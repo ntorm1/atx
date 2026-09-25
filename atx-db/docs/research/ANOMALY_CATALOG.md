@@ -17,20 +17,20 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | class | role | rows | research-eligible |
 |---|---|---:|---:|
 | value | anomaly | 12 | 12 |
-| profitability | anomaly | 15 | 15 |
-| quality | anomaly | 6 | 6 |
-| growth | anomaly | 46 | 42 |
-| investment | anomaly | 14 | 14 |
+| profitability | anomaly | 23 | 23 |
+| quality | anomaly | 9 | 8 |
+| growth | anomaly | 51 | 46 |
+| investment | anomaly | 20 | 20 |
 | accruals | anomaly | 5 | 5 |
-| leverage | anomaly | 10 | 10 |
-| payout_issuance | anomaly | 10 | 10 |
-| efficiency | anomaly | 6 | 6 |
-| earnings_stability | anomaly | 1 | 0 |
+| leverage | anomaly | 14 | 14 |
+| payout_issuance | anomaly | 12 | 10 |
+| efficiency | anomaly | 13 | 13 |
+| earnings_stability | anomaly | 5 | 4 |
 | size | control | 2 | 2 |
 | momentum | control | 4 | 4 |
 | reversal | control | 1 | 1 |
 | volatility | control | 2 | 2 |
-| **all** | | **134** | **129** |
+| **all** | | **173** | **164** |
 
 ## value
 
@@ -68,17 +68,28 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `operating_profitability` | `operating_profitability` (ttm) | +1 | Trailing twelve-month operating income over average total assets. | Ball Gerakos Linnainmaa and Nikolaev 2015 (Journal of Financial Economics); Fama and French 2015 (Journal of Financial Economics) | published_anomaly | winsor_z | conservative_filing_46h | 5q/0s | eligible |
 | `cash_profitability` | `cash_profitability` (ttm) | +1 | Trailing operating income plus depreciation less working-capital accrual changes over average total assets. | Ball Gerakos Linnainmaa and Nikolaev 2016 (Journal of Financial Economics) | published_anomaly | winsor_z | conservative_filing_46h | 5q/0s | eligible |
 | `cfo_to_assets` | `cfo_to_assets` (ttm) | +1 | Trailing twelve-month operating cash flow over average total assets. | Ball Gerakos Linnainmaa and Nikolaev 2016 (Journal of Financial Economics); Piotroski 2000 (Journal of Accounting Research) | published_analogue | winsor_z | conservative_filing_46h | 5q/0s | eligible |
+| `roe_q` | `roe_q` (q) | +1 | Single-quarter net income over common equity at the prior quarter end (q-factor ROE). | Hou Xue and Zhang 2015 (Review of Financial Studies); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | rank_normal | conservative_filing_46h | 2q/0s | eligible_with_caveat: A single-quarter level carries fiscal seasonality; the value is labeled quarterly only when the opening balance is proven to be the prior quarter end. |
+| `roa_q` | `roa_q` (q) | +1 | Single-quarter net income over total assets at the prior quarter end. | Balakrishnan Bartov and Faurel 2010 (Journal of Accounting and Economics); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | winsor_z | conservative_filing_46h | 2q/0s | eligible_with_caveat: A single-quarter level carries fiscal seasonality; the value is labeled quarterly only when the opening balance is proven to be the prior quarter end. |
+| `rnoa_q` | `rnoa_q` (q) | +1 | Single-quarter operating income over net operating assets at the prior quarter end. | Soliman 2008 (The Accounting Review); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | rank_normal | conservative_filing_46h | 2q/0s | eligible_with_caveat: A single-quarter level carries fiscal seasonality; the value is labeled quarterly only when the opening balance is proven to be the prior quarter end. |
+| `rnoa` | `rnoa` (ttm) | +1 | Trailing twelve-month operating income over net operating assets at the start of the trailing year. | Soliman 2008 (The Accounting Review); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `gross_profitability_q` | `gross_profitability_q` (q) | +1 | Single-quarter gross profit over total assets at the prior quarter end. | Novy-Marx 2013 (Journal of Financial Economics); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | winsor_z | conservative_filing_46h | 2q/0s | eligible_with_caveat: A single-quarter level carries fiscal seasonality; the value is labeled quarterly only when the opening balance is proven to be the prior quarter end. |
+| `operating_profitability_q` | `operating_profitability_q` (q) | +1 | Single-quarter gross profit less SG&A (before R&D) over total assets at the prior quarter end. | Ball Gerakos Linnainmaa and Nikolaev 2015 (Journal of Financial Economics); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | winsor_z | conservative_filing_46h | 2q/0s | eligible_with_caveat: A single-quarter level carries fiscal seasonality; the value is labeled quarterly only when the opening balance is proven to be the prior quarter end. |
+| `cfo_to_assets_q` | `cfo_to_assets_q` (q) | +1 | Single-quarter operating cash flow over total assets at the prior quarter end. | Ball Gerakos Linnainmaa and Nikolaev 2016 (Journal of Financial Economics); Sloan 1996 (The Accounting Review) | published_analogue | winsor_z | conservative_filing_46h | 2q/0s | eligible_with_caveat: A single-quarter level carries fiscal seasonality; the value is labeled quarterly only when the opening balance is proven to be the prior quarter end. |
+| `fcf_to_assets` | `fcf_to_assets` (ttm) | +1 | Trailing twelve-month free cash flow over average total assets. | Asness Frazzini and Pedersen 2019 (Review of Accounting Studies) | published_analogue | winsor_z | conservative_filing_46h | 5q/0s | eligible |
 
 ## quality
 
 | feature | source | sign | definition | reference | evidence | transform | clock | history | admission |
 |---|---|:-:|---|---|---|---|---|---|---|
-| `piotroski_f` | `piotroski_f` (ttm) | +1 | Nine binary signals of profitability and its change and of liquidity and leverage and issuance and efficiency (0 to 9). | Piotroski 2000 (Journal of Accounting Research) | published_anomaly | winsor_z | conservative_filing_46h | 9q/0s | eligible |
+| `piotroski_f` | `piotroski_f` (ttm) | +1 | Nine binary signals of profitability and its change and of liquidity and leverage and issuance and efficiency (0 to 9). | Piotroski 2000 (Journal of Accounting Research) | published_anomaly | winsor_z | conservative_filing_46h | 9q/0s | blocked_incomparable_origin: Its equity-offering signal compares period-end share counts a year apart: a split-sensitive balance pair stays incomparable until a split guard exists (R1d); piotroski_f_cash_issuance is the testable analogue. |
+| `piotroski_f_cash_issuance` | `piotroski_f_cash_issuance` (ttm) | +1 | Nine binary Piotroski signals (0 to 9) with the no-equity-issuance signal read from trailing cash proceeds of equity issuance. | Piotroski 2000 (Journal of Accounting Research) | published_analogue | winsor_z | conservative_filing_46h | 9q/0s | eligible_with_caveat: Equity issuance is read from cash proceeds (option exercises included); a proceeds concept absent all year with complete operating cash flow reads as no issuance and one reported for only part of the year gives no value. |
 | `altman_z_book` | `altman_z_book` (ttm) | +1 | Altman Z-score with book equity in the equity-to-liabilities term. | Altman 1968 (Journal of Finance); Dichev 1998 (Journal of Finance) | published_analogue | rank_normal | conservative_filing_46h | 4q/0s | eligible |
 | `altman_z` | `altman_z` (daily) | +1 | Altman Z-score with market equity in the equity-to-liabilities term. | Dichev 1998 (Journal of Finance); Altman 1968 (Journal of Finance) | published_anomaly | rank_normal | max_filing_46h_trade_date_22h | 4q/1s | eligible |
 | `beneish_m` | `beneish_m` (ttm) | -1 | Beneish eight-variable earnings-manipulation M-score. | Beneish 1999 (Financial Analysts Journal); Beneish Lee and Nichols 2013 (Financial Analysts Journal) | published_anomaly | rank_normal | conservative_filing_46h | 8q/0s | eligible |
 | `ohlson_o` | `ohlson_o` (ttm) | -1 | Ohlson O-score bankruptcy index (no GNP deflator). | Ohlson 1980 (Journal of Accounting Research); Dichev 1998 (Journal of Finance); Griffin and Lemmon 2002 (Journal of Finance) | published_anomaly | rank_normal | conservative_filing_46h | 8q/0s | eligible |
 | `tax_to_book_income` | `tax_to_book_income` (ttm) | +1 | Trailing twelve-month income tax expense over trailing net income. | Lev and Nissim 2004 (The Accounting Review) | published_analogue | rank_normal | conservative_filing_46h | 4q/0s | eligible_with_caveat: Negative net income inverts the ratio. |
+| `cash_to_assets` | `cash_to_assets` (q) | +1 | Cash and short-term investments over total assets. | Palazzo 2012 (Journal of Financial Economics) | published_anomaly | winsor_z | conservative_filing_46h | 1q/0s | eligible |
+| `sustainable_growth` | `sustainable_growth` (ttm) | +1 | Trailing earnings to common less trailing common dividends over average common equity (ROE times the retention ratio). | Fama and French 2006 (Journal of Financial Economics); Hou Xue and Zhang 2015 (Review of Financial Studies) | economic_conjecture | rank_normal | conservative_filing_46h | 5q/0s | eligible_with_caveat: An unreported common dividend reads as zero payout and negative earnings give a negative rate. |
 
 ## growth
 
@@ -96,7 +107,7 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `tax_expense_change_yoy` | `tax_expense_change_yoy` (ttm) | +1 | Year-over-year growth of trailing twelve-month income tax expense. | Thomas and Zhang 2011 (Journal of Accounting Research) | published_analogue | rank_normal | conservative_filing_46h | 8q/0s | eligible |
 | `revenue_growth_qoq` | `revenue_growth_qoq` (ttm) | +1 | Quarter-over-quarter growth of trailing twelve-month revenue. | Jegadeesh and Livnat 2006 (Journal of Accounting and Economics) | economic_conjecture | rank_normal | conservative_filing_46h | 5q/0s | blocked_incomparable_origin: A one-quarter change of a trailing sum compares overlapping 365-day spans; the engine labels every value incomparable. |
 | `eps_diluted_growth_qoq` | `eps_diluted_growth_qoq` (ttm) | +1 | Quarter-over-quarter growth of trailing twelve-month diluted EPS. | Bernard and Thomas 1989 (Journal of Accounting Research) | economic_conjecture | rank_normal | conservative_filing_46h | 5q/0s | blocked_incomparable_origin: Per-share one-quarter pair over overlapping trailing spans without a split guard; every value is labeled incomparable. |
-| `eps_cagr_3y` | `eps_cagr_3y` (ttm) | -1 | Three-year compound annual growth of trailing diluted EPS with positive endpoints required. | Lakonishok Shleifer and Vishny 1994 (Journal of Finance); Chan Karceski and Lakonishok 2003 (Journal of Finance) | economic_conjecture | rank_normal | conservative_filing_46h | 16q/0s | eligible |
+| `eps_cagr_3y` | `eps_cagr_3y` (ttm) | -1 | Three-year compound annual growth of trailing diluted EPS with positive endpoints required. | Lakonishok Shleifer and Vishny 1994 (Journal of Finance); Chan Karceski and Lakonishok 2003 (Journal of Finance) | economic_conjecture | rank_normal | conservative_filing_46h | 16q/0s | blocked_incomparable_origin: Per-share trailing EPS twelve quarters apart: filings restate only the prior-year comparative for splits so the pair stays incomparable until a split guard exists (R1d). |
 | `cfo_cagr_3y` | `cfo_cagr_3y` (ttm) | -1 | Three-year compound annual growth of trailing operating cash flow with positive endpoints required. | Lakonishok Shleifer and Vishny 1994 (Journal of Finance); Chan Karceski and Lakonishok 2003 (Journal of Finance) | economic_conjecture | rank_normal | conservative_filing_46h | 16q/0s | eligible |
 | `gross_profit_cagr_3y` | `gross_profit_cagr_3y` (ttm) | -1 | Three-year compound annual growth of trailing gross profit with positive endpoints required. | Lakonishok Shleifer and Vishny 1994 (Journal of Finance); Daniel and Titman 2006 (Journal of Finance) | economic_conjecture | rank_normal | conservative_filing_46h | 16q/0s | eligible |
 | `operating_income_cagr_3y` | `operating_income_cagr_3y` (ttm) | -1 | Three-year compound annual growth of trailing operating income with positive endpoints required. | Lakonishok Shleifer and Vishny 1994 (Journal of Finance); Chan Karceski and Lakonishok 2003 (Journal of Finance) | economic_conjecture | rank_normal | conservative_filing_46h | 16q/0s | eligible |
@@ -130,6 +141,11 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `revenue_q_growth_yoy_accel` | `revenue_q_growth_yoy_accel` (q) | +1 | This quarter's seasonal revenue growth less the previous quarter's seasonal growth. | He and Narayanamoorthy 2020 (Journal of Accounting and Economics); Jegadeesh and Livnat 2006 (Journal of Accounting and Economics) | published_analogue | rank_normal | conservative_filing_46h | 6q/0s | eligible |
 | `gross_margin_q_change_yoy_accel` | `gross_margin_q_change_yoy_accel` (q) | +1 | This quarter's seasonal gross-margin change less the previous quarter's seasonal change. | He and Narayanamoorthy 2020 (Journal of Accounting and Economics); Abarbanell and Bushee 1998 (The Accounting Review) | economic_conjecture | rank_normal | conservative_filing_46h | 6q/0s | eligible |
 | `operating_margin_q_change_yoy_accel` | `operating_margin_q_change_yoy_accel` (q) | +1 | This quarter's seasonal operating-margin change less the previous quarter's seasonal change. | He and Narayanamoorthy 2020 (Journal of Accounting and Economics); Abarbanell and Bushee 1998 (The Accounting Review) | economic_conjecture | rank_normal | conservative_filing_46h | 6q/0s | eligible |
+| `sue_ni` | `sue_ni` (q) | +1 | Seasonal change in quarterly net income over the sample standard deviation of the eight preceding seasonal changes (standardized unexpected earnings on net income). | Foster Olsen and Shevlin 1984 (The Accounting Review); Bernard and Thomas 1989 (Journal of Accounting Research); Chan Jegadeesh and Lakonishok 1996 (Journal of Finance) | published_analogue | rank_normal | conservative_filing_46h | 13q/0s | eligible |
+| `sue_revenue` | `sue_revenue` (q) | +1 | Seasonal change in quarterly revenue over the sample standard deviation of the eight preceding seasonal changes (standardized unexpected revenue). | Jegadeesh and Livnat 2006 (Journal of Accounting and Economics) | published_analogue | rank_normal | conservative_filing_46h | 13q/0s | eligible |
+| `earnings_surprise_to_market` | `metric:ni_q_change_yoy` / `metric:market_cap` | +1 | Seasonal change in quarterly net income over market capitalization (price-scaled earnings surprise). | Livnat and Mendenhall 2006 (Journal of Accounting Research); Bernard and Thomas 1989 (Journal of Accounting Research) | published_analogue | rank_normal | max_filing_46h_trade_date_22h | 5q/1s | eligible |
+| `roe_q_change_yoy` | `roe_q_change_yoy` (q) | +1 | Single-quarter ROE less the same fiscal quarter's ROE a year earlier (dRoe). | Hou Xue and Zhang 2020 (Review of Financial Studies); Hou Mo Xue and Zhang 2021 (Review of Finance) | published_anomaly | rank_normal | conservative_filing_46h | 6q/0s | eligible |
+| `roa_q_change_yoy` | `roa_q_change_yoy` (q) | +1 | Single-quarter ROA less the same fiscal quarter's ROA a year earlier (dRoa). | Balakrishnan Bartov and Faurel 2010 (Journal of Accounting and Economics); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | rank_normal | conservative_filing_46h | 6q/0s | eligible |
 
 ## investment
 
@@ -149,6 +165,12 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `rd_expense_growth_yoy` | `rd_expense_growth_yoy` (ttm) | +1 | Year-over-year growth of trailing twelve-month research and development expense. | Eberhart Maxwell and Siddique 2004 (Journal of Finance) | published_analogue | rank_normal | conservative_filing_46h | 8q/0s | eligible |
 | `rd_expense_q_growth_yoy` | `rd_expense_q_growth_yoy` (q) | +1 | Single-quarter R&D expense growth over the same fiscal quarter a year earlier. | Eberhart Maxwell and Siddique 2004 (Journal of Finance) | economic_conjecture | rank_normal | conservative_filing_46h | 5q/0s | eligible |
 | `rd_expense_q_growth_qoq` | `rd_expense_q_growth_qoq` (q) | +1 | Single-quarter R&D expense growth over the immediately preceding fiscal quarter. | Eberhart Maxwell and Siddique 2004 (Journal of Finance) | economic_conjecture | rank_normal | conservative_filing_46h | 2q/0s | eligible_with_caveat: Sequential quarters carry fiscal seasonality and unequal quarter lengths; quarterly origin only when adjacency is proven. |
+| `investment_to_assets` | `investment_to_assets` (q) | -1 | Year-over-year change in gross PP&E plus the change in inventory over total assets four quarters earlier (I/A). | Lyandres Sun and Zhang 2008 (Review of Financial Studies); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | winsor_z | conservative_filing_46h | 5q/0s | eligible_with_caveat: Net PP&E change substitutes when gross PP&E is not reported at both ends; unreported inventory contributes zero. |
+| `inventory_change_to_assets` | `inventory_change_to_assets` (q) | -1 | Year-over-year change in inventory over average total assets. | Thomas and Zhang 2002 (Review of Accounting Studies); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | winsor_z | conservative_filing_46h | 5q/0s | eligible |
+| `capex_to_assets` | `capex_to_assets` (ttm) | -1 | Trailing twelve-month capital expenditure over average total assets. | Titman Wei and Xie 2004 (Journal of Financial and Quantitative Analysis); Polk and Sapienza 2009 (Review of Financial Studies) | published_analogue | winsor_z | conservative_filing_46h | 5q/0s | eligible |
+| `capex_growth_2y` | `capex_growth_2y` (ttm) | -1 | Two-year growth of trailing twelve-month capital expenditure. | Anderson and Garcia-Feijoo 2006 (Journal of Finance); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | rank_normal | conservative_filing_46h | 12q/0s | eligible |
+| `capex_growth_3y` | `capex_growth_3y` (ttm) | -1 | Three-year growth of trailing twelve-month capital expenditure. | Anderson and Garcia-Feijoo 2006 (Journal of Finance); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | rank_normal | conservative_filing_46h | 16q/0s | eligible |
+| `rd_to_assets` | `rd_to_assets` (ttm) | +1 | Trailing twelve-month R&D expense over average total assets. | Li 2011 (Review of Financial Studies); Chan Lakonishok and Sougiannis 2001 (Journal of Finance) | published_analogue | winsor_z | conservative_filing_46h | 5q/0s | eligible |
 
 ## accruals
 
@@ -174,6 +196,10 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `cash_ratio` | `cash_ratio` (q) | +1 | Cash and short-term investments over current liabilities. | Palazzo 2012 (Journal of Financial Economics); Campbell Hilscher and Szilagyi 2008 (Journal of Finance) | published_analogue | rank_normal | conservative_filing_46h | 1q/0s | eligible |
 | `debt_to_market` | `metric:total_debt_q` / `metric:market_cap` | +1 | Interest-bearing debt over market capitalization (market leverage). | Bhandari 1988 (Journal of Finance); Fama and French 1992 (Journal of Finance) | published_anomaly | rank_normal | max_filing_46h_trade_date_22h | 1q/1s | eligible |
 | `assets_to_market` | `item:total_assets` / `metric:market_cap` | +1 | Total assets over market capitalization (A/ME market leverage). | Fama and French 1992 (Journal of Finance) | published_anomaly | rank_normal | max_filing_46h_trade_date_22h | 1q/1s | eligible |
+| `debt_to_assets_change_yoy` | `debt_to_assets_change_yoy` (q) | -1 | Year-over-year change in total debt over total assets. | Piotroski 2000 (Journal of Accounting Research) | published_analogue | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `net_debt_to_book_equity` | `net_debt_to_book_equity` (q) | -1 | Total debt less cash and short-term investments over common equity (financing leverage). | Penman Richardson and Tuna 2007 (Journal of Accounting Research) | published_anomaly | rank_normal | conservative_filing_46h | 1q/0s | eligible |
+| `current_ratio_change_yoy` | `current_ratio_change_yoy` (q) | +1 | Year-over-year change in current assets over current liabilities. | Piotroski 2000 (Journal of Accounting Research) | published_analogue | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `operating_leverage` | `operating_leverage` (ttm) | +1 | Trailing cost of revenue plus trailing SG&A over average total assets. | Novy-Marx 2011 (Review of Finance) | published_anomaly | winsor_z | conservative_filing_46h | 5q/0s | eligible |
 
 ## payout_issuance
 
@@ -182,13 +208,15 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `net_equity_issuance` | `net_equity_issuance` (ttm) | -1 | Trailing equity issued less repurchased over average total assets. | Pontiff and Woodgate 2008 (Journal of Finance); Bradshaw Richardson and Sloan 2006 (Journal of Accounting and Economics) | published_anomaly | winsor_z | conservative_filing_46h | 5q/0s | eligible |
 | `net_debt_issuance` | `net_debt_issuance` (ttm) | -1 | Trailing long-term debt issued less repaid over average total assets. | Bradshaw Richardson and Sloan 2006 (Journal of Accounting and Economics); Spiess and Affleck-Graves 1999 (Journal of Financial Economics) | published_anomaly | winsor_z | conservative_filing_46h | 5q/0s | eligible |
 | `external_financing` | `external_financing` (ttm) | -1 | Net equity plus net debt financing over average total assets. | Bradshaw Richardson and Sloan 2006 (Journal of Accounting and Economics) | published_anomaly | winsor_z | conservative_filing_46h | 5q/0s | eligible |
-| `shares_growth_yoy` | `shares_growth_yoy` (q) | -1 | Year-over-year growth of period-end shares outstanding. | Pontiff and Woodgate 2008 (Journal of Finance); Daniel and Titman 2006 (Journal of Finance) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | eligible_with_caveat: Period-end share counts are as reported: a split between the two period ends reads as issuance until a split-adjusted share basis exists. |
+| `shares_growth_yoy` | `shares_growth_yoy` (q) | -1 | Year-over-year growth of period-end shares outstanding. | Pontiff and Woodgate 2008 (Journal of Finance); Daniel and Titman 2006 (Journal of Finance) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | blocked_incomparable_origin: Period-end share counts are balances that no filing restates for a split: the year-over-year pair stays incomparable until a split guard exists (R1d); share_issuance_1y is the testable weighted-share analogue. |
 | `buyback_ratio` | `buyback_ratio` (ttm) | +1 | Trailing repurchases less issuance over average total assets. | Ikenberry Lakonishok and Vermaelen 1995 (Journal of Financial Economics); Pontiff and Woodgate 2008 (Journal of Finance) | published_analogue | winsor_z | conservative_filing_46h | 5q/0s | eligible |
 | `payout_ratio` | `payout_ratio` (ttm) | +1 | Trailing common dividends over trailing earnings available to common. | Arnott and Asness 2003 (Financial Analysts Journal) | economic_conjecture | rank_normal | conservative_filing_46h | 4q/0s | eligible_with_caveat: Negative earnings invert the ratio. |
 | `buyback_yield` | `buyback_yield` (daily) | +1 | Trailing repurchases less issuance over market capitalization. | Boudoukh Michaely Richardson and Roberts 2007 (Journal of Finance); Ikenberry Lakonishok and Vermaelen 1995 (Journal of Financial Economics) | published_anomaly | winsor_z | max_filing_46h_trade_date_22h | 4q/1s | eligible |
 | `net_payout_yield` | `net_payout_yield` (daily) | +1 | Trailing dividends plus repurchases less issuance over market capitalization. | Boudoukh Michaely Richardson and Roberts 2007 (Journal of Finance) | published_anomaly | winsor_z | max_filing_46h_trade_date_22h | 4q/1s | eligible |
 | `total_payout_yield` | `total_payout_yield` (daily) | +1 | Trailing gross dividends plus gross repurchases over market capitalization. | Boudoukh Michaely Richardson and Roberts 2007 (Journal of Finance) | published_anomaly | winsor_z | max_filing_46h_trade_date_22h | 4q/1s | eligible |
 | `shareholder_yield` | `shareholder_yield` (daily) | +1 | Trailing net payout plus net debt paydown over market capitalization. | Boudoukh Michaely Richardson and Roberts 2007 (Journal of Finance); Bradshaw Richardson and Sloan 2006 (Journal of Accounting and Economics) | published_analogue | winsor_z | max_filing_46h_trade_date_22h | 4q/1s | eligible |
+| `share_issuance_1y` | `share_issuance_1y` (q) | -1 | Log change in quarterly weighted-average basic shares over the same fiscal quarter a year earlier (a weighted-share analogue of split-adjusted shares outstanding). | Pontiff and Woodgate 2008 (Journal of Finance); Daniel and Titman 2006 (Journal of Finance) | published_analogue | rank_normal | conservative_filing_46h | 5q/0s | eligible_with_caveat: Fiscal fourth quarters have no value where only annual weighted shares are reported; the prior-year base is split-consistent only through the current filing's restated comparative. |
+| `share_issuance_3y` | `share_issuance_3y` (q) | -1 | Three-year log change in period-end shares outstanding. | Daniel and Titman 2006 (Journal of Finance); Pontiff and Woodgate 2008 (Journal of Finance) | published_anomaly | rank_normal | conservative_filing_46h | 13q/0s | blocked_incomparable_origin: Period-end share counts twelve quarters apart are never restated for splits: the pair stays incomparable until a split guard exists (R1d). |
 
 ## efficiency
 
@@ -200,12 +228,23 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `dio_days` | `dio_days` (ttm) | -1 | Days inventory outstanding: average inventory times 365 over trailing cost of revenue. | Wang 2019 (Journal of Financial Economics); Thomas and Zhang 2002 (Review of Accounting Studies) | published_analogue | rank_normal | conservative_filing_46h | 5q/0s | eligible |
 | `dpo_days` | `dpo_days` (ttm) | +1 | Days payables outstanding: average payables times 365 over trailing cost of revenue. | Wang 2019 (Journal of Financial Economics) | published_analogue | rank_normal | conservative_filing_46h | 5q/0s | eligible |
 | `cash_conversion_cycle` | `cash_conversion_cycle` (ttm) | -1 | DSO plus DIO less DPO in days. | Wang 2019 (Journal of Financial Economics) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `sga_to_sales` | `sga_to_sales` (ttm) | +1 | Trailing twelve-month SG&A over trailing revenue. | Eisfeldt and Papanikolaou 2013 (Journal of Finance) | published_analogue | winsor_z | conservative_filing_46h | 4q/0s | eligible |
+| `sga_growth_less_sales_growth` | `sga_growth_less_sales_growth` (q) | -1 | Year-over-year quarterly SG&A growth less year-over-year quarterly revenue growth. | Lev and Thiagarajan 1993 (Journal of Accounting Research); Abarbanell and Bushee 1998 (The Accounting Review) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `inventory_growth_less_sales_growth` | `inventory_growth_less_sales_growth` (q) | -1 | Year-over-year inventory growth less year-over-year quarterly revenue growth. | Lev and Thiagarajan 1993 (Journal of Accounting Research); Abarbanell and Bushee 1998 (The Accounting Review) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `receivables_growth_less_sales_growth` | `receivables_growth_less_sales_growth` (q) | -1 | Year-over-year receivables growth less year-over-year quarterly revenue growth. | Lev and Thiagarajan 1993 (Journal of Accounting Research); Abarbanell and Bushee 1998 (The Accounting Review) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `sales_growth_less_gross_profit_growth` | `sales_growth_less_gross_profit_growth` (q) | -1 | Year-over-year quarterly revenue growth less year-over-year quarterly gross-profit growth. | Lev and Thiagarajan 1993 (Journal of Accounting Research); Abarbanell and Bushee 1998 (The Accounting Review) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `noa_turnover` | `noa_turnover` (ttm) | +1 | Trailing twelve-month revenue over net operating assets at the start of the trailing year (ATO). | Soliman 2008 (The Accounting Review); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | rank_normal | conservative_filing_46h | 5q/0s | eligible |
+| `noa_turnover_change_yoy` | `noa_turnover_change_yoy` (ttm) | +1 | Year-over-year change in trailing revenue over opening net operating assets. | Soliman 2008 (The Accounting Review) | published_anomaly | rank_normal | conservative_filing_46h | 9q/0s | eligible |
 
 ## earnings_stability
 
 | feature | source | sign | definition | reference | evidence | transform | clock | history | admission |
 |---|---|:-:|---|---|---|---|---|---|---|
-| `earnings_variability` | `earnings_variability` (ttm) | -1 | Twelve-quarter standard deviation of year-over-year trailing diluted-EPS growth. | Huang 2009 (Journal of Empirical Finance); Dichev and Tang 2009 (Journal of Accounting and Economics) | published_analogue | rank_normal | conservative_filing_46h | 19q/0s | blocked_incomparable_origin: _derived_annual.lower_span marks every stdev_q span incoherent so every value is labeled incomparable. |
+| `earnings_variability` | `earnings_variability` (ttm) | -1 | Twelve-quarter standard deviation of year-over-year trailing diluted-EPS growth. | Huang 2009 (Journal of Empirical Finance); Dichev and Tang 2009 (Journal of Accounting and Economics) | published_analogue | rank_normal | conservative_filing_46h | 19q/0s | blocked_incomparable_origin: Its elements are trailing-twelve-month growth rates whose 365-day spans never pass the stdev_q single-quarter chain proof so every value is labeled incomparable. |
+| `roe_variability_8q` | `roe_variability_8q` (q) | -1 | Eight-quarter sample standard deviation of single-quarter ROE. | Asness Frazzini and Pedersen 2019 (Review of Accounting Studies); Mohanram 2005 (Review of Accounting Studies) | published_analogue | rank_normal | conservative_filing_46h | 9q/0s | eligible_with_caveat: Fiscal seasonality in single-quarter ROE inflates the dispersion of seasonal businesses. |
+| `roa_variability_8q` | `roa_variability_8q` (q) | -1 | Eight-quarter sample standard deviation of single-quarter ROA. | Mohanram 2005 (Review of Accounting Studies); Dichev and Tang 2009 (Journal of Accounting and Economics) | published_analogue | rank_normal | conservative_filing_46h | 9q/0s | eligible_with_caveat: Fiscal seasonality in single-quarter ROA inflates the dispersion of seasonal businesses. |
+| `cfo_variability_8q` | `cfo_variability_8q` (q) | -1 | Eight-quarter sample standard deviation of single-quarter operating cash flow over opening total assets. | Huang 2009 (Journal of Empirical Finance) | published_analogue | rank_normal | conservative_filing_46h | 9q/0s | eligible_with_caveat: Fiscal seasonality in single-quarter operating cash flow inflates the dispersion of seasonal businesses. |
+| `sales_growth_variability_8q` | `sales_growth_variability_8q` (q) | -1 | Eight-quarter sample standard deviation of year-over-year quarterly revenue growth. | Mohanram 2005 (Review of Accounting Studies) | published_analogue | rank_normal | conservative_filing_46h | 12q/0s | eligible |
 
 ## size
 
@@ -292,6 +331,9 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `net_debt` | dollar_level_input |
 | `net_income_common_ttm` | dollar_level_input |
 | `net_income_ttm` | dollar_level_input |
+| `ni_q_change_yoy` | dollar_level_input |
+| `ni_q_change_yoy_sd8` | dollar_level_input |
+| `no_equity_issuance_ttm` | component_of:piotroski_f_cash_issuance |
 | `noa` | dollar_level_input |
 | `nopat_ttm` | dollar_level_input |
 | `ohlson_chin` | component_of:ohlson_o |
@@ -312,6 +354,8 @@ Compositions are market-scaled ratios declared here and computed at formation by
 | `ps_ttm` | inverse_cataloged:sales_to_price |
 | `rd_expense_ttm` | dollar_level_input |
 | `receivables_avg2` | dollar_level_input |
+| `revenue_q_change_yoy` | dollar_level_input |
+| `revenue_q_change_yoy_sd8` | dollar_level_input |
 | `revenue_ttm` | dollar_level_input |
 | `sales_per_share` | per_share_level |
 | `sga_expense_ttm` | dollar_level_input |

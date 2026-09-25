@@ -114,7 +114,7 @@ def test_core_metric_breadth_preserves_the_prior_catalog_and_declares_the_new_fa
         "eps_basic_ttm", "dso_days", "dio_days", "dpo_days", "cash_conversion_cycle",
         *_QUARTERLY_MARGIN_AND_ACCELERATION,
     }
-    assert len(definitions) == 213
+    assert len(definitions) == 256
     assert expected <= definitions.keys()
     # Single-quarter margin levels, changes, basic-EPS growth and accelerations
     # live on the quarter grid; the existing *_margin_change_yoy stay trailing.

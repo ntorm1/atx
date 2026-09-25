@@ -20,11 +20,12 @@ from __future__ import annotations
 import csv
 import hashlib
 import re
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
+from .._derived_annual import SHARE_COUNT_CODES, ShareExponent, share_exponent
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from ..derived_dsl import SCALAR_FUNCTIONS, BinOp, Call, Neg, Node, Number, Ref, parse_expression
 from ..derived_registry import (
@@ -146,6 +147,9 @@ EXCLUDED_SEED_METRICS: Mapping[str, str] = {
         "invested_capital_avg2", "invested_capital_ex_goodwill_avg2", "nopat_ttm",
         "change_in_receivables_yoy", "change_in_inventory_yoy", "change_in_payables_yoy", "noa",
         "operating_working_capital_q", "enterprise_value",
+        # R1b: seasonal changes and their eight-quarter scales, consumed by sue_ni /
+        # sue_revenue and the earnings_surprise_to_market composition.
+        "ni_q_change_yoy", "ni_q_change_yoy_sd8", "revenue_q_change_yoy", "revenue_q_change_yoy_sd8",
     )},
     **{code: "per_share_level" for code in (
         "eps_diluted_ttm", "eps_basic_ttm", "eps_ttm", "sales_per_share", "book_per_share",
@@ -167,6 +171,7 @@ EXCLUDED_SEED_METRICS: Mapping[str, str] = {
         "ohlson_intwo", "ohlson_chin",
     )},
     "effective_tax_rate_ttm": "component_of:roic",
+    "no_equity_issuance_ttm": "component_of:piotroski_f_cash_issuance",
 }
 
 
@@ -321,13 +326,24 @@ def _pair(left: _Span, right: _Span) -> _Span:
             never = "quarter_vs_trailing_span_same_bucket"
     else:
         kind = newer.kind
+        # _derived_annual._combine: until a split guard exists, a split-sensitive
+        # comparison across periods is proven only between flows exactly four
+        # quarters apart (the prior-year comparative a filing restates for splits).
+        sensitive = newer.share_basis or older.share_basis
         if distance == 1:
-            if newer.share_basis or older.share_basis:
+            # _one_quarter_apart proves flow after flow, a flow after its opening
+            # balance and instant after instant. A trailing span, an instant after a
+            # flow and any split-sensitive pair never pass.
+            if sensitive:
                 never = "one_quarter_pair_per_share_without_split_guard"
-            elif not {newer.kind, older.kind} <= _QUARTER_POSSIBLE:
+            elif "long" in (newer.kind, older.kind) or (newer.kind, older.kind) == ("instant", "quarter"):
                 never = "one_quarter_pair_without_provable_quarter_spans"
         elif distance % 4:
             never = "lag_distance_off_the_annual_grid"
+        elif sensitive and distance != 4:
+            never = "multi_year_share_basis_pair_without_split_guard"
+        elif sensitive and "instant" in (newer.kind, older.kind):
+            never = "share_basis_balance_pair_without_split_guard"
     return _Span(kind, newer.offset, left.share_basis or right.share_basis,
                  left.never or right.never or never)
 
@@ -338,18 +354,30 @@ def _numeric(node: Node) -> int:
     return int(node.value)
 
 
-def _span(node: Node, refs: Mapping[str, _Span]) -> _Span:
+def _span(node: Node, refs: Mapping[str, _Span], exponent_of: Callable[[str], ShareExponent]) -> _Span:
+    """Mirror ``_derived_annual.lower_span``, including its per-node split sensitivity.
+
+    Like the engine, every sub-expression's share basis is its formula-derived
+    share exponent (``_derived_annual.share_exponent``): nonzero or mixed means a
+    split changes the value.
+    """
+    span = _span_rule(node, refs, exponent_of)
+    sensitive = share_exponent(node, exponent_of) != 0
+    return span if span.share_basis == sensitive else replace(span, share_basis=sensitive)
+
+
+def _span_rule(node: Node, refs: Mapping[str, _Span], exponent_of: Callable[[str], ShareExponent]) -> _Span:
     if isinstance(node, Number):
         return _Span()
     if isinstance(node, Ref):
         return refs[node.name]
     if isinstance(node, Neg):
-        return _span(node.operand, refs)
+        return _span(node.operand, refs, exponent_of)
     if isinstance(node, BinOp):
-        return _pair(_span(node.left, refs), _span(node.right, refs))
+        return _pair(_span(node.left, refs, exponent_of), _span(node.right, refs, exponent_of))
     if not isinstance(node, Call):
         raise TypeError(node)
-    children = [_span(argument, refs) for argument in node.args]
+    children = [_span(argument, refs, exponent_of) for argument in node.args]
     inner = children[0]
     if node.name == "coalesce":
         spans = [child for child in children if child.offset is not None]
@@ -370,8 +398,15 @@ def _span(node: Node, refs: Mapping[str, _Span]) -> _Span:
         never = inner.never or (None if inner.kind in _QUARTER_POSSIBLE else "ttm_over_non_quarter_spans")
         return _Span("long", 0, inner.share_basis, never)
     if node.name == "stdev_q":
-        # _derived_annual.lower_span hard-codes coherent 'false' for stdev_q.
-        return _Span(inner.kind, 0, inner.share_basis, inner.never or "stdev_q_span_never_coherent")
+        # _derived_annual._consecutive_window (R1c): coherent only for a chain of
+        # coherent single-quarter flows or quarter-end instants, never on a share
+        # basis. Consecutive trailing (365-day) spans never pass the quarter proof.
+        never = inner.never
+        if never is None and inner.share_basis:
+            never = "stdev_q_over_share_basis_without_split_guard"
+        elif never is None and inner.kind == "long":
+            never = "stdev_q_over_trailing_spans"
+        return _Span(inner.kind, 0, inner.share_basis, never)
     periods = {"avg2": 4, "yoy": 4, "qoq": 1}.get(node.name)
     if node.name == "lag":
         periods = _numeric(node.args[1])
@@ -435,28 +470,40 @@ def derive_metric_shapes(
 
     Incomparability mirrors ``_derived_annual`` (span rules) and ``_derived_pit``
     (an ``incomparable`` input makes the output incomparable) for the cases that
-    are false for every row: ``stdev_q``; a one-quarter pair over a per-share
-    operand (ruling: no split guard yet) or over spans that can never prove
-    quarter adjacency (trailing or instant); off-grid lags; a quarter and a
-    trailing span of the same bucket. Daily-window metrics are not span-labeled.
+    are false for every row. Split sensitivity is the formula-derived share
+    exponent (per-share and share-count operands; ruling: no split guard yet): a
+    split-sensitive pair is never proven one quarter apart, across balances or
+    beyond four quarters, and a split-sensitive ``stdev_q`` window never is. Also
+    false: a one-quarter pair involving a trailing span or an instant after a
+    flow; ``stdev_q`` over trailing spans; off-grid lags; a quarter and a trailing
+    span of the same bucket. Daily-window metrics are not span-labeled.
+    ``tests/test_research_metric_economics.py`` checks this mirror against the
+    real engine's ``value_origin`` on a fixture of consecutive quarters.
     """
     rows = default_derived_definitions() if definitions is None else tuple(definitions)
-    items: dict[str, _Span] = {}
-    for item in read_fundamental_item_seed():
-        prior = items.get(item.canonical_code)
-        items[item.canonical_code] = _Span(
-            "instant" if item.data_type == "instant" else "quarter", 0,
-            item.unit_type == "per_share" or bool(prior and prior.share_basis), None,
-        )
+    item_exponents: dict[str, int] = {
+        item.canonical_code: -1 for item in read_fundamental_item_seed() if item.unit_type == "per_share"}
+    item_exponents.update(dict.fromkeys(SHARE_COUNT_CODES, 1))
+    items: dict[str, _Span] = {
+        item.canonical_code: _Span("instant" if item.data_type == "instant" else "quarter", 0,
+                                   item_exponents.get(item.canonical_code, 0) != 0, None)
+        for item in read_fundamental_item_seed()
+    }
     shapes: dict[str, MetricShape] = {}
     metric_spans: dict[str, _Span] = {}
-    share_basis: set[str] = {code for code, span in items.items() if span.share_basis}
+    metric_exponents: dict[str, ShareExponent] = {}
     filing_clocked: set[str] = set()
     for definition in topological_order(rows):
         code = definition.metric_code
-        if definition.family == "per_share" or (
-                definition.family == "rollup" and share_basis.intersection(definition.bare_names)):
-            share_basis.add(code)
+        node = parse_expression(definition.expression)
+
+        def exponent_of(name: str, owner: DerivedMetricDefinition = definition) -> ShareExponent:
+            # Mirrors _derived_annual._metric_share_exponents / AnnualPlan.share_exponents.
+            return metric_exponents[name] if name in owner.metric_inputs else item_exponents.get(name, 0)
+
+        exponent = share_exponent(node, exponent_of)
+        # Family per_share is never basis-free (engine floor).
+        metric_exponents[code] = None if definition.family == "per_share" and exponent == 0 else exponent
         quarters: dict[str, int] = {}
         sessions: dict[str, int] = {}
         refs: dict[str, _Span] = {}
@@ -467,11 +514,10 @@ def derive_metric_shapes(
             shape = shapes[name]
             quarters[name], sessions[name] = shape.min_history_quarters, shape.min_history_sessions
             span = metric_spans.get(name, _Span("mixed", 0))
-            refs[name] = _Span(span.kind, 0, name in share_basis,
+            refs[name] = _Span(span.kind, 0, metric_exponents[name] != 0,
                                f"incomparable_input:{name}" if shape.incomparable_reason else None)
         for name in definition.market_inputs:
             quarters[name], sessions[name] = 0, 2 if name == "log_return" else 1
-        node = parse_expression(definition.expression)
         history = _history(node, quarters, sessions)
         filing = bool(definition.item_inputs) or any(
             name in filing_clocked for name in definition.metric_inputs
@@ -483,7 +529,7 @@ def derive_metric_shapes(
             # A value lives on a fiscal-quarter bucket even when a constant
             # fallback (e.g. ``coalesce(debt, 0)``) needs no input history.
             history = (max(history[0], 1), history[1])
-            span = _span(node, refs)
+            span = _span(node, refs, exponent_of)
             metric_spans[code] = span
             reason = span.never
             clock = CLOCK_FILING

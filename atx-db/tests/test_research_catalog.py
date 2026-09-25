@@ -35,7 +35,15 @@ BLOCKED = {
     "eps_basic_q_growth_qoq": "one_quarter_pair_per_share_without_split_guard",
     "eps_diluted_growth_qoq": "one_quarter_pair_per_share_without_split_guard",
     "revenue_growth_qoq": "one_quarter_pair_without_provable_quarter_spans",
-    "earnings_variability": "stdev_q_span_never_coherent",
+    # Twelve trailing-twelve-month growth rates: 365-day spans never form a
+    # single-quarter chain (R1c _consecutive_window).
+    "earnings_variability": "stdev_q_over_trailing_spans",
+    # Split-sensitive comparisons other than flows exactly four quarters apart
+    # stay incomparable until a split guard exists (R1c fix, pending R1d).
+    "shares_growth_yoy": "share_basis_balance_pair_without_split_guard",
+    "share_issuance_3y": "multi_year_share_basis_pair_without_split_guard",
+    "eps_cagr_3y": "multi_year_share_basis_pair_without_split_guard",
+    "piotroski_f": "incomparable_input:shares_growth_yoy",
 }
 
 
@@ -127,9 +135,11 @@ def _probe(code: str, expression: str, inputs: tuple[str, ...]) -> DerivedMetric
     return DerivedMetricDefinition(code, "growth", expression, "q", inputs, False, "probe", "1")
 
 
-def test_engine_mirror_blocks_r1b_style_definitions_that_can_never_be_comparable():
+def test_engine_mirror_follows_the_r1c_quarter_chain_proofs():
     seed = default_derived_definitions()
     probes = (
+        # Provable since R1c: a stdev_q chain of basis-free single quarters, a flow
+        # over a one-quarter-lagged instant, and instant after instant.
         _probe("sue_probe",
                "safe_div(net_income_total - lag(net_income_total, 4), stdev_q(net_income_q_growth_yoy, 8))",
                ("item:net_income_total", "metric:net_income_q_growth_yoy")),
@@ -138,15 +148,39 @@ def test_engine_mirror_blocks_r1b_style_definitions_that_can_never_be_comparable
         _probe("roe_q_lag4_probe", "safe_div(net_income_total, lag(common_equity_q, 4))",
                ("item:net_income_total", "metric:common_equity_q")),
         _probe("sue_child_probe", "abs(sue_probe)", ("metric:sue_probe",)),
+        _probe("asset_qoq_probe", "total_assets - lag(total_assets, 1)", ("item:total_assets",)),
+        # Share flows exactly four quarters apart; per-share x shares is basis-free.
+        _probe("wavg_yoy_probe", "yoy(weighted_avg_shares_basic)", ("item:weighted_avg_shares_basic",)),
+        _probe("earnings_qoq_probe",
+               "eps_diluted * weighted_avg_shares_diluted - lag(eps_diluted * weighted_avg_shares_diluted, 1)",
+               ("item:eps_diluted", "item:weighted_avg_shares_diluted")),
+        # Never provable: trailing spans in a stdev_q chain; a split-sensitive chain,
+        # one-quarter pair, balance pair or multi-year pair; an instant after a flow.
+        _probe("ttm_vol_probe", "stdev_q(revenue_growth_yoy, 8)", ("metric:revenue_growth_yoy",)),
+        _probe("eps_vol_probe", "stdev_q(eps_diluted, 8)", ("item:eps_diluted",)),
+        _probe("share_qoq_probe", "weighted_avg_shares_basic - lag(weighted_avg_shares_basic, 1)",
+               ("item:weighted_avg_shares_basic",)),
+        _probe("share_balance_yoy_probe", "yoy(shares_outstanding_period_end)",
+               ("item:shares_outstanding_period_end",)),
+        _probe("wavg_2y_probe", "weighted_avg_shares_basic - lag(weighted_avg_shares_basic, 8)",
+               ("item:weighted_avg_shares_basic",)),
+        _probe("instant_after_flow_probe", "safe_div(total_assets, lag(net_income_total, 1))",
+               ("item:total_assets", "item:net_income_total")),
     )
     shapes = derive_metric_shapes(seed + probes)
 
-    assert shapes["sue_probe"].incomparable_reason == "stdev_q_span_never_coherent"
+    comparable = ("sue_probe", "roe_q_lag1_probe", "roe_q_lag4_probe", "sue_child_probe", "asset_qoq_probe",
+                  "wavg_yoy_probe", "earnings_qoq_probe")
+    assert {code: shapes[code].incomparable_reason for code in comparable} == dict.fromkeys(comparable)
     assert shapes["sue_probe"].min_history_quarters == 12  # 5-quarter yoy series, 8 of them
-    # A balance-sheet instant has no period start, so one-quarter adjacency is unprovable.
-    assert shapes["roe_q_lag1_probe"].incomparable_reason == "one_quarter_pair_without_provable_quarter_spans"
-    assert shapes["roe_q_lag4_probe"].incomparable_reason is None
-    assert shapes["sue_child_probe"].incomparable_reason == "incomparable_input:sue_probe"
+    assert shapes["roe_q_lag1_probe"].min_history_quarters == 2
+    assert shapes["ttm_vol_probe"].incomparable_reason == "stdev_q_over_trailing_spans"
+    assert shapes["eps_vol_probe"].incomparable_reason == "stdev_q_over_share_basis_without_split_guard"
+    assert shapes["share_qoq_probe"].incomparable_reason == "one_quarter_pair_per_share_without_split_guard"
+    assert shapes["share_balance_yoy_probe"].incomparable_reason == "share_basis_balance_pair_without_split_guard"
+    assert shapes["wavg_2y_probe"].incomparable_reason == "multi_year_share_basis_pair_without_split_guard"
+    assert shapes["instant_after_flow_probe"].incomparable_reason == (
+        "one_quarter_pair_without_provable_quarter_spans")
 
     template = _by_id()["revenue_q_growth_yoy"]
     extra = tuple(
@@ -157,9 +191,11 @@ def test_engine_mirror_blocks_r1b_style_definitions_that_can_never_be_comparable
     with pytest.raises(AnomalyCatalogError) as caught:
         validate_anomaly_catalog(default_anomaly_catalog() + extra, definitions=seed + probes)
     message = str(caught.value)
-    for code in ("sue_probe", "roe_q_lag1_probe", "sue_child_probe"):
+    for code in ("ttm_vol_probe", "eps_vol_probe", "share_qoq_probe", "share_balance_yoy_probe", "wavg_2y_probe",
+                 "instant_after_flow_probe"):
         assert f"feature {code!r}: every quarterly value is labeled incomparable" in message
-    assert "roe_q_lag4_probe" not in message
+    for code in comparable:
+        assert f"feature {code!r}: every quarterly value" not in message
 
 
 def _rows() -> list[dict[str, str]]:
