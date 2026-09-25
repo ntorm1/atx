@@ -237,6 +237,9 @@ void fold(Digest &d, const IcSampleStats &s) {
   cfg.common_sample_dates = 150U;
   cfg.forward_variant = variant;
   cfg.ties = IcTieHandling::AverageRanksV1;
+  // The versioned legacy settings (added by W0-E0a after the digests were measured).
+  cfg.block_len_rule = BlockLenRule::HalfHorizonV1;
+  cfg.execution_delay = 0U;
   return cfg;
 }
 
@@ -266,6 +269,62 @@ TEST(EvalHac, FrozenStreams_ReproduceUnderV1) {
                 static_cast<unsigned>(c.variant), static_cast<unsigned long long>(c.restriction),
                 static_cast<unsigned long long>(got));
     EXPECT_EQ(got, c.base_digest);
+  }
+}
+
+// The corrected defaults (TwoHorizonV2, execution_delay 1) move every stream; each of the
+// two corrections alone moves it too. The default digests are pinned so a later change to
+// either default is a visible re-baseline (old -> new recorded in the W0-E0a report).
+TEST(EvalHac, FrozenStreams_DefaultsMoveOffV1AndArePinned) {
+  const Panel p = make_panel();
+  const std::vector<atx::usize> horizons{1U, 5U, 10U, 21U, 63U};
+  struct Moved {
+    ForwardReturnVariant variant;
+    atx::u64 restriction;
+    std::uint64_t base_digest;
+    std::uint64_t default_digest;
+  };
+  const Moved cases[] = {
+      {ForwardReturnVariant::DropMissingForward, 0U, 0x3eff877612745386ULL,
+       0xbc4a3f1cf4b04442ULL},
+      {ForwardReturnVariant::DropMissingForward, 1U, 0xdee7f78c1999af44ULL,
+       0xba5d12625946780bULL},
+      {ForwardReturnVariant::IncludeAuditedTerminalV1, 0U, 0x5f2c2f0e33647808ULL,
+       0x29a588c156f4db4dULL},
+      {ForwardReturnVariant::IncludeAuditedTerminalV1, 1U, 0x0d8febe9dd429f91ULL,
+       0x4b6ee3e63e34da79ULL},
+  };
+  const auto digest_of = [&p](const CrossSectionIcConfig &cfg) -> std::uint64_t {
+    auto scratch = plan_cross_section_ic(p.view(), cfg);
+    if (!scratch.has_value()) {
+      ADD_FAILURE() << scratch.error().message();
+      return 0U;
+    }
+    auto res = compute_cross_section_ic(p.view(), cfg, *scratch);
+    if (!res.has_value()) {
+      ADD_FAILURE() << res.error().message();
+      return 0U;
+    }
+    return digest(*res);
+  };
+  for (const Moved &c : cases) {
+    CrossSectionIcConfig cfg = frozen_config(horizons, c.variant, c.restriction);
+    cfg.block_len_rule = CrossSectionIcConfig{}.block_len_rule;
+    cfg.execution_delay = CrossSectionIcConfig{}.execution_delay;
+    const std::uint64_t both = digest_of(cfg);
+    CrossSectionIcConfig block_only = frozen_config(horizons, c.variant, c.restriction);
+    block_only.block_len_rule = BlockLenRule::TwoHorizonV2;
+    CrossSectionIcConfig delay_only = frozen_config(horizons, c.variant, c.restriction);
+    delay_only.execution_delay = 1U;
+    std::printf("W0E0A_DEFAULT_DIGEST variant=%u restriction=%llu old=0x%016llx "
+                "new=0x%016llx\n",
+                static_cast<unsigned>(c.variant), static_cast<unsigned long long>(c.restriction),
+                static_cast<unsigned long long>(c.base_digest),
+                static_cast<unsigned long long>(both));
+    EXPECT_NE(both, c.base_digest);
+    EXPECT_NE(digest_of(block_only), c.base_digest);
+    EXPECT_NE(digest_of(delay_only), c.base_digest);
+    EXPECT_EQ(both, c.default_digest);
   }
 }
 
