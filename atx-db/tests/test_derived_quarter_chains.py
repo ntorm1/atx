@@ -3,12 +3,14 @@
 A ``stdev_q`` window is comparable only when every consecutive pair of its states
 is a proven fiscal-quarter step, and a flow divided by the prior quarter's
 balance is comparable only when that balance is dated at the flow's start.
-Share-basis operands (per-share values and share counts) are never proven.
+Share-basis operands (per-share values and share counts) filed at different
+clocks are comparable only when daily bars prove their split basis (R1d).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import math
 import statistics
 from pathlib import Path
 from types import SimpleNamespace
@@ -193,8 +195,9 @@ def test_rolling_standard_deviation_is_quarterly_only_across_a_proven_quarter_ch
             assert _state(store, "S5", code, index)[1:] == ("valid", "incomparable"), (code, index)
     assert _state(store, "S5", "sue_t", 8)[1:] == ("valid", "quarterly")
 
-    # Per-share operands have no split guard, even inside a growth-family metric;
-    # trailing windows are not single quarters.
+    # Without bars, per-share operands filed at different clocks have an unproven
+    # split basis, even inside a growth-family metric; trailing windows are not
+    # single quarters.
     assert _state(store, "S1", "eps_vol_t", 11)[1:] == ("valid", "incomparable")
     assert _state(store, "S1", "eps_sd4_t", 11)[1:] == ("valid", "incomparable")
     assert _state(store, "S1", "rev_ttm_vol_t", 11)[1:] == ("valid", "incomparable")
@@ -228,10 +231,11 @@ def test_flows_over_prior_quarter_balances_prove_the_balance_date(store):
     assert _state(store, "S1", "roe_avg_q_t", 9) == (
         pytest.approx(NET_INCOME[9] / ((EQUITY[9] + EQUITY[8]) / 2)), "valid", "quarterly")
     assert _state(store, "S1", "roe_q_t", 0) == (None, "missing_input_or_domain", "unavailable")
-    # Consecutive quarter-end balances are an instant chain.
+    # Consecutive quarter-end balances: qoq(B) labels as B - lag(B, 1) does (the
+    # pair spans one fiscal quarter).
     assert _state(store, "S1", "equity_qoq_t", 9) == (
-        pytest.approx((EQUITY[9] - EQUITY[8]) / EQUITY[8]), "valid", "instant")
-    # Share counts move with splits: never proven one quarter apart.
+        pytest.approx((EQUITY[9] - EQUITY[8]) / EQUITY[8]), "valid", "quarterly")
+    # Share counts move with splits: without bars their basis is unproven.
     assert _state(store, "S1", "shares_qoq_t", 9)[1:] == ("valid", "incomparable")
 
     assert _state(store, "S4", "roe_q_t", 9)[1:] == ("valid", "quarterly")
@@ -258,24 +262,65 @@ def test_opening_balance_is_never_dated_inside_the_flow(store, balance_date, lag
     assert _state(store, "S8", "roe_avg_q_t", 9)[1:] == ("valid", averaged)
 
 
-def test_split_sensitive_comparisons_across_periods_need_flows_four_quarters_apart(store):
-    _seed(store, "S10")
-    # 2:1 split after 2020-12-31: later period-end share counts double, while the
-    # current 10-Q restates the prior-year quarter's weighted shares and EPS.
+def _split_after_2020(store, security_id: str) -> None:
+    """A 2:1 split between the Q7 filing (2021-02-09) and the Q8 filing (2021-05-10).
+
+    Each later filing states its own quarter on the post-split basis: share counts
+    double and EPS halves.
+    """
     store.con.execute("""
-        UPDATE fundamental_standardized SET value = value * 2
-        WHERE security_id = 'S10' AND canonical_code = 'shares_outstanding_period_end'
-          AND period_end > DATE '2020-12-31'
+        UPDATE fundamental_standardized
+        SET value = CASE WHEN canonical_code = 'eps_diluted' THEN value / 2 ELSE value * 2 END
+        WHERE security_id = ? AND period_end > DATE '2020-12-31'
+          AND canonical_code IN ('shares_outstanding_period_end', 'weighted_avg_shares_diluted', 'eps_diluted')
+    """, [security_id])
+
+
+def _bars_with_split(store, security_id: str, ex_date: dt.date, ratio: float) -> None:
+    """Weekday bars whose vendor factor (adjusted / raw close) steps by ``ratio`` on ``ex_date``."""
+    store.con.execute("""
+        CREATE TABLE IF NOT EXISTS equity_daily_bars (
+            source VARCHAR, security_id VARCHAR, trade_date DATE, close DOUBLE,
+            adjusted_close DOUBLE, shares_outstanding BIGINT, available_at TIMESTAMP)
     """)
+    store.con.execute("""
+        INSERT INTO equity_daily_bars
+        SELECT 'vendor', ?, d::DATE, 10.0, CASE WHEN d::DATE < ? THEN 10.0 / ? ELSE 10.0 END, NULL,
+               d::DATE + INTERVAL 22 HOUR
+        FROM generate_series(TIMESTAMP '2018-12-01', TIMESTAMP '2022-06-30', INTERVAL 1 DAY) t(d)
+        WHERE dayofweek(d) BETWEEN 1 AND 5
+    """, [security_id, ex_date, ratio])
+
+
+def test_split_sensitive_comparisons_across_filings_need_a_proven_split_basis(store):
+    _seed(store, "S10")
+    _split_after_2020(store, "S10")
+    _seed(store, "S11")
+    _split_after_2020(store, "S11")
+    _bars_with_split(store, "S11", dt.date(2021, 3, 15), 2.0)
     engine.refresh_derived_metrics(store)
 
-    assert _state(store, "S10", "eps_yoy_t", 8)[1:] == ("valid", "quarterly")
-    assert _state(store, "S10", "wshares_yoy_t", 8)[1:] == ("valid", "quarterly")
-    # Balances are never restated for a split, and nothing two or more years back is.
+    # S10 has no bars: operands filed at different clocks have an unproven basis;
+    # the values still publish unrebased.
+    for code in ("eps_yoy_t", "wshares_yoy_t"):
+        assert _state(store, "S10", code, 8)[1:] == ("valid", "incomparable"), code
     assert _state(store, "S10", "shares_yoy_t", 8) == (
         pytest.approx(2 * SHARES[8] / SHARES[4] - 1), "valid", "incomparable")
     assert _state(store, "S10", "share_issuance_2y_t", 11)[1:] == ("valid", "incomparable")
     assert _state(store, "S10", "eps_cagr_2y_t", 11)[1:] == ("valid", "incomparable")
+
+    # S11: the split is known by the Q8 filing, so the older operands are rebased.
+    assert _state(store, "S11", "eps_yoy_t", 8) == (pytest.approx(EPS[8] / EPS[4] - 1), "valid", "quarterly")
+    assert _state(store, "S11", "wshares_yoy_t", 8) == (
+        pytest.approx(SHARES[8] / SHARES[4] - 1), "valid", "quarterly")
+    assert _state(store, "S11", "shares_yoy_t", 8) == (
+        pytest.approx(SHARES[8] / SHARES[4] - 1), "valid", "instant")
+    assert _state(store, "S11", "share_issuance_2y_t", 11) == (
+        pytest.approx(math.log(SHARES[11] / SHARES[3])), "valid", "instant")
+    assert _state(store, "S11", "eps_cagr_2y_t", 11) == (
+        pytest.approx((EPS[11] / EPS[3]) ** 0.5 - 1), "valid", "quarterly")
+    # Before the split both sides share one basis; no rebase is applied.
+    assert _state(store, "S11", "eps_yoy_t", 7) == (pytest.approx(EPS[7] / EPS[3] - 1), "valid", "quarterly")
 
 
 def _pair(older: tuple[dt.date | None, dt.date], newer: tuple[dt.date | None, dt.date]) -> bool:

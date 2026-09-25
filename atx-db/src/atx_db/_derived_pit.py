@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from . import _derived_annual as annual
+from . import _split_epochs
 from .derived_dsl import BinOp, Call, LowerContext, Lowered, lower, lower_selected_refs, parse_expression
 from .derived_registry import DerivedMetricDefinition
 
@@ -132,6 +133,7 @@ def prepare_security(con: Any, security_id: str, input_limit: int) -> None:
         FROM changed
     """)
     annual.prepare_security(con)
+    _split_epochs.prepare_split_epochs(con, security_id)
     con.execute("CREATE OR REPLACE TEMP TABLE _pit_stage AS SELECT * FROM derived_metric_values WHERE false")
 
 
@@ -206,6 +208,7 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
     lineage: list[str] = []
     refs: dict[str, str] = {}
     span_refs: dict[str, annual.Span] = {}
+    exponents = annual.plan_share_exponents(annual_plan)
     for index, (kind, code) in enumerate(
         [("item", c) for c in sorted(definition.item_inputs)]
         + [("metric", c) for c in sorted(definition.metric_inputs)]
@@ -215,8 +218,22 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             f"ASOF LEFT JOIN (SELECT * FROM _pit_inputs WHERE kind={quote(kind)} AND code={quote(code)}) {alias} "
             f"ON f.security_id={alias}.security_id AND f.bucket={alias}.bucket AND f.event_at >= {alias}.event_at"
         )
+        # A share-basis operand is restated on the frame's split basis: the
+        # filing's basis is fixed by its clock, and only splits known by the
+        # frame's clock are applied (_split_epochs). A mixed unit cannot be rebased.
+        value, clock, basis = f"{alias}.value", "NULL::TIMESTAMP", "true"
+        exponent = exponents.get(code, 0)
+        if exponent != 0:
+            clock, basis = f'b."{code}__at"', "false"
+        if exponent:
+            factor = _split_epochs.rebase_factor_sql(f"{alias}.input_at", "f.event_at", exponent)
+            known = _split_epochs.basis_known_sql(f"{alias}.input_at", "f.event_at")
+            value, basis = f"({value} * {factor})", f'b."{code}__basis"'
+            projections.append(f'{known} AS "{code}__basis"')
+            lineage.append(f"struct_pack(kind := 'split_basis', code := {quote(code)}, "
+                           f"state := to_json(struct_pack(factor := {factor}, basis_known := {known})))")
         projections.extend([
-            f'{alias}.value AS "{code}"', f'{alias}.input_at AS "{code}__at"',
+            f'{value} AS "{code}"', f'{alias}.input_at AS "{code}__at"',
             f'{alias}.fiscal_period_start AS "{code}__start"',
             f'{alias}.fiscal_period_end AS "{code}__end"',
             f'{alias}.value_origin AS "{code}__origin"',
@@ -228,6 +245,7 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             f'coalesce(b."{code}__origin" IN (\'annual_fallback\', \'annual_dependency\', \'annual\'), false)',
             f'coalesce(b."{code}__origin" <> \'incomparable\' AND '
             f'(b."{code}__origin" <> \'quarterly\' OR b."{code}__start" IS NOT NULL), true)', 0,
+            False, clock, basis,
         )
         lineage.append(f"struct_pack(kind := {quote(kind)}, code := {quote(code)}, state := {alias}.lineage)")
     extra_joins, extra_columns, extra_lineage = annual.frame_annual_columns(annual_plan, quote)
@@ -249,12 +267,13 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             annual._case(choose_annual, "b.annual_end", old.end),
             annual._case(choose_annual, "true", old.annual),
             annual._case(choose_annual, "true", old.coherent), 0,
+            False, annual._case(choose_annual, f'b."annual_{code}__at"', old.clock),
+            annual._case(choose_annual, f'coalesce(b."annual_{code}__basis", false)', old.basis),
         )
     context = LowerContext(context.grid, columns, availability, context.partition_sql, context.order_sql, refs)
     node = parse_expression(definition.expression)
     lowered = lower(node, context)
     selected_refs = lower_selected_refs(node, context)
-    exponents = None if annual_plan.share_exponents is None else dict(annual_plan.share_exponents)
     span = annual.lower_span(node, context, span_refs, exponents)
     coherent = f"coalesce(({span.coherent}), false)"
     # Only annual-backed arithmetic gets the new comparability gate. The
@@ -298,8 +317,14 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
         arithmetic_sql = annual._case(choose_annual, alternative.availability_sql, lowered.availability_sql)
         start_sql = annual._case(choose_annual, "b.annual_start", start_sql)
         end_sql = annual._case(choose_annual, "b.annual_end", end_sql)
+    # An annual per-share value filed before the frame's clock is rebased; it is
+    # comparable only when its split basis is known (or it is the frame's filing).
+    annual_basis = " AND ".join(
+        f'(b."annual_{code}__at" = b.event_at OR coalesce(b."annual_{code}__basis", false))'
+        for code in annual_plan.codes if annual.item_share_exponent(code)) or "true"
     origin_sql = (
-        f"CASE WHEN {choose_annual} THEN 'annual_fallback' WHEN {span.annual} THEN 'annual_dependency' "
+        f"CASE WHEN ({choose_annual}) AND NOT ({annual_basis}) THEN 'incomparable' "
+        f"WHEN {choose_annual} THEN 'annual_fallback' WHEN {span.annual} THEN 'annual_dependency' "
         f"WHEN NOT ({coherent}) THEN 'incomparable' WHEN ({span.start}) IS NOT NULL THEN 'quarterly' "
         f"WHEN ({span.end}) IS NOT NULL THEN 'instant' ELSE 'scalar' END"
     )
@@ -393,3 +418,4 @@ def cleanup(con: Any) -> None:
     for table in ("_pit_metric", "_pit_keys", "_pit_inputs", "_pit_stage", "_pit_targets", "_pit_items",
                   "_pit_annual_targets", "_pit_annual_items", "_pit_raw"):
         con.execute(f"DROP TABLE IF EXISTS {table}")
+    _split_epochs.cleanup_split_epochs(con)

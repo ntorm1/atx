@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any
 
+from . import _split_epochs
 from .derived_dsl import (
     SCALAR_FUNCTIONS,
     BinOp,
@@ -135,14 +136,30 @@ def _metric_share_exponents(definitions: Mapping[str, DerivedMetricDefinition]) 
     return memo
 
 
-_CATALOG_EXPONENTS: list[Any] = [None, None]
+_CATALOG_EXPONENTS: dict[int, tuple[Mapping[str, DerivedMetricDefinition], dict[str, ShareExponent]]] = {}
+_CATALOG_SLOTS = 8
 
 
 def _catalog_share_exponents(definitions: Mapping[str, DerivedMetricDefinition]) -> dict[str, ShareExponent]:
-    # plan_for runs per security and metric with one catalog object: cache by identity.
-    if _CATALOG_EXPONENTS[0] is not definitions:
-        _CATALOG_EXPONENTS[:] = [definitions, _metric_share_exponents(definitions)]
-    return _CATALOG_EXPONENTS[1]
+    # plan_for runs per security and metric with a few long-lived catalog objects
+    # (refresh, research, lineage): cache by identity. Each slot keeps its catalog
+    # alive, so an identity cannot be reused while it is cached.
+    cached = _CATALOG_EXPONENTS.get(id(definitions))
+    if cached is None or cached[0] is not definitions:
+        if len(_CATALOG_EXPONENTS) >= _CATALOG_SLOTS:
+            _CATALOG_EXPONENTS.pop(next(iter(_CATALOG_EXPONENTS)))
+        cached = (definitions, _metric_share_exponents(definitions))
+        _CATALOG_EXPONENTS[id(definitions)] = cached
+    return cached[1]
+
+
+def item_share_exponent(code: str) -> int:
+    return _item_share_exponents().get(code, 0)
+
+
+def plan_share_exponents(plan: AnnualPlan) -> Mapping[str, ShareExponent]:
+    """Operand units for frame SQL: the plan's, else the shipped catalog's."""
+    return _default_ref_exponents() if plan.share_exponents is None else dict(plan.share_exponents)
 
 
 @lru_cache(maxsize=1)
@@ -249,6 +266,12 @@ class Span:
     #: The operand's value is on a share basis (per share or a share count), so a
     #: split between two quarters changes it. Static, not SQL.
     share_basis: bool = False
+    #: SQL availability clock of a share-basis operand (its filing, hence its
+    #: split basis); NULL when operands of different clocks were combined.
+    clock: str = "NULL::TIMESTAMP"
+    #: SQL: every split between the operand's clock and the frame's clock would
+    #: have been seen, so rebasing restated it exactly (``_split_epochs``).
+    basis: str = "true"
 
 
 def _case(condition: str, yes: str, no: str) -> str:
@@ -299,23 +322,35 @@ def _one_quarter_apart(newer: Span, older: Span) -> str:
             f"WHEN ({older.start}) IS NULL THEN {instant_after_instant} ELSE false END, false)")
 
 
+def _window_basis(inner: Span, frame: str, size: int) -> tuple[str, str, str]:
+    """(proof, clock, basis) for a share-basis operand over a ``size``-row frame.
+
+    The window is on one split basis when all its states were filed at one clock,
+    or when every state's basis is known and was rebased to the frame's clock.
+    """
+    same_clock = (f"count({inner.clock}) OVER ({frame}) = {size} "
+                  f"AND min({inner.clock}) OVER ({frame}) = max({inner.clock}) OVER ({frame})")
+    basis = f"bool_and({inner.basis}) OVER ({frame})"
+    return (f"coalesce(({same_clock}) OR ({basis}), false)",
+            f"(CASE WHEN {same_clock} THEN max({inner.clock}) OVER ({frame}) END)", basis)
+
+
 def _consecutive_window(inner: Span, frame: str, size: int) -> str:
     """Prove a ``size``-bucket rolling window is one chain of consecutive quarters.
 
     Every one of the ``size`` states must be present (end dates), coherent and of
     one kind (all flows or all instants), and every consecutive pair must pass
-    the one-bucket proof of :func:`_one_quarter_apart`. Share-basis operands are
-    never proven: no split guard exists yet.
+    the one-bucket proof of :func:`_one_quarter_apart`. A share-basis window
+    must also sit on one split basis (:func:`_window_basis`).
     """
-    if inner.share_basis:
-        return "false"
     states = f"list(struct_pack(s := {inner.start}, e := {inner.end})) OVER ({frame})"
     pair = _one_quarter_apart(Span("q_pair[2].s", "q_pair[2].e"), Span("q_pair[1].s", "q_pair[1].e"))
+    split = f" AND {_window_basis(inner, frame, size)[0]}" if inner.share_basis else ""
     return (f"coalesce(count({inner.end}) OVER ({frame}) = {size} "
             f"AND count({inner.start}) OVER ({frame}) IN (0, {size}) "
             f"AND bool_and({inner.coherent}) OVER ({frame}) "
             f"AND list_bool_and(list_transform(list_zip(({states})[1:-2], ({states})[2:]), "
-            f"lambda q_pair: {pair})), false)")
+            f"lambda q_pair: {pair})){split}, false)")
 
 
 def _combine(left: Span, right: Span) -> Span:
@@ -325,16 +360,6 @@ def _combine(left: Span, right: Span) -> Span:
         return left
     newer, older = (left, right) if left.offset <= right.offset else (right, left)
     distance = abs(left.offset - right.offset)
-    if distance == 0:
-        comparable = (
-            f"(({left.end}) IS NULL OR ({right.end}) IS NULL OR ({left.end}) = ({right.end})) AND "
-            f"(({left.start}) IS NULL OR ({right.start}) IS NULL OR ({left.start}) = ({right.start}))"
-        )
-    # A 10-Q restates only the prior-year quarter's flows for a split; the
-    # preceding quarters, balances and anything two or more years back stay as
-    # first reported. Until a split guard exists, a split-sensitive comparison
-    # across periods is proven only between flows exactly four quarters apart.
-    split_sensitive = newer.share_basis or older.share_basis
     start = newer.start
     if distance == 0:
         comparable = (
@@ -343,11 +368,11 @@ def _combine(left: Span, right: Span) -> Span:
         )
         start = f"coalesce({newer.start}, {older.start})"
     elif distance == 1:
-        comparable = "false" if split_sensitive else _one_quarter_apart(newer, older)
+        comparable = _one_quarter_apart(newer, older)
         # Two balances one quarter apart span the quarter between them.
         start = (f"(CASE WHEN ({newer.start}) IS NULL AND ({older.start}) IS NULL "
                  f"THEN CAST(({older.end}) + INTERVAL 1 DAY AS DATE) ELSE {newer.start} END)")
-    elif distance % 4 or (split_sensitive and distance != 4):
+    elif distance % 4:
         comparable = "false"
     else:
         comparable = (
@@ -355,8 +380,12 @@ def _combine(left: Span, right: Span) -> Span:
             f"(({newer.start}) IS NULL OR ({older.start}) IS NULL OR "
             f"{_years_apart(newer.start, older.start, distance // 4)})"
         )
-        if split_sensitive:
-            comparable = f"({newer.start}) IS NOT NULL AND ({older.start}) IS NOT NULL AND {comparable}"
+    if distance and (newer.share_basis or older.share_basis):
+        # A filing states every value on the split basis at its own clock. Values
+        # from one filing share it; otherwise both must have been rebased with
+        # every split between their clocks and the frame's clock (_split_epochs).
+        comparable = (f"({comparable}) AND (({newer.clock}) = ({older.clock}) "
+                      f"OR (({newer.basis}) AND ({older.basis})))")
     return Span(
         start,
         f"coalesce({newer.end}, {older.end})" if distance == 0 else newer.end,
@@ -364,6 +393,8 @@ def _combine(left: Span, right: Span) -> Span:
         f"(({left.coherent}) AND ({right.coherent}) AND ({comparable}))",
         newer.offset,
         left.share_basis or right.share_basis,
+        f"(CASE WHEN ({left.clock}) = ({right.clock}) THEN ({left.clock}) END)",
+        f"(({left.basis}) AND ({right.basis}))",
     )
 
 
@@ -408,6 +439,8 @@ def _lower_span(node: Node, context: LowerContext, refs: dict[str, Span],
                 coherent=_case(condition, child.coherent, result.coherent),
                 offset=child.offset if child.offset is not None else result.offset,
                 share_basis=child.share_basis or result.share_basis,
+                clock=_case(condition, child.clock, result.clock),
+                basis=_case(condition, child.basis, result.basis),
             )
         return result
     if node.name in SCALAR_FUNCTIONS:
@@ -427,16 +460,23 @@ def _lower_span(node: Node, context: LowerContext, refs: dict[str, Span],
             coherent.append(f"date_diff('day', ({starts})[{index}], ({ends})[{index}]) + 1 BETWEEN 70 AND 120")
             if index < 4:
                 coherent.append(f"({ends})[{index}] + INTERVAL 1 DAY = ({starts})[{index + 1}]")
+        clock, basis = inner.clock, inner.basis
+        if inner.share_basis:
+            # Quarters filed before a split are rebased to the frame's basis.
+            proof, clock, basis = _window_basis(inner, frame, 4)
+            coherent.append(proof)
         return Span(f"({starts})[1]", f"({ends})[4]",
-                    f"bool_or({inner.annual}) OVER ({frame})", " AND ".join(coherent), 0, inner.share_basis)
+                    f"bool_or({inner.annual}) OVER ({frame})", " AND ".join(coherent), 0, inner.share_basis,
+                    clock, basis)
     if node.name == "stdev_q":
         period_argument = node.args[1]
         if not isinstance(period_argument, Number):
             raise TypeError(f"{node.name} metadata requires a numeric literal period")
         size = int(period_argument.value)
         frame = window + f" ROWS BETWEEN {size - 1} PRECEDING AND CURRENT ROW"
+        clock, basis = _window_basis(inner, frame, size)[1:] if inner.share_basis else (Span.clock, "true")
         return Span(inner.start, inner.end, f"bool_or({inner.annual}) OVER ({frame})",
-                    _consecutive_window(inner, frame, size), 0, inner.share_basis)
+                    _consecutive_window(inner, frame, size), 0, inner.share_basis, clock, basis)
     periods = {"avg2": 4, "yoy": 4, "qoq": 1}.get(node.name)
     if node.name in ("lag", "cagr"):
         period_argument = node.args[1]
@@ -452,14 +492,18 @@ def _lower_span(node: Node, context: LowerContext, refs: dict[str, Span],
         coherent=f"lag({inner.coherent}, {periods}) OVER ({window})",
         offset=periods,
         share_basis=inner.share_basis,
+        clock=f"lag({inner.clock}, {periods}) OVER ({window})",
+        basis=f"lag({inner.basis}, {periods}) OVER ({window})",
     )
     if node.name == "lag":
         return previous
     paired = _combine(inner, previous)
     if node.name == "avg2":
-        return Span("NULL::DATE", inner.end, paired.annual, paired.coherent, 0, inner.share_basis)
-    # yoy/qoq/cagr publish a relative change: a basis-free value.
-    return Span(inner.start, inner.end, paired.annual, paired.coherent, 0)
+        return Span("NULL::DATE", inner.end, paired.annual, paired.coherent, 0, inner.share_basis,
+                    paired.clock, paired.basis)
+    # yoy/qoq/cagr publish a basis-free relative change over the pair's span:
+    # qoq of two balances spans the quarter between them, like ``B - lag(B, 1)``.
+    return Span(paired.start, inner.end, paired.annual, paired.coherent, 0)
 
 
 def frame_annual_columns(plan: AnnualPlan, quote: Any) -> tuple[list[str], list[str], list[str]]:
@@ -483,8 +527,14 @@ def frame_annual_columns(plan: AnnualPlan, quote: Any) -> tuple[list[str], list[
             f"AND ay.span.period_end={alias}.period_end AND f.period_end={alias}.period_end "
             f"AND f.event_at >= {alias}.event_at"
         )
+        exponent = _item_share_exponents().get(code, 0)
+        value = f"{alias}.state.value"
+        if exponent:
+            clock = f"{alias}.state.available_at"
+            value = f"({value} * {_split_epochs.rebase_factor_sql(clock, 'f.event_at', exponent)})"
+            projections.append(f'{_split_epochs.basis_known_sql(clock, "f.event_at")} AS "annual_{code}__basis"')
         projections.extend([
-            f'{alias}.state.value AS "annual_{code}"',
+            f'{value} AS "annual_{code}"',
             f'{alias}.state.available_at AS "annual_{code}__at"',
             (f"to_json(struct_pack(kind := 'item', code := {quote(code)}, "
              f'bucket := f.bucket, "offset" := f.target_bucket - f.bucket, '

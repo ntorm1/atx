@@ -243,6 +243,24 @@ def _seed_statement(store, security_id: str, quarters: tuple[dt.date, ...],
             )
 
 
+def _bars(store, security_id: str, split: tuple[dt.date, float] | None = None) -> None:
+    """Weekday bars covering every filing clock, so the split basis is proven (R1d).
+
+    The vendor factor (adjusted / raw close) steps by ``k`` on a split's ex-date.
+    """
+    ex_date, ratio = split or (dt.date(1900, 1, 1), 1.0)
+    store.con.execute(
+        """
+        INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close, available_at)
+        SELECT 'test', ?, ?, d::DATE, 10.0, CASE WHEN d::DATE < ? THEN 10.0 / ? ELSE 10.0 END,
+               d::DATE + INTERVAL 22 HOUR
+        FROM generate_series(TIMESTAMP '2018-12-01', TIMESTAMP '2022-06-30', INTERVAL 1 DAY) t(d)
+        WHERE dayofweek(d) BETWEEN 1 AND 5
+        """,
+        [security_id, security_id, ex_date, ratio],
+    )
+
+
 def _ratio(numerator: str, index: int) -> float:
     return _STATEMENT[numerator][index] / _STATEMENT["revenue"][index]
 
@@ -391,7 +409,7 @@ _ONE_QUARTER_APART = (
     "eps_diluted_q_growth_yoy_accel", "gross_margin_q_change_yoy_accel", "operating_margin_q_change_yoy_accel",
 )
 # Share-count-denominated one-quarter comparisons: a 10-Q never restates the
-# preceding quarter, so span adjacency cannot prove a common share basis.
+# preceding quarter, so span adjacency alone cannot prove a common share basis.
 _PER_SHARE_QOQ = ("eps_basic_q_growth_qoq", "eps_diluted_q_growth_qoq")
 
 
@@ -403,6 +421,8 @@ def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adja
     # Fiscal-year change: contiguous quarters with a 66-day stub from 2021-04-11 to 2021-06-15.
     stub_calendar = (*_QUARTERS[:8], dt.date(2021, 4, 10), dt.date(2021, 6, 15), *_QUARTERS[10:12])
     _seed_statement(tmp_store, "S6", stub_calendar)
+    for security_id in ("S1", "S4", "S5", "S6"):
+        _bars(tmp_store, security_id)
     _refresh_quarterly_family(tmp_store)
 
     for index in (9, 10, 11):
@@ -412,7 +432,9 @@ def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adja
             assert _origin(tmp_store, code, _QUARTERS[index], "S4") == "quarterly", code
         for code in _PER_SHARE_QOQ:
             assert _latest_state(tmp_store, code, _QUARTERS[index])[1] == "valid", code
-            assert _origin(tmp_store, code, _QUARTERS[index]) == "incomparable", code
+            # Bars show no split between the two filings: one proven share basis
+            # (without bars see the reverse-split test below).
+            assert _origin(tmp_store, code, _QUARTERS[index]) == "quarterly", code
     for code in ("eps_basic_q_growth_yoy", "gross_margin_q_change_yoy", "revenue_q_growth_yoy"):
         assert _origin(tmp_store, code, _QUARTERS[9], "S5") == "quarterly", code
     # Overlapping trailing windows are never adjacent quarters.
@@ -429,34 +451,40 @@ def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adja
         assert _origin(tmp_store, code, stub_calendar[11], "S6") == "quarterly", code
 
 
-def test_per_share_qoq_across_a_reverse_split_is_never_labeled_comparable(tmp_store):
+def test_per_share_qoq_across_a_reverse_split_is_rebased_or_labeled_incomparable(tmp_store):
     # 1:10 reverse split between the second and third quarters: the third 10-Q
     # does not restate the second quarter, so its unadjusted EPS base is pre-split.
     quarters = _QUARTERS[:3]
-    for index, (eps, revenue) in enumerate(((-0.04, 100.0), (-0.05, 110.0), (-0.50, 121.0))):
-        period_start = quarters[index - 1] + dt.timedelta(days=1) if index else dt.date(2019, 1, 1)
-        available_at = _available(quarters[index])
-        for code, value in (("eps_diluted", eps), ("eps_basic__1034", eps), ("revenue", revenue)):
-            tmp_store.con.execute(
-                """
-                INSERT INTO fundamental_standardized (
-                    standardized_id, source, security_id, item_id, canonical_code, basis,
-                    period_start, period_end, value, as_of_date, available_at, input_codes_json,
-                    input_item_ids_json, rule_id, combination_rule, revision_sequence,
-                    is_latest_revision
-                ) VALUES (?, 'test', 'S7', 1, ?, 'quarterly', ?, ?, ?, ?, ?, '[]', '[]', 'r', 'direct', 1, true)
-                """,
-                [f"S7|{code}|{quarters[index]}", code, period_start, quarters[index], value,
-                 available_at.date(), available_at],
-            )
+    for security_id in ("S7", "S8"):
+        for index, (eps, revenue) in enumerate(((-0.04, 100.0), (-0.05, 110.0), (-0.50, 121.0))):
+            period_start = quarters[index - 1] + dt.timedelta(days=1) if index else dt.date(2019, 1, 1)
+            available_at = _available(quarters[index])
+            for code, value in (("eps_diluted", eps), ("eps_basic__1034", eps), ("revenue", revenue)):
+                tmp_store.con.execute(
+                    """
+                    INSERT INTO fundamental_standardized (
+                        standardized_id, source, security_id, item_id, canonical_code, basis,
+                        period_start, period_end, value, as_of_date, available_at, input_codes_json,
+                        input_item_ids_json, rule_id, combination_rule, revision_sequence,
+                        is_latest_revision
+                    ) VALUES (?, 'test', ?, 1, ?, 'quarterly', ?, ?, ?, ?, ?, '[]', '[]', 'r', 'direct', 1, true)
+                    """,
+                    [f"{security_id}|{code}|{quarters[index]}", security_id, code, period_start, quarters[index],
+                     value, available_at.date(), available_at],
+                )
+    # S8's bars date the split between the second (2019-08-09) and third (2019-11-09) filings.
+    _bars(tmp_store, "S8", (dt.date(2019, 10, 1), 0.1))
     seed_derived_metric_definitions(tmp_store)
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions(
         metric_codes=(*_PER_SHARE_QOQ, "revenue_q_growth_qoq")))
 
     for code in _PER_SHARE_QOQ:
-        # The arithmetic is published (-9.0), but never as a comparable quarterly pair.
+        # Without bars the arithmetic is published (-9.0), but never as a comparable pair.
         assert _latest_state(tmp_store, code, quarters[2], "S7")[:2] == (pytest.approx(-9.0), "valid")
         assert _origin(tmp_store, code, quarters[2], "S7") == "incomparable"
+        # With bars the pre-split base is restated (-0.05 x 10 = -0.50): no change.
+        assert _latest_state(tmp_store, code, quarters[2], "S8")[:2] == (pytest.approx(0.0), "valid")
+        assert _origin(tmp_store, code, quarters[2], "S8") == "quarterly"
     assert _origin(tmp_store, "revenue_q_growth_qoq", quarters[2], "S7") == "quarterly"
 
 
@@ -488,10 +516,14 @@ def test_one_bucket_adjacency_limits(older, newer, comparable):
     assert _one_bucket_apart_comparable(older, newer) is comparable
 
 
-def test_one_bucket_adjacency_never_certifies_a_per_share_pair():
+def test_one_bucket_adjacency_certifies_a_per_share_pair_only_on_one_split_basis():
     newer = _days(dt.date(2024, 4, 1), 91)
     assert _one_bucket_apart_comparable(_Q1_2024, newer) is True
+    # Filed at different clocks without bar evidence: the split basis is unproven.
     assert _one_bucket_apart_comparable(_Q1_2024, newer, share_basis=True) is False
+    # One filing (a restated comparative), or both bases proven by bars.
+    assert _one_bucket_apart_comparable(_Q1_2024, newer, share_basis=True, same_clock=True) is True
+    assert _one_bucket_apart_comparable(_Q1_2024, newer, share_basis=True, basis="true") is True
     basis = annual.share_basis_codes()
     assert {"eps_diluted", "eps_basic__1034", "eps_diluted_ttm", "eps_basic_ttm", "eps_ttm"} <= basis
     # Growth rates and margins are basis-free: accelerations keep their span proof.
@@ -499,10 +531,12 @@ def test_one_bucket_adjacency_never_certifies_a_per_share_pair():
                 "revenue", "gross_margin_q"} & basis
 
 
-def _one_bucket_apart_comparable(older, newer, *, share_basis: bool = False) -> bool:
+def _one_bucket_apart_comparable(older, newer, *, share_basis: bool = False, same_clock: bool = False,
+                                 basis: str = "false") -> bool:
     def span(dates, offset):
         start, end = (f"DATE '{value}'" if value is not None else "NULL::DATE" for value in dates)
-        return annual.Span(start, end, "false", "true", offset, share_basis and offset == 0)
+        clock = "TIMESTAMP '2024-08-09 21:00'" if offset == 0 or same_clock else "TIMESTAMP '2024-05-10 21:00'"
+        return annual.Span(start, end, "false", "true", offset, share_basis and offset == 0, clock, basis)
 
     combined = annual._combine(span(newer, 0), span(older, 1))
     with duckdb.connect(config={"memory_limit": "64MB", "threads": 1}) as con:
