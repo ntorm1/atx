@@ -32,6 +32,11 @@
   that shared tree races on `_ITERATOR_DEBUG_LEVEL`. `new-worktree.ps1 -Isolated`
   wires this automatically.
 
+  BUILD WORKERS. For build/check, explicit -Jobs wins, otherwise a nonempty
+  CMAKE_BUILD_PARALLEL_LEVEL is used, otherwise one worker. Both limits must be
+  integers in [1,256]. -Ctest keeps its separate explicit/default -Jobs value.
+  Use -Preset equity-hygiene for PCH-off checks; never toggle PCH in equity-dev.
+
   P-CORE BENCH-LEASE. Benchmarks are only citable on a quiet host: pin to the
   P-cores (`configure_pricing_executor(PerformanceCores)`) and, when several
   agents share the box, LEASE the P-cores to one bench at a time and cap fit
@@ -127,7 +132,33 @@ if (-not $MtDir) { Write-Warning "mt.exe not found under Windows Kits; relying o
 # Build the executable and argument array. Commands that need the compiler run
 # after vcvars64's environment has been imported into this PowerShell process.
 $verb = if ($Args.Count -gt 0) { $Args[0] } else { "" }
-$rest = if ($Args.Count -gt 1) { $Args[1..($Args.Count - 1)] } else { @() }
+$rest = @(if ($Args.Count -gt 1) { $Args[1..($Args.Count - 1)] })
+
+$buildJobs = $null
+if (-not $Ctest -and ($verb -eq "build" -or $verb -eq "check")) {
+  if ($PSBoundParameters.ContainsKey("Jobs")) {
+    $buildJobs = $Jobs
+  }
+  elseif (-not [string]::IsNullOrEmpty($env:CMAKE_BUILD_PARALLEL_LEVEL)) {
+    $parsedJobs = 0
+    if ($env:CMAKE_BUILD_PARALLEL_LEVEL -notmatch '^[1-9][0-9]*$' -or
+        -not [int]::TryParse($env:CMAKE_BUILD_PARALLEL_LEVEL, [ref]$parsedJobs) -or
+        $parsedJobs -gt 256) {
+      throw "CMAKE_BUILD_PARALLEL_LEVEL must be an integer in [1,256], or supply -Jobs explicitly"
+    }
+    $buildJobs = $parsedJobs
+  }
+  else {
+    $buildJobs = 1
+  }
+  # Native flags after -- would override the enforced limit. Keep a single
+  # unambiguous knob instead of silently launching more workers than requested.
+  foreach ($arg in $rest) {
+    if ($arg -match '^(?:-j(?:[0-9]+)?|--(?:parallel|jobs)(?:=.*)?)$') {
+      throw "Use -Jobs for worker limits; native parallel flags are not accepted"
+    }
+  }
+}
 
 if ($Ctest) {
   # Serial is the evidence default. Parallelism is an explicit operator choice
@@ -156,6 +187,9 @@ elseif ($verb -eq "configure") {
   $requiresMsvc = $true
 }
 elseif ($verb -eq "build") {
+  if ($rest.Count -eq 0 -or [string]::IsNullOrWhiteSpace($rest[0]) -or $rest[0].StartsWith("-")) {
+    throw "usage: atx-build.ps1 build <target> [more targets ...] (bare all-target builds are not allowed)"
+  }
   # Build the binaryDir that -Preset actually configured. This USED to hard-code
   # "$RepoRoot\build", so `atx-build.ps1 configure -Preset rel` wrote build-rel/
   # but `atx-build.ps1 build <tgt>` then rebuilt the DEBUG build/ tree and handed
@@ -165,7 +199,8 @@ elseif ($verb -eq "build") {
   # .superpowers/sdd/2026-07-26-sp100-surface-db/perf-investigation-report.md.
   # Preset name -> binaryDir must stay in sync with CMakePresets.json.
   $innerExe = "cmake"
-  $innerArgs = @("--build", (Join-Path $RepoRoot (Get-PresetBinaryDir $Preset)), "--target") + $rest
+  $innerArgs = @("--build", (Join-Path $RepoRoot (Get-PresetBinaryDir $Preset)),
+                 "--parallel", "$buildJobs", "--target") + $rest
   $requiresMsvc = $true
 }
 elseif ($verb -eq "check") {
@@ -208,7 +243,7 @@ elseif ($verb -eq "check") {
     $objs += $hits
   }
   $innerExe = "ninja"
-  $innerArgs = @("-C", "$buildDir") + $objs
+  $innerArgs = @("-C", "$buildDir", "-j", "$buildJobs") + $objs
   $requiresMsvc = $true
 }
 else {
@@ -225,6 +260,7 @@ if ($DryRun) {
     executable = $innerExe
     arguments = @($innerArgs)
     ctest_jobs = if ($Ctest) { $Jobs } else { $null }
+    build_jobs = $buildJobs
     requires_msvc = $requiresMsvc
   } | ConvertTo-Json -Depth 3
   exit 0

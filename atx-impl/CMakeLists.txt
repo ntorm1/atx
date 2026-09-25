@@ -79,7 +79,9 @@ if(GIT_FOUND)
     endif()
 endif()
 message(STATUS "atx-impl engine_git_sha: ${ATX_ENGINE_GIT_SHA}")
-target_compile_definitions(atx-impl-core PRIVATE
+# Only this TU consumes provenance. A new SHA must not invalidate all pipeline
+# objects (and their compiler-cache keys) after every configure/commit.
+set_property(SOURCE src/stage_discover.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     ATX_ENGINE_GIT_SHA="${ATX_ENGINE_GIT_SHA}")
 
 add_executable(atx-impl src/main.cpp)
