@@ -238,6 +238,10 @@ protected:
         cfg.equity_evaluation_start = kEvaluationStart;
         cfg.equity_evaluation_end = evaluation_end;
         cfg.equity_trial_ledger = ledger().string();
+        // W0-I0b / E-18: the production floor is 50 names per date; this six-name
+        // synthetic fixture opts into the old floor of 2 explicitly.
+        cfg.equity_ic_min_names_per_date = 2;
+        cfg.set_flags.insert("min-names-per-date");
         return cfg;
     }
 };
@@ -299,15 +303,17 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     EXPECT_TRUE(fs::exists(root / "ic1" / "manifest.json"));
     EXPECT_FALSE(fs::exists(root / "ic1" / ".pending"));
 
-    // (2 baseline + blend + families) signals x 2 variants x 2 restrictions x sum over H of (T - h).
+    // (2 baseline + blend + families) signals x 2 variants x 2 restrictions x sum over H of
+    // (T - h - delay). W0-I0b / E-09: the default execution delay is 1 session, so
+    // the forward return starts at the t+1 close and each horizon loses one date.
     const atx::usize signal_count =
         impl::kEquityBaselineDsl.size() + 1U + impl::kEquityFamilyDsl.size();
     const atx::usize blocks = signal_count * 2U * 2U;
     // Checkpoint 18 declares only the NEW family configurations per run.
     const int declared_per_run = static_cast<int>(
         (impl::kEquityFamilyDsl.size() - impl::kEquityFamilyRetainedCount) * 5U * 2U * 2U);
-    const atx::usize date_rows = blocks * ((kEvaluationDates - 1U) + (kEvaluationDates - 5U) +
-        (kEvaluationDates - 10U) + (kEvaluationDates - 21U) + (kEvaluationDates - 63U));
+    const atx::usize date_rows = blocks * ((kEvaluationDates - 2U) + (kEvaluationDates - 6U) +
+        (kEvaluationDates - 11U) + (kEvaluationDates - 22U) + (kEvaluationDates - 64U));
     EXPECT_EQ(line_count(contents(root / "ic1" / "ic.csv")), date_rows + 1U);
     EXPECT_EQ(line_count(contents(root / "ic1" / "coverage.csv")), date_rows + 1U);
     EXPECT_EQ(line_count(contents(root / "ic1" / "ic_decay.csv")), blocks * 5U + 1U);
@@ -325,14 +331,16 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     const auto summary = Json::parse(contents(root / "ic1" / "ic_summary.json"));
     EXPECT_EQ(summary.at("trial_count_declared"), declared_per_run);
     EXPECT_EQ(summary.at("checkpoint"), 22);
+    // W0-I0b / E-09: the label names the t+1 entry close the IC now measures from.
     EXPECT_EQ(summary.at("alignment"),
-              "signal-at-t-return-from-t-deployed-book-executes-at-t-plus-1");
+              "signal-at-t-return-from-entry-close-t-plus-1-deployed-book-executes-at-t-plus-1");
     EXPECT_NE(summary.at("sign_and_shape_statement").get<std::string>().find(
                   "sign-and-shape evidence only"), std::string::npos);
     EXPECT_EQ(summary.at("series").size(), blocks * 5U);
-    EXPECT_EQ(summary.at("common_sample_dates"), kEvaluationDates - 63U);
+    // W0-I0b / E-09: the common prefix is T - label_embargo(max(H), delay) = T - 64.
+    EXPECT_EQ(summary.at("common_sample_dates"), kEvaluationDates - 64U);
 
-    // §7.4 null encoding: h = 63 has n = 7 < 20, so its interval is unreportable
+    // §7.4 null encoding: h = 63 has n = 6 < 20, so its interval is unreportable
     // and BOTH serializers say so — JSON null, CSV "" — never 0 and never NaN.
     bool checked = false;
     for (const auto &row : summary.at("series")) {
@@ -344,18 +352,18 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
         EXPECT_EQ(full.at("ic_mean_ci").at("unreportable_reason"), 1);
         EXPECT_EQ(full.at("ic_mean_ci").at("unreportable_reason_text"),
                   "series-shorter-than-twenty");
-        // §3.13: the common block is the prefix [0, T - max(H)) = 7 dates for
-        // EVERY horizon, and every prefix date emits here, so the block reports
-        // its mean with no gap — while its interval stays null at n = 7 < 20.
+        // §3.13: the common block is the prefix [0, T - max(H) - delay) = 6 dates
+        // for EVERY horizon, and every prefix date emits here, so the block reports
+        // its mean with no gap — while its interval stays null at n = 6 < 20.
         const auto &common = row.at("common");
         EXPECT_TRUE(common.at("summary_reportable").get<bool>());
-        EXPECT_EQ(common.at("dates_emitted"), kEvaluationDates - 63U);
+        EXPECT_EQ(common.at("dates_emitted"), kEvaluationDates - 64U);
         EXPECT_EQ(common.at("common_prefix_gaps"), 0);
         EXPECT_FALSE(common.at("ic_mean").is_null());
         EXPECT_TRUE(common.at("ic_mean_ci").at("lo").is_null());
         EXPECT_EQ(common.at("ic_mean_ci").at("unreportable_reason"), 1);
         // §11.8 / §11.9 I-4: a CLOSED SPREAD GATE nulls the four spread moments.
-        // The spread series here is the same 7 dates, so its own gate is shut and
+        // The spread series here is the same 6 dates, so its own gate is shut and
         // a 0.0 spread mean over an unreportable series must never be published.
         EXPECT_FALSE(row.at("spread_reportable").get<bool>());
         EXPECT_NE(row.at("spread_unreportable_reason"), 0);
@@ -433,6 +441,9 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     EXPECT_EQ(request.at("required_mark_audit").at("required_mark_id_count"), 34);
     EXPECT_EQ(request.at("required_mark_audit").at("terminal_unevidenced_ids"),
               Json::array({146189}));
+    // W0-I0b fix pass 1: the computed R-A count (34 audited - 3 evidenced terminal - 2
+    // evidenced non-terminal) is published again, here and in the manifest.
+    EXPECT_EQ(request.at("required_mark_audit").at("unclassified_id_count"), 29);
     ASSERT_EQ(request.at("terminal_evidence").size(), 3U);
     EXPECT_EQ(request.at("terminal_evidence").at(1).at("security_id"), 35715);
     EXPECT_EQ(request.at("terminal_evidence").at(1).at("record_date"), "2013-10-28");
@@ -440,6 +451,7 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     const auto manifest = Json::parse(contents(root / "ic1" / "manifest.json"));
     EXPECT_EQ(manifest.at("status"), "complete");
     EXPECT_EQ(manifest.at("terminal_evidence").at("pcs_applied"), false);
+    EXPECT_EQ(manifest.at("terminal_evidence").at("unclassified_id_count"), 29);
     EXPECT_EQ(manifest.at("predictions_confirmed").at("modulo_fallbacks"), 0);
     EXPECT_NE(manifest.at("cost_model_provenance").get<std::string>().find(
                   "no call into replay.cpp borrow_charge"), std::string::npos);
@@ -527,11 +539,9 @@ TEST_F(StageEquityIc, RequiredMarkAuditFailuresRejectBeforePublishingAManifest) 
     ASSERT_NO_FATAL_FAILURE(build_baseline());
     const auto audit = data() / "equity_source_reconciliation_2013_20260919";
 
-    const auto missing = impl::run_equity_ic(ic_config("ic_missing"));
-    ASSERT_FALSE(missing);
-    EXPECT_EQ(missing.error().code(), ErrorCode::IoError);
-    EXPECT_FALSE(fs::exists(root / "ic_missing" / "manifest.json"));
-    EXPECT_TRUE(fs::exists(root / "ic_missing" / "failure.json"));
+    // W0-I0b / I-15: a MISSING audit is no longer a failure (the audit is
+    // optional; its absence is recorded — see ImplIcAsOfMembership_Stage). A
+    // PRESENT audit is still checked in full, before any ledger line:
 
     // 34 ids, but PCS replaced by a filler: the membership assertion must fire
     // rather than the cardinality one, because the partition rests on PCS.

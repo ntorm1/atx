@@ -69,14 +69,18 @@ static void print_usage(std::ostream& out) {
            "  sweep      Sweep K seeds into one --library-dir accumulating library\n"
            "  metabook   Sleeve-aware meta-book (S2 fund::MetaBook), standalone\n"
            "\n"
-           "Global flags: --help, --quiet, --digest-only\n"
+           "Global flags: --help, --quiet, --digest-only, --config <file> (every stage\n"
+           "  except equity-ic and equity-universe, which reject it).\n"
+           "Boolean flags take an optional true|false|1|0 (--metabook false; key=false in a file).\n"
+           "Double-valued flags must be finite (nan/inf are rejected).\n"
            "Panel inputs require matching .manifest.json identity files.\n"
            "Legacy diagnostics: --allow-unidentified-panels true (unknown identity).\n"
            "Load provenance: --preparation-manifest <completed preparation manifest>.\n"
            "Identified reports replay holdings/cash with --report-aum as initial NAV.\n"
-           "Replay: --replay-execution-delay <observations, default 1>,\n"
-           "        --replay-trade-bps <per traded dollar, default 0>,\n"
-           "        --replay-annual-borrow-bps <annual bps, default 0>,\n"
+           "Replay: --replay-execution-delay <observations, default 1;\n"
+           "        0 needs --allow-same-close>,\n"
+           "        --replay-trade-bps <per traded dollar, REQUIRED (0 must be explicit)>,\n"
+           "        --replay-annual-borrow-bps <annual bps, REQUIRED (0 must be explicit)>,\n"
            "        --replay-day-basis <360|365, default 365>.\n"
            "Replay timing is hypothetical; historical availability remains unverified.\n";
     out << "Equity baseline: --panel <identified context> --out <fresh directory>,\n"
@@ -125,15 +129,26 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
         return 0;
     }
 
-    // 3. Pipeline/equity config files merge into the CLI-parsed cfg. A flag
-    //    explicitly supplied on the CLI always wins (presence-tracked via
-    //    cfg.set_flags); the file only fills gaps the CLI left unset.
-    if ((cfg.subcommand == "run" || cfg.subcommand == "equity-baseline" ||
-         cfg.subcommand == "equity-book") &&
-        !cfg.config_file.empty()) {
+    // 3. W0-I0b / I-10: --config works in EVERY stage or is rejected. Before W0 only
+    //    run / equity-baseline / equity-book merged the file and every other stage
+    //    silently ignored it. Now every stage merges it, except the two frozen-recipe
+    //    stages (subcommand_rejects_config), which refuse it here and in the stage.
+    //    A flag explicitly supplied on the CLI always wins (presence-tracked via
+    //    cfg.set_flags); the file only fills gaps the CLI left unset, and the merged
+    //    result passes the same cross-flag rules as a pure CLI invocation.
+    if (!cfg.config_file.empty()) {
+        if (subcommand_rejects_config(cfg.subcommand)) {
+            err << cfg.subcommand << ": --config is not accepted for this subcommand\n";
+            return 2;
+        }
         auto merge_result = merge_config_file(cfg, cfg.config_file);
         if (!merge_result) {
             err << merge_result.error().message() << '\n';
+            return 2;
+        }
+        auto validated = validate_cross_flags(cfg);
+        if (!validated) {
+            err << validated.error().message() << '\n';
             return 2;
         }
     }

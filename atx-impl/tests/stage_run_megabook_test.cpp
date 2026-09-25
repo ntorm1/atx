@@ -121,6 +121,10 @@ static atx::impl::RunConfig base_cfg(const std::string &zip, const std::string &
     cfg.rebalance = "weekly";
     cfg.risk_aversion = 1.0;
     cfg.report_out = report_dir;
+    // W0-I0b / I-11: report costs are mandatory; this graph-identity fixture
+    // replays frictionlessly BY EXPLICIT CHOICE (0 / 0), so its digests are unchanged.
+    cfg.set_flags.insert("replay-trade-bps");
+    cfg.set_flags.insert("replay-annual-borrow-bps");
     return cfg;
 }
 
