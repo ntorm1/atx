@@ -171,11 +171,7 @@ template <class T>
   if (cfg.horizons.empty()) {
     return Err(ErrorCode::InvalidArgument, "cross_section_ic: horizons is empty");
   }
-  if (cfg.horizons.size() > kMaxIcHorizons) {
-    return Err(ErrorCode::InvalidArgument,
-               "cross_section_ic: " + std::to_string(cfg.horizons.size()) +
-                   " horizons exceeds kMaxIcHorizons " + std::to_string(kMaxIcHorizons));
-  }
+  // horizons.size() <= kMaxIcHorizons was enforced by the preflight above.
   if (cfg.horizons.front() == 0U) {
     return Err(ErrorCode::InvalidArgument,
                "cross_section_ic: horizon 0 is not a forward return; each horizon must be >= 1");
@@ -209,11 +205,7 @@ template <class T>
   if (cfg.block_len_floor == 0U) {
     return Err(ErrorCode::InvalidArgument, "cross_section_ic: block_len_floor must be >= 1");
   }
-  if (cfg.bootstrap_draws > kMaxBootstrapDraws) {
-    return Err(ErrorCode::OutOfRange,
-               "cross_section_ic: bootstrap_draws " + std::to_string(cfg.bootstrap_draws) +
-                   " exceeds kMaxBootstrapDraws " + std::to_string(kMaxBootstrapDraws));
-  }
+  // bootstrap_draws <= kMaxBootstrapDraws was enforced by the preflight above.
   if (!finite_non_negative(cfg.trade_bps)) {
     return Err(ErrorCode::InvalidArgument,
                "cross_section_ic: trade_bps must be finite and non-negative");
@@ -984,6 +976,18 @@ Result<IcSizing> preflight_cross_section_ic(atx::usize dates, atx::usize instrum
     return Err(ErrorCode::OutOfRange,
                "cross_section_ic: dates * instruments overflows usize (" +
                    std::to_string(dates) + " x " + std::to_string(instruments) + ")");
+  }
+  // The two config maxima the byte count below multiplies by. `validate` reaches them
+  // only through this call, so a standalone preflight enforces the same bounds.
+  if (cfg.horizons.size() > kMaxIcHorizons) {
+    return Err(ErrorCode::InvalidArgument,
+               "cross_section_ic: " + std::to_string(cfg.horizons.size()) +
+                   " horizons exceeds kMaxIcHorizons " + std::to_string(kMaxIcHorizons));
+  }
+  if (cfg.bootstrap_draws > kMaxBootstrapDraws) {
+    return Err(ErrorCode::OutOfRange,
+               "cross_section_ic: bootstrap_draws " + std::to_string(cfg.bootstrap_draws) +
+                   " exceeds kMaxBootstrapDraws " + std::to_string(kMaxBootstrapDraws));
   }
   if (cfg.max_working_bytes == 0U) {
     return Err(ErrorCode::InvalidArgument, "cross_section_ic: max_working_bytes must be > 0");

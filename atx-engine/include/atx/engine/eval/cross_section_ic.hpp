@@ -834,13 +834,15 @@ plan_cross_section_ic(const CrossSectionIcInput &in, const CrossSectionIcConfig 
 //
 //  Checks, in order: both extents non-zero and within the sanity bounds kMaxIcDates /
 //  kMaxIcInstruments; dates * instruments does not overflow; the horizon count and
-//  bootstrap draws are within their maxima; `max_working_bytes > 0`; and the exact
-//  working set (every scratch vector plus every result vector the compute sizes) fits
-//  `cfg.max_working_bytes`. All byte arithmetic is overflow-checked.
+//  bootstrap draws are within their maxima (kMaxIcHorizons, kMaxBootstrapDraws);
+//  `max_working_bytes > 0`; and the exact working set (every scratch vector plus every
+//  result vector the compute sizes) fits `cfg.max_working_bytes`. All byte arithmetic is
+//  overflow-checked. The other §6.2 checks run in `plan_cross_section_ic`.
 //
-//  Errors: InvalidArgument (zero extent or zero budget), OutOfRange (an extent above its
-//  bound, an overflowing product, or a working set above the budget — the message
-//  carries both numbers).
+//  Errors: InvalidArgument (zero extent, more than kMaxIcHorizons horizons, or zero
+//  budget), OutOfRange (an extent above its bound, an overflowing product,
+//  bootstrap_draws above kMaxBootstrapDraws, or a working set above the budget — the
+//  message carries both numbers).
 // ===========================================================================
 [[nodiscard]] atx::core::Result<IcSizing>
 preflight_cross_section_ic(atx::usize dates, atx::usize instruments,

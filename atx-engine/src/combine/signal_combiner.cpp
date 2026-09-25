@@ -51,6 +51,11 @@ namespace {
 // ICIR-EWMA haircut barely bit. The default is Newey-West at the NW-1994 automatic lag;
 // IidV1 stays callable through eval::hac::mean_tstat / ewma_variance_inflation so a
 // frozen fit can be re-derived term for term.
+//
+// Known limitation (W0-E0a review): the NW-1994 automatic lag does not know the horizon.
+// On an MA(20) null at T = 500 it still rejects about 13% at a nominal 5% (the IID rule
+// rejected 67%). When the combiner headers gain `tstat_rule`, also pass the horizon and
+// floor the lag at h - 1, as eval's IcHacRule already does.
 constexpr eval::hac::TStatRule kCombineTStatRule = eval::hac::kDefaultTStatRule;
 
 // Per-column t-stat of the column mean under kCombineTStatRule; NaN when the rule

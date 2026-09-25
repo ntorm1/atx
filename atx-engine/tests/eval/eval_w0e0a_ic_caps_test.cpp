@@ -210,4 +210,30 @@ TEST(EvalIcCaps, SanityBoundsStillRejectAndZeroExtentsAreInvalid) {
   EXPECT_TRUE(preflight_cross_section_ic(kMaxIcDates, 1U, cfg).has_value());
 }
 
+// Review fix pass 1: the preflight's documented horizon-count and bootstrap-draw maxima
+// are enforced by a standalone preflight, not only by plan_cross_section_ic. The budget
+// is raised so only the maxima can reject; both sides of each boundary are pinned.
+TEST(EvalIcCaps, StandalonePreflight_EnforcesHorizonCountAndDrawMaxima) {
+  std::vector<std::size_t> at_max;
+  for (std::size_t k = 0U; k < kMaxIcHorizons; ++k) {
+    at_max.push_back(k + 1U);
+  }
+  std::vector<std::size_t> too_many = at_max;
+  too_many.push_back(kMaxIcHorizons + 1U);
+  CrossSectionIcConfig cfg = config(at_max, kMaxBootstrapDraws);
+  cfg.max_working_bytes = std::uint64_t{1} << 40U;
+  EXPECT_TRUE(preflight_cross_section_ic(200U, 50U, cfg).has_value());
+
+  cfg.horizons = too_many;
+  auto horizons = preflight_cross_section_ic(200U, 50U, cfg);
+  ASSERT_FALSE(horizons.has_value());
+  EXPECT_EQ(horizons.error().code(), ErrorCode::InvalidArgument);
+
+  cfg.horizons = at_max;
+  cfg.bootstrap_draws = kMaxBootstrapDraws + 1U;
+  auto draws = preflight_cross_section_ic(200U, 50U, cfg);
+  ASSERT_FALSE(draws.has_value());
+  EXPECT_EQ(draws.error().code(), ErrorCode::OutOfRange);
+}
+
 } // namespace atx_test_w0_e0a_ic_caps

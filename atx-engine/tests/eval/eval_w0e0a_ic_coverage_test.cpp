@@ -143,6 +143,10 @@ TEST(EvalIcCoverage, BootstrapBlockRule_V2MovesMa20CoverageTowardNominal) {
   // to the [93%, 97%] band.)
   EXPECT_LT(v1.rate(), 0.88);
   EXPECT_GT(v2.rate(), v1.rate() + 0.05);
+  // Review fix pass 1: pin the level of the default bootstrap's coverage, not only its
+  // gain over V1, so a later block-rule change cannot regress it silently. Measured 0.9300
+  // here; an independent numpy run (n=1750, B=2000, 2000 reps) measured 0.925.
+  EXPECT_GE(v2.rate(), 0.90);
 }
 
 TEST(EvalIcCoverage, BootstrapMeanInterval_RejectsBadScratchAndReportsReasons) {

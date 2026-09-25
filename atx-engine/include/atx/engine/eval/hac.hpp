@@ -337,8 +337,10 @@ namespace detail {
 
 // ---------------------------------------------------------------------------
 //  BlockLength / politis_white — the automatic block length of Politis & White (2004)
-//  with the Patton, Politis & White (2009) correction (the `arch` package's
-//  `optimal_block_length`):
+//  with the Patton, Politis & White (2009) correction, transcribed from the papers. It is
+//  NOT verified against the `arch` package's `optimal_block_length`: arch scans lags
+//  m..m+K_N-1 with its own correlation normalization, so its m^ can differ by one lag.
+//  The test reference is an independent numpy transcription of the formulas below:
 //
 //      K_N   = max(5, floor(log10 n)),  m_max = ceil(sqrt n) + K_N,
 //      c     = 2 sqrt(log10(n) / n)

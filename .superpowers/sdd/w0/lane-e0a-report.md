@@ -164,7 +164,7 @@ No existing golden digest in the eval or combine targets needed a new baseline. 
    - What was done: E-03 is fixed at the three combine sites, and the default moved to `NeweyWestAutoV2`. The old behaviour is reproducible at the kernel level:
      - `eval::hac::mean_tstat(x, TStatRule::IidV1)` equals the old formula bit for bit (tested);
      - `ewma_variance_inflation(..., IidV1)` returns exactly 1.0, which gives back the old ICIR-EWMA t bit for bit.
-   - What is missing: `IcirEwmaCombiner`, `GrinoldKahnCombiner`, `FamaMacBethRidge`, `KakushadzeRegression` and `marginal_ic` have no `tstat_rule` field or parameter. Adding one needs `combine/signal_combiner.hpp` and `combine/orthogonalize.hpp`, which this lane does not own. So a frozen combiner fit cannot yet re-run through its public struct under IidV1. See the integration note.
+   - What is missing: `IcirEwmaCombiner`, `GrinoldKahnCombiner`, `FamaMacBethRidge`, `KakushadzeRegression` and `marginal_ic` have no `tstat_rule` field or parameter. Adding one needs `combine/signal_combiner.hpp` and `combine/orthogonalize.hpp`, which this lane does not own. So a frozen combiner fit cannot yet re-run through its public struct under IidV1. The same holds for E-15's `IcReturnTreatment::RawV1`: GK and ICIR-EWMA call `ic_matrix(s, w)`, whose default is now `WinsorizedV2`, so their weights moved too and cannot be put back per combiner. See the integration note.
 2. **Which interval the coverage item is measured on.**
    - The acceptance item is met on the HAC interval that `cross_section_ic` publishes (`ic_mean_hac`): 94.5%.
    - The circular-block bootstrap under the new `TwoHorizonV2` rule measured 93.0% (n=1000, B=199, 400 reps), up from 81.8% under V1. Its taper, which works like a Bartlett kernel, keeps it a few points short of nominal at L = 2h.
@@ -184,6 +184,8 @@ No existing golden digest in the eval or combine targets needed a new baseline. 
   - **Tests that may move.** Expected values in `stage_equity_ic_test.cpp`, `fundamental_zoo_test.cpp` and `trial_ledger_test.cpp` may shift.
 - **Owner of `combine/signal_combiner.hpp` and `combine/orthogonalize.hpp` (W1-E1 or W2-E3)**
   - Add `eval::hac::TStatRule tstat_rule{eval::hac::kDefaultTStatRule}` to the four combiner structs, and a matching `marginal_ic` parameter. Then thread it to `column_tstats`, the ICIR-EWMA site and `marginal_ic`. The kernels already take the rule.
+  - Also add `IcReturnTreatment ic_returns{IcReturnTreatment::WinsorizedV2}` (and, if wanted, the winsor width) to `GrinoldKahnCombiner` and `IcirEwmaCombiner`, threaded to the two `ic_matrix(s, w)` calls (`signal_combiner.cpp:188,203`). E-15 made `WinsorizedV2` the `ic_matrix` default, so the GK and ICIR-EWMA **weights** moved, not only their t-stats (the zoo IR print moved). Until this field exists, `RawV1` is selectable only by calling `ic_matrix(s, w, IcReturnTreatment::RawV1)` directly, not per combiner.
+  - When `tstat_rule` lands, also pass the IC horizon and floor the Newey-West lag at h - 1 (see Known limitations).
   - Update the `MarginalIc::tstat` doc comment (`orthogonalize.hpp:65`, which still says "mean_ic / (sd/√n)").
   - `combine/hrp.hpp:386` still computes an IID t-stat. It is outside this lane's file set, so E-03 at that site is left to the hrp owner. The fix is `eval::hac::mean_tstat(col, kDefaultTStatRule)`.
 - **Walk-forward and lockbox consumers (W0-E0b E-17, W1-E1).** Embargo at least `eval::label_embargo(h, execution_delay)` rows between a fit window's last signal row and the first evaluated row.
@@ -194,3 +196,28 @@ No existing golden digest in the eval or combine targets needed a new baseline. 
 1. Measured on MA(20) IC coverage with n=1750 and 2000 reps: Hansen-Hodrick at lag max(h−1, NW rule of thumb) gives 94.5%. Newey-West at the auto lag gives 91.4%. The naive IID interval gives 31.5%.
 2. Measured on the circular-block bootstrap for MA(20) with n=1000: the V1 block of 11 covers 81.8%. A 2h block of 42 covers 93.0%. The Politis-White b_CB for an MA(20) series of n=500 is about 30.
 3. Measured `cross_section_ic` cost at 6,624 × 1,750 with one horizon: the engine's working set is 0.75 MB and caller spans are 417 MB. Debug compute takes about 88 s, mostly in the per-date sorts.
+
+## Known limitations
+
+- **Combine-site t-stats are about 2.7x liberal on overlapping horizons.** `kCombineTStatRule` (`signal_combiner.cpp:59`) is Newey-West at the NW-1994 automatic lag, which does not know the horizon. On an MA(20) null at T = 500 it rejects 13.3% against a nominal 5% (`CombineHacTstat` print; the test bound is `< 0.15`). The IID rule it replaced rejected 67.2%, so E-03 is materially fixed, but not to nominal. The combiner structs carry no horizon and their headers are not owned here. The fix, for the owner who adds `tstat_rule`, is a lag floor of h - 1, as eval's `IcHacRule` already applies. This is recorded in a comment at the constant.
+
+## Fix pass 1
+
+Review: `.superpowers/sdd/w0/lane-e0a-review.md` (APPROVE at `1db2bb43`, five minors, no blocker or major).
+
+| # | Finding | What changed | Evidence |
+|---|---|---|---|
+| 1 | The default bootstrap (`TwoHorizonV2`) coverage level is not pinned; only its gain over V1 is | `EvalIcCoverage.BootstrapBlockRule_V2MovesMa20CoverageTowardNominal` now also asserts `v2.rate() >= 0.90`. The test's measured value is 0.9300, and the reviewer's independent numpy run gave 0.925. The acceptance item itself still rests on the HAC interval (0.9450). **Owner confirmation is still needed** that `ic_mean_hac` is the interval that satisfies "[93%, 97%]" (review waiver 1). No fixer can close that. | `^EvalIcCoverage` 3/3. Print: `CBB on MA(20), n=1000, B=199, 400 reps: HalfHorizonV1 (L=11) 0.8175  TwoHorizonV2 (L=42) 0.9300` |
+| 2 | `preflight_cross_section_ic` documented horizon-count and draw maxima it did not check | The two checks moved from `validate` into `preflight_cross_section_ic`. They keep the same codes and messages: `InvalidArgument` for more than `kMaxIcHorizons` horizons, and `OutOfRange` for `bootstrap_draws > kMaxBootstrapDraws`. `validate` reaches them through its existing preflight call, so each check lives in one place. The header's Errors list now names both. New test `EvalIcCaps.StandalonePreflight_EnforcesHorizonCountAndDrawMaxima` pins both sides of each boundary, with a 1 TiB budget so only the maxima can reject. | `^EvalIcCaps` 5/5. The pre-existing `EvalCrossSectionIc.Config_BoundedMaxima_RejectOversizedHorizonsQuantilesAndDraws` still passes, with the same codes (`^EvalCrossSectionIc` 63/63). |
+| 3 | E-15 moved GK and ICIR-EWMA weights through `ic_matrix`'s `WinsorizedV2` default, and the report mentioned only `tstat_rule` | Deviation 1 and the combiner-owner integration note now say that the weights moved. The note asks for an `IcReturnTreatment` field on `GrinoldKahnCombiner` and `IcirEwmaCombiner`, threaded to both `ic_matrix` calls. Doc-only, because the headers are not owned by this lane. | This report, Deviations §1 and Integration notes. |
+| 4 | The combine-site NW auto lag is horizon-blind: 13.3% rejection on an MA(20) null | Recorded as a known limitation, in this report (Known limitations) and in a comment at `kCombineTStatRule`. The integration note asks for an h - 1 lag floor when `tstat_rule` lands. The fix itself was not made: it needs a horizon on the combiner structs, which live in headers this lane does not own. The test bound was not changed. | `^CombineHacTstat` 6/6 |
+| 5 | The `politis_white` doc claimed parity with arch's `optimal_block_length` | The `hac.hpp` doc now cites Politis-White (2004) and Patton-Politis-White (2009) only. It states that arch parity is NOT verified, explains why arch's m^ can differ by one lag, and says the test reference is an independent numpy transcription. No code change. | The doc comment in `hac.hpp` |
+
+Verification (pool-5, `equity-dev`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, 4.0 GB free before the build):
+- `build atx-engine-eval-tests atx-engine-combine-tests`: `build_exit=0`.
+- Single-TU `check` passed with exit 0 and no diagnostics for `src/eval/cross_section_ic.cpp`, `src/combine/signal_combiner.cpp`, `tests/eval/eval_w0e0a_ic_caps_test.cpp` and `tests/eval/eval_w0e0a_ic_coverage_test.cpp`.
+- Anchored `-Ctest -R`, all exit 0: `^EvalHac` 14/14, `^EvalIcCoverage` 3/3, `^EvalIcDelay` 6/6, `^EvalIcCaps` 5/5, `^CombineHacTstat` 6/6, `^EvalCrossSectionIc` 63/63.
+- Whole executables:
+  - `atx-engine-eval-tests.exe --gtest_brief=1`: 223 tests from 29 suites, PASSED, `eval_exit=0`. That is 222 plus the one new caps test.
+  - `atx-engine-combine-tests.exe --gtest_brief=1`: 183 tests from 34 suites, PASSED, `combine_exit=0`.
+- No test was weakened, skipped or deleted. The two test edits only add assertions or a new test.
