@@ -25,6 +25,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/augment.hpp"    // DollarVolumeBasis
 #include "atx/engine/alpha/datafields.hpp" // parse_adv_field
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/segment_panel.hpp"
@@ -108,6 +109,22 @@ std::optional<LevelBasis> history_field_level_basis(std::string_view name) noexc
     return LevelBasis::Raw; // macro series broadcast as published
   }
   return std::nullopt;
+}
+
+std::optional<LevelBasis> history_field_level_basis(std::string_view name,
+                                                    alpha::DollarVolumeBasis dv_basis) noexcept {
+  const std::optional<LevelBasis> by_name = history_field_level_basis(name);
+  if (dv_basis == alpha::DollarVolumeBasis::RawCloseV2 || !by_name.has_value()) {
+    return by_name;
+  }
+  // CloseV1 (or an unknown enum value — fail closed): liquidity is close x volume,
+  // and close on a history panel carries the snapshot factor.
+  atx::u16 window = 0;
+  if (name == alpha::datafields::kDollarVolume ||
+      alpha::datafields::parse_adv_field(name, window)) {
+    return LevelBasis::AdjustedLevel;
+  }
+  return by_name;
 }
 
 // ---------------------------------------------------------------------------

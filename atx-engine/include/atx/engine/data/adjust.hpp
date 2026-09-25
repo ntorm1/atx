@@ -51,10 +51,16 @@
 //   * NaN raw_close_t      -> S_t = NaN, r_t = NaN, TRI_t = NaN for that cell; the
 //     series RESUMES at the next valid close with r = 0 (there is no defined
 //     one-day return across a gap). Its TRI level follows TriGapRule: by default
-//     (RatioChainV2) TRI = prev_TRI · S_t / S_last, where S_last is the last valid
-//     split-adjusted close before the gap, so dividends accumulated before the gap
-//     are kept. The legacy ReanchorV1 rule set TRI = S_t, which dropped them: a 3%
-//     payer five years in showed a phantom -14% step at the first gap (D-04).
+//     (RatioChainV2) TRI = prev_TRI · (S_t + ΣD_adj) / S_last, where S_last is the
+//     last valid split-adjusted close before the gap, so dividends accumulated
+//     before the gap are kept. ΣD_adj reinvests every cash dividend whose ex-date
+//     is a gap cell or the resumption cell itself, each on its own ex-date's split
+//     basis (D_k · cum_adj_factor_k). A gap-cell dividend whose factor is NaN/≤ 0
+//     is put on the resumption cell's basis only when the factor is unchanged
+//     across the gap (no split inside it); otherwise its basis is unknown and it is
+//     dropped rather than scaled by a guessed factor. The legacy ReanchorV1 rule
+//     set TRI = S_t, which dropped all of them: a 3% payer five years in showed a
+//     phantom -14% step at the first gap (D-04).
 //   * NaN cum_adj_factor_t -> treated IDENTICALLY to a NaN raw_close: S_t = NaN
 //     and the cell is a gap. S1-2 emits NaN (NOT 1.0) where the split factor is
 //     absent — which only happens where the symbol is genuinely absent on a union
@@ -103,7 +109,7 @@ struct AdjustedSeries {
 // How the TRI level resumes after a gap (W0-D0, D-04). See the NaN policy above.
 enum class TriGapRule : std::uint8_t {
   ReanchorV1 = 1,   // TRI = S_t (legacy; drops accumulated dividends)
-  RatioChainV2 = 2, // TRI = prev_TRI · S_t / S_last (default)
+  RatioChainV2 = 2, // TRI = prev_TRI · (S_t + ΣD_adj) / S_last (default)
 };
 
 // Fold split + reinvested dividends into the total-return series for ONE symbol.

@@ -124,6 +124,86 @@ TEST(DataAdjustGap_W0d0, LeadingGapAnchorsAtTheFirstValidClose) {
   }
 }
 
+// Fix pass 1: a dividend whose ex-date is the resumption cell is reinvested there.
+// close {100, NaN, 99}, div {0, 0, 1.0}: the holder got 99 + 1 = 100 of value, so the
+// index must not step (the plain price ratio showed a phantom -1%).
+TEST(DataAdjustGap_W0d0, DividendOnTheResumptionCellIsReinvested) {
+  const std::vector<atx::f64> close = {100.0, kNaN, 99.0};
+  const std::vector<atx::f64> factor = {1.0, 1.0, 1.0};
+  const std::vector<atx::f64> div = {0.0, 0.0, 1.0};
+  const AdjustedSeries v2 = adjust_total_return(close, factor, div);
+  EXPECT_DOUBLE_EQ(v2.total_return_index[0], 100.0);
+  EXPECT_TRUE(std::isnan(v2.total_return_index[1]));
+  EXPECT_DOUBLE_EQ(v2.total_return_index[2], 100.0 * ((99.0 + 1.0) / 100.0));
+  EXPECT_EQ(v2.total_return_index[2], 100.0);
+  EXPECT_EQ(v2.total_return[2], 0.0); // one-day return across a gap stays undefined (0)
+  EXPECT_DOUBLE_EQ(v2.split_adj_close[2], 99.0);
+  // The dividend is on the ex-date's split basis: a 2:1 split before the series
+  // (factor 0.5 throughout) halves the price and the dividend alike.
+  const std::vector<atx::f64> half = {0.5, 0.5, 0.5};
+  const AdjustedSeries h = adjust_total_return(close, half, div);
+  EXPECT_DOUBLE_EQ(h.total_return_index[2], 50.0 * ((49.5 + 0.5) / 50.0));
+  // The legacy rule still re-anchors at S (and so drops the dividend).
+  const AdjustedSeries v1 = adjust_total_return(close, factor, div, TriGapRule::ReanchorV1);
+  EXPECT_DOUBLE_EQ(v1.total_return_index[2], 99.0);
+}
+
+// Fix pass 1: a dividend whose ex-date falls on a NaN-close cell inside the gap is
+// reinvested at the resumption, on its own ex-date's split basis.
+TEST(DataAdjustGap_W0d0, DividendInsideTheGapIsReinvestedAtResumption) {
+  // Finite factor on the gap cells: 1.5 on index 2 is converted at factor 1.0.
+  const std::vector<atx::f64> close = {100.0, 101.0, kNaN, kNaN, 98.0, 99.0};
+  const std::vector<atx::f64> factor = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  const std::vector<atx::f64> div = {0.0, 0.0, 1.5, 0.0, 0.0, 0.0};
+  const AdjustedSeries adj = adjust_total_return(close, factor, div);
+  EXPECT_DOUBLE_EQ(adj.total_return_index[1], 101.0);
+  EXPECT_DOUBLE_EQ(adj.total_return_index[4], 101.0 * ((98.0 + 1.5) / 101.0));
+  EXPECT_DOUBLE_EQ(adj.total_return_index[5], adj.total_return_index[4] * (99.0 / 98.0));
+
+  // Two dividends in one gap plus one on the resumption cell: all three are kept.
+  const std::vector<atx::f64> div3 = {0.0, 0.0, 0.5, 0.25, 0.75, 0.0};
+  const AdjustedSeries a3 = adjust_total_return(close, factor, div3);
+  EXPECT_DOUBLE_EQ(a3.total_return_index[4], 101.0 * ((98.0 + 1.5) / 101.0));
+
+  // A split inside the gap: 2:1 effective on index 3 (factor 0.5 before, 1.0 from
+  // index 3). A 2.0 raw dividend on index 2 (pre-split) is 1.0 on the continuous
+  // basis; the price ratio is 49 / 50.
+  const std::vector<atx::f64> close_s = {100.0, kNaN, kNaN, 49.0};
+  const std::vector<atx::f64> factor_s = {0.5, 0.5, 1.0, 1.0};
+  const std::vector<atx::f64> div_s = {0.0, 2.0, 0.0, 0.0};
+  const AdjustedSeries s = adjust_total_return(close_s, factor_s, div_s);
+  EXPECT_DOUBLE_EQ(s.total_return_index[0], 50.0);
+  EXPECT_DOUBLE_EQ(s.total_return_index[3], 50.0 * ((49.0 + 1.0) / 50.0));
+  EXPECT_EQ(s.total_return_index[3], 50.0); // no phantom step: 49 + 1 == 50
+
+  // No usable factor on the gap cell: the dividend is converted on the resumption
+  // cell's basis when the factor did not change across the gap ...
+  const std::vector<atx::f64> close_u = {100.0, kNaN, 99.0};
+  const std::vector<atx::f64> factor_same = {1.0, kNaN, 1.0};
+  const std::vector<atx::f64> div_u = {0.0, 1.0, 0.0};
+  const AdjustedSeries u = adjust_total_return(close_u, factor_same, div_u);
+  EXPECT_EQ(u.total_return_index[2], 100.0);
+  // ... and dropped (never scaled by a guessed factor) when a split hides inside.
+  const std::vector<atx::f64> factor_split = {0.5, kNaN, 1.0};
+  const std::vector<atx::f64> close_split = {100.0, kNaN, 49.5};
+  const AdjustedSeries us = adjust_total_return(close_split, factor_split, div_u);
+  EXPECT_DOUBLE_EQ(us.total_return_index[2], 50.0 * (49.5 / 50.0));
+
+  // A dividend in a LEADING gap has no chain to join: the first valid cell anchors.
+  const std::vector<atx::f64> close_l = {kNaN, 40.0, 41.0};
+  const std::vector<atx::f64> factor_l = {1.0, 1.0, 1.0};
+  const std::vector<atx::f64> div_l = {0.5, 0.0, 0.0};
+  const AdjustedSeries l = adjust_total_return(close_l, factor_l, div_l);
+  EXPECT_DOUBLE_EQ(l.total_return_index[1], 40.0);
+  EXPECT_DOUBLE_EQ(l.total_return_index[2], 41.0);
+
+  // The legacy rule drops the gap dividend with everything else.
+  const AdjustedSeries v1 = adjust_total_return(close, factor, div, TriGapRule::ReanchorV1);
+  EXPECT_DOUBLE_EQ(v1.total_return_index[4], 98.0);
+  std::printf("[tri-gap] dividend in gap: RatioChainV2 step=%.6f  (price-only ratio %.6f)\n",
+              adj.total_return_index[4] / adj.total_return_index[1] - 1.0, 98.0 / 101.0 - 1.0);
+}
+
 // Legacy reproduction: ReanchorV1 still sets TRI = S after a gap.
 TEST(DataAdjustGap_W0d0, ReanchorV1ReproducesTheLegacyLevel) {
   const std::vector<atx::f64> close = {100.0, 101.0, kNaN, 90.9};

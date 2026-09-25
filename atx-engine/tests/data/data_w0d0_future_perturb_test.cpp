@@ -339,6 +339,71 @@ TEST(DataLevelBasis_W0d0, HistoryPanelTagsEveryFieldWithItsBasis) {
   fs::remove_all(dir);
 }
 
+// Fix pass 1: the liquidity tag follows the DollarVolumeBasis the panel was
+// augmented under. CloseV1 liquidity is close x volume on the snapshot-factor close,
+// so it is AdjustedLevel — measured: it moves under a factor re-snapshot.
+TEST(DataLevelBasis_W0d0, LiquidityTagFollowsTheDollarVolumeBasis) {
+  using alpha::DollarVolumeBasis;
+  const fs::path dir = fs::temp_directory_path() / "atx_w0d0_basis_dvb";
+  const SourceModel base{};
+  const HistoryPanel p = build(dir, base, base, kDates);
+  auto v2 = alpha::with_alpha101_fields(p.panel, kAdvWindows);
+  ASSERT_TRUE(v2.has_value());
+  atx::usize liquidity_fields = 0;
+  for (atx::usize f = 0; f < v2->num_fields(); ++f) {
+    const std::string_view name = v2->field_name(static_cast<alpha::FieldId>(f));
+    const auto by_name = history_field_level_basis(name);
+    ASSERT_TRUE(by_name.has_value()) << name;
+    // RawCloseV2 is exactly the name-only tag for every field.
+    EXPECT_EQ(history_field_level_basis(name, DollarVolumeBasis::RawCloseV2), by_name) << name;
+    atx::u16 w = 0;
+    const bool liquidity = name == "dollar_volume" || alpha::datafields::parse_adv_field(name, w);
+    liquidity_fields += liquidity ? 1U : 0U;
+    // CloseV1 retags only the derived liquidity; every other field keeps its tag.
+    EXPECT_EQ(history_field_level_basis(name, DollarVolumeBasis::CloseV1),
+              liquidity ? std::optional<LevelBasis>{LevelBasis::AdjustedLevel} : by_name)
+        << name;
+  }
+  EXPECT_EQ(liquidity_fields, 1U + kAdvWindows.size());
+  // An unknown enum value fails closed (AdjustedLevel), unknown names stay nullopt.
+  const auto bogus = static_cast<DollarVolumeBasis>(0);
+  EXPECT_EQ(history_field_level_basis("adv20", bogus), LevelBasis::AdjustedLevel);
+  EXPECT_EQ(history_field_level_basis("raw_close", bogus), LevelBasis::Raw);
+  EXPECT_FALSE(history_field_level_basis("no_such_field", DollarVolumeBasis::CloseV1).has_value());
+  EXPECT_FALSE(history_field_level_basis("adv", DollarVolumeBasis::CloseV1).has_value());
+
+  // with_datafields called directly on a history panel (atx-impl stage_discover's
+  // capacity screen) derives close x volume: the same values as CloseV1.
+  auto v1 = alpha::with_alpha101_fields(p.panel, kAdvWindows, DollarVolumeBasis::CloseV1);
+  ASSERT_TRUE(v1.has_value());
+  const atx::usize nf = p.panel.num_fields();
+  std::vector<std::string> names;
+  std::vector<std::vector<atx::f64>> data;
+  for (atx::usize f = 0; f < nf; ++f) {
+    names.emplace_back(p.panel.field_name(static_cast<alpha::FieldId>(f)));
+    const auto col = p.panel.field_all(static_cast<alpha::FieldId>(f));
+    data.emplace_back(col.begin(), col.end());
+  }
+  std::vector<std::uint8_t> uni(kDates * kInsts, 0);
+  for (atx::usize d = 0; d < kDates; ++d) {
+    for (atx::usize i = 0; i < kInsts; ++i) {
+      uni[d * kInsts + i] = p.panel.in_universe(d, i) ? std::uint8_t{1} : std::uint8_t{0};
+    }
+  }
+  auto direct = alpha::datafields::with_datafields(kDates, kInsts, std::move(names),
+                                                    std::move(data), std::move(uni), kAdvWindows);
+  ASSERT_TRUE(direct.has_value());
+  for (const auto name : {"dollar_volume", "adv2", "adv5"}) {
+    const auto x = field(*direct, name);
+    const auto y = field(*v1, name);
+    ASSERT_EQ(x.size(), y.size());
+    for (atx::usize k = 0; k < x.size(); ++k) {
+      EXPECT_TRUE(same_bits(x[k], y[k])) << name << " cell " << k;
+    }
+  }
+  fs::remove_all(dir);
+}
+
 // dollar_volume = raw_close x volume and adv{d} = its causal mean, bit-for-bit;
 // the field order is unchanged from the legacy rule.
 TEST(DataLevelBasis_W0d0, DollarVolumeAndAdvAreBuiltFromRawClose) {

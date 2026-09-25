@@ -11,6 +11,8 @@
 - **Final SHA:** the commit that adds this report (see `git log -1` on `feat/w0-d0`); code commits
   `115cfb57` (implementation) and `02d34323` (tests + follow-up fixes).
 - Build tree: `build-equity\` reconfigured once with `-Groups "data;alpha"` (it held `factory`).
+- **Fix pass 1:** findings 1 and 4 fixed in code; finding 2 relabelled DEVIATION; finding 3 handed
+  to G0. Owner waivers needed: vwap deviation, and G0 real-data items. See "Fix pass 1" at the end.
 
 ## Files changed (all owned, or new test files)
 
@@ -60,7 +62,7 @@ Lane "Build" items (brief) and their proof:
 | Build item | Test(s) | Measured result | Status |
 |---|---|---|---|
 | dollar_volume / adv{d} from raw_close × volume | `DataLevelBasis_W0d0.DollarVolumeAndAdvAreBuiltFromRawClose`, `FactorResnapshotLeavesRawLiquidityInvariant` | dollar_volume == raw_close·volume and adv5 == rolling mean of it, bit-for-bit; field order identical to legacy. Re-snapshot (all factors × 0.5): raw_close, volume, market_cap, dollar_volume, adv2, adv5, returns, cap and the mask unchanged bit-for-bit; legacy CloseV1 dollar_volume halved on 112/112 finite cells. | MET |
-| vwap | same | vwap stays the typical price on close's basis (identical under both rules); tagged `adjusted_level`. See Deviations. | MET (with deviation) |
+| vwap | same | vwap stays the typical price on close's basis (identical under both rules); tagged `adjusted_level`. NOT built from raw_close × volume as the brief asks. See Deviations #1. | **DEVIATION — owner waiver needed** |
 | Tag every field with its level basis | `DataLevelBasis_W0d0.HistoryPanelTagsEveryFieldWithItsBasis`, `RealPanelFieldTagsFollowThePriceBasis` | All 12 history fields and every Alpha101-derived field tagged; unknown names → nullopt. | MET |
 | FINRA lag in NYSE sessions, +1 after close | DataFinraLag_W0d0 (4 tests) | see acceptance row | MET |
 | TRI gap uses prev_tri·S_t/S_last | DataAdjustGap_W0d0 (5 tests) | ratio carried (103·90.9/101), split inside a gap continuous, leading gap anchors, V1 reproducible | MET |
@@ -214,7 +216,20 @@ No other golden literal in the data/alpha targets moved (all 235 + 678 tests gre
   settlements outside it fail with `OutOfRange`.
 - **W2-A3 (lint):** read `HistoryPanel::field_basis` / `RealPanel::field_basis` (parallel to
   FieldIds) or call `history_field_level_basis(name)` / `real_panel_field_level_basis(name)` for
-  augmented / loaded panels; `nullopt` must be treated as unknown, not clean.
+  augmented / loaded panels; `nullopt` must be treated as unknown, not clean. The name-only Raw
+  tag on `dollar_volume`/`adv{d}` holds only for `with_alpha101_fields` under
+  `DollarVolumeBasis::RawCloseV2` (the default). For a panel augmented under `CloseV1`, or run
+  through `datafields::with_datafields` directly, use
+  `history_field_level_basis(name, DollarVolumeBasis::CloseV1)` (→ AdjustedLevel) — fix pass 1.
+- **atx-impl `stage_discover.cpp:315` (capacity screen, D-01 residual; not an owned file):** it
+  calls `df::with_datafields` directly on the incoming history panel, so whenever that panel has
+  no `adv{W}` yet the screen's `adv{W}` is `close × volume` on the snapshot-factor adjusted close
+  (the D-01 look-ahead; measured equal, bit-for-bit, to `CloseV1` in
+  `DataLevelBasis_W0d0.LiquidityTagFollowsTheDollarVolumeBasis`). Its price floor also reads the
+  adjusted `close` (lines 336-338, `px > min_price`). Suggested change (atx-impl owner, e.g. W0-I0b): replace the
+  direct call with `alpha::with_alpha101_fields(panel, {win})` (raw liquidity when `raw_close` is
+  present), or pre-supply `dollar_volume = raw_close × volume` before calling `with_datafields`,
+  and test the price floor against `raw_close`.
 - **Universe behaviour change (D-09):** `stage_panel.cpp:394` keeps `min_mktcap_usd = 0`, so
   names with no share count (NaN market cap) now pass the (disabled) cap screen and can enter the
   production universe; the ADV floor still applies. If that is not wanted, set a positive
@@ -237,3 +252,112 @@ No other golden literal in the data/alpha targets moved (all 235 + 678 tests gre
   factor (a later 2:1 split halves every past value); raw_close × volume is invariant.
 - W0-D0: TRI re-anchoring after a single missing session drops accumulated dividends: −13.2% on a
   flat 3% payer after 5 years; ratio resumption fixes it (step 0).
+
+## Fix pass 1 (review `lane-d0-review.md`, 4 minor findings)
+
+| # | Finding | Action | Status |
+|---|---|---|---|
+| 1 | `adjust.cpp` RatioChainV2 dropped a dividend on the resumption cell / a gap cell | Fixed in code + 2 new tests | FIXED |
+| 2 | vwap row labelled "MET (with deviation)" | Relabelled **DEVIATION — owner waiver needed** (Build-items table); no code change | RELABELLED, waiver needed |
+| 3 | `build_real_panel` wiring (D-03/D-05 options, coverage guard) untested in lane; `kGoldenDigest` stale | Cannot be done in lane (real 2024 data; data discipline). Handed to G0 below | G0 hand-off, waiver needed |
+| 4 | `history_field_level_basis` tags liquidity by name only | New overload `history_field_level_basis(name, alpha::DollarVolumeBasis)` + doc caveat on the name-only overload + Integration note for `stage_discover.cpp:315` + 1 new test | FIXED |
+
+**1 — dividend at / inside a gap (D-04 residual).** `atx-engine/src/data/adjust.cpp`: gap cells
+now accumulate their cash dividend on their own ex-date split basis (`D_k · cum_adj_factor_k`,
+factor finite and > 0). The resumption step is `TRI = prev_TRI · (S_t + ΣD_adj) / S_last`, where
+ΣD_adj = gap dividends + the resumption cell's own dividend. A gap-cell dividend with a NaN/≤ 0
+factor is converted at the resumption cell's factor only when the factor is unchanged across the
+gap (no split inside it); otherwise its basis is unknown and it is dropped rather than scaled by
+a guessed factor. A dividend in a leading gap (nothing to chain to) is discarded at the anchor.
+`r_t` at the resumption cell stays 0 (unchanged contract). `ReanchorV1` is byte-identical to
+before. Header doc (`adjust.hpp` NaN policy + `TriGapRule` comment) updated. No existing
+expectation changed (`NanRawCloseDoesNotZeroFill` and the 5 existing DataAdjustGap tests pass
+unchanged: none has a dividend on a gap or resumption cell).
+New tests (`data_w0d0_adjust_gap_test.cpp`):
+- `DataAdjustGap_W0d0.DividendOnTheResumptionCellIsReinvested` — the reviewer's case, close
+  {100, NaN, 99}, div {0, 0, 1.0}: TRI_2 == 100 exactly (was 99, a phantom −1%); same with a
+  factor 0.5 basis (dividend scaled with the price); ReanchorV1 still 99.
+- `DataAdjustGap_W0d0.DividendInsideTheGapIsReinvestedAtResumption` — a 1.5 dividend on a NaN-close
+  gap cell: TRI_4 = 101·(98+1.5)/101 (step −1.49% vs −2.97% price-only); two gap dividends +
+  one on the resumption cell all kept; 2:1 split inside the gap with a pre-split 2.0 dividend →
+  1.0 on the continuous basis, TRI exactly flat; NaN gap factor with unchanged factor across the
+  gap → converted (TRI exactly 100); NaN gap factor with a split across the gap → dropped;
+  leading-gap dividend → anchor at S; ReanchorV1 → 98.
+  Printed: `[tri-gap] dividend in gap: RatioChainV2 step=-0.014851  (price-only ratio -0.029703)`.
+
+**2 — vwap.** Relabelled in the Build-items table. The reasoning in Deviations #1 stands (a raw
+vwap beside the adjusted `close` recreates D-03 and puts the snapshot factor into `close/vwap`).
+**Owner waiver needed.**
+
+**3 — G0 hand-off (orchestrator; lanes may not read real data).** At G0:
+(a) run the 14 excluded real-data tests (`DataRealPanel.*` ×5,
+`DataCorporateActions.{LoadsSmokeMasterRowShapeMatchesManifest, DividendZeroFilledOffExDates,
+SharesOutstandingPitForwardFill, SymbolInterningDeterministic, PartitionedLoaderOrdersBySymbolArgument}`,
+`DataAdjust.SplitAdjustedNoDiscontinuityAtKnownAaplSplits`,
+`OratsE2ESmoke.{RealPartitionRunsUnchangedRobustPipeline, OperatorOratsZip}`,
+`DataUniverse.SurvivorshipCaveatDocumentedOrDeferred`);
+(b) re-pin `data_real_panel_e2e_test.cpp:169` `kGoldenDigest` (`0x2a22a873483d9157` → measured)
+with an old→new row tied to D-03 (TRI-basis candle), D-04 (+ this fix pass's gap-dividend
+reinvestment), D-05 (event join / staleness / coverage) and D-09;
+(c) confirm the D-05 `require_coverage` guard does not fire on the smoke window (price dates must
+not pass the security master's last date — `Err(OutOfRange)` otherwise);
+(d) confirm `DataCorporateActions.SharesOutstandingPitForwardFill` still passes under the V2
+row-dated shares rule (it expects the 2009 filing visible on its filed date).
+The wiring itself was read and judged correct by the reviewer. **Owner waiver needed** for
+closing the lane with (a)-(d) deferred to G0.
+
+**4 — liquidity tag basis.** `history_panel.hpp`: opaque declaration of
+`alpha::DollarVolumeBasis` (defined in `augment.hpp`), a doc caveat on the name-only overload
+(Raw holds only for RawCloseV2 augmentation), and
+`history_field_level_basis(std::string_view, alpha::DollarVolumeBasis) noexcept`:
+RawCloseV2 → identical to the name-only tag; CloseV1 or an unknown enum value (fail closed) →
+`dollar_volume`/`adv{d}` are AdjustedLevel; every other name keeps its name-only tag.
+`history_panel.cpp` implements it (includes `augment.hpp`). Integration note added for
+`atx-impl/src/stage_discover.cpp:315` (not owned). New test
+`DataLevelBasis_W0d0.LiquidityTagFollowsTheDollarVolumeBasis`: RawCloseV2 equals the name-only
+tag on every augmented field; CloseV1 retags exactly the 3 liquidity fields (dollar_volume, adv2,
+adv5) and nothing else; unknown enum → AdjustedLevel; unknown names → nullopt; and
+`datafields::with_datafields` run directly on a history panel yields dollar_volume/adv2/adv5
+bit-identical to CloseV1 (so the stage_discover path is the adjusted-level case).
+
+### Fix pass 1 evidence
+
+All in `C:\atx-wt\pool-4`, preset equity-dev, `CMAKE_BUILD_PARALLEL_LEVEL=2`, free RAM ≥ 4.95 GB
+before each build.
+```
+check atx-engine\src\data\adjust.cpp          exit=0
+check atx-engine\src\data\history_panel.cpp   exit=0
+check atx-engine\src\data\real_panel.cpp      exit=0
+check atx-impl\src\{stage_panel,stage_augment,append_history_panel,stage_equity_mine}.cpp  exit=0 (each)
+build -Preset equity-dev atx-engine-data-tests   [19/20] Linking CXX executable bin\atx-engine-data-tests.exe   exit=0
+build -Preset equity-dev atx-engine-alpha-tests  [10/11] Linking CXX executable bin\atx-engine-alpha-tests.exe  exit=0
+```
+Lane suites direct (`atx-engine-data-tests.exe --gtest_filter=*W0d0* --gtest_brief=1`):
+```
+[tri-gap] 3% payer, 5y: RatioChainV2 step=0.000000  ReanchorV1 step=-0.132351
+[tri-gap] dividend in gap: RatioChainV2 step=-0.014851  (price-only ratio -0.029703)
+[resnapshot] CloseV1 dollar_volume cells halved=112/112; RawCloseV2 moved=0
+[==========] 39 tests from 8 test suites ran. (813 ms total)
+[  PASSED  ] 39 tests.   exit=0
+```
+Anchored ctest (`scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^<Suite>'`), all exit 0:
+```
+^DataLevelBasis_ 7/7  ^DataFinraLag_ 4/4  ^DataAdjustGap_ 7/7  ^DataAlignEvent_ 7/7
+^DataCorpActRebase_ 5/5  ^DataContextAsOf_ 3/3  ^DataHistoryPanelFuturePerturb_ 2/2
+^DataUniverseNanFloor_ 4/4  ^DataAdjust\. 6/6 (5 passed + SplitAdjustedNoDiscontinuityAtKnownAaplSplits
+SKIPPED: "smoke security_master.parquet not found" — it found no real data in the pool and read none)
+```
+Whole data executable minus the 14 real-data tests (same filter as above):
+```
+[==========] 237 tests from 36 test suites ran. (15071 ms total)
+[  PASSED  ] 237 tests.   exit=0
++ OratsE2ESmoke.SyntheticPartitionRunsUnchangedRobustPipeline: 1 test PASSED exit=0
+=> 238 passed (235 before + 3 new tests)
+```
+Whole alpha executable (`atx-engine-alpha-tests.exe --gtest_brief=1`):
+```
+[==========] 678 tests from 255 test suites ran. (50321 ms total)
+[  PASSED  ] 678 tests.   exit=0
+```
+Golden digests: no new in-lane change (the real-panel digest was already "not measured in lane";
+row 3(b) above adds this pass's gap-dividend fix to the defects G0 ties to it).

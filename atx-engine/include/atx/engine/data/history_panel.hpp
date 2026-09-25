@@ -26,6 +26,11 @@
 #include "atx/engine/alpha/segment_panel.hpp"  // alpha::TimeWindow
 #include "atx/engine/data/universe.hpp"         // UniverseConfig
 
+namespace atx::engine::alpha {
+// Opaque declaration; defined in atx/engine/alpha/augment.hpp (W0-D0, D-01).
+enum class DollarVolumeBasis : std::uint8_t;
+} // namespace atx::engine::alpha
+
 namespace atx::engine::data {
 
 // =========================================================================
@@ -72,7 +77,20 @@ enum class LevelBasis : std::uint8_t {
 // (alpha::DollarVolumeBasis::RawCloseV2); `vwap` is the typical price on the close
 // basis, so it is AdjustedLevel. Unknown names return nullopt — a lint must treat an
 // untagged field as unknown, never as clean.
+//
+// The name-only Raw tag on `dollar_volume`/`adv{d}` holds ONLY for a panel augmented
+// by with_alpha101_fields under RawCloseV2 (the default). A panel augmented under
+// DollarVolumeBasis::CloseV1, or run through datafields::with_datafields directly
+// (which always uses close x volume, i.e. the adjusted close on a history panel),
+// carries adjusted-level liquidity: tag it with the overload below.
 [[nodiscard]] std::optional<LevelBasis> history_field_level_basis(std::string_view name) noexcept;
+
+// Same tags, for a panel whose dollar_volume/adv{d} were derived under `dv_basis`:
+// RawCloseV2 → identical to the name-only overload; CloseV1 (and any unknown enum
+// value, fail closed) → dollar_volume and adv{d} are AdjustedLevel. Every other
+// name is tagged exactly as the name-only overload tags it.
+[[nodiscard]] std::optional<LevelBasis>
+history_field_level_basis(std::string_view name, alpha::DollarVolumeBasis dv_basis) noexcept;
 
 // =========================================================================
 //  Canonical assembled-Panel field order (digest hashes fields in THIS order).
