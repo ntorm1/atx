@@ -1,0 +1,124 @@
+{
+  "required_physical_gib": 3.0,
+  "required_commit_gib": 5.0,
+  "required_seconds": 120,
+  "sample_interval_seconds": 10,
+  "maximum_wait_seconds": 180,
+  "samples": [
+    {
+      "utc": "2026-09-25T11:30:04.441242+00:00",
+      "physical_free_gib": 3.5811767578125,
+      "commit_free_gib": 5.479759216308594,
+      "qualifying_seconds": 0.0
+    },
+    {
+      "utc": "2026-09-25T11:30:14.448961+00:00",
+      "physical_free_gib": 3.383495330810547,
+      "commit_free_gib": 5.372810363769531,
+      "qualifying_seconds": 10.0
+    },
+    {
+      "utc": "2026-09-25T11:30:24.450591+00:00",
+      "physical_free_gib": 3.605762481689453,
+      "commit_free_gib": 6.920921325683594,
+      "qualifying_seconds": 20.014999999999418
+    },
+    {
+      "utc": "2026-09-25T11:30:34.452247+00:00",
+      "physical_free_gib": 3.276226043701172,
+      "commit_free_gib": 5.850212097167969,
+      "qualifying_seconds": 30.014999999999418
+    },
+    {
+      "utc": "2026-09-25T11:30:44.454189+00:00",
+      "physical_free_gib": 3.0947723388671875,
+      "commit_free_gib": 5.392578125,
+      "qualifying_seconds": 40.01499999999942
+    },
+    {
+      "utc": "2026-09-25T11:30:54.455958+00:00",
+      "physical_free_gib": 2.754535675048828,
+      "commit_free_gib": 5.266151428222656,
+      "qualifying_seconds": 0
+    },
+    {
+      "utc": "2026-09-25T11:31:04.457511+00:00",
+      "physical_free_gib": 3.0659942626953125,
+      "commit_free_gib": 5.475746154785156,
+      "qualifying_seconds": 0.0
+    },
+    {
+      "utc": "2026-09-25T11:31:14.459070+00:00",
+      "physical_free_gib": 2.99517822265625,
+      "commit_free_gib": 4.823482513427734,
+      "qualifying_seconds": 0
+    },
+    {
+      "utc": "2026-09-25T11:31:24.461302+00:00",
+      "physical_free_gib": 3.5475196838378906,
+      "commit_free_gib": 5.741020202636719,
+      "qualifying_seconds": 0.0
+    },
+    {
+      "utc": "2026-09-25T11:31:34.462737+00:00",
+      "physical_free_gib": 3.4812545776367188,
+      "commit_free_gib": 5.629913330078125,
+      "qualifying_seconds": 10.0
+    },
+    {
+      "utc": "2026-09-25T11:31:44.464940+00:00",
+      "physical_free_gib": 3.3708038330078125,
+      "commit_free_gib": 5.696739196777344,
+      "qualifying_seconds": 20.0
+    },
+    {
+      "utc": "2026-09-25T11:31:54.466577+00:00",
+      "physical_free_gib": 3.431976318359375,
+      "commit_free_gib": 5.778961181640625,
+      "qualifying_seconds": 30.015999999995984
+    },
+    {
+      "utc": "2026-09-25T11:32:04.476566+00:00",
+      "physical_free_gib": 3.345539093017578,
+      "commit_free_gib": 5.613811492919922,
+      "qualifying_seconds": 40.015999999995984
+    },
+    {
+      "utc": "2026-09-25T11:32:14.477808+00:00",
+      "physical_free_gib": 3.1313209533691406,
+      "commit_free_gib": 4.815773010253906,
+      "qualifying_seconds": 0
+    },
+    {
+      "utc": "2026-09-25T11:32:24.479461+00:00",
+      "physical_free_gib": 2.75634765625,
+      "commit_free_gib": 4.728183746337891,
+      "qualifying_seconds": 0
+    },
+    {
+      "utc": "2026-09-25T11:32:34.480669+00:00",
+      "physical_free_gib": 3.1424293518066406,
+      "commit_free_gib": 5.045177459716797,
+      "qualifying_seconds": 0.0
+    },
+    {
+      "utc": "2026-09-25T11:32:44.482120+00:00",
+      "physical_free_gib": 3.142017364501953,
+      "commit_free_gib": 5.115653991699219,
+      "qualifying_seconds": 10.01600000000326
+    },
+    {
+      "utc": "2026-09-25T11:32:54.483254+00:00",
+      "physical_free_gib": 3.5895614624023438,
+      "commit_free_gib": 6.472957611083984,
+      "qualifying_seconds": 20.01600000000326
+    },
+    {
+      "utc": "2026-09-25T11:33:04.484711+00:00",
+      "physical_free_gib": 3.3989715576171875,
+      "commit_free_gib": 5.816234588623047,
+      "qualifying_seconds": 30.01600000000326
+    }
+  ],
+  "status": "no_sustained_window"
+}

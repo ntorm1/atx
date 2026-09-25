@@ -1,0 +1,499 @@
+{
+  "observed_at_utc": "2026-09-25T12:02:51.893506+00:00",
+  "activation_run": "activation-companyfacts-archive20",
+  "config": {
+    "memory_limit": "256MB",
+    "threads": 1,
+    "read_only": true
+  },
+  "activation": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive20",
+      "failed",
+      "2026-09-25 11:09:20.012362",
+      "2026-09-25 11:59:28.111190",
+      0,
+      "Host headroom guard stopped the archive20 job: physical_free_gb=2.617542266845703, commit_free_gb=2.9111557006835938 (guard exit 137); last progress 2275/20390 loaded=1907 empty=345 unavailable=23 failed=0 rows=0. Original guard/child and all warehouse workers are absent; exclusive open verified. 0 committed attempt fact rows across 0 CIKs retained; 0 attempt point rows; source receipts: empty=346, unavailable=23. No recorded source failure is inferred. finished_at is operator ledger recovery time; see companyfacts-archive20-headroom-recovery.json."
+    ]
+  ],
+  "dataset": [
+    [
+      "4c69bc32-60a7-4354-adea-f1ee6c096eec",
+      "failed",
+      "2026-09-25 11:09:20.035823",
+      "2026-09-25 11:59:28.111190",
+      0,
+      "Host headroom guard stopped the archive20 job: physical_free_gb=2.617542266845703, commit_free_gb=2.9111557006835938 (guard exit 137); last progress 2275/20390 loaded=1907 empty=345 unavailable=23 failed=0 rows=0. Original guard/child and all warehouse workers are absent; exclusive open verified. 0 committed attempt fact rows across 0 CIKs retained; 0 attempt point rows; source receipts: empty=346, unavailable=23. No recorded source failure is inferred. finished_at is operator ledger recovery time; see companyfacts-archive20-headroom-recovery.json.",
+      "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "data\\cache\\companyfacts.zip"
+    ]
+  ],
+  "lineage_newest_first": [
+    [
+      "4c69bc32-60a7-4354-adea-f1ee6c096eec",
+      "failed",
+      "2026-09-25 11:09:20.035823",
+      "2026-09-25 11:59:28.111190",
+      0,
+      "activation-companyfacts-archive20-companyfacts"
+    ],
+    [
+      "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "failed",
+      "2026-09-25 00:53:51.480416",
+      "2026-09-25 10:35:44.937122",
+      0,
+      "activation-companyfacts-archive19-companyfacts"
+    ],
+    [
+      "a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a",
+      "failed",
+      "2026-09-24 23:53:08.215195",
+      "2026-09-25 00:18:29.479452",
+      0,
+      "activation-companyfacts-archive18-companyfacts"
+    ],
+    [
+      "dd52e571-5786-42c5-bfaa-d7122b033912",
+      "failed",
+      "2026-09-24 22:53:45.911895",
+      "2026-09-24 23:16:42.389637",
+      null,
+      "activation-companyfacts-archive17-companyfacts"
+    ],
+    [
+      "513cfbbc-096a-4186-9666-b6cc5170c4ad",
+      "failed",
+      "2026-09-23 22:08:59.121354",
+      "2026-09-23 22:19:32.614888",
+      0,
+      "activation-companyfacts-archive16-companyfacts"
+    ],
+    [
+      "4932365c-4b61-4437-b634-11b2a7284f6e",
+      "failed",
+      "2026-09-23 01:34:32.946730",
+      "2026-09-23 22:01:31.212132",
+      0,
+      "activation-companyfacts-archive15-companyfacts"
+    ],
+    [
+      "96f93269-84b5-4854-8ebe-fc5b99ab6612",
+      "failed",
+      "2026-09-23 01:20:12.210818",
+      "2026-09-23 01:28:00.807938",
+      0,
+      "activation-companyfacts-archive14-companyfacts"
+    ],
+    [
+      "22d51d47-2992-4043-95ef-54763a9dd45d",
+      "failed",
+      "2026-09-23 00:34:53.068690",
+      "2026-09-23 01:16:04.493089",
+      0,
+      "activation-companyfacts-archive13-companyfacts"
+    ],
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      "failed",
+      "2026-09-23 00:10:49.068401",
+      "2026-09-23 00:29:16.889912",
+      55234,
+      "activation-companyfacts-archive12-companyfacts"
+    ],
+    [
+      "694f056e-a268-4927-8500-990b62c9a9be",
+      "failed",
+      "2026-09-22 23:58:58.696801",
+      "2026-09-23 00:08:15.063794",
+      0,
+      "activation-companyfacts-archive11-companyfacts"
+    ],
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      "failed",
+      "2026-09-22 22:13:14.418372",
+      "2026-09-22 22:52:07.512781",
+      1753504,
+      "activation-companyfacts-archive10-companyfacts"
+    ],
+    [
+      "b6dd979e-4c97-4cac-a785-c0114887052c",
+      "failed",
+      "2026-09-22 21:53:53.626084",
+      "2026-09-22 22:12:44.285016",
+      0,
+      "activation-companyfacts-archive9-companyfacts"
+    ],
+    [
+      "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480",
+      "failed",
+      "2026-09-22 00:23:26.490339",
+      "2026-09-22 00:44:36.104103",
+      589436,
+      "activation-companyfacts-archive8-companyfacts"
+    ],
+    [
+      "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+      "failed",
+      "2026-09-21 22:27:53.732580",
+      "2026-09-22 00:01:37.301740",
+      5351787,
+      "activation-companyfacts-archive7-companyfacts"
+    ],
+    [
+      "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      "failed",
+      "2026-09-21 21:54:48.986768",
+      "2026-09-21 22:27:11.401503",
+      699244,
+      "activation-companyfacts-archive6-companyfacts"
+    ],
+    [
+      "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+      "failed",
+      "2026-09-21 01:09:02.993280",
+      "2026-09-21 21:53:52.273576",
+      2803031,
+      "activation-companyfacts-archive5-companyfacts"
+    ],
+    [
+      "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+      "failed",
+      "2026-09-20 23:04:15.595138",
+      "2026-09-21 00:36:56.065104",
+      7999850,
+      "activation-companyfacts-archive4-companyfacts"
+    ],
+    [
+      "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+      "failed",
+      "2026-09-20 20:03:29.064043",
+      "2026-09-20 22:02:44.547910",
+      null,
+      "activation-companyfacts-archive3-companyfacts"
+    ]
+  ],
+  "quality_checks": [],
+  "attempt_facts": [
+    0,
+    0,
+    null,
+    null
+  ],
+  "attempt_points": [
+    0,
+    0,
+    null,
+    null
+  ],
+  "facts_by_run": [
+    [
+      "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+      true,
+      20205629,
+      3750,
+      "1967-05-25",
+      "2026-09-18"
+    ],
+    [
+      "c6bfbb1e-76b9-436e-ae94-907d2f4fc59b",
+      false,
+      8483285,
+      3497,
+      "1993-04-21",
+      "2026-09-17"
+    ],
+    [
+      "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+      true,
+      7999850,
+      2042,
+      "1977-06-15",
+      "2026-09-17"
+    ],
+    [
+      "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+      true,
+      5351787,
+      1785,
+      "1961-03-26",
+      "2026-09-11"
+    ],
+    [
+      "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+      true,
+      2803031,
+      778,
+      "1995-07-18",
+      "2026-09-10"
+    ],
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      true,
+      1753504,
+      621,
+      "1927-02-17",
+      "2026-09-11"
+    ],
+    [
+      "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      true,
+      699244,
+      235,
+      "1994-03-14",
+      "2026-09-14"
+    ],
+    [
+      "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480",
+      true,
+      589436,
+      229,
+      "1978-08-20",
+      "2026-08-18"
+    ],
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      true,
+      55234,
+      22,
+      "1998-06-03",
+      "2026-09-08"
+    ]
+  ],
+  "points_by_run": [
+    [
+      "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+      true,
+      20205629,
+      3750
+    ],
+    [
+      "c6bfbb1e-76b9-436e-ae94-907d2f4fc59b",
+      false,
+      8483285,
+      3497
+    ],
+    [
+      "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+      true,
+      7999850,
+      2042
+    ],
+    [
+      "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+      true,
+      5351787,
+      1785
+    ],
+    [
+      "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+      true,
+      2803031,
+      778
+    ],
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      true,
+      1753504,
+      621
+    ],
+    [
+      "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      true,
+      699244,
+      235
+    ],
+    [
+      "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480",
+      true,
+      589436,
+      229
+    ],
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      true,
+      55234,
+      22
+    ]
+  ],
+  "facts_totals": [
+    47941000,
+    12959,
+    39457715,
+    9462,
+    "1927-02-17",
+    "2026-09-18"
+  ],
+  "receipts_by_run_status": [
+    [
+      "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+      "loaded",
+      3750,
+      20205629,
+      "2026-09-20 20:03:36.030178",
+      "2026-09-20 22:02:40.884256"
+    ],
+    [
+      "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+      "loaded",
+      2042,
+      7999850,
+      "2026-09-20 23:16:30.683878",
+      "2026-09-21 00:25:26.702673"
+    ],
+    [
+      "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+      "loaded",
+      778,
+      2803031,
+      "2026-09-21 01:26:13.146659",
+      "2026-09-21 01:48:04.680665"
+    ],
+    [
+      "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      "loaded",
+      235,
+      699244,
+      "2026-09-21 22:15:57.476197",
+      "2026-09-21 22:23:24.003752"
+    ],
+    [
+      "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+      "loaded",
+      1785,
+      5351787,
+      "2026-09-21 22:53:26.905656",
+      "2026-09-21 23:52:44.840536"
+    ],
+    [
+      "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480",
+      "loaded",
+      229,
+      589436,
+      "2026-09-22 00:36:52.750446",
+      "2026-09-22 00:43:16.726306"
+    ],
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      "loaded",
+      621,
+      1753504,
+      "2026-09-22 22:29:14.211859",
+      "2026-09-22 22:48:39.354065"
+    ],
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      "loaded",
+      22,
+      55234,
+      "2026-09-23 00:24:58.790151",
+      "2026-09-23 00:26:19.339548"
+    ],
+    [
+      "22d51d47-2992-4043-95ef-54763a9dd45d",
+      "empty",
+      4,
+      0,
+      "2026-09-23 01:06:09.114412",
+      "2026-09-23 01:06:09.777548"
+    ],
+    [
+      "dd52e571-5786-42c5-bfaa-d7122b033912",
+      "empty",
+      398,
+      0,
+      "2026-09-24 23:10:09.800620",
+      "2026-09-24 23:16:37.250668"
+    ],
+    [
+      "dd52e571-5786-42c5-bfaa-d7122b033912",
+      "unavailable",
+      14,
+      0,
+      "2026-09-24 23:10:21.992501",
+      "2026-09-24 23:15:22.179156"
+    ],
+    [
+      "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "empty",
+      579,
+      0,
+      "2026-09-25 01:05:36.874598",
+      "2026-09-25 01:11:42.741437"
+    ],
+    [
+      "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "unavailable",
+      6,
+      0,
+      "2026-09-25 01:05:42.200355",
+      "2026-09-25 01:11:34.568497"
+    ],
+    [
+      "4c69bc32-60a7-4354-adea-f1ee6c096eec",
+      "empty",
+      346,
+      0,
+      "2026-09-25 11:17:53.554908",
+      "2026-09-25 11:23:17.288474"
+    ],
+    [
+      "4c69bc32-60a7-4354-adea-f1ee6c096eec",
+      "unavailable",
+      23,
+      0,
+      "2026-09-25 11:17:54.139229",
+      "2026-09-25 11:23:04.258779"
+    ]
+  ],
+  "archive_targets": 20390,
+  "dispositions": {
+    "loaded": 9462,
+    "empty": 1327,
+    "unavailable": 43,
+    "none": 9558
+  },
+  "non_loaded_reasons": {
+    "empty:unsupported_or_empty_taxonomy": 1272,
+    "unavailable:empty_archive_placeholder": 43,
+    "empty:allowlist_empty": 53,
+    "empty:no_valid_fact_rows": 2
+  },
+  "members_without_disposition": 9558,
+  "first_member_without_disposition": 10832,
+  "loaded_receipt_fact_count_mismatches": 0,
+  "loaded_receipt_fact_count_mismatch_sample": [],
+  "fact_ciks_without_lineage_loaded_receipt": 3497,
+  "stale_fact_cik_sample": [
+    "0001496443",
+    "0001496690",
+    "0001497230",
+    "0001497253",
+    "0001497645",
+    "0001497649",
+    "0001497770",
+    "0001498067",
+    "0001498148",
+    "0001498372",
+    "0001498382",
+    "0001498403",
+    "0001498547",
+    "0001499422",
+    "0001499494",
+    "0001499505",
+    "0001499543",
+    "0001499620",
+    "0001499780",
+    "0001499832"
+  ],
+  "acceptance": {
+    "activation_completed": false,
+    "dataset_succeeded": false,
+    "all_members_have_disposition": false,
+    "loaded_receipts_match_retained_facts": true,
+    "no_error_dispositions": true,
+    "no_stale_non_lineage_facts": false
+  }
+}

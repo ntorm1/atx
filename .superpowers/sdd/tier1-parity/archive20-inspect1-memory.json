@@ -1,0 +1,24 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\claude-ctl\\inspect_companyfacts_terminal.py",
+    "--activation-run",
+    "activation-companyfacts-archive20",
+    "--out",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\companyfacts-archive20-terminal-inspection.json"
+  ],
+  "job_limit_gb": 0.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 2.9406700134277344,
+    "commit_free_gb": 7.185779571533203
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 48.684574127197266,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 19620,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.3280525207519531
+}
