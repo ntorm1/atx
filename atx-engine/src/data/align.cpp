@@ -7,9 +7,13 @@
 
 #include "atx/engine/data/align.hpp"
 
+#include <algorithm>
 #include <limits>
+#include <optional>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
@@ -66,6 +70,16 @@ build_plug_index(std::span<const InstKey> plug_instruments) {
 } // namespace
 
 atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const Dataset &plug) {
+  return align_onto(canonical_price, plug, AlignOptions{});
+}
+
+atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const Dataset &plug,
+                                          const AlignOptions &options) {
+  if (!options.column_rules.empty() &&
+      options.column_rules.size() != plug.schema().columns.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "align_onto: column_rules must be empty or one rule per plug column");
+  }
   if (canonical_price.schema().date_encoding != plug.schema().date_encoding) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "align_onto: date encodings must match");
@@ -88,6 +102,22 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
   const atx::usize plug_ni = plug.num_instruments();
   constexpr atx::f64 nan = std::numeric_limits<atx::f64>::quiet_NaN();
 
+  // D-05 coverage guard: a canonical date after the plug's last availability date
+  // would otherwise silently forward-fill (freeze) the plug's final row.
+  const std::span<const DateKey> plug_available = plug.available_dates();
+  if (options.require_coverage && nd > 0 &&
+      (plug_available.empty() || canonical_dates.back() > plug_available.back())) {
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange,
+                          "align_onto: canonical dates extend past the plug's coverage "
+                          "(last canonical date > last plug availability date)");
+  }
+
+  // Per-column staleness caps (empty rules => legacy unbounded as-of for every column).
+  std::vector<atx::usize> max_stale(ncols, kAlignUnboundedStaleness);
+  for (atx::usize c = 0; c < options.column_rules.size(); ++c) {
+    max_stale[c] = options.column_rules[c].max_stale_sessions;
+  }
+
   AlignedView view;
   view.num_dates = nd;
   view.num_instruments = ni;
@@ -100,6 +130,17 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
     if (!pd) {
       continue; // no plug row on/before this date — whole row stays NaN
     }
+    // Staleness in CANONICAL sessions: the number of canonical dates in
+    // [availability, canonical_dates[d]) — 0 on the row's own session, or on the
+    // first session after an off-axis row. A row available before the first
+    // canonical date has unknown (unbounded) staleness.
+    const DateKey available = plug_available[*pd];
+    const atx::usize first_session = static_cast<atx::usize>(
+        std::lower_bound(canonical_dates.begin(), canonical_dates.end(), available) -
+        canonical_dates.begin());
+    const atx::usize staleness = (available < canonical_dates.front())
+                                     ? kAlignUnboundedStaleness
+                                     : d - first_session;
     const atx::usize pd_base = *pd * plug_ni;
     for (atx::usize i = 0; i < ni; ++i) {
       const auto found = plug_index.find(canonical_instruments[i]);
@@ -109,7 +150,10 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
       const atx::usize flat = pd_base + found->second;
       const atx::usize out = (d * ni) + i;
       for (atx::usize c = 0; c < ncols; ++c) {
-        view.aligned_columns[c][out] = plug.column(c)[flat];
+        const bool unbounded = max_stale[c] == kAlignUnboundedStaleness;
+        if (unbounded || staleness <= max_stale[c]) {
+          view.aligned_columns[c][out] = plug.column(c)[flat];
+        }
       }
     }
   }
