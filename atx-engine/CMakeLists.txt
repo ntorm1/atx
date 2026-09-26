@@ -7,6 +7,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/crossover.cpp
     src/factory/factory.cpp
     src/factory/fitness.cpp
+    src/factory/ic_screen.cpp
     src/factory/genome.cpp
     src/factory/mutation.cpp
     src/factory/op_catalog.cpp

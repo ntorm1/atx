@@ -32,6 +32,7 @@ cherry-picked source SHAs remain listed alongside their resulting integration SH
 | W0 integration fixup | `e8b1785d`; merge `2dc21315` | JSONL normalization and degenerate zoo fixture corrected. |
 | W0 discovery resume identity | `0037c515` | Capacity settings now bind persisted configuration and fingerprint when augmentation is active. Source reviewed; owning runtime and no-PCH production build passed in `932c1061`. |
 | G0 | Harness imports `b004d7c7`, `f19d522b`; report import `9225cb30`; D0 impact review `35c68fe6` | **Original frozen comparisons complete.** Old/new measurements and manifests verified; no alpha promoted. D0 requires the full L9 numerical rerun; L7, L10, cp21 and native replay evidence can be reused unchanged. |
+| Priority IC search screen (subset of W2-A4, pulled forward) | Implementation in progress; scaffold SHA to follow | Owner requested vectorized rough forward-return IC across several horizons before full backtests, with conservative rejection and measured true-alpha retention. Preserve rejected trials and prevent downstream rescoring. Remaining W2-A4 cost/objective/exposure requirements stay open. |
 | W1 | Gate base and Lane 0 SHA pending | Preparation only; no completed lane SHA yet. |
 | W2 | Pending W1 gate | Not started. |
 | W3 | Pending W2 gate | Not started. |
@@ -40,8 +41,7 @@ cherry-picked source SHAs remain listed alongside their resulting integration SH
 
 Integrated correctness report `c040476d` qualifies source `b185d056`: **3,074 passed,
 seven documented skips, zero failures** across nine whole targets. Later disclosure/ASan
-changes passed the separate final target closure `21ede21d`; D0 correctness is approved at `b131c3f4`. Corrected L9 and the benchmark gate remain open. Do not
-fast-forward `main` or record a W0 gate SHA until the required gates pass.
+changes passed the separate final target closure `21ede21d`; D0 correctness is approved at `b131c3f4`. Corrected L9 completed on 2026-09-26 and its report is being recorded. The long benchmark gate is explicitly deferred by the owner; it has not passed. Local `main` has not been fast-forwarded.
 
 Compiler follow-up: worker limits, isolated hygiene configuration, and source-local Git
 provenance are integrated at `e54602fe` (code through `0c5f87a0`). Stable test-PCH carriers
@@ -66,6 +66,23 @@ Current gate state and detailed receipts: [continuation checkpoint](../../.super
 [integrated correctness](../../.superpowers/sdd/w0/integrated-correctness-report-codex.md),
 [G0 report](../../.superpowers/sdd/w0/lane-g0-codex-report.md), and
 [compiler evidence](../../.superpowers/sdd/w0/lane-build-incremental-report.md).
+
+### Owner steering: build first, 2026-09-26
+
+The owner wrote: "we should not be running anything that takes 25-45 minutes at this
+stage. We are focused on building now." The planned 81-case performance comparison
+is therefore **deferred, not passed**, with its frozen binaries/protocol preserved
+(build evidence `151b92cb`). This supersedes the earlier requirement to wait for that
+long run before further implementation. Use bounded, relevant checks after code is
+implemented; no automatic full comparison or long mining rerun.
+
+The same instruction prioritizes a vectorized multi-horizon forward-return IC screen
+before full search fitness/backtests. Three disjoint lanes own kernel, search/admission,
+and mine integration; root owns scaffold and global configuration/resume bindings.
+Reject only with adequate evidence across every configured horizon; uncertainty passes
+through. Measure weak/inverse/long-horizon alpha retention and null rejection on bounded
+synthetic cohorts, retain all evaluated trials, and prevent downstream rescoring.
+This is a scoped part of W2-A4 brought forward, not completion of W1 or all W2-A4.
 
 ## 0. What changed from v1
 

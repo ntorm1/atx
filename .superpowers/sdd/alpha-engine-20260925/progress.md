@@ -38,6 +38,50 @@ All commands need explicit workdir/path. Lease acquisition can fail in automatic
 configuration AFTER publishing a valid lease; inspect the record, then use equity presets.
 Reuse existing pools, -MaxPool11; do not create more. Four agent slots including root.
 
+## Active owner steering and implementation (2026-09-26)
+
+LATEST OWNER INSTRUCTION supersedes the long performance hold below: no25-45minute
+runs at this stage; focus building. The81-case benchmark is DEFERRED, NEVER passed.
+Do not launch it or automatically rerun mining. User prioritized vectorized rough
+forward-return IC across several horizons before full backtests, retaining true alphas.
+This explicitly authorizes proceeding with the scoped W2-A4 subset before that long gate.
+
+Scaffold adds only factory/ic_screen.cpp to CMake. Root branch remains integration;
+main has NOT been fast-forwarded. Existing production correctness evidence remains valid
+for frozenfcbcc; new implementation will get bounded owning checks after implementation.
+Kernel owner /root/w0_replay_integration inpool4: newfactory/ic_screen.hpp/.cpp + tests.
+Search owner /root/w0_gate_audit inpool5: search_driver,search_state,search_progress,
+factory.cpp admission paths and tests. Mine owner /root/g0_evidence inpool3 (after concise
+L9report): stage_equity_mine.cpp/.hpp +mine tests. Root: CMake, globalconfig,discover/
+resumeidentity/progresssink/trialledger bindings, integration and review. Coordinate API;
+no overlapping edits. Existing leases may be reused for this priority fix; merge scaffold.
+No agent compiles until root grants sole Jobs1 slot. No TDD, no whole-suite ceremony.
+
+ICscreen must reuse already-materialized VMsignals, immutablecachedforwardlabels and
+worker-local scratch; realSIMD acrossinstruments, no stripped/stridedVMhistory. Training
+labelmaturity cutoff, delay, masks and ReturnGuard remain explicit. Conservative reject
+only if adequatelypowered bounds exclude a configured practical absIC in EVERY horizon;
+short/sparse/uncertain evidence passes. Retain weak/inverse/longhorizon alpha. Explicit
+DisabledV1 preserves legacy. Every screened trial remains counted and durable; nofakePnL.
+SearchResult.all_scored includes every trial; existingFactory andmine currently rescore
+all_scored, so explicit persistedrejectionidentity MUSTfilter everyfullrescore/admission
+path, including alreadydedupedseeds. Merelyreturningraw=-inf withouttypedresumeorigin is
+insufficient. Auditsfound fiveFactoryrescorepaths. Onlyfinalgenerationadmitted_candidates
+is NOTa replacement forall_scored because earlier validcandidates woulddisappear.
+
+L9 existingrun COMPLETE native0,818.734s,peak0.964GiB; heavylockreleased. Output
+C:/atx-wt/g0-data/w0-vwap-v2_e464000f_20260926. Old->V2:candidates2504->2523,
+scored2306->2293,family56->47,admitted0->0;validationblendSR-.535778->-.106037,
+BY/RW1. ActualDSRclusters3(distinctfromfamily47),Nraw2293/Neff6.0949568. Manifest
+SHAa1bae0951662f08298ae2483011059957ee0079dd7dab04aec0fa5dbb10651ea,31files,
+oldparent3e2fd328...preserved. Final report pending ownercommit/rootverification.
+
+Finalbenchbuild/registryreport source3fdb60ce imported151b92cb. Root independently
+rehashedfinalbench/worker/runner/protocol and verified81exactnames/order, receipt at
+build-equity/w0-vwap-closure/final-benchmark-prerequisites-verification.json. Currentbench
+e708b192...,workerdbc05f35...,runner63bba16c...,protocolf29b4a0f.... Actualunchangednoop
+3.869s/zerocachecalls. Ownedjobsmokepassed but noeligibletimingcomparison exists.
+
 ## Current checkpoint (2026-09-26; supersedes historical notes below)
 
 Latest user concern: too much compiling and insufficient visible engine progress. Required
