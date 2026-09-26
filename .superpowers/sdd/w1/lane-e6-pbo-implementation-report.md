@@ -84,9 +84,47 @@ substitute a smaller workload for the performance requirement.
 
 ## Production identity integration
 
-The parent authorized the following narrow follow-up after this source freeze:
-factory `finalize_run_pbo` and FactoryConfig/FactoryReport; `NnGateCfg` and actual
-sweep consumers; explicit V1 for the fixed validation audit; and impl CLI,
-discover persisted configuration/fingerprint/report forwarding. V2 must not
-silently resume artifacts created under V1. This follow-up is separate from the
-kernel freeze and is not yet represented as completed by this report.
+The authorized follow-up is implemented in
+`aec32f42d182fcc7b1c50317b25ab73a89c0abae`. It changes only factory.hpp/cpp,
+learn/nn_gate.hpp, validation/bias_audit.cpp, and impl config.hpp/cpp,
+store_progress_sink.cpp, and stage_discover.cpp. No CMake or IC-default region
+changed; the parent can retain its newer IC defaults while importing these hunks.
+
+FactoryConfig and RunConfig explicitly default to CachedMomentsV2. All five
+factory finalizer callers forward the configured rule; FactoryReport records the
+rule and actual cache/reference/ambiguity counters. The fixed synthetic bias
+audit explicitly selects LegacyGatherV1. NnGateCfg forwards the selected rule and
+NnGateResult returns it. Targeted repository search found no application NN sweep
+caller outside this inline gate: only learn_nn_gate_test.cpp and
+learn_nn_source_integration_test.cpp invoke it. There is no production persisted
+NN sweep recipe to pretend this change has updated; future sweep artifacts must
+retain NnGateCfg's explicit rule.
+
+`--pbo-rule cached-moments-v2|legacy-gather-v1` uses the existing shared CLI/config
+parser. Unknown names fail. V2 adds a tagged rule to the discover resume
+fingerprint and emits schema3 config_json with the numerical rule. Explicit V1
+omits that addition, retaining the old fingerprint and schema1/2 representation
+(an absent rule means V1). This also separates off-gate runs, because the holdout
+path can still compute the always-on PBO diagnostic. Both discover manifests
+persist the V2 recipe even when IC screening is disabled; the factory path
+exposes rule and computed evaluation counters in its manifest and stage result.
+
+Five additional postimplementation tests cover factory/NN forwarding, CLI
+selection/rejection, an independently reconstructed pre-binding fingerprint, and
+the actual persisted config JSON. Existing targets: atx-engine-factory-tests,
+atx-engine-learn-tests, and atx-impl-tests. Focused filters:
+
+```
+BlockingPbo.NumericalRulePropagatesToRunReport
+LearnNnGate.PboNumericalRuleIsForwardedAndReturned
+AtxImplDiscover.W1_PboRuleCliIsExplicitAndRejectsUnknownRecipe
+AtxImplStoreDiscover.PboV2SeparatesResumeAndExplicitV1PreservesFrozenIdentity
+AtxImplProvenance.PboRuleIsPersistedAndExplicitV1KeepsLegacySchema
+```
+
+No caller tests have been compiled or executed by this lane. Independent source
+review approved kernel/fallback/oracle commits through acb89b8e, runtime pending;
+the parent found no static blocker in the caller production commit. The exact
+old schema path is retained by omission; the new persisted-JSON fixture expects
+schema3 for V2 and schema2 for explicit V1 with active IC screening. It does not
+claim a new general artifact-migration facility.
