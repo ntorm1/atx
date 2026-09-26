@@ -95,3 +95,40 @@ legacy output does not establish the shared execution model or $1bn capacity.
 Several CommonStockV2/PanelStore paths hard-code the old 2020 seal. Prefer a
 small explicit recent research adapter and runner over silently bypassing those
 contracts. Stock-type and source-vintage gaps must remain visible in results.
+
+## Frozen first implementation packet
+
+- Plan/integration pivot: `469972f4`.
+- Candidate library source `eeb76477` -> integration `cf252c5b`, at
+  `atx-impl/strategies/slow_price_volume_24_v1.json`; SHA256
+  `1851cd07d41a68d3b47009875aa54703bbb59bf5335bd6e09e4dd426c9fff40b`.
+  Twenty-four candidates, six families, four recipes per family. Exact fields
+  are close/raw_close/volume. Native parsing/VM qualification is pending.
+- Shared execution cadence source `54b4ec99` -> integration `34fcac6b`: every
+  five sessions, partial decision-known dollar targets; unchanged defaults
+  preserve prior V2 semantics. Runtime qualification is pending.
+- Primary variant is weekly_partial25 (every five sessions, fraction0.25);
+  weekly_full (fraction1) is a diagnostic. The name does not imply calendar-week
+  alignment. Orientation is fit on primary TRAIN only and reused unchanged.
+- Fixed trial budget: 24 x two TRAIN sign orientations + two combined TRAIN
+  variants =50. Equal family allocation means fixed1/24 contributions. Missing
+  candidate contribution is neutral zero, with no data-dependent renormalization.
+  An unscorable required orientation fails visibly; it does not remove a family.
+- Source/runtime guard `257ffd3b`: `scripts/run_bounded_research.py`. One owned
+  process tree, immutable source/executable/config/log receipt, sampled RAM and
+  wall limits. Smoke completed in0.265s; intentional1s timeout stopped the owned
+  sleeper in1.109s. These verify the harness only, not strategy performance.
+- Data/runner implementation uses explicit research artifacts, a lightweight
+  header/privateCPP reader and a standalone executable. No broad CLI config
+  migration or whole sprint compilation is required.
+
+Warmup begins2018-06-01 for TRAIN and2021-06-01 for validation. The adapter must
+provide at least320 usable membership-warmup sessions after the initial63 ADV
+sessions before scoring. Its ID union includes every name eligible during
+warmup and scoring, so delayed cross-sectional ranks cannot depend on future
+role membership. The VM uses the dated cross-sectional mask on historical
+operations while preserving raw time-series history.
+
+The first bounded run is a wiring/data-quality observation, not the final
+Sharpe claim. Missing held returns remain an error; the runner cannot invent
+zero returns or silently drop an exposed name to make the backtest complete.
