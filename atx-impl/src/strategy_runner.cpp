@@ -622,6 +622,8 @@ co::Result<Json> summarize_claims(const ex::ExecutionCashClaimStreams& out,
         !std::isfinite(out.claim_borrow_dollars[t]) || !std::isfinite(out.settled_cash_dollars[t]))
       return co::Err(co::ErrorCode::Unavailable, "strategy: nonfinite cash-claim diagnostics");
     recognition_total += out.recognition_pnl_dollars[t]; borrow_total += out.claim_borrow_dollars[t];
+    if (!std::isfinite(recognition_total) || !std::isfinite(borrow_total))
+      return co::Err(co::ErrorCode::OutOfRange, "strategy: accumulated cash-claim diagnostics overflow");
     if (csv) csv << role.session_keys[t] << ',' << out.signed_claim_dollars[t] << ',' << out.receivable_dollars[t] << ','
         << out.payable_dollars[t] << ',' << out.recognition_pnl_dollars[t] << ',' << out.claim_borrow_dollars[t] << ','
         << out.settled_cash_dollars[t] << ',' << out.streams.end_nav_flat[t] << '\n';
@@ -683,6 +685,8 @@ co::Result<Json> summarize_stocks(const ex::ExecutionStockTransitionStreams& out
       return co::Err(co::ErrorCode::Unavailable, "strategy: nonfinite stock-transition diagnostics");
     delivered_total += out.signed_delivered_dollars[t]; bridge_total += out.recognition_pnl_dollars[t];
     fixed_total += out.fixed_cash_component_dollars[t];
+    if (!std::isfinite(delivered_total) || !std::isfinite(bridge_total) || !std::isfinite(fixed_total))
+      return co::Err(co::ErrorCode::OutOfRange, "strategy: accumulated stock-transition diagnostics overflow");
     if (csv) csv << role.session_keys[t] << ',' << out.signed_delivered_dollars[t] << ',' << out.recognition_pnl_dollars[t] << ','
         << out.fixed_cash_component_dollars[t] << ',' << out.cash.streams.end_nav_flat[t] << '\n';
   }
