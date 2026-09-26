@@ -25,7 +25,7 @@ membership. There is no current-session re-ranking or price-based membership
 override: economic/type eligibility comes from the bound D5 membership artifact.
 
 `HistoryDataConfig::fixed_axis_ids` selects a new bounded assembly path. It maps
-one source segment at a time, rejects malformed/unsealed metadata and duplicate
+one intersecting source segment at a time, rejects malformed/unsealed metadata and duplicate
 canonical identities/cells, and reserves the complete axis before copying fields.
 The existing history path is unchanged when the fixed axis is absent. Source
 presence is the returned panel mask on the fixed-axis path; a separate dated mask
@@ -50,6 +50,10 @@ The additive `SegmentReader::attach(path,max_bytes)` checks the captured handle'
 extent through the reviewed Mapping overload before mapping. Its legacy API remains
 unchanged. D6 source mappings are capped at 256 MiB each. Metadata bounds are 10,000
 source paths, 100,000 session/ID entries and canonical finite field rules.
+Source paths have an aggregate 8 MiB limit; the immutable source-axis index has
+a conservative 16 MiB admission limit plus bounded 100,000-date inspection
+scratch. A single index is reused across chunks; unrelated source payloads are
+never mapped/CRC-checked per chunk.
 Assembly admits the chunk/warm-up shape before whole-union numeric allocation:
 2 GiB budget, 384 MiB reserved for mapping/writer/metadata, and conservative
 512+24*ADV-window-count bytes per cell for overlapping transformations. The fixed
@@ -88,3 +92,36 @@ Independent source review, focused runtime, actual 2012-2019 t3000 artifact,
 full causal qualification remain pending. Untagged custom as-of fields and implicit
 legacy strategy consumption are deliberately refused until their separate-mask
 and metadata contracts are wired.
+
+## Adapter review corrections
+
+Root and independent review identified a reopened-date `lower_bound(end)` cell
+addressing bug and an O(chunks * all source bytes) scan. The corrected producer
+captures one immutable `HistorySourceIndex` and passes it to every chunk. A
+metadata-only handle read admits header/time-axis bounds before payload mapping;
+all source names are checked first, rejecting explicit 2020+ years or mixed-era
+range names. All axes must be positive, strictly increasing and before 2020.
+This is a filename/axis seal check, not a claim of historic publication knowledge.
+
+Only files with an actual session in the complete output window receive a full
+CRC/SHA capture. Each chunk selects intersecting sources from the index, checks
+the exact captured extent/time geometry before constructing borrowed time spans,
+checks the complete time axis and SHA of the same reader mapping, then validates
+every destination date by equality/end before any cell write. The lifetime-bound
+`SegmentReader::mapped_bytes()`/`mapped_size()` accessors add no mapping ownership
+and leave the legacy attach behavior unchanged.
+
+Before publication the producer re-enumerates the complete path set and reads
+bounded time metadata for every original file, including formerly disjoint
+files. A new path or a source moved into the window fails. Consumed payloads and
+ingestion/preparation receipts are revalidated by the existing final source
+binding. The manifest remains last. Metadata scans occur once at capture and
+once at publication; chunk work hashes only intersecting source payloads.
+
+Three additional postimplementation synthetic cases cover an equal-sized,
+valid-CRC source replacement moving a date beyond the captured axis; changed
+prices under unchanged axes; corrupt disjoint payloads skipped by earlier
+chunks; later actual consumption rejecting corruption; new/re-dated final source
+entries; and named mixed-era refusal before attachment. **Twelve new owning D6
+checks total are prepared, still uncompiled/unrun.** No scale timing or RSS claim
+is made. Generic legacy history/panel behavior remains on its existing path.

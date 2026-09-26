@@ -13,6 +13,7 @@
 // Multi-segment attach -> raw-price universe screen -> adjusted OHLC -> lineage/digest.
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -107,6 +108,39 @@ inline constexpr std::string_view kHistFieldEarnCnt5  = "nEarnCnt_5d";   // earn
 // =========================================================================
 //  Configuration
 // =========================================================================
+struct HistorySourceFile {
+  std::string path;
+  atx::u64 bytes{};
+  std::string sha256;
+  std::vector<atx::i64> sessions;
+  atx::u64 time_axis_offset{};
+};
+
+// Immutable bounded source-axis capture. All files retain admitted metadata;
+// only intersecting files receive a payload SHA (empty for disjoint files).
+// The complete initial path/axis set supports final publication validation.
+// One index is shared by all chunks. No source mapping survives its construction.
+class HistorySourceIndex {
+public:
+  [[nodiscard]] const std::string& directory() const noexcept { return directory_; }
+  [[nodiscard]] alpha::TimeWindow window() const noexcept { return window_; }
+  [[nodiscard]] std::span<const HistorySourceFile> files() const noexcept { return files_; }
+  [[nodiscard]] const std::vector<atx::i64>& sessions() const noexcept { return sessions_; }
+  [[nodiscard]] atx::core::Status verify_paths() const;
+private:
+  HistorySourceIndex() = default;
+  friend atx::core::Result<std::shared_ptr<const HistorySourceIndex>>
+  capture_history_sources(const std::string&, alpha::TimeWindow);
+  std::string directory_;
+  alpha::TimeWindow window_{};
+  std::vector<std::string> paths_;
+  std::vector<HistorySourceFile> files_;
+  std::vector<atx::i64> sessions_;
+};
+
+[[nodiscard]] atx::core::Result<std::shared_ptr<const HistorySourceIndex>>
+capture_history_sources(const std::string& seg_dir, alpha::TimeWindow window);
+
 struct HistoryDataConfig {
   std::string seg_dir;          // data/orats_history_1d
   alpha::TimeWindow window{};   // [start,end) trading dates (unix-nanos)
@@ -129,6 +163,9 @@ struct HistoryDataConfig {
   // is supplied separately by the panel-store stage. Legacy empty path unchanged.
   std::vector<atx::i64> fixed_axis_ids{};
   atx::u64 max_working_bytes{2ULL * 1024 * 1024 * 1024};
+  // D6 only. Chunk window must lie inside this immutable source capture. Missing
+  // index causes one capture per standalone call; legacy empty fixed axis ignores it.
+  std::shared_ptr<const HistorySourceIndex> source_index{};
 };
 
 // =========================================================================

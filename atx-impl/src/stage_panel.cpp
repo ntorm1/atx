@@ -331,35 +331,6 @@ std::string panel_recipe(const atx::engine::data::HistoryDataConfig &cfg,
     return recipe.dump();
 }
 
-atx::core::Result<std::vector<SourceFileDigest>> snapshot_store_sources(
-    const std::string& directory, atx::i64 begin, atx::i64 end) {
-    namespace fs = std::filesystem;
-    using atx::core::Err; using atx::core::ErrorCode;
-    std::vector<fs::path> paths; std::error_code ec;
-    for (const auto& e : fs::directory_iterator(directory, ec)) {
-        if (e.path().extension() != ".seg") continue;
-        if (paths.size() == 10000 || e.path().string().size() > 4096)
-            return Err(ErrorCode::InvalidArgument, "panel store: source metadata limit");
-        paths.push_back(e.path());
-    }
-    if (ec) return Err(ErrorCode::IoError, "panel store: source enumeration failed");
-    std::sort(paths.begin(), paths.end());
-    std::vector<SourceFileDigest> result;
-    for (const auto& path : paths) {
-        bool selected = false;
-        {
-            ATX_TRY(auto reader, atx::tsdb::SegmentReader::attach(path.string(), 256ULL * 1024 * 1024));
-            for (auto date : reader.times()) if (date >= begin && date < end) { selected = true; break; }
-        }
-        if (!selected) continue;
-        ATX_TRY(auto captured, atx::tsdb::Mapping::map_file_ro(path.string(), 0, 256ULL * 1024 * 1024));
-        ATX_TRY(auto sha, atx::core::sha256_hex(std::as_bytes(std::span{captured.base(), captured.size()})));
-        result.push_back({path.filename().string(), std::move(sha), captured.size()});
-    }
-    if (result.empty()) return Err(ErrorCode::InvalidArgument, "panel store: no selected source");
-    return atx::core::Ok(std::move(result));
-}
-
 atx::core::Result<StageResult> run_panel_store_v2(const RunConfig& cfg) {
     using namespace atx::engine;
     using atx::core::Err; using atx::core::ErrorCode; using atx::core::Ok;
@@ -392,8 +363,13 @@ atx::core::Result<StageResult> run_panel_store_v2(const RunConfig& cfg) {
     // subset selected by this year/window or names whose current bars exist.
     store_cfg.original_indices.resize(store_cfg.instrument_ids.size());
     std::iota(store_cfg.original_indices.begin(), store_cfg.original_indices.end(), atx::u64{0});
-    ATX_TRY(store_cfg.session_keys, data::history_session_keys(cfg.segs, {*start, *end}));
-    ATX_TRY(auto before, snapshot_store_sources(cfg.segs, *start, *end));
+    ATX_TRY(auto source_index, data::capture_history_sources(cfg.segs, {*start, *end}));
+    store_cfg.session_keys = source_index->sessions();
+    std::vector<SourceFileDigest> before;
+    for (const auto& file : source_index->files()) {
+        if (file.sha256.empty()) continue; // metadata-only, disjoint from the complete output window
+        before.push_back({std::filesystem::path(file.path).filename().string(), file.sha256, file.bytes});
+    }
     std::vector<std::string> initial_paths;
     for (const auto& file : before) initial_paths.push_back((std::filesystem::path(cfg.segs) / file.filename).string());
     ATX_TRY(auto sources, validate_panel_sources(cfg.segs, before, initial_paths, cfg.preparation_manifest));
@@ -433,6 +409,7 @@ atx::core::Result<StageResult> run_panel_store_v2(const RunConfig& cfg) {
         {"augmentation_adv_windows", windows}, {"vwap_rule", alpha::vwap_rule_name(cfg.vwap_rule)},
         {"warmup_sessions", warmup}, {"assembly_max_working_bytes", assembly_budget},
         {"assembly_admission_bytes_per_cell", bytes_per_cell},
+        {"source_admission", "one-bounded-axis-index;intersecting-payload-only;captured-sha-before-values;final-path-axis-and-sha-check"},
         {"screen", "dated-membership-artifact;no-current-session-reranking"},
         {"historical_availability", "unknown-archive-snapshot;session-label-is-not-publication"},
         {"historical_vintages_verified", false}, {"ingestion_content_binding_verified", sources.ingestion_verified},
@@ -449,6 +426,7 @@ atx::core::Result<StageResult> run_panel_store_v2(const RunConfig& cfg) {
         hc.seg_dir = cfg.segs;
         hc.window = {store_cfg.session_keys[first], finish < store_cfg.session_keys.size() ? store_cfg.session_keys[finish] : *end};
         hc.fixed_axis_ids = store_cfg.instrument_ids;
+        hc.source_index = source_index;
         hc.universe.min_adv_usd = 0; hc.universe.adv_window = 1;
         ATX_TRY(auto hp, data::build_history_panel(hc));
         if (hp.session_keys.size() != finish - first || hp.panel.instruments() != n ||
@@ -492,6 +470,7 @@ atx::core::Result<StageResult> run_panel_store_v2(const RunConfig& cfg) {
                                             active ? active->rank_session_key : 0));
         }
     }
+    ATX_TRY_VOID(source_index->verify_paths());
     const std::vector<std::string> actual_paths(selected_paths.begin(), selected_paths.end());
     ATX_TRY(auto unchanged, validate_panel_sources(cfg.segs, before, actual_paths, cfg.preparation_manifest)); (void)unchanged;
     ATX_TRY(auto manifest_sha, writer->finish());
