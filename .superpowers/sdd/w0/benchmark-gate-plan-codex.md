@@ -109,11 +109,12 @@ for memory pressure is failed evidence. The 2 GiB cache holds all 549 modeled
 cacheable nodes at this size (~1.319 GiB), so cache-eviction pressure at 500 names
 is explicitly unmeasured; warm root-hit behavior is still exercised.
 
-For baseline and current, use identical arguments and distinct output files:
+For each native family, use the prepared runner with the frozen width N and
+distinct output labels; the report gives both snapshot SHAs and the complete
+command form. Example for the baseline WQ family:
 
 ```powershell
-$env:ATX_WQ101_INSTRUMENTS='128'
-& "$P/build-equity-bench/bin/atx-engine-bench.exe" '--benchmark_filter=^BM_Kernel|^Wq101_|^BM_Search|^BM_OptimizerProduction/M:(1000|3000|5000)/mode:(4|6|7)/' '--benchmark_repetitions=3' '--benchmark_out_format=json' "--benchmark_out=$OutputJson"
+python C:/atx-wt/pool-5/build-equity-bench/w0-run-bench.py C:/atx-wt/pool-6 w0-baseline-wqN-wq --registry C:/atx-wt/pool-6/build-equity-bench/w0-baseline-registry.json --compiled-source-head 3ccf012c40ef42c49ed21aaec96476455e06e049 --wq-instruments N --family wq --execute-after-quiet-release
 # Require native exit 0 and every expected case/repetition present.
 ```
 
