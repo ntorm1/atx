@@ -143,12 +143,18 @@ TEST(ImplIcEpochConfig, ConfigFileAndCliMergeUseTheSameGuardAndPreserveTrustedHe
     auto from_file = impl::parse_config_file(path.string(), "equity-ic");
     ASSERT_TRUE(from_file);
     EXPECT_TRUE(impl::validate_ic_epoch_flags(*from_file));
-    EXPECT_FALSE(impl::parse_config_file(path.string(), "discover"));
+    // File helpers permit partial configurations; dispatch validates after the
+    // CLI/file merge. This tests that boundary, not equity-ic stage acceptance
+    // of --config (that stage continues to require direct CLI/runtime prereg).
+    auto wrong_command = impl::parse_config_file(path.string(), "discover");
+    ASSERT_TRUE(wrong_command);
+    EXPECT_FALSE(impl::validate_cross_flags(*wrong_command));
     auto merged = parse({"atx-impl", "equity-ic", "--config", path.string(),
                          "--ic-epoch-anchor", std::string(64, 'b')});
     ASSERT_TRUE(merged);
     ASSERT_TRUE(impl::merge_config_file(*merged, path.string()));
     EXPECT_EQ(merged->equity_ic_epoch_anchor, std::string(64, 'b'));
+    EXPECT_TRUE(impl::validate_cross_flags(*merged));
     EXPECT_TRUE(impl::validate_ic_epoch_flags(*merged));
     merged->equity_ic_prereg_sha256.clear();
     EXPECT_FALSE(impl::validate_ic_epoch_flags(*merged));
