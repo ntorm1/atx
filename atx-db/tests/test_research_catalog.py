@@ -52,16 +52,15 @@ SPLIT_GATED = {
     # Blocked for their spans; the share basis is labeled per row as well.
     "earnings_variability", "eps_diluted_growth_qoq",
 }
-#: Share-basis rows whose comparability rests only on R1d's cross-filing split
-#: rebasing (trailing EPS windows, balance and multi-year share pairs, per-share
-#: QoQ): blocked for a known bias until the R1d split guard passes review
-#: (controller ruling for eps_diluted_growth_yoy, R1a I2).
-KNOWN_BIAS = {
-    "eps_diluted_growth_yoy", "eps_cagr_3y", "eps_diluted_q_growth_qoq", "eps_basic_q_growth_qoq",
-    "shares_growth_yoy", "share_issuance_3y", "piotroski_f",
-}
-#: Contested signs pre-registered two-sided (R1a I3/I5, R1b J1).
-TWO_SIDED = {"revenue_growth_yoy", "debt_to_market", "assets_to_market", "sga_to_sales"}
+#: Rows blocked for a known construction bias. The share-basis rows that rested only
+#: on R1d's cross-filing split rebasing were unblocked once the R1d split guard
+#: passed review (68170a44, 4649571b; CB1).
+KNOWN_BIAS: set[str] = set()
+#: Contested signs pre-registered two-sided (R1a I3/I5, R1b J1, CB1 downside risk).
+TWO_SIDED = {"revenue_growth_yoy", "debt_to_market", "assets_to_market", "sga_to_sales", "downside_deviation_60d"}
+#: Research-panel natives (P2), computed from the line's own bars.
+PANEL_NATIVES = {"amihud_illiquidity_21d", "pct_from_high_252d", "max_daily_return_21d", "turnover_21d",
+                 "downside_deviation_60d"}
 
 
 def _by_id() -> dict[str, object]:
@@ -80,6 +79,8 @@ def test_every_seed_metric_has_exactly_one_reviewed_disposition():
         if entry.source_kind == "seed_metric":
             assert (entry.metric_code, entry.metric_window) == (
                 seed[entry.metric_code].metric_code, seed[entry.metric_code].window)
+    # CB1: the P2 panel natives are cataloged as panel_native rows (R2b plans them as panel features).
+    assert {entry.feature_id for entry in entries if entry.source_kind == "panel_native"} == PANEL_NATIVES
 
 
 def test_every_row_is_a_signed_referenced_hypothesis_and_all_classes_are_present():
@@ -237,6 +238,10 @@ def test_incomparable_by_construction_metrics_are_blocked_and_only_those():
         ("earnings_yield", 4, 1, CLOCK_MAX),
         ("debt_to_market", 1, 1, CLOCK_MAX),
         ("assets_to_market", 1, 1, CLOCK_MAX),
+        # Panel natives: the panel's declared minimum; a filed share count adds its clock.
+        ("pct_from_high_252d", 0, 252, CLOCK_BAR),
+        ("downside_deviation_60d", 0, 61, CLOCK_BAR),
+        ("turnover_21d", 0, 21, CLOCK_MAX),
     ],
 )
 def test_history_and_clock_are_inherited_from_the_definition(feature_id, quarters, sessions, clock):
@@ -401,6 +406,13 @@ def _mutated(tmp_path: Path, target_id: str, changes: dict[str, str]) -> Path:
          "caveat presence_rule goes with a definition that reads a zero"),
         ("roa", {"admission": "eligible_with_caveat", "caveat_code": "presence_rule", "admission_note": "x"},
          "caveat presence_rule goes with a definition that reads a zero"),
+        # CB1: a panel native must be declared by the research panel, with its clock and history.
+        ("amihud_illiquidity_21d", {"feature_id": "amihud_x", "metric_code": "amihud_x"},
+         "unknown panel_native metric_code 'amihud_x'"),
+        ("turnover_21d", {"availability_clock": CLOCK_BAR},
+         "the inherited clock is 'max_filing_46h_trade_date_22h'"),
+        ("pct_from_high_252d", {"min_history_sessions": "1"}, "needs (0q, 252s)"),
+        ("max_daily_return_21d", {"metric_window": "q"}, "but the panel window of 'max_daily_return_21d' is 'daily'"),
     ],
 )
 def test_loader_rejects_unknown_codes_and_engine_disagreements(tmp_path, feature_id, changes, fragment):

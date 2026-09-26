@@ -1,8 +1,10 @@
 """Research anomaly catalog (R1a): the economic identity of every research metric.
 
 Each row of ``seeds/research_anomaly_catalog.csv`` maps one declarative derived
-metric ``(metric_code, window)`` or one formation-time market-scaled composition to
-a pre-registered hypothesis: anomaly class, expected sign (``+1`` means a higher
+metric ``(metric_code, window)``, one research-panel native (``panel_native``: a
+price/liquidity feature the panel computes from the line's own daily bars, declared
+in ``research.panel.NATIVE_FEATURES``) or one formation-time market-scaled
+composition to a pre-registered hypothesis: anomaly class, expected sign (``+1`` means a higher
 value predicts higher forward returns; ``two_sided`` pre-registers no direction
 where the published evidence disagrees) with a rationale and a literature
 reference, the hypothesis family its near-duplicates share, scale type, preferred
@@ -12,8 +14,8 @@ machine-readable caveat codes and the legacy factor ids it supersedes.
 Evaluation (R3b/R4) tests these hypotheses; it never chooses a sign from data.
 
 Clocks, minimum history and incomparable-by-construction status are *derived* from
-the derived-metric seed and must equal the declared values, so the catalog cannot
-drift from the metric engine silently. Every seed metric is either a catalog row or
+the derived-metric seed (for a panel native: from its panel declaration) and must
+equal the declared values, so the catalog cannot drift from the metric engine silently. Every seed metric is either a catalog row or
 an explicit exclusion in :data:`EXCLUDED_SEED_METRICS`; adding a seed metric without
 a catalog decision fails validation.
 
@@ -33,6 +35,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from .._derived_annual import SHARE_COUNT_CODES, ShareExponent, share_exponent
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
@@ -114,7 +117,9 @@ ANOMALY_CLASSES = (
 )
 #: Priced characteristics used as controls and benchmarks, not as new anomalies.
 CONTROL_CLASSES = ("size", "momentum", "reversal", "volatility")
-SOURCE_KINDS = frozenset({"seed_metric", "composition"})
+SOURCE_KINDS = frozenset({"seed_metric", "panel_native", "composition"})
+#: Bar-table prefix of a panel native's inputs: bar-only natives keep the bar clock.
+_BAR_INPUT_PREFIX = "equity_daily_bars."
 SCALE_TYPES = frozenset(
     {"ratio", "yield", "growth_rate", "ratio_change", "score", "days", "dispersion",
      "dollar_level", "return", "volatility"}
@@ -315,7 +320,10 @@ class AnomalyCatalogEntry:
 
     @property
     def operands(self) -> tuple[str, ...]:
-        """``metric:``/``item:`` inputs: the seed metric itself or the composition legs."""
+        """``metric:``/``item:`` seed inputs: the seed metric itself or the composition legs.
+
+        A panel native has none: it is computed by the panel, not a seed metric.
+        """
         if self.source_kind == "seed_metric":
             return (f"metric:{self.metric_code}",)
         return tuple(value for value in (self.numerator, self.denominator) if value)
@@ -762,14 +770,21 @@ def validate_anomaly_catalog(
     *,
     definitions: Iterable[DerivedMetricDefinition] | None = None,
     exclusions: Mapping[str, str] | None = None,
+    natives: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     """Reject unknown codes, bad enumerations and any disagreement with the engine.
 
-    All problems are collected and raised together as one :class:`AnomalyCatalogError`.
+    ``natives`` defaults to ``research.panel.NATIVE_FEATURES`` (imported here: the
+    panel imports this module). All problems are collected and raised together as
+    one :class:`AnomalyCatalogError`.
     """
     rows = tuple(entries)
     seed = default_derived_definitions() if definitions is None else tuple(definitions)
     excluded = EXCLUDED_SEED_METRICS if exclusions is None else exclusions
+    if natives is None:
+        from .panel import NATIVE_FEATURES
+
+        natives = NATIVE_FEATURES
     by_code = {definition.metric_code: definition for definition in seed}
     shapes = derive_metric_shapes(seed)
     item_codes = frozenset(item.canonical_code for item in read_fundamental_item_seed())
@@ -801,6 +816,29 @@ def validate_anomaly_catalog(
                     errors.append(f"{where}: a seed_metric feature_id must equal its metric_code")
             if entry.numerator or entry.denominator:
                 errors.append(f"{where}: a seed_metric row has no numerator/denominator")
+        elif entry.source_kind == "panel_native":
+            spec = natives.get(entry.metric_code or "")
+            if spec is None:
+                errors.append(f"{where}: unknown panel_native metric_code {entry.metric_code!r}")
+            else:
+                if entry.metric_window != spec["metric_window"]:
+                    errors.append(f"{where}: metric_window {entry.metric_window!r} but the panel "
+                                  f"window of {entry.metric_code!r} is {spec['metric_window']!r}")
+                if entry.feature_id != entry.metric_code:
+                    errors.append(f"{where}: a panel_native feature_id must equal its metric_code")
+                sessions = spec.get("min_history_sessions")
+                if not isinstance(sessions, int):
+                    errors.append(f"{where}: panel native {entry.metric_code!r} declares no min_history_sessions")
+                else:
+                    # A native computed from bars alone keeps the bar clock; a share
+                    # count from filings (DEI) makes it the latest of both clocks.
+                    inputs = [str(name) for name in spec.get("inputs", ())]
+                    bar_only = bool(inputs) and all(name.startswith(_BAR_INPUT_PREFIX) for name in inputs)
+                    shape = MetricShape(0, sessions, CLOCK_BAR if bar_only else CLOCK_MAX, None)
+            if entry.feature_id in by_code or entry.feature_id in item_codes:
+                errors.append(f"{where}: panel_native id collides with a seed metric or item code")
+            if entry.numerator or entry.denominator:
+                errors.append(f"{where}: a panel_native row has no numerator/denominator")
         elif entry.source_kind == "composition":
             if entry.metric_code or entry.metric_window:
                 errors.append(f"{where}: a composition has no metric_code/metric_window")
@@ -1014,6 +1052,11 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
         "Compositions are market-scaled ratios declared here and computed at formation by "
         "the feature store (R2b), clock = latest input clock.",
         "",
+        "Panel natives (source `(daily, panel)`) are price/liquidity features the research panel "
+        "computes from the line's own daily bars on XNYS session windows "
+        "(`research.panel.NATIVE_FEATURES`); their minimum history is the panel's declared one "
+        "and their clock is the bar clock, or the latest input clock when a filed share count is read.",
+        "",
         "## Class counts",
         "",
         "| class | role | rows | research-eligible |",
@@ -1038,6 +1081,8 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
         for entry in members:
             if entry.source_kind == "seed_metric":
                 source = f"`{entry.metric_code}` ({entry.metric_window})"
+            elif entry.source_kind == "panel_native":
+                source = f"`{entry.metric_code}` ({entry.metric_window}, panel)"
             else:
                 source = f"`{entry.numerator}` / `{entry.denominator}`"
             admission = entry.admission
