@@ -38,3 +38,11 @@ relaxed/prebuilt augmented forms plus their factor payloads.
 Owning postimplementation fixtures, existing V1/V2 small-book parity, native build
 and actual-stage recipe checks remain pending. The M5000 materialization timing,
 RSS and solve acceptance remain unrun under the owner's build-first direction.
+
+Final follow-ups reviewed: `760f28f7` charges copied robust metadata before sparse
+pin allocation; fixtures `2308d27f` cover CSR/dense bit parity, real economic
+budgets, malformed metadata and application recipe selection. `fb4702b1` makes
+MPC/reference solver rejection of nonlegacy storage explicit, including empty
+logical-row cases. Their existing geometry checks already rejected ordinary
+nonempty CSR, so this is an explicit unsupported-consumer guard, not evidence of
+a demonstrated dropped-row runtime failure. Source approved; fixtures unrun.
