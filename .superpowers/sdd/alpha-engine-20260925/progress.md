@@ -40,18 +40,26 @@ Reuse existing pools, -MaxPool11; do not create more. Four agent slots including
 
 ## Current checkpoint (supersedes historical job notes below)
 
-Root HEAD before this update: bc16ff76. Tree clean. No active root compiler or test.
+Root HEAD before this update: 05570f27. Tree clean. No active root compiler or test.
+Latest user steering: find ORIGINAL DAG plan, fill completion SHAs there as elements
+finish, keep pushing and work around RAM limits. Root did this in
+docs/plans/2026-09-24-alpha-engine-production-swarm.md at26b232ab,053de610,05570f27.
+68 referenced SHAs checked:67 are ancestors; source3f2c25fb is cherry-picked asd3d04510
+with identical stable patch-id432e1b02ed72deabc41553868297d3a0f6dcafda. Do not require
+original cherry-pick source to be an ancestor. Plan distinguishes imports explicitly.
 W0 correctness source b185d056 passed all nine whole targets: 3081 run,3074 passed,
-7 documented skips. G0 is complete, with no promoted alpha. W0 remains OPEN for final
-changed impl/risk target qualification and the full quiet performance gate. W1-W5
+7 documented skips. Frozen G0 comparisons complete, with no promoted alpha. W0 remains
+OPEN for new D0 raw-VWAP correction/affected evidence and quiet performance gate. W1-W5
 production implementation has not started; preparation notes are not lane completion.
 
 Root final equity-dev configure completed at source b1fc62b8 in55.5s with PCH ON,
 the original eight groups/order and isolated pool2/deps/equity-dev. A build attempt
-stopped BEFORE launch at2.356GiB free. No pending process or session needs resuming.
-Next build targets: atx-impl-tests,atx-engine-risk-tests,atx-shm-worker, Jobs1.
-Keep old warm PCH ownership for that closure; run only the two changed whole suites.
-Configure/logs are in build-equity/w0-final-closure. Later commits changed docs only.
+stopped BEFORE launch at2.356GiB free. Later build session8399 PASSED158.150s atsource
+ffa6df4e, launch3.126GiB, Jobs1, targets impl/risk/worker;36compiler calls (32preprocessed
+hits,4misses,zeroerrors),3links. Exact repeat no-op6.722s,cache-statshashunchanged.
+Tests session75143 PASSED: risk470pass/1nightlyskip133.852s; impl600pass/5knownskips
+432.618s. No rerun of untouchedgroups. Report21ede21d final-disclosure-build-closure-report.md.
+All receipts in build-equity/w0-final-closure. BothsessionsCOMPLETE, don't restart them.
 
 Build improvements through0c5f87a0 merged root at e54602fe, independent approval
 imported b1fc62b8. Explicit -Jobs now controls BOTH build and check, overriding valid
@@ -60,10 +68,10 @@ Seven oracle preparation callers migrated; their focused argument checks7/7 pass
 Git SHA now belongs only to stage_discover.cpp: across385 configured command strings,
 one revision change altered exactly that one command. No compiler flag changes.
 
-Stable PCH commit3f2c25fb is APPROVED but deliberately NOT YET IMPORTED into root.
+Stable PCH commit3f2c25fb is APPROVED and imported rootd3d04510 AFTER finalwarmtargetgate.
 Two minimal carriers (common/data) avoid first-test-group ownership changes and worker
 dependency expansion. Actual six-output compile passed54.336s, exact repeat no-op6.876s.
-Do not forget integration after final warm risk closure, before W1 Lane0. Owner reports
+No new full rebuild solely for PCH ownership is required by independent review. Owner reports
 75005562/e1a4f085/53239ffb imported bd2ce34a/202c06f5/87f7c609; independent PCH review
 2a0cc4c2 imported ef35c141. Fresh equity-hygiene metadata configure passed19.450s,
 380 commands, zero PCH flags/targets. Eight owned dependency sources seeded offline;
@@ -75,22 +83,51 @@ Current unchanged warm rebuild passed3.4759664s, native no-work, zero ccache cal
 unchanged executable/statslog hashes. Fresh current build224calls:84direct hits,
 140cacheable misses, zero preprocessing failures. Historical7581 preprocessing errors
 are not attributed to this build. No speculative cache flags/global cache mutation.
-Both benchmark trees are idle; no measurements have run. Full81cases x3 repetitions,
+Both benchmark trees are now idle. First baselinekernel batch is INVALID due to contention.
+Full81cases x3 repetitions,
 0.20 regression gate, no missing/skipped cases or threshold bypass remains required.
-P-core mask0xFF independently verified. Agent derives memory requirement; WQ fixed
-panel+output storage~0.84GiB, WarmCache budget2GiB plus live DAG scratch/retained pools.
+P-core mask0xFF independently verified. Original plan has NO W0WQ500width floor.
+User's RAM-workaround steering authorizes smaller identical boundedworkload. Protocol
+N128 FROZEN beforetimings at3.902GiB free;2520dates/70alphas,all81cases,3reps,unchanged
+optimizerM1000/3000/5000/search756x500x6. KeepN128 forboth; NEVER switch aftertimings.
+WQ source-model dominantpayload2.202GiB vs5.446GiBatN500. Allcacheable nodes fit at128;
+cache-eviction/productionscale NOTqualified. Fiveisolatedfamilies,baselinefivefirst then
+finalcurrentfive, freshquiet/memorycheckeach. Plan/preflight imports b272ea83/bef98cd1;
+latest commandexample115cf6b0 notyetimported. Protocolfreeze pool5/build-equity-bench/
+w0-protocol-freeze.json. Currentbinaryb185 will need D0 impact/build beforetiming.
+
+Baselinekernel session75820 child16448 finishednative0 in146.701s,peak48.56MiB, but
+hostfree fell409.12MiB,505741pagefaults,CV up44%, competingCPU. Explicit.invalidity.json
+preventsaggregatingit. No processkilled (childalreadyexitedbeforeverifiedstopattempt).
+Root metadata-only PythonSHAloop session96753 maycontribute; don'tclaim allcompeting
+PIDsunrelated. No automaticretry; waitgenuinelyquietwindow. Compilerwindowreleased.
 
 Scheduling: exclusive ONE compiler can launch above3GiB free with zero existing compiler
 workers; monitor2GiB reserve. This is orchestration policy, not owner-imposed acceptance.
 Latest host available RAM fluctuates~1.8-2.8GiB; no compiler launched at that level.
 Small metadata work proceeds without project/package compilation. Never kill other apps.
 
-Agent duties: replay owner independently reviews D1 source acquisition note;
-G0 owner does bounded provenance recovery for82 recycled-ticker cases/19 corrupt dates;
-audit owner derives benchmark memory bound. Root owns changed-target gate/checkpoint.
+Agent duties: replayowner implementsnewD0rawVWAPcorrection inpool4, source-only until
+compilerpermission; auditowner readyindependentreviewwhenfrozen; G0owner mapsEXACTaffected
+frozenrecipes (read-only) forrerun. Root owns integration/originalDAG/checkpoint.
+New D0 blocker: history_panel.cpp:75 explicitly admitsadjustedOHLC/vwap futureactions;
+augment.hpp computesadjustedtypicalproxy. RawdailycloseVWAPfix is required byoriginalD0,
+not a wording-onlywaiver. VwapRule RawDailyCloseV2 correcteddefault, AdjustedTypicalV1
+explicitlegacy; knownrawinputrequired, stale suppliedvwap mustberecomputed/refused;
+finitepositiveP/V, simplifiedPraw aftervalidationavoidsnumeratoroverflow. Persist CLI
+--vwap-rule inconfig/MineArgs/panelrecipe/minequalifications. Refresh augmentedfieldbasis
+andfixwrong dollar-volume metadata literal. KeepadjustedOHLCtags/W2A3lintscope explicit.
+Approvedextra tiny alpha/vwap_rule.hpp avoidslargeheaderdependencies; real_panel.hpp/
+adapt_panel.hpp exposebasiscontract. SyntheticWQbenchmarkhelper explicitlyLegacyV1 only
+to preservefrozennumericfixture; requirefield/digestequivalence beforecurrenttimings.
+NoTDD; implementationfirst. NoCMakeedits. PlanD0rowopen, G0impactreviewopen; don'tclaimwavepass.
 Source acquisition note0c0aef56 imported bc16ff76:56 Insider quarters,43 populated-range
 FSDS quarters, historical acceptance/header caveats. No filing payloads acquired.
-W1 prep now includes A1,B1,D1/D5,I1,Lane0 and source inventory; all documentation only.
+W1 prep now includes A1,B1,D1/D5,I1,Lane0 and sourceinventory; alldocumentationonly.
+D1revisionclock/availabilityclarification42689c95 importedb58d79a6; tier1ownershipref
+d94db27b additionallyowns historical_identity_sources.py,fsds_baseline.py,ownership_identity.py.
+Do nottouchthem/usemixedera scanners. Caseprovenanceb67abaf6 imported37e7d338 recovers
+original19-date report+hash/allowlisthash;82-case list NOTrecovered. Neverinvent82resolved.
 
 ## Historical live-job notes
 
