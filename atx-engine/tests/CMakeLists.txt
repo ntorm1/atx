@@ -298,3 +298,17 @@ target_link_libraries(atx-engine-w1-eval-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-eval-tests REUSE_FROM atx-engine-test-pch)
 endif()
+
+# Include legacy record/store contracts alongside the new compact format. This
+# target stays explicit so storage work need not compile unrelated test groups.
+add_executable(atx-engine-w1-library-tests EXCLUDE_FROM_ALL
+    library/library_corr_index_test.cpp
+    library/library_lifecycle_test.cpp
+    library/library_compressed_test.cpp
+    library/library_record_test.cpp
+    library/library_store_test.cpp)
+atx_engine_test_compile_environment(atx-engine-w1-library-tests)
+target_link_libraries(atx-engine-w1-library-tests PRIVATE atx-test-scratch)
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine-w1-library-tests REUSE_FROM atx-engine-test-pch)
+endif()
