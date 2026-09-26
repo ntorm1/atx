@@ -84,8 +84,10 @@ private:
 // marked holdings toward those stored dollars; apply snapshot-d participation
 // caps to actual fills and debit cash costs. Short proceeds remain in cash.
 // This is a total-return marked-dollar book: fractional fills are permitted;
-// corporate-action claims/share replay and financing of negative cash are not
-// modeled. There is no automatic terminal liquidation: ending NAV includes the
+// corporate-action claims/share replay are not modeled. Negative cash beyond
+// 32*epsilon*current-positive-NAV refuses after completed fills/borrow because
+// this recipe has no cash-funding input; transient intra-batch cash is permitted.
+// There is no automatic terminal liquidation: ending NAV includes the
 // final marked holdings, and terminal liquidation costs are not fabricated.
 [[nodiscard]] atx::core::Result<ExecutionObjectiveContext> prepare_execution_objective(
     const alpha::Panel& panel,const WeightPolicy& policy,const ExecutionObjectiveConfig& config,

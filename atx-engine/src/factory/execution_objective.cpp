@@ -37,6 +37,13 @@ using Context = execution_objective_detail::Context;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr f64 ns_per_day = 86'400'000'000'000.0;
 
+// The dollar-book recipe has no funding-rate input. Permit only tiny cash
+// roundoff relative to CURRENT positive NAV; do not scale by gross leverage or
+// initial NAV (either could hide economically material borrowing). No clamp.
+bool requires_cash_financing(f64 cash, f64 nav) noexcept {
+  constexpr f64 relative_roundoff = 32.0 * std::numeric_limits<f64>::epsilon();
+  return cash < -(relative_roundoff * nav);
+}
 bool same(f64 a, f64 b) noexcept { return std::bit_cast<u64>(a) == std::bit_cast<u64>(b); }
 bool policy_matches(const WeightPolicy &a, const WeightPolicy &b) noexcept {
   return a.transform == b.transform && a.industry_neutral == b.industry_neutral &&
@@ -105,7 +112,7 @@ struct Hash {
 };
 co::Result<std::string> context_hash(const Context &c, const ExecutionObjectiveIdentity &id) {
   Hash h;
-  ATX_TRY_VOID(h.text("delayed-fixed-dollar-targets/surface-v2/endpoint-attribution-v1"));
+  ATX_TRY_VOID(h.text("delayed-fixed-dollar-targets/surface-v2/endpoint-attribution-v1/unfunded-cash-refusal-v1"));
   ATX_TRY_VOID(h.text(id.source_sha256));
   ATX_TRY_VOID(h.text(id.role));
   ATX_TRY_VOID(h.text(id.price_recipe));
@@ -238,6 +245,9 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
     if (!std::isfinite(cash) || !std::isfinite(nav) || nav <= 0)
       return co::Err(co::ErrorCode::OutOfRange,
                      "execution streams: nonpositive/nonfinite marked NAV");
+    if (requires_cash_financing(cash, nav))
+      return co::Err(co::ErrorCode::Unavailable,
+                     "execution streams: cash financing unsupported after borrow/mark");
     if (active_interval) {
       const auto row = alpha_index * c.dates + t;
       out.pnl_flat[row] = (nav - entry_nav) / entry_nav;
@@ -300,6 +310,11 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
       if (!std::isfinite(entry_cost) || !std::isfinite(entry_turnover) || !std::isfinite(cash) ||
           !std::isfinite(nav) || nav <= 0)
         return co::Err(co::ErrorCode::OutOfRange, "execution streams: nonpositive NAV after costs");
+      // Check the completed batch: sales/short proceeds can fund earlier buys,
+      // so transient per-name cash inside the fill loop is not a refusal.
+      if (requires_cash_financing(cash, nav))
+        return co::Err(co::ErrorCode::Unavailable,
+                       "execution streams: cash financing unsupported after fills/costs");
       active_interval = true; // The attribution closes at t+1; cash is already debited.
     }
     if (t < c.decision_end) {
