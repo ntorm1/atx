@@ -50,6 +50,7 @@ meta)``, then list ``{feature_id, feature_sha, basis}`` in the wave manifest
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import itertools
 import json
 import os
@@ -195,6 +196,28 @@ def store_code_digest(*extra: Path | str) -> str:
     for path in (Path(cross_section.__file__), *(Path(p) for p in extra)):
         digest.update(path.name.encode("utf-8"))
         digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
+    return digest.hexdigest()
+
+
+@functools.lru_cache(maxsize=1)
+def adapter_code_digest() -> str:
+    """Digest of the code that turns stored rows into what R3b reads (the evaluation cache key's part).
+
+    :func:`load_feature_table_from_store` derives ``date_status``, ``coverage_fraction``,
+    ``available_at``, ``unlinked_line`` and the variant values from stored rows; neither the
+    ``feature_sha`` (:func:`store_code_digest`: the writer) nor R3b's ``_code_sha`` covers it
+    (1.9 re-review n1). Covers this whole module (the adapter, its closures and helpers, the
+    reason codes and the clock) and R2b's ``_inverse_normal`` (``rank_normal`` is served
+    through it). An edit here is an evaluation-cache miss, never a stale cell.
+    """
+    import hashlib
+    import inspect
+
+    from . import features as rf
+
+    digest = hashlib.sha256()
+    digest.update(Path(__file__).read_bytes().replace(b"\r\n", b"\n"))
+    digest.update(inspect.getsource(rf._inverse_normal).replace("\r\n", "\n").encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -907,6 +930,7 @@ __all__ = [
     "FeatureStore",
     "FeatureStoreParquetError",
     "StoreFeatureTable",
+    "adapter_code_digest",
     "build_feature",
     "catalog_row_payload",
     "compute_feature_sha",

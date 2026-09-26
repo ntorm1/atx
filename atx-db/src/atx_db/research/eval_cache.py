@@ -8,18 +8,24 @@ Layout (root ``C:/atx/atx-db/data/research`` by default)::
     eval/<feature_sha>/<label_sha>/<eval_spec_sha>.json             sidecar (rows, file sha256, meta)
 
 A cell depends on its feature file (``feature_sha``), the labels read (``label_sha``) and
-everything else the R3b engine reads, which the third component covers (1.9 fix round 1, I1):
+everything else the R3b engine reads, which the third component covers (1.9 fix rounds 1-2):
 ``eval_spec_sha`` = sha256 of canonical JSON of
 
 * the evaluation spec payload (``evaluation.spec_payload(spec)`` without the run-identity fields);
-* the basis' **prepared digests** from R3b's own ``_prepare`` (:func:`basis_prepared_digests`):
+* the **basis** (:func:`basis_key`): its name, status, ``meta`` strings (copied into every
+  cell) and its **prepared digests** from R3b's own ``_prepare`` (:func:`basis_prepared_digests`):
   calendar (formation, cutoff, entry), the labels actually read per horizon (so the label read
   window), the context/spine (universe flags, size, venue), supplied NYSE breakpoints,
   investable and population flags, and every control feature's values;
 * the label read window (``label_sha``, ``eom_before``, ``allow_holdout``, ``holdout_wave``);
-* the R3b code digest (``evaluation._code_sha()``: evaluation.py, stats.py, labels.py).
+* the R3b code digest (``evaluation._code_sha()``: evaluation.py, stats.py, labels.py) and the
+  store -> R3b adapter's (``feature_store.adapter_code_digest()``).
 
-Any change there is a new key, so a stale cell is never served; the sidecar keeps the parts
+The key is computed from live inputs **before** ``evaluate_bases`` (which releases the frames of
+``release_frames=True`` inputs): :func:`basis_prepared_digests` refuses released or empty
+frames, and :meth:`EvalCache.write` refuses cells unless the key's basis block equals the
+evaluation's own record of what it read (``EvaluationTables.bases[basis]``). Any change in the
+parts is a new key, so a stale cell is never served; the sidecar keeps the parts
 (``key_parts``) so a reader can see why a key missed. A new feature still costs one feature's
 evaluation: :meth:`EvalCache.missing` lists the keys to compute. Family-level statistics
 (BH q, Holm, DSR ``n_trials``, ``family_best``) depend on the whole family and the trial
@@ -47,7 +53,7 @@ from .research_lake import canonical_json, connect_bounded, sha256_file, sha256_
 if TYPE_CHECKING:
     import pandas as pd
 
-EVAL_CACHE_VERSION = "research-eval-cache-v1"
+EVAL_CACHE_VERSION = "research-eval-cache-v2"
 DEFAULT_ROOT = Path("C:/atx/atx-db/data/research")
 CELL_KEY = ("basis", "feature_id", "variant", "horizon_months")
 #: Spec fields that identify a run, not its results (excluded from the spec sha).
@@ -64,6 +70,8 @@ class EvalCacheError(ValueError):
 LABEL_WINDOW_KEYS = ("label_sha", "eom_before", "allow_holdout", "holdout_wave")
 #: Prepared digests every R3b basis has (the rest depend on the inputs supplied).
 REQUIRED_PREPARED = ("calendar_sha256", "context_sha256")
+#: The fields of an evaluation's own basis record (``EvaluationTables.bases[basis]``) the key covers.
+BASIS_KEY_FIELDS = ("basis", "status", "meta", "prepared_digests")
 
 
 def basis_prepared_digests(inputs: Any, spec: Any) -> dict[str, str]:
@@ -71,23 +79,66 @@ def basis_prepared_digests(inputs: Any, spec: Any) -> dict[str, str]:
 
     Runs ``evaluation._prepare`` on a copy of ``inputs`` with ``release_frames=False`` (the
     caller's frames stay intact for the evaluation itself) and returns ``prep.digests``.
+    Refuses a basis whose ``labels`` or ``context`` frame (or ``controls``, when the spec
+    names control features) is empty while its calendar has formed months -- e.g.
+    ``release_frames=True`` inputs after ``evaluate_bases`` released them: digests of empty
+    frames would give different bases one key (1.9 re-review I3). Compute keys before
+    evaluating.
     """
     from dataclasses import replace
 
     from . import evaluation as ev
 
-    prep = ev._prepare(replace(inputs, release_frames=False), ev.validate_spec(spec))
+    checked = ev.validate_spec(spec)
+    calendar = inputs.calendar
+    formed = int((calendar["status"] == ev.CALENDAR_FORMED).sum()) \
+        if len(calendar) and "status" in calendar else 0
+    if formed:
+        empty = [name for name in ("labels", "context") if not len(getattr(inputs, name))]
+        if checked.control_features and not len(inputs.controls):
+            empty.append("controls")
+        if empty:
+            state = ("released by an evaluation (release_frames=True inputs after evaluate_bases)"
+                     if inputs.release_frames else "empty")
+            raise EvalCacheError(f"basis {inputs.basis}: the {empty} frames are {state} while the calendar has "
+                                 f"{formed} formed months; digests of empty frames never key a cache entry "
+                                 "(compute the key from live inputs, before evaluate_bases)")
+    prep = ev._prepare(replace(inputs, release_frames=False), checked)
     digests = {str(k): str(v) for k, v in prep.digests.items()}
     del prep
     return digests
 
 
-def eval_key_parts(payload: Mapping[str, object], *, prepared_digests: Mapping[str, str],
-                   label_window: Mapping[str, object], code_sha: str | None = None) -> dict[str, Any]:
-    """The canonical parts of an evaluation cache key (see the module docstring)."""
-    missing = [key for key in REQUIRED_PREPARED if key not in prepared_digests]
+def basis_key(inputs: Any, spec: Any) -> dict[str, Any]:
+    """The key's basis block: name, status, ``meta`` and :func:`basis_prepared_digests` (live inputs only).
+
+    It has the shape of the evaluation's own record ``EvaluationTables.bases[basis]``
+    restricted to :data:`BASIS_KEY_FIELDS`, which :meth:`EvalCache.write` compares it with.
+    """
+    return json.loads(canonical_json({"basis": str(inputs.basis), "status": str(inputs.status),
+                                      "meta": dict(inputs.meta),
+                                      "prepared_digests": basis_prepared_digests(inputs, spec)}))
+
+
+def _basis_block(basis: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(basis, Mapping) or set(basis) != set(BASIS_KEY_FIELDS):
+        raise EvalCacheError(f"basis names exactly {BASIS_KEY_FIELDS}: pass basis_key(inputs, spec)")
+    prepared = basis["prepared_digests"]
+    missing = [key for key in REQUIRED_PREPARED if not isinstance(prepared, Mapping) or key not in prepared]
     if missing:
-        raise EvalCacheError(f"prepared_digests lack {missing}: pass basis_prepared_digests(inputs, spec)")
+        raise EvalCacheError(f"basis prepared_digests lack {missing}: pass basis_key(inputs, spec)")
+    return json.loads(canonical_json(dict(basis)))
+
+
+def eval_key_parts(payload: Mapping[str, object], *, basis: Mapping[str, Any],
+                   label_window: Mapping[str, object], code_sha: str | None = None,
+                   adapter_sha: str | None = None) -> dict[str, Any]:
+    """The canonical parts of an evaluation cache key (see the module docstring).
+
+    ``basis`` is :func:`basis_key`; ``code_sha`` defaults to ``evaluation._code_sha()`` and
+    ``adapter_sha`` to ``feature_store.adapter_code_digest()``.
+    """
+    block = _basis_block(basis)
     if set(label_window) != set(LABEL_WINDOW_KEYS):
         raise EvalCacheError(f"label_window names exactly {LABEL_WINDOW_KEYS}")
     _check(str(label_window["label_sha"]), "label_window['label_sha']")
@@ -98,18 +149,24 @@ def eval_key_parts(payload: Mapping[str, object], *, prepared_digests: Mapping[s
         from . import evaluation as ev
 
         code_sha = ev._code_sha()
+    if adapter_sha is None:
+        from .feature_store import adapter_code_digest
+
+        adapter_sha = adapter_code_digest()
     _check(code_sha, "code_sha")
+    _check(adapter_sha, "adapter_sha")
     body = {key: value for key, value in payload.items() if key not in RUN_FIELDS}
-    return json.loads(canonical_json({"cache_version": EVAL_CACHE_VERSION, "spec": body,
-                                      "prepared_digests": dict(prepared_digests),
-                                      "label_window": dict(label_window), "code_sha": code_sha}))
+    return json.loads(canonical_json({"cache_version": EVAL_CACHE_VERSION, "spec": body, "basis": block,
+                                      "label_window": dict(label_window), "code_sha": code_sha,
+                                      "adapter_sha": adapter_sha}))
 
 
-def compute_eval_spec_sha(payload: Mapping[str, object], *, prepared_digests: Mapping[str, str],
-                          label_window: Mapping[str, object], code_sha: str | None = None) -> str:
-    """The cache key's third component: sha256 of :func:`eval_key_parts` (``code_sha`` defaults to R3b's)."""
-    return sha256_text(canonical_json(eval_key_parts(payload, prepared_digests=prepared_digests,
-                                                     label_window=label_window, code_sha=code_sha)))
+def compute_eval_spec_sha(payload: Mapping[str, object], *, basis: Mapping[str, Any],
+                          label_window: Mapping[str, object], code_sha: str | None = None,
+                          adapter_sha: str | None = None) -> str:
+    """The cache key's third component: sha256 of :func:`eval_key_parts`."""
+    return sha256_text(canonical_json(eval_key_parts(payload, basis=basis, label_window=label_window,
+                                                     code_sha=code_sha, adapter_sha=adapter_sha)))
 
 
 def _check(value: str, label: str) -> None:
@@ -156,20 +213,36 @@ class EvalCache:
     def write(self, feature_sha: str, label_sha: str, eval_spec_sha: str, cells: pa.Table | pd.DataFrame,
               meta: Mapping[str, object] | None = None,
               extra: Mapping[str, pa.Table | pd.DataFrame] | None = None, *,
-              key_parts: Mapping[str, Any]) -> Path:
+              key_parts: Mapping[str, Any], evaluated: Mapping[str, Any]) -> Path:
         """Write the cells (and optional per-feature tables) once; an existing entry is kept.
 
         ``key_parts`` (:func:`eval_key_parts`) must hash to ``eval_spec_sha`` and name the
-        same ``label_sha``; they are kept in the sidecar.
+        same ``label_sha``; they are kept in the sidecar. ``evaluated`` is the evaluation's own
+        record of the basis the cells come from (``EvaluationTables.bases[basis]``): its
+        name, status, meta and ``prepared_digests`` must equal the key's basis block, so cells
+        are cached only under the key of the inputs that were actually evaluated (I3).
         """
         target = self.path(feature_sha, label_sha, eval_spec_sha)
         if sha256_text(canonical_json(dict(key_parts))) != eval_spec_sha:
             raise EvalCacheError("key_parts do not hash to eval_spec_sha (compute it with compute_eval_spec_sha)")
         if key_parts.get("label_window", {}).get("label_sha") != label_sha:
             raise EvalCacheError("key_parts name another label_sha than the cache key")
+        if not isinstance(evaluated, Mapping) or "prepared_digests" not in evaluated:
+            raise EvalCacheError("evaluated= is the evaluation's record of the basis (EvaluationTables.bases[basis], "
+                                 "with its prepared_digests)")
+        recorded = json.loads(canonical_json({key: evaluated.get(key) for key in BASIS_KEY_FIELDS}))
+        keyed = key_parts.get("basis") or {}
+        if recorded != keyed:
+            differ = sorted(key for key in BASIS_KEY_FIELDS if recorded.get(key) != keyed.get(key))
+            digests = sorted(name for name in {*recorded["prepared_digests"], *keyed.get("prepared_digests", {})}
+                             if recorded["prepared_digests"].get(name) != keyed.get("prepared_digests", {}).get(name))
+            raise EvalCacheError(f"key_parts' basis differs from what the evaluation read ({differ}; digests {digests}): "
+                                 "the cells were computed under another key")
+        table = _as_table(cells)
+        if "basis" in table.column_names and set(table.column("basis").to_pylist()) - {recorded["basis"]}:
+            raise EvalCacheError(f"cells of another basis than the evaluated {recorded['basis']!r}")
         if self.has(feature_sha, label_sha, eval_spec_sha):
             return target
-        table = _as_table(cells)
         if table.num_rows == 0:
             raise EvalCacheError("no cells to cache")
         present = [name for name in CELL_KEY if name in table.column_names]
@@ -244,11 +317,13 @@ class EvalCache:
 
 
 __all__ = [
+    "BASIS_KEY_FIELDS",
     "CELL_KEY",
     "EVAL_CACHE_VERSION",
     "LABEL_WINDOW_KEYS",
     "EvalCache",
     "EvalCacheError",
+    "basis_key",
     "basis_prepared_digests",
     "compute_eval_spec_sha",
     "eval_key_parts",

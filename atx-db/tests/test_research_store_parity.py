@@ -21,9 +21,11 @@ from __future__ import annotations
 import csv
 import dataclasses
 import datetime as dt
+import inspect
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -306,6 +308,17 @@ def _sorted(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     return frame.sort_values(keys, kind="stable").reset_index(drop=True)
 
 
+def _register_wave(registry: Path, wave: str, policy_sha: str) -> None:
+    """A one-feature wave in a scratch registry (1.10's fix round adds the row binding: rows + pre-registration)."""
+    extra: dict[str, Any] = {}
+    if "preregistration" in inspect.signature(trial_registry.register_wave).parameters:
+        row = SimpleNamespace(feature_id="book_to_market", wave=wave, expected_sign=1, evidence_class="published",
+                              population="unrestricted")
+        extra = {"rows": [row], "preregistration": {"book_to_market": 1}}
+    trial_registry.register_wave(wave, "c" * 64, policy_sha, ["book_to_market"], [("book_to_market", "rank_normal", 3)],
+                                 root=registry, **extra)
+
+
 def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> None:
     warehouse = tmp_path / "warehouse.duckdb"
     signal, month_keys = _warehouse(warehouse)
@@ -337,6 +350,11 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
         """, [built.feature_version]).df()
         prepared_a = ec.basis_prepared_digests(a_inputs, spec)   # before evaluate_bases releases A's frames
         tables_a = ev.evaluate_bases([a_inputs], spec, catalog=catalog)
+        # I3: A's inputs are release_frames=True; once evaluated their frames are gone, and no key is taken
+        # from them (digests of empty frames would give every basis one key).
+        assert len(a_inputs.labels) == len(a_inputs.context) == 0
+        with pytest.raises(ec.EvalCacheError, match="released"):
+            ec.basis_prepared_digests(a_inputs, spec)
     finally:
         research.close()
 
@@ -438,8 +456,7 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
     policy_sha = next(sha for pid, sha in qualification.FROZEN_POLICY_SHA256.items()
                       if pid in qualification.V4_POLICY_IDS)
     for wave in ("parity_wave", "other_wave"):
-        trial_registry.register_wave(wave, "c" * 64, policy_sha, ["book_to_market"],
-                                     [("book_to_market", "rank_normal", 3)], root=registry)
+        _register_wave(registry, wave, policy_sha)
     read = {"calendar": frames["calendar"], "securities": codes, "label_cutoff": spec.label_cutoff}
     everything = dt.date(2025, 1, 1)
     holdout_checks: dict[str, str] = {}
@@ -447,7 +464,7 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
         sealed_labels, _, sealed_info = matrix_store.r3b_inputs(sealed, spec.horizons_months, **read)
         eoms = frames["labels"]["month_index"].map(
             {int(k): _month_end(v) for k, v in frames["calendar"].set_index("month_index")["month_start"].items()})
-        assert sealed_info["eom_before"] == holdout.isoformat()
+        assert sealed_info["eom_before"] == holdout.isoformat() and sealed_info["holdout_opening"] is None
         assert len(sealed_labels) == int((eoms < holdout).sum()) < len(frames["labels"])
         attempts = {
             "past_holdout_without_allow": dict(label_sha=sealed),
@@ -465,10 +482,16 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
             matrix_store.r3b_inputs(final, spec.horizons_months, eom_before=everything, allow_holdout=True,
                                     holdout_wave="other_wave", registry_root=registry, **read)
         trial_registry.open_holdout("parity_wave", final_labels=True, label_sha=final, root=registry)
-        opened, _, _ = matrix_store.r3b_inputs(final, spec.horizons_months, eom_before=everything,
-                                               allow_holdout=True, holdout_wave="parity_wave",
-                                               registry_root=registry, **read)
+        opened, _, opened_info = matrix_store.r3b_inputs(final, spec.horizons_months, eom_before=everything,
+                                                         allow_holdout=True, holdout_wave="parity_wave",
+                                                         registry_root=registry, **read)
         assert len(opened) == len(frames["labels"])
+        # n2: the run records which registry and which opening record allowed the holdout read.
+        record = trial_registry.TrialRegistry(registry).holdout_opening("parity_wave")
+        assert opened_info["holdout_opening"] == {
+            "registry": (registry / trial_registry.REGISTRY_FILE).as_posix(), "registry_default": False,
+            "wave": "parity_wave", "sequence": record["sequence"], "record_sha": record["record_sha"],
+            "opened_at": record["opened_at"], "label_sha": final}
         with pytest.raises(lm.LabelHoldoutError):
             matrix_store.scan(sealed, [1], eom_before=everything)
         assert matrix_store.scan(sealed, [1], eom_before=holdout).count("*").fetchone()[0] > 0
@@ -482,6 +505,14 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
             matrix_store.complete(incomplete, [1], [2023])
     with pytest.raises(lm.LabelMatrixError, match="sealed"):
         lm.LabelMatrix(root).write(sealed, 1, 2030, [])   # a completed set takes no new (h, year) file
+    # n3: reads check each file's recorded sha256 (a same-size edit with one byte changed is refused).
+    first_year = lm.LabelMatrix(root)._complete_record(sealed)["years"][0]
+    tampered = lm.LabelMatrix(root).path(sealed, 1, first_year)
+    content = bytearray(tampered.read_bytes())
+    content[len(content) // 2] ^= 0xFF
+    tampered.write_bytes(bytes(content))
+    with lm.LabelMatrix(root) as matrix_store, pytest.raises(lm.LabelMatrixError, match="sha256"):
+        matrix_store.scan(sealed, [1], eom_before=holdout)
 
     # R3b over the store adapter: identical date statuses/coverage and identical result tables.
     table = fs.load_feature_table_from_store(store, manifest, calendar=frames["calendar"], securities=codes,
@@ -517,44 +548,64 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
     pd.testing.assert_frame_equal(table.load_feature("momentum_12_1").values, before)
     store.close()
 
-    # I1: the evaluation cache key covers the spec, the basis inputs, the label read window and the R3b code.
+    # I1/I3/n1: the evaluation cache key covers the spec, the basis (name, status, meta, R3b's prepared digests),
+    # the label read window, the R3b code and the store adapter code; cells are cached only under the key of the
+    # inputs the evaluation itself recorded (EvaluationTables.bases).
     payload = ev.spec_payload(ev.validate_spec(spec))
     window = {"label_sha": label_sha, "eom_before": label_info["eom_before"], "allow_holdout": False,
               "holdout_wave": None}
-    parts = ec.eval_key_parts(payload, prepared_digests=prepared_b, label_window=window)
-    spec_sha = ec.compute_eval_spec_sha(payload, prepared_digests=prepared_b, label_window=window)
+    evaluated_b = tables_b.bases["reconstructed"]
+    basis_b = ec.basis_key(b_inputs, spec)
+    assert basis_b["prepared_digests"] == prepared_b == evaluated_b["prepared_digests"]
+    assert basis_b == {key: evaluated_b[key] for key in ec.BASIS_KEY_FIELDS} \
+        == {key: tables_a.bases["reconstructed"][key] for key in ec.BASIS_KEY_FIELDS}
+    parts = ec.eval_key_parts(payload, basis=basis_b, label_window=window)
+    spec_sha = ec.compute_eval_spec_sha(payload, basis=basis_b, label_window=window)
+    assert parts["adapter_sha"] == fs.adapter_code_digest() and parts["code_sha"] == ev._code_sha()
     context_moved = frames["context"].copy()
     context_moved.loc[context_moved.index[0], "market_cap"] = 1.0
     controls_moved = b_inputs.controls.copy()
     controls_moved.loc[controls_moved.index[0], "value"] = 0.123
     variants_of_key = {
-        "context_changed": dict(prepared_digests=ec.basis_prepared_digests(
-            dataclasses.replace(b_inputs, context=context_moved), spec), label_window=window),
-        "control_changed": dict(prepared_digests=ec.basis_prepared_digests(
-            dataclasses.replace(b_inputs, controls=controls_moved), spec), label_window=window),
-        "label_window_changed": dict(prepared_digests=prepared_b,
-                                     label_window={**window, "eom_before": "2024-04-01"}),
-        "code_changed": dict(prepared_digests=prepared_b, label_window=window, code_sha="f" * 64),
+        "context_changed": dict(basis=ec.basis_key(dataclasses.replace(b_inputs, context=context_moved), spec),
+                                label_window=window),
+        "control_changed": dict(basis=ec.basis_key(dataclasses.replace(b_inputs, controls=controls_moved), spec),
+                                label_window=window),
+        "meta_changed": dict(basis=ec.basis_key(dataclasses.replace(
+            b_inputs, meta={**b_inputs.meta, "classification_basis": "changed"}), spec), label_window=window),
+        "label_window_changed": dict(basis=basis_b, label_window={**window, "eom_before": "2024-04-01"}),
+        "code_changed": dict(basis=basis_b, label_window=window, code_sha="f" * 64),
+        "adapter_changed": dict(basis=basis_b, label_window=window, adapter_sha="f" * 64),
     }
     moved = {name: ec.compute_eval_spec_sha(payload, **kwargs) for name, kwargs in variants_of_key.items()}
     assert len({spec_sha, *moved.values()}) == 1 + len(moved)
-    assert spec_sha == ec.compute_eval_spec_sha(payload, prepared_digests=prepared_a, label_window=window)
+    assert spec_sha == ec.compute_eval_spec_sha(payload, basis={**basis_b, "prepared_digests": prepared_a},
+                                                label_window=window)
     cache = ec.EvalCache(root)
     keys_cached = []
     for row in manifest:
         part = cells[cells["feature_id"] == row["feature_id"]].reset_index(drop=True)
         series = tables_b.series[tables_b.series["feature_id"] == row["feature_id"]].reset_index(drop=True)
         cache.write(row["feature_sha"], label_sha, spec_sha, part, {"feature_id": row["feature_id"]},
-                    extra={"series": series}, key_parts=parts)
+                    extra={"series": series}, key_parts=parts, evaluated=evaluated_b)
         keys_cached.append((row["feature_sha"], label_sha, spec_sha))
         back = cache.read(row["feature_sha"], label_sha, spec_sha).to_pandas()
         pd.testing.assert_frame_equal(back, part, check_dtype=False, check_exact=True)
     assert cache.missing(keys_cached) == []
     stale = [(f, lab, sha) for f, lab, _ in keys_cached for sha in moved.values()]
     assert cache.missing(stale) == stale          # any moved input is a miss: stale cells are never served
-    assert cache.read_meta(*keys_cached[0])["key_parts"]["prepared_digests"] == prepared_b
+    assert cache.read_meta(*keys_cached[0])["key_parts"]["basis"]["prepared_digests"] == prepared_b
     with pytest.raises(ec.EvalCacheError, match="key_parts"):
-        cache.write(manifest[0]["feature_sha"], label_sha, moved["code_changed"], cells.iloc[:1], key_parts=parts)
+        cache.write(manifest[0]["feature_sha"], label_sha, moved["code_changed"], cells.iloc[:1], key_parts=parts,
+                    evaluated=evaluated_b)
+    # I3: B's cells under a key computed from other inputs (changed context / control / meta) are refused.
+    write_refusals = {}
+    for name in ("context_changed", "control_changed", "meta_changed"):
+        with pytest.raises(ec.EvalCacheError, match="differs from what the evaluation read") as refused:
+            cache.write(manifest[0]["feature_sha"], label_sha, moved[name], cells.iloc[:1],
+                        key_parts=ec.eval_key_parts(payload, **variants_of_key[name]), evaluated=evaluated_b)
+        write_refusals[name] = str(refused.value).split("(", 1)[-1].split(")", 1)[0]
+    assert cache.missing(stale) == stale
     assert cache.scan(keys_cached).count("*").fetchone()[0] == len(cells)
     cache.close()
     measured.update({"reason_pairs": {f"{k[0]}:{k[1]}": int(v) for k, v in reasons.items()},
@@ -565,5 +616,6 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
                      "manifest_sha": manifest_sha, "label_sha": label_sha, "eval_spec_sha": spec_sha,
                      "prepared_digest_keys": sorted(prepared_b), "moved_keys": moved,
                      "sealed_label_rows": len(sealed_labels), "opened_label_rows": len(opened),
-                     "holdout_refusals": holdout_checks})
+                     "holdout_refusals": holdout_checks, "cache_write_refusals": write_refusals,
+                     "holdout_opening": opened_info["holdout_opening"]})
     print("PARITY " + json.dumps(measured, sort_keys=True))

@@ -33,14 +33,18 @@ must carry (1.9 fix round 1):
 Holdout (ruling R-6): every read names ``eom_before``; a read past ``holdout_start`` is refused
 unless ``allow_holdout=True`` **and** the labels are final **and** the trial registry holds the
 wave's ``open_holdout`` record for this ``label_sha`` (``holdout_wave=``). Provisional labels
-never open the holdout.
+never open the holdout. :meth:`LabelMatrix.r3b_inputs` records the opening that allowed a
+holdout read in ``info['holdout_opening']`` (registry file, whether it is the default
+registry, the record's sequence, ``record_sha`` and ``opened_at``); ``registry_root=`` is for
+tests (the default registry is the policy one).
 
 The builder (node 1.12's provisional labels, node 3.8's final labels): :meth:`LabelMatrix.create`
 (spec), one :meth:`LabelMatrix.write` per (h, year), :meth:`LabelMatrix.write_windows`, then
 :meth:`LabelMatrix.complete` with the expected horizons and formation years. Reads
 (:meth:`LabelMatrix.scan`, :meth:`LabelMatrix.r3b_inputs`) refuse a set that is not complete, read
-exactly the recorded files, and :meth:`LabelMatrix.r3b_inputs` turns them into the R3b engine's
-``labels``/``maturity`` frames. A completed set is sealed (no further writes).
+exactly the recorded files after checking each one's size and sha256 against ``_complete.json``
+(the sha256 once per process per file state), and :meth:`LabelMatrix.r3b_inputs` turns them into
+the R3b engine's ``labels``/``maturity`` frames. A completed set is sealed (no further writes).
 """
 
 from __future__ import annotations
@@ -115,6 +119,21 @@ class LabelHoldoutError(LabelMatrixError):
 
 
 _TEMP = itertools.count()
+#: Files whose sha256 matched their ``_complete.json`` record in this process: (path, size, mtime_ns) -> sha.
+_VERIFIED: dict[tuple[str, int, int], str] = {}
+
+
+def _verify_file(path: Path, expected: str, what: str) -> None:
+    """A completed set's file against its recorded sha256 (hashed once per process per file state)."""
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if _VERIFIED.get(key) == expected:
+        return
+    actual = sha256_file(path)
+    if actual != expected:
+        raise LabelMatrixError(f"{what}: sha256 {actual[:12]} differs from the {expected[:12]} recorded by complete() "
+                               "(the file changed since the set was sealed)")
+    _VERIFIED[key] = expected
 
 
 def _check_spec(spec: Mapping[str, object]) -> None:
@@ -322,14 +341,17 @@ class LabelMatrix:
         _write_atomic_text(target, json.dumps(payload, indent=1, sort_keys=True) + "\n")
         return target
 
-    def _complete_files(self, label_sha: str, horizons: Sequence[int],
-                        years: Sequence[int] | None = None) -> list[str]:
-        """The completed set's files at ``horizons`` (optionally some years), checked on disk (bytes)."""
+    def _complete_record(self, label_sha: str) -> dict[str, Any]:
         target = self.directory(label_sha) / "_complete.json"
         if not target.is_file():
             raise LabelMatrixError(f"label set {label_sha[:12]} is not complete (LabelMatrix.complete): "
                                    "an incomplete set is never read")
-        record = json.loads(target.read_text(encoding="utf-8"))
+        return json.loads(target.read_text(encoding="utf-8"))
+
+    def _complete_files(self, label_sha: str, horizons: Sequence[int],
+                        years: Sequence[int] | None = None) -> list[str]:
+        """The completed set's files at ``horizons`` (optionally some years), checked on disk (bytes, sha256)."""
+        record = self._complete_record(label_sha)
         wanted = [_check_horizon(h) for h in horizons]
         outside = sorted(set(wanted) - set(record["horizons"]))
         if outside:
@@ -343,6 +365,7 @@ class LabelMatrix:
                 path = self.directory(label_sha) / name
                 if not path.is_file() or path.stat().st_size != record["files"][name]["bytes"]:
                     raise LabelMatrixError(f"label set {label_sha[:12]}: {name} is missing or changed since complete()")
+                _verify_file(path, record["files"][name]["sha256"], f"label set {label_sha[:12]}: {name}")
                 paths.append(path.as_posix())
         return paths
 
@@ -365,14 +388,17 @@ class LabelMatrix:
         self.close()
 
     def _guard(self, label_sha: str, eom_before: dt.date, allow_holdout: bool, holdout_wave: str | None,
-               registry_root: Path | str | None) -> dict[str, Any]:
-        """R-6: a read past ``holdout_start`` needs final labels and the wave's recorded opening."""
+               registry_root: Path | str | None) -> dict[str, Any] | None:
+        """R-6: a read past ``holdout_start`` needs final labels and the wave's recorded opening.
+
+        Returns the opening that allowed a holdout read (None when the read stays sealed).
+        """
         if isinstance(eom_before, dt.datetime) or not isinstance(eom_before, dt.date):
             raise LabelMatrixError("eom_before must be a datetime.date")
         spec = self.spec(label_sha)
         holdout = spec["holdout_start"]
         if holdout is None or eom_before <= dt.date.fromisoformat(str(holdout)):
-            return spec
+            return None
         where = f"labels {label_sha[:12]}: reading formations up to {eom_before} opens the holdout sealed from {holdout}"
         if not allow_holdout:
             raise LabelHoldoutError(f"{where} (ruling R-6: pass allow_holdout only for the wave's one opening)")
@@ -382,11 +408,14 @@ class LabelMatrix:
             raise LabelHoldoutError(f"{where}: name the wave (holdout_wave=) whose trial-registry opening allows it")
         from .trial_registry import TrialRegistry
 
-        opening = TrialRegistry(registry_root).holdout_opening(holdout_wave)
+        registry = TrialRegistry(registry_root)
+        opening = registry.holdout_opening(holdout_wave)
         if opening is None or not opening.get("final_labels") or opening.get("label_sha") != label_sha:
             raise LabelHoldoutError(f"{where}: the trial registry has no open_holdout record of wave "
                                     f"{holdout_wave!r} for this label_sha (found {opening and opening.get('label_sha')})")
-        return spec
+        return {"registry": registry.path.as_posix(), "registry_default": registry_root is None,
+                "wave": holdout_wave, "sequence": opening.get("sequence"), "record_sha": opening.get("record_sha"),
+                "opened_at": opening.get("opened_at"), "label_sha": label_sha}
 
     def scan(self, label_sha: str, horizons: Sequence[int], *, eom_before: dt.date,
              years: Sequence[int] | None = None, allow_holdout: bool = False, holdout_wave: str | None = None,
@@ -423,12 +452,14 @@ class LabelMatrix:
             holdout = spec["holdout_start"]
             eom_before = dt.date.fromisoformat(str(holdout)) if holdout is not None else \
                 max(eoms) + dt.timedelta(days=1)
-        self._guard(label_sha, eom_before, allow_holdout, holdout_wave, registry_root)
+        opening = self._guard(label_sha, eom_before, allow_holdout, holdout_wave, registry_root)
         files = self._complete_files(label_sha, horizons)
+        record = self._complete_record(label_sha)
         tag = f"_lm{next(_TEMP)}"
         windows_path = self.directory(label_sha) / "_windows.parquet"
         if not windows_path.is_file():
             raise LabelMatrixError(f"labels {label_sha[:12]} have no _windows.parquet")
+        _verify_file(windows_path, record["windows_sha256"], f"label set {label_sha[:12]}: _windows.parquet")
         cutoff = label_cutoff.replace(tzinfo=None) if label_cutoff.tzinfo is None else \
             label_cutoff.astimezone(dt.UTC).replace(tzinfo=None)
         con = self.con
@@ -471,12 +502,12 @@ class LabelMatrix:
         info: dict[str, Any] = {"label_sha": label_sha, "provisional": spec.get("provisional"),
                                 "holdout_start": spec.get("holdout_start"), "eom_before": eom_before.isoformat(),
                                 "allow_holdout": bool(allow_holdout), "holdout_wave": holdout_wave,
-                                "label_cutoff": cutoff.isoformat(),
+                                "holdout_opening": opening, "label_cutoff": cutoff.isoformat(),
                                 "windows_aligned": int(alignment.get(True, 0)),
                                 "windows_not_aligned": int(alignment.get(False, 0)),
-                                "files": {Path(p).parent.name + "/" + Path(p).name:
-                                          json.loads(Path(p).with_suffix(".json").read_text(encoding="utf-8"))[
-                                              "file_sha256"] for p in files}}
+                                "windows_sha256": record["windows_sha256"],
+                                "files": {name: record["files"][name]["sha256"] for name in
+                                          (Path(p).parent.name + "/" + Path(p).name for p in files)}}
         literal = "[" + ", ".join(sql_text(p) for p in files) + "]"
         status_case = " ".join(f"WHEN {code} THEN {pair[0]}" for code, pair in _R3B_STATUS.items())
         terminal_case = " ".join(f"WHEN {code} THEN {pair[1]}" for code, pair in _R3B_STATUS.items())
