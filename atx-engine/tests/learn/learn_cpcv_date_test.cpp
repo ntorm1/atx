@@ -1,11 +1,14 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <vector>
 #include <gtest/gtest.h>
 #include "atx/engine/learn/train.hpp"
 #include "atx/engine/learn/linear_alpha.hpp"
 #include "atx/engine/learn/gbt.hpp"
+#include "atx/engine/learn/tcn_alpha.hpp"
 
 namespace atxtest_learn_cpcv_date {
 namespace learn=atx::engine::learn;
@@ -82,6 +85,58 @@ TEST(LearnCpcvDate, SparseAxisAndExpandedRowsCannotBypassWorkspaceLimits) {
   EXPECT_TRUE(learn::expand_date_folds_checked(plan->folds,fm,cfg));
   const std::array<atx::u16,1> horizons{3};
   EXPECT_FALSE(learn::validate_date_cpcv_inputs(fm,horizons,cfg));
+}
+
+TEST(LearnCpcvDate, SequenceInnerAndOuterDatePlansKeepTestLabelsOutOfCheckpoint) {
+  learn::SequenceTensor seq;
+  seq.lookback=2; seq.n_features=2; seq.y.resize(1);
+  for (usize d=0; d<36; ++d) for (usize i=0; i<2; ++i) {
+    // Deliberately sparse original session ordinals; embargo must not compress them.
+    seq.date_of.push_back(2*d); seq.inst_of.push_back(i);
+    seq.sample_valid.push_back(1); ++seq.n_samples;
+    for (usize j=0; j<4; ++j)
+      seq.x.push_back(std::sin(static_cast<double>(d*3+i+j)));
+    seq.y[0].push_back(0.1*seq.x.back());
+  }
+  learn::TcnAlphaCfg cfg;
+  cfg.blocks=1; cfg.kernel=2; cfg.channels=2; cfg.dropout=0;
+  cfg.horizons={2}; cfg.cpcv={3,1,0.0};
+  cfg.cpcv.rule=eval::CpcvRule::DateV2; cfg.cpcv.embargo_dates=1;
+  cfg.train.epochs=2; cfg.train.batch_size=16; cfg.train.ckpt_every=1;
+  cfg.train.ensemble_size=1; cfg.train.master_seed=19;
+  learn::LearnFitTrace trace;
+  const auto fitted=learn::fit_tcn(seq,cfg,&trace);
+  ASSERT_TRUE(fitted);
+  ASSERT_EQ(fitted->cpcv_metadata.size(),1U);
+  ASSERT_FALSE(trace.folds.empty());
+  const auto separated=[&](usize training,usize held_out) {
+    const auto a=seq.date_of[training], b=seq.date_of[held_out];
+    return a+3<=b || a>=b+3+cfg.cpcv.embargo_dates;
+  };
+  for (const auto& fold:trace.folds) {
+    ASSERT_FALSE(fold.fit_keys.empty());
+    ASSERT_FALSE(fold.val_keys.empty());
+    for (const auto tr:fold.fit_keys) {
+      for (const auto te:fold.test_keys) EXPECT_TRUE(separated(tr,te));
+      for (const auto val:fold.val_keys) EXPECT_TRUE(separated(tr,val));
+    }
+    for (const auto val:fold.val_keys)
+      for (const auto te:fold.test_keys) EXPECT_TRUE(separated(val,te));
+  }
+  const auto& reference=trace.folds.front();
+  auto mutated=seq;
+  for (const auto key:reference.test_keys) mutated.y[0][key]+=10;
+  learn::LearnFitTrace changed_trace;
+  ASSERT_TRUE(learn::fit_tcn(mutated,cfg,&changed_trace));
+  const auto changed=std::find_if(changed_trace.folds.begin(),changed_trace.folds.end(),
+      [&](const auto& fold) { return fold.fold_idx==reference.fold_idx && fold.horizon_idx==reference.horizon_idx; });
+  ASSERT_NE(changed,changed_trace.folds.end());
+  EXPECT_EQ(changed->test_keys,reference.test_keys);
+  ASSERT_FALSE(reference.artifact.empty());
+  ASSERT_EQ(changed->artifact.size(),reference.artifact.size());
+  EXPECT_EQ(std::memcmp(changed->artifact.data(),reference.artifact.data(),reference.artifact.size()*sizeof(double)),0);
+  ASSERT_EQ(changed->test_pred.size(),reference.test_pred.size());
+  EXPECT_EQ(std::memcmp(changed->test_pred.data(),reference.test_pred.data(),reference.test_pred.size()*sizeof(double)),0);
 }
 
 }
