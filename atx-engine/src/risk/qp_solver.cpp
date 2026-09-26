@@ -1364,7 +1364,8 @@ atx::core::Status ConstrainedQpSolver::check_problem(const QpProblem& p) {
   return ConstrainedQpSolverImpl::check_problem(p);
 }
 atx::core::Result<std::vector<atx::f64>> ConstrainedQpSolver::solve(const QpProblem& p) const {
-  return ConstrainedQpSolverImpl{cfg}.solve(p);
+  const ConstrainedQpSolverImpl implementation{cfg};
+  return implementation.solve(p);
 }
 atx::core::Result<QpResult> ConstrainedQpSolver::solve_with_cert(const QpProblem& p) const {
   return ConstrainedQpSolverImpl{cfg}.solve_with_cert(p);
