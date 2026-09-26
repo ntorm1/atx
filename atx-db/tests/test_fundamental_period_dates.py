@@ -178,6 +178,36 @@ def test_refresh_fundamental_periods_infers_four_date_model(tmp_store):
     assert row[5] == dt.date(2024, 5, 3)
 
 
+def test_implausible_8k_report_date_takes_the_acceptance_date(tmp_store):
+    """Novell-like: the Item 2.02 8-K is dated at the fiscal quarter end, accepted weeks later."""
+    from atx_db.fundamental_statements import refresh_fundamental_periods
+
+    _insert_statement_point(tmp_store)
+    _insert_item_202_8k(tmp_store)
+
+    def rdq_for(report_date, filing_date, acceptance):
+        tmp_store.con.execute(
+            "UPDATE sec_submissions SET report_date=?, filing_date=?, acceptance_datetime=? "
+            "WHERE accession_number='0000000001-24-000008'",
+            [report_date, filing_date, acceptance],
+        )
+        refresh_fundamental_periods(tmp_store)
+        return tmp_store.con.execute(
+            "SELECT rdq, pdate FROM fundamental_periods WHERE security_id='SEC-CIK-0000000001'"
+        ).fetchone()
+
+    # Report date = period end, accepted 2024-04-26 16:30 ET (19 business days later):
+    # the release date comes from the acceptance, never earlier than it.
+    assert rdq_for(dt.date(2024, 3, 31), dt.date(2024, 4, 26), dt.datetime(2024, 4, 26, 20, 30)) == (
+        dt.date(2024, 4, 26), dt.date(2024, 4, 26))
+    # No usable clock (date-only stamp): the 8-K filing date instead.
+    assert rdq_for(dt.date(2024, 3, 31), dt.date(2024, 4, 29), dt.datetime(2024, 4, 29)) == (
+        dt.date(2024, 4, 29), dt.date(2024, 4, 29))
+    # Within Item 2.02's four business days (Mon -> Fri) the report date stands.
+    assert rdq_for(dt.date(2024, 4, 22), dt.date(2024, 4, 26), dt.datetime(2024, 4, 26, 20, 30))[0] == \
+        dt.date(2024, 4, 22)
+
+
 def test_fundamental_period_date_quality_passes_clean_sample(tmp_store):
     from atx_db.fundamental_statements import refresh_fundamental_periods
     from atx_db.quality import run_warehouse_quality_checks

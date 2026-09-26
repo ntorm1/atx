@@ -25,6 +25,18 @@ SOURCE_NAME = "SEC companyfacts"
 # concept (basic -> eps_basic 1034, diluted -> eps_diluted 1035).
 _RELEASE_EPS_CONCEPT_SQL = ", ".join(f"'{concept}'" for concept in RELEASE_EPS_CONCEPTS)
 
+# fundamental_periods.rdq (FP-rdq, the research.events P3 rule): Item 2.02 must be
+# furnished within four business days; a larger report_date -> acceptance gap (filing
+# date: one more day of rollover when the stamp has no usable clock) marks the report
+# date implausible and the date comes from the acceptance / filing instead.
+RDQ_ITEM_202_DEADLINE_BUSINESS_DAYS = 4
+RDQ_FILING_DATE_ROLLOVER_DAYS = 1
+RDQ_BASIS_REPORTED = "reported_date"
+RDQ_BASIS_ACCEPTANCE = "acceptance_date_implausible_report"
+RDQ_BASIS_FILING = "filing_date_implausible_report"
+RDQ_BASIS_NO_REPORT_DATE = "filing_date_no_report_date"
+RDQ_BASES = (RDQ_BASIS_REPORTED, RDQ_BASIS_ACCEPTANCE, RDQ_BASIS_FILING, RDQ_BASIS_NO_REPORT_DATE)
+
 
 def __getattr__(name: str) -> object:
     """PEP 562 shim: keep the historical module-level tuple name working."""
@@ -1276,12 +1288,46 @@ def refresh_fundamental_statement_points(
     return int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
 
 
-def refresh_fundamental_periods(store: DuckDBStore) -> int:
-    """Refresh normalized reporting-period windows from SEC statement points."""
+def _rdq_clock_inputs(store: DuckDBStore) -> tuple[str, str, list[str]]:
+    """The raw acceptance-stamp expression and the observed session relation for rdq.
 
+    Both are optional warehouse inputs: without ``acceptance_datetime_raw`` (pre-0320) the
+    normalized stamp is used; without ``trading_calendar`` every weekday is a business day.
+    """
+    from .delisting import _TRADING_CALENDAR_ID, _TRADING_CALENDAR_SOURCE
+
+    def exists(table: str, column: str) -> bool:
+        return bool(store.con.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE table_name=? AND column_name=?",
+            [table, column]).fetchone()[0])
+
+    raw = "acceptance_datetime_raw" if exists("sec_submissions", "acceptance_datetime_raw") \
+        else "CAST(NULL AS VARCHAR)"
+    if all(exists("trading_calendar", column) for column in ("calendar_id", "source", "trade_date", "is_open")):
+        return raw, ("SELECT DISTINCT trade_date FROM trading_calendar "
+                     "WHERE calendar_id=? AND source=? AND is_open"), [_TRADING_CALENDAR_ID,
+                                                                      _TRADING_CALENDAR_SOURCE]
+    return raw, "SELECT CAST(NULL AS DATE) AS trade_date WHERE false", []
+
+
+def refresh_fundamental_periods(store: DuckDBStore) -> int:
+    """Refresh normalized reporting-period windows from SEC statement points.
+
+    ``rdq``/``pdate`` come from the earliest matching 8-K Item 2.02 filing. Its report date
+    is trusted only when the 8-K was accepted within four business days of it (Item 2.02's
+    furnishing deadline; with no usable acceptance clock, filed within five): otherwise the
+    report date is not the release date (some filers enter the fiscal period end) and the
+    date comes from the acceptance (America/New_York), or the 8-K filing date without a
+    usable clock -- the ``research.events`` rule (P3). The candidate's report date must lie
+    in ``[period_end, fdate]`` and its effective date on or before ``fdate``. The basis
+    (:data:`RDQ_BASES`) and the acceptance clock are computed but not stored: that needs
+    a migration adding ``rdq_basis`` / ``rdq_available_at`` columns.
+    """
+
+    raw_clock, sessions_sql, params = _rdq_clock_inputs(store)
     with fundamental_publication(store, ("fundamental_periods",)):
         store.con.execute(
-            """
+            f"""
             INSERT INTO fundamental_periods_bulk_stage (
                 fundamental_period_id,
                 period_group_id,
@@ -1403,11 +1449,15 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                   AND accession_number <> ''
                 GROUP BY source, security_id, period_start, period_end, accession_number
             ),
-            rdq_candidates AS (
+            rdq_raw AS (
                 SELECT
                     security_id,
-                    coalesce(report_date, filing_date, CAST(acceptance_datetime AS DATE)) AS rdq,
-                    acceptance_datetime AS rdq_available_at,
+                    report_date,
+                    filing_date,
+                    acceptance_datetime,
+                    {raw_clock} AS acceptance_raw,
+                    timezone('America/New_York', timezone('UTC', acceptance_datetime)) AS acceptance_local_et,
+                    coalesce(report_date, filing_date, CAST(acceptance_datetime AS DATE)) AS reported_rdq,
                     accession_number AS rdq_accession_number,
                     source_url AS rdq_source_url
                 FROM sec_submissions
@@ -1415,20 +1465,105 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                   AND coalesce(items, '') LIKE '%2.02%'
                   AND coalesce(report_date, filing_date, CAST(acceptance_datetime AS DATE)) IS NOT NULL
             ),
+            rdq_sessions AS ({sessions_sql}),
+            rdq_session_bounds AS (
+                SELECT min(trade_date) AS lo, max(trade_date) AS hi FROM rdq_sessions
+            ),
+            rdq_span AS (
+                SELECT
+                    least(min(report_date), min(filing_date), min(CAST(acceptance_local_et AS DATE))) AS lo,
+                    greatest(max(report_date), max(filing_date), max(CAST(acceptance_local_et AS DATE))) AS hi
+                FROM rdq_raw
+            ),
+            rdq_days AS (
+                -- Business days: observed XNYS sessions inside the session calendar, weekdays
+                -- outside it (the research.events rule); business_le counts those <= day.
+                SELECT
+                    d.day,
+                    sum(
+                        CASE
+                            WHEN d.day BETWEEN b.lo AND b.hi THEN CAST(s.trade_date IS NOT NULL AS INTEGER)
+                            ELSE CAST(isodow(d.day) <= 5 AS INTEGER)
+                        END
+                    ) OVER (ORDER BY d.day) AS business_le
+                FROM (
+                    SELECT CAST(unnest(generate_series(lo, hi, INTERVAL 1 DAY)) AS DATE) AS day
+                    FROM rdq_span
+                ) d
+                CROSS JOIN rdq_session_bounds b
+                LEFT JOIN rdq_sessions s ON s.trade_date = d.day
+            ),
+            rdq_clocked AS (
+                SELECT
+                    r.*,
+                    -- A usable acceptance clock (research.events: exact offset or normalized UTC).
+                    r.acceptance_datetime IS NOT NULL
+                    AND NOT (r.acceptance_raw IS NOT NULL AND length(trim(r.acceptance_raw)) <= 10)
+                    AND NOT (
+                        r.acceptance_raw IS NOT NULL
+                        AND NOT regexp_matches(trim(r.acceptance_raw), '(?i)(z|[+-][0-9]{{2}}:?[0-9]{{2}})$')
+                    )
+                    AND NOT (
+                        CAST(r.acceptance_datetime AS TIME) = TIME '00:00:00'
+                        OR CAST(r.acceptance_local_et AS TIME) = TIME '00:00:00'
+                    ) AS timed_clock
+                FROM rdq_raw r
+            ),
+            rdq_lagged AS (
+                SELECT
+                    c.*,
+                    coalesce(
+                        CASE
+                            WHEN c.report_date IS NULL THEN NULL
+                            WHEN c.timed_clock THEN a.business_le - rd.business_le
+                            ELSE f.business_le - rd.business_le
+                        END > CASE WHEN c.timed_clock THEN {RDQ_ITEM_202_DEADLINE_BUSINESS_DAYS}
+                                   ELSE {RDQ_ITEM_202_DEADLINE_BUSINESS_DAYS + RDQ_FILING_DATE_ROLLOVER_DAYS} END,
+                        false
+                    ) AS report_date_implausible
+                FROM rdq_clocked c
+                LEFT JOIN rdq_days rd ON rd.day = c.report_date
+                LEFT JOIN rdq_days a ON a.day = CAST(c.acceptance_local_et AS DATE)
+                LEFT JOIN rdq_days f ON f.day = c.filing_date
+            ),
+            rdq_candidates AS (
+                SELECT
+                    security_id,
+                    reported_rdq,
+                    CASE
+                        WHEN NOT report_date_implausible THEN reported_rdq
+                        WHEN timed_clock THEN CAST(acceptance_local_et AS DATE)
+                        ELSE coalesce(filing_date, reported_rdq)
+                    END AS rdq,
+                    CASE
+                        WHEN report_date IS NULL THEN '{RDQ_BASIS_NO_REPORT_DATE}'
+                        WHEN NOT report_date_implausible THEN '{RDQ_BASIS_REPORTED}'
+                        WHEN timed_clock THEN '{RDQ_BASIS_ACCEPTANCE}'
+                        ELSE '{RDQ_BASIS_FILING}'
+                    END AS rdq_basis,
+                    acceptance_datetime AS rdq_available_at,
+                    rdq_accession_number,
+                    rdq_source_url
+                FROM rdq_lagged
+            ),
             grouped AS (
                 SELECT
                     grouped_base.*,
                     rdq.rdq,
-                    rdq.rdq AS pdate
+                    rdq.rdq AS pdate,
+                    -- Carried for a 0328 column (no fundamental_periods column yet).
+                    rdq.rdq_basis,
+                    rdq.rdq_available_at
                 FROM grouped_base
                 LEFT JOIN LATERAL (
                     SELECT
                         r.rdq,
+                        r.rdq_basis,
                         r.rdq_available_at,
                         r.rdq_accession_number
                     FROM rdq_candidates r
                     WHERE r.security_id = grouped_base.security_id
-                      AND r.rdq >= grouped_base.period_end
+                      AND r.reported_rdq >= grouped_base.period_end
                       AND r.rdq <= grouped_base.fdate
                     ORDER BY
                         r.rdq,
@@ -1499,7 +1634,8 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                 latest_available_at,
                 source_loaded_at
             FROM sequenced
-            """
+            """,
+            params,
         )
     return int(store.con.execute("SELECT count(*) FROM fundamental_periods").fetchone()[0])
 
