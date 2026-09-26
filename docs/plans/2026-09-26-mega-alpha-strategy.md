@@ -80,6 +80,33 @@ ensemble baseline.
 
 No recent-data strategy has yet been measured under this new contract.
 
+## First native integration and rehearsal admission
+
+The native runner and focused qualification target built at `36771680` in
+88.873s with three workers, retaining the existing PCH and dependency trees.
+Eighteen of nineteen checks passed in 0.711s; the DSL-library fixture alone
+failed because `__FILE__` was relative to the build directory. The test-only
+correction `87ff49cc` -> `d8cc7b65` uses the existing configured test-directory
+macro. Runtime qualification of that correction follows before performance.
+
+The first real rehearsal requires at least 2,000 usable names at a rebalance,
+1,024 MiB admitted numerical workspace, and an external 180-second/1,536-MiB
+sampled process-tree ceiling with 768 MiB minimum system free memory. These
+limits are operational admission criteria, fixed before any strategy result.
+TRAIN manifest SHA256 is
+`900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b`;
+the subsequent development-check manifest SHA256 is
+`2129ed162ca3eb1e2bce3bd74f456b83ea11187c26729d06712677bbb6848e84`.
+The latter has 524 sessions, 461 warmup sessions, 63 scored sessions and 4,101
+union identifiers. It is 2020Q2 development evidence, despite the runner's
+generic role label `validation`; 2023-2024 validation remains unread.
+
+Independent mask audit `7a69b22a` -> `3f9e1749` verified the first role's axes,
+warmup membership union and hashes. Ten cadence-five name-decisions may lack
+an entry or endpoint bar. This is a data diagnostic, not permission to remove
+names using future presence or invent zero returns. Failed evaluation attempts
+remain in the research ledger.
+
 ## Initial metadata and runner findings
 
 Source footer inspection reports TickerHistory3.parquet (32,323,644 rows,
