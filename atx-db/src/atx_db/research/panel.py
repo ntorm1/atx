@@ -38,10 +38,15 @@ latest run known at the session's cutoff, folded into the row's clock
 (``latest_input_clock``) and named in ``availability_basis``
 (``vendor_share_run_clock:<dei_matched|split_derived|first_run|modeled_lag>``;
 ``modeled_lag`` and ``first_run`` are modeled, not verified). An ADR line's count
-is an ADS count, used only when the ADS ratio is known. A withheld count
+is an ADS count, used only when the ADS ratio is known (a line whose bridge row
+states an ADS basis for the session but is not yet visible is ``adr_ratio_unknown``).
+A withheld count is NULL with its label as the reason for ``line_market_cap`` and
+turnover: for ``line_market_cap`` the labels it derives from the A8 relation
 (``archive_run_pending``, ``split_pending_share_update``, ``adr_ratio_unknown``,
-``vendor_shares_zero``, ``bar_price_invalid`` and every other A8 withheld label)
-is NULL with its label as the reason for ``line_market_cap`` and turnover; a
+``vendor_shares_zero``, ``bar_price_invalid``) and market_daily's withheld verdict
+on the same line and session (its ``shares_source`` in ``SHARES_SOURCES_WITHHELD``,
+e.g. ``adr_ratio_unresolved``, ``dei_archive_conflict``: a vendor count in the wrong
+basis); for turnover every withheld label of its market_daily row. A
 market_daily size feature (``market_cap`` and what reads it) is NULL with the
 label as its ``shares_source`` and keeps ``invalid_current_state``, so its R2a
 digests are unchanged. When market_daily records a row's share clock (0328
@@ -214,8 +219,11 @@ SIZE_VERIFIED = "verified_dei_shares"
 #: count, ``archive_ads`` an ADR line's ADS count with a known ratio).
 LINE_SHARES_SOURCE = "archive"
 LINE_ADS_SHARES_SOURCE = "archive_ads"
-#: Eligible lines per :func:`market_daily.vendor_share_state_query` call.
+#: At most this many eligible lines per :func:`market_daily.vendor_share_state_query` call.
 LINE_SHARES_CHUNK = 1000
+#: Bars per call at a 384 MB DuckDB memory limit (R2d review m1: 1.0M and 1.6M bars ran at
+#: ~0.5 GB process peak, 2.5M ran out of memory); scaled linearly with the connection's limit.
+LINE_SHARES_BARS_AT_384MB = 1_000_000
 SHARE_CLOCK_POLICY = ("a share count is read at its own availability clock at or before the cutoff: DEI at its "
                       "filing, a vendor count at the A8 run clock (vendor_share_state_query; modeled_lag and "
                       "first_run are modeled, not verified); the clock is folded into latest_input_clock; a "
@@ -269,11 +277,13 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
     "line_market_cap": {
         "metric_window": MARKET_WINDOW,
         "expression": "close x the line's vendor share count of the latest A8 share run known at the cutoff; an "
-                      "ADR line's ADS count only with a known ADS ratio; NULL with the A8 label when withheld",
+                      "ADR line's ADS count only with a known ADS ratio; NULL with the A8 label when withheld, "
+                      "including market_daily's withheld verdict for the same line and session",
         "inputs": ["equity_daily_bars.close", "equity_daily_bars.adjusted_close",
                    "equity_daily_bars.shares_outstanding", "shares_outstanding_history",
-                   "market_owner_bridge.share_basis", "market_owner_bridge.adr_ratio"],
-        "version": "2",
+                   "market_owner_bridge.share_basis", "market_owner_bridge.adr_ratio",
+                   "market_daily_metrics.shares_source"],
+        "version": "3",
         "source_column": "equity_daily_bars.close*market_daily.vendor_share_state_query.pit_shares",
         "unit_basis": "usd_line_market_value",
         "requires": UNVERIFIED_VENDOR_SHARES,
@@ -877,9 +887,11 @@ def _require_inputs(store: ResearchStore, basis: str, features: tuple[PanelFeatu
     if any(f.is_market and f.metric_code in sized and f.metric_code not in NATIVE_FEATURES for f in features):
         columns.append(("market_daily_metrics", "shares_source"))
     if any(f.metric_code == "line_market_cap" for f in features):
-        # The A8 vendor share relation reads the bars and the DEI cover counts.
+        # The A8 vendor share relation reads the bars and the DEI cover counts;
+        # market_daily's share verdict of the same line and session can withhold.
         columns += [("equity_daily_bars", c) for c in ("trade_date", "close", "adjusted_close", "volume",
                                                        "shares_outstanding", "available_at", "source", "symbol")]
+        columns.append(("market_daily_metrics", "shares_source"))
         columns += [("shares_outstanding_history", c) for c in (
             "security_id", "form", "share_count_type", "taxonomy", "concept", "available_at", "share_count",
             "effective_date")]
@@ -976,15 +988,48 @@ def _share_bridge(store: ResearchStore, basis: str, features: Sequence[PanelFeat
     return built if built is not None else _build_bridge(store, basis)
 
 
-def _stage_line_shares(store: ResearchStore, bridge: Any, dates: Sequence[dt.date]) -> dict[str, int]:
+_MEMORY_SETTING = re.compile(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)i?B\s*", re.IGNORECASE)
+
+
+def _line_share_chunk_bars(con: Any) -> int:
+    """Bars per A8 share-state call: :data:`LINE_SHARES_BARS_AT_384MB` scaled to the memory limit."""
+    match = _MEMORY_SETTING.fullmatch(str(con.execute("SELECT current_setting('memory_limit')").fetchone()[0]))
+    if match is None:
+        return LINE_SHARES_BARS_AT_384MB
+    limit = float(match.group(1)) * {"": 1, "K": 2 ** 10, "M": 2 ** 20, "G": 2 ** 30,
+                                     "T": 2 ** 40}[match.group(2).upper()]
+    return max(100_000, int(LINE_SHARES_BARS_AT_384MB * limit / (384 * 2 ** 20)))
+
+
+def share_bridge_digest(bridge: Any) -> str:
+    """Content digest of the rows ``line_market_cap`` reads through the share bridge (R2d m4).
+
+    Per bridge row: line, owner, validity interval, availability, share basis and ADS
+    ratio, so a supplied bridge or changed ratios between a failed run and its resume
+    change the run's ``source_ids``.
+    """
+    rows = [[row.price_security_id, row.owner_security_id, _iso(row.valid_from), _iso(row.valid_to),
+             _iso(row.available_at), row.share_basis, _iso(row.adr_ratio)] for row in bridge.rows]
+    return _sha(_canonical(sorted(rows, key=_canonical)))
+
+
+def _stage_line_shares(store: ResearchStore, bridge: Any, dates: Sequence[dt.date], *,
+                       max_bars: int | None = None) -> dict[str, int]:
     """``_rp_share_state``: A8's vendor share state of every eligible line at each formation session.
 
-    One :func:`market_daily.vendor_share_state_query` per chunk of lines, over their
-    bars up to the last session (a run's clock and a bar's state use only bars and
-    filings up to that bar, so the state at an earlier session is the same), kept only
-    at the formation sessions. ``_rp_share_dates`` records the sessions staged.
+    One :func:`market_daily.vendor_share_state_query` per chunk of lines over their bars
+    up to the last session (a run's clock and a bar's state use only bars and filings up
+    to that bar, so the state at an earlier session is the same), kept only at the
+    eligible (line, formation session) pairs. A chunk holds at most ``max_bars`` bars
+    (default :func:`_line_share_chunk_bars`, from the connection's memory limit; a line
+    with more bars is a chunk of its own) and :data:`LINE_SHARES_CHUNK` lines.
+    ``_rp_share_dates`` records the sessions staged; ``_rp_adr_lines`` the bridge
+    intervals with an ADS basis (visible or not, for the ratio gate).
     """
     con = store.con
+    budget = _line_share_chunk_bars(con) if max_bars is None else int(max_bars)
+    if budget < 1:
+        raise ValueError("max_bars must be positive")
     con.execute("CREATE OR REPLACE TEMP TABLE _rp_share_dates (decision_date DATE)")
     con.executemany("INSERT INTO _rp_share_dates VALUES (?)", [[day] for day in sorted(set(dates))])
     con.execute("""
@@ -993,20 +1038,43 @@ def _stage_line_shares(store: ResearchStore, bridge: Any, dates: Sequence[dt.dat
           pit_available_at TIMESTAMP, run_pending BOOLEAN, split_pending BOOLEAN, share_basis VARCHAR,
           adr_ratio DOUBLE, adr_ratio_reason VARCHAR)
     """)
-    lines = [row[0] for row in con.execute("""
-        SELECT DISTINCT k.security_id FROM _rp_cohort_all k SEMI JOIN _rp_share_dates d ON d.decision_date=k.decision_date
-        WHERE k.eligible ORDER BY 1
-    """).fetchall()]
-    for start in range(0, len(lines), LINE_SHARES_CHUNK):
-        sql, params = _market_daily.vendor_share_state_query(bridge, lines[start:start + LINE_SHARES_CHUNK],
-                                                             end_date=max(dates))
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_share_pairs AS
+        SELECT DISTINCT k.security_id, k.decision_date FROM _rp_cohort_all k
+        SEMI JOIN _rp_share_dates d ON d.decision_date=k.decision_date
+        WHERE k.eligible
+    """)
+    counts = con.execute("""
+        SELECT l.security_id, count(b.security_id)
+        FROM (SELECT DISTINCT security_id FROM _rp_share_pairs) l
+        LEFT JOIN equity_daily_bars b ON b.security_id=l.security_id AND b.trade_date <= ?
+        GROUP BY 1 ORDER BY 1
+    """, [max(dates)]).fetchall()
+    lines = [str(line) for line, _ in counts]
+    chunks: list[list[str]] = []
+    total = 0
+    for line, bars in counts:
+        if not chunks or total + int(bars) > budget or len(chunks[-1]) >= LINE_SHARES_CHUNK:
+            chunks.append([])
+            total = 0
+        chunks[-1].append(str(line))
+        total += int(bars)
+    for chunk in chunks:
+        sql, params = _market_daily.vendor_share_state_query(bridge, chunk, end_date=max(dates))
         con.execute(f"""
             INSERT INTO _rp_share_state
             SELECT v.security_id, v.trade_date, CAST(v.pit_shares AS DOUBLE), v.pit_clock, v.pit_available_at,
                    v.run_pending, v.split_pending, v.share_basis, CAST(v.adr_ratio AS DOUBLE), v.adr_ratio_reason
-            FROM ({sql}) v SEMI JOIN _rp_share_dates d ON d.decision_date=v.trade_date
+            FROM ({sql}) v SEMI JOIN _rp_share_pairs p ON p.security_id=v.security_id AND p.decision_date=v.trade_date
         """, params)
-    return {"lines": len(lines), "states": int(con.execute("SELECT count(*) FROM _rp_share_state").fetchone()[0])}
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_adr_lines (security_id VARCHAR, valid_from DATE, valid_to DATE)")
+    adr = [[row.price_security_id, row.valid_from, row.valid_to] for row in bridge.linked_rows(lines)
+           if row.share_basis == _market_owner_bridge.SHARE_BASIS_ADR]
+    if adr:
+        con.executemany("INSERT INTO _rp_adr_lines VALUES (?,?,?)", adr)
+    return {"lines": len(lines), "chunks": len(chunks), "max_bars_per_chunk": budget,
+            "states": int(con.execute("SELECT count(*) FROM _rp_share_state").fetchone()[0]),
+            "adr_intervals": len(adr)}
 
 
 def _stage_foreign_filer_intervals(store: ResearchStore) -> dict[str, Any]:
@@ -1832,7 +1900,7 @@ def _price_window_parts(con: Any, features: Sequence[PanelFeature], spec: dict[s
     return parts
 
 
-def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow) -> str:
+def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow, market_source: str) -> str:
     """The long-form ``line_market_cap`` rows of one formation (UNVERIFIED; opt-in only).
 
     The line's own close, picked with market_daily's one bar rule (every column from
@@ -1842,12 +1910,19 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow) -> str:
     bar's own count: the vendor starts a run on the DEI cover date, before the filing
     is public. The run's availability is folded into the row's clock and its kind
     named in ``availability_basis``. An ADR line's count is an ADS count (priced by the
-    ADS close), used only when the bridge states the ADS ratio. Withheld, with the
-    count's A8 label as the reason and ``shares_source``: ``bar_price_invalid``,
-    ``adr_ratio_unknown``, ``vendor_shares_zero``, ``archive_run_pending`` (no run
+    ADS close), used only when the bridge states the ADS ratio; a line whose bridge
+    interval for the session has an ADS basis that is not visible yet at the cutoff is
+    ``adr_ratio_unknown`` too (withheld only, never priced as a plain line). Withheld,
+    with the label as the reason and ``shares_source``, in this order:
+    ``bar_price_invalid``; market_daily's withheld verdict on the same line and session
+    (the newest ``market_daily_metrics`` row visible at the cutoff whose
+    ``shares_source`` is in ``SHARES_SOURCES_WITHHELD``, e.g. ``adr_ratio_unresolved``
+    or ``dei_archive_conflict``: the vendor count is in the wrong basis, R2d review
+    I1); ``adr_ratio_unknown``; ``vendor_shares_zero``; ``archive_run_pending`` (no run
     known yet) and ``split_pending_share_update`` (the known run started before a
     split ex-date at or before the bar). A bar with no vendor count has no value
-    (``invalid_current_state``).
+    (``invalid_current_state``). A line market_daily does not cover has no verdict.
+    Like A8, the bar's own count gates only by presence and sign, never by magnitude.
     """
     staged = con.execute("SELECT count(*) FROM _rp_share_dates WHERE decision_date=?",
                          [row.formation_date]).fetchone()[0]
@@ -1855,7 +1930,20 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow) -> str:
         raise RuntimeError(f"the line share state was not staged for {row.formation_date}")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _rp_line_cap AS
-        WITH picked AS (
+        WITH verdict AS (
+          -- The same newest-visible pick as _rp_market (the caller staged _rp_cal_one).
+          SELECT m.security_id,
+                 arg_max_null(m.shares_source, (m.available_at, m.market_daily_id)) AS shares_source
+          FROM market_daily_metrics m
+          JOIN _rp_cal_one c ON m.trade_date=c.decision_date AND m.available_at<=c.cutoff
+                            AND m.as_of_date<=c.decision_date
+          JOIN _rp_cohort_all k ON k.decision_date=c.decision_date AND k.security_id=m.security_id AND k.eligible
+          WHERE m.source=?
+          GROUP BY m.security_id
+        ), adr_hidden AS (
+          SELECT DISTINCT security_id FROM _rp_adr_lines
+          WHERE coalesce(valid_from <= ?, true) AND (valid_to IS NULL OR ? < valid_to)
+        ), picked AS (
           SELECT b.security_id,
                  CAST(arg_max_null(b.close, (b.available_at, b.source)) AS DOUBLE) AS close,
                  CAST(arg_max_null(b.adjusted_close, (b.available_at, b.source)) AS DOUBLE) AS adj,
@@ -1871,8 +1959,10 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow) -> str:
                  greatest(p.bar_at, s.pit_available_at) AS available_at,
                  CASE WHEN NOT coalesce(p.close > 0 AND p.adj > 0 AND isfinite(p.close) AND isfinite(p.adj), false)
                            THEN {_sql_text(BAR_PRICE_INVALID_REASON)}
+                      WHEN v.shares_source IN ({_sql_list(SHARES_SOURCES_WITHHELD)}) THEN v.shares_source
                       WHEN s.share_basis = {_sql_text(_market_owner_bridge.SHARE_BASIS_ADR)}
                            AND s.adr_ratio_reason IS NOT NULL THEN s.adr_ratio_reason
+                      WHEN s.share_basis IS NULL AND a.security_id IS NOT NULL THEN 'adr_ratio_unknown'
                       WHEN p.vendor_shares <= 0 THEN 'vendor_shares_zero'
                       WHEN p.vendor_shares IS NULL THEN NULL
                       WHEN s.security_id IS NULL OR s.run_pending THEN 'archive_run_pending'
@@ -1880,6 +1970,8 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow) -> str:
                       END AS reason_hint
           FROM picked p
           LEFT JOIN _rp_share_state s ON s.security_id=p.security_id AND s.trade_date=?
+          LEFT JOIN verdict v ON v.security_id=p.security_id
+          LEFT JOIN adr_hidden a ON a.security_id=p.security_id
         )
         SELECT security_id,
                CASE WHEN reason_hint IS NULL AND vendor_shares > 0 AND pit_shares > 0 THEN close * pit_shares END
@@ -1892,7 +1984,8 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow) -> str:
                CASE WHEN reason_hint IS NULL AND pit_clock IS NOT NULL
                     THEN {_sql_text(VENDOR_SHARES_AVAILABILITY_BASIS + ':')} || pit_clock END AS availability_basis
         FROM judged
-    """, [row.formation_date, row.formation_date, row.formation_date])
+    """, [market_source, row.formation_date, row.formation_date, row.formation_date, row.formation_date,
+          row.formation_date])
     return (f"SELECT security_id, {_sql_text(feature.feature_id)} AS feature_id, value, available_at, "
             f"CAST(NULL AS TIMESTAMP) AS fundamental_available_at, '{BARS_SOURCE}' AS value_origin, shares_source, "
             f"CAST(reason_hint AS VARCHAR) AS reason_hint, availability_basis FROM _rp_line_cap")
@@ -1953,7 +2046,7 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
                               f"CAST(\"{f.metric_code}\" AS DOUBLE) AS value, {size_sql} FROM _rp_market")
     if any(f.metric_code == "line_market_cap" for f in batch.features):
         long_parts.append(_line_cap_part(con, next(f for f in batch.features if f.metric_code == "line_market_cap"),
-                                         row))
+                                         row, market_source))
     window = [f for f in batch.features if f.metric_code in PRICE_WINDOW_FEATURES]
     if window:
         long_parts += _price_window_parts(con, window, spec, market_source, row)
@@ -2132,6 +2225,7 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
     shares_bridge = _share_bridge(store, basis, features, built, share_bridge)
     if shares_bridge is not None:
         source_ids["line_shares"] = f"market_daily.vendor_share_state_query:{shares_bridge.mode}"
+        source_ids["line_share_bridge_sha256"] = share_bridge_digest(shares_bridge)
     source_json = _canonical(source_ids)
     phases["owner_bridge"] = time.perf_counter() - started
     con.execute("CREATE OR REPLACE TEMP TABLE _rp_features "
@@ -2663,6 +2757,7 @@ __all__ = [
     "nyse_full_day_closures",
     "observed_sessions",
     "price_line_codes",
+    "share_bridge_digest",
     "size_codes",
     "stage_foreign_filer_reasons",
     "stage_formation",

@@ -795,8 +795,11 @@ def test_line_shares_are_read_at_their_run_clock_and_adr_counts_need_a_ratio(tmp
                    "WHERE security_id=? AND trade_date >= DATE '2024-01-12' AND trade_date < DATE '2024-02-12'", [ddd])
     wh.con.execute("UPDATE equity_daily_bars SET close = 50.0, shares_outstanding = 2200000 "
                    "WHERE security_id=? AND trade_date >= DATE '2024-02-12'", [ddd])
+    # R2d fix 1 (I1): market_daily judged AAA's January vendor count to be in the wrong basis.
+    wh.con.execute("UPDATE market_daily_metrics SET shares_source = 'dei_archive_conflict' "
+                   "WHERE security_id=? AND trade_date = DATE '2024-01-31'", [LINES[1][0]])
     wh.close()
-    bbb, ccc = LINES[2][0], LINES[3][0]
+    aaa, bbb, ccc = LINES[1][0], LINES[2][0], LINES[3][0]
     october, november = dt.date(2023, 10, 31), dt.date(2023, 11, 30)
     january, february = dt.date(2024, 1, 31), dt.date(2024, 2, 29)
     line_cap = rp.PanelFeature("line_market_cap", "line_market_cap", "daily")
@@ -839,6 +842,9 @@ def test_line_shares_are_read_at_their_run_clock_and_adr_counts_need_a_ratio(tmp
         # The ADS count priced by the ADS close (not rescaled by the ratio); none without a ratio.
         assert cap(january, bbb)[:2] == (100.0 * 1_000_000, "valid") and cap(january, bbb)[5] == "archive_ads"
         assert cap(january, ccc)[:2] == (None, "adr_ratio_unknown") and cap(january, ccc)[5] == "adr_ratio_unknown"
+        # market_daily's withheld verdict on the same line and session withholds the line cap too.
+        assert cap(january, aaa)[:2] == (None, "dei_archive_conflict") and cap(january, aaa)[5] == "dei_archive_conflict"
+        assert cap(february, aaa)[:2] == (100.0 * 1_000_000, "valid")
         # P11: CCC has no roa_q state in October (its Q3 lands 11-09) and is inside the IFRS window.
         assert _value(con, "shares", october, ccc, "roa_q")[:2] == (None, rp.IFRS_REPORTER_REASON)
         assert _value(con, "shares", november, ccc, "roa_q")[:2] == (0.05, "valid")
