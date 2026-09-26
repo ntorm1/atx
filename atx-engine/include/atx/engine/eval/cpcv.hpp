@@ -62,15 +62,9 @@
 #include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp" // atx::f64, atx::usize
 
-// detail::binomial / detail::next_combination are the SHARED combinatorics
-// helpers. They were originally duplicated verbatim here and in pbo.hpp with the
-// documented assumption that a single TU never includes both. S3-4 (pool-aware
-// fitness) is the first consumer to include BOTH cpcv.hpp (folds) and, via
-// validation/bias_audit.hpp, pbo.hpp — which made the two inline definitions
-// collide (redefinition in one TU). The dedup: cpcv.hpp now REUSES pbo.hpp's
-// detail::binomial / detail::next_combination instead of redefining them (the
-// bodies were byte-identical), so a TU may include both headers safely.
-#include "atx/engine/eval/pbo.hpp" // eval::detail::binomial, eval::detail::next_combination
+// Share only the small combinatorics helpers. PBO arithmetic/API changes no
+// longer force recompilation of every learner that consumes CPCV geometry.
+#include "atx/engine/eval/combinatorics.hpp"
 
 namespace atx::engine::eval {
 
@@ -108,9 +102,7 @@ struct CpcvFold {
 
 namespace detail {
 
-// binomial / next_combination are REUSED from pbo.hpp (included above) — they
-// were previously duplicated here verbatim. See the include-site note for why
-// the dedup was required (S3-4 includes both headers in one TU).
+// binomial / next_combination are shared by CPCV and PBO via combinatorics.hpp.
 
 // ---------------------------------------------------------------------------
 //  group_start — first observation index of group g in the contiguous,
