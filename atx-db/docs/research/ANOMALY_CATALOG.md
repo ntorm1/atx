@@ -36,14 +36,14 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | payout_issuance | anomaly | 11 | 11 |
 | efficiency | anomaly | 13 | 13 |
 | earnings_stability | anomaly | 5 | 4 |
-| liquidity | anomaly | 2 | 2 |
+| liquidity | anomaly | 14 | 14 |
 | ownership | anomaly | 5 | 5 |
 | event_timing | anomaly | 1 | 1 |
-| size | control | 2 | 2 |
-| momentum | control | 5 | 5 |
-| reversal | control | 2 | 2 |
-| volatility | control | 6 | 6 |
-| **all** | | **186** | **182** |
+| size | control | 4 | 4 |
+| momentum | control | 14 | 14 |
+| reversal | control | 5 | 5 |
+| volatility | control | 18 | 18 |
+| **all** | | **224** | **220** |
 
 ## value
 
@@ -264,6 +264,18 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 |---|---|:-:|---|---|---|---|---|---|---|---|---|
 | `amihud_illiquidity_21d` | `amihud_illiquidity_21d` (daily, panel) | +1 | Mean absolute daily return per dollar traded (x 1e9) over the positive-volume days of the last 21 XNYS sessions. | Amihud 2002 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | modeled_trade_date_22h | 0q/22s | eligible_with_caveat [coverage_bias]: A line with fewer than 19 positive-volume days or observed returns in the window has no value (zero_volume_in_window or window_gaps) so the most thinly traded names of the illiquid tail are missing. |
 | `turnover_21d` | `turnover_21d` (daily, panel) | -1 | Mean daily share volume over the last 21 XNYS sessions divided by the verified DEI shares outstanding. | Datar Naik and Radcliffe 1998 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 0q/21s | eligible_with_caveat [coverage_bias]: Only lines with a verified DEI share count have a value: multi-class and ADR and unlinked lines and withheld counts are missing and a window holding an exact split or stock-dividend ratio (R1d classifier) has no value. |
+| `zero_trade_21d` | `zero_trade_21d` (daily, panel) | +1 | Share of the observed XNYS sessions among the last 21 with zero volume (at least 15 observed sessions). | Liu 2006 (Journal of Financial Economics) | published_analogue | zero_trading_days | rank_normal | unrestricted | modeled_trade_date_22h | 0q/21s | eligible_with_caveat [construct_deviation]: Liu's measure is the turnover-adjusted count of zero-trading days over twelve months; here the share of zero-volume bars among the line's observed sessions of the window (a session without a vendor bar is not counted). |
+| `zero_trade_252d` | `zero_trade_252d` (daily, panel) | +1 | Share of the observed XNYS sessions among the last 252 with zero volume (at least 200 observed sessions). | Liu 2006 (Journal of Financial Economics) | published_analogue | zero_trading_days | rank_normal | unrestricted | modeled_trade_date_22h | 0q/252s | eligible_with_caveat [construct_deviation]: Liu's measure is the turnover-adjusted count of zero-trading days over twelve months; here the share of zero-volume bars among the line's observed sessions of the window (a session without a vendor bar is not counted). |
+| `turnover_126d` | `turnover_126d` (daily, panel) | -1 | Mean daily share volume over the last 126 XNYS sessions (each day restated to the lag date's share basis by the vendor factor) over the vendor share count lagged 90 days (at least 100 observed sessions). | Datar Naik and Radcliffe 1998 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | modeled_trade_date_22h | 0q/126s | eligible_with_caveat [construct_deviation]: The denominator is the unverified vendor share count of the line's last bar at least 90 days before formation (A8 modeled lag: vendor runs start at the filing cover date) restated through the vendor adjustment factor which also carries dividends (a few tenths of a percent a quarter); an ADR line counts ADS. |
+| `turnover_252d` | `turnover_252d` (daily, panel) | -1 | Mean daily share volume over the last 252 XNYS sessions (each day restated to the lag date's share basis by the vendor factor) over the vendor share count lagged 90 days (at least 200 observed sessions). | Datar Naik and Radcliffe 1998 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | modeled_trade_date_22h | 0q/252s | eligible_with_caveat [construct_deviation]: The denominator is the unverified vendor share count of the line's last bar at least 90 days before formation (A8 modeled lag: vendor runs start at the filing cover date) restated through the vendor adjustment factor which also carries dividends (a few tenths of a percent a quarter); an ADR line counts ADS. |
+| `std_turn_126d` | `std_turn_126d` (daily, panel) | -1 | Standard deviation of daily turnover (volume restated to the lag date's share basis over the vendor share count lagged 90 days) over the last 126 XNYS sessions (at least 100 observed sessions). | Chordia Subrahmanyam and Anshuman 2001 (Journal of Financial Economics) | published_anomaly | turnover_volatility | rank_normal | unrestricted | modeled_trade_date_22h | 0q/126s | eligible_with_caveat [construct_deviation]: The denominator is the unverified vendor share count of the line's last bar at least 90 days before formation (A8 modeled lag) restated through the vendor adjustment factor; an ADR line counts ADS. |
+| `std_dvol_126d` | `std_dvol_126d` (daily, panel) | -1 | Standard deviation of daily dollar volume (close times volume) over the last 126 XNYS sessions (at least 100 observed sessions). | Chordia Subrahmanyam and Anshuman 2001 (Journal of Financial Economics) | published_anomaly | turnover_volatility | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/126s | eligible |
+| `ami_126d` | `ami_126d` (daily, panel) | +1 | One million times the mean absolute daily return per dollar traded (close times volume) over the positive-volume daily returns of the last 126 XNYS sessions (at least 100). | Amihud 2002 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | modeled_trade_date_22h | 0q/127s | eligible_with_caveat [coverage_bias]: A line with fewer than 100 positive-volume daily returns in the window has no value so the most thinly traded names of the illiquid tail are missing. |
+| `ami_252d` | `ami_252d` (daily, panel) | +1 | One million times the mean absolute daily return per dollar traded (close times volume) over the positive-volume daily returns of the last 252 XNYS sessions (at least 200). | Amihud 2002 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | modeled_trade_date_22h | 0q/253s | eligible_with_caveat [coverage_bias]: A line with fewer than 200 positive-volume daily returns in the window has no value so the most thinly traded names of the illiquid tail are missing. |
+| `bidask_cs_21d` | `bidask_cs_21d` (daily, panel) | +1 | Corwin-Schultz high-low spread: the mean over the two-session pairs of the last 21 XNYS sessions of the overnight-adjusted estimate on vendor-factor-adjusted highs and lows with negative estimates set to zero (at least 15 pairs). | Amihud and Mendelson 1986 (Journal of Financial Economics); Corwin and Schultz 2012 (Journal of Finance) | published_analogue | bid_ask_spread | rank_normal | unrestricted | modeled_trade_date_22h | 0q/22s | eligible |
+| `bidask_ar_21d` | `bidask_ar_21d` (daily, panel) | +1 | Abdi-Ranaldo close-high-low spread: the square root of the positive part of four times the mean over the two-session pairs of the last 21 XNYS sessions of the log close minus its log mid-range times the log close minus the next session's log mid-range (at least 15 pairs). | Amihud and Mendelson 1986 (Journal of Financial Economics); Abdi and Ranaldo 2017 (Review of Financial Studies) | published_analogue | bid_ask_spread | rank_normal | unrestricted | modeled_trade_date_22h | 0q/22s | eligible |
+| `dolvol_126d` | `dolvol_126d` (daily, panel) | -1 | Mean daily dollar volume (close times volume) over the last 126 XNYS sessions (at least 100 observed sessions; log by the transform). | Brennan Chordia and Subrahmanyam 1998 (Journal of Financial Economics) | published_anomaly | dollar_volume | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/126s | eligible |
+| `price_delay_52w` | `price_delay_52w` (daily, panel) | +1 | Hou-Moskowitz delay D1: one minus the R-squared of weekly returns on the weekly equal-weighted market over the R-squared with four weekly market lags added over the 52 complete weeks to formation (at least 40 weeks). | Hou and Moskowitz 2005 (Review of Financial Studies) | published_anomaly | price_delay | winsor_z | unrestricted | modeled_trade_date_22h | 0q/280s | eligible_with_caveat [construct_deviation]: Weekly returns from the vendor-factor-repaired adjusted close and the compounded equal-weighted P3 market (daily bar returns winsorized at 50 percent) where Hou and Moskowitz use the CRSP value-weight market; a week counts only when it is complete before the formation session. |
 
 ## ownership
 
@@ -287,6 +299,8 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 |---|---|:-:|---|---|---|---|---|---|---|---|---|
 | `market_cap` | `market_cap` (daily) | -1 | Price times point-in-time shares outstanding. | Banz 1981 (Journal of Financial Economics); Fama and French 1992 (Journal of Finance) | published_anomaly | size | log_winsor_z | positive_value_required | max_filing_46h_trade_date_22h | 0q/1s | eligible |
 | `dollar_volume_20d` | `dollar_volume_20d` (daily) | -1 | Twenty-day average daily dollar trading volume. | Brennan Chordia and Subrahmanyam 1998 (Journal of Financial Economics); Amihud 2002 (Journal of Financial Markets) | published_anomaly | trading_liquidity | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/20s | eligible |
+| `prc_log` | `prc_log` (daily, panel) | -1 | Close at the formation session (log by the transform). | Blume and Husic 1973 (Journal of Finance); Miller and Scholes 1982 (Journal of Business) | published_anomaly | share_price | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/1s | eligible |
+| `me_line_log` | `me_line_log` (daily, panel) | -1 | Line market value: the close at the formation session times the vendor share count lagged 90 days restated to the formation session's share basis (log by the transform). | Banz 1981 (Journal of Financial Economics); Fama and French 1992 (Journal of Finance) | published_anomaly | size | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/63s | eligible_with_caveat [construct_deviation]: One price line's market value from its unverified vendor share count (not the issuer total across share classes); the count is the line's last bar at least 90 days before formation (A8 modeled lag; me_basis vendor_shares_lag90) restated through the vendor factor. |
 
 ## momentum
 
@@ -297,6 +311,15 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | `total_return_6m` | `total_return_6m` (daily) | +1 | Total return over the last 126 trading days. | Jegadeesh and Titman 1993 (Journal of Finance) | published_anomaly | momentum | winsor_z | unrestricted | modeled_trade_date_22h | 0q/127s | eligible |
 | `total_return_3m` | `total_return_3m` (daily) | +1 | Total return over the last 63 trading days. | Jegadeesh and Titman 1993 (Journal of Finance) | published_analogue | momentum | winsor_z | unrestricted | modeled_trade_date_22h | 0q/64s | eligible |
 | `pct_from_high_252d` | `pct_from_high_252d` (daily, panel) | +1 | Adjusted close over its highest adjusted close in the last 252 XNYS sessions minus one. | George and Hwang 2004 (Journal of Finance) | published_anomaly | momentum | winsor_z | unrestricted | modeled_trade_date_22h | 0q/252s | eligible |
+| `ret_12_1` | `ret_12_1` (daily, panel) | +1 | Cumulative return over months t-12 to t-2 (t the holding month): the repaired adjusted close at the last observed session of formation month F-1 over that of F-12; at least 200 observed sessions. | Jegadeesh and Titman 1993 (Journal of Finance); Carhart 1997 (Journal of Finance) | published_anomaly | momentum | winsor_z | unrestricted | modeled_trade_date_22h | 0q/252s | eligible |
+| `ret_6_1` | `ret_6_1` (daily, panel) | +1 | Cumulative return over months t-6 to t-2: the repaired adjusted close at the last observed session of month F-1 over that of F-6; at least 100 observed sessions. | Jegadeesh and Titman 1993 (Journal of Finance) | published_anomaly | momentum | winsor_z | unrestricted | modeled_trade_date_22h | 0q/126s | eligible |
+| `ret_9_1` | `ret_9_1` (daily, panel) | +1 | Cumulative return over months t-9 to t-2: the repaired adjusted close at the last observed session of month F-1 over that of F-9; at least 150 observed sessions. | Jegadeesh and Titman 1993 (Journal of Finance) | published_anomaly | momentum | winsor_z | unrestricted | modeled_trade_date_22h | 0q/189s | eligible |
+| `ret_12_7` | `ret_12_7` (daily, panel) | +1 | Cumulative return over months t-12 to t-7: the repaired adjusted close at the last observed session of month F-6 over that of F-12; at least 100 observed sessions. | Novy-Marx 2012 (Journal of Financial Economics) | published_anomaly | intermediate_momentum | winsor_z | unrestricted | modeled_trade_date_22h | 0q/252s | eligible |
+| `chmom` | `chmom` (daily, panel) | -1 | Change in six-month momentum: the months t-6 to t-2 return minus the same return six months earlier (months t-12 to t-8: formation months F-5 to F-1 minus F-11 to F-7); at least 200 observed sessions over formation months F-11 to F-1. | Gettleman and Marks 2006 (working paper); Green Hand and Zhang 2017 (Review of Financial Studies) | published_analogue | momentum_change | winsor_z | unrestricted | modeled_trade_date_22h | 0q/252s | eligible |
+| `frog_in_pan` | `frog_in_pan` (daily, panel) | -1 | Information discreteness: the sign of the months t-12 to t-2 return times the share of negative minus the share of positive daily returns over those months; at least 200 daily returns. | Da Gurun and Warachka 2014 (Review of Financial Studies) | published_analogue | information_discreteness | winsor_z | unrestricted | modeled_trade_date_22h | 0q/252s | eligible |
+| `seas_1_1an` | `seas_1_1an` (daily, panel) | +1 | Same-calendar-month return one year ago: the return of month t-12 (formation month F-11) with at least 15 observed sessions in that month. | Heston and Sadka 2008 (Journal of Financial Economics) | published_anomaly | return_seasonality | winsor_z | unrestricted | modeled_trade_date_22h | 0q/252s | eligible |
+| `seas_2_5an` | `seas_2_5an` (daily, panel) | +1 | Mean same-calendar-month return of years 2 to 5 (formation months F-23 F-35 F-47 and F-59) with at least 3 of the 4 months present (each with at least 15 observed sessions). | Heston and Sadka 2008 (Journal of Financial Economics) | published_anomaly | return_seasonality | winsor_z | unrestricted | modeled_trade_date_22h | 0q/1260s | eligible |
+| `prc_highprc_252d` | `prc_highprc_252d` (daily, panel) | +1 | Repaired adjusted close at the formation session over its highest repaired adjusted close over the last 252 XNYS sessions (at least 200 observed sessions). | George and Hwang 2004 (Journal of Finance) | published_anomaly | momentum | winsor_z | unrestricted | modeled_trade_date_22h | 0q/252s | eligible |
 
 ## reversal
 
@@ -304,6 +327,9 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 |---|---|:-:|---|---|---|---|---|---|---|---|---|
 | `total_return_1m` | `total_return_1m` (daily) | -1 | Total return over the last 21 trading days. | Jegadeesh 1990 (Journal of Finance); Lehmann 1990 (Quarterly Journal of Economics) | published_anomaly | short_term_reversal | winsor_z | unrestricted | modeled_trade_date_22h | 0q/22s | eligible |
 | `runup_m21_m2` | `runup_m21_m2` (event, event) | two-sided | Market-adjusted return (the line's one-session return less the equal-weighted bar-return market) summed over sessions E-21 to E-2 before the latest visible earnings announcement session E. | Aboody Lehavy and Trueman 2010 (Review of Accounting Studies) | published_analogue | earnings_announcement_runup | winsor_z | unrestricted | max_filing_46h_trade_date_22h | 0q/21s | eligible_with_caveat [mixed_evidence, coverage_bias]: Published evidence disagrees on the sign after a pre-announcement run-up (continuation into the announcement versus a reversal after it) so it is tested two-sided; events are keyed by original 10-K/10-Q periods and only linked primary lines carry a value. |
+| `ret_36_13` | `ret_36_13` (daily, panel) | -1 | Cumulative return over months t-36 to t-13: the repaired adjusted close at the last observed session of month F-12 over that of F-36; at least 400 observed sessions. | De Bondt and Thaler 1985 (Journal of Finance) | published_anomaly | long_term_reversal | winsor_z | unrestricted | modeled_trade_date_22h | 0q/756s | eligible |
+| `ret_60_13` | `ret_60_13` (daily, panel) | -1 | Cumulative return over months t-60 to t-13: the repaired adjusted close at the last observed session of month F-12 over that of F-60; at least 800 observed sessions. | De Bondt and Thaler 1985 (Journal of Finance) | published_anomaly | long_term_reversal | winsor_z | unrestricted | modeled_trade_date_22h | 0q/1260s | eligible |
+| `ret_1_0` | `ret_1_0` (daily, panel) | -1 | Return of the formation month: the repaired adjusted close at the formation session over that at the last observed session of month F-1; at least 15 observed sessions in the month. | Jegadeesh 1990 (Journal of Finance); Lehmann 1990 (Quarterly Journal of Economics) | published_anomaly | short_term_reversal | winsor_z | unrestricted | modeled_trade_date_22h | 0q/22s | eligible |
 
 ## volatility
 
@@ -315,6 +341,18 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | `downside_deviation_60d` | `downside_deviation_60d` (daily, panel) | two-sided | Annualized zero-target semideviation (root mean square of the negative daily returns) over the last 60 XNYS sessions. | Ang Chen and Xing 2006 (Review of Financial Studies); Ang Hodrick Xing and Zhang 2006 (Journal of Finance) | published_analogue | volatility | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/61s | eligible_with_caveat [mixed_evidence]: Published evidence disagrees on the sign: Ang Chen and Xing price downside beta positively while the low-volatility literature prices total volatility negatively; tested two-sided. |
 | `beta_mkt_252d` | `beta_mkt_252d` (252d, factor_exposure) | -1 | OLS slope of the line's daily excess return on the daily value-weighted research-universe market excess return over the trailing 252 sessions (at least 200 observations; P4 research_factor_exposures). | Black Jensen and Scholes 1972 (Studies in the Theory of Capital Markets); Frazzini and Pedersen 2014 (Journal of Financial Economics) | published_anomaly | market_beta | winsor_z | unrestricted | max_filing_46h_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: The market is the research universe weighted by verified DEI caps only (not CRSP) with the risk-free rate from FRED DTB3 (current vintage) when cached; plain OLS without the Frazzini-Pedersen shrinkage and correlation split; the daily market starts at the first formation so the first year of formations is burn-in (insufficient_obs). |
 | `ivol_252d` | `ivol_252d` (252d, factor_exposure) | -1 | Annualized standard deviation of the residuals of the 252-session one-factor market model of daily excess returns (at least 200 observations; P4 research_factor_exposures). | Ang Hodrick Xing and Zhang 2006 (Journal of Finance); Ang Hodrick Xing and Zhang 2009 (Journal of Financial Economics) | published_anomaly | idiosyncratic_volatility | log_winsor_z | positive_value_required | max_filing_46h_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: Residuals of a one-factor market model over 252 sessions where the published measure uses Fama-French three-factor residuals over one month; the market is the verified-DEI-cap value-weighted research universe; the first year of formations is burn-in (insufficient_obs). |
+| `rvol_21d` | `rvol_21d` (daily, panel) | -1 | Sample standard deviation of daily log returns over the last 21 XNYS sessions (at least 15 returns). | Ang Hodrick Xing and Zhang 2006 (Journal of Finance) | published_analogue | volatility | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/22s | eligible |
+| `rvol_252d` | `rvol_252d` (daily, panel) | -1 | Sample standard deviation of daily log returns over the last 252 XNYS sessions (at least 200 returns). | Ang Hodrick Xing and Zhang 2006 (Journal of Finance); Baker Bradley and Wurgler 2011 (Financial Analysts Journal) | published_analogue | volatility | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/253s | eligible |
+| `rmax5_21d` | `rmax5_21d` (daily, panel) | -1 | Mean of the five largest daily returns over the last 21 XNYS sessions (at least 15 returns). | Bali Cakici and Whitelaw 2011 (Journal of Financial Economics) | published_anomaly | volatility | winsor_z | unrestricted | modeled_trade_date_22h | 0q/22s | eligible |
+| `rmax1_21d` | `rmax1_21d` (daily, panel) | -1 | Largest daily return over the last 21 XNYS sessions (at least 15 returns). | Bali Cakici and Whitelaw 2011 (Journal of Financial Economics) | published_anomaly | volatility | winsor_z | unrestricted | modeled_trade_date_22h | 0q/22s | eligible |
+| `rskew_252d` | `rskew_252d` (daily, panel) | -1 | Sample skewness of daily returns over the last 252 XNYS sessions (at least 200 returns). | Boyer Mitton and Vorkink 2010 (Review of Financial Studies); Amaya Christoffersen Jacobs and Vasquez 2015 (Journal of Financial Economics) | published_analogue | skewness | winsor_z | unrestricted | modeled_trade_date_22h | 0q/253s | eligible |
+| `beta_ew_252d` | `beta_ew_252d` (daily, panel) | -1 | OLS slope of daily returns on the equal-weighted market (the P3 sealed convention: the mean of the bar returns of the prior formation's spine lines each winsorized at 50 percent per ruling C-55) over the last 252 XNYS sessions (at least 200 pairs). | Black Jensen and Scholes 1972 (Studies in the Theory of Capital Markets); Frazzini and Pedersen 2014 (Journal of Financial Economics) | published_analogue | market_beta | winsor_z | unrestricted | modeled_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: Reported only (ruling C-24 and policy v4 reported_only): the value-weight market beta (beta_mkt_252d in wave w4_events) is the pre-registered tested hypothesis and this equal-weight-market twin is evaluated and reported but never gated; no risk-free rate is subtracted (a constant shift leaves the slope unchanged). |
+| `ivol_ew_252d` | `ivol_ew_252d` (daily, panel) | -1 | Residual standard deviation of the regression of daily returns on the equal-weighted market (P3 convention with bar returns winsorized at 50 percent) over the last 252 XNYS sessions (at least 200 pairs). | Ang Hodrick Xing and Zhang 2006 (Journal of Finance); Ang Hodrick Xing and Zhang 2009 (Journal of Financial Economics) | published_analogue | idiosyncratic_volatility | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: Reported only (ruling C-24 and policy v4 reported_only): the Fama-French-residual idiosyncratic volatility is the pre-registered tested hypothesis and this equal-weight-market CAPM twin is evaluated and reported but never gated. |
+| `ivol_ew_21d` | `ivol_ew_21d` (daily, panel) | -1 | Residual standard deviation of the regression of daily returns on the equal-weighted market (P3 convention with bar returns winsorized at 50 percent) over the last 21 XNYS sessions (at least 15 pairs). | Ang Hodrick Xing and Zhang 2006 (Journal of Finance); Ang Hodrick Xing and Zhang 2009 (Journal of Financial Economics) | published_analogue | idiosyncratic_volatility | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/22s | eligible_with_caveat [construct_deviation]: Reported only (ruling C-24 and policy v4 reported_only): the Fama-French-residual idiosyncratic volatility is the pre-registered tested hypothesis and this one-month equal-weight-market CAPM twin is evaluated and reported but never gated (the published measure uses one month of three-factor residuals). |
+| `beta_dimson_252d` | `beta_dimson_252d` (daily, panel) | -1 | Dimson beta: the sum of the slopes of one regression of daily returns on the equal-weighted market at t-1 and t and t+1 over the last 252 XNYS sessions (pairs whose t+1 is after the formation session dropped; at least 200 pairs). | Dimson 1979 (Journal of Financial Economics); Frazzini and Pedersen 2014 (Journal of Financial Economics) | published_analogue | market_beta | winsor_z | unrestricted | modeled_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: The market is the equal-weighted P3 convention (bar returns of the prior formation's spine lines each winsorized at 50 percent) where the published constructions use the value-weight market; no risk-free rate is subtracted. |
+| `beta_down_252d` | `beta_down_252d` (daily, panel) | -1 | OLS slope of daily returns on the equal-weighted market over the days the market fell in the last 252 XNYS sessions (at least 100 such days). | Ang Chen and Xing 2006 (Review of Financial Studies); Jensen Kelly and Pedersen 2023 (Journal of Finance) | published_analogue | downside_beta | winsor_z | unrestricted | modeled_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: The market is the equal-weighted P3 convention (bar returns of the prior formation's spine lines each winsorized at 50 percent) where the published constructions use the value-weight market; no risk-free rate is subtracted. |
+| `coskew_252d` | `coskew_252d` (daily, panel) | -1 | Harvey-Siddique coskewness: the mean of the CAPM residual times the squared demeaned equal-weighted market over the root mean squared residual times the mean squared demeaned market over the last 252 XNYS sessions (at least 200 pairs). | Harvey and Siddique 2000 (Journal of Finance) | published_anomaly | coskewness | winsor_z | unrestricted | modeled_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: Daily returns on the equal-weighted P3 market (bar returns winsorized at 50 percent) over 252 sessions where Harvey and Siddique use monthly returns on the value-weight market over five years. |
+| `beta_bab_1260d` | `beta_bab_1260d` (daily, panel) | -1 | Frazzini-Pedersen beta: the correlation of overlapping three-session log returns with the equal-weighted market over the 60 months to formation (at least 750) times the ratio of the line's to the market's daily log-return volatility over the last 252 XNYS sessions (at least 120 line returns). | Frazzini and Pedersen 2014 (Journal of Financial Economics) | published_anomaly | market_beta | winsor_z | unrestricted | modeled_trade_date_22h | 0q/1260s | eligible_with_caveat [construct_deviation]: The market is the equal-weighted P3 convention (bar returns winsorized at 50 percent) where Frazzini and Pedersen use the value-weight market; the beta is not shrunk toward one (a rank-preserving affine map that leaves every tested variant unchanged); the correlation window is 60 calendar months rather than 1260 sessions. |
 
 ## Hypothesis families with more than one member
 
@@ -324,6 +362,7 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | asset_growth | `asset_growth`, `total_assets_cagr_3y` |
 | asset_turnover | `asset_turnover`, `noa_turnover` |
 | asset_turnover_change | `asset_turnover_change_yoy`, `noa_turnover_change_yoy` |
+| bid_ask_spread | `bidask_cs_21d`, `bidask_ar_21d` |
 | book_equity_growth | `book_value_growth_yoy`, `common_equity_cagr_3y` |
 | book_leverage | `debt_to_equity`, `debt_to_assets`, `long_term_debt_to_assets`, `net_debt_to_book_equity` |
 | capex_growth | `capex_growth_yoy`, `capex_q_growth_yoy`, `capex_q_growth_qoq`, `capex_growth_2y`, `capex_growth_3y` |
@@ -346,10 +385,13 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | gross_margin_change | `gross_margin_change_yoy`, `gross_margin_q_change_yoy`, `sales_growth_less_gross_profit_growth` |
 | gross_profit_growth | `gross_profit_growth_yoy`, `gross_profit_q_growth_yoy` |
 | gross_profitability | `gross_profitability`, `gross_profitability_q` |
+| idiosyncratic_volatility | `ivol_252d`, `ivol_ew_252d`, `ivol_ew_21d` |
 | liquidity | `current_ratio`, `quick_ratio` |
+| long_term_reversal | `ret_36_13`, `ret_60_13` |
 | margin_acceleration | `gross_margin_q_change_yoy_accel`, `operating_margin_q_change_yoy_accel` |
+| market_beta | `beta_mkt_252d`, `beta_ew_252d`, `beta_dimson_252d`, `beta_bab_1260d` |
 | market_leverage | `debt_to_market`, `assets_to_market` |
-| momentum | `momentum_12_1`, `total_return_12m`, `total_return_6m`, `total_return_3m`, `pct_from_high_252d` |
+| momentum | `momentum_12_1`, `total_return_12m`, `total_return_6m`, `total_return_3m`, `pct_from_high_252d`, `ret_12_1`, `ret_6_1`, `ret_9_1`, `prc_highprc_252d` |
 | net_margin | `net_margin`, `net_margin_q` |
 | net_margin_change | `net_margin_change_yoy`, `net_margin_q_change_yoy` |
 | operating_margin | `operating_margin`, `ebitda_margin`, `operating_margin_q` |
@@ -367,11 +409,16 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | return_on_equity | `roe`, `roe_q` |
 | return_on_invested_capital | `roic`, `roic_ex_goodwill` |
 | return_on_net_operating_assets | `rnoa_q`, `rnoa` |
+| return_seasonality | `seas_1_1an`, `seas_2_5an` |
 | revenue_growth_sequential | `revenue_growth_qoq`, `revenue_q_growth_qoq` |
 | revenue_surprise | `revenue_q_growth_yoy`, `sue_revenue` |
 | short_interest | `short_interest_ratio`, `days_to_cover_si` |
-| trading_liquidity | `dollar_volume_20d`, `amihud_illiquidity_21d`, `turnover_21d` |
-| volatility | `realized_vol_60d`, `realized_vol_252d`, `max_daily_return_21d`, `downside_deviation_60d` |
+| short_term_reversal | `total_return_1m`, `ret_1_0` |
+| size | `market_cap`, `me_line_log` |
+| trading_liquidity | `dollar_volume_20d`, `amihud_illiquidity_21d`, `turnover_21d`, `turnover_126d`, `turnover_252d`, `ami_126d`, `ami_252d` |
+| turnover_volatility | `std_turn_126d`, `std_dvol_126d` |
+| volatility | `realized_vol_60d`, `realized_vol_252d`, `max_daily_return_21d`, `downside_deviation_60d`, `rvol_21d`, `rvol_252d`, `rmax5_21d`, `rmax1_21d` |
+| zero_trading_days | `zero_trade_21d`, `zero_trade_252d` |
 
 ## Domain rules
 
@@ -435,23 +482,23 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 |---|---:|---:|
 | `accruals` | 5 | 5 |
 | `debt_issuance` | 3 | 3 |
-| `investment` | 29 | 28 |
+| `investment` | 31 | 30 |
 | `low_leverage` | 17 | 17 |
-| `low_risk` | 10 | 9 |
-| `momentum` | 5 | 5 |
+| `low_risk` | 27 | 26 |
+| `momentum` | 12 | 12 |
 | `profit_growth` | 44 | 42 |
 | `profitability` | 19 | 19 |
 | `quality` | 18 | 18 |
-| `seasonality` | 3 | 3 |
-| `size` | 4 | 4 |
-| `short_term_reversal` | 2 | 2 |
+| `seasonality` | 5 | 5 |
+| `size` | 13 | 13 |
+| `short_term_reversal` | 3 | 3 |
 | `value` | 22 | 22 |
 | `none` | 5 | 5 |
 
 | wave | rows | research-eligible |
 |---|---:|---:|
 | `w0_existing` | 175 | 172 |
-| `w1_price` | 0 | 0 |
+| `w1_price` | 38 | 38 |
 | `w2_fund_a` | 0 | 0 |
 | `w3_compositions` | 0 | 0 |
 | `w4_events` | 6 | 5 |
@@ -645,6 +692,44 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | `breadth_change_13f` | all | replication | 2002 | none | w5_ownership |
 | `short_interest_ratio` | all | replication | 2005 | none | w5_ownership |
 | `days_to_cover_si` | all | replication | 2015 | none | w5_ownership |
+| `ret_12_1` | all | replication | 1993 | momentum | w1_price |
+| `ret_6_1` | all | replication | 1993 | momentum | w1_price |
+| `ret_9_1` | all | replication | 1993 | momentum | w1_price |
+| `ret_12_7` | all | replication | 2012 | momentum | w1_price |
+| `ret_36_13` | all | replication | 1985 | investment | w1_price |
+| `ret_60_13` | all | replication | 1985 | investment | w1_price |
+| `chmom` | all | replication | 2006 | momentum | w1_price |
+| `frog_in_pan` | all | replication | 2014 | momentum | w1_price |
+| `seas_1_1an` | all | replication | 2008 | seasonality | w1_price |
+| `seas_2_5an` | all | replication | 2008 | seasonality | w1_price |
+| `ret_1_0` | all | replication | 1990 | short_term_reversal | w1_price |
+| `rvol_21d` | all | replication | 2006 | low_risk | w1_price |
+| `rvol_252d` | all | replication | 2006 | low_risk | w1_price |
+| `rmax5_21d` | all | replication | 2011 | low_risk | w1_price |
+| `rmax1_21d` | all | replication | 2011 | low_risk | w1_price |
+| `rskew_252d` | all | replication | 2010 | low_risk | w1_price |
+| `beta_ew_252d` | all | replication | 1972 | low_risk | w1_price |
+| `ivol_ew_252d` | all | replication | 2006 | low_risk | w1_price |
+| `ivol_ew_21d` | all | replication | 2006 | low_risk | w1_price |
+| `beta_dimson_252d` | all | replication | 1979 | low_risk | w1_price |
+| `beta_down_252d` | all | replication | 2006 | low_risk | w1_price |
+| `coskew_252d` | all | replication | 2000 | low_risk | w1_price |
+| `beta_bab_1260d` | all | replication | 2014 | low_risk | w1_price |
+| `zero_trade_21d` | all | replication | 2006 | size | w1_price |
+| `zero_trade_252d` | all | replication | 2006 | size | w1_price |
+| `turnover_126d` | all | replication | 1998 | low_risk | w1_price |
+| `turnover_252d` | all | replication | 1998 | low_risk | w1_price |
+| `std_turn_126d` | all | replication | 2001 | low_risk | w1_price |
+| `std_dvol_126d` | all | replication | 2001 | low_risk | w1_price |
+| `ami_126d` | all | replication | 2002 | size | w1_price |
+| `ami_252d` | all | replication | 2002 | size | w1_price |
+| `bidask_cs_21d` | all | replication | 1986 | size | w1_price |
+| `bidask_ar_21d` | all | replication | 1986 | size | w1_price |
+| `prc_log` | all | replication | 1973 | size | w1_price |
+| `prc_highprc_252d` | all | replication | 2004 | momentum | w1_price |
+| `me_line_log` | all | replication | 1981 | size | w1_price |
+| `dolvol_126d` | all | replication | 1998 | size | w1_price |
+| `price_delay_52w` | all | replication | 2005 | low_risk | w1_price |
 
 ## Seed metrics that are not research features
 

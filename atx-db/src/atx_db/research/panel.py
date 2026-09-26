@@ -167,6 +167,7 @@ from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from ..calendar import (
     decision_cutoff_utc,
     expected_month_end_session,
+    is_session,
     nyse_full_day_closures,
     xnys_sessions,
 )
@@ -175,6 +176,7 @@ from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_
 from ..universe_us_listed import UNIVERSE_SOURCE_NAME
 from . import catalog as _catalog
 from . import lineage as _lineage
+from . import price_natives as _price_natives
 from . import store as _store
 from .store import ResearchStore
 
@@ -188,7 +190,12 @@ from .store import ResearchStore
 # v8 (VA1 + R2d fix 1): the P2 natives' bar returns read the vendor_artifact_repaired
 # adjusted close; line_market_cap withholds on market_daily's basis verdicts and on an
 # ADS bridge interval not visible yet; line share state chunked by bar count.
-QUERY_VERSION = "research-monthly-pit-panel-v8"
+# v9 (node 1.12, one bump for its panel changes): the P2 window bars are one whole row per
+# (line, date) by the publisher's pick order and repaired with the VA1 v2 share veto (C-39);
+# line_market_cap's bar is the same whole-row pick among rows visible at the cutoff (0.13
+# re-review D3); the monthly entry is the first observed XNYS rule session after the month
+# end (1.11 m4).
+QUERY_VERSION = "research-monthly-pit-panel-v9"
 MARKET_REVISION_RULE = ("newest market_daily revision visible at the cutoff wins per column, "
                         "a NULL included (arg_max_null)")
 BASIS_STRICT = "strict"
@@ -392,6 +399,12 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
 }
 #: The natives computed from the P2 bar window (every native but line_market_cap).
 PRICE_WINDOW_FEATURES = frozenset(code for code, spec in NATIVE_FEATURES.items() if "window_sessions" in spec)
+#: Price wave natives (node 1.12, catalog wave ``w1_price``): built by ``research.price_natives``
+#: from the retained vendor bars into the research feature store, never by this panel. They are
+#: registered here so the catalog validates their ``panel_native`` rows against one registry;
+#: they are gated (never default features) and :func:`canonical_features` refuses them.
+STORE_NATIVE_FEATURES = frozenset(_price_natives.panel_native_specs())
+NATIVE_FEATURES.update(_price_natives.panel_native_specs())
 #: Seed-metric roles (catalog ``EXCLUDED_SEED_METRICS`` reasons) the panel never carries as
 #: research features: ``presence_indicator`` is a 0/1 building block of an ever-reported
 #: missing-is-not-zero rule (catalog round 2), not a characteristic.
@@ -516,7 +529,9 @@ def month_end_calendar(sessions: Sequence[dt.date], *, start_month: dt.date, end
         in_month = [day for day in observed if day.year == month.year and day.month == month.month]
         last = in_month[-1] if in_month else None
         cutoff = decision_cutoff_utc(expected).replace(tzinfo=None)  # naive UTC, as ``run_at``
-        later = [day for day in observed if day > expected]
+        # v9 (1.11 review m4): entry is the first observed date after the month end that is an
+        # XNYS rule session; a stray market_daily date (a closure or weekend bar) is never an entry.
+        later = [day for day in observed if day > expected and is_session(day)]
         entry = later[0] if later else None
         if expected > as_of_date or cutoff > run_at:
             status, formation, cutoff_value, entry = CALENDAR_AFTER_CUTOFF, None, None, None
@@ -647,6 +662,10 @@ def canonical_features(features: Iterable[PanelFeature | dict[str, Any]] | None,
         result.append(item)
     if not 1 <= len(result) <= 1024:
         raise ValueError("feature count must be between 1 and 1024")
+    store_built = [f.feature_id for f in result if f.metric_code in STORE_NATIVE_FEATURES]
+    if store_built:
+        raise ValueError(f"{store_built} are price wave natives: research.price_natives builds them from the retained "
+                         "vendor bars into the research feature store, never the panel")
     gated = [f.feature_id for f in result
              if NATIVE_FEATURES.get(f.metric_code, {}).get("requires") == UNVERIFIED_VENDOR_SHARES]
     if gated and not unverified_vendor_shares:
@@ -1677,12 +1696,13 @@ def _split_step_sql(k: str) -> str:
 def _stage_price_window(con: Any, row: CalendarRow) -> None:
     """``_rp_price_window``: per eligible line with a bar on the session, its P2 window aggregates.
 
-    Bars follow market_daily's one bar rule: the rows of one ``(security_id,
-    trade_date)`` whose clock (``greatest(available_at, trade_date 22:00)``) is at or
-    before the cutoff are ranked by ``(available_at, source)``, and every column comes
-    from the newest one, a NULL included (``arg_max_null``). The price is checked
-    after the pick: a session whose picked close or adjusted close is not positive
-    and finite is not observed (and at the formation session it is
+    Bars follow market_daily's one bar rule (node 0.13 I4, C-39): among the rows of one
+    ``(security_id, trade_date)`` whose clock (``greatest(available_at, trade_date
+    22:00)``) is at or before the cutoff, one whole row is picked by the publisher's total
+    order (``_vendor_artifact.bar_pick_order_sql(with_shares=True)``, then volume), so a
+    newer row's NULL wins and tied rows give the same row on every run and thread count.
+    The price is checked after the pick: a session whose picked close or adjusted close
+    is not positive and finite is not observed (and at the formation session it is
     ``bar_price_invalid``). Only bars dated in the ``PRICE_LOOKBACK_DAYS`` before the
     session are read, so no input is dated after the session or knowable only after
     the cutoff; the scan is bounded by the formation (eligible lines x lookback).
@@ -1695,12 +1715,14 @@ def _stage_price_window(con: Any, row: CalendarRow) -> None:
     step (``(adj/close)_t / (adj/close)_(t-1)`` between consecutive observed bars of
     the 21-session window) that R1d's classifier calls an exact ratio.
 
-    ``adj`` is the ``vendor_artifact_repaired`` adjusted close (VA1,
-    :func:`atx_db._vendor_artifact.repaired_bars_sql` over the picked bars): a vendor
-    factor decrease that is not a split (the 2021-01-04 step on ~3,400 dividend payers)
-    is neutralized, so no daily return, window level or split step spans it. The rule
-    reads a bar and its predecessor only (no look-ahead), and returns inside the read
-    window do not depend on where the read starts.
+    ``adj`` is the ``vendor_artifact_repaired`` adjusted close (VA1 v2,
+    :func:`atx_db._vendor_artifact.repaired_bars_sql` over the picked bars with the same
+    bar's vendor share count for the share veto, C-39): a vendor factor decrease that is
+    not a split (the 2021-01-04 step on ~3,400 dividend payers) is neutralized, so no
+    daily return, window level or split step spans it. The rule reads a bar and at most
+    ``LOOKBACK_SESSIONS`` earlier bars (no look-ahead), and returns inside the read window
+    do not depend on where the read starts (except a step in its first few bars, whose
+    look-back is cut short).
     """
     first = row.formation_date - dt.timedelta(days=PRICE_LOOKBACK_DAYS)
     sessions = sorted({*xnys_sessions(first, row.formation_date), row.formation_date}, reverse=True)
@@ -1708,18 +1730,21 @@ def _stage_price_window(con: Any, row: CalendarRow) -> None:
     con.executemany("INSERT INTO _rp_xnys VALUES (?, ?)", [[day, back] for back, day in enumerate(sessions, 1)])
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _rp_price_window AS
-        WITH picked AS (
-          SELECT b.security_id, b.trade_date,
-                 CAST(arg_max_null(b.close, (b.available_at, b.source)) AS DOUBLE) AS close,
-                 CAST(arg_max_null(b.adjusted_close, (b.available_at, b.source)) AS DOUBLE) AS adj,
-                 CAST(arg_max_null(b.volume, (b.available_at, b.source)) AS DOUBLE) AS volume,
-                 max({_BAR_CLOCK_SQL}) AS bar_at
-          FROM equity_daily_bars b
+        WITH visible AS (
+          SELECT b.security_id, b.trade_date, b.close, b.adjusted_close, b.volume, b.shares_outstanding,
+                 max({_BAR_CLOCK_SQL}) OVER (PARTITION BY b.security_id, b.trade_date) AS bar_at,
+                 row_number() OVER (PARTITION BY b.security_id, b.trade_date
+                                    ORDER BY {_vendor_artifact.bar_pick_order_sql('b', with_shares=True)},
+                                             b.volume DESC NULLS LAST) AS bar_pick
+          FROM {_vendor_artifact.bars_relation_sql()} b
           SEMI JOIN (SELECT security_id FROM _rp_cohort_all WHERE decision_date=? AND eligible) k
             ON k.security_id=b.security_id
           WHERE b.trade_date BETWEEN ? AND ? AND {_BAR_CLOCK_SQL}<=?
-          GROUP BY b.security_id, b.trade_date
-        ), repaired AS ({_vendor_artifact.repaired_bars_sql('picked', adjusted='adj')}
+        ), picked AS (
+          SELECT security_id, trade_date, CAST(close AS DOUBLE) AS close, CAST(adjusted_close AS DOUBLE) AS adj,
+                 CAST(volume AS DOUBLE) AS volume, CAST(shares_outstanding AS DOUBLE) AS shares, bar_at
+          FROM visible WHERE bar_pick = 1
+        ), repaired AS ({_vendor_artifact.repaired_bars_sql('picked', adjusted='adj', shares='shares')}
         ), obs AS (
           SELECT p.security_id, x.back, p.close, p.adj * p.va_multiplier AS adj, p.volume, p.bar_at
           FROM repaired p JOIN _rp_xnys x ON x.session=p.trade_date
@@ -1851,8 +1876,9 @@ def _price_window_parts(con: Any, features: Sequence[PanelFeature], spec: dict[s
 def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow, market_source: str) -> str:
     """The long-form ``line_market_cap`` rows of one formation (UNVERIFIED; opt-in only).
 
-    The line's own close, picked with market_daily's one bar rule (every column from
-    the newest ``(available_at, source)`` row, a NULL included; the price checked
+    The line's own close, picked with market_daily's one bar rule (node 0.13 I4, C-39,
+    0.13 re-review D3: one whole row among the session's rows visible at the cutoff, by
+    the publisher's total order, as in :func:`_stage_price_window`; the price checked
     after the pick), times the vendor share count of the latest A8 share run known at
     the session's cutoff (``_rp_share_state``, :func:`_stage_line_shares`), never the
     bar's own count: the vendor starts a run on the DEI cover date, before the filing
@@ -1894,16 +1920,15 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow, market_sou
           SELECT DISTINCT security_id FROM _rp_adr_lines
           WHERE coalesce(valid_from <= ?, true) AND (valid_to IS NULL OR ? < valid_to)
         ), picked AS (
-          SELECT b.security_id,
-                 CAST(arg_max_null(b.close, (b.available_at, b.source)) AS DOUBLE) AS close,
-                 CAST(arg_max_null(b.adjusted_close, (b.available_at, b.source)) AS DOUBLE) AS adj,
-                 CAST(arg_max_null(b.shares_outstanding, (b.available_at, b.source)) AS DOUBLE) AS vendor_shares,
-                 greatest(max(b.available_at), CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)
-                   AS bar_at
-          FROM equity_daily_bars b
+          SELECT b.security_id, CAST(b.close AS DOUBLE) AS close, CAST(b.adjusted_close AS DOUBLE) AS adj,
+                 CAST(b.shares_outstanding AS DOUBLE) AS vendor_shares,
+                 max({_BAR_CLOCK_SQL}) OVER (PARTITION BY b.security_id) AS bar_at
+          FROM {_vendor_artifact.bars_relation_sql()} b
           JOIN _rp_cohort_all k ON k.decision_date=? AND k.security_id=b.security_id AND k.eligible
-          WHERE b.trade_date=?
-          GROUP BY b.security_id, b.trade_date
+          WHERE b.trade_date=? AND {_BAR_CLOCK_SQL}<=?
+          QUALIFY row_number() OVER (PARTITION BY b.security_id
+                                     ORDER BY {_vendor_artifact.bar_pick_order_sql('b', with_shares=True)},
+                                              b.volume DESC NULLS LAST) = 1
         ), judged AS (
           SELECT p.security_id, p.close, p.vendor_shares, s.pit_shares, s.pit_clock, s.share_basis,
                  greatest(p.bar_at, s.pit_available_at) AS available_at,
@@ -1935,7 +1960,7 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow, market_sou
                     THEN {_sql_text(VENDOR_SHARES_AVAILABILITY_BASIS + ':')} || pit_clock END AS availability_basis
         FROM judged
     """, [market_source, row.formation_date, row.formation_date, row.formation_date, row.formation_date,
-          row.formation_date])
+          row.cutoff, row.formation_date])
     return (f"SELECT security_id, {_sql_text(feature.feature_id)} AS feature_id, value, available_at, "
             f"CAST(NULL AS TIMESTAMP) AS fundamental_available_at, '{BARS_SOURCE}' AS value_origin, shares_source, "
             f"CAST(reason_hint AS VARCHAR) AS reason_hint, availability_basis FROM _rp_line_cap")

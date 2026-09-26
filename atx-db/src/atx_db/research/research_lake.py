@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -121,8 +122,28 @@ def resolve_research_root(root: Path | str | None = None) -> Path:
 
 
 def default_temp_directory(root: Path) -> Path:
-    """DuckDB spill directory: ``<root>/../tmp/duckdb`` (``data/tmp/duckdb`` for the default root)."""
+    """DuckDB spill root: ``<root>/../tmp/duckdb`` (``data/tmp/duckdb`` for the default root).
+
+    Each connection spills into a directory of its own below it (:func:`private_temp_directory`).
+    """
     return root.parent / "tmp" / "duckdb"
+
+
+_CONNECTIONS = itertools.count()
+
+
+def private_temp_directory(root: Path) -> Path:
+    """A spill directory for one connection: ``<spill root>/conn-<pid>-<n>-<ns>`` (not created here).
+
+    Ruling C-56: DuckDB gives its spill files the same names in every process
+    (``duckdb_temp_storage_*.tmp``) and, at close, deletes the ``duckdb_temp_*`` files of a
+    directory it did not create. Two workers sharing one directory therefore overwrote and
+    deleted each other's spills (an OOM on a "4690 PiB" block, an INTERNAL "allocation size
+    1.7e19", "Failed to delete duckdb_temp_storage_S64K-0.tmp"). A per-connection name that is
+    left for DuckDB to create on its first spill is also removed by DuckDB at close; only a
+    killed process leaves its (pid-named) directory behind.
+    """
+    return default_temp_directory(root) / f"conn-{os.getpid()}-{next(_CONNECTIONS)}-{time.monotonic_ns()}"
 
 
 def sql_text(value: str) -> str:
@@ -135,14 +156,17 @@ def connect_bounded(db_path: Path | str | None = None, *, root: Path | None = No
     """A DuckDB connection with the research-worker settings applied at connect (M7).
 
     ``memory_limit`` and ``threads`` are set in the connect config (so they hold during
-    WAL replay too), with ``preserve_insertion_order=false`` and a spill directory.
+    WAL replay too), with ``preserve_insertion_order=false`` and a spill directory private
+    to this connection (:func:`private_temp_directory`, ruling C-56): concurrent workers
+    never share spill files.
     """
     if not _MEMORY.fullmatch(memory_limit):
         raise LakeError("memory_limit must look like '256MB'")
     if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 4:
         raise LakeError("threads must be an integer 1..4")
-    temp = default_temp_directory(resolve_research_root(root))
-    temp.mkdir(parents=True, exist_ok=True)
+    research_root = resolve_research_root(root)
+    default_temp_directory(research_root).mkdir(parents=True, exist_ok=True)
+    temp = private_temp_directory(research_root)
     config = {"memory_limit": memory_limit, "threads": str(threads), "preserve_insertion_order": "false",
               "temp_directory": temp.as_posix(), "max_temp_directory_size": "40GB"}
     if db_path is None:
@@ -515,6 +539,7 @@ __all__ = [
     "lake_manifest",
     "lake_relation",
     "lake_root",
+    "private_temp_directory",
     "register_benchmarks",
     "register_external_dataset",
     "resolve_research_root",

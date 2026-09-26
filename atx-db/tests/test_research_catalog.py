@@ -30,6 +30,7 @@ from atx_db.research.catalog import (
     render_anomaly_catalog_markdown,
     validate_anomaly_catalog,
 )
+from atx_db.research.price_natives import NATIVES
 
 DOC_PATH = Path(__file__).resolve().parents[1] / "docs" / "research" / "ANOMALY_CATALOG.md"
 
@@ -82,8 +83,12 @@ def test_every_seed_metric_has_exactly_one_reviewed_disposition():
         if entry.source_kind == "seed_metric":
             assert (entry.metric_code, entry.metric_window) == (
                 seed[entry.metric_code].metric_code, seed[entry.metric_code].window)
-    # CB1: the P2 panel natives are cataloged as panel_native rows (R2b plans them as panel features).
-    assert {entry.feature_id for entry in entries if entry.source_kind == "panel_native"} == PANEL_NATIVES
+    # CB1: the P2 panel natives are cataloged as panel_native rows (R2b plans them as panel features);
+    # node 1.12 adds the price wave's store-built natives (wave w1_price), one row each.
+    price_wave = {native.feature_id for native in NATIVES}
+    assert len(price_wave) == len(NATIVES) and price_wave.isdisjoint(PANEL_NATIVES)
+    assert {entry.feature_id for entry in entries if entry.source_kind == "panel_native"} == PANEL_NATIVES | price_wave
+    assert {entry.feature_id for entry in entries if entry.wave == "w1_price"} == price_wave
     # Liquidity premia are anomalies, not size controls: their size-neutral variant is tested.
     for code in ("amihud_illiquidity_21d", "turnover_21d"):
         entry = next(entry for entry in entries if entry.feature_id == code)

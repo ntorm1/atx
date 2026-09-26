@@ -170,7 +170,12 @@ def is_session(day: dt.date) -> bool:
 
 
 def xnys_sessions(start: dt.date, end: dt.date) -> list[dt.date]:
-    """The XNYS rule sessions in ``[start, end]`` (weekdays that are not full-day closures)."""
+    """The XNYS rule sessions in ``[start, end]`` (weekdays that are not full-day closures).
+
+    ``start`` and ``end`` must be dates: a ``datetime`` never equals a closure date, so it
+    would return holidays as sessions (1.11 review m1); it is refused like every clock here.
+    """
+    start, end = _as_date(start, "start"), _as_date(end, "end")
     closures: dict[int, frozenset[dt.date]] = {}
     days, day = [], start
     while day <= end:

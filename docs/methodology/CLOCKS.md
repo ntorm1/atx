@@ -15,6 +15,11 @@ Tier-1 v2 node 1.11. Code: `atx-db/src/atx_db/calendar.py` (sessions and clocks)
 | Entry | the close of the first session strictly after `t` | `next_session(t)` |
 | FC1 fundamental | SEC filing date 00:00 UTC + 46 h = the next calendar day's 22:00 UTC, i.e. a feature dated `filed + 1 day` | `_fundamental_clock.FUNDAMENTAL_CLOCK_POLICY` (`sec_filed_date_plus_46h_v1`) |
 
+The `t` 22:00 UTC rule is for market-dated features (a bar, a session, a month end). A **date-only SEC stamp** (a
+filing date without its acceptance time) always takes FC1 (filing date + 46 h), never the market-date 22:00 UTC rule:
+EDGAR dates a filing accepted up to 17:30 ET (22:30 UTC in winter) on that same day, and Section 16 forms up to
+22:00 ET, so `filed` 22:00 UTC can precede dissemination.
+
 Consequences:
 
 - **No same-session entry.** 22:00 UTC is after every XNYS close: 16:00 ET is 21:00 UTC in winter and 20:00 UTC in
@@ -26,8 +31,10 @@ Consequences:
   is usable Saturday 22:00 UTC and enters Monday's close; a filing on the Wednesday before Good Friday is usable
   Thursday 22:00 UTC and enters the following Monday's close.
 - **Monthly formations** (research panel): formation = the month's last rule session `M`, cutoff = `M` 22:00 UTC, entry =
-  the next observed session after `M` (`research/panel.py:month_end_calendar`; a missing month-end session is never
-  replaced by an earlier one).
+  the first observed date after `M` that is a rule session (`research/panel.py:month_end_calendar`, panel v9: a stray
+  market_daily date is never an entry; a missing month-end session is never replaced by an earlier one). The price
+  wave's provisional labels (`research/spine.py`, node 1.12) enter at the close of `next_session(eom)` and exit at the
+  close of `next_session` of the h-th month end after `eom`.
 
 ## The session calendar
 

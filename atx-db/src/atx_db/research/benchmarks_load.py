@@ -382,7 +382,9 @@ def build_french_me_breakpoints(raw: RawFile) -> tuple[pa.Table, dict[str, Any]]
         "timing": "percentiles of NYSE market equity at the end of month_end (French ME_Breakpoints)",
         "columns": {
             "n_nyse_firms": "number of NYSE firms",
-            **{name: f"{name[4:6]}th NYSE ME percentile" for name in names},
+            # The percentile digits of me_pXX_musd and me_p100_musd (X.3 review M3: not a fixed slice).
+            **{name: f"{int(name.removeprefix('me_p').removesuffix('_musd'))}th NYSE ME percentile"
+               for name in names},
         },
         "non_positive_values_to_null": non_positive,
         "header_text": " ".join(text_lines)[:400],
@@ -435,7 +437,8 @@ def build_jkp_us_factors(raw: RawFile) -> tuple[pa.Table, dict[str, Any]]:
         "ret_nulls": table.column("ret").null_count,
         "ret_abs_max": pc.max(abs_ret).as_py(),
         "ret_abs_median": float(np.nanmedian(abs_ret.to_numpy(zero_copy_only=False).astype(float))),
-        "direction_note": "JKP 'direction' is the sign applied so the factor is long the high-expected-return leg",
+        "direction_note": ("ret is already direction-signed: JKP applied 'direction' so every factor is long its "
+                           "high-expected-return leg; do not multiply ret by direction again (X.3 review M4)"),
     }
     return table, info
 
@@ -711,10 +714,26 @@ def _schema_listing(schema: pa.Schema) -> list[list[str]]:
     return [[item.name, str(item.type)] for item in schema]
 
 
+#: Run-dependent fields kept in ``_manifest.json`` only, never in a Parquet footer (X.3 review M2): the
+#: footer then depends on the input bytes and the loader alone, so identical inputs give an identical
+#: ``parquet_sha256`` on every re-parse and after a byte-identical refetch.
+_VOLATILE_KEYS = frozenset({"parsed_at_utc"})
+_VOLATILE_SOURCE_KEYS = frozenset({"fetched_at_utc", "snapshot_dir"})
+
+
+def _footer_bytes(entry: dict[str, Any]) -> bytes:
+    """The footer stamp of a manifest entry without its run-dependent fields (reproducible bytes)."""
+    stable = {key: value for key, value in entry.items() if key not in _VOLATILE_KEYS}
+    if "sources" in stable:
+        stable["sources"] = [{key: value for key, value in item.items() if key not in _VOLATILE_SOURCE_KEYS}
+                             for item in stable["sources"]]
+    return json.dumps(stable, sort_keys=True, default=str).encode()
+
+
 def _write_table(table: pa.Table, path: Path, entry: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    stamped = table.replace_schema_metadata({METADATA_KEY: json.dumps(entry, sort_keys=True, default=str).encode()})
+    stamped = table.replace_schema_metadata({METADATA_KEY: _footer_bytes(entry)})
     pq.write_table(stamped, tmp, compression="zstd")
     os.replace(tmp, path)
 
@@ -758,7 +777,7 @@ def _build_one(name: str, root: Path, inputs: list[RawFile], parsed_at: str) -> 
             entry = base | {"rows": stats["rows"], "date_min": stats["date_min"], "date_max": stats["date_max"]}
             entry["info"] = info_base | {"stats": stats}
             entry["schema"] = _schema_listing(_PORTS_SCHEMA)
-            return json.dumps(entry, sort_keys=True, default=str).encode()
+            return _footer_bytes(entry)
 
         stats, ls_rows = write_osap_portfolios(inputs[0], path, metadata)
         pa.default_memory_pool().release_unused()
