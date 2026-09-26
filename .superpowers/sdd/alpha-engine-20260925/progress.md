@@ -46,7 +46,25 @@ Do not launch it or automatically rerun mining. User prioritized vectorized roug
 forward-return IC across several horizons before full backtests, retaining true alphas.
 This explicitly authorizes proceeding with the scoped W2-A4 subset before that long gate.
 
-IC V2 source through abe8fec6 passed 102 distinct focused checks, zero failures/skips:
+LATEST COMPLETED PACKET: 123163e2 qualifies production7e9f6f4a, clean build6a401f56,
+with test-only fixture correctione2aaea7e. W1 foundation83/83 (19.904s); IC63/64
+then corrected fixture1/1 (17.362s+0.011s); impl42/42 (35.752s). 189distinct
+checks pass, zero skips/unresolved failures. Initial assertion omitted decision-price
+eligibility; production unchanged. Initial build324.500s stopped on missing JSON
+include; resumed source-local fix375.350s; test-only rebuild8.531s. No active
+compiler/runtime remains. Full wave/performance/RSS/harness gates remain open;
+V3 practical noisy pruning/general recall still unqualified. Logs/XML/receipts
+and binary hashes in pool2/build-equity, report w1/foundation-v3-qualification-report.md.
+
+Next source is NOT imported yet: B1 core a3ee26f0, tests7cad09c9, report3a9ae917
+independently source-approved by root; calibration63ea1ef4 awaiting source review
+and postimplementation fixtures. A5 first slice d9925eec under review: persist corr
+recipe on reopen and use bounded top16 exact refinement for PoolView approximate
+continuous redundancy; compact records/segments/resolver still in progress.
+D1 pure synthetic source work continues, including narrow PitRecord/decoder expiry
+wiring. Do not build imported subsets separately: batch the next coherent release.
+
+Earlier detail (superseded by completed packet above where it says pending):IC V2 source through abe8fec6 passed 102 distinct focused checks, zero failures/skips:
 engine59, impl42, additional widecohort1; final discovery8 repeated after provenance
 refresh. First build402.686s, completion78.394s, wide/provenance43.617s. Small noisy
 cohorts rejected0/18 nulls; planted effects retained but no population recall claim.

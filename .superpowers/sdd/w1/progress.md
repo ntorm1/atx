@@ -50,10 +50,13 @@ IC floor0.002 and multiplier3.5; it removes the arbitrary one-SE veto while
 retaining the additional heuristic quarter safeguard. Old V2 remains explicit.
 This still passes underpowered candidates; it makes no general recall or speed
 claim. Kernel import `b9e55206`, mine import `d7b11bc5` and discovery/defaults
-`8ccf0982` are independently source-approved. One combined warm build at
-`8ccf0982` is in progress: 73 changed C++ objects and five links, no dependency,
-PCH or worker rebuild. Jobs1 preserves the available RAM. Runtime qualification
-is pending; this build is not a passed gate.
+`8ccf0982` are independently source-approved. Bounded qualification is complete
+in `123163e2`: W1 foundation 83/83, IC 63 passing plus one corrected fixture
+passing, and impl 42/42, 189 distinct checks with no unresolved failures/skips.
+Production rank reuse/source-local JSON fix is `7e9f6f4a`; test correction
+`e2aaea7e`. The build reused PCH/dependencies, Jobs1, and completed in 324.500s
+(initial missing include) plus 375.350s; final fixture-only rebuild 8.531s.
+Full wave, performance, scale and shared causality-harness gates remain open.
 
 The next independent implementation lanes are active under the same owner
 build-first instruction. Pool-3 owns W1-D1 dated security links, with the minimum
