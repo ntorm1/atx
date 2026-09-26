@@ -14,6 +14,13 @@
 //
 //      raw = wq * diversify * robust
 //
+//  This opening convention describes explicit LegacyStreamsV1. DelayedSurfaceV2
+//  instead uses annualized NET Sharpe over its contiguous mature role calendar
+//  in the historical `wq` scalar slot; turnover is actual filled dollars / NAV.
+//  That is a role/training score, not a CPCV out-of-sample or WQ fitness claim.
+//  V2 refuses unbound nonempty pools until their execution/calendar recipe can
+//  be certified, so its supported empty-pool diversification term is exactly 1.
+//
 //  where wq is the OOS WorldQuant fitness (combine::compute_metrics().fitness,
 //  reused VERBATIM — no second convention), diversify = 1 − mean|corr-to-pool|
 //  (F7), and robust is the sub-universe-stability ratio (§0.8). Admission (S3-6)
@@ -51,7 +58,8 @@
 //  panel as an optional borrow; when none is configured, robust = 1.0 (a clean,
 //  documented degenerate — robustness neither rewards nor penalizes).
 //
-//  Header-only, every function inline; the fitness path is COLD (one call per
+//  Core fitness is compiled in src/factory/fitness.cpp; only small helpers and
+//  the cache remain inline. The fitness path is COLD (one call per
 //  distinct candidate, never on the VM hot loop), so std::vector is fine.
 
 #include "atx/engine/factory/execution_objective.hpp"

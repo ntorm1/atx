@@ -50,6 +50,10 @@ public:
   [[nodiscard]] atx::usize realization_end() const noexcept;
   [[nodiscard]] const ExecutionObjectiveConfig& config() const noexcept;
   [[nodiscard]] std::string_view identity_sha256() const noexcept;
+  // Admission charges retained payload plus explicit allocator/control-block
+  // slack, not measured RSS. Per-signal includes output, pending targets and
+  // book/WeightPolicy scratch; context + concurrent calls must fit the config
+  // maximum. Existing VM/search caches are separate from this execution budget.
   [[nodiscard]] atx::u64 bytes() const noexcept;
   [[nodiscard]] atx::u64 per_signal_working_bytes() const noexcept;
 private:
@@ -79,6 +83,10 @@ private:
 // weights. At d store fixed target dollars using NAV known at d. At entry rebalance
 // marked holdings toward those stored dollars; apply snapshot-d participation
 // caps to actual fills and debit cash costs. Short proceeds remain in cash.
+// This is a total-return marked-dollar book: fractional fills are permitted;
+// corporate-action claims/share replay and financing of negative cash are not
+// modeled. There is no automatic terminal liquidation: ending NAV includes the
+// final marked holdings, and terminal liquidation costs are not fabricated.
 [[nodiscard]] atx::core::Result<ExecutionObjectiveContext> prepare_execution_objective(
     const alpha::Panel& panel,const WeightPolicy& policy,const ExecutionObjectiveConfig& config,
     std::span<const cost::CostSurface> decision_snapshots,
