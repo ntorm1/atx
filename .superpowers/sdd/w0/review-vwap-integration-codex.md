@@ -1,7 +1,7 @@
 # Independent D0 VWAP integration review
 
 Source review of frozen production `deb939d25965fed0dd04f4493a8f91156a337e76`.
-**Changes requested; runtime qualification pending.** No production edits,
+**Initial changes requested; see the fix-only review below. Runtime qualification pending.** No production edits,
 configure, compilation or test execution were performed by this reviewer.
 
 ## Required repairs
@@ -76,3 +76,42 @@ Root approved using pool5 for warm alpha-only qualification after the final D0
 freeze/review, retaining group order and old PCH layout. Data and impl qualify in
 their owning trees. This is a graph estimate, not a measured build speedup. No
 configure, dependency regeneration or compiler was launched for this audit.
+
+## Fix-only review and qualification candidate
+
+Reviewed the frozen production followups and postimplementation tests through
+`d40441ad352aab84ead6faecb129da72a56c0496`. **Ready for compilation qualification;
+no remaining source/test blocker. This is not a runtime approval.**
+
+- `c19e8a0a9182e8b450fa29480e3c93fd4dccd485` closes context forwarding: explicit
+  rule/basis are stored, transferred by both move operations, and passed into
+  lazy augmented lowering. Raw lowering with no ADV windows is unchanged.
+- `a90b428a7c45f8823b8dcf4d24be76f88e982f95` closes the pre-read geometry issue:
+  checked dates*instruments, matching name/data cardinality, all column lengths
+  and any nonempty mask are validated before spans or element reads. Valid V1
+  arithmetic is unchanged.
+- Separately attributed `95828c6e5da1d249b46a2032a25ca805a71462d5` closes the
+  adjacent capacity identity hole: both persisted JSON and fingerprint bind
+  min_price, min_adv_usd and adv_window under the identical active branch.
+- `6103ab692d9bc4bd5d63f2cef9c45dc2b6c94b1f` preserves empty valid V1 field order
+  by distinguishing an available zero-length legacy VWAP column from no column.
+- Tests at d40441ad cover stale VWAP replacement; finite-positive raw cells and
+  invalid/masked cells; strict unknown-basis rejection and explicit alternatives;
+  raw-price raggedness, cardinality, mask and product overflow; instrument-specific
+  future factor perturbation and rank invariance; context moves before caching;
+  versioned field basis, persisted recipes and active/off capacity identity.
+  Synthetic raw declarations were inspected against their unadjusted generators.
+- The new N128 fixture oracle independently copies the b185d056 RNG, base field
+  generation and legacy derivation. Its oldest-to-newest ADV sum, NaN creation,
+  field order and universe masks match the frozen old source. It does not call
+  current datafields on the expected side. It compares every f64 bit, field name,
+  mask cell and digest at 2520 x 128. Actual equivalence remains a runtime gate.
+
+The exact six-commit import sequence for pool5 is deb939d2, c19e8a0a, a90b428a,
+95828c6e, 6103ab69, d40441ad. It contains no CMake, preset or PCH ownership changes,
+so the existing alpha;eval;combine group order and warm original PCH remain usable.
+Data/impl suites qualify in their owning trees; pool5 owns alpha qualification.
+The owner supplied one PCH-off real_panel.cpp compile log at
+pool4/build-equity-hygiene/w0-vwap-real-panel-hygiene.log, whose recorded Ninja
+command uses -j 1 and compiles that one object. This reviewer has not executed a
+compiler or claimed broader hygiene/suite evidence at this source-review stage.
