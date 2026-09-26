@@ -1,0 +1,930 @@
+{
+  "audited_at_utc": "2026-09-26T21:08:42.628097+00:00",
+  "root_head": "0bfac41e2e07f56327254d116fe07fbf352da293",
+  "packets": [
+    {
+      "report_commit": "52f5cbf1",
+      "name": "exposure-residual",
+      "bindings": [
+        {
+          "path": "build-equity/w2-exposure-ic-qualification-index.json",
+          "expected": "ef523c3cc985a7731d993de905b69a80773cbcd73dcbdcea2889448756dc5f93",
+          "actual": "ef523c3cc985a7731d993de905b69a80773cbcd73dcbdcea2889448756dc5f93",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-configure.log",
+          "expected": "f7635fcfc5f30b42d67f997ba851bab6442ee67dfa986be85b2a9d9c059e8904",
+          "actual": "f7635fcfc5f30b42d67f997ba851bab6442ee67dfa986be85b2a9d9c059e8904",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-configure-receipt.json",
+          "expected": "7ab6e9510f0d7d0b429aac506230ec79096e7c906a5e4de3c26ad1aae831e65c",
+          "actual": "7ab6e9510f0d7d0b429aac506230ec79096e7c906a5e4de3c26ad1aae831e65c",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-start.json",
+          "expected": "d57f74eb876403ae442610c8af4d6e4e70fcf94f2e9a7a5fcee6e05c0da0ebd4",
+          "actual": "d57f74eb876403ae442610c8af4d6e4e70fcf94f2e9a7a5fcee6e05c0da0ebd4",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-build-receipt.json",
+          "expected": "f0ae9b41b64f9ab0601f43b90a60933ba7afd2f1a6b8b6630424b0e6bcc742c8",
+          "actual": "f0ae9b41b64f9ab0601f43b90a60933ba7afd2f1a6b8b6630424b0e6bcc742c8",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-build.log",
+          "expected": "aeeee1f727f5d07dc2bf2469b6cd0af005989360ce021e7175c9a875000c2dbf",
+          "actual": "aeeee1f727f5d07dc2bf2469b6cd0af005989360ce021e7175c9a875000c2dbf",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-cache-summary.txt",
+          "expected": "90fa4f99a588465d0a9afdae3a178bfd9e02a0fea49f4a8c2562ea134ad30ecd",
+          "actual": "90fa4f99a588465d0a9afdae3a178bfd9e02a0fea49f4a8c2562ea134ad30ecd",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-resume-start.json",
+          "expected": "5114f6859e88922f5fa1f24f0184355ea775ddf419568fd8c3308a7e42ab44a1",
+          "actual": "5114f6859e88922f5fa1f24f0184355ea775ddf419568fd8c3308a7e42ab44a1",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-resume-build-receipt.json",
+          "expected": "63310cc299d275f304c3b895d358a9835bd3d7394420b041bf60b2975c0c37e8",
+          "actual": "63310cc299d275f304c3b895d358a9835bd3d7394420b041bf60b2975c0c37e8",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-resume-build.log",
+          "expected": "3e9c1eca402e90573d874603c77443c47566d84cd0f6c50a44b684742d79bef6",
+          "actual": "3e9c1eca402e90573d874603c77443c47566d84cd0f6c50a44b684742d79bef6",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-resume-cache-summary.txt",
+          "expected": "ce0ae2611c98660cce0e4c5203130f05882978190dac319f4c67584b6471f0d0",
+          "actual": "ce0ae2611c98660cce0e4c5203130f05882978190dac319f4c67584b6471f0d0",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-noop-start.json",
+          "expected": "ca231cfa628123853a4a341fdb4a4dd89e53b9dae506994d9ec16485aa1e10d7",
+          "actual": "ca231cfa628123853a4a341fdb4a4dd89e53b9dae506994d9ec16485aa1e10d7",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-noop-build-receipt.json",
+          "expected": "947d82a5d2c233422d8362a7141b3377eb3ff44fb9bed35fe09facde5cd67003",
+          "actual": "947d82a5d2c233422d8362a7141b3377eb3ff44fb9bed35fe09facde5cd67003",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-noop-build.log",
+          "expected": "4a308decda346c7e10aef738855f00dfaa7069805d8b7b3911e8350cdca9fe15",
+          "actual": "4a308decda346c7e10aef738855f00dfaa7069805d8b7b3911e8350cdca9fe15",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-noop-cache-summary.txt",
+          "expected": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "actual": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-data-qualified.xml",
+          "expected": "5d518177bc2d5d0295c61be85b332a02f2d07a8f96643b7a13fd5076d8b628cc",
+          "actual": "5d518177bc2d5d0295c61be85b332a02f2d07a8f96643b7a13fd5076d8b628cc",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-data-qualified.log",
+          "expected": "b1288f3c23b3c81bed4a94525b74083cbcb1f3d0ca5d4ac0c24cbc206ee25471",
+          "actual": "b1288f3c23b3c81bed4a94525b74083cbcb1f3d0ca5d4ac0c24cbc206ee25471",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-data-qualified-receipt.json",
+          "expected": "d6e6c6d24b9ee11ea28cbac7f74096b7c46423af8df9e415901ce2b15e167a60",
+          "actual": "d6e6c6d24b9ee11ea28cbac7f74096b7c46423af8df9e415901ce2b15e167a60",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/bin/atx-engine-w1-data-tests.exe",
+          "expected": "b9829f248a45264c93d758b78f341da38b6683bbfa4defa2b93dcfe93b04dea9",
+          "actual": "daa97b4362f1287f460fa0d925e52f5c6b098df17d61b985d17c227da3bb6314",
+          "matches": false,
+          "binary": true
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-residual-qualified.xml",
+          "expected": "152da707619a31b9aec40e48b553773c674abf174d7c206069c5d0738c6e854f",
+          "actual": "152da707619a31b9aec40e48b553773c674abf174d7c206069c5d0738c6e854f",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-residual-qualified.log",
+          "expected": "4972aa76c2bb42bd71a8c72ed0bada798bd0917339a2c208e442f13b1a5cf42e",
+          "actual": "4972aa76c2bb42bd71a8c72ed0bada798bd0917339a2c208e442f13b1a5cf42e",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-residual-qualified-receipt.json",
+          "expected": "0057210e51721fac90529f5ff92d467453ec01178869f4cb53f0068708138b97",
+          "actual": "0057210e51721fac90529f5ff92d467453ec01178869f4cb53f0068708138b97",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/bin/atx-engine-ic-screen-tests.exe",
+          "expected": "d38430293fe2a62e13d77535d65e9201ad318d692add775dff5305f15f394e3a",
+          "actual": "18d06ad8317afddae241a696f35aacc6e19940b2f958437e0e3a7ea77ad34de4",
+          "matches": false,
+          "binary": true
+        }
+      ],
+      "xml": [
+        {
+          "path": "build-equity/w2-exposure-ic-data-qualified.xml",
+          "tests": "6",
+          "time": "0.01",
+          "cases": [
+            {
+              "name": "ExposurePanel.PlantedColumnsMatchIndependentCapCenterAndKeepOriginalAxes",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "ExposurePanel.FutureKnownClosureAndFutureObservationsCannotChangeEarlierNumericRows",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "ExposurePanel.SourceAbsenceUnqualifiedCapAndIndustryKeepDenominatorAndReasons",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "ExposurePanel.PartialWarmupDoesNotBanCompleteLaterDateAndUnknownMembersStayVisible",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "ExposurePanel.RawWinsorizationDoesNotPromiseFinalZBoundAndFlagsDegenerateColumns",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "ExposurePanel.CheckedIdentityGeometryBudgetsAndClockFailuresDoNotPublishBadRows",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            }
+          ]
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-residual-qualified.xml",
+          "tests": "6",
+          "time": "5.746",
+          "cases": [
+            {
+              "name": "FactoryResidualObjective.SqrtCapProjectionRemovesProxyAndPreservesSmallRealResidual",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FactoryResidualObjective.NearCollinearExactProxyCannotRankCancellationDust",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FactoryResidualObjective.WarmupMissingAndRankDeficiencyAreUnavailableNotZeroScores",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FactoryResidualObjective.CausalMaturityAndExplicitPricePresenceSurviveFutureMutation",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FactoryResidualObjective.CalendarHacMatchesIndependentLagSumAndPersistenceSkipsGaps",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FactoryResidualObjective.RefusesUnboundAxesSourceClocksScratchAndWorkingBudget",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            }
+          ]
+        }
+      ],
+      "logs": [
+        {
+          "path": "build-equity/w2-exposure-ic-configure.log",
+          "actions": [],
+          "diagnostics": [
+            "-- Configuring done (17.0s)",
+            "-- Generating done (0.5s)"
+          ]
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-build.log",
+          "actions": [
+            "[1/8] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\data\\exposure_panel.cpp.obj",
+            "[2/8] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\objective_ic.cpp.obj",
+            "[3/8] Building CXX object atx-engine\\tests\\CMakeFiles\\atx-engine-ic-screen-tests.dir\\factory\\factory_objective_ic_test.cpp.obj"
+          ],
+          "diagnostics": [
+            "FAILED: atx-engine/CMakeFiles/atx-engine.dir/src/factory/objective_ic.cpp.obj ",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(39,48): error: function definition is not allowed here",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(44,60): error: function definition is not allowed here",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(47,49): error: function definition is not allowed here",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(52,53): error: function definition is not allowed here",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(63,80): error: function definition is not allowed here",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(81,65): error: function definition is not allowed here",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(95,89): error: function definition is not allowed here",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(154,10): error: no matching function for call to 'equal'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(155,10): error: no matching function for call to 'equal'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(156,10): error: no matching function for call to 'equal'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(184,10): error: use of undeclared identifier 'charge'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(184,42): error: use of undeclared identifier 'charge'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(185,10): error: use of undeclared identifier 'charge'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(185,39): error: use of undeclared identifier 'charge'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(186,10): error: use of undeclared identifier 'charge'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(187,10): error: use of undeclared identifier 'charge'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(225,22): error: use of undeclared identifier 'hash_word'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(264,26): error: use of undeclared identifier 'hash_word'",
+            "..\\atx-engine\\src\\factory\\objective_ic.cpp(265,26): error: use of undeclared identifier 'hash_word'",
+            "fatal error: too many errors emitted, stopping now [-ferror-limit=]"
+          ]
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-resume-build.log",
+          "actions": [
+            "[1/6] Building CXX object atx-engine\\tests\\CMakeFiles\\atx-engine-w1-data-tests.dir\\data\\exposure_panel_test.cpp.obj",
+            "[2/6] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\objective_ic.cpp.obj",
+            "[3/6] Linking CXX static library lib\\atx-engine.lib",
+            "[4/6] Linking CXX executable bin\\atx-engine-ic-screen-tests.exe",
+            "[5/6] Linking CXX executable bin\\atx-engine-w1-data-tests.exe"
+          ],
+          "diagnostics": []
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-noop-build.log",
+          "actions": [],
+          "diagnostics": [
+            "ninja: no work to do."
+          ]
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-data-qualified.log",
+          "actions": [],
+          "diagnostics": []
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-residual-qualified.log",
+          "actions": [],
+          "diagnostics": []
+        }
+      ],
+      "receipts": [
+        {
+          "path": "build-equity/w2-exposure-ic-configure-receipt.json",
+          "contents": {
+            "Source": "73ace5dd3b7d931e7f1875e52b740f34b916cef7",
+            "ExitCode": 0,
+            "WallSeconds": 21.252283
+          }
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-build-receipt.json",
+          "contents": {
+            "Source": "a3101a9c905556509e950017345273609c9fc737",
+            "ConfiguredProvenance": "73ace5dd3b7d931e7f1875e52b740f34b916cef7",
+            "Jobs": 2,
+            "ExitCode": 1,
+            "WallSeconds": 13.3670732
+          }
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-resume-build-receipt.json",
+          "contents": {
+            "Source": "4816bb85e221c80d1ca7544d0a0208f4e5670475",
+            "ConfiguredProvenance": "73ace5dd3b7d931e7f1875e52b740f34b916cef7",
+            "Jobs": 2,
+            "ExitCode": 0,
+            "WallSeconds": 21.8520023
+          }
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-noop-build-receipt.json",
+          "contents": {
+            "Source": "4816bb85e221c80d1ca7544d0a0208f4e5670475",
+            "ConfiguredProvenance": "73ace5dd3b7d931e7f1875e52b740f34b916cef7",
+            "Jobs": 2,
+            "ExitCode": 0,
+            "WallSeconds": 3.750396
+          }
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-data-qualified-receipt.json",
+          "contents": {
+            "Source": "4816bb85e221c80d1ca7544d0a0208f4e5670475",
+            "Target": "atx-engine-w1-data-tests",
+            "Filter": "ExposurePanel.*",
+            "BinarySha256": "b9829f248a45264c93d758b78f341da38b6683bbfa4defa2b93dcfe93b04dea9",
+            "ExitCode": 0,
+            "WallSeconds": 0.0952437
+          }
+        },
+        {
+          "path": "build-equity/w2-exposure-ic-residual-qualified-receipt.json",
+          "contents": {
+            "Source": "4816bb85e221c80d1ca7544d0a0208f4e5670475",
+            "Target": "atx-engine-ic-screen-tests",
+            "Filter": "FactoryResidualObjective.*",
+            "BinarySha256": "d38430293fe2a62e13d77535d65e9201ad318d692add775dff5305f15f394e3a",
+            "ExitCode": 0,
+            "WallSeconds": 5.7896733
+          }
+        }
+      ],
+      "cpp_names_match": true,
+      "cohort_receipts_match": true,
+      "action_summary": {
+        "build-equity/w2-exposure-ic-configure.log": {
+          "cpp_attempts": 0,
+          "links": 0,
+          "pch_or_dependency_actions": []
+        },
+        "build-equity/w2-exposure-ic-build.log": {
+          "cpp_attempts": 3,
+          "links": 0,
+          "pch_or_dependency_actions": []
+        },
+        "build-equity/w2-exposure-ic-resume-build.log": {
+          "cpp_attempts": 2,
+          "links": 3,
+          "pch_or_dependency_actions": []
+        },
+        "build-equity/w2-exposure-ic-noop-build.log": {
+          "cpp_attempts": 0,
+          "links": 0,
+          "pch_or_dependency_actions": []
+        },
+        "build-equity/w2-exposure-ic-data-qualified.log": {
+          "cpp_attempts": 0,
+          "links": 0,
+          "pch_or_dependency_actions": []
+        },
+        "build-equity/w2-exposure-ic-residual-qualified.log": {
+          "cpp_attempts": 0,
+          "links": 0,
+          "pch_or_dependency_actions": []
+        }
+      }
+    },
+    {
+      "report_commit": "63e17294",
+      "name": "filing-clock",
+      "bindings": [
+        {
+          "path": "build-equity/w2-d3-clock-qualification-index.json",
+          "expected": "5297d42ef4cae72142b340a15a83a20cd56d8f1ecd6d1ad85de2bd457c22fe71",
+          "actual": "5297d42ef4cae72142b340a15a83a20cd56d8f1ecd6d1ad85de2bd457c22fe71",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/bin/atx-engine-w1-data-tests.exe",
+          "expected": "daa97b4362f1287f460fa0d925e52f5c6b098df17d61b985d17c227da3bb6314",
+          "actual": "daa97b4362f1287f460fa0d925e52f5c6b098df17d61b985d17c227da3bb6314",
+          "matches": true,
+          "binary": true
+        },
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified.xml",
+          "expected": "2cd610957b1cc89cd72471e2c6fc3d0e198d9f6c835f0ee19f6bbcc0114247a0",
+          "actual": "2cd610957b1cc89cd72471e2c6fc3d0e198d9f6c835f0ee19f6bbcc0114247a0",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified.log",
+          "expected": "301f25ca7e904c502fa9a2f71c56143fc70f0c236533e721b4127d5d3b894ba7",
+          "actual": "301f25ca7e904c502fa9a2f71c56143fc70f0c236533e721b4127d5d3b894ba7",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified-receipt.json",
+          "expected": "894680d27cc9bb08acf95980dd65cd9a2c4cd86ff1e630f40cc0fbd342c0074a",
+          "actual": "894680d27cc9bb08acf95980dd65cd9a2c4cd86ff1e630f40cc0fbd342c0074a",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-python-qualified.log",
+          "expected": "c736979cc5a6f821c2e883fa95965d096877e051fcd032e5e0fe695bbdfc088c",
+          "actual": "c736979cc5a6f821c2e883fa95965d096877e051fcd032e5e0fe695bbdfc088c",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-python-qualified-receipt.json",
+          "expected": "4589264fd58c6c667bea0d33f1f9d1ce71516bb3ea7c1ef56d2ebefb79e025c4",
+          "actual": "4589264fd58c6c667bea0d33f1f9d1ce71516bb3ea7c1ef56d2ebefb79e025c4",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-legacy-python-qualified.log",
+          "expected": "da80c8f4b9e9e33b3b4dd279e02cb109ccf04aee55794cd732e6a0ee57cae98e",
+          "actual": "da80c8f4b9e9e33b3b4dd279e02cb109ccf04aee55794cd732e6a0ee57cae98e",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-legacy-python-qualified-receipt.json",
+          "expected": "cd5f8139ab0bf21c4113f0381422bc7f151cf6e4b82bbc3fd32b22040e781db4",
+          "actual": "cd5f8139ab0bf21c4113f0381422bc7f151cf6e4b82bbc3fd32b22040e781db4",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-clock-start.json",
+          "expected": "8b3edc158ad144a1cee2c9d13578826530de5fd31745ccfa820c46d167ec2818",
+          "actual": "8b3edc158ad144a1cee2c9d13578826530de5fd31745ccfa820c46d167ec2818",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-clock-build-receipt.json",
+          "expected": "7db166968a5763cf7e591e94c18d7d808cb3e995f175208518421fd9d472555b",
+          "actual": "7db166968a5763cf7e591e94c18d7d808cb3e995f175208518421fd9d472555b",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-clock-build.log",
+          "expected": "36e0be7d07f89fe8b798a47f7e3a94944b4cb8dcfdfb790fdf38a346cbbd6517",
+          "actual": "36e0be7d07f89fe8b798a47f7e3a94944b4cb8dcfdfb790fdf38a346cbbd6517",
+          "matches": true,
+          "binary": false
+        },
+        {
+          "path": "build-equity/w2-d3-clock-cache-summary.txt",
+          "expected": "d4251f2163e66a82febe7568ae2794aef9feffccda0e144d747b63d73862ecb2",
+          "actual": "d4251f2163e66a82febe7568ae2794aef9feffccda0e144d747b63d73862ecb2",
+          "matches": true,
+          "binary": false
+        }
+      ],
+      "xml": [
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified.xml",
+          "tests": "25",
+          "time": "0.004",
+          "cases": [
+            {
+              "name": "FundamentalClockV4.DefaultDispatchKeepsStrictPublicationAndIdentityClocks",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalClockV4.ModeledOverrideRelaxesOnlyClockNeverFactVintage",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalClockV4.AcceptanceLagAndRevisionAvailabilityAreValidatedExactly",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalClockV4.MalformedClocksAndHiddenAxisRowsFailInsteadOfBecomingMissing",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalClockV4.WithheldSnapshotDoesNotRefreshOrRevokeOlderQualifiedValue",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalClockV4.MarkersBudgetsAndAuditCommitAreExplicit",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "SecurityLinkIntervals.ExpiryAndSeparateKnowledgeClockPermitOlderPeriodSuccessor",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "SecurityLinkIntervals.FutureConflictMarkerDoesNotBackdateAndOverrideIsExplicit",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "SecurityLinkIntervals.VersionedDecoderFeedsActualAlignerAndRejectsMalformedRows",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "SecurityLinkIntervals.DatedClockEqualityIsWithheldAndLegacyArithmeticIsPreserved",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "SecurityLinkIntervals.ExpiryMarkerRequiresBothEffectiveDateAndStrictKnowledgeTime",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "SecurityLinkIntervals.V3DecoderRetiresOverlapWithoutResurrectingPriorState",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.RawFieldNamesAreUniqueAndComplete",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Align_NoLookAhead_InvisibleBeforeAvailablePlusLag",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Align_AvailableBetweenSessions_UsesNextSession",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Align_LaterPeriodSupersedes_OlderAmendmentDoesNotRegress",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Align_FieldsChosenIndependently",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Align_StalenessCapsStopForwardFill",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Align_InstrumentsIsolated_AndStatsCounted",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Align_RecordAfterAxisIsCountedNotPlaced",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Align_RejectsBadInputs",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.MapSecurityIds_MapsKnownAndLeavesUnknownEmpty",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Derive_LiteratureDefinitions",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.Derive_NonPositiveDenominatorsAreNaN",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            },
+            {
+              "name": "FundamentalFields.WithFundamentalFields_AppendsNamedColumnsAndKeepsMask",
+              "status": "run",
+              "result": "completed",
+              "failure": 0,
+              "error": 0,
+              "skips": 0
+            }
+          ]
+        }
+      ],
+      "logs": [
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified.log",
+          "actions": [],
+          "diagnostics": []
+        },
+        {
+          "path": "build-equity/w2-d3-python-qualified.log",
+          "actions": [],
+          "diagnostics": [
+            "test_actual_exporter_writes_hash_bound_v4_and_separate_true_shares) ... [export] 0/1 companies",
+            "Ran 10 tests in 0.194s",
+            "OK"
+          ]
+        },
+        {
+          "path": "build-equity/w2-d3-legacy-python-qualified.log",
+          "actions": [],
+          "diagnostics": [
+            "Ran 9 tests in 0.002s",
+            "OK"
+          ]
+        },
+        {
+          "path": "build-equity/w2-d3-clock-build.log",
+          "actions": [
+            "[1/8] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\data\\fundamental_clock_artifact.cpp.obj",
+            "[2/8] Building CXX object atx-engine\\tests\\CMakeFiles\\atx-engine-w1-data-tests.dir\\data\\fundamental_clock_artifact_test.cpp.obj",
+            "[3/8] Linking CXX static library lib\\atx-engine.lib",
+            "[4/8] Building CXX object atx-engine\\tests\\CMakeFiles\\atx-engine-w1-data-tests.dir\\data\\data_security_link_intervals_test.cpp.obj",
+            "[5/8] Linking CXX executable bin\\atx-engine-w1-data-tests.exe"
+          ],
+          "diagnostics": [
+            "-- Configuring done (17.7s)",
+            "-- Generating done (0.9s)"
+          ]
+        }
+      ],
+      "receipts": [
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified-receipt.json",
+          "contents": {
+            "Source": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+            "Target": "atx-engine-w1-data-tests",
+            "Filter": "FundamentalClockV4.*:SecurityLinkIntervals.*:FundamentalFields.*",
+            "BinarySha256": "daa97b4362f1287f460fa0d925e52f5c6b098df17d61b985d17c227da3bb6314",
+            "ExitCode": 0,
+            "WallSeconds": 0.1126645
+          }
+        },
+        {
+          "path": "build-equity/w2-d3-python-qualified-receipt.json",
+          "contents": {
+            "Source": "f0ffc66d5bf3fc7729ae0aa5053e6392bb9a9ef5",
+            "ExitCode": 0,
+            "WallSeconds": 1.1998313999999999,
+            "Command": "python -m unittest discover -s atx-engine/tests/tools -p test_pit_fundamental_clock.py -v"
+          }
+        },
+        {
+          "path": "build-equity/w2-d3-legacy-python-qualified-receipt.json",
+          "contents": {
+            "Source": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+            "ExitCode": 0,
+            "WallSeconds": 0.8106496,
+            "Command": "python -m unittest discover -s atx-engine/tests/tools -p test_export_fundamental_fields.py -v"
+          }
+        },
+        {
+          "path": "build-equity/w2-d3-clock-build-receipt.json",
+          "contents": {
+            "Source": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+            "ConfiguredProvenance": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+            "Jobs": 2,
+            "ExitCode": 0,
+            "WallSeconds": 35.1366575
+          }
+        }
+      ],
+      "cpp_names_match": true,
+      "python": [
+        {
+          "path": "build-equity/w2-d3-python-qualified.log",
+          "actual_names": [
+            "test_acceptance_public_revision_and_exact_modeled_fallback_are_distinct",
+            "test_actual_exporter_writes_hash_bound_v4_and_separate_true_shares",
+            "test_conflicting_sue_history_is_unavailable_until_later_qualified_correction",
+            "test_expired_unqualified_facts_do_not_permanently_taint_new_history",
+            "test_inherited_modeled_or_unverified_knowledge_is_not_laundered",
+            "test_legacy_writer_bytes_and_24_hour_clock_remain_explicit",
+            "test_same_day_accessions_are_not_applied_before_their_own_publication",
+            "test_simultaneous_conflict_withheld_and_later_qualified_correction_recovers",
+            "test_true_entity_shares_never_sum_and_diluted_accounting_stays_separate",
+            "test_v4_nonfinite_derived_seasonal_differences_are_unavailable"
+          ],
+          "expected_names": [
+            "test_acceptance_public_revision_and_exact_modeled_fallback_are_distinct",
+            "test_actual_exporter_writes_hash_bound_v4_and_separate_true_shares",
+            "test_conflicting_sue_history_is_unavailable_until_later_qualified_correction",
+            "test_expired_unqualified_facts_do_not_permanently_taint_new_history",
+            "test_inherited_modeled_or_unverified_knowledge_is_not_laundered",
+            "test_legacy_writer_bytes_and_24_hour_clock_remain_explicit",
+            "test_same_day_accessions_are_not_applied_before_their_own_publication",
+            "test_simultaneous_conflict_withheld_and_later_qualified_correction_recovers",
+            "test_true_entity_shares_never_sum_and_diluted_accounting_stays_separate",
+            "test_v4_nonfinite_derived_seasonal_differences_are_unavailable"
+          ],
+          "match": true,
+          "summary": [
+            "Ran 10 tests in 0.194s",
+            "OK\r"
+          ],
+          "observed_ok": 10
+        },
+        {
+          "path": "build-equity/w2-d3-legacy-python-qualified.log",
+          "actual_names": [
+            "test_sue_requires_history_and_uses_prior_differences",
+            "test_ttm_prefers_annual_and_chains_quarters",
+            "test_ytd_differences_become_discrete_quarters",
+            "test_future_period_and_non_event_forms_are_ignored",
+            "test_scale_error_share_pair_is_dropped_from_snapshot",
+            "test_share_pair_plausibility_rejects_xbrl_scale_errors",
+            "test_snapshots_are_point_in_time_and_sealed",
+            "test_split_restated_comparative_keeps_issuance_split_consistent",
+            "test_stale_statement_fields_are_not_relabelled_current"
+          ],
+          "expected_names": [
+            "test_sue_requires_history_and_uses_prior_differences",
+            "test_ttm_prefers_annual_and_chains_quarters",
+            "test_ytd_differences_become_discrete_quarters",
+            "test_future_period_and_non_event_forms_are_ignored",
+            "test_scale_error_share_pair_is_dropped_from_snapshot",
+            "test_share_pair_plausibility_rejects_xbrl_scale_errors",
+            "test_snapshots_are_point_in_time_and_sealed",
+            "test_split_restated_comparative_keeps_issuance_split_consistent",
+            "test_stale_statement_fields_are_not_relabelled_current"
+          ],
+          "match": true,
+          "summary": [
+            "Ran 9 tests in 0.002s",
+            "OK\r\n"
+          ],
+          "observed_ok": 9
+        }
+      ],
+      "cohort_receipts_match": true,
+      "action_summary": {
+        "build-equity/w2-d3-clock-cpp-qualified.log": {
+          "cpp_attempts": 0,
+          "links": 0,
+          "pch_or_dependency_actions": []
+        },
+        "build-equity/w2-d3-python-qualified.log": {
+          "cpp_attempts": 0,
+          "links": 0,
+          "pch_or_dependency_actions": []
+        },
+        "build-equity/w2-d3-legacy-python-qualified.log": {
+          "cpp_attempts": 0,
+          "links": 0,
+          "pch_or_dependency_actions": []
+        },
+        "build-equity/w2-d3-clock-build.log": {
+          "cpp_attempts": 3,
+          "links": 2,
+          "pch_or_dependency_actions": []
+        }
+      }
+    }
+  ],
+  "source_diffs": {
+    "initial_to_corrected_I2_A4": "A\t.superpowers/sdd/w2/review-a4-residual-objective-source.md\nM\tatx-engine/src/factory/objective_ic.cpp\n",
+    "D3_python_to_cpp": "A\t.superpowers/sdd/w2/review-d3-filing-clock-source.md\n",
+    "I2_A4_single_brace_fix": "diff --git a/atx-engine/src/factory/objective_ic.cpp b/atx-engine/src/factory/objective_ic.cpp\nindex ed7411bd..db712271 100644\n--- a/atx-engine/src/factory/objective_ic.cpp\n+++ b/atx-engine/src/factory/objective_ic.cpp\n@@ -36,6 +36,7 @@ bool digest(std::string_view s) {\n     return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) {\n         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');\n     });\n+}\n bool charge(u64 &total, usize count, u64 each) {\n     if (count > (std::numeric_limits<u64>::max() - total) / each) return false;\n     total += static_cast<u64>(count) * each;\n"
+  }
+}
