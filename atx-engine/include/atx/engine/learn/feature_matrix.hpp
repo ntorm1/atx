@@ -59,6 +59,9 @@
 
 #include "atx/engine/alpha/panel.hpp"   // alpha::Panel, FieldId
 #include "atx/engine/combine/store.hpp" // combine::AlphaStore, combine::AlphaId
+#include "atx/engine/learn/panel_dataset.hpp"
+
+namespace atx::engine::data { class PanelStore; }
 
 namespace atx::engine::learn {
 
@@ -105,9 +108,15 @@ struct FeatureMatrix {
   // label_horizons[h], so it is only KNOWN at a decision date t once that date has
   // passed (label_matured below). EMPTY == unannotated: a hand-built matrix whose label
   // convention is unknown. Maturity-aware consumers (select_interactions) refuse to
-  // guess a horizon for an unannotated matrix. build_features should copy
-  // spec.horizons here (feature_matrix.cpp is owned by W1-L1; see the W0-L0 report).
+  // guess a horizon for an unannotated matrix. build_features copies spec.horizons;
+  // the explicit dataset adapter stores execution_delay + holding_horizon.
   std::vector<atx::u16> label_horizons;
+  // Populated only by the explicit V2 dataset adapter. Legacy matrices retain
+  // their raw/drop-invalid interpretation. Presence is independent of emitted
+  // member rows; an absent member can have finite neutral features + indicators.
+  std::vector<atx::u8> row_present{};
+  std::string dataset_manifest_sha256{};
+  std::string dataset_recipe{};
 
   // Number of emitted rows (in-universe cells).
   [[nodiscard]] atx::usize n_rows() const noexcept { return row_date.size(); }
@@ -239,5 +248,27 @@ write_feature_row(std::span<atx::f64> X, atx::usize row, atx::usize n_features,
 [[nodiscard]] atx::core::Result<FeatureMatrix>
 build_features(const alpha::Panel &panel, const combine::AlphaStore &store,
                const FeatureSpec &spec);
+
+// Actual V2 producers. Panel features/AlphaStore streams borrow their existing
+// source lifetime for this synchronous call; member is T*N, clocks is T and
+// Panel::in_universe explicitly means source presence on this adapter.
+// Spec horizons must equal config holding horizons; exact axes/source identity
+// and all transformation knobs are persisted. Legacy build_features is unchanged.
+[[nodiscard]] atx::core::Result<PanelDatasetBuildResult> build_panel_dataset_from_panel(
+    const alpha::Panel&, const combine::AlphaStore&, const FeatureSpec&,
+    const PanelDatasetConfig&, std::span<const atx::u8> member,
+    std::span<const atx::i64> membership_clocks, const std::string& directory);
+// Reads original-f64 close and independent masks from D6. Raw feature names are
+// config.feature_names; close features also use the original-f64 channel.
+[[nodiscard]] atx::core::Result<PanelDatasetBuildResult> build_panel_dataset_from_store(
+    const data::PanelStore&, const PanelDatasetConfig&, const std::string& directory);
+
+// Explicit bounded materialization for existing learners, NOT an out-of-core
+// fit. Preserve full source ordinals; label_horizons = delay + holding horizon.
+// asof_date is inclusive under L0's same-close convention. Labels beyond asof
+// are NaN; member rows survive regardless of feature missingness/label maturity.
+[[nodiscard]] atx::core::Result<FeatureMatrix> read_dataset_features(
+    const PanelDataset&, atx::usize begin_date, atx::usize end_date,
+    atx::usize asof_date, atx::u64 max_working_bytes);
 
 } // namespace atx::engine::learn

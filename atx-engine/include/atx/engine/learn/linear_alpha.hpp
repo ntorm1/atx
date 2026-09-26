@@ -221,4 +221,18 @@ build_design(const FeatureMatrix &fm, const LearnedModel &model_shell,
 fit_linear_checked(const FeatureMatrix& fm, const LatentAugmentation& aug,
                  const LinearAlphaCfg& cfg, LearnFitTrace* trace = nullptr);
 
+struct DatasetLinearFit {
+  LearnedModel model;
+  std::string dataset_manifest_sha256;
+  std::string dataset_window_recipe;
+};
+// Explicit selected-window bridge, NOT a whole-dataset streamed learner. DateV2
+// is required; cfg.horizons must be the persisted delay+holding endpoints.
+// Both materialization and CPCV workspace limits remain active. The result
+// carries the immutable dataset identity beside the model for publication.
+[[nodiscard]] atx::core::Result<DatasetLinearFit> fit_linear_dataset(
+    const PanelDataset&, atx::usize begin_date, atx::usize end_date,
+    atx::usize asof_date, atx::u64 max_materialization_bytes,
+    const LatentAugmentation&, const LinearAlphaCfg&, LearnFitTrace* trace = nullptr);
+
 } // namespace atx::engine::learn
