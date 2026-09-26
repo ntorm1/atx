@@ -13,6 +13,7 @@ struct RunnerConfig {
   std::string library_path, train_manifest, validation_manifest, holdout_manifest;
   std::string library_sha256, train_sha256, validation_sha256, holdout_sha256;
   std::string cash_claims_path, cash_claims_sha256; // paired optional reconstructed-publication input
+  std::string stock_transitions_path, stock_transitions_sha256; // paired optional reconstructed stock delivery
   std::string output_directory;
   atx::u64 max_working_bytes{512ULL << 20};
   atx::u64 seed{42}; // declared deterministic recipe; no random search is performed
