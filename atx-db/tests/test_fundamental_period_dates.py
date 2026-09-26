@@ -208,6 +208,51 @@ def test_implausible_8k_report_date_takes_the_acceptance_date(tmp_store):
         dt.date(2024, 4, 22)
 
 
+def test_rdq_available_at_is_the_8k_decision_clock_never_a_raw_or_untimed_stamp(tmp_store):
+    """PIT edge cases for the 0328 rdq lineage: rdq_available_at is the 8-K's FC1 clock,
+    greatest(timed acceptance, filed + 46h) (research.events' evidence clock), so it never
+    precedes filed + 46h, never stores an untimed stamp, and is never NULL beside a set rdq."""
+    from atx_db.fundamental_statements import refresh_fundamental_periods
+
+    _insert_statement_point(tmp_store)
+    _insert_item_202_8k(tmp_store)
+
+    def lineage(report_date, filing_date, acceptance, raw=None):
+        tmp_store.con.execute(
+            "UPDATE sec_submissions SET report_date=?, filing_date=?, acceptance_datetime=?, "
+            "acceptance_datetime_raw=? WHERE accession_number='0000000001-24-000008'",
+            [report_date, filing_date, acceptance, raw],
+        )
+        assert refresh_fundamental_periods(tmp_store) == 1
+        row = tmp_store.con.execute(
+            "SELECT rdq, rdq_basis, rdq_available_at, rdq_accession_number FROM fundamental_periods "
+            "WHERE security_id='SEC-CIK-0000000001'"
+        ).fetchone()
+        assert len({value is None for value in row}) == 1  # rdq and its lineage are NULL together
+        return row[:3]
+
+    d, ts = dt.date, dt.datetime
+    # Timed acceptance (16:01 ET) the evening before filing: the clock is filed + 46h, not the stamp.
+    assert lineage(d(2024, 4, 24), d(2024, 4, 25), ts(2024, 4, 24, 20, 1)) == (
+        d(2024, 4, 24), "reported_date", ts(2024, 4, 26, 22))
+    # A timed acceptance after the floor is the clock.
+    assert lineage(d(2024, 4, 24), d(2024, 4, 24), ts(2024, 4, 26, 23, 30)) == (
+        d(2024, 4, 24), "reported_date", ts(2024, 4, 26, 23, 30))
+    # EDGAR-midnight stamp (00:00 ET) is untimed: never stored; the floor instead.
+    assert lineage(d(2024, 4, 24), d(2024, 4, 26), ts(2024, 4, 26, 4)) == (
+        d(2024, 4, 24), "reported_date", ts(2024, 4, 27, 22))
+    # Zone-less raw stamp is untimed as well.
+    assert lineage(d(2024, 4, 24), d(2024, 4, 25), ts(2024, 4, 24, 16, 1), raw="2024-04-24T16:01:00") == (
+        d(2024, 4, 24), "reported_date", ts(2024, 4, 26, 22))
+    # No acceptance at all: rdq keeps its date and gets the floor, never a NULL clock.
+    assert lineage(d(2024, 4, 24), d(2024, 4, 25), None) == (d(2024, 4, 24), "reported_date", ts(2024, 4, 26, 22))
+    # Implausible report date with a date-only stamp: filing-date rdq, clocked at its floor.
+    assert lineage(d(2024, 3, 31), d(2024, 4, 29), ts(2024, 4, 29)) == (
+        d(2024, 4, 29), "filing_date_implausible_report", ts(2024, 4, 30, 22))
+    # No filing date: no resolvable clock (FC1), so the 8-K never sets rdq.
+    assert lineage(d(2024, 4, 24), None, ts(2024, 4, 24, 20, 1)) == (None, None, None)
+
+
 def test_fundamental_period_date_quality_passes_clean_sample(tmp_store):
     from atx_db.fundamental_statements import refresh_fundamental_periods
     from atx_db.quality import run_warehouse_quality_checks

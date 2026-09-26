@@ -1527,7 +1527,8 @@ def _identity_row_columns(store: DuckDBStore) -> tuple[str, ...]:
     present = {
         str(row[0])
         for row in store.con.execute(
-            "SELECT column_name FROM duckdb_columns() WHERE table_name = 'market_daily_metrics' AND NOT internal"
+            "SELECT column_name FROM duckdb_columns() WHERE database_name = current_database() "
+            "AND schema_name = current_schema() AND table_name = 'market_daily_metrics' AND NOT internal"
         ).fetchall()
     }
     return tuple(name for name in _OPTIONAL_ROW_COLUMNS if name in present)

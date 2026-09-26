@@ -38,6 +38,12 @@ RDQ_BASIS_NO_REPORT_DATE = "filing_date_no_report_date"
 RDQ_BASES = (RDQ_BASIS_REPORTED, RDQ_BASIS_ACCEPTANCE, RDQ_BASIS_FILING, RDQ_BASIS_NO_REPORT_DATE)
 # fundamental_periods lineage columns added by migration 0328 (written when present).
 RDQ_LINEAGE_COLUMNS = ("rdq_basis", "rdq_available_at", "rdq_accession_number")
+# rdq_available_at is the 8-K's decision clock, never its raw acceptance stamp: the FC1
+# floor (_fundamental_clock, sec_filed_date_plus_46h_v1: filing date + 46h) raised to a
+# timed acceptance -- research.events' evidence clock for the same 8-K
+# (EVIDENCE_FLOOR_HOURS). An untimed stamp is never a clock; an 8-K without a finite
+# filing date has no resolvable clock and never sets rdq.
+RDQ_EVIDENCE_FLOOR_HOURS = 46
 
 
 def __getattr__(name: str) -> object:
@@ -1328,9 +1334,12 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
     date comes from the acceptance (America/New_York), or the 8-K filing date without a
     usable clock -- the ``research.events`` rule (P3). The candidate's report date must lie
     in ``[period_end, fdate]`` and its effective date on or before ``fdate``. Its lineage --
-    ``rdq_basis`` (:data:`RDQ_BASES`), ``rdq_available_at`` (the 8-K acceptance; rdq is never
-    known before it) and ``rdq_accession_number`` -- is stored when the table carries the
-    0328 columns (NULL when no 8-K matched); a pre-0328 table keeps its old shape.
+    ``rdq_basis`` (:data:`RDQ_BASES`), ``rdq_available_at`` (the 8-K's FC1 decision clock:
+    greatest(timed acceptance, filing date + :data:`RDQ_EVIDENCE_FLOOR_HOURS` h), the
+    research.events evidence clock; never the raw or an untimed stamp) and
+    ``rdq_accession_number`` -- is stored when the table carries the 0328 columns; a
+    pre-0328 table keeps its old shape. An 8-K without a finite filing date has no
+    resolvable clock and never sets ``rdq``, so ``rdq`` and its lineage are NULL together.
     """
 
     raw_clock, sessions_sql, params = _rdq_clock_inputs(store)
@@ -1552,7 +1561,14 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                         WHEN timed_clock THEN '{RDQ_BASIS_ACCEPTANCE}'
                         ELSE '{RDQ_BASIS_FILING}'
                     END AS rdq_basis,
-                    acceptance_datetime AS rdq_available_at,
+                    -- Decision clock (RDQ_EVIDENCE_FLOOR_HOURS): greatest ignores the NULL of an
+                    -- untimed stamp; a non-finite filing date leaves the clock NULL.
+                    CASE WHEN isfinite(filing_date) THEN greatest(
+                        CASE WHEN timed_clock THEN acceptance_datetime END,
+                        CAST(filing_date AS TIMESTAMP) + INTERVAL {RDQ_EVIDENCE_FLOOR_HOURS} HOUR
+                    ) END AS rdq_available_at,
+                    -- The raw stamp orders same-day candidates only (unchanged rdq choice).
+                    acceptance_datetime AS rdq_acceptance_at,
                     rdq_accession_number,
                     rdq_source_url
                 FROM rdq_lagged
@@ -1576,9 +1592,12 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                     WHERE r.security_id = grouped_base.security_id
                       AND r.reported_rdq >= grouped_base.period_end
                       AND r.rdq <= grouped_base.fdate
+                      -- FC1: an 8-K with no resolvable clock never sets rdq, so rdq and its
+                      -- lineage are NULL together.
+                      AND r.rdq_available_at IS NOT NULL
                     ORDER BY
                         r.rdq,
-                        r.rdq_available_at NULLS LAST,
+                        r.rdq_acceptance_at NULLS LAST,
                         r.rdq_accession_number
                     LIMIT 1
                 ) rdq ON true
