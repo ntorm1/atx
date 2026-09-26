@@ -1,6 +1,7 @@
 """Behavioral input-QA checks; uses tiny synthetic ZIPs only."""
 import datetime as dt
 import importlib.util
+import hashlib
 import pathlib
 import tempfile
 import unittest
@@ -95,19 +96,23 @@ class PreparationTest(unittest.TestCase):
         self.assertEqual(flags, ["zero_shares"])
 
     def test_qa_v2_rescues_only_sole_order_violations_on_listed_dates(self):
-        next_day = DAY + dt.timedelta(days=3)
-        corrupt = row("1", open="11.5", high="11.2", low="11.1", close="11.0")  # order violation only
-        also_bad = row("2", open="11.5", high="11.2", low="11.1", volume="-1")  # plus bad volume
-        valid = row("3")
+        day = PREPARE.QA_V2_DATES[0]
+        next_day = day + dt.timedelta(days=3)
+        corrupt = row("1", tradingDate=day.isoformat(), open="11.5", high="11.2", low="11.1", close="11.0")
+        also_bad = row("2", tradingDate=day.isoformat(), open="11.5", high="11.2", low="11.1", volume="-1")
+        valid = row("3", tradingDate=day.isoformat())
         later = row("4", tradingDate=next_day.isoformat(), open="11.5", high="11.2", low="11.1")
         source = self.source([corrupt, also_bad, valid, later])
-        v1 = PREPARE.prepare(source, self.root / "v1", DAY, next_day)
+        v1 = PREPARE.prepare(source, self.root / "v1", day, next_day)
         self.assertNotIn("qa_version", v1)
         self.assertEqual(v1["counts"]["accepted_rows"], 1)
-        v2 = PREPARE.prepare(source, self.root / "v2", DAY, next_day, (DAY,))
+        v2 = PREPARE.prepare(source, self.root / "v2", day, next_day, qa_rule="qa-v2")
         self.assertEqual(v2["qa_version"], "v2")
-        self.assertEqual(v2["policy_version"], "tickerhistory-qa-v1")
-        self.assertEqual(v2["qa_v2_daily_counts"], {DAY.isoformat(): {
+        self.assertEqual(v2["policy_version"], "tickerhistory-qa-v2")
+        self.assertFalse(v2["accepted"]["rows_preserved_byte_for_byte"])
+        self.assertEqual(v2["accepted"]["unmodified_rows"], 1)
+        self.assertTrue(v2["accepted"]["unmodified_rows_preserved_byte_for_byte"])
+        self.assertEqual(v2["qa_v2_daily_counts"], {day.isoformat(): {
             "accepted_v1": 1, "accepted_v2_rescued": 1, "accepted": 2}})
         self.assertEqual(v2["counts"]["accepted_rows"], 2)
         self.assertEqual(v2["accepted"]["rows_modified_qa_v2"], 1)
@@ -115,7 +120,30 @@ class PreparationTest(unittest.TestCase):
         with zipfile.ZipFile(self.root / "v2" / "accepted.zip") as archive:
             self.assertEqual(archive.read(MEMBER), HEADER + blanked + valid)
         with self.assertRaises(ValueError):
-            PREPARE.prepare(source, self.root / "outside", DAY, DAY, (next_day,))
+            PREPARE.prepare(source, self.root / "outside", day, next_day, (next_day,))
+
+    def test_qa_v2_allowlist_hash_and_unaffected_bytes_match_legacy(self):
+        date_bytes = "".join(d.isoformat() + "\n" for d in PREPARE.QA_V2_DATES).encode("ascii")
+        self.assertEqual(len(PREPARE.QA_V2_DATES), 19)
+        self.assertEqual(hashlib.sha256(date_bytes).hexdigest(), PREPARE.QA_V2_DATES_SHA256)
+        day = dt.date(2013, 5, 1)
+        original = row("7", tradingDate=day.isoformat())
+        source = self.source([original])
+        old = PREPARE.prepare(source, self.root / "old", day, day, qa_rule="legacy-v1")
+        new = PREPARE.prepare(source, self.root / "new", day, day, qa_rule="qa-v2")
+        self.assertEqual(old["accepted"]["sha256"], new["accepted"]["sha256"])
+        self.assertTrue(new["accepted"]["rows_preserved_byte_for_byte"])
+        self.assertEqual(new["qa_v2_dates"], [])
+
+    def test_qa_v2_never_rescues_duplicates_or_invalid_close(self):
+        day = PREPARE.QA_V2_DATES[0]
+        corrupt = dict(tradingDate=day.isoformat(), open="11.5", high="11.2", low="11.1")
+        records = [row("1", **corrupt), row("01", **corrupt),
+                   row("2", close="0", **corrupt), row("3", cumulReturnFactor="1e308", **corrupt),
+                   row("4", tradingDate=day.isoformat())]
+        result = PREPARE.prepare(self.source(records), self.root / "out", day, day, qa_rule="qa-v2")
+        self.assertEqual(result["counts"]["accepted_rows"], 1)
+        self.assertEqual(result["accepted"]["rows_modified_qa_v2"], 0)
 
 
 if __name__ == "__main__":

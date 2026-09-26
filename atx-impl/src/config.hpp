@@ -533,6 +533,8 @@ struct RunConfig {
     std::string equity_preparation_manifests; // --preparation-manifests a;b;...
     std::string equity_rank_start;            // --rank-start, inclusive YYYY-MM-DD
     std::string equity_rank_end;              // --rank-end, inclusive YYYY-MM-DD
+    std::string equity_universe_rule = "common-stock-v2"; // --universe-rule; explicit legacy-v1 reproduces cp15
+    std::string equity_instrument_types;     // --instrument-types, sealed dated type projection JSON
     // --robustness-sub-universe / --robustness-alt-neutralization / --robustness-param-perturb
     // (S5-3): expose the 3 currently-unreachable eval::BatteryConfig checks (noise_control is
     // already wired via --robustness-battery alone, p8 final-wave). Each requires BOTH its own

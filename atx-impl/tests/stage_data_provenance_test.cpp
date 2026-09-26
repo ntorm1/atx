@@ -297,4 +297,47 @@ TEST_F(AtxImplDataProvenance, InvalidConfigurationAndIncrementalFailBeforePublic
     EXPECT_FALSE(fs::exists(cfg.panel_out));
 }
 
+TEST_F(AtxImplDataProvenance, QaV2TruthfulModifiedRowsLoadAndBindWhileFalseClaimsFail) {
+    auto rescued = atx_impl_test::make_orats_row("2016-01-15", "42", "SYN", "SYN", 11.0, 1.0, 1000);
+    // Drop only the three synthetic OHL cells (indices 5..7), retaining every other byte.
+    std::size_t begin = 0;
+    for (int field = 0; field < 5; ++field) begin = rescued.find('\t', begin) + 1;
+    auto end = begin;
+    for (int field = 0; field < 3; ++field) end = rescued.find('\t', end) + 1;
+    rescued.replace(begin, end - begin, "\t\t\t");
+    ASSERT_NO_FATAL_FAILURE(atx_impl_test::write_orats_zip(std::string(atx_impl_test::kHeader) + "\n" + rescued, zip.string()));
+    const auto sha = atx::core::sha256_file(zip.string());
+    ASSERT_TRUE(sha);
+    auto doc = read_json(prep);
+    doc["policy_version"] = "tickerhistory-qa-v2";
+    doc["qa_version"] = "v2";
+    doc["window"] = {{"start_inclusive", "2016-01-15"}, {"end_inclusive", "2016-01-15"}};
+    doc["counts"] = {{"source_rows", 1}, {"selected_rows", 1}, {"accepted_rows", 1}, {"qa_v2_rescued_rows", 1}};
+    doc["accepted"] = {{"filename", "accepted.zip"}, {"sha256", *sha}, {"size_bytes", fs::file_size(zip)},
+        {"rows_preserved_byte_for_byte", false}, {"rows_modified_qa_v2", 1}, {"unmodified_rows", 0},
+        {"unmodified_rows_preserved_byte_for_byte", true}};
+    doc["qa_v2_allowlist_sha256"] = "0589dc9ae5c96e68d183820f4733ade7df94245d805e285e43e1bdf29c0fef60";
+    doc["qa_v2_blanked_fields"] = {"open", "high", "low"};
+    doc["qa_v2_rescuable_reasons"] = {"ohlc_order_violation"};
+    doc["qa_v2_dates"] = {"2016-01-15"};
+    doc["qa_v2_daily_counts"] = {{"2016-01-15", {{"accepted_v1", 0}, {"accepted_v2_rescued", 1}, {"accepted", 1}}}};
+    std::vector<Json> bad(4, doc);
+    bad[0]["accepted"]["rows_preserved_byte_for_byte"] = true;
+    bad[1]["qa_v2_allowlist_sha256"] = std::string(64, 'b');
+    bad[2]["qa_v2_blanked_fields"] = {"close"};
+    bad[3]["qa_v2_daily_counts"]["2016-01-15"]["accepted_v2_rescued"] = 0;
+    for (const auto& invalid : bad) {
+        write_json(prep, invalid);
+        EXPECT_FALSE(begin_ingestion_provenance(zip.string(), load.out, prep.string()));
+        EXPECT_FALSE(fs::exists(load.out));
+    }
+    write_json(prep, doc);
+    load.min_date = "2016-01-01";
+    const auto loaded = run_load(load);
+    ASSERT_TRUE(loaded) << loaded.error().message();
+    const auto receipt = read_json(fs::path(load.out) / "_ingestion.manifest.json");
+    EXPECT_EQ(receipt["preparation"]["policy_version"], "tickerhistory-qa-v2");
+    EXPECT_EQ(receipt["preparation"]["accepted_sha256"], *sha);
+}
+
 } // namespace

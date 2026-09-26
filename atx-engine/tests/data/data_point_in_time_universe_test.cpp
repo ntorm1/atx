@@ -109,7 +109,8 @@ template <class T>
 // unexpected error so a broken fixture fails the test with the engine's message.
 class Feed {
 public:
-  explicit Feed(const PitUniverseConfig &c) : b_{make(c)} {}
+  explicit Feed(const PitUniverseConfig &c, std::span<const PitInstrumentTypeEvidence> types = {})
+      : b_{require(PitUniverseBuilder::create(c, types), "create")} {}
 
   [[nodiscard]] Status observe(const std::vector<Bar> &bars, bool with_extra = true) {
     Status st = observe_key(key(next_), bars, with_extra);
@@ -2504,6 +2505,116 @@ TEST(DataPointInTimeUniverse, Case26_OracleMarkers_EmitAllFamilies) {
   run_f7();    // 3
   run_f8();    // 2
   run_f9();    // 8  -> 42 oracle cases
+}
+
+PitUniverseConfig v2_config() {
+  auto cfg = make_cfg(1, 1, {16}, {0});
+  cfg.rule = PitUniverseRule::CommonStockV2;
+  cfg.min_adv_usd = kPitV2MinAdvUsd;
+  cfg.instrument_types_sha256.fill('a');
+  return cfg;
+}
+
+PitInstrumentTypeEvidence type_proof(atx::i64 id, atx::u32 row,
+                                    PitInstrumentType type = PitInstrumentType::CommonStock) {
+  return {id, key(0), kPitSessionKeyEndExclusive, key(0) - kDay, key(0) - kDay,
+          type, PitTypeSource::Vendor, true, row};
+}
+
+TEST(DataPointInTimeUniverseV2, InclusiveFloorsAndExplicitTypeExclusions) {
+  std::vector<PitInstrumentTypeEvidence> types{type_proof(1, 1), type_proof(2, 2, PitInstrumentType::Etf),
+      type_proof(4, 3), type_proof(5, 4), type_proof(6, 5), type_proof(6, 6, PitInstrumentType::Fund),
+      type_proof(7, 7), type_proof(8, 8)};
+  types[2].verified = false;
+  types[3].available_at = key(0); // equality is unavailable
+  types[5].source = PitTypeSource::Sec;
+  Feed feed(v2_config(), types);
+  const std::vector<Bar> bars{raw(1, 5.0, 1'000'000), raw(2, 10, 1'000'000), raw(3, 10, 1'000'000),
+      raw(4, 10, 1'000'000), raw(5, 10, 1'000'000), raw(6, 10, 1'000'000),
+      raw(7, 4.999, 2'000'000), raw(8, 10, 499'999.9)};
+  require(feed.observe(bars), "observe");
+  const auto first = feed.rebalance_now();
+  ASSERT_EQ(first.ranked.size(), 1U);
+  EXPECT_EQ(first.ranked[0].security_id, 1);
+  EXPECT_EQ(first.ranked[0].adv63_usd, 5'000'000);
+  ASSERT_EQ(first.excluded.size(), 7U);
+  const auto reasons = [&](atx::i64 id) {
+    for (const auto& row : first.excluded) if (row.security_id == id) return row.reasons;
+    return atx::u32{0};
+  };
+  EXPECT_NE(reasons(2) & PitNotCommonStock, 0U);
+  EXPECT_NE(reasons(3) & PitTypeUnknown, 0U);
+  EXPECT_NE(reasons(4) & PitTypeUnverified, 0U);
+  EXPECT_NE(reasons(5) & PitTypeUnavailable, 0U);
+  EXPECT_NE(reasons(6) & PitTypeConflict, 0U);
+  EXPECT_NE(reasons(7) & PitBelowPrice, 0U);
+  EXPECT_NE(reasons(8) & PitBelowAdv, 0U);
+  require(feed.observe(bars), "next session");
+  const auto second = feed.rebalance_now();
+  EXPECT_EQ(second.ranked.size(), 2U);
+  EXPECT_NE(find_ranked(second, 5), nullptr);
+}
+
+TEST(DataPointInTimeUniverseV2, StrictClockExpiryAndFutureEvidencePreserveEarlierMembership) {
+  auto cfg = v2_config();
+  auto old = type_proof(1, 1);
+  auto future = type_proof(1, 2, PitInstrumentType::Fund);
+  future.available_at = key(2);
+  auto expires = type_proof(2, 3);
+  expires.valid_to = key(1); // this endpoint was known under the old source clock
+  const std::vector<PitInstrumentTypeEvidence> types{old, future, expires};
+  Feed full(cfg, types);
+  expires.source_row = 2;
+  const std::vector<PitInstrumentTypeEvidence> prefix_types{old, expires};
+  Feed prefix(cfg, prefix_types);
+  const std::vector<Bar> bars{raw(1, 10, 1'000'000), raw(2, 10, 1'000'000)};
+  for (atx::usize t = 0; t < 4; ++t) {
+    require(full.observe(bars), "full");
+    const auto actual = full.rebalance_now();
+    if (t <= 2) {
+      require(prefix.observe(bars), "prefix");
+      const auto expected = prefix.rebalance_now();
+      EXPECT_EQ(member_ids(full, actual, 0), member_ids(prefix, expected, 0));
+      EXPECT_NE(find_ranked(actual, 1), nullptr); // equality t=2 remains prior state
+    } else EXPECT_EQ(find_ranked(actual, 1), nullptr);
+    EXPECT_EQ(find_ranked(actual, 2) != nullptr, t == 0);
+  }
+}
+
+TEST(DataPointInTimeUniverseV2, EvidenceValidationAndVersionedCodecPreserveLegacy) {
+  auto cfg = v2_config();
+  EXPECT_FALSE(PitUniverseBuilder::create(cfg));
+  auto proof = type_proof(1, 1);
+  auto bad = proof; bad.available_at = kPitSessionKeyEndExclusive;
+  EXPECT_FALSE(PitUniverseBuilder::create(cfg, std::span{&bad, 1U}));
+  bad = proof; bad.verified = false;
+  EXPECT_FALSE(PitUniverseBuilder::create(cfg, std::span{&bad, 1U}));
+  bad = proof; bad.valid_to = bad.valid_from;
+  EXPECT_FALSE(PitUniverseBuilder::create(cfg, std::span{&bad, 1U}));
+  Feed v2(cfg, std::span{&proof, 1U});
+  auto legacy_cfg = cfg;
+  legacy_cfg.rule = PitUniverseRule::LegacyV1;
+  Feed legacy(legacy_cfg);
+  const std::vector<Bar> bars{raw(1, 10, 1'000'000)};
+  require(v2.observe(bars), "v2"); require(legacy.observe(bars), "legacy");
+  const auto new_view = v2.rebalance_now(), old_view = legacy.rebalance_now();
+  EXPECT_EQ(member_ids(v2, new_view, 0), member_ids(legacy, old_view, 0));
+  require(v2.observe(bars), "effective"); require(legacy.observe(bars), "effective");
+  const auto old_bytes = require(encode_membership_bin(legacy.b()), "legacy encode");
+  EXPECT_EQ(old_bytes.substr(0, 8), "ATXPITU1");
+  const auto old_image = require(decode_membership_bin(old_bytes), "legacy decode");
+  EXPECT_EQ(old_image.rule, PitUniverseRule::LegacyV1);
+  const auto bytes = require(encode_membership_bin(v2.b()), "v2 encode");
+  EXPECT_EQ(bytes.substr(0, 8), "ATXPITU2");
+  const auto image = require(decode_membership_bin(bytes), "v2 decode");
+  EXPECT_EQ(image.rule, PitUniverseRule::CommonStockV2);
+  EXPECT_EQ(image.min_raw_price_inclusive, 5.0);
+  EXPECT_EQ(image.min_adv_usd, 5'000'000.0);
+  EXPECT_EQ(image.instrument_types_sha256, cfg.instrument_types_sha256);
+  EXPECT_EQ(image.rebalances[0].cuts[0].security_ids, old_image.rebalances[0].cuts[0].security_ids);
+  auto corrupt = bytes; corrupt[50] ^= 1;
+  EXPECT_FALSE(decode_membership_bin(corrupt));
+  EXPECT_FALSE(decode_membership_bin(bytes.substr(0, 64)));
 }
 
 } // namespace atxtest_data_point_in_time_universe

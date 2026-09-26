@@ -305,6 +305,8 @@ struct PitUniverseBuilder::Impl {
   // observe / rebalance scratch
   std::vector<PitRankedRow> ranked_scratch; // U, slot order
   std::vector<PitRankedRow> ranked;         // U, rank order (the view)
+  std::vector<PitInstrumentTypeEvidence> types; // sorted by ID, immutable after create
+  std::vector<PitExcludedRow> excluded; // U, V2 rebalance view
   std::vector<atx::u32> order;              // U
   std::vector<atx::u8> seen_this_call;      // U
   std::vector<atx::u32> provisional_cells;  // U
@@ -355,6 +357,15 @@ struct PitUniverseBuilder::Impl {
 namespace {
 
 [[nodiscard]] Status validate_config(const PitUniverseConfig &cfg) {
+  if (cfg.rule != PitUniverseRule::LegacyV1 && cfg.rule != PitUniverseRule::CommonStockV2)
+    return Err(ErrorCode::InvalidArgument, "pit universe: unknown rule");
+  if (cfg.rule == PitUniverseRule::CommonStockV2 &&
+      (!std::isfinite(cfg.min_raw_price_inclusive) || cfg.min_raw_price_inclusive < kPitV2MinRawPriceInclusive ||
+       !std::isfinite(cfg.min_adv_usd) || cfg.min_adv_usd < kPitV2MinAdvUsd ||
+       cfg.session_key_end_exclusive <= 0 || cfg.session_key_end_exclusive > kPitSessionKeyEndExclusive ||
+       !std::all_of(cfg.instrument_types_sha256.begin(), cfg.instrument_types_sha256.end(),
+                    [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); })))
+    return Err(ErrorCode::InvalidArgument, "pit universe: V2 floors or type projection hash invalid");
   if (cfg.adv_window == 0) {
     return Err(ErrorCode::InvalidArgument, "pit universe: adv_window must be > 0");
   }
@@ -374,6 +385,8 @@ namespace {
                                                std::to_string(kPitMaxBandValues) + "]");
   }
   for (atx::usize i = 0; i < cfg.top_n_count; ++i) {
+    if (cfg.rule == PitUniverseRule::CommonStockV2 && cfg.top_n[i] > cfg.max_source_ids)
+      return Err(ErrorCode::InvalidArgument, "pit universe: V2 cut exceeds source-ID bound");
     if (cfg.top_n[i] == 0) {
       return Err(ErrorCode::InvalidArgument, "pit universe: top_n values must be > 0");
     }
@@ -415,8 +428,26 @@ namespace {
 
 } // namespace
 
-Result<PitUniverseBuilder> PitUniverseBuilder::create(const PitUniverseConfig &cfg) {
+Result<PitUniverseBuilder> PitUniverseBuilder::create(
+    const PitUniverseConfig &cfg, std::span<const PitInstrumentTypeEvidence> types) {
   ATX_TRY_VOID(validate_config(cfg));
+  if (types.size() > kPitMaxTypeRecords || (cfg.rule == PitUniverseRule::LegacyV1 && !types.empty()))
+    return Err(ErrorCode::InvalidArgument, "pit universe: type record bound or legacy/type mismatch");
+  bool any_verified = false;
+  for (atx::usize i = 0; i < types.size(); ++i) {
+    const auto& row = types[i];
+    if (row.security_id <= 0 || row.valid_from <= 0 || row.valid_from >= row.valid_to ||
+        row.valid_to > cfg.session_key_end_exclusive || row.valid_to > kPitSessionKeyEndExclusive ||
+        row.source_row != i + 1U || static_cast<atx::u32>(row.type) > 8U ||
+        (row.source != PitTypeSource::Vendor && row.source != PitTypeSource::Sec) ||
+        row.source_published_at < 0 || row.available_at < row.source_published_at ||
+        row.available_at >= kPitSessionKeyEndExclusive ||
+        (row.verified && (row.source_published_at == 0 || row.available_at == 0)))
+      return Err(ErrorCode::InvalidArgument, "pit universe: invalid or unsealed type evidence");
+    any_verified = any_verified || row.verified;
+  }
+  if (cfg.rule == PitUniverseRule::CommonStockV2 && !any_verified)
+    return Err(ErrorCode::InvalidArgument, "pit universe: V2 requires verified dated type evidence");
   const atx::usize U = cfg.max_source_ids;
   const atx::usize W = cfg.adv_window;
   const atx::usize R = cfg.max_rebalances;
@@ -485,6 +516,13 @@ Result<PitUniverseBuilder> PitUniverseBuilder::create(const PitUniverseConfig &c
     const PitRankedRow empty_row{0u, 0, 0u, kNaN, 0u, kNaN, kNaN, kNaN};
     m.ranked_scratch.assign(U, empty_row);
     m.ranked.assign(U, empty_row);
+    if (cfg.rule == PitUniverseRule::CommonStockV2) {
+      m.types.assign(types.begin(), types.end());
+      std::sort(m.types.begin(), m.types.end(), [](const auto& a, const auto& b) {
+        return a.security_id != b.security_id ? a.security_id < b.security_id : a.source_row < b.source_row;
+      });
+      m.excluded.resize(U);
+    }
     m.order.assign(U, 0u);
     m.seen_this_call.assign(U, 0u);
     m.provisional_cells.assign(U, 0u);
@@ -674,6 +712,7 @@ Result<PitRebalanceView> PitUniverseBuilder::rebalance(atx::i64 rank_session_key
 
   // --- 1. eligibility and key ------------------------------------------------
   atx::usize E = 0;
+  atx::usize excluded_count = 0;
   for (atx::usize u = 0; u < m.source_ids; ++u) {
     const bool bar_on_rank = m.last_bar[u] == static_cast<atx::u32>(Rs);
     atx::usize valid_count = 0;
@@ -688,9 +727,41 @@ Result<PitRebalanceView> PitUniverseBuilder::rebalance(atx::i64 rank_session_key
     if (valid_count > 0) {
       adv = median_in_place(std::span<atx::f64>{m.median_scratch.data(), valid_count});
     }
-    const bool eligible = bar_on_rank && m.last_close[u] > m.cfg.min_raw_price_exclusive &&
-                          valid_count >= m.cfg.min_valid_observations &&
-                          adv >= m.cfg.min_adv_usd; // NaN compares false
+    bool eligible = bar_on_rank && m.last_close[u] > m.cfg.min_raw_price_exclusive &&
+                    valid_count >= m.cfg.min_valid_observations && adv >= m.cfg.min_adv_usd;
+    if (m.cfg.rule == PitUniverseRule::CommonStockV2) {
+      PitExcludedRow exclusion{m.id[u], 0U, PitInstrumentType::Unknown, 0U, 0,
+                               bar_on_rank ? m.last_close[u] : kNaN, adv,
+                               static_cast<atx::u32>(valid_count)};
+      if (!bar_on_rank) exclusion.reasons |= PitNoRankBar;
+      if (!(bar_on_rank && m.last_close[u] >= m.cfg.min_raw_price_inclusive)) exclusion.reasons |= PitBelowPrice;
+      if (valid_count < m.cfg.min_valid_observations) exclusion.reasons |= PitInsufficientHistory;
+      if (!(adv >= m.cfg.min_adv_usd)) exclusion.reasons |= PitBelowAdv;
+      bool qualified = false, unavailable = false, unverified = false, unknown = false, conflict = false;
+      auto type = std::lower_bound(m.types.begin(), m.types.end(), m.id[u],
+                                  [](const auto& row, auto id) { return row.security_id < id; });
+      for (; type != m.types.end() && type->security_id == m.id[u]; ++type) {
+        if (rank_session_key < type->valid_from || rank_session_key >= type->valid_to) continue;
+        // Strict source clock; no later record can alter an earlier decision.
+        if (type->available_at >= rank_session_key) { unavailable = true; continue; }
+        if (!type->verified) { unverified = true; continue; }
+        if (type->type == PitInstrumentType::Unknown) { unknown = true; continue; }
+        if (qualified && type->type != exclusion.type) conflict = true;
+        qualified = true;
+        exclusion.type = type->type;
+        exclusion.source_row = type->source_row;
+        exclusion.available_at = std::max(exclusion.available_at, type->available_at);
+      }
+      if (conflict) exclusion.reasons |= PitTypeConflict;
+      if (unverified) exclusion.reasons |= PitTypeUnverified;
+      if (unknown) exclusion.reasons |= PitTypeUnknown;
+      if (!qualified && !unverified && !unknown)
+        exclusion.reasons |= unavailable ? PitTypeUnavailable : PitTypeUnknown;
+      if (qualified && exclusion.type != PitInstrumentType::CommonStock) exclusion.reasons |= PitNotCommonStock;
+      if (conflict) exclusion.type = PitInstrumentType::Unknown; // never label a disagreement as its last row
+      eligible = exclusion.reasons == 0;
+      if (!eligible) m.excluded[excluded_count++] = exclusion;
+    }
     if (!eligible) {
       continue;
     }
@@ -841,6 +912,7 @@ Result<PitRebalanceView> PitUniverseBuilder::rebalance(atx::i64 rank_session_key
   view.ids_with_valid_bar = m.ids_valid_per_session[Rs];
   view.eligible = E;
   view.ranked = std::span<const PitRankedRow>{m.ranked.data(), E};
+  view.excluded = std::span<const PitExcludedRow>{m.excluded.data(), excluded_count};
   view.members = std::span<const std::span<const PitMemberRow>>{m.member_spans.data(), m.C};
   view.drops = std::span<const std::span<const PitDropRow>>{m.drop_spans.data(), m.C};
   view.churn = std::span<const PitChurn>{m.churn.data() + r * m.C, m.C};
@@ -1202,11 +1274,18 @@ Result<std::string> encode_membership_bin(const PitUniverseBuilder &b) {
     return Err(ErrorCode::Internal, "pit universe: rebalance count does not fit u32");
   }
   std::string out;
-  out.append(kPitMembershipMagic.data(), kPitMembershipMagic.size());
-  put_u32(out, kPitMembershipVersion);
+  const bool v2 = cfg.rule == PitUniverseRule::CommonStockV2;
+  out.append(v2 ? kPitMembershipV2Magic : kPitMembershipMagic);
+  put_u32(out, v2 ? 2U : kPitMembershipVersion);
   put_u32(out, static_cast<atx::u32>(cfg.adv_window));
   put_u32(out, static_cast<atx::u32>(cfg.min_valid_observations));
   put_f64(out, cfg.min_raw_price_exclusive);
+  if (v2) {
+    put_u32(out, static_cast<atx::u32>(cfg.rule));
+    put_f64(out, cfg.min_raw_price_inclusive);
+    put_f64(out, cfg.min_adv_usd);
+    out.append(cfg.instrument_types_sha256.data(), cfg.instrument_types_sha256.size());
+  }
   put_u32(out, static_cast<atx::u32>(cfg.top_n_count));
   for (atx::usize i = 0; i < cfg.top_n_count; ++i) {
     put_u32(out, static_cast<atx::u32>(cfg.top_n[i]));
@@ -1253,7 +1332,7 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
   if (bytes.size() < kHeaderMin + kTrailer) {
     return Err(ErrorCode::InvalidArgument, "pit universe: membership.bin too short");
   }
-  if (bytes.substr(0, 8) != kPitMembershipMagic) {
+  if (bytes.substr(0, 8) != kPitMembershipMagic && bytes.substr(0, 8) != kPitMembershipV2Magic) {
     return Err(ErrorCode::InvalidArgument, "pit universe: membership.bin bad magic");
   }
   atx::u32 version = 0;
@@ -1263,7 +1342,8 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
       return Err(ErrorCode::InvalidArgument, "pit universe: membership.bin too short");
     }
   }
-  if (version != kPitMembershipVersion) {
+  if ((version != 1U && version != 2U) ||
+      (version == 1U) != (bytes.substr(0, 8) == kPitMembershipMagic)) {
     return Err(ErrorCode::InvalidArgument,
                "pit universe: membership.bin version " + std::to_string(version) + " unsupported");
   }
@@ -1296,6 +1376,25 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
       !body.take_f64(img.min_raw_price_exclusive)) {
     return short_buffer();
   }
+  if (version == 2U) {
+    atx::u32 rule = 0;
+    if (!body.take_u32(rule) || !body.take_f64(img.min_raw_price_inclusive) ||
+        !body.take_f64(img.min_adv_usd)) return short_buffer();
+    for (atx::usize i = 0; i < 8U; ++i) {
+      atx::u64 word = 0;
+      if (!body.take_u64(word)) return short_buffer();
+      for (unsigned j = 0; j < 8U; ++j) img.instrument_types_sha256[i * 8U + j] = static_cast<char>((word >> (8U * j)) & 255U);
+    }
+    if (rule != 2U || !std::isfinite(img.min_raw_price_inclusive) ||
+        img.min_raw_price_inclusive < kPitV2MinRawPriceInclusive ||
+        !std::isfinite(img.min_adv_usd) || img.min_adv_usd < kPitV2MinAdvUsd ||
+        !std::all_of(img.instrument_types_sha256.begin(), img.instrument_types_sha256.end(),
+                     [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+      return Err(ErrorCode::InvalidArgument, "pit universe: membership V2 recipe invalid");
+    img.rule = PitUniverseRule::CommonStockV2;
+    if (img.adv_window == 0 || img.min_valid_observations == 0 || img.min_valid_observations > img.adv_window)
+      return Err(ErrorCode::InvalidArgument, "pit universe: membership V2 window invalid");
+  }
   atx::u32 t = 0;
   if (!body.take_u32(t)) {
     return short_buffer();
@@ -1308,6 +1407,9 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
     if (!body.take_u32(img.top_n[i])) {
       return short_buffer();
     }
+    if (version == 2U && (img.top_n[i] == 0 || img.top_n[i] > kPitMaxSourceIds ||
+                         (i > 0 && img.top_n[i] <= img.top_n[i - 1])))
+      return Err(ErrorCode::InvalidArgument, "pit universe: membership V2 cuts invalid");
   }
   atx::u32 bcount = 0;
   if (!body.take_u32(bcount)) {
@@ -1321,6 +1423,8 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
     if (!body.take_u32(img.band_bp[i])) {
       return short_buffer();
     }
+    if (version == 2U && i > 0 && img.band_bp[i] <= img.band_bp[i - 1])
+      return Err(ErrorCode::InvalidArgument, "pit universe: membership V2 bands invalid");
   }
   atx::u32 rcount = 0;
   if (!body.take_u32(rcount)) {
@@ -1341,6 +1445,10 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
       return Err(ErrorCode::InvalidArgument,
                  "pit universe: membership.bin effective_session_key is 0");
     }
+    if (version == 2U && (reb.rank_session_key <= 0 || reb.effective_session_key <= reb.rank_session_key ||
+        reb.effective_session_key >= kPitSessionKeyEndExclusive ||
+        (r > 0 && reb.rank_session_key <= img.rebalances[r - 1].rank_session_key)))
+      return Err(ErrorCode::InvalidArgument, "pit universe: membership V2 unsealed/unordered sessions");
     reb.cuts.resize(cuts);
     for (atx::usize c = 0; c < cuts; ++c) {
       atx::u32 n = 0;
@@ -1350,6 +1458,8 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
       if (static_cast<atx::usize>(n) > body.remaining() / 12) { // 8 id + 4 rank bytes each
         return short_buffer();
       }
+      if (version == 2U && n > img.top_n[c / bcount])
+        return Err(ErrorCode::InvalidArgument, "pit universe: membership V2 cut exceeds capacity");
       PitMembershipCut &cut = reb.cuts[c];
       cut.security_ids.resize(n);
       cut.ranks.resize(n);
@@ -1357,6 +1467,8 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
         if (!body.take_i64(cut.security_ids[i])) {
           return short_buffer();
         }
+        if (version == 2U && cut.security_ids[i] <= 0)
+          return Err(ErrorCode::InvalidArgument, "pit universe: membership V2 nonpositive ID");
         if (i > 0 && cut.security_ids[i] <= cut.security_ids[i - 1]) {
           return Err(ErrorCode::InvalidArgument,
                      "pit universe: membership.bin ids not strictly ascending");
@@ -1366,6 +1478,8 @@ Result<PitMembershipImage> decode_membership_bin(std::string_view bytes) {
         if (!body.take_u32(cut.ranks[i])) {
           return short_buffer();
         }
+        if (version == 2U && (cut.ranks[i] == 0 || cut.ranks[i] > kPitMaxSourceIds))
+          return Err(ErrorCode::InvalidArgument, "pit universe: membership V2 rank invalid");
       }
     }
   }

@@ -291,6 +291,7 @@ protected:
                                                   const char *rank_end = kRankEnd) const {
         impl::RunConfig cfg;
         cfg.subcommand = "equity-universe";
+        cfg.equity_universe_rule = "legacy-v1"; // frozen cp15 fixtures explicitly reproduce V1
         cfg.equity_segments_dirs = join({dir_a(), dir_b()});
         cfg.equity_preparation_manifests = join({prep_a(), prep_b()});
         cfg.out = (root / out).string();
@@ -315,6 +316,17 @@ auto parse(std::vector<std::string> arguments) {
 } // namespace
 
 // --- §9.2 C1-C4 -----------------------------------------------------------
+
+TEST(ConfigEquityUniverse, V2DefaultRequiresExplicitTypeInputAndLegacyIsSelectable) {
+    const auto active = parse({"atx-impl", "equity-universe"});
+    ASSERT_TRUE(active);
+    EXPECT_EQ(active->equity_universe_rule, "common-stock-v2");
+    const auto legacy = parse({"atx-impl", "equity-universe", "--universe-rule", "legacy-v1"});
+    ASSERT_TRUE(legacy); EXPECT_EQ(legacy->equity_universe_rule, "legacy-v1");
+    const auto supplied = parse({"atx-impl", "equity-universe", "--instrument-types", "types.json"});
+    ASSERT_TRUE(supplied); EXPECT_EQ(supplied->equity_instrument_types, "types.json");
+    EXPECT_FALSE(parse({"atx-impl", "equity-universe", "--universe-rule", "guess-common"}));
+}
 
 TEST(ConfigEquityUniverse, Subcommand_IsFourteenthAndLast) {
     ASSERT_EQ(impl::kSubcommands.size(), 14U);
@@ -493,6 +505,55 @@ TEST_F(StageEquityUniverse, PreparationManifest_MustMatchIngestionBinding) {
     ASSERT_FALSE(edited);
     EXPECT_EQ(edited.error().code(), ErrorCode::InvalidArgument);
     EXPECT_FALSE(fs::exists(ledger()));
+}
+
+TEST_F(StageEquityUniverse, V2DatedTypesBindMembershipExclusionsAndExactPublicationBoundary) {
+    const std::array<Name, 5> names{{{101, 5, 1'000'000, 10, 10}, {202, 10, 1'000'000, 10, 10},
+        {303, 4.999, 2'000'000, 10, 10}, {404, 10, 1'000'000, 10, 10}, {505, 10, 1'000'000, 10, 10}}};
+    auto a = spec_a(), b = spec_b(); a.names = names; b.names = names;
+    ASSERT_NO_FATAL_FAILURE(write_dir(a)); ASSERT_NO_FATAL_FAILURE(write_dir(b));
+    auto cfg = universe_config("v2_missing"); cfg.equity_universe_rule = "common-stock-v2";
+    EXPECT_FALSE(impl::run_equity_universe(cfg));
+    EXPECT_FALSE(fs::exists(root / "v2_missing")); EXPECT_FALSE(fs::exists(ledger()));
+    Json rows = Json::array();
+    for (const auto& name : names) {
+        const auto clock = *date_to_nanos(name.id == 404 ? "2012-12-31" : "2012-01-01");
+        rows.push_back(Json{{"security_id", name.id}, {"valid_from_ns", *date_to_nanos("2012-01-01")},
+            {"valid_to_ns", data::kPitSessionKeyEndExclusive}, {"source_published_at_ns", clock}, {"available_at_ns", clock},
+            {"instrument_type", name.id == 202 ? "etf" : "common-stock"}, {"source_kind", "vendor"},
+            {"source_id", "synthetic"}, {"evidence_locator", "synthetic-row"},
+            {"evidence_status", "verified"}, {"vintage_status", "verified"},
+            {"availability_status", name.id == 505 ? "unverified" : "verified"},
+            {"endpoints_known_at_source_clock", true}});
+    }
+    const Json types{{"schema", "atx-instrument-types-v1"}, {"status", "complete"},
+        {"sealed_end_exclusive", "2020-01-01"}, {"clock_rule", "verified-publication-strict-before-session"},
+        {"validity_rule", "endpoints-known-at-source-clock"},
+        {"sources", Json::array({Json{{"id", "synthetic"}, {"sha256", std::string(64, 'a')}, {"locator", "synthetic-only"}}})},
+        {"rows", rows}};
+    const auto input = root / "types.json";
+    { std::ofstream stream(input, std::ios::binary); stream << types.dump(); }
+    cfg.equity_instrument_types = input.string(); cfg.out = (root / "v2").string();
+    const auto result = impl::run_equity_universe(cfg);
+    ASSERT_TRUE(result) << result.error().message();
+    const auto manifest = Json::parse(contents(root / "v2" / "manifest.json"));
+    EXPECT_EQ(manifest["schema"], "atx-equity-universe-v2");
+    EXPECT_EQ(manifest["config"]["min_raw_price_inclusive"], 5);
+    const auto type_sha = atx::core::sha256_file(input.string()); ASSERT_TRUE(type_sha);
+    EXPECT_EQ(manifest["config"]["instrument_types_sha256"], *type_sha);
+    EXPECT_EQ(contents(input), contents(root / "v2" / "instrument_types.json"));
+    const auto decoded = data::decode_membership_bin(contents(root / "v2" / "membership.bin"));
+    ASSERT_TRUE(decoded); ASSERT_EQ(decoded->rebalances.size(), 2U);
+    EXPECT_EQ(decoded->rebalances[0].cuts[0].security_ids, (std::vector<atx::i64>{101}));
+    EXPECT_EQ(decoded->rebalances[1].cuts[0].security_ids, (std::vector<atx::i64>{101, 404}));
+    const auto excluded = contents(root / "v2" / "excluded_instruments.csv");
+    EXPECT_NE(excluded.find(",202,"), std::string::npos); // ETF
+    EXPECT_NE(excluded.find(",303,"), std::string::npos); // price
+    EXPECT_NE(excluded.find(",505,"), std::string::npos); // unverified
+    for (const auto& file : manifest.at("files")) {
+        const auto hash = atx::core::sha256_file((root / "v2" / file.at("filename").get<std::string>()).string());
+        ASSERT_TRUE(hash); EXPECT_EQ(*hash, file.at("sha256"));
+    }
 }
 
 TEST_F(StageEquityUniverse, Run_SyntheticTwoDirs_WritesAllFilesAndPins) {

@@ -310,6 +310,18 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         cfg.si_publication_lag_rule = value;
         return atx::core::Ok();
     }
+    if (flag == "universe-rule") {
+        if (value != "legacy-v1" && value != "common-stock-v2")
+            return atx::core::Err(EC::InvalidArgument, "--universe-rule must be legacy-v1 or common-stock-v2");
+        cfg.equity_universe_rule = value;
+        return atx::core::Ok();
+    }
+    if (flag == "instrument-types") {
+        if (value.empty() || value.starts_with("--"))
+            return atx::core::Err(EC::InvalidArgument, "--instrument-types requires a path");
+        cfg.equity_instrument_types = value;
+        return atx::core::Ok();
+    }
     // Checkpoint 15 `equity-universe` flags (design §5.2): each rejects an empty or
     // `--` value exactly as --trial-ledger does; list splitting and date validation
     // belong to the stage.
