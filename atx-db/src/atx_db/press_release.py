@@ -4,6 +4,13 @@ The loader is injectable by design: tests and local development pass a CSV/JSON
 file or fetch/parse callables, while production wiring can later point it at a
 licensed filing text source. Preliminary facts are retained in their own table
 and reconciled to final reported ``est_actual`` rows when those arrive.
+
+SEC Item 2.02 EX-99 evidence is split into fetch and load (node 1.7):
+:func:`fetch_sec_earnings_release_documents` is the fetch worker (no DuckDB; it
+writes a ``sec_http.FetchLedgerStore``: content-addressed files plus
+``fetch-ledger.jsonl``, resumable), and :func:`refresh_sec_earnings_release_facts`
+with ``SecEarningsReleaseOptions.fetch_dir`` is the loader that reads only that
+store and never opens the network.
 """
 from __future__ import annotations
 
@@ -18,7 +25,7 @@ import tempfile
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import urlsplit
 
 import pandas as pd
@@ -26,6 +33,7 @@ import pandas as pd
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .reported_eps_core import BASIC_EPS, DILUTED_EPS
+from .sec_http import APPROVED_SEC_USER_AGENT, RESPONSE_TOO_LARGE, FetchLedgerStore, SecRateLimiter
 from .sec_submissions import EarningsReleaseCandidate, select_earnings_release_candidates
 from .security_master import sec_session
 from .estimates import (
@@ -68,7 +76,7 @@ from .warehouse import (
 
 SOURCE_NAME = "press_release_injectable"
 SEC_EARNINGS_RELEASE_SOURCE = "SEC 8-K Item 2.02 reported earnings release"
-SEC_EARNINGS_RELEASE_USER_AGENT = "atx-db/0.1 atx-research@example.com"
+SEC_EARNINGS_RELEASE_USER_AGENT = APPROVED_SEC_USER_AGENT
 DEFAULT_RECONCILIATION_TOLERANCE = 0.02
 EPS_CONFLICT_TOLERANCE = 0.005
 SEC_FILING_DATE_CLOCK_POLICY = "sec_filed_date_plus_46h_v1"
@@ -251,6 +259,9 @@ class SecEarningsReleaseOptions:
     max_document_bytes: int = 8_000_000
     candidate_batch_size: int = 250
     user_agent: str = SEC_EARNINGS_RELEASE_USER_AGENT
+    # Set: loader-only mode. Index/EX-99 bytes come from this sec_http fetch store
+    # (fetch_sec_earnings_release_documents); nothing is requested from SEC.
+    fetch_dir: Path | None = None
     run_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -1139,6 +1150,193 @@ def _fetch_sec_bytes(session: Any, url: str, *, timeout: float, maximum: int) ->
         response.close()
 
 
+class _PrefetchMissing(Exception):
+    """The fetch worker holds no final outcome for this URL yet: the loader skips it, never fetches it."""
+
+
+class _LedgeredFetchFailure(Exception):
+    """A final non-200 outcome in the fetch ledger; ``kind`` matches the network path's reason."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
+
+
+def _prefetched_bytes(store: FetchLedgerStore, url: str, *, maximum: int) -> bytes:
+    record = store.lookup(url)
+    if record is None:
+        raise _PrefetchMissing(url)
+    if record.ok:
+        return store.read(record, maximum=maximum)  # SHA-verified; ValueError above the loader's cap
+    if record.error == RESPONSE_TOO_LARGE:
+        raise ValueError(RESPONSE_TOO_LARGE)
+    raise _LedgeredFetchFailure("HTTPError")  # the network path's raise_for_status on a final 4xx
+
+
+def _fetch_error_name(exc: Exception) -> str:
+    return exc.kind if isinstance(exc, _LedgeredFetchFailure) else type(exc).__name__
+
+
+def earnings_release_candidates_from_submissions_archive(
+    zip_path: Path,
+    *,
+    ciks: tuple[str, ...] | None = None,
+    history_start: dt.date | None = None,
+    history_end: dt.date | None = None,
+    run_id: str | None = None,
+) -> Iterator[EarningsReleaseCandidate]:
+    """Item 2.02 candidates read straight from the retained bulk submissions ZIP (no warehouse).
+
+    Same selection as :func:`select_earnings_release_candidates`: form ``8-K``, ``items``
+    containing ``2.02``, ``report_date`` inside the bounds (a missing report date fails any
+    bound), one row per accession (latest acceptance, then filing date), yielded in
+    ``(cik, accession)`` order. History members are required: a referenced member missing
+    from the archive raises instead of silently narrowing the candidate set.
+    """
+
+    from ._submissions_archive import SubmissionsArchive
+    from .sec_submissions import _normalized_cik, _parse_acceptance, _parse_date
+
+    item_202 = re.compile(r"(^|[^0-9])2\.02([^0-9]|$)")
+    with SubmissionsArchive(Path(zip_path)) as archive:
+        members: Iterable[str]
+        if ciks:
+            members = [f"CIK{cik}.json" for cik in sorted({_normalized_cik(cik) for cik in ciks})]
+        else:
+            members = archive.main_members()
+        for member in members:
+            if member not in archive:
+                continue
+            cik = member[3:13]
+            payload = json.loads(archive.read(member))
+            filings = payload.get("filings", {}) or {}
+            blocks = [(filings.get("recent") or {}, f"{zip_path}!{member}")]
+            for item in filings.get("files", []) or []:
+                name = item.get("name")
+                if not name:
+                    continue
+                if name not in archive:
+                    raise ValueError(f"submissions archive lacks history member {name} referenced by {member}")
+                blocks.append((json.loads(archive.read(name)), f"{zip_path}!{name}"))
+            best: dict[str, tuple[tuple[Any, ...], EarningsReleaseCandidate]] = {}
+            for block, source_url in blocks:
+                forms = block.get("form") or []
+                for index, form in enumerate(forms):
+                    if str(form or "").strip().upper() != "8-K":
+                        continue
+                    row = {
+                        key: _submissions_column(block, key, index)
+                        for key in ("items", "reportDate", "acceptanceDateTime", "filingDate",
+                                    "accessionNumber", "primaryDocument")
+                    }
+                    if not item_202.search(str(row["items"] or "").strip()):
+                        continue
+                    report_date = _parse_date(row["reportDate"])
+                    if history_start is not None and (report_date is None or report_date < history_start):
+                        continue
+                    if history_end is not None and (report_date is None or report_date > history_end):
+                        continue
+                    raw_acceptance = row["acceptanceDateTime"]
+                    acceptance = _parse_acceptance(raw_acceptance)
+                    filing_date = _parse_date(row["filingDate"])
+                    candidate = EarningsReleaseCandidate(
+                        cik=cik,
+                        accession_number=str(row["accessionNumber"] or "").strip(),
+                        filing_date=filing_date,
+                        report_date=report_date,
+                        acceptance_datetime=None if acceptance is None else acceptance.to_pydatetime(),
+                        acceptance_datetime_raw=None if raw_acceptance is None else str(raw_acceptance).strip(),
+                        primary_document=_clean_string(row["primaryDocument"]),
+                        source_url=source_url,
+                        run_id=run_id,
+                    )
+                    rank = (acceptance is not None, acceptance or pd.Timestamp.min,
+                            filing_date is not None, filing_date or dt.date.min)
+                    held = best.get(candidate.accession_number)
+                    if held is None or rank > held[0]:
+                        best[candidate.accession_number] = (rank, candidate)
+            for accession in sorted(best):
+                yield best[accession][1]
+
+
+def _submissions_column(block: dict[str, Any], key: str, index: int) -> Any:
+    values = block.get(key) or []
+    return values[index] if index < len(values) else None
+
+
+def fetch_sec_earnings_release_documents(
+    candidates: Iterable[EarningsReleaseCandidate],
+    fetch_dir: Path,
+    *,
+    limiter: SecRateLimiter | None = None,
+    request_timeout: float = 30.0,
+    max_index_bytes: int = 2_000_000,
+    max_document_bytes: int = 8_000_000,
+    progress: Callable[[dict[str, int]], None] | None = None,
+    progress_every: int = 0,
+) -> dict[str, int]:
+    """Fetch half of the Item 2.02 split: filing index plus its single EX-99, into a fetch store.
+
+    Holds no DuckDB connection. It makes exactly the requests the loader would make (a
+    candidate without a usable SEC clock, or without exactly one EX-99, fetches nothing
+    more), so the cache-mode loader finds every byte it needs. Ledgered URLs are never
+    refetched; transient failures (0/403/429/5xx) stay retryable on the next run.
+    """
+
+    store = FetchLedgerStore(fetch_dir).load()
+    counts = {
+        "candidates": 0, "no_clock": 0, "index_fetched": 0, "index_ledgered": 0, "index_failed": 0,
+        "index_unparsed": 0, "ex99_not_single": 0, "document_fetched": 0, "document_ledgered": 0,
+        "document_failed": 0, "ledger_duplicate_ok_urls_at_start": store.duplicate_ok_urls,
+        "ledger_corrupt_lines_at_start": store.corrupt_lines,
+    }
+    for candidate in candidates:
+        counts["candidates"] += 1
+        clock = _daily_sec_clock(candidate.acceptance_datetime_raw, candidate.filing_date)
+        if clock.available_at is None:
+            counts["no_clock"] += 1
+        else:
+            _fetch_candidate_documents(
+                store, candidate, counts, limiter=limiter, timeout=request_timeout,
+                max_index_bytes=max_index_bytes, max_document_bytes=max_document_bytes,
+            )
+        if progress is not None and progress_every and counts["candidates"] % progress_every == 0:
+            progress(dict(counts))
+    return counts
+
+
+def _fetch_candidate_documents(
+    store: FetchLedgerStore,
+    candidate: EarningsReleaseCandidate,
+    counts: dict[str, int],
+    *,
+    limiter: SecRateLimiter | None,
+    timeout: float,
+    max_index_bytes: int,
+    max_document_bytes: int,
+) -> None:
+    index_url, directory_url = _archive_urls(candidate.cik, candidate.accession_number)
+    record, fetched = store.ensure(index_url, limiter=limiter, timeout=timeout, maximum=max_index_bytes)
+    counts["index_fetched" if fetched else "index_ledgered"] += 1
+    if not record.ok:
+        counts["index_failed"] += 1
+        return
+    try:
+        documents = _ex99_documents(store.read(record).decode("utf-8", errors="replace"), directory_url)
+    except Exception:
+        counts["index_unparsed"] += 1  # the loader records the same parse failure from the same bytes
+        return
+    if len(documents) != 1:
+        counts["ex99_not_single"] += 1
+        return
+    record, fetched = store.ensure(
+        f"{directory_url}/{documents[0]}", limiter=limiter, timeout=timeout, maximum=max_document_bytes,
+    )
+    counts["document_fetched" if fetched else "document_ledgered"] += 1
+    if not record.ok:
+        counts["document_failed"] += 1
+
+
 def _cached_document_path(cache_dir: Path, candidate: EarningsReleaseCandidate, document_name: str) -> Path:
     # _archive_urls validates the accession and this selector admits flat names.
     return cache_dir / candidate.cik / candidate.accession_number.replace("-", "") / document_name
@@ -1379,10 +1577,26 @@ def refresh_sec_earnings_release_facts(
     its CIK/accession/document identity; replays only skip terminal document
     fingerprints and retain each later accession as its own source vintage.
     This routine requires the additive receipt migration before execution.
+
+    With ``options.fetch_dir`` the routine is loader-only: bytes come from the
+    fetch worker's SHA-verified store, no session is opened, and a candidate the
+    worker has not fetched yet is skipped (``not_prefetched``) without a receipt.
     """
 
-    session = session or sec_session(options.user_agent)
+    prefetched = FetchLedgerStore(options.fetch_dir).load() if options.fetch_dir is not None else None
+    if prefetched is not None and session is not None:
+        raise ValueError("fetch_dir mode is loader-only and takes no network session")
+    if prefetched is None:
+        session = session or sec_session(options.user_agent)
     counts = {"candidates": 0, "accepted": 0, "rejected": 0, "skipped_terminal": 0, "cache_hits": 0}
+    if prefetched is not None:
+        counts.update(not_prefetched=0, prefetched_documents=0)
+
+    def fetch_bytes(url: str, maximum: int) -> bytes:
+        if prefetched is not None:
+            return _prefetched_bytes(prefetched, url, maximum=maximum)
+        return _fetch_sec_bytes(session, url, timeout=options.request_timeout, maximum=maximum)
+
     for candidate in _iter_sec_earnings_release_candidates(store, options):
         counts["candidates"] += 1
         if _terminal_sec_receipt_exists(store, candidate):
@@ -1402,13 +1616,14 @@ def refresh_sec_earnings_release_facts(
             counts["rejected"] += 1
             continue
         try:
-            index_bytes = _fetch_sec_bytes(
-                session, index_url, timeout=options.request_timeout, maximum=options.max_index_bytes
-            )
+            index_bytes = fetch_bytes(index_url, options.max_index_bytes)
             documents = _ex99_documents(index_bytes.decode("utf-8", errors="replace"), directory_url)
+        except _PrefetchMissing:
+            counts["not_prefetched"] += 1
+            continue
         except Exception as exc:
             outcome = SecEarningsReleaseOutcome(
-                candidate, "fetch_failed", f"index_fetch_or_parse:{type(exc).__name__}",
+                candidate, "fetch_failed", f"index_fetch_or_parse:{_fetch_error_name(exc)}",
                 index_url=index_url, source_clock=clock,
             )
             _write_sec_receipt(store, outcome)
@@ -1426,19 +1641,25 @@ def refresh_sec_earnings_release_facts(
         document_url = f"{directory_url}/{document_name}"
         cache_path = _cached_document_path(options.cache_dir, candidate, document_name)
         try:
-            document_bytes = _read_verified_cache(
-                store, candidate, document_name, cache_path, maximum=options.max_document_bytes
-            )
-            if document_bytes is not None:
-                counts["cache_hits"] += 1
+            if prefetched is not None:
+                # The fetch store is itself content-addressed and SHA-verified: no second copy.
+                document_bytes = fetch_bytes(document_url, options.max_document_bytes)
+                counts["prefetched_documents"] += 1
             else:
-                document_bytes = _fetch_sec_bytes(
-                    session, document_url, timeout=options.request_timeout, maximum=options.max_document_bytes
+                document_bytes = _read_verified_cache(
+                    store, candidate, document_name, cache_path, maximum=options.max_document_bytes
                 )
-                _write_verified_cache(cache_path, document_bytes)
+                if document_bytes is not None:
+                    counts["cache_hits"] += 1
+                else:
+                    document_bytes = fetch_bytes(document_url, options.max_document_bytes)
+                    _write_verified_cache(cache_path, document_bytes)
+        except _PrefetchMissing:
+            counts["not_prefetched"] += 1
+            continue
         except Exception as exc:
             outcome = SecEarningsReleaseOutcome(
-                candidate, "fetch_failed", f"document_fetch:{type(exc).__name__}", document_name,
+                candidate, "fetch_failed", f"document_fetch:{_fetch_error_name(exc)}", document_name,
                 index_url, document_url, source_clock=clock,
             )
             _write_sec_receipt(store, outcome)

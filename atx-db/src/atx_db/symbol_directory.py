@@ -28,6 +28,7 @@ import requests
 from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .sec_http import APPROVED_SEC_USER_AGENT
 from .warehouse import insert_frame, now_utc_naive, quality_check, record_source_file, symbol_key
 
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
@@ -36,8 +37,8 @@ TRADING_SYSTEM_ADDS_DELETES_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/T
 SOURCE_NAME = "Nasdaq Trader Symbol Directory"
 LISTING_EVENTS_SOURCE_NAME = "Nasdaq Trader Trading System Adds/Deletes"
 
-# The only user agent approved for SEC/Nasdaq requests from this project.
-APPROVED_USER_AGENT = "atx-db/0.1 atx-research@example.com"
+# The only user agent approved for SEC/Nasdaq requests from this project (defined once in sec_http).
+APPROVED_USER_AGENT = APPROVED_SEC_USER_AGENT
 
 SYMBOL_DIRECTORY_DATASET_ID = "nasdaq_symbol_directory"
 LISTING_EVENTS_DATASET_ID = "nasdaq_listing_events"

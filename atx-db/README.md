@@ -105,7 +105,8 @@ Install the package, identify SEC traffic, and inspect warehouse readiness:
 
 ```powershell
 python -m pip install -e ".[dev]"
-$env:ATX_SEC_USER_AGENT = "atx-db/0.2 data-operations@your-domain.example"
+# SEC traffic always uses the approved agent (atx_db.sec_http.APPROVED_SEC_USER_AGENT);
+# ATX_SEC_USER_AGENT may stay unset and rejects any other value.
 atx-db status --strict
 ```
 

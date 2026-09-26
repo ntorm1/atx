@@ -21,6 +21,7 @@ from atx_db.activation import (
     stage_sec_bulk_download,
     stage_submissions_load,
 )
+from atx_db.sec_http import APPROVED_SEC_USER_AGENT
 
 _CIK = "0000320193"
 
@@ -114,7 +115,7 @@ def _options(tmp_path: Path, downloader=None) -> ActivationOptions:
         as_of_date=dt.date(2024, 1, 4),
         staging_dir=tmp_path / "staging",
         cache_dir=tmp_path / "cache",
-        sec_user_agent="atx-db test agent test@example.com",
+        sec_user_agent=APPROVED_SEC_USER_AGENT,
         downloader=downloader,
         ticker_history_expected_bytes=None,
         run_id="test-run",
@@ -175,9 +176,9 @@ def test_download_stage_resumes_by_skipping_present_archives(
     assert result.detail["submissions_skipped"] is True
 
 
-def test_download_stage_requires_a_sec_user_agent(tmp_store, tmp_path, monkeypatch):
+def test_download_stage_refuses_a_non_approved_sec_user_agent(tmp_store, tmp_path, monkeypatch):
     monkeypatch.delenv("ATX_SEC_USER_AGENT", raising=False)
-    options = ActivationOptions(**{**_options(tmp_path).as_dict(), "sec_user_agent": None})
+    options = ActivationOptions(**{**_options(tmp_path).as_dict(), "sec_user_agent": "other-agent ops@example.org"})
     with pytest.raises(ValueError, match="ATX_SEC_USER_AGENT"):
         stage_sec_bulk_download(tmp_store, options)
 

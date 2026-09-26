@@ -80,8 +80,9 @@ from ._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from ._submissions_archive import SubmissionsArchive
 from .historical_identity import EVIDENCE_COLUMNS, EVIDENCE_TABLE, normalize_cik
 from .market_owner_bridge import normalize_symbol
+from .sec_http import APPROVED_SEC_USER_AGENT, SecRateLimiter, sec_session
 
-USER_AGENT = "atx-db/0.1 atx-research@example.com"
+USER_AGENT = APPROVED_SEC_USER_AGENT
 #: RX5: at most 500 primary-document fetches for the pilot, at most 5 requests per second.
 PILOT_FETCH_BUDGET = 500
 MAX_REQUESTS_PER_SECOND = 5.0
@@ -260,7 +261,9 @@ class SecDocumentFetcher:
     """Fetch SEC archive documents once; every response is cached and ledgered.
 
     * Only the approved project user agent is accepted.
-    * Network requests are spaced by ``min_interval_s`` (``>= 1/5 s``: RX5).
+    * Network requests are spaced by ``min_interval_s`` (``>= 1/5 s``: RX5) and, on the default
+      session, also take a token from the host-wide ``sec_http`` limiter (<= 5 req/s across all
+      workers); that session makes one attempt per request so the budget sees every request.
     * ``budget`` caps *network requests* across runs: the ledger in
       ``cache_dir`` records every request (status, bytes, SHA-256, time), and a
       cached response is served without touching the network or the budget.
@@ -280,6 +283,7 @@ class SecDocumentFetcher:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC).replace(tzinfo=None),
+        limiter: SecRateLimiter | None = None,
     ) -> None:
         if user_agent != USER_AGENT:
             raise ValueError("SEC document fetches require the approved project user agent")
@@ -295,6 +299,7 @@ class SecDocumentFetcher:
         self.retry_backoff_s = retry_backoff_s
         self.timeout_s = timeout_s
         self._session = session
+        self._limiter = limiter
         self._monotonic = monotonic
         self._sleep = sleep
         self._now = now
@@ -347,9 +352,7 @@ class SecDocumentFetcher:
 
     def _session_or_default(self) -> Any:
         if self._session is None:
-            import requests
-
-            self._session = requests.Session()
+            self._session = sec_session(USER_AGENT, limiter=self._limiter, max_attempts=1)
         return self._session
 
     def fetch(self, url: str, *, retries: int = 1) -> CachedResponse:

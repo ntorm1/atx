@@ -11,8 +11,9 @@ standardization.
 Pipeline (bounded; nothing here opens the governed warehouse by itself):
 
 1. :func:`fetch_fsds_quarters` -- ruling RX10: at most eight quarterly zips, approved SEC user
-   agent, <= 4 requests/s, streamed into ``data/cache/P12-fsds`` with a SHA-256 manifest. A cached
-   zip is re-hashed and reused, never downloaded again.
+   agent, paced by the host-wide ``sec_http`` limiter (<= 5 requests/s across all workers), streamed
+   into ``data/cache/P12-fsds`` with a SHA-256 manifest. A cached zip is re-hashed and reused, never
+   downloaded again.
 2. :func:`load_fsds_subset` -- streams ``sub/num/tag`` out of each zip into a temporary file and
    reads it with DuckDB (memory_limit 384MB, 2 threads), keeping only the panel issuers'
    submissions, into a small standalone subset DB (idempotent per quarter + zip hash + panel).
@@ -46,10 +47,9 @@ import json
 import os
 import re
 import shutil
-import time
 import uuid
 import zipfile
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -60,13 +60,13 @@ import pandas as pd
 from .connection import DuckDBStore, resolve_data_dir
 from .fact_disagreement import FactDisagreementOptions, refresh_fact_disagreement
 from .item_registry import FundamentalItemSeedRow, read_fundamental_item_seed
+from .sec_http import APPROVED_SEC_USER_AGENT, SecRateLimiter, sec_session
 from .standardization import StandardizationRule, default_standardization_rules, rule_input_kinds
 from .statement_map_seed import FundamentalStatementMapRow, read_statement_map_seed
 
 FSDS_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip"
-SEC_USER_AGENT = "atx-db/0.1 atx-research@example.com"
+SEC_USER_AGENT = APPROVED_SEC_USER_AGENT
 RX10_MAX_ZIPS = 8
-MIN_REQUEST_INTERVAL_S = 0.25
 CACHE_DIRNAME = "P12-fsds"
 MANIFEST_NAME = "P12-fsds-manifest.json"
 SUBSET_DB_NAME = "P12-fsds-subset.duckdb"
@@ -348,14 +348,14 @@ def fetch_fsds_quarters(
     cache_dir: Path | None = None,
     *,
     session: Any | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-    monotonic: Callable[[], float] = time.monotonic,
+    limiter: SecRateLimiter | None = None,
 ) -> list[FsdsArchive]:
     """Download (once) and hash FSDS quarterly zips under the RX10 cap.
 
     A zip already on disk is re-hashed and reused -- never downloaded again; a manifest/zip hash
     mismatch or a recorded-but-missing zip is an error rather than a silent re-download. The cap
-    counts every distinct quarter ever recorded in the manifest, not just this call.
+    counts every distinct quarter ever recorded in the manifest, not just this call. The default
+    session is ``sec_http.sec_session``: every attempt takes a token from the host-wide limiter.
     """
 
     cache_dir = Path(cache_dir or default_cache_dir())
@@ -368,7 +368,6 @@ def fetch_fsds_quarters(
             f"RX10 allows at most {RX10_MAX_ZIPS} FSDS zips; recorded={sorted(recorded)} requested={wanted}"
         )
 
-    last_request = float("-inf")
     results: list[FsdsArchive] = []
     for quarter in wanted:
         path = cache_dir / f"{quarter}.zip"
@@ -389,13 +388,7 @@ def fetch_fsds_quarters(
             raise RuntimeError(f"{quarter} is recorded in {MANIFEST_NAME} but {path} is missing; refusing to re-download")
 
         if session is None:
-            import requests
-
-            session = requests.Session()
-        wait = MIN_REQUEST_INTERVAL_S - (monotonic() - last_request)
-        if wait > 0:
-            sleep(wait)
-        last_request = monotonic()
+            session = sec_session(limiter=limiter)
         headers = {"User-Agent": SEC_USER_AGENT, "Accept-Encoding": "gzip, deflate"}
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
         digest = hashlib.sha256()

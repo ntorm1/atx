@@ -15,6 +15,7 @@ from atx_db.activation import (
     stage_ticker_history_extract,
     stage_ticker_history_publish,
 )
+from atx_db.sec_http import APPROVED_SEC_USER_AGENT
 
 # The full tbltickerhistory3 source contract (ticker_history_quality._validate_source_columns):
 # dn is the vendor's per-security trading-day sequence, closeUnadjPr the prior unadjusted close.
@@ -57,7 +58,7 @@ def _options(tmp_path: Path, zip_path: Path) -> ActivationOptions:
         ticker_history_zip=zip_path,
         staging_dir=tmp_path / "staging",
         cache_dir=tmp_path / "cache",
-        sec_user_agent="atx-db test agent test@example.com",
+        sec_user_agent=APPROVED_SEC_USER_AGENT,
         ticker_history_expected_bytes=None,
         minimum_rows=1,
         minimum_securities=1,
@@ -279,11 +280,11 @@ def test_symbol_directory_stage_records_source_files_with_sha256(tmp_store, tmp_
         assert source_url in payloads
 
 
-def test_stages_fail_fast_without_a_sec_user_agent(tmp_store, tmp_path, three_symbol_zip):
+def test_stages_fail_fast_on_a_non_approved_sec_user_agent(tmp_store, tmp_path, three_symbol_zip):
     from atx_db.activation import stage_security_master
 
     options = ActivationOptions(
-        **{**_options(tmp_path, three_symbol_zip).as_dict(), "sec_user_agent": None}
+        **{**_options(tmp_path, three_symbol_zip).as_dict(), "sec_user_agent": "other-agent ops@example.org"}
     )
     with pytest.raises(ValueError, match="ATX_SEC_USER_AGENT"):
         stage_security_master(tmp_store, options)

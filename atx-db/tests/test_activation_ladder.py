@@ -18,6 +18,7 @@ from atx_db.activation import (
     run_activation,
 )
 from atx_db.connection import DuckDBStore
+from atx_db.sec_http import APPROVED_SEC_USER_AGENT
 
 # The full tbltickerhistory3 source contract (ticker_history_quality._validate_source_columns):
 # dn is the vendor's per-security trading-day sequence, closeUnadjPr the prior unadjusted close.
@@ -135,7 +136,7 @@ def offline_options(built_warehouse, tmp_path, three_symbol_zip) -> ActivationOp
         ticker_history_expected_bytes=None,
         staging_dir=tmp_path / "staging",
         cache_dir=tmp_path / "cache",
-        sec_user_agent="atx-db test agent test@example.com",
+        sec_user_agent=APPROVED_SEC_USER_AGENT,
         minimum_rows=1,
         minimum_securities=1,
         minimum_latest_date_securities=1,

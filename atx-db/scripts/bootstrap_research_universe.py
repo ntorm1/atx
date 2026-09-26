@@ -15,6 +15,7 @@ from atx_db import DEFAULT_DB_PATH, DuckDBStore, JobManager
 from atx_db.fundamentals import COMPANY_FACT_SYMBOL_SOURCES
 from atx_db.lake import DEFAULT_EXPORT_OBJECTS, DEFAULT_LAKE_ROOT, LakehouseExporter
 from atx_db.quality import run_warehouse_quality_checks
+from atx_db.sec_http import APPROVED_SEC_USER_AGENT, validate_sec_user_agent
 from atx_db.ticker_history import (
     DEFAULT_TICKER_HISTORY_ZIP,
     TickerHistoryArchiveProfileOptions,
@@ -663,7 +664,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sec-company-facts-as-of-date", type=parse_date)
     parser.add_argument("--xbrl-taxonomy-urls", default=",".join(DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS))
     parser.add_argument("--xbrl-request-timeout", type=int, default=120)
-    parser.add_argument("--xbrl-user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--xbrl-user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
     parser.add_argument("--include-sec-submissions", action="store_true")
     parser.add_argument("--sec-forms", default="10-K,10-Q,8-K")
     parser.add_argument("--include-xbrl-filing-contexts", action="store_true")
@@ -675,7 +676,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional balanced cap per security before the overall --xbrl-context-max-filings cap.",
     )
     parser.add_argument("--xbrl-context-request-timeout", type=int, default=120)
-    parser.add_argument("--xbrl-context-user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--xbrl-context-user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
 
     parser.add_argument("--skip-lake-export", action="store_true")
     parser.add_argument("--lake-root", type=Path, default=DEFAULT_LAKE_ROOT)

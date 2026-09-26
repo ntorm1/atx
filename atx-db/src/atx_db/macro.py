@@ -9,6 +9,7 @@ import requests
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .sec_http import APPROVED_SEC_USER_AGENT
 from .warehouse import insert_frame, quality_check, record_source_file
 
 
@@ -61,7 +62,7 @@ class FredMacroOptions:
     start_date: dt.date | None = None
     end_date: dt.date | None = None
     request_timeout: int = 60
-    user_agent: str = "atx-db/0.1 atx-research@example.com"
+    user_agent: str = APPROVED_SEC_USER_AGENT
     run_id: str | None = None
 
 

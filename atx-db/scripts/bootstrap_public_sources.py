@@ -16,6 +16,7 @@ from atx_db.lake import DEFAULT_EXPORT_OBJECTS, DEFAULT_LAKE_ROOT, LakehouseExpo
 from atx_db.fundamentals import COMPANY_FACT_SYMBOL_SOURCES
 from atx_db.macro import DEFAULT_SERIES
 from atx_db.quality import run_warehouse_quality_checks
+from atx_db.sec_http import APPROVED_SEC_USER_AGENT, PUBLIC_DATA_USER_AGENT, validate_sec_user_agent
 from atx_db.thirteenf import AAPL_CUSIP, ThirteenFOptions, normalize_cusip
 from atx_db.warehouse import symbol_key
 from atx_db.watermarks import refresh_warehouse_watermarks
@@ -1231,7 +1232,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-macro", action="store_true")
 
     parser.add_argument("--sec-request-timeout", type=int, default=120)
-    parser.add_argument("--sec-user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--sec-user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
     parser.add_argument("--sec-concepts", default="")
     parser.add_argument("--sec-company-facts-symbol-source", choices=COMPANY_FACT_SYMBOL_SOURCES, default="symbols")
     parser.add_argument("--sec-company-facts-symbol-limit", type=int)
@@ -1247,10 +1248,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional balanced cap per security before the overall --xbrl-context-max-filings cap.",
     )
     parser.add_argument("--xbrl-context-request-timeout", type=int, default=120)
-    parser.add_argument("--xbrl-context-user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--xbrl-context-user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
     parser.add_argument("--xbrl-taxonomy-urls", default=",".join(DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS))
     parser.add_argument("--xbrl-request-timeout", type=int, default=120)
-    parser.add_argument("--xbrl-user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--xbrl-user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
     parser.add_argument("--fundamental-feature-set", default="sec_fundamentals_v1")
     parser.add_argument("--fundamental-feature-start-date", type=parse_date)
     parser.add_argument("--fundamental-feature-end-date", type=parse_date)
@@ -1259,7 +1260,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--listing-events-as-of-date", type=parse_date)
     parser.add_argument("--listing-events-url")
     parser.add_argument("--nasdaq-request-timeout", type=int, default=60)
-    parser.add_argument("--nasdaq-user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--nasdaq-user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
 
     parser.add_argument("--finra-mode", choices=("symbol", "dates"), default="symbol")
     parser.add_argument("--finra-symbol")
@@ -1276,7 +1277,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--finra-request-timeout", type=int, default=120)
     parser.add_argument("--finra-request-retries", type=int, default=5)
     parser.add_argument("--finra-retry-sleep", type=float, default=1.0)
-    parser.add_argument("--finra-user-agent", default="atx-db FINRA dataset loader")
+    parser.add_argument("--finra-user-agent", default=PUBLIC_DATA_USER_AGENT)
     parser.add_argument("--finra-feature-set", default="finra_short_interest_v1")
     parser.add_argument("--finra-feature-min-cross-section", type=int, default=20)
 
@@ -1286,7 +1287,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--full-13f-holdings", action="store_true")
     parser.add_argument("--sec-13f-chunk-size", type=int, default=200_000)
     parser.add_argument("--sec-13f-request-timeout", type=int, default=180)
-    parser.add_argument("--sec-13f-user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--sec-13f-user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
     parser.add_argument("--sec-13f-ownership-feature-set", default="sec_13f_ownership_v1")
     parser.add_argument("--compute-source-hash", action="store_true")
 
@@ -1306,7 +1307,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--macro-start-date", type=parse_date)
     parser.add_argument("--macro-end-date", type=parse_date)
     parser.add_argument("--macro-request-timeout", type=int, default=60)
-    parser.add_argument("--macro-user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--macro-user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
 
     parser.add_argument("--skip-lake-export", action="store_true")
     parser.add_argument("--lake-root", type=Path, default=DEFAULT_LAKE_ROOT)

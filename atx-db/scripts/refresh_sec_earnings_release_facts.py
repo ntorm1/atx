@@ -1,4 +1,9 @@
-"""Fetch bounded SEC Item 2.02 EX-99 evidence from already-loaded submissions."""
+"""Load SEC Item 2.02 EX-99 evidence for already-loaded submissions.
+
+With ``--fetch-dir`` the run is loader-only: bytes come from the fetch store written by
+``scripts/fetch_sec_earnings_releases.py`` and no SEC request is made. Without it the
+legacy path fetches from SEC while holding the warehouse writer.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +26,8 @@ def main() -> int:
     parser.add_argument("--request-timeout", type=float, default=30.0)
     parser.add_argument("--max-index-bytes", type=int, default=2_000_000)
     parser.add_argument("--max-document-bytes", type=int, default=8_000_000)
+    parser.add_argument("--fetch-dir", type=Path, default=None,
+                        help="Loader-only: read the sec_http fetch store instead of the network.")
     parser.add_argument("--run-id", default=None)
     args = parser.parse_args()
     with DuckDBStore(args.db_path) as store:
@@ -34,6 +41,7 @@ def main() -> int:
                 request_timeout=args.request_timeout,
                 max_index_bytes=args.max_index_bytes,
                 max_document_bytes=args.max_document_bytes,
+                fetch_dir=args.fetch_dir,
                 run_id=args.run_id,
             ),
         )

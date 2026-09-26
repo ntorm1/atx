@@ -12,8 +12,8 @@ delisting evidence, the listed universe, and final provider coverage.
 
 Network is limited to security_master, symbol_directory, sec_bulk_download, and
 the governed earnings_release_facts stage after submissions_load.
-``ATX_SEC_USER_AGENT`` (or ``--sec-user-agent``) is required before any SEC
-request; the ladder fails fast without it.
+``ATX_SEC_USER_AGENT`` (or ``--sec-user-agent``) is optional and may only repeat
+the approved SEC user agent; any other value fails before any SEC request.
 
 Migration governance
 ---------------------

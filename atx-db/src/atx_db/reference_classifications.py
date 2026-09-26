@@ -29,7 +29,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-import time
 import uuid
 import zipfile
 from collections import Counter
@@ -38,10 +37,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
-import requests
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .sec_http import APPROVED_SEC_USER_AGENT, sec_session
 from .warehouse import now_utc_naive, record_source_file
 
 logger = logging.getLogger(__name__)
@@ -1102,26 +1101,19 @@ class NaicsTaxonomyDataset(Dataset):
 # SEC submission fetcher
 # ---------------------------------------------------------------------------
 
-_DEFAULT_USER_AGENT = "atx-db/0.1 atx-research@example.com"
+_DEFAULT_USER_AGENT = APPROVED_SEC_USER_AGENT
 _SEC_SUBMISSION_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
-_MAX_REQUESTS_PER_SEC = 5
 
 
 def _make_real_fetcher(
     user_agent: str = _DEFAULT_USER_AGENT,
     request_timeout: int = 30,
 ) -> Callable[[str | int], dict | None]:
-    """Return a real SEC-fetching callable (rate-limited ≤5 req/s)."""
-    session = requests.Session()
-    session.headers.update({"User-Agent": user_agent, "Accept": "application/json"})
-    min_interval = 1.0 / _MAX_REQUESTS_PER_SEC
-    last_call: list[float] = [0.0]
+    """Return a real SEC-fetching callable (host-wide ``sec_http`` limiter, ≤5 req/s across workers)."""
+    session = sec_session(user_agent)
+    session.headers.update({"Accept": "application/json"})
 
     def fetch(cik: str | int) -> dict | None:
-        elapsed = time.monotonic() - last_call[0]
-        if elapsed < min_interval:
-            time.sleep(min_interval - elapsed)
-        last_call[0] = time.monotonic()
         url = _SEC_SUBMISSION_URL.format(cik=int(cik))
         try:
             resp = session.get(url, timeout=request_timeout)

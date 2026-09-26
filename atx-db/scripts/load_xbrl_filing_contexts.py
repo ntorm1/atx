@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore
+from atx_db.sec_http import APPROVED_SEC_USER_AGENT, validate_sec_user_agent
 from atx_db.xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
 
 
@@ -31,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional balanced cap applied within each security before the overall --max-filings cap.",
     )
     parser.add_argument("--request-timeout", type=int, default=120)
-    parser.add_argument("--user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
     return parser.parse_args()
 
 

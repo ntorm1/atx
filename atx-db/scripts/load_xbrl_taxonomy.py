@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore
+from atx_db.sec_http import APPROVED_SEC_USER_AGENT, validate_sec_user_agent
 from atx_db.xbrl_taxonomy import DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS, XbrlTaxonomyOptions, refresh_xbrl_taxonomy
 
 
@@ -23,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--package-urls", default=",".join(DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS))
     parser.add_argument("--request-timeout", type=int, default=120)
-    parser.add_argument("--user-agent", default="atx-db/0.1 atx-research@example.com")
+    parser.add_argument("--user-agent", type=validate_sec_user_agent, default=APPROVED_SEC_USER_AGENT)
     return parser.parse_args()
 
 

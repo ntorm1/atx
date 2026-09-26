@@ -153,6 +153,7 @@ import pandas as pd
 from .._forward_return_publication import effective_terminals_sql, selected_bars_sql, selected_terminals_sql
 from ..connection import resolve_data_dir
 from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME
+from ..sec_http import APPROVED_SEC_USER_AGENT
 from . import evaluation as _evaluation
 from . import stats
 from .features import IN_DOMAIN, OWNER_BASIS_LINKED, OWNER_BASIS_UNLINKED
@@ -187,7 +188,7 @@ FRED_DTB3_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTB3"
 #: Ruling RX10: the fetch is cached under a P4-prefixed cache directory.
 RF_CACHE_DIRNAME = "P4-fred-dtb3"
 RF_FILENAME = "DTB3.csv"
-USER_AGENT = "atx-db/0.1 atx-research@example.com"
+USER_AGENT = APPROVED_SEC_USER_AGENT
 SESSIONS_PER_YEAR = 252
 MONTHLY_LABEL_SESSIONS = 21
 FREQ_DAILY, FREQ_MONTHLY = "daily", "monthly"

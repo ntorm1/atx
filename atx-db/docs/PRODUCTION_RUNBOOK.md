@@ -7,8 +7,11 @@ jobs serially. Readers should use read-only connections or published Parquet
 snapshots. Keep `ATX_DB_PATH`, cache, staging, and DuckDB spill storage on the
 same durable volume when possible.
 
-Set `ATX_SEC_USER_AGENT` to a product name and monitored contact address before
-making SEC requests. The 13F loader validates ZIP contents, resumes partial
+SEC requests send only the approved user agent `sec_http.APPROVED_SEC_USER_AGENT`;
+`ATX_SEC_USER_AGENT` / `--sec-user-agent` are optional and may only repeat it (any other
+value fails before a request). All SEC workers on a host share one 5 req/s limiter
+(`data/cache/.sec_rate.lock`; set `ATX_SEC_RATE_LOCK` when running from an export).
+The 13F loader validates ZIP contents, resumes partial
 downloads, records source hashes and byte counts, and atomically replaces one
 source archive at a time.
 
@@ -110,8 +113,10 @@ successful execution alone does not certify the data.
   (3,617,973,507 bytes). The older `tbltickerhistory3_10y.zip` and extracted TSV
   remain preserved source evidence. Use `--ticker-history-source-path` for the
   native file; it does not require ZIP extraction.
-- `ATX_SEC_USER_AGENT` set to a product name and a monitored contact address.
-  The ladder fails fast on any SEC stage without it.
+- `ATX_SEC_USER_AGENT` unset or exactly the approved agent (`sec_http.APPROVED_SEC_USER_AGENT`);
+  the ladder fails fast, before any request, on any other value.
+- Item 2.02 EX-99 documents prefetched by `scripts/fetch_sec_earnings_releases.py` (no warehouse
+  handle) when `earnings_release_facts` should run loader-only (`--earnings-release-fetch-dir`).
 - One durable volume with room for the disk budget below.
 
 ### Disk usage

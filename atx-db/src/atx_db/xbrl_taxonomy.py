@@ -15,6 +15,7 @@ import requests
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .sec_http import APPROVED_SEC_USER_AGENT, default_sec_limiter, is_sec_url, validate_sec_user_agent
 from .warehouse import insert_frame, now_utc_naive, quality_check, record_source_file
 
 
@@ -42,7 +43,7 @@ FRAME_RE = re.compile(r"^CY(?P<year>\d{4})(?:Q(?P<quarter>[1-4]))?(?P<instant>I)
 class XbrlTaxonomyOptions:
     package_urls: tuple[str, ...] = DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS
     request_timeout: int = 120
-    user_agent: str = "atx-db/0.1 atx-research@example.com"
+    user_agent: str = APPROVED_SEC_USER_AGENT
     run_id: str | None = None
 
 
@@ -194,6 +195,9 @@ def _is_dimension_relationship(row: dict[str, Any]) -> bool:
 
 
 def _download_package(url: str, *, timeout: int, user_agent: str) -> tuple[bytes, str]:
+    if is_sec_url(url):  # SEC-hosted packages: approved agent only, host-wide limiter
+        user_agent = validate_sec_user_agent(user_agent)
+        default_sec_limiter().acquire(url)
     response = requests.get(url, timeout=timeout, headers={"User-Agent": user_agent})
     response.raise_for_status()
     content = response.content

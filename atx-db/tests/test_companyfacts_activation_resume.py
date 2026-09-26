@@ -18,8 +18,9 @@ from atx_db.activation import (
     run_activation,
     stage_companyfacts_load,
 )
+from atx_db.sec_http import APPROVED_SEC_USER_AGENT
 
-_UA = "atx-db/0.2 atx-research@example.com"
+_UA = APPROVED_SEC_USER_AGENT  # the only agent the CLI edge accepts (sec_http)
 _PRIOR = "758f7d5c-73ae-4b66-a8c9-f1996afa163a"
 
 

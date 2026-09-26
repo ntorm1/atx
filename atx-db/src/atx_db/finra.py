@@ -14,6 +14,7 @@ import requests
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .sec_http import PUBLIC_DATA_USER_AGENT
 from .security_master import security_ids_for_symbols
 from .warehouse import security_id_for_symbol
 
@@ -84,7 +85,7 @@ class FinraShortInterestOptions:
     retry_sleep: float = 1.0
     limit_dates: int | None = None
     date_order: Literal["asc", "desc"] = "desc"
-    user_agent: str = "atx-db FINRA dataset loader"
+    user_agent: str = PUBLIC_DATA_USER_AGENT  # non-SEC source: descriptive agent, no contact address
     run_id: str | None = None
 
 

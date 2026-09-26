@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import os
 import re
 import zipfile
 from collections.abc import Iterable
@@ -13,13 +12,12 @@ import requests
 
 from .connection import DuckDBStore, resolve_data_dir
 from .dataset import Dataset, DatasetLoadResult
+from .sec_http import APPROVED_SEC_USER_AGENT, sec_session
 from .warehouse import cik_security_id, insert_frame, record_source_file, security_id_for_cusip
 
 SEC_13F_DATASETS_PAGE = "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets"
-SEC_USER_AGENT = os.getenv(
-    "ATX_SEC_USER_AGENT",
-    "atx-db/0.1 atx-research@example.com",
-)
+# The approved agent only; sec_session refuses any other value (ATX_SEC_USER_AGENT is validated at CLI edges).
+SEC_USER_AGENT = APPROVED_SEC_USER_AGENT
 AAPL_CUSIP = "037833100"
 AAPL_CIK = "0000320193"
 CUSIP_FALLBACK_SOURCE = "SEC 13F CUSIP fallback security seed"
@@ -42,14 +40,10 @@ def normalize_cusip(value: str) -> str:
 
 
 def requests_session(user_agent: str) -> requests.Session:
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": user_agent,
-            "Accept-Encoding": "gzip, deflate",
-            "Accept": "text/html,application/zip,application/octet-stream,*/*",
-        }
-    )
+    """SEC session (approved agent only, host-wide 5 req/s limiter, bounded retries)."""
+
+    session = sec_session(user_agent)
+    session.headers.update({"Accept": "text/html,application/zip,application/octet-stream,*/*"})
     return session
 
 

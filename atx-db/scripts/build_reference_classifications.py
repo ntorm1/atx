@@ -11,7 +11,7 @@ Runs five datasets in dependency order:
 Usage
 -----
   python scripts/build_reference_classifications.py [--db-path PATH]
-         [--symbols AAPL MSFT ...] [--user-agent "email@example.com"]
+         [--symbols AAPL MSFT ...] [--user-agent APPROVED_SEC_USER_AGENT]
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from atx_db.reference_classifications import (
     SicTaxonomyDataset,
     SicTaxonomyOptions,
 )
+from atx_db.sec_http import validate_sec_user_agent
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,8 +62,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--user-agent",
+        type=validate_sec_user_agent,
         default=EntityClassificationOptions().user_agent,
-        help="HTTP User-Agent sent to SEC EDGAR (format: 'AppName email@example.com').",
+        help="HTTP User-Agent sent to SEC EDGAR; only sec_http.APPROVED_SEC_USER_AGENT is accepted.",
     )
     parser.add_argument(
         "--request-timeout",

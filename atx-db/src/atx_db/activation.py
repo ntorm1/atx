@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from .clock import resolve_as_of_date, utc_today
 from .connection import DEFAULT_DB_PATH, DuckDBStore
+from .sec_http import APPROVED_SEC_USER_AGENT, default_sec_limiter, is_sec_url, resolve_sec_user_agent
 from .security_master import SEC_COMPANY_TICKERS_URL, normalize_company_tickers, upsert_security_master_from_frame
 from .ticker_history_bulk import BulkTickerHistoryOptions, publish_bulk_ticker_history
 from .ticker_history_extract import (
@@ -321,6 +322,8 @@ class ActivationOptions:
     earnings_release_max_index_bytes: int = 2_000_000
     earnings_release_max_document_bytes: int = 8_000_000
     earnings_release_candidate_batch_size: int = 250
+    # Set: the earnings-release stage is loader-only and reads a sec_http fetch store (no network).
+    earnings_release_fetch_dir: Path | None = None
     companyfacts_symbol_source: str = "sec_company_tickers"
     skip_loaded_companyfacts: bool | None = None
     # Pinned-snapshot sources (security_master, symbol_directory, listing_events)
@@ -367,15 +370,13 @@ class ActivationOptions:
 
 
 def require_sec_user_agent(options: ActivationOptions) -> str:
-    """Return the SEC user agent or fail fast with an operator-actionable message."""
-    agent = options.sec_user_agent or os.environ.get("ATX_SEC_USER_AGENT")
-    if not agent or not agent.strip():
-        raise ValueError(
-            "ATX_SEC_USER_AGENT is required before any SEC request. Set it to a product "
-            'name and a monitored contact address, e.g. ATX_SEC_USER_AGENT="atx-db/0.2 '
-            'ops@example.com", or pass --sec-user-agent.'
-        )
-    return agent.strip()
+    """Return the approved SEC user agent or fail fast, before any request, on any other value.
+
+    ``--sec-user-agent`` / ``ATX_SEC_USER_AGENT`` are optional and may only repeat
+    ``APPROVED_SEC_USER_AGENT``; unset means that value. The error names both knobs and the
+    approved value (never the rejected one).
+    """
+    return resolve_sec_user_agent(options.sec_user_agent)
 
 
 def stage_migrate(store: DuckDBStore, options: ActivationOptions) -> StageResult:
@@ -542,10 +543,8 @@ def _acquire_snapshot_file(
 
 
 def _nasdaq_user_agent(options: ActivationOptions) -> str:
-    from .symbol_directory import APPROVED_USER_AGENT
-
-    agent = options.sec_user_agent or os.environ.get("ATX_SEC_USER_AGENT") or APPROVED_USER_AGENT
-    return agent.strip()
+    # Nasdaq Trader receives the same approved agent; an override passes the same validator.
+    return require_sec_user_agent(options)
 
 
 def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> StageResult:
@@ -799,9 +798,17 @@ def sha256_file(path: Path, *, chunk_bytes: int = 1 << 22) -> str:
 
 
 def requests_downloader(url: str, dest: Path, *, user_agent: str) -> int:
-    """Resumable streaming HTTP download. Network — never called from tests."""
+    """Resumable streaming HTTP download. Network — never called from tests.
+
+    An SEC URL takes one token from the host-wide ``sec_http`` limiter and may only carry the
+    approved user agent.
+    """
     import requests
 
+    if is_sec_url(url):
+        if user_agent != APPROVED_SEC_USER_AGENT:
+            raise ValueError(f"SEC downloads may only send {APPROVED_SEC_USER_AGENT!r}")
+        default_sec_limiter().acquire(url)
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_suffix(dest.suffix + ".part")
     existing = partial.stat().st_size if partial.is_file() else 0
@@ -917,7 +924,8 @@ def stage_earnings_release_facts(store: DuckDBStore, options: ActivationOptions)
         max_index_bytes=options.earnings_release_max_index_bytes,
         max_document_bytes=options.earnings_release_max_document_bytes,
         candidate_batch_size=options.earnings_release_candidate_batch_size,
-        user_agent="atx-db/0.1 atx-research@example.com",
+        user_agent=APPROVED_SEC_USER_AGENT,
+        fetch_dir=options.earnings_release_fetch_dir,
         run_id=f"{options.run_id}-earnings-release",
     ))
     return StageResult(rows=int(result.rows_loaded), detail=dict(result.details))
@@ -1395,7 +1403,7 @@ def stage_delisting_terminal_returns(store: DuckDBStore, options: ActivationOpti
 def stage_trading_calendar(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     from .calendar import TradingCalendarDataset, TradingCalendarOptions
     result = TradingCalendarDataset().load(store, TradingCalendarOptions(run_id=options.run_id))
-    return StageResult(result.rows_loaded, {**result.details, "calendar_basis": "observed price dates; not certified exchange calendar"})
+    return StageResult(result.rows_loaded, dict(result.details))  # calendar_basis='xnys_rules_v1' from the loader
 
 
 def stage_survivorship_forward_returns(store: DuckDBStore, options: ActivationOptions) -> StageResult:
@@ -1698,6 +1706,9 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--earnings-release-max-index-bytes", type=int, default=2_000_000)
     parser.add_argument("--earnings-release-max-document-bytes", type=int, default=8_000_000)
     parser.add_argument("--earnings-release-candidate-batch-size", type=int, default=250)
+    parser.add_argument("--earnings-release-fetch-dir", type=Path, default=None,
+                        help="Loader-only: read prefetched Item 2.02 documents from this sec_http fetch store "
+                             "(scripts/fetch_sec_earnings_releases.py) instead of the network.")
     parser.add_argument("--submissions-resume-from-run-id", default=None,
                         help="Verify and resume the full archive prefix of a failed submissions dataset UUID.")
     parser.add_argument("--companyfacts-symbol-source", choices=("sec_company_tickers", "archive_members"),
@@ -1733,7 +1744,7 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
     ``scripts/warehouse_activate.py`` and the ``atx-db activate`` subcommand.
     """
     as_of_date = args.as_of_date or utc_today()
-    sec_user_agent = args.sec_user_agent or os.environ.get("ATX_SEC_USER_AGENT")
+    sec_user_agent = resolve_sec_user_agent(args.sec_user_agent)  # fails at the CLI edge on any other agent
     run_id = args.run_id or f"warehouse-activate-{as_of_date.isoformat()}"
     return ActivationOptions(
         db_path=args.db_path,
@@ -1759,6 +1770,7 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         earnings_release_max_index_bytes=args.earnings_release_max_index_bytes,
         earnings_release_max_document_bytes=args.earnings_release_max_document_bytes,
         earnings_release_candidate_batch_size=args.earnings_release_candidate_batch_size,
+        earnings_release_fetch_dir=getattr(args, "earnings_release_fetch_dir", None),
         companyfacts_symbol_source=args.companyfacts_symbol_source,
         skip_loaded_companyfacts=args.skip_loaded_companyfacts,
         allow_network_refresh=bool(getattr(args, "allow_network_refresh", False)),
