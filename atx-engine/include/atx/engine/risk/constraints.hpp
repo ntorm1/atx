@@ -158,6 +158,23 @@ struct ParticipationCap {
   bool elastic = false;
 };
 
+// Explicit dollar-volume inputs, available before the portfolio decision. This
+// API never multiplies by a price or infers the units of CapacityRef::adv.
+// Missing/nonfinite inputs refuse the active limit; zero ADV is a hard zero.
+struct DollarLiquidityRef {
+  std::span<const atx::f64> adv_usd;
+  atx::f64 nav_usd{};
+};
+struct TradeParticipationCap {
+  atx::f64 adv_fraction{1.0}; // rho in [0,1]; |w_i-w_prev_i| <= rho*ADV_usd_i/NAV
+  DollarLiquidityRef liquidity;
+};
+struct DaysToLiquidate {
+  atx::f64 max_days{1.0};
+  atx::f64 adv_fraction{1.0}; // |w_i| <= days*rho*ADV_usd_i/NAV
+  DollarLiquidityRef liquidity;
+};
+
 // Ownership cap (%shares-outstanding, S8.4): |w_i| <= κ·shares_out_i·price_i/NAV,
 // κ = shares_frac. Like ParticipationCap, a POSITION-BOX descriptor that folds
 // (elementwise min) into the diagonal box. Needs CapacityRef.shares_out / price / nav.
@@ -313,6 +330,8 @@ struct ConstraintSet {
   std::optional<TrackingError> track;      // tracking-error SOC (S8.5a; cone, not a linear row)
   std::optional<RobustAlpha> robust;       // robust alpha-uncertainty SOC (S8.5c; cone, not a linear row)
   ConstraintStorageConfig storage;
+  std::optional<TradeParticipationCap> trade;
+  std::optional<DaysToLiquidate> liquidation;
 
   // Materialize l <= A w <= u over the M-dim weight space. `X` is the M×K
   // exposure matrix (FactorComponents.X); `w_prev` keys the turnover L1 (an
@@ -327,6 +346,10 @@ struct ConstraintSet {
               atx::usize M, const CapacityRef &ref = {}) const;
 
 private:
+  [[nodiscard]] atx::core::Status validate_liquidity(
+      std::span<const atx::f64> w_prev, atx::usize M, const CapacityRef& ref) const;
+  [[nodiscard]] std::pair<atx::f64, atx::f64> name_box_bounds(
+      atx::usize i, std::span<const atx::f64> w_prev, const CapacityRef& ref) const noexcept;
   // The "no active cap" sentinel for the per-name box min-fold: a finite, very large
   // bound (far above any realistic |w_i|) so a present-but-unevaluable participation /
   // ownership cap never spuriously zeroes the box. Mirrors qp_augment.hpp's kAugInf
@@ -559,7 +582,8 @@ private:
   // into the box, §0.3). The per-name bound is the elementwise min of whichever caps
   // are active for that name.
   [[nodiscard]] bool has_box() const noexcept {
-    return pos.has_value() || part.has_value() || own.has_value();
+    return pos.has_value() || part.has_value() || own.has_value() || trade.has_value() ||
+           liquidation.has_value();
   }
 
   // -------------------------------------------------------------------------
@@ -605,15 +629,16 @@ private:
   // NOT evaluable for that name and is simply skipped (it does not bind). When ONLY
   // PositionCap is set this reduces EXACTLY to the as-built uniform box (the pin).
   void emit_position_box(MaterializedConstraints &mc, atx::usize M, const CapacityRef &ref,
+                         std::span<const atx::f64> w_prev,
                          Eigen::Index &next) const noexcept {
     if (!has_box()) {
       return;
     }
     for (atx::usize i = 0; i < M; ++i) {
-      const atx::f64 cap = name_box_cap(i, ref);
+      const auto [lo, hi] = name_box_bounds(i, w_prev, ref);
       mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
-      mc.l[next] = -cap;
-      mc.u[next] = cap;
+      mc.l[next] = lo;
+      mc.u[next] = hi;
       ++next;
     }
   }

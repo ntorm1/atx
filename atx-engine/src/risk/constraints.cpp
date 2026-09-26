@@ -18,7 +18,73 @@ namespace co = atx::core;
     return co::Err(co::ErrorCode::OutOfRange, "constraints: dimension/resource product exceeded");
   return co::Ok(a * b);
 }
+[[nodiscard]] atx::f64 liquidity_weight(atx::f64 adv, atx::f64 nav,
+                                       atx::f64 fraction, atx::f64 days) noexcept {
+  if (fraction == 0.0 || days == 0.0) return 0.0;
+  // Fraction <=1 avoids multiplication overflow before the dollar/NAV
+  // conversion. A nonfinite quotient/product is rejected by validation.
+  return ((adv * fraction) / nav) * days;
+}
 } // namespace
+
+atx::core::Status ConstraintSet::validate_liquidity(
+    std::span<const atx::f64> w_prev, usize M, const CapacityRef& ref) const {
+  if (!trade && !liquidation) return co::Ok();
+  if ((pos && (pos->elastic || !std::isfinite(pos->name_cap))) ||
+      (part && (part->elastic || !std::isfinite(part->adv_frac))) ||
+      (own && (own->elastic || !std::isfinite(own->shares_frac))))
+    return co::Err(co::ErrorCode::InvalidArgument,
+        "liquidity limit: hard liquidity cannot share an elastic/nonfinite position box");
+  const auto validate_ref = [M](const DollarLiquidityRef& input,
+                               atx::f64 fraction, atx::f64 days) -> co::Status {
+    if (input.adv_usd.size() != M || !std::isfinite(input.nav_usd) || input.nav_usd <= 0.0 ||
+        !std::isfinite(fraction) || fraction < 0.0 || fraction > 1.0 ||
+        !std::isfinite(days) || days < 0.0)
+      return co::Err(co::ErrorCode::InvalidArgument, "liquidity limit: missing/invalid dollar ADV, NAV or rate");
+    for (const auto adv : input.adv_usd)
+      if (!std::isfinite(adv) || adv < 0.0 ||
+          !std::isfinite(liquidity_weight(adv, input.nav_usd, fraction, days)))
+        return co::Err(co::ErrorCode::InvalidArgument, "liquidity limit: nonfinite/negative ADV or weight bound");
+    return co::Ok();
+  };
+  if (trade) {
+    ATX_TRY_VOID(validate_ref(trade->liquidity, trade->adv_fraction, 1.0));
+    if (w_prev.size() != M)
+      return co::Err(co::ErrorCode::InvalidArgument, "trade participation: explicit aligned previous weights required");
+    for (usize i = 0; i < M; ++i) {
+      const auto delta = liquidity_weight(trade->liquidity.adv_usd[i],
+          trade->liquidity.nav_usd, trade->adv_fraction, 1.0);
+      if (!std::isfinite(w_prev[i]) || !std::isfinite(w_prev[i] - delta) ||
+          !std::isfinite(w_prev[i] + delta))
+        return co::Err(co::ErrorCode::InvalidArgument, "trade participation: nonfinite previous weight/trade bound");
+    }
+  }
+  if (liquidation)
+    ATX_TRY_VOID(validate_ref(liquidation->liquidity, liquidation->adv_fraction, liquidation->max_days));
+  for (usize i = 0; i < M; ++i) {
+    const auto [lo, hi] = name_box_bounds(i, w_prev, ref);
+    if (!std::isfinite(lo) || !std::isfinite(hi) || lo > hi)
+      return co::Err(co::ErrorCode::InvalidArgument, "liquidity limit: contradictory or nonfinite position/trade box");
+  }
+  return co::Ok();
+}
+
+std::pair<atx::f64, atx::f64> ConstraintSet::name_box_bounds(
+    usize i, std::span<const atx::f64> w_prev, const CapacityRef& ref) const noexcept {
+  const auto cap = name_box_cap(i, ref);
+  atx::f64 lo = -cap, hi = cap; // frozen V1 arithmetic when new descriptors are absent
+  if (liquidation) {
+    const auto bound = liquidity_weight(liquidation->liquidity.adv_usd[i],
+        liquidation->liquidity.nav_usd, liquidation->adv_fraction, liquidation->max_days);
+    lo = std::max(lo, -bound); hi = std::min(hi, bound);
+  }
+  if (trade) {
+    const auto delta = liquidity_weight(trade->liquidity.adv_usd[i],
+        trade->liquidity.nav_usd, trade->adv_fraction, 1.0);
+    lo = std::max(lo, w_prev[i] - delta); hi = std::min(hi, w_prev[i] + delta);
+  }
+  return {lo, hi};
+}
 
 atx::core::Status MaterializedConstraints::validate_layout(atx::usize instruments) const {
   if (storage.rule != ConstraintStorageRule::LegacyDenseV1 &&
@@ -175,6 +241,7 @@ atx::core::Result<MaterializedConstraints> ConstraintSet::materialize(
     const atx::core::linalg::MatX& X, std::span<const atx::f64> w_prev, usize M,
     const CapacityRef& ref) const {
   ATX_TRY_VOID(validate(X, M));
+  ATX_TRY_VOID(validate_liquidity(w_prev, M, ref));
   if (storage.rule != ConstraintStorageRule::LegacyDenseV1 &&
       storage.rule != ConstraintStorageRule::SparseCsrV2)
     return co::Err(co::ErrorCode::InvalidArgument, "constraints: unknown storage rule");
@@ -252,7 +319,7 @@ atx::core::Result<MaterializedConstraints> ConstraintSet::materialize(
   mc.u = co::linalg::VecX::Zero(er);
   Eigen::Index next = 0;
   emit_dollar_neutral(mc, M, next);
-  emit_position_box(mc, M, ref, next);
+  emit_position_box(mc, M, ref, w_prev, next);
   emit_factor_exposure(mc, X, M, next);
   emit_group(mc, M, next);
   emit_beta(mc, M, next);
