@@ -9,6 +9,7 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/panel_artifact.cpp
     src/panel_pipeline.cpp
     src/stage_data_provenance.cpp
+    src/strategy_runner.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
@@ -102,6 +103,11 @@ set_source_files_properties("${_atx_provenance_cpp}" PROPERTIES SKIP_PRECOMPILE_
 
 add_executable(atx-impl src/main.cpp)
 target_link_libraries(atx-impl PRIVATE atx-impl-core atx_warnings)
+
+# Small supplied-DSL research entry point. Reuse the warm production libraries;
+# this does not require the broad pipeline main or a second compiler environment.
+add_executable(atx-equity-strategy EXCLUDE_FROM_ALL tools/equity_strategy.cpp)
+target_link_libraries(atx-equity-strategy PRIVATE atx-impl-core atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
