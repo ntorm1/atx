@@ -40,121 +40,114 @@ Reuse existing pools, -MaxPool11; do not create more. Four agent slots including
 
 ## Current checkpoint (supersedes historical job notes below)
 
-Root HEAD before this update: 1e4ee053. No active root compiler or test. New D0 code,
-source review and qualification preparation are integrated; runtime gates remain open.
-Latest user steering: find ORIGINAL DAG plan, fill completion SHAs there as elements
-finish, keep pushing and work around RAM limits. Root did this in
-docs/plans/2026-09-24-alpha-engine-production-swarm.md at26b232ab,053de610,05570f27.
-68 referenced SHAs checked:67 are ancestors; source3f2c25fb is cherry-picked asd3d04510
-with identical stable patch-id432e1b02ed72deabc41553868297d3a0f6dcafda. Do not require
-original cherry-pick source to be an ancestor. Plan distinguishes imports explicitly.
-W0 correctness source b185d056 passed all nine whole targets: 3081 run,3074 passed,
-7 documented skips. Frozen G0 comparisons complete, with no promoted alpha. W0 remains
-OPEN for new D0 raw-VWAP correction/affected evidence and quiet performance gate. W1-W5
-production implementation has not started; preparation notes are not lane completion.
+Latest user steering: find the ORIGINAL DAG plan, add completed implementation/evidence
+SHAs there, keep pushing and work around RAM. Original plan completion index is maintained
+in docs/plans/2026-09-24-alpha-engine-production-swarm.md (26b232ab,053de610,05570f27,
+ba806242 and the pending current update). Source/import SHAs are distinguished; source
+PCH3f2c25fb imports asd3d04510 with identical patch-id. No W1-W5 production implementation
+has started. W0 remains OPEN for D0 remaining runtime/hygiene/L9 and quiet performance.
 
-Root final equity-dev configure completed at source b1fc62b8 in55.5s with PCH ON,
-the original eight groups/order and isolated pool2/deps/equity-dev. A build attempt
-stopped BEFORE launch at2.356GiB free. Later build session8399 PASSED158.150s atsource
-ffa6df4e, launch3.126GiB, Jobs1, targets impl/risk/worker;36compiler calls (32preprocessed
-hits,4misses,zeroerrors),3links. Exact repeat no-op6.722s,cache-statshashunchanged.
-Tests session75143 PASSED: risk470pass/1nightlyskip133.852s; impl600pass/5knownskips
-432.618s. No rerun of untouchedgroups. Report21ede21d final-disclosure-build-closure-report.md.
-All receipts in build-equity/w0-final-closure. BothsessionsCOMPLETE, don't restart them.
+Root HEAD3103b4f6 (only later report/prep commits after frozen productionfcbcc9d1).
+Checkpoint/plan edits may be dirty pending commit. The four-target Debug build session99434
+COMPLETE exit0, sourcefcbcc9d1a351ccd339687389b118aca65e2812b5, 991.797s, 170native actions
+(163compiler,6links plus ordinary glob edge), 163cache misses/zero preprocessing errors.
+Includes first-use stable common/data PCH carriers in root and new shared-header consumers.
+Native Ninja command -j1 verified; non-atomic monitor saw max2 clang processes once, so
+never claim sampled max1. Three bounded independent snapshots saw0/1/1. Peak ownedRSS
+1607.4375MiB, minimum host1.078415GiB, commitheadroom3.210178GiB; no pressure stop.
+Same exact wrapper repeat5.047s exited0, 'ninja: no work to do', no cache log created.
+Do not restart either job. build-equity/w0-vwap-closure holds all receipts and build-result.
 
-Build improvements through0c5f87a0 merged root at e54602fe, independent approval
-imported b1fc62b8. Explicit -Jobs now controls BOTH build and check, overriding valid
-CMAKE_BUILD_PARALLEL_LEVEL; default1. Raw native concurrency overrides rejected.
-Seven oracle preparation callers migrated; their focused argument checks7/7 passed.
-Git SHA now belongs only to stage_discover.cpp: across385 configured command strings,
-one revision change altered exactly that one command. No compiler flag changes.
+Root runtime runner prepared: build-equity/w0-vwap-closure/run-tests.ps1. It requires
+build-result exit0, runs whole data/book/impl serial, retains prior exact external-data
+exclusions and clears opt-ins; records per-target log/JSON/hash/exit. NOT launched yet.
+Root gave sole compiler slot to pool4 for one remaining context.cpp hygiene check, active
+session69120. Wait its explicit release then launch runtime runner. No Release build yet.
+Five current root impl-core commands (config, mine, discover, progresssink, panel) already
+have no PCH and all compiled successfully; receipt impl-no-pch-commands.json. Reuse them
+for header qualification, never duplicate large TUs solely for hygiene. real_panel prior
+one-action PCH-off pass remains reusable: source+34 tracked header deps unchanged.
 
-Stable PCH commit3f2c25fb is APPROVED and imported rootd3d04510 AFTER finalwarmtargetgate.
-Two minimal carriers (common/data) avoid first-test-group ownership changes and worker
-dependency expansion. Actual six-output compile passed54.336s, exact repeat no-op6.876s.
-No new full rebuild solely for PCH ownership is required by independent review. Owner reports
-75005562/e1a4f085/53239ffb imported bd2ce34a/202c06f5/87f7c609; independent PCH review
-2a0cc4c2 imported ef35c141. Fresh equity-hygiene metadata configure passed19.450s,
-380 commands, zero PCH flags/targets. Eight owned dependency sources seeded offline;
-separate hygiene binary directories; installed vcpkg payload unchanged, no package build.
-Development PCH remained ON. No full hygiene-source compile claim.
+Alpha qualification GREEN at033b89c2 (source8a47c48f), scope auditf1620990 (source927e798e):
+711/711 whole tests47.328s and independent N128 oracle1/1 1.472s, every19field/mask/f64bit
+matches frozen pre-D0. Digest75b4a957ff30e9c3. Alpha source90d965df7233bdd7e716ccd8a8ae78c72a68817c;
+exeSHA256 bb1e6dabd2a2c529cdaad50fd8f0d09993844138de7f5d8cfb974f5ab381a8e1.
+Initial build failed test literal overload only, fixed520bc0cc?root1e4ee053; first suite
+707/711 failed unadjusted synthetic streaming generator missingraw_close; fixture-only
+7be27928?rootefe57fd9 fixed it. Failure receipts retained. Actual final alpha no-op3.106138s,
+zero cachecalls/hashchanges. No additional default-policy owner among remaining12 groups;
+two parallel tests use explicitly V1 WQ helper, corroborated by independent byte oracle.
+Root attempted Ninja deps discovery during live build; it refused locked deps log. Do NOT
+retry/broaden tests: source audit resolved scope. No additional target justification remains.
 
-Baseline/current Release benchmark+worker builds COMPLETE, same81-case registry/order.
-Current unchanged warm rebuild passed3.4759664s, native no-work, zero ccache calls,
-unchanged executable/statslog hashes. Fresh current build224calls:84direct hits,
-140cacheable misses, zero preprocessing failures. Historical7581 preprocessing errors
-are not attributed to this build. No speculative cache flags/global cache mutation.
-Benchmark binaries are idle. Pool5 Debug alpha qualification is active (below).
-First baselinekernel batch is INVALID due to contention.
-Full81cases x3 repetitions,
-0.20 regression gate, no missing/skipped cases or threshold bypass remains required.
-P-core mask0xFF independently verified. Original plan has NO W0WQ500width floor.
-User's RAM-workaround steering authorizes smaller identical boundedworkload. Protocol
-N128 FROZEN beforetimings at3.902GiB free;2520dates/70alphas,all81cases,3reps,unchanged
-optimizerM1000/3000/5000/search756x500x6. KeepN128 forboth; NEVER switch aftertimings.
-WQ source-model dominantpayload2.202GiB vs5.446GiBatN500. Allcacheable nodes fit at128;
-cache-eviction/productionscale NOTqualified. Fiveisolatedfamilies,baselinefivefirst then
-finalcurrentfive, freshquiet/memorycheckeach. Plan/preflight imports b272ea83/bef98cd1;
-latest protocol examples are imported at3f4dddad andc995220e. Protocolfreeze pool5/build-equity-bench/
-w0-protocol-freeze.json. Currentbinaryb185 will need D0 impact/build beforetiming.
+D0 final code imports: f54b55e5 main raw VWAP default;2a7194d5 context policy/moves;
+0f74a357 pre-read geometry validation;c1011024 legacy empty ordering;0037c515 separate
+capacity resume identity; tests58df3e29,c68b78a4,1e4ee053,efe57fd9; benchmark pins9c2ffd1f.
+Report90e376ba,source review2cbc935a,briefad829c62,hygiene preparationfcbcc9d1.
+RawDailyCloseV2 requires known raw basis, finite positive price/volume and valid geometry,
+replaces stale VWAP, avoids TRI scaling, persists CLI/recipe/report/fingerprint policy.
+AdjustedTypicalV1 is explicit exact legacy. Raw daily proxy is not true intraday VWAP.
+Adjusted OHLC/mixed-basis lint remains W2-A3; do not call that defect already closed.
 
-Baselinekernel session75820 child16448 finishednative0 in146.701s,peak48.56MiB, but
-hostfree fell409.12MiB,505741pagefaults,CV up44%, competingCPU. Explicit.invalidity.json
-preventsaggregatingit. No processkilled (childalreadyexitedbeforeverifiedstopattempt).
-Root metadata-only PythonSHAloop session96753 maycontribute; don'tclaim allcompeting
-PIDsunrelated. No automaticretry; waitgenuinelyquietwindow. Compilerwindowreleased.
+Agent current states:
+- pool4/replay owner: context hygiene session69120; no other compile allowed. Docs-only
+  W1-X1 shared causal adapter brief e00ef0a9 imported3103b4f6, eight components/controls,
+  availability versus session/label clocks, positive execution-clock control. No W1 code.
+- pool5/audit: clean927e798e after root production merge9d72d787dea8fc9d57356a04bd79745e71fb1907.
+  Production/header/bench/core/TSDB/presets/CMake/wrapper equal rootfcbcc9d1. Reports033b89c2
+  andf1620990 imported. Holds final current Release build slot; no compiler/test active.
+- pool3/G0: clean e464000fc05f380740e06ce168f465b9a118201e after rootfcbcc9d1 merge.
+  EXACT entire tree parity b008adc830408a31a7871770673bacbaa561a811. Prior Release binary
+  2edbf4f5 remains byte-identical in immutable archive. Configure/build only atx-impl after
+  compiler release, no run yet. Existing Release isolateddeps/equity-rel, PCHon/static.
+  Old all34 impl commands carried GitSHA, so one-time command invalidation expected;
+  future sourceSHA only affects stage_discover. Never assume two-object catch-up.
 
-Scheduling: ONE compiler, known target closure, zero other compiler workers. Prefer3GiB
-physical; user RAM-workaround steering permits correctness admission at >=2GiB physical
-AND >=3GiB commit headroom. Monitor owned process tree. Sustained physical<0.75GiB or
-commit headroom<1GiB may stop ONLY verified owned build tree, preserving logs/objects.
-This is orchestration policy, not owner-imposed acceptance. Benchmark N128 quiet/fresh
-memory requirements remain separate and unchanged. Never kill other apps.
+G0 D0 impact620299b4 imported35c68fe6: ONLY full L9 numerical rerun required. All14 frozen
+contexts are augmentation-disabled/no suppliedVWAP; reuse them unchanged. L9 seeds/search
+consumeVWAP. L7/L10/all13cp21 baseline+IC/native replay unaffected; reuse old evidence.
+After required gates+final Release binary: fresh g0-data/w0-vwap-v2_<actualsha8>_20260925,
+exact old receipt argv/env except binary/output and --vwap-rule raw-daily-close-v2. Same
+2013-18 contexts,seed20260923,pop192,gens15,threads2,holdoutoff/seal2020. Fresh registry,
+no oldnumericstate. Hash exact fixturebytes1a04d5e7182e331e1f20c87c17528ae12156036e195fdbcf47995fa92aae1e9b
+(LFblob265c7babc099a17ca242a00ae5299d9b8f407f6d7bf168e16006189f89312385 differs by checkout EOL).
+New manifest last with old parent hashes; old omission of fixturehash stays disclosed.
+Prior L9 987s/~1.01GiB is scheduling observation. No active heavy lock/numerical job.
 
-Agent duties: auditowner owns SOLE compiler slot, pool5 alpha build retry session89729.
-Initial session4827 stopped on ambiguous test field_name integer literal after82.9s;
-no production compile error; retained objects. Peak ownedRSS1.207GiB, minhost1.685GiB,
-commitheadroom3.323GiB, concurrency1, no watchdog termination. Owner fix520bc0cc imported
-root1e4ee053/pool5bbc389ab. Retry launched3.561GiB free. After success: whole alpha plus
-independent N128 legacy fixture oracle, then release slot to root. No root configure yet.
-Replayowner pool4 prepared scoped remaining hygiene closure, no build permission.
-G0owner finished impact plan620299b4 (root35c68fe6); only L9 numerical rerun required.
-Root owns integration/originalDAG/checkpoint and later data/book/impl/worker closure.
-New D0 blocker: history_panel.cpp:75 explicitly admitsadjustedOHLC/vwap futureactions;
-augment.hpp computesadjustedtypicalproxy. RawdailycloseVWAPfix is required byoriginalD0,
-not a wording-onlywaiver. VwapRule RawDailyCloseV2 correcteddefault, AdjustedTypicalV1
-explicitlegacy; knownrawinputrequired, stale suppliedvwap mustberecomputed/refused;
-finitepositiveP/V, simplifiedPraw aftervalidationavoidsnumeratoroverflow. Persist CLI
---vwap-rule inconfig/MineArgs/panelrecipe/minequalifications. Refresh augmentedfieldbasis
-andfixwrong dollar-volume metadata literal. KeepadjustedOHLCtags/W2A3lintscope explicit.
-Approvedextra tiny alpha/vwap_rule.hpp avoidslargeheaderdependencies; real_panel.hpp/
-adapt_panel.hpp exposebasiscontract. SyntheticWQbenchmarkhelper explicitlyLegacyV1 only
-to preservefrozennumericfixture; requirefield/digestequivalence beforecurrenttimings.
-NoTDD; implementationfirst. NoCMakeedits. Source correction is now COMPLETE/REVIEWED:
-f54b55e5 main,2a7194d5 contextpolicy/moves,0f74a357 geometrybounds,c1011024 legacyemptyorder;
-0037c515 separate discovery capacity identity; tests58df3e29,c68b78a4,indexfix1e4ee053;
-nonselectedbenchmarklegacy pins9c2ffd1f. Report90e376ba/review2cbc935a/briefad829c62.
-Raw V2 requires known raw basis, overwrites stale VWAP, validates geometry before indexing,
-avoids TRI scaling, forwards rules through context/options/moves and persisted CLI/metadata.
-Audit corrected two introduced issues before compilation: geometry OOB and context policy
-escape hatch. Raw daily-close proxy does not claim intraday VWAP. W2-A3 adjustedOHLC lint
-remains explicitly open. N128 legacy oracle copies b185 RNG/order/NaN bits independently.
-Pool4 PCH-off real_panel.cpp passed exactly one action/no links; peakRSS NOT captured.
-Root prepared build-equity/w0-vwap-closure/run-tests.ps1: whole data/book/impl, same exact
-external data exclusions and cleared opt-ins; requires successful build-result.json.
-Build/logs not launched. Stable common/data PCH carriers imported; no alpha rebuild here.
-G0 all14 frozen contexts have augmentation disabled, so remain valid. Only L9 applies
-VWAP augmentation; rerun all L9 search/validation/library/registry with same frozen args,
-new dir and explicit raw-daily-close-v2, final Release binary/source; hash fixture too.
-Reuse L7/L10/all13 cp21 baselines+IC/native replay unchanged; no diagnostic cp21 rebuild.
-PlanD0row remains runtime-open; do not claim wave pass. No active G0 lock/run.
-Source acquisition note0c0aef56 imported bc16ff76:56 Insider quarters,43 populated-range
-FSDS quarters, historical acceptance/header caveats. No filing payloads acquired.
-W1 prep now includes A1,B1,D1/D5,I1,Lane0 and sourceinventory; alldocumentationonly.
-D1revisionclock/availabilityclarification42689c95 importedb58d79a6; tier1ownershipref
-d94db27b additionallyowns historical_identity_sources.py,fsds_baseline.py,ownership_identity.py.
-Do nottouchthem/usemixedera scanners. Caseprovenanceb67abaf6 imported37e7d338 recovers
-original19-date report+hash/allowlisthash;82-case list NOTrecovered. Neverinvent82resolved.
+Memory policy: exclusive one native compiler worker, known closure, zero other compilers.
+Prefer3GiB physical; correctness may start >=2GiB physical AND >=3GiB commitheadroom.
+Sustained five seconds physical<0.75GiB or commit<1GiB may stop ONLY owned verified tree;
+keep objects/logs. Never kill others. Quiet benchmark memory/CPU policy is separate.
+
+Benchmark protocol remains N128 FROZEN before first timing at3.902GiB. All81 registered
+cases,three repetitions,20% gate unchanged; WQ2520dates/70alphas/workers1,2,4,8,16;
+search756x500x6 and optimizerM1000/3000/5000 unchanged. Five isolated families, allbaseline
+first thenallcurrent; exact row union. WQcache-pressure/production-scale not qualified.
+Baseline pool6 exact3ccf012c, Release built; current oldb185 Release OUTDATED until D0
+incremental build. First baselinekernel session75820 completednative0 but INVALID:
+minhost409MiB/505741pagefaults/CV44%/externalCPU. .invalidity.json blocks aggregation;
+no kill occurred. Root metadata Pythonloop may contribute, do not say all competitors
+unrelated. No valid timing yet, no automaticretry, never switchN128 after timings.
+Runner hashes bound; five-second native quiet/RAM preflight; sustained externalCPU guard
+aborts only its owned benchmark. ALL agents and root writers/discovery must quiesce for
+next full attempt. Reportsb272ea83/bef98cd1/3f4dddad/c995220e/033b89c2; protocolfreeze in
+pool5/build-equity-bench/w0-protocol-freeze.json. Compiler/G0 and timings stay serial.
+
+Prior correctness: sourceb185d056 all9whole targets3074pass/7documented skips(c040476d).
+Final disclosure/ASan closure sourceffa6df4e built158.150s (32cachehits/4misses), repeat
+6.722s no-work; risk470pass/1skip andimpl600pass/5skips report21ede21d. No redo of unaffected
+owning suites. W0 original G0 manifest3e2fd328a15c6671d81aff9aa2012388aad924e995b6b8185591259f117da679
+complete, no alpha promoted. New D0 L9 replaces only affected numerical evidence.
+Compiler improvements e54602fe/source0c5f87a0,d3d04510 stablePCH are integrated and reviewed;
+normal PCHon, isolatedhygieneoff, one source-localSHA out of385commands, exact no-ops proven.
+
+W1 prepared briefs A1/B1/D1-D5/I1/Lane0/sourceinventory/X1 only. Sourceinventorybc16ff76:
+56Insiderquarters/43populatedFSDS, no downloads. D1 clocks reviewb58d79a6; ownership pin
+feat/tier1-parityd94db27b includes historical_identity_sources.py/fsds_baseline.py/
+ownership_identity.py plus prior forbidden modules/migrations. Avoid all. Caseprovenance
+37e7d338 recovers19-date report/hash;82 recycled-case list NOT recovered. Never fabricate82.
+After TRUE W0 gates: record report/ledger/originalDAG, localmainFF, freeze W1Lane0 and
+start D1 critical path plus disjoint implementation lanes. Do not stop at compiler fix/W0.
 
 ## Historical live-job notes
 

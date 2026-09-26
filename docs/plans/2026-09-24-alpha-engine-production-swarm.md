@@ -21,7 +21,7 @@ cherry-picked source SHAs remain listed alongside their resulting integration SH
 |---|---|---|
 | W0-O1 | L6 `1cf59cb7`; fixes `c339ead5`, `853d1dd9`; merge `14ce9172` | Approved at `3ccf012c`. Release binaries built; quiet benchmark comparison still pending. |
 | W0-A0 | `cb3b4e78`, `3a1197b5`, `b74e27d3`; merge `1d78cc14` | Report `9a4e1f46`; owning targets green. A-18 production cache wiring remains W2-A4. |
-| W0-D0 | Original `115cfb57`, `02d34323`, `be32d7ac`; merge `2bc9f034`. Raw VWAP correction `f54b55e5`, context `2a7194d5`, bounds `0f74a357`, legacy ordering `c1011024`; tests `58df3e29`, `c68b78a4` | Original report `822524f6`; correction report `90e376ba`, source review `2cbc935a`. Runtime qualification in progress. Raw daily-close proxy defaults to V2; adjusted typical-price V1 is explicit. One production hygiene compile passed. True intraday VWAP is unavailable; source shares remain W2-D3. |
+| W0-D0 | Original `115cfb57`, `02d34323`, `be32d7ac`; merge `2bc9f034`. Raw VWAP correction `f54b55e5`, context `2a7194d5`, bounds `0f74a357`, legacy ordering `c1011024`; tests `58df3e29`, `c68b78a4`, `1e4ee053`, `efe57fd9` | Original report `822524f6`; correction report `90e376ba`, source review `2cbc935a`; alpha qualification `033b89c2`, scope audit `f1620990`. **Alpha 711/711 and independent N128 fixture oracle passed.** Data/book/impl built; their runtime qualification is pending. Raw daily-close proxy defaults to V2; adjusted typical-price V1 remains explicit. True intraday VWAP is unavailable; source shares remain W2-D3. |
 | W0-E0a | `2f814fbe`, `a95df360`; merge `4ef916db`; follow-up `52b8c6ea` | Reports `33d9b2f3`, `c225b2cf`. Public V1 reproduction and overlap inference repaired; HAC coverage 94.5%. Bootstrap is a separate estimator. |
 | W0-E0b | `d0a37e02`, `e0d157ee`; merge `1e0a7cf9` | Report `a0b06547`. Null FPR 5.45% qualifies `MonteCarloMaxV2`; the conservative default is a different rule. |
 | W0-L0 | `67819c8f`, `3ec645a8`, `c962996a`; merge `1b766875` | Report `5b11f7cb`; whole learn target green. Autoencoder trial accounting remains W3-L4. |
@@ -49,6 +49,12 @@ provenance are integrated at `e54602fe` (code through `0c5f87a0`). Stable test-P
 final target closure. Final changed-target build passed in 158.15s; its unchanged repeat was a
 6.72s no-op with zero cache calls. These are measured build receipts, not a controlled
 compiler-speedup claim.
+
+The D0 owning-target build at `fcbcc9d1` passed in 991.797s (163 compiler actions,
+six links); the native worker cap was one. This includes first-use stable test-PCH
+carriers in the root tree. Its exact unchanged repeat took 5.047s, with no work and
+zero cache calls. Sampled owned-tree peak RSS was 1,607.44MiB; no pressure stop occurred.
+The separate warm alpha repeat took 3.106s with zero cache calls (`033b89c2`).
 
 RAM adaptation for W0 timing: retain all 81 registered cases, three repetitions, unchanged
 optimizer sizes and the 20% regression threshold. Freeze the same smaller synthetic WQ
