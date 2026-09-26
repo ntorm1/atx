@@ -1,6 +1,7 @@
 #pragma once
 
 #include "atx/engine/alpha/vwap_rule.hpp"
+#include "atx/engine/factory/ic_screen.hpp"
 
 #include <array>
 #include <limits>
@@ -23,6 +24,12 @@ enum class ReplayDelistingPolicy : atx::u8 { AbortV1 = 1, TerminalReturnV2 = 2 }
 // Accept only terminal-return or abort; invalid text returns InvalidArgument.
 [[nodiscard]] atx::core::Result<ReplayDelistingPolicy>
 parse_replay_delisting_policy(std::string_view value);
+
+// Shared by discover/config-file and equity-mine parsing. Returns false for an
+// unrelated flag; recognized invalid values return InvalidArgument unchanged.
+[[nodiscard]] atx::core::Result<bool> apply_ic_screen_option(
+    atx::engine::factory::IcScreenConfig& config, std::string_view flag,
+    std::string_view value);
 
 // The single source of truth for valid subcommand names. parse_args validates
 // against this; dispatch's routing if-chain consumes the same names.
@@ -67,6 +74,11 @@ struct RunConfig {
     unsigned long long seed = 0ULL;    // --seed
     long        population   = 0;     // --population
     long        generations  = 0;     // --generations
+    atx::engine::factory::IcScreenConfig ic_screen = [] {
+        atx::engine::factory::IcScreenConfig screen;
+        screen.rule = atx::engine::factory::IcScreenRule::ConservativeV2;
+        return screen;
+    }(); // --ic-screen-rule disabled-v1 explicitly reproduces unscreened discovery.
     std::vector<std::string> seed_exprs; // --seed-expr (repeatable)
     double      min_dsr      = 0.5;   // --min-dsr
 

@@ -169,9 +169,30 @@ namespace {
 
     os << '{';
     // Provenance-format version so a reader can branch on schema evolution.
-    kv_i("v", 1);
+    kv_i("v", cfg.ic_screen.rule ==
+        atx::engine::factory::IcScreenRule::DisabledV1 ? 1 : 2);
     // Panel + seed/search environment.
     kv_s("panel", cfg.panel);
+    if (cfg.ic_screen.rule != atx::engine::factory::IcScreenRule::DisabledV1) {
+        const auto& screen = cfg.ic_screen;
+        kv_s("ic_screen_rule", std::string(
+            atx::engine::factory::ic_screen_rule_name(screen.rule)));
+        std::string horizons;
+        for (const auto horizon : screen.horizons) {
+            if (!horizons.empty()) horizons += ',';
+            horizons += std::to_string(horizon);
+        }
+        kv_s("ic_screen_horizons", horizons);
+        kv_i("ic_screen_delay", static_cast<long long>(screen.execution_delay));
+        kv_i("ic_screen_window_begin", static_cast<long long>(screen.window_begin));
+        kv_i("ic_screen_window_end", static_cast<long long>(screen.window_end));
+        kv_i("ic_screen_maturity_end", static_cast<long long>(screen.maturity_end));
+        kv_i("ic_screen_min_names", static_cast<long long>(screen.min_names));
+        kv_i("ic_screen_min_dates", static_cast<long long>(screen.min_dates));
+        kv_i("ic_screen_max_cache_bytes", static_cast<long long>(screen.max_cache_bytes));
+        kv_d("ic_screen_practical_abs_ic", screen.practical_abs_ic);
+        kv_d("ic_screen_confidence_multiplier", screen.confidence_multiplier);
+    }
     if (cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0) {
         kv_s("vwap_rule", std::string(atx::engine::alpha::vwap_rule_name(cfg.vwap_rule)));
         kv_d("min_price", cfg.min_price);
@@ -845,6 +866,12 @@ atx::core::Result<StageResult> run_discover_gated(
         return atx::core::Err(rep_r.error());
     }
     const factory::FactoryReport rep = std::move(*rep_r);
+    if (rep.ic_screen_resume_mismatch) {
+        const std::string message =
+            "discover: checkpoint IC screening configuration differs from this run";
+        if (rec) { (void)rec->mark_failed(now_unix(), message); }
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, message);
+    }
     if (rec) { (void)rec->complete(now_unix()); }
 
     {
@@ -914,6 +941,13 @@ atx::core::Result<StageResult> run_discover_gated(
                 "discover (gated): cannot write manifest: " + manifest_path);
         }
         mf << "gated=1\n";
+        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+            mf << "config_json=" << build_config_json(cfg) << '\n';
+            mf << "ic_screen_evaluations=" << rep.ic_screen_evaluations << '\n';
+            mf << "ic_screen_rejected=" << rep.ic_rejected << '\n';
+            mf << "ic_screen_unavailable=" << rep.ic_screen_unavailable << '\n';
+            mf << "ic_prepass_vm_evaluations=" << rep.ic_prepass_vm_evaluations << '\n';
+        }
         mf << "source_artifact_id="
            << (source_artifact_id.empty() ? "unknown" : source_artifact_id) << '\n';
         mf << "seed="            << cfg.seed             << '\n';
@@ -1179,6 +1213,9 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
 
     // 5. Build SearchConfig.
     factory::SearchConfig sc;
+    // Zero window bounds resolve on the actual train subpanel inside SearchDriver,
+    // including Factory's later OOS split. Future validation labels cannot enter it.
+    sc.ic_screen = cfg.ic_screen;
     sc.master_seed  = cfg.seed;
     sc.population   = cfg.population  > 0
                         ? static_cast<atx::usize>(cfg.population)  : 200;
@@ -1273,6 +1310,10 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
     factory::SearchDriver driver{lib, panel, policy, sim, cfg.seed_exprs, fields, weak_panel,
                                  numeric_excluded_fields, extra_group_fields};
     factory::SearchResult res = driver.run(sc, pool);
+    if (res.ic_screen_resume_mismatch) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "discover: checkpoint IC screening configuration differs from this run");
+    }
 
     // 7. Check admission.
     const auto& admitted = res.admitted_candidates;
@@ -1320,6 +1361,13 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
         mf << "seed="          << cfg.seed             << '\n';
         mf << "count="         << n                    << '\n';
         mf << "search_digest=" << to_hex16(res.digest) << '\n';
+        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+            mf << "config_json=" << build_config_json(cfg) << '\n';
+            mf << "ic_screen_evaluations=" << res.ic_screen_evaluations << '\n';
+            mf << "ic_screen_rejected=" << res.ic_rejected_hashes.size() << '\n';
+            mf << "ic_screen_unavailable=" << res.ic_screen_unavailable << '\n';
+            mf << "ic_prepass_vm_evaluations=" << res.ic_prepass_vm_evaluations << '\n';
+        }
         mf << "panel="         << cfg.panel            << '\n';
         mf << "source_artifact_id="
            << (panel_input.identity ? panel_input.artifact_id : "unknown") << '\n';

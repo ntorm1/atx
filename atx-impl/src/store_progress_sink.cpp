@@ -68,6 +68,23 @@ atx::u64 compute_discover_fingerprint(const RunConfig& cfg) {
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.min_dsr));
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.oos_fraction));
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.oos_embargo));
+  // DisabledV1 preserves the old resume identity. Every enabled-screen input
+  // must bind a checkpoint because it can permanently eliminate candidates.
+  if (cfg.ic_screen.rule != atx::engine::factory::IcScreenRule::DisabledV1) {
+    const auto& screen = cfg.ic_screen;
+    h = fp::fold_string(h, "ic-screen-config-v2");
+    h = fp::fold_u64(h, static_cast<atx::u64>(screen.rule));
+    for (const auto horizon : screen.horizons) h = fp::fold_u64(h, horizon);
+    h = fp::fold_u64(h, screen.execution_delay);
+    h = fp::fold_u64(h, screen.window_begin);
+    h = fp::fold_u64(h, screen.window_end);
+    h = fp::fold_u64(h, screen.maturity_end);
+    h = fp::fold_u64(h, screen.min_names);
+    h = fp::fold_u64(h, screen.min_dates);
+    h = fp::fold_u64(h, screen.max_cache_bytes);
+    h = fp::fold_u64(h, std::bit_cast<atx::u64>(screen.practical_abs_ic));
+    h = fp::fold_u64(h, std::bit_cast<atx::u64>(screen.confidence_multiplier));
+  }
   // The capacity adapter augments the panel; its price rule changes derived
   // inputs. Preserve existing fingerprints when that adapter is inactive.
   if (cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0) {

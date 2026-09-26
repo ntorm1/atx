@@ -106,6 +106,76 @@ constexpr std::array<BoolFlag, 35> kBoolFlags{{
 
 } // namespace
 
+atx::core::Result<bool> apply_ic_screen_option(
+    atx::engine::factory::IcScreenConfig& config, std::string_view flag,
+    std::string_view value) {
+    using atx::core::Err;
+    using atx::core::Ok;
+    using atx::core::ErrorCode;
+    using atx::engine::factory::IcScreenRule;
+    const auto invalid = [&] {
+        return Err(ErrorCode::InvalidArgument,
+            "--" + std::string(flag) + ": invalid value '" + std::string(value) + "'");
+    };
+    if (flag == "ic-screen-rule") {
+        if (value == "disabled-v1") config.rule = IcScreenRule::DisabledV1;
+        else if (value == "conservative-v2") config.rule = IcScreenRule::ConservativeV2;
+        else return invalid();
+        return Ok(true);
+    }
+    if (flag == "ic-screen-horizons") {
+        auto horizons = config.horizons;
+        auto rest = value;
+        for (atx::usize i = 0; i < horizons.size(); ++i) {
+            const auto separator = rest.find_first_of(",;");
+            const auto token = rest.substr(0, separator);
+            auto parsed = parse_count(flag, token);
+            if (!parsed || *parsed == 0 || *parsed > 65535) return invalid();
+            for (atx::usize j = 0; j < i; ++j) {
+                if (horizons[j] == *parsed) return invalid();
+            }
+            horizons[i] = *parsed;
+            if (i + 1 == horizons.size()) {
+                if (separator != std::string_view::npos) return invalid();
+            } else {
+                if (separator == std::string_view::npos) return invalid();
+                rest.remove_prefix(separator + 1);
+            }
+        }
+        config.horizons = horizons;
+        return Ok(true);
+    }
+    if (flag == "ic-screen-min-abs-ic" || flag == "ic-screen-confidence") {
+        double number{};
+        const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (error != std::errc{} || end != value.data() + value.size() ||
+            !std::isfinite(number)) return invalid();
+        if (flag == "ic-screen-min-abs-ic") {
+            if (!(number > 0.0) || number > 1.0) return invalid();
+            config.practical_abs_ic = number;
+        } else {
+            if (number < 2.0 || number > 20.0) return invalid();
+            config.confidence_multiplier = number;
+        }
+        return Ok(true);
+    }
+    if (flag != "ic-screen-min-names" && flag != "ic-screen-min-dates" &&
+        flag != "ic-screen-max-cache-mib") return Ok(false);
+    auto count = parse_count(flag, value);
+    if (!count) return Err(count.error());
+    if (flag == "ic-screen-min-names") {
+        if (*count < 3 || *count > 262144) return invalid();
+        config.min_names = *count;
+    } else if (flag == "ic-screen-min-dates") {
+        if (*count < 3 || *count > 65536) return invalid();
+        config.min_dates = *count;
+    } else {
+        if (*count == 0 || *count > 65536) return invalid();
+        config.max_cache_bytes = static_cast<atx::u64>(*count) * 1024U * 1024U;
+    }
+    return Ok(true);
+}
+
 atx::core::Result<bool> parse_bool_flag_value(std::string_view flag, std::string_view value) {
     if (value.empty() || value == "true" || value == "1") return atx::core::Ok(true);
     if (value == "false" || value == "0") return atx::core::Ok(false);
@@ -129,6 +199,9 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                                                 std::string_view flag,
                                                 std::string_view value) {
     using EC = atx::core::ErrorCode;
+
+    ATX_TRY(const bool ic_handled, apply_ic_screen_option(cfg.ic_screen, flag, value));
+    if (ic_handled) return atx::core::Ok();
 
     if (flag == "allow-unidentified-panels") {
         if (value != "true" && value != "false") {
