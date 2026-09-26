@@ -66,7 +66,14 @@ The identical target command then returned exit 0 in 6.876 seconds with native
 `75005562ceb31135460cd3624e82abd0093150e8`.
 
 No broad second correctness-suite recompile is required merely to prove these
-build-system changes. A fresh equity-hygiene configure remains unrun and is not
-claimed here; its isolated preset was reviewed statically. Root owns final
+build-system changes. Independently inspected the fresh equity-hygiene configure
+and preset proof: configure passed in 19.450 seconds, all 380 commands have no PCH
+flags/entries, and no PCH Ninja targets exist. Hygiene uses its own
+`deps/equity-hygiene`; equity-dev remains PCH ON with `deps/equity-dev`. The owner
+seeded eight pinned dependency source trees offline without copying build trees.
+Receipts are pool4's `build-equity/w0-hygiene-configure.log`,
+`w0-hygiene-preset-proof.json` and `w0-hygiene-dependency-seeds.json`, with final
+owner report `53239ffbac6aad971477f7d17bf17b00c787764d`. This proves configuration,
+not a PCH-off project compilation. Root owns final
 integrated changed-target qualification and the choice of when to import PCH
 carriers without disturbing an already qualified warm test tree.
