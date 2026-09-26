@@ -605,7 +605,7 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
     signal_member = claim_member;
   }
   al::Engine engine(role.panel); engine.set_eval_mode(al::EvalMode::ResearchFast);
-  ATX_TRY_VOID(engine.set_cross_section_mask(signal_member));
+  ATX_TRY_VOID(engine.set_cross_section_mask(std::vector<u8>(signal_member.begin(), signal_member.end())));
   std::vector<f64> blend(role.panel.cells(), 0.0); std::vector<usize> order; order.reserve(role.panel.instruments());
   Json orientation = Json::array(), combined = Json::array();
   std::map<std::string, ContributionCoverage> family_coverage;
