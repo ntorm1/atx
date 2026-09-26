@@ -1157,7 +1157,11 @@ def _fetch_sec_bytes(session: Any, url: str, *, timeout: float, maximum: int) ->
 
 
 class _PrefetchMissing(Exception):
-    """The fetch worker holds no final outcome for this URL yet: the loader skips it, never fetches it."""
+    """The fetch store holds no usable final outcome for this URL yet: the loader skips it, never fetches it.
+
+    That covers a URL the worker has not fetched and a ledgered success whose stored object is absent,
+    unreadable or fails its SHA check (the worker's next run refetches it).
+    """
 
 
 class _LedgeredFetchFailure(Exception):
@@ -1173,7 +1177,16 @@ def _prefetched_bytes(store: FetchLedgerStore, url: str, *, maximum: int) -> byt
     if record is None:
         raise _PrefetchMissing(url)
     if record.ok:
-        return store.read(record, maximum=maximum)  # SHA-verified; ValueError above the loader's cap
+        # A missing or corrupt object (read() quarantines it) is not evidence: it must count as not prefetched,
+        # never as a fetch_failed receipt that lets the loader-only stage record `completed`.
+        try:
+            return store.read(record, maximum=maximum)  # SHA-verified; ValueError above the loader's cap
+        except OSError:
+            raise _PrefetchMissing(url) from None
+        except ValueError as exc:
+            if str(exc) == FETCH_OBJECT_SHA_MISMATCH:
+                raise _PrefetchMissing(url) from None
+            raise
     if record.error == RESPONSE_TOO_LARGE:
         raise ValueError(RESPONSE_TOO_LARGE)
     raise _LedgeredFetchFailure("HTTPError")  # the network path's raise_for_status on a final 4xx
@@ -1607,7 +1620,8 @@ def refresh_sec_earnings_release_facts(
 
     With ``options.fetch_dir`` the routine is loader-only: bytes come from the
     fetch worker's SHA-verified store, no session is opened, and a candidate the
-    worker has not fetched yet is skipped (``not_prefetched``) without a receipt.
+    worker has not fetched yet (or whose stored object is missing or corrupt) is
+    skipped (``not_prefetched``) without a receipt.
     """
 
     prefetched = FetchLedgerStore(options.fetch_dir).load() if options.fetch_dir is not None else None

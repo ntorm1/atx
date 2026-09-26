@@ -12,11 +12,13 @@ Every SEC request made by this package goes through this module:
   refuses to start (a second lock would be a second 5 req/s bucket).
   The default and the ceiling are 5 requests/second. Every HTTP attempt (first try, retry and redirect hop)
   takes one token.
-* SEC throttling is shared host-wide. A 403 or 429 pauses every worker on the host (``Retry-After`` when
-  SEC sends a longer one, else 60 s doubling per consecutive block episode, at most 600 s). The
+* SEC throttling is shared host-wide. A 403 or 429 from an SEC host pauses every worker on the host
+  (``Retry-After`` when SEC sends a longer one, else 60 s doubling per consecutive block episode, at most
+  600 s); statuses from other hosts never touch that state. The
   :data:`SEC_BLOCK_ABORT_AFTER`-th consecutive block episode trips the host: every later SEC request on the
   host raises :class:`SecBlockedError` (a non-zero exit) until an operator has checked SEC access and runs
-  ``python -m atx_db.sec_http --clear-block``.
+  ``python -m atx_db.sec_http --clear-block``. An unreadable limiter state fails closed (no grant, no
+  overwrite; :class:`SecLimiterStateError` if it persists).
 * :func:`sec_session` returns a ``requests.Session`` whose adapter applies the approved user agent, the
   shared limiter, the shared block pause and a bounded retry policy (403/429 after the shared pause,
   5xx/connection errors with local backoff).
@@ -66,6 +68,9 @@ _MAX_BACKOFF_SECONDS = 60.0
 _LOCK_POLL_SECONDS = 0.002
 _LOCK_TIMEOUT_SECONDS = 600.0
 _PAUSE_POLL_SECONDS = 1.0
+#: An unreadable state file is re-read a few times (a scanner briefly holding it) before callers fail closed.
+_STATE_READ_ATTEMPTS = 5
+_STATE_READ_RETRY_SECONDS = 0.05
 #: The host-wide limiter lock (ruling C-63): one absolute path on this host, whatever root a worker runs from.
 #: The state file and the trip marker live beside it in the same directory.
 CANONICAL_SEC_RATE_LOCK = Path(r"C:\atx\atx-db\data\cache\.sec_rate.lock")
@@ -81,6 +86,15 @@ class SecBlockedError(BaseException):
     It derives from ``BaseException`` (like ``KeyboardInterrupt``) on purpose: the loaders' per-item
     ``except Exception`` handlers must not turn a host-wide block into a stream of per-item failures or
     retryable ledger lines. The process aborts with a non-zero exit instead.
+    """
+
+
+class SecLimiterStateError(SecBlockedError):
+    """The host-wide limiter state stayed unreadable, so SEC requests on the host stop (fail closed).
+
+    An unreadable state may hold a block pause and the block count; granting past it or overwriting it would
+    end that pause host-wide. An operator checks the file, then runs ``--clear-block`` (the unreadable file is
+    kept aside, never deleted).
     """
 
 
@@ -227,29 +241,40 @@ class SecRateLimiter:
         """Wait for this process's next SEC request slot and return the grant time (epoch seconds).
 
         A host-wide block pause is waited out with the lock released between polls; a tripped host raises
-        :class:`SecBlockedError`.
+        :class:`SecBlockedError`. An unreadable state fails closed: nothing is granted and nothing is written
+        while it stays unreadable (it may hold a pause), and after ``max_block_pause_s`` of that the call
+        raises :class:`SecLimiterStateError`.
         """
 
+        unreadable_since: float | None = None
         while True:
             with self._thread_lock, _exclusive_file_lock(self.lock_path):
                 self._raise_if_tripped()
                 now = time.time()
-                state = self._read_state(now)
-                paused = state.pause_until - now
-                if paused <= 0:
-                    wait = min(max(state.next_slot - now, 0.0), self.interval_s)
-                    if wait > 0:
-                        time.sleep(wait)
-                    granted = time.time()
-                    state.next_slot = granted + self.interval_s
-                    self._write_state(state)
-                    self._log({"t": granted, "pid": os.getpid(), "label": label})
-                    return granted
-                bound = state.pause_s if 0 < state.pause_s <= self.max_block_pause_s else self.max_block_pause_s
-                if paused > bound + self.interval_s:  # the wall clock stepped back: never wait past one pause
-                    state.pause_until, state.pause_s = now + bound, bound
-                    self._write_state(state)
-                    paused = bound
+                state = self._read_state()
+                if state is None:
+                    unreadable_since = time.monotonic() if unreadable_since is None else unreadable_since
+                    unreadable_s = time.monotonic() - unreadable_since
+                    if unreadable_s > self.max_block_pause_s:
+                        raise self._state_error(unreadable_s)
+                    paused = _PAUSE_POLL_SECONDS
+                else:
+                    unreadable_since = None
+                    paused = state.pause_until - now
+                    if paused <= 0:
+                        wait = min(max(state.next_slot - now, 0.0), self.interval_s)
+                        if wait > 0:
+                            time.sleep(wait)
+                        granted = time.time()
+                        state.next_slot = granted + self.interval_s
+                        self._write_state(state)
+                        self._log({"t": granted, "pid": os.getpid(), "label": label})
+                        return granted
+                    bound = state.pause_s if 0 < state.pause_s <= self.max_block_pause_s else self.max_block_pause_s
+                    if paused > bound + self.interval_s:  # the wall clock stepped back: never wait past one pause
+                        state.pause_until, state.pause_s = now + bound, bound
+                        self._write_state(state)
+                        paused = bound
             time.sleep(min(paused, _PAUSE_POLL_SECONDS))
 
     def record_response(self, status: int, *, granted_at: float | None = None, retry_after_s: float = 0.0) -> None:
@@ -260,13 +285,18 @@ class SecRateLimiter:
         consecutive episode (at least SEC's ``Retry-After``), capped at ``max_block_pause_s``. A block on a
         request granted before that (already in flight when the block was recorded) belongs to the same
         episode and does not escalate. Any other status on a request granted after the latest block ends the
-        run. The ``abort_after``-th consecutive episode trips the host.
+        run. The ``abort_after``-th consecutive episode trips the host. An unreadable state is never
+        overwritten (fail closed: it may hold a pause and the count, and :meth:`acquire` grants nothing
+        while it stays unreadable).
         """
 
         is_block = int(status) in SEC_BLOCK_STATUS_CODES
         with self._thread_lock, _exclusive_file_lock(self.lock_path):
             now = time.time()
-            state = self._read_state(now)
+            state = self._read_state()
+            if state is None:
+                self._log({"t": now, "pid": os.getpid(), "event": "state_unreadable", "status": int(status)})
+                return
             new_episode = granted_at is None or granted_at >= state.block_at
             if not is_block:
                 if state.blocks and new_episode:
@@ -295,28 +325,42 @@ class SecRateLimiter:
     def preflight(self) -> dict[str, Any]:
         """Take the host lock once and report the limiter state; raises SecBlockedError on a tripped host.
 
-        Fetch workers call this before any work, so an unreachable host lock or a tripped host stops them
-        at start instead of mid-run.
+        Fetch workers call this before any work, so an unreachable host lock, a tripped host or an
+        unreadable limiter state (:class:`SecLimiterStateError`) stops them at start instead of mid-run.
         """
 
         with self._thread_lock, _exclusive_file_lock(self.lock_path):
             self._raise_if_tripped()
-            return self._status_locked()
+            status = self._status_locked()
+            if status["state"] != "ok":
+                raise self._state_error(0.0)
+            return status
 
     def status(self) -> dict[str, Any]:
         with self._thread_lock, _exclusive_file_lock(self.lock_path):
             return self._status_locked()
 
     def clear_block(self) -> Path | None:
-        """Operator reset after SEC access was checked: keep the trip marker as ``.cleared-<stamp>``."""
+        """Operator reset after SEC access was checked: keep the trip marker as ``.cleared-<stamp>``.
+
+        An unreadable limiter state is also reset: the file is kept aside as ``.unreadable-<stamp>``.
+        Returns the kept marker (else the kept state file), or None when there was nothing to clear.
+        """
 
         with self._thread_lock, _exclusive_file_lock(self.lock_path):
-            if not self.blocked_path.exists():
+            state = self._read_state()
+            if not self.blocked_path.exists() and state is not None:
                 return None
             stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-            cleared = self.blocked_path.with_name(f"{self.blocked_path.name}.cleared-{stamp}")
-            os.replace(self.blocked_path, cleared)
-            state = self._read_state(time.time())
+            cleared: Path | None = None
+            if self.blocked_path.exists():
+                cleared = self.blocked_path.with_name(f"{self.blocked_path.name}.cleared-{stamp}")
+                os.replace(self.blocked_path, cleared)
+            if state is None:
+                kept_state = self.state_path.with_name(f"{self.state_path.name}.unreadable-{stamp}")
+                os.replace(self.state_path, kept_state)
+                cleared = cleared or kept_state
+                state = _LimiterState(next_slot=time.time() + self.interval_s)
             state.blocks, state.pause_until, state.pause_s = 0, 0.0, 0.0
             self._write_state(state)
             self._log({"t": time.time(), "pid": os.getpid(), "event": "block_cleared", "marker": str(cleared)})
@@ -324,15 +368,23 @@ class SecRateLimiter:
 
     def _status_locked(self) -> dict[str, Any]:
         now = time.time()
-        state = self._read_state(now)
+        state = self._read_state()
         return {
             "lock_path": str(self.lock_path),
             "rate_per_s": self.rate_per_s,
-            "paused_s": round(max(state.pause_until - now, 0.0), 3),
-            "consecutive_block_episodes": state.blocks,
+            "state": "ok" if state is not None else "unreadable",
+            "paused_s": None if state is None else round(max(state.pause_until - now, 0.0), 3),
+            "consecutive_block_episodes": None if state is None else state.blocks,
             "abort_after": self.abort_after,
             "tripped": self._tripped_detail(),
         }
+
+    def _state_error(self, unreadable_s: float) -> SecLimiterStateError:
+        return SecLimiterStateError(
+            f"host SEC limiter state {self.state_path} is unreadable (for {unreadable_s:.0f} s); it may hold a "
+            f"block pause, so SEC requests on this host stop (fail closed). Check the file, then run "
+            f"`{CLEAR_BLOCK_COMMAND}` (it keeps the unreadable file aside and resets the state)."
+        )
 
     def _tripped_detail(self) -> str | None:
         if not self.blocked_path.exists():
@@ -364,26 +416,37 @@ class SecRateLimiter:
         os.replace(temporary, self.blocked_path)
         self._log({"t": now, "pid": os.getpid(), "event": "trip", "blocks": state.blocks, "status": status})
 
-    def _read_state(self, now: float) -> _LimiterState:
-        try:
-            text = self.state_path.read_text(encoding="ascii")
-        except FileNotFoundError:
-            return _LimiterState()
-        except OSError:
-            return _LimiterState(next_slot=now + self.interval_s)
-        try:
-            payload = json.loads(text)
-            if isinstance(payload, (int, float)):  # the pre-fix format: the next slot only
-                return _LimiterState(next_slot=float(payload))
-            return _LimiterState(
-                next_slot=float(payload["next"]),
-                pause_until=float(payload.get("pause_until", 0.0)),
-                pause_s=float(payload.get("pause_s", 0.0)),
-                blocks=int(payload.get("blocks", 0)),
-                block_at=float(payload.get("block_at", 0.0)),
-            )
-        except (ValueError, KeyError, TypeError, AttributeError):
-            return _LimiterState(next_slot=now + self.interval_s)  # unreadable state: wait one full interval
+    def _read_state(self) -> _LimiterState | None:
+        """The shared state; None when the file exists but stays unreadable (callers then fail closed).
+
+        A missing file is a fresh host. An unreadable or unparsable file is re-read a few times (writes are
+        atomic, so this is a scanner holding it or a storage fault). If it stays unreadable the callers
+        neither grant nor overwrite it, so a read failure can never end a block pause or reset the count.
+        """
+
+        for attempt in range(_STATE_READ_ATTEMPTS):
+            if attempt:
+                time.sleep(_STATE_READ_RETRY_SECONDS)
+            try:
+                text = self.state_path.read_text(encoding="ascii")
+            except FileNotFoundError:
+                return _LimiterState()
+            except (OSError, UnicodeDecodeError):
+                continue
+            try:
+                payload = json.loads(text)
+                if isinstance(payload, (int, float)):  # the pre-fix format: the next slot only
+                    return _LimiterState(next_slot=float(payload))
+                return _LimiterState(
+                    next_slot=float(payload["next"]),
+                    pause_until=float(payload.get("pause_until", 0.0)),
+                    pause_s=float(payload.get("pause_s", 0.0)),
+                    blocks=int(payload.get("blocks", 0)),
+                    block_at=float(payload.get("block_at", 0.0)),
+                )
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+        return None
 
     def _write_state(self, state: _LimiterState) -> None:
         """Replace the state file whole (a kill never leaves a torn state); only ever called under the lock."""
@@ -443,8 +506,10 @@ def _retry_after_seconds(response: Any, cap: float = _MAX_BACKOFF_SECONDS) -> fl
 class _SecAdapter(HTTPAdapter):
     """Every attempt (first try, retry, redirect hop) takes one token from the shared limiter.
 
-    Every response status is shared with the limiter, so a 403/429 pauses all workers on the host; the
-    retry of a blocked request waits out that shared pause inside ``acquire`` (no local sleep).
+    Every SEC response status is shared with the limiter, so an SEC 403/429 pauses all workers on the host;
+    the retry of a blocked request waits out that shared pause inside ``acquire`` (no local sleep). Statuses
+    from other hosts sent through the same session (FASB, XBRL US) never reach the SEC block state: their 403
+    is returned, their 429 is retried with local backoff.
     """
 
     def __init__(self, limiter: SecRateLimiter, *, max_attempts: int, backoff_s: float) -> None:
@@ -460,6 +525,7 @@ class _SecAdapter(HTTPAdapter):
 
     def send(self, request, **kwargs):  # type: ignore[no-untyped-def,override]
         idempotent = (request.method or "GET").upper() in ("GET", "HEAD")
+        sec_host = is_sec_url(request.url or "")
         attempt = 0
         while True:
             attempt += 1
@@ -471,12 +537,13 @@ class _SecAdapter(HTTPAdapter):
                     raise
                 time.sleep(self._backoff(attempt))
                 continue
-            self.limiter.record_response(
-                response.status_code,
-                granted_at=granted,
-                retry_after_s=_retry_after_seconds(response, cap=SEC_MAX_BLOCK_PAUSE_SECONDS),
-            )
-            if response.status_code in SEC_BLOCK_STATUS_CODES:
+            if sec_host:  # a non-SEC status must neither pause/trip SEC work nor end an SEC block run
+                self.limiter.record_response(
+                    response.status_code,
+                    granted_at=granted,
+                    retry_after_s=_retry_after_seconds(response, cap=SEC_MAX_BLOCK_PAUSE_SECONDS),
+                )
+            if sec_host and response.status_code in SEC_BLOCK_STATUS_CODES:
                 if idempotent and attempt < self.max_attempts:
                     response.close()
                     continue  # the next acquire waits out the host-wide pause (or raises once tripped)
