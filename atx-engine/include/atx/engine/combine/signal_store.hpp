@@ -30,6 +30,8 @@
 #include <cmath>     // std::isfinite, std::sqrt
 #include <limits>    // std::numeric_limits
 #include <span>      // std::span
+#include <string>
+#include <string_view>
 #include <utility>   // std::move
 #include <vector>    // std::vector
 
@@ -37,6 +39,8 @@
 #include "atx/core/types.hpp" // f64, u8, u32, usize
 
 namespace atx::engine::combine {
+
+class SignalCube;
 
 // Half-open window of DATE rows [begin, end).
 struct FitWindow {
@@ -236,6 +240,51 @@ private:
   std::vector<atx::f64> fwd_;
 };
 
+enum class SignalIcPrecision : atx::u8 { ExactF64V1 = 1, Float32V1 = 2 };
+
+// Labels at row t mature at t + execution_delay + label_horizon. The exclusive
+// maturity_end is an observation cutoff, not the end of an optimizer window.
+struct SignalIcCacheConfig {
+  atx::usize label_horizon{1U};
+  atx::usize execution_delay{};
+  atx::usize maturity_end{};
+  IcReturnTreatment return_treatment{IcReturnTreatment::WinsorizedV2};
+  atx::f64 winsor{3.0};
+  SignalIcPrecision precision{SignalIcPrecision::ExactF64V1};
+};
+
+// Borrowed immutable date-major rows. A fit validates shape, recipe and maturity
+// before indexing. The backing storage must remain alive and unchanged during fit.
+struct SignalIcView {
+  std::span<const atx::f64> values;
+  atx::usize n_dates{};
+  atx::usize n_alphas{};
+  FitWindow stored_window;
+  SignalIcCacheConfig config;
+};
+
+// An owned immutable snapshot of a bounded IC window. Unlike a full signal cube,
+// this uses O(dates*alphas) memory; fits borrow subspans without reconstructing IC.
+class SignalIcCache {
+public:
+  [[nodiscard]] static atx::core::Result<SignalIcCache> from_store(
+      const SignalStore&, FitWindow, SignalIcCacheConfig,
+      atx::u64 max_bytes = 256ULL * 1024ULL * 1024ULL);
+  [[nodiscard]] static atx::core::Result<SignalIcCache> from_cube(
+      const SignalCube&, FitWindow, atx::usize horizon_index, bool allow_float32 = false);
+  [[nodiscard]] SignalIcView view() const noexcept {
+    return {values_, n_dates_, n_alphas_, window_, config_};
+  }
+  [[nodiscard]] std::string_view source_manifest_sha256() const noexcept { return manifest_sha256_; }
+private:
+  std::vector<atx::f64> values_;
+  atx::usize n_dates_{};
+  atx::usize n_alphas_{};
+  FitWindow window_;
+  SignalIcCacheConfig config_;
+  std::string manifest_sha256_;
+};
+
 // ===========================================================================
 //  Per-date cross-sectional statistics (the inputs every combiner consumes).
 // ===========================================================================
@@ -302,13 +351,14 @@ private:
 // gets — so a single extreme return cannot dominate a date's IC. `IcReturnTreatment::RawV1`
 // reproduces the pre-W0 raw-return IC bit for bit. `winsor` must be > 0 under
 // WinsorizedV2 (a non-positive value falls back to RawV1 rather than clipping to a point).
-[[nodiscard]] inline std::vector<atx::f64>
-ic_matrix(const SignalStore &s, FitWindow w,
-          IcReturnTreatment returns = IcReturnTreatment::WinsorizedV2, atx::f64 winsor = 3.0) {
+namespace signal_detail {
+// Allocation-free row construction for an append-only walk-forward cache.
+// Preconditions: out.size()==w.size()*K, and clipping scratch has N cells when used.
+inline void ic_rows_into(const SignalStore &s, FitWindow w, std::span<atx::f64> out,
+                         IcReturnTreatment returns, atx::f64 winsor,
+                         std::span<atx::f64> clipped) {
   const atx::usize k = s.n_alphas();
-  std::vector<atx::f64> out(w.size() * k, kSignalNaN);
   const bool clip = (returns == IcReturnTreatment::WinsorizedV2) && (winsor > 0.0);
-  std::vector<atx::f64> clipped(clip ? s.n_instruments() : 0U);
   for (atx::usize r = 0U; r < w.size(); ++r) {
     std::span<const atx::f64> fwd = s.fwd_row(w.begin + r);
     if (clip) {
@@ -319,6 +369,16 @@ ic_matrix(const SignalStore &s, FitWindow w,
       out[r * k + a] = cross_section_corr(s.signal_row(a, w.begin + r), fwd);
     }
   }
+}
+} // namespace signal_detail
+
+[[nodiscard]] inline std::vector<atx::f64>
+ic_matrix(const SignalStore &s, FitWindow w,
+          IcReturnTreatment returns = IcReturnTreatment::WinsorizedV2, atx::f64 winsor = 3.0) {
+  std::vector<atx::f64> out(w.size() * s.n_alphas(), kSignalNaN);
+  const bool clip = returns == IcReturnTreatment::WinsorizedV2 && winsor > 0.0;
+  std::vector<atx::f64> clipped(clip ? s.n_instruments() : 0U);
+  signal_detail::ic_rows_into(s, w, out, returns, winsor, clipped);
   return out;
 }
 

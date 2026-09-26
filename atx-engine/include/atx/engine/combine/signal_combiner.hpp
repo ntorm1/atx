@@ -97,6 +97,8 @@ void normalize_gross(std::vector<atx::f64> &w) noexcept;
 // Shared window validation: >= 1 alpha, window inside n_dates, >= min_rows rows.
 [[nodiscard]] atx::core::Status validate_window(const SignalStore &s, FitWindow w,
                                                 atx::usize min_rows);
+[[nodiscard]] atx::core::Status validate_window(const SignalIcView&, FitWindow,
+                                                atx::usize min_rows);
 
 // --- core kernels (store-free, individually testable) ------------------------
 
@@ -134,12 +136,20 @@ struct IcirEwmaCombiner {
   atx::f64 tstat_haircut = 2.0; // shrink factor max(0, 1 − haircut/|t|); 0 disables
   SignalInferenceConfig inference{};
   [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalStore &s, FitWindow w) const;
+  [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalIcView&, FitWindow) const;
+  [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalIcCache& s, FitWindow w) const {
+    return fit(s.view(), w);
+  }
 };
 
 struct GrinoldKahnCombiner {
   CovTarget target = CovTarget::LwIdentity;
   SignalInferenceConfig inference{};
   [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalStore &s, FitWindow w) const;
+  [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalIcView&, FitWindow) const;
+  [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalIcCache& s, FitWindow w) const {
+    return fit(s.view(), w);
+  }
 };
 
 struct FamaMacBethRidge {

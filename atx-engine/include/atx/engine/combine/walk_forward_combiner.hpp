@@ -24,6 +24,8 @@
 //    * a fit that returns Err keeps the current weights (counted in failed_fits).
 //  Dates before the first adoption carry NaN weights (no forecast).
 
+#include <algorithm>
+#include <limits>
 #include <cmath>   // std::abs, std::isfinite
 #include <span>    // std::span
 #include <utility> // std::move
@@ -43,6 +45,7 @@ struct WalkForwardCfg {
   atx::usize lookback = 0U;    // 0 → expanding window; else rolling window of this many rows
   atx::usize refit_every = 1U; // refit cadence in dates, >= 1
   atx::f64 hysteresis = 0.0;   // adopt only when ‖ŵ_new − ŵ_cur‖₁ > hysteresis (ŵ = w/Σ|w|)
+  atx::u64 ic_cache_max_bytes = 256ULL * 1024ULL * 1024ULL; // 0 disables exact IC row reuse
 };
 
 struct WeightPath {
@@ -52,6 +55,8 @@ struct WeightPath {
   std::vector<atx::usize> refit_dates;    // dates a fit was attempted
   std::vector<atx::usize> adopted_dates;  // dates whose fit replaced the weights
   atx::usize failed_fits = 0U;
+  atx::usize ic_rows_computed = 0U; // distinct rows, not rows revisited by refits
+  bool used_ic_cache = false;
 
   [[nodiscard]] std::span<const atx::f64> at(atx::usize t) const noexcept {
     return {w.data() + t * n_alphas, n_alphas};
@@ -61,38 +66,43 @@ struct WeightPath {
   }
 };
 
-// Build the PIT weight path over every date of `s`. Err on an invalid cfg or an
-// empty store.
-template <Combiner C>
-[[nodiscard]] atx::core::Result<WeightPath> walk_forward(const SignalStore &s,
-                                                         const WalkForwardCfg &cfg, const C &c) {
+namespace walk_detail {
+template <class Fit>
+[[nodiscard]] atx::core::Result<WeightPath> run_path(
+    atx::usize n_dates, atx::usize n_alphas, const WalkForwardCfg& cfg,
+    atx::usize delay, atx::usize maturity_end, atx::usize data_begin,
+    atx::usize data_end, Fit&& fit) {
   if (cfg.horizon == 0U || cfg.min_train == 0U || cfg.refit_every == 0U || !(cfg.hysteresis >= 0.0)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "walk_forward: horizon, min_train, refit_every must be >= 1");
   }
-  if (s.n_alphas() == 0U) {
+  if (n_alphas == 0U || n_dates == 0U ||
+      n_dates > std::numeric_limits<atx::usize>::max() / n_alphas ||
+      cfg.horizon > std::numeric_limits<atx::usize>::max() - delay) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "walk_forward: empty store");
   }
   WeightPath p;
-  p.n_dates = s.n_dates();
-  p.n_alphas = s.n_alphas();
+  p.n_dates = n_dates;
+  p.n_alphas = n_alphas;
   p.w.assign(p.n_dates * p.n_alphas, kSignalNaN);
   std::vector<atx::f64> cur;
   bool first_attempt_seen = false;
   atx::usize first_attempt = 0U;
+  const atx::usize lag = cfg.horizon + delay;
   for (atx::usize d = 0U; d < p.n_dates; ++d) {
     // Embargo: rows t with t + h <= d → fit_end = d − h + 1.
-    const atx::usize fit_end = (d + 1U >= cfg.horizon) ? d + 1U - cfg.horizon : 0U;
+    const atx::usize observed_end = std::min(d + 1U, maturity_end);
+    const atx::usize fit_end = std::min(data_end, observed_end >= lag ? observed_end - lag : 0U);
     const atx::usize fit_begin =
-        (cfg.lookback > 0U && fit_end > cfg.lookback) ? fit_end - cfg.lookback : 0U;
-    const bool eligible = fit_end >= fit_begin + cfg.min_train;
+        std::max(data_begin, (cfg.lookback > 0U && fit_end > cfg.lookback) ? fit_end - cfg.lookback : 0U);
+    const bool eligible = fit_end >= fit_begin && fit_end - fit_begin >= cfg.min_train;
     if (eligible && !first_attempt_seen) {
       first_attempt_seen = true;
       first_attempt = d;
     }
     if (eligible && (d - first_attempt) % cfg.refit_every == 0U) {
       p.refit_dates.push_back(d);
-      const auto r = c.fit(s, FitWindow{fit_begin, fit_end});
+      const auto r = fit(FitWindow{fit_begin, fit_end}, observed_end);
       if (!r.has_value() || r->w.size() != p.n_alphas) {
         ++p.failed_fits;
       } else {
@@ -123,6 +133,97 @@ template <Combiner C>
     }
   }
   return atx::core::Ok(std::move(p));
+}
+} // namespace walk_detail
+
+template <class C>
+concept CachedIcCombiner = requires(const C& c, const SignalIcView& s, FitWindow w) {
+  { c.fit(s, w) } -> std::same_as<atx::core::Result<CombineWeights>>;
+  { c.inference } -> std::same_as<const SignalInferenceConfig&>;
+};
+
+// Existing store callers use exact incremental IC rows when the declared horizon
+// agrees with the combiner. Other combiners, old mismatched declarations and a
+// cache exceeding the caller's budget retain the original store path.
+// Each row is constructed only when its label matures. Unobserved future labels
+// are never read to fill the cache; refits borrow the already immutable prefix.
+template <Combiner C>
+[[nodiscard]] atx::core::Result<WeightPath> walk_forward(
+    const SignalStore& s, const WalkForwardCfg& cfg, const C& c) {
+  std::vector<atx::f64> rows;
+  std::vector<atx::f64> clipped;
+  bool cached = false;
+  if constexpr (CachedIcCombiner<C>) {
+    const atx::usize capacity = s.n_dates() > cfg.horizon ? s.n_dates() - cfg.horizon : 0U;
+    const bool treatment_ok = c.inference.return_treatment == IcReturnTreatment::RawV1 ||
+                             c.inference.return_treatment == IcReturnTreatment::WinsorizedV2;
+    if (cfg.horizon > 0U && cfg.horizon == c.inference.label_horizon && treatment_ok &&
+        cfg.ic_cache_max_bytes > 0U && s.n_alphas() > 0U && capacity > 0U &&
+        capacity <= std::numeric_limits<atx::usize>::max() / s.n_alphas()) {
+      const atx::usize cells = capacity * s.n_alphas();
+      const atx::usize scratch = c.inference.return_treatment == IcReturnTreatment::WinsorizedV2
+                                    ? s.n_instruments() : 0U;
+      if (cells <= cfg.ic_cache_max_bytes / sizeof(atx::f64) &&
+          scratch <= (cfg.ic_cache_max_bytes - cells * sizeof(atx::f64)) / sizeof(atx::f64)) {
+        rows.resize(cells, kSignalNaN);
+        clipped.resize(scratch);
+        cached = true;
+      }
+    }
+  }
+  atx::usize ready = 0U;
+  const auto fit = [&](FitWindow w, atx::usize observed_end) {
+    if constexpr (CachedIcCombiner<C>) {
+      if (cached) {
+        if (w.end > ready) {
+          const FitWindow fresh{ready, w.end};
+          auto output = std::span{rows}.subspan(ready * s.n_alphas(), fresh.size() * s.n_alphas());
+          signal_detail::ic_rows_into(s, fresh, output, c.inference.return_treatment, 3.0, clipped);
+          ready = w.end;
+        }
+        const SignalIcView view{std::span<const atx::f64>{rows}.first(ready * s.n_alphas()),
+            s.n_dates(), s.n_alphas(), {0U, ready},
+            {cfg.horizon, 0U, observed_end, c.inference.return_treatment, 3.0,
+             SignalIcPrecision::ExactF64V1}};
+        return c.fit(view, w);
+      }
+    }
+    return c.fit(s, w);
+  };
+  ATX_TRY(auto path, walk_detail::run_path(s.n_dates(), s.n_alphas(), cfg, 0U,
+                                          s.n_dates(), 0U, s.n_dates(), fit));
+  path.used_ic_cache = cached;
+  path.ic_rows_computed = ready;
+  return atx::core::Ok(std::move(path));
+}
+
+// A cube/stat-cache fit requires an exact matching declared horizon. The cube's
+// execution delay is added to the embargo, and its immutable maturity cutoff
+// bounds the observed prefix even on later decision dates.
+template <CachedIcCombiner C>
+[[nodiscard]] atx::core::Result<WeightPath> walk_forward(
+    const SignalIcCache& cache, const WalkForwardCfg& cfg, const C& c) {
+  const SignalIcView view = cache.view();
+  ATX_TRY_VOID(validate_window(view, view.stored_window, 1U));
+  if (cfg.horizon != view.config.label_horizon ||
+      c.inference.label_horizon != view.config.label_horizon ||
+      c.inference.return_treatment != view.config.return_treatment ||
+      (view.config.return_treatment == IcReturnTreatment::WinsorizedV2 && view.config.winsor != 3.0)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "walk_forward: IC cache horizon/return recipe mismatch");
+  }
+  const auto fit = [&](FitWindow w, atx::usize observed_end) {
+    SignalIcView visible = view;
+    visible.stored_window.end = w.end;
+    visible.values = view.values.first(visible.stored_window.size() * view.n_alphas);
+    visible.config.maturity_end = observed_end;
+    return c.fit(visible, w); // future cached rows are absent from the fit's view
+  };
+  ATX_TRY(auto path, walk_detail::run_path(view.n_dates, view.n_alphas, cfg,
+      view.config.execution_delay, view.config.maturity_end, view.stored_window.begin,
+      view.stored_window.end, fit));
+  path.used_ic_cache = true;
+  return atx::core::Ok(std::move(path));
 }
 
 // Per-date realized PnL of the walk-forward forecast: pnl[d] = Σ_i c_i fwd(d,i) / Σ_i |c_i|
