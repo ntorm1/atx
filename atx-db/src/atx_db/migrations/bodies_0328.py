@@ -1,7 +1,8 @@
 """0328 post-B0 bundle: row share clocks, currency and eligibility labels, classification basis, rdq lineage.
 
-Applied after B0 (0327). Every table widened here has a ``DEFAULT now()`` column, and
-DuckDB 1.5.5 cannot replay a WAL ``ALTER TABLE`` on such a table (see 0327), so columns
+Applied right after 0327, in the same governed migrate at B0. Every table widened here
+has a ``DEFAULT now()`` column, and DuckDB 1.5.5 cannot replay a WAL ``ALTER TABLE`` on
+such a table (see 0327), so columns
 are appended by the governed create/copy/swap with the old column shapes, constraints and
 indexes verified afterwards. All new columns are nullable; NULL on rows written before
 their writer stores them.
@@ -302,7 +303,7 @@ def _post_b0_bundle(conn: duckdb.DuckDBPyConnection) -> None:
     _classification_basis(conn)
     _fundamental_period_rdq_lineage(conn)
     _equity_bar_revision_tables(conn)
-    # Never the in-place _refresh_schema_contract_v2_pin: its WAL replay corrupts the ART.
+    # The pin is re-persisted by swap, never in place: an in-place WAL replay corrupts the ART.
     refresh_schema_contract_pin_by_swap(conn)
 
 

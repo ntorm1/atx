@@ -11,12 +11,15 @@ import ast
 import contextlib
 import hashlib
 import inspect
+import logging
 import textwrap
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 import duckdb
+
+_LOG = logging.getLogger(__name__)
 
 # Exact legacy fingerprints produced before imported runtime callables were excluded
 # from migration checksums. These four migrations instantiate DuckDBStore, whose
@@ -346,9 +349,32 @@ def _apply_pending_migrations_unlocked(conn: duckdb.DuckDBPyConnection) -> list[
         except Exception:
             conn.execute("ROLLBACK")
             raise
+        _LOG.info("migration %s committed", _migration_version_text(migration.version))
+        _checkpoint_committed_migration(conn, migration.version)
         applied_now.append(migration.version)
 
     return applied_now
+
+
+def _checkpoint_committed_migration(conn: duckdb.DuckDBPyConnection, version: int) -> None:
+    """CHECKPOINT a committed migration before the next one starts.
+
+    Until a checkpoint, a commit lives only in the WAL and is replayed on the next open;
+    DuckDB 1.5.5 can replay in-place index writes into a corrupt ART, after which the next
+    write to that table invalidates the database (MIG0328-report.md). A checkpoint right
+    after each COMMIT bounds that crash window to one migration and gives every later
+    migration a checkpointed base. If the checkpoint fails the run stops here: the migration
+    is committed and recorded, so a rerun resumes with the next one.
+    """
+    text = _migration_version_text(version)
+    try:
+        conn.execute("CHECKPOINT")
+    except Exception as exc:
+        raise RuntimeError(
+            f"migration {text} is committed but its CHECKPOINT failed; "
+            "no further migration runs until the database checkpoints"
+        ) from exc
+    _LOG.info("migration %s checkpointed", text)
 
 
 def apply_pending_migrations(
@@ -359,7 +385,8 @@ def apply_pending_migrations(
 ) -> list[int]:
     """Apply any MIGRATIONS whose version is not yet recorded in schema_migrations.
 
-    Runs each migration inside a transaction. Inserts a tracking row on success.
+    Runs each migration inside a transaction. Inserts a tracking row on success, and
+    CHECKPOINTs each committed migration before the next one starts.
     Returns the list of version numbers that were applied (empty list if all up to date).
     Must be called after ensure_quant_schema so that schema_migrations exists.
 

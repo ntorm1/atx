@@ -33,6 +33,10 @@ DuckDB 1.5.5 cannot replay a WAL containing ``ALTER TABLE`` on a table with a
 Every table widened here has such a column, so columns are added by the same
 governed swap as the est_actual key change (a replay-safe shape), with the old
 column shapes, constraints and indexes verified afterwards.
+
+The schema-contract pin is re-persisted by :func:`refresh_schema_contract_pin_by_swap`
+(``schema_contract`` / ``schema_contract_version`` rebuilt INSERT-only and swapped in),
+not by the in-place helper of 0140-0326, whose WAL replay corrupts the ART.
 """
 
 from __future__ import annotations
@@ -327,15 +331,17 @@ def _add_nullable_columns(
 
 def _replace_rows_by_swap(
     conn: duckdb.DuckDBPyConnection, table: str, columns: tuple[str, ...], select_sql: str,
-    params: list[object] | None = None,
+    params: list[object] | None = None, *, expected_rows: int | None = None,
 ) -> None:
     """Replace every row of ``table`` with ``select_sql`` via a fresh table and a swap.
 
     No in-place UPDATE/DELETE touches the persisted indexed table: DuckDB 1.5.5 can
     replay such writes from the WAL into a corrupt ART (the next write to the table
     then invalidates the database). The fresh table takes the live catalog DDL (so its
-    constraints and primary key), is filled INSERT-only, replaces the old one, and gets
-    its secondary indexes back from their stored SQL after the rename.
+    columns, defaults, CHECKs and primary key), is filled INSERT-only (its primary-key
+    ART is built fresh), replaces the old one (whose ARTs are dropped with it), and gets
+    its secondary indexes back from their stored SQL after the rename. When given, the new
+    row count must equal ``expected_rows``.
     """
     ddl = conn.execute(
         """
@@ -353,6 +359,8 @@ def _replace_rows_by_swap(
     conn.execute(f"DROP TABLE IF EXISTS {scratch}")
     conn.execute(f"CREATE TABLE {scratch}{str(ddl[0])[len(f'CREATE TABLE {table}'):]}")
     conn.execute(f"INSERT INTO {scratch} ({_quoted(columns)}) {select_sql}", params or [])
+    if expected_rows is not None and (copied := _row_count(conn, scratch)) != expected_rows:
+        raise RuntimeError(f"row swap of {table} built {copied} rows, expected {expected_rows}")
     conn.execute(f"DROP TABLE {table}")
     conn.execute(f"ALTER TABLE {scratch} RENAME TO {table}")
     for sql in indexes:
@@ -370,9 +378,11 @@ def refresh_schema_contract_pin_by_swap(conn: duckdb.DuckDBPyConnection) -> None
     does not heal it). Here the manifest is computed first, then ``schema_contract`` and
     ``schema_contract_version`` are each rebuilt INSERT-only and swapped in. A row keeps
     its ``source_loaded_at`` when its contract fields are unchanged. Later migrations
-    must call this, never the in-place helper.
+    (0328 and every one after it that re-pins the contract) must call this, never the
+    in-place helper. Its source is hashed into 0327's checksum: once 0327 is applied in
+    production it is frozen, and a changed pin rule needs a new helper.
     """
-    import pandas as pd
+    import pyarrow as pa
 
     from ..schema_contract import (
         SCHEMA_CONTRACT_VERSION,
@@ -383,14 +393,29 @@ def refresh_schema_contract_pin_by_swap(conn: duckdb.DuckDBPyConnection) -> None
 
     manifest = build_contract_manifest(conn)
     manifest_sha256 = schema_contract_sha256(manifest)
+    specs = [(table, spec) for table, table_specs in manifest.items() for spec in table_specs]
+
+    def text(values: list[object]) -> pa.Array:
+        return pa.array([None if value is None else str(value) for value in values], pa.string())
+
+    def flag(values: list[object]) -> pa.Array:
+        return pa.array([bool(value) for value in values], pa.bool_())
+
+    seed = pa.table({
+        "table_name": text([table for table, _ in specs]),
+        "column_name": text([spec.name for _, spec in specs]),
+        "data_type": text([spec.data_type for _, spec in specs]),
+        "nullable": flag([spec.nullable for _, spec in specs]),
+        "is_natural_key": flag([spec.is_natural_key for _, spec in specs]),
+        "is_pit_column": flag([spec.is_pit_column for _, spec in specs]),
+        "declared_in": text([spec.declared_in for _, spec in specs]),
+        "unit": text([spec.unit for _, spec in specs]),
+        "sign": text([spec.sign for _, spec in specs]),
+        "scale": text([spec.scale for _, spec in specs]),
+        "natural_key": flag([spec.natural_key for _, spec in specs]),
+    })
     fields = ("data_type", "nullable", "is_natural_key", "is_pit_column", "declared_in", "unit", "sign", "scale",
               "natural_key")
-    seed = pd.DataFrame.from_records(
-        [(table, spec.name, spec.data_type, bool(spec.nullable), bool(spec.is_natural_key), bool(spec.is_pit_column),
-          spec.declared_in, spec.unit, spec.sign, spec.scale, bool(spec.natural_key))
-         for table, specs in manifest.items() for spec in specs],
-        columns=["table_name", "column_name", *fields],
-    )
     conn.register("_schema_contract_pin_seed", seed)
     try:
         unchanged = " AND ".join(f"e.{name} IS NOT DISTINCT FROM s.{name}" for name in fields)
@@ -403,11 +428,12 @@ def refresh_schema_contract_pin_by_swap(conn: duckdb.DuckDBPyConnection) -> None
                    s.declared_in, ?,
                    CASE WHEN e.table_name IS NOT NULL AND {unchanged} THEN e.source_loaded_at
                         ELSE CAST(now() AS TIMESTAMP) END,
-                   CAST(s.unit AS VARCHAR), CAST(s.sign AS VARCHAR), CAST(s.scale AS VARCHAR), s.natural_key
+                   s.unit, s.sign, s.scale, s.natural_key
             FROM _schema_contract_pin_seed s
             LEFT JOIN schema_contract e ON e.table_name = s.table_name AND e.column_name = s.column_name
             """,
             [manifest_sha256],
+            expected_rows=len(specs),
         )
     finally:
         conn.unregister("_schema_contract_pin_seed")
@@ -418,6 +444,7 @@ def refresh_schema_contract_pin_by_swap(conn: duckdb.DuckDBPyConnection) -> None
         FROM schema_contract_version
         """,
         [SCHEMA_CONTRACT_VERSION, manifest_sha256],
+        expected_rows=_row_count(conn, "schema_contract_version"),
     )
     assert_schema_contract_version(conn, manifest=manifest)
 

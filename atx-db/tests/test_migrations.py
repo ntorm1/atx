@@ -979,23 +979,35 @@ _EST_ACTUAL_0327_KEY = [
 ]
 
 
-def test_migration_0327_is_the_registered_head_and_recorded_with_its_checksum(tmp_store):
-    """Pin: 0327 is the last registered migration and a fresh bootstrap records it."""
+# Source checksums of the two migrations production has not applied yet (prod max 0326 on
+# 2026-09-26). Once production applies them they are append-only: a changed body fails here.
+_CHECKSUM_0327 = "01ffa6f5dc91cd55a769bd9e33187acd2b94ac9a078c2d0acd7dd703f2fa413b"
+_CHECKSUM_0328 = "1be792a510c7957b2db3d75d9e4aa9ee009e219739379b3d9e047d49bd710e3e"
+
+
+def test_migration_0328_is_the_registered_head_and_0327_0328_are_recorded_with_their_checksums(tmp_store):
+    """Pin: 0328 is the last registered migration; a fresh bootstrap records 0327 and 0328."""
     from atx_db.migrations import MIGRATIONS, _migration_source_checksum
 
-    head = MIGRATIONS[-1]
-    assert (head.version, head.name) == (327, "pre_run5_identity_bundle")
+    pre_run5, head = MIGRATIONS[-2:]
+    assert (pre_run5.version, pre_run5.name) == (327, "pre_run5_identity_bundle")
+    assert (head.version, head.name) == (328, "post_b0_bundle")
+    assert (_migration_source_checksum(pre_run5), _migration_source_checksum(head)) == (_CHECKSUM_0327, _CHECKSUM_0328)
     assert tmp_store.con.execute(
-        "SELECT description, checksum FROM schema_migrations WHERE version = '0327'"
-    ).fetchone() == ("pre_run5_identity_bundle", _migration_source_checksum(head))
+        "SELECT version, description, checksum FROM schema_migrations WHERE version IN ('0327', '0328') ORDER BY 1"
+    ).fetchall() == [
+        ("0327", "pre_run5_identity_bundle", _CHECKSUM_0327),
+        ("0328", "post_b0_bundle", _CHECKSUM_0328),
+    ]
     tables = {row[0] for row in tmp_store.con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
     assert {"security_identity_evidence", "historical_security_decisions"} <= tables
+    assert {"equity_adjustment_rebases", "equity_daily_bar_revisions"} <= tables
     assert _est_actual_primary_key(tmp_store.con) == _EST_ACTUAL_0327_KEY
 
 
 @pytest.mark.slow
-def test_migration_0327_upgrades_a_0326_warehouse(tmp_path):
-    """Pin: a warehouse bootstrapped at 0326 reaches 0327 through the governed runner."""
+def test_migrations_0327_0328_upgrade_a_0326_warehouse(tmp_path):
+    """Pin: a warehouse bootstrapped at 0326 reaches 0328 through the runner (production is at 0326)."""
     import duckdb
 
     import atx_db.migrations as migrations_pkg
@@ -1020,10 +1032,16 @@ def test_migration_0327_upgrades_a_0326_warehouse(tmp_path):
         ).fetchone() == (326,)
         assert _est_actual_primary_key(con) == _EST_ACTUAL_0327_KEY[:5]
 
-        assert apply_pending_migrations(con) == [327]
+        assert apply_pending_migrations(con) == [327, 328]
         verify_migration_checksums(con)
         assert verify_schema(con) == ()
         assert _est_actual_primary_key(con) == _EST_ACTUAL_0327_KEY
+        rdq_lineage = {
+            row[0] for row in con.execute(
+                "SELECT column_name FROM duckdb_columns() WHERE table_name = 'fundamental_periods'"
+            ).fetchall()
+        }
+        assert {"rdq_basis", "rdq_available_at", "rdq_accession_number"} <= rdq_lineage
         assert apply_pending_migrations(con) == []
     finally:
         store.connection.close()

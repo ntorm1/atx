@@ -151,6 +151,7 @@ from .bodies_0324 import MIGRATIONS as _MIGRATIONS_0324
 from .bodies_0325 import MIGRATIONS as _MIGRATIONS_0325
 from .bodies_0326 import MIGRATIONS as _MIGRATIONS_0326
 from .bodies_0327 import MIGRATIONS as _MIGRATIONS_0327
+from .bodies_0328 import MIGRATIONS as _MIGRATIONS_0328
 
 MIGRATIONS = [
     *_MIGRATIONS_0001_0137,
@@ -304,6 +305,9 @@ MIGRATIONS = [
     # 0327 (A9): pre-run5 identity bundle. Registered in the live tree because heavy launches
     # run from pinned git-archive exports (RX3); a launch applies it only from an export that has it.
     *_MIGRATIONS_0327,
+    # 0328 (MIG0328, tier1-v2 0.2): post-B0 bundle. B0 applies 0327 and 0328 in one governed
+    # migrate while market_daily_metrics is still empty (its swap copies that table).
+    *_MIGRATIONS_0328,
 ]
 
 

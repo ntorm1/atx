@@ -1,9 +1,9 @@
 """Migration 0328 (post-B0 bundle): one upgrade check on a populated 0327 warehouse.
 
-The body runs exactly as the runner does (one transaction) on a copy of the 0327 schema
-template with rows in every widened table, twice, with both commits left in the WAL and
-replayed on reopen (DuckDB 1.5.5 cannot replay ALTER on DEFAULT now() tables, hence the
-swap). While 0328 is unregistered the template is the 0327 head.
+The body runs exactly as the runner does (one transaction) on a genuine 0327 warehouse
+(a bootstrap with the registry truncated at 0327; slow lane, since 0328 is registered)
+with rows in every widened table, twice, with both commits left in the WAL and replayed
+on reopen (DuckDB 1.5.5 cannot replay ALTER on DEFAULT now() tables, hence the swap).
 """
 
 from __future__ import annotations
@@ -12,8 +12,11 @@ import datetime as dt
 import shutil
 
 import duckdb
+import pytest
 
+import atx_db.migrations as migrations_pkg
 from atx_db import ticker_history_incremental as p14
+from atx_db.connection import DuckDBStore
 from atx_db.migration_admin import verify_schema
 from atx_db.migrations import bodies_0328 as b0328
 
@@ -31,6 +34,23 @@ def _connect(path) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(path), config={"memory_limit": "384MB", "threads": 1})
     con.execute("SET TimeZone='UTC'")
     return con
+
+
+@pytest.fixture(scope="module")
+def warehouse_0327(tmp_path_factory):
+    """A warehouse bootstrapped through the real runner with the registry truncated at 0327."""
+    path = tmp_path_factory.mktemp("w0327") / "w0327.duckdb"
+    full = migrations_pkg.MIGRATIONS
+    migrations_pkg.MIGRATIONS = [migration for migration in full if migration.version <= 327]
+    store = DuckDBStore(path)
+    store.connection = duckdb.connect(str(path), config={"memory_limit": "256MB", "threads": 1})
+    try:
+        store._configure_session(store.connection)
+        store.initialize()
+    finally:
+        migrations_pkg.MIGRATIONS = full
+        store.connection.close()
+    return path
 
 
 def _literal(data_type: str, row: int):
@@ -88,10 +108,14 @@ def _apply(con) -> None:
     con.execute("COMMIT")
 
 
-def test_0328_widens_only_its_tables_keeps_rows_backfills_and_replays_from_the_wal(_schema_template, tmp_path):
+@pytest.mark.slow
+def test_0328_widens_only_its_tables_keeps_rows_backfills_and_replays_from_the_wal(warehouse_0327, tmp_path):
     path = tmp_path / "w.duckdb"
-    shutil.copyfile(_schema_template, path)
+    shutil.copyfile(warehouse_0327, path)
     con = _connect(path)
+    assert con.execute(
+        "SELECT max(CAST(version AS INTEGER)) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
+    ).fetchone() == (327,)
     for table in WIDENED:
         _populate(con, table, 3, {
             0: {"source": SIC_SOURCE},
