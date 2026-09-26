@@ -160,6 +160,8 @@ TEST(StrategyIcRunner, SharedVmWorkersPreserveSignalsOrientationsAndPlannedTarge
   auto parallel_recipe=read_json(dir.path/"parallel"/"recipe.json");
   EXPECT_EQ(parallel_recipe.at("vm_workers"),2);
   parallel_recipe.erase("vm_workers");
+  EXPECT_EQ(parallel_recipe.at("research_ic_workers"),2);
+  parallel_recipe.erase("research_ic_workers");
   EXPECT_EQ(read_json(dir.path/"output"/"recipe.json"),parallel_recipe);
   EXPECT_EQ(read_json(dir.path/"output"/"orientations.json").at("candidates"),
             read_json(dir.path/"parallel"/"orientations.json").at("candidates"));
@@ -171,7 +173,7 @@ TEST(StrategyIcRunner, SharedVmWorkersPreserveSignalsOrientationsAndPlannedTarge
     for (const auto* key:{"load","label_preparation","vm","ic","composition"})
       EXPECT_GE(b.at("stage_seconds").at(key).get<f64>(),0);
     for (auto* role_result:{&a,&b}) {
-      for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes"})
+      for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes","ic_scratch_bytes"})
         role_result->erase(key);
       for (auto& candidate:role_result->at("candidates")) {
         candidate.erase("wall_seconds"); candidate.erase("stage_seconds");
@@ -229,7 +231,7 @@ TEST(StrategyIcRunner, FrozenTrainValidationMatchesUninterruptedWithoutTrainPayl
   ASSERT_EQ(resumed.at("roles").size(),1U);
   auto expected=original.at("roles").at(1); auto actual=resumed.at("roles").at(0);
   for (auto* row:{&expected,&actual}) {
-    for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes"}) row->erase(key);
+    for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes","ic_scratch_bytes"}) row->erase(key);
     for (auto& candidate:row->at("candidates")) {
       candidate.erase("wall_seconds"); candidate.erase("stage_seconds");
     }

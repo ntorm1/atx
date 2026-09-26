@@ -62,7 +62,7 @@ co::Result<Json> pinned_json(const std::string& path,const std::string& pin) {
   if (actual!=pin) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: external metadata pin differs");
   return co::Ok(Json::parse(text));
 }
-Json method_recipe(const IcRunnerConfig& cfg) {
+Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true) {
   Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
       {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
       {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
@@ -75,6 +75,7 @@ Json method_recipe(const IcRunnerConfig& cfg) {
       {"planned_targets","final-rank-neutral-gross1;cadence5;fraction.25;no-drift;offcycle-membership-exit-zero;deployment-included"},
       {"scope","IC-and-planned-weight-change-only;no-costs-trades-NAV-Sharpe-or-holdout"}};
   if (cfg.workers!=1) recipe["vm_workers"]=cfg.workers;
+  if (parallel_ic && cfg.workers!=1) recipe["research_ic_workers"]=cfg.workers;
   return recipe;
 }
 struct FrozenTrain { Json artifact,recipe; std::vector<int> signs; std::string recipe_sha; };
@@ -99,7 +100,10 @@ co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& li
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN resource bounds");
   auto source_cfg=cfg; source_cfg.max_working_bytes=static_cast<u64>(source_bytes);
   source_cfg.workers=static_cast<usize>(source_workers);
-  auto expected=method_recipe(source_cfg); expected["role_manifest_sha256"]["train"]=cfg.train_sha256;
+  // Earlier completed TRAIN artifacts used parallel VM but serial IC. Absence
+  // means precisely that original execution path, not unknown numerical policy.
+  auto expected=method_recipe(source_cfg,recipe.contains("research_ic_workers"));
+  expected["role_manifest_sha256"]["train"]=cfg.train_sha256;
   if (recipe.at("role_manifest_sha256").contains("validation"))
     expected["role_manifest_sha256"]["validation"]=cfg.validation_sha256;
   if (recipe!=expected)
@@ -213,11 +217,12 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
       return co::Err(co::ErrorCode::Unavailable,"IC runner: combined IC label/rank/scratch budget");
   }
   // No second VM or label cache: only worker-local Cs/TS scratch. Allow 2x
-  // vector growth within1024B/name and64B/date; separately reserve8MiB stack
+  // vector growth within1024B/name and64B/date; add64B/name for IC row buffers;
+  // separately reserve8MiB stack
   // address/commit envelope plus64KiB runtime slack per explicit worker. This
   // conservative admission is not a measured thread-stack/RSS guarantee.
   if (cfg.workers>1 && (!b.add(cfg.workers,(8ULL<<20)+(64ULL<<10)) ||
-      !b.add(cfg.workers*n,1024) || !b.add(cfg.workers*d,64)))
+      !b.add(cfg.workers*n,1024+64) || !b.add(cfg.workers*d,64)))
     return co::Err(co::ErrorCode::OutOfRange,"IC runner: worker scratch/stack envelope overflow");
   if (enforce_budget && b.used>cfg.max_working_bytes)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: required_bytes="+std::to_string(b.used)+
@@ -297,8 +302,10 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   ic.window_begin=role.score_begin; ic.window_end=role.score_end; ic.maturity_end=role.score_end;
   ic.max_cache_bytes=cfg.max_working_bytes;
   const auto label_started=std::chrono::steady_clock::now();
-  ATX_TRY(auto cache,ex::prepare_research_ic(role.panel,ic,{3,true},role.decision_member,guard));
+  ATX_TRY(auto cache,ex::prepare_research_ic(role.panel,ic,{3,true,cfg.workers},role.decision_member,guard));
   ATX_TRY(auto scratch,ex::prepare_research_ic_scratch(cache));
+  if (cache.bytes()>cfg.max_working_bytes || scratch.bytes()>cfg.max_working_bytes-cache.bytes())
+    return co::Err(co::ErrorCode::Unavailable,"IC runner: actual IC cache/scratch exceeds admitted budget");
   const auto label_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-label_started).count();
   // Lifetime order matters: Engine borrows the pool and dies first. Candidate
   // evaluation is driven by THIS main thread; Cs and Ts jobs never nest.
@@ -345,7 +352,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     if (evaluated.alphas.size()!=1) return co::Err(co::ErrorCode::Internal,"IC runner: VM root missing");
     const auto& signal=evaluated.alphas.front().values;
     const auto ic_started=std::chrono::steady_clock::now();
-    ATX_TRY(auto scored,ex::evaluate_research_ic(signal,cache,scratch));
+    ATX_TRY(auto scored,ex::evaluate_research_ic(signal,cache,scratch,pool.get()));
     const auto ic_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-ic_started).count();
     total_ic_seconds+=ic_seconds;
     const auto& orientation=scored.screen.horizons[1].rank;
@@ -384,7 +391,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   ATX_TRY(auto combined,composition.finish());
   total_composition_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-finish_started).count();
   const auto combined_ic_started=std::chrono::steady_clock::now();
-  ATX_TRY(auto combined_ic,ex::evaluate_research_ic(combined.signal,cache,scratch));
+  ATX_TRY(auto combined_ic,ex::evaluate_research_ic(combined.signal,cache,scratch,pool.get()));
   total_ic_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-combined_ic_started).count();
   series(daily,"__combined__",role,scratch,1);
   std::ofstream targets(dir/(spec.name+"_planned_targets.csv"),std::ios::binary);
