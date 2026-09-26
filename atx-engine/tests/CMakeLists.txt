@@ -254,3 +254,22 @@ if(ATX_USE_PCH)
     endif()
     target_precompile_headers(atx-engine-ic-screen-tests REUSE_FROM atx-engine-test-pch)
 endif()
+
+# Bounded W1 qualification on production libraries, including existing oracle,
+# streaming and walk-forward checks. Ordinary owning suites remain registered.
+add_executable(atx-engine-w1-foundation-tests EXCLUDE_FROM_ALL
+    alpha/alpha_ts_date_major_test.cpp
+    alpha/alpha_ts_sliding_routing_test.cpp
+    alpha/alpha_conformance_test.cpp
+    alpha/alpha_widened_conformance_test.cpp
+    alpha/alpha_oracle_test.cpp
+    alpha/streaming_engine_test.cpp
+    combine/combine_signal_cube_test.cpp
+    combine/combine_ic_cache_test.cpp
+    combine/combine_signal_combiner_test.cpp
+    combine/combine_walk_forward_test.cpp)
+atx_engine_test_compile_environment(atx-engine-w1-foundation-tests)
+target_link_libraries(atx-engine-w1-foundation-tests PRIVATE atx-test-scratch)
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine-w1-foundation-tests REUSE_FROM atx-engine-test-pch)
+endif()

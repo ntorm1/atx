@@ -46,19 +46,28 @@ Do not launch it or automatically rerun mining. User prioritized vectorized roug
 forward-return IC across several horizons before full backtests, retaining true alphas.
 This explicitly authorizes proceeding with the scoped W2-A4 subset before that long gate.
 
-Source integrated through4924341a: kernel45682ec9/0c9820d7/ee24fa6d, search
-a9606e6d/8ad38bef, globalconfigd060cd81/f9a6be88, V3registry561ed7bf/10dfdc80,
-mined8f0968e/4924341a. Focused tests3b834f89/52a67eb2 are NOT compiled yet.
-Independent reviews fixed paired coverage and duplicate V3 metadata; borrowed cache
-recipe/geometry compatibility is being added by kernel/search owners. Root adding
-StageResult counters and two EXCLUDE_FROM_ALL focused targets: four engine test TUs,
-five impl test TUs, both real production libraries and normal PCH settings. One root
-combined compile only after final source arrives and RAM admits it; no other compiler.
-Last host sample1.299GiB physical/2.424GiB commit/zero compilers: no build launched.
-Kernel owner also adds short noisy retention/null cohorts; do not claim general alpha
-recall from prior high-precision fixtures. G0 independently reviews search/admission;
-root reviews mine. V3 rejects have no P&L; DSR total raw N uses max of observed and
-existing candidate marginal variance, explicitly disclosed. Long gates stay deferred.
+IC source compiled throughabe8fec6: engine59/59(11.994s), impl42/42(37.707s),
+additional widecohort1/1(21.148s); final source-provenance discovery8/8(7.060s).
+102distinct focusedchecks, zero failures/skips; full owning suites NOT rerun.
+Firstbuild402.686s reached testmissingargument; fixed1840317b, incremental78.394s.
+Widecohort/provenance refresh43.617s includingconfigure, exactly2changedTUs.
+AllJobs1; PCH and deps warm; noactivecompiler/runtimeremains. Alllogs/receipts/XML
+pool2/build-equity/ic-screen-*. Report .superpowers/sdd/w1/priority-ic-report.md.
+Independentreviews fixed coverage, V3meta, injectedcache mismatch/resume refusal,
+adaptive all-rejected baseline and actualclusterDSR benchmark reporting.
+
+IMPORTANT qualification open:512x96noisycohort nullreject0/6,retained18/18planted;
+512x512 nullreject0/12,retained12/12weak/inverse. Exactconstructednulls skipbacktest,
+but practical rejection/throughput is NOT qualified. Auditowner reviewing one-SE
+retentionguard/multiplehorizons analytically, no C++build/data/longrun authorized.
+
+W1 source work proceeding under ownerbuild-firstoverride; workingbase7e16ed26.
+G0(pool3) cube45317e8d; audit(pool5) consumer c898c7e8/tests ce879ea1; rootreviewed
+both source, G0 independently reviewingconsumer. Kernelowner(pool4) A1 f257bc91,
+667d386c,bc3e173c,ca8ea138 and unaryroutingpending; G0found pairoverflowrecoverygap,
+ownerfixing. No W1source imported/built yet. RootownsminimalLane0CMake/brief before
+imports. Details .superpowers/sdd/w1/progress.md. V3partialDSR uses totalrawN and
+max(observed,marginal) variance; nofakePnL. Long gates stay deferred; main unchanged.
 
 Scaffold adds factory/ic_screen.cpp to CMake. Root branch remains integration;
 main has NOT been fast-forwarded. Existing production correctness evidence remains valid
