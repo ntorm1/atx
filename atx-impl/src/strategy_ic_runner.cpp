@@ -45,8 +45,7 @@ bool hash_valid(std::string_view value) {
     return (c>='0' && c<='9') || (c>='a' && c<='f');
   });
 }
-co::Result<Json> pinned_json(const std::string& path,const std::string& pin) {
-  if (!hash_valid(pin)) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: external SHA256 required");
+co::Result<std::string> metadata_text(const std::string& path) {
   std::ifstream in(path,std::ios::binary|std::ios::ate);
   if (!in || in.tellg()<=0 || static_cast<u64>(in.tellg())>(1ULL<<20))
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: metadata missing/over1MiB");
@@ -54,9 +53,91 @@ co::Result<Json> pinned_json(const std::string& path,const std::string& pin) {
   in.seekg(0); in.read(text.data(),static_cast<std::streamsize>(text.size()));
   if (!in || in.peek()!=std::char_traits<char>::eof())
     return co::Err(co::ErrorCode::IoError,"IC runner: metadata extent changed");
+  return co::Ok(std::move(text));
+}
+co::Result<Json> pinned_json(const std::string& path,const std::string& pin) {
+  if (!hash_valid(pin)) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: external SHA256 required");
+  ATX_TRY(auto text,metadata_text(path));
   ATX_TRY(auto actual,co::sha256_hex(text));
   if (actual!=pin) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: external metadata pin differs");
   return co::Ok(Json::parse(text));
+}
+Json method_recipe(const IcRunnerConfig& cfg) {
+  Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
+      {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
+      {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
+      {"screen_rule","equivalence-v3"},{"practical_abs_ic",.002},{"confidence_multiplier",3.5},
+      {"max_working_bytes",cfg.max_working_bytes},{"vm","ResearchFast;full-historical-asof-member-mask"},
+      {"labels","close[d+1+h]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity"},
+      {"guard","observed-adjacent-log1.5;adjusted-log-vs-raw+.10;no-missing-zero-fill"},
+      {"orientation","TRAIN21h-nonzero-sample-rank-mean;undefined=0;screen-diagnostic-only;freeze-before-validation"},
+      {"composition","fixed-equal-family/equal-within;centered-tied-rank;missing-or-unoriented-neutral;no-redistribution"},
+      {"planned_targets","final-rank-neutral-gross1;cadence5;fraction.25;no-drift;offcycle-membership-exit-zero;deployment-included"},
+      {"scope","IC-and-planned-weight-change-only;no-costs-trades-NAV-Sharpe-or-holdout"}};
+  if (cfg.workers!=1) recipe["vm_workers"]=cfg.workers;
+  return recipe;
+}
+struct FrozenTrain { Json artifact,recipe; std::vector<int> signs; std::string recipe_sha; };
+co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train) {
+  ATX_TRY(auto artifact,pinned_json(cfg.orientations_path,cfg.orientations_sha256));
+  if (artifact.at("schema")!="atx.dsl-ic-orientations/v1" ||
+      artifact.at("library_sha256")!=cfg.library_sha256 || artifact.at("train_manifest_sha256")!=cfg.train_sha256)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN artifact identity");
+  const auto recipe_sha=artifact.at("recipe_sha256").get<std::string>();
+  if (!hash_valid(recipe_sha)) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN recipe SHA");
+  // The externally pinned artifact binds the adjacent recipe by canonical JSON
+  // hash, not by trusting a second self-reported filename/hash pair.
+  ATX_TRY(auto text,metadata_text((std::filesystem::path(cfg.orientations_path).parent_path()/"recipe.json").string()));
+  auto recipe=Json::parse(text); ATX_TRY(auto actual,co::sha256_hex(recipe.dump()));
+  if (actual!=recipe_sha) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN recipe hash differs");
+  if (!recipe.at("max_working_bytes").is_number_integer() ||
+      (recipe.contains("vm_workers") && !recipe.at("vm_workers").is_number_integer()))
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN resource types");
+  const auto source_bytes=recipe.at("max_working_bytes").get<i64>();
+  const auto source_workers=recipe.value("vm_workers",i64{1});
+  if (source_bytes<(32LL<<20) || source_bytes>(16LL<<30) || source_workers<1 || source_workers>4)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN resource bounds");
+  auto source_cfg=cfg; source_cfg.max_working_bytes=static_cast<u64>(source_bytes);
+  source_cfg.workers=static_cast<usize>(source_workers);
+  auto expected=method_recipe(source_cfg); expected["role_manifest_sha256"]["train"]=cfg.train_sha256;
+  if (recipe.at("role_manifest_sha256").contains("validation"))
+    expected["role_manifest_sha256"]["validation"]=cfg.validation_sha256;
+  if (recipe!=expected)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN method/statistical settings/role pins differ");
+  const auto& rows=artifact.at("candidates");
+  if (!rows.is_array() || rows.size()!=lib.candidates.size())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN candidate count");
+  const auto score_dates=train.metadata.at("score_end").get<u64>()-train.metadata.at("score_begin").get<u64>();
+  const auto max_dates=score_dates>22?score_dates-22:0;
+  std::vector<int> signs; signs.reserve(rows.size());
+  for (usize k=0;k<rows.size();++k) {
+    const auto& row=rows[k]; const auto& c=lib.candidates[k];
+    if (row.at("id")!=c.id || row.at("family")!=c.family || row.at("dsl_sha256")!=c.dsl_sha ||
+        row.at("orientation_horizon")!=21 || row.at("composition_selection")!="all-fixed-candidates-no-screen-selection" ||
+        row.at("fit_status")!="noisy-TRAIN-sample-orientation-not-significance" ||
+        !row.at("sign").is_number_integer() || !row.at("sample_orientation_sign").is_number_integer())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN candidate recipe");
+    const auto& horizons=row.at("ic").at("horizons");
+    if (!horizons.is_array() || horizons.size()!=3 || horizons[0].at("horizon")!=5 ||
+        horizons[1].at("horizon")!=21 || horizons[2].at("horizon")!=63)
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN horizons");
+    const auto& estimate=horizons[1].at("rank");
+    if (!estimate.at("valid_dates").is_number_integer())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN date count type");
+    const auto dates=estimate.at("valid_dates").get<i64>();
+    if (dates<0 || static_cast<u64>(dates)>max_dates || row.at("orientation_dates")!=dates ||
+        (dates==0 && !estimate.at("mean").is_null()) || (dates>0 && !estimate.at("mean").is_number()))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN mature observations");
+    const auto mean=dates>0?estimate.at("mean").get<f64>():0;
+    if (!std::isfinite(mean) || std::abs(mean)>1.000000000001)
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN rank mean");
+    const int sign=mean>0?1:(mean<0?-1:0);
+    if (row.at("sign")!=sign || row.at("sample_orientation_sign")!=sign ||
+        row.at("orientation_defined")!=(sign!=0))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN sign differs from recorded sample");
+    signs.push_back(sign);
+  }
+  return co::Ok(FrozenTrain{std::move(artifact),std::move(recipe),std::move(signs),recipe_sha});
 }
 co::Status write_json(const std::filesystem::path& path,const Json& j) {
   std::ofstream out(path,std::ios::binary); if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: JSON output");
@@ -109,7 +190,7 @@ co::Result<Library> library(const IcRunnerConfig& cfg) {
   return co::Ok(std::move(out));
 }
 co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string path,
-                      std::string pin,std::string name) {
+                      std::string pin,std::string name,bool enforce_budget=true) {
   ATX_TRY(auto j,pinned_json(path,pin));
   const auto d=j.at("dates").get<u64>(),n=j.at("instruments").get<u64>();
   const auto begin=j.at("score_begin").get<u64>(),end=j.at("score_end").get<u64>();
@@ -138,7 +219,7 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
   if (cfg.workers>1 && (!b.add(cfg.workers,(8ULL<<20)+(64ULL<<10)) ||
       !b.add(cfg.workers*n,1024) || !b.add(cfg.workers*d,64)))
     return co::Err(co::ErrorCode::OutOfRange,"IC runner: worker scratch/stack envelope overflow");
-  if (b.used>cfg.max_working_bytes)
+  if (enforce_budget && b.used>cfg.max_working_bytes)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: required_bytes="+std::to_string(b.used)+
         " max_compiled_slots="+std::to_string(lib.max_slots)+" exceeds configured memory budget before payload load");
   return co::Ok(Role{std::move(path),std::move(pin),std::move(name),std::move(j),b.used});
@@ -332,18 +413,26 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
 } // namespace
 co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
   try {
+    const bool validation_only=!cfg.orientations_path.empty();
     if ((!cfg.plan_only && cfg.output_directory.empty()) || cfg.max_working_bytes<(32ULL<<20) || cfg.max_working_bytes>(16ULL<<30) ||
         cfg.min_names<3 || cfg.min_dates<8 || cfg.min_dates>4096 || cfg.workers<1 || cfg.workers>4 ||
-        cfg.validation_manifest.empty()!=cfg.validation_sha256.empty())
+        cfg.validation_manifest.empty()!=cfg.validation_sha256.empty() ||
+        cfg.orientations_path.empty()!=cfg.orientations_sha256.empty() ||
+        (validation_only && cfg.validation_manifest.empty()))
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: bounded config");
     ATX_TRY(auto lib,library(cfg));
     std::vector<Role> roles;
-    ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train")); roles.push_back(std::move(train));
+    ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",!validation_only)); roles.push_back(std::move(train));
     if (!cfg.validation_manifest.empty()) {
       ATX_TRY(auto val,admit(cfg,lib,cfg.validation_manifest,cfg.validation_sha256,"validation"));
       if (roles.front().metadata.at("score_end_ns").get<i64>()>val.metadata.at("score_start_ns").get<i64>())
         return co::Err(co::ErrorCode::InvalidArgument,"IC runner: overlapping/nonchronological roles");
       roles.push_back(std::move(val));
+    }
+    FrozenTrain recovered;
+    if (validation_only) {
+      ATX_TRY(recovered,frozen_train(cfg,lib,roles.front()));
+      roles.erase(roles.begin()); // TRAIN metadata checked, payload never opened.
     }
     if (cfg.plan_only) {
       Json plan{{"mode","metadata-only-no-payload"},{"candidates",lib.candidates.size()},
@@ -351,23 +440,22 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
           {"library_sha256",cfg.library_sha256},{"roles",Json::array()}};
       for (const auto& role:roles) plan["roles"].push_back({{"role",role.name},
           {"manifest_sha256",role.sha},{"required_bytes",role.bytes}});
+      if (validation_only) {
+        plan["run_mode"]="validation-only-frozen-TRAIN";
+        plan["train_recipe_sha256"]=recovered.recipe_sha;
+        plan["orientations_artifact_sha256"]=cfg.orientations_sha256;
+      }
       progress<<plan.dump(2)<<'\n'; return co::Ok();
     }
-    Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
-        {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
-        {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
-        {"screen_rule","equivalence-v3"},{"practical_abs_ic",.002},{"confidence_multiplier",3.5},
-        {"max_working_bytes",cfg.max_working_bytes},{"vm","ResearchFast;full-historical-asof-member-mask"},
-        {"labels","close[d+1+h]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity"},
-        {"guard","observed-adjacent-log1.5;adjusted-log-vs-raw+.10;no-missing-zero-fill"},
-        {"orientation","TRAIN21h-nonzero-sample-rank-mean;undefined=0;screen-diagnostic-only;freeze-before-validation"},
-        {"composition","fixed-equal-family/equal-within;centered-tied-rank;missing-or-unoriented-neutral;no-redistribution"},
-        {"planned_targets","final-rank-neutral-gross1;cadence5;fraction.25;no-drift;offcycle-membership-exit-zero;deployment-included"},
-        {"scope","IC-and-planned-weight-change-only;no-costs-trades-NAV-Sharpe-or-holdout"}};
-    // Worker1 retains the previously frozen serial recipe hash. Nondefault
-    // worker counts are explicit execution provenance, not new alpha selection.
-    if (cfg.workers!=1) recipe["vm_workers"]=cfg.workers;
+    auto recipe=method_recipe(cfg);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
+    if (validation_only) {
+      recipe["role_manifest_sha256"]["train"]=cfg.train_sha256;
+      recipe["run_mode"]="validation-only-frozen-TRAIN";
+      recipe["train_recipe_sha256"]=recovered.recipe_sha;
+      recipe["orientations_artifact_sha256"]=cfg.orientations_sha256;
+      recipe["frozen_train_recipe"]=recovered.recipe;
+    }
     ATX_TRY(auto recipe_sha,co::sha256_hex(recipe.dump()));
     std::error_code ec;
     if (!std::filesystem::create_directory(cfg.output_directory,ec))
@@ -375,9 +463,19 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     const auto dir=std::filesystem::path(cfg.output_directory);
     ATX_TRY_VOID(write_json(dir/"recipe.json",recipe));
     Json report{{"status","running"},{"recipe_sha256",recipe_sha},{"roles",Json::array()},
-        {"train_candidates_planned",lib.candidates.size()},{"full_book_evaluations",0}};
-    ATX_TRY_VOID(write_json(dir/"summary.json",report));
+        {"train_candidates_planned",validation_only?usize{0}:lib.candidates.size()},{"full_book_evaluations",0}};
     std::vector<int> signs; Json orientations=Json::array();
+    if (validation_only) {
+      signs=std::move(recovered.signs);
+      report["run_mode"]="validation-only-frozen-TRAIN";
+      report["train_manifest_sha256"]=cfg.train_sha256;
+      report["train_recipe_sha256"]=recovered.recipe_sha;
+      report["orientations_artifact_sha256"]=cfg.orientations_sha256;
+      // A receipt of the verified source, not a newly fitted orientation file.
+      ATX_TRY_VOID(write_json(dir/"frozen_train_receipt.json",{{"source_artifact_sha256",cfg.orientations_sha256},
+          {"train_recipe_sha256",recovered.recipe_sha},{"artifact",recovered.artifact}}));
+    }
+    ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
       auto scored=score_role(cfg,lib,role,signs,orientations,progress);
       if (!scored) {
@@ -412,7 +510,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       if (key=="--plan-only") { cfg.plan_only=true; continue; }
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
-               "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only]\n";
+               "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA]\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");
@@ -428,6 +526,8 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--train-sha256") cfg.train_sha256=value;
       else if (key=="--validation") cfg.validation_manifest=value;
       else if (key=="--validation-sha256") cfg.validation_sha256=value;
+      else if (key=="--orientations") cfg.orientations_path=value;
+      else if (key=="--orientations-sha256") cfg.orientations_sha256=value;
       else if (key=="--output") cfg.output_directory=value;
       else if (key=="--max-memory-mib") { const auto n=integer(); if (n>16384) throw std::invalid_argument("memory limit"); cfg.max_working_bytes=n<<20; }
       else if (key=="--min-names") cfg.min_names=static_cast<usize>(integer());
