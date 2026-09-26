@@ -23,6 +23,7 @@ struct ScheduleInput {
   std::vector<f64> prices = std::vector<f64>(D * N, 100.0);
   std::vector<f64> signal = std::vector<f64>(D * N);
   std::vector<u8> member = std::vector<u8>(D * N, 1);
+  std::vector<u8> present = std::vector<u8>(D * N, 1);
   std::vector<u32> guard = std::vector<u32>(D * N, 0);
   std::vector<i64> marks = std::vector<i64>(D), decisions = std::vector<i64>(D);
   f64 borrow{};
@@ -37,7 +38,7 @@ struct ScheduleInput {
     }
   }
   core::Result<atx::engine::alpha::Panel> panel() const {
-    return atx::engine::alpha::Panel::create(D, N, {"close"}, {prices}, {});
+    return atx::engine::alpha::Panel::create(D, N, {"close"}, {prices}, present);
   }
   core::Result<ex::ExecutionObjectiveContext> context(const atx::engine::alpha::Panel& p) const {
     const std::array<u64, N> ids{10, 20};
@@ -126,5 +127,37 @@ TEST(ExecutionSchedule, MembershipExitIsPartialAtScheduledEntry) {
   EXPECT_DOUBLE_EQ(out->positions(0, 3)[1], .25); // off-cycle does not flatten
   EXPECT_DOUBLE_EQ(out->positions(0, 4)[1], .125);
   EXPECT_DOUBLE_EQ(out->positions(0, 6)[1], .0625);
+}
+
+TEST(ExecutionSchedule, StrictRefusalIdentifiesActualClockNameExposureAndGuard) {
+  {
+    ScheduleInput f; f.present[N + 1] = 0; f.prices[N + 1] = 777;
+    auto p = f.panel(); ASSERT_TRUE(p); auto c = f.context(*p); ASSERT_TRUE(c);
+    const auto out = ex::extract_execution_signal(f.signal, *c); ASSERT_FALSE(out);
+    EXPECT_EQ(out.error().code(), core::ErrorCode::Unavailable);
+    const auto& message = out.error().message();
+    EXPECT_NE(message.find("unavailable entry price"), std::string::npos);
+    EXPECT_NE(message.find("date_index=1 "), std::string::npos);
+    EXPECT_NE(message.find("mark_time_ns=" + std::to_string(f.marks[1])), std::string::npos);
+    EXPECT_NE(message.find("instrument_id=20 source_present=0"), std::string::npos);
+    EXPECT_NE(message.find("decision_index=0 "), std::string::npos);
+    EXPECT_NE(message.find("held_dollars=0"), std::string::npos);
+    EXPECT_NE(message.find("requested_dollars=500 quoted_fill_dollars=500"), std::string::npos);
+  }
+  for (const bool guarded : {false, true}) {
+    ScheduleInput f;
+    if (guarded) for (usize t = 2; t < D; ++t) f.guard[t * N + 1] = 1;
+    else { f.present[2 * N + 1] = 0; f.prices[2 * N + 1] = 777; }
+    auto p = f.panel(); ASSERT_TRUE(p); auto c = f.context(*p); ASSERT_TRUE(c);
+    const auto out = ex::extract_execution_signal(f.signal, *c); ASSERT_FALSE(out);
+    EXPECT_EQ(out.error().code(), core::ErrorCode::Unavailable);
+    const auto& message = out.error().message();
+    EXPECT_NE(message.find("missing/guarded held return"), std::string::npos);
+    EXPECT_NE(message.find("date_index=2 "), std::string::npos);
+    EXPECT_NE(message.find("instrument_id=20"), std::string::npos);
+    EXPECT_NE(message.find("held_dollars=500"), std::string::npos);
+    EXPECT_NE(message.find("previous_source_present=1 previous_price=100"), std::string::npos);
+    EXPECT_NE(message.find(guarded ? "guard_crossed=1" : "guard_crossed=0"), std::string::npos);
+  }
 }
 } // namespace
