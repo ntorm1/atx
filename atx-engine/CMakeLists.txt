@@ -139,6 +139,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/eval/trial_registry.cpp
     src/eval/trial_epoch.cpp
     src/data/exposure_panel.cpp
+    src/data/fundamental_clock_artifact.cpp
     src/factory/objective_ic.cpp
     src/eval/multiple_testing.cpp
     src/eval/lockbox_audit.cpp

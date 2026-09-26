@@ -1,8 +1,14 @@
 #include "atx/engine/data/fundamental_clock_artifact.hpp"
 #include "atx/engine/data/fundamental_fields.hpp"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
+#include <cmath>
+#include <limits>
 #include <new>
+#include <unordered_map>
+#include <utility>
 
 namespace atx::engine::data::fundamentals {
 namespace {
