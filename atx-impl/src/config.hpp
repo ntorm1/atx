@@ -1,9 +1,9 @@
 #pragma once
 
 #include "atx/engine/alpha/vwap_rule.hpp"
-#include "atx/engine/factory/ic_screen.hpp"
-#include "atx/engine/eval/cpcv.hpp"
-#include "atx/engine/eval/pbo.hpp"
+#include "atx/engine/factory/ic_screen_config.hpp"
+#include "atx/engine/eval/cpcv_config.hpp"
+#include "atx/engine/eval/pbo_config.hpp"
 
 #include <array>
 #include <limits>
