@@ -448,11 +448,27 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
   if (!factory || n == 0 || cfg.first_as_of < horizon || cfg.first_as_of >= t ||
       cfg.n_periods == 0 || cfg.step == 0 ||
       cfg.n_periods - 1 > (t - 1 - cfg.first_as_of) / cfg.step ||
-      cfg.n_min_variance > 10'000 || cfg.n_optimized > 10'000 || cfg.books.size() > 10'000 ||
-      n > cfg.max_working_bytes / 128 / (cfg.n_min_variance + cfg.n_optimized + 1))
+      cfg.n_min_variance > 10'000 || cfg.n_optimized > 10'000 || cfg.books.size() > 10'000)
     return Err(ErrorCode::InvalidArgument, "risk validation V2: invalid horizon/shape/budget");
+  // Admit the combined live storage before constructing any random matrices or
+  // accumulator groups. Caller-owned inputs and factory-owned models are outside
+  // this scratch/result budget; their sizes are checked before our model work.
+  atx::u64 reserved = 0;
+  const auto reserve = [&](atx::u64 count, atx::u64 bytes) {
+    if (bytes != 0 && count > (cfg.max_working_bytes - reserved) / bytes) return false;
+    reserved += count * bytes;
+    return true;
+  };
+  constexpr atx::u64 group_bytes = sizeof(Acc21) + 2 * sizeof(ValidationMetric21) + 256;
+  const auto groups = cfg.n_min_variance + cfg.n_optimized + cfg.books.size() + 12;
+  if (!reserve(1, 4096) || !reserve(groups, group_bytes) ||
+      !reserve(n, 128 * (cfg.n_min_variance + cfg.n_optimized + 1)) ||
+      !reserve(cfg.label.size(), 2))
+    return Err(ErrorCode::OutOfRange, "risk validation V2: aggregate persistent workspace budget");
   for (const auto& b : cfg.books) {
     if (b.w.size() != n) return Err(ErrorCode::InvalidArgument, "risk validation V2: book shape");
+    if (!reserve(b.name.size(), 2))
+      return Err(ErrorCode::OutOfRange, "risk validation V2: result name workspace budget");
     for (auto w : b.w) if (!std::isfinite(w))
       return Err(ErrorCode::InvalidArgument, "risk validation V2: nonfinite book");
   }
@@ -477,10 +493,24 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
     ATX_TRY(auto snap, factory(a));
     const auto& model = snap.model;
     const auto m = snap.assets.size(), k = model.n_factors();
-    if (m == 0 || m != model.n_instruments() || model.fit_begin() < a ||
-        k == 0 || k > cfg.max_working_bytes / 128 / k || m > cfg.max_working_bytes / 128 / k)
+    if (m == 0 || m > n || m != model.n_instruments() || model.fit_begin() < a || k == 0)
       return Err(ErrorCode::InvalidArgument, "risk validation V2: snapshot shape/fit clock/budget");
-    if (period == 0) { stable_k = k; eigen.resize(k); for (auto& acc : eigen) acc.rolling_enabled = mrad_clock; }
+    auto remaining = cfg.max_working_bytes - reserved;
+    if (k > remaining / group_bytes)
+      return Err(ErrorCode::OutOfRange, "risk validation V2: eigen accumulator workspace budget");
+    remaining -= k * group_bytes;
+    if (k > remaining / 128 / k)
+      return Err(ErrorCode::OutOfRange, "risk validation V2: factor workspace budget");
+    remaining -= 128 * k * k;
+    if (m > remaining / 128 / k)
+      return Err(ErrorCode::OutOfRange, "risk validation V2: combined factor workspace budget");
+    if (period == 0) {
+      stable_k = k;
+      eigen.resize(k);
+      out.metrics.reserve(groups + k);
+      out.cohort_mrad.reserve(6);
+      for (auto& acc : eigen) acc.rolling_enabled = mrad_clock;
+    }
     if (k != stable_k)
       return Err(ErrorCode::InvalidArgument, "risk validation V2: eigenportfolio axis changes across forecasts");
     std::vector<atx::u8> seen(n,0), available(m,1);
