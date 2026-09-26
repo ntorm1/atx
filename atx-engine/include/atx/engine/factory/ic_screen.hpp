@@ -12,7 +12,7 @@ namespace atx::engine::alpha { class Panel; }
 
 namespace atx::engine::factory {
 
-enum class IcScreenRule : atx::u8 { DisabledV1 = 1, ConservativeV2 = 2 };
+enum class IcScreenRule : atx::u8 { DisabledV1 = 1, ConservativeV2 = 2, EquivalenceV3 = 3 };
 
 struct IcScreenConfig {
   IcScreenRule rule{IcScreenRule::DisabledV1};
@@ -27,6 +27,10 @@ struct IcScreenConfig {
   atx::f64 confidence_multiplier{3.5};
   atx::u64 max_cache_bytes{atx::u64{512} * 1024U * 1024U};
 };
+
+// Explicit active-application recipe: protect full-window absolute IC >= .002.
+// The default constructor retains the legacy DisabledV1/.02 configuration.
+[[nodiscard]] IcScreenConfig equivalence_ic_screen_config() noexcept;
 
 enum class IcScreenReason : atx::u8 {
   Disabled, InsufficientEvidence, PossibleAlpha, PracticalNull
@@ -57,6 +61,14 @@ struct IcScreenResult {
   IcScreenReason reason{IcScreenReason::Disabled};
   std::array<IcScreenHorizon, 4> horizons;
 };
+
+// Classify already-computed estimates; `defined` certifies the upstream
+// coverage, calendar, maturity and inference checks. Uses the same decision
+// path as screen_ic, without labels/VM/backtests or invented P&L observations.
+// V3 recomputes each bound from mean/SE and this recipe; V2 retains its original
+// stored-bound + one-SE directional-veto semantics. Undefined evidence passes.
+[[nodiscard]] IcScreenResult classify_ic_screen_estimates(
+    const std::array<IcScreenHorizon, 4>& estimates, const IcScreenConfig& config) noexcept;
 
 namespace ic_screen_detail { struct Cache; struct Scratch; }
 class IcScreenScratch;
@@ -130,9 +142,11 @@ prepare_ic_screen_scratch(const IcScreenCache& cache);
                                             const alpha::Panel& panel,
                                             const IcScreenConfig& config) noexcept;
 
-// Conservative equivalence screen, not significance/alpha admission. Reject only
-// if EVERY horizon's Pearson AND tied-rank bounds exclude a practical effect in
-// BOTH signs, with adequate coverage and no weak directional/regime evidence.
+// Equivalence screen, not significance/alpha admission. Reject only if EVERY
+// horizon's Pearson AND tied-rank bounds exclude a practical effect in BOTH
+// signs, with adequate coverage. V2 additionally vetoes any one-SE directional
+// evidence; V3 removes that veto. Both retain a quarter-mean safeguard as an
+// extra conservative heuristic, NOT a calibrated guarantee of regime recall.
 // Bartlett HAC uses calendar-preserving missing-data influence series and a lag
 // >=2*h; inference is approximate. Undefined/short/sparse evidence passes.
 [[nodiscard]] atx::core::Result<IcScreenResult> screen_ic(

@@ -72,6 +72,85 @@ IcScreenConfig small_config() {
   return cfg;
 }
 
+// Analytic estimate-level cases describe mean/SE directly. They do not construct
+// artificially quiet signal observations or claim a population recall rate.
+std::array<IcScreenHorizon, 4> precise_estimates(const IcScreenConfig& cfg,
+                                               f64 mean = 0.0, f64 se = 0.0001) {
+  std::array<IcScreenHorizon, 4> out{};
+  for (usize k = 0; k < out.size(); ++k) {
+    out[k].horizon = cfg.horizons[k];
+    for (auto* e : {&out[k].pearson, &out[k].rank}) {
+      e->valid_dates = 600; e->calendar_dates = 600; e->hac_lag = cfg.horizons[k] * 2U;
+      e->mean = mean; e->standard_error = se;
+      e->upper_abs_ic = std::abs(mean) + cfg.confidence_multiplier * se;
+      e->max_segment_abs_ic = std::abs(mean);
+      e->defined = true; e->suggestive_direction = std::abs(mean) >= se;
+    }
+  }
+  return out;
+}
+
+TEST(IcScreen, EquivalenceV3PoweredEstimatesProtectDeclaredEffectsAcrossEveryMetric) {
+  const auto cfg = equivalence_ic_screen_config();
+  EXPECT_EQ(cfg.rule, IcScreenRule::EquivalenceV3);
+  EXPECT_DOUBLE_EQ(cfg.practical_abs_ic, 0.002);
+  EXPECT_DOUBLE_EQ(cfg.confidence_multiplier, 3.5);
+  EXPECT_EQ(ic_screen_rule_name(cfg.rule), "equivalence-v3");
+  EXPECT_DOUBLE_EQ(IcScreenConfig{}.practical_abs_ic, 0.02); // unchanged legacy construction
+  const auto powered_null = precise_estimates(cfg);
+  EXPECT_TRUE(classify_ic_screen_estimates(powered_null, cfg).reject);
+  for (usize k = 0; k < 4U; ++k) {
+    for (const bool rank : {false, true}) {
+      for (const f64 effect : {0.002, -0.002, 0.005, -0.005}) {
+        auto estimates = powered_null;
+        auto& e = rank ? estimates[k].rank : estimates[k].pearson;
+        e.mean = effect;
+        // Deliberately leave the old cached upper bound untouched: V3 must use
+        // the configured mean/SE formula, including both signs and every metric.
+        const auto result = classify_ic_screen_estimates(estimates, cfg);
+        EXPECT_TRUE(result.enough_evidence);
+        EXPECT_FALSE(result.reject) << k << ':' << rank << ':' << effect;
+        EXPECT_EQ(result.reason, IcScreenReason::PossibleAlpha);
+      }
+      auto uncertain = powered_null;
+      auto& e = rank ? uncertain[k].rank : uncertain[k].pearson;
+      e.standard_error = 0.001;
+      EXPECT_FALSE(classify_ic_screen_estimates(uncertain, cfg).reject);
+      e.defined = false;
+      EXPECT_EQ(classify_ic_screen_estimates(uncertain, cfg).reason, IcScreenReason::InsufficientEvidence);
+    }
+  }
+}
+
+TEST(IcScreen, EquivalenceV3RemovesOnlyV2DirectionalVetoAndKeepsQuarterHeuristic) {
+  auto cfg = equivalence_ic_screen_config();
+  auto legacy = cfg; legacy.rule = IcScreenRule::ConservativeV2;
+  for (const f64 mean : {0.0004, -0.0004}) {
+    const auto precise_submargin = precise_estimates(cfg, mean);
+    EXPECT_TRUE(precise_submargin[0].pearson.suggestive_direction);
+    EXPECT_FALSE(classify_ic_screen_estimates(precise_submargin, legacy).reject);
+    EXPECT_TRUE(classify_ic_screen_estimates(precise_submargin, cfg).reject);
+  }
+  auto estimates = precise_estimates(cfg);
+  estimates[2].rank.max_segment_abs_ic = 0.003;
+  EXPECT_FALSE(classify_ic_screen_estimates(estimates, cfg).reject);
+  // The quarter-mean check is an extra heuristic, not a calibrated claim that
+  // all regimes or intermittent effects are retained.
+  estimates = precise_estimates(cfg);
+  estimates[0].pearson.standard_error = 0.0;
+  EXPECT_FALSE(classify_ic_screen_estimates(estimates, cfg).reject);
+  estimates[0].pearson.standard_error = nan;
+  EXPECT_EQ(classify_ic_screen_estimates(estimates, cfg).reason, IcScreenReason::InsufficientEvidence);
+  estimates = precise_estimates(cfg);
+  estimates[3].rank.max_segment_abs_ic = nan;
+  EXPECT_FALSE(classify_ic_screen_estimates(estimates, cfg).reject);
+  estimates = precise_estimates(cfg);
+  cfg.practical_abs_ic = estimates[0].pearson.upper_abs_ic;
+  EXPECT_FALSE(classify_ic_screen_estimates(estimates, cfg).reject); // strict boundary
+  estimates[0].pearson.upper_abs_ic = 0.5;
+  EXPECT_FALSE(classify_ic_screen_estimates(estimates, legacy).reject); // V2 uses its stored bound
+}
+
 TEST(IcScreen, DisabledHasNoDenseCacheAndNeverScreensSignal) {
   auto p = panel(3, 5, prices(3, 5)); ASSERT_TRUE(p);
   auto cache = prepare_ic_screen(*p, {}); ASSERT_TRUE(cache);
@@ -291,6 +370,31 @@ TEST(IcScreen, RetainsWeakInverseLongHorizonAndRegimeCohorts) {
   }
   const auto regime = screen_ic(weak_signal(*cache, 3, 0.0, true), *cache, *scratch); ASSERT_TRUE(regime);
   EXPECT_FALSE(regime->reject); EXPECT_GT(regime->horizons[3].pearson.max_segment_abs_ic, 0.07);
+}
+
+TEST(IcScreen, EquivalenceV3ActualScreenUsesSmallDeclaredMarginAndRetainsBoundarySignals) {
+  constexpr usize dates = 384, names = 128;
+  std::vector<f64> close(dates * names), signal(dates * names);
+  for (usize d = 0; d < dates; ++d) for (usize i = 0; i < names; ++i) {
+    close[d * names + i] = std::exp(1e-7 * static_cast<f64>(d) * (static_cast<f64>(i) - 63.5));
+    const f64 shifted = static_cast<f64>((i + 27U) % names) - 63.5;
+    signal[d * names + i] = d % 2U == 0U ? shifted : -shifted;
+  }
+  // A deliberately precise algebraic fixture exercises production wiring only;
+  // it is not stochastic null-power or general weak-signal recall evidence.
+  auto p = panel(dates, names, std::move(close)); ASSERT_TRUE(p);
+  const auto cfg = equivalence_ic_screen_config();
+  auto cache = prepare_ic_screen(*p, cfg); ASSERT_TRUE(cache);
+  auto scratch = prepare_ic_screen_scratch(*cache); ASSERT_TRUE(scratch);
+  const auto rejected = screen_ic(signal, *cache, *scratch); ASSERT_TRUE(rejected);
+  EXPECT_TRUE(rejected->enough_evidence); EXPECT_TRUE(rejected->reject);
+  auto legacy = cfg; legacy.rule = IcScreenRule::ConservativeV2;
+  EXPECT_FALSE(ic_screen_cache_matches(*cache, *p, legacy)); // resume/cache identity is versioned
+  for (const f64 effect : {0.002, -0.002, 0.005, -0.005}) {
+    const auto result = screen_ic(weak_signal(*cache, 3, effect), *cache, *scratch);
+    ASSERT_TRUE(result); EXPECT_FALSE(result->reject) << effect;
+    EXPECT_GE(result->horizons[3].pearson.upper_abs_ic, cfg.practical_abs_ic);
+  }
 }
 
 TEST(IcScreen, StrictMonotoneTransformPreservesRankPathAndDecision) {

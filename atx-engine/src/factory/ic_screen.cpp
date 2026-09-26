@@ -129,7 +129,8 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
                                         const IcScreenConfig& cfg,
                                         std::span<const atx::u8> member,
                                         std::span<const atx::u32> bad) {
-  if (cfg.rule != IcScreenRule::DisabledV1 && cfg.rule != IcScreenRule::ConservativeV2)
+  if (cfg.rule != IcScreenRule::DisabledV1 && cfg.rule != IcScreenRule::ConservativeV2 &&
+      cfg.rule != IcScreenRule::EquivalenceV3)
     return Err(ErrorCode::InvalidArgument, "IC screen: unknown rule");
   if (cfg.rule == IcScreenRule::DisabledV1) return Ok();
   if (panel.instruments() == 0 || panel.dates() == 0 ||
@@ -188,8 +189,9 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
   out.hac_lag = std::max(horizon * 2U, eval::hac::newey_west_rule_of_thumb_lag(daily.size()));
   if (out.valid_dates < cfg.min_dates || daily.size() <= out.hac_lag + 1U ||
       static_cast<f64>(out.valid_dates) < kMinCoverage * static_cast<f64>(daily.size())) return out;
-  // Four fixed chronological segments guard against cancellation of an alpha
-  // concentrated in a regime. Sparse segments cannot certify a practical null.
+  // Additional conservative heuristic: four fixed chronological segment means.
+  // This is NOT a calibrated guarantee of regime-specific alpha recall. Sparse
+  // segments cannot certify a practical null under either active rule.
   for (usize q = 0; q < 4U; ++q) {
     const usize begin = daily.size() / 4U * q + (daily.size() % 4U) * q / 4U;
     const usize end = daily.size() / 4U * (q + 1U) + (daily.size() % 4U) * (q + 1U) / 4U;
@@ -375,8 +377,6 @@ atx::core::Result<IcScreenResult> screen_ic(std::span<const f64> signal,
   if (signal.size() != data.dates * data.instruments)
     return Err(ErrorCode::InvalidArgument, "IC screen: signal shape mismatch");
   auto& s = *scratch.data_;
-  out.enough_evidence = true;
-  bool possible = false;
   for (usize k = 0; k < cfg.horizons.size(); ++k) {
     for (usize row = 0; row < data.active[k]; ++row) {
       const usize n = data.instruments, d = cfg.window_begin + row;
@@ -387,17 +387,51 @@ atx::core::Result<IcScreenResult> screen_ic(std::span<const f64> signal,
     auto& h = out.horizons[k]; h.horizon = cfg.horizons[k];
     h.pearson = estimate(s.pearson[k], h.horizon, cfg, s.influence);
     h.rank = estimate(s.rank[k], h.horizon, cfg, s.influence);
-    h.enough_evidence = h.pearson.defined && h.rank.defined;
-    out.enough_evidence = out.enough_evidence && h.enough_evidence;
-    for (const auto* e : {&h.pearson, &h.rank}) {
-      possible = possible || e->suggestive_direction || e->upper_abs_ic >= cfg.practical_abs_ic ||
+  }
+  return Ok(classify_ic_screen_estimates(out.horizons, cfg));
+}
+
+IcScreenConfig equivalence_ic_screen_config() noexcept {
+  IcScreenConfig cfg;
+  cfg.rule = IcScreenRule::EquivalenceV3;
+  cfg.practical_abs_ic = 0.002;
+  cfg.confidence_multiplier = 3.5;
+  return cfg;
+}
+
+IcScreenResult classify_ic_screen_estimates(const std::array<IcScreenHorizon, 4>& estimates,
+                                            const IcScreenConfig& cfg) noexcept {
+  IcScreenResult out;
+  if (cfg.rule == IcScreenRule::DisabledV1) return out;
+  out.horizons = estimates;
+  out.reason = IcScreenReason::InsufficientEvidence;
+  if (cfg.rule != IcScreenRule::ConservativeV2 && cfg.rule != IcScreenRule::EquivalenceV3)
+    return out;
+  const bool equivalence = cfg.rule == IcScreenRule::EquivalenceV3;
+  if (equivalence && (!std::isfinite(cfg.practical_abs_ic) || cfg.practical_abs_ic <= 0.0 ||
+      cfg.practical_abs_ic >= 1.0 || !std::isfinite(cfg.confidence_multiplier) ||
+      cfg.confidence_multiplier < 3.0)) return out;
+  out.enough_evidence = true;
+  bool possible = false;
+  for (auto& h : out.horizons) {
+    for (auto* e : {&h.pearson, &h.rank}) {
+      if (equivalence) {
+        e->upper_abs_ic = std::abs(e->mean) + cfg.confidence_multiplier * e->standard_error;
+        e->defined = e->defined && std::isfinite(e->mean) && std::isfinite(e->standard_error) &&
+                     e->standard_error > 0.0 && std::isfinite(e->upper_abs_ic) &&
+                     std::isfinite(e->max_segment_abs_ic) && e->max_segment_abs_ic >= 0.0;
+      }
+      possible = possible || (!equivalence && e->suggestive_direction) ||
+                 e->upper_abs_ic >= cfg.practical_abs_ic ||
                  e->max_segment_abs_ic >= cfg.practical_abs_ic;
     }
+    h.enough_evidence = h.pearson.defined && h.rank.defined;
+    out.enough_evidence = out.enough_evidence && h.enough_evidence;
   }
   out.reject = out.enough_evidence && !possible;
   out.reason = !out.enough_evidence ? IcScreenReason::InsufficientEvidence :
       (out.reject ? IcScreenReason::PracticalNull : IcScreenReason::PossibleAlpha);
-  return Ok(out);
+  return out;
 }
 
 usize IcScreenCache::dates() const noexcept { return data_ ? data_->dates : 0U; }
@@ -434,6 +468,7 @@ std::string_view ic_screen_rule_name(IcScreenRule rule) noexcept {
   switch (rule) {
   case IcScreenRule::DisabledV1: return "disabled-v1";
   case IcScreenRule::ConservativeV2: return "conservative-v2";
+  case IcScreenRule::EquivalenceV3: return "equivalence-v3";
   }
   return "unknown";
 }
