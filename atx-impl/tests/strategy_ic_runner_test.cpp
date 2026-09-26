@@ -211,4 +211,77 @@ TEST(StrategyIcRunner, WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload) 
     EXPECT_FALSE(std::filesystem::exists(dir.path/"output")); EXPECT_TRUE(progress.str().empty());
   }
 }
+TEST(StrategyIcRunner, FrozenTrainValidationMatchesUninterruptedWithoutTrainPayload) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  std::ostringstream progress; auto status=atx::impl::strategy::run_ic(cfg,progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto original=read_json(dir.path/"output"/"summary.json");
+  cfg.orientations_path=(dir.path/"output"/"orientations.json").string();
+  auto pin=core::sha256_file(cfg.orientations_path); ASSERT_TRUE(pin); cfg.orientations_sha256=*pin;
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  cfg.output_directory=(dir.path/"resumed").string(); cfg.workers=2;
+  std::ostringstream resumed_progress; status=atx::impl::strategy::run_ic(cfg,resumed_progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto resumed=read_json(dir.path/"resumed"/"summary.json");
+  EXPECT_EQ(resumed.at("status"),"complete"); EXPECT_EQ(resumed.at("train_candidates_planned"),0);
+  EXPECT_EQ(resumed.at("train_recipe_sha256"),original.at("recipe_sha256"));
+  EXPECT_EQ(resumed.at("orientations_artifact_sha256"),cfg.orientations_sha256);
+  ASSERT_EQ(resumed.at("roles").size(),1U);
+  auto expected=original.at("roles").at(1); auto actual=resumed.at("roles").at(0);
+  for (auto* row:{&expected,&actual}) {
+    for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes"}) row->erase(key);
+    for (auto& candidate:row->at("candidates")) {
+      candidate.erase("wall_seconds"); candidate.erase("stage_seconds");
+    }
+  }
+  EXPECT_EQ(actual,expected);
+  for (const auto* name:{"validation_daily_ic.csv","validation_planned_targets.csv"}) {
+    auto a=core::sha256_file((dir.path/"output"/name).string()); ASSERT_TRUE(a);
+    auto b=core::sha256_file((dir.path/"resumed"/name).string()); ASSERT_TRUE(b); EXPECT_EQ(*a,*b);
+  }
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"resumed"/"train_daily_ic.csv"));
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"resumed"/"orientations.json"));
+  EXPECT_EQ(resumed_progress.str().find("IC loading train"),std::string::npos);
+  const auto receipt=read_json(dir.path/"resumed"/"frozen_train_receipt.json");
+  EXPECT_EQ(receipt.at("artifact"),read_json(cfg.orientations_path));
+  EXPECT_EQ(read_json(dir.path/"resumed"/"recipe.json").at("frozen_train_recipe"),
+            read_json(dir.path/"output"/"recipe.json"));
+  auto still_pinned=core::sha256_file(cfg.orientations_path); ASSERT_TRUE(still_pinned); EXPECT_EQ(*still_pinned,*pin);
+}
+TEST(StrategyIcRunner, FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  std::ostringstream progress; auto status=atx::impl::strategy::run_ic(cfg,progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto artifact=read_json(dir.path/"output"/"orientations.json");
+  const auto recipe=read_json(dir.path/"output"/"recipe.json");
+  ASSERT_TRUE(std::filesystem::create_directory(dir.path/"source"));
+  std::string unused; ASSERT_TRUE(json_file(dir.path/"source"/"recipe.json",recipe,unused));
+  cfg.orientations_path=(dir.path/"source"/"orientations.json").string();
+  cfg.output_directory=(dir.path/"resumed").string();
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  for (int mutation=0;mutation<6;++mutation) {
+    auto bad=artifact;
+    if (mutation==0) bad["candidates"][0]["sign"]=-1;
+    if (mutation==1) bad["candidates"][0]["dsl_sha256"]=std::string(64,'0');
+    if (mutation==2) bad["candidates"][0]["id"]="different_id";
+    if (mutation==3) bad["train_manifest_sha256"]=std::string(64,'0');
+    if (mutation==4) bad["recipe_sha256"]=std::string(64,'0');
+    if (mutation==5) bad["candidates"][0]["orientation_dates"]=100000;
+    ASSERT_TRUE(json_file(cfg.orientations_path,bad,cfg.orientations_sha256));
+    std::ostringstream attempt; status=atx::impl::strategy::run_ic(cfg,attempt);
+    ASSERT_FALSE(status) << mutation;
+    EXPECT_NE(status.error().to_string().find("frozen TRAIN"),std::string::npos) << mutation;
+    EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"resumed"));
+  }
+  // Even a consistently rehashed artifact cannot authorize a different method.
+  auto wrong_recipe=recipe; wrong_recipe["orientation"]="validation-fit";
+  ASSERT_TRUE(json_file(dir.path/"source"/"recipe.json",wrong_recipe,unused));
+  auto digest=core::sha256_hex(wrong_recipe.dump()); ASSERT_TRUE(digest);
+  auto repinned=artifact; repinned["recipe_sha256"]=*digest;
+  ASSERT_TRUE(json_file(cfg.orientations_path,repinned,cfg.orientations_sha256));
+  std::ostringstream attempt; status=atx::impl::strategy::run_ic(cfg,attempt);
+  ASSERT_FALSE(status); EXPECT_NE(status.error().to_string().find("method/statistical"),std::string::npos);
+  EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"resumed"));
+}
 } // namespace
