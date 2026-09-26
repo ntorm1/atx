@@ -1,6 +1,6 @@
 # atx alpha engine: engine and implementation sprint series (v2)
 
-**Status (2026-09-25):** W0 implementations and frozen G0 comparisons are integrated; a remaining D0 VWAP correction and final performance qualification are in progress. W1–W5 implementation has not started.
+**Status (2026-09-26):** W0 implementations and D0 correctness approval are integrated. Corrected L9 evidence and quiet performance qualification remain open; all required binaries are built. W1–W5 implementation has not started.
 **Version:** v2, 2026-09-24. It replaces the v1 content of this file, which covered production runtime and paper trading; those are now out of scope.
 **Companion:** [`2026-09-24-alpha-engine-review-findings.md`](2026-09-24-alpha-engine-review-findings.md). It holds the defect register (IDs `A-xx`, `D-xx`, `E-xx`, `L-xx`, `R-xx`, `B-xx`, `I-xx`, each with file:line) and the research digest (§3). Every lane below cites those IDs. A lane brief is incomplete until it lists the IDs it closes.
 
@@ -21,7 +21,7 @@ cherry-picked source SHAs remain listed alongside their resulting integration SH
 |---|---|---|
 | W0-O1 | L6 `1cf59cb7`; fixes `c339ead5`, `853d1dd9`; merge `14ce9172` | Approved at `3ccf012c`. Release binaries built; quiet benchmark comparison still pending. |
 | W0-A0 | `cb3b4e78`, `3a1197b5`, `b74e27d3`; merge `1d78cc14` | Report `9a4e1f46`; owning targets green. A-18 production cache wiring remains W2-A4. |
-| W0-D0 | Original `115cfb57`, `02d34323`, `be32d7ac`; merge `2bc9f034`. Raw VWAP correction `f54b55e5`, context `2a7194d5`, bounds `0f74a357`, legacy ordering `c1011024`; tests `58df3e29`, `c68b78a4`, `1e4ee053`, `efe57fd9` | Final correctness report `932c1061`, approval `b131c3f4`, alpha qualification `033b89c2`, scope audit `f1620990`, integrated hygiene `63d28b5c`. **Affected targets: 1,683 passed, six documented skips, zero failures; independent N128 fixture oracle and nine independent focused checks passed.** Corrected L9 and performance evidence remain open. Raw daily-close proxy defaults to V2; adjusted typical-price V1 remains explicit. True intraday VWAP is unavailable; source shares remain W2-D3. |
+| W0-D0 | Original `115cfb57`, `02d34323`, `be32d7ac`; merge `2bc9f034`. Raw VWAP correction `f54b55e5`, context `2a7194d5`, bounds `0f74a357`, legacy ordering `c1011024`; tests `58df3e29`, `c68b78a4`, `1e4ee053`, `efe57fd9` | Original report `822524f6`; final correctness report `932c1061`, approval `b131c3f4`, alpha qualification `033b89c2`, scope audit `f1620990`, integrated hygiene `63d28b5c`. **Affected targets: 1,683 passed, six documented skips, zero failures; independent N128 fixture oracle and nine independent focused checks passed.** Corrected L9 and performance evidence remain open. Raw daily-close proxy defaults to V2; adjusted typical-price V1 remains explicit. True intraday VWAP is unavailable; source shares remain W2-D3. |
 | W0-E0a | `2f814fbe`, `a95df360`; merge `4ef916db`; follow-up `52b8c6ea` | Reports `33d9b2f3`, `c225b2cf`. Public V1 reproduction and overlap inference repaired; HAC coverage 94.5%. Bootstrap is a separate estimator. |
 | W0-E0b | `d0a37e02`, `e0d157ee`; merge `1e0a7cf9` | Report `a0b06547`. Null FPR 5.45% qualifies `MonteCarloMaxV2`; the conservative default is a different rule. |
 | W0-L0 | `67819c8f`, `3ec645a8`, `c962996a`; merge `1b766875` | Report `5b11f7cb`; whole learn target green. Autoencoder trial accounting remains W3-L4. |
@@ -40,7 +40,7 @@ cherry-picked source SHAs remain listed alongside their resulting integration SH
 
 Integrated correctness report `c040476d` qualifies source `b185d056`: **3,074 passed,
 seven documented skips, zero failures** across nine whole targets. Later disclosure/ASan
-changes passed the separate final target closure `21ede21d`; the D0 correction and benchmark gate remain open. Do not
+changes passed the separate final target closure `21ede21d`; D0 correctness is approved at `b131c3f4`. Corrected L9 and the benchmark gate remain open. Do not
 fast-forward `main` or record a W0 gate SHA until the required gates pass.
 
 Compiler follow-up: worker limits, isolated hygiene configuration, and source-local Git
