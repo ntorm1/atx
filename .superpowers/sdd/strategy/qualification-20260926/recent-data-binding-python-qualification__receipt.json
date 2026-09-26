@@ -1,0 +1,48 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "9862f9d9bf41d9c3909035e5a9e652c9732a4ee6",
+  "started_utc": "2026-09-26T21:55:09.567340+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "atx-engine/tools",
+    "-p",
+    "test_prepare_recent_research.py",
+    "-v"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-engine\\tools\\prepare_recent_research.py",
+      "sha256": "58b0cc322c117fbadde410b8a178bfe0aeb49edaea9a0046820c231e23550bdf"
+    }
+  ],
+  "limits": {
+    "seconds": 30.0,
+    "max_rss_mib": 512,
+    "min_free_mib": 256
+  },
+  "sampled_peak_tree_rss_bytes": 124760064,
+  "minimum_system_free_bytes": 1499848704,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 3.5940000000118744,
+  "owned_processes": [
+    {
+      "pid": 3196,
+      "create_time": 1790459709.5823555
+    },
+    {
+      "pid": 18160,
+      "create_time": 1790459709.5979984
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr.log": "e70260da27217c22eaa2e97257da54ef2571cd37bbb5711a19866cd641196e87"
+  }
+}

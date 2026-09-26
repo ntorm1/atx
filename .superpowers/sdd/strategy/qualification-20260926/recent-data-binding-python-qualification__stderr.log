@@ -1,0 +1,11 @@
+test_between_pass_cache_or_manifest_mutation_never_publishes_role (test_prepare_recent_research.RecentResearch.test_between_pass_cache_or_manifest_mutation_never_publishes_role) ... ok
+test_lagged_membership_independent_presence_full_warmup_union_and_future_prefix (test_prepare_recent_research.RecentResearch.test_lagged_membership_independent_presence_full_warmup_union_and_future_prefix) ... ok
+test_manifest_bytes_are_charged_before_exclusive_publication (test_prepare_recent_research.RecentResearch.test_manifest_bytes_are_charged_before_exclusive_publication) ... ok
+test_nonfinite_or_unbounded_deadline_is_refused (test_prepare_recent_research.RecentResearch.test_nonfinite_or_unbounded_deadline_is_refused) ... ok
+test_projection_filters_before_qa_preserves_calendar_and_quarantines_duplicates (test_prepare_recent_research.RecentResearch.test_projection_filters_before_qa_preserves_calendar_and_quarantines_duplicates) ... ok
+test_unpublished_mutated_cache_budget_and_warmup_refuse (test_prepare_recent_research.RecentResearch.test_unpublished_mutated_cache_budget_and_warmup_refuse) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 2.271s
+
+OK

@@ -1,0 +1,56 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "e2ef9c272a5177d925817f3a73ed849a53811e5f",
+  "started_utc": "2026-09-26T21:51:06.039465+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "atx-engine/tools/prepare_recent_research.py",
+    "project",
+    "--source",
+    "C:/Users/natha/Downloads/TickerHistory3.parquet",
+    "--out",
+    "C:/atx-wt/pool-2/build-equity/recent-projection-v1",
+    "--start",
+    "2018-06-01",
+    "--end",
+    "2025-01-01",
+    "--memory-mib",
+    "768",
+    "--disk-mib",
+    "12288",
+    "--max-seconds",
+    "270"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-engine\\tools\\prepare_recent_research.py",
+      "sha256": "4675f826cfdc557534a323a3b1276ab428c21d86d698994e95938701d1ca181a"
+    }
+  ],
+  "limits": {
+    "seconds": 300.0,
+    "max_rss_mib": 1100,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 795824128,
+  "minimum_system_free_bytes": 1773596672,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 39.203000000008615,
+  "owned_processes": [
+    {
+      "pid": 16232,
+      "create_time": 1790459466.0470817
+    },
+    {
+      "pid": 14292,
+      "create_time": 1790459466.0575037
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "92b545bdc9387acb94d28ffdb0c7fdf6c872cb62abb3c8a1897f882940994830",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}
