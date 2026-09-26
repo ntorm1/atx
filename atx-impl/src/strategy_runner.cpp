@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <locale>
 #include <map>
@@ -27,6 +28,7 @@
 #include "atx/engine/data/strategy_data.hpp"
 #include "atx/engine/eval/hac.hpp"
 #include "atx/engine/factory/execution_objective.hpp"
+#include "atx/engine/factory/execution_cash_claim_streams.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
 namespace atx::impl::strategy {
@@ -49,6 +51,11 @@ struct Library {
   usize max_slots{}, lookback{};
 };
 struct RoleSpec { std::string path, sha, role; Json manifest; u64 admitted_bytes{}; };
+struct CashClaims {
+  std::string source_sha256;
+  Json document;
+  std::vector<ex::ExecutionCashClaimEvent> events;
+};
 struct Budget {
   u64 limit{}, used{};
   bool add(u64 n, u64 size) {
@@ -128,13 +135,15 @@ co::Result<Library> read_library(const RunnerConfig& cfg) {
   return co::Ok(std::move(out));
 }
 co::Result<RoleSpec> admit_role(const RunnerConfig& cfg, const Library& lib,
-    std::string path, std::string sha, std::string role) {
+    std::string path, std::string sha, std::string role, const CashClaims* claims = nullptr) {
   ATX_TRY(auto j, read_pinned(path, sha));
   const auto d = j.at("dates").get<u64>(), n = j.at("instruments").get<u64>();
   const auto begin = j.at("score_begin").get<u64>(), end = j.at("score_end").get<u64>();
   if (!d || d > 4096 || !n || n > 20000 || begin < lib.lookback || begin <= cfg.liquidity_window ||
       end != d || begin >= end || end - begin < 4)
     return co::Err(co::ErrorCode::InvalidArgument, "strategy: role geometry/warmup/maturity");
+  if (claims && j.at("source_sha256") != claims->source_sha256)
+    return co::Err(co::ErrorCode::InvalidArgument, "strategy: cash-claim archive pin differs from role source");
   const auto cells = d * n, decisions = end - begin - 2;
   Budget b{cfg.max_working_bytes, 0};
   // Panel/support=26, guard=4, owned VM mask=1, aggregate=8, output=8,
@@ -144,6 +153,8 @@ co::Result<RoleSpec> admit_role(const RunnerConfig& cfg, const Library& lib,
   if (!b.add(1, 32ULL << 20) || !b.add(cells, 101 + 16 * lib.max_slots) ||
       !b.add(decisions * n, 128) || !b.add(decisions, 8192) || !b.add(d, 256) || !b.add(n, 1024))
     return co::Err(co::ErrorCode::Unavailable, "strategy: combined role/VM/surface/context/scratch budget; use a smaller declared role");
+  if (claims && (!b.add(cells, 1) || !b.add(d, 64) || !b.add(claims->events.size(), 8192) || !b.add(1, 2 * metadata_limit)))
+    return co::Err(co::ErrorCode::Unavailable, "strategy: additional cash-claim context/diagnostic budget");
   return co::Ok(RoleSpec{std::move(path), std::move(sha), std::move(role), std::move(j), b.used});
 }
 co::Result<std::vector<u32>> make_guard(const en::data::StrategyRoleData& role) {
@@ -212,13 +223,19 @@ co::Result<std::vector<cost::CostSurface>> surfaces(const en::data::StrategyRole
 }
 co::Result<ex::ExecutionObjectiveContext> context(const en::data::StrategyRoleData& role,
     const RoleSpec& spec, const RunnerConfig& cfg, const Variant& variant,
-    std::span<const cost::CostSurface> snapshots, std::span<const u32> guard) {
+    std::span<const cost::CostSurface> snapshots, std::span<const u32> guard,
+    std::span<const ex::ExecutionCashClaimEvent> events = {}) {
   en::WeightPolicy policy; policy.transform = en::Transform::Rank;
   policy.winsorize_limit = 0; policy.dollar_neutral = true; policy.gross_leverage = 1;
   ex::ExecutionObjectiveConfig c; c.rule = ex::ExecutionObjectiveRule::DelayedSurfaceV2;
   c.window_begin = role.score_begin; c.window_end = role.score_end; c.maturity_end = role.score_end;
   c.min_names = cfg.min_names; c.initial_nav = cfg.initial_nav; c.max_working_bytes = cfg.max_working_bytes;
   c.rebalance_sessions = variant.cadence; c.trade_fraction = variant.fraction;
+  if (!events.empty())
+    return ex::prepare_execution_objective_claims(role.panel, policy, c, snapshots,
+        role.mark_times_ns, role.decision_times_ns, role.instrument_ids,
+        {role.manifest_sha256, spec.role, "vendor-return-proxy;" + role.clock_recipe}, events,
+        role.decision_member, guard);
   return ex::prepare_execution_objective(role.panel, policy, c, snapshots,
       role.mark_times_ns, role.decision_times_ns, role.instrument_ids,
       {role.manifest_sha256, spec.role, "vendor-return-proxy;" + role.clock_recipe},
@@ -242,6 +259,97 @@ std::pair<int, unsigned> calendar_month(i64 session_ns) {
   const std::chrono::year_month_day date{
       std::chrono::sys_days{std::chrono::days{session_ns / day_ns}}};
   return {static_cast<int>(date.year()), static_cast<unsigned>(date.month())};
+}
+bool exact_keys(const Json& value, std::initializer_list<std::string_view> keys) {
+  if (!value.is_object() || value.size() != keys.size()) return false;
+  return std::all_of(keys.begin(), keys.end(), [&](auto key) { return value.contains(std::string(key)); });
+}
+co::Result<CashClaims> read_cash_claims(const RunnerConfig& cfg) {
+  ATX_TRY(auto text, read_text(cfg.cash_claims_path));
+  ATX_TRY(auto actual, co::sha256_hex(text));
+  if (actual != cfg.cash_claims_sha256)
+    return co::Err(co::ErrorCode::InvalidArgument, "strategy: cash-claim external SHA256 mismatch");
+  bool duplicate = false;
+  std::vector<std::set<std::string>> keys;
+  const auto callback = [&](int depth, Json::parse_event_t event, Json& parsed) {
+    if (depth > 8) throw std::invalid_argument("cash-claim document nesting exceeds bound");
+    if (event == Json::parse_event_t::object_start) keys.emplace_back();
+    else if (event == Json::parse_event_t::key) duplicate |= !keys.back().insert(parsed.get<std::string>()).second;
+    else if (event == Json::parse_event_t::object_end) keys.pop_back();
+    return true;
+  };
+  auto j = Json::parse(text, callback);
+  if (duplicate || !exact_keys(j, {"schema", "source_snapshot_sha256", "currency", "publication_evidence", "settlement_status", "events"}) ||
+      j.at("schema") != "atx.strategy-cash-claims/v1" || j.at("currency") != "USD" ||
+      j.at("publication_evidence") != "reconstructed-source-publication-research-v1" ||
+      j.at("settlement_status") != "unknown" || !j.at("events").is_array() ||
+      j.at("events").empty() || j.at("events").size() > 256)
+    return co::Err(co::ErrorCode::InvalidArgument, "strategy: unsupported bounded cash-claim document");
+  CashClaims out; out.source_sha256 = j.at("source_snapshot_sha256").get<std::string>();
+  if (!hash_valid(out.source_sha256))
+    return co::Err(co::ErrorCode::InvalidArgument, "strategy: invalid cash-claim source snapshot pin");
+  std::set<std::string> event_ids;
+  std::set<u64> instruments;
+  const auto positive_integer = [](const Json& value) -> u64 {
+    if (!value.is_number_integer() || (value.is_number_integer() && !value.is_number_unsigned() && value.get<i64>() <= 0))
+      throw std::invalid_argument("cash-claim positive integer required");
+    const auto n = value.get<u64>();
+    if (!n || n > static_cast<u64>(std::numeric_limits<i64>::max()))
+      throw std::invalid_argument("cash-claim integer out of range");
+    return n;
+  };
+  for (const auto& row : j.at("events")) {
+    if (!exact_keys(row, {"event_id", "revision", "instrument_id", "security_id_namespace", "historical_identity",
+        "identity_evidence_sha256", "completion_evidence_sha256", "basis_evidence_sha256", "evidence_urls",
+        "reference_mark_ns", "reference_raw_close", "reference_adjusted_close", "effective_after_ns", "effective_by_ns",
+        "available_at_ns", "recognition_mark_ns", "cash_usd_per_raw_share", "cash_excluded_from_adjusted_close"}))
+      return co::Err(co::ErrorCode::InvalidArgument, "strategy: unknown/missing cash-claim event field");
+    ex::ExecutionCashClaimEvent event;
+    event.event_id = row.at("event_id").get<std::string>();
+    event.revision = positive_integer(row.at("revision"));
+    event.instrument_id = positive_integer(row.at("instrument_id"));
+    event.security_id_namespace = row.at("security_id_namespace").get<std::string>();
+    event.historical_identity = row.at("historical_identity").get<std::string>();
+    event.identity_evidence_sha256 = row.at("identity_evidence_sha256").get<std::string>();
+    event.completion_evidence_sha256 = row.at("completion_evidence_sha256").get<std::string>();
+    event.basis_evidence_sha256 = row.at("basis_evidence_sha256").get<std::string>();
+    event.reference_mark_ns = static_cast<i64>(positive_integer(row.at("reference_mark_ns")));
+    event.effective_after_ns = static_cast<i64>(positive_integer(row.at("effective_after_ns")));
+    event.effective_by_ns = static_cast<i64>(positive_integer(row.at("effective_by_ns")));
+    event.available_at_ns = static_cast<i64>(positive_integer(row.at("available_at_ns")));
+    event.recognition_mark_ns = static_cast<i64>(positive_integer(row.at("recognition_mark_ns")));
+    event.reference_raw_close = row.at("reference_raw_close").get<f64>();
+    event.reference_adjusted_close = row.at("reference_adjusted_close").get<f64>();
+    event.cash_usd_per_raw_share = row.at("cash_usd_per_raw_share").get<f64>();
+    event.cash_excluded_from_adjusted_close = row.at("cash_excluded_from_adjusted_close").get<bool>();
+    event.evidence = ex::ExecutionCashClaimEvidence::ReconstructedPublicationV1;
+    if (event.event_id.empty() || event.event_id.size() > 128 ||
+        !std::all_of(event.event_id.begin(), event.event_id.end(), [](unsigned char c) {
+          return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                 c == '-' || c == '_' || c == '.' || c == ':';
+        }) || !event_ids.insert(event.event_id).second || !instruments.insert(event.instrument_id).second ||
+        event.security_id_namespace != "spiderrock.securityID" || event.historical_identity.empty() ||
+        event.historical_identity.size() > 1024 || !hash_valid(event.identity_evidence_sha256) ||
+        !hash_valid(event.completion_evidence_sha256) || !hash_valid(event.basis_evidence_sha256) ||
+        !event.cash_excluded_from_adjusted_close || !std::isfinite(event.reference_raw_close) || event.reference_raw_close <= 0 ||
+        !std::isfinite(event.reference_adjusted_close) || event.reference_adjusted_close <= 0 ||
+        !std::isfinite(event.cash_usd_per_raw_share) || event.cash_usd_per_raw_share <= 0 ||
+        event.reference_mark_ns > event.effective_after_ns || event.effective_after_ns >= event.effective_by_ns ||
+        event.available_at_ns < event.effective_by_ns || event.effective_by_ns >= event.recognition_mark_ns ||
+        event.available_at_ns >= event.recognition_mark_ns ||
+        !row.at("evidence_urls").is_array() || row.at("evidence_urls").empty() || row.at("evidence_urls").size() > 8)
+      return co::Err(co::ErrorCode::InvalidArgument, "strategy: invalid/duplicate cash-claim event or evidence clock");
+    for (const auto& url : row.at("evidence_urls")) {
+      const auto value = url.get<std::string>();
+      if (!value.starts_with("https://") || value.size() > 4096)
+        return co::Err(co::ErrorCode::InvalidArgument, "strategy: bounded HTTPS evidence URL required");
+    }
+    // Only the immutable archive pin is asserted here. The exact role manifest
+    // is bound later, after comparing its source snapshot with this document.
+    out.events.push_back(std::move(event));
+  }
+  out.document = std::move(j);
+  return co::Ok(std::move(out));
 }
 co::Result<Json> summarize(const al::AlphaStreams& s, const en::data::StrategyRoleData& role,
     const std::filesystem::path& series_path = {}) {
@@ -343,9 +451,79 @@ co::Result<Json> summarize(const al::AlphaStreams& s, const en::data::StrategyRo
       {"execution_context_sha256", s.execution_context_sha256}};
   return co::Ok(std::move(j));
 }
+co::Result<ex::ExecutionCashClaimStreams> execute_trial(std::span<const f64> signal,
+    const ex::ExecutionObjectiveContext& ctx, f64 sign, bool claims) {
+  if (claims) return ex::extract_execution_signal_claims(signal, ctx, sign);
+  ATX_TRY(auto streams, ex::extract_execution_signal(signal, ctx, sign));
+  ex::ExecutionCashClaimStreams out;
+  out.streams = std::move(streams);
+  return co::Ok(std::move(out));
+}
+co::Result<Json> summarize_claims(const ex::ExecutionCashClaimStreams& out,
+    const en::data::StrategyRoleData& role, std::span<const ex::ExecutionCashClaimEvent> events,
+    const std::filesystem::path& series_path) {
+  const auto dates = role.panel.dates(), begin = out.streams.first_realization_, end = out.streams.realization_end_;
+  if (begin >= end || end > dates || out.signed_claim_dollars.size() != dates || out.receivable_dollars.size() != dates ||
+      out.payable_dollars.size() != dates || out.recognition_pnl_dollars.size() != dates ||
+      out.claim_borrow_dollars.size() != dates || out.settled_cash_dollars.size() != dates || !out.payment_dates_unknown)
+    return co::Err(co::ErrorCode::Internal, "strategy: invalid cash-claim diagnostic geometry/policy");
+  std::ofstream csv;
+  if (!series_path.empty()) {
+    const auto path = series_path.parent_path() / (series_path.stem().string() + "_cash_claims.csv");
+    csv.open(path, std::ios::binary); csv.imbue(std::locale::classic()); csv << std::setprecision(17);
+    if (!csv) return co::Err(co::ErrorCode::IoError, "strategy: cash-claim diagnostic output");
+    csv << "session_ns,signed_unsettled_claim_dollars,receivable_dollars,payable_dollars,recognition_pnl_dollars,claim_borrow_dollars,settled_cash_dollars,nav_including_claims\n";
+  }
+  f64 recognition_total = 0, borrow_total = 0;
+  for (usize t = begin; t < end; ++t) {
+    if (!std::isfinite(out.signed_claim_dollars[t]) || !std::isfinite(out.receivable_dollars[t]) ||
+        !std::isfinite(out.payable_dollars[t]) || !std::isfinite(out.recognition_pnl_dollars[t]) ||
+        !std::isfinite(out.claim_borrow_dollars[t]) || !std::isfinite(out.settled_cash_dollars[t]))
+      return co::Err(co::ErrorCode::Unavailable, "strategy: nonfinite cash-claim diagnostics");
+    recognition_total += out.recognition_pnl_dollars[t]; borrow_total += out.claim_borrow_dollars[t];
+    if (csv) csv << role.session_keys[t] << ',' << out.signed_claim_dollars[t] << ',' << out.receivable_dollars[t] << ','
+        << out.payable_dollars[t] << ',' << out.recognition_pnl_dollars[t] << ',' << out.claim_borrow_dollars[t] << ','
+        << out.settled_cash_dollars[t] << ',' << out.streams.end_nav_flat[t] << '\n';
+  }
+  if (csv.is_open()) { csv.close(); if (!csv) return co::Err(co::ErrorCode::IoError, "strategy: cash-claim CSV flush/close"); }
+  Json recognized = Json::array(), uses = Json::array();
+  for (const auto& r : out.recognitions) {
+    if (r.event_index >= events.size() || r.period >= dates || r.instrument_index >= role.panel.instruments() ||
+        role.instrument_ids[r.instrument_index] != r.instrument_id)
+      return co::Err(co::ErrorCode::Internal, "strategy: cash-claim recognition identity mismatch");
+    recognized.push_back({{"event_id", events[r.event_index].event_id}, {"revision", events[r.event_index].revision},
+        {"instrument_id", r.instrument_id}, {"period", r.period}, {"recognition_mark_ns", r.recognition_mark_ns},
+        {"removed_equity_dollars", r.removed_equity_dollars}, {"research_share_equivalents", r.research_share_equivalents},
+        {"signed_claim_dollars", r.signed_claim_dollars}, {"recognition_pnl_dollars", r.recognition_pnl_dollars},
+        {"continued_annual_borrow_rate", r.continued_annual_borrow_rate}});
+  }
+  for (const auto& use : out.event_uses) {
+    if (use.event_index >= events.size())
+      return co::Err(co::ErrorCode::Internal, "strategy: cash-claim event-use identity mismatch");
+    std::string label;
+    switch (use.use) {
+    case ex::ExecutionCashClaimUse::InRole: label = "in-role"; break;
+    case ex::ExecutionCashClaimUse::PreRoleRetired: label = "pre-role-retired-no-opening-claim"; break;
+    case ex::ExecutionCashClaimUse::OutsideAxis: label = "outside-axis-retained-in-identity"; break;
+    case ex::ExecutionCashClaimUse::AfterRole: label = "after-role-retained-in-identity"; break;
+    default: return co::Err(co::ErrorCode::Internal, "strategy: unknown cash-claim event-use policy");
+    }
+    uses.push_back({{"event_id", events[use.event_index].event_id}, {"instrument_id", events[use.event_index].instrument_id}, {"use", label}});
+  }
+  return co::Ok(Json{{"publication_evidence", "reconstructed-source-publication-research-v1"},
+      {"historical_delivery_verified", false}, {"settlement_status", "unknown-no-payment-modeled"},
+      {"final_signed_unsettled_claim_dollars", out.signed_claim_dollars[end - 1]},
+      {"final_receivable_dollars", out.receivable_dollars[end - 1]}, {"final_payable_dollars", out.payable_dollars[end - 1]},
+      {"final_settled_cash_dollars", out.settled_cash_dollars[end - 1]},
+      {"final_nav_including_unsettled_claims", out.streams.end_nav_flat[end - 1]},
+      {"summed_recognition_pnl_dollars", recognition_total}, {"summed_claim_borrow_dollars", borrow_total},
+      {"recognitions", recognized}, {"event_uses", uses},
+      {"policy", "fixed USD face; no cash receipt; receivables excluded from target NAV; payables reserve settled cash and continue last modeled short rate; no claim conversion turnover"}});
+}
 struct ContributionCoverage { u64 eligible{}, finite{}, ranked{}; };
 ContributionCoverage add_ranked(std::span<const f64> signal, f64 sign, f64 weight,
-    const en::data::StrategyRoleData& role, std::vector<f64>& blend, std::vector<usize>& order) {
+    const en::data::StrategyRoleData& role, std::span<const u8> signal_member,
+    std::vector<f64>& blend, std::vector<usize>& order) {
   const auto n = role.panel.instruments();
   const auto close = role.panel.field_all(*role.panel.field_id("close"));
   ContributionCoverage coverage;
@@ -354,7 +532,7 @@ ContributionCoverage add_ranked(std::span<const f64> signal, f64 sign, f64 weigh
     const bool reported = t >= role.score_begin && t < role.score_end - 2;
     for (usize i = 0; i < n; ++i) {
       const auto k = t * n + i;
-      if (role.decision_member[k] && role.panel.in_universe(t, i) && std::isfinite(close[k]) && close[k] > 0) {
+      if (signal_member[k] && role.panel.in_universe(t, i) && std::isfinite(close[k]) && close[k] > 0) {
         if (reported) ++coverage.eligible;
         if (std::isfinite(signal[k])) order.push_back(i);
       }
@@ -377,15 +555,37 @@ ContributionCoverage add_ranked(std::span<const f64> signal, f64 sign, f64 weigh
   return coverage;
 }
 co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const RoleSpec& spec,
-    std::vector<f64>& signs, const std::string& cost_recipe, std::ostream& progress) {
+    std::vector<f64>& signs, const std::string& cost_recipe, std::ostream& progress, const CashClaims* claims = nullptr) {
   progress << "loading " << spec.role << " admitted_bytes=" << spec.admitted_bytes << '\n' << std::flush;
   ATX_TRY(auto role, en::data::read_strategy_role(spec.path, cfg.max_working_bytes));
   if (role.manifest_sha256 != spec.sha)
     return co::Err(co::ErrorCode::InvalidArgument, "strategy: manifest changed after admission");
+  std::vector<ex::ExecutionCashClaimEvent> events;
+  if (claims) {
+    if (role.source_sha256 != claims->source_sha256)
+      return co::Err(co::ErrorCode::InvalidArgument, "strategy: cash-claim source changed after admission");
+    events = claims->events;
+    for (auto& event : events) event.panel_source_sha256 = role.manifest_sha256;
+  }
   ATX_TRY(auto guard, make_guard(role));
   ATX_TRY(auto snapshots, surfaces(role, cfg, guard, cost_recipe));
+  std::vector<u8> claim_member;
+  std::span<const u8> signal_member = role.decision_member;
+  if (claims) {
+    claim_member = role.decision_member;
+    for (const auto& event : events) {
+      const auto found = std::lower_bound(role.instrument_ids.begin(), role.instrument_ids.end(), event.instrument_id);
+      if (found == role.instrument_ids.end() || *found != event.instrument_id) continue;
+      const auto i = static_cast<usize>(found - role.instrument_ids.begin());
+      for (usize t = 0; t < role.panel.dates(); ++t)
+        if (role.mark_times_ns[t] >= event.recognition_mark_ns &&
+            event.effective_by_ns < role.mark_times_ns[t] && event.available_at_ns < role.mark_times_ns[t])
+          claim_member[t * role.panel.instruments() + i] = 0;
+    }
+    signal_member = claim_member;
+  }
   al::Engine engine(role.panel); engine.set_eval_mode(al::EvalMode::ResearchFast);
-  ATX_TRY_VOID(engine.set_cross_section_mask(role.decision_member));
+  ATX_TRY_VOID(engine.set_cross_section_mask(signal_member));
   std::vector<f64> blend(role.panel.cells(), 0.0); std::vector<usize> order; order.reserve(role.panel.instruments());
   Json orientation = Json::array(), combined = Json::array();
   std::map<std::string, ContributionCoverage> family_coverage;
@@ -401,13 +601,17 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
         {"context_sha256", ctx.identity_sha256()}, {"status", "started"}};
     ledger << receipt.dump() << '\n' << std::flush;
     if (!ledger) return co::Err(co::ErrorCode::IoError, "strategy: trial-start receipt");
-    auto streams = ex::extract_execution_signal(signal, ctx, sign);
+    auto streams = execute_trial(signal, ctx, sign, claims != nullptr);
     if (!streams) {
       receipt["status"] = "failed"; receipt["error"] = streams.error().to_string();
       ledger << receipt.dump() << '\n' << std::flush;
       return co::Err(streams.error());
     }
-    ATX_TRY(auto summary, summarize(*streams, role, csv));
+    ATX_TRY(auto summary, summarize(streams->streams, role, csv));
+    if (claims) {
+      ATX_TRY(auto diagnostics, summarize_claims(*streams, role, events, csv));
+      summary["cash_claims"] = std::move(diagnostics);
+    }
     receipt["status"] = "complete"; receipt["summary"] = summary;
     ledger << receipt.dump() << '\n' << std::flush;
     if (!ledger) return co::Err(co::ErrorCode::IoError, "strategy: completed-trial receipt");
@@ -418,7 +622,7 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
     return co::Err(co::ErrorCode::InvalidArgument, "strategy: missing frozen TRAIN signs");
   // This scope releases the primary context before preparing the diagnostic.
   {
-    ATX_TRY(auto ctx, context(role, spec, cfg, lib.variants.front(), snapshots, guard));
+    ATX_TRY(auto ctx, context(role, spec, cfg, lib.variants.front(), snapshots, guard, events));
     for (usize k = 0; k < lib.candidates.size(); ++k) {
       const auto& candidate = lib.candidates[k]; engine.reset();
       ATX_TRY(auto evaluated, engine.evaluate(candidate.program));
@@ -439,7 +643,7 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
         orientation.push_back({{"id", candidate.id}, {"family", candidate.family}, {"weight", candidate.weight},
             {"sign", signs.back()}, {"plus", two[0]}, {"minus", two[1]}});
       }
-      const auto coverage = add_ranked(signal, signs[k], candidate.weight, role, blend, order);
+      const auto coverage = add_ranked(signal, signs[k], candidate.weight, role, signal_member, blend, order);
       auto& family = family_coverage[candidate.family];
       family.eligible += coverage.eligible; family.finite += coverage.finite; family.ranked += coverage.ranked;
       progress << spec.role << " candidate " << (k + 1) << '/' << lib.candidates.size() << ' ' << candidate.id << '\n' << std::flush;
@@ -449,7 +653,7 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
     summary["variant"] = lib.variants[0].id; combined.push_back(std::move(summary));
   }
   {
-    ATX_TRY(auto ctx, context(role, spec, cfg, lib.variants[1], snapshots, guard));
+    ATX_TRY(auto ctx, context(role, spec, cfg, lib.variants[1], snapshots, guard, events));
     ATX_TRY(auto summary, trial(blend, ctx, 1.0, lib.variants[1].id, "combined-strategy",
         std::filesystem::path(cfg.output_directory) / (spec.role + "_" + lib.variants[1].id + ".csv")));
     summary["variant"] = lib.variants[1].id; combined.push_back(std::move(summary));
@@ -479,6 +683,10 @@ co::Status write_json(const std::filesystem::path& path, const Json& j) {
 
 co::Status run(const RunnerConfig& cfg, std::ostream& progress) {
   try {
+    const bool claims_enabled = !cfg.cash_claims_path.empty();
+    if (claims_enabled != !cfg.cash_claims_sha256.empty() ||
+        (claims_enabled && !hash_valid(cfg.cash_claims_sha256)))
+      return co::Err(co::ErrorCode::InvalidArgument, "strategy: cash-claims path and lowercase SHA256 must be paired");
     if (cfg.output_directory.empty() || cfg.max_working_bytes < (32ULL << 20) || cfg.max_working_bytes > (16ULL << 30) ||
         cfg.initial_nav != 1'000'000'000.0 || cfg.min_names < 2 || cfg.liquidity_window < 2 || cfg.liquidity_window > 252 ||
         !std::isfinite(cfg.full_spread_bps) || cfg.full_spread_bps < 0 ||
@@ -487,12 +695,18 @@ co::Status run(const RunnerConfig& cfg, std::ostream& progress) {
         !std::isfinite(cfg.impact_y) || cfg.impact_y < 0 ||
         !std::isfinite(cfg.max_participation) || cfg.max_participation <= 0 || cfg.max_participation > 1)
       return co::Err(co::ErrorCode::InvalidArgument, "strategy: invalid bounded $1bn scenario");
+    CashClaims claim_document;
+    if (claims_enabled) {
+      ATX_TRY(auto admitted_claims, read_cash_claims(cfg));
+      claim_document = std::move(admitted_claims);
+    }
+    const auto* claims = claims_enabled ? &claim_document : nullptr;
     ATX_TRY(auto lib, read_library(cfg));
     std::vector<RoleSpec> roles;
-    ATX_TRY(auto train, admit_role(cfg, lib, cfg.train_manifest, cfg.train_sha256, "train")); roles.push_back(std::move(train));
-    ATX_TRY(auto validation, admit_role(cfg, lib, cfg.validation_manifest, cfg.validation_sha256, "validation")); roles.push_back(std::move(validation));
+    ATX_TRY(auto train, admit_role(cfg, lib, cfg.train_manifest, cfg.train_sha256, "train", claims)); roles.push_back(std::move(train));
+    ATX_TRY(auto validation, admit_role(cfg, lib, cfg.validation_manifest, cfg.validation_sha256, "validation", claims)); roles.push_back(std::move(validation));
     if (!cfg.holdout_manifest.empty()) {
-      ATX_TRY(auto holdout, admit_role(cfg, lib, cfg.holdout_manifest, cfg.holdout_sha256, "holdout")); roles.push_back(std::move(holdout));
+      ATX_TRY(auto holdout, admit_role(cfg, lib, cfg.holdout_manifest, cfg.holdout_sha256, "holdout", claims)); roles.push_back(std::move(holdout));
     }
     for (usize i = 1; i < roles.size(); ++i)
       if (roles[i - 1].manifest.at("score_end_ns").get<i64>() > roles[i].manifest.at("score_start_ns").get<i64>())
@@ -512,6 +726,14 @@ co::Status run(const RunnerConfig& cfg, std::ostream& progress) {
         {"participation", "one-percent default of prior ADV per execution;target dollars may remain partially unfilled"},
         {"membership_exit", "partial target unwind on cadence;not immediate flatten"},
         {"statistical_claim", "TRAIN orientation fit;no selection-adjusted significance or guaranteed net Sharpe"}};
+    if (claims) {
+      recipe["schema"] = "atx.dsl-combined-execution/cash-claims-v2";
+      recipe["cash_claims"] = {{"schema", "atx.strategy-cash-claims/v1"}, {"sha256", cfg.cash_claims_sha256},
+          {"source_snapshot_sha256", claims->source_sha256}, {"event_count", claims->events.size()},
+          {"publication_evidence", "reconstructed-source-publication-research-v1"},
+          {"historical_delivery_verified", false}, {"settlement_status", "unknown-no-payment-modeled"},
+          {"signal_support_policy", "causal-retirement-v1: VM ranks and fixed blend exclude only at/after approved recognition with effective-by and public availability strictly before mark; source payload retained"}};
+    }
     for (const auto& role : roles) recipe["role_manifest_sha256"][role.role] = role.sha;
     ATX_TRY(auto recipe_sha, co::sha256_hex(recipe.dump()));
     std::error_code ec;
@@ -520,10 +742,11 @@ co::Status run(const RunnerConfig& cfg, std::ostream& progress) {
     ATX_TRY_VOID(write_json(std::filesystem::path(cfg.output_directory) / "recipe.json", recipe));
     Json report{{"status", "running"}, {"recipe_sha256", recipe_sha}, {"train_hypotheses_planned", 2 * lib.candidates.size() + 2},
         {"validation_hypotheses_planned", 2}, {"holdout_requested", !cfg.holdout_manifest.empty()}, {"roles", Json::array()}};
+    if (claims) report["cash_claims_evidence"] = claims->document;
     ATX_TRY_VOID(write_json(std::filesystem::path(cfg.output_directory) / "summary.json", report));
     std::vector<f64> signs; signs.reserve(lib.candidates.size());
     for (const auto& role : roles) {
-      auto scored = score_role(cfg, lib, role, signs, recipe.dump(), progress);
+      auto scored = score_role(cfg, lib, role, signs, recipe.dump(), progress, claims);
       if (!scored) {
         report["status"] = "failed"; report["error"] = scored.error().to_string();
         ATX_TRY_VOID(write_json(std::filesystem::path(cfg.output_directory) / "summary.json", report));
@@ -554,6 +777,7 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
       if (key == "--help") {
         out << "equity-strategy --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA "
                "--validation MANIFEST --validation-sha256 SHA --output NEWDIR [--holdout MANIFEST --holdout-sha256 SHA] "
+               "[--cash-claims JSON --cash-claims-sha256 SHA] "
                "[--max-memory-mib N --min-names N --seed N --spread-bps X --commission-bps X --borrow-bps X --impact-y X --max-participation X]\n";
         return 0;
       }
@@ -570,6 +794,8 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
       else if (key == "--validation-sha256") cfg.validation_sha256 = v;
       else if (key == "--holdout") cfg.holdout_manifest = v;
       else if (key == "--holdout-sha256") cfg.holdout_sha256 = v;
+      else if (key == "--cash-claims") cfg.cash_claims_path = v;
+      else if (key == "--cash-claims-sha256") cfg.cash_claims_sha256 = v;
       else if (key == "--output") cfg.output_directory = v;
       else if (key == "--max-memory-mib") { auto x = integer(); if (x > 16384) throw std::invalid_argument("memory limit"); cfg.max_working_bytes = x << 20; }
       else if (key == "--min-names") cfg.min_names = static_cast<usize>(integer());
