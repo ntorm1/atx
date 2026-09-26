@@ -358,6 +358,7 @@ public:
   /// as_of_period against this before reading dead holdings).
   [[nodiscard]] atx::usize n_periods() const noexcept { return store_.n_periods(); }
   [[nodiscard]] CorrIndexRule corr_rule() const noexcept { return corr_rule_; }
+  [[nodiscard]] atx::u64 corr_seed() const noexcept { return store_.index_seed(); }
   [[nodiscard]] LibraryStorageRule storage_rule() const noexcept { return store_.storage_rule(); }
   [[nodiscard]] atx::core::Result<LifecycleState> state_as_of(AlphaId id, atx::usize t) const {
     return journal_.state_as_of(id, static_cast<atx::u64>(t));
@@ -410,10 +411,8 @@ private:
       : dir_{dir}, cfg_{cfg}, master_seeds_{std::move(master_seeds)}, corr_rule_{corr_rule},
         store_{dir, storage}, dedup_{dir},
         journal_{dir} {
-    const auto recipe = store_.bind_index_recipe(static_cast<atx::u32>(corr_rule_),
-                                                  seed0(master_seeds_), storage.allow_recipe_migration);
-    ATX_CHECK(recipe.has_value());
-    corr_rule_ = static_cast<CorrIndexRule>(*recipe);
+    const bool use_existing_recipe = corr_rule_ == CorrIndexRule::ExistingOrSignedV2;
+    atx::u64 projection_seed = seed0(master_seeds_);
     // R1: load the cumulative trial counter from the sidecar manifest if one
     // exists in `dir`. A fresh/never-snapshotted library has no sidecar -> 0,
     // which is byte-identical to the pre-R1 single-run behavior (prior == 0 =>
@@ -425,9 +424,16 @@ private:
       const auto maybe = read_manifest(dir + "/_manifest.bin");
       if (maybe.has_value()) {
         cumulative_trials_ = maybe->cumulative_trials;
+        if (use_existing_recipe) projection_seed = seed0(maybe->master_seeds);
+        if (master_seeds_.empty()) master_seeds_ = maybe->master_seeds;
       }
       // else: no sidecar or unreadable/corrupt — leave cumulative_trials_ at 0.
     }
+
+    const auto recipe = store_.bind_index_recipe(static_cast<atx::u32>(corr_rule_),
+        projection_seed, storage.allow_recipe_migration, use_existing_recipe);
+    ATX_CHECK(recipe.has_value());
+    corr_rule_ = static_cast<CorrIndexRule>(*recipe);
 
     // The corr index's vector length T is fixed at construction. A reopened store
     // already knows T (n_periods()), so size + rebuild now; a fresh store defers
@@ -466,7 +472,7 @@ private:
       ATX_ASSERT(corr_->t() == t); // all alphas share one period count
       return;
     }
-    corr_.emplace(seed0(master_seeds_), t, kCorrK, corr_rule_);
+    corr_.emplace(store_.index_seed(), t, kCorrK, corr_rule_);
   }
 
   // Rebuild the corr index from every alpha currently in the store, in AlphaId

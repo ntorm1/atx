@@ -355,8 +355,14 @@ public:
   // use the saved rule, or V1 for metadata-less nonempty libraries, V2 for new.
   // Seed/rule changes require an explicit migration option, never a silent reopen.
   [[nodiscard]] atx::core::Result<atx::u32>
-  bind_index_recipe(atx::u32 requested, atx::u64 seed, bool allow_migration = false) {
+  bind_index_recipe(atx::u32 requested, atx::u64 seed, bool allow_migration = false,
+                    bool use_saved_seed = false) {
     ATX_TRY(auto old, metadata_value("corr_recipe"));
+    if (use_saved_seed && !old.empty()) {
+      atx::usize off = 3U * sizeof(atx::u32);
+      if (!detail::get_le(old, off, seed) || off != old.size())
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "library: bad saved index seed");
+    }
     atx::u32 selected = requested;
     if (selected == 0U) {
       if (old.empty()) selected = n_alphas() == 0U ? 2U : 1U;
@@ -378,8 +384,11 @@ public:
     if (old != recipe) ATX_TRY_VOID(set_metadata("corr_recipe", recipe));
     recipe_crc_ = atx::tsdb::crc32(recipe.data(), recipe.size());
     bind_recipe_identity_ = selected != 1U;
+    index_seed_ = seed;
     return atx::core::Ok(selected);
   }
+
+  [[nodiscard]] atx::u64 index_seed() const noexcept { return index_seed_; }
 
   [[nodiscard]] atx::u32 record_crc(combine::AlphaId g) const {
     ATX_CHECK(g.value < next_alpha_id_);
@@ -703,6 +712,7 @@ private:
                               "library: malformed saved index recipe");
       recipe_crc_ = atx::tsdb::crc32(saved_index.data(), saved_index.size());
       bind_recipe_identity_ = rule != 1U;
+      index_seed_ = seed;
     }
     ATX_TRY_VOID(set_metadata("storage_rule", recipe));
     extended_.resize(static_cast<atx::usize>(next_alpha_id_));
@@ -747,6 +757,7 @@ private:
   std::vector<Extension> extensions_;
   mutable std::vector<std::vector<atx::f64>> extended_;
   mutable std::vector<atx::f64> resolved_positions_;
+  atx::u64 index_seed_{0};
   atx::u32 recipe_crc_{0};
   bool bind_recipe_identity_{false};
   combine::AlphaStore memtable_;                 // staging buffer (the "memtable")

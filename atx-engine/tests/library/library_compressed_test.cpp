@@ -280,11 +280,14 @@ TEST(LibraryCompressed, FacadeRebuildsIndexAndBindsManifestAfterPeriodAppend) {
     const auto after = library.snapshot();
     EXPECT_NE(after.version_id, before.version_id); version = after.version_id;
   }
-  auto reopened = lib::Library::open(dir, config, {42});
+  auto reopened = lib::Library::open(dir, config, {}); // existing read-only consumer convention
   EXPECT_EQ(reopened.storage_rule(), lib::LibraryStorageRule::CompressedV2);
   EXPECT_EQ(reopened.corr_rule(), lib::CorrIndexRule::SignedHammingV2);
   EXPECT_EQ(reopened.n_periods(), 6U);
   EXPECT_EQ(reopened.snapshot().version_id, version);
+  EXPECT_EQ(reopened.corr_seed(), 42U);
+  auto other_search_seed = lib::Library::open(dir, config, {999});
+  EXPECT_EQ(other_search_seed.corr_seed(), 42U); // run/search seed is not an implicit index migration
 }
 
 TEST(LibraryCompressed, FailedFirstAdmissionDoesNotFixPeriodGeometry) {
