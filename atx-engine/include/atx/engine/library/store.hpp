@@ -295,7 +295,19 @@ public:
       const auto row = positions(g, period);
       return atx::core::Ok(std::vector<atx::f64>{row.begin(), row.end()});
     }
-    const auto record = get(g);
+    auto record = get(g);
+    if (g.value < next_alpha_id_) {
+      const auto [segment, local] = locate(g); (void)local;
+      if (period >= segments_[segment].n_periods()) {
+        record.metadata = {}; // admission context does not authorize later periods
+        for (const auto& extension : extensions_)
+          if (g.value < extension.reader.n_alphas() && period >= extension.start &&
+              period - extension.start < extension.reader.n_periods()) {
+            record.metadata = extension.reader.metadata(g.value);
+            break;
+          }
+      }
+    }
     if (!options_.position_resolver || record.metadata.context_hash == 0U ||
         record.metadata.position_recipe_hash == 0U)
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -312,10 +324,14 @@ public:
   // Append an immutable time slab for every CURRENT alpha. New alphas admitted
   // later provide the entire extended history; old sealed bytes never change.
   // The catalog transaction publishes a contiguous [start,start+periods) slab.
+  // Later-period positions require explicit metadata for that new context; an
+  // omitted span permits PnL extension but does not authorize replaying holdings.
   [[nodiscard]] atx::core::Status append_periods(std::span<const atx::f64> pnl_alpha_major,
-                                                atx::usize periods) {
+                                                atx::usize periods,
+                                                std::span<const AlphaMetadata> position_metadata = {}) {
     atx::u64 cells = 0, end = 0;
     if (options_.rule != LibraryStorageRule::CompressedV2 || periods == 0U || n_alphas() == 0U ||
+        (!position_metadata.empty() && position_metadata.size() != n_alphas()) ||
         !detail::checked_mul(n_alphas(), periods, cells) || cells != pnl_alpha_major.size() ||
         !detail::checked_add(n_periods(), periods, end) ||
         end > static_cast<atx::u64>(std::numeric_limits<atx::i64>::max()))
@@ -325,6 +341,7 @@ public:
     for (atx::usize a = 0; a < rows.size(); ++a) {
       ATX_TRY(auto values, compress_pnl(pnl_alpha_major.subspan(a * periods, periods)));
       rows[a].pnl = std::move(values);
+      if (!position_metadata.empty()) rows[a].metadata = position_metadata[a];
     }
     ATX_TRY(auto bytes, write_compressed_segment_bytes(
         static_cast<atx::u32>(n_instruments()), periods, 0, rows));

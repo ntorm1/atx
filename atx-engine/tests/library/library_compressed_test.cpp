@@ -360,6 +360,30 @@ TEST(LibraryCompressed, BaseCatalogRejectsResealedReplacementWithMatchingGeometr
   EXPECT_FALSE(lib::LibraryStore::open(dir)); // differs from committed catalog content
 }
 
+TEST(LibraryCompressed, AppendedHoldingsRequireTheNewSlabContextInsteadOfAdmissionContext) {
+  lib::LibraryStore store(directory(), compact_options(3));
+  const std::array<f64, 2> pnl{1, -1};
+  ASSERT_TRUE(store.stage(nullptr, pnl, {}, metrics(), {"original"}, 1, metadata()));
+  const std::array<f64, 1> tail{0.5};
+  ASSERT_TRUE(store.append_periods(tail, 1));
+  int calls = 0;
+  store.set_position_resolver([&calls](const lib::PositionRequest& request) {
+    ++calls;
+    EXPECT_EQ(request.metadata.context_hash, 4567U);
+    EXPECT_EQ(request.metadata.position_recipe_hash, 654U);
+    EXPECT_EQ(request.provenance.expr_source, "original");
+    return atx::core::Ok(std::vector<f64>(request.instruments, 0.25));
+  });
+  EXPECT_FALSE(store.positions_checked(AlphaId{0}, 2));
+  EXPECT_EQ(calls, 0); // no invocation under the stale admission context
+  auto extended_context = metadata(); extended_context.context_hash = 4567;
+  const std::array extended_metadata{extended_context};
+  ASSERT_TRUE(store.append_periods(tail, 1, extended_metadata));
+  const auto positions = store.positions_checked(AlphaId{0}, 3);
+  ASSERT_TRUE(positions); EXPECT_EQ(calls, 1);
+  EXPECT_EQ(*positions, (std::vector<f64>{0.25, 0.25, 0.25}));
+}
+
 TEST(LibraryCompressed, ContinuousRefinementScoresModerateCorrelationExactlyForSmallPool) {
   lib::LibraryStore store(directory());
   const std::array<f64, 4> base{1, -1, 1, -1};

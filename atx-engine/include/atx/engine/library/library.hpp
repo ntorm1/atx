@@ -308,8 +308,9 @@ public:
     return online_corr_to_pool(pnl, store_, *corr_, 0.7, true);
   }
   [[nodiscard]] atx::core::Status append_periods(std::span<const atx::f64> pnl_alpha_major,
-                                                atx::usize periods) {
-    ATX_TRY_VOID(store_.append_periods(pnl_alpha_major, periods));
+                                                atx::usize periods,
+                                                std::span<const AlphaMetadata> position_metadata = {}) {
+    ATX_TRY_VOID(store_.append_periods(pnl_alpha_major, periods, position_metadata));
     memtable_pending_ = 0U;
     corr_.reset(); ensure_corr(store_.n_periods()); rebuild_corr_index();
     return atx::core::Ok();
