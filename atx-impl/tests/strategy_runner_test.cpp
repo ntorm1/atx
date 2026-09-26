@@ -11,6 +11,7 @@
 #include <sstream>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -124,6 +125,31 @@ Json cash_claim_document() {
 bool pin_claims(Directory& dir, atx::impl::strategy::RunnerConfig& cfg, const Json& document) {
   cfg.cash_claims_path = (dir.path / "claims.json").string();
   return json_file(cfg.cash_claims_path, document, cfg.cash_claims_sha256);
+}
+Json stock_transition_document() {
+  const auto cash = cash_claim_document();
+  const auto& base = cash["events"][0];
+  const auto successor_price = 100 * std::exp((2.0 - 1.5) * .0002 * 389.0 + .001 * std::sin(389.0 * .21 + 2.0));
+  return {{"schema", "atx.strategy-stock-transitions/v1"}, {"source_snapshot_sha256", std::string(64, 'a')},
+      {"currency", "USD"}, {"publication_evidence", "reconstructed-source-publication-research-v1"},
+      {"settlement_status", "unknown"}, {"units_policy", "continuous-research-share-equivalents-v1"},
+      {"events", Json::array({{{"event_id", "synthetic-stock-40-to-30"}, {"revision", 1},
+        {"predecessor_instrument_id", 40}, {"successor_instrument_id", 30}, {"security_id_namespace", "spiderrock.securityID"},
+        {"predecessor_historical_identity", "Synthetic predecessor 40"}, {"successor_historical_identity", "Synthetic successor 30"},
+        {"predecessor_identity_evidence_sha256", std::string(64, 'b')}, {"successor_identity_evidence_sha256", std::string(64, 'e')},
+        {"completion_evidence_sha256", std::string(64, 'c')}, {"basis_evidence_sha256", std::string(64, 'd')},
+        {"evidence_urls", Json::array({"https://example.com/synthetic-stock-fixture"})},
+        {"reference_mark_ns", base["reference_mark_ns"]}, {"reference_raw_close", base["reference_raw_close"]},
+        {"reference_adjusted_close", base["reference_adjusted_close"]}, {"effective_after_ns", base["effective_after_ns"]},
+        {"effective_by_ns", base["effective_by_ns"]}, {"available_at_ns", base["available_at_ns"]},
+        {"recognition_mark_ns", base["recognition_mark_ns"]}, {"stock_ratio_numerator", 1}, {"stock_ratio_denominator", 1},
+        {"successor_recognition_raw_close", successor_price}, {"successor_recognition_adjusted_close", successor_price},
+        {"fixed_cash_usd_per_predecessor_raw_share", 0}, {"stock_and_cash_excluded_from_adjusted_close", true}
+      }})}};
+}
+bool pin_stocks(Directory& dir, atx::impl::strategy::RunnerConfig& cfg, const Json& document) {
+  cfg.stock_transitions_path = (dir.path / "stock-transitions.json").string();
+  return json_file(cfg.stock_transitions_path, document, cfg.stock_transitions_sha256);
 }
 i64 epoch_day(int year, unsigned month, unsigned date) {
   return std::chrono::sys_days{std::chrono::year_month_day{
@@ -452,4 +478,149 @@ TEST(StrategyRunner, AggregateCashClaimReportsRefuseBudgetBeforePayloadLoading) 
   EXPECT_NE(result.error().to_string().find("retained cash-claim summary/copy/serialization budget"), std::string::npos);
   EXPECT_FALSE(std::filesystem::exists(cfg.output_directory));
   EXPECT_TRUE(progress.str().empty());
+}
+
+TEST(StrategyRunner, StockTransitionsDeliverSignedUnitsWithoutInventedCashOrOpeningEntitlement) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  const auto document = stock_transition_document();
+  ASSERT_TRUE(pin_stocks(dir, cfg, document));
+  std::ostringstream progress;
+  const auto result = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+  const auto report = read(dir.path / "output" / "summary.json");
+  const auto recipe = read(dir.path / "output" / "recipe.json");
+  EXPECT_EQ(recipe["schema"], "atx.dsl-combined-execution/stock-transitions-v3");
+  EXPECT_EQ(recipe["stock_transitions"]["sha256"], cfg.stock_transitions_sha256);
+  EXPECT_FALSE(recipe.contains("cash_claims"));
+  EXPECT_EQ(report["stock_transitions_evidence"], document);
+  ASSERT_EQ(report["roles"].size(), 2U);
+  EXPECT_EQ(report["roles"][0]["completed_trials"], 6);
+  EXPECT_EQ(report["roles"][1]["completed_trials"], 2);
+  EXPECT_EQ(report["roles"][0]["family_contribution_coverage"][0]["candidate_member_cells"], 2 * (5 * 4 + 14 * 3));
+  EXPECT_EQ(report["roles"][1]["family_contribution_coverage"][0]["candidate_member_cells"], 2 * 19 * 3);
+  for (const auto& orientation : report["roles"][0]["orientations"]) {
+    for (const auto* sign : {"plus", "minus"}) {
+      const auto& summary = orientation[sign];
+      const auto& stock = summary["stock_transitions"];
+      ASSERT_EQ(stock["recognitions"].size(), 1U);
+      const auto& r = stock["recognitions"][0];
+      EXPECT_EQ(r["period"], 389);
+      EXPECT_EQ(r["predecessor_id"], 40); EXPECT_EQ(r["successor_id"], 30);
+      const auto delivered = r["delivered_successor_share_equivalents"].get<f64>();
+      EXPECT_DOUBLE_EQ(delivered, r["predecessor_share_equivalents"].get<f64>()); // ratio 1/1
+      EXPECT_NEAR(r["delivered_successor_dollars"].get<f64>(),
+                  delivered * document["events"][0]["successor_recognition_raw_close"].get<f64>(), 1e-6);
+      EXPECT_NEAR(r["recognition_pnl_dollars"].get<f64>(),
+                  r["delivered_successor_dollars"].get<f64>() - r["removed_equity_dollars"].get<f64>(), 1e-6);
+      EXPECT_GT(delivered * (std::string_view(sign) == "plus" ? 1.0 : -1.0), 0);
+      EXPECT_EQ(r["fixed_cash_claim_dollars"], 0);
+      EXPECT_EQ(stock["summed_fixed_cash_component_dollars"], 0);
+      EXPECT_EQ(stock["physical_delivery_and_fraction_cash_unresolved"], true);
+      EXPECT_EQ(stock["stock_loan_discharge_assumed"], false);
+      EXPECT_TRUE(summary["cash_claims"]["recognitions"].empty());
+      EXPECT_EQ(summary["cash_claims"]["final_signed_unsettled_claim_dollars"], 0);
+    }
+  }
+  for (const auto& role_report : report["roles"]) for (const auto& combined : role_report["combined"]) {
+    const auto name = role_report["role"].get<std::string>() + "_" + combined["variant"].get<std::string>() + "_stock_transitions.csv";
+    EXPECT_TRUE(std::filesystem::exists(dir.path / "output" / name));
+    if (role_report["role"] == "validation") {
+      EXPECT_EQ(combined["stock_transitions"]["event_uses"][0]["use"], "pre-role-retired-no-opening-delivery");
+      EXPECT_TRUE(combined["stock_transitions"]["recognitions"].empty());
+      EXPECT_EQ(combined["stock_transitions"]["summed_signed_delivered_dollars"], 0);
+    }
+  }
+}
+
+TEST(StrategyRunner, CashAndStockEventsUseSeparateRecognitionIdentitiesInTheSameTrial) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  auto cash = cash_claim_document();
+  auto& event = cash["events"][0];
+  event["event_id"] = "synthetic-cash-10"; event["instrument_id"] = 10;
+  event["historical_identity"] = "Synthetic issuer 10";
+  const auto price = 100 * std::exp((0.0 - 1.5) * .0002 * 388.0 + .001 * std::sin(388.0 * .21));
+  event["reference_raw_close"] = price; event["reference_adjusted_close"] = price;
+  event["cash_usd_per_raw_share"] = price * 1.01;
+  ASSERT_TRUE(pin_claims(dir, cfg, cash)); ASSERT_TRUE(pin_stocks(dir, cfg, stock_transition_document()));
+  std::ostringstream progress;
+  const auto result = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+  const auto report = read(dir.path / "output" / "summary.json");
+  const auto recipe = read(dir.path / "output" / "recipe.json");
+  EXPECT_EQ(recipe["cash_claims"]["sha256"], cfg.cash_claims_sha256);
+  EXPECT_EQ(recipe["stock_transitions"]["sha256"], cfg.stock_transitions_sha256);
+  for (const auto& orientation : report["roles"][0]["orientations"]) for (const auto* sign : {"plus", "minus"}) {
+    const auto& summary = orientation[sign];
+    ASSERT_EQ(summary["cash_claims"]["recognitions"].size(), 1U);
+    ASSERT_EQ(summary["stock_transitions"]["recognitions"].size(), 1U);
+    EXPECT_EQ(summary["cash_claims"]["recognitions"][0]["event_id"], "synthetic-cash-10");
+    EXPECT_EQ(summary["cash_claims"]["recognitions"][0]["instrument_id"], 10);
+    EXPECT_EQ(summary["stock_transitions"]["recognitions"][0]["event_id"], "synthetic-stock-40-to-30");
+    EXPECT_EQ(summary["stock_transitions"]["recognitions"][0]["predecessor_id"], 40);
+  }
+}
+
+TEST(StrategyRunner, FutureStockAnnouncementsPreserveCashOnlyNumericalPrefixAndIgnoreInactiveSuccessor) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  ASSERT_TRUE(pin_claims(dir, cfg, cash_claim_document()));
+  std::ostringstream progress;
+  const auto baseline = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(baseline) << (baseline ? "" : baseline.error().to_string());
+  const auto original = read(dir.path / "output" / "summary.json");
+  EXPECT_EQ(read(dir.path / "output" / "recipe.json")["schema"], "atx.dsl-combined-execution/cash-claims-v2");
+  for (const i64 shift : {2000 * day, 2100 * day}) {
+    auto document = stock_transition_document();
+    auto& event = document["events"][0];
+    // Different predecessor from the cash event; an inactive future successor
+    // need not be on this earlier role axis and cannot change current support.
+    event["predecessor_instrument_id"] = 20; event["successor_instrument_id"] = 900;
+    for (const auto* clock : {"reference_mark_ns", "effective_after_ns", "effective_by_ns", "available_at_ns", "recognition_mark_ns"})
+      event[clock] = event[clock].get<i64>() + shift;
+    ASSERT_TRUE(pin_stocks(dir, cfg, document));
+    const auto output = dir.path / ("future-stock-" + std::to_string(shift / day));
+    cfg.output_directory = output.string();
+    const auto result = atx::impl::strategy::run(cfg, progress);
+    ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+    const auto current = read(output / "summary.json");
+    EXPECT_NE(current["recipe_sha256"], original["recipe_sha256"]);
+    EXPECT_EQ(current["frozen_signs"], original["frozen_signs"]);
+    for (const auto& role_report : current["roles"]) for (const auto& combined : role_report["combined"]) {
+      const auto stem = role_report["role"].get<std::string>() + "_" + combined["variant"].get<std::string>();
+      for (const auto* suffix : {".csv", "_cash_claims.csv"}) {
+        const auto before = read_bytes(dir.path / "output" / (stem + suffix));
+        ASSERT_FALSE(before.empty()); EXPECT_EQ(read_bytes(output / (stem + suffix)), before);
+      }
+      EXPECT_EQ(combined["stock_transitions"]["event_uses"][0]["use"], "after-role-retained-in-identity");
+      EXPECT_TRUE(combined["stock_transitions"]["recognitions"].empty());
+    }
+  }
+}
+
+TEST(StrategyRunner, StockTransitionSchemaAndActiveMissingSuccessorRefuseExplicitly) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  std::ostringstream progress;
+  for (unsigned change = 0; change < 5; ++change) {
+    auto document = stock_transition_document();
+    switch (change) {
+      case 0: document["events"][0]["stock_ratio_denominator"] = 0; break;
+      case 1: document["events"][0]["successor_identity_evidence_sha256"] = std::string(64, '0'); break;
+      case 2: document["events"][0]["stock_and_cash_excluded_from_adjusted_close"] = false; break;
+      case 3: document["source_snapshot_sha256"] = std::string(64, 'f'); break;
+      case 4: document["units_policy"] = "invent-physical-fraction-cash"; break;
+      default: FAIL() << "unhandled stock schema fixture";
+    }
+    ASSERT_TRUE(pin_stocks(dir, cfg, document));
+    const auto result = atx::impl::strategy::run(cfg, progress);
+    ASSERT_FALSE(result); EXPECT_EQ(result.error().code(), core::ErrorCode::InvalidArgument);
+    EXPECT_FALSE(std::filesystem::exists(cfg.output_directory)); EXPECT_TRUE(progress.str().empty());
+  }
+  auto document = stock_transition_document();
+  document["events"][0]["successor_instrument_id"] = 900;
+  ASSERT_TRUE(pin_stocks(dir, cfg, document));
+  const auto missing = atx::impl::strategy::run(cfg, progress);
+  ASSERT_FALSE(missing);
+  EXPECT_NE(missing.error().to_string().find("successor"), std::string::npos);
+  const auto failed = read(dir.path / "output" / "summary.json");
+  EXPECT_EQ(failed["status"], "failed"); EXPECT_TRUE(failed["roles"].empty());
+  EXPECT_TRUE(read_bytes(dir.path / "output" / "train_trials.jsonl").empty());
 }
