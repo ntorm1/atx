@@ -49,5 +49,17 @@ the original V2 rule. A new explicit EquivalenceV3 uses a protected full-window
 IC floor0.002 and multiplier3.5; it removes the arbitrary one-SE veto while
 retaining the additional heuristic quarter safeguard. Old V2 remains explicit.
 This still passes underpowered candidates; it makes no general recall or speed
-claim. Kernel/application changes are pending final source release, and will
-share one combined build with W1 to avoid repeated header rebuilds.
+claim. Kernel import `b9e55206`, mine import `d7b11bc5` and discovery/defaults
+`8ccf0982` are independently source-approved. One combined warm build at
+`8ccf0982` is in progress: 73 changed C++ objects and five links, no dependency,
+PCH or worker rebuild. Jobs1 preserves the available RAM. Runtime qualification
+is pending; this build is not a passed gate.
+
+The next independent implementation lanes are active under the same owner
+build-first instruction. Pool-3 owns W1-D1 dated security links, with the minimum
+exporter and PitRecord consumer wiring needed to enforce expiry and acceptance
+availability. No migration or loader runs are authorized. Pool-4 owns W1-A5
+compact library records, absolute-correlation retrieval, segments and lifecycle.
+Pool-5 owns the W1-B1 immutable cost-surface core and consistent fitness,
+optimizer and replay adapters. The full B1 spread/calibration/borrow work remains
+separate. These agents do source work while root owns the only compiler slot.

@@ -46,34 +46,34 @@ Do not launch it or automatically rerun mining. User prioritized vectorized roug
 forward-return IC across several horizons before full backtests, retaining true alphas.
 This explicitly authorizes proceeding with the scoped W2-A4 subset before that long gate.
 
-IC source compiled throughabe8fec6: engine59/59(11.994s), impl42/42(37.707s),
-additional widecohort1/1(21.148s); final source-provenance discovery8/8(7.060s).
-102distinct focusedchecks, zero failures/skips; full owning suites NOT rerun.
-Firstbuild402.686s reached testmissingargument; fixed1840317b, incremental78.394s.
-Widecohort/provenance refresh43.617s includingconfigure, exactly2changedTUs.
-AllJobs1; PCH and deps warm; noactivecompiler/runtimeremains. Alllogs/receipts/XML
-pool2/build-equity/ic-screen-*. Report .superpowers/sdd/w1/priority-ic-report.md.
-Independentreviews fixed coverage, V3meta, injectedcache mismatch/resume refusal,
-adaptive all-rejected baseline and actualclusterDSR benchmark reporting.
+IC V2 source through abe8fec6 passed 102 distinct focused checks, zero failures/skips:
+engine59, impl42, additional widecohort1; final discovery8 repeated after provenance
+refresh. First build402.686s, completion78.394s, wide/provenance43.617s. Small noisy
+cohorts rejected0/18 nulls; planted effects retained but no population recall claim.
+Report .superpowers/sdd/w1/priority-ic-report.md remains historical V2 evidence.
 
-IMPORTANT qualification open:512x96noisycohort nullreject0/6,retained18/18planted;
-512x512 nullreject0/12,retained12/12weak/inverse. Exactconstructednulls skipbacktest,
-but practical rejection/throughput is NOT qualified. Auditowner reviewing one-SE
-retentionguard/multiplehorizons analytically, no C++build/data/longrun authorized.
+Independent source review approved explicit EquivalenceV3/.002/3.5: kernelb9e55206,
+mined7b11bc5, global8ccf0982. V3 removes only the arbitrary one-SE veto; every
+horizon/metric still needs enough evidence and its bound below the protected floor.
+Quarter safeguard is heuristic. Underpowered candidates pass; practical pruning
+and production throughput remain unqualified. V2 remains explicit with its recipe.
 
-W1 source work proceeding under ownerbuild-firstoverride; workingbase7e16ed26.
-G0(pool3) cube45317e8d; audit(pool5) consumer c898c7e8/tests ce879ea1; rootreviewed
-both source, G0 independently reviewingconsumer. Kernelowner(pool4) A1 f257bc91,
-667d386c,bc3e173c,ca8ea138 and unaryroutingpending; G0found pairoverflowrecoverygap,
-ownerfixed0906a4ee, independentlyaccepted. W1minimalLane0CMake/brief95d0773d;
-E1 imports0d7a45ec/4e49679e/e2ea5e6d/43d5ad98 and A1 aeea9b55through5a64fa2d,
-report e7fa0e3c. W1source integrated, compilationruntimepending. CurrentICV3fix
-inprogress:explicitEquivalenceV3/.002/3.5 removesarbitrary1SEveto onlynewrule,
-V2reproductionunchangedwithfullrecordedrecipe. Rootglobalcfgdirtywaitingkernelhelper;
-mine248888c6pendingimport. OnecombinedW1+ICbuildonlyafterfinalV3reviewrelease.
-Details .superpowers/sdd/w1/progress.md. V3partialDSR uses totalrawN and
-max(observed,marginal) variance; nofakePnL. Long gates stay deferred; main unchanged.
+W1 A1 imports aeea9b55 through5a64fa2d, reporte7fa0e3c; E1 imports0d7a45ec,
+4e49679e,e2ea5e6d,43d5ad98; scaffold95d0773d. Source reviews accepted. Combined
+build8ccf0982 compiled32productionTUs then failed cube JSON include (324.500s).
+Root7e9f6f4a adds source-local JSON includes to cube/test without global PCH churn,
+and independently reviewed date-outer IC rank reuse with a same-count/different-ID
+fixture. Remaining closure42C++objects+5links; no PCH/dependency/worker rebuild.
+Runtime pending. Only root builds, Jobs1; actual head/provenance frozen at configure.
+Logs pool2/build-equity/w1-v3-*. No long benchmark/mining run authorized.
 
+New source lanes active in existing leases: pool3 D1 dated security links plus
+minimum exporter/PitRecord/decoder validity wiring; pool4 A5 compact library,
+absolute-correlation retrieval and lifecycle; pool5 B1 cost-surface core/adapters.
+No source imported yet. Only synthetic short Python checks allowed to D1; no agent
+C++ builds. No warehouse writes/migrations/data downloads/actual2020+ payload reads.
+Root owns CMake/DAG/ledger. Full B1 estimators/calibration/borrow remain separate.
+Original DAG index records existing source SHAs; W1 and all later gates stay open.
 Scaffold adds factory/ic_screen.cpp to CMake. Root branch remains integration;
 main has NOT been fast-forwarded. Existing production correctness evidence remains valid
 for frozenfcbcc; new implementation will get bounded owning checks after implementation.
