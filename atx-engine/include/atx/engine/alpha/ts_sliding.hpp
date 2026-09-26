@@ -314,6 +314,125 @@ struct CoMomentLane {
   }
 };
 
+// Finite-window exponential decay. Coefficients are shared by all instruments
+// of one instruction; prepare is cold/grow-only, never called in the cell loop.
+// Positive factors above one are supported by the DSL but amplify recurrence
+// error, so retain the chronological direct formula in that region.
+struct ExpDecayCoefficients {
+  atx::usize window{0};
+  atx::f64 factor{0.0};
+  atx::f64 leave_weight{0.0};
+  atx::f64 weight_sum{0.0};
+  atx::f64 direct_weight_sum{0.0};
+  bool recurrent{false};
+  std::vector<atx::f64> weights;
+
+  void prepare(atx::usize d, atx::f64 f) {
+    if (window == d && factor == f && weights.size() >= d) return;
+    window = d;
+    factor = f;
+    if (weights.size() < d) weights.resize(d);
+    direct_weight_sum = 0.0;
+    for (atx::usize i = 0; i < d; ++i) {
+      weights[i] = std::pow(f, static_cast<atx::f64>(d - 1 - i));
+      direct_weight_sum += weights[i];
+    }
+    recurrent = d != 0 && f > 0.0 && f <= 1.0;
+    leave_weight = recurrent ? std::pow(f, static_cast<atx::f64>(d)) : 0.0;
+    if (f == 1.0) weight_sum = static_cast<atx::f64>(d);
+    else if (recurrent) {
+      const atx::f64 log_factor = std::log(f);
+      weight_sum = std::expm1(static_cast<atx::f64>(d) * log_factor) / std::expm1(log_factor);
+    } else weight_sum = direct_weight_sum;
+    recurrent = recurrent && std::isfinite(weight_sum) && weight_sum > 0.0;
+  }
+
+  template <class Win>
+  [[nodiscard]] atx::f64 weighted_sum(const Win &win) const noexcept {
+    atx::f64 sum = 0.0;
+    for (atx::usize i = 0; i < window; ++i) sum += weights[i] * win(i);
+    return sum;
+  }
+};
+
+// S[t] = f*S[t-1] + x[t] - f^d*x[t-d]. Warmup starts at zero at the
+// actual first observation (no leave term yet), then seeds the first complete
+// clean window from its finite weighted sum. Running counters replace the
+// old O(d) NaN pre-scan and trigger exact recovery after a gap leaves.
+struct ExpDecayLane {
+  atx::f64 sum{0.0};
+  atx::f64 peak{0.0};
+  atx::usize nan{0};
+  atx::usize inf{0};
+  atx::usize age{0};
+  bool needs_seed{true};
+
+  void count(atx::f64 value, bool leaving) noexcept {
+    if (std::isnan(value)) {
+      if (leaving) --nan; else ++nan;
+    } else if (std::isinf(value)) {
+      if (leaving) --inf; else ++inf;
+    }
+  }
+
+  template <class Win>
+  [[nodiscard]] atx::f64 step(atx::f64 entering, bool has_leave, atx::f64 leaving,
+                              bool full, const ExpDecayCoefficients &coeff,
+                              const Win &win) noexcept {
+    count(entering, false);
+    if (has_leave) count(leaving, true);
+    if (coeff.recurrent) {
+      sum = coeff.factor * sum + (std::isfinite(entering) ? entering : 0.0);
+      if (has_leave) sum -= coeff.leave_weight * (std::isfinite(leaving) ? leaving : 0.0);
+    }
+    if (!full || nan != 0) {
+      needs_seed = true;
+      return kSlNaN;
+    }
+    if (!coeff.recurrent || inf != 0) {
+      // Includes 0*infinity for underflowed weights, matching the old formula.
+      needs_seed = true;
+      return coeff.direct_weight_sum == 0.0 ? kSlNaN
+          : coeff.weighted_sum(win) / coeff.direct_weight_sum;
+    }
+    ++age;
+    if (needs_seed || age >= reseed_period(coeff.window) || !std::isfinite(sum) ||
+        std::abs(sum) < kDriftRatio * peak) {
+      sum = coeff.weighted_sum(win);
+      peak = std::abs(sum);
+      age = 0;
+      needs_seed = false;
+    } else {
+      peak = std::max(peak, std::abs(sum));
+    }
+    return sum / coeff.weight_sum;
+  }
+};
+
+// Ordinary clean bounded inputs are O(1) per cell amortized (one O(d) reseed
+// per 2d dates). Nonfinite/overflow/strong-cancellation windows and f>1 retain
+// an explicit O(d) fallback. No unsupported worst-case O(1) claim.
+inline void sweep_exp_decay(std::span<const atx::f64> x, std::span<atx::f64> out,
+                            atx::usize dates, atx::usize instruments,
+                            const ExpDecayCoefficients &coeff,
+                            atx::usize begin, atx::usize end) noexcept {
+  constexpr atx::usize tile_size = 64;
+  ATX_ASSERT(begin <= end && end <= instruments && end - begin <= tile_size);
+  std::array<ExpDecayLane, tile_size> lanes{};
+  const atx::usize d = coeff.window;
+  for (atx::usize t = 0; t < dates; ++t) {
+    const bool has_leave = t >= d;
+    const bool full = d != 0 && t + 1 >= d;
+    for (atx::usize j = begin; j < end; ++j) {
+      const auto win = [&x, t, d, instruments, j](atx::usize i) noexcept {
+        return x[(t + 1 - d + i) * instruments + j];
+      };
+      out[t * instruments + j] = lanes[j - begin].step(x[t * instruments + j], has_leave,
+          has_leave ? x[(t - d) * instruments + j] : 0.0, full, coeff, win);
+    }
+  }
+}
+
 // ===========================================================================
 //  LinDecay — linear-decay weighted mean (weights 1..d oldest..newest, /Σw).
 // ===========================================================================

@@ -86,6 +86,7 @@ enum class TsKind : atx::u8 {
   Decay,     // decay_linear / wma under ResearchFast (sliding lane)
   TimeReg,   // slope / rsquare / resid under ResearchFast (sliding lane)
   CoMoment,  // corr / cov / pair-regression under ResearchFast
+  ExpDecay,  // finite-window exponential decay under ResearchFast
   Generic,   // batch per-cell kernel over the ring window
 };
 
@@ -114,6 +115,8 @@ struct TsState {
   std::vector<sliding::LinDecayLane> decay;
   std::vector<sliding::TimeRegLane> timereg;
   std::vector<sliding::CoMomentLane> comoment;
+  sliding::ExpDecayCoefficients exp_coeff;
+  std::vector<sliding::ExpDecayLane> exp_decay;
 };
 
 // Per-recurrence-instruction carried state.
@@ -216,6 +219,7 @@ struct RecState {
     return TsKind::Extreme;
   }
   if (mode == EvalMode::ResearchFast && sliding::is_comoment_op(op)) return TsKind::CoMoment;
+  if (mode == EvalMode::ResearchFast && op == OpCode::TsDecayExp) return TsKind::ExpDecay;
   // Order-stat online ops (TsRank/Med/Quantile) are bit-exact with the batch
   // per-cell kernel, so the Generic recompute reproduces them exactly.
   if (mode == EvalMode::ResearchFast && detail::ts_is_online_variance_op(op)) {
@@ -439,6 +443,10 @@ private:
       break;
     case TsKind::CoMoment:
       st.comoment.assign(inst_, sliding::CoMomentLane{});
+      break;
+    case TsKind::ExpDecay:
+      st.exp_coeff.prepare(d, in.imm[0]);
+      st.exp_decay.assign(inst_, sliding::ExpDecayLane{});
       break;
     case TsKind::Lookback:
     case TsKind::Generic:
@@ -763,6 +771,9 @@ private:
     case TsKind::CoMoment:
       ts_comoment(in, st, o);
       break;
+    case TsKind::ExpDecay:
+      ts_exp_decay(st, o);
+      break;
     case TsKind::Generic:
       ts_generic(in, st, o);
       break;
@@ -889,6 +900,19 @@ private:
       o[j] = st.kind == TsKind::Decay
                  ? st.decay[j].step(enter, has_leave, leave, full, st.d, win)
                  : st.timereg[j].step(in.op, enter, has_leave, leave, full, st.d, win);
+    }
+  }
+
+  void ts_exp_decay(TsState &st, std::span<atx::f64> o) const {
+    const bool has_leave = t_ >= st.d;
+    const bool full = t_ + 1 >= st.d;
+    for (atx::usize j = 0; j < inst_; ++j) {
+      const auto win = [this, &st, j](atx::usize i) noexcept {
+        return at(st.ring_x, st, t_ + 1 - st.d + i, j, inst_);
+      };
+      const atx::f64 enter = at(st.ring_x, st, t_, j, inst_);
+      const atx::f64 leave = has_leave ? at(st.ring_x, st, t_ - st.d, j, inst_) : 0.0;
+      o[j] = st.exp_decay[j].step(enter, has_leave, leave, full, st.exp_coeff, win);
     }
   }
 

@@ -1542,6 +1542,28 @@ private:
     const bool sum_op = (in.op == OpCode::TsSum || in.op == OpCode::TsMean);
     const bool legacy_sum = policy_.ts_sum == TsSumPath::OnlineV1;
     const bool windowed_sum = sum_op && !legacy_sum && mode_ == EvalMode::AuditExact;
+    if (in.op == OpCode::TsDecayExp && mode_ == EvalMode::ResearchFast && policy_.is_default()) {
+      if (d == 0 || d > dates) {
+        for (atx::usize t = 0; t < dates; ++t)
+          std::fill_n(out.data() + t * instruments + j0, j1 - j0, detail::kTsNaN);
+        return atx::core::Ok();
+      }
+      ts_exp_coeff_.prepare(d, in.imm[0]);
+      const atx::usize width = j1 - j0;
+      const atx::usize tiles = width / detail::kTsInstrumentTile +
+                              static_cast<atx::usize>(width % detail::kTsInstrumentTile != 0);
+      const auto tile = [&](atx::usize i) {
+        const atx::usize begin = j0 + i * detail::kTsInstrumentTile;
+        const atx::usize end = begin + std::min(detail::kTsInstrumentTile, j1 - begin);
+        sliding::sweep_exp_decay(x, out, dates, instruments, ts_exp_coeff_, begin, end);
+      };
+      if (ts_pool_ != nullptr && tiles > 1) {
+        ts_pool_->parallel_for(tiles, [&](atx::usize i, atx::usize) { tile(i); });
+      } else {
+        for (atx::usize i = 0; i < tiles; ++i) tile(i);
+      }
+      return atx::core::Ok();
+    }
     if (sum_op && !legacy_sum && mode_ == EvalMode::ResearchFast) {
       const atx::usize width = j1 - j0;
       const atx::usize tiles = width / detail::kTsInstrumentTile +
@@ -1951,6 +1973,7 @@ private:
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
   std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
+  sliding::ExpDecayCoefficients ts_exp_coeff_; // grow-only, immutable during tile dispatch
   // S1-3: per-instrument column-extract buffers (dates-sized).  Grown
   // monotonically; never allocated inside the (t,j) hot loop.  ts_col_ holds the
   // extracted x column; ts_col_b_ the y column for binary ops.
