@@ -241,6 +241,7 @@ endforeach()
 # Run it directly with a gtest filter. Do not duplicate CTest registrations.
 add_executable(atx-engine-ic-screen-tests EXCLUDE_FROM_ALL
     factory/ic_screen_test.cpp
+    factory/factory_objective_ic_test.cpp
     factory/execution_objective_test.cpp
     factory/execution_fitness_test.cpp
     factory/factory_fidelity_test.cpp
