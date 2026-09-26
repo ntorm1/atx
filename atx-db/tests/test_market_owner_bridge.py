@@ -67,6 +67,7 @@ from atx_db.market_daily import (
     vendor_share_state_query,
 )
 from atx_db.market_owner_bridge import (
+    IDENTITY_BASIS_CURRENT_AND_RECONSTRUCTED,
     IDENTITY_BASIS_CURRENT_TICKER,
     RECONSTRUCTION_TIERS_HIGH_ONLY,
     CurrencyEvent,
@@ -887,48 +888,60 @@ def test_a_vendor_share_run_never_spans_a_split_and_an_adr_without_ratio_is_with
     """A8 fix C1 (rv-a8 probe shape, forward 2:1 and reverse 1:10): vendor 100M, then an unmatched
     104M run from 02-03, a split on 03-02 the vendor absorbs on 03-09 (104M x k). On a linked line
     without DEI and on an unlinked line, the pre-split count never prices a post-split bar: the
-    window is NULL (split_pending_share_update), then the split-derived run prices the bar at its
-    own start. N1: an inexact 1.37 factor step (spin-off / special dividend; the count does not
-    move) is no split and opens no window. I1: an ADR line whose name states no ADS ratio is
-    withheld (adr_ratio_unknown)."""
+    bars are NULL (split_pending_share_update) until the split-derived run is known. That run's
+    count reveals the unmatched 104M run's, so it is known no earlier than that run (A8 follow-up):
+    on the unlinked line 150 days after 02-03 (after the fixture), on the linked line at max(90-day
+    modeled lag, 05-03; the 02-03 bar's own late arrival, 06-01 12:00): a run is never known
+    before the bars that define it. N1: an inexact 1.37 factor step (spin-off / special dividend;
+    the count does not move) is no split and opens no window. I1: an ADR line whose name states no
+    ADS ratio is withheld (adr_ratio_unknown)."""
     spin_off = k == 1.37
     seed_derived_metric_definitions(tmp_store)
     linked, unlinked, adr = "SEC-CIK-0000000501", "TBLTICKERHISTORY-601", "TBLTICKERHISTORY-502"
     _ticker(tmp_store, "501", "SPLA")
     _ticker(tmp_store, "502", "FOOB")
     _directory(tmp_store, "FOOB", "Foob Holdings Limited American Depositary Shares")
-    split, absorbed = dt.date(2020, 3, 2), dt.date(2020, 3, 9)
+    split, absorbed, run_start = dt.date(2020, 3, 2), dt.date(2020, 3, 9), dt.date(2020, 2, 3)
+    late_bar = dt.datetime(2020, 6, 1, 12)
+    known = {linked: dt.date(2020, 6, 1), unlinked: None}  # the split-derived run's first known session
     for trade_date in _DATES:
         close = 50.0 if trade_date < split else 50.0 / k
-        shares = 100_000_000 if trade_date < dt.date(2020, 2, 3) else 104_000_000
+        shares = 100_000_000 if trade_date < run_start else 104_000_000
         shares = round(104_000_000 * k) if trade_date >= absorbed and not spin_off else shares
         for line, symbol in ((linked, "SPLA"), (unlinked, "SPLX")):
             _bar(tmp_store, line, symbol, trade_date, close, shares=shares, adj=50.0 / k)
         _bar(tmp_store, adr, "FOOB", trade_date, 20.0, shares=50_000_000)
+    tmp_store.con.execute("UPDATE equity_daily_bars SET available_at = ? WHERE security_id = ? AND trade_date = ?",
+                          [late_bar, linked, run_start])
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
     refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
-    window_days = len([d for d in _DATES if split <= d < absorbed])
+
+    def pending(line, day):
+        return split <= day and (known[line] is None or day < known[line])
+
     for line in (linked, unlinked):
         rows = _rows(tmp_store, line)
         if spin_off:  # the known count keeps pricing the line through the distribution
             assert rows and {row[5] for row in rows} == {"archive"} and all(row[6] is not None for row in rows)
             continue
-        window = [row for row in rows if split <= row[0] < absorbed]
-        assert window and all(
+        window = [row for row in rows if pending(line, row[0])]
+        assert [row for row in window if row[0] >= absorbed] and all(
             (row[5], row[4], row[6]) == ("split_pending_share_update", None, None) for row in window
         )
         before = [row for row in rows if row[0] < split]
-        after = [row for row in rows if row[0] >= absorbed]
+        after = [row for row in rows if row[0] >= split and not pending(line, row[0])]
         # The unmatched 104M run is not known yet before the split (modeled lag).
         assert {(row[5], row[4]) for row in before} == {("archive", 100_000_000)}
-        assert {(row[5], row[4]) for row in after} == {("archive", round(104_000_000 * k))}
+        assert bool(after) == (known[line] is not None)
+        assert all((row[5], row[4]) == ("archive", round(104_000_000 * k)) for row in after)
         caps = [row[6] for row in rows if row[6] is not None]
         assert all(abs(later / earlier - 1) < 0.05 for earlier, later in pairwise(caps))  # never x2 or x10
     adr_rows = _rows(tmp_store, adr)
     assert adr_rows and all((row[5], row[4], row[6], row[1]) == ("adr_ratio_unknown", None, None, None)
                             for row in adr_rows)
     report = owner_bridge_report(tmp_store)["share_basis"]
-    assert report["split_pending_share_update_rows"] == (0 if spin_off else 2 * window_days)
+    pending_rows = sum(pending(line, day) for line in (linked, unlinked) for day in _DATES)
+    assert report["split_pending_share_update_rows"] == (0 if spin_off else pending_rows)
     assert report["adr_ratio_unknown_rows"] == len(_DATES)
     assert spin_off or report["rows_by_share_clock"]["split_derived"] > 0
     # The read relation other readers join (R2d) states the same clock, window and basis per bar.
@@ -942,7 +955,11 @@ def test_a_vendor_share_run_never_spans_a_split_and_an_adr_without_ratio_is_with
     for line in (linked, unlinked):
         assert all(state[(line, day)][9] != spin_off for day in _DATES if split <= day < absorbed)  # split_pending
         if not spin_off:
-            assert {state[(line, day)][3] for day in _DATES if day >= absorbed} == {"split_derived"}
+            assert all(state[(line, day)][9] == pending(line, day) for day in _DATES if day >= split)
+    if not spin_off:
+        assert {state[(linked, day)][3] for day in _DATES if day >= known[linked]} == {"split_derived"}
+        assert state[(linked, known[linked])][6] == late_bar  # pit_available_at: the late bar, not 03-09
+        assert state[(unlinked, _DATES[-1])][3] == "first_run"
 
 
 def _valuation_facts(store, owner, unit=None):
@@ -1242,6 +1259,8 @@ def test_delisted_line_takes_its_reconstructed_owner_point_in_time_and_never_in_
         link.valid_from, link.valid_to, link.available_at, evidence_rows[0]["evidence_id"])
     detail = bridge.summary()
     assert (detail["unlinked_lines"], detail["linked_by_identity_basis"]) == (0, {"reconstructed_history": 1})
+    # The bridge-level label names both bases; the delisted rule-5 line is not an A5 stale holder.
+    assert (detail["identity_basis"], detail["stale_links"]) == (IDENTITY_BASIS_CURRENT_AND_RECONSTRUCTED, 0)
     assert (detail["reconstructed_history"]["linked_lines_by_tier"], detail["reconstructed_history"]["tier_filter"]) == (
         {"medium": 1}, "high_medium")
 
@@ -1271,12 +1290,13 @@ def _ri1(line, cik, valid, available_at, history, status="reconstructed"):
 
 
 def test_reconstructed_conflicts_stay_unlinked_and_tiers_and_issuers_are_point_in_time():
-    a, b, c = "TBLTICKERHISTORY-11", "TBLTICKERHISTORY-12", "TBLTICKERHISTORY-13"
+    a, b, c, p = "TBLTICKERHISTORY-11", "TBLTICKERHISTORY-12", "TBLTICKERHISTORY-13", "TBLTICKERHISTORY-14"
     d = dt.date
     lines = [
         PriceLine(a, "AAA", d(2015, 1, 2), d(2016, 12, 30), 500),
         PriceLine(b, "BBB", d(2015, 1, 2), d(2016, 12, 30), 500),
         PriceLine(c, "CCC", d(2015, 6, 1), d(2016, 6, 29), 100),
+        PriceLine(p, "AAAAP", d(2015, 1, 2), d(2016, 12, 30), 500),
     ]
     clock, c_clock = dt.datetime(2015, 7, 31, 22), dt.datetime(2015, 9, 1, 22)
     evidence = [
@@ -1288,19 +1308,26 @@ def test_reconstructed_conflicts_stay_unlinked_and_tiers_and_issuers_are_point_i
         _ri1(b, "0000000703", (d(2015, 1, 2), d(2016, 12, 31)), None, (), "conflicting"),
         # C: the same issuer as A on a second, shorter line overlapping A's link.
         _ri1(c, "0000000701", (d(2015, 6, 1), d(2016, 6, 30)), c_clock, (("medium", c_clock),)),
+        # P: the same issuer's delisted Series A preferred (Nasdaq fifth letter P; not a current ticker),
+        # fingerprinted to the issuer because the vendor carries the common count on it.
+        _ri1(p, "0000000701", (d(2015, 1, 2), d(2016, 12, 31)), clock, (("medium", clock),)),
     ]
     rows, _members, _ambiguous, stats = classify_reconstructed_with_history(lines, (), {}, reconstructed=evidence)
 
-    linked = [(row.price_security_id, row.valid_from, row.valid_to, row.tier, row.available_at, row.share_basis)
-              for row in rows if row.linked]
+    linked = [(row.price_security_id, row.valid_from, row.valid_to, row.tier, row.available_at, row.share_basis,
+               row.withheld_reason) for row in rows if row.linked]
     assert linked == [
         # A is linked only while its tier in force is inside the filter (low is never auto-picked).
-        (a, d(2015, 1, 2), d(2016, 3, 2), "medium", clock, "single"),
-        # C keeps only the days A does not hold (A has more bars): one issuer, one line per day.
-        (c, d(2016, 3, 2), d(2016, 6, 30), "medium", c_clock, "single"),
+        (a, d(2015, 1, 2), d(2016, 3, 2), "medium", clock, "single", None),
+        # C keeps only the days A does not hold (A's link is visible first): one issuer, one line per day.
+        (c, d(2016, 3, 2), d(2016, 6, 30), "medium", c_clock, "single", None),
+        # The preferred line is linked but withheld (no DEI, no valuation); it neither claims nor loses days.
+        (p, d(2015, 1, 2), d(2016, 12, 31), "medium", clock, "withheld", "non_common_line"),
     ]
     assert [row.unlinked_reason for row in rows if row.price_security_id == b] == ["conflicting_reconstruction"]
     assert (stats["linked_lines_by_tier"], stats["segments_excluded_by_tier"], stats["unlinked_lines_by_reason"]) == (
-        {"medium": 2}, {"low": 1}, {"conflicting_reconstruction": 1})
-    assert stats["cik_day_dedupe"] == {"rule": "current_ticker_first_then_more_bars_then_smaller_id", "ciks": 1,
-                                       "segments_trimmed": 1, "days_removed": 275, "lines_removed": 0}
+        {"medium": 3}, {"low": 1}, {"conflicting_reconstruction": 1})
+    assert (stats["linked_lines_non_common"], stats["linked_lines_never_visible"]) == ({"preferred": 1}, 0)
+    assert stats["cik_day_dedupe"] == {
+        "rule": "common_lines_only;current_ticker_first_then_first_visible_then_first_bar_then_id", "ciks": 1,
+        "segments_trimmed": 1, "days_removed": 275, "lines_removed": 0}
