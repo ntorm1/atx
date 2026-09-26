@@ -143,7 +143,6 @@ as evidence) after :func:`validate_research_panel`.
 
 from __future__ import annotations
 
-import calendar as _calendar
 import datetime as dt
 import hashlib
 import itertools
@@ -157,11 +156,20 @@ from pathlib import Path
 from typing import Any
 
 from .. import _split_epochs, _vendor_artifact
+from .. import calendar as _xnys
 from .. import derived_lineage as _derived_lineage
 from .. import fundamental_signal_research as fsr
 from .. import market_daily as _market_daily
 from .. import market_owner_bridge as _market_owner_bridge
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
+
+# The canonical XNYS calendar (1.11) lives in ``atx_db.calendar``; re-exported here.
+from ..calendar import (
+    decision_cutoff_utc,
+    expected_month_end_session,
+    nyse_full_day_closures,
+    xnys_sessions,
+)
 from ..derived_registry import DERIVED_SOURCE_NAME
 from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME, SHARES_SOURCES_WITHHELD
 from ..universe_us_listed import UNIVERSE_SOURCE_NAME
@@ -191,7 +199,7 @@ MARKET_AVAILABILITY_BASIS = "modeled_trade_date_22h"
 DERIVED_WINDOWS = ("q", "ttm", "avg2")
 MARKET_WINDOW = "daily"
 PANEL_WINDOWS = (*DERIVED_WINDOWS, MARKET_WINDOW)
-DECISION_HOUR = 22
+DECISION_HOUR = _xnys.DECISION_HOUR_UTC
 DEFAULT_MAX_AGE_DAYS = 200
 DEFAULT_ANNUAL_MAX_AGE_DAYS = 400
 # Reasons whose selected value is point-in-time safe to publish.
@@ -410,18 +418,12 @@ _BASE_BLOCKERS = (
     "month_end_calendar_from_nyse_rules_and_observed_sessions",
     "research_only_not_release_eligible",
 )
-# Unscheduled full-day NYSE closures (weekday rule holidays are computed).
-NYSE_SPECIAL_CLOSURES = frozenset({
-    dt.date(1994, 4, 27), dt.date(2001, 9, 11), dt.date(2001, 9, 12), dt.date(2001, 9, 13),
-    dt.date(2001, 9, 14), dt.date(2004, 6, 11), dt.date(2007, 1, 2), dt.date(2012, 10, 29),
-    dt.date(2012, 10, 30), dt.date(2018, 12, 5), dt.date(2025, 1, 9),
-})
 
 # Every module whose semantics a run's rows depend on: a change between a
 # failed run and its resume refuses the resume.
 _CODE_FILES = (*(Path(str(module.__file__)) for module in (
-    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store, _split_epochs, _market_daily, _vendor_artifact)),
-    Path(__file__))
+    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store, _split_epochs, _market_daily, _vendor_artifact,
+    _xnys)), Path(__file__))
 
 
 # ---------------------------------------------------------------------------
@@ -471,87 +473,8 @@ def _sql_list(values: Iterable[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# NYSE month-end rule
+# NYSE month-end rule (the session rules are ``atx_db.calendar``'s)
 # ---------------------------------------------------------------------------
-
-def _easter(year: int) -> dt.date:
-    """Gregorian Easter Sunday (anonymous algorithm)."""
-    a, b, c = year % 19, year // 100, year % 100
-    d, e = b // 4, b % 4
-    f = (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19 * a + b - d - g + 15) % 30
-    i, k = c // 4, c % 4
-    l_ = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * l_) // 451
-    month = (h + l_ - 7 * m + 114) // 31
-    day = (h + l_ - 7 * m + 114) % 31 + 1
-    return dt.date(year, month, day)
-
-
-def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> dt.date:
-    first = dt.date(year, month, 1)
-    return first + dt.timedelta(days=(weekday - first.weekday()) % 7 + 7 * (nth - 1))
-
-
-def _last_weekday(year: int, month: int, weekday: int) -> dt.date:
-    last = dt.date(year, month, _calendar.monthrange(year, month)[1])
-    return last - dt.timedelta(days=(last.weekday() - weekday) % 7)
-
-
-def _observed(day: dt.date) -> dt.date:
-    if day.weekday() == 5:
-        return day - dt.timedelta(days=1)
-    if day.weekday() == 6:
-        return day + dt.timedelta(days=1)
-    return day
-
-
-def nyse_full_day_closures(year: int) -> frozenset[dt.date]:
-    """NYSE full-day holidays of ``year`` (rule-based) plus known special closures.
-
-    New Year's Day on a Saturday is not observed on the prior Friday (NYSE rule).
-    """
-    days: set[dt.date] = set()
-    new_year = dt.date(year, 1, 1)
-    if new_year.weekday() == 6:
-        days.add(new_year + dt.timedelta(days=1))
-    elif new_year.weekday() < 5:
-        days.add(new_year)
-    if year >= 1998:
-        days.add(_nth_weekday(year, 1, 0, 3))
-    days.add(_nth_weekday(year, 2, 0, 3))
-    days.add(_easter(year) - dt.timedelta(days=2))
-    days.add(_last_weekday(year, 5, 0))
-    if year >= 2022:
-        days.add(_observed(dt.date(year, 6, 19)))
-    days.add(_observed(dt.date(year, 7, 4)))
-    days.add(_nth_weekday(year, 9, 0, 1))
-    days.add(_nth_weekday(year, 11, 3, 4))
-    days.add(_observed(dt.date(year, 12, 25)))
-    days.update(day for day in NYSE_SPECIAL_CLOSURES if day.year == year)
-    return frozenset(day for day in days if day.year == year)
-
-
-def expected_month_end_session(year: int, month: int) -> dt.date:
-    """The last NYSE session of the month under the holiday rules."""
-    closures = nyse_full_day_closures(year)
-    day = dt.date(year, month, _calendar.monthrange(year, month)[1])
-    while day.weekday() >= 5 or day in closures:
-        day -= dt.timedelta(days=1)
-    return day
-
-
-def xnys_sessions(first: dt.date, last: dt.date) -> list[dt.date]:
-    """The XNYS rule sessions in ``[first, last]`` (weekdays that are not full-day closures)."""
-    closures: dict[int, frozenset[dt.date]] = {}
-    days, day = [], first
-    while day <= last:
-        if day.weekday() < 5 and day not in closures.setdefault(day.year, nyse_full_day_closures(day.year)):
-            days.append(day)
-        day += dt.timedelta(days=1)
-    return days
-
 
 @dataclass(frozen=True)
 class CalendarRow:
@@ -592,7 +515,7 @@ def month_end_calendar(sessions: Sequence[dt.date], *, start_month: dt.date, end
         expected = expected_month_end_session(month.year, month.month)
         in_month = [day for day in observed if day.year == month.year and day.month == month.month]
         last = in_month[-1] if in_month else None
-        cutoff = dt.datetime.combine(expected, dt.time(DECISION_HOUR))
+        cutoff = decision_cutoff_utc(expected).replace(tzinfo=None)  # naive UTC, as ``run_at``
         later = [day for day in observed if day > expected]
         entry = later[0] if later else None
         if expected > as_of_date or cutoff > run_at:

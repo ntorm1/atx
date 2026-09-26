@@ -573,17 +573,20 @@ def _events(store):
 
 
 def test_issuer_25nse_for_notes_never_terminates_the_trading_common(tmp_store):
-    from atx_db.calendar import TradingCalendarDataset, TradingCalendarOptions
+    from atx_db.calendar import TradingCalendarDataset, TradingCalendarOptions, xnys_sessions
     from atx_db.delisting import refresh_delisting_terminal_returns, refresh_survivorship_safe_forward_returns
     from atx_db.signal_eval import IC_HORIZONS
 
     common = "SEC-CIK-0000000010"
     notice_index = 59
+    # The trading_calendar is the XNYS rule calendar (1.11): a weekday bar on an NYSE holiday is a
+    # stray bar, never a formation session, so this test seeds XNYS sessions only.
+    sessions = [day.isoformat() for day in xnys_sessions(dt.date(2023, 1, 3), dt.date(2024, 3, 1))][:280]
     # The archive runs 280 sessions; the common trades 200 sessions past the 25-NSE filed for
     # its issuer's notes and stops within the gap threshold of the archive end.
-    _seed_priced_bars(tmp_store, "SEC-LIVE", "LIVE", LONG_SESSIONS)
-    _seed_priced_bars(tmp_store, common, "ACME", LONG_SESSIONS[: notice_index + 201])
-    _file(tmp_store, common, "0000000010", "NOTES-25NSE", LONG_SESSIONS[notice_index], "25-NSE")
+    _seed_priced_bars(tmp_store, "SEC-LIVE", "LIVE", sessions)
+    _seed_priced_bars(tmp_store, common, "ACME", sessions[: notice_index + 201])
+    _file(tmp_store, common, "0000000010", "NOTES-25NSE", sessions[notice_index], "25-NSE")
 
     assert _build(tmp_store) == 0
     evidence = tmp_store.con.execute(
@@ -601,7 +604,7 @@ def test_issuer_25nse_for_notes_never_terminates_the_trading_common(tmp_store):
     after_filing = tmp_store.con.execute(
         "SELECT count(*), count(*) FILTER (WHERE is_delisted_in_horizon) "
         "FROM forward_returns_survivorship_safe WHERE security_id = ? AND as_of_date > ?",
-        [common, LONG_SESSIONS[notice_index]],
+        [common, sessions[notice_index]],
     ).fetchone()
     # Every horizon of every post-filing formation whose endpoint the common reached.
     expected = sum(max(0, 200 - horizon) for horizon in IC_HORIZONS)
