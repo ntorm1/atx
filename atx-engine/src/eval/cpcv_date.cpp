@@ -1,6 +1,8 @@
 #include "atx/engine/eval/cpcv_date.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <initializer_list>
 #include <limits>
 #include <utility>
 
@@ -95,6 +97,76 @@ co::Result<DateCpcvPlan> cpcv_date_plan(std::span<const LabelSpan> spans,
     }
     out.folds.push_back(std::move(fold));
   } while (detail::next_combination(combo, K));
+  return co::Ok(std::move(out));
+}
+atx::u64 cpcv_recipe_identity(const CpcvConfig& cfg) noexcept {
+  atx::u64 h = 14695981039346656037ULL;
+  const auto add = [&](atx::u64 value) {
+    for (unsigned i = 0; i < 8U; ++i) {
+      h = (h ^ (value & 255U)) * 1099511628211ULL;
+      value >>= 8U;
+    }
+  };
+  add(static_cast<atx::u64>(cfg.rule)); add(cfg.n_groups); add(cfg.n_test_groups);
+  if (cfg.rule == CpcvRule::DateV2) {
+    add(cfg.embargo_dates); add(cfg.max_working_bytes);
+  } else { add(std::bit_cast<atx::u64>(cfg.embargo)); }
+  return h;
+}
+
+co::Result<CpcvPlan> cpcv_plan(std::span<const LabelSpan> spans, const CpcvConfig& cfg) {
+  CpcvPlan out;
+  out.metadata.config = cfg;
+  out.metadata.recipe_identity = cpcv_recipe_identity(cfg);
+  if (cfg.rule == CpcvRule::ObservationV1) {
+    out.folds = cpcv_folds(spans, cfg); // exact historical order/arithmetic
+  } else if (cfg.rule == CpcvRule::DateV2) {
+    ATX_TRY(auto plan, cpcv_date_plan(spans, DateCpcvConfig{
+        cfg.n_groups, cfg.n_test_groups, cfg.embargo_dates, cfg.max_working_bytes}));
+    out.metadata.label_identity = 14695981039346656037ULL;
+    for (const auto span : spans) {
+      for (atx::u64 value : {static_cast<atx::u64>(span.t0), static_cast<atx::u64>(span.t1)})
+        for (unsigned b = 0; b < 8U; ++b) {
+          out.metadata.label_identity = (out.metadata.label_identity ^ (value & 255U)) * 1099511628211ULL;
+          value >>= 8U;
+        }
+    }
+    out.folds = std::move(plan.folds);
+    out.metadata.group_offsets = std::move(plan.group_offsets);
+    out.metadata.paths = std::move(plan.paths);
+  } else {
+    return co::Err(co::ErrorCode::InvalidArgument, "CPCV: unknown rule");
+  }
+  out.metadata.fold_count = out.folds.size();
+  return co::Ok(std::move(out));
+}
+
+co::Result<std::vector<usize>> cpcv_date_train(std::span<const LabelSpan> spans,
+    std::span<const usize> candidates, std::span<const usize> test, usize embargo) {
+  std::vector<LabelSpan> windows;
+  windows.reserve(test.size());
+  for (const auto i : test) {
+    if (i >= spans.size() || spans[i].t0 >= spans[i].t1 ||
+        embargo > std::numeric_limits<usize>::max() - spans[i].t1)
+      return co::Err(co::ErrorCode::InvalidArgument, "date CPCV inner: invalid test endpoint");
+    windows.push_back({spans[i].t0, spans[i].t1 + embargo});
+  }
+  std::sort(windows.begin(), windows.end(), [](const auto& a, const auto& b) { return a.t0 < b.t0; });
+  usize merged = 0;
+  for (const auto window : windows) {
+    if (merged == 0U || window.t0 > windows[merged - 1U].t1) windows[merged++] = window;
+    else windows[merged - 1U].t1 = std::max(windows[merged - 1U].t1, window.t1);
+  }
+  windows.resize(merged);
+  std::vector<usize> out;
+  out.reserve(candidates.size());
+  for (const auto i : candidates) {
+    if (i >= spans.size() || spans[i].t0 >= spans[i].t1)
+      return co::Err(co::ErrorCode::InvalidArgument, "date CPCV inner: invalid candidate endpoint");
+    const auto next = std::lower_bound(windows.begin(), windows.end(), spans[i].t0,
+        [](const auto& window, usize t0) { return window.t1 <= t0; });
+    if (next == windows.end() || spans[i].t1 <= next->t0) out.push_back(i);
+  }
   return co::Ok(std::move(out));
 }
 } // namespace atx::engine::eval

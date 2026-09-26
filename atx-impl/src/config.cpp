@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -584,6 +585,23 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "min-dsr")           return parse_double(cfg.min_dsr);
     if (flag == "min-split-sharpe")  return parse_double(cfg.min_split_sharpe);   // W4a split-sample stability floor
     if (flag == "max-pbo")           return parse_double(cfg.max_pbo);            // W4b run-level CSCV-PBO batch gate
+    if (flag == "cpcv-rule") {
+        if (value == "observation-v1") cfg.cpcv_rule = atx::engine::eval::CpcvRule::ObservationV1;
+        else if (value == "date-v2") cfg.cpcv_rule = atx::engine::eval::CpcvRule::DateV2;
+        else return atx::core::Err(EC::InvalidArgument,
+            "--cpcv-rule must be observation-v1 or date-v2");
+        return atx::core::Ok();
+    }
+    if (flag == "cpcv-embargo-dates" || flag == "cpcv-max-working-bytes") {
+        unsigned long long parsed = 0;
+        ATX_TRY_VOID(parse_ull(parsed));
+        if (parsed > static_cast<unsigned long long>(std::numeric_limits<long long>::max()) ||
+            (flag == "cpcv-max-working-bytes" && parsed == 0U))
+            return atx::core::Err(EC::InvalidArgument, "CPCV integer setting out of range");
+        if (flag == "cpcv-embargo-dates") cfg.cpcv_embargo_dates = static_cast<atx::usize>(parsed);
+        else cfg.cpcv_max_working_bytes = static_cast<atx::u64>(parsed);
+        return atx::core::Ok();
+    }
     if (flag == "pbo-rule") {
         if (value == "legacy-gather-v1") cfg.pbo_rule = atx::engine::eval::PboRule::LegacyGatherV1;
         else if (value == "cached-moments-v2") cfg.pbo_rule = atx::engine::eval::PboRule::CachedMomentsV2;

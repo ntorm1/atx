@@ -19,7 +19,7 @@
 
 #include "atx/core/linalg/linalg.hpp" // MatX
 
-#include "atx/engine/eval/cpcv.hpp"        // eval::CpcvConfig, eval::cpcv_folds, eval::LabelSpan
+#include "atx/engine/eval/cpcv_date.hpp"        // eval::CpcvConfig, eval::cpcv_folds, eval::LabelSpan
 #include "atx/engine/learn/latent.hpp"     // detail::pearson (reused, order-fixed)
 #include "atx/engine/learn/nn/layers.hpp"  // nn::Linear, nn::Dropout
 #include "atx/engine/learn/nn/loss.hpp"    // nn::MseLoss
@@ -237,6 +237,29 @@ InnerSplit inner_purged_split(std::span<const eval::LabelSpan> spans,
   return out;
 }
 
+[[nodiscard]] atx::core::Result<InnerSplit> inner_split_checked(
+    std::span<const eval::LabelSpan> spans, std::span<const atx::usize> train_ord,
+    atx::f64 frac, atx::usize embargo, eval::CpcvRule rule) {
+  if (rule == eval::CpcvRule::ObservationV1)
+    return atx::core::Ok(inner_purged_split(spans, train_ord, frac, embargo));
+  InnerSplit out;
+  if (train_ord.empty()) return atx::core::Ok(std::move(out));
+  const auto n_val = std::max<atx::usize>(1U, static_cast<atx::usize>(
+      std::ceil(frac * static_cast<atx::f64>(train_ord.size()))));
+  const auto boundary = train_ord.size() - n_val;
+  out.val.assign(train_ord.begin() + static_cast<std::ptrdiff_t>(boundary), train_ord.end());
+  ATX_TRY(auto kept, eval::cpcv_date_train(spans, train_ord.first(boundary), out.val, embargo));
+  out.inner_train = std::move(kept);
+  return atx::core::Ok(std::move(out));
+}
+
+[[nodiscard]] atx::core::Result<std::vector<eval::LabelSpan>> seq_spans_checked(
+    const std::vector<atx::usize>& dates, atx::u16 horizon, eval::CpcvRule rule) {
+  if (rule == eval::CpcvRule::ObservationV1)
+    return atx::core::Ok(seq_label_spans(dates, horizon));
+  return date_label_spans_v2(dates, horizon);
+}
+
 // ---------------------------------------------------------------------------
 //  Design assembly — copy each selected sample's flat (L*F) window into a MatX
 //  row (the Trainer's time-major (B, T*C) encoding, which is byte-identical to
@@ -357,7 +380,8 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
   }
   // The embargo fraction is turned into a date count below (embargo_len_of); a NaN or
   // out-of-range value would make that float->usize conversion undefined.
-  if (!(cpcv.embargo >= 0.0 && cpcv.embargo <= 1.0)) {
+  if (cpcv.rule == eval::CpcvRule::ObservationV1 &&
+      !(cpcv.embargo >= 0.0 && cpcv.embargo <= 1.0)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "fit_seq_alpha: cpcv.embargo must be in [0, 1]");
   }
@@ -383,7 +407,13 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
   }
 
   const std::vector<atx::usize> used_dates = seq_used_dates(seq);
-  const atx::usize embargo_len = embargo_len_of(cpcv, used_dates.size());
+  if (cpcv.rule != eval::CpcvRule::ObservationV1 &&
+      (cpcv.rule != eval::CpcvRule::DateV2 || horizons.empty() ||
+       used_dates.size() > cpcv.max_working_bytes / 128U))
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "sequence DateV2: rule/horizon/span budget");
+
+  const atx::usize embargo_len = cpcv.rule == eval::CpcvRule::DateV2
+      ? cpcv.embargo_dates : embargo_len_of(cpcv, used_dates.size());
 
   std::vector<atx::f64> oof_pred_sum(seq.n_samples, 0.0);
   std::vector<atx::u32> oof_pred_cnt(seq.n_samples, 0U);
@@ -394,9 +424,11 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
   for (atx::usize h = 0; h < horizons.size(); ++h) {
     const auto label_h = [&seq, h](atx::usize s) noexcept -> atx::f64 { return seq.y[h][s]; };
 
-    const std::vector<eval::LabelSpan> spans = seq_label_spans(used_dates, horizons[h]);
-    const std::vector<eval::CpcvFold> dfolds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cpcv);
+    ATX_TRY(auto spans, seq_spans_checked(used_dates, horizons[h], cpcv.rule));
+    ATX_TRY(auto plan, eval::cpcv_plan(spans, cpcv));
+    const auto& dfolds = plan.folds;
+    if (cpcv.rule == eval::CpcvRule::DateV2)
+      m.cpcv_metadata.push_back(std::move(plan.metadata));
 
     std::vector<atx::f64> oos_pred;
     std::vector<atx::f64> oos_label;
@@ -418,10 +450,9 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
         val_samples = test_samples;
         break;
       case SeqValidationRule::InnerPurgedV2: {
-        const InnerSplit split =
-            inner_purged_split(std::span<const eval::LabelSpan>{spans},
+        ATX_TRY(auto split, inner_split_checked(std::span<const eval::LabelSpan>{spans},
                                std::span<const atx::usize>{df.train_idx},
-                               proto.inner_val_frac, embargo_len);
+                               proto.inner_val_frac, embargo_len, cpcv.rule));
         fit_samples = samples_for_ordinals(seq, used_dates,
                                            std::span<const atx::usize>{split.inner_train});
         val_samples =
@@ -582,15 +613,16 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
         h_dep = horizons[h];
       }
     }
-    const std::vector<eval::LabelSpan> spans = seq_label_spans(used_dates, h_dep);
+    if (cpcv.rule == eval::CpcvRule::DateV2)
+      for (const auto horizon : horizons) h_dep = std::max(h_dep, horizon);
+    ATX_TRY(auto spans, seq_spans_checked(used_dates, h_dep, cpcv.rule));
     std::vector<atx::usize> all_ord(used_dates.size());
     for (atx::usize o = 0; o < all_ord.size(); ++o) {
       all_ord[o] = o;
     }
-    const InnerSplit split =
-        inner_purged_split(std::span<const eval::LabelSpan>{spans},
+    ATX_TRY(auto split, inner_split_checked(std::span<const eval::LabelSpan>{spans},
                            std::span<const atx::usize>{all_ord}, proto.inner_val_frac,
-                           embargo_len);
+                           embargo_len, cpcv.rule));
     fit_samples =
         samples_for_ordinals(seq, used_dates, std::span<const atx::usize>{split.inner_train});
     val_samples = samples_for_ordinals(seq, used_dates, std::span<const atx::usize>{split.val});

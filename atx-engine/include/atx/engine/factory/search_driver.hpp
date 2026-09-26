@@ -342,6 +342,9 @@ struct SearchResult {
   atx::usize ic_screen_evaluations{0};
   atx::usize ic_screen_unavailable{0}; // preparation/scratch/runtime errors; fail open
   atx::usize ic_prepass_vm_evaluations{0}; // both-on path, no population signal cache
+  bool cpcv_invalid{false}; // invalid checked plan: no evaluation/admission
+  bool cpcv_resume_mismatch{false};
+  eval::CpcvMetadata cpcv_metadata; // populated only for active DateV2
   bool ic_screen_resume_mismatch{false}; // incompatible/missing active checkpoint identity
   bool ic_screen_cache_mismatch{false}; // injected recipe/geometry differs from this run
 };

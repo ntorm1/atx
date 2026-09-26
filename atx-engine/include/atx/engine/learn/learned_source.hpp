@@ -69,6 +69,7 @@
 
 #include "atx/core/linalg/linalg.hpp" // VecX
 
+#include "atx/engine/eval/cpcv_date.hpp"
 #include "atx/engine/learn/feature_matrix.hpp" // FeatureSpec, FeatureMatrix
 #include "atx/engine/learn/latent.hpp"         // LatentAugmentation, interaction_value
 #include "atx/engine/loop/panel_types.hpp"     // PanelView, PanelField
@@ -216,6 +217,8 @@ struct NnPayload {
 //                S5-4/S5-6 model before it fills its own) still constructs.
 // ===========================================================================
 struct LearnedModel {
+  // DateV2 only, one record per declared horizon. Legacy models keep this empty.
+  std::vector<eval::CpcvMetadata> cpcv_metadata;
   ModelKind kind{ModelKind::Linear};
   std::vector<atx::core::linalg::VecX> coeffs;
   std::vector<atx::f64> blend_w;

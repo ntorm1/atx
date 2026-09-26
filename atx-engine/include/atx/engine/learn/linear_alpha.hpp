@@ -58,6 +58,7 @@
 
 #include <Eigen/Dense> // Eigen::Index, MatX/VecX
 
+#include "atx/core/error.hpp"
 #include "atx/core/types.hpp" // f64, u16, u32, usize
 
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
@@ -213,5 +214,11 @@ build_design(const FeatureMatrix &fm, const LearnedModel &model_shell,
 //  stable two-arg call surface (the series already lives on the model).
 // ===========================================================================
 [[nodiscard]] atx::f64 oos_deflated_sharpe(const LearnedModel &m, const FeatureMatrix &fm);
+
+// Checked entrypoint for DateV2 configuration/geometry failures. Existing
+// value-returning overloads retain a fail-fast contract, never a full-data fallback.
+[[nodiscard]] atx::core::Result<LearnedModel>
+fit_linear_checked(const FeatureMatrix& fm, const LatentAugmentation& aug,
+                 const LinearAlphaCfg& cfg, LearnFitTrace* trace = nullptr);
 
 } // namespace atx::engine::learn

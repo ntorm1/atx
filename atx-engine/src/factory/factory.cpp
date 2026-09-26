@@ -71,6 +71,9 @@ inline void fill_scored_hashes(FactoryReport &rep, const SearchResult &res) {
   rep.ic_prepass_vm_evaluations = res.ic_prepass_vm_evaluations;
   rep.ic_rejected = res.ic_rejected_hashes.size();
   rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+  rep.cpcv_invalid = res.cpcv_invalid;
+  rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
+  rep.cpcv_metadata = res.cpcv_metadata;
   rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
   rep.scored_canon_hashes.clear();
   rep.scored_canon_hashes.reserve(res.all_scored.size());
@@ -423,8 +426,11 @@ void finalize_run_pbo(FactoryReport &rep,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
   const SearchResult res = driver.run(cfg.search, pool);
-  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch) {
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
     rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
     rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
     rep.seed = res.seed;
     return rep; // never rescore or admit from incompatible screen state
@@ -601,8 +607,11 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1);
   const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
-  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch) {
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
     rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
     rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
     rep.seed = res.seed;
     return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
@@ -916,8 +925,11 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_par);
   const SearchResult res = driver.run(search_cfg, search_pool);
-  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch) {
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
     rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
     rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
     rep.seed = res.seed;
     return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
@@ -1550,8 +1562,11 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_oos_pre);
   const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
-  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch) {
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
     rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
     rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
     rep.seed = res.seed;
     return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
@@ -1961,8 +1976,11 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_par_oos);
   const SearchResult res = driver.run(search_cfg, search_pool);
-  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch) {
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
     rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
     rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
     rep.seed = res.seed;
     return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission

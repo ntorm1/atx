@@ -9,6 +9,7 @@
 
 #include <Eigen/Dense> // Eigen::Index, MatX/VecX
 
+#include "atx/core/macro.hpp"
 #include "atx/core/types.hpp" // f64, u16, u32, usize
 
 #include "atx/core/linalg/linalg.hpp"     // MatX, VecX
@@ -175,7 +176,17 @@ LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
 
 LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
                         const LinearAlphaCfg &cfg, LearnFitTrace *trace) {
+  auto result = fit_linear_checked(fm, aug, cfg, trace);
+  ATX_CHECK(result.has_value());
+  return std::move(*result);
+}
+
+atx::core::Result<LearnedModel> fit_linear_checked(
+    const FeatureMatrix &fm, const LatentAugmentation &aug,
+    const LinearAlphaCfg &cfg, LearnFitTrace *trace) {
+  ATX_TRY_VOID(validate_date_cpcv_inputs(fm, cfg.horizons, cfg.cpcv));
   LearnedModel m;
+  std::vector<eval::CpcvMetadata> cpcv_metadata;
   m.kind = ModelKind::Linear;
   m.aug = aug;
   m.n_base_features = static_cast<atx::u32>(fm.n_features);
@@ -209,10 +220,10 @@ LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
 
   for (atx::usize h = 0; h < cfg.horizons.size(); ++h) {
     // CPCV date-folds for this horizon's label span.
-    const std::vector<eval::LabelSpan> spans = date_label_spans(fm, cfg.horizons[h]);
-    const std::vector<eval::CpcvFold> dfolds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
-    const Folds folds = expand_date_folds(dfolds, fm);
+    ATX_TRY(auto plan, learn_cpcv_plan(fm, cfg.horizons[h], cfg.cpcv));
+    const Folds folds = expand_date_folds(plan.folds, fm);
+    if (cfg.cpcv.rule == eval::CpcvRule::DateV2)
+      cpcv_metadata.push_back(std::move(plan.metadata));
 
     // OOS prediction + label accumulation across folds (for the horizon IC).
     std::vector<atx::f64> oos_pred;
@@ -336,7 +347,8 @@ LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
       w = u;
     }
   }
-  return m;
+  m.cpcv_metadata = std::move(cpcv_metadata);
+  return atx::core::Ok(std::move(m));
 }
 
 atx::f64 oos_deflated_sharpe(const LearnedModel &m, const FeatureMatrix &fm) {

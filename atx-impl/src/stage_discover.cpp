@@ -58,6 +58,7 @@
 #endif
 
 namespace atx::impl {
+namespace eval = atx::engine::eval;
 
 namespace exec = atx::engine::exec;
 
@@ -169,10 +170,18 @@ namespace {
 
     os << '{';
     // Provenance-format version so a reader can branch on schema evolution.
-    kv_i("v", cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1 ? 3 :
+    kv_i("v", cfg.cpcv_rule != atx::engine::eval::CpcvRule::ObservationV1 ? 4 :
+        cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1 ? 3 :
         (cfg.ic_screen.rule == atx::engine::factory::IcScreenRule::DisabledV1 ? 1 : 2));
     // Panel + seed/search environment.
     kv_s("panel", cfg.panel);
+    if (cfg.cpcv_rule != atx::engine::eval::CpcvRule::ObservationV1) {
+        kv_s("cpcv_rule", std::string(atx::engine::eval::cpcv_rule_name(cfg.cpcv_rule)));
+        kv_i("cpcv_embargo_dates", static_cast<long long>(cfg.cpcv_embargo_dates));
+        kv_i("cpcv_max_working_bytes", static_cast<long long>(cfg.cpcv_max_working_bytes));
+        kv_i("cpcv_n_groups", 6); kv_i("cpcv_n_test_groups", 2);
+    }
+
     // An omitted rule in old schema1/2 means LegacyGatherV1. Preserve that exact
     // representation for explicit V1; schema3 always names the new recipe.
     if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1)
@@ -871,6 +880,13 @@ atx::core::Result<StageResult> run_discover_gated(
         return atx::core::Err(rep_r.error());
     }
     const factory::FactoryReport rep = std::move(*rep_r);
+    if (rep.cpcv_invalid || rep.cpcv_resume_mismatch) {
+        const std::string message = rep.cpcv_invalid
+            ? "discover: invalid CPCV date plan or working-byte budget"
+            : "discover: checkpoint CPCV recipe differs from this run";
+        if (rec) { (void)rec->mark_failed(now_unix(), message); }
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, message);
+    }
     if (rep.ic_screen_cache_mismatch || rep.ic_screen_resume_mismatch) {
         const std::string message = rep.ic_screen_cache_mismatch
             ? "discover: IC cache configuration differs from this run"
@@ -947,9 +963,27 @@ atx::core::Result<StageResult> run_discover_gated(
                 "discover (gated): cannot write manifest: " + manifest_path);
         }
         mf << "gated=1\n";
-        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
+        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1 ||
+            cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
             cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
             mf << "config_json=" << build_config_json(cfg) << '\n';
+        }
+        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
+            const auto& meta = rep.cpcv_metadata;
+            mf << "cpcv_rule=" << eval::cpcv_rule_name(cfg.cpcv_rule) << '\n';
+            mf << "cpcv_recipe_identity=" << to_hex16(meta.recipe_identity) << '\n';
+            mf << "cpcv_embargo_dates=" << cfg.cpcv_embargo_dates << '\n';
+            mf << "cpcv_max_working_bytes=" << cfg.cpcv_max_working_bytes << '\n';
+            mf << "cpcv_fold_count=" << meta.fold_count << '\n';
+            mf << "cpcv_path_count=" << meta.paths.size() << '\n';
+            for (atx::usize p = 0; p < meta.paths.size(); ++p) {
+                mf << "cpcv_path_" << p << '=';
+                for (atx::usize g = 0; g < meta.paths[p].size(); ++g) {
+                    if (g != 0U) mf << ',';
+                    mf << meta.paths[p][g];
+                }
+                mf << '\n';
+            }
         }
         if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
             mf << "ic_screen_evaluations=" << rep.ic_screen_evaluations << '\n';
@@ -1099,6 +1133,12 @@ atx::core::Result<StageResult> run_discover_gated(
         {"population",      std::to_string(sc.population)},
         {"generations",     std::to_string(sc.generations)},
     };
+    if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
+        sr.kvs.emplace_back("cpcv_rule", std::string(eval::cpcv_rule_name(cfg.cpcv_rule)));
+        sr.kvs.emplace_back("cpcv_recipe_identity", to_hex16(rep.cpcv_metadata.recipe_identity));
+        sr.kvs.emplace_back("cpcv_fold_count", std::to_string(rep.cpcv_metadata.fold_count));
+        sr.kvs.emplace_back("cpcv_path_count", std::to_string(rep.cpcv_metadata.paths.size()));
+    }
     if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
         sr.kvs.emplace_back("ic_screen_evaluations", std::to_string(rep.ic_screen_evaluations));
         sr.kvs.emplace_back("ic_screen_rejected", std::to_string(rep.ic_rejected));
@@ -1244,6 +1284,10 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
 
     // 5. Build SearchConfig.
     factory::SearchConfig sc;
+    sc.fitness.cpcv.rule = cfg.cpcv_rule;
+    sc.fitness.cpcv.embargo_dates = cfg.cpcv_embargo_dates;
+    sc.fitness.cpcv.max_working_bytes = cfg.cpcv_max_working_bytes;
+
     // Zero window bounds resolve on the actual train subpanel inside SearchDriver,
     // including Factory's later OOS split. Future validation labels cannot enter it.
     sc.ic_screen = cfg.ic_screen;
@@ -1341,6 +1385,12 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
     factory::SearchDriver driver{lib, panel, policy, sim, cfg.seed_exprs, fields, weak_panel,
                                  numeric_excluded_fields, extra_group_fields};
     factory::SearchResult res = driver.run(sc, pool);
+    if (res.cpcv_invalid || res.cpcv_resume_mismatch) {
+        const std::string message = res.cpcv_invalid
+            ? "discover: invalid CPCV date plan or working-byte budget"
+            : "discover: checkpoint CPCV recipe differs from this run";
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, message);
+    }
     if (res.ic_screen_cache_mismatch || res.ic_screen_resume_mismatch) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
             res.ic_screen_cache_mismatch
@@ -1394,9 +1444,27 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
         mf << "seed="          << cfg.seed             << '\n';
         mf << "count="         << n                    << '\n';
         mf << "search_digest=" << to_hex16(res.digest) << '\n';
-        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
+        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1 ||
+            cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
             cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
             mf << "config_json=" << build_config_json(cfg) << '\n';
+        }
+        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
+            const auto& meta = res.cpcv_metadata;
+            mf << "cpcv_rule=" << eval::cpcv_rule_name(cfg.cpcv_rule) << '\n';
+            mf << "cpcv_recipe_identity=" << to_hex16(meta.recipe_identity) << '\n';
+            mf << "cpcv_embargo_dates=" << cfg.cpcv_embargo_dates << '\n';
+            mf << "cpcv_max_working_bytes=" << cfg.cpcv_max_working_bytes << '\n';
+            mf << "cpcv_fold_count=" << meta.fold_count << '\n';
+            mf << "cpcv_path_count=" << meta.paths.size() << '\n';
+            for (atx::usize p = 0; p < meta.paths.size(); ++p) {
+                mf << "cpcv_path_" << p << '=';
+                for (atx::usize g = 0; g < meta.paths[p].size(); ++g) {
+                    if (g != 0U) mf << ',';
+                    mf << meta.paths[p][g];
+                }
+                mf << '\n';
+            }
         }
         if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
             mf << "ic_screen_evaluations=" << res.ic_screen_evaluations << '\n';
@@ -1431,6 +1499,12 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
         {"population",    std::to_string(sc.population)},
         {"generations",   std::to_string(sc.generations)},
     };
+    if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
+        sr.kvs.emplace_back("cpcv_rule", std::string(eval::cpcv_rule_name(cfg.cpcv_rule)));
+        sr.kvs.emplace_back("cpcv_recipe_identity", to_hex16(res.cpcv_metadata.recipe_identity));
+        sr.kvs.emplace_back("cpcv_fold_count", std::to_string(res.cpcv_metadata.fold_count));
+        sr.kvs.emplace_back("cpcv_path_count", std::to_string(res.cpcv_metadata.paths.size()));
+    }
     if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
         sr.kvs.emplace_back("ic_screen_evaluations", std::to_string(res.ic_screen_evaluations));
         sr.kvs.emplace_back("ic_screen_rejected", std::to_string(res.ic_rejected_hashes.size()));

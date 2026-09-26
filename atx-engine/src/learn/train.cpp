@@ -1,5 +1,7 @@
 #include "atx/engine/learn/train.hpp"
 
+#include <limits>
+#include <utility>
 #include <vector> // std::vector
 
 #include "atx/core/types.hpp" // usize, u16
@@ -25,6 +27,68 @@ namespace atx::engine::learn {
     }
   }
   return spans;
+}
+
+atx::core::Result<std::vector<eval::LabelSpan>>
+date_label_spans_v2(std::span<const atx::usize> dates, atx::u16 horizon) {
+  if (horizon == 0U)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: zero horizon");
+  std::vector<eval::LabelSpan> out;
+  atx::usize distinct = 0;
+  for (atx::usize i = 0; i < dates.size(); ++i) {
+    if (i != 0U && dates[i] < dates[i-1U])
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: date order");
+    if (i == 0U || dates[i] != dates[i-1U]) ++distinct;
+  }
+  out.reserve(distinct);
+  const auto width = static_cast<atx::usize>(horizon) + 1U;
+  for (const auto d : dates) {
+    if (d > std::numeric_limits<atx::usize>::max() - width ||
+        (!out.empty() && d < out.back().t0))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: date order/overflow");
+    if (out.empty() || out.back().t0 != d) out.push_back({d, d + width});
+  }
+  return atx::core::Ok(std::move(out));
+}
+
+atx::core::Status validate_date_cpcv_inputs(const FeatureMatrix& fm,
+    std::span<const atx::u16> horizons, const eval::CpcvConfig& cfg) {
+  if (cfg.rule == eval::CpcvRule::ObservationV1) return atx::core::Ok();
+  if (cfg.rule != eval::CpcvRule::DateV2 || horizons.empty() ||
+      fm.row_valid.size() != fm.n_rows() || fm.row_inst.size() != fm.n_rows() ||
+      fm.Y.size() != horizons.size() ||
+      (fm.n_features != 0U && fm.n_rows() > std::numeric_limits<atx::usize>::max() / fm.n_features) ||
+      fm.X.size() != fm.n_rows() * fm.n_features)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: invalid feature/label geometry");
+  for (atx::usize h = 0; h < horizons.size(); ++h) {
+    if (horizons[h] == 0U || fm.Y[h].size() != fm.n_rows() ||
+        (!fm.label_horizons.empty() &&
+         (fm.label_horizons.size() != horizons.size() || fm.label_horizons[h] != horizons[h])))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: label horizon mismatch");
+  }
+  for (atx::usize r = 0; r < fm.n_rows(); ++r)
+    if (fm.row_date[r] >= fm.n_dates || fm.row_inst[r] >= fm.n_instruments ||
+        (r != 0U && fm.row_date[r] < fm.row_date[r-1U]))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: invalid date/instrument axis");
+  return atx::core::Ok();
+}
+
+atx::core::Result<eval::CpcvPlan>
+learn_cpcv_plan(const FeatureMatrix& fm, atx::u16 horizon, const eval::CpcvConfig& cfg) {
+  if (cfg.rule == eval::CpcvRule::ObservationV1)
+    return eval::cpcv_plan(date_label_spans(fm, horizon), cfg);
+  if (fm.row_valid.size() != fm.row_date.size())
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: row geometry");
+  for (const auto date : fm.row_date)
+    if (date >= fm.n_dates)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: date outside axis");
+  atx::usize distinct = 0;
+  for (atx::usize i = 0; i < fm.row_date.size(); ++i)
+    if (i == 0U || fm.row_date[i] != fm.row_date[i-1U]) ++distinct;
+  if (distinct > cfg.max_working_bytes / 128U)
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "learn DateV2: span budget");
+  ATX_TRY(auto spans, date_label_spans_v2(fm.row_date, horizon));
+  return eval::cpcv_plan(spans, cfg);
 }
 
 namespace detail {

@@ -25,6 +25,18 @@ namespace pipeline_detail {
 // coefficients, and every GBT forest's node bytes. All deterministic from the
 // seeded fit; NO clock / map / filesystem input. Order-fixed ascending walks.
 void fold_model(std::vector<atx::f64> &buf, const LearnedModel &m) {
+  for (const auto& meta : m.cpcv_metadata) {
+    buf.push_back(2.0); // active DateV2 provenance; no added V1 bytes
+    buf.push_back(static_cast<atx::f64>(meta.recipe_identity >> 32U));
+    buf.push_back(static_cast<atx::f64>(meta.recipe_identity & 0xffffffffULL));
+    buf.push_back(static_cast<atx::f64>(meta.label_identity >> 32U));
+    buf.push_back(static_cast<atx::f64>(meta.label_identity & 0xffffffffULL));
+    buf.push_back(static_cast<atx::f64>(meta.fold_count));
+    for (const auto offset : meta.group_offsets) buf.push_back(static_cast<atx::f64>(offset));
+    for (const auto& path : meta.paths)
+      for (const auto fold : path) buf.push_back(static_cast<atx::f64>(fold));
+  }
+
   buf.push_back(static_cast<atx::f64>(static_cast<atx::u8>(m.kind)));
   buf.push_back(static_cast<atx::f64>(m.trial_count));
   buf.insert(buf.end(), m.blend_w.begin(), m.blend_w.end());

@@ -296,6 +296,9 @@ struct FactoryReport {
   atx::usize ic_screen_unavailable{0};
   atx::usize ic_prepass_vm_evaluations{0};
   atx::usize ic_rejected{0};
+  bool cpcv_invalid{false}; // invalid checked plan: no evaluation/admission
+  bool cpcv_resume_mismatch{false};
+  eval::CpcvMetadata cpcv_metadata; // populated only for active DateV2
   bool ic_screen_resume_mismatch{false};
   bool ic_screen_cache_mismatch{false};
 

@@ -505,8 +505,18 @@ LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
 }
 
 LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
-                     const GbtCfg &cfg, LearnFitTrace *trace) {
+                        const GbtCfg &cfg, LearnFitTrace *trace) {
+  auto result = fit_gbt_checked(fm, aug, cfg, trace);
+  ATX_CHECK(result.has_value());
+  return std::move(*result);
+}
+
+atx::core::Result<LearnedModel> fit_gbt_checked(
+    const FeatureMatrix &fm, const LatentAugmentation &aug,
+    const GbtCfg &cfg, LearnFitTrace *trace) {
+  ATX_TRY_VOID(validate_date_cpcv_inputs(fm, cfg.horizons, cfg.cpcv));
   LearnedModel m;
+  std::vector<eval::CpcvMetadata> cpcv_metadata;
   m.kind = ModelKind::Gbt;
   m.aug = aug;
   m.n_base_features = static_cast<atx::u32>(fm.n_features);
@@ -535,10 +545,10 @@ LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
   std::vector<atx::u32> oof_pred_cnt(fm.n_rows(), 0U);
 
   for (atx::usize h = 0; h < cfg.horizons.size(); ++h) {
-    const std::vector<eval::LabelSpan> spans = date_label_spans(fm, cfg.horizons[h]);
-    const std::vector<eval::CpcvFold> dfolds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
-    const Folds folds = expand_date_folds(dfolds, fm);
+    ATX_TRY(auto plan, learn_cpcv_plan(fm, cfg.horizons[h], cfg.cpcv));
+    const Folds folds = expand_date_folds(plan.folds, fm);
+    if (cfg.cpcv.rule == eval::CpcvRule::DateV2)
+      cpcv_metadata.push_back(std::move(plan.metadata));
 
     std::vector<atx::f64> oos_pred;
     std::vector<atx::f64> oos_label;
@@ -663,7 +673,8 @@ LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
       w = u;
     }
   }
-  return m;
+  m.cpcv_metadata = std::move(cpcv_metadata);
+  return atx::core::Ok(std::move(m));
 }
 
 } // namespace atx::engine::learn

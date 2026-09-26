@@ -2,6 +2,7 @@
 
 #include "atx/engine/alpha/vwap_rule.hpp"
 #include "atx/engine/factory/ic_screen.hpp"
+#include "atx/engine/eval/cpcv.hpp"
 #include "atx/engine/eval/pbo.hpp"
 
 #include <array>
@@ -129,6 +130,10 @@ struct RunConfig {
     double      max_pbo = 1.0; // --max-pbo (run-level CSCV-PBO batch gate; 1.0 = off, active when < 1.0)
     // --pbo-rule cached-moments-v2|legacy-gather-v1. V2 binds a new resume
     // identity; explicit V1 keeps the previous numerical recipe/identity.
+    // DateV2 is opt-in; legacy CPCV bytes remain unchanged.
+    atx::engine::eval::CpcvRule cpcv_rule{atx::engine::eval::CpcvRule::ObservationV1};
+    atx::usize cpcv_embargo_dates{0};
+    atx::u64 cpcv_max_working_bytes{64ULL * 1024ULL * 1024ULL};
     atx::engine::eval::PboRule pbo_rule{atx::engine::eval::PboRule::CachedMomentsV2};
     // --robust-holdout-frac (W4a): OPTIONAL. When > 0, discover builds a weak/holdout
     // sub-universe Panel = the main panel with its universe restricted to a

@@ -109,6 +109,47 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                                              const IcScreenCache *prepared_ic_screen) {
   SearchResult res;
   res.seed = cfg.master_seed;
+  std::optional<atx::u64> cpcv_identity = cfg.fitness.cpcv.rule == eval::CpcvRule::ObservationV1
+      ? std::nullopt : std::optional<atx::u64>{(eval::cpcv_recipe_identity(cfg.fitness.cpcv) ^
+          (static_cast<atx::u64>(panel_.dates()) * 1099511628211ULL))};
+  if (cpcv_identity) {
+    const auto bind = [&](atx::u64 v) { *cpcv_identity = (*cpcv_identity ^ v) * 1099511628211ULL; };
+    bind(cfg.fitness.cpcv_session_stride);
+    bind(static_cast<atx::u64>(cfg.fidelity.enabled));
+    if (cfg.fidelity.enabled) {
+      for (const auto& rung : cfg.fidelity.rungs) {
+        bind(rung.date_stride); bind(rung.inst_stride); bind(rung.n_folds);
+      }
+    }
+    CpcvCache validation_cache;
+    auto plan = validation_cache.get_or_build_checked(
+        panel_.dates(), cfg.fitness.cpcv, cfg.fitness.cpcv_session_stride);
+    if (!plan) { res.cpcv_invalid = true; return res; }
+    if (cfg.fidelity.enabled) {
+      for (const auto& rung : cfg.fidelity.rungs) {
+        if (rung.full()) break;
+        if (rung.date_stride == 0U || rung.inst_stride == 0U) {
+          res.cpcv_invalid = true; return res;
+        }
+        auto rung_cfg = cfg.fitness.cpcv;
+        if (rung.n_folds > 1U) {
+          rung_cfg.n_groups = rung.n_folds;
+          rung_cfg.n_test_groups = std::min<atx::usize>(rung_cfg.n_test_groups, rung.n_folds - 1U);
+        }
+        const auto periods = panel_.dates() / rung.date_stride +
+            static_cast<atx::usize>(panel_.dates() % rung.date_stride != 0U);
+        auto rung_plan = validation_cache.get_or_build_checked(periods, rung_cfg, rung.date_stride);
+        if (!rung_plan) { res.cpcv_invalid = true; return res; }
+      }
+    }
+    res.cpcv_metadata = (*plan)->metadata;
+    res.digest = *cpcv_identity;
+    if (resume != nullptr && resume->cache_blob.empty()) {
+      res.cpcv_resume_mismatch = true;
+      return res;
+    }
+  }
+
   if (cfg.ic_screen.rule != IcScreenRule::DisabledV1 && prepared_ic_screen != nullptr) {
     if (!ic_screen_cache_matches(*prepared_ic_screen, panel_, cfg.ic_screen)) {
       res.ic_screen_cache_mismatch = true;
@@ -235,13 +276,17 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     auto best_pg = deserialize_f64_list(resume->best_per_gen_blob);
     std::vector<atx::u64> cache_keys;
     std::vector<CachedScore> cache_vals;
-    std::optional<atx::u64> restored_ic_identity;
+    std::optional<atx::u64> restored_ic_identity, restored_cpcv_identity;
     auto cache_st = deserialize_cache(resume->cache_blob, cache_keys, cache_vals,
-                                      &restored_ic_identity);
+                                      &restored_ic_identity, &restored_cpcv_identity);
     if (!canon_keys || !archive_entries || !best_pg || !cache_st) {
       SearchResult err_res; // corrupt accumulated-state blob -> fail loud
       err_res.seed = cfg.master_seed;
       return err_res;
+    }
+    if (restored_cpcv_identity != cpcv_identity) {
+      res.cpcv_resume_mismatch = true;
+      return res;
     }
     const bool has_ic_rejection = std::any_of(
         cache_vals.begin(), cache_vals.end(),
@@ -346,7 +391,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
         for (atx::u64 k : ck) {
           cv.push_back(fitness_cache.at(k));
         }
-        entering_cache_blob = serialize_cache(ck, cv, ic_identity);
+        entering_cache_blob = serialize_cache(ck, cv, ic_identity, cpcv_identity);
       }
       entering_archive_blob = serialize_archive(behavior_archive.entries());
       entering_best_pg_blob = serialize_f64_list(res.best_fitness_per_gen);
@@ -1938,6 +1983,7 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
   const RungEvaluator eval = [&](const Genome &g, atx::usize r, const Rung &rung,
                                  atx::usize wid) -> atx::f64 {
     FitnessCfg f = gen_fit;
+    if (f.cpcv.rule == eval::CpcvRule::DateV2) f.cpcv_session_stride = rung.date_stride;
     f.capacity_objective = false;
     f.turnover_objective = false;
     if (rung.n_folds > 1) {

@@ -38,4 +38,30 @@ struct DateCpcvPlan {
 [[nodiscard]] atx::core::Result<DateCpcvPlan>
 cpcv_date_plan(std::span<const LabelSpan> spans, const DateCpcvConfig& config);
 
+// Compact provenance retained by factory caches and fitted learned models.
+// V1 leaves paths/offsets empty; V2 exposes actual combinatorial paths, not a
+// claim that each fold is an independent backtest.
+struct CpcvMetadata {
+  CpcvConfig config;
+  atx::u64 recipe_identity{0};
+  atx::u64 label_identity{0};
+  atx::usize fold_count{0};
+  std::vector<atx::usize> group_offsets;
+  std::vector<std::vector<atx::usize>> paths;
+};
+struct CpcvPlan {
+  std::vector<CpcvFold> folds;
+  CpcvMetadata metadata;
+};
+// Stable recipe identity. Inactive knobs are omitted; callers add geometry or
+// label support identity when caching plans across different datasets.
+[[nodiscard]] atx::u64 cpcv_recipe_identity(const CpcvConfig& config) noexcept;
+[[nodiscard]] atx::core::Result<CpcvPlan>
+cpcv_plan(std::span<const LabelSpan> spans, const CpcvConfig& config);
+// Arbitrary inner-validation subset with the SAME DateV2 endpoint embargo.
+[[nodiscard]] atx::core::Result<std::vector<atx::usize>>
+cpcv_date_train(std::span<const LabelSpan> spans,
+                std::span<const atx::usize> candidates,
+                std::span<const atx::usize> test, atx::usize embargo_dates);
+
 } // namespace atx::engine::eval

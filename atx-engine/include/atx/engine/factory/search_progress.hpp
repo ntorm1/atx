@@ -189,10 +189,15 @@ deserialize_canon(const std::string &blob) {
 // sentinel without changing old checkpoint decoding or inventing a fitness value.
 [[nodiscard]] inline std::string serialize_cache(const std::vector<atx::u64> &keys,
                                                  const std::vector<CachedScore> &vals,
-                                                 std::optional<atx::u64> ic_identity = std::nullopt) {
+                                                 std::optional<atx::u64> ic_identity = std::nullopt,
+                                                 std::optional<atx::u64> cpcv_identity = std::nullopt) {
   std::string out;
   if (ic_identity) {
     out = "ic-screen-v2 " + u64_to_hex(*ic_identity);
+  }
+  if (cpcv_identity) {
+    if (!out.empty()) out += '\n';
+    out += "cpcv-date-v2 " + u64_to_hex(*cpcv_identity);
   }
   for (atx::usize r = 0; r < keys.size(); ++r) {
     if (!out.empty()) {
@@ -224,18 +229,29 @@ deserialize_canon(const std::string &blob) {
 [[nodiscard]] inline atx::core::Status
 deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
                   std::vector<CachedScore> &vals,
-                  std::optional<atx::u64> *ic_identity = nullptr) {
+                  std::optional<atx::u64> *ic_identity = nullptr,
+                  std::optional<atx::u64> *cpcv_identity = nullptr) {
   keys.clear();
   vals.clear();
   if (ic_identity != nullptr) {
     ic_identity->reset();
   }
+  if (cpcv_identity != nullptr) cpcv_identity->reset();
   if (blob.empty()) {
     return atx::core::Ok();
   }
+  bool saw_cpcv_identity = false;
   bool saw_identity = false;
   for (const std::string &line : detail::split_on(blob, '\n')) {
     const std::vector<std::string> f = detail::split_on(line, ' ');
+    if (!f.empty() && f.front() == "cpcv-date-v2") {
+      atx::u64 identity = 0;
+      if (saw_cpcv_identity || !keys.empty() || f.size() != 2U || !hex_to_u64(f[1], identity))
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "deserialize_cache: bad CPCV identity");
+      saw_cpcv_identity = true;
+      if (cpcv_identity != nullptr) *cpcv_identity = identity;
+      continue;
+    }
     if (!f.empty() && f.front() == "ic-screen-v2") {
       atx::u64 identity = 0;
       if (saw_identity || !keys.empty() || f.size() != 2U ||

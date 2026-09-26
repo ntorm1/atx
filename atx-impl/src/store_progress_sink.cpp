@@ -96,6 +96,14 @@ atx::u64 compute_discover_fingerprint(const RunConfig& cfg) {
   // V1 omits this addition to reproduce existing checkpoint identities. V2
   // must never resume a run recorded under the old numerical recipe, including
   // off-gate runs whose always-on OOS diagnostic can still calculate PBO.
+  if (cfg.cpcv_rule != atx::engine::eval::CpcvRule::ObservationV1) {
+    h = fp::fold_string(h, "cpcv-date-recipe-v2");
+    h = fp::fold_u64(h, static_cast<atx::u64>(cfg.cpcv_rule));
+    h = fp::fold_u64(h, cfg.cpcv_embargo_dates);
+    h = fp::fold_u64(h, cfg.cpcv_max_working_bytes);
+    h = fp::fold_u64(h, 6U); // discover's fixed K,k
+    h = fp::fold_u64(h, 2U);
+  }
   if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
     h = fp::fold_string(h, "pbo-numerical-rule");
     h = fp::fold_u64(h, static_cast<atx::u64>(cfg.pbo_rule));

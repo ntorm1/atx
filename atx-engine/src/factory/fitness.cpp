@@ -302,15 +302,17 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 
   // S3-1 PERF: use cpcv_cache when supplied; fall back to recomputing when nullptr.
   // Both paths produce bit-identical spans and folds (pure deterministic functions).
+  CpcvCache local_cache;
+  if (cpcv_cache == nullptr && cfg.cpcv.rule != eval::CpcvRule::ObservationV1)
+    cpcv_cache = &local_cache;
   OosAggregate agg{};
   if (cpcv_cache != nullptr) {
-    const CpcvCache::Entry &entry = cpcv_cache->get_or_build(strm.n_periods(), cfg.cpcv);
-    agg = aggregate_oos(strm, entry.folds, insts, cfg.book_size);
+    ATX_TRY(const auto* entry, cpcv_cache->get_or_build_checked(strm.n_periods(), cfg.cpcv, cfg.cpcv_session_stride));
+    agg = aggregate_oos(strm, entry->folds, insts, cfg.book_size);
   } else {
     const std::vector<eval::LabelSpan> spans = point_label_spans(strm.n_periods());
-    const std::vector<eval::CpcvFold> folds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
-    agg = aggregate_oos(strm, folds, insts, cfg.book_size);
+    ATX_TRY(auto plan, eval::cpcv_plan(std::span<const eval::LabelSpan>{spans}, cfg.cpcv));
+    agg = aggregate_oos(strm, plan.folds, insts, cfg.book_size);
   }
   const atx::f64 wq = agg.wq;
 
@@ -324,14 +326,14 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     // function of n_periods; only the streams differ).
     OosAggregate weak_agg{};
     if (cpcv_cache != nullptr) {
-      const CpcvCache::Entry &weak_entry =
-          cpcv_cache->get_or_build(weak_strm.n_periods(), cfg.cpcv);
-      weak_agg = aggregate_oos(weak_strm, weak_entry.folds, weak_insts, cfg.book_size);
+      ATX_TRY(const auto* weak_entry,
+              cpcv_cache->get_or_build_checked(weak_strm.n_periods(), cfg.cpcv, cfg.cpcv_session_stride));
+      weak_agg = aggregate_oos(weak_strm, weak_entry->folds, weak_insts, cfg.book_size);
     } else {
       const std::vector<eval::LabelSpan> weak_spans = point_label_spans(weak_strm.n_periods());
-      const std::vector<eval::CpcvFold> weak_folds =
-          eval::cpcv_folds(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv);
-      weak_agg = aggregate_oos(weak_strm, weak_folds, weak_insts, cfg.book_size);
+      ATX_TRY(auto weak_plan,
+              eval::cpcv_plan(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv));
+      weak_agg = aggregate_oos(weak_strm, weak_plan.folds, weak_insts, cfg.book_size);
     }
     const atx::f64 denom = (std::abs(wq) > kEps) ? wq : kEps;
     robust = std::clamp(weak_agg.wq / denom, 0.0, 1.0);

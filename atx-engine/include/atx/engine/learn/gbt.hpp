@@ -46,6 +46,7 @@
 #include <Eigen/Dense> // Eigen::Index, MatX/VecX
 
 #include "atx/core/random.hpp" // atx::core::Xoshiro256pp
+#include "atx/core/error.hpp"
 #include "atx/core/types.hpp"  // f64, u32, u64, usize
 
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
@@ -305,5 +306,11 @@ oof_ic_series_floored(const FeatureMatrix &fm, std::span<const atx::f64> oof_sum
   }
   return sum / static_cast<atx::f64>(series.size());
 }
+
+// Checked entrypoint for DateV2 configuration/geometry failures. Existing
+// value-returning overloads retain a fail-fast contract, never a full-data fallback.
+[[nodiscard]] atx::core::Result<LearnedModel>
+fit_gbt_checked(const FeatureMatrix& fm, const LatentAugmentation& aug,
+                 const GbtCfg& cfg, LearnFitTrace* trace = nullptr);
 
 } // namespace atx::engine::learn
