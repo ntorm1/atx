@@ -450,7 +450,10 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // parallel reproduce) so every child draws against FIXED weights. Pure fn of
     // `scored` + the recorded operator ids -> RNG-free, worker-count-invariant. All
     // gated behind adaptive_operators so the legacy path leaves op_weights uniform.
-    if (cfg.adaptive_operators && have_prev_children) {
+    // An all-IC-rejected generation has best_raw == -inf. It supplies no
+    // realized fitness baseline: crediting a later survivor against it would
+    // create infinite operator weights and corrupt future mutation draws.
+    if (cfg.adaptive_operators && have_prev_children && std::isfinite(prev_parent_best)) {
       std::array<atx::f64, 3> gain_sum{0.0, 0.0, 0.0};
       std::array<atx::usize, 3> gain_cnt{0, 0, 0};
       for (atx::usize p = 0; p < prev_child_ops.size(); ++p) {
