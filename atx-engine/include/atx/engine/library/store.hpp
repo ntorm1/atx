@@ -364,6 +364,7 @@ public:
     }
     if (old != recipe) ATX_TRY_VOID(set_metadata("corr_recipe", recipe));
     recipe_crc_ = atx::tsdb::crc32(recipe.data(), recipe.size());
+    bind_recipe_identity_ = selected != 1U;
     return atx::core::Ok(selected);
   }
 
@@ -371,7 +372,8 @@ public:
     ATX_CHECK(g.value < next_alpha_id_);
     const auto [seg, local] = locate(g); (void)local;
     const auto& reader = segments_[seg];
-    if (reader.format_version() == 1U && extensions_.empty()) return reader.integrity_crc();
+    if (reader.format_version() == 1U && extensions_.empty() && !bind_recipe_identity_)
+      return reader.integrity_crc();
     std::vector<std::byte> identity;
     detail::put_le(identity, reader.integrity_crc());
     detail::put_le(identity, recipe_crc_);
@@ -705,6 +707,7 @@ private:
   mutable std::vector<std::vector<atx::f64>> extended_;
   mutable std::vector<atx::f64> resolved_positions_;
   atx::u32 recipe_crc_{0};
+  bool bind_recipe_identity_{false};
   combine::AlphaStore memtable_;                 // staging buffer (the "memtable")
   std::vector<Provenance> pending_prov_;         // provenance per staged memtable row
   std::vector<atx::u64> pending_canon_;          // canon hash per staged memtable row

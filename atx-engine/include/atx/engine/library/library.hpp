@@ -230,11 +230,11 @@ private:
       return atx::core::Ok(AdmitVerdict{verdict, AlphaId{0}});
     }
     // 4. admit, all in AlphaId order (L7).
-    ensure_corr(c.pnl.size()); // size the corr index to T on the first admit
     const auto staged = store_.stage(c.source, c.pnl, c.pos_flat, c.metrics, c.prov, c.canon_hash,
                                       c.metadata, c.signal_sketch);
     if (!staged) return atx::core::Err(staged.error());
     const AlphaId id = *staged;
+    ensure_corr(c.pnl.size()); // fix T only after a successful stage
     corr_->add(id, store_.pnl(id));                      // reads the caller's buffer (copies signature only)
     const auto ins = dedup_.insert(c.canon_hash, id);
     ATX_ASSERT(ins.has_value() && *ins);        // we already proved it was new (step 1)
