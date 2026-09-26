@@ -28,6 +28,13 @@ struct ExecutionObjectiveConfig {
   bool guard_returns{true}; // true requires the supplied cumulative ReturnGuard
   std::string price_field{"close"};
   atx::u64 max_working_bytes{atx::u64{512}*1024U*1024U};
+  // Explicit scheduled policy. Phase is relative to window_begin; off-cycle
+  // positions remain marked and charged borrow. Partial targets interpolate
+  // decision-known held dollars toward desired dollars before queuing; actual
+  // fill deltas are netted against marked holdings at entry. Defaults preserve
+  // the original V2 arithmetic/identity. Nondefaults extend the hashed recipe.
+  atx::usize rebalance_sessions{1};
+  atx::f64 trade_fraction{1.0};
 };
 struct ExecutionObjectiveIdentity {
   std::string source_sha256; // bound panel/role provenance, 64 lowercase hex

@@ -63,6 +63,8 @@ bool normalize(ExecutionObjectiveConfig &c, usize dates) noexcept {
          (c.borrow == ExecutionBorrowRule::DisabledExplicitV1 ||
           c.borrow == ExecutionBorrowRule::RequireModeledV2) &&
          std::isfinite(c.borrow_days_per_year) && c.borrow_days_per_year > 0 &&
+         c.rebalance_sessions >= 1 && c.rebalance_sessions <= 252 &&
+         std::isfinite(c.trade_fraction) && c.trade_fraction > 0 && c.trade_fraction <= 1 &&
          !c.price_field.empty() && c.price_field.size() <= 4096;
 }
 bool config_matches(const ExecutionObjectiveConfig &a, const ExecutionObjectiveConfig &b,
@@ -74,7 +76,8 @@ bool config_matches(const ExecutionObjectiveConfig &a, const ExecutionObjectiveC
          same(a.initial_nav, b.initial_nav) && a.borrow == b.borrow &&
          same(a.borrow_days_per_year, b.borrow_days_per_year) &&
          a.guard_returns == b.guard_returns && a.price_field == b.price_field &&
-         a.max_working_bytes == b.max_working_bytes;
+         a.max_working_bytes == b.max_working_bytes &&
+         a.rebalance_sessions == b.rebalance_sessions && same(a.trade_fraction, b.trade_fraction);
 }
 struct Budget {
   u64 maximum{}, used{};
@@ -129,6 +132,11 @@ co::Result<std::string> context_hash(const Context &c, const ExecutionObjectiveI
                  c.policy.truncation, c.policy.winsorize_limit})
     ATX_TRY_VOID(h.number(v));
   ATX_TRY_VOID(h.text(r.price_field));
+  if (r.rebalance_sessions != 1 || r.trade_fraction != 1.0) {
+    ATX_TRY_VOID(h.text("scheduled-decision-dollar-partial-v1"));
+    ATX_TRY_VOID(h.word(r.rebalance_sessions));
+    ATX_TRY_VOID(h.number(r.trade_fraction));
+  }
   for (auto v : c.ids)
     ATX_TRY_VOID(h.word(v));
   for (usize d = r.window_begin; d < c.realization_end; ++d) {
@@ -270,13 +278,14 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
     if (t >= d0 + delay && t - delay < c.decision_end) {
       const auto d = t - delay, slot = (d - d0) % slots;
       const auto &surface = c.snapshots[d - d0];
+      const bool rebalance = (d - d0) % c.config.rebalance_sessions == 0;
       entry_nav = nav;
       entry_cost = 0;
       entry_turnover = 0;
-      entry_names = queued_names[slot];
+      if (rebalance) entry_names = queued_names[slot];
       entry_capped = 0;
       entry_decision = d;
-      for (usize i = 0; i < n; ++i) {
+      for (usize i = 0; rebalance && i < n; ++i) {
         const auto requested = queued[slot * n + i] - holdings[i];
         if (!std::isfinite(requested))
           return co::Err(co::ErrorCode::OutOfRange,
@@ -317,7 +326,7 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
                        "execution streams: cash financing unsupported after fills/costs");
       active_interval = true; // The attribution closes at t+1; cash is already debited.
     }
-    if (t < c.decision_end) {
+    if (t < c.decision_end && (t - d0) % c.config.rebalance_sessions == 0) {
       usize names = 0;
       for (usize i = 0; i < n; ++i) {
         const auto k = t * n + i;
@@ -343,6 +352,14 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
             return co::Err(co::ErrorCode::OutOfRange,
                            "execution streams: decision target overflow");
           queued[slot * n + i] = target;
+        }
+      }
+      if (c.config.trade_fraction != 1.0) {
+        for (usize i = 0; i < n; ++i) {
+          auto& target = queued[slot * n + i];
+          target = holdings[i] + c.config.trade_fraction * (target - holdings[i]);
+          if (!std::isfinite(target))
+            return co::Err(co::ErrorCode::OutOfRange, "execution streams: partial decision target overflow");
         }
       }
     }
