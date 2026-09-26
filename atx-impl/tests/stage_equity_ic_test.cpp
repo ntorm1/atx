@@ -636,7 +636,7 @@ TEST_F(StageEquityIc, RuntimePreregistrationConsumesSignsAndHeterogeneousHorizon
         auto fields = split_csv(line);
         if (fields.size() < 9) continue;
         if (fields[2] == "runtime_positive") positives.push_back(std::move(fields));
-        if (fields[2] == "runtime_negative") negatives.push_back(std::move(fields));
+        else if (fields[2] == "runtime_negative") negatives.push_back(std::move(fields));
     }
     ASSERT_FALSE(positives.empty());
     ASSERT_EQ(positives.size(), negatives.size());
