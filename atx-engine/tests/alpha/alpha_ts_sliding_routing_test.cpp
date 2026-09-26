@@ -150,4 +150,63 @@ TEST(AlphaDecayExpO1_Production, FiniteWindowInitializationRecoveryFactorsAndStr
     }
   }
 }
+
+TEST(AlphaPairRouting_LegacyAndPrefix, FutureMutationPreservesOutputBitsAndLegacyPairArithmetic) {
+  constexpr atx::usize dates = 109, names = 67, cells = dates * names, cut = 72;
+  std::vector<atx::f64> x(cells), y(cells);
+  for (atx::usize i = 0; i < cells; ++i) {
+    x[i] = 10.0 + std::sin(static_cast<atx::f64>(i) * 0.17);
+    y[i] = 20.0 + std::cos(static_cast<atx::f64>(i) * 0.11);
+  }
+  x[40 * names + 2] = std::numeric_limits<atx::f64>::quiet_NaN();
+  auto panel = Panel::create(dates, names, {"close", "open"}, {x, y}, {});
+  ASSERT_TRUE(panel);
+  for (atx::usize i = (cut + 1) * names; i < cells; ++i) {
+    x[i] = i % 3 == 0 ? std::numeric_limits<atx::f64>::quiet_NaN() : 1e200;
+    y[i] = -static_cast<atx::f64>(i);
+  }
+  std::vector<atx::u8> universe(cells, 1);
+  for (atx::usize i = (cut + 1) * names; i < cells; ++i) universe[i] = static_cast<atx::u8>(i % 2);
+  auto changed = Panel::create(dates, names, {"close", "open"}, {x, y}, universe);
+  ASSERT_TRUE(changed);
+  const Library lib;
+  auto ast = parse_program("a=correlation(close,open,17)\n"
+                           "b=ts_regression(close,open,17)\n"
+                           "c=ts_decay_exp(close,17,0.9)\n"
+                           "d=ts_mean(close,17)\n"
+                           "e=delay(close,5)\n", lib);
+  ASSERT_TRUE(ast);
+  auto analysis = analyze(*ast);
+  ASSERT_TRUE(analysis);
+  auto program = compile(*ast, *analysis);
+  ASSERT_TRUE(program);
+  for (const EvalMode mode : {EvalMode::AuditExact, EvalMode::ResearchFast}) {
+    for (const KernelPolicy policy : {KernelPolicy{}, KernelPolicy::legacy_v1()}) {
+      Engine base{*panel}, mutated{*changed};
+      base.set_eval_mode(mode);
+      mutated.set_eval_mode(mode);
+      base.set_kernel_policy(policy);
+      mutated.set_kernel_policy(policy);
+      auto before = base.evaluate(*program);
+      auto after = mutated.evaluate(*program);
+      ASSERT_TRUE(before);
+      ASSERT_TRUE(after);
+      for (atx::usize root = 0; root < before->alphas.size(); ++root)
+        for (atx::usize i = 0; i < (cut + 1) * names; ++i)
+          ASSERT_EQ(std::bit_cast<atx::u64>(before->alphas[root].values[i]),
+                    std::bit_cast<atx::u64>(after->alphas[root].values[i])) << root << ':' << i;
+      if (!policy.is_default() && mode == EvalMode::ResearchFast) {
+        Engine exact{*panel};
+        exact.set_kernel_policy(policy);
+        auto legacy = exact.evaluate(*program);
+        ASSERT_TRUE(legacy);
+        // These roots all retain their original arithmetic in explicit V1.
+        for (atx::usize root = 0; root < before->alphas.size(); ++root)
+          for (atx::usize i = 0; i < cells; ++i)
+            ASSERT_EQ(std::bit_cast<atx::u64>(before->alphas[root].values[i]),
+                      std::bit_cast<atx::u64>(legacy->alphas[root].values[i])) << root << ':' << i;
+      }
+    }
+  }
+}
 } // namespace atxtest_alpha_ts_sliding_routing
