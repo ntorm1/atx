@@ -177,6 +177,46 @@ TEST(AtxImplStoreDiscover, FingerprintStableAndSensitive) {
         << "a different panel must change the fingerprint";
 }
 
+TEST(AtxImplStoreDiscover, VwapRuleSeparatesResumeOnlyWhenAugmentationIsActive) {
+    auto cfg = gated_cfg("panel.bin", "out");
+    cfg.min_price = 0.0;
+    cfg.min_adv_usd = 0.0;
+    auto legacy = cfg;
+    legacy.vwap_rule = atx::engine::alpha::VwapRule::AdjustedTypicalV1;
+    EXPECT_EQ(atx::impl::compute_discover_fingerprint(cfg),
+              atx::impl::compute_discover_fingerprint(legacy));
+    cfg.min_price = legacy.min_price = 1.0;
+    EXPECT_NE(atx::impl::compute_discover_fingerprint(cfg),
+              atx::impl::compute_discover_fingerprint(legacy));
+    cfg.min_price = legacy.min_price = 0.0;
+    cfg.min_adv_usd = legacy.min_adv_usd = 1e6;
+    EXPECT_NE(atx::impl::compute_discover_fingerprint(cfg),
+              atx::impl::compute_discover_fingerprint(legacy));
+}
+
+TEST(AtxImplStoreDiscover, ActiveCapacityKnobsEachInvalidateResume) {
+    auto cfg = gated_cfg("panel.bin", "out");
+    cfg.min_price = 1.0;
+    cfg.min_adv_usd = 1e6;
+    cfg.adv_window = 20;
+    const auto base = atx::impl::compute_discover_fingerprint(cfg);
+    auto price = cfg;
+    price.min_price = 2.0;
+    auto adv = cfg;
+    adv.min_adv_usd = 2e6;
+    auto window = cfg;
+    window.adv_window = 21;
+    for (const auto &changed : {price, adv, window}) {
+        EXPECT_NE(atx::impl::compute_discover_fingerprint(changed), base);
+    }
+    cfg.min_price = cfg.min_adv_usd = 0.0;
+    auto unused = cfg;
+    unused.adv_window = 120;
+    unused.vwap_rule = atx::engine::alpha::VwapRule::AdjustedTypicalV1;
+    EXPECT_EQ(atx::impl::compute_discover_fingerprint(cfg),
+              atx::impl::compute_discover_fingerprint(unused));
+}
+
 // ---------------------------------------------------------------------------
 // 2. SinkWritesCheckpointRows — isolated sink unit test over in-memory StoreDb.
 // ---------------------------------------------------------------------------

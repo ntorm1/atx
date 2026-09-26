@@ -179,6 +179,9 @@ augment_for_alpha101(const Panel &base, std::span<const atx::u16> adv_windows) {
     }
   }
 
+  // This generator has no adjustment factors; expose its known raw price basis.
+  names.emplace_back("raw_close");
+  cols.push_back(cols[3]);
   std::vector<std::uint8_t> universe(cells, std::uint8_t{1});
   auto p = Panel::create(D, I, std::move(names), std::move(cols), std::move(universe));
   // create() only fails on ragged input, which we never produce here.

@@ -84,7 +84,9 @@ protected:
             cols.emplace_back(c.begin() + static_cast<std::ptrdiff_t>(b * kInst),
                               c.begin() + static_cast<std::ptrdiff_t>(e * kInst));
         }
-        auto panel = Panel::create(n, kInst, {"close", "open", "high", "low", "volume", "sig"},
+        // Synthetic closes are unadjusted prices.
+        cols.push_back(cols[0]);
+        auto panel = Panel::create(n, kInst, {"close", "open", "high", "low", "volume", "sig", "raw_close"},
                                    std::move(cols), std::vector<std::uint8_t>(n * kInst, 1));
         EXPECT_TRUE(panel.has_value());
         atx::impl::PanelIdentity id;

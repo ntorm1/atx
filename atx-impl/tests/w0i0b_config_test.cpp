@@ -287,4 +287,15 @@ TEST(ImplDelayGuard_Config, ProgrammaticValidationMatchesTheCli) {
     EXPECT_FALSE(impl::validate_cross_flags(cfg));
 }
 
+TEST(ImplConfigVwap, RawDefaultExplicitLegacyAndClosedRuleNames) {
+    using atx::engine::alpha::VwapRule;
+    const auto def = parse({"atx-impl", "panel"});
+    ASSERT_TRUE(def);
+    EXPECT_EQ(def->vwap_rule, VwapRule::RawDailyCloseV2);
+    const auto old = parse({"atx-impl", "panel", "--vwap-rule", "adjusted-typical-v1"});
+    ASSERT_TRUE(old);
+    EXPECT_EQ(old->vwap_rule, VwapRule::AdjustedTypicalV1);
+    EXPECT_FALSE(parse({"atx-impl", "panel", "--vwap-rule", "true-vwap"}));
+}
+
 } // namespace atx_test_w0_i0b_config

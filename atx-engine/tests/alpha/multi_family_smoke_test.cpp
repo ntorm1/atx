@@ -105,7 +105,10 @@ constexpr atx::usize kN = 5;
 [[nodiscard]] Panel make_augmented_panel() {
   const Panel base = make_base_panel();
   const std::vector<atx::u16> windows = {20};
-  auto a = with_alpha101_fields(base, windows);
+  auto a = with_alpha101_fields(base, windows,
+      atx::engine::alpha::DollarVolumeBasis::RawCloseV2,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   EXPECT_TRUE(a.has_value()) << "with_alpha101_fields: " << (a ? "" : a.error().message());
   auto iv = with_iv_fields(a.value());
   EXPECT_TRUE(iv.has_value()) << "with_iv_fields: " << (iv ? "" : iv.error().message());
@@ -252,9 +255,15 @@ TEST(MultiFamilySmoke, OffPathDigestUnchanged) {
   const Panel base = make_base_panel();
   const std::vector<atx::u16> windows = {20};
 
-  auto a1 = with_alpha101_fields(base, windows);
+  auto a1 = with_alpha101_fields(base, windows,
+      atx::engine::alpha::DollarVolumeBasis::RawCloseV2,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(a1.has_value()) << a1.error().message();
-  auto a2 = with_alpha101_fields(base, windows);
+  auto a2 = with_alpha101_fields(base, windows,
+      atx::engine::alpha::DollarVolumeBasis::RawCloseV2,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(a2.has_value()) << a2.error().message();
 
   EXPECT_EQ(panel_digest(a1.value()), panel_digest(a2.value()))

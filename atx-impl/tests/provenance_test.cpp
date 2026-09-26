@@ -140,10 +140,17 @@ struct Provenance {
     std::string engine_git_sha;
 };
 
-Provenance run_and_read(const std::string& tag) {
+Provenance run_and_read(const std::string& tag, bool capacity = false) {
     Provenance out;
     auto panel = make_panel();
     if (!panel.has_value()) return out;
+    if (capacity) {
+        const auto close_span = panel->field_all(panel->field_id("close").value());
+        const std::vector<f64> close(close_span.begin(), close_span.end());
+        panel = Panel::create(panel->dates(), panel->instruments(),
+            {"close", "raw_close", "volume"},
+            {close, close, std::vector<f64>(close.size(), 1e6)}, {}).value();
+    }
     const std::string panel_path = write_panel_tmp(*panel, tag);
     const std::string alpha_out = (fs::temp_directory_path() / ("atx_prov_out_" + tag)).string();
     const std::string db_path =
@@ -153,6 +160,11 @@ Provenance run_and_read(const std::string& tag) {
     fs::remove(db_path, ec0);
 
     auto cfg = gated_cfg(panel_path, alpha_out);
+    if (capacity) {
+        cfg.min_price = 1.25;
+        cfg.min_adv_usd = 1e6;
+        cfg.adv_window = 3;
+    }
     cfg.run_db = db_path;
     auto r = atx::impl::run_discover(cfg);
     EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().message());
@@ -170,6 +182,18 @@ Provenance run_and_read(const std::string& tag) {
     fs::remove_all(alpha_out, ec);
     fs::remove(db_path, ec);
     return out;
+}
+
+TEST(AtxImplProvenance, ActiveCapacityRecipeIsPersisted) {
+    const auto active = run_and_read("capacity_vwap_v2", true);
+    EXPECT_EQ(json_value_of(active.config_json, "vwap_rule"), "raw-daily-close-v2");
+    EXPECT_EQ(json_value_of(active.config_json, "min_price"), "1.25");
+    EXPECT_EQ(json_value_of(active.config_json, "min_adv_usd"), "1000000");
+    EXPECT_EQ(json_value_of(active.config_json, "adv_window"), "3");
+    const auto off = run_and_read("capacity_disabled");
+    for (const auto *key : {"vwap_rule", "min_price", "min_adv_usd", "adv_window"}) {
+        EXPECT_TRUE(json_value_of(off.config_json, key).empty());
+    }
 }
 
 // ---------------------------------------------------------------------------

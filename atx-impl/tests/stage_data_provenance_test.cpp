@@ -127,6 +127,10 @@ TEST_F(AtxImplDataProvenance, BoundLoadAndAugmentedPanelPreserveExactAxes) {
     const auto recipe = Json::parse(panel->identity.recipe);
     EXPECT_EQ(recipe["universe"]["adv_window_bars"], 21);
     EXPECT_EQ(recipe["augmentation"]["adv_windows"], Json::array({2}));
+    EXPECT_EQ(recipe["augmentation"]["dollar_volume_basis"], "raw_close*raw_volume");
+    EXPECT_EQ(recipe["augmentation"]["vwap_rule"], "raw-daily-close-v2");
+    EXPECT_EQ(recipe["augmentation"]["vwap_basis"], "raw");
+    EXPECT_EQ(recipe["augmentation"]["vwap_kind"], "daily-close-price-proxy-not-intraday-vwap");
     EXPECT_EQ(recipe["historical_availability"], "unknown-archive-snapshot");
     EXPECT_EQ(recipe["historical_vintages_verified"], false);
     EXPECT_EQ(recipe["preparation_content_binding_verified"], true);
@@ -137,6 +141,15 @@ TEST_F(AtxImplDataProvenance, BoundLoadAndAugmentedPanelPreserveExactAxes) {
     const auto other = read_panel_artifact(cfg.panel_out);
     ASSERT_TRUE(other.has_value());
     EXPECT_EQ(other->artifact_id, panel->artifact_id);
+    cfg.panel_out = (dir / "legacy.bin").string();
+    cfg.vwap_rule = atx::engine::alpha::VwapRule::AdjustedTypicalV1;
+    ASSERT_TRUE(run_panel(cfg));
+    const auto legacy = read_panel_artifact(cfg.panel_out);
+    ASSERT_TRUE(legacy);
+    EXPECT_NE(legacy->artifact_id, panel->artifact_id);
+    const auto legacy_recipe = Json::parse(legacy->identity.recipe);
+    EXPECT_EQ(legacy_recipe["augmentation"]["vwap_rule"], "adjusted-typical-v1");
+    EXPECT_EQ(legacy_recipe["augmentation"]["vwap_basis"], "adjusted_level");
     const auto input_after = atx::core::sha256_file(zip.string());
     ASSERT_TRUE(input_after.has_value());
     EXPECT_EQ(*input_after, *input_before);

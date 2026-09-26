@@ -330,7 +330,11 @@ TEST(DataLevelBasis_W0d0, HistoryPanelTagsEveryFieldWithItsBasis) {
   }
   EXPECT_EQ(history_field_level_basis("dollar_volume"), LevelBasis::Raw);
   EXPECT_EQ(history_field_level_basis("adv20"), LevelBasis::Raw);
-  EXPECT_EQ(history_field_level_basis("vwap"), LevelBasis::AdjustedLevel);
+  EXPECT_EQ(history_field_level_basis("vwap"), LevelBasis::Raw);
+  EXPECT_EQ(history_field_level_basis("vwap", alpha::DollarVolumeBasis::RawCloseV2,
+      alpha::VwapRule::AdjustedTypicalV1), LevelBasis::AdjustedLevel);
+  EXPECT_FALSE(history_field_level_basis("vwap", alpha::DollarVolumeBasis::RawCloseV2,
+      static_cast<alpha::VwapRule>(0)));
   EXPECT_EQ(history_field_level_basis("returns"), LevelBasis::Ratio);
   EXPECT_EQ(history_field_level_basis("regime_vix"), LevelBasis::Raw);
   EXPECT_FALSE(history_field_level_basis("no_such_field").has_value());
@@ -373,9 +377,7 @@ TEST(DataLevelBasis_W0d0, LiquidityTagFollowsTheDollarVolumeBasis) {
   EXPECT_FALSE(history_field_level_basis("adv", DollarVolumeBasis::CloseV1).has_value());
 
   // with_datafields called directly on a history panel (atx-impl stage_discover's
-  // capacity screen) derives close x volume: the same values as CloseV1.
-  auto v1 = alpha::with_alpha101_fields(p.panel, kAdvWindows, DollarVolumeBasis::CloseV1);
-  ASSERT_TRUE(v1.has_value());
+  // capacity screen) now derives raw close x volume under the V2 default.
   const atx::usize nf = p.panel.num_fields();
   std::vector<std::string> names;
   std::vector<std::vector<atx::f64>> data;
@@ -395,7 +397,7 @@ TEST(DataLevelBasis_W0d0, LiquidityTagFollowsTheDollarVolumeBasis) {
   ASSERT_TRUE(direct.has_value());
   for (const auto name : {"dollar_volume", "adv2", "adv5"}) {
     const auto x = field(*direct, name);
-    const auto y = field(*v1, name);
+    const auto y = field(*v2, name);
     ASSERT_EQ(x.size(), y.size());
     for (atx::usize k = 0; k < x.size(); ++k) {
       EXPECT_TRUE(same_bits(x[k], y[k])) << name << " cell " << k;
@@ -445,19 +447,23 @@ TEST(DataLevelBasis_W0d0, DollarVolumeAndAdvAreBuiltFromRawClose) {
   EXPECT_GT(checked, 0U);
   // Instrument 1 (factor 0.5 before its split) and 3 (0.98 before a dividend) differ.
   EXPECT_GT(differs_from_v1, 0U);
-  // vwap stays the typical price on the close basis (same under both rules).
+  // Dollar-volume versioning is independent of the raw VWAP default.
   const auto vw2 = field(*v2, "vwap");
   const auto vw1 = field(*v1, "vwap");
   for (atx::usize k = 0; k < vw2.size(); ++k) {
     EXPECT_TRUE(same_bits(vw2[k], vw1[k]));
   }
-  // A panel with no raw_close keeps close x volume under the default rule.
+  // Unknown generic close cannot silently stand in for raw_close.
   auto no_raw = alpha::Panel::create(2, 1, {"close", "volume", "high", "low"},
                                      {{10.0, 11.0}, {5.0, 6.0}, {10.5, 11.5}, {9.5, 10.5}}, {});
   ASSERT_TRUE(no_raw.has_value());
   auto no_raw_aug = alpha::with_alpha101_fields(*no_raw, kAdvWindows);
-  ASSERT_TRUE(no_raw_aug.has_value());
-  EXPECT_DOUBLE_EQ(field(*no_raw_aug, "dollar_volume")[1], 66.0);
+  EXPECT_FALSE(no_raw_aug.has_value());
+  auto known_raw = alpha::with_alpha101_fields(*no_raw, kAdvWindows,
+      alpha::DollarVolumeBasis::RawCloseV2, alpha::VwapRule::RawDailyCloseV2,
+      alpha::ClosePriceBasis::Raw);
+  ASSERT_TRUE(known_raw.has_value());
+  EXPECT_DOUBLE_EQ(field(*known_raw, "dollar_volume")[1], 66.0);
   fs::remove_all(dir);
 }
 
@@ -481,7 +487,7 @@ TEST(DataLevelBasis_W0d0, FactorResnapshotLeavesRawLiquidityInvariant) {
 
   // Raw-basis and ratio fields are invariant, bit for bit.
   for (const auto name : {"raw_close", "volume", "market_cap", "dollar_volume", "adv2", "adv5",
-                          "returns", "cap"}) {
+                          "returns", "cap", "vwap"}) {
     const auto x = field(*a2, name);
     const auto y = field(*b2, name);
     for (atx::usize k = 0; k < x.size(); ++k) {

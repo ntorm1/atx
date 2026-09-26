@@ -6,7 +6,7 @@
 // build_real_panel set close = TRI while open/high/low/vwap stayed raw, so one panel
 // mixed two price bases. The candle is now restated cell by cell with
 // restate_on_tri_basis (price x TRI / raw_close), which build_real_panel applies to
-// open/high/low/vwap. The full build reads a databento hive whose volume column is
+// open/high/low and explicit legacy V1 VWAP; V2 VWAP remains raw. The full build reads a databento hive whose volume column is
 // UInt64, which the in-process parquet writer cannot produce, so the build itself
 // is exercised by the orchestrator's G0 smoke re-run; here the restatement is
 // driven through the real adjust_total_return on a synthetic dividend + split series.
@@ -108,7 +108,7 @@ TEST(DataLevelBasis_W0d0, RestateNeverFabricatesAPrice) {
 // Real-panel tags: the candle is adjusted_level under the default, raw under the
 // legacy mixed basis; liquidity stays raw; the config defaults are the V2 rules.
 TEST(DataLevelBasis_W0d0, RealPanelFieldTagsFollowThePriceBasis) {
-  for (const auto name : {"close", "open", "high", "low", "vwap"}) {
+  for (const auto name : {"close", "open", "high", "low"}) {
     EXPECT_EQ(real_panel_field_level_basis(name), LevelBasis::AdjustedLevel) << name;
   }
   for (const auto name : {"open", "high", "low", "vwap"}) {
@@ -121,7 +121,16 @@ TEST(DataLevelBasis_W0d0, RealPanelFieldTagsFollowThePriceBasis) {
                           "regime_vix"}) {
     EXPECT_EQ(real_panel_field_level_basis(name), LevelBasis::Raw) << name;
   }
+  using atx::engine::alpha::VwapRule;
+  EXPECT_EQ(real_panel_field_level_basis("vwap"), LevelBasis::Raw);
+  EXPECT_EQ(real_panel_field_level_basis("vwap", RealPanelPriceBasis::TriScaledV2,
+      VwapRule::AdjustedTypicalV1), LevelBasis::AdjustedLevel);
+  EXPECT_EQ(real_panel_field_level_basis("vwap", RealPanelPriceBasis::MixedV1,
+      VwapRule::AdjustedTypicalV1), LevelBasis::Raw);
+  EXPECT_FALSE(real_panel_field_level_basis("vwap", RealPanelPriceBasis::TriScaledV2,
+      static_cast<VwapRule>(0)));
   const RealDataConfig cfg{};
+  EXPECT_EQ(cfg.vwap_rule, VwapRule::RawDailyCloseV2);
   EXPECT_EQ(cfg.price_basis, RealPanelPriceBasis::TriScaledV2);
   EXPECT_EQ(cfg.corp_align, atx::engine::data::CorpAlignRule::EventOnceCappedV2);
   EXPECT_EQ(cfg.tri_gap_rule, atx::engine::data::TriGapRule::RatioChainV2);

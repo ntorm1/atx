@@ -232,11 +232,15 @@ constexpr usize kN = 4;  // four instruments (graded long/short book)
 // price Dataset rather than calling .value() on an error Result (UB).
 [[nodiscard]] Panel make_price_panel(const Dataset &price) {
   const std::vector<atx::u16> adv{};
-  auto res = price_to_panel(price, std::span<const atx::u16>{adv});
+  auto res = price_to_panel(price, std::span<const atx::u16>{adv},
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   if (!res.has_value()) {
     ADD_FAILURE() << "make_price_panel: " << res.error().message();
     const Dataset fallback = valid_default_dataset();
-    auto def = price_to_panel(fallback, std::span<const atx::u16>{adv});
+    auto def = price_to_panel(fallback, std::span<const atx::u16>{adv},
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
     EXPECT_TRUE(def.has_value());
     return std::move(def).value();
   }

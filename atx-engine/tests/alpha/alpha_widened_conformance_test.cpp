@@ -128,7 +128,9 @@ inline constexpr atx::f64 kOnlineRtol = 1e-9;
   }
   std::vector<std::string> names = {"close", "open", "high", "low", "volume", "IndClass.sector"};
   std::vector<atx::u16> adv = {20};
-  auto p = df::with_datafields(dates, instruments, std::move(names), std::move(cols), {}, adv);
+  auto p = df::with_datafields(dates, instruments, std::move(names), std::move(cols), {}, adv,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   EXPECT_TRUE(p.has_value()) << (p ? "" : p.error().message());
   return p.value_or(Panel::create(0, 0, {}, {}, {}).value());
 }

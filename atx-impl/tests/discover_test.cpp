@@ -887,7 +887,7 @@ static std::optional<Panel> make_w2_panel() {
         volume_data[d * I + 2] = 1.0e3;  // DV=5e3, adv3=5e3 << 50M (LOW_ADV)
         volume_data[d * I + 3] = 1.0e7;  // OOU, irrelevant
     }
-    auto r = Panel::create(D, I, {"close", "volume"}, {close_data, volume_data}, univ);
+    auto r = Panel::create(D, I, {"close", "volume", "raw_close"}, {close_data, volume_data, close_data}, univ);
     if (!r.has_value()) {
         ADD_FAILURE() << "W2 panel fixture must build: " << r.error().to_string();
         return std::nullopt;
@@ -1174,7 +1174,7 @@ TEST(AtxImplDiscover, W2_CapacityScreenActiveChangesUniverse) {
     // All close values start at ~100 and drift, so > $1.
     std::vector<f64> volume_vals(D * I, 1.0e6); // DV = close*vol, adv >> 1.0
 
-    auto r = Panel::create(D, I, {"close", "volume"}, {close_vals, volume_vals}, {});
+    auto r = Panel::create(D, I, {"close", "volume", "raw_close"}, {close_vals, volume_vals, close_vals}, {});
     ASSERT_TRUE(r.has_value());
     const Panel& panel = *r;
 

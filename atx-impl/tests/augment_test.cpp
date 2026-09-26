@@ -145,7 +145,7 @@ TEST(WithAlpha101Fields, AddsExpectedColumns) {
   }
 
   // Exactly 15 fields (7 base + 8 derived).
-  EXPECT_EQ(aug.num_fields(), 15u);
+  EXPECT_EQ(aug.num_fields(), 16u);
 }
 
 // ============================================================================

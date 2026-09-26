@@ -12,6 +12,7 @@
 //       external provenance; no Signal dataset => empty span.
 
 #include <span>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -159,6 +160,41 @@ constexpr usize kInsts = 4;
 // =============================================================================
 //  PricePanelLowersFromCatalog — raw lowering is byte-identical to Panel::create.
 // =============================================================================
+TEST(DataContext, AugmentationRequiresKnownBasisAndMovesPreserveExplicitPolicy) {
+  using atx::engine::alpha::VwapRule;
+  using atx::engine::alpha::ClosePriceBasis;
+  DatasetSchema schema;
+  schema.columns = {"close", "volume", "high", "low"};
+  schema.dtypes.assign(4, ColumnDType::F64);
+  schema.role = Role::Price;
+  auto prices = Dataset::create(schema, {1, 2}, {0},
+      {{12.0, 15.0}, {100.0, 100.0}, {21.0, 24.0}, {6.0, 9.0}}, {}, {});
+  ASSERT_TRUE(prices);
+  DatasetCatalog catalog;
+  ASSERT_TRUE(catalog.register_dataset("prices", std::move(*prices)));
+  auto unknown = DataContext::create(catalog, "prices", {1});
+  ASSERT_TRUE(unknown);
+  EXPECT_FALSE(unknown->price_panel());
+  auto raw = DataContext::create(catalog, "prices", {1}, VwapRule::RawDailyCloseV2,
+                                  ClosePriceBasis::Raw);
+  auto legacy = DataContext::create(catalog, "prices", {1}, VwapRule::AdjustedTypicalV1);
+  ASSERT_TRUE(raw && legacy);
+  DataContext moved_raw{std::move(*raw)}; // move before lazy augmentation
+  auto receiver = DataContext::create(catalog, "prices");
+  ASSERT_TRUE(receiver);
+  *receiver = std::move(*legacy);
+  const auto raw_panel = moved_raw.price_panel();
+  const auto old_panel = receiver->price_panel();
+  ASSERT_TRUE(raw_panel && old_panel);
+  const auto raw_id = raw_panel->get().field_id("vwap");
+  const auto old_id = old_panel->get().field_id("vwap");
+  ASSERT_TRUE(raw_id && old_id);
+  EXPECT_DOUBLE_EQ(raw_panel->get().field_all(*raw_id)[0], 12.0);
+  EXPECT_DOUBLE_EQ(old_panel->get().field_all(*old_id)[0], 13.0);
+  EXPECT_FALSE(raw->price_panel());
+  EXPECT_FALSE(legacy->price_panel());
+}
+
 TEST(DataContext, PricePanelLowersFromCatalog) {
   const std::vector<f64> close = close_col();
   const std::vector<f64> rev = rev_col(close);

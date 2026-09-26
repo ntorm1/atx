@@ -121,7 +121,9 @@ bool cells_equal(atx::f64 a, atx::f64 b) noexcept {
 // Build a price-only Panel via the S6.4a adapter (no adv windows needed here).
 Panel make_price_panel(const Dataset &price) {
   std::vector<atx::u16> adv{}; // no adv columns
-  auto res = price_to_panel(price, std::span<const atx::u16>{adv});
+  auto res = price_to_panel(price, std::span<const atx::u16>{adv},
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   EXPECT_TRUE(res.has_value()) << (res.has_value() ? "" : res.error().message());
   return std::move(res).value();
 }
