@@ -239,23 +239,26 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // second run() with the same seed replays from a clean slate (F1). Caches the
   // raw scalar AND the S4.1 multi-objective vector (CachedScore).
   std::unordered_map<atx::u64, CachedScore> fitness_cache;
-  parallel::DetPool det_pool{cfg.n_workers};
   std::vector<ObjectiveIcScratch> residual_scratch;
   if (residual_on) {
     const auto &context = cfg.fitness.residual_binding->context();
     const auto budget = context.config().max_working_bytes;
     const auto owned = context.bytes(), per_worker = context.per_signal_working_bytes();
-    if (owned > budget || !per_worker || det_pool.n_workers() > context.config().workers ||
-        det_pool.n_workers() > (budget - owned) / per_worker) {
+    // Admission must precede DetPool's constructor: it immediately launches
+    // threads. This explicit mode refuses auto sizing instead of resolving a
+    // machine-dependent worker count after resources have already been spent.
+    if (!cfg.n_workers || owned > budget || !per_worker || cfg.n_workers > context.config().workers ||
+        cfg.n_workers > (budget - owned) / per_worker) {
       fail_residual("residual context plus declared worker scratch exceeds budget"); return res;
     }
-    residual_scratch.reserve(det_pool.n_workers());
-    for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
+    residual_scratch.reserve(cfg.n_workers);
+    for (atx::usize w = 0; w < cfg.n_workers; ++w) {
       auto scratch = prepare_objective_ic_scratch(context);
       if (!scratch) { fail_residual(scratch.error().to_string()); return res; }
       residual_scratch.push_back(std::move(*scratch));
     }
   }
+  parallel::DetPool det_pool{cfg.n_workers};
   if (execution_on) {
     const auto& context = *cfg.fitness.execution_context;
     const auto maximum = context.config().max_working_bytes;
