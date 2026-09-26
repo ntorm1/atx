@@ -222,11 +222,13 @@ with_alpha101_fields(const Panel &base, std::span<const atx::u16> adv_windows,
     }
     // Preserve V1 arithmetic and the old dollar_volume/vwap/ADV field order.
     std::vector<atx::f64> legacy_vwap;
+    bool legacy_vwap_ready = false;
     if (vwap_rule == VwapRule::AdjustedTypicalV1 &&
         !datafields::detail::has_field(names, datafields::kVwap)) {
       const auto high_i = datafields::detail::field_index(names, datafields::kHigh);
       const auto low_i = datafields::detail::field_index(names, datafields::kLow);
       if (high_i != npos && low_i != npos) {
+        legacy_vwap_ready = true; // an empty, valid panel still has a VWAP column
         legacy_vwap.assign(cells, kAugNaN);
         for (atx::usize i = 0; i < cells; ++i) {
           if (universe[i] != 0) {
@@ -255,7 +257,7 @@ with_alpha101_fields(const Panel &base, std::span<const atx::u16> adv_windows,
       data.push_back(std::move(raw_dvol));
     }
     if (!datafields::detail::has_field(names, datafields::kVwap) &&
-        (vwap_rule == VwapRule::RawDailyCloseV2 || !legacy_vwap.empty())) {
+        (vwap_rule == VwapRule::RawDailyCloseV2 || legacy_vwap_ready)) {
       names.emplace_back(datafields::kVwap);
       if (vwap_rule == VwapRule::RawDailyCloseV2) {
         data.emplace_back(cells, kAugNaN);
