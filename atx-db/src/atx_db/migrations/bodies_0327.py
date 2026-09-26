@@ -50,7 +50,6 @@ from .._forward_return_publication import effective_terminals_sql
 from ..provider_coverage import DEFAULT_PROVIDER_COVERAGE_SLOS
 from ._runner import Migration
 from .bodies_0001_0137 import _catalog_fields_for_tables
-from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
 
 _SCRATCH_SUFFIX = "__rebuild_0327"
 
@@ -324,6 +323,103 @@ def _add_nullable_columns(
     expected = [*existing, *((name, data_type, True, None) for name, data_type in missing)]
     if _columns(conn, table) != expected or _constraints(conn, table) != constraints:
         raise RuntimeError(f"0327 {table} rebuild changed existing column shapes or constraints")
+
+
+def _replace_rows_by_swap(
+    conn: duckdb.DuckDBPyConnection, table: str, columns: tuple[str, ...], select_sql: str,
+    params: list[object] | None = None,
+) -> None:
+    """Replace every row of ``table`` with ``select_sql`` via a fresh table and a swap.
+
+    No in-place UPDATE/DELETE touches the persisted indexed table: DuckDB 1.5.5 can
+    replay such writes from the WAL into a corrupt ART (the next write to the table
+    then invalidates the database). The fresh table takes the live catalog DDL (so its
+    constraints and primary key), is filled INSERT-only, replaces the old one, and gets
+    its secondary indexes back from their stored SQL after the rename.
+    """
+    ddl = conn.execute(
+        """
+        SELECT sql FROM duckdb_tables()
+        WHERE database_name = current_database() AND schema_name = current_schema() AND table_name = ?
+        """,
+        [table],
+    ).fetchone()
+    if ddl is None or not str(ddl[0]).startswith(f"CREATE TABLE {table}("):
+        raise RuntimeError(f"cannot derive the {table} DDL for a row swap")
+    indexes = _index_sql(conn, table)
+    constraints = _constraints(conn, table)
+    shape = _columns(conn, table)
+    scratch = f"{table}__swap"
+    conn.execute(f"DROP TABLE IF EXISTS {scratch}")
+    conn.execute(f"CREATE TABLE {scratch}{str(ddl[0])[len(f'CREATE TABLE {table}'):]}")
+    conn.execute(f"INSERT INTO {scratch} ({_quoted(columns)}) {select_sql}", params or [])
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {scratch} RENAME TO {table}")
+    for sql in indexes:
+        conn.execute(sql)
+    if _columns(conn, table) != shape or _constraints(conn, table) != constraints or _index_sql(conn, table) != indexes:
+        raise RuntimeError(f"row swap changed the shape, constraints or indexes of {table}")
+
+
+def refresh_schema_contract_pin_by_swap(conn: duckdb.DuckDBPyConnection) -> None:
+    """Persist the live schema contract and its v2 pin without in-place writes.
+
+    Replaces ``_refresh_schema_contract_v2_pin`` from 0327 on: that helper DELETEs and
+    UPDATEs the indexed ``schema_contract`` in place, and a WAL replay of such a commit
+    leaves a corrupt ART (probed: the next write invalidates the database; CHECKPOINT
+    does not heal it). Here the manifest is computed first, then ``schema_contract`` and
+    ``schema_contract_version`` are each rebuilt INSERT-only and swapped in. A row keeps
+    its ``source_loaded_at`` when its contract fields are unchanged. Later migrations
+    must call this, never the in-place helper.
+    """
+    import pandas as pd
+
+    from ..schema_contract import (
+        SCHEMA_CONTRACT_VERSION,
+        assert_schema_contract_version,
+        build_contract_manifest,
+        schema_contract_sha256,
+    )
+
+    manifest = build_contract_manifest(conn)
+    manifest_sha256 = schema_contract_sha256(manifest)
+    fields = ("data_type", "nullable", "is_natural_key", "is_pit_column", "declared_in", "unit", "sign", "scale",
+              "natural_key")
+    seed = pd.DataFrame.from_records(
+        [(table, spec.name, spec.data_type, bool(spec.nullable), bool(spec.is_natural_key), bool(spec.is_pit_column),
+          spec.declared_in, spec.unit, spec.sign, spec.scale, bool(spec.natural_key))
+         for table, specs in manifest.items() for spec in specs],
+        columns=["table_name", "column_name", *fields],
+    )
+    conn.register("_schema_contract_pin_seed", seed)
+    try:
+        unchanged = " AND ".join(f"e.{name} IS NOT DISTINCT FROM s.{name}" for name in fields)
+        _replace_rows_by_swap(
+            conn, "schema_contract",
+            ("table_name", "column_name", "data_type", "nullable", "is_natural_key", "is_pit_column", "declared_in",
+             "manifest_sha256", "source_loaded_at", "unit", "sign", "scale", "natural_key"),
+            f"""
+            SELECT s.table_name, s.column_name, s.data_type, s.nullable, s.is_natural_key, s.is_pit_column,
+                   s.declared_in, ?,
+                   CASE WHEN e.table_name IS NOT NULL AND {unchanged} THEN e.source_loaded_at
+                        ELSE CAST(now() AS TIMESTAMP) END,
+                   CAST(s.unit AS VARCHAR), CAST(s.sign AS VARCHAR), CAST(s.scale AS VARCHAR), s.natural_key
+            FROM _schema_contract_pin_seed s
+            LEFT JOIN schema_contract e ON e.table_name = s.table_name AND e.column_name = s.column_name
+            """,
+            [manifest_sha256],
+        )
+    finally:
+        conn.unregister("_schema_contract_pin_seed")
+    _replace_rows_by_swap(
+        conn, "schema_contract_version", ("version", "manifest_sha256", "declared_by_migration", "source_loaded_at"),
+        """
+        SELECT version, CASE WHEN version = ? THEN ? ELSE manifest_sha256 END, declared_by_migration, source_loaded_at
+        FROM schema_contract_version
+        """,
+        [SCHEMA_CONTRACT_VERSION, manifest_sha256],
+    )
+    assert_schema_contract_version(conn, manifest=manifest)
 
 
 def _market_daily_labels(conn: duckdb.DuckDBPyConnection) -> None:
@@ -1034,7 +1130,7 @@ def _pre_run5_identity_bundle(conn: duckdb.DuckDBPyConnection) -> None:
     _delisting_return_coverage_effective_view(conn)
     _issuer_content_coverage_slos(conn)
     _ticker_history_share_units(conn)
-    _refresh_schema_contract_v2_pin(conn)
+    refresh_schema_contract_pin_by_swap(conn)
 
 
 MIGRATIONS = [Migration(version=327, name="pre_run5_identity_bundle", up=_pre_run5_identity_bundle)]

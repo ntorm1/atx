@@ -23,7 +23,8 @@ their writer stores them.
 Cost: each swap copies its table once in the migration transaction and rebuilds its
 primary key (and secondary indexes). Cheap while the tables are empty or small; a
 populated ``market_daily_metrics`` (tens of millions of rows after run5 B2) makes the copy
-and its VARCHAR primary-key ART the dominant cost (MIG0328-report.md).
+and its VARCHAR primary-key ART the dominant cost (MIG0328-report.md). Ruling: B0 applies
+0327 and 0328 together, while ``market_daily_metrics`` is empty.
 """
 
 from __future__ import annotations
@@ -31,8 +32,15 @@ from __future__ import annotations
 import duckdb
 
 from ._runner import Migration
-from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
-from .bodies_0327 import _columns, _constraints, _describe_fields, _index_sql, _quoted, _row_count
+from .bodies_0327 import (
+    _columns,
+    _constraints,
+    _describe_fields,
+    _index_sql,
+    _quoted,
+    _row_count,
+    refresh_schema_contract_pin_by_swap,
+)
 
 _SCRATCH_SUFFIX = "__rebuild_0328"
 
@@ -294,7 +302,8 @@ def _post_b0_bundle(conn: duckdb.DuckDBPyConnection) -> None:
     _classification_basis(conn)
     _fundamental_period_rdq_lineage(conn)
     _equity_bar_revision_tables(conn)
-    _refresh_schema_contract_v2_pin(conn)
+    # Never the in-place _refresh_schema_contract_v2_pin: its WAL replay corrupts the ART.
+    refresh_schema_contract_pin_by_swap(conn)
 
 
 MIGRATIONS = [Migration(version=328, name="post_b0_bundle", up=_post_b0_bundle)]
