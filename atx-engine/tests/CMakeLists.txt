@@ -290,3 +290,11 @@ target_link_libraries(atx-engine-w1-cost-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-cost-tests REUSE_FROM atx-engine-test-pch)
 endif()
+
+add_executable(atx-engine-w1-eval-tests EXCLUDE_FROM_ALL
+    eval/eval_pbo_test.cpp)
+atx_engine_test_compile_environment(atx-engine-w1-eval-tests)
+target_link_libraries(atx-engine-w1-eval-tests PRIVATE atx-test-scratch)
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine-w1-eval-tests REUSE_FROM atx-engine-test-pch)
+endif()

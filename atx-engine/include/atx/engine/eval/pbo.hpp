@@ -263,7 +263,9 @@ struct SplitScratch {
 // ===========================================================================
 //  pbo_cscv_checked — validated CSCV PBO. Returns InvalidArgument when:
 //    * n_candidates < 2                    (no cross-sectional ranking possible),
+//    * perf.size() % n_candidates != 0     (ragged candidate-major matrix),
 //    * n_splits is odd (or zero)           (CSCV needs an even S to split S/2),
+//    * n_splits > 16                       (bounded exhaustive CSCV),
 //    * n_splits > T (= perf.size()/N)      (cannot form S non-empty sub-periods).
 //  On success, see PboResult.
 // ===========================================================================
@@ -276,8 +278,16 @@ pbo_cscv_checked(std::span<const atx::f64> perf, atx::usize n_candidates, atx::u
   if (n_candidates < 2U) {
     return Err(ErrorCode::InvalidArgument, "pbo_cscv: n_candidates must be >= 2");
   }
+  if (perf.size() % n_candidates != 0U) {
+    return Err(ErrorCode::InvalidArgument, "pbo_cscv: performance matrix must have equal candidate lengths");
+  }
   if (n_splits == 0U || (n_splits % 2U) != 0U) {
     return Err(ErrorCode::InvalidArgument, "pbo_cscv: n_splits must be a positive even number");
+  }
+  // The binomial reserve and exhaustive walk above rely on this bound. Larger
+  // even S must not silently trigger combinatorial work or integer overflow.
+  if (n_splits > 16U) {
+    return Err(ErrorCode::InvalidArgument, "pbo_cscv: exhaustive CSCV supports at most 16 splits");
   }
   // n_candidates >= 2 guarantees a non-zero divisor; integer division floors T.
   const atx::usize periods = perf.size() / n_candidates;
@@ -290,17 +300,16 @@ pbo_cscv_checked(std::span<const atx::f64> perf, atx::usize n_candidates, atx::u
 // ===========================================================================
 //  pbo_cscv — unchecked convenience for inputs known to be valid (n_candidates
 //  >= 2, n_splits positive & even, n_splits <= T). It delegates to the checked
-//  variant and FAILS FAST on a precondition violation (ATX_ASSERT, compiled out
-//  under NDEBUG) rather than running an undefined-behavior path — a safety-
+//  variant and FAILS FAST on a precondition violation (also under NDEBUG)
+//  rather than running an undefined-behavior path — a safety-
 //  critical library never silently consumes malformed input. Call
 //  pbo_cscv_checked directly when validity is not statically guaranteed.
 // ===========================================================================
 [[nodiscard]] inline PboResult
 pbo_cscv(std::span<const atx::f64> perf, atx::usize n_candidates, atx::usize n_splits) {
   auto r = pbo_cscv_checked(perf, n_candidates, n_splits);
-  // SAFETY: precondition contract — a release build with NDEBUG trusts the caller;
-  // a debug build traps the invalid argument instead of proceeding into UB.
-  ATX_ASSERT(r.has_value());
+  // Check before dereferencing Result in every build configuration.
+  ATX_CHECK(r.has_value());
   return *r;
 }
 
