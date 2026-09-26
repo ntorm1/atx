@@ -197,8 +197,9 @@ TEST(IcScreen, SimdMatchesIndependentPairwiseOracleWithTiesMissingAndTails) {
 TEST(IcScreen, SharedDateRanksHandleEqualCountDifferentNamesAndScratchReuse) {
   constexpr usize dates = 24, names = 35;
   auto raw = prices(dates, names, true);
-  // Each horizon has the same pair count but a different missing exit name.
-  for (usize d = 0; d < dates; ++d) raw[d * names + (7U * d) % names] = nan;
+  // Missing decision/entry names are shared; each horizon has a distinct
+  // missing exit name. All four paired subsets have the same size.
+  for (usize d = 0; d < dates; ++d) raw[d * names + d % names] = nan;
   auto p = panel(dates, names, std::move(raw)); ASSERT_TRUE(p);
   auto cache = prepare_ic_screen(*p, small_config()); ASSERT_TRUE(cache);
   auto scratch = prepare_ic_screen_scratch(*cache); ASSERT_TRUE(scratch);
@@ -215,7 +216,7 @@ TEST(IcScreen, SharedDateRanksHandleEqualCountDifferentNamesAndScratchReuse) {
         for (usize i = 0; i < names; ++i) if (std::isfinite(labels[d * names + i])) {
           x.push_back(signal[d * names + i]); y.push_back(labels[d * names + i]);
         }
-        ASSERT_EQ(x.size(), names - 2U);
+        ASSERT_EQ(x.size(), names - 3U);
         EXPECT_NEAR(actual[d], reference_corr(reference_ranks(x), reference_ranks(y)), 2e-13)
             << "pass=" << pass << " h=" << h << " d=" << d;
       }
