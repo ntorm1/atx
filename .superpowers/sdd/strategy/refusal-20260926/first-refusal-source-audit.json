@@ -1,0 +1,39 @@
+{
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "instrument_id": 39621,
+  "start": "2020-01-02",
+  "end_exclusive": "2020-01-11",
+  "raw_rows": [
+    {
+      "tradingDate": "2020-01-02",
+      "securityID": 39621,
+      "close": 84.95999908447266,
+      "volume": 3498545.0,
+      "cumulReturnFactor": 1.0
+    },
+    {
+      "tradingDate": "2020-01-03",
+      "securityID": 39621,
+      "close": 84.9000015258789,
+      "volume": 15594746.0,
+      "cumulReturnFactor": 1.0
+    }
+  ],
+  "private_non_authoritative_cache_rows": [
+    [
+      "2020-01-02",
+      39621,
+      84.95999908447266,
+      3498545.0,
+      1.0
+    ],
+    [
+      "2020-01-03",
+      39621,
+      84.9000015258789,
+      15594746.0,
+      1.0
+    ]
+  ],
+  "scope": "fixed source records only; no portfolio return, signal selection or membership alteration"
+}

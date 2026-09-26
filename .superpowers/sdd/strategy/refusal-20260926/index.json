@@ -1,0 +1,57 @@
+[
+    {
+        "Original":  "recent-strategy-refusal-diagnostics-build-receipt.json",
+        "File":  "recent-strategy-refusal-diagnostics-build-receipt.json",
+        "SHA256":  "437efe3f7de345c68ae1e9c2b78d45d2f0c6a7b8977a81d58539842aaf93a147"
+    },
+    {
+        "Original":  "recent-strategy-refusal-diagnostics-build.log",
+        "File":  "recent-strategy-refusal-diagnostics-build.log",
+        "SHA256":  "67558793af8fc6d79246f3900f27964ee94acde0f128dba9c06d46d129e0c512"
+    },
+    {
+        "Original":  "recent-strategy-diagnostic-qualification/receipt.json",
+        "File":  "recent-strategy-diagnostic-qualification__receipt.json",
+        "SHA256":  "95227417f27d2d40ecdecae318b8aee562b754a9e9758f1d1050eab007eaa30d"
+    },
+    {
+        "Original":  "recent-strategy-diagnostic-qualification/results.xml",
+        "File":  "recent-strategy-diagnostic-qualification__results.xml",
+        "SHA256":  "d1a35403db9fd445869ea66d0b0a78e6107beb23750fb5d05551ae841efa060d"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v2-run/receipt.json",
+        "File":  "recent-dev-rehearsal-v2-run__receipt.json",
+        "SHA256":  "32a9f6006dc2f3422526b5b472f8ca529c6a64448ab2b83c55e26968fd583c42"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v2-run/stderr.log",
+        "File":  "recent-dev-rehearsal-v2-run__stderr.log",
+        "SHA256":  "ae3122575dd1dd3ce805201cd2ec2e2c9d47c81e01debe133ffc465248c47abe"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v2/summary.json",
+        "File":  "recent-dev-rehearsal-v2__summary.json",
+        "SHA256":  "0dc9eb9d8d526106b32068471d1dc9aef1ccf0939cef434fb7805fe7beded4c1"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v2/train_trials.jsonl",
+        "File":  "recent-dev-rehearsal-v2__train_trials.jsonl",
+        "SHA256":  "20563c3f6d9ee707b27d436b5b481b748140aa3dcb457063856569bdb8eb47fb"
+    },
+    {
+        "Original":  "first-refusal-source-audit-run/receipt.json",
+        "File":  "first-refusal-source-audit-run__receipt.json",
+        "SHA256":  "97b2949bfb11e3d2d4ebb165329261c09a3183e5815ddbdc0ab2d8d6f9fe5fba"
+    },
+    {
+        "Original":  "first-refusal-source-audit.json",
+        "File":  "first-refusal-source-audit.json",
+        "SHA256":  "c87cf62f9f5f7b610c72b0547c3139ce7955666c41c39f96aa6ee3dcb33a7ce5"
+    },
+    {
+        "Original":  "audit-first-refusal-source.py",
+        "File":  "audit-first-refusal-source.py",
+        "SHA256":  "ad34050f0e3416a601d83f83803136fe2433f3d7cfdd3eca08cf9c4d5135bca8"
+    }
+]

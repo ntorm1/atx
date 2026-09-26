@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="17" failures="0" disabled="0" errors="0" time="0.537" timestamp="2026-09-26T18:13:33.100" name="AllTests">
+  <testsuite name="StrategyRunner" tests="3" failures="0" disabled="0" skipped="0" errors="0" time="0.476" timestamp="2026-09-26T18:13:33.101">
+    <testcase name="FixedCostedPortfoliosAcceptObservedZeroVolumeAndFreezeTrainSigns" file="..\atx-impl\tests\strategy_runner_test.cpp" line="96" status="run" result="completed" time="0.185" timestamp="2026-09-26T18:13:33.101" classname="StrategyRunner" />
+    <testcase name="ShortMaturePrefixReportsActualClampedHacLag" file="..\atx-impl\tests\strategy_runner_test.cpp" line="130" status="run" result="completed" time="0.18" timestamp="2026-09-26T18:13:33.286" classname="StrategyRunner" />
+    <testcase name="RefusesExternalPinOrCombinedBudgetBeforePayloadEvaluation" file="..\atx-impl\tests\strategy_runner_test.cpp" line="150" status="run" result="completed" time="0.109" timestamp="2026-09-26T18:13:33.467" classname="StrategyRunner" />
+  </testsuite>
+  <testsuite name="ExecutionSchedule" tests="5" failures="0" disabled="0" skipped="0" errors="0" time="0.02" timestamp="2026-09-26T18:13:33.577">
+    <testcase name="DefaultCadencePreservesIdentityAndIndependentInitialLedger" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="64" status="run" result="completed" time="0.003" timestamp="2026-09-26T18:13:33.577" classname="ExecutionSchedule" />
+    <testcase name="OffCycleKeepsMarkedReturnsAndCalendarBorrowWithoutTrades" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="81" status="run" result="completed" time="0.009" timestamp="2026-09-26T18:13:33.581" classname="ExecutionSchedule" />
+    <testcase name="LongerDelayFreezesPartialTargetsBeforeOtherQueuedFills" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="104" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:13:33.590" classname="ExecutionSchedule" />
+    <testcase name="MembershipExitIsPartialAtScheduledEntry" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="121" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:13:33.591" classname="ExecutionSchedule" />
+    <testcase name="StrictRefusalIdentifiesActualClockNameExposureAndGuard" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="132" status="run" result="completed" time="0.004" timestamp="2026-09-26T18:13:33.593" classname="ExecutionSchedule" />
+  </testsuite>
+  <testsuite name="ExecutionObjective" tests="9" failures="0" disabled="0" skipped="0" errors="0" time="0.041" timestamp="2026-09-26T18:13:33.597">
+    <testcase name="DelayedCashLedgerUsesMarkedDollarCostsAndCalendarSlots" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="92" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:13:33.597" classname="ExecutionObjective" />
+    <testcase name="DelayTwoKeepsDecisionDollarsAfterEntryNavChanges" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="131" status="run" result="completed" time="0." timestamp="2026-09-26T18:13:33.599" classname="ExecutionObjective" />
+    <testcase name="ParticipationCapChangesActualHoldingsAndTurnover" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="150" status="run" result="completed" time="0." timestamp="2026-09-26T18:13:33.599" classname="ExecutionObjective" />
+    <testcase name="CalendarBorrowAndInverseSignalHaveDifferentCashLedgers" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="166" status="run" result="completed" time="0." timestamp="2026-09-26T18:13:33.600" classname="ExecutionObjective" />
+    <testcase name="AbsentFiniteEntryOrHeldMarkCannotBecomeRealizedPnl" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="188" status="run" result="completed" time="0.03" timestamp="2026-09-26T18:13:33.601" classname="ExecutionObjective" />
+    <testcase name="RoleMaturityAndFutureMutationPreserveRealizedPrefix" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="200" status="run" result="completed" time="0." timestamp="2026-09-26T18:13:33.631" classname="ExecutionObjective" />
+    <testcase name="ClocksIdentitySupportAndBudgetAreExplicitAdmission" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="233" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:13:33.632" classname="ExecutionObjective" />
+    <testcase name="MissingCostBorrowAndGuardedHeldReturnNeverBecomeZeroCost" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="253" status="run" result="completed" time="0.002" timestamp="2026-09-26T18:13:33.634" classname="ExecutionObjective" />
+    <testcase name="UnfundedLongAndAsymmetricallyCappedNeutralBooksAreRefused" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="270" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:13:33.636" classname="ExecutionObjective" />
+  </testsuite>
+</testsuites>

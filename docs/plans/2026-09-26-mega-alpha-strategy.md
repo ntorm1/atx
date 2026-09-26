@@ -160,6 +160,15 @@ The first bounded run is a wiring/data-quality observation, not the final
 Sharpe claim. Missing held returns remain an error; the runner cannot invent
 zero returns or silently drop an exposed name to make the backtest complete.
 
+The first real attempt and diagnostic retry both failed on a held price gap,
+with zero completed trials. Source inspection confirms that security39621's
+archive ends on2020-01-03. W2-D2 terminal/merger evidence is therefore pulled
+forward: identify the dated event, value any evidenced signed claim explicitly,
+and preserve cash-receipt/availability qualifications. No forward price fill,
+future membership filter, Shumway gain for shorts or hypothetical settlement
+may be silently introduced to produce a Sharpe. See report480af2d7 and its
+strict-diagnostic addendum. Candidate/sign/blend selection recipe is unchanged.
+
 ## Development rehearsal registered before any strategy performance
 
 The first real execution rehearsal uses TRAIN2020Q1 and a subsequent2020Q2

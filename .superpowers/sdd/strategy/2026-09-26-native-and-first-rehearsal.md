@@ -46,3 +46,33 @@ remain in the ignored worktree cache and are bound by their manifests.
 
 No achieved net Sharpe, turnover target, capacity, final-period result,
 large-scale performance gate or full sprint completion is claimed.
+
+## Strict refusal diagnosed
+
+Diagnostics `e2b97317` -> `32f074b3` and fixture `e53d13a3` -> `429bf26c`
+preserve all successful arithmetic and context hashes; independent review
+`1e1156d9` -> `ba7df9de`. At clean source `fcd4061d`, incremental build20.824s
+with Jobs2 (two C++ objects, three links); all17 affected execution/runner
+checks pass in0.537s, wrapper0.813s. Together with unchanged DSL/reader evidence,
+20 distinct cases are qualified. No full-repeat or additive pass-count claim.
+
+The identical second rehearsal fails in7.484s/217,067,520 sampled bytes with
+unchanged context SHA. Security39621 has a $183,472.94 held position at the
+2020-01-06 mark, but no current source bar; previous2020-01-03 adjusted close
+84.900001525878906. Return guard did not trigger. Cumulative real attempts:
+two failed, zero completed; Q2/2023-2024/2025+ remain unread.
+
+A bounded13.250s raw-source audit reverified the full source SHA, then decoded
+only projected columns and reported the fixed security/date window. Both raw
+source and retained private staging DB have January2/3 rows and no January6-10
+rows. This is an archive ending, not a duplicate quarantine or numeric QA bug.
+No source, membership or return was altered. The new exact artifact packet is
+`refusal-20260926/index.json`. The failed preliminary inline diagnostic had a
+Python syntax error and read no data; the bound script supersedes it.
+
+This promotes original W2-D2 terminal/merger evidence to a direct dependency.
+Historical ticker identity and actual event consideration must be established
+before applying an event. Existing ex-post last-print inference or assumed
+short gains cannot qualify portfolio returns. Historical stock-type inventory
+`3614788d` -> `fcd4061d` separately preserves unresolved recent type/vintage
+coverage; no currently held local dataset has yet established full qualification.
