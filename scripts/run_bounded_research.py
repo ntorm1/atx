@@ -4,6 +4,9 @@
 Arguments after -- are passed directly to the process, never through a shell.
 Outputs must be new directories inside this worktree. This requires psutil and
 does not authorize concurrent compilation or turn a smoke run into alpha evidence.
+This is a sampled operational guard, not a process sandbox: supported research
+commands must not detach children between samples. Observed descendants remain
+owned and monitored after the direct child exits.
 """
 from __future__ import annotations
 
@@ -29,18 +32,26 @@ def digest(path: Path) -> str:
     return result.hexdigest()
 
 
-def stop_owned(process: psutil.Process) -> None:
+def live_owned(owned: dict) -> list[psutil.Process]:
+    for process in list(owned.values()):
+        try:
+            if process.is_running():
+                for child in process.children(recursive=True):
+                    owned[(child.pid, child.create_time())] = child
+        except psutil.NoSuchProcess:
+            pass
+    return [process for process in owned.values() if process.is_running()]
+
+
+def stop_owned(owned: dict) -> None:
     """psutil checks creation time before signaling, protecting against PID reuse."""
-    try:
-        owned = process.children(recursive=True) + [process]
-    except psutil.NoSuchProcess:
-        return
-    for child in reversed(owned):
+    live = live_owned(owned)
+    for child in reversed(live):
         try:
             child.terminate()
         except psutil.NoSuchProcess:
             pass
-    _, alive = psutil.wait_procs(owned, timeout=2)
+    _, alive = psutil.wait_procs(live, timeout=2)
     for child in alive:
         try:
             child.kill()
@@ -91,18 +102,26 @@ def main() -> int:
     (output / "start.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     started = time.monotonic()
     child = None
-    owned = None
+    owned = {}
     try:
         with (output / "stdout.log").open("xb") as stdout, (output / "stderr.log").open("xb") as stderr:
+            if psutil.virtual_memory().available < args.min_free_mib * 1024**2:
+                receipt["outcome"] = "prelaunch-memory-refusal"
+                raise RuntimeError("available system memory is below the launch floor")
             child = subprocess.Popen(command, cwd=root, stdout=stdout, stderr=stderr,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            owned = psutil.Process(child.pid)
-            while child.poll() is None:
-                try:
-                    tree = [owned] + owned.children(recursive=True)
-                    rss = sum(p.memory_info().rss for p in tree if p.is_running())
-                except psutil.NoSuchProcess:
-                    rss = 0
+            process = psutil.Process(child.pid)
+            owned[(process.pid, process.create_time())] = process
+            while True:
+                tree = live_owned(owned)
+                if child.poll() is not None and not tree:
+                    break
+                rss = 0
+                for process in tree:
+                    try:
+                        rss += process.memory_info().rss
+                    except psutil.NoSuchProcess:
+                        pass
                 free = psutil.virtual_memory().available
                 receipt["sampled_peak_tree_rss_bytes"] = max(receipt["sampled_peak_tree_rss_bytes"], rss)
                 receipt["minimum_system_free_bytes"] = min(receipt["minimum_system_free_bytes"], free)
@@ -118,14 +137,17 @@ def main() -> int:
             if receipt["outcome"] == "launch-failed":
                 receipt["outcome"] = "completed" if child.returncode == 0 else "process-error"
     except BaseException as exc:
-        receipt["outcome"] = "interrupted" if isinstance(exc, KeyboardInterrupt) else "runner-error"
+        if receipt["outcome"] != "prelaunch-memory-refusal":
+            receipt["outcome"] = "interrupted" if isinstance(exc, KeyboardInterrupt) else "runner-error"
         receipt["error"] = str(exc)
-        if owned is not None:
+        if owned:
             stop_owned(owned)
         if child is not None:
             receipt["exit_code"] = child.wait(timeout=5)
     finally:
         receipt["wall_seconds"] = time.monotonic() - started
+        receipt["owned_processes"] = [{"pid": pid, "create_time": born} for pid, born in owned]
+        receipt["ownership_scope"] = "sampled descendant identities; commands must not detach unsampled children"
         receipt["logs"] = {name: digest(output / name) for name in ("stdout.log", "stderr.log")
                            if (output / name).exists()}
         with (output / "receipt.json").open("x", encoding="utf-8") as stream:
