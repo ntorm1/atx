@@ -14,7 +14,7 @@ import pandas as pd
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .security_master import security_ids_for_symbols, symbol_key
-from .warehouse import insert_frame, json_dumps, quality_check
+from .warehouse import json_dumps, quality_check, register_frame
 
 
 SOURCE_NAME = "Cross-vendor fundamental fact reconciliation"
@@ -156,14 +156,20 @@ def _map_missing_security_ids(store: DuckDBStore, frame: pd.DataFrame) -> pd.Dat
     if "symbol" not in frame.columns:
         return frame
 
-    symbols = sorted({symbol_key(value) for value in frame["symbol"].dropna() if symbol_key(value)})
+    out = frame.copy()
+    # Object dtype so a resolved id can be written into a column DuckDB typed (pandas 3 refuses
+    # to upcast on .loc assignment).
+    out["security_id"] = out["security_id"].astype("object")
+    missing = out["security_id"].isna() | (out["security_id"].astype("string").str.strip() == "").fillna(False)
+    if not missing.any():
+        return out
+    symbols = sorted({symbol_key(value) for value in out.loc[missing, "symbol"].dropna() if symbol_key(value)})
     resolved = security_ids_for_symbols(store, symbols)
     if not resolved:
-        return frame
-
-    out = frame.copy()
-    missing = out["security_id"].isna() | (out["security_id"].astype("string").str.strip() == "")
-    out.loc[missing, "security_id"] = out.loc[missing, "symbol"].map(lambda value: resolved.get(symbol_key(value)))
+        return out
+    out.loc[missing, "security_id"] = out.loc[missing, "symbol"].map(
+        lambda value: None if pd.isna(value) else resolved.get(symbol_key(value))
+    )
     return out
 
 
@@ -209,10 +215,19 @@ def normalize_vendor_baseline_rows(
         out["item_id"] = pd.NA
     if "canonical_code" not in out.columns:
         out["canonical_code"] = pd.NA
+    # Frames straight from DuckDB (``.df()``) arrive with numpy int32/int64 and Arrow/str
+    # columns; pandas 3 rejects .loc writes of a different dtype, so normalize to nullable
+    # Int64 / object first and only write where something is actually missing.
+    out["item_id"] = pd.to_numeric(out["item_id"], errors="coerce").astype("Int64")
+    out["canonical_code"] = out["canonical_code"].astype("object")
     missing_item = out["item_id"].isna() & out["canonical_code"].notna()
-    out.loc[missing_item, "item_id"] = out.loc[missing_item, "canonical_code"].map(by_code)
+    if missing_item.any():
+        out.loc[missing_item, "item_id"] = (
+            out.loc[missing_item, "canonical_code"].map(by_code).astype("Int64")
+        )
     missing_code = out["canonical_code"].isna() & out["item_id"].notna()
-    out.loc[missing_code, "canonical_code"] = out.loc[missing_code, "item_id"].map(lambda value: by_id.get(int(value)))
+    if missing_code.any():
+        out.loc[missing_code, "canonical_code"] = out.loc[missing_code, "item_id"].map(lambda value: by_id.get(int(value)))
 
     out["vendor"] = out["vendor"].astype("string").str.strip().str.upper()
     if options.vendor:
@@ -255,6 +270,7 @@ def normalize_vendor_baseline_rows(
         out["source_accession"] = pd.NA
     if "is_latest_revision" not in out.columns:
         out["is_latest_revision"] = True
+    out["is_latest_revision"] = out["is_latest_revision"].astype("object").where(out["is_latest_revision"].notna(), True).astype(bool)
 
     out = out.dropna(subset=["source", "vendor", "security_id", "item_id", "canonical_code", "basis", "period_end", "value", "as_of_date", "available_at"])
     if out.empty:
@@ -290,6 +306,68 @@ def normalize_vendor_baseline_rows(
     )
 
 
+def _merge_scope(
+    store: DuckDBStore,
+    *,
+    table: str,
+    key_column: str,
+    natural_key: Sequence[str],
+    columns: Sequence[str],
+    rows: pd.DataFrame,
+    scope_sql: str,
+    scope_params: Sequence[object],
+    relation_name: str,
+) -> None:
+    """Make ``table``'s scope equal ``rows``, idempotently, in one transaction.
+
+    ``key_column`` is the sha256 of ``natural_key``. Keys present in both are updated in place,
+    new keys are inserted, and only then are the scope's keys absent from ``rows`` deleted -- a
+    key is never deleted and re-inserted, and no delete precedes the writes. The old
+    delete-scope + insert pattern (and a delete-first merge) raised ``ConstraintException:
+    Duplicate key`` on the natural-key unique index when rerun over an on-disk DuckDB 1.5.5
+    store (reproduced on the P12 FSDS comparison scratch DB); update -> insert -> delete passes
+    on the same state, twice within one transaction.
+    """
+
+    value_columns = [c for c in columns if c != key_column and c not in natural_key]
+    column_list = ", ".join(columns)
+    register_frame(store, relation_name, rows[list(columns)])
+    try:
+        with store.transaction():
+            store.con.execute(
+                f"""
+                UPDATE {table} AS t
+                SET {', '.join(f'{c} = n.{c}' for c in value_columns)},
+                    source_loaded_at = now(),
+                    updated_at = now()
+                FROM {relation_name} n
+                WHERE t.{key_column} = n.{key_column}
+                """
+            )
+            store.con.execute(
+                f"""
+                INSERT INTO {table} ({column_list})
+                SELECT {column_list}
+                FROM {relation_name} n
+                WHERE NOT EXISTS (SELECT 1 FROM {table} t WHERE t.{key_column} = n.{key_column})
+                """
+            )
+            store.con.execute(
+                f"""
+                DELETE FROM {table} AS t
+                WHERE {scope_sql}
+                  AND NOT EXISTS (SELECT 1 FROM {relation_name} n WHERE n.{key_column} = t.{key_column})
+                """,
+                list(scope_params),
+            )
+    finally:
+        store.con.unregister(relation_name)
+
+
+_BASELINE_NATURAL_KEY = ("source", "vendor", "security_id", "item_id", "period_end", "basis")
+_DISAGREEMENT_NATURAL_KEY = ("source", "baseline_source", "vendor", "security_id", "item_id", "period_end", "basis")
+
+
 def refresh_vendor_baseline_facts(store: DuckDBStore, options: FactDisagreementOptions | None = None) -> int:
     options = options or FactDisagreementOptions()
     store.initialize()
@@ -298,13 +376,18 @@ def refresh_vendor_baseline_facts(store: DuckDBStore, options: FactDisagreementO
         return 0
 
     vendors = sorted(rows["vendor"].dropna().unique().tolist())
-    with store.transaction():
-        placeholders = ", ".join("?" for _ in vendors)
-        store.con.execute(
-            f"DELETE FROM vendor_baseline_facts WHERE source = ? AND vendor IN ({placeholders})",
-            [options.baseline_source, *vendors],
-        )
-        insert_frame(store, rows, "vendor_baseline_facts", "vendor_baseline_facts_insert")
+    placeholders = ", ".join("?" for _ in vendors)
+    _merge_scope(
+        store,
+        table="vendor_baseline_facts",
+        key_column="baseline_fact_id",
+        natural_key=_BASELINE_NATURAL_KEY,
+        columns=VENDOR_BASELINE_COLUMNS,
+        rows=rows,
+        scope_sql=f"t.source = ? AND t.vendor IN ({placeholders})",
+        scope_params=[options.baseline_source, *vendors],
+        relation_name="vendor_baseline_facts_merge",
+    )
     return int(len(rows))
 
 
@@ -314,14 +397,18 @@ def _comparison_inputs(store: DuckDBStore, options: FactDisagreementOptions) -> 
     if options.vendor:
         predicates.append("b.vendor = ?")
         params.append(options.vendor.strip().upper())
-    as_of_filter = ""
-    if options.as_of_ts is not None:
-        as_of_filter = "AND b.available_at <= ?"
-        params.append(options.as_of_ts)
-    std_as_of_filter = ""
+    # Without as_of_ts both sides compare their latest revision. With as_of_ts each side takes
+    # the version *known at* as_of_ts (latest available_at <= as_of_ts): filtering on
+    # is_latest_revision first would drop a fact whose restatement arrived after as_of_ts
+    # instead of falling back to the earlier version that was visible then.
     std_params: list[object] = []
-    if options.as_of_ts is not None:
-        std_as_of_filter = "AND s.available_at <= ?"
+    if options.as_of_ts is None:
+        baseline_visibility = "AND b.is_latest_revision"
+        std_visibility = "s.is_latest_revision"
+    else:
+        baseline_visibility = "AND b.available_at <= ?"
+        params.append(options.as_of_ts)
+        std_visibility = "s.available_at <= ?"
         std_params.append(options.as_of_ts)
 
     sql = f"""
@@ -334,8 +421,7 @@ def _comparison_inputs(store: DuckDBStore, options: FactDisagreementOptions) -> 
                 ) AS rn
             FROM vendor_baseline_facts b
             WHERE {' AND '.join(predicates)}
-              AND b.is_latest_revision
-              {as_of_filter}
+              {baseline_visibility}
         ),
         baseline AS (
             SELECT * EXCLUDE (rn)
@@ -351,8 +437,7 @@ def _comparison_inputs(store: DuckDBStore, options: FactDisagreementOptions) -> 
                     ORDER BY s.available_at DESC, s.source_loaded_at DESC, s.standardized_id DESC
                 ) AS rn
             FROM fundamental_standardized s
-            WHERE s.is_latest_revision
-              {std_as_of_filter}
+            WHERE {std_visibility}
         ),
         standardized AS (
             SELECT * EXCLUDE (rn)
@@ -417,7 +502,7 @@ def compute_fact_disagreement_rows(
     out["agreement_status"] = "disagrees"
     out.loc[agrees, "agreement_status"] = "agrees"
     out.loc[missing, "agreement_status"] = "missing_warehouse"
-    out["vintage_status"] = "like_for_like_latest_visible"
+    out["vintage_status"] = "like_for_like_latest_visible" if options.as_of_ts is None else "like_for_like_as_of"
     out.loc[missing, "vintage_status"] = "missing_warehouse_vintage"
     out["is_latest_revision"] = True
     out["warehouse_available_at"] = pd.to_datetime(out["warehouse_available_at"], errors="coerce")
@@ -459,13 +544,13 @@ def compute_fact_disagreement_rows(
     return out[FACT_DISAGREEMENT_COLUMNS]
 
 
-def _delete_fact_disagreement_scope(store: DuckDBStore, options: FactDisagreementOptions) -> None:
-    predicates = ["source = ?", "baseline_source = ?"]
+def _fact_disagreement_scope(options: FactDisagreementOptions) -> tuple[str, list[object]]:
+    predicates = ["t.source = ?", "t.baseline_source = ?"]
     params: list[object] = [options.source, options.baseline_source]
     if options.vendor:
-        predicates.append("vendor = ?")
+        predicates.append("t.vendor = ?")
         params.append(options.vendor.strip().upper())
-    store.con.execute(f"DELETE FROM fact_disagreement WHERE {' AND '.join(predicates)}", params)
+    return " AND ".join(predicates), params
 
 
 def refresh_fact_disagreement(store: DuckDBStore, options: FactDisagreementOptions | None = None) -> int:
@@ -474,10 +559,22 @@ def refresh_fact_disagreement(store: DuckDBStore, options: FactDisagreementOptio
     refresh_vendor_baseline_facts(store, options)
     inputs = _comparison_inputs(store, options)
     rows = compute_fact_disagreement_rows(inputs, options)
-    with store.transaction():
-        _delete_fact_disagreement_scope(store, options)
-        if not rows.empty:
-            insert_frame(store, rows, "fact_disagreement", "fact_disagreement_insert")
+    scope_sql, scope_params = _fact_disagreement_scope(options)
+    if rows.empty:
+        with store.transaction():
+            store.con.execute(f"DELETE FROM fact_disagreement AS t WHERE {scope_sql}", scope_params)
+        return 0
+    _merge_scope(
+        store,
+        table="fact_disagreement",
+        key_column="disagreement_id",
+        natural_key=_DISAGREEMENT_NATURAL_KEY,
+        columns=FACT_DISAGREEMENT_COLUMNS,
+        rows=rows,
+        scope_sql=scope_sql,
+        scope_params=scope_params,
+        relation_name="fact_disagreement_merge",
+    )
     return int(len(rows))
 
 

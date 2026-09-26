@@ -147,6 +147,44 @@ def test_fact_disagreement_dataset_records_agreement_quality(tmp_store) -> None:
     assert json.loads(row[2])["threshold"] == pytest.approx(0.99)
 
 
+def test_fact_disagreement_as_of_uses_version_known_then(tmp_store) -> None:
+    # Warehouse: original 100 (visible 2025-02-15), restated to 110 on 2026-02-15 (latest revision).
+    _insert_standardized(tmp_store, value=100.0)
+    tmp_store.con.execute("UPDATE fundamental_standardized SET is_latest_revision = false")
+    tmp_store.con.execute(
+        """
+        INSERT INTO fundamental_standardized
+        SELECT * REPLACE ('std-restated' AS standardized_id, 110.0 AS value,
+                          TIMESTAMP '2026-02-15 10:00:00' AS available_at, true AS is_latest_revision)
+        FROM fundamental_standardized
+        """
+    )
+    # Baseline straight from DuckDB (INTEGER item_id -> int32 column under pandas 3).
+    frame = tmp_store.con.execute(
+        """
+        SELECT 'sharadar' AS vendor, 'SEC-A' AS security_id, 1001 AS item_id, 'revenue' AS canonical_code,
+               'annual' AS basis, DATE '2024-12-31' AS period_end, 100.0 AS value,
+               TIMESTAMP '2025-02-20 00:00:00' AS available_at
+        """
+    ).df()
+
+    def status() -> tuple:
+        return tmp_store.con.execute(
+            "SELECT agreement_status, warehouse_value, vintage_status, count(*) OVER () FROM fact_disagreement"
+        ).fetchone()
+
+    as_of = FactDisagreementOptions(vendor="SHARADAR", baseline_frame=frame, as_of_ts=dt.datetime(2025, 6, 30))
+    assert refresh_fact_disagreement(tmp_store, as_of) == 1
+    assert refresh_fact_disagreement(tmp_store, as_of) == 1  # rerun is an idempotent upsert
+    # As of mid-2025 the restatement did not exist yet: compare against the original, not "missing".
+    assert status() == ("agrees", 100.0, "like_for_like_as_of", 1)
+
+    latest = FactDisagreementOptions(vendor="SHARADAR", baseline_frame=frame)
+    assert refresh_fact_disagreement(tmp_store, latest) == 1
+    assert status() == ("disagrees", 110.0, "like_for_like_latest_visible", 1)
+    assert tmp_store.con.execute("SELECT count(*) FROM vendor_baseline_facts").fetchone()[0] == 1
+
+
 def test_fact_disagreement_migration_catalog_present(tmp_store) -> None:
     assert tmp_store.con.execute(
         "SELECT description FROM schema_migrations WHERE version = '0125'"

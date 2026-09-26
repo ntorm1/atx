@@ -61,6 +61,7 @@ from .connection import DuckDBStore, resolve_data_dir
 from .fact_disagreement import FactDisagreementOptions, refresh_fact_disagreement
 from .item_registry import FundamentalItemSeedRow, read_fundamental_item_seed
 from .standardization import StandardizationRule, default_standardization_rules
+from .statement_map_seed import FundamentalStatementMapRow, read_statement_map_seed
 
 FSDS_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip"
 SEC_USER_AGENT = "atx-db/0.1 atx-research@example.com"
@@ -692,6 +693,9 @@ class CanonicalAlias:
     priority: int
     valid_from: dt.date | None
     valid_to: dt.date | None
+    # statement_map.value_multiplier for (concept, item): the warehouse stores raw x multiplier
+    # (e.g. PaymentsToAcquirePropertyPlantAndEquipment -1.0, capex as a signed outflow).
+    value_multiplier: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -716,17 +720,23 @@ def canonical_rules(
     *,
     rules: Sequence[StandardizationRule] | None = None,
     item_seed: Sequence[FundamentalItemSeedRow] | None = None,
+    statement_rows: Sequence[FundamentalStatementMapRow] | None = None,
 ) -> dict[tuple[int, str], CanonicalRule]:
     """Resolve the warehouse standardization rules (and their raw component items) per basis."""
 
     rules = tuple(rules if rules is not None else default_standardization_rules())
     seed = tuple(item_seed if item_seed is not None else read_fundamental_item_seed())
+    statement = tuple(statement_rows if statement_rows is not None else read_statement_map_seed())
     validity: dict[tuple[int, str], tuple[dt.date | None, dt.date | None]] = {}
     unit_types: dict[int, str | None] = {}
     for row in seed:
         unit_types.setdefault(row.item_id, row.unit_type)
         if row.alias_scheme == "us-gaap" and row.alias_code:
             validity[(row.item_id, row.alias_code)] = (_as_date(row.valid_from), _as_date(row.valid_to))
+    multipliers: dict[tuple[int, str], float] = {}
+    for srow in sorted(statement, key=lambda r: r.industry_template != "ALL"):  # ALL template wins
+        if srow.taxonomy == "us-gaap" and srow.is_active and srow.item_id is not None:
+            multipliers.setdefault((int(srow.item_id), srow.concept), float(srow.value_multiplier))
     active = {(rule.item_id, rule.basis): rule for rule in rules if rule.is_active}
 
     def build(item_id: int, basis: str, unit_kind: str) -> CanonicalRule:
@@ -734,7 +744,12 @@ def canonical_rules(
         if rule is None:
             raise ValueError(f"no active standardization rule for item {item_id} basis {basis}")
         aliases = tuple(
-            CanonicalAlias(alias.alias_code, int(alias.priority), *validity.get((item_id, alias.alias_code), (None, None)))
+            CanonicalAlias(
+                alias.alias_code,
+                int(alias.priority),
+                *validity.get((item_id, alias.alias_code), (None, None)),
+                value_multiplier=multipliers.get((item_id, alias.alias_code), 1.0),
+            )
             for alias in rule.source_aliases
             if alias.alias_scheme == "us-gaap"
         )
@@ -778,12 +793,16 @@ def _alias_table(rules_map: Mapping[tuple[int, str], CanonicalRule]) -> pd.DataF
             "alias_valid_from": alias.valid_from or rule.valid_from,
             "alias_valid_to": alias.valid_to or rule.valid_to,
             "expected_uom": uom,
+            "value_multiplier": alias.value_multiplier,
         }
         for rule in rules_map.values()
         for alias in rule.aliases
         for uom in _FSDS_UOMS_BY_UNIT_KIND[rule.unit_kind]
     ]
-    return pd.DataFrame(rows, columns=["item_id", "basis", "tag", "priority", "alias_valid_from", "alias_valid_to", "expected_uom"])
+    return pd.DataFrame(
+        rows,
+        columns=["item_id", "basis", "tag", "priority", "alias_valid_from", "alias_valid_to", "expected_uom", "value_multiplier"],
+    )
 
 
 FACT_COLUMNS = [
@@ -870,7 +889,10 @@ def canonical_fsds_facts(
         candidates[valid]
         .sort_values(["adsh", "item_id", "basis", "ddate", "priority", "tag"], kind="mergesort")
         .drop_duplicates(subset=["adsh", "item_id", "basis", "ddate"], keep="first")
+        .copy()
     )
+    # Statement points carry raw x statement_map.value_multiplier; compositions read those.
+    raw["value"] = raw["value"].astype(float) * raw["value_multiplier"].astype(float)
     filings = frame[_FILING_COLUMNS].drop_duplicates(subset=["adsh"])
     name_by_id = {item.item_id: item.name for item in items}
 
@@ -1367,16 +1389,6 @@ def run_fsds_comparison(
             }
             for r in group.itertuples(index=False)
         ]
-        # Clear this group's previous run in its own committed statements first: on DuckDB 1.5.5
-        # fact_disagreement's delete + re-insert of the same unique keys inside one transaction
-        # raises a duplicate-key ConstraintException on a rerun (reproduced on the P12 scratch DB).
-        store.con.execute(
-            "DELETE FROM fact_disagreement WHERE source = ? AND baseline_source = ? AND vendor = ?",
-            [parity_source, baseline_source, FSDS_VENDOR],
-        )
-        store.con.execute(
-            "DELETE FROM vendor_baseline_facts WHERE source = ? AND vendor = ?", [baseline_source, FSDS_VENDOR]
-        )
         refresh_fact_disagreement(
             store,
             FactDisagreementOptions(

@@ -58,6 +58,10 @@ agreement ratio against the warehouse yet; do not quote one.
      Only `version us-gaap/*` facts are used. Facts with `segments` or `coreg` are excluded.
    - `uom` must be `USD`. FSDS publishes `EarningsPerShareDiluted` with uom `USD` in all 8
      quarters, not `USD/shares`.
+   - Each value is multiplied by the concept's `statement_map.value_multiplier`, as the
+     warehouse's statement points are. For example, `PaymentsToAcquirePropertyPlantAndEquipment`
+     has multiplier -1.0, so capex is a signed outflow in `capex__1305`. Without this, every
+     PP&E-tagged capex row would read as a `sign_flip` mismatch.
    - **Direct:** within each filing, the alias with the lowest priority number wins. For example,
      `RevenueFromContractWithCustomerExcludingAssessedTax` (10) beats `Revenues` (20).
    - **Derived:** `coalesce_or_difference` and `coalesce_or_sum` rules use raw component items
@@ -130,10 +134,10 @@ agreement ratio against the warehouse yet; do not quote one.
      panel's `fundamental_standardized` rows (every revision) are copied out.
    - A filing's `fy`/`fp` label only its own period. Comparatives, such as FY2021 inside the FY2023
      10-K, carry no fiscal label.
-   - Reruns are idempotent. Each group's previous rows are deleted in their own committed
-     statements before `refresh_fact_disagreement`. The reason: on DuckDB 1.5.5, that function's
-     in-transaction delete and re-insert of the same unique keys raises a duplicate-key
-     ConstraintException on the second run (reproduced; see the P12 report).
+   - Reruns are idempotent. `fact_disagreement` itself upserts by natural key, in one
+     transaction: update existing keys, insert new ones, then delete stale keys. The old
+     delete-then-insert pattern raised a duplicate-key ConstraintException on DuckDB 1.5.5 when
+     rerun; this was fixed in P12F, so P12 needs no workaround.
 
 ## Proof of the harness (no warehouse opened)
 

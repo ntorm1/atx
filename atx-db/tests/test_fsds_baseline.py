@@ -120,7 +120,8 @@ def test_fsds_loader_mapping_coverage_and_parity_harness(tmp_path, tmp_store) ->
         ("total_assets", "instant", fy24, A1): (340e9, "direct", ["us-gaap:Assets"]),
         ("cfo", "annual", fy25, A2): (110e9, "direct", ["us-gaap:NetCashProvidedByUsedInOperatingActivities"]),
         ("cfo", "quarterly", fy25, A2): (30e9, "direct", ["us-gaap:NetCashProvidedByUsedInOperatingActivities"]),
-        ("capex", "annual", fy25, A2): (12e9, "direct", ["us-gaap:PaymentsToAcquirePropertyPlantAndEquipment"]),
+        # statement_map value_multiplier -1.0 (capex as a signed outflow), as the warehouse stores it
+        ("capex", "annual", fy25, A2): (-12e9, "direct", ["us-gaap:PaymentsToAcquirePropertyPlantAndEquipment"]),
     }
 
     cells = coverage.cells.set_index(["benchmark_item", coverage.cells["fy_end"].astype(str)])
