@@ -36,6 +36,7 @@ bool digest(std::string_view s) {
     return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
     });
+}
 bool charge(u64 &total, usize count, u64 each) {
     if (count > (std::numeric_limits<u64>::max() - total) / each) return false;
     total += static_cast<u64>(count) * each;
