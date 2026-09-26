@@ -127,11 +127,17 @@ def test_events_are_labelled_by_their_evidence_revisioned_at_its_clocks_and_tie_
     assert [(kind, at) for kind, _, at in chain] == [("adjustment_unclassified", _at(EX)), ("split", _at(LATE_SHARES))]
     assert chain[0][1]["superseded_at"] == _at(LATE_SHARES).isoformat(sep=" ")
     assert chain[1][1]["supersedes_event_id"] == chain[0][1]["event_id"]
-    # One stable step id across the revisions: md5 of source|security_id|ex_date (the release natural key).
+    # One stable step id across the revisions: md5 of source|security_id|ex_date (the step's column key).
     step = hashlib.md5(f"vendor factor corporate action events|LATE|{EX}".encode()).hexdigest()
     assert chain[0][1]["step_id"] == chain[1][1]["step_id"] == step
-    # The current relation counts the dividend once, at its ex-date clock, with its final evidence.
-    current = con.execute(f"SELECT available_at, details_json FROM ({corporate_actions_current_sql('ca')}) "
-                          "WHERE security_id = 'SPLIT' AND action_type = 'cash_dividend'").fetchall()
-    assert [(at, json.loads(details)["evidence_basis"]) for at, details in current] == [
-        (_at(DIVIDEND), "vendor_factor+xbrl_dps")]
+    # The current relation (economics once per step) holds each step's first decided revision at its own
+    # clock: no pending row (presence never tells how a step resolves), no verdict or evidence earlier.
+    current = con.execute(f"SELECT security_id, action_type, available_at, details_json "
+                          f"FROM ({corporate_actions_current_sql('ca')}) ORDER BY 1, 2").fetchall()
+    assert [(sid, kind, at, json.loads(details)["reason"] or json.loads(details)["evidence_basis"])
+            for sid, kind, at, details in current] == [
+        ("DECREASE", "adjustment_unclassified", VERDICT, "factor_decrease"),
+        ("LATE", "split", _at(LATE_SHARES), "vendor_factor+shares"),
+        ("SPECIAL", "distribution_unclassified", VERDICT, "special_or_spinoff"),
+        ("SPLIT", "cash_dividend", _at(DIVIDEND), "vendor_factor"),
+        ("SPLIT", "split", _at(EX), "vendor_factor+shares")]

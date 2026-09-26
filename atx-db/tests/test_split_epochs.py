@@ -103,6 +103,11 @@ def _window_close(ex_date: dt.date, bars: int = split_epochs.SHARE_WINDOW_BARS) 
     return list(_weekdays(ex_date, ex_date + dt.timedelta(days=500)))[bars]
 
 
+#: A "no match" verdict waits for any count in its window to be public: the family lag after its close
+#: (no ``shares_outstanding_history`` in these fixtures: the unknown family).
+VERDICT_LAG = dt.timedelta(days=split_epochs.SHARE_MODELED_LAG_DAYS["unknown"])
+
+
 # --- detection -------------------------------------------------------------------------------
 
 
@@ -146,10 +151,12 @@ EX = dt.date(2021, 3, 15)
           share_steps=((dt.date(2021, 4, 12), 1060),)),
      [("distribution", EX, _at(EX), 1.075269, "distribution")], []),
     # N2: an exact 6:5 whose count only drifts 6 % (issuance, not the ratio) is a distribution once
-    # its (year-long) window closes.
+    # its (year-long) window closes and a count matching inside it would be public (the family lag).
     (dict(split=(EX, 1.2), shares=(1000, 1000, 0), share_steps=((dt.date(2021, 4, 1), 1060),)),
-     [("distribution", EX, _at(_window_close(EX, split_epochs.LATE_SHARE_WINDOW_BARS)), 1.2, "distribution")],
-     [(EX, _at(EX), _at(_window_close(EX, split_epochs.LATE_SHARE_WINDOW_BARS)), 1.2, "pending_confirmation")]),
+     [("distribution", EX, _at(_window_close(EX, split_epochs.LATE_SHARE_WINDOW_BARS)) + VERDICT_LAG, 1.2,
+       "distribution")],
+     [(EX, _at(EX), _at(_window_close(EX, split_epochs.LATE_SHARE_WINDOW_BARS)) + VERDICT_LAG, 1.2,
+       "pending_confirmation")]),
 ], ids=["n1_count_lags", "n1_count_stale", "n1_reverse_1_30_lags", "n2_distribution_and_issuance",
         "n2_exact_ratio_issuance_drift"])
 def test_exact_ratios_wait_for_shares_and_inexact_in_band_steps_are_distributions(bars, events, hazards):
@@ -447,8 +454,11 @@ def test_a_distribution_is_never_rebased(store, cut):
     # At the Q7 filing (2021-02-09) the share window is still open: value right, basis unknown.
     assert _state(store, "D", "eps_qoq_t", 7) == (
         pytest.approx(_growth(EPS_PRE, 7, 1)), "valid", "incomparable")
-    # Decided as a distribution when the window closes (mid-April): later comparisons are proven, unrebased.
-    assert _state(store, "D", "eps_ttm_t", 9) == (pytest.approx(sum(EPS_PRE[6:10])), "valid", "quarterly")
-    assert _state(store, "D", "shares_yoy_t", 8) == (
-        pytest.approx(SHARES_PRE[8] / SHARES_PRE[4] - 1), "valid", "instant")
-    assert _state(store, "D", "eps_yoy_t", 9) == (pytest.approx(_growth(EPS_PRE, 9, 4)), "valid", "quarterly")
+    # The window closes mid-April, but a count matching inside it could stay unpublished the family lag
+    # (150 days, unknown family): at the Q9 filing (2021-08-09) "no split" is not known yet.
+    assert _state(store, "D", "eps_ttm_t", 9) == (pytest.approx(sum(EPS_PRE[6:10])), "valid", "incomparable")
+    # Decided as a distribution then (mid-September): later comparisons are proven, unrebased.
+    assert _state(store, "D", "eps_ttm_t", 10) == (pytest.approx(sum(EPS_PRE[7:11])), "valid", "quarterly")
+    assert _state(store, "D", "shares_yoy_t", 10) == (
+        pytest.approx(SHARES_PRE[10] / SHARES_PRE[6] - 1), "valid", "instant")
+    assert _state(store, "D", "eps_yoy_t", 10) == (pytest.approx(_growth(EPS_PRE, 10, 4)), "valid", "quarterly")

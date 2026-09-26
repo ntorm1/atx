@@ -55,12 +55,13 @@ the late-filer tail A8's own modeled lag accepts).
   distribution;
 - out-of-band and not simple: a split if the count follows within
   SHARE_WINDOW_BARS sessions (e.g. a split and a dividend on one day), else a
-  ``distribution`` when the window closes;
+  ``distribution`` known the family lag after the window closes;
 - in-band and simple (21:20, 11:10, 6:5, 5:4 ...): a stock split or dividend
   only if the count makes one discrete jump by k (within
   STOCK_DIVIDEND_SHARE_TOLERANCE x |k - 1|) within LATE_SHARE_WINDOW_BARS
   sessions (counts lag stock dividends like splits), so routine issuance never
-  confirms; pending until then, else a ``distribution`` when the window closes;
+  confirms; pending until then, else a ``distribution`` known the family lag
+  after the window closes;
 - in-band and not simple: a ``distribution`` (special dividend, spin-off, fund
   distribution; per-share fundamentals are not restated), known at once;
 - a simple candidate without any share data: the permanent hazard ``no_share_data``.
@@ -79,16 +80,20 @@ until the count moves to near a split ratio (within
 SIGNATURE_SHARE_RATIO_TOLERANCE) that cancels the price jump (within
 SIGNATURE_SHARE_TOLERANCE, the ex-day return) within LATE_SHARE_WINDOW_BARS
 sessions, which makes it the permanent ``flat_factor_split_signature`` (a split
-the vendor factor missed); otherwise it closes as ``signature_unconfirmed`` at
-the window's end. A hazard is closed early
+the vendor factor missed); otherwise it closes as ``signature_unconfirmed`` the
+family lag after the window's end. A hazard is closed early
 when a split confirmed in another series explains it. Hazards may use share
-observations after their opening bar: they only ever withdraw a proof. A
-hazard row's ``known_at`` is the clock by which its negative verdict is final
-(``distribution`` of a candidate that needed shares, ``split_unconfirmed``,
-``no_share_data`` once the late window is complete, ``signature_unconfirmed``):
-the window's end plus the line's family lag, since a matching count inside the
-window can stay unpublished that long. ``corporate_actions`` (P8) dates its
-labels by it; the engine's hazard interval still ends at the window's end.
+observations after their opening bar: they only ever withdraw a proof.
+Negative verdicts wait like positive ones: a matching count inside a window is
+known only from its own clock (up to the family lag after its bar), so a "no
+match" verdict -- a ``distribution`` of a candidate that needed shares, the
+``pending_confirmation`` hazard it closes, ``signature_unconfirmed`` -- is known
+only the family lag after its window's end, and a hazard row's ``known_at`` is
+that verdict clock (also for ``split_unconfirmed`` / ``no_share_data`` once the
+late window is complete, which stay open for good). Otherwise, at a frame
+between the window's end and a lagged confirmation, a comparable basis would
+reveal that no count ever matched. ``corporate_actions`` (P8) dates its labels
+by the same clock.
 
 Coverage (``_pit_split_coverage``) is a run of one factor series' factored bars
 with no gap above COVERAGE_MAX_GAP_DAYS. A basis is known when one run spans the
@@ -516,9 +521,11 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
             SELECT * FROM conflicted WHERE NOT conflict
         ), open_hazards AS (
             SELECT security_id, series, ex_date, ex_at AS from_at,
+                   -- A negative verdict closes its hazard only once a count matching inside the window
+                   -- would be public (window end plus the family lag), like a lagged confirmation.
                    CASE WHEN outcome = 'split' THEN greatest(ex_at, confirm_at)
-                        WHEN outcome = 'distribution' THEN window_end_at
-                        WHEN outcome = 'signature_unconfirmed' THEN late_end_at END AS until_at,
+                        WHEN outcome = 'distribution' THEN window_end_at + family_lag
+                        WHEN outcome = 'signature_unconfirmed' THEN late_end_at + family_lag END AS until_at,
                    CASE WHEN cls = 'signature' THEN 1 / price_ratio ELSE coalesce(split_field, k) END AS ratio,
                    CASE WHEN outcome = 'split' AND cls = 'simple_out' THEN 'split_pending_share_confirmation'
                         WHEN outcome IN ('split', 'distribution') THEN 'pending_confirmation'
@@ -560,7 +567,7 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                NULL::TIMESTAMP AS until_at, ratio, evidence FROM splits
         UNION ALL
         SELECT security_id, 'distribution', series, ex_date, ex_at,
-               CASE WHEN cls = 'inexact_in' THEN ex_at ELSE window_end_at END, NULL, k, 'distribution'
+               CASE WHEN cls = 'inexact_in' THEN ex_at ELSE window_end_at + family_lag END, NULL, k, 'distribution'
         FROM _split_stage_classified WHERE outcome = 'distribution'
         UNION ALL
         SELECT security_id, 'hazard', series, ex_date, from_at, verdict_at,
