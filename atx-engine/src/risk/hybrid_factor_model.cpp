@@ -527,9 +527,22 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
     return Err(ErrorCode::InvalidArgument, "hybrid: unknown estimator rule");
   if (v2 && (!exp.market || !has_caps(exp)))
     return Err(ErrorCode::InvalidArgument, "hybrid V2: explicit market factor and current/PIT caps required");
-  if (v2 && (ret.n_assets() == 0 || cfg.window > cfg.estimator.max_working_bytes / 192 / ret.n_assets() ||
-             cfg.window > cfg.estimator.max_working_bytes / 192 / cfg.window))
-    return Err(ErrorCode::OutOfRange, "hybrid V2: fitting workspace budget");
+  if (v2) {
+    const auto limit = static_cast<atx::usize>(FactorModel::kMaxFactorsStack);
+    const auto ns = exp.n_style(), ng = exp.n_ind();
+    const auto stat = cfg.select == StatFactorSelect::Fixed ? cfg.n_stat_fixed : cfg.k_max;
+    if (ns > limit || ng > limit || stat > limit || ns + ng + 1 > limit - stat)
+      return Err(ErrorCode::OutOfRange, "hybrid V2: factor dimension bound before allocation");
+    const auto k_bound = ns + ng + 1 + stat;
+    const auto share = cfg.estimator.max_working_bytes / 4;
+    if (ret.n_assets() == 0 || cfg.window > share / 64 / ret.n_assets() ||
+        cfg.window > share / 64 / cfg.window || k_bound > share / 128 / k_bound ||
+        ret.n_assets() > share / 128 / k_bound)
+      return Err(ErrorCode::OutOfRange, "hybrid V2: complete fitting workspace budget");
+    for (auto industry : exp.industry)
+      if (industry >= ng)
+        return Err(ErrorCode::InvalidArgument, "hybrid V2: unavailable/out-of-range current industry");
+  }
   ATX_TRY(FactorReturnSeries fr, estimate_factor_returns(ret, exp, as_of, cfg.window, v2));
   const Layout lay = layout_of(exp);
   if (fr.n_used < 2U) {
@@ -706,7 +719,9 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
     f = std::move(clean.factor_covariance);
     d = std::move(clean.specific_variances);
     diagnostics = std::move(clean.diagnostics);
-    diagnostics.statistical_fallback_assets = ks > 0 ? assets.size() - panel_rows.size() : assets.size();
+    const bool requested_stat = cfg.select == StatFactorSelect::Fixed ? cfg.n_stat_fixed > 0 : cfg.k_max > 0;
+    diagnostics.statistical_fallback_assets = requested_stat && ks > 0 ? assets.size() - panel_rows.size() : 0;
+    // A selection rule choosing zero factors is not a thin-asset fallback.
   } else {
     for (Eigen::Index r = 0; r < m; ++r) d[r] = spec_var(e, r, cfg.spec_halflife);
   }

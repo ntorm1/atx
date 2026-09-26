@@ -612,12 +612,6 @@ FactorModelBuilder::run_passes(const PanelView &panel, atx::usize window,
   if (cfg.cov.estimator.rule != RiskEstimatorRule::LegacyV1 &&
       cfg.cov.estimator.rule != RiskEstimatorRule::EffectiveHistoryV2)
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "risk: unknown estimator rule");
-  if (dated_residuals != nullptr) {
-    if (n_inst == 0 || window > cfg.cov.estimator.max_working_bytes / 64 / n_inst)
-      return atx::core::Err(atx::core::ErrorCode::OutOfRange, "risk V2: residual workspace budget");
-    dated_residuals->setConstant(static_cast<Eigen::Index>(window),
-        static_cast<Eigen::Index>(n_inst), std::numeric_limits<atx::f64>::quiet_NaN());
-  }
   ATX_TRY_VOID(side.validate(n_inst));
   // Point-in-time side inputs must cover every exposure row the passes read: rows
   // [0, exposure_row(window − 1)] clipped to the panel (R-06; never a silent reuse).
@@ -629,6 +623,39 @@ FactorModelBuilder::run_passes(const PanelView &panel, atx::usize window,
                             "FactorModelBuilder: point-in-time side inputs must cover every "
                             "exposure row of the window");
     }
+  }
+  if (cfg.cov.estimator.rule == RiskEstimatorRule::EffectiveHistoryV2) {
+    const auto limit = static_cast<atx::usize>(FactorModel::kMaxFactorsStack);
+    const auto share = cfg.cov.estimator.max_working_bytes / 3;
+    if (n_inst == 0 || window > panel.rows() || window > share / 64 / n_inst)
+      return atx::core::Err(atx::core::ErrorCode::OutOfRange, "risk V2: dated residual workspace budget");
+    atx::usize k_bound = 0;
+    // Count bounded distinct groups BEFORE build_exposures allocates M x K.
+    for (atx::usize s = 0; s <= window; ++s) {
+      const auto row = s == 0 ? 0 : detail::exposure_row(cfg.exposure_timing, s - 1);
+      if (row >= panel.rows() || !side.covers(row))
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "risk V2: incomplete exposure clock");
+      const auto groups = side.group_at(row,n_inst);
+      const auto styles = detail::emitted_styles(cfg,!side.cap_at(row,n_inst).empty()).size();
+      std::vector<atx::u32> unique;
+      unique.reserve(limit);
+      if (cfg.sector_factors)
+        for (auto g : groups) {
+          if (g == kNoGroup || std::find(unique.begin(),unique.end(),g) != unique.end()) continue;
+          if (unique.size() >= limit - styles)
+            return atx::core::Err(atx::core::ErrorCode::OutOfRange, "risk V2: factor dimension bound before allocation");
+          unique.push_back(g);
+        }
+      k_bound = std::max(k_bound, styles + unique.size());
+    }
+    if (k_bound == 0 || k_bound > share / 128 / k_bound || n_inst > share / 128 / k_bound)
+      return atx::core::Err(atx::core::ErrorCode::OutOfRange, "risk V2: factor workspace budget");
+  }
+  if (dated_residuals != nullptr) {
+    if (n_inst == 0 || window > cfg.cov.estimator.max_working_bytes / 64 / n_inst)
+      return atx::core::Err(atx::core::ErrorCode::OutOfRange, "risk V2: residual workspace budget");
+    dated_residuals->setConstant(static_cast<Eigen::Index>(window),
+        static_cast<Eigen::Index>(n_inst), std::numeric_limits<atx::f64>::quiet_NaN());
   }
   // X[0] (the CURRENT cross-section) defines M and the emitted factor count K.
   ATX_TRY(ExposureMatrix x0_built, build_exposures(panel, cfg, /*row=*/0U, side));
