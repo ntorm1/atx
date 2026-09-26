@@ -125,6 +125,12 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
         !execution_objective_matches(*context, panel_, policy_, input.fitness.execution)) {
       fail_execution("execution context/policy/panel mismatch"); return res;
     }
+    // Legacy raw*DSR assumes a nonnegative fitness. V2 net Sharpe is signed:
+    // shrinking a negative value toward zero would improve its selection rank.
+    if (input.deflate_selection) {
+      fail_execution("execution V2 does not support the legacy multiplicative DSR overlay");
+      return res;
+    }
     if (resume != nullptr || sink != nullptr || input.fidelity.enabled || weak_panel_ != nullptr ||
         input.capacity_objective || input.turnover_objective || input.fitness.target_aum != 0.0 ||
         input.fitness.cost_selection.impact_in_selection || input.fitness.turnover_penalty_slope != 0.0 ||

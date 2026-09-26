@@ -151,6 +151,12 @@ TEST(ExecutionFitnessV2, ReusesSignalAndMatchesMatureNetMomentsWithoutZeroPaddin
   EXPECT_NEAR(result->wq, expected, 1e-12);
   EXPECT_DOUBLE_EQ(result->raw, result->wq);
   EXPECT_NEAR(result->turnover, turnover / static_cast<f64>(end - begin), 1e-14);
+  cfg.trial_count = 2000;
+  const auto high_trials = fac::pool_aware_fitness(genome, empty, f.data, f.policy, f.sim, cfg,
+                                                 nullptr, &engine, &*signal);
+  ASSERT_TRUE(high_trials);
+  EXPECT_DOUBLE_EQ(high_trials->raw, result->raw);
+  EXPECT_LE(high_trials->dsr, result->dsr);
   EXPECT_EQ(result->execution_context_sha256, context->identity_sha256());
   EXPECT_EQ(result->execution_rule, fac::ExecutionObjectiveRule::DelayedSurfaceV2);
   ASSERT_EQ(result->descriptor.size(), dates);
@@ -206,6 +212,13 @@ TEST(ExecutionFitnessV2, RefusesMissingMismatchFidelityUnboundPoolAndWorkerBudge
   fidelity.fidelity.enabled = true;
   EXPECT_TRUE(
       f.driver().run(fidelity, empty, nullptr, nullptr, nullptr, &*context).execution_invalid);
+  auto deflated = cfg;
+  deflated.deflate_selection = true;
+  const auto dsr_refused = f.driver().run(deflated, empty, nullptr, nullptr, nullptr, &*context);
+  EXPECT_TRUE(dsr_refused.execution_invalid);
+  EXPECT_NE(dsr_refused.execution_error.find("DSR"), std::string::npos);
+  EXPECT_TRUE(dsr_refused.all_scored.empty());
+  EXPECT_TRUE(dsr_refused.admitted_candidates.empty());
   eng::combine::AlphaStore pool;
   std::vector<f64> pnl(dates, 0), positions(dates * names, 0);
   ASSERT_TRUE(pool.insert(nullptr, pnl, positions, {}));

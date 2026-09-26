@@ -334,6 +334,8 @@ execution_fitness_core(const Genome& cand, const alpha::Panel& panel,
   const auto split = split_half_sharpe(returns, per_period > 0 ? 1.0 : per_period < 0 ? -1.0 : 0.0);
   FitnessCore out{};
   out.oos_pnl = std::move(streams.pnl_flat); // uncompressed calendar, NaN outside maturity
+  // DSR remains a reported diagnostic. A multiplicative DSR haircut is invalid
+  // for signed scores; SearchDriver refuses that legacy selection overlay.
   out.wq = annual; out.robust = 1.0; out.dsr = deflated.dsr;
   out.haircut_sharpe = deflated.haircut_sharpe;
   out.turnover = turnover / static_cast<atx::f64>(count);

@@ -18,6 +18,8 @@
 //  instead uses annualized NET Sharpe over its contiguous mature role calendar
 //  in the historical `wq` scalar slot; turnover is actual filled dollars / NAV.
 //  That is a role/training score, not a CPCV out-of-sample or WQ fitness claim.
+//  Direct V2 fitness reports DSR separately and never multiplies signed raw by
+//  it. Search refuses the legacy deflate_selection overlay for this rule.
 //  V2 refuses unbound nonempty pools until their execution/calendar recipe can
 //  be certified, so its supported empty-pool diversification term is exactly 1.
 //
