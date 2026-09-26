@@ -119,6 +119,7 @@ private:
     friend core::Result<ObjectiveIcScratch> prepare_objective_ic_scratch(const ObjectiveIcContext &);
     friend core::Result<ObjectiveIcResult> evaluate_objective_ic(
         std::span<const f64>, const ObjectiveIcContext &, ObjectiveIcScratch &);
+    friend core::Result<bool> objective_ic_panel_matches(const ObjectiveIcContext &, const alpha::Panel &);
 };
 
 // One worker-owned scratch. Residuals are full-calendar [date][instrument],
@@ -157,6 +158,10 @@ private:
     const alpha::Panel &, const data::ExposurePanel &, const ObjectiveIcInputs &,
     const ObjectiveIcConfig & = {});
 [[nodiscard]] core::Result<ObjectiveIcScratch> prepare_objective_ic_scratch(const ObjectiveIcContext &);
+// Full captured price/presence payload check, intended for a binding boundary,
+// not the per-candidate hot path. Additional VM fields are not label inputs.
+[[nodiscard]] core::Result<bool> objective_ic_panel_matches(
+    const ObjectiveIcContext &, const alpha::Panel &);
 
 // Tied Spearman is computed on finite mature evaluation pairs after residual
 // formation. Missing dates stay missing; only HAC influence entries use zeros,

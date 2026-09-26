@@ -65,6 +65,7 @@
 //  distinct candidate, never on the VM hot loop), so std::vector is fine.
 
 #include "atx/engine/factory/execution_objective.hpp"
+#include "atx/engine/factory/objective_ic.hpp"
 #include <array>   // std::array (the multi-objective vector, S4.1)
 #include <cstring> // std::memcpy (CpcvCache: embed embargo f64 as bit pattern for map key)
 #include <limits>  // std::numeric_limits (FitnessCfg::max_turnover_target default +inf)
@@ -97,6 +98,25 @@ class Engine;
 }
 
 namespace atx::engine::factory {
+
+enum class FitnessObjectiveRule : atx::u8 { LegacyV1 = 1, ResidualHacIcV2 = 2 };
+
+// Validates captured label prices/presence once, and owns the immutable prepared
+// context. The exact Panel object and any borrowed backing must remain alive,
+// immutable and unmoved for the binding lifetime. Candidate checks are O(1).
+class ResidualFitnessBinding {
+public:
+  ResidualFitnessBinding() = default;
+  [[nodiscard]] bool matches(const alpha::Panel &) const noexcept;
+  [[nodiscard]] const ObjectiveIcContext &context() const noexcept;
+private:
+  const alpha::Panel *panel_{};
+  ObjectiveIcContext context_;
+  friend atx::core::Result<ResidualFitnessBinding> prepare_residual_fitness_binding(
+      const ObjectiveIcContext &, const alpha::Panel &);
+};
+[[nodiscard]] atx::core::Result<ResidualFitnessBinding> prepare_residual_fitness_binding(
+    const ObjectiveIcContext &, const alpha::Panel &);
 
 // =========================================================================
 //  CpcvCache — a thread-safe cache of pre-built CPCV label spans + folds,
@@ -419,6 +439,9 @@ struct FitnessReport {
   ExecutionObjectiveRule execution_rule{ExecutionObjectiveRule::LegacyStreamsV1};
   std::string execution_context_sha256{};
   atx::usize realized_begin{}, realized_end{};
+  FitnessObjectiveRule objective_rule{FitnessObjectiveRule::LegacyV1};
+  bool residual_available{false};
+  ObjectiveIcResult residual_ic{}; // training IC diagnostics, never P&L/DSR/CPCV
 };
 
 // =========================================================================
@@ -490,6 +513,13 @@ struct FitnessCfg {
   // borrowed only during scoring; its identity is validated before use.
   ExecutionObjectiveConfig execution{};
   const ExecutionObjectiveContext* execution_context{nullptr};
+  // ResidualHacIcV2 is an IC-only TRAINING objective: signed equal mean of all
+  // three defined HAC IRs, no full backtest/CPCV/DSR or automatic sign inversion.
+  // Bind once with prepare_residual_fitness_binding; concurrent workers each
+  // borrow their own scratch. No legacy cost/execution overlay is supported.
+  FitnessObjectiveRule objective_rule{FitnessObjectiveRule::LegacyV1};
+  const ResidualFitnessBinding *residual_binding{nullptr}; // runtime borrow
+  ObjectiveIcScratch *residual_scratch{nullptr}; // optional exclusive worker borrow
 };
 
 namespace detail {
@@ -600,6 +630,10 @@ struct FitnessCore {
   ExecutionObjectiveRule execution_rule{ExecutionObjectiveRule::LegacyStreamsV1};
   std::string execution_context_sha256{};
   atx::usize realized_begin{}, realized_end{};
+  FitnessObjectiveRule objective_rule{FitnessObjectiveRule::LegacyV1};
+  bool residual_available{false};
+  ObjectiveIcResult residual_ic{};
+  atx::f64 residual_score{};
 };
 
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:

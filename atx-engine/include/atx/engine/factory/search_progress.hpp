@@ -221,6 +221,8 @@ deserialize_canon(const std::string &blob) {
     }
     if (cs.origin == ScoreOrigin::IcRejected) {
       out += " ic3";
+    } else if (cs.origin == ScoreOrigin::ResidualUnavailable) {
+      out += " residual2";
     }
   }
   return out;
@@ -294,11 +296,13 @@ deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
       return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: bad n_desc");
     }
     const bool ic_tag = f.back() == "ic3";
-    if (ic_tag && f.size() == fixed) {
+    const bool residual_tag = f.back() == "residual2";
+    const bool rejection_tag = ic_tag || residual_tag;
+    if (rejection_tag && f.size() == fixed) {
       return atx::core::Err(atx::core::ErrorCode::Internal,
                             "deserialize_cache: IC tag without descriptor count");
     }
-    const atx::usize expected_desc = f.size() - fixed - (ic_tag ? 1U : 0U);
+    const atx::usize expected_desc = f.size() - fixed - (rejection_tag ? 1U : 0U);
     if (ndesc != expected_desc) {
       return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: desc count mismatch");
     }
@@ -313,12 +317,12 @@ deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
     if (cs.raw == kRejectedRaw) {
       cs.origin = ScoreOrigin::FidelityRejected; // L3 sentinel survives the round-trip
     }
-    if (ic_tag) {
+    if (rejection_tag) {
       if (cs.raw != kRejectedRaw || cs.n_objectives != 0U || !cs.descriptor.empty()) {
         return atx::core::Err(atx::core::ErrorCode::Internal,
                               "deserialize_cache: invalid IC rejection sentinel");
       }
-      cs.origin = ScoreOrigin::IcRejected;
+      cs.origin = ic_tag ? ScoreOrigin::IcRejected : ScoreOrigin::ResidualUnavailable;
     }
     keys.push_back(key);
     vals.push_back(std::move(cs));

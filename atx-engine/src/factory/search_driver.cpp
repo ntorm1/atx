@@ -110,6 +110,36 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                                              const ExecutionObjectiveContext *execution_context) {
   SearchResult res;
   res.seed = input.master_seed;
+  const bool residual_on = input.fitness.objective_rule == FitnessObjectiveRule::ResidualHacIcV2;
+  const auto fail_residual = [&](std::string message) {
+    res.residual_invalid = true; res.residual_error = std::move(message);
+  };
+  if (input.fitness.objective_rule != FitnessObjectiveRule::LegacyV1 && !residual_on) {
+    fail_residual("unknown fitness objective rule"); return res;
+  }
+  if (residual_on) {
+    const auto *binding = input.fitness.residual_binding;
+    if (!binding || !binding->matches(panel_) || input.fitness.residual_scratch != nullptr) {
+      fail_residual("residual objective needs a prepared immutable Panel binding and owned worker scratch");
+      return res;
+    }
+    if (input.ic_screen.rule != IcScreenRule::DisabledV1 || prepared_ic_screen != nullptr) {
+      fail_residual("residual objective requires the raw IC screen explicitly DisabledV1"); return res;
+    }
+    if (input.objective_mode != ObjectiveMode::ScalarRaw || input.output_dedup || input.deflate_selection ||
+        input.fidelity.enabled || resume || sink || weak_panel_ || pool.n_alphas() != 0 ||
+        execution_context || input.fitness.execution_context ||
+        input.fitness.execution.rule != ExecutionObjectiveRule::LegacyStreamsV1 ||
+        input.capacity_objective || input.turnover_objective || input.fitness.capacity_objective ||
+        input.fitness.turnover_objective || input.fitness.target_aum != 0 ||
+        input.fitness.cost_selection.impact_in_selection || input.fitness.turnover_penalty_slope != 0) {
+      fail_residual("residual IC-only scoring refuses unbound pools, checkpoints, fidelity, dedup and legacy overlays");
+      return res;
+    }
+    res.residual_context_sha256 = binding->context().identity_sha256();
+    for (const char ch : std::string{"ResidualHacIcV2-signed-equal-mean:"} + res.residual_context_sha256)
+      res.digest = (res.digest ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
+  }
   const bool execution_on = input.fitness.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2;
   std::optional<SearchConfig> execution_cfg;
   const auto fail_execution = [&](std::string message) {
@@ -146,7 +176,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       res.digest = (res.digest ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
   }
   const SearchConfig& cfg = execution_cfg ? *execution_cfg : input;
-  std::optional<atx::u64> cpcv_identity = execution_on || cfg.fitness.cpcv.rule == eval::CpcvRule::ObservationV1
+  std::optional<atx::u64> cpcv_identity = execution_on || residual_on || cfg.fitness.cpcv.rule == eval::CpcvRule::ObservationV1
       ? std::nullopt : std::optional<atx::u64>{(eval::cpcv_recipe_identity(cfg.fitness.cpcv) ^
           (static_cast<atx::u64>(panel_.dates()) * 1099511628211ULL))};
   if (cpcv_identity) {
@@ -210,6 +240,22 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // raw scalar AND the S4.1 multi-objective vector (CachedScore).
   std::unordered_map<atx::u64, CachedScore> fitness_cache;
   parallel::DetPool det_pool{cfg.n_workers};
+  std::vector<ObjectiveIcScratch> residual_scratch;
+  if (residual_on) {
+    const auto &context = cfg.fitness.residual_binding->context();
+    const auto budget = context.config().max_working_bytes;
+    const auto owned = context.bytes(), per_worker = context.per_signal_working_bytes();
+    if (owned > budget || !per_worker || det_pool.n_workers() > context.config().workers ||
+        det_pool.n_workers() > (budget - owned) / per_worker) {
+      fail_residual("residual context plus declared worker scratch exceeds budget"); return res;
+    }
+    residual_scratch.reserve(det_pool.n_workers());
+    for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
+      auto scratch = prepare_objective_ic_scratch(context);
+      if (!scratch) { fail_residual(scratch.error().to_string()); return res; }
+      residual_scratch.push_back(std::move(*scratch));
+    }
+  }
   if (execution_on) {
     const auto& context = *cfg.fitness.execution_context;
     const auto maximum = context.config().max_working_bytes;
@@ -338,6 +384,11 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     const bool has_ic_rejection = std::any_of(
         cache_vals.begin(), cache_vals.end(),
         [](const CachedScore &score) { return score.origin == ScoreOrigin::IcRejected; });
+    if (std::any_of(cache_vals.begin(), cache_vals.end(), [](const CachedScore &score) {
+          return score.origin == ScoreOrigin::ResidualUnavailable;
+        })) {
+      fail_residual("residual score checkpoints are not supported"); return res;
+    }
     if (restored_ic_identity != ic_identity || (has_ic_rejection && !restored_ic_identity)) {
       SearchResult incompatible;
       incompatible.seed = cfg.master_seed;
@@ -447,8 +498,8 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // (a)-(c): evaluate the fresh (not-yet-seen) candidates of `pop`, fold the
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
     scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res,
-                                 ic_cache, ic_scratch);
-    if (res.execution_invalid) return res;
+                                 ic_cache, ic_scratch, residual_scratch);
+    if (res.execution_invalid || res.residual_invalid) return res;
 
     // (d2) S4.2 behavioral-novelty pass: write the population-relative phenotypic
     // novelty into objectives[3] (n_objectives -> 4) BEFORE ranking, but ONLY when
@@ -754,7 +805,8 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
                                   parallel::DetPool &det_pool,
                                   std::vector<std::unique_ptr<alpha::Engine>> &engines,
                                   SearchResult &res, const IcScreenCache *ic_cache,
-                                  std::span<IcScreenScratch> ic_scratch) {
+                                  std::span<IcScreenScratch> ic_scratch,
+                                  std::span<ObjectiveIcScratch> residual_scratch) {
   // -----------------------------------------------------------------------
   // Phase 1 (serial): dedup + plan
   //
@@ -828,7 +880,9 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   std::vector<atx::u64> digest_slot(n_fresh, atx::u64{0});
   std::vector<std::uint8_t> compiled(n_fresh, std::uint8_t{0});
   const bool execution_on = cfg.fitness.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2;
+  const bool residual_on = cfg.fitness.objective_rule == FitnessObjectiveRule::ResidualHacIcV2;
   std::vector<std::string> execution_errors(execution_on ? n_fresh : 0);
+  std::vector<std::string> residual_errors(residual_on ? n_fresh : 0);
 
   // One stateless Scheduler for the merged parallel region's Tier 1 LPT
   // dispatch order. Default-constructed: the single-node fallback topology, NO
@@ -885,6 +939,9 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
 
   const atx::usize n_to_score = to_score.size();
   std::vector<CachedScore> score_slot(n_to_score);
+  std::vector<ResidualCandidateScore> residual_slot(residual_on ? n_to_score : 0);
+  if (residual_on)
+    std::fill(score_slot.begin(), score_slot.end(), residual_unavailable_score());
   // Disjoint per-representative decisions: 0 untested, 1 keep, 2 reject, 3 error.
   // Only the serial merge updates counters and persistent rejection identities.
   std::vector<atx::u8> ic_status(ic_cache != nullptr ? n_to_score : 0U, atx::u8{0});
@@ -1068,9 +1125,20 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
           return;
         }
       }
-      auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, gen_fit,
+      auto worker_fit = gen_fit;
+      if (residual_on) worker_fit.residual_scratch = &residual_scratch[wid];
+      auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, worker_fit,
                                    /*weak_panel=*/weak_panel_, /*engine=*/engines[wid].get(),
                                    /*signals=*/&*ss, /*cpcv_cache=*/&cpcv_cache);
+      if (residual_on) {
+        if (!rep) { residual_errors[k] = rep.error().to_string(); return; }
+        residual_slot[j].status = rep->residual_available ? ResidualScoreStatus::Available
+                                                         : ResidualScoreStatus::InsufficientEvidence;
+        residual_slot[j].score = rep->raw;
+        residual_slot[j].diagnostics = std::move(rep->residual_ic);
+        if (!rep->residual_available) return; // keep explicit sentinel, never finite zero
+        score_slot[j].origin = ScoreOrigin::Full;
+      }
       if (!rep && execution_on) {
         execution_errors[k] = rep.error().to_string();
         return; // unpriceable execution must never become a successful zero score
@@ -1125,6 +1193,12 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     if (!error.empty()) {
       res.execution_invalid = true; res.execution_error = error;
       return {}; // deterministic first canonical error; no admission from this generation
+    }
+  }
+  for (const auto &error : residual_errors) {
+    if (!error.empty()) {
+      res.residual_invalid = true; res.residual_error = error;
+      return {}; // hard config/binding/scratch failure, no partial admission
     }
   }
 
@@ -1184,6 +1258,12 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   }
   for (atx::usize j = 0; j < n_to_score; ++j) {
     const atx::u64 hash = to_score[j]->canon_hash;
+    if (residual_on) {
+      residual_slot[j].canon_hash = hash;
+      res.residual_scores.push_back(std::move(residual_slot[j]));
+      if (score_slot[j].origin == ScoreOrigin::ResidualUnavailable)
+        res.residual_unavailable_hashes.push_back(hash);
+    }
     if (score_slot[j].origin == ScoreOrigin::IcRejected) {
       res.ic_rejected_hashes.push_back(hash);
     }
@@ -1193,6 +1273,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     res.all_scored.back().canon_hash = hash;
   }
   std::sort(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end());
+  std::sort(res.residual_unavailable_hashes.begin(), res.residual_unavailable_hashes.end());
   res.ic_rejected_hashes.erase(
       std::unique(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end()),
       res.ic_rejected_hashes.end());

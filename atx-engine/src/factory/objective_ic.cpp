@@ -122,7 +122,7 @@ struct Context {
     data::ExposurePanel exposure_owner;
     std::vector<Row> rows;
     std::array<std::vector<f64>, 3> labels;
-    std::string identity;
+    std::string identity, price_field, panel_payload_sha256;
     u64 bytes{}, scratch_bytes{};
 };
 struct Scratch {
@@ -142,6 +142,20 @@ struct Scratch {
 namespace {
 using Context = objective_ic_detail::Context;
 using Scratch = objective_ic_detail::Scratch;
+
+Result<std::string> panel_payload_identity(const Context &c, const alpha::Panel &panel) {
+    if (panel.dates() != c.dates || panel.instruments() != c.names)
+        return Err(ErrorCode::InvalidArgument, "objective IC: binding panel geometry differs");
+    ATX_TRY(auto field, panel.field_id(c.price_field));
+    const auto price = panel.field_all(field);
+    core::Sha256 hash;
+    for (usize d = c.cfg.window_begin; d < c.cfg.maturity_end; ++d)
+        for (usize i = 0; i < c.names; ++i) {
+            ATX_TRY_VOID(hash_word(hash, std::bit_cast<u64>(price[d * c.names + i])));
+            ATX_TRY_VOID(hash_word(hash, panel.in_universe(d, i) ? 1U : 0U));
+        }
+    return finish_hash(hash);
+}
 
 Status check_axes(const alpha::Panel &prices, const data::ExposurePanel &exposures,
                   const ObjectiveIcInputs &in) {
@@ -208,7 +222,7 @@ Result<std::string> capture(Context &c, const alpha::Panel &panel, const Objecti
         {"hac", "HorizonAwareV3-calendar-influence-v1"}, {"price_field", in.price_field},
         {"price_source_sha256", in.price_source_sha256}, {"exposure_axis", in.expected_exposure_axis_sha256},
         {"exposure_content", in.expected_exposure_content_sha256}, {"exposure_recipe", c.exposure_owner.recipe_sha256()},
-        {"weights", "sqrt-cap-statistical;fourth-root-row;relative-rank64eps"},
+        {"weights", "sqrt-cap-statistical;fourth-root-row;relative-rank64eps;QR-complement-product-floor64eps-v1"},
         {"rank_ic", "paired-tied-Spearman-after-decision-residualization"},
         {"half_life", "same-common-dates-log-abs-mean-three-horizon-v1"}};
     const auto encoded = recipe.dump();
@@ -519,10 +533,17 @@ Result<ObjectiveIcContext> prepare_objective_ic(const alpha::Panel &prices,
     auto c = std::make_shared<Context>();
     c->cfg = resolved; c->dates = prices.dates(); c->names = prices.instruments(); c->exposure_owner = exposures;
     ATX_TRY_VOID(budget(*c));
+    c->price_field = input.price_field;
     ATX_TRY(c->identity, capture(*c, prices, input));
+    ATX_TRY(c->panel_payload_sha256, panel_payload_identity(*c, prices));
     ObjectiveIcContext result;
     result.data_ = std::move(c);
     return result;
+}
+Result<bool> objective_ic_panel_matches(const ObjectiveIcContext &context, const alpha::Panel &panel) {
+    if (!context.data_) return Err(ErrorCode::InvalidArgument, "objective IC: unprepared binding context");
+    ATX_TRY(auto actual, panel_payload_identity(*context.data_, panel));
+    return actual == context.data_->panel_payload_sha256;
 }
 Result<ObjectiveIcScratch> prepare_objective_ic_scratch(const ObjectiveIcContext &context) {
     if (!context.data_) return Err(ErrorCode::InvalidArgument, "objective IC: unprepared context");

@@ -39,10 +39,12 @@ enum class ScoreOrigin : atx::u8 {
   FingerprintBorrowed = 1,
   FidelityRejected = 2,
   IcRejected = 3, // screened on forward-return IC; still a distinct research trial
+  ResidualUnavailable = 4, // evaluated/attempted but no defined three-horizon IC score
 };
 
 [[nodiscard]] constexpr bool is_rejected_score(ScoreOrigin origin) noexcept {
-  return origin == ScoreOrigin::FidelityRejected || origin == ScoreOrigin::IcRejected;
+  return origin == ScoreOrigin::FidelityRejected || origin == ScoreOrigin::IcRejected ||
+      origin == ScoreOrigin::ResidualUnavailable;
 }
 
 // Worst-case raw sentinel for a fidelity-rejected candidate. -inf (not lowest())
@@ -86,6 +88,12 @@ struct CachedScore {
 [[nodiscard]] inline CachedScore ic_rejected_score() {
   CachedScore cs = rejected_score();
   cs.origin = ScoreOrigin::IcRejected;
+  return cs;
+}
+
+[[nodiscard]] inline CachedScore residual_unavailable_score() {
+  CachedScore cs = rejected_score();
+  cs.origin = ScoreOrigin::ResidualUnavailable;
   return cs;
 }
 

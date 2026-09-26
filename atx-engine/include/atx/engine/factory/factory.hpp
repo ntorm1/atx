@@ -301,6 +301,8 @@ struct FactoryReport {
   eval::CpcvMetadata cpcv_metadata; // populated only for active DateV2
   bool ic_screen_resume_mismatch{false};
   bool ic_screen_cache_mismatch{false};
+  bool residual_invalid{false}; // IC-only search has no qualified P&L admission route
+  std::string residual_error{};
 
   // --- S4b-3 mine_into() telemetry (additive; default-init so mine() is untouched).
   // These fields are populated ONLY by mine_into (the persistent-library admit path);

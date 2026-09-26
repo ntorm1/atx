@@ -419,6 +419,11 @@ void finalize_run_pbo(FactoryReport &rep,
 [[nodiscard]] FactoryReport Factory::mine(const FactoryConfig &cfg, combine::AlphaStore &pool,
                                           const combine::AlphaGate &gate) {
   FactoryReport rep;
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1) {
+    rep.residual_invalid = true;
+    rep.residual_error = "Factory admission does not support the residual IC-only objective";
+    return rep;
+  }
 
   // (1) run the S3-5 search. The driver re-derives a clean per-run state from the
   // seed, so a fresh driver per mine() preserves F1 replay (no carried state).
@@ -572,6 +577,9 @@ void finalize_run_pbo(FactoryReport &rep,
 Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                    const combine::AlphaGate &gate, SearchProgressSink *sink,
                    const SearchResumeState *resume) {
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "Factory admission does not support the residual IC-only objective");
   // P2a — out-of-sample (holdout) validation is an ADDITIVE branch at the TOP:
   // when oos_fraction > 0 the search SELECTS on a train window and admission is
   // CONFIRMED on a held-out window. When oos_fraction == 0 (the default) this is
@@ -879,6 +887,9 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
 [[nodiscard]] atx::core::Result<FactoryReport>
 Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                    const combine::AlphaGate &gate, parallel::IExecutor &exec) {
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "Factory admission does not support the residual IC-only objective");
   // P2a — OOS validation requires a train/holdout panel split. The MultiProcess wire
   // format serializes ONE panel and decodes streams sized to that panel's dims, so the
   // OOS path runs TWO submits (one per sub-panel) reusing the SAME wire format unchanged
@@ -1472,6 +1483,9 @@ namespace {
 Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
                        const combine::AlphaGate &gate, SearchProgressSink *sink,
                        const SearchResumeState *resume) {
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "Factory admission does not support the residual IC-only objective");
   FactoryReport rep;
   rep.library_n_alphas_before = lib_lib.n_alphas();
 
@@ -1882,6 +1896,9 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
 [[nodiscard]] atx::core::Result<FactoryReport>
 Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_lib,
                                 const combine::AlphaGate &gate, parallel::IExecutor &exec) {
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "Factory admission does not support the residual IC-only objective");
   // Task 5 — the PARALLEL out-of-sample admit path. This REPRODUCES the serial
   // mine_into_oos bit-for-bit (same digest / admitted / version_id / reject histogram /
   // oos_metrics), but the two expensive per-candidate VM evals — the TRAIN ranking eval

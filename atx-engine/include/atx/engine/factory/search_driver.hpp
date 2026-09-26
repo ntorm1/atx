@@ -63,6 +63,7 @@
 // loop; the cold compile path may allocate, documented).
 
 #include <array>         // std::array (per-genome multi-objective vector, S4.1)
+#include <limits>
 #include <memory>        // std::unique_ptr (per-worker Engine vector, Tier 4)
 #include <span>          // std::span
 #include <string>        // std::string (seed-expression source input)
@@ -319,6 +320,13 @@ struct SearchConfig {
 // =========================================================================
 //  SearchResult — the §4.7 return value (fields the verbatim tests read).
 // =========================================================================
+enum class ResidualScoreStatus : atx::u8 { Available, InsufficientEvidence, EvaluationFailed };
+struct ResidualCandidateScore {
+  atx::u64 canon_hash{};
+  ResidualScoreStatus status{ResidualScoreStatus::EvaluationFailed};
+  atx::f64 score{-std::numeric_limits<atx::f64>::infinity()};
+  ObjectiveIcResult diagnostics{};
+};
 struct SearchResult {
   atx::u64 digest{0};                         // F1/F2 byte-identical run fingerprint
   atx::usize trial_count{0};                  // distinct candidates scored (canon.size())
@@ -350,6 +358,12 @@ struct SearchResult {
   bool execution_invalid{false}; // explicit V2 request refused before search
   std::string execution_error{};
   std::string execution_context_sha256{};
+  bool residual_invalid{false};
+  std::string residual_error{}, residual_context_sha256{};
+  // One record per distinct attempted candidate, including failed evaluation.
+  // These are training ICs, not P&L, Sharpe or durable registry records.
+  std::vector<ResidualCandidateScore> residual_scores;
+  std::vector<atx::u64> residual_unavailable_hashes;
 };
 
 namespace detail {
@@ -505,7 +519,8 @@ private:
                       parallel::DetPool &det_pool,
                       std::vector<std::unique_ptr<alpha::Engine>> &engines, SearchResult &res,
                       const IcScreenCache *ic_cache,
-                      std::span<IcScreenScratch> ic_scratch);
+                      std::span<IcScreenScratch> ic_scratch,
+                      std::span<ObjectiveIcScratch> residual_scratch);
 
   // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
   // Compute the population-relative BEHAVIORAL novelty for every Scored and write
