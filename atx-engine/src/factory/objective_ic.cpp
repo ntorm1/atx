@@ -357,19 +357,43 @@ void residualize(usize d, std::span<const f64> raw, const Context &c, Scratch &s
     s.qr.setThreshold(64 * kEps * static_cast<f64>(std::max(m, p)));
     s.qr.compute(s.weighted.topLeftCorner(m, p));
     diag.rank = static_cast<usize>(s.qr.rank());
+    const auto pivots = s.qr.matrixQR().diagonal().head(p).cwiseAbs();
+    const f64 largest_pivot = pivots.maxCoeff();
+    diag.qr_pivot_ratio = largest_pivot > 0 ? pivots.minCoeff() / largest_pivot : 0;
     if (s.qr.rank() != p) { diag.status = ObjectiveIcDateStatus::RankDeficient; return; }
     s.beta.head(p) = s.qr.solve((s.signal.head(m).array() * s.multipliers.head(m).array()).matrix());
-    s.fitted.head(m).noalias() = s.design.topLeftCorner(m, p) * s.beta.head(p);
-    if (!s.beta.head(p).allFinite() || !s.fitted.head(m).allFinite()) return;
+    if (!s.beta.head(p).allFinite()) return;
+    // Project through the weighted QR orthogonal complement instead of
+    // subtracting X*beta: almost dependent columns can have huge cancelling
+    // coefficients even when the fitted signal has magnitude one.
+    s.fitted.head(m) = s.qr.householderQ().adjoint() *
+        (s.signal.head(m).array() * s.multipliers.head(m).array()).matrix();
+    s.fitted.head(p).setZero();
+    s.fitted.head(m) = s.qr.householderQ() * s.fitted.head(m).eval();
+    if (!s.fitted.head(m).allFinite()) return;
     s.x.resize(s.rows.size());
-    f64 maximum = 0, prediction = 0;
     for (Eigen::Index r = 0; r < m; ++r) {
-        s.x[static_cast<usize>(r)] = s.signal[r] - s.fitted[r];
-        maximum = std::max(maximum, std::abs(s.x[static_cast<usize>(r)]));
-        prediction = std::max(prediction, std::abs(s.fitted[r]));
+        const f64 residual = s.fitted[r] / s.multipliers[r];
+        f64 products = 0;
+        for (Eigen::Index j = 0; j < p; ++j)
+            products += std::abs(s.design(r, j) * s.beta[j]);
+        if (!std::isfinite(residual) || !std::isfinite(products)) return;
+        s.x[static_cast<usize>(r)] = residual;
+        diag.max_abs_residual = std::max(diag.max_abs_residual, std::abs(residual));
+        diag.fitted_absolute_product_scale = std::max(diag.fitted_absolute_product_scale, products);
     }
-    const f64 numerical_floor = 64 * kEps * static_cast<f64>(columns + 1) * (1 + prediction);
-    if (!(maximum > numerical_floor)) { diag.status = ObjectiveIcDateStatus::ResidualDegenerate; return; }
+    // Conservative roundoff admission, in scaled-signal units: dot-product
+    // cancellation scale plus input scale, enlarged for the QR dimensions.
+    // This is not an economic amplitude floor or a certified forward-error
+    // estimate for an arbitrarily ill-conditioned matrix. Unresolvable small
+    // residuals of such a design remain unavailable and expose this threshold.
+    diag.residual_roundoff_floor = 64 * kEps *
+        static_cast<f64>(std::max(s.rows.size(), columns + 1)) *
+        (1 + diag.fitted_absolute_product_scale);
+    if (!std::isfinite(diag.residual_roundoff_floor)) return;
+    if (!(diag.max_abs_residual > diag.residual_roundoff_floor)) {
+        diag.status = ObjectiveIcDateStatus::ResidualDegenerate; return;
+    }
     for (Eigen::Index j = 0; j < p; ++j) {
         f64 error = 0;
         for (Eigen::Index r = 0; r < m; ++r)

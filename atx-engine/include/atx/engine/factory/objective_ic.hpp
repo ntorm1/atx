@@ -68,6 +68,10 @@ struct ObjectiveIcDate {
     usize known_member_names{}, unknown_membership_names{};
     usize exposure_names{}, decision_names{}, fitted_names{}, design_columns{}, rank{};
     f64 max_weighted_orthogonality_error{};
+    // QR pivot ratio is a diagnostic, not a condition-number estimate. The
+    // dimension-scaled roundoff floor includes cancelling coefficient products.
+    f64 qr_pivot_ratio{}, fitted_absolute_product_scale{};
+    f64 residual_roundoff_floor{}, max_abs_residual{};
 };
 struct ObjectiveIcHorizon {
     usize horizon{};
