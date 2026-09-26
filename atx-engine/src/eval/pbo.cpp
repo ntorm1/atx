@@ -114,7 +114,8 @@ cache_blocks(std::span<const f64> perf, usize n, usize periods, usize splits, us
   const f64 centered_mean = sum / count;
   const f64 mean = anchor + centered_mean;
   const f64 variance = (square - centered_mean * sum) / count;
-  if (!std::isfinite(mean) || !std::isfinite(variance) || variance <= 0.0) return {};
+  if (!std::isfinite(mean) || !std::isfinite(variance) ||
+      variance < std::numeric_limits<f64>::min()) return {};
   const f64 deviation = std::sqrt(variance);
   const f64 value = mean / deviation;
 
@@ -128,6 +129,9 @@ cache_blocks(std::span<const f64> perf, usize n, usize periods, usize splits, us
   const f64 variance_error = 4.0 * gamma * (square / count + centered_mean * centered_mean) +
                              mean_error * mean_error + 4.0 * mean_error * deviation;
   if (gamma >= 0.01 || !std::isfinite(value) || !std::isfinite(variance_error) ||
+      // Relative-error arithmetic does not bound subnormal rounding. A normal
+      // input scale alone does not exclude a subnormal variance/error envelope.
+      variance_error < std::numeric_limits<f64>::min() ||
       variance <= 8.0 * variance_error ||
       scale > std::sqrt(std::numeric_limits<f64>::max() / count) * 0.25 ||
       (scale != 0.0 && scale < std::sqrt(std::numeric_limits<f64>::min()))) return {};
