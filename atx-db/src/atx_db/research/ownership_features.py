@@ -42,7 +42,9 @@ old):
 
 ``short_interest_ratio``
     Short interest / the line's verified share count at the last session on or before the
-    settlement (same gate as IO; an unlinked line has no DEI count: ``unverified_shares``).
+    settlement (same gate as IO; an unlinked line has no DEI count: ``unverified_shares``). A
+    split window is covered by that gate: ``market_daily`` never labels a count ``dei`` across
+    an unabsorbed split (``archive_split_adjusted`` / ``split_unresolved`` instead).
 ``days_to_cover_si``
     Short interest / FINRA's average daily volume (``missing_adv`` when not positive);
     NULL with ``split_in_period`` when FINRA's ``stock_split_flag`` is set or an R1d exact
@@ -55,7 +57,8 @@ later of the loader's ``available_at`` and settlement + ``si_publication_busines
 business days (default 8; FINRA disseminates about seven business days after settlement,
 after the close) at 22:00 UTC; formations trade at the next session. A row FINRA revised
 (``revision_flag`` set: the loader keeps only the revised values) is visible only from the
-modeled publication of the **next** settlement cycle, never at the original's clock.
+modeled publication of the **next** settlement cycle, never at the original's clock; with no
+next cycle in the data it is withheld.
 Business days are the observed XNYS sessions inside the calendar and weekdays outside it.
 
 Every row carries ``owner_basis``, ``source_period``, ``source_clock``, ``identity_basis``
@@ -64,7 +67,8 @@ Every row carries ``owner_basis``, ``source_period``, ``source_clock``, ``identi
 when any CUSIP used was mapped through a current snapshot, else ``dated_name_window``) and
 ``reason``: ``valid``, ``unverified_shares``, ``missing_market_row``, ``no_owner_link``,
 ``no_mapped_13f_holding`` (no visible eligible 13F position in a CUSIP mapped to the owner
-for that quarter), ``not_held_both_quarters``, ``no_continuing_managers``,
+for that quarter: unknown, never zero IO -- nobody held the stock, or its CUSIP did not map,
+e.g. a non-surviving CUSIP without a dated name window), ``not_held_both_quarters``, ``no_continuing_managers``,
 ``previous_quarter_<reason>``, ``missing_adv``, ``split_in_period``,
 ``no_recent_13f_quarter`` or ``no_recent_short_interest``.
 
@@ -73,8 +77,9 @@ parameters, input fingerprints; code digest). Seal checks: no value visible afte
 cutoff; no short-interest value before its publication clock or on its settlement day; no
 13F value before its quarter's deadline clock; every 13F value's owner mapped for its
 quarter; no owner feature on an unlinked line; grain. Blockers label the reconstructed
-identity, the modeled FINRA calendar, revised FINRA rows, unlinked lines and -- until dated
-name windows (0327) exist in the warehouse -- the survivor-conditioned 13F coverage.
+identity, the modeled FINRA calendar, revised FINRA rows, unlinked lines and the
+survivor-conditioned 13F coverage (``thirteenf_identity_survivor_conditioned:<n>`` while any
+13F value is survivor-conditioned, and whenever no dated name window (0327) exists).
 """
 
 from __future__ import annotations
@@ -151,7 +156,8 @@ _TEMP_TABLES = ("_ow_cal", "_ow_days", "_ow_bday", "_ow_forms", "_ow_lines", "_o
                 "_ow_form_q", "_ow_positions", "_ow_vals", "_ow_si", "_ow_si_rows", "_ow_si_splits", "_ow_shares_at",
                 "_ow_state", "_ow_managers", "_ow_share_keys", "_ow_si_pick", "_oi_cusip_periods", "_oi_cusip_owner",
                 "_oi_names", "_oi_current_cusips", "_oi_flagged", "_oi_ticker_links", "_oi_primary_diag",
-                "_oi_name_links", "_oi_raw", "_oi_cusip_status", "_oi_eligible", "_oi_si_keys", "_oi_si_line")
+                "_oi_name_links", "_oi_raw", "_oi_filers", "_oi_cusip_status", "_oi_eligible", "_oi_si_keys",
+                "_oi_si_line")
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PKG = Path(__file__).resolve().parents[1]
 _CODE_FILES = (Path(__file__), _PKG / "ownership_identity.py", _PKG / "research" / "panel.py",
@@ -760,7 +766,10 @@ def _build_short_interest(store: ResearchStore, options: OwnershipFeatureOptions
         )
         SELECT r.*, m.security_id,
                lag(r.settlement_date) OVER (PARTITION BY r.symbol ORDER BY r.settlement_date) AS prior_settlement,
-               CASE WHEN r.revised  -- the revised value is public only with the next cycle
+               -- the revised value is public only with the next cycle; with no next cycle it is
+               -- withheld (greatest() skips NULLs, so the loader clock alone would backdate it)
+               CASE WHEN r.revised AND n.publication_day IS NULL THEN NULL
+                    WHEN r.revised
                     THEN greatest(r.loader_available_at, CAST(n.publication_day AS TIMESTAMP)
                                   + INTERVAL {PUBLICATION_HOUR} HOUR)
                     ELSE greatest(r.loader_available_at, CAST(p.publication_day AS TIMESTAMP)
@@ -839,12 +848,15 @@ def _build_short_interest(store: ResearchStore, options: OwnershipFeatureOptions
                    settlement_date, publication_clock, NULL, '{SI_IDENTITY_BASIS}', '{SI_CONDITIONING}'
             FROM _ow_si_pick
         """)
-    rows = con.execute("SELECT count(*), count(DISTINCT security_id), count(*) FILTER (WHERE revised), "
-                       "count(*) FILTER (WHERE split_in_period) FROM _ow_si").fetchone()
+    rows = con.execute("SELECT count(*), count(DISTINCT security_id), count(*) FILTER (WHERE split_in_period) "
+                       "FROM _ow_si").fetchone()
+    revised = con.execute("SELECT count(*) FILTER (WHERE revised), "
+                          "count(*) FILTER (WHERE revised AND publication_clock IS NULL) FROM _ow_si_rows").fetchone()
     multi = con.execute("SELECT count(*) FROM (SELECT 1 FROM finra_short_interest GROUP BY symbol, settlement_date "
                         "HAVING count(*) > 1)").fetchone()
-    return {"mapped_settlement_rows": int(rows[0]), "mapped_lines": int(rows[1]), "revised_rows": int(rows[2]),
-            "split_in_period_rows": int(rows[3]), "multi_market_class_rows_excluded": int(multi[0])}
+    return {"mapped_settlement_rows": int(rows[0]), "mapped_lines": int(rows[1]), "revised_rows": int(revised[0]),
+            "revised_rows_withheld_no_next_cycle": int(revised[1]), "split_in_period_rows": int(rows[2]),
+            "multi_market_class_rows_excluded": int(multi[0])}
 
 
 def _insert_features(store: ResearchStore, version: str, options: OwnershipFeatureOptions) -> int:
@@ -1076,9 +1088,12 @@ def build_ownership_features(store: ResearchStore, options: OwnershipFeatureOpti
         unmapped = owner_map.get("unmapped", {})
         if unmapped:
             blockers.append(f"thirteenf_unmapped_cusip_periods:{sum(unmapped.values())}/{owner_map['cusip_periods']}")
-        # I-1: until dated name windows (0327) exist, 13F coverage is conditioned on CUSIP survival.
-        if has_13f and not owner_map.get("dated_name_windows"):
-            blockers.append(f"{SURVIVOR_BLOCKER}:{diagnostic['reasons']['survivor_conditioned_13f_values']}")
+        # I-1: 13F coverage through a current snapshot is conditioned on CUSIP survival. The label stays
+        # while any value is survivor-conditioned (a partial C9 pilot must not clear it) and whenever no
+        # dated name window (0327) exists at all.
+        survivor = diagnostic["reasons"]["survivor_conditioned_13f_values"]
+        if has_13f and (survivor or not owner_map.get("dated_name_windows")):
+            blockers.append(f"{SURVIVOR_BLOCKER}:{survivor}")
         revised = diagnostic.get("short_interest", {}).get("revised_rows", 0)
         if revised:
             blockers.append(f"{REVISED_BLOCKER}:{revised}")

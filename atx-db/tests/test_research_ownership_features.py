@@ -1,7 +1,8 @@
 """P9 ownership features: 13F IO / dIO / breadth at the quarter's deadline clock (IO > 1 kept and
 flagged, put/call rows excluded, survivor conditioning labeled), the verified-shares gate, FINRA short
-interest visible only from its publication clock (never at settlement), line-level short interest on
-an unlinked line (owner features NULL + reason) and days-to-cover withheld over a split period."""
+interest visible only from its publication clock (never at settlement; a revised row only from the next
+cycle's, withheld without one), line-level short interest on an unlinked line (owner features NULL +
+reason) and days-to-cover withheld over a split period."""
 
 from __future__ import annotations
 
@@ -48,9 +49,12 @@ FILINGS = [
     ("9004", "2020-06-30", "2020-08-10", [("LB", 1, "")]),
     ("9005", "2020-06-30", "2020-08-10", [("LB", 1, "")]),
 ]
-# FINRA: (symbol, settlement, short interest, ADV, stock split flag)
-SHORTS = [("LA", "2020-07-15", 10, 5, ""), ("LA", "2020-07-31", 20, 4, "S"), ("LA", "2020-08-25", 30, 10, ""),
-          ("LB", "2020-07-15", 50, 0, ""), (UNLINKED, "2020-07-15", 8, 4, "")]
+# FINRA: (symbol, settlement, short interest, ADV, stock split flag, revision flag)
+SHORTS = [("LA", "2020-07-15", 10, 5, "", ""), ("LA", "2020-07-31", 20, 4, "S", ""),
+          ("LA", "2020-08-25", 30, 10, "", ""), ("LB", "2020-07-15", 50, 0, "", ""),
+          (UNLINKED, "2020-07-15", 8, 4, "", ""),
+          # revised rows: public only with the next cycle (07-31 -> 08-25's 09-04 22:00); none after 08-25: withheld
+          (UNLINKED, "2020-07-31", 12, 4, "", "R"), ("LB", "2020-08-25", 60, 6, "", "R")]
 
 
 def _store(tmp_path):
@@ -90,9 +94,9 @@ def _store(tmp_path):
                     [accession, filed, manager, period])
         con.executemany("INSERT INTO thirteenf_holdings VALUES (?, ?, ?, ?, 'SH', ?, 'COM', 'p')",
                         [(accession, CUSIPS[line], NAMES[line], n, put) for line, n, put in rows])
-    con.executemany("INSERT INTO finra_short_interest VALUES (?, ?, 'N', ?, ?, ?, '', ?)",
+    con.executemany("INSERT INTO finra_short_interest VALUES (?, ?, 'N', ?, ?, ?, ?, ?)",
                     [(symbol, settle, si, adv, dt.datetime.fromisoformat(settle) + dt.timedelta(days=10, hours=22),
-                      split) for symbol, settle, si, adv, split in SHORTS])
+                      revision, split) for symbol, settle, si, adv, split, revision in SHORTS])
     con.close()
     research = ResearchStore(tmp_path / "research.duckdb", warehouse_path=warehouse)
     research.open()
@@ -170,6 +174,12 @@ def test_ownership_features_clocks_io_flag_verified_shares_and_line_level_si(sto
     assert feats[(jul, "LU", "days_to_cover_si")][5] == "unlinked_line"
     assert feats[(jul, "LU", "short_interest_ratio")][:2] == (None, "missing_market_row")
     assert feats[(aug, "LU", "io_ratio_13f")][:2] == (None, "no_owner_link")
+    # revised rows: LU 07-31 is not visible at its own 08-12 publication (only at 08-25's 09-04 22:00);
+    # LB 08-25 has no next cycle and is withheld, never shown at the loader clock
+    assert feats[(aug, "LU", "days_to_cover_si")][:2] == (None, "no_recent_short_interest")
+    assert feats[(sep, "LB", "days_to_cover_si")][:2] == (None, "no_recent_short_interest")
+    assert "finra_revised_rows_modeled_next_cycle:2" in result.blockers
+    assert result.diagnostic["short_interest"]["revised_rows_withheld_no_next_cycle"] == 1
     for (formation, _, _), row in feats.items():
         if row[2] is not None:
             assert row[2] <= dt.datetime.combine(d(formation), CLOSE)

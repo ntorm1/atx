@@ -200,13 +200,23 @@ def stage_13f_cusip_periods(con: Any, *, out: str = "_oi_cusip_periods",
           AND (CAST(? AS DATE) IS NULL OR s.period_of_report >= CAST(? AS DATE))
           AND (CAST(? AS DATE) IS NULL OR s.period_of_report <= CAST(? AS DATE))"""
     bounds = [start, start, end, end]
-    # One aggregated pass over the holdings; CUSIP validity is then judged per distinct CUSIP.
+    # Aggregate first at the (CUSIP, period, raw name, row reason) grain; the distinct filers are
+    # counted in their own aggregate, so no staged table carries holding-row cardinality. CUSIP
+    # validity is then judged once per distinct CUSIP.
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _oi_raw AS
         SELECT {cusip_key_sql('h.cusip')} AS cusip, s.period_of_report AS report_period, h.name_of_issuer,
-               {_cik_sql('s.cik')} AS filer, {holding_exclusion_sql('h')} AS row_excluded, count(*) AS n
+               {holding_exclusion_sql('h')} AS row_excluded, count(*) AS n
         {base}
         GROUP BY ALL
+    """, bounds)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _oi_filers AS
+        SELECT cusip, report_period, count(*) AS filers FROM (
+            SELECT DISTINCT {cusip_key_sql('h.cusip')} AS cusip, s.period_of_report AS report_period,
+                   {_cik_sql('s.cik')} AS filer
+            {base} AND {holding_exclusion_sql('h')} IS NULL
+        ) GROUP BY cusip, report_period
     """, bounds)
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _oi_cusip_status AS
@@ -214,15 +224,13 @@ def stage_13f_cusip_periods(con: Any, *, out: str = "_oi_cusip_periods",
     """)
     con.execute("""
         CREATE OR REPLACE TEMP TABLE _oi_eligible AS
-        SELECT r.cusip, r.report_period, r.name_of_issuer, r.filer, r.n
+        SELECT r.cusip, r.report_period, r.name_of_issuer, r.n
         FROM _oi_raw r JOIN _oi_cusip_status s ON s.cusip=r.cusip
         WHERE r.row_excluded IS NULL AND s.status IS NULL
     """)
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE {out} AS
-        WITH filers AS (
-            SELECT cusip, report_period, count(DISTINCT filer) AS filers FROM _oi_eligible GROUP BY ALL
-        ), named AS (  -- the name normalization runs once per distinct raw name
+        WITH named AS (  -- the name normalization runs once per distinct raw name
             SELECT cusip, report_period, {issuer_name_key_sql('name_of_issuer')} AS name_key,
                    any_value(name_of_issuer) AS issuer_name, sum(n) AS n
             FROM _oi_eligible GROUP BY ALL
@@ -234,7 +242,7 @@ def stage_13f_cusip_periods(con: Any, *, out: str = "_oi_cusip_periods",
         )
         SELECT r.cusip, r.report_period, r.issuer_name, r.name_key, r.holding_rows,
                CAST(r.n AS DOUBLE) / r.holding_rows AS name_share, coalesce(f.filers, 0) AS filers
-        FROM ranked r LEFT JOIN filers f ON f.cusip=r.cusip AND f.report_period=r.report_period
+        FROM ranked r LEFT JOIN _oi_filers f ON f.cusip=r.cusip AND f.report_period=r.report_period
     """)
     excluded = {str(reason): int(rows) for reason, rows in con.execute("""
         SELECT coalesce(r.row_excluded, s.status) AS reason, sum(r.n)
