@@ -1825,7 +1825,9 @@ def refresh_entity_classification_snapshot(
     NAICS_2022 (partial, approximate) rows. Every new row has ``valid_from`` =
     ``as_of_date`` = the snapshot's receipt date and ``available_at`` = its receipt
     time; the ``source`` label carries ``classification_basis=current_sic_snapshot``,
-    the archive hash prefix and, for derived rows, the mapping version. Per
+    the archive hash prefix and, for derived rows, the mapping version -- also written to
+    the 0328 ``classification_basis`` / ``mapping_version`` columns when the table has them
+    (``mapping_version`` NULL on SIC rows), exactly as 0328 back-fills them from ``source``. Per
     (security, taxonomy, primary): the same open code is kept (idempotent rerun); a
     differing open interval is closed at the snapshot date and the new code opened;
     when the new SIC has no industry in a derived taxonomy (FF49-unlisted, no NAICS-2
