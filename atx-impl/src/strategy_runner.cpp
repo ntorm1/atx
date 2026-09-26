@@ -1,6 +1,7 @@
 #include "strategy_runner.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -228,24 +229,60 @@ struct Moments {
   void add(f64 x) { ++n; const auto d = x - mean; mean += d / static_cast<f64>(n); m2 += d * (x - mean); }
   f64 sharpe() const { return n > 1 && m2 > 0 ? mean / std::sqrt(m2 / static_cast<f64>(n - 1)) * std::sqrt(252.0) : nan; }
 };
+struct CalendarTurnover {
+  usize intervals{}, traded_intervals{};
+  f64 turnover{}, filled_dollars{};
+};
+struct CalendarReturn {
+  usize observations{};
+  f64 first_pretrade_nav{}, last_end_nav{};
+};
+std::pair<int, unsigned> calendar_month(i64 session_ns) {
+  constexpr i64 day_ns = 86'400'000'000'000LL;
+  const std::chrono::year_month_day date{
+      std::chrono::sys_days{std::chrono::days{session_ns / day_ns}}};
+  return {static_cast<int>(date.year()), static_cast<unsigned>(date.month())};
+}
 co::Result<Json> summarize(const al::AlphaStreams& s, const en::data::StrategyRoleData& role,
     const std::filesystem::path& series_path = {}) {
   Moments gross, net; f64 turnover = 0, execution = 0, borrow = 0, max_weight = 0;
   f64 peak_nav = 0, max_drawdown = 0;
   usize held_sum = 0, held_min = std::numeric_limits<usize>::max(), active = 0, capped = 0;
   const auto begin = s.first_realization_, end = s.realization_end_, n = role.panel.instruments();
-  if (begin >= end) return co::Err(co::ErrorCode::Unavailable, "strategy: no mature execution interval");
+  if (begin == 0 || begin >= end || end > role.session_keys.size())
+    return co::Err(co::ErrorCode::Unavailable, "strategy: no valid mature execution calendar");
+  std::map<std::pair<int, unsigned>, CalendarTurnover> months;
+  std::map<int, CalendarReturn> years;
+  bool deployed = false;
+  i64 deployment_session = 0;
+  f64 deployment_turnover = 0, deployment_dollars = 0;
   peak_nav = s.pretrade_nav_flat[begin];
   std::ofstream csv;
   if (!series_path.empty()) {
     csv.open(series_path, std::ios::binary); csv.imbue(std::locale::classic()); csv << std::setprecision(17);
     if (!csv) return co::Err(co::ErrorCode::IoError, "strategy: series output");
-    csv << "session_ns,gross_return,net_return,one_way_turnover,execution_cost,borrow_cost,pretrade_nav,end_nav,held_names,capped_names\n";
+    csv << "session_ns,gross_return,net_return,one_way_turnover,execution_cost,borrow_cost,pretrade_nav,end_nav,held_names,capped_names,execution_session_ns\n";
   }
   for (usize t = begin; t < end; ++t) {
     if (!s.valid_flat[t] || !std::isfinite(s.pnl_flat[t]) || !std::isfinite(s.gross_flat[t]))
       return co::Err(co::ErrorCode::Unavailable, "strategy: noncontiguous/nonfinite mature execution interval");
     gross.add(s.gross_flat[t]); net.add(s.pnl_flat[t]); turnover += s.turnover_flat[t];
+    // An endpoint row closes the interval entered at the preceding actual
+    // session, which may be in a different month/year or across a weekend.
+    const auto execution_session = role.session_keys[t - 1];
+    auto& month = months[calendar_month(execution_session)];
+    ++month.intervals;
+    month.traded_intervals += s.turnover_flat[t] > 0;
+    month.turnover += s.turnover_flat[t];
+    const auto filled_dollars = s.turnover_flat[t] * s.pretrade_nav_flat[t];
+    month.filled_dollars += filled_dollars;
+    if (!deployed && s.turnover_flat[t] > 0) {
+      deployed = true; deployment_session = execution_session;
+      deployment_turnover = s.turnover_flat[t]; deployment_dollars = filled_dollars;
+    }
+    auto& year = years[calendar_month(role.session_keys[t]).first];
+    if (year.observations++ == 0) year.first_pretrade_nav = s.pretrade_nav_flat[t];
+    year.last_end_nav = s.end_nav_flat[t];
     peak_nav = std::max(peak_nav, s.end_nav_flat[t]);
     max_drawdown = std::max(max_drawdown, 1.0 - s.end_nav_flat[t] / peak_nav);
     execution += s.execution_cost_flat[t]; borrow += s.borrow_cost_flat[t]; capped += s.capped_names_flat[t];
@@ -258,7 +295,8 @@ co::Result<Json> summarize(const al::AlphaStreams& s, const en::data::StrategyRo
     held_sum += held; held_min = std::min(held_min, held); active += held != 0;
     if (csv) csv << role.session_keys[t] << ',' << s.gross_flat[t] << ',' << s.pnl_flat[t] << ','
         << s.turnover_flat[t] << ',' << s.execution_cost_flat[t] << ',' << s.borrow_cost_flat[t] << ','
-        << s.pretrade_nav_flat[t] << ',' << s.end_nav_flat[t] << ',' << held << ',' << s.capped_names_flat[t] << '\n';
+        << s.pretrade_nav_flat[t] << ',' << s.end_nav_flat[t] << ',' << held << ',' << s.capped_names_flat[t]
+        << ',' << execution_session << '\n';
   }
   if (csv.is_open()) {
     csv.close();
@@ -267,11 +305,36 @@ co::Result<Json> summarize(const al::AlphaStreams& s, const en::data::StrategyRo
   if (net.n < 2) return co::Err(co::ErrorCode::Unavailable, "strategy: too few mature observations");
   const auto inference = en::eval::hac::mean_inference(std::span<const f64>{s.pnl_flat}.subspan(begin, end - begin),
       en::eval::hac::Kernel::BartlettV1, 5, true, true);
+  Json monthly = Json::array(), annual = Json::array();
+  f64 monthly_total = 0, maximum_monthly = 0;
+  for (const auto& [date, values] : months) {
+    const auto month = std::to_string(date.first) + (date.second < 10 ? "-0" : "-") + std::to_string(date.second);
+    monthly.push_back({{"month", month}, {"execution_intervals", values.intervals},
+        {"traded_intervals", values.traded_intervals}, {"one_way_turnover", values.turnover},
+        {"filled_dollars_from_turnover", values.filled_dollars}});
+    monthly_total += values.turnover; maximum_monthly = std::max(maximum_monthly, values.turnover);
+  }
+  for (const auto& [year, values] : years)
+    annual.push_back({{"year", year}, {"observations", values.observations},
+        {"net_compounded_return", values.last_end_nav / values.first_pretrade_nav - 1}});
   Json j{{"observations", net.n}, {"realized_begin", begin}, {"realized_end", end},
       {"gross_sharpe", gross.sharpe()}, {"net_sharpe", net.sharpe()}, {"mean_net_return", net.mean},
       {"hac_lag_requested", 5}, {"hac_lag", inference.lag}, {"hac_defined", inference.defined != 0}, {"hac_t", inference.defined ? Json(inference.t) : Json(nullptr)},
       {"total_one_way_turnover", turnover}, {"mean_daily_one_way_turnover", turnover / static_cast<f64>(net.n)},
       {"monthly21_one_way_turnover", turnover * 21 / static_cast<f64>(net.n)},
+      {"monthly21_is_approximation", true}, {"calendar_month_turnover", monthly},
+      {"maximum_calendar_month_one_way_turnover", maximum_monthly},
+      {"calendar_month_turnover_sum", monthly_total},
+      {"calendar_month_turnover_reconciliation_error", monthly_total - turnover},
+      {"calendar_month_turnover_basis", "execution session at endpoint index minus one; initial deployment included"},
+      {"initial_deployment", {{"occurred", deployed},
+          {"execution_session_ns", deployed ? Json(deployment_session) : Json(nullptr)},
+          {"one_way_turnover", deployment_turnover}, {"filled_dollars_from_turnover", deployment_dollars},
+          {"share_of_total_one_way_turnover", turnover > 0 ? Json(deployment_turnover / turnover) : Json(nullptr)},
+          {"included_in_totals", true},
+          {"basis", "first nonzero actual-fill interval; dollar amount reconstructed as turnover times entry NAV"}}},
+      {"calendar_year_net_returns", annual},
+      {"calendar_year_net_return_basis", "realized endpoint session year; last end NAV / first interval pretrade NAV minus one"},
       {"summed_execution_cost_returns", execution}, {"summed_borrow_cost_returns", borrow},
       {"final_nav", s.end_nav_flat[end - 1]}, {"total_net_return", s.end_nav_flat[end - 1] / s.pretrade_nav_flat[begin] - 1}, {"mean_held_names", static_cast<f64>(held_sum) / static_cast<f64>(net.n)},
       {"minimum_held_names", held_min}, {"active_interval_fraction", static_cast<f64>(active) / static_cast<f64>(net.n)},
