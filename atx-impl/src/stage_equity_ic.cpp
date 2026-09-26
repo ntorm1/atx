@@ -29,6 +29,7 @@
 #include "equity_allocation.hpp"
 #include "equity_baseline_views.hpp"
 #include "panel_artifact.hpp"
+#include "prereg.hpp"
 #include "stage_data_provenance.hpp"
 #include "trial_ledger.hpp"
 
@@ -371,6 +372,21 @@ struct Profile {
     IcRules rules;
     EquityTerminalReturnTable terminal;
     Json recipe;
+    std::optional<EquityIcPrereg> prereg;
+    std::vector<std::string_view> family_dsl;
+    std::vector<std::string_view> family_names;
+    std::vector<atx::usize> horizons{kHorizons.begin(), kHorizons.end()};
+
+    atx::i64 checkpoint() const { return prereg ? prereg->checkpoint : kCheckpoint; }
+    atx::i64 ledger_count() const { return prereg ? prereg->measured_n : kTrialCountDeclared; }
+    atx::usize retained_count() const {
+        return prereg ? prereg->retained_count : kEquityFamilyRetainedCount;
+    }
+    std::string_view count_rule() const {
+        return prereg ? "runtime-v1: every measured family/horizon times 2 variants times 2 "
+                        "restrictions; unverified retained declarations do not reduce ledger N"
+                      : kTrialCountRule;
+    }
 };
 
 Json frozen_recipe(const RunConfig &cfg, const IcRules &rules,
@@ -445,13 +461,15 @@ Json frozen_recipe(const RunConfig &cfg, const IcRules &rules,
 }
 
 Result<Profile> resolve(const RunConfig &cfg) {
+    ATX_TRY_VOID(validate_ic_prereg_flags(cfg));
     // Ruling AR-9: `config` is deliberately ABSENT — equity-ic accepts no config file.
     // W0-I0b adds the evaluation knobs (E-18, E-09, E-02), membership (D-12) and the
     // terminal-return table (I-15); each is recorded in the recipe.
     const std::set<std::string> allowed{"panel", "baseline-dir", "out", "evaluation-start",
         "evaluation-end", "max-working-bytes", "trial-ledger", "quiet", "digest-only",
         "min-names-per-date", "ic-execution-delay", "ic-block-len-rule", "allow-same-close",
-        "membership", "membership-rule", "terminal-returns"};
+        "membership", "membership-rule", "terminal-returns", "ic-prereg-file",
+        "ic-prereg-sha256"};
     for (const auto &flag : cfg.set_flags) {
         if (!allowed.contains(flag)) {
             return Err(ErrorCode::InvalidArgument, "equity ic: unsupported flag --" + flag);
@@ -507,6 +525,40 @@ Result<Profile> resolve(const RunConfig &cfg) {
                                                           : cfg.equity_trial_ledger;
     ATX_TRY(auto executable, current_executable_sha256());
     profile.recipe = frozen_recipe(cfg, profile.rules, profile.terminal, executable);
+    if (!cfg.equity_ic_prereg_file.empty()) {
+        ATX_TRY(auto declaration, load_equity_ic_prereg(cfg.equity_ic_prereg_file,
+                                                        cfg.equity_ic_prereg_sha256));
+        profile.prereg = std::move(declaration);
+        profile.horizons = profile.prereg->horizons;
+        profile.rules.block_lens.clear();
+        for (const auto h : profile.horizons) {
+            if (profile.rules.block_len_rule != eval::BlockLenRule::PolitisWhiteV2) {
+                profile.rules.block_lens.push_back(static_cast<atx::i64>(
+                    eval::detail::block_len_for_rule(profile.rules.block_len_rule, h,
+                                                     kBlockLenFloor)));
+            }
+        }
+        auto &recipe = profile.recipe;
+        recipe["profile"] = "runtime-preregistered-cross-section-ic-v1";
+        recipe["checkpoint"] = profile.checkpoint();
+        recipe["trial_count_declared"] = profile.ledger_count();
+        recipe["trial_count_rule"] = profile.count_rule();
+        recipe["horizons"] = profile.horizons;
+        recipe["signals"].erase(recipe["signals"].begin() + 3, recipe["signals"].end());
+        for (const auto &family : profile.prereg->families) {
+            recipe["signals"].push_back(Json{{"name", family.name}, {"dsl", family.dsl},
+                {"id", family.id}, {"sign", family.sign}, {"theme", family.theme},
+                {"horizons", family.horizons}, {"retained", family.retained},
+                {"configuration_sha256", family.configuration_sha256}});
+        }
+        recipe["preregistration"] = Json{
+            {"canonical_sha256", profile.prereg->canonical_sha256},
+            {"file_sha256", profile.prereg->file_sha256},
+            {"declared_new_n", profile.prereg->declared_n},
+            {"measured_n_charged_to_ledger", profile.prereg->measured_n},
+            {"retained_lineage_status", "declared-unverified-pending-E2-reconciliation"},
+            {"document", strict_json(profile.prereg->canonical_json)}};
+    }
     return Ok(std::move(profile));
 }
 
@@ -1016,9 +1068,9 @@ TrialLedgerEntry base_entry(const RunConfig &cfg, const Profile &profile,
     TrialLedgerEntry entry;
     entry.trial_id = trial_id;
     entry.appended_utc = utc_now();
-    entry.checkpoint = kCheckpoint;
+    entry.checkpoint = profile.checkpoint();
     entry.purpose = "training-only-forecast-evaluation";
-    entry.trial_count_declared = kTrialCountDeclared;
+    entry.trial_count_declared = profile.ledger_count();
     // §4.5's four parents, plus the required-mark audit the §7.2 assertions bind
     // to. `design-note` carries the digest, never an artifact id (§11.9 I-2).
     entry.parents = {{"source-context", context.artifact_id, ""},
@@ -1037,11 +1089,21 @@ TrialLedgerEntry base_entry(const RunConfig &cfg, const Profile &profile,
                                         sha ? *sha : std::string()});
     }
     entry.recipe.signals.push_back({"blend_equal", "published combo.bin alpha column", ""});
-    for (atx::usize a = 0; a < kEquityFamilyDsl.size(); ++a) {
-        auto sha = atx::core::sha256_hex(kEquityFamilyDsl[a]);
-        entry.recipe.signals.push_back({std::string(kEquityFamilySignalNames[a]),
-                                        std::string(kEquityFamilyDsl[a]),
+    for (atx::usize a = 0; a < profile.family_dsl.size(); ++a) {
+        const auto dsl = profile.prereg && profile.prereg->families[a].sign < 0
+            ? "-1 * (" + std::string(profile.family_dsl[a]) + ")"
+            : std::string(profile.family_dsl[a]);
+        auto sha = atx::core::sha256_hex(dsl);
+        entry.recipe.signals.push_back({std::string(profile.family_names[a]), dsl,
                                         sha ? *sha : std::string()});
+    }
+    if (profile.prereg) {
+        entry.parents.erase(entry.parents.begin() + 3); // design note is legacy only
+        entry.parents.push_back({"preregistration-file", "", profile.prereg->file_sha256});
+        entry.parents.push_back({"preregistration-canonical", "",
+                                  profile.prereg->canonical_sha256});
+        entry.recipe.horizons.assign(profile.horizons.begin(), profile.horizons.end());
+        entry.recipe.bootstrap.predicted_null_horizons.clear();
     }
     entry.window = {cfg.equity_evaluation_start, cfg.equity_evaluation_end,
                     static_cast<atx::i64>(observations)};
@@ -1080,6 +1142,10 @@ TrialLedgerEntry base_entry(const RunConfig &cfg, const Profile &profile,
         profile.recipe.at("producer_executable_sha256").get<std::string>();
     entry.notes = "Checkpoint 17 Stage 3 families; sign-and-shape only; not accepted alpha. " +
                   std::string(kTrialCountRule) + ".";
+    if (profile.prereg) {
+        entry.notes = std::string(profile.count_rule()) + "; declaration=" +
+            profile.prereg->canonical_json;
+    }
     return entry;
 }
 
@@ -1097,6 +1163,22 @@ Result<std::string> next_trial_id(const std::string &ledger_path) {
     std::string digits = number(ordinal);
     while (digits.size() < 4U) digits.insert(digits.begin(), '0');
     return Ok(std::string(kTrialIdPrefix) + digits);
+}
+
+Result<std::string> runtime_trial_id(const Profile &profile, const fs::path &directory) {
+    auto count = pre_registered_lines_for_checkpoint(profile.ledger_path, profile.checkpoint());
+    if (!count && count.error().code() != ErrorCode::NotFound) {
+        return Err(count.error().code(), count.error().message());
+    }
+    const auto ordinal = count ? *count : 0;
+    if (ordinal == std::numeric_limits<atx::u64>::max()) {
+        return Err(ErrorCode::OutOfRange, "equity ic: attempt ordinal overflow");
+    }
+    // The exclusively created output directory distinguishes simultaneous attempts
+    // which observed the same ledger count before either acquired its append lock.
+    ATX_TRY(auto location, atx::core::sha256_hex(fs::absolute(directory).generic_string()));
+    return Ok("prereg-" + profile.prereg->canonical_sha256 + "-" + number(ordinal + 1) +
+              "-" + location.substr(0, 16));
 }
 
 // Parallel cells share one sidecar ledger. append_trial never waits (its lock is
@@ -1272,6 +1354,16 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
                             const fs::path &directory, bool &registered) {
     const auto started = std::chrono::steady_clock::now();
     Json files = Json::array();
+    // Form borrowed views only after the owning Profile has reached its final address.
+    if (profile.prereg) {
+        for (const auto &family : profile.prereg->families) {
+            profile.family_dsl.push_back(family.dsl);
+            profile.family_names.push_back(family.name);
+        }
+    } else {
+        profile.family_dsl.assign(kEquityFamilyDsl.begin(), kEquityFamilyDsl.end());
+        profile.family_names.assign(kEquityFamilySignalNames.begin(), kEquityFamilySignalNames.end());
+    }
     const bool frozen_terminal_table = profile.terminal.source == kFrozenTerminalTableSource;
     ATX_TRY(auto marks, load_required_marks(cfg.equity_baseline_dir, frozen_terminal_table));
     ATX_TRY(auto bound, load_bound_inputs(cfg, profile, attempt));
@@ -1286,88 +1378,106 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
     ATX_TRY_VOID(bind_fresh_view(view, bound.evaluation, bound.context));
     const auto dates = view.panel.dates();
     const auto names = view.panel.instruments();
-    // Checkpoint 17: every family is evaluated in ONE pass over the same feature
-    // window, on the baseline's admission mask; its warmup is derived.
-    ATX_TRY(auto families, evaluate_equity_families(bound.context, profile.views, view,
-                std::span<const std::string_view>(kEquityFamilyDsl),
-                std::span<const std::string_view>(kEquityFamilySignalNames)));
-    ATX_TRY(estimate, add(estimate, families.additional_array_bytes));
-    if (estimate > cfg.equity_max_working_bytes) {
-        return Err(ErrorCode::OutOfRange, "equity ic: memory estimate with families exceeds budget");
-    }
-    // R17-8 cost/capacity view: dollar ADV per admitted cell, an ancillary series
-    // (never a signal, never a trial) averaged over each decile's members.
-    const std::array<std::string_view, 1> adv_dsl{kEquityDollarAdvDsl};
-    const std::array<std::string_view, 1> adv_name{kEquityDollarAdvName};
-    ATX_TRY(auto dollar_adv, evaluate_equity_families(bound.context, profile.views, view,
-                std::span<const std::string_view>(adv_dsl),
-                std::span<const std::string_view>(adv_name)));
-    ATX_TRY(estimate, add(estimate, dollar_adv.additional_array_bytes));
-    if (estimate > cfg.equity_max_working_bytes) {
-        return Err(ErrorCode::OutOfRange, "equity ic: memory estimate with dollar adv exceeds budget");
-    }
-
-    // §5.2 — a live gate that a 2013-only panel does not trip.
-    eval::CalendarSeal seal{};
-    seal.policy = eval::SealPolicy::RejectSealedV1;
-    ATX_TRY(auto seal_report,
-            eval::apply_calendar_seal(std::span<const atx::i64>(view.session_keys), seal));
-    const Json seal_json{
-        {"policy", "RejectSealedV1"}, {"dates_total", seal_report.dates_total},
-        {"dates_visible", seal_report.dates_visible},
-        {"dates_at_or_after_validation", seal_report.dates_at_or_after_validation},
-        {"dates_at_or_after_sealed", seal_report.dates_at_or_after_sealed},
-        {"embargo_len", seal_report.embargo_len},
-        {"content_address", number(seal_report.content_address)},
-        {"used_reserve_window", seal_report.used_reserve_window != 0},
-        {"statement", "non-vacuous by code; vacuous by data for a 2013-only panel"},
-        {"untested_paths", Json::array({"MaskSealedV1", "reserve_window routing"})}};
-    ATX_TRY(auto seal_file, write_text(directory, "seal.json", seal_json.dump(2) + "\n"));
-    files.push_back(std::move(seal_file));
-
-    ATX_TRY(auto cells, build_cells(view, bound.evaluation.identity.instrument_ids, marks,
-                                    profile.terminal));
     ATX_TRY(auto close_id, view.panel.field_id("close"));
     ATX_TRY(auto raw_id, view.panel.field_id("raw_close"));
     ATX_TRY(auto alpha_id, bound.combo.panel.field_id("alpha"));
     const auto price = view.panel.field_all(close_id);
     const auto raw_price = view.panel.field_all(raw_id);
     const auto blend = bound.combo.panel.field_all(alpha_id);
-    if (view.signals.alphas.size() != kEquityBaselineDsl.size() ||
-        blend.size() != price.size() ||
-        families.signals.alphas.size() != kEquityFamilyDsl.size() ||
-        dollar_adv.signals.alphas.size() != 1 ||
-        dollar_adv.signals.alphas[0].values.size() != price.size()) {
-        return Err(ErrorCode::InvalidArgument, "equity ic: unexpected signal or combo extent");
-    }
-    // Signal table: baseline DSLs, the published blend, then the families. Index 0
-    // stays momentum_252 so the single-block measurement scopes below are unchanged.
     struct SignalColumn {
         std::string_view name;
         std::span<const atx::f64> values;
+        std::span<const atx::usize> horizons;
     };
     std::vector<SignalColumn> columns;
-    for (atx::usize a = 0; a < kEquityBaselineDsl.size(); ++a) {
-        columns.push_back({kEquityBaselineSignalNames[a], view.signals.alphas[a].values});
-    }
-    columns.push_back({"blend_equal", blend});
-    for (atx::usize a = 0; a < kEquityFamilyDsl.size(); ++a) {
-        if (families.signals.alphas[a].values.size() != price.size()) {
-            return Err(ErrorCode::InvalidArgument, "equity ic: family signal extent");
+    EquityFamilyEvaluation families, dollar_adv;
+    CellArrays cells;
+    auto prepare = [&]() -> Status {
+        // Checkpoint 17: every family is evaluated in ONE pass over the same feature
+        // window, on the baseline's admission mask; its warmup is derived.
+        auto family_views = profile.views;
+        if (profile.prereg) family_views.max_additional_bytes = cfg.equity_max_working_bytes - estimate;
+        ATX_TRY(families, evaluate_equity_families(bound.context, family_views, view,
+                    std::span<const std::string_view>(profile.family_dsl),
+                    std::span<const std::string_view>(profile.family_names)));
+        ATX_TRY(estimate, add(estimate, families.additional_array_bytes));
+        if (estimate > cfg.equity_max_working_bytes) {
+            return Err(ErrorCode::OutOfRange, "equity ic: memory estimate with families exceeds budget");
         }
-        columns.push_back({kEquityFamilySignalNames[a], families.signals.alphas[a].values});
-    }
+        // R17-8 cost/capacity view: dollar ADV per admitted cell, an ancillary series
+        // (never a signal, never a trial) averaged over each decile's members.
+        const std::array<std::string_view, 1> adv_dsl{kEquityDollarAdvDsl};
+        const std::array<std::string_view, 1> adv_name{kEquityDollarAdvName};
+        if (profile.prereg) family_views.max_additional_bytes = cfg.equity_max_working_bytes - estimate;
+        ATX_TRY(dollar_adv, evaluate_equity_families(bound.context, family_views, view,
+                    std::span<const std::string_view>(adv_dsl),
+                    std::span<const std::string_view>(adv_name)));
+        ATX_TRY(estimate, add(estimate, dollar_adv.additional_array_bytes));
+        if (estimate > cfg.equity_max_working_bytes) {
+            return Err(ErrorCode::OutOfRange, "equity ic: memory estimate with dollar adv exceeds budget");
+        }
+
+        // §5.2 — a live gate that a 2013-only panel does not trip.
+        eval::CalendarSeal seal{};
+        seal.policy = eval::SealPolicy::RejectSealedV1;
+        ATX_TRY(auto seal_report,
+                eval::apply_calendar_seal(std::span<const atx::i64>(view.session_keys), seal));
+        const Json seal_json{
+            {"policy", "RejectSealedV1"}, {"dates_total", seal_report.dates_total},
+            {"dates_visible", seal_report.dates_visible},
+            {"dates_at_or_after_validation", seal_report.dates_at_or_after_validation},
+            {"dates_at_or_after_sealed", seal_report.dates_at_or_after_sealed},
+            {"embargo_len", seal_report.embargo_len},
+            {"content_address", number(seal_report.content_address)},
+            {"used_reserve_window", seal_report.used_reserve_window != 0},
+            {"statement", "non-vacuous by code; vacuous by data for a 2013-only panel"},
+            {"untested_paths", Json::array({"MaskSealedV1", "reserve_window routing"})}};
+        ATX_TRY(auto seal_file, write_text(directory, "seal.json", seal_json.dump(2) + "\n"));
+        files.push_back(std::move(seal_file));
+
+        ATX_TRY(cells, build_cells(view, bound.evaluation.identity.instrument_ids, marks,
+                                        profile.terminal));
+        if (view.signals.alphas.size() != kEquityBaselineDsl.size() ||
+            blend.size() != price.size() ||
+            families.signals.alphas.size() != profile.family_dsl.size() ||
+            dollar_adv.signals.alphas.size() != 1 ||
+            dollar_adv.signals.alphas[0].values.size() != price.size()) {
+            return Err(ErrorCode::InvalidArgument, "equity ic: unexpected signal or combo extent");
+        }
+        // Signal table: baseline DSLs, the published blend, then the families. Index 0
+        // stays momentum_252 so the single-block measurement scopes below are unchanged.
+        for (atx::usize a = 0; a < kEquityBaselineDsl.size(); ++a) {
+            columns.push_back({kEquityBaselineSignalNames[a], view.signals.alphas[a].values,
+                               profile.horizons});
+        }
+        columns.push_back({"blend_equal", blend, profile.horizons});
+        for (atx::usize a = 0; a < profile.family_dsl.size(); ++a) {
+            if (families.signals.alphas[a].values.size() != price.size()) {
+                return Err(ErrorCode::InvalidArgument, "equity ic: family signal extent");
+            }
+            if (profile.prereg && profile.prereg->families[a].sign < 0) {
+                for (auto &value : families.signals.alphas[a].values) value = -value;
+            }
+            const std::span<const atx::usize> requested = profile.prereg
+                ? std::span<const atx::usize>(profile.prereg->families[a].horizons)
+                : std::span<const atx::usize>(profile.horizons);
+            columns.push_back({profile.family_names[a], families.signals.alphas[a].values, requested});
+        }
+
+        return Ok();
+    };
+    if (!profile.prereg) ATX_TRY_VOID(prepare());
 
     // §4.5 — the pre-registration line goes in BEFORE the numbers exist.
-    ATX_TRY(auto trial_id, next_trial_id(profile.ledger_path));
+    ATX_TRY(auto trial_id, profile.prereg ? runtime_trial_id(profile, directory)
+                                         : next_trial_id(profile.ledger_path));
     auto pre = base_entry(cfg, profile, marks, bound.context, bound.evaluation, bound.combo,
                           trial_id, dates);
     pre.status = "pre-registered";
     pre.result.outcome = "pending";
     ATX_TRY(auto pre_line, append_trial_with_retry(profile.ledger_path, pre));
     registered = true;
-    ATX_TRY(auto pre_text, serialize_trial_entry(pre_line));
-    ATX_TRY(auto pre_sha, atx::core::sha256_hex(pre_text + "\n"));
+    std::string pre_sha;
 
     // ---- POINT OF NO RETURN (§11.9 ruling C-1) -----------------------------
     // The ledger now carries a "pre-registered" line for this trial_id. §4.5:
@@ -1379,6 +1489,12 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
     std::optional<atx::f64> published_seconds;
     Result<StageResult> outcome = [&]() -> Result<StageResult> {
       try {
+        ATX_TRY(auto pre_text, serialize_trial_entry(pre_line));
+        ATX_TRY(pre_sha, atx::core::sha256_hex(pre_text + "\n"));
+        if (profile.prereg) {
+            attempt["preregistration"] = profile.recipe.at("preregistration");
+            ATX_TRY_VOID(prepare());
+        }
         attempt["required_mark_audit"] = Json{
             {"status", marks.present ? "loaded" : "absent-optional-ex34-restriction-empty"},
             {"path", marks.path}, {"audit_id", marks.audit_id},
@@ -1400,20 +1516,21 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
             {"interface", "W0-I0b terminal-return table; data from W2-D2"}};
         attempt["trial_ledger"] = Json{{"path", profile.ledger_path}, {"trial_id", trial_id},
             {"pre_registration_line_sha256", pre_sha},
-            {"trial_count_declared", kTrialCountDeclared}};
+            {"trial_count_declared", profile.ledger_count()}};
         {
             Json finite = Json::object();
-            for (atx::usize a = 0; a < kEquityFamilyDsl.size(); ++a) {
-                finite[std::string(kEquityFamilySignalNames[a])] = families.finite_admitted_cells[a];
+            for (atx::usize a = 0; a < profile.family_dsl.size(); ++a) {
+                finite[std::string(profile.family_names[a])] = families.finite_admitted_cells[a];
             }
-            attempt["families"] = Json{{"checkpoint", kCheckpoint}, {"count", kEquityFamilyDsl.size()},
+            attempt["families"] = Json{{"checkpoint", profile.checkpoint()},
+                {"count", profile.family_dsl.size()},
                 {"warmup_observations_derived", families.warmup}, {"vm_slots", families.vm_slots},
                 {"additional_array_bytes", number(families.additional_array_bytes)},
                 {"admission", "baseline mask (eligible AND both momentum signals ready); a family "
                               "cell is NaN where its own value is not finite and the engine "
                               "excludes and counts it"},
-                {"finite_admitted_cells", finite}, {"trial_count_rule", kTrialCountRule},
-                {"retained_count", kEquityFamilyRetainedCount},
+                {"finite_admitted_cells", finite}, {"trial_count_rule", profile.count_rule()},
+                {"retained_count", profile.retained_count()},
                 {"dollar_adv", Json{{"dsl", kEquityDollarAdvDsl}, {"name", kEquityDollarAdvName},
                     {"finite_admitted_cells", number(dollar_adv.finite_admitted_cells[0])},
                     {"role", "ancillary; mean_dollar_adv column of quantile_spread.csv; not a "
@@ -1422,7 +1539,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
         attempt["cost_model_provenance"] = kCostModelProvenance;
         attempt["borrow_day_convention"] = kBorrowDayConvention;
         attempt["alignment"] = alignment_label(profile.rules.execution_delay);
-        attempt["design_note"] =
+        if (!profile.prereg) attempt["design_note"] =
             Json{{"path", kDesignNoteRelativePath}, {"sha256", kDesignNoteSha256},
                  {"binding", "embedded constant; the runner refuses the run unless the on-disk "
                              "design note hashes to exactly this value"}};
@@ -1444,7 +1561,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
         input.aux = dollar_adv.signals.alphas[0].values;
 
         eval::CrossSectionIcConfig base{};
-        base.horizons = std::span<const atx::usize>(kHorizons.data(), kHorizons.size());
+        base.horizons = profile.horizons;
         base.quantiles = kQuantiles;
         base.min_names_per_date = profile.rules.min_names_per_date; // E-18
         base.bootstrap_draws = kBootstrapDraws;
@@ -1460,7 +1577,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
         // E-09: the _common prefix must leave room for the LONGEST label, which ends
         // delay + max(H) rows after its signal row; the pre-W0 T - max(H) put a row with
         // no exit into the h = 63 prefix under delay 1 and voided that block.
-        const auto embargo = eval::label_embargo(kHorizons.back(), base.execution_delay);
+        const auto embargo = eval::label_embargo(profile.horizons.back(), base.execution_delay);
         base.common_sample_dates = dates > embargo ? dates - embargo : 0;
         base.ties = eval::IcTieHandling::AverageRanksV1;
         base.forward_variant = eval::ForwardReturnVariant::DropMissingForward;
@@ -1488,6 +1605,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
             for (atx::usize v = 0; v < kVariantNames.size(); ++v) {
                 for (atx::usize r = 0; r < kRestrictionNames.size(); ++r) {
                     eval::CrossSectionIcConfig c = base;
+                    c.horizons = columns[s].horizons;
                     c.stream_signal_index = s;
                     c.stream_variant_id = v;
                     c.stream_restriction_id = r;
@@ -1498,7 +1616,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
                     block[v][r] = std::move(computed);
                 }
             }
-            for (atx::usize h = 0; h < kHorizons.size(); ++h) {
+            for (atx::usize h = 0; h < columns[s].horizons.size(); ++h) {
                 for (atx::usize v = 0; v < kVariantNames.size(); ++v) {
                     for (atx::usize r = 0; r < kRestrictionNames.size(); ++r) {
                         const auto &sum = block[v][r].horizons[h];
@@ -1539,11 +1657,11 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
                      {"purpose", "training-only-forecast-evaluation"},
                      {"observations", dates}, {"instruments", names},
                      {"common_sample_dates", base.common_sample_dates},
-                     {"checkpoint", kCheckpoint}, {"signal_count", columns.size()},
+                     {"checkpoint", profile.checkpoint()}, {"signal_count", columns.size()},
                      {"family_warmup_observations_derived", families.warmup},
-                     {"trial_count_declared", kTrialCountDeclared},
-                     {"trial_count_rule", kTrialCountRule},
-                     {"family_retained_count", kEquityFamilyRetainedCount},
+                     {"trial_count_declared", profile.ledger_count()},
+                     {"trial_count_rule", profile.count_rule()},
+                     {"family_retained_count", profile.retained_count()},
                      {"liquidity_floor", attempt.at("universe").at("liquidity_floor")},
                      {"alignment", alignment_label(profile.rules.execution_delay)},
                      {"execution_delay", profile.rules.execution_delay},
@@ -1628,6 +1746,15 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
                 "or changes PCS admission.",
                 "No live trading and no broker action is performed or authorized."})},
             {"acceptance", "sign-and-shape evidence only; not accepted alpha"}, {"files", files}};
+        if (profile.prereg) {
+            manifest["parents"].push_back(Json{{"role", "preregistration-file"},
+                {"sha256", profile.prereg->file_sha256}});
+            manifest["parents"].push_back(Json{{"role", "preregistration-canonical"},
+                {"sha256", profile.prereg->canonical_sha256}});
+            manifest["predictions_confirmed"]["dates_below_min_names_scope"] =
+                "ONE reference block: momentum_252, IncludeAuditedTerminalV1, full, "
+                "summed over the registered horizon union";
+        }
         ATX_TRY(auto ic_id, atx::core::sha256_hex(std::string(kDomain) + manifest.dump()));
         manifest["ic_id"] = ic_id;
         // Manifest FIRST, `.pending` last: a failure on the manifest write must
