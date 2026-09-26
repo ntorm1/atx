@@ -165,6 +165,8 @@ struct QpConfig {
   // own layout (x_full = w; see qp_factor_admm.hpp); a warm start from the other path's
   // layout is detected by length and ignored (a cold start, never a mis-seeded one).
   bool factor_space = false;
+  ConstraintFeasibilityRule feasibility_rule{ConstraintFeasibilityRule::LegacyAbsoluteV1};
+  atx::f64 feasibility_relative_tolerance{0.0};
 };
 
 // A deterministic infeasibility / convergence certificate, computed from the FINAL
@@ -299,6 +301,8 @@ public:
                                                                  const AdmmSchedule *sched,
                                                                  const WarmStart *ws) const {
     namespace co = atx::core;
+    if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2)
+      ATX_TRY_VOID(validate(p_in, p_in.V.n_instruments()));
     const QpProblem p = (ws == nullptr)
                             ? QpProblem{p_in.V, p_in.risk_aversion, p_in.q, p_in.C, p_in.x0, p_in.y0}
                             : QpProblem{p_in.V, p_in.risk_aversion, p_in.q, p_in.C, ws->x0, ws->y0};
@@ -342,6 +346,10 @@ public:
 
     // (7) Feasibility gate (R3): Ã x ∈ [l̃, ũ] within feas_tol (original units), else Err.
     ATX_TRY_VOID(check_feasible(aug, x));
+    if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2)
+      ATX_TRY_VOID(p.C.check_relative_feasible(
+          std::span<const atx::f64>{x.data(), m}, cfg.feas_tol,
+          cfg.feasibility_relative_tolerance));
 
     // (8) Return the w-block (first M entries) in canonical order + the certificate.
     QpResult out;
@@ -369,7 +377,8 @@ private:
                                                                const AdmmSchedule &sched,
                                                                const WarmStart *ws) const {
     namespace co = atx::core;
-    const FactorAdmmConfig fc{cfg.iters, cfg.rho, cfg.sigma, cfg.feas_tol, cfg.polish};
+    const FactorAdmmConfig fc{cfg.iters, cfg.rho, cfg.sigma, cfg.feas_tol, cfg.polish,
+        cfg.feasibility_rule, cfg.feasibility_relative_tolerance};
     const std::span<const atx::f64> x0 = (ws != nullptr) ? ws->x0 : p.x0;
     const std::span<const atx::f64> y0 = (ws != nullptr) ? ws->y0 : p.y0;
     const atx::f64 rho0 = (ws != nullptr) ? ws->rho : 0.0;
@@ -401,8 +410,18 @@ private:
   // -------------------------------------------------------------------------
   //  Up-front dimension validation (R3). Infeasible-by-shape ⇒ InvalidArgument.
   // -------------------------------------------------------------------------
-  [[nodiscard]] static atx::core::Status validate(const QpProblem &p, atx::usize m) {
+  [[nodiscard]] atx::core::Status validate(const QpProblem &p, atx::usize m) const {
     namespace co = atx::core;
+    if (cfg.feasibility_rule != ConstraintFeasibilityRule::LegacyAbsoluteV1 &&
+        cfg.feasibility_rule != ConstraintFeasibilityRule::RelativeEconomicV2)
+      return co::Err(co::ErrorCode::InvalidArgument, "QP: unknown feasibility rule");
+    if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2 &&
+        (!std::isfinite(cfg.feas_tol) || cfg.feas_tol <= 0.0 ||
+         !std::isfinite(cfg.feasibility_relative_tolerance) ||
+         cfg.feasibility_relative_tolerance < 0.0 || cfg.feasibility_relative_tolerance >= 1.0 ||
+         !p.C.elastic.empty()))
+      return co::Err(co::ErrorCode::InvalidArgument,
+          "QP: relative economic feasibility requires valid tolerances and hard constraints");
     if (p.q.size() != m) {
       return co::Err(co::ErrorCode::InvalidArgument, "QP: q.size() must equal M (n_instruments)");
     }
@@ -1246,16 +1265,20 @@ private:
   // the objective by VIOLATING the cone must be rejected here (else polish would silently
   // break the SOC). Order-fixed cone norm (R1).
   [[nodiscard]] bool feasible_within(const AugmentedQp &aug, const atx::core::linalg::VecX &x,
-                                     const QpProblem & /*p*/) const {
+                                     const QpProblem &p) const {
     const atx::core::linalg::VecX ax = aug.A_tilde * x;
     for (Eigen::Index i = 0; i < ax.size(); ++i) {
-      if (ax[i] - aug.u[i] > cfg.feas_tol) {
+      const auto tolerance = row_feasibility_tolerance(ax[i], aug.l[i], aug.u[i]);
+      if (ax[i] - aug.u[i] > tolerance) {
         return false;
       }
-      if (aug.l[i] - ax[i] > cfg.feas_tol) {
+      if (aug.l[i] - ax[i] > tolerance) {
         return false;
       }
     }
+    if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2 &&
+        !p.C.check_relative_feasible(std::span<const atx::f64>{x.data(), aug.n_w},
+            cfg.feas_tol, cfg.feasibility_relative_tolerance)) return false;
     return cones_feasible(aug, ax);
   }
 
@@ -1272,7 +1295,8 @@ private:
         arg[j] = ax[static_cast<Eigen::Index>(blk.row_start + j)] +
                  blk.offset[static_cast<Eigen::Index>(j)];
       }
-      if (cone_violation(blk, arg) > cfg.feas_tol) {
+      const auto apex = blk.variable_apex ? arg[0] : blk.radius;
+      if (cone_violation(blk, arg) > row_feasibility_tolerance(apex, 0.0, apex)) {
         return false;
       }
     }
@@ -1359,10 +1383,14 @@ private:
     for (Eigen::Index i = 0; i < ax.size(); ++i) {
       const atx::f64 over = ax[i] - aug.u[i];  // > feas_tol ⇒ above upper bound
       const atx::f64 under = aug.l[i] - ax[i]; // > feas_tol ⇒ below lower bound
-      if (over > cfg.feas_tol) {
+      const auto tolerance = row_feasibility_tolerance(ax[i], aug.l[i], aug.u[i]);
+      if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2 &&
+          (!std::isfinite(ax[i]) || !std::isfinite(tolerance)))
+        return co::Err(co::ErrorCode::InvalidArgument, "QP: nonfinite relative feasibility row");
+      if (over > tolerance) {
         return co::Err(co::ErrorCode::InvalidArgument, infeasible_msg(i, over));
       }
-      if (under > cfg.feas_tol) {
+      if (under > tolerance) {
         return co::Err(co::ErrorCode::InvalidArgument, infeasible_msg(i, under));
       }
     }
@@ -1376,11 +1404,21 @@ private:
                  blk.offset[static_cast<Eigen::Index>(j)];
       }
       const atx::f64 viol = cone_violation(blk, arg);
-      if (viol > cfg.feas_tol) {
+      const auto apex = blk.variable_apex ? arg[0] : blk.radius;
+      if (viol > row_feasibility_tolerance(apex, 0.0, apex) ||
+          (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2 &&
+           !std::isfinite(viol))) {
         return co::Err(co::ErrorCode::InvalidArgument, infeasible_cone_msg(b, viol));
       }
     }
     return co::Ok();
+  }
+
+  [[nodiscard]] atx::f64 row_feasibility_tolerance(atx::f64 value, atx::f64 lower,
+                                                  atx::f64 upper) const noexcept {
+    if (cfg.feasibility_rule == ConstraintFeasibilityRule::LegacyAbsoluteV1) return cfg.feas_tol;
+    return relative_constraint_tolerance(value, lower, upper, cfg.feas_tol,
+        cfg.feasibility_relative_tolerance);
   }
 
   // Cone-feasibility-gate Err message (mirrors infeasible_msg: names BOTH causes —

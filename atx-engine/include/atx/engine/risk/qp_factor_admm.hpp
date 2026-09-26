@@ -94,6 +94,8 @@ struct FactorAdmmConfig {
   atx::f64 sigma = 1e-6;    // proximal regularization
   atx::f64 feas_tol = 1e-6; // gate tolerance (per row; sums get (M + 1)·feas_tol)
   bool polish = true;
+  ConstraintFeasibilityRule feasibility_rule{ConstraintFeasibilityRule::LegacyAbsoluteV1};
+  atx::f64 feasibility_relative_tolerance{0.0};
 };
 
 struct FactorAdmmOutput {
@@ -780,6 +782,16 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
     return co::Err(co::ErrorCode::InvalidArgument,
                    "solve_factor_admm: cone constraints need the augmented solver");
   }
+  if (cfg.feasibility_rule != ConstraintFeasibilityRule::LegacyAbsoluteV1 &&
+      cfg.feasibility_rule != ConstraintFeasibilityRule::RelativeEconomicV2)
+    return co::Err(co::ErrorCode::InvalidArgument, "factor-space QP: unknown feasibility rule");
+  if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2 &&
+      (!std::isfinite(cfg.feas_tol) || cfg.feas_tol <= 0.0 ||
+       !std::isfinite(cfg.feasibility_relative_tolerance) ||
+       cfg.feasibility_relative_tolerance < 0.0 || cfg.feasibility_relative_tolerance >= 1.0 ||
+       !C.elastic.empty()))
+    return co::Err(co::ErrorCode::InvalidArgument,
+        "factor-space QP: relative economic feasibility requires valid tolerances and hard constraints");
   ATX_TRY(FaProblem f, detail::fa_compile(V, lambda, q, C));
   const auto m = static_cast<Eigen::Index>(f.m);
   const Eigen::Index rd = f.ad.rows();
@@ -989,7 +1001,11 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
       const atx::f64 fp = detail::fa_objective(f, wp);
       const atx::f64 slack = 1e-9 + 1e-7 * std::fabs(fa) +
                              2.0 * detail::fa_dual_inf(f, s.yb, s.yd, s.yt) * viol.total;
-      if (vp.row <= cfg.feas_tol && vp.sums <= cfg.feas_tol && fp <= fa + slack) {
+      const bool feasible = cfg.feasibility_rule == ConstraintFeasibilityRule::LegacyAbsoluteV1
+          ? vp.row <= cfg.feas_tol && vp.sums <= cfg.feas_tol
+          : C.check_relative_feasible(std::span<const atx::f64>{wp.data(), f.m},
+              cfg.feas_tol, cfg.feasibility_relative_tolerance).has_value();
+      if (feasible && fp <= fa + slack) {
         w = std::move(wp);
         viol = vp;
         out.polished = true;
@@ -997,7 +1013,10 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
     }
   }
   out.prim_res = std::max(0.0, std::max(viol.row, viol.sums));
-  if (!detail::fa_gate_ok(f, viol, cfg.feas_tol)) {
+  if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2) {
+    ATX_TRY_VOID(C.check_relative_feasible(std::span<const atx::f64>{w.data(), f.m},
+        cfg.feas_tol, cfg.feasibility_relative_tolerance));
+  } else if (!detail::fa_gate_ok(f, viol, cfg.feas_tol)) {
     std::ostringstream msg;
     msg.precision(17);
     msg << "solve_factor_admm: book violates ";

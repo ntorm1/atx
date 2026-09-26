@@ -64,6 +64,13 @@
 namespace atx::engine::risk {
 
 enum class ConstraintStorageRule : atx::u8 { LegacyDenseV1 = 1, SparseCsrV2 = 2 };
+enum class ConstraintFeasibilityRule : atx::u8 { LegacyAbsoluteV1 = 1, RelativeEconomicV2 = 2 };
+
+// Unbounded +/-1e30 sentinels do not inflate the relative tolerance. A row's
+// units are those of lhs/bounds; L1 budgets use actual economic weights.
+[[nodiscard]] atx::f64 relative_constraint_tolerance(
+    atx::f64 lhs, atx::f64 lower, atx::f64 upper,
+    atx::f64 absolute_tolerance, atx::f64 relative_tolerance) noexcept;
 
 struct ConstraintStorageConfig {
   ConstraintStorageRule rule{ConstraintStorageRule::LegacyDenseV1};
@@ -290,6 +297,9 @@ struct MaterializedConstraints {
       atx::usize instruments, atx::usize factors, atx::usize general_rows) const;
   [[nodiscard]] atx::core::Status validate_augmented_workspace(
       atx::usize instruments, atx::usize factors) const;
+  [[nodiscard]] atx::core::Status check_relative_feasible(
+      std::span<const atx::f64> weights, atx::f64 absolute_tolerance,
+      atx::f64 relative_tolerance) const;
 
   // Ascending-column traversal, same order as the frozen dense assembler.
   // Requires validated geometry; never allocates or exposes a dense fallback.

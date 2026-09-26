@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <limits>
+#include <string>
 
 namespace atx::engine::risk {
 namespace {
@@ -26,6 +27,55 @@ namespace co = atx::core;
   return ((adv * fraction) / nav) * days;
 }
 } // namespace
+
+atx::f64 relative_constraint_tolerance(atx::f64 lhs, atx::f64 lower, atx::f64 upper,
+    atx::f64 absolute_tolerance, atx::f64 relative_tolerance) noexcept {
+  auto scale = std::abs(lhs);
+  if (lower > -1e30) scale = std::max(scale, std::abs(lower));
+  if (upper < 1e30) scale = std::max(scale, std::abs(upper));
+  return absolute_tolerance + relative_tolerance * scale;
+}
+
+atx::core::Status MaterializedConstraints::check_relative_feasible(
+    std::span<const atx::f64> weights, atx::f64 absolute_tolerance,
+    atx::f64 relative_tolerance) const {
+  ATX_TRY_VOID(validate_layout(weights.size()));
+  if (!std::isfinite(absolute_tolerance) || absolute_tolerance < 0.0 ||
+      !std::isfinite(relative_tolerance) || relative_tolerance < 0.0 ||
+      relative_tolerance >= 1.0 || (absolute_tolerance == 0.0 && relative_tolerance == 0.0))
+    return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid tolerance");
+  for (const auto weight : weights)
+    if (!std::isfinite(weight))
+      return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: nonfinite weight");
+  const auto in_band = [=](atx::f64 value, atx::f64 lower, atx::f64 upper) {
+    const auto tolerance = relative_constraint_tolerance(value, lower, upper,
+        absolute_tolerance, relative_tolerance);
+    return std::isfinite(value) && std::isfinite(lower) && std::isfinite(upper) &&
+        std::isfinite(tolerance) && value - upper <= tolerance && lower - value <= tolerance;
+  };
+  for (usize row = 0; row < row_count(); ++row) {
+    atx::f64 value = 0.0;
+    visit_row(row, [&](usize column, atx::f64 coefficient) { value += coefficient * weights[column]; });
+    if (!in_band(value, l[static_cast<Eigen::Index>(row)], u[static_cast<Eigen::Index>(row)]))
+      return co::Err(co::ErrorCode::InvalidArgument,
+          "relative feasibility: linear row " + std::to_string(row) + " exceeds tolerance");
+  }
+  if (gross_l1_budget >= 0.0) {
+    atx::f64 gross = 0.0;
+    for (const auto weight : weights) gross += std::abs(weight);
+    if (!in_band(gross, 0.0, gross_l1_budget))
+      return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: actual gross exceeds budget");
+  }
+  if (has_turnover) {
+    if (turnover_ref.size() != weights.size())
+      return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: turnover reference shape mismatch");
+    atx::f64 turnover = 0.0;
+    for (usize i = 0; i < weights.size(); ++i) turnover += std::abs(weights[i] - turnover_ref[i]);
+    if (!in_band(turnover, 0.0, turnover_budget))
+      return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: actual turnover exceeds budget");
+  }
+  return co::Ok();
+}
 
 atx::core::Status ConstraintSet::validate_liquidity(
     std::span<const atx::f64> w_prev, usize M, const CapacityRef& ref) const {
