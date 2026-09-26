@@ -131,6 +131,12 @@ TEST(EquityMinePipeline, PlantedAlphaIsRecoveredAndAdmitted) {
     for (const auto &c : out->candidates) scored += c.scored ? 1 : 0;
     EXPECT_EQ(out->trials.n_raw, scored);
     EXPECT_GE(out->trials.n_eff, 1.0);
+    // The complete-P&L branch must report the benchmark it actually used too.
+    // These distinct planted/noise trials exercise a nonzero cluster penalty.
+    EXPECT_EQ(out->trials.n_screened, 0U);
+    EXPECT_EQ(out->dsr_rule, "cluster-mc-floor-v2");
+    EXPECT_GT(out->dsr_clusters, 1U);
+    EXPECT_GT(top.dsr_selection_benchmark, 0.0);
 }
 
 // Under the null every admission is a false discovery. BY bounds the expected
