@@ -345,6 +345,24 @@ atx::core::Result<IcScreenScratch> prepare_ic_screen_scratch(const IcScreenCache
   return Ok(std::move(result));
 }
 
+bool ic_screen_cache_matches(const IcScreenCache& cache, const alpha::Panel& panel,
+                              const IcScreenConfig& config) noexcept {
+  if (!cache.data_ || cache.data_->dates != panel.dates() ||
+      cache.data_->instruments != panel.instruments()) return false;
+  const auto& prepared = cache.data_->config;
+  if (prepared.rule != config.rule) return false;
+  if (config.rule == IcScreenRule::DisabledV1) return true;
+  const usize end = config.window_end == 0U ? panel.dates() : config.window_end;
+  const usize maturity = config.maturity_end == 0U ? end : config.maturity_end;
+  return prepared.horizons == config.horizons &&
+         prepared.execution_delay == config.execution_delay &&
+         prepared.window_begin == config.window_begin && prepared.window_end == end &&
+         prepared.maturity_end == maturity && prepared.min_names == config.min_names &&
+         prepared.min_dates == config.min_dates && prepared.practical_abs_ic == config.practical_abs_ic &&
+         prepared.confidence_multiplier == config.confidence_multiplier &&
+         prepared.max_cache_bytes == config.max_cache_bytes;
+}
+
 atx::core::Result<IcScreenResult> screen_ic(std::span<const f64> signal,
                                            const IcScreenCache& cache,
                                            IcScreenScratch& scratch) {

@@ -82,6 +82,8 @@ private:
   friend atx::core::Result<IcScreenScratch> prepare_ic_screen_scratch(const IcScreenCache&);
   friend atx::core::Result<IcScreenResult> screen_ic(
       std::span<const atx::f64>, const IcScreenCache&, IcScreenScratch&);
+  friend bool ic_screen_cache_matches(const IcScreenCache&, const alpha::Panel&,
+                                       const IcScreenConfig&) noexcept;
 };
 
 // One preallocated scratch per worker; never share between concurrent calls.
@@ -119,6 +121,14 @@ private:
     std::string_view price_field = "close");
 [[nodiscard]] atx::core::Result<IcScreenScratch>
 prepare_ic_screen_scratch(const IcScreenCache& cache);
+
+// Reject injected caches with a different geometry or active recipe. Zero
+// window/maturity bounds resolve exactly as in prepare. This does not hash the
+// Panel payload or optional membership/return guard: the injecting caller must
+// bind those inputs to the same run. Disabled recipes compare rule+geometry only.
+[[nodiscard]] bool ic_screen_cache_matches(const IcScreenCache& cache,
+                                            const alpha::Panel& panel,
+                                            const IcScreenConfig& config) noexcept;
 
 // Conservative equivalence screen, not significance/alpha admission. Reject only
 // if EVERY horizon's Pearson AND tied-rank bounds exclude a practical effect in

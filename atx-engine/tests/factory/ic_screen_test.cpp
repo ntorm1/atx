@@ -153,6 +153,32 @@ TEST(IcScreen, InvalidShapesModesBudgetsAndScratchBindingReturnErrors) {
   EXPECT_FALSE(screen_ic(std::vector<f64>(180, 1.0), *b, *scratch));
 }
 
+TEST(IcScreen, PreparedCacheRequiresMatchingResolvedGeometryAndRecipe) {
+  auto p = panel(32, 9, prices(32, 9)); ASSERT_TRUE(p);
+  const auto cfg = small_config();
+  auto cache = prepare_ic_screen(*p, cfg); ASSERT_TRUE(cache);
+  EXPECT_TRUE(ic_screen_cache_matches(*cache, *p, cfg));
+  auto resolved = cfg; resolved.window_end = 32; resolved.maturity_end = 32;
+  EXPECT_TRUE(ic_screen_cache_matches(*cache, *p, resolved));
+  std::array<IcScreenConfig, 11> different;
+  different.fill(cfg);
+  different[0].rule = IcScreenRule::DisabledV1;
+  different[1].horizons[3] = 5;
+  different[2].execution_delay = 2;
+  different[3].window_begin = 1;
+  different[4].window_end = 16;
+  different[5].maturity_end = 16;
+  different[6].min_names = 4;
+  different[7].min_dates = 16;
+  different[8].practical_abs_ic = 0.01;
+  different[9].confidence_multiplier = 4.0;
+  different[10].max_cache_bytes /= 2U;
+  for (const auto& changed : different) EXPECT_FALSE(ic_screen_cache_matches(*cache, *p, changed));
+  auto other = panel(32, 10, prices(32, 10)); ASSERT_TRUE(other);
+  EXPECT_FALSE(ic_screen_cache_matches(*cache, *other, cfg));
+  EXPECT_FALSE(ic_screen_cache_matches(IcScreenCache{}, *p, cfg));
+}
+
 TEST(IcScreen, ShortSparseAndConstantCandidatesPassThrough) {
   constexpr usize dates = 150, names = 32;
   auto p = panel(dates, names, prices(dates, names)); ASSERT_TRUE(p);
