@@ -866,9 +866,10 @@ atx::core::Result<StageResult> run_discover_gated(
         return atx::core::Err(rep_r.error());
     }
     const factory::FactoryReport rep = std::move(*rep_r);
-    if (rep.ic_screen_resume_mismatch) {
-        const std::string message =
-            "discover: checkpoint IC screening configuration differs from this run";
+    if (rep.ic_screen_cache_mismatch || rep.ic_screen_resume_mismatch) {
+        const std::string message = rep.ic_screen_cache_mismatch
+            ? "discover: IC cache configuration differs from this run"
+            : "discover: checkpoint IC screening configuration differs from this run";
         if (rec) { (void)rec->mark_failed(now_unix(), message); }
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument, message);
     }
@@ -1316,9 +1317,11 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
     factory::SearchDriver driver{lib, panel, policy, sim, cfg.seed_exprs, fields, weak_panel,
                                  numeric_excluded_fields, extra_group_fields};
     factory::SearchResult res = driver.run(sc, pool);
-    if (res.ic_screen_resume_mismatch) {
+    if (res.ic_screen_cache_mismatch || res.ic_screen_resume_mismatch) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-            "discover: checkpoint IC screening configuration differs from this run");
+            res.ic_screen_cache_mismatch
+                ? "discover: IC cache configuration differs from this run"
+                : "discover: checkpoint IC screening configuration differs from this run");
     }
 
     // 7. Check admission.
