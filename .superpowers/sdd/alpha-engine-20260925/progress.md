@@ -40,7 +40,8 @@ Reuse existing pools, -MaxPool11; do not create more. Four agent slots including
 
 ## Current checkpoint (supersedes historical job notes below)
 
-Root HEAD before this update: 05570f27. Tree clean. No active root compiler or test.
+Root HEAD before this update: 1e4ee053. No active root compiler or test. New D0 code,
+source review and qualification preparation are integrated; runtime gates remain open.
 Latest user steering: find ORIGINAL DAG plan, fill completion SHAs there as elements
 finish, keep pushing and work around RAM limits. Root did this in
 docs/plans/2026-09-24-alpha-engine-production-swarm.md at26b232ab,053de610,05570f27.
@@ -83,7 +84,8 @@ Current unchanged warm rebuild passed3.4759664s, native no-work, zero ccache cal
 unchanged executable/statslog hashes. Fresh current build224calls:84direct hits,
 140cacheable misses, zero preprocessing failures. Historical7581 preprocessing errors
 are not attributed to this build. No speculative cache flags/global cache mutation.
-Both benchmark trees are now idle. First baselinekernel batch is INVALID due to contention.
+Benchmark binaries are idle. Pool5 Debug alpha qualification is active (below).
+First baselinekernel batch is INVALID due to contention.
 Full81cases x3 repetitions,
 0.20 regression gate, no missing/skipped cases or threshold bypass remains required.
 P-core mask0xFF independently verified. Original plan has NO W0WQ500width floor.
@@ -93,7 +95,7 @@ optimizerM1000/3000/5000/search756x500x6. KeepN128 forboth; NEVER switch afterti
 WQ source-model dominantpayload2.202GiB vs5.446GiBatN500. Allcacheable nodes fit at128;
 cache-eviction/productionscale NOTqualified. Fiveisolatedfamilies,baselinefivefirst then
 finalcurrentfive, freshquiet/memorycheckeach. Plan/preflight imports b272ea83/bef98cd1;
-latest commandexample115cf6b0 notyetimported. Protocolfreeze pool5/build-equity-bench/
+latest protocol examples are imported at3f4dddad andc995220e. Protocolfreeze pool5/build-equity-bench/
 w0-protocol-freeze.json. Currentbinaryb185 will need D0 impact/build beforetiming.
 
 Baselinekernel session75820 child16448 finishednative0 in146.701s,peak48.56MiB, but
@@ -102,14 +104,22 @@ preventsaggregatingit. No processkilled (childalreadyexitedbeforeverifiedstopatt
 Root metadata-only PythonSHAloop session96753 maycontribute; don'tclaim allcompeting
 PIDsunrelated. No automaticretry; waitgenuinelyquietwindow. Compilerwindowreleased.
 
-Scheduling: exclusive ONE compiler can launch above3GiB free with zero existing compiler
-workers; monitor2GiB reserve. This is orchestration policy, not owner-imposed acceptance.
-Latest host available RAM fluctuates~1.8-2.8GiB; no compiler launched at that level.
-Small metadata work proceeds without project/package compilation. Never kill other apps.
+Scheduling: ONE compiler, known target closure, zero other compiler workers. Prefer3GiB
+physical; user RAM-workaround steering permits correctness admission at >=2GiB physical
+AND >=3GiB commit headroom. Monitor owned process tree. Sustained physical<0.75GiB or
+commit headroom<1GiB may stop ONLY verified owned build tree, preserving logs/objects.
+This is orchestration policy, not owner-imposed acceptance. Benchmark N128 quiet/fresh
+memory requirements remain separate and unchanged. Never kill other apps.
 
-Agent duties: replayowner implementsnewD0rawVWAPcorrection inpool4, source-only until
-compilerpermission; auditowner readyindependentreviewwhenfrozen; G0owner mapsEXACTaffected
-frozenrecipes (read-only) forrerun. Root owns integration/originalDAG/checkpoint.
+Agent duties: auditowner owns SOLE compiler slot, pool5 alpha build retry session89729.
+Initial session4827 stopped on ambiguous test field_name integer literal after82.9s;
+no production compile error; retained objects. Peak ownedRSS1.207GiB, minhost1.685GiB,
+commitheadroom3.323GiB, concurrency1, no watchdog termination. Owner fix520bc0cc imported
+root1e4ee053/pool5bbc389ab. Retry launched3.561GiB free. After success: whole alpha plus
+independent N128 legacy fixture oracle, then release slot to root. No root configure yet.
+Replayowner pool4 prepared scoped remaining hygiene closure, no build permission.
+G0owner finished impact plan620299b4 (root35c68fe6); only L9 numerical rerun required.
+Root owns integration/originalDAG/checkpoint and later data/book/impl/worker closure.
 New D0 blocker: history_panel.cpp:75 explicitly admitsadjustedOHLC/vwap futureactions;
 augment.hpp computesadjustedtypicalproxy. RawdailycloseVWAPfix is required byoriginalD0,
 not a wording-onlywaiver. VwapRule RawDailyCloseV2 correcteddefault, AdjustedTypicalV1
@@ -120,7 +130,24 @@ andfixwrong dollar-volume metadata literal. KeepadjustedOHLCtags/W2A3lintscope e
 Approvedextra tiny alpha/vwap_rule.hpp avoidslargeheaderdependencies; real_panel.hpp/
 adapt_panel.hpp exposebasiscontract. SyntheticWQbenchmarkhelper explicitlyLegacyV1 only
 to preservefrozennumericfixture; requirefield/digestequivalence beforecurrenttimings.
-NoTDD; implementationfirst. NoCMakeedits. PlanD0rowopen, G0impactreviewopen; don'tclaimwavepass.
+NoTDD; implementationfirst. NoCMakeedits. Source correction is now COMPLETE/REVIEWED:
+f54b55e5 main,2a7194d5 contextpolicy/moves,0f74a357 geometrybounds,c1011024 legacyemptyorder;
+0037c515 separate discovery capacity identity; tests58df3e29,c68b78a4,indexfix1e4ee053;
+nonselectedbenchmarklegacy pins9c2ffd1f. Report90e376ba/review2cbc935a/briefad829c62.
+Raw V2 requires known raw basis, overwrites stale VWAP, validates geometry before indexing,
+avoids TRI scaling, forwards rules through context/options/moves and persisted CLI/metadata.
+Audit corrected two introduced issues before compilation: geometry OOB and context policy
+escape hatch. Raw daily-close proxy does not claim intraday VWAP. W2-A3 adjustedOHLC lint
+remains explicitly open. N128 legacy oracle copies b185 RNG/order/NaN bits independently.
+Pool4 PCH-off real_panel.cpp passed exactly one action/no links; peakRSS NOT captured.
+Root prepared build-equity/w0-vwap-closure/run-tests.ps1: whole data/book/impl, same exact
+external data exclusions and cleared opt-ins; requires successful build-result.json.
+Build/logs not launched. Stable common/data PCH carriers imported; no alpha rebuild here.
+G0 all14 frozen contexts have augmentation disabled, so remain valid. Only L9 applies
+VWAP augmentation; rerun all L9 search/validation/library/registry with same frozen args,
+new dir and explicit raw-daily-close-v2, final Release binary/source; hash fixture too.
+Reuse L7/L10/all13 cp21 baselines+IC/native replay unchanged; no diagnostic cp21 rebuild.
+PlanD0row remains runtime-open; do not claim wave pass. No active G0 lock/run.
 Source acquisition note0c0aef56 imported bc16ff76:56 Insider quarters,43 populated-range
 FSDS quarters, historical acceptance/header caveats. No filing payloads acquired.
 W1 prep now includes A1,B1,D1/D5,I1,Lane0 and sourceinventory; alldocumentationonly.
