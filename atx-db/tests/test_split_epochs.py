@@ -210,6 +210,83 @@ def test_without_a_bars_table_every_basis_is_unknown():
     con.close()
 
 
+# --- owner lookup through the bridge (R1e) ----------------------------------------------------
+
+EX = dt.date(2021, 3, 15)
+YEAR = (dt.date(2021, 1, 1), dt.date(2021, 12, 31))
+
+
+def _link(content, line, issuer, *, multi):
+    """One row as ``MarketOwnerBridge.single_class_link_rows`` emits it (a current-ticker link)."""
+    return (content, line, issuer, YEAR[0], None, _at(YEAR[0]), multi, "current_sec_ticker",
+            "current_ticker_unverified", "modeled")
+
+
+def _links(con):
+    """The owner-link labels of the last prepared security's splits."""
+    return con.execute("SELECT DISTINCT link FROM _pit_split_events WHERE kind = 'split'").fetchall()
+
+
+def _factor(con, clock: dt.datetime, frame: dt.datetime) -> float:
+    sql = split_epochs.rebase_factor_sql(f"TIMESTAMP '{clock}'", f"TIMESTAMP '{frame}'", -1)
+    return con.execute(f"SELECT {sql} FROM (SELECT 1) {split_epochs.LISTS_JOIN}").fetchone()[0]
+
+
+def test_a_multi_class_owner_takes_a_split_only_when_every_class_line_shows_it():
+    con = _con()
+    both = {"split": (EX, 2.0), "shares": (1000, 2000, 0)}
+    for line in ("AGREE-A", "AGREE-B", "ONE-A", "ALONE-A"):
+        _bars(con, line, *YEAR, **both)
+    _bars(con, "ONE-B", *YEAR, shares=(1000, 1000, 0))
+    links = [_link("AGREE", "AGREE-A", "cik:1", multi=True), _link("AGREE", "AGREE-B", "cik:1", multi=True),
+             _link("ONE", "ONE-A", "cik:2", multi=True), _link("ONE", "ONE-B", "cik:2", multi=True),
+             # an unbridged sibling class makes the only visible line multi-class
+             _link("ALONE", "ALONE-A", "cik:3", multi=True)]
+    before, after = dt.datetime(2021, 2, 10, 21), dt.datetime(2021, 5, 10, 21)
+    with split_epochs.refresh_scope(SimpleNamespace(con=con), None, persistent=False, links=links):
+        # Both classes split 2:1: one owner split (not 4:1), labelled with its links.
+        assert _events(con, "AGREE") == [("split", EX, _at(EX), 2.0, "vendor_factor+shares")]
+        assert _links(con) == [("current_sec_ticker+class_agreement",)] and _hazards(con) == []
+        assert _known(con, before, after)
+        # One class line splits alone, or is the only class visible: never applied, the basis stays unknown.
+        for owner in ("ONE", "ALONE"):
+            assert _events(con, owner) == []
+            assert _hazards(con) == [(EX, _at(EX), None, 2.0, split_epochs.MULTI_CLASS_SPLIT_DISAGREEMENT)]
+            assert not _known(con, before, after)
+        # Under the bridge a price line's own id is not an accounting id.
+        assert _events(con, "AGREE-A") == []
+    con.close()
+
+
+def test_an_unresolved_owner_takes_a_reconstructed_lines_splits_only_from_the_link_clock():
+    from atx_db.market_owner_bridge import BridgeRow, MarketOwnerBridge, PriceLine
+
+    con = _con()
+    line, owner = "TBLTICKERHISTORY-9", "SEC-CIK-0000000501"
+    member = "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000501"
+    valid, ri1_at = (dt.date(2021, 1, 4), dt.date(2022, 1, 3)), dt.datetime(2021, 6, 30, 22)
+    _bars(con, line, dt.date(2021, 1, 1), dt.date(2022, 6, 30), split=(EX, 2.0), shares=(1000, 2000, 0))
+    # A rule-5 (RI1) segment; the bridge maps the owner's unresolved Company Facts id to it.
+    row = BridgeRow(line, owner, "0000000501", "OLDCO", *valid, ri1_at, "reconstructed_history", "modeled",
+                    "reconstructed_history_medium", share_basis="single", tier="medium", evidence_id="ev-9")
+    bridge = MarketOwnerBridge(mode="reconstructed", rows=(row,), owner_members={owner: (owner, member)},
+                               lines={line: PriceLine(line, "OLDCO", dt.date(2021, 1, 1), dt.date(2022, 6, 30), 390)})
+    with split_epochs.refresh_scope(SimpleNamespace(con=con), None, persistent=False,
+                                    links=bridge.single_class_link_rows()):
+        for content in (member, owner):
+            # The split counts from the RI1 link clock, later than its own share evidence.
+            assert _events(con, content) == [("split", EX, ri1_at, 2.0, "vendor_factor+shares")]
+            assert _links(con) == [("reconstructed_history_medium",)]
+        # Coverage: inside the link interval only, and proof only once the link is visible.
+        runs = con.execute("SELECT first_at, last_at, known_at, link FROM _pit_split_coverage").fetchall()
+        assert runs == [(dt.datetime(2021, 1, 4), dt.datetime(2022, 1, 3), ri1_at, "reconstructed_history_medium")]
+        clock, hidden, visible = dt.datetime(2021, 2, 10, 21), dt.datetime(2021, 5, 10, 21), dt.datetime(2021, 8, 10, 21)
+        assert (_known(con, clock, hidden), _factor(con, clock, hidden)) == (False, 1.0)
+        assert (_known(con, clock, visible), _factor(con, clock, visible)) == (True, pytest.approx(0.5))
+        assert not _known(con, clock, dt.datetime(2022, 3, 10, 21))  # bars after the link prove nothing
+    con.close()
+
+
 # --- engine: rebasing on the frame's split basis --------------------------------------------
 
 

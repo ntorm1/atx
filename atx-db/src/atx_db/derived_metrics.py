@@ -254,8 +254,10 @@ def refresh_derived_metrics(
     if options.metric_codes is not None:
         predicate += f" AND metric_code IN ({', '.join('?' for _ in codes)})"
     inserted = committed_since_reopen = 0
-    # Split epochs are staged in one pass over the bars for the whole refresh.
-    with _split_epochs.refresh_scope(store, options.security_ids, persistent=recycle), \
+    # Split epochs are staged in one pass over the bars for the whole refresh, keyed by
+    # accounting id through the owner bridge's single-class links (R1e).
+    links = _split_epochs.bridge_links(store, item_codes=known_item_codes(), derived_source=options.source)
+    with _split_epochs.refresh_scope(store, options.security_ids, persistent=recycle, links=links), \
             closing(select_security_batches(store, options)) as batches:
         for batch in batches:
             for security_id in batch:

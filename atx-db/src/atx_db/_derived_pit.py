@@ -235,9 +235,11 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             events = _split_epochs.applied_events_sql(f"{alias}.input_at", "f.event_at")
             proof = (f"CASE WHEN {alias}.input_at = f.event_at THEN 'frame_filing' "
                      f"WHEN {known} THEN 'vendor_reconstructed' ELSE 'unproven' END")
+            # The owner links (R1e) of the price lines whose bars prove the basis: reconstructed identity.
+            links = _split_epochs.basis_links_sql(f"{alias}.input_at", "f.event_at")
             lineage.append(f"struct_pack(kind := 'split_basis', code := {quote(code)}, "
                            f"state := to_json(struct_pack(factor := {factor}, basis_known := {known}, "
-                           f"proof := {proof}, events := {events})))")
+                           f"proof := {proof}, events := {events}, links := {links})))")
         projections.extend([
             f'{value} AS "{code}"', f'{alias}.input_at AS "{code}__at"',
             f'{alias}.fiscal_period_start AS "{code}__start"',
