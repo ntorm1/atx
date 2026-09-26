@@ -5,6 +5,7 @@
 #include <numbers>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -12,8 +13,15 @@
 
 #include "atx/core/error.hpp"
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/parser.hpp"
+#include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/data/exposure_panel.hpp"
+#include "atx/engine/factory/factory.hpp"
+#include "atx/engine/factory/fitness.hpp"
 #include "atx/engine/factory/objective_ic.hpp"
+#include "atx/engine/factory/search_driver.hpp"
+#include "atx/engine/factory/search_progress.hpp"
 
 namespace {
 namespace fac = atx::engine::factory;
@@ -121,6 +129,46 @@ fac::ObjectiveIcConfig config() {
     cfg.allow_synthetic_exposures = true;
     cfg.min_names = 20; cfg.min_dates = 16;
     cfg.max_working_bytes = 32U * 1024U * 1024U;
+    return cfg;
+}
+
+Result<Fixture> consumer_fixture() {
+    ATX_TRY(auto f, fixture(320));
+    auto mixed = f.planted;
+    for (usize d = 0; d < f.panel.dates(); ++d) for (usize i = 0; i < kNames; ++i) {
+        const f64 theta = 2 * std::numbers::pi_v<f64> * static_cast<f64>(i) / static_cast<f64>(kNames);
+        mixed[d * kNames + i] += 8 * f.size_proxy[d * kNames + i] +
+            0.7 * std::sin(0.2 * static_cast<f64>(d)) * std::cos(10 * theta);
+    }
+    auto inverse = mixed;
+    for (auto &value : inverse) value = -value;
+    ATX_TRY(auto close_id, f.panel.field_id("close"));
+    const auto close = f.panel.field_all(close_id);
+    ATX_TRY(auto panel, atx::engine::alpha::Panel::create(f.panel.dates(), kNames,
+        {"close", "proxy", "mixed", "inverse"},
+        {std::vector<f64>(close.begin(), close.end()), f.size_proxy, std::move(mixed), std::move(inverse)}, {}));
+    f.panel = std::move(panel);
+    return f;
+}
+atx::engine::exec::ExecutionSimulator consumer_simulator() {
+    using namespace atx::engine::exec;
+    return ExecutionSimulator{FillCfg{}, SlippageCfg{SlippageMode::VolumeShare, 0, 0, 0, 0},
+        ImpactCfg{0, 0.5, 0}, CommissionCfg{CommissionMode::PerShare, 0, 0, 1, 0},
+        LatencyCfg{}, VolumeCapCfg{1}};
+}
+Result<fac::Genome> consumer_genome(std::string_view expression, const atx::engine::alpha::Library &library) {
+    ATX_TRY(auto ast, atx::engine::alpha::parse_expr(expression, library));
+    ATX_TRY(auto info, atx::engine::alpha::analyze(ast));
+    return fac::Genome{std::move(ast), std::move(info), 0};
+}
+fac::SearchConfig consumer_config(const fac::ResidualFitnessBinding &binding) {
+    fac::SearchConfig cfg;
+    cfg.master_seed = 71; cfg.population = 3; cfg.generations = 1;
+    cfg.elites = 1; cfg.k_tournament = 2; cfg.n_workers = 1;
+    cfg.seed_from_grammar = false;
+    cfg.objective_mode = fac::ObjectiveMode::ScalarRaw;
+    cfg.fitness.objective_rule = fac::FitnessObjectiveRule::ResidualHacIcV2;
+    cfg.fitness.residual_binding = &binding;
     return cfg;
 }
 } // namespace
@@ -316,4 +364,124 @@ TEST(FactoryResidualObjective, RefusesUnboundAxesSourceClocksScratchAndWorkingBu
     auto c = fac::prepare_objective_ic(f->panel, f->exposures, in, cfg); ASSERT_TRUE(c);
     fac::ObjectiveIcScratch empty;
     EXPECT_FALSE(fac::evaluate_objective_ic(f->planted, *c, empty));
+}
+
+TEST(FactoryResidualConsumer, ActualFitnessRanksResidualAndInverseWithoutInventingPnl) {
+    auto f = consumer_fixture(); ASSERT_TRUE(f) << f.error().message();
+    auto context = fac::prepare_objective_ic(f->panel, f->exposures, f->inputs(), config());
+    ASSERT_TRUE(context);
+    auto binding = fac::prepare_residual_fitness_binding(*context, f->panel); ASSERT_TRUE(binding);
+    auto cfg = consumer_config(*binding).fitness;
+    auto scratch = fac::prepare_objective_ic_scratch(*context); ASSERT_TRUE(scratch);
+    cfg.residual_scratch = &*scratch;
+    atx::engine::alpha::Library library;
+    atx::engine::combine::AlphaStore empty;
+    atx::engine::WeightPolicy policy;
+    const auto sim = consumer_simulator();
+    auto mixed = consumer_genome("mixed", library); ASSERT_TRUE(mixed);
+    auto inverse = consumer_genome("inverse", library); ASSERT_TRUE(inverse);
+    auto proxy = consumer_genome("proxy", library); ASSERT_TRUE(proxy);
+    const auto good = fac::pool_aware_fitness(*mixed, empty, f->panel, policy, sim, cfg);
+    const auto opposite = fac::pool_aware_fitness(*inverse, empty, f->panel, policy, sim, cfg);
+    const auto unavailable = fac::pool_aware_fitness(*proxy, empty, f->panel, policy, sim, cfg);
+    ASSERT_TRUE(good); ASSERT_TRUE(opposite); ASSERT_TRUE(unavailable);
+    ASSERT_TRUE(good->residual_available); ASSERT_TRUE(opposite->residual_available);
+    EXPECT_GT(good->raw, 0);
+    EXPECT_NEAR(good->raw, -opposite->raw, 1e-10);
+    EXPECT_FALSE(unavailable->residual_available);
+    EXPECT_EQ(unavailable->raw, fac::kRejectedRaw);
+    EXPECT_GT(opposite->raw, unavailable->raw); // meaningful negative beats missing
+    f64 expected = 0;
+    for (const auto &h : good->residual_ic.horizons) {
+        ASSERT_TRUE(h.inference_defined);
+        expected += h.hac_ir / 3;
+    }
+    EXPECT_DOUBLE_EQ(good->raw, expected);
+    EXPECT_TRUE(good->descriptor.empty());
+    EXPECT_TRUE(std::isnan(good->wq)); EXPECT_TRUE(std::isnan(good->dsr));
+    EXPECT_TRUE(std::isnan(good->turnover));
+    EXPECT_EQ(good->residual_ic.context_sha256, context->identity_sha256());
+}
+
+TEST(FactoryResidualConsumer, ActualSearchRetainsUnavailableTrialsAndWorkerInvariantScores) {
+    auto f = consumer_fixture(); ASSERT_TRUE(f);
+    auto recipe = config(); recipe.workers = 2;
+    auto context = fac::prepare_objective_ic(f->panel, f->exposures, f->inputs(), recipe); ASSERT_TRUE(context);
+    auto binding = fac::prepare_residual_fitness_binding(*context, f->panel); ASSERT_TRUE(binding);
+    auto cfg = consumer_config(*binding);
+    atx::engine::alpha::Library library;
+    atx::engine::combine::AlphaStore empty;
+    atx::engine::WeightPolicy policy;
+    const auto sim = consumer_simulator();
+    fac::SearchDriver driver{library, f->panel, policy, sim,
+        {"proxy", "mixed", "inverse"}, {"close", "proxy", "mixed", "inverse"}};
+    const auto one = driver.run(cfg, empty);
+    ASSERT_FALSE(one.residual_invalid) << one.residual_error;
+    cfg.n_workers = 2;
+    const auto two = driver.run(cfg, empty);
+    ASSERT_FALSE(two.residual_invalid) << two.residual_error;
+    EXPECT_EQ(one.digest, two.digest);
+    EXPECT_EQ(one.trial_count, 3U);
+    EXPECT_EQ(one.all_scored.size(), 3U);
+    ASSERT_EQ(one.residual_scores.size(), 3U);
+    ASSERT_EQ(two.residual_scores.size(), 3U);
+    ASSERT_EQ(one.residual_unavailable_hashes.size(), 1U);
+    EXPECT_EQ(one.admitted_candidates.size(), 2U);
+    EXPECT_EQ(one.ic_screen_evaluations, 0U);
+    for (usize i = 0; i < one.residual_scores.size(); ++i) {
+        EXPECT_EQ(one.residual_scores[i].canon_hash, two.residual_scores[i].canon_hash);
+        EXPECT_EQ(one.residual_scores[i].status, two.residual_scores[i].status);
+        EXPECT_EQ(one.residual_scores[i].score, two.residual_scores[i].score);
+    }
+    for (const auto &g : one.admitted_candidates)
+        EXPECT_NE(g.canon_hash, one.residual_unavailable_hashes.front());
+    std::vector<atx::u64> keys{one.residual_unavailable_hashes.front()};
+    std::vector<fac::CachedScore> scores{fac::residual_unavailable_score()};
+    const auto encoded = fac::serialize_cache(keys, scores);
+    std::vector<atx::u64> restored_keys;
+    std::vector<fac::CachedScore> restored_scores;
+    ASSERT_TRUE(fac::deserialize_cache(encoded, restored_keys, restored_scores));
+    ASSERT_EQ(restored_scores.size(), 1U);
+    EXPECT_EQ(restored_scores.front().origin, fac::ScoreOrigin::ResidualUnavailable);
+}
+
+TEST(FactoryResidualConsumer, RefusesRawScreenWrongBindingResumeAndLegacyAdmission) {
+    auto f = consumer_fixture(); ASSERT_TRUE(f);
+    auto context = fac::prepare_objective_ic(f->panel, f->exposures, f->inputs(), config()); ASSERT_TRUE(context);
+    auto binding = fac::prepare_residual_fitness_binding(*context, f->panel); ASSERT_TRUE(binding);
+    auto cfg = consumer_config(*binding);
+    atx::engine::alpha::Library library;
+    atx::engine::combine::AlphaStore empty;
+    atx::engine::WeightPolicy policy;
+    const auto sim = consumer_simulator();
+    fac::SearchDriver driver{library, f->panel, policy, sim, {"mixed"}, {"close", "mixed"}};
+    cfg.ic_screen = fac::equivalence_ic_screen_config();
+    const auto wrong_gate = driver.run(cfg, empty);
+    EXPECT_TRUE(wrong_gate.residual_invalid);
+    EXPECT_EQ(wrong_gate.trial_count, 0U);
+    cfg = consumer_config(*binding); cfg.fidelity.enabled = true;
+    EXPECT_TRUE(driver.run(cfg, empty).residual_invalid);
+    cfg = consumer_config(*binding); cfg.deflate_selection = true;
+    EXPECT_TRUE(driver.run(cfg, empty).residual_invalid);
+    cfg = consumer_config(*binding); cfg.fitness.residual_binding = nullptr;
+    EXPECT_TRUE(driver.run(cfg, empty).residual_invalid);
+    cfg = consumer_config(*binding); cfg.n_workers = 100000;
+    EXPECT_TRUE(driver.run(cfg, empty).residual_invalid); // refused before any thread launch
+    cfg = consumer_config(*binding); cfg.n_workers = 0;
+    EXPECT_TRUE(driver.run(cfg, empty).residual_invalid); // no implicit machine-size budget
+    cfg = consumer_config(*binding);
+    fac::SearchResumeState resume;
+    EXPECT_TRUE(driver.run(cfg, empty, nullptr, &resume).residual_invalid);
+    auto changed = fixture(320, 0, false, 0); ASSERT_TRUE(changed);
+    EXPECT_FALSE(fac::prepare_residual_fitness_binding(*context, changed->panel));
+    auto copy = f->panel; // matching bytes can rebind, but cannot reuse another object's binding
+    EXPECT_FALSE(binding->matches(copy));
+    EXPECT_TRUE(fac::prepare_residual_fitness_binding(*context, copy));
+    fac::Factory factory{library, f->panel, sim, policy};
+    fac::FactoryConfig fc;
+    fc.search = cfg;
+    const auto refused = factory.mine(fc, empty, atx::engine::combine::AlphaGate{});
+    EXPECT_TRUE(refused.residual_invalid);
+    EXPECT_EQ(refused.evaluated, 0U);
+    EXPECT_EQ(empty.n_alphas(), 0U);
 }
