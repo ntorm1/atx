@@ -268,6 +268,8 @@ add_executable(atx-engine-w1-foundation-tests EXCLUDE_FROM_ALL
     combine/combine_ic_cache_test.cpp
     combine/combine_signal_combiner_test.cpp
     combine/combine_walk_forward_test.cpp)
+set_property(SOURCE combine/combine_signal_cube_test.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
+    "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
 atx_engine_test_compile_environment(atx-engine-w1-foundation-tests)
 target_link_libraries(atx-engine-w1-foundation-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)

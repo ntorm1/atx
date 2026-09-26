@@ -34,7 +34,7 @@ struct Scratch {
   // Binding prevents accidental reuse with a different window/configuration.
   std::shared_ptr<const Cache> cache;
   std::vector<atx::f64> x, y, xr, yr, influence;
-  std::vector<atx::usize> order;
+  std::vector<atx::usize> order, ranked_names;
   std::array<std::vector<atx::f64>, 4> pearson, rank;
 };
 } // namespace ic_screen_detail
@@ -222,26 +222,37 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
 void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
                   std::span<const f64> cached_ranks, usize cached_names,
                   usize eligible, const IcScreenConfig& cfg, Scratch& scratch,
+                  usize& ranked_count,
                   f64& pearson, f64& rank) noexcept {
   pearson = kNan; rank = kNan;
   if (cached_names < cfg.min_names ||
       static_cast<f64>(cached_names) < kMinCoverage * static_cast<f64>(eligible)) return;
   usize count = 0;
+  bool same_names = true;
   for (usize i = 0; i < signal.size(); ++i) {
     if (std::isfinite(signal[i]) && std::isfinite(labels[i])) {
+      same_names = same_names && count < ranked_count && scratch.ranked_names[count] == i;
+      scratch.ranked_names[count] = i;
       scratch.x[count] = signal[i]; scratch.y[count] = labels[i];
       scratch.yr[count] = cached_ranks[i]; ++count;
     }
   }
   if (count < cfg.min_names ||
       static_cast<f64>(count) < kMinCoverage * static_cast<f64>(cached_names) ||
-      static_cast<f64>(count) < kMinCoverage * static_cast<f64>(eligible)) return;
+      static_cast<f64>(count) < kMinCoverage * static_cast<f64>(eligible)) {
+    ranked_count = 0U;
+    return;
+  }
   const auto x = std::span{scratch.x}.first(count);
   const auto y = std::span{scratch.y}.first(count);
   auto xr = std::span{scratch.xr}.first(count);
   auto yr = std::span{scratch.yr}.first(count);
   pearson = correlation(x, y);
-  rank_values(x, xr, scratch.order);
+  // The date-outer caller keeps signal values fixed. Reuse exact tied ranks
+  // only when the ordered paired instrument IDs also match. Equal counts
+  // alone are insufficient when missing labels differ across horizons.
+  if (!same_names || count != ranked_count) rank_values(x, xr, scratch.order);
+  ranked_count = count;
   if (count != cached_names) {
     // Cached ranks preserve ordering/ties but their gaps are invalid on a
     // candidate-specific subset. Re-rank that subset for exact Spearman.
@@ -324,7 +335,7 @@ atx::core::Result<IcScreenScratch> prepare_ic_screen_scratch(const IcScreenCache
   if (!cache.data_) return Err(ErrorCode::InvalidArgument, "IC screen: unprepared cache");
   atx::u64 bytes = sizeof(Scratch);
   if (cache.data_->config.rule != IcScreenRule::DisabledV1) {
-    if (!checked_add_bytes(bytes, cache.data_->instruments, 4U * sizeof(f64) + sizeof(usize)) ||
+    if (!checked_add_bytes(bytes, cache.data_->instruments, 4U * sizeof(f64) + 2U * sizeof(usize)) ||
         !checked_add_bytes(bytes, cache.data_->rows, sizeof(f64)))
       return Err(ErrorCode::InvalidArgument, "IC screen: scratch size overflow");
     for (const usize rows : cache.data_->active)
@@ -340,6 +351,7 @@ atx::core::Result<IcScreenScratch> prepare_ic_screen_scratch(const IcScreenCache
   if (s.cache->config.rule == IcScreenRule::DisabledV1) return Ok(std::move(result));
   const usize n = s.cache->instruments;
   s.x.resize(n); s.y.resize(n); s.xr.resize(n); s.yr.resize(n); s.order.resize(n);
+  s.ranked_names.resize(n);
   s.influence.resize(s.cache->rows);
   for (usize k = 0; k < s.pearson.size(); ++k) {
     s.pearson[k].resize(s.cache->active[k]); s.rank[k].resize(s.cache->active[k]);
@@ -377,13 +389,17 @@ atx::core::Result<IcScreenResult> screen_ic(std::span<const f64> signal,
   if (signal.size() != data.dates * data.instruments)
     return Err(ErrorCode::InvalidArgument, "IC screen: signal shape mismatch");
   auto& s = *scratch.data_;
-  for (usize k = 0; k < cfg.horizons.size(); ++k) {
-    for (usize row = 0; row < data.active[k]; ++row) {
+  for (usize row = 0; row < data.active.front(); ++row) {
+    usize ranked_count = 0U;
+    for (usize k = 0; k < cfg.horizons.size(); ++k) {
+      if (row >= data.active[k]) continue;
       const usize n = data.instruments, d = cfg.window_begin + row;
       evaluate_row(signal.subspan(d * n, n), std::span{data.labels[k]}.subspan(row * n, n),
                    std::span{data.ranks[k]}.subspan(row * n, n), data.names[k][row],
-                   data.eligible[row], cfg, s, s.pearson[k][row], s.rank[k][row]);
+                   data.eligible[row], cfg, s, ranked_count, s.pearson[k][row], s.rank[k][row]);
     }
+  }
+  for (usize k = 0; k < cfg.horizons.size(); ++k) {
     auto& h = out.horizons[k]; h.horizon = cfg.horizons[k];
     h.pearson = estimate(s.pearson[k], h.horizon, cfg, s.influence);
     h.rank = estimate(s.rank[k], h.horizon, cfg, s.influence);

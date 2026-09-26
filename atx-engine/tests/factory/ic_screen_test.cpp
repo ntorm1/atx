@@ -194,6 +194,35 @@ TEST(IcScreen, SimdMatchesIndependentPairwiseOracleWithTiesMissingAndTails) {
   }
 }
 
+TEST(IcScreen, SharedDateRanksHandleEqualCountDifferentNamesAndScratchReuse) {
+  constexpr usize dates = 24, names = 35;
+  auto raw = prices(dates, names, true);
+  // Each horizon has the same pair count but a different missing exit name.
+  for (usize d = 0; d < dates; ++d) raw[d * names + (7U * d) % names] = nan;
+  auto p = panel(dates, names, std::move(raw)); ASSERT_TRUE(p);
+  auto cache = prepare_ic_screen(*p, small_config()); ASSERT_TRUE(cache);
+  auto scratch = prepare_ic_screen_scratch(*cache); ASSERT_TRUE(scratch);
+  std::vector<f64> signal(dates * names);
+  for (usize pass = 0; pass < 2U; ++pass) {
+    for (usize d = 0; d < dates; ++d) for (usize i = 0; i < names; ++i)
+      signal[d * names + i] = static_cast<f64>((i * (pass + 1U) + 3U * d) % 9U);
+    ASSERT_TRUE(screen_ic(signal, *cache, *scratch));
+    for (usize h = 0; h < 4U; ++h) {
+      const auto labels = cache->returns(h);
+      const auto actual = scratch->rank_series(h);
+      for (usize d = 0; d < actual.size(); ++d) {
+        std::vector<f64> x, y;
+        for (usize i = 0; i < names; ++i) if (std::isfinite(labels[d * names + i])) {
+          x.push_back(signal[d * names + i]); y.push_back(labels[d * names + i]);
+        }
+        ASSERT_EQ(x.size(), names - 2U);
+        EXPECT_NEAR(actual[d], reference_corr(reference_ranks(x), reference_ranks(y)), 2e-13)
+            << "pass=" << pass << " h=" << h << " d=" << d;
+      }
+    }
+  }
+}
+
 TEST(IcScreen, DelayedMatureLabelsUseDecisionMembershipAndReturnGuardOnly) {
   constexpr usize dates = 20, names = 9;
   auto raw = prices(dates, names);

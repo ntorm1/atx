@@ -139,6 +139,11 @@ add_library(atx-engine ${ATX_LIB_TYPE}
 )
 add_library(atx::engine ALIAS atx-engine)
 
+# JSON is private to the cube manifest implementation. Keep its include path
+# source-local so adding this dependency does not invalidate every engine TU/PCH.
+set_property(SOURCE src/combine/signal_cube.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
+    "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
+
 target_include_directories(atx-engine
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
