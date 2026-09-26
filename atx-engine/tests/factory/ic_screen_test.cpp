@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <span>
 #include <string>
@@ -308,5 +309,172 @@ TEST(IcScreen, StrictMonotoneTransformPreservesRankPathAndDecision) {
     ASSERT_EQ(rank[h].size(), scratch->rank_series(h).size());
     EXPECT_EQ(std::memcmp(rank[h].data(), scratch->rank_series(h).data(), rank[h].size() * sizeof(f64)), 0);
   }
+}
+
+class CohortRng {
+public:
+  explicit CohortRng(atx::u64 seed) : state_{seed} {}
+  f64 normal() {
+    const f64 u = (static_cast<f64>(next() >> 11U) + 0.5) * 0x1.0p-53;
+    const f64 v = (static_cast<f64>(next() >> 11U) + 0.5) * 0x1.0p-53;
+    return std::sqrt(-2.0 * std::log(u)) * std::cos(6.283185307179586 * v);
+  }
+private:
+  atx::u64 next() {
+    atx::u64 x = (state_ += 0x9e3779b97f4a7c15ULL);
+    x = (x ^ (x >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27U)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31U);
+  }
+  atx::u64 state_;
+};
+
+std::vector<f64> stochastic_prices(usize dates, usize names) {
+  CohortRng rng{0x194902U};
+  std::vector<f64> close(dates * names, 100.0);
+  for (usize d = 1; d < dates; ++d) {
+    const f64 market = 0.003 * rng.normal();
+    for (usize i = 0; i < names; ++i)
+      close[d * names + i] = close[(d - 1U) * names + i] * std::exp(market + 0.01 * rng.normal());
+  }
+  return close;
+}
+
+f64 scalar_dot(std::span<const f64> x, std::span<const f64> y) {
+  f64 value = 0.0;
+  for (usize i = 0; i < x.size(); ++i) value += x[i] * y[i];
+  return value;
+}
+
+void center_unit(std::span<f64> x) {
+  f64 mean = 0.0;
+  for (const f64 v : x) mean += v;
+  mean /= static_cast<f64>(x.size());
+  for (auto& v : x) v -= mean;
+  const f64 scale = std::sqrt(scalar_dot(x, x));
+  for (auto& v : x) v /= scale;
+}
+
+struct NoisySignal {
+  std::vector<f64> values;
+  f64 max_other_effect_projection{};
+};
+
+// The injected component is orthogonal to every other AVAILABLE horizon's
+// return vector. Independent Gaussian signal noise is NOT orthogonalized or
+// rescaled to force a sample IC: .002/.005 cases have low expected t at this
+// sample size, unlike the separate precise algebraic fixtures above.
+NoisySignal noisy_signal(const IcScreenCache& cache, usize target_horizon,
+                         f64 effect, atx::u64 seed, bool regime = false) {
+  const usize n = cache.instruments(), dates = cache.dates();
+  const auto labels = cache.returns(target_horizon);
+  const usize active = labels.size() / n;
+  CohortRng rng{seed};
+  NoisySignal out;
+  out.values.resize(dates * n);
+  for (auto& v : out.values) v = rng.normal();
+  if (effect == 0.0 && !regime) return out;
+  std::array<std::vector<f64>, 3> basis;
+  for (auto& b : basis) b.resize(n);
+  std::vector<f64> target(n), residual(n), original_other(n);
+  for (usize d = 0; d < active; ++d) {
+    const auto target_row = labels.subspan(d * n, n);
+    std::copy(target_row.begin(), target_row.end(), target.begin());
+    center_unit(target);
+    usize used = 0;
+    for (usize h = 0; h < 4U; ++h) {
+      const auto other = cache.returns(h);
+      if (h == target_horizon || d >= other.size() / n) continue;
+      auto& b = basis[used];
+      std::copy_n(other.begin() + static_cast<std::ptrdiff_t>(d * n), n, b.begin());
+      center_unit(b);
+      for (usize j = 0; j < used; ++j) {
+        const f64 projection = scalar_dot(b, basis[j]);
+        for (usize i = 0; i < n; ++i) b[i] -= projection * basis[j][i];
+      }
+      center_unit(b); ++used;
+    }
+    residual = target;
+    for (usize j = 0; j < used; ++j) {
+      const f64 projection = scalar_dot(residual, basis[j]);
+      for (usize i = 0; i < n; ++i) residual[i] -= projection * basis[j][i];
+    }
+    center_unit(residual);
+    const f64 target_projection = scalar_dot(residual, target);
+    for (usize h = 0; h < 4U; ++h) {
+      const auto other = cache.returns(h);
+      if (h == target_horizon || d >= other.size() / n) continue;
+      std::copy_n(other.begin() + static_cast<std::ptrdiff_t>(d * n), n, original_other.begin());
+      center_unit(original_other);
+      out.max_other_effect_projection = std::max(out.max_other_effect_projection,
+                                                  std::abs(scalar_dot(residual, original_other)));
+    }
+    const f64 rho = regime ? (d < active / 4U ? 0.06 : -0.02) : effect;
+    const f64 coefficient = rho / target_projection;
+    if (!std::isfinite(coefficient) || std::abs(coefficient) >= 0.9) return {};
+    for (usize i = 0; i < n; ++i)
+      out.values[d * n + i] = std::sqrt(1.0 - coefficient * coefficient) * out.values[d * n + i] +
+                              coefficient * std::sqrt(static_cast<f64>(n)) * residual[i];
+  }
+  return out;
+}
+
+TEST(IcScreen, BoundedNoisyDistinctHorizonQualificationReportsActualCohorts) {
+  constexpr usize dates = 512, names = 96;
+  auto p = panel(dates, names, stochastic_prices(dates, names)); ASSERT_TRUE(p);
+  IcScreenConfig cfg; cfg.rule = IcScreenRule::ConservativeV2;
+  auto cache = prepare_ic_screen(*p, cfg); ASSERT_TRUE(cache);
+  auto scratch = prepare_ic_screen_scratch(*cache); ASSERT_TRUE(scratch);
+  // Stochastic increments remove the common ordering shared by the old smooth
+  // exponential fixture. Injected effects also remove cross-horizon loadings.
+  EXPECT_LT(std::abs(reference_corr(cache->returns(0).first(names), cache->returns(3).first(names))), 0.99);
+  usize null_total = 0, null_rejected = 0, effect_total = 0, effect_retained = 0;
+  std::cout << "ic-screen-cohort,synthetic-only,not-general-recall,dates=512,names=96,floor="
+            << cfg.practical_abs_ic << ",confidence=" << cfg.confidence_multiplier << '\n';
+  const auto qualify = [&](std::string_view kind, usize h, f64 effect, atx::u64 seed,
+                           bool regime, bool inverse) {
+    auto signal = noisy_signal(*cache, h, effect, seed, regime);
+    EXPECT_EQ(signal.values.size(), dates * names);
+    EXPECT_LT(signal.max_other_effect_projection, 1e-11);
+    if (signal.values.size() != dates * names) return;
+    if (inverse) for (auto& v : signal.values) v = -v;
+    const auto result = screen_ic(signal.values, *cache, *scratch);
+    EXPECT_TRUE(result.has_value()); if (!result) return;
+    EXPECT_TRUE(result->enough_evidence); // a pass must not be vacuous/short
+    if (kind == "null") { ++null_total; null_rejected += result->reject ? 1U : 0U; }
+    else { ++effect_total; effect_retained += result->reject ? 0U : 1U; }
+    const auto& measured = result->horizons[h].pearson;
+    std::cout << "ic-screen-cohort," << kind << ",h=" << cfg.horizons[h]
+              << ",effect=" << effect * (inverse ? -1.0 : 1.0) << ",seed=" << seed
+              << ",reject=" << result->reject << ",mean=" << measured.mean
+              << ",hac_se=" << measured.standard_error << ",bound=" << measured.upper_abs_ic << '\n';
+  };
+  for (atx::u64 seed = 1; seed <= 6; ++seed) qualify("null", 3, 0.0, 700U + seed, false, false);
+  for (usize h = 0; h < 4U; ++h) {
+    qualify("weak", h, 0.002, 810U + static_cast<atx::u64>(h), false, false);
+    qualify("weak", h, 0.005, 820U + static_cast<atx::u64>(h), false, false);
+    qualify("inverse", h, 0.005, 820U + static_cast<atx::u64>(h), false, true);
+    qualify("regime", h, 0.0, 830U + static_cast<atx::u64>(h), true, false);
+  }
+  qualify("positive", 3, 0.01, 840U, false, false);
+  qualify("positive", 3, 0.02, 841U, false, false);
+  EXPECT_EQ(null_total, 6U); EXPECT_EQ(effect_total, 18U);
+  std::cout << "ic-screen-cohort,totals,null_rejected=" << null_rejected << '/' << null_total
+            << ",effect_retained=" << effect_retained << '/' << effect_total << '\n';
+  // Counts above are measurements to review, not a tuned recall/rejection gate.
+  // Paired inverse/regime cases share data; these are not independent estimates
+  // of population recall. No throughput claim is inferred from this test.
+  auto monotone = noisy_signal(*cache, 3, 0.005, 920U);
+  ASSERT_EQ(monotone.values.size(), dates * names);
+  ASSERT_TRUE(screen_ic(monotone.values, *cache, *scratch));
+  std::vector<f64> ranks(scratch->rank_series(3).begin(), scratch->rank_series(3).end());
+  for (auto& v : monotone.values) v = std::exp(0.4 * v);
+  ASSERT_TRUE(screen_ic(monotone.values, *cache, *scratch));
+  EXPECT_EQ(std::memcmp(ranks.data(), scratch->rank_series(3).data(), ranks.size() * sizeof(f64)), 0);
+  auto short_cfg = cfg; short_cfg.maturity_end = 198;
+  auto short_cache = prepare_ic_screen(*p, short_cfg); ASSERT_TRUE(short_cache);
+  auto short_scratch = prepare_ic_screen_scratch(*short_cache); ASSERT_TRUE(short_scratch);
+  const auto short_result = screen_ic(monotone.values, *short_cache, *short_scratch); ASSERT_TRUE(short_result);
+  EXPECT_FALSE(short_result->reject); EXPECT_EQ(short_result->reason, IcScreenReason::InsufficientEvidence);
 }
 } // namespace
