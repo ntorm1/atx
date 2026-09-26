@@ -1542,6 +1542,22 @@ private:
     const bool sum_op = (in.op == OpCode::TsSum || in.op == OpCode::TsMean);
     const bool legacy_sum = policy_.ts_sum == TsSumPath::OnlineV1;
     const bool windowed_sum = sum_op && !legacy_sum && mode_ == EvalMode::AuditExact;
+    if (sum_op && !legacy_sum && mode_ == EvalMode::ResearchFast) {
+      const atx::usize width = j1 - j0;
+      const atx::usize tiles = width / detail::kTsInstrumentTile +
+                              static_cast<atx::usize>(width % detail::kTsInstrumentTile != 0);
+      const auto tile = [&](atx::usize i) {
+        const atx::usize begin = j0 + i * detail::kTsInstrumentTile;
+        const atx::usize end = begin + std::min(detail::kTsInstrumentTile, j1 - begin);
+        detail::ts_sum_tile(in.op, x, out, dates, instruments, d, begin, end);
+      };
+      if (ts_pool_ != nullptr && tiles > 1) {
+        ts_pool_->parallel_for(tiles, [&](atx::usize i, atx::usize) { tile(i); });
+      } else {
+        for (atx::usize i = 0; i < tiles; ++i) tile(i);
+      }
+      return atx::core::Ok();
+    }
     if (detail::ts_is_online_op(in.op) && !windowed_sum) {
       const bool extreme =
           (in.op == OpCode::TsMin || in.op == OpCode::TsMax || in.op == OpCode::TsScale);

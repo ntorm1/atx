@@ -10,6 +10,7 @@
 
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/parallel/det_pool.hpp"
 #include "atx/engine/alpha/vm.hpp"
 
 namespace atxtest_alpha_ts_date_major {
@@ -91,5 +92,47 @@ TEST(AlphaTsDateMajor_Lookback, BlockOverlapCopiesBeforeWarmupAndPartialOverlapR
   EXPECT_FALSE(engine.execute_range(in, slots, 0, names));
   for (atx::usize i = 0; i < cells; ++i)
     EXPECT_EQ(std::bit_cast<atx::u64>(x[i]), std::bit_cast<atx::u64>(before[i]));
+}
+
+TEST(AlphaTsDateMajor_Sum, TiledSimdAndWorkerCutsMatchScalarCompensatedStateBits) {
+  constexpr atx::usize dates = 73, names = 133, cells = dates * names;
+  std::vector<atx::f64> x(cells);
+  for (atx::usize i = 0; i < cells; ++i)
+    x[i] = (i % 7 == 0 ? -1.0 : 1.0) * (1.0e8 + static_cast<atx::f64>(i % 43) / 32.0);
+  x[10 * names + 2] = std::numeric_limits<atx::f64>::quiet_NaN();
+  x[12 * names + 64] = std::numeric_limits<atx::f64>::infinity();
+  x[13 * names + 132] = -std::numeric_limits<atx::f64>::infinity();
+  auto panel = Panel::create(dates, names, {"close"}, {x}, {});
+  ASSERT_TRUE(panel);
+  atx::engine::parallel::DetPool pool{2};
+  Engine engine{*panel};
+  engine.set_eval_mode(EvalMode::ResearchFast);
+  for (const OpCode op : {OpCode::TsSum, OpCode::TsMean}) {
+    for (const atx::usize d : {atx::usize{1}, atx::usize{17}, dates + 1}) {
+      std::vector<atx::f64> expected(cells), actual(cells), cut(cells);
+      std::vector<atx::f64> window(cells, static_cast<atx::f64>(d));
+      for (atx::usize j = 0; j < names; ++j)
+        detail::ts_online_sum_family(op, x, expected, dates, j, d, names, true);
+      Instr in{};
+      in.op = op;
+      in.src[0] = 0;
+      in.src[1] = 1;
+      in.dst = 2;
+      std::array<ExtSlot, 3> slots{{{x.data(), nullptr, cells},
+                                  {window.data(), nullptr, cells},
+                                  {actual.data(), actual.data(), cells}}};
+      engine.set_ts_pool(&pool);
+      ASSERT_TRUE(engine.execute_range(in, slots, 0, names));
+      slots[2] = {cut.data(), cut.data(), cells};
+      engine.set_ts_pool(nullptr);
+      ASSERT_TRUE(engine.execute_range(in, slots, 0, 3));
+      ASSERT_TRUE(engine.execute_range(in, slots, 3, 69));
+      ASSERT_TRUE(engine.execute_range(in, slots, 69, names));
+      for (atx::usize i = 0; i < cells; ++i) {
+        ASSERT_EQ(std::bit_cast<atx::u64>(actual[i]), std::bit_cast<atx::u64>(expected[i])) << i;
+        ASSERT_EQ(std::bit_cast<atx::u64>(cut[i]), std::bit_cast<atx::u64>(expected[i])) << i;
+      }
+    }
+  }
 }
 } // namespace atxtest_alpha_ts_date_major

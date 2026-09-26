@@ -74,6 +74,8 @@
 #include <span>
 #include <vector>
 
+#include <xsimd/xsimd.hpp>
+
 #include "atx/core/macro.hpp"
 #include "atx/core/types.hpp"
 
@@ -520,6 +522,81 @@ struct TsvRunSum {
   }
   [[nodiscard]] atx::f64 sum() const noexcept { return sx + cx; }
 };
+
+inline constexpr atx::usize kTsInstrumentTile = 64;
+
+// A date-major tile of the SAME compensated state machine as TsvRunSum.
+// SIMD lanes are independent instruments: no horizontal reduction or changed
+// add/remove ordering. Scratch is bounded (3*64 doubles) and invocation-local,
+// so tiles may run on distinct workers without allocation or shared mutation.
+inline void ts_sum_tile(OpCode op, std::span<const atx::f64> x,
+                        std::span<atx::f64> out, atx::usize dates,
+                        atx::usize instruments, atx::usize d,
+                        atx::usize begin, atx::usize end) noexcept {
+  ATX_ASSERT(begin <= end && end <= instruments && end - begin <= kTsInstrumentTile);
+  // A manually assembled instruction may exceed the DSL's bounded window.
+  // Keep integer missing counts exact even for that theoretical geometry.
+  if (static_cast<atx::f64>(d) >= 0x1p53) {
+    for (atx::usize j = begin; j < end; ++j) {
+      TsvRunSum state;
+      for (atx::usize t = 0; t < dates; ++t) {
+        state.enter(x[t * instruments + j]);
+        if (t >= d) state.leave(x[(t - d) * instruments + j]);
+        out[t * instruments + j] = t + 1 < d || state.nan_cnt != 0 ? kTsNaN
+            : op == OpCode::TsSum ? state.sum() : state.sum() / static_cast<atx::f64>(d);
+      }
+    }
+    return;
+  }
+  using Batch = xsimd::batch<atx::f64>;
+  std::array<atx::f64, kTsInstrumentTile> sums{};
+  std::array<atx::f64, kTsInstrumentTile> corrections{};
+  // At most d+1 entering/live missing cells; the guard above guarantees exact
+  // integer representation even for manually assembled (non-DSL) instructions.
+  std::array<atx::f64, kTsInstrumentTile> missing{};
+  const atx::usize width = end - begin;
+  const atx::f64 nf = static_cast<atx::f64>(d);
+  for (atx::usize t = 0; t < dates; ++t) {
+    const atx::f64 *const row = x.data() + t * instruments + begin;
+    atx::f64 *const dst = out.data() + t * instruments + begin;
+    atx::usize j = 0;
+    for (; width - j >= Batch::size; j += Batch::size) {
+      Batch sum = Batch::load_unaligned(sums.data() + j);
+      Batch correction = Batch::load_unaligned(corrections.data() + j);
+      Batch miss = Batch::load_unaligned(missing.data() + j);
+      const auto add = [&](Batch value, bool leaving) {
+        const auto finite = xsimd::isfinite(value);
+        const Batch v = leaving ? -value : value;
+        const Batch next = sum + v;
+        const Batch residual = xsimd::select(xsimd::abs(sum) >= xsimd::abs(v),
+                                             (sum - next) + v, (v - next) + sum);
+        correction = xsimd::select(finite, correction + residual, correction);
+        sum = xsimd::select(finite, next, sum);
+        const Batch bad = xsimd::select(finite, Batch{0.0}, Batch{1.0});
+        miss = leaving ? miss - bad : miss + bad;
+      };
+      add(Batch::load_unaligned(row + j), false);
+      if (t >= d) add(Batch::load_unaligned(x.data() + (t - d) * instruments + begin + j), true);
+      sum.store_unaligned(sums.data() + j);
+      correction.store_unaligned(corrections.data() + j);
+      miss.store_unaligned(missing.data() + j);
+      const Batch value = op == OpCode::TsSum ? sum + correction : (sum + correction) / Batch{nf};
+      const Batch result = t + 1 < d ? Batch{kTsNaN}
+          : xsimd::select(miss == Batch{0.0}, value, Batch{kTsNaN});
+      result.store_unaligned(dst + j);
+    }
+    for (; j < width; ++j) {
+      TsvRunSum state{sums[j], corrections[j], static_cast<atx::usize>(missing[j])};
+      state.enter(row[j]);
+      if (t >= d) state.leave(x[(t - d) * instruments + begin + j]);
+      sums[j] = state.sx;
+      corrections[j] = state.cx;
+      missing[j] = static_cast<atx::f64>(state.nan_cnt);
+      dst[j] = t + 1 < d || state.nan_cnt != 0 ? kTsNaN
+          : op == OpCode::TsSum ? state.sum() : state.sum() / nf;
+    }
+  }
+}
 
 // `compensated` selects the ResearchFast Neumaier slide (TsvRunSum, the W0-A0
 // default) or the legacy uncompensated slide (TsSumPath::OnlineV1).
