@@ -418,7 +418,7 @@ Result<PanelSourceProvenance> validate_panel_sources(
                 ATX_TRY(auto explicit_prep, validate_preparation(preparation_manifest, input));
                 if (explicit_prep.preparation_sha256 != prep_sha ||
                     explicit_prep.original_source_sha256 != original_sha ||
-                    explicit_prep.preparation_policy != prep.at("policy_version")) {
+                    explicit_prep.preparation_policy != prep.at("policy_version").get<std::string>()) {
                     return Err(ErrorCode::InvalidArgument, "panel: preparation manifest mismatch");
                 }
             }
