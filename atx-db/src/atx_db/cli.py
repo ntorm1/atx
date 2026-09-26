@@ -61,6 +61,12 @@ from .xbrl_taxonomy_packages import (
     capture_xbrl_taxonomy_packages,
 )
 
+#: Default DuckDB budget of the analytical commands: the set-based pass of the index §4 budget table
+#: (DuckDB 512MB, 1 thread inside a 1.0 GiB guard job). The memory guard refuses jobs above
+#: 1.0 GiB (ruling C-65), so a command that needs more is sliced, never given a bigger default.
+ANALYTICAL_MEMORY_LIMIT = "512MB"
+ANALYTICAL_THREADS = 1
+
 
 def _json(value: Any) -> None:
     print(json.dumps(value, default=str, sort_keys=True))
@@ -183,8 +189,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     standardized.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     standardized.add_argument("--symbol", action="append", dest="symbols")
-    standardized.add_argument("--memory-limit", default="8GB")
-    standardized.add_argument("--threads", type=int, default=4)
+    standardized.add_argument("--memory-limit", default=ANALYTICAL_MEMORY_LIMIT)
+    standardized.add_argument("--threads", type=int, default=ANALYTICAL_THREADS)
     standardized.add_argument("--run-id")
 
     reconciliation = commands.add_parser(
@@ -193,8 +199,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reconciliation.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     reconciliation.add_argument("--symbol", action="append", dest="symbols")
-    reconciliation.add_argument("--memory-limit", default="8GB")
-    reconciliation.add_argument("--threads", type=int, default=4)
+    reconciliation.add_argument("--memory-limit", default=ANALYTICAL_MEMORY_LIMIT)
+    reconciliation.add_argument("--threads", type=int, default=ANALYTICAL_THREADS)
     reconciliation.add_argument("--run-id")
 
     context_queue = commands.add_parser(
@@ -343,8 +349,8 @@ def _build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--minimum-history-quarters", type=int, default=24)
     refresh.add_argument("--spike-zscore", type=float, default=2.0)
     refresh.add_argument("--zero-variance-zscore", type=float, default=10.0)
-    refresh.add_argument("--memory-limit", default="4GB")
-    refresh.add_argument("--threads", type=int, default=4)
+    refresh.add_argument("--memory-limit", default=ANALYTICAL_MEMORY_LIMIT)
+    refresh.add_argument("--threads", type=int, default=ANALYTICAL_THREADS)
     refresh.add_argument(
         "--skip-effective-positions",
         action="store_true",
@@ -360,8 +366,8 @@ def _build_parser() -> argparse.ArgumentParser:
     signals.add_argument("--end", type=dt.date.fromisoformat)
     signals.add_argument("--minimum-distinct-filers", type=int, default=3)
     signals.add_argument("--stress-zscore", type=float, default=1.5)
-    signals.add_argument("--memory-limit", default="4GB")
-    signals.add_argument("--threads", type=int, default=4)
+    signals.add_argument("--memory-limit", default=ANALYTICAL_MEMORY_LIMIT)
+    signals.add_argument("--threads", type=int, default=ANALYTICAL_THREADS)
     signals.add_argument("--run-id")
 
     mapping = commands.add_parser("map-13f-signal-instruments", help="Map consensus-signal CUSIPs through OpenFIGI v3")
@@ -412,8 +418,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     broad_bars.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     broad_bars.add_argument("--tsv-path", type=Path, required=True)
-    broad_bars.add_argument("--memory-limit", default="4GB")
-    broad_bars.add_argument("--threads", type=int, default=4)
+    broad_bars.add_argument("--memory-limit", default=ANALYTICAL_MEMORY_LIMIT)
+    broad_bars.add_argument("--threads", type=int, default=ANALYTICAL_THREADS)
     broad_bars.add_argument("--run-id")
 
     activate = commands.add_parser(
@@ -430,8 +436,8 @@ def _build_parser() -> argparse.ArgumentParser:
     release.add_argument("--release-id", required=True)
     release.add_argument("--out-dir", type=Path, required=True)
     release.add_argument("--previous-dir", type=Path)
-    release.add_argument("--memory-limit", default="1GB")
-    release.add_argument("--threads", type=int, default=1)
+    release.add_argument("--memory-limit", default=ANALYTICAL_MEMORY_LIMIT)
+    release.add_argument("--threads", type=int, default=ANALYTICAL_THREADS)
     release.add_argument("--run-id")
     return parser
 

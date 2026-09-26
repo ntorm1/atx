@@ -6,7 +6,7 @@ import pytest
 @pytest.mark.parametrize(
     ("resource_args", "expected_memory_limit", "expected_settings"),
     [
-        ([], "1GB", ("953.6 MiB", 1, False)),
+        ([], "512MB", ("488.2 MiB", 1, False)),
         (["--memory-limit", "512MB", "--threads", "2"], "512MB", ("488.2 MiB", 2, False)),
     ],
     ids=["defaults", "override"],

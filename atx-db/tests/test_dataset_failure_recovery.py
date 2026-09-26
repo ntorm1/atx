@@ -44,14 +44,18 @@ class _FatalDataset(Dataset):
 def test_dataset_run_records_failure_after_invalidated_connection(tmp_path, monkeypatch):
     path = tmp_path / "dataset-failure.duckdb"
     events = []
+    opens = []
     configs = []
     original = duckdb.FatalException("original COMMIT failure: query memory exhausted")
     real_connect = duckdb.connect
 
     def connect_spy(*args, **kwargs):
-        if "config" in kwargs:
+        # Every store connect is bounded now; the recovery reopen is the one after the raw close.
+        if "raw_close" in events:
             events.append("bounded_reopen")
-            configs.append(kwargs["config"])
+            configs.append(kwargs.get("config"))
+        else:
+            opens.append(kwargs.get("config"))
         return real_connect(*args, **kwargs)
 
     def initialize(store):
@@ -80,10 +84,12 @@ def test_dataset_run_records_failure_after_invalidated_connection(tmp_path, monk
     assert events.count("invalidated_execute") == 1
     assert events.count("raw_close") == 1
     assert events.index("raw_close") < events.index("bounded_reopen")
-    assert len(configs) == 1
-    assert configs[0]["memory_limit"] == "128MB"
-    assert configs[0]["threads"] == "1"
-    assert configs[0]["preserve_insertion_order"] == "false"
+    spill = str(store.temp_directory)
+    # The first open carries the store's default budget; the recovery reopen the recorded analytical one.
+    assert opens == [{"memory_limit": "384MB", "threads": 1, "preserve_insertion_order": False,
+                      "temp_directory": spill, "max_temp_directory_size": "40GB"}]
+    assert configs == [{"memory_limit": "128MB", "threads": 1, "preserve_insertion_order": False,
+                        "temp_directory": spill, "max_temp_directory_size": "40GB"}]
 
     with real_connect(str(path), config={"memory_limit": "128MB", "threads": "1"}) as con:
         status, finished_at, error_message, rows_loaded = con.execute(

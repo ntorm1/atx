@@ -10,7 +10,7 @@ import pytest
 
 from atx_db import activation
 from atx_db import ticker_history_bulk as bulk
-from atx_db.connection import DuckDBStore
+from atx_db.connection import DuckDBStore, private_temp_directory
 
 
 class InvalidatedConnection:
@@ -41,9 +41,9 @@ def test_original_fatal_error_survives_bounded_ledger_recovery(
     real_connect = duckdb.connect
 
     def connect_spy(*args, **kwargs):
-        config = kwargs.get("config")
-        if config is not None:
-            configs.append(config)
+        # Every store connect is bounded now; recovery reopens are the ones after the raw close.
+        if "raw_close" in events:
+            configs.append(kwargs.get("config"))
             events.append("bounded_reopen")
             if entry == "reopen_failure":
                 raise duckdb.IOException("injected reopen unavailable")
@@ -89,6 +89,9 @@ def test_original_fatal_error_survives_bounded_ledger_recovery(
     monkeypatch.setattr(bulk, "_create_line_map", lambda *_a: None)
     monkeypatch.setattr(bulk, "_create_next_table", staging)
     monkeypatch.setattr(bulk, "_validate_next", lambda *_a: (1, 1, dt.date(2026, 9, 18), 1, 0, 0))
+    # The A8 share-unit check (b10175b6) reads staged columns this stub table lacks; like the
+    # other pre-publication steps it is not what this test exercises.
+    monkeypatch.setattr(bulk, "_check_share_units", lambda *_a: {"status": "not_exercised"})
     monkeypatch.setattr(bulk, "_publish", fatal)
     caplog.set_level(logging.INFO, logger=bulk.__name__)
     lines = []
@@ -122,10 +125,9 @@ def test_original_fatal_error_survives_bounded_ledger_recovery(
     assert events.count("raw_close") == 1
     assert events.index("raw_close") < events.index("bounded_reopen")
     assert configs
-    for config in configs:
-        assert config["memory_limit"] == "128MB"
-        assert config["threads"] == "1"
-        assert config["preserve_insertion_order"] == "false"
+    for config in configs:  # the recorded analytical budget, in the connect config
+        assert config == {"memory_limit": "128MB", "threads": 1, "preserve_insertion_order": False,
+                          "temp_directory": str(private_temp_directory(path)), "max_temp_directory_size": "40GB"}
     if entry != "activation_other":
         assert "validated 1 rows across 1 securities; latest breadth 1" in caplog.text
 
