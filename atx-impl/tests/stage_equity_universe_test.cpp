@@ -388,6 +388,9 @@ TEST(ConfigEquityUniverse, RankEnd_After2019_Rejected) {
     cfg.subcommand = "equity-universe";
     cfg.equity_segments_dirs = "nonexistent-dir";
     cfg.equity_preparation_manifests = "nonexistent-manifest";
+    // Satisfy V2's type-input contract so this reaches the date guard. No path
+    // may be opened for an invalid rank window.
+    cfg.equity_instrument_types = "nonexistent-types";
     cfg.out = "u";
     cfg.equity_rank_start = "2012-12-31";
     cfg.equity_rank_end = "2020-01-02";
