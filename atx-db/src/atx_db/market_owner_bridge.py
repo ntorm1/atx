@@ -85,11 +85,13 @@ symbol is normalized (upper case; ``.``, ``/`` and blanks -> ``-``):
    dominance-resolved conflict) is never linked. A line whose RI1 candidates
    conflict, or whose only link is contested (``low``), is unlinked as
    ``conflicting_reconstruction``; one whose link is below the filter as
-   ``reconstruction_below_tier``. Owner links are deduplicated per CIK per day:
-   an issuer already linked on another line that day (current-ticker rules
-   first, then the reconstructed line with more bars, then the smaller id)
-   keeps it and the other reconstructed segment is trimmed -- counted. Strict
-   mode never consumes these links (they are not ``verified_dated``).
+   ``reconstruction_below_tier``. Owner links are deduplicated per CIK per day
+   among common-equity lines: an issuer already linked on another common line
+   that day (current-ticker rules first, then the reconstructed line with more
+   bars, then the smaller id) keeps it and the other reconstructed segment is
+   trimmed -- counted. The issuer's preferred, note or warrant lines never
+   claim a day (they trade alongside the common line). Strict mode never
+   consumes these links (they are not ``verified_dated``).
 
 Stale current-ticker holders stay linked (a delisted issuer that still files
 under the same ticker is common) but are counted (``stale_links``).
@@ -1257,6 +1259,26 @@ def classify_sec_tickers(
     return tuple(classes)
 
 
+def _class_index(classes: Sequence[TickerClass]) -> dict[tuple[str, str | None], TickerClass]:
+    return {(item.cik, normalize_symbol(item.ticker)): item for item in classes}
+
+
+def _line_class(
+    row: BridgeRow, by_key: dict[tuple[str, str | None], TickerClass], common_types: frozenset[str]
+) -> tuple[str, str, str]:
+    """(class, basis, category) of a linked row's symbol: category is common / unverified / non_common."""
+    key = normalize_symbol(row.share_class_symbol)
+    item = by_key.get((row.cik or "", key or ""))
+    if item is not None:
+        kind, basis = item.security_class, item.basis
+    else:
+        suffix = _suffix_class(key, set()) if key else None
+        kind, basis = (suffix, CLASS_BASIS_SUFFIX) if suffix else ("unclassified", CLASS_BASIS_UNCLASSIFIED)
+    if kind in common_types or kind in ("unclassified", _CLASS_SHARE):
+        return kind, basis, "common"
+    return kind, basis, "unverified" if kind == _UNVERIFIED_COMMON else "non_common"
+
+
 def _with_class_guards(
     rows: list[BridgeRow],
     lines: dict[str, PriceLine],
@@ -1276,26 +1298,13 @@ def _with_class_guards(
     no class basis yet (a strict multi-class line is valuation-withheld).
     """
     common_types = _common_equity_types()
-    by_key = {(item.cik, normalize_symbol(item.ticker)): item for item in classes}
+    by_key = _class_index(classes)
     common_counts: dict[str, int] = defaultdict(int)
     for item in classes:
         if item.counted_common:
             common_counts[item.cik] += 1
 
-    def line_class(row: BridgeRow) -> tuple[str, str, str]:
-        """(class, basis, category): category is common / unverified / non_common."""
-        key = normalize_symbol(row.share_class_symbol)
-        item = by_key.get((row.cik or "", key or ""))
-        if item is not None:
-            kind, basis = item.security_class, item.basis
-        else:
-            suffix = _suffix_class(key, set()) if key else None
-            kind, basis = (suffix, CLASS_BASIS_SUFFIX) if suffix else ("unclassified", CLASS_BASIS_UNCLASSIFIED)
-        if kind in common_types or kind in ("unclassified", _CLASS_SHARE):
-            return kind, basis, "common"
-        return kind, basis, "unverified" if kind == _UNVERIFIED_COMMON else "non_common"
-
-    kinds = {id(row): line_class(row) for row in rows if row.owner_security_id is not None}
+    kinds = {id(row): _line_class(row, by_key, common_types) for row in rows if row.owner_security_id is not None}
     issuer_lines: dict[str, set[str]] = defaultdict(set)
     for row in rows:
         if row.owner_security_id is not None and kinds[id(row)][2] != "non_common":
@@ -1635,7 +1644,7 @@ def classify_reconstructed_with_history(
             rows.append(BridgeRow(**unlinked, unlinked_reason=UNLINKED_NO_CURRENT_TICKER))
 
     by_id = {line.price_security_id: line for line in lines}
-    rows, stats = _with_reconstructed_history(rows, by_id, reconstructed, tiers)
+    rows, stats = _with_reconstructed_history(rows, by_id, reconstructed, tiers, classes)
     resolved = _with_class_guards(rows, by_id, classes, strict=False)
     resolved = _with_adr_ratios(_with_sibling_segments(resolved, line_symbols, directory), adr_ratios or {})
     members, ambiguous = _owner_members(resolved, content)
@@ -1784,8 +1793,14 @@ def _with_reconstructed_history(
     lines: dict[str, PriceLine],
     evidence: Sequence[ReconstructedLinkEvidence],
     tiers: tuple[str, ...],
+    classes: Sequence[TickerClass] = (),
 ) -> tuple[list[BridgeRow], dict[str, object]]:
-    """Rule 5: link lines the current-ticker rules left unlinked through RI1 evidence (module docstring)."""
+    """Rule 5: link lines the current-ticker rules left unlinked through RI1 evidence (module docstring).
+
+    ``classes`` (the SEC ticker classes) decide which current links are common-equity lines: only
+    those claim an issuer-day in the per-CIK dedupe -- a preferred, note or warrant line of the same
+    issuer legitimately trades alongside its common line.
+    """
     by_vendor: dict[int, str] = {}
     for line in lines.values():
         vendor = _line_vendor_id(line)
@@ -1854,8 +1869,9 @@ def _with_reconstructed_history(
         return low, high
 
     taken: dict[str, list[tuple[dt.date, dt.date, str]]] = defaultdict(list)
+    by_key, common_types = _class_index(classes), _common_equity_types()
     for row in rows:
-        if row.linked and row.cik is not None:
+        if row.linked and row.cik is not None and _line_class(row, by_key, common_types)[2] == "common":
             low, high = span(row.valid_from, row.valid_to, row.price_security_id)
             if low < high:
                 taken[row.cik].append((low, high, row.price_security_id))
