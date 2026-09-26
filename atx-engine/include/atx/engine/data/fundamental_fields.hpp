@@ -129,6 +129,10 @@ struct PitRecord {
   std::string link_id;
   bool identity_only{false}; // interval marker: no filing values, no filing lag
   atx::u8 link_priority{0}; // 1 = explicitly reviewed dated override, 0 = filing bracket
+  // V3 optional conflict retirement. Both effective and strict knowledge clocks
+  // must be reached; max/max means absent and preserves interval-v2 behavior.
+  atx::i64 identity_retired_from_ns{std::numeric_limits<atx::i64>::max()};
+  atx::i64 identity_retired_available_ns{std::numeric_limits<atx::i64>::max()};
 };
 
 struct AlignConfig {
@@ -250,6 +254,9 @@ align_pit_records(std::span<const PitRecord> records, std::span<const atx::i64> 
          rec.link_available_ns < 0 ||
          rec.owner_id.empty() || rec.link_id.empty() ||
          rec.link_priority > 1 ||
+         rec.identity_retired_from_ns < 0 || rec.identity_retired_available_ns < 0 ||
+         ((rec.identity_retired_from_ns == std::numeric_limits<atx::i64>::max()) !=
+          (rec.identity_retired_available_ns == std::numeric_limits<atx::i64>::max())) ||
          rec.link_available_ns == std::numeric_limits<atx::i64>::min())) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "fundamentals: malformed dated issuer link");
@@ -283,7 +290,10 @@ align_pit_records(std::span<const PitRecord> records, std::span<const atx::i64> 
         const atx::i64 key = session_keys[t];
         for (; next < list.size() && list[next].first <= t; ++next)
           visible.push_back(list[next].second);
-        std::erase_if(visible, [&](atx::usize r) { return records[r].identity_valid_to_ns <= key; });
+        std::erase_if(visible, [&](atx::usize r) {
+          return records[r].identity_valid_to_ns <= key ||
+              (key >= records[r].identity_retired_from_ns && key > records[r].identity_retired_available_ns);
+        });
         std::string_view owner;
         bool conflict = false;
         atx::u8 priority = 0;

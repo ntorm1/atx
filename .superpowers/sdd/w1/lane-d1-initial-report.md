@@ -141,3 +141,28 @@ Five C++ checks are source only; no C++ compilation or data evaluation was run.
 
 All original acquisition, operating-company coverage, non-survivor, original82,
 active-loader and production file-reader/manifest-verification gaps remain open.
+
+## Successor correction: separately timed conflict retirement V3
+
+Independent review reproduced an expired open vendor line permanently blocking
+its legitimate successor through an overlap marker. Static truncation at the
+economic expiry would instead backdate later-known information. The correction
+adds a both-or-neither retirement pair to that overlap marker: effective date and
+verified publication clock. The conflict is removed only after **both** conditions
+hold, with strict publication-clock inequality. Its retirement source is included
+in proof bindings and the link identity. The predecessor's own expiry marker is
+not retired, so the old line does not resurrect.
+
+This is explicit `atx.security-link/v3` and `points.interval-v3.tsv` under export
+manifest v3. Old link artifacts and interval-v2 decoding preserve their previous
+no-retirement semantics. V3 retirement fields cannot be labeled as an older link
+artifact. `PitRecord` carries the optional pair, and the aligner/decoder enforce
+both-or-neither fields. Verified contradictory economic expiry dates for one
+vendor interval fail closed for adjudication; repeated proofs of the same expiry
+use the earliest known clock without rewriting earlier decisions.
+
+Postimplementation synthetic checks: core **15/15**, 0.076 s; exporter **7/7**,
+0.319 s, exit 0. Logs `build-equity/d1-retirement-{core,export}-tests.log`. Fixtures
+cover late-known and known-early retirement, equality, durable marker projection,
+successor recovery and persistent predecessor expiry. Six C++ fixtures remain
+source-only. No eligible historical evidence/coverage gate was added or claimed.

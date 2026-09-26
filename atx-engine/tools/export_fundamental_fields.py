@@ -574,7 +574,7 @@ def _ns(value: dt.date | dt.datetime) -> int:
 
 INTERVAL_KEYS = ("sr_id", "owner_id", "link_id", "available_ns", "period_end_ns",
                  "identity_valid_from_ns", "identity_valid_to_ns", "link_available_ns",
-                 "identity_only", "link_priority")
+                 "identity_only", "link_priority", "identity_retired_from_ns", "identity_retired_available_ns")
 
 
 def project_dated_snapshots(link, snapshots: list[dict]) -> list[dict]:
@@ -588,6 +588,8 @@ def project_dated_snapshots(link, snapshots: list[dict]) -> list[dict]:
     base = {"sr_id": link.sr_id, "owner_id": link.owner_id, "link_id": link.link_id,
             "identity_valid_from_ns": _ns(link.valid_from),
             "identity_valid_to_ns": _ns(link.valid_to), "link_available_ns": _ns(link.available_at),
+            "identity_retired_from_ns": _ns(link.retired_from) if link.retired_from else 2**63 - 1,
+            "identity_retired_available_ns": _ns(link.retired_available_at) if link.retired_available_at else 2**63 - 1,
             "link_priority": int(link.method == "dated-override-v1")}
     marker = dict(base, available_ns=0, period_end_ns=0, identity_only=1,
                   **{name: math.nan for name in RAW_FIELDS})
@@ -605,7 +607,7 @@ def project_dated_snapshots(link, snapshots: list[dict]) -> list[dict]:
 
 def write_interval_points(path: Path, rows_by_sr: dict[str, list[dict]]) -> int:
     with path.open("w", encoding="utf-8", newline="") as stream:
-        stream.write("ATX-FUNDAMENTAL-INTERVALS\t2\n")
+        stream.write("ATX-FUNDAMENTAL-INTERVALS\t3\n")
         writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
         writer.writerow(INTERVAL_KEYS + RAW_FIELDS)
         count = 0
@@ -631,7 +633,8 @@ def align_interval_values(rows: list[dict], session_keys: list[int], lag_session
                   for r in rows]
     output = []
     for t, key in enumerate(session_keys):
-        eligible = [r for vis, r in visibility if vis <= t and r["identity_valid_from_ns"] <= key < r["identity_valid_to_ns"]]
+        eligible = [r for vis, r in visibility if vis <= t and r["identity_valid_from_ns"] <= key < r["identity_valid_to_ns"]
+                    and not (key >= r["identity_retired_from_ns"] and key > r["identity_retired_available_ns"])]
         priority = max((r["link_priority"] for r in eligible), default=0)
         eligible = [r for r in eligible if r["link_priority"] == priority]
         values = {f: math.nan for f in RAW_FIELDS}
@@ -817,7 +820,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out.mkdir(parents=True)
     zf.close()
-    points = out / ("points.interval-v2.tsv" if strict else "points.csv")
+    points = out / ("points.interval-v3.tsv" if strict else "points.csv")
     n_rows = 0
     if strict:
         n_rows = write_interval_points(points, rows_by_sr)
@@ -869,7 +872,7 @@ def main(argv: list[str] | None = None) -> int:
     (out / "unmapped_securities.csv").write_text(
         "sr_id,reason\n" + "".join(f"{k},{v}\n" for k, v in sorted(unmapped.items())))
     manifest = {
-        "schema": "atx.fundamental-fields-export/v2" if strict else "atx.fundamental-fields-export/v1",
+        "schema": "atx.fundamental-fields-export/v3" if strict else "atx.fundamental-fields-export/v1",
         "tool": TOOL_VERSION,
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "clock_policy": CLOCK_POLICY,

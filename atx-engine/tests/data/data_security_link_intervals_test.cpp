@@ -111,4 +111,38 @@ TEST(SecurityLinkIntervals, ExpiryMarkerRequiresBothEffectiveDateAndStrictKnowle
   EXPECT_EQ(got->raw[0][4], 10.0); // equality remains unknown
   EXPECT_TRUE(std::isnan(got->raw[0][5]));
 }
+
+TEST(SecurityLinkIntervals, V3DecoderRetiresOverlapWithoutResurrectingPriorState) {
+  std::string data = "ATX-FUNDAMENTAL-INTERVALS\t3\n";
+  data += fund::kIntervalHeader; data += fund::kRetirementHeader;
+  for (auto field : fund::kRawFieldNames) { data += '\t'; data += field; }
+  data += '\n';
+  const auto append = [&](std::string owner, bool marker, atx::i64 retired_from, atx::i64 retired_at) {
+    data += "8\t" + owner + "\tproof\t" + std::to_string(99*day) + "\t" +
+        std::to_string(90*day) + "\t" + std::to_string(100*day) + "\t" +
+        std::to_string(106*day) + "\t" + std::to_string(99*day) + "\t" +
+        (marker ? "1" : "0") + "\t0\t" + std::to_string(retired_from) + "\t" +
+        std::to_string(retired_at) + "\t" + (marker ? "" : "20");
+    for (atx::usize i = 1; i < fund::kRawFieldCount; ++i) data += '\t';
+    data += '\n';
+  };
+  const auto absent = std::numeric_limits<atx::i64>::max();
+  append("B", false, absent, absent);
+  append("CONFLICT:B", true, 102*day, 104*day);
+  const std::vector<std::string> ids{"8"};
+  auto rows = fund::decode_interval_points(data, ids);
+  ASSERT_TRUE(rows); ASSERT_EQ(rows->size(), 2U);
+  fund::AlignConfig cfg; cfg.lag_sessions = 0;
+  auto got = fund::align_pit_records(*rows, axis(), 1, cfg);
+  ASSERT_TRUE(got);
+  EXPECT_TRUE(std::isnan(got->raw[0][3])); EXPECT_TRUE(std::isnan(got->raw[0][4]));
+  EXPECT_EQ(got->raw[0][5], 20.0);
+  (*rows)[1].identity_retired_from_ns = 103*day;
+  (*rows)[1].identity_retired_available_ns = 99*day;
+  got = fund::align_pit_records(*rows, axis(), 1, cfg);
+  ASSERT_TRUE(got);
+  EXPECT_TRUE(std::isnan(got->raw[0][2])); EXPECT_EQ(got->raw[0][3], 20.0);
+  (*rows)[1].identity_retired_available_ns = absent;
+  EXPECT_FALSE(fund::align_pit_records(*rows, axis(), 1, cfg));
+}
 } // namespace atx_test_d1_security_link

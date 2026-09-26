@@ -125,12 +125,37 @@ class SecurityLinkTest(unittest.TestCase):
             digest = sl.write_link_artifact(path, links, gaps, {p: H for x in links for p in x.evidence_ids})
             loaded, manifest = sl.read_link_artifact(path, digest)
             self.assertEqual(loaded, links)
-            self.assertEqual(manifest["schema"], "atx.security-link/v2")
+            self.assertEqual(manifest["schema"], "atx.security-link/v3")
             self.assertIn("prospective-two-filings-v2", manifest["rules"])
             manifest["schema"] = "atx.security-link/v1"
             (path / "manifest.json").write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(ValueError, "v2 link semantics"):
+            with self.assertRaisesRegex(ValueError, "v3 conflict retirement"):
                 sl.read_link_artifact(path)
+
+    def test_expired_open_predecessor_releases_successor_only_after_both_retirement_clocks(self):
+        prior = replace(vendor(), valid_to=None)
+        successor = sl.VendorInterval("v2", "8", "XYZ", D(2013, 1, 10), None,
+                                     clock(10), H, "synthetic:successor", True)
+        observations = [filing("a", 2), filing("b", 5),
+                        filing("c", 12, "2"), filing("d", 13, "2")]
+        for effective, available in [(10, 15), (15, 5)]:
+            with self.subTest(effective=effective, available=available):
+                expiry = sl.VendorExpiry("expiry", "v1", D(2013, 1, effective), clock(available),
+                                         H, "synthetic:expiry", True)
+                links, _ = sl.build_prospective_links([prior, successor], observations, [expiry])
+                self.assertIsNone(sl.resolve_link(links, "8", D(2013, 1, 14), decision(14)).link)
+                self.assertIsNotNone(sl.resolve_link(links, "8", D(2013, 1, 15), decision(15)).link)
+                self.assertIsNotNone(sl.resolve_link(links, "8", D(2013, 1, 25), decision(25)).link)
+                self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 25), decision(25)).link)
+                if available == 15:
+                    self.assertIsNone(sl.resolve_link(links, "8", D(2013, 1, 15), clock(15)).link)
+                conflict = next(x for x in links if x.sr_id == "8" and x.retired_from)
+                self.assertIn("expiry", conflict.evidence_ids)
+                with self.assertRaisesRegex(ValueError, "both effective"):
+                    replace(conflict, retired_available_at=None)
+        with self.assertRaisesRegex(ValueError, "economic expiry dates"):
+            sl.build_prospective_links([prior, successor], observations, [expiry,
+                replace(expiry, evidence_id="contradiction", effective_date=D(2013, 1, 18))])
 
     def test_bracket_cannot_backdate_right_proof_or_revision(self):
         left, right = filing("left", 1), filing("right", 9, available=9)

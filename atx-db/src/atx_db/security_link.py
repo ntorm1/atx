@@ -21,7 +21,8 @@ from typing import TextIO
 
 UTC = dt.timezone.utc
 SEAL = dt.date(2020, 1, 1)
-SCHEMA = "atx.security-link/v2"
+SCHEMA = "atx.security-link/v3"
+PROSPECTIVE_SCHEMA = "atx.security-link/v2"
 LEGACY_SCHEMA = "atx.security-link/v1"
 
 
@@ -151,6 +152,8 @@ class SecurityLink:
     reviewer: str = ""
     reason: str = ""
     end_kind: str = "source-expiry"  # seal-bound does not assert an economic end
+    retired_from: dt.date | None = None
+    retired_available_at: dt.datetime | None = None
 
     def __post_init__(self) -> None:
         _window(self.valid_from, self.valid_to)
@@ -170,6 +173,13 @@ class SecurityLink:
             raise ValueError("unknown link end kind")
         if self.end_kind == "seal-bound" and self.valid_to != SEAL:
             raise ValueError("open economic interval must terminate at the artifact seal")
+        if (self.retired_from is None) != (self.retired_available_at is None):
+            raise ValueError("conflict retirement requires both effective and knowledge clocks")
+        if self.retired_from is not None:
+            _window(self.retired_from, None)
+            if (self.method != "prospective-conflict-v2" or
+                    utc(self.retired_available_at).date() >= SEAL):
+                raise ValueError("invalid conflict retirement")
         if self.method == "dated-override-v1" and (not self.reviewer or not self.reason):
             raise ValueError("override requires reviewer and reason")
 
@@ -345,9 +355,18 @@ def build_prospective_links(intervals: Iterable[VendorInterval], filings: Iterab
             raise ValueError("conflicting duplicate expiry evidence id")
         closures[value.evidence_id] = value
     links, unresolved = [], []
+    known_expiries: dict[str, VendorExpiry] = {}
     for event in closures.values():
         if event.interval_id not in vendors:
             unresolved.append({"evidence_id": event.evidence_id, "reason": "expiry_interval_unresolved"})
+        elif event.availability_verified:
+            if event.effective_date < vendors[event.interval_id].valid_from:
+                raise ValueError("expiry event precedes vendor line")
+            old = known_expiries.get(event.interval_id)
+            if old is not None and old.effective_date != event.effective_date:
+                raise ValueError("conflicting verified economic expiry dates require adjudication")
+            if old is None or (utc(event.available_at), event.evidence_id) < (utc(old.available_at), old.evidence_id):
+                known_expiries[event.interval_id] = event
     for interval in sorted(vendors.values(), key=lambda v: v.interval_id):
         base = {"interval_id": interval.interval_id, "sr_id": interval.sr_id,
                 "rule": "prospective-two-filings-v2"}
@@ -408,10 +427,17 @@ def build_prospective_links(intervals: Iterable[VendorInterval], filings: Iterab
                     continue
                 proof = (interval.interval_id, other.interval_id)
                 known = max(available, utc(other.available_at))
-                links.append(SecurityLink(_id([identity, proof, "line-conflict"]), interval.sr_id, cik,
+                expiry = known_expiries.get(other.interval_id)
+                retired_from = expiry.effective_date if expiry else None
+                retired_at = max(utc(other.available_at), utc(expiry.available_at)) if expiry else None
+                if expiry:
+                    proof += (expiry.evidence_id,)
+                links.append(SecurityLink(_id([identity, proof, "line-conflict", str(conflict_begin),
+                    str(conflict_end), str(known), str(retired_from), str(retired_at)]), interval.sr_id, cik,
                     symbol_key(interval.ticker), conflict_begin, conflict_end, accepted, known, proof,
                     "prospective-conflict-v2", reason="ambiguous_overlapping_vendor_lines",
-                    end_kind="seal-bound" if conflict_end == SEAL else "source-expiry"))
+                    end_kind="seal-bound" if conflict_end == SEAL else "source-expiry",
+                    retired_from=retired_from, retired_available_at=retired_at))
                 unresolved.append(dict(base, reason="ambiguous_overlapping_vendor_lines", available_at=str(known),
                                        evidence_ids=proof))
             for event in closures.values():
@@ -439,7 +465,9 @@ def resolve_link(links: Iterable[SecurityLink], sr_id: str, session: dt.date,
     if session >= SEAL or clock.date() >= SEAL:
         raise ValueError("link decision reaches sealed era")
     eligible = [x for x in links if x.sr_id == sr_id and x.valid_from <= session < x.valid_to
-                and utc(x.available_at) < clock and (x.live_eligible or retrospective_audit)]
+                and utc(x.available_at) < clock and (x.live_eligible or retrospective_audit)
+                and not (x.retired_from is not None and session >= x.retired_from
+                         and utc(x.retired_available_at) < clock)]
     if not eligible:
         return LinkDecision(None, "no_available_covering_link")
     overrides = [x for x in eligible if x.method == "dated-override-v1"]
@@ -536,7 +564,7 @@ def read_link_artifact(directory: Path, expected_manifest_sha256: str = "") -> t
     if expected_manifest_sha256 and hashlib.sha256(data).hexdigest() != expected_manifest_sha256:
         raise ValueError("link manifest checksum mismatch")
     manifest = json.loads(data)
-    if manifest["schema"] not in {LEGACY_SCHEMA, SCHEMA} or manifest["seal_exclusive"] != str(SEAL):
+    if manifest["schema"] not in {LEGACY_SCHEMA, PROSPECTIVE_SCHEMA, SCHEMA} or manifest["seal_exclusive"] != str(SEAL):
         raise ValueError("unsupported or unsealed link artifact")
     for digest in manifest["sources"].values():
         _hash(digest)
@@ -554,6 +582,8 @@ def read_link_artifact(directory: Path, expected_manifest_sha256: str = "") -> t
     result = []
     for line in payloads["links.jsonl"].splitlines():
         row = json.loads(line)
+        if manifest["schema"] != SCHEMA and ("retired_from" in row or "retired_available_at" in row):
+            raise ValueError("v3 conflict retirement cannot be labeled as an older artifact")
         if manifest["schema"] == LEGACY_SCHEMA and (
                 row["method"] not in {"bracketed-filings-v1", "dated-override-v1", "conflict-v1"}
                 or "end_kind" in row):
@@ -562,11 +592,14 @@ def read_link_artifact(directory: Path, expected_manifest_sha256: str = "") -> t
             row[key] = dt.date.fromisoformat(row[key])
         for key in ("accepted_at", "available_at"):
             row[key] = dt.datetime.fromisoformat(row[key]) if row[key] is not None else None
+        if row.get("retired_from") is not None:
+            row["retired_from"] = dt.date.fromisoformat(row["retired_from"])
+            row["retired_available_at"] = dt.datetime.fromisoformat(row["retired_available_at"])
         row["evidence_ids"] = tuple(row["evidence_ids"])
         result.append(SecurityLink(**row))
     if len(result) != manifest["rows"] or len({x.link_id for x in result}) != len(result):
         raise ValueError("link row count/identity mismatch")
-    if manifest["schema"] == SCHEMA and (
+    if manifest["schema"] in {SCHEMA, PROSPECTIVE_SCHEMA} and (
             manifest.get("rules") != sorted({x.method for x in result}) or
             manifest.get("live_clock_comparison") != "available_at < decision"):
         raise ValueError("link rule/clock manifest mismatch")

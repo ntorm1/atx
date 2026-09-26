@@ -49,6 +49,39 @@ def company(cik, value, period="2012-12-31"):
 
 
 class SecurityLinkExportTest(unittest.TestCase):
+    def test_successor_retirement_pair_survives_v3_artifact_export_and_alignment(self):
+        vendors = [sl.VendorInterval("old", "7", "XYZ", D(2013, 1, 1), None,
+                    clock(1), H, "synthetic:old", True),
+                   sl.VendorInterval("new", "8", "XYZ", D(2013, 1, 10), None,
+                    clock(10), H, "synthetic:new", True)]
+        observations = [sl.FilingEvidence(f"p{day}", f"acc{day}", str(cik), "XYZ",
+            D(2013, 1, day), clock(day), H, "synthetic:filing", clock(25), clock(day),
+            revision_status="original-confirmed") for day, cik in [(2, 1), (5, 1), (12, 2), (13, 2)]]
+        for effective, known in [(10, 15), (15, 5)]:
+            expiry = sl.VendorExpiry("expiry", "old", D(2013, 1, effective), clock(known),
+                                     H, "synthetic:expiry", True)
+            links, gaps = sl.build_prospective_links(vendors, observations, [expiry])
+            with tempfile.TemporaryDirectory(prefix="atx-d1-retirement-") as tmp:
+                root = Path(tmp)
+                sl.write_link_artifact(root / "links", links, gaps, {p: H for x in links for p in x.evidence_ids})
+                grouped, _, _ = ex.load_dated_id_bridge(str(root / "links"), {"7", "8"})
+                rows = [r for item in grouped["8"] for r in ex.project_dated_snapshots(item, [snapshot(20)])]
+                ex.write_interval_points(root / "points.tsv", {"8": rows})
+                decoded = list(csv.DictReader((root / "points.tsv").read_text().splitlines()[1:], delimiter="\t"))
+                marker = next(r for r in decoded if r["identity_retired_from_ns"] != str(2**63 - 1))
+                self.assertEqual(int(marker["identity_retired_from_ns"]), ex._ns(D(2013, 1, effective)))
+                self.assertEqual(int(marker["identity_retired_available_ns"]), ex._ns(clock(known)))
+                boundary = ex._ns(clock(15))
+                axis = [ex._ns(clock(14)), boundary, boundary + 1, ex._ns(clock(20))]
+                values = ex.align_interval_values(rows, axis, 0, 365, 550)
+                self.assertTrue(math.isnan(values[0]["book_equity"]))
+                if known == 15:
+                    self.assertTrue(math.isnan(values[1]["book_equity"]))
+                else:
+                    self.assertEqual(values[1]["book_equity"], 20)
+                self.assertEqual(values[2]["book_equity"], 20)
+                self.assertEqual(values[3]["book_equity"], 20)
+
     def test_prospective_open_link_and_expiry_survive_artifact_and_export_projection(self):
         vendor = sl.VendorInterval("vendor", "7", "XYZ", D(2013, 1, 1), None,
                                    clock(1), H, "synthetic:vendor", True)
@@ -63,7 +96,7 @@ class SecurityLinkExportTest(unittest.TestCase):
             sl.write_link_artifact(root / "links", links, gaps, {p: H for x in links for p in x.evidence_ids})
             grouped, _, _ = ex.load_dated_id_bridge(str(root / "links"), {"7"})
             rows = [row for item in grouped["7"] for row in ex.project_dated_snapshots(item, [snapshot(10)])]
-            path = root / "points.interval-v2.tsv"
+            path = root / "points.interval-v3.tsv"
             ex.write_interval_points(path, {"7": rows})
             decoded = list(csv.DictReader(path.read_text().splitlines()[1:], delimiter="\t"))
             expiry_rows = [r for r in decoded if r["owner_id"].startswith("CONFLICT:")]
@@ -145,8 +178,8 @@ class SecurityLinkExportTest(unittest.TestCase):
             self.assertFalse((output / "points.csv").exists())
             for name, binding in manifest["outputs"].items():
                 self.assertEqual(ex.sha256_file(output / name), binding["sha256"])
-            lines = (output / "points.interval-v2.tsv").read_text().splitlines()
-            self.assertEqual(lines[0], "ATX-FUNDAMENTAL-INTERVALS\t2")
+            lines = (output / "points.interval-v3.tsv").read_text().splitlines()
+            self.assertEqual(lines[0], "ATX-FUNDAMENTAL-INTERVALS\t3")
             records = list(csv.DictReader(lines[1:], delimiter="\t"))
             self.assertEqual(len(records), 4)  # two identity markers and two fiscal snapshots
             self.assertEqual({r["owner_id"] for r in records}, {"SEC-CIK-0000000001", "SEC-CIK-0000000002"})
