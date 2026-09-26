@@ -476,10 +476,14 @@ def test_price_liquidity_natives_equal_hand_computation_and_never_read_a_bar_aft
     reason on unverified shares and across a split, and unlinked lines keep the price-line natives.
     Fix round 1: windows are XNYS sessions. CCC (listed 2023-09-01) has no 52-week ratio
     (``insufficient_history``); BBB misses four January sessions, so its 21-session window has 13 daily
-    returns, under the 15 MAX needs (``window_gaps``), and the price drop across a gap is not a daily return."""
+    returns, under the 15 MAX needs (``window_gaps``), and the price drop across a gap is not a daily return.
+    VA1 (v8): AAA's vendor factor drops 1.8 % on 2024-01-04 with a flat close (the 2021-01-04 artifact of the
+    retained TickerHistory3 snapshot, replayed inside the January windows); the natives read the repaired
+    adjusted close, so they still equal the hand computation on the clean series."""
     wh_path, _ = warehouse
     aaa, bbb, ccc = (LINES[i][0] for i in (1, 2, 3))
     october, january = dt.date(2023, 10, 31), dt.date(2024, 1, 31)
+    artifact_day, artifact_k = dt.date(2024, 1, 4), 0.982
     con = duckdb.connect(str(wh_path))
     con.execute("ALTER TABLE equity_daily_bars ADD COLUMN volume BIGINT")
     con.execute("ALTER TABLE market_daily_metrics ADD COLUMN shares_outstanding DOUBLE")
@@ -498,11 +502,13 @@ def test_price_liquidity_natives_equal_hand_computation_and_never_read_a_bar_aft
     for i, day in enumerate(_sessions(dt.date(2022, 11, 1), AS_OF)):
         adj = 50.0 + 10.0 * math.sin(i / 3.0) + 0.05 * i
         series.append((day, adj * 1.25, adj, 10_000 + 997 * (i % 13)))
+    # The vendor's adjusted close carries the artifact from 2024-01-04 on; the raw close does not.
     con.executemany("""
         INSERT INTO equity_daily_bars (security_id, symbol, trade_date, close, adjusted_close, shares_outstanding,
                                        available_at, source, vendor_security_id, volume)
         VALUES (?, 'AAA', ?, ?, ?, 1000000, NULL, 'test_bars', '1', ?)
-    """, [[aaa, day, close, adj, volume] for day, close, adj, volume in series])
+    """, [[aaa, day, close, adj * (artifact_k if day >= artifact_day else 1.0), volume]
+          for day, close, adj, volume in series])
     for day, clock in ((january, dt.datetime(2024, 1, 31, 23, 30)), (dt.date(2024, 1, 10), dt.datetime(2024, 2, 5))):
         con.execute("INSERT INTO equity_daily_bars (security_id, symbol, trade_date, close, adjusted_close, "
                     "shares_outstanding, available_at, source, vendor_security_id, volume) "
@@ -522,6 +528,11 @@ def test_price_liquidity_natives_equal_hand_computation_and_never_read_a_bar_aft
         "downside_deviation_60d": math.sqrt(sum(min(r, 0.0) ** 2 for r in returns[-60:]) / 60) * math.sqrt(252),
         "turnover_21d": sum(volume[-21:]) / 21 / 2_000_000,
     }
+    # Unrepaired, the artifact would bias the January downside deviation (the -1.8 % step is a daily return).
+    vendor = [a * (artifact_k if row[0] >= artifact_day else 1.0) for row, a in zip(bars, adj, strict=True)]
+    vendor_returns = [vendor[i] / vendor[i - 1] - 1.0 for i in range(1, len(vendor))]
+    assert not math.isclose(math.sqrt(sum(min(r, 0.0) ** 2 for r in vendor_returns[-60:]) / 60) * math.sqrt(252),
+                            expected["downside_deviation_60d"], rel_tol=1e-3)
     with ResearchStore(tmp_path / "research.duckdb", warehouse_path=wh_path) as store:
         assert rp.build_research_panel(store, _options("p2", features=P2_FEATURES)).status == "complete"
         con = store.con
@@ -779,9 +790,11 @@ def test_vendor_share_size_is_opt_in_only(registry):
 def test_line_shares_are_read_at_their_run_clock_and_adr_counts_need_a_ratio(tmp_path, registry):
     """R2d: line_market_cap prices a line with the vendor count of the latest A8 share run known at the cutoff,
     never the bar's own count. DDD's vendor starts a 1.1M run on 2024-01-12 that no filing matches (modeled
-    lag, 90+ days), so January still uses the 1M first run; a 2:1 split on 2024-02-12 with a 2.2M run
-    (split-derived, known at its own start) prices February. An ADR line's ADS count is used only with a known
-    ratio. P11: a valid owner inside a foreign-filer interval at the cutoff carries its reason in place of
+    lag, 90+ days), so January still uses the 1M first run; a 2:1 split on 2024-02-12 with a 2.2M run is
+    split-derived and waits for the 1.1M run it reveals (b4345421), so February is withheld
+    (``split_pending_share_update``: the known 1M run predates the split). An ADR line's ADS count is used only
+    with a known ratio. R2d fix 1: market_daily's basis verdict on the same line and session withholds the line
+    cap. P11: a valid owner inside a foreign-filer interval at the cutoff carries its reason in place of
     missing_metric_state; an interval closed before the cutoff does not apply, and values are never dropped."""
     wh = Warehouse(tmp_path / "wh.duckdb")
     _populate(wh)
@@ -837,8 +850,10 @@ def test_line_shares_are_read_at_their_run_clock_and_adr_counts_need_a_ratio(tmp
         assert cap(january, ddd) == (100.0 * 1_000_000, "valid", dt.datetime(2024, 1, 31, 22),
                                      dt.datetime(2024, 1, 31, 22), f"{rp.VENDOR_SHARES_AVAILABILITY_BASIS}:first_run",
                                      rp.LINE_SHARES_SOURCE, rp.UNVERIFIED_VENDOR_SHARES)
-        assert cap(february, ddd)[:2] == (50.0 * 2_200_000, "valid")
-        assert cap(february, ddd)[4] == f"{rp.VENDOR_SHARES_AVAILABILITY_BASIS}:split_derived"
+        # The split-derived 2.2M run is known only with the 1.1M run it reveals (b4345421), after February's
+        # cutoff; the known 1M run predates the 02-12 split, so February is withheld.
+        assert cap(february, ddd)[:2] == (None, "split_pending_share_update")
+        assert cap(february, ddd)[4:6] == (rp.VENDOR_SHARES_AVAILABILITY_BASIS, "split_pending_share_update")
         # The ADS count priced by the ADS close (not rescaled by the ratio); none without a ratio.
         assert cap(january, bbb)[:2] == (100.0 * 1_000_000, "valid") and cap(january, bbb)[5] == "archive_ads"
         assert cap(january, ccc)[:2] == (None, "adr_ratio_unknown") and cap(january, ccc)[5] == "adr_ratio_unknown"

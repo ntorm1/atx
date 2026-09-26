@@ -43,10 +43,10 @@ states an ADS basis for the session but is not yet visible is ``adr_ratio_unknow
 A withheld count is NULL with its label as the reason for ``line_market_cap`` and
 turnover: for ``line_market_cap`` the labels it derives from the A8 relation
 (``archive_run_pending``, ``split_pending_share_update``, ``adr_ratio_unknown``,
-``vendor_shares_zero``, ``bar_price_invalid``) and market_daily's withheld verdict
-on the same line and session (its ``shares_source`` in ``SHARES_SOURCES_WITHHELD``,
-e.g. ``adr_ratio_unresolved``, ``dei_archive_conflict``: a vendor count in the wrong
-basis); for turnover every withheld label of its market_daily row. A
+``vendor_shares_zero``, ``bar_price_invalid``) and market_daily's basis verdict on
+the same line and session (:data:`LINE_CAP_BASIS_VERDICTS`: ``adr_ratio_unresolved``,
+``dei_archive_conflict``: the line's vendor count is in the wrong basis); for
+turnover every withheld label of its market_daily row. A
 market_daily size feature (``market_cap`` and what reads it) is NULL with the
 label as its ``shares_source`` and keeps ``invalid_current_state``, so its R2a
 digests are unchanged. When market_daily records a row's share clock (0328
@@ -112,7 +112,9 @@ every eligible line: ``amihud_illiquidity_21d``, ``pct_from_high_252d``,
 ``max_daily_return_21d`` and ``downside_deviation_60d``. ``turnover_21d`` is
 owner-scoped (volume over the issuer's verified DEI share count). They are
 computed from the line's own bars only (never ``equity_price_metrics``, whose
-row-count windows are another definition), on the XNYS session calendar: a
+row-count windows are another definition), with VA1's ``vendor_artifact_repaired``
+adjusted close (a vendor factor decrease that is not a split, such as the 2021-01-04
+step, is neutralized: v8), on the XNYS session calendar: a
 window is the last N rule sessions ending at the formation session, a line
 *observes* a session when it has a valid-price bar on it, and a daily return
 exists only between two consecutive sessions both observed. A line whose history
@@ -154,7 +156,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .. import _split_epochs
+from .. import _split_epochs, _vendor_artifact
 from .. import derived_lineage as _derived_lineage
 from .. import fundamental_signal_research as fsr
 from .. import market_daily as _market_daily
@@ -175,7 +177,10 @@ from .store import ResearchStore
 # with market_daily's one bar rule (arg_max_null); equity_price_metrics is never read.
 # v7 (R2d): shares at their own availability clock (A8 vendor share relation), ADR
 # ratio gate, withheld share labels as reasons, P11 foreign-filer reasons.
-QUERY_VERSION = "research-monthly-pit-panel-v7"
+# v8 (VA1 + R2d fix 1): the P2 natives' bar returns read the vendor_artifact_repaired
+# adjusted close; line_market_cap withholds on market_daily's basis verdicts and on an
+# ADS bridge interval not visible yet; line share state chunked by bar count.
+QUERY_VERSION = "research-monthly-pit-panel-v8"
 MARKET_REVISION_RULE = ("newest market_daily revision visible at the cutoff wins per column, "
                         "a NULL included (arg_max_null)")
 BASIS_STRICT = "strict"
@@ -219,6 +224,13 @@ SIZE_VERIFIED = "verified_dei_shares"
 #: count, ``archive_ads`` an ADR line's ADS count with a known ratio).
 LINE_SHARES_SOURCE = "archive"
 LINE_ADS_SHARES_SOURCE = "archive_ads"
+#: market_daily verdicts on a line's vendor count *basis* that withhold ``line_market_cap``
+#: for that line and session (R2d review I1): ADS count x ratio disagrees with the DEI
+#: count, or DEI and the vendor count disagree (an issuer total on a class line, an
+#: ordinary count on an ADS line, a unit error). market_daily's other withheld labels
+#: judge the issuer's count (``multiclass_unresolved``, ``split_unresolved``) or repeat what
+#: the panel derives from the A8 relation itself, so they do not withhold a line's own cap.
+LINE_CAP_BASIS_VERDICTS = ("adr_ratio_unresolved", "dei_archive_conflict")
 #: At most this many eligible lines per :func:`market_daily.vendor_share_state_query` call.
 LINE_SHARES_CHUNK = 1000
 #: Bars per call at a 384 MB DuckDB memory limit (R2d review m1: 1.0M and 1.6M bars ran at
@@ -278,7 +290,8 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
         "metric_window": MARKET_WINDOW,
         "expression": "close x the line's vendor share count of the latest A8 share run known at the cutoff; an "
                       "ADR line's ADS count only with a known ADS ratio; NULL with the A8 label when withheld, "
-                      "including market_daily's withheld verdict for the same line and session",
+                      "and with market_daily's basis verdict (adr_ratio_unresolved, dei_archive_conflict) for "
+                      "the same line and session",
         "inputs": ["equity_daily_bars.close", "equity_daily_bars.adjusted_close",
                    "equity_daily_bars.shares_outstanding", "shares_outstanding_history",
                    "market_owner_bridge.share_basis", "market_owner_bridge.adr_ratio",
@@ -295,7 +308,8 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
         "expression": "1e9 * mean(|r_t| / (close_t * volume_t)) over the daily returns of the last 21 XNYS sessions "
                       "with positive volume; >= 15 such days required",
         "inputs": ["equity_daily_bars.adjusted_close", "equity_daily_bars.close", "equity_daily_bars.volume"],
-        "version": "3",
+        "adjustment_repair": _vendor_artifact.REPAIR_VERSION,
+        "version": "4",
         "unit_basis": "abs_return_per_1e9_dollars_traded",
         "reference": "Amihud (2002)",
         "scope": SCOPE_PRICE_LINE,
@@ -308,8 +322,9 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
         "metric_window": MARKET_WINDOW,
         "expression": "adj_t / max(adj over the observed sessions of the last 252 XNYS sessions) - 1; >= 252 "
                       "sessions since the first bar and >= 200 observed prices in the window required",
-        "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "3",
+        "inputs": ["equity_daily_bars.adjusted_close", "equity_daily_bars.close"],
+        "adjustment_repair": _vendor_artifact.REPAIR_VERSION,
+        "version": "4",
         "unit_basis": "fraction",
         "reference": "George and Hwang (2004)",
         "scope": SCOPE_PRICE_LINE,
@@ -321,8 +336,9 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
     "max_daily_return_21d": {
         "metric_window": MARKET_WINDOW,
         "expression": "max(r_t) over the daily returns of the last 21 XNYS sessions; >= 15 returns required",
-        "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "3",
+        "inputs": ["equity_daily_bars.adjusted_close", "equity_daily_bars.close"],
+        "adjustment_repair": _vendor_artifact.REPAIR_VERSION,
+        "version": "4",
         "unit_basis": "fraction",
         "reference": "Bali, Cakici and Whitelaw (2011)",
         "scope": SCOPE_PRICE_LINE,
@@ -335,8 +351,9 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
         "metric_window": MARKET_WINDOW,
         "expression": "sqrt(252 * mean(min(r_t, 0)^2)) over the daily returns of the last 60 XNYS sessions; "
                       ">= 45 returns required (zero-target semideviation, LPM2)",
-        "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "3",
+        "inputs": ["equity_daily_bars.adjusted_close", "equity_daily_bars.close"],
+        "adjustment_repair": _vendor_artifact.REPAIR_VERSION,
+        "version": "4",
         "unit_basis": "annualized_fraction",
         "reference": "published analogue: downside risk of Ang, Chen and Xing (2006), who price downside beta; "
                      "this is the Sortino zero-target semideviation",
@@ -403,7 +420,7 @@ NYSE_SPECIAL_CLOSURES = frozenset({
 # Every module whose semantics a run's rows depend on: a change between a
 # failed run and its resume refuses the resume.
 _CODE_FILES = (*(Path(str(module.__file__)) for module in (
-    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store, _split_epochs, _market_daily)),
+    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store, _split_epochs, _market_daily, _vendor_artifact)),
     Path(__file__))
 
 
@@ -1754,6 +1771,13 @@ def _stage_price_window(con: Any, row: CalendarRow) -> None:
     return across a gap is not daily and is not used. ``split_21`` is a vendor-factor
     step (``(adj/close)_t / (adj/close)_(t-1)`` between consecutive observed bars of
     the 21-session window) that R1d's classifier calls an exact ratio.
+
+    ``adj`` is the ``vendor_artifact_repaired`` adjusted close (VA1,
+    :func:`atx_db._vendor_artifact.repaired_bars_sql` over the picked bars): a vendor
+    factor decrease that is not a split (the 2021-01-04 step on ~3,400 dividend payers)
+    is neutralized, so no daily return, window level or split step spans it. The rule
+    reads a bar and its predecessor only (no look-ahead), and returns inside the read
+    window do not depend on where the read starts.
     """
     first = row.formation_date - dt.timedelta(days=PRICE_LOOKBACK_DAYS)
     sessions = sorted({*xnys_sessions(first, row.formation_date), row.formation_date}, reverse=True)
@@ -1772,9 +1796,10 @@ def _stage_price_window(con: Any, row: CalendarRow) -> None:
             ON k.security_id=b.security_id
           WHERE b.trade_date BETWEEN ? AND ? AND {_BAR_CLOCK_SQL}<=?
           GROUP BY b.security_id, b.trade_date
+        ), repaired AS ({_vendor_artifact.repaired_bars_sql('picked', adjusted='adj')}
         ), obs AS (
-          SELECT p.security_id, x.back, p.close, p.adj, p.volume, p.bar_at
-          FROM picked p JOIN _rp_xnys x ON x.session=p.trade_date
+          SELECT p.security_id, x.back, p.close, p.adj * p.va_multiplier AS adj, p.volume, p.bar_at
+          FROM repaired p JOIN _rp_xnys x ON x.session=p.trade_date
           WHERE p.close>0 AND p.adj>0 AND isfinite(p.close) AND isfinite(p.adj)
         ), seq AS (
           SELECT *, lag(back) OVER w AS prior_back, lag(adj) OVER w AS prior_adj, lag(close) OVER w AS prior_close
@@ -1912,16 +1937,18 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow, market_sou
     named in ``availability_basis``. An ADR line's count is an ADS count (priced by the
     ADS close), used only when the bridge states the ADS ratio; a line whose bridge
     interval for the session has an ADS basis that is not visible yet at the cutoff is
-    ``adr_ratio_unknown`` too (withheld only, never priced as a plain line). Withheld,
-    with the label as the reason and ``shares_source``, in this order:
-    ``bar_price_invalid``; market_daily's withheld verdict on the same line and session
-    (the newest ``market_daily_metrics`` row visible at the cutoff whose
-    ``shares_source`` is in ``SHARES_SOURCES_WITHHELD``, e.g. ``adr_ratio_unresolved``
-    or ``dei_archive_conflict``: the vendor count is in the wrong basis, R2d review
-    I1); ``adr_ratio_unknown``; ``vendor_shares_zero``; ``archive_run_pending`` (no run
-    known yet) and ``split_pending_share_update`` (the known run started before a
-    split ex-date at or before the bar). A bar with no vendor count has no value
-    (``invalid_current_state``). A line market_daily does not cover has no verdict.
+    ``adr_ratio_unknown`` too (R2d review m5: withheld only, never priced as a plain
+    line; the later-visible row decides only that the value is withheld, never a value).
+    Withheld, with the label as the reason and ``shares_source``, in this order:
+    ``bar_price_invalid``; market_daily's basis verdict on the same line and session
+    (the newest ``market_daily_metrics`` row visible at the cutoff, the same pick as the
+    market features, whose ``shares_source`` is in :data:`LINE_CAP_BASIS_VERDICTS`:
+    ``adr_ratio_unresolved`` or ``dei_archive_conflict``, the vendor count is in the
+    wrong basis, R2d review I1); ``adr_ratio_unknown``; ``vendor_shares_zero``;
+    ``archive_run_pending`` (no run known yet) and ``split_pending_share_update`` (the
+    known run started before a split ex-date at or before the bar). A bar with no vendor
+    count has no value (``invalid_current_state``). A line market_daily does not cover
+    has no verdict.
     Like A8, the bar's own count gates only by presence and sign, never by magnitude.
     """
     staged = con.execute("SELECT count(*) FROM _rp_share_dates WHERE decision_date=?",
@@ -1959,7 +1986,7 @@ def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow, market_sou
                  greatest(p.bar_at, s.pit_available_at) AS available_at,
                  CASE WHEN NOT coalesce(p.close > 0 AND p.adj > 0 AND isfinite(p.close) AND isfinite(p.adj), false)
                            THEN {_sql_text(BAR_PRICE_INVALID_REASON)}
-                      WHEN v.shares_source IN ({_sql_list(SHARES_SOURCES_WITHHELD)}) THEN v.shares_source
+                      WHEN v.shares_source IN ({_sql_list(LINE_CAP_BASIS_VERDICTS)}) THEN v.shares_source
                       WHEN s.share_basis = {_sql_text(_market_owner_bridge.SHARE_BASIS_ADR)}
                            AND s.adr_ratio_reason IS NOT NULL THEN s.adr_ratio_reason
                       WHEN s.share_basis IS NULL AND a.security_id IS NOT NULL THEN 'adr_ratio_unknown'
