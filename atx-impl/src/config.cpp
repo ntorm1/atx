@@ -235,6 +235,14 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         cfg.panel_storage_rule = value;
         return atx::core::Ok();
     }
+    if (flag == "ic-prereg-file" || flag == "ic-prereg-sha256") {
+        if (value.empty() || value.starts_with("--"))
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a nonempty value");
+        if (flag == "ic-prereg-file") cfg.equity_ic_prereg_file = value;
+        else cfg.equity_ic_prereg_sha256 = value;
+        return atx::core::Ok();
+    }
     if (flag == "start")        { cfg.start         = value; return atx::core::Ok(); }
     if (flag == "end")          { cfg.end           = value; return atx::core::Ok(); }
     if (flag == "allocation-rule") {
@@ -951,6 +959,22 @@ atx::core::Status validate_execution_delay(const RunConfig& cfg) {
     return atx::core::Ok();
 }
 
+atx::core::Status validate_ic_prereg_flags(const RunConfig& cfg) {
+    using EC = atx::core::ErrorCode;
+    const bool supplied = !cfg.equity_ic_prereg_file.empty();
+    if (supplied != !cfg.equity_ic_prereg_sha256.empty())
+        return atx::core::Err(EC::InvalidArgument,
+            "--ic-prereg-file and --ic-prereg-sha256 must be supplied together");
+    if (!supplied) return atx::core::Ok();
+    if (cfg.subcommand != "equity-ic")
+        return atx::core::Err(EC::InvalidArgument, "IC pre-registration is only valid for equity-ic");
+    if (cfg.equity_ic_prereg_sha256.size() != 64 ||
+        !std::all_of(cfg.equity_ic_prereg_sha256.begin(), cfg.equity_ic_prereg_sha256.end(),
+            [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+        return atx::core::Err(EC::InvalidArgument, "IC pre-registration SHA256 must be 64 lowercase hex digits");
+    return atx::core::Ok();
+}
+
 atx::core::Status validate_cross_flags(const RunConfig& cfg) {
     using EC = atx::core::ErrorCode;
     // --resume requires --run-db.
@@ -960,6 +984,7 @@ atx::core::Status validate_cross_flags(const RunConfig& cfg) {
     // The panel membership restriction is all-three-or-none. A partial set would
     // silently pick a cut or a window the operator never named.
     ATX_TRY_VOID(validate_membership_flags(cfg));
+    ATX_TRY_VOID(validate_ic_prereg_flags(cfg));
     ATX_TRY_VOID(validate_execution_delay(cfg));
     if (cfg.si_publication_lag < 0) {
         return atx::core::Err(EC::InvalidArgument, "--si-publication-lag must be >= 0");

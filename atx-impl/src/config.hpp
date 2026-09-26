@@ -516,6 +516,8 @@ struct RunConfig {
     // Append-only hash-chained pre-registration ledger consumed by equity-ic.
     // Empty = the stage's own frozen default, atx-engine/reviews/trial-ledger.jsonl.
     std::string equity_trial_ledger; // --trial-ledger
+    std::string equity_ic_prereg_file{}; // --ic-prereg-file, paired with exact SHA256
+    std::string equity_ic_prereg_sha256{}; // --ic-prereg-sha256
     // W0-I0b / D-12: point-in-time membership for equity-baseline / equity-ic. A
     // context built with --universe-membership carries a YEAR-UNION allow-list; under
     // the default rule "as-of-v2" the stage re-applies the membership AS OF each
@@ -620,6 +622,10 @@ read_seed_file(const std::string& path);
 // --config is present (see validate_cross_flags).
 // Returns Err(InvalidArgument) on unknown flag/subcommand.
 [[nodiscard]] atx::core::Result<RunConfig> parse_args(int argc, char** argv);
+
+// Paired explicit runtime declaration for equity-ic; direct stage callers use
+// the same validation as CLI/config parsing before reading a declaration file.
+[[nodiscard]] atx::core::Status validate_ic_prereg_flags(const RunConfig& cfg);
 
 // Parse a config file (newline-separated flag=value, # comments). A boolean key takes
 // true|false|1|0 (or an empty value, meaning true). A nested `config=` key is refused.
