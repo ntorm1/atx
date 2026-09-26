@@ -1,0 +1,125 @@
+{
+  "ProductionSource": "b6b80d2b7f5171ce8d3670e5ccfdc5a3519ae4bd",
+  "BuiltAt": "3e467fce61de3538240d830aa33b05fb278111b2",
+  "ConfiguredProvenance": "b6b80d2b7f5171ce8d3670e5ccfdc5a3519ae4bd",
+  "FixtureCorrection": "42677f2431ee9a9db06a5e914efc4a1580d364cc",
+  "DistinctQualified": 41,
+  "Executions": 42,
+  "UnresolvedFailures": 0,
+  "Runs": [
+    {
+      "Source": "3e467fce61de3538240d830aa33b05fb278111b2",
+      "Target": "atx-engine-w1-eval-tests",
+      "Filter": "GbtColumnV2.*:GbtDatasetV2.*:LearnPanelDataset.*:LearnCpcvDate.*",
+      "BinarySha256": "4ed3f4627d42c0f7c9843fa9459d1ba4bba312e65ef2ca24b9ef67806b46eeb3",
+      "ExitCode": 0,
+      "WallSeconds": 0.38583619999999996,
+      "Artifact": "w2-epoch-gbt-learn-qualified",
+      "Tests": 17,
+      "NativeSeconds": 0.305,
+      "Failures": [],
+      "XmlSha256": "d9bde13c4805d967464371e0cecc044619619235ba717621eee6f975c2b7913f",
+      "ReceiptSha256": "2abc177c26a4d4545278d53cf7e0a3e6783e63a12f19ec0fae85a7d317b8bbe7",
+      "LogSha256": "7bdb69670f2fcf24c15511676feccb1fa7ee08e991238bae1a4fe5025396fb43",
+      "MatchesCurrentBinary": true
+    },
+    {
+      "Source": "3e467fce61de3538240d830aa33b05fb278111b2",
+      "Target": "atx-engine-ic-screen-tests",
+      "Filter": "TrialEpoch.*",
+      "BinarySha256": "88b6a68a6f1a542175b1f2b17641ccc181524b1c408151ea3216baaa295e1211",
+      "ExitCode": 0,
+      "WallSeconds": 0.1681327,
+      "Artifact": "w2-epoch-gbt-catalog-qualified",
+      "Tests": 5,
+      "NativeSeconds": 0.11,
+      "Failures": [],
+      "XmlSha256": "b7235f79461a140af55ced1f3df4ee9dc578113d81c8bbe56dbff0ca60c7a709",
+      "ReceiptSha256": "f6ddfff12e26a7f5739bdf96fed93f95b88c801712084814a9f137e583587a88",
+      "LogSha256": "86d5f444ba1cf0d56673943456a0ef9d95d2a98f710794e7946c8ba7c4694e1d",
+      "MatchesCurrentBinary": true
+    },
+    {
+      "Source": "3e467fce61de3538240d830aa33b05fb278111b2",
+      "Target": "atx-impl-ic-screen-tests",
+      "Filter": "ImplIcEpochConfig.*:ImplIcScreenConfig.*",
+      "BinarySha256": "f49c201bc2caa5434be724578595b8b1cbf88b9b3d0c0ddb2b4535f98523144f",
+      "ExitCode": 1,
+      "WallSeconds": 0.1280565,
+      "Artifact": "w2-epoch-gbt-flags-qualified",
+      "Tests": 6,
+      "NativeSeconds": 0.03,
+      "Failures": [
+        "ImplIcEpochConfig.ConfigFileAndCliMergeUseTheSameGuardAndPreserveTrustedHead"
+      ],
+      "XmlSha256": "96a4c4127a159bbadbd16dce1198ff8535f9cf099247c75a32f3b1284c220192",
+      "ReceiptSha256": "c856518e0b4c641ebe6bf21f0d828dad5bcb64892dbc2d3be77f303fb1b95b56",
+      "LogSha256": "b74e13403f15358e379189905009511922cd559d158816bd5e91a44830ce431a",
+      "MatchesCurrentBinary": false
+    },
+    {
+      "Source": "3e467fce61de3538240d830aa33b05fb278111b2",
+      "Target": "atx-impl-w1-contract-tests",
+      "Filter": "EquityIcPrereg.*:StageEquityIc.Epoch*:StageEquityIc.RuntimePreregistration*:StageEquityIc.RuntimeFamilyVmFailure*:StageEquityIc.TwoRuns*",
+      "BinarySha256": "75ce1c7e999de7c6fd50aa31882cb05f99a4837c50a098d5846770788c014acc",
+      "ExitCode": 0,
+      "WallSeconds": 21.037666599999998,
+      "Artifact": "w2-epoch-gbt-stage-qualified",
+      "Tests": 13,
+      "NativeSeconds": 20.944,
+      "Failures": [],
+      "XmlSha256": "57a172abc66cd75e5019eb70a7b1978547b9d81793fe2e2d0ed2a178fa9a715c",
+      "ReceiptSha256": "9e1e5fbc100b3b0930b9b6124da779b13057c886b927ecad52ac2ae38b582b77",
+      "LogSha256": "6e306247a604224906e33f7b86f25c458012bb1e14e3fefefaf79815e82550fe",
+      "MatchesCurrentBinary": true
+    },
+    {
+      "Source": "42677f2431ee9a9db06a5e914efc4a1580d364cc",
+      "Target": "atx-impl-ic-screen-tests",
+      "Filter": "ImplIcEpochConfig.ConfigFileAndCliMergeUseTheSameGuardAndPreserveTrustedHead",
+      "BinarySha256": "f6c497ac98e2b502c63afa9c27cbc37d3d8aede3a26a69368ecd230d1050c848",
+      "ExitCode": 0,
+      "WallSeconds": 0.117161,
+      "Artifact": "w2-epoch-gbt-flags-fix-qualified",
+      "Tests": 1,
+      "NativeSeconds": 0.004,
+      "Failures": [],
+      "XmlSha256": "263d6282963150afd9a2fab6cb9ccaefc1d694e4a3d6427f59cd33d4cd219885",
+      "ReceiptSha256": "9135c5923a3d7456af6ff776371e16fb063c6d42bdb37d686e5168ee941ebf4d",
+      "LogSha256": "6efb9a9b2d2c847ec1640d620bc636d578e6f00747568452f523b1809aedcfda",
+      "MatchesCurrentBinary": true
+    }
+  ],
+  "IndexSha256": "c5dd670502014d01cf16fbdbd4020d9882e0e9530c147378ce1053f71ba25a66",
+  "Builds": [
+    {
+      "Source": "b6b80d2b7f5171ce8d3670e5ccfdc5a3519ae4bd",
+      "Jobs": 2,
+      "ExitCode": 0,
+      "WallSeconds": 51.4449585,
+      "Artifact": "w2-epoch-gbt-leaf-build",
+      "ReceiptSha256": "5cb7f7d2df8d0e341e246eba278470e123a8876c0a59a635b1aec0eb52a50d70",
+      "LogSha256": "9bccf2442d13cffa625da4b80a66d75e8acd9f9271495f3971f411a6c8063cbb"
+    },
+    {
+      "Source": "3e467fce61de3538240d830aa33b05fb278111b2",
+      "ConfiguredProvenance": "b6b80d2b7f5171ce8d3670e5ccfdc5a3519ae4bd",
+      "Jobs": 3,
+      "ExitCode": 0,
+      "WallSeconds": 239.66427779999998,
+      "Artifact": "w2-epoch-gbt-build",
+      "ReceiptSha256": "0f19128151697dadb42fba6443d8d2932145dd4cf2877a6d5398f5e0ee17eb70",
+      "LogSha256": "f66fb8b343483c4d0b2a8e9c60baee882fc055a98513e81cade706cfe91aaa37"
+    },
+    {
+      "Source": "42677f2431ee9a9db06a5e914efc4a1580d364cc",
+      "ConfiguredProvenance": "b6b80d2b7f5171ce8d3670e5ccfdc5a3519ae4bd",
+      "Jobs": 3,
+      "ExitCode": 0,
+      "WallSeconds": 24.4074442,
+      "Artifact": "w2-epoch-gbt-flags-fix-build",
+      "ReceiptSha256": "eb6224400bc202a54de4e394d29a260273c4553c757de303a3596795bf48dbf3",
+      "LogSha256": "12f6a7ec748211d0576250870d852cf45c66ce9aad8761b9d84da457b6cc9cec"
+    }
+  ]
+}
