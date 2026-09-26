@@ -245,6 +245,7 @@ add_executable(atx-engine-ic-screen-tests EXCLUDE_FROM_ALL
     factory/execution_fitness_test.cpp
     factory/factory_fidelity_test.cpp
     factory/search_progress_test.cpp
+    eval/eval_trial_epoch_test.cpp
     eval/eval_trial_registry_test.cpp)
 atx_engine_test_compile_environment(atx-engine-ic-screen-tests)
 target_link_libraries(atx-engine-ic-screen-tests PRIVATE atx-test-scratch)
