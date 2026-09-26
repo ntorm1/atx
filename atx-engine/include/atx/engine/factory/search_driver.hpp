@@ -347,6 +347,9 @@ struct SearchResult {
   eval::CpcvMetadata cpcv_metadata; // populated only for active DateV2
   bool ic_screen_resume_mismatch{false}; // incompatible/missing active checkpoint identity
   bool ic_screen_cache_mismatch{false}; // injected recipe/geometry differs from this run
+  bool execution_invalid{false}; // explicit V2 request refused before search
+  std::string execution_error{};
+  std::string execution_context_sha256{};
 };
 
 namespace detail {
@@ -472,7 +475,8 @@ public:
   [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool,
                                  SearchProgressSink *sink = nullptr,
                                  const SearchResumeState *resume = nullptr,
-                                 const IcScreenCache *prepared_ic_screen = nullptr);
+                                 const IcScreenCache *prepared_ic_screen = nullptr,
+                                 const ExecutionObjectiveContext *execution_context = nullptr);
 
 private:
   // ----- (1) init_population -------------------------------------------------

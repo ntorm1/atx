@@ -54,6 +54,7 @@
 //  Header-only, every function inline; the fitness path is COLD (one call per
 //  distinct candidate, never on the VM hot loop), so std::vector is fine.
 
+#include "atx/engine/factory/execution_objective.hpp"
 #include <array>   // std::array (the multi-objective vector, S4.1)
 #include <cstring> // std::memcpy (CpcvCache: embed embargo f64 as bit pattern for map key)
 #include <limits>  // std::numeric_limits (FitnessCfg::max_turnover_target default +inf)
@@ -470,6 +471,10 @@ struct FitnessCfg {
   // two inert bools appended at the end -- no aggregate-init break, no digest drift.
   bool capacity_objective = false; // S4-1: gates the kObjCapacity compute
   bool turnover_objective = false; // S4-2: gates the kObjTurnover compute
+  // V2 is an explicit mature net-return objective. The immutable context is
+  // borrowed only during scoring; its identity is validated before use.
+  ExecutionObjectiveConfig execution{};
+  const ExecutionObjectiveContext* execution_context{nullptr};
 };
 
 namespace detail {
