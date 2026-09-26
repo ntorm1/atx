@@ -35,3 +35,19 @@ mask forward labels crossing each training cutoff, even with an embargo.
 The original E1 1000×2520×3000 RSS gate and A1 large-panel speed thresholds remain
 pending actual evidence. Use short, bounded synthetic correctness and resource
 checks now. Do not infer throughput from Debug tests or claim W1 completion.
+
+Source integrations completed before compilation: Lane0 `95d0773d`; E1 storage
+`0d7a45ec`, consumer `4e49679e`, checks `e2ea5e6d`/`43d5ad98`; A1 `aeea9b55`,
+`65a7210c`, `6cc30e5f`, `59e3e199`, `0bdec034`, `70ccafdc`, `acfae169`, `5a64fa2d`;
+report `e7fa0e3c`. Independent review accepted source after raw and derived
+co-moment overflow fixes. The consumer fixture's missing parent directory was
+also fixed before compilation. Root's focused W1 target contains ten test TUs,
+including existing oracle/conformance/streaming and combiner/WF consumers.
+
+The IC statistical review found no demonstrated noisy-null pruning (0/18) at
+the original V2 rule. A new explicit EquivalenceV3 uses a protected full-window
+IC floor0.002 and multiplier3.5; it removes the arbitrary one-SE veto while
+retaining the additional heuristic quarter safeguard. Old V2 remains explicit.
+This still passes underpowered candidates; it makes no general recall or speed
+claim. Kernel/application changes are pending final source release, and will
+share one combined build with W1 to avoid repeated header rebuilds.

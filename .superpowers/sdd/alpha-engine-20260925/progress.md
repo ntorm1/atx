@@ -65,8 +65,13 @@ W1 source work proceeding under ownerbuild-firstoverride; workingbase7e16ed26.
 G0(pool3) cube45317e8d; audit(pool5) consumer c898c7e8/tests ce879ea1; rootreviewed
 both source, G0 independently reviewingconsumer. Kernelowner(pool4) A1 f257bc91,
 667d386c,bc3e173c,ca8ea138 and unaryroutingpending; G0found pairoverflowrecoverygap,
-ownerfixing. No W1source imported/built yet. RootownsminimalLane0CMake/brief before
-imports. Details .superpowers/sdd/w1/progress.md. V3partialDSR uses totalrawN and
+ownerfixed0906a4ee, independentlyaccepted. W1minimalLane0CMake/brief95d0773d;
+E1 imports0d7a45ec/4e49679e/e2ea5e6d/43d5ad98 and A1 aeea9b55through5a64fa2d,
+report e7fa0e3c. W1source integrated, compilationruntimepending. CurrentICV3fix
+inprogress:explicitEquivalenceV3/.002/3.5 removesarbitrary1SEveto onlynewrule,
+V2reproductionunchangedwithfullrecordedrecipe. Rootglobalcfgdirtywaitingkernelhelper;
+mine248888c6pendingimport. OnecombinedW1+ICbuildonlyafterfinalV3reviewrelease.
+Details .superpowers/sdd/w1/progress.md. V3partialDSR uses totalrawN and
 max(observed,marginal) variance; nofakePnL. Long gates stay deferred; main unchanged.
 
 Scaffold adds factory/ic_screen.cpp to CMake. Root branch remains integration;
