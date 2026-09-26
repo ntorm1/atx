@@ -61,15 +61,47 @@
 
 #include <cmath>   // std::pow, std::sqrt
 #include <utility> // std::move
+#include <span>
+#include <vector>
 
 #include <Eigen/Dense>
 
 #include "atx/core/types.hpp" // f64, usize
+#include "atx/core/error.hpp"
 
 #include "atx/core/linalg/decompose.hpp" // symmetric_eig (SPD floor)
 #include "atx/core/linalg/linalg.hpp"    // MatX, VecX (column-major Eigen)
 
 namespace atx::engine::risk {
+
+struct EwmaCovarianceV2 {
+  atx::core::linalg::MatX covariance;
+  // Kish effective observations of the variance weights, per factor. Missing
+  // observations are excluded, never compacted into a shorter session clock.
+  std::vector<atx::f64> effective_observations;
+  std::vector<atx::usize> observations;
+};
+
+struct EwmaVarianceV2 {
+  atx::f64 variance{};
+  atx::f64 effective_observations{};
+  atx::usize observations{};
+};
+
+[[nodiscard]] atx::core::Result<EwmaVarianceV2> ewma_variance_v2(
+    std::span<const atx::f64> returns, std::span<const atx::usize> session_ages,
+    atx::usize vol_halflife = 84, atx::usize nw_lags = 5, atx::usize nw_halflife = 252);
+
+// Newest-first rows and strictly increasing session ages. Empty ages means
+// contiguous 0..T-1. NaN is missing, infinity is invalid. Newey-West terms use
+// the same weighted measure as their own zero-lag covariance, then rescale the
+// fast variance by the resulting serial-correlation ratio. Legacy overload
+// below is unchanged.
+[[nodiscard]] atx::core::Result<EwmaCovarianceV2> ewma_factor_covariance_v2(
+    const atx::core::linalg::MatX& returns, std::span<const atx::usize> session_ages,
+    atx::usize vol_halflife = 84, atx::usize correlation_halflife = 504,
+    atx::usize nw_lags = 2, atx::usize nw_halflife = 252,
+    atx::u64 max_working_bytes = 268'435'456);
 
 // Floor applied to every eigenvalue of the final F so it is positive-DEFINITE
 // (FactorModel::create's Cholesky succeeds). Relative to the matrix trace so it
