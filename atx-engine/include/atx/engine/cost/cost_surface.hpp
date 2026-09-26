@@ -92,6 +92,10 @@ public:
       std::span<const CostSurfaceRow> rows,
       atx::u64 max_working_bytes = atx::u64{64} * 1024U * 1024U);
 
+  // Retained payload capacities plus explicit 1 KiB allocator/control-block
+  // slack; saturates on overflow. Shared copies each report the full payload.
+  // This is an admission charge, not measured RSS.
+  [[nodiscard]] atx::u64 bytes() const noexcept;
   [[nodiscard]] atx::usize instruments() const noexcept;
   [[nodiscard]] atx::i64 decision_time_ns() const noexcept;
   [[nodiscard]] std::span<const CostSurfaceRow> rows() const noexcept;

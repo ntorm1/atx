@@ -175,6 +175,23 @@ std::span<const CostSurfaceRow> CostSurface::rows() const noexcept {
   return data_ ? std::span<const CostSurfaceRow>{data_->rows} : std::span<const CostSurfaceRow>{};
 }
 std::string_view CostSurface::recipe_sha256() const noexcept { return data_ ? data_->recipe_hash : std::string_view{}; }
+atx::u64 CostSurface::bytes() const noexcept {
+  if (!data_) return 0;
+  constexpr auto limit = std::numeric_limits<atx::u64>::max();
+  atx::u64 used = sizeof(cost_surface_detail::Data) + 1024U;
+  const auto add = [&](atx::u64 count, atx::u64 width) {
+    if (width != 0 && count > (limit - used) / width) { used = limit; return; }
+    used += count * width;
+  };
+  add(data_->rows.capacity(), sizeof(CostSurfaceRow));
+  for (const auto* value : {&data_->identity.source_sha256, &data_->identity.liquidity_recipe,
+                            &data_->identity.calibration_identity, &data_->recipe_hash,
+                            &data_->snapshot_hash}) {
+    add(value->capacity(), 1U);
+    add(1U, 1U); // terminating character; conservative for small-string storage
+  }
+  return used;
+}
 std::string_view CostSurface::snapshot_sha256() const noexcept { return data_ ? data_->snapshot_hash : std::string_view{}; }
 std::string_view CostSurface::source_sha256() const noexcept { return data_ ? data_->identity.source_sha256 : std::string_view{}; }
 
