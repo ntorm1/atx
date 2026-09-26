@@ -445,7 +445,11 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
       usize names = 0;
       for (usize i = 0; i < n; ++i) {
         const auto k = t * n + i;
-        const bool eligible = (!claims_enabled || retired[i]==0) &&
+        const auto event_index=claims_enabled?c.cash_event_for_name[i]:c.cash_events.size();
+        const bool known_completion=event_index<c.cash_events.size() &&
+            c.cash_events[event_index].effective_by_ns<c.decisions[t] &&
+            c.cash_events[event_index].available_at_ns<c.decisions[t];
+        const bool eligible = (!claims_enabled || retired[i]==0) && !known_completion &&
                               c.member[k] != 0 && c.panel_member[k] != 0 &&
                               std::isfinite(signal[k]) && std::isfinite(c.prices[k]) &&
                               c.prices[k] > 0;
@@ -677,6 +681,8 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
       c->cash_event_names[j]=i; c->cash_event_for_name[i]=j;
       const auto known=std::max(e.effective_by_ns,e.available_at_ns);
       if (known<marks[c->config.window_begin]) {
+        if (e.recognition_mark_ns>marks[c->config.window_begin])
+          return co::Err(co::ErrorCode::InvalidArgument,"cash claim: delayed pre-role recognition");
         c->cash_event_periods[j]=c->config.window_begin;
         continue; // Known extinction only. No hypothetical opening entitlement.
       }
