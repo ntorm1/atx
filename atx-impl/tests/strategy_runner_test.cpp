@@ -8,6 +8,7 @@
 #include <map>
 #include <sstream>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
