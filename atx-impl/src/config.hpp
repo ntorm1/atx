@@ -505,6 +505,8 @@ struct RunConfig {
     // The stage inherits baseline dates/financial assumptions unless overridden;
     // set_flags distinguishes an explicit zero fee from an omitted override.
     std::string equity_baseline_dir; // --baseline-dir
+    // Explicit numerical/storage recipe; legacy selection omits the V2 metadata.
+    std::string equity_allocation_rule = "sparse-relative-v2"; // --allocation-rule
     // Append-only hash-chained pre-registration ledger consumed by equity-ic.
     // Empty = the stage's own frozen default, atx-engine/reviews/trial-ledger.jsonl.
     std::string equity_trial_ledger; // --trial-ledger

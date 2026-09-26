@@ -100,9 +100,12 @@ Status arguments(const RunConfig &cfg) {
     const std::set<std::string> allowed{"panel", "baseline-dir", "out", "max-working-bytes",
         "report-aum", "replay-execution-delay", "replay-trade-bps", "replay-annual-borrow-bps",
         "replay-day-basis", "quiet", "digest-only", "config", "allow-same-close",
-        "replay-delisting-policy"};
+        "replay-delisting-policy", "allocation-rule"};
     for (const auto &flag : cfg.set_flags) if (!allowed.contains(flag))
         return Err(ErrorCode::InvalidArgument, "equity book: unsupported flag --" + flag);
+    if (cfg.equity_allocation_rule != "legacy-dense-absolute-v1" &&
+        cfg.equity_allocation_rule != "sparse-relative-v2")
+        return Err(ErrorCode::InvalidArgument, "equity book: unknown allocation rule");
     if (cfg.panel.empty() || cfg.equity_baseline_dir.empty() || cfg.out.empty() ||
         cfg.equity_max_working_bytes <= kReserve || cfg.allow_unidentified_panels ||
         !cfg.equity_evaluation_start.empty() || !cfg.equity_evaluation_end.empty() ||
@@ -257,7 +260,7 @@ Result<Inputs> load(const RunConfig &cfg) {
 
 Json certificate(const EquityAllocationResult &out) {
     const auto &c = out.certificate;
-    return Json{{"solver_used", c.solver_used}, {"primal_residual", c.solver.prim_res},
+    Json value{{"solver_used", c.solver_used}, {"primal_residual", c.solver.prim_res},
         {"dual_residual", c.solver.dual_res}, {"polished", c.solver.polished},
         {"effective_solver_feasibility_tolerance", c.effective_solver_feasibility_tolerance},
         {"fee_reserve", c.fee_reserve}, {"requested_prefee_net", c.requested_prefee_net},
@@ -286,6 +289,11 @@ Json certificate(const EquityAllocationResult &out) {
         {"close_count", c.close_count}, {"hold_count", c.hold_count},
         {"union_instruments", out.plan.union_instruments},
         {"additional_bytes_bound", std::to_string(out.plan.additional_bytes_bound)}};
+    if (c.rule == EquityAllocationRule::SparseRelativeV2) {
+        value["allocation_rule"] = "sparse-relative-v2";
+        value["effective_solver_relative_tolerance"] = c.effective_solver_relative_tolerance;
+    }
+    return value;
 }
 
 const char *close_classification(atx::f64 mark) {
@@ -388,6 +396,8 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
     report.books = (fs::path(cfg.equity_baseline_dir) / "books.bin").string();
     report.report_out = (directory / "report").string();
     EquityAllocationConfig allocation;
+    allocation.rule = cfg.equity_allocation_rule == "sparse-relative-v2"
+        ? EquityAllocationRule::SparseRelativeV2 : EquityAllocationRule::LegacyDenseAbsoluteV1;
     allocation.representation = EquityAllocationRepresentation::MachinePrecisionIntentsV1;
     allocation.execution_availability = EquityExecutionAvailability::ObservedCloseEntryConstraintV1;
     allocation.trade_bps = report.replay_trade_bps;
@@ -450,6 +460,23 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
         {"qualification", "unknown"}, {"strategy_capacity", "unavailable"},
         {"sector_beta_constraints", "not-enforced"}, {"live_orders_authorized", false},
         {"producer_executable_sha256", executable.empty() ? "unknown" : executable}};
+    if (allocation.rule == EquityAllocationRule::SparseRelativeV2) {
+        recipe["profile"] = "constrained-preference-weekly-sparse-relative-v4";
+        recipe["allocation_rule"] = cfg.equity_allocation_rule;
+        recipe["constraint_storage"] = {{"rule", "SparseCsrV2"},
+            {"max_nnz", std::to_string(allocation.sparse_storage.max_nnz)},
+            {"max_materialization_bytes", std::to_string(allocation.sparse_storage.max_materialization_bytes)},
+            {"max_solver_bytes", std::to_string(allocation.sparse_storage.max_solver_bytes)},
+            {"effective_max_factor_bytes", std::to_string(std::min(allocation.solver.max_factor_bytes,
+                allocation.sparse_storage.max_solver_bytes / 4))}};
+        recipe["solver_feasibility_rule"] = "RelativeEconomicV2-direct-actual-weight-linear-gross-turnover";
+        recipe["solver_absolute_tolerance"] =
+            "min(configured,economic_tolerance*fee_reserve/(32*(1+fee_rate*(1+gross_limit+name_limit))))";
+        recipe["solver_relative_tolerance"] =
+            "economic_tolerance*fee_reserve/(32*(1+fee_rate*(1+gross_limit+name_limit))*(1+gross_limit+turnover_limit+name_limit+max(0,beta_tolerance)+max(0,sector_net_cap)))";
+        recipe["solver_route"] = "unchanged-augmented-admm-fixed-iterations";
+        recipe["final_economic_certificate"] = "unchanged-post-fee-and-represented-execution-absolute-limits";
+    }
     const Json parents = Json::array({Json{{"role", "source-context"}, {"sha256", inputs.context.artifact_id}},
         Json{{"role", "evaluation"}, {"sha256", inputs.evaluation.artifact_id}},
         Json{{"role", "combo"}, {"sha256", inputs.combo.artifact_id}},

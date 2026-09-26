@@ -48,11 +48,19 @@ Status validate_config(const EquityAllocationConfig &c) {
         c.solver.iters == 0 || c.solver.iters > 100'000 ||
         c.solver.ruiz_passes > 100 || c.solver.polish_refine > 100 || c.solver.max_factor_bytes == 0 ||
         c.max_additional_bytes == 0 ||
+        (c.rule != EquityAllocationRule::LegacyDenseAbsoluteV1 &&
+         c.rule != EquityAllocationRule::SparseRelativeV2) ||
         (c.representation != EquityAllocationRepresentation::ExactWeights &&
          c.representation != EquityAllocationRepresentation::MachinePrecisionIntentsV1) ||
         (c.execution_availability != EquityExecutionAvailability::RequireRequestedMark &&
          c.execution_availability != EquityExecutionAvailability::ObservedCloseEntryConstraintV1)) {
         return Err(ErrorCode::InvalidArgument, "equity allocation: invalid numeric/configuration bounds");
+    }
+    if (c.rule == EquityAllocationRule::SparseRelativeV2 &&
+        (c.sparse_storage.rule != risk::ConstraintStorageRule::SparseCsrV2 ||
+         c.sparse_storage.max_nnz == 0 || c.sparse_storage.max_materialization_bytes == 0 ||
+         c.sparse_storage.max_solver_bytes < 4)) {
+        return Err(ErrorCode::InvalidArgument, "equity allocation: invalid sparse resource policy");
     }
     if (!std::isfinite(c.beta_tolerance) || !std::isfinite(c.sector_net_cap)) {
         return Err(ErrorCode::InvalidArgument, "equity allocation: nonfinite factor bound");
@@ -133,6 +141,11 @@ EquityRealizedExposure exposures_of(const EquityAllocationDecision &d,
             atx::f64 net = 0.0;
             const auto label = nets[k].first;
             for (; k < nets.size() && nets[k].first == label; ++k) net += nets[k].second;
+            if (!std::isfinite(net)) {
+                out.max_sector_net = std::numeric_limits<atx::f64>::infinity();
+                out.within_bounds = false;
+                return out;
+            }
             worst = std::max(worst, std::abs(net));
         }
         out.max_sector_net = worst / nav;
@@ -552,11 +565,14 @@ Result<EquityAllocationPlan> plan_equity_allocation(atx::usize canonical, atx::u
     // This also bounds 8*(D+1) in Eigen's AMD scratch-index arithmetic.
     ATX_TRY(auto kkt_plus_one, add(kkt, 1));
     ATX_TRY(auto amd_work, mul(kkt_plus_one, 8));
-    ATX_TRY(auto worst_count, mul(kkt_plus_one, kkt_plus_one));
     if (amd_nnz > static_cast<atx::u64>(std::numeric_limits<int>::max()) / 4 ||
-        amd_work > static_cast<atx::u64>(std::numeric_limits<int>::max()) / 4 ||
-        worst_count > static_cast<atx::u64>(std::numeric_limits<int>::max()) / 4)
+        amd_work > static_cast<atx::u64>(std::numeric_limits<int>::max()) / 4)
         return Err(ErrorCode::OutOfRange, "equity allocation: sparse/AMD index bound exceeded");
+    if (config.rule == EquityAllocationRule::LegacyDenseAbsoluteV1) {
+        ATX_TRY(auto worst_count, mul(kkt_plus_one, kkt_plus_one));
+        if (worst_count > static_cast<atx::u64>(std::numeric_limits<int>::max()) / 4)
+            return Err(ErrorCode::OutOfRange, "equity allocation: sparse/AMD index bound exceeded");
+    }
     // Descriptor-specific bounds; do not reuse for arbitrary ConstraintSets.
     // Atilde has 15M+1 entries, INCLUDING M explicit zero factor exposures;
     // full symmetric KKT has 40M+7. Eigen AMD copies the selfadjoint pattern,
@@ -573,8 +589,19 @@ Result<EquityAllocationPlan> plan_equity_allocation(atx::usize canonical, atx::u
     static_assert(sizeof(atx::f64) == 8 && sizeof(atx::usize) <= 8 && sizeof(int) <= 4);
     static_assert(sizeof(Eigen::Triplet<atx::f64>) <= 16);
     ATX_TRY(auto m_plus_one, add(m, 1));
-    ATX_TRY(auto dense_cells, mul(m_plus_one, m_plus_one));
-    ATX_TRY(auto matrix_bytes, mul(dense_cells, 64));
+    atx::u64 matrix_bytes = 0;
+    if (config.rule == EquityAllocationRule::LegacyDenseAbsoluteV1) {
+        ATX_TRY(auto dense_cells, mul(m_plus_one, m_plus_one));
+        ATX_TRY(matrix_bytes, mul(dense_cells, 64));
+    } else {
+        // Net has M stored coefficients and the M boxes are implicit. Include
+        // bounds, offsets, descriptors and copies; no dense M-by-M reservation.
+        ATX_TRY(matrix_bytes, mul(m_plus_one, 1024));
+        ATX_TRY(auto logical_nnz, mul(m, 2));
+        if (logical_nnz > config.sparse_storage.max_nnz ||
+            matrix_bytes > config.sparse_storage.max_materialization_bytes)
+            return Err(ErrorCode::OutOfRange, "equity allocation: CSR storage budget exceeded");
+    }
     ATX_TRY(auto linear_bytes, mul(kkt, 8192));
     ATX_TRY(auto factor_bytes, mul(config.solver.max_factor_bytes, 2));
     ATX_TRY(auto bytes0, add(matrix_bytes, linear_bytes));
@@ -626,6 +653,7 @@ Result<EquityAllocationResult> allocate_equity_preference(const EquityAllocation
     ATX_TRY(auto plan, plan_equity_allocation(d.preference.size(), count, d.config));
     EquityAllocationResult out;
     out.plan = plan;
+    out.certificate.rule = d.config.rule;
     out.continuous_weights.assign(d.preference.size(), 0.0);
     out.union_indices.reserve(count);
     out.certificate.fee_reserve = 1.0 - (d.config.trade_bps * 1e-4) * d.config.turnover_limit;
@@ -663,6 +691,8 @@ Result<EquityAllocationResult> allocate_equity_preference(const EquityAllocation
         ATX_TRY(auto model, risk::FactorModel::create(std::move(exposures), std::move(factor),
             std::move(diagonal), d.first_context_row, d.decision_context_row + 1));
         risk::ConstraintSet constraints;
+        if (d.config.rule == EquityAllocationRule::SparseRelativeV2)
+            constraints.storage = d.config.sparse_storage;
         constraints.gross = {d.config.gross_limit * out.certificate.fee_reserve, true};
         constraints.pos = risk::PositionCap{d.config.name_limit * out.certificate.fee_reserve};
         constraints.turn = risk::TurnoverBudget{d.config.turnover_limit};
@@ -687,9 +717,17 @@ Result<EquityAllocationResult> allocate_equity_preference(const EquityAllocation
         }
         const auto factor_rows = (beta_enabled(d.config) ? 1U : 0U) + sector_rows;
         if (factor_rows != 0) {
-            // Dense factor rows plus their share of every sparse/KKT copy.
-            ATX_TRY(auto dense, mul(static_cast<atx::u64>(factor_rows), static_cast<atx::u64>(count) + 1));
-            ATX_TRY(auto dense_bytes, mul(dense, 64));
+            // Legacy stores every row densely. CSR stores one sector entry per
+            // instrument, plus one beta entry when enabled, regardless of S.
+            atx::u64 coefficient_count = 0;
+            if (d.config.rule == EquityAllocationRule::LegacyDenseAbsoluteV1) {
+                ATX_TRY(coefficient_count, mul(static_cast<atx::u64>(factor_rows),
+                    static_cast<atx::u64>(count) + 1));
+            } else {
+                ATX_TRY(coefficient_count, mul(static_cast<atx::u64>(count),
+                    (beta_enabled(d.config) ? 1U : 0U) + (sector_rows != 0 ? 1U : 0U)));
+            }
+            ATX_TRY(auto dense_bytes, mul(coefficient_count, 64));
             ATX_TRY(auto linear_bytes, mul(static_cast<atx::u64>(factor_rows), 8192));
             ATX_TRY(auto extra, add(dense_bytes, linear_bytes));
             ATX_TRY(auto total, add(plan.additional_bytes_bound, extra));
@@ -697,7 +735,7 @@ Result<EquityAllocationResult> allocate_equity_preference(const EquityAllocation
                 return Err(ErrorCode::OutOfRange, "equity allocation: factor rows exceed additional byte budget");
         }
         ATX_TRY(auto materialized, constraints.materialize(model.exposures(), previous, count));
-        if (materialized.A.rows() != static_cast<Eigen::Index>(count + 1 + factor_rows))
+        if (materialized.row_count() != count + 1 + factor_rows)
             return Err(ErrorCode::Internal, "equity allocation: unexpected constraint row layout");
         for (atx::usize j = 0; j < count; ++j) {
             if (out.required_zero_reasons[out.union_indices[j]] != 0) {
@@ -708,6 +746,10 @@ Result<EquityAllocationResult> allocate_equity_preference(const EquityAllocation
         }
         risk::ConstrainedQpSolver solver;
         solver.cfg = d.config.solver;
+        // Versioned policy wins over caller solver feasibility fields. Neither
+        // rule changes the existing unscheduled augmented ADMM solve route.
+        solver.cfg.feasibility_rule = risk::ConstraintFeasibilityRule::LegacyAbsoluteV1;
+        solver.cfg.feasibility_relative_tolerance = 0.0;
         // If every augmented row is feasible within eps, |w_i| <= s_i+eps
         // and sum(s_i) <= G+eps imply gross <= G+(M+1)*eps. The same
         // propagation applies to turnover. Lifting F mathematically fixed-zero
@@ -732,13 +774,32 @@ Result<EquityAllocationResult> allocate_equity_preference(const EquityAllocation
         const auto propagated_tolerance =
             ((d.config.feasibility_tolerance * out.certificate.fee_reserve / 8.0) /
              propagation) / fee_amplification;
-        if (!positive(propagation) || !positive(fee_amplification) ||
-            !positive(propagated_tolerance)) {
+        if (!positive(fee_amplification) ||
+            (d.config.rule == EquityAllocationRule::LegacyDenseAbsoluteV1 &&
+             (!positive(propagation) || !positive(propagated_tolerance)))) {
             return Err(ErrorCode::OutOfRange,
                        "equity allocation: nonfinite/underflowed propagated solver tolerance");
         }
-        solver.cfg.feas_tol = std::min(solver.cfg.feas_tol, propagated_tolerance);
+        if (d.config.rule == EquityAllocationRule::LegacyDenseAbsoluteV1)
+            solver.cfg.feas_tol = std::min(solver.cfg.feas_tol, propagated_tolerance);
+        if (d.config.rule == EquityAllocationRule::SparseRelativeV2) {
+            // Direct actual-weight L1/net checks avoid an M*row-epsilon budget.
+            // Split the economic margin between absolute and scale-relative
+            // error, retaining the independent post-fee/mandatory-zero check.
+            const auto budget = (d.config.feasibility_tolerance *
+                out.certificate.fee_reserve / 32.0) / fee_amplification;
+            const auto scale = 1.0 + d.config.gross_limit + d.config.turnover_limit +
+                d.config.name_limit + std::max(0.0, d.config.beta_tolerance) +
+                std::max(0.0, d.config.sector_net_cap);
+            const auto relative = budget / scale;
+            if (!positive(budget) || !positive(scale) || !positive(relative))
+                return Err(ErrorCode::OutOfRange, "equity allocation: invalid relative economic tolerance");
+            solver.cfg.feas_tol = std::min(d.config.solver.feas_tol, budget);
+            solver.cfg.feasibility_rule = risk::ConstraintFeasibilityRule::RelativeEconomicV2;
+            solver.cfg.feasibility_relative_tolerance = relative;
+        }
         out.certificate.effective_solver_feasibility_tolerance = solver.cfg.feas_tol;
+        out.certificate.effective_solver_relative_tolerance = solver.cfg.feasibility_relative_tolerance;
         auto solved = solver.solve_with_cert(risk::QpProblem{model, 0.5, q, materialized});
         if (!solved) {
             return Err(solved.error().code(),
@@ -778,6 +839,7 @@ Result<EquityAllocationResult> represent_equity_allocation(const EquityAllocatio
     ATX_TRY(auto plan, plan_equity_allocation(d.preference.size(), count, d.config));
     EquityAllocationResult out;
     out.plan = plan;
+    out.certificate.rule = d.config.rule;
     out.continuous_weights.assign(continuous_weights.begin(), continuous_weights.end());
     out.union_indices.reserve(count);
     out.certificate.fee_reserve = 1.0 - (d.config.trade_bps * 1e-4) * d.config.turnover_limit;

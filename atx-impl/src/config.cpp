@@ -229,6 +229,13 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "panel-out")    { cfg.panel_out     = value; return atx::core::Ok(); }
     if (flag == "start")        { cfg.start         = value; return atx::core::Ok(); }
     if (flag == "end")          { cfg.end           = value; return atx::core::Ok(); }
+    if (flag == "allocation-rule") {
+        if (value != "legacy-dense-absolute-v1" && value != "sparse-relative-v2")
+            return atx::core::Err(EC::InvalidArgument,
+                "--allocation-rule requires legacy-dense-absolute-v1 or sparse-relative-v2");
+        cfg.equity_allocation_rule = value;
+        return atx::core::Ok();
+    }
     if (flag == "baseline-dir") {
         if (value.empty() || value.starts_with("--")) {
             return atx::core::Err(EC::InvalidArgument,

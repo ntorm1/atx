@@ -22,6 +22,11 @@ enum class EquityExecutionAvailability : atx::u8 {
     ObservedCloseEntryConstraintV1
 };
 
+enum class EquityAllocationRule : atx::u8 {
+    LegacyDenseAbsoluteV1 = 1,
+    SparseRelativeV2 = 2
+};
+
 // Bitmask codebook for required_zero_reasons. Reasons can overlap outside the
 // solve union; no held missing mark is ever converted to an execution exclusion.
 enum class EquityAllocationZeroReason : atx::u8 {
@@ -52,6 +57,12 @@ struct EquityAllocationConfig {
     // represented book. They need the matching decision exposures (below).
     atx::f64 beta_tolerance{-1.0};  // |sum_i beta_i w_i| <= this.
     atx::f64 sector_net_cap{-1.0};  // |sum_{i in g} w_i| <= this for every sector g.
+    // Existing library callers retain the exact dense/absolute recipe. The book
+    // application selects V2 explicitly and binds it into its persisted recipe.
+    EquityAllocationRule rule{EquityAllocationRule::LegacyDenseAbsoluteV1};
+    atx::engine::risk::ConstraintStorageConfig sparse_storage{
+        atx::engine::risk::ConstraintStorageRule::SparseCsrV2,
+        16'000'000, 268'435'456, 1'073'741'824};
 };
 
 // Exactly 64 canonical, consecutive source observations ending at the decision.
@@ -110,6 +121,7 @@ struct EquityAllocationPlan {
 };
 
 struct EquityAllocationCertificate {
+    EquityAllocationRule rule{EquityAllocationRule::LegacyDenseAbsoluteV1};
     // This raw QP diagnostic applies only to continuous_weights, never to the
     // subsequently lifted/represented execution candidate.
     atx::engine::risk::QpCertificate solver;
@@ -117,6 +129,7 @@ struct EquityAllocationCertificate {
     // Original augmented-row tolerance after L1/mandatory-zero/fee propagation;
     // zero when no solver is used. Economic acceptance tolerance is unchanged.
     atx::f64 effective_solver_feasibility_tolerance{};
+    atx::f64 effective_solver_relative_tolerance{}; // V2 only, zero for V1/all-cash.
     atx::f64 fee_reserve{};
     atx::f64 requested_prefee_net{};
     atx::f64 requested_prefee_gross{};
@@ -196,7 +209,7 @@ measure_equity_exposures(const EquityAllocationDecision &decision,
                          std::span<const atx::f64> held_marked_dollars, atx::f64 nav);
 
 // Conservative worst-case bound for the specific diagonal/net/box/gross/turnover
-// path, including dense ConstraintSet A, sparse assembly and both guarded factor
+// path, including the selected constraint storage, sparse assembly and guarded factor
 // budgets. This is admission control, not an OS RSS ceiling. Oversized unions
 // fail before solver/union allocations; no holdings are dropped to fit a budget.
 [[nodiscard]] atx::core::Result<EquityAllocationPlan>
