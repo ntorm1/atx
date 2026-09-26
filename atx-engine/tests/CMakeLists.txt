@@ -327,6 +327,8 @@ endif()
 add_executable(atx-engine-w1-risk-tests EXCLUDE_FROM_ALL
     risk/risk_estimator_v2_test.cpp
     risk/risk_covariance_integration_test.cpp
+    risk/risk_factor_model_test.cpp
+    risk/risk_hybrid_model_test.cpp
     risk/risk_constraints_test.cpp
     risk/risk_qp_solver_test.cpp
     risk/risk_qp_factor_admm_test.cpp
