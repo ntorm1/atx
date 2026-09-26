@@ -2342,7 +2342,8 @@ def _selection_coverage(series: pd.DataFrame, basis: str, feature_id: str, first
         return None, 0
     chosen = part["in_selection"].fillna(False).astype(bool).to_numpy()
     if first is not None:
-        chosen &= pd.to_datetime(part["formation_date"]).to_numpy() >= np.datetime64(first)
+        # Not in place: under pandas 3 (Copy-on-Write) ``to_numpy()`` is a read-only view (1.13, ruling C-82).
+        chosen = chosen & (pd.to_datetime(part["formation_date"]).to_numpy() >= np.datetime64(first))
     coverage = pd.to_numeric(part["coverage"], errors="coerce").to_numpy(dtype=float)[chosen]
     if not len(coverage):
         return None, 0
