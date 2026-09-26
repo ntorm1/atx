@@ -86,5 +86,6 @@ add_executable(atx-impl-strategy-tests EXCLUDE_FROM_ALL
     strategy_runner_test.cpp
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/data/strategy_data_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/execution_schedule_test.cpp"
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/execution_cash_claim_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/execution_objective_test.cpp")
 atx_impl_test_target_environment(atx-impl-strategy-tests)
