@@ -207,7 +207,8 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
         if (old == 0)
           continue;
         const auto a = (t - 1) * n + i, b = t * n + i;
-        if (!std::isfinite(c.prices[a]) || !std::isfinite(c.prices[b]) || c.prices[a] <= 0 ||
+        if (c.panel_member[a] == 0 || c.panel_member[b] == 0 ||
+            !std::isfinite(c.prices[a]) || !std::isfinite(c.prices[b]) || c.prices[a] <= 0 ||
             c.prices[b] <= 0 || (c.config.guard_returns && c.guard[b] != c.guard[a]))
           return co::Err(co::ErrorCode::Unavailable,
                          "execution streams: missing/guarded held return");
@@ -277,7 +278,7 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
                          "execution streams: unpriceable nonzero trade");
         if (quote.filled_dollars != 0) {
           const auto price = c.prices[t * n + i];
-          if (!std::isfinite(price) || price <= 0)
+          if (c.panel_member[t * n + i] == 0 || !std::isfinite(price) || price <= 0)
             return co::Err(co::ErrorCode::Unavailable,
                            "execution streams: unavailable entry price");
           const auto units = quote.filled_dollars / price;
