@@ -6,7 +6,7 @@ Status: source implemented and postimplementation fixtures frozen; no configure,
 
 - Mine production: `184ee024` (`stage_equity_mine.hpp/.cpp`).
 - Owning fixtures: `b93263ea` (two `EquityMineExecution` checks in the existing `stage_equity_mine_core_test.cpp`).
-- Core-owner declaration dependencies: `343e4a2b`, `3251e057`, `6cd17013`. Core implementation `1448c7e0`; source-presence repair `2621ad07`. Fitness/search implementation is a separate owner release; the mine caller uses the agreed final execution configuration, context pointer and explicit failure fields.
+- Core-owner declaration dependencies: `343e4a2b`, `3251e057`, `6cd17013`. Core implementation `1448c7e0`; source-presence repair `2621ad07`. Fitness/search implementation is `0270b79c`; the mine caller matches its final execution configuration, context pointer and explicit failure fields. Bounded source review confirms the empty-pool mine route is supported, while checkpoint/resume/fidelity and legacy overlays are refused explicitly.
 - Root owns source/test registration and compiled qualification. G0 independently reviews this consumer; this report does not self-approve it.
 
 ## Actual caller behavior
