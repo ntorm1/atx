@@ -252,8 +252,12 @@ build_features(const alpha::Panel &panel, const combine::AlphaStore &store,
 // Actual V2 producers. Panel features/AlphaStore streams borrow their existing
 // source lifetime for this synchronous call; member is T*N, clocks is T and
 // Panel::in_universe explicitly means source presence on this adapter.
-// Spec horizons must equal config holding horizons; exact axes/source identity
-// and all transformation knobs are persisted. Legacy build_features is unchanged.
+// Plain Panel/AlphaStore carry no durable numeric axes or input artifact SHA:
+// config axes/source_sha256/source_recipe are CALLER ASSERTIONS on this adapter.
+// The output manifest hashes actual produced bytes, not proof of those source
+// assertions. Spec horizons must match config holding horizons; all supplied
+// identity/knobs persist. Absent source closes become NaN even if the backing
+// Panel carries a finite placeholder. Legacy build_features is unchanged.
 [[nodiscard]] atx::core::Result<PanelDatasetBuildResult> build_panel_dataset_from_panel(
     const alpha::Panel&, const combine::AlphaStore&, const FeatureSpec&,
     const PanelDatasetConfig&, std::span<const atx::u8> member,

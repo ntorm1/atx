@@ -35,7 +35,8 @@ struct PanelDatasetConfig {
 
 // The source may hold a small mapped-block cache; it must not retain unbounded
 // date history. read_features writes F*N values, feature-major within one date.
-// read_close supplies ORIGINAL f64 adjusted close, never f32 reconstructed prices.
+// read_close supplies ORIGINAL f64 adjusted close, never f32 reconstructed prices;
+// an absent/unobserved source cell MUST be NaN, never a finite placeholder.
 // Membership is a decision-time assertion, independent of source-row presence.
 // These methods can read future labels only when asked by the dataset builder;
 // no future row participates in feature ranks or volatility normalization.

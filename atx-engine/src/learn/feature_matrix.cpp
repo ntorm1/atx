@@ -111,7 +111,10 @@ public:
     clock = clocks_[date]; return Ok();
   }
   Status read_close(usize date, std::span<f64> out) override {
-    const auto row = panel_.field_cross_section(close_, date); std::copy(row.begin(), row.end(), out.begin()); return Ok();
+    const auto row = panel_.field_cross_section(close_, date);
+    for (usize i = 0; i < out.size(); ++i)
+      out[i] = panel_.in_universe(date, i) ? row[i] : std::numeric_limits<f64>::quiet_NaN();
+    return Ok();
   }
 private:
   const alpha::Panel& panel_; const combine::AlphaStore& store_; const FeatureSpec& spec_;
