@@ -1,0 +1,22 @@
+IC loading train admitted_bytes=1487603721
+IC eval-start train 1/48 mom_12_1_s21 slots=5
+IC train 1/48 mom_12_1_s21 seconds=7.72652 sign=1 reason=possible-alpha
+IC eval-start train 2/48 mom_12_1_s63 slots=4
+IC train 2/48 mom_12_1_s63 seconds=6.09103 sign=1 reason=insufficient-evidence
+IC eval-start train 3/48 mom_9_1_s21 slots=5
+IC train 3/48 mom_9_1_s21 seconds=7.57609 sign=1 reason=possible-alpha
+IC eval-start train 4/48 mom_9_1_s63 slots=4
+IC train 4/48 mom_9_1_s63 seconds=6.67496 sign=1 reason=insufficient-evidence
+IC eval-start train 5/48 mom_6_1_s21 slots=5
+IC train 5/48 mom_6_1_s21 seconds=8.58241 sign=1 reason=possible-alpha
+IC eval-start train 6/48 mom_6_1_s63 slots=4
+IC train 6/48 mom_6_1_s63 seconds=7.91107 sign=1 reason=insufficient-evidence
+IC eval-start train 7/48 efficiency_63_s21 slots=4
+IC train 7/48 efficiency_63_s21 seconds=11.5094 sign=1 reason=possible-alpha
+IC eval-start train 8/48 efficiency_63_s63 slots=4
+IC train 8/48 efficiency_63_s63 seconds=10.9291 sign=1 reason=possible-alpha
+IC eval-start train 9/48 sign_consistency_126_s21 slots=4
+IC train 9/48 sign_consistency_126_s21 seconds=8.93384 sign=1 reason=possible-alpha
+IC eval-start train 10/48 sign_consistency_126_s63 slots=4
+IC train 10/48 sign_consistency_126_s63 seconds=8.83746 sign=1 reason=insufficient-evidence
+IC eval-start train 11/48 risk_scaled_6_1_s21 slots=7

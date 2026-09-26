@@ -1,5 +1,24 @@
 # Active task: recent-data DSL ensemble
 
+## Latest runtime checkpoint
+
+At clean source `20bf677b`, focused build passed in27.729s Jobs3 (eight CXX
+actions, warm PCH/deps); all11 native checks pass1.344s. Metadata plan confirms
+maxslots7, lookback314, TRAIN1,487,603,721bytes, validation1,030,839,264bytes.
+First real fast attempt `build-equity/recent-fast-ic-v1` stopped deliberately
+at105.609s:10 TRAIN candidates complete,11th started;6.091–11.509s each,
+peak956231680bytes. No composition/orientations/validation complete. Fixed
+library/weights unchanged. Guard is process-error plus explicit operator-stop
+receipt. NO active process. Root imported final review/report ef65e6d8/2147d883.
+
+Pool4 now implements explicit1..4 sharedDetPool CS/TS execution and per-stage
+timers in private runner, preserving serial default/recipe/math; fixtures then
+review. Pool5 investigates narrowly scoped optimized compilation of hot CPPs
+without globalDebug/PCH/dependency rebuild. Root owns CMake/build/data. Next
+build/run remains bounded; don't re-run known-slow serial baseline wholesale.
+Exact32-file evidence and initial qualification report under
+`.superpowers/sdd/strategy/fast-ic-qualification-20260926` and adjacent report.
+
 ## Fast IC integration checkpoint
 
 Current root before this checkpoint: `9bb58f9e`. Event expansion is stopped.

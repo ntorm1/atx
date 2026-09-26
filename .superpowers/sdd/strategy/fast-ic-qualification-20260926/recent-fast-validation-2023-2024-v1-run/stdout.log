@@ -1,0 +1,17 @@
+{"dates":1,"selected_union":0,"source_names":15996,"stage":"membership"}
+{"dates":129,"selected_union":3377,"source_names":15996,"stage":"membership"}
+{"dates":257,"selected_union":3879,"source_names":15996,"stage":"membership"}
+{"dates":385,"selected_union":4162,"source_names":15996,"stage":"membership"}
+{"dates":513,"selected_union":4373,"source_names":15996,"stage":"membership"}
+{"dates":641,"selected_union":4577,"source_names":15996,"stage":"membership"}
+{"dates":769,"selected_union":4826,"source_names":15996,"stage":"membership"}
+{"dates":897,"selected_union":5034,"source_names":15996,"stage":"membership"}
+{"dates":1,"instruments":5048,"stage":"role-write"}
+{"dates":129,"instruments":5048,"stage":"role-write"}
+{"dates":257,"instruments":5048,"stage":"role-write"}
+{"dates":385,"instruments":5048,"stage":"role-write"}
+{"dates":513,"instruments":5048,"stage":"role-write"}
+{"dates":641,"instruments":5048,"stage":"role-write"}
+{"dates":769,"instruments":5048,"stage":"role-write"}
+{"dates":897,"instruments":5048,"stage":"role-write"}
+{"bytes":118564552,"dates":903,"instruments":5048,"stage":"role-complete"}
