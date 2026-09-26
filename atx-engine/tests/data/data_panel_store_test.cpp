@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 #include "atx/engine/data/history_panel.hpp"
 #include "atx/engine/data/panel_store.hpp"
+#include "atx/tsdb/mapping.hpp"
 
 namespace {
 using namespace atx;
@@ -49,7 +50,7 @@ protected:
     const std::array<f64, 2> returns{t ? .10000000000000003 : kNaN, t ? -0.0 : kNaN};
     const std::array<std::span<const f64>, 2> fields{close, returns};
     const std::array<u8, 2> present{1, static_cast<u8>(t != 0)};
-    const std::array<u8, 2> tradable{1, static_cast<u8>(t >= 2)};
+    const std::array<u8, 2> tradable{1, static_cast<u8>(t == 0 || t >= 2)};
     return w.append_date(t, fields, close, present, tradable, kStart - kDay);
   }
   core::Result<std::string> write(const std::string& name, f64 future_delta = 0) {
@@ -70,6 +71,7 @@ TEST_F(DataPanelStoreV2, SeparateMasksFixedUnionAndOriginalF64Returns) {
   EXPECT_EQ(row[1], 21.25); // warm-up data is retained while not tradable
   EXPECT_EQ((*chunk->present(1))[1], 1); EXPECT_EQ((*chunk->tradable(1))[1], 0);
   ASSERT_TRUE(chunk->read_field_row(0, 0, row)); EXPECT_TRUE(std::isnan(row[1]));
+  EXPECT_EQ((*chunk->present(0))[1], 0); EXPECT_EQ((*chunk->tradable(0))[1], 1); // absent member retained
   ASSERT_TRUE(chunk->read_field_row(1, 1, row));
   EXPECT_EQ(std::bit_cast<u64>(row[0]), std::bit_cast<u64>(.10000000000000003));
   EXPECT_EQ(std::bit_cast<u64>(row[1]), std::bit_cast<u64>(-0.0));
@@ -114,6 +116,18 @@ TEST_F(DataPanelStoreV2, SharedMappingBudgetAndViewLifetime) {
   std::array<f64, 2> row{}; EXPECT_TRUE(s->forward_returns(0, 3, 4, row)); // one live mapping suffices
 }
 
+TEST_F(DataPanelStoreV2, GrownChunkIsRejectedBeforeCapturedExtentMapping) {
+  ASSERT_TRUE(write("store"));
+  auto s = PanelStore::open((root / "store").string()); ASSERT_TRUE(s);
+  const auto path = root / "store" / "chunk-0.bin";
+  const auto admitted = fs::file_size(path);
+  fs::resize_file(path, admitted + 4096);
+  EXPECT_FALSE(tsdb::Mapping::map_file_ro(path.string(), admitted, admitted));
+  EXPECT_FALSE(tsdb::Mapping::map_file_ro(path.string(), 0, admitted));
+  EXPECT_FALSE(s->open_chunk(0));
+  EXPECT_TRUE(tsdb::Mapping::map_file_ro(path.string(), admitted + 4096, admitted + 4096));
+}
+
 TEST_F(DataPanelStoreV2, BoundsCanonicalAxesAndStrictMaskClock) {
   auto c = config(); c.instrument_ids = {100, 17}; EXPECT_FALSE(preflight_panel_store(c));
   c = config(); c.original_indices = {1, 1}; EXPECT_FALSE(preflight_panel_store(c));
@@ -124,7 +138,7 @@ TEST_F(DataPanelStoreV2, BoundsCanonicalAxesAndStrictMaskClock) {
   const std::array<std::span<const f64>, 2> fields{close, returns};
   std::array<u8, 2> present{1, 1}, tradable{1, 1};
   EXPECT_FALSE(w->append_date(0, fields, close, present, tradable, kStart));
-  present[1] = 0; EXPECT_FALSE(w->append_date(0, fields, close, present, tradable, kStart - 1));
+  present[1] = 2; EXPECT_FALSE(w->append_date(0, fields, close, present, tradable, kStart - 1));
   present[1] = 1; close[0] = std::numeric_limits<f64>::max();
   EXPECT_FALSE(w->append_date(0, fields, close, present, tradable, kStart - 1));
   close[0] = 1e-300; EXPECT_FALSE(w->append_date(0, fields, close, present, tradable, kStart - 1));

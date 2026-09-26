@@ -182,6 +182,8 @@ Result<PanelStoreSizing> preflight_panel_store(const PanelStoreConfig& c) {
       return Err(ErrorCode::InvalidArgument, "panel store: duplicate field");
     if (field.name == "returns" && field.precision != PanelStorePrecision::ExactFloat64V2)
       return Err(ErrorCode::InvalidArgument, "panel store: returns require original-f64 storage");
+    if (field.name == "close" && basis != 2)
+      return Err(ErrorCode::InvalidArgument, "panel store: close must have adjusted-level basis");
   }
   for (usize p = 0; p < c.parents.size(); ++p) {
     if (!text_valid(c.parents[p].role, 128) || !hash_valid(c.parents[p].sha256))
@@ -238,7 +240,7 @@ Status PanelStoreWriter::append_date(usize date, std::span<const std::span<const
       decision < 0 || decision >= c.session_keys[date])
     return Err(ErrorCode::InvalidArgument, "panel store: row shape or strict membership clock");
   for (usize i = 0; i < n; ++i) {
-    if (present[i] > 1 || tradable[i] > 1 || tradable[i] > present[i] || (tradable[i] && decision == 0))
+    if (present[i] > 1 || tradable[i] > 1 || (tradable[i] && decision == 0))
       return Err(ErrorCode::InvalidArgument, "panel store: invalid independent masks/clock");
     if (present[i] && !std::isnan(exact_close[i]) && (!std::isfinite(exact_close[i]) || exact_close[i] <= 0))
       return Err(ErrorCode::InvalidArgument, "panel store: invalid original-f64 close");
@@ -249,7 +251,8 @@ Status PanelStoreWriter::append_date(usize date, std::span<const std::span<const
       const auto v = fields[f][i];
       if (!std::isfinite(v)) return Err(ErrorCode::InvalidArgument, "panel store: infinite field");
       if (c.fields[f].precision == PanelStorePrecision::Float32V2 &&
-          (!std::isfinite(static_cast<f32>(v)) || (v != 0 && static_cast<f32>(v) == 0)))
+          (std::abs(v) > static_cast<f64>((std::numeric_limits<f32>::max)()) ||
+           (v != 0 && static_cast<f32>(v) == 0)))
         return Err(ErrorCode::InvalidArgument, "panel store: f32 overflow/underflow");
     }
   }
@@ -366,7 +369,8 @@ Result<PanelStoreChunk> PanelStore::open_chunk(usize index) const {
       return Err(ErrorCode::InvalidArgument, "panel store: live mapping/handle budget exceeded");
     chunk->budget->bytes += info.bytes; ++chunk->budget->handles; chunk->reserved = info.bytes;
   }
-  ATX_TRY(chunk->mapping, tsdb::Mapping::map_file_ro((impl_->directory / chunk_name(index)).string()));
+  ATX_TRY(chunk->mapping, tsdb::Mapping::map_file_ro(
+      (impl_->directory / chunk_name(index)).string(), info.bytes, info.bytes));
   if (chunk->mapping.size() != info.bytes) return Err(ErrorCode::IoError, "panel store: captured chunk size changed");
   const auto* p = chunk->mapping.base();
   ATX_TRY(auto hash, core::sha256_hex(byte_span(std::span{p, chunk->mapping.size()})));
@@ -390,7 +394,7 @@ Result<PanelStoreChunk> PanelStore::open_chunk(usize index) const {
       return Err(ErrorCode::ParseError, "panel store: invalid strict membership clock");
     for (usize i = 0; i < chunk->instruments; ++i) {
       const auto cell = t * chunk->instruments + i;
-      if (p[l.present + cell] > 1 || p[l.tradable + cell] > p[l.present + cell] ||
+      if (p[l.present + cell] > 1 || p[l.tradable + cell] > 1 ||
           (p[l.tradable + cell] && clock == 0) || !canonical_numeric(p + l.close + cell * 8, 8, true) ||
           (!p[l.present + cell] && get(p + l.close + cell * 8) != kMissing64))
         return Err(ErrorCode::ParseError, "panel store: invalid masks/exact close/clock");

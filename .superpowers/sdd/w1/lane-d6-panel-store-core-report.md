@@ -1,6 +1,6 @@
 # W1 D6 panel-store core: initial source slice
 
-This is implementation-first source with six postimplementation C++ fixtures.
+This is implementation-first source with seven postimplementation C++ fixtures.
 No compilation, runtime test, historical artifact build or market payload read
 has occurred. Stage integration is the next slice; this core does not by itself
 close D6 or establish its large-union RSS/rank-IC acceptance.
@@ -14,8 +14,11 @@ decision key. Field level basis and f32/f64 precision are explicit. Every output
 column belongs to one fixed, sorted positive numeric security-ID union; original
 source-axis indices, exact session labels, source parents, membership SHA and
 recipe bytes are manifest-bound. The API never derives publication from a session
-label. Tradability requires presence and a positive membership decision strictly
-before the session; presence alone preserves warm-up data.
+label. The tradable bit means as-of membership, independently of current data
+presence, and requires a positive membership decision strictly before the session.
+A member with a missing source row retains membership; its numeric cells are NaN.
+Consumers may derive presence AND membership for execution, while missing-held-mark
+and coverage checks retain the distinction. Presence alone preserves warm-up data.
 
 Finite f32 storage uses ordinary rounding and rejects overflow/underflow to zero;
 infinities are refused. Absent cells and numeric NaNs use canonical quiet NaN
@@ -42,6 +45,12 @@ is SHA-validated and checked for numeric/mask/clock invariants before exposure.
 Copied stores share a live mapped-byte/handle budget; chunk owners retain their
 mapping independently, and release OS resources before returning budget.
 This bounds mappings and decode buffers, not an observed operating-system RSS.
+
+Review corrections add a checked Mapping overload: the opened handle's size is
+admitted before CreateFileMapping/MapViewOfFile or mmap, and only that admitted
+extent is mapped. A post-open grown-file fixture covers rejection. The existing
+one-argument API remains available. f32 range is checked before narrowing, and
+the roundtrip fixture explicitly preserves an absent member's membership bit.
 
 The writer exclusively creates a fresh directory and chunk files. A complete
 hash-bound manifest is published last by a no-replace hard link; incomplete stores

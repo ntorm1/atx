@@ -58,8 +58,11 @@ public:
 
   // Append each date exactly once in axis order. One N-cell span per field.
   // present = observed source row, independent of tradable = dated membership.
-  // A tradable cell must be present; its membership decision must be strictly
-  // before session_keys[date]. An all-zero tradable row may use decision_key=0.
+  // A member can lack a current source row: these masks are independent, so
+  // missing-held marks remain distinguishable from nonmembership. Consumers
+  // derive present & tradable for execution when appropriate. A membership
+  // decision must be strictly before session_keys[date]. An all-zero tradable
+  // row may use decision_key=0.
   // Values of absent cells are stored missing. No warm-up values are masked by
   // tradability. exact_close stores original f64 adjusted close, NOT a widened
   // f32 value; finite entries must be positive. The writer cannot authenticate

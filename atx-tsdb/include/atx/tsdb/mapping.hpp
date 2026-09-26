@@ -19,6 +19,12 @@ public:
   /// Map `path` read-only. Err(IoError) if the file cannot be opened/mapped,
   /// Err(InvalidArgument) if it is empty (an empty mapping is never valid here).
   [[nodiscard]] static atx::core::Result<Mapping> map_file_ro(const std::string &path);
+  // Validate the OPENED HANDLE's extent before creating any mapping. Zero
+  // expected_bytes means any nonempty extent <= max_bytes; a nonzero expected
+  // extent must match exactly. Maps exactly the admitted bytes, never a later
+  // larger extent. Existing one-argument API keeps its unbounded legacy behavior.
+  [[nodiscard]] static atx::core::Result<Mapping> map_file_ro(
+      const std::string &path, atx::u64 expected_bytes, atx::u64 max_bytes);
 
   Mapping() noexcept = default;
   ~Mapping();
