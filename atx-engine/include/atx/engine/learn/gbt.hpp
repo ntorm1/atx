@@ -340,7 +340,7 @@ struct DatasetGbtFit {
   LearnedModel model;
   std::string dataset_manifest_sha256;
   std::string dataset_window_recipe;
-  std::string algorithm_recipe;
+  std::string algorithm_recipe; // includes canonical supplied augmentation SHA-256
   GbtFitDiagnostics diagnostics;
 };
 // Explicit bounded selected-window materialization, not out-of-core fitting.

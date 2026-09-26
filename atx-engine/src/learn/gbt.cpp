@@ -4,6 +4,7 @@
 #include <cmath>     // std::isfinite, std::sqrt (OOF dispersion floor)
 #include <cstddef>   // std::ptrdiff_t (subset slice index)
 #include <bit>
+#include <array>
 #include <string>
 #include <limits>    // std::numeric_limits (trace NaN for uncovered rows)
 #include <span>      // std::span
@@ -12,6 +13,7 @@
 
 #include <Eigen/Dense> // Eigen::Index, MatX/VecX
 
+#include "atx/core/sha256.hpp"
 #include "atx/core/macro.hpp"  // ATX_CHECK
 #include "atx/core/random.hpp" // atx::core::Xoshiro256pp
 
@@ -933,6 +935,51 @@ co::Status accumulate_fit_stats(GbtFitDiagnostics &out, const GbtFitDiagnostics 
   }
   return co::Ok();
 }
+// Canonical little-endian words, row-major matrix coordinates, no locale or
+// Eigen storage-order dependence. Incremental hashing retains constant scratch.
+co::Result<std::string> augmentation_identity(const LatentAugmentation &aug) {
+  co::Sha256 hash;
+  const auto word = [&](u64 value) -> co::Status {
+    std::array<std::byte, 8> bytes{};
+    for (usize i = 0; i < bytes.size(); ++i)
+      bytes[i] = static_cast<std::byte>((value >> (8U * i)) & 255U);
+    return hash.update(bytes);
+  };
+  const auto matrix = [&](const auto &values) -> co::Status {
+    ATX_TRY_VOID(word(static_cast<u64>(values.rows())));
+    ATX_TRY_VOID(word(static_cast<u64>(values.cols())));
+    for (Eigen::Index row = 0; row < values.rows(); ++row)
+      for (Eigen::Index col = 0; col < values.cols(); ++col)
+        ATX_TRY_VOID(word(std::bit_cast<u64>(values(row, col))));
+    return co::Ok();
+  };
+  ATX_TRY_VOID(word(1)); // augmentation identity format
+  ATX_TRY_VOID(word(aug.pca.has_value()));
+  if (aug.pca) {
+    ATX_TRY_VOID(word(aug.pca->k));
+    ATX_TRY_VOID(word(aug.pca->fit_upto_date));
+    ATX_TRY_VOID(matrix(aug.pca->model.mean));
+    ATX_TRY_VOID(matrix(aug.pca->model.components));
+    ATX_TRY_VOID(matrix(aug.pca->model.explained_variance));
+    ATX_TRY_VOID(matrix(aug.pca->model.explained_ratio));
+  }
+  ATX_TRY_VOID(word(aug.interactions_fixed));
+  ATX_TRY_VOID(word(aug.interactions.size()));
+  for (const auto &[a, b] : aug.interactions) {
+    ATX_TRY_VOID(word(a));
+    ATX_TRY_VOID(word(b));
+  }
+  ATX_TRY(auto digest, hash.finalize());
+  constexpr char hex[] = "0123456789abcdef";
+  std::string text;
+  text.reserve(64);
+  for (auto byte : digest) {
+    const auto value = std::to_integer<unsigned>(byte);
+    text.push_back(hex[value >> 4U]);
+    text.push_back(hex[value & 15U]);
+  }
+  return co::Ok(std::move(text));
+}
 std::string gbt_v2_recipe(const GbtCfg &c) {
   std::string out =
       "gbt-column-bins-v2;missing255-fixed-right;hist-subtract-cancel-rebuild-v1;early-stop=none";
@@ -984,8 +1031,9 @@ co::Result<DatasetGbtFit> fit_gbt_dataset(const PanelDataset &dataset, usize beg
   GbtFitDiagnostics diagnostics;
   ATX_TRY(auto model, fit_gbt_checked(fm, aug, cfg, trace, &diagnostics));
   diagnostics.workspace_bound_bytes = combined.used;
+  ATX_TRY(auto augmentation_sha, augmentation_identity(aug));
   return co::Ok(DatasetGbtFit{std::move(model), fm.dataset_manifest_sha256, fm.dataset_recipe,
-                              gbt_v2_recipe(cfg), std::move(diagnostics)});
+                              gbt_v2_recipe(cfg) + ";augmentation-sha256=" + augmentation_sha, std::move(diagnostics)});
 }
 
 LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug, const GbtCfg &cfg) {
