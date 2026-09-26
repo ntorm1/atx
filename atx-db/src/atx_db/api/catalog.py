@@ -1185,9 +1185,10 @@ CLASSIFICATION_SCHEMA = RecordSchema(
     ),
 )
 
-# Corporate-action events (P8) have no contract here until P8 fix1 lands revisioned per-step
-# events with PIT label clocks (P13 fix 1, ruling I1); the contract is then keyed by the
-# per-step event id and its revision, never by action_type.
+# Corporate-action events (P8) have no contract here until P8's revisioned per-step events
+# (PIT label clocks) are reviewed (P13 fix 1, ruling I1). The contract is then keyed by the
+# column triple (source, security_id, ex_date) with revisions ranked by available_at
+# (ruling C-18) -- never by action_type, the positional event_id or details_json.step_id.
 
 PENDING_REGISTRATION_DATASETS: Final[tuple[DatasetSpec, ...]] = (
     DatasetSpec(

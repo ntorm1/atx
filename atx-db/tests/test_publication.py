@@ -18,8 +18,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from atx_db._forward_return_publication import CALCULATION_VERSION as LABEL_VERSION
-
 CREATED_AT = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
 ALL_GATES = ("item_coverage", "provider_slos", "critical_dqc", "source_completeness", "universe_certification")
 CERTIFIED_RULES = json.dumps(
@@ -275,7 +273,7 @@ def test_the_manifest_carries_every_required_key(tmp_store, tmp_path):
     assert evidence["fundamentals_core"]["clock_policy"] == "sec_filed_date_plus_46h_v1"
     assert evidence["market_daily"]["availability_basis"] == "modeled_trade_date_22h"
     assert evidence["market_daily"]["share_basis"]["vendor_share_run_clock_verified"] is False
-    assert evidence["forward_labels_daily"]["expected_calculation_version"] == LABEL_VERSION
+    assert evidence["forward_labels_daily"]["expected_calculation_version"] == "forward_return_publication_v3"
     assert not any(block.get("verified_vintage") for block in evidence.values() if isinstance(block, dict))
     base = {"name", "object", "schema", "record_schema_sha256", "key_columns", "natural_key", "basis", "store"}
     base |= {"stage", "evidence_basis", "status", "eligibility", "eligibility_reason"}
@@ -831,7 +829,7 @@ def test_evidence_labels_reconstruction_inference_and_policy_honestly(tmp_store,
         ('p3', 'test', 'SEC-2', DATE '2024-01-03', TIMESTAMP '2024-01-03 22:00:00', 'h', DATE '2024-01-03',
          'verified_dated', 'verified', 'dated_evidence', 'archive')
     """)
-    v2 = LABEL_VERSION
+    v3 = "forward_return_publication_v3"
     daily = "atx_forward_returns_survivorship_safe_v1"
     con.execute(
         """
@@ -843,7 +841,7 @@ def test_evidence_labels_reconstruction_inference_and_policy_honestly(tmp_store,
         ('fr3', ?, 'SEC-2', DATE '2024-01-03', 21, -0.4, true, true, 'policy', TIMESTAMP '2024-02-01', ?),
         ('fr4', ?, 'SEC-2', DATE '2024-01-04', 21, 0.0, false, false, NULL, TIMESTAMP '2024-02-01', NULL)
         """,
-        [daily, v2, daily, v2, daily, v2, daily],
+        [daily, v3, daily, v3, daily, v3, daily],
     )
     result = publish_release(tmp_store, "r1", tmp_path, created_at=CREATED_AT)
     manifest = read_release_manifest(result.manifest_path)
@@ -929,21 +927,22 @@ def test_publish_script_exit_code_distinguishes_candidate_from_eligible(built_wa
 def test_p13_datasets_carry_basis_absence_and_research_is_never_eligible(tmp_store, tmp_path):
     """P13: natural key, schema hash and evidence basis per dataset; absent/withheld with a
     reason; research basis is research_only even in an eligible release. Fix 1: CA events
-    withheld (I1), listing status capped (I2), market_daily keyed by panel source (I3), label
-    version allowlist, an optional dataset's schema change withholds only that dataset."""
+    withheld (I1) and cut as of the decision cutoff, listing status capped (I2), market_daily
+    keyed by panel source (I3), label version allowlist, an optional dataset's schema change
+    withholds only that dataset."""
 
     from atx_db.market_daily import MARKET_DAILY_STRICT_SOURCE_NAME
-    from atx_db.publication import publish_release, read_release_manifest
+    from atx_db.publication import RELEASE_DATASETS, publish_release, read_release_manifest, release_query
 
     con = tmp_store.con
     _seed_all_gates_passing(con)
     con.execute(
         "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
         "horizon_days, forward_return, is_delisted_in_horizon, is_stitched, available_at, calculation_version) "
-        "SELECT id, src, 'SEC-1', DATE '2024-01-02', 21, 0.1, false, false, TIMESTAMP '2024-02-01', ? "
+        "SELECT id, src, 'SEC-1', DATE '2024-01-02', 21, 0.1, false, false, TIMESTAMP '2024-02-01', "
+        "'forward_return_publication_v3' "
         "FROM (VALUES ('fd', 'atx_forward_returns_survivorship_safe_v1'), "
-        "('fm', 'atx_forward_returns_survivorship_safe_monthly_v1'), ('fo', 'legacy')) t(id, src)",
-        [LABEL_VERSION],
+        "('fm', 'atx_forward_returns_survivorship_safe_monthly_v1'), ('fo', 'legacy')) t(id, src)"
     )
     con.execute(
         "INSERT INTO entity_classification (classification_id, security_id, taxonomy_id, node_id, node_code, "
@@ -955,10 +954,22 @@ def test_p13_datasets_carry_basis_absence_and_research_is_never_eligible(tmp_sto
         "source, evidence_source, evidence_source_table, method) VALUES ('l1', 'AAA', 'active', "
         "DATE '2024-01-02', DATE '2024-01-02', 'ls', 'directory', 'nasdaq_symbol_directory', 'snapshot')"
     )
-    con.execute(
-        "INSERT INTO corporate_actions (source, security_id, action_type, ex_date, available_at) "
-        "VALUES ('ca', 'SEC-1', 'split', DATE '2024-01-02', TIMESTAMP '2024-01-02 22:00')"
+    # One P8 step: pending at its ex-date bar clock, decided only after the release's cutoff.
+    con.executemany(
+        "INSERT INTO corporate_actions (source, security_id, action_type, ex_date, available_at, details_json) "
+        "VALUES ('ca', 'SEC-1', ?, DATE '2024-01-02', ?, ?)",
+        [
+            ("adjustment_unclassified", dt.datetime(2024, 1, 2, 22), json.dumps({"step_id": "s1", "revision": 0})),
+            ("split", dt.datetime(2026, 9, 25, 22), json.dumps({"step_id": "s1", "revision": 1})),
+        ],
     )
+    ca = next(dataset for dataset in RELEASE_DATASETS if dataset.name == "corporate_action_events")
+    as_of = con.execute(release_query(ca, ["action_type", "available_at"], CREATED_AT)).fetchall()
+    assert as_of == [("adjustment_unclassified", dt.datetime(2024, 1, 2, 22))]
+    with pytest.raises(ValueError, match="decision_cutoff"):
+        publish_release(
+            tmp_store, "r0", tmp_path / "out", created_at=CREATED_AT, decision_cutoff=dt.datetime(2026, 9, 20)
+        )
     research = tmp_path / "research.duckdb"
     with duckdb.connect(str(research)) as rcon:
         rcon.execute(
@@ -982,7 +993,7 @@ def test_p13_datasets_carry_basis_absence_and_research_is_never_eligible(tmp_sto
         "listing_status": ("published", "candidate"),  # I2: capped even in an eligible release
         "entity_classification": ("published", "research_only"),
         "factor_returns": ("published", "research_only"),
-        "corporate_action_events": ("absent", None),  # I1: rows exist, withheld until P8 fix1
+        "corporate_action_events": ("withheld", None),  # I1: rows exist, withheld until P8 is reviewed
         "owner_links": ("absent", None),
         "foreign_filer_disclosure": ("absent", None),
         "earnings_events": ("absent", None),
@@ -990,9 +1001,17 @@ def test_p13_datasets_carry_basis_absence_and_research_is_never_eligible(tmp_sto
     assert {name: (entries[name]["status"], entries[name]["eligibility"]) for name in expected} == expected
     assert entries["listing_status"]["eligibility_reason"] == "latest_build_not_pit_current_ticker_identity"
     assert manifest["evidence"]["listing_status"]["eligibility_cap"] == entries["listing_status"]["eligibility_reason"]
-    assert entries["corporate_action_events"]["absent_reason"] == "pending_p8_fix_revisioned_events"
+    assert entries["corporate_action_events"]["absent_reason"] == "pending_p8_review"
     ca_events = entries["corporate_action_events"]
-    assert ca_events["schema"] is None and "action_type" not in ca_events["natural_key"]
+    # Ruling C-18: the column triple, revisions by available_at; never action_type or a JSON id.
+    assert ca_events["schema"] is None and ca_events["natural_key"] == ["source", "security_id", "ex_date"]
+    assert ca_events["key_columns"] == ["source", "security_id", "ex_date", "available_at"]
+    assert manifest["decision_cutoff"] == "2026-09-19T00:00:00"
+    ca_evidence = manifest["evidence"]["corporate_action_events"]
+    assert (ca_evidence["stored_rows"], ca_evidence["rows_after_decision_cutoff"], ca_evidence["rows"]) == (2, 1, 1)
+    assert ca_evidence["rows_by_type"] == [
+        {"source": "ca", "action_type": "adjustment_unclassified", "evidence_basis": None, "rows": 1}
+    ]
     # I3: strict and reconstructed panels are one export ranked within their source.
     assert entries["market_daily"]["natural_key"] == ["source", "security_id", "trade_date"]
     panels = {p["source"]: p["panel"] for p in manifest["evidence"]["market_daily"]["panels_by_source"]}
@@ -1015,14 +1034,10 @@ def test_p13_datasets_carry_basis_absence_and_research_is_never_eligible(tmp_sto
     # dataset whose schema changed is withheld while the release itself is still written.
     con.execute("UPDATE forward_returns_survivorship_safe SET calculation_version = 'forward_return_publication_v1'")
     con.execute("ALTER TABLE entity_classification ADD COLUMN mapping_note VARCHAR")
-    # 0328's ledger eligibility columns (r1 above was written without them): written when present.
-    for table, column in (
-        ("publication_releases", "eligibility"),
-        ("publication_releases", "gates_not_passed_json"),
-        ("publication_release_datasets", "eligibility"),
-        ("publication_release_datasets", "eligibility_reason"),
-    ):
-        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR")
+    # 0328's ledger eligibility columns (present at head 328) carry the manifest's values.
+    assert con.execute(
+        "SELECT eligibility, gates_not_passed_json FROM publication_releases WHERE release_id = 'r1'"
+    ).fetchone() == ("eligible", "[]")
     second = publish_release(
         tmp_store, "r2", tmp_path / "out", created_at=CREATED_AT, previous_dir=result.out_dir, research_store=research
     )
@@ -1060,7 +1075,10 @@ def test_release_producing_stages_run_before_the_gate_evidence_stages():
     assert set(RELEASE_DATASET_STAGES) == {
         dataset.name
         for dataset in RELEASE_DATASETS
-        if dataset.stage and dataset.basis == "production" and dataset.absent_reason is None
+        if dataset.stage
+        and dataset.basis == "production"
+        and dataset.absent_reason is None
+        and dataset.withheld_reason is None
     }
     for stage in RELEASE_DATASET_STAGES.values():
         assert all(order[stage] < order[evidence] for evidence in EVIDENCE_STAGES.values())

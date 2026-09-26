@@ -38,12 +38,22 @@ Coverage extension (P13, contract 1.2.0). Every :data:`RELEASE_DATASETS` entry i
 in the manifest with its natural key, basis and evidence basis. A dataset is
 ``published`` (Parquet + schema hash), ``absent`` (its producer is not landed, not
 persisted, or the research store is not attached; the reason is recorded) or
-``withheld`` (present but its release key is not unique). Per-dataset ``eligibility``:
-``research_only`` for research-basis datasets (never ``eligible``); ``candidate`` for a
-production dataset produced outside the activation ladder (its freshness is not bound
-by the gates); otherwise the release eligibility. Research-store datasets (RX6: earnings
-events, factor returns/exposures, the qualified-signal ledger) are read from a research
-store attached READ_ONLY for the duration of the publication.
+``withheld`` (present but not released: a static review hold, a non-unique release key,
+or an optional dataset whose columns changed since the previous release). Per-dataset
+``eligibility``: ``research_only`` for research-basis datasets (never ``eligible``);
+``candidate`` for a production dataset produced outside the activation ladder (its
+freshness is not bound by the gates) or capped by an ``eligibility_cap``; otherwise the
+release eligibility. Research-store datasets (RX6: earnings events, factor
+returns/exposures, the qualified-signal ledger) are read from a research store attached
+READ_ONLY for the duration of the publication.
+
+P13 fix 1 (contract 1.3.0). The manifest records the release's ``decision_cutoff`` (the
+caller's data cutoff, never after ``created_at``); a revisioned dataset (corporate-action
+events) is served as of it -- each step's latest revision visible then, nothing known
+later. Corporate-action events are withheld until P8 is reviewed; listing status is
+capped at ``candidate``; ``market_daily`` is keyed within its panel ``source``; forward
+labels are ``eligible`` only at an allowed calculation version. Pending-registration API
+contracts are resolved for manifests only (``include_pending``), never served.
 """
 
 from __future__ import annotations
@@ -66,6 +76,7 @@ from ._forward_return_publication import CALCULATION_VERSION as FORWARD_RETURN_C
 from ._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from .api.catalog import EXTENDED_DATASET_CODE, RecordSchema, _record_schema_sha256, get_schema
 from .connection import DuckDBStore
+from .corporate_actions import corporate_actions_asof_sql
 from .delisting import DEFAULT_FORWARD_RETURN_SS_SOURCE, delisting_policy_bias_exposure
 from .item_coverage import (
     DEFAULT_SOURCE as ITEM_COVERAGE_SOURCE,
@@ -143,7 +154,9 @@ __all__ = [
 # 1.1.0: additive source pins, per-dataset evidence, gates and eligibility (C4).
 # 1.2.0: additive P13 datasets; per-dataset status, natural key, basis, evidence basis and
 # eligibility; absent/withheld datasets listed with a reason (no Parquet).
-PUBLICATION_CONTRACT_VERSION = "1.2.0"
+# 1.3.0: P13 fix 1 -- ``decision_cutoff``; as-of revisioned datasets; static withholds;
+# per-dataset eligibility caps; ``market_daily`` natural key includes ``source``.
+PUBLICATION_CONTRACT_VERSION = "1.3.0"
 MANIFEST_NAME = "manifest.json"
 
 # --- Release eligibility -------------------------------------------------------------
@@ -236,10 +249,17 @@ class ReleaseDataset:
     required: bool = False
     #: Static reason when no persisted producer exists: listed absent, never exported.
     absent_reason: str | None = None
+    #: Static reason a produced dataset is held back (e.g. pending review): listed
+    #: ``withheld`` while its object exists, never exported.
+    withheld_reason: str | None = None
     #: Short label of what the dataset's clocks/identity rest on (details in ``evidence``).
     evidence_basis: str | None = None
     #: Static reason capping a published production dataset at ``candidate`` (P13 fix 1 I2).
     eligibility_cap: str | None = None
+    #: Revisioned datasets: ``asof_sql(<SQL timestamp>)`` is the relation exported in place
+    #: of ``object_name`` -- each row's latest revision visible at the release's
+    #: ``decision_cutoff``; a row available later is never released.
+    asof_sql: Callable[[str], str] | None = None
 
     @property
     def schema_ref(self) -> str | None:
@@ -253,11 +273,13 @@ def _source_filter(source: str) -> str:
 
 
 _RESEARCH_EVIDENCE_BASIS = "research_store_rx6"
-#: P13 fix 1 rulings (binding).
-CORPORATE_ACTIONS_ABSENT = "pending_p8_fix_revisioned_events"
+#: P13 fix 1 rulings (binding). Corporate-action events stay withheld until P8 (tier-1 v2
+#: node 0.4: revisioned per-step events at their decision clocks) is reviewed.
+CORPORATE_ACTIONS_WITHHELD = "pending_p8_review"
 LISTING_STATUS_ELIGIBILITY_CAP = "latest_build_not_pit_current_ticker_identity"
-#: Label calculation versions a forward-label dataset may be ``eligible`` at. VA1 bumps the
-#: label version: add the new one here once its relabel has landed.
+#: Label calculation versions a forward-label dataset may be ``eligible`` at: VA1's
+#: ``forward_return_publication_v3`` only. Latest labels at any other (or no) version cap
+#: the dataset at ``candidate`` until they are relabelled.
 ELIGIBLE_FORWARD_LABEL_VERSIONS: tuple[str, ...] = (FORWARD_RETURN_CALCULATION_VERSION,)
 FORWARD_LABEL_VERSION_CAP = "calculation_version_not_allowed"
 
@@ -409,16 +431,19 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
     ReleaseDataset(
         "corporate_action_events",
         "corporate_actions",
-        # One vendor-factor step per (line, ex_date); its revisions differ by clock.
-        ("source", "security_id", "ex_date", "available_at", "source_loaded_at"),
+        # Ruling C-18: one P8 step per (source, security_id, ex_date) -- the column triple,
+        # never event_id (positional) nor details_json.step_id -- and its revisions differ
+        # by available_at. Never action_type: a pending step and its resolution are one step.
+        ("source", "security_id", "ex_date", "available_at"),
         None,
         None,
-        # Per-step identity (never action_type: a pending event and its resolution are one
-        # step), newest visible revision wins. P8 fix1 replaces it with its step id + revision.
         natural_key=("source", "security_id", "ex_date"),
-        # Withheld (P13 fix 1, ruling I1): a84111db stamps final build-time labels at earlier
-        # clocks (rv-p8 I2). Built by scripts/build_corporate_action_events.py, outside activation.
-        absent_reason=CORPORATE_ACTIONS_ABSENT,
+        # As of the decision cutoff (each step's latest revision visible then), never the
+        # current view: P8 dates some rows after the data cutoff.
+        asof_sql=corporate_actions_asof_sql,
+        # P13 fix 1 I1: withheld until P8 is reviewed. Built by
+        # scripts/build_corporate_action_events.py, outside activation.
+        withheld_reason=CORPORATE_ACTIONS_WITHHELD,
         evidence_basis="reconstructed_vendor_factor",
     ),
     ReleaseDataset(
@@ -477,7 +502,10 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
 RELEASE_DATASET_STAGES: dict[str, str] = {
     dataset.name: dataset.stage
     for dataset in RELEASE_DATASETS
-    if dataset.stage is not None and dataset.basis == BASIS_PRODUCTION and dataset.absent_reason is None
+    if dataset.stage is not None
+    and dataset.basis == BASIS_PRODUCTION
+    and dataset.absent_reason is None
+    and dataset.withheld_reason is None
 }
 #: Why a dataset has no public record schema (manifest ``schema_absent_reason``).
 _NO_API_SCHEMA_REASONS: dict[str, str] = {
@@ -486,7 +514,10 @@ _NO_API_SCHEMA_REASONS: dict[str, str] = {
         "CIK-keyed reason intervals (valid_from/valid_to clocks) without the security_id, as_of_date and "
         "available_at columns the PIT range service ranks on"
     ),
-    "corporate_action_events": "no contract until P8 fix1 (revisioned per-step events, step id + revision key)",
+    "corporate_action_events": (
+        "no contract until P8 is reviewed; it will rank revisions by available_at within the column triple "
+        "(source, security_id, ex_date)"
+    ),
 }
 _RESEARCH_API_REASON = "research store outputs (RX6) are not served by the warehouse API"
 _FOREIGN_FILER_ABSENT = (
@@ -557,23 +588,37 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def release_query(dataset: ReleaseDataset, columns: list[str]) -> str:
+def release_query(dataset: ReleaseDataset, columns: list[str], decision_cutoff: dt.datetime | None = None) -> str:
     """The exact SQL a release executes for one dataset.
 
     Columns are listed explicitly (never ``SELECT *``) so a warehouse column added after
     the release was cut cannot silently change the export, and the ORDER BY is the
-    dataset's key so the Parquet bytes are reproducible.
+    dataset's key so the Parquet bytes are reproducible. A revisioned dataset
+    (``asof_sql``) reads its as-of relation at ``decision_cutoff``, which it requires.
     """
 
     projection = ", ".join(_quote(column) for column in columns)
     order = ", ".join(f"{_quote(column)} ASC NULLS LAST" for column in dataset.key_columns)
     where = "" if dataset.row_filter is None else f" WHERE {dataset.row_filter}"
-    return f"SELECT {projection} FROM {_relation(dataset)}{where} ORDER BY {order}"
+    return f"SELECT {projection} FROM {_relation(dataset, decision_cutoff)}{where} ORDER BY {order}"
 
 
-def _relation(dataset: ReleaseDataset) -> str:
-    """The quoted relation a dataset reads (research-store objects are catalog-qualified)."""
+def _timestamp_sql(value: dt.datetime) -> str:
+    """A naive-UTC SQL TIMESTAMP literal of a datetime (never caller text)."""
 
+    if value.tzinfo is not None:
+        value = value.astimezone(dt.UTC).replace(tzinfo=None)
+    return f"TIMESTAMP '{value.isoformat(sep=' ')}'"
+
+
+def _relation(dataset: ReleaseDataset, decision_cutoff: dt.datetime | None = None) -> str:
+    """The relation a dataset reads: its quoted object (research-store objects are
+    catalog-qualified), or its as-of relation at ``decision_cutoff``."""
+
+    if dataset.asof_sql is not None:
+        if decision_cutoff is None:
+            raise ValueError(f"dataset {dataset.name!r} is served as of a decision cutoff; none was given")
+        return f"({dataset.asof_sql(_timestamp_sql(decision_cutoff))}) AS {_quote(dataset.object_name)}"
     if dataset.store == STORE_RESEARCH:
         return f'{_quote(RESEARCH_STORE_ALIAS)}."main".{_quote(dataset.object_name)}'
     return _quote(dataset.object_name)
@@ -1726,23 +1771,35 @@ def _classification_evidence(store: DuckDBStore) -> dict[str, object]:
     }
 
 
-def _corporate_action_evidence(store: DuckDBStore) -> dict[str, object]:
+def _corporate_action_evidence(store: DuckDBStore, decision_cutoff: dt.datetime) -> dict[str, object]:
+    """P8 events as of the decision cutoff (stated while the dataset is withheld, too)."""
+
+    cutoff = _timestamp_sql(decision_cutoff)
+    stored = store.con.execute(
+        f"SELECT count(*)::BIGINT, count(*) FILTER (WHERE available_at > {cutoff})::BIGINT FROM corporate_actions"
+    ).fetchone()
     rows = store.con.execute(
-        """
+        f"""
         SELECT source, action_type,
                CASE WHEN json_valid(details_json) THEN json_extract_string(details_json, '$.evidence_basis') END,
                count(*)::BIGINT
-        FROM corporate_actions GROUP BY ALL
+        FROM ({corporate_actions_asof_sql(cutoff)}) GROUP BY ALL
         """
     ).fetchall()
     return {
         "event_basis": "reconstructed",
         "availability_status": "modeled",
+        "view": "as_of_decision_cutoff",
+        "decision_cutoff": decision_cutoff.isoformat(),
         "note": (
             "P8: every step of a line's vendor adjustment factor is one labelled event, reconstructed from a later "
             "vendor snapshot (never a verified corporate-action record); adjustment_unclassified is a hazard, "
-            "never a split. Released only once P8 fix1 revisions each step's label at the clock it became known."
+            "never a split. Served as of the decision cutoff: each step's latest revision visible then, ranked by "
+            "available_at within (source, security_id, ex_date); a revision available after the cutoff is never "
+            "released. Withheld until P8 (revisioned per-step events at their decision clocks) is reviewed."
         ),
+        "stored_rows": 0 if stored is None else int(stored[0]),
+        "rows_after_decision_cutoff": 0 if stored is None else int(stored[1]),
         "rows": sum(int(row[-1]) for row in rows),
         "rows_by_type": _count_rows(rows, ("source", "action_type", "evidence_basis")),
     }
@@ -1845,12 +1902,13 @@ _EVIDENCE_BUILDERS: dict[str, Callable[[DuckDBStore], dict[str, object]]] = {
     "equity_price_metrics": _price_metric_evidence,
     "listing_status": _listing_status_evidence,
     "entity_classification": _classification_evidence,
-    "corporate_action_events": _corporate_action_evidence,
     "foreign_filer_disclosure": _foreign_filer_evidence,
 }
 
 
-def _extension_evidence(store: DuckDBStore, dataset: ReleaseDataset, entry: Mapping[str, object]) -> dict[str, object]:
+def _extension_evidence(
+    store: DuckDBStore, dataset: ReleaseDataset, entry: Mapping[str, object], decision_cutoff: dt.datetime
+) -> dict[str, object]:
     block: dict[str, object] = {
         "status": entry["status"],
         "basis": dataset.basis,
@@ -1861,16 +1919,24 @@ def _extension_evidence(store: DuckDBStore, dataset: ReleaseDataset, entry: Mapp
         block["absent_reason"] = entry["absent_reason"]
         if dataset.name == "owner_links":
             block.update(_owner_link_evidence(store))
-        return block
+        # A static hold (its object exists) still states what it holds back.
+        held = entry["status"] == DATASET_WITHHELD and entry["absent_reason"] == dataset.withheld_reason
+        if not held:
+            return block
     if dataset.store == STORE_RESEARCH and dataset.name in _RESEARCH_EVIDENCE:
         block.update(_research_evidence(store, dataset))
+    elif dataset.name == "corporate_action_events":
+        block.update(_corporate_action_evidence(store, decision_cutoff))
     elif dataset.name in _EVIDENCE_BUILDERS:
         block.update(_EVIDENCE_BUILDERS[dataset.name](store))
     return block
 
 
 def _release_evidence(
-    store: DuckDBStore, universes: Mapping[str, object], entries: Mapping[str, Mapping[str, object]]
+    store: DuckDBStore,
+    universes: Mapping[str, object],
+    entries: Mapping[str, Mapping[str, object]],
+    decision_cutoff: dt.datetime,
 ) -> dict[str, object]:
     fundamentals = {
         "availability_basis": FUNDAMENTALS_AVAILABILITY_BASIS,
@@ -1897,7 +1963,7 @@ def _release_evidence(
         "SELECT source, count(*)::BIGINT FROM v_security_master_public GROUP BY ALL"
     ).fetchall()
     extension = {
-        dataset.name: _extension_evidence(store, dataset, entries[dataset.name])
+        dataset.name: _extension_evidence(store, dataset, entries[dataset.name], decision_cutoff)
         for dataset in RELEASE_DATASETS
         if not dataset.required and dataset.name in entries
     }
@@ -1958,6 +2024,7 @@ def publish_release(
     previous_dir: Path | str | None = None,
     run_id: str | None = None,
     research_store: Path | str | None = None,
+    decision_cutoff: dt.datetime | None = None,
 ) -> ReleaseResult:
     """Publish every release dataset to ``<out_dir>/<release_id>/`` with one manifest.
 
@@ -1981,12 +2048,22 @@ def publish_release(
     ``research_store`` (optional) is a research DuckDB file (RX6) attached READ_ONLY for
     the publication and detached afterwards; without it the research-store datasets are
     listed absent with the reason.
+
+    ``decision_cutoff`` (default ``created_at``, never after it) is the data cutoff the
+    release is cut at: a revisioned dataset (``asof_sql``) is exported as of it, so a
+    revision available after it is never released. The manifest records it.
     """
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", release_id) or release_id.endswith("."):
         raise ValueError("release_id must be a simple directory name")
     if created_at.tzinfo is not None:
         created_at = created_at.astimezone(dt.UTC).replace(tzinfo=None)
+    if decision_cutoff is None:
+        decision_cutoff = created_at
+    elif decision_cutoff.tzinfo is not None:
+        decision_cutoff = decision_cutoff.astimezone(dt.UTC).replace(tzinfo=None)
+    if decision_cutoff > created_at:
+        raise ValueError("decision_cutoff must not be after created_at")
     release_dir = Path(out_dir).resolve() / release_id
     if release_dir.exists():
         raise FileExistsError(f"Release directory already exists: {release_dir}")
@@ -2011,6 +2088,7 @@ def publish_release(
                 previous_files,
                 run_id,
                 research_reason,
+                decision_cutoff,
             )
             Path(staging).rename(release_dir)
             renamed = True
@@ -2050,6 +2128,7 @@ def _export_dataset(
     release_dir: Path,
     previous_files: Mapping[str, Path],
     research_reason: str | None,
+    decision_cutoff: dt.datetime,
 ) -> tuple[dict[str, object], ReleaseDatasetResult | None]:
     """One manifest dataset entry, and its result when the dataset is published."""
 
@@ -2088,10 +2167,13 @@ def _export_dataset(
                 )
     if reason is not None:
         return {**entry, "status": DATASET_ABSENT, "absent_reason": reason}, None
+    if dataset.withheld_reason is not None:
+        # Produced but held back (e.g. pending review): nothing is exported.
+        return {**entry, "status": DATASET_WITHHELD, "absent_reason": dataset.withheld_reason}, None
     # The shared catalog helper's ORDER BY inherits DuckDB's default direction.
     schema.sort(key=lambda column: int(str(column["ordinal"])))
     columns = [str(column["name"]) for column in schema]
-    query = release_query(dataset, columns)
+    query = release_query(dataset, columns, decision_cutoff)
     parquet_path = staging / f"{dataset.name}.parquet"
     _copy_parquet(store, query, parquet_path)
     previous = previous_files.get(dataset.name)
@@ -2205,13 +2287,15 @@ def _publish_snapshot(
     previous_files: dict[str, Path],
     run_id: str | None,
     research_reason: str | None = None,
+    decision_cutoff: dt.datetime | None = None,
 ) -> ReleaseResult:
 
+    cutoff = created_at if decision_cutoff is None else decision_cutoff
     results: list[ReleaseDatasetResult] = []
     published: list[ReleaseDataset] = []
     manifest_datasets: list[dict[str, object]] = []
     for dataset in RELEASE_DATASETS:
-        entry, result = _export_dataset(store, dataset, staging, release_dir, previous_files, research_reason)
+        entry, result = _export_dataset(store, dataset, staging, release_dir, previous_files, research_reason, cutoff)
         manifest_datasets.append(entry)
         if result is not None:
             results.append(result)
@@ -2231,7 +2315,7 @@ def _publish_snapshot(
         "universe_certification": _universe_certification_gate(universes),
     }
     eligibility, gates_not_passed = release_eligibility(gates)
-    evidence = _release_evidence(store, universes, {str(entry["name"]): entry for entry in manifest_datasets})
+    evidence = _release_evidence(store, universes, {str(entry["name"]): entry for entry in manifest_datasets}, cutoff)
     for dataset, entry in zip(RELEASE_DATASETS, manifest_datasets, strict=True):
         block = evidence.get(dataset.name)
         cap = block.get("eligibility_cap") if isinstance(block, dict) else None
@@ -2242,6 +2326,7 @@ def _publish_snapshot(
         "release_id": release_id,
         "contract_version": PUBLICATION_CONTRACT_VERSION,
         "created_at": created_at.isoformat(),
+        "decision_cutoff": cutoff.isoformat(),
         "previous_release_id": previous_release_id,
         "activation_stage_run_ids": activation_stage_run_ids(store),
         "datasets": manifest_datasets,
@@ -2257,9 +2342,9 @@ def _publish_snapshot(
             + ", ".join(RELEASE_GATES)
             + " is 'passed'; failed or unmeasured gates make the release a candidate. Per dataset: "
             "research-basis datasets are research_only (never eligible); a production dataset produced outside "
-            "the activation ladder, or capped by its evidence (eligibility_cap: e.g. current-ticker listing "
-            "status, forward labels outside the eligible calculation versions), is a candidate; every other "
-            "published dataset takes the release eligibility"
+            "the activation ladder, or capped (eligibility_cap: current-ticker listing status; forward labels "
+            "outside the eligible calculation versions), is a candidate; every other published dataset takes "
+            "the release eligibility"
         ),
     }
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
