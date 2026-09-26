@@ -3,10 +3,19 @@
 Candidates come straight from the retained bulk ``submissions.zip`` (no warehouse, no DuckDB
 connection). Each candidate's filing index and its single EX-99 go into a ``sec_http`` fetch
 store under ``--fetch-dir``: content-addressed files plus ``fetch-ledger.jsonl``. Every request
-sends only the approved SEC user agent and takes a token from the host-wide 5 req/s limiter, so
-several workers (``--shard K/N``) may run at once. A rerun skips every ledgered URL, so a killed
-run resumes where it stopped. Load afterwards with
+sends only the approved SEC user agent and takes a token from the host-wide 5 req/s limiter
+(one fixed lock per host, whatever root the worker is launched from), so several workers
+(``--shard K/N``) may run at once. A rerun skips every ledgered URL, so a killed run resumes
+where it stopped. Load afterwards with
 ``scripts/refresh_sec_earnings_release_facts.py --fetch-dir`` (loader-only, no network).
+
+Run each worker under the memory guard (ruling C-58): ``run_memory_guarded.py --job-gb 0.6
+--wait-minutes 30 -- python scripts/fetch_sec_earnings_releases.py ...``.
+
+Exit codes: 0 done; 3 SEC blocked the host (403/429 on every retry, see ``sec_http``), or the
+host was already tripped at start: nothing more is requested until an operator runs
+``python -m atx_db.sec_http --clear-block``. A worker that cannot reach the host-wide limiter
+lock refuses to start.
 """
 
 from __future__ import annotations
@@ -26,6 +35,9 @@ from atx_db.press_release import (  # noqa: E402
     earnings_release_candidates_from_submissions_archive,
     fetch_sec_earnings_release_documents,
 )
+from atx_db.sec_http import SecBlockedError, default_sec_limiter
+
+EXIT_SEC_BLOCKED = 3
 
 
 def _shard(value: str) -> tuple[int, int]:
@@ -52,6 +64,15 @@ def main() -> int:
 
     shard, shards = args.shard
     started = time.monotonic()
+    # Refuses to start on an ATX_SEC_RATE_LOCK naming a second lock, an unreachable host lock, or a tripped host.
+    limiter = default_sec_limiter()
+    try:
+        limiter_state = limiter.preflight()
+    except SecBlockedError as exc:
+        print(json.dumps({"aborted": "sec_blocked_at_start", "pid": os.getpid(), "error": str(exc)}), flush=True)
+        return EXIT_SEC_BLOCKED
+    print(json.dumps({"start": {"pid": os.getpid(), "shard": f"{shard}/{shards}", "limiter": limiter_state}},
+                     sort_keys=True), flush=True)
     candidates = (
         candidate
         for position, candidate in enumerate(earnings_release_candidates_from_submissions_archive(
@@ -62,20 +83,29 @@ def main() -> int:
         ))
         if position % shards == shard
     )
+    counts: dict[str, int] = {}
 
-    def progress(counts: dict[str, int]) -> None:
-        print(json.dumps({"progress": counts, "pid": os.getpid(), "elapsed_s": round(time.monotonic() - started, 1)}),
+    def progress(snapshot: dict[str, int]) -> None:
+        counts.update(snapshot)
+        print(json.dumps({"progress": snapshot, "pid": os.getpid(), "elapsed_s": round(time.monotonic() - started, 1)}),
               flush=True)
 
-    counts = fetch_sec_earnings_release_documents(
-        candidates,
-        args.fetch_dir,
-        request_timeout=args.request_timeout,
-        max_index_bytes=args.max_index_bytes,
-        max_document_bytes=args.max_document_bytes,
-        progress=progress,
-        progress_every=args.progress_every,
-    )
+    try:
+        counts = fetch_sec_earnings_release_documents(
+            candidates,
+            args.fetch_dir,
+            limiter=limiter,
+            request_timeout=args.request_timeout,
+            max_index_bytes=args.max_index_bytes,
+            max_document_bytes=args.max_document_bytes,
+            progress=progress,
+            progress_every=args.progress_every,
+        )
+    except SecBlockedError as exc:
+        print(json.dumps({"aborted": "sec_blocked", "pid": os.getpid(), "shard": f"{shard}/{shards}",
+                          "last_progress": counts, "error": str(exc),
+                          "elapsed_s": round(time.monotonic() - started, 1)}, sort_keys=True), flush=True)
+        return EXIT_SEC_BLOCKED
     print(json.dumps({"done": counts, "pid": os.getpid(), "shard": f"{shard}/{shards}",
                       "elapsed_s": round(time.monotonic() - started, 1)}, sort_keys=True), flush=True)
     return 0

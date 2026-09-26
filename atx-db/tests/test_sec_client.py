@@ -12,9 +12,14 @@ from atx_db import sec_http, security_master
 class _CountingLimiter:
     def __init__(self) -> None:
         self.acquired = 0
+        self.statuses: list[int] = []
 
-    def acquire(self, label: str | None = None) -> None:
+    def acquire(self, label: str | None = None) -> float:
         self.acquired += 1
+        return time.time()
+
+    def record_response(self, status: int, *, granted_at: float | None = None, retry_after_s: float = 0.0) -> None:
+        self.statuses.append(status)
 
 
 class _Response:
@@ -30,7 +35,7 @@ def test_sec_session_sends_only_the_approved_user_agent() -> None:
     session = security_master.sec_session(None)
     assert session.headers["User-Agent"] == sec_http.APPROVED_SEC_USER_AGENT
     with pytest.raises(ValueError, match="ATX_SEC_USER_AGENT"):
-        security_master.sec_session("atx-test test@example.com")
+        security_master.sec_session("atx-db/0.2 other-agent")
 
 
 def test_every_attempt_takes_a_limiter_token(monkeypatch) -> None:
@@ -41,6 +46,7 @@ def test_every_attempt_takes_a_limiter_token(monkeypatch) -> None:
     monkeypatch.setattr(sec_http.time, "sleep", lambda _seconds: None)
     assert adapter.send(requests.Request("GET", "https://www.sec.gov/x").prepare()).status_code == 200
     assert limiter.acquired == 3
+    assert limiter.statuses == [503, 429, 200]  # every status reaches the host-wide block state
     assert sec_http.SEC_RETRY_STATUS_CODES == frozenset({429, 500, 502, 503, 504})
 
 

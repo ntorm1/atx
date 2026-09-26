@@ -15,7 +15,7 @@ import requests
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .sec_http import APPROVED_SEC_USER_AGENT, default_sec_limiter, is_sec_url, validate_sec_user_agent
+from .sec_http import APPROVED_SEC_USER_AGENT, is_sec_url, sec_session, validate_sec_user_agent
 from .warehouse import insert_frame, now_utc_naive, quality_check, record_source_file
 
 
@@ -195,10 +195,11 @@ def _is_dimension_relationship(row: dict[str, Any]) -> bool:
 
 
 def _download_package(url: str, *, timeout: int, user_agent: str) -> tuple[bytes, str]:
-    if is_sec_url(url):  # SEC-hosted packages: approved agent only, host-wide limiter
+    get = requests.get
+    if is_sec_url(url):  # SEC-hosted packages: approved agent only, host-wide limiter per attempt and hop
         user_agent = validate_sec_user_agent(user_agent)
-        default_sec_limiter().acquire(url)
-    response = requests.get(url, timeout=timeout, headers={"User-Agent": user_agent})
+        get = sec_session(user_agent).get
+    response = get(url, timeout=timeout, headers={"User-Agent": user_agent})
     response.raise_for_status()
     content = response.content
     return content, hashlib.sha256(content).hexdigest()

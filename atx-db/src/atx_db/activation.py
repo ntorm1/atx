@@ -24,7 +24,13 @@ from typing import TYPE_CHECKING, Protocol
 
 from .clock import resolve_as_of_date, utc_today
 from .connection import DEFAULT_DB_PATH, DuckDBStore
-from .sec_http import APPROVED_SEC_USER_AGENT, default_sec_limiter, is_sec_url, resolve_sec_user_agent
+from .sec_http import (
+    APPROVED_SEC_USER_AGENT,
+    SecBlockedError,
+    is_sec_url,
+    resolve_sec_user_agent,
+    sec_session,
+)
 from .security_master import SEC_COMPANY_TICKERS_URL, normalize_company_tickers, upsert_security_master_from_frame
 from .ticker_history_bulk import BulkTickerHistoryOptions, publish_bulk_ticker_history
 from .ticker_history_extract import (
@@ -800,22 +806,23 @@ def sha256_file(path: Path, *, chunk_bytes: int = 1 << 22) -> str:
 def requests_downloader(url: str, dest: Path, *, user_agent: str) -> int:
     """Resumable streaming HTTP download. Network — never called from tests.
 
-    An SEC URL takes one token from the host-wide ``sec_http`` limiter and may only carry the
-    approved user agent.
+    An SEC URL goes through a ``sec_http`` session: approved user agent only, one host-wide limiter
+    token per attempt and redirect hop, and the shared 403/429 pause / abort.
     """
     import requests
 
+    get = requests.get
     if is_sec_url(url):
         if user_agent != APPROVED_SEC_USER_AGENT:
             raise ValueError(f"SEC downloads may only send {APPROVED_SEC_USER_AGENT!r}")
-        default_sec_limiter().acquire(url)
+        get = sec_session(user_agent).get
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_suffix(dest.suffix + ".part")
     existing = partial.stat().st_size if partial.is_file() else 0
     headers = {"User-Agent": user_agent, "Accept-Encoding": "identity"}
     if existing:
         headers["Range"] = f"bytes={existing}-"
-    with requests.get(url, headers=headers, stream=True, timeout=600) as response:
+    with get(url, headers=headers, stream=True, timeout=600) as response:
         if existing and response.status_code == 200:
             existing = 0  # server ignored the range request; restart
         response.raise_for_status()
@@ -912,7 +919,12 @@ def stage_submissions_load(store: DuckDBStore, options: ActivationOptions) -> St
 
 
 def stage_earnings_release_facts(store: DuckDBStore, options: ActivationOptions) -> StageResult:
-    """Load governed Item 2.02 EX-99 source evidence after submissions."""
+    """Load governed Item 2.02 EX-99 source evidence after submissions.
+
+    Loader-only mode (``earnings_release_fetch_dir``) fails the stage while any candidate is still
+    ``not_prefetched`` (for example a fetch store still being filled), so a partial store is never recorded
+    ``completed``; the committed receipts make the rerun resume.
+    """
     from .press_release import SecEarningsReleaseDataset, SecEarningsReleaseOptions
 
     result = SecEarningsReleaseDataset().run(store, SecEarningsReleaseOptions(
@@ -928,7 +940,10 @@ def stage_earnings_release_facts(store: DuckDBStore, options: ActivationOptions)
         fetch_dir=options.earnings_release_fetch_dir,
         run_id=f"{options.run_id}-earnings-release",
     ))
-    return StageResult(rows=int(result.rows_loaded), detail=dict(result.details))
+    stage_result = StageResult(rows=int(result.rows_loaded), detail=dict(result.details))
+    if int(stage_result.detail.get("not_prefetched") or 0) > 0:
+        raise ActivationStageError("earnings-release prefetch incomplete", stage_result)
+    return stage_result
 
 
 def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> StageResult:
@@ -1615,7 +1630,7 @@ def run_activation(
             started_at = begin_stage(store, stage=stage, run_id=options.run_id, params=params)
             try:
                 result = STAGES[stage](store, options)
-            except Exception as exc:  # recorded then re-raised
+            except (Exception, SecBlockedError) as exc:  # recorded then re-raised (a host-wide SEC block too)
                 partial = exc.result if isinstance(exc, ActivationStageError) else StageResult(0, {})
                 ledger_detail: dict[str, object] = {}
                 for recover in (False, True):

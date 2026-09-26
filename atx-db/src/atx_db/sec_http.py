@@ -4,19 +4,26 @@ Every SEC request made by this package goes through this module:
 
 * :data:`APPROVED_SEC_USER_AGENT` is the only user agent (and the only contact) ever sent to SEC.
   ``ATX_SEC_USER_AGENT`` / ``--sec-user-agent`` may only repeat it (:func:`validate_sec_user_agent`).
-* :class:`SecRateLimiter` is a cross-process token bucket shared by every worker on the host through a
-  file lock (default ``<data dir>/cache/.sec_rate.lock``) and a state file next to it; the default and the
-  ceiling are 5 requests/second. Every HTTP attempt (first try, retry and redirect) takes one token.
+* :class:`SecRateLimiter` is a cross-process token bucket shared by every worker on the host through one
+  file lock at a hard-coded absolute path (:data:`CANONICAL_SEC_RATE_LOCK`,
+  ``C:/atx/atx-db/data/cache/.sec_rate.lock``, ruling C-63) with its state file and trip marker beside it.
+  The path does not depend on the checkout, a git-archive export, ``ATX_DB_PATH`` or ``ATX_DB_DATA_DIR``,
+  so every launch on the host draws from the same bucket. ``ATX_SEC_RATE_LOCK`` may only name that same path; any other value
+  refuses to start (a second lock would be a second 5 req/s bucket).
+  The default and the ceiling are 5 requests/second. Every HTTP attempt (first try, retry and redirect hop)
+  takes one token.
+* SEC throttling is shared host-wide. A 403 or 429 pauses every worker on the host (``Retry-After`` when
+  SEC sends a longer one, else 60 s doubling per consecutive block episode, at most 600 s). The
+  :data:`SEC_BLOCK_ABORT_AFTER`-th consecutive block episode trips the host: every later SEC request on the
+  host raises :class:`SecBlockedError` (a non-zero exit) until an operator has checked SEC access and runs
+  ``python -m atx_db.sec_http --clear-block``.
 * :func:`sec_session` returns a ``requests.Session`` whose adapter applies the approved user agent, the
-  shared limiter and a bounded retry policy (429/5xx/connection errors, ``Retry-After`` honoured).
+  shared limiter, the shared block pause and a bounded retry policy (403/429 after the shared pause,
+  5xx/connection errors with local backoff).
 * :class:`FetchLedgerStore` is the fetch half of the fetch/load split: fetch workers never hold a DuckDB
   writer; they write content-addressed files (``objects/<sha[:2]>/<sha256>``) plus one ``fetch-ledger.jsonl``
-  line per request outcome (url, sha256, status, fetched_at) and resume by skipping ledgered URLs. Loaders
-  read the files back (SHA-verified) and never touch the network.
-
-All workers on a host must resolve the same lock path. A worker launched from a git-archive export resolves
-its data dir inside the export, so it must set ``ATX_SEC_RATE_LOCK`` (or ``ATX_DB_DATA_DIR``) to the shared
-``C:/atx/atx-db/data`` location.
+  line per request outcome (url, sha256, status, fetched_at, rate_lock) and resume by skipping ledgered
+  URLs. Loaders read the files back (SHA-verified) and never touch the network.
 """
 from __future__ import annotations
 
@@ -29,7 +36,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,13 +54,34 @@ SEC_RATE_LOCK_ENV = "ATX_SEC_RATE_LOCK"
 SEC_RATE_LOG_ENV = "ATX_SEC_RATE_LOG"
 MAX_SEC_REQUESTS_PER_SECOND = 5.0
 SEC_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+#: SEC's rate / undeclared-tool refusals: every one pauses the whole host (see SecRateLimiter.record_response).
+SEC_BLOCK_STATUS_CODES = frozenset({403, 429})
+SEC_BLOCK_PAUSE_SECONDS = 60.0
+SEC_MAX_BLOCK_PAUSE_SECONDS = 600.0
+#: Consecutive host-wide block episodes after which every SEC request on the host stops (SecBlockedError).
+SEC_BLOCK_ABORT_AFTER = 5
 SEC_MAX_ATTEMPTS = 6
 SEC_BACKOFF_SECONDS = 0.5
 _MAX_BACKOFF_SECONDS = 60.0
 _LOCK_POLL_SECONDS = 0.002
 _LOCK_TIMEOUT_SECONDS = 600.0
+_PAUSE_POLL_SECONDS = 1.0
+#: The host-wide limiter lock (ruling C-63): one absolute path on this host, whatever root a worker runs from.
+#: The state file and the trip marker live beside it in the same directory.
+CANONICAL_SEC_RATE_LOCK = Path(r"C:\atx\atx-db\data\cache\.sec_rate.lock")
 FETCH_LEDGER_NAME = "fetch-ledger.jsonl"
 RESPONSE_TOO_LARGE = "response_too_large"
+FETCH_OBJECT_SHA_MISMATCH = "fetch_object_sha_mismatch"
+CLEAR_BLOCK_COMMAND = "python -m atx_db.sec_http --clear-block"
+
+
+class SecBlockedError(BaseException):
+    """SEC kept refusing this host (403/429): every SEC request on the host stops until an operator clears it.
+
+    It derives from ``BaseException`` (like ``KeyboardInterrupt``) on purpose: the loaders' per-item
+    ``except Exception`` handlers must not turn a host-wide block into a stream of per-item failures or
+    retryable ledger lines. The process aborts with a non-zero exit instead.
+    """
 
 
 def validate_sec_user_agent(value: str | None) -> str:
@@ -81,13 +109,34 @@ def is_sec_url(url: str) -> bool:
     return host == "sec.gov" or host.endswith(".sec.gov")
 
 
-def default_sec_rate_lock_path() -> Path:
-    configured = os.environ.get(SEC_RATE_LOCK_ENV)
-    if configured:
-        return Path(os.path.expandvars(configured)).expanduser()
-    from .connection import resolve_data_dir
+def canonical_sec_rate_lock_path() -> Path:
+    """The one host-wide SEC limiter lock (:data:`CANONICAL_SEC_RATE_LOCK`, ruling C-63).
 
-    return resolve_data_dir() / "cache" / ".sec_rate.lock"
+    A hard-coded absolute path: it does not follow the checkout, a git-archive export (C-23), ``ATX_DB_PATH``
+    or ``ATX_DB_DATA_DIR``, so workers launched from different roots share one 5 req/s bucket.
+    """
+
+    return CANONICAL_SEC_RATE_LOCK
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+def default_sec_rate_lock_path() -> Path:
+    """:func:`canonical_sec_rate_lock_path`; refuses an ``ATX_SEC_RATE_LOCK`` that names any other lock."""
+
+    canonical = canonical_sec_rate_lock_path()
+    configured = os.environ.get(SEC_RATE_LOCK_ENV)
+    if configured and configured.strip():
+        requested = Path(os.path.expandvars(configured.strip())).expanduser()
+        if not _same_path(requested, canonical):
+            raise ValueError(
+                f"{SEC_RATE_LOCK_ENV}={str(requested)!r} names a second SEC rate lock; every SEC worker on the "
+                f"host must share the host-wide lock {str(canonical)!r} (a second lock is a second 5 req/s "
+                f"bucket). Unset {SEC_RATE_LOCK_ENV}."
+            )
+    return canonical
 
 
 @contextmanager
@@ -127,44 +176,238 @@ def _exclusive_file_lock(path: Path, *, timeout_s: float = _LOCK_TIMEOUT_SECONDS
         os.close(fd)
 
 
-class SecRateLimiter:
-    """Cross-process token bucket (file lock at data/cache/.sec_rate.lock + state file); default 5 req/s.
+@dataclass
+class _LimiterState:
+    next_slot: float = 0.0  # earliest time of the next grant (epoch seconds)
+    pause_until: float = 0.0  # host-wide block pause: no grant before this time
+    pause_s: float = 0.0  # length of that pause when it was set (bounds a wall-clock step back)
+    blocks: int = 0  # consecutive block episodes on this host
+    block_at: float = 0.0  # when the latest block episode was recorded
 
-    The bucket holds one token, so grants are spaced at least ``1 / rate_per_s`` apart host-wide and no
-    one-second window can hold more than ``rate_per_s`` grants. The lock is held while waiting for the slot
-    and the next slot is computed from the actual grant time, so a late wake-up delays the schedule instead of
-    compressing it. A wall-clock step backwards never stalls a worker for more than one interval.
+
+class SecRateLimiter:
+    """Cross-process token bucket (host-wide file lock + state file); default 5 req/s.
+
+    The default lock is :func:`canonical_sec_rate_lock_path`, one fixed path per host. The bucket holds one
+    token, so grants are spaced at least ``1 / rate_per_s`` apart host-wide and no one-second window can hold
+    more than ``rate_per_s`` grants. The lock is held while waiting for the slot and the next slot is computed
+    from the actual grant time, so a late wake-up delays the schedule instead of compressing it. A wall-clock
+    step backwards never stalls a worker for more than one interval (or one block pause).
+
+    The same state carries SEC's throttling signal (:meth:`record_response`): a block pause every worker
+    waits out, the count of consecutive block episodes, and a trip marker (``.sec_rate.blocked``) that stops
+    every SEC request on the host until :meth:`clear_block`. ``lock_path`` and the block parameters are for
+    tests and offline probes; production code uses :func:`default_sec_limiter`.
     """
 
-    def __init__(self, rate_per_s: float = MAX_SEC_REQUESTS_PER_SECOND, lock_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        rate_per_s: float = MAX_SEC_REQUESTS_PER_SECOND,
+        lock_path: Path | None = None,
+        *,
+        block_pause_s: float = SEC_BLOCK_PAUSE_SECONDS,
+        max_block_pause_s: float = SEC_MAX_BLOCK_PAUSE_SECONDS,
+        abort_after: int = SEC_BLOCK_ABORT_AFTER,
+    ) -> None:
         if not 0 < rate_per_s <= MAX_SEC_REQUESTS_PER_SECOND:
             raise ValueError(f"SEC request rate must be in (0, {MAX_SEC_REQUESTS_PER_SECOND:g}] requests/second")
+        if not 0 < block_pause_s <= max_block_pause_s or abort_after < 1:
+            raise ValueError("block pause must be in (0, max_block_pause_s] and abort_after must be positive")
         self.rate_per_s = float(rate_per_s)
         self.interval_s = 1.0 / self.rate_per_s
+        self.block_pause_s = float(block_pause_s)
+        self.max_block_pause_s = float(max_block_pause_s)
+        self.abort_after = int(abort_after)
         self.lock_path = Path(lock_path) if lock_path is not None else default_sec_rate_lock_path()
         self.state_path = self.lock_path.with_name(f"{self.lock_path.stem}.state")
+        self.blocked_path = self.lock_path.with_name(f"{self.lock_path.stem}.blocked")
         self._thread_lock = threading.Lock()
 
-    def acquire(self, label: str | None = None) -> None:
+    def acquire(self, label: str | None = None) -> float:
+        """Wait for this process's next SEC request slot and return the grant time (epoch seconds).
+
+        A host-wide block pause is waited out with the lock released between polls; a tripped host raises
+        :class:`SecBlockedError`.
+        """
+
+        while True:
+            with self._thread_lock, _exclusive_file_lock(self.lock_path):
+                self._raise_if_tripped()
+                now = time.time()
+                state = self._read_state(now)
+                paused = state.pause_until - now
+                if paused <= 0:
+                    wait = min(max(state.next_slot - now, 0.0), self.interval_s)
+                    if wait > 0:
+                        time.sleep(wait)
+                    granted = time.time()
+                    state.next_slot = granted + self.interval_s
+                    self._write_state(state)
+                    self._log({"t": granted, "pid": os.getpid(), "label": label})
+                    return granted
+                bound = state.pause_s if 0 < state.pause_s <= self.max_block_pause_s else self.max_block_pause_s
+                if paused > bound + self.interval_s:  # the wall clock stepped back: never wait past one pause
+                    state.pause_until, state.pause_s = now + bound, bound
+                    self._write_state(state)
+                    paused = bound
+            time.sleep(min(paused, _PAUSE_POLL_SECONDS))
+
+    def record_response(self, status: int, *, granted_at: float | None = None, retry_after_s: float = 0.0) -> None:
+        """Share one SEC response status with every worker on the host.
+
+        A 403/429 starts or extends a host-wide pause. A request granted after the latest recorded block
+        opens a new block episode: the count goes up and the pause is ``block_pause_s`` doubled per
+        consecutive episode (at least SEC's ``Retry-After``), capped at ``max_block_pause_s``. A block on a
+        request granted before that (already in flight when the block was recorded) belongs to the same
+        episode and does not escalate. Any other status on a request granted after the latest block ends the
+        run. The ``abort_after``-th consecutive episode trips the host.
+        """
+
+        is_block = int(status) in SEC_BLOCK_STATUS_CODES
         with self._thread_lock, _exclusive_file_lock(self.lock_path):
             now = time.time()
-            wait = min(max(self._next_slot(now) - now, 0.0), self.interval_s)
-            if wait > 0:
-                time.sleep(wait)
-            granted = time.time()
-            self.state_path.write_text(repr(granted + self.interval_s), encoding="ascii")
-            log_path = os.environ.get(SEC_RATE_LOG_ENV)
-            if log_path:
-                with open(log_path, "a", encoding="utf-8") as handle:
-                    handle.write(json.dumps({"t": granted, "pid": os.getpid(), "label": label}) + "\n")
+            state = self._read_state(now)
+            new_episode = granted_at is None or granted_at >= state.block_at
+            if not is_block:
+                if state.blocks and new_episode:
+                    self._log({"t": now, "pid": os.getpid(), "event": "block_run_ended", "status": int(status),
+                               "after_blocks": state.blocks})
+                    state.blocks = 0
+                    self._write_state(state)
+                return
+            retry_after = min(max(float(retry_after_s or 0.0), 0.0), self.max_block_pause_s)
+            if new_episode:
+                state.blocks += 1
+                state.block_at = now
+                backoff = self.block_pause_s * (2 ** min(state.blocks - 1, 16))
+                pause = min(max(backoff, retry_after), self.max_block_pause_s)
+            else:
+                pause = retry_after
+            if now + pause > state.pause_until:
+                state.pause_until, state.pause_s = now + pause, pause
+            self._write_state(state)
+            self._log({"t": now, "pid": os.getpid(), "event": "block", "status": int(status),
+                       "episode": "new" if new_episode else "in_flight", "blocks": state.blocks,
+                       "pause_until": state.pause_until})
+            if new_episode and state.blocks >= self.abort_after:
+                self._trip(state, int(status), now)
 
-    def _next_slot(self, now: float) -> float:
+    def preflight(self) -> dict[str, Any]:
+        """Take the host lock once and report the limiter state; raises SecBlockedError on a tripped host.
+
+        Fetch workers call this before any work, so an unreachable host lock or a tripped host stops them
+        at start instead of mid-run.
+        """
+
+        with self._thread_lock, _exclusive_file_lock(self.lock_path):
+            self._raise_if_tripped()
+            return self._status_locked()
+
+    def status(self) -> dict[str, Any]:
+        with self._thread_lock, _exclusive_file_lock(self.lock_path):
+            return self._status_locked()
+
+    def clear_block(self) -> Path | None:
+        """Operator reset after SEC access was checked: keep the trip marker as ``.cleared-<stamp>``."""
+
+        with self._thread_lock, _exclusive_file_lock(self.lock_path):
+            if not self.blocked_path.exists():
+                return None
+            stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+            cleared = self.blocked_path.with_name(f"{self.blocked_path.name}.cleared-{stamp}")
+            os.replace(self.blocked_path, cleared)
+            state = self._read_state(time.time())
+            state.blocks, state.pause_until, state.pause_s = 0, 0.0, 0.0
+            self._write_state(state)
+            self._log({"t": time.time(), "pid": os.getpid(), "event": "block_cleared", "marker": str(cleared)})
+            return cleared
+
+    def _status_locked(self) -> dict[str, Any]:
+        now = time.time()
+        state = self._read_state(now)
+        return {
+            "lock_path": str(self.lock_path),
+            "rate_per_s": self.rate_per_s,
+            "paused_s": round(max(state.pause_until - now, 0.0), 3),
+            "consecutive_block_episodes": state.blocks,
+            "abort_after": self.abort_after,
+            "tripped": self._tripped_detail(),
+        }
+
+    def _tripped_detail(self) -> str | None:
+        if not self.blocked_path.exists():
+            return None
         try:
-            return float(self.state_path.read_text(encoding="ascii"))
+            return self.blocked_path.read_text(encoding="utf-8")[:500] or "empty trip marker"
+        except OSError:
+            return "unreadable trip marker"
+
+    def _raise_if_tripped(self) -> None:
+        detail = self._tripped_detail()
+        if detail is not None:
+            raise SecBlockedError(
+                f"SEC refused this host {self.abort_after} consecutive times (403/429); every SEC request on the "
+                f"host is stopped. Check SEC access, then run `{CLEAR_BLOCK_COMMAND}`. Marker "
+                f"{self.blocked_path}: {detail}"
+            )
+
+    def _trip(self, state: _LimiterState, status: int, now: float) -> None:
+        marker = {
+            "tripped_at": dt.datetime.fromtimestamp(now, dt.UTC).isoformat(timespec="seconds"),
+            "pid": os.getpid(),
+            "consecutive_block_episodes": state.blocks,
+            "last_status": status,
+            "clear_with": CLEAR_BLOCK_COMMAND,
+        }
+        temporary = self.blocked_path.with_name(f"{self.blocked_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, self.blocked_path)
+        self._log({"t": now, "pid": os.getpid(), "event": "trip", "blocks": state.blocks, "status": status})
+
+    def _read_state(self, now: float) -> _LimiterState:
+        try:
+            text = self.state_path.read_text(encoding="ascii")
         except FileNotFoundError:
-            return 0.0
-        except (OSError, ValueError):
-            return now + self.interval_s  # unreadable state: wait one full interval
+            return _LimiterState()
+        except OSError:
+            return _LimiterState(next_slot=now + self.interval_s)
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, (int, float)):  # the pre-fix format: the next slot only
+                return _LimiterState(next_slot=float(payload))
+            return _LimiterState(
+                next_slot=float(payload["next"]),
+                pause_until=float(payload.get("pause_until", 0.0)),
+                pause_s=float(payload.get("pause_s", 0.0)),
+                blocks=int(payload.get("blocks", 0)),
+                block_at=float(payload.get("block_at", 0.0)),
+            )
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return _LimiterState(next_slot=now + self.interval_s)  # unreadable state: wait one full interval
+
+    def _write_state(self, state: _LimiterState) -> None:
+        """Replace the state file whole (a kill never leaves a torn state); only ever called under the lock."""
+
+        text = json.dumps({
+            "next": state.next_slot, "pause_until": state.pause_until, "pause_s": state.pause_s,
+            "blocks": state.blocks, "block_at": state.block_at,
+        })
+        temporary = self.state_path.with_name(f"{self.state_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(text, encoding="ascii")
+        for _ in range(50):
+            try:
+                os.replace(temporary, self.state_path)
+                return
+            except PermissionError:  # a scanner briefly holding the target (Windows)
+                time.sleep(_LOCK_POLL_SECONDS)
+        os.replace(temporary, self.state_path)
+
+    @staticmethod
+    def _log(event: dict[str, Any]) -> None:
+        log_path = os.environ.get(SEC_RATE_LOG_ENV)
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event) + "\n")
 
 
 _DEFAULT_LIMITER: SecRateLimiter | None = None
@@ -181,24 +424,28 @@ def default_sec_limiter() -> SecRateLimiter:
         return _DEFAULT_LIMITER
 
 
-def _retry_after_seconds(response: Any) -> float:
+def _retry_after_seconds(response: Any, cap: float = _MAX_BACKOFF_SECONDS) -> float:
     value = (response.headers or {}).get("Retry-After") if hasattr(response, "headers") else None
     if not value:
         return 0.0
     value = str(value).strip()
     if value.isdigit():
-        return min(float(value), _MAX_BACKOFF_SECONDS)
+        return min(float(value), cap)
     try:
         when = email.utils.parsedate_to_datetime(value)
     except (TypeError, ValueError):
         return 0.0
     if when.tzinfo is None:
         when = when.replace(tzinfo=dt.UTC)
-    return min(max((when - dt.datetime.now(dt.UTC)).total_seconds(), 0.0), _MAX_BACKOFF_SECONDS)
+    return min(max((when - dt.datetime.now(dt.UTC)).total_seconds(), 0.0), cap)
 
 
 class _SecAdapter(HTTPAdapter):
-    """Every attempt (first try, retry, redirect hop) takes one token from the shared limiter."""
+    """Every attempt (first try, retry, redirect hop) takes one token from the shared limiter.
+
+    Every response status is shared with the limiter, so a 403/429 pauses all workers on the host; the
+    retry of a blocked request waits out that shared pause inside ``acquire`` (no local sleep).
+    """
 
     def __init__(self, limiter: SecRateLimiter, *, max_attempts: int, backoff_s: float) -> None:
         super().__init__(max_retries=0)
@@ -216,7 +463,7 @@ class _SecAdapter(HTTPAdapter):
         attempt = 0
         while True:
             attempt += 1
-            self.limiter.acquire(request.url)
+            granted = self.limiter.acquire(request.url)
             try:
                 response = super().send(request, **kwargs)
             except (requests.ConnectionError, requests.Timeout):
@@ -224,6 +471,16 @@ class _SecAdapter(HTTPAdapter):
                     raise
                 time.sleep(self._backoff(attempt))
                 continue
+            self.limiter.record_response(
+                response.status_code,
+                granted_at=granted,
+                retry_after_s=_retry_after_seconds(response, cap=SEC_MAX_BLOCK_PAUSE_SECONDS),
+            )
+            if response.status_code in SEC_BLOCK_STATUS_CODES:
+                if idempotent and attempt < self.max_attempts:
+                    response.close()
+                    continue  # the next acquire waits out the host-wide pause (or raises once tripped)
+                return response
             if idempotent and response.status_code in SEC_RETRY_STATUS_CODES and attempt < self.max_attempts:
                 delay = max(self._backoff(attempt), _retry_after_seconds(response))
                 response.close()
@@ -327,10 +584,15 @@ class FetchRecord:
 class FetchLedgerStore:
     """Content-addressed fetch output plus an append-only ``fetch-ledger.jsonl`` (fetch/load split).
 
-    Only a URL's newest *terminal* record counts; a rerun skips every URL that has one. Payload bytes are
-    written before their ledger line, so a kill leaves at most an unreferenced object, never a ledger line
-    without its bytes. Appends are serialized by a file lock, so concurrent workers may share one store.
-    The in-memory index keeps a 16-byte URL digest per terminal record (not the URL text).
+    Only a URL's newest *terminal* record counts; a rerun skips every URL that has one whose object is
+    present at its ledgered size. Payload bytes are written before their ledger line, so a kill leaves at
+    most an unreferenced object, never a ledger line without its bytes. A read whose SHA does not match
+    quarantines the object (``<sha>.corrupt-<stamp>``) so the next :meth:`ensure` refetches it. Appends are
+    serialized by a file lock, so concurrent workers may share one store.
+
+    The in-memory index keeps a 16-byte URL digest per terminal record (not the URL text). Measured at 100k
+    entries (review of 1.7): about 266 B retained and 309 B peak per entry, i.e. about 216 / 250 MB at 850k
+    URLs; a loader that holds this index next to DuckDB must budget for it (or shard the ledger).
     """
 
     def __init__(self, root: str | Path) -> None:
@@ -405,12 +667,30 @@ class FetchLedgerStore:
 
         if not record.ok or record.sha256 is None:
             raise ValueError(f"no content was fetched for {record.url}")
-        payload = self.object_path(record.sha256).read_bytes()
+        path = self.object_path(record.sha256)
+        payload = path.read_bytes()
         if hashlib.sha256(payload).hexdigest() != record.sha256:
-            raise ValueError("fetch_object_sha_mismatch")
+            self._quarantine(path)
+            raise ValueError(FETCH_OBJECT_SHA_MISMATCH)
         if maximum is not None and len(payload) > maximum:
             raise ValueError(RESPONSE_TOO_LARGE)
         return payload
+
+    def _quarantine(self, path: Path) -> None:
+        """Move a corrupt object aside (kept, not deleted) so the next ensure() refetches its URL."""
+
+        stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        # Another process may hold it open or have moved it first: the caller still raises, a later read retries.
+        with suppress(OSError):
+            os.replace(path, path.with_name(f"{path.name}.corrupt-{stamp}"))
+
+    def _object_present(self, record: FetchRecord) -> bool:
+        if not record.ok or record.sha256 is None:
+            return True  # a terminal failure has no object
+        try:
+            return self.object_path(record.sha256).stat().st_size == record.bytes
+        except OSError:
+            return False
 
     def ensure(
         self,
@@ -420,10 +700,14 @@ class FetchLedgerStore:
         timeout: float = 30.0,
         maximum: int | None = None,
     ) -> tuple[FetchRecord, bool]:
-        """Return ``(record, fetched_now)``: the ledgered terminal record, else one new (ledgered) fetch."""
+        """Return ``(record, fetched_now)``: the ledgered terminal record, else one new (ledgered) fetch.
+
+        A successful record whose object is missing or not at its ledgered size (for example quarantined by
+        :meth:`read`) is refetched.
+        """
 
         record = self.lookup(url)
-        if record is not None:
+        if record is not None and self._object_present(record):
             return record, False
         return self.fetch(url, limiter=limiter, timeout=timeout, maximum=maximum), True
 
@@ -437,7 +721,8 @@ class FetchLedgerStore:
     ) -> FetchRecord:
         if not is_sec_url(url):
             raise ValueError(f"FetchLedgerStore only fetches SEC hosts, not {urlsplit(url).hostname!r}")
-        session = _session_for(limiter or default_sec_limiter())
+        limiter = limiter or default_sec_limiter()
+        session = _session_for(limiter)
         status, payload, error = 0, b"", None
         try:
             response = session.get(url, timeout=timeout, stream=True)
@@ -458,7 +743,7 @@ class FetchLedgerStore:
         record = FetchRecord(
             url, status, sha, dt.datetime.now(dt.UTC).isoformat(timespec="milliseconds"), len(payload), error,
         )
-        self._append(record)
+        self._append(record, rate_lock=str(getattr(limiter, "lock_path", "")))
         if record.terminal:
             self._remember(self._key(url), record)
         return record
@@ -466,7 +751,9 @@ class FetchLedgerStore:
     def _write_object(self, sha256: str, payload: bytes) -> None:
         path = self.object_path(sha256)
         if path.is_file() and path.stat().st_size == len(payload):
-            return
+            if hashlib.sha256(path.read_bytes()).hexdigest() == sha256:
+                return  # same content already stored (identical bytes under another URL, or a resumed write)
+            self._quarantine(path)  # same size, different bytes: keep it aside and store the verified payload
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="wb", dir=path.parent, prefix=f".{sha256[:16]}.", suffix=".tmp", delete=False
@@ -480,7 +767,7 @@ class FetchLedgerStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _append(self, record: FetchRecord) -> None:
+    def _append(self, record: FetchRecord, *, rate_lock: str | None = None) -> None:
         line = json.dumps(
             {
                 "url": record.url,
@@ -491,6 +778,7 @@ class FetchLedgerStore:
                 "error": record.error,
                 "user_agent": APPROVED_SEC_USER_AGENT,
                 "pid": os.getpid(),
+                "rate_lock": rate_lock,
             },
             sort_keys=True,
         ).encode("utf-8") + b"\n"
@@ -515,3 +803,29 @@ def _record_from_json(payload: dict[str, Any]) -> FetchRecord:
         bytes=int(payload.get("bytes") or 0),
         error=payload.get("error"),
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m atx_db.sec_http --status | --clear-block``: inspect or reset the host-wide SEC limiter."""
+
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m atx_db.sec_http", description=main.__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--status", action="store_true", help="Print the host lock path, pause and trip state.")
+    group.add_argument(
+        "--clear-block", action="store_true",
+        help="Operator reset after SEC access was checked; the trip marker is kept as .cleared-<stamp>.",
+    )
+    args = parser.parse_args(argv)
+    limiter = default_sec_limiter()
+    if args.clear_block:
+        cleared = limiter.clear_block()
+        print(json.dumps({"cleared": str(cleared) if cleared else None, **limiter.status()}, sort_keys=True))
+    else:
+        print(json.dumps(limiter.status(), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

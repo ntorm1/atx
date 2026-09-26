@@ -284,7 +284,7 @@ def test_stages_fail_fast_on_a_non_approved_sec_user_agent(tmp_store, tmp_path, 
     from atx_db.activation import stage_security_master
 
     options = ActivationOptions(
-        **{**_options(tmp_path, three_symbol_zip).as_dict(), "sec_user_agent": "other-agent ops@example.org"}
+        **{**_options(tmp_path, three_symbol_zip).as_dict(), "sec_user_agent": "atx-db/0.2 other-agent"}
     )
     with pytest.raises(ValueError, match="ATX_SEC_USER_AGENT"):
         stage_security_master(tmp_store, options)

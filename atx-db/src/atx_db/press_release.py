@@ -33,7 +33,13 @@ import pandas as pd
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .reported_eps_core import BASIC_EPS, DILUTED_EPS
-from .sec_http import APPROVED_SEC_USER_AGENT, RESPONSE_TOO_LARGE, FetchLedgerStore, SecRateLimiter
+from .sec_http import (
+    APPROVED_SEC_USER_AGENT,
+    FETCH_OBJECT_SHA_MISMATCH,
+    RESPONSE_TOO_LARGE,
+    FetchLedgerStore,
+    SecRateLimiter,
+)
 from .sec_submissions import EarningsReleaseCandidate, select_earnings_release_candidates
 from .security_master import sec_session
 from .estimates import (
@@ -1191,7 +1197,8 @@ def earnings_release_candidates_from_submissions_archive(
     containing ``2.02``, ``report_date`` inside the bounds (a missing report date fails any
     bound), one row per accession (latest acceptance, then filing date), yielded in
     ``(cik, accession)`` order. History members are required: a referenced member missing
-    from the archive raises instead of silently narrowing the candidate set.
+    from the archive raises instead of silently narrowing the candidate set, and so does an
+    explicitly requested CIK that the archive does not hold.
     """
 
     from ._submissions_archive import SubmissionsArchive
@@ -1202,6 +1209,10 @@ def earnings_release_candidates_from_submissions_archive(
         members: Iterable[str]
         if ciks:
             members = [f"CIK{cik}.json" for cik in sorted({_normalized_cik(cik) for cik in ciks})]
+            missing = [member[3:13] for member in members if member not in archive]
+            if missing:
+                raise ValueError(f"submissions archive {zip_path} holds no member for requested CIK(s): "
+                                 f"{', '.join(missing)}")
         else:
             members = archive.main_members()
         for member in members:
@@ -1280,14 +1291,17 @@ def fetch_sec_earnings_release_documents(
     Holds no DuckDB connection. It makes exactly the requests the loader would make (a
     candidate without a usable SEC clock, or without exactly one EX-99, fetches nothing
     more), so the cache-mode loader finds every byte it needs. Ledgered URLs are never
-    refetched; transient failures (0/403/429/5xx) stay retryable on the next run.
+    refetched unless their stored object is missing or corrupt; transient failures
+    (0/403/429/5xx) stay retryable on the next run. A host-wide SEC block
+    (``sec_http.SecBlockedError``) propagates and stops the worker.
     """
 
     store = FetchLedgerStore(fetch_dir).load()
     counts = {
         "candidates": 0, "no_clock": 0, "index_fetched": 0, "index_ledgered": 0, "index_failed": 0,
-        "index_unparsed": 0, "ex99_not_single": 0, "document_fetched": 0, "document_ledgered": 0,
-        "document_failed": 0, "ledger_duplicate_ok_urls_at_start": store.duplicate_ok_urls,
+        "index_unparsed": 0, "index_object_repaired": 0, "ex99_not_single": 0, "document_fetched": 0,
+        "document_ledgered": 0, "document_failed": 0,
+        "ledger_duplicate_ok_urls_at_start": store.duplicate_ok_urls,
         "ledger_corrupt_lines_at_start": store.corrupt_lines,
     }
     for candidate in candidates:
@@ -1322,7 +1336,20 @@ def _fetch_candidate_documents(
         counts["index_failed"] += 1
         return
     try:
-        documents = _ex99_documents(store.read(record).decode("utf-8", errors="replace"), directory_url)
+        index_bytes = store.read(record)
+    except ValueError as exc:
+        if str(exc) != FETCH_OBJECT_SHA_MISMATCH:
+            raise
+        # read() quarantined the corrupt object, so ensure() refetches it; a second mismatch on freshly
+        # written bytes is storage corruption and propagates instead of posing as a parse failure.
+        counts["index_object_repaired"] += 1
+        record, _ = store.ensure(index_url, limiter=limiter, timeout=timeout, maximum=max_index_bytes)
+        if not record.ok:
+            counts["index_failed"] += 1
+            return
+        index_bytes = store.read(record)
+    try:
+        documents = _ex99_documents(index_bytes.decode("utf-8", errors="replace"), directory_url)
     except Exception:
         counts["index_unparsed"] += 1  # the loader records the same parse failure from the same bytes
         return

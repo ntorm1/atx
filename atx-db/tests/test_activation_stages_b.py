@@ -178,7 +178,7 @@ def test_download_stage_resumes_by_skipping_present_archives(
 
 def test_download_stage_refuses_a_non_approved_sec_user_agent(tmp_store, tmp_path, monkeypatch):
     monkeypatch.delenv("ATX_SEC_USER_AGENT", raising=False)
-    options = ActivationOptions(**{**_options(tmp_path).as_dict(), "sec_user_agent": "other-agent ops@example.org"})
+    options = ActivationOptions(**{**_options(tmp_path).as_dict(), "sec_user_agent": "atx-db/0.2 other-agent"})
     with pytest.raises(ValueError, match="ATX_SEC_USER_AGENT"):
         stage_sec_bulk_download(tmp_store, options)
 

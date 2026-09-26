@@ -9,8 +9,15 @@ same durable volume when possible.
 
 SEC requests send only the approved user agent `sec_http.APPROVED_SEC_USER_AGENT`;
 `ATX_SEC_USER_AGENT` / `--sec-user-agent` are optional and may only repeat it (any other
-value fails before a request). All SEC workers on a host share one 5 req/s limiter
-(`data/cache/.sec_rate.lock`; set `ATX_SEC_RATE_LOCK` when running from an export).
+value fails before a request). All SEC workers on a host share one 5 req/s limiter at the
+hard-coded lock `C:\atx\atx-db\data\cache\.sec_rate.lock` (state file and trip marker beside
+it), whatever checkout, git-archive export or `ATX_DB_PATH` they run from;
+`ATX_SEC_RATE_LOCK` may only name that path (any other value refuses to start). A 403/429
+from SEC pauses every worker on the host (60 s doubling to 600 s, or SEC's longer
+`Retry-After`); the fifth consecutive block
+episode stops all SEC requests on the host (`SecBlockedError`, fetch worker exit 3) until
+an operator has checked SEC access and runs `python -m atx_db.sec_http --clear-block`
+(`--status` shows the lock, pause and trip state).
 The 13F loader validates ZIP contents, resumes partial
 downloads, records source hashes and byte counts, and atomically replaces one
 source archive at a time.
@@ -31,20 +38,19 @@ atx-db status --db-path $env:ATX_DB_PATH --strict
 python scripts/db_dev_tests.py --smoke --workers 0
 ```
 
-Some analytical commands default to a 4 GB DuckDB cap and four threads. For the
-current roughly 16 GiB host, explicitly start with **1 GB and one DuckDB thread**,
-one heavy process tree at a time, under the controller's aggregate memory guard
-with the current **2 GiB process-tree cap** and physical/commit headroom checks. A DuckDB setting
-does not cap pandas or other Python allocations. The guard limits the process
-tree; it does not prove that an unbounded operation can finish within that cap.
-Use bounded local test concurrency (`-n 0`); CI's four-worker lane runs on a
-separate machine and is not the local resource policy.
+Some analytical commands default to a 4 GB DuckDB cap and four threads. On this roughly 16 GiB host every
+Python/DuckDB process runs under the memory guard (`.superpowers/sdd/tier1-parity/run_memory_guarded.py`,
+ruling C-58): a Windows job object caps the process tree's committed memory at `--job-gb` (at most 1.0 GiB;
+0.6 probes/tests, 0.8 writer slices, 1.0 set-based passes) with DuckDB `memory_limit`/`threads` at 256MB/1,
+384MB/1-2 and 512MB/1 respectively, so DuckDB spills before the cap. A DuckDB setting does not cap pandas or
+other Python allocations; the job cap does, and an allocation past it fails inside the job. Use bounded local
+test concurrency (`-n 0`); CI's four-worker lane runs on a separate machine and is not the local resource policy.
 
-Long source restarts additionally require at least two minutes of observations
-above 6 GiB free physical memory and 8 GiB free commit headroom. The guard stops
-its own job below 1.5 GiB physical or 3 GiB commit headroom. Do not lower these
-thresholds or terminate other workloads to force a backfill. Continue bounded
-platform work while waiting; preserve completed source rows and receipts.
+Admission is size-based: a job starts when free commit, net of what our running jobs may still claim, is at
+least its cap + 1.0 GiB; host-wide slot files keep the sum of our running caps at or below 2.0 GiB with one
+`--heavy` job at a time; `--wait-minutes N` queues FIFO. The guard stops its own job only below 0.75 GiB free
+commit or 0.25 GiB free physical memory sustained 30 s; a stopped slice resumes from its ledger. Do not raise a
+cap, run uncapped, or terminate other workloads to force a backfill; re-engineer a job that cannot be admitted.
 
 ## Activation from scratch
 
