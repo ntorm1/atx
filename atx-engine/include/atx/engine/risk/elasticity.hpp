@@ -515,6 +515,7 @@ solve_elastic(const QpProblem &p, const ConstrainedQpSolver &solver) {
 
   // Build the hard augmented form (same assembly the solver used) + the relaxed form.
   const atx::usize k = p.V.n_factors();
+  ATX_TRY_VOID(p.C.validate_augmented_workspace(p.V.n_instruments(), k));
   const AugmentedQp hard = build_augmented(p.V, p.risk_aversion, p.q, p.C);
   const AugmentedQp relaxed = detail::build_relaxed(hard, p.C, k);
 

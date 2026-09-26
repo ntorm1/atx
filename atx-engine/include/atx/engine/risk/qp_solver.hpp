@@ -233,7 +233,7 @@ public:
   // Up-front shape/finiteness validation of a QpProblem, exactly as solve_with_cert runs
   // it. Exposed for callers that assemble their own augmented form (cost_terms.hpp).
   [[nodiscard]] static atx::core::Status check_problem(const QpProblem &p) {
-    return validate(p, p.V.n_instruments());
+    return ConstrainedQpSolver{}.validate(p, p.V.n_instruments());
   }
 
   // Solve the augmented constrained QP. Returns the length-M weight vector w (the
@@ -301,8 +301,26 @@ public:
                                                                  const AdmmSchedule *sched,
                                                                  const WarmStart *ws) const {
     namespace co = atx::core;
-    if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2)
+    if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2 || p_in.C.sparse())
       ATX_TRY_VOID(validate(p_in, p_in.V.n_instruments()));
+    if (p_in.C.sparse()) {
+      // Cost/elastic callers may supply a wider form than build_augmented.
+      // Check its actual sparse KKT before equilibration/factor allocations.
+      constexpr auto limit = static_cast<atx::u64>(std::numeric_limits<int>::max()) / 4;
+      const auto n = static_cast<atx::u64>(aug.P.rows());
+      const auto r = static_cast<atx::u64>(aug.A_tilde.rows());
+      const auto nnz = static_cast<atx::u64>(aug.P.nonZeros()) +
+          2 * static_cast<atx::u64>(aug.A_tilde.nonZeros()) + n + r;
+      if (n > limit || r > limit || nnz > limit || n + r > limit ||
+          aug.P.cols() != aug.P.rows() || aug.A_tilde.cols() != aug.P.rows() ||
+          aug.q_aug.size() != aug.P.rows() || aug.l.size() != aug.A_tilde.rows() ||
+          aug.u.size() != aug.l.size() || aug.n_w != p_in.V.n_instruments() ||
+          aug.n_y != p_in.V.n_factors() || aug.n_w + aug.n_y > n ||
+          aug.n_aux != n - aug.n_w - aug.n_y)
+        return co::Err(co::ErrorCode::InvalidArgument, "QP: malformed/budget-exceeding sparse augmented form");
+      ATX_TRY_VOID(p_in.C.validate_kkt_workspace(static_cast<atx::usize>(n + r),
+          static_cast<atx::usize>(nnz)));
+    }
     const QpProblem p = (ws == nullptr)
                             ? QpProblem{p_in.V, p_in.risk_aversion, p_in.q, p_in.C, p_in.x0, p_in.y0}
                             : QpProblem{p_in.V, p_in.risk_aversion, p_in.q, p_in.C, ws->x0, ws->y0};
@@ -426,6 +444,12 @@ private:
       return co::Err(co::ErrorCode::InvalidArgument, "QP: q.size() must equal M (n_instruments)");
     }
     ATX_TRY_VOID(p.C.validate_layout(m));
+    if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2) {
+      ATX_TRY_VOID(p.C.validate_relative_metadata(m));
+      if (p.C.robust.active && p.C.robust.omega_f.size() != 0 &&
+          static_cast<atx::usize>(p.C.robust.omega_f.rows()) != p.V.n_factors())
+        return co::Err(co::ErrorCode::InvalidArgument, "QP: robust factor covariance geometry mismatch");
+    }
     if (!std::isfinite(p.C.turnover_penalty) || p.C.turnover_penalty < 0.0) {
       return co::Err(co::ErrorCode::InvalidArgument,
                      "QP: turnover_penalty must be finite and nonnegative");
@@ -670,7 +694,8 @@ private:
 
     const SpMat kkt = build_kkt(aug);
     QuasiDefiniteLdl ldl;
-    ATX_TRY_VOID(ldl.factor_symbolic(kkt, std::min(cfg.max_factor_bytes, aug.max_factor_bytes)));
+    ATX_TRY_VOID(ldl.factor_symbolic(kkt, std::min({cfg.max_factor_bytes, aug.max_factor_bytes,
+        p.C.sparse() ? p.C.storage.max_solver_bytes / 4 : std::numeric_limits<atx::u64>::max()})));
     ATX_TRY_VOID(ldl.factor_numeric(kkt));
 
     const atx::f64 rho_inv = 1.0 / cfg.rho;
@@ -762,7 +787,8 @@ private:
     SpMat kkt = build_kkt(aug);
     set_kkt_rho_diag(kkt, n, rho_inv);
     QuasiDefiniteLdl ldl;
-    ATX_TRY_VOID(ldl.factor_symbolic(kkt, std::min(cfg.max_factor_bytes, aug.max_factor_bytes)));
+    ATX_TRY_VOID(ldl.factor_symbolic(kkt, std::min({cfg.max_factor_bytes, aug.max_factor_bytes,
+        p.C.sparse() ? p.C.storage.max_solver_bytes / 4 : std::numeric_limits<atx::u64>::max()})));
     ATX_TRY_VOID(ldl.factor_numeric(kkt));
 
     cl::VecX x = cl::VecX::Zero(n);
@@ -1044,7 +1070,8 @@ private:
 
     SpMat rkkt = build_reduced_kkt(aug.P, A_act, n, na, sig_p, delta);
     QuasiDefiniteLdl ldl;
-    const auto symbolic = ldl.factor_symbolic(rkkt, std::min(cfg.max_factor_bytes, aug.max_factor_bytes));
+    const auto symbolic = ldl.factor_symbolic(rkkt, std::min({cfg.max_factor_bytes, aug.max_factor_bytes,
+        p.C.sparse() ? p.C.storage.max_solver_bytes / 4 : std::numeric_limits<atx::u64>::max()}));
     if (!symbolic) {
       if (symbolic.error().code() == co::ErrorCode::OutOfRange) {
         return co::Err(symbolic.error()); // resource bound is mandatory, including polish

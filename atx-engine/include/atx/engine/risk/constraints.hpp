@@ -64,6 +64,8 @@
 namespace atx::engine::risk {
 
 enum class ConstraintStorageRule : atx::u8 { LegacyDenseV1 = 1, SparseCsrV2 = 2 };
+// V1 owns a dense A. V2 represents the same ordered logical operator in CSR,
+// with identity boxes implicit. Bounds and auxiliary L1 metadata are unchanged.
 enum class ConstraintFeasibilityRule : atx::u8 { LegacyAbsoluteV1 = 1, RelativeEconomicV2 = 2 };
 
 // Unbounded +/-1e30 sentinels do not inflate the relative tolerance. A row's
@@ -297,6 +299,12 @@ struct MaterializedConstraints {
       atx::usize instruments, atx::usize factors, atx::usize general_rows) const;
   [[nodiscard]] atx::core::Status validate_augmented_workspace(
       atx::usize instruments, atx::usize factors) const;
+  [[nodiscard]] atx::core::Status validate_kkt_workspace(
+      atx::usize dimension, atx::usize nonzeros) const;
+  [[nodiscard]] atx::core::Status validate_relative_metadata(atx::usize instruments) const;
+  // Linear rows and actual-weight L1 budgets only. Cones require the solver's
+  // factor-aware augmented certificate; this checker is not that certificate.
+  // Elastic constraints are refused rather than certified as hard limits.
   [[nodiscard]] atx::core::Status check_relative_feasible(
       std::span<const atx::f64> weights, atx::f64 absolute_tolerance,
       atx::f64 relative_tolerance) const;

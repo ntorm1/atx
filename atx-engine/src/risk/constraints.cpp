@@ -36,10 +36,50 @@ atx::f64 relative_constraint_tolerance(atx::f64 lhs, atx::f64 lower, atx::f64 up
   return absolute_tolerance + relative_tolerance * scale;
 }
 
+atx::core::Status MaterializedConstraints::validate_relative_metadata(usize instruments) const {
+  const auto finite_nonnegative = [](atx::f64 value) { return std::isfinite(value) && value >= 0.0; };
+  const auto all_finite = [](const auto& values) {
+    for (const auto value : values) if (!std::isfinite(value)) return false;
+    return true;
+  };
+  if (!std::isfinite(gross_l1_budget) || !finite_nonnegative(turnover_penalty) ||
+      (has_turnover && !finite_nonnegative(turnover_budget)) || !elastic.empty())
+    return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid hard-budget metadata");
+  if ((has_turnover || turnover_penalty > 0.0) &&
+      (turnover_ref.size() != instruments || !all_finite(turnover_ref)))
+    return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid turnover reference");
+  if (tracking.active && (!finite_nonnegative(tracking.te_budget) ||
+      (!tracking.w_bench.empty() && tracking.w_bench.size() != instruments) ||
+      !all_finite(tracking.w_bench)))
+    return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid tracking cone metadata");
+  if (sector_risk.active) {
+    if (sector_risk.sector_id.size() != instruments)
+      return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid sector geometry");
+    for (const auto sigma : sector_risk.sigma)
+      if (!finite_nonnegative(sigma))
+        return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid sector cone radius");
+    for (const auto sector : sector_risk.sector_id)
+      if (sector >= sector_risk.sigma.size())
+        return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid sector identifier");
+  }
+  if (robust.active && (!finite_nonnegative(robust.kappa) ||
+      robust.omega_f.rows() != robust.omega_f.cols() || !robust.omega_f.allFinite()))
+    return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid robust cone metadata");
+  if (impact.active && !impact.coeff.empty()) {
+    if (impact.coeff.size() != instruments)
+      return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid impact geometry");
+    for (const auto value : impact.coeff)
+      if (!finite_nonnegative(value))
+        return co::Err(co::ErrorCode::InvalidArgument, "relative feasibility: invalid impact coefficient");
+  }
+  return co::Ok();
+}
+
 atx::core::Status MaterializedConstraints::check_relative_feasible(
     std::span<const atx::f64> weights, atx::f64 absolute_tolerance,
     atx::f64 relative_tolerance) const {
   ATX_TRY_VOID(validate_layout(weights.size()));
+  ATX_TRY_VOID(validate_relative_metadata(weights.size()));
   if (!std::isfinite(absolute_tolerance) || absolute_tolerance < 0.0 ||
       !std::isfinite(relative_tolerance) || relative_tolerance < 0.0 ||
       relative_tolerance >= 1.0 || (absolute_tolerance == 0.0 && relative_tolerance == 0.0))
@@ -163,6 +203,8 @@ atx::core::Status MaterializedConstraints::validate_layout(atx::usize instrument
   ATX_TRY(bytes, bounded_product(bytes, 256, byte_limit));
   ATX_TRY(const auto coefficient_bytes, bounded_product(csr.values.size(), 32, byte_limit));
   ATX_TRY(bytes, bounded_add(bytes, coefficient_bytes, byte_limit));
+  ATX_TRY(const auto omega_bytes, bounded_product(static_cast<usize>(robust.omega_f.size()), 16, byte_limit));
+  ATX_TRY(bytes, bounded_add(bytes, omega_bytes, byte_limit));
   ATX_TRY(bytes, bounded_add(bytes, sizeof(MaterializedConstraints), byte_limit));
   (void)bytes;
   for (usize row = 0; row < rows; ++row) {
@@ -250,11 +292,52 @@ atx::core::Status MaterializedConstraints::validate_augmented_workspace(
   ATX_TRY(const auto sector_nnz, bounded_product(sector_cones, sector_width, limit));
   ATX_TRY(nnz, bounded_add(nnz, sector_nnz, limit));
   if (robust_on) { ATX_TRY(nnz, bounded_add(nnz, factor_square + 1, limit)); }
+  if (!elastic.empty()) {
+    // Bound the relaxed form before elasticity builds it. Linear rows add two
+    // slacks each; each cone adds one slack and at most K+M+2 rows. Duplication
+    // of all cone coefficients is bounded by a second copy of the hard A.
+    usize linear_slacks = 0, previous_end = 0;
+    for (const auto& row : elastic.linear_rows) {
+      if (row.row_begin < previous_end || row.row_begin > row_count() ||
+          row.count > row_count() - row.row_begin)
+        return co::Err(co::ErrorCode::InvalidArgument, "constraints: elastic row outside logical operator");
+      previous_end = row.row_begin + row.count;
+      ATX_TRY(const auto added, bounded_product(row.count, 2, limit));
+      ATX_TRY(linear_slacks, bounded_add(linear_slacks, added, limit));
+    }
+    const auto all_cones = sector_cones + (tracking.active ? 1U : 0U) + (robust_on ? 1U : 0U);
+    usize previous_cone = 0;
+    bool first_cone = true;
+    for (const auto& cone : elastic.cones) {
+      if (cone.cone_index >= all_cones || (!first_cone && cone.cone_index <= previous_cone))
+        return co::Err(co::ErrorCode::InvalidArgument, "constraints: elastic cone outside cone metadata");
+      first_cone = false;
+      previous_cone = cone.cone_index;
+    }
+    ATX_TRY(auto slacks, bounded_add(linear_slacks, elastic.cones.size(), limit));
+    ATX_TRY(slacks, bounded_add(slacks, elastic.budgets.size(), limit));
+    ATX_TRY(columns, bounded_add(columns, slacks, limit));
+    ATX_TRY(rows, bounded_add(rows, slacks, limit));
+    ATX_TRY(const auto cone_copies, bounded_product(elastic.cones.size(), cone_rows + 1, limit));
+    ATX_TRY(rows, bounded_add(rows, cone_copies, limit));
+    ATX_TRY(nnz, bounded_product(nnz, 2, limit));
+    ATX_TRY(const auto slack_nnz, bounded_product(slacks, 4, limit));
+    ATX_TRY(nnz, bounded_add(nnz, slack_nnz, limit));
+  }
   ATX_TRY(nnz, bounded_product(nnz, 2, limit)); // symmetric off-diagonal KKT blocks
   ATX_TRY(nnz, bounded_add(nnz, instruments, limit));
   ATX_TRY(nnz, bounded_add(nnz, factor_square, limit));
   ATX_TRY(const auto dimension, bounded_add(rows, columns, limit));
   ATX_TRY(nnz, bounded_add(nnz, dimension, limit));
+  return validate_kkt_workspace(dimension, nnz);
+}
+
+atx::core::Status MaterializedConstraints::validate_kkt_workspace(
+    usize dimension, usize nnz) const {
+  if (!sparse()) return co::Ok();
+  constexpr auto limit = static_cast<usize>(std::numeric_limits<int>::max()) / 4;
+  if (dimension >= limit || nnz > limit)
+    return co::Err(co::ErrorCode::OutOfRange, "constraints: sparse KKT index bound exceeded");
   ATX_TRY(const auto amd_extra, bounded_product(dimension, 2, limit));
   ATX_TRY(auto amd, bounded_add(nnz, nnz / 5, limit));
   ATX_TRY(amd, bounded_add(amd, amd_extra, limit));

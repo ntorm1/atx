@@ -792,6 +792,8 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
        !C.elastic.empty()))
     return co::Err(co::ErrorCode::InvalidArgument,
         "factor-space QP: relative economic feasibility requires valid tolerances and hard constraints");
+  if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2)
+    ATX_TRY_VOID(C.validate_relative_metadata(V.n_instruments()));
   ATX_TRY(FaProblem f, detail::fa_compile(V, lambda, q, C));
   const auto m = static_cast<Eigen::Index>(f.m);
   const Eigen::Index rd = f.ad.rows();
