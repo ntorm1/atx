@@ -2,7 +2,10 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
+#include <fstream>
+#include <stdexcept>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -25,12 +28,32 @@ using atx::f64;
 using atx::engine::combine::AlphaId;
 
 std::string directory() {
+  struct Cleanup {
+    std::vector<std::filesystem::path> owned;
+    ~Cleanup() {
+      for (const auto& path : owned) {
+        std::error_code ignored;
+        std::filesystem::remove_all(path, ignored);
+      }
+    }
+  };
+  static Cleanup cleanup;
   const auto* test = ::testing::UnitTest::GetInstance()->current_test_info();
-  const auto path = std::filesystem::temp_directory_path() / "atx_w1_a5" / test->name();
+  const auto parent = std::filesystem::temp_directory_path() / "atx_w1_a5";
   std::error_code error;
-  std::filesystem::remove_all(path, error);
-  std::filesystem::create_directories(path, error);
-  return path.string();
+  std::filesystem::create_directories(parent, error);
+  if (error) throw std::runtime_error("cannot create A5 fixture parent");
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  for (unsigned attempt = 0; attempt < 1000; ++attempt) {
+    const auto path = parent / (std::string{test->name()} + "_" + std::to_string(stamp) +
+                                "_" + std::to_string(attempt));
+    if (std::filesystem::create_directory(path, error)) {
+      cleanup.owned.push_back(path); // only this process's exclusive creations are removed
+      return path.string();
+    }
+    if (error) throw std::runtime_error("cannot create A5 fixture directory");
+  }
+  throw std::runtime_error("cannot reserve unique A5 fixture directory");
 }
 lib::LibraryStorageOptions compact_options(atx::usize instruments = 3) {
   lib::LibraryStorageOptions options;
@@ -279,6 +302,59 @@ TEST(LibraryCompressed, FailedFirstAdmissionDoesNotFixPeriodGeometry) {
   ASSERT_TRUE(admitted);
   EXPECT_EQ(admitted->kind, lib::AdmitKind::Accept);
   EXPECT_EQ(library.n_periods(), 3U);
+}
+
+TEST(LibraryCompressed, ImmutablePublicationRejectsStaleHandlesAndOrphanCollisions) {
+  const auto dir = directory();
+  lib::LibraryStore writer(dir, compact_options(0));
+  lib::LibraryStore stale_base(dir, compact_options(0));
+  const std::array<f64, 2> pnl{1, -1}, different{7, -7};
+  ASSERT_TRUE(writer.stage(nullptr, pnl, {}, metrics(), {"original"}));
+  ASSERT_TRUE(writer.flush());
+  ASSERT_TRUE(stale_base.stage(nullptr, different, {}, metrics(), {"stale"}));
+  EXPECT_FALSE(stale_base.flush());
+  lib::LibraryStore stale_period(dir);
+  const std::array<f64, 1> tail{2}, wrong{-2};
+  ASSERT_TRUE(writer.append_periods(tail, 1));
+  EXPECT_FALSE(stale_period.append_periods(wrong, 1));
+  {
+    const std::string orphan = dir + "/period_1.alib";
+    std::ofstream out(orphan, std::ios::binary); out << "owned-orphan";
+    ASSERT_TRUE(out.good());
+  }
+  EXPECT_FALSE(writer.append_periods(tail, 1));
+  std::ifstream orphan(dir + "/period_1.alib", std::ios::binary);
+  std::string contents; orphan >> contents;
+  EXPECT_EQ(contents, "owned-orphan");
+  auto reopened = lib::LibraryStore::open(dir);
+  ASSERT_TRUE(reopened);
+  const auto actual = reopened->pnl(AlphaId{0});
+  ASSERT_EQ(actual.size(), 3U);
+  EXPECT_EQ(actual[0], 1.0); EXPECT_EQ(actual[2], 2.0);
+}
+
+TEST(LibraryCompressed, BaseCatalogRejectsResealedReplacementWithMatchingGeometry) {
+  const auto dir = directory();
+  std::string path;
+  {
+    lib::LibraryStore store(dir, compact_options(0));
+    const std::array<f64, 4> pnl{0, 1, 2, 3};
+    ASSERT_TRUE(store.stage(nullptr, pnl, {}, metrics(), {"original"}));
+    ASSERT_TRUE(store.flush()); path = store.segment_path(0);
+  }
+  auto replacement = record();
+  replacement.provenance.expr_source = "resealed replacement";
+  const std::array rows{replacement};
+  const auto bytes = lib::write_compressed_segment_bytes(0, 4, 0, rows);
+  ASSERT_TRUE(bytes);
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes->data()),
+              static_cast<std::streamsize>(bytes->size()));
+    ASSERT_TRUE(out.good());
+  }
+  ASSERT_TRUE(lib::SegmentReaderLite::attach(path)); // structurally valid, checksum valid
+  EXPECT_FALSE(lib::LibraryStore::open(dir)); // differs from committed catalog content
 }
 
 TEST(LibraryCompressed, ContinuousRefinementScoresModerateCorrelationExactlyForSmallPool) {

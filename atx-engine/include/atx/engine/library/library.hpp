@@ -345,10 +345,10 @@ public:
   [[nodiscard]] AlphaRecordView get(AlphaId id) const { return store_.get(id); }
   [[nodiscard]] std::span<const atx::f64> pnl(AlphaId id) const { return store_.pnl(id); }
   /// Alpha `id`'s target-weight cross-section at `period` (length n_instruments()).
-  /// SAFETY: same aliasing contract as pnl() — the span ALIASES a segment Mapping
-  /// (dangles when the store dies) or the live memtable (dangles on the next
-  /// stage()/flush()). Copy out before the store grows. Consumed by S7-3 dead-alpha
-  /// factor extraction (risk::extract_dead_factors reads dead holdings at as_of).
+  /// V1 aliases mapping/memtable storage until growth/destruction. V2 aliases
+  /// ONE reusable resolver buffer and expires on the next positions() call,
+  /// stage, flush, append or destruction. Use owning positions_checked() when
+  /// retaining more than one row; missing resolver/recipe is a checked error there.
   [[nodiscard]] std::span<const atx::f64> positions(AlphaId id, atx::usize period) const {
     return store_.positions(id, period);
   }

@@ -40,6 +40,8 @@
 
 #include <algorithm>   // std::upper_bound
 #include <cstring>     // std::memcpy
+#include <cstdio>
+#include <memory>
 #include <array>
 #include <cmath>
 #include <functional>
@@ -112,6 +114,17 @@ public:
       : dir_{dir}, options_{std::move(options)}, catalog_{open_or_abort(catalog_path_for(dir))} {
     const auto st = init_schema_and_attach();
     ATX_CHECK(st.has_value());
+  }
+
+  // Checked attach for new callers: corrupt catalogs/recipe mismatches surface
+  // as errors. The historical constructor retains its fail-fast contract.
+  [[nodiscard]] static atx::core::Result<LibraryStore>
+  open(const std::string& dir, LibraryStorageOptions options = {}) {
+    ATX_TRY(auto database, atx::core::db::Database::open(
+        catalog_path_for(dir), atx::core::db::OpenMode::ReadWriteCreate));
+    LibraryStore store{dir, std::move(options), std::move(database), Unattached{}};
+    ATX_TRY_VOID(store.init_schema_and_attach());
+    return atx::core::Ok(std::move(store));
   }
 
   /// Stage one evaluated alpha into the memtable. Returns its GLOBAL AlphaId
@@ -386,6 +399,11 @@ public:
   }
 
 private:
+  struct Unattached {};
+  LibraryStore(const std::string& dir, LibraryStorageOptions options,
+               atx::core::db::Database database, Unattached)
+      : dir_{dir}, options_{std::move(options)}, catalog_{std::move(database)} {}
+
   [[nodiscard]] atx::usize pending_count() const noexcept {
     return options_.rule == LibraryStorageRule::CompressedV2 ? compact_.size() : memtable_.n_alphas();
   }
@@ -542,19 +560,28 @@ private:
     return dir_ + "/seg_" + std::to_string(seg_id) + ".alib";
   }
 
-  /// Write `bytes` to `path` in one shot (truncate-create). Err(IoError) on fail.
+  /// Exclusive creation is the immutable publication guard, including stale
+  /// handles and orphan files. C11 x mode maps to CREATE_NEW/O_EXCL; an existing
+  /// segment is never truncated. A failed write leaves an unreferenced orphan
+  /// for explicit recovery rather than risking another writer's published file.
   [[nodiscard]] static atx::core::Status write_file(const std::string &path,
                                                     std::span<const std::byte> bytes) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
+    std::FILE* raw = nullptr;
+#ifdef _WIN32
+    const auto opened = ::fopen_s(&raw, path.c_str(), "wbx");
+    if (opened != 0) raw = nullptr;
+#else
+    raw = std::fopen(path.c_str(), "wbx");
+#endif
+    std::unique_ptr<std::FILE, decltype(&std::fclose)> out{raw, &std::fclose};
+    if (!out)
       return atx::core::Err(atx::core::ErrorCode::IoError,
-                            "LibraryStore: cannot open segment file for write");
-    }
-    out.write(reinterpret_cast<const char *>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    if (!out) {
-      return atx::core::Err(atx::core::ErrorCode::IoError, "LibraryStore: segment file write failed");
-    }
+                            "LibraryStore: exclusive segment create failed (existing path or IO error)");
+    if (std::fwrite(bytes.data(), 1U, bytes.size(), out.get()) != bytes.size() ||
+        std::fflush(out.get()) != 0)
+      return atx::core::Err(atx::core::ErrorCode::IoError, "LibraryStore: segment write/flush failed");
+    if (std::fclose(out.release()) != 0)
+      return atx::core::Err(atx::core::ErrorCode::IoError, "LibraryStore: segment close failed");
     return atx::core::Ok();
   }
 
@@ -582,7 +609,7 @@ private:
                                " n_alphas INTEGER NOT NULL,"
                                " crc INTEGER NOT NULL)"));
     ATX_TRY(auto stmt,
-            catalog_.prepare("SELECT path, base_alpha_id, n_alphas FROM segments "
+            catalog_.prepare("SELECT path, base_alpha_id, n_alphas, crc FROM segments "
                              "ORDER BY segment_id ASC"));
     for (;;) {
       ATX_TRY(const auto step, stmt.step());
@@ -594,6 +621,7 @@ private:
       const auto n = static_cast<atx::u32>(stmt.column_int(2));
       ATX_TRY(auto reader, SegmentReaderLite::attach(path));
       if (base != next_alpha_id_ || reader.base_alpha_id() != base || reader.n_alphas() != n ||
+          reader.integrity_crc() != static_cast<atx::u64>(stmt.column_int(3)) ||
           (!segments_.empty() && reader.n_instruments() != n_instruments_))
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "library: catalog/segment mismatch");
       if (segments_.empty()) { // adopt the shape from the first attached segment
