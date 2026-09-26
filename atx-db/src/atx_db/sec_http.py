@@ -79,6 +79,13 @@ _STATE_READ_RETRY_SECONDS = 0.05
 #: The state file and the trip marker live beside it in the same directory.
 CANONICAL_SEC_RATE_LOCK = Path(r"C:\atx\atx-db\data\cache\.sec_rate.lock")
 FETCH_LEDGER_NAME = "fetch-ledger.jsonl"
+#: Append-only sidecar (ruling C-80 m1): one line per unit of work whose every request has a terminal outcome,
+#: so a relaunch skips it by a set lookup instead of re-reading and re-parsing its stored objects.
+UNITS_DONE_NAME = "units-done.jsonl"
+#: Bounded backoff for a transient Windows sharing/lock violation (a scanner or reader holding a file), C-80 m2.
+_SHARING_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
+#: A writer's temp file older than this at a worker start is debris from a killed writer (C-80 m4).
+STALE_TEMP_SECONDS = 600.0
 #: Objects at rest (ruling C-71): ``<sha256>.gz``, gzip level 6, mtime 0 (deterministic); sha256 is over the raw
 #: bytes. A plain ``<sha256>`` file is a pre-C-71 raw object until :meth:`FetchLedgerStore.compress_raw_objects`.
 OBJECT_SUFFIX = ".gz"
@@ -659,6 +666,20 @@ class FetchRecord:
         return 400 <= self.status < 500 and self.status not in (403, 429)
 
 
+def _retry_sharing(operation: Any) -> Any:
+    """Run ``operation()``; a transient sharing/lock violation (PermissionError) is retried with bounded backoff.
+
+    About 6 s in all, then the PermissionError propagates: it is never mistaken for a missing or corrupt object.
+    """
+
+    for delay in _SHARING_RETRY_DELAYS:
+        try:
+            return operation()
+        except PermissionError:
+            time.sleep(delay)
+    return operation()
+
+
 class _InFlight:
     """One URL being fetched by one thread; other threads asking for it wait for its record."""
 
@@ -681,6 +702,9 @@ class FetchLedgerStore:
     bytes. A read whose SHA does not match quarantines the object (``<name>.corrupt-<stamp>``) so the next
     :meth:`ensure` refetches it. Appends are serialized by a file lock across processes and by a mutex across
     threads; threads (ruling C-72) may share one store, and one URL is fetched by one thread at a time.
+    ``units-done.jsonl`` (C-80 m1) is an append-only sidecar in the same style: a caller marks a unit of work
+    (for example one filing) done once all its requests are terminal, and a relaunch skips it by lookup.
+    Transient sharing violations on object reads and replaces are retried with bounded backoff (C-80 m2).
 
     The in-memory index keeps a 16-byte URL digest per terminal record (not the URL text). Measured at 100k
     entries (review of 1.7): about 266 B retained and 309 B peak per entry, i.e. about 216 / 250 MB at 850k
@@ -701,6 +725,11 @@ class FetchLedgerStore:
         self._object_mutex = threading.Lock()
         self._inflight_mutex = threading.Lock()
         self._inflight: dict[bytes, _InFlight] = {}
+        self.units_done_path = self.root / UNITS_DONE_NAME
+        self._units_done_lock_path = self.root / f"{UNITS_DONE_NAME}.lock"
+        self._units_done: set[bytes] = set()
+        self.units_done_lines = 0
+        self.units_done_corrupt_lines = 0
 
     @staticmethod
     def _key(url: str) -> bytes:
@@ -732,6 +761,57 @@ class FetchLedgerStore:
                         self._remember(key, record)
         self._loaded = True
         return self
+
+    def load_units_done(self) -> FetchLedgerStore:
+        """(Re)read the units-done sidecar (C-80 m1); a line torn by a kill is counted and ignored."""
+
+        self._units_done = set()
+        self.units_done_lines = self.units_done_corrupt_lines = 0
+        if self.units_done_path.is_file():
+            with self.units_done_path.open("rb") as handle:
+                for raw in handle:
+                    if not raw.strip():
+                        continue
+                    self.units_done_lines += 1
+                    try:
+                        self._units_done.add(self._key(str(json.loads(raw)["unit"])))
+                    except (ValueError, KeyError, TypeError):
+                        self.units_done_corrupt_lines += 1
+        return self
+
+    def unit_done(self, unit: str) -> bool:
+        return self._key(unit) in self._units_done
+
+    def mark_unit_done(self, unit: str, detail: dict[str, Any]) -> None:
+        """Append one units-done line (after every request of the unit has a terminal ledger record)."""
+
+        line = json.dumps({"unit": unit, **detail, "done_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+                           "pid": os.getpid()}, sort_keys=True).encode("utf-8") + b"\n"
+        self._append_line(self.units_done_path, self._units_done_lock_path, line)
+        self._units_done.add(self._key(unit))
+
+    def sweep_stale_temp_files(self, *, older_than_s: float = STALE_TEMP_SECONDS) -> int:
+        """Remove object temp files (``objects/<xx>/.<sha16>.*.tmp``) older than ``older_than_s``: debris of a
+        writer killed between its write and its atomic replace (C-80 m4). Returns the number removed."""
+
+        if not self.objects_dir.is_dir():
+            return 0
+        cutoff = time.time() - older_than_s
+        removed = 0
+        for bucket in self.objects_dir.iterdir():
+            if not bucket.is_dir():
+                continue
+            with os.scandir(bucket) as entries:
+                for entry in entries:
+                    if not (entry.name.startswith(".") and entry.name.endswith(".tmp")):
+                        continue
+                    try:
+                        if entry.stat().st_mtime < cutoff:
+                            os.unlink(entry.path)
+                            removed += 1
+                    except OSError:
+                        continue  # held or already gone: the next sweep retries
+        return removed
 
     def _remember(self, key: bytes, record: FetchRecord) -> None:
         self._index[key] = (
@@ -786,13 +866,14 @@ class FetchLedgerStore:
 
         The compressed path is tried again last, because a conversion pass may replace the raw file between the
         two reads. A compressed file that does not decompress yields empty bytes, so the caller's SHA check fails
-        and quarantines it.
+        and quarantines it. A transient sharing violation is retried (C-80 m2) and, if it persists, raised as
+        PermissionError: never read as corruption.
         """
 
         compressed, raw = self.object_path(sha256), self.raw_object_path(sha256)
         for path in (compressed, raw, compressed):
             try:
-                stored = path.read_bytes()
+                stored = _retry_sharing(path.read_bytes)
             except FileNotFoundError:
                 continue
             if path == raw:
@@ -804,19 +885,28 @@ class FetchLedgerStore:
         raise FileNotFoundError(str(compressed))
 
     def _stored_raw_size(self, sha256: str) -> int | None:
-        """The raw size of the stored object (gzip ISIZE, exact below 4 GiB, or the raw file's size); None if absent."""
+        """The raw size of the stored object (gzip ISIZE, exact below 4 GiB, or the raw file's size); None if absent.
 
-        try:
+        Only a missing file or one shorter than a gzip trailer counts as absent; a sharing violation is retried and,
+        if it persists, raised (C-80 m2), so a held object is never refetched or quarantined.
+        """
+
+        def gzip_isize() -> int:
             with self.object_path(sha256).open("rb") as handle:
                 handle.seek(-4, os.SEEK_END)
                 return int.from_bytes(handle.read(4), "little")
+
+        try:
+            return _retry_sharing(gzip_isize)
         except FileNotFoundError:
             pass
+        except PermissionError:
+            raise  # still held after the bounded retries: surface it, never treat the object as absent
         except OSError:
-            return None  # shorter than a gzip trailer: a torn file, refetched
+            return None  # shorter than a gzip trailer (seek before the start): a torn file, refetched
         try:
-            return self.raw_object_path(sha256).stat().st_size
-        except OSError:
+            return _retry_sharing(self.raw_object_path(sha256).stat).st_size
+        except FileNotFoundError:
             return None
 
     def _quarantine(self, path: Path) -> None:
@@ -911,8 +1001,18 @@ class FetchLedgerStore:
         return record
 
     def _compressed_verifies(self, path: Path, sha256: str) -> bool:
+        """True when ``path`` decompresses to bytes hashing to ``sha256``; False when absent or corrupt.
+
+        A sharing violation is retried and, if it persists, raised (C-80 m2): a held valid object must never be
+        taken for a corrupt one and quarantined.
+        """
+
         try:
-            return hashlib.sha256(gzip.decompress(path.read_bytes())).hexdigest() == sha256
+            stored = _retry_sharing(path.read_bytes)
+        except FileNotFoundError:
+            return False
+        try:
+            return hashlib.sha256(gzip.decompress(stored)).hexdigest() == sha256
         except (OSError, EOFError, zlib.error):
             return False
 
@@ -935,7 +1035,7 @@ class FetchLedgerStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
-                os.replace(temporary, path)
+                _retry_sharing(lambda: os.replace(temporary, path))  # a scanner briefly holding the target (m2)
             finally:
                 temporary.unlink(missing_ok=True)
 
@@ -998,17 +1098,24 @@ class FetchLedgerStore:
             },
             sort_keys=True,
         ).encode("utf-8") + b"\n"
+        self._append_line(self.ledger_path, self._lock_path, line)
+
+    def _append_line(self, path: Path, lock_path: Path, line: bytes) -> None:
+        """Append one fsynced line; a line torn by an earlier kill is isolated by a leading newline."""
+
         self.root.mkdir(parents=True, exist_ok=True)
         # The mutex serializes this process's threads (a byte-range lock is per handle); the file lock, processes.
-        with self._append_mutex, _exclusive_file_lock(self._lock_path), self.ledger_path.open("ab+") as handle:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell():
-                handle.seek(-1, os.SEEK_END)
-                if handle.read(1) != b"\n":
-                    handle.write(b"\n")  # isolate a line torn by an earlier kill
-            handle.write(line)
-            handle.flush()
-            os.fsync(handle.fileno())
+        with self._append_mutex, _exclusive_file_lock(lock_path):
+            handle = _retry_sharing(lambda: path.open("ab+"))
+            with handle:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell():
+                    handle.seek(-1, os.SEEK_END)
+                    if handle.read(1) != b"\n":
+                        handle.write(b"\n")  # isolate a line torn by an earlier kill
+                handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
 
 
 def _record_from_json(payload: dict[str, Any]) -> FetchRecord:

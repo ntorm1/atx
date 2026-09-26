@@ -548,8 +548,19 @@ class _SecFilingDocumentTable(HTMLParser):
             self._table_depth -= 1
 
 
+_EX99_TYPE = re.compile(r"EX[-_]?99(?:\.(\d+))?", re.IGNORECASE)
+#: The fetch worker's choice for a filing with more than one EX-99 (ruling C-80 m7), recorded in units-done.
+EX99_SELECTOR = "ex99.1-else-lowest-numbered-ex99/v1"
+
+
 def _ex99_documents(index_html: str, directory_url: str) -> tuple[str, ...]:
     """Trust SEC filing-detail Type cells, never directory MIME or filenames."""
+
+    return tuple(sorted({name for name, _type, _seq in _ex99_exhibits(index_html, directory_url)}))
+
+
+def _ex99_exhibits(index_html: str, directory_url: str) -> tuple[tuple[str, str, int], ...]:
+    """``(name, type, seq)`` of every EX-99 row in the filing index (Type cell, never MIME or filename)."""
 
     parser = _SecFilingDocumentTable()
     parser.feed(index_html)
@@ -557,9 +568,9 @@ def _ex99_documents(index_html: str, directory_url: str) -> tuple[str, ...]:
     if not parser.table_complete:
         raise ValueError("document_format_table_not_found_or_incomplete")
     expected_path = urlsplit(directory_url).path.rstrip("/") + "/"
-    selected: set[str] = set()
+    exhibits: list[tuple[str, str, int]] = []
     for row in parser.rows:
-        if len(row) < 4 or not re.fullmatch(r"EX[-_]?99(?:\.\d+)?", row[3][0], flags=re.IGNORECASE):
+        if len(row) < 4 or not _EX99_TYPE.fullmatch(row[3][0]):
             continue
         hrefs = row[2][1]
         if len(hrefs) != 1:
@@ -570,8 +581,34 @@ def _ex99_documents(index_html: str, directory_url: str) -> tuple[str, ...]:
         name = link.path[len(expected_path):]
         if ".." in name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:htm|html|txt)", name, re.IGNORECASE):
             continue
-        selected.add(name)
-    return tuple(sorted(selected))
+        seq = row[0][0].strip()
+        exhibits.append((name, row[3][0].strip(), int(seq) if seq.isdigit() else 1_000_000))
+    return tuple(exhibits)
+
+
+def _press_release_exhibit(
+    exhibits: Iterable[tuple[str, str, int]],
+) -> tuple[tuple[str, str] | None, tuple[tuple[str, str], ...]]:
+    """``(chosen, skipped)`` for the fetch worker (C-80 m7): EX-99.1, else the lowest-numbered EX-99.
+
+    A bare ``EX-99`` counts as number 0; ties go to the index's Seq, then the name. Each document name counts
+    once. ``chosen`` is None when the filing has no EX-99.
+    """
+
+    by_name: dict[str, tuple[str, int]] = {}
+    for name, exhibit_type, seq in exhibits:
+        by_name.setdefault(name, (exhibit_type, seq))
+
+    def rank(item: tuple[str, tuple[str, int]]) -> tuple[int, int, int, str]:
+        name, (exhibit_type, seq) = item
+        match = _EX99_TYPE.fullmatch(exhibit_type)
+        number = int(match.group(1)) if match and match.group(1) else 0
+        return (0 if number == 1 else 1, number, seq, name)
+
+    ordered = [(name, exhibit_type) for name, (exhibit_type, _seq) in sorted(by_name.items(), key=rank)]
+    if not ordered:
+        return None, ()
+    return ordered[0], tuple(ordered[1:])
 
 
 def _normalized_cell(value: str) -> str:
@@ -1306,14 +1343,20 @@ def fetch_sec_earnings_release_documents(
     progress_every: int = 0,
     workers: int = 1,
 ) -> dict[str, int]:
-    """Fetch half of the Item 2.02 split: filing index plus its single EX-99, into a fetch store.
+    """Fetch half of the Item 2.02 split: filing index plus its press-release EX-99, into a fetch store.
 
-    Holds no DuckDB connection. It makes exactly the requests the loader would make (a
-    candidate without a usable SEC clock, or without exactly one EX-99, fetches nothing
-    more), so the cache-mode loader finds every byte it needs. Ledgered URLs are never
-    refetched unless their stored object is missing or corrupt; transient failures
-    (0/403/429/5xx) stay retryable on the next run. A host-wide SEC block
-    (``sec_http.SecBlockedError``) propagates and stops the worker.
+    Holds no DuckDB connection. A candidate without a usable SEC clock fetches nothing; otherwise
+    the filing index, then one EX-99: the only one, or for a filing with several the press-release
+    exhibit chosen by :data:`EX99_SELECTOR` (EX-99.1, else the lowest-numbered EX-99; ruling C-80
+    m7), the others recorded as skipped. Ledgered URLs are never refetched unless their stored
+    object is missing or corrupt; transient failures (0/403/429/5xx) stay retryable on the next
+    run. A host-wide SEC block (``sec_http.SecBlockedError``) propagates and stops the worker.
+
+    A candidate whose requests all have terminal outcomes gets a units-done line (outcome, chosen
+    and skipped exhibits); a relaunch skips it by lookup instead of re-reading and re-parsing its
+    index (C-80 m1). A candidate processed before that sidecar existed is re-evaluated once, which
+    is also the catch-up that fetches the chosen exhibit of an earlier multi-EX-99 filing. Stale
+    object temp files are swept at start (C-80 m4).
 
     ``workers`` (1..:data:`MAX_FETCH_WORKERS`, ruling C-72) threads fetch candidates at once. They share
     the one host-wide limiter (the 5 req/s host cap is unchanged: requests are latency-bound, not
@@ -1324,13 +1367,18 @@ def fetch_sec_earnings_release_documents(
 
     if not 1 <= workers <= MAX_FETCH_WORKERS:
         raise ValueError(f"workers must be in 1..{MAX_FETCH_WORKERS}")
-    store = FetchLedgerStore(fetch_dir).load()
+    store = FetchLedgerStore(fetch_dir)
+    temp_swept = store.sweep_stale_temp_files()
+    store.load().load_units_done()
     counts = {
-        "candidates": 0, "no_clock": 0, "index_fetched": 0, "index_ledgered": 0, "index_failed": 0,
-        "index_unparsed": 0, "index_object_repaired": 0, "ex99_not_single": 0, "document_fetched": 0,
-        "document_ledgered": 0, "document_failed": 0,
+        "candidates": 0, "no_clock": 0, "unit_done": 0, "index_fetched": 0, "index_ledgered": 0,
+        "index_failed": 0, "index_unparsed": 0, "index_object_repaired": 0, "ex99_none": 0, "ex99_multi": 0,
+        "document_fetched": 0, "document_ledgered": 0, "document_failed": 0,
         "ledger_duplicate_ok_urls_at_start": store.duplicate_ok_urls,
         "ledger_corrupt_lines_at_start": store.corrupt_lines,
+        "units_done_at_start": store.units_done_lines,
+        "units_done_corrupt_lines_at_start": store.units_done_corrupt_lines,
+        "temp_files_swept_at_start": temp_swept,
     }
 
     def one(candidate: EarningsReleaseCandidate) -> Counter[str]:
@@ -1386,10 +1434,16 @@ def _fetch_candidate_documents(
     max_document_bytes: int,
 ) -> None:
     index_url, directory_url = _archive_urls(candidate.cik, candidate.accession_number)
+    if store.unit_done(index_url):
+        counts["unit_done"] += 1
+        return
+    unit = {"cik": candidate.cik, "accession": candidate.accession_number, "selector": EX99_SELECTOR}
     record, fetched = store.ensure(index_url, limiter=limiter, timeout=timeout, maximum=max_index_bytes)
     counts["index_fetched" if fetched else "index_ledgered"] += 1
     if not record.ok:
         counts["index_failed"] += 1
+        if record.terminal:  # a final 4xx: nothing more will be requested for this filing
+            store.mark_unit_done(index_url, {**unit, "outcome": f"index_status_{record.status}"})
         return
     try:
         index_bytes = store.read(record)
@@ -1405,19 +1459,31 @@ def _fetch_candidate_documents(
             return
         index_bytes = store.read(record)
     try:
-        documents = _ex99_documents(index_bytes.decode("utf-8", errors="replace"), directory_url)
+        exhibits = _ex99_exhibits(index_bytes.decode("utf-8", errors="replace"), directory_url)
     except Exception:
         counts["index_unparsed"] += 1  # the loader records the same parse failure from the same bytes
+        store.mark_unit_done(index_url, {**unit, "outcome": "index_unparsed"})
         return
-    if len(documents) != 1:
-        counts["ex99_not_single"] += 1
+    chosen, skipped = _press_release_exhibit(exhibits)
+    if chosen is None:
+        counts["ex99_none"] += 1
+        store.mark_unit_done(index_url, {**unit, "outcome": "ex99_none"})
         return
-    record, fetched = store.ensure(
-        f"{directory_url}/{documents[0]}", limiter=limiter, timeout=timeout, maximum=max_document_bytes,
-    )
+    if skipped:
+        counts["ex99_multi"] += 1
+    document_url = f"{directory_url}/{chosen[0]}"
+    record, fetched = store.ensure(document_url, limiter=limiter, timeout=timeout, maximum=max_document_bytes)
     counts["document_fetched" if fetched else "document_ledgered"] += 1
     if not record.ok:
         counts["document_failed"] += 1
+        if not record.terminal:
+            return  # 0/403/429/5xx: retried on the next run, so the filing is not done
+    store.mark_unit_done(index_url, {
+        **unit, "outcome": "document_ok" if record.ok else (
+            f"document_status_{record.status}" + (f":{record.error}" if record.error else "")),
+        "exhibit": chosen[0], "exhibit_type": chosen[1], "document_sha256": record.sha256,
+        "skipped": [{"name": name, "type": exhibit_type} for name, exhibit_type in skipped],
+    })
 
 
 def _cached_document_path(cache_dir: Path, candidate: EarningsReleaseCandidate, document_name: str) -> Path:
