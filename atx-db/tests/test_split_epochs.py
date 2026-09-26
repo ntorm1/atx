@@ -180,6 +180,29 @@ def test_a_small_stock_split_is_pending_until_the_share_count_shows_it():
     con.close()
 
 
+def test_an_inexact_out_of_band_split_needs_its_own_evidence_on_public_counts():
+    # M2 (Ruling C-17) in R1d, the verdict P8 reads: a 1:7.97 reverse split (PBM 2025) whose count moves
+    # 4527 -> 4648 two bars before the step (an issuance) and then by the ratio on the ex-date.
+    con = _con()
+    k, first, pre = 0.12547, dt.date(2021, 1, 1), dt.date(2021, 3, 11)
+    _bars(con, "PBM", first, dt.date(2022, 6, 30), split=(EX, k), share_steps=((first, 4527), (pre, 4648), (EX, 583)))
+    # The ex-date move (583 / 4648, 0.03 % off k) is evidence only once 4648 is public: its run's bar plus
+    # the family lag, not the ex-date (on public counts, 583 / 4527 is 2.6 % off k: no discrete move).
+    assert _events(con, "PBM") == [("split", EX, _at(pre) + VERDICT_LAG, k, "vendor_factor+shares")]
+    clock = dt.datetime(2021, 2, 10, 21)
+    assert not _known(con, clock, dt.datetime(2021, 5, 10, 21))
+    visible = _at(pre) + VERDICT_LAG + dt.timedelta(days=1)
+    assert (_known(con, clock, visible), _factor(con, clock, visible)) == (True, pytest.approx(1 / k))
+    # The same step with a raw close that does not move: a misdated factor step, never applied (the basis
+    # stays unknown for good).
+    _bars(con, "FLAT", first, dt.date(2022, 6, 30), split=(EX, k), price_moves=((EX, k),),
+          share_steps=((first, 4000), (EX, 502)))
+    assert _events(con, "FLAT") == []
+    assert _hazards(con) == [(EX, _at(EX), None, k, split_epochs.SPLIT_RATIO_IMPLAUSIBLE)]
+    assert not _known(con, clock, dt.datetime(2022, 3, 10, 21))
+    con.close()
+
+
 def test_a_flat_factor_with_a_split_signature_is_never_proof_of_no_split():
     con = _con()
     # A real 1:10 reverse split: raw close x10 and archive shares /10, vendor factor flat.
@@ -262,6 +285,25 @@ def test_a_multi_class_owner_takes_a_split_only_when_every_class_line_shows_it()
             assert not _known(con, before, after)
         # Under the bridge a price line's own id is not an accounting id.
         assert _events(con, "AGREE-A") == []
+    con.close()
+
+
+def test_a_multi_class_owner_split_withholds_the_basis_until_every_class_line_shows_it():
+    con = _con()
+    late = EX + dt.timedelta(days=2)
+    _bars(con, "CA", *YEAR, split=(EX, 2.0), shares=(1000, 2000, 0))
+    _bars(con, "CB", *YEAR, split=(late, 2.0), shares=(1000, 2000, 0))
+    links = [_link("OWN", "CA", "cik:1", multi=True), _link("OWN", "CB", "cik:1", multi=True)]
+    clock = dt.datetime(2021, 2, 10, 21)
+    with split_epochs.refresh_scope(SimpleNamespace(con=con), None, persistent=False, links=links):
+        # Class A splits on EX, class B two days later: the owner split is known at the agreement clock.
+        assert _events(con, "OWN") == [("split", EX, _at(late), 2.0, "vendor_factor+shares")]
+        assert _hazards(con) == [(EX, _at(EX), _at(late), 2.0, split_epochs.SPLIT_PENDING_OWNER_AGREEMENT)]
+        # Between the two ex-dates the pre-split filing is on an unknown basis, never proven unrebased.
+        between = dt.datetime(2021, 3, 16, 21)
+        assert (_known(con, clock, between), _factor(con, clock, between)) == (False, 1.0)
+        after = _at(late) + dt.timedelta(days=1)
+        assert (_known(con, clock, after), _factor(con, clock, after)) == (True, pytest.approx(0.5))
     con.close()
 
 

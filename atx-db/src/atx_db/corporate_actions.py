@@ -22,15 +22,15 @@ derived engine and ``market_daily`` use:
     R1d's verdict clock: the late window's close plus the line's family lag,
     as a matching count could stay unpublished that long), an R1d-confirmed
     out-of-band ratio that is not exact and lacks split evidence of its own
-    (``split_ratio_implausible``, M2 / Ruling C-17, :func:`_stage_m2`: a raw
+    (``split_ratio_implausible``, M2 / Ruling C-17, decided by R1d -- a raw
     price that moves with the factor, a line that is not fund-like, and a
-    discrete count move by the ratio whose residual is at most a same-day
-    dividend; rejects year-end fund distributions, spin-offs, E&P purges and
-    misdated factor steps whose loose count happened to match -- R1d itself
-    still applies them, so here P8 and the derived engine differ), a factor
-    step across a data gap, a factor decrease, or float noise (``factor_noise``:
-    a factor increase whose yield 1 - 1/k is below FACTOR_NOISE_YIELD). Never a
-    split.
+    discrete count move by the ratio from a public count whose residual is at
+    most a same-day dividend; rejects year-end fund distributions, spin-offs,
+    E&P purges and misdated factor steps whose loose count happened to match --
+    so P8 and the derived engine read one verdict, dated at R1d's verdict
+    clock), a factor step across a data gap, a factor decrease, or float noise
+    (``factor_noise``: a factor increase whose yield 1 - 1/k is below
+    FACTOR_NOISE_YIELD). Never a split.
 ``cash_dividend``
     a factor residual below SPECIAL_DISTRIBUTION_MIN_YIELD of the prior close:
     cash amount = (1 - 1/k) x prior close; upgraded to
@@ -82,7 +82,14 @@ from types import SimpleNamespace
 from typing import Any
 
 from . import _split_epochs
-from ._split_epochs import SPLIT_MAX_RATIO, SPLIT_MIN_RATIO, _stock_dividend_sql
+from ._split_epochs import (
+    CASH_STEP_MAX_YIELD,
+    CASH_STEP_MIN_YIELD,
+    SPLIT_MAX_RATIO,
+    SPLIT_MIN_RATIO,
+    SPLIT_RATIO_IMPLAUSIBLE,
+    _stock_dividend_sql,
+)
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import quality_check
@@ -93,12 +100,13 @@ LEGACY_SOURCE_NAME = "tbltickerhistory inferred corporate actions"
 ACTION_TYPES = ("split", "stock_dividend", "cash_dividend", "distribution_unclassified", "adjustment_unclassified")
 #: Reasons of a step whose classification is not decided yet at the row's clock.
 PENDING_REASONS = ("split_candidate_pending", "distribution_pending_classification")
-#: A residual of at least this fraction of the prior close is a special or spin-off-like distribution.
-SPECIAL_DISTRIBUTION_MIN_YIELD = 0.10
+#: A residual of at least this fraction of the prior close is a special or spin-off-like distribution
+#: (R1d's cash-step band, which its M2 dividend-payer check uses).
+SPECIAL_DISTRIBUTION_MIN_YIELD = CASH_STEP_MAX_YIELD
 #: Factor steps with |ln k| below this are numerical noise, not events.
 FACTOR_NOISE = 1e-9
 #: A factor increase whose yield 1 - 1/k is below this is float noise (``factor_noise``), never a cash dividend.
-FACTOR_NOISE_YIELD = 1e-5
+FACTOR_NOISE_YIELD = CASH_STEP_MIN_YIELD
 TIE_OUT_TOLERANCE = 1e-6
 DPS_CONCEPTS = ("CommonStockDividendsPerShareDeclared", "CommonStockDividendsPerShareCashPaid")
 #: XBRL per-share units compared with the (USD) cash amount.
@@ -109,34 +117,19 @@ DPS_ABSOLUTE_TOLERANCE = 0.005
 DPS_MAX_PERIOD_DAYS = 100
 #: R1d hazards still open at the end of the data: the step's classification is pending.
 OPEN_HAZARDS = ("pending_confirmation", "split_pending_share_confirmation")
-#: R1d hazards decided only when the late share window closes.
-LATE_HAZARDS = ("split_unconfirmed", "no_share_data")
+#: R1d hazards whose negative verdict has its own clock (``known_at``): the late share window closing, or
+#: M2's ``split_ratio_implausible`` (Ruling C-17; R1d decides it, so P8 and the derived engine agree).
+LATE_HAZARDS = ("split_unconfirmed", "no_share_data", SPLIT_RATIO_IMPLAUSIBLE)
 #: R1d hazards with no decision clock (two series disagree): the step stays pending.
 UNDATED_HAZARDS = ("conflicting_series",)
 #: R1d hazards that leave a split candidate unresolved (signature hazards are not factor steps).
 UNRESOLVED_HAZARDS = (*OPEN_HAZARDS, *LATE_HAZARDS, *UNDATED_HAZARDS)
-#: M2 (Ruling C-17): an R1d-confirmed out-of-band step whose ratio is not exact (not p/q with q <= 10) is a
-#: split only with split evidence of its own (see ``_stage_m2``); otherwise it is this. Never a split.
-SPLIT_RATIO_IMPLAUSIBLE = "split_ratio_implausible"
-#: (a) a discrete count move: one bar's count ratio r (count / the previous count) within R1d's window with
-#: |k / r - 1| at most this (a whole split, not cumulative fund creations).
-M2_JUMP_TOLERANCE = 0.02
-#: (c) a residual k / r - 1 beyond this (either way) must be a same-day dividend: positive, on a line with a
-#: cash-dividend step in the M2_HISTORY_BARS bars before the step.
-M2_EXACT_RESIDUAL = 0.001
-#: (b) the raw close moves with the factor on the step bar: max(p, 1/p) of price ratio x k at most this
-#: (rejects price-flat and misdated factor steps).
-M2_PRICE_TOLERANCE = 1.5
-M2_HISTORY_BARS = 260
-#: (d) a fund-like line: at least this many vendor count changes in the M2_HISTORY_BARS bars before the step
-#: (creations/redemptions; an operating company's count changes a few times a year).
-M2_FUND_COUNT_CHANGES = 24
 #: Reasons of split-sized steps that are never applied as splits (``daily_adjustments`` labels them).
-UNAPPLIED_SPLIT_REASONS = (*PENDING_REASONS, *UNRESOLVED_HAZARDS, SPLIT_RATIO_IMPLAUSIBLE)
+UNAPPLIED_SPLIT_REASONS = (*PENDING_REASONS, *UNRESOLVED_HAZARDS)
 EVENT_COLUMNS = ("source", "security_id", "symbol", "action_type", "ex_date", "declaration_date", "record_date",
                  "payable_date", "cash_amount", "split_from", "split_to", "adjustment_factor", "details_json",
                  "available_at", "run_id")
-_HELPERS = ("_ca_raw", "_ca_series", "_ca_bars", "_ca_steps", "_ca_classed", "_ca_m2", "_ca_events", "_ca_dressed")
+_HELPERS = ("_ca_raw", "_ca_series", "_ca_bars", "_ca_steps", "_ca_events", "_ca_dressed")
 _BUILD_HELPERS = ("_ca_factor_series", "_ca_dps")
 
 
@@ -291,14 +284,12 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
     clock = ("coalesce(available_at, trade_date::TIMESTAMP + INTERVAL 22 HOUR)" if "available_at" in bars
              else "trade_date::TIMESTAMP + INTERVAL 22 HOUR")
     symbol = "CAST(symbol AS VARCHAR)" if "symbol" in bars else "NULL::VARCHAR"
-    shares = ("CASE WHEN shares_outstanding > 0 THEN CAST(shares_outstanding AS DOUBLE) END"
-              if "shares_outstanding" in bars else "NULL::DOUBLE")
     factor = ("CASE WHEN close > 0 AND adjusted_close > 0 AND isfinite(close) AND isfinite(adjusted_close) "
               "THEN adjusted_close / close END")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _ca_raw AS
         SELECT security_id, {series} AS series, trade_date, CAST(close AS DOUBLE) AS close, {symbol} AS symbol,
-               {clock} AS available_at, {factor} AS factor, {shares} AS shares
+               {clock} AS available_at, {factor} AS factor
         FROM equity_daily_bars
         WHERE security_id IS NOT NULL AND trade_date IS NOT NULL {scope}
         QUALIFY row_number() OVER (PARTITION BY security_id, {series}, trade_date
@@ -343,7 +334,7 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
     band = f"BETWEEN {SPLIT_MIN_RATIO} AND {SPLIT_MAX_RATIO}"
     gap = _split_epochs.COVERAGE_MAX_GAP_DAYS
     con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _ca_classed AS
+        CREATE OR REPLACE TEMP TABLE _ca_events AS
         WITH s AS (SELECT *, exp(ln_k) AS k FROM _ca_steps),
         r1d AS (
             SELECT security_id, ex_date,
@@ -372,9 +363,6 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
                    -- what is knowable at the ex-date clock about a step whose label is decided later
                    CASE WHEN s.k {band} THEN 'distribution_pending_classification'
                         ELSE 'split_candidate_pending' END AS pending_reason,
-                   -- M2: a confirmed out-of-band ratio that is not exact needs split evidence of its own.
-                   coalesce(r.split_ratio IS NOT NULL AND r.split_evidence <> 'vendor_split_field'
-                            AND s.k NOT {band} AND NOT {_split_epochs._simple_sql('s.k')}, false) AS m2_candidate,
                    CASE
                        WHEN r.split_ratio IS NOT NULL THEN
                            CASE WHEN s.k > 1 AND s.k {band} AND r.split_evidence <> 'vendor_split_field'
@@ -416,17 +404,6 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
                                                       coalesce(c.verdict_at, c.ex_at))
                     ELSE c.ex_at END AS decided_at
         FROM classed c
-    """)
-    _stage_m2(con)
-    # M2 verdicts replace the split label (and its clock) of the candidates.
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _ca_events AS
-        SELECT c.* REPLACE (
-                   CASE WHEN m.implausible THEN 'adjustment_unclassified' ELSE c.action_type END AS action_type,
-                   CASE WHEN m.implausible THEN '{SPLIT_RATIO_IMPLAUSIBLE}' ELSE c.reason END AS reason,
-                   CASE WHEN c.m2_candidate THEN m.decided_at ELSE c.decided_at END AS decided_at),
-               m.evidence AS m2
-        FROM _ca_classed c LEFT JOIN _ca_m2 m USING (security_id, ex_date)
     """)
     tol = f"greatest({DPS_ABSOLUTE_TOLERANCE}, {DPS_RELATIVE_TOLERANCE} * "
     dressed = "SELECT e.*, NULL::STRUCT(value DOUBLE, available_at TIMESTAMP, concept VARCHAR) AS dps FROM ev e"
@@ -509,8 +486,7 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
                                            WHEN 'vendor_split_field' THEN 'vendor_field' END END,
                    reason := row_reason, pending := pending, ratio := k, price_factor := 1 / k,
                    prior_close := prior_close, yield := CASE WHEN k > 1 THEN yield END, gap_days := gap_days,
-                   xbrl_dps := row_dps, m2 := CASE WHEN NOT pending THEN m2 END, step_id := step_id,
-                   revision := revision,
+                   xbrl_dps := row_dps, step_id := step_id, revision := revision,
                    event_id := {event_id.format('revision')},
                    supersedes_event_id := CASE WHEN revision > 0 THEN {event_id.format('revision - 1')} END,
                    superseded_at := superseded_at, classifier := 'r1d_split_epochs', basis := 'vendor_reconstructed')),
@@ -521,124 +497,6 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
     return {"lines": int(tie[0]), "deviation": tie[1], "over": int(tie[2]),
             "bars_outside_primary_series": int(accounting[0]), "lines_with_other_series": int(accounting[1]),
             "lines_without_factor_series": int(accounting[2])}
-
-
-def _stage_m2(con: Any) -> None:
-    """``_ca_m2``: the point-in-time M2 verdict of each candidate of ``_ca_classed`` (Ruling C-17).
-
-    A confirmed out-of-band step whose ratio is not exact is a split only if all hold:
-    (b) the raw close moves with the factor on the step bar (max(x, 1/x) of price ratio x k at most
-    M2_PRICE_TOLERANCE); (d) the line is not fund-like (fewer than M2_FUND_COUNT_CHANGES vendor count
-    changes in the M2_HISTORY_BARS bars before the step, up to the pre-step bar SHARE_LEAD_BARS + 1 before
-    it: a lead bar's count may be unpublished at the verdict); (a) a discrete count move corroborates it: a
-    bar of R1d's window (SHARE_LEAD_BARS before to SHARE_WINDOW_BARS after the step) whose count ratio r to
-    the previous count has |k/r - 1| at most M2_JUMP_TOLERANCE; (c) and whose residual k/r - 1, beyond
-    M2_EXACT_RESIDUAL, is a same-day dividend (positive, on a line with a cash-dividend step in the
-    M2_HISTORY_BARS bars before). Otherwise it is ``split_ratio_implausible`` (fail closed).
-
-    Clocks: (b) and (d) are known at the step bar, so failing either decides the label at R1d's
-    confirmation clock; a split is decided at the later of R1d's confirmation and the first corroborating
-    bar whose previous count is public (R1d's A8 run clock: a count run is public at its first bar when it
-    is the line's first, else the longest family lag after it -- the previous count can be an unpublished
-    intermediate run); no corroborating bar is a verdict only once the window has closed and any count in it
-    would be public (window end + the longest A8 family lag); until then the step is pending.
-    """
-    lead, window = _split_epochs.SHARE_LEAD_BARS, _split_epochs.SHARE_WINDOW_BARS
-    lag_days = max(_split_epochs.SHARE_MODELED_LAG_DAYS.values())
-    qualifies = (f"abs(j.residual) <= {M2_JUMP_TOLERANCE} AND (abs(j.residual) <= {M2_EXACT_RESIDUAL} "
-                 f"OR (j.residual > 0 AND coalesce(h.cash_steps, 0) > 0))")
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _ca_m2 AS
-        WITH cand AS (
-            SELECT security_id, ex_date, k, ex_at, split_known_at FROM _ca_classed WHERE m2_candidate
-        ), bars AS (
-            -- Every bar of the primary series (a NULL-factor bar still carries a count), numbered.
-            SELECT r.security_id, r.trade_date, r.close, r.shares, r.available_at,
-                   row_number() OVER w AS bar_no, lag(r.close) OVER w AS prior_close,
-                   last_value(r.shares IGNORE NULLS) OVER (PARTITION BY r.security_id ORDER BY r.trade_date
-                       ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS prev_shares
-            FROM _ca_raw r
-            JOIN _ca_series p ON p.security_id = r.security_id AND p.series = r.series AND p.is_primary
-            WHERE r.security_id IN (SELECT security_id FROM cand)
-            WINDOW w AS (PARTITION BY r.security_id ORDER BY r.trade_date)
-        ), runs AS (
-            -- Vendor count runs (R1d's A8 model): a run starts where the count changes; run 1 is the first count.
-            SELECT *, sum(CASE WHEN shares IS NOT NULL AND shares IS DISTINCT FROM prev_shares THEN 1 ELSE 0 END)
-                          OVER (PARTITION BY security_id ORDER BY trade_date ROWS UNBOUNDED PRECEDING) AS share_run
-            FROM bars
-        ), published AS (
-            -- When a run's count is public: at its first bar for the line's first run, else the family lag after.
-            SELECT security_id, share_run,
-                   CASE WHEN share_run = 1 THEN min(available_at)
-                        ELSE min(available_at) + INTERVAL {lag_days} DAY END AS public_at
-            FROM runs WHERE shares IS NOT NULL GROUP BY security_id, share_run
-        ), at_ex AS (
-            SELECT c.*, b.bar_no AS ex_no, b.close / b.prior_close AS price_ratio
-            FROM cand c JOIN bars b ON b.security_id = c.security_id AND b.trade_date = c.ex_date
-        ), history AS (
-            SELECT x.security_id, x.ex_date,
-                   count(*) FILTER (WHERE b.shares IS NOT NULL AND b.prev_shares IS NOT NULL
-                                      AND b.shares <> b.prev_shares AND b.bar_no <= x.ex_no - {lead + 1})
-                       AS count_changes,
-                   count(e.ex_date) AS cash_steps
-            FROM at_ex x
-            JOIN bars b ON b.security_id = x.security_id AND b.bar_no BETWEEN x.ex_no - {M2_HISTORY_BARS} AND x.ex_no - 1
-            LEFT JOIN _ca_classed e ON e.security_id = b.security_id AND e.ex_date = b.trade_date
-                 AND e.action_type = 'cash_dividend'
-            GROUP BY x.security_id, x.ex_date
-        ), jumps AS (
-            -- A count move is evidence only once its previous count is public too.
-            SELECT x.security_id, x.ex_date, greatest(b.available_at, p.public_at) AS public_at,
-                   b.shares / b.prev_shares AS r, x.k / (b.shares / b.prev_shares) - 1 AS residual
-            FROM at_ex x
-            JOIN runs b ON b.security_id = x.security_id AND b.bar_no BETWEEN x.ex_no - {lead} AND x.ex_no + {window}
-            JOIN published p ON p.security_id = b.security_id AND p.share_run = b.share_run - 1
-            WHERE b.shares > 0 AND b.prev_shares > 0 AND b.shares <> b.prev_shares
-        ), corroborated AS (
-            SELECT j.security_id, j.ex_date,
-                   min(j.public_at) FILTER (WHERE {qualifies}) AS jump_at,
-                   arg_min(j.r, j.public_at) FILTER (WHERE {qualifies}) AS first_r,
-                   arg_min(j.r, abs(j.residual)) AS closest_r
-            FROM jumps j LEFT JOIN history h USING (security_id, ex_date)
-            GROUP BY j.security_id, j.ex_date
-        ), windows AS (
-            SELECT x.security_id, x.ex_date, count(*) = {window + 1} AS complete, max(b.available_at) AS end_at
-            FROM at_ex x JOIN bars b ON b.security_id = x.security_id AND b.bar_no BETWEEN x.ex_no AND x.ex_no + {window}
-            GROUP BY x.security_id, x.ex_date
-        ), judged AS (
-            SELECT x.*, coalesce(h.count_changes, 0) AS count_changes, coalesce(h.cash_steps, 0) AS cash_steps,
-                   c.jump_at, coalesce(c.first_r, c.closest_r) AS share_ratio, w.complete, w.end_at,
-                   coalesce(greatest(x.price_ratio * x.k, 1 / (x.price_ratio * x.k)) <= {M2_PRICE_TOLERANCE}, false)
-                       AS price_moves,
-                   coalesce(h.count_changes, 0) >= {M2_FUND_COUNT_CHANGES} AS fund_like
-            FROM at_ex x
-            LEFT JOIN history h USING (security_id, ex_date)
-            LEFT JOIN corroborated c USING (security_id, ex_date)
-            LEFT JOIN windows w USING (security_id, ex_date)
-        ), verdicts AS (
-            SELECT *, CASE WHEN NOT price_moves THEN 'price_did_not_move'
-                           WHEN fund_like THEN 'fund_like_count'
-                           WHEN jump_at IS NOT NULL THEN 'discrete_count_move'
-                           WHEN complete THEN 'no_discrete_count_move' END AS verdict
-            FROM judged
-        )
-        SELECT security_id, ex_date,
-               CASE WHEN verdict IS NULL THEN NULL ELSE verdict <> 'discrete_count_move' END AS implausible,
-               CASE verdict WHEN 'discrete_count_move' THEN greatest(ex_at, split_known_at, jump_at)
-                            WHEN 'no_discrete_count_move'
-                                THEN greatest(ex_at, split_known_at, end_at + INTERVAL {lag_days} DAY)
-                            WHEN 'price_did_not_move' THEN greatest(ex_at, split_known_at)
-                            WHEN 'fund_like_count' THEN greatest(ex_at, split_known_at) END AS decided_at,
-               -- Evidence known by the verdict's clock only (the window's counts only once it has closed).
-               struct_pack(verdict := verdict, price_ratio_x_k := price_ratio * k, count_changes := count_changes,
-                           cash_steps := cash_steps,
-                           share_ratio := CASE WHEN verdict IN ('discrete_count_move', 'no_discrete_count_move')
-                                               THEN share_ratio END,
-                           residual := CASE WHEN verdict IN ('discrete_count_move', 'no_discrete_count_move')
-                                            THEN k / share_ratio - 1 END,
-                           corroborated_at := CASE WHEN verdict = 'discrete_count_move' THEN jump_at END) AS evidence
-        FROM verdicts
-    """)
 
 
 def _tie_out(con: Any, relation: str) -> tuple[int, float | None, int]:

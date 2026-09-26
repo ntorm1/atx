@@ -55,7 +55,19 @@ the late-filer tail A8's own modeled lag accepts).
   distribution;
 - out-of-band and not simple: a split if the count follows within
   SHARE_WINDOW_BARS sessions (e.g. a split and a dividend on one day), else a
-  ``distribution`` known the family lag after the window closes;
+  ``distribution`` known the family lag after the window closes. A confirmed
+  one also needs split evidence of its own (M2, Ruling C-17; ``corporate_actions``
+  reads the same verdict): the raw close moves with the factor on the step bar
+  (price ratio x k within M2_PRICE_TOLERANCE), the line is not fund-like (fewer
+  than M2_FUND_COUNT_CHANGES count changes in the M2_HISTORY_BARS bars before,
+  up to the pre-step bar), and one bar of the window moves the count by r with
+  |k/r - 1| at most M2_JUMP_TOLERANCE, a residual beyond M2_EXACT_RESIDUAL only
+  as a positive same-day dividend on a line with a cash step in those bars. It
+  is then known at the later of the count confirmation, that bar and the
+  publication of the count it moves from (its run's A8 clock); failing the step-bar
+  facts it is the permanent hazard ``split_ratio_implausible`` from the
+  confirmation, as it is when no such move comes by the window's end (known the
+  family lag after); pending (``pending_confirmation``) until then;
 - in-band and simple (21:20, 11:10, 6:5, 5:4 ...): a stock split or dividend
   only if the count makes one discrete jump by k (within
   STOCK_DIVIDEND_SHARE_TOLERANCE x |k - 1|) within LATE_SHARE_WINDOW_BARS
@@ -72,6 +84,7 @@ Hazards (``_pit_split_hazards``) make the basis unknown for an operand filed on
 or before AMBIGUOUS_EPOCH_DAYS after the hazard's ex-date, while the hazard is
 open at the frame's clock: ``pending_confirmation`` (a window not yet decided),
 ``split_pending_share_confirmation``, ``split_unconfirmed``, ``no_share_data``,
+``split_ratio_implausible``, ``split_pending_owner_agreement`` (owner lookup),
 ``conflicting_series`` (two series report different splits within the ambiguity
 window) and the flat-factor signature. The signature: the factor is flat (or
 missing) on a day the raw price jumps to within SIGNATURE_PRICE_TOLERANCE of a
@@ -125,7 +138,11 @@ split). A split on a line of a multi-class issuer counts only when every class
 line linked on its ex-date shows it (within AMBIGUOUS_EPOCH_DAYS and
 SHARE_CORROBORATION_TOLERANCE; the owner split is known once every one is),
 else the permanent hazard MULTI_CLASS_SPLIT_DISAGREEMENT -- also when only one
-class line is visible. Every split and coverage row carries its ``link``
+class line is visible. Until an accepted owner split is known (a class line's
+split or a link still to come) the hazard SPLIT_PENDING_OWNER_AGREEMENT runs
+from each class line's ex-date, so the basis is never proven with the split
+unapplied. A linked line takes the A8 filer family of every accounting id
+linked to it, whatever the refresh's scope. Every split and coverage row carries its ``link``
 label (the bridge ``link_method``: ``current_sec_ticker``,
 ``cik_security_id``, ``shared_security_id``, ``reconstructed_history_<tier>``,
 ``+class_agreement`` when multi-class; LINK_SAME_SECURITY_ID without a
@@ -161,12 +178,19 @@ from .market_owner_bridge import (
 
 __all__ = [
     "AMBIGUOUS_EPOCH_DAYS",
+    "CASH_STEP_MAX_YIELD",
+    "CASH_STEP_MIN_YIELD",
     "COVERAGE_GRACE_DAYS",
     "COVERAGE_MAX_GAP_DAYS",
     "LATE_SHARE_WINDOW_BARS",
     "LINK_SAME_SECURITY_ID",
     "LISTS_ALIAS",
     "LISTS_JOIN",
+    "M2_EXACT_RESIDUAL",
+    "M2_FUND_COUNT_CHANGES",
+    "M2_HISTORY_BARS",
+    "M2_JUMP_TOLERANCE",
+    "M2_PRICE_TOLERANCE",
     "MULTI_CLASS_SPLIT_DISAGREEMENT",
     "SHARE_CORROBORATION_TOLERANCE",
     "SHARE_LEAD_BARS",
@@ -180,6 +204,8 @@ __all__ = [
     "SPLIT_DERIVED_SHARE_TOLERANCE",
     "SPLIT_MAX_RATIO",
     "SPLIT_MIN_RATIO",
+    "SPLIT_PENDING_OWNER_AGREEMENT",
+    "SPLIT_RATIO_IMPLAUSIBLE",
     "STAGE_CHUNK_ROWS",
     "STOCK_DIVIDEND_MIN_STEP",
     "STOCK_DIVIDEND_RATIO_STEP",
@@ -226,6 +252,29 @@ STAGE_CHUNK_ROWS = 1_000_000
 LINK_SAME_SECURITY_ID = "same_security_id"
 #: A split on one class line of a multi-class issuer that not every class line linked on its ex-date shows.
 MULTI_CLASS_SPLIT_DISAGREEMENT = "multi_class_split_disagreement"
+#: An owner split accepted but not yet known (a class line's split or a link still to come): basis unknown.
+SPLIT_PENDING_OWNER_AGREEMENT = "split_pending_owner_agreement"
+#: M2 (Ruling C-17): a confirmed out-of-band step whose ratio is not exact, without split evidence of its own.
+SPLIT_RATIO_IMPLAUSIBLE = "split_ratio_implausible"
+#: M2 (a): one bar's count ratio r (count / the previous count) in the share window with |k / r - 1| at most
+#: this is a discrete count move (a whole split, not cumulative fund creations).
+M2_JUMP_TOLERANCE = 0.02
+#: M2 (c): a residual k / r - 1 beyond this (either way) must be a same-day dividend: positive, on a line with
+#: a cash step in the M2_HISTORY_BARS bars before the step.
+M2_EXACT_RESIDUAL = 0.001
+#: M2 (b): the raw close moves with the factor on the step bar: max(x, 1/x) of price ratio x k at most this
+#: (rejects price-flat and misdated factor steps).
+M2_PRICE_TOLERANCE = 1.5
+M2_HISTORY_BARS = 260
+#: M2 (d): a fund-like line has at least this many vendor count changes in the M2_HISTORY_BARS bars before
+#: the step, up to the pre-step bar SHARE_LEAD_BARS + 1 before it (creations/redemptions; an operating
+#: company's count changes a few times a year). A count-churn proxy, not a fund flag: a high-churn ADR is
+#: caught too (its inexact ADS-ratio change is labelled, never applied).
+M2_FUND_COUNT_CHANGES = 24
+#: A cash step: a factor increase between consecutive factored bars (no data gap) with a yield 1 - 1/k in
+#: [CASH_STEP_MIN_YIELD, CASH_STEP_MAX_YIELD) -- ``corporate_actions``' cash dividend (P8 uses these bounds).
+CASH_STEP_MIN_YIELD = 1e-5
+CASH_STEP_MAX_YIELD = 0.10
 #: Link rows bound per VALUES statement.
 LINK_CHUNK_ROWS = 1_000
 _EVENTS = "_pit_split_events"
@@ -233,6 +282,8 @@ _HAZARDS = "_pit_split_hazards"
 _COVERAGE = "_pit_split_coverage"
 _LISTS = "_pit_split_lists"
 _LINKS = "_split_stage_links"
+#: Every owner link of the scoped price lines (not only the scoped owners'): the filer family of a line.
+_FAMILY_LINKS = "_split_stage_family_links"
 _HELPERS = ("_split_stage_bars", "_split_stage_steps", "_split_stage_classified", "_split_stage_factor_series",
             "_split_stage_lag")
 #: (relation, covered security ids or None for every security, owner links or None) of the active refresh.
@@ -305,8 +356,10 @@ def _stage(con: Any, relation: str, kind: str, security_ids: Sequence[str] | Non
     Every scoped security is read once, in hash buckets of about
     STAGE_CHUNK_ROWS bars so each sort stays bounded. Which loads carry a
     vendor factor is decided over the whole table, so a scoped refresh and a
-    full one agree. ``linked``: the scoped ids are price lines of the owner
-    links in ``_LINKS``, whose accounting ids carry the A8 filer family.
+    full one agree. ``linked``: the scoped ids are price lines, and each takes
+    the A8 filer family of every accounting id linked to it (``_FAMILY_LINKS``:
+    all owner links of these lines, not only the scoped owners', so a scoped
+    refresh and a full one agree here too).
     """
     _create_relation(con, relation, kind)
     columns = _bar_columns(con)
@@ -329,7 +382,7 @@ def _stage(con: Any, relation: str, kind: str, security_ids: Sequence[str] | Non
             key, join = "h.security_id", ""
             if linked:
                 key = "coalesce(l.price_security_id, h.security_id)"
-                join = (f"LEFT JOIN (SELECT DISTINCT content_security_id, price_security_id FROM {_LINKS}) l "
+                join = (f"LEFT JOIN (SELECT DISTINCT content_security_id, price_security_id FROM {_FAMILY_LINKS}) l "
                         "ON l.content_security_id = h.security_id")
             keyed = f"AND {key} IN (SELECT unnest(?::VARCHAR[]))" if security_ids is not None else ""
             con.execute(f"""
@@ -363,7 +416,11 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _split_stage_bars AS
         WITH counted AS (
-            SELECT *, last_value(shares IGNORE NULLS) OVER ({before}) AS prev_shares
+            SELECT *, last_value(shares IGNORE NULLS) OVER ({before}) AS prev_shares,
+                   -- M2: the bar's factor step from the last factored bar (a cash step when small and positive).
+                   last_value(factor IGNORE NULLS) OVER ({before}) AS prev_factor,
+                   last_value(CASE WHEN factor IS NOT NULL THEN trade_date END IGNORE NULLS) OVER ({before})
+                       AS prev_factor_date
             FROM (
                 SELECT security_id, {series} AS series, trade_date, CAST(close AS DOUBLE) AS close,
                        {shares} AS shares, {clock} AS available_at, {field} AS split_field, {_FACTOR} AS factor
@@ -379,8 +436,16 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                           OVER ({partition} ROWS UNBOUNDED PRECEDING) AS share_run
             FROM counted
         )
-        SELECT *, CASE WHEN shares IS NOT NULL
-                       THEN min(available_at) OVER (PARTITION BY security_id, series, share_run) END AS run_at
+        SELECT * EXCLUDE (prev_factor, prev_factor_date),
+               CASE WHEN shares IS NOT NULL
+                    THEN min(available_at) OVER (PARTITION BY security_id, series, share_run) END AS run_at,
+               -- M2 history: a vendor count change, and a cash step (P8's cash dividend yield band).
+               CASE WHEN shares IS NOT NULL AND prev_shares IS NOT NULL AND shares <> prev_shares THEN 1 ELSE 0 END
+                   AS count_change,
+               CASE WHEN factor IS NOT NULL AND prev_factor IS NOT NULL
+                         AND date_diff('day', prev_factor_date, trade_date) <= {gap}
+                         AND 1 - prev_factor / factor >= {CASH_STEP_MIN_YIELD}
+                         AND 1 - prev_factor / factor < {CASH_STEP_MAX_YIELD} THEN 1 ELSE 0 END AS cash_step
         FROM runs
     """, params)
     # One pass: every step of interest, classified by the evidence it needs.
@@ -401,16 +466,22 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                    last_value(trade_date) OVER ws AS short_end_date, last_value(available_at) OVER ws AS short_end_at,
                    count(*) OVER ws AS short_bars,
                    last_value(trade_date) OVER wl AS late_end_date, last_value(available_at) OVER wl AS late_end_at,
-                   count(*) OVER wl AS late_bars
+                   count(*) OVER wl AS late_bars,
+                   -- M2 (c)/(d) history: cash steps are known at their bar; count changes only up to the
+                   -- pre-step bar (a lead bar's count may be unpublished at the verdict).
+                   coalesce(sum(count_change) OVER wc, 0) AS count_changes,
+                   coalesce(sum(cash_step) OVER wh, 0) AS cash_steps
             FROM _split_stage_bars
             WINDOW w AS ({partition}),
                    wb AS ({partition} ROWS BETWEEN {window + lead} PRECEDING AND {lead + 1} PRECEDING),
                    ws AS ({partition} ROWS BETWEEN CURRENT ROW AND {window} FOLLOWING),
-                   wl AS ({partition} ROWS BETWEEN CURRENT ROW AND {late} FOLLOWING)
+                   wl AS ({partition} ROWS BETWEEN CURRENT ROW AND {late} FOLLOWING),
+                   wh AS ({partition} ROWS BETWEEN {M2_HISTORY_BARS} PRECEDING AND 1 PRECEDING),
+                   wc AS ({partition} ROWS BETWEEN {M2_HISTORY_BARS} PRECEDING AND {lead + 1} PRECEDING)
         ), measured AS (
             SELECT security_id, series, trade_date AS ex_date, available_at AS ex_at, split_field,
                    coalesce(lead_date, trade_date) AS lead_date, shares_before, shares_later, before_run,
-                   before_run_at,
+                   before_run_at, count_changes, cash_steps,
                    short_end_date, short_end_at, short_bars = {window + 1} AS short_complete,
                    late_end_date, late_end_at, late_bars = {late + 1} AS late_complete,
                    CASE WHEN factor IS NOT NULL AND prior_factor IS NOT NULL
@@ -473,25 +544,67 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
             FROM _split_stage_steps s
             JOIN confirmed c USING (security_id, series, ex_date)
             LEFT JOIN _split_stage_lag l ON l.security_id = s.security_id
+        ), prior_runs AS (
+            -- The count runs of M2 candidates' lines (run_at is constant within a run: one row per run).
+            SELECT DISTINCT security_id, series, share_run, run_at FROM _split_stage_bars
+            WHERE shares IS NOT NULL
+              AND security_id IN (SELECT security_id FROM _split_stage_steps WHERE cls = 'inexact_out')
+        ), jumps AS (
+            -- M2 (a)/(c): the first discrete count move by the ratio in the share window (inexact out of band),
+            -- evidence only once the count it moves from is public too (A8 run clock: the line's first run at
+            -- its first bar, a later one the family lag after -- it can be an unpublished intermediate count).
+            SELECT s.security_id, s.series, s.ex_date,
+                   min(greatest(b.available_at, CASE WHEN p.share_run = 1 THEN p.run_at
+                                                     ELSE p.run_at + {family_lag} END)) AS jump_at
+            FROM _split_stage_steps s
+            JOIN _split_stage_bars b
+              ON b.security_id = s.security_id AND b.series = s.series
+             AND b.trade_date BETWEEN s.lead_date AND s.search_end_date
+            JOIN prior_runs p ON p.security_id = b.security_id AND p.series = b.series AND p.share_run = b.share_run - 1
+            LEFT JOIN _split_stage_lag l ON l.security_id = s.security_id
+            WHERE s.cls = 'inexact_out' AND b.shares > 0 AND b.prev_shares > 0 AND b.shares <> b.prev_shares
+              AND abs(s.k * b.prev_shares / b.shares - 1) <= {M2_JUMP_TOLERANCE}
+              AND (abs(s.k * b.prev_shares / b.shares - 1) <= {M2_EXACT_RESIDUAL}
+                   OR (s.k * b.prev_shares / b.shares - 1 > 0 AND s.cash_steps > 0))
+            GROUP BY ALL
+        ), judged AS (
+            SELECT s.*, c.confirm_at AS count_confirm_at, j.jump_at, {family_lag} AS family_lag,
+                   -- M2 (Ruling C-17): a confirmed inexact out-of-band ratio needs split evidence of its own.
+                   s.cls = 'inexact_out' AND c.confirm_at IS NOT NULL AS m2,
+                   coalesce(greatest(s.price_ratio * s.k, 1 / (s.price_ratio * s.k)) <= {M2_PRICE_TOLERANCE}, false)
+                       AND s.count_changes < {M2_FUND_COUNT_CHANGES} AS m2_step_ok
+            FROM _split_stage_steps s
+            LEFT JOIN dated c USING (security_id, series, ex_date)
+            LEFT JOIN jumps j USING (security_id, series, ex_date)
+            LEFT JOIN _split_stage_lag l ON l.security_id = s.security_id
         )
-        SELECT s.*, c.confirm_at,
-               CASE WHEN s.cls = 'field' THEN 'split'
-                    WHEN s.cls = 'inexact_in' THEN 'distribution'
-                    WHEN s.cls = 'signature' THEN
-                        CASE WHEN c.confirm_at IS NOT NULL THEN 'flat_factor_split_signature'
-                             WHEN s.late_complete THEN 'signature_unconfirmed' ELSE 'signature_pending' END
-                    WHEN c.confirm_at IS NOT NULL THEN 'split'
-                    WHEN s.cls IN ('simple_out', 'simple_in') AND (s.shares_before IS NULL OR s.shares_later IS NULL)
+        SELECT * EXCLUDE (count_confirm_at, jump_at, m2, m2_step_ok),
+               -- An M2 split is known once both its count confirmation and its discrete move are.
+               CASE WHEN m2 AND m2_step_ok AND jump_at IS NOT NULL THEN greatest(count_confirm_at, jump_at)
+                    ELSE count_confirm_at END AS confirm_at,
+               CASE WHEN cls = 'field' THEN 'split'
+                    WHEN cls = 'inexact_in' THEN 'distribution'
+                    WHEN cls = 'signature' THEN
+                        CASE WHEN count_confirm_at IS NOT NULL THEN 'flat_factor_split_signature'
+                             WHEN late_complete THEN 'signature_unconfirmed' ELSE 'signature_pending' END
+                    WHEN m2 THEN
+                        CASE WHEN NOT m2_step_ok THEN '{SPLIT_RATIO_IMPLAUSIBLE}'
+                             WHEN jump_at IS NOT NULL THEN 'split'
+                             WHEN short_complete THEN '{SPLIT_RATIO_IMPLAUSIBLE}'
+                             ELSE 'pending_confirmation' END
+                    WHEN count_confirm_at IS NOT NULL THEN 'split'
+                    WHEN cls IN ('simple_out', 'simple_in') AND (shares_before IS NULL OR shares_later IS NULL)
                         THEN 'no_share_data'
-                    WHEN s.cls = 'simple_out' THEN
-                        CASE WHEN s.late_complete THEN 'split_unconfirmed' ELSE 'split_pending_share_confirmation' END
-                    WHEN s.window_complete THEN 'distribution'
+                    WHEN cls = 'simple_out' THEN
+                        CASE WHEN late_complete THEN 'split_unconfirmed' ELSE 'split_pending_share_confirmation' END
+                    WHEN window_complete THEN 'distribution'
                     ELSE 'pending_confirmation' END AS outcome,
-               -- A count inside the window can stay unpublished this long (A8 modeled run clock).
-               {family_lag} AS family_lag
-        FROM _split_stage_steps s
-        LEFT JOIN dated c USING (security_id, series, ex_date)
-        LEFT JOIN _split_stage_lag l ON l.security_id = s.security_id
+               -- M2's verdict clock: the step-bar facts (price, fund-like) at the count confirmation; no
+               -- discrete move only once the window has closed and any count in it would be public.
+               CASE WHEN m2 AND NOT m2_step_ok THEN greatest(ex_at, count_confirm_at)
+                    WHEN m2 AND jump_at IS NULL AND short_complete
+                        THEN greatest(ex_at, count_confirm_at, short_end_at + family_lag) END AS m2_verdict_at
+        FROM judged
     """)
     con.execute(f"""
         INSERT INTO {relation} (security_id, kind, series, ex_date, from_at, known_at, until_at, ratio, evidence)
@@ -534,7 +647,8 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                    CASE WHEN outcome = 'distribution' THEN window_end_at + family_lag
                         WHEN outcome IN ('split_unconfirmed', 'no_share_data') AND late_complete
                             THEN late_end_at + family_lag
-                        WHEN outcome = 'signature_unconfirmed' THEN late_end_at + family_lag END AS verdict_at
+                        WHEN outcome = 'signature_unconfirmed' THEN late_end_at + family_lag
+                        WHEN outcome = '{SPLIT_RATIO_IMPLAUSIBLE}' THEN m2_verdict_at END AS verdict_at
             FROM _split_stage_classified
             WHERE (outcome = 'split' AND cls <> 'field' AND confirm_at > ex_at)
                OR (outcome = 'distribution' AND cls <> 'inexact_in')
@@ -610,18 +724,28 @@ def _stage_links(con: Any, relation: str, kind: str, security_ids: Sequence[str]
     lines = sorted({str(row[1]) for row in rows})
     if not lines:
         return
+    # A line's filer family comes from every accounting id linked to it, in scope or not.
+    wanted = set(lines)
+    family = [tuple(row) for row in links if str(row[1]) in wanted]
     line_relation = f'"_split_stage_lines_{uuid4().hex}"'
     try:
-        con.execute(f"CREATE OR REPLACE TEMP TABLE {_LINKS} AS {values_relation_sql(SINGLE_CLASS_LINK_COLUMNS, 0)}")
-        for start in range(0, len(rows), LINK_CHUNK_ROWS):
-            chunk = rows[start:start + LINK_CHUNK_ROWS]
-            con.execute(f"INSERT INTO {_LINKS} {values_relation_sql(SINGLE_CLASS_LINK_COLUMNS, len(chunk))}",
-                        [value for row in chunk for value in row])
+        _bind_links(con, _LINKS, rows)
+        _bind_links(con, _FAMILY_LINKS, family)
         _stage(con, line_relation, "TEMP ", lines, linked=True)
         _map_links(con, relation, line_relation)
     finally:
         con.execute(f"DROP TABLE IF EXISTS {line_relation}")
         con.execute(f"DROP TABLE IF EXISTS {_LINKS}")
+        con.execute(f"DROP TABLE IF EXISTS {_FAMILY_LINKS}")
+
+
+def _bind_links(con: Any, table: str, rows: Sequence[tuple[Any, ...]]) -> None:
+    """Create TEMP ``table`` holding owner link rows (``SINGLE_CLASS_LINK_COLUMNS``), bound in chunks."""
+    con.execute(f"CREATE OR REPLACE TEMP TABLE {table} AS {values_relation_sql(SINGLE_CLASS_LINK_COLUMNS, 0)}")
+    for start in range(0, len(rows), LINK_CHUNK_ROWS):
+        chunk = rows[start:start + LINK_CHUNK_ROWS]
+        con.execute(f"INSERT INTO {table} {values_relation_sql(SINGLE_CLASS_LINK_COLUMNS, len(chunk))}",
+                    [value for row in chunk for value in row])
 
 
 def _map_links(con: Any, relation: str, lines: str) -> None:
@@ -710,6 +834,13 @@ def _map_links(con: Any, relation: str, lines: str) -> None:
         SELECT security_id, 'hazard', series, ex_date, from_at, NULL, NULL, ratio,
                '{MULTI_CLASS_SPLIT_DISAGREEMENT}', link
         FROM candidates WHERE NOT agreed
+        UNION ALL
+        -- An accepted owner split is known only once every class line's split and every link is: from each
+        -- class line's ex-date (the earliest opens it) until then the basis is unknown, never proven with the
+        -- split unapplied (class ex-dates up to AMBIGUOUS_EPOCH_DAYS apart, or a class link visible later).
+        SELECT security_id, 'hazard', series, ex_date, from_at, NULL, known_at, ratio,
+               '{SPLIT_PENDING_OWNER_AGREEMENT}', link
+        FROM accepted WHERE known_at > from_at
         UNION ALL
         SELECT content, kind, line || '|' || series, ex_date, from_at, known_at, until_at, ratio, evidence,
                link_method
