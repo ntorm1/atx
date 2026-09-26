@@ -1,5 +1,6 @@
 #include "atx/engine/factory/execution_objective.hpp"
 #include "execution_cash_claim_internal.hpp"
+#include "execution_stock_transition_internal.hpp"
 #include "atx/core/sha256.hpp"
 #include "atx/engine/alpha/streams.hpp"
 #include "atx/engine/cost/cost_surface.hpp"
@@ -35,6 +36,8 @@ struct Context {
   std::vector<cost::CostSurface> snapshots;
   std::vector<ExecutionCashClaimEvent> cash_events;
   std::vector<usize> cash_event_names, cash_event_periods, cash_event_for_name;
+  std::vector<ExecutionStockTransitionEvent> stock_events;
+  std::vector<usize> stock_predecessors, stock_successors, stock_periods, stock_event_for_name;
   std::string identity;
 };
 } // namespace execution_objective_detail
@@ -208,6 +211,24 @@ co::Result<std::string> context_hash(const Context &c, const ExecutionObjectiveI
         ATX_TRY_VOID(h.number(v));
     }
   }
+  if (!c.stock_events.empty()) {
+    ATX_TRY_VOID(h.text("continuous-research-stock-delivery-v1/unresolved-fraction-cash-and-physical-delivery-v1"));
+    ATX_TRY_VOID(h.word(c.stock_events.size()));
+    for (const auto& e:c.stock_events) {
+      for (const auto* text:{&e.event_id,&e.security_id_namespace,&e.predecessor_identity,
+          &e.successor_identity,&e.panel_source_sha256,&e.predecessor_identity_evidence_sha256,
+          &e.successor_identity_evidence_sha256,&e.completion_evidence_sha256,
+          &e.basis_evidence_sha256}) ATX_TRY_VOID(h.text(*text));
+      for (auto v:{e.revision,e.predecessor_id,e.successor_id,static_cast<u64>(e.evidence),
+          static_cast<u64>(e.reference_mark_ns),static_cast<u64>(e.effective_after_ns),
+          static_cast<u64>(e.effective_by_ns),static_cast<u64>(e.available_at_ns),
+          static_cast<u64>(e.recognition_mark_ns),e.stock_ratio_numerator,e.stock_ratio_denominator,
+          static_cast<u64>(e.stock_and_cash_excluded_from_adjusted_close),
+          static_cast<u64>(e.fraction_rule),static_cast<u64>(e.borrow_rule)}) ATX_TRY_VOID(h.word(v));
+      for (auto v:{e.reference_raw_close,e.reference_adjusted_close,e.successor_raw_close,
+                   e.successor_adjusted_close,e.fixed_cash_usd_per_raw_share}) ATX_TRY_VOID(h.number(v));
+    }
+  }
   return h.finish();
 }
 
@@ -240,10 +261,11 @@ co::Result<alpha::AlphaStreams> allocate_streams(const Context &c, usize count) 
 }
 
 // One signal is processed chronologically. Dollars denote a total-return mark
-// book, with only the explicit fixed-cash claim extension. No future value is used
+// book, with explicit fixed-cash and continuous-share transition extensions. No future value is used
 // to rank, filter or size a decision; entry prices only validate execution units.
 co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize alpha_index,
-                alpha::AlphaStreams &out, ExecutionCashClaimStreams* claim_out=nullptr) {
+                alpha::AlphaStreams &out, ExecutionCashClaimStreams* claim_out=nullptr,
+                ExecutionStockTransitionStreams* stock_out=nullptr) {
   const auto n = c.instruments, d0 = c.config.window_begin, delay = c.config.delay;
   if (signal.size() != c.dates * n || (sign != 1.0 && sign != -1.0))
     return co::Err(co::ErrorCode::InvalidArgument, "execution streams: signal shape/sign");
@@ -259,19 +281,27 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
   f64 cash = c.config.initial_nav, nav = cash, entry_nav = 0, entry_cost = 0, entry_turnover = 0;
   usize entry_names = 0, entry_capped = 0, entry_decision = 0;
   bool active_interval = false;
-  const bool claims_enabled=!c.cash_events.empty();
+  const bool stock_enabled=!c.stock_events.empty();
+  const bool claims_enabled=!c.cash_events.empty() || stock_enabled;
   std::vector<atx::u8> retired(claims_enabled?n:0,0);
-  std::vector<f64> claims(c.cash_events.size(),0), claim_rates(c.cash_events.size(),0);
+  const auto claim_count=c.cash_events.size()+c.stock_events.size();
+  std::vector<f64> claims(claim_count,0), claim_rates(claim_count,0);
+  std::vector<f64> delivered(stock_enabled?n:0,0);
   if (claims_enabled) {
     for (usize j=0;j<c.cash_events.size();++j)
       if (c.cash_event_names[j]<n && c.cash_event_periods[j]<=d0)
         retired[c.cash_event_names[j]]=1; // Known pre-role extinction, no opening claim.
+    for (usize j=0;j<c.stock_events.size();++j)
+      if (c.stock_predecessors[j]<n && c.stock_periods[j]<=d0)
+        retired[c.stock_predecessors[j]]=1;
   }
   f64 receivables=0, payables=0;
 
   for (usize t = d0; t < c.realization_end; ++t) {
     f64 gross_dollars = 0, borrow_dollars = 0;
     f64 claim_bridge=0, claim_borrow=0;
+    f64 stock_bridge=0, stock_delivered=0, stock_cash=0;
+    if (stock_enabled) std::fill(delivered.begin(),delivered.end(),0.0);
     // Existing fixed payables continue their last qualified modeled rate; no
     // inferred loan termination/payment. Recognition interval uses old equity.
     if (claims_enabled && t>d0) {
@@ -289,9 +319,11 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
         const auto old = holdings[i];
         if (active_interval)
           out.pos_flat[(alpha_index * c.dates + t) * n + i] = old / entry_nav;
-        const auto event_index=claims_enabled?c.cash_event_for_name[i]:c.cash_events.size();
+        const auto event_index=!c.cash_events.empty()?c.cash_event_for_name[i]:c.cash_events.size();
         const bool recognize=event_index<c.cash_events.size() &&
                              c.cash_event_periods[event_index]==t;
+        const auto stock_index=stock_enabled?c.stock_event_for_name[i]:c.stock_events.size();
+        const bool recognize_stock=stock_index<c.stock_events.size() && c.stock_periods[stock_index]==t;
         if (recognize) {
           retired[i]=1;
           for (usize slot=0;slot<slots;++slot) queued[slot*n+i]=0;
@@ -311,14 +343,39 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
           holdings[i]=0;
           claim_out->recognitions.push_back(record);
         }
+        if (recognize_stock) {
+          retired[i]=1;
+          for (usize slot=0;slot<slots;++slot) queued[slot*n+i]=0;
+          const auto successor=c.stock_successors[stock_index];
+          ATX_TRY(auto record,execution_stock_transition_detail::recognize(
+              c.stock_events[stock_index],stock_index,i,successor,t,old));
+          if (record.fixed_cash_claim_dollars<0 && active_interval) {
+            const auto quote=c.snapshots[entry_decision-d0].borrow_annual_rate(
+                i,c.decisions[entry_decision]);
+            if (quote.status!=cost::CostQuoteStatus::Priced)
+              return co::Err(co::ErrorCode::Unavailable,"stock transition: fixed-cash carry unavailable");
+            record.continued_cash_annual_borrow_rate=quote.annual_fraction;
+            claim_rates[c.cash_events.size()+stock_index]=quote.annual_fraction;
+          }
+          claims[c.cash_events.size()+stock_index]=record.fixed_cash_claim_dollars;
+          delivered[successor]+=record.delivered_successor_dollars;
+          if (!std::isfinite(delivered[successor]))
+            return co::Err(co::ErrorCode::OutOfRange,"stock transition: aggregate delivery overflow");
+          stock_delivered+=record.delivered_successor_dollars;
+          stock_cash+=record.fixed_cash_claim_dollars;
+          stock_bridge+=record.recognition_pnl_dollars;
+          gross_dollars+=record.recognition_pnl_dollars;
+          holdings[i]=0;
+          stock_out->stock_recognitions.push_back(record);
+        }
         if (old == 0) continue;
         const auto a = (t - 1) * n + i, b = t * n + i;
-        if (!recognize && (c.panel_member[a] == 0 || c.panel_member[b] == 0 ||
+        if (!recognize && !recognize_stock && (c.panel_member[a] == 0 || c.panel_member[b] == 0 ||
             !std::isfinite(c.prices[a]) || !std::isfinite(c.prices[b]) || c.prices[a] <= 0 ||
             c.prices[b] <= 0 || (c.config.guard_returns && c.guard[b] != c.guard[a])))
           return co::Err(co::ErrorCode::Unavailable,
                          price_failure(c, "execution streams: missing/guarded held return", t, i, old, true));
-        if (!recognize) {
+        if (!recognize && !recognize_stock) {
           const auto next = old * (c.prices[b] / c.prices[a]);
           if (!std::isfinite(next))
             return co::Err(co::ErrorCode::OutOfRange, "execution streams: holding mark overflow");
@@ -336,6 +393,15 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
         }
       }
     }
+    // Finish every existing holding's mark BEFORE adding successor delivery;
+    // successor axis order and multiple predecessors cannot create double returns.
+    if (stock_enabled) {
+      for (usize i=0;i<n;++i) {
+        holdings[i]+=delivered[i];
+        if (!std::isfinite(holdings[i]))
+          return co::Err(co::ErrorCode::OutOfRange,"stock transition: combined successor holding overflow");
+      }
+    }
     if (claims_enabled) {
       receivables=0; payables=0;
       for (const auto value:claims) {
@@ -345,7 +411,8 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
     }
     if (!std::isfinite(gross_dollars) || !std::isfinite(borrow_dollars) ||
         !std::isfinite(receivables) || !std::isfinite(payables) ||
-        !std::isfinite(claim_bridge) || !std::isfinite(claim_borrow))
+        !std::isfinite(claim_bridge) || !std::isfinite(claim_borrow) ||
+        !std::isfinite(stock_bridge) || !std::isfinite(stock_delivered) || !std::isfinite(stock_cash))
       return co::Err(co::ErrorCode::OutOfRange,
                      "execution streams: realized return/borrow overflow");
     cash -= borrow_dollars;
@@ -378,6 +445,11 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
         claim_out->recognition_pnl_dollars[t]=claim_bridge;
         claim_out->claim_borrow_dollars[t]=claim_borrow;
         claim_out->settled_cash_dollars[t]=cash;
+      }
+      if (stock_enabled) {
+        stock_out->signed_delivered_dollars[t]=stock_delivered;
+        stock_out->recognition_pnl_dollars[t]=stock_bridge;
+        stock_out->fixed_cash_component_dollars[t]=stock_cash;
       }
       if (!std::isfinite(out.pnl_flat[row]) || !std::isfinite(out.gross_flat[row]) ||
           !std::isfinite(out.execution_cost_flat[row]) || !std::isfinite(out.borrow_cost_flat[row]))
@@ -446,10 +518,14 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
       f64 known_locked_equity=0;
       for (usize i = 0; i < n; ++i) {
         const auto k = t * n + i;
-        const auto event_index=claims_enabled?c.cash_event_for_name[i]:c.cash_events.size();
-        const bool known_completion=event_index<c.cash_events.size() &&
+        const auto event_index=!c.cash_events.empty()?c.cash_event_for_name[i]:c.cash_events.size();
+        const auto stock_index=stock_enabled?c.stock_event_for_name[i]:c.stock_events.size();
+        const bool known_completion=(event_index<c.cash_events.size() &&
             c.cash_events[event_index].effective_by_ns<c.decisions[t] &&
-            c.cash_events[event_index].available_at_ns<c.decisions[t];
+            c.cash_events[event_index].available_at_ns<c.decisions[t]) ||
+            (stock_index<c.stock_events.size() &&
+             c.stock_events[stock_index].effective_by_ns<c.decisions[t] &&
+             c.stock_events[stock_index].available_at_ns<c.decisions[t]);
         // Publication can precede this decision but follow its mark. That
         // known locked asset cannot finance fresh targets while awaiting claim
         // recognition. Remove its current accounted long value, not a guessed
@@ -543,6 +619,17 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
     const ExecutionObjectiveIdentity &identity, std::span<const ExecutionCashClaimEvent> events,
     std::span<const atx::u8> member, std::span<const atx::u32> guard,
     std::span<const atx::u32> groups) {
+  return prepare_execution_objective_transitions(panel,policy,input,snapshots,marks,decisions,
+      ids,identity,events,{},member,guard,groups);
+}
+co::Result<ExecutionObjectiveContext> prepare_execution_objective_transitions(
+    const alpha::Panel &panel, const WeightPolicy &policy, const ExecutionObjectiveConfig &input,
+    std::span<const cost::CostSurface> snapshots, std::span<const atx::i64> marks,
+    std::span<const atx::i64> decisions, std::span<const u64> ids,
+    const ExecutionObjectiveIdentity &identity, std::span<const ExecutionCashClaimEvent> events,
+    std::span<const ExecutionStockTransitionEvent> stock_events,
+    std::span<const atx::u8> member, std::span<const atx::u32> guard,
+    std::span<const atx::u32> groups) {
   const auto d = panel.dates(), n = panel.instruments();
   if (input.price_field.size() > 4096)
     return co::Err(co::ErrorCode::InvalidArgument, "execution objective: price field too long");
@@ -577,7 +664,8 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
     if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
       return co::Err(co::ErrorCode::InvalidArgument,
                      "execution objective: source hash is not lowercase SHA256");
-  if (events.size()>1024 || (!events.empty() && cfg.borrow!=ExecutionBorrowRule::RequireModeledV2))
+  if (events.size()>1024 || stock_events.size()>1024 ||
+      ((!events.empty() || !stock_events.empty()) && cfg.borrow!=ExecutionBorrowRule::RequireModeledV2))
     return co::Err(co::ErrorCode::InvalidArgument,"cash claim: event count/borrow policy");
   for (usize j=0;j<events.size();++j) {
     ATX_TRY_VOID(execution_cash_claim_detail::validate(events[j]));
@@ -586,6 +674,18 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
     for (usize k=0;k<j;++k)
       if (events[j].instrument_id==events[k].instrument_id || events[j].event_id==events[k].event_id)
         return co::Err(co::ErrorCode::InvalidArgument,"cash claim: duplicate event/instrument");
+  }
+  for (usize j=0;j<stock_events.size();++j) {
+    const auto& e=stock_events[j];
+    ATX_TRY_VOID(execution_stock_transition_detail::validate(e));
+    if (e.panel_source_sha256!=identity.source_sha256)
+      return co::Err(co::ErrorCode::InvalidArgument,"stock transition: role source pin differs");
+    for (usize k=0;k<j;++k)
+      if (e.predecessor_id==stock_events[k].predecessor_id || e.event_id==stock_events[k].event_id)
+        return co::Err(co::ErrorCode::InvalidArgument,"stock transition: duplicate predecessor/event");
+    for (const auto& cash_event:events)
+      if (e.predecessor_id==cash_event.instrument_id || e.event_id==cash_event.event_id)
+        return co::Err(co::ErrorCode::InvalidArgument,"stock transition: conflicting cash event");
   }
   // Charge retained immutable snapshots too, even though copies share their rows.
   Budget owned{cfg.max_working_bytes, 0};
@@ -598,6 +698,9 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
                                                   2*sizeof(usize)) ||
                          !owned.add(n,sizeof(usize))))
     return co::Err(co::ErrorCode::OutOfRange,"cash claim: retained event budget");
+  if (!stock_events.empty() && (!owned.add(stock_events.size(),sizeof(ExecutionStockTransitionEvent)+
+      3072+3*sizeof(usize)) || !owned.add(n,sizeof(usize))))
+    return co::Err(co::ErrorCode::OutOfRange,"stock transition: retained event budget");
   for (const auto &snapshot : snapshots)
     if (!owned.add(snapshot.bytes(), 1))
       return co::Err(co::ErrorCode::OutOfRange, "execution objective: retained snapshot budget");
@@ -610,13 +713,21 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
       scratch.used > cfg.max_working_bytes - owned.used - output.used)
     return co::Err(co::ErrorCode::OutOfRange,
                    "execution objective: output/pending-target/worker scratch budget");
-  if (!events.empty() && (!output.add(d,6*sizeof(f64)) ||
+  if ((!events.empty() || !stock_events.empty()) && (!output.add(d,6*sizeof(f64)) ||
       !output.add(events.size(),sizeof(ExecutionCashClaimRecognition)+sizeof(ExecutionCashClaimEventUse)) ||
       !output.add(1,sizeof(ExecutionCashClaimStreams)+512) || !scratch.add(n,sizeof(atx::u8)) ||
       !scratch.add(events.size(),2*sizeof(f64)) ||
       output.used>cfg.max_working_bytes-owned.used ||
       scratch.used>cfg.max_working_bytes-owned.used-output.used))
     return co::Err(co::ErrorCode::OutOfRange,"cash claim: result/worker budget");
+  if (!stock_events.empty() && (!output.add(d,3*sizeof(f64)) ||
+      !output.add(stock_events.size(),sizeof(ExecutionStockTransitionRecognition)+
+                                     sizeof(ExecutionStockTransitionEventUse)) ||
+      !output.add(1,sizeof(ExecutionStockTransitionStreams)+512) ||
+      !scratch.add(n,sizeof(f64)) || !scratch.add(stock_events.size(),2*sizeof(f64)) ||
+      output.used>cfg.max_working_bytes-owned.used ||
+      scratch.used>cfg.max_working_bytes-owned.used-output.used))
+    return co::Err(co::ErrorCode::OutOfRange,"stock transition: result/worker budget");
   for (usize t = cfg.window_begin; t < last_realized; ++t) {
     if (marks[t] <= 0 || (t > cfg.window_begin && marks[t] <= marks[t - 1]))
       return co::Err(co::ErrorCode::InvalidArgument,
@@ -712,6 +823,65 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
       c->cash_event_periods[j]=t;
     }
   }
+  if (!stock_events.empty()) {
+    c->stock_events.assign(stock_events.begin(),stock_events.end());
+    c->stock_event_for_name.assign(n,stock_events.size());
+    c->stock_predecessors.assign(stock_events.size(),n);
+    c->stock_successors.assign(stock_events.size(),n);
+    c->stock_periods.assign(stock_events.size(),last_realized);
+    for (usize j=0;j<stock_events.size();++j) {
+      const auto& e=stock_events[j];
+      const auto pred=std::find(ids.begin(),ids.end(),e.predecessor_id);
+      const auto succ=std::find(ids.begin(),ids.end(),e.successor_id);
+      if (succ!=ids.end()) c->stock_successors[j]=static_cast<usize>(succ-ids.begin());
+      if (pred==ids.end()) continue;
+      const auto i=static_cast<usize>(pred-ids.begin());
+      c->stock_predecessors[j]=i; c->stock_event_for_name[i]=j;
+      const auto known=std::max(e.effective_by_ns,e.available_at_ns);
+      if (known<marks[c->config.window_begin]) {
+        if (e.recognition_mark_ns>marks[c->config.window_begin])
+          return co::Err(co::ErrorCode::InvalidArgument,"stock transition: delayed pre-role recognition");
+        c->stock_periods[j]=c->config.window_begin;
+        continue;
+      }
+      if (known>=marks[last_realized-1]) continue;
+      if (succ==ids.end())
+        return co::Err(co::ErrorCode::Unavailable,"stock transition: active successor absent from role axis");
+      const auto successor=c->stock_successors[j];
+      const auto mark=std::upper_bound(
+          marks.begin()+static_cast<std::ptrdiff_t>(c->config.window_begin),
+          marks.begin()+static_cast<std::ptrdiff_t>(last_realized),known);
+      if (*mark!=e.recognition_mark_ns)
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "stock transition: recognition must be first strictly known role mark");
+      const auto t=static_cast<usize>(mark-marks.begin()), a=(t-1)*n+i, b=t*n+successor;
+      if (e.reference_mark_ns!=marks[t-1] || c->panel_member[a]==0 ||
+          !same(e.reference_adjusted_close,prices[a]))
+        return co::Err(co::ErrorCode::InvalidArgument,"stock transition: previous observed adjusted basis");
+      if (c->panel_member[b]==0 || !same(e.successor_adjusted_close,prices[b]))
+        return co::Err(co::ErrorCode::Unavailable,"stock transition: successor observed adjusted mark");
+      ATX_TRY(auto raw_id,panel.field_id("raw_close"));
+      const auto raw=panel.field_all(raw_id);
+      if (raw.size()!=cells || !same(e.reference_raw_close,raw[a]) ||
+          !same(e.successor_raw_close,raw[b]))
+        return co::Err(co::ErrorCode::InvalidArgument,"stock transition: observed raw basis differs");
+      c->stock_periods[j]=t;
+    }
+    // A terminal successor/chain needs a distinct explicit chronology policy.
+    // Only potentially active role deliveries trigger this bounded refusal.
+    for (usize j=0;j<stock_events.size();++j) {
+      if (c->stock_predecessors[j]==n || c->stock_periods[j]<=c->config.window_begin ||
+          c->stock_periods[j]>=last_realized) continue;
+      for (usize k=0;k<stock_events.size();++k)
+        if (stock_events[j].successor_id==stock_events[k].predecessor_id &&
+            c->stock_predecessors[k]<n && c->stock_periods[k]<last_realized)
+          return co::Err(co::ErrorCode::InvalidArgument,"stock transition: event chain unsupported");
+      for (usize k=0;k<events.size();++k)
+        if (stock_events[j].successor_id==events[k].instrument_id &&
+            c->cash_event_names[k]<n && c->cash_event_periods[k]<last_realized)
+          return co::Err(co::ErrorCode::InvalidArgument,"stock transition: terminal successor unsupported");
+    }
+  }
   ATX_TRY(c->identity, context_hash(*c, identity));
   ExecutionObjectiveContext out;
   out.data_ = std::move(c);
@@ -757,6 +927,20 @@ bool execution_objective_matches(const ExecutionObjectiveContext &context,
                                              c.cash_events[j].reference_raw_close)) return false;
     }
   }
+  if (!c.stock_events.empty()) {
+    usize raw_column=0;
+    for (;raw_column<panel.num_fields();++raw_column)
+      if (panel.field_name(raw_column)=="raw_close") break;
+    for (usize j=0;j<c.stock_events.size();++j) {
+      const auto t=c.stock_periods[j],i=c.stock_predecessors[j],successor=c.stock_successors[j];
+      if (i==c.instruments || t<=c.config.window_begin || t>=c.realization_end) continue;
+      if (raw_column==panel.num_fields()) return false;
+      const auto raw=panel.field_all(static_cast<alpha::FieldId>(raw_column));
+      if (raw.size()!=c.prices.size() ||
+          !same(raw[(t-1)*c.instruments+i],c.stock_events[j].reference_raw_close) ||
+          !same(raw[t*c.instruments+successor],c.stock_events[j].successor_raw_close)) return false;
+    }
+  }
   return true;
 }
 bool execution_support_matches(const ExecutionObjectiveContext &context,
@@ -781,6 +965,8 @@ co::Result<alpha::AlphaStreams> extract_execution_streams(const alpha::SignalSet
     return co::Err(co::ErrorCode::InvalidArgument,
                    "execution streams: missing context or signal geometry");
   const auto &c = *context.data_;
+  if (!c.stock_events.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,"stock transition: explicit stock result required");
   if (!c.cash_events.empty())
     return co::Err(co::ErrorCode::InvalidArgument,"cash claim: explicit claim result required");
   ATX_TRY(auto out, allocate_streams(c, signals.alphas.size()));
@@ -794,34 +980,66 @@ co::Result<alpha::AlphaStreams> extract_execution_signal(std::span<const f64> si
   if (!context.data_)
     return co::Err(co::ErrorCode::InvalidArgument, "execution streams: empty context");
   const auto &c = *context.data_;
+  if (!c.stock_events.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,"stock transition: explicit stock result required");
   if (!c.cash_events.empty())
     return co::Err(co::ErrorCode::InvalidArgument,"cash claim: explicit claim result required");
   ATX_TRY(auto out, allocate_streams(c, 1));
   ATX_TRY_VOID(fill(c, signal, sign, 0, out));
   return co::Ok(std::move(out));
 }
+namespace {
+void initialize_cash_diagnostics(const Context& c,ExecutionCashClaimStreams& out) {
+  if (c.cash_events.empty() && c.stock_events.empty()) return;
+  for (auto* values:{&out.signed_claim_dollars,&out.receivable_dollars,&out.payable_dollars,
+      &out.recognition_pnl_dollars,&out.claim_borrow_dollars,&out.settled_cash_dollars})
+    values->assign(c.dates,nan);
+  out.recognitions.reserve(c.cash_events.size());
+  out.event_uses.reserve(c.cash_events.size());
+  for (usize j=0;j<c.cash_events.size();++j) {
+    const auto use=c.cash_event_names[j]==c.instruments?ExecutionCashClaimUse::OutsideAxis:
+        c.cash_event_periods[j]<=c.config.window_begin?ExecutionCashClaimUse::PreRoleRetired:
+        c.cash_event_periods[j]>=c.realization_end?ExecutionCashClaimUse::AfterRole:
+                                                 ExecutionCashClaimUse::InRole;
+    out.event_uses.push_back({j,c.cash_event_names[j],use});
+  }
+}
+}
 co::Result<ExecutionCashClaimStreams> extract_execution_signal_claims(
     std::span<const f64> signal,const ExecutionObjectiveContext& context,f64 sign) {
   if (!context.data_)
     return co::Err(co::ErrorCode::InvalidArgument,"cash claim: empty context");
   const auto& c=*context.data_;
+  if (!c.stock_events.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,"stock transition: explicit stock result required");
   ExecutionCashClaimStreams out;
   ATX_TRY(out.streams,allocate_streams(c,1));
-  if (!c.cash_events.empty()) {
-    for (auto* values:{&out.signed_claim_dollars,&out.receivable_dollars,&out.payable_dollars,
-        &out.recognition_pnl_dollars,&out.claim_borrow_dollars,&out.settled_cash_dollars})
-      values->assign(c.dates,nan);
-    out.recognitions.reserve(c.cash_events.size());
-    out.event_uses.reserve(c.cash_events.size());
-    for (usize j=0;j<c.cash_events.size();++j) {
-      const auto use=c.cash_event_names[j]==c.instruments?ExecutionCashClaimUse::OutsideAxis:
-          c.cash_event_periods[j]<=c.config.window_begin?ExecutionCashClaimUse::PreRoleRetired:
-          c.cash_event_periods[j]>=c.realization_end?ExecutionCashClaimUse::AfterRole:
-                                                   ExecutionCashClaimUse::InRole;
-      out.event_uses.push_back({j,c.cash_event_names[j],use});
+  initialize_cash_diagnostics(c,out);
+  ATX_TRY_VOID(fill(c,signal,sign,0,out.streams,&out));
+  return co::Ok(std::move(out));
+}
+co::Result<ExecutionStockTransitionStreams> extract_execution_signal_transitions(
+    std::span<const f64> signal,const ExecutionObjectiveContext& context,f64 sign) {
+  if (!context.data_)
+    return co::Err(co::ErrorCode::InvalidArgument,"stock transition: empty context");
+  const auto& c=*context.data_;
+  ExecutionStockTransitionStreams out;
+  ATX_TRY(out.cash.streams,allocate_streams(c,1));
+  initialize_cash_diagnostics(c,out.cash);
+  if (!c.stock_events.empty()) {
+    for (auto* values:{&out.signed_delivered_dollars,&out.recognition_pnl_dollars,
+                      &out.fixed_cash_component_dollars}) values->assign(c.dates,nan);
+    out.stock_recognitions.reserve(c.stock_events.size());
+    out.stock_event_uses.reserve(c.stock_events.size());
+    for (usize j=0;j<c.stock_events.size();++j) {
+      const auto use=c.stock_predecessors[j]==c.instruments?ExecutionCashClaimUse::OutsideAxis:
+          c.stock_periods[j]<=c.config.window_begin?ExecutionCashClaimUse::PreRoleRetired:
+          c.stock_periods[j]>=c.realization_end?ExecutionCashClaimUse::AfterRole:
+                                               ExecutionCashClaimUse::InRole;
+      out.stock_event_uses.push_back({j,c.stock_predecessors[j],c.stock_successors[j],use});
     }
   }
-  ATX_TRY_VOID(fill(c,signal,sign,0,out.streams,&out));
+  ATX_TRY_VOID(fill(c,signal,sign,0,out.cash.streams,&out.cash,&out));
   return co::Ok(std::move(out));
 }
 } // namespace atx::engine::factory
