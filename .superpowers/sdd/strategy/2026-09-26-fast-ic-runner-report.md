@@ -1,0 +1,37 @@
+# Fast supplied-DSL IC and fixed composition
+
+Source-first packet; no pool4 compilation, test execution or real payload read. Root owns the focused build and bounded recent-role evaluation. This replaces further event-realism work as the active research priority; the previous stock path is not evaluated again here.
+
+## Packet and build boundary
+
+- Kernel `1dba70357121e803083cd40fec5a7e4d9087b5f1`: NEW lightweight `factory/ic_research.hpp`, implementation shares private algorithms in existing `src/factory/ic_screen.cpp`. Existing `IcScreenConfig`/`ic_screen.hpp` layout and caller API remain untouched.
+- Kernel fixtures `ade1e99d023677e0b2d4dd3b8894546a821794a9`: new `tests/factory/ic_research_test.cpp`, three `ResearchIc.*` cases.
+- Runner `08940e88b9851d9733d30d10ed0f4d588bf689bb`: new `atx-impl/src/strategy_ic_runner.hpp/.cpp` and `tools/equity_strategy_ic.cpp`.
+- Caller fixtures `767d88947d1c5ea1d7911a515d5b6929544bddd5`, preflight/fixture identifier alignment `86671916381ad89348a659a58541012191b6f4d8`: three `StrategyIcRunner.*` cases in new `atx-impl/tests/strategy_ic_runner_test.cpp`.
+- Depends on pool5's `c4c8dc59` composition/library packet (locally imported as `19c266d8`, do not duplicate-import). Root registers two new private impl CPPs under the existing impl environment/PCH and tiny `atx-equity-strategy-ic` main; no additional engine CPP is needed.
+
+## Actual research path
+
+Pinned library metadata compiles every supplied DSL before payload admission. One externally pinned role is loaded at a time through `read_strategy_role`; returned manifest identity must match. A reusable ResearchFast VM owns the full historical decision-membership cross-sectional mask while raw time-series histories remain the original Panel. One immutable delayed-label/rank cache and one worker scratch serve every candidate and the combined signal. Each candidate is evaluated once: IC, TRAIN orientation, immediate streaming composition while its signal is live, then discard. No full D*N*candidate store or second VM pass is used.
+
+Labels are observed positive close[d+1+h]/close[d+1]-1 for h5/21/63, strictly inside the same declared role's maturity bound. Decision membership is checked at d; endpoint source presence is mandatory, but future membership is not a label filter. Guarded intervals and unavailable endpoints do not become zero returns. Available-case IC can still be affected by nonrandom missing outcomes; counts disclose the omitted support and these diagnostics do not prove tradeability.
+
+The new opaque options select three active horizons and strict endpoint presence. Legacy entry points use the old four-horizon/non-strict configuration and the same correlation/ranking/HAC arithmetic. Only active horizons allocate/classify; inactive slot4 has horizon0/undefined results. The cache/scratch identity is pointer-bound. Source/membership/guard/options/recipe identity is bound by the runner's pinned recipe, with no change to older caller resume hashes.
+
+Coverage separates mature dates, structural tails, decision-eligible pairs, finite labels and actual finite signal-label pairs. Missing entry/exit reasons may overlap; guard, invalid prices and nonfinite returns are counted after presence admission. Pair counts are collected even when insufficient cross-sectional coverage prevents an IC observation. Means with zero valid dates serialize as null. Existing calendar-preserving Bartlett HAC (lag at least2*h), IID uncertainty floor and quarter-mean safeguard are reused. Short/sparse/low-power evidence keeps candidates; a short Q1 does not certify a63-session null.
+
+Orientation is the sign of the finite, nonzero **TRAIN21-session sample mean rank IC**, not a significance claim. Missing/zero means yield sign0. Signs freeze before validation. The first baseline includes every oriented fixed-library candidate irrespective of diagnostic equivalence rejection: no screened variant or validation selection is introduced. Undefined candidates contribute neutral0 with fixed family denominators. Screen rule V3 protects absolute IC .002 with multiplier3.5 and reports keep/reject diagnostics only for this baseline.
+
+Pool5's composition uses equal-family/equal-within centered tied ranks, fixed missing/unoriented-neutral contributions and no redistribution. Combined5/21/63 IC uses the same kernel. A separate planned-weight proxy uses final rank, desired neutral gross1, cadence5, fraction.25, no price drift, immediate zero for membership exits even off cadence, and initial deployment included. It reports planned gross/net because exits can break neutrality. This proxy is not actual fills, netted dollar turnover, costed P&L, NAV or Sharpe. No event payload, CostSurface, portfolio book or holdout is opened.
+
+## Admission, runtime visibility and artifacts
+
+Before any role payload loads, checked admission includes Panel26B/cell, ReturnGuard4, effective/VM masks2, one returned signal8, conservative VM scratch32 and twice maximum compiled slot bytes (16*slots/cell); it also adds the exact composition envelope, label/rank arrays for each mature horizon, IC scratch and bounded metadata/row slack. Twice-slot allowance covers `Engine::ensure_pool`'s construct-before-move replacement. The runner retains no subtree cache or second Engine. This is an allocation envelope, not measured RSS or a runtime claim.
+
+`--plan-only` reads pinned metadata and compiles DSL only, prints actual maximum slots/lookback and required role bytes, and creates no output directory. A too-small budget refuses before payload with required bytes and slot count. Normal mode emits candidate-start progress plus per-candidate/role seconds, so root's time/RAM watchdog can identify a bounded failure.
+
+Example command contract: `atx-equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --validation MANIFEST --validation-sha256 SHA --output NEWDIR --max-memory-mib N --min-names 2000`; add `--plan-only` for admission-only mode. `--min-dates` defaults128. Validation is optional; no holdout CLI exists in this slice.
+
+Outputs are recipe/summary JSON, frozen `orientations.json` with artifact SHA, candidate JSONL receipts, full-calendar mature daily IC CSV (holes remain empty, not compressed), and planned-target CSV. Failed runs retain a failed summary and already-started receipts; final output streams are explicitly closed and checked. All48 supplied candidates plus one combined signal per role means49 diagnostic evaluations per role, not98 sign backtests. Signs and fixed weights do not add hidden hypotheses.
+
+Six new source-only fixtures cover legacy4/false series bits, strict finite-but-absent endpoint coverage and finite candidate pairs, future-membership invariance, inactive horizon handling, short63h KEEP and cache/scratch mismatch; actual runner TRAINpositive/validationnegative frozen signs and combined IC, planned deployment, pinned metadata-only mode with missing payload, and null/unoriented short roles. G0 independently source-reviewed kernel/runner; native results remain root-owned. No speedup, empirical recall, net Sharpe or strategy success is claimed by this source packet.
