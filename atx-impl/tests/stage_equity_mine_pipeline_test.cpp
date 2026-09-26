@@ -231,22 +231,23 @@ TEST(EquityMinePipeline, RejectsRegistryLengthMismatch) {
     EXPECT_FALSE(out.has_value());
 }
 
-// Cartesian-product exposures: every x value occurs with every y value. The
-// x signal is exactly independent of the y-driven return cross section; y is
-// an explicit positive control. This is not an assertion against kernel output.
+// Cartesian-product exposures with a tiny alternating y perturbation: the null
+// has balanced positive/negative IC and nonzero uncertainty (an exact constant
+// IC correctly fails open). y is an explicit positive control. The null is
+// constructed independently of the kernel's decision and no future labels fit it.
 Panel screen_panel(bool poison_future = false) {
-    constexpr std::size_t dates = 240, names = 64;
+    constexpr std::size_t dates = 240, names = 256;
     std::vector<double> close(dates * names), sig(dates * names), plant(dates * names);
     double cumulative = 0.0;
     for (std::size_t d = 0; d < dates; ++d) {
         cumulative += 0.001 * (1.0 + 0.2 * std::sin(static_cast<double>(d)));
         for (std::size_t i = 0; i < names; ++i) {
             const auto cell = d * names + i;
-            const double x = static_cast<double>(i / 8) - 3.5;
+            const double x = static_cast<double>(i / 8) - 15.5;
             const double y = static_cast<double>(i % 8) - 3.5;
             close[cell] = 50.0 * std::exp(cumulative * y);
             if (poison_future && d >= 200) close[cell] *= std::exp(x);
-            sig[cell] = x;
+            sig[cell] = x + (d % 2 == 0 ? 0.0001 : -0.0001) * y;
             plant[cell] = y;
         }
     }
