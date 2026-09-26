@@ -92,7 +92,8 @@ core::Result<StrategyRoleData> read_strategy_role(const std::string& path, u64 m
         dates * names * 26 > max_bytes - overhead - std::min(max_bytes - overhead, dates * 24 + names * 8))
       return core::Err(core::ErrorCode::Unavailable, "strategy role: owned panel budget");
     const auto d = static_cast<usize>(dates), n = static_cast<usize>(names), cells = d * n;
-    StrategyRoleData out;
+    ATX_TRY(auto empty_panel, alpha::Panel::create(0, 0, {}, {}, {}));
+    StrategyRoleData out{std::move(empty_panel)};
     out.score_begin = j.at("score_begin").get<usize>(); out.score_end = j.at("score_end").get<usize>();
     const auto start = j.at("score_start_ns").get<i64>(), end = j.at("score_end_ns").get<i64>();
     if (out.score_begin < 383 || out.score_begin >= out.score_end || out.score_end != d ||

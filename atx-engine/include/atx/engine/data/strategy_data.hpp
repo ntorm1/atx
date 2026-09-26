@@ -14,11 +14,11 @@ namespace atx::engine::data {
 // strictly prior-session liquidity. Missing marks never become zero returns.
 struct StrategyRoleData {
   alpha::Panel panel;
-  std::vector<i64> session_keys, mark_times_ns, decision_times_ns;
-  std::vector<u64> instrument_ids;
-  std::vector<u8> decision_member;
+  std::vector<i64> session_keys{}, mark_times_ns{}, decision_times_ns{};
+  std::vector<u64> instrument_ids{};
+  std::vector<u8> decision_member{};
   usize score_begin{}, score_end{};
-  std::string source_sha256, membership_recipe, clock_recipe, manifest_sha256;
+  std::string source_sha256{}, membership_recipe{}, clock_recipe{}, manifest_sha256{};
 };
 
 // Owns only one bounded role. SHA checks stream through the same captured file
