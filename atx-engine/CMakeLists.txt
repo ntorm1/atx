@@ -8,6 +8,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/factory.cpp
     src/factory/fitness.cpp
     src/factory/execution_objective.cpp
+    src/factory/execution_cash_claim.cpp
     src/factory/ic_screen.cpp
     src/factory/genome.cpp
     src/factory/mutation.cpp
