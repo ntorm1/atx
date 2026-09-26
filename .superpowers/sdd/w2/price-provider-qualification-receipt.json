@@ -1,0 +1,150 @@
+{
+  "schema": "atx.bounded-qualification/v1",
+  "index": {
+    "path": "build-equity/w2-price-provider-qualification-index.json",
+    "sha256": "0974cb6f7cad33f4642532bd6dde30c8d80f1b5404a444de3aa69d1aafa87f8c"
+  },
+  "qualification": {
+    "distinct_final_passes": 5,
+    "executions": 6,
+    "initial_fixture_failures": 1,
+    "unresolved_failures": 0,
+    "skips": 0,
+    "cohorts": [
+      {
+        "receipt": {
+          "Source": "9f635f3e39b4ad0e91f19ae678a1aa464f688327",
+          "Target": "atx-engine-w1-data-tests",
+          "Filter": "PriceExposureProvider.*",
+          "BinarySha256": "933b2a92aee97fb83206f47e9166d5eeeca391857793422df4da2b63e1e0f5c0",
+          "ExitCode": 1,
+          "WallSeconds": 1.0517208999999998
+        },
+        "cases": [
+          {
+            "name": "PriceExposureProvider.SixComputedDescriptorsMatchIndependentScalarRecipes",
+            "passed": true
+          },
+          {
+            "name": "PriceExposureProvider.PriorCapAndStrictEqualityNeverUseTodaysWeightsOrUnknownDenominators",
+            "passed": true
+          },
+          {
+            "name": "PriceExposureProvider.FutureMutationAndTruncationPreserveEarlierRows",
+            "passed": true
+          },
+          {
+            "name": "PriceExposureProvider.AbsentFiniteMarksLateBarsAndZeroVolumeRemainDistinct",
+            "passed": true
+          },
+          {
+            "name": "PriceExposureProvider.D6UsesExactCloseAndChecksPinnedAxesBasesAndJointBudget",
+            "passed": false
+          }
+        ],
+        "native_seconds": 0.975,
+        "files": [
+          {
+            "path": "build-equity/w2-price-provider-qualified.xml",
+            "sha256": "00f8110962e1c09b176e52e4ff10cfa06ac0eac520db56478db45e4379355740"
+          },
+          {
+            "path": "build-equity/w2-price-provider-qualified.log",
+            "sha256": "78db25caf76f4f19e799c3e643751b375289a797b817aef1f73d0810ec0565b0"
+          },
+          {
+            "path": "build-equity/w2-price-provider-qualified-receipt.json",
+            "sha256": "cd5858cef7fe0144ef4bbec3be3973b2e9bde5dea88693cc00e3762816c3894d"
+          }
+        ]
+      },
+      {
+        "receipt": {
+          "Source": "cb9eda17ce57bfc3881cfbed328871157c87cbcd",
+          "Target": "atx-engine-w1-data-tests",
+          "Filter": "PriceExposureProvider.D6UsesExactCloseAndChecksPinnedAxesBasesAndJointBudget",
+          "BinarySha256": "fa2c85e9ea345b384a610eb32c16b2a189cf64aa9611d4dd8243cc2419003f55",
+          "ExitCode": 0,
+          "WallSeconds": 0.61566
+        },
+        "cases": [
+          {
+            "name": "PriceExposureProvider.D6UsesExactCloseAndChecksPinnedAxesBasesAndJointBudget",
+            "passed": true
+          }
+        ],
+        "native_seconds": 0.497,
+        "files": [
+          {
+            "path": "build-equity/w2-price-provider-fixture-qualified.xml",
+            "sha256": "bcdea8ad4372c9f41817e11a9416b76ec8a211bf327c57122ff806b776a17b65"
+          },
+          {
+            "path": "build-equity/w2-price-provider-fixture-qualified.log",
+            "sha256": "69e8b924f96e186d8cad0cff0d15b81d6e0575cf603d0a11adb02b8e4a92d552"
+          },
+          {
+            "path": "build-equity/w2-price-provider-fixture-qualified-receipt.json",
+            "sha256": "6075e77ef38a522b08b06a523d7f9d087fc869a5cf99d2287093f52c459e447d"
+          }
+        ]
+      }
+    ],
+    "current_binary": {
+      "path": "build-equity/bin/atx-engine-w1-data-tests.exe",
+      "sha256": "fa2c85e9ea345b384a610eb32c16b2a189cf64aa9611d4dd8243cc2419003f55"
+    },
+    "historical_binary": "933b2a92aee97fb83206f47e9166d5eeeca391857793422df4da2b63e1e0f5c0"
+  },
+  "builds": [
+    {
+      "Source": "9f635f3e39b4ad0e91f19ae678a1aa464f688327",
+      "ConfiguredProvenance": "9f635f3e39b4ad0e91f19ae678a1aa464f688327",
+      "Jobs": 3,
+      "ExitCode": 0,
+      "WallSeconds": 45.888953799999996
+    },
+    {
+      "Source": "cb9eda17ce57bfc3881cfbed328871157c87cbcd",
+      "ConfiguredProvenance": "9f635f3e39b4ad0e91f19ae678a1aa464f688327",
+      "Jobs": 2,
+      "ExitCode": 0,
+      "WallSeconds": 21.069771799999998
+    }
+  ],
+  "build_files": [
+    {
+      "path": "build-equity/w2-price-provider-start.json",
+      "sha256": "18a2c4a8839ec33c30e06462f65e958826e11caebc00e18e1027fb9857611d5c"
+    },
+    {
+      "path": "build-equity/w2-price-provider-build-receipt.json",
+      "sha256": "87b5f52c8b95acccceeff240c22ccb6da0f5435ecbbd2344638e95af78f0a90c"
+    },
+    {
+      "path": "build-equity/w2-price-provider-build.log",
+      "sha256": "a795c69acbb1e90e66b52813622496a32db3f300b8ce8d4e0174920c90345ec9"
+    },
+    {
+      "path": "build-equity/w2-price-provider-cache-summary.txt",
+      "sha256": "ce0ae2611c98660cce0e4c5203130f05882978190dac319f4c67584b6471f0d0"
+    },
+    {
+      "path": "build-equity/w2-price-provider-fixture-start.json",
+      "sha256": "d910c74c14531b4897b8ba3ef74cb64ed75473b366011609cb47ab5df1cfecdf"
+    },
+    {
+      "path": "build-equity/w2-price-provider-fixture-build-receipt.json",
+      "sha256": "87d73dfdcec5ccb1350688e407177d6258a754505fcab2646f03a4cb717a105c"
+    },
+    {
+      "path": "build-equity/w2-price-provider-fixture-build.log",
+      "sha256": "97f2ff8789fd4701075ab94ec0531df00ec271564bb3290861e1f1a48198ea65"
+    },
+    {
+      "path": "build-equity/w2-price-provider-fixture-cache-summary.txt",
+      "sha256": "ed3005b707691812db22cb793567206a3140f7ecbec8f251570644a454947353"
+    }
+  ],
+  "scope": "Five constructed price-exposure/D6 checks; test-only missing source-parent repair, no production change or real coverage claim."
+}
