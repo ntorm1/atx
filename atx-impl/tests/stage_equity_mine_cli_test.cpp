@@ -189,6 +189,13 @@ TEST_F(EquityMineCli, PublishesHashBoundLibraryWithPlantedAlpha) {
     EXPECT_EQ(g["config"]["vwap_rule"], "raw-daily-close-v2");
     EXPECT_EQ(g["config"]["vwap_basis"], "raw");
     EXPECT_EQ(g["config"]["vwap_is_intraday_observation"], false);
+    EXPECT_EQ(g["ic_screen"]["rule"], "conservative-v2");
+    EXPECT_EQ(g["ic_screen"]["horizons"], json::array({5, 21, 63, 126}));
+    EXPECT_EQ(g["ic_screen"]["execution_delay"], 1);
+    EXPECT_EQ(g["ic_screen"]["window_end"], g["ic_screen"]["maturity_end"]);
+    EXPECT_EQ(g["trials"]["log_format"], 3);
+    EXPECT_EQ(g["trials"]["n_raw"].get<atx::u64>(),
+              g["trials"]["n_full_pnl"].get<atx::u64>() + g["trials"]["n_screened"].get<atx::u64>());
     EXPECT_EQ(g["counts"]["seeds_invalid"].get<int>(), 1);
     EXPECT_GE(g["counts"]["admitted"].get<int>(), 1);
     EXPECT_EQ(g["train"]["overlap_mismatch_cells"].get<int>(), 0);
@@ -253,7 +260,7 @@ TEST_F(EquityMineCli, RefusesContextsAtOrAfterTheSeal) {
 TEST_F(EquityMineCli, HoldoutOffByDefaultNeverLoadsHoldoutContexts) {
     const fs::path out = root_ / "no_holdout";
     auto args = base_args(out);
-    args.insert(args.end(), {"--vwap-rule", "adjusted-typical-v1"});
+    args.insert(args.end(), {"--vwap-rule", "adjusted-typical-v1", "--ic-screen-rule", "disabled-v1"});
     // Point the holdout at a file that does not exist: off must never open it.
     args[std::find(args.begin(), args.end(), "--holdout-contexts") - args.begin() + 1] =
         (root_ / "missing_holdout.bin").string();
@@ -264,6 +271,10 @@ TEST_F(EquityMineCli, HoldoutOffByDefaultNeverLoadsHoldoutContexts) {
     const json g = json::parse(gf);
     EXPECT_EQ(g["config"]["vwap_rule"], "adjusted-typical-v1");
     EXPECT_EQ(g["config"]["vwap_basis"], "adjusted_level");
+    EXPECT_EQ(g["ic_screen"]["rule"], "disabled-v1");
+    EXPECT_EQ(g["trials"]["log_format"], 2);
+    EXPECT_EQ(g["ic_screen"]["mine_evaluations"], 0);
+    EXPECT_EQ(g["trials"]["n_screened"], 0);
     EXPECT_FALSE(g["holdout"]["evaluated"].get<bool>());
     EXPECT_EQ(g["holdout"]["mode"].get<std::string>(), "off");
     EXPECT_FALSE(g["holdout"].contains("contexts"));

@@ -20,6 +20,7 @@
 #include <sstream>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -39,6 +40,8 @@
 #include "atx/engine/eval/deflated_sharpe.hpp"
 #include "atx/engine/eval/stats_ext.hpp"
 #include "atx/engine/factory/sketch_index.hpp"
+#include "atx/engine/factory/canonical.hpp"
+#include "atx/engine/factory/ic_screen.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
 #include "artifacts.hpp"
@@ -699,6 +702,26 @@ guard_for(const MineData &m, atx::u32 close_id, const ScoreCfg &cfg, ReturnGuard
     return fnv1a64(key.data(), key.size());
 }
 
+[[nodiscard]] std::string screen_recipe(const factory::IcScreenConfig &c,
+                                        const MineData &train, const ScoreCfg &score,
+                                        const ReturnGuard *guard) {
+    // Float bit patterns avoid rounding distinct experimental recipes together.
+    nlohmann::json j{{"rule", factory::ic_screen_rule_name(c.rule)}, {"horizons", c.horizons},
+        {"delay", c.execution_delay}, {"begin", c.window_begin}, {"end", c.window_end},
+        {"maturity_end", c.maturity_end}, {"min_names", c.min_names}, {"min_dates", c.min_dates},
+        {"practical_abs_ic_bits", std::bit_cast<atx::u64>(c.practical_abs_ic)},
+        {"confidence_bits", std::bit_cast<atx::u64>(c.confidence_multiplier)},
+        {"max_cache_bytes", c.max_cache_bytes}, {"price_field", "close"},
+        {"dates", train.panel->dates()}, {"instruments", train.panel->instruments()},
+        {"membership_hash", fnv1a64(train.member.data(), train.member.size())},
+        {"guard_enabled", guard != nullptr}, {"raw_close_field", score.raw_close_field},
+        {"guard_max_log_bits", std::bit_cast<atx::u64>(score.max_abs_log_return)},
+        {"guard_adj_raw_tolerance_bits", std::bit_cast<atx::u64>(score.adj_raw_log_tol)}};
+    if (guard != nullptr) j["guard_prefix_hash"] = fnv1a64(guard->bad_prefix.data(),
+        guard->bad_prefix.size() * sizeof(atx::u32));
+    return j.dump();
+}
+
 // Run `fn(index, engine)` over [0, n) on up to `threads` workers. Each worker
 // owns an Engine over `panel`; index i is processed by exactly one worker which
 // writes only slot i of the caller's outputs, so results do not depend on the
@@ -708,30 +731,47 @@ guard_for(const MineData &m, atx::u32 close_id, const ScoreCfg &cfg, ReturnGuard
 template <class Fn>
 void parallel_over(atx::usize n, atx::usize threads, const alpha::Panel &panel, Fn fn) {
     const atx::usize w = std::max<atx::usize>(1, std::min(threads, n));
+    const auto invoke = [&](atx::usize i, alpha::Engine &engine, atx::usize worker) {
+        if constexpr (std::is_invocable_v<Fn, atx::usize, alpha::Engine &, atx::usize>)
+            fn(i, engine, worker);
+        else fn(i, engine);
+    };
     if (w <= 1) {
         alpha::Engine engine{panel};
-        for (atx::usize i = 0; i < n; ++i) fn(i, engine);
+        for (atx::usize i = 0; i < n; ++i) invoke(i, engine, 0);
         return;
     }
     std::atomic<atx::usize> next{0};
     std::vector<std::jthread> pool;
     pool.reserve(w);
     for (atx::usize t = 0; t < w; ++t) {
-        pool.emplace_back([&] {
+        pool.emplace_back([&, t] {
             alpha::Engine engine{panel};
-            for (atx::usize i = next.fetch_add(1); i < n; i = next.fetch_add(1)) fn(i, engine);
+            for (atx::usize i = next.fetch_add(1); i < n; i = next.fetch_add(1)) invoke(i, engine, t);
         });
     }
 }
 
 void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const MineData &train,
                      atx::u32 close_id, const ScoreCfg &cfg, const ReturnGuard *guard,
+                     const factory::IcScreenCache *cache, factory::IcScreenScratch *scratch,
                      CandidateRow &row) {
-    if (!row.error.empty()) return;
+    if (!row.error.empty() || row.ic_rejected) return;
     auto sig = evaluate_dsl(lib, engine, row.dsl);
     if (!sig) {
         row.error = "eval: " + sig.error().message();
         return;
+    }
+    if (cache != nullptr && scratch != nullptr) {
+        row.ic_screen_evaluated = true;
+        auto screened = factory::screen_ic(*sig, *cache, *scratch);
+        if (screened) {
+            row.ic_screen_reason = screened->reason;
+            row.ic_rejected = screened->reject;
+            if (row.ic_rejected) return; // No backtest, sign choice or synthetic P&L.
+        } else {
+            row.ic_screen_unavailable = true; // Uncertainty retains the candidate.
+        }
     }
     auto sc = score_signal(*sig, 1.0, *train.panel, close_id, train.member, train.window, cfg,
                            guard);
@@ -749,8 +789,23 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
 }
 
 [[nodiscard]] atx::core::Status register_trials(MineOutcome &out, eval::TrialRegistry &registry,
-                                               TrainDsrRule dsr_rule) {
+                                               TrainDsrRule dsr_rule, atx::usize train_len) {
     for (CandidateRow &row : out.candidates) {
+        if (row.ic_rejected) {
+            const std::string reason{factory::ic_screen_reason_name(row.ic_screen_reason)};
+            const std::string key = "ic-screen|" + std::to_string(row.canonical_hash) + "|" +
+                                    out.ic_screen_recipe + "|" + reason;
+            row.config_hash = fnv1a64(key.data(), key.size());
+            row.dsr_train = kNaN;
+            eval::TrialMeta meta;
+            meta.window_end = train_len - 1U;
+            meta.sample = eval::TrialSample::InSample;
+            meta.family_tag = eval::trial_tag(trial_family_of(row.origin));
+            meta.theme_tag = eval::trial_tag(trial_theme_of(row.origin));
+            ATX_TRY_VOID(registry.record_screened(eval::TrialKind::MinerExpr, row.config_hash,
+                meta, eval::trial_tag(out.ic_screen_recipe), eval::trial_tag(reason)));
+            continue;
+        }
         if (!row.scored) continue;
         if (degenerate(row.train)) {
             row.scored = false;
@@ -781,6 +836,12 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
     }
     out.trials = registry.summary();
     out.chain_head = registry.chain_head();
+    if (out.trials.n_screened > 0) {
+        dsr_rule = TrainDsrRule::SummaryRawNV2;
+        out.dsr_fallback_reason = "screen-only trials have unknown P&L correlation; "
+                                  "DSR uses total raw N and observed-P&L SR variance "
+                                  "floored by each candidate's marginal sampling variance";
+    }
     // E-01 wiring: the cluster-N DSR through TrialRegistry::accounting(). When the
     // registry cannot produce it (empty, or more than max_trials trials) every row
     // falls back to the summary DSR (N = n_raw) and the report says why. The summary
@@ -821,9 +882,26 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
             row.dsr_train = eval::deflated_sharpe(sr, *acct, row.train.net.size(), skew, kurt)
                                 .result.dsr;
         } else {
-            row.dsr_train = eval::deflated_sharpe(sr, out.trials, row.train.net.size(), skew,
-                                                  kurt, summary_rule)
-                                .dsr;
+            auto result = eval::deflated_sharpe(sr, out.trials, row.train.net.size(), skew,
+                                               kurt, summary_rule);
+            if (out.trials.n_screened > 0) {
+                // Reuse the existing marginal estimator (including its T and
+                // skew/kurtosis convention). For fixed total N, max of the two
+                // benchmarks is exactly the max-variance floor; observed
+                // registry moments remain untouched.
+                const auto marginal = eval::deflated_sharpe(sr, row.train.net.size(), skew,
+                    kurt, static_cast<atx::usize>(out.trials.n_raw), std::nullopt);
+                if (!std::isfinite(result.dsr) || !std::isfinite(marginal.dsr)) {
+                    result.dsr = kNaN;
+                    result.sr_star = kNaN;
+                } else if (marginal.sr_star > result.sr_star) {
+                    result = marginal;
+                    row.dsr_marginal_floor_applied = true;
+                    ++out.dsr_marginal_floor_count;
+                }
+            }
+            row.dsr_train = result.dsr;
+            row.dsr_selection_benchmark = result.sr_star;
         }
     }
     return Ok();
@@ -890,6 +968,28 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
     const alpha::Panel &panel = *train.panel;
     ATX_TRY(const atx::u32 close_id, close_field_of(panel));
     MineOutcome out;
+    out.ic_screen = cfg.search.ic_screen;
+    out.ic_screen.execution_delay = cfg.score.delay;
+    out.ic_screen.window_begin = train.window.begin;
+    out.ic_screen.window_end = train.window.end;
+    out.ic_screen.maturity_end = train.window.end;
+    const bool screen_enabled = out.ic_screen.rule != factory::IcScreenRule::DisabledV1;
+    if (screen_enabled && registry.format() != eval::TrialLogFormat::V3) {
+        return Err(ErrorCode::InvalidArgument, "mine_train: IC screening requires TrialRegistry V3");
+    }
+    ReturnGuard local_guard;
+    ATX_TRY(const ReturnGuard *guard, guard_for(train, close_id, cfg.score, local_guard));
+    std::optional<factory::IcScreenCache> screen_cache;
+    if (screen_enabled) {
+        out.ic_screen_recipe = screen_recipe(out.ic_screen, train, cfg.score, guard);
+        auto prepared = factory::prepare_ic_screen(panel, out.ic_screen, train.member,
+            guard != nullptr ? std::span<const atx::u32>{guard->bad_prefix} : std::span<const atx::u32>{});
+        if (prepared) screen_cache = std::move(*prepared);
+        else {
+            ++out.ic_screen_unavailable;
+            out.ic_screen_unavailable_reason = prepared.error().message();
+        }
+    }
     std::unordered_set<std::string> seen;
     std::vector<std::string> valid_seed_dsl;
     for (const SeedExpr &s : seeds) {
@@ -903,6 +1003,11 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
             ++out.seeds_invalid;
         } else {
             valid_seed_dsl.push_back(s.dsl);
+            if (screen_enabled) {
+                ATX_TRY(auto ast, alpha::parse_expr(s.dsl, lib));
+                ATX_TRY(auto genome, factory::analyze_into(std::move(ast)));
+                row.canonical_hash = factory::canonical_hash(genome, cfg.search.canon);
+            }
         }
         out.candidates.push_back(std::move(row));
     }
@@ -918,30 +1023,70 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
         const auto sim = frictionless_sim();
         const atx::engine::combine::AlphaStore pool{};
         factory::SearchDriver driver{lib, panel, policy, sim, valid_seed_dsl, fields};
-        const factory::SearchResult res = driver.run(cfg.search, pool);
+        auto search_cfg = cfg.search;
+        search_cfg.ic_screen = out.ic_screen;
+        // A failed preparation must not make SearchDriver rebuild without the
+        // caller's membership/ReturnGuard support. The whole screen fails open.
+        if (screen_enabled && !screen_cache) search_cfg.ic_screen.rule = factory::IcScreenRule::DisabledV1;
+        const factory::SearchResult res = driver.run(search_cfg, pool, nullptr, nullptr,
+                                                     screen_cache ? &*screen_cache : nullptr);
         out.search_digest = res.digest;
         out.search_trial_count = res.trial_count;
         out.search_fidelity_evals = res.fidelity_evals;
         out.search_fidelity_rejected = res.fidelity_rejected;
         out.search_fingerprint_hits = res.fingerprint_hits;
+        out.search_ic_screen_evaluations = res.ic_screen_evaluations;
+        out.search_ic_screen_unavailable = res.ic_screen_unavailable;
+        out.search_ic_screen_rejected = res.ic_rejected_hashes.size();
+        out.search_ic_prepass_vm_evaluations = res.ic_prepass_vm_evaluations;
+        out.search_ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+        const auto rejected = [&](atx::u64 hash) {
+            return std::binary_search(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end(), hash);
+        };
+        for (auto &row : out.candidates) {
+            if (row.error.empty() && rejected(row.canonical_hash)) {
+                row.ic_rejected = true;
+                row.ic_screen_reason = factory::IcScreenReason::PracticalNull;
+            }
+        }
         for (const factory::Genome &g : res.all_scored) {
             std::string dsl = alpha::unparse(g.ast);
             if (!seen.insert(dsl).second) continue;
             CandidateRow row;
             row.dsl = std::move(dsl);
             row.origin = "search";
+            row.canonical_hash = g.canon_hash;
+            row.ic_rejected = rejected(g.canon_hash);
+            if (row.ic_rejected) row.ic_screen_reason = factory::IcScreenReason::PracticalNull;
             out.candidates.push_back(std::move(row));
         }
     }
 
-    ReturnGuard local_guard;
-    ATX_TRY(const ReturnGuard *guard, guard_for(train, close_id, cfg.score, local_guard));
+    const atx::usize workers = std::max<atx::usize>(1, std::min(cfg.threads, out.candidates.size()));
+    std::vector<std::optional<factory::IcScreenScratch>> scratches(workers);
+    if (screen_cache) {
+        for (auto &scratch : scratches) {
+            auto prepared = factory::prepare_ic_screen_scratch(*screen_cache);
+            if (prepared) scratch = std::move(*prepared);
+            else {
+                ++out.ic_screen_unavailable;
+                out.ic_screen_unavailable_reason = prepared.error().message();
+            }
+        }
+    }
     parallel_over(out.candidates.size(), cfg.threads, panel,
-                  [&](atx::usize i, alpha::Engine &engine) {
+                  [&](atx::usize i, alpha::Engine &engine, atx::usize worker) {
                       score_train_row(lib, engine, train, close_id, cfg.score, guard,
+                                      screen_cache ? &*screen_cache : nullptr,
+                                      scratches[worker] ? &*scratches[worker] : nullptr,
                                       out.candidates[i]);
                   });
-    ATX_TRY_VOID(register_trials(out, registry, cfg.dsr_rule));
+    for (const auto &row : out.candidates) {
+        out.ic_screen_evaluations += row.ic_screen_evaluated ? 1U : 0U;
+        out.ic_screen_unavailable += row.ic_screen_unavailable ? 1U : 0U;
+        out.ic_screen_rejected += row.ic_rejected ? 1U : 0U;
+    }
+    ATX_TRY_VOID(register_trials(out, registry, cfg.dsr_rule, train.window.size()));
     select_family(out, cfg, train.window.size());
     return Ok(std::move(out));
 }
@@ -1140,6 +1285,11 @@ using nlohmann::json;
 
 struct MineArgs {
     alpha::VwapRule vwap_rule{alpha::VwapRule::RawDailyCloseV2};
+    atx::engine::factory::IcScreenConfig ic_screen = [] {
+        atx::engine::factory::IcScreenConfig c;
+        c.rule = atx::engine::factory::IcScreenRule::ConservativeV2;
+        return c;
+    }();
     std::vector<std::string> train_ctx, val_ctx, hold_ctx;
     std::string membership;
     atx::usize membership_cut{0};
@@ -1223,6 +1373,8 @@ template <class T>
 }
 
 [[nodiscard]] atx::core::Status apply_value(MineArgs &a, std::string_view f, std::string_view v) {
+    ATX_TRY(const bool screen_option, apply_ic_screen_option(a.ic_screen, f, v));
+    if (screen_option) return Ok();
     if (f == "vwap-rule") {
         const auto rule = alpha::parse_vwap_rule(v);
         if (!rule) return Err(ErrorCode::InvalidArgument,
@@ -1623,15 +1775,27 @@ constexpr std::string_view kScoreHeader =
 }
 
 [[nodiscard]] std::string candidates_csv(const mine::MineOutcome &o) {
+    const bool screening = o.ic_screen.rule != atx::engine::factory::IcScreenRule::DisabledV1;
     std::string s = "idx,origin,sign,scored,in_family,";
-    s += score_header("train_") + ",dsr_train,error,dsl\n";
+    s += score_header("train_") + ",dsr_train,error,dsl";
+    if (screening) s += ",ic_screened,ic_screen_reason,trial_config_hash,dsr_marginal_floor,dsr_selection_benchmark";
+    s += '\n';
     std::vector<atx::u8> fam(o.candidates.size(), 0);
     for (auto i : o.family) fam[i] = 1;
     for (atx::usize i = 0; i < o.candidates.size(); ++i) {
         const auto &c = o.candidates[i];
+        // Metadata-only trials have no score: empty numeric cells are not zeros.
+        const std::string train_cols = c.ic_rejected
+            ? std::string(static_cast<atx::usize>(std::count(kScoreHeader.begin(), kScoreHeader.end(), ',')), ',')
+            : score_cols(c.train);
         s += std::to_string(i) + ',' + csv_quote(c.origin) + ',' + num(c.sign) + ',' +
-             (c.scored ? "1" : "0") + ',' + (fam[i] ? "1" : "0") + ',' + score_cols(c.train) +
-             ',' + num(c.dsr_train) + ',' + csv_quote(c.error) + ',' + csv_quote(c.dsl) + '\n';
+             (c.scored ? "1" : "0") + ',' + (fam[i] ? "1" : "0") + ',' + train_cols +
+             ',' + (c.ic_rejected ? std::string{} : num(c.dsr_train)) + ',' + csv_quote(c.error) + ',' + csv_quote(c.dsl);
+        if (screening) s += ',' + std::string{c.ic_rejected ? "1" : "0"} + ',' +
+            csv_quote(std::string{atx::engine::factory::ic_screen_reason_name(c.ic_screen_reason)}) + ',' + to_hex16(c.config_hash) + ',' +
+            (c.scored ? (c.dsr_marginal_floor_applied ? "1" : "0") : "") + ',' +
+            (c.scored ? num(c.dsr_selection_benchmark) : std::string{});
+        s += '\n';
     }
     return s;
 }
@@ -1790,6 +1954,8 @@ void log_line(std::ostream &err, bool quiet, const std::string &msg) {
     cfg.search.canon.semantic = a.semantic;
     cfg.search.output_dedup = a.output_dedup;
     cfg.search.fidelity.enabled = a.fidelity;
+    cfg.search.ic_screen = a.ic_screen;
+    cfg.search.ic_screen.execution_delay = a.delay;
     for (atx::usize f = 0; f < train_panel.num_fields(); ++f) {
         const std::string name{train_panel.field_name(f)};
         // raw_close duplicates close up to corporate actions; earnFlag/nEarnCnt_5d
@@ -1909,6 +2075,8 @@ struct Windows {
         eval::TrialRegistryConfig rc;
         rc.pnl_len = train_T + val_sessions;
         rc.sketch_dim = 256;
+        if (a.ic_screen.rule != atx::engine::factory::IcScreenRule::DisabledV1)
+            rc.format = eval::TrialLogFormat::V3;
         ATX_TRY(auto registry, eval::TrialRegistry::open(out / "trial_registry.bin", rc));
         const auto cfg = make_config(a, train.span.panel);
         log_line(err, a.quiet, "train span " + std::to_string(train.span.session_keys.size()) +
@@ -2004,6 +2172,24 @@ struct Windows {
                         {"family", outcome.family.size()},
                         {"family_rejected_corr", outcome.family_rejected_corr},
                         {"admitted", outcome.admitted.size()}};
+    const auto &screen = outcome.ic_screen;
+    report["ic_screen"] = {
+        {"rule", atx::engine::factory::ic_screen_rule_name(screen.rule)},
+        {"horizons", screen.horizons}, {"execution_delay", screen.execution_delay},
+        {"window_begin", screen.window_begin}, {"window_end", screen.window_end},
+        {"maturity_end", screen.maturity_end}, {"window_role", "train"},
+        {"min_names", screen.min_names}, {"min_dates", screen.min_dates},
+        {"practical_abs_ic", screen.practical_abs_ic}, {"confidence_multiplier", screen.confidence_multiplier},
+        {"max_cache_bytes", screen.max_cache_bytes}, {"recipe", outcome.ic_screen_recipe},
+        {"mine_evaluations", outcome.ic_screen_evaluations},
+        {"mine_unavailable", outcome.ic_screen_unavailable},
+        {"unavailable_reason", outcome.ic_screen_unavailable_reason},
+        {"rejected_candidate_rows", outcome.ic_screen_rejected},
+        {"search_evaluations", outcome.search_ic_screen_evaluations},
+        {"search_unavailable", outcome.search_ic_screen_unavailable},
+        {"search_rejected_unique", outcome.search_ic_screen_rejected},
+        {"search_prepass_vm_evaluations", outcome.search_ic_prepass_vm_evaluations},
+        {"search_resume_mismatch", outcome.search_ic_screen_resume_mismatch}};
     report["search"] = {{"digest", to_hex16(outcome.search_digest)},
                         {"trial_count", outcome.search_trial_count},
                         {"fidelity_evals", outcome.search_fidelity_evals},
@@ -2019,8 +2205,19 @@ struct Windows {
                                      "train_window_len - 1], TrialSample::InSample"},
                         {"n_in_sample", t.n_in_sample},
                         {"n_out_of_sample", t.n_out_of_sample},
+                        {"n_full_pnl", t.n_full_pnl}, {"n_screened", t.n_screened},
+                        {"pnl_statistics_complete", t.pnl_statistics_complete},
+                        {"n_eff_full_pnl", t.n_eff_full_pnl},
+                        {"n_eff_uncorrected_full_pnl", t.n_eff_uncorrected_full_pnl},
+                        {"sr_moments_scope", "observed full-P&L trials only"},
+                        {"log_format", a.ic_screen.rule == atx::engine::factory::IcScreenRule::DisabledV1 ? 2 : 3},
                         {"dsr_rule", outcome.dsr_rule},
                         {"dsr_fallback_reason", outcome.dsr_fallback_reason},
+                        {"dsr_partial_variance_floor", t.n_screened > 0
+                            ? "max(observed_full_pnl_var_sr, candidate_marginal_sharpe_variance); "
+                              "marginal estimator from eval::deflated_sharpe; total raw N"
+                            : "not applied"},
+                        {"dsr_marginal_floor_count", outcome.dsr_marginal_floor_count},
                         {"dsr_clusters", outcome.dsr_clusters},
                         {"dsr_sr_star_mc_per_period", outcome.dsr_sr_star_mc},
                         {"chain_head", {{"records", outcome.chain_head.records},

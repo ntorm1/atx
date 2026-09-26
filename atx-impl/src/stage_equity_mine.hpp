@@ -59,6 +59,7 @@
 #include "atx/engine/eval/multiple_testing.hpp"
 #include "atx/engine/eval/trial_registry.hpp"
 #include "atx/engine/factory/search_driver.hpp"
+#include "atx/engine/factory/ic_screen.hpp"
 
 #include "stages.hpp"
 
@@ -296,6 +297,14 @@ struct CandidateRow {
     atx::f64 p_by{1.0};
     atx::f64 p_rw{1.0};
     bool admitted{false};
+    atx::u64 canonical_hash{};
+    bool ic_screen_evaluated{false};
+    bool ic_screen_unavailable{false};
+    bool ic_rejected{false};
+    atx::engine::factory::IcScreenReason ic_screen_reason{
+        atx::engine::factory::IcScreenReason::Disabled};
+    bool dsr_marginal_floor_applied{false};
+    atx::f64 dsr_selection_benchmark{};
 };
 
 struct MineOutcome {
@@ -319,6 +328,18 @@ struct MineOutcome {
     atx::usize search_fidelity_evals{};
     atx::usize search_fidelity_rejected{};
     atx::usize search_fingerprint_hits{};
+    atx::engine::factory::IcScreenConfig ic_screen{}; // resolved TRAIN-only bounds
+    std::string ic_screen_recipe;
+    std::string ic_screen_unavailable_reason;
+    atx::usize ic_screen_evaluations{};
+    atx::usize ic_screen_unavailable{};
+    atx::usize ic_screen_rejected{}; // candidate rows (registry deduplicates identities)
+    atx::usize search_ic_screen_evaluations{};
+    atx::usize search_ic_screen_unavailable{};
+    atx::usize search_ic_screen_rejected{};
+    atx::usize search_ic_prepass_vm_evaluations{};
+    bool search_ic_screen_resume_mismatch{false};
+    atx::usize dsr_marginal_floor_count{};
     // W0-I0b recording (E-16 / E-01 wiring). dsr_rule names the rule behind every
     // row's dsr_train (train_dsr_rule_label): "cluster-mc-floor-v2" (the default,
     // TrialRegistry::accounting()), "summary-raw-n-v2" (requested, or the default's
