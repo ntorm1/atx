@@ -1,0 +1,32 @@
+{
+  "schema": "atx.strategy-cash-claims/v1",
+  "source_snapshot_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "currency": "USD",
+  "publication_evidence": "reconstructed-source-publication-research-v1",
+  "settlement_status": "unknown",
+  "events": [
+    {
+      "event_id": "mdco-cash-merger-20200106",
+      "revision": 1,
+      "instrument_id": 39621,
+      "security_id_namespace": "spiderrock.securityID",
+      "historical_identity": "The Medicines Company common stock / MDCO",
+      "identity_evidence_sha256": "d83428a70a76a67e94407d6d95ba795660d7c653d4df26d42d38ff85edc7c95a",
+      "completion_evidence_sha256": "d83428a70a76a67e94407d6d95ba795660d7c653d4df26d42d38ff85edc7c95a",
+      "basis_evidence_sha256": "d83428a70a76a67e94407d6d95ba795660d7c653d4df26d42d38ff85edc7c95a",
+      "evidence_urls": [
+        "https://www.globenewswire.com/en/news-release/2020/01/06/1966725/0/en/Novartis-successfully-completes-acquisition-of-The-Medicines-Company-adding-a-potentially-first-in-class-investigational-cholesterol-lowering-therapy-inclisiran.html",
+        "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2019-296"
+      ],
+      "reference_mark_ns": 1578088800000000000,
+      "reference_raw_close": 84.900001525878906,
+      "reference_adjusted_close": 84.900001525878906,
+      "effective_after_ns": 1578088800000000000,
+      "effective_by_ns": 1578330300000000000,
+      "available_at_ns": 1578330300000000000,
+      "recognition_mark_ns": 1578348000000000000,
+      "cash_usd_per_raw_share": 85.0,
+      "cash_excluded_from_adjusted_close": true
+    }
+  ]
+}
