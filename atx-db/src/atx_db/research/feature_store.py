@@ -18,7 +18,9 @@ and month end::
                          R2b ``rank_normal`` = Phi^-1(rank_u) exactly
     z DOUBLE             per-formation sample z-score of the winsorized signed base (R2b ``zscore``)
     reason INT8          :data:`REASONS` (0 valid; < 64 a value slot; >= 64 a universe row without one)
-    clock_offset_s INT32 ceil(seconds from ``eom`` 22:00 UTC to the value's latest input clock)
+    clock_offset_s INT32 ceil(seconds from ``eom`` 22:00 UTC to the value's latest input clock);
+                         a value row must be clocked at or before its formation session's 22:00 UTC
+                         (the XNYS rule calendar's last session of the month; CLOCKS.md monthly cutoff)
 
 ``feature_sha`` = sha256 of canonical JSON of (feature id, catalog row + transform policy, code
 digest, input digests) (:func:`compute_feature_sha`): any change of definition, code or input
@@ -48,6 +50,7 @@ meta)``, then list ``{feature_id, feature_sha, basis}`` in the wave manifest
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 import os
 import re
@@ -116,6 +119,7 @@ IN_DOMAIN = "in_domain"
 STORE_VARIANTS: tuple[str, ...] = ("rank_normal", "signed_raw", "zscore")
 ADAPTER_VARIANTS: tuple[str, ...] = ("rank_normal", "rank_u", "signed_raw", "zscore")
 
+_TEMP = itertools.count()
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _WAVE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
@@ -208,29 +212,70 @@ def _check_sha(value: str) -> None:
 # Store
 # ---------------------------------------------------------------------------
 
+_EPOCH = dt.date(1970, 1, 1)
+#: ``formation_sessions`` basis when none is supplied: the XNYS rule calendar (node 1.11).
+SESSION_BASIS_XNYS = "xnys_rules_v1:expected_month_end_session"
+
+
+def formation_session_limits(eoms: Iterable[int], formation_sessions: Mapping[dt.date, dt.date] | None = None
+                             ) -> dict[int, int]:
+    """Per month end (days since epoch): the latest allowed ``clock_offset_s``, i.e. the formation
+    session's 22:00 UTC minus ``eom`` 22:00 UTC in seconds (0 when the month ends on a session).
+
+    The formation session is the XNYS rule calendar's last session of the month
+    (``calendar.expected_month_end_session``), or ``formation_sessions[eom]`` when the caller
+    supplies its own session calendar (recorded in the sidecar).
+    """
+    from ..calendar import expected_month_end_session
+
+    limits = {}
+    for days in eoms:
+        eom = _EPOCH + dt.timedelta(days=int(days))
+        if formation_sessions is None:
+            session = expected_month_end_session(eom.year, eom.month)
+        else:
+            if eom not in formation_sessions:
+                raise FeatureStoreParquetError(f"formation_sessions has no session for {eom}")
+            session = formation_sessions[eom]
+            if not (session.year, session.month) == (eom.year, eom.month) or session > eom:
+                raise FeatureStoreParquetError(f"formation session {session} is not in the month ending {eom}")
+        limits[int(days)] = (session - eom).days * 86400
+    return limits
+
+
 class _StreamCheck:
     """Validates a feature stream batch by batch in O(1) memory; accumulates the sidecar stats."""
 
-    def __init__(self) -> None:
+    def __init__(self, formation_sessions: Mapping[dt.date, dt.date] | None = None) -> None:
         self.rows = 0
         self.last: tuple[int, str] | None = None
         self.reasons: dict[int, int] = {}
         self.eom_min: int | None = None
         self.eom_max: int | None = None
         self.years: set[int] = set()
+        self.formation_sessions = formation_sessions
+        self.limits: dict[int, int] = {}
 
     def add(self, batch: pa.RecordBatch) -> None:
         n = batch.num_rows
         if n == 0:
             return
-        eom = batch.column("eom").cast(pa.int32()).to_numpy(zero_copy_only=False)
-        line = np.asarray(batch.column("line_id").to_pylist(), dtype=object)
         if batch.column("line_id").null_count or batch.column("eom").null_count:
             raise FeatureStoreParquetError("eom and line_id are never NULL")
+        eom = batch.column("eom").cast(pa.int32()).to_numpy(zero_copy_only=False)
+        line = np.asarray(batch.column("line_id").to_pylist(), dtype=object)
         keys_ok = (eom[1:] > eom[:-1]) | ((eom[1:] == eom[:-1]) & (line[1:] > line[:-1]))
         if not keys_ok.all() or (self.last is not None and (int(eom[0]), str(line[0])) <= self.last):
             raise FeatureStoreParquetError("rows must be strictly increasing in (eom, line_id): unique, sorted")
         self.last = (int(eom[-1]), str(line[-1]))
+        months = np.unique(eom)
+        not_month_end = [(_EPOCH + dt.timedelta(days=int(d))).isoformat() for d in months
+                         if (_EPOCH + dt.timedelta(days=int(d) + 1)).day != 1]
+        if not_month_end:
+            raise FeatureStoreParquetError(f"eom must be a calendar month end: {not_month_end[:5]}")
+        fresh = [int(d) for d in months if int(d) not in self.limits]
+        if fresh:
+            self.limits.update(formation_session_limits(fresh, self.formation_sessions))
         reason = batch.column("reason").to_numpy(zero_copy_only=False).astype(np.int16)
         unknown = set(np.unique(reason).tolist()) - set(REASON_NAMES)
         if unknown:
@@ -240,11 +285,15 @@ class _StreamCheck:
         clock_null = np.asarray(clock.is_null().to_numpy(zero_copy_only=False), dtype=bool)
         if (slot & clock_null).any():
             raise FeatureStoreParquetError(f"{int((slot & clock_null).sum())} value rows without a clock")
-        offsets = clock.fill_null(0).to_numpy(zero_copy_only=False)
-        if (slot & (offsets > 0)).any():
+        offsets = clock.fill_null(0).to_numpy(zero_copy_only=False).astype(np.int64)
+        limit = np.fromiter((self.limits[int(d)] for d in eom), dtype=np.int64, count=n)
+        late = slot & (offsets > limit)
+        if late.any():
+            first = int(np.flatnonzero(late)[0])
             raise FeatureStoreParquetError(
-                f"{int((slot & (offsets > 0)).sum())} value rows whose clock is after their month end's 22:00 UTC "
-                "decision clock (look-ahead)")
+                f"{int(late.sum())} value rows clocked after their formation session's 22:00 UTC decision clock "
+                f"(look-ahead), e.g. {line[first]} at eom {_EPOCH + dt.timedelta(days=int(eom[first]))}: offset "
+                f"{int(offsets[first])} s > allowed {int(limit[first])} s")
         valid = reason == REASONS["valid"]
         signed_null = np.asarray(batch.column("signed").is_null().to_numpy(zero_copy_only=False), dtype=bool)
         if (valid & signed_null).any():
@@ -310,14 +359,16 @@ class FeatureStore:
 
     # -- write ---------------------------------------------------------------
     def write(self, basis: str, feature_id: str, feature_sha: str, batches: Iterable[pa.RecordBatch],
-              meta: Mapping[str, object]) -> Path:
+              meta: Mapping[str, object], *, formation_sessions: Mapping[dt.date, dt.date] | None = None) -> Path:
         """Stream ``batches`` into the feature's file (temp file + rename); idempotent per sha.
 
         ``meta`` must carry ``expected_sign`` (+1/-1/0, the catalog sign; the adapter serves
         it to R3b). The batches must follow :data:`FEATURE_SCHEMA`, strictly increasing in
-        ``(eom, line_id)``; value rows need a clock at or before their month end's decision
-        clock. An existing ``(basis, feature_id, feature_sha)`` is returned unchanged (the
-        same sha is the same content), and ``batches`` is not consumed.
+        ``(eom, line_id)``, ``eom`` a calendar month end; a value row needs a clock at or before
+        its **formation session's** 22:00 UTC (the XNYS rule calendar's last session of the
+        month, or ``formation_sessions[eom]`` for a caller's own session calendar, recorded in
+        the sidecar). An existing ``(basis, feature_id, feature_sha)`` is returned unchanged
+        (the same sha is the same content), and ``batches`` is not consumed.
         """
         target = self.path(basis, feature_id, feature_sha)
         if self.has(basis, feature_id, feature_sha):
@@ -328,7 +379,7 @@ class FeatureStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         stamp = f"{os.getpid()}.{time.monotonic_ns()}"
         tmp = target.with_name(f".{feature_sha}.{stamp}.tmp")
-        check = _StreamCheck()
+        check = _StreamCheck(formation_sessions)
         started = time.perf_counter()
         try:
             with pq.ParquetWriter(tmp, FEATURE_SCHEMA, compression="zstd", write_statistics=True) as writer:
@@ -352,6 +403,9 @@ class FeatureStore:
                 "write_seconds": round(time.perf_counter() - started, 3),
                 "written_at": dt.datetime.now(dt.UTC).replace(tzinfo=None, microsecond=0).isoformat(),
                 "expected_sign": int(sign), "meta": json.loads(canonical_json(dict(meta))),
+                "formation_session_basis": SESSION_BASIS_XNYS if formation_sessions is None else
+                "supplied:" + sha256_text(canonical_json(sorted([k.isoformat(), v.isoformat()]
+                                                                for k, v in formation_sessions.items()))),
             }
             meta_tmp = target.with_name(f".{feature_sha}.{stamp}.json.tmp")
             meta_tmp.write_text(json.dumps(sidecar, indent=1, sort_keys=True) + "\n", encoding="utf-8")
@@ -608,14 +662,16 @@ def standardize_to_store(frame: pd.DataFrame, *, expected_sign: int, log_base: b
 
 def build_feature(store: FeatureStore, basis: str, feature_id: str, feature_sha: str,
                   chunks: Iterable[pd.DataFrame], *, expected_sign: int, log_base: bool = False,
-                  policy: StandardizationPolicy | None = None, meta: Mapping[str, object] | None = None) -> Path:
+                  policy: StandardizationPolicy | None = None, meta: Mapping[str, object] | None = None,
+                  formation_sessions: Mapping[dt.date, dt.date] | None = None) -> Path:
     """Standardize each chunk of whole formations and stream it into the store (the add-one-feature path)."""
     if store.has(basis, feature_id, feature_sha):
         return store.path(basis, feature_id, feature_sha)
     batches = (standardize_to_store(chunk, expected_sign=expected_sign, log_base=log_base, policy=policy,
                                     feature_id=feature_id) for chunk in chunks)
     return store.write(basis, feature_id, feature_sha, batches,
-                       {**dict(meta or {}), "expected_sign": expected_sign, "log_base": log_base})
+                       {**dict(meta or {}), "expected_sign": expected_sign, "log_base": log_base},
+                       formation_sessions=formation_sessions)
 
 
 # ---------------------------------------------------------------------------
@@ -696,18 +752,22 @@ def load_feature_table_from_store(store: FeatureStore, entries: Sequence[Mapping
     formed = (cal["status"] == "formed").to_numpy(dtype=bool)
     lo, hi = eoms.min(), eoms.max()
     con = store.con
-    con.execute("CREATE OR REPLACE TEMP TABLE _fs_months (eom DATE, month_index BIGINT, formed BOOLEAN)")
-    con.executemany("INSERT INTO _fs_months VALUES (?, ?, ?)",
+    # Per-call table names: the closures below read them later, so another table on the same
+    # store connection (another basis or calendar) must not rebind them (1.9 review m2).
+    tag = f"_fs{next(_TEMP)}"
+    months_table, securities_table = f"{tag}_months", f"{tag}_securities"
+    con.execute(f"CREATE TEMP TABLE {months_table} (eom DATE, month_index BIGINT, formed BOOLEAN)")
+    con.executemany(f"INSERT INTO {months_table} VALUES (?, ?, ?)",
                     [(e, int(i), bool(f)) for e, i, f in zip(eoms, cal["month_index"], formed, strict=True)])
-    con.execute("CREATE OR REPLACE TEMP TABLE _fs_securities (line_id VARCHAR, code BIGINT)")
+    con.execute(f"CREATE TEMP TABLE {securities_table} (line_id VARCHAR, code BIGINT)")
     security_frame = pd.DataFrame({"line_id": pd.Series(list(securities.keys()), dtype=object),
                                    "code": np.fromiter(securities.values(), dtype=np.int64, count=len(securities))})
-    con.register("_fs_security_stage", security_frame)
+    con.register(f"{tag}_stage", security_frame)
     try:
-        con.execute("INSERT INTO _fs_securities SELECT CAST(line_id AS VARCHAR), CAST(code AS BIGINT) "
-                    "FROM _fs_security_stage")
+        con.execute(f"INSERT INTO {securities_table} SELECT CAST(line_id AS VARCHAR), CAST(code AS BIGINT) "
+                    f"FROM {tag}_stage")
     finally:
-        con.unregister("_fs_security_stage")
+        con.unregister(f"{tag}_stage")
     formed_index = cal.loc[formed, "month_index"].to_numpy(dtype=np.int64)
     by_id = {r["feature_id"]: r for r in rows}
     digests: dict[str, Any] = {"store_version": FEATURE_STORE_VERSION, "basis": basis,
@@ -724,13 +784,13 @@ def load_feature_table_from_store(store: FeatureStore, entries: Sequence[Mapping
     def _arrays(feature_id: str) -> dict[str, np.ndarray]:
         source = _path(feature_id)
         outside = con.execute(f"""
-            SELECT count(*) FROM read_parquet({source}) r LEFT JOIN _fs_months m ON m.eom = r.eom
+            SELECT count(*) FROM read_parquet({source}) r LEFT JOIN {months_table} m ON m.eom = r.eom
             WHERE r.eom BETWEEN ? AND ? AND r.reason < {VALUE_SLOT_LIMIT} AND NOT coalesce(m.formed, false)
         """, [lo, hi]).fetchone()[0]
         digests["outside_formed_months"][feature_id] = int(outside)
         unmapped = con.execute(f"""
-            SELECT count(*) FROM read_parquet({source}) r JOIN _fs_months m ON m.eom = r.eom AND m.formed
-            LEFT JOIN _fs_securities s ON s.line_id = r.line_id
+            SELECT count(*) FROM read_parquet({source}) r JOIN {months_table} m ON m.eom = r.eom AND m.formed
+            LEFT JOIN {securities_table} s ON s.line_id = r.line_id
             WHERE r.reason < {VALUE_SLOT_LIMIT} AND s.code IS NULL
         """).fetchone()[0]
         if unmapped:
@@ -743,8 +803,8 @@ def load_feature_table_from_store(store: FeatureStore, entries: Sequence[Mapping
                              + CAST(r.clock_offset_s AS BIGINT) * 1000000 END AS available_at_us,
                    r.owner_id IS NULL AS unlinked_line
             FROM read_parquet({source}) r
-            JOIN _fs_months m ON m.eom = r.eom AND m.formed
-            JOIN _fs_securities s ON s.line_id = r.line_id
+            JOIN {months_table} m ON m.eom = r.eom AND m.formed
+            JOIN {securities_table} s ON s.line_id = r.line_id
             WHERE r.reason < {VALUE_SLOT_LIMIT}
             ORDER BY m.month_index, s.code
         """).fetchnumpy()
@@ -774,7 +834,7 @@ def load_feature_table_from_store(store: FeatureStore, entries: Sequence[Mapping
         source = _path(feature_id)
         universe = dict(con.execute(f"""
             SELECT m.month_index, count(*) FROM read_parquet({source}) r
-            JOIN _fs_months m ON m.eom = r.eom AND m.formed GROUP BY 1
+            JOIN {months_table} m ON m.eom = r.eom AND m.formed GROUP BY 1
         """).fetchall())
         span = int(cal["month_index"].max()) + 1
         thin_rows = np.bincount(month[reason == thin_code], minlength=span)
@@ -841,6 +901,7 @@ __all__ = [
     "FEATURE_STORE_VERSION",
     "REASONS",
     "REASON_NAMES",
+    "SESSION_BASIS_XNYS",
     "STORE_VARIANTS",
     "VALUE_SLOT_LIMIT",
     "FeatureStore",
@@ -849,6 +910,7 @@ __all__ = [
     "build_feature",
     "catalog_row_payload",
     "compute_feature_sha",
+    "formation_session_limits",
     "load_feature_table_from_store",
     "read_manifest",
     "standardize_to_store",

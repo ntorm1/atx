@@ -19,6 +19,7 @@ table (and its digest) is identical.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import datetime as dt
 import json
 import math
@@ -37,6 +38,7 @@ from atx_db.research import feature_store as fs
 from atx_db.research import features as rf
 from atx_db.research import label_matrix as lm
 from atx_db.research import panel as rp
+from atx_db.research import qualification, trial_registry
 from atx_db.research import research_lake as lake
 from atx_db.research.store import ResearchStore
 from tests.test_research_evaluation import DELIST_LAST_TRADE, N_SECURITIES, SESSIONS, _warehouse
@@ -209,6 +211,10 @@ def _build_store_features(root: Path, snapshot: str, entries: tuple[Any, ...],
     digests = {name: lake.lake_dataset_digest(snapshot, name, root) for name in files}
     by_id = {entry.feature_id: entry for entry in entries}
     unlinked = ", ".join(lake.sql_text(r) for r in rp.OWNER_LINK_FAILURES)
+    # The fixture's session calendar is business days (2024-03-29, Good Friday, is a fixture session), so
+    # its formation sessions are supplied explicitly; the store's default guard is the XNYS rule calendar.
+    sessions = {_month_end(day): day for (day,) in con.execute(
+        f"SELECT formation_date FROM read_parquet({files['panel_calendar']}) WHERE status = 'formed'").fetchall()}
     manifest = []
     for feature, _, scope, size, _ in FEATURES:
         entry = by_id[feature]
@@ -236,18 +242,21 @@ def _build_store_features(root: Path, snapshot: str, entries: tuple[Any, ...],
         years = [part for _, part in frame.groupby(pd.to_datetime(frame["eom"]).dt.year)]
         fs.build_feature(store, "reconstructed", feature, sha, years, expected_sign=int(entry.expected_sign),
                          log_base=entry.preferred_transform == "log_winsor_z", policy=policy,
-                         meta={"lake_snapshot": snapshot, "catalog_feature": feature})
+                         meta={"lake_snapshot": snapshot, "catalog_feature": feature}, formation_sessions=sessions)
         manifest.append({"basis": "reconstructed", "feature_id": feature, "feature_sha": sha})
     con.close()
     store.close()
     return manifest
 
 
+LABEL_SPEC = {"source": "r3a_monthly_fixture_round_trip", "horizons": [1, 3, 6, 12],
+              "code_digest": "fixture-" + "0" * 56, "input_digests": {"r3a_fixture_labels": "fixture"}}
+
+
 def _write_labels(root: Path, labels: pd.DataFrame, maturity: pd.DataFrame, calendar: pd.DataFrame,
-                  lines: dict[int, str]) -> str:
+                  lines: dict[int, str], **spec_keys: Any) -> str:
     """Path B, L3: the R3a labels path A read, written to the label matrix (a container round trip)."""
-    spec = {"provisional": True, "holdout_start": None, "source": "r3a_monthly_fixture_round_trip",
-            "horizons": [1, 3, 6, 12]}
+    spec = {**LABEL_SPEC, **spec_keys}
     label_sha = lm.compute_label_sha(spec)
     matrix = lm.LabelMatrix(root)
     matrix.create(label_sha, spec)
@@ -268,6 +277,11 @@ def _write_labels(root: Path, labels: pd.DataFrame, maturity: pd.DataFrame, cale
     codes = {(0, 0): 0, (0, 1): 1, (0, 2): 2}
     frame = labels.assign(eom=labels["month_index"].map(eom), line_id=labels["security"].map(lines))
     frame["year"] = [day.year for day in frame["eom"]]
+    years = sorted({day.year for day in eom.values()})
+    for h in (1, 3, 6, 12):   # every (h, year) of the grid, empty where nothing matured (e.g. h=12 in 2024)
+        for year in years:
+            if not ((frame["horizon_months"] == h) & (frame["year"] == year)).any():
+                matrix.write(label_sha, h, year, [])
     for (h, year), part in frame.groupby(["horizon_months", "year"]):
         part = part.sort_values(["eom", "line_id"])
         reasons = [codes.get((int(s), int(t)), 3 if int(s) == 1 else 4)
@@ -283,6 +297,7 @@ def _write_labels(root: Path, labels: pd.DataFrame, maturity: pd.DataFrame, cale
             "ret_exc": pa.array([None] * len(part), pa.float64()),
             "basis": pa.array([ev.LABEL_BASIS] * len(part), pa.string()),
             "reason": pa.array(reasons, pa.int8())})])
+    matrix.complete(label_sha, [1, 3, 6, 12], years)
     matrix.close()
     return label_sha
 
@@ -320,6 +335,7 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
             SELECT feature_id, formation_date, security_id, domain_status, signed_raw, zscore, rank_normal
             FROM research_feature_matrix WHERE feature_version = ?
         """, [built.feature_version]).df()
+        prepared_a = ec.basis_prepared_digests(a_inputs, spec)   # before evaluate_bases releases A's frames
         tables_a = ev.evaluate_bases([a_inputs], spec, catalog=catalog)
     finally:
         research.close()
@@ -368,9 +384,28 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
     assert set(reasons) <= {("in_domain", 0), ("in_domain", 1), ("nonfinite_value", 18)}
     assert ("in_domain", 1) in reasons and ("nonfinite_value", 18) in reasons   # thin roe formation, NULL roe
 
-    # Labels through the label matrix are the labels path A read.
+    # m1/m4: the store's default look-ahead guard is the XNYS formation session's 22:00 UTC. The fixture's
+    # 2024-03-29 (Good Friday, an XNYS closure) session clock is refused under it, accepted only with the
+    # fixture's session calendar supplied; a non-month-end eom is refused.
+    probe = pa.table({"eom": pa.array([dt.date(2024, 3, 31)], pa.date32()), "line_id": ["S000"],
+                      "owner_id": ["0000000000"], "raw": [1.0], "signed": [1.0], "rank_u": [0.5], "z": [0.0],
+                      "reason": pa.array([0], pa.int8()),
+                      "clock_offset_s": pa.array([-2 * 86400], pa.int32())}, schema=fs.FEATURE_SCHEMA)
+    guard_sha = "e" * 64
+    with pytest.raises(fs.FeatureStoreParquetError, match="formation session's 22:00 UTC"):
+        store.write("guard", "clock_probe", guard_sha, [probe], {"expected_sign": 1})
+    store.write("guard", "clock_probe", guard_sha, [probe], {"expected_sign": 1},
+                formation_sessions={dt.date(2024, 3, 31): dt.date(2024, 3, 29)})
+    assert store.read_meta("guard", "clock_probe", guard_sha)["formation_session_basis"].startswith("supplied:")
+    with pytest.raises(fs.FeatureStoreParquetError, match="month end"):
+        store.write("guard", "clock_probe", "d" * 64, [probe.set_column(0, "eom", pa.array(
+            [dt.date(2024, 3, 29)], pa.date32()))], {"expected_sign": 1})
+
+    # Labels through the label matrix are the labels path A read (explicitly unsealed: R3b read them whole).
     lines = {code: security for security, code in codes.items()}
-    label_sha = _write_labels(root, frames["labels"], frames["maturity"], frames["calendar"], lines)
+    label_sha = _write_labels(root, frames["labels"], frames["maturity"], frames["calendar"], lines,
+                              provisional=True, holdout_start=None,
+                              holdout_basis="fixture parity: path A (R3b) reads every fixture label unsealed")
     with lm.LabelMatrix(root) as matrix_store:
         labels_b, maturity_b, label_info = matrix_store.r3b_inputs(
             label_sha, spec.horizons_months, calendar=frames["calendar"], securities=codes,
@@ -387,6 +422,66 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
     ends_a, ends_b = (pd.to_datetime(m["expected_end"]).dt.date for m in (mat_a, mat_b))
     assert (ends_a.isna() == ends_b.isna()).all() and (ends_a[ends_a.notna()] == ends_b[ends_b.notna()]).all()
     assert label_info["label_rows"] == len(frames["labels"])
+
+    # I2/m3: the holdout seal is mandatory, provisional labels never open it, and an opening must be the
+    # trial registry's record for this label_sha; label identity needs code/input digests; sets are complete.
+    for missing_key in ("holdout_start", "code_digest", "input_digests"):
+        with pytest.raises(lm.LabelMatrixError, match=missing_key):
+            lm.compute_label_sha({k: v for k, v in {**LABEL_SPEC, "provisional": True, "holdout_start": None,
+                                                    "holdout_basis": "x"}.items() if k != missing_key})
+    holdout = dt.date(2024, 4, 1)
+    sealed = _write_labels(root, frames["labels"], frames["maturity"], frames["calendar"], lines,
+                           provisional=True, holdout_start=holdout.isoformat())
+    final = _write_labels(root, frames["labels"], frames["maturity"], frames["calendar"], lines,
+                          provisional=False, holdout_start=holdout.isoformat())
+    registry = tmp_path / "registry"
+    policy_sha = next(sha for pid, sha in qualification.FROZEN_POLICY_SHA256.items()
+                      if pid in qualification.V4_POLICY_IDS)
+    for wave in ("parity_wave", "other_wave"):
+        trial_registry.register_wave(wave, "c" * 64, policy_sha, ["book_to_market"],
+                                     [("book_to_market", "rank_normal", 3)], root=registry)
+    read = {"calendar": frames["calendar"], "securities": codes, "label_cutoff": spec.label_cutoff}
+    everything = dt.date(2025, 1, 1)
+    holdout_checks: dict[str, str] = {}
+    with lm.LabelMatrix(root) as matrix_store:
+        sealed_labels, _, sealed_info = matrix_store.r3b_inputs(sealed, spec.horizons_months, **read)
+        eoms = frames["labels"]["month_index"].map(
+            {int(k): _month_end(v) for k, v in frames["calendar"].set_index("month_index")["month_start"].items()})
+        assert sealed_info["eom_before"] == holdout.isoformat()
+        assert len(sealed_labels) == int((eoms < holdout).sum()) < len(frames["labels"])
+        attempts = {
+            "past_holdout_without_allow": dict(label_sha=sealed),
+            "provisional_with_allow": dict(label_sha=sealed, allow_holdout=True, holdout_wave="parity_wave"),
+            "final_without_wave": dict(label_sha=final, allow_holdout=True),
+            "final_without_opening": dict(label_sha=final, allow_holdout=True, holdout_wave="parity_wave"),
+        }
+        for name, kwargs in attempts.items():
+            with pytest.raises(lm.LabelHoldoutError) as refused:
+                matrix_store.r3b_inputs(kwargs.pop("label_sha"), spec.horizons_months, eom_before=everything,
+                                        registry_root=registry, **read, **kwargs)
+            holdout_checks[name] = str(refused.value).split(": ", 1)[-1][:90]
+        trial_registry.open_holdout("other_wave", final_labels=True, label_sha=sealed, root=registry)
+        with pytest.raises(lm.LabelHoldoutError, match="no open_holdout record"):
+            matrix_store.r3b_inputs(final, spec.horizons_months, eom_before=everything, allow_holdout=True,
+                                    holdout_wave="other_wave", registry_root=registry, **read)
+        trial_registry.open_holdout("parity_wave", final_labels=True, label_sha=final, root=registry)
+        opened, _, _ = matrix_store.r3b_inputs(final, spec.horizons_months, eom_before=everything,
+                                               allow_holdout=True, holdout_wave="parity_wave",
+                                               registry_root=registry, **read)
+        assert len(opened) == len(frames["labels"])
+        with pytest.raises(lm.LabelHoldoutError):
+            matrix_store.scan(sealed, [1], eom_before=everything)
+        assert matrix_store.scan(sealed, [1], eom_before=holdout).count("*").fetchone()[0] > 0
+        incomplete = lm.compute_label_sha({**LABEL_SPEC, "provisional": True, "holdout_start": None,
+                                           "holdout_basis": "incomplete-set check"})
+        matrix_store.create(incomplete, {**LABEL_SPEC, "provisional": True, "holdout_start": None,
+                                         "holdout_basis": "incomplete-set check"})
+        with pytest.raises(lm.LabelMatrixError, match="not complete"):
+            matrix_store.r3b_inputs(incomplete, [1], **read)
+        with pytest.raises(lm.LabelMatrixError, match="incomplete"):
+            matrix_store.complete(incomplete, [1], [2023])
+    with pytest.raises(lm.LabelMatrixError, match="sealed"):
+        lm.LabelMatrix(root).write(sealed, 1, 2030, [])   # a completed set takes no new (h, year) file
 
     # R3b over the store adapter: identical date statuses/coverage and identical result tables.
     table = fs.load_feature_table_from_store(store, manifest, calendar=frames["calendar"], securities=codes,
@@ -405,6 +500,9 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
     controls_a = _sorted(frames["controls"], ["control", "month_index", "security"])
     controls_b = _sorted(b_inputs.controls, ["control", "month_index", "security"])
     assert np.array_equal(controls_a["value"].to_numpy(float), controls_b["value"].to_numpy(float), equal_nan=True)
+    # I1: R3b's own prepared digests (calendar, labels per horizon, context, controls) of path B equal path A's.
+    prepared_b = ec.basis_prepared_digests(b_inputs, spec)
+    assert prepared_b == prepared_a and "context_sha256" in prepared_b
     tables_b = ev.evaluate_bases([b_inputs], spec, catalog=catalog)
     for key in ev.RESULT_TABLES:
         pd.testing.assert_frame_equal(tables_a.frames()[key], tables_b.frames()[key], check_exact=True, obj=key)
@@ -413,21 +511,50 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
     # 24 fixture months: every 1- and 3-month cell is tested (6/12 months lack selection formations).
     short = cells[cells["horizon_months"].isin([1, 3])]
     assert len(short) == len(FEATURES) * len(VARIANTS) * 2 and (short["status"] == "tested").all()
+    # m2: a second adapter table on the same store connection (another calendar) leaves the first intact.
+    before = table.load_feature("momentum_12_1").values
+    fs.load_feature_table_from_store(store, manifest, calendar=frames["calendar"].iloc[:6], securities=codes)
+    pd.testing.assert_frame_equal(table.load_feature("momentum_12_1").values, before)
     store.close()
 
-    # The evaluation cache keeps each feature's cells under (feature_sha, label_sha, eval_spec_sha).
+    # I1: the evaluation cache key covers the spec, the basis inputs, the label read window and the R3b code.
+    payload = ev.spec_payload(ev.validate_spec(spec))
+    window = {"label_sha": label_sha, "eom_before": label_info["eom_before"], "allow_holdout": False,
+              "holdout_wave": None}
+    parts = ec.eval_key_parts(payload, prepared_digests=prepared_b, label_window=window)
+    spec_sha = ec.compute_eval_spec_sha(payload, prepared_digests=prepared_b, label_window=window)
+    context_moved = frames["context"].copy()
+    context_moved.loc[context_moved.index[0], "market_cap"] = 1.0
+    controls_moved = b_inputs.controls.copy()
+    controls_moved.loc[controls_moved.index[0], "value"] = 0.123
+    variants_of_key = {
+        "context_changed": dict(prepared_digests=ec.basis_prepared_digests(
+            dataclasses.replace(b_inputs, context=context_moved), spec), label_window=window),
+        "control_changed": dict(prepared_digests=ec.basis_prepared_digests(
+            dataclasses.replace(b_inputs, controls=controls_moved), spec), label_window=window),
+        "label_window_changed": dict(prepared_digests=prepared_b,
+                                     label_window={**window, "eom_before": "2024-04-01"}),
+        "code_changed": dict(prepared_digests=prepared_b, label_window=window, code_sha="f" * 64),
+    }
+    moved = {name: ec.compute_eval_spec_sha(payload, **kwargs) for name, kwargs in variants_of_key.items()}
+    assert len({spec_sha, *moved.values()}) == 1 + len(moved)
+    assert spec_sha == ec.compute_eval_spec_sha(payload, prepared_digests=prepared_a, label_window=window)
     cache = ec.EvalCache(root)
-    spec_sha = ec.compute_eval_spec_sha(ev.spec_payload(ev.validate_spec(spec)))
     keys_cached = []
     for row in manifest:
         part = cells[cells["feature_id"] == row["feature_id"]].reset_index(drop=True)
         series = tables_b.series[tables_b.series["feature_id"] == row["feature_id"]].reset_index(drop=True)
         cache.write(row["feature_sha"], label_sha, spec_sha, part, {"feature_id": row["feature_id"]},
-                    extra={"series": series})
+                    extra={"series": series}, key_parts=parts)
         keys_cached.append((row["feature_sha"], label_sha, spec_sha))
         back = cache.read(row["feature_sha"], label_sha, spec_sha).to_pandas()
         pd.testing.assert_frame_equal(back, part, check_dtype=False, check_exact=True)
     assert cache.missing(keys_cached) == []
+    stale = [(f, lab, sha) for f, lab, _ in keys_cached for sha in moved.values()]
+    assert cache.missing(stale) == stale          # any moved input is a miss: stale cells are never served
+    assert cache.read_meta(*keys_cached[0])["key_parts"]["prepared_digests"] == prepared_b
+    with pytest.raises(ec.EvalCacheError, match="key_parts"):
+        cache.write(manifest[0]["feature_sha"], label_sha, moved["code_changed"], cells.iloc[:1], key_parts=parts)
     assert cache.scan(keys_cached).count("*").fetchone()[0] == len(cells)
     cache.close()
     measured.update({"reason_pairs": {f"{k[0]}:{k[1]}": int(v) for k, v in reasons.items()},
@@ -435,5 +562,8 @@ def test_parquet_research_store_reproduces_the_r2b_r3b_path(tmp_path: Path) -> N
                      "result_rows": {key: len(tables_b.frames()[key]) for key in ev.RESULT_TABLES},
                      "cells_tested": int((cells["status"] == "tested").sum()), "cells": len(cells),
                      "results_sha256_a": tables_a.results_sha256, "results_sha256_b": tables_b.results_sha256,
-                     "manifest_sha": manifest_sha, "label_sha": label_sha, "eval_spec_sha": spec_sha})
+                     "manifest_sha": manifest_sha, "label_sha": label_sha, "eval_spec_sha": spec_sha,
+                     "prepared_digest_keys": sorted(prepared_b), "moved_keys": moved,
+                     "sealed_label_rows": len(sealed_labels), "opened_label_rows": len(opened),
+                     "holdout_refusals": holdout_checks})
     print("PARITY " + json.dumps(measured, sort_keys=True))

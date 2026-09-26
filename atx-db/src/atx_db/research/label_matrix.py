@@ -19,20 +19,34 @@ none), ``basis`` the price basis, ``reason`` :data:`LABEL_REASONS` (a line that 
 inside its window is ``terminal_pending`` with ``ret`` NULL until a terminal return exists:
 counted, never imputed).
 
-``label_sha`` = sha256 of canonical JSON of the label spec (:func:`compute_label_sha`); the spec
-must say ``provisional`` (true for the price wave's labels, node 1.12; false for the final
-labels, node 3.8) and may carry ``holdout_start``: then every read must name ``eom_before``
-and a read past the holdout start is refused unless ``allow_holdout=True`` (ruling R-6: the
-holdout is opened once, by the trial registry's owner, with final labels).
+``label_sha`` = sha256 of canonical JSON of the label spec (:func:`compute_label_sha`). The spec
+must carry (1.9 fix round 1):
 
-The builder (node 1.12's provisional labels, node 3.8's final labels) writes one file per
-(h, year) with :meth:`LabelMatrix.write` and the windows with :meth:`LabelMatrix.write_windows`;
-:meth:`LabelMatrix.r3b_inputs` turns them into the R3b engine's ``labels``/``maturity`` frames.
+* ``provisional`` (bool): true for the price wave's labels (node 1.12), false for final labels
+  (node 3.8);
+* ``holdout_start``: the ISO date from which formations are sealed (policy v4: ``2024-01-01``),
+  or an explicit ``None`` together with a ``holdout_basis`` reason (e.g. a fixture) -- the key is
+  mandatory, so labels are never unsealed by omission;
+* ``code_digest`` (the builder's code) and ``input_digests`` (the lake datasets / files read), so a
+  builder fix or an input change is a new label set.
+
+Holdout (ruling R-6): every read names ``eom_before``; a read past ``holdout_start`` is refused
+unless ``allow_holdout=True`` **and** the labels are final **and** the trial registry holds the
+wave's ``open_holdout`` record for this ``label_sha`` (``holdout_wave=``). Provisional labels
+never open the holdout.
+
+The builder (node 1.12's provisional labels, node 3.8's final labels): :meth:`LabelMatrix.create`
+(spec), one :meth:`LabelMatrix.write` per (h, year), :meth:`LabelMatrix.write_windows`, then
+:meth:`LabelMatrix.complete` with the expected horizons and formation years. Reads
+(:meth:`LabelMatrix.scan`, :meth:`LabelMatrix.r3b_inputs`) refuse a set that is not complete, read
+exactly the recorded files, and :meth:`LabelMatrix.r3b_inputs` turns them into the R3b engine's
+``labels``/``maturity`` frames. A completed set is sealed (no further writes).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 import os
 import re
@@ -100,17 +114,36 @@ class LabelHoldoutError(LabelMatrixError):
     """A read would open sealed holdout formations."""
 
 
-def compute_label_sha(spec: Mapping[str, object]) -> str:
-    """sha256 of canonical JSON of the label spec (inputs, code digest, calendar, rules).
+_TEMP = itertools.count()
 
-    ``spec['provisional']`` must be a bool; ``spec['holdout_start']`` (ISO date or None)
-    seals formations from that month end on.
-    """
+
+def _check_spec(spec: Mapping[str, object]) -> None:
     if not isinstance(spec.get("provisional"), bool):
         raise LabelMatrixError("a label spec says provisional=true|false")
-    holdout = spec.get("holdout_start")
-    if holdout is not None:
-        dt.date.fromisoformat(str(holdout))
+    if "holdout_start" not in spec:
+        raise LabelMatrixError("a label spec names holdout_start (an ISO date, e.g. policy v4's 2024-01-01, or None "
+                               "with a holdout_basis reason): labels are never unsealed by omission (R-6)")
+    holdout = spec["holdout_start"]
+    if holdout is None:
+        basis = spec.get("holdout_basis")
+        if not isinstance(basis, str) or not basis.strip():
+            raise LabelMatrixError("holdout_start=None needs a holdout_basis reason")
+    else:
+        try:
+            dt.date.fromisoformat(str(holdout))
+        except ValueError as error:
+            raise LabelMatrixError(f"holdout_start {holdout!r} is not an ISO date") from error
+    code = spec.get("code_digest")
+    if not isinstance(code, str) or not code.strip():
+        raise LabelMatrixError("a label spec carries code_digest (the builder's code): a builder fix is a new set")
+    inputs = spec.get("input_digests")
+    if not isinstance(inputs, Mapping) or not inputs or not all(isinstance(v, str) and v for v in inputs.values()):
+        raise LabelMatrixError("a label spec carries input_digests {name: digest} of every input read")
+
+
+def compute_label_sha(spec: Mapping[str, object]) -> str:
+    """sha256 of canonical JSON of the label spec (see the module docstring for the required keys)."""
+    _check_spec(spec)
     return sha256_text(canonical_json({"store_version": LABEL_STORE_VERSION, "spec": dict(spec)}))
 
 
@@ -177,7 +210,15 @@ class LabelMatrix:
         payload = json.loads(target.read_text(encoding="utf-8"))
         if payload.get("store_version") != LABEL_STORE_VERSION:
             raise LabelMatrixError(f"label set {label_sha}: unsupported store version")
-        return dict(payload["spec"])
+        spec = dict(payload["spec"])
+        _check_spec(spec)
+        if compute_label_sha(spec) != label_sha:
+            raise LabelMatrixError(f"labels/{label_sha}/_label.json does not hash to its label_sha")
+        return spec
+
+    def _refuse_if_complete(self, label_sha: str) -> None:
+        if (self.directory(label_sha) / "_complete.json").is_file():
+            raise LabelMatrixError(f"label set {label_sha[:12]} is complete (sealed); a change is a new label set")
 
     # -- write ---------------------------------------------------------------
     def write(self, label_sha: str, h: int, year: int, batches: Iterable[pa.RecordBatch | pa.Table],
@@ -187,6 +228,7 @@ class LabelMatrix:
         target = self.path(label_sha, h, year)
         if self.has(label_sha, h, year):
             return target
+        self._refuse_if_complete(label_sha)
         target.parent.mkdir(parents=True, exist_ok=True)
         stamp = f"{os.getpid()}.{time.monotonic_ns()}"
         tmp = target.with_name(f".{target.stem}.{stamp}.tmp")
@@ -241,10 +283,68 @@ class LabelMatrix:
             if not existing.equals(table.sort_by([("eom", "ascending"), ("h", "ascending")])):
                 raise LabelMatrixError(f"labels/{label_sha}/_windows.parquet holds other windows")
             return target
+        self._refuse_if_complete(label_sha)
         tmp = target.with_name(f"._windows.{os.getpid()}.{time.monotonic_ns()}.tmp")
         pq.write_table(table.sort_by([("eom", "ascending"), ("h", "ascending")]), tmp, compression="zstd")
         os.replace(tmp, target)
         return target
+
+    def complete(self, label_sha: str, horizons: Sequence[int], years: Sequence[int]) -> Path:
+        """Seal the set: every (h, year) of the expected grid and the windows must exist.
+
+        Writes ``_complete.json`` (the grid and each file's bytes and sha256); reads refuse a
+        set without it and read exactly its files. Idempotent for the same grid and files.
+        """
+        self.spec(label_sha)
+        grid_h = sorted({_check_horizon(h) for h in horizons})
+        grid_y = sorted({int(y) for y in years})
+        if not grid_h or not grid_y:
+            raise LabelMatrixError("complete() needs the expected horizons and formation years")
+        windows = self.directory(label_sha) / "_windows.parquet"
+        missing = [f"h={h}/year={y:04d}" for h in grid_h for y in grid_y if not self.has(label_sha, h, y)]
+        if not windows.is_file():
+            missing.append("_windows.parquet")
+        if missing:
+            raise LabelMatrixError(f"label set {label_sha[:12]} is incomplete: missing {missing}")
+        files = {}
+        for h in grid_h:
+            for y in grid_y:
+                sidecar = json.loads(self.path(label_sha, h, y).with_suffix(".json").read_text(encoding="utf-8"))
+                files[f"h={h}/year={y:04d}.parquet"] = {"bytes": sidecar["bytes"], "sha256": sidecar["file_sha256"],
+                                                        "rows": sidecar["rows"]}
+        payload = {"store_version": LABEL_STORE_VERSION, "label_sha": label_sha, "horizons": grid_h,
+                   "years": grid_y, "files": files, "windows_sha256": sha256_file(windows)}
+        target = self.directory(label_sha) / "_complete.json"
+        if target.is_file():
+            if json.loads(target.read_text(encoding="utf-8")) != payload:
+                raise LabelMatrixError(f"label set {label_sha[:12]} was completed with another grid or files")
+            return target
+        _write_atomic_text(target, json.dumps(payload, indent=1, sort_keys=True) + "\n")
+        return target
+
+    def _complete_files(self, label_sha: str, horizons: Sequence[int],
+                        years: Sequence[int] | None = None) -> list[str]:
+        """The completed set's files at ``horizons`` (optionally some years), checked on disk (bytes)."""
+        target = self.directory(label_sha) / "_complete.json"
+        if not target.is_file():
+            raise LabelMatrixError(f"label set {label_sha[:12]} is not complete (LabelMatrix.complete): "
+                                   "an incomplete set is never read")
+        record = json.loads(target.read_text(encoding="utf-8"))
+        wanted = [_check_horizon(h) for h in horizons]
+        outside = sorted(set(wanted) - set(record["horizons"]))
+        if outside:
+            raise LabelMatrixError(f"horizons {outside} are not in the completed set {record['horizons']}")
+        paths = []
+        for h in wanted:
+            for y in record["years"]:
+                if years is not None and y not in years:
+                    continue
+                name = f"h={h}/year={y:04d}.parquet"
+                path = self.directory(label_sha) / name
+                if not path.is_file() or path.stat().st_size != record["files"][name]["bytes"]:
+                    raise LabelMatrixError(f"label set {label_sha[:12]}: {name} is missing or changed since complete()")
+                paths.append(path.as_posix())
+        return paths
 
     # -- read ----------------------------------------------------------------
     @property
@@ -264,29 +364,36 @@ class LabelMatrix:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def _guard(self, label_sha: str, eom_before: dt.date, allow_holdout: bool) -> dict[str, Any]:
+    def _guard(self, label_sha: str, eom_before: dt.date, allow_holdout: bool, holdout_wave: str | None,
+               registry_root: Path | str | None) -> dict[str, Any]:
+        """R-6: a read past ``holdout_start`` needs final labels and the wave's recorded opening."""
+        if isinstance(eom_before, dt.datetime) or not isinstance(eom_before, dt.date):
+            raise LabelMatrixError("eom_before must be a datetime.date")
         spec = self.spec(label_sha)
-        holdout = spec.get("holdout_start")
-        if holdout is not None and eom_before > dt.date.fromisoformat(str(holdout)) and not allow_holdout:
-            raise LabelHoldoutError(f"labels {label_sha[:12]}: reading formations up to {eom_before} opens the "
-                                    f"holdout sealed from {holdout} (ruling R-6: once, by the trial registry)")
+        holdout = spec["holdout_start"]
+        if holdout is None or eom_before <= dt.date.fromisoformat(str(holdout)):
+            return spec
+        where = f"labels {label_sha[:12]}: reading formations up to {eom_before} opens the holdout sealed from {holdout}"
+        if not allow_holdout:
+            raise LabelHoldoutError(f"{where} (ruling R-6: pass allow_holdout only for the wave's one opening)")
+        if spec["provisional"]:
+            raise LabelHoldoutError(f"{where}: provisional labels never open the holdout (R-6: final labels only)")
+        if not holdout_wave:
+            raise LabelHoldoutError(f"{where}: name the wave (holdout_wave=) whose trial-registry opening allows it")
+        from .trial_registry import TrialRegistry
+
+        opening = TrialRegistry(registry_root).holdout_opening(holdout_wave)
+        if opening is None or not opening.get("final_labels") or opening.get("label_sha") != label_sha:
+            raise LabelHoldoutError(f"{where}: the trial registry has no open_holdout record of wave "
+                                    f"{holdout_wave!r} for this label_sha (found {opening and opening.get('label_sha')})")
         return spec
 
-    def files(self, label_sha: str, horizons: Sequence[int], years: Sequence[int] | None = None) -> list[str]:
-        paths = []
-        for h in horizons:
-            directory = self.directory(label_sha) / f"h={_check_horizon(h)}"
-            for path in sorted(directory.glob("year=*.parquet")):
-                year = int(path.stem.split("=", 1)[1])
-                if (years is None or year in years) and path.with_suffix(".json").is_file():
-                    paths.append(path.as_posix())
-        return paths
-
     def scan(self, label_sha: str, horizons: Sequence[int], *, eom_before: dt.date,
-             years: Sequence[int] | None = None, allow_holdout: bool = False) -> duckdb.DuckDBPyRelation:
-        """Rows with ``eom < eom_before`` at the horizons (column ``h`` from the path)."""
-        self._guard(label_sha, eom_before, allow_holdout)
-        files = self.files(label_sha, horizons, years)
+             years: Sequence[int] | None = None, allow_holdout: bool = False, holdout_wave: str | None = None,
+             registry_root: Path | str | None = None) -> duckdb.DuckDBPyRelation:
+        """Rows with ``eom < eom_before`` at the horizons (column ``h`` from the path) of a complete set."""
+        self._guard(label_sha, eom_before, allow_holdout, holdout_wave, registry_root)
+        files = self._complete_files(label_sha, horizons, years)
         if not files:
             raise LabelMatrixError(f"labels {label_sha[:12]}: no files for horizons {list(horizons)}")
         literal = "[" + ", ".join(sql_text(p) for p in files) + "]"
@@ -295,14 +402,17 @@ class LabelMatrix:
 
     def r3b_inputs(self, label_sha: str, horizons: Sequence[int], *, calendar: pd.DataFrame,
                    securities: Mapping[str, int], label_cutoff: dt.datetime, eom_before: dt.date | None = None,
-                   allow_holdout: bool = False) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+                   allow_holdout: bool = False, holdout_wave: str | None = None,
+                   registry_root: Path | str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
         """R3b ``labels`` and ``maturity`` frames from the label set (the ``load_label_inputs`` counterpart).
 
-        A window is matured when its formation and entry sessions are the calendar's and its
+        A window is matured when its formation and entry sessions are the calendar's, its
+        formation is before ``eom_before`` (default: the spec's ``holdout_start``) and its
         exit + 1 day 12:00 is <= ``label_cutoff`` (the R3a rule). Labels are the rows at
-        matured windows of formations before ``eom_before`` on lines in ``securities``:
-        reasons 0-2 -> status 0 (terminal 0/1/2), 3 -> 1, 4 -> 2; the others carry no return
-        and are absent (R3b counts them missing). ``anchor_date`` is the row's entry date.
+        matured windows on lines in ``securities``: reasons 0-2 -> status 0 (terminal 0/1/2),
+        3 -> 1, 4 -> 2; the others carry no return and are absent (R3b counts them missing).
+        ``anchor_date`` is the row's entry date. The set must be complete; the holdout rule
+        is :meth:`_guard`'s.
         """
         import pandas as pd
 
@@ -310,10 +420,12 @@ class LabelMatrix:
         cal = calendar.sort_values("month_index", kind="stable").reset_index(drop=True)
         eoms = (pd.to_datetime(cal["month_start"]).dt.normalize() + pd.offsets.MonthEnd(0)).dt.date
         if eom_before is None:
-            holdout = spec.get("holdout_start")
+            holdout = spec["holdout_start"]
             eom_before = dt.date.fromisoformat(str(holdout)) if holdout is not None else \
                 max(eoms) + dt.timedelta(days=1)
-        self._guard(label_sha, eom_before, allow_holdout)
+        self._guard(label_sha, eom_before, allow_holdout, holdout_wave, registry_root)
+        files = self._complete_files(label_sha, horizons)
+        tag = f"_lm{next(_TEMP)}"
         windows_path = self.directory(label_sha) / "_windows.parquet"
         if not windows_path.is_file():
             raise LabelMatrixError(f"labels {label_sha[:12]} have no _windows.parquet")
@@ -328,20 +440,20 @@ class LabelMatrix:
                                "entry_date": pd.to_datetime(cal["entry_date"]).to_numpy()})
         codes = pd.DataFrame({"line_id": pd.Series(list(securities.keys()), dtype=object),
                               "code": np.fromiter(securities.values(), dtype=np.int64, count=len(securities))})
-        con.register("_lm_months_stage", months)
-        con.register("_lm_codes_stage", codes)
+        con.register(f"{tag}_months_stage", months)
+        con.register(f"{tag}_codes_stage", codes)
         try:
-            con.execute("CREATE OR REPLACE TEMP TABLE _lm_months AS SELECT CAST(eom AS DATE) AS eom, month_index, "
-                        "formed, CAST(formation_date AS DATE) AS formation_date, CAST(entry_date AS DATE) AS entry_date "
-                        "FROM _lm_months_stage")
-            con.execute("CREATE OR REPLACE TEMP TABLE _lm_codes AS SELECT CAST(line_id AS VARCHAR) AS line_id, "
-                        "CAST(code AS BIGINT) AS code FROM _lm_codes_stage")
+            con.execute(f"CREATE TEMP TABLE {tag}_months AS SELECT CAST(eom AS DATE) AS eom, month_index, formed, "
+                        "CAST(formation_date AS DATE) AS formation_date, CAST(entry_date AS DATE) AS entry_date "
+                        f"FROM {tag}_months_stage")
+            con.execute(f"CREATE TEMP TABLE {tag}_codes AS SELECT CAST(line_id AS VARCHAR) AS line_id, "
+                        f"CAST(code AS BIGINT) AS code FROM {tag}_codes_stage")
         finally:
-            con.unregister("_lm_months_stage")
-            con.unregister("_lm_codes_stage")
+            con.unregister(f"{tag}_months_stage")
+            con.unregister(f"{tag}_codes_stage")
         horizon_list = [_check_horizon(h) for h in horizons]
         con.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _lm_windows AS
+            CREATE TEMP TABLE {tag}_windows AS
             SELECT m.month_index, m.eom, h.h AS horizon_months, w.exit_date AS expected_end,
                    w.eom IS NOT NULL AND w.formation_date = m.formation_date AND w.entry_date = m.entry_date
                        AS aligned,
@@ -349,44 +461,38 @@ class LabelMatrix:
                             AND w.entry_date = m.entry_date AND w.exit_date IS NOT NULL
                             AND CAST(w.exit_date AS TIMESTAMP) + INTERVAL 1 DAY + INTERVAL 12 HOUR <= ?
                             AND m.eom < ?, false) AS matured
-            FROM _lm_months m CROSS JOIN (SELECT unnest(?::INTEGER[]) AS h) h
+            FROM {tag}_months m CROSS JOIN (SELECT unnest(?::INTEGER[]) AS h) h
             LEFT JOIN read_parquet({sql_text(windows_path.as_posix())}) w ON w.eom = m.eom AND w.h = h.h
             WHERE m.formed
         """, [cutoff, eom_before, horizon_list])
-        maturity = con.execute("SELECT month_index, horizon_months, expected_end, matured FROM _lm_windows "
+        maturity = con.execute(f"SELECT month_index, horizon_months, expected_end, matured FROM {tag}_windows "
                                "ORDER BY horizon_months, month_index").df()
-        alignment = dict(con.execute("SELECT aligned, count(*) FROM _lm_windows GROUP BY 1").fetchall())
-        files = self.files(label_sha, horizon_list)
+        alignment = dict(con.execute(f"SELECT aligned, count(*) FROM {tag}_windows GROUP BY 1").fetchall())
         info: dict[str, Any] = {"label_sha": label_sha, "provisional": spec.get("provisional"),
                                 "holdout_start": spec.get("holdout_start"), "eom_before": eom_before.isoformat(),
+                                "allow_holdout": bool(allow_holdout), "holdout_wave": holdout_wave,
                                 "label_cutoff": cutoff.isoformat(),
                                 "windows_aligned": int(alignment.get(True, 0)),
                                 "windows_not_aligned": int(alignment.get(False, 0)),
                                 "files": {Path(p).parent.name + "/" + Path(p).name:
                                           json.loads(Path(p).with_suffix(".json").read_text(encoding="utf-8"))[
                                               "file_sha256"] for p in files}}
-        if not files:
-            empty = pd.DataFrame({"month_index": np.zeros(0, np.int64), "security": np.zeros(0, np.int64),
-                                  "horizon_months": np.zeros(0, np.int64), "forward_return": np.zeros(0),
-                                  "status": np.zeros(0, np.int64), "terminal": np.zeros(0, np.int64),
-                                  "anchor_date": pd.Series([], dtype="datetime64[us]")})
-            return empty, maturity, {**info, "label_rows": 0}
         literal = "[" + ", ".join(sql_text(p) for p in files) + "]"
         status_case = " ".join(f"WHEN {code} THEN {pair[0]}" for code, pair in _R3B_STATUS.items())
         terminal_case = " ".join(f"WHEN {code} THEN {pair[1]}" for code, pair in _R3B_STATUS.items())
         usable = ", ".join(str(code) for code in _R3B_STATUS)
         con.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _lm_rows AS
+            CREATE TEMP TABLE {tag}_rows AS
             SELECT r.*, w.month_index, w.matured, c.code
             FROM read_parquet({literal}, hive_partitioning=true, hive_types={{'h': INTEGER}}) r
-            JOIN _lm_windows w ON w.eom = r.eom AND w.horizon_months = r.h
-            LEFT JOIN _lm_codes c ON c.line_id = r.line_id
+            JOIN {tag}_windows w ON w.eom = r.eom AND w.horizon_months = r.h
+            LEFT JOIN {tag}_codes c ON c.line_id = r.line_id
             WHERE r.eom < ?
         """, [eom_before])
-        counts = con.execute("""
+        counts = con.execute(f"""
             SELECT h, reason, count(*) FILTER (WHERE matured AND code IS NOT NULL),
                    count(*) FILTER (WHERE NOT matured), count(*) FILTER (WHERE code IS NULL)
-            FROM _lm_rows GROUP BY ALL ORDER BY ALL
+            FROM {tag}_rows GROUP BY ALL ORDER BY ALL
         """).fetchall()
         info["reasons"] = [{"h": int(h), "reason": LABEL_REASON_NAMES.get(int(r), str(r)), "used_rows": int(a),
                             "unmatured_rows": int(b), "rows_off_securities": int(c)} for h, r, a, b, c in counts]
@@ -394,9 +500,11 @@ class LabelMatrix:
             SELECT month_index, code AS security, h AS horizon_months, ret AS forward_return,
                    CASE reason {status_case} END AS status, CASE reason {terminal_case} END AS terminal,
                    entry_date AS anchor_date
-            FROM _lm_rows WHERE matured AND code IS NOT NULL AND reason IN ({usable})
+            FROM {tag}_rows WHERE matured AND code IS NOT NULL AND reason IN ({usable})
             ORDER BY horizon_months, month_index, security
         """).df()
+        for suffix in ("months", "codes", "windows", "rows"):
+            con.execute(f"DROP TABLE IF EXISTS {tag}_{suffix}")
         info["label_rows"] = len(labels)
         return labels, maturity, info
 

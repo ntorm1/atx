@@ -7,14 +7,24 @@ Layout (root ``C:/atx/atx-db/data/research`` by default)::
                                                                       (series, slices, quantiles, decay)
     eval/<feature_sha>/<label_sha>/<eval_spec_sha>.json             sidecar (rows, file sha256, meta)
 
-A cell depends only on its feature file, its label set and the evaluation spec, so a new
-feature costs one feature's evaluation: :meth:`EvalCache.missing` lists the keys to compute.
-Family-level statistics (BH q, Holm, DSR ``n_trials``, ``family_best``) depend on the whole
-family and the trial registry; they are recomputed over cached cells, never cached here.
+A cell depends on its feature file (``feature_sha``), the labels read (``label_sha``) and
+everything else the R3b engine reads, which the third component covers (1.9 fix round 1, I1):
+``eval_spec_sha`` = sha256 of canonical JSON of
 
-``eval_spec_sha`` = sha256 of canonical JSON of the spec payload (:func:`compute_eval_spec_sha`;
-for R3b, ``evaluation.spec_payload(spec)`` without the per-run fields). Files are written
-once (temp + rename) and never overwritten.
+* the evaluation spec payload (``evaluation.spec_payload(spec)`` without the run-identity fields);
+* the basis' **prepared digests** from R3b's own ``_prepare`` (:func:`basis_prepared_digests`):
+  calendar (formation, cutoff, entry), the labels actually read per horizon (so the label read
+  window), the context/spine (universe flags, size, venue), supplied NYSE breakpoints,
+  investable and population flags, and every control feature's values;
+* the label read window (``label_sha``, ``eom_before``, ``allow_holdout``, ``holdout_wave``);
+* the R3b code digest (``evaluation._code_sha()``: evaluation.py, stats.py, labels.py).
+
+Any change there is a new key, so a stale cell is never served; the sidecar keeps the parts
+(``key_parts``) so a reader can see why a key missed. A new feature still costs one feature's
+evaluation: :meth:`EvalCache.missing` lists the keys to compute. Family-level statistics
+(BH q, Holm, DSR ``n_trials``, ``family_best``) depend on the whole family and the trial
+registry; they are recomputed over cached cells, never cached here. Files are written once
+(temp + rename) and never overwritten.
 """
 
 from __future__ import annotations
@@ -50,10 +60,56 @@ class EvalCacheError(ValueError):
     """The evaluation cache cannot write or read cells under its contract."""
 
 
-def compute_eval_spec_sha(payload: Mapping[str, object]) -> str:
-    """sha256 of canonical JSON of the evaluation spec payload (run-identity fields removed)."""
+#: Keys a label read window names (``eom_before`` ISO date; ``holdout_wave`` may be None).
+LABEL_WINDOW_KEYS = ("label_sha", "eom_before", "allow_holdout", "holdout_wave")
+#: Prepared digests every R3b basis has (the rest depend on the inputs supplied).
+REQUIRED_PREPARED = ("calendar_sha256", "context_sha256")
+
+
+def basis_prepared_digests(inputs: Any, spec: Any) -> dict[str, str]:
+    """R3b's prepared digests of one basis, computed without evaluating (and without releasing its frames).
+
+    Runs ``evaluation._prepare`` on a copy of ``inputs`` with ``release_frames=False`` (the
+    caller's frames stay intact for the evaluation itself) and returns ``prep.digests``.
+    """
+    from dataclasses import replace
+
+    from . import evaluation as ev
+
+    prep = ev._prepare(replace(inputs, release_frames=False), ev.validate_spec(spec))
+    digests = {str(k): str(v) for k, v in prep.digests.items()}
+    del prep
+    return digests
+
+
+def eval_key_parts(payload: Mapping[str, object], *, prepared_digests: Mapping[str, str],
+                   label_window: Mapping[str, object], code_sha: str | None = None) -> dict[str, Any]:
+    """The canonical parts of an evaluation cache key (see the module docstring)."""
+    missing = [key for key in REQUIRED_PREPARED if key not in prepared_digests]
+    if missing:
+        raise EvalCacheError(f"prepared_digests lack {missing}: pass basis_prepared_digests(inputs, spec)")
+    if set(label_window) != set(LABEL_WINDOW_KEYS):
+        raise EvalCacheError(f"label_window names exactly {LABEL_WINDOW_KEYS}")
+    _check(str(label_window["label_sha"]), "label_window['label_sha']")
+    dt.date.fromisoformat(str(label_window["eom_before"]))
+    if not isinstance(label_window["allow_holdout"], bool):
+        raise EvalCacheError("label_window['allow_holdout'] must be a bool")
+    if code_sha is None:
+        from . import evaluation as ev
+
+        code_sha = ev._code_sha()
+    _check(code_sha, "code_sha")
     body = {key: value for key, value in payload.items() if key not in RUN_FIELDS}
-    return sha256_text(canonical_json({"cache_version": EVAL_CACHE_VERSION, "spec": body}))
+    return json.loads(canonical_json({"cache_version": EVAL_CACHE_VERSION, "spec": body,
+                                      "prepared_digests": dict(prepared_digests),
+                                      "label_window": dict(label_window), "code_sha": code_sha}))
+
+
+def compute_eval_spec_sha(payload: Mapping[str, object], *, prepared_digests: Mapping[str, str],
+                          label_window: Mapping[str, object], code_sha: str | None = None) -> str:
+    """The cache key's third component: sha256 of :func:`eval_key_parts` (``code_sha`` defaults to R3b's)."""
+    return sha256_text(canonical_json(eval_key_parts(payload, prepared_digests=prepared_digests,
+                                                     label_window=label_window, code_sha=code_sha)))
 
 
 def _check(value: str, label: str) -> None:
@@ -99,9 +155,18 @@ class EvalCache:
 
     def write(self, feature_sha: str, label_sha: str, eval_spec_sha: str, cells: pa.Table | pd.DataFrame,
               meta: Mapping[str, object] | None = None,
-              extra: Mapping[str, pa.Table | pd.DataFrame] | None = None) -> Path:
-        """Write the cells (and optional per-feature tables) once; an existing entry is kept."""
+              extra: Mapping[str, pa.Table | pd.DataFrame] | None = None, *,
+              key_parts: Mapping[str, Any]) -> Path:
+        """Write the cells (and optional per-feature tables) once; an existing entry is kept.
+
+        ``key_parts`` (:func:`eval_key_parts`) must hash to ``eval_spec_sha`` and name the
+        same ``label_sha``; they are kept in the sidecar.
+        """
         target = self.path(feature_sha, label_sha, eval_spec_sha)
+        if sha256_text(canonical_json(dict(key_parts))) != eval_spec_sha:
+            raise EvalCacheError("key_parts do not hash to eval_spec_sha (compute it with compute_eval_spec_sha)")
+        if key_parts.get("label_window", {}).get("label_sha") != label_sha:
+            raise EvalCacheError("key_parts name another label_sha than the cache key")
         if self.has(feature_sha, label_sha, eval_spec_sha):
             return target
         table = _as_table(cells)
@@ -125,7 +190,7 @@ class EvalCache:
                 written.append((tmp, final))
                 files[name] = {"rows": item.num_rows, "bytes": tmp.stat().st_size, "sha256": sha256_file(tmp)}
             sidecar = {"cache_version": EVAL_CACHE_VERSION, "feature_sha": feature_sha, "label_sha": label_sha,
-                       "eval_spec_sha": eval_spec_sha, "files": files,
+                       "eval_spec_sha": eval_spec_sha, "files": files, "key_parts": dict(key_parts),
                        "written_at": dt.datetime.now(dt.UTC).replace(tzinfo=None, microsecond=0).isoformat(),
                        "meta": json.loads(canonical_json(dict(meta or {})))}
             meta_tmp = target.with_name(f".{target.stem}.{stamp}.json.tmp")
@@ -181,7 +246,10 @@ class EvalCache:
 __all__ = [
     "CELL_KEY",
     "EVAL_CACHE_VERSION",
+    "LABEL_WINDOW_KEYS",
     "EvalCache",
     "EvalCacheError",
+    "basis_prepared_digests",
     "compute_eval_spec_sha",
+    "eval_key_parts",
 ]
