@@ -23,20 +23,24 @@ Every SEC request made by this package goes through this module:
   shared limiter, the shared block pause and a bounded retry policy (403/429 after the shared pause,
   5xx/connection errors with local backoff).
 * :class:`FetchLedgerStore` is the fetch half of the fetch/load split: fetch workers never hold a DuckDB
-  writer; they write content-addressed files (``objects/<sha[:2]>/<sha256>``) plus one ``fetch-ledger.jsonl``
-  line per request outcome (url, sha256, status, fetched_at, rate_lock) and resume by skipping ledgered
-  URLs. Loaders read the files back (SHA-verified) and never touch the network.
+  writer; they write content-addressed files plus one ``fetch-ledger.jsonl`` line per request outcome (url,
+  sha256, status, fetched_at, rate_lock) and resume by skipping ledgered URLs. Objects are gzip-compressed at
+  rest (``objects/<sha[:2]>/<sha256>.gz``, ruling C-71); the ledger sha256 and ``bytes`` stay over the RAW
+  bytes. Loaders read the files back (decompressed, SHA-verified) and never touch the network. Several fetch
+  threads may share one store and one limiter (ruling C-72).
 """
 from __future__ import annotations
 
 import datetime as dt
 import email.utils
+import gzip
 import hashlib
 import json
 import os
 import tempfile
 import threading
 import time
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -75,6 +79,10 @@ _STATE_READ_RETRY_SECONDS = 0.05
 #: The state file and the trip marker live beside it in the same directory.
 CANONICAL_SEC_RATE_LOCK = Path(r"C:\atx\atx-db\data\cache\.sec_rate.lock")
 FETCH_LEDGER_NAME = "fetch-ledger.jsonl"
+#: Objects at rest (ruling C-71): ``<sha256>.gz``, gzip level 6, mtime 0 (deterministic); sha256 is over the raw
+#: bytes. A plain ``<sha256>`` file is a pre-C-71 raw object until :meth:`FetchLedgerStore.compress_raw_objects`.
+OBJECT_SUFFIX = ".gz"
+OBJECT_GZIP_LEVEL = 6
 RESPONSE_TOO_LARGE = "response_too_large"
 FETCH_OBJECT_SHA_MISMATCH = "fetch_object_sha_mismatch"
 CLEAR_BLOCK_COMMAND = "python -m atx_db.sec_http --clear-block"
@@ -580,16 +588,19 @@ def sec_session(
     return session
 
 
-_SESSIONS: dict[int, tuple[SecRateLimiter, requests.Session]] = {}
+_SESSIONS: dict[tuple[int, int], tuple[SecRateLimiter, requests.Session]] = {}
 _SESSIONS_GUARD = threading.Lock()
 
 
 def _session_for(limiter: SecRateLimiter) -> requests.Session:
+    """One session per (limiter, thread): fetch threads share the limiter, never a ``requests.Session``."""
+
+    key = (id(limiter), threading.get_ident())
     with _SESSIONS_GUARD:
-        cached = _SESSIONS.get(id(limiter))
+        cached = _SESSIONS.get(key)
         if cached is None or cached[0] is not limiter:
             cached = (limiter, sec_session(limiter=limiter))
-            _SESSIONS[id(limiter)] = cached
+            _SESSIONS[key] = cached
         return cached[1]
 
 
@@ -648,14 +659,28 @@ class FetchRecord:
         return 400 <= self.status < 500 and self.status not in (403, 429)
 
 
+class _InFlight:
+    """One URL being fetched by one thread; other threads asking for it wait for its record."""
+
+    __slots__ = ("done", "record")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.record: FetchRecord | None = None
+
+
 class FetchLedgerStore:
     """Content-addressed fetch output plus an append-only ``fetch-ledger.jsonl`` (fetch/load split).
 
     Only a URL's newest *terminal* record counts; a rerun skips every URL that has one whose object is
-    present at its ledgered size. Payload bytes are written before their ledger line, so a kill leaves at
-    most an unreferenced object, never a ledger line without its bytes. A read whose SHA does not match
-    quarantines the object (``<sha>.corrupt-<stamp>``) so the next :meth:`ensure` refetches it. Appends are
-    serialized by a file lock, so concurrent workers may share one store.
+    present at its ledgered (raw) size. Objects are stored gzip-compressed (``objects/<sha[:2]>/<sha256>.gz``,
+    ruling C-71; sha256 and ``bytes`` are over the raw bytes, and the gzip trailer's ISIZE gives the raw size
+    without decompressing); a plain ``<sha256>`` file written before C-71 is still read until
+    :meth:`compress_raw_objects` converts it. Payload bytes are written (temp file, fsync, atomic replace)
+    before their ledger line, so a kill leaves at most an unreferenced object, never a ledger line without its
+    bytes. A read whose SHA does not match quarantines the object (``<name>.corrupt-<stamp>``) so the next
+    :meth:`ensure` refetches it. Appends are serialized by a file lock across processes and by a mutex across
+    threads; threads (ruling C-72) may share one store, and one URL is fetched by one thread at a time.
 
     The in-memory index keeps a 16-byte URL digest per terminal record (not the URL text). Measured at 100k
     entries (review of 1.7): about 266 B retained and 309 B peak per entry, i.e. about 216 / 250 MB at 850k
@@ -672,6 +697,10 @@ class FetchLedgerStore:
         self.corrupt_lines = 0
         self.duplicate_ok_urls = 0
         self._loaded = False
+        self._append_mutex = threading.Lock()
+        self._object_mutex = threading.Lock()
+        self._inflight_mutex = threading.Lock()
+        self._inflight: dict[bytes, _InFlight] = {}
 
     @staticmethod
     def _key(url: str) -> bytes:
@@ -727,21 +756,68 @@ class FetchLedgerStore:
         return len(self._index)
 
     def object_path(self, sha256: str) -> Path:
+        """The object at rest: ``<sha256>.gz`` (gzip of the raw bytes, ruling C-71)."""
+
+        return self.objects_dir / sha256[:2] / f"{sha256}{OBJECT_SUFFIX}"
+
+    def raw_object_path(self, sha256: str) -> Path:
+        """A pre-C-71 uncompressed object, read until :meth:`compress_raw_objects` converts it."""
+
         return self.objects_dir / sha256[:2] / sha256
 
     def read(self, record: FetchRecord, *, maximum: int | None = None) -> bytes:
-        """The verified bytes of a successful record; ValueError on a size or SHA mismatch."""
+        """The verified raw bytes of a successful record (decompressed); ValueError on a SHA mismatch.
+
+        FileNotFoundError when no object is stored for it.
+        """
 
         if not record.ok or record.sha256 is None:
             raise ValueError(f"no content was fetched for {record.url}")
-        path = self.object_path(record.sha256)
-        payload = path.read_bytes()
+        path, payload = self._load_object(record.sha256)
         if hashlib.sha256(payload).hexdigest() != record.sha256:
             self._quarantine(path)
             raise ValueError(FETCH_OBJECT_SHA_MISMATCH)
         if maximum is not None and len(payload) > maximum:
             raise ValueError(RESPONSE_TOO_LARGE)
         return payload
+
+    def _load_object(self, sha256: str) -> tuple[Path, bytes]:
+        """``(path, raw bytes)``: the compressed object, else a pre-C-71 raw one.
+
+        The compressed path is tried again last, because a conversion pass may replace the raw file between the
+        two reads. A compressed file that does not decompress yields empty bytes, so the caller's SHA check fails
+        and quarantines it.
+        """
+
+        compressed, raw = self.object_path(sha256), self.raw_object_path(sha256)
+        for path in (compressed, raw, compressed):
+            try:
+                stored = path.read_bytes()
+            except FileNotFoundError:
+                continue
+            if path == raw:
+                return path, stored
+            try:
+                return path, gzip.decompress(stored)
+            except (OSError, EOFError, zlib.error):
+                return path, b""
+        raise FileNotFoundError(str(compressed))
+
+    def _stored_raw_size(self, sha256: str) -> int | None:
+        """The raw size of the stored object (gzip ISIZE, exact below 4 GiB, or the raw file's size); None if absent."""
+
+        try:
+            with self.object_path(sha256).open("rb") as handle:
+                handle.seek(-4, os.SEEK_END)
+                return int.from_bytes(handle.read(4), "little")
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return None  # shorter than a gzip trailer: a torn file, refetched
+        try:
+            return self.raw_object_path(sha256).stat().st_size
+        except OSError:
+            return None
 
     def _quarantine(self, path: Path) -> None:
         """Move a corrupt object aside (kept, not deleted) so the next ensure() refetches its URL."""
@@ -754,10 +830,7 @@ class FetchLedgerStore:
     def _object_present(self, record: FetchRecord) -> bool:
         if not record.ok or record.sha256 is None:
             return True  # a terminal failure has no object
-        try:
-            return self.object_path(record.sha256).stat().st_size == record.bytes
-        except OSError:
-            return False
+        return self._stored_raw_size(record.sha256) == record.bytes
 
     def ensure(
         self,
@@ -770,13 +843,35 @@ class FetchLedgerStore:
         """Return ``(record, fetched_now)``: the ledgered terminal record, else one new (ledgered) fetch.
 
         A successful record whose object is missing or not at its ledgered size (for example quarantined by
-        :meth:`read`) is refetched.
+        :meth:`read`) is refetched. Thread-safe: while one thread fetches a URL, other threads asking for it
+        wait and get that thread's record, so a URL is never requested twice at once.
         """
 
-        record = self.lookup(url)
-        if record is not None and self._object_present(record):
-            return record, False
-        return self.fetch(url, limiter=limiter, timeout=timeout, maximum=maximum), True
+        key = self._key(url)
+        while True:
+            record = self.lookup(url)
+            if record is not None and self._object_present(record):
+                return record, False
+            with self._inflight_mutex:
+                flight = self._inflight.get(key)
+                if flight is None:
+                    # Re-check under the mutex: an owner remembers its record before it leaves the in-flight map.
+                    record = self.lookup(url)
+                    if record is not None and self._object_present(record):
+                        return record, False
+                    flight = self._inflight[key] = _InFlight()
+                    break
+            flight.done.wait()
+            if flight.record is not None:
+                return flight.record, False
+            # the owning thread raised: try again (as the owner, unless another thread took over first)
+        try:
+            flight.record = self.fetch(url, limiter=limiter, timeout=timeout, maximum=maximum)
+            return flight.record, True
+        finally:
+            with self._inflight_mutex:
+                self._inflight.pop(key, None)
+            flight.done.set()
 
     def fetch(
         self,
@@ -815,24 +910,78 @@ class FetchLedgerStore:
             self._remember(self._key(url), record)
         return record
 
-    def _write_object(self, sha256: str, payload: bytes) -> None:
-        path = self.object_path(sha256)
-        if path.is_file() and path.stat().st_size == len(payload):
-            if hashlib.sha256(path.read_bytes()).hexdigest() == sha256:
-                return  # same content already stored (identical bytes under another URL, or a resumed write)
-            self._quarantine(path)  # same size, different bytes: keep it aside and store the verified payload
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="wb", dir=path.parent, prefix=f".{sha256[:16]}.", suffix=".tmp", delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
+    def _compressed_verifies(self, path: Path, sha256: str) -> bool:
         try:
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+            return hashlib.sha256(gzip.decompress(path.read_bytes())).hexdigest() == sha256
+        except (OSError, EOFError, zlib.error):
+            return False
+
+    def _write_object(self, sha256: str, payload: bytes) -> None:
+        """Store ``payload`` (whose raw sha256 is ``sha256``) as ``<sha256>.gz``: temp file, fsync, atomic replace."""
+
+        compressed = gzip.compress(payload, compresslevel=OBJECT_GZIP_LEVEL, mtime=0)
+        path = self.object_path(sha256)
+        with self._object_mutex:  # threads storing identical bytes under different URLs
+            if path.is_file():
+                if self._compressed_verifies(path, sha256):
+                    return  # same content already stored (identical bytes under another URL, or a resumed write)
+                self._quarantine(path)  # does not verify: keep it aside and store the verified payload
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=path.parent, prefix=f".{sha256[:16]}.", suffix=".tmp", delete=False
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(compressed)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def compress_raw_objects(self, *, limit: int | None = None) -> dict[str, int]:
+        """Resumable C-71 conversion: every pre-C-71 raw object becomes a verified ``<sha256>.gz``.
+
+        Per raw file ``<sha256>``: its bytes must hash to its name (else it is quarantined, kept, and counted);
+        the compressed object is written atomically, read back, decompressed and verified against that same raw
+        sha256, and only then is the raw file removed. A kill at any point leaves the raw file, or both files
+        (the next pass verifies the compressed one and removes the raw), never neither. ``limit`` stops after
+        that many raw files (for a kill-and-resume drill). Safe beside a running fetch worker, whose readers
+        prefer the compressed file and re-try it after a raw file disappears.
+        """
+
+        counts = {"raw_seen": 0, "converted": 0, "already_compressed": 0, "raw_sha_mismatch": 0,
+                  "raw_busy": 0, "raw_bytes": 0, "compressed_bytes": 0}
+        if not self.objects_dir.is_dir():
+            return counts
+        hexdigits = set("0123456789abcdef")
+        for bucket in sorted(p for p in self.objects_dir.iterdir() if p.is_dir()):
+            for raw_path in sorted(bucket.iterdir()):
+                name = raw_path.name
+                if len(name) != 64 or not set(name) <= hexdigits or not raw_path.is_file():
+                    continue
+                if limit is not None and counts["raw_seen"] >= limit:
+                    return counts
+                counts["raw_seen"] += 1
+                payload = raw_path.read_bytes()
+                if hashlib.sha256(payload).hexdigest() != name:
+                    self._quarantine(raw_path)
+                    counts["raw_sha_mismatch"] += 1
+                    continue
+                target = self.object_path(name)
+                already = target.is_file() and self._compressed_verifies(target, name)
+                if not already:
+                    self._write_object(name, payload)
+                    if not self._compressed_verifies(target, name):
+                        raise RuntimeError(f"compressed object {target} does not verify after writing; raw kept")
+                counts["already_compressed" if already else "converted"] += 1
+                counts["raw_bytes"] += len(payload)
+                counts["compressed_bytes"] += target.stat().st_size
+                try:
+                    raw_path.unlink()
+                except PermissionError:
+                    counts["raw_busy"] += 1  # a reader holds it open: the next pass removes it
+        return counts
 
     def _append(self, record: FetchRecord, *, rate_lock: str | None = None) -> None:
         line = json.dumps(
@@ -850,7 +999,8 @@ class FetchLedgerStore:
             sort_keys=True,
         ).encode("utf-8") + b"\n"
         self.root.mkdir(parents=True, exist_ok=True)
-        with _exclusive_file_lock(self._lock_path), self.ledger_path.open("ab+") as handle:
+        # The mutex serializes this process's threads (a byte-range lock is per handle); the file lock, processes.
+        with self._append_mutex, _exclusive_file_lock(self._lock_path), self.ledger_path.open("ab+") as handle:
             handle.seek(0, os.SEEK_END)
             if handle.tell():
                 handle.seek(-1, os.SEEK_END)

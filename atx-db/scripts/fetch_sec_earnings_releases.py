@@ -2,15 +2,16 @@
 
 Candidates come straight from the retained bulk ``submissions.zip`` (no warehouse, no DuckDB
 connection). Each candidate's filing index and its single EX-99 go into a ``sec_http`` fetch
-store under ``--fetch-dir``: content-addressed files plus ``fetch-ledger.jsonl``. Every request
-sends only the approved SEC user agent and takes a token from the host-wide 5 req/s limiter
-(one fixed lock per host, whatever root the worker is launched from), so several workers
-(``--shard K/N``) may run at once. A rerun skips every ledgered URL, so a killed run resumes
-where it stopped. Load afterwards with
+store under ``--fetch-dir``: gzip-compressed content-addressed files (sha256 over the raw
+bytes, ruling C-71) plus ``fetch-ledger.jsonl``. Every request sends only the approved SEC user
+agent and takes a token from the host-wide 5 req/s limiter (one fixed lock per host, whatever
+root the worker is launched from), so ``--workers`` threads (at most 3, ruling C-72) and several
+processes (``--shard K/N``) may run at once. A rerun skips every ledgered URL, so a killed run
+resumes where it stopped. Load afterwards with
 ``scripts/refresh_sec_earnings_release_facts.py --fetch-dir`` (loader-only, no network).
 
-Run each worker under the memory guard (ruling C-58): ``run_memory_guarded.py --job-gb 0.6
---wait-minutes 30 -- python scripts/fetch_sec_earnings_releases.py ...``.
+Run each worker under the memory guard (ruling C-58): ``run_memory_guarded.py --job-gb 0.5
+--wait-minutes 30 -- python scripts/fetch_sec_earnings_releases.py --workers 3 ...``.
 
 Exit codes: 0 done; 3 SEC blocked the host (403/429 on every retry, see ``sec_http``), or the
 host was already tripped at start: nothing more is requested until an operator runs
@@ -32,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from atx_db.connection import resolve_data_dir  # noqa: E402
 from atx_db.press_release import (  # noqa: E402
+    MAX_FETCH_WORKERS,
     earnings_release_candidates_from_submissions_archive,
     fetch_sec_earnings_release_documents,
 )
@@ -60,6 +62,8 @@ def main() -> int:
     parser.add_argument("--max-index-bytes", type=int, default=2_000_000)
     parser.add_argument("--max-document-bytes", type=int, default=8_000_000)
     parser.add_argument("--progress-every", type=int, default=10)
+    parser.add_argument("--workers", type=int, default=1, choices=range(1, MAX_FETCH_WORKERS + 1),
+                        help="Fetch threads sharing the host-wide limiter and the ledger (ruling C-72).")
     args = parser.parse_args()
 
     shard, shards = args.shard
@@ -71,8 +75,8 @@ def main() -> int:
     except SecBlockedError as exc:
         print(json.dumps({"aborted": "sec_blocked_at_start", "pid": os.getpid(), "error": str(exc)}), flush=True)
         return EXIT_SEC_BLOCKED
-    print(json.dumps({"start": {"pid": os.getpid(), "shard": f"{shard}/{shards}", "limiter": limiter_state}},
-                     sort_keys=True), flush=True)
+    print(json.dumps({"start": {"pid": os.getpid(), "shard": f"{shard}/{shards}", "workers": args.workers,
+                                "limiter": limiter_state}}, sort_keys=True), flush=True)
     candidates = (
         candidate
         for position, candidate in enumerate(earnings_release_candidates_from_submissions_archive(
@@ -100,6 +104,7 @@ def main() -> int:
             max_document_bytes=args.max_document_bytes,
             progress=progress,
             progress_every=args.progress_every,
+            workers=args.workers,
         )
     except SecBlockedError as exc:
         print(json.dumps({"aborted": "sec_blocked", "pid": os.getpid(), "shard": f"{shard}/{shards}",

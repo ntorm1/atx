@@ -22,6 +22,8 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -1288,6 +1290,10 @@ def _submissions_column(block: dict[str, Any], key: str, index: int) -> Any:
     return values[index] if index < len(values) else None
 
 
+#: Fetch threads per worker process (ruling C-72); the host-wide limiter still caps SEC at 5 req/s.
+MAX_FETCH_WORKERS = 3
+
+
 def fetch_sec_earnings_release_documents(
     candidates: Iterable[EarningsReleaseCandidate],
     fetch_dir: Path,
@@ -1298,6 +1304,7 @@ def fetch_sec_earnings_release_documents(
     max_document_bytes: int = 8_000_000,
     progress: Callable[[dict[str, int]], None] | None = None,
     progress_every: int = 0,
+    workers: int = 1,
 ) -> dict[str, int]:
     """Fetch half of the Item 2.02 split: filing index plus its single EX-99, into a fetch store.
 
@@ -1307,8 +1314,16 @@ def fetch_sec_earnings_release_documents(
     refetched unless their stored object is missing or corrupt; transient failures
     (0/403/429/5xx) stay retryable on the next run. A host-wide SEC block
     (``sec_http.SecBlockedError``) propagates and stops the worker.
+
+    ``workers`` (1..:data:`MAX_FETCH_WORKERS`, ruling C-72) threads fetch candidates at once. They share
+    the one host-wide limiter (the 5 req/s host cap is unchanged: requests are latency-bound, not
+    rate-bound) and the one ledger, whose store fetches a URL in one thread at a time. At most
+    ``2 * workers`` candidates are in flight, so memory does not grow with the candidate count; the
+    ``candidates`` count is the number finished.
     """
 
+    if not 1 <= workers <= MAX_FETCH_WORKERS:
+        raise ValueError(f"workers must be in 1..{MAX_FETCH_WORKERS}")
     store = FetchLedgerStore(fetch_dir).load()
     counts = {
         "candidates": 0, "no_clock": 0, "index_fetched": 0, "index_ledgered": 0, "index_failed": 0,
@@ -1317,25 +1332,53 @@ def fetch_sec_earnings_release_documents(
         "ledger_duplicate_ok_urls_at_start": store.duplicate_ok_urls,
         "ledger_corrupt_lines_at_start": store.corrupt_lines,
     }
-    for candidate in candidates:
-        counts["candidates"] += 1
+
+    def one(candidate: EarningsReleaseCandidate) -> Counter[str]:
+        local: Counter[str] = Counter(candidates=1)
         clock = _daily_sec_clock(candidate.acceptance_datetime_raw, candidate.filing_date)
         if clock.available_at is None:
-            counts["no_clock"] += 1
+            local["no_clock"] += 1
         else:
             _fetch_candidate_documents(
-                store, candidate, counts, limiter=limiter, timeout=request_timeout,
+                store, candidate, local, limiter=limiter, timeout=request_timeout,
                 max_index_bytes=max_index_bytes, max_document_bytes=max_document_bytes,
             )
+        return local
+
+    def merge(local: Counter[str]) -> None:
+        for key, value in local.items():
+            counts[key] = counts.get(key, 0) + value
         if progress is not None and progress_every and counts["candidates"] % progress_every == 0:
             progress(dict(counts))
+
+    if workers == 1:
+        for candidate in candidates:
+            merge(one(candidate))
+        return counts
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sec-fetch")
+    pending: set[Future[Counter[str]]] = set()
+    try:
+        for candidate in candidates:
+            pending.add(pool.submit(one, candidate))
+            if len(pending) >= 2 * workers:
+                finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    merge(future.result())  # re-raises a worker's SecBlockedError / storage error here
+        while pending:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in finished:
+                merge(future.result())
+    except BaseException:
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
     return counts
 
 
 def _fetch_candidate_documents(
     store: FetchLedgerStore,
     candidate: EarningsReleaseCandidate,
-    counts: dict[str, int],
+    counts: Counter[str],
     *,
     limiter: SecRateLimiter | None,
     timeout: float,
