@@ -13,8 +13,11 @@
 // (the PnL is already the firewalled OOS output of extract_streams; the slicing
 // is a pure partition, never a refit). Stated again in regime_slice.hpp.
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -37,6 +40,7 @@ using atx::engine::eval::regime_labels;
 using atx::engine::eval::robustness_verdict;
 using atx::engine::eval::RobustnessConfig;
 using atx::engine::eval::RobustnessVerdict;
+using atx::engine::eval::RegimeSliceRule;
 using atx::engine::eval::walk_forward_sharpe;
 
 // A tiny deterministic LCG -> uniform(-1, 1), the S3/S4 fixture idiom (no RNG dep).
@@ -79,7 +83,7 @@ struct RegimeSliceLcg {
 //  monotonically over the back two-thirds gets the low/mid/high terciles in
 //  ascending-date order, and each tercile holds ~1/3 of the LABELLED dates.
 // =============================================================================
-TEST(EvalRegimeSlice, TercilePartitionIsBalancedAndOrdered) {
+TEST(EvalRegimeSlice, LegacyTercilePartitionIsBalancedAndOrdered) {
   // A monotonically RISING vol schedule: low at the start, high at the end.
   std::vector<f64> sigma(90);
   for (usize t = 0; t < sigma.size(); ++t) {
@@ -88,7 +92,8 @@ TEST(EvalRegimeSlice, TercilePartitionIsBalancedAndOrdered) {
   const Panel panel = vol_schedule_panel(sigma, 0xC0FFEEu);
 
   RobustnessConfig cfg; // default vol_window
-  const std::vector<u8> labels = regime_labels(panel, cfg.vol_window);
+  const std::vector<u8> labels = regime_labels(panel, cfg.vol_window, kNumRegimes,
+                                               RegimeSliceRule::LegacyFullSampleV1);
   ASSERT_EQ(labels.size(), panel.dates());
 
   // Count labelled (non-sentinel) dates per tercile. The warm-up dates (< vol
@@ -134,6 +139,105 @@ TEST(EvalRegimeSlice, LabelsAreDeterministic) {
   const std::vector<u8> a = regime_labels(panel, 10);
   const std::vector<u8> b = regime_labels(panel, 10);
   EXPECT_EQ(a, b);
+}
+
+[[nodiscard]] Panel regime_test_closes(std::vector<f64> close, usize instruments = 1) {
+  const auto dates = close.size() / instruments;
+  auto result = Panel::create(dates, instruments, {"close"}, {std::move(close)}, {});
+  EXPECT_TRUE(result.has_value());
+  return std::move(result.value());
+}
+
+TEST(EvalRegimeSlice, ExpandingLabelsPreserveTruncationAndIgnoreCurrentAndFutureMutation) {
+  std::vector<f64> sigma(120, 0.02);
+  for (usize t = 70; t < sigma.size(); ++t) sigma[t] = 0.2;
+  const auto original = vol_schedule_panel(sigma, 37);
+  const auto close_id = *original.field_id("close");
+  std::vector<f64> closes;
+  for (usize t = 0; t < original.dates(); ++t) closes.push_back(original.field_cross_section(close_id, t)[0]);
+  RobustnessConfig cfg; cfg.vol_window = 7; cfg.min_regime_history = 8;
+  const auto full = regime_labels(original, cfg);
+  for (const usize stop : {25U, 51U, 85U}) {
+    const auto prefix = regime_test_closes(std::vector<f64>{closes.begin(), closes.begin() + static_cast<std::ptrdiff_t>(stop)});
+    const auto truncated = regime_labels(prefix, cfg);
+    EXPECT_TRUE(std::equal(truncated.begin(), truncated.end(), full.begin()));
+    auto changed = closes;
+    for (usize t = stop; t < changed.size(); ++t)
+      changed[t] = t % 2U == 0U ? std::numeric_limits<f64>::infinity() : 1e-200;
+    const auto altered = regime_labels(regime_test_closes(std::move(changed)), cfg);
+    EXPECT_TRUE(std::equal(full.begin(), full.begin() + static_cast<std::ptrdiff_t>(stop + 1U), altered.begin()))
+        << "label at stop must not consume the return at stop";
+  }
+}
+
+TEST(EvalRegimeSlice, OnlineQuantilesMatchIndependentSortedPrefixOracleIncludingTies) {
+  atx::engine::eval::detail::ExpandingVolCuts cuts;
+  const std::vector<f64> values{2, 2, 2, 1, 5, 0, 3, 3, 9, 8, 7, 2, 2, 4, 6, 0, 100, 1};
+  std::vector<f64> prior;
+  for (usize t = 0; t < values.size(); ++t) {
+    if (prior.size() >= 3U) {
+      auto ordered = prior;
+      std::sort(ordered.begin(), ordered.end());
+      const auto low = ordered[(ordered.size() - 1U) / 3U];
+      const auto high = ordered[2U * (ordered.size() - 1U) / 3U];
+      const u8 expected = values[t] < low ? 0U : values[t] > high ? 2U : 1U;
+      EXPECT_EQ(cuts.label(values[t]), expected) << "prefix " << t;
+    }
+    cuts.add(values[t], t);
+    prior.push_back(values[t]);
+  }
+}
+
+TEST(EvalRegimeSlice, FlatHistoryHasCausalWarmupAndExplicitLegacyDateRankTies) {
+  const auto panel = regime_test_closes(std::vector<f64>(9, 100.0));
+  const auto legacy = regime_labels(panel, 3, kNumRegimes, RegimeSliceRule::LegacyFullSampleV1);
+  const auto none = atx::engine::eval::kNoRegime;
+  EXPECT_EQ(legacy, (std::vector<u8>{none, none, none, 0, 0, 1, 1, 2, 2}));
+  const auto causal = regime_labels(panel, 3);
+  EXPECT_EQ(causal, (std::vector<u8>{none, none, none, none, none, none, none, 1, 1}));
+  RobustnessConfig cfg; cfg.vol_window = 3; cfg.min_regime_history = 5;
+  const auto insufficient = regime_labels(panel, cfg);
+  EXPECT_TRUE(std::all_of(insufficient.begin(), insufficient.end(), [none](auto x) { return x == none; }));
+  cfg.regime_rule = RegimeSliceRule::LegacyFullSampleV1;
+  EXPECT_EQ(regime_labels(panel, cfg), legacy); // legacy does not consult the new history knob
+}
+
+TEST(EvalRegimeSlice, NonfiniteNamesAreExcludedAndMissingWindowsRecoverWithoutSyntheticZeros) {
+  const auto panel = vol_schedule_panel(std::vector<f64>(90, 0.03), 93);
+  const auto close_id = *panel.field_id("close");
+  std::vector<f64> closes, two_names;
+  for (usize t = 0; t < panel.dates(); ++t) {
+    const auto value = panel.field_cross_section(close_id, t)[0];
+    closes.push_back(value); two_names.push_back(value);
+    two_names.push_back(t % 2U == 0U ? std::numeric_limits<f64>::infinity() : 0.0);
+  }
+  const auto clean = regime_labels(panel, 5);
+  EXPECT_EQ(clean, regime_labels(regime_test_closes(std::move(two_names), 2), 5));
+  for (usize t = 40; t <= 43; ++t) closes[t] = std::numeric_limits<f64>::quiet_NaN();
+  const auto holes = regime_labels(regime_test_closes(std::move(closes)), 5);
+  EXPECT_TRUE(std::equal(clean.begin(), clean.begin() + 41, holes.begin()));
+  for (usize t = 41; t <= 49; ++t) EXPECT_EQ(holes[t], atx::engine::eval::kNoRegime);
+  EXPECT_LT(holes[50], kNumRegimes);
+}
+
+TEST(EvalRegimeSlice, UnavailableRegimesDoNotPassV2AndRecipeVersionIsObservable) {
+  const auto panel = regime_test_closes(std::vector<f64>(30, std::numeric_limits<f64>::quiet_NaN()));
+  RobustnessConfig cfg;
+  const auto labels = regime_labels(panel, cfg);
+  std::vector<f64> pnl(30);
+  for (usize t = 0; t < pnl.size(); ++t) pnl[t] = t % 2U == 0U ? 0.01 : 0.02;
+  const auto causal = robustness_verdict(pnl, labels, cfg);
+  EXPECT_FALSE(causal.is_robust); EXPECT_FALSE(causal.regime_coverage_complete);
+  EXPECT_EQ(causal.regime_observations, (std::array<usize, 3>{0, 0, 0}));
+  EXPECT_EQ(causal.regime_rule, RegimeSliceRule::ExpandingPastV2);
+  EXPECT_EQ(causal.regime_recipe, atx::engine::eval::regime_recipe_id(cfg));
+  const auto before = causal.regime_recipe;
+  ++cfg.min_regime_history;
+  EXPECT_NE(before, atx::engine::eval::regime_recipe_id(cfg));
+  cfg.regime_rule = RegimeSliceRule::LegacyFullSampleV1;
+  EXPECT_NE(before, atx::engine::eval::regime_recipe_id(cfg));
+  EXPECT_EQ(atx::engine::eval::regime_slice_rule_name(cfg.regime_rule), "legacy-full-sample-v1");
+  EXPECT_TRUE(robustness_verdict(pnl, labels, cfg).is_robust); // frozen empty-regime convention
 }
 
 // =============================================================================

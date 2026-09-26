@@ -217,8 +217,7 @@ private:
     out.reserve(static_cast<atx::usize>(n));
     const bool filter = cfg.research.robustness_gate;
     const std::vector<atx::u8> labels =
-        filter ? eval::regime_labels(visible, cfg.research.robustness_cfg.vol_window,
-                                     eval::kNumRegimes)
+        filter ? eval::regime_labels(visible, cfg.research.robustness_cfg)
                : std::vector<atx::u8>{};
     for (atx::u64 a = 0; a < n; ++a) {
       const library::AlphaId id{static_cast<atx::u32>(a)};
