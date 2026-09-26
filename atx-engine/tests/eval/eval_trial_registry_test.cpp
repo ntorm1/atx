@@ -473,7 +473,7 @@ TEST(EvalTrialRegistry, V3ScreenedTrialsCountWithoutInventedPnl) {
   EXPECT_TRUE(std::isnan(summary.n_eff));
   EXPECT_FALSE(reg->correlation());
   EXPECT_FALSE(reg->mc_max_null(16, 5));
-  EXPECT_FALSE(reg->accounting());
+  EXPECT_FALSE(reg->accounting({}));
   EXPECT_EQ(reg->size(), 3U);
   EXPECT_EQ(reg->chain_head().records, 3U);
 }
