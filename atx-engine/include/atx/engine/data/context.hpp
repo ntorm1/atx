@@ -57,6 +57,7 @@
 #include "atx/engine/data/adapt_signal.hpp"          // SignalAdmission
 #include "atx/engine/data/catalog.hpp"               // DatasetCatalog
 #include "atx/engine/data/dataset_schema.hpp"        // DateKey, Role
+#include "atx/engine/alpha/vwap_rule.hpp"
 #include "atx/engine/data/factor_model_artifact.hpp" // FactorModelArtifact
 #include "atx/engine/exec/execution_sim.hpp"         // exec::ExecutionSimulator
 #include "atx/engine/library/library.hpp"            // library::AlphaCandidate
@@ -74,10 +75,14 @@ public:
   // price name is registered AND carries Role::Price (Err otherwise).
   //   adv_windows EMPTY    => RAW lowering (Panel::create from the price columns).
   //   adv_windows NON-empty => with_datafields OHLCV augmentation (price_to_panel).
+  // Augmentation requires raw_close or an explicit Raw close basis under V2;
+  // V1 is available for legacy reproduction. Empty-window lowering is unchanged.
   // The catalog is BORROWED for the context's lifetime (must outlive *this).
   [[nodiscard]] static atx::core::Result<DataContext>
   create(const DatasetCatalog &catalog, std::string price_name,
-         std::vector<atx::u16> adv_windows = {});
+         std::vector<atx::u16> adv_windows = {},
+         alpha::VwapRule vwap_rule = alpha::VwapRule::RawDailyCloseV2,
+         alpha::ClosePriceBasis close_basis = alpha::ClosePriceBasis::Unknown);
 
   // Move-only (owns move-only SignalAdmissions + a cached Panel). The move ops NULL the
   // source's catalog_ borrow so a moved-from DataContext fails LOUDLY (every accessor
@@ -126,9 +131,10 @@ public:
 
 private:
   DataContext(const DatasetCatalog &catalog, std::string price_name,
-              std::vector<atx::u16> adv_windows) noexcept
+              std::vector<atx::u16> adv_windows, alpha::VwapRule vwap_rule,
+              alpha::ClosePriceBasis close_basis) noexcept
       : catalog_{&catalog}, price_name_{std::move(price_name)},
-        adv_windows_{std::move(adv_windows)} {}
+        adv_windows_{std::move(adv_windows)}, vwap_rule_{vwap_rule}, close_basis_{close_basis} {}
 
   // Names of every registered dataset whose role == `role`, ascending (catalog order).
   // Returns Err if any catalog role_of() probe fails (propagated, never silently skipped).
@@ -137,6 +143,8 @@ private:
   const DatasetCatalog *catalog_; // borrowed; must outlive *this (nulled on move-from)
   std::string price_name_;
   std::vector<atx::u16> adv_windows_; // empty => raw lowering
+  alpha::VwapRule vwap_rule_;
+  alpha::ClosePriceBasis close_basis_;
 
   std::optional<alpha::Panel> panel_cache_;            // lazily built by price_panel()
   std::optional<FactorModelArtifact> factor_artifact_; // set via set_factor_model

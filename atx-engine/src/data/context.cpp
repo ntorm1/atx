@@ -39,7 +39,8 @@ namespace {
 // ===========================================================================
 DataContext::DataContext(DataContext &&other) noexcept
     : catalog_{std::exchange(other.catalog_, nullptr)}, price_name_{std::move(other.price_name_)},
-      adv_windows_{std::move(other.adv_windows_)}, panel_cache_{std::move(other.panel_cache_)},
+      adv_windows_{std::move(other.adv_windows_)}, vwap_rule_{other.vwap_rule_},
+      close_basis_{other.close_basis_}, panel_cache_{std::move(other.panel_cache_)},
       factor_artifact_{std::move(other.factor_artifact_)},
       factor_cache_{std::move(other.factor_cache_)}, admissions_{std::move(other.admissions_)},
       flat_candidates_{std::move(other.flat_candidates_)}, signals_built_{other.signals_built_},
@@ -50,6 +51,8 @@ DataContext &DataContext::operator=(DataContext &&other) noexcept {
     catalog_ = std::exchange(other.catalog_, nullptr);
     price_name_ = std::move(other.price_name_);
     adv_windows_ = std::move(other.adv_windows_);
+    vwap_rule_ = other.vwap_rule_;
+    close_basis_ = other.close_basis_;
     panel_cache_ = std::move(other.panel_cache_);
     factor_artifact_ = std::move(other.factor_artifact_);
     factor_cache_ = std::move(other.factor_cache_);
@@ -66,13 +69,16 @@ DataContext &DataContext::operator=(DataContext &&other) noexcept {
 // ===========================================================================
 atx::core::Result<DataContext> DataContext::create(const DatasetCatalog &catalog,
                                                    std::string price_name,
-                                                   std::vector<atx::u16> adv_windows) {
+                                                   std::vector<atx::u16> adv_windows,
+                                                   alpha::VwapRule vwap_rule,
+                                                   alpha::ClosePriceBasis close_basis) {
   ATX_TRY(const auto role, catalog.role_of(price_name));
   if (role != Role::Price) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "DataContext::create: dataset '" + price_name + "' is not Role::Price");
   }
-  return atx::core::Ok(DataContext{catalog, std::move(price_name), std::move(adv_windows)});
+  return atx::core::Ok(DataContext{catalog, std::move(price_name), std::move(adv_windows),
+                                  vwap_rule, close_basis});
 }
 
 // ===========================================================================
@@ -134,7 +140,8 @@ atx::core::Result<std::reference_wrapper<const alpha::Panel>> DataContext::price
                                  std::move(cols), std::move(mask)));
     base = std::move(p);
   } else {
-    ATX_TRY(alpha::Panel p, price_to_panel(price, std::span<const atx::u16>{adv_windows_}));
+    ATX_TRY(alpha::Panel p, price_to_panel(price, std::span<const atx::u16>{adv_windows_},
+                                          vwap_rule_, close_basis_));
     base = std::move(p);
   }
 
