@@ -1,7 +1,8 @@
 # Optional cash-claim runner adapter
 
 Source: `80ebf709`, corrected decision-clock support and early admission in
-`5e1fa849`. Postimplementation fixtures: `a86b274d`. This packet changes only
+`5e1fa849`, and aggregate diagnostic admission in `5e6dcb75`.
+Postimplementation fixtures: `a86b274d` and `8a9f254c`. This packet changes only
 `atx-impl/src/strategy_runner.{hpp,cpp}` and the existing runner fixture TU.
 Root owns the engine dependency imports, CMake, compilation and real-data runs.
 
@@ -23,7 +24,13 @@ only after both effective-by and availability clocks are strictly before that
 decision. Claim valuation remains the engine-validated first eligible mark.
 The immutable price, presence and member artifacts are unchanged; prior time
 series history remains available. Extra mask and claim-output working memory is
-charged explicitly before loading role payloads.
+charged explicitly before loading role payloads. The initial event-only reserve
+missed retained orientation-summary multiplicity; independent review identified
+that defect before compilation. The fix charges the entire run on each role:
+`2*C + 2*roles + 2` summary slots, each with 8 KiB fixed plus 8 KiB per event,
+times four for retained JSON, copies and serialization overlap. Counts are
+bounded at C<=64, events<=256 and roles<=3 before this arithmetic. This is a
+conservative declared admission envelope, not a measured RSS guarantee.
 
 Enabled recipes use `atx.dsl-combined-execution/cash-claims-v2`, bind the exact
 event-file SHA, archive SHA and decision-support policy, and retain the admitted
@@ -38,7 +45,7 @@ cash-claim CSV. Payment timing stays unknown; no settlement or liquidation is
 invented. The engine's research share-equivalent conversion is explicitly
 distinguished from an observed broker entitlement ledger.
 
-The three new source fixtures cover:
+The four new source fixtures cover:
 
 - A publication between mark and decision: retirement affects the current
   decision's fixed contribution denominator; valuation occurs at the next mark.
@@ -50,6 +57,9 @@ The three new source fixtures cover:
 - Missing/mismatched external pins, mismatched archive, duplicate/unknown keys,
   zero evidence pins, unsupported basis, overlong identity and equality at the
   recognition clock fail before any output directory or trial is created.
+- A two-candidate, 96-event report exceeds the 64 MiB configured envelope before
+  payload loading. The fixture removes its synthetic close payload and checks
+  the specific aggregate-summary refusal, requiring no large allocation.
 
 `git diff --check` passed. No compiler, fixture, benchmark or real-payload run was
 performed in this lane. Runtime approval is pending the root's focused batch;
