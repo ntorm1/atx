@@ -800,8 +800,11 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
             eval::TrialMeta meta;
             meta.window_end = train_len - 1U;
             meta.sample = eval::TrialSample::InSample;
-            meta.family_tag = eval::trial_tag(trial_family_of(row.origin));
-            meta.theme_tag = eval::trial_tag(trial_theme_of(row.origin));
+            // Equivalent seeds/search outputs share one screen identity. Their
+            // row origins remain in candidates.csv; durable metadata is a pure
+            // function of that identity, independent of discovery order.
+            meta.family_tag = eval::trial_tag("ic-screened");
+            meta.theme_tag = row.canonical_hash;
             ATX_TRY_VOID(registry.record_screened(eval::TrialKind::MinerExpr, row.config_hash,
                 meta, eval::trial_tag(out.ic_screen_recipe), eval::trial_tag(reason)));
             continue;

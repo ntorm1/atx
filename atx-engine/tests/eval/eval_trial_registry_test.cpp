@@ -570,4 +570,55 @@ TEST(EvalTrialRegistry, V3MidLogChecksumFailureDoesNotDeleteTrials) {
   EXPECT_EQ(std::filesystem::file_size(path), size);
 }
 
+TEST(EvalTrialRegistry, V3DuplicateMetadataCannotChangeSampleOrWindow) {
+  TrialRegistryConfig cfg;
+  cfg.pnl_len = 32; cfg.sketch_dim = 16; cfg.format = TrialLogFormat::V3;
+  TrialMeta meta;
+  meta.window_end = 31; meta.sample = TrialSample::InSample;
+  auto reg = TrialRegistry::in_memory(cfg);
+  ASSERT_TRUE(reg);
+  ASSERT_TRUE(reg->record_screened(TrialKind::MinerExpr, 1, meta, 10, 20));
+  const auto anchor = reg->chain_head();
+  for (int field = 0; field < 6; ++field) {
+    auto changed = meta;
+    switch (field) {
+    case 0: changed.sample = TrialSample::OutOfSample; break;
+    case 1: changed.window_start = 1; break;
+    case 2: changed.window_end = 30; break;
+    case 3: changed.fidelity = 1; break;
+    case 4: changed.family_tag = 3; break;
+    case 5: changed.theme_tag = 4; break;
+    }
+    EXPECT_FALSE(reg->record_screened(TrialKind::MinerExpr, 1, changed, 10, 20));
+    EXPECT_EQ(reg->chain_head(), anchor);
+  }
+  EXPECT_EQ(reg->summary().n_in_sample, 1U);
+  EXPECT_EQ(reg->summary().n_out_of_sample, 0U);
+
+  // Append a correctly checksummed duplicate from a separate valid log. Its
+  // changed sample must be rejected during replay, not silently deduplicated.
+  const auto first_path = fresh_path("v3_duplicate_meta_first");
+  const auto changed_path = fresh_path("v3_duplicate_meta_changed");
+  {
+    auto first = TrialRegistry::open(first_path, cfg);
+    auto changed = TrialRegistry::open(changed_path, cfg);
+    ASSERT_TRUE(first); ASSERT_TRUE(changed);
+    ASSERT_TRUE(first->record_screened(TrialKind::MinerExpr, 1, meta, 10, 20));
+    meta.sample = TrialSample::OutOfSample;
+    ASSERT_TRUE(changed->record_screened(TrialKind::MinerExpr, 1, meta, 10, 20));
+  }
+  {
+    std::ifstream source(changed_path, std::ios::binary);
+    source.seekg(48);
+    std::vector<char> record(96);
+    source.read(record.data(), static_cast<std::streamsize>(record.size()));
+    ASSERT_TRUE(source);
+    std::ofstream target(first_path, std::ios::binary | std::ios::app);
+    target.write(record.data(), static_cast<std::streamsize>(record.size()));
+  }
+  const auto size = std::filesystem::file_size(first_path);
+  EXPECT_FALSE(TrialRegistry::open(first_path, cfg));
+  EXPECT_EQ(std::filesystem::file_size(first_path), size);
+}
+
 } // namespace atx_test_l4_mtest_trial_registry

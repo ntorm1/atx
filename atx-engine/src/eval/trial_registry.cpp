@@ -842,6 +842,7 @@ struct TrialRegistry::Impl {
           return v.id == info.id;
         });
         if (prior->observation != info.observation ||
+            prior->meta != info.meta ||
             prior->screen_rule_tag != info.screen_rule_tag ||
             prior->screen_reason_tag != info.screen_reason_tag) {
           return Err(ErrorCode::ParseError, "TrialRegistry: conflicting V3 observation identity");
@@ -960,8 +961,8 @@ struct TrialRegistry::Impl {
         const auto prior = std::find_if(infos.begin(), infos.end(), [&](const TrialInfo &v) {
           return v.id == id;
         });
-        if (prior->observation != TrialObservation::FullPnl)
-          return Err(ErrorCode::InvalidArgument, "TrialRegistry: identity already belongs to a screened trial");
+        if (prior->observation != TrialObservation::FullPnl || prior->meta != meta)
+          return Err(ErrorCode::InvalidArgument, "TrialRegistry: V3 identity has conflicting observation metadata");
       }
       return atx::core::Ok(RecordOutcome{id, false});
     }
@@ -997,9 +998,10 @@ struct TrialRegistry::Impl {
         return v.id == id;
       });
       if (prior->observation != TrialObservation::IcScreened ||
+          prior->meta != meta ||
           prior->screen_rule_tag != rule || prior->screen_reason_tag != reason)
         return Err(ErrorCode::InvalidArgument,
-                   "TrialRegistry: changed screening recipe/reason requires a distinct config hash");
+                   "TrialRegistry: changed screening metadata/recipe/reason requires a distinct config hash");
       return atx::core::Ok(RecordOutcome{id, false});
     }
     TrialInfo info;
