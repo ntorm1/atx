@@ -170,10 +170,10 @@ Status validate_limits(const TrialEpochLimits &l) {
         return Err(ErrorCode::InvalidArgument, "trial epoch: invalid resource limits");
     return Ok();
 }
-Status room(const State &s, usize encoded_bytes, const TrialEpochLimits &l) {
+Status room(const State &s, usize encoded_bytes, const TrialEpochLimits &l, usize held_bytes = 0) {
     const auto retained = state_bytes(s);
-    if (retained > l.max_working_bytes ||
-        encoded_bytes > (l.max_working_bytes - retained) / 64U)
+    if (retained > l.max_working_bytes || held_bytes > l.max_working_bytes - retained ||
+        encoded_bytes > (l.max_working_bytes - retained - held_bytes) / 64U)
         return Err(ErrorCode::OutOfRange, "trial epoch: working-memory admission exceeded");
     return Ok();
 }
@@ -292,7 +292,8 @@ Status apply(State &s, const Json &event, const std::string &hash,
     s.head = hash;
     return Ok();
 }
-Result<State> scan(std::FILE *f, const std::string &epoch, const TrialEpochLimits &limits) {
+Result<State> scan(std::FILE *f, const std::string &epoch, const TrialEpochLimits &limits,
+                   usize held_bytes) {
     if (std::fseek(f, 0, SEEK_END) != 0) return Err(ErrorCode::IoError, "trial epoch: seek failed");
     const auto extent = std::ftell(f);
     if (extent < 0 || static_cast<usize>(extent) > limits.max_file_bytes)
@@ -313,7 +314,7 @@ Result<State> scan(std::FILE *f, const std::string &epoch, const TrialEpochLimit
         }
         if (!length || length > limits.max_record_bytes || length > bytes - s.file_bytes - 81U)
             return Err(ErrorCode::ParseError, "trial epoch: incomplete/oversized frame; preserved");
-        ATX_TRY_VOID(room(s, length, limits));
+        ATX_TRY_VOID(room(s, length, limits, held_bytes));
         std::string body(length, '\0');
         std::array<char, 65> trailer{};
         ATX_TRY_VOID(read(f, body.data(), body.size()));
@@ -362,7 +363,9 @@ struct TrialEpochCatalog::Impl {
 
     Status refresh() {
         if (poisoned) return Err(ErrorCode::IoError, "trial epoch: failed write; reopen and inspect");
-        ATX_TRY(auto next, scan(file.get(), epoch, limits));
+        // Preserve the prior acknowledged snapshot on read/anchor error; its
+        // storage coexists with the replay index and must be charged as well.
+        ATX_TRY(auto next, scan(file.get(), epoch, limits, state_bytes(state)));
         if (next.head != expected_head)
             return Err(ErrorCode::InvalidArgument, "trial epoch: external anchor/head mismatch");
         state = std::move(next);
