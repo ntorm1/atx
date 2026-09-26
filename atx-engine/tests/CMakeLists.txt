@@ -292,6 +292,8 @@ if(ATX_USE_PCH)
 endif()
 
 add_executable(atx-engine-w1-eval-tests EXCLUDE_FROM_ALL
+    eval/eval_cpcv_test.cpp
+    eval/eval_cpcv_date_test.cpp
     eval/eval_pbo_test.cpp
     eval/eval_breadth_test.cpp
     eval/eval_regime_slice_test.cpp
