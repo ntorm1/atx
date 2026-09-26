@@ -120,6 +120,50 @@ TEST(EquityIcPrereg, RetainedLineageRequiresExactConfigurationAndNeverReducesMea
     EXPECT_FALSE(impl::parse_equity_ic_prereg(input.dump()));
 }
 
+TEST(EquityIcPrereg, E2KeepsPriorFamilyProofAcrossDisplayAliasChangeWithoutDiscountingMeasuredN) {
+    auto input = declaration();
+    const auto prior = impl::parse_equity_ic_prereg(input.dump());
+    ASSERT_TRUE(prior);
+    input["families"][0]["id"] = "renamed_id";
+    input["families"][0]["name"] = "renamed_display";
+    input["families"][0]["theme"] = "renamed_theme";
+    input["families"][0]["lineage"] = Json{{"kind", "retained"},
+        {"prereg_sha256", prior->file_sha256},
+        {"configuration_sha256", prior->families[0].configuration_sha256},
+        {"trial_id", "prior-epoch-attempt"}};
+    input["declared_n"] = 0;
+    EXPECT_FALSE(impl::parse_equity_ic_prereg(input.dump())); // explicit legacy unchanged
+    const auto parsed = impl::parse_equity_ic_prereg(input.dump(),
+        impl::PreregLineageRule::CatalogVerifiedCellsE2);
+    ASSERT_TRUE(parsed) << parsed.error().message();
+    ASSERT_TRUE(parsed->families[0].lineage);
+    EXPECT_EQ(parsed->families[0].lineage->configuration_sha256,
+              prior->families[0].configuration_sha256);
+    EXPECT_NE(parsed->families[0].configuration_sha256, prior->families[0].configuration_sha256);
+    EXPECT_EQ(parsed->measured_n, 8);
+    EXPECT_EQ(parsed->declared_n, 0);
+    // This parse does not verify historical lineage; the mandatory catalog call does.
+}
+
+TEST(EquityIcPrereg, EpochSelectorRequiresRuntimeFileExplicitAnchorAndSeparateLegacyMode) {
+    bool parsed = false;
+    auto cfg = cli_config({"--ic-prereg-file", "fixture.json", "--ic-prereg-sha256",
+        std::string(64, 'a'), "--ic-trial-accounting-rule", "epoch-e2-v1",
+        "--ic-epoch-catalog", "epoch.bin", "--ic-epoch-anchor", std::string(64, '0')}, parsed);
+    ASSERT_TRUE(parsed);
+    EXPECT_TRUE(impl::validate_ic_epoch_flags(cfg));
+    cfg.equity_ic_epoch_anchor.clear();
+    EXPECT_FALSE(impl::validate_ic_epoch_flags(cfg));
+    EXPECT_FALSE(impl::run_equity_ic(cfg));
+    cfg.equity_ic_epoch_anchor.assign(64, '0');
+    cfg.equity_ic_trial_accounting_rule = "legacy-ledger-v1";
+    EXPECT_FALSE(impl::validate_ic_epoch_flags(cfg));
+    cfg.equity_ic_trial_accounting_rule = "epoch-e2-v1";
+    cfg.equity_ic_prereg_file.clear();
+    cfg.equity_ic_prereg_sha256.clear();
+    EXPECT_FALSE(impl::validate_ic_epoch_flags(cfg));
+}
+
 TEST(EquityIcPrereg, ExactFileHashRefusesChangedBytes) {
     namespace fs = std::filesystem;
     static std::atomic<unsigned> sequence{};

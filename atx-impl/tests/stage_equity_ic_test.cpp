@@ -26,6 +26,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/sha256.hpp"
 #include "atx/engine/data/orats_history.hpp"
+#include "atx/engine/eval/trial_epoch.hpp"
 #include "panel_artifact.hpp"
 #include "prereg.hpp"
 #include "stage_equity_baseline.hpp"
@@ -696,4 +697,122 @@ TEST_F(StageEquityIc, RuntimeFamilyVmFailureStillHasPreregistrationAndFailedTerm
     const auto failure_sha = atx::core::sha256_hex(failure);
     ASSERT_TRUE(failure_sha);
     EXPECT_EQ(failed.at("result").at("failure_sha256"), *failure_sha);
+}
+
+TEST_F(StageEquityIc, EpochCountsExactRetainedAliasAndBindsReservationManifestTerminalSeparately) {
+    ASSERT_NO_FATAL_FAILURE(build_baseline(40, "2013-05-14"));
+    Json declaration{{"schema", "atx-equity-ic-prereg-v1"}, {"epoch", "synthetic-E2"},
+        {"checkpoint", 1003}, {"declared_n", 4},
+        {"forward_variants", {"DropMissingForward", "IncludeAuditedTerminalV1"}},
+        {"restrictions", {"full", "_ex34"}},
+        {"families", Json::array({Json{{"id", "family"}, {"name", "original_alias"},
+            {"dsl", "close"}, {"sign", 1}, {"theme", "synthetic"},
+            {"horizons", {5}}, {"lineage", {{"kind", "new"}}}}})}};
+    const auto original = impl::parse_equity_ic_prereg(declaration.dump());
+    ASSERT_TRUE(original);
+    auto cfg = ic_config("epoch_first", "2013-05-14");
+    const auto prereg_file = root / "epoch-prereg.json";
+    const auto publish = [&]() {
+        const auto text = declaration.dump();
+        { std::ofstream out(prereg_file, std::ios::binary); out << text; }
+        const auto sha = atx::core::sha256_hex(text);
+        EXPECT_TRUE(sha);
+        if (sha) cfg.equity_ic_prereg_sha256 = *sha;
+    };
+    cfg.equity_ic_prereg_file = prereg_file.string();
+    cfg.equity_ic_trial_accounting_rule = "epoch-e2-v1";
+    cfg.equity_ic_epoch_catalog = (root / "epoch.bin").string();
+    cfg.equity_ic_epoch_anchor.assign(64, '0');
+    publish();
+    const auto first = impl::run_equity_ic(cfg);
+    ASSERT_TRUE(first) << first.error().message();
+    const auto manifest_text = contents(root / "epoch_first" / "manifest.json");
+    const auto manifest = Json::parse(manifest_text);
+    const auto receipt = Json::parse(contents(root / "epoch_first" / "epoch-reservation.json"));
+    const auto anchor = Json::parse(contents(root / "epoch_first" / "epoch-anchor.json"));
+    EXPECT_EQ(manifest.at("epoch_catalog"), receipt);
+    EXPECT_NE(receipt.at("reservation_head_sha256"), anchor.at("head_sha256"));
+    const auto manifest_sha = atx::core::sha256_hex(manifest_text);
+    ASSERT_TRUE(manifest_sha);
+    EXPECT_EQ(anchor.at("terminal_result_sha256"), *manifest_sha);
+    EXPECT_EQ(anchor.at("counts").at("known_unique_cells"), 4);
+    EXPECT_EQ(anchor.at("counts").at("completed"), 1);
+    EXPECT_FALSE(fs::exists(root / "epoch_first" / ".pending"));
+    declaration["checkpoint"] = 1004; // metadata-only checkpoint/aliases do not create numerical cells
+    declaration["families"][0]["id"] = "renamed_id";
+    declaration["families"][0]["name"] = "renamed_alias";
+    declaration["families"][0]["theme"] = "renamed_theme";
+    declaration["families"][0]["lineage"] = Json{{"kind", "retained"},
+        {"prereg_sha256", original->file_sha256},
+        {"configuration_sha256", original->families[0].configuration_sha256},
+        {"trial_id", receipt.at("trial_id")}};
+    declaration["declared_n"] = 0;
+    publish();
+    cfg.out = (root / "epoch_retained").string();
+    cfg.equity_ic_epoch_anchor = anchor.at("head_sha256").get<std::string>();
+    const auto retained = impl::run_equity_ic(cfg);
+    ASSERT_TRUE(retained) << retained.error().message();
+    const auto second = Json::parse(contents(root / "epoch_retained" / "epoch-anchor.json"));
+    EXPECT_EQ(second.at("counts").at("known_unique_cells"), 4);
+    EXPECT_EQ(second.at("counts").at("measured_declarations"), 8);
+    EXPECT_EQ(second.at("counts").at("verified_retained_cells"), 4);
+    EXPECT_EQ(second.at("counts").at("completed"), 2);
+    const auto second_manifest = Json::parse(contents(root / "epoch_retained" / "manifest.json"));
+    EXPECT_EQ(second_manifest.at("epoch_catalog").at("new_unique_cells"), 0);
+    // Changed numerical sign cannot borrow the old family's proof.
+    declaration["families"][0]["sign"] = -1;
+    publish();
+    cfg.out = (root / "epoch_bad_lineage").string();
+    cfg.equity_ic_epoch_anchor = second.at("head_sha256").get<std::string>();
+    const auto bytes = fs::file_size(cfg.equity_ic_epoch_catalog);
+    EXPECT_FALSE(impl::run_equity_ic(cfg));
+    EXPECT_EQ(fs::file_size(cfg.equity_ic_epoch_catalog), bytes);
+    EXPECT_FALSE(fs::exists(root / "epoch_bad_lineage" / "epoch-reservation.json"));
+}
+
+TEST_F(StageEquityIc, EpochReservationSurvivesLegacyPreAppendAndFamilyVmFailures) {
+    ASSERT_NO_FATAL_FAILURE(build_baseline());
+    const Json declaration{{"schema", "atx-equity-ic-prereg-v1"}, {"epoch", "synthetic-E2-failure"},
+        {"checkpoint", 1005}, {"declared_n", 4},
+        {"forward_variants", {"DropMissingForward", "IncludeAuditedTerminalV1"}},
+        {"restrictions", {"full", "_ex34"}},
+        {"families", Json::array({Json{{"id", "too_long"}, {"name", "too_long"},
+            {"dsl", "delay(close, 10000)"}, {"sign", 1}, {"theme", "synthetic"},
+            {"horizons", {5}}, {"lineage", {{"kind", "new"}}}}})}};
+    const auto text = declaration.dump();
+    const auto file = root / "failure-E2-prereg.json";
+    { std::ofstream out(file, std::ios::binary); out << text; }
+    const auto sha = atx::core::sha256_hex(text);
+    ASSERT_TRUE(sha);
+    std::string anchor(64, '0');
+    for (const bool pre_append_failure : {true, false}) {
+        const std::string out_name = pre_append_failure ? "e2_bad_ledger" : "e2_bad_vm";
+        auto cfg = ic_config(out_name);
+        cfg.equity_ic_prereg_file = file.string();
+        cfg.equity_ic_prereg_sha256 = *sha;
+        cfg.equity_ic_trial_accounting_rule = "epoch-e2-v1";
+        cfg.equity_ic_epoch_catalog = (root / "failure-epoch.bin").string();
+        cfg.equity_ic_epoch_anchor = anchor;
+        if (pre_append_failure) {
+            cfg.equity_trial_ledger = (root / "unanchored-ledger.jsonl").string();
+            std::ofstream broken(cfg.equity_trial_ledger, std::ios::binary);
+            broken << "invalid-unanchored-ledger\n";
+        }
+        const auto result = impl::run_equity_ic(cfg);
+        ASSERT_FALSE(result);
+        if (pre_append_failure) EXPECT_EQ(result.error().message().find("lookback"), std::string::npos);
+        if (!pre_append_failure) EXPECT_NE(result.error().message().find("lookback"), std::string::npos);
+        const auto receipt = Json::parse(contents(root / out_name / "epoch-anchor.json"));
+        anchor = receipt.at("head_sha256").get<std::string>();
+        EXPECT_EQ(receipt.at("counts").at("known_unique_cells"), 4);
+        EXPECT_EQ(receipt.at("counts").at("incomplete"), 0);
+        EXPECT_EQ(receipt.at("counts").at("failed"), pre_append_failure ? 1 : 2);
+        EXPECT_TRUE(fs::exists(root / out_name / ".pending"));
+        EXPECT_FALSE(fs::exists(root / out_name / "manifest.json"));
+    }
+    auto catalog = atx::engine::eval::TrialEpochCatalog::open((root / "failure-epoch.bin").string(),
+        "synthetic-E2-failure", anchor);
+    ASSERT_TRUE(catalog) << catalog.error().message();
+    EXPECT_EQ(catalog->counts().attempts, 2U);
+    EXPECT_EQ(catalog->counts().declared_cells, 8U);
 }
