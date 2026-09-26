@@ -157,6 +157,20 @@ TEST_F(DataHistoryPanelFixedUnion, NamedFutureOrMixedSourceRefusedBeforeAnyAttac
   EXPECT_NE(result.error().message().find("before mapping"), std::string::npos);
 }
 
+TEST_F(DataHistoryPanelFixedUnion, UniverseSizeAndBuildDateNamesDoNotAssertPayloadEra) {
+  const auto start = day_nanos(15707);
+  const auto source = root / "t3000" / "build-20260925";
+  ASSERT_TRUE(fs::create_directories(source));
+  ASSERT_NO_FATAL_FAILURE(write_day(source, "a.seg", start, {"10"}, {10}, {1}, {1e8}));
+  const auto result = capture_history_sources(source.string(), {start, start + day_nanos(1)});
+  ASSERT_TRUE(result) << result.error().message();
+  EXPECT_EQ((*result)->sessions(), (std::vector<atx::i64>{start}));
+  { std::ofstream file(source / "2020-01-02.seg", std::ios::binary); file << "never attach"; }
+  const auto forbidden = capture_history_sources(source.string(), {start, start + day_nanos(1)});
+  ASSERT_FALSE(forbidden);
+  EXPECT_NE(forbidden.error().message().find("before mapping"), std::string::npos);
+}
+
 TEST(DataHistoryPanel, DeterministicDigestAndCanonicalFields) {
   const fs::path dir = fs::temp_directory_path() / "atx_hist_panel";
   fs::remove_all(dir);

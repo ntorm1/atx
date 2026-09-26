@@ -49,19 +49,32 @@ namespace {
 constexpr atx::i64 kHistorySeal = 1'577'836'800'000'000'000LL;
 constexpr atx::u64 kSourceMappingLimit = 256ULL * 1024 * 1024;
 
-bool has_unsealed_date_token(std::string_view name) {
-  for (atx::usize i = 0; i < name.size();) {
-    if (name[i] < '0' || name[i] > '9') { ++i; continue; }
-    const auto begin = i;
-    while (i < name.size() && name[i] >= '0' && name[i] <= '9') ++i;
-    const auto length = i - begin;
-    // Named years (including range endpoints) and compact YYYYMMDD dates.
-    if (length != 4 && length != 8) continue;
-    int year{};
-    const auto parsed = std::from_chars(name.data() + begin, name.data() + begin + 4, year);
-    if (parsed.ec == std::errc{} && year >= 2020) return true;
+bool has_unsealed_calendar_name(std::string_view name, bool source_filename) {
+  // Only recognizable source calendar names, never arbitrary numeric tokens in
+  // t3000 universe labels, build-20260925 directories or other provenance names.
+  if (source_filename) {
+    constexpr std::array<std::string_view, 6> prefixes{
+        "prices-", "prices_", "orats-", "orats_", "history-", "history_"};
+    for (auto prefix : prefixes) if (name.starts_with(prefix)) { name.remove_prefix(prefix.size()); break; }
   }
-  return false;
+  const auto number = [](std::string_view value) {
+    int result{};
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+    return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() ? result : -1;
+  };
+  if (name.size() == 4) return number(name) >= 2020; // exact year component
+  if (name.size() == 9 && (name[4] == '-' || name[4] == '_')) {
+    const auto first = number(name.substr(0, 4)), last = number(name.substr(5, 4));
+    return first >= 1900 && last >= first && last >= 2020; // explicit year range
+  }
+  std::string_view year, month, day;
+  if (name.size() == 8) {
+    year = name.substr(0, 4); month = name.substr(4, 2); day = name.substr(6, 2);
+  } else if (name.size() == 10 && name[4] == '-' && name[7] == '-') {
+    year = name.substr(0, 4); month = name.substr(5, 2); day = name.substr(8, 2);
+  } else return false;
+  return number(year) >= 2020 && number(month) >= 1 && number(month) <= 12 &&
+      number(day) >= 1 && number(day) <= 31;
 }
 
 core::Result<std::vector<std::string>> bounded_history_paths(const std::string& directory) {
@@ -69,7 +82,7 @@ core::Result<std::vector<std::string>> bounded_history_paths(const std::string& 
   if (directory.size() > 4096)
     return core::Err(core::ErrorCode::InvalidArgument, "history: source directory bound");
   for (const auto& component : std::filesystem::path(directory))
-    if (has_unsealed_date_token(component.string()))
+    if (has_unsealed_calendar_name(component.string(), false))
       return core::Err(core::ErrorCode::InvalidArgument, "history: named unsealed/mixed-era source refused before mapping");
   std::filesystem::directory_iterator it(directory, ec), end;
   for (; !ec && it != end; it.increment(ec)) {
@@ -77,7 +90,7 @@ core::Result<std::vector<std::string>> bounded_history_paths(const std::string& 
     if (e.path().extension() != ".seg") continue;
     if (paths.size() == 10000 || e.path().string().size() > 4096)
       return core::Err(core::ErrorCode::InvalidArgument, "history: source file/path bound");
-    if (has_unsealed_date_token(e.path().filename().string()))
+    if (has_unsealed_calendar_name(e.path().stem().string(), true))
       return core::Err(core::ErrorCode::InvalidArgument, "history: named unsealed/mixed-era source refused before mapping");
     path_bytes += e.path().string().size();
     if (path_bytes > 8ULL * 1024 * 1024)

@@ -99,8 +99,10 @@ Root and independent review identified a reopened-date `lower_bound(end)` cell
 addressing bug and an O(chunks * all source bytes) scan. The corrected producer
 captures one immutable `HistorySourceIndex` and passes it to every chunk. A
 metadata-only handle read admits header/time-axis bounds before payload mapping;
-all source names are checked first, rejecting explicit 2020+ years or mixed-era
-range names. All axes must be positive, strictly increasing and before 2020.
+all source names are checked first, rejecting recognizable explicit 2020+
+calendar names or mixed-era source ranges. Universe sizes such as `t3000` and
+provenance names such as `build-20260925` make no payload-era assertion and are
+not rejected. Unknown names still undergo bounded time-axis admission. All axes must be positive, strictly increasing and before 2020.
 This is a filename/axis seal check, not a claim of historic publication knowledge.
 
 Only files with an actual session in the complete output window receive a full
@@ -118,10 +120,10 @@ ingestion/preparation receipts are revalidated by the existing final source
 binding. The manifest remains last. Metadata scans occur once at capture and
 once at publication; chunk work hashes only intersecting source payloads.
 
-Three additional postimplementation synthetic cases cover an equal-sized,
+Four additional postimplementation synthetic cases cover an equal-sized,
 valid-CRC source replacement moving a date beyond the captured axis; changed
 prices under unchanged axes; corrupt disjoint payloads skipped by earlier
 chunks; later actual consumption rejecting corruption; new/re-dated final source
-entries; and named mixed-era refusal before attachment. **Twelve new owning D6
+entries; and named mixed-era refusal before attachment. **Thirteen new owning D6
 checks total are prepared, still uncompiled/unrun.** No scale timing or RSS claim
 is made. Generic legacy history/panel behavior remains on its existing path.
