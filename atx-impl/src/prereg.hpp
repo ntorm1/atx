@@ -2,12 +2,20 @@
 
 #include <string>
 #include <string_view>
+#include <optional>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
 namespace atx::impl {
+
+enum class PreregLineageRule { LegacySameFamilyV1, CatalogVerifiedCellsE2 };
+struct PreregLineageReference {
+    std::string prereg_sha256;
+    std::string configuration_sha256;
+    std::string trial_id;
+};
 
 // Runtime family recipes use the existing two forward variants and two restrictions.
 // A negative sign multiplies the evaluated DSL exactly once. No sign is inferred.
@@ -20,6 +28,7 @@ struct PreregFamily {
     std::vector<atx::usize> horizons;
     bool retained{};
     std::string configuration_sha256;
+    std::optional<PreregLineageReference> lineage{};
 };
 
 struct EquityIcPrereg {
@@ -39,9 +48,11 @@ struct EquityIcPrereg {
 
 // Strict bounded JSON; unknown/duplicate keys, duplicate configurations, malformed
 // lineage, inconsistent declared N and unsupported recipes are rejected before VM work.
-[[nodiscard]] atx::core::Result<EquityIcPrereg> parse_equity_ic_prereg(std::string_view text);
+[[nodiscard]] atx::core::Result<EquityIcPrereg> parse_equity_ic_prereg(std::string_view text,
+    PreregLineageRule lineage_rule = PreregLineageRule::LegacySameFamilyV1);
 // Hashes the exact bytes read, then parses those same bytes (no second file read).
 [[nodiscard]] atx::core::Result<EquityIcPrereg> load_equity_ic_prereg(
-    const std::string &path, std::string_view expected_file_sha256);
+    const std::string &path, std::string_view expected_file_sha256,
+    PreregLineageRule lineage_rule = PreregLineageRule::LegacySameFamilyV1);
 
 } // namespace atx::impl

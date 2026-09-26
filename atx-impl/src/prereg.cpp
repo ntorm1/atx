@@ -71,7 +71,10 @@ atx::i64 integer(const Json &value, atx::i64 low, atx::i64 high) {
 }
 } // namespace
 
-Result<EquityIcPrereg> parse_equity_ic_prereg(std::string_view source) {
+Result<EquityIcPrereg> parse_equity_ic_prereg(std::string_view source, PreregLineageRule lineage_rule) {
+    if (lineage_rule != PreregLineageRule::LegacySameFamilyV1 &&
+        lineage_rule != PreregLineageRule::CatalogVerifiedCellsE2)
+        return Err(ErrorCode::InvalidArgument, "prereg: unknown lineage rule");
     if (source.empty() || source.size() > kMaxBytes) {
         return Err(ErrorCode::OutOfRange, "prereg: file must contain 1..1048576 bytes");
     }
@@ -168,10 +171,17 @@ Result<EquityIcPrereg> parse_equity_ic_prereg(std::string_view source) {
             } else {
                 keys(lineage, {"kind", "prereg_sha256", "configuration_sha256", "trial_id"});
                 require(lineage.at("kind") == "retained", "unknown lineage kind");
-                require(digest(text(lineage.at("prereg_sha256"), 64)), "invalid lineage digest");
-                require(text(lineage.at("configuration_sha256"), 64) ==
-                            family.configuration_sha256, "retained configuration changed");
-                (void)identifier(lineage.at("trial_id"), 256);
+                PreregLineageReference reference{text(lineage.at("prereg_sha256"), 64),
+                    text(lineage.at("configuration_sha256"), 64),
+                    identifier(lineage.at("trial_id"), 256)};
+                require(digest(reference.prereg_sha256) && digest(reference.configuration_sha256),
+                        "invalid lineage digest");
+                // E2 checks the prior document's family AND each numerical cell in
+                // its hash-bound reservation. Display aliases may change there.
+                if (lineage_rule == PreregLineageRule::LegacySameFamilyV1)
+                    require(reference.configuration_sha256 == family.configuration_sha256,
+                            "retained configuration changed");
+                family.lineage = std::move(reference);
                 family.retained = true;
                 ++out.retained_count;
             }
@@ -192,7 +202,8 @@ Result<EquityIcPrereg> parse_equity_ic_prereg(std::string_view source) {
 }
 
 Result<EquityIcPrereg> load_equity_ic_prereg(const std::string &path,
-                                           std::string_view expected_file_sha256) {
+                                           std::string_view expected_file_sha256,
+                                           PreregLineageRule lineage_rule) {
     if (!digest(expected_file_sha256)) {
         return Err(ErrorCode::InvalidArgument, "prereg: expected lowercase SHA256 required");
     }
@@ -207,6 +218,6 @@ Result<EquityIcPrereg> load_equity_ic_prereg(const std::string &path,
     if (actual != expected_file_sha256) {
         return Err(ErrorCode::InvalidArgument, "prereg: exact file SHA256 mismatch");
     }
-    return parse_equity_ic_prereg(source);
+    return parse_equity_ic_prereg(source, lineage_rule);
 }
 } // namespace atx::impl

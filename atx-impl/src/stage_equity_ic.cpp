@@ -5,6 +5,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +28,7 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/data/orats_history.hpp"
 #include "atx/engine/eval/cross_section_ic.hpp"
+#include "atx/engine/eval/trial_epoch.hpp"
 #include "equity_allocation.hpp"
 #include "equity_baseline_views.hpp"
 #include "panel_artifact.hpp"
@@ -374,6 +376,7 @@ struct Profile {
     EquityTerminalReturnTable terminal;
     Json recipe;
     std::optional<EquityIcPrereg> prereg;
+    bool epoch_accounting{};
     std::vector<std::string_view> family_dsl;
     std::vector<std::string_view> family_names;
     std::vector<atx::usize> horizons{kHorizons.begin(), kHorizons.end()};
@@ -463,6 +466,7 @@ Json frozen_recipe(const RunConfig &cfg, const IcRules &rules,
 
 Result<Profile> resolve(const RunConfig &cfg) {
     ATX_TRY_VOID(validate_ic_prereg_flags(cfg));
+    ATX_TRY_VOID(validate_ic_epoch_flags(cfg));
     // Ruling AR-9: `config` is deliberately ABSENT — equity-ic accepts no config file.
     // W0-I0b adds the evaluation knobs (E-18, E-09, E-02), membership (D-12) and the
     // terminal-return table (I-15); each is recorded in the recipe.
@@ -470,7 +474,7 @@ Result<Profile> resolve(const RunConfig &cfg) {
         "evaluation-end", "max-working-bytes", "trial-ledger", "quiet", "digest-only",
         "min-names-per-date", "ic-execution-delay", "ic-block-len-rule", "allow-same-close",
         "membership", "membership-rule", "terminal-returns", "ic-prereg-file",
-        "ic-prereg-sha256"};
+        "ic-prereg-sha256", "ic-trial-accounting-rule", "ic-epoch-catalog", "ic-epoch-anchor"};
     for (const auto &flag : cfg.set_flags) {
         if (!allowed.contains(flag)) {
             return Err(ErrorCode::InvalidArgument, "equity ic: unsupported flag --" + flag);
@@ -510,6 +514,7 @@ Result<Profile> resolve(const RunConfig &cfg) {
                    "equity ic: evaluation must be within training [2013-04-01,2020-01-01)");
     }
     Profile profile;
+    profile.epoch_accounting = cfg.equity_ic_trial_accounting_rule == "epoch-e2-v1";
     profile.views.evaluation = {*begin, *end};
     profile.views.observation_basis =
         EquityBaselineObservationBasis::ArchiveRawVolumeAndPointwiseAdjustedCloseV1;
@@ -524,11 +529,17 @@ Result<Profile> resolve(const RunConfig &cfg) {
     }
     profile.ledger_path = cfg.equity_trial_ledger.empty() ? std::string(kDefaultTrialLedger)
                                                           : cfg.equity_trial_ledger;
+    if (profile.epoch_accounting) {
+        const auto catalog_path = fs::weakly_canonical(cfg.equity_ic_epoch_catalog);
+        if (catalog_path == fs::weakly_canonical(profile.ledger_path))
+            return Err(ErrorCode::InvalidArgument, "equity ic: epoch catalog and legacy ledger must be distinct");
+    }
     ATX_TRY(auto executable, current_executable_sha256());
     profile.recipe = frozen_recipe(cfg, profile.rules, profile.terminal, executable);
     if (!cfg.equity_ic_prereg_file.empty()) {
         ATX_TRY(auto declaration, load_equity_ic_prereg(cfg.equity_ic_prereg_file,
-                                                        cfg.equity_ic_prereg_sha256));
+            cfg.equity_ic_prereg_sha256, profile.epoch_accounting
+                ? PreregLineageRule::CatalogVerifiedCellsE2 : PreregLineageRule::LegacySameFamilyV1));
         profile.prereg = std::move(declaration);
         profile.horizons = profile.prereg->horizons;
         profile.rules.block_lens.clear();
@@ -563,6 +574,11 @@ Result<Profile> resolve(const RunConfig &cfg) {
             {"measured_n_charged_to_ledger", profile.prereg->measured_n},
             {"retained_lineage_status", "declared-unverified-pending-E2-reconciliation"},
             {"document", strict_json(profile.prereg->canonical_json)}};
+        if (profile.epoch_accounting) {
+            recipe["trial_accounting_rule"] = "epoch-e2-v1";
+            recipe["preregistration"]["retained_lineage_status"] =
+                "requires-exact-prior-catalog-cell-proof-before-family-VM";
+        }
     }
     return Ok(std::move(profile));
 }
@@ -1355,6 +1371,122 @@ Status bind_fresh_view(const EquityBaselineEvaluation &view, const PanelArtifact
     return Ok();
 }
 
+Json epoch_counts(const eval::TrialEpochCounts &c) {
+    return Json{{"known_unique_cells", c.unique_cells}, {"measured_declarations", c.declared_cells},
+        {"verified_retained_cells", c.verified_retained_cells}, {"attempts", c.attempts},
+        {"completed", c.completed}, {"failed", c.failed}, {"incomplete", c.incomplete}};
+}
+
+// Hash ordered axes without materializing a second full JSON axis array. The
+// textual length prefixes make the encoding unambiguous across platforms.
+Result<std::string> epoch_axes_sha(const PanelIdentity &axes) {
+    atx::core::Sha256 hash;
+    const auto feed = [&](std::string_view s) -> Status {
+        const auto prefix = number(s.size()) + ":";
+        ATX_TRY_VOID(hash.update(std::as_bytes(std::span(prefix.data(), prefix.size()))));
+        return hash.update(std::as_bytes(std::span(s.data(), s.size())));
+    };
+    ATX_TRY_VOID(feed("atx-e2-panel-axes-v1"));
+    ATX_TRY_VOID(feed(axes.instrument_namespace));
+    ATX_TRY_VOID(feed(number(axes.session_keys.size())));
+    for (const auto key : axes.session_keys) ATX_TRY_VOID(feed(number(key)));
+    ATX_TRY_VOID(feed(number(axes.instrument_ids.size())));
+    for (const auto &id : axes.instrument_ids) ATX_TRY_VOID(feed(id));
+    ATX_TRY_VOID(feed(number(axes.original_instrument_indices.size())));
+    for (const auto i : axes.original_instrument_indices) ATX_TRY_VOID(feed(number(i)));
+    ATX_TRY(auto bytes, hash.finalize());
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(64);
+    for (const auto byte : bytes) {
+        const auto value = std::to_integer<unsigned>(byte);
+        result.push_back(digits[value >> 4U]);
+        result.push_back(digits[value & 15U]);
+    }
+    return result;
+}
+
+Result<eval::TrialEpochAttempt> epoch_attempt(const Profile &profile, const Bound &bound,
+    const RequiredMarks &marks, const Json &attempt, const fs::path &directory) {
+    if (!profile.prereg) return Err(ErrorCode::InvalidArgument, "equity ic: E2 requires preregistration");
+    ATX_TRY(auto context_axes, epoch_axes_sha(bound.context.identity));
+    ATX_TRY(auto evaluation_axes, epoch_axes_sha(bound.evaluation.identity));
+    // Both evidenced prices and unevidenced terminal flags affect the labels.
+    // Source prose/order is provenance, not a different numerical model.
+    std::vector<const EquityTerminalEvent *> ordered_events;
+    // This bounded declaration format intentionally refuses oversized recipes;
+    // callers must not silently omit terminal support from the cell identity.
+    if (profile.terminal.events.size() > 128)
+        return Err(ErrorCode::OutOfRange, "equity ic: E2 inline terminal recipe exceeds 128-event bound");
+    ordered_events.reserve(profile.terminal.events.size());
+    for (const auto &event : profile.terminal.events) ordered_events.push_back(&event);
+    std::sort(ordered_events.begin(), ordered_events.end(), [](const auto *a, const auto *b) {
+        return a->security_id < b->security_id;
+    });
+    Json terminal = Json::array();
+    for (const auto *e : ordered_events) terminal.push_back(Json{{"security_id", e->security_id},
+        {"terminal_value", e->terminal_value ? Json(*e->terminal_value) : Json(nullptr)},
+        {"terminal_return", e->terminal_return ? Json(*e->terminal_return) : Json(nullptr)},
+        {"special_dividend", e->special_dividend}, {"record_session_key",
+            e->record_session_key ? Json(*e->record_session_key) : Json(nullptr)},
+        {"evidenced", e->evidenced}});
+    // Explicit whitelist, never the full run recipe: display labels, report paths,
+    // prereg/checkpoint identity and producer executable are not numerical choices.
+    Json recipe{{"schema", "atx-equity-ic-numerical-cells-e2-v1"},
+        {"engine_recipe", "cross-section-ic-HansenHodrickV1-AverageRanksV1"},
+        {"context_payload_sha256", bound.context.payload_sha256},
+        {"context_axes_sha256", context_axes},
+        {"evaluation_payload_sha256", bound.evaluation.payload_sha256},
+        {"evaluation_axes_sha256", evaluation_axes},
+        {"evaluation_start", profile.views.evaluation.begin_session_key},
+        {"evaluation_end_exclusive", profile.views.evaluation.end_exclusive_session_key},
+        {"observation_basis", "ArchiveRawVolumeAndPointwiseAdjustedCloseV1"},
+        {"membership", attempt.at("membership")},
+        {"min_dollar_adv", profile.views.min_dollar_adv},
+        {"dollar_adv_window", profile.views.dollar_adv_window},
+        {"common_max_horizon", profile.horizons.back()},
+        {"quantiles", kQuantiles}, {"min_names", profile.rules.min_names_per_date},
+        {"delay", profile.rules.execution_delay}, {"bootstrap_draws", kBootstrapDraws},
+        {"bootstrap_seed", kBootstrapSeed}, {"block_len_floor", kBlockLenFloor},
+        {"block_len_rule", profile.rules.block_len_rule_name},
+        {"autocorr_lags", Json::array({1})},
+        {"trade_bps", kTradeBps}, {"annual_borrow_bps", kAnnualBorrowBps},
+        {"short_leg_gross", kShortLegGross}, {"day_basis", kDayBasis},
+        {"terminal_evidence", terminal},
+        {"excluded_mark_ids", marks.ids}};
+    eval::TrialEpochAttempt declaration;
+    declaration.numerical_recipe_json = recipe.dump();
+    declaration.prereg_sha256 = profile.prereg->file_sha256;
+    const Json execution_identity{{"schema", "atx-equity-ic-epoch-attempt-v1"},
+        {"epoch", profile.prereg->epoch}, {"prereg_sha256", declaration.prereg_sha256},
+        {"directory", fs::absolute(directory).lexically_normal().generic_string()},
+        {"recipe", recipe}};
+    ATX_TRY(declaration.token, atx::core::sha256_hex(execution_identity.dump()));
+    declaration.trial_id = "e2-ic-" + declaration.token;
+    for (atx::usize a = 0; a < profile.prereg->families.size(); ++a) {
+        const auto &family = profile.prereg->families[a];
+        for (atx::usize hi = 0; hi < family.horizons.size(); ++hi) {
+            for (const auto variant : kVariantNames) for (const auto restriction : kRestrictionNames) {
+                eval::TrialEpochCell cell;
+                cell.canonical_dsl = family.dsl;
+                cell.sign = family.sign;
+                cell.horizon = family.horizons[hi];
+                cell.stream_signal_index = a + kEquityBaselineDsl.size() + 1;
+                cell.stream_horizon_index = hi;
+                cell.forward_variant = variant;
+                cell.restriction = restriction == "ex34" ? "_ex34" : "full";
+                cell.family_sha256 = family.configuration_sha256;
+                cell.display_alias = family.name;
+                if (family.lineage) cell.retained = eval::TrialEpochLineage{
+                    family.lineage->prereg_sha256, family.lineage->configuration_sha256,
+                    family.lineage->trial_id};
+                declaration.cells.push_back(std::move(cell));
+            }
+        }
+    }
+    return declaration;
+}
+
 Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attempt,
                             const fs::path &directory, bool &registered) {
     const auto started = std::chrono::steady_clock::now();
@@ -1473,9 +1605,45 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
     };
     if (!profile.prereg) ATX_TRY_VOID(prepare());
 
+    std::optional<eval::TrialEpochCatalog> epoch;
+    std::optional<eval::TrialEpochReservation> reservation;
+    std::string epoch_token, epoch_trial_id;
+    if (profile.epoch_accounting) {
+        ATX_TRY(auto catalog, eval::TrialEpochCatalog::open(cfg.equity_ic_epoch_catalog,
+            profile.prereg->epoch, cfg.equity_ic_epoch_anchor));
+        epoch = std::move(catalog);
+        ATX_TRY(auto declaration, epoch_attempt(profile, bound, marks, attempt, directory));
+        epoch_token = declaration.token;
+        epoch_trial_id = declaration.trial_id;
+        ATX_TRY(auto reserved, epoch->reserve_attempt(declaration));
+        reservation = std::move(reserved);
+        if (!reservation->inserted) return Err(ErrorCode::AlreadyExists,
+            "equity ic: E2 token already reserved; no VM rerun, use a new attempt directory");
+    }
+    // Every exit after a durable E2 reservation (including legacy pre-line and
+    // publication failures) passes through catalog finalization below.
+    std::string manifest_sha;
+    auto registered_run = [&]() -> Result<StageResult> {
+      try {
+    if (reservation) {
+        registered = true;
+        attempt["epoch_catalog"] = Json{{"rule", "epoch-e2-v1"},
+            {"epoch", profile.prereg->epoch}, {"trial_id", epoch_trial_id}, {"token", epoch_token},
+            {"reservation_head_sha256", reservation->reservation_head_sha256},
+            {"numerical_recipe_sha256", reservation->numerical_recipe_sha256},
+            {"new_unique_cells", reservation->new_unique_cells},
+            {"verified_retained_cells", reservation->verified_retained_cells},
+            {"counts_at_reservation", epoch_counts(reservation->counts)},
+            {"coverage", "known-catalog-declarations-only; historical-imports-unreconciled"},
+            {"pnl_cluster_coverage", "unavailable-no-calendar-PnL-attached"}};
+        ATX_TRY(auto reserved_file, write_text(directory, "epoch-reservation.json",
+            attempt.at("epoch_catalog").dump(2) + "\n"));
+        (void)reserved_file;
+    }
+
     // §4.5 — the pre-registration line goes in BEFORE the numbers exist.
-    ATX_TRY(auto trial_id, profile.prereg ? runtime_trial_id(profile, directory)
-                                         : next_trial_id(profile.ledger_path));
+    ATX_TRY(auto trial_id, epoch ? Ok(epoch_trial_id) : (profile.prereg
+        ? runtime_trial_id(profile, directory) : next_trial_id(profile.ledger_path)));
     auto pre = base_entry(cfg, profile, marks, bound.context, bound.evaluation, bound.combo,
                           trial_id, dates);
     pre.status = "pre-registered";
@@ -1490,7 +1658,6 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
     // ONE guarded phase whose every exit — Err, write failure, or exception —
     // falls through to the terminal append at the bottom of this function. No
     // `return` may appear between here and it.
-    std::string manifest_sha;
     std::optional<atx::f64> published_seconds;
     Result<StageResult> outcome = [&]() -> Result<StageResult> {
       try {
@@ -1683,6 +1850,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
                      {"sign_and_shape_statement", kSignAndShapeStatement},
                      {"acceptance", "sign-and-shape evidence only; not accepted alpha"},
                      {"series", writers.summary_rows}};
+        if (reservation) summary["epoch_catalog"] = attempt.at("epoch_catalog");
         for (const auto &[name, text] : {std::pair<std::string, std::string>{
                  "coverage.csv", writers.coverage.str()},
              std::pair<std::string, std::string>{"ic.csv", writers.ic.str()},
@@ -1760,6 +1928,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
                 "ONE reference block: momentum_252, IncludeAuditedTerminalV1, full, "
                 "summed over the registered horizon union";
         }
+        if (reservation) manifest["epoch_catalog"] = attempt.at("epoch_catalog");
         ATX_TRY(auto ic_id, atx::core::sha256_hex(std::string(kDomain) + manifest.dump()));
         manifest["ic_id"] = ic_id;
         // Manifest FIRST, `.pending` last: a failure on the manifest write must
@@ -1767,7 +1936,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
         const auto manifest_text = manifest.dump(2) + "\n";
         ATX_TRY(auto manifest_file, write_text(directory, "manifest.json", manifest_text));
         std::error_code ec;
-        if (!fs::remove(directory / ".pending", ec) || ec) {
+        if (!epoch && (!fs::remove(directory / ".pending", ec) || ec)) {
             return Err(ErrorCode::IoError, "equity ic: cannot release pending marker");
         }
         manifest_sha = manifest_file.at("sha256").get<std::string>();
@@ -1861,6 +2030,46 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
         return Err(appended.error().code(), message);
     }
     return outcome;
+      } catch (const std::exception &error) {
+        return Err(ErrorCode::IoError, "equity ic: registered attempt failed: " + std::string(error.what()));
+      }
+    }();
+    if (epoch && reservation) {
+        // The immutable manifest binds the reservation head. The terminal binds
+        // that manifest (or a precise failure receipt); the new head is separate.
+        std::string result_sha = manifest_sha;
+        if (!registered_run) {
+            const Json failure{{"schema", "atx-equity-ic-e2-failure-v1"},
+                {"token", epoch_token}, {"reservation_head_sha256", reservation->reservation_head_sha256},
+                {"error", registered_run.error().to_string()}, {"manifest_sha256", manifest_sha}};
+            ATX_TRY(result_sha, atx::core::sha256_hex(failure.dump()));
+            // Failure publication is secondary to recording the terminal event.
+            const auto written = write_text(directory, "epoch-failure.json", failure.dump(2) + "\n");
+            if (!written) attempt["epoch_failure_publication_error"] = written.error().to_string();
+        }
+        const auto finalized = epoch->finish_attempt(epoch_token, registered_run
+            ? eval::TrialEpochTerminal::Completed : eval::TrialEpochTerminal::Failed, result_sha);
+        if (!finalized) return Err(finalized.error().code(),
+            "equity ic: E2 terminal append failed; reservation remains counted: " +
+            finalized.error().to_string() + (registered_run ? "" : "; original: " + registered_run.error().to_string()));
+        const Json anchor{{"schema", "atx-trial-epoch-external-anchor-v1"},
+            {"epoch", profile.prereg->epoch}, {"head_sha256", epoch->head_sha256()},
+            {"counts", epoch_counts(epoch->counts())}, {"token", epoch_token},
+            {"terminal_result_sha256", result_sha},
+            {"trust", "export separately; no automatic trust in a mutable adjacent sidecar"}};
+        ATX_TRY(auto anchor_file, write_text(directory, "epoch-anchor.json", anchor.dump(2) + "\n"));
+        (void)anchor_file;
+        if (registered_run) {
+            std::error_code ec;
+            if (!fs::remove(directory / ".pending", ec) || ec)
+                return Err(ErrorCode::IoError, "equity ic: E2 completed but pending marker removal failed");
+            registered_run->kvs.emplace_back("epoch_head_sha256", epoch->head_sha256());
+            registered_run->kvs.emplace_back("epoch_known_unique_cells", number(epoch->counts().unique_cells));
+            registered_run->kvs.emplace_back("epoch_new_unique_cells", number(reservation->new_unique_cells));
+            registered_run->kvs.emplace_back("epoch_attempts", number(epoch->counts().attempts));
+        }
+    }
+    return registered_run;
 }
 
 } // namespace
