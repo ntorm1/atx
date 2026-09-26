@@ -51,6 +51,7 @@ public:
   [[nodiscard]] const ExecutionObjectiveConfig& config() const noexcept;
   [[nodiscard]] std::string_view identity_sha256() const noexcept;
   [[nodiscard]] atx::u64 bytes() const noexcept;
+  [[nodiscard]] atx::u64 per_signal_working_bytes() const noexcept;
 private:
   std::shared_ptr<const execution_objective_detail::Context> data_;
   friend atx::core::Result<ExecutionObjectiveContext> prepare_execution_objective(
@@ -61,6 +62,8 @@ private:
       std::span<const atx::u32>,std::span<const atx::u32>);
   friend bool execution_objective_matches(const ExecutionObjectiveContext&,
       const alpha::Panel&,const WeightPolicy&,const ExecutionObjectiveConfig&) noexcept;
+  friend bool execution_support_matches(const ExecutionObjectiveContext&,
+      std::span<const atx::u8>,std::span<const atx::u32>) noexcept;
   friend atx::core::Result<alpha::AlphaStreams> extract_execution_streams(
       const alpha::SignalSet&,const ExecutionObjectiveContext&,atx::f64);
   friend atx::core::Result<alpha::AlphaStreams> extract_execution_signal(
@@ -85,6 +88,13 @@ private:
     std::span<const atx::u32> bad_return_prefix={},std::span<const atx::u32> group_map={});
 [[nodiscard]] bool execution_objective_matches(const ExecutionObjectiveContext& context,
     const alpha::Panel& panel,const WeightPolicy& policy,const ExecutionObjectiveConfig& config) noexcept;
+
+// Compare the caller's separately supplied support once per role. Empty member
+// means all ones before Panel membership; guard is ignored only when disabled
+// explicitly in the context recipe. No shape-only support substitution.
+[[nodiscard]] bool execution_support_matches(const ExecutionObjectiveContext& context,
+    std::span<const atx::u8> decision_membership,
+    std::span<const atx::u32> bad_return_prefix) noexcept;
 
 // Outputs retain the full Panel calendar axis. PnL is indexed by realized
 // endpoint e+1, and includes entry-e costs plus the e -> e+1 holding return/borrow.

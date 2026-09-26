@@ -68,6 +68,7 @@
 //  shape mismatch (SignalSet vs panel dates/instruments disagreement).
 
 #include <cmath>   // std::isnan, std::abs (return / turnover guards)
+#include <string>
 #include <span>    // std::span (the non-owning stream accessors)
 #include <utility> // std::move (Result hand-off)
 #include <vector>  // std::vector (owned dense stream storage)
@@ -101,6 +102,17 @@ struct AlphaStreams {
   atx::usize n_alphas_{};
   atx::usize n_periods_{};
   atx::usize n_instruments_{};
+
+  // DelayedSurfaceV2 only: full calendar, alpha-major diagnostic arrays. Empty
+  // on the preserved legacy path. All return/cost fractions use interval-entry
+  // pretrade NAV; turnover is actual one-way filled dollars / that same NAV.
+  std::vector<atx::f64> gross_flat{}, execution_cost_flat{}, borrow_cost_flat{};
+  std::vector<atx::f64> turnover_flat{}, pretrade_nav_flat{}, end_nav_flat{};
+  std::vector<atx::u8> valid_flat{};
+  std::vector<atx::usize> names_flat{}, capped_names_flat{};
+  std::string execution_context_sha256{};
+  atx::usize first_realization_{}, realization_end_{};
+
 
   /// The realized-return stream for `alpha` (length == n_periods()).
   /// PRECONDITION: alpha < n_alphas() (ABORTS in debug).
