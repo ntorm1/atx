@@ -115,3 +115,22 @@ is claimed. Runtime file/ledger tests must use only owned temporary synthetic ar
 Remaining original I1 work includes E2 historical reconciliation (including missing cp22
 ledger), proven cumulative/cluster counts, all-stage run manifests, config-file reachability
 and shared universal guards. Historical sidecar imports and production data remain untouched.
+
+
+## First runtime receipt and test-only repair
+
+Root qualification at source `2e3981011478085829596143ebbd905d1283697a` retained
+`build-equity/w1-next-impl-prereg-qualified.log` and its receipt. The legacy
+TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput check passed in 13.537 s;
+the following runtime preregistration case aborted with native -1073740791 before
+XML publication. Receipt wall time is 14.2643559 s and binary SHA256 is
+`44a02e7a4a2230f33c9e7ea910d2e7924f95a22c55fab09dfe360499e3ea169f`.
+This failed attempt is retained and is not counted as a passed runtime gate.
+
+Source inspection found the exact invalid access in the test's CSV classifier:
+a positive row moves fields into positives, then a separate if immediately reads
+fields[2] from the moved-from vector. Test-only correction
+`b464a5b85e6a3bd196dafa562918dc4c9b57d380` makes the negative branch else-if.
+No production change was made. Per-family result construction/emission uses each
+family's declared horizon span consistently; the engine sizes results from that
+same span. Root owns the targeted rebuild/rerun. No postrepair pass is claimed here.

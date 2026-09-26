@@ -1,0 +1,120 @@
+{
+  "reference_source": "2e3981011478085829596143ebbd905d1283697a",
+  "reference_header": "atx-engine/include/atx/engine/risk/exposures.hpp",
+  "new_source": "atx-engine/src/risk/exposures.cpp",
+  "new_source_sha256_lf": "d9f0b0aaa4d438c9cf23bfead18b3261840ee3aec44e7672564c8b39d528c9f3",
+  "function_bodies_compared": 18,
+  "all_exact_match": true,
+  "compiled": false,
+  "runtime_tested": false,
+  "bodies": [
+    {
+      "function": "step_return",
+      "declaration_order": 0,
+      "body_sha256": "eb161a8edd30f1f3ce029cb94608f9ff8302bd588690d8c83f61170504d33b64",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "valid_returns",
+      "declaration_order": 1,
+      "body_sha256": "dd1e7641ba47c868d1c0609d35aa69d681186f717d595257a9e5928cebbfa0bf",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "momentum",
+      "declaration_order": 2,
+      "body_sha256": "a46be99b17444fbed02c5e567177cf2cf37b8742b2aa7d36439a62e1f85bf8d2",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "volatility",
+      "declaration_order": 3,
+      "body_sha256": "d5f8dd5bf70c5a2228d10d01ea1bd5bc0f564751b72a267c1df975c701ade6e1",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "liquidity",
+      "declaration_order": 4,
+      "body_sha256": "2c2c26f5340d4a6c57ec751efe8d03b9d1a4ff4d369cb8319331cec43d201e1f",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "market_return",
+      "declaration_order": 5,
+      "body_sha256": "f3b24b13b28fd8f144d3d3d6cfd2c352f71ed7dbd15d1d4cdee71b3a25ba8363",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "beta",
+      "declaration_order": 6,
+      "body_sha256": "4a3d988001e10486eb78a270ce0e6b8b952131463b812db546094394b0af853f",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "market_returns",
+      "declaration_order": 7,
+      "body_sha256": "8e9cabc02a8d69866e9f470c7ba4923b906a259ded21b396747956c44db2d7a1",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "beta_cached",
+      "declaration_order": 8,
+      "body_sha256": "427e6e6770bc0b1e3f2610d6a93e5d6c6057afaebc3fd6532ed13521eac18e48",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "raw_style",
+      "declaration_order": 9,
+      "body_sha256": "d3b51f53543b9d0547ebc9566d36da552187f526cb8f6f082830cf91e2c0b3bd",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "emitted_styles",
+      "declaration_order": 10,
+      "body_sha256": "a58c706558a6815266c7ee6d3c35cce0dc3befc3728b564eb1f94187ff41e03e",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "zscore_column",
+      "declaration_order": 11,
+      "body_sha256": "ba4e33f65f4a8526a41f051169d2dcab5fa7adcecccffbb869ec41bb4c7be7ef",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "zscore_column_v2",
+      "declaration_order": 12,
+      "body_sha256": "641acbbb3fbaa57578559a27b7d203b2252b68245f7e119ebfb41452b9e0cd09",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "sector_groups",
+      "declaration_order": 13,
+      "body_sha256": "e3310ee83378cc6fde41127aed4ec431e7614e3ca26304eb0a4b86755c706f5c",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "sqrt_cap_weight",
+      "declaration_order": 14,
+      "body_sha256": "30ea52762abcfd134e64e29917dbbd7f1ab85b6c8f5270533ad9cae1245481a0",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "apply_industry_sum_to_zero",
+      "declaration_order": 15,
+      "body_sha256": "3cbd138d1ee691952034fabf10a7850e6d424663a90cf2824a5ca30d71fea1b2",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "build_exposures",
+      "declaration_order": 16,
+      "body_sha256": "8ed34d964582124b9557016c65e5e670afde6ae60a745b653fa2b2447e0354ce",
+      "signature_and_exact_lf_body_match": true
+    },
+    {
+      "function": "build_exposures",
+      "declaration_order": 17,
+      "body_sha256": "f5b32df49088614f8262807e1e77a3d4d5327abd1bf5742347b100e9dc33eef6",
+      "signature_and_exact_lf_body_match": true
+    }
+  ]
+}
