@@ -30,6 +30,7 @@ bool hash_ok(std::string_view v) {
   return v.size() == 64 && std::all_of(v.begin(), v.end(), [](char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
   });
+}
 bool increasing(std::span<const i64> a) {
   return !a.empty() && a.front() > 0 &&
       std::adjacent_find(a.begin(), a.end(), std::greater_equal<i64>{}) == a.end();
@@ -38,6 +39,7 @@ bool parent(const ExposurePanelConfig& c, std::string_view role) {
   return std::any_of(c.parents.begin(), c.parents.end(), [&](const auto& p) {
     return p.role == role && hash_ok(p.sha256);
   });
+}
 bool parent_is(const ExposurePanelConfig& c, std::string_view role, std::string_view sha) {
   return std::count_if(c.parents.begin(), c.parents.end(), [&](const auto& p) {
     return p.role == role && p.sha256 == sha;
@@ -66,12 +68,24 @@ co::Status validate(const PriceExposureConfig& c) {
       o.decision_times_ns.size() != t || c.mark_times_ns.size() != t ||
       !increasing(c.mark_times_ns) || o.instrument_namespace.empty() ||
       o.instrument_namespace.size() > 128 || o.parents.size() > 32 ||
+      (o.provenance != ExposureProvenance::SyntheticDeclaredV1 &&
+       o.provenance != ExposureProvenance::PitDeclaredV1) ||
+      o.normalization != ExposureNormalizationRule::RawWinsor16CapCenterV1 ||
       c.rule != PriceExposureRule::PriorKnownCapPriceV1 ||
       c.close_basis != ExposureCloseBasis::AdjustedCloseRatioV1 ||
       c.dollar_basis != ExposureDollarBasis::RawUsdCloseTimesRawSharesV1 ||
       !hash_ok(c.price_source_sha256) || !parent_is(o, "prices", c.price_source_sha256) ||
       (c.use_return_guard && !parent(o, "return_guard")))
     return co::Err(co::ErrorCode::InvalidArgument, "price exposures: axes/basis/parents/rule");
+  // Reject oversized or conflicting metadata before copying output into the
+  // provider/builder. The fixed role-count bound alone does not bound strings.
+  for (usize i = 0; i < o.parents.size(); ++i) {
+    const auto& p = o.parents[i];
+    if (p.role.empty() || p.role.size() > 128 || !hash_ok(p.sha256))
+      return co::Err(co::ErrorCode::InvalidArgument, "price exposures: parent metadata");
+    for (usize j = 0; j < i; ++j) if (p.role == o.parents[j].role)
+      return co::Err(co::ErrorCode::InvalidArgument, "price exposures: duplicate parent role");
+  }
   for (auto name : {std::string_view(c.close_field), std::string_view(c.raw_close_field),
                     std::string_view(c.volume_field)})
     if (name.empty() || name.size() > 128)

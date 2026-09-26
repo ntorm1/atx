@@ -42,8 +42,10 @@ struct PriceExposureEvidenceRow {
 
 // Synchronous borrowed row views, valid until the next read_date call. Implementors
 // must have bounded retained storage and must not read future rows to construct a
-// current snapshot. retained_bytes includes any owned read/decode scratch. This
-// interface validates supplied clocks but does not authenticate a data vendor.
+// current snapshot. retained_bytes declares the PEAK live retained/read/decode
+// allocation over the entire sequence, not merely the allocation at admission.
+// The implementation must obey that bound during every read. This interface
+// validates supplied clocks but does not authenticate a data vendor.
 class PriceExposureEvidenceSource {
 public:
   virtual ~PriceExposureEvidenceSource() = default;
