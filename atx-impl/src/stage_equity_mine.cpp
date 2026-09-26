@@ -1035,6 +1035,10 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
         if (screen_enabled && !screen_cache) search_cfg.ic_screen.rule = factory::IcScreenRule::DisabledV1;
         const factory::SearchResult res = driver.run(search_cfg, pool, nullptr, nullptr,
                                                      screen_cache ? &*screen_cache : nullptr);
+        if (res.ic_screen_cache_mismatch || res.ic_screen_resume_mismatch) {
+            return Err(ErrorCode::InvalidArgument,
+                       "mine_train: SearchDriver rejected incompatible IC screening state");
+        }
         out.search_digest = res.digest;
         out.search_trial_count = res.trial_count;
         out.search_fidelity_evals = res.fidelity_evals;
