@@ -3,6 +3,10 @@
 -- Requires migrations 0324/0325. Prepared; not executed on the live warehouse.
 -- Inspect stored results for all five hypotheses, all splits and all horizons.
 -- This is not the builder's digest validator or a production certification.
+-- Inference: fq2_v3 p-values are R3a EWC fixed-b robust; fq2_v1/fq2_v2 p-values
+-- (calendar Bartlett HAC, normal p) over-reject under overlapping labels and are
+-- shown with inference_status='inference_overconfident_legacy'; a legacy run never
+-- surfaces a candidate here.
 WITH requested AS (
     SELECT 'fundamental_signals_build1'::VARCHAR AS build_run_id,
            'fundamental_signals_evaluation1'::VARCHAR AS evaluation_run_id,
@@ -58,6 +62,14 @@ WITH requested AS (
            s.status AS statistical_status,
            s.spread_dates, s.gross_mean, s.ci95_low, s.ci95_high,
            s.hac_standard_error, s.p_value, s.holm_p_value,
+           json_extract_string(e.config_json, '$.evaluation_version') AS inference_version,
+           CASE WHEN e.run_id IS NULL THEN NULL
+                WHEN json_extract_string(e.config_json, '$.evaluation_version') = 'fq2_v3'
+                    THEN 'ewc_fixed_b_robust'
+                WHEN coalesce(json_extract_string(e.config_json, '$.evaluation_version'), 'fq2_v1')
+                     IN ('fq2_v1', 'fq2_v2') THEN 'inference_overconfident_legacy'
+                ELSE 'unsupported_inference_version'
+           END AS inference_status,
            s.net_10bp, s.net_25bp, s.net_50bp,
            s.eligible_count, s.labeled_count, s.label_coverage,
            s.observed_terminal_share, s.policy_terminal_share,
@@ -82,6 +94,7 @@ WITH requested AS (
 )
 SELECT * EXCLUDE (split_order, horizon_order),
        report_status = 'stored_results'
-           AND coalesce(stored_statistical_candidate, false) AS candidate_in_requested_run
+           AND coalesce(stored_statistical_candidate, false)
+           AND coalesce(inference_status = 'ewc_fixed_b_robust', false) AS candidate_in_requested_run
 FROM report
 ORDER BY signal_id, split_order, horizon_order;

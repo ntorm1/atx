@@ -114,21 +114,51 @@ horizons cause an explicit prerequisite error before evaluation.
 
 The reported daily series is the **Q10 minus Q1 horizon-return spread**, not daily
 portfolio PnL or an annualized trading Sharpe. Python receives only SQL-aggregated
-spread/date/feature/horizon rows. Mean standard errors use Bartlett/Newey–West
-weights at lag `horizon-1`, using actual calendar-session differences across gaps.
-Two-sided p-values and 95% intervals use a stated asymptotic normal approximation;
-fewer than `max(30,2*horizon)` spread dates or degenerate variance yield no
-significance result. The complete eight-test primary family receives Holm
-adjustment within each split; missing tests remain in that family. Methodological
-references are [Newey and West (1987)](https://users.ssc.wisc.edu/~behansen/718/NeweyWest1987.pdf)
-and [Harvey, Liu and Zhu](https://people.duke.edu/~charvey/Research/Published_Papers/P118_and_the_cross.PDF).
+spread/date/feature/horizon rows.
+
+**Inference `fq2_v3` (current; evaluation runs record `inference_version=fq2_v3`).**
+
+- **Primary test.** The spread mean is tested with the R3a robust test,
+  `atx_db.research.stats.mean_inference`. It uses an equal-weighted-cosine (EWC)
+  long-run variance with fixed-b inference and a Student-t(B) reference.
+- **Series.** The test runs on the spread series positioned by decision session.
+  Gaps are kept, and `horizon_periods` is the horizon in sessions.
+- **Stored columns.** `p_value` is `robust_p_value`, `z_statistic` is the
+  normal-equivalent z, and `hac_standard_error` is the robust standard error.
+  `hac_lags` holds B, the number of cosine terms, which is also the t degrees of
+  freedom. `ci95_low` and `ci95_high` are the Student-t(B) interval.
+- **Reported only.** Newey–West (R3a lag rule) and the legacy calendar-HAC p are
+  recorded per hypothesis in `diagnostics_json.inference_comparison`. They never
+  drive Holm or screening.
+- **No significance result** is produced from fewer than `max(30,2*horizon)` spread
+  dates or from a degenerate variance.
+- **Holm.** The complete eight-test primary family receives Holm adjustment on the
+  robust p within each split, and missing tests remain in that family.
+- **Point estimates are unchanged.** Deciles, spreads, gross and net means, counts
+  and annual buckets are digest-identical to the earlier runs.
+
+**Earlier evaluation runs** have no `inference_version`. They used Bartlett/Newey–West
+weights at lag `horizon-1` with an asymptotic normal p. That test over-rejects under
+overlapping labels: R3a measured about 11% size at a nominal 5% for the 21-session
+spread. Those runs remain readable, but their p-values are labeled
+`inference_overconfident_legacy`
+(`atx_db.fundamental_signal_evaluation.inference_status`). The prepared acceptance
+query shows that label next to them.
+
+Methodological references:
+
+- [Newey and West (1987)](https://users.ssc.wisc.edu/~behansen/718/NeweyWest1987.pdf)
+- Lazarus, Lewis, Stock and Watson (2018), "HAR Inference: Recommendations for
+  Practice", JBES 36(4)
+- [Harvey, Liu and Zhu](https://people.duke.edu/~charvey/Research/Published_Papers/P118_and_the_cross.PDF)
 The feature formulas and thresholds are our research design, not endorsements
 from these papers.
 
 Simple 10/25/50 basis-point **per-side** costs subtract `4*cost` from the spread:
 long and short legs, each with entry and exit. This is sensitivity analysis and
 does not establish realized turnover, execution, borrow availability or capacity.
-Statistical/economic screening requires a positive primary spread, Holm p≤0.05,
+Statistical/economic screening requires a positive primary spread, Holm p≤0.05
+(robust p under `fq2_v3`),
 positive 25bp-per-side result, at least 252 spread dates, at least two annual
 buckets with at least 60 dates each and positive means in every available bucket,
 and at least 99% label coverage. Only holdout evidence supports candidacy;

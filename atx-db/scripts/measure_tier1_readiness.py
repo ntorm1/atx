@@ -575,8 +575,12 @@ class Measurement:
                         "linkage_schema_gaps": build_gap["schema_gaps"],
                     }
                 fq2["selection_note"] = "FQ1 manifest schema is missing; evaluation linkage and summaries are unmeasured."
-            selected_rows = self.rows("""
+            # fq2_v3 (EWC robust p) vs fq2_v1/v2 over-confident calendar-HAC p (FQ2 v3 ruling).
+            version_sql = ("json_extract_string(e.config_json,'$.evaluation_version')"
+                           if "config_json" in self.columns("fundamental_signal_evaluation_runs") else "NULL")
+            selected_rows = self.rows(f"""
                 SELECT e.run_id,e.build_run_id,e.status,e.as_of_date,e.run_at,
+                       {version_sql} AS evaluation_version,
                        e.build_sha256,e.result_sha256,b.panel_sha256 AS recorded_panel_sha256,
                        b.status AS build_status,
                        b.as_of_date AS build_as_of_date,b.start_date AS build_start_date,
@@ -595,6 +599,7 @@ class Measurement:
                                      and selected["build_as_of_date"] <= selected["as_of_date"]
                                      and selected["build_as_of_date"] <= self.as_of)
                 linked = hash_equal and snapshot_eligible
+                inference = fq2_inference_status(selected["evaluation_version"])
                 fq2["selected_run"] = {
                     "run_id": public_id(selected["run_id"]),
                     "build_run_id": public_id(selected["build_run_id"]),
@@ -604,6 +609,9 @@ class Measurement:
                     "build_end_date": selected["build_end_date"],
                     "recorded_hash_equality": hash_equal,
                     "linked_build_snapshot_eligible": snapshot_eligible,
+                    "evaluation_version": public_id(selected["evaluation_version"])
+                    if selected["evaluation_version"] is not None else None,
+                    "inference_status": inference,
                 }
                 if not linked:
                     fq2["selection_note"] = "Latest complete evaluation has no complete snapshot-eligible build with equal recorded build/panel hash."
@@ -622,11 +630,22 @@ class Measurement:
                         row["signal_id"] = public_id(row["signal_id"])
                         row["status"] = public_status(row["status"])
                         row["split"] = row["split"] if row["split"] in {"train", "validation", "holdout"} else "other"
+                        row["inference_status"] = inference    # beside holm_p_value
                     fq2["summaries"] = summaries
             elif not build_gap:
                 fq2["selection_note"] = "No complete evaluation with a complete snapshot-eligible build and equal recorded build/panel hash."
         return {"fq1": fq1, "fq2": fq2, "certification": "unmeasured",
                 "note": "Recorded FQ1/FQ2 research evidence only. Manifest status, hashes, candidate flags and blocker counts are observations, not read-side digest validation, production eligibility, alpha certification or parity proof."}
+
+
+def fq2_inference_status(evaluation_version: Any) -> str:
+    """Mirror of ``atx_db.fundamental_signal_evaluation.inference_status`` (no atx_db import):
+    fq2_v1/fq2_v2 p-values (calendar Bartlett HAC, normal p) over-reject under overlap."""
+    if evaluation_version == "fq2_v3":
+        return "ewc_fixed_b_robust"
+    if evaluation_version is None or evaluation_version in ("fq2_v1", "fq2_v2"):
+        return "inference_overconfident_legacy"
+    return "unsupported_inference_version"
 
 
 def markdown(report: dict[str, Any]) -> str:

@@ -3,6 +3,10 @@
 -- Read the existing evaluator's outputs; do not rerank features or recompute
 -- significance here. Always return all eight hypotheses and all three splits.
 -- This query is prepared for the first evaluation, not yet executed live.
+-- Inference: evaluations with inference_version='fq2_v3' carry R3a EWC fixed-b robust
+-- p-values; earlier evaluations (no inference_version: calendar Bartlett HAC, normal p)
+-- over-reject under overlapping labels, are shown with
+-- inference_status='inference_overconfident_legacy' and never meet the screen here.
 WITH requested AS (
     SELECT
         'custom-features-build1'::VARCHAR AS build_run_id,
@@ -68,6 +72,11 @@ SELECT x.feature_id, x.split, x.primary_horizon AS horizon_sessions,
                THEN 'label_after_evaluation_cutoff'
            WHEN e.spread_dates = 0 THEN 'no_evaluable_spread_dates'
            WHEN e.holm_p_value IS NULL THEN 'inference_unavailable'
+           WHEN json_extract_string(v.configuration_json, '$.inference_version') IS NULL
+             OR json_extract_string(v.configuration_json, '$.inference_version') IN ('fq2_v1', 'fq2_v2')
+               THEN 'inference_overconfident_legacy'
+           WHEN json_extract_string(v.configuration_json, '$.inference_version') <> 'fq2_v3'
+               THEN 'unsupported_inference_version'
            WHEN NOT e.statistically_qualified THEN 'research_screen_not_met'
            WHEN NOT e.production_eligible THEN 'research_screen_met_production_unqualified'
            ELSE 'inspect_production_eligibility_evidence'
@@ -76,6 +85,14 @@ SELECT x.feature_id, x.split, x.primary_horizon AS horizon_sessions,
        e.net_10bp, e.net_25bp, e.net_50bp,
        e.hac_lags, e.hac_standard_error, e.z_statistic,
        e.p_value, e.holm_p_value, e.ci95_low, e.ci95_high,
+       json_extract_string(v.configuration_json, '$.inference_version') AS inference_version,
+       CASE WHEN v.run_id IS NULL THEN NULL
+            WHEN json_extract_string(v.configuration_json, '$.inference_version') = 'fq2_v3'
+                THEN 'ewc_fixed_b_robust'
+            WHEN coalesce(json_extract_string(v.configuration_json, '$.inference_version'), 'fq2_v1')
+                 IN ('fq2_v1', 'fq2_v2') THEN 'inference_overconfident_legacy'
+            ELSE 'unsupported_inference_version'
+       END AS inference_status,
        e.label_coverage, e.eligible_count, e.labeled_count,
        e.terminal_count, e.imputed_count, e.annual_stability_json,
        e.statistically_qualified, e.production_eligible, e.blockers_json,
