@@ -1,4 +1,19 @@
-"""Bounded, frozen fundamental signal decile evaluation."""
+"""Bounded, frozen fundamental signal decile evaluation.
+
+Inference versions
+------------------
+``fq2_v3`` (current) tests each Q10-Q1 horizon-spread mean with the R3a robust test:
+:func:`atx_db.research.stats.mean_inference` (EWC fixed-b, Student-t(B)) on the spread
+series positioned by decision session (gaps kept), ``horizon_periods`` = the horizon in
+sessions. The summary's inference columns carry that test (:data:`INFERENCE_CONTRACT`);
+Newey-West and the legacy calendar-HAC p are reported only, in the run's
+``diagnostic_json.inference_comparison``. Point estimates (deciles, gross/net means,
+counts, annual stability) and the testability rule are unchanged, so they stay
+digest-identical to ``fq2_v2``. ``fq2_v1``/``fq2_v2`` results used the calendar Bartlett
+HAC with lag ``h-1`` and a normal p, which over-rejects under overlapping labels (R3a:
+about 11% size at a nominal 5% for the 21-session spread); they stay readable, are
+labeled :data:`INFERENCE_LEGACY` and never pass the desk-Q5 significance gate.
+"""
 
 from __future__ import annotations
 
@@ -10,13 +25,35 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from ._forward_return_publication import CALCULATION_VERSION
 from .connection import DuckDBStore
 from .fundamental_signal_research import validate_fundamental_signal_panel
 from .research.labels import label_revision_order_sql, label_status_sql
-from .research.stats import calendar_hac_statistics
+from .research.stats import calendar_hac_statistics as calendar_hac_statistics
 from .research.stats import holm as holm_family
+from .research.stats import mean_inference
 
+EVALUATION_VERSION = "fq2_v3"
+LEGACY_EVALUATION_VERSIONS = ("fq2_v1", "fq2_v2")
+INFERENCE_ROBUST = "ewc_fixed_b_robust"
+INFERENCE_LEGACY = "inference_overconfident_legacy"
+INFERENCE_UNSUPPORTED = "unsupported_inference_version"
+INFERENCE_CONTRACT = {
+    "method": "ewc_fixed_b_student_t",
+    "implementation": "atx_db.research.stats.mean_inference (R3a)",
+    "series": ("Q10-Q1 horizon spread per evaluated decision session, positioned by session "
+               "number with missing sessions kept as gaps; horizon_periods = horizon sessions"),
+    "columns": {"p_value": "robust_p_value", "z_statistic": "z_equivalent",
+                "hac_standard_error": "robust_standard_error",
+                "hac_lags": "robust_df (EWC cosine terms B, the Student-t df)",
+                "ci95_low": "robust_ci95_low (Student-t(B))", "ci95_high": "robust_ci95_high (Student-t(B))",
+                "holm_p_value": "Holm over robust_p_value; family definition unchanged"},
+    "testability": "unchanged: at least max(30, 2*horizon) dates and a nonconstant series",
+    "reported_only": ("Newey-West (R3a lag rule) and the legacy calendar-HAC p in "
+                      "diagnostic_json.inference_comparison; never used for status, Holm or candidates"),
+}
 HORIZONS = (5, 21, 63)
 SPLITS = ("train", "validation", "holdout")
 # Accept exactly the publisher's current calculation (v2: halt-gap terminal dating).
@@ -57,6 +94,63 @@ def _digest_rows(con: Any, sql: str, params: list[Any]) -> tuple[int, str]:
 # ``holm_family`` (Holm over every frozen hypothesis, untestable kept as p=1) and
 # ``calendar_hac_statistics`` live in ``research.stats`` and are re-exported here by
 # the imports above; the label-validity CASE is ``research.labels.label_status_sql``.
+
+
+def inference_status(evaluation_version: str | None) -> str:
+    """How far a stored result's significance columns can be trusted.
+
+    ``fq2_v3`` -> :data:`INFERENCE_ROBUST`; ``fq2_v1``/``fq2_v2`` or no inference version
+    (a CF1 run before ``fq2_v3``) -> :data:`INFERENCE_LEGACY` (readable, never
+    gate-eligible); anything else -> :data:`INFERENCE_UNSUPPORTED`.
+    """
+    if evaluation_version == EVALUATION_VERSION:
+        return INFERENCE_ROBUST
+    if evaluation_version is None or evaluation_version in LEGACY_EVALUATION_VERSIONS:
+        return INFERENCE_LEGACY
+    return INFERENCE_UNSUPPORTED
+
+
+def _finite(value: Any) -> float | None:
+    return float(value) if value is not None and math.isfinite(value) else None
+
+
+def robust_spread_statistics(values: list[tuple[int, float]],
+                             horizon: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``fq2_v3`` statistics of a calendar-positioned spread series (FQ2 and CF1).
+
+    The point estimate, date count and testability are the sealed
+    :func:`calendar_hac_statistics` ones (digest-identical to ``fq2_v2``); the inference
+    columns are replaced by R3a's :func:`mean_inference` on the series positioned by
+    session number (gaps are NaN, ``horizon_periods = horizon``): see
+    :data:`INFERENCE_CONTRACT`. Returns ``(record, comparison)``; ``comparison`` holds the
+    reported-only Newey-West and legacy calendar-HAC results.
+    """
+    record = calendar_hac_statistics(values, horizon)
+    comparison: dict[str, Any] = {"legacy_calendar_hac_lags": record["hac_lags"],
+                                  "legacy_calendar_hac_p_value": record["p_value"]}
+    data = {int(session): float(value) for session, value in values if math.isfinite(value)}
+    inference = None
+    if data:
+        first = min(data)
+        positioned = np.full(max(data) - first + 1, np.nan)
+        for session, value in data.items():
+            positioned[session - first] = value
+        inference = mean_inference(positioned, horizon_periods=horizon)
+        comparison.update(n_obs=inference.n_obs, span=inference.span, nw_lags=inference.nw_lags,
+                          nw_standard_error=_finite(inference.nw_standard_error),
+                          nw_t=_finite(inference.nw_t), nw_p_value=_finite(inference.nw_p_value),
+                          robust_df=inference.robust_df, robust_t=_finite(inference.robust_t),
+                          robust_p_value=_finite(inference.robust_p_value))
+    testable = (inference is not None and record["p_value"] is not None
+                and math.isfinite(inference.robust_p_value))
+    record.update(hac_lags=inference.robust_df if inference is not None else 0,
+                  hac_standard_error=None, z_statistic=None, p_value=None, ci95_low=None, ci95_high=None)
+    if testable:
+        assert inference is not None
+        record.update(hac_standard_error=_finite(inference.robust_standard_error),
+                      z_statistic=_finite(inference.z_equivalent), p_value=inference.robust_p_value,
+                      ci95_low=_finite(inference.robust_ci95_low), ci95_high=_finite(inference.robust_ci95_high))
+    return record, comparison
 
 
 @dataclass(frozen=True)
@@ -189,7 +283,8 @@ def _join_labels(con: Any, source: str, entry: dt.date, horizon: int,
     """, [source, entry, horizon, cutoff, LABEL_VERSION, end, entry, end, cutoff])
 
 
-def _summaries(con: Any, run_id: str, signals: tuple[str, ...]) -> None:
+def _summaries(con: Any, run_id: str, signals: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+    """Insert every summary row (``fq2_v3`` inference); return the reported-only comparison."""
     rows = con.execute("""
         SELECT signal_id,horizon_sessions,split,session_number,year(decision_date),
                max(mean_forward_return) FILTER (WHERE decile=10)
@@ -205,12 +300,13 @@ def _summaries(con: Any, run_id: str, signals: tuple[str, ...]) -> None:
     for signal, horizon, split, *rest in rows:
         groups.setdefault((signal, horizon, split), []).append(tuple(rest))
     records: dict[tuple[str, int, str], dict[str, Any]] = {}
+    comparison: dict[str, dict[str, Any]] = {}
     for signal in signals:
         for horizon in HORIZONS:
             for split in SPLITS:
                 group = groups.get((signal, horizon, split), [])
                 values = [(r[0], r[2]) for r in group if r[2] is not None]
-                stats = calendar_hac_statistics(values, horizon)
+                stats, comparison[f"{signal}|{horizon}|{split}"] = robust_spread_statistics(values, horizon)
                 yearly: dict[int, list[float]] = {}
                 for _, year, spread, *_ in group:
                     if spread is not None and math.isfinite(spread):
@@ -253,6 +349,7 @@ def _summaries(con: Any, run_id: str, signals: tuple[str, ...]) -> None:
               record["policy"]/record["labeled"] if record["labeled"] else None,
               _json(annual), candidate,
               False, _json(_BLOCKERS)])
+    return comparison
 
 
 def _result_digest(con: Any, run_id: str) -> tuple[int, str]:
@@ -303,7 +400,7 @@ def evaluate_fundamental_signals(
         raise ValueError("evaluation cutoff precedes completed build")
     source = json.loads(build[3])["market_source"]
     cutoff = dt.datetime.combine(options.as_of_date, dt.time(22))
-    config = {"evaluation_version": "fq2_v2",
+    config = {"evaluation_version": EVALUATION_VERSION, "inference": INFERENCE_CONTRACT,
               "build_run_id": options.build_run_id, "label_source": options.label_source,
               "as_of_date": options.as_of_date.isoformat(), "label_version": LABEL_VERSION,
               "label_evidence_version": "selected_label_v2",
@@ -384,7 +481,7 @@ def evaluate_fundamental_signals(
                                 VALUES (?,?,?,?,0,?)
                             """, [options.run_id, signal, day, horizon,
                                   hashlib.sha256().hexdigest()])
-        _summaries(con, options.run_id, verified.signal_ids)
+        comparison = _summaries(con, options.run_id, verified.signal_ids)
         _, sample_sha = _digest_rows(con, """
             SELECT signal_id,decision_date,horizon_sessions,selected_rows,selected_sha256
             FROM fundamental_signal_evaluation_label_evidence WHERE run_id=?
@@ -397,7 +494,8 @@ def evaluate_fundamental_signals(
         """, [options.run_id]).fetchone()[0]
         diagnostic = {"sessions": len(sessions), "signals": len(verified.signal_ids),
                       "decile_rows": result_rows, "label_rows": label_rows,
-                      "summary_rows": len(verified.signal_ids)*len(HORIZONS)*len(SPLITS)}
+                      "summary_rows": len(verified.signal_ids)*len(HORIZONS)*len(SPLITS),
+                      "evaluation_version": EVALUATION_VERSION, "inference_comparison": comparison}
         with store.transaction():
             con.execute("""
                 UPDATE fundamental_signal_evaluation_runs

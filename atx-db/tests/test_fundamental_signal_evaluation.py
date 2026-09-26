@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from pathlib import Path
 
 import duckdb
+import numpy as np
 import pytest
 
 from atx_db import _forward_return_publication as publication
@@ -30,6 +32,7 @@ from atx_db.fundamental_signal_research import (
 )
 from atx_db.migrations.bodies_0324 import create_fundamental_signal_tables
 from atx_db.migrations.bodies_0325 import create_fundamental_signal_evaluation_tables
+from atx_db.research.stats import mean_inference
 
 
 def test_holm_family_keeps_missing_hypotheses_in_denominator():
@@ -336,7 +339,7 @@ def test_selected_label_evidence_covers_revision_order_and_stitching(tmp_path):
 
     try:
         baseline = evaluate("baseline")
-        assert baseline[0]["evaluation_version"] == "fq2_v2"
+        assert baseline[0]["evaluation_version"] == "fq2_v3"
         assert baseline[0]["label_evidence_version"] == "selected_label_v2"
         assert baseline[3] == 20
 
@@ -428,6 +431,85 @@ def test_malformed_latest_terminal_is_invalid_and_valid_policy_is_counted(tmp_pa
             WHERE run_id='terminal_eval' AND signal_id=? AND decision_date=?
               AND horizon_sessions=21 AND decile=1
         """, [signal, day]).fetchone() == (20, 19, 1, 1)
+    finally:
+        store.connection.close()
+
+
+def _desk_q5(con, **params):
+    sql = (Path(__file__).resolve().parents[1] / "sql/research/desk-q5-monthly-factor-portfolios.sql").read_text(
+        encoding="utf-8")
+    cursor = con.execute(sql, params)
+    columns = [column[0] for column in cursor.description]
+    return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+
+def test_fq2_v3_robust_p_is_r3a_and_desk_q5_gate_refuses_legacy_inference(tmp_path):
+    store, _, as_of, signal = _warehouse(tmp_path)
+    con = store.con
+    try:
+        # fq2_v3 p-values are R3a's robust_p_value on the same session-positioned spread series.
+        con.execute("""
+            INSERT INTO fundamental_signal_evaluation_deciles
+            SELECT 'planted',?,(DATE '2024-01-01'+t::INTEGER),t,NULL,NULL,21,'holdout','evaluated',d,
+                   200,0,20,20,0,0,0,0,0,0.0,CASE WHEN d=10 THEN 0.002+0.01*sin(t/5.0) ELSE 0.0 END
+            FROM range(1,401) r(t),(VALUES (1),(10)) v(d) WHERE t%7<>0
+        """, [signal])
+        comparison = evaluation._summaries(con, "planted", (signal,))
+        spreads = con.execute("""
+            SELECT session_number,max(mean_forward_return) FILTER (WHERE decile=10)
+                                  -max(mean_forward_return) FILTER (WHERE decile=1)
+            FROM fundamental_signal_evaluation_deciles WHERE run_id='planted' GROUP BY 1 ORDER BY 1
+        """).fetchall()
+        positioned = np.full(spreads[-1][0] - spreads[0][0] + 1, np.nan)
+        for session, spread in spreads:
+            positioned[session - spreads[0][0]] = spread
+        expected = mean_inference(positioned, horizon_periods=21)
+        row = con.execute("""
+            SELECT p_value,holm_p_value,z_statistic,hac_standard_error,hac_lags,gross_mean
+            FROM fundamental_signal_evaluation_summaries
+            WHERE run_id='planted' AND horizon_sessions=21 AND split='holdout'
+        """).fetchone()
+        assert row[0] == row[1] == expected.robust_p_value      # a one-signal Holm family
+        assert row[2:5] == (expected.z_equivalent, expected.robust_standard_error, expected.robust_df)
+        legacy = evaluation.calendar_hac_statistics(spreads, 21)
+        assert row[5] == legacy["gross_mean"] and row[0] != legacy["p_value"]
+        reported = comparison[f"{signal}|21|holdout"]
+        assert (reported["nw_p_value"], reported["legacy_calendar_hac_p_value"]) == (
+            expected.nw_p_value, legacy["p_value"])
+
+        # The desk-Q5 gate reads only fq2_v3 robust Holm p; legacy results stay readable, labeled.
+        evaluate_fundamental_signals(store, FundamentalSignalEvaluationOptions(
+            build_run_id="build", run_id="eval", as_of_date=as_of,
+            run_at=dt.datetime.combine(as_of, dt.time(22, 30), dt.UTC), label_source="labels"))
+        config = json.loads(con.execute("SELECT config_json FROM fundamental_signal_evaluation_runs "
+                                        "WHERE run_id='eval'").fetchone()[0])
+        assert config["evaluation_version"] == evaluation.EVALUATION_VERSION == "fq2_v3"
+        assert config["inference"]["columns"]["p_value"] == "robust_p_value"
+        con.execute("UPDATE fundamental_signal_evaluation_summaries SET p_value=.001,holm_p_value=.004 "
+                    "WHERE run_id='eval' AND split='holdout'")
+
+        def gate(version):
+            con.execute("UPDATE fundamental_signal_evaluation_runs SET config_json=json_merge_patch("
+                        "config_json, json_object('evaluation_version', ?)) WHERE run_id='eval'", [version])
+            rows = _desk_q5(con, cutoff=dt.datetime.combine(as_of, dt.time(23)), build_run_id="build",
+                            evaluation_run_id="eval", signal_id=signal,
+                            start_date=dt.date(2024, 3, 1), end_date=dt.date(2024, 3, 31))
+            return {r["horizon_sessions"]: (r["status"], r["inference_status"], r["significance_gate_status"],
+                                            r["significance_gate_pass"], r["robust_p_value"],
+                                            r["legacy_overconfident_p_value"]) for r in rows}
+
+        assert gate("fq2_v3") == {
+            21: ("month_end_not_evaluated", "ewc_fixed_b_robust", "robust_holm_pass", True, .001, None),
+            63: ("month_end_not_evaluated", "ewc_fixed_b_robust", "secondary_horizon_not_gated", False, .001, None)}
+        legacy_rows = gate("fq2_v2")
+        assert {h: r[:4] for h, r in legacy_rows.items()} == {
+            h: ("month_end_not_evaluated", "inference_overconfident_legacy", "inference_overconfident_legacy", False)
+            for h in (21, 63)}
+        assert {r[4:] for r in legacy_rows.values()} == {(None, .001)}
+        assert gate("fq2_v1")[21][:4] == ("unsupported_evaluation_contract", "inference_overconfident_legacy",
+                                          "evaluation_contract_failed", False)
+        assert evaluation.inference_status("fq2_v2") == evaluation.inference_status(None) == \
+            "inference_overconfident_legacy"
     finally:
         store.connection.close()
 

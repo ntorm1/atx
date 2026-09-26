@@ -6,6 +6,11 @@
 -- Each requested month/horizon survives even with no manifest/calendar/labels.
 -- A price gap ending mid-month is flagged, never treated as that month's end.
 -- These are overlapping cohort returns, not the P&L of a monthly traded book.
+-- Significance gate (ruling fq2_v3): only an fq2_v3 run's robust inference counts
+-- (R3a EWC fixed-b p, Holm over the primary 21-session family of the month's split).
+-- fq2_v1/fq2_v2 p-values (calendar Bartlett HAC, normal p) over-reject under
+-- overlapping labels: readable as legacy_overconfident_p_value, labeled
+-- inference_overconfident_legacy, and never pass the gate.
 WITH p AS (
     SELECT $cutoff::TIMESTAMP AS cutoff,$build_run_id::VARCHAR AS build_run_id,
       $evaluation_run_id::VARCHAR AS evaluation_run_id,$signal_id::VARCHAR AS signal_id,
@@ -44,13 +49,12 @@ WITH p AS (
       ON d.run_id=x.evaluation_run_id AND d.signal_id=x.signal_id
       AND d.decision_date=x.decision_date AND d.horizon_sessions=x.horizon_sessions
     GROUP BY x.month_start,x.horizon_sessions
-), report AS (
+), manifest AS (
     SELECT x.*,o.* EXCLUDE (month_start,horizon_sessions),b.panel_sha256,e.result_sha256,e.label_source,
       json_extract_string(e.config_json,'$.label_version') AS label_version,
+      json_extract_string(e.config_json,'$.evaluation_version') AS inference_version,
       b.blockers_json AS build_blockers,e.blockers_json AS evaluation_blockers,
-      CASE WHEN x.month_start>x.cutoff::DATE THEN 'future_month'
-           WHEN x.month_end>=x.cutoff::DATE THEN 'month_not_closed_at_cutoff'
-           WHEN b.run_id IS NULL THEN 'build_manifest_missing'
+      CASE WHEN b.run_id IS NULL THEN 'build_manifest_missing'
            WHEN b.status<>'complete' THEN 'build_not_complete'
            WHEN b.as_of_date>x.cutoff::DATE THEN 'build_snapshot_after_cutoff'
            WHEN f.signal_id IS NULL THEN 'signal_not_in_frozen_build'
@@ -60,26 +64,57 @@ WITH p AS (
              OR e.as_of_date>x.cutoff::DATE OR e.run_at>x.cutoff THEN 'evaluation_manifest_mismatch'
            -- v2 labels realize a halt-gap delisting loss at the first absent session (R3a);
            -- sealed v1 runs stay readable: their unstitched halt windows surface as label attrition.
-           WHEN json_extract_string(e.config_json,'$.evaluation_version') IS DISTINCT FROM 'fq2_v2'
+           -- fq2_v2 and fq2_v3 share the observation contract; they differ only in inference.
+           WHEN coalesce(json_extract_string(e.config_json,'$.evaluation_version'),'') NOT IN ('fq2_v2','fq2_v3')
              OR coalesce(json_extract_string(e.config_json,'$.label_version'),'')
                 NOT IN ('forward_return_publication_v1','forward_return_publication_v2')
              THEN 'unsupported_evaluation_contract'
-           WHEN x.decision_date IS NULL THEN 'observed_calendar_missing'
-           -- Weekend+holiday leaves <=3 days (2015-2026 NYSE); more means the
-           -- observed calendar lost the true last session, not a month-end.
-           WHEN date_diff('day',x.decision_date,x.month_end)>4 THEN 'observed_month_end_session_missing'
-           WHEN o.stored_deciles=0 THEN 'month_end_not_evaluated'
-           WHEN o.evaluated_deciles<>10 THEN 'excluded_or_unmatured_month_end'
-           WHEN o.eligible_count<>o.labeled_count OR o.missing_labels+o.invalid_labels+o.unsupported_basis_labels<>0
-             THEN 'label_attrition_no_complete_portfolio_return'
-           ELSE 'stored_complete_cohort_digest_validation_required' END AS status
+           END AS contract_failure,
+      -- The FQ2 split of the month's decision session (train<=2020, validation 2021..2023, holdout>=2024).
+      CASE WHEN x.decision_date IS NULL THEN NULL WHEN year(x.decision_date)<=2020 THEN 'train'
+           WHEN year(x.decision_date)<=2023 THEN 'validation' ELSE 'holdout' END AS hypothesis_split
     FROM expected x JOIN observations o USING (month_start,horizon_sessions)
     LEFT JOIN fundamental_signal_runs b ON b.run_id=x.build_run_id
     LEFT JOIN fundamental_signal_definitions f ON f.run_id=b.run_id AND f.signal_id=x.signal_id
     LEFT JOIN fundamental_signal_evaluation_runs e ON e.run_id=x.evaluation_run_id
+), report AS (
+    SELECT m.*,
+      CASE WHEN m.month_start>m.cutoff::DATE THEN 'future_month'
+           WHEN m.month_end>=m.cutoff::DATE THEN 'month_not_closed_at_cutoff'
+           WHEN m.contract_failure IS NOT NULL THEN m.contract_failure
+           WHEN m.decision_date IS NULL THEN 'observed_calendar_missing'
+           -- Weekend+holiday leaves <=3 days (2015-2026 NYSE); more means the
+           -- observed calendar lost the true last session, not a month-end.
+           WHEN date_diff('day',m.decision_date,m.month_end)>4 THEN 'observed_month_end_session_missing'
+           WHEN m.stored_deciles=0 THEN 'month_end_not_evaluated'
+           WHEN m.evaluated_deciles<>10 THEN 'excluded_or_unmatured_month_end'
+           WHEN m.eligible_count<>m.labeled_count OR m.missing_labels+m.invalid_labels+m.unsupported_basis_labels<>0
+             THEN 'label_attrition_no_complete_portfolio_return'
+           ELSE 'stored_complete_cohort_digest_validation_required' END AS status,
+      CASE WHEN m.inference_version='fq2_v3' THEN 'ewc_fixed_b_robust'
+           WHEN m.inference_version IN ('fq2_v1','fq2_v2') THEN 'inference_overconfident_legacy'
+           WHEN m.inference_version IS NULL THEN 'no_inference'
+           ELSE 'unsupported_inference_version' END AS inference_status,
+      s.primary_hypothesis,
+      CASE WHEN m.inference_version='fq2_v3' THEN s.p_value END AS robust_p_value,
+      CASE WHEN m.inference_version='fq2_v3' THEN s.holm_p_value END AS holm_robust_p_value,
+      CASE WHEN m.inference_version IN ('fq2_v1','fq2_v2') THEN s.p_value END AS legacy_overconfident_p_value,
+      CASE WHEN m.contract_failure IS NOT NULL THEN 'evaluation_contract_failed'
+           WHEN m.inference_version IS DISTINCT FROM 'fq2_v3' THEN 'inference_overconfident_legacy'
+           WHEN s.run_id IS NULL THEN 'hypothesis_summary_missing'
+           WHEN NOT s.primary_hypothesis THEN 'secondary_horizon_not_gated'
+           WHEN s.holm_p_value IS NULL THEN 'robust_inference_untestable'
+           WHEN s.holm_p_value<=0.05 THEN 'robust_holm_pass'
+           ELSE 'robust_holm_not_significant' END AS significance_gate_status
+    FROM manifest m
+    LEFT JOIN fundamental_signal_evaluation_summaries s
+      ON s.run_id=m.evaluation_run_id AND s.signal_id=m.signal_id
+      AND s.horizon_sessions=m.horizon_sessions AND s.split=m.hypothesis_split
 )
-SELECT *,CASE WHEN status='stored_complete_cohort_digest_validation_required'
+SELECT * EXCLUDE (contract_failure),
+       CASE WHEN status='stored_complete_cohort_digest_validation_required'
              THEN q10_return-q1_return END AS complete_cohort_q10_minus_q1,
+       significance_gate_status='robust_holm_pass' AS significance_gate_pass,
        false AS production_qualified,
-       'FQ1 modeled availability and historical membership; FQ2 observed/policy terminals separate; no digest certification by this SQL' AS qualification
+       'FQ1 modeled availability and historical membership; FQ2 observed/policy terminals separate; no digest certification by this SQL; significance only from fq2_v3 robust Holm p' AS qualification
 FROM report ORDER BY month_start,horizon_sessions;

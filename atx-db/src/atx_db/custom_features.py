@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .connection import DuckDBStore
-from .research.stats import calendar_hac_statistics, holm
+from .fundamental_signal_evaluation import EVALUATION_VERSION as INFERENCE_VERSION
+from .fundamental_signal_evaluation import INFERENCE_CONTRACT, robust_spread_statistics
+from .fundamental_signal_evaluation import inference_status as inference_status
+from .research.stats import calendar_hac_statistics as calendar_hac_statistics
+from .research.stats import holm
 
 FEATURE_VERSION = "cf1_v1"
 FEATURE_SOURCE = "atx_custom_price_liquidity_v1"
@@ -401,7 +405,7 @@ def evaluate_custom_features(store: DuckDBStore, options: CustomEvaluationOption
                     FROM date_rules WHERE status<>'evaluated'
                 """, [horizon, cutoff, horizon, options.run_id, feature, horizon,
                       options.run_id, feature, horizon])
-        summaries = _evaluation_summaries(store, options.run_id)
+        summaries, comparison = _evaluation_summaries(store, options.run_id)
         decile_count = con.execute("SELECT count(*) FROM _cf_deciles").fetchone()
         assert decile_count is not None
         diagnostics = {
@@ -410,6 +414,7 @@ def evaluate_custom_features(store: DuckDBStore, options: CustomEvaluationOption
             "evaluation_rows": len(summaries),
             "holdout_primary_statistically_qualified": [row[1] for row in summaries if row[2] == 21 and row[3] == "holdout" and row[-3]],
             "production_eligible": [], "production_blockers": list(PRODUCTION_BLOCKERS),
+            "inference_version": INFERENCE_VERSION, "inference_comparison": comparison,
             "date_status_counts": [list(row) for row in con.execute(
                 "SELECT status,count(DISTINCT (feature_id,horizon_sessions,decision_date)) "
                 "FROM _cf_deciles GROUP BY status ORDER BY status").fetchall()],
@@ -419,7 +424,10 @@ def evaluate_custom_features(store: DuckDBStore, options: CustomEvaluationOption
                   "primary_horizon": 21, "secondary_horizons": [5, 63], "cohort": COHORT,
                   "min_names": 200, "min_names_per_decile_before_labels": 20,
                   "split_rule": "train<=2020; validation2021..2023; holdout>=2024; purge crossing labels; first63 market sessions embargoed at validation/holdout start",
-                  "inference": "calendar-aware Bartlett/Newey-West mean SE; lag=horizon-1; asymptotic normal two-sided p; eight-test Holm within each primary split",
+                  # fq2_v3 (R3a EWC fixed-b); runs without inference_version used the
+                  # over-confident calendar Bartlett HAC (lag horizon-1, normal p): legacy.
+                  "inference_version": INFERENCE_VERSION,
+                  "inference": dict(INFERENCE_CONTRACT, family="eight-test Holm within each primary split"),
                   "costs": "10/25/50bp per side per security: two legs times entry and exit => 4*c from Q10-Q1 horizon spread",
                   "portfolio_claim": "overlapping horizon return spread, not daily PnL or annualized trading Sharpe"}
         with store.transaction():
@@ -436,8 +444,12 @@ def evaluate_custom_features(store: DuckDBStore, options: CustomEvaluationOption
         con.execute("DROP VIEW IF EXISTS _cf_labels")
 
 
-def _evaluation_summaries(store: DuckDBStore, run_id: str) -> list[list[Any]]:
-    """Only small date/feature/horizon aggregates cross the Python boundary."""
+def _evaluation_summaries(store: DuckDBStore, run_id: str) -> tuple[list[list[Any]], dict[str, dict[str, Any]]]:
+    """Only small date/feature/horizon aggregates cross the Python boundary.
+
+    Inference is ``fq2_v3`` (:func:`robust_spread_statistics`); returns the rows and the
+    reported-only Newey-West / legacy calendar-HAC comparison per hypothesis.
+    """
     rows = store.con.execute("""
         SELECT feature_id,horizon_sessions,split,session_number,year(decision_date),
                max(mean_forward_return) FILTER (WHERE decile=10)
@@ -451,12 +463,13 @@ def _evaluation_summaries(store: DuckDBStore, run_id: str) -> list[list[Any]]:
     for feature, horizon, split, *data in rows:
         groups.setdefault((feature, horizon, split), []).append(tuple(data))
     records: dict[tuple[str, int, str], dict[str, Any]] = {}
+    comparison: dict[str, dict[str, Any]] = {}
     for feature in FEATURE_DEFINITIONS:
         for horizon in HORIZONS:
             for split in SPLITS:
                 group = groups.get((feature, horizon, split), [])
                 values = [(row[0], row[2]) for row in group if row[2] is not None]
-                statistics = calendar_hac_statistics(values, horizon)
+                statistics, comparison[f"{feature}|{horizon}|{split}"] = robust_spread_statistics(values, horizon)
                 yearly: dict[int, list[float]] = {}
                 for _, year, spread, *_ in group:
                     if spread is not None and math.isfinite(spread):
@@ -496,4 +509,4 @@ def _evaluation_summaries(store: DuckDBStore, run_id: str) -> list[list[Any]]:
             record["terminal_count"], record["imputed_count"], _json(record["annual"]),
             qualified, False, _json(PRODUCTION_BLOCKERS),
         ])
-    return output
+    return output, comparison
