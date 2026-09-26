@@ -149,7 +149,7 @@ TEST(LibraryCompressed, MissingResolverFailsAndBoundRecipeRecomputesOnlyRequeste
   const std::array<atx::i16, 3> sketch{-120, 0, 120};
   {
     lib::LibraryStore store(dir, compact_options());
-    ASSERT_TRUE(store.stage(nullptr, pnl, {}, metrics(), {"close"}, 7, metadata(), sketch));
+    ASSERT_TRUE(store.stage(nullptr, pnl, {}, metrics(), {"close", {}, 0, 0}, 7, metadata(), sketch));
     EXPECT_DOUBLE_EQ(store.pnl(AlphaId{0})[1], static_cast<f64>(static_cast<atx::f32>(pnl[1])));
     EXPECT_FALSE(store.positions_checked(AlphaId{0}, 1).has_value());
     ASSERT_TRUE(store.flush());
@@ -184,8 +184,8 @@ TEST(LibraryCompressed, AppendPeriodsAndLaterAdmissionsSurviveReopenWithoutRewri
   {
     lib::LibraryStore store(dir, compact_options(0));
     const std::array<f64, 4> first{1, 2, 3, 4}, second{-1, -2, -3, -4};
-    ASSERT_TRUE(store.stage(nullptr, first, {}, metrics(), {"first"}, 1));
-    ASSERT_TRUE(store.stage(nullptr, second, {}, metrics(), {"second"}, 2));
+    ASSERT_TRUE(store.stage(nullptr, first, {}, metrics(), {"first", {}, 0, 0}, 1));
+    ASSERT_TRUE(store.stage(nullptr, second, {}, metrics(), {"second", {}, 0, 0}, 2));
     ASSERT_TRUE(store.bind_index_recipe(2, 42));
     ASSERT_TRUE(store.flush());
     auto original = lib::SegmentReaderLite::attach(store.segment_path(0));
@@ -195,7 +195,7 @@ TEST(LibraryCompressed, AppendPeriodsAndLaterAdmissionsSurviveReopenWithoutRewri
     ASSERT_TRUE(store.append_periods(tail, 1));
     EXPECT_NE(store.record_crc(AlphaId{0}), before);
     const std::array<f64, 5> later{10, 20, 30, 40, 50};
-    ASSERT_TRUE(store.stage(nullptr, later, {}, metrics(), {"later"}, 3));
+    ASSERT_TRUE(store.stage(nullptr, later, {}, metrics(), {"later", {}, 0, 0}, 3));
     const std::array<f64, 6> more{6, 7, -6, -7, 60, 70};
     ASSERT_TRUE(store.append_periods(more, 2));
     extended_crc = store.record_crc(AlphaId{0});
@@ -240,7 +240,7 @@ TEST(LibraryCompressed, IndexRecipeIsDurableAndMigrationChangesIdentity) {
   {
     lib::LibraryStore legacy(dir);
     const std::array<f64, 4> pnl{1, -1, 2, -2};
-    ASSERT_TRUE(legacy.stage(nullptr, pnl, {}, metrics(), {"legacy"}));
+    ASSERT_TRUE(legacy.stage(nullptr, pnl, {}, metrics(), {"legacy", {}, 0, 0}));
     ASSERT_TRUE(legacy.flush());
     auto adopted = legacy.bind_index_recipe(0, 91);
     ASSERT_TRUE(adopted); EXPECT_EQ(*adopted, 1U); // metadata-less populated V1 keeps its rule
@@ -265,7 +265,7 @@ TEST(LibraryCompressed, FacadeRebuildsIndexAndBindsManifestAfterPeriodAppend) {
     auto library = lib::Library::open(dir, config, {42}, lib::CorrIndexRule::ExistingOrSignedV2,
                                       compact_options(0));
     const std::array<f64, 4> pnl{0.125, -0.25, 0.375, -0.5};
-    lib::AlphaCandidate candidate{11, pnl, {}, metrics(), {"first"}, 3};
+    lib::AlphaCandidate candidate{11, pnl, {}, metrics(), {"first", {}, 0, 0}, 3};
     candidate.metadata = metadata();
     auto admitted = library.try_admit(candidate, gate);
     ASSERT_TRUE(admitted); EXPECT_EQ(admitted->kind, lib::AdmitKind::Accept);
@@ -296,7 +296,7 @@ TEST(LibraryCompressed, FailedFirstAdmissionDoesNotFixPeriodGeometry) {
   auto library = lib::Library::open(directory(), config, {29},
       lib::CorrIndexRule::ExistingOrSignedV2, compact_options(3));
   const std::array<f64, 4> bad_pnl{1, 2, 3, std::numeric_limits<f64>::max()};
-  lib::AlphaCandidate candidate{12, bad_pnl, {}, metrics(), {"first"}, 3};
+  lib::AlphaCandidate candidate{12, bad_pnl, {}, metrics(), {"first", {}, 0, 0}, 3};
   EXPECT_FALSE(library.try_admit(candidate, gate));
   EXPECT_EQ(library.n_periods(), 0U);
   const std::array<f64, 3> good_pnl{0.125, -0.25, 0.375};
@@ -312,9 +312,9 @@ TEST(LibraryCompressed, ImmutablePublicationRejectsStaleHandlesAndOrphanCollisio
   lib::LibraryStore writer(dir, compact_options(0));
   lib::LibraryStore stale_base(dir, compact_options(0));
   const std::array<f64, 2> pnl{1, -1}, different{7, -7};
-  ASSERT_TRUE(writer.stage(nullptr, pnl, {}, metrics(), {"original"}));
+  ASSERT_TRUE(writer.stage(nullptr, pnl, {}, metrics(), {"original", {}, 0, 0}));
   ASSERT_TRUE(writer.flush());
-  ASSERT_TRUE(stale_base.stage(nullptr, different, {}, metrics(), {"stale"}));
+  ASSERT_TRUE(stale_base.stage(nullptr, different, {}, metrics(), {"stale", {}, 0, 0}));
   EXPECT_FALSE(stale_base.flush());
   lib::LibraryStore stale_period(dir);
   const std::array<f64, 1> tail{2}, wrong{-2};
@@ -342,7 +342,7 @@ TEST(LibraryCompressed, BaseCatalogRejectsResealedReplacementWithMatchingGeometr
   {
     lib::LibraryStore store(dir, compact_options(0));
     const std::array<f64, 4> pnl{0, 1, 2, 3};
-    ASSERT_TRUE(store.stage(nullptr, pnl, {}, metrics(), {"original"}));
+    ASSERT_TRUE(store.stage(nullptr, pnl, {}, metrics(), {"original", {}, 0, 0}));
     ASSERT_TRUE(store.flush()); path = store.segment_path(0);
   }
   auto replacement = record();
@@ -363,7 +363,7 @@ TEST(LibraryCompressed, BaseCatalogRejectsResealedReplacementWithMatchingGeometr
 TEST(LibraryCompressed, AppendedHoldingsRequireTheNewSlabContextInsteadOfAdmissionContext) {
   lib::LibraryStore store(directory(), compact_options(3));
   const std::array<f64, 2> pnl{1, -1};
-  ASSERT_TRUE(store.stage(nullptr, pnl, {}, metrics(), {"original"}, 1, metadata()));
+  ASSERT_TRUE(store.stage(nullptr, pnl, {}, metrics(), {"original", {}, 0, 0}, 1, metadata()));
   const std::array<f64, 1> tail{0.5};
   ASSERT_TRUE(store.append_periods(tail, 1));
   int calls = 0;
