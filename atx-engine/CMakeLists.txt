@@ -141,6 +141,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/combine/orthogonalize.cpp
     src/risk/model_validation.cpp
     src/risk/qp_solver.cpp
+    src/risk/qp_factor_admm.cpp
+    src/risk/exposures.cpp
     src/risk/hybrid_factor_model.cpp
     src/risk/cost_terms.cpp
     src/book/replay_cost.cpp
