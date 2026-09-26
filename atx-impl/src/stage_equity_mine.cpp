@@ -1297,7 +1297,9 @@ struct MineArgs {
     alpha::VwapRule vwap_rule{alpha::VwapRule::RawDailyCloseV2};
     atx::engine::factory::IcScreenConfig ic_screen = [] {
         atx::engine::factory::IcScreenConfig c;
-        c.rule = atx::engine::factory::IcScreenRule::ConservativeV2;
+        c.rule = atx::engine::factory::IcScreenRule::EquivalenceV3;
+        c.practical_abs_ic = 0.002;
+        c.confidence_multiplier = 3.5;
         return c;
     }();
     std::vector<std::string> train_ctx, val_ctx, hold_ctx;

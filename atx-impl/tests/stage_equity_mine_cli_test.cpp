@@ -189,7 +189,9 @@ TEST_F(EquityMineCli, PublishesHashBoundLibraryWithPlantedAlpha) {
     EXPECT_EQ(g["config"]["vwap_rule"], "raw-daily-close-v2");
     EXPECT_EQ(g["config"]["vwap_basis"], "raw");
     EXPECT_EQ(g["config"]["vwap_is_intraday_observation"], false);
-    EXPECT_EQ(g["ic_screen"]["rule"], "conservative-v2");
+    EXPECT_EQ(g["ic_screen"]["rule"], "equivalence-v3");
+    EXPECT_DOUBLE_EQ(g["ic_screen"]["practical_abs_ic"].get<double>(), 0.002);
+    EXPECT_DOUBLE_EQ(g["ic_screen"]["confidence_multiplier"].get<double>(), 3.5);
     EXPECT_EQ(g["ic_screen"]["horizons"], json::array({5, 21, 63, 126}));
     EXPECT_EQ(g["ic_screen"]["execution_delay"], 1);
     EXPECT_EQ(g["ic_screen"]["window_end"], g["ic_screen"]["maturity_end"]);
@@ -226,11 +228,17 @@ TEST_F(EquityMineCli, PublishesHashBoundLibraryWithPlantedAlpha) {
 TEST_F(EquityMineCli, SmoothWindowsAddDecayedVariantsAsTrials) {
     const fs::path out = root_ / "smooth";
     auto args = base_args(out);
-    args.insert(args.end(), {"--smooth-windows", "5;10"});
+    // V2 reproduction pins its original margin; changing only the rule leaves
+    // independently configured numeric knobs intact.
+    args.insert(args.end(), {"--smooth-windows", "5;10", "--ic-screen-rule", "conservative-v2",
+                             "--ic-screen-min-abs-ic", "0.02"});
     std::string o, e;
     ASSERT_EQ(run(args, o, e), 0) << e;
     std::ifstream gf(out / "gate_report.json");
     const json g = json::parse(gf);
+    EXPECT_EQ(g["ic_screen"]["rule"], "conservative-v2");
+    EXPECT_DOUBLE_EQ(g["ic_screen"]["practical_abs_ic"].get<double>(), 0.02);
+    EXPECT_DOUBLE_EQ(g["ic_screen"]["confidence_multiplier"].get<double>(), 3.5);
     EXPECT_EQ(g["counts"]["seeds"].get<int>(), 15);        // 5 base lines x (1 + 2 windows)
     EXPECT_EQ(g["counts"]["seeds_invalid"].get<int>(), 3); // the bad line in every form
     // 4 valid base seeds x 3 forms = 12 scored candidates. W0-A0 / A-01 (average rank
@@ -241,7 +249,8 @@ TEST_F(EquityMineCli, SmoothWindowsAddDecayedVariantsAsTrials) {
     EXPECT_EQ(g["trials"]["n_raw"].get<int>(), 9);
     std::string o2, e2;
     auto bad = args;
-    bad.back() = (root_ / "smooth_bad").string();
+    bad[std::find(bad.begin(), bad.end(), "--out") - bad.begin() + 1] =
+        (root_ / "smooth_bad").string();
     bad.insert(bad.end(), {"--smooth-windows", "1"});
     EXPECT_EQ(run(bad, o2, e2), 2);
 }
