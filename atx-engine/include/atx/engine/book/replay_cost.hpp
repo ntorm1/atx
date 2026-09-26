@@ -32,6 +32,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/cost/cost_surface.hpp"
 
 namespace atx::engine::book {
 
@@ -89,6 +90,33 @@ public:
     if (filled > 0.0) return priced.cost_dollars * (requested / filled);
     return std::numeric_limits<atx::f64>::quiet_NaN();
   }
+};
+
+// Explicit new adapter: one immutable surface, bound to one execution period.
+// The snapshot supplies all liquidity; an external row cannot override its
+// as-of provenance. Other periods refuse fills and return NaN for full requests.
+// B2 owns any future chronological snapshot provider / production migration.
+class SurfaceReplayCost final : public ReplayCostModel {
+public:
+  // The caller maps the replay period to its real clock. A surface cannot be
+  // bound to an execution preceding its decision; later execution is allowed.
+  [[nodiscard]] static atx::core::Result<SurfaceReplayCost> create(
+      atx::engine::cost::CostSurface surface, atx::usize execution_period,
+      atx::i64 execution_time_ns);
+  [[nodiscard]] TradeCost cost(atx::usize instrument, atx::usize period,
+      atx::f64 trade_dollars, const LiquidityRow& liquidity) const noexcept override;
+  [[nodiscard]] atx::f64 unrationed_cost(atx::usize instrument, atx::usize period,
+      atx::f64 trade_dollars, const LiquidityRow& liquidity) const noexcept override;
+  [[nodiscard]] bool needs_liquidity() const noexcept override { return false; }
+  [[nodiscard]] const atx::engine::cost::CostSurface& surface() const noexcept { return surface_; }
+  [[nodiscard]] atx::usize execution_period() const noexcept { return period_; }
+  [[nodiscard]] atx::i64 execution_time_ns() const noexcept { return execution_time_ns_; }
+private:
+  SurfaceReplayCost(atx::engine::cost::CostSurface surface, atx::usize execution_period,
+                    atx::i64 execution_time_ns) noexcept;
+  atx::engine::cost::CostSurface surface_;
+  atx::usize period_{};
+  atx::i64 execution_time_ns_{};
 };
 
 class FlatBpsCost final : public ReplayCostModel {

@@ -42,6 +42,7 @@
 
 #include "atx/engine/book/replay_cost.hpp" // FlatBpsCost, SqrtImpactCost, LiquidityRow
 #include "atx/engine/cost/borrow.hpp"      // DayCount, day_count_denom
+#include "atx/engine/cost/cost_surface.hpp"
 #include "atx/engine/risk/cost_terms.hpp"  // risk::TradeCostTerms
 
 namespace atx::engine::cost {
@@ -88,6 +89,36 @@ namespace detail {
 }
 
 } // namespace detail
+
+// New surface adapter; existing flat/sqrt entry points retain their arithmetic.
+// The caller MUST enforce untradeable pins and max_trade boxes (R1/R3). This
+// view alone does not constrain a solver. No borrow or locate is invented here.
+[[nodiscard]] inline atx::core::Result<OptimizerCostTerms>
+cost_terms_from_surface(const CostSurface& surface, atx::i64 decision_time_ns,
+                        atx::f64 pretrade_nav, std::span<const atx::f64> w_prev = {}) {
+  namespace co = atx::core;
+  const auto m = surface.instruments();
+  ATX_TRY_VOID(detail::check_book(w_prev, m));
+  if (m == 0U || decision_time_ns != surface.decision_time_ns() ||
+      !std::isfinite(pretrade_nav) || pretrade_nav <= 0.0)
+    return co::Err(co::ErrorCode::InvalidArgument, "surface cost terms: invalid snapshot, time or NAV");
+  OptimizerCostTerms out;
+  out.kappa_lin.assign(m, 0.0);
+  out.c_three_halves.assign(m, 0.0);
+  out.w_prev = detail::book_or_zero(w_prev, m);
+  out.untradeable.assign(m, 0U);
+  out.max_trade.assign(m, 0.0);
+  for (atx::usize i = 0U; i < m; ++i) {
+    const auto terms = surface.coefficients(i, decision_time_ns, pretrade_nav);
+    if (terms.status == CostQuoteStatus::Unavailable) { out.untradeable[i] = 1U; continue; }
+    if (!terms.priced())
+      return co::Err(co::ErrorCode::InvalidArgument, "surface cost terms: coefficient cannot be represented");
+    out.kappa_lin[i] = terms.spread_linear + terms.commission_linear;
+    out.c_three_halves[i] = terms.impact_three_halves;
+    out.max_trade[i] = terms.max_trade_weight;
+  }
+  return co::Ok(std::move(out));
+}
 
 // FlatBpsCost ⇒ κ_i = bps·1e-4 on every name (no impact, no cap, every name tradeable).
 [[nodiscard]] inline atx::core::Result<OptimizerCostTerms>
