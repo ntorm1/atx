@@ -3,9 +3,10 @@
 One compact end-to-end check on a scratch 0327 warehouse (the schema template at
 migration head) and tiny retained files: the stage writes the accepted link with
 its point-in-time tier history and both sides of a two-CIK conflict, the bridge's
-evidence reader sees them, a rerun on the same files changes nothing, and a
+evidence reader sees them, a rerun on the same files changes nothing, a
 missing input or one received after the cutoff day fails before anything is
-written.
+written, and other inputs append a new revision that supersedes the held one
+through the governed swap (and the older inputs restore it the same way).
 """
 
 from __future__ import annotations
@@ -145,3 +146,33 @@ def test_stage_writes_ri1_evidence_idempotently_and_refuses_late_or_missing_inpu
         stage_identity_reconstruction(tmp_store, ActivationOptions(**{**options.as_dict(),
                                                                       "ticker_history_source_path": None}))
     assert _held(tmp_store) == held
+
+    # Other inputs (a later receipt clock on one file, still before the cutoff) are a new revision: appended,
+    # and the held one superseded -- never deleted -- by the governed swap (no in-place UPDATE).
+    tickers = root / "cache" / "company_tickers.json"
+    later = calendar.timegm((RECEIVED + dt.timedelta(hours=6)).timetuple())
+    os.utime(tickers, (later, later))
+    second = stage_identity_reconstruction(tmp_store, options)
+    assert (second.rows, second.detail["rows_superseded"], second.detail["rows_restored"],
+            second.detail["latest_flags_rebuilt_by_swap"]) == (3, 3, 0, True)
+    assert _flags(tmp_store) == [(first.detail["revision"], False, 3), (second.detail["revision"], True, 3)]
+    assert set(hi.audit_identity_evidence(tmp_store.con).values()) == {0}
+    assert {item.evidence_id for item in _read_reconstructed_evidence(tmp_store)} == {
+        row[0] for row in tmp_store.con.execute(
+            "SELECT evidence_id FROM security_identity_evidence WHERE source_revision_id = ?",
+            [second.detail["revision"]]).fetchall()}
+    # The older inputs again: nothing appended; their revision is latest again, by the same swap.
+    stamp = calendar.timegm(RECEIVED.timetuple())
+    os.utime(tickers, (stamp, stamp))
+    back = stage_identity_reconstruction(tmp_store, options)
+    assert (back.rows, back.detail["rows_unchanged"], back.detail["rows_superseded"], back.detail["rows_restored"],
+            back.detail["latest_flags_rebuilt_by_swap"]) == (0, 3, 3, 3, True)
+    assert _flags(tmp_store) == [(second.detail["revision"], False, 3), (first.detail["revision"], True, 3)]
+    assert [row for row in _held(tmp_store) if row[5]] == held
+
+
+def _flags(store) -> list[tuple[object, ...]]:
+    return store.con.execute(
+        "SELECT source_revision_id, is_latest_revision, count(*) FROM security_identity_evidence "
+        "GROUP BY ALL ORDER BY is_latest_revision, source_revision_id"
+    ).fetchall()

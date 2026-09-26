@@ -190,10 +190,11 @@ import datetime as dt
 import hashlib
 import json
 import math
+import re
 import time
 import zipfile
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -207,6 +208,8 @@ from .ticker_history import SOURCE_NAME as TICKER_HISTORY_SOURCE
 from .warehouse import cik_security_id, now_utc_naive
 
 if TYPE_CHECKING:
+    import pyarrow as pa  # type: ignore[import-untyped]
+
     from .connection import DuckDBStore
 
 __all__ = [
@@ -851,7 +854,7 @@ _SHARE_FACT_FIELDS = ("cik", "concept", "as_of", "value", "accession", "form", "
 
 def stage_share_facts(con: duckdb.DuckDBPyConnection, facts: Iterable[IssuerShareFact], batch: int = 50_000) -> int:
     """Stage issuer share facts in bounded Arrow batches (one INSERT per batch); returns the row count."""
-    import pyarrow as pa  # type: ignore[import-untyped]
+    import pyarrow as pa
 
     con.execute(_SHARE_FACTS_DDL)
     schema = pa.schema(
@@ -936,30 +939,35 @@ def stage_vendor_ticker_history(con: duckdb.DuckDBPyConnection, parquet_path: st
     )
     con.execute(_SHARE_RUNS_DDL)
     for part in range(chunks):
+        # One row per (line, day, count), materialized first (its own blocking operator): a repeated
+        # identical bar is one observation, so (d, shares) below is a total order and a repeated
+        # vendor-day with two counts splits the runs the same way on every run.
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ri_share_obs AS
+            SELECT DISTINCT securityID AS vendor_id, tradingDate AS d, shares
+            FROM read_parquet(?)
+            WHERE securityID > 0 AND shares > 0 AND tradingDate IS NOT NULL AND securityID % ? = ?
+            """,
+            [source, chunks, part],
+        )
         con.execute(
             """
             INSERT INTO ri_share_runs
-            WITH s AS (
-                -- One row per (line, day, count): a repeated identical bar is one observation, so
-                -- (d, shares) below is a total order and a repeated vendor-day with two counts
-                -- splits the runs the same way on every run.
-                SELECT DISTINCT securityID AS vendor_id, tradingDate AS d, shares
-                FROM read_parquet(?)
-                WHERE securityID > 0 AND shares > 0 AND tradingDate IS NOT NULL AND securityID % ? = ?
-            ), marked AS (
+            WITH marked AS (
                 SELECT *, CASE WHEN lag(shares) OVER (PARTITION BY vendor_id ORDER BY d, shares)
                                     IS DISTINCT FROM shares
                                THEN 1 ELSE 0 END AS brk
-                FROM s
+                FROM ri_share_obs
             ), grouped AS (
                 SELECT *, sum(brk) OVER (PARTITION BY vendor_id ORDER BY d, shares ROWS UNBOUNDED PRECEDING)
                            AS run_no
                 FROM marked
             )
             SELECT vendor_id, shares, min(d), max(d), count(*) FROM grouped GROUP BY vendor_id, run_no, shares
-            """,
-            [source, chunks, part],
+            """
         )
+    con.execute("DROP TABLE IF EXISTS ri_share_obs")
 
 
 def read_vendor_lines(
@@ -1274,7 +1282,7 @@ def match_share_counts(
     # other weight threshold of the reconstruction (:func:`_share_weight`).
     weights: dict[tuple[object, object], list[float]] = defaultdict(list)
     for row in rows:
-        weights[(row[0], row[1])].append(float(row[13]))  # type: ignore[arg-type]
+        weights[(row[0], row[1])].append(float(row[13]))
     kept = {pair for pair, values in weights.items() if math.fsum(values) >= floor}
     return [row for row in rows if (row[0], row[1]) in kept]
 
@@ -1721,13 +1729,21 @@ def _segments(
 # Warehouse refresh (RI2): the ``identity_reconstruction`` activation stage
 
 #: DuckDB ``memory_limit`` of the private staging database (the RI1 measurement ran at 192MB).
-SCRATCH_MEMORY_LIMIT = "256MB"
+SCRATCH_MEMORY_LIMIT = "192MB"
+#: The warehouse session's memory cap while the stage runs (lowered only, restored afterwards).
+#: The stage reads the warehouse once (a ~26k-group line-id aggregate over ``equity_daily_bars``)
+#: and appends ~12.7k rows, so the session's buffer pool (up to its ``--memory-limit``) must not
+#: stay resident beside the scratch DB and the Python payload: the stage runs in the 0.8 GiB
+#: writer-slice guard class with a measured process peak <= 0.7 GiB (ruling C-14).
+WAREHOUSE_SESSION_MEMORY_LIMIT = "128MB"
 _SCRATCH_DB = "ri2_stage.duckdb"
 #: Vendor lines per candidate-CIK matching pass (the runs are the hash-join build side).
 _CANDIDATE_CHUNK = 2000
 #: Bookkeeping columns: a rerun may restamp them; every other column is the row's content.
 _BOOKKEEPING = frozenset({"is_latest_revision", "run_id", "source_loaded_at"})
 _CONTENT_COLUMNS = tuple(name for name, _kind in EVIDENCE_COLUMNS if name not in _BOOKKEEPING)
+#: Rows per bounded content-digest pass (fresh Arrow batches, held rows fetched in chunks).
+_DIGEST_BATCH = 1024
 _SEC_CIK_PREFIX = "SEC-CIK-"
 
 
@@ -1792,8 +1808,30 @@ def refresh_identity_reconstruction(
     input files and their receipt clocks, so a rerun on the same files writes
     nothing. ``observed_at`` is the Company Facts receipt; ``available_at`` is
     RI1's evidence clock, unchanged.
+
+    Memory: the warehouse session runs capped at
+    :data:`WAREHOUSE_SESSION_MEMORY_LIMIT` for the whole stage (restored
+    afterwards), and the staging inputs are released before the write.
     """
-    params = params or ReconstructionParams()
+    restore = _cap_session_memory(store, WAREHOUSE_SESSION_MEMORY_LIMIT)
+    try:
+        return _refresh(store, inputs, scratch_dir=scratch_dir, run_id=run_id, params=params or ReconstructionParams(),
+                        memory_limit=memory_limit, threads=threads, batch_size=batch_size)
+    finally:
+        restore()
+
+
+def _refresh(
+    store: DuckDBStore,
+    inputs: ReconstructionInputs,
+    *,
+    scratch_dir: Path,
+    run_id: str,
+    params: ReconstructionParams,
+    memory_limit: str,
+    threads: int,
+    batch_size: int,
+) -> dict[str, object]:
     revision_key = inputs.revision_key()
     revision = f"{METHOD}:{params.digest()}:{revision_key}"
     seconds: dict[str, float] = {}
@@ -1804,9 +1842,14 @@ def refresh_identity_reconstruction(
     scratch_dir.mkdir(parents=True, exist_ok=True)
     path = scratch_dir / _SCRATCH_DB
     _remove_scratch(path)
+    import pyarrow as pa
+
     con = duckdb.connect(str(path), config={"memory_limit": memory_limit, "threads": threads})
     totals: dict[str, int] = defaultdict(int)
-    rows: list[dict[str, object]] = []
+    statuses: dict[str, int] = defaultdict(int)
+    # Evidence rows are kept as Arrow batches, not Python dicts: one batch's rows at a time.
+    schema = _evidence_schema()
+    batches: list[pa.Table] = []
     try:
         spill = scratch_dir / "duckdb-tmp"
         spill.mkdir(exist_ok=True)
@@ -1853,55 +1896,62 @@ def refresh_identity_reconstruction(
             batch_size=batch_size,
         ):
             _accumulate_summary(totals, result.summary())
-            rows.extend(
-                result.evidence_rows(
-                    observed_at=inputs.companyfacts.received_at,
-                    source_loaded_at=loaded_at,
-                    run_id=run_id,
-                    artifact_sha256=inputs.companyfacts.sha256,
-                    artifacts=artifacts,
-                    revision_key=revision_key,
-                )
+            batch_rows = result.evidence_rows(
+                observed_at=inputs.companyfacts.received_at,
+                source_loaded_at=loaded_at,
+                run_id=run_id,
+                artifact_sha256=inputs.companyfacts.sha256,
+                artifacts=artifacts,
+                revision_key=revision_key,
             )
+            for row in batch_rows:
+                statuses[str(row["evidence_status"])] += 1
+            if batch_rows:
+                batches.append(pa.Table.from_pylist(batch_rows, schema=schema))
         seconds["reconstruction"] = round(time.perf_counter() - clock, 1)
+        filing_count = len(filings)
     finally:
         con.close()
         _remove_scratch(path)
+    # Release the staging inputs before the write: only the evidence rows go on.
+    del filings, lines, line_ids, current
+    evidence = pa.concat_tables(batches) if batches else schema.empty_table()
+    del batches
 
     clock = time.perf_counter()
     with store.transaction():
-        written = write_reconstruction_evidence(store.con, rows, revision=revision)
+        written = write_reconstruction_evidence(store.con, evidence, revision=revision)
     # Fold the commit (and any flag swap) into the database file: nothing is left to WAL replay.
     store.con.execute("CHECKPOINT")
     seconds["write"] = round(time.perf_counter() - clock, 1)
-    statuses: dict[str, int] = defaultdict(int)
-    for row in rows:
-        statuses[str(row["evidence_status"])] += 1
     return {
         **written,
         "method": METHOD,
         "params_digest": params.digest(),
         "revision_key": revision_key,
         "identity_basis": IDENTITY_BASIS,
-        "evidence_rows": len(rows),
+        "evidence_rows": evidence.num_rows,
         "evidence_rows_by_status": dict(sorted(statuses.items())),
         **{key: value for key, value in sorted(totals.items())},
         "share_facts": share_facts,
         "candidate_ciks": len(candidate_ciks),
-        "lifecycle_filings": len(filings),
+        "lifecycle_filings": filing_count,
         **mapping,
         "vendor_lines_without_published_bars": unpublished,
         "inputs": {item.name: item.as_detail() for item in inputs.files()},
         "tier_basis": "tier_history in value_json; consumers filter on the tier in force at their cutoff",
         "scratch_memory_limit": memory_limit,
         "scratch_threads": threads,
+        "warehouse_session_memory_limit": str(
+            store.con.execute("SELECT current_setting('memory_limit')").fetchone()[0]  # type: ignore[index]
+        ),
         "seconds": seconds,
     }
 
 
 def write_reconstruction_evidence(
     con: duckdb.DuckDBPyConnection,
-    rows: Sequence[Mapping[str, object]],
+    rows: Sequence[Mapping[str, object]] | pa.Table,
     *,
     revision: str,
     table: str = EVIDENCE_TABLE,
@@ -1909,7 +1959,9 @@ def write_reconstruction_evidence(
     """Write one RI1 revision into the 0327 evidence table; append-only, idempotent, WAL-safe.
 
     ``rows`` are :meth:`ReconstructionResult.evidence_rows` of one revision
-    (``source_revision_id == revision``). A revision already held with the
+    (``source_revision_id == revision``), as mappings or as an Arrow table of
+    the evidence columns (the stage passes Arrow: its rows never all live as
+    Python objects; content is compared in bounded batches). A revision already held with the
     same content (every column but the flag, run id and load stamp) writes
     nothing; one held with other content fails loudly (a logic change must
     bump :data:`METHOD` or the params). A new revision is appended (INSERT
@@ -1917,46 +1969,48 @@ def write_reconstruction_evidence(
     ``issuer_link`` rows (``source = SOURCE``, every :data:`METHOD` version):
     other revisions are superseded (``is_latest_revision = false``, never
     deleted), and a rerun of an older revision's inputs makes it latest again.
-    A flag change rebuilds the table INSERT-only and swaps it in (the governed
-    0327 row swap), never an in-place UPDATE: the table has a ``DEFAULT now()``
+    A flag change rebuilds the table INSERT-only and swaps it in
+    (:mod:`atx_db._table_swap`, bounded at ~2M rows per M2), never an in-place UPDATE: the table has a ``DEFAULT now()``
     column, and DuckDB 1.5.5 cannot be trusted to replay such a write from the
     WAL. Run it inside the caller's transaction; CHECKPOINT after the commit.
     """
     import pyarrow as pa
 
+    schema = _evidence_schema()
+    names = [name for name, _kind in EVIDENCE_COLUMNS]
+    if isinstance(rows, pa.Table):
+        batch = rows.select(names).cast(schema)
+    else:
+        batch = pa.Table.from_pylist([dict(row) for row in rows], schema=schema)
     fresh: dict[str, str] = {}
-    for row in rows:
-        if row["source_revision_id"] != revision or row["method"] != METHOD:
-            raise ValueError(f"row {row['evidence_id']} is not of revision {revision}")
-        if row["evidence_id"] in fresh:
-            raise ValueError(f"duplicate evidence_id {row['evidence_id']} in revision {revision}")
-        fresh[str(row["evidence_id"])] = _content_digest(row[name] for name in _CONTENT_COLUMNS)
-    held = {
-        str(found[0]): _content_digest(found)
-        for found in con.execute(
-            f"SELECT {', '.join(_CONTENT_COLUMNS)} FROM {table} "
-            "WHERE method = ? AND fact_kind = 'issuer_link' AND source_revision_id = ?",
-            [METHOD, revision],
-        ).fetchall()
-    }
+    for record in batch.to_batches(max_chunksize=_DIGEST_BATCH):
+        for row in record.to_pylist():
+            if row["source_revision_id"] != revision or row["method"] != METHOD:
+                raise ValueError(f"row {row['evidence_id']} is not of revision {revision}")
+            if row["evidence_id"] in fresh:
+                raise ValueError(f"duplicate evidence_id {row['evidence_id']} in revision {revision}")
+            fresh[str(row["evidence_id"])] = _content_digest(row[name] for name in _CONTENT_COLUMNS)
+    held: dict[str, str] = {}
+    cursor = con.execute(
+        f"SELECT {', '.join(_CONTENT_COLUMNS)} FROM {table} "
+        "WHERE method = ? AND fact_kind = 'issuer_link' AND source_revision_id = ?",
+        [METHOD, revision],
+    )
+    while chunk := cursor.fetchmany(_DIGEST_BATCH):
+        held.update((str(found[0]), _content_digest(found)) for found in chunk)
     if held and held != fresh:
         raise RuntimeError(
             f"{table} already holds revision {revision} with other content ({len(held)} rows held, "
             f"{len(fresh)} computed); a logic change must bump METHOD or the reconstruction params"
         )
     inserted = 0
-    if not held and rows:
-        kinds = {"VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "BOOLEAN": pa.bool_()}
-        names = [name for name, _kind in EVIDENCE_COLUMNS]
-        batch = pa.Table.from_pylist(
-            [dict(row) for row in rows], schema=pa.schema([(name, kinds[kind]) for name, kind in EVIDENCE_COLUMNS])
-        )
+    if not held and batch.num_rows:
         con.register("ri_evidence_batch", batch)
         try:
             con.execute(f"INSERT INTO {table} ({', '.join(names)}) SELECT {', '.join(names)} FROM ri_evidence_batch")
         finally:
             con.unregister("ri_evidence_batch")
-        inserted = len(rows)
+        inserted = batch.num_rows
     flags = con.execute(
         f"""
         SELECT count(*) FILTER (WHERE is_latest_revision AND source_revision_id IS DISTINCT FROM ?),
@@ -1971,35 +2025,71 @@ def write_reconstruction_evidence(
     return {
         "revision": revision,
         "rows_inserted": inserted,
-        "rows_unchanged": len(rows) - inserted,
+        "rows_unchanged": batch.num_rows - inserted,
         "rows_superseded": superseded,
         "rows_restored": restored,
         "latest_flags_rebuilt_by_swap": bool(superseded or restored),
     }
 
 
-def _swap_latest_revision(con: duckdb.DuckDBPyConnection, table: str, revision: str) -> None:
-    """Rebuild ``table`` with this module's latest flag on ``revision`` only (INSERT-only swap)."""
-    from .migrations.bodies_0327 import _replace_rows_by_swap
+def _evidence_schema() -> pa.Schema:
+    """Arrow schema of the 0327 evidence columns (:data:`EVIDENCE_COLUMNS`)."""
+    import pyarrow as pa
 
-    names = tuple(
-        str(name)
-        for (name,) in con.execute(
-            "SELECT column_name FROM duckdb_columns() WHERE database_name = current_database() "
-            "AND schema_name = current_schema() AND table_name = ? ORDER BY column_index",
-            [table],
-        ).fetchall()
-    )
+    kinds = {"VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "BOOLEAN": pa.bool_()}
+    return pa.schema([(name, kinds[kind]) for name, kind in EVIDENCE_COLUMNS])
+
+
+def _swap_latest_revision(con: duckdb.DuckDBPyConnection, table: str, revision: str) -> None:
+    """Rebuild ``table`` with this module's latest flag on ``revision`` only (INSERT-only swap).
+
+    The runtime swap (:func:`atx_db._table_swap.replace_rows_by_swap`) proves the
+    row count and refuses a table above its M2 bound (~2M rows) before writing:
+    each revision adds ~12.7k rows, so the bound is far off; past it the
+    supersession must be rewritten bucketed.
+    """
+    from ._table_swap import replace_rows_by_swap, table_columns
+
+    names = table_columns(con, table)
     flag = (
         "CASE WHEN source = ? AND fact_kind = 'issuer_link' "
         "THEN source_revision_id IS NOT DISTINCT FROM ? ELSE is_latest_revision END"
     )
     select = ", ".join(flag if name == "is_latest_revision" else f'"{name}"' for name in names)
-    before = _changed(con, f"SELECT count(*) FROM {table}", [])
-    _replace_rows_by_swap(con, table, names, f"SELECT {select} FROM {table}", [SOURCE, revision])
-    after = _changed(con, f"SELECT count(*) FROM {table}", [])
-    if after != before:
-        raise RuntimeError(f"{table} latest-flag swap row-count proof failed: {before} rows before, {after} after")
+    replace_rows_by_swap(con, table, names, f"SELECT {select} FROM {table}", [SOURCE, revision], preserve_count=True)
+
+
+_SIZE = re.compile(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]I?B|BYTES?|B)?\s*", re.IGNORECASE)
+
+
+def _size_bytes(text: str) -> float | None:
+    """Bytes of a DuckDB size setting (``'128MB'``, ``'366.2 MiB'``), or None when unreadable."""
+    match = _SIZE.fullmatch(text)
+    if match is None:
+        return None
+    unit = (match.group(2) or "B").upper()
+    power = "BKMGT".index(unit[0]) if unit[0] in "KMGT" else 0
+    return float(match.group(1)) * float((1024 if "I" in unit else 1000) ** power)
+
+
+def _cap_session_memory(store: DuckDBStore, cap: str) -> Callable[[], None]:
+    """Lower (never raise) the warehouse session's ``memory_limit`` to ``cap``; returns the restore.
+
+    Lowering the limit evicts the session's unpinned cached pages. The restore
+    sets the session's configured analytical limit when the ladder recorded
+    one, else the value read before.
+    """
+    current = str(store.con.execute("SELECT current_setting('memory_limit')").fetchone()[0])  # type: ignore[index]
+    held, wanted = _size_bytes(current), _size_bytes(cap)
+    if held is not None and wanted is not None and held <= wanted:
+        return lambda: None
+    previous = getattr(store, "analytical_memory_limit", None) or current
+    store.con.execute("SET memory_limit = ?", [cap])
+
+    def restore() -> None:
+        store.con.execute("SET memory_limit = ?", [previous])
+
+    return restore
 
 
 def _published_line_ids(store: DuckDBStore) -> tuple[dict[int, str], dict[str, int]]:
@@ -2037,11 +2127,6 @@ def _content_digest(values: Iterable[object]) -> str:
     ]
     canonical = [value.isoformat() if isinstance(value, dt.date) else value for value in canonical]
     return hashlib.sha256(json.dumps(canonical, separators=(",", ":"), default=str).encode()).hexdigest()
-
-
-def _changed(con: duckdb.DuckDBPyConnection, sql: str, parameters: Sequence[object]) -> int:
-    found = con.execute(sql, list(parameters)).fetchone()
-    return 0 if found is None else int(found[0])
 
 
 def _remove_scratch(path: Path) -> None:

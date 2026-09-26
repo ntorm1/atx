@@ -235,9 +235,13 @@ vendor share counts are the fingerprint, the TSV export is not accepted),
 `data/cache/company_tickers.json`. A missing input fails the stage, and so does one
 received (cache receipt, else mtime) after the cutoff day, before anything is
 written. Staging runs in a private scratch DuckDB under
-`<staging-dir>/identity-reconstruction/` (256MB, at most 2 threads; deleted
-afterwards), never in the warehouse; the process peak must stay under ~600 MB, so
-run it under the memory guard like any heavy stage. Rows are `reconstructed` /
+`<staging-dir>/identity-reconstruction/` (192MB, at most 2 threads; deleted
+afterwards), never in the warehouse, and the warehouse session is capped at 128MB for
+the stage (restored afterwards). Run it under the memory guard in the 0.8 GiB
+writer-slice class (`--only identity_reconstruction`, `--memory-limit 384MB`): on a
+production-shaped warehouse (32.3M bars) its measured process peak is 620 MB on a
+first write and 625 MB on a new revision that supersedes the held one (limit 0.7 GiB,
+ruling C-14). Rows are `reconstructed` /
 `modeled` (both sides of a two-CIK conflict as `conflicting`), `available_at` is the
 RI1 evidence clock, and `value_json` carries the point-in-time tier history
 (`tier_history`, `tier_at_available_at`, `tier_attained_at`). The content is
@@ -245,9 +249,10 @@ deterministic (method `ri1_share_fingerprint_v2`): a rerun on the same files wri
 nothing, and a rerun whose content differs from the held revision fails loud. Files
 with other bytes or receipt clocks are a new revision (INSERT only) that supersedes
 (`is_latest_revision = false`), never deletes, the previous one; the flag change
-rebuilds `security_identity_evidence` by the governed create/copy/swap (never an
-in-place UPDATE: the table has a `DEFAULT now()` column), and the stage ends with a
-`CHECKPOINT`. Every tier is written: the bridge's default filter is high+medium as in force at
+rebuilds `security_identity_evidence` by the governed create/copy/swap
+(`atx_db._table_swap`; never an in-place UPDATE: the table has a `DEFAULT now()`
+column), and the stage ends with a `CHECKPOINT`. The swap refuses a table above ~2M
+rows (M2) before writing; each revision adds ~12.7k rows. Every tier is written: the bridge's default filter is high+medium as in force at
 each bar cutoff, and the high-only sensitivity is a consumer option
 (`market_owner_bridge.RECONSTRUCTION_TIERS_HIGH_ONLY`), not yet exposed through
 `MarketDailyOptions`.
