@@ -91,6 +91,7 @@
 #include "atx/engine/factory/fitness.hpp"    // factory::pool_aware_fitness, kMaxObjectives
 #include "atx/engine/factory/generate.hpp"   // factory::generate_genome, GenConfig (S3.5 wire)
 #include "atx/engine/factory/genome.hpp"     // factory::Genome
+#include "atx/engine/factory/ic_screen.hpp" // conservative forward-return IC prefilter
 #include "atx/engine/factory/mutation.hpp"   // factory::op_swap/field_swap/jitter_const
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
 #include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
@@ -306,6 +307,10 @@ struct SearchConfig {
   // digested. Low rungs score the pool-independent fitness (empty pool): the
   // run's pool PnL is full-length and cannot be correlated on a strided panel.
   FidelityCfg fidelity{};
+  // When both screens are active, IC runs before the low-fidelity backtests.
+  // Its prepass retains decisions/digests only; survivors may evaluate the VM
+  // again after the race. IC alone reuses the normal pass's SignalSet directly.
+  IcScreenConfig ic_screen{};
   // Behavioral archive eviction: Fifo (legacy ring of recent elites) or
   // FarthestPoint (max-min-distance set of elite behaviours, behavior.hpp).
   ArchiveEviction archive_eviction{ArchiveEviction::Fifo};
@@ -330,6 +335,14 @@ struct SearchResult {
   atx::usize fingerprint_hits{0};  // representatives whose score was reused by fingerprint
   atx::usize fidelity_evals{0};    // low-rung evaluations (each one a trial)
   atx::usize fidelity_rejected{0}; // candidates rejected before the full-fidelity pass
+  // Complete, sorted identities, including restored cache entries. Rejections
+  // remain in all_scored/canon/trial_count but cannot be rescored for admission.
+  std::vector<atx::u64> ic_rejected_hashes;
+  // Work actually performed by this invocation (not persisted cumulative counts).
+  atx::usize ic_screen_evaluations{0};
+  atx::usize ic_screen_unavailable{0}; // preparation/scratch/runtime errors; fail open
+  atx::usize ic_prepass_vm_evaluations{0}; // both-on path, no population signal cache
+  bool ic_screen_resume_mismatch{false}; // incompatible/missing active checkpoint identity
 };
 
 namespace detail {
@@ -446,9 +459,13 @@ public:
   // resume->population instead of init_population. With BOTH nullptr (the default)
   // run() is the byte-identical legacy path — the only added work is two
   // null-pointer checks (F1/F2 off-path invariant, tested by OffPathByteIdentical).
+  // `prepared_ic_screen` optionally borrows a cache prepared for this exact panel
+  // and active config, including caller-specific training membership/return guards.
+  // It must outlive run(); DisabledV1 ignores it. Otherwise run prepares its own.
   [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool,
                                  SearchProgressSink *sink = nullptr,
-                                 const SearchResumeState *resume = nullptr);
+                                 const SearchResumeState *resume = nullptr,
+                                 const IcScreenCache *prepared_ic_screen = nullptr);
 
 private:
   // ----- (1) init_population -------------------------------------------------
@@ -475,7 +492,9 @@ private:
                       const combine::AlphaStore &pool, CanonSet &canon,
                       std::unordered_map<atx::u64, CachedScore> &fitness_cache,
                       parallel::DetPool &det_pool,
-                      std::vector<std::unique_ptr<alpha::Engine>> &engines, SearchResult &res);
+                      std::vector<std::unique_ptr<alpha::Engine>> &engines, SearchResult &res,
+                      const IcScreenCache *ic_cache,
+                      std::span<IcScreenScratch> ic_scratch);
 
   // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
   // Compute the population-relative BEHAVIORAL novelty for every Scored and write

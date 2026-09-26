@@ -34,7 +34,16 @@ namespace atx::engine::factory {
 //                          the NSGA-II sort (placed on a trailing front), never
 //                          emitted, never credited to an operator.
 // =========================================================================
-enum class ScoreOrigin : atx::u8 { Full = 0, FingerprintBorrowed = 1, FidelityRejected = 2 };
+enum class ScoreOrigin : atx::u8 {
+  Full = 0,
+  FingerprintBorrowed = 1,
+  FidelityRejected = 2,
+  IcRejected = 3, // screened on forward-return IC; still a distinct research trial
+};
+
+[[nodiscard]] constexpr bool is_rejected_score(ScoreOrigin origin) noexcept {
+  return origin == ScoreOrigin::FidelityRejected || origin == ScoreOrigin::IcRejected;
+}
 
 // Worst-case raw sentinel for a fidelity-rejected candidate. -inf (not lowest())
 // so it survives the hex checkpoint round-trip and is recognisable on resume.
@@ -58,9 +67,10 @@ struct CachedScore {
   // fresh each generation (NOT cached). Empty if the candidate's fitness errored.
   std::vector<atx::f64> descriptor{};
   // L3: provenance of this score (see ScoreOrigin). Not serialized by the resume
-  // checkpoint; deserialize_cache restores FidelityRejected from the -inf raw
+  // checkpoint for legacy origins; deserialize_cache restores FidelityRejected from the -inf raw
   // sentinel, while a FingerprintBorrowed score resumes as Full (documented: runs
-  // with output_dedup on are not resume byte-identical).
+  // with output_dedup on are not resume byte-identical). IcRejected has an explicit
+  // optional codec tag so it retains its exclusion identity after resume.
   ScoreOrigin origin{ScoreOrigin::Full};
 };
 
@@ -70,6 +80,12 @@ struct CachedScore {
   CachedScore cs{};
   cs.raw = kRejectedRaw;
   cs.origin = ScoreOrigin::FidelityRejected;
+  return cs;
+}
+
+[[nodiscard]] inline CachedScore ic_rejected_score() {
+  CachedScore cs = rejected_score();
+  cs.origin = ScoreOrigin::IcRejected;
   return cs;
 }
 

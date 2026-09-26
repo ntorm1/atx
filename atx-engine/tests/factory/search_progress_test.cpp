@@ -11,6 +11,7 @@
 #include <algorithm> // std::sort, std::includes, std::swap
 #include <bit>       // std::bit_cast (bit-exact f64 comparison in the round-trip test)
 #include <limits>    // std::numeric_limits (hard f64 codec values)
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -539,6 +540,115 @@ TEST(SearchProgress, AccumulatedStateRoundTrip) {
   }
   EXPECT_TRUE(deserialize_archive("").value().empty());
   EXPECT_TRUE(deserialize_f64_list("").value().empty());
+}
+
+TEST(SearchProgress, IcRejectionCodecKeepsExplicitOriginAndLegacyRecords) {
+  using namespace atx::engine::factory;
+  const std::vector<u64> keys{11U, 12U, 13U};
+  const std::vector<CachedScore> values{CachedScore{}, rejected_score(), ic_rejected_score()};
+  const std::string blob = serialize_cache(keys, values);
+  EXPECT_NE(blob.find(" ic3"), std::string::npos);
+  std::vector<u64> decoded_keys;
+  std::vector<CachedScore> decoded;
+  ASSERT_TRUE(deserialize_cache(blob, decoded_keys, decoded));
+  EXPECT_EQ(decoded_keys, keys);
+  ASSERT_EQ(decoded.size(), 3U);
+  EXPECT_EQ(decoded[0].origin, ScoreOrigin::Full);
+  EXPECT_EQ(decoded[1].origin, ScoreOrigin::FidelityRejected);
+  EXPECT_EQ(decoded[2].origin, ScoreOrigin::IcRejected);
+  EXPECT_EQ(decoded[2].raw, kRejectedRaw);
+  EXPECT_EQ(serialize_cache(decoded_keys, decoded), blob);
+  const std::string legacy = serialize_cache({11U, 12U}, {values[0], values[1]});
+  EXPECT_EQ(legacy.find(" ic3"), std::string::npos);
+  EXPECT_FALSE(deserialize_cache(serialize_cache({11U}, {CachedScore{}}) + " ic3",
+                                  decoded_keys, decoded));
+}
+
+TEST(SearchProgress, ResumedIcRejectIdentitySurvivesWithoutRescoring) {
+  using namespace atx::engine::factory;
+  Fixture fx;
+  SearchDriver driver = fx.driver();
+  SearchConfig cfg;
+  cfg.population = 2;
+  cfg.generations = 2;
+  cfg.enable_behavioral_novelty = false;
+  cfg.ic_screen.rule = IcScreenRule::ConservativeV2;
+  auto rejected = SearchProgressTestAccess::deserialize_population(driver, {"rank(close)"});
+  ASSERT_TRUE(rejected);
+  ASSERT_EQ(rejected->size(), 1U);
+  const u64 hash = rejected->front().canon_hash;
+  const AlphaStore pool;
+  RecordingSink sink;
+  (void)driver.run(cfg, pool, &sink);
+  ASSERT_EQ(sink.seen.size(), 2U);
+  std::optional<u64> identity;
+  std::vector<u64> keys;
+  std::vector<CachedScore> values;
+  ASSERT_TRUE(deserialize_cache(sink.seen.front().cache_blob, keys, values, &identity));
+  ASSERT_TRUE(identity.has_value());
+  SearchResumeState resume;
+  resume.start_generation = 1;
+  resume.population = {"rank(close)", "rank(rev)"};
+  CanonSet canon;
+  canon.insert(hash);
+  resume.canon_blob = serialize_canon(canon);
+  resume.cache_blob = serialize_cache({hash}, {ic_rejected_score()}, identity);
+  const SearchResult result = driver.run(cfg, pool, nullptr, &resume);
+  EXPECT_EQ(result.ic_rejected_hashes, (std::vector<u64>{hash}));
+  EXPECT_EQ(result.trial_count, 2U);
+  EXPECT_FALSE(result.ic_screen_resume_mismatch);
+  EXPECT_LE(result.ic_screen_evaluations, 1U); // only the other candidate may be screened
+  for (const Genome &g : result.all_scored) {
+    EXPECT_NE(g.canon_hash, hash);
+  }
+  for (const Genome &g : result.admitted_candidates) {
+    EXPECT_NE(g.canon_hash, hash);
+  }
+}
+
+TEST(SearchProgress, IcResumeRejectsChangedRulesBoundsAndLegacyIdentity) {
+  using namespace atx::engine::factory;
+  Fixture fx;
+  SearchDriver driver = fx.driver();
+  SearchConfig cfg;
+  cfg.population = 2;
+  cfg.generations = 2;
+  cfg.ic_screen.rule = IcScreenRule::ConservativeV2;
+  const AlphaStore pool;
+  RecordingSink sink;
+  (void)driver.run(cfg, pool, &sink);
+  ASSERT_EQ(sink.seen.size(), 2U);
+  const auto &cp = sink.seen.back();
+  SearchResumeState resume;
+  resume.start_generation = cp.generation;
+  resume.population = cp.population;
+  resume.cache_blob = cp.cache_blob;
+  resume.canon_blob = cp.canon_blob;
+  resume.archive_blob = cp.archive_blob;
+  resume.best_per_gen_blob = cp.best_per_gen_blob;
+  resume.digest = cp.digest;
+  resume.candidates_generated = cp.candidates_generated;
+  EXPECT_FALSE(driver.run(cfg, pool, nullptr, &resume).ic_screen_resume_mismatch);
+  const auto rejected = [&](const SearchConfig &changed) {
+    const SearchResult result = driver.run(changed, pool, nullptr, &resume);
+    EXPECT_TRUE(result.ic_screen_resume_mismatch);
+    EXPECT_EQ(result.trial_count, 0U);
+    EXPECT_TRUE(result.admitted_candidates.empty());
+  };
+  SearchConfig changed = cfg;
+  changed.ic_screen.horizons[0] = 4;
+  rejected(changed);
+  changed = cfg;
+  changed.ic_screen.window_end = 80;
+  rejected(changed);
+  changed = cfg;
+  changed.ic_screen.practical_abs_ic = 0.01;
+  rejected(changed);
+  changed = cfg;
+  changed.ic_screen.rule = IcScreenRule::DisabledV1;
+  rejected(changed);
+  resume.cache_blob.clear();
+  rejected(cfg); // no active identity in a legacy population-only checkpoint
 }
 
 } // namespace atxtest_search_progress_test

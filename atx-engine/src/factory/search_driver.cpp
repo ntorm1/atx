@@ -1,6 +1,7 @@
 #include "atx/engine/factory/search_driver.hpp"
 
 #include <algorithm>     // std::clamp, std::sort, std::max, std::min
+#include <bit>           // std::bit_cast (screen checkpoint identity)
 #include <cmath>         // std::isfinite (mean_raw telemetry, NaN/inf-safe)
 #include <cstddef>       // std::size_t (hash_combine seed type)
 #include <cstdint>       // std::uint8_t (compiled[] flag vector)
@@ -24,6 +25,38 @@
 #include "atx/engine/parallel/scheduler.hpp" // parallel::Scheduler, ShardId (Tier 1 LPT dispatch)
 
 namespace atx::engine::factory {
+
+namespace {
+[[nodiscard]] atx::u64 ic_config_identity(const IcScreenConfig &cfg,
+                                        const alpha::Panel &panel) noexcept {
+  // Explicit little-endian FNV words: independent of padding, native enum size,
+  // std::hash, allocation order and machine addresses. All effective knobs bind.
+  atx::u64 value = 14695981039346656037ULL;
+  const auto mix = [&value](atx::u64 word) {
+    for (atx::usize byte = 0; byte < 8U; ++byte) {
+      value ^= word & 0xffU;
+      value *= 1099511628211ULL;
+      word >>= 8U;
+    }
+  };
+  mix(static_cast<atx::u64>(cfg.rule));
+  mix(panel.dates());
+  mix(panel.instruments());
+  for (const atx::usize h : cfg.horizons) {
+    mix(h);
+  }
+  mix(cfg.execution_delay);
+  mix(cfg.window_begin);
+  mix(cfg.window_end);
+  mix(cfg.maturity_end);
+  mix(cfg.min_names);
+  mix(cfg.min_dates);
+  mix(std::bit_cast<atx::u64>(cfg.practical_abs_ic));
+  mix(std::bit_cast<atx::u64>(cfg.confidence_multiplier));
+  mix(cfg.max_cache_bytes);
+  return value;
+}
+} // namespace
 
 SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                            const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
@@ -72,7 +105,8 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
 [[nodiscard]] SearchResult SearchDriver::run(const SearchConfig &cfg,
                                              const combine::AlphaStore &pool,
                                              SearchProgressSink *sink,
-                                             const SearchResumeState *resume) {
+                                             const SearchResumeState *resume,
+                                             const IcScreenCache *prepared_ic_screen) {
   SearchResult res;
   res.seed = cfg.master_seed;
   res.best_fitness_per_gen.reserve(cfg.generations);
@@ -88,6 +122,42 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // raw scalar AND the S4.1 multi-objective vector (CachedScore).
   std::unordered_map<atx::u64, CachedScore> fitness_cache;
   parallel::DetPool det_pool{cfg.n_workers};
+
+  std::optional<IcScreenCache> owned_ic_cache;
+  const std::optional<atx::u64> ic_identity =
+      cfg.ic_screen.rule == IcScreenRule::DisabledV1
+          ? std::nullopt : std::optional<atx::u64>{ic_config_identity(cfg.ic_screen, panel_)};
+  if (resume != nullptr && ic_identity && resume->cache_blob.empty()) {
+    res.ic_screen_resume_mismatch = true;
+    return res; // population-only legacy checkpoints cannot certify active-screen state
+  }
+  const IcScreenCache *ic_cache = nullptr;
+  std::vector<IcScreenScratch> ic_scratch;
+  if (cfg.ic_screen.rule != IcScreenRule::DisabledV1) {
+    ic_cache = prepared_ic_screen;
+    if (ic_cache == nullptr) {
+      auto prepared = prepare_ic_screen(panel_, cfg.ic_screen);
+      if (prepared) {
+        owned_ic_cache.emplace(std::move(*prepared));
+        ic_cache = &*owned_ic_cache;
+      } else {
+        ++res.ic_screen_unavailable;
+      }
+    }
+    if (ic_cache != nullptr) {
+      ic_scratch.reserve(det_pool.n_workers());
+      for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
+        auto scratch = prepare_ic_screen_scratch(*ic_cache);
+        if (!scratch) {
+          ++res.ic_screen_unavailable;
+          ic_cache = nullptr; // uncertain preparation never discards a candidate
+          ic_scratch.clear();
+          break;
+        }
+        ic_scratch.push_back(std::move(*scratch));
+      }
+    }
+  }
 
   // One reusable Engine per worker, bound to panel_, built ONCE per run() and reused
   // across EVERY generation (Tier 4). Engine holds a const Panel& (not move-assignable)
@@ -155,18 +225,36 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     auto best_pg = deserialize_f64_list(resume->best_per_gen_blob);
     std::vector<atx::u64> cache_keys;
     std::vector<CachedScore> cache_vals;
-    auto cache_st = deserialize_cache(resume->cache_blob, cache_keys, cache_vals);
+    std::optional<atx::u64> restored_ic_identity;
+    auto cache_st = deserialize_cache(resume->cache_blob, cache_keys, cache_vals,
+                                      &restored_ic_identity);
     if (!canon_keys || !archive_entries || !best_pg || !cache_st) {
       SearchResult err_res; // corrupt accumulated-state blob -> fail loud
       err_res.seed = cfg.master_seed;
       return err_res;
     }
+    const bool has_ic_rejection = std::any_of(
+        cache_vals.begin(), cache_vals.end(),
+        [](const CachedScore &score) { return score.origin == ScoreOrigin::IcRejected; });
+    if (restored_ic_identity != ic_identity || (has_ic_rejection && !restored_ic_identity)) {
+      SearchResult incompatible;
+      incompatible.seed = cfg.master_seed;
+      incompatible.ic_screen_resume_mismatch = true;
+      return incompatible;
+    }
     for (atx::u64 h : *canon_keys) {
       canon.insert(h);
     }
     for (atx::usize i = 0; i < cache_keys.size(); ++i) {
+      if (cache_vals[i].origin == ScoreOrigin::IcRejected) {
+        res.ic_rejected_hashes.push_back(cache_keys[i]);
+      }
       fitness_cache.emplace(cache_keys[i], std::move(cache_vals[i]));
     }
+    std::sort(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end());
+    res.ic_rejected_hashes.erase(
+        std::unique(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end()),
+        res.ic_rejected_hashes.end());
     // Replay archive inserts in ring order (oldest first) so the FIFO contents — and
     // therefore every future novelty() neighbourhood — match the uninterrupted run.
     for (const std::vector<atx::f64> &e : *archive_entries) {
@@ -248,7 +336,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
         for (atx::u64 k : ck) {
           cv.push_back(fitness_cache.at(k));
         }
-        entering_cache_blob = serialize_cache(ck, cv);
+        entering_cache_blob = serialize_cache(ck, cv, ic_identity);
       }
       entering_archive_blob = serialize_archive(behavior_archive.entries());
       entering_best_pg_blob = serialize_f64_list(res.best_fitness_per_gen);
@@ -256,7 +344,8 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
 
     // (a)-(c): evaluate the fresh (not-yet-seen) candidates of `pop`, fold the
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
-    scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res);
+    scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res,
+                                 ic_cache, ic_scratch);
 
     // (d2) S4.2 behavioral-novelty pass: write the population-relative phenotypic
     // novelty into objectives[3] (n_objectives -> 4) BEFORE ranking, but ONLY when
@@ -363,7 +452,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
         if (idx >= scored.size()) {
           continue; // defensive (population shrank) — never expected
         }
-        if (scored[idx].origin == ScoreOrigin::FidelityRejected) {
+        if (is_rejected_score(scored[idx].origin)) {
           continue; // L3: never fully scored (sentinel raw) -> no realized gain to credit
         }
         gain_sum[o] += scored[idx].fitness - prev_parent_best;
@@ -558,7 +647,8 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
                                   std::unordered_map<atx::u64, CachedScore> &fitness_cache,
                                   parallel::DetPool &det_pool,
                                   std::vector<std::unique_ptr<alpha::Engine>> &engines,
-                                  SearchResult &res) {
+                                  SearchResult &res, const IcScreenCache *ic_cache,
+                                  std::span<IcScreenScratch> ic_scratch) {
   // -----------------------------------------------------------------------
   // Phase 1 (serial): dedup + plan
   //
@@ -687,6 +777,10 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
 
   const atx::usize n_to_score = to_score.size();
   std::vector<CachedScore> score_slot(n_to_score);
+  // Disjoint per-representative decisions: 0 untested, 1 keep, 2 reject, 3 error.
+  // Only the serial merge updates counters and persistent rejection identities.
+  std::vector<atx::u8> ic_status(ic_cache != nullptr ? n_to_score : 0U, atx::u8{0});
+  std::vector<atx::u64> ic_prepass_digest;
 
   // R4 — per-generation deflation N (Piece 1, determinism-safe).
   //
@@ -721,6 +815,37 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   gen_fit.capacity_objective = cfg.capacity_objective;
   gen_fit.turnover_objective = cfg.turnover_objective;
 
+  // IC must precede even the low-rung backtests. With both flags on, evaluate
+  // distinct representatives once for the IC decision, retain only their small
+  // decisions/digests, then race survivors. A surviving candidate may evaluate
+  // the VM again in the full pass; retaining population*panel SignalSets would
+  // defeat the bounded-memory goal. The IC-only path below evaluates once.
+  if (ic_cache != nullptr && cfg.fidelity.enabled) {
+    ic_prepass_digest.resize(n_to_score, atx::u64{0});
+    std::vector<atx::u8> vm_evaluated(n_to_score, atx::u8{0});
+    det_pool.parallel_for(n_to_score, [&](atx::usize j, atx::usize wid) {
+      auto prog = alpha::compile(to_score[j]->ast, to_score[j]->analysis);
+      if (!prog) {
+        return;
+      }
+      vm_evaluated[j] = atx::u8{1};
+      auto ss = engines[wid]->evaluate(*prog);
+      if (!ss || ss->alphas.empty()) {
+        return;
+      }
+      ic_prepass_digest[j] = parallel::signal_set_digest(*ss);
+      auto screened = screen_ic(ss->alphas.front().values, *ic_cache, ic_scratch[wid]);
+      ic_status[j] = !screened ? atx::u8{3}
+                              : screened->reject ? atx::u8{2} : atx::u8{1};
+      if (screened && screened->reject) {
+        score_slot[j] = ic_rejected_score();
+      }
+    });
+    for (const atx::u8 evaluated : vm_evaluated) {
+      res.ic_prepass_vm_evaluations += evaluated;
+    }
+  }
+
   // L3 multi-fidelity race (opt-in). The distinct fresh candidates are raced on
   // strided sub-panels; the rejected ones leave `fresh` (no full eval, no digest
   // fold) and get the worst-case sentinel score (rejected_score(): raw -inf,
@@ -732,8 +857,19 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   // front 0 whenever a negative objective such as parsimony is live).
   // Off (the default) -> `rejected` is empty -> no-op.
   if (cfg.fidelity.enabled) {
+    std::vector<const Genome *> ic_survivors;
+    const std::vector<const Genome *> *race_candidates = &to_score;
+    if (!ic_prepass_digest.empty()) {
+      ic_survivors.reserve(to_score.size());
+      for (atx::usize j = 0; j < n_to_score; ++j) {
+        if (ic_status[j] != atx::u8{2}) {
+          ic_survivors.push_back(to_score[j]);
+        }
+      }
+      race_candidates = &ic_survivors;
+    }
     const std::vector<atx::u64> rejected =
-        fidelity_reject(to_score, cfg, gen_fit, det_pool, res);
+        fidelity_reject(*race_candidates, cfg, gen_fit, det_pool, res);
     if (!rejected.empty()) {
       const std::unordered_set<atx::u64> rej(rejected.begin(), rejected.end());
       for (atx::usize j = 0; j < n_to_score; ++j) {
@@ -783,6 +919,15 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
 
   det_pool.parallel_for(n_fresh, [&](atx::usize p, atx::usize wid) {
     const atx::usize k = order_fresh[p]; // LPT remap -> canonical slot k
+    const auto it = score_j_of_ptr.find(fresh[k]);
+    if (it != score_j_of_ptr.end() && !ic_prepass_digest.empty() &&
+        ic_status[it->second] == atx::u8{2}) {
+      // The same representative was already evaluated in the prepass; retain
+      // its own signal digest, but do not evaluate/backtest the reject again.
+      digest_slot[k] = ic_prepass_digest[it->second];
+      compiled[k] = std::uint8_t{1};
+      return;
+    }
     auto prog = alpha::compile(fresh[k]->ast, fresh[k]->analysis);
     if (!prog.has_value()) {
       return; // compiled[k] stays 0 (F5 backstop): no digest, no fitness for this k
@@ -793,9 +938,17 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     // Representative? Score it from the SAME SignalSet (no second evaluate). On
     // eval-failure (!ss) leave score_slot[j] default — matches the prior code where
     // Phase 3's own eval would fail to a default score.
-    const auto it = score_j_of_ptr.find(fresh[k]);
     if (it != score_j_of_ptr.end() && ss.has_value()) {
       const atx::usize j = it->second;
+      if (ic_cache != nullptr && ic_status[j] == atx::u8{0} && !ss->alphas.empty()) {
+        auto screened = screen_ic(ss->alphas.front().values, *ic_cache, ic_scratch[wid]);
+        ic_status[j] = !screened ? atx::u8{3}
+                                : screened->reject ? atx::u8{2} : atx::u8{1};
+        if (screened && screened->reject) {
+          score_slot[j] = ic_rejected_score();
+          return; // no extract_streams, CPCV, transaction costs or weak-panel fit
+        }
+      }
       if (fp_on && !ss->alphas.empty()) {
         thread_local FingerprintScratch fp_scratch;
         fp_slot[j] = signal_fingerprint(ss->alphas.front().values, panel_.instruments(),
@@ -856,6 +1009,13 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     }
   });
 
+  for (const atx::u8 status : ic_status) {
+    if (status != atx::u8{0}) {
+      ++res.ic_screen_evaluations;
+      res.ic_screen_unavailable += status == atx::u8{3} ? 1U : 0U;
+    }
+  }
+
   // Serial fold in canonical-id index order (0..n_fresh): skip non-compilable
   // genomes (compiled[k]==0), exactly matching the prior sequential loop's
   // `continue` on compile failure. This reproduces the byte-identical digest.
@@ -905,11 +1065,18 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   }
   for (atx::usize j = 0; j < n_to_score; ++j) {
     const atx::u64 hash = to_score[j]->canon_hash;
+    if (score_slot[j].origin == ScoreOrigin::IcRejected) {
+      res.ic_rejected_hashes.push_back(hash);
+    }
     canon.insert(hash);
     fitness_cache.emplace(hash, std::move(score_slot[j]));
     res.all_scored.push_back(to_score[j]->clone());
     res.all_scored.back().canon_hash = hash;
   }
+  std::sort(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end());
+  res.ic_rejected_hashes.erase(
+      std::unique(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end()),
+      res.ic_rejected_hashes.end());
 
   // Assemble output in population order (every hash is now present in
   // fitness_cache after the merge above; cached hits reuse the stored score).
@@ -1452,7 +1619,7 @@ void SearchDriver::assign_pareto_ranks(std::vector<Scored> &scored,
   live.reserve(n);
   std::vector<atx::usize> local_of(n, n);
   for (atx::usize i = 0; i < n; ++i) {
-    if (scored[i].origin != ScoreOrigin::FidelityRejected) {
+    if (!is_rejected_score(scored[i].origin)) {
       local_of[i] = live.size();
       live.push_back(i);
     }
