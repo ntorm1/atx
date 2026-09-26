@@ -399,4 +399,31 @@ TEST(RiskCovarianceIntegration, AllFeaturesTruncationInvariant) {
 }
 
 
+TEST(RiskEstimatorV2, FundamentalBuilderBindsExplicitRecipeAndDatedCleaning) {
+  const usize window = 32, n_inst = 6;
+  const auto close = make_close(window + 2, n_inst);
+  PanelFixture fx{window + 2, n_inst, close};
+  const std::vector<u32> groups{1,1,1,2,2,2};
+  const std::vector<f64> caps(n_inst,1000);
+  auto cfg = base_cfg();
+  cfg.cov.estimator = atx::engine::risk::effective_history_v2();
+  cfg.cov.estimator.eigen_simulations = 0;
+  cfg.cov.estimator.structural_min_observations = 8;
+  FactorModelBuilder builder{cfg};
+  const auto comp = builder.build_components(fx.view(),window,caps,groups);
+  ASSERT_TRUE(comp) << (comp ? "" : comp.error().to_string());
+  const auto model = builder.build(fx.view(),window,caps,groups);
+  ASSERT_TRUE(model) << (model ? "" : model.error().to_string());
+  EXPECT_EQ(model->estimator_diagnostics().recipe,
+            atx::engine::risk::risk_estimator_recipe(cfg.cov.estimator));
+  EXPECT_EQ(model->estimator_diagnostics().factor_vra,
+            atx::engine::risk::PriorAdjustmentStatus::UnavailableUnverified);
+  EXPECT_EQ(0,std::memcmp(comp->F.data(),model->factor_cov().data(),4*sizeof(f64)));
+  EXPECT_EQ(0,std::memcmp(comp->D.data(),model->specific_var().data(),n_inst*sizeof(f64)));
+  cfg.cov.estimator.missing_prior = atx::engine::risk::MissingPriorForecastRule::RequireObservedV1;
+  EXPECT_FALSE(FactorModelBuilder{cfg}.build(fx.view(),window,caps,groups));
+  cfg.n_stat_factors = 1;
+  EXPECT_FALSE(FactorModelBuilder{cfg}.build(fx.view(),window,caps,groups));
+}
+
 }  // namespace atxtest_risk_covariance_integration_test

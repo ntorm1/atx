@@ -277,7 +277,7 @@ TEST(RiskEstimatorV2, NeweyWestCorrectionUsesConsistentWeightedLagMoments) {
       for (usize i = 0; i < values.size(); ++i)
         for (usize j = 0; j < values.size(); ++j)
           if (ages[j] >= ages[i] && ages[j] - ages[i] == lag)
-            moment += std::exp2(-static_cast<f64>(ages[i]) / half) * (values[i] - mean) *
+            moment += std::exp2(-static_cast<f64>(ages[j]) / half) * (values[i] - mean) *
                       (values[j] - mean);
       total += 2 * (1 - static_cast<f64>(lag) / static_cast<f64>(lags + 1)) * moment;
     }
