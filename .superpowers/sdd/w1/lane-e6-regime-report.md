@@ -52,3 +52,13 @@ old balanced-tercile fixture now explicitly requests V1. `git diff --check` pass
 
 Root owns the combined build and independent source review. These source fixtures
 do not constitute runtime, scaling or tradeable-alpha evidence.
+
+Independent review correction: finite coverage alone did not prevent a NaN in a
+middle regime/window from being ignored by the legacy minimum reduction. V2 now
+also requires every full-sample, regime and walk-forward Sharpe to be finite;
+descriptive scores and the explicit V1 verdict retain their former arithmetic.
+A sixth postimplementation fixture (12 tests total) reproduces the middle-NaN
+case with finite counts {4,3,4}, asserts V2 rejection, and freezes the explicit V1
+result. `ExpandingVolCuts` is now noncopyable/nonmovable because its cut iterators
+refer to its own ordered set. Source-only: this follow-up has not been compiled
+or run.

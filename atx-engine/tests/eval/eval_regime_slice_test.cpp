@@ -240,6 +240,29 @@ TEST(EvalRegimeSlice, UnavailableRegimesDoNotPassV2AndRecipeVersionIsObservable)
   EXPECT_TRUE(robustness_verdict(pnl, labels, cfg).is_robust); // frozen empty-regime convention
 }
 
+TEST(EvalRegimeSlice, V2RejectsUndefinedMiddleScoresDespiteSufficientFiniteCoverage) {
+  const std::vector<u8> labels{0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2};
+  std::vector<f64> pnl{1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2};
+  RobustnessConfig cfg;
+  cfg.n_walk_forward = 3;
+  ASSERT_TRUE(robustness_verdict(pnl, labels, cfg).is_robust);
+
+  pnl[6] = std::numeric_limits<f64>::quiet_NaN();
+  const auto causal = robustness_verdict(pnl, labels, cfg);
+  EXPECT_EQ(causal.regime_observations, (std::array<usize, 3>{4, 3, 4}));
+  EXPECT_TRUE(causal.regime_coverage_complete);
+  EXPECT_TRUE(std::isnan(causal.regime_sharpe[1]));
+  ASSERT_EQ(causal.walk_forward_sharpe.size(), 3U);
+  EXPECT_TRUE(std::isnan(causal.walk_forward_sharpe[1]));
+  EXPECT_TRUE(std::isnan(causal.full_sample_sharpe));
+  EXPECT_GT(causal.worst_regime_sharpe, 0.0);
+  EXPECT_GT(causal.worst_window_sharpe, 0.0);
+  EXPECT_FALSE(causal.is_robust);
+
+  cfg.regime_rule = RegimeSliceRule::LegacyFullSampleV1;
+  EXPECT_TRUE(robustness_verdict(pnl, labels, cfg).is_robust);
+}
+
 // =============================================================================
 //  per_regime_sharpe partitions the SAME stream by label; a constant-mean stream
 //  has equal per-regime Sharpe sign, and a label with no members yields 0.

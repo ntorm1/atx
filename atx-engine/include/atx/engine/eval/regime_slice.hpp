@@ -295,6 +295,11 @@ causal_market_returns(const alpha::Panel& panel, alpha::FieldId close) {
 class ExpandingVolCuts {
   using Values = std::multiset<std::pair<atx::f64, atx::usize>>;
 public:
+  ExpandingVolCuts() = default;
+  ExpandingVolCuts(const ExpandingVolCuts&) = delete;
+  ExpandingVolCuts& operator=(const ExpandingVolCuts&) = delete;
+  ExpandingVolCuts(ExpandingVolCuts&&) = delete;
+  ExpandingVolCuts& operator=(ExpandingVolCuts&&) = delete;
   [[nodiscard]] atx::usize size() const noexcept { return values_.size(); }
   [[nodiscard]] atx::u8 label(atx::f64 value) const noexcept {
     return value < low_->first ? atx::u8{0} : value > high_->first ? atx::u8{2} : atx::u8{1};
@@ -494,7 +499,8 @@ namespace detail {
 //  An alpha is ROBUST iff its worst per-regime OOS Sharpe AND its worst walk-
 //  forward-window Sharpe BOTH clear cfg.min_regime_sharpe — survival in EVERY
 //  vol regime and across EVERY rolling window, not merely full-sample. V2 also
-//  requires at least two finite observations in each regime; missing slices are
+//  requires finite full-sample, per-regime and walk-forward Sharpes, as well as
+//  at least two finite observations in each regime; missing slices are
 //  explicitly unqualified even though the legacy descriptive Sharpe slot is zero.
 //  The
 //  full_sample_sharpe is reported for contrast (the naive number). recovery_corr
@@ -521,8 +527,16 @@ namespace detail {
   v.worst_window_sharpe = detail::min_sharpe(std::span<const atx::f64>{v.walk_forward_sharpe});
   v.is_robust = (v.worst_regime_sharpe >= cfg.min_regime_sharpe) &&
                 (v.worst_window_sharpe >= cfg.min_regime_sharpe);
-  if (cfg.regime_rule != RegimeSliceRule::LegacyFullSampleV1)
-    v.is_robust = v.is_robust && cfg.regime_rule == RegimeSliceRule::ExpandingPastV2 && v.regime_coverage_complete;
+  if (cfg.regime_rule != RegimeSliceRule::LegacyFullSampleV1) {
+    const auto finite_score = [](atx::f64 score) { return std::isfinite(score); };
+    // The legacy minimum reduction deliberately retains its old NaN behavior.
+    // V2 must qualify every score directly: a later NaN cannot be hidden by a
+    // finite first slice, even when finite observation counts are sufficient.
+    v.is_robust = v.is_robust && cfg.regime_rule == RegimeSliceRule::ExpandingPastV2 &&
+                  v.regime_coverage_complete && std::isfinite(v.full_sample_sharpe) &&
+                  std::all_of(v.regime_sharpe.begin(), v.regime_sharpe.end(), finite_score) &&
+                  std::all_of(v.walk_forward_sharpe.begin(), v.walk_forward_sharpe.end(), finite_score);
+  }
   return v;
 }
 
