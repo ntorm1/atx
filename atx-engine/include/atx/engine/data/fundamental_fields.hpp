@@ -115,11 +115,20 @@ inline constexpr std::array<std::string_view, kDerivedFieldCount> kDerivedFieldN
 }
 
 // One filing-level snapshot for one panel instrument. NaN = not reported.
+enum class IdentityRule : atx::u8 { LegacyStaticV1 = 1, DatedLinksV2 = 2 };
 struct PitRecord {
   atx::usize instrument{};  // panel column (see map_security_ids)
-  atx::i64 available_ns{};  // first public instant, Unix ns
+  atx::i64 available_ns{};  // filing availability under the artifact's declared clock, Unix ns
   atx::i64 period_end_ns{}; // fiscal period end the values describe, Unix ns
   std::array<atx::f64, kRawFieldCount> values{};
+  IdentityRule identity_rule{IdentityRule::LegacyStaticV1};
+  atx::i64 identity_valid_from_ns{std::numeric_limits<atx::i64>::min()};
+  atx::i64 identity_valid_to_ns{std::numeric_limits<atx::i64>::max()}; // exclusive
+  atx::i64 link_available_ns{std::numeric_limits<atx::i64>::min()};
+  std::string owner_id;
+  std::string link_id;
+  bool identity_only{false}; // interval marker: no filing values, no filing lag
+  atx::u8 link_priority{0}; // 1 = explicitly reviewed dated override, 0 = filing bracket
 };
 
 struct AlignConfig {
@@ -131,6 +140,7 @@ struct AlignConfig {
 struct AlignStats {
   atx::usize records{};            // records supplied
   atx::usize records_after_axis{}; // visible only after the last session: never placed
+  atx::usize ambiguous_identity_cells{}; // instrument/date, withheld across all fields
   std::array<atx::usize, kRawFieldCount> filled_cells{}; // finite cells written
   std::array<atx::usize, kRawFieldCount> stale_cells{};  // visible value dropped by a cap
 };
@@ -201,6 +211,7 @@ align_pit_records(std::span<const PitRecord> records, std::span<const atx::i64> 
 
   // Bucket record indices per instrument, ordered by visibility.
   std::vector<std::vector<std::pair<atx::usize, atx::usize>>> by_inst(instruments);
+  std::vector<atx::u8> identity_versions(instruments, 0);
   for (atx::usize r = 0; r < records.size(); ++r) {
     const PitRecord &rec = records[r];
     if (rec.instrument >= instruments) {
@@ -211,7 +222,33 @@ align_pit_records(std::span<const PitRecord> records, std::span<const atx::i64> 
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "fundamentals: record period ends after it became public");
     }
-    const atx::usize vis = detail::visible_index(session_keys, rec.available_ns, cfg.lag_sessions);
+    const auto version = static_cast<atx::u8>(rec.identity_rule);
+    if ((rec.identity_rule != IdentityRule::LegacyStaticV1 &&
+         rec.identity_rule != IdentityRule::DatedLinksV2) ||
+        (identity_versions[rec.instrument] != 0 && identity_versions[rec.instrument] != version)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "fundamentals: mixed or unknown identity rules on one instrument");
+    }
+    identity_versions[rec.instrument] = version;
+    if (rec.identity_rule == IdentityRule::LegacyStaticV1 && rec.identity_only) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "fundamentals: identity marker requires dated-links-v2");
+    }
+    if (rec.identity_rule == IdentityRule::DatedLinksV2 &&
+        (rec.identity_valid_from_ns >= rec.identity_valid_to_ns ||
+         rec.available_ns < 0 || rec.period_end_ns < 0 || rec.identity_valid_from_ns < 0 ||
+         rec.link_available_ns < 0 ||
+         rec.owner_id.empty() || rec.link_id.empty() ||
+         rec.link_priority > 1 ||
+         rec.link_available_ns == std::numeric_limits<atx::i64>::min())) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "fundamentals: malformed dated issuer link");
+    }
+    const atx::usize filing_vis = rec.identity_only ? 0U
+        : detail::visible_index(session_keys, rec.available_ns, cfg.lag_sessions);
+    const atx::usize vis = rec.identity_rule == IdentityRule::DatedLinksV2
+        ? std::max(filing_vis, detail::visible_index(session_keys, rec.link_available_ns, 0U))
+        : filing_vis;
     if (vis >= dates) {
       ++out.stats.records_after_axis;
       continue;
@@ -224,6 +261,49 @@ align_pit_records(std::span<const PitRecord> records, std::span<const atx::i64> 
   for (atx::usize i = 0; i < instruments; ++i) {
     auto &list = by_inst[i];
     std::sort(list.begin(), list.end());
+    if (identity_versions[i] == static_cast<atx::u8>(IdentityRule::DatedLinksV2)) {
+      // Keep only currently covering visible records. Expiry removes an old
+      // issuer even if its fiscal period is newer than the successor's. Link-only
+      // markers expose conflicts before a competing issuer supplies any facts.
+      std::vector<atx::usize> visible;
+      atx::usize next = 0;
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::i64 key = session_keys[t];
+        for (; next < list.size() && list[next].first <= t; ++next)
+          visible.push_back(list[next].second);
+        std::erase_if(visible, [&](atx::usize r) { return records[r].identity_valid_to_ns <= key; });
+        std::string_view owner;
+        bool conflict = false;
+        atx::u8 priority = 0;
+        for (const atx::usize r : visible)
+          if (key >= records[r].identity_valid_from_ns)
+            priority = std::max(priority, records[r].link_priority);
+        for (const atx::usize r : visible) {
+          const auto &rec = records[r];
+          if (key < rec.identity_valid_from_ns || rec.link_priority != priority) continue;
+          if (owner.empty()) owner = rec.owner_id;
+          else if (owner != rec.owner_id) conflict = true;
+        }
+        if (conflict) { ++out.stats.ambiguous_identity_cells; continue; }
+        for (atx::usize f = 0; f < kRawFieldCount; ++f) {
+          const PitRecord *best = nullptr;
+          for (const atx::usize r : visible) {
+            const auto &rec = records[r];
+            if (rec.identity_only || key < rec.identity_valid_from_ns ||
+                rec.link_priority != priority || !std::isfinite(rec.values[f])) continue;
+            if (best == nullptr || detail::supersedes(rec, *best)) best = &rec;
+          }
+          if (best == nullptr) continue;
+          if (key - best->available_ns > cap_avail || key - best->period_end_ns > cap_period) {
+            ++out.stats.stale_cells[f];
+            continue;
+          }
+          out.raw[f][t * instruments + i] = best->values[f];
+          ++out.stats.filled_cells[f];
+        }
+      }
+      continue;
+    }
     for (atx::usize f = 0; f < kRawFieldCount; ++f) {
       const PitRecord *best = nullptr;
       atx::usize next = 0;
