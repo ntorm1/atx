@@ -128,6 +128,35 @@ Classification basis (RX1): ``strict`` joins ``entity_classification`` point in 
 (``valid_from``, ``as_of_date``, ``available_at`` at the cutoff); ``reconstructed`` uses
 each CIK's current classification backcast (``current_sic_backcast``), labeled.
 
+Research-store sources (E1)
+---------------------------
+Catalog rows of source kind ``event`` (P3 ``research_event_features``), ``factor_exposure``
+(P4 ``research_factor_exposures``) and ``ownership`` (P9 ``research_ownership_features``)
+read one source version pinned in the options (``event_version``, ``factor_run_id``,
+``ownership_version``); without a pin the row is ``source_version_not_pinned``. The pinned
+version must be built on this panel run's seal, carry the source contract this adapter is
+written against (:data:`EXTERNAL_QUERY_VERSIONS`) and pass its own validator (P3, P9) or
+results digest (P4, a ``complete`` run); its id and content digest enter the version inputs
+and its blockers the version blockers (``event:``, ``factor:``, ``ownership:``).
+``metric_code`` names the source feature (for P4 the exposure column) and ``metric_window``
+its declared window (:data:`EXTERNAL_FEATURES`); these rows take no domain operand. Event
+and ownership values are owner features placed on the owner's primary line (joined on the
+line and checked against its owner) and rank the valid primary lines; factor exposures are
+line features and rank the unlinked lines too. Every eligible member gets one row from the
+source row of the *same* formation and line: the source already chose the newest state
+visible at that cutoff, NULL states included, so an invalid newest state is NULL with its
+reason and never an earlier formation's value. A value enters only when its source reason
+is valid (P4 ``estimated``) and its own ``available_at`` is at or before the cutoff;
+otherwise it is NULL and counted as ``<kind>:<source reason>`` (for example
+``factor_exposure:insufficient_obs`` in the beta burn-in), ``<kind>:missing_source_row`` or
+``<kind>:not_visible_at_cutoff``, so the universe is never narrowed silently. A source row
+flag (P9 ``io_above_one``: IO above one is kept, never clipped) is counted per formation as
+``flag:<flag>`` beside the status counts, outside their sum. ``age_days`` is the days since
+the event session (event) or the source period (ownership). One SUE hypothesis: the panel's
+``sue_ni`` and P3's ``sue_ni_event`` (the same states on the event clock, never earlier than
+the filing clock, only where an event is visible) are never built together. No table or
+column is added, so the store schema stays v3.
+
 Versions
 --------
 ``feature_version`` = sha256 of (spec, code, inputs): the spec (panel run, policy
@@ -238,6 +267,7 @@ FEATURE_BLOCKED = "blocked_admission"
 FEATURE_EXCLUDED = "excluded_by_subset"
 FEATURE_INPUT_MISSING = "input_not_in_panel"
 FEATURE_OPERAND_MISSING = "domain_operand_not_in_panel"
+FEATURE_SOURCE_NOT_PINNED = "source_version_not_pinned"
 
 DATE_FORMED = "formed"
 DATE_THIN = "thin_cross_section"
@@ -259,6 +289,7 @@ PREFERRED_VARIANT = {"winsor_z": "zscore", "log_winsor_z": "zscore", "rank_norma
 #: Formations per digest query (digests are per formation, so any chunk gives the same bytes).
 _DIGEST_CHUNK = 24
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _OPERAND = re.compile(r"^(metric|item):([a-z][a-z0-9_]{0,95})$")
 _CODE_FILES = (Path(__file__), Path(_catalog.__file__), Path(_panel.__file__), Path(_cross_section.__file__),
                Path(_signal_eval.__file__))
@@ -510,6 +541,13 @@ class FeatureStoreOptions:
     #: whether the R2a validator re-checks the panel before building.
     formation_chunk: int = 24
     verify_panel: bool = True
+    #: E1 source pins (they determine the version): the sealed P3 event version, the
+    #: complete P4 factor run and the sealed P9 ownership version of the same panel run
+    #: that the catalog's ``event`` / ``factor_exposure`` / ``ownership`` rows read. A
+    #: kind without a pin is ``source_version_not_pinned``; an unused pin is ignored.
+    event_version: str | None = None
+    factor_run_id: str | None = None
+    ownership_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -542,6 +580,8 @@ class _Plan:
     size_feature: bool = False
     variants: tuple[str, ...] = ()
     universe_scope: str = UNIVERSE_SCOPE_LINKED
+    #: E1: (source kind, source feature) of a research-store source row.
+    external: tuple[str, str] | None = None
 
     @property
     def feature_id(self) -> str:
@@ -565,13 +605,16 @@ class _Plan:
         return self.entry.source_kind == "composition"
 
     def inputs(self) -> dict[str, Any]:
-        return {"panel_feature": self.panel_feature,
-                "legs": [[leg.role, leg.kind, leg.code, leg.panel_feature, leg.size_feature] for leg in self.legs],
-                "operand": None if self.operand is None else [
-                    self.operand.kind, self.operand.code, self.operand.window, self.operand.panel_feature,
-                    self.operand.size_feature, self.operand.leg],
-                "size_feature": self.size_feature,
-                "universe_scope": self.universe_scope}
+        inputs = {"panel_feature": self.panel_feature,
+                  "legs": [[leg.role, leg.kind, leg.code, leg.panel_feature, leg.size_feature] for leg in self.legs],
+                  "operand": None if self.operand is None else [
+                      self.operand.kind, self.operand.code, self.operand.window, self.operand.panel_feature,
+                      self.operand.size_feature, self.operand.leg],
+                  "size_feature": self.size_feature,
+                  "universe_scope": self.universe_scope}
+        if self.external is not None:
+            inputs["external"] = list(self.external)
+        return inputs
 
 
 @dataclass(frozen=True)
@@ -629,12 +672,18 @@ def _validate_options(options: FeatureStoreOptions) -> FeatureStoreOptions:
         raise FeatureStoreError(f"control_features must include the size control {SIZE_FEATURE_ID!r}")
     if options.catalog_entries is not None and options.catalog_path is not None:
         raise FeatureStoreError("pass catalog_path or catalog_entries, not both")
+    pins: dict[str, str | None] = {}
+    for name in _PIN_FIELDS.values():
+        pin = getattr(options, name)
+        if pin is not None and (not isinstance(pin, str) or not _PIN.fullmatch(pin)):
+            raise FeatureStoreError(f"{name} must be a source version id")
+        pins[name] = pin
     return FeatureStoreOptions(
         panel_run_id=options.panel_run_id, features=features, winsor_limits=(limits[0], limits[1]),
         min_names=options.min_names, industry_min_group_size=options.industry_min_group_size,
         neutral_min_coverage=coverage, taxonomy_code=options.taxonomy_code, control_features=controls,
         catalog_path=options.catalog_path, catalog_entries=options.catalog_entries,
-        formation_chunk=options.formation_chunk, verify_panel=bool(options.verify_panel))
+        formation_chunk=options.formation_chunk, verify_panel=bool(options.verify_panel), **pins)
 
 
 def _load_catalog(options: FeatureStoreOptions) -> tuple[tuple[AnomalyCatalogEntry, ...], str, str]:
@@ -699,6 +748,44 @@ def _parse_operand(text: str | None) -> tuple[str, str] | None:
 #: catalog lane decides the name and validates it against ``panel.NATIVE_FEATURES``.
 PANEL_FEATURE_SOURCE_KINDS = ("seed_metric", "panel_native")
 
+#: E1: catalog source kinds read from a sealed research-store source version pinned in
+#: :class:`FeatureStoreOptions`, keyed by the row's ``metric_code`` (the source feature id,
+#: for P4 the exposure column) and its declared ``metric_window``.
+SOURCE_EVENT = "event"
+SOURCE_FACTOR = "factor_exposure"
+SOURCE_OWNERSHIP = "ownership"
+EXTERNAL_SOURCE_KINDS = (SOURCE_EVENT, SOURCE_FACTOR, SOURCE_OWNERSHIP)
+EXTERNAL_FEATURES: Mapping[str, Mapping[str, str]] = {
+    SOURCE_EVENT: {"ear_m1p1": "event", "runup_m21_m2": "event", "days_since_announcement": "event",
+                   "sue_ni_event": "event"},
+    SOURCE_FACTOR: {"beta_mkt_252d": "252d", "ivol_252d": "252d"},
+    SOURCE_OWNERSHIP: {"io_ratio_13f": "13f_quarter", "io_change_13f": "13f_quarter",
+                       "breadth_change_13f": "13f_quarter", "short_interest_ratio": "short_interest",
+                       "days_to_cover_si": "short_interest"},
+}
+#: The source contract this adapter is written against; any other version is refused.
+EXTERNAL_QUERY_VERSIONS: Mapping[str, str] = {SOURCE_EVENT: "research-earnings-events-v2",
+                                              SOURCE_FACTOR: "research-factor-returns-v3",
+                                              SOURCE_OWNERSHIP: "research-ownership-features-v1"}
+_PIN_FIELDS = {SOURCE_EVENT: "event_version", SOURCE_FACTOR: "factor_run_id", SOURCE_OWNERSHIP: "ownership_version"}
+_BLOCKER_PREFIX = {SOURCE_EVENT: "event", SOURCE_FACTOR: "factor", SOURCE_OWNERSHIP: "ownership"}
+#: kind -> (version table, key column, content digest column, contract column).
+_SOURCE_TABLES = {
+    SOURCE_EVENT: ("research_event_versions", "event_version", "features_sha256", "query_version"),
+    SOURCE_FACTOR: ("research_factor_runs", "run_id", "results_sha256", "factor_version"),
+    SOURCE_OWNERSHIP: ("research_ownership_versions", "ownership_version", "features_sha256", "query_version"),
+}
+#: A P4 exposure column's status column; ``estimated`` is the valid status.
+_FACTOR_STATUS = {"beta_mkt_252d": "status_252d", "ivol_252d": "status_252d"}
+_FACTOR_ESTIMATED = "estimated"
+#: Key prefix of a source row flag counted beside (not inside) a formation's status counts.
+FLAG_PREFIX = "flag:"
+#: One SUE hypothesis (E1): the panel's filing-clocked ``sue_ni`` is the cataloged one;
+#: P3's ``sue_ni_event`` reads the same states on the event clock (never earlier, and only
+#: where an event is visible), so it adds no timing and is never built beside it.
+_SUE_PANEL = ("seed_metric", "sue_ni")
+_SUE_EVENT = (SOURCE_EVENT, "sue_ni_event")
+
 
 def _plan_features(entries: Sequence[AnomalyCatalogEntry], context: _PanelContext,
                    options: FeatureStoreOptions) -> list[_Plan]:
@@ -721,6 +808,20 @@ def _plan_features(entries: Sequence[AnomalyCatalogEntry], context: _PanelContex
             plans.append(_Plan(entry, FEATURE_EXCLUDED, "feature_subset"))
             continue
         domain = _parse_operand(entry.domain_operand)
+        if entry.source_kind in EXTERNAL_SOURCE_KINDS:
+            kind, code = entry.source_kind, entry.metric_code or ""
+            window = EXTERNAL_FEATURES[kind].get(code)
+            if window is None or entry.metric_window != window:
+                raise FeatureStoreError(f"{entry.feature_id}: the {kind} source has no feature {code!r} with window "
+                                        f"{entry.metric_window!r} (known: {dict(EXTERNAL_FEATURES[kind])})")
+            if domain is not None:
+                raise FeatureStoreError(f"{entry.feature_id}: a {kind} feature takes no domain operand")
+            if getattr(options, _PIN_FIELDS[kind]) is None:
+                plans.append(_Plan(entry, FEATURE_SOURCE_NOT_PINNED, f"{_PIN_FIELDS[kind]}:none"))
+                continue
+            scope = UNIVERSE_SCOPE_ALL_LINES if kind == SOURCE_FACTOR else UNIVERSE_SCOPE_LINKED
+            plans.append(_Plan(entry, "planned", None, None, (), None, False, variants, scope, (kind, code)))
+            continue
         if entry.source_kind in PANEL_FEATURE_SOURCE_KINDS:
             code = entry.metric_code or ""
             feature = context.features.get((code, entry.metric_window or ""))
@@ -781,6 +882,10 @@ def _plan_features(entries: Sequence[AnomalyCatalogEntry], context: _PanelContex
                            any(leg.size_feature for leg in legs), variants,
                            context.universe_scope([leg.panel_feature for leg in legs], operand)))
     planned = {p.feature_id for p in plans if p.status == "planned"}
+    sources = {(p.entry.source_kind, p.entry.metric_code) for p in plans if p.status == "planned"}
+    if _SUE_PANEL in sources and _SUE_EVENT in sources:
+        raise FeatureStoreError("one SUE hypothesis: the panel's sue_ni and the event-clocked sue_ni_event read the "
+                                "same states; catalog (or select) only one of them")
     missing_controls = [c for c in options.control_features if c not in planned]
     if missing_controls:
         raise FeatureStoreError(f"controls {missing_controls} cannot be built from this catalog and panel run "
@@ -1038,6 +1143,145 @@ def _stage_operands(store: ResearchStore, run_id: str, plans: Sequence[_Plan], v
         counts[plan.feature_id] = int(con.execute(
             "SELECT count(*) FROM _rf_operand WHERE feature_id=?", [plan.feature_id]).fetchone()[0])
     return counts
+
+
+def _store_has(store: ResearchStore, table: str) -> bool:
+    """Whether the research catalog itself (not the warehouse, not temp) has ``table``."""
+    return bool(store.con.execute("""
+        SELECT count(*) FROM duckdb_tables()
+        WHERE database_name = ? AND schema_name = 'main' AND table_name = ? AND NOT temporary
+    """, [store.catalog, table]).fetchone()[0])
+
+
+def _load_external_source(store: ResearchStore, kind: str, pin: str, context: _PanelContext) -> dict[str, Any]:
+    """Validate one pinned source version: this panel seal, its contract, its own validator.
+
+    P3 and P9 versions pass :func:`events.validate_event_version` /
+    :func:`ownership_features.validate_ownership_version` (seal invariants, including no value
+    visible after its cutoff, and both content digests). A P4 run has no validator: it must be
+    ``complete`` (``untestable_strict`` on an untestable panel) with its results digest intact.
+    """
+    table, key, digest_column, contract_column = _SOURCE_TABLES[kind]
+    where = f"{kind} source {pin!r}"
+    if not _store_has(store, table):
+        raise FeatureStoreError(f"{where}: the research store has no {table}")
+    row = store.con.execute(f"""
+        SELECT status, panel_run_id, panel_sha256, {contract_column}, blockers_json, {digest_column}
+        FROM {table} WHERE {key} = ?
+    """, [pin]).fetchone()
+    if row is None:
+        raise FeatureStoreError(f"{where} is absent")
+    status, run_id, panel_sha, contract, blockers_json, digest = row
+    if contract != EXTERNAL_QUERY_VERSIONS[kind]:
+        raise FeatureStoreError(f"{where} was built by {contract!r}; this adapter reads "
+                                f"{EXTERNAL_QUERY_VERSIONS[kind]!r} only")
+    if run_id != context.run_id or panel_sha != context.panel_sha256:
+        raise FeatureStoreError(f"{where} is built on panel run {run_id} ({panel_sha}), not on the seal of "
+                                f"{context.run_id} ({context.panel_sha256})")
+    try:
+        if kind == SOURCE_EVENT:
+            from . import events as _events
+
+            _events.validate_event_version(store, pin)
+        elif kind == SOURCE_OWNERSHIP:
+            from . import ownership_features as _ownership
+
+            _ownership.validate_ownership_version(store, pin)
+        else:
+            from . import factor_returns as _factors  # imports this module: never at module level
+
+            wanted = FEATURE_UNTESTABLE if context.status == STATUS_UNTESTABLE else "complete"
+            if status != wanted:
+                raise FeatureStoreError(f"{where} is {status!r}, not {wanted!r}")
+            if _factors.results_digest(store.con, pin)[0] != digest:
+                raise FeatureStoreError(f"{where}: result rows differ from their sealed digest")
+    except FeatureStoreError:
+        raise
+    except (ValueError, duckdb.Error) as error:
+        raise FeatureStoreError(f"{where} fails its validator: {error}") from error
+    return {"version": pin, "status": str(status), "query_version": str(contract), "sha256": str(digest),
+            "blockers": [str(b) for b in json.loads(blockers_json or "[]")]}
+
+
+def _external_sources(store: ResearchStore, context: _PanelContext, options: FeatureStoreOptions,
+                      plans: Sequence[_Plan]) -> dict[str, dict[str, Any]]:
+    """The validated source of every kind a planned feature reads (unused pins are ignored)."""
+    kinds = sorted({p.external[0] for p in plans if p.status == "planned" and p.external is not None})
+    return {kind: _load_external_source(store, kind, getattr(options, _PIN_FIELDS[kind]), context)
+            for kind in kinds}
+
+
+def _external_source_sql(kind: str, code: str) -> str:
+    """One source feature's rows: formation_date, security_id, source_owner, value, source_reason,
+    available_at, age_days, value_flag (parameters: the pin, then the feature id except for P4)."""
+    if kind == SOURCE_FACTOR:
+        status = _FACTOR_STATUS[code]
+        return f"""
+            SELECT formation_date, security_id, owner_basis AS source_owner, CAST({code} AS DOUBLE) AS value,
+                   CASE WHEN {status} = '{_FACTOR_ESTIMATED}' THEN 'valid' ELSE {status} END AS source_reason,
+                   available_at, CAST(NULL AS INTEGER) AS age_days, CAST(NULL AS VARCHAR) AS value_flag
+            FROM research_factor_exposures WHERE run_id = ?"""
+    table, key, anchor, flag = (("research_event_features", "event_version", "event_session",
+                                 "CAST(NULL AS VARCHAR)") if kind == SOURCE_EVENT else
+                                ("research_ownership_features", "ownership_version", "source_period", "value_flag"))
+    return f"""
+        SELECT formation_date, security_id, owner_cik AS source_owner, CAST(raw_value AS DOUBLE) AS value,
+               reason AS source_reason, available_at,
+               CAST(date_diff('day', {anchor}, formation_date) AS INTEGER) AS age_days, {flag} AS value_flag
+        FROM {table} WHERE {key} = ? AND feature_id = ?"""
+
+
+def _stage_external_rows(con: Any, plan: _Plan, pin: str) -> None:
+    """``_rf_rows`` of a research-store source feature over every eligible cohort row.
+
+    The source row of the same formation and line (the source's newest state visible at
+    that cutoff, NULL included) gives the value only when its reason is valid and its own
+    clock is at or before the cutoff; a missing row, an invalid reason or a late clock is
+    NULL with ``<kind>:<reason>``. A source row off the source's universe, on another owner,
+    or duplicated breaks the pinned contract and stops the build.
+    """
+    if plan.external is None:
+        raise FeatureStoreError(f"{plan.feature_id} is not a research-store source feature")
+    kind, code = plan.external
+    params = [pin] if kind == SOURCE_FACTOR else [pin, code]
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _rf_source AS {_external_source_sql(kind, code)}", params)
+    member, owner = (("k.owner_basis IS NOT NULL", "k.owner_basis") if plan.price_line
+                     else ("k.in_universe", "k.owner_cik"))
+    duplicates, outside, other_owner = (int(v) for v in con.execute(f"""
+        SELECT count(*) - count(DISTINCT (s.formation_date, s.security_id)),
+               count(*) FILTER (WHERE NOT coalesce({member}, false)),
+               count(*) FILTER (WHERE coalesce({member}, false) AND s.source_owner IS DISTINCT FROM {owner})
+        FROM _rf_source s
+        LEFT JOIN _rf_cohort k ON k.formation_date = s.formation_date AND k.security_id = s.security_id
+    """).fetchone())
+    if duplicates or outside or other_owner:
+        raise FeatureStoreError(f"{plan.feature_id}: {kind} source {pin} breaks its contract (duplicates="
+                                f"{duplicates}, rows_outside_universe={outside}, owner_mismatch={other_owner})")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _rf_rows AS
+        WITH r AS (
+            SELECT k.formation_date, k.security_id, k.owner_basis, k.cohort_reason, k.primary_line, c.cutoff,
+                   s.security_id IS NOT NULL AS has_source, s.source_reason, s.value AS raw_value,
+                   s.available_at AS source_at, s.age_days, s.value_flag
+            FROM _rf_cohort k
+            JOIN _rf_calendar c ON c.formation_date = k.formation_date
+            LEFT JOIN _rf_source s ON s.formation_date = k.formation_date AND s.security_id = k.security_id
+        ), g AS (
+            SELECT r.*, CASE
+                {_universe_gate(plan, 'r.')}
+                WHEN NOT r.has_source THEN '{kind}:missing_source_row'
+                WHEN r.source_reason IS DISTINCT FROM 'valid' THEN '{kind}:' || coalesce(r.source_reason, 'no_reason')
+                WHEN r.source_at IS NULL OR r.source_at > r.cutoff THEN '{kind}:not_visible_at_cutoff'
+                WHEN r.raw_value IS NULL OR NOT isfinite(r.raw_value) THEN 'nonfinite_value'
+                END AS gate
+            FROM r
+        )
+        SELECT formation_date, security_id, owner_basis, raw_value,
+               CASE WHEN gate IS NULL THEN source_at END AS available_at, age_days,
+               CAST(NULL AS VARCHAR) AS size_status, value_flag,
+               {_status_sql(plan.entry, 'raw_value', None, plan.log_base)} AS status
+        FROM g
+    """)
 
 
 def _relation_digest(con: Any, relation: str, columns: Sequence[str], order: str,
@@ -1396,7 +1640,18 @@ class FeatureVersionResult:
 
 
 def _spec_payload(options: FeatureStoreOptions, context: _PanelContext, plans: Sequence[_Plan],
-                  catalog_source: str) -> dict[str, Any]:
+                  catalog_source: str, sources: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    payload = _base_spec_payload(options, context, plans, catalog_source)
+    if sources:  # E1: only a version that reads a research-store source carries these keys
+        payload["external_sources"] = {kind: source["version"] for kind, source in sorted(sources.items())}
+        payload["external_source_rule"] = (
+            "the source row of the same formation and line; a value only when the source reason is valid "
+            "and its own available_at <= cutoff, else NULL counted as <kind>:<reason>")
+    return payload
+
+
+def _base_spec_payload(options: FeatureStoreOptions, context: _PanelContext, plans: Sequence[_Plan],
+                       catalog_source: str) -> dict[str, Any]:
     return {
         "query_version": QUERY_VERSION,
         "store_schema": FEATURE_SCHEMA_VERSION,
@@ -1547,7 +1802,9 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
     ``unlinked`` line counts of the ranked universes.
     """
     con = store.con
-    if plan.is_composition:
+    if plan.external is not None:
+        _stage_external_rows(con, plan, getattr(options, _PIN_FIELDS[plan.external[0]]))
+    elif plan.is_composition:
         _stage_composition_rows(con, context.run_id, plan, context.verified_status, context.max_age_days)
     else:
         _stage_seed_rows(con, context.run_id, plan, context.verified_status)
@@ -1556,6 +1813,14 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
                                       "ORDER BY ALL").fetchall():
         reasons.setdefault(day, {})[str(status)] = int(n)
     candidates_sql = f"r.status IN ({_sql_list(DOMAIN_STATUSES)})"
+    if plan.external is not None:
+        # Source row flags of stored rows (P9 io_above_one: kept, never clipped), counted
+        # beside the status counts (the validator leaves them out of the member sum).
+        for day, flag, n in con.execute(f"""
+            SELECT r.formation_date, r.value_flag, count(*) FROM _rf_rows r
+            WHERE r.value_flag IS NOT NULL AND {candidates_sql} GROUP BY ALL ORDER BY ALL
+        """).fetchall():
+            reasons.setdefault(day, {})[f"{FLAG_PREFIX}{flag}"] = int(n)
     late = int(con.execute(f"""
         SELECT count(*) FROM _rf_rows r JOIN _rf_calendar c ON c.formation_date = r.formation_date
         WHERE {candidates_sql} AND (r.available_at IS NULL OR r.available_at > c.cutoff)
@@ -1675,7 +1940,10 @@ def _blockers(context: _PanelContext, plans: Sequence[_Plan], options: FeatureSt
         blockers.append("strict_basis_untestable")
     for blocker in staged.get("panel_blockers", []):
         blockers.append(f"panel:{blocker}")
-    not_built = [p for p in plans if p.status in (FEATURE_INPUT_MISSING, FEATURE_OPERAND_MISSING)]
+    for kind, source in sorted(staged.get("external_sources", {}).items()):
+        blockers.extend(f"{_BLOCKER_PREFIX[kind]}:{blocker}" for blocker in source["blockers"])
+    not_built = [p for p in plans
+                 if p.status in (FEATURE_INPUT_MISSING, FEATURE_OPERAND_MISSING, FEATURE_SOURCE_NOT_PINNED)]
     if not_built:
         blockers.append(f"catalog_features_not_built:{len(not_built)}")
     if options.features is not None:
@@ -1708,10 +1976,13 @@ def build_feature_version(store: ResearchStore, options: FeatureStoreOptions) ->
     entries, catalog_sha, catalog_source = _load_catalog(options)
     plans = _plan_features(entries, context, options)
     buildable = [p for p in plans if p.status == "planned"]
+    sources = _external_sources(store, context, options, buildable)
     phases["plan"] = time.perf_counter() - started
     blockers_json = con.execute("SELECT blockers_json FROM research_panel_runs WHERE run_id=?",
                                 [context.run_id]).fetchone()[0]
     staged: dict[str, Any] = {"panel_blockers": json.loads(blockers_json) if blockers_json else []}
+    if sources:
+        staged["external_sources"] = sources
     chunk = options.formation_chunk
     started = time.perf_counter()
     _stage_universe(con, context.run_id)
@@ -1763,8 +2034,12 @@ def build_feature_version(store: ResearchStore, options: FeatureStoreOptions) ->
                                                            "available_at", "period_end"), "code, security_id",
                                          context.formations, chunk),
     }
+    if sources:  # the pinned source versions and their content digests (E1)
+        inputs["external_sources"] = {kind: {key: source[key] for key in ("version", "status", "query_version",
+                                                                           "sha256")}
+                                      for kind, source in sorted(sources.items())}
     phases["input_digests"] = time.perf_counter() - started
-    spec = _spec_payload(options, context, plans, catalog_source)
+    spec = _spec_payload(options, context, plans, catalog_source, sources)
     spec_json = _canonical(spec)
     spec_sha, code_sha, inputs_json = _sha(spec_json), _code_sha(), _canonical(inputs)
     inputs_sha = _sha(inputs_json)
@@ -1960,12 +2235,13 @@ def validate_feature_version(store: ResearchStore, feature_version: str, *,
     _require_feature_schema(con)
     row = con.execute("""
         SELECT status, basis, panel_run_id, panel_sha256, values_sha256, spec_json, spec_sha256, blockers_json,
-               diagnostic_json
+               diagnostic_json, inputs_json
         FROM research_feature_versions WHERE feature_version=?
     """, [feature_version]).fetchone()
     if row is None or row[0] not in SEALED_STATUSES:
         raise FeatureStoreError(f"feature version {feature_version!r} is absent or not sealed")
-    status, basis, run_id, panel_sha, values_sha, spec_json, spec_sha, blockers_json, diagnostic_json = row
+    status, basis, run_id, panel_sha, values_sha, spec_json, spec_sha, blockers_json, diagnostic_json, \
+        inputs_json = row
     if _sha(spec_json) != spec_sha:
         raise FeatureStoreError("feature version spec digest mismatch")
     spec = json.loads(spec_json)
@@ -1981,6 +2257,16 @@ def validate_feature_version(store: ResearchStore, feature_version: str, *,
         raise FeatureStoreError(f"panel run {run_id} no longer carries the seal this version was built from")
     if verify_panel:
         _panel.validate_research_panel(store, run_id)
+    # E1: every pinned research-store source still carries the seal the version read.
+    for kind, pinned in sorted((json.loads(inputs_json or "{}").get("external_sources") or {}).items()):
+        if kind not in _SOURCE_TABLES:
+            raise FeatureStoreError(f"unknown research-store source kind {kind!r} in the version inputs")
+        table, key, digest_column, _ = _SOURCE_TABLES[kind]
+        seal = con.execute(f"SELECT status, {digest_column} FROM {table} WHERE {key}=?",
+                           [pinned["version"]]).fetchone() if _store_has(store, table) else None
+        if seal is None or [str(seal[0]), str(seal[1])] != [pinned["status"], pinned["sha256"]]:
+            raise FeatureStoreError(f"{kind} source {pinned['version']} no longer carries the seal this version "
+                                    "was built from")
     formations = [r[0] for r in con.execute("""
         SELECT formation_date FROM research_panel_calendar WHERE run_id=? AND status=? ORDER BY formation_date
     """, [run_id, _panel.CALENDAR_FORMED]).fetchall()]
@@ -2074,11 +2360,13 @@ def validate_feature_version(store: ResearchStore, feature_version: str, *,
         for day, members, names, reasons_json, variant, date_status, excluded, label in date_rows:
             eligible, linked, unlinked = universe.get(day, (0, 0, 0))
             expected_names = (linked + unlinked if all_lines else linked) if status == STATUS_SEALED else 0
-            if sum(json.loads(reasons_json).values()) != (members if status == STATUS_SEALED else 0) \
+            # Row statuses partition the members; source flags (E1) are counted beside them.
+            counted = sum(n for key, n in json.loads(reasons_json).items() if not key.startswith(FLAG_PREFIX))
+            if counted != (members if status == STATUS_SEALED else 0) \
                     or members != eligible or names != expected_names:
                 raise FeatureStoreError(
                     f"{feature_id} {day}: date row accounting broken (reasons sum "
-                    f"{sum(json.loads(reasons_json).values())}, eligible_members {members}/{eligible}, "
+                    f"{counted}, eligible_members {members}/{eligible}, "
                     f"universe_names {names}/{expected_names})")
             want = left_out.get((day, variant), 0) if all_lines and status == STATUS_SEALED else None
             want_label = CONDITIONING_LINKED_ONLY if want and date_status == DATE_FORMED else None
@@ -2293,18 +2581,26 @@ __all__ = [
     "DATE_THIN_COVARIATE",
     "DEFAULT_CONTROLS",
     "DOMAIN_STATUSES",
+    "EXTERNAL_FEATURES",
+    "EXTERNAL_QUERY_VERSIONS",
+    "EXTERNAL_SOURCE_KINDS",
     "FEATURE_BLOCKED",
     "FEATURE_BUILT",
     "FEATURE_EXCLUDED",
     "FEATURE_INPUT_MISSING",
     "FEATURE_OPERAND_MISSING",
     "FEATURE_SCHEMA_VERSION",
+    "FEATURE_SOURCE_NOT_PINNED",
+    "FLAG_PREFIX",
     "IN_DOMAIN",
     "NEUTRAL_CONDITIONING_BLOCKER",
     "OWNER_BASES",
     "OWNER_BASIS_LINKED",
     "OWNER_BASIS_UNLINKED",
     "QUERY_VERSION",
+    "SOURCE_EVENT",
+    "SOURCE_FACTOR",
+    "SOURCE_OWNERSHIP",
     "STANDARDIZED_VARIANTS",
     "UNIVERSE_RULE",
     "UNIVERSE_SCOPES",

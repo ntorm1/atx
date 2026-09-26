@@ -353,7 +353,8 @@ def _catalog_row(feature_id: str, anomaly_class: str, sign: str, transform: str,
             "supersedes": ""}
 
 
-def _catalog_entries(path: Path, *, drop: tuple[str, ...] = ()) -> tuple[research_catalog.AnomalyCatalogEntry, ...]:
+def _catalog_entries(path: Path, *, drop: tuple[str, ...] = (),
+                     extra: tuple[dict[str, str], ...] = ()) -> tuple[research_catalog.AnomalyCatalogEntry, ...]:
     rows = [
         _catalog_row("market_cap", "size", "-1", "log_winsor_z", "positive_value_required", scale="dollar_level"),
         _catalog_row("book_to_market", "value", "+1", "rank_normal", "negative_book_excluded", caveat="sign_flip",
@@ -382,7 +383,7 @@ def _catalog_entries(path: Path, *, drop: tuple[str, ...] = ()) -> tuple[researc
         _catalog_row("revenue_growth_qoq", "growth", "+1", "rank_normal", "unrestricted", window="q",
                      caveat="sequential_quarter", admission="blocked_incomparable_origin"),
     ]
-    rows = [row for row in rows if row["feature_id"] not in drop]
+    rows = [row for row in rows if row["feature_id"] not in drop] + list(extra)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(research_catalog.ANOMALY_CATALOG_COLUMNS))
         writer.writeheader()
@@ -928,3 +929,179 @@ def test_standardize_frame_is_formation_independent() -> None:
     for variant in rf.VARIANTS:
         np.testing.assert_array_equal(part[variant].to_numpy(), alone[variant].to_numpy())
     assert math.isclose(float(np.corrcoef(part["signed_raw"], part["rank_normal"])[0, 1]), 1.0, abs_tol=0.05)
+
+
+def _seal_research_sources(con: Any, panel_sha: str, parent_version: str) -> None:
+    """E1 fixture: a sealed P3 event version ``ev1`` (``ear_m1p1``), a complete P4 factor run ``fr1``
+    (``beta_mkt_252d``) and a sealed P9 ownership version ``ow1`` (``io_ratio_13f``) of ``panel_recon``.
+
+    Events: no row when i % 7 == 0; i % 7 == 1 is valid in January and ``event_value_pending`` (NULL)
+    afterwards. Ownership: no row when i % 11 == 4; i % 5 == 0 ``no_mapped_13f_holding``; i % 5 == 1 valid in
+    January and ``unverified_shares`` afterwards; issuer 2's IO is 1.3, flagged ``io_above_one``. Factor: every
+    ranked line (unlinked ones too) but issuer 3's; January is the beta burn-in (``insufficient_obs``); tail
+    line 7's March beta is clocked after the March cutoff.
+    """
+    from atx_db import ownership_identity
+    from atx_db.research import events as rev
+    from atx_db.research import factor_returns as rfr
+    from atx_db.research import ownership_features as rof
+
+    for ensure in (rev.ensure_event_schema, rfr.ensure_factor_schema, rof.ensure_ownership_schema):
+        ensure(con)
+    created = dt.datetime(2026, 9, 25)
+    events, owners, exposures = [], [], []
+    for n, day in enumerate(FORMATIONS):
+        cutoff = dt.datetime.combine(day, dt.time(22))
+        period = Q3 if n < 2 else Q4
+        deadline = dt.datetime.combine(period, dt.time()) + dt.timedelta(days=45, hours=46)
+        linked = _linked_lines(day)
+        for i in (i for i in range(N_ISSUERS) if _owner(i) in linked):
+            if i % 7:
+                pending = i % 7 == 1 and n > 0
+                events.append(["ev1", day, _owner(i), _cik(i), "ear_m1p1", None if pending else 0.01 * (i % 13 - 6),
+                               "event_value_pending" if pending else "valid",
+                               None if pending else cutoff - dt.timedelta(days=5), period,
+                               day - dt.timedelta(days=12), "8k_202"])
+            if i % 11 != 4:
+                reason = ("no_mapped_13f_holding" if i % 5 == 0
+                          else "unverified_shares" if i % 5 == 1 and n > 0 else "valid")
+                valid = reason == "valid"
+                owners.append(["ow1", day, _owner(i), _cik(i), "io_ratio_13f",
+                               (1.3 if i == 2 else 0.2 + 0.03 * (i % 17)) if valid else None, reason,
+                               deadline if valid else None, period, deadline,
+                               "io_above_one" if valid and i == 2 else None, "cusip_exact"])
+        for line in sorted(linked | _unlinked_lines(day)):
+            if line == _owner(3):
+                continue
+            estimated = n > 0
+            exposures.append({"run_id": "fr1", "formation_date": day, "security_id": line,
+                              "owner_basis": rf.OWNER_BASIS_LINKED if line in linked else rf.OWNER_BASIS_UNLINKED,
+                              "beta_mkt_252d": 0.5 + (sum(map(ord, line)) % 50) / 50 if estimated else None,
+                              "n_daily_obs": 240 if estimated else 120,
+                              "status_252d": "estimated" if estimated else "insufficient_obs",
+                              "status_36m": "no_factor_history",
+                              "available_at": None if not estimated else cutoff + dt.timedelta(days=1)
+                              if (n, line) == (2, "TBL-TAIL-007") else cutoff - dt.timedelta(days=1),
+                              "basis": "reconstructed", "venue_basis": "not_applicable", "rf_basis": "none"})
+    con.executemany("""
+        INSERT INTO research_event_features (event_version, formation_date, security_id, owner_cik, feature_id,
+            raw_value, reason, available_at, fiscal_period_end, event_session, announcement_basis)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)""", events)
+    con.executemany("""
+        INSERT INTO research_ownership_features (ownership_version, formation_date, security_id, owner_cik,
+            feature_id, raw_value, reason, available_at, source_period, source_clock, value_flag, identity_basis)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", owners)
+    con.executemany("""
+        INSERT INTO research_ownership_identity (ownership_version, source, source_key, source_period, name_key,
+            owner_cik, security_id, identity_basis, confidence, reason) VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, [["ow1", "13f", f"cusip{i}", period, None, _cik(i), _owner(i), "cusip_exact", "high",
+           ownership_identity.MAPPED] for i in range(N_ISSUERS) for period in (Q3, Q4)])
+    con.execute("""
+        INSERT INTO research_event_versions (event_version, status, basis, panel_run_id, panel_sha256, query_version,
+            spec_json, spec_sha256, code_sha256, inputs_json, blockers_json, events_sha256, features_sha256,
+            created_at)
+        VALUES ('ev1', 'sealed', 'reconstructed', 'panel_recon', ?, ?, '{}', 's', 'c', '{}', '["event_fixture"]',
+                ?, ?, ?)
+    """, [panel_sha, rev.QUERY_VERSION, rev._events_digest(con, "ev1"), rev._features_digest(con, "ev1"), created])
+    con.execute("""
+        INSERT INTO research_ownership_versions (ownership_version, status, basis, panel_run_id, panel_sha256,
+            query_version, spec_json, spec_sha256, code_sha256, inputs_json, blockers_json, identity_sha256,
+            features_sha256, created_at)
+        VALUES ('ow1', 'sealed', 'reconstructed', 'panel_recon', ?, ?, '{}', 's', 'c', '{}',
+                '["ownership_fixture"]', ?, ?, ?)
+    """, [panel_sha, rof.QUERY_VERSION, rof._identity_digest(con, "ow1"), rof._features_digest(con, "ow1"),
+          created])
+    rfr._insert(con, "runs", [{
+        "run_id": "fr1", "status": "complete", "basis": "reconstructed", "feature_version": parent_version,
+        "panel_run_id": "panel_recon", "panel_sha256": panel_sha, "factor_version": rfr.FACTOR_VERSION,
+        "rf_basis": "none", "label_source": "fixture", "label_cutoff": created, "spec_json": "{}",
+        "spec_sha256": "s", "code_sha256": "c", "blockers_json": '["factor_fixture"]', "created_at": created}])
+    rfr._insert(con, "exposures", exposures)
+    con.execute("UPDATE research_factor_runs SET results_sha256=? WHERE run_id='fr1'",
+                [rfr.results_digest(con, "fr1")[0]])
+
+
+def test_research_store_sources_enter_point_in_time_and_count_every_member(built: Any) -> None:
+    """E1: P3 event, P4 factor-exposure and P9 ownership features enter from pinned sealed versions. Per kind a
+    value enters only from the same formation's source row, when its reason is valid and its own clock is
+    visible at the cutoff; an invalid newest state is NULL with its reason (never January's value), missing
+    rows are counted, IO above one is kept and flagged, and a source failing its own validator is refused."""
+    from atx_db.research import events as rev
+
+    store = built["store"]
+    con = store.con
+    panel_sha = con.execute("SELECT panel_sha256 FROM research_panel_runs WHERE run_id='panel_recon'").fetchone()[0]
+    _seal_research_sources(con, panel_sha, built["result"].feature_version)
+    # P3's validator binds its session calendar (there are no event rows to check against it here).
+    con.execute("CREATE OR REPLACE TEMP TABLE trading_calendar "
+                "(calendar_id VARCHAR, source VARCHAR, trade_date DATE, is_open BOOLEAN)")
+
+    def source_row(feature_id: str, kind: str, code: str, window: str, anomaly_class: str, sign: str) -> dict:
+        return {**_catalog_row(feature_id, anomaly_class, sign, "rank_normal", "unrestricted"),
+                "source_kind": kind, "metric_code": code, "metric_window": window}
+
+    entries = _catalog_entries(built["root"] / "catalog_e1.csv", extra=(
+        source_row("ear_m1p1", "event", "ear_m1p1", "event", "growth", "+1"),
+        source_row("beta_252d", "factor_exposure", "beta_mkt_252d", "252d", "volatility", "-1"),
+        source_row("io_ratio_13f", "ownership", "io_ratio_13f", "13f_quarter", "quality", "+1")))
+    unpinned = rf._plan_features(entries, rf._panel_context(store, "panel_recon", False),
+                                 rf._validate_options(_options(entries)))
+    assert [(p.status, p.reason) for p in unpinned if p.feature_id == "ear_m1p1"] == [
+        (rf.FEATURE_SOURCE_NOT_PINNED, "event_version:none")]
+    options = _options(entries, features=("beta_252d", "ear_m1p1", "io_ratio_13f"), event_version="ev1",
+                       factor_run_id="fr1", ownership_version="ow1")
+    result = rf.build_feature_version(store, options)
+    assert result.status == rf.STATUS_SEALED
+    rf.validate_feature_version(store, result.feature_version)   # status counts sum to the members, flags aside
+    assert {"event:event_fixture", "factor:factor_fixture", "ownership:ownership_fixture"} <= set(result.blockers)
+    inputs = json.loads(con.execute("SELECT inputs_json FROM research_feature_versions WHERE feature_version=?",
+                                    [result.feature_version]).fetchone()[0])
+    assert {kind: source["version"] for kind, source in inputs["external_sources"].items()} == {
+        "event": "ev1", "factor_exposure": "fr1", "ownership": "ow1"}
+
+    def value(feature: str, day: dt.date, line: str) -> tuple | None:
+        return con.execute("""
+            SELECT signed_raw, available_at, age_days, owner_basis FROM research_feature_matrix
+            WHERE feature_version=? AND feature_id=? AND formation_date=? AND security_id=?
+        """, [result.feature_version, feature, day, line]).fetchone()
+
+    def reasons(feature: str, day: dt.date) -> dict[str, int]:
+        return json.loads(con.execute("""
+            SELECT reasons_json FROM research_feature_dates
+            WHERE feature_version=? AND feature_id=? AND formation_date=? AND variant='signed_raw'
+        """, [result.feature_version, feature, day]).fetchone()[0])
+
+    jan, feb, mar = FORMATIONS[:3]
+    issuers = range(N_ISSUERS)
+    # Events: the value's own clock and age; after January issuer 1's newest state is pending (NULL).
+    assert value("ear_m1p1", jan, _owner(1)) == (0.01 * (1 % 13 - 6), dt.datetime.combine(jan, dt.time(22))
+                                                 - dt.timedelta(days=5), 12, rf.OWNER_BASIS_LINKED)
+    assert value("ear_m1p1", feb, _owner(1)) is None
+    counts = reasons("ear_m1p1", feb)
+    assert counts["event:event_value_pending"] == sum(1 for i in issuers if i % 7 == 1)
+    assert counts["event:missing_source_row"] == sum(1 for i in issuers if i % 7 == 0)
+    assert counts["cohort:missing_owner_link"] == TAIL
+    # Factor exposures rank unlinked lines; burn-in, missing and late rows are NULL and counted.
+    counts = reasons("beta_252d", jan)
+    assert counts["factor_exposure:insufficient_obs"] == len(_linked_lines(jan) | _unlinked_lines(jan)) - 1
+    assert counts["factor_exposure:missing_source_row"] == 1
+    assert value("beta_252d", mar, "TBL-TAIL-007") is None
+    assert reasons("beta_252d", mar)["factor_exposure:not_visible_at_cutoff"] == 1
+    tail = value("beta_252d", feb, "TBL-TAIL-008")
+    assert tail[0] == -(0.5 + (sum(map(ord, "TBL-TAIL-008")) % 50) / 50) and tail[3] == rf.OWNER_BASIS_UNLINKED
+    # Ownership: IO above one is kept and flagged; issuer 1's newest state is unverified (NULL) after January.
+    assert value("io_ratio_13f", jan, _owner(2))[:3] == (1.3, dt.datetime.combine(Q3, dt.time())
+                                                         + dt.timedelta(days=45, hours=46), (jan - Q3).days)
+    assert [reasons("io_ratio_13f", day).get("flag:io_above_one") for day in FORMATIONS] == [1] * len(FORMATIONS)
+    assert value("io_ratio_13f", jan, _owner(1)) is not None and value("io_ratio_13f", feb, _owner(1)) is None
+    counts = reasons("io_ratio_13f", feb)
+    assert counts["ownership:unverified_shares"] == sum(1 for i in issuers if i % 5 == 1 and i % 11 != 4)
+    assert counts["ownership:missing_source_row"] == sum(1 for i in issuers if i % 11 == 4)
+    # A source row visible after its cutoff fails the source's own validator: the build is refused.
+    con.execute("UPDATE research_event_features SET available_at = available_at + INTERVAL 10 DAY "
+                "WHERE event_version='ev1' AND formation_date=? AND security_id=?", [jan, _owner(2)])
+    with pytest.raises(rf.FeatureStoreError, match="fails its validator"):
+        rf.build_feature_version(store, options)
+    con.execute("UPDATE research_event_features SET available_at = available_at - INTERVAL 10 DAY "
+                "WHERE event_version='ev1' AND formation_date=? AND security_id=?", [jan, _owner(2)])
+    assert rev.validate_event_version(store, "ev1")
