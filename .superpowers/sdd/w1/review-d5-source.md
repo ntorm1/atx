@@ -4,8 +4,10 @@ Reviewed frozen `a5250e257f150d478a69888316f8e381b238e37a` from Git objects,
 including all 13 changed files and the owning report. No build, real-data read,
 acquisition or historical membership reconstruction was performed.
 
-Verdict: **changes requested**, limited to the two findings below. No broader
-architecture changes or extra historical runs are requested.
+Final source verdict after correction
+`ef0b56a902399537f30d3032f527d73dabf5a84b`: **approve for focused qualification**.
+Both findings below are closed by independent fix-only inspection. No build or
+runtime approval is claimed; historical acceptance remains open.
 
 ## Findings
 
@@ -31,8 +33,20 @@ architecture changes or extra historical runs are requested.
    unchanged bound, or its equivalent) plus this mutation fixture. This defect
    falsifies count provenance; it does not change the loaded close values.
 
-Both findings were sent to the owner and root before any source integration
-approval. Fix-only review and C++ execution remain pending.
+Both findings were sent to the owner and root before source integration approval.
+The final correction separates `clock_verified` from classification qualification.
+Unknown clocks cannot affect membership even negatively; qualified classifications
+require a positive verified clock. Under a verified clock, ambiguous evidence can
+still block strictly after publication. The new builder prefix/equality check and
+stage fixture cover mixed existing-common plus unknown publication/vintage/endpoint
+cases. Unproven solitary lines still cannot qualify themselves.
+
+QA daily accepted and unchanged totals now use remaining-budget subtraction before
+addition. Inductively each running total stays within its global bound, so neither
+unsigned subtraction nor addition can overflow. Inequality is appropriate because
+accepted rows outside the allowlist need not appear in the QA-v2 daily subset.
+Fixtures include the exact 99+1 inconsistency, maximum-u64 values and a two-date
+cumulative overrun. Source checks resolve both findings; C++ execution is pending.
 
 ## Reviewed portions without another blocker
 
