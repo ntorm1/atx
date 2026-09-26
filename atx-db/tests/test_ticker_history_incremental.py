@@ -18,12 +18,19 @@ One fixture, daily partitions of three vendor lines (the vendor's
 * a partition load killed before COMMIT leaves nothing and resumes; one killed
   after COMMIT, before its CHECKPOINT, replays from the WAL, reruns as
   ``unchanged`` and the next partition applies (the replayed indexes are sound);
-  the result equals an uninterrupted load.
+  the result equals an uninterrupted load;
+* a skipped vendor session is refused with nothing written, also under an
+  override when the partition's previous closes show the session was
+  published; an excluded no-trade row keeps its returnFactor (a carried ledger
+  step the next bar continues through, visible to the vendor-basis read from
+  its receipt); a session the vendor never published is accepted only with a
+  recorded reason; a stale late file is refused without blocking newer ones.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import subprocess
 import sys
@@ -36,21 +43,27 @@ from atx_db.ticker_history_incremental import (
     BASIS_STORED,
     REBASES_TABLE,
     REVISIONS_TABLE,
+    DailyRefreshRequest,
+    PartitionFile,
     PartitionIngestOptions,
     RevisionsTableNotMigratedError,
+    SessionGapError,
     bars_asof_sql,
     ingest_ticker_history_partition,
+    refresh_daily_prices,
 )
 
-_DAYS = tuple(dt.date(2026, 9, day) for day in (21, 22, 23, 24, 25))
+_DAYS = tuple(dt.date(2026, 9, day) for day in (21, 22, 23, 24, 25, 28, 29))
 _RECEIPTS = tuple(dt.datetime.combine(day + dt.timedelta(days=1), dt.time(10)) for day in _DAYS)
-_CLOSES = {101: (10.0, 10.5, 11.0, 11.2, 11.1), 102: (20.0, 20.2, 20.4, 20.3, 20.6),
-           103: (30.0, 31.0, 30.2, 30.5, 30.9)}
+_CLOSES = {101: (10.0, 10.5, 11.0, 11.2, 11.1, 11.4, 11.3), 102: (20.0, 20.2, 20.4, 20.3, 20.6, 20.8, 20.7),
+           103: (30.0, 31.0, 30.2, 30.5, 30.9, 31.2, 31.0)}
 _LINES = {vendor_id: f"TBLTICKERHISTORY-{vendor_id}" for vendor_id in _CLOSES}
 _SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 
-def _write_partition(path, index, *, rf=None, close=None):
+def _write_partition(path, index, *, rf=None, close=None, dn=None, invalid=(), day=None):
+    """One vendor session: ``dn`` defaults to index + 1; ``closeUnadjPr`` is the previous session's close;
+    ``invalid`` lines are no-trade quotes (open 0, volume 0) the projection excludes."""
     con = duckdb.connect()
     con.execute(
         "CREATE TABLE p (tradingDate DATE, securityID BIGINT, ticker_tk VARCHAR, todayTicker VARCHAR, dn BIGINT, "
@@ -60,9 +73,11 @@ def _write_partition(path, index, *, rf=None, close=None):
     rows = []
     for vendor_id, closes in _CLOSES.items():
         price = (close or {}).get(vendor_id, closes[index])
+        previous = closes[max(index - 1, 0)]
         symbol = f"S{vendor_id}"
-        rows.append((_DAYS[index], vendor_id, symbol, symbol, index + 1, price, price, price, price, price, price,
-                     1_000, 50_000, (rf or {}).get(vendor_id, 1.0), 0.0, 1.0))
+        opened, volume = (0.0, 0) if vendor_id in invalid else (price, 1_000)
+        rows.append((day or _DAYS[index], vendor_id, symbol, symbol, dn or index + 1, opened, price, price, price,
+                     price, previous, volume, 50_000, (rf or {}).get(vendor_id, 1.0), 0.0, 1.0))
     con.executemany("INSERT INTO p VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
     con.execute(f"COPY p TO '{path.as_posix()}' (FORMAT parquet)")
     con.close()
@@ -249,3 +264,74 @@ def test_a_killed_partition_load_resumes_to_the_uninterrupted_result(tmp_store, 
         _ingest(fresh_store, parts[index], _RECEIPTS[index])
     assert _state(tmp_store) == _state(fresh_store)
     assert _state(tmp_store)[2] == (1,) and len(_state(tmp_store)[1]) == 1
+
+
+def _latest_session(store):
+    row = store.con.execute(
+        "SELECT watermark_value FROM dataset_watermarks WHERE watermark_name = 'latest_partition:tbltickerhistory3_10y'"
+    ).fetchone()
+    return json.loads(row[0])
+
+
+def test_every_session_and_every_excluded_step_stays_in_the_factor_chain(tmp_store, tmp_path):
+    for index in range(2):
+        _ingest(tmp_store, _write_partition(tmp_path / f"p{index}.parquet", index), _RECEIPTS[index])
+    bars = _bars(tmp_store)
+
+    # A skipped session (the 09-23 file never arrived) is refused before any write, also under an override:
+    # its previous closes are the 09-23 closes, not the stored 09-22 ones (the vendor did publish 09-23).
+    skipped = _write_partition(tmp_path / "p3.parquet", 3)
+    with pytest.raises(SessionGapError, match="session 4"):
+        _ingest(tmp_store, skipped, _RECEIPTS[3])
+    with pytest.raises(SessionGapError, match="override is refused"):
+        _ingest(tmp_store, skipped, _RECEIPTS[3], session_gap_reason="assumed holiday")
+    assert _bars(tmp_store) == bars and _latest_session(tmp_store)["dn"] == 2
+
+    # 09-23 arrives; line 103's row is a no-trade quote (excluded) carrying a 2 % distribution.
+    third = _ingest(tmp_store, _write_partition(tmp_path / "p2.parquet", 2, invalid={103}, rf={103: 0.98}),
+                    _RECEIPTS[2])
+    ex_div = _LINES[103]
+    assert (third.appended_rows, third.rebased_lines) == (2, 1)
+    assert (third.detail["excluded_event_rows"], third.detail["excluded_event_rows_carried"]) == (1, 1)
+    assert tmp_store.con.execute(
+        "SELECT status FROM data_quality_checks WHERE check_name = 'incremental_partition_applied' "
+        "ORDER BY checked_at DESC LIMIT 1").fetchone() == ("warning",)
+    assert tmp_store.con.execute(
+        f"SELECT security_id, partition_date, available_at, multiplier, last_affected_date, detection_basis "
+        f"FROM {REBASES_TABLE}").fetchall() == [
+        (ex_div, _DAYS[2], _RECEIPTS[2], pytest.approx(0.98), _DAYS[1], "vendor_crf_return_factor_excluded_row")]
+    # The vendor's own file of 09-23 restates 103's history by 0.98: the vendor-basis read applies the carried
+    # step from its receipt although no 09-23 bar of 103 is stored.
+    before, between = _RECEIPTS[1] + dt.timedelta(hours=2), _RECEIPTS[2] + dt.timedelta(hours=2)
+    assert [_asof(tmp_store, before)[(ex_div, day)][1] for day in _DAYS[:2]] == pytest.approx([30.0, 31.0])
+    assert [_asof(tmp_store, between)[(ex_div, day)][1] for day in _DAYS[:2]] == pytest.approx([29.4, 30.38])
+
+    # The next bar continues through the carried step: 103's factor is 1 / 0.98, so the stored return from
+    # 09-22 to 09-24 includes the distribution.
+    fourth = _ingest(tmp_store, _write_partition(tmp_path / "p3.parquet", 3), _RECEIPTS[3])
+    assert fourth.detail["session"]["basis"] == "dn" and fourth.detail["session"]["dn"] == 4
+    stored = {(row[0], row[1]): row for row in _bars(tmp_store)}
+    assert stored[(ex_div, _DAYS[3])][3] == pytest.approx(30.5 / 0.98)
+    after = _RECEIPTS[3] + dt.timedelta(hours=2)
+    known = _asof(tmp_store, after)
+    assert [known[(ex_div, day)][1] for day in (_DAYS[0], _DAYS[1], _DAYS[3])] == pytest.approx([29.4, 30.38, 30.5])
+    _ingest(tmp_store, _write_partition(tmp_path / "p4.parquet", 4), _RECEIPTS[4])
+
+    # 09-28: the vendor counted a closed session (dn 7 after 5, previous closes are the 09-25 ones).
+    closure = _write_partition(tmp_path / "p5.parquet", 5, dn=7)
+    with pytest.raises(SessionGapError, match="session 7"):
+        _ingest(tmp_store, closure, _RECEIPTS[5])
+    closed = _ingest(tmp_store, closure, _RECEIPTS[5], session_gap_reason="vendor session 6: market closed")
+    assert closed.detail["session"]["status"] == "gap_overridden"
+    assert closed.detail["session"]["reason"] == "vendor session 6: market closed"
+    assert _latest_session(tmp_store)["dn"] == 7
+
+    # A late file of the skipped number is stale: refused and recorded, and the next session still applies.
+    stale = _write_partition(tmp_path / "late.parquet", 5, dn=6, day=dt.date(2026, 9, 26))
+    refresh = refresh_daily_prices(tmp_store, DailyRefreshRequest(
+        partitions=(PartitionFile(stale, _RECEIPTS[5]),
+                    PartitionFile(_write_partition(tmp_path / "p6.parquet", 6, dn=8), _RECEIPTS[6])),
+        minimum_partition_lines=1))
+    assert len(refresh.refused) == 1 and "late.parquet" in refresh.refused[0]["path"]
+    assert [(result.partition_date, result.status) for result in refresh.partitions] == [(_DAYS[6], "applied")]
+    assert _wal_bytes(tmp_store) == 0

@@ -11,13 +11,24 @@ Daily date partitions after the full load go through
 :mod:`atx_db.ticker_history_incremental` (P14), which reuses this module's
 projection (``_RAW_CTE``), symbol map and :func:`vendor_share_unit_check`.
 Incremental bars continue their line's stored factor through the vendor's
-``returnFactor`` and are never rebased; they carry the ``run_id`` of the series
-they extend. A later full republish replaces the source's rows in
-``equity_daily_bars`` on the file's own basis, as one new ``run_id`` series:
-each line's adjusted level moves by one constant (the vendor's own
-recurrence), its ratios do not. The incremental path's rebase ledger
-(``equity_adjustment_rebases``) and restated revisions
-(``equity_daily_bar_revisions``) stay as history.
+``returnFactor`` (and the carried steps of excluded vendor rows) and are never
+rebased; they carry the ``run_id`` of the series they extend. Publication
+leaves what that path continues from (``record_bulk_session``): a ledger row
+for each line whose last vendor row(s) the projection excluded, and the file's
+last vendor session.
+
+A later full republish replaces the source's rows in ``equity_daily_bars`` on
+the file's own basis, as one new ``run_id`` series. Where the incremental chain
+was complete, each line's adjusted level moves by one constant and its ratios
+do not; on a session skipped by an override, the file restores the lost step.
+It also re-stamps incrementally received bars at the modeled
+``trade_date + 22h`` clock, earlier than their receipts, and its rows then
+precede every ``equity_daily_bar_revisions`` version in
+``ticker_history_incremental.bars_asof_sql`` (restated values would show before
+their receipt). Decide the clock policy (for example carry the existing
+``available_at`` per key) before any republish over incremental data. Ledger
+rows recorded before a republication stay as history and never apply to the
+republished bars.
 """
 
 from __future__ import annotations
@@ -560,8 +571,10 @@ def vendor_share_unit_check(
     return details
 
 
-def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
+def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> dict[str, object]:
     con = store.con
+    session: dict[str, object] = {}
+
     def publish_links() -> None:
         con.execute(
             """
@@ -622,12 +635,22 @@ def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
             """,
             [options.source, options.run_id],
         )
+        # The incremental path continues from here: tail anchors of lines whose last vendor
+        # rows were excluded, and the file's last session (P14 I1/I2). Local import: that
+        # module imports this one.
+        from .ticker_history_incremental import record_bulk_session
+
+        session.update(record_bulk_session(
+            store, source=options.source, run_id=str(options.run_id), vendor_rows="ticker_history_source_rows",
+            bars_table="equity_daily_bars_bulk_next",
+        ))
     publish_validated_shadow(
         store,
         live_table="equity_daily_bars",
         shadow_table="equity_daily_bars_bulk_next",
         before_swap=publish_links,
     )
+    return session
 
 
 def _record_failed_publication(store: DuckDBStore, run_id: str, error: Exception) -> None:
@@ -724,7 +747,7 @@ def publish_bulk_ticker_history(
         )
         share_units = _check_share_units(store, options)
         LOGGER.info("vendor share unit check: %s", share_units)
-        _publish(store, options)
+        incremental_session = _publish(store, options)
         LOGGER.info("atomically published bars and canonical indexes")
     except Exception as exc:
         # Keep staging for inspection. Cleanup must not invalidate a recovered
@@ -760,6 +783,7 @@ def publish_bulk_ticker_history(
             "source_diagnostics": diagnostics,
             "provenance": provenance,
             "share_units": share_units,
+            "incremental_session": incremental_session,
         },
     )
     store.con.execute("CHECKPOINT")
