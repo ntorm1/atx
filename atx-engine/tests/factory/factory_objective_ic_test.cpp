@@ -44,7 +44,7 @@ struct Fixture {
 
 Result<Fixture> fixture(usize dates = 192, usize warmup_missing = 0, bool singular = false,
                         usize mutate_after = std::numeric_limits<usize>::max(),
-                        bool missing_finite_price = false) {
+                        bool missing_finite_price = false, bool nearly_collinear = false) {
     data::ExposurePanelConfig ecfg;
     ecfg.instrument_namespace = "synthetic.security";
     for (usize i = 0; i < kNames; ++i) ecfg.instrument_ids.push_back(static_cast<atx::i64>(i + 1));
@@ -83,6 +83,8 @@ Result<Fixture> fixture(usize dates = 192, usize warmup_missing = 0, bool singul
             for (usize k = 0; k < 6; ++k) {
                 const auto frequency = singular && k == 5 ? usize{1} : k + 1;
                 f64 value = 2 + std::sin(static_cast<f64>(frequency) * theta);
+                if (nearly_collinear && k == 1)
+                    value = 2 + std::sin(theta) + std::ldexp(std::cos(8 * theta), -36);
                 if (d >= mutate_after) value += 0.1 * std::cos(11 * theta);
                 raw[k * kNames + i] = {value, marks[d] - 2, marks[d] - 1, true};
             }
@@ -163,6 +165,48 @@ TEST(FactoryResidualObjective, SqrtCapProjectionRemovesProxyAndPreservesSmallRea
     const auto inverse = fac::evaluate_objective_ic(small, *context, *scratch);
     ASSERT_TRUE(inverse);
     EXPECT_NEAR(inverse->horizons[0].mean, -weak_amplitude->horizons[0].mean, 1e-12);
+}
+
+TEST(FactoryResidualObjective, NearCollinearExactProxyCannotRankCancellationDust) {
+    auto f = fixture(192, 0, false, std::numeric_limits<usize>::max(), false, true);
+    ASSERT_TRUE(f) << f.error().message();
+    auto context = fac::prepare_objective_ic(f->panel, f->exposures, f->inputs(), config());
+    ASSERT_TRUE(context) << context.error().message();
+    auto scratch = fac::prepare_objective_ic_scratch(*context); ASSERT_TRUE(scratch);
+    data::ExposureExtractConfig ec;
+    ec.allow_synthetic = true;
+    const auto row = data::extract_exposure_date(f->exposures, 0, f->exposures.axis_sha256(),
+        f->exposures.content_sha256(), f->decisions[0], ec);
+    ASSERT_TRUE(row);
+    // Exact stored-column combination: normalization roundoff must not turn
+    // an approximate raw-input proxy into an intentionally genuine residual.
+    std::vector<f64> proxy(f->panel.dates() * kNames);
+    for (usize d = 0; d < f->panel.dates(); ++d)
+        for (usize r = 0; r < row->original_slots.size(); ++r)
+            proxy[d * kNames + row->original_slots[r]] =
+                std::ldexp(row->values[r * 7 + 2] - row->values[r * 7 + 1], 36);
+    const auto pure = fac::evaluate_objective_ic(proxy, *context, *scratch);
+    ASSERT_TRUE(pure);
+    EXPECT_EQ(pure->rank_deficient_dates, 0U); // exercise accepted near-collinear QR
+    EXPECT_EQ(pure->residual_degenerate_dates, f->panel.dates());
+    EXPECT_EQ(pure->residual_valid_dates, 0U);
+    for (const auto &d : scratch->date_diagnostics()) {
+        EXPECT_EQ(d.rank, d.design_columns);
+        EXPECT_GT(d.qr_pivot_ratio, 0);
+        EXPECT_LT(d.qr_pivot_ratio, 1e-9);
+        EXPECT_GT(d.fitted_absolute_product_scale, 1e9);
+        EXPECT_LE(d.max_abs_residual, d.residual_roundoff_floor);
+    }
+    // A residual distinguishable at this design's disclosed numerical scale
+    // survives. The separate well-conditioned fixture retains amplitude 1e-6.
+    for (usize i = 0; i < proxy.size(); ++i) proxy[i] += 2 * f->planted[i];
+    const auto real = fac::evaluate_objective_ic(proxy, *context, *scratch);
+    ASSERT_TRUE(real);
+    EXPECT_EQ(real->rank_deficient_dates, 0U);
+    EXPECT_EQ(real->residual_valid_dates, f->panel.dates());
+    EXPECT_GT(real->horizons[0].mean, 0.8);
+    for (const auto &d : scratch->date_diagnostics())
+        EXPECT_GT(d.max_abs_residual, d.residual_roundoff_floor);
 }
 
 TEST(FactoryResidualObjective, WarmupMissingAndRankDeficiencyAreUnavailableNotZeroScores) {
