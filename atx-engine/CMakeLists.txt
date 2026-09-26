@@ -185,6 +185,14 @@ if(ATX_USE_PCH)
     target_precompile_headers(atx-engine PRIVATE pch.hpp)
 endif()
 
+# Keep fast IC screening optimized in the iterative Debug tree without changing
+# the engine-wide PCH, Debug ABI, precise FP defaults, or other source objects.
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/factory/ic_screen.cpp APPEND PROPERTY COMPILE_OPTIONS
+        /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/factory/ic_screen.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()
+
 # Engine builds on top of core; the warnings gate (§8) applies to engine TUs.
 # atx::tsdb is PUBLIC: ShmBarFeed (a header in this target's public include tree)
 # exposes atx::tsdb::SegmentReader in its interface, so consumers need it too.

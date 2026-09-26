@@ -62,6 +62,18 @@ endif()
 # the common PCH would parse the CRT before the source's suppression takes effect.
 set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
+# Full recent-data IC runs need optimized VM/collection loops even in the warm
+# iterative Debug tree. Keep the Debug CRT, assertions, FP and ISA settings;
+# change only these private implementations, not the target or shared PCH.
+# clang-cl /Ob0 leaves -fno-inline behind even after /O2 /Ob2; explicitly clear
+# it with the public clang driver option. LLVM ignores the inherited /RTC1.
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp
+        APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()
+
 
 # ---------------------------------------------------------------------------
 # engine_git_sha provenance bake (p7 S6-4).
