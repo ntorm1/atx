@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <limits>
 #include <locale>
+#include <memory>
 #include <new>
 #include <ostream>
 #include <set>
@@ -23,6 +24,7 @@
 #include "atx/engine/alpha/vm.hpp"
 #include "atx/engine/data/strategy_data.hpp"
 #include "atx/engine/factory/ic_research.hpp"
+#include "atx/engine/parallel/det_pool.hpp"
 
 namespace atx::impl::strategy {
 namespace {
@@ -129,6 +131,13 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
     if (!b.add(mature*n,16) || !b.add(mature,32))
       return co::Err(co::ErrorCode::Unavailable,"IC runner: combined IC label/rank/scratch budget");
   }
+  // No second VM or label cache: only worker-local Cs/TS scratch. Allow 2x
+  // vector growth within1024B/name and64B/date; separately reserve8MiB stack
+  // address/commit envelope plus64KiB runtime slack per explicit worker. This
+  // conservative admission is not a measured thread-stack/RSS guarantee.
+  if (cfg.workers>1 && (!b.add(cfg.workers,(8ULL<<20)+(64ULL<<10)) ||
+      !b.add(cfg.workers*n,1024) || !b.add(cfg.workers*d,64)))
+    return co::Err(co::ErrorCode::OutOfRange,"IC runner: worker scratch/stack envelope overflow");
   if (b.used>cfg.max_working_bytes)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: required_bytes="+std::to_string(b.used)+
         " max_compiled_slots="+std::to_string(lib.max_slots)+" exceeds configured memory budget before payload load");
@@ -198,6 +207,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY(auto role,engine::data::read_strategy_role(spec.path,cfg.max_working_bytes));
+  const auto load_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
   if (role.manifest_sha256!=spec.sha)
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: role manifest changed after admission");
   ATX_TRY(auto guard,guard_for(role));
@@ -205,9 +215,16 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   ic.horizons={5,21,63,0}; ic.min_names=cfg.min_names; ic.min_dates=cfg.min_dates;
   ic.window_begin=role.score_begin; ic.window_end=role.score_end; ic.maturity_end=role.score_end;
   ic.max_cache_bytes=cfg.max_working_bytes;
+  const auto label_started=std::chrono::steady_clock::now();
   ATX_TRY(auto cache,ex::prepare_research_ic(role.panel,ic,{3,true},role.decision_member,guard));
   ATX_TRY(auto scratch,ex::prepare_research_ic_scratch(cache));
+  const auto label_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-label_started).count();
+  // Lifetime order matters: Engine borrows the pool and dies first. Candidate
+  // evaluation is driven by THIS main thread; Cs and Ts jobs never nest.
+  std::unique_ptr<engine::parallel::DetPool> pool;
+  if (cfg.workers>1) pool=std::make_unique<engine::parallel::DetPool>(cfg.workers);
   al::Engine vm(role.panel); vm.set_eval_mode(al::EvalMode::ResearchFast);
+  if (pool) { vm.set_cs_pool(pool.get()); vm.set_ts_pool(pool.get()); }
   ATX_TRY_VOID(vm.set_cross_section_mask(role.decision_member));
   ATX_TRY(auto close_id,role.panel.field_id("close")); const auto close=role.panel.field_all(close_id);
   std::vector<u8> effective=role.decision_member;
@@ -230,6 +247,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   if (!train && signs.size()!=lib.candidates.size())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN signs unavailable");
   Json summaries=Json::array();
+  f64 total_vm_seconds=0,total_ic_seconds=0,total_composition_seconds=0;
   for (usize k=0;k<lib.candidates.size();++k) {
     const auto& candidate=lib.candidates[k];
     ledger<<Json{{"id",candidate.id},{"status","started"},{"number",k+1}}.dump()<<'\n'<<std::flush;
@@ -237,10 +255,18 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto candidate_started=std::chrono::steady_clock::now();
     progress<<"IC eval-start "<<spec.name<<' '<<(k+1)<<'/'<<lib.candidates.size()<<' '<<candidate.id
             <<" slots="<<candidate.program.num_slots<<'\n'<<std::flush;
-    vm.reset(); ATX_TRY(auto evaluated,vm.evaluate(candidate.program));
+    vm.reset();
+    const auto vm_started=std::chrono::steady_clock::now();
+    ATX_TRY(auto evaluated,vm.evaluate(candidate.program));
+    const auto vm_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-vm_started).count();
+    total_vm_seconds+=vm_seconds;
+    progress<<"IC VM-complete "<<candidate.id<<" seconds="<<vm_seconds<<'\n'<<std::flush;
     if (evaluated.alphas.size()!=1) return co::Err(co::ErrorCode::Internal,"IC runner: VM root missing");
     const auto& signal=evaluated.alphas.front().values;
+    const auto ic_started=std::chrono::steady_clock::now();
     ATX_TRY(auto scored,ex::evaluate_research_ic(signal,cache,scratch));
+    const auto ic_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-ic_started).count();
+    total_ic_seconds+=ic_seconds;
     const auto& orientation=scored.screen.horizons[1].rank;
     const bool fit=orientation.valid_dates>0 && std::isfinite(orientation.mean) && orientation.mean!=0;
     const int sample_sign=fit?(orientation.mean>0?1:-1):0;
@@ -254,7 +280,11 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           {"ic",result_json(scored,sign)}});
     }
     const auto sign=signs[k];
+    const auto composition_started=std::chrono::steady_clock::now();
     ATX_TRY_VOID(composition.add(k,signal,sign));
+    const auto composition_seconds=std::chrono::duration<f64>(
+        std::chrono::steady_clock::now()-composition_started).count();
+    total_composition_seconds+=composition_seconds;
     series(daily,candidate.id,role,scratch,sign);
     auto summary=result_json(scored,sign);
     summary["id"]=candidate.id; summary["family"]=candidate.family;
@@ -262,13 +292,19 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto candidate_seconds=std::chrono::duration<f64>(
         std::chrono::steady_clock::now()-candidate_started).count();
     summary["wall_seconds"]=candidate_seconds;
+    summary["stage_seconds"]={{"vm",vm_seconds},{"ic",ic_seconds},{"composition",composition_seconds}};
     summaries.push_back(summary); ledger<<summary.dump()<<'\n'<<std::flush;
     if (!daily || !ledger) return co::Err(co::ErrorCode::IoError,"IC runner: candidate output");
     progress<<"IC "<<spec.name<<' '<<(k+1)<<'/'<<lib.candidates.size()<<' '<<candidate.id
-            <<" seconds="<<candidate_seconds<<" sign="<<sign<<" reason="<<ex::ic_screen_reason_name(scored.screen.reason)<<'\n'<<std::flush;
+            <<" seconds="<<candidate_seconds<<" vm="<<vm_seconds<<" ic="<<ic_seconds
+            <<" composition="<<composition_seconds<<" sign="<<sign<<" reason="<<ex::ic_screen_reason_name(scored.screen.reason)<<'\n'<<std::flush;
   }
+  const auto finish_started=std::chrono::steady_clock::now();
   ATX_TRY(auto combined,composition.finish());
+  total_composition_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-finish_started).count();
+  const auto combined_ic_started=std::chrono::steady_clock::now();
   ATX_TRY(auto combined_ic,ex::evaluate_research_ic(combined.signal,cache,scratch));
+  total_ic_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-combined_ic_started).count();
   series(daily,"__combined__",role,scratch,1);
   std::ofstream targets(dir/(spec.name+"_planned_targets.csv"),std::ios::binary);
   if (!targets) return co::Err(co::ErrorCode::IoError,"IC runner: target proxy output");
@@ -285,6 +321,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       {"dates",role.panel.dates()},{"instruments",role.panel.instruments()},
       {"score_begin",role.score_begin},{"score_end",role.score_end}, {"wall_seconds",seconds},
       {"admitted_working_bytes",spec.bytes},{"ic_cache_bytes",cache.bytes()},{"ic_scratch_bytes",scratch.bytes()},
+      {"workers",cfg.workers},{"stage_seconds",{{"load",load_seconds},{"label_preparation",label_seconds},
+          {"vm",total_vm_seconds},{"ic",total_ic_seconds},{"composition",total_composition_seconds}}},
       {"candidate_evaluations",lib.candidates.size()},{"combined_evaluations",1},
       {"candidates",std::move(summaries)},{"combined_ic",result_json(combined_ic,1)},
       {"planned_target_proxy",{{"total_turnover",combined.total_planned_turnover},
@@ -295,7 +333,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
 co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
   try {
     if ((!cfg.plan_only && cfg.output_directory.empty()) || cfg.max_working_bytes<(32ULL<<20) || cfg.max_working_bytes>(16ULL<<30) ||
-        cfg.min_names<3 || cfg.min_dates<8 || cfg.min_dates>4096 ||
+        cfg.min_names<3 || cfg.min_dates<8 || cfg.min_dates>4096 || cfg.workers<1 || cfg.workers>4 ||
         cfg.validation_manifest.empty()!=cfg.validation_sha256.empty())
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: bounded config");
     ATX_TRY(auto lib,library(cfg));
@@ -309,7 +347,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     if (cfg.plan_only) {
       Json plan{{"mode","metadata-only-no-payload"},{"candidates",lib.candidates.size()},
-          {"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},
+          {"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},{"workers",cfg.workers},
           {"library_sha256",cfg.library_sha256},{"roles",Json::array()}};
       for (const auto& role:roles) plan["roles"].push_back({{"role",role.name},
           {"manifest_sha256",role.sha},{"required_bytes",role.bytes}});
@@ -326,6 +364,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         {"composition","fixed-equal-family/equal-within;centered-tied-rank;missing-or-unoriented-neutral;no-redistribution"},
         {"planned_targets","final-rank-neutral-gross1;cadence5;fraction.25;no-drift;offcycle-membership-exit-zero;deployment-included"},
         {"scope","IC-and-planned-weight-change-only;no-costs-trades-NAV-Sharpe-or-holdout"}};
+    // Worker1 retains the previously frozen serial recipe hash. Nondefault
+    // worker counts are explicit execution provenance, not new alpha selection.
+    if (cfg.workers!=1) recipe["vm_workers"]=cfg.workers;
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     ATX_TRY(auto recipe_sha,co::sha256_hex(recipe.dump()));
     std::error_code ec;
@@ -371,7 +412,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       if (key=="--plan-only") { cfg.plan_only=true; continue; }
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
-               "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --plan-only]\n";
+               "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only]\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");
@@ -391,6 +432,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--max-memory-mib") { const auto n=integer(); if (n>16384) throw std::invalid_argument("memory limit"); cfg.max_working_bytes=n<<20; }
       else if (key=="--min-names") cfg.min_names=static_cast<usize>(integer());
       else if (key=="--min-dates") cfg.min_dates=static_cast<usize>(integer());
+      else if (key=="--workers") cfg.workers=static_cast<usize>(integer());
       else throw std::invalid_argument("unknown option: "+key);
     }
     const auto result=run_ic(cfg,out);

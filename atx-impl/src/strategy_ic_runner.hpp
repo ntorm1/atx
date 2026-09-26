@@ -11,6 +11,7 @@ struct IcRunnerConfig {
   std::string output_directory;
   atx::u64 max_working_bytes{512ULL<<20};
   atx::usize min_names{20},min_dates{128};
+  atx::usize workers{1}; // 1 is the existing serial baseline; explicit2..4 share one VM pool
   bool plan_only{false}; // pinned metadata/DSL compilation only; no role payloads
 };
 // IC-only research; no book, surfaces, fees, Sharpe, stock events or holdout.
