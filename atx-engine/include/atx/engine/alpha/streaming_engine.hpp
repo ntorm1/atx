@@ -85,6 +85,7 @@ enum class TsKind : atx::u8 {
   Welford,   // var / std / zscore / av_diff under ResearchFast
   Decay,     // decay_linear / wma under ResearchFast (sliding lane)
   TimeReg,   // slope / rsquare / resid under ResearchFast (sliding lane)
+  CoMoment,  // corr / cov / pair-regression under ResearchFast
   Generic,   // batch per-cell kernel over the ring window
 };
 
@@ -112,6 +113,7 @@ struct TsState {
   std::vector<detail::TsvWelfordState> welford;
   std::vector<sliding::LinDecayLane> decay;
   std::vector<sliding::TimeRegLane> timereg;
+  std::vector<sliding::CoMomentLane> comoment;
 };
 
 // Per-recurrence-instruction carried state.
@@ -213,6 +215,7 @@ struct RecState {
   if (op == OpCode::TsMin || op == OpCode::TsMax || op == OpCode::TsScale) {
     return TsKind::Extreme;
   }
+  if (mode == EvalMode::ResearchFast && sliding::is_comoment_op(op)) return TsKind::CoMoment;
   // Order-stat online ops (TsRank/Med/Quantile) are bit-exact with the batch
   // per-cell kernel, so the Generic recompute reproduces them exactly.
   if (mode == EvalMode::ResearchFast && detail::ts_is_online_variance_op(op)) {
@@ -433,6 +436,9 @@ private:
       break;
     case TsKind::TimeReg:
       st.timereg.assign(inst_, sliding::TimeRegLane{});
+      break;
+    case TsKind::CoMoment:
+      st.comoment.assign(inst_, sliding::CoMomentLane{});
       break;
     case TsKind::Lookback:
     case TsKind::Generic:
@@ -754,6 +760,9 @@ private:
     case TsKind::TimeReg:
       ts_sliding(in, st, o);
       break;
+    case TsKind::CoMoment:
+      ts_comoment(in, st, o);
+      break;
     case TsKind::Generic:
       ts_generic(in, st, o);
       break;
@@ -880,6 +889,23 @@ private:
       o[j] = st.kind == TsKind::Decay
                  ? st.decay[j].step(enter, has_leave, leave, full, st.d, win)
                  : st.timereg[j].step(in.op, enter, has_leave, leave, full, st.d, win);
+    }
+  }
+
+  void ts_comoment(const Instr &in, TsState &st, std::span<atx::f64> o) const {
+    const bool has_leave = t_ >= st.d;
+    const bool full = t_ + 1 >= st.d;
+    for (atx::usize j = 0; j < inst_; ++j) {
+      const auto win = [this, &st, j](atx::usize i) noexcept {
+        const atx::u64 date = t_ + 1 - st.d + i;
+        return std::pair<atx::f64, atx::f64>{at(st.ring_x, st, date, j, inst_),
+                                            at(st.ring_y, st, date, j, inst_)};
+      };
+      const atx::f64 xe = at(st.ring_x, st, t_, j, inst_);
+      const atx::f64 ye = at(st.ring_y, st, t_, j, inst_);
+      const atx::f64 xl = has_leave ? at(st.ring_x, st, t_ - st.d, j, inst_) : 0.0;
+      const atx::f64 yl = has_leave ? at(st.ring_y, st, t_ - st.d, j, inst_) : 0.0;
+      o[j] = st.comoment[j].step(in.op, xe, ye, has_leave, xl, yl, full, st.d, win, true);
     }
   }
 

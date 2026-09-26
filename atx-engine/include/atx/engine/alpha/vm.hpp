@@ -1558,6 +1558,22 @@ private:
       }
       return atx::core::Ok();
     }
+    if (binary_series && mode_ == EvalMode::ResearchFast && policy_.flat == FlatGuard::RelativeV2) {
+      const atx::usize width = j1 - j0;
+      const atx::usize tiles = width / detail::kTsInstrumentTile +
+                              static_cast<atx::usize>(width % detail::kTsInstrumentTile != 0);
+      const auto tile = [&](atx::usize i) {
+        const atx::usize begin = j0 + i * detail::kTsInstrumentTile;
+        const atx::usize end = begin + std::min(detail::kTsInstrumentTile, j1 - begin);
+        sliding::sweep_comoment(in.op, x, y, out, dates, instruments, d, begin, end, true);
+      };
+      if (ts_pool_ != nullptr && tiles > 1) {
+        ts_pool_->parallel_for(tiles, [&](atx::usize i, atx::usize) { tile(i); });
+      } else {
+        for (atx::usize i = 0; i < tiles; ++i) tile(i);
+      }
+      return atx::core::Ok();
+    }
     if (detail::ts_is_online_op(in.op) && !windowed_sum) {
       const bool extreme =
           (in.op == OpCode::TsMin || in.op == OpCode::TsMax || in.op == OpCode::TsScale);

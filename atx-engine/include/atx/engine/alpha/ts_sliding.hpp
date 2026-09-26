@@ -57,6 +57,7 @@
 // Header-only; every function is `inline`.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <span>
@@ -210,7 +211,8 @@ struct CoMoment {
 inline constexpr atx::usize kDirectMaxWindow = 4;
 
 template <class Win>
-[[nodiscard]] inline atx::f64 direct_pair(OpCode op, atx::usize d, const Win &win) noexcept {
+[[nodiscard]] inline atx::f64 direct_pair(OpCode op, atx::usize d, const Win &win,
+                                         bool relative_flat = false) noexcept {
   if (d < 2) {
     return kSlNaN;
   }
@@ -233,6 +235,10 @@ template <class Win>
     saa += (a - ma) * (a - ma);
     sbb += (b - mb) * (b - mb);
   }
+  const bool flat_x = std::sqrt(saa / nf) <= 1e-10 * std::fabs(ma);
+  const bool flat_y = std::sqrt(sbb / nf) <= 1e-10 * std::fabs(mb);
+  if (relative_flat && ((op == OpCode::TsCorr && (flat_x || flat_y)) ||
+                        (op == OpCode::TsRegression && flat_y))) return kSlNaN;
   switch (op) {
   case OpCode::TsCorr: {
     const atx::f64 denom = std::sqrt(saa * sbb);
@@ -257,7 +263,8 @@ struct CoMomentLane {
 
   template <class Win>
   [[nodiscard]] atx::f64 step(OpCode op, atx::f64 xe, atx::f64 ye, bool has_leave, atx::f64 xl,
-                              atx::f64 yl, bool full, atx::usize d, const Win &win) noexcept {
+                              atx::f64 yl, bool full, atx::usize d, const Win &win,
+                              bool relative_flat = false) noexcept {
     if (std::isfinite(xe) && std::isfinite(ye)) {
       m.push(xe, ye);
     } else {
@@ -274,7 +281,7 @@ struct CoMomentLane {
       return kSlNaN;
     }
     if (d <= kDirectMaxWindow) {
-      return direct_pair(op, d, win);
+      return direct_pair(op, d, win, relative_flat);
     }
     if (++age >= reseed_period(d) || m.drifted()) {
       age = 0;
@@ -283,6 +290,16 @@ struct CoMomentLane {
         const auto [wx, wy] = win(i);
         m.push(wx, wy);
       }
+    }
+    // W0 RelativeV2 flatness is part of the production pair contract. Keep the
+    // standalone lane's legacy default for existing callers, while the VM and
+    // streaming explicitly select the corrected policy. No window pre-scan.
+    if (relative_flat) {
+      const atx::f64 inv = m.inv_n();
+      const bool flat_x = std::sqrt(m.cxx(inv) * inv) <= 1e-10 * std::fabs(m.cx + m.sx * inv);
+      const bool flat_y = std::sqrt(m.cyy(inv) * inv) <= 1e-10 * std::fabs(m.cy + m.sy * inv);
+      if ((op == OpCode::TsCorr && (flat_x || flat_y)) ||
+          (op == OpCode::TsRegression && flat_y)) return kSlNaN;
     }
     switch (op) {
     case OpCode::TsCorr:
@@ -590,7 +607,8 @@ inline void sweep_unary(OpCode op, std::span<const atx::f64> x, std::span<atx::f
 // Pair ops (corr / cov / regression). Same layout contract as sweep_unary.
 inline void sweep_comoment(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> y,
                            std::span<atx::f64> out, atx::usize dates, atx::usize instruments,
-                           atx::usize d, atx::usize j0, atx::usize j1) {
+                           atx::usize d, atx::usize j0, atx::usize j1,
+                           bool relative_flat = false) {
   ATX_ASSERT(is_comoment_op(op) && j0 <= j1 && j1 <= instruments);
   if (d == 0) {
     for (atx::usize t = 0; t < dates; ++t) {
@@ -600,22 +618,25 @@ inline void sweep_comoment(OpCode op, std::span<const atx::f64> x, std::span<con
     }
     return;
   }
-  CoMomentLane one;
-  std::vector<CoMomentLane> many(j1 - j0 > 1 ? j1 - j0 : 0);
-  CoMomentLane *lanes = j1 - j0 > 1 ? many.data() : &one;
-  for (atx::usize t = 0; t < dates; ++t) {
-    const bool has_leave = t >= d;
-    const bool full = t + 1 >= d;
-    const atx::usize r = t * instruments;
-    const atx::usize lr = has_leave ? (t - d) * instruments : r;
-    for (atx::usize j = j0; j < j1; ++j) {
-      const auto win = [&x, &y, t, d, instruments, j](atx::usize i) noexcept {
-        const atx::usize k = (t + 1 - d + i) * instruments + j;
-        return std::pair<atx::f64, atx::f64>{x[k], y[k]};
-      };
-      out[r + j] = lanes[j - j0].step(op, x[r + j], y[r + j], has_leave, x[lr + j], y[lr + j],
-                                      full, d, win);
+  constexpr atx::usize tile_size = 64;
+  for (atx::usize begin = j0; begin < j1;) {
+    const atx::usize end = begin + std::min(tile_size, j1 - begin);
+    std::array<CoMomentLane, tile_size> lanes{};
+    for (atx::usize t = 0; t < dates; ++t) {
+      const bool has_leave = t >= d;
+      const bool full = t + 1 >= d;
+      const atx::usize r = t * instruments;
+      const atx::usize lr = has_leave ? (t - d) * instruments : r;
+      for (atx::usize j = begin; j < end; ++j) {
+        const auto win = [&x, &y, t, d, instruments, j](atx::usize i) noexcept {
+          const atx::usize k = (t + 1 - d + i) * instruments + j;
+          return std::pair<atx::f64, atx::f64>{x[k], y[k]};
+        };
+        out[r + j] = lanes[j - begin].step(op, x[r + j], y[r + j], has_leave,
+                                           x[lr + j], y[lr + j], full, d, win, relative_flat);
+      }
     }
+    begin = end;
   }
 }
 
