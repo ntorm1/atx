@@ -26,6 +26,7 @@ from .calendarization import fiscal_year_label
 from .connection import DuckDBStore
 from .item_registry import seed_fundamental_item_registry
 from .reported_eps_core import reported_eps_conflict_candidates_cte
+from .standardization import rule_dependency_levels, rule_input_kinds
 
 if TYPE_CHECKING:
     from .standardization import FundamentalStandardizationOptions, StandardizationRule
@@ -74,7 +75,8 @@ class SetBasedStandardizationOutcome:
     basis_counts: dict[str, int]
 
 
-def _rules_frame(rules: Sequence[StandardizationRule]) -> pd.DataFrame:
+def _rules_frame(rules: Sequence[StandardizationRule], levels: dict[str, int] | None = None) -> pd.DataFrame:
+    levels = levels if levels is not None else rule_dependency_levels(rules)
     return pd.DataFrame.from_records(
         [
             {
@@ -94,6 +96,7 @@ def _rules_frame(rules: Sequence[StandardizationRule]) -> pd.DataFrame:
                 "valid_from": rule.valid_from,
                 "valid_to": rule.valid_to,
                 "input_count": len(rule.source_item_ids),
+                "dependency_level": levels[rule.rule_id],
             }
             for rule in rules
             if rule.is_active
@@ -107,13 +110,16 @@ def _rule_inputs_frame(rules: Sequence[StandardizationRule]) -> pd.DataFrame:
             "rule_id": rule.rule_id,
             "input_position": position,
             "source_item_id": item_id,
+            "input_source": kind,
         }
         for rule in rules
         if rule.is_active
-        for position, item_id in enumerate(rule.source_item_ids, start=1)
+        for position, (item_id, kind) in enumerate(
+            zip(rule.source_item_ids, rule_input_kinds(rule), strict=True), start=1
+        )
     ]
     if not records:
-        return pd.DataFrame(columns=["rule_id", "input_position", "source_item_id"])
+        return pd.DataFrame(columns=["rule_id", "input_position", "source_item_id", "input_source"])
     return pd.DataFrame.from_records(records)
 
 
@@ -135,6 +141,9 @@ def _rule_set_digest(rules: Sequence[StandardizationRule]) -> str:
             "missing_policy": rule.missing_policy,
             "valid_from": None if rule.valid_from is None else rule.valid_from.isoformat(),
             "valid_to": None if rule.valid_to is None else rule.valid_to.isoformat(),
+            # Only rules that read another rule's output carry kinds, so the digest of a rule set
+            # without output inputs is unchanged.
+            **({"source_input_kinds": list(rule.source_input_kinds)} if rule.source_input_kinds else {}),
         }
         for rule in sorted(rules, key=lambda value: (value.rule_id, value.item_id, value.basis))
     ]
@@ -1291,9 +1300,139 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
         FROM _std_derived_quarters derived
         """
     )
+    # Level 0 rules compose raw items only (every rule before output inputs existed); rules that
+    # read another rule's output run afterwards, one dependency level at a time, against that
+    # rule's already-materialized direct/derived/composed rows.
+    store.con.execute(
+        "CREATE OR REPLACE TEMP TABLE _std_combinations AS "
+        + _combination_select_sql(
+            candidates="_std_combination_candidates",
+            level_predicate="r.dependency_level = 0",
+            input_match="",
+        )
+    )
+    max_level_row = store.con.execute("SELECT max(dependency_level) FROM _std_rules").fetchone()
+    max_level = int(max_level_row[0] or 0) if max_level_row else 0
+    for level in range(1, max_level + 1):
+        _create_rule_output_candidates(store)
+        store.con.execute(
+            "INSERT INTO _std_combinations BY NAME "
+            + _combination_select_sql(
+                candidates="_std_level_candidates",
+                level_predicate=f"r.dependency_level = {level}",
+                input_match="AND c.input_source = ri.input_source",
+                own_quarters_are_direct=True,
+            )
+        )
     store.con.execute(
         """
-        CREATE OR REPLACE TEMP TABLE _std_combinations AS
+        CREATE OR REPLACE TEMP TABLE _std_output_raw AS
+        SELECT * FROM _std_direct
+        UNION ALL BY NAME
+        SELECT * FROM _std_derived_quarters
+        UNION ALL BY NAME
+        SELECT * FROM _std_combinations
+        """
+    )
+    _create_fiscal_labels(store)
+    _create_sequenced_output(store)
+
+
+def _create_rule_output_candidates(store: DuckDBStore) -> None:
+    """Rows of every rule some composition reads as ``output``, shaped as composition candidates.
+
+    Labeled ``taxonomy='atx-rule-output'`` / ``concept=<canonical_code>`` so the composed row's
+    ``input_codes_json`` states its derivation basis (for example
+    ``["atx-rule-output:stockholders_equity", "us-gaap:PreferredStockValue"]``).
+    """
+
+    store.con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _std_rule_output_candidates AS
+        WITH needed AS (
+            SELECT DISTINCT ri.source_item_id AS item_id, r.basis
+            FROM _std_rule_inputs ri
+            JOIN _std_rules r ON r.rule_id = ri.rule_id
+            WHERE ri.input_source = 'output'
+        ),
+        rule_output AS (
+            SELECT * FROM _std_direct
+            UNION ALL BY NAME
+            SELECT * FROM _std_derived_quarters
+            UNION ALL BY NAME
+            SELECT * FROM _std_combinations
+        )
+        SELECT
+            -- Keep the underlying provenance (fiscal labels key on it); the rule-output
+            -- basis is carried by taxonomy/concept into input_codes_json.
+            o.upstream_source,
+            30 AS upstream_priority,
+            sha256(concat_ws('|', o.rule_id, o.security_id, coalesce(CAST(o.period_start AS VARCHAR), ''),
+                             CAST(o.period_end AS VARCHAR), CAST(o.available_at AS VARCHAR),
+                             o.combination_rule, coalesce(o.source_accession, ''))) AS upstream_row_id,
+            'atx_rule_output' AS upstream_adapter,
+            o.security_id,
+            o.symbol,
+            o.cik,
+            o.item_id,
+            o.canonical_code AS canonical_metric,
+            o.canonical_code AS concept,
+            'atx-rule-output' AS taxonomy,
+            o.unit,
+            o.unit_type,
+            o.basis,
+            o.period_start,
+            o.period_end,
+            o.fiscal_year,
+            o.fiscal_period,
+            o.source_accession AS accession_number,
+            o.source_accession,
+            o.filed_date,
+            o.value,
+            o.available_at,
+            100 AS input_rank,
+            true AS source_is_latest,
+            o.available_at AS source_loaded_at
+        FROM rule_output o
+        JOIN needed ON needed.item_id = o.item_id AND needed.basis = o.basis
+        """
+    )
+    store.con.execute(
+        """
+        CREATE OR REPLACE TEMP VIEW _std_level_candidates AS
+        SELECT c.*, 'item' AS input_source FROM _std_combination_candidates c
+        UNION ALL BY NAME
+        SELECT o.*, 'output' AS input_source FROM _std_rule_output_candidates o
+        """
+    )
+
+
+def _combination_select_sql(
+    *, candidates: str, level_predicate: str, input_match: str, own_quarters_are_direct: bool = False
+) -> str:
+    """Composition SELECT for one dependency level (level 0 = the original raw-item query).
+
+    Differences are n-ary: input 1 minus every later input. ``zero_fill_subtrahends`` needs
+    input 1 and counts absent later inputs as zero; ``zero_fill`` and ``skip`` are unchanged.
+    ``own_quarters_are_direct`` (levels >= 1 only) also lets the rule's own discrete-quarter
+    row suppress a coalesce_or_* composition, as its direct value does: at level 0 both rows
+    can share a standardized key (same rule/period/event/accession).
+    """
+
+    own_quarter_guard = (
+        """
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM _std_derived_quarters own_quarter
+                    WHERE own_quarter.rule_id = agg.rule_id
+                      AND own_quarter.security_id = agg.security_id
+                      AND own_quarter.period_end = agg.period_end
+                      AND own_quarter.available_at <= agg.available_at
+                )"""
+        if own_quarters_are_direct
+        else ""
+    )
+    return f"""
         WITH events AS (
             SELECT DISTINCT
                 r.rule_id,
@@ -1312,14 +1451,16 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
                 c.available_at AS event_at
             FROM _std_rules r
             JOIN _std_rule_inputs ri ON ri.rule_id = r.rule_id
-            JOIN _std_combination_candidates c
+            JOIN {candidates} c
               ON c.item_id = ri.source_item_id
+             {input_match}
              AND c.basis = r.basis
              AND coalesce(r.valid_from, DATE '0001-01-01') <= c.period_end
              AND coalesce(r.valid_to, DATE '9999-12-31') > c.period_end
             WHERE r.combination_rule IN (
                 'sum', 'difference', 'coalesce_or_sum', 'coalesce_or_difference'
             )
+              AND {level_predicate}
         ),
         visible_inputs AS (
             SELECT
@@ -1347,8 +1488,9 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
                 ) AS input_rank_at_event
             FROM events e
             JOIN _std_rule_inputs ri ON ri.rule_id = e.rule_id
-            JOIN _std_combination_candidates c
+            JOIN {candidates} c
               ON c.item_id = ri.source_item_id
+             {input_match}
              AND c.basis = e.basis
              AND c.security_id = e.security_id
              AND c.period_start IS NOT DISTINCT FROM e.period_start
@@ -1373,10 +1515,10 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
             any_value(fiscal_period) AS fiscal_period,
             CASE
                 WHEN absolute_value THEN abs(sum(
-                    CASE WHEN combination_rule IN ('difference', 'coalesce_or_difference') AND input_position = 2 THEN -input_value ELSE input_value END
+                    CASE WHEN combination_rule IN ('difference', 'coalesce_or_difference') AND input_position >= 2 THEN -input_value ELSE input_value END
                 ))
                 ELSE sum(
-                    CASE WHEN combination_rule IN ('difference', 'coalesce_or_difference') AND input_position = 2 THEN -input_value ELSE input_value END
+                    CASE WHEN combination_rule IN ('difference', 'coalesce_or_difference') AND input_position >= 2 THEN -input_value ELSE input_value END
                 ) * sign_multiplier
             END * scale_multiplier AS value,
             any_value(unit) AS unit,
@@ -1399,31 +1541,26 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
             period_start, period_end, event_at
         HAVING count(DISTINCT input_position) = input_count
             OR missing_policy = 'zero_fill'
+            OR (missing_policy = 'zero_fill_subtrahends' AND bool_or(input_position = 1))
         )
         SELECT *
         FROM aggregated agg
         WHERE agg.combination_rule IN ('sum', 'difference')
-           OR NOT EXISTS (
-                SELECT 1
-                FROM _std_direct direct
-                WHERE direct.rule_id = agg.rule_id
-                  AND direct.security_id = agg.security_id
-                  AND direct.period_end = agg.period_end
-                  AND direct.available_at <= agg.available_at
+           OR (
+                NOT EXISTS (
+                    SELECT 1
+                    FROM _std_direct direct
+                    WHERE direct.rule_id = agg.rule_id
+                      AND direct.security_id = agg.security_id
+                      AND direct.period_end = agg.period_end
+                      AND direct.available_at <= agg.available_at
+                )
+                {own_quarter_guard}
            )
         """
-    )
-    store.con.execute(
-        """
-        CREATE OR REPLACE TEMP TABLE _std_output_raw AS
-        SELECT * FROM _std_direct
-        UNION ALL BY NAME
-        SELECT * FROM _std_derived_quarters
-        UNION ALL BY NAME
-        SELECT * FROM _std_combinations
-        """
-    )
-    _create_fiscal_labels(store)
+
+
+def _create_sequenced_output(store: DuckDBStore) -> None:
     store.con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE _std_output AS
@@ -1562,6 +1699,7 @@ def _create_exceptions(store: DuckDBStore) -> None:
 
 
 def _drop_temporary_relations(store: DuckDBStore) -> None:
+    store.con.execute("DROP VIEW IF EXISTS temp.main._std_level_candidates")
     for table_name in (
         "_std_exceptions",
         "_std_output",
@@ -1569,6 +1707,7 @@ def _drop_temporary_relations(store: DuckDBStore) -> None:
         "_std_fiscal_anchors",
         "_std_fiscal_anchor_candidates",
         "_std_output_raw",
+        "_std_rule_output_candidates",
         "_std_combinations",
         "_std_combination_candidates",
         "_std_derived_quarters",
@@ -1606,6 +1745,8 @@ def refresh_standardized_set_based(
     seed_fundamental_item_registry(store)
 
     active_rules = tuple(rule for rule in rules if rule.is_active)
+    # Validates output dependencies (existing, acyclic) before any build row is written.
+    levels = rule_dependency_levels(active_rules)
     symbols = tuple(sorted({str(value).strip().upper() for value in options.symbols or () if str(value).strip()}))
     run_id = options.run_id or str(uuid.uuid4())
     build_id = str(uuid.uuid4())
@@ -1616,7 +1757,7 @@ def refresh_standardized_set_based(
         separators=(",", ":"),
     )
 
-    store.con.register("_std_rules", _rules_frame(active_rules))
+    store.con.register("_std_rules", _rules_frame(active_rules, levels))
     store.con.register("_std_rule_inputs", _rule_inputs_frame(active_rules))
     store.con.register(
         "_std_context",
@@ -1685,7 +1826,7 @@ def refresh_standardized_set_based(
             owned_registrations=(
                 "_std_exceptions", "_std_output", "_std_fiscal_labels", "_std_fiscal_anchors",
                 "_std_fiscal_anchor_candidates",
-                "_std_output_raw", "_std_combinations",
+                "_std_output_raw", "_std_rule_output_candidates", "_std_level_candidates", "_std_combinations",
                 "_std_combination_candidates", "_std_derived_quarters", "_std_direct",
                 "_std_quarter_inputs", "_std_candidates", "_std_candidates_all",
                 "_std_context", "_std_rule_inputs", "_std_rules", "_std_symbol_filter",

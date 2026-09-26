@@ -64,14 +64,19 @@ agreement ratio against the warehouse yet; do not quote one.
      PP&E-tagged capex row would read as a `sign_flip` mismatch.
    - **Direct:** within each filing, the alias with the lowest priority number wins. For example,
      `RevenueFromContractWithCustomerExcludingAssessedTax` (10) beats `Revenues` (20).
-   - **Derived:** `coalesce_or_difference` and `coalesce_or_sum` rules use raw component items
-     reported in the same filing. Examples: `gross_profit = revenue - cost_of_revenue`,
-     `total_liabilities = LiabilitiesAndStockholdersEquity - StockholdersEquityIncludingNCI`,
-     `common_equity = StockholdersEquity - PreferredStockValue` (zero-filled),
-     `cfo = NetCashProvidedByUsedInOperatingActivities`, else continuing operations. This matches
-     `_standardization_set_based`, where compositions read raw items and never another rule's
-     derived output. One deliberate difference: the minuend must be present. The warehouse's
-     zero-fill would emit `-preferred` when stockholders' equity is missing.
+   - **Derived:** `coalesce_or_difference` and `coalesce_or_sum` rules compose inputs reported in
+     the same filing, with the engine's semantics (S1): an input is either a raw item or, when the
+     rule declares `{"input": "output"}`, another rule's own output (its direct value, else its
+     composition), evaluated in dependency order. Differences are n-ary (input 1 minus every later
+     input). `skip` needs every input, `zero_fill` any, `zero_fill_subtrahends` input 1 with absent
+     later inputs as 0. Examples: `gross_profit = revenue - cost_of_revenue`,
+     `stockholders_equity = equity_incl_NCI - NCI`, `common_equity = stockholders_equity(output) -
+     preferred`, `equity_incl_NCI = StockholdersEquity + NCI`, `total_liabilities =
+     LiabilitiesAndStockholdersEquity - equity_incl_NCI(output)`, `revenue = utility operating
+     revenue(output)` when no revenue tag is reported. An output input is labeled
+     `atx-rule-output:<canonical_code>` in `source_tags_json`, as the engine labels it in
+     `input_codes_json`. The FSDS side has no industry-template routing, so item 1801 (a UT-template
+     concept in the warehouse) applies to every FSDS filer; only utilities report it.
    - Core items: revenue (1001), gross_profit (1004), operating_income (1014), net_income_total
      (1031), eps_diluted (1035), total_assets (1101), total_liabilities (1201), common_equity (1220),
      cash_flow_from_operations (1301), capex (1305).

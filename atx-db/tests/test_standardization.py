@@ -102,7 +102,9 @@ def test_standardization_rule_seed_covers_template_items():
     assert len(by_basis["ttm"]) == 132
     assert len(by_basis["instant"]) == 69
     revenue = next(rule for rule in rules if rule.rule_id == "std_annual_1001")
-    assert revenue.combination_rule == "coalesce_priority"
+    # S1: revenue falls back to the utility template's operating revenue rule output.
+    assert revenue.combination_rule == "coalesce_or_sum"
+    assert (revenue.source_item_ids, revenue.source_input_kinds) == ((1801,), ("output",))
     assert [alias.alias_code for alias in revenue.source_aliases] == [
         "RevenueFromContractWithCustomerExcludingAssessedTax",
         "RevenueFromContractWithCustomerIncludingAssessedTax",
@@ -539,7 +541,7 @@ def test_refresh_derives_pit_discrete_q4_and_defers_to_reported_quarter(tmp_stor
             dt.datetime(2026, 4, 1, 22, 0),
             "Q4",
             "fundamental_statement_points",
-            "coalesce_priority",
+            "coalesce_or_sum",  # S1: seed revenue rule is coalesce_or_sum (utility fallback); direct row
             3,
             3,
             True,
@@ -894,7 +896,7 @@ def test_coalesce_or_difference_rejects_wrong_input_arity(tmp_path):
                 "skip", "true", "1900-01-01", "",
             ]
         )
-    with pytest.raises(ValueError, match="requires exactly two source item ids"):
+    with pytest.raises(ValueError, match="requires at least two source item ids"):
         read_standardization_rules(seed)
 
 

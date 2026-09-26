@@ -46,7 +46,14 @@ _DIFFERENCE_RULES = frozenset({"difference", "coalesce_or_difference"})
 _DIRECT_FIRST_RULES = frozenset({"identity", "coalesce_priority", "first_non_null", "coalesce_or_sum", "coalesce_or_difference"})
 SIGN_RULES = frozenset({"statement_normalized", "as_reported", "absolute", "invert"})
 SCALE_RULES = frozenset({"identity", "thousands", "millions"})
-MISSING_POLICIES = frozenset({"skip", "zero_fill"})
+# zero_fill_subtrahends: the first input must be reported; later inputs (subtrahends of a
+# difference, addends of a sum) count as zero when absent -- e.g. total equity - NCI when the
+# filing reports no NCI line. Unlike zero_fill it never emits a value from later inputs alone.
+MISSING_POLICIES = frozenset({"skip", "zero_fill", "zero_fill_subtrahends"})
+# A composition input reads either the raw item (``item``: statement points mapped to that item)
+# or the standardized output of that item's own rule on the same basis (``output``: its direct
+# value or its own composition), evaluated in dependency order.
+INPUT_KINDS = frozenset({"item", "output"})
 
 RULE_COLUMNS = (
     "rule_id",
@@ -136,6 +143,60 @@ class StandardizationRule:
     is_active: bool
     valid_from: dt.date | None
     valid_to: dt.date | None
+    # Per source_item_ids position: "item" (raw) or "output" (that item's rule output). Empty
+    # means every input is raw, which keeps pre-existing rules (and their digests) unchanged.
+    source_input_kinds: tuple[str, ...] = ()
+
+
+def rule_input_kinds(rule: StandardizationRule) -> tuple[str, ...]:
+    """Input kind per ``source_item_ids`` position ("item" unless declared "output")."""
+
+    if not rule.source_input_kinds:
+        return tuple("item" for _ in rule.source_item_ids)
+    return rule.source_input_kinds
+
+
+def rule_dependency_levels(rules: Sequence[StandardizationRule]) -> dict[str, int]:
+    """Evaluation level per active rule; raises on a missing or cyclic ``output`` dependency.
+
+    Level 0 rules read only raw items; a rule reading another rule's output sits one level
+    above the deepest rule it reads, so the engine can evaluate levels in order.
+    """
+
+    active = [rule for rule in rules if rule.is_active]
+    by_key = {(rule.item_id, rule.basis): rule for rule in active}
+    dependencies: dict[str, tuple[str, ...]] = {}
+    for rule in active:
+        needed: list[str] = []
+        for item_id, kind in zip(rule.source_item_ids, rule_input_kinds(rule), strict=True):
+            if kind != "output":
+                continue
+            dependency = by_key.get((item_id, rule.basis))
+            if dependency is None:
+                raise ValueError(
+                    f"{rule.rule_id}: output input item {item_id} has no active {rule.basis} rule"
+                )
+            needed.append(dependency.rule_id)
+        dependencies[rule.rule_id] = tuple(needed)
+
+    levels: dict[str, int] = {}
+    visiting: set[str] = set()
+
+    def level(rule_id: str, path: tuple[str, ...]) -> int:
+        if rule_id in levels:
+            return levels[rule_id]
+        if rule_id in visiting:
+            raise ValueError("cyclic standardization rule dependency: " + " -> ".join((*path, rule_id)))
+        visiting.add(rule_id)
+        needed = dependencies[rule_id]
+        value = 0 if not needed else 1 + max(level(dep, (*path, rule_id)) for dep in needed)
+        visiting.discard(rule_id)
+        levels[rule_id] = value
+        return value
+
+    for rule in active:
+        level(rule.rule_id, ())
+    return levels
 
 
 @dataclass(frozen=True)
@@ -200,24 +261,43 @@ def _parse_aliases(raw_json: str) -> tuple[SourceAlias, ...]:
     return tuple(sorted(aliases, key=lambda alias: (alias.priority, alias.alias_scheme, alias.alias_code)))
 
 
-def _parse_item_ids(raw_json: str) -> tuple[int, ...]:
+def _parse_inputs(raw_json: str) -> tuple[tuple[int, ...], tuple[str, ...]]:
+    """``[1221, {"item_id": 1214, "input": "output"}]`` -> ids and kinds (kinds empty when all raw)."""
+
     payload = json.loads(raw_json or "[]")
     if not isinstance(payload, list):
         raise ValueError("source_item_ids_json must be a JSON list")
-    return tuple(int(value) for value in payload)
+    item_ids: list[int] = []
+    kinds: list[str] = []
+    for entry in payload:
+        if isinstance(entry, Mapping):
+            kind = str(entry.get("input", "item"))
+            if kind not in INPUT_KINDS:
+                raise ValueError(f"source_item_ids_json input kind {kind!r} not in {sorted(INPUT_KINDS)}")
+            item_ids.append(int(entry["item_id"]))
+            kinds.append(kind)
+        else:
+            item_ids.append(int(entry))
+            kinds.append("item")
+    return tuple(item_ids), (tuple(kinds) if any(kind != "item" for kind in kinds) else ())
+
+
+def _parse_item_ids(raw_json: str) -> tuple[int, ...]:
+    return _parse_inputs(raw_json)[0]
 
 
 def _read_rule(row: Mapping[str, str], *, row_number: int, seed_path: Path) -> StandardizationRule:
     missing = [column for column in RULE_COLUMNS if column not in row]
     if missing:
         raise ValueError(f"{seed_path} row {row_number}: missing columns {missing!r}")
+    source_item_ids, source_input_kinds = _parse_inputs(row["source_item_ids_json"])
     rule = StandardizationRule(
         rule_id=str(row["rule_id"]).strip(),
         item_id=int(row["item_id"]),
         canonical_code=str(row["canonical_code"]).strip(),
         basis=str(row["basis"]).strip(),
         source_aliases=_parse_aliases(row["source_aliases_json"]),
-        source_item_ids=_parse_item_ids(row["source_item_ids_json"]),
+        source_item_ids=source_item_ids,
         combination_rule=str(row["combination_rule"]).strip(),
         sign_rule=str(row["sign_rule"]).strip(),
         scale_rule=str(row["scale_rule"]).strip(),
@@ -225,6 +305,7 @@ def _read_rule(row: Mapping[str, str], *, row_number: int, seed_path: Path) -> S
         is_active=_parse_bool(row["is_active"]),
         valid_from=_parse_date(row["valid_from"]),
         valid_to=_parse_date(row["valid_to"]),
+        source_input_kinds=source_input_kinds,
     )
     if not rule.rule_id:
         raise ValueError(f"{seed_path} row {row_number}: blank rule_id")
@@ -238,8 +319,11 @@ def _read_rule(row: Mapping[str, str], *, row_number: int, seed_path: Path) -> S
         raise ValueError(f"{seed_path} row {row_number}: unknown missing_policy {rule.missing_policy!r}")
     if rule.combination_rule in _COMPOSITION_RULES and not rule.source_item_ids:
         raise ValueError(f"{seed_path} row {row_number}: {rule.combination_rule} requires source_item_ids_json")
-    if rule.combination_rule in _DIFFERENCE_RULES and len(rule.source_item_ids) != 2:
-        raise ValueError(f"{seed_path} row {row_number}: {rule.combination_rule} requires exactly two source item ids")
+    if rule.combination_rule in _DIFFERENCE_RULES and len(rule.source_item_ids) < 2:
+        # n-ary: first input minus every later input (a - b - c ...).
+        raise ValueError(f"{seed_path} row {row_number}: {rule.combination_rule} requires at least two source item ids")
+    if rule.source_input_kinds and rule.combination_rule not in _COMPOSITION_RULES:
+        raise ValueError(f"{seed_path} row {row_number}: output inputs need a composition rule")
     return rule
 
 
@@ -260,6 +344,10 @@ def read_standardization_rules(path: Path | str = RULE_PATH) -> tuple[Standardiz
             raise ValueError(f"{seed_path}: duplicate active rule key {key!r}")
         if rule.is_active:
             seen.add(key)
+    try:
+        rule_dependency_levels(rules)  # output dependencies exist and are acyclic
+    except ValueError as exc:
+        raise ValueError(f"{seed_path}: {exc}") from exc
     return rules
 
 
@@ -381,18 +469,23 @@ def _select_inputs(
         if rule.combination_rule not in _COMPOSITION_RULES:
             return None
 
+    # Legacy pandas path: an "output" input reads the raw item here; only the set-based engine
+    # evaluates rule outputs in dependency order.
     selected: list[Mapping[str, Any]] = []
     values: list[float] = []
-    for item_id in rule.source_item_ids:
+    for position, item_id in enumerate(rule.source_item_ids):
+        zero_filled = rule.missing_policy == "zero_fill" or (
+            rule.missing_policy == "zero_fill_subtrahends" and position > 0
+        )
         row = _best_for_item(candidates, item_id)
         if row is None:
-            if rule.missing_policy == "zero_fill":
+            if zero_filled:
                 values.append(0.0)
                 continue
             return None
         value = _normalize_value(row.get("value"), rule)
         if value is None:
-            if rule.missing_policy == "zero_fill":
+            if zero_filled:
                 values.append(0.0)
                 continue
             return None
@@ -402,7 +495,10 @@ def _select_inputs(
     if not selected:
         return None
     if rule.combination_rule in _DIFFERENCE_RULES:
-        return values[0] - values[1], selected
+        result = values[0]
+        for subtrahend in values[1:]:
+            result -= subtrahend
+        return result, selected
     return sum(values), selected
 
 

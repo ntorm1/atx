@@ -60,7 +60,7 @@ import pandas as pd
 from .connection import DuckDBStore, resolve_data_dir
 from .fact_disagreement import FactDisagreementOptions, refresh_fact_disagreement
 from .item_registry import FundamentalItemSeedRow, read_fundamental_item_seed
-from .standardization import StandardizationRule, default_standardization_rules
+from .standardization import StandardizationRule, default_standardization_rules, rule_input_kinds
 from .statement_map_seed import FundamentalStatementMapRow, read_statement_map_seed
 
 FSDS_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip"
@@ -95,6 +95,7 @@ _UOM_BY_UNIT_KIND = {"monetary": "USD", "per_share": "USD/shares"}  # unit_type 
 _FSDS_UOMS_BY_UNIT_KIND = {"monetary": ("USD",), "per_share": ("USD", "USD/shares")}
 _COMPOSITION_RULES = frozenset({"sum", "difference", "coalesce_or_sum", "coalesce_or_difference"})
 _DIFFERENCE_RULES = frozenset({"difference", "coalesce_or_difference"})
+_DIRECT_FIRST_RULES = frozenset({"identity", "coalesce_priority", "first_non_null", "coalesce_or_sum", "coalesce_or_difference"})
 
 
 # ---------------------------------------------------------------------------------------------
@@ -713,6 +714,8 @@ class CanonicalRule:
     scale_multiplier: float
     valid_from: dt.date | None = None
     valid_to: dt.date | None = None
+    # Per input: "item" (raw statement item) or "output" (that item's own rule output).
+    input_kinds: tuple[str, ...] = ()
 
 
 def canonical_rules(
@@ -767,19 +770,26 @@ def canonical_rules(
             scale_multiplier={"identity": 1.0, "thousands": 1_000.0, "millions": 1_000_000.0}[rule.scale_rule],
             valid_from=rule.valid_from,
             valid_to=rule.valid_to,
+            input_kinds=rule_input_kinds(rule) if rule.combination_rule in _COMPOSITION_RULES else (),
         )
 
     out: dict[tuple[int, str], CanonicalRule] = {}
+
+    def add(item_id: int, basis: str, unit_kind: str) -> CanonicalRule:
+        if (item_id, basis) in out:
+            return out[(item_id, basis)]
+        rule = build(item_id, basis, unit_kind)
+        out[(item_id, basis)] = rule
+        for input_id in rule.inputs:  # raw inputs need the item's aliases; output inputs its rule
+            kind = "per_share" if unit_types.get(input_id) == "per_share" else "monetary"
+            add(input_id, basis, kind)
+        return rule
+
     for item in items:
         for basis in _BASES_BY_KIND[item.period_kind]:
-            rule = build(item.item_id, basis, item.unit_kind)
+            rule = add(item.item_id, basis, item.unit_kind)
             if rule.canonical_code != item.canonical_code:
                 raise ValueError(f"{item.name}: rule code {rule.canonical_code} != {item.canonical_code}")
-            out[(item.item_id, basis)] = rule
-            for input_id in rule.inputs:
-                if (input_id, basis) not in out:
-                    kind = "per_share" if unit_types.get(input_id) == "per_share" else "monetary"
-                    out[(input_id, basis)] = build(input_id, basis, kind)
     return out
 
 
@@ -895,26 +905,64 @@ def canonical_fsds_facts(
     raw["value"] = raw["value"].astype(float) * raw["value_multiplier"].astype(float)
     filings = frame[_FILING_COLUMNS].drop_duplicates(subset=["adsh"])
     name_by_id = {item.item_id: item.name for item in items}
+    outputs: dict[tuple[int, str], pd.DataFrame] = {}
+
+    def raw_rows(item_id: int, basis: str) -> pd.DataFrame:
+        part = raw[(raw["item_id"] == item_id) & (raw["basis"] == basis)]
+        return pd.DataFrame(
+            {
+                "adsh": part["adsh"].to_numpy(),
+                "ddate": part["ddate"].to_numpy(),
+                "value": part["value"].astype(float).to_numpy(),
+                "tags": [[f"us-gaap:{tag}"] for tag in part["tag"]],
+            }
+        )
+
+    def output_rows(item_id: int, basis: str) -> pd.DataFrame:
+        """The rule's own output: direct value, else its composition (engine semantics)."""
+
+        key = (item_id, basis)
+        if key in outputs:
+            return outputs[key]
+        rule = rules_map[key]
+        parts: list[pd.DataFrame] = []
+        if rule.combination_rule in _DIRECT_FIRST_RULES:
+            direct = raw_rows(item_id, basis)
+            direct["value"] = _apply_rule_value(direct["value"], rule).to_numpy()
+            direct["derivation"] = "direct"
+            parts.append(direct)
+        if rule.inputs:
+            sources = [
+                output_rows(input_id, basis) if kind == "output" else raw_rows(input_id, basis)
+                for input_id, kind in zip(rule.inputs, rule.input_kinds or ("item",) * len(rule.inputs), strict=True)
+            ]
+            labels = [
+                f"atx-rule-output:{rules_map[(input_id, basis)].canonical_code}" if kind == "output" else None
+                for input_id, kind in zip(rule.inputs, rule.input_kinds or ("item",) * len(rule.inputs), strict=True)
+            ]
+            derived = _derive(sources, labels, rule)
+            if not derived.empty and parts and rule.combination_rule.startswith("coalesce_or_"):
+                have = set(zip(parts[0]["adsh"], parts[0]["ddate"], strict=True))
+                derived = derived[[k not in have for k in zip(derived["adsh"], derived["ddate"], strict=True)]]
+            parts.append(derived)
+        non_empty = [p for p in parts if not p.empty]
+        result = (
+            pd.concat(non_empty, ignore_index=True)
+            if non_empty
+            else pd.DataFrame(columns=["adsh", "ddate", "value", "tags", "derivation"])
+        )
+        outputs[key] = result
+        return result
 
     out_frames: list[pd.DataFrame] = []
     for item in items:
         for basis in _BASES_BY_KIND[item.period_kind]:
             rule = rules_map[(item.item_id, basis)]
-            direct = raw[(raw["item_id"] == item.item_id) & (raw["basis"] == basis)]
-            direct_rows = direct[[*_FILING_COLUMNS, "ddate"]].copy()
-            direct_rows["value"] = _apply_rule_value(direct["value"].astype(float), rule).to_numpy()
-            direct_rows["derivation"] = "direct"
-            direct_rows["source_tags_json"] = [json.dumps([f"us-gaap:{tag}"]) for tag in direct["tag"]]
-            parts = [direct_rows]
-            if rule.inputs:
-                derived = _derive(raw, rule, basis, filings)
-                if not derived.empty and rule.combination_rule.startswith("coalesce_or_"):
-                    have = set(zip(direct_rows["adsh"], direct_rows["ddate"], strict=True))
-                    derived = derived[[key not in have for key in zip(derived["adsh"], derived["ddate"], strict=True)]]
-                parts.append(derived)
-            combined = pd.concat([p for p in parts if not p.empty], ignore_index=True) if any(not p.empty for p in parts) else pd.DataFrame()
+            combined = output_rows(item.item_id, basis)
             if combined.empty:
                 continue
+            combined = combined.merge(filings, on="adsh", how="left")
+            combined["source_tags_json"] = [json.dumps(tags) for tags in combined["tags"]]
             combined["item_id"] = item.item_id
             combined["canonical_code"] = rule.canonical_code
             combined["benchmark_item"] = name_by_id[item.item_id]
@@ -928,38 +976,54 @@ def canonical_fsds_facts(
     ).reset_index(drop=True)
 
 
-def _derive(raw: pd.DataFrame, rule: CanonicalRule, basis: str, filings: pd.DataFrame) -> pd.DataFrame:
-    """Composition over raw component items reported in the same filing and period."""
+def _derive(sources: Sequence[pd.DataFrame], labels: Sequence[str | None], rule: CanonicalRule) -> pd.DataFrame:
+    """Composition over inputs reported in the same filing and period (engine semantics).
+
+    Differences are n-ary (input 1 minus every later input). ``skip`` needs every input,
+    ``zero_fill`` at least one (absent inputs count as 0), ``zero_fill_subtrahends`` needs
+    input 1 and counts absent later inputs as 0. An ``output`` input is labeled
+    ``atx-rule-output:<canonical_code>`` as the engine labels it in ``input_codes_json``.
+    """
 
     keyed: pd.DataFrame | None = None
-    for position, input_id in enumerate(rule.inputs):
-        part = raw[(raw["item_id"] == input_id) & (raw["basis"] == basis)][["adsh", "ddate", "value", "tag"]]
-        part = part.rename(columns={"value": f"v{position}", "tag": f"t{position}"})
+    for position, source in enumerate(sources):
+        part = source[["adsh", "ddate", "value", "tags"]].rename(columns={"value": f"v{position}", "tags": f"t{position}"})
+        if labels[position] is not None:
+            part[f"t{position}"] = pd.Series([[labels[position]] for _ in range(len(part))], index=part.index, dtype=object)
         keyed = part if keyed is None else keyed.merge(part, on=["adsh", "ddate"], how="outer")
     if keyed is None or keyed.empty:
         return pd.DataFrame()
-    value_cols = [f"v{i}" for i in range(len(rule.inputs))]
+    value_cols = [f"v{i}" for i in range(len(sources))]
     present = keyed[value_cols].notna()
-    zero_fill = rule.missing_policy == "zero_fill"
-    if rule.combination_rule in _DIFFERENCE_RULES:
-        # The minuend must be reported; the subtrahend may be zero-filled only under zero_fill.
-        keep = present["v0"] & (present["v1"] | zero_fill)
-        keyed = keyed[keep].copy()
-        value = keyed["v0"].astype(float) - keyed["v1"].fillna(0.0).astype(float)
+    if rule.missing_policy == "zero_fill":
+        keep = present.any(axis=1)
+    elif rule.missing_policy == "zero_fill_subtrahends":
+        keep = present["v0"]
     else:
-        keep = present.all(axis=1) | (zero_fill & present.any(axis=1))
-        keyed = keyed[keep].copy()
-        value = keyed[value_cols].fillna(0.0).astype(float).sum(axis=1)
+        keep = present.all(axis=1)
+    keyed = keyed[keep].copy()
     if keyed.empty:
         return pd.DataFrame()
-    keyed["value"] = _apply_rule_value(value, rule).to_numpy()
-    keyed["derivation"] = "derived"
-    tag_cols = [f"t{i}" for i in range(len(rule.inputs))]
-    keyed["source_tags_json"] = [
-        json.dumps([f"us-gaap:{tag}" for tag in row if isinstance(tag, str)]) for row in keyed[tag_cols].itertuples(index=False)
-    ]
-    merged = keyed.merge(filings, on="adsh", how="left")
-    return merged[[*_FILING_COLUMNS, "ddate", "value", "derivation", "source_tags_json"]]
+    filled = keyed[value_cols].fillna(0.0).astype(float)
+    if rule.combination_rule in _DIFFERENCE_RULES:
+        value = filled["v0"]
+        for column in value_cols[1:]:
+            value = value - filled[column]
+    else:
+        value = filled.sum(axis=1)
+    tag_cols = [f"t{i}" for i in range(len(sources))]
+    return pd.DataFrame(
+        {
+            "adsh": keyed["adsh"].to_numpy(),
+            "ddate": keyed["ddate"].to_numpy(),
+            "value": _apply_rule_value(value, rule).to_numpy(),
+            "tags": [
+                [tag for tags in row if isinstance(tags, list) for tag in tags]
+                for row in keyed[tag_cols].itertuples(index=False)
+            ],
+            "derivation": "derived",
+        }
+    )
 
 
 # ---------------------------------------------------------------------------------------------

@@ -143,7 +143,7 @@ us-gaap,PaymentsToAcquireBusinessesNetOfCashAcquired,acquisitions,1309,cash_flow
 us-gaap,PaymentsToAcquireIntangibleAssets,capital_expenditures_broad,1306,cash_flow,ALL
 us-gaap,PaymentsToAcquireMachineryAndEquipment,capital_expenditures,1305,cash_flow,ALL
 us-gaap,PaymentsToAcquireOtherPropertyPlantAndEquipment,capital_expenditures,1305,cash_flow,ALL
-us-gaap,PaymentsToAcquireProductiveAssets,capital_expenditures_broad,1306,cash_flow,ALL
+us-gaap,PaymentsToAcquireProductiveAssets,capital_expenditures,1305,cash_flow,ALL
 us-gaap,PaymentsToAcquirePropertyPlantAndEquipment,capital_expenditures,1305,cash_flow,ALL
 us-gaap,PaymentsToDevelopSoftware,capital_expenditures_broad,1306,cash_flow,ALL
 us-gaap,ProceedsFromDivestitureOfBusinesses,divestitures,1310,cash_flow,ALL

@@ -6,12 +6,13 @@ seeding/rule helpers already defined there.
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 
 import pytest
 
 from atx_db._standardization_set_based import refresh_standardized_set_based
-from atx_db.standardization import FundamentalStandardizationOptions
+from atx_db.standardization import FundamentalStandardizationOptions, rule_dependency_levels
 from tests.test_standardization import _rule, _seed_statement_points
 
 
@@ -111,3 +112,63 @@ def test_direct_tag_arriving_later_supersedes_the_composed_revision(tmp_store):
     assert direct[2] == "coalesce_or_difference"
     assert direct[4] is True
     assert direct[3] > composed[3]
+
+
+def test_composition_reads_another_rules_output_in_dependency_order(tmp_store):
+    """S1: common equity = derived stockholders' equity (a rule output) - preferred - temp equity.
+
+    The dependent rule is listed first; dependency levels still evaluate stockholders'
+    equity (1222 - 1213) before common equity reads it. The n-ary difference zero-fills the
+    absent third input under ``zero_fill_subtrahends``, and ``input_codes_json`` states the
+    derivation basis. A cyclic output dependency is rejected at load.
+    """
+    _seed_statement_points(
+        tmp_store,
+        [
+            ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+             "equity_incl_minority", 1222, 1000.0),
+            ("us-gaap", "MinorityInterest", "minority_int_bs", 1213, 100.0),
+            ("us-gaap", "PreferredStockValue", "pref_stock", 1214, 50.0),
+        ],
+        id_prefix="dep",
+    )
+    stockholders_equity = _rule(
+        1221, combination_rule="coalesce_or_difference", source_item_ids=(1222, 1213),
+        canonical_code="stockholders_equity",
+    )
+    common_equity = dataclasses.replace(
+        _rule(1220, combination_rule="coalesce_or_difference", source_item_ids=(1221, 1214, 1224),
+              canonical_code="common_equity"),
+        missing_policy="zero_fill_subtrahends",
+        source_input_kinds=("output", "item", "item"),
+    )
+    assert rule_dependency_levels((common_equity, stockholders_equity)) == {
+        common_equity.rule_id: 1, stockholders_equity.rule_id: 0,
+    }
+    cyclic = dataclasses.replace(
+        stockholders_equity, source_item_ids=(1220, 1213), source_input_kinds=("output", "item")
+    )
+    with pytest.raises(ValueError, match="cyclic standardization rule dependency"):
+        rule_dependency_levels((common_equity, cyclic))
+
+    refresh_standardized_set_based(
+        tmp_store,
+        FundamentalStandardizationOptions(symbols=("TST",)),
+        (common_equity, stockholders_equity),
+    )
+    rows = tmp_store.con.execute(
+        """
+        SELECT item_id, value, input_codes_json, input_item_ids_json
+        FROM fundamental_standardized
+        WHERE item_id IN (1220, 1221)
+        ORDER BY item_id
+        """
+    ).fetchall()
+
+    assert rows == [
+        (1220, pytest.approx(850.0), '["atx-rule-output:stockholders_equity","us-gaap:PreferredStockValue"]',
+         "[1221,1214]"),
+        (1221, pytest.approx(900.0),
+         '["us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest","us-gaap:MinorityInterest"]',
+         "[1222,1213]"),
+    ]
