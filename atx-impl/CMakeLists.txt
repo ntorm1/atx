@@ -57,8 +57,8 @@ endif()
 
 # ---------------------------------------------------------------------------
 # engine_git_sha provenance bake (p7 S6-4).
-# Resolve the engine's git commit at configure time and bake it into a compile
-# definition ATX_ENGINE_GIT_SHA consumed by stage_discover.cpp. Appends "-dirty"
+# Resolve the engine's git commit at configure time and bake it into a
+# private generated source consumed through build_provenance.hpp. Appends "-dirty"
 # when the working tree has uncommitted changes; falls back to "unknown" if git
 # is unavailable (CI / source tarball). This is provenance only — it never enters
 # panel.bin or the discover search digest (guarded by the S6-5 tripwire).
@@ -87,10 +87,13 @@ if(GIT_FOUND)
     endif()
 endif()
 message(STATUS "atx-impl engine_git_sha: ${ATX_ENGINE_GIT_SHA}")
-# Only this TU consumes provenance. A new SHA must not invalidate all pipeline
-# objects (and their compiler-cache keys) after every configure/commit.
-set_property(SOURCE src/stage_discover.cpp APPEND PROPERTY COMPILE_DEFINITIONS
-    ATX_ENGINE_GIT_SHA="${ATX_ENGINE_GIT_SHA}")
+# A changing command-line macro conflicts with clang-cl PCH reuse. Keep the
+# value in one tiny generated implementation, outside the stable PCH payload.
+# configure_file writes only when content changes, preserving no-op builds.
+set(_atx_provenance_cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/build_provenance.cpp")
+configure_file(src/build_provenance.cpp.in "${_atx_provenance_cpp}" @ONLY)
+target_sources(atx-impl-core PRIVATE "${_atx_provenance_cpp}")
+set_source_files_properties("${_atx_provenance_cpp}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
 add_executable(atx-impl src/main.cpp)
 target_link_libraries(atx-impl PRIVATE atx-impl-core atx_warnings)

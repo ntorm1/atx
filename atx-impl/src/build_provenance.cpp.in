@@ -1,0 +1,7 @@
+#include "build_provenance.hpp"
+
+namespace atx::impl {
+std::string_view build_engine_git_sha() noexcept {
+    return "@ATX_ENGINE_GIT_SHA@";
+}
+} // namespace atx::impl

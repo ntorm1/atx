@@ -40,6 +40,7 @@
 #include "atx/engine/store/pipeline_progress.hpp" // store::PipelineRecorder, PipelineRunRow, ResumableRun, split_population
 
 #include "artifacts.hpp"
+#include "build_provenance.hpp"
 #include "config.hpp"
 #include "dead_alpha_wire.hpp"  // split-range ledger (W0-I0a, I-01)
 #include "research_sim.hpp"
@@ -49,13 +50,6 @@
 #include "panel_pipeline.hpp"
 #include "stage_discover_detail.hpp"             // atx::impl::detail::apply_capacity_screen (Fix 1: testable)
 #include "store_progress_sink.hpp"               // StoreProgressSink, compute_discover_fingerprint, fp_hex, now_unix
-
-// engine_git_sha (S6-4): baked at configure time by atx-impl/CMakeLists.txt.
-// Fallback for any TU compiled without the compile definition (e.g. a build that
-// lacks the bake step) so the provenance string is always a defined value.
-#ifndef ATX_ENGINE_GIT_SHA
-#define ATX_ENGINE_GIT_SHA "unknown"
-#endif
 
 namespace atx::impl {
 namespace eval = atx::engine::eval;
@@ -860,7 +854,7 @@ atx::core::Result<StageResult> run_discover_gated(
             // no timestamps) + the build-time engine git SHA. Both are run-DB metadata
             // only — they never enter panel.bin or the discover search digest (S6-5).
             row.config_json       = build_config_json(cfg);
-            row.engine_git_sha    = ATX_ENGINE_GIT_SHA;
+            row.engine_git_sha    = build_engine_git_sha();
             row.created_at        = now_unix();
             ATX_TRY(auto r, store::PipelineRecorder::begin(sdb->db(), row));
             rec.emplace(std::move(r));
