@@ -18,8 +18,8 @@ struct PipelinePanel {
     std::string artifact_id;
     // Nonempty only for the explicit bounded V2 reader. Panel's own mask is
     // presence; consumers must use this for CS/trading admission.
-    std::vector<atx::u8> tradable;
-    std::vector<atx::engine::data::PanelStoreField> store_fields;
+    std::vector<atx::u8> tradable{};
+    std::vector<atx::engine::data::PanelStoreField> store_fields{};
 };
 
 // Reserves all companion writes for one stage. Failed runs leave diagnostic
