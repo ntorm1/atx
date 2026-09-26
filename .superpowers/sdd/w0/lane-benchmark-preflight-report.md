@@ -173,3 +173,27 @@ contains surviving PID/parent/executable metadata. The merge helper rejects any
 native batch with an invalidity marker. No automatic timing retry is authorized;
 the quiet window was released for D0 implementation/qualification. N128, 81 cases,
 three repetitions and the 20% threshold remain unchanged.
+
+## Next quiet-window preflight
+
+Before another attempt, all agent source edits, repository scans and builds must
+finish and writers must remain quiescent. The next current binary must include
+the final D0 VWAP correction; the earlier 766bac4a command example is historical
+and must not be used to qualify stale production. Its replacement registry receipt
+must bind the actual final compiled source and executable. N128 is already frozen.
+
+The prepared runner finishes its own source/process queries, then samples native
+host busy CPU minus runner CPU once per second for five seconds. Every sample must
+remain at most one external logical core and above the fixed N128 memory launch
+floor. A failed preflight leaves a JSON receipt and launches no benchmark. During
+execution it subtracts both runner and benchmark process CPU, aborting only its
+own benchmark after five consecutive samples above one external logical core.
+All selected kernel/WQ/search/optimizer cases execute in-process; their worker
+threads are included in GetProcessTimes. ProcessExecutor benchmark cases are not
+selected. Thus measured workers are not classified as external activity.
+
+Native preflight receipts bind runner SHA, executable SHA, compiled source and
+the original dimension protocol SHA. The merger rejects missing/mismatched
+preflights and both snapshots must use the same runner version. Every failed or
+contaminated attempt is retained. This changes quiet-window verification, not
+dimensions, case coverage, repetitions, timing thresholds or native numeric code.

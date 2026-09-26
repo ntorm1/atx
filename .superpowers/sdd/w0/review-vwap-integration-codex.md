@@ -115,3 +115,14 @@ The owner supplied one PCH-off real_panel.cpp compile log at
 pool4/build-equity-hygiene/w0-vwap-real-panel-hygiene.log, whose recorded Ninja
 command uses -j 1 and compiles that one object. This reviewer has not executed a
 compiler or claimed broader hygiene/suite evidence at this source-review stage.
+
+## Alpha runtime follow-up
+
+The candidate's alpha gate now passes with fixture-only followups 520bc0cc and
+7be27928: 711/711 whole-alpha tests and the explicit independent N128 oracle 1/1.
+The exact fixture digest is `75b4a957ff30e9c3`; every field/mask/value bit matched.
+The two intervening fixture failures and their repairs are recorded in
+`lane-vwap-alpha-qualification-codex.md`, together with source/binary hashes,
+native logs, actual same-tree no-op, cache attribution and resource observations.
+Alpha owner approval is complete. Data/book/impl runtime, remaining hygiene and
+L9 evidence still require their owning outputs before an overall D0 approval.
