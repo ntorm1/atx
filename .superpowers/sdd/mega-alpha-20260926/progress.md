@@ -1,6 +1,43 @@
 # Active task: recent-data DSL ensemble
 
-## Current checkpoint: five sourced cash claims integrated; focused runtime next
+## Current checkpoint: cash qualified; stock conversion in implementation
+
+Root3780a55d records cash/monthly qualification and49 exact evidence artifacts.
+Clean compiled sourceab049a50, configuredc09df61c. Firstbuild51.129s Jobs3
+failed mask span/owned-vector API; one-linefixab049a50 resumes21.906s Jobs3.
+All32 native cases pass1.738s (12new), zero failures/skips; guard1.875s.
+Report .superpowers/sdd/strategy/2026-09-26-cash-claim-qualification.md.
+
+Third actualrun recent-dev-rehearsal-v3 stops4.828s/219181056bytes on first
+candidate+ orientation JAG4997008 short-151822.37061726692 at2020-01-10
+22UTC; priorJan9price8.2299995422363281, no guard crossing, sourceabsent.
+It passes priorMDCO/WAIRendpoints; laterthreeconfiguredcashevents unreached.
+Three cumulative actual attempts, zero completions; no portfolio Sharpe.
+Samecashconfig257c6d645292b9f9464e6401ed1f9adb5e41a66089fdc4f7e23db0724f6da510,
+same24library/costs/roles/selection. No Q2score/2023-24/2025+ evaluation.
+
+JAGfacts775a9cad->16a8adb2: issuerJan10 08:51ET confirmscompletion;
+447/1000 ParsleyEnergy CLASS A PE, CUSIP701877102 per predecessor share.
+Use followingminute13:52UTC conservativeavailability. Nofixedcashleg;
+actualfractionalCIL/delivery/loantransfer unresolved. Priorstockinventory
+a852df6c->ffda3043 identifies onlysyntheticexistingreplaycaller.
+
+Pool4 implements new narrow factory stocktransitioncontext/privateCPP with
+signed successor addition/bridge and optionalexplicitfixedcash, retirement/
+queuedorder netting, exact observed successor raw/adjustedbasis, causalclock.
+Preservecashroutehash/arithmetic whenstockempty. No oldsyntheticenumwidening.
+Pool5 owns strict pinned --stock-transitions runner/config v3 with sameallroles/
+signs and decisionmask, no fabricatedfractionalsettlement. Pool3 extends
+audit_recent_price_gap.py --tickers exactsource selector to bind PEvendorID;
+rootonlyrunsrawaudit, thenG0reviewsnewengine. No activebuild orrealrun.
+
+Need stock primary/sourcefacts artifact, preregister pinnedv3 execution before
+fourthattempt; rootownsCMake,focusedbuild,guardednative/realrun. UpdateDAG
+withstockimports whenready. Emptywarehousetables and commonstockcoverage
+remainunresolved; optionalexternaldatapathquestion stillpending. Original
+goalactive/unlimited but ownerpivotgoverns; no goalcompletion or push.
+
+## Prior integration checkpoint: five cash claims awaiting runtime (superseded)
 
 This checkpoint supersedes the historical sections below. Root source before
 this checkpoint is d52ed04b, pool2 only. No active build or numerical process.
