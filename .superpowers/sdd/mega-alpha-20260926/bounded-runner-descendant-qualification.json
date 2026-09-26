@@ -1,0 +1,41 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "11afd431eb21e1fce612947dd405b21dc3f1f8bb",
+  "started_utc": "2026-09-26T21:43:10.875916+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-c",
+    "import subprocess,sys,time; subprocess.Popen([sys.executable,\"-c\",\"import time; time.sleep(10)\"]); time.sleep(0.6)"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [],
+  "limits": {
+    "seconds": 2.0,
+    "max_rss_mib": 128,
+    "min_free_mib": 256
+  },
+  "sampled_peak_tree_rss_bytes": 41246720,
+  "minimum_system_free_bytes": 2147110912,
+  "outcome": "time-limit",
+  "exit_code": 0,
+  "wall_seconds": 2.2030000000086147,
+  "owned_processes": [
+    {
+      "pid": 4708,
+      "create_time": 1790458990.8815384
+    },
+    {
+      "pid": 10372,
+      "create_time": 1790458990.8913624
+    },
+    {
+      "pid": 17836,
+      "create_time": 1790458991.0522575
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}
