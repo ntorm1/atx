@@ -1,0 +1,15 @@
+# Fast IC kernel and fixed composition source review
+
+Independent source approval on 2026-09-26 for kernel `1dba70357121e803083cd40fec5a7e4d9087b5f1`, composition/library `c4c8dc59`, and five postimplementation composition fixtures `67b28ba0`. Native compilation, fixture execution and empirical alpha evidence remain pending. The new runner is outside this source verdict until its separate freeze.
+
+The opaque research IC boundary reuses the existing correlations, exact pairwise tied ranks and calendar-preserving Bartlett HAC with lag at least twice the horizon plus the IID variance floor. Active horizons control validation, allocation, evaluation and equivalence classification; inactive slots are undefined and cannot become zero-effect evidence. Strict endpoint presence requires observed entry/exit prices without imposing future membership. Coverage counts actual finite signal/label pairs, distinguishes structural tails, and documents overlapping missing-endpoint counts. Uncertain, short or sparse evidence remains KEEP. Legacy public configuration/layout is unchanged, and its wrappers retain four horizons and their prior endpoint policy/arithmetic.
+
+The composition helper has no labels or fitting. It consumes one candidate at a time with an externally frozen sign, weights each family equally and each member of that family equally, and uses centered tied ranks. Missing values and sign0 contribute zero without redistribution. The 48-name library therefore assigns1/48 to every candidate. Its eight economic families organize related variants; this is not a claim of statistical independence. All-zero/constant compositions do not create positions.
+
+The planned turnover proxy is explicitly price-free: cadence5, partial adjustment0.25, no drift, costs, fills or capacity claim. Membership exits immediately become zero without rescaling survivors. Actual planned gross/net and initial deployment turnover are reported, including temporary non-neutrality. Owned allocations are checked before creation; caller Panel, VM, labels and incoming signal remain separate admissions.
+
+A read-only Python AST traversal of the exact committed library independently recomputed all48 lookbacks using shift=d and rolling=d-1, checked every lineage DSL hash, and verified eight families with six unique expressions each. Required history is41..314 prior bars (maximum315 observations), below320. Only `close`, `raw_close`, and `volume` are referenced; dollar liquidity uses raw price times raw share volume. Exact library SHA-256:
+
+`1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff`
+
+The five owning fixtures cover the actual48 DSLs under historical CS masks, future mutation and excluded-name isolation, hand-checked fixed-family/missing arithmetic, target exits/deployment, zero-position cases, and bounded admission/state errors. They were inspected, not executed by this reviewer. No data or market payload was read, no compiler was launched, and no corporate-action work was added.
