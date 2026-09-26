@@ -132,6 +132,17 @@ Policy v4 additions (tier-1 v2 node 1.10; off unless the spec enables them)
 * Family scope: :func:`family_scope` marks the gating family (primary cells of a wave's
   gating hypotheses); :func:`gating_bh_q` computes its Benjamini-Hochberg q-values with the
   earlier waves' gating hypotheses at p = 1. The R3b family columns stay the reported family.
+* Holdout seal (``seal_holdout``, needs the split): every label whose expected end is on/after
+  the holdout start, or unknown, is dropped (and its formation counts as not matured) before
+  anything is computed, so no statistic -- cells, slices, series, lags, JT -- sees a
+  holdout-period return. The count per horizon is ``labels_<h>m_sealed_formations`` in the
+  prepared digests.
+* Order and label binding: ``wave_registration_id`` (the trial-registry record sha of the
+  wave's registration), ``created_at`` and ``label_sha256``. :func:`label_set_sha256` digests
+  the label set a run saw (every basis's prepared ``labels_<h>m_sha256``);
+  :func:`prepared_label_set_sha256` gives the same value before evaluating (what
+  ``trial_registry.open_holdout`` records). A run whose spec declares ``label_sha256`` refuses
+  a different label set.
 
 Point-in-time guards
 --------------------
@@ -463,6 +474,17 @@ class EvaluationSpec:
     investable_nyse_percentile: int | None = None
     jt_holding_months: tuple[int, ...] = ()
     population_coverage: bool = False
+    #: Policy v4 order and seal (off by default, absent from a pre-v4 payload): ``seal_holdout``
+    #: drops every label whose expected end is on/after the split's holdout start (or unknown)
+    #: before anything is computed, so no holdout-period return enters any statistic;
+    #: ``wave_registration_id`` binds the run to its trial-registry registration (a record sha
+    #: that exists only after the wave was registered); ``label_sha256`` declares the label set
+    #: (:func:`label_set_sha256`) the run must see (an opened holdout's labels; the engine refuses
+    #: another); ``created_at`` is when the spec was built (naive-UTC ISO seconds).
+    seal_holdout: bool = False
+    wave_registration_id: str | None = None
+    label_sha256: str | None = None
+    created_at: str | None = None
 
 
 def _positive_int(value: Any, label: str, low: int, high: int) -> int:
@@ -545,10 +567,30 @@ def validate_spec(spec: EvaluationSpec) -> EvaluationSpec:
         raise EvaluationInputError("Jegadeesh-Titman holdings need the 1-month labels (horizons_months must hold 1)")
     if not isinstance(spec.population_coverage, bool):
         raise EvaluationInputError("population_coverage must be a boolean")
+    if not isinstance(spec.seal_holdout, bool):
+        raise EvaluationInputError("seal_holdout must be a boolean")
+    if spec.seal_holdout and spec.split is None:
+        raise EvaluationInputError("seal_holdout needs a frozen split (it seals the split's holdout)")
+    for name in ("wave_registration_id", "label_sha256"):
+        value = getattr(spec, name)
+        if value is not None and not re.fullmatch(r"[0-9a-f]{64}", str(value)):
+            raise EvaluationInputError(f"{name} must be a sha256 hex digest")
+    if spec.seal_holdout and spec.label_sha256 is not None:
+        raise EvaluationInputError("a sealed run reads no holdout label: label_sha256 declares an opened label set")
+    created = spec.created_at
+    if created is not None:
+        try:
+            stamp = dt.datetime.fromisoformat(str(created))
+        except ValueError as error:
+            raise EvaluationInputError("created_at must be an ISO datetime") from error
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone(dt.UTC).replace(tzinfo=None)
+        created = stamp.isoformat(timespec="seconds")
     return replace(spec, feature_versions=versions, horizons_months=horizons, marginal_months=marginal,
                    label_cutoff=cutoff, features=_ids(spec.features, "features"),
                    variants=_ids(spec.variants, "variants"), subperiods=tuple(subperiods),
-                   control_features=controls or (), investable_min_price=price, jt_holding_months=holding)
+                   control_features=controls or (), investable_min_price=price, jt_holding_months=holding,
+                   created_at=created)
 
 
 def spec_payload(spec: EvaluationSpec) -> dict[str, Any]:
@@ -564,6 +606,11 @@ def spec_payload(spec: EvaluationSpec) -> dict[str, Any]:
         payload["jt_holding_months"] = list(spec.jt_holding_months)
     if spec.population_coverage:
         payload["population_coverage"] = True
+    if spec.seal_holdout:
+        payload["seal_holdout"] = True
+    for name in ("wave_registration_id", "label_sha256", "created_at"):
+        if getattr(spec, name) is not None:
+            payload[name] = getattr(spec, name)
     return payload
 
 
@@ -623,6 +670,10 @@ def spec_from_payload(payload: Mapping[str, Any], run_id: str) -> EvaluationSpec
         investable_nyse_percentile=payload.get("investable_nyse_percentile"),
         jt_holding_months=tuple(payload.get("jt_holding_months") or ()),
         population_coverage=bool(payload.get("population_coverage", False)),
+        seal_holdout=bool(payload.get("seal_holdout", False)),
+        wave_registration_id=payload.get("wave_registration_id"),
+        label_sha256=payload.get("label_sha256"),
+        created_at=payload.get("created_at"),
     )
     return validate_spec(spec)
 
@@ -1284,6 +1335,16 @@ def _prepare(inputs: BasisInputs, spec: EvaluationSpec) -> _Prepared:
             mature[index] = rows["matured"].to_numpy(dtype=bool)
             ends[index] = _days(rows["expected_end"])
         mature &= formed
+        if spec.seal_holdout and spec.split is not None:
+            # Policy v4 seal: a label whose window ends on/after the holdout start (or whose end is
+            # unknown) is dropped before any statistic; it counts as not matured.
+            sealed = formed & ~(ends < np.datetime64(spec.split.holdout_start))
+            if len(keys):
+                keep = ~sealed[keys // span]
+                keys, returns, status, terminal = keys[keep], returns[keep], status[keep], terminal[keep]
+                label_keys[h], label_return[h], label_status[h], label_terminal[h] = keys, returns, status, terminal
+            mature &= ~sealed
+            digests[f"labels_{h}m_sealed_formations"] = str(int(sealed.sum()))
         matured[h], expected_end[h] = mature, ends
         digests[f"labels_{h}m_sha256"] = _array_digest(keys, returns, status, terminal, mature, ends)
 
@@ -2759,7 +2820,51 @@ def _evaluate_into(con: duckdb.DuckDBPyConnection | None, run_id: str, bases: It
                 write("feature_inputs", _frame([input_row], "feature_inputs"))
             del produced
         del prep
+    if spec.label_sha256 is not None:
+        seen = label_set_sha256(manifests)
+        if seen != spec.label_sha256:
+            raise EvaluationInputError(f"the run's label set {seen} is not the declared label_sha256 "
+                                       f"{spec.label_sha256} (policy v4: the labels of the opened holdout)")
     return manifests, info
+
+
+_LABEL_DIGEST = re.compile(r"labels_\d+m_sha256")
+
+
+def label_set_sha256(bases: Mapping[str, Any]) -> str:
+    """Digest of the label set a run saw: every basis's prepared per-horizon label digests.
+
+    ``bases`` is ``EvaluationTables.bases`` (or the stored run manifest's bases). Policy v4
+    records it when a wave's holdout is opened (``trial_registry.open_holdout``); a final
+    grade refuses a run whose label set differs.
+    """
+    parts: dict[str, dict[str, str]] = {}
+    for basis, manifest in sorted(bases.items()):
+        digests = (manifest or {}).get("prepared_digests") or {}
+        labels = {key: str(value) for key, value in digests.items() if _LABEL_DIGEST.fullmatch(str(key))}
+        if labels:
+            parts[str(basis)] = labels
+    if not parts:
+        raise EvaluationInputError("no prepared label digests in the run's basis manifests")
+    return _sha(_canonical(parts))
+
+
+def prepared_label_set_sha256(bases: Iterable[BasisInputs], spec: EvaluationSpec) -> str:
+    """:func:`label_set_sha256` of the inputs *before* evaluating them (what ``open_holdout`` records).
+
+    Prepares every available basis (labels, maturity, context) and computes no statistic; the
+    inputs' frames are kept (``release_frames`` is not honoured here) so the same inputs can then
+    be evaluated.
+    """
+    spec = validate_spec(spec)
+    manifests: dict[str, Any] = {}
+    for inputs in bases:
+        if inputs.status == BASIS_UNTESTABLE:
+            continue
+        prep = _prepare(replace(inputs, release_frames=False), spec)
+        manifests[inputs.basis] = {"prepared_digests": dict(prep.digests)}
+        del prep
+    return label_set_sha256(manifests)
 
 
 def evaluate_bases(bases: Iterable[BasisInputs], spec: EvaluationSpec, *,
@@ -3627,10 +3732,12 @@ __all__ = [
     "grouped_quantiles",
     "grouped_rank_correlation",
     "jegadeesh_titman_series",
+    "label_set_sha256",
     "load_feature_table",
     "load_frozen_split",
     "load_label_inputs",
     "open_basis_inputs",
+    "prepared_label_set_sha256",
     "results_digest",
     "run_evaluation",
     "spec_from_payload",

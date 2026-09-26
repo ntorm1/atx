@@ -17,10 +17,35 @@ power study `scripts/research_power_study.py`.
 | first forward return read (the power study, selection window only) | 2026-09-26T15:35:38Z (a `--quick` run; the full run of record read at 15:50:00Z) |
 | evaluation split | `r4-split-v1` (sha256 `b1271e3f...6f26`): selection = train + validation formations whose label window ends before 2024-01-01; holdout 2024-01 onward |
 
-Order (ruling R-6): the policy was frozen and registered before any tier-1 v2 code read a forward return; the
-power study (the first reader) loads bars dated on or before 2023-12-31 only, so no holdout-period price has
-been read. A wave (for example `w1_price` at node 1.13) must additionally be registered in the trial registry
-before its first label join (`TrialRegistry.require_registration(wave, catalog_digest=..., policy_sha=...)`).
+**Order (ruling R-6).** The policy was frozen and registered before any tier-1 v2 code read a forward
+return. The power study was the first reader, and it loads only bars dated on or before 2023-12-31, so no
+holdout-period price has been read. A wave (for example `w1_price` at node 1.13) must also be registered in
+the trial registry, and its anchor committed, before its first label join. Grading enforces this order in
+code (§2, *order and seal*).
+
+**What the power study saw of the selection sample (review I1, disclosed in fix round 1).**
+
+* **What it computed.** To build the null covariance, the study computed per-formation cross-sectional
+  rank scores of the real 3-month forward returns over 2012-03 .. 2023-08.
+* **What that amounts to.** The covariance's lag-k blocks, `sum_i u_i,t u_i,t+k`, are the cross-sectional
+  rank correlation between a line's 3-month return and its 3-month return k months later. That is the rank
+  IC of a lagged 3-month-return window, which belongs to the momentum / reversal / seasonality family of
+  `w1_price`:
+  * lag 3 ≈ a months −3..0 window;
+  * lag 6 ≈ months −6..−4;
+  * lag 12 ≈ `seas_1_1an`;
+  * lags 13–57 ≈ `ret_36_13` / `ret_60_13`.
+* **What was published.** Two of these values were printed and committed: the null IC autocorrelations at
+  lags 3 and 6 (0.025 / 0.022, §5.2) and the model autocovariances in §5.1. After dividing out the latent
+  kernel and the common-name share, they imply a selection-sample 3-month rank IC of about **+0.035 (lag 3)
+  and +0.043 (lag 6)**.
+* **What it did not compute.** No IC, spread or other statistic of any catalog feature was computed. The
+  study's null features are independent of returns.
+
+The `w1_price` ids, definitions and signs were fixed before this read, in the S1 plan and `task-1.12-brief.md`.
+`register_wave` now refuses rows that differ from the pre-registration table (ids and signs; §2), so no
+momentum, reversal or seasonality row can be added, dropped or re-signed after the fact. A future calibration
+that must stay blind should use a train-only window or a label-free proxy.
 
 v3 (`research_qualification_policy.json`, `r4-qualification-v3`) stays the legacy R3b/R4 DuckDB-oracle policy
 (ruling R-5); v4 grades pre-registered waves. `qualify` / `qualify_run` refuse a v4 policy and
@@ -37,11 +62,38 @@ v3 (`research_qualification_policy.json`, `r4-qualification-v3`) stays the legac
   family** is every cell (the R3b family columns `bh_q`, `holm_p`, `dsr`), reported, never gating.
 * **Trial registry**, cumulative across waves: `trials_so_far()` (every registered configuration =
   feature x variant x horizon) is the deflated-Sharpe `n_trials`; `gating_hypotheses_before(wave)` pads the
-  gating BH family.
+  gating BH family. The grade refuses evaluated cells that were not registered, so `n_trials` cannot be
+  understated.
+* **Registration binds the rows (fix round 1).** `register_wave(..., rows=<catalog entries>,
+  preregistration=<table>)` refuses rows that differ from the pre-registration table on ids or signs. It
+  stores each row's sign, evidence class, population and a definition digest (`trial_registry.ROW_DIGEST_FIELDS`:
+  every field that computes or grades the row; prose excluded). The grade recomputes those digests from
+  the catalog it is given, and a changed row is refused. The comparison covers only the wave's own rows, so
+  later waves adding catalog rows never break an earlier wave's final grade.
+* **The registry is tamper-evident (fix round 1).**
+  * *In the file:* a hash chain catches an edited or reordered line, and a torn line is refused.
+  * *Outside the file:* a dropped tail is caught by the head anchor. After every write the registry appends
+    `(sequence, record_sha, event, wave)` to `src/atx_db/seeds/research_trial_registry_anchor.jsonl`, and the
+    wave runner **commits** that file.
+  * *At grading:* the grade reads the anchor from git `HEAD` and refuses an empty, unanchored, truncated or
+    altered registry.
+* **Order and seal (fix round 1).**
+  * `evaluation_spec_kwargs_v4(policy, registration=...)` binds the run to the registration: the record
+    sha, plus `created_at`, which must not precede `registered_at`.
+  * By default it seals the holdout: the engine drops every label whose window ends on or after 2024-01-01,
+    or whose end is unknown, before computing anything.
+  * The grade refuses holdout-period statistics (an unsealed run, or frames that carry them) unless the
+    registry recorded the wave's one opening for exactly the run's label set (`evaluation.label_set_sha256`).
+    So `final_labels=True` is checked, not trusted.
+* **EWC oversize flag (ruling C-50, reported only).** Every graded row carries `persistence_1m` (the feature's
+  1-month rank autocorrelation) and `ewc_oversize_risk`. The flag is true at or above 0.945, the rank
+  autocorrelation of a latent persistence of 0.95, where the complete-null FDR of the replication gate
+  exceeds q (§5.3). It changes no threshold.
 * **Investable co-primary cell**: price >= $5 and market cap >= the NYSE 20th percentile (supplied NYSE
   breakpoints, e.g. Fama-French `ME_Breakpoints`, else point-in-time NYSE names).
-* **Holdout**: opened once per wave (`open_holdout(wave, final_labels=True)`), only on final labels; the rule
-  is *sign consistent and no significant shrink* instead of v3's `holdout z >= 1.5`.
+* **Holdout**: opened once per wave (`open_holdout(wave, final_labels=True, label_sha=<final label set>)`),
+  only on final labels; the rule is *sign consistent and no significant shrink* instead of v3's
+  `holdout z >= 1.5`.
 * **Coverage** against the catalog population (`population`), on the feature's history-eligible selection
   formations.
 * **Long-horizon evidence**: Jegadeesh-Titman calendar-time portfolios for K = 6 and 12 months (reported).
@@ -88,17 +140,26 @@ policy = rq.load_policy_v4()
 catalog = [e for e in load_anomaly_catalog() if e.wave == "w1_price"]
 digest = anomaly_catalog_sha256()
 cells = [(e.feature_id, v, h) for e in catalog for v in ev.expected_variants(e.anomaly_class) for h in (1, 3, 6, 12)]
+prereg = {...}   # the pre-registration table (1.12 brief): feature_id -> expected sign
 tr.register_wave("w1_price", digest, policy.sha256, [e.feature_id for e in catalog], cells,
-                 first_formations={...})                # BEFORE any label join (R-6)
-spec = ev.EvaluationSpec(run_id="w1_price_provisional", verify_panels=False, **rq.evaluation_spec_kwargs_v4(policy))
-tables = ev.evaluate_bases(bases, spec, catalog=ev.catalog_features(catalog))   # formations <= 2023-12 only
+                 rows=catalog, preregistration=prereg, first_formations={...})   # BEFORE any label join (R-6)
+# commit src/atx_db/seeds/research_trial_registry_anchor.jsonl now: grading reads the anchor from git HEAD
+registration = tr.TrialRegistry().require_registration("w1_price", catalog_digest=digest, policy_sha=policy.sha256)
+spec = ev.EvaluationSpec(run_id="w1_price_provisional", verify_panels=False,
+                         **rq.evaluation_spec_kwargs_v4(policy, registration=registration))   # sealed holdout
+tables = ev.evaluate_bases(bases, spec, catalog=ev.catalog_features(catalog))
 ledger = rq.grade_wave_v4(tables.cells, tables.slices, tables.series, policy, wave="w1_price", spec=spec,
-                          catalog=catalog, catalog_digest=digest, grade_basis=rq.GRADE_PROVISIONAL)
+                          catalog=catalog, catalog_digest=digest, grade_basis=rq.GRADE_PROVISIONAL,
+                          run_bases=tables.bases)
+# final labels (later): label_sha = ev.prepared_label_set_sha256(final_bases, unsealed_spec)
+#   tr.open_holdout("w1_price", final_labels=True, label_sha=label_sha); commit the anchor;
+#   evaluation_spec_kwargs_v4(policy, registration=registration, label_sha=label_sha); grade with GRADE_FINAL
 ```
 
 The engine options the spec turns on (all off by default; a pre-v4 spec gives byte-identical results):
 the context needs `price`; the calendar may carry `nyse_me_p20` / `nyse_me_p50` (same units as
-`market_cap`); a conditional population needs `population_<name>` flags in the context.
+`market_cap`); a conditional population needs `population_<name>` flags in the context. A sealed run needs the
+label maturity rows (`expected_end`): a label without a known end is dropped.
 
 ## 5. Power study
 
@@ -153,10 +214,15 @@ one query per calendar year at 256MB and 1 thread.
 | IC autocovariance at lag 6 | 9.3e-7 | 5.8e-6 |
 | cov(IC, LS) | 1.804e-4 | 1.820e-4 |
 
-The model's variance is about 3% above the direct simulation's, and its autocovariance is slightly higher at
-every lag, including a small positive value at lags 3 and 6 where the direct simulation has none. The EWC
-statistic does not depend on scale, and its oversize grows with serial correlation. So if the model errs, it
-errs toward overstating the null false-qualification rates below.
+The model is essentially exact.
+
+* **The gap is estimator bias.** The direct estimator centres each simulated series on its own mean, which
+  biases every lag's autocovariance by about −LRV/T ≈ −6e-6. That bias accounts for the variance, lag 1,
+  lag 2, lag 3 and lag 6 gaps (reviewer's check).
+* **Lags 3 and 6 are real, not model error.** At lag ≥ 3 the two 3-month windows no longer overlap, so the
+  model's positive values there are real selection-sample statistics. They are the rank correlations of
+  lagged 3-month returns, i.e. the rank ICs of past-return windows disclosed in §1. The direct simulation
+  estimates the same quantities with that bias and with noise.
 
 The vectorized EWC matches `stats.mean_inference`: max |dt| 2.2e-15, max |dp| 7.2e-8.
 
@@ -172,7 +238,7 @@ The vectorized EWC matches `stats.mean_inference`: max |dt| 2.2e-15, max |dp| 7.
 | names per formation: all / investable / small / large | mean 3,439 / 2,302 / 1,073 / 1,278 (min 3,060 / 2,123 / 927 / 1,181) |
 | lines in the selection panel | 7,148; 0 formations without NYSE breakpoints |
 | annual Sharpe for t > 3 on monthly returns | 0.885 over 11.50 years (0.911 over 10.83 years) |
-| null 3-month rank IC (rho 0.9) | sd 0.01706 per formation; autocorrelation 0.549 / 0.249 / 0.025 / 0.022 at lags 1 / 2 / 3 / 6 |
+| null 3-month rank IC (rho 0.9) | sd 0.01706 per formation; autocorrelation 0.549 / 0.249 / 0.025 / 0.022 at lags 1 / 2 / 3 / 6 (lags 3 and 6 carry the selection-sample lagged-return rank ICs of §1: ≈ +0.035 / +0.043 after dividing out the kernel and the name overlap) |
 | EWC degrees of freedom (h = 3) | 10 at T = 130; 3 at T = 30 |
 
 The price-only sample reaches 138 selection formations. The 130 used below is the policy's
@@ -181,30 +247,61 @@ that starts later) sees fewer formations; section 5.5 shows what that costs.
 
 ### 5.3 Null false-qualification (acceptance)
 
-400 runs x 200 null features at T = 130 selection / 30 holdout, `n_trials` 4,800. Per-feature rates with
-Wilson 95% intervals; FWER = the share of runs in which at least one of the 200 nulls passes.
+Setup: 400 runs x 200 null features, T = 130 selection / 30 holdout, `n_trials` 4,800.
 
-| scenario | one-sided p <= .05 | HLZ \|z\| >= 3 | replication selection | replication final | discovery selection | discovery final | FWER rep. selection | FWER disc. |
+* **Per-feature rates** carry Wilson 95% intervals.
+* **FWER = FDR.** The last two columns give the share of runs in which at least one of the 200 nulls
+  passes. Every feature is null, so every pass is false and the false-discovery proportion is 1{any pass}.
+  **Under the complete null, FDR ≡ FWER**, and this column is the gating family's FDR. Its target is the
+  replication gate's BH q = 0.10.
+
+Two runs produced these rows:
+
+* the run of record (rows rho 0, 0.9, 0.98 and the regime stress);
+* fix round 1 (2026-09-26 18:12Z, `--null-only --null-rhos 0.9,0.95,0.97,0.98,0.99`, same seeds), which added
+  rows 0.95, 0.97 and 0.99. Its 0.9, 0.98 and stress rows reproduced the run of record exactly.
+
+| scenario | one-sided p <= .05 | HLZ \|z\| >= 3 | replication selection | replication final | discovery selection | discovery final | FDR = FWER rep. selection | FDR = FWER disc. |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | rho 0 | 0.0512 | 0.0025 | 0.00047 [.00035, .00065] | 0.00014 | 0 [0, .00005] | 0 | 0.088 | 0 |
-| rho 0.9 | 0.0561 | 0.0032 | 0.00055 [.00041, .00074] | 0.00029 | 0 [0, .00005] | 0 | 0.095 | 0 |
-| rho 0.98 | 0.0724 [.0706, .0742] | 0.0058 | 0.00106 [.00086, .00131] | 0.00055 | 0 [0, .00005] | 0 | 0.160 | 0 |
-| rho 0.9 + AR(0.5) regime stress | 0.0558 | 0.0035 | 0.00084 [.00066, .00106] | 0.00032 | 0 [0, .00005] | 0 | 0.148 | 0 |
+| rho 0.9 | 0.0561 | 0.0032 | 0.00055 [.00041, .00074] | 0.00029 | 0 [0, .00005] | 0 | 0.095 [0.070, 0.128] | 0 |
+| rho 0.95 | 0.0630 | 0.0046 | 0.00096 [.00077, .00120] | 0.00050 | 0 [0, .00005] | 0 | **0.155 [0.123, 0.194]** | 0 |
+| rho 0.97 | 0.0678 | 0.0049 | 0.00095 [.00076, .00119] | 0.00045 | 0 [0, .00005] | 0 | **0.153 [0.121, 0.191]** | 0 |
+| rho 0.98 | 0.0724 [.0706, .0742] | 0.0058 | 0.00106 [.00086, .00131] | 0.00055 | 0 [0, .00005] | 0 | **0.160 [0.127, 0.199]** | 0 |
+| rho 0.99 | 0.0803 [.0784, .0822] | 0.0076 | 0.00187 [.00160, .00220] | 0.00081 | 0 [0, .00005] | 0 | **0.228 [0.189, 0.271]** | 0 |
+| rho 0.9 + AR(0.5) regime stress | 0.0558 | 0.0035 | 0.00084 [.00066, .00106] | 0.00032 | 0 [0, .00005] | 0 | **0.148 [0.116, 0.186]** | 0 |
 
-Nominal per-feature rates are 0.05 for replication (one-sided alpha) and 0.0027 for discovery (HLZ, two-sided).
+Nominal rates:
 
-**Acceptance: both evidence classes are far below nominal in every scenario.** Replication selection is at
-most 0.0011 against 0.05. Discovery is 0 in 320,000 feature draws per scenario, against 0.0027.
+* per feature: 0.05 for replication (one-sided alpha) and 0.0027 for discovery (HLZ, two-sided);
+* family: FDR q = 0.10 (replication) and 0.05 (discovery).
 
-Two cautions:
+**Acceptance, read honestly (ruling C-50).**
 
-* **The EWC test is oversized at high persistence.** The bare one-sided test rejects 7.2% at nominal 5% when
-  rho = 0.98, and HLZ rejects 0.58% against 0.27%. v4's gates are stacked (BH, investable, size buckets), so
-  the gated rate stays small.
-* **Family-wise error of the replication gate.** Under the complete null of 200 features, the chance that
-  some feature passes is 0.09-0.10 at rho <= 0.9, and rises to 0.16 at rho 0.98 or under regime stress. This
-  is above the BH q of 0.10. BH controls the false-discovery rate, not the family-wise rate; this is how the
-  gate is designed, and it is worth knowing.
+* **Discovery is within nominal on every reading.** It is 0 in 320,000 feature draws per scenario, and its
+  family FDR is 0.
+* **Replication's per-feature rate is far below 0.05 everywhere**, at most 0.0019.
+* **But its family FDR, the relevant nominal for a BH-gated family, is controlled only up to persistence
+  0.9:** 0.088 at rho 0 and 0.095 at rho 0.9.
+* **At persistence ≥ 0.95 it exceeds q = 0.10:** 0.153–0.160 at 0.95–0.98 and 0.228 at 0.99, with every
+  lower Wilson bound above 0.10. The regime stress also exceeds it (0.148). Levels between 0.9 and 0.95 were
+  not simulated.
+
+The cause is the EWC fixed-b p-value, which is anti-conservative at high persistence. The bare one-sided test
+rejects 6.3% / 6.8% / 7.2% / 8.0% at nominal 5% for rho 0.95 / 0.97 / 0.98 / 0.99, and HLZ rejects up to 0.76%
+against 0.27%. The stacked gates only remove BH rejections, so BH alone does at least as badly.
+
+This is a known property of frozen v4; its thresholds stay as they are (C-49). Instead, every graded row
+reports `persistence_1m` and `ewc_oversize_risk`, which is true at a 1-month rank autocorrelation of 0.945 or
+more (the level of latent rho 0.95). A reader of a wave's grades sees which passes come from features in the
+over-rejecting regime.
+
+For `w1_price`, the reviewer expects the flag on the long-window and level features listed below. That is an
+expectation, not a measurement: the flag is measured per feature at grading.
+
+* `me_line_log`, `prc_log`;
+* `beta_bab_1260d`, `ret_36_13`, `ret_60_13`;
+* `rvol_252d`, `turnover_252d`, `ami_252d`, `zero_trade_252d`, `dolvol_126d`, `prc_highprc_252d`.
 
 ### 5.4 Power (rho 0.9, T 130, holdout 30, 20 of 200 true, 400 runs)
 
@@ -322,15 +419,23 @@ This is an estimate, not a measurement.
   signal. These are the brief's frozen thresholds. A discovery row has no prior, and the registry makes
   every tested configuration count. Because `trials_so_far()` grows with every wave, each later wave's DSR
   bar rises further.
-* **The null false-qualification rate is tiny** because the gates stack. The price paid for that is the
-  power shortfall above, not false positives.
+* **The per-feature false-qualification rate is tiny, but the family FDR is not controlled for persistent
+  features.** Stacked gates keep the per-feature rate at or below 0.0019. For features with 1-month rank
+  autocorrelation ≥ 0.945 (latent persistence ≥ 0.95), however, the replication family's complete-null FDR
+  is 0.15–0.23 against q = 0.10. A persistent feature's `selection_pass` carries `ewc_oversize_risk = true`
+  and deserves the skepticism that implies.
 
 ### 5.7 Limitations
 
 * **The null features are independent of returns and of each other.** Real features share factor exposures,
   so their ICs move together. Each feature's EWC test is still valid, but false passes then cluster: one
   factor shock can carry several correlated rows through BH together. A persistent factor-return regime
-  behaves like the regime-stress scenario (FWER 0.148).
+  behaves like the regime-stress scenario (FDR = FWER 0.148 under the complete null).
+* **The calibration saw selection-sample returns.** The null covariance is built from the real 2012–2023
+  3-month forward returns. Its lagged blocks are the rank ICs of past-return windows (§1: ≈ +0.035 at lag 3
+  and +0.043 at lag 6, both published here). No catalog feature's statistic was computed, and the `w1_price`
+  rows were fixed before the read. Even so, a strictly blind calibration would have used a train-only window
+  or a label-free proxy.
 * **Proxies.** The universe (earnings-active lines) and ME (vendor current shares) stand in for the
   point-in-time universe and market cap. Only slice membership depends on them.
 * **Stand-in holdout.** The holdout is drawn from the last 30 selection formations, so it assumes no regime

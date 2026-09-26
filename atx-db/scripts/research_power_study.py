@@ -23,6 +23,10 @@ Real data (read-only, no warehouse)
     close and share count and a valid 3-month return; ME = close x vendor shares (thousands) / 1000 in $M
     (vendor shares are current, A8/A9 caveats: only the slice membership of this study uses them).
     Duplicate vendor keys (date, securityID) are dropped, never picked.
+    Disclosure (review I1): the null covariance's lag-k blocks sum_i u_i,t u_i,t+k are the cross-sectional
+    rank correlations of lagged 3-month returns -- the selection-sample rank ICs of past-return windows
+    (momentum / reversal / seasonality). They enter the model and the printed lag autocorrelations; no
+    catalog feature's statistic is computed.
 
 Null and planted features (the Gaussian-copula model)
     A null feature is a latent AR(1) Gaussian per line (monthly persistence rho; its rank score has
@@ -55,6 +59,7 @@ Grading (the production code)
 
 Run (OPENBLAS_NUM_THREADS=1; DuckDB 256MB / 1 thread, one extraction query per calendar year; peak ~0.35 GiB):
     python scripts/research_power_study.py [--runs 400] [--features 200] [--planted 20] [--seed 20260926]
+    python scripts/research_power_study.py --null-only --null-rhos 0.9,0.95,0.97,0.98,0.99   (fix round 1 rows)
 """
 
 from __future__ import annotations
@@ -584,6 +589,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--direct-features", type=int, default=200)
     parser.add_argument("--seed", type=int, default=20260926)
     parser.add_argument("--quick", action="store_true", help="skip the sensitivity scenarios")
+    parser.add_argument("--null-only", action="store_true",
+                        help="sample facts, model checks and the null false-qualification rows only")
     parser.add_argument("--json", type=Path, default=None, help="write every scenario result here")
     return parser.parse_args(argv)
 
@@ -669,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n## Null false-qualification ({args.runs} runs x {args.features} null features, "
           f"T = {args.t_selection} / holdout {args.t_holdout}, n_trials {args.n_trials})\n")
     print("| scenario | one-sided p<=.05 | HLZ \\|z\\|>=3 | replication selection | replication final | "
-          "discovery selection | discovery final | FWER rep sel | FWER disc sel |")
+          "discovery selection | discovery final | FWER = FDR rep sel | FWER = FDR disc sel |")
     print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     null_specs = [(f"rho {rho}", rho, 0.0) for rho in rhos] + [(f"rho {args.rho} + regime AR(0.5) stress", args.rho, 1.0)]
     for label, rho, stress in null_specs:
@@ -687,10 +694,20 @@ def main(argv: list[str] | None = None) -> int:
             k, n = null_counts.get(name, 0), null_counts["features"]
             low, high = wilson(k, n)
             cells.append(f"{k / n:.5f} [{low:.5f}, {high:.5f}]")
-        print(f"| {label} | " + " | ".join(cells) + " | "
-              f"{result['fwer'].get('replication_selection', 0) / args.runs:.4f} | "
-              f"{result['fwer'].get('discovery_selection', 0) / args.runs:.4f} |")
-    print("\nNominal per-feature rates: replication 0.05 (one-sided alpha), discovery 0.0027 (HLZ two-sided).")
+        fwer = []
+        for name in ("replication_selection", "discovery_selection"):
+            k = result["fwer"].get(name, 0)
+            low, high = wilson(k, args.runs)
+            fwer.append(f"{k / args.runs:.4f} [{low:.4f}, {high:.4f}]")
+        print(f"| {label} | " + " | ".join(cells) + " | " + " | ".join(fwer) + " |")
+    print("\nNominal per-feature rates: replication 0.05 (one-sided alpha), discovery 0.0027 (HLZ two-sided). "
+          "Under the complete null every pass is false, so FWER = FDR: the replication gate's BH target is "
+          "q = 0.10.")
+    if args.null_only:
+        print(f"\nelapsed {time.time() - started:.0f} s; {peak_memory_mib()}")
+        if args.json is not None:
+            args.json.write_text(json.dumps(results, indent=1, default=str), encoding="utf-8")
+        return 0
 
     # 2. Power curves.
     def power_table(title: str, rho: float, t_sel: int, planted: int, runs: int, classes: Sequence[str], *,

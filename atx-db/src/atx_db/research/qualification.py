@@ -141,6 +141,19 @@ grades :class:`FeatureEvidence` rows (the power study calls it directly) and
 :func:`grade_wave_v4` ties both to the registry (``n_trials``, earlier waves, the holdout
 state) and returns a sealed :class:`V4Ledger`. A provisional-label grade never reads the
 holdout: it stops at ``selection_pass``.
+
+Order and seal are code, not convention (fix round 1): :func:`grade_wave_v4` refuses a registry
+that fails its chain or its committed anchor, catalog rows whose sign, class or definition
+digest differ from the registered rows, evaluated cells that were not registered, a run whose
+spec is not bound to the registration (``wave_registration_id``) or was built before it
+(``created_at``), and holdout-period statistics -- an unsealed run, or frames that carry them
+(:func:`holdout_statistics`) -- unless the wave's holdout was opened for exactly the run's label
+set (``evaluation.label_set_sha256``). :func:`evaluation_spec_kwargs_v4` builds a sealed run by
+default (the engine drops every label ending in the holdout). Every row reports
+``ewc_oversize_risk``: the feature's rank autocorrelation is at or above the persistence where the
+null EWC test over-rejects (ruling C-50; reported, never gating). The manifest records the
+digest of every graded-path module (:func:`v4_code_sha256s`) and the audit trail (anchor, order,
+label set, opening).
 """
 
 from __future__ import annotations
@@ -227,6 +240,18 @@ def qualification_code_sha256() -> str:
     """EOL-normalized digest of this module (recorded in every ledger manifest, M5)."""
     data = Path(__file__).read_bytes().replace(b"\r\n", b"\n")
     return hashlib.sha256(data).hexdigest()
+
+
+#: Every module on the policy v4 grading path (grading, registry, inference, engine, catalog rows).
+V4_GRADED_PATH_FILES = ("qualification.py", "trial_registry.py", "stats.py", "evaluation.py", "catalog.py")
+
+
+def v4_code_sha256s() -> dict[str, str]:
+    """EOL-normalized digest of every v4 graded-path module and their combined digest (V4 ledger manifest)."""
+    here = Path(__file__).resolve().parent
+    files = {name: hashlib.sha256((here / name).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+             for name in V4_GRADED_PATH_FILES}
+    return {**files, "combined": _sha(_canonical(files))}
 
 
 class QualificationError(ValueError):
@@ -1764,6 +1789,15 @@ _V4_SECTIONS: Mapping[str, frozenset[str]] = {
 #: The only implemented semantics of v4's named rules (a policy cannot name a rule the code lacks).
 _V4_FIXED = {"gating_family": "primary_cells_over_eligible_hypotheses", "reported_family": "all_cells",
              "inference": "ewc_fixed_b", "trial_registry": "cumulative_across_waves"}
+#: Latent monthly persistence at and above which the EWC null over-rejects (fix round 1, ruling C-50).
+#: Complete-null power study (400 runs x 200 features, T 130, the frozen v4 gates): the gating
+#: family's FDR (= FWER under the complete null) is 0.088 / 0.095 at persistence 0 / 0.9 and
+#: 0.155 / 0.153 / 0.160 / 0.228 at 0.95 / 0.97 / 0.98 / 0.99 against q = 0.10 (levels between 0.9
+#: and 0.95 were not simulated). A reported flag (``ewc_oversize_risk``); it changes no threshold.
+EWC_OVERSIZE_LATENT_RHO = 0.95
+#: The same level as the feature's 1-month Spearman rank autocorrelation (R3b ``rank_autocorr_1m``):
+#: (6 / pi) asin(rho / 2) = 0.945.
+EWC_OVERSIZE_RANK_AUTOCORR = 6.0 / math.pi * math.asin(EWC_OVERSIZE_LATENT_RHO / 2.0)
 
 
 @dataclass(frozen=True)
@@ -1936,13 +1970,25 @@ def load_policy_v4_by_id(policy_id: str) -> QualificationPolicyV4:
     return load_policy_v4(POLICY_V4_PATHS[policy_id])
 
 
-def evaluation_spec_kwargs_v4(policy: QualificationPolicyV4) -> dict[str, Any]:
+def evaluation_spec_kwargs_v4(policy: QualificationPolicyV4, *, registration: Any,
+                              label_sha: str | None = None) -> dict[str, Any]:
     """The R3b ``EvaluationSpec`` keyword arguments a v4 wave run must use: the frozen split, the
-    pinned inputs, the investable slice, the JT holdings, population coverage and the policy file
-    hash (``EvaluationSpec(run_id=..., **evaluation_spec_kwargs_v4(policy))``). ``verify_panels`` is
-    the caller's (a Parquet-store run has no R2a panel to verify)."""
+    pinned inputs, the investable slice, the JT holdings, population coverage, the policy file
+    hash and the order/seal binding (``EvaluationSpec(run_id=..., **evaluation_spec_kwargs_v4(policy,
+    registration=...))``). ``verify_panels`` is the caller's (a Parquet-store run has no R2a panel).
+
+    ``registration`` is the wave's ``trial_registry.WaveRegistration``: its record sha binds the
+    run to it and ``created_at`` (now) must not precede it (R-6 order, checked by
+    :func:`grade_wave_v4`). ``label_sha`` None (default) builds a sealed selection-sample run: the
+    engine drops every label that ends in the holdout. For the final run pass the opened label
+    set (``evaluation.prepared_label_set_sha256`` of the final labels, recorded by
+    ``trial_registry.open_holdout``); the engine refuses any other label set.
+    """
     if policy.file_sha256 is None:
         raise PolicyError(f"policy {policy.version} was not loaded from a file")
+    if getattr(registration, "policy_sha", None) != policy.sha256:
+        raise PolicyError(f"the registration was made under policy {getattr(registration, 'policy_sha', None)}, "
+                          f"not {policy.version} ({policy.sha256})")
     inputs = policy.evaluation_inputs
     return {"split": policy.split, "horizons_months": tuple(inputs["horizons_months"]),
             "subperiods": V4_REPORTED_SUBPERIODS, "min_names": inputs["min_names"],
@@ -1950,7 +1996,9 @@ def evaluation_spec_kwargs_v4(policy: QualificationPolicyV4) -> dict[str, Any]:
             "min_formations": inputs["min_formations"], "investable_min_price": policy.min_price_usd,
             "investable_nyse_percentile": policy.min_me_percentile_nyse,
             "jt_holding_months": policy.jt_holding_months, "population_coverage": True,
-            "policy_sha256": policy.file_sha256}
+            "policy_sha256": policy.file_sha256, "seal_holdout": label_sha is None,
+            "wave_registration_id": str(registration.registration_id), "label_sha256": label_sha,
+            "created_at": dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat(timespec="seconds")}
 
 
 def v4_spec_problems(spec: Any, policy: QualificationPolicyV4) -> list[str]:
@@ -2051,6 +2099,8 @@ class FeatureEvidence:
     holdout_t: float | None = None
     holdout_df: float | None = None
     holdout_formations: int | None = None
+    #: The feature's 1-month rank autocorrelation (R3b ``rank_autocorr_1m``): the ``ewc_oversize_risk`` flag.
+    persistence: float | None = None
     annotations: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -2063,7 +2113,7 @@ V4_ROW_COLUMNS: tuple[str, ...] = (
     "small_ic_mean", "small_formations", "large_ic_mean", "large_formations", "size_venue_basis",
     "gate_coverage", "gate_sign", "gate_significance", "gate_investable", "gate_size_buckets", "gate_holdout",
     "holdout_graded", "holdout_ic_mean", "holdout_formations", "holdout_sign_consistent", "holdout_shrink_t",
-    "holdout_shrink_df", "holdout_shrink_p",
+    "holdout_shrink_df", "holdout_shrink_p", "persistence_1m", "ewc_oversize_risk",
 )
 V4_FEATURE_COLUMNS: tuple[str, ...] = (
     "feature_id", "status", "status_basis", "status_reasons", *[c for c in V4_ROW_COLUMNS
@@ -2114,6 +2164,11 @@ def _grade_v4_row(item: FeatureEvidence, policy: QualificationPolicyV4, q: float
                 "small_ic_mean": _f(item.small_mean), "small_formations": item.small_formations,
                 "large_ic_mean": _f(item.large_mean), "large_formations": item.large_formations,
                 "size_venue_basis": item.size_venue_basis, "holdout_graded": grade_holdout})
+    # Reported only (ruling C-50): at this persistence the EWC null over-rejects and the gating
+    # family's FDR exceeds its q; the flag changes no gate.
+    persistence = _f(item.persistence)
+    row.update({"persistence_1m": persistence,
+                "ewc_oversize_risk": None if persistence is None else persistence >= EWC_OVERSIZE_RANK_AUTOCORR})
     evidence = "strict" if item.basis == policy.strict_basis and item.strict_labels else "reconstructed"
     row["evidence_basis"] = evidence
     # Deflated Sharpe of the direction-oriented EW decile long-short (discovery gate; reported for all).
@@ -2312,6 +2367,12 @@ def evidence_from_evaluation(cells: pd.DataFrame, slices: pd.DataFrame, series: 
     evaluated = set(cells["feature_id"].astype(str)) if len(cells) else set()
     if evaluated - set(registered):
         reasons.append(f"features_not_registered:{len(evaluated - set(registered))}")
+    registered_cells = {(str(f), str(v), int(h)) for f, v, h in getattr(registration, "cells", ())}
+    if len(cells):
+        evaluated_cells = set(zip(cells["feature_id"].astype(str), cells["variant"].astype(str),
+                                  pd.to_numeric(cells["horizon_months"]).astype(int), strict=True))
+        if evaluated_cells - registered_cells:
+            reasons.append(f"cells_not_registered:{len(evaluated_cells - registered_cells)}")
     if set(registered) - set(by_id):
         reasons.append(f"registered_features_not_in_catalog:{len(set(registered) - set(by_id))}")
     h, variant = policy.primary_horizon, policy.primary_variant
@@ -2368,6 +2429,7 @@ def evidence_from_evaluation(cells: pd.DataFrame, slices: pd.DataFrame, series: 
                 sharpe_variance=_f(cell.get("dsr_sharpe_variance")),
                 holdout_mean=_f(hold.get("ic_mean")), holdout_t=_f(hold.get("ic_robust_t")),
                 holdout_df=_f(hold.get("ic_robust_df")), holdout_formations=_i(hold.get("formations")),
+                persistence=_f(cell.get("rank_autocorr_1m")),
                 annotations={"anomaly_class": _s(getattr(entry, "anomaly_class", None)),
                              "hypothesis_family": _s(getattr(entry, "hypothesis_family", None)),
                              "jkp_theme": _s(getattr(entry, "jkp_theme", None)),
@@ -2411,11 +2473,18 @@ class V4Ledger:
 
 def ledger_from_evidence_v4(evidence: Sequence[FeatureEvidence], policy: QualificationPolicyV4, *, wave: str,
                             registration_id: str, catalog_digest: str, n_trials: int, prior_gating_hypotheses: int,
-                            grade_basis: str, holdout_opened: bool, run: Mapping[str, Any] | None = None) -> V4Ledger:
-    """Grade the evidence (:func:`grade_v4`), resolve one status per feature and seal the ledger."""
+                            grade_basis: str, holdout_opened: bool, run: Mapping[str, Any] | None = None,
+                            grade_holdout: bool | None = None, audit: Mapping[str, Any] | None = None,
+                            extra_blockers: Sequence[str] = ()) -> V4Ledger:
+    """Grade the evidence (:func:`grade_v4`), resolve one status per feature and seal the ledger.
+
+    ``grade_holdout`` defaults to a final grade of an opened holdout (:func:`grade_wave_v4` decides
+    it from the registry and the run); ``audit`` (anchor, order, label set) goes into the manifest.
+    """
     if grade_basis not in GRADE_BASES:
         raise QualificationError(f"grade_basis must be one of {GRADE_BASES}")
-    grade_holdout = grade_basis == GRADE_FINAL and holdout_opened
+    if grade_holdout is None:
+        grade_holdout = grade_basis == GRADE_FINAL and holdout_opened
     graded = grade_v4(evidence, policy, n_trials=n_trials, prior_gating_hypotheses=prior_gating_hypotheses,
                       grade_holdout=grade_holdout)
     annotations = {item.feature_id: item.annotations for item in evidence}
@@ -2435,15 +2504,22 @@ def ledger_from_evidence_v4(evidence: Sequence[FeatureEvidence], policy: Qualifi
     counts = {status: 0 for status in V4_STATUSES}
     for row in features:
         counts[str(row["status"])] += 1
-    blockers = []
+    blockers = list(extra_blockers)
     if grade_basis == GRADE_PROVISIONAL:
         blockers.append("provisional_labels_selection_sample_only")
     elif not holdout_opened:
         blockers.append("final_labels_holdout_not_opened")
+    elif not grade_holdout:
+        blockers.append("final_labels_holdout_not_graded")
     if counts[V4_QUALIFIED_RECONSTRUCTED]:
         blockers.append(f"qualified_on_reconstructed_evidence_only:{counts[V4_QUALIFIED_RECONSTRUCTED]}")
+    code = v4_code_sha256s()
     manifest = {
-        "qualification_version": QUALIFICATION_VERSION, "qualification_code_sha256": qualification_code_sha256(),
+        "qualification_version": QUALIFICATION_VERSION, "qualification_code_sha256": code["combined"],
+        "code_sha256": code, "audit": json.loads(_canonical(dict(audit or {}))),
+        "ewc_oversize_risk": {"latent_rho": EWC_OVERSIZE_LATENT_RHO,
+                              "rank_autocorr_threshold": round(EWC_OVERSIZE_RANK_AUTOCORR, 6),
+                              "features_flagged": sum(1 for row in features if row.get("ewc_oversize_risk"))},
         "policy": {"version": policy.version, "sha256": policy.sha256, "split_sha256": policy.split.sha256,
                    "primary_variant": policy.primary_variant, "primary_horizon_months": policy.primary_horizon},
         "wave": wave, "registration_id": registration_id, "catalog_digest": catalog_digest,
@@ -2460,32 +2536,132 @@ def ledger_from_evidence_v4(evidence: Sequence[FeatureEvidence], policy: Qualifi
     return V4Ledger(ledger_id, manifest, tuple(features), tuple(bases), sha)
 
 
+#: R3b series columns that carry a forward return (any finite value is a return statistic).
+_SERIES_RETURN_COLUMNS = ("ic", "ls_ew10", "ls_vw10", "ls_ew5", "ls_vw5", "ls_nyse_ew10", "ls_nyse_vw10", "fm_slope",
+                          "fmc_slope", "net25_ew10", "ic_lag1")
+
+
+def holdout_statistics(series: pd.DataFrame, slices: pd.DataFrame, policy: QualificationPolicyV4) -> list[str]:
+    """Where a wave run's frames carry holdout-period statistics (empty: none).
+
+    A series row counts when its formation is on/after the split's first segment and outside the
+    selection sample (``in_selection`` false: a holdout formation, or a selection-window formation
+    whose label ends in the holdout) and any return column is finite; a ``split``/``holdout`` slice
+    counts when it has formations and a finite IC.
+    """
+    found: list[str] = []
+    if len(series):
+        first = pd.Timestamp(policy.split.segments[0][1])
+        outside = ~series["in_selection"].fillna(False).astype(bool).to_numpy() & \
+            (pd.to_datetime(series["formation_date"]) >= first).to_numpy()
+        columns = [name for name in _SERIES_RETURN_COLUMNS if name in series.columns]
+        if outside.any() and columns:
+            values = series.loc[outside, columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+            rows = int(np.isfinite(values).any(axis=1).sum())
+            if rows:
+                found.append(f"series_holdout_period_rows:{rows}")
+    if len(slices):
+        hold = slices[(slices["slice_kind"].astype(str) == "split") & (slices["slice_name"].astype(str) == "holdout")]
+        live = (pd.to_numeric(hold["formations"], errors="coerce").fillna(0) > 0) & \
+            np.isfinite(pd.to_numeric(hold["ic_mean"], errors="coerce").to_numpy(dtype=float))
+        if live.any():
+            found.append(f"holdout_slices:{int(live.sum())}")
+    return found
+
+
+def _order_problems(payload: Mapping[str, Any], registration: Any) -> list[str]:
+    """R-6 order in code: the run's spec names the registration and was built after it."""
+    problems = []
+    if payload.get("wave_registration_id") != registration.registration_id:
+        problems.append("evaluation_spec_not_bound_to_the_wave_registration")
+    try:
+        created = dt.datetime.fromisoformat(str(payload["created_at"])) if payload.get("created_at") else None
+    except ValueError:
+        created = None
+    if created is None:
+        problems.append("evaluation_spec_without_created_at")
+    elif created < dt.datetime.fromisoformat(str(registration.registered_at)):
+        problems.append("evaluation_created_before_the_wave_registration")
+    return problems
+
+
 def grade_wave_v4(cells: pd.DataFrame, slices: pd.DataFrame, series: pd.DataFrame, policy: QualificationPolicyV4,
                   *, wave: str, spec: Any, catalog: Iterable[Any], catalog_digest: str, grade_basis: str,
-                  registry: Any = None, run: Mapping[str, Any] | None = None) -> V4Ledger:
-    """Grade one registered wave's R3b result frames under policy v4 (the trial registry supplies the
-    registration, ``n_trials``, the earlier waves' gating hypotheses and the holdout state).
+                  run_bases: Mapping[str, Any], registry: Any = None,
+                  run: Mapping[str, Any] | None = None) -> V4Ledger:
+    """Grade one registered wave's R3b result frames under policy v4.
 
-    Refuses an unregistered wave, a catalog digest or policy other than the registration's, and
-    everything :func:`evidence_from_evaluation` refuses. A provisional-label grade never reads the
-    holdout.
+    ``run_bases`` is the run's ``EvaluationTables.bases`` (its prepared label digests identify the
+    label set). The trial registry (default: the production registry, whose anchor must be
+    committed) supplies the registration, ``n_trials``, the earlier waves' gating hypotheses and
+    the holdout opening. Refuses (:class:`QualificationRefused`):
+
+    * a registry that fails its chain or anchor (empty, unanchored, dropped tail, changed record);
+    * an unregistered wave, a catalog digest or policy other than the registration's, catalog rows
+      whose sign, class or definition differ from the registered rows;
+    * a run whose spec is not bound to the registration or was built before it (R-6 order);
+    * holdout-period statistics (an unsealed run, or frames carrying them) unless the wave's
+      holdout was opened for exactly this run's label set;
+    * everything :func:`evidence_from_evaluation` refuses (spec, unregistered features or cells).
+
+    A provisional-label grade never grades the holdout; a final grade grades it only on an unsealed
+    run of the opened label set.
     """
-    from .trial_registry import RegistryError, TrialRegistry
+    from .evaluation import label_set_sha256
+    from .trial_registry import RegistryError, TrialRegistry, registered_row_problems
 
+    if not isinstance(policy, QualificationPolicyV4):
+        raise PolicyError("grade_wave_v4 grades under a policy v4 only")
+    if grade_basis not in GRADE_BASES:
+        raise QualificationError(f"grade_basis must be one of {GRADE_BASES}")
     registry = registry if registry is not None else TrialRegistry()
-    try:
-        registration = registry.require_registration(wave, catalog_digest=catalog_digest, policy_sha=policy.sha256)
-    except RegistryError as error:
-        raise QualificationRefused([f"wave_registration:{error}"]) from error
-    opened = registry.holdout_opened(wave)
-    grade_holdout = grade_basis == GRADE_FINAL and opened
     catalog_rows = list(catalog)
-    evidence = evidence_from_evaluation(cells, slices, series, policy, spec=spec, catalog=catalog_rows,
+    try:
+        anchor = registry.verify_anchor()
+        registration = registry.require_registration(wave, catalog_digest=catalog_digest, policy_sha=policy.sha256)
+        opening = registry.holdout_opening(wave)
+        n_trials = registry.trials_so_far()
+        prior = registry.gating_hypotheses_before(wave)
+    except RegistryError as error:
+        raise QualificationRefused([f"trial_registry:{error}"]) from error
+    reasons = registered_row_problems(registration, catalog_rows)
+    payload = spec if isinstance(spec, Mapping) else _spec_payload(spec)
+    reasons += _order_problems(payload, registration)
+    try:
+        label_set: str | None = label_set_sha256(run_bases)
+    except ValueError:
+        label_set = None
+        reasons.append("run_bases_without_prepared_label_digests")
+    sealed = bool(payload.get("seal_holdout"))
+    present = holdout_statistics(series, slices, policy)
+    if sealed and present:
+        reasons.append("sealed_run_carries_holdout_statistics:" + ",".join(present))
+    elif not sealed or present:
+        if opening is None:
+            reasons.append("holdout_statistics_without_an_opened_holdout:"
+                           + (",".join(present) if present else "unsealed_run"))
+        elif not opening.get("label_sha") == label_set == payload.get("label_sha256"):
+            reasons.append("holdout_label_set_differs_from_the_opening")
+    if reasons:
+        raise QualificationRefused(sorted(set(reasons)))
+    grade_holdout = grade_basis == GRADE_FINAL and opening is not None and not sealed
+    evidence = evidence_from_evaluation(cells, slices, series, policy, spec=payload, catalog=catalog_rows,
                                         registration=registration, grade_holdout=grade_holdout)
+    blockers = [] if anchor.committed else ["registry_anchor_not_committed"]
+    if grade_basis == GRADE_FINAL and opening is not None and sealed:
+        blockers.append("final_grade_on_a_sealed_run")
+    audit = {"anchor": anchor.as_dict(), "registered_at": registration.registered_at,
+             "registry_version": registration.registry_version,
+             "preregistration_sha256": registration.preregistration_sha256,
+             "spec_created_at": payload.get("created_at"), "spec_registration_id": payload.get("wave_registration_id"),
+             "sealed_run": sealed, "label_set_sha256": label_set, "spec_label_sha256": payload.get("label_sha256"),
+             "holdout_opening": None if opening is None else {
+                 "record_sha": opening.get("record_sha"), "label_sha": opening.get("label_sha"),
+                 "opened_at": opening.get("opened_at")}}
     return ledger_from_evidence_v4(evidence, policy, wave=wave, registration_id=registration.registration_id,
-                                   catalog_digest=catalog_digest, n_trials=registry.trials_so_far(),
-                                   prior_gating_hypotheses=registry.gating_hypotheses_before(wave),
-                                   grade_basis=grade_basis, holdout_opened=opened, run=run)
+                                   catalog_digest=catalog_digest, n_trials=n_trials, prior_gating_hypotheses=prior,
+                                   grade_basis=grade_basis, holdout_opened=opening is not None, run=run,
+                                   grade_holdout=grade_holdout, audit=audit, extra_blockers=blockers)
 
 
 __all__ = [
@@ -2493,6 +2669,8 @@ __all__ = [
     "CANDIDATE",
     "DISCOVERY",
     "EVALUATION_SPEC_FIELDS",
+    "EWC_OVERSIZE_LATENT_RHO",
+    "EWC_OVERSIZE_RANK_AUTOCORR",
     "FEATURE_COLUMNS",
     "FROZEN_POLICY_SHA256",
     "GRADE_BASES",
@@ -2520,6 +2698,7 @@ __all__ = [
     "UNSTABLE",
     "UNTESTABLE_STRICT",
     "V4_FEATURE_COLUMNS",
+    "V4_GRADED_PATH_FILES",
     "V4_PASSING",
     "V4_POLICY_IDS",
     "V4_ROW_COLUMNS",
@@ -2541,6 +2720,7 @@ __all__ = [
     "grade_v4",
     "grade_wave_v4",
     "holdout_shrink_test",
+    "holdout_statistics",
     "ledger_from_evidence_v4",
     "load_evaluation_results",
     "load_policy",
@@ -2560,6 +2740,7 @@ __all__ = [
     "stored_catalog_snapshot",
     "stored_ledger_sha256",
     "superseded_policy_versions",
+    "v4_code_sha256s",
     "v4_spec_problems",
     "verify_ledger",
     "write_artifacts",
