@@ -1,0 +1,42 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "2d06b7044ba606bb62405be676e39018ef999332",
+  "started_utc": "2026-09-26T22:37:00.398568+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-B",
+    "build-equity/inventory-existing-event-coverage.py"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\inventory-existing-event-coverage.py",
+      "sha256": "65b191ca030bf7571228d18843e6e24bf060ff30a09150d275cac99ddfd66fa5"
+    }
+  ],
+  "limits": {
+    "seconds": 60.0,
+    "max_rss_mib": 512,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 196452352,
+  "minimum_system_free_bytes": 3271393280,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 1.875,
+  "owned_processes": [
+    {
+      "pid": 17268,
+      "create_time": 1790462220.4044197
+    },
+    {
+      "pid": 19088,
+      "create_time": 1790462220.419227
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "8d1b05f19ebb900455e74d4bfa046d0b4a6d63cd6023d4c03535666893013105",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

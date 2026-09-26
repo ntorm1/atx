@@ -1,0 +1,40 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "6b270e8b51f9e7fd4b0f33121d30de689ac013dc",
+  "started_utc": "2026-09-26T22:21:31.541420+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-B",
+    "atx-engine/tools/audit_recent_price_gap.py",
+    "--source",
+    "C:/Users/natha/Downloads/TickerHistory3.parquet",
+    "--source-sha256",
+    "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+    "--id",
+    "39621",
+    "--start",
+    "2020-01-02",
+    "--end",
+    "2020-01-11",
+    "--out",
+    "build-equity/recent-gap-39621-source-v1.json",
+    "--max-seconds",
+    "120"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-engine\\tools\\audit_recent_price_gap.py",
+      "sha256": "f154b48cc1e4f4c0d3202f8b37288000e9724c952643a39e42315d4d355e1ccf"
+    }
+  ],
+  "limits": {
+    "seconds": 120.0,
+    "max_rss_mib": 768,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 2504814592,
+  "outcome": "launch-failed",
+  "exit_code": null
+}

@@ -1,0 +1,306 @@
+[
+    {
+        "ID":  33764,
+        "Tickers":  "AVP",
+        "Previous":  "2020-01-03",
+        "FirstMissing":  "2020-01-06",
+        "NextPrint":  null,
+        "Rows":  2
+    },
+    {
+        "ID":  39621,
+        "Tickers":  "MDCO",
+        "Previous":  "2020-01-03",
+        "FirstMissing":  "2020-01-06",
+        "NextPrint":  null,
+        "Rows":  2
+    },
+    {
+        "ID":  2752722,
+        "Tickers":  "WAIR",
+        "Previous":  "2020-01-08",
+        "FirstMissing":  "2020-01-09",
+        "NextPrint":  null,
+        "Rows":  5
+    },
+    {
+        "ID":  4997008,
+        "Tickers":  "JAG",
+        "Previous":  "2020-01-09",
+        "FirstMissing":  "2020-01-10",
+        "NextPrint":  null,
+        "Rows":  6
+    },
+    {
+        "ID":  4677674,
+        "Tickers":  "BOLD",
+        "Previous":  "2020-01-14",
+        "FirstMissing":  "2020-01-15",
+        "NextPrint":  null,
+        "Rows":  9
+    },
+    {
+        "ID":  33551,
+        "Tickers":  "ARQL",
+        "Previous":  "2020-01-15",
+        "FirstMissing":  "2020-01-16",
+        "NextPrint":  null,
+        "Rows":  10
+    },
+    {
+        "ID":  5747162,
+        "Tickers":  "THOR",
+        "Previous":  "2020-01-22",
+        "FirstMissing":  "2020-01-23",
+        "NextPrint":  null,
+        "Rows":  14
+    },
+    {
+        "ID":  160964,
+        "Tickers":  "WCG",
+        "Previous":  "2020-01-23",
+        "FirstMissing":  "2020-01-24",
+        "NextPrint":  null,
+        "Rows":  15
+    },
+    {
+        "ID":  383531,
+        "Tickers":  "ACHN",
+        "Previous":  "2020-01-27",
+        "FirstMissing":  "2020-01-28",
+        "NextPrint":  null,
+        "Rows":  17
+    },
+    {
+        "ID":  5178122,
+        "Tickers":  "CISN",
+        "Previous":  "2020-01-30",
+        "FirstMissing":  "2020-01-31",
+        "NextPrint":  null,
+        "Rows":  20
+    },
+    {
+        "ID":  4166548,
+        "Tickers":  "CBPX",
+        "Previous":  "2020-01-31",
+        "FirstMissing":  "2020-02-03",
+        "NextPrint":  null,
+        "Rows":  21
+    },
+    {
+        "ID":  228112,
+        "Tickers":  "LPT",
+        "Previous":  "2020-02-03",
+        "FirstMissing":  "2020-02-04",
+        "NextPrint":  null,
+        "Rows":  22
+    },
+    {
+        "ID":  3951140,
+        "Tickers":  "WLH",
+        "Previous":  "2020-02-05",
+        "FirstMissing":  "2020-02-06",
+        "NextPrint":  null,
+        "Rows":  24
+    },
+    {
+        "ID":  428680,
+        "Tickers":  "IPHS",
+        "Previous":  "2020-02-06",
+        "FirstMissing":  "2020-02-07",
+        "NextPrint":  null,
+        "Rows":  25
+    },
+    {
+        "ID":  5804722,
+        "Tickers":  "CFXA",
+        "Previous":  "2020-02-07",
+        "FirstMissing":  "2020-02-10",
+        "NextPrint":  "2020-02-11",
+        "Rows":  61
+    },
+    {
+        "ID":  1272388,
+        "Tickers":  "WFC.PRL",
+        "Previous":  "2020-02-10",
+        "FirstMissing":  "2020-02-11",
+        "NextPrint":  "2020-02-12",
+        "Rows":  60
+    },
+    {
+        "ID":  4159499,
+        "Tickers":  "CRCM",
+        "Previous":  "2020-02-10",
+        "FirstMissing":  "2020-02-11",
+        "NextPrint":  null,
+        "Rows":  27
+    },
+    {
+        "ID":  4438373,
+        "Tickers":  "XBIT",
+        "Previous":  "2020-02-13",
+        "FirstMissing":  "2020-02-14",
+        "NextPrint":  "2020-02-20",
+        "Rows":  59
+    },
+    {
+        "ID":  4335207,
+        "Tickers":  "DERM",
+        "Previous":  "2020-02-19",
+        "FirstMissing":  "2020-02-20",
+        "NextPrint":  null,
+        "Rows":  33
+    },
+    {
+        "ID":  5122670,
+        "Tickers":  "GDI,IR",
+        "Previous":  "2020-02-20",
+        "FirstMissing":  "2020-02-21",
+        "NextPrint":  "2020-02-26",
+        "Rows":  59
+    },
+    {
+        "ID":  3984255,
+        "Tickers":  "SBGL",
+        "Previous":  "2020-02-21",
+        "FirstMissing":  "2020-02-24",
+        "NextPrint":  null,
+        "Rows":  35
+    },
+    {
+        "ID":  273222,
+        "Tickers":  "SSW",
+        "Previous":  "2020-02-27",
+        "FirstMissing":  "2020-02-28",
+        "NextPrint":  null,
+        "Rows":  39
+    },
+    {
+        "ID":  1836262,
+        "Tickers":  "PRMW",
+        "Previous":  "2020-02-28",
+        "FirstMissing":  "2020-03-02",
+        "NextPrint":  null,
+        "Rows":  40
+    },
+    {
+        "ID":  67851,
+        "Tickers":  "CBD",
+        "Previous":  "2020-03-04",
+        "FirstMissing":  "2020-03-05",
+        "NextPrint":  null,
+        "Rows":  43
+    },
+    {
+        "ID":  5884670,
+        "Tickers":  "CHNG",
+        "Previous":  "2020-03-04",
+        "FirstMissing":  "2020-03-05",
+        "NextPrint":  "2020-03-13",
+        "Rows":  56
+    },
+    {
+        "ID":  4354916,
+        "Tickers":  "ZAYO",
+        "Previous":  "2020-03-06",
+        "FirstMissing":  "2020-03-09",
+        "NextPrint":  null,
+        "Rows":  45
+    },
+    {
+        "ID":  2373253,
+        "Tickers":  "INXN",
+        "Previous":  "2020-03-12",
+        "FirstMissing":  "2020-03-13",
+        "NextPrint":  null,
+        "Rows":  49
+    },
+    {
+        "ID":  4095961,
+        "Tickers":  "PEGI",
+        "Previous":  "2020-03-13",
+        "FirstMissing":  "2020-03-16",
+        "NextPrint":  null,
+        "Rows":  50
+    },
+    {
+        "ID":  2003601,
+        "Tickers":  "GASL",
+        "Previous":  "2020-03-17",
+        "FirstMissing":  "2020-03-18",
+        "NextPrint":  "2020-03-24",
+        "Rows":  56
+    },
+    {
+        "ID":  4380194,
+        "Tickers":  "HABT",
+        "Previous":  "2020-03-18",
+        "FirstMissing":  "2020-03-19",
+        "NextPrint":  null,
+        "Rows":  53
+    },
+    {
+        "ID":  4623063,
+        "Tickers":  "INST",
+        "Previous":  "2020-03-23",
+        "FirstMissing":  "2020-03-24",
+        "NextPrint":  null,
+        "Rows":  56
+    },
+    {
+        "ID":  4625325,
+        "Tickers":  "MRRL",
+        "Previous":  "2020-03-24",
+        "FirstMissing":  "2020-03-25",
+        "NextPrint":  null,
+        "Rows":  57
+    },
+    {
+        "ID":  398524,
+        "Tickers":  "AYR",
+        "Previous":  "2020-03-26",
+        "FirstMissing":  "2020-03-27",
+        "NextPrint":  null,
+        "Rows":  59
+    },
+    {
+        "ID":  33767,
+        "Tickers":  "AVX",
+        "Previous":  "2020-03-27",
+        "FirstMissing":  "2020-03-30",
+        "NextPrint":  null,
+        "Rows":  60
+    },
+    {
+        "ID":  4614249,
+        "Tickers":  "WAAS",
+        "Previous":  "2020-03-27",
+        "FirstMissing":  "2020-03-30",
+        "NextPrint":  null,
+        "Rows":  60
+    },
+    {
+        "ID":  4657753,
+        "Tickers":  "GASX",
+        "Previous":  "2020-03-27",
+        "FirstMissing":  "2020-03-30",
+        "NextPrint":  null,
+        "Rows":  60
+    },
+    {
+        "ID":  5094125,
+        "Tickers":  "OILU",
+        "Previous":  "2020-03-27",
+        "FirstMissing":  "2020-03-30",
+        "NextPrint":  null,
+        "Rows":  60
+    },
+    {
+        "ID":  5094126,
+        "Tickers":  "OILD",
+        "Previous":  "2020-03-27",
+        "FirstMissing":  "2020-03-30",
+        "NextPrint":  null,
+        "Rows":  60
+    }
+]

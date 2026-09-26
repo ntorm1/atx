@@ -1,0 +1,974 @@
+{
+  "status": "complete",
+  "mode": "read-only-schema-only",
+  "source": "C:/atx/atx-db/data/warehouse.duckdb",
+  "columns": [
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "delist_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "code_system",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "vendor_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "crsp_dlstcd",
+      "type": "INTEGER"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "crsp_dlstcd_family",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "reason_category",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "description",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "terminal_trading_status",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "imputation_allowed",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "default_imputed_return",
+      "type": "DOUBLE"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "imputation_policy",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "source_loaded_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delist_code_dim",
+      "column": "updated_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "reconciliation_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "symbol",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "delist_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "as_of_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "available_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "warehouse_delist_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "warehouse_reason_category",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "vendor_crsp_dlstcd",
+      "type": "INTEGER"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "vendor_dlstcd_family",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "reconciliation_status",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "mismatch_reason",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "delisting_event_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "delisting_return_observation_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "is_latest_revision",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "run_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "source_loaded_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_code_reconciliation",
+      "column": "updated_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "delisting_event_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "listing_status_source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "source_listing_status_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "symbol",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "listing_venue_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "listing_venue_name",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "listing_exchange_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "delist_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "as_of_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "available_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "delist_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "delist_reason",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "delisting_return",
+      "type": "DOUBLE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "delisting_return_type",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "is_return_imputed",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "return_policy",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "return_confidence",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "return_observation_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "return_observation_source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "return_observation_provider",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "evidence_source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "evidence_source_table",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "source_event_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "source_url",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "method",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "evidence_confidence",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "inferred_from_absence",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "details_json",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "run_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "source_loaded_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "updated_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_events",
+      "column": "is_latest_revision",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "evidence_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "symbol",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "evidence_kind",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "evidence_rank",
+      "type": "INTEGER"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "delist_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "reason_category",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "reason_confidence",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "delist_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "evidence_source_table",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "source_event_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "as_of_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "is_latest_revision",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "available_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "details_json",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "run_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_evidence",
+      "column": "source_loaded_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "delisting_return_observation_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "provider",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "source_file",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "source_file_sha256",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "symbol",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "vendor_security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "vendor_security_id_type",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "delist_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "as_of_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "available_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "delist_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "vendor_delist_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "crsp_dlstcd",
+      "type": "INTEGER"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "delist_amount",
+      "type": "DOUBLE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "delist_price",
+      "type": "DOUBLE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "delisting_return",
+      "type": "DOUBLE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "delisting_return_ex_div",
+      "type": "DOUBLE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "delist_pay_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "next_pricing_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "successor_security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "successor_vendor_security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "return_basis",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "currency",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "raw_payload_json",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "run_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "source_loaded_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "updated_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_return_observations",
+      "column": "is_latest_revision",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "terminal_return_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "symbol",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "delist_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "as_of_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "available_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "terminal_return",
+      "type": "DOUBLE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "terminal_return_ex_div",
+      "type": "DOUBLE"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "terminal_return_source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "terminal_return_policy",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "crsp_dlstcd",
+      "type": "INTEGER"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "return_basis",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "successor_security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "return_observation_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "is_latest_revision",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "run_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "source_loaded_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "delisting_terminal_returns",
+      "column": "updated_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "membership_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "universe_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "security_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "symbol",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "valid_from",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "valid_to",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "available_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "security_type",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "exchange_code",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "has_cik",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "cik",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "market_cap_decile",
+      "type": "INTEGER"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "reason",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "rules_json",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "decision_count",
+      "type": "INTEGER"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "as_of_date",
+      "type": "DATE"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "is_latest_revision",
+      "type": "BOOLEAN"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "source",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "run_id",
+      "type": "VARCHAR"
+    },
+    {
+      "schema": "main",
+      "table": "universe_us_listed_membership",
+      "column": "source_loaded_at",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "v_delisting_return_coverage",
+      "column": "delist_cohort_month",
+      "type": "TIMESTAMP"
+    },
+    {
+      "schema": "main",
+      "table": "v_delisting_return_coverage",
+      "column": "delist_security_days",
+      "type": "BIGINT"
+    },
+    {
+      "schema": "main",
+      "table": "v_delisting_return_coverage",
+      "column": "observed_terminal_count",
+      "type": "BIGINT"
+    },
+    {
+      "schema": "main",
+      "table": "v_delisting_return_coverage",
+      "column": "policy_terminal_count",
+      "type": "BIGINT"
+    },
+    {
+      "schema": "main",
+      "table": "v_delisting_return_coverage",
+      "column": "missing_terminal_count",
+      "type": "BIGINT"
+    },
+    {
+      "schema": "main",
+      "table": "v_delisting_return_coverage",
+      "column": "stitched_count",
+      "type": "BIGINT"
+    },
+    {
+      "schema": "main",
+      "table": "v_delisting_return_coverage",
+      "column": "dropped_count",
+      "type": "BIGINT"
+    }
+  ]
+}
+

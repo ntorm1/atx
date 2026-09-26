@@ -1,0 +1,247 @@
+[
+  {
+    "Original": "recent-strategy-cash-claims-start.json",
+    "File": "recent-strategy-cash-claims-start.json",
+    "SHA256": "f6611317d137390025c489d9fbd6efd2e08a5a787e8aafb3b77624a1f7b30c7d"
+  },
+  {
+    "Original": "recent-strategy-cash-claims-build-receipt.json",
+    "File": "recent-strategy-cash-claims-build-receipt.json",
+    "SHA256": "6d57bec8b9f5c2e8dde05a2297c1352c7fba4c259a3d142e9f7df7a360a387e3"
+  },
+  {
+    "Original": "recent-strategy-cash-claims-build.log",
+    "File": "recent-strategy-cash-claims-build.log",
+    "SHA256": "14922145ef0160cb3a99d2089c800b580a1971d95e1957f2e7bd9d8de6b9894d"
+  },
+  {
+    "Original": "recent-strategy-cash-claims-cache-summary.txt",
+    "File": "recent-strategy-cash-claims-cache-summary.txt",
+    "SHA256": "8761b31ee292c01c2c03c412d90e35b0a725ec6276191064ca4f4b14d95b0f67"
+  },
+  {
+    "Original": "recent-strategy-cash-resume-start.json",
+    "File": "recent-strategy-cash-resume-start.json",
+    "SHA256": "c3ea14082b04311ae15237623649d0313a8e58409ea36d896882b8fb2dd70325"
+  },
+  {
+    "Original": "recent-strategy-cash-resume-build-receipt.json",
+    "File": "recent-strategy-cash-resume-build-receipt.json",
+    "SHA256": "e68168eec3dc2f84ef93104729893c9b62f4744e03282c78ff1b8d82d4534a08"
+  },
+  {
+    "Original": "recent-strategy-cash-resume-build.log",
+    "File": "recent-strategy-cash-resume-build.log",
+    "SHA256": "029a0a83bef1f869d41e2b000291c5d6751b1bf04c34738bdd9f92b124709eae"
+  },
+  {
+    "Original": "recent-strategy-cash-resume-cache-summary.txt",
+    "File": "recent-strategy-cash-resume-cache-summary.txt",
+    "SHA256": "f793348eef52774bc77140cbe0af3c1132137785f5c70da210b4efe1d772a7d8"
+  },
+  {
+    "Original": "build-recent-strategy-cash-claims.ps1",
+    "File": "build-recent-strategy-cash-claims.ps1",
+    "SHA256": "117aaa387b4f1531756fc1b0c4710346b5d3385c19027490c10c9cd40b7c0ce2"
+  },
+  {
+    "Original": "build-recent-strategy-cash-resume.ps1",
+    "File": "build-recent-strategy-cash-resume.ps1",
+    "SHA256": "3ea2ec56ff291241ff2d43bb33469d9c9047f214180814511f5c621c1dbe0035"
+  },
+  {
+    "Original": "run-recent-strategy-cash-claims.ps1",
+    "File": "run-recent-strategy-cash-claims.ps1",
+    "SHA256": "68e1949a88f094014b6f61ca631d67cfdd88cbc5fda6b428b273915dd04f1031"
+  },
+  {
+    "Original": "recent-strategy-cash-qualification/receipt.json",
+    "File": "recent-strategy-cash-qualification__receipt.json",
+    "SHA256": "b64c0330330814f9879435a4159b3bf753fcd771480dce73dba7ac18cdd6735a"
+  },
+  {
+    "Original": "recent-strategy-cash-qualification/results.xml",
+    "File": "recent-strategy-cash-qualification__results.xml",
+    "SHA256": "8b567099e7ea8835a3b1d70145a0bdcf81f31b2b3b0b6e589b4ca4808cc5eaff"
+  },
+  {
+    "Original": "recent-strategy-cash-qualification/start.json",
+    "File": "recent-strategy-cash-qualification__start.json",
+    "SHA256": "1ac3201397e281a9cbf023e9bcec6a0b393e66493f642dd988b3fee79486d016"
+  },
+  {
+    "Original": "recent-strategy-cash-qualification/stderr.log",
+    "File": "recent-strategy-cash-qualification__stderr.log",
+    "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "Original": "recent-strategy-cash-qualification/stdout.log",
+    "File": "recent-strategy-cash-qualification__stdout.log",
+    "SHA256": "d734a06c188538516534e0844d2421bfd712af64b47c3222f4522a806aab58f2"
+  },
+  {
+    "Original": "recent-dev-rehearsal-v3-run/receipt.json",
+    "File": "recent-dev-rehearsal-v3-run__receipt.json",
+    "SHA256": "8df368f0a80383eccfca49494ed4e7aee8bf40cb946098f924321fcfb06696a8"
+  },
+  {
+    "Original": "recent-dev-rehearsal-v3-run/start.json",
+    "File": "recent-dev-rehearsal-v3-run__start.json",
+    "SHA256": "81e15b5f10e715d1494f9b919d077c986fa3b12631705c549065b354a3400a8a"
+  },
+  {
+    "Original": "recent-dev-rehearsal-v3-run/stderr.log",
+    "File": "recent-dev-rehearsal-v3-run__stderr.log",
+    "SHA256": "b0fd265e2d3db2b34947aa42d08cd4e88044bf610d4c13eee39f1273760e67ae"
+  },
+  {
+    "Original": "recent-dev-rehearsal-v3-run/stdout.log",
+    "File": "recent-dev-rehearsal-v3-run__stdout.log",
+    "SHA256": "7e553e4e4bfa31c600ff2e1f492d7c5275fd3fff12088ab6615630d4ce69cdb1"
+  },
+  {
+    "Original": "recent-dev-rehearsal-v3/recipe.json",
+    "File": "recent-dev-rehearsal-v3__recipe.json",
+    "SHA256": "14a0a60b7c65d2191b8f79936a57b13cc734957aa6942e11c7f03918a3fc30bb"
+  },
+  {
+    "Original": "recent-dev-rehearsal-v3/summary.json",
+    "File": "recent-dev-rehearsal-v3__summary.json",
+    "SHA256": "4263644a5f9adfac908cf69441bc282eb5fd10a8f6b73b21d3348666e1928784"
+  },
+  {
+    "Original": "recent-dev-rehearsal-v3/train_trials.jsonl",
+    "File": "recent-dev-rehearsal-v3__train_trials.jsonl",
+    "SHA256": "4264a0d072580879ed31fe61be96171984e9d4acdd7b3d6e1a1cac434cb8a413"
+  },
+  {
+    "Original": "recent-gap-39621-source-v1-run/receipt.json",
+    "File": "recent-gap-39621-source-v1-run__receipt.json",
+    "SHA256": "8e8f918c859d2fa9037d991a003f0886d4a28c30f1a4c6b74b4dc2e6327b42db"
+  },
+  {
+    "Original": "recent-gap-39621-source-v1-run/start.json",
+    "File": "recent-gap-39621-source-v1-run__start.json",
+    "SHA256": "c22ac0c4bfafe3655516722e28859c9d262a365a7add7a964d23a92ce1b95365"
+  },
+  {
+    "Original": "recent-gap-39621-source-v1-run/stderr.log",
+    "File": "recent-gap-39621-source-v1-run__stderr.log",
+    "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "Original": "recent-gap-39621-source-v1-run/stdout.log",
+    "File": "recent-gap-39621-source-v1-run__stdout.log",
+    "SHA256": "0d887a151db6e80d39b5b4f00aaa45d3d64266211bdb1ac4c2771d5740c722f2"
+  },
+  {
+    "Original": "recent-q1-gap-batch-v1-run/receipt.json",
+    "File": "recent-q1-gap-batch-v1-run__receipt.json",
+    "SHA256": "6bd691d80ab3b1e1fffc9ac9732fbf22a0c0c1e59082246f09b11dc76162a071"
+  },
+  {
+    "Original": "recent-q1-gap-batch-v1-run/start.json",
+    "File": "recent-q1-gap-batch-v1-run__start.json",
+    "SHA256": "04743ab87620ab233cfb2f056200dd604197d265a9382b87bf625cc0ef3f4335"
+  },
+  {
+    "Original": "recent-q1-gap-batch-v1-run/stderr.log",
+    "File": "recent-q1-gap-batch-v1-run__stderr.log",
+    "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "Original": "recent-q1-gap-batch-v1-run/stdout.log",
+    "File": "recent-q1-gap-batch-v1-run__stdout.log",
+    "SHA256": "63a82c95c9fe08388dbd7beee4806bf44a1c058d699c27c026ee204765682f5b"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-run/receipt.json",
+    "File": "existing-event-metadata-inventory-run__receipt.json",
+    "SHA256": "bbe3e8360521b321601f4c9d43caeb370489c81f798f1b58492330cb43f9ef1e"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-run/start.json",
+    "File": "existing-event-metadata-inventory-run__start.json",
+    "SHA256": "00ce1254fdf63035aba50ffec2d8335b7f466f615ef57c7dc25a69aceb46fe62"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-run/stderr.log",
+    "File": "existing-event-metadata-inventory-run__stderr.log",
+    "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-run/stdout.log",
+    "File": "existing-event-metadata-inventory-run__stdout.log",
+    "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-v2-run/receipt.json",
+    "File": "existing-event-metadata-inventory-v2-run__receipt.json",
+    "SHA256": "136755b7a86eb6797b28b2d9a8d9105601b91a6a7d788a7d1162119f1a7b37d9"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-v2-run/start.json",
+    "File": "existing-event-metadata-inventory-v2-run__start.json",
+    "SHA256": "7a54ed9c92a1635fda61e149abec4f922c637e2651b9635715666765fbf2163d"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-v2-run/stderr.log",
+    "File": "existing-event-metadata-inventory-v2-run__stderr.log",
+    "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-v2-run/stdout.log",
+    "File": "existing-event-metadata-inventory-v2-run__stdout.log",
+    "SHA256": "cdf40c811517147aa6b508972c0d977039492efeffdefa70749c80864cf3271b"
+  },
+  {
+    "Original": "existing-event-coverage-run/receipt.json",
+    "File": "existing-event-coverage-run__receipt.json",
+    "SHA256": "72afc2c4a0d06c1ed7e6a2bf7c77c0c54eed6bd05673e77e95c6218fbdc943de"
+  },
+  {
+    "Original": "existing-event-coverage-run/start.json",
+    "File": "existing-event-coverage-run__start.json",
+    "SHA256": "94240df24b92d51a779ee41807c49dc314eaa3e6e37c6f30f84da1fb258ce757"
+  },
+  {
+    "Original": "existing-event-coverage-run/stderr.log",
+    "File": "existing-event-coverage-run__stderr.log",
+    "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "Original": "existing-event-coverage-run/stdout.log",
+    "File": "existing-event-coverage-run__stdout.log",
+    "SHA256": "8d1b05f19ebb900455e74d4bfa046d0b4a6d63cd6023d4c03535666893013105"
+  },
+  {
+    "Original": "recent-q1-gap-batch-v1.json",
+    "File": "recent-q1-gap-batch-v1.json",
+    "SHA256": "037234f9c3f427dd45160a8f19ab7ecbc40dd941699cc73f56c94f717f11ed56"
+  },
+  {
+    "Original": "recent-q1-gap-symbols-v1.json",
+    "File": "recent-q1-gap-symbols-v1.json",
+    "SHA256": "c313ace49b7aa87e23dabea0187e0ba2d6d6c4d40d4287ba4a95d9334b6b3014"
+  },
+  {
+    "Original": "existing-event-metadata-inventory-v2.json",
+    "File": "existing-event-metadata-inventory-v2.json",
+    "SHA256": "1d2a7a87e086a7bef2502001903ea9ccbcccd50d0456c3c6321ff30f08c0b077"
+  },
+  {
+    "Original": "existing-event-coverage.json",
+    "File": "existing-event-coverage.json",
+    "SHA256": "fc73af7d248dc7e948e14acff684de3e6e4e7c46edf4277a997f50c15014d24e"
+  },
+  {
+    "Original": "inventory-existing-event-metadata-v2.py",
+    "File": "inventory-existing-event-metadata-v2.py",
+    "SHA256": "1894492b1afc9ae8d6759597e5ce5bcffd58f08795d2198fe34209f01eaf3213"
+  },
+  {
+    "Original": "inventory-existing-event-coverage.py",
+    "File": "inventory-existing-event-coverage.py",
+    "SHA256": "65b191ca030bf7571228d18843e6e24bf060ff30a09150d275cac99ddfd66fa5"
+  }
+]

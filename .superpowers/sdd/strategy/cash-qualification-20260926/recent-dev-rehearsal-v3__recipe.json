@@ -1,0 +1,39 @@
+{
+  "annual_borrow_bps": 300.0,
+  "blend": "equal-family/equal-within-family;centered-tied-rank;missing-zero;fixed-denominators;final-rank-neutral-gross1",
+  "cash_claims": {
+    "event_count": 5,
+    "historical_delivery_verified": false,
+    "publication_evidence": "reconstructed-source-publication-research-v1",
+    "schema": "atx.strategy-cash-claims/v1",
+    "settlement_status": "unknown-no-payment-modeled",
+    "sha256": "257c6d645292b9f9464e6401ed1f9adb5e41a66089fdc4f7e23db0724f6da510",
+    "signal_support_policy": "causal-decision-retirement-v1: VM ranks and fixed blend exclude when effective-by and public availability are strictly before decision; context validates first eligible valuation mark; source payload retained",
+    "source_snapshot_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae"
+  },
+  "commission_bps": 1.0,
+  "cost_input_status": "declared-unfitted-scenario-not-observed-no-locate-proof",
+  "full_spread_bps": 10.0,
+  "impact_y": 0.6,
+  "initial_nav": 1000000000.0,
+  "library_sha256": "1851cd07d41a68d3b47009875aa54703bbb59bf5335bd6e09e4dd426c9fff40b",
+  "liquidity_window": 63,
+  "max_participation": 0.01,
+  "max_working_bytes": 1073741824,
+  "membership_exit": "partial target unwind on cadence;not immediate flatten",
+  "min_names": 2000,
+  "participation": "one-percent default of prior ADV per execution;target dollars may remain partially unfilled",
+  "primary_variant": "weekly_partial25",
+  "return_guard": "abs-log<=1.5;adjusted-abs-log<=raw-abs-log+.10",
+  "role_manifest_sha256": {
+    "train": "900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b",
+    "validation": "2129ed162ca3eb1e2bce3bd74f456b83ea11187c26729d06712677bbb6848e84"
+  },
+  "schema": "atx.dsl-combined-execution/cash-claims-v2",
+  "seed": 42,
+  "statistical_claim": "TRAIN orientation fit;no selection-adjusted significance or guaranteed net Sharpe",
+  "terminal": "marked holdings;no automatic liquidation",
+  "timing": "decision-fixed-dollar;delay1;endpoint-return;mature-contiguous-prefix",
+  "turnover": "sum absolute actual filled dollars / interval-entry pretrade NAV;initial deployment included;monthly=21*mean",
+  "vm": "ResearchFast;corrected-kernels;full-asof-CS-member-mask"
+}

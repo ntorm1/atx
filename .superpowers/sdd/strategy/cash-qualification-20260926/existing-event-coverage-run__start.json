@@ -1,0 +1,26 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "2d06b7044ba606bb62405be676e39018ef999332",
+  "started_utc": "2026-09-26T22:37:00.398568+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-B",
+    "build-equity/inventory-existing-event-coverage.py"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\inventory-existing-event-coverage.py",
+      "sha256": "65b191ca030bf7571228d18843e6e24bf060ff30a09150d275cac99ddfd66fa5"
+    }
+  ],
+  "limits": {
+    "seconds": 60.0,
+    "max_rss_mib": 512,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 3703255040,
+  "outcome": "launch-failed",
+  "exit_code": null
+}

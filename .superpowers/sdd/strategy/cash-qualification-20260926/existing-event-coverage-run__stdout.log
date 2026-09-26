@@ -1,0 +1,10 @@
+{
+  "mode": "read-only-counts-and-source-coverage;no-event-values-or-strategy-performance",
+  "queries": {
+    "terminal_observation_sources": [],
+    "terminal_return_sources": [],
+    "event_sources": [],
+    "type_sources": []
+  }
+}
+
