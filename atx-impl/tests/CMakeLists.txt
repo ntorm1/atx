@@ -41,6 +41,9 @@ target_compile_definitions(atx-impl-ic-screen-tests PRIVATE
 
 # Bounded W1 universe/provenance and allocation contracts. No worker dependency.
 add_executable(atx-impl-w1-contract-tests EXCLUDE_FROM_ALL
+    prereg_test.cpp
+    config_equity_ic_test.cpp
+    stage_equity_ic_test.cpp
     panel_test.cpp
     stage_equity_universe_test.cpp
     stage_data_provenance_test.cpp

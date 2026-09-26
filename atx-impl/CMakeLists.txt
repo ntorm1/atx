@@ -34,6 +34,7 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/preference_source.cpp
     src/stage_equity_book.cpp
     src/trial_ledger.cpp
+    src/prereg.cpp
     src/stage_equity_ic.cpp
     src/stage_equity_universe.cpp
     src/stage_run.cpp
