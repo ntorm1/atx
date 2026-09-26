@@ -182,6 +182,7 @@ TEST(LibraryCompressed, AppendPeriodsAndLaterAdmissionsSurviveReopenWithoutRewri
     ASSERT_TRUE(unchanged); EXPECT_EQ(unchanged->integrity_crc(), original_crc);
   }
   lib::LibraryStore reopened(dir);
+  EXPECT_EQ(reopened.record_crc(AlphaId{0}), extended_crc); // restored without rebinding
   ASSERT_TRUE(reopened.bind_index_recipe(0, 42));
   EXPECT_EQ(reopened.n_periods(), 7U); EXPECT_EQ(reopened.n_alphas(), 3U);
   EXPECT_EQ(reopened.record_crc(AlphaId{0}), extended_crc);

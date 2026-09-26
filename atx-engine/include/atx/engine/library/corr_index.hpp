@@ -16,6 +16,7 @@
 #include <cstddef>       // std::size_t
 #include <span>          // std::span
 #include <unordered_map> // bucket map
+#include <utility>
 #include <vector>        // hyperplanes, bucket members, scratch
 
 #include "atx/core/macro.hpp"  // ATX_ASSERT

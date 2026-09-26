@@ -663,6 +663,19 @@ private:
       if (end != n_periods_)
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "library: incompatible segment periods");
     }
+    ATX_TRY(auto saved_index, metadata_value("corr_recipe"));
+    if (!saved_index.empty()) {
+      atx::usize off = 0;
+      atx::u32 rule = 0, version = 0, bits = 0; atx::u64 seed = 0;
+      if (!detail::get_le(saved_index, off, rule) || !detail::get_le(saved_index, off, version) ||
+          !detail::get_le(saved_index, off, bits) || !detail::get_le(saved_index, off, seed) ||
+          off != saved_index.size() || (rule != 1U && rule != 2U) || version != rule ||
+          bits != (rule == 1U ? 64U : 256U))
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "library: malformed saved index recipe");
+      recipe_crc_ = atx::tsdb::crc32(saved_index.data(), saved_index.size());
+      bind_recipe_identity_ = rule != 1U;
+    }
     ATX_TRY_VOID(set_metadata("storage_rule", recipe));
     extended_.resize(static_cast<atx::usize>(next_alpha_id_));
     return atx::core::Ok();

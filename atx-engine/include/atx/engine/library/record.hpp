@@ -50,6 +50,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <utility> // std::move
 #include <vector>
 
@@ -661,7 +662,8 @@ private:
     }
     atx::u64 dir_bytes = 0, cells = 0, pnl_bytes = 0, pos_cells = 0, pos_bytes = 0;
     const bool compressed = h.format_version == 2U;
-    if (!detail::checked_mul(h.n_alphas, sizeof(AlphaDirEntry), dir_bytes) ||
+    if ((compressed && (h.n_alphas == 0U || h.n_periods == 0U)) ||
+        !detail::checked_mul(h.n_alphas, sizeof(AlphaDirEntry), dir_bytes) ||
         !detail::checked_mul(h.n_alphas, h.n_periods, cells) ||
         !detail::checked_mul(cells, compressed ? sizeof(atx::f32) : sizeof(atx::f64), pnl_bytes) ||
         !detail::checked_mul(compressed ? h.n_alphas : cells,
