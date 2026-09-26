@@ -1,16 +1,19 @@
 {
-  "composite_policy_version": "p5-composite-v1",
-  "title": "Frozen build-forward policy over the R4 ledger: redundancy, spanning and composites (P5)",
+  "composite_policy_version": "p5-composite-v2",
+  "supersedes": "p5-composite-v1",
+  "title": "Frozen build-forward policy over the R4 ledger: redundancy, spanning and composites (P5, v2)",
   "frozen_on": "2026-09-25",
-  "authority": "controller P5 dispatch and rulings 2026-09-25 (plan-s3-parity section 4.1 P5): redundancy_status is an annotation that never alters an R4 status; the rank-correlation cluster threshold is declared here; composites are sign-oriented z within and across classes, equal and IC-weighted with shrinkage, fit on train+validation only, one holdout evaluation through the R3b harness; frozen before any real-data composite",
+  "authority": "controller P5 fix-round-1 rulings 2026-09-25 on rv-p5 (C1 option a: constituents selected only on R4's train+validation evidence, never on holdout IC or sign; frozen and registered before the RR4 real-data run, RX7; I1 full-family grading with a composite_post_selection stamp; I2 unlinked price lines per the R2b I1 ruling; I3 bounded streaming; I4 holdout spent only after an evaluation; one holdout evaluation per split and basis). v1 is superseded before any real-data composite",
   "source": {
-    "qualified_statuses": ["qualified_strict", "qualified_reconstructed"],
+    "selection": "r4_train_validation_gates",
+    "selection_gates": ["gate_coverage", "gate_significance", "gate_sign", "gate_subperiods", "gate_size_buckets"],
     "basis": "reconstructed",
     "constituent_variant": "rank_normal",
     "fit_horizon_months": 3,
     "min_names_per_formation": 100
   },
   "redundancy": {
+    "rank_correlation": "pearson_of_within_formation_average_ranks_on_names_valued_on_both",
     "rank_correlation_threshold": 0.7,
     "linkage": "complete",
     "min_formations": 24,
@@ -20,16 +23,23 @@
     "factors": ["mkt_rf", "smb", "hml", "umd", "rmw", "cma"],
     "series": "ls_ew10",
     "horizon_months": 1,
+    "calendar": "monthly_period_grid",
     "alpha_min_z": 2.0,
     "min_periods": 36
   },
   "composite": {
+    "constituents": "cluster_representatives",
+    "universe": "all_eligible_lines_price_line_rule",
     "weightings": ["equal", "ic_shrunk"],
     "ic_shrinkage": 0.5,
     "min_class_constituents": 2,
     "min_across_inputs": 2,
-    "min_weight_coverage": 0.5,
-    "exclude_cross_class_duplicates": true
+    "min_constituent_share": 0.5,
+    "missing_constituents": "variance_adjusted_under_fit_correlation"
   },
-  "policy_sha256": "1e90aab500ac5e49bec85ab19a82a19f40e1a1cd302fa3c1e303cb04dc45d702"
+  "holdout": {
+    "evaluations_per_split_and_basis": 1,
+    "grading_family": "source_family_plus_composites"
+  },
+  "policy_sha256": "28f3405dfe3adfbe3e29d976ab6eea026533150c728e8c82e6037cd367b45fee"
 }
