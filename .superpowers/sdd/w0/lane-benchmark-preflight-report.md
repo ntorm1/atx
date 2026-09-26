@@ -95,8 +95,9 @@ cold cached-DAG payload at the proposed reduced sizes.
 | 64 | 0.6597 | 1.1008 |
 
 For WQ500, 4–5 GiB free is insufficient; a practical launch policy would require
-6.5 GiB with monitoring. WQ128 uses a 3 GiB launch floor. A proposed deterministic
-fallback is WQ96 at 2.25 GiB if approved and selected once before ANY timing. N64
+6.5 GiB with monitoring. WQ128 uses a 3 GiB launch floor. Root approved deterministic
+fallback WQ96 at 2.25 GiB, selected once before ANY timing if WQ128 cannot safely
+launch. N64
 was rejected as a coverage choice: `IndClass.subindustry=j%71` makes all groups
 singletons and alpha #48's within-subindustry neutralization degenerates. N96
 retains 25 paired subindustries; N128 retains 57. Neither is a production-width
@@ -116,8 +117,13 @@ and no numerical benchmark was run to produce the model.
 ## Final protocol pending quiet release
 
 Choose the single N before timings and record it. For families `kernels`, `wq`,
-`throughput`, `optimizer`, `search`, run baseline then current serially, three
+`throughput`, `optimizer`, `search`, run all five baseline families, then all five
+final-current families serially, three
 repetitions each, P-core affinity 0xFF verified through Windows processor topology.
+Root approved this sequencing before timings so baseline work can proceed during
+the current-only VWAP repair's source work. No compilation or test process may
+overlap either snapshot's measurements; current requires a fresh quiet check after
+its final build. This is a sequential pair, not an interleaved measurement design.
 The native filters are disjoint and their union is the exact original 81-case
 registry. The runner removes inherited ATX variables and pins identical dimensions.
 At one-second intervals it records process peak working set/private memory,

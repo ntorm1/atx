@@ -84,11 +84,17 @@ authorized by the user's RAM-workaround instruction and root. The authoritative
 W0 plan sets no 500-name floor. This is a bounded-workload regression gate; larger
 production-scale gates remain required by later tasks. Clear inherited ATX
 environment variables and pin search dimensions to 756 dates, 500 names and six
-generations. Optimizer sizes remain 1000/3000/5000.
+generations. Optimizer sizes remain 1000/3000/5000. If 3 GiB is unavailable at the
+first quiet launch, root approved choosing N96 with a 2.25 GiB launch floor once
+before any timings, then freezing it for both snapshots. N64 would make all
+subindustry groups singletons and is excluded.
 
 Use five disjoint native process batches per snapshot: 33 raw kernels, 20 WQ101,
 15 SearchThroughput, nine optimizer, and four scalar/multiobjective search cases.
-Run baseline then current for each family, serially. Every native process has
+Run all five baseline families first, then all five final-current families,
+serially. This sequence was fixed before timings to permit current-only source
+repair work while the frozen baseline runs; no compilation/tests may overlap
+measurements. Every native process has
 three repetitions and verified P-core affinity 0xFF. Process exit releases its
 fixture/cache/scratch allocations before the next family. Keep native JSONs and
 contexts; concatenate unchanged rows only for the existing comparison script.
