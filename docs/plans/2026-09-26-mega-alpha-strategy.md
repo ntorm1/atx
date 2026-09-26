@@ -12,7 +12,43 @@ The new instruction authorizes recent-data use and supersedes the older
 pre-2020-only restriction. It does not authorize warehouse writes, broker
 trading, pushes, or changes in the separately owned C:/atx checkout.
 
-## Cash-claim rehearsal registration (before any completed strategy result)
+## Current priority: fast alpha generation and composition
+
+The owner's latest instruction stops event-by-event realism expansion. Focus
+now on core runtime, many DSL subalphas and their composition; detailed realistic
+backtesting follows a working implementation. The previous strict-book
+registrations below remain historical records, not gates for this phase.
+The in-flight stock batch was closed with45 focused native passes atb036fa32;
+no fourth real book rehearsal ran. Three earlier failed attempts remain recorded.
+
+The new fast phase uses a separately versioned48-candidate library: eight
+families, three fixed templates each, two slow variants. Preserve the old24
+library. Use the existing pinned recent-data cache and full2020-2022 TRAIN,
+2023-2024 validation;2025+ remains reserved. Freeze the exact new library before
+measuring it. Every candidate evaluation is recorded.
+
+Evaluate5/21/63-session forward returns through the vectorized IC kernel,
+with decision-time membership, strictly observed endpoints, delayed entry and
+explicit pair/maturity coverage. Unavailable or statistically weak evidence
+stays uncertain; it is not proof that an alpha is insignificant. Reuse the
+existing conservative screen implementation through a small research API.
+Fit signs on TRAIN21-session mean IC only, with undefined/zero orientation
+contributing neutral zero. The first composition fixes1/48 per candidate,
+without missing-signal redistribution or validation tuning.
+
+Stream candidates and retain a bounded blend, small summaries and the frozen
+orientation artifact. Report candidate/combined horizon IC, coverage, runtime
+and planned-target turnover/exposure proxies. These are preliminary research
+diagnostics, not executed fills, a realistic net portfolio Sharpe or proof of
+$1bn capacity. Full costed portfolio acceptance remains a later task.
+
+Use a new lightweight research header/private implementation so existing
+search/config headers and callers do not rebuild for research-only options.
+Root owns bounded real data and focused compilation, with RAM-admitted2-4
+workers, warm PCH/dependencies and runs capped at180seconds. Corporate-action
+catalog completion, CVR valuation and exhaustive realism work are deferred.
+
+## Historical cash-claim rehearsal registration
 
 The first two real attempts stopped on MDCO's missing 2020-01-06 mark; zero
 orientations or portfolios completed. The exact pinned source identifies MDCO

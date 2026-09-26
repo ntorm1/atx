@@ -1,5 +1,36 @@
 # Active task: recent-data DSL ensemble
 
+## LATEST OWNER STEERING: runtime, generation and composition before realism
+
+Owner explicitly stopped overoptimizing realism/registering every action.
+All event-expansion work is stopped. In-flightstockbatchclosedall45casespass
+3.028s(guard3.25s/18MiB) atb036fa32. First195.553sJobs2 compilefailure was
+fixturemixedconstpointerdeduction; test-onlyb036fa32 resumes12.462sJobs4,
+oneCPP+twolinks. Configuredf1c40409. NOactualv4bookrun, threeactualattempts
+stillzeroresults. BothJAG/WCGstockconfigsretainedcurrentSHA
+2fc4cc34103cb7cf591b7a27e4b8da58f749d76193e36fe474014c66f3d76691.
+
+Activeplan nowprioritizesnewfastresearchphase. Pool4implements NEWlightweight
+factory/ic_research.hpp opaqueoptions/cache/scratch over sharedic_screen.cpp
+helpers (legacyIcScreenConfig/header/APIsunchanged); research3horizons5/21/63,
+strictendpointpresence. Newprivate strategy_ic_runner.hpp/CPP +standalonemain,
+no surfaces/book. Pool5owns48DSL library8families*3templates*2slowvariants,
+maxlookback<=320, plusnewprivate streamingcompositionhelper. Fixed1/48weights,
+TRAIN21ICsigns/undefinedzero, fixeddenominators; combinedIC/coverage andplanned
+targetturnover/exposurediagnostics only. No evidenceweightoptimizerfirst.
+G0 revieweddesign andisIDLEawaitingfrozenpackets; reactivatewithfollowup_task.
+
+Rootnext: preserveconcisequalification, preparefull2020-22TRAIN fromwarmup
+2018-06 and2023-24validation fromwarmup2021-06 usingexistingacceptedcache
+recent-projection-v1 (no rawrescan); caprealprocesses180s/RAM/freefloor. Freeze
+exactnewlibrary beforeperformance, inspectkernel/runner/composition, register
+focusedCMake, one warmbuild thenboundedactualfastresearch. Preliminarysignal
+diagnostics arenotcostednetportfolioSR/capacity/actualturnoverclaims. Usergoal
+still$1bn,Sharpe>=1,lowturnover/thousands;2025+reserved. No activebuild/process.
+
+Currentrootbeforethischeckpointb036fa32. NoC:/atxwrites/push/warehousewrites.
+OriginalDAGupdatedsource/importSHAs. Oldercheckpointsbelowaresuperseded.
+
 ## Current checkpoint: cash qualified; stock conversion in implementation
 
 Root3780a55d records cash/monthly qualification and49 exact evidence artifacts.
