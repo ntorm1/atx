@@ -48,6 +48,13 @@ target_link_libraries(atx-impl-core
 find_package(Threads REQUIRED)
 target_link_libraries(atx-impl-core PRIVATE Threads::Threads)
 
+# Stable third-party/std headers only; pipeline/config headers stay outside the
+# PCH so an ordinary engine change does not invalidate this parse cache. PRIVATE
+# keeps it out of downstream targets, and hygiene still disables ATX_USE_PCH.
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-impl-core PRIVATE pch.hpp)
+endif()
+
 # ---------------------------------------------------------------------------
 # engine_git_sha provenance bake (p7 S6-4).
 # Resolve the engine's git commit at configure time and bake it into a compile
