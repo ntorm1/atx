@@ -1,0 +1,155 @@
+{
+  "schema": "atx.bounded-qualification/v1",
+  "index": {
+    "path": "build-equity/w2-d3-clock-qualification-index.json",
+    "sha256": "5297d42ef4cae72142b340a15a83a20cd56d8f1ecd6d1ad85de2bd457c22fe71"
+  },
+  "qualification": {
+    "cpp": {
+      "receipt": {
+        "Source": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+        "Target": "atx-engine-w1-data-tests",
+        "Filter": "FundamentalClockV4.*:SecurityLinkIntervals.*:FundamentalFields.*",
+        "BinarySha256": "daa97b4362f1287f460fa0d925e52f5c6b098df17d61b985d17c227da3bb6314",
+        "ExitCode": 0,
+        "WallSeconds": 0.1126645
+      },
+      "passes": 25,
+      "cases": [
+        "FundamentalClockV4.DefaultDispatchKeepsStrictPublicationAndIdentityClocks",
+        "FundamentalClockV4.ModeledOverrideRelaxesOnlyClockNeverFactVintage",
+        "FundamentalClockV4.AcceptanceLagAndRevisionAvailabilityAreValidatedExactly",
+        "FundamentalClockV4.MalformedClocksAndHiddenAxisRowsFailInsteadOfBecomingMissing",
+        "FundamentalClockV4.WithheldSnapshotDoesNotRefreshOrRevokeOlderQualifiedValue",
+        "FundamentalClockV4.MarkersBudgetsAndAuditCommitAreExplicit",
+        "SecurityLinkIntervals.ExpiryAndSeparateKnowledgeClockPermitOlderPeriodSuccessor",
+        "SecurityLinkIntervals.FutureConflictMarkerDoesNotBackdateAndOverrideIsExplicit",
+        "SecurityLinkIntervals.VersionedDecoderFeedsActualAlignerAndRejectsMalformedRows",
+        "SecurityLinkIntervals.DatedClockEqualityIsWithheldAndLegacyArithmeticIsPreserved",
+        "SecurityLinkIntervals.ExpiryMarkerRequiresBothEffectiveDateAndStrictKnowledgeTime",
+        "SecurityLinkIntervals.V3DecoderRetiresOverlapWithoutResurrectingPriorState",
+        "FundamentalFields.RawFieldNamesAreUniqueAndComplete",
+        "FundamentalFields.Align_NoLookAhead_InvisibleBeforeAvailablePlusLag",
+        "FundamentalFields.Align_AvailableBetweenSessions_UsesNextSession",
+        "FundamentalFields.Align_LaterPeriodSupersedes_OlderAmendmentDoesNotRegress",
+        "FundamentalFields.Align_FieldsChosenIndependently",
+        "FundamentalFields.Align_StalenessCapsStopForwardFill",
+        "FundamentalFields.Align_InstrumentsIsolated_AndStatsCounted",
+        "FundamentalFields.Align_RecordAfterAxisIsCountedNotPlaced",
+        "FundamentalFields.Align_RejectsBadInputs",
+        "FundamentalFields.MapSecurityIds_MapsKnownAndLeavesUnknownEmpty",
+        "FundamentalFields.Derive_LiteratureDefinitions",
+        "FundamentalFields.Derive_NonPositiveDenominatorsAreNaN",
+        "FundamentalFields.WithFundamentalFields_AppendsNamedColumnsAndKeepsMask"
+      ],
+      "native_seconds": 0.004,
+      "binary": {
+        "path": "build-equity/bin/atx-engine-w1-data-tests.exe",
+        "sha256": "daa97b4362f1287f460fa0d925e52f5c6b098df17d61b985d17c227da3bb6314"
+      },
+      "files": [
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified.xml",
+          "sha256": "2cd610957b1cc89cd72471e2c6fc3d0e198d9f6c835f0ee19f6bbcc0114247a0"
+        },
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified.log",
+          "sha256": "301f25ca7e904c502fa9a2f71c56143fc70f0c236533e721b4127d5d3b894ba7"
+        },
+        {
+          "path": "build-equity/w2-d3-clock-cpp-qualified-receipt.json",
+          "sha256": "894680d27cc9bb08acf95980dd65cd9a2c4cd86ff1e630f40cc0fbd342c0074a"
+        }
+      ]
+    },
+    "python": [
+      {
+        "receipt": {
+          "Source": "f0ffc66d5bf3fc7729ae0aa5053e6392bb9a9ef5",
+          "ExitCode": 0,
+          "WallSeconds": 1.1998313999999999,
+          "Command": "python -m unittest discover -s atx-engine/tests/tools -p test_pit_fundamental_clock.py -v"
+        },
+        "passes": 10,
+        "cases": [
+          "test_acceptance_public_revision_and_exact_modeled_fallback_are_distinct",
+          "test_actual_exporter_writes_hash_bound_v4_and_separate_true_shares",
+          "test_conflicting_sue_history_is_unavailable_until_later_qualified_correction",
+          "test_expired_unqualified_facts_do_not_permanently_taint_new_history",
+          "test_inherited_modeled_or_unverified_knowledge_is_not_laundered",
+          "test_legacy_writer_bytes_and_24_hour_clock_remain_explicit",
+          "test_same_day_accessions_are_not_applied_before_their_own_publication",
+          "test_simultaneous_conflict_withheld_and_later_qualified_correction_recovers",
+          "test_true_entity_shares_never_sum_and_diluted_accounting_stays_separate",
+          "test_v4_nonfinite_derived_seasonal_differences_are_unavailable"
+        ],
+        "files": [
+          {
+            "path": "build-equity/w2-d3-python-qualified.log",
+            "sha256": "c736979cc5a6f821c2e883fa95965d096877e051fcd032e5e0fe695bbdfc088c"
+          },
+          {
+            "path": "build-equity/w2-d3-python-qualified-receipt.json",
+            "sha256": "4589264fd58c6c667bea0d33f1f9d1ce71516bb3ea7c1ef56d2ebefb79e025c4"
+          }
+        ]
+      },
+      {
+        "receipt": {
+          "Source": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+          "ExitCode": 0,
+          "WallSeconds": 0.8106496,
+          "Command": "python -m unittest discover -s atx-engine/tests/tools -p test_export_fundamental_fields.py -v"
+        },
+        "passes": 9,
+        "cases": [
+          "test_sue_requires_history_and_uses_prior_differences",
+          "test_ttm_prefers_annual_and_chains_quarters",
+          "test_ytd_differences_become_discrete_quarters",
+          "test_future_period_and_non_event_forms_are_ignored",
+          "test_scale_error_share_pair_is_dropped_from_snapshot",
+          "test_share_pair_plausibility_rejects_xbrl_scale_errors",
+          "test_snapshots_are_point_in_time_and_sealed",
+          "test_split_restated_comparative_keeps_issuance_split_consistent",
+          "test_stale_statement_fields_are_not_relabelled_current"
+        ],
+        "files": [
+          {
+            "path": "build-equity/w2-d3-legacy-python-qualified.log",
+            "sha256": "da80c8f4b9e9e33b3b4dd279e02cb109ccf04aee55794cd732e6a0ee57cae98e"
+          },
+          {
+            "path": "build-equity/w2-d3-legacy-python-qualified-receipt.json",
+            "sha256": "cd5f8139ab0bf21c4113f0381422bc7f151cf6e4b82bbc3fd32b22040e781db4"
+          }
+        ]
+      }
+    ]
+  },
+  "build": {
+    "Source": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+    "ConfiguredProvenance": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+    "Jobs": 2,
+    "ExitCode": 0,
+    "WallSeconds": 35.1366575
+  },
+  "build_files": [
+    {
+      "path": "build-equity/w2-d3-clock-start.json",
+      "sha256": "8b3edc158ad144a1cee2c9d13578826530de5fd31745ccfa820c46d167ec2818"
+    },
+    {
+      "path": "build-equity/w2-d3-clock-build-receipt.json",
+      "sha256": "7db166968a5763cf7e591e94c18d7d808cb3e995f175208518421fd9d472555b"
+    },
+    {
+      "path": "build-equity/w2-d3-clock-build.log",
+      "sha256": "36e0be7d07f89fe8b798a47f7e3a94944b4cb8dcfdfb790fdf38a346cbbd6517"
+    },
+    {
+      "path": "build-equity/w2-d3-clock-cache-summary.txt",
+      "sha256": "d4251f2163e66a82febe7568ae2794aef9feffccda0e144d747b63d73862ecb2"
+    }
+  ],
+  "scope": "Synthetic V4 exporter/decoder and affected legacy arithmetic/identity; no market payload, cap, coverage or full D3 gate."
+}
