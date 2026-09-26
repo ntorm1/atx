@@ -90,6 +90,11 @@ bool fixture(Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg) {
            {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}}})}},cfg.library_sha256);
 }
 Json read_json(const std::filesystem::path& path) { std::ifstream in(path); return Json::parse(in); }
+template<class T> bool read_payload(const std::filesystem::path& path,std::vector<T>& data) {
+  std::ifstream in(path,std::ios::binary);
+  in.read(reinterpret_cast<char*>(data.data()),static_cast<std::streamsize>(data.size()*sizeof(T)));
+  return static_cast<bool>(in) && in.peek()==std::char_traits<char>::eof();
+}
 TEST(StrategyIcRunner, FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   std::ostringstream progress; auto status=atx::impl::strategy::run_ic(cfg,progress);
@@ -114,6 +119,7 @@ TEST(StrategyIcRunner, FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns) 
   auto sha=core::sha256_file((dir.path/"output"/"orientations.json").string()); ASSERT_TRUE(sha);
   EXPECT_EQ(summary.at("orientations_artifact_sha256"),*sha);
   EXPECT_NE(progress.str().find("IC eval-start"),std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"/"train_combined.json"));
 }
 TEST(StrategyIcRunner, PlanOnlyPinsMetadataAndNeverLoadsPayload) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
@@ -221,7 +227,7 @@ TEST(StrategyIcRunner, FrozenTrainValidationMatchesUninterruptedWithoutTrainPayl
   cfg.orientations_path=(dir.path/"output"/"orientations.json").string();
   auto pin=core::sha256_file(cfg.orientations_path); ASSERT_TRUE(pin); cfg.orientations_sha256=*pin;
   ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
-  cfg.output_directory=(dir.path/"resumed").string(); cfg.workers=2;
+  cfg.output_directory=(dir.path/"resumed").string(); cfg.workers=2; cfg.save_combined=true;
   std::ostringstream resumed_progress; status=atx::impl::strategy::run_ic(cfg,resumed_progress);
   ASSERT_TRUE(status) << status.error().to_string();
   const auto resumed=read_json(dir.path/"resumed"/"summary.json");
@@ -230,6 +236,7 @@ TEST(StrategyIcRunner, FrozenTrainValidationMatchesUninterruptedWithoutTrainPayl
   EXPECT_EQ(resumed.at("orientations_artifact_sha256"),cfg.orientations_sha256);
   ASSERT_EQ(resumed.at("roles").size(),1U);
   auto expected=original.at("roles").at(1); auto actual=resumed.at("roles").at(0);
+  ASSERT_TRUE(actual.contains("combined_artifact")); actual.erase("combined_artifact");
   for (auto* row:{&expected,&actual}) {
     for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes","ic_scratch_bytes"}) row->erase(key);
     for (auto& candidate:row->at("candidates")) {
@@ -248,6 +255,7 @@ TEST(StrategyIcRunner, FrozenTrainValidationMatchesUninterruptedWithoutTrainPayl
   EXPECT_EQ(receipt.at("artifact"),read_json(cfg.orientations_path));
   EXPECT_EQ(read_json(dir.path/"resumed"/"recipe.json").at("frozen_train_recipe"),
             read_json(dir.path/"output"/"recipe.json"));
+  EXPECT_EQ(read_json(dir.path/"resumed"/"validation_combined.json").at("orientations_artifact_sha256"),*pin);
   auto still_pinned=core::sha256_file(cfg.orientations_path); ASSERT_TRUE(still_pinned); EXPECT_EQ(*still_pinned,*pin);
 }
 TEST(StrategyIcRunner, FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload) {
@@ -285,5 +293,53 @@ TEST(StrategyIcRunner, FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPa
   std::ostringstream attempt; status=atx::impl::strategy::run_ic(cfg,attempt);
   ASSERT_FALSE(status); EXPECT_NE(status.error().to_string().find("method/statistical"),std::string::npos);
   EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"resumed"));
+}
+TEST(StrategyIcRunner, SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenRequested) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  std::ostringstream progress; auto status=atx::impl::strategy::run_ic(cfg,progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto output=dir.path/"output"; const auto summary=read_json(output/"summary.json");
+  const auto orientations=read_json(output/"orientations.json");
+  auto orientation_hash=core::sha256_hex(orientations.at("candidates").dump()); ASSERT_TRUE(orientation_hash);
+  EXPECT_EQ(read_json(output/"recipe.json").at("saved_combined"),"date-major-f64-with-explicit-support-v1");
+  for (const auto& role_result:summary.at("roles")) {
+    const auto name=role_result.at("role").get<std::string>(); const auto prefix=name+"_combined";
+    const auto path=output/(prefix+".json"); const auto manifest=read_json(path);
+    auto manifest_hash=core::sha256_file(path.string()); ASSERT_TRUE(manifest_hash);
+    EXPECT_EQ(role_result.at("combined_artifact").at("manifest_sha256"),*manifest_hash);
+    EXPECT_EQ(manifest.at("schema"),"atx.dsl-combined-signal/v1");
+    EXPECT_EQ(manifest.at("dates"),D); EXPECT_EQ(manifest.at("instruments"),N);
+    EXPECT_EQ(manifest.at("score_begin"),383); EXPECT_EQ(manifest.at("score_end"),D);
+    EXPECT_EQ(manifest.at("role_manifest_sha256"),name=="train"?cfg.train_sha256:cfg.validation_sha256);
+    EXPECT_EQ(manifest.at("library_sha256"),cfg.library_sha256);
+    EXPECT_EQ(manifest.at("run_recipe_sha256"),summary.at("recipe_sha256"));
+    EXPECT_EQ(manifest.at("orientation_candidates_sha256"),*orientation_hash);
+    EXPECT_EQ(manifest.at("finite_cells"),(D-63)*N); EXPECT_EQ(manifest.at("member_cells"),(D-63)*N);
+    for (auto it=manifest.at("files").begin();it!=manifest.at("files").end();++it) {
+      const auto file=output/it.key(); auto hash=core::sha256_file(file.string()); ASSERT_TRUE(hash);
+      EXPECT_EQ(it.value().at("sha256"),*hash);
+      EXPECT_EQ(it.value().at("bytes"),std::filesystem::file_size(file));
+    }
+    std::vector<f64> signal(D*N); std::vector<u8> member(D*N),finite(D*N);
+    std::vector<i64> sessions(D); std::vector<u64> ids(N);
+    ASSERT_TRUE(read_payload(output/(prefix+".f64"),signal));
+    ASSERT_TRUE(read_payload(output/(prefix+"_member.u8"),member));
+    ASSERT_TRUE(read_payload(output/(prefix+"_finite.u8"),finite));
+    ASSERT_TRUE(read_payload(output/(prefix+"_sessions.i64"),sessions));
+    ASSERT_TRUE(read_payload(output/(prefix+"_ids.u64"),ids));
+    const i64 first=name=="train"?17683:18200;
+    for (usize d=0;d<D;++d) {
+      ASSERT_EQ(sessions[d],(first+static_cast<i64>(d))*day);
+      for (usize i=0;i<N;++i) {
+        const auto k=d*N+i; ASSERT_EQ(member[k],static_cast<u8>(d>=63)); ASSERT_EQ(finite[k],member[k]);
+        if (d<63) ASSERT_TRUE(std::isnan(signal[k]));
+        // Two equally weighted monotone volume candidates have the same
+        // centered rank. This scalar oracle is independent of saved-buffer code.
+        else ASSERT_DOUBLE_EQ(signal[k],static_cast<f64>(i)/static_cast<f64>(N-1)-.5);
+      }
+    }
+    for (usize i=0;i<N;++i) EXPECT_EQ(ids[i],10*(i+1));
+  }
 }
 } // namespace
