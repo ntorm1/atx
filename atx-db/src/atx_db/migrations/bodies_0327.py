@@ -23,8 +23,9 @@ One governed migration, applied by B0 while a backup is still cheap:
    (added by 0322 after 0307 seeded the others), from ``DEFAULT_PROVIDER_COVERAGE_SLOS``.
 7. TickerHistory share-unit gate (A9), read-only: :func:`ticker_history_unit_inventory`
    decides every load run's stored unit (its recorded input format, corroborated by the
-   run's median) and the migration aborts on any doubt, including a thousands run with
-   a row above ``THOUSANDS_ROW_CEILING`` (1e8, mixed units). 0327 writes nothing to
+   run's median) and the migration aborts on any doubt. A thousands-run line with a row
+   above ``THOUSANDS_ROW_CEILING`` (1e8) is ``shares_unit_suspect`` as a whole line for the
+   stage to withhold; more such lines than the C-81 bound abort (mixed-unit file). 0327 writes nothing to
    ``equity_daily_bars``: the correction of vendor-thousands runs (``shares_outstanding
    * 1000``, recomputed ``market_cap_usd``) is the batch stage ``bars_unit_correction``
    (tier-1 v2 1.3, run in 1.8), ledgered in ``equity_bar_unit_corrections`` (0329). A
@@ -112,8 +113,16 @@ CROSS_SECTION_SHARES_FROM = 5_000_000
 PLAUSIBLE_SHARES_MIN = 10_000  # new ETFs launch at 25K-50K shares
 PLAUSIBLE_SHARES_MAX = 100_000_000_000  # ~4x NVDA's 24.6B, the largest US share count
 # Per-row check of a run decided thousands: a stored value above this would exceed
-# PLAUSIBLE_SHARES_MAX after x1000, so the row is already in shares (mixed-unit run) => abort.
+# PLAUSIBLE_SHARES_MAX after x1000, so the row is not in thousands.
 THOUSANDS_ROW_CEILING = PLAUSIBLE_SHARES_MAX // 1000
+# Ruling C-81: a line (security_id) of a thousands run with any row above the ceiling is
+# ``shares_unit_suspect`` as a WHOLE line (0.13 D10: never a unit boundary inside a line); the
+# bars_unit_correction stage withholds its share-derived values and never rescales it. The run
+# still aborts 0327 as a genuinely mixed-unit file when its suspect lines are more than
+# MIXED_UNIT_MAX_SUSPECT_LINES or its rows above the ceiling more than
+# MIXED_UNIT_MAX_SUSPECT_ROW_SHARE of the run's rows.
+MIXED_UNIT_MAX_SUSPECT_LINES = 5
+MIXED_UNIT_MAX_SUSPECT_ROW_SHARE = 0.0001  # 0.01 %
 # Without format evidence the median alone decides only a full-universe run
 # (>= this many rows AND >= CROSS_SECTION_MIN_SECURITIES securities).
 NO_EVIDENCE_MIN_ROWS = 1_000_000
@@ -925,9 +934,13 @@ def ticker_history_unit_inventory(conn: duckdb.DuckDBPyConnection) -> list[dict[
     run it before ``bars_unit_correction`` publishes (a scaled run would then read as a
     format/median disagreement).
 
-    A run decided thousands is also checked row by row: rows already above
-    ``THOUSANDS_ROW_CEILING`` (in shares, so x1000 would exceed ``PLAUSIBLE_SHARES_MAX``)
-    make it a mixed-unit run => ``abort``, with up to five of the largest such rows in
+    A run decided thousands is also checked row by row (ruling C-81): a line with any row
+    above ``THOUSANDS_ROW_CEILING`` (not thousands: x1000 would exceed
+    ``PLAUSIBLE_SHARES_MAX``) is ``shares_unit_suspect`` as a whole line, listed in
+    ``shares_unit_suspect_lines`` for the stage to withhold (never rescaled); the run stays
+    ``scale_x1000`` for every other line. More than ``MIXED_UNIT_MAX_SUSPECT_LINES`` suspect
+    lines, or rows above the ceiling above ``MIXED_UNIT_MAX_SUSPECT_ROW_SHARE`` of the run,
+    make it a mixed-unit file => ``abort``, with up to five of the largest rows in
     ``mixed_unit_examples``.
     """
     rows = conn.execute(
@@ -954,29 +967,66 @@ def ticker_history_unit_inventory(conn: duckdb.DuckDBPyConnection) -> list[dict[
         median = None if median is None else float(median)
         decision = _share_unit_decision(int(rows_in_run), int(securities), median, params_json, bool(has_dataset_run))
         examples: list[dict[str, object]] = []
+        suspect: list[dict[str, object]] = []
         if decision["action"] == "scale_x1000" and above:
-            examples = [
-                {"security_id": security_id, "trade_date": str(trade_date), "shares_outstanding": int(shares)}
-                for security_id, trade_date, shares in conn.execute(
+            ceiling = int(THOUSANDS_ROW_CEILING)
+            suspect = [
+                {"security_id": security_id, "disposition": "shares_unit_suspect", "rows": int(line_rows),
+                 "rows_above_ceiling": int(line_above), "first_trade_date": str(first), "last_trade_date": str(last),
+                 "max_stored_shares": int(top)}
+                for security_id, line_rows, line_above, first, last, top in conn.execute(
                     f"""
-                    SELECT security_id, trade_date, shares_outstanding FROM equity_daily_bars
-                    WHERE "source" = ? AND run_id IS NOT DISTINCT FROM ?
-                      AND shares_outstanding > {int(THOUSANDS_ROW_CEILING)}
-                    ORDER BY shares_outstanding DESC, security_id, trade_date
-                    LIMIT 5
+                    SELECT security_id, count(*), count(*) FILTER (WHERE shares_outstanding > {ceiling}),
+                           min(trade_date), max(trade_date), max(shares_outstanding)
+                    FROM equity_daily_bars
+                    WHERE "source" = ? AND run_id IS NOT DISTINCT FROM ? AND shares_outstanding IS NOT NULL
+                      AND security_id IN (
+                          SELECT security_id FROM equity_daily_bars
+                          WHERE "source" = ? AND run_id IS NOT DISTINCT FROM ? AND shares_outstanding > {ceiling}
+                      )
+                    GROUP BY security_id ORDER BY security_id
                     """,
-                    [TICKER_HISTORY_SOURCE, run_id],
+                    [TICKER_HISTORY_SOURCE, run_id, TICKER_HISTORY_SOURCE, run_id],
                 ).fetchall()
             ]
-            decision = {
-                **decision, "decision_basis": None, "stored_unit": None, "decision": None, "action": "abort",
-                "reason": f"mixed units: {int(above):,} rows of this run decided thousands ({decision['reason']}) "
-                          f"already exceed {THOUSANDS_ROW_CEILING:,} stored, so x1000 would put them above "
-                          f"{PLAUSIBLE_SHARES_MAX:,} shares",
-            }
+            suspect_rows = sum(int(line["rows"]) for line in suspect)
+            bound = (f"{MIXED_UNIT_MAX_SUSPECT_LINES} lines or {MIXED_UNIT_MAX_SUSPECT_ROW_SHARE:.2%} of its rows "
+                     "above the ceiling")
+            # The bound counts the evidence rows (above the ceiling); the label covers whole lines.
+            if (len(suspect) > MIXED_UNIT_MAX_SUSPECT_LINES
+                    or int(above) > MIXED_UNIT_MAX_SUSPECT_ROW_SHARE * int(rows_in_run)):
+                examples = [
+                    {"security_id": security_id, "trade_date": str(trade_date), "shares_outstanding": int(shares)}
+                    for security_id, trade_date, shares in conn.execute(
+                        f"""
+                        SELECT security_id, trade_date, shares_outstanding FROM equity_daily_bars
+                        WHERE "source" = ? AND run_id IS NOT DISTINCT FROM ? AND shares_outstanding > {ceiling}
+                        ORDER BY shares_outstanding DESC, security_id, trade_date
+                        LIMIT 5
+                        """,
+                        [TICKER_HISTORY_SOURCE, run_id],
+                    ).fetchall()
+                ]
+                decision = {
+                    **decision, "decision_basis": None, "stored_unit": None, "decision": None, "action": "abort",
+                    "reason": f"mixed units: {len(suspect):,} line(s) with {suspect_rows:,} rows of this run decided "
+                              f"thousands ({decision['reason']}) hold {int(above):,} rows above {ceiling:,} stored "
+                              f"(x1000 would exceed {PLAUSIBLE_SHARES_MAX:,} shares); more than {bound}",
+                }
+            else:
+                decision = {
+                    **decision,
+                    "reason": f"{decision['reason']}; {len(suspect)} whole line(s) ({suspect_rows:,} rows, "
+                              f"{int(above):,} above {ceiling:,} stored) are shares_unit_suspect: withheld by "
+                              f"bars_unit_correction, never rescaled (within {bound})",
+                }
         inventory.append({"run_id": run_id, "rows_in_run": int(rows_in_run), "distinct_securities": int(securities),
                           "median_positive_shares": median, "rows_above_thousands_ceiling": int(above),
-                          "has_dataset_run": bool(has_dataset_run), **decision, "mixed_unit_examples": examples})
+                          "has_dataset_run": bool(has_dataset_run), **decision,
+                          "shares_unit_suspect_line_count": len(suspect),
+                          "shares_unit_suspect_rows": sum(int(line["rows"]) for line in suspect),
+                          "shares_unit_suspect_lines": suspect[:20],
+                          "mixed_unit_examples": examples})
     return inventory
 
 
@@ -999,12 +1049,13 @@ def _ticker_history_unit_gate(conn: duckdb.DuckDBPyConnection) -> None:
       (basis ``median_full_universe``).
 
     Disagreement, conflicting paths, an ambiguous or implausible median, a small run
-    without format evidence, or a thousands run holding rows already in shares (above
-    ``THOUSANDS_ROW_CEILING``) raise: the governed migrate rolls back and restores, and B0
-    stops for a manual unit ruling (read the same decisions beforehand with
-    :func:`ticker_history_unit_inventory`). Read-only: the vendor-thousands runs are scaled
-    by the batch stage ``bars_unit_correction`` (ledger ``equity_bar_unit_corrections``,
-    created by 0329), never by this migration.
+    without format evidence, or a genuinely mixed-unit thousands run (more suspect lines
+    above ``THOUSANDS_ROW_CEILING`` than the C-81 bound) raise: the governed migrate rolls
+    back and restores, and B0 stops for a manual unit ruling (read the same decisions
+    beforehand with :func:`ticker_history_unit_inventory`). A thousands run within the
+    bound passes; its ``shares_unit_suspect`` lines are the stage's to withhold. Read-only:
+    the vendor-thousands runs are scaled by the batch stage ``bars_unit_correction``
+    (ledger ``equity_bar_unit_corrections``, created by 0329), never by this migration.
     """
     inventory = ticker_history_unit_inventory(conn)
     refused = [run for run in inventory if run["action"] == "abort"]

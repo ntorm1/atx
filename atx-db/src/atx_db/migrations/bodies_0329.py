@@ -211,9 +211,9 @@ def _build_ledger_tables(conn: duckdb.DuckDBPyConnection) -> None:
          "Control ledger; started_at/finished_at are wall clocks of the batch, not data availability."),
         ("equity_bar_unit_corrections", "control", "equity_daily_bars", "security_id,run_start",
          "Ledger of the A9 TickerHistory vendor-shares correction (batch stage bars_unit_correction): one row "
-         "per price line and run of bars with the stored unit basis, the multiplier applied to "
-         "shares_outstanding (market_cap_usd recomputed) and the evidence. Migration 0327 only gates on the "
-         "read-only unit inventory; it corrects nothing.",
+         "per price line and run of bars with the stored unit basis (thousands | units | shares_unit_suspect), "
+         "the multiplier applied to shares_outstanding (market_cap_usd recomputed) and the evidence. Migration "
+         "0327 only gates on the read-only unit inventory; it corrects nothing.",
          "Control ledger; a corrected line's bars change value when the stage publishes (no bar revision "
          "rows). created_at is the stage's wall clock."),
     )
@@ -252,9 +252,12 @@ def _build_ledger_tables(conn: duckdb.DuckDBPyConnection) -> None:
         ("run_start", "First trade_date of the line's run of bars (inclusive); with security_id the natural key. "
                       "Whole lines are decided, and a run boundary never falls on a factor-step bar (0.13 D10)."),
         ("run_end", "Last trade_date of the run (inclusive)."),
-        ("unit_basis", "Unit of the stored vendor shares_outstanding before the stage (A9: the input file format "
-                       "and the run's median must agree; any doubt aborts)."),
-        ("multiplier", "Factor applied to shares_outstanding: 1000.0 for vendor thousands, 1.0 when kept."),
+        ("unit_basis", "Disposition of the line's stored vendor shares_outstanding: thousands (scaled) | units "
+                       "(kept) | shares_unit_suspect (ruling C-81: a line of a thousands run with a row above the "
+                       "1e8 stored ceiling; its share-derived values are withheld, never rescaled by guess). A9: the "
+                       "input file format and the run's median must agree; any other doubt aborts."),
+        ("multiplier", "Factor applied to shares_outstanding: 1000.0 for vendor thousands, 1.0 when kept or "
+                       "shares_unit_suspect."),
         ("evidence", "The A9 evidence of the decision (input format, median verdict, rows above the 1e8 ceiling)."),
         ("created_at", "Wall clock when the stage wrote the row (set by the writer; no DEFAULT now())."),
     ))

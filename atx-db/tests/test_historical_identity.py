@@ -1027,6 +1027,47 @@ def test_ticker_history_unit_needs_format_evidence_and_median_to_agree(
     assert _bars(con) == before  # the correction is the bars_unit_correction stage, never 0327
 
 
+def test_ticker_history_suspect_lines_within_the_c81_bound_pass_as_whole_lines(tmp_store):
+    """C-81: a thousands run with <= 5 lines / <= 0.01% rows above the ceiling passes the gate; the
+    lines are shares_unit_suspect WHOLE lines for the stage to withhold. One more line aborts."""
+    con = tmp_store.con
+    th = b0327.TICKER_HISTORY_SOURCE
+    _run(con, "run", _PARQUET)
+    con.execute(
+        """
+        INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, "close", adjusted_close,
+            run_id, shares_outstanding, market_cap_usd)
+        SELECT ?, 'S' || (i % 2000), 'S' || (i % 2000), DATE '2025-01-02' + CAST(i // 2000 AS INTEGER),
+               10.0, 10.0, 'run', 20000, 200000.0
+        FROM range(40000) t(i)
+        """,
+        [th],
+    )
+    # The production shape (CIK 1769256): the vendor delivers one line in shares from some date on.
+    for day, shares in ((dt.date(2025, 3, 28), 1_999_315), (dt.date(2025, 3, 31), 1_999_315_840),
+                        (dt.date(2025, 4, 1), 1_999_315_840)):
+        _bar(con, source=th, run_id="run", security="SUSPECT", shares=shares, day=day)
+    before = _bars(con)
+
+    [run] = b0327.ticker_history_unit_inventory(con)
+    assert (run["action"], run["decision_basis"]) == ("scale_x1000", "format_and_median")
+    assert (run["shares_unit_suspect_line_count"], run["shares_unit_suspect_rows"]) == (1, 3)  # the whole line
+    [line] = run["shares_unit_suspect_lines"]
+    assert (line["security_id"], line["disposition"], line["rows"], line["rows_above_ceiling"],
+            line["first_trade_date"], line["last_trade_date"]) == (
+        "SUSPECT", "shares_unit_suspect", 3, 2, "2025-03-28", "2025-04-01")
+    _in_transaction(con, b0327._ticker_history_unit_gate)
+    assert _bars(con) == before
+
+    # A sixth suspect line makes it a genuinely mixed-unit file: 0327 aborts.
+    for index in range(5):
+        _bar(con, source=th, run_id="run", security=f"MIXED{index}", shares=5_000_000_000)
+    [run] = b0327.ticker_history_unit_inventory(con)
+    assert run["action"] == "abort" and "mixed units" in run["reason"]
+    with pytest.raises(RuntimeError, match="mixed units"):
+        _in_transaction(con, b0327._ticker_history_unit_gate)
+
+
 # --------------------------------------------------------------------------- helpers
 
 

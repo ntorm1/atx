@@ -981,9 +981,9 @@ _EST_ACTUAL_0327_KEY = [
 
 # Source checksums of the three migrations production has not applied yet (prod max 0326 on
 # 2026-09-26). Once production applies them they are append-only: a changed body fails here.
-_CHECKSUM_0327 = "76e6b424a27e03dfa57fb98e3b050ea4dc96984fc2bc46043648437bea895e91"
+_CHECKSUM_0327 = "5224f1d0ab11dc0eff52bcad626a31620ace9470fed0a3b2fa1fa8b43e865965"
 _CHECKSUM_0328 = "a65dc87b30275c95b929ac6a4d374ddb7ed477eba2df84128c379b8eb7927d48"
-_CHECKSUM_0329 = "927cb929f6647f68770905d551763ca1a3a98ae739afb0df10e274fe1207c5b6"
+_CHECKSUM_0329 = "0dfc9b494d4b99942b71c6ac59e9a8a4aec664c588718e7a323af730d836be84"
 
 
 def _unkeyed_bulk_violations(con) -> list[tuple[str, str]]:
