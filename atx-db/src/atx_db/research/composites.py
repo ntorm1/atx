@@ -92,10 +92,13 @@ run over these versions evaluates the **full family** (every candidate signal pl
 composites: BH, Holm and the DSR ``n_trials`` count all of them), and R4 grades it with
 every row stamped ``composite_post_selection`` and the constituent ledger id; no ledger
 containing composites or that stamp may seed another build. The registry allows one
-holdout evaluation per (frozen split, basis): an identical rerun is a no-op, an
-unevaluated build may be replaced (a retry after an abort), and any other build after
-the evaluation is refused. The build identity is policy + ledger + inputs + value
-digests; code digests are provenance only.
+holdout look per (frozen split, basis), recorded *before* the composite R3b run starts:
+an identical rerun is a no-op once the run sealed and resumes it after an abort; a
+different build may replace the stored one only while the recorded run never looked at
+the holdout (it neither completed nor wrote a feature row of the basis); any other build
+after that is refused. The build identity is policy + ledger + inputs + value digests;
+code digests are provenance only. Run the R4 grading (``qualify``) right after the build,
+on the same commit: a catalog change in between makes the spent window ungradable.
 """
 
 from __future__ import annotations
@@ -1407,21 +1410,43 @@ def _insert_rows(con: duckdb.DuckDBPyConnection, table: str, build_sha: str, row
         con.unregister("_cmp_rows")
 
 
+def _window_looked(con: duckdb.DuckDBPyConnection, run_id: str, basis: str) -> bool:
+    """Whether R3b run ``run_id`` looked at the holdout (R3d's rule): it completed, or it wrote
+    a feature row on ``basis`` (R3b commits each feature with its holdout cells). A run refused
+    or killed before its first feature of the basis never saw the holdout."""
+    catalog = con.execute("SELECT current_database()").fetchone()
+    tables = {r[0] for r in con.execute(
+        "SELECT table_name FROM duckdb_tables() WHERE database_name = ? AND schema_name = 'main' "
+        "AND table_name IN ('research_eval_runs', 'research_eval_feature_inputs')",
+        [catalog[0] if catalog else None]).fetchall()}
+    if "research_eval_runs" not in tables:
+        return False
+    row = con.execute("SELECT status FROM research_eval_runs WHERE run_id = ?", [run_id]).fetchone()
+    if row is not None and row[0] == "complete":
+        return True
+    return "research_eval_feature_inputs" in tables and bool(con.execute(
+        "SELECT count(*) FROM research_eval_feature_inputs WHERE run_id = ? AND basis = ?",
+        [run_id, basis]).fetchone()[0])
+
+
 def persist_build(con: duckdb.DuckDBPyConnection, result: BuildForwardResult) -> str:
     """Store the build of its holdout window: ``'stored'``, ``'exists'`` or ``'replaced'``.
 
-    One holdout evaluation per (split, basis): once a holdout evaluation is recorded, any
-    other build is refused. Before that, a different build replaces the stored one (a
-    retry after an aborted run, even after code changed; the superseded sha is kept).
+    One holdout look per (split, basis). The look is recorded before the composite R3b run
+    starts (:func:`run_build_forward`); once the recorded run looked at the holdout (it
+    completed, or wrote any feature row on the basis: :func:`_window_looked`), any other build
+    is refused, even if that run aborted. Before that, a different build replaces the stored
+    one (a retry after an abort, even after code changed; the superseded sha is kept).
     """
     ensure_composite_schema(con)
-    row = con.execute("SELECT build_sha256, holdout_run_id, superseded_json, ledger_id FROM research_composite_builds "
-                      "WHERE holdout_key = ?", [result.holdout_key]).fetchone()
+    row = con.execute("SELECT build_sha256, holdout_run_id, superseded_json, ledger_id, basis "
+                      "FROM research_composite_builds WHERE holdout_key = ?", [result.holdout_key]).fetchone()
     if row is not None and row[0] == result.sha256:
         return "exists"
-    if row is not None and row[1] is not None:
-        raise CompositeError(f"holdout window {result.holdout_key} was already evaluated (run {row[1]}, build {row[0]} "
-                             f"from ledger {row[3]}): its holdout is spent; one evaluation per split and basis")
+    if row is not None and row[1] is not None and _window_looked(con, row[1], row[4]):
+        raise CompositeError(f"holdout window {result.holdout_key} was already looked at (run {row[1]}, build "
+                             f"{row[0]} from ledger {row[3]}): its holdout is spent; one evaluation per split and "
+                             "basis (an aborted run is resumed by rerunning the identical build)")
     manifest = result.manifest
     members = [{"composite_id": d.composite_id, "level": d.level, "weighting": d.weighting,
                 "anomaly_class": d.anomaly_class, "emitted": d.emitted, "member_id": m, "weight": w, "fit_ic": ic,
@@ -1451,16 +1476,25 @@ def persist_build(con: duckdb.DuckDBPyConnection, result: BuildForwardResult) ->
     return "stored" if row is None else "replaced"
 
 
-def record_holdout_evaluation(con: duckdb.DuckDBPyConnection, key: str, versions: Sequence[str], run_id: str) -> None:
-    """Record the one R3b run that evaluated the window's composites (a second one is refused)."""
-    row = con.execute("SELECT holdout_run_id FROM research_composite_builds WHERE holdout_key = ?", [key]).fetchone()
+def record_holdout_evaluation(con: duckdb.DuckDBPyConnection, key: str, versions: Sequence[str], run_id: str, *,
+                              evaluated: bool = True) -> None:
+    """Record the one R3b run of the window's composites.
+
+    ``evaluated=False`` records the look *before* the run starts (the start of the look is
+    committed first, so an aborted run is resumed, never replaced by another build);
+    ``evaluated=True`` stamps ``evaluated_at`` once it sealed. Another run id is refused once
+    the recorded run looked at the holdout (:func:`_window_looked`); a recorded run that never
+    looked (refused or killed before its first feature) may be superseded by a new attempt.
+    """
+    row = con.execute("SELECT holdout_run_id, basis FROM research_composite_builds WHERE holdout_key = ?",
+                      [key]).fetchone()
     if row is None:
         raise CompositeError(f"no composite build for holdout window {key}")
-    if row[0] is not None and row[0] != run_id:
+    if row[0] is not None and row[0] != run_id and _window_looked(con, row[0], row[1]):
         raise CompositeError(f"holdout window {key}: the composites were already evaluated once (run {row[0]})")
     con.execute("UPDATE research_composite_builds SET composite_versions_json = ?, holdout_run_id = ?, "
-                "evaluated_at = coalesce(evaluated_at, ?) WHERE holdout_key = ?",
-                [_canonical(list(versions)), run_id, _now(), key])
+                "evaluated_at = CASE WHEN ? THEN coalesce(evaluated_at, ?) END WHERE holdout_key = ?",
+                [_canonical(list(versions)), run_id, evaluated, _now(), key])
 
 
 # ---------------------------------------------------------------------------
@@ -1617,10 +1651,21 @@ def run_build_forward(store: ResearchStore, ledger_id: str, *, factor_run_id: st
     values streamed per batch, the R3b selection series and the P4 monthly factor run;
     stores the build (one evaluation per split and basis), writes one composite version
     per basis (the source version plus the composites) and runs one R3b evaluation of them
-    with the source run's spec. :func:`qualify_composites` then grades that run with R4.
-    Refused before anything is written when the committed anomaly catalog changed since the
-    source versions were built: R3b would stamp the composite run with catalog drift, R4
-    refuses to grade such a run, and the one holdout look would be spent for nothing.
+    with the source run's spec. :func:`qualify_composites` then grades that run with R4:
+    run it right after this call, on the same commit (a catalog change in between makes the
+    spent window ungradable).
+
+    The one holdout look is recorded (``holdout_run_id``) *before* the R3b run starts. A run
+    that aborted after it looked (killed, or raised, after its first feature of the basis)
+    is resumed by rerunning the identical build (R3b ``resume``: spec and code must be
+    unchanged); no other build is accepted for the window. A recorded run that never looked
+    is superseded by a fresh attempt (``p5_<build>_<n>``), and a different build may replace
+    the stored one. A sealed run returns ``evaluated: False``.
+
+    Refused before any look when the committed anomaly catalog differs from the one the
+    source versions were built from, checked at the start and again right before the R3b
+    run: R3b would stamp the composite run with catalog drift, R4 refuses to grade such a
+    run, and the one holdout look would be spent for nothing.
     """
     from .catalog import anomaly_catalog_sha256
 
@@ -1641,17 +1686,13 @@ def run_build_forward(store: ResearchStore, ledger_id: str, *, factor_run_id: st
     if policy.basis not in bases:
         raise CompositeError(f"the source run has no {policy.basis} feature version")
 
-    committed = anomaly_catalog_sha256()
     for basis, version in bases.items():
-        status, catalog_sha = con.execute("SELECT status, catalog_sha256 FROM research_feature_versions "
-                                          "WHERE feature_version = ?", [version]).fetchone()
+        status = con.execute("SELECT status FROM research_feature_versions WHERE feature_version = ?",
+                             [version]).fetchone()[0]
         if basis != policy.basis and status != rf.STATUS_UNTESTABLE:
             raise CompositeError(f"composites on a second testable basis ({basis}) need their own build: v2 builds "
                                  f"on {policy.basis} (the strict basis is untestable today)")
-        if catalog_sha is not None and catalog_sha != committed:
-            raise CompositeError(f"{version} was built from anomaly catalog {catalog_sha}, the committed catalog is "
-                                 f"now {committed}: R4 would refuse to grade the composite run (catalog drift), so "
-                                 "the holdout is not looked at; rebuild the source run on the committed catalog")
+    _refuse_catalog_drift(con, bases.values(), anomaly_catalog_sha256())
     inputs = ev.open_basis_inputs(store, bases[policy.basis], source_spec)
     # R3b's security codes, read right away (the next basis open re-registers R3b's key tables).
     security_ids = [str(r[0]) for r in con.execute("SELECT security_id FROM _ev_securities ORDER BY code").fetchall()]
@@ -1665,46 +1706,77 @@ def run_build_forward(store: ResearchStore, ledger_id: str, *, factor_run_id: st
                                           "results_sha256": None if digest is None else digest[0]},
                            policy_registered_at=composite_policy_registered_at(con, policy),
                            source_created_at=created, allow_post_hoc_policy=allow_post_hoc_policy)
-    outcome = persist_build(con, result)
-    stored = con.execute("SELECT holdout_run_id, composite_versions_json FROM research_composite_builds "
-                         "WHERE holdout_key = ?", [result.holdout_key]).fetchone()
-    if stored[0] is not None:
-        return {"ledger_id": ledger_id, "holdout_key": result.holdout_key, "build": outcome,
-                "build_sha256": result.sha256, "composite_versions": json.loads(stored[1]),
-                "holdout_run_id": stored[0], "evaluated": False}
+    outcome = persist_build(con, result)  # refuses any other build once the window was looked at
+    key = result.holdout_key
+    common = {"ledger_id": ledger_id, "holdout_key": key, "build": outcome, "build_sha256": result.sha256}
+    recorded, recorded_versions, evaluated_at = con.execute(
+        "SELECT holdout_run_id, composite_versions_json, evaluated_at FROM research_composite_builds "
+        "WHERE holdout_key = ?", [key]).fetchone()
+    state = None if recorded is None else con.execute("SELECT status FROM research_eval_runs WHERE run_id = ?",
+                                                      [recorded]).fetchone()
+    if state is not None and state[0] == "complete":  # the one look is done (identical build)
+        if evaluated_at is None:  # sealed, but the process stopped before stamping it
+            with store.transaction():
+                record_holdout_evaluation(con, key, json.loads(recorded_versions), recorded)
+        return {**common, "composite_versions": json.loads(recorded_versions), "holdout_run_id": recorded,
+                "evaluated": False}
     if not result.emitted:  # nothing to evaluate: the holdout is not looked at (the build stays replaceable)
-        return {"ledger_id": ledger_id, "holdout_key": result.holdout_key, "build": outcome,
-                "build_sha256": result.sha256, "composite_versions": [], "holdout_run_id": None,
-                "evaluated": False, "blockers": list(result.manifest["blockers"])}
-    versions = []
-    for basis, version in sorted(bases.items()):
-        if basis == policy.basis:
-            batches = materialize(source, inputs.calendar, result.definitions, result.orientation, policy,
-                                  int(inputs.security_count))
-            versions.append(write_composite_version(store, result, version, batches=batches,
-                                                    security_ids=security_ids, formation_dates=source.date_of))
-        else:  # untestable_strict (checked above): the composites are untestable there too
-            versions.append(write_composite_version(store, result, version, batches=None, security_ids=[],
-                                                    formation_dates={}))
-    run_id = f"p5_{result.sha256[:16]}"
+        return {**common, "composite_versions": [], "holdout_run_id": None, "evaluated": False,
+                "blockers": list(result.manifest["blockers"])}
+    if recorded is not None and _window_looked(con, recorded, policy.basis):
+        # The recorded run aborted after it looked: resume it (R3b checks spec and code are unchanged).
+        versions, run_id, resume = list(json.loads(recorded_versions)), recorded, True
+    else:
+        versions = []
+        for basis, version in sorted(bases.items()):  # sealed versions are reused, failed ones resume
+            if basis == policy.basis:
+                batches = materialize(source, inputs.calendar, result.definitions, result.orientation, policy,
+                                      int(inputs.security_count))
+                versions.append(write_composite_version(store, result, version, batches=batches,
+                                                        security_ids=security_ids, formation_dates=source.date_of))
+            else:  # untestable_strict (checked above): the composites are untestable there too
+                versions.append(write_composite_version(store, result, version, batches=None, security_ids=[],
+                                                        formation_dates={}))
+        base = f"p5_{result.sha256[:16]}"
+        taken = {r[0] for r in con.execute("SELECT run_id FROM research_eval_runs WHERE starts_with(run_id, ?)",
+                                           [base]).fetchall()}
+        run_id = next(name for name in (base, *(f"{base}_{n}" for n in range(2, len(taken) + 3)))
+                      if name not in taken)  # an earlier attempt that never looked keeps its run row
+        resume = False
+    _refuse_catalog_drift(con, versions, anomaly_catalog_sha256())  # m1: again, right before the look
+    with store.transaction():  # the look starts: recorded first, so an abort is resumed, never replaced
+        record_holdout_evaluation(con, key, versions, run_id, evaluated=False)
     spec = replace(source_spec, run_id=run_id, feature_versions=tuple(versions), features=None, variants=None)
-    evaluation = ev.run_evaluation(store, spec)
+    evaluation = ev.run_evaluation(store, spec, resume=resume)
     with store.transaction():
-        record_holdout_evaluation(con, result.holdout_key, versions, run_id)
-    return {"ledger_id": ledger_id, "holdout_key": result.holdout_key, "build": outcome,
-            "build_sha256": result.sha256, "composite_versions": versions, "holdout_run_id": run_id,
-            "evaluated": True, "family_complete": evaluation.family_complete,
+        record_holdout_evaluation(con, key, versions, run_id)
+    return {**common, "composite_versions": versions, "holdout_run_id": run_id, "evaluated": True,
+            "resumed": resume, "family_complete": evaluation.family_complete,
             "n_trials": evaluation.family.get("n_trials"), "blockers": list(evaluation.blockers)}
+
+
+def _refuse_catalog_drift(con: duckdb.DuckDBPyConnection, versions: Iterable[str], committed: str) -> None:
+    """Refuse when a feature version was built from another anomaly catalog than the committed
+    one (R3b stamps that run ``*_feature_catalog_differs_from_committed_catalog``; R4 refuses it)."""
+    for version in versions:
+        row = con.execute("SELECT catalog_sha256 FROM research_feature_versions WHERE feature_version = ?",
+                          [version]).fetchone()
+        if row is not None and row[0] is not None and row[0] != committed:
+            raise CompositeError(f"{version} was built from anomaly catalog {row[0]}, the committed catalog is now "
+                                 f"{committed}: R4 would refuse to grade the composite run (catalog drift), so the "
+                                 "holdout is not looked at; rebuild the source run on the committed catalog")
 
 
 def qualify_composites(con: duckdb.DuckDBPyConnection, key: str, r4_policy: rq.QualificationPolicy,
                        catalog: Iterable[Any]) -> rq.QualificationLedger:
     """Grade the window's one composite run under R4, within the full family (source catalog +
-    composites), every row stamped ``composite_post_selection`` and the constituent ledger id."""
-    row = con.execute("SELECT holdout_run_id, ledger_id, build_sha256 FROM research_composite_builds "
+    composites), every row stamped ``composite_post_selection`` and the constituent ledger id.
+    The run must have sealed (``evaluated_at``); an aborted one is resumed by :func:`run_build_forward`."""
+    row = con.execute("SELECT holdout_run_id, ledger_id, build_sha256, evaluated_at FROM research_composite_builds "
                       "WHERE holdout_key = ?", [key]).fetchone()
-    if row is None or row[0] is None:
-        raise CompositeError(f"holdout window {key} has no evaluated composite build")
+    if row is None or row[0] is None or row[3] is None:
+        raise CompositeError(f"holdout window {key} has no evaluated composite build (a recorded run that has not "
+                             "sealed is resumed by rerunning the identical build)")
     definitions = [CompositeDefinition(cid, level, weighting, cls, (), (), bool(emitted))
                    for cid, level, weighting, cls, emitted in con.execute(
                        "SELECT DISTINCT composite_id, level, weighting, anomaly_class, emitted "
@@ -1784,8 +1856,11 @@ def render_composites_markdown(policy: CompositePolicy, result: BuildForwardResu
         "family (every candidate signal plus the composites: BH, Holm and DSR `n_trials` count them all); R4 grades "
         "it with every row stamped `composite_post_selection` and the constituent ledger id. Such a ledger never "
         "seeds another build. The FM size/value/momentum controls come from the copied source rows.",
-        "- One holdout evaluation per (frozen split, basis): an unevaluated build may be replaced (retry after an "
-        "abort); after the evaluation any other build is refused.",
+        "- One holdout look per (frozen split, basis), recorded before the composite R3b run starts: a run that "
+        "aborted after it looked is resumed by rerunning the identical build, never replaced; a different build may "
+        "replace the stored one only while no look happened. Run `qualify` right after `build`, on the same commit "
+        "(a catalog change in between makes the spent window ungradable; `build` itself refuses a drifted catalog "
+        "before the look).",
         "- Memory: constituents are streamed per batch of formations, never whole histories. Measured bound of "
         "the build (selection, correlations, ICs, fits, materialization of 18 composites): 420 MB peak at 40 "
         "signals x 5,000 names x 170 formations (20,000 security codes) with the CLI's 128 MB DuckDB limit. The "
