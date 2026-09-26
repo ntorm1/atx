@@ -1,6 +1,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 #include <span>
 #include <string>
