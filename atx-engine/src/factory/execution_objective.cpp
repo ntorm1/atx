@@ -443,12 +443,18 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
     }
     if (t < c.decision_end && (t - d0) % c.config.rebalance_sessions == 0) {
       usize names = 0;
+      f64 known_locked_equity=0;
       for (usize i = 0; i < n; ++i) {
         const auto k = t * n + i;
         const auto event_index=claims_enabled?c.cash_event_for_name[i]:c.cash_events.size();
         const bool known_completion=event_index<c.cash_events.size() &&
             c.cash_events[event_index].effective_by_ns<c.decisions[t] &&
             c.cash_events[event_index].available_at_ns<c.decisions[t];
+        // Publication can precede this decision but follow its mark. That
+        // known locked asset cannot finance fresh targets while awaiting claim
+        // recognition. Remove its current accounted long value, not a guessed
+        // marked gain or a cash receipt. Earlier queued targets remain frozen.
+        if (known_completion && holdings[i]>0) known_locked_equity+=holdings[i];
         const bool eligible = (!claims_enabled || retired[i]==0) && !known_completion &&
                               c.member[k] != 0 && c.panel_member[k] != 0 &&
                               std::isfinite(signal[k]) && std::isfinite(c.prices[k]) &&
@@ -456,6 +462,8 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
         masked[i] = eligible ? sign * signal[k] : nan;
         names += eligible;
       }
+      if (!std::isfinite(known_locked_equity))
+        return co::Err(co::ErrorCode::OutOfRange,"cash claim: locked decision equity overflow");
       const auto slot = (t - d0) % slots;
       queued_names[slot] = names;
       if (names < c.config.min_names) {
@@ -467,7 +475,7 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
                                         : std::span<const atx::u32>{c.groups}.subspan(t * n, n);
         c.policy.to_target_weights(SignalView{masked}, universe, scratch, groups);
         for (usize i = 0; i < n; ++i) {
-          const auto target_nav=claims_enabled?nav-receivables:nav;
+          const auto target_nav=claims_enabled?nav-receivables-known_locked_equity:nav;
           if (!std::isfinite(target_nav) || target_nav<0)
             return co::Err(co::ErrorCode::Unavailable,"cash claim: nonspendable target NAV");
           const auto target = scratch.weights[i] * target_nav;

@@ -49,7 +49,8 @@ struct ExecutionCashClaimStreams;
 // claim; out-of-axis and future events are hash-bound but inactive and reported.
 // In-role recognition must be the first mark strictly after public completion.
 // If publication occurs between a mark and its later decision, that decision
-// already excludes the extinct line; recognition still waits for the next mark.
+// already excludes the extinct line and its accounted positive holding from
+// fresh target capital; recognition still waits for the next mark.
 // Unknown payment remains a claim.
 // Policy: fixed USD face; positive receivables excluded from target NAV;
 // negative claims reserve settled cash and retain the last admitted modeled
