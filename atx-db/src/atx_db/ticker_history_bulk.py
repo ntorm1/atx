@@ -9,11 +9,15 @@ validates it, and swaps it in atomically. Raw source bytes remain the lineage.
 
 Daily date partitions after the full load go through
 :mod:`atx_db.ticker_history_incremental` (P14), which reuses this module's
-projection (``_RAW_CTE``), symbol map and :func:`vendor_share_unit_check`. A
-later full republish replaces the source's rows in ``equity_daily_bars``; the
-incremental path's rebase ledger (``equity_adjustment_rebases``) and restated
-revisions (``equity_daily_bar_revisions``) stay. The republished file must be
-newer than every ledger row, so its basis already includes them all.
+projection (``_RAW_CTE``), symbol map and :func:`vendor_share_unit_check`.
+Incremental bars continue their line's stored factor through the vendor's
+``returnFactor`` and are never rebased; they carry the ``run_id`` of the series
+they extend. A later full republish replaces the source's rows in
+``equity_daily_bars`` on the file's own basis, as one new ``run_id`` series:
+each line's adjusted level moves by one constant (the vendor's own
+recurrence), its ratios do not. The incremental path's rebase ledger
+(``equity_adjustment_rebases``) and restated revisions
+(``equity_daily_bar_revisions``) stay as history.
 """
 
 from __future__ import annotations

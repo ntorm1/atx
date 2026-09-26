@@ -1,28 +1,39 @@
-"""P14: incremental TickerHistory3 date partitions.
+"""P14: incremental TickerHistory3 date partitions (0.14 fix: stored bars are never rebased).
 
-One fixture, three daily partitions of three vendor lines (the vendor's
+One fixture, daily partitions of three vendor lines (the vendor's
 ``cumulReturnFactor`` is 1.0 on each partition's own date, as on the real feed):
 
-* the second partition appends only its own date; the first date's rows are untouched;
-* re-applying a partition changes nothing;
+* the second partition appends only its own date and continues each line's
+  series (``run_id``) and stored factor; re-applying it changes nothing;
 * an ex-dividend on one line in the third partition (``returnFactor`` 0.98)
-  moves that line's stored adjusted history to the new basis (x 0.98) and
-  records one ledger row (``equity_adjustment_rebases``) at the third
-  partition's receipt; raw fields and every bar's clock stay as first
-  published; a point-in-time read before that receipt still returns the
-  pre-rebase adjusted history; the other lines are untouched;
-* the rebase is refused, with nothing written, until the ledger is allowed
-  (migration 0328 formalizes it).
+  writes one ledger row and a new bar whose factor continues the line's
+  (1 / 0.98); no stored bar changes; the vendor-basis point-in-time read
+  applies the multiplier only from the rebase's receipt;
+* a re-delivered third partition (a raw close correction, a corrected
+  returnFactor) restates those keys through the revisions table, adds a
+  correcting ledger row, and the as-of read returns the superseded versions
+  before its receipt;
+* the ledger / revisions tables are refused, with nothing written, on a
+  warehouse below migration 0328;
+* a partition load killed before COMMIT leaves nothing and resumes; one killed
+  after COMMIT, before its CHECKPOINT, replays from the WAL, reruns as
+  ``unchanged`` and the next partition applies (the replayed indexes are sound);
+  the result equals an uninterrupted load.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import duckdb
 import pytest
 
 from atx_db.ticker_history_incremental import (
+    BASIS_STORED,
     REBASES_TABLE,
     REVISIONS_TABLE,
     PartitionIngestOptions,
@@ -31,12 +42,15 @@ from atx_db.ticker_history_incremental import (
     ingest_ticker_history_partition,
 )
 
-_DAYS = (dt.date(2026, 9, 21), dt.date(2026, 9, 22), dt.date(2026, 9, 23))
+_DAYS = tuple(dt.date(2026, 9, day) for day in (21, 22, 23, 24, 25))
 _RECEIPTS = tuple(dt.datetime.combine(day + dt.timedelta(days=1), dt.time(10)) for day in _DAYS)
-_CLOSES = {101: (10.0, 10.5, 11.0), 102: (20.0, 20.2, 20.4), 103: (30.0, 31.0, 30.2)}
+_CLOSES = {101: (10.0, 10.5, 11.0, 11.2, 11.1), 102: (20.0, 20.2, 20.4, 20.3, 20.6),
+           103: (30.0, 31.0, 30.2, 30.5, 30.9)}
+_LINES = {vendor_id: f"TBLTICKERHISTORY-{vendor_id}" for vendor_id in _CLOSES}
+_SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 
-def _write_partition(path, index, *, ex_dividend=None):
+def _write_partition(path, index, *, rf=None, close=None):
     con = duckdb.connect()
     con.execute(
         "CREATE TABLE p (tradingDate DATE, securityID BIGINT, ticker_tk VARCHAR, todayTicker VARCHAR, dn BIGINT, "
@@ -45,20 +59,19 @@ def _write_partition(path, index, *, ex_dividend=None):
     )
     rows = []
     for vendor_id, closes in _CLOSES.items():
-        close = closes[index]
-        rf = 0.98 if vendor_id == ex_dividend else 1.0
+        price = (close or {}).get(vendor_id, closes[index])
         symbol = f"S{vendor_id}"
-        rows.append((_DAYS[index], vendor_id, symbol, symbol, index + 1, close, close, close, close, close, close,
-                     1_000, 50_000, rf, 0.0, 1.0))
+        rows.append((_DAYS[index], vendor_id, symbol, symbol, index + 1, price, price, price, price, price, price,
+                     1_000, 50_000, (rf or {}).get(vendor_id, 1.0), 0.0, 1.0))
     con.executemany("INSERT INTO p VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
     con.execute(f"COPY p TO '{path.as_posix()}' (FORMAT parquet)")
     con.close()
     return path
 
 
-def _ingest(store, path, index, **overrides):
+def _ingest(store, path, received_at, **overrides):
     return ingest_ticker_history_partition(store, PartitionIngestOptions(
-        partition_path=path, received_at=_RECEIPTS[index], minimum_partition_lines=1, **overrides))
+        partition_path=path, received_at=received_at, minimum_partition_lines=1, **overrides))
 
 
 def _bars(store):
@@ -68,64 +81,171 @@ def _bars(store):
     ).fetchall()
 
 
-def test_partitions_append_idempotently_and_a_factor_rebase_revises_only_its_line(tmp_store, tmp_path):
-    p1 = _write_partition(tmp_path / "p1.parquet", 0)
-    p2 = _write_partition(tmp_path / "p2.parquet", 1)
-    p3 = _write_partition(tmp_path / "p3.parquet", 2, ex_dividend=103)
+def _asof(store, cutoff, **kwargs):
+    rows = store.con.execute(bars_asof_sql(store, **kwargs), [cutoff]).fetchall()
+    return {(row[1], row[4]): (row[8], row[9]) for row in rows}  # (security_id, date) -> (close, adjusted)
 
-    first = _ingest(tmp_store, p1, 0)
+
+def _wal_bytes(store):
+    wal = Path(f"{store.path}.wal")
+    return wal.stat().st_size if wal.exists() else 0
+
+
+def test_partitions_continue_the_stored_factor_and_never_rebase_history(tmp_store, tmp_path):
+    parts = [_write_partition(tmp_path / f"p{i + 1}.parquet", i, rf={103: 0.98} if i == 2 else None)
+             for i in range(3)]
+    first = _ingest(tmp_store, parts[0], _RECEIPTS[0])
     assert (first.status, first.appended_rows, first.new_lines) == ("applied", 3, 3)
     after_first = _bars(tmp_store)
-    # A8 units: parquet shares are thousands (format evidence + median), stored in shares.
-    assert {row[6] for row in after_first} == {50_000_000}
+    assert {row[6] for row in after_first} == {50_000_000}  # A8: parquet thousands stored in shares
 
-    second = _ingest(tmp_store, p2, 1)
+    second = _ingest(tmp_store, parts[1], _RECEIPTS[1])
     assert (second.appended_rows, second.restated_rows, second.rebased_lines) == (3, 0, 0)
     after_second = _bars(tmp_store)
-    assert [row for row in after_second if row[1] == _DAYS[0]] == after_first  # only the new date was appended
+    assert [row for row in after_second if row[1] == _DAYS[0]] == after_first
     assert {row[4] for row in after_second if row[1] == _DAYS[1]} == {_RECEIPTS[1]}  # receipt clock
-
-    again = _ingest(tmp_store, p2, 1)
+    # C4: a new bar continues its line's series, so P8 / R1d read one series per line.
+    assert tmp_store.con.execute(
+        "SELECT max(n) FROM (SELECT count(DISTINCT run_id) AS n FROM equity_daily_bars GROUP BY security_id)"
+    ).fetchone() == (1,)
+    again = _ingest(tmp_store, parts[1], _RECEIPTS[1])
     assert (again.status, again.changed_rows) == ("unchanged", 0) and _bars(tmp_store) == after_second
 
-    ledger_sql = "SELECT (SELECT count(*) FROM data_quality_checks), (SELECT count(*) FROM dataset_runs)"
-    ledger = tmp_store.con.execute(ledger_sql).fetchone()
+    # Below migration 0328 the ledger is refused and nothing is written.
+    tmp_store.con.execute(f"DROP TABLE {REBASES_TABLE}")
+    tmp_store.con.execute(f"DROP TABLE {REVISIONS_TABLE}")
+    ledger_sql = ("SELECT (SELECT count(*) FROM data_quality_checks), (SELECT count(*) FROM dataset_runs), "
+                  "(SELECT count(*) FROM duckdb_tables() WHERE table_name IN (?, ?))")
+    ledger = tmp_store.con.execute(ledger_sql, [REBASES_TABLE, REVISIONS_TABLE]).fetchone()
     with pytest.raises(RevisionsTableNotMigratedError):
-        _ingest(tmp_store, p3, 2)
-    assert _bars(tmp_store) == after_second and tmp_store.con.execute(ledger_sql).fetchone() == ledger
+        _ingest(tmp_store, parts[2], _RECEIPTS[2])
+    assert _bars(tmp_store) == after_second
+    assert tmp_store.con.execute(ledger_sql, [REBASES_TABLE, REVISIONS_TABLE]).fetchone() == ledger
 
-    def tables():
-        return {row[0] for row in tmp_store.con.execute(
-            "SELECT table_name FROM duckdb_tables() WHERE table_name IN (?, ?)",
-            [REBASES_TABLE, REVISIONS_TABLE]).fetchall()}
-
-    assert tables() == set()
-
-    third = _ingest(tmp_store, p3, 2, allow_unmigrated_revisions_table=True)
-    assert (third.appended_rows, third.rebased_lines, third.rebased_rows, third.restated_rows) == (3, 1, 2, 0)
-    rebased = "TBLTICKERHISTORY-103"
-    by_key = {(row[0], row[1]): row for row in _bars(tmp_store)}
-    for row in after_second:
-        now = by_key[(row[0], row[1])]
-        if row[0] == rebased:  # adjusted history x 0.98; raw close, clock, run and shares as first published
-            assert now[3] == pytest.approx(row[3] * 0.98) and now[:3] + now[4:] == row[:3] + row[4:]
-        else:
-            assert now == row
-    # A factor-only revision is one ledger row per rebase, never a copy of history.
-    assert tables() == {REBASES_TABLE}
-    ledger_rows = tmp_store.con.execute(
+    third = _ingest(tmp_store, parts[2], _RECEIPTS[2], allow_unmigrated_revisions_table=True)
+    assert (third.appended_rows, third.rebased_lines, third.restated_rows) == (3, 1, 0)
+    assert _wal_bytes(tmp_store) == 0  # checkpointed after the commit
+    after_third = _bars(tmp_store)
+    assert [row for row in after_third if row[1] <= _DAYS[1]] == after_second  # history untouched
+    by_key = {(row[0], row[1]): row for row in after_third}
+    ex_div = _LINES[103]
+    new_bar = by_key[(ex_div, _DAYS[2])]
+    assert new_bar[3] == pytest.approx(30.2 / 0.98) and new_bar[5] == by_key[(ex_div, _DAYS[0])][5]
+    assert tmp_store.con.execute(
         f"SELECT security_id, partition_date, available_at, multiplier, first_affected_date, last_affected_date "
-        f"FROM {REBASES_TABLE}"
-    ).fetchall()
-    assert ledger_rows == [(rebased, _DAYS[2], _RECEIPTS[2], pytest.approx(0.98), _DAYS[0], _DAYS[1])]
-    assert not tmp_store.con.execute(
-        "SELECT count(*) FROM (SELECT source, security_id, trade_date FROM equity_daily_bars GROUP BY ALL "
-        "HAVING count(*) > 1)").fetchone()[0]
+        f"FROM {REBASES_TABLE}").fetchall() == [(ex_div, _DAYS[2], _RECEIPTS[2], pytest.approx(0.98), *_DAYS[:2])]
 
-    # Point in time: before the third receipt the pre-rebase history is what was known.
-    sql = bars_asof_sql(tmp_store)
-    for cutoff, scale in ((_RECEIPTS[1] + dt.timedelta(hours=2), 1.0), (_RECEIPTS[2] + dt.timedelta(hours=2), 0.98)):
-        known = {(row[1], row[4]): row[9] for row in tmp_store.con.execute(sql, [cutoff]).fetchall()}
-        assert [known[(rebased, day)] for day in _DAYS[:2]] == pytest.approx([30.0 * scale, 31.0 * scale])
-        assert known[("TBLTICKERHISTORY-101", _DAYS[1])] == 10.5
-        assert ((rebased, _DAYS[2]) in known) == (cutoff > _RECEIPTS[2])
+    # Point in time: the rebase multiplier applies from its receipt only.
+    before, after = _RECEIPTS[1] + dt.timedelta(hours=2), _RECEIPTS[2] + dt.timedelta(hours=2)
+    known = _asof(tmp_store, before)
+    assert [known[(ex_div, day)][1] for day in _DAYS[:2]] == pytest.approx([30.0, 31.0])
+    assert (ex_div, _DAYS[2]) not in known
+    known = _asof(tmp_store, after)
+    assert [known[(ex_div, day)][1] for day in _DAYS[:3]] == pytest.approx([29.4, 30.38, 30.2])
+    assert known[(_LINES[101], _DAYS[1])][1] == pytest.approx(10.5)
+    stored = _asof(tmp_store, after, basis=BASIS_STORED)
+    assert [stored[(ex_div, day)][1] for day in _DAYS[:3]] == pytest.approx([30.0, 31.0, 30.2 / 0.98])
+
+    # A re-delivered third partition: 101's close corrected, 103's returnFactor corrected to 0.97.
+    redelivered = _write_partition(tmp_path / "p3b.parquet", 2, rf={103: 0.97}, close={101: 11.1})
+    receipt = _RECEIPTS[2] + dt.timedelta(hours=30)
+    fourth = _ingest(tmp_store, redelivered, receipt, allow_unmigrated_revisions_table=True)
+    assert (fourth.appended_rows, fourth.restated_rows, fourth.rebased_lines) == (0, 2, 1)
+    assert _wal_bytes(tmp_store) == 0
+    assert tmp_store.con.execute(
+        f"SELECT security_id, trade_date, adjusted_close, available_at FROM {REVISIONS_TABLE} ORDER BY ALL"
+    ).fetchall() == [(_LINES[101], _DAYS[2], pytest.approx(11.0), _RECEIPTS[2]),
+                     (ex_div, _DAYS[2], pytest.approx(30.2 / 0.98), _RECEIPTS[2])]
+    restated = {(row[0], row[1]): row for row in _bars(tmp_store)}
+    assert restated[(_LINES[101], _DAYS[2])][2:5] == (11.1, pytest.approx(11.1), receipt)
+    assert restated[(ex_div, _DAYS[2])][3] == pytest.approx(30.2 / 0.97)
+    assert [row for row in _bars(tmp_store) if row[1] <= _DAYS[1]] == after_second
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM (SELECT 1 FROM equity_daily_bars GROUP BY source, security_id, trade_date "
+        "HAVING count(*) > 1)").fetchone() == (0,)
+    known = _asof(tmp_store, after)  # the superseded versions until the re-delivery's receipt
+    assert known[(_LINES[101], _DAYS[2])] == pytest.approx((11.0, 11.0))
+    assert [known[(ex_div, day)][1] for day in _DAYS[:3]] == pytest.approx([29.4, 30.38, 30.2])
+    known = _asof(tmp_store, receipt + dt.timedelta(hours=1))
+    assert known[(_LINES[101], _DAYS[2])] == pytest.approx((11.1, 11.1))
+    assert [known[(ex_div, day)][1] for day in _DAYS[:3]] == pytest.approx([29.1, 30.07, 30.2])
+
+
+_KILL = """
+import datetime as dt, os, sys
+from pathlib import Path
+from atx_db import ticker_history_incremental as p14
+from atx_db.connection import DuckDBStore
+store = DuckDBStore(Path(sys.argv[1]))
+store.reopen()
+store.con.execute("SET memory_limit = '256MB'")
+store._initialized = True
+if sys.argv[4] == "before_checkpoint":
+    p14._checkpoint = lambda _store: os._exit(9)
+else:
+    publish = p14._publish_new_lines
+    def die(*args, **kwargs):
+        publish(*args, **kwargs)
+        os._exit(9)
+    p14._publish_new_lines = die
+p14.ingest_ticker_history_partition(store, p14.PartitionIngestOptions(
+    partition_path=Path(sys.argv[2]), received_at=dt.datetime.fromisoformat(sys.argv[3]), minimum_partition_lines=1))
+"""
+
+
+def _killed(store, path, received_at, mode):
+    store.close()
+    done = subprocess.run(
+        [sys.executable, "-c", _KILL, str(store.path), str(path), received_at.isoformat(), mode],
+        env={**os.environ, "PYTHONPATH": _SRC, "OPENBLAS_NUM_THREADS": "1"}, capture_output=True, text=True,
+        timeout=300,
+    )
+    assert done.returncode == 9, done.stderr
+    wal = _wal_bytes(store)
+    store.reopen()  # replays the WAL, if any
+    return wal
+
+
+def _state(store):
+    bars = store.con.execute(
+        "SELECT security_id, trade_date, close, adjusted_close, available_at FROM equity_daily_bars ORDER BY ALL"
+    ).fetchall()
+    ledger = store.con.execute(
+        f"SELECT security_id, partition_date, available_at, multiplier FROM {REBASES_TABLE} ORDER BY ALL").fetchall()
+    series = store.con.execute(
+        "SELECT max(n) FROM (SELECT count(DISTINCT run_id) AS n FROM equity_daily_bars GROUP BY security_id)"
+    ).fetchone()
+    return bars, ledger, series
+
+
+def test_a_killed_partition_load_resumes_to_the_uninterrupted_result(tmp_store, fresh_store, tmp_path):
+    parts = [_write_partition(tmp_path / f"p{i + 1}.parquet", i, rf={103: 0.98} if i == 2 else None)
+             for i in range(5)]
+    for store in (tmp_store, fresh_store):
+        for index in range(2):
+            _ingest(store, parts[index], _RECEIPTS[index])
+    applied = "SELECT count(*) FROM data_quality_checks WHERE check_name = 'incremental_partition_applied'"
+    runs = tmp_store.con.execute(applied).fetchone()
+
+    # Killed inside the transaction: nothing of the partition is left (only the A8 unit check's own
+    # quality row, written before the transaction, replays); it resumes.
+    _killed(tmp_store, parts[2], _RECEIPTS[2], "before_commit")
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM equity_daily_bars WHERE trade_date = ?", [_DAYS[2]]).fetchone() == (0,)
+    assert tmp_store.con.execute(f"SELECT count(*) FROM {REBASES_TABLE}").fetchone() == (0,)
+    assert tmp_store.con.execute(applied).fetchone() == runs
+    assert _ingest(tmp_store, parts[2], _RECEIPTS[2]).status == "applied"
+
+    # Killed after COMMIT, before CHECKPOINT: the partition lives only in the WAL and replays on open.
+    assert _killed(tmp_store, parts[3], _RECEIPTS[3], "before_checkpoint") > 0
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM equity_daily_bars WHERE trade_date = ?", [_DAYS[3]]).fetchone() == (3,)
+    assert _ingest(tmp_store, parts[3], _RECEIPTS[3]).status == "unchanged"
+    # The next partition writes every indexed ledger table the replayed transaction wrote.
+    assert _ingest(tmp_store, parts[4], _RECEIPTS[4]).status == "applied"
+    assert _wal_bytes(tmp_store) == 0
+
+    for index in range(2, 5):
+        _ingest(fresh_store, parts[index], _RECEIPTS[index])
+    assert _state(tmp_store) == _state(fresh_store)
+    assert _state(tmp_store)[2] == (1,) and len(_state(tmp_store)[1]) == 1
