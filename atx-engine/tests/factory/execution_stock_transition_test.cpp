@@ -271,8 +271,8 @@ TEST(ExecutionStockTransition, EmptyStockPreservesCashRecipeAndAllNumericalArray
   auto a=f.context(*p,{}, {&ce,1},true); ASSERT_TRUE(a);
   auto b=f.context(*p,{}, {&ce,1}); ASSERT_TRUE(b);
   EXPECT_EQ(a->identity_sha256(),b->identity_sha256());
-  auto ar=ex::extract_execution_signal_claims(f.signal,*a); ASSERT_TRUE(ar);
-  auto br=ex::extract_execution_signal_transitions(f.signal,*b); ASSERT_TRUE(br);
+  const auto ar=ex::extract_execution_signal_claims(f.signal,*a); ASSERT_TRUE(ar);
+  const auto br=ex::extract_execution_signal_transitions(f.signal,*b); ASSERT_TRUE(br);
   const auto& x=ar->streams; const auto& y=br->cash.streams;
   for (const auto pair:{std::pair{&x.pnl_flat,&y.pnl_flat},std::pair{&x.gross_flat,&y.gross_flat},
       std::pair{&x.pos_flat,&y.pos_flat},std::pair{&x.end_nav_flat,&y.end_nav_flat},
