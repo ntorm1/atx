@@ -97,4 +97,60 @@ TEST(ImplIcScreenConfig, EveryEnabledDecisionInputInvalidatesResume) {
     EXPECT_EQ(impl::compute_discover_fingerprint(base),
               impl::compute_discover_fingerprint(inactive));
 }
+TEST(ImplIcEpochConfig, CliRequiresExplicitRulePreregistrationCatalogAndAnchor) {
+    auto legacy = parse({"atx-impl", "equity-ic"});
+    ASSERT_TRUE(legacy);
+    EXPECT_EQ(legacy->equity_ic_trial_accounting_rule, "legacy-ledger-v1");
+    EXPECT_TRUE(impl::validate_ic_epoch_flags(*legacy));
+    EXPECT_FALSE(parse({"atx-impl", "equity-ic", "--ic-epoch-catalog", "unused.jsonl"}));
+    EXPECT_FALSE(parse({"atx-impl", "equity-ic", "--ic-trial-accounting-rule", "epoch-e2-v1"}));
+    EXPECT_FALSE(parse({"atx-impl", "equity-ic", "--ic-trial-accounting-rule", "unknown"}));
+    auto active = parse({"atx-impl", "equity-ic", "--ic-trial-accounting-rule", "epoch-e2-v1",
+        "--ic-prereg-file", "unused-prereg.json", "--ic-prereg-sha256", std::string(64, 'a'),
+        "--ic-epoch-catalog", "unused-catalog.jsonl", "--ic-epoch-anchor", std::string(64, '0')});
+    ASSERT_TRUE(active);
+    EXPECT_TRUE(impl::validate_ic_epoch_flags(*active));
+    EXPECT_TRUE(active->set_flags.contains("ic-epoch-anchor"));
+    EXPECT_EQ(active->equity_ic_epoch_anchor, std::string(64, '0'));
+    auto invalid = *active;
+    invalid.subcommand = "discover";
+    EXPECT_FALSE(impl::validate_ic_epoch_flags(invalid));
+    invalid = *active; invalid.equity_ic_epoch_catalog.clear();
+    EXPECT_FALSE(impl::validate_ic_epoch_flags(invalid));
+    invalid = *active; invalid.equity_ic_prereg_file.clear();
+    EXPECT_FALSE(impl::validate_ic_epoch_flags(invalid));
+    invalid = *active; invalid.equity_ic_trial_accounting_rule = "legacy-ledger-v1";
+    EXPECT_FALSE(impl::validate_ic_epoch_flags(invalid));
+    for (const auto& anchor : {std::string{}, std::string(63, 'a'), std::string(64, 'A'), std::string(64, 'g')}) {
+        invalid = *active; invalid.equity_ic_epoch_anchor = anchor;
+        EXPECT_FALSE(impl::validate_ic_epoch_flags(invalid));
+    }
+}
+
+TEST(ImplIcEpochConfig, ConfigFileAndCliMergeUseTheSameGuardAndPreserveTrustedHead) {
+    const auto path = std::filesystem::temp_directory_path() / "atx_ic_epoch_config.cfg";
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove(path, ec); }
+    } cleanup{path};
+    {
+        std::ofstream file(path);
+        ASSERT_TRUE(file);
+        file << "ic-trial-accounting-rule=epoch-e2-v1\nic-prereg-file=unused.json\n"
+             << "ic-prereg-sha256=" << std::string(64, 'a')
+             << "\nic-epoch-catalog=unused.jsonl\nic-epoch-anchor=" << std::string(64, '0') << '\n';
+    }
+    auto from_file = impl::parse_config_file(path.string(), "equity-ic");
+    ASSERT_TRUE(from_file);
+    EXPECT_TRUE(impl::validate_ic_epoch_flags(*from_file));
+    EXPECT_FALSE(impl::parse_config_file(path.string(), "discover"));
+    auto merged = parse({"atx-impl", "equity-ic", "--config", path.string(),
+                         "--ic-epoch-anchor", std::string(64, 'b')});
+    ASSERT_TRUE(merged);
+    ASSERT_TRUE(impl::merge_config_file(*merged, path.string()));
+    EXPECT_EQ(merged->equity_ic_epoch_anchor, std::string(64, 'b'));
+    EXPECT_TRUE(impl::validate_ic_epoch_flags(*merged));
+    merged->equity_ic_prereg_sha256.clear();
+    EXPECT_FALSE(impl::validate_ic_epoch_flags(*merged));
+}
 } // namespace atx_test_ic_screen_config
