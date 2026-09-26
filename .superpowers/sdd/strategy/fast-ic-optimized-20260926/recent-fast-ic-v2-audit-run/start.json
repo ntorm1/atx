@@ -1,0 +1,30 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "0f618a45b3bd256eddd3a96f64893746063818d9",
+  "started_utc": "2026-09-26T23:45:15.368447+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-B",
+    "build-equity/audit-fast-ic-v2.py"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\audit-fast-ic-v2.py",
+      "sha256": "1c12709c51052fea2957953851d607c0c372accdc5b749a5d5ec2cc1a8d2b9ac"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-v2\\summary.json",
+      "sha256": "7ccd0d8410b2a0a50cdbea83964dd3df0e51205927830c711aaa9739c5f5402b"
+    }
+  ],
+  "limits": {
+    "seconds": 30.0,
+    "max_rss_mib": 256,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 2757439488,
+  "outcome": "launch-failed",
+  "exit_code": null
+}

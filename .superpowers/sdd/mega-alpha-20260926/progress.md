@@ -1,5 +1,38 @@
 # Active task: recent-data DSL ensemble
 
+## Latest: completed TRAIN, resume validation next
+
+Root HEAD before this checkpoint `0230d799`. No active build/process. New
+pending CMake edit adds existing factory/ic_screen_test.cpp to the focused
+atx-impl-strategy-ic-tests target to qualify legacy arithmetic/bookkeeping.
+Next ignored build helper `build-equity/build-recent-strategy-fast-ic-resume.ps1`.
+
+At0f618a45, optimized build31.631s Jobs3 and all13 native checks1.618s pass.
+Only3privateCPP commands gained O2/Ob2/finline and local PCHexceptions;
+allotherflags/CRT/FP/ISA/PCH/deps unchanged. v2 fullTRAIN48+combined completes
+131.666s; wholeprocesscap180.218s leaves13VALcomplete/14started, noVALblend.
+Peak896258048bytes. Samefirst10 candidates84.772s->24.090s, all62376 valid
+dailyIC values identical;1truncatedbaselineCSVrow excluded. Exactv2packet
+fast-ic-optimized-20260926 and adjacent qualification report preserve all.
+
+Resume artifact `build-equity/recent-fast-ic-v2/orientations.json` SHA
+5106fdc13fc5347c9c2c670714c134a1978e6b7a0d2d2b5dd79bacb7dfb782d6;
+adjacentrecipe needed. Same fullrole pins/library/minnames2000/memory1536,
+workers4; add --orientations PATH --orientations-sha256 SHA, newoutputdir.
+No TRAIN payload/refit. 2025+ reserved.
+
+New source imported: parallelICbfabe3a4 +fixture5330a5fd, resume34d149a2
++fixturee72f32da, caller0230d799. G0sourceapproved42337ab3 pendingimport.
+Pool4 separately implements opt-in --save-combined exactf64 blend+effective
+membermask and boundmanifest; include before resumedVAL if ready, to avoid
+re-evaluating48DSLs for later portfolio construction. Pool5 now DESIGNONLY
+for fast savedblend portfolio/turnover work; no source/data/buildthere.
+
+TRAINcombinedIC5/21/63=.03499/.04993/.05983, training-onlyfit, noSharpe.
+Plannedmeanmonthlyturnover35.32%, meangross.9012,maxabsnet.0645; targetnotmet.
+Do not resume corporate-action catalog expansion. Focus runtime, composition,
+then fast portfolio construction. Alloldercheckpoints supersededasneeded.
+
 ## Latest runtime checkpoint
 
 At clean source `20bf677b`, focused build passed in27.729s Jobs3 (eight CXX

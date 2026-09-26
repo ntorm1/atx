@@ -1,0 +1,41 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 13 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 5 tests from StrategyIcComposition
+[ RUN      ] StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask
+[       OK ] StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask (795 ms)
+[ RUN      ] StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting
+[       OK ] StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting (0 ms)
+[ RUN      ] StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions
+[       OK ] StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions (0 ms)
+[ RUN      ] StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix
+[       OK ] StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix (0 ms)
+[ RUN      ] StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses
+[       OK ] StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses (0 ms)
+[----------] 5 tests from StrategyIcComposition (795 ms total)
+
+[----------] 5 tests from StrategyIcRunner
+[ RUN      ] StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns
+[       OK ] StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns (165 ms)
+[ RUN      ] StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload
+[       OK ] StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload (90 ms)
+[ RUN      ] StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean
+[       OK ] StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean (207 ms)
+[ RUN      ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets
+[       OK ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets (269 ms)
+[ RUN      ] StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload
+[       OK ] StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload (86 ms)
+[----------] 5 tests from StrategyIcRunner (819 ms total)
+
+[----------] 3 tests from ResearchIc
+[ RUN      ] ResearchIc.LegacyFourHorizonSeriesRemainBitIdentical
+[       OK ] ResearchIc.LegacyFourHorizonSeriesRemainBitIdentical (1 ms)
+[ RUN      ] ResearchIc.EndpointPresenceAndCandidatePairsAreCountedWithoutFutureMembership
+[       OK ] ResearchIc.EndpointPresenceAndCandidatePairsAreCountedWithoutFutureMembership (0 ms)
+[ RUN      ] ResearchIc.ShortLongHorizonIsUnavailableAndNeverRejected
+[       OK ] ResearchIc.ShortLongHorizonIsUnavailableAndNeverRejected (0 ms)
+[----------] 3 tests from ResearchIc (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 13 tests from 3 test suites ran. (1618 ms total)
+[  PASSED  ] 13 tests.

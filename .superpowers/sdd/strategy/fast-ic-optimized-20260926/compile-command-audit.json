@@ -1,0 +1,20 @@
+[
+  {
+    "directory": "C:/atx-wt/pool-2/build-equity",
+    "command": "C:\\PROGRA~1\\MICROS~3\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE -DSPDLOG_COMPILED_LIB -IC:\\atx-wt\\pool-2\\atx-engine\\include -IC:\\atx-wt\\pool-2\\atx-core\\include -IC:\\atx-wt\\pool-2\\deps\\equity-dev\\spdlog-src\\include -IC:\\atx-wt\\pool-2\\atx-tsdb\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\tl-expected-src\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\unordered_dense-src\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\eigen3-src -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\xsimd-src\\include -imsvcC:\\atx-cache\\vcpkg_installed\\x64-windows\\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++20 -MDd -Z7 /clang:-ffile-prefix-map=C:/atx-wt/pool-2=. /W4 /permissive- /WX /O2 /Ob2 /clang:-finline /Foatx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\ic_screen.cpp.obj /Fdatx-engine\\CMakeFiles\\atx-engine.dir\\atx-engine.pdb -c -- C:\\atx-wt\\pool-2\\atx-engine\\src\\factory\\ic_screen.cpp",
+    "file": "C:\\atx-wt\\pool-2\\atx-engine\\src\\factory\\ic_screen.cpp",
+    "output": "atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\ic_screen.cpp.obj"
+  },
+  {
+    "directory": "C:/atx-wt/pool-2/build-equity",
+    "command": "C:\\PROGRA~1\\MICROS~3\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE -DSPDLOG_COMPILED_LIB -IC:\\atx-wt\\pool-2\\atx-impl\\src -IC:\\atx-wt\\pool-2\\atx-core\\include -IC:\\atx-wt\\pool-2\\deps\\equity-dev\\spdlog-src\\include -IC:\\atx-wt\\pool-2\\atx-engine\\include -IC:\\atx-wt\\pool-2\\atx-tsdb\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\tl-expected-src\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\unordered_dense-src\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\eigen3-src -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\xsimd-src\\include -imsvcC:\\atx-cache\\vcpkg_installed\\x64-windows\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\json-src\\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++20 -MDd -Z7 /clang:-ffile-prefix-map=C:/atx-wt/pool-2=. /W4 /permissive- /WX /O2 /Ob2 /clang:-finline /Foatx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\strategy_ic_runner.cpp.obj /Fdatx-impl\\CMakeFiles\\atx-impl-core.dir\\atx-impl-core.pdb -c -- C:\\atx-wt\\pool-2\\atx-impl\\src\\strategy_ic_runner.cpp",
+    "file": "C:\\atx-wt\\pool-2\\atx-impl\\src\\strategy_ic_runner.cpp",
+    "output": "atx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\strategy_ic_runner.cpp.obj"
+  },
+  {
+    "directory": "C:/atx-wt/pool-2/build-equity",
+    "command": "C:\\PROGRA~1\\MICROS~3\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE -DSPDLOG_COMPILED_LIB -IC:\\atx-wt\\pool-2\\atx-impl\\src -IC:\\atx-wt\\pool-2\\atx-core\\include -IC:\\atx-wt\\pool-2\\deps\\equity-dev\\spdlog-src\\include -IC:\\atx-wt\\pool-2\\atx-engine\\include -IC:\\atx-wt\\pool-2\\atx-tsdb\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\tl-expected-src\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\unordered_dense-src\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\eigen3-src -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\xsimd-src\\include -imsvcC:\\atx-cache\\vcpkg_installed\\x64-windows\\include -imsvcC:\\atx-wt\\pool-2\\deps\\equity-dev\\json-src\\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++20 -MDd -Z7 /clang:-ffile-prefix-map=C:/atx-wt/pool-2=. /W4 /permissive- /WX /O2 /Ob2 /clang:-finline /Foatx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\strategy_ic_composition.cpp.obj /Fdatx-impl\\CMakeFiles\\atx-impl-core.dir\\atx-impl-core.pdb -c -- C:\\atx-wt\\pool-2\\atx-impl\\src\\strategy_ic_composition.cpp",
+    "file": "C:\\atx-wt\\pool-2\\atx-impl\\src\\strategy_ic_composition.cpp",
+    "output": "atx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\strategy_ic_composition.cpp.obj"
+  }
+]

@@ -1,0 +1,188 @@
+[
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-start.json",
+    "file": "recent-strategy-fast-ic-opt-start.json",
+    "bytes": 274,
+    "sha256": "85f568477c0c3ac6d8cf2ec506c85be9592e26473ff42eb815f2ea96f278766b"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-build-receipt.json",
+    "file": "recent-strategy-fast-ic-opt-build-receipt.json",
+    "bytes": 210,
+    "sha256": "2b06a7e104000fa1d01017aa1dd9ce81250503d85f17cc526a97966437865b68"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-build.log",
+    "file": "recent-strategy-fast-ic-opt-build.log",
+    "bytes": 14342,
+    "sha256": "9fed8e1f47ed5f157423f431e8be8101e0dea01f2894e61acebf56c7318547da"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-cache-summary.txt",
+    "file": "recent-strategy-fast-ic-opt-cache-summary.txt",
+    "bytes": 458,
+    "sha256": "394469fe0264b4cfec30b325d8bb68a200719e11b3cc51cfc9f1bec97db1453f"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit.json",
+    "file": "recent-fast-ic-v2-audit.json",
+    "bytes": 7066,
+    "sha256": "ea6f860bbe31ec47f8b2b50aad5efb775f40ee019c444471a240a040efc4e541"
+  },
+  {
+    "source": "build-equity/audit-fast-ic-v2.py",
+    "file": "audit-fast-ic-v2.py",
+    "bytes": 3857,
+    "sha256": "094a38c369819600d73fd3b61f87141c714d8739339bc29b78f9bff20b6003c7"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-qualification/receipt.json",
+    "file": "recent-strategy-fast-ic-opt-qualification/receipt.json",
+    "bytes": 1600,
+    "sha256": "25010d22979be64dc202759f1c1377f67cd9900ee0e5aba72b7ccb31812224ac"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-qualification/results.xml",
+    "file": "recent-strategy-fast-ic-opt-qualification/results.xml",
+    "bytes": 3952,
+    "sha256": "6a7f3736a7c843700550566013d90285a7496b0a728600cd24a29cfe9b99179a"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-qualification/start.json",
+    "file": "recent-strategy-fast-ic-opt-qualification/start.json",
+    "bytes": 1086,
+    "sha256": "ffc90c6635371b3c9b968aedbb6739056118a9e51e581b64fb729e9bf129103a"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-qualification/stderr.log",
+    "file": "recent-strategy-fast-ic-opt-qualification/stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-opt-qualification/stdout.log",
+    "file": "recent-strategy-fast-ic-opt-qualification/stdout.log",
+    "bytes": 2937,
+    "sha256": "cd8b647302c9b78feed730fa437cf2af7915951f9c7b2d3d558f6e172766ec4a"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-run/receipt.json",
+    "file": "recent-fast-ic-v2-run/receipt.json",
+    "bytes": 2604,
+    "sha256": "85e0a4cff18940d6c466b07e7dafc22a9dda06762640833c8c8cc2f720961506"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-run/start.json",
+    "file": "recent-fast-ic-v2-run/start.json",
+    "bytes": 2089,
+    "sha256": "589be19a67dadab7d555a88e60aedb49d811b2a4cd582860be0839007b975a99"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-run/stderr.log",
+    "file": "recent-fast-ic-v2-run/stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-run/stdout.log",
+    "file": "recent-fast-ic-v2-run/stdout.log",
+    "bytes": 14835,
+    "sha256": "e85920001f08d283c22f3b24a6d5acbcb299e99ab7c73eafeffbc71834beda83"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2/orientations.json",
+    "file": "recent-fast-ic-v2/orientations.json",
+    "bytes": 255259,
+    "sha256": "5106fdc13fc5347c9c2c670714c134a1978e6b7a0d2d2b5dd79bacb7dfb782d6"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2/recipe.json",
+    "file": "recent-fast-ic-v2/recipe.json",
+    "bytes": 1323,
+    "sha256": "c2635f5a88e5d76f2f53fce2412193fc81e3323167308b854828370ea8e83b09"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2/summary.json",
+    "file": "recent-fast-ic-v2/summary.json",
+    "bytes": 262274,
+    "sha256": "7ccd0d8410b2a0a50cdbea83964dd3df0e51205927830c711aaa9739c5f5402b"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2/train_candidates.jsonl",
+    "file": "recent-fast-ic-v2/train_candidates.jsonl",
+    "bytes": 152096,
+    "sha256": "e84aa73a024efe42d5f0b5aab751a6ce7ab3c4a1af9687aeacbf43a4c2244b10"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2/train_daily_ic.csv",
+    "file": "recent-fast-ic-v2/train_daily_ic.csv",
+    "bytes": 11579768,
+    "sha256": "3333029505291544e77b9a34e10eb45633d9c1edd54cedfee51381b460c62fc2"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2/train_planned_targets.csv",
+    "file": "recent-fast-ic-v2/train_planned_targets.csv",
+    "bytes": 84869,
+    "sha256": "db5d4dbcd23b03be109f8d1832bada553ad39913dcba7c084fa7204ce7b539e0"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2/validation_candidates.jsonl",
+    "file": "recent-fast-ic-v2/validation_candidates.jsonl",
+    "bytes": 41784,
+    "sha256": "9d41e470db8c337f40cd72d54dce88b412d1529a4f02271d5acd7f6b2d335dde"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2/validation_daily_ic.csv",
+    "file": "recent-fast-ic-v2/validation_daily_ic.csv",
+    "bytes": 1957888,
+    "sha256": "2f9d389a626dd2177d0c329ec96e414baaebf3e4ac6183e6785f0298bb1934e4"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit-run/receipt.json",
+    "file": "recent-fast-ic-v2-audit-run/receipt.json",
+    "bytes": 1497,
+    "sha256": "26470f84cc2f18e9f56b18fb7a35c3ebfc2b17f757b049b1a84f84060a8adfad"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit-run/start.json",
+    "file": "recent-fast-ic-v2-audit-run/start.json",
+    "bytes": 981,
+    "sha256": "c59bc0fab155d8d432d807d2d173c93fa9a1b5cce76bd6ae92ad1d9efb5447aa"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit-run/stderr.log",
+    "file": "recent-fast-ic-v2-audit-run/stderr.log",
+    "bytes": 202,
+    "sha256": "928a192a63fd19ae4449e811acf2daa8dafbb1f3fe0d10e785e5ab13fbf72a32"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit-run/stdout.log",
+    "file": "recent-fast-ic-v2-audit-run/stdout.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit-run2/receipt.json",
+    "file": "recent-fast-ic-v2-audit-run2/receipt.json",
+    "bytes": 1493,
+    "sha256": "4f96fc2525a19c1ae93df3da44ef49a6c6ab040bc2bf2e569ab0d9e6d2a8eab0"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit-run2/start.json",
+    "file": "recent-fast-ic-v2-audit-run2/start.json",
+    "bytes": 981,
+    "sha256": "c0f80008bf9cbbce884b4f7c62d10b45882082d2f02cb0af12b6a7a198636d39"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit-run2/stderr.log",
+    "file": "recent-fast-ic-v2-audit-run2/stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v2-audit-run2/stdout.log",
+    "file": "recent-fast-ic-v2-audit-run2/stdout.log",
+    "bytes": 1157,
+    "sha256": "b26be377592ff7e3db9f39a110f5b2c6d011a1f3a1e41f6b21f7a472a6606540"
+  }
+]
