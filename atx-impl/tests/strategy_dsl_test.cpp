@@ -60,7 +60,7 @@ std::vector<atx::u8> strategy_membership() {
 } // namespace
 
 TEST(StrategyDsl, FrozenLibraryCompilesRunsAndPreservesCausalMaskedPrefix) {
-    const auto directory = std::filesystem::path{__FILE__}.parent_path().parent_path() / "strategies";
+    const auto directory = std::filesystem::path{ATX_IMPL_TESTS_DIR}.parent_path() / "strategies";
     std::ifstream input(directory / "slow_price_volume_24_v1.json", std::ios::binary);
     ASSERT_TRUE(input);
     const std::string bytes{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
