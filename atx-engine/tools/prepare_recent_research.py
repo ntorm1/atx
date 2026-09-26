@@ -79,12 +79,21 @@ def sha_file(path: Path, limits: Limits | None = None) -> str:
     return h.hexdigest()
 
 
-def publish(path: Path, value):
+def publish(path: Path, value, limits: Limits):
     # Exclusive directory ownership; never replace another completed manifest.
-    with path.open("x", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n")
+    content = (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+    if len(content) > 1 << 20 or limits.check_owned(path.parent) + len(content) > limits.disk_bytes:
+        raise ValueError("manifest publication exceeds metadata/total owned budget")
+    pending = path.with_name("." + path.name + ".pending")
+    with pending.open("xb") as f:
+        f.write(content)
         f.flush()
         os.fsync(f.fileno())
+    # Atomic exclusive publication on the same filesystem, including Windows.
+    # A reader sees either no manifest or its complete fsynced bytes.
+    os.link(pending, path)
+    pending.unlink()
+    limits.check_owned(path.parent)
 
 
 def sql_path(path: Path) -> str:
@@ -212,7 +221,7 @@ def prepare_cache(source: Path, output: Path, begin: str, end: str, limits: Limi
                 "common_stock_verified": False, "historical_vintage_verified": False}
     # Private spill database can be retained for audit, but is never a resumable
     # authority. Only this publish-last cache manifest grants reuse.
-    publish(output / "manifest.json", manifest)
+    publish(output / "manifest.json", manifest, limits)
     limits.report("projection-complete", accepted_rows=metadata.num_rows)
     return manifest
 
@@ -221,13 +230,34 @@ def cache_receipt(directory: Path, limits: Limits):
     path = directory / "manifest.json"
     if path.stat().st_size > 1 << 20:
         raise ValueError("oversized cache manifest")
-    m = json.loads(path.read_text(encoding="utf-8"))
+    manifest_bytes = path.read_bytes()
+    if len(manifest_bytes) > 1 << 20:
+        raise ValueError("oversized changed cache manifest")
+    m = json.loads(manifest_bytes)
     p = directory / "accepted.parquet"
     if m.get("schema") != CACHE_SCHEMA or m.get("status") != "complete":
         raise ValueError("unpublished projection cannot be resumed")
-    if p.stat().st_size != m["accepted"]["bytes"] or sha_file(p, limits) != m["accepted"]["sha256"]:
+    stat = p.stat()
+    identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    if stat.st_size != m["accepted"]["bytes"] or sha_file(p, limits) != m["accepted"]["sha256"]:
         raise ValueError("cache bytes do not match immutable receipt")
+    m["_admitted_manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+    m["_admitted_file_identity"] = identity
+    verify_cache(directory, m, limits)
     return m
+
+
+def verify_cache(directory: Path, receipt, limits: Limits, *, rehash=False):
+    stat = (directory / "accepted.parquet").stat()
+    identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    if identity != receipt["_admitted_file_identity"] or sha_file(directory / "manifest.json", limits) != receipt["_admitted_manifest_sha256"]:
+        raise ValueError("admitted cache changed between role passes")
+    if rehash and sha_file(directory / "accepted.parquet", limits) != receipt["accepted"]["sha256"]:
+        raise ValueError("admitted cache content changed before role publication")
+    # Hashing itself must not race a replacement/extent change.
+    final = (directory / "accepted.parquet").stat()
+    if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != identity:
+        raise ValueError("admitted cache changed during revalidation")
 
 
 def date_rows(path: Path, begin: int, end: int, limits: Limits):
@@ -298,6 +328,7 @@ def create_role(cache: Path, output: Path, warmup: str, score_start: str, score_
         all_ids = np.union1d(all_ids, row[0])
         if len(all_ids) > 100000:
             raise ValueError("source-axis admission exceeded")
+    verify_cache(cache, m, limits)
     score_begin = int(np.searchsorted(dates, start))
     if score_begin < 383 or score_begin >= len(dates):
         raise ValueError("role needs >=320 usable membership warmup sessions AFTER63 unready sessions")
@@ -330,6 +361,7 @@ def create_role(cache: Path, output: Path, warmup: str, score_start: str, score_
         prior_raw.fill(np.nan); prior_raw[slots] = row[1]
         if t % 128 == 0:
             limits.report("membership", dates=t + 1, source_names=n, selected_union=int(selected_union.sum()))
+    verify_cache(cache, m, limits)
     union = np.flatnonzero(selected_union)
     if not len(union) or len(union) > max_union:
         raise ValueError("selected all-time union exceeds role budget or is empty")
@@ -369,6 +401,7 @@ def create_role(cache: Path, output: Path, warmup: str, score_start: str, score_
         a.flush()
         a._mmap.close()
     limits.check_owned(output)
+    verify_cache(cache, m, limits, rehash=True)
     for name in ("sessions.i64", "ids.u64", *arrays):
         p = output / name
         files[name] = {"bytes": p.stat().st_size, "sha256": sha_file(p, limits)}
@@ -380,7 +413,7 @@ def create_role(cache: Path, output: Path, warmup: str, score_start: str, score_
         "instrument_namespace": "spiderrock.securityID", "score_begin": score_begin, "score_end": count,
         "score_start_ns": start * DAY_NS, "score_end_ns": end * DAY_NS,
         "warmup_start": warmup, "source_sha256": m["source_sha256"],
-        "projection_manifest_sha256": sha_file(cache / "manifest.json"),
+        "projection_manifest_sha256": m["_admitted_manifest_sha256"],
         "membership_recipe": membership, "clock_recipe": CLOCK,
         "close_basis": "f64(raw-f32-close)*f64-cumulReturnFactor", "volume_basis": "raw-share-volume",
         "common_stock_verified": False, "historical_vintage_verified": False,
@@ -388,7 +421,8 @@ def create_role(cache: Path, output: Path, warmup: str, score_start: str, score_
         "physical_presence": "accepted-current-row-independent-from-prior-membership",
         "declared_output_bytes": output_bytes,
         "score_member_counts": [int(len(x)) for x in members[score_begin:]], "files": files}
-    publish(output / "manifest.json", result)
+    verify_cache(cache, m, limits)
+    publish(output / "manifest.json", result, limits)
     limits.report("role-complete", dates=count, instruments=len(union), bytes=output_bytes)
     return result
 

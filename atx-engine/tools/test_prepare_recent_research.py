@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pyarrow as pa
@@ -46,6 +47,15 @@ class RecentResearch(unittest.TestCase):
         for seconds in (float("nan"), float("inf"), 0, -1, 601):
             with self.assertRaises(ValueError):
                 tool.Limits(seconds)
+
+    def test_manifest_bytes_are_charged_before_exclusive_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "manifest.json"
+            limits = tool.Limits(30)
+            limits.disk_bytes = 1
+            with self.assertRaisesRegex(ValueError, "publication exceeds"):
+                tool.publish(path, {"status": "complete"}, limits)
+            self.assertFalse(path.exists())
 
     def test_projection_filters_before_qa_preserves_calendar_and_quarantines_duplicates(self):
         with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
@@ -98,6 +108,23 @@ class RecentResearch(unittest.TestCase):
                 f.write(b"x")
             with self.assertRaisesRegex(ValueError, "immutable receipt"):
                 tool.cache_receipt(base / "cache", tool.Limits(30))
+
+    def test_between_pass_cache_or_manifest_mutation_never_publishes_role(self):
+        with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
+            base = Path(temp); source = base / "source.parquet"; days = fixture(source)
+            for what in ("accepted.parquet", "manifest.json"):
+                cache = base / ("cache-" + what)
+                tool.prepare_cache(source, cache, days[0], "2021-01-01", tool.Limits(30))
+                original_rows = tool.calendar_rows
+                def changed_rows(*args, **kwargs):
+                    yield from original_rows(*args, **kwargs)
+                    with (cache / what).open("ab") as f:
+                        f.write(b" ")
+                out = base / ("role-" + what)
+                with patch.object(tool, "calendar_rows", changed_rows):
+                    with self.assertRaisesRegex(ValueError, "changed between role passes"):
+                        tool.create_role(cache, out, days[0], days[400], "2021-01-01", tool.Limits(30), top_n=2)
+                self.assertFalse((out / "manifest.json").exists())
 
 
 if __name__ == "__main__":

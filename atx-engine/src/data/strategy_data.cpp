@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <span>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
