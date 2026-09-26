@@ -253,6 +253,8 @@ TEST_F(LearnPanelDataset, MetadataScaleAdmissionAndBoundedCheckedLinearConsumer)
   ASSERT_TRUE(model) << model.error().message();
   EXPECT_EQ(model->dataset_manifest_sha256, dataset->manifest_sha256());
   EXPECT_EQ(model->model.n_base_features, 10U); EXPECT_EQ(model->model.horizons, cfg.horizons);
+  learn::LatentAugmentation future_aug; future_aug.pca.emplace(); future_aug.pca->fit_upto_date = 32;
+  EXPECT_FALSE(learn::fit_linear_dataset(*dataset, 0, 24, 31, kBudget, future_aug, cfg));
   cfg.horizons = {1, 2, 4}; EXPECT_FALSE(learn::fit_linear_dataset(*dataset, 0, 24, 31, kBudget, aug, cfg));
   cfg.horizons = {2, 3, 5}; cfg.cpcv.max_working_bytes = 1;
   EXPECT_FALSE(learn::fit_linear_dataset(*dataset, 0, 24, 31, kBudget, aug, cfg));
