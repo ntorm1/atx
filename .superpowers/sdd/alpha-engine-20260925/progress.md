@@ -470,3 +470,6 @@ G0 agent independently diagnoses current ccache misses. Fresh224/224 cacheable w
 errors disproves a CURRENT preprocessing-failure claim; historical7581 errors remain
 unattributed. Missing Clang PCH timestamp option and BASEDIR /FI rewriting are only old
 hypotheses; do not change flags/config without an actual reproduced failure.
+
+## Newest source staging (supersedes older pending-import notes)
+B1 core e5f8ea8d, tests a3aed92c, report86e50ae8; scaffold f6704d55. Calibration416961a3/168cb34c/b0ddb715, report11268bb2, source independently approved after rank normalization fix. Focused cost target six TUs now registered. No new configure/build or runtime active; prior compiled binaries still qualify production7e9f6f4a/clean6a401f56 and test correctione2aaea7e only. A5 d9925eec/10f0d46e not imported; awaiting G0 review and fixtures. D1 source commit forthcoming; audit owner ready to review. Packet123163e2 independently approved by audit owner (all four XMLs and three binary hashes verified;189 unique checks). Batch next source releases into one warm Jobs1 build; no long benchmark/mining run.
