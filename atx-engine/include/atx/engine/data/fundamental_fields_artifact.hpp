@@ -5,6 +5,7 @@
 // Input is an already hash-validated artifact member; this decoder performs no IO.
 #include <charconv>
 #include "atx/engine/data/fundamental_fields.hpp"
+#include "atx/engine/data/fundamental_clock_artifact.hpp"
 
 namespace atx::engine::data::fundamentals {
 inline constexpr std::string_view kIntervalHeader =
@@ -16,6 +17,11 @@ inline constexpr std::string_view kRetirementHeader =
 [[nodiscard]] inline atx::core::Result<std::vector<PitRecord>> decode_interval_points(
     std::string_view text, std::span<const std::string> axis_ids,
     atx::usize max_rows = 1'000'000) {
+  if (text.starts_with("ATX-FUNDAMENTAL-INTERVALS\t4\n")) {
+    QualifiedIntervalConfig config;
+    config.max_rows = max_rows;
+    return decode_qualified_interval_points(text, axis_ids, config);
+  }
   const auto error = [] { return atx::core::Err(atx::core::ErrorCode::ParseError,
                                                "fundamentals: invalid interval-v2/v3 TSV"); };
   if (text.size() > 256ULL * 1024ULL * 1024ULL || max_rows == 0) return error();

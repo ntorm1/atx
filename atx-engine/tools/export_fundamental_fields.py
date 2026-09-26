@@ -11,14 +11,20 @@ only the fiscal-period arithmetic that needs a company's statement history:
 trailing-twelve-month sums, year-ago balances and standardized unexpected
 earnings.
 
-Point-in-time discipline
-------------------------
+The explicit acceptance-v2 path additionally requires a hash-bound sealed
+issuer/accession clock projection. Acceptance and observed public availability
+are separate; unsupported dissemination and filed+46h are labeled modeled.
+True DEI entity shares are a separate output, never the legacy diluted-share
+field and never an inferred security-line market cap.
+
+Legacy point-in-time discipline (numerical reproduction)
+------------------------------------------------------
 * A fact is known at filing F only if its own ``filed`` date is <= F's filed
   date. Restatements therefore enter on their own filing date, never earlier.
 * ``available_date`` = filed + 1 calendar day: the warehouse clock policy
-  ``sec_filed_date_plus_46h_v1`` makes a Company Facts fact eligible at 22:00
-  UTC of the day after filing, which the daily 22:00 UTC decision cutoff of the
-  session labelled filed+1 can use. Consumers add their own session lag on top.
+  ``sec_filed_date_plus_46h_v1`` label is historical: the interval writer actually
+  stamps midnight UTC of filed+1 (+24h). This exact legacy clock is preserved;
+  acceptance-v2 alone implements the explicit +46h modeled fallback.
 * Nothing available on or after ``--seal`` (default 2020-01-01, the validation
   seal of the equity program) is ever written.
 
@@ -605,6 +611,44 @@ def project_dated_snapshots(link, snapshots: list[dict]) -> list[dict]:
     return rows
 
 
+def project_qualified_snapshots(link, snapshots: list[dict]) -> list[dict]:
+    """V4 preserves D1 identity and the exact resolved filing nanosecond clock."""
+    import pit_fundamental_clock as fc
+    marker = project_dated_snapshots(link, [])[0]
+    marker.update({key: "" if key == "clock_policy" else 0 for key in fc.CLOCK_KEYS})
+    rows = [marker]
+    if link.is_marker:
+        return rows
+    for snapshot in snapshots:
+        if snapshot["available_ns"] >= _ns(link.valid_to):
+            continue
+        row = dict(marker, available_ns=snapshot["available_ns"],
+                   period_end_ns=_ns(snapshot["period_end"]), identity_only=0)
+        row.update({key: snapshot[key] for key in fc.CLOCK_KEYS})
+        # An unverified fact vintage never becomes numerical input, even under
+        # explicit modeled-clock admission. The audit retains the reason.
+        row.update({name: snapshot[name] if snapshot["fact_vintage_qualified"] else math.nan
+                    for name in RAW_FIELDS})
+        rows.append(row)
+    return rows
+
+
+def write_qualified_points(path: Path, rows_by_sr: dict[str, list[dict]]) -> int:
+    import pit_fundamental_clock as fc
+    keys = INTERVAL_KEYS + fc.CLOCK_KEYS
+    count = 0
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write("ATX-FUNDAMENTAL-INTERVALS\t4\n")
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(keys + RAW_FIELDS)
+        for sr in sorted(rows_by_sr, key=lambda x: (len(x), x)):
+            for row in sorted(rows_by_sr[sr], key=lambda r: (r["link_id"], r["available_ns"], r["period_end_ns"])):
+                writer.writerow([row[key] for key in keys] +
+                                [repr(row[f]) if math.isfinite(row[f]) else "" for f in RAW_FIELDS])
+                count += 1
+    return count
+
+
 def write_interval_points(path: Path, rows_by_sr: dict[str, list[dict]]) -> int:
     with path.open("w", encoding="utf-8", newline="") as stream:
         stream.write("ATX-FUNDAMENTAL-INTERVALS\t3\n")
@@ -740,6 +784,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--warehouse", help="explicit legacy-static-v1 warehouse (opened read-only)")
     ap.add_argument("--bridge-rule", choices=("dated-links-v2", "legacy-static-v1"), default="dated-links-v2")
     ap.add_argument("--security-links", help="hash-bound D1 security-link artifact directory")
+    ap.add_argument("--filing-clock-rule", choices=("legacy-filed-day-v1", "acceptance-v2"),
+                    default="legacy-filed-day-v1")
+    ap.add_argument("--filing-clocks", help="sealed issuer/accession filing-clock JSON projection")
+    ap.add_argument("--filing-clocks-sealed-manifest")
+    ap.add_argument("--acceptance-delay-seconds", type=int,
+                    help="explicit modeled dissemination lag when observed publication is absent")
     ap.add_argument("--companyfacts-sealed-manifest", help="required pre-2020 source projection receipt for v2")
     ap.add_argument("--contexts", required=True, help="glob of identified context directories")
     ap.add_argument("--out", required=True)
@@ -753,9 +803,22 @@ def main(argv: list[str] | None = None) -> int:
     if out.exists():
         raise SystemExit(f"{out} exists; exports always go to a fresh directory")
     seal = dt.date.fromisoformat(args.seal)
-    strict = args.bridge_rule == "dated-links-v2"
     if seal > dt.date(2020, 1, 1):
         raise SystemExit("seal may not extend beyond 2020-01-01")
+    strict = args.bridge_rule == "dated-links-v2"
+    accepted_clock = args.filing_clock_rule == "acceptance-v2"
+    filing_clocks, filing_clock_proof = {}, {}
+    if accepted_clock:
+        if not strict or not args.filing_clocks or not args.filing_clocks_sealed_manifest or args.acceptance_delay_seconds is None:
+            raise SystemExit("acceptance-v2 requires dated links, sealed filing clocks and explicit acceptance-delay-seconds")
+        import pit_fundamental_clock as fc
+        if not 0 <= args.acceptance_delay_seconds <= 7 * 86400:
+            raise SystemExit("invalid modeled dissemination delay")
+        filing_clocks, filing_clock_proof = fc.load_projection(
+            Path(args.filing_clocks), Path(args.filing_clocks_sealed_manifest), seal)
+    elif any(value is not None for value in (args.filing_clocks, args.filing_clocks_sealed_manifest,
+                                              args.acceptance_delay_seconds)):
+        raise SystemExit("filing-clock inputs require acceptance-v2")
     if strict:
         if not args.security_links or not args.companyfacts_sealed_manifest:
             raise SystemExit("dated-links-v2 requires --security-links and --companyfacts-sealed-manifest")
@@ -764,6 +827,8 @@ def main(argv: list[str] | None = None) -> int:
                 dt.date.fromisoformat(proof["seal_exclusive"]) > seal or
                 sha256_file(Path(args.companyfacts)) != proof["payload_sha256"]):
             raise SystemExit("unqualified sealed Company Facts projection")
+        if accepted_clock and filing_clock_proof["facts_payload_sha256"] != proof["payload_sha256"]:
+            raise SystemExit("filing-clock vintage evidence is bound to another Company Facts projection")
     elif not args.warehouse:
         raise SystemExit("legacy-static-v1 requires --warehouse")
     contexts = load_contexts(args.contexts)
@@ -781,10 +846,16 @@ def main(argv: list[str] | None = None) -> int:
     lag_by_form: dict[str, list[int]] = {}
     ciks_missing_facts = 0
     by_cik: dict[str, list] = {}
+    true_shares, clock_audit, rejected_facts = [], [], []
+    total_v4_rows = 0
     if strict:
         for sr, links in mapping.items():
             for link in links:
-                rows_by_sr.setdefault(sr, []).extend(project_dated_snapshots(link, []))
+                rows_by_sr.setdefault(sr, []).extend(
+                    project_qualified_snapshots(link, []) if accepted_clock else project_dated_snapshots(link, []))
+                total_v4_rows += 1
+                if accepted_clock and total_v4_rows > 1_000_000:
+                    raise ValueError("acceptance-v2 identity row budget")
                 if not link.is_marker:
                     by_cik.setdefault(link.cik, []).append(link)
     else:
@@ -799,6 +870,8 @@ def main(argv: list[str] | None = None) -> int:
                     sr = sr.sr_id
                 unmapped[sr] = "cik_absent_from_companyfacts"
             continue
+        if accepted_clock and zf.getinfo(member).file_size > 32 * 1024 * 1024:
+            raise ValueError("acceptance-v2 per-company projection exceeds 32 MiB")
         doc = json.loads(zf.read(member))
         if strict:
             try:
@@ -807,12 +880,31 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError:
                 zf.close()
                 raise
-        snaps = company_snapshots(parse_company_facts(doc), seal)
+        if accepted_clock:
+            accounting = set(C_EQUITY + C_EQUITY_NCI + C_ASSETS + C_LIABILITIES + C_NET_INCOME +
+                C_REVENUE + C_GROSS_PROFIT + C_COST_OF_REVENUE + C_CFO + C_OPERATING_INCOME + C_EPS +
+                C_SHARES_GAAP + C_WASO)
+            facts, rejected = fc.parse_facts(doc, accounting, EVENT_FORMS)
+            snaps, shares, clocks = fc.snapshot_events(facts, cik, filing_clocks, seal,
+                args.acceptance_delay_seconds, knowledge_factory=Knowledge, snapshot_fn=snapshot,
+                event_forms=EVENT_FORMS)
+            if max(len(true_shares) + len(shares), len(clock_audit) + len(clocks),
+                   len(rejected_facts) + len(rejected)) > 1_000_000:
+                raise ValueError("acceptance-v2 audit row budget")
+            true_shares.extend(shares); clock_audit.extend(clocks)
+            rejected_facts.extend(dict(cik=cik, **item) for item in rejected)
+        else:
+            snaps = company_snapshots(parse_company_facts(doc), seal)
         for s in snaps:
             lag_by_form.setdefault(s["form"], []).append((s["filed"] - s["period_end"]).days)
         for sr in srs:
             if strict:
-                rows_by_sr[sr.sr_id].extend(project_dated_snapshots(sr, snaps)[1:])
+                projected = (project_qualified_snapshots(sr, snaps) if accepted_clock else
+                             project_dated_snapshots(sr, snaps))[1:]
+                total_v4_rows += len(projected)
+                if accepted_clock and total_v4_rows > 1_000_000:
+                    raise ValueError("acceptance-v2 output row budget")
+                rows_by_sr[sr.sr_id].extend(projected)
             else:
                 rows_by_sr[sr] = [dict(s, sr_id=sr, cik=cik) for s in snaps]
         if n % 100 == 0:
@@ -820,10 +912,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out.mkdir(parents=True)
     zf.close()
-    points = out / ("points.interval-v3.tsv" if strict else "points.csv")
+    points = out / ("points.interval-v4.tsv" if accepted_clock else "points.interval-v3.tsv" if strict else "points.csv")
     n_rows = 0
     if strict:
-        n_rows = write_interval_points(points, rows_by_sr)
+        n_rows = (write_qualified_points if accepted_clock else write_interval_points)(points, rows_by_sr)
     else:
         with open(points, "w", newline="") as fh:
             w = csv.writer(fh)
@@ -840,7 +932,13 @@ def main(argv: list[str] | None = None) -> int:
         for context in contexts:
             covered = {f: 0 for f in RAW_FIELDS}
             for sr in context.instrument_ids:
-                aligned = align_interval_values(rows_by_sr.get(sr, []), context.session_keys,
+                source_rows = rows_by_sr.get(sr, [])
+                if accepted_clock:
+                    source_rows = [dict(r, **{f: math.nan for f in RAW_FIELDS})
+                        if not r["identity_only"] and not (r["clock_kind"] == 1 and
+                            r["fact_vintage_qualified"] and r["knowledge_clock_qualified"]) else r
+                        for r in source_rows]
+                aligned = align_interval_values(source_rows, context.session_keys,
                     args.lag_sessions, args.max_days_since_available, args.max_days_since_period_end)
                 for row in aligned:
                     for f in RAW_FIELDS:
@@ -913,6 +1011,42 @@ def main(argv: list[str] | None = None) -> int:
     for filename in ("availability_audit.json", "unmapped_securities.csv"):
         manifest["outputs"][filename] = {"sha256": sha256_file(out / filename)}
     part = out / "manifest.json.part"
+    if accepted_clock:
+        share_path = out / "shares.entity-v1.jsonl"
+        with share_path.open("w", encoding="utf-8", newline="") as stream:
+            for row in sorted(true_shares, key=lambda r: (r["cik"], r["available_ns"], r["accession"], r["shares_observation_date"])):
+                stream.write(json.dumps(row, sort_keys=True, allow_nan=False) + "\n")
+        audit_path = out / "filing_clock_audit.json"
+        audit_path.write_text(json.dumps({"schema": "atx.filing-clock-audit/v2", "events": clock_audit,
+            "rejected_facts": rejected_facts, "qualification_scope": "all active retained accounting cells; conservative"},
+            indent=2, allow_nan=False), encoding="utf-8")
+        manifest.update(schema="atx.fundamental-fields-export/v4", tool="fundamental-fields-export-v4",
+            clock_policy="accession-resolved-ns-v2", filing_clock_rule=args.filing_clock_rule,
+            acceptance_delay_seconds=args.acceptance_delay_seconds,
+            accounting_lookback_days=fc.ACTIVE_LOOKBACK_DAYS,
+            qualification_scope="all retained accounting cells within declared lookback; conservative",
+            default_admission="observed-public AND qualified active knowledge/vintage; strict less-than decision",
+            legacy_clock_caveat="explicit legacy-filed-day-v1 preserves midnight(filed+1), despite historical +46h label",
+            true_shares_scope="DEI entity instant; exact duplicates deduped; conflicts withheld; not line shares or split-rebased cap",
+            cap_output="unavailable: requires separate dated class/split/price evidence",
+            consumer="data/fundamental_clock_artifact.hpp::decode_qualified_interval_points")
+        manifest["columns"]["keys"] = list(INTERVAL_KEYS + fc.CLOCK_KEYS)
+        manifest["inputs"]["filing_clocks"] = {
+            "path": args.filing_clocks, "payload_sha256": filing_clock_proof["payload_sha256"],
+            "sealed_manifest_sha256": sha256_file(Path(args.filing_clocks_sealed_manifest)),
+            "facts_payload_sha256": filing_clock_proof["facts_payload_sha256"]}
+        manifest["outputs"][share_path.name] = {"rows": len(true_shares), "sha256": sha256_file(share_path)}
+        manifest["outputs"][audit_path.name] = {"sha256": sha256_file(audit_path)}
+        manifest["identity_qualification"] = "D1 independently clocked dated identity; filing/public/vintage admission V4"
+        manifest["id_bridge_caveat"] = "Dated identity; clock and vintage evidence are source-declared, not independently authenticated by this exporter"
+        manifest["recipe"] = {"rule": "acceptance-v2", "acceptance_delay_seconds": args.acceptance_delay_seconds,
+            "accounting_lookback_days": fc.ACTIVE_LOOKBACK_DAYS,
+            "clock_rows_sha256": manifest["outputs"][audit_path.name]["sha256"],
+            "clock_input_sha256": filing_clock_proof["payload_sha256"],
+            "companyfacts_sha256": manifest["inputs"]["companyfacts"]["sha256"],
+            "admission": manifest["default_admission"], "identity_rule": args.bridge_rule}
+        manifest["recipe_sha256"] = hashlib.sha256(json.dumps(manifest["recipe"],
+            sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     part.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     part.rename(out / "manifest.json")
     print(json.dumps({"rows": n_rows, "mapped": len(mapping), "panel_securities": len(sr_ids)}))
