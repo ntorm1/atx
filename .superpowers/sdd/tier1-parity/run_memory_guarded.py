@@ -9,25 +9,35 @@ Admission is size-based and host-wide:
   commit), must be >= cap + 1.0 GiB reserve. Free physical memory is NOT an admission condition;
 * host-wide slot files: the sum of our running caps stays <= 2.0 GiB and at most one ``--heavy`` job runs;
 * ``--wait-minutes N`` queues FIFO for admission and a slot (earliest waiter first; a HEAVY waiter held
-  back only by the running HEAVY job keeps its budget but does not block later non-heavy jobs). Slot
-  files of dead processes (PID + creation time) are reclaimed. ``--wait-minutes 0`` tries once.
+  back only by the running HEAVY job keeps its budget but does not block later non-heavy jobs).
+  ``--wait-minutes 0`` tries once.
+* a slot is live while its guard's named job object exists with a process in it (the guard holds the only
+  handle, so the job ends when the guard dies; kill-on-close has then ended its tree) or while its PID runs
+  with the recorded creation time (a PID this user cannot query is never one of our guards). Every other
+  slot is stale and is reclaimed at the next admission; ``--status`` shows the evidence per slot and
+  ``--reclaim-stale`` removes stale ones.
 
 In-run protection (1 s poll): stop the job when free commit < 0.75 GiB, or free physical < 0.25 GiB for
-30 consecutive seconds (thrash), or the optional disk floor fails. A stopped slice resumes from its ledger.
+30 consecutive seconds (thrash), or the optional disk floor fails, or (a research worker) its parent
+orchestrator's guard job is gone. A stop terminates the job first (this supervisor included) and never
+waits on the command; a stopped slice resumes from its ledger.
 
 A guard started inside another guard's job is refused (that outer cap would bind it). An orchestrator
 that starts guarded jobs itself (research ``workers.run_jobs``) runs with ``--allow-nested-guards``: its
 job then lets a child created with CREATE_BREAKAWAY_FROM_JOB leave, which run_jobs uses only to start
-another guard (that guard caps itself in a job and slot of its own).
+another guard (that guard caps itself in a job and slot of its own, and gets ``--parent-job`` = the
+orchestrator guard's job, read from ``ATX_GUARD_JOB`` which every guard sets for its command, so the
+worker stops when the orchestrator's guard stops or dies).
 
 Exit codes: the command's own code when it ran to completion; 70 no job cap possible (never runs
-uncapped); 78 not admitted (wait timeout or disk preflight); 137 stopped in-run; 127 the command could
-not be started; 2 bad arguments.
-The JSON receipt records the native peak job commit on every exit, including stops and wait timeouts.
+uncapped); 78 not admitted (wait timeout, disk preflight, nested in a guard, slot lock timeout, parent
+gone while queued); 137 stopped in-run; 127 the command could not be started; 2 bad arguments.
+The JSON receipt records the native peak job commit on every exit, including stops and wait timeouts;
+that peak includes a refused allocation, so it can exceed the cap by up to one request.
 
     python run_memory_guarded.py --job-gb 0.6 --wait-minutes 30 [--heavy] [--receipt R.json] -- <command...>
     python run_memory_guarded.py --job-gb 0.2 --allow-nested-guards --wait-minutes 30 -- <orchestrator...>
-    python run_memory_guarded.py --status
+    python run_memory_guarded.py --status | --reclaim-stale
 """
 from __future__ import annotations
 
@@ -45,7 +55,7 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from ctypes import wintypes as w
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 GIB = 1024 ** 3
 PAGE_BYTES = 4096
@@ -58,13 +68,15 @@ THRASH_SECONDS = 30.0
 POLL_SECONDS = 1.0
 RECORD_SECONDS = 30.0
 MAX_WAIT_MINUTES = 24 * 60
+UNPARSABLE_SLOT_GRACE_SECONDS = 60.0
 EXIT_BAD_ARGUMENTS = 2
 EXIT_UNGUARDED = 70
 EXIT_NOT_ADMITTED = 78
 EXIT_STOPPED = 137
 EXIT_LAUNCH_FAILED = 127
-GUARD_VERSION = "c58-m0"
+GUARD_VERSION = "c58-m0-r1"
 SLOT_DIR_ENV = "ATX_GUARD_SLOT_DIR"
+GUARD_JOB_ENV = "ATX_GUARD_JOB"
 CHILD_ENV = {"OPENBLAS_NUM_THREADS": "1"}
 _JOB_MSG_JOB_MEMORY_LIMIT = 10
 _STILL_ACTIVE = 259
@@ -193,50 +205,81 @@ def host_memory() -> dict[str, float]:
 
 
 def process_created(pid: int) -> int | None:
-    """Creation FILETIME of a live process; None when it has exited or never existed."""
+    """Creation FILETIME of a live process this user can query; None when gone or not queryable.
+
+    Every guard runs as this user, so a PID this user cannot query is never one of our guards.
+    """
     kernel, _ = _api()
     handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not handle:
-        # Access denied means the process exists but is not ours to query: treat it as live.
-        return -1 if c.get_last_error() == 5 else None
+        return None
     try:
         code = w.DWORD()
         if not kernel.GetExitCodeProcess(handle, c.byref(code)) or code.value != _STILL_ACTIVE:
             return None
         times = [c.c_ulonglong() for _ in range(4)]
         if not kernel.GetProcessTimes(handle, *[c.byref(t) for t in times]):
-            return -1
+            return None
         return int(times[0].value)
     finally:
         kernel.CloseHandle(handle)
 
 
+@contextlib.contextmanager
+def _open_job(job_name: str) -> Iterator[Any]:
+    kernel, _ = _api()
+    handle = kernel.OpenJobObjectW(0x0004, False, job_name)  # JOB_OBJECT_QUERY
+    try:
+        yield handle
+    finally:
+        if handle:
+            kernel.CloseHandle(handle)
+
+
+class BasicAccounting(c.Structure):  # JOBOBJECT_BASIC_ACCOUNTING_INFORMATION (class 1)
+    _fields_ = [(name, c.c_longlong) for name in ("user", "kernel", "period_user", "period_kernel")] + [
+        (name, w.DWORD) for name in ("page_faults", "total_processes", "active_processes", "terminated")]
+
+
+def job_state(job_name: str) -> tuple[bool, int | None]:
+    """(the named job exists, its active process count or None when unreadable)."""
+    kernel, _ = _api()
+    with _open_job(job_name) as handle:
+        if not handle:
+            return False, None
+        accounting = BasicAccounting()
+        if not kernel.QueryInformationJobObject(handle, 1, c.byref(accounting), c.sizeof(accounting), None):
+            return True, None
+        return True, int(accounting.active_processes)
+
+
+def job_alive(job_name: str) -> bool:
+    """True while a guard's named job exists with a process in it (the guard holds the only long-lived
+    handle; a dead guard's job can linger only while someone holds a handle to a terminated process)."""
+    exists, active = job_state(job_name)
+    return exists and (active is None or active > 0)
+
+
 def job_commit_bytes(job_name: str) -> int | None:
     """Live committed memory of another guard's named job (None when it cannot be read)."""
     kernel, _ = _api()
-    handle = kernel.OpenJobObjectW(0x0004, False, job_name)  # JOB_OBJECT_QUERY
-    if not handle:
-        return None
-    try:
+    with _open_job(job_name) as handle:
+        if not handle:
+            return None
         usage = MemoryUsage()
         if not kernel.QueryInformationJobObject(handle, 28, c.byref(usage), c.sizeof(usage), None):
             return None
         return int(usage.job_memory)
-    finally:
-        kernel.CloseHandle(handle)
 
 
 def inside_job(job_name: str) -> bool:
     """True when this process runs inside another guard's named job (nested: that job's cap would bind)."""
     kernel, _ = _api()
-    handle = kernel.OpenJobObjectW(0x0004, False, job_name)  # JOB_OBJECT_QUERY
-    if not handle:
-        return False
-    try:
+    with _open_job(job_name) as handle:
+        if not handle:
+            return False
         result = w.BOOL()
         return bool(kernel.IsProcessInJob(kernel.GetCurrentProcess(), handle, c.byref(result)) and result.value)
-    finally:
-        kernel.CloseHandle(handle)
 
 
 class Job:
@@ -291,9 +334,9 @@ class Job:
             if message.value == _JOB_MSG_JOB_MEMORY_LIMIT:
                 self.cap_hit_events += 1
 
-    def terminate(self, code: int) -> None:
-        """Terminates only this explicitly assigned job, including this supervisor."""
-        self.kernel.TerminateJobObject(self.handle, code)
+    def terminate(self, code: int) -> bool:
+        """Terminate this job, this supervisor included; returns only when the call failed (False)."""
+        return bool(self.kernel.TerminateJobObject(self.handle, code))
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +344,11 @@ class Job:
 # ---------------------------------------------------------------------------
 
 class Slot:
-    """One job's host-wide slot file: ``state`` is "waiting" (queued) or "running" (admitted)."""
+    """One job's host-wide slot file: ``state`` is "waiting" (queued) or "running" (admitted).
+
+    The file keeps exactly these fields so guards of the previous release (c58-m0) can still parse it.
+    A slot's identity is (seq, pid, created), never seq alone.
+    """
 
     FIELDS = ("seq", "pid", "created", "state", "cap_bytes", "heavy", "job_name", "receipt", "enqueued_at_utc",
               "admitted_at_utc", "command_head")
@@ -313,22 +360,36 @@ class Slot:
         self.cap_bytes, self.heavy, self.job_name, self.receipt = int(cap_bytes), bool(heavy), job_name, receipt
         self.enqueued_at_utc, self.admitted_at_utc, self.command_head = enqueued_at_utc, admitted_at_utc, command_head
 
+    @property
+    def key(self) -> tuple[int, int, int]:
+        return self.seq, self.pid, self.created
+
     def as_dict(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in self.FIELDS}
 
 
-def decide(me: Slot, slots: Sequence[Slot], free_commit_bytes: int, usage: Mapping[int, int | None], *,
-           budget_bytes: int = page_aligned_cap(SLOT_BUDGET_GB),
+def slot_evidence(slot: Slot) -> dict[str, Any]:
+    """Liveness evidence: the guard's named job holds a process, or its PID runs with the recorded creation time."""
+    exists, active = job_state(slot.job_name) if slot.job_name else (False, None)
+    job_live = exists and (active is None or active > 0)
+    created = process_created(slot.pid)
+    pid_match = created is not None and created == slot.created
+    return {"job_exists": exists, "job_active_processes": active, "pid_match": pid_match,
+            "live": job_live or pid_match}
+
+
+def decide(me: Slot, slots: Sequence[Slot], free_commit_bytes: int, usage: Mapping[tuple[int, int, int], int | None],
+           *, budget_bytes: int = page_aligned_cap(SLOT_BUDGET_GB),
            reserve_bytes: int = page_aligned_cap(ADMISSION_RESERVE_GB)) -> tuple[bool, list[str], dict[str, Any]]:
-    """The one admission rule. ``usage`` maps a running slot's seq to its live job commit (None: unknown)."""
-    others = [s for s in slots if s.seq != me.seq]
+    """The one admission rule. ``usage`` maps a running slot's key to its live job commit (None: unknown)."""
+    others = [s for s in slots if s.key != me.key]
     running = [s for s in others if s.state == "running"]
-    earlier = sorted((s for s in others if s.state == "waiting" and s.seq < me.seq), key=lambda s: s.seq)
+    earlier = sorted((s for s in others if s.state == "waiting" and s.key < me.key), key=lambda s: s.key)
     running_caps = sum(s.cap_bytes for s in running)
     heavy_running = any(s.heavy for s in running)
     unclaimed = 0
     for slot in running:
-        used = usage.get(slot.seq)
+        used = usage.get(slot.key)
         unclaimed += slot.cap_bytes if used is None else max(0, slot.cap_bytes - used)
     effective_free = free_commit_bytes - unclaimed
     reasons: list[str] = []
@@ -390,12 +451,14 @@ class SlotPool:
     def path(self, slot: Slot) -> Path:
         return self.dir / f"slot-{slot.seq:012d}-{slot.pid}.json"
 
-    def next_seq(self) -> int:
+    def next_seq(self, known: Sequence[Slot]) -> int:
+        """Next ticket (call under the lock): above the stored counter and above every slot on disk."""
         seq_path = self.dir / ".seq"
         try:
-            value = int(seq_path.read_text(encoding="ascii").strip() or 0) + 1
+            stored = int(seq_path.read_text(encoding="ascii").strip())
         except (OSError, ValueError):
-            value = 1
+            stored = 0
+        value = max([stored, *(s.seq for s in known)]) + 1
         _write_atomic(seq_path, f"{value}\n")
         return value
 
@@ -408,21 +471,37 @@ class SlotPool:
                 found.append((path, None))
         return found
 
-    def live_slots(self) -> tuple[list[Slot], list[dict[str, Any]]]:
-        """Live slots, after removing those of dead processes (call under the lock)."""
+    def scan(self) -> tuple[list[Slot], list[tuple[Path, Slot | None, dict[str, Any]]]]:
+        """Live slots, and stale entries with their evidence (read-only)."""
         live: list[Slot] = []
-        reclaimed: list[dict[str, Any]] = []
+        stale: list[tuple[Path, Slot | None, dict[str, Any]]] = []
         for path, slot in self.read_all():
-            if slot is not None:
-                created = process_created(slot.pid)
-                if created is not None and (created == -1 or created == slot.created):
-                    live.append(slot)
+            if slot is None:
+                try:
+                    age = time.time() - path.stat().st_mtime
+                except OSError:
                     continue
+                if age >= UNPARSABLE_SLOT_GRACE_SECONDS:  # writes are atomic: an unparsable file is debris
+                    stale.append((path, None, {"unparsable": True, "age_s": round(age)}))
+                continue
+            evidence = slot_evidence(slot)
+            if evidence["live"]:
+                live.append(slot)
+            else:
+                stale.append((path, slot, evidence))
+        return live, stale
+
+    def live_slots(self) -> tuple[list[Slot], list[dict[str, Any]]]:
+        """Live slots, after removing stale ones (call under the lock)."""
+        live, stale = self.scan()
+        reclaimed: list[dict[str, Any]] = []
+        for path, slot, evidence in stale:
             with contextlib.suppress(OSError):
                 path.unlink()
             reclaimed.append({"file": path.name, "pid": None if slot is None else slot.pid,
-                              "state": None if slot is None else slot.state,
-                              "cap_gb": None if slot is None else round(slot.cap_bytes / GIB, 4)})
+                              "state": None if slot is None else slot.state, "heavy": None if slot is None
+                              else slot.heavy, "cap_gb": None if slot is None else round(slot.cap_bytes / GIB, 4),
+                              "evidence": evidence})
         return live, reclaimed
 
     def write(self, slot: Slot) -> None:
@@ -451,17 +530,27 @@ def _utc() -> str:
     return dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
 
 
-def _status(slot_dir: Path) -> int:
+def _status(slot_dir: Path, *, reclaim: bool) -> int:
+    """Print every slot with its liveness evidence; with ``reclaim``, remove the stale ones."""
     pool = SlotPool(slot_dir)
     with pool.lock():
-        live, reclaimed = pool.live_slots()
-    usage = {s.seq: job_commit_bytes(s.job_name) for s in live if s.state == "running"}
-    memory = host_memory()
-    print(json.dumps({"slot_dir": str(slot_dir), "host": memory, "reclaimed": reclaimed,
+        if reclaim:
+            live, reclaimed = pool.live_slots()
+            stale_rows: list[dict[str, Any]] = []
+        else:
+            live, stale = pool.scan()
+            reclaimed = []
+            stale_rows = [{"file": path.name, **({} if slot is None else slot.as_dict()), "evidence": evidence}
+                          for path, slot, evidence in stale]
+    rows = []
+    for slot in live:
+        used = job_commit_bytes(slot.job_name) if slot.state == "running" else None
+        rows.append({**slot.as_dict(), "cap_gb": round(slot.cap_bytes / GIB, 4),
+                     "live_commit_gb": None if used is None else round(used / GIB, 4),
+                     "evidence": slot_evidence(slot)})
+    print(json.dumps({"slot_dir": str(slot_dir), "host": host_memory(),
                       "running_caps_gb": round(sum(s.cap_bytes for s in live if s.state == "running") / GIB, 4),
-                      "slots": [{**s.as_dict(), "cap_gb": round(s.cap_bytes / GIB, 4),
-                                 "live_commit_gb": None if usage.get(s.seq) is None
-                                 else round(usage[s.seq] / GIB, 4)} for s in live]}, indent=1))
+                      "live": rows, "stale": stale_rows, "reclaimed": reclaimed}, indent=1))
     return 0
 
 
@@ -484,20 +573,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--stderr", type=Path)
     parser.add_argument("--disk-path", type=Path)
     parser.add_argument("--min-free-disk-gb", type=float)
-    parser.add_argument("--slot-dir", type=Path, help=f"host-wide slot directory (default ${SLOT_DIR_ENV} or "
-                                                      "%%LOCALAPPDATA%%/atx-memory-guard/slots)")
-    parser.add_argument("--test-stop-commit-gb", type=float,
-                        help="TEST ONLY: raise the in-run free-commit stop threshold above 0.75 GiB")
     parser.add_argument("--allow-nested-guards", action="store_true",
                         help="orchestrator mode: the command may start further guarded jobs (research "
                              "workers.run_jobs) outside this job; each of them takes its own cap and slot")
+    parser.add_argument("--parent-job", help="set by research workers.run_jobs: the orchestrator guard's job "
+                                             "name; this job stops when that job is gone")
     parser.add_argument("--quiet", action="store_true", help="do not echo the receipt JSON to stdout")
-    parser.add_argument("--status", action="store_true", help="print the live slots and host memory, then exit")
+    parser.add_argument("--status", action="store_true",
+                        help="print every slot with its liveness evidence and host memory, then exit")
+    parser.add_argument("--reclaim-stale", action="store_true",
+                        help="remove slots whose guard is gone (no named job, no matching PID), then exit")
+    parser.add_argument("--slot-dir", type=Path,
+                        help=f"TEST ONLY (as is ${SLOT_DIR_ENV}): a private slot pool; it splits the host-wide "
+                             "2.0 GiB budget, the single-HEAVY rule and nested-guard detection")
+    parser.add_argument("--test-stop-commit-gb", type=float,
+                        help="TEST ONLY: raise the in-run free-commit stop threshold above 0.75 GiB")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     slot_dir = args.slot_dir or default_slot_dir()
-    if args.status:
-        return _status(slot_dir)
+    if args.status or args.reclaim_stale:
+        return _status(slot_dir, reclaim=args.reclaim_stale)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("Supply a command after --.")
@@ -526,14 +621,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     state: dict[str, Any] = {
         "guard_version": GUARD_VERSION, "command": command, "job_limit_gb": args.job_gb,
         "job_cap_bytes": cap_request, "heavy": args.heavy, "allow_nested_guards": args.allow_nested_guards,
-        "status": "preflight", "guard_pid": own_pid,
+        "parent_job": args.parent_job, "status": "preflight", "guard_pid": own_pid,
         "receipt": str(receipt), "headroom": host_memory(),
         "thresholds": {"admission_reserve_gb": ADMISSION_RESERVE_GB, "slot_budget_gb": SLOT_BUDGET_GB,
                        "stop_commit_gb": stop_commit_gb, "stop_physical_gb": STOP_PHYSICAL_GB,
-                       "thrash_seconds": THRASH_SECONDS, "test_override": args.test_stop_commit_gb is not None},
-        "child_env_forced": CHILD_ENV, "native_peak_job_memory_gb": None, "cap_hit": False,
+                       "thrash_seconds": THRASH_SECONDS, "test_override": args.test_stop_commit_gb is not None,
+                       "test_slot_dir": args.slot_dir is not None or bool(os.environ.get(SLOT_DIR_ENV))},
+        "native_peak_job_memory_gb": None, "cap_hit": False,
     }
     job: Job | None = None
+    child: subprocess.Popen[bytes] | None = None
+    me: Slot | None = None
 
     def record(**updates: Any) -> None:
         state.update(updates)
@@ -550,6 +648,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.quiet:
             print(json.dumps(state, default=str), flush=True)
 
+    def stop_now(status: str, **extra: Any) -> NoReturn:
+        """Kill first: a best-effort receipt, then terminate the job (this supervisor too); never wait.
+
+        The slot is not released here (no lock is taken); it goes stale with this job and is reclaimed.
+        """
+        with contextlib.suppress(Exception):
+            record(status=status, returncode=EXIT_STOPPED, **extra)
+        if job is not None:
+            job.terminate(EXIT_STOPPED)  # on success this process ends inside the call
+        if child is not None:
+            with contextlib.suppress(Exception):
+                child.kill()
+        os._exit(EXIT_STOPPED)  # closing the last job handle ends whatever is left (kill-on-close)
+
+    def parent_gone() -> bool:
+        return bool(args.parent_job) and not job_alive(args.parent_job)
+
     try:
         job = Job(f"Local\\atx-memory-guard-{own_pid}-{own_created}", cap_request,
                   allow_nested_guards=args.allow_nested_guards)
@@ -557,42 +672,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         record(status="job_object_failed", error=repr(error))
         return EXIT_UNGUARDED
     state["job_cap_bytes"] = job.cap_bytes
+    child_env = {**CHILD_ENV, GUARD_JOB_ENV: job.name}
+    state["child_env_forced"] = child_env
     if args.disk_path is not None:
         state["disk"], disk_failure = sample_disk(args.disk_path, args.min_free_disk_gb)
         if disk_failure is not None:
             record(status=f"refused_{disk_failure}")
             return EXIT_NOT_ADMITTED
+    if parent_gone():
+        record(status="refused_parent_gone")
+        return EXIT_NOT_ADMITTED
 
     pool = SlotPool(slot_dir)
     requested = time.monotonic()
     admission: dict[str, Any] = {"slot_dir": str(slot_dir), "wait_limit_minutes": args.wait_minutes,
                                  "requested_at_utc": _utc(), "reclaimed_slots": []}
     state["admission"] = admission
-    with pool.lock():
-        live, reclaimed = pool.live_slots()
-        admission["reclaimed_slots"] += reclaimed
-        outer = [s for s in live if s.state == "running" and inside_job(s.job_name)]
-        if outer:
-            # Nested inside another guard's job: that job's cap would bind this one too. An orchestrator
-            # that starts guarded jobs runs with --allow-nested-guards, whose launches leave its job.
-            record(status="refused_nested_in_guard", nested_in={"seq": outer[0].seq, "pid": outer[0].pid,
-                                                                "cap_gb": round(outer[0].cap_bytes / GIB, 4)})
-            return EXIT_NOT_ADMITTED
-        me = Slot(seq=pool.next_seq(), pid=own_pid, created=own_created, state="waiting", cap_bytes=job.cap_bytes,
-                  heavy=args.heavy, job_name=job.name, receipt=str(receipt), enqueued_at_utc=admission["requested_at_utc"],
-                  command_head=" ".join(command)[:200])
-        pool.write(me)
-    admission["seq"] = me.seq
-    deadline = requested + args.wait_minutes * 60
-    next_note = 0.0
+
+    def note_reclaimed(reclaimed: list[dict[str, Any]]) -> None:
+        admission["reclaimed_slots"] = (admission["reclaimed_slots"] + reclaimed)[-50:]
+
     try:
+        with pool.lock():
+            live, reclaimed = pool.live_slots()
+            note_reclaimed(reclaimed)
+            outer = [s for s in live if s.state == "running" and inside_job(s.job_name)]
+            if outer:
+                # Nested inside another guard's job: that job's cap would bind this one too. An orchestrator
+                # that starts guarded jobs runs with --allow-nested-guards, whose launches leave its job.
+                record(status="refused_nested_in_guard", nested_in={
+                    "seq": outer[0].seq, "pid": outer[0].pid, "cap_gb": round(outer[0].cap_bytes / GIB, 4)})
+                return EXIT_NOT_ADMITTED
+            me = Slot(seq=pool.next_seq(live), pid=own_pid, created=own_created, state="waiting",
+                      cap_bytes=job.cap_bytes, heavy=args.heavy, job_name=job.name, receipt=str(receipt),
+                      enqueued_at_utc=admission["requested_at_utc"], command_head=" ".join(command)[:200])
+            pool.write(me)
+        admission["seq"] = me.seq
+        deadline = requested + args.wait_minutes * 60
+        next_note = 0.0
         while True:
             with pool.lock():
                 live, reclaimed = pool.live_slots()
-                admission["reclaimed_slots"] += reclaimed
-                if not any(s.seq == me.seq for s in live):
+                note_reclaimed(reclaimed)
+                if not any(s.key == me.key for s in live):
                     pool.write(me)  # the directory was cleared under us: re-register with the same ticket
-                usage = {s.seq: job_commit_bytes(s.job_name) for s in live if s.state == "running"}
+                    live.append(me)
+                usage = {s.key: job_commit_bytes(s.job_name) for s in live if s.state == "running"}
                 memory = host_memory()
                 admitted, reasons, detail = decide(me, live, memory["commit_free_bytes"], usage)
                 if admitted:
@@ -605,6 +730,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if admitted:
                 admission["admitted_at_utc"] = me.admitted_at_utc
                 break
+            if parent_gone():
+                record(status="refused_parent_gone", headroom=memory)
+                return EXIT_NOT_ADMITTED
             now = time.monotonic()
             if now >= deadline:
                 record(status="refused_wait_timeout", headroom=memory)
@@ -616,7 +744,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         stdout = args.stdout.open("xb") if args.stdout else None
         stderr = args.stderr.open("xb") if args.stderr else None
-        env = {**os.environ, **CHILD_ENV}
         started = time.monotonic()
         minimum = {"commit_free_gb": memory["commit_free_gb"], "physical_free_gb": memory["physical_free_gb"]}
         state["min_headroom"] = minimum
@@ -624,46 +751,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         executable = str(Path(command[0]).resolve()) if Path(command[0]).is_file() else None
         try:
             child = subprocess.Popen(command, executable=executable, stdin=subprocess.DEVNULL, stdout=stdout,
-                                     stderr=stderr, env=env, creationflags=subprocess.CREATE_NO_WINDOW)
+                                     stderr=stderr, env={**os.environ, **child_env},
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
         except OSError as error:
             record(status="launch_failed", error=repr(error)[:500], headroom=memory)
             return EXIT_LAUNCH_FAILED
-        with child:
-            record(status="running", child_pid=child.pid, headroom=memory)
-            next_report = time.monotonic() + RECORD_SECONDS
-            low_physical_since: float | None = None
-            while child.poll() is None:
-                memory = host_memory()
-                minimum["commit_free_gb"] = min(minimum["commit_free_gb"], memory["commit_free_gb"])
-                minimum["physical_free_gb"] = min(minimum["physical_free_gb"], memory["physical_free_gb"])
-                now = time.monotonic()
-                stop: str | None = None
-                if memory["commit_free_gb"] < stop_commit_gb:
-                    stop = "low_commit"
-                if memory["physical_free_gb"] < STOP_PHYSICAL_GB:
-                    low_physical_since = now if low_physical_since is None else low_physical_since
-                    if now - low_physical_since >= THRASH_SECONDS:
-                        stop = stop or "thrash"
-                else:
-                    low_physical_since = None
-                if stop is None and args.disk_path is not None:
-                    state["disk"], disk_failure = sample_disk(args.disk_path, args.min_free_disk_gb)
-                    stop = disk_failure
-                if stop is not None:
-                    record(status=f"stopped_{stop}", stop_reason=stop, returncode=EXIT_STOPPED, headroom=memory,
-                           run_seconds=round(now - started, 1))
-                    with pool.lock():
-                        pool.remove(me)
-                    # Terminates only this explicitly assigned job: the command and this supervisor.
-                    job.terminate(EXIT_STOPPED)
-                    return EXIT_STOPPED
-                if now >= next_report:
-                    record(headroom=memory)
-                    next_report = now + RECORD_SECONDS
-                time.sleep(POLL_SECONDS)
-            code = child.returncode
-            record(status="completed" if code == 0 else "failed", returncode=code, headroom=host_memory(),
-                   run_seconds=round(time.monotonic() - started, 1))
+        record(status="running", child_pid=child.pid, headroom=memory)
+        next_report = time.monotonic() + RECORD_SECONDS
+        low_physical_since: float | None = None
+        while child.poll() is None:
+            memory = host_memory()
+            minimum["commit_free_gb"] = min(minimum["commit_free_gb"], memory["commit_free_gb"])
+            minimum["physical_free_gb"] = min(minimum["physical_free_gb"], memory["physical_free_gb"])
+            now = time.monotonic()
+            stop: str | None = None
+            if memory["commit_free_gb"] < stop_commit_gb:
+                stop = "low_commit"
+            if memory["physical_free_gb"] < STOP_PHYSICAL_GB:
+                low_physical_since = now if low_physical_since is None else low_physical_since
+                if now - low_physical_since >= THRASH_SECONDS:
+                    stop = stop or "thrash"
+            else:
+                low_physical_since = None
+            if stop is None and args.disk_path is not None:
+                state["disk"], disk_failure = sample_disk(args.disk_path, args.min_free_disk_gb)
+                stop = disk_failure
+            if stop is None and parent_gone():
+                stop = "parent_gone"
+            if stop is not None:
+                stop_now(f"stopped_{stop}", stop_reason=stop, headroom=memory, run_seconds=round(now - started, 1))
+            if now >= next_report:
+                record(headroom=memory)
+                next_report = now + RECORD_SECONDS
+            time.sleep(POLL_SECONDS)
+        code = child.returncode
+        record(status="completed" if code == 0 else "failed", returncode=code, headroom=host_memory(),
+               run_seconds=round(time.monotonic() - started, 1))
         for handle in (stdout, stderr):
             if handle:
                 handle.close()
@@ -671,12 +794,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         # too. The OS then cleans up any leftover children.
         return code
     except BaseException as error:
-        if state.get("status") in ("preflight", "queued", "running"):
-            record(status="interrupted", error=repr(error)[:500])
+        if child is not None and child.poll() is None:
+            # Never leave the command running without its in-run protection, and never wait on it.
+            stop_now("interrupted", error=repr(error)[:500])
+        if isinstance(error, TimeoutError):
+            with contextlib.suppress(Exception):
+                record(status="refused_lock_timeout", error=repr(error)[:500])
+            return EXIT_NOT_ADMITTED
+        with contextlib.suppress(Exception):
+            if state.get("status") in ("preflight", "queued", "running"):
+                record(status="interrupted", error=repr(error)[:500])
         raise
     finally:
-        with contextlib.suppress(Exception), pool.lock(timeout_s=10):
-            pool.remove(me)
+        if me is not None:
+            with contextlib.suppress(Exception), pool.lock(timeout_s=10):
+                pool.remove(me)
 
 
 if __name__ == "__main__":

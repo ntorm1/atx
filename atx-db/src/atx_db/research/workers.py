@@ -2,8 +2,8 @@
 
 :func:`run_jobs` runs callables (pickled, executed in the child) or argv lists, at most
 ``max_workers`` at a time. Every job is launched through the ONE memory guard,
-``.superpowers/sdd/tier1-parity/run_memory_guarded.py`` (ruling C-58, node M0; override the path
-with ``ATX_MEMORY_GUARD``), which
+``.superpowers/sdd/tier1-parity/run_memory_guarded.py`` (ruling C-58, node M0; ``ATX_MEMORY_GUARD``
+names another copy for TESTS ONLY), which
 
 * runs the job inside a Windows job object whose committed memory is capped at ``job_gb``
   (``0.6`` GiB for research workers; page-aligned, never above the request), so the job and
@@ -13,9 +13,14 @@ with ``ATX_MEMORY_GUARD``), which
   host-wide slot files keep the sum of our running caps <= 2.0 GiB (one HEAVY job at most); the
   guard queues FIFO for up to ``wait_minutes`` (free physical memory is not an admission condition);
 * stops the job in-run only at free commit < 0.75 GiB or free physical < 0.25 GiB for 30 s
-  (exit 137, a normal event: re-run the slice, it resumes from its ledger);
+  (exit 137, a normal event: re-run the slice, it resumes from its ledger), and also when the
+  orchestrator's own guard stops or dies (``--parent-job``, from ``ATX_GUARD_JOB``), so no worker
+  outlives the run that launched it;
 * writes a JSON receipt with the job's native peak committed memory on every exit
   (``peak_job_memory_gb`` here, the number research acceptance reports), its status and exit code.
+
+The orchestrator (the process calling :func:`run_jobs`) runs under the guard in orchestrator mode:
+``run_memory_guarded.py --job-gb 0.2 --allow-nested-guards --wait-minutes 30 -- python <script>``.
 
 Children get ``OPENBLAS_NUM_THREADS=1`` and the DuckDB research settings through the environment
 (``ATX_RESEARCH_DUCKDB_MEMORY_LIMIT=256MB``, ``ATX_RESEARCH_DUCKDB_THREADS=1``), which
@@ -45,6 +50,7 @@ DEFAULT_JOB_GB = 0.6
 MAX_JOB_GB = 1.0
 DEFAULT_WAIT_MINUTES = 60.0
 GUARD_ENV = "ATX_MEMORY_GUARD"
+GUARD_JOB_ENV = "ATX_GUARD_JOB"
 MEMORY_ENV = "ATX_RESEARCH_DUCKDB_MEMORY_LIMIT"
 THREADS_ENV = "ATX_RESEARCH_DUCKDB_THREADS"
 WORKER_ENV: Mapping[str, str] = {
@@ -62,7 +68,7 @@ _GUARD_RELATIVE = Path(".superpowers") / "sdd" / "tier1-parity" / "run_memory_gu
 
 
 def guard_script() -> Path:
-    """The memory guard: ``$ATX_MEMORY_GUARD``, else the first ancestor holding the tracked guard."""
+    """The memory guard: the first ancestor holding the tracked guard (``$ATX_MEMORY_GUARD``: tests only)."""
     named = os.environ.get(GUARD_ENV)
     if named:
         path = Path(named).resolve()
@@ -150,6 +156,9 @@ def _launch(index: int, job: Callable[[], None] | Sequence[str], job_gb: float, 
             "--receipt", str(receipt), "--quiet"]
     if heavy:
         argv.append("--heavy")
+    parent_job = os.environ.get(GUARD_JOB_ENV)
+    if parent_job:  # the orchestrator's guard: the worker stops when that guard stops or dies
+        argv += ["--parent-job", parent_job]
     argv.append("--")
     if callable(job):
         target = scratch / f"job-{index}.pickle"
@@ -164,27 +173,28 @@ def _launch(index: int, job: Callable[[], None] | Sequence[str], job_gb: float, 
         log = (log_dir / f"job-{index}.log").open("ab")
     # The guard takes its own cap and slot, so it must not nest inside this process's job (a nested job
     # would share this process's cap): it is started with CREATE_BREAKAWAY_FROM_JOB, which a guarded
-    # orchestrator allows only when it was started with --allow-nested-guards.
+    # orchestrator allows only when it was started with --allow-nested-guards (otherwise the guard stays
+    # nested and refuses itself: refused_nested_in_guard, raised below).
     flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB if os.name == "nt" else 0
-    try:
-        process = subprocess.Popen(argv, env=dict(env), stdin=subprocess.DEVNULL, stdout=log,
-                                   stderr=subprocess.STDOUT if log is not None else None, creationflags=flags)
-    except PermissionError as error:
-        if log is not None:
-            log.close()
-        raise RuntimeError(
-            "run_jobs cannot start a guarded job from this process: its job object does not allow guard "
-            "launches. Start the orchestrator itself under the memory guard in orchestrator mode: "
-            "run_memory_guarded.py --job-gb 0.2 --allow-nested-guards --wait-minutes 30 -- python <script>") from error
+    process = subprocess.Popen(argv, env=dict(env), stdin=subprocess.DEVNULL, stdout=log,
+                               stderr=subprocess.STDOUT if log is not None else None, creationflags=flags)
     return process, receipt, log
 
 
 def _collect(receipt: Path, code: int) -> dict[str, Any]:
-    """The guard receipt, with the fields research callers read (``peak_job_memory_gb``, ``seconds``)."""
+    """The guard receipt, with the fields research callers read (``peak_job_memory_gb``, ``seconds``).
+
+    A result without a guard receipt (``guard_version`` and ``job_cap_bytes``) is never a success: the
+    job cannot be shown to have run capped, so it reports exit 70.
+    """
     try:
         collected: dict[str, Any] = json.loads(receipt.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         collected = {"status": "no_receipt"}
+    if not isinstance(collected, dict) or not collected.get("guard_version") or not collected.get("job_cap_bytes"):
+        collected = {"status": "no_valid_guard_receipt", "raw_status": (collected or {}).get("status")
+                     if isinstance(collected, dict) else None}
+        code = code or EXIT_UNGUARDED
     collected["peak_job_memory_gb"] = collected.get("native_peak_job_memory_gb")
     collected["seconds"] = collected.get("run_seconds")
     collected["wait_seconds"] = (collected.get("admission") or {}).get("wait_seconds")
@@ -214,7 +224,8 @@ def run_jobs(jobs: Sequence[Callable[[], None]] | Sequence[list[str]], max_worke
     given) is filled with each job's guard receipt in job order (status, ``peak_job_memory_gb``,
     ``seconds``, ``wait_seconds``, headroom). Exit codes: 0 ok, 1 the job raised, 75 the job hit
     its memory cap, 137 stopped in-run by the guard (re-run: resume from the ledger), 78 not
-    admitted within ``wait_minutes`` (re-engineer smaller, index section 4 M8), 70 no cap possible.
+    admitted within ``wait_minutes`` (re-engineer smaller, index section 4 M8), 70 no cap possible
+    or no valid guard receipt.
     """
     if isinstance(max_workers, bool) or not isinstance(max_workers, int) or not 1 <= max_workers <= 8:
         raise ValueError("max_workers must be an integer 1..8")
