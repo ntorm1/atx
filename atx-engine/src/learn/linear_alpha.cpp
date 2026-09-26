@@ -31,9 +31,14 @@ atx::core::Result<DatasetLinearFit> fit_linear_dataset(const PanelDataset& datas
     const LatentAugmentation& aug, const LinearAlphaCfg& cfg, LearnFitTrace* trace) {
   if (cfg.cpcv.rule != eval::CpcvRule::DateV2)
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "dataset linear fit requires explicit date-unit CPCV");
-  ATX_TRY(auto fm, read_dataset_features(dataset, begin, end, asof, max_bytes));
-  if (cfg.horizons != fm.label_horizons)
+  std::vector<atx::u16> endpoints;
+  for (auto horizon : dataset.config().holding_horizons)
+    endpoints.push_back(static_cast<atx::u16>(horizon + dataset.config().execution_delay));
+  if (cfg.horizons != endpoints)
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "dataset linear fit horizon/endpoint identity mismatch");
+  if (aug.pca && aug.pca->fit_upto_date > asof)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "dataset linear fit cannot use a future-fitted PCA basis");
+  ATX_TRY(auto fm, read_dataset_features(dataset, begin, end, asof, max_bytes));
   ATX_TRY(auto model, fit_linear_checked(fm, aug, cfg, trace));
   return atx::core::Ok(DatasetLinearFit{std::move(model), fm.dataset_manifest_sha256, fm.dataset_recipe});
 }

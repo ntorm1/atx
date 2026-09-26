@@ -28,7 +28,8 @@ constexpr i64 kSeal = 1'577'836'800'000'000'000LL;
 constexpr u64 kMissing = 0x7ff8000000000000ULL;
 constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
 constexpr std::string_view kRule = "rank-residual-v2;rank-average-ties;missing-zero-plus-indicator;prior-daily-sd-sqrt-h;scaled-then-date-demean;no-exposure-residual";
-static_assert(std::endian::native == std::endian::little && sizeof(f32) == 4 && sizeof(f64) == 8);
+static_assert(std::endian::native == std::endian::little && sizeof(f32) == 4 && sizeof(f64) == 8 &&
+    std::numeric_limits<f32>::is_iec559 && std::numeric_limits<f64>::is_iec559);
 
 bool valid_hash(std::string_view text) {
   return text.size() == 64 && std::all_of(text.begin(), text.end(), [](char c) {
