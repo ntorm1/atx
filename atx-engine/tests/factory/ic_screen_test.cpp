@@ -479,4 +479,37 @@ TEST(IcScreen, BoundedNoisyDistinctHorizonQualificationReportsActualCohorts) {
   const auto short_result = screen_ic(monotone.values, *short_cache, *short_scratch); ASSERT_TRUE(short_result);
   EXPECT_FALSE(short_result->reject); EXPECT_EQ(short_result->reason, IcScreenReason::InsufficientEvidence);
 }
+
+TEST(IcScreen, WiderNoisyCohortReportsRejectionAndWeakSignalRetention) {
+  constexpr usize dates = 512, names = 512;
+  auto p = panel(dates, names, stochastic_prices(dates, names)); ASSERT_TRUE(p);
+  IcScreenConfig cfg; cfg.rule = IcScreenRule::ConservativeV2;
+  auto cache = prepare_ic_screen(*p, cfg); ASSERT_TRUE(cache);
+  auto scratch = prepare_ic_screen_scratch(*cache); ASSERT_TRUE(scratch);
+  usize null_rejected = 0, weak_retained = 0;
+  const auto measure = [&](usize h, f64 effect, atx::u64 seed) {
+    auto signal = noisy_signal(*cache, h, effect, seed);
+    EXPECT_EQ(signal.values.size(), dates * names);
+    if (signal.values.size() != dates * names) return false;
+    const auto result = screen_ic(signal.values, *cache, *scratch);
+    EXPECT_TRUE(result.has_value()); if (!result) return false;
+    EXPECT_TRUE(result->enough_evidence);
+    std::cout << "ic-screen-wide,dates=512,names=512,h=" << cfg.horizons[h]
+              << ",effect=" << effect << ",seed=" << seed << ",reject=" << result->reject
+              << ",mean=" << result->horizons[h].pearson.mean
+              << ",hac_se=" << result->horizons[h].pearson.standard_error << '\n';
+    return result->reject;
+  };
+  for (atx::u64 seed = 701; seed <= 712; ++seed)
+    null_rejected += measure(3, 0.0, seed) ? 1U : 0U;
+  for (usize h = 0; h < 4U; ++h) {
+    weak_retained += measure(h, 0.002, 810U + h) ? 0U : 1U;
+    weak_retained += measure(h, 0.005, 820U + h) ? 0U : 1U;
+    weak_retained += measure(h, -0.005, 850U + h) ? 0U : 1U;
+  }
+  std::cout << "ic-screen-wide,totals,null_rejected=" << null_rejected
+            << "/12,weak_retained=" << weak_retained << "/12,synthetic-only\n";
+  // Fixed diagnostic cohort: report the actual rates, never tune seeds or
+  // assert a desired quota. Statistical uncertainty and economic value remain.
+}
 } // namespace
