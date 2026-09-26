@@ -45,6 +45,7 @@ add_executable(atx-impl-w1-contract-tests EXCLUDE_FROM_ALL
     stage_data_provenance_test.cpp
     equity_allocation_test.cpp
     equity_allocation_factor_test.cpp
+    stage_equity_baseline_test.cpp
     config_equity_book_test.cpp)
 target_link_libraries(atx-impl-w1-contract-tests PRIVATE
     atx-impl-core GTest::gtest_main atx_warnings nlohmann_json::nlohmann_json

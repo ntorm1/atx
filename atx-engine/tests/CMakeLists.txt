@@ -322,6 +322,17 @@ if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-library-tests REUSE_FROM atx-engine-test-pch)
 endif()
 
+add_executable(atx-engine-w1-risk-tests EXCLUDE_FROM_ALL
+    risk/risk_constraints_test.cpp
+    risk/risk_qp_solver_test.cpp
+    risk/risk_qp_factor_admm_test.cpp
+    risk/risk_discretize_test.cpp)
+atx_engine_test_compile_environment(atx-engine-w1-risk-tests)
+target_link_libraries(atx-engine-w1-risk-tests PRIVATE atx-test-scratch)
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine-w1-risk-tests REUSE_FROM atx-engine-test-pch)
+endif()
+
 add_executable(atx-engine-w1-data-tests EXCLUDE_FROM_ALL
     data/data_point_in_time_universe_test.cpp
     data/data_security_link_intervals_test.cpp
