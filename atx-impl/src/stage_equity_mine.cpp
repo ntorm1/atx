@@ -706,6 +706,8 @@ guard_for(const MineData &m, atx::u32 close_id, const ScoreCfg &cfg, ReturnGuard
                                         const MineData &train, const ScoreCfg &score,
                                         const ReturnGuard *guard) {
     // Float bit patterns avoid rounding distinct experimental recipes together.
+    const atx::usize first_cell = c.window_begin * train.panel->instruments();
+    const atx::usize train_cells = (c.window_end - c.window_begin) * train.panel->instruments();
     nlohmann::json j{{"rule", factory::ic_screen_rule_name(c.rule)}, {"horizons", c.horizons},
         {"delay", c.execution_delay}, {"begin", c.window_begin}, {"end", c.window_end},
         {"maturity_end", c.maturity_end}, {"min_names", c.min_names}, {"min_dates", c.min_dates},
@@ -713,12 +715,12 @@ guard_for(const MineData &m, atx::u32 close_id, const ScoreCfg &cfg, ReturnGuard
         {"confidence_bits", std::bit_cast<atx::u64>(c.confidence_multiplier)},
         {"max_cache_bytes", c.max_cache_bytes}, {"price_field", "close"},
         {"dates", train.panel->dates()}, {"instruments", train.panel->instruments()},
-        {"membership_hash", fnv1a64(train.member.data(), train.member.size())},
+        {"membership_hash", fnv1a64(train.member.data() + first_cell, train_cells)},
         {"guard_enabled", guard != nullptr}, {"raw_close_field", score.raw_close_field},
         {"guard_max_log_bits", std::bit_cast<atx::u64>(score.max_abs_log_return)},
         {"guard_adj_raw_tolerance_bits", std::bit_cast<atx::u64>(score.adj_raw_log_tol)}};
-    if (guard != nullptr) j["guard_prefix_hash"] = fnv1a64(guard->bad_prefix.data(),
-        guard->bad_prefix.size() * sizeof(atx::u32));
+    if (guard != nullptr) j["guard_prefix_hash"] = fnv1a64(guard->bad_prefix.data() + first_cell,
+        train_cells * sizeof(atx::u32));
     return j.dump();
 }
 

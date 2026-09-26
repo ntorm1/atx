@@ -315,7 +315,8 @@ TEST(EquityMinePipeline, IcScreenUsesTrainingCutoffAndRejectIdentityBindsRecipe)
     auto reg = screen_registry();
     auto cfg = screen_config();
     const mine::MineData ta{&a, std::vector<std::uint8_t>(a.cells(), 1), {20, 200}};
-    const mine::MineData tb{&b, std::vector<std::uint8_t>(b.cells(), 1), {20, 200}};
+    mine::MineData tb{&b, std::vector<std::uint8_t>(b.cells(), 1), {20, 200}};
+    std::fill(tb.member.begin() + 200 * b.instruments(), tb.member.end(), 0);
     auto first = mine::mine_train(lib, ta, inputs, cfg, reg);
     auto future = mine::mine_train(lib, tb, inputs, cfg, reg);
     ASSERT_TRUE(first); ASSERT_TRUE(future);
