@@ -63,7 +63,7 @@ attempted and zero completed. No strategy-selection rule is changed.
 
 The next rehearsal additionally opts into the explicit stock-transition recipe
 using `atx-impl/strategies/slow_price_volume_24_v1.stock_transitions.json`,
-SHA256 `5601e0b441c69dc864b27b44bf40fca7bd2ca64e6d7d4814ff9fdac8e0eb5ac5`.
+SHA256 `2fc4cc34103cb7cf591b7a27e4b8da58f749d76193e36fe474014c66f3d76691`.
 Primary issuer/SEC evidence and exact archive/role basis support a447/1000
 conversion from JAG4997008 into Parsley Class A PE4245819. The conservative
 completion/publication upper bound is January10 13:52UTC; recognition is at
@@ -71,6 +71,17 @@ the observed22UTC mark. Existing successor holdings are marked before signed
 delivery, predecessor orders are retired, successor targets net against actual
 post-transition research holdings, and delivery is not counted as an exchange
 fill or execution turnover. An absent required successor mark remains an error.
+
+Before any stock-capable evaluation, the existing masks-only queue also led to
+WCG160964/CNC79219 primary-source reconstruction. The same file now contains
+this second event:338/100 successor common shares and USD120 fixed entitlement.
+January23 11:04ET completion publication gives a conservative16:05UTC upper
+bound, so recognition is January23 22UTC using January22 predecessor basis.
+The final WCG source print on January23 and first absence on January24 do not
+determine the legal event clock. Both selected role prices and original source
+records are hash-bound. The former one-event config5601e0b4 remains in commit
+09444e33; it was never evaluated. This metadata amendment expands evidenced
+accounting coverage without selecting a signal or observing portfolio metrics.
 
 This is a continuous research share-equivalent transition. It does not model
 physical whole-share rounding, unknown fractional cash-in-lieu, actual account

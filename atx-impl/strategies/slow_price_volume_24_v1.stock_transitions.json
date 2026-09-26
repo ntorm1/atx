@@ -37,6 +37,37 @@
       "successor_recognition_adjusted_close": 17.822093310787793,
       "fixed_cash_usd_per_predecessor_raw_share": 0,
       "stock_and_cash_excluded_from_adjusted_close": true
+    },
+    {
+      "event_id": "wcg-cnc-stock-cash-merger-20200123",
+      "revision": 1,
+      "predecessor_instrument_id": 160964,
+      "successor_instrument_id": 79219,
+      "security_id_namespace": "spiderrock.securityID",
+      "predecessor_historical_identity": "WellCare Health Plans common stock / WCG",
+      "successor_historical_identity": "Centene Corporation common stock / CNC",
+      "predecessor_identity_evidence_sha256": "b1b4bad2022603c48be68ae123ce1b41dd173b281abd10c49d2247cee2626bc1",
+      "successor_identity_evidence_sha256": "b1b4bad2022603c48be68ae123ce1b41dd173b281abd10c49d2247cee2626bc1",
+      "completion_evidence_sha256": "b1b4bad2022603c48be68ae123ce1b41dd173b281abd10c49d2247cee2626bc1",
+      "basis_evidence_sha256": "b1b4bad2022603c48be68ae123ce1b41dd173b281abd10c49d2247cee2626bc1",
+      "evidence_urls": [
+        "https://www.prnewswire.com/news-releases/centene-completes-acquisition-of-wellcare-creating-a-leading-healthcare-enterprise-focused-on-government-sponsored-healthcare-programs-300992269.html",
+        "https://www.sec.gov/Archives/edgar/data/1071739/000114036120001310/form8k.htm",
+        "https://www.sec.gov/Archives/edgar/data/1279363/000114036120001340/form8k.htm"
+      ],
+      "reference_mark_ns": 1579730400000000000,
+      "reference_raw_close": 345.25,
+      "reference_adjusted_close": 345.25,
+      "effective_after_ns": 1579730400000000000,
+      "effective_by_ns": 1579795500000000000,
+      "available_at_ns": 1579795500000000000,
+      "recognition_mark_ns": 1579816800000000000,
+      "stock_ratio_numerator": 338,
+      "stock_ratio_denominator": 100,
+      "successor_recognition_raw_close": 68.0199966430664,
+      "successor_recognition_adjusted_close": 68.0199966430664,
+      "fixed_cash_usd_per_predecessor_raw_share": 120,
+      "stock_and_cash_excluded_from_adjusted_close": true
     }
   ]
 }
