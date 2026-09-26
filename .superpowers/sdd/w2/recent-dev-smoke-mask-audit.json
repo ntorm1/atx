@@ -1,0 +1,4224 @@
+{
+  "all_mature_score_decisions": {
+    "dates_with_any_missing_endpoint": 45,
+    "dates_with_any_missing_entry": 29,
+    "decision_dates": 60,
+    "missing_either_name_decisions": 70,
+    "missing_endpoint_d2_name_decisions": 68,
+    "missing_entry_d1_name_decisions": 35,
+    "observed_eligible_name_decisions": 176422,
+    "unique_affected_ids": 35
+  },
+  "bindings": {
+    "ids.u64": {
+      "bytes": 31600,
+      "sha256": "f8f4e57e6dc1f75dc042de280acb040056eafa9e63de3eadcbe3cfc7bc87756e",
+      "verified": true
+    },
+    "member.u8": {
+      "bytes": 1820950,
+      "sha256": "c8d85e0deb05c2684bf0aa61f7e333ad34e3f2f2a9cca4cb7fd24666b05be658",
+      "verified": true
+    },
+    "present.u8": {
+      "bytes": 1820950,
+      "sha256": "e6d7bdd1e1db6657b1bc6af27a204cdf6755503b57e328043dd4af39fdd495c1",
+      "verified": true
+    },
+    "sessions.i64": {
+      "bytes": 3688,
+      "sha256": "f8375cf766422d1256a5f845eebe6d99bd2e6b62f6a8f2da8fc7db0781f6e214",
+      "verified": true
+    }
+  },
+  "daily": [
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3677,
+      "scored": false,
+      "session": "2018-06-01"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3674,
+      "scored": false,
+      "session": "2018-06-04"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3675,
+      "scored": false,
+      "session": "2018-06-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3677,
+      "scored": false,
+      "session": "2018-06-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3675,
+      "scored": false,
+      "session": "2018-06-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3675,
+      "scored": false,
+      "session": "2018-06-08"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3675,
+      "scored": false,
+      "session": "2018-06-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3674,
+      "scored": false,
+      "session": "2018-06-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3676,
+      "scored": false,
+      "session": "2018-06-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3675,
+      "scored": false,
+      "session": "2018-06-14"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3677,
+      "scored": false,
+      "session": "2018-06-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3681,
+      "scored": false,
+      "session": "2018-06-18"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3681,
+      "scored": false,
+      "session": "2018-06-19"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3685,
+      "scored": false,
+      "session": "2018-06-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3686,
+      "scored": false,
+      "session": "2018-06-21"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3685,
+      "scored": false,
+      "session": "2018-06-22"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3686,
+      "scored": false,
+      "session": "2018-06-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3687,
+      "scored": false,
+      "session": "2018-06-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3689,
+      "scored": false,
+      "session": "2018-06-27"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3694,
+      "scored": false,
+      "session": "2018-06-28"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3694,
+      "scored": false,
+      "session": "2018-06-29"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3697,
+      "scored": false,
+      "session": "2018-07-02"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3695,
+      "scored": false,
+      "session": "2018-07-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3700,
+      "scored": false,
+      "session": "2018-07-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3698,
+      "scored": false,
+      "session": "2018-07-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3698,
+      "scored": false,
+      "session": "2018-07-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3697,
+      "scored": false,
+      "session": "2018-07-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3701,
+      "scored": false,
+      "session": "2018-07-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3699,
+      "scored": false,
+      "session": "2018-07-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3700,
+      "scored": false,
+      "session": "2018-07-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3698,
+      "scored": false,
+      "session": "2018-07-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3702,
+      "scored": false,
+      "session": "2018-07-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3703,
+      "scored": false,
+      "session": "2018-07-18"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3708,
+      "scored": false,
+      "session": "2018-07-19"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3704,
+      "scored": false,
+      "session": "2018-07-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3706,
+      "scored": false,
+      "session": "2018-07-23"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3709,
+      "scored": false,
+      "session": "2018-07-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3711,
+      "scored": false,
+      "session": "2018-07-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3716,
+      "scored": false,
+      "session": "2018-07-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3714,
+      "scored": false,
+      "session": "2018-07-27"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3716,
+      "scored": false,
+      "session": "2018-07-30"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3721,
+      "scored": false,
+      "session": "2018-07-31"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3719,
+      "scored": false,
+      "session": "2018-08-01"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3723,
+      "scored": false,
+      "session": "2018-08-02"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3723,
+      "scored": false,
+      "session": "2018-08-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2018-08-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3722,
+      "scored": false,
+      "session": "2018-08-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3724,
+      "scored": false,
+      "session": "2018-08-08"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3723,
+      "scored": false,
+      "session": "2018-08-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3724,
+      "scored": false,
+      "session": "2018-08-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2018-08-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2018-08-14"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2018-08-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2018-08-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2018-08-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2018-08-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2018-08-21"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3731,
+      "scored": false,
+      "session": "2018-08-22"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3731,
+      "scored": false,
+      "session": "2018-08-23"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2018-08-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2018-08-27"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2018-08-28"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 0,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3731,
+      "scored": false,
+      "session": "2018-08-29"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2934,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2018-08-30"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2933,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2018-08-31"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2930,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2018-09-04"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2933,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2018-09-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2932,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2018-09-06"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2928,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2018-09-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2924,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2018-09-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2917,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2018-09-11"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2917,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2018-09-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2920,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2018-09-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2914,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2018-09-14"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2898,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2018-09-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2899,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2018-09-18"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2895,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3733,
+      "scored": false,
+      "session": "2018-09-19"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2896,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2018-09-20"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2901,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2018-09-21"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2898,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3739,
+      "scored": false,
+      "session": "2018-09-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2892,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3739,
+      "scored": false,
+      "session": "2018-09-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2894,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2018-09-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2890,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3739,
+      "scored": false,
+      "session": "2018-09-27"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2886,
+      "observed_eligible_missing_d1": 5,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3744,
+      "scored": false,
+      "session": "2018-09-28"
+    },
+    {
+      "member_current_absent": 5,
+      "member_names": 2894,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-10-01"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2888,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2018-10-02"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2896,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2018-10-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2902,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3746,
+      "scored": false,
+      "session": "2018-10-04"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2905,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2018-10-05"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2905,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2018-10-08"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2908,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-10-09"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2905,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3745,
+      "scored": false,
+      "session": "2018-10-10"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2908,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-10-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2921,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-10-12"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2934,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2018-10-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2934,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2018-10-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2945,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-10-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2946,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3740,
+      "scored": false,
+      "session": "2018-10-18"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2946,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-10-19"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2946,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2018-10-22"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2940,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-10-23"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2940,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2018-10-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2936,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-10-25"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2944,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3739,
+      "scored": false,
+      "session": "2018-10-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2939,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2018-10-29"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2938,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2018-10-30"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2944,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3748,
+      "scored": false,
+      "session": "2018-10-31"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2941,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3746,
+      "scored": false,
+      "session": "2018-11-01"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2950,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3747,
+      "scored": false,
+      "session": "2018-11-02"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2953,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3745,
+      "scored": false,
+      "session": "2018-11-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2951,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3746,
+      "scored": false,
+      "session": "2018-11-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2954,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3749,
+      "scored": false,
+      "session": "2018-11-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2957,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3746,
+      "scored": false,
+      "session": "2018-11-08"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2957,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3746,
+      "scored": false,
+      "session": "2018-11-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2956,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2018-11-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2960,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3749,
+      "scored": false,
+      "session": "2018-11-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2959,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3746,
+      "scored": false,
+      "session": "2018-11-14"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2962,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3747,
+      "scored": false,
+      "session": "2018-11-15"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2967,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3746,
+      "scored": false,
+      "session": "2018-11-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2966,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3747,
+      "scored": false,
+      "session": "2018-11-19"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2973,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3747,
+      "scored": false,
+      "session": "2018-11-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2969,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-11-21"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2971,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3745,
+      "scored": false,
+      "session": "2018-11-23"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2961,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-11-26"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2965,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2018-11-27"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2960,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3744,
+      "scored": false,
+      "session": "2018-11-28"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2966,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2018-11-29"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2971,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2018-11-30"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2977,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2018-12-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2976,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3740,
+      "scored": false,
+      "session": "2018-12-04"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2965,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2018-12-06"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2975,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3737,
+      "scored": false,
+      "session": "2018-12-07"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2975,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2018-12-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2975,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2018-12-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2973,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2018-12-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2981,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2018-12-13"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2976,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2018-12-14"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2970,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2018-12-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2974,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2018-12-18"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2979,
+      "observed_eligible_missing_d1": 4,
+      "observed_eligible_missing_d2": 6,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2018-12-19"
+    },
+    {
+      "member_current_absent": 4,
+      "member_names": 2982,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3731,
+      "scored": false,
+      "session": "2018-12-20"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2979,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2018-12-21"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2976,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2018-12-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2972,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2018-12-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2990,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2018-12-27"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 7,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2018-12-28"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 6,
+      "observed_eligible_missing_d2": 7,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2018-12-31"
+    },
+    {
+      "member_current_absent": 6,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-01-02"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-01-03"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-01-04"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-01-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-01-08"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-01-09"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3724,
+      "scored": false,
+      "session": "2019-01-10"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3723,
+      "scored": false,
+      "session": "2019-01-11"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3721,
+      "scored": false,
+      "session": "2019-01-14"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3718,
+      "scored": false,
+      "session": "2019-01-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3722,
+      "scored": false,
+      "session": "2019-01-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3718,
+      "scored": false,
+      "session": "2019-01-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3719,
+      "scored": false,
+      "session": "2019-01-18"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3720,
+      "scored": false,
+      "session": "2019-01-22"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3722,
+      "scored": false,
+      "session": "2019-01-23"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3720,
+      "scored": false,
+      "session": "2019-01-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3722,
+      "scored": false,
+      "session": "2019-01-25"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3717,
+      "scored": false,
+      "session": "2019-01-28"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2997,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3715,
+      "scored": false,
+      "session": "2019-01-29"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2994,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3717,
+      "scored": false,
+      "session": "2019-01-30"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2998,
+      "observed_eligible_missing_d1": 4,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3718,
+      "scored": false,
+      "session": "2019-01-31"
+    },
+    {
+      "member_current_absent": 4,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3712,
+      "scored": false,
+      "session": "2019-02-01"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3710,
+      "scored": false,
+      "session": "2019-02-04"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2995,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3710,
+      "scored": false,
+      "session": "2019-02-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2998,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3710,
+      "scored": false,
+      "session": "2019-02-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2990,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3713,
+      "scored": false,
+      "session": "2019-02-07"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2988,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3714,
+      "scored": false,
+      "session": "2019-02-08"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2982,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3713,
+      "scored": false,
+      "session": "2019-02-11"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2973,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3713,
+      "scored": false,
+      "session": "2019-02-12"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2975,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3711,
+      "scored": false,
+      "session": "2019-02-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2971,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3711,
+      "scored": false,
+      "session": "2019-02-14"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2973,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3709,
+      "scored": false,
+      "session": "2019-02-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2968,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3709,
+      "scored": false,
+      "session": "2019-02-19"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2971,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3710,
+      "scored": false,
+      "session": "2019-02-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2969,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3708,
+      "scored": false,
+      "session": "2019-02-21"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2970,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3708,
+      "scored": false,
+      "session": "2019-02-22"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2965,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3709,
+      "scored": false,
+      "session": "2019-02-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2966,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3711,
+      "scored": false,
+      "session": "2019-02-26"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2969,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3708,
+      "scored": false,
+      "session": "2019-02-27"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2976,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-02-28"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2978,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3704,
+      "scored": false,
+      "session": "2019-03-01"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2982,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3703,
+      "scored": false,
+      "session": "2019-03-04"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2984,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3707,
+      "scored": false,
+      "session": "2019-03-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2985,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3704,
+      "scored": false,
+      "session": "2019-03-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2984,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3706,
+      "scored": false,
+      "session": "2019-03-07"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2985,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-03-08"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2977,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-03-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2971,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3706,
+      "scored": false,
+      "session": "2019-03-12"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2971,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-03-13"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2966,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3703,
+      "scored": false,
+      "session": "2019-03-14"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2965,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-03-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2967,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3703,
+      "scored": false,
+      "session": "2019-03-18"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2972,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3707,
+      "scored": false,
+      "session": "2019-03-19"
+    },
+    {
+      "member_current_absent": 4,
+      "member_names": 2971,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3706,
+      "scored": false,
+      "session": "2019-03-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2961,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3707,
+      "scored": false,
+      "session": "2019-03-21"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2959,
+      "observed_eligible_missing_d1": 4,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3703,
+      "scored": false,
+      "session": "2019-03-22"
+    },
+    {
+      "member_current_absent": 4,
+      "member_names": 2952,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3700,
+      "scored": false,
+      "session": "2019-03-25"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2931,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3703,
+      "scored": false,
+      "session": "2019-03-26"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2914,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-03-27"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2916,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-03-28"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2917,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 10,
+      "present_names": 3710,
+      "scored": false,
+      "session": "2019-03-29"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2910,
+      "observed_eligible_missing_d1": 9,
+      "observed_eligible_missing_d2": 7,
+      "present_names": 3706,
+      "scored": false,
+      "session": "2019-04-01"
+    },
+    {
+      "member_current_absent": 9,
+      "member_names": 2903,
+      "observed_eligible_missing_d1": 6,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3697,
+      "scored": false,
+      "session": "2019-04-02"
+    },
+    {
+      "member_current_absent": 6,
+      "member_names": 2895,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3701,
+      "scored": false,
+      "session": "2019-04-03"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2889,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3711,
+      "scored": false,
+      "session": "2019-04-04"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2881,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 6,
+      "present_names": 3710,
+      "scored": false,
+      "session": "2019-04-05"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2886,
+      "observed_eligible_missing_d1": 6,
+      "observed_eligible_missing_d2": 9,
+      "present_names": 3707,
+      "scored": false,
+      "session": "2019-04-08"
+    },
+    {
+      "member_current_absent": 6,
+      "member_names": 2883,
+      "observed_eligible_missing_d1": 9,
+      "observed_eligible_missing_d2": 10,
+      "present_names": 3706,
+      "scored": false,
+      "session": "2019-04-09"
+    },
+    {
+      "member_current_absent": 9,
+      "member_names": 2869,
+      "observed_eligible_missing_d1": 9,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3699,
+      "scored": false,
+      "session": "2019-04-10"
+    },
+    {
+      "member_current_absent": 9,
+      "member_names": 2859,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3702,
+      "scored": false,
+      "session": "2019-04-11"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2845,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3709,
+      "scored": false,
+      "session": "2019-04-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2838,
+      "observed_eligible_missing_d1": 5,
+      "observed_eligible_missing_d2": 7,
+      "present_names": 3714,
+      "scored": false,
+      "session": "2019-04-15"
+    },
+    {
+      "member_current_absent": 5,
+      "member_names": 2838,
+      "observed_eligible_missing_d1": 7,
+      "observed_eligible_missing_d2": 8,
+      "present_names": 3707,
+      "scored": false,
+      "session": "2019-04-16"
+    },
+    {
+      "member_current_absent": 7,
+      "member_names": 2828,
+      "observed_eligible_missing_d1": 6,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3706,
+      "scored": false,
+      "session": "2019-04-17"
+    },
+    {
+      "member_current_absent": 6,
+      "member_names": 2822,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3710,
+      "scored": false,
+      "session": "2019-04-18"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2814,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3713,
+      "scored": false,
+      "session": "2019-04-22"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2809,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3713,
+      "scored": false,
+      "session": "2019-04-23"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2813,
+      "observed_eligible_missing_d1": 4,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3716,
+      "scored": false,
+      "session": "2019-04-24"
+    },
+    {
+      "member_current_absent": 4,
+      "member_names": 2811,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 6,
+      "present_names": 3710,
+      "scored": false,
+      "session": "2019-04-25"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2801,
+      "observed_eligible_missing_d1": 6,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3713,
+      "scored": false,
+      "session": "2019-04-26"
+    },
+    {
+      "member_current_absent": 6,
+      "member_names": 2801,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-04-29"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2795,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 10,
+      "present_names": 3717,
+      "scored": false,
+      "session": "2019-04-30"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2799,
+      "observed_eligible_missing_d1": 10,
+      "observed_eligible_missing_d2": 11,
+      "present_names": 3712,
+      "scored": false,
+      "session": "2019-05-01"
+    },
+    {
+      "member_current_absent": 10,
+      "member_names": 2799,
+      "observed_eligible_missing_d1": 11,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3709,
+      "scored": false,
+      "session": "2019-05-02"
+    },
+    {
+      "member_current_absent": 11,
+      "member_names": 2787,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3705,
+      "scored": false,
+      "session": "2019-05-03"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2787,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3719,
+      "scored": false,
+      "session": "2019-05-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2786,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3717,
+      "scored": false,
+      "session": "2019-05-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2790,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3718,
+      "scored": false,
+      "session": "2019-05-08"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2794,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3722,
+      "scored": false,
+      "session": "2019-05-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2787,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3724,
+      "scored": false,
+      "session": "2019-05-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2784,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3724,
+      "scored": false,
+      "session": "2019-05-13"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2778,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-05-14"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2776,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3721,
+      "scored": false,
+      "session": "2019-05-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2774,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3724,
+      "scored": false,
+      "session": "2019-05-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2770,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-05-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2764,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-05-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2764,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-05-21"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2763,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-05-22"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2757,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-05-23"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2755,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-05-24"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2755,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-05-28"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2748,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-05-29"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2749,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-05-30"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2746,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-05-31"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2743,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-06-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2739,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-06-04"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2742,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-06-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2738,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-06-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2743,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-06-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2740,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-06-10"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2739,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-06-11"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2737,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-06-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2726,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-06-13"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2732,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2019-06-14"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2724,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-06-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2726,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-06-18"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2732,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2019-06-19"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2729,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-06-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2731,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3733,
+      "scored": false,
+      "session": "2019-06-21"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2730,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2019-06-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2734,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-06-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2741,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-06-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2742,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2019-06-27"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2751,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2019-06-28"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2774,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2019-07-01"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2784,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-07-02"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2785,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3733,
+      "scored": false,
+      "session": "2019-07-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2787,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-07-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2787,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3731,
+      "scored": false,
+      "session": "2019-07-08"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2784,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-07-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2784,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-07-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2788,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-07-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2797,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2019-07-12"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2801,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3733,
+      "scored": false,
+      "session": "2019-07-15"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2802,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3733,
+      "scored": false,
+      "session": "2019-07-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2801,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2019-07-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2806,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2019-07-18"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2817,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3744,
+      "scored": false,
+      "session": "2019-07-19"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2820,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2019-07-22"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2821,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3739,
+      "scored": false,
+      "session": "2019-07-23"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2821,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2019-07-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2824,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3746,
+      "scored": false,
+      "session": "2019-07-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2828,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3744,
+      "scored": false,
+      "session": "2019-07-26"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2833,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2019-07-29"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2834,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3740,
+      "scored": false,
+      "session": "2019-07-30"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2838,
+      "observed_eligible_missing_d1": 4,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3740,
+      "scored": false,
+      "session": "2019-07-31"
+    },
+    {
+      "member_current_absent": 4,
+      "member_names": 2843,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-08-01"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2846,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-08-02"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2854,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-08-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2856,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3737,
+      "scored": false,
+      "session": "2019-08-06"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2857,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3737,
+      "scored": false,
+      "session": "2019-08-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2858,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-08-08"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2860,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-08-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2856,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-08-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2852,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3740,
+      "scored": false,
+      "session": "2019-08-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2849,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3739,
+      "scored": false,
+      "session": "2019-08-14"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2845,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3737,
+      "scored": false,
+      "session": "2019-08-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2848,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3739,
+      "scored": false,
+      "session": "2019-08-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2849,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3737,
+      "scored": false,
+      "session": "2019-08-19"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2852,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2019-08-20"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2852,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-08-21"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2852,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2019-08-22"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2848,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3737,
+      "scored": false,
+      "session": "2019-08-23"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2850,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3737,
+      "scored": false,
+      "session": "2019-08-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2845,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2019-08-27"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2842,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3738,
+      "scored": false,
+      "session": "2019-08-28"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2847,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-08-29"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2848,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-08-30"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2840,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-09-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2840,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-09-04"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2843,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2019-09-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2855,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-09-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2857,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-09-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2865,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-09-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2874,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3735,
+      "scored": false,
+      "session": "2019-09-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2876,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3737,
+      "scored": false,
+      "session": "2019-09-12"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2877,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3740,
+      "scored": false,
+      "session": "2019-09-13"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2878,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2019-09-16"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2884,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3739,
+      "scored": false,
+      "session": "2019-09-17"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2885,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2019-09-18"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2882,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3742,
+      "scored": false,
+      "session": "2019-09-19"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2875,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3743,
+      "scored": false,
+      "session": "2019-09-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2892,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3740,
+      "scored": false,
+      "session": "2019-09-23"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2888,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3741,
+      "scored": false,
+      "session": "2019-09-24"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2887,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-09-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2892,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-09-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2882,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3736,
+      "scored": false,
+      "session": "2019-09-27"
+    },
+    {
+      "member_current_absent": 3,
+      "member_names": 2864,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2019-09-30"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2855,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2019-10-01"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2848,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3733,
+      "scored": false,
+      "session": "2019-10-02"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2860,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-10-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2863,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2019-10-04"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2856,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-10-07"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2855,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-10-08"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2848,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-10-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2845,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3731,
+      "scored": false,
+      "session": "2019-10-10"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2849,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-10-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2855,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2019-10-14"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2849,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-10-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2857,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-10-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2862,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-10-17"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2862,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2019-10-18"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2862,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-10-21"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2861,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-10-22"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2865,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-10-23"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2863,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3731,
+      "scored": false,
+      "session": "2019-10-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2858,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-10-25"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2862,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3732,
+      "scored": false,
+      "session": "2019-10-28"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2867,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3733,
+      "scored": false,
+      "session": "2019-10-29"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2857,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3734,
+      "scored": false,
+      "session": "2019-10-30"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2841,
+      "observed_eligible_missing_d1": 3,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3733,
+      "scored": false,
+      "session": "2019-10-31"
+    },
+    {
+      "member_current_absent": 4,
+      "member_names": 2844,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-11-01"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2842,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-11-04"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2845,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3730,
+      "scored": false,
+      "session": "2019-11-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2851,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-11-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2849,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3729,
+      "scored": false,
+      "session": "2019-11-07"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2851,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-11-08"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2857,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-11-11"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2853,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-11-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2853,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-11-13"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2845,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-11-14"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2847,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-11-15"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2846,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-11-18"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2848,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-11-19"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2855,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-11-20"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2859,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-11-21"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2848,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3724,
+      "scored": false,
+      "session": "2019-11-22"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2856,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-11-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2861,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-11-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2858,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-11-27"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2867,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-11-29"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2861,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-12-02"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2855,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 3,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-12-03"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2855,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-12-04"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2859,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-12-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2851,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-12-06"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2859,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-12-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2862,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-12-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2859,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-12-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2853,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-12-12"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2860,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-12-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2861,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3728,
+      "scored": false,
+      "session": "2019-12-16"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2869,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-12-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2872,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3727,
+      "scored": false,
+      "session": "2019-12-18"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2875,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-12-19"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2869,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3726,
+      "scored": false,
+      "session": "2019-12-20"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2881,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-12-23"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2885,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3723,
+      "scored": false,
+      "session": "2019-12-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2884,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3723,
+      "scored": false,
+      "session": "2019-12-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2880,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3725,
+      "scored": false,
+      "session": "2019-12-27"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2884,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3721,
+      "scored": false,
+      "session": "2019-12-30"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2887,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3722,
+      "scored": false,
+      "session": "2019-12-31"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2889,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3719,
+      "scored": true,
+      "session": "2020-01-02"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2894,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3719,
+      "scored": true,
+      "session": "2020-01-03"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2891,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3717,
+      "scored": true,
+      "session": "2020-01-06"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2900,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3716,
+      "scored": true,
+      "session": "2020-01-07"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2901,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3717,
+      "scored": true,
+      "session": "2020-01-08"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2902,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3715,
+      "scored": true,
+      "session": "2020-01-09"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2903,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3715,
+      "scored": true,
+      "session": "2020-01-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2898,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3713,
+      "scored": true,
+      "session": "2020-01-13"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2901,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3714,
+      "scored": true,
+      "session": "2020-01-14"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2906,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3711,
+      "scored": true,
+      "session": "2020-01-15"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2918,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3711,
+      "scored": true,
+      "session": "2020-01-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2929,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3711,
+      "scored": true,
+      "session": "2020-01-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2930,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3710,
+      "scored": true,
+      "session": "2020-01-21"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2935,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3710,
+      "scored": true,
+      "session": "2020-01-22"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2942,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3709,
+      "scored": true,
+      "session": "2020-01-23"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2942,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3707,
+      "scored": true,
+      "session": "2020-01-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2943,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3707,
+      "scored": true,
+      "session": "2020-01-27"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2947,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3706,
+      "scored": true,
+      "session": "2020-01-28"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2944,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3707,
+      "scored": true,
+      "session": "2020-01-29"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2946,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3707,
+      "scored": true,
+      "session": "2020-01-30"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2945,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3705,
+      "scored": true,
+      "session": "2020-01-31"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2948,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3704,
+      "scored": true,
+      "session": "2020-02-03"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2944,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3704,
+      "scored": true,
+      "session": "2020-02-04"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2939,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3704,
+      "scored": true,
+      "session": "2020-02-05"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2951,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3703,
+      "scored": true,
+      "session": "2020-02-06"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2947,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3701,
+      "scored": true,
+      "session": "2020-02-07"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2939,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3699,
+      "scored": true,
+      "session": "2020-02-10"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 2938,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3699,
+      "scored": true,
+      "session": "2020-02-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2940,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3699,
+      "scored": true,
+      "session": "2020-02-12"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2942,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3700,
+      "scored": true,
+      "session": "2020-02-13"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2942,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3699,
+      "scored": true,
+      "session": "2020-02-14"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2941,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3698,
+      "scored": true,
+      "session": "2020-02-18"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2943,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3698,
+      "scored": true,
+      "session": "2020-02-19"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2944,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3698,
+      "scored": true,
+      "session": "2020-02-20"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2955,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3698,
+      "scored": true,
+      "session": "2020-02-21"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2952,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3697,
+      "scored": true,
+      "session": "2020-02-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2946,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3697,
+      "scored": true,
+      "session": "2020-02-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2944,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3698,
+      "scored": true,
+      "session": "2020-02-26"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2946,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3698,
+      "scored": true,
+      "session": "2020-02-27"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2953,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3697,
+      "scored": true,
+      "session": "2020-02-28"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2973,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3696,
+      "scored": true,
+      "session": "2020-03-02"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2983,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3696,
+      "scored": true,
+      "session": "2020-03-03"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 2,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3695,
+      "scored": true,
+      "session": "2020-03-04"
+    },
+    {
+      "member_current_absent": 2,
+      "member_names": 3000,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3694,
+      "scored": true,
+      "session": "2020-03-05"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2998,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3694,
+      "scored": true,
+      "session": "2020-03-06"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2998,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3692,
+      "scored": true,
+      "session": "2020-03-09"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2961,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3692,
+      "scored": true,
+      "session": "2020-03-10"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2982,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3691,
+      "scored": true,
+      "session": "2020-03-11"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2974,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 2,
+      "present_names": 3691,
+      "scored": true,
+      "session": "2020-03-12"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2937,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3692,
+      "scored": true,
+      "session": "2020-03-13"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2962,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3690,
+      "scored": true,
+      "session": "2020-03-16"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2925,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3691,
+      "scored": true,
+      "session": "2020-03-17"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2929,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3690,
+      "scored": true,
+      "session": "2020-03-18"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2872,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3688,
+      "scored": true,
+      "session": "2020-03-19"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2928,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3689,
+      "scored": true,
+      "session": "2020-03-20"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2935,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3689,
+      "scored": true,
+      "session": "2020-03-23"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2923,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 0,
+      "present_names": 3689,
+      "scored": true,
+      "session": "2020-03-24"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2944,
+      "observed_eligible_missing_d1": 0,
+      "observed_eligible_missing_d2": 1,
+      "present_names": 3687,
+      "scored": true,
+      "session": "2020-03-25"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2975,
+      "observed_eligible_missing_d1": 1,
+      "observed_eligible_missing_d2": 5,
+      "present_names": 3686,
+      "scored": true,
+      "session": "2020-03-26"
+    },
+    {
+      "member_current_absent": 1,
+      "member_names": 2995,
+      "observed_eligible_missing_d1": 4,
+      "observed_eligible_missing_d2": 4,
+      "present_names": 3686,
+      "scored": true,
+      "session": "2020-03-27"
+    },
+    {
+      "member_current_absent": 4,
+      "member_names": 2996,
+      "present_names": 3678,
+      "scored": true,
+      "session": "2020-03-30"
+    },
+    {
+      "member_current_absent": 0,
+      "member_names": 2977,
+      "present_names": 3678,
+      "scored": true,
+      "session": "2020-03-31"
+    }
+  ],
+  "daily_member_counts_match_manifest": true,
+  "initial_member_unready_dates": 63,
+  "limitations": [
+    "Future presence QA is diagnostic only and must not alter earlier membership or candidate selection.",
+    "Observed eligible means member AND current physical presence; DSL finiteness and nonzero target/held positions were not inspected.",
+    "Missing potential entry/endpoint does not prove a particular strategy trade fails; actual zero/capped decisions and held state determine execution.",
+    "Mask hashes/metadata verified only; numeric field bytes and empirical prior-ADV arithmetic were intentionally not read.",
+    "Common-stock and historical-vintage qualifications remain false."
+  ],
+  "manifest_sha256": "900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b",
+  "member_current_absent_all_name_dates": 356,
+  "member_current_absent_score_name_dates": 36,
+  "scheduled5_mature_score_decisions": {
+    "dates_with_any_missing_endpoint": 6,
+    "dates_with_any_missing_entry": 4,
+    "decision_dates": 12,
+    "missing_either_name_decisions": 10,
+    "missing_endpoint_d2_name_decisions": 9,
+    "missing_entry_d1_name_decisions": 4,
+    "observed_eligible_name_decisions": 35294,
+    "unique_affected_ids": 10
+  },
+  "scope": "read-only pinned manifest+axes+presence/member masks; no prices/returns/performance",
+  "score_dates": 62,
+  "score_dates_with_member_current_absence": 30,
+  "score_end_exclusive_declared": "2020-04-01",
+  "score_first_session": "2020-01-02",
+  "score_last_session": "2020-03-31",
+  "score_member_max": 3000,
+  "score_member_mean": 2942.3709677419356,
+  "score_member_min": 2872,
+  "score_start_declared": "2020-01-01",
+  "session_first": "2018-06-01",
+  "session_last": "2020-03-31",
+  "shape": [
+    461,
+    3950
+  ],
+  "source_sha256_declared": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "stable_union_equals_all_time_member_union": true,
+  "usable_member_warmup_dates": 336,
+  "warmup_dates": 399,
+  "warmup_only_member_ids": 654
+}
