@@ -1,4 +1,5 @@
 #include "atx/engine/factory/execution_objective.hpp"
+#include "execution_cash_claim_internal.hpp"
 #include "atx/core/sha256.hpp"
 #include "atx/engine/alpha/streams.hpp"
 #include "atx/engine/cost/cost_surface.hpp"
@@ -32,6 +33,8 @@ struct Context {
   std::vector<atx::i64> marks, decisions;
   std::vector<u64> ids;
   std::vector<cost::CostSurface> snapshots;
+  std::vector<ExecutionCashClaimEvent> cash_events;
+  std::vector<usize> cash_event_names, cash_event_periods, cash_event_for_name;
   std::string identity;
 };
 } // namespace execution_objective_detail
@@ -189,6 +192,22 @@ co::Result<std::string> context_hash(const Context &c, const ExecutionObjectiveI
     ATX_TRY_VOID(h.text(snapshot.recipe_sha256()));
     ATX_TRY_VOID(h.text(snapshot.snapshot_sha256()));
   }
+  if (!c.cash_events.empty()) {
+    ATX_TRY_VOID(h.text("fixed-usd-research-share-claim-v1/reserve-payable-continue-borrow-v1"));
+    ATX_TRY_VOID(h.word(c.cash_events.size()));
+    for (const auto& e:c.cash_events) {
+      for (const auto* text:{&e.event_id,&e.security_id_namespace,&e.historical_identity,
+          &e.panel_source_sha256,&e.identity_evidence_sha256,&e.completion_evidence_sha256,
+          &e.basis_evidence_sha256}) ATX_TRY_VOID(h.text(*text));
+      for (auto v:{e.revision,e.instrument_id,static_cast<u64>(e.evidence),
+          static_cast<u64>(e.reference_mark_ns),static_cast<u64>(e.effective_after_ns),
+          static_cast<u64>(e.effective_by_ns),static_cast<u64>(e.available_at_ns),
+          static_cast<u64>(e.recognition_mark_ns),
+          static_cast<u64>(e.cash_excluded_from_adjusted_close)}) ATX_TRY_VOID(h.word(v));
+      for (auto v:{e.reference_raw_close,e.reference_adjusted_close,e.cash_usd_per_raw_share})
+        ATX_TRY_VOID(h.number(v));
+    }
+  }
   return h.finish();
 }
 
@@ -221,10 +240,10 @@ co::Result<alpha::AlphaStreams> allocate_streams(const Context &c, usize count) 
 }
 
 // One signal is processed chronologically. Dollars denote a total-return mark
-// book, not a claims-aware share/corporate-action replay. No future value is used
+// book, with only the explicit fixed-cash claim extension. No future value is used
 // to rank, filter or size a decision; entry prices only validate execution units.
 co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize alpha_index,
-                alpha::AlphaStreams &out) {
+                alpha::AlphaStreams &out, ExecutionCashClaimStreams* claim_out=nullptr) {
   const auto n = c.instruments, d0 = c.config.window_begin, delay = c.config.delay;
   if (signal.size() != c.dates * n || (sign != 1.0 && sign != -1.0))
     return co::Err(co::ErrorCode::InvalidArgument, "execution streams: signal shape/sign");
@@ -240,8 +259,28 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
   f64 cash = c.config.initial_nav, nav = cash, entry_nav = 0, entry_cost = 0, entry_turnover = 0;
   usize entry_names = 0, entry_capped = 0, entry_decision = 0;
   bool active_interval = false;
+  const bool claims_enabled=!c.cash_events.empty();
+  std::vector<atx::u8> retired(claims_enabled?n:0,0);
+  std::vector<f64> claims(c.cash_events.size(),0), claim_rates(c.cash_events.size(),0);
+  if (claims_enabled) {
+    for (usize j=0;j<c.cash_events.size();++j)
+      if (c.cash_event_names[j]<n && c.cash_event_periods[j]<=d0)
+        retired[c.cash_event_names[j]]=1; // Known pre-role extinction, no opening claim.
+  }
+  f64 receivables=0, payables=0;
+
   for (usize t = d0; t < c.realization_end; ++t) {
     f64 gross_dollars = 0, borrow_dollars = 0;
+    f64 claim_bridge=0, claim_borrow=0;
+    // Existing fixed payables continue their last qualified modeled rate; no
+    // inferred loan termination/payment. Recognition interval uses old equity.
+    if (claims_enabled && t>d0) {
+      const auto days=static_cast<f64>(c.marks[t]-c.marks[t-1])/ns_per_day;
+      for (usize j=0;j<claims.size();++j)
+        if (claims[j]<0)
+          claim_borrow+=(-claims[j])*(claim_rates[j]*days/c.config.borrow_days_per_year);
+      borrow_dollars+=claim_borrow;
+    }
     // Value yesterday's already held positions. Future missingness can refuse a
     // realized interval; it cannot retroactively change decision eligibility.
     if (t > d0) {
@@ -250,19 +289,42 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
         const auto old = holdings[i];
         if (active_interval)
           out.pos_flat[(alpha_index * c.dates + t) * n + i] = old / entry_nav;
-        if (old == 0)
-          continue;
+        const auto event_index=claims_enabled?c.cash_event_for_name[i]:c.cash_events.size();
+        const bool recognize=event_index<c.cash_events.size() &&
+                             c.cash_event_periods[event_index]==t;
+        if (recognize) {
+          retired[i]=1;
+          for (usize slot=0;slot<slots;++slot) queued[slot*n+i]=0;
+          ATX_TRY(auto record,execution_cash_claim_detail::recognize(
+              c.cash_events[event_index],event_index,i,t,old));
+          if (old<0 && active_interval) {
+            const auto quote=c.snapshots[entry_decision-d0].borrow_annual_rate(
+                i,c.decisions[entry_decision]);
+            if (quote.status!=cost::CostQuoteStatus::Priced)
+              return co::Err(co::ErrorCode::Unavailable,"cash claim: modeled carry unavailable");
+            record.continued_annual_borrow_rate=quote.annual_fraction;
+            claim_rates[event_index]=quote.annual_fraction;
+          }
+          claims[event_index]=record.signed_claim_dollars;
+          claim_bridge+=record.recognition_pnl_dollars;
+          gross_dollars+=record.recognition_pnl_dollars;
+          holdings[i]=0;
+          claim_out->recognitions.push_back(record);
+        }
+        if (old == 0) continue;
         const auto a = (t - 1) * n + i, b = t * n + i;
-        if (c.panel_member[a] == 0 || c.panel_member[b] == 0 ||
+        if (!recognize && (c.panel_member[a] == 0 || c.panel_member[b] == 0 ||
             !std::isfinite(c.prices[a]) || !std::isfinite(c.prices[b]) || c.prices[a] <= 0 ||
-            c.prices[b] <= 0 || (c.config.guard_returns && c.guard[b] != c.guard[a]))
+            c.prices[b] <= 0 || (c.config.guard_returns && c.guard[b] != c.guard[a])))
           return co::Err(co::ErrorCode::Unavailable,
                          price_failure(c, "execution streams: missing/guarded held return", t, i, old, true));
-        const auto next = old * (c.prices[b] / c.prices[a]);
-        if (!std::isfinite(next))
-          return co::Err(co::ErrorCode::OutOfRange, "execution streams: holding mark overflow");
-        gross_dollars += next - old;
-        holdings[i] = next;
+        if (!recognize) {
+          const auto next = old * (c.prices[b] / c.prices[a]);
+          if (!std::isfinite(next))
+            return co::Err(co::ErrorCode::OutOfRange, "execution streams: holding mark overflow");
+          gross_dollars += next - old;
+          holdings[i] = next;
+        }
         if (active_interval && old < 0 &&
             c.config.borrow == ExecutionBorrowRule::RequireModeledV2) {
           const auto quote =
@@ -274,17 +336,27 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
         }
       }
     }
-    if (!std::isfinite(gross_dollars) || !std::isfinite(borrow_dollars))
+    if (claims_enabled) {
+      receivables=0; payables=0;
+      for (const auto value:claims) {
+        if (value>0) receivables+=value;
+        else payables-=value;
+      }
+    }
+    if (!std::isfinite(gross_dollars) || !std::isfinite(borrow_dollars) ||
+        !std::isfinite(receivables) || !std::isfinite(payables) ||
+        !std::isfinite(claim_bridge) || !std::isfinite(claim_borrow))
       return co::Err(co::ErrorCode::OutOfRange,
                      "execution streams: realized return/borrow overflow");
     cash -= borrow_dollars;
     nav = cash;
     for (auto position : holdings)
       nav += position;
+    if (claims_enabled) nav+=(receivables-payables);
     if (!std::isfinite(cash) || !std::isfinite(nav) || nav <= 0)
       return co::Err(co::ErrorCode::OutOfRange,
                      "execution streams: nonpositive/nonfinite marked NAV");
-    if (requires_cash_financing(cash, nav))
+    if (requires_cash_financing(claims_enabled?cash-payables:cash, nav))
       return co::Err(co::ErrorCode::Unavailable,
                      "execution streams: cash financing unsupported after borrow/mark");
     if (active_interval) {
@@ -299,6 +371,14 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
       out.names_flat[row] = entry_names;
       out.capped_names_flat[row] = entry_capped;
       out.valid_flat[row] = 1;
+      if (claims_enabled) {
+        claim_out->signed_claim_dollars[t]=receivables-payables;
+        claim_out->receivable_dollars[t]=receivables;
+        claim_out->payable_dollars[t]=payables;
+        claim_out->recognition_pnl_dollars[t]=claim_bridge;
+        claim_out->claim_borrow_dollars[t]=claim_borrow;
+        claim_out->settled_cash_dollars[t]=cash;
+      }
       if (!std::isfinite(out.pnl_flat[row]) || !std::isfinite(out.gross_flat[row]) ||
           !std::isfinite(out.execution_cost_flat[row]) || !std::isfinite(out.borrow_cost_flat[row]))
         return co::Err(co::ErrorCode::OutOfRange, "execution streams: interval return overflow");
@@ -317,6 +397,7 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
       entry_capped = 0;
       entry_decision = d;
       for (usize i = 0; rebalance && i < n; ++i) {
+        if (claims_enabled && retired[i]!=0) continue;
         const auto requested = queued[slot * n + i] - holdings[i];
         if (!std::isfinite(requested))
           return co::Err(co::ErrorCode::OutOfRange,
@@ -355,7 +436,7 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
         return co::Err(co::ErrorCode::OutOfRange, "execution streams: nonpositive NAV after costs");
       // Check the completed batch: sales/short proceeds can fund earlier buys,
       // so transient per-name cash inside the fill loop is not a refusal.
-      if (requires_cash_financing(cash, nav))
+      if (requires_cash_financing(claims_enabled?cash-payables:cash, nav))
         return co::Err(co::ErrorCode::Unavailable,
                        "execution streams: cash financing unsupported after fills/costs");
       active_interval = true; // The attribution closes at t+1; cash is already debited.
@@ -364,7 +445,8 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
       usize names = 0;
       for (usize i = 0; i < n; ++i) {
         const auto k = t * n + i;
-        const bool eligible = c.member[k] != 0 && c.panel_member[k] != 0 &&
+        const bool eligible = (!claims_enabled || retired[i]==0) &&
+                              c.member[k] != 0 && c.panel_member[k] != 0 &&
                               std::isfinite(signal[k]) && std::isfinite(c.prices[k]) &&
                               c.prices[k] > 0;
         masked[i] = eligible ? sign * signal[k] : nan;
@@ -381,7 +463,10 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
                                         : std::span<const atx::u32>{c.groups}.subspan(t * n, n);
         c.policy.to_target_weights(SignalView{masked}, universe, scratch, groups);
         for (usize i = 0; i < n; ++i) {
-          const auto target = scratch.weights[i] * nav;
+          const auto target_nav=claims_enabled?nav-receivables:nav;
+          if (!std::isfinite(target_nav) || target_nav<0)
+            return co::Err(co::ErrorCode::Unavailable,"cash claim: nonspendable target NAV");
+          const auto target = scratch.weights[i] * target_nav;
           if (!std::isfinite(target))
             return co::Err(co::ErrorCode::OutOfRange,
                            "execution streams: decision target overflow");
@@ -436,6 +521,16 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective(
     std::span<const atx::i64> decisions, std::span<const u64> ids,
     const ExecutionObjectiveIdentity &identity, std::span<const atx::u8> member,
     std::span<const atx::u32> guard, std::span<const atx::u32> groups) {
+  return prepare_execution_objective_claims(panel,policy,input,snapshots,marks,decisions,ids,
+      identity,{},member,guard,groups);
+}
+co::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
+    const alpha::Panel &panel, const WeightPolicy &policy, const ExecutionObjectiveConfig &input,
+    std::span<const cost::CostSurface> snapshots, std::span<const atx::i64> marks,
+    std::span<const atx::i64> decisions, std::span<const u64> ids,
+    const ExecutionObjectiveIdentity &identity, std::span<const ExecutionCashClaimEvent> events,
+    std::span<const atx::u8> member, std::span<const atx::u32> guard,
+    std::span<const atx::u32> groups) {
   const auto d = panel.dates(), n = panel.instruments();
   if (input.price_field.size() > 4096)
     return co::Err(co::ErrorCode::InvalidArgument, "execution objective: price field too long");
@@ -470,6 +565,16 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective(
     if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
       return co::Err(co::ErrorCode::InvalidArgument,
                      "execution objective: source hash is not lowercase SHA256");
+  if (events.size()>1024 || (!events.empty() && cfg.borrow!=ExecutionBorrowRule::RequireModeledV2))
+    return co::Err(co::ErrorCode::InvalidArgument,"cash claim: event count/borrow policy");
+  for (usize j=0;j<events.size();++j) {
+    ATX_TRY_VOID(execution_cash_claim_detail::validate(events[j]));
+    if (events[j].panel_source_sha256!=identity.source_sha256)
+      return co::Err(co::ErrorCode::InvalidArgument,"cash claim: role source pin differs");
+    for (usize k=0;k<j;++k)
+      if (events[j].instrument_id==events[k].instrument_id || events[j].event_id==events[k].event_id)
+        return co::Err(co::ErrorCode::InvalidArgument,"cash claim: duplicate event/instrument");
+  }
   // Charge retained immutable snapshots too, even though copies share their rows.
   Budget owned{cfg.max_working_bytes, 0};
   if (!owned.add(1, sizeof(Context) + 16384) || !owned.add(cells, sizeof(f64) + 2) ||
@@ -477,6 +582,10 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective(
       !owned.add(groups.size(), sizeof(atx::u32)) || !owned.add(d, 2 * sizeof(atx::i64)) ||
       !owned.add(n, sizeof(u64)) || !owned.add(decisions_count, sizeof(cost::CostSurface)))
     return co::Err(co::ErrorCode::OutOfRange, "execution objective: retained context budget");
+  if (!events.empty() && (!owned.add(events.size(),sizeof(ExecutionCashClaimEvent)+2048+
+                                                  2*sizeof(usize)) ||
+                         !owned.add(n,sizeof(usize))))
+    return co::Err(co::ErrorCode::OutOfRange,"cash claim: retained event budget");
   for (const auto &snapshot : snapshots)
     if (!owned.add(snapshot.bytes(), 1))
       return co::Err(co::ErrorCode::OutOfRange, "execution objective: retained snapshot budget");
@@ -489,6 +598,13 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective(
       scratch.used > cfg.max_working_bytes - owned.used - output.used)
     return co::Err(co::ErrorCode::OutOfRange,
                    "execution objective: output/pending-target/worker scratch budget");
+  if (!events.empty() && (!output.add(d,6*sizeof(f64)) ||
+      !output.add(events.size(),sizeof(ExecutionCashClaimRecognition)+sizeof(ExecutionCashClaimEventUse)) ||
+      !output.add(1,sizeof(ExecutionCashClaimStreams)+512) || !scratch.add(n,sizeof(atx::u8)) ||
+      !scratch.add(events.size(),2*sizeof(f64)) ||
+      output.used>cfg.max_working_bytes-owned.used ||
+      scratch.used>cfg.max_working_bytes-owned.used-output.used))
+    return co::Err(co::ErrorCode::OutOfRange,"cash claim: result/worker budget");
   for (usize t = cfg.window_begin; t < last_realized; ++t) {
     if (marks[t] <= 0 || (t > cfg.window_begin && marks[t] <= marks[t - 1]))
       return co::Err(co::ErrorCode::InvalidArgument,
@@ -548,6 +664,40 @@ co::Result<ExecutionObjectiveContext> prepare_execution_objective(
   c->decisions.assign(decisions.begin(), decisions.end());
   c->ids.assign(ids.begin(), ids.end());
   c->snapshots.assign(snapshots.begin(), snapshots.end());
+  if (!events.empty()) {
+    c->cash_events.assign(events.begin(),events.end());
+    c->cash_event_for_name.assign(n,events.size());
+    c->cash_event_names.assign(events.size(),n);
+    c->cash_event_periods.assign(events.size(),last_realized);
+    for (usize j=0;j<events.size();++j) {
+      const auto& e=events[j];
+      const auto id=std::find(ids.begin(),ids.end(),e.instrument_id);
+      if (id==ids.end()) continue; // Explicitly outside this ordered role axis.
+      const auto i=static_cast<usize>(id-ids.begin());
+      c->cash_event_names[j]=i; c->cash_event_for_name[i]=j;
+      const auto known=std::max(e.effective_by_ns,e.available_at_ns);
+      if (known<marks[c->config.window_begin]) {
+        c->cash_event_periods[j]=c->config.window_begin;
+        continue; // Known extinction only. No hypothetical opening entitlement.
+      }
+      if (known>=marks[last_realized-1]) continue;
+      const auto mark=std::upper_bound(
+          marks.begin()+static_cast<std::ptrdiff_t>(c->config.window_begin),
+          marks.begin()+static_cast<std::ptrdiff_t>(last_realized),known);
+      if (*mark!=e.recognition_mark_ns)
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "cash claim: recognition must be first strictly known role mark");
+      const auto t=static_cast<usize>(mark-marks.begin()), k=(t-1)*n+i;
+      if (e.reference_mark_ns!=marks[t-1] || c->panel_member[k]==0 ||
+          !same(e.reference_adjusted_close,prices[k]))
+        return co::Err(co::ErrorCode::InvalidArgument,"cash claim: previous observed adjusted basis");
+      ATX_TRY(auto raw_id,panel.field_id("raw_close"));
+      const auto raw=panel.field_all(raw_id);
+      if (raw.size()!=cells || !same(e.reference_raw_close,raw[k]))
+        return co::Err(co::ErrorCode::InvalidArgument,"cash claim: previous observed raw basis");
+      c->cash_event_periods[j]=t;
+    }
+  }
   ATX_TRY(c->identity, context_hash(*c, identity));
   ExecutionObjectiveContext out;
   out.data_ = std::move(c);
@@ -580,6 +730,19 @@ bool execution_objective_matches(const ExecutionObjectiveContext &context,
           panel.in_universe(static_cast<alpha::DateIdx>(t), i) != (c.panel_member[k] != 0))
         return false;
     }
+  if (!c.cash_events.empty()) {
+    usize raw_column=0;
+    for (;raw_column<panel.num_fields();++raw_column)
+      if (panel.field_name(raw_column)=="raw_close") break;
+    for (usize j=0;j<c.cash_events.size();++j) {
+      const auto t=c.cash_event_periods[j],i=c.cash_event_names[j];
+      if (i==c.instruments || t<=c.config.window_begin || t>=c.realization_end) continue;
+      if (raw_column==panel.num_fields()) return false;
+      const auto raw=panel.field_all(static_cast<alpha::FieldId>(raw_column));
+      if (raw.size()!=c.prices.size() || !same(raw[(t-1)*c.instruments+i],
+                                             c.cash_events[j].reference_raw_close)) return false;
+    }
+  }
   return true;
 }
 bool execution_support_matches(const ExecutionObjectiveContext &context,
@@ -604,6 +767,8 @@ co::Result<alpha::AlphaStreams> extract_execution_streams(const alpha::SignalSet
     return co::Err(co::ErrorCode::InvalidArgument,
                    "execution streams: missing context or signal geometry");
   const auto &c = *context.data_;
+  if (!c.cash_events.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,"cash claim: explicit claim result required");
   ATX_TRY(auto out, allocate_streams(c, signals.alphas.size()));
   for (usize a = 0; a < signals.alphas.size(); ++a)
     ATX_TRY_VOID(fill(c, signals.alphas[a].values, sign, a, out));
@@ -615,8 +780,34 @@ co::Result<alpha::AlphaStreams> extract_execution_signal(std::span<const f64> si
   if (!context.data_)
     return co::Err(co::ErrorCode::InvalidArgument, "execution streams: empty context");
   const auto &c = *context.data_;
+  if (!c.cash_events.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,"cash claim: explicit claim result required");
   ATX_TRY(auto out, allocate_streams(c, 1));
   ATX_TRY_VOID(fill(c, signal, sign, 0, out));
+  return co::Ok(std::move(out));
+}
+co::Result<ExecutionCashClaimStreams> extract_execution_signal_claims(
+    std::span<const f64> signal,const ExecutionObjectiveContext& context,f64 sign) {
+  if (!context.data_)
+    return co::Err(co::ErrorCode::InvalidArgument,"cash claim: empty context");
+  const auto& c=*context.data_;
+  ExecutionCashClaimStreams out;
+  ATX_TRY(out.streams,allocate_streams(c,1));
+  if (!c.cash_events.empty()) {
+    for (auto* values:{&out.signed_claim_dollars,&out.receivable_dollars,&out.payable_dollars,
+        &out.recognition_pnl_dollars,&out.claim_borrow_dollars,&out.settled_cash_dollars})
+      values->assign(c.dates,nan);
+    out.recognitions.reserve(c.cash_events.size());
+    out.event_uses.reserve(c.cash_events.size());
+    for (usize j=0;j<c.cash_events.size();++j) {
+      const auto use=c.cash_event_names[j]==c.instruments?ExecutionCashClaimUse::OutsideAxis:
+          c.cash_event_periods[j]<=c.config.window_begin?ExecutionCashClaimUse::PreRoleRetired:
+          c.cash_event_periods[j]>=c.realization_end?ExecutionCashClaimUse::AfterRole:
+                                                   ExecutionCashClaimUse::InRole;
+      out.event_uses.push_back({j,c.cash_event_names[j],use});
+    }
+  }
+  ATX_TRY_VOID(fill(c,signal,sign,0,out.streams,&out));
   return co::Ok(std::move(out));
 }
 } // namespace atx::engine::factory

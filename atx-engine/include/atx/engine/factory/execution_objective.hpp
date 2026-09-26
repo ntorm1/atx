@@ -41,6 +41,8 @@ struct ExecutionObjectiveIdentity {
   std::string role; // train / validation / holdout / explicitly named synthetic role
   std::string price_recipe; // declared total-return-compatible close/mark convention
 };
+struct ExecutionCashClaimEvent;
+struct ExecutionCashClaimStreams;
 namespace execution_objective_detail { struct Context; }
 
 // Immutable owned execution inputs and WeightPolicy; copies share read-only storage.
@@ -71,6 +73,14 @@ private:
       std::span<const atx::i64>,std::span<const atx::u64>,
       const ExecutionObjectiveIdentity&,std::span<const atx::u8>,
       std::span<const atx::u32>,std::span<const atx::u32>);
+  friend atx::core::Result<ExecutionObjectiveContext> prepare_execution_objective_claims(
+      const alpha::Panel&,const WeightPolicy&,const ExecutionObjectiveConfig&,
+      std::span<const cost::CostSurface>,std::span<const atx::i64>,
+      std::span<const atx::i64>,std::span<const atx::u64>,
+      const ExecutionObjectiveIdentity&,std::span<const ExecutionCashClaimEvent>,
+      std::span<const atx::u8>,std::span<const atx::u32>,std::span<const atx::u32>);
+  friend atx::core::Result<ExecutionCashClaimStreams> extract_execution_signal_claims(
+      std::span<const atx::f64>,const ExecutionObjectiveContext&,atx::f64);
   friend bool execution_objective_matches(const ExecutionObjectiveContext&,
       const alpha::Panel&,const WeightPolicy&,const ExecutionObjectiveConfig&) noexcept;
   friend bool execution_support_matches(const ExecutionObjectiveContext&,
@@ -91,7 +101,7 @@ private:
 // marked holdings toward those stored dollars; apply snapshot-d participation
 // caps to actual fills and debit cash costs. Short proceeds remain in cash.
 // This is a total-return marked-dollar book: fractional fills are permitted;
-// corporate-action claims/share replay are not modeled. Negative cash beyond
+// corporate-action claims require the explicit execution_cash_claim.hpp route. Negative cash beyond
 // 32*epsilon*current-positive-NAV refuses after completed fills/borrow because
 // this recipe has no cash-funding input; transient intra-batch cash is permitted.
 // There is no automatic terminal liquidation: ending NAV includes the
@@ -118,7 +128,8 @@ private:
 // Valid rows are the contiguous [first_realization, realization_end); outside
 // rows are NaN/invalid, never structural zero observations. The corresponding
 // decision index is realized_index-delay-1. Sign is independently rescored, not
-// synthesized by negating PnL (borrow/caps/NAV make that invalid).
+// A nonempty cash-claim context requires extract_execution_signal_claims.
+// Negating PnL cannot synthesize the negative sign (borrow/caps/NAV make that invalid).
 [[nodiscard]] atx::core::Result<alpha::AlphaStreams> extract_execution_streams(
     const alpha::SignalSet& signals,const ExecutionObjectiveContext& context,atx::f64 sign=1.0);
 [[nodiscard]] atx::core::Result<alpha::AlphaStreams> extract_execution_signal(
