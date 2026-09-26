@@ -1,0 +1,25 @@
+# Independent runner cash-claim adapter review
+
+2026-09-26, `g0_evidence`, pool-3. **Source approved for focused qualification**: `80ebf709`, decision-mask correction `5e1fa8492ce725284f22e585463d8fec5cb4533a`, and report-memory correction `5e6dcb7561b8f77facaf45db3822ab45d3166bbf`. Postimplementation fixtures reviewed: `a86b274d6cb1c290317ec5d71ae9b04fdbe0211d` and `8a9f254cef09c18bb92bb7f188ba971ecb8de396`. Requires the independently reviewed engine capital correction `440d538f` and final engine fixture/documentation packet `47696031`.
+
+This review read Git source and synthetic fixtures only. No build, runtime test, market payload, or strategy execution was performed. Runtime, event coverage, actual settlement and tradable-alpha acceptance remain separate.
+
+## Verified source paths
+
+- Optional path/SHA must be paired. The captured document bytes are bounded to 1 MiB and hashed against the external pin before parsing. Duplicate keys, excessive nesting, unknown/missing keys, unsupported schema/currency/evidence/settlement policy, invalid positive integer clocks, zero/invalid evidence pins, duplicate event/ID, invalid raw/adjusted basis and nonfinite/nonpositive amounts refuse. Events are bounded to 256; the namespace is explicitly `spiderrock.securityID`. URLs and evidence hashes are declarations, not independently fetched/authenticated source contents.
+- Each role's pinned metadata must name the same immutable archive SHA. After loading and verifying the exact role manifest again, the archive pin is rechecked and a local copy of each event receives that role-manifest pin. The original archive-level evidence document is retained in output. The engine independently validates in-role prior raw/adjusted values and recognition chronology.
+- The additional mask starts from the complete existing decision-member matrix. Retirement changes it only where effective-by and public availability are both strictly before the actual decision clock, across warmup and scoring rows. `Engine::set_cross_section_mask` and `add_ranked` consume this same mask. Source presence and numeric histories remain untouched. Thus inner cross-sectional ranks, trailing DSL operations and final blend formation use causal support; no first-missing/future-return mask is introduced.
+- Every TRAIN plus/minus candidate and both combined variants use the same admitted event set. Subsequent roles reuse frozen TRAIN signs and weights, with fresh role-bound contexts. Pre-role extinction produces no hypothetical opening claim. The same wrapper returns explicit claim diagnostics for all active paths; ordinary no-event execution and recipe schema remain unchanged.
+- Main gross/net/cost/borrow summaries consume the engine's actual streams. Separate claim CSV/JSON report signed fixed claims, receivables/payables, recognition bridge, continued claim borrow, settled cash and NAV including claims. CSV close errors are checked. Outputs explicitly retain unknown settlement and unverified historical delivery; source evidence does not become spendable cash or proof of borrow termination.
+
+## Findings and fixes
+
+The initial runner retirement mask waited until the recognition mark. It was aligned in `5e1fa849` with the engine's strict decision-clock rule, including publication between the same day's mark and decision. The active recipe names that support policy.
+
+The final resource pass found that diagnostics were retained once for every candidate sign, then copied into role/root reports, while initial admission charged only event count. `5e6dcb75` now charges the entire run on every role admission: `2*C + 2*role_count + 2` summary slots, each reserving `8 KiB + 8 KiB/event`, multiplied by four for retained/copy/serialization representations. `C<=64`, events `<=256`, and roles `<=3` precede this arithmetic; the existing checked budget admits or refuses before payload loading. This is an explicit conservative allocation envelope, not measured RSS. The existing mask, context, arrays and metadata charges remain additive; the no-event path has no new reserve.
+
+## Fixture scope and limits
+
+Four new cases inspect the actual runner boundary: informed decision support and fixed coverage denominator with signed claims; the same event pre-role without an opening entitlement; future-only event changes that alter identity while preserving frozen signs and all combined CSV bytes; strict document/archive/schema/clock/pin refusals; and the additional aggregate-budget refusal. The latter uses two candidates and 96 outside-axis events at 64 MiB, removes only its owned synthetic close payload, and requires the specific summary-budget error before output/progress, distinguishing admission from a later read failure. The tests do not claim large-universe memory measurements or exhaustive nested-DSL warmup coverage.
+
+Exact Git blobs: final runner CPP `35ba693761f97498d513fa42d9fd40d097d32ddc`; runner header `97a9c97b4f43138379785908388a84936f277d0b`; final owning fixture `a7d50b8f33d8d6e1c8cd5f21a394319d8ae49be1`. Engine review is recorded separately in `review-execution-cash-claim-source.md` (`eeb6dc03`).
