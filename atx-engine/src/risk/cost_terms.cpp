@@ -1,6 +1,11 @@
 // atx::engine::risk — cost_terms out-of-line definitions (Lane 6 trade-cost augmentation).
 #include "atx/engine/risk/cost_terms.hpp"
+#include "atx/engine/risk/qp_factor_admm.hpp"
+#include "atx/engine/risk/admm_schedule.hpp"
+#include "atx/engine/cost/optimizer_cost_terms.hpp"
+#include "atx/engine/risk/optimizer.hpp"
 
+#include <algorithm>
 #include <cmath>   // std::isfinite, std::isinf, std::sqrt, std::pow, std::fabs
 #include <string>  // std::string (Err messages)
 #include <utility> // std::move
@@ -153,18 +158,169 @@ bool TradeCostTerms::active() const noexcept {
   return any_pos(kappa_lin) || any_pos(c_three_halves) || any_pos(borrow_fee) || finite_cap;
 }
 
+namespace {
+atx::f64 trade_delta(atx::f64 v, atx::f64 threshold, atx::f64 impact, atx::f64 rho) noexcept {
+  const auto magnitude = std::abs(v);
+  if (magnitude <= threshold)
+    return 0.0;
+  const auto shifted = magnitude - threshold;
+  if (impact == 0.0)
+    return std::copysign(shifted, v);
+  // s^2+a*s-shifted=0. Exponent-separated ratio avoids intermediate overflow
+  // or underflow when impact/rho and sqrt(shifted) have very different scales.
+  int ec = 0, er = 0, es = 0;
+  const auto mc = std::frexp(impact, &ec), mr = std::frexp(rho, &er);
+  const auto ms = std::frexp(std::sqrt(shifted), &es);
+  const auto ratio = std::ldexp(1.5 * mc / mr / ms, ec - er - es);
+  if (!std::isfinite(ratio)) {
+    // The correction to this large-ratio asymptote is below double precision,
+    // but the result may still be a representable subnormal. Do not truncate it.
+    int ev = 0;
+    const auto mv = std::frexp(shifted, &ev);
+    const auto mantissa = mr * mv / (1.5 * mc);
+    return std::copysign(std::ldexp(mantissa * mantissa, 2 * (er + ev - ec)), v);
+  }
+  const auto scale = ratio > 1.0 ? (2.0 / ratio) / (std::hypot(1.0, 2.0 / ratio) + 1.0)
+                                 : 2.0 / (std::hypot(ratio, 2.0) + ratio);
+  return std::copysign((shifted * scale) * scale, v);
+}
+} // namespace
+
+atx::f64 cost_detail::trade_prox(atx::f64 v, atx::f64 kappa, atx::f64 impact,
+                                 atx::f64 rho) noexcept {
+  return trade_delta(v, kappa / rho, impact, rho);
+}
+
+atx::core::Result<atx::f64> prox_trade_cost(atx::f64 v, atx::f64 kappa, atx::f64 impact,
+                                            atx::f64 rho) {
+  if (!std::isfinite(v) || !std::isfinite(kappa) || kappa < 0.0 || !std::isfinite(impact) ||
+      impact < 0.0 || !std::isfinite(rho) || rho <= 0.0)
+    return co::Err(co::ErrorCode::InvalidArgument, "trade prox: invalid input");
+  return co::Ok(cost_detail::trade_prox(v, kappa, impact, rho));
+}
+
+atx::core::Status cost_detail::project_holdings(std::span<const atx::f64> target,
+                                                std::span<const atx::f64> lower,
+                                                std::span<const atx::f64> upper,
+                                                std::span<const atx::f64> borrow, atx::f64 rho,
+                                                atx::f64 budget, std::span<atx::f64> output) {
+  for (auto v : target)
+    if (!std::isfinite(v))
+      return co::Err(co::ErrorCode::OutOfRange, "costed holdings target overflow");
+  const auto project = [&](atx::f64 tau) {
+    atx::f64 gross = 0;
+    for (atx::usize i = 0; i < target.size(); ++i) {
+      const auto v = target[i], short_fee = borrow.empty() ? 0.0 : borrow[i] / rho;
+      const auto unbounded = v > tau ? v - tau : (v < -tau - short_fee ? v + tau + short_fee : 0.0);
+      output[i] = std::clamp(unbounded, lower[i], upper[i]);
+      gross += std::abs(output[i]);
+    }
+    return gross;
+  };
+  auto gross = project(0.0);
+  if (!std::isfinite(gross))
+    return co::Err(co::ErrorCode::OutOfRange, "costed holdings prox overflow");
+  if (budget < 0.0 || gross <= budget)
+    return co::Ok();
+  atx::f64 hi = 0, lo = 0;
+  for (auto v : target)
+    hi = std::max(hi, std::abs(v));
+  const auto minimum = project(hi);
+  if (!std::isfinite(minimum) || minimum > budget)
+    return co::Err(co::ErrorCode::InvalidArgument, "costed box pins exceed gross budget");
+  for (atx::usize it = 0; it < 100; ++it) {
+    const auto mid = lo + (hi - lo) * 0.5;
+    if (mid == lo || mid == hi)
+      break;
+    gross = project(mid);
+    if (!std::isfinite(gross))
+      return co::Err(co::ErrorCode::OutOfRange, "costed holdings prox overflow");
+    if (gross > budget)
+      lo = mid;
+    else
+      hi = mid;
+  }
+  (void)project(hi);
+  return co::Ok();
+}
+
+atx::core::Status cost_detail::project_trades(std::span<const atx::f64> target,
+                                              std::span<const atx::f64> previous,
+                                              const TradeCostTerms &terms, atx::f64 scalar_kappa,
+                                              atx::f64 rho, atx::f64 budget,
+                                              std::span<atx::f64> output) {
+  for (atx::usize i = 0; i < target.size(); ++i)
+    if (!std::isfinite(target[i] - previous[i]))
+      return co::Err(co::ErrorCode::OutOfRange, "costed trade target overflow");
+  const auto project = [&](atx::f64 extra_threshold) {
+    atx::f64 turnover = 0;
+    for (atx::usize i = 0; i < target.size(); ++i) {
+      const auto threshold = scalar_kappa / rho +
+                             (terms.kappa_lin.empty() ? 0.0 : terms.kappa_lin[i] / rho) +
+                             extra_threshold;
+      const auto delta =
+          trade_delta(target[i] - previous[i], threshold,
+                      terms.c_three_halves.empty() ? 0.0 : terms.c_three_halves[i], rho);
+      output[i] = previous[i] + delta;
+      turnover += std::abs(delta);
+    }
+    return turnover;
+  };
+  auto turnover = project(0.0);
+  if (!std::isfinite(turnover))
+    return co::Err(co::ErrorCode::OutOfRange, "costed trade prox overflow");
+  if (budget >= kAugInf || turnover <= budget) {
+    for (auto value : output)
+      if (!std::isfinite(value))
+        return co::Err(co::ErrorCode::OutOfRange, "costed trade output overflow");
+    return co::Ok();
+  }
+  atx::f64 hi = 0, lo = 0;
+  for (atx::usize i = 0; i < target.size(); ++i)
+    hi = std::max(hi, std::abs(target[i] - previous[i]));
+  if (!std::isfinite(hi))
+    return co::Err(co::ErrorCode::OutOfRange, "costed trade displacement overflow");
+  for (atx::usize it = 0; it < 100; ++it) {
+    const auto mid = lo + (hi - lo) * 0.5;
+    if (mid == lo || mid == hi)
+      break;
+    turnover = project(mid);
+    if (!std::isfinite(turnover))
+      return co::Err(co::ErrorCode::OutOfRange, "costed trade prox overflow");
+    if (turnover > budget)
+      lo = mid;
+    else
+      hi = mid;
+  }
+  (void)project(hi);
+  for (auto value : output)
+    if (!std::isfinite(value))
+      return co::Err(co::ErrorCode::OutOfRange, "costed trade output overflow");
+  return co::Ok();
+}
+
 atx::core::Status validate_cost_terms(const TradeCostTerms &terms, atx::usize m) {
   ATX_TRY_VOID(check_span(terms.kappa_lin, m, "kappa_lin", false, false));
   ATX_TRY_VOID(check_span(terms.c_three_halves, m, "c_three_halves", false, false));
   ATX_TRY_VOID(check_span(terms.borrow_fee, m, "borrow_fee", false, false));
   ATX_TRY_VOID(check_span(terms.locate_cap, m, "locate_cap", false, true));
   ATX_TRY_VOID(check_span(terms.w_prev, m, "w_prev", true, false));
+  ATX_TRY_VOID(check_span(terms.max_trade, m, "max_trade", true, true));
+  if (!terms.untradeable.empty() && terms.untradeable.size() != m)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "cost terms: untradeable must be empty or length M");
+  for (auto flag : terms.untradeable)
+    if (flag > 1)
+      return co::Err(co::ErrorCode::InvalidArgument, "cost terms: untradeable flag must be 0/1");
   return co::Ok();
 }
 
 atx::core::Result<AugmentedQp> append_cost_terms(AugmentedQp base, const TradeCostTerms &terms) {
   const atx::usize m = base.n_w;
   ATX_TRY_VOID(validate_cost_terms(terms, m));
+  if (!terms.untradeable.empty() || !terms.max_trade.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "augmented cost V1 does not accept executable limits; select FactorProxV2");
   if (!terms.active()) {
     return co::Ok(std::move(base)); // R10: verbatim base ⇒ byte-identical downstream solve
   }
@@ -288,14 +444,150 @@ atx::core::Result<TradeCostBreakdown> evaluate_trade_costs(const TradeCostTerms 
   return co::Ok(out);
 }
 
-atx::core::Result<QpResult> solve_with_costs(const ConstrainedQpSolver &solver,
-                                             const QpProblem &p, const TradeCostTerms &terms,
-                                             const AdmmSchedule *sched, const WarmStart *ws) {
+atx::core::Result<QpResult> solve_with_costs(const ConstrainedQpSolver &solver, const QpProblem &p,
+                                             const TradeCostTerms &terms, const AdmmSchedule *sched,
+                                             const WarmStart *ws, CostedSolveRule rule) {
   ATX_TRY_VOID(ConstrainedQpSolver::check_problem(p));
   ATX_TRY_VOID(validate_cost_terms(terms, p.V.n_instruments()));
+  if (rule == CostedSolveRule::FactorProxV2) {
+    const AdmmSchedule schedule = sched != nullptr ? *sched : AdmmSchedule{};
+    const FactorAdmmConfig cfg{solver.cfg.iters,
+                               solver.cfg.rho,
+                               solver.cfg.sigma,
+                               solver.cfg.feas_tol,
+                               false,
+                               solver.cfg.feasibility_rule,
+                               solver.cfg.feasibility_relative_tolerance};
+    const auto x0 = ws != nullptr ? ws->x0 : p.x0, y0 = ws != nullptr ? ws->y0 : p.y0;
+    ATX_TRY(auto solved, solve_factor_admm(p.V, p.risk_aversion, p.q, p.C, cfg, schedule, x0, y0,
+                                           ws != nullptr ? ws->rho : 0.0, &terms));
+    QpResult out;
+    out.book = solved.w;
+    out.x_full = std::move(solved.w);
+    out.y_full = std::move(solved.dual);
+    out.cert.prim_res = solved.prim_res;
+    out.cert.dual_res = solved.dual_res;
+    out.cert.admm_iters = solved.iters;
+    out.cert.rho_final = solved.rho;
+    out.cert.factor_space = true;
+    return co::Ok(std::move(out));
+  }
+  if (rule != CostedSolveRule::AugmentedConeV1)
+    return co::Err(co::ErrorCode::InvalidArgument, "costed solve: unknown rule");
+  if (!terms.untradeable.empty() || !terms.max_trade.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "legacy costed solve refuses executable limits; select FactorProxV2");
   AugmentedQp base = build_augmented(p.V, p.risk_aversion, p.q, p.C);
   ATX_TRY(AugmentedQp aug, append_cost_terms(std::move(base), terms));
   return solver.solve_augmented_form(aug, p, sched, ws);
 }
 
+} // namespace atx::engine::risk
+
+namespace atx::engine::cost {
+atx::core::Result<SurfaceSolveResult>
+solve_surface_costed(const risk::ConstrainedQpSolver &solver, const risk::QpProblem &problem,
+                     const CostSurface &surface, std::span<const atx::u64> model_instrument_ids,
+                     atx::i64 decision_time_ns, atx::f64 pretrade_nav,
+                     std::span<const atx::f64> held_weights, const SurfaceSolvePolicy &policy,
+                     std::span<const atx::f64> observed_locate_dollars,
+                     const risk::AdmmSchedule *schedule, const risk::WarmStart *warm) {
+  namespace co = atx::core;
+  const auto m = surface.instruments();
+  if (m != problem.V.n_instruments() || model_instrument_ids.size() != m ||
+      (!held_weights.empty() && held_weights.size() != m) ||
+      m > problem.C.storage.max_solver_bytes / 128 || !std::isfinite(policy.holding_days) ||
+      policy.holding_days < 0 ||
+      (policy.day_count != DayCount::D360 && policy.day_count != DayCount::D365 &&
+       policy.day_count != DayCount::D252))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "surface solve: invalid model axis/policy/budget");
+  for (atx::usize i = 0; i < m; ++i)
+    if (model_instrument_ids[i] != surface.rows()[i].instrument_id)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "surface solve: model/surface instrument order differs");
+  ATX_TRY(auto terms,
+          cost_terms_from_surface(surface, decision_time_ns, pretrade_nav, held_weights));
+  SurfaceSolveResult out;
+  out.policy = policy;
+  out.surface_recipe_sha256 = surface.recipe_sha256();
+  out.surface_snapshot_sha256 = surface.snapshot_sha256();
+  for (auto pin : terms.untradeable)
+    out.unavailable_liquidity_pins += pin != 0;
+  std::vector<atx::f64> rates(m, 0.0);
+  if (policy.borrow == SurfaceBorrowPolicy::RequireModeledV2) {
+    for (atx::usize i = 0; i < m; ++i) {
+      const auto quote = surface.borrow_annual_rate(i, decision_time_ns);
+      if (quote.status != CostQuoteStatus::Priced)
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "surface solve: prior modeled borrow rate unavailable");
+      rates[i] = quote.annual_fraction;
+    }
+  } else if (policy.borrow != SurfaceBorrowPolicy::DisabledExplicitV1) {
+    return co::Err(co::ErrorCode::InvalidArgument, "surface solve: unknown borrow policy");
+  }
+  ATX_TRY_VOID(add_borrow_terms(terms, rates, policy.holding_days, policy.day_count,
+                                observed_locate_dollars, pretrade_nav));
+  out.locate_limits_supplied = !observed_locate_dollars.empty();
+  const auto view = terms.executable_view();
+  ATX_TRY(out.solve, risk::solve_with_costs(solver, problem, view, schedule, warm,
+                                            risk::CostedSolveRule::FactorProxV2));
+  ATX_TRY(out.costs, risk::evaluate_trade_costs(view, out.solve.book));
+  if (!std::isfinite(out.costs.total()))
+    return co::Err(co::ErrorCode::OutOfRange, "surface solve: predicted costs overflow");
+  return co::Ok(std::move(out));
+}
+} // namespace atx::engine::cost
+
+namespace atx::engine::risk {
+atx::core::Result<cost::SurfaceSolveResult> PortfolioOptimizer::solve_surface(
+    std::span<const atx::f64> expected_returns, const FactorModel &V,
+    std::span<const atx::f64> held_weights, const cost::CostSurface &surface,
+    std::span<const atx::u64> model_instrument_ids, atx::i64 decision_time_ns,
+    atx::f64 pretrade_nav, const cost::SurfaceSolvePolicy &policy,
+    std::span<const atx::f64> observed_locate_dollars, const AdmmSchedule *schedule,
+    const WarmStart *warm) const {
+  namespace co = atx::core;
+  const auto m = V.n_instruments();
+  if (m == 0 || expected_returns.size() != m ||
+      (!held_weights.empty() && held_weights.size() != m) || !std::isfinite(cfg.risk_aversion) ||
+      cfg.risk_aversion < 0 || !std::isfinite(cfg.turnover_penalty) || cfg.turnover_penalty < 0)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "PortfolioOptimizer::solve_surface: invalid objective/book geometry");
+  for (auto value : expected_returns)
+    if (std::isinf(value))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "PortfolioOptimizer::solve_surface: infinite expected return");
+  for (auto value : held_weights)
+    if (!std::isfinite(value))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "PortfolioOptimizer::solve_surface: nonfinite held weight");
+  ConstraintSet set = constraints.value_or(ConstraintSet{});
+  if (!constraints) {
+    set.gross.gross_leverage = cfg.gross_leverage;
+    set.gross.dollar_neutral = cfg.dollar_neutral;
+    set.pos = PositionCap{cfg.name_cap};
+  }
+  set.storage.rule = ConstraintStorageRule::SparseCsrV2;
+  if (m > set.storage.max_solver_bytes / 128)
+    return co::Err(co::ErrorCode::OutOfRange,
+                   "PortfolioOptimizer::solve_surface: vector workspace budget");
+  ATX_TRY(auto C, set.materialize(V.exposures(), held_weights, m, ref));
+  C.turnover_penalty = cfg.turnover_penalty;
+  // These costs are measured from the same actually held book even without an
+  // explicit turnover-budget row. Missing alpha never erases an existing holding.
+  if (C.turnover_penalty > 0 || C.impact.active || C.has_turnover) {
+    C.turnover_ref.assign(m, 0.0);
+    if (!held_weights.empty())
+      std::copy(held_weights.begin(), held_weights.end(), C.turnover_ref.begin());
+  }
+  std::vector<atx::f64> q(m, 0.0);
+  for (atx::usize i = 0; i < m; ++i)
+    q[i] = std::isnan(expected_returns[i]) ? 0.0 : -expected_returns[i];
+  const ConstrainedQpSolver solver{qp};
+  const QpProblem problem{V, cfg.risk_aversion, q, C};
+  return cost::solve_surface_costed(solver, problem, surface, model_instrument_ids,
+                                    decision_time_ns, pretrade_nav, held_weights, policy,
+                                    observed_locate_dollars, schedule, warm);
+}
 } // namespace atx::engine::risk

@@ -18,9 +18,10 @@
 #include "atx/core/types.hpp"         // f64, usize
 
 #include "atx/engine/risk/admm_schedule.hpp" // AdmmSchedule, WarmStart, adapt_rho, residuals_converged
-#include "atx/engine/risk/constraints.hpp"   // MaterializedConstraints
-#include "atx/engine/risk/factor_model.hpp"  // FactorModel
-#include "atx/engine/risk/qp_augment.hpp"    // kAugInf (the ±∞ bound sentinel)
+#include "atx/engine/risk/constraints.hpp" // MaterializedConstraints
+#include "atx/engine/risk/cost_types.hpp"
+#include "atx/engine/risk/factor_model.hpp" // FactorModel
+#include "atx/engine/risk/qp_augment.hpp"   // kAugInf (the ±∞ bound sentinel)
 
 
 namespace atx::engine::risk {
@@ -41,6 +42,7 @@ constexpr atx::usize kFaTauIters = 100; // cap on each τ search (Newton/bisecti
 // The compiled problem: box block, dense rows, budgets, Hessian diagonal, factor loading.
 struct FaProblem {
   atx::usize m = 0;
+  const TradeCostTerms *costs = nullptr; // borrowed only for this solve
   std::vector<atx::f64> lo, hi;   // per-name box (±kAugInf when absent)
   std::vector<atx::u8> box_on;    // 1 ⇒ name i is in the z_b block (a finite bound or gross)
   std::vector<atx::u8> box_eq;    // 1 ⇒ lo == hi (a pin: ρ boost)
@@ -72,12 +74,12 @@ struct FaProblem {
   return b / a;
 }
 
-[[nodiscard]] atx::core::Result<FaProblem> fa_compile(const FactorModel &V,
-                                                             atx::f64 lambda,
-                                                             std::span<const atx::f64> q,
-                                                             const MaterializedConstraints &C) {
+[[nodiscard]] atx::core::Result<FaProblem>
+fa_compile(const FactorModel &V, atx::f64 lambda, std::span<const atx::f64> q,
+           const MaterializedConstraints &C, const TradeCostTerms *costs = nullptr) {
   namespace co = atx::core;
   FaProblem f;
+  f.costs = costs;
   const atx::usize m = V.n_instruments();
   const auto em = static_cast<Eigen::Index>(m);
   ATX_TRY_VOID(C.validate_layout(m));
@@ -169,13 +171,37 @@ struct FaProblem {
   // (3) Budgets.
   f.gross = C.gross_l1_budget >= 0.0;
   f.gross_budget = f.gross ? C.gross_l1_budget : 0.0;
-  f.turn = C.has_turnover || C.turnover_penalty > 0.0;
+  f.turn = C.has_turnover || C.turnover_penalty > 0.0 || costs != nullptr;
   f.turn_budget = C.has_turnover ? C.turnover_budget : kAugInf;
   f.kappa = C.turnover_penalty;
   f.wprev.assign(m, 0.0);
   if (f.turn) {
     for (atx::usize i = 0; i < m && i < C.turnover_ref.size(); ++i) {
       f.wprev[i] = C.turnover_ref[i];
+    }
+  }
+  if (costs != nullptr) {
+    for (atx::usize i = 0; i < m; ++i) {
+      const auto previous = costs->w_prev.empty() ? 0.0 : costs->w_prev[i];
+      if ((C.has_turnover || C.turnover_penalty > 0.0 || C.impact.active) &&
+          previous != (C.turnover_ref.empty() ? 0.0 : C.turnover_ref[i]))
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "costed solve: constraint and cost books disagree");
+      f.wprev[i] = previous;
+      const bool pin = (!costs->untradeable.empty() && costs->untradeable[i] != 0) ||
+                       (!costs->max_trade.empty() && costs->max_trade[i] <= 0.0);
+      const auto cap = pin ? 0.0
+                           : (costs->max_trade.empty() ? std::numeric_limits<atx::f64>::infinity()
+                                                       : costs->max_trade[i]);
+      if (std::isfinite(cap)) {
+        f.lo[i] = std::max(f.lo[i], previous - cap);
+        f.hi[i] = std::min(f.hi[i], previous + cap);
+      }
+      if (!costs->locate_cap.empty() && std::isfinite(costs->locate_cap[i]))
+        f.lo[i] = std::max(f.lo[i], -costs->locate_cap[i]);
+      if (!std::isfinite(f.lo[i]) || !std::isfinite(f.hi[i]) || f.lo[i] > f.hi[i])
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "costed solve: incompatible holding/execution/locate bounds");
     }
   }
   if (f.turn) {
@@ -187,7 +213,10 @@ struct FaProblem {
   f.box_eq.assign(m, 0U);
   for (atx::usize j = 0; j < m; ++j) {
     const bool bounded = f.lo[j] > -kAugInf || f.hi[j] < kAugInf;
-    f.box_on[j] = (f.gross || bounded) ? 1U : 0U;
+    f.box_on[j] = (f.gross || bounded ||
+                   (costs != nullptr && !costs->borrow_fee.empty() && costs->borrow_fee[j] > 0.0))
+                      ? 1U
+                      : 0U;
     f.box_eq[j] = (f.lo[j] == f.hi[j]) ? 1U : 0U;
   }
 
@@ -463,12 +492,35 @@ struct FaViolation {
     }
     obj += f.kappa * t;
   }
+  if (f.costs != nullptr) {
+    for (atx::usize i = 0; i < f.m; ++i) {
+      const auto wi = w[static_cast<Eigen::Index>(i)], delta = std::abs(wi - f.wprev[i]);
+      if (!f.costs->kappa_lin.empty())
+        obj += f.costs->kappa_lin[i] * delta;
+      if (!f.costs->c_three_halves.empty())
+        obj += f.costs->c_three_halves[i] * delta * std::sqrt(delta);
+      if (!f.costs->borrow_fee.empty() && wi < 0)
+        obj += f.costs->borrow_fee[i] * (-wi);
+    }
+  }
   return obj;
 }
 
 // The z-updates (projections) from the relaxed targets. v_b / v_t are the targets plus y/ρ.
-void fa_project(const FaProblem &f, const cl::VecX &vb, const cl::VecX &vd,
-                       const cl::VecX &vt, atx::f64 rho_t, FaState &s) {
+atx::core::Status fa_project(const FaProblem &f, const cl::VecX &vb, const cl::VecX &vd,
+                                    const cl::VecX &vt, atx::f64 rho_t, FaState &s) {
+  if (f.costs != nullptr) {
+    ATX_TRY_VOID(cost_detail::project_holdings({vb.data(), f.m}, f.lo, f.hi, f.costs->borrow_fee,
+                                               rho_t, f.gross ? f.gross_budget : -1.0,
+                                               {s.zb.data(), f.m}));
+    for (Eigen::Index k = 0; k < vd.size(); ++k) {
+      const auto ku = static_cast<atx::usize>(k);
+      s.zd[k] = std::clamp(vd[k], f.dl[ku], f.du[ku]);
+    }
+    ATX_TRY_VOID(cost_detail::project_trades({vt.data(), f.m}, f.wprev, *f.costs, f.kappa, rho_t,
+                                             f.turn_budget, {s.zt.data(), f.m}));
+    return atx::core::Ok();
+  }
   // (a) box ∩ gross block.
   s.tau_b = f.gross ? fa_find_tau(vb, f.lo, f.hi, f.box_on, f.gross_budget, 0.0) : 0.0;
   for (atx::usize i = 0; i < f.m; ++i) {
@@ -493,6 +545,7 @@ void fa_project(const FaProblem &f, const cl::VecX &vb, const cl::VecX &vd,
       s.zt[ei] = f.wprev[i] + fa_soft_clamp(u[ei], s.tau_t, -kAugInf, kAugInf);
     }
   }
+  return atx::core::Ok();
 }
 
 // OSQP-style polish on the active set read off the final z. Returns false (and leaves
@@ -690,7 +743,8 @@ void fa_project(const FaProblem &f, const cl::VecX &vb, const cl::VecX &vd,
 solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f64> q,
                   const MaterializedConstraints &C, const FactorAdmmConfig &cfg,
                   const AdmmSchedule &sched, std::span<const atx::f64> x0,
-                  std::span<const atx::f64> y0, atx::f64 rho_warm) {
+                  std::span<const atx::f64> y0, atx::f64 rho_warm,
+                  const TradeCostTerms *costs) {
   namespace co = atx::core;
   namespace cl = atx::core::linalg;
   using detail::FaProblem;
@@ -711,7 +765,72 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
         "factor-space QP: relative economic feasibility requires valid tolerances and hard constraints");
   if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2)
     ATX_TRY_VOID(C.validate_relative_metadata(V.n_instruments()));
-  ATX_TRY(FaProblem f, detail::fa_compile(V, lambda, q, C));
+  if (costs != nullptr) {
+    ATX_TRY_VOID(validate_cost_terms(*costs, V.n_instruments()));
+    ATX_TRY_VOID(C.validate_layout(V.n_instruments()));
+    ATX_TRY_VOID(C.validate_relative_metadata(V.n_instruments()));
+    // Active quadratic impact also reads the previous book, even when there is
+    // no L1 turnover term. Empty means flat; a supplied reference must be whole.
+    if (C.impact.active && !C.turnover_ref.empty()) {
+      if (C.turnover_ref.size()!=V.n_instruments())
+        return co::Err(co::ErrorCode::InvalidArgument,"costed factor V2: impact reference length differs");
+      for (auto value:C.turnover_ref) if (!std::isfinite(value))
+        return co::Err(co::ErrorCode::InvalidArgument,"costed factor V2: nonfinite impact reference");
+    }
+    if (!C.elastic.empty() || !factor_admm_eligible(C))
+      return co::Err(co::ErrorCode::NotImplemented,
+                     "costed factor V2 requires hard linear/box/L1 constraints");
+    if (V.n_instruments() == 0 || q.size() != V.n_instruments() || !std::isfinite(lambda) ||
+        lambda < 0 || cfg.iters == 0 || !std::isfinite(cfg.rho) || cfg.rho <= 0 ||
+        !std::isfinite(cfg.sigma) || cfg.sigma <= 0 || !std::isfinite(cfg.feas_tol) ||
+        cfg.feas_tol <= 0 || !std::isfinite(sched.eps_abs) || sched.eps_abs <= 0 ||
+        !std::isfinite(sched.eps_rel) || sched.eps_rel < 0 || !std::isfinite(sched.relax_alpha) ||
+        sched.relax_alpha <= 0 || sched.relax_alpha >= 2 || !std::isfinite(sched.eq_rho_scale) ||
+        sched.eq_rho_scale < 1 || !std::isfinite(sched.rho_min) || sched.rho_min <= 0 ||
+        !std::isfinite(sched.rho_max) || sched.rho_max < sched.rho_min ||
+        !std::isfinite(sched.adapt_ratio) || sched.adapt_ratio <= 1 || !std::isfinite(rho_warm) ||
+        rho_warm < 0 || !V.exposures().allFinite() || !V.factor_cov().allFinite() ||
+        !V.specific_var().allFinite())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "costed factor V2: invalid objective or convergence policy");
+    for (auto value : q)
+      if (!std::isfinite(value))
+        return co::Err(co::ErrorCode::InvalidArgument, "costed factor V2: nonfinite objective");
+    for (auto values : {x0, y0})
+      for (auto value : values)
+        if (!std::isfinite(value))
+          return co::Err(co::ErrorCode::InvalidArgument, "costed factor V2: nonfinite warm start");
+    for (auto value : costs->w_prev)
+      if (std::abs(value) >= kAugInf)
+        return co::Err(co::ErrorCode::OutOfRange,
+                       "costed factor V2: prior book exceeds finite bound range");
+    const auto count = V.n_instruments();
+    const auto limit = C.storage.max_solver_bytes / sizeof(atx::f64);
+    atx::usize general = 0;
+    for (atx::usize row = 0; row < C.row_count(); ++row) {
+      atx::usize entries = 0;
+      C.visit_row(row, [&](atx::usize, atx::f64) { ++entries; });
+      if (entries > 1)
+        ++general;
+    }
+    if ((!x0.empty() && x0.size() != count) ||
+        (!y0.empty() && (count > std::numeric_limits<atx::usize>::max() / 2 ||
+                         general > std::numeric_limits<atx::usize>::max() - 2 * count ||
+                         y0.size() != 2 * count + general)))
+      return co::Err(co::ErrorCode::InvalidArgument, "costed factor V2: warm start layout differs");
+    // Combined admission BEFORE FaProblem allocates row/general/factor storage.
+    // Includes extra cost/projection/warm-state vectors and dense Woodbury copies.
+    if (V.n_factors() > limit || general > limit - V.n_factors() ||
+        V.n_factors() + general > limit - std::min<atx::u64>(limit, 16))
+      return co::Err(co::ErrorCode::OutOfRange, "costed factor V2: workspace width budget");
+    const auto width = V.n_factors() + general + 16;
+    if (width == 0 || count > limit / 16 / width || width > limit / 16 / width)
+      return co::Err(co::ErrorCode::OutOfRange, "costed factor V2: workspace matrix budget");
+    const auto used = 16 * (count * width + width * width);
+    if (used > limit || C.row_count() > (limit - used) / 16)
+      return co::Err(co::ErrorCode::OutOfRange, "costed factor V2: combined workspace budget");
+  }
+  ATX_TRY(FaProblem f, detail::fa_compile(V, lambda, q, C, costs));
   const auto m = static_cast<Eigen::Index>(f.m);
   const Eigen::Index rd = f.ad.rows();
   const atx::usize ny = f.m + static_cast<atx::usize>(rd) + (f.turn ? f.m : 0U);
@@ -783,7 +902,7 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
   {
     // z seeded from the (possibly zero) w: the same projections the loop applies.
     const cl::VecX ad_w = f.ad * s.w;
-    detail::fa_project(f, s.w, ad_w, s.w, rho, s);
+    ATX_TRY_VOID(detail::fa_project(f, s.w, ad_w, s.w, rho, s));
   }
 
   const atx::f64 alpha = sched.relax_alpha;
@@ -832,7 +951,7 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
       }
     }
     s.w = alpha * xt + (1.0 - alpha) * s.w;
-    detail::fa_project(f, vb, vd, vt, rho, s);
+    ATX_TRY_VOID(detail::fa_project(f, vb, vd, vt, rho, s));
     for (Eigen::Index i = 0; i < m; ++i) {
       s.yb[i] += rb[i] * (zrb[i] - s.zb[i]);
     }
@@ -906,7 +1025,7 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
   out.dual_res = dual_norm;
   cl::VecX w = s.w;
   detail::FaViolation viol = detail::fa_violation(f, w);
-  if (cfg.polish) {
+  if (cfg.polish && costs == nullptr) {
     cl::VecX wp;
     if (detail::fa_polish(f, s, rho, wp)) {
       const detail::FaViolation vp = detail::fa_violation(f, wp);
@@ -931,7 +1050,65 @@ solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f6
       }
     }
   }
-  out.prim_res = std::max(0.0, std::max(viol.row, viol.sums));
+  if (costs != nullptr) {
+    // Exact pins and the proximal no-trade kink are represented exactly in the
+    // returned book, then the ENTIRE original economic set is checked again.
+    for (atx::usize i = 0; i < f.m; ++i) {
+      const auto ei = static_cast<Eigen::Index>(i);
+      w[ei] = std::clamp(w[ei], f.lo[i], f.hi[i]);
+      if (s.zt[ei] == f.wprev[i] && std::abs(w[ei] - f.wprev[i]) <= cfg.feas_tol &&
+          f.wprev[i] >= f.lo[i] && f.wprev[i] <= f.hi[i])
+        w[ei] = f.wprev[i];
+    }
+    if (!w.allFinite() || !s.yb.allFinite() || !s.yd.allFinite() || !s.yt.allFinite() ||
+        !s.zb.allFinite() || !s.zd.allFinite() || !s.zt.allFinite() ||
+        !std::isfinite(detail::fa_objective(f, w)))
+      return co::Err(co::ErrorCode::OutOfRange,
+                     "costed factor V2: nonfinite final state/objective");
+    ATX_TRY_VOID(C.check_relative_feasible({w.data(), f.m}, cfg.feas_tol,
+                                           cfg.feasibility_rule ==
+                                                   ConstraintFeasibilityRule::RelativeEconomicV2
+                                               ? cfg.feasibility_relative_tolerance
+                                               : 0.0));
+    AdmmResidualNorms nr;
+    for (Eigen::Index i = 0; i < m; ++i) {
+      if (f.box_on[static_cast<atx::usize>(i)] != 0) {
+        nr.prim = std::max(nr.prim, std::abs(w[i] - s.zb[i]));
+        nr.z = std::max(nr.z, std::abs(s.zb[i]));
+      }
+      nr.prim = std::max(nr.prim, std::abs(w[i] - s.zt[i]));
+      nr.z = std::max(nr.z, std::abs(s.zt[i]));
+      nr.ax = std::max(nr.ax, std::abs(w[i]));
+    }
+    const cl::VecX aw = f.ad * w;
+    if (!aw.allFinite())
+      return co::Err(co::ErrorCode::OutOfRange, "costed factor V2: constraint evaluation overflow");
+    for (Eigen::Index j = 0; j < rd; ++j) {
+      nr.prim = std::max(nr.prim, std::abs(aw[j] - s.zd[j]));
+      nr.ax = std::max(nr.ax, std::abs(aw[j]));
+      nr.z = std::max(nr.z, std::abs(s.zd[j]));
+    }
+    cl::VecX aty = s.yb + s.yt;
+    if (rd > 0)
+      aty.noalias() += f.ad.transpose() * s.yd;
+    detail::fa_apply_p(f, w, pw);
+    const cl::VecX gradient = pw + f.q + aty;
+    if (!pw.allFinite() || !aty.allFinite() || !gradient.allFinite())
+      return co::Err(co::ErrorCode::OutOfRange,
+                     "costed factor V2: stationarity evaluation overflow");
+    nr.dual = gradient.lpNorm<Eigen::Infinity>();
+    nr.px = pw.lpNorm<Eigen::Infinity>();
+    nr.aty = aty.lpNorm<Eigen::Infinity>();
+    nr.q = f.q.lpNorm<Eigen::Infinity>();
+    if (!std::isfinite(nr.prim) || !std::isfinite(nr.dual) || !residuals_converged(nr, sched))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "costed factor V2: requested convergence tolerance not achieved");
+    out.dual_res = nr.dual;
+    viol = detail::fa_violation(f, w);
+    out.prim_res = nr.prim;
+  }
+  const auto violation_residual = std::max(0.0, std::max(viol.row, viol.sums));
+  out.prim_res = costs == nullptr ? violation_residual : std::max(out.prim_res, violation_residual);
   if (cfg.feasibility_rule == ConstraintFeasibilityRule::RelativeEconomicV2) {
     ATX_TRY_VOID(C.check_relative_feasible(std::span<const atx::f64>{w.data(), f.m},
         cfg.feas_tol, cfg.feasibility_relative_tolerance));

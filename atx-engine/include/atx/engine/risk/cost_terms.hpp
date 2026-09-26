@@ -9,7 +9,7 @@
 //       with a locate box         max(0, −w_i) ≤ locate_cap_i         (locate availability)
 //
 // ===========================================================================
-//  Formulation (every piece stays inside the existing QP + SOC ADMM, no new solver)
+//  AugmentedConeV1 formulation (the original QP + SOC ADMM)
 // ===========================================================================
 //  (1) aux r_i ≥ |Δ_i| via the two rows  w_i − r_i ≤ w0_i,  −w_i − r_i ≤ −w0_i; cost κ_i r_i.
 //  (2) aux (u_i, s_i, τ_i): u_i ≥ |Δ_i| by the same two rows, cost c_i τ_i, and TWO rotated
@@ -30,6 +30,10 @@
 //  robust apex) is unchanged. With every term inactive the base AugmentedQp is returned
 //  verbatim ⇒ the solve is byte-identical to ConstrainedQpSolver::solve_with_cert (R10).
 //
+//  FactorProxV2 explicitly uses the factor-space ADMM with per-name closed-form
+//  3/2 trade proximal steps and asymmetric borrow proximal steps. Hard execution
+//  caps are folded into boxes; no scalar-only polish or augmented fallback runs.
+//
 //  Units: coefficients are in objective units per unit weight (the caller maps bps and
 //  per-period borrow into the same units as −α). w0 is the pre-trade book.
 
@@ -38,23 +42,11 @@
 #include "atx/core/error.hpp" // Result
 #include "atx/core/types.hpp" // f64, usize
 
+#include "atx/engine/risk/cost_types.hpp"
 #include "atx/engine/risk/qp_augment.hpp" // AugmentedQp
 #include "atx/engine/risk/qp_solver.hpp"  // ConstrainedQpSolver, QpProblem, QpResult
 
 namespace atx::engine::risk {
-
-// Per-name trade-cost coefficients. Every span is either EMPTY (term off) or length M.
-// Non-owning: the spans must outlive the call they are passed to.
-struct TradeCostTerms {
-  std::span<const atx::f64> kappa_lin;      // κ_i ≥ 0: linear cost on |w_i − w0_i|
-  std::span<const atx::f64> c_three_halves; // c_i ≥ 0: impact cost on |w_i − w0_i|^{3/2}
-  std::span<const atx::f64> borrow_fee;     // fee_i ≥ 0: cost on the short leg max(0, −w_i)
-  std::span<const atx::f64> locate_cap;     // cap_i ≥ 0 (+inf ⇒ none): max(0, −w_i) ≤ cap_i
-  std::span<const atx::f64> w_prev;         // w0 (length M); empty ⇒ the zero book
-
-  // True iff any term would add a column (a positive coefficient or a finite locate cap).
-  [[nodiscard]] bool active() const noexcept;
-};
 
 // Realized cost of a book under the terms (objective units).
 struct TradeCostBreakdown {
@@ -81,10 +73,12 @@ evaluate_trade_costs(const TradeCostTerms &terms, std::span<const atx::f64> w);
 // the solver's standard pipeline (Ruiz → ADMM → polish → gate). Same error contract as
 // ConstrainedQpSolver::solve_with_cert plus the term validation above. `sched` (optional)
 // selects the deterministic adaptive-rho ADMM; `ws` (optional) warm-starts from a previous
-// costed solve's x_full / y_full (same terms layout).
+// costed solve's x_full / y_full (same terms layout). The explicit V2 rule instead
+// requires the factor layout and checks requested stationarity/consensus tolerances
+// before returning a feasible book. V1 refuses nonempty executable limit spans.
 [[nodiscard]] atx::core::Result<QpResult>
-solve_with_costs(const ConstrainedQpSolver &solver, const QpProblem &p,
-                 const TradeCostTerms &terms, const AdmmSchedule *sched = nullptr,
-                 const WarmStart *ws = nullptr);
+solve_with_costs(const ConstrainedQpSolver &solver, const QpProblem &p, const TradeCostTerms &terms,
+                 const AdmmSchedule *sched = nullptr, const WarmStart *ws = nullptr,
+                 CostedSolveRule rule = CostedSolveRule::AugmentedConeV1);
 
 } // namespace atx::engine::risk

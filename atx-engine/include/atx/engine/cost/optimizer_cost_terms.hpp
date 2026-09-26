@@ -31,9 +31,10 @@
 //  (the same accrual daily_borrow charges), and a locate of L_i dollars caps the short at
 //  L_i / B in weight units (+inf ⇒ no locate limit).
 
-#include <cmath>   // std::isfinite, std::sqrt
-#include <limits>  // std::numeric_limits (+inf caps)
-#include <span>    // std::span
+#include <cmath>  // std::isfinite, std::sqrt
+#include <limits> // std::numeric_limits (+inf caps)
+#include <span>   // std::span
+#include <string>
 #include <utility> // std::move
 #include <vector>  // std::vector
 
@@ -58,9 +59,15 @@ struct OptimizerCostTerms {
   std::vector<atx::u8> untradeable;     // 1 ⇒ the replay will not fill this name: pin it
   std::vector<atx::f64> max_trade;      // |Δw_i| the replay can fill (+inf ⇒ uncapped)
 
-  // Non-owning view for risk::solve_with_costs. Valid while *this is alive and unmodified.
+  // Legacy V1 economic view only: executable limits are deliberately NOT carried.
+  // New execution-aware consumers must use executable_view() and FactorProxV2.
+  // Both views borrow this storage until the solve finishes.
   [[nodiscard]] risk::TradeCostTerms view() const noexcept {
     return risk::TradeCostTerms{kappa_lin, c_three_halves, borrow_fee, locate_cap, w_prev};
+  }
+  [[nodiscard]] risk::TradeCostTerms executable_view() const noexcept {
+    return risk::TradeCostTerms{kappa_lin, c_three_halves, borrow_fee, locate_cap,
+                                w_prev,    untradeable,    max_trade};
   }
 };
 
@@ -220,5 +227,31 @@ add_borrow_terms(OptimizerCostTerms &terms, std::span<const atx::f64> annual_rat
   terms.locate_cap = std::move(cap);
   return co::Ok();
 }
+
+enum class SurfaceBorrowPolicy : atx::u8 { DisabledExplicitV1 = 1, RequireModeledV2 = 2 };
+struct SurfaceSolvePolicy {
+  SurfaceBorrowPolicy borrow{SurfaceBorrowPolicy::RequireModeledV2};
+  atx::f64 holding_days{1.0};
+  DayCount day_count{DayCount::D365};
+};
+struct SurfaceSolveResult {
+  risk::QpResult solve;
+  risk::TradeCostBreakdown costs; // NAV-return units, actual solved delta holdings
+  std::string surface_recipe_sha256, surface_snapshot_sha256;
+  risk::CostedSolveRule rule{risk::CostedSolveRule::FactorProxV2};
+  SurfaceSolvePolicy policy;
+  atx::usize unavailable_liquidity_pins{};
+  bool locate_limits_supplied{false}; // modeled borrow is never a locate assertion
+};
+
+// The executable B1 -> R3 consumer. Axis identity is checked explicitly; all
+// coefficients use the same decision snapshot and pretrade NAV. It makes no
+// claim of observed fills/locates or of calibrated expected-return inputs in p.q.
+[[nodiscard]] atx::core::Result<SurfaceSolveResult> solve_surface_costed(
+    const risk::ConstrainedQpSolver &solver, const risk::QpProblem &problem,
+    const CostSurface &surface, std::span<const atx::u64> model_instrument_ids,
+    atx::i64 decision_time_ns, atx::f64 pretrade_nav, std::span<const atx::f64> held_weights,
+    const SurfaceSolvePolicy &policy = {}, std::span<const atx::f64> observed_locate_dollars = {},
+    const risk::AdmmSchedule *schedule = nullptr, const risk::WarmStart *warm = nullptr);
 
 } // namespace atx::engine::cost

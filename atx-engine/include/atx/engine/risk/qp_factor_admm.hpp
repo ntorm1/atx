@@ -73,6 +73,7 @@
 namespace atx::engine::risk {
 class FactorModel;
 struct AdmmSchedule;
+struct TradeCostTerms;
 
 // The solver knobs the factor-space path reads (a subset of QpConfig, passed by value so
 // this header does not depend on qp_solver.hpp).
@@ -96,9 +97,11 @@ struct FactorAdmmOutput {
   bool polished = false;
 };
 
+// Eligibility is only the cone check; V2 separately refuses elastic constraints.
 [[nodiscard]] bool factor_admm_eligible(const MaterializedConstraints& C) noexcept;
 
-// Retain the existing independent projection oracle entry points.
+// Preserved declarations for the existing independent projection oracle tests.
+// The numerical helper bodies are compiled only in qp_factor_admm.cpp.
 namespace detail {
 [[nodiscard]] atx::f64 fa_soft_clamp(atx::f64 v, atx::f64 tau,
                                      atx::f64 lo, atx::f64 hi) noexcept;
@@ -107,10 +110,13 @@ namespace detail {
     const std::vector<atx::u8>& on, atx::f64 budget, atx::f64 tau_min) noexcept;
 } // namespace detail
 
+// Null costs preserve the original numerical path. Non-null costs select V2's
+// checked per-name proximal splitting, hard execution limits and convergence gate.
 [[nodiscard]] atx::core::Result<FactorAdmmOutput>
 solve_factor_admm(const FactorModel &V, atx::f64 lambda, std::span<const atx::f64> q,
                   const MaterializedConstraints &C, const FactorAdmmConfig &cfg,
                   const AdmmSchedule &sched, std::span<const atx::f64> x0 = {},
-                  std::span<const atx::f64> y0 = {}, atx::f64 rho_warm = 0.0);
+                  std::span<const atx::f64> y0 = {}, atx::f64 rho_warm = 0.0,
+                  const TradeCostTerms *costs = nullptr);
 
 } // namespace atx::engine::risk
