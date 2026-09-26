@@ -1,4 +1,5 @@
 #include "atx/engine/factory/ic_screen.hpp"
+#include "atx/engine/factory/ic_research.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +20,8 @@ namespace atx::engine::factory {
 namespace ic_screen_detail {
 struct Cache {
   IcScreenConfig config;
+  ResearchIcOptions options{4,false};
+  std::array<ResearchIcCoverage,4> coverage{};
   atx::usize dates{};
   atx::usize instruments{};
   atx::usize rows{};
@@ -33,6 +36,7 @@ struct Cache {
 struct Scratch {
   // Binding prevents accidental reuse with a different window/configuration.
   std::shared_ptr<const Cache> cache;
+  atx::u64 bytes{};
   std::vector<atx::f64> x, y, xr, yr, influence;
   std::vector<atx::usize> order, ranked_names;
   std::array<std::vector<atx::f64>, 4> pearson, rank;
@@ -128,10 +132,13 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
 [[nodiscard]] atx::core::Status validate(const alpha::Panel& panel,
                                         const IcScreenConfig& cfg,
                                         std::span<const atx::u8> member,
-                                        std::span<const atx::u32> bad) {
+                                        std::span<const atx::u32> bad,
+                                        usize active_horizons) {
   if (cfg.rule != IcScreenRule::DisabledV1 && cfg.rule != IcScreenRule::ConservativeV2 &&
       cfg.rule != IcScreenRule::EquivalenceV3)
     return Err(ErrorCode::InvalidArgument, "IC screen: unknown rule");
+  if (active_horizons==0 || active_horizons>4)
+    return Err(ErrorCode::InvalidArgument,"IC research: active horizon count");
   if (cfg.rule == IcScreenRule::DisabledV1) return Ok();
   if (panel.instruments() == 0 || panel.dates() == 0 ||
       panel.dates() > std::numeric_limits<usize>::max() / panel.instruments())
@@ -144,7 +151,7 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
       cfg.practical_abs_ic >= 1.0 || !std::isfinite(cfg.confidence_multiplier) ||
       cfg.confidence_multiplier < 3.0 || cfg.max_cache_bytes == 0U)
     return Err(ErrorCode::InvalidArgument, "IC screen: invalid conservative configuration");
-  for (usize k = 0; k < cfg.horizons.size(); ++k) {
+  for (usize k = 0; k < active_horizons; ++k) {
     const usize h = cfg.horizons[k];
     if (h == 0U || h > (std::numeric_limits<usize>::max() - 1U) / 2U ||
         h > std::numeric_limits<usize>::max() - cfg.execution_delay ||
@@ -223,10 +230,11 @@ void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
                   std::span<const f64> cached_ranks, usize cached_names,
                   usize eligible, const IcScreenConfig& cfg, Scratch& scratch,
                   usize& ranked_count,
-                  f64& pearson, f64& rank) noexcept {
+                  f64& pearson, f64& rank,atx::u64* paired=nullptr) noexcept {
   pearson = kNan; rank = kNan;
-  if (cached_names < cfg.min_names ||
-      static_cast<f64>(cached_names) < kMinCoverage * static_cast<f64>(eligible)) return;
+  const bool cached_admitted=cached_names >= cfg.min_names &&
+      static_cast<f64>(cached_names) >= kMinCoverage * static_cast<f64>(eligible);
+  if (!cached_admitted && paired==nullptr) return; // exact old fast refusal path
   usize count = 0;
   bool same_names = true;
   for (usize i = 0; i < signal.size(); ++i) {
@@ -237,7 +245,8 @@ void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
       scratch.yr[count] = cached_ranks[i]; ++count;
     }
   }
-  if (count < cfg.min_names ||
+  if (paired!=nullptr) *paired+=static_cast<atx::u64>(count);
+  if (!cached_admitted || count < cfg.min_names ||
       static_cast<f64>(count) < kMinCoverage * static_cast<f64>(cached_names) ||
       static_cast<f64>(count) < kMinCoverage * static_cast<f64>(eligible)) {
     ranked_count = 0U;
@@ -263,16 +272,17 @@ void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
 }
 } // namespace
 
-atx::core::Result<IcScreenCache> prepare_ic_screen(
-    const alpha::Panel& panel, const IcScreenConfig& config,
+namespace {
+atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
+    const alpha::Panel& panel, const IcScreenConfig& config, const ResearchIcOptions& options,
     std::span<const atx::u8> member, std::span<const atx::u32> bad,
     std::string_view price_field) {
-  const auto valid = validate(panel, config, member, bad);
+  const auto valid = validate(panel, config, member, bad,options.active_horizons);
   if (!valid) return Err(valid.error());
   auto data = std::make_shared<Cache>();
   data->config = config; data->dates = panel.dates(); data->instruments = panel.instruments();
-  IcScreenCache result;
-  if (config.rule == IcScreenRule::DisabledV1) { result.data_ = std::move(data); return Ok(std::move(result)); }
+  data->options=options;
+  if (config.rule == IcScreenRule::DisabledV1) return Ok(std::shared_ptr<const Cache>{std::move(data)});
   auto& cfg = data->config;
   if (cfg.window_end == 0U) cfg.window_end = panel.dates();
   if (cfg.maturity_end == 0U) cfg.maturity_end = cfg.window_end;
@@ -283,9 +293,11 @@ atx::core::Result<IcScreenCache> prepare_ic_screen(
   atx::u64 bytes = sizeof(Cache);
   if (!checked_add_bytes(bytes, data->rows, sizeof(usize)))
     return Err(ErrorCode::InvalidArgument, "IC screen: cache size overflow");
-  for (usize k = 0; k < cfg.horizons.size(); ++k) {
+  for (usize k = 0; k < options.active_horizons; ++k) {
     const usize lag = cfg.execution_delay + cfg.horizons[k];
     data->active[k] = available > lag ? available - lag : 0U;
+    data->coverage[k].mature_dates=data->active[k];
+    data->coverage[k].structural_tail_dates=data->rows-data->active[k];
     const usize cells = data->active[k] * n; // <= validated panel geometry
     if (!checked_add_bytes(bytes, cells, 2U * sizeof(f64)) ||
         !checked_add_bytes(bytes, data->active[k], sizeof(usize)))
@@ -305,7 +317,7 @@ atx::core::Result<IcScreenCache> prepare_ic_screen(
     for (usize i = 0; i < n; ++i)
       if (panel.in_universe(d, i) && (member.empty() || member[d * n + i] != 0U)) ++data->eligible[row];
   }
-  for (usize k = 0; k < cfg.horizons.size(); ++k) {
+  for (usize k = 0; k < options.active_horizons; ++k) {
     const usize cells = data->active[k] * n;
     data->labels[k].assign(cells, kNan); data->ranks[k].assign(cells, kNan);
     data->names[k].assign(data->active[k], 0U);
@@ -314,40 +326,60 @@ atx::core::Result<IcScreenCache> prepare_ic_screen(
       const usize end = entry + cfg.horizons[k];
       auto labels = std::span{data->labels[k]}.subspan(row * n, n);
       for (usize i = 0; i < n; ++i) {
-        if (!panel.in_universe(d, i) || (!member.empty() && member[d * n + i] == 0U) ||
-            (!bad.empty() && bad[end * n + i] != bad[entry * n + i])) continue;
+        if (!panel.in_universe(d, i) || (!member.empty() && member[d * n + i] == 0U)) continue;
+        auto& coverage=data->coverage[k]; ++coverage.decision_eligible_pairs;
+        const bool missing_entry=options.require_endpoint_presence && !panel.in_universe(entry,i);
+        const bool missing_exit=options.require_endpoint_presence && !panel.in_universe(end,i);
+        coverage.missing_entry_pairs+=missing_entry; coverage.missing_exit_pairs+=missing_exit;
+        if (missing_entry || missing_exit) continue;
+        if (!bad.empty() && bad[end*n+i]!=bad[entry*n+i]) { ++coverage.guard_excluded_pairs; continue; }
         const f64 decision = prices[d * n + i];
         const f64 from = prices[entry * n + i], to = prices[end * n + i];
         if (!std::isfinite(decision) || decision <= 0.0 || !std::isfinite(from) ||
-            !std::isfinite(to) || from <= 0.0 || to <= 0.0) continue;
+            !std::isfinite(to) || from <= 0.0 || to <= 0.0) { ++coverage.invalid_price_pairs; continue; }
         const f64 ret = to / from - 1.0;
-        if (!std::isfinite(ret)) continue;
-        labels[i] = ret; ++data->names[k][row];
+        if (!std::isfinite(ret)) { ++coverage.nonfinite_return_pairs; continue; }
+        labels[i] = ret; ++data->names[k][row]; ++coverage.finite_label_pairs;
       }
       rank_values(labels, std::span{data->ranks[k]}.subspan(row * n, n), order);
     }
   }
-  result.data_ = std::move(data);
-  return Ok(std::move(result));
+  return Ok(std::shared_ptr<const Cache>{std::move(data)});
+}
+} // namespace
+atx::core::Result<IcScreenCache> prepare_ic_screen(
+    const alpha::Panel& panel,const IcScreenConfig& config,std::span<const atx::u8> member,
+    std::span<const atx::u32> bad,std::string_view price_field) {
+  IcScreenCache out;
+  ATX_TRY(out.data_,prepare_cache(panel,config,{4,false},member,bad,price_field));
+  return Ok(std::move(out));
+}
+atx::core::Result<ResearchIcCache> prepare_research_ic(
+    const alpha::Panel& panel,const IcScreenConfig& config,const ResearchIcOptions& options,
+    std::span<const atx::u8> member,std::span<const atx::u32> bad,std::string_view price_field) {
+  ResearchIcCache out;
+  ATX_TRY(out.data_,prepare_cache(panel,config,options,member,bad,price_field));
+  return Ok(std::move(out));
 }
 
-atx::core::Result<IcScreenScratch> prepare_ic_screen_scratch(const IcScreenCache& cache) {
-  if (!cache.data_) return Err(ErrorCode::InvalidArgument, "IC screen: unprepared cache");
+namespace {
+atx::core::Result<std::unique_ptr<Scratch>> prepare_scratch(std::shared_ptr<const Cache> cache) {
+  if (!cache) return Err(ErrorCode::InvalidArgument, "IC screen: unprepared cache");
   atx::u64 bytes = sizeof(Scratch);
-  if (cache.data_->config.rule != IcScreenRule::DisabledV1) {
-    if (!checked_add_bytes(bytes, cache.data_->instruments, 4U * sizeof(f64) + 2U * sizeof(usize)) ||
-        !checked_add_bytes(bytes, cache.data_->rows, sizeof(f64)))
+  if (cache->config.rule != IcScreenRule::DisabledV1) {
+    if (!checked_add_bytes(bytes, cache->instruments, 4U * sizeof(f64) + 2U * sizeof(usize)) ||
+        !checked_add_bytes(bytes, cache->rows, sizeof(f64)))
       return Err(ErrorCode::InvalidArgument, "IC screen: scratch size overflow");
-    for (const usize rows : cache.data_->active)
+    for (const usize rows : cache->active)
       if (!checked_add_bytes(bytes, rows, 2U * sizeof(f64)))
         return Err(ErrorCode::InvalidArgument, "IC screen: scratch size overflow");
-    if (bytes > cache.data_->config.max_cache_bytes)
+    if (bytes > cache->config.max_cache_bytes)
       return Err(ErrorCode::InvalidArgument, "IC screen: worker scratch memory budget exceeded");
   }
-  IcScreenScratch result;
-  result.data_ = std::make_unique<Scratch>();
-  auto& s = *result.data_;
-  s.cache = cache.data_;
+  auto result = std::make_unique<Scratch>();
+  auto& s = *result;
+  s.bytes=bytes;
+  s.cache = cache;
   if (s.cache->config.rule == IcScreenRule::DisabledV1) return Ok(std::move(result));
   const usize n = s.cache->instruments;
   s.x.resize(n); s.y.resize(n); s.xr.resize(n); s.yr.resize(n); s.order.resize(n);
@@ -357,6 +389,14 @@ atx::core::Result<IcScreenScratch> prepare_ic_screen_scratch(const IcScreenCache
     s.pearson[k].resize(s.cache->active[k]); s.rank[k].resize(s.cache->active[k]);
   }
   return Ok(std::move(result));
+}
+
+} // namespace
+atx::core::Result<IcScreenScratch> prepare_ic_screen_scratch(const IcScreenCache& cache) {
+  IcScreenScratch out; ATX_TRY(out.data_,prepare_scratch(cache.data_)); return Ok(std::move(out));
+}
+atx::core::Result<ResearchIcScratch> prepare_research_ic_scratch(const ResearchIcCache& cache) {
+  ResearchIcScratch out; ATX_TRY(out.data_,prepare_scratch(cache.data_)); return Ok(std::move(out));
 }
 
 bool ic_screen_cache_matches(const IcScreenCache& cache, const alpha::Panel& panel,
@@ -377,34 +417,53 @@ bool ic_screen_cache_matches(const IcScreenCache& cache, const alpha::Panel& pan
          prepared.max_cache_bytes == config.max_cache_bytes;
 }
 
-atx::core::Result<IcScreenResult> screen_ic(std::span<const f64> signal,
-                                           const IcScreenCache& cache,
-                                           IcScreenScratch& scratch) {
-  if (!cache.data_ || !scratch.data_ || scratch.data_->cache != cache.data_)
-    return Err(ErrorCode::InvalidArgument, "IC screen: scratch/cache binding mismatch");
-  const auto& data = *cache.data_;
+namespace {
+IcScreenResult classify_estimates(const std::array<IcScreenHorizon,4>&,
+                                  const IcScreenConfig&,usize) noexcept;
+atx::core::Result<IcScreenResult> evaluate_cache(std::span<const f64> signal,
+    const std::shared_ptr<const Cache>& cache,Scratch& scratch,
+    std::array<ResearchIcCoverage,4>* coverage=nullptr) {
+  const auto& data = *cache;
   const auto& cfg = data.config;
   IcScreenResult out;
   if (cfg.rule == IcScreenRule::DisabledV1) return Ok(out);
   if (signal.size() != data.dates * data.instruments)
     return Err(ErrorCode::InvalidArgument, "IC screen: signal shape mismatch");
-  auto& s = *scratch.data_;
+  auto& s = scratch;
   for (usize row = 0; row < data.active.front(); ++row) {
     usize ranked_count = 0U;
-    for (usize k = 0; k < cfg.horizons.size(); ++k) {
+    for (usize k = 0; k < data.options.active_horizons; ++k) {
       if (row >= data.active[k]) continue;
       const usize n = data.instruments, d = cfg.window_begin + row;
       evaluate_row(signal.subspan(d * n, n), std::span{data.labels[k]}.subspan(row * n, n),
                    std::span{data.ranks[k]}.subspan(row * n, n), data.names[k][row],
-                   data.eligible[row], cfg, s, ranked_count, s.pearson[k][row], s.rank[k][row]);
+                   data.eligible[row], cfg, s, ranked_count, s.pearson[k][row], s.rank[k][row],
+                   coverage?&(*coverage)[k].paired_signal_pairs:nullptr);
     }
   }
-  for (usize k = 0; k < cfg.horizons.size(); ++k) {
+  for (usize k = 0; k < data.options.active_horizons; ++k) {
     auto& h = out.horizons[k]; h.horizon = cfg.horizons[k];
     h.pearson = estimate(s.pearson[k], h.horizon, cfg, s.influence);
     h.rank = estimate(s.rank[k], h.horizon, cfg, s.influence);
   }
-  return Ok(classify_ic_screen_estimates(out.horizons, cfg));
+  return Ok(classify_estimates(out.horizons,cfg,data.options.active_horizons));
+}
+
+} // namespace
+atx::core::Result<IcScreenResult> screen_ic(std::span<const f64> signal,
+    const IcScreenCache& cache,IcScreenScratch& scratch) {
+  if (!cache.data_ || !scratch.data_ || scratch.data_->cache != cache.data_)
+    return Err(ErrorCode::InvalidArgument,"IC screen: scratch/cache binding mismatch");
+  return evaluate_cache(signal,cache.data_,*scratch.data_);
+}
+atx::core::Result<ResearchIcResult> evaluate_research_ic(std::span<const f64> signal,
+    const ResearchIcCache& cache,ResearchIcScratch& scratch) {
+  if (!cache.data_ || !scratch.data_ || scratch.data_->cache != cache.data_)
+    return Err(ErrorCode::InvalidArgument,"IC research: scratch/cache binding mismatch");
+  ResearchIcResult out; out.active_horizons=cache.data_->options.active_horizons;
+  out.coverage=cache.data_->coverage;
+  ATX_TRY(out.screen,evaluate_cache(signal,cache.data_,*scratch.data_,&out.coverage));
+  return Ok(std::move(out));
 }
 
 IcScreenConfig equivalence_ic_screen_config() noexcept {
@@ -415,8 +474,9 @@ IcScreenConfig equivalence_ic_screen_config() noexcept {
   return cfg;
 }
 
-IcScreenResult classify_ic_screen_estimates(const std::array<IcScreenHorizon, 4>& estimates,
-                                            const IcScreenConfig& cfg) noexcept {
+namespace {
+IcScreenResult classify_estimates(const std::array<IcScreenHorizon, 4>& estimates,
+                                            const IcScreenConfig& cfg,usize active_horizons) noexcept {
   IcScreenResult out;
   if (cfg.rule == IcScreenRule::DisabledV1) return out;
   out.horizons = estimates;
@@ -429,7 +489,8 @@ IcScreenResult classify_ic_screen_estimates(const std::array<IcScreenHorizon, 4>
       cfg.confidence_multiplier < 3.0)) return out;
   out.enough_evidence = true;
   bool possible = false;
-  for (auto& h : out.horizons) {
+  for (usize k=0;k<active_horizons;++k) {
+    auto& h=out.horizons[k];
     for (auto* e : {&h.pearson, &h.rank}) {
       if (equivalence) {
         e->upper_abs_ic = std::abs(e->mean) + cfg.confidence_multiplier * e->standard_error;
@@ -449,6 +510,10 @@ IcScreenResult classify_ic_screen_estimates(const std::array<IcScreenHorizon, 4>
       (out.reject ? IcScreenReason::PracticalNull : IcScreenReason::PossibleAlpha);
   return out;
 }
+
+} // namespace
+IcScreenResult classify_ic_screen_estimates(const std::array<IcScreenHorizon,4>& estimates,
+    const IcScreenConfig& cfg) noexcept { return classify_estimates(estimates,cfg,4); }
 
 usize IcScreenCache::dates() const noexcept { return data_ ? data_->dates : 0U; }
 usize IcScreenCache::instruments() const noexcept { return data_ ? data_->instruments : 0U; }
@@ -470,6 +535,21 @@ std::span<const f64> IcScreenScratch::pearson_series(usize k) const noexcept {
 }
 std::span<const f64> IcScreenScratch::rank_series(usize k) const noexcept {
   return data_ && k < 4U ? std::span<const f64>{data_->rank[k]} : std::span<const f64>{};
+}
+usize ResearchIcCache::dates() const noexcept { return data_?data_->dates:0; }
+usize ResearchIcCache::instruments() const noexcept { return data_?data_->instruments:0; }
+usize ResearchIcCache::first_date() const noexcept { return data_?data_->config.window_begin:0; }
+atx::u64 ResearchIcCache::bytes() const noexcept { return data_?data_->bytes:0; }
+ResearchIcScratch::ResearchIcScratch()=default;
+ResearchIcScratch::~ResearchIcScratch()=default;
+ResearchIcScratch::ResearchIcScratch(ResearchIcScratch&&) noexcept=default;
+ResearchIcScratch& ResearchIcScratch::operator=(ResearchIcScratch&&) noexcept=default;
+atx::u64 ResearchIcScratch::bytes() const noexcept { return data_?data_->bytes:0; }
+std::span<const f64> ResearchIcScratch::pearson_series(usize k) const noexcept {
+  return data_ && k<data_->cache->options.active_horizons?std::span<const f64>{data_->pearson[k]}:std::span<const f64>{};
+}
+std::span<const f64> ResearchIcScratch::rank_series(usize k) const noexcept {
+  return data_ && k<data_->cache->options.active_horizons?std::span<const f64>{data_->rank[k]}:std::span<const f64>{};
 }
 std::string_view ic_screen_reason_name(IcScreenReason reason) noexcept {
   switch (reason) {
