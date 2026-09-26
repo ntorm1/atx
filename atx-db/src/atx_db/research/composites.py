@@ -84,7 +84,10 @@ Grading, storage, one holdout look
 A composite feature version is the constituent R2b version **plus** the composites
 (source rows copied, store schema 3, ``anomaly_class='composite'``, constituents and
 weights in each composite catalog row), every composite variant produced by R2b's own
-:func:`atx_db.research.features.standardize_frame`; it passes R2b's validator. One R3b
+:func:`atx_db.research.features.standardize_frame` and written by R2b's public
+:func:`atx_db.research.features.write_derived_feature_version` (R2b's own write path: one
+transaction per copied feature and per batch of composite rows); it passes R2b's
+validator. A build that emits no composite writes and evaluates nothing. One R3b
 run over these versions evaluates the **full family** (every candidate signal plus the
 composites: BH, Holm and the DSR ``n_trials`` count all of them), and R4 grades it with
 every row stamped ``composite_post_selection`` and the constituent ledger id; no ledger
@@ -140,6 +143,8 @@ WEIGHT_TAGS = {WEIGHT_EQUAL: "eq", WEIGHT_IC: "icw"}
 COMPOSITE_CLASS = "composite"
 POST_SELECTION_STAMP = "composite_post_selection"
 COMPOSITE_CAVEATS = (POST_SELECTION_STAMP, "weights_fit_on_selection_sample")
+#: Date-row reason of a ranked line the composite does not value (too few constituents).
+COMPOSITE_NOT_VALUED = "composite_not_valued"
 POST_HOC_REASONS = ("composite_policy_not_registered", "composite_policy_registered_after_evaluation")
 UNCLASSIFIED = "unclassified"
 _ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789_"
@@ -1487,159 +1492,36 @@ def _standardization(spec: Mapping[str, Any]) -> rf.StandardizationPolicy:
                                     str(spec["taxonomy_code"]))
 
 
-def _columns(con: duckdb.DuckDBPyConnection, table: str) -> list[str]:
-    return [r[0] for r in con.execute("SELECT column_name FROM duckdb_columns() WHERE database_name = "
-                                      "current_database() AND schema_name = 'main' AND table_name = ? "
-                                      "ORDER BY column_index", [table]).fetchall()]
-
-
 def _composite_inputs(definition: CompositeDefinition) -> dict[str, Any]:
     return _clean({"universe_scope": rf.UNIVERSE_SCOPE_ALL_LINES, "level": definition.level,
                    "weighting": definition.weighting, "anomaly_class": definition.anomaly_class,
                    "members": [[m, w] for m, w, _, _ in definition.members]})
 
 
-def write_composite_version(store: ResearchStore, result: BuildForwardResult, constituent_version: str, *,
-                            batches: Iterable[tuple[np.ndarray, Mapping[str, pd.DataFrame], Any]] | None,
-                            security_ids: Sequence[str], formation_dates: Mapping[int, dt.date]) -> str:
-    """The constituent version plus the emitted composites, as one new R2b feature version.
+def _composite_feature(definition: CompositeDefinition, ledger_stamp: str) -> rf.DerivedFeature:
+    """The catalog row of one composite: class ``composite``, every variant, every eligible line."""
+    return rf.DerivedFeature(definition.composite_id, COMPOSITE_CLASS, COMPOSITE_CLASS, COMPOSITE_CLASS, 1,
+                             "rank_normal", inputs=_composite_inputs(definition),
+                             universe_scope=rf.UNIVERSE_SCOPE_ALL_LINES, variants=rf.VARIANTS,
+                             caveat_codes=(*COMPOSITE_CAVEATS, ledger_stamp), unvalued_reason=COMPOSITE_NOT_VALUED)
 
-    Every row of ``constituent_version`` is copied (the full candidate family, so one R3b
-    run grades composites within it: I1); ``batches`` are :func:`materialize` output on that
-    version's basis (None for an ``untestable_strict`` version: the composites are then
-    untestable too). Composites rank every eligible line with enough constituents
-    (``valid_primary_and_unlinked_lines``); each variant comes from R2b's standardization
-    under the version's policy and covariates (unlinked lines have none, so neutral
-    variants leave them out and are labeled ``survivor_conditioned_linked_only``). The
-    version passes :func:`atx_db.research.features.validate_feature_version`; its id is a
-    content hash and an identical sealed version is reused. The version's blockers carry
-    ``composite_post_selection:<ledger id>``.
+
+def _composite_rows(con: duckdb.DuckDBPyConnection, constituent_version: str,
+                    emitted: Sequence[CompositeDefinition],
+                    batches: Iterable[tuple[np.ndarray, Mapping[str, pd.DataFrame], Any]],
+                    security_ids: Sequence[str], formation_dates: Mapping[int, dt.date],
+                    standardization: rf.StandardizationPolicy, digests: Mapping[str, str]
+                    ) -> Iterator[rf.DerivedFeatureRows]:
+    """The writer's ``rows``: each composite's standardized rows, one batch of whole formations each.
+
+    Covariates are read from the *constituent's* ``research_feature_context`` (the derived
+    version's copy is identical); unlinked lines get none. After the last batch the
+    materialized values must reproduce the build's digests (inputs unchanged since
+    :func:`build_forward`), else :class:`CompositeError` (the writer marks the version failed).
     """
-    con = store.con
-    with store.transaction():
-        rf.ensure_feature_schema(con)
-    base = _constituent_version(con, constituent_version)
-    untestable = base["status"] == rf.STATUS_UNTESTABLE
-    if untestable != (batches is None):
-        raise CompositeError("composite batches are required exactly when the constituent version is sealed")
-    standardization = _standardization(base["spec"])
-    panel = base["panel_run_id"]
-    calendar = con.execute("SELECT formation_date, cutoff, eligible_members FROM research_panel_calendar "
-                           "WHERE run_id = ? AND status = ? ORDER BY formation_date", [panel, CALENDAR_FORMED]).fetchall()
-    formations = [row[0] for row in calendar]
-    eligible = {row[0]: int(row[2] or 0) for row in calendar}
-    lines: dict[dt.date, dict[str, int]] = {}
-    for day, basis_name, n in con.execute(f"""
-        SELECT k.formation_date, {rf._expected_owner_basis_sql("k")} AS owner, count(*) FROM research_panel_cohort k
-        WHERE k.run_id = ? GROUP BY ALL
-    """, [panel]).fetchall():
-        if basis_name is not None:
-            lines.setdefault(day, {})[str(basis_name)] = int(n)
-    emitted = sorted(result.emitted, key=lambda d: d.composite_id)
-    existing_ids = {r[0] for r in con.execute("SELECT feature_id FROM research_feature_catalog WHERE feature_version = ?",
-                                              [constituent_version]).fetchall()}
-    if existing_ids & {d.composite_id for d in emitted}:
-        raise CompositeError(f"{constituent_version} already has features named like the composites")
-    features = [*base["spec"].get("features", []),
-                *([d.composite_id, "planned", None, _composite_inputs(d), list(rf.VARIANTS)] for d in emitted)]
-    ledger_stamp = f"{POST_SELECTION_STAMP}:{result.ledger_id}"
-    spec = _clean({**base["spec"], "kind": COMPOSITE_CLASS, "composite_version": COMPOSITE_VERSION,
-                   "constituent_feature_version": constituent_version, "constituent_values_sha256": base["values_sha256"],
-                   "composite_policy": result.manifest["policy"], "build_sha256": result.sha256,
-                   "holdout_key": result.holdout_key, "post_selection": ledger_stamp,
-                   "orientation": dict(sorted(result.orientation.items())), "features": features})
-    spec_json = _canonical(spec)
-    inputs = {"constituent_version": constituent_version, "constituent_values_sha256": base["values_sha256"],
-              "build_sha256": result.sha256,
-              "composites": {c["composite_id"]: c["values_sha256"] for c in result.manifest["composites"]}}
-    spec_sha, code_sha, inputs_json = _sha(spec_json), code_sha256(), _canonical(inputs)
-    version = "cmp_" + _sha(_canonical({"spec_sha256": spec_sha, "inputs_sha256": _sha(inputs_json)}))[:40]
-    existing = con.execute("SELECT status FROM research_feature_versions WHERE feature_version = ?",
-                           [version]).fetchone()
-    if existing is not None and existing[0] in rf.SEALED_STATUSES:
-        return version
-    common = {"source_kind": COMPOSITE_CLASS, "anomaly_class": COMPOSITE_CLASS, "hypothesis_family": COMPOSITE_CLASS,
-              "expected_sign": 1, "orientation_sign": 1, "preferred_transform": "rank_normal",
-              "preferred_variant": "rank_normal", "domain": "none",
-              "caveat_codes": _canonical([*COMPOSITE_CAVEATS, ledger_stamp]), "admission": "eligible",
-              "is_control": False, "variants_json": _canonical(list(rf.VARIANTS)),
-              "universe_scope": rf.UNIVERSE_SCOPE_ALL_LINES}
-    digests = {c["composite_id"]: c["values_sha256"] for c in result.manifest["composites"]}
-    with store.transaction():
-        for table in ("research_feature_matrix", "research_feature_dates", "research_feature_owner_basis",
-                      "research_feature_context", "research_feature_catalog", "research_feature_versions"):
-            con.execute(f"DELETE FROM {table} WHERE feature_version = ?", [version])  # a failed earlier attempt
-        con.execute("""
-            INSERT INTO research_feature_versions (feature_version, status, basis, panel_run_id, panel_sha256,
-                classification_basis, query_version, universe_rule, spec_json, spec_sha256, code_sha256,
-                catalog_sha256, inputs_json, inputs_sha256, blockers_json, created_at)
-            VALUES (?, 'building', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?)
-        """, [version, base["basis"], panel, base["panel_sha256"], base["classification_basis"], rf.QUERY_VERSION,
-              rf.UNIVERSE_RULE, spec_json, spec_sha, code_sha, base["catalog_sha256"], inputs_json, _sha(inputs_json),
-              _now()])
-        for table in ("research_feature_matrix", "research_feature_dates", "research_feature_owner_basis",
-                      "research_feature_context", "research_feature_catalog"):
-            names = ", ".join(c for c in _columns(con, table) if c != "feature_version")
-            con.execute(f"INSERT INTO {table} (feature_version, {names}) SELECT ?, {names} FROM {table} "
-                        "WHERE feature_version = ?", [version, constituent_version])
-        if untestable:
-            rows = [{"feature_version": version, "formation_date": day, "feature_id": d.composite_id,
-                     "variant": variant, "date_status": rf.DATE_EMPTY, "eligible_members": eligible[day],
-                     "universe_names": 0, "valid_names": 0, "coverage_fraction": None, "candidate_names": 0,
-                     "in_domain_names": 0, "covariate_names": None, "covariate_coverage": None,
-                     "reasons_json": _canonical({}), "unlinked_excluded": None, "sample_conditioning": None}
-                    for d in emitted for day in formations for variant in rf.VARIANTS]
-            rf._insert_frame(con, "research_feature_dates", pd.DataFrame(rows, columns=list(rf._DATE_COLUMNS)),
-                             rf._DATE_CASTS)
-            _insert_catalog(con, version, emitted, common, rf.FEATURE_UNTESTABLE, "constituent_untestable_strict", {})
-            status = rf.STATUS_UNTESTABLE
-        else:
-            _write_composites(con, version, emitted, batches, security_ids, formation_dates, formations, eligible,
-                              lines, standardization, common, digests)
-            status = rf.STATUS_SEALED
-        conditioned = int(con.execute("SELECT count(*) FROM research_feature_dates WHERE feature_version = ? AND "
-                                      "sample_conditioning IS NOT NULL", [version]).fetchone()[0])
-        blockers = [b for b in base["blockers"] if not b.startswith(f"{rf.NEUTRAL_CONDITIONING_BLOCKER}:")]
-        blockers += ["composite_feature_version", ledger_stamp]
-        if conditioned:
-            blockers.append(f"{rf.NEUTRAL_CONDITIONING_BLOCKER}:{conditioned}")
-        values_sha, _, _ = rf._combined_digest(con, version, rf._context_digest(con, version, formations,
-                                                                                 rf._DIGEST_CHUNK))
-        con.execute("UPDATE research_feature_versions SET status = ?, values_sha256 = ?, blockers_json = ?, "
-                    "diagnostic_json = ?, finished_at = ? WHERE feature_version = ?",
-                    [status, values_sha, _canonical(sorted(set(blockers))),
-                     _canonical({"composites": [d.composite_id for d in emitted], "formations": len(formations),
-                                 "survivor_conditioned_date_rows": conditioned}), _now(), version])
-    return version
-
-
-def _insert_catalog(con: duckdb.DuckDBPyConnection, version: str, definitions: Sequence[CompositeDefinition],
-                    common: Mapping[str, Any], status: str, reason: str | None,
-                    extra: Mapping[str, Mapping[str, Any]]) -> None:
-    rows = []
-    for d in definitions:
-        item = {"feature_version": version, "feature_id": d.composite_id, **common,
-                "inputs_json": _canonical(_composite_inputs(d)), "status": status, "status_reason": reason,
-                "value_rows": None, "in_domain_rows": None, "reasons_json": None, "values_sha256": None,
-                **extra.get(d.composite_id, {})}
-        rows.append([item[name] for name in rf._CATALOG_COLUMNS])
-    con.executemany(f"INSERT INTO research_feature_catalog ({','.join(rf._CATALOG_COLUMNS)}) "
-                    f"VALUES ({','.join('?' * len(rf._CATALOG_COLUMNS))})", rows)
-
-
-def _write_composites(con: duckdb.DuckDBPyConnection, version: str, emitted: Sequence[CompositeDefinition],
-                      batches: Iterable[tuple[np.ndarray, Mapping[str, pd.DataFrame], Any]],
-                      security_ids: Sequence[str], formation_dates: Mapping[int, dt.date],
-                      formations: Sequence[dt.date], eligible: Mapping[dt.date, int],
-                      lines: Mapping[dt.date, Mapping[str, int]], standardization: rf.StandardizationPolicy,
-                      common: Mapping[str, Any], digests: Mapping[str, str]) -> None:
     ids = [d.composite_id for d in emitted]
-    stats: dict[str, dict[tuple[dt.date, str], dict[str, Any]]] = {cid: {} for cid in ids}
-    candidates: dict[str, dict[dt.date, int]] = {cid: {} for cid in ids}
-    owners: dict[str, dict[tuple[dt.date, str], tuple[Any, ...]]] = {cid: {} for cid in ids}
-    excluded: dict[str, dict[tuple[dt.date, str], int]] = {cid: {} for cid in ids}
-    totals = dict.fromkeys(ids, 0)
     check = {cid: hashlib.sha256() for cid in ids}
+    codes = np.asarray(list(security_ids), dtype=object)
     for _, frames, _ in batches:
         for cid in ids:
             frame = frames[cid]
@@ -1647,14 +1529,15 @@ def _write_composites(con: duckdb.DuckDBPyConnection, version: str, emitted: Seq
                 check[cid].update(np.ascontiguousarray(frame[column].to_numpy()).tobytes())
             if not len(frame):
                 continue
-            days = [formation_dates[int(m)] for m in frame["month_index"].to_numpy()]
+            months = frame["month_index"].to_numpy(dtype=np.int64)
+            day_of = {int(m): formation_dates[int(m)] for m in np.unique(months)}
             rows = pd.DataFrame({
-                "formation_date": days,
-                "security_id": [security_ids[int(code)] for code in frame["security"].to_numpy()],
+                "formation_date": [day_of[int(m)] for m in months],
+                "security_id": codes[frame["security"].to_numpy(dtype=np.int64)],
                 "owner_basis": np.where(frame["unlinked"].to_numpy(dtype=bool), rf.OWNER_BASIS_UNLINKED,
                                         rf.OWNER_BASIS_LINKED),
                 "raw_value": frame["value"].to_numpy(dtype=float),
-                "available_at": [pd.Timestamp(int(c), unit="us").to_pydatetime() for c in frame["clock_us"].to_numpy()]})
+                "available_at": frame["clock_us"].to_numpy(dtype=np.int64).astype("datetime64[us]")})
             con.register("_cmp_chunk", rows)
             try:
                 staged = con.execute("""
@@ -1665,64 +1548,60 @@ def _write_composites(con: duckdb.DuckDBPyConnection, version: str, emitted: Seq
                     LEFT JOIN research_feature_context x
                       ON x.feature_version = ? AND x.formation_date = r.formation_date AND x.security_id = r.security_id
                     ORDER BY r.formation_date, r.security_id
-                """, [rf.OWNER_BASIS_LINKED, rf.OWNER_BASIS_LINKED, version]).df()
+                """, [rf.OWNER_BASIS_LINKED, rf.OWNER_BASIS_LINKED, constituent_version]).df()
             finally:
                 con.unregister("_cmp_chunk")
-            standardized, part = standardize_composite(staged, cid, standardization)
-            stats[cid].update(part)
-            for day, n in standardized.groupby(pd.to_datetime(standardized["formation_date"]).dt.date).size().items():
-                candidates[cid][day] = int(n)
-            owners[cid].update(rf._owner_basis_stats(standardized))
-            excluded[cid].update(rf._unlinked_excluded(standardized, rf.VARIANTS))
-            totals[cid] += len(standardized)
-            matrix = pd.DataFrame({
-                "feature_version": version, "formation_date": standardized["formation_date"],
-                "security_id": standardized["security_id"], "feature_id": cid,
-                "owner_basis": standardized["owner_basis"], "expected_sign": 1,
-                "available_at": standardized["available_at"],
-                "raw_value": standardized["raw_value"].to_numpy(dtype=float), "domain_status": rf.IN_DOMAIN,
-                "age_days": None, **{v: standardized[v].to_numpy(dtype=float) for v in rf.VARIANTS}})
-            rf._insert_frame(con, "research_feature_matrix", matrix, rf._MATRIX_CASTS)
+            standardized, stats = standardize_composite(staged, cid, standardization)
+            yield rf.DerivedFeatureRows(cid, standardized, stats)
     for cid in ids:
         if check[cid].hexdigest() != digests.get(cid):
             raise CompositeError(f"{cid}: materialized values differ from the build's digest (inputs changed)")
-        date_rows, reasons_total = [], {}
-        for day in formations:
-            counts = lines.get(day, {})
-            names = counts.get(rf.OWNER_BASIS_LINKED, 0) + counts.get(rf.OWNER_BASIS_UNLINKED, 0)
-            members, valued = eligible.get(day, 0), candidates[cid].get(day, 0)
-            reasons = {key: n for key, n in (("in_domain", valued), ("composite_not_valued", names - valued),
-                                             ("not_a_ranked_line", members - names)) if n}
-            for key, n in reasons.items():
-                reasons_total[key] = reasons_total.get(key, 0) + n
-            for variant in rf.VARIANTS:
-                item = stats[cid].get((day, variant)) or {"date_status": rf.DATE_THIN, "valid_names": 0,
-                                                          "in_domain_names": 0, "covariate_names": None,
-                                                          "covariate_coverage": None}
-                left_out = excluded[cid].get((day, variant), 0)
-                date_rows.append({
-                    "feature_version": version, "formation_date": day, "feature_id": cid, "variant": variant,
-                    "date_status": item["date_status"], "eligible_members": members, "universe_names": names,
-                    "valid_names": int(item["valid_names"]),
-                    "coverage_fraction": (item["valid_names"] / names) if names else None, "candidate_names": valued,
-                    "in_domain_names": int(item["in_domain_names"]), "covariate_names": item["covariate_names"],
-                    "covariate_coverage": item["covariate_coverage"],
-                    "reasons_json": _canonical(dict(sorted(reasons.items()))), "unlinked_excluded": left_out,
-                    "sample_conditioning": rf.CONDITIONING_LINKED_ONLY
-                    if left_out and item["date_status"] == rf.DATE_FORMED else None})
-        rf._insert_frame(con, "research_feature_dates", pd.DataFrame(date_rows, columns=list(rf._DATE_COLUMNS)),
-                         rf._DATE_CASTS)
-        empty = (0, None, None, 0, None, None)
-        owner_rows = [[version, day, cid, owner, *owners[cid].get((day, owner), empty)]
-                      for day in formations for owner in rf.OWNER_BASES]
-        rf._insert_frame(con, "research_feature_owner_basis",
-                         pd.DataFrame(owner_rows, columns=list(rf._OWNER_BASIS_COLUMNS)).astype(
-                             {name: "float64" for name in rf._OWNER_MOMENTS}), rf._OWNER_BASIS_CASTS)
-        digest = rf._feature_digest(con, version, cid, formations, rf._DIGEST_CHUNK)
-        _insert_catalog(con, version, [d for d in emitted if d.composite_id == cid], common, rf.FEATURE_BUILT, None,
-                        {cid: {"value_rows": totals[cid], "in_domain_rows": totals[cid],
-                               "reasons_json": _canonical(dict(sorted(reasons_total.items()))),
-                               "values_sha256": digest}})
+
+
+def write_composite_version(store: ResearchStore, result: BuildForwardResult, constituent_version: str, *,
+                            batches: Iterable[tuple[np.ndarray, Mapping[str, pd.DataFrame], Any]] | None,
+                            security_ids: Sequence[str], formation_dates: Mapping[int, dt.date]) -> str:
+    """The constituent version plus the emitted composites, as one new R2b feature version.
+
+    Written by R2b's public :func:`atx_db.research.features.write_derived_feature_version`
+    (the one write path of R2b's own features: matrix, date and owner-basis rows, digests,
+    seal). Every row of ``constituent_version`` is copied (the full candidate family, so one
+    R3b run grades composites within it: I1), one transaction per feature; ``batches`` are
+    :func:`materialize` output on that version's basis, written one transaction per batch
+    and composite (None for an ``untestable_strict`` version: the composites are then
+    untestable too). Composites rank every eligible line with enough constituents
+    (``valid_primary_and_unlinked_lines``); each variant comes from R2b's standardization
+    under the version's policy and covariates (unlinked lines have none, so neutral
+    variants leave them out and are labeled ``survivor_conditioned_linked_only``). The
+    version passes :func:`atx_db.research.features.validate_feature_version`; its id is
+    ``cmp_`` + a content hash (spec and inputs; code is provenance) and an identical sealed
+    version is reused without reading ``batches``; a failed attempt resumes. The version's
+    blockers carry ``composite_feature_version`` and ``composite_post_selection:<ledger id>``.
+    """
+    con = store.con
+    emitted = sorted(result.emitted, key=lambda d: d.composite_id)
+    if not emitted:
+        raise CompositeError(f"build {result.sha256} emitted no composite: there is no composite version to write")
+    with store.transaction():
+        rf.ensure_feature_schema(con)
+    base = _constituent_version(con, constituent_version)
+    if (base["status"] == rf.STATUS_UNTESTABLE) != (batches is None):
+        raise CompositeError("composite batches are required exactly when the constituent version is sealed")
+    ledger_stamp = f"{POST_SELECTION_STAMP}:{result.ledger_id}"
+    digests = {c["composite_id"]: c["values_sha256"] for c in result.manifest["composites"]}
+    spec = rf.DerivedVersionSpec(
+        constituent_version, COMPOSITE_CLASS, tuple(_composite_feature(d, ledger_stamp) for d in emitted),
+        spec=_clean({"composite_version": COMPOSITE_VERSION, "composite_policy": result.manifest["policy"],
+                     "build_sha256": result.sha256, "holdout_key": result.holdout_key, "post_selection": ledger_stamp,
+                     "orientation": dict(sorted(result.orientation.items()))}),
+        inputs={"build_sha256": result.sha256, "composites": digests},
+        blockers=("composite_feature_version", ledger_stamp),
+        diagnostic={"composites": [d.composite_id for d in emitted]}, code_sha256=code_sha256(),
+        version_prefix="cmp_")
+    rows = None if batches is None else _composite_rows(
+        con, constituent_version, emitted, batches, security_ids, formation_dates, _standardization(base["spec"]),
+        digests)
+    return rf.write_derived_feature_version(con, spec=spec, rows=rows)
 
 
 # ---------------------------------------------------------------------------
@@ -1739,7 +1618,12 @@ def run_build_forward(store: ResearchStore, ledger_id: str, *, factor_run_id: st
     stores the build (one evaluation per split and basis), writes one composite version
     per basis (the source version plus the composites) and runs one R3b evaluation of them
     with the source run's spec. :func:`qualify_composites` then grades that run with R4.
+    Refused before anything is written when the committed anomaly catalog changed since the
+    source versions were built: R3b would stamp the composite run with catalog drift, R4
+    refuses to grade such a run, and the one holdout look would be spent for nothing.
     """
+    from .catalog import anomaly_catalog_sha256
+
     policy = policy or load_composite_policy()
     con = store.con
     ledger = load_ledger(con, ledger_id)
@@ -1757,12 +1641,17 @@ def run_build_forward(store: ResearchStore, ledger_id: str, *, factor_run_id: st
     if policy.basis not in bases:
         raise CompositeError(f"the source run has no {policy.basis} feature version")
 
+    committed = anomaly_catalog_sha256()
     for basis, version in bases.items():
-        status = con.execute("SELECT status FROM research_feature_versions WHERE feature_version = ?",
-                             [version]).fetchone()[0]
+        status, catalog_sha = con.execute("SELECT status, catalog_sha256 FROM research_feature_versions "
+                                          "WHERE feature_version = ?", [version]).fetchone()
         if basis != policy.basis and status != rf.STATUS_UNTESTABLE:
             raise CompositeError(f"composites on a second testable basis ({basis}) need their own build: v2 builds "
                                  f"on {policy.basis} (the strict basis is untestable today)")
+        if catalog_sha is not None and catalog_sha != committed:
+            raise CompositeError(f"{version} was built from anomaly catalog {catalog_sha}, the committed catalog is "
+                                 f"now {committed}: R4 would refuse to grade the composite run (catalog drift), so "
+                                 "the holdout is not looked at; rebuild the source run on the committed catalog")
     inputs = ev.open_basis_inputs(store, bases[policy.basis], source_spec)
     # R3b's security codes, read right away (the next basis open re-registers R3b's key tables).
     security_ids = [str(r[0]) for r in con.execute("SELECT security_id FROM _ev_securities ORDER BY code").fetchall()]
@@ -1783,6 +1672,10 @@ def run_build_forward(store: ResearchStore, ledger_id: str, *, factor_run_id: st
         return {"ledger_id": ledger_id, "holdout_key": result.holdout_key, "build": outcome,
                 "build_sha256": result.sha256, "composite_versions": json.loads(stored[1]),
                 "holdout_run_id": stored[0], "evaluated": False}
+    if not result.emitted:  # nothing to evaluate: the holdout is not looked at (the build stays replaceable)
+        return {"ledger_id": ledger_id, "holdout_key": result.holdout_key, "build": outcome,
+                "build_sha256": result.sha256, "composite_versions": [], "holdout_run_id": None,
+                "evaluated": False, "blockers": list(result.manifest["blockers"])}
     versions = []
     for basis, version in sorted(bases.items()):
         if basis == policy.basis:
@@ -1920,6 +1813,7 @@ def render_composites_markdown(policy: CompositePolicy, result: BuildForwardResu
 
 __all__ = [
     "COMPOSITE_CLASS",
+    "COMPOSITE_NOT_VALUED",
     "COMPOSITE_VERSION",
     "DUPLICATE_PREFIX",
     "FROZEN_POLICY_SHA256",
