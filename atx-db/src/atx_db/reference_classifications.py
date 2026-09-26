@@ -1655,6 +1655,8 @@ CLASSIFICATION_MAPPING_VERSIONS: dict[str, str] = {
     "NAICS_2022": NAICS_MAPPING_VERSION,
 }
 _OWNER_CIK_PATTERN = "CIK-([0-9]{1,10})$"
+# entity_classification lineage columns added by migration 0328 (written when present).
+CLASSIFICATION_LINEAGE_COLUMNS = ("classification_basis", "mapping_version")
 
 
 @dataclass(frozen=True)
@@ -1690,6 +1692,15 @@ def _has_table(store: DuckDBStore, table: str) -> bool:
         "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]
     ).fetchone()
     return bool(row and row[0])
+
+
+def _has_columns(store: DuckDBStore, table: str, columns: Iterable[str]) -> bool:
+    present = {str(row[0]) for row in store.con.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_catalog = current_database() AND table_schema = current_schema() AND table_name = ?",
+        [table],
+    ).fetchall()}
+    return set(columns) <= present
 
 
 def classification_targets(store: DuckDBStore) -> pd.DataFrame:
@@ -1958,16 +1969,21 @@ def refresh_entity_classification_snapshot(
             GROUP BY t.code
         """).fetchall()
     }
-    con.execute("""
+    # 0328 lineage columns, written when present: the row's basis and, for derived rows, the
+    # SIC-to-taxonomy mapping version (NULL for SIC rows). A pre-0328 table keeps its shape.
+    lineage = _has_columns(store, "entity_classification", CLASSIFICATION_LINEAGE_COLUMNS)
+    con.execute(f"""
         INSERT INTO entity_classification
             (classification_id, security_id, taxonomy_id, node_id, node_code, is_primary,
-             valid_from, valid_to, as_of_date, available_at, run_id, source)
+             valid_from, valid_to, as_of_date, available_at, run_id, source
+             {", classification_basis, mapping_version" if lineage else ""})
         SELECT p.classification_id, p.security_id, p.taxonomy_id, p.node_id, p.node_code, p.is_primary,
-               ?, NULL, ?, ?, ?, p.source
+               ?, NULL, ?, ?, ?, p.source {", ?, p.mapping_version" if lineage else ""}
         FROM _ec_plan p
         WHERE NOT p.close_only AND NOT p.newer_open AND NOT p.same_open
           AND NOT EXISTS (SELECT 1 FROM entity_classification e WHERE e.classification_id = p.classification_id)
-    """, [snap, snap, snapshot.received_at, run_id])
+    """, [snap, snap, snapshot.received_at, run_id,
+          *((CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT,) if lineage else ())])
     open_counts = dict(con.execute("""
         SELECT t.code, count(DISTINCT e.security_id)
         FROM entity_classification e JOIN taxonomy t ON t.taxonomy_id = e.taxonomy_id

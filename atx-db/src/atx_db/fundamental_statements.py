@@ -36,6 +36,8 @@ RDQ_BASIS_ACCEPTANCE = "acceptance_date_implausible_report"
 RDQ_BASIS_FILING = "filing_date_implausible_report"
 RDQ_BASIS_NO_REPORT_DATE = "filing_date_no_report_date"
 RDQ_BASES = (RDQ_BASIS_REPORTED, RDQ_BASIS_ACCEPTANCE, RDQ_BASIS_FILING, RDQ_BASIS_NO_REPORT_DATE)
+# fundamental_periods lineage columns added by migration 0328 (written when present).
+RDQ_LINEAGE_COLUMNS = ("rdq_basis", "rdq_available_at", "rdq_accession_number")
 
 
 def __getattr__(name: str) -> object:
@@ -1288,6 +1290,14 @@ def refresh_fundamental_statement_points(
     return int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
 
 
+def _has_column(store: DuckDBStore, table: str, column: str) -> bool:
+    return bool(store.con.execute(
+        "SELECT count(*) FROM information_schema.columns "
+        "WHERE table_catalog=current_database() AND table_schema=current_schema() "
+        "AND table_name=? AND column_name=?",
+        [table, column]).fetchone()[0])
+
+
 def _rdq_clock_inputs(store: DuckDBStore) -> tuple[str, str, list[str]]:
     """The raw acceptance-stamp expression and the observed session relation for rdq.
 
@@ -1297,9 +1307,7 @@ def _rdq_clock_inputs(store: DuckDBStore) -> tuple[str, str, list[str]]:
     from .delisting import _TRADING_CALENDAR_ID, _TRADING_CALENDAR_SOURCE
 
     def exists(table: str, column: str) -> bool:
-        return bool(store.con.execute(
-            "SELECT count(*) FROM information_schema.columns WHERE table_name=? AND column_name=?",
-            [table, column]).fetchone()[0])
+        return _has_column(store, table, column)
 
     raw = "acceptance_datetime_raw" if exists("sec_submissions", "acceptance_datetime_raw") \
         else "CAST(NULL AS VARCHAR)"
@@ -1319,12 +1327,15 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
     report date is not the release date (some filers enter the fiscal period end) and the
     date comes from the acceptance (America/New_York), or the 8-K filing date without a
     usable clock -- the ``research.events`` rule (P3). The candidate's report date must lie
-    in ``[period_end, fdate]`` and its effective date on or before ``fdate``. The basis
-    (:data:`RDQ_BASES`) and the acceptance clock are computed but not stored: that needs
-    a migration adding ``rdq_basis`` / ``rdq_available_at`` columns.
+    in ``[period_end, fdate]`` and its effective date on or before ``fdate``. Its lineage --
+    ``rdq_basis`` (:data:`RDQ_BASES`), ``rdq_available_at`` (the 8-K acceptance; rdq is never
+    known before it) and ``rdq_accession_number`` -- is stored when the table carries the
+    0328 columns (NULL when no 8-K matched); a pre-0328 table keeps its old shape.
     """
 
     raw_clock, sessions_sql, params = _rdq_clock_inputs(store)
+    lineage = all(_has_column(store, "fundamental_periods", column) for column in RDQ_LINEAGE_COLUMNS)
+    lineage_columns = "".join(f",\n                {column}" for column in RDQ_LINEAGE_COLUMNS) if lineage else ""
     with fundamental_publication(store, ("fundamental_periods",)):
         store.con.execute(
             f"""
@@ -1369,7 +1380,7 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                 is_latest_revision,
                 first_available_at,
                 latest_available_at,
-                source_loaded_at
+                source_loaded_at{lineage_columns}
             )
             WITH grouped_base AS (
                 SELECT
@@ -1551,9 +1562,9 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                     grouped_base.*,
                     rdq.rdq,
                     rdq.rdq AS pdate,
-                    -- Carried for a 0328 column (no fundamental_periods column yet).
                     rdq.rdq_basis,
-                    rdq.rdq_available_at
+                    rdq.rdq_available_at,
+                    rdq.rdq_accession_number
                 FROM grouped_base
                 LEFT JOIN LATERAL (
                     SELECT
@@ -1632,7 +1643,7 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                 revision_sequence = revision_count AS is_latest_revision,
                 first_available_at,
                 latest_available_at,
-                source_loaded_at
+                source_loaded_at{lineage_columns}
             FROM sequenced
             """,
             params,
