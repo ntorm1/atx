@@ -2,8 +2,10 @@
 #include "strategy_ic_composition.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -76,6 +78,7 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true) {
       {"scope","IC-and-planned-weight-change-only;no-costs-trades-NAV-Sharpe-or-holdout"}};
   if (cfg.workers!=1) recipe["vm_workers"]=cfg.workers;
   if (parallel_ic && cfg.workers!=1) recipe["research_ic_workers"]=cfg.workers;
+  if (cfg.save_combined) recipe["saved_combined"]="date-major-f64-with-explicit-support-v1";
   return recipe;
 }
 struct FrozenTrain { Json artifact,recipe; std::vector<int> signs; std::string recipe_sha; };
@@ -100,6 +103,7 @@ co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& li
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN resource bounds");
   auto source_cfg=cfg; source_cfg.max_working_bytes=static_cast<u64>(source_bytes);
   source_cfg.workers=static_cast<usize>(source_workers);
+  source_cfg.save_combined=recipe.contains("saved_combined");
   // Earlier completed TRAIN artifacts used parallel VM but serial IC. Absence
   // means precisely that original execution path, not unknown numerical policy.
   auto expected=method_recipe(source_cfg,recipe.contains("research_ic_workers"));
@@ -147,6 +151,79 @@ co::Status write_json(const std::filesystem::path& path,const Json& j) {
   std::ofstream out(path,std::ios::binary); if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: JSON output");
   out<<j.dump(2)<<'\n'; out.close();
   return out?co::Ok():co::Status(co::Err(co::ErrorCode::IoError,"IC runner: JSON final close"));
+}
+co::Result<Json> binary_receipt(const std::filesystem::path& path,u64 bytes) {
+  ATX_TRY(auto sha,co::sha256_file(path.string()));
+  return co::Ok(Json{{"bytes",bytes},{"sha256",sha}});
+}
+co::Result<Json> save_bytes(const std::filesystem::path& path,std::span<const std::byte> bytes) {
+  std::ofstream out(path,std::ios::binary);
+  if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: combined payload output");
+  constexpr usize chunk=1U<<20;
+  for (usize offset=0;offset<bytes.size();) {
+    const auto count=std::min(chunk,bytes.size()-offset);
+    out.write(reinterpret_cast<const char*>(bytes.data()+offset),static_cast<std::streamsize>(count));
+    if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: combined payload write");
+    offset+=count;
+  }
+  out.close(); if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: combined payload close");
+  return binary_receipt(path,bytes.size());
+}
+co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& spec,
+    const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
+    const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin) {
+  if constexpr (std::endian::native!=std::endian::little)
+    return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
+  const auto cells=role.panel.dates()*role.panel.instruments();
+  if (signal.size()!=cells || member.size()!=cells || orientations.empty())
+    return co::Err(co::ErrorCode::Internal,"IC runner: combined artifact geometry/orientations");
+  const auto dir=std::filesystem::path(cfg.output_directory); const auto prefix=spec.name+"_combined";
+  Json files;
+  const auto store=[&](const std::string& suffix,std::span<const std::byte> bytes)->co::Status {
+    const auto name=prefix+suffix; ATX_TRY(auto receipt,save_bytes(dir/name,bytes));
+    files[name]=std::move(receipt); return co::Ok();
+  };
+  ATX_TRY_VOID(store(".f64",std::as_bytes(signal)));
+  ATX_TRY_VOID(store("_member.u8",std::as_bytes(member)));
+  ATX_TRY_VOID(store("_sessions.i64",std::as_bytes(std::span<const i64>(role.session_keys))));
+  ATX_TRY_VOID(store("_ids.u64",std::as_bytes(std::span<const u64>(role.instrument_ids))));
+  // Fixed-size scratch only; do not duplicate the dense signal or its masks.
+  const auto finite_name=prefix+"_finite.u8";
+  std::ofstream finite(dir/finite_name,std::ios::binary);
+  if (!finite) return co::Err(co::ErrorCode::IoError,"IC runner: combined finite-mask output");
+  std::array<u8,65536> chunk{}; u64 finite_cells=0,member_cells=0;
+  for (usize offset=0;offset<cells;) {
+    const auto count=std::min(chunk.size(),cells-offset);
+    for (usize j=0;j<count;++j) {
+      const auto k=offset+j;
+      chunk[j]=static_cast<u8>(std::isfinite(signal[k]));
+      if (member[k]>1 || (!member[k] && chunk[j]))
+        return co::Err(co::ErrorCode::Internal,"IC runner: combined support invariant");
+      finite_cells+=chunk[j]; member_cells+=member[k];
+    }
+    finite.write(reinterpret_cast<const char*>(chunk.data()),static_cast<std::streamsize>(count));
+    if (!finite) return co::Err(co::ErrorCode::IoError,"IC runner: combined finite-mask write");
+    offset+=count;
+  }
+  finite.close(); if (!finite) return co::Err(co::ErrorCode::IoError,"IC runner: combined finite-mask close");
+  ATX_TRY(auto finite_file,binary_receipt(dir/finite_name,cells)); files[finite_name]=std::move(finite_file);
+  ATX_TRY(auto orientation_sha,co::sha256_hex(orientations.dump()));
+  Json manifest{{"schema","atx.dsl-combined-signal/v1"},{"status","complete"},{"role",spec.name},
+      {"layout","date-major-little-endian"},{"dates",role.panel.dates()},{"instruments",role.panel.instruments()},
+      {"score_begin",role.score_begin},{"score_end",role.score_end},{"role_manifest_sha256",spec.sha},
+      {"source_sha256",role.source_sha256},{"library_sha256",cfg.library_sha256},
+      {"train_manifest_sha256",cfg.train_sha256},{"run_recipe_sha256",recipe_sha},
+      {"orientation_candidates_sha256",orientation_sha},
+      {"orientations_artifact_sha256",orientation_pin.empty()?Json(nullptr):Json(orientation_pin)},
+      {"signal_semantics","exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator"},
+      {"member_semantics","decision-member-and-source-present-and-finite-positive-close;independent-of-component-coverage"},
+      {"finite_semantics","one-iff-saved-f64-is-finite;nonmembers-NaN;zero-is-valid-neutral-signal"},
+      {"axes_semantics","exact-ordered-role-sessions-and-instrument-IDs;no-static-broadcast"},
+      {"role_window_required",true},{"finite_cells",finite_cells},{"member_cells",member_cells},
+      {"files",std::move(files)},{"actual_trades_or_returns",false}};
+  const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
+  ATX_TRY(auto pin,co::sha256_file((dir/name).string()));
+  return co::Ok(Json{{"manifest",name},{"manifest_sha256",pin},{"orientation_candidates_sha256",orientation_sha}});
 }
 bool composition_id(std::string_view s) {
   return !s.empty() && s.size()<=64 && std::all_of(s.begin(),s.end(),[](char c) {
@@ -289,7 +366,8 @@ void series(std::ofstream& out,std::string_view id,const engine::data::StrategyR
   }
 }
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
-    std::vector<int>& signs,Json& frozen,std::ostream& progress) {
+    std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,
+    const std::string& orientation_pin,std::ostream& progress) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY(auto role,engine::data::read_strategy_role(spec.path,cfg.max_working_bytes));
@@ -404,8 +482,14 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
            <<combined.contribution_fraction[d]<<','<<combined.eligible_names[d]<<'\n';
   targets.close(); daily.close(); ledger.close();
   if (!targets || !daily || !ledger) return co::Err(co::ErrorCode::IoError,"IC runner: final output close");
+  Json saved; f64 save_seconds=0;
+  if (cfg.save_combined) {
+    const auto save_started=std::chrono::steady_clock::now();
+    ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined.signal,effective,frozen,recipe_sha,orientation_pin));
+    save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
+  }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
-  return co::Ok(Json{{"role",spec.name},{"manifest_sha256",spec.sha},{"source_sha256",role.source_sha256},
+  Json result{{"role",spec.name},{"manifest_sha256",spec.sha},{"source_sha256",role.source_sha256},
       {"dates",role.panel.dates()},{"instruments",role.panel.instruments()},
       {"score_begin",role.score_begin},{"score_end",role.score_end}, {"wall_seconds",seconds},
       {"admitted_working_bytes",spec.bytes},{"ic_cache_bytes",cache.bytes()},{"ic_scratch_bytes",scratch.bytes()},
@@ -415,7 +499,12 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       {"candidates",std::move(summaries)},{"combined_ic",result_json(combined_ic,1)},
       {"planned_target_proxy",{{"total_turnover",combined.total_planned_turnover},
           {"deployment_turnover",combined.deployment_turnover},{"deployment_date",combined.deployment_date},
-          {"initial_deployment_included",true},{"actual_trades_or_costs",false}}}});
+          {"initial_deployment_included",true},{"actual_trades_or_costs",false}}}};
+  if (cfg.save_combined) {
+    result["combined_artifact"]=std::move(saved);
+    result["stage_seconds"]["save_combined"]=save_seconds;
+  }
+  return co::Ok(std::move(result));
 }
 } // namespace
 co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
@@ -474,6 +563,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     std::vector<int> signs; Json orientations=Json::array();
     if (validation_only) {
       signs=std::move(recovered.signs);
+      orientations=recovered.artifact.at("candidates");
       report["run_mode"]="validation-only-frozen-TRAIN";
       report["train_manifest_sha256"]=cfg.train_sha256;
       report["train_recipe_sha256"]=recovered.recipe_sha;
@@ -484,7 +574,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
-      auto scored=score_role(cfg,lib,role,signs,orientations,progress);
+      auto scored=score_role(cfg,lib,role,signs,orientations,recipe_sha,
+          report.value("orientations_artifact_sha256",std::string{}),progress);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());
@@ -515,9 +606,10 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
     for (int i=1;i<argc;++i) {
       const std::string key=argv[i];
       if (key=="--plan-only") { cfg.plan_only=true; continue; }
+      if (key=="--save-combined") { cfg.save_combined=true; continue; }
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
-               "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA]\n";
+               "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA]\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");
