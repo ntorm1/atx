@@ -181,7 +181,7 @@ public:
   // a non-SPD F, or K exceeding the risk() stack-buffer bound.
   [[nodiscard]] static atx::core::Result<FactorModel>
   create(atx::core::linalg::MatX x, atx::core::linalg::MatX f, atx::core::linalg::VecX d,
-         atx::usize fit_begin, atx::usize fit_end);
+         atx::usize fit_begin, atx::usize fit_end, RiskEstimatorDiagnostics diagnostics = {});
 
   // Value semantics, preserved EXACTLY from the pre-split (header-only) class: the
   // old FactorModel held Eigen members by value and was copyable. The pimpl keeps
@@ -235,6 +235,7 @@ public:
 
   [[nodiscard]] atx::usize fit_begin() const noexcept;
   [[nodiscard]] atx::usize fit_end() const noexcept;
+  [[nodiscard]] const RiskEstimatorDiagnostics& estimator_diagnostics() const noexcept;
 
   // Max K we materialize the risk() g-buffer for on the stack. K is the factor count
   // (sector dummies + ≤5 style factors); 256 is far above any realistic factor block
@@ -347,6 +348,7 @@ struct FactorComponents {
   atx::core::linalg::MatX F; // K×K factor covariance (Ledoit-Wolf shrunk, SPD)
   atx::core::linalg::VecX D; // M specific (idiosyncratic) variances
   atx::usize fit_end;        // the fit window upper bound (== window)
+  RiskEstimatorDiagnostics diagnostics{};
 };
 
 // ===========================================================================
@@ -362,6 +364,8 @@ struct FactorComponents {
 class FactorModelBuilder {
 public:
   FactorModelConfig cfg;
+  // Borrowed only for the build call. Actual prior forecast records, never a final-fit proxy.
+  const RiskVraEvidence* prior_forecasts{nullptr};
 
   // Estimate (X, F, D) over the trailing `window` cross-sections and assemble the
   // FactorModel. THIN WRAPPER (§0.3): runs build_components then FactorModel::create
@@ -412,7 +416,8 @@ private:
   run_passes(const PanelView &panel, atx::usize window, const PitSideInputs &side,
              ExposureMatrix &x0, atx::core::linalg::MatX &fseries,
              std::vector<std::vector<atx::f64>> &u_by_inst, std::vector<atx::usize> &dates,
-             std::vector<atx::usize> &missing) const;
+             std::vector<atx::usize> &missing,
+             atx::core::linalg::MatX* dated_residuals = nullptr) const;
 
   // ε floor for the bootstrap weights so 1/d0_i is finite for a zero-residual
   // instrument (a date with M_s==K fits exactly -> 0 OLS residual). Far below any
@@ -441,7 +446,8 @@ private:
   accumulate_wls(const PanelView &panel, atx::usize window, const PitSideInputs &side,
                  const ExposureMatrix &x0, const atx::core::linalg::VecX &d0,
                  atx::core::linalg::MatX &fseries, std::vector<std::vector<atx::f64>> &u_by_inst,
-                 std::vector<atx::usize> &dates, std::vector<atx::usize> &missing) const;
+                 std::vector<atx::usize> &dates, std::vector<atx::usize> &missing,
+             atx::core::linalg::MatX* dated_residuals = nullptr) const;
 
   // Pass B (ROBUST, S8.1; opt-in) — √-cap / inverse-specific-variance prior composed
   // with the Huber IRLS kernel (fixed cfg.cov.robust_iters steps, tol=0). Body in the
@@ -451,7 +457,8 @@ private:
                     const ExposureMatrix &x0, const atx::core::linalg::VecX &d0,
                     atx::core::linalg::MatX &fseries,
                     std::vector<std::vector<atx::f64>> &u_by_inst, std::vector<atx::usize> &dates,
-                    std::vector<atx::usize> &missing) const;
+                    std::vector<atx::usize> &missing,
+             atx::core::linalg::MatX* dated_residuals = nullptr) const;
 
   // Specific (idiosyncratic) variances D over the current cross-section. EXHAUSTIVE
   // dispatch on cfg.cov.specific_method (PopVariance default = P4 byte-identical;

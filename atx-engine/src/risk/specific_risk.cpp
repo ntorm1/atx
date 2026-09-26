@@ -1,4 +1,6 @@
 #include "atx/engine/risk/specific_risk.hpp"
+#include "atx/engine/risk/eigen_adjust.hpp"
+#include "atx/engine/risk/vol_regime.hpp"
 
 #include <numeric>
 
@@ -144,4 +146,66 @@ atx::core::Result<SpecificRiskV2> specific_risk_v2(
   }
   return co::Ok(std::move(out));
 }
+atx::core::Result<CleanRiskEstimatesV2> clean_risk_estimates_v2(
+    const atx::core::linalg::MatX& returns, const atx::core::linalg::MatX& residuals,
+    const atx::core::linalg::MatX& exposures,
+    std::span<const atx::f64> caps, std::span<const atx::usize> ages,
+    const RiskEstimatorPolicy& p, const RiskVraEvidence* prior) {
+  namespace co = atx::core;
+  if (p.rule != RiskEstimatorRule::EffectiveHistoryV2 ||
+      (p.missing_prior != MissingPriorForecastRule::RequireObservedV1 &&
+       p.missing_prior != MissingPriorForecastRule::LeaveUnadjustedUnverifiedV2) ||
+      returns.rows() != residuals.rows() || returns.cols() != exposures.cols() ||
+      !exposures.allFinite())
+    return co::Err(co::ErrorCode::InvalidArgument, "risk V2: invalid policy/axis/exposure");
+  ATX_TRY(auto covariance, ewma_factor_covariance_v2(returns, ages, p.vol_halflife,
+      p.correlation_halflife, p.factor_nw_lags, p.nw_halflife, p.max_working_bytes));
+  const auto effective = *std::min_element(covariance.effective_observations.begin(),
+                                           covariance.effective_observations.end());
+  ATX_TRY(auto adjusted, eigen_adjust_v2(covariance.covariance, effective,
+      p.eigen_simulations, p.eigen_amplification, p.eigen_seed, p.max_working_bytes));
+  SpecificRiskConfigV2 sc{p.specific_halflife, p.specific_nw_lags, p.nw_halflife,
+      p.structural_min_observations, p.bayesian_q, p.variance_floor, p.max_working_bytes};
+  ATX_TRY(auto specific, specific_risk_v2(residuals, exposures, caps, ages, sc));
+  RiskEstimatorDiagnostics diag;
+  diag.recipe = risk_estimator_recipe(p);
+  diag.effective_observations = effective;
+  diag.simulated_observations = adjusted.simulated_observations;
+  diag.structural_exposure_model_fitted = specific.exposure_model_fitted;
+  diag.structural_fallback_assets = static_cast<atx::usize>(std::count(
+      specific.structural_fallback.begin(), specific.structural_fallback.end(), atx::u8{1}));
+  diag.factor_vra = diag.specific_vra = PriorAdjustmentStatus::UnavailableUnverified;
+  if (prior != nullptr) {
+    if (prior->identity.empty() || prior->factor.realized.cols() != returns.cols() ||
+        prior->specific.realized.cols() != residuals.cols() ||
+        prior->specific.forecasts.weights.size() == 0)
+      return co::Err(co::ErrorCode::InvalidArgument, "risk V2: prior forecast identity/axis/cap weights missing");
+    diag.evidence_identity = prior->identity;
+    ATX_TRY(auto f, vol_regime_multiplier_v2(prior->factor.realized,
+        prior->factor.forecasts, prior->factor.session_ages, p.vra_halflife,
+        p.structural_min_observations, p.max_working_bytes));
+    ATX_TRY(auto d, vol_regime_multiplier_v2(prior->specific.realized,
+        prior->specific.forecasts, prior->specific.session_ages, p.vra_halflife,
+        p.structural_min_observations, p.max_working_bytes));
+    if (f.available) {
+      diag.factor_vra = PriorAdjustmentStatus::ObservedPriorV2;
+      diag.factor_lambda2 = f.lambda2;
+    }
+    if (d.available) {
+      diag.specific_vra = PriorAdjustmentStatus::ObservedPriorV2;
+      diag.specific_lambda2 = d.lambda2;
+    }
+  }
+  if (p.missing_prior == MissingPriorForecastRule::RequireObservedV1 &&
+      (diag.factor_vra != PriorAdjustmentStatus::ObservedPriorV2 ||
+       diag.specific_vra != PriorAdjustmentStatus::ObservedPriorV2))
+    return co::Err(co::ErrorCode::InvalidArgument, "risk V2: observed prior forecast adjustment unavailable");
+  adjusted.covariance *= diag.factor_lambda2;
+  specific.variances *= diag.specific_lambda2;
+  if (!adjusted.covariance.allFinite() || !specific.variances.allFinite())
+    return co::Err(co::ErrorCode::OutOfRange, "risk V2: regime scaling overflow");
+  return co::Ok(CleanRiskEstimatesV2{std::move(adjusted.covariance),
+      std::move(specific.variances), std::move(diag)});
+}
+
 } // namespace atx::engine::risk

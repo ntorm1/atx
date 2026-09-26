@@ -51,6 +51,7 @@
 #include <cmath>   // std::sqrt
 #include <utility> // std::move
 #include <span>
+#include <string>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -68,6 +69,18 @@ struct PriorVarianceForecasts {
   // strictly greater than that row's age. max(usize) explicitly means unknown.
   std::vector<atx::usize> available_ages;
   atx::core::linalg::MatX weights; // optional T x K known-prior cross-section weights
+};
+
+// Realizations use the recorded forecasts' factor/asset coordinates, never a
+// retrospectively refit APCA basis. specific.forecasts.weights are prior caps.
+struct PriorRiskRealizations {
+  atx::core::linalg::MatX realized;
+  PriorVarianceForecasts forecasts;
+  std::vector<atx::usize> session_ages;
+};
+struct RiskVraEvidence {
+  PriorRiskRealizations factor, specific;
+  std::string identity; // caller-bound source + stable axis/forecast recipe digest
 };
 
 struct RegimeAdjustV2 {

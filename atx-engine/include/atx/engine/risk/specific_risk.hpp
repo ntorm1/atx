@@ -62,6 +62,7 @@
 
 #include <Eigen/Dense>
 
+#include "atx/engine/risk/estimator_policy.hpp"
 #include "atx/core/types.hpp" // f64, usize
 #include "atx/core/error.hpp"
 
@@ -71,6 +72,20 @@
 #include "atx/engine/risk/exposures.hpp" // ExposureMatrix
 
 namespace atx::engine::risk {
+
+struct CleanRiskEstimatesV2 {
+  atx::core::linalg::MatX factor_covariance;
+  atx::core::linalg::VecX specific_variances;
+  RiskEstimatorDiagnostics diagnostics;
+};
+// Shared explicit V2 consumer boundary. Returns/residuals share the same actual
+// session clock. Prior VRA evidence is independent of retrospective fitting.
+[[nodiscard]] atx::core::Result<CleanRiskEstimatesV2> clean_risk_estimates_v2(
+    const atx::core::linalg::MatX& factor_returns,
+    const atx::core::linalg::MatX& residuals,
+    const atx::core::linalg::MatX& exposures,
+    std::span<const atx::f64> market_caps, std::span<const atx::usize> session_ages,
+    const RiskEstimatorPolicy& policy, const RiskVraEvidence* prior = nullptr);
 
 struct SpecificRiskConfigV2 {
   atx::usize half_life{84};

@@ -95,6 +95,7 @@
 #include "atx/core/linalg/linalg.hpp" // MatX (column-major Eigen), VecX
 
 #include "atx/engine/loop/panel_types.hpp" // PanelView
+#include "atx/engine/risk/estimator_policy.hpp"
 #include "atx/engine/risk/fwd.hpp"         // StyleFactor / FactorModelConfig fwd decls
 
 namespace atx::engine::risk {
@@ -233,6 +234,7 @@ struct CovarianceConfig {
   // D_i >= frac · median(D) for EVERY name (V2), on both the fundamental and the
   // statistical (APCA) builder. Clamped to [0, 1]; non-finite ⇒ InvalidArgument.
   atx::f64 specific_floor_frac = 0.1;
+  RiskEstimatorPolicy estimator{}; // LegacyV1 by default; V2 supersedes old cleaning knobs.
 };
 
 struct FactorModelConfig {

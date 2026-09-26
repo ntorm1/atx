@@ -46,6 +46,27 @@ struct RiskEstimatorPolicy {
   return out;
 }
 
+struct RiskVraEvidence; // explicit historical forecasts, defined in vol_regime.hpp
+
+enum class PriorAdjustmentStatus : atx::u8 {
+  LegacyUnspecified = 0, ObservedPriorV2 = 1, UnavailableUnverified = 2
+};
+
+// Travels with model components AND the assembled model. Availability is not a
+// claim of empirical calibration. External artifact writers must persist recipe
+// and evidence_identity with their source/axis identity.
+struct RiskEstimatorDiagnostics {
+  std::string recipe;
+  std::string evidence_identity;
+  PriorAdjustmentStatus factor_vra{PriorAdjustmentStatus::LegacyUnspecified};
+  PriorAdjustmentStatus specific_vra{PriorAdjustmentStatus::LegacyUnspecified};
+  atx::f64 factor_lambda2{1.0}, specific_lambda2{1.0};
+  atx::f64 effective_observations{0.0};
+  atx::usize simulated_observations{0}, structural_fallback_assets{0};
+  atx::usize statistical_fallback_assets{0};
+  bool structural_exposure_model_fitted{false};
+};
+
 // Canonical algorithm/config identity. Model outputs bind this together with
 // source/axis identities; it is not a claim about observed data provenance.
 [[nodiscard]] std::string risk_estimator_recipe(const RiskEstimatorPolicy& policy);

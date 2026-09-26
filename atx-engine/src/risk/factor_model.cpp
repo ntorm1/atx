@@ -38,6 +38,7 @@ namespace atx::engine::risk {
 //  apply-math reads them out-of-line below. Byte-identical state + arithmetic.
 // ===========================================================================
 struct FactorModel::Impl {
+  RiskEstimatorDiagnostics diagnostics;
   atx::core::linalg::MatX x_;                   // M×K exposures
   atx::core::linalg::MatX f_;                   // K×K factor covariance (SPD)
   atx::core::linalg::VecX d_;                   // M specific variances (floored, > 0)
@@ -67,7 +68,7 @@ FactorModel::~FactorModel() = default;
 
 atx::core::Result<FactorModel>
 FactorModel::create(atx::core::linalg::MatX x, atx::core::linalg::MatX f, atx::core::linalg::VecX d,
-                    atx::usize fit_begin, atx::usize fit_end) {
+                    atx::usize fit_begin, atx::usize fit_end, RiskEstimatorDiagnostics diagnostics) {
   if (f.rows() != f.cols() || f.rows() != x.cols()) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "FactorModel::create: F must be K×K with K == X.cols()");
@@ -117,6 +118,7 @@ FactorModel::create(atx::core::linalg::MatX x, atx::core::linalg::MatX f, atx::c
   }
 
   auto impl = std::make_unique<Impl>();
+  impl->diagnostics = std::move(diagnostics);
   impl->x_ = std::move(x);
   impl->f_ = std::move(f);
   impl->d_ = std::move(d);
@@ -214,6 +216,9 @@ void FactorModel::neutralize(std::span<atx::f64> signal) const {
 
 atx::usize FactorModel::fit_begin() const noexcept { return fit_begin_; }
 atx::usize FactorModel::fit_end() const noexcept { return fit_end_; }
+const RiskEstimatorDiagnostics& FactorModel::estimator_diagnostics() const noexcept {
+  return impl_->diagnostics;
+}
 
 // ===========================================================================
 //  FactorModelBuilder detail kernels (P4-7b). date_returns / select_rows /
@@ -568,6 +573,9 @@ atx::core::Result<FactorModel> FactorModelBuilder::build(const PanelView &panel,
                           "residual"); // NOT a silent skip — an explicit deferral
   }
   if (cfg.n_stat_factors > 0U) {
+    if (cfg.cov.estimator.rule != RiskEstimatorRule::LegacyV1)
+      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
+          "risk V2: statistical factors require HybridFactorModelBuilder");
     return build_stat_factor_model(panel, window, side, cfg, cfg.n_stat_factors,
                                    cfg.cov.apca_gls_reweight, cfg.factor_cov_shrink);
   }
@@ -575,7 +583,7 @@ atx::core::Result<FactorModel> FactorModelBuilder::build(const PanelView &panel,
   // then assemble. build_components returns EXACTLY the (X, F, D, fit_end) create consumes.
   ATX_TRY(FactorComponents comp, build_components(panel, window, side));
   return FactorModel::create(std::move(comp.X), std::move(comp.F), std::move(comp.D),
-                             /*fit_begin=*/0U, /*fit_end=*/comp.fit_end);
+                             /*fit_begin=*/0U, /*fit_end=*/comp.fit_end, std::move(comp.diagnostics));
 }
 
 atx::core::Result<atx::usize>
@@ -584,7 +592,8 @@ FactorModelBuilder::run_passes(const PanelView &panel, atx::usize window,
                                atx::core::linalg::MatX &fseries,
                                std::vector<std::vector<atx::f64>> &u_by_inst,
                                std::vector<atx::usize> &dates,
-                               std::vector<atx::usize> &missing) const {
+                               std::vector<atx::usize> &missing,
+                               atx::core::linalg::MatX* dated_residuals) const {
   if (cfg.n_stat_factors > 0U || cfg.n_dead_factors > 0U) {
     return atx::core::Err(atx::core::ErrorCode::NotImplemented,
                           "FactorModelBuilder::build_components: stat/dead rungs are dispatched "
@@ -600,6 +609,15 @@ FactorModelBuilder::run_passes(const PanelView &panel, atx::usize window,
                           "finite");
   }
   const atx::usize n_inst = panel.instruments();
+  if (cfg.cov.estimator.rule != RiskEstimatorRule::LegacyV1 &&
+      cfg.cov.estimator.rule != RiskEstimatorRule::EffectiveHistoryV2)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "risk: unknown estimator rule");
+  if (dated_residuals != nullptr) {
+    if (n_inst == 0 || window > cfg.cov.estimator.max_working_bytes / 64 / n_inst)
+      return atx::core::Err(atx::core::ErrorCode::OutOfRange, "risk V2: residual workspace budget");
+    dated_residuals->setConstant(static_cast<Eigen::Index>(window),
+        static_cast<Eigen::Index>(n_inst), std::numeric_limits<atx::f64>::quiet_NaN());
+  }
   ATX_TRY_VOID(side.validate(n_inst));
   // Point-in-time side inputs must cover every exposure row the passes read: rows
   // [0, exposure_row(window − 1)] clipped to the panel (R-06; never a silent reuse).
@@ -643,8 +661,8 @@ FactorModelBuilder::run_passes(const PanelView &panel, atx::usize window,
   // return series + per-instrument residuals downstream; the default keeps P4 exactly.
   ATX_TRY(atx::usize used_b,
           cfg.cov.robust_regression
-              ? accumulate_robust(panel, window, side, x0, d0, fseries, u_by_inst, dates, missing)
-              : accumulate_wls(panel, window, side, x0, d0, fseries, u_by_inst, dates, missing));
+              ? accumulate_robust(panel, window, side, x0, d0, fseries, u_by_inst, dates, missing, dated_residuals)
+              : accumulate_wls(panel, window, side, x0, d0, fseries, u_by_inst, dates, missing, dated_residuals));
   if (used_b < 2U) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "FactorModelBuilder::build_components: too few usable WLS dates");
@@ -655,24 +673,43 @@ FactorModelBuilder::run_passes(const PanelView &panel, atx::usize window,
 atx::core::Result<FactorComponents>
 FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
                                      const PitSideInputs &side) const {
+  const bool v2 = cfg.cov.estimator.rule == RiskEstimatorRule::EffectiveHistoryV2;
+  atx::core::linalg::MatX dated;
   ExposureMatrix x0;
   atx::core::linalg::MatX fseries;
   std::vector<std::vector<atx::f64>> u_by_inst;
   std::vector<atx::usize> dates;
   std::vector<atx::usize> missing;
   ATX_TRY(atx::usize used_b,
-          run_passes(panel, window, side, x0, fseries, u_by_inst, dates, missing));
+          run_passes(panel, window, side, x0, fseries, u_by_inst, dates, missing, v2 ? &dated : nullptr));
   const atx::usize k = x0.n_factors();
   // Compact fseries to the rows actually filled (under-determined dates skipped).
-  // KNOWN LIMITATION (W1 risk item, W0-R0 review minor 2): a model factor with no
-  // members on a date carries return 0 there (scatter_factor_returns; counted in
-  // `missing`), and those zeros enter the covariance below as observations, deflating
-  // that factor's variance by about its missing fraction. The fix (covariance over the
-  // observed dates only, pairwise, or a rescale) belongs with the W1 covariance work.
+  // V1 retains zero returns for absent model factors. Explicit V2 marks them
+  // missing and estimates covariance on observed pairs with original date ages.
   const atx::core::linalg::MatX fkept = fseries.topRows(static_cast<Eigen::Index>(used_b));
   if (fkept.rows() < static_cast<Eigen::Index>(k)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "FactorModelBuilder::build_components: usable dates < K (factor cov rank)");
+  }
+
+  if (v2) {
+    const auto m = x0.n_instruments();
+    const auto caps = side.cap_at(0, panel.instruments());
+    if (caps.size() != panel.instruments())
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "risk V2: current market caps required");
+    atx::core::linalg::MatX residuals(static_cast<Eigen::Index>(dates.size()),
+                                     static_cast<Eigen::Index>(m));
+    std::vector<atx::f64> current_caps(m);
+    for (atx::usize i = 0; i < m; ++i) {
+      current_caps[i] = caps[x0.instrument_rows[i]];
+      for (atx::usize t = 0; t < dates.size(); ++t)
+        residuals(static_cast<Eigen::Index>(t), static_cast<Eigen::Index>(i)) =
+            dated(static_cast<Eigen::Index>(dates[t]), static_cast<Eigen::Index>(x0.instrument_rows[i]));
+    }
+    ATX_TRY(auto clean, clean_risk_estimates_v2(fkept, residuals, x0.x, current_caps,
+        dates, cfg.cov.estimator, prior_forecasts));
+    return atx::core::Ok(FactorComponents{std::move(x0.x), std::move(clean.factor_covariance),
+        std::move(clean.specific_variances), window, std::move(clean.diagnostics)});
   }
 
   // Factor-covariance dispatch. DEFAULT (LedoitWolfSingle) is the as-built P4 path,
@@ -928,7 +965,7 @@ struct DateDesign {
 template <class Coef>
 void scatter_factor_returns(const Coef &beta, const std::vector<atx::usize> &col_map,
                             atx::core::linalg::MatX &fseries, atx::usize u,
-                            std::vector<atx::usize> &missing) {
+                            std::vector<atx::usize> &missing, bool missing_is_nan = false) {
   const atx::usize k = static_cast<atx::usize>(fseries.cols());
   std::vector<bool> hit(k, false);
   for (atx::usize c = 0U; c < col_map.size(); ++c) {
@@ -943,7 +980,8 @@ void scatter_factor_returns(const Coef &beta, const std::vector<atx::usize> &col
   }
   for (atx::usize j = 0U; j < k; ++j) {
     if (!hit[j]) {
-      fseries(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(j)) = 0.0;
+      fseries(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(j)) =
+          missing_is_nan ? std::numeric_limits<atx::f64>::quiet_NaN() : 0.0;
       ++missing[j];
     }
   }
@@ -1033,7 +1071,8 @@ FactorModelBuilder::accumulate_wls(const PanelView &panel, atx::usize window,
                                    atx::core::linalg::MatX &fseries,
                                    std::vector<std::vector<atx::f64>> &u_by_inst,
                                    std::vector<atx::usize> &dates,
-                                   std::vector<atx::usize> &missing) const {
+                                   std::vector<atx::usize> &missing,
+                               atx::core::linalg::MatX* dated_residuals) const {
   DateDesign dd;
   atx::usize used = 0U;
   for (atx::usize s = 0U; s < window; ++s) {
@@ -1052,12 +1091,15 @@ FactorModelBuilder::accumulate_wls(const PanelView &panel, atx::usize window,
     }
     ATX_ASSERT(static_cast<atx::usize>(fit->beta.size()) == dd.xs.n_factors());
     scatter_factor_returns(fit->beta, detail::map_columns(dd.xs.columns, x0.columns), fseries,
-                           used, missing);
+                           used, missing, cfg.cov.estimator.rule == RiskEstimatorRule::EffectiveHistoryV2);
     dates.push_back(s);
     ++used;
     for (atx::usize j = 0U; j < dd.keep.size(); ++j) {
-      u_by_inst[dd.xs.instrument_rows[dd.keep[j]]].push_back(
-          fit->residuals[static_cast<Eigen::Index>(j)]);
+      const auto inst = dd.xs.instrument_rows[dd.keep[j]];
+      const auto value = fit->residuals[static_cast<Eigen::Index>(j)];
+      u_by_inst[inst].push_back(value);
+      if (dated_residuals != nullptr)
+        (*dated_residuals)(static_cast<Eigen::Index>(s), static_cast<Eigen::Index>(inst)) = value;
     }
   }
   return atx::core::Ok(used);
@@ -1070,7 +1112,8 @@ FactorModelBuilder::accumulate_robust(const PanelView &panel, atx::usize window,
                                       atx::core::linalg::MatX &fseries,
                                       std::vector<std::vector<atx::f64>> &u_by_inst,
                                       std::vector<atx::usize> &dates,
-                                      std::vector<atx::usize> &missing) const {
+                                      std::vector<atx::usize> &missing,
+                               atx::core::linalg::MatX* dated_residuals) const {
   const cost::RobustCfg rcfg{/*huber_k=*/cfg.cov.huber_c, /*max_iter=*/cfg.cov.robust_iters,
                              /*tol=*/0.0};
   DateDesign dd;
@@ -1095,11 +1138,14 @@ FactorModelBuilder::accumulate_robust(const PanelView &panel, atx::usize window,
     const cost::RobustFit fit = cost::irls_huber(dd.xsr, dd.r, rcfg, &w0);
     ATX_ASSERT(static_cast<atx::usize>(fit.beta.size()) == dd.xs.n_factors());
     scatter_factor_returns(fit.beta, detail::map_columns(dd.xs.columns, x0.columns), fseries,
-                           used, missing);
+                           used, missing, cfg.cov.estimator.rule == RiskEstimatorRule::EffectiveHistoryV2);
     dates.push_back(s);
     ++used;
     for (atx::usize j = 0U; j < dd.keep.size(); ++j) {
-      u_by_inst[dd.xs.instrument_rows[dd.keep[j]]].push_back(fit.residuals[j]);
+      const auto inst = dd.xs.instrument_rows[dd.keep[j]];
+      u_by_inst[inst].push_back(fit.residuals[j]);
+      if (dated_residuals != nullptr)
+        (*dated_residuals)(static_cast<Eigen::Index>(s), static_cast<Eigen::Index>(inst)) = fit.residuals[j];
     }
   }
   return atx::core::Ok(used);

@@ -14,7 +14,7 @@ atx::core::Result<EigenAdjustmentV2> eigen_adjust_v2(
       !std::isfinite(amplification) || amplification < 0.0 || simulations > 10'000)
     return co::Err(co::ErrorCode::InvalidArgument, "eigen adjustment V2: invalid covariance/effective history/config");
   const auto t = static_cast<atx::usize>(std::floor(effective + 0.5));
-  if (k > budget / 128 / k || t > budget / 64 / k)
+  if (k > budget / 128 / k || t > (budget - k * k * 128) / 64 / k)
     return co::Err(co::ErrorCode::OutOfRange, "eigen adjustment V2: workspace exceeds budget");
   if (!f.isApprox(f.transpose(), 1e-12))
     return co::Err(co::ErrorCode::InvalidArgument, "eigen adjustment V2: covariance is not symmetric");
