@@ -1,0 +1,159 @@
+{
+  "schema": "atx.dsl-strategy-experiment/v1",
+  "id": "slow_price_volume_24_v1_initial",
+  "library": {
+    "path": "slow_price_volume_24_v1.json",
+    "sha256": "1851cd07d41a68d3b47009875aa54703bbb59bf5335bd6e09e4dd426c9fff40b"
+  },
+  "initial_nav_usd": 1000000000,
+  "primary_variant": "weekly_partial25",
+  "diagnostic_variants": [
+    "weekly_full"
+  ],
+  "primary_selected_before_any_performance_observation": true,
+  "family_ids": [
+    "momentum",
+    "medium_reversal",
+    "defensive_risk",
+    "liquidity_stress",
+    "price_volume_confirmation",
+    "trading_year_seasonality"
+  ],
+  "candidate_ids": [
+    "momentum_12_1_s21",
+    "momentum_12_1_s63",
+    "momentum_6_1_s21",
+    "momentum_6_1_s63",
+    "reversal_21_skip5_s21",
+    "reversal_21_skip5_s63",
+    "reversal_63_skip5_s21",
+    "reversal_63_skip5_s63",
+    "low_volatility_63_s63",
+    "low_volatility_63_s126",
+    "low_downside_126_s63",
+    "low_downside_126_s126",
+    "dollar_volume_shock_s21",
+    "dollar_volume_shock_s63",
+    "relative_liquidity_instability_s21",
+    "relative_liquidity_instability_s63",
+    "return_dollar_rank_correlation_s21",
+    "return_dollar_rank_correlation_s63",
+    "weekly_return_relative_flow_s21",
+    "weekly_return_relative_flow_s63",
+    "prior_year_forward_month_s21",
+    "prior_year_forward_month_s63",
+    "prior_year_forward_week_s21",
+    "prior_year_forward_week_s63"
+  ],
+  "sign_orientation": {
+    "role": "train",
+    "execution_variant": "weekly_partial25",
+    "evaluated_signs": [
+      1,
+      -1
+    ],
+    "objective": "annualized net Sharpe from shared delayed execution and actual costs",
+    "negative_sign_requires_independent_execution": true,
+    "finite_equal_score_tie_break": 1,
+    "unscorable_sign_policy": "fail; do not drop candidate or redistribute its family budget",
+    "freeze_before_validation": true
+  },
+  "combination": {
+    "rule": "fixed-family-centered-rank-v1",
+    "candidate_transform": "centered tied cross-sectional rank on decision-eligible finite names",
+    "candidate_weight_within_family": {
+      "numerator": 1,
+      "denominator": 4
+    },
+    "family_weight": {
+      "numerator": 1,
+      "denominator": 6
+    },
+    "missing_candidate_contribution": 0,
+    "renormalize_missing": false,
+    "fit_weights": false,
+    "final_weight_policy": "rank transform, gross leverage 1, dollar neutral",
+    "same_signs_and_weights_for_all_variants_and_roles": true,
+    "family_budgets_are_signal_combination_weights_not_separate_subbooks": true
+  },
+  "trial_accounting": {
+    "candidate_count": 24,
+    "family_count": 6,
+    "primary_train_candidate_sign_evaluations": 48,
+    "combined_train_variant_evaluations": 2,
+    "declared_train_evaluations": 50,
+    "combined_validation_variant_evaluations": 2,
+    "declared_total_role_evaluations": 52,
+    "individual_diagnostic_variant_backtests": 0,
+    "family_subblend_backtests": 0,
+    "validation_selection": false,
+    "reruns_and_failures": "retain attempt identities and actual counts; no unsupported historical discount",
+    "scope": "finite declared evaluations only; not a completed registry, DSR or cluster-N accounting claim"
+  },
+  "execution_contract": {
+    "delay_sessions": 1,
+    "cadence_unit": "observed trading sessions",
+    "extra_signal_smoothing_sessions": 0,
+    "trade_fraction_unit": "fraction of requested target-minus-marked-holding dollars at scheduled rebalance",
+    "fills": "netted across all subalpha signals; immutable prior-known costs and liquidity; actual capped fills",
+    "costs": "explicit modeled B1 spread/impact and annual borrow assumptions must be pinned in the run receipt; missing nonzero costs fail",
+    "turnover_report": "actual sum(abs(filled_dollars))/pretrade_NAV, with initial deployment shown separately; monthly sums also reported",
+    "terminal_rule": "report actual ending marked holdings and the chosen liquidation policy; no invented zero terminal cost",
+    "low_turnover_is_measured_not_guaranteed": true
+  },
+  "data_contract": {
+    "fields": [
+      {
+        "name": "close",
+        "basis": "f64(raw source float32 close) * vendor cumulReturnFactor; adjusted total-return proxy"
+      },
+      {
+        "name": "raw_close",
+        "basis": "unadjusted source float32 close widened to f64; USD per share"
+      },
+      {
+        "name": "volume",
+        "basis": "unadjusted source share volume widened to f64"
+      }
+    ],
+    "raw_dollar_liquidity": "raw_close * volume",
+    "returns": "close / delay(close, 1) - 1",
+    "universe": "provider's lagged top-3000 as-of membership; independent source presence; full decision mask for cross-sectional VM operations",
+    "minimum_complete_observations": 315,
+    "lookback_prior_observations_max": 314,
+    "warmup_policy": "retain earlier raw history; no zero/backfill substitution for unavailable rolling windows",
+    "seasonality": "252-session trading-year proxy; not exact calendar-month or issuer seasonality",
+    "not_consumed": [
+      "open",
+      "high",
+      "low",
+      "cap",
+      "current sector",
+      "current industry",
+      "fundamentals"
+    ],
+    "source_quality": "vendor adjusted return proxy and caller-declared clocks; PIT stock-type/vintage qualification remains explicit",
+    "train_and_validation": "role artifacts pin exact disjoint evaluation windows and source/axes/payload identities"
+  },
+  "evaluation_contract": {
+    "target_net_sharpe": 1,
+    "target_is_not_a_promise": true,
+    "primary_result_must_be_reported_even_if_diagnostic_better": true,
+    "add_candidates_or_variants_after_first_report": false,
+    "report": [
+      "net/gross Sharpe",
+      "drawdown",
+      "gross and net returns",
+      "execution and borrow costs",
+      "actual turnover",
+      "participation caps",
+      "name and family coverage",
+      "candidate signs",
+      "fixed blend weights",
+      "source and recipe hashes",
+      "missing-data errors"
+    ],
+    "cpp_parse_vm_validation": "pending owning native fixture; JSON/IDs/function-name/field-whitelist static checks passed",
+    "empirical_performance": "unmeasured at freeze"
+  }
+}
