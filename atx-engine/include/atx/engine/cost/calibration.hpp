@@ -336,19 +336,28 @@ namespace detail {
   if (!identifiable && !fixed_delta) {
     report.status = CostCalibrationStatus::DegenerateParticipation; return out;
   }
+  // A large common log(p) with tiny variation makes [1,log(p)] numerically
+  // rank deficient even when max-min is nonzero. Solve on a bounded centered
+  // column, then transform coefficients back into the original power law.
+  const f64 center = *lo + 0.5 * (*hi - *lo);
+  const f64 x_scale = identifiable ? *hi - *lo : 1.0;
   MatX X(static_cast<Eigen::Index>(n), 2);
   VecX y(static_cast<Eigen::Index>(n));
   f64 mean_x = 0.0, mean_y = 0.0;
   for (usize i = 0U; i < n; ++i) {
     const auto r = static_cast<Eigen::Index>(i);
-    X(r, 0) = 1.0; X(r, 1) = log_p[i]; y[r] = ly[i];
+    X(r, 0) = 1.0; X(r, 1) = (log_p[i] - center) / x_scale; y[r] = ly[i];
     mean_x += log_p[i]; mean_y += ly[i];
   }
   mean_x /= static_cast<f64>(n); mean_y /= static_cast<f64>(n);
   f64 raw_intercept = 0.0, raw_delta = 0.0;
-  if (identifiable) {
+  // A requested fixed slope does not need any raw two-column diagnostic fit.
+  // Leave raw estimates unavailable rather than making successful one-column
+  // calibration depend on identifying an unused slope.
+  if (identifiable && !fixed_delta) {
     const auto raw = irls_huber(X, y, RobustCfg{});
-    raw_intercept = raw.beta[0]; raw_delta = raw.beta[1];
+    raw_delta = raw.beta[1] / x_scale;
+    raw_intercept = raw.beta[0] - raw_delta * center;
     report.raw_Y = std::exp(raw_intercept); report.raw_delta = raw_delta;
     if (!std::isfinite(raw_intercept) || !std::isfinite(raw_delta)) {
       report.status = CostCalibrationStatus::NumericalFailure; return out;
@@ -393,7 +402,12 @@ namespace detail {
     report.Y_stderr = applied_y * std::sqrt(rss / static_cast<f64>(n - 1U) / static_cast<f64>(n));
     report.uncertainty = CostCalibrationUncertainty::ConditionalOnAppliedDelta;
   } else if (n > 2U) {
-    report.delta_stderr = report.raw_delta_stderr; report.Y_stderr = report.raw_Y_stderr;
+    f64 sxx = 0.0;
+    for (const auto x : log_p) { const auto dx = x - mean_x; sxx += dx * dx; }
+    const auto sigma2 = rss / static_cast<f64>(n - 2U);
+    report.delta_stderr = std::sqrt(sigma2 / sxx);
+    report.Y_stderr = applied_y * std::sqrt(sigma2 *
+        (1.0 / static_cast<f64>(n) + mean_x * mean_x / sxx));
     report.uncertainty = CostCalibrationUncertainty::OlsApproximation;
   }
   if (!std::isfinite(report.r2_temp) || !std::isfinite(report.Y_stderr) || !std::isfinite(report.delta_stderr)) {

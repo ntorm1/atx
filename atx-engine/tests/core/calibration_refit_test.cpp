@@ -95,7 +95,7 @@ TEST(CostCalibrationRefit, FixedSquareRootRefitsRatherThanTransplantingAnotherEx
   EXPECT_EQ(result->report.status, cost::CostCalibrationStatus::Applied);
   EXPECT_TRUE(result->report.delta_fixed); EXPECT_FALSE(result->report.delta_clamped);
   EXPECT_DOUBLE_EQ(result->impact.delta, 0.5);
-  EXPECT_NEAR(result->report.raw_delta, 0.7, 1e-11);
+  EXPECT_TRUE(std::isnan(result->report.raw_delta)); // fixed fit does not estimate an unused slope
   EXPECT_NEAR(result->impact.Y, scale * std::exp(0.2 * mean_log_p), 1e-11);
   check_applied_diagnostics(*result, obs);
   for (const f64 invalid : {0.0, 1.0, std::numeric_limits<f64>::quiet_NaN(),
@@ -149,5 +149,24 @@ TEST(CostCalibrationRefit, FiniteExtremeRatioUsesLogDifferenceAndUnavailablePerm
   EXPECT_FALSE(temporary_only.report.permanent_fit_applied);
   EXPECT_DOUBLE_EQ(temporary_only.impact.gamma, prior.gamma);
   EXPECT_EQ(temporary_only.report.r2_perm, 0.0);
+}
+
+TEST(CostCalibrationRefit, NearConstantLargeLogParticipationsDoNotAbortTheRobustSolver) {
+  std::vector<cost::CostObs> obs;
+  for (usize i = 0U; i < 9U; ++i) {
+    const f64 log_p = -700.0 + 1e-10 * (static_cast<f64>(i) - 4.0);
+    obs.push_back({std::exp(log_p), 0.02, scale * 0.02 * std::exp(0.5 * log_p), 0.0});
+  }
+  const auto estimated = cost::calibrate_from_obs(obs);
+  ASSERT_EQ(estimated.report.status, cost::CostCalibrationStatus::Applied);
+  EXPECT_TRUE(std::isfinite(estimated.impact.Y));
+  EXPECT_GE(estimated.impact.delta, 0.3); EXPECT_LE(estimated.impact.delta, 0.9);
+  auto fixed = cost::calibrate_from_obs_fixed_delta(obs, 0.5); ASSERT_TRUE(fixed);
+  EXPECT_NEAR(fixed->impact.Y, scale, 1e-10);
+  EXPECT_TRUE(std::isnan(fixed->report.raw_delta));
+  // Even exactly singular raw slope data are usable with the slope declared.
+  for (auto& row : obs) row = obs.front();
+  auto singular_fixed = cost::calibrate_from_obs_fixed_delta(obs, 0.5); ASSERT_TRUE(singular_fixed);
+  EXPECT_NEAR(singular_fixed->impact.Y, scale, 1e-10);
 }
 } // namespace atx_test_w1_b1_calibration_refit
