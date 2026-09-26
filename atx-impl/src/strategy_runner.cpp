@@ -286,7 +286,10 @@ co::Result<CashClaims> read_cash_claims(const RunnerConfig& cfg) {
       j.at("events").empty() || j.at("events").size() > 256)
     return co::Err(co::ErrorCode::InvalidArgument, "strategy: unsupported bounded cash-claim document");
   CashClaims out; out.source_sha256 = j.at("source_snapshot_sha256").get<std::string>();
-  if (!hash_valid(out.source_sha256))
+  const auto evidence_pin = [](std::string_view value) {
+    return hash_valid(value) && value.find_first_not_of('0') != std::string_view::npos;
+  };
+  if (!evidence_pin(out.source_sha256))
     return co::Err(co::ErrorCode::InvalidArgument, "strategy: invalid cash-claim source snapshot pin");
   std::set<std::string> event_ids;
   std::set<u64> instruments;
@@ -329,8 +332,8 @@ co::Result<CashClaims> read_cash_claims(const RunnerConfig& cfg) {
                  c == '-' || c == '_' || c == '.' || c == ':';
         }) || !event_ids.insert(event.event_id).second || !instruments.insert(event.instrument_id).second ||
         event.security_id_namespace != "spiderrock.securityID" || event.historical_identity.empty() ||
-        event.historical_identity.size() > 1024 || !hash_valid(event.identity_evidence_sha256) ||
-        !hash_valid(event.completion_evidence_sha256) || !hash_valid(event.basis_evidence_sha256) ||
+        event.historical_identity.size() > 256 || !evidence_pin(event.identity_evidence_sha256) ||
+        !evidence_pin(event.completion_evidence_sha256) || !evidence_pin(event.basis_evidence_sha256) ||
         !event.cash_excluded_from_adjusted_close || !std::isfinite(event.reference_raw_close) || event.reference_raw_close <= 0 ||
         !std::isfinite(event.reference_adjusted_close) || event.reference_adjusted_close <= 0 ||
         !std::isfinite(event.cash_usd_per_raw_share) || event.cash_usd_per_raw_share <= 0 ||
@@ -578,8 +581,10 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
       if (found == role.instrument_ids.end() || *found != event.instrument_id) continue;
       const auto i = static_cast<usize>(found - role.instrument_ids.begin());
       for (usize t = 0; t < role.panel.dates(); ++t)
-        if (role.mark_times_ns[t] >= event.recognition_mark_ns &&
-            event.effective_by_ns < role.mark_times_ns[t] && event.available_at_ns < role.mark_times_ns[t])
+        // Public completion changes decision eligibility immediately; the
+        // context separately validates the first mark for claim valuation.
+        if (event.effective_by_ns < role.decision_times_ns[t] &&
+            event.available_at_ns < role.decision_times_ns[t])
           claim_member[t * role.panel.instruments() + i] = 0;
     }
     signal_member = claim_member;
@@ -732,7 +737,7 @@ co::Status run(const RunnerConfig& cfg, std::ostream& progress) {
           {"source_snapshot_sha256", claims->source_sha256}, {"event_count", claims->events.size()},
           {"publication_evidence", "reconstructed-source-publication-research-v1"},
           {"historical_delivery_verified", false}, {"settlement_status", "unknown-no-payment-modeled"},
-          {"signal_support_policy", "causal-retirement-v1: VM ranks and fixed blend exclude only at/after approved recognition with effective-by and public availability strictly before mark; source payload retained"}};
+          {"signal_support_policy", "causal-decision-retirement-v1: VM ranks and fixed blend exclude when effective-by and public availability are strictly before decision; context validates first eligible valuation mark; source payload retained"}};
     }
     for (const auto& role : roles) recipe["role_manifest_sha256"][role.role] = role.sha;
     ATX_TRY(auto recipe_sha, co::sha256_hex(recipe.dump()));
