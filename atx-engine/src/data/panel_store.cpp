@@ -91,7 +91,8 @@ struct MappingBudget {
 
 Status write_exclusive(const fs::path& path, std::span<const u8> bytes) {
 #if defined(_WIN32)
-  auto* file = _wfopen(path.c_str(), L"wbx");
+  std::FILE* file = nullptr;
+  if (_wfopen_s(&file, path.c_str(), L"wbx") != 0) file = nullptr;
 #else
   auto* file = std::fopen(path.c_str(), "wbx");
 #endif
