@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._vendor_artifact import bar_pick_order_sql, bars_relation_sql
 from .connection import DuckDBStore
 from .factors.cross_section import winsorize, zscore
 from .universe import DEFAULT_UNIVERSE_ID
@@ -86,21 +87,21 @@ def load_quarterly_gross_profitability_inputs(
                 accession_number,
                 period_start,
                 period_end,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'revenue') AS revenue,
                 arg_max(statement_point_id,
                         (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'revenue') AS revenue_id,
                 max(available_at) FILTER (WHERE canonical_metric = 'revenue')
                     AS revenue_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'cogs') AS cogs,
                 arg_max(statement_point_id,
                         (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'cogs') AS cogs_id,
                 max(available_at) FILTER (WHERE canonical_metric = 'cogs')
                     AS cogs_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'gross_profit') AS gross_profit,
                 arg_max(statement_point_id,
                         (available_at, revision_sequence, statement_point_id))
@@ -114,8 +115,7 @@ def load_quarterly_gross_profitability_inputs(
               AND period_start IS NOT NULL
               AND period_end IS NOT NULL
               AND date_diff('day', period_start, period_end) + 1 BETWEEN 70 AND 115
-              AND value IS NOT NULL
-              AND isfinite(value)
+              AND available_at IS NOT NULL
               AND accession_number IS NOT NULL
               AND form IN (
                   '10-Q', '10-Q/A', '10-QT',
@@ -143,48 +143,72 @@ def load_quarterly_gross_profitability_inputs(
                         THEN greatest(revenue_available_at, cogs_available_at)
                     ELSE gross_profit_available_at
                 END AS reporting_available_at
-            FROM quarterly_components
+            -- Each component is its newest revision (NULL included); a non-finite
+            -- newest value is missing, never replaced by an older revision's.
+            FROM (
+                SELECT * REPLACE (
+                    CASE WHEN isfinite(revenue) THEN revenue END AS revenue,
+                    CASE WHEN isfinite(cogs) THEN cogs END AS cogs,
+                    CASE WHEN isfinite(gross_profit) THEN gross_profit END AS gross_profit
+                )
+                FROM quarterly_components
+            ) quarterly_components
             WHERE (revenue IS NOT NULL AND cogs IS NOT NULL)
                OR gross_profit IS NOT NULL
         ),
+        -- The newest revision per filing is picked first, then checked: a newest
+        -- invalid total never revives an older revision's value.
         quarterly_assets AS (
-            SELECT
-                security_id,
-                accession_number,
-                period_end,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
-                    AS total_assets,
-                arg_max(statement_point_id,
-                        (available_at, revision_sequence, statement_point_id))
-                    AS total_assets_id,
-                max(available_at) AS total_assets_available_at
-            FROM fundamental_statement_points
-            WHERE canonical_metric = 'total_assets'
-              AND unit = 'USD'
-              AND period_type = 'instant'
-              AND period_end IS NOT NULL
-              AND value > 0
-              AND isfinite(value)
-              AND accession_number IS NOT NULL
-              AND form IN (
-                  '10-Q', '10-Q/A', '10-QT',
-                  '10-K', '10-K/A', '10-KT',
-                  '20-F', '20-F/A', '40-F', '40-F/A',
-                  '6-K', '6-K/A'
-              )
-            GROUP BY security_id, accession_number, period_end
+            SELECT *
+            FROM (
+                SELECT
+                    security_id,
+                    accession_number,
+                    period_end,
+                    arg_max_null(value, (available_at, revision_sequence, statement_point_id))
+                        AS total_assets,
+                    arg_max(statement_point_id,
+                            (available_at, revision_sequence, statement_point_id))
+                        AS total_assets_id,
+                    max(available_at) AS total_assets_available_at
+                FROM fundamental_statement_points
+                WHERE canonical_metric = 'total_assets'
+                  AND unit = 'USD'
+                  AND period_type = 'instant'
+                  AND period_end IS NOT NULL
+                  AND available_at IS NOT NULL
+                  AND accession_number IS NOT NULL
+                  AND form IN (
+                      '10-Q', '10-Q/A', '10-QT',
+                      '10-K', '10-K/A', '10-KT',
+                      '20-F', '20-F/A', '40-F', '40-F/A',
+                      '6-K', '6-K/A'
+                  )
+                GROUP BY security_id, accession_number, period_end
+            )
+            WHERE total_assets > 0
+              AND isfinite(total_assets)
         ),
+        -- A priced session: its newest bar (publisher's total order) has a valid close.
         price_dedup AS (
-            SELECT
-                security_id,
-                any_value(symbol) AS symbol,
-                trade_date,
-                max(available_at) AS price_available_at
-            FROM equity_daily_bars
-            WHERE close > 0
-              AND trade_date IS NOT NULL
-              AND available_at IS NOT NULL
-            GROUP BY security_id, trade_date
+            SELECT security_id, symbol, trade_date, price_available_at
+            FROM (
+                SELECT
+                    security_id,
+                    symbol,
+                    trade_date,
+                    close,
+                    available_at AS price_available_at,
+                    row_number() OVER (
+                        PARTITION BY security_id, trade_date
+                        ORDER BY {bar_pick_order_sql()}
+                    ) AS bar_pick
+                FROM {bars_relation_sql()} equity_daily_bars
+                WHERE trade_date IS NOT NULL
+                  AND available_at IS NOT NULL
+            )
+            WHERE bar_pick = 1
+              AND close > 0
         ),
         price_months AS (
             SELECT
@@ -210,7 +234,7 @@ def load_quarterly_gross_profitability_inputs(
                 row_number() OVER (
                     PARTITION BY p.security_id, p.trade_date
                     ORDER BY u.valid_from DESC,
-                             u.available_at DESC NULLS LAST,
+                             u.available_at DESC,
                              u.source_loaded_at DESC,
                              u.source DESC
                 ) AS universe_rank
@@ -222,8 +246,7 @@ def load_quarterly_gross_profitability_inputs(
              AND (u.valid_to IS NULL OR u.valid_to >= p.trade_date)
              AND u.as_of_date <= p.trade_date
              AND u.is_member
-             AND u.is_latest_revision
-             AND (u.available_at IS NULL OR u.available_at <= p.price_available_at)
+             AND u.available_at <= p.price_available_at
         ),
         profit_candidates AS (
             SELECT

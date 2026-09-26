@@ -29,7 +29,7 @@ FROM adjustment_factor_history a
 {event_type_join}
 CROSS JOIN params p
 WHERE a.ex_date <= p.as_of_date
-  AND (a.available_at IS NULL OR a.available_at <= p.as_of_ts)
+  AND a.available_at <= p.as_of_ts
 ORDER BY a.security_id, a.ex_date, a.event_type, a.event_ref_id
 """
 
@@ -45,7 +45,7 @@ ranked AS (
         row_number() OVER (
             PARTITION BY d.source, d.bar_source, d.factor_source, d.security_id, d.trade_date
             ORDER BY d.as_of_date DESC,
-                     d.available_at DESC NULLS LAST,
+                     d.available_at DESC,
                      d.source_loaded_at DESC NULLS LAST,
                      d.daily_adjustment_id DESC
         ) AS rn
@@ -54,7 +54,7 @@ ranked AS (
     CROSS JOIN params p
     WHERE d.trade_date <= p.as_of_date
       AND d.as_of_date <= p.as_of_date
-      AND (d.available_at IS NULL OR d.available_at <= p.as_of_ts)
+      AND d.available_at <= p.as_of_ts
 )
 SELECT
     daily_adjustment_id,
@@ -100,7 +100,7 @@ bars AS (
     {symbol_join}
     CROSS JOIN params p
     WHERE b.trade_date <= p.as_of_date
-      AND (b.available_at IS NULL OR b.available_at <= p.as_of_ts)
+      AND b.available_at <= p.as_of_ts
 ),
 adjustment_ranked AS (
     SELECT
@@ -108,7 +108,7 @@ adjustment_ranked AS (
         row_number() OVER (
             PARTITION BY d.bar_source, d.security_id, d.trade_date
             ORDER BY d.as_of_date DESC,
-                     d.available_at DESC NULLS LAST,
+                     d.available_at DESC,
                      d.source_loaded_at DESC NULLS LAST,
                      d.factor_source DESC,
                      d.source DESC,
@@ -118,7 +118,7 @@ adjustment_ranked AS (
     CROSS JOIN params p
     WHERE d.trade_date <= p.as_of_date
       AND d.as_of_date <= p.as_of_date
-      AND (d.available_at IS NULL OR d.available_at <= p.as_of_ts)
+      AND d.available_at <= p.as_of_ts
 ),
 adjustments AS (
     SELECT *
@@ -202,8 +202,10 @@ ranked AS (
         row_number() OVER (
             PARTITION BY f.feature_set, f.feature_name, f.security_id
             ORDER BY f.as_of_date DESC,
-                     f.available_at DESC NULLS LAST,
-                     f.computed_at DESC
+                     f.available_at DESC,
+                     f.computed_at DESC,
+                     f.source DESC,
+                     f.input_hash DESC NULLS LAST
         ) AS rn
     FROM feature_values f
     {feature_join}
@@ -211,7 +213,7 @@ ranked AS (
     CROSS JOIN params p
     WHERE f.feature_set = p.feature_set
       AND f.as_of_date <= p.as_of_date
-      AND (f.available_at IS NULL OR f.available_at <= p.as_of_ts)
+      AND f.available_at <= p.as_of_ts
 )
 SELECT *
 FROM ranked
@@ -231,14 +233,14 @@ ranked AS (
         row_number() OVER (
             PARTITION BY coalesce(s.security_id, s.symbol), coalesce(s.market_class_code, '')
             ORDER BY s.settlement_date DESC,
-                     s.available_at DESC NULLS LAST,
+                     s.available_at DESC,
                      s.source_loaded_at DESC
         ) AS rn
     FROM finra_short_interest s
     {symbol_join}
     CROSS JOIN params p
     WHERE s.settlement_date <= p.as_of_date
-      AND (s.available_at IS NULL OR s.available_at <= p.as_of_ts)
+      AND s.available_at <= p.as_of_ts
 )
 SELECT *
 FROM ranked
@@ -259,7 +261,7 @@ ranked AS (
             PARTITION BY m.source, m.series_id
             ORDER BY m.observation_date DESC,
                      m.as_of_date DESC,
-                     m.available_at DESC NULLS LAST,
+                     m.available_at DESC,
                      m.source_loaded_at DESC
         ) AS rn
     FROM macro_observations m
@@ -267,7 +269,7 @@ ranked AS (
     CROSS JOIN params p
     WHERE m.observation_date <= p.as_of_date
       AND m.as_of_date <= p.as_of_date
-      AND (m.available_at IS NULL OR m.available_at <= p.as_of_ts)
+      AND m.available_at <= p.as_of_ts
 )
 SELECT *
 FROM ranked
@@ -282,19 +284,25 @@ WITH params AS (
         CAST(? AS TIMESTAMP) AS as_of_ts,
         CAST(? AS VARCHAR) AS universe_id
 ),
-snapshot AS (
-    SELECT
-        u.universe_id,
-        max(u.as_of_date) AS snapshot_date
+visible AS (
+    SELECT u.*
     FROM universe_memberships u
     CROSS JOIN params p
     WHERE u.universe_id = p.universe_id
       AND u.as_of_date <= p.as_of_date
-      AND (u.available_at IS NULL OR u.available_at <= p.as_of_ts)
-    GROUP BY u.universe_id
+      AND u.available_at <= p.as_of_ts
+),
+snapshot AS (
+    SELECT
+        universe_id,
+        max(as_of_date) AS snapshot_date
+    FROM visible
+    GROUP BY universe_id
 )
+-- Rows of the chosen snapshot are themselves visibility-checked: a member of that
+-- snapshot date published after the cutoff is not returned.
 SELECT u.*
-FROM universe_memberships u
+FROM visible u
 JOIN snapshot s
   ON s.universe_id = u.universe_id
  AND s.snapshot_date = u.as_of_date
@@ -309,13 +317,15 @@ WITH params AS (
         CAST(? AS TIMESTAMP) AS as_of_ts,
         CAST(? AS VARCHAR) AS universe_id
 ),
+-- The newest visible interval covering the date wins whole, member or not: a newer
+-- non-member decision is never skipped in favour of an older member interval.
 ranked AS (
     SELECT
         u.*,
         row_number() OVER (
             PARTITION BY u.universe_id, u.security_id
             ORDER BY u.valid_from DESC,
-                     u.available_at DESC NULLS LAST,
+                     u.available_at DESC,
                      u.source_loaded_at DESC NULLS LAST,
                      u.source DESC
         ) AS rn
@@ -327,9 +337,7 @@ ranked AS (
       AND u.valid_from <= p.as_of_date
       AND (u.valid_to IS NULL OR u.valid_to >= p.as_of_date)
       AND u.as_of_date <= p.as_of_date
-      AND u.is_member
-      AND u.is_latest_revision
-      AND (u.available_at IS NULL OR u.available_at <= p.as_of_ts)
+      AND u.available_at <= p.as_of_ts
 )
 SELECT
     universe_id,
@@ -345,10 +353,10 @@ SELECT
     available_at,
     source,
     run_id,
-    is_latest_revision,
     source_loaded_at
 FROM ranked
 WHERE rn = 1
+  AND is_member
 ORDER BY symbol, security_id
 """
 

@@ -12,8 +12,32 @@ from ._common import (
     connect,
     dt,
     end_of_day_asof_ts,
+    latest_visible_sql,
     pd,
 )
+
+_PARAMS_CTE = """WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+)"""
+
+
+def _latest_visible_metric_sql(
+    table: str, alias: str, key_cols: tuple[str, ...], id_col: str, joins: str, order_by: str,
+) -> str:
+    """As-of read of a derived metric table: the newest visible revision per natural key.
+
+    ``key_cols`` is the key the writer's row id hashes (without its clock); a row is visible
+    when its ``available_at`` and ``as_of_date`` are known at the cutoff. No stored latest
+    flag is consulted (a restated key keeps its original row at earlier cutoffs).
+    """
+    visible = latest_visible_sql(
+        table, key_cols, "p.as_of_ts", ("available_at", "source_loaded_at", id_col),
+        alias=alias, joins=f"{joins}\n    CROSS JOIN params p",
+        predicates=(f"{alias}.as_of_date <= p.as_of_date",),
+    )
+    return f"\n{_PARAMS_CTE}\nSELECT {alias}.*\nFROM ({visible}) {alias}\nORDER BY {order_by}\n"
 
 
 FUNDAMENTAL_XBRL_METRIC_ASOF_SQL = """
@@ -42,22 +66,37 @@ WHERE rn = 1
 ORDER BY symbol, canonical_metric, period_end
 """
 
+# Newest visible vintage per (source, security, ratio, basis, period): the month-end
+# reader's ordering (filing date, clock, accession) plus the row id as the final tie.
 FUNDAMENTAL_RATIOS_ASOF_SQL = """
 WITH params AS (
     SELECT
         CAST(? AS DATE) AS as_of_date,
         CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        r.*,
+        row_number() OVER (
+            PARTITION BY r.source, r.security_id, r.ratio_code, r.basis, r.period_end
+            ORDER BY coalesce(r.filed_date, r.as_of_date) DESC,
+                     r.available_at DESC,
+                     coalesce(r.source_accession, '') DESC,
+                     r.ratio_id DESC
+        ) AS rn
+    FROM fundamental_ratios r
+    {symbol_join}
+    {code_join}
+    {category_join}
+    CROSS JOIN params p
+    WHERE r.available_at IS NOT NULL
+      AND r.available_at <= p.as_of_ts
+      AND r.as_of_date <= p.as_of_date
 )
-SELECT r.*
-FROM fundamental_ratios r
-{symbol_join}
-{code_join}
-{category_join}
-CROSS JOIN params p
-WHERE r.available_at <= p.as_of_ts
-  AND r.as_of_date <= p.as_of_date
-  AND r.is_latest_revision
-ORDER BY r.symbol, r.ratio_code, r.basis, r.period_end
+SELECT * EXCLUDE (rn)
+FROM ranked
+WHERE rn = 1
+ORDER BY symbol, ratio_code, basis, period_end
 """
 
 FUNDAMENTAL_RATIOS_ASOF_MONTH_SQL = """
@@ -243,21 +282,10 @@ def pit_snapshot_asof(
         metrics=metrics,
     )
 
-CORPORATE_ACTION_DIVIDEND_METRICS_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+CORPORATE_ACTION_DIVIDEND_METRICS_ASOF_SQL = _latest_visible_metric_sql(
+    "corporate_action_dividend_metrics", "m", ("source", "security_id", "ex_date"), "metric_id",
+    "{symbol_join}", "m.symbol, m.ex_date",
 )
-SELECT m.*
-FROM corporate_action_dividend_metrics m
-{symbol_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.symbol, m.ex_date
-"""
 
 def corporate_action_dividend_metrics_asof(
     as_of_date: dt.date,
@@ -294,21 +322,12 @@ def corporate_action_dividend_metrics_asof(
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
-CORPORATE_ACTION_SPLIT_METRICS_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+CORPORATE_ACTION_SPLIT_METRICS_ASOF_SQL = _latest_visible_metric_sql(
+    "corporate_action_split_metrics", "m",
+    ("source", "factor_source", "daily_adjustment_source", "bar_source", "security_id", "event_ref_id",
+     "ex_date"),
+    "split_metric_id", "{symbol_join}", "m.symbol, m.ex_date, m.bar_source",
 )
-SELECT m.*
-FROM corporate_action_split_metrics m
-{symbol_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.symbol, m.ex_date, m.bar_source
-"""
 
 def corporate_action_split_metrics_asof(
     as_of_date: dt.date,
@@ -345,22 +364,12 @@ def corporate_action_split_metrics_asof(
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
-CORPORATE_ACTION_FACTOR_RECONCILIATION_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+CORPORATE_ACTION_FACTOR_RECONCILIATION_ASOF_SQL = _latest_visible_metric_sql(
+    "corporate_action_factor_reconciliation", "m",
+    ("source", "factor_source", "daily_adjustment_source", "bar_source", "security_id", "event_ref_id",
+     "event_type", "ex_date"),
+    "reconciliation_id", "{symbol_join}\n    {event_type_join}", "m.symbol, m.ex_date, m.event_type, m.bar_source",
 )
-SELECT m.*
-FROM corporate_action_factor_reconciliation m
-{symbol_join}
-{event_type_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.symbol, m.ex_date, m.event_type, m.bar_source
-"""
 
 def corporate_action_factor_reconciliation_asof(
     as_of_date: dt.date,
@@ -401,71 +410,26 @@ def corporate_action_factor_reconciliation_asof(
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
-EQUITY_PRICE_METRICS_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+EQUITY_PRICE_METRICS_ASOF_SQL = _latest_visible_metric_sql(
+    "equity_price_metrics", "m", ("source", "security_id", "trade_date"), "metric_id",
+    "{symbol_join}", "m.symbol, m.trade_date",
 )
-SELECT m.*
-FROM equity_price_metrics m
-{symbol_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.symbol, m.trade_date
-"""
 
-MARKET_CAP_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+MARKET_CAP_ASOF_SQL = _latest_visible_metric_sql(
+    "market_cap", "m", ("source", "security_id", "trade_date"), "market_cap_id",
+    "{symbol_join}", "m.symbol, m.trade_date",
 )
-SELECT m.*
-FROM market_cap m
-{symbol_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.symbol, m.trade_date
-"""
 
-ENTERPRISE_VALUE_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+ENTERPRISE_VALUE_ASOF_SQL = _latest_visible_metric_sql(
+    "enterprise_value", "e", ("source", "market_cap_source", "security_id", "trade_date"),
+    "enterprise_value_id", "{symbol_join}", "e.symbol, e.trade_date",
 )
-SELECT e.*
-FROM enterprise_value e
-{symbol_join}
-CROSS JOIN params p
-WHERE e.available_at <= p.as_of_ts
-  AND e.as_of_date <= p.as_of_date
-  AND e.is_latest_revision
-ORDER BY e.symbol, e.trade_date
-"""
 
-VALUATION_MULTIPLES_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+VALUATION_MULTIPLES_ASOF_SQL = _latest_visible_metric_sql(
+    "valuation_multiples", "v", ("source", "market_cap_source", "security_id", "trade_date", "formula_code"),
+    "valuation_multiple_id", "{symbol_join}\n    {formula_join}\n    {category_join}",
+    "v.symbol, v.formula_code, v.trade_date",
 )
-SELECT v.*
-FROM valuation_multiples v
-{symbol_join}
-{formula_join}
-{category_join}
-CROSS JOIN params p
-WHERE v.available_at <= p.as_of_ts
-  AND v.as_of_date <= p.as_of_date
-  AND v.is_latest_revision
-ORDER BY v.symbol, v.formula_code, v.trade_date
-"""
 
 def market_cap_asof(
     as_of_date: dt.date,
@@ -609,21 +573,10 @@ def equity_price_metrics_asof(
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
-MACRO_METRICS_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+MACRO_METRICS_ASOF_SQL = _latest_visible_metric_sql(
+    "macro_metrics", "m", ("source", "series_id", "observation_date"), "metric_id",
+    "{series_join}", "m.series_id, m.observation_date",
 )
-SELECT m.*
-FROM macro_metrics m
-{series_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.series_id, m.observation_date
-"""
 
 def macro_metrics_asof(
     as_of_date: dt.date,
@@ -660,21 +613,10 @@ def macro_metrics_asof(
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
-THIRTEENF_POSITION_METRICS_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+THIRTEENF_POSITION_METRICS_ASOF_SQL = _latest_visible_metric_sql(
+    "thirteenf_position_metrics", "m", ("source", "manager_id", "security_id", "report_period"), "metric_id",
+    "{symbol_join}", "m.report_period, m.security_id, m.manager_id",
 )
-SELECT m.*
-FROM thirteenf_position_metrics m
-{symbol_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.report_period, m.security_id, m.manager_id
-"""
 
 def thirteenf_position_metrics_asof(
     as_of_date: dt.date,
@@ -712,21 +654,10 @@ def thirteenf_position_metrics_asof(
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
-THIRTEENF_OPTION_METRICS_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+THIRTEENF_OPTION_METRICS_ASOF_SQL = _latest_visible_metric_sql(
+    "thirteenf_option_metrics", "m", ("source", "security_id", "cusip", "report_period", "source_period"),
+    "metric_id", "{symbol_join}", "m.report_period, m.security_id, m.cusip",
 )
-SELECT m.*
-FROM thirteenf_option_metrics m
-{symbol_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.report_period, m.security_id, m.cusip
-"""
 
 def thirteenf_option_metrics_asof(
     as_of_date: dt.date,
@@ -763,21 +694,10 @@ def thirteenf_option_metrics_asof(
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
-THIRTEENF_CONCENTRATION_METRICS_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+THIRTEENF_CONCENTRATION_METRICS_ASOF_SQL = _latest_visible_metric_sql(
+    "thirteenf_concentration_metrics", "m", ("source", "security_id", "cusip", "report_period", "source_period"),
+    "metric_id", "{symbol_join}", "m.report_period, m.security_id, m.cusip",
 )
-SELECT m.*
-FROM thirteenf_concentration_metrics m
-{symbol_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.report_period, m.security_id, m.cusip
-"""
 
 def thirteenf_concentration_metrics_asof(
     as_of_date: dt.date,
@@ -809,21 +729,11 @@ def thirteenf_concentration_metrics_asof(
     with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
-SHORT_INTEREST_METRICS_ASOF_SQL = """
-WITH params AS (
-    SELECT
-        CAST(? AS DATE) AS as_of_date,
-        CAST(? AS TIMESTAMP) AS as_of_ts
+# The row id hashes available_at: republished settlements coexist; the newest visible wins.
+SHORT_INTEREST_METRICS_ASOF_SQL = _latest_visible_metric_sql(
+    "short_interest_metrics", "m", ("source", "security_id", "settlement_date"), "metric_id",
+    "{symbol_join}", "m.symbol, m.settlement_date",
 )
-SELECT m.*
-FROM short_interest_metrics m
-{symbol_join}
-CROSS JOIN params p
-WHERE m.available_at <= p.as_of_ts
-  AND m.as_of_date <= p.as_of_date
-  AND m.is_latest_revision
-ORDER BY m.symbol, m.settlement_date
-"""
 
 def short_interest_metrics_asof(
     as_of_date: dt.date,

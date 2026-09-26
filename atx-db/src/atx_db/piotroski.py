@@ -134,9 +134,11 @@ def _annual_pivot_columns() -> str:
         )
         predicate = f"canonical_metric = '{metric}'{period_filter}"
         order = "(available_at, revision_sequence, statement_point_id)"
+        # The newest revision wins even when its value is NULL (plain arg_max would
+        # revive an older value); value and id come from the same row.
         columns.extend(
             [
-                f"arg_max(value, {order}) FILTER (WHERE {predicate}) AS {metric}",
+                f"arg_max_null(value, {order}) FILTER (WHERE {predicate}) AS {metric}",
                 f"arg_max(statement_point_id, {order}) "
                 f"FILTER (WHERE {predicate}) AS {metric}_id",
                 f"max(available_at) FILTER (WHERE {predicate}) "
@@ -196,6 +198,7 @@ def load_piotroski_inputs(
             WHERE canonical_metric IN ({metric_filter})
               AND unit = 'USD'
               AND period_end IS NOT NULL
+              AND available_at IS NOT NULL
               AND accession_number IS NOT NULL
               AND form IN (
                   '10-K', '10-K/A', '10-KT',

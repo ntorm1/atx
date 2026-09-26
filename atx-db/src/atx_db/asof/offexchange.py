@@ -16,19 +16,30 @@ from ._common import (
 )
 
 
+# The stored latest flag is today's knowledge (it drops a restated week's original at every
+# cutoff before the restatement): pick the newest visible publication per writer key instead.
 OFFEXCHANGE_VOLUME_ASOF_SQL = """
 WITH params AS (
     SELECT
         CAST(? AS DATE) AS as_of_date,
         CAST(? AS TIMESTAMP) AS as_of_ts
+),
+visible AS (
+    SELECT
+        v.*,
+        row_number() OVER (
+            PARTITION BY v.source, v.symbol, v.mpid, v.venue_class, v.period_type, v.summary_start_date
+            ORDER BY v.available_at DESC, v.volume_id
+        ) AS rn
+    FROM offexchange_volume v
+    {symbol_join}
+    CROSS JOIN params p
+    WHERE v.available_at <= p.as_of_ts
 )
-SELECT v.*
-FROM offexchange_volume v
-{symbol_join}
-CROSS JOIN params p
-WHERE v.available_at <= p.as_of_ts
-  AND v.is_latest
-ORDER BY v.symbol, v.period_type, v.summary_start_date, v.venue_class, v.mpid
+SELECT * EXCLUDE (rn)
+FROM visible
+WHERE rn = 1
+ORDER BY symbol, period_type, summary_start_date, venue_class, mpid
 """
 
 OFFEXCHANGE_SECURITY_PERIOD_ASOF_SQL = """
@@ -66,7 +77,7 @@ visible AS (
 SELECT
     volume_id, security_id, symbol, trade_date, market_code,
     short_volume, short_exempt_volume, total_volume,
-    restatement_seq, is_latest, as_of_date, available_at,
+    restatement_seq, as_of_date, available_at,
     source, source_file, source_file_sha256, raw_payload_json,
     run_id, source_loaded_at, updated_at
 FROM visible
@@ -99,7 +110,7 @@ SELECT
     short_volume_ratio_percentile, short_exempt_ratio_percentile,
     market_count, dominant_market_code, dominant_market_total_volume,
     dominant_market_share_pct, is_high_short_flow,
-    restatement_seq, is_latest_revision, as_of_date, available_at,
+    restatement_seq, as_of_date, available_at,
     source, run_id, source_loaded_at, updated_at
 FROM visible
 WHERE rn = 1
@@ -131,7 +142,7 @@ SELECT
     short_volume, short_exempt_volume, short_volume_ratio,
     ats_share_pct, high_short_flow_count, restated_key_count,
     multiple_latest_key_count, bad_row_count, missing_available_at_count,
-    max_publication_lag_days, restatement_seq, is_latest_revision,
+    max_publication_lag_days, restatement_seq,
     as_of_date, available_at, source_inputs_json, run_id,
     source_loaded_at, updated_at
 FROM visible

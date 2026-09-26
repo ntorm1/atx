@@ -123,27 +123,36 @@ def load_quarterly_cash_profitability_inputs(
               AND isfinite(raw_value)
               {date_sql}
         ),
+        -- Per filing and item, the newest revision wins whole (NULL included); a
+        -- non-finite newest value is missing, never replaced by an older revision's.
         balance_statements AS (
+            SELECT * REPLACE (
+                CASE WHEN isfinite(ar) THEN ar END AS ar,
+                CASE WHEN isfinite(inventory) THEN inventory END AS inventory,
+                CASE WHEN isfinite(deferred_revenue) THEN deferred_revenue END AS deferred_revenue,
+                CASE WHEN isfinite(ap) THEN ap END AS ap
+            )
+            FROM (
             SELECT
                 security_id,
                 accession_number AS balance_accession_number,
                 period_end,
                 max(available_at) AS balance_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'ar') AS ar,
                 arg_max(statement_point_id,
                         (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'ar') AS ar_id,
                 max(available_at) FILTER (WHERE canonical_metric = 'ar')
                     AS ar_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'inventory') AS inventory,
                 arg_max(statement_point_id,
                         (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'inventory') AS inventory_id,
                 max(available_at) FILTER (WHERE canonical_metric = 'inventory')
                     AS inventory_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'deferred_revenue')
                     AS deferred_revenue,
                 arg_max(statement_point_id,
@@ -152,7 +161,7 @@ def load_quarterly_cash_profitability_inputs(
                     AS deferred_revenue_id,
                 max(available_at) FILTER (WHERE canonical_metric = 'deferred_revenue')
                     AS deferred_revenue_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (WHERE canonical_metric = 'ap') AS ap,
                 arg_max(statement_point_id,
                         (available_at, revision_sequence, statement_point_id))
@@ -164,11 +173,10 @@ def load_quarterly_cash_profitability_inputs(
               AND unit = 'USD'
               AND period_type = 'instant'
               AND period_end IS NOT NULL
-              AND value IS NOT NULL
-              AND isfinite(value)
               AND available_at IS NOT NULL
               AND accession_number IS NOT NULL
             GROUP BY security_id, accession_number, period_end
+            )
         ),
         current_candidates AS (
             SELECT

@@ -244,6 +244,12 @@ def test_rdq_available_at_is_the_8k_decision_clock_never_a_raw_or_untimed_stamp(
     # Zone-less raw stamp is untimed as well.
     assert lineage(d(2024, 4, 24), d(2024, 4, 25), ts(2024, 4, 24, 16, 1), raw="2024-04-24T16:01:00") == (
         d(2024, 4, 24), "reported_date", ts(2024, 4, 26, 22))
+    # Untimed stamps ABOVE the floor (0.9 N1): only the untimed check keeps them out, so a lost
+    # check would surface here as the stamp instead of the floor (filed 04-24 -> 04-25 22:00).
+    assert lineage(d(2024, 4, 24), d(2024, 4, 24), ts(2024, 4, 26, 4)) == (
+        d(2024, 4, 24), "reported_date", ts(2024, 4, 25, 22))
+    assert lineage(d(2024, 4, 24), d(2024, 4, 24), ts(2024, 4, 26, 16, 1), raw="2024-04-26T16:01:00") == (
+        d(2024, 4, 24), "reported_date", ts(2024, 4, 25, 22))
     # No acceptance at all: rdq keeps its date and gets the floor, never a NULL clock.
     assert lineage(d(2024, 4, 24), d(2024, 4, 25), None) == (d(2024, 4, 24), "reported_date", ts(2024, 4, 26, 22))
     # Implausible report date with a date-only stamp: filing-date rdq, clocked at its floor.

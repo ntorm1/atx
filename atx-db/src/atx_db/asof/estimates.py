@@ -113,12 +113,15 @@ def est_actual_asof(
                     a.*,
                     row_number() OVER (
                         PARTITION BY a.security_id, a.measure_code, a.period_end, a.period_start
-                        ORDER BY a.available_at DESC NULLS LAST
+                        ORDER BY a.available_at DESC,
+                                 a.accession_number DESC NULLS LAST,
+                                 a.fiscal_year DESC,
+                                 a.fiscal_period DESC
                     ) AS rn
                 FROM est_actual a
                 {sid_join}
                 {mc_join}
-                WHERE (a.available_at IS NULL OR a.available_at <= CAST(? AS TIMESTAMP))
+                WHERE a.available_at <= CAST(? AS TIMESTAMP)
             )
             SELECT * EXCLUDE (rn) FROM ranked WHERE rn = 1
             ORDER BY security_id, measure_code, period_end
@@ -178,7 +181,7 @@ def est_surprise_asof(
             FROM est_surprise s
             {sid_join}
             {mc_join}
-            WHERE (s.available_at IS NULL OR s.available_at <= CAST(? AS TIMESTAMP))
+            WHERE s.available_at <= CAST(? AS TIMESTAMP)
             ORDER BY s.security_id, s.measure_code, s.period_end
             """
             return store.con.execute(sql, [as_of_ts]).df()
@@ -326,7 +329,7 @@ def est_consensus_asof(
                 FROM est_consensus c
                 {ESTIMATE_SECURITY_LINK_JOIN.format(alias='c')}
                 CROSS JOIN params p
-                WHERE (c.available_at IS NULL OR c.available_at <= p.as_of_ts)
+                WHERE c.available_at <= p.as_of_ts
                   AND (c.consensus_date IS NULL OR c.consensus_date <= p.as_of_date)
                   AND (c.as_of_date IS NULL OR c.as_of_date <= p.as_of_date)
                   {stale_filter}
@@ -352,7 +355,7 @@ def est_consensus_asof(
                             coalesce(filtered.pdf, ''),
                             coalesce(filtered.basis, '')
                         ORDER BY
-                            coalesce(filtered.available_at, filtered.source_loaded_at) DESC,
+                            filtered.available_at DESC,
                             filtered.consensus_date DESC NULLS LAST,
                             filtered.source_loaded_at DESC,
                             coalesce(filtered.est_consensus_id, '') DESC
@@ -415,7 +418,7 @@ def est_guidance_asof(
             FROM est_guidance g
             {sid_join}
             {mc_join}
-            WHERE (g.available_at IS NULL OR g.available_at <= CAST(? AS TIMESTAMP))
+            WHERE g.available_at <= CAST(? AS TIMESTAMP)
               AND (g.as_of_date IS NULL OR g.as_of_date <= CAST(? AS DATE))
               AND (g.guidance_date IS NULL OR g.guidance_date <= CAST(? AS DATE))
             ORDER BY g.security_id, g.measure_code, g.period_end
@@ -500,7 +503,7 @@ def est_detail_asof(
                 FROM est_detail d
                 {ESTIMATE_SECURITY_LINK_JOIN.format(alias='d')}
                 CROSS JOIN params p
-                WHERE (d.available_at IS NULL OR d.available_at <= p.as_of_ts)
+                WHERE d.available_at <= p.as_of_ts
                   AND (d.as_of_date IS NULL OR d.as_of_date <= p.as_of_date)
                   AND (d.estimate_date IS NULL OR d.estimate_date <= p.as_of_date)
                   AND (d.announce_date IS NULL OR d.announce_date <= p.as_of_date)
@@ -616,7 +619,7 @@ def est_recommendation_asof(
                 FROM est_recommendation r
                 {ESTIMATE_SECURITY_LINK_JOIN.format(alias='r')}
                 CROSS JOIN params p
-                WHERE (r.available_at IS NULL OR r.available_at <= p.as_of_ts)
+                WHERE r.available_at <= p.as_of_ts
                   AND (r.as_of_date IS NULL OR r.as_of_date <= p.as_of_date)
                   AND (r.rating_date IS NULL OR r.rating_date <= p.as_of_date)
                   AND (r.announce_date IS NULL OR r.announce_date <= p.as_of_date)

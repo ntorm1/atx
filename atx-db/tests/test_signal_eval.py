@@ -280,18 +280,23 @@ def test_pit_classification_loader_does_not_backfill_future_knowledge(tmp_store)
 
 
 def test_survivorship_safe_loader_is_scoped_and_source_governed(tmp_store) -> None:
+    # A feature dated Tue 2024-01-02 is known at 22:00 UTC, after that day's close: it enters
+    # at the next session's close (Wed 2024-01-03), so the label anchored on the feature date
+    # itself ('same-anchor') is never its target (node 2.2, CLOCKS.md).
     tmp_store.con.execute(
         """
         INSERT INTO forward_returns_survivorship_safe (
             forward_return_id, source, security_id, as_of_date, horizon_days,
             forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at
         ) VALUES
-            ('safe-hit', 'safe-test', 'S1', DATE '2024-01-02', 21,
-             DATE '2024-02-01', -0.45, true, true, TIMESTAMP '2024-02-02 12:00:00'),
-            ('other-source', 'other', 'S1', DATE '2024-01-02', 21,
-             DATE '2024-02-01', 0.99, false, false, TIMESTAMP '2024-02-02 12:00:00'),
-            ('other-key', 'safe-test', 'S2', DATE '2024-01-02', 21,
-             DATE '2024-02-01', 0.10, false, false, TIMESTAMP '2024-02-02 12:00:00')
+            ('safe-hit', 'safe-test', 'S1', DATE '2024-01-03', 21,
+             DATE '2024-02-02', -0.45, true, true, TIMESTAMP '2024-02-03 12:00:00'),
+            ('same-anchor', 'safe-test', 'S1', DATE '2024-01-02', 21,
+             DATE '2024-02-01', 0.55, false, false, TIMESTAMP '2024-02-02 12:00:00'),
+            ('other-source', 'other', 'S1', DATE '2024-01-03', 21,
+             DATE '2024-02-02', 0.99, false, false, TIMESTAMP '2024-02-03 12:00:00'),
+            ('other-key', 'safe-test', 'S2', DATE '2024-01-03', 21,
+             DATE '2024-02-02', 0.10, false, false, TIMESTAMP '2024-02-03 12:00:00')
         """
     )
     panel = pd.DataFrame(
@@ -313,6 +318,7 @@ def test_survivorship_safe_loader_is_scoped_and_source_governed(tmp_store) -> No
     assert got[["security_id", "horizon", "forward_return"]].to_dict("records") == [
         {"security_id": "S1", "horizon": 21, "forward_return": -0.45}
     ]
+    assert pd.to_datetime(got["as_of_date"]).dt.date.tolist() == [dt.date(2024, 1, 2)]
 
 
 def test_evaluate_panel_persists_ic_rows_per_factor(tmp_store) -> None:

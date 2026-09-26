@@ -23,6 +23,7 @@ from typing import Any, cast
 
 import pandas as pd
 
+from ._vendor_artifact import bar_pick_order_sql, bars_relation_sql
 from .connection import DuckDBStore
 from .factors.cross_section import rank, winsorize, zscore
 from .warehouse import insert_frame, json_dumps
@@ -139,7 +140,7 @@ def load_fundamental_signal_inputs(
                 any_value(symbol) AS fundamental_symbol,
                 accession_number,
                 period_end,
-                arg_max(
+                arg_max_null(
                     value,
                     (available_at, revision_sequence, statement_point_id)
                 ) FILTER (
@@ -160,7 +161,7 @@ def load_fundamental_signal_inputs(
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 379
                 ) AS gross_profit_id,
-                arg_max(
+                arg_max_null(
                     value,
                     (available_at, revision_sequence, statement_point_id)
                 ) FILTER (WHERE canonical_metric = 'total_assets') AS total_assets,
@@ -171,7 +172,7 @@ def load_fundamental_signal_inputs(
                     statement_point_id,
                     (available_at, revision_sequence, statement_point_id)
                 ) FILTER (WHERE canonical_metric = 'total_assets') AS total_assets_id,
-                arg_max(
+                arg_max_null(
                     value,
                     (available_at, revision_sequence, statement_point_id)
                 ) FILTER (WHERE canonical_metric = 'stockholders_equity') AS stockholders_equity,
@@ -182,7 +183,7 @@ def load_fundamental_signal_inputs(
                     statement_point_id,
                     (available_at, revision_sequence, statement_point_id)
                 ) FILTER (WHERE canonical_metric = 'stockholders_equity') AS stockholders_equity_id,
-                arg_max(value, (available_at, revision_sequence, statement_point_id)) FILTER (
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id)) FILTER (
                     WHERE canonical_metric = 'revenue'
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 379
@@ -197,7 +198,7 @@ def load_fundamental_signal_inputs(
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 379
                 ) AS revenue_id,
-                arg_max(value, (available_at, revision_sequence, statement_point_id)) FILTER (
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id)) FILTER (
                     WHERE canonical_metric = 'cogs'
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 379
@@ -212,7 +213,7 @@ def load_fundamental_signal_inputs(
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 379
                 ) AS cogs_id,
-                arg_max(value, (available_at, revision_sequence, statement_point_id)) FILTER (
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id)) FILTER (
                     WHERE canonical_metric = 'sga'
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 379
@@ -227,7 +228,7 @@ def load_fundamental_signal_inputs(
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 379
                 ) AS sga_id,
-                arg_max(value, (available_at, revision_sequence, statement_point_id)) FILTER (
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id)) FILTER (
                     WHERE canonical_metric = 'interest_expense'
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 379
@@ -248,6 +249,7 @@ def load_fundamental_signal_inputs(
                 'revenue', 'cogs', 'sga', 'interest_expense'
             )
               AND period_end IS NOT NULL
+              AND available_at IS NOT NULL
               AND accession_number IS NOT NULL
               AND form IN ('10-K', '10-K/A', '20-F', '20-F/A', '40-F', '40-F/A')
             GROUP BY security_id, accession_number, period_end
@@ -274,20 +276,29 @@ def load_fundamental_signal_inputs(
                   )
               )
         ),
+        -- One whole bar per (security, session) by the publisher's total order; the
+        -- price is checked after the pick (a newest invalid bar never revives an older one).
         price_dedup AS (
-            SELECT
-                security_id,
-                any_value(symbol) AS symbol,
-                trade_date,
-                arg_max("close", available_at) AS close,
-                arg_max(volume, available_at) AS volume,
-                max(available_at) AS price_available_at
-            FROM equity_daily_bars
-            WHERE security_id IN (SELECT DISTINCT security_id FROM annual)
-              AND "close" > 0
-              AND trade_date IS NOT NULL
-              AND available_at IS NOT NULL
-            GROUP BY security_id, trade_date
+            SELECT security_id, symbol, trade_date, close, volume, price_available_at
+            FROM (
+                SELECT
+                    security_id,
+                    symbol,
+                    trade_date,
+                    "close" AS close,
+                    volume,
+                    available_at AS price_available_at,
+                    row_number() OVER (
+                        PARTITION BY security_id, trade_date
+                        ORDER BY {bar_pick_order_sql()}
+                    ) AS bar_pick
+                FROM {bars_relation_sql()} equity_daily_bars
+                WHERE security_id IN (SELECT DISTINCT security_id FROM annual)
+                  AND trade_date IS NOT NULL
+                  AND available_at IS NOT NULL
+            )
+            WHERE bar_pick = 1
+              AND close > 0
         ),
         price_features AS (
             SELECT

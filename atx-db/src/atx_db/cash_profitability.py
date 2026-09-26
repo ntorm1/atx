@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import pandas as pd
 
+from ._vendor_artifact import bar_pick_order_sql, bars_relation_sql
 from .connection import DuckDBStore
 from .factors.cross_section import winsorize, zscore
 from .warehouse import insert_frame, json_dumps
@@ -130,7 +131,8 @@ def load_cash_profitability_inputs(
         )
         pivot_columns.extend(
             [
-                f"arg_max(value, (available_at, revision_sequence, statement_point_id)) "
+                # Newest revision wins even when NULL (arg_max would revive an older value).
+                f"arg_max_null(value, (available_at, revision_sequence, statement_point_id)) "
                 f"FILTER (WHERE canonical_metric = '{metric}'{duration_predicate}) AS {metric}",
                 f"max(available_at) FILTER (WHERE canonical_metric = '{metric}'"
                 f"{duration_predicate}) AS {metric}_available_at",
@@ -152,6 +154,7 @@ def load_cash_profitability_inputs(
             FROM fundamental_statement_points
             WHERE canonical_metric IN ({metric_filter})
               AND period_end IS NOT NULL
+              AND available_at IS NOT NULL
               AND accession_number IS NOT NULL
               AND form IN ('10-K', '10-K/A', '20-F', '20-F/A', '40-F', '40-F/A')
             GROUP BY security_id, accession_number, period_end
@@ -183,24 +186,33 @@ def load_cash_profitability_inputs(
                 ) AS balance_available_at
             FROM annual_facts
         ),
+        -- One whole bar per (security, session) by the publisher's total order; the
+        -- price is checked after the pick (a newest invalid bar never revives an older one).
         price_dedup AS (
-            SELECT
-                security_id,
-                any_value(symbol) AS symbol,
-                trade_date,
-                arg_max("close", available_at) AS "close",
-                arg_max(volume, available_at) AS volume,
-                max(available_at) AS price_available_at
-            FROM equity_daily_bars
-            WHERE security_id IN (
-                SELECT DISTINCT security_id
-                FROM annual
-                WHERE revenue IS NOT NULL AND (cogs IS NOT NULL OR sga IS NOT NULL)
+            SELECT security_id, symbol, trade_date, "close", volume, price_available_at
+            FROM (
+                SELECT
+                    security_id,
+                    symbol,
+                    trade_date,
+                    "close",
+                    volume,
+                    available_at AS price_available_at,
+                    row_number() OVER (
+                        PARTITION BY security_id, trade_date
+                        ORDER BY {bar_pick_order_sql()}
+                    ) AS bar_pick
+                FROM {bars_relation_sql()} equity_daily_bars
+                WHERE security_id IN (
+                    SELECT DISTINCT security_id
+                    FROM annual
+                    WHERE revenue IS NOT NULL AND (cogs IS NOT NULL OR sga IS NOT NULL)
+                )
+                  AND trade_date IS NOT NULL
+                  AND available_at IS NOT NULL
             )
+            WHERE bar_pick = 1
               AND "close" > 0
-              AND trade_date IS NOT NULL
-              AND available_at IS NOT NULL
-            GROUP BY security_id, trade_date
         ),
         price_features AS (
             SELECT

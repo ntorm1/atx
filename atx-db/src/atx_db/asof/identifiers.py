@@ -27,7 +27,7 @@ FROM identifier_resolution_decisions d
 {status_join}
 CROSS JOIN params p
 WHERE d.as_of_date <= p.as_of_date
-  AND (d.available_at IS NULL OR d.available_at <= p.as_of_ts)
+  AND d.available_at <= p.as_of_ts
 ORDER BY d.source_key_type, d.source_key_value, d.target_security_id, d.decision_method
 """
 
@@ -45,7 +45,7 @@ JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id
 CROSS JOIN params p
 WHERE ec.valid_from <= p.as_of_date
   AND coalesce(ec.valid_to, DATE '9999-12-31') > p.as_of_date
-  AND (ec.available_at IS NULL OR ec.available_at <= p.as_of_ts)
+  AND ec.available_at <= p.as_of_ts
 ORDER BY ec.security_id, t.code, ec.is_primary DESC, ec.valid_from
 """
 
@@ -63,7 +63,7 @@ FROM filer_13f_cik_alias fa
 CROSS JOIN params p
 WHERE fa.valid_from <= p.as_of_date
   AND coalesce(fa.valid_to, DATE '9999-12-31') > p.as_of_date
-  AND (fa.available_at IS NULL OR fa.available_at <= p.as_of_ts)
+  AND fa.available_at <= p.as_of_ts
   AND fa.confidence >= p.min_conf
 ORDER BY fa.alias_cik, fa.alias_type, fa.valid_from
 """

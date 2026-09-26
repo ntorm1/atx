@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._vendor_artifact import bar_pick_order_sql, bars_relation_sql
 from .connection import DuckDBStore
 from .derived_dsl import LowerContext, compile_expression
 
@@ -84,9 +85,11 @@ def statements(
     for metric in metrics:
         pred = f"canonical_metric='{metric}'"
         order = "(available_at,revision_sequence,statement_point_id)"
+        # The newest revision wins even when its value is NULL (arg_max would skip it and
+        # revive an older value); value and id come from the same row of one total order.
         pivots.extend(
             (
-                f"arg_max(value,{order}) FILTER (WHERE {pred}) AS {metric}",
+                f"arg_max_null(value,{order}) FILTER (WHERE {pred}) AS {metric}",
                 f"arg_max(statement_point_id,{order}) FILTER (WHERE {pred}) AS {metric}_id",
                 f"max(available_at) FILTER (WHERE {pred}) AS {metric}_at",
             )
@@ -94,11 +97,13 @@ def statements(
     start = ",period_start" if by_start else ""
     codes = ",".join(f"'{m}'" for m in metrics)
     visibility = f" AND available_at<={visible_at}" if visible_at else ""
+    # A row without a clock is never visible (it would also sort as the newest key).
     return Relation(
         f"SELECT * FROM (SELECT security_id,accession_number,period_end{start},"
         f"{','.join(pivots)},max(available_at) AS available_at "
         f"FROM fundamental_statement_points WHERE canonical_metric IN ({codes}) "
         f"AND unit='USD' AND accession_number IS NOT NULL AND period_end IS NOT NULL "
+        f"AND available_at IS NOT NULL "
         f"AND {period_filter} {forms} AND ({row_filter}) {visibility} "
         f"GROUP BY security_id,accession_number,period_end{start}) WHERE {eligible}"
     )
@@ -108,19 +113,28 @@ def trailing(
     metrics: tuple[str, ...], *, complete: bool = False, latest: bool = False,
     by_accession: bool = True, visible_at: str | None = None,
 ) -> Relation:
-    """Select reported TTM facts, optionally requiring four-quarter coverage."""
+    """Select reported TTM facts, optionally requiring four-quarter coverage.
+
+    ``latest`` selects each TTM point's newest revision visible at the selecting grid row's
+    decision clock (``b.decision_available_at``; the relation is read inside a selection's
+    lateral join), never the stored ``is_latest_revision`` flag: that flag is today's
+    knowledge and hides a restated point's original at every decision before the restatement.
+    An explicit ``visible_at`` takes precedence.
+    """
 
     fields: list[str] = []
     for metric in metrics:
         pred = f"canonical_metric='{metric}'"
         fields.extend(
             (
-                f"arg_max(ttm_value,(available_at,revision_sequence,ttm_point_id)) FILTER (WHERE {pred}) AS {metric}",
+                f"arg_max_null(ttm_value,(available_at,revision_sequence,ttm_point_id)) FILTER (WHERE {pred}) AS {metric}",
                 f"arg_max(ttm_point_id,(available_at,revision_sequence,ttm_point_id)) FILTER (WHERE {pred}) AS {metric}_id",
             )
         )
     codes = ",".join(f"'{m}'" for m in metrics)
-    filters = "AND is_latest_revision" if latest else ""
+    filters = "AND available_at IS NOT NULL"
+    if latest and not visible_at:
+        visible_at = "b.decision_available_at"
     if visible_at:
         filters += f" AND available_at<={visible_at}"
     if complete:
@@ -173,19 +187,26 @@ def prior(
     return Selection(name, relation, predicate, order)
 
 
-_PRICE_RELATION = """
+# One whole bar per (security, session): the publisher's total order over the rows visible
+# at the session's 22:00 UTC cutoff, then the price is checked. Separate arg_max picks would
+# skip a newest NULL volume or split factor and revive an older revision's (a phantom split).
+_PRICE_RELATION = f"""
 SELECT *,product(CASE WHEN split_factor>0 AND (split_factor<=0.8 OR split_factor>=1.25)
                      THEN split_factor ELSE 1 END)
              OVER (PARTITION BY security_id ORDER BY trade_date) AS split_index,
          avg(close*volume) OVER (PARTITION BY security_id ORDER BY trade_date
                                 ROWS BETWEEN 20 PRECEDING AND CURRENT ROW) AS adv21_usd
 FROM (
-    SELECT security_id,any_value(symbol) AS symbol,trade_date,
-           arg_max(close,available_at) AS close,arg_max(volume,available_at) AS volume,
-           arg_max(split_factor,available_at) AS split_factor,max(available_at) AS available_at
-    FROM equity_daily_bars WHERE close>0 AND trade_date IS NOT NULL AND available_at IS NOT NULL
-      AND available_at<=CAST(trade_date AS TIMESTAMP)+INTERVAL 22 HOUR
-    GROUP BY security_id,trade_date
+    SELECT security_id,symbol,trade_date,close,volume,split_factor,available_at
+    FROM (
+        SELECT security_id,symbol,trade_date,close,volume,split_factor,available_at,
+               row_number() OVER (PARTITION BY security_id,trade_date
+                                  ORDER BY {bar_pick_order_sql()}) AS bar_pick
+        FROM {bars_relation_sql()} equity_daily_bars
+        WHERE trade_date IS NOT NULL AND available_at IS NOT NULL
+          AND available_at<=CAST(trade_date AS TIMESTAMP)+INTERVAL 22 HOUR
+    )
+    WHERE bar_pick=1 AND close>0
 )
 """
 
@@ -329,10 +350,10 @@ def _grid(metric: CompatibilityMetric, universe_id: str) -> str:
     return f"""{select} FROM ({month}) m JOIN universe_membership u
         ON u.security_id=m.security_id AND u.universe_id='{escaped_universe}'
        AND u.valid_from<=m.trade_date AND (u.valid_to IS NULL OR u.valid_to>=m.trade_date)
-       AND u.as_of_date<=m.trade_date AND u.is_member AND u.is_latest_revision
-       AND (u.available_at IS NULL OR u.available_at<={clock})
+       AND u.as_of_date<=m.trade_date AND u.is_member
+       AND u.available_at<={clock}
        QUALIFY row_number() OVER (PARTITION BY m.security_id,m.trade_date
-           ORDER BY u.valid_from DESC,u.available_at DESC NULLS LAST,u.source_loaded_at DESC,u.source DESC)=1"""
+           ORDER BY u.valid_from DESC,u.available_at DESC,u.source_loaded_at DESC,u.source DESC)=1"""
 
 
 def build_compatibility_sql(metric: CompatibilityMetric, universe_id: str) -> str:

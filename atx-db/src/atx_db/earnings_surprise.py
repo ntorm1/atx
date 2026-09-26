@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._vendor_artifact import bar_pick_order_sql, bars_relation_sql
 from .connection import DuckDBStore
 from .factors.cross_section import winsorize, zscore
 from .warehouse import insert_frame, json_dumps
@@ -142,19 +143,29 @@ def load_earnings_surprise_inputs(
             FROM standardized
             WHERE history_observations >= ? AND historical_std > 0
         ),
+        -- One whole bar per (security, session) by the publisher's total order, then the
+        -- price check: separate arg_max picks would skip a newest NULL split factor or
+        -- volume and revive an older revision's (a phantom split in split_index).
         price_dedup AS (
-            SELECT
-                security_id,
-                any_value(symbol) AS symbol,
-                trade_date,
-                arg_max("close", available_at) AS "close",
-                arg_max(volume, available_at) AS volume,
-                arg_max(split_factor, available_at) AS split_factor,
-                max(available_at) AS price_available_at
-            FROM equity_daily_bars
-            WHERE security_id IN (SELECT DISTINCT security_id FROM signals)
-              AND "close" > 0 AND trade_date IS NOT NULL AND available_at IS NOT NULL
-            GROUP BY security_id, trade_date
+            SELECT security_id, symbol, trade_date, "close", volume, split_factor, price_available_at
+            FROM (
+                SELECT
+                    security_id,
+                    symbol,
+                    trade_date,
+                    "close",
+                    volume,
+                    split_factor,
+                    available_at AS price_available_at,
+                    row_number() OVER (
+                        PARTITION BY security_id, trade_date
+                        ORDER BY {bar_pick_order_sql()}
+                    ) AS bar_pick
+                FROM {bars_relation_sql()} equity_daily_bars
+                WHERE security_id IN (SELECT DISTINCT security_id FROM signals)
+                  AND trade_date IS NOT NULL AND available_at IS NOT NULL
+            )
+            WHERE bar_pick = 1 AND "close" > 0
         ),
         price_features AS (
             SELECT

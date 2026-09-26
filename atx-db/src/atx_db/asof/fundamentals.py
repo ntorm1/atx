@@ -14,6 +14,9 @@ from ._common import (
     pd,
 )
 
+# Ties within a filing date break on the FC1 clock, then the accession; fundamental_points
+# has no row id, so the remaining row fields complete a total order (the load clock
+# ``source_loaded_at`` never decides: a reload would change the pick).
 FUNDAMENTALS_ASOF_SQL = f"""
 WITH params AS (
     SELECT
@@ -25,7 +28,15 @@ ranked AS (
         f.*,
         row_number() OVER (
             PARTITION BY f.security_id, f.metric, f.period_start, f.period_end, f.unit
-            ORDER BY f.as_of_date DESC, f.source_loaded_at DESC
+            ORDER BY f.as_of_date DESC,
+                     f.available_at DESC,
+                     f.accession_number DESC NULLS LAST,
+                     f.source DESC,
+                     f.taxonomy DESC NULLS LAST,
+                     f.form DESC NULLS LAST,
+                     f.fiscal_year DESC NULLS LAST,
+                     f.fiscal_period DESC NULLS LAST,
+                     f.value DESC NULLS LAST
         ) AS rn
     FROM {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} f
     {{symbol_join}}
@@ -33,7 +44,7 @@ ranked AS (
     CROSS JOIN params p
     WHERE f.period_end <= p.as_of_date
       AND f.as_of_date <= p.as_of_date
-      AND (f.available_at IS NULL OR f.available_at <= p.as_of_ts)
+      AND f.available_at <= p.as_of_ts
 )
 SELECT *
 FROM ranked
@@ -64,7 +75,7 @@ ranked AS (
     CROSS JOIN params prm
     WHERE p.period_end <= prm.as_of_date
       AND p.as_of_date <= prm.as_of_date
-      AND (p.available_at IS NULL OR p.available_at <= prm.as_of_ts)
+      AND p.available_at <= prm.as_of_ts
 )
 SELECT *
 FROM ranked
@@ -95,7 +106,7 @@ ranked AS (
     CROSS JOIN params prm
     WHERE t.ttm_end_date <= prm.as_of_date
       AND t.as_of_date <= prm.as_of_date
-      AND (t.available_at IS NULL OR t.available_at <= prm.as_of_ts)
+      AND t.available_at <= prm.as_of_ts
 )
 SELECT *
 FROM ranked
@@ -125,7 +136,7 @@ ranked AS (
     CROSS JOIN params prm
     WHERE fp.period_end <= prm.as_of_date
       AND fp.as_of_date <= prm.as_of_date
-      AND (fp.available_at IS NULL OR fp.available_at <= prm.as_of_ts)
+      AND fp.available_at <= prm.as_of_ts
 )
 SELECT *
 FROM ranked
@@ -156,7 +167,7 @@ ranked AS (
     CROSS JOIN params p
     WHERE s.effective_date <= p.as_of_date
       AND s.as_of_date <= p.as_of_date
-      AND (s.available_at IS NULL OR s.available_at <= p.as_of_ts)
+      AND s.available_at <= p.as_of_ts
 )
 SELECT *
 FROM ranked

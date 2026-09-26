@@ -132,10 +132,12 @@ def load_quarterly_inventory_investment_inputs(
             FROM fundamental_factor_values
             WHERE {' AND '.join(predicates)}
         ),
+        -- The newest visible revision of the filing's total assets wins whole: a NULL or
+        -- non-finite newest value is missing, never replaced by an older revision's.
         candidates AS (
             SELECT
                 b.*,
-                a.value AS current_total_assets,
+                CASE WHEN isfinite(a.value) THEN a.value END AS current_total_assets,
                 a.statement_point_id AS current_total_assets_id,
                 a.available_at AS current_total_assets_available_at,
                 row_number() OVER (
@@ -152,8 +154,6 @@ def load_quarterly_inventory_investment_inputs(
              AND a.canonical_metric = 'total_assets'
              AND a.unit = 'USD'
              AND a.period_type = 'instant'
-             AND a.value IS NOT NULL
-             AND isfinite(a.value)
              AND a.available_at IS NOT NULL
              AND a.available_at <= b.decision_available_at
         )

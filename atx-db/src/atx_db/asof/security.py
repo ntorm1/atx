@@ -22,17 +22,22 @@ WITH params AS (
         CAST(? AS DATE) AS as_of_date,
         CAST(? AS TIMESTAMP) AS as_of_ts
 ),
+-- One identifier per type: the newest visible interval (valid_from, then clock), never
+-- the lexically largest of overlapping values.
 ids AS (
     SELECT
         i.security_id,
-        max(CASE WHEN i.id_type = 'CIK' THEN i.id_value END) AS cik,
-        max(CASE WHEN i.id_type = 'CUSIP' THEN i.id_value END) AS cusip,
-        max(CASE WHEN i.id_type = 'TICKER' THEN i.id_value END) AS ticker
+        arg_max(i.id_value, (i.valid_from, i.available_at, i.source, i.id_value))
+            FILTER (WHERE i.id_type = 'CIK') AS cik,
+        arg_max(i.id_value, (i.valid_from, i.available_at, i.source, i.id_value))
+            FILTER (WHERE i.id_type = 'CUSIP') AS cusip,
+        arg_max(i.id_value, (i.valid_from, i.available_at, i.source, i.id_value))
+            FILTER (WHERE i.id_type = 'TICKER') AS ticker
     FROM security_identifier_history i
     CROSS JOIN params p
     WHERE i.valid_from <= p.as_of_date
       AND coalesce(i.valid_to, DATE '9999-12-31') > p.as_of_date
-      AND (i.available_at IS NULL OR i.available_at <= p.as_of_ts)
+      AND i.available_at <= p.as_of_ts
     GROUP BY i.security_id
 )
 SELECT
@@ -63,7 +68,7 @@ CROSS JOIN params p
 WHERE l.valid_from <= p.as_of_date
   AND coalesce(l.valid_to, DATE '9999-12-31') > p.as_of_date
   AND l.as_of_date <= p.as_of_date
-  AND (l.available_at IS NULL OR l.available_at <= p.as_of_ts)
+  AND l.available_at <= p.as_of_ts
 ORDER BY l.symbol, l.listing_venue_code, l.status, l.valid_from, l.evidence_source
 """
 

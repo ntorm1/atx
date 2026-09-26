@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .calendar import DECISION_HOUR_UTC, next_session
 from .connection import DEFAULT_DB_PATH, connect  # noqa: F401  (re-exported per interfaces contract)
 from .quality import QualityResult, _registry_allows_check
 from .research import stats as research_stats
@@ -1093,22 +1094,26 @@ def load_panel_for_eval(
                     security_id, as_of_date, factor_id, value, available_at,
                     source_loaded_at, run_id, input_lineage_json
                 FROM fundamental_factor_values
-                WHERE is_latest_revision
-                  AND value IS NOT NULL
+                WHERE available_at IS NOT NULL
                   AND factor_id IN ({placeholders})
                 UNION ALL
                 SELECT
                     security_id, as_of_date, factor_id, value, available_at,
                     source_loaded_at, run_id, input_lineage_json
                 FROM cross_domain_factor_values
-                WHERE is_latest_revision
-                  AND value IS NOT NULL
+                WHERE available_at IS NOT NULL
                   AND factor_id IN ({placeholders})
             ),
+            -- Every revision enters at its own clock (no stored latest flag): a value is
+            -- dated by the first date whose {DECISION_HOUR_UTC}:00 UTC cutoff it meets.
             factor_values AS (
                 SELECT
                     security_id,
-                    greatest(as_of_date, cast(available_at AS DATE)) AS as_of_date,
+                    greatest(
+                        as_of_date,
+                        CAST(available_at + INTERVAL {24 - DECISION_HOUR_UTC} HOUR
+                             - INTERVAL 1 MICROSECOND AS DATE)
+                    ) AS as_of_date,
                     factor_id,
                     value,
                     available_at,
@@ -1139,9 +1144,10 @@ def load_panel_for_eval(
                  AND (u.valid_to IS NULL OR u.valid_to >= f.as_of_date)
                  AND u.as_of_date <= f.as_of_date
                  AND u.is_member
-                 AND u.is_latest_revision
-                 AND (u.available_at IS NULL OR cast(u.available_at AS DATE) <= f.as_of_date)
+                 AND u.available_at <= CAST(f.as_of_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR_UTC} HOUR
             ),
+            -- The newest revision per key wins whole: a NULL value is a missing
+            -- observation, never replaced by an older non-NULL value.
             latest_factor AS (
                 SELECT
                     *,
@@ -1152,7 +1158,7 @@ def load_panel_for_eval(
                     ) AS factor_rn
                 FROM universe_filtered
                 WHERE universe_rn = 1
-                  AND cast(available_at AS DATE) <= as_of_date
+                  AND available_at <= CAST(as_of_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR_UTC} HOUR
             )
             SELECT
                 p.security_id,
@@ -1162,6 +1168,7 @@ def load_panel_for_eval(
                 p.available_at
             FROM latest_factor p
             WHERE p.factor_rn = 1
+              AND p.value IS NOT NULL
             ORDER BY p.factor_id, p.as_of_date, p.security_id
             """,
             params,
@@ -1323,6 +1330,39 @@ def neutralize_panel_by_industry(
     return NeutralizationResult(panel=out, diagnostics=diagnostics)
 
 
+def survivorship_entry_keys(panel: pd.DataFrame) -> pd.DataFrame:
+    """``security_id, as_of_date, entry_date`` for each panel formation key (CLOCKS.md).
+
+    A feature dated ``t`` is known at ``t`` 22:00 UTC, after every XNYS close, so its
+    position enters at the close of ``next_session(t)``: the label anchored at the entry
+    session, never the label anchored at ``t`` itself. A row whose ``available_at`` is later
+    than its date's cutoff is dated by its clock instead (the first date whose 22:00 UTC
+    cutoff is at or after it). A key with several rows enters after its latest clock.
+    """
+    columns = ["security_id", "as_of_date"]
+    keys = panel.loc[:, [*columns, *(["available_at"] if "available_at" in panel.columns else [])]].copy()
+    keys["as_of_date"] = pd.to_datetime(keys["as_of_date"]).dt.date
+    feature_date = keys["as_of_date"]
+    if "available_at" in keys.columns:
+        clock = pd.to_datetime(keys["available_at"], errors="coerce")
+        if getattr(clock.dt, "tz", None) is not None:
+            clock = clock.dt.tz_convert("UTC").dt.tz_localize(None)
+        # The first date d with d + DECISION_HOUR_UTC >= clock.
+        known_on = (
+            clock + pd.Timedelta(hours=24 - DECISION_HOUR_UTC) - pd.Timedelta(microseconds=1)
+        ).dt.date
+        feature_date = pd.Series(
+            [max(d, k) if pd.notna(k) else d for d, k in zip(feature_date, known_on, strict=True)],
+            index=keys.index,
+        )
+    keys["feature_date"] = feature_date
+    keys = keys[keys["as_of_date"].notna()]
+    keys = keys.groupby(columns, as_index=False, sort=True)["feature_date"].max()
+    entries = {day: next_session(day) for day in keys["feature_date"].unique()}
+    keys["entry_date"] = keys["feature_date"].map(entries)
+    return keys.loc[:, [*columns, "entry_date"]]
+
+
 def load_survivorship_safe_forward_returns(
     store,
     panel: pd.DataFrame,
@@ -1330,7 +1370,14 @@ def load_survivorship_safe_forward_returns(
     horizons: Iterable[int],
     source: str = DEFAULT_SURVIVORSHIP_SAFE_SOURCE,
 ) -> pd.DataFrame:
-    """Read the governed survivorship-safe target at only the requested formation keys."""
+    """Read the governed survivorship-safe target at only the requested formation keys.
+
+    Each formation key reads the label anchored at its entry session
+    (:func:`survivorship_entry_keys`): the next session after the feature date, so no
+    label shares its anchor with a feature known only after that day's close. Rows are
+    returned under the panel's own ``as_of_date``. Per label key the newest revision
+    wins whole (a NULL return is a missing target, never an older value).
+    """
 
     columns = ["security_id", "as_of_date", "horizon", "forward_return"]
     horizon_list = tuple(dict.fromkeys(int(horizon) for horizon in horizons))
@@ -1344,8 +1391,7 @@ def load_survivorship_safe_forward_returns(
             "forward_returns_survivorship_safe is empty"
         )
 
-    keys = panel.loc[:, ["security_id", "as_of_date"]].drop_duplicates().copy()
-    keys["as_of_date"] = pd.to_datetime(keys["as_of_date"]).dt.date
+    keys = survivorship_entry_keys(panel)
     store.con.register("signal_eval_survivorship_keys", keys)
     store.con.register(
         "signal_eval_survivorship_horizons",
@@ -1354,25 +1400,35 @@ def load_survivorship_safe_forward_returns(
     try:
         result = store.con.execute(
             """
+            WITH picked AS (
+                SELECT
+                    f.security_id,
+                    f.as_of_date AS entry_date,
+                    f.horizon_days,
+                    f.forward_return
+                FROM forward_returns_survivorship_safe f
+                JOIN (SELECT DISTINCT security_id, entry_date FROM signal_eval_survivorship_keys) e
+                  ON e.security_id = f.security_id
+                 AND e.entry_date = f.as_of_date
+                JOIN signal_eval_survivorship_horizons h
+                  ON h.horizon = f.horizon_days
+                WHERE f.source = ?
+                QUALIFY row_number() OVER (
+                    PARTITION BY f.security_id, f.as_of_date, f.horizon_days
+                    ORDER BY f.available_at DESC, f.source_loaded_at DESC, f.forward_return_id DESC
+                ) = 1
+            )
             SELECT
-                f.security_id,
-                f.as_of_date,
-                f.horizon_days AS horizon,
-                f.forward_return
-            FROM forward_returns_survivorship_safe f
-            JOIN signal_eval_survivorship_keys k
-              ON k.security_id = f.security_id
-             AND k.as_of_date = f.as_of_date
-            JOIN signal_eval_survivorship_horizons h
-              ON h.horizon = f.horizon_days
-            WHERE f.source = ?
-              AND f.is_latest_revision = true
-              AND f.forward_return IS NOT NULL
-            QUALIFY row_number() OVER (
-                PARTITION BY f.security_id, f.as_of_date, f.horizon_days
-                ORDER BY f.available_at DESC, f.source_loaded_at DESC, f.forward_return_id DESC
-            ) = 1
-            ORDER BY f.security_id, f.as_of_date, f.horizon_days
+                k.security_id,
+                k.as_of_date,
+                p.horizon_days AS horizon,
+                p.forward_return
+            FROM signal_eval_survivorship_keys k
+            JOIN picked p
+              ON p.security_id = k.security_id
+             AND p.entry_date = k.entry_date
+            WHERE p.forward_return IS NOT NULL
+            ORDER BY k.security_id, k.as_of_date, p.horizon_days
             """,
             [source],
         ).df()
@@ -2358,7 +2414,7 @@ def _derive_universe_counts(
     store.con.register("signal_eval_coverage_dates", pd.DataFrame({"as_of_date": dates}))
     try:
         return store.con.execute(
-            """
+            f"""
             SELECT
                 d.as_of_date,
                 count(DISTINCT u.security_id) AS universe_size
@@ -2369,8 +2425,7 @@ def _derive_universe_counts(
              AND (u.valid_to IS NULL OR u.valid_to >= d.as_of_date)
              AND u.as_of_date <= d.as_of_date
              AND u.is_member
-             AND u.is_latest_revision
-             AND (u.available_at IS NULL OR CAST(u.available_at AS DATE) <= d.as_of_date)
+             AND u.available_at <= CAST(d.as_of_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR_UTC} HOUR
             GROUP BY d.as_of_date
             ORDER BY d.as_of_date
             """,

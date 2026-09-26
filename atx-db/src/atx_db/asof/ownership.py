@@ -99,7 +99,7 @@ ranked AS (
         row_number() OVER (
             PARTITION BY coalesce(o.security_id, o.cusip)
             ORDER BY o.report_period DESC NULLS LAST,
-                     o.available_at DESC NULLS LAST,
+                     o.available_at DESC,
                      o.source_loaded_at DESC
         ) AS rn
     FROM thirteenf_security_ownership o
@@ -108,7 +108,7 @@ ranked AS (
     CROSS JOIN params p
     WHERE o.report_period <= p.as_of_date
       AND o.as_of_date <= p.as_of_date
-      AND (o.available_at IS NULL OR o.available_at <= p.as_of_ts)
+      AND o.available_at <= p.as_of_ts
 )
 SELECT *
 FROM ranked
@@ -130,7 +130,7 @@ FROM insider_transaction t
 CROSS JOIN params p
 WHERE coalesce(t.transaction_date, t.as_of_date) <= p.as_of_date
   AND (t.as_of_date IS NULL OR t.as_of_date <= p.as_of_date)
-  AND (t.available_at IS NULL OR t.available_at <= p.as_of_ts)
+  AND t.available_at <= p.as_of_ts
 ORDER BY coalesce(t.transaction_date, t.as_of_date), t.security_id, t.insider_id, t.transaction_ordinal
 """
 
@@ -148,7 +148,7 @@ CROSS JOIN params p
 WHERE r.valid_from <= p.as_of_date
   AND coalesce(r.valid_to, DATE '9999-12-31') > p.as_of_date
   AND (r.as_of_date IS NULL OR r.as_of_date <= p.as_of_date)
-  AND (r.available_at IS NULL OR r.available_at <= p.as_of_ts)
+  AND r.available_at <= p.as_of_ts
 ORDER BY r.security_id, r.insider_id, r.valid_from
 """
 
@@ -187,7 +187,7 @@ SELECT
     cluster_sale_count, cluster_seller_count, cluster_sale_value,
     plan_sale_value_ratio, is_cluster_buy, is_discretionary_sell_pressure,
     is_10b5_1_heavy_sale, source_transaction_ids_json, restatement_seq,
-    is_latest_revision, as_of_date, available_at, run_id, source_loaded_at
+    as_of_date, available_at, run_id, source_loaded_at
 FROM visible
 WHERE rn = 1
 ORDER BY signal_date, security_id
@@ -220,7 +220,7 @@ SELECT
     security_name, round_lot_size, is_etf, is_test_issue, is_next_shares,
     financial_status_code, financial_status_label, has_financial_status,
     is_listing_compliant, is_deficient, is_delinquent, is_bankrupt, is_noncompliant,
-    restatement_seq, is_latest_revision, available_at, run_id, source_loaded_at
+    restatement_seq, available_at, run_id, source_loaded_at
 FROM visible
 WHERE rn = 1
 ORDER BY security_id
@@ -232,15 +232,27 @@ WITH params AS (
         CAST(? AS DATE) AS as_of_date,
         CAST(? AS TIMESTAMP) AS as_of_ts
 ),
+-- The newest visible amendment per intent (the writer's is_latest key), never the stored
+-- latest flag: that flag drops an original notice at every cutoff before its amendment.
 visible_intents AS (
-    SELECT f.*
-    FROM form144_intent f
-    {security_join}
-    {symbol_join}
-    CROSS JOIN params p
-    WHERE coalesce(f.as_of_date, f.notice_date, f.filing_date, f.approx_sale_date) <= p.as_of_date
-      AND coalesce(f.is_latest, true)
-      AND (f.available_at IS NULL OR f.available_at <= p.as_of_ts)
+    SELECT * EXCLUDE (rn)
+    FROM (
+        SELECT
+            f.*,
+            row_number() OVER (
+                PARTITION BY f.source, coalesce(f.seller_cik, f.seller_name_norm), f.security_id,
+                             coalesce(f.approx_sale_date, f.notice_date, f.filing_date),
+                             coalesce(f.security_title, '')
+                ORDER BY f.available_at DESC, f.filing_id
+            ) AS rn
+        FROM form144_intent f
+        {security_join}
+        {symbol_join}
+        CROSS JOIN params p
+        WHERE coalesce(f.as_of_date, f.notice_date, f.filing_date, f.approx_sale_date) <= p.as_of_date
+          AND f.available_at <= p.as_of_ts
+    )
+    WHERE rn = 1
 ),
 visible_links AS (
     SELECT
@@ -253,9 +265,9 @@ visible_links AS (
     FROM form144_to_form4_link l
     JOIN insider_transaction t ON t.transaction_id = l.insider_transaction_id
     CROSS JOIN params p
-    WHERE (l.available_at IS NULL OR l.available_at <= p.as_of_ts)
+    WHERE l.available_at <= p.as_of_ts
       AND coalesce(t.transaction_date, t.as_of_date) <= p.as_of_date
-      AND (t.available_at IS NULL OR t.available_at <= p.as_of_ts)
+      AND t.available_at <= p.as_of_ts
     GROUP BY l.form144_filing_id
 )
 SELECT
@@ -328,10 +340,10 @@ JOIN insider_transaction t ON t.transaction_id = l.insider_transaction_id
 {symbol_join}
 CROSS JOIN params p
 WHERE coalesce(l.as_of_date, f.as_of_date, f.notice_date, f.filing_date, f.approx_sale_date) <= p.as_of_date
-  AND (f.available_at IS NULL OR f.available_at <= p.as_of_ts)
+  AND f.available_at <= p.as_of_ts
   AND coalesce(t.transaction_date, t.as_of_date) <= p.as_of_date
-  AND (t.available_at IS NULL OR t.available_at <= p.as_of_ts)
-  AND (l.available_at IS NULL OR l.available_at <= p.as_of_ts)
+  AND t.available_at <= p.as_of_ts
+  AND l.available_at <= p.as_of_ts
 ORDER BY f.approx_sale_date, f.seller_name, t.transaction_date
 """
 
@@ -366,7 +378,7 @@ LEFT JOIN blockholder_reporting_person p
 {schedule_join}
 CROSS JOIN params prm
 WHERE coalesce(f.event_date, f.filing_date) <= prm.as_of_date
-  AND (f.available_at IS NULL OR f.available_at <= prm.as_of_ts)
+  AND f.available_at <= prm.as_of_ts
 ORDER BY coalesce(f.event_date, f.filing_date), f.accession_number, p.reporting_person_seq
 """
 

@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._vendor_artifact import bar_pick_order_sql, bars_relation_sql
 from .connection import DuckDBStore
 from .factors.cross_section import winsorize, zscore
 from .universe import DEFAULT_UNIVERSE_ID
@@ -82,7 +83,7 @@ def load_noa_proxy_turnover_change_inputs(
                 any_value(symbol) AS fundamental_symbol,
                 accession_number,
                 period_end,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (
                         WHERE canonical_metric = 'revenue'
                           AND period_type = 'duration'
@@ -103,7 +104,7 @@ def load_noa_proxy_turnover_change_inputs(
                       AND period_start IS NOT NULL
                       AND period_end - period_start BETWEEN 329 AND 399
                 ) AS revenue_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (
                         WHERE canonical_metric = 'stockholders_equity'
                           AND period_type = 'instant'
@@ -118,7 +119,7 @@ def load_noa_proxy_turnover_change_inputs(
                     WHERE canonical_metric = 'stockholders_equity'
                       AND period_type = 'instant'
                 ) AS equity_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (
                         WHERE canonical_metric = 'lt_debt'
                           AND period_type = 'instant'
@@ -133,7 +134,7 @@ def load_noa_proxy_turnover_change_inputs(
                     WHERE canonical_metric = 'lt_debt'
                       AND period_type = 'instant'
                 ) AS lt_debt_available_at,
-                arg_max(value, (available_at, revision_sequence, statement_point_id))
+                arg_max_null(value, (available_at, revision_sequence, statement_point_id))
                     FILTER (
                         WHERE canonical_metric = 'cash_st_inv'
                           AND period_type = 'instant'
@@ -154,6 +155,7 @@ def load_noa_proxy_turnover_change_inputs(
                   )
               AND unit = 'USD'
               AND period_end IS NOT NULL
+              AND available_at IS NOT NULL
               AND accession_number IS NOT NULL
               AND form IN (
                   '10-K', '10-K/A', '10-KT',
@@ -207,18 +209,27 @@ def load_noa_proxy_turnover_change_inputs(
               AND equity + lt_debt - cash_st_inv > 0
               AND isfinite(equity + lt_debt - cash_st_inv)
         ),
+        -- A priced session: its newest bar (publisher's total order) has a valid close.
         price_dedup AS (
-            SELECT
-                security_id,
-                any_value(symbol) AS symbol,
-                trade_date,
-                max(available_at) AS price_available_at
-            FROM equity_daily_bars
-            WHERE security_id IN (SELECT DISTINCT security_id FROM revenue_events)
+            SELECT security_id, symbol, trade_date, price_available_at
+            FROM (
+                SELECT
+                    security_id,
+                    symbol,
+                    trade_date,
+                    close,
+                    available_at AS price_available_at,
+                    row_number() OVER (
+                        PARTITION BY security_id, trade_date
+                        ORDER BY {bar_pick_order_sql()}
+                    ) AS bar_pick
+                FROM {bars_relation_sql()} equity_daily_bars
+                WHERE security_id IN (SELECT DISTINCT security_id FROM revenue_events)
+                  AND trade_date IS NOT NULL
+                  AND available_at IS NOT NULL
+            )
+            WHERE bar_pick = 1
               AND close > 0
-              AND trade_date IS NOT NULL
-              AND available_at IS NOT NULL
-            GROUP BY security_id, trade_date
         ),
         price_months AS (
             SELECT
@@ -244,7 +255,7 @@ def load_noa_proxy_turnover_change_inputs(
                 row_number() OVER (
                     PARTITION BY p.security_id, p.trade_date
                     ORDER BY u.valid_from DESC,
-                             u.available_at DESC NULLS LAST,
+                             u.available_at DESC,
                              u.source_loaded_at DESC,
                              u.source DESC
                 ) AS universe_rank
@@ -256,8 +267,7 @@ def load_noa_proxy_turnover_change_inputs(
              AND (u.valid_to IS NULL OR u.valid_to >= p.trade_date)
              AND u.as_of_date <= p.trade_date
              AND u.is_member
-             AND u.is_latest_revision
-             AND (u.available_at IS NULL OR u.available_at <= p.price_available_at)
+             AND u.available_at <= p.price_available_at
         ),
         current_candidates AS (
             SELECT
