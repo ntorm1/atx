@@ -31,7 +31,7 @@
 //       max_lookback() here is the MAX over the constituents' own max_lookback().
 //
 // ===========================================================================
-//  Blend semantics (implement EXACTLY — the ambiguities are resolved + documented)
+//  LegacyPerCellV1 blend semantics (explicit reproduction rule)
 // ===========================================================================
 //  evaluate(panel) evaluates each constituent over `panel` (propagating any Err)
 //  and blends their current-date cross-sections into ONE signal of length
@@ -108,6 +108,12 @@
 
 namespace atx::engine::combine {
 
+// V2 treats missing constituent opinions as neutral contributions to a fixed
+// gross blend, then standardizes the finite cross-section at the current date.
+// It avoids boosting a name merely because fewer signals cover it. V1 retains
+// the per-cell renormalization described below for historical reproduction.
+enum class CombinedSourceRule : atx::u8 { LegacyPerCellV1 = 1, StandardizedFixedGrossV2 = 2 };
+
 namespace detail {
 
 // Quiet NaN "no opinion" sentinel (matches the SignalView NaN contract / the
@@ -123,12 +129,12 @@ inline constexpr atx::f64 kCombineNaN = std::numeric_limits<atx::f64>::quiet_NaN
 // NaN-last == out-of-set: they receive a NaN rank (so the per-cell mean excludes
 // them). Empty valid set -> every cell NaN. Order-fixed -> deterministic.
 inline void cs_percentile_rank(std::span<const atx::f64> s, std::vector<atx::usize> &order_scratch,
-                               std::span<atx::f64> out) {
+                               std::span<atx::f64> out, bool finite_midrank = false) {
   const atx::usize n = s.size();
   order_scratch.clear();
   for (atx::usize i = 0U; i < n; ++i) {
     out[i] = kCombineNaN; // default: out-of-set (NaN) unless ranked below
-    if (!std::isnan(s[i])) {
+    if (finite_midrank ? std::isfinite(s[i]) : !std::isnan(s[i])) {
       order_scratch.push_back(i); // ascending instrument index (stable tie-break)
     }
   }
@@ -140,6 +146,18 @@ inline void cs_percentile_rank(std::span<const atx::f64> s, std::vector<atx::usi
   // deterministic ordinal tie-break (identical to cs_ops.hpp cs_rank_row).
   std::stable_sort(order_scratch.begin(), order_scratch.end(),
                    [&](atx::usize a, atx::usize b) { return s[a] < s[b]; });
+  if (finite_midrank) {
+    for (atx::usize begin = 0; begin < nv;) {
+      atx::usize end = begin + 1;
+      while (end < nv && s[order_scratch[end]] == s[order_scratch[begin]]) ++end;
+      const auto rank = nv == 1 ? 0.5 :
+          (static_cast<atx::f64>(begin) + static_cast<atx::f64>(end - 1)) /
+              (2.0 * static_cast<atx::f64>(nv - 1));
+      for (auto r = begin; r < end; ++r) out[order_scratch[r]] = rank;
+      begin = end;
+    }
+    return;
+  }
   for (atx::usize r = 0U; r < nv; ++r) {
     const atx::f64 pct =
         (nv == 1U) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(nv - 1U);
@@ -172,14 +190,19 @@ public:
   /// weights[i] for every constituent i; a length disagreement is a wiring bug that
   /// would read OOB on the apply path — ABORTS in debug, fail-closed).
   CombinedSignalSource(std::vector<ISignalSource *> sources, Combination combo,
-                       CombineMethod method) noexcept
-      : sources_{std::move(sources)}, combo_{std::move(combo)}, method_{method} {
+                       CombineMethod method,
+                       CombinedSourceRule rule = CombinedSourceRule::StandardizedFixedGrossV2) noexcept
+      : sources_{std::move(sources)}, combo_{std::move(combo)}, method_{method}, rule_{rule} {
     // ATX_ASSERT aborts (noexcept-compatible): the per-alpha weight vector must be
     // index-aligned to the constituents (combiner.hpp documents Σ|w|=1 over exactly
     // pool.size() == sources_.size() weights). RankAverage ignores the weights, but
     // the invariant is cheap and uniform, so it is asserted unconditionally.
     ATX_ASSERT(combo_.weights.size() == sources_.size());
+    ATX_CHECK(rule == CombinedSourceRule::LegacyPerCellV1 ||
+              rule == CombinedSourceRule::StandardizedFixedGrossV2);
   }
+
+  [[nodiscard]] CombinedSourceRule rule() const noexcept { return rule_; }
 
   /// Evaluate each constituent over `panel`, blend into ONE cross-sectional signal,
   /// and return a SignalView borrowing the owned out_ buffer (valid until the next
@@ -188,6 +211,11 @@ public:
   /// is invalidated by the next evaluate() on this instance (see the class note).
   [[nodiscard]] atx::core::Result<SignalView> evaluate(PanelView panel) override {
     const atx::usize m = sources_.size();
+    if (rule_ == CombinedSourceRule::StandardizedFixedGrossV2 &&
+        (combo_.weights.size() != m || std::any_of(combo_.weights.begin(), combo_.weights.end(),
+            [](auto w) { return !std::isfinite(w); })))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                             "combined source: invalid weights");
     // Evaluate every constituent; cache the borrowed cross-sections. Each borrow is
     // valid until the NEXT evaluate() on that SAME source — distinct sources here,
     // so all m borrows are simultaneously live for this blend (then consumed).
@@ -202,6 +230,9 @@ public:
       // The loop guarantees every constituent shares the universe length; a
       // disagreement is a wiring bug (fail loud in debug).
       ATX_ASSERT(sv.values.size() == n_instruments);
+      if (sv.values.size() != n_instruments)
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                               "combined source: constituent shape mismatch");
     }
 
     if (out_.size() < n_instruments) {
@@ -229,6 +260,7 @@ public:
       blend_rank(m, n_instruments);
       break;
     }
+    if (rule_ == CombinedSourceRule::StandardizedFixedGrossV2) standardize(n_instruments);
     return atx::core::Ok(SignalView{std::span<const atx::f64>{out_.data(), n_instruments}});
   }
 
@@ -248,6 +280,29 @@ private:
   /// V empty OR zero surviving gross -> out[k] = NaN. Fixed constituent + instrument
   /// order (determinism). Reads combo_.weights[i] (P4-4 gross-normalized to Σ|w|=1).
   void blend_linear(atx::usize m, atx::usize n_instruments) noexcept {
+    if (rule_ == CombinedSourceRule::StandardizedFixedGrossV2) {
+      // One common signal scale cancels in the final standardization. Scaling
+      // both inputs first avoids overflow from finite weights or signal values.
+      atx::f64 weight_scale = 0.0, signal_scale = 0.0;
+      for (const auto w : combo_.weights) weight_scale = std::max(weight_scale, std::abs(w));
+      for (const auto row : cross_)
+        for (const auto v : row) if (std::isfinite(v)) signal_scale = std::max(signal_scale, std::abs(v));
+      atx::f64 gross = 0.0;
+      if (weight_scale > 0.0)
+        for (const auto w : combo_.weights) gross += std::abs(w / weight_scale);
+      for (atx::usize k = 0; k < n_instruments; ++k) {
+        atx::f64 sum = 0.0;
+        bool covered = false;
+        for (atx::usize i = 0; i < m && gross > 0.0; ++i) {
+          const auto v = cross_[i][k];
+          if (!std::isfinite(v) || combo_.weights[i] == 0.0) continue;
+          covered = true;
+          if (signal_scale > 0.0) sum += (combo_.weights[i] / weight_scale) * (v / signal_scale);
+        }
+        out_[k] = covered ? sum / gross : detail::kCombineNaN;
+      }
+      return;
+    }
     for (atx::usize k = 0U; k < n_instruments; ++k) {
       atx::f64 num = 0.0;
       atx::f64 gross = 0.0;
@@ -268,6 +323,7 @@ private:
   /// rank_i is the cross-sectional ordinal-percentile rank of constituent i (NaN
   /// cells -> NaN rank, excluded from the mean). V empty -> NaN. Weights IGNORED.
   void blend_rank(atx::usize m, atx::usize n_instruments) {
+    const bool v2 = rule_ == CombinedSourceRule::StandardizedFixedGrossV2;
     rank_scratch_.resize(n_instruments);
     // Accumulate the per-cell rank sum + valid count across constituents (fixed
     // order). rank_sum_/rank_cnt_ are reused scratch (sized once per shape).
@@ -275,24 +331,47 @@ private:
     rank_cnt_.assign(n_instruments, 0U);
     for (atx::usize i = 0U; i < m; ++i) {
       detail::cs_percentile_rank(cross_[i], order_scratch_,
-                                 std::span<atx::f64>{rank_scratch_.data(), n_instruments});
+                                 std::span<atx::f64>{rank_scratch_.data(), n_instruments}, v2);
       for (atx::usize k = 0U; k < n_instruments; ++k) {
         const atx::f64 rk = rank_scratch_[k];
         if (!std::isnan(rk)) {
-          rank_sum_[k] += rk;
+          rank_sum_[k] += v2 ? rk - 0.5 : rk;
           ++rank_cnt_[k];
         }
       }
     }
     for (atx::usize k = 0U; k < n_instruments; ++k) {
-      out_[k] = (rank_cnt_[k] > 0U) ? (rank_sum_[k] / static_cast<atx::f64>(rank_cnt_[k]))
+      out_[k] = (rank_cnt_[k] > 0U) ? (rank_sum_[k] / static_cast<atx::f64>(v2 ? m : rank_cnt_[k]))
                                     : detail::kCombineNaN;
     }
+  }
+
+  // Population z-score over this date's finite opinions only. All-missing rows
+  // remain missing; constant/singleton opinions become neutral zero. No fitted
+  // or future-date statistics and no new allocation.
+  void standardize(atx::usize n) noexcept {
+    atx::f64 scale = 0.0, sum = 0.0;
+    atx::usize count = 0;
+    for (atx::usize k = 0; k < n; ++k)
+      if (std::isfinite(out_[k])) { scale = std::max(scale, std::abs(out_[k])); ++count; }
+    if (count == 0) return;
+    if (scale > 0.0)
+      for (atx::usize k = 0; k < n; ++k) if (std::isfinite(out_[k])) sum += out_[k] / scale;
+    const auto mean = sum / static_cast<atx::f64>(count);
+    atx::f64 squared = 0.0;
+    for (atx::usize k = 0; k < n; ++k) if (std::isfinite(out_[k])) {
+      out_[k] = (scale > 0.0 ? out_[k] / scale : 0.0) - mean;
+      squared += out_[k] * out_[k];
+    }
+    const auto deviation = std::sqrt(squared / static_cast<atx::f64>(count));
+    for (atx::usize k = 0; k < n; ++k) if (std::isfinite(out_[k]))
+      out_[k] = deviation > 0.0 ? out_[k] / deviation : 0.0;
   }
 
   std::vector<ISignalSource *> sources_; // NON-OWNING constituents (caller owns lifetime)
   Combination combo_;                    // frozen blend (weights; [fit_begin,fit_end) inert here)
   CombineMethod method_;                 // linear-vs-rank selector (exhaustive switch)
+  CombinedSourceRule rule_;
   std::vector<atx::f64> out_;            // owned blend buffer; the SignalView borrows it
 
   // ---- reused scratch (sized once per shape; no per-cell heap alloc on apply) ---

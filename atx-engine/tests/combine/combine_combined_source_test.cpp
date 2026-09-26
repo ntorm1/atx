@@ -77,6 +77,7 @@ using atx::engine::Universe;
 using atx::engine::WeightPolicy;
 using atx::engine::combine::Combination;
 using atx::engine::combine::CombinedSignalSource;
+using atx::engine::combine::CombinedSourceRule;
 using atx::engine::combine::CombineMethod;
 using atx::engine::data::BarRow;
 using atx::engine::data::InMemoryBarFeed;
@@ -142,7 +143,7 @@ TEST(CombinedSignalSource, LinearBlend_KnownWeights_HandComputed) {
   auto s0 = scripted({4.0, 2.0, 1.0});
   auto s1 = scripted({1.0, 3.0, 5.0});
   std::vector<ISignalSource *> sources{s0.get(), s1.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.75, 0.25}), CombineMethod::EqualWeight};
+  CombinedSignalSource src{std::move(sources), combo({0.75, 0.25}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 3U);
@@ -164,7 +165,7 @@ TEST(CombinedSignalSource, RankAverage_MeanOfCrossSectionalRanks) {
   auto s1 = scripted({5.0, 1.0, 9.0});
   std::vector<ISignalSource *> sources{s0.get(), s1.get()};
   // Weights are IGNORED by RankAverage (pure rank-space mean); pass uniform.
-  CombinedSignalSource src{std::move(sources), combo({0.5, 0.5}), CombineMethod::RankAverage};
+  CombinedSignalSource src{std::move(sources), combo({0.5, 0.5}), CombineMethod::RankAverage, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 3U);
@@ -185,7 +186,7 @@ TEST(CombinedSignalSource, RankAverage_NaNCell_SkippedPerConstituent) {
   auto s0 = scripted({10.0, kNaN, 20.0});
   auto s1 = scripted({5.0, 1.0, 9.0});
   std::vector<ISignalSource *> sources{s0.get(), s1.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.5, 0.5}), CombineMethod::RankAverage};
+  CombinedSignalSource src{std::move(sources), combo({0.5, 0.5}), CombineMethod::RankAverage, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 3U);
@@ -205,7 +206,7 @@ TEST(CombinedSignalSource, LinearBlend_NaNConstituent_SkippedAndRenormalized) {
   auto s0 = scripted({4.0, kNaN, 6.0});
   auto s1 = scripted({1.0, 8.0, kNaN});
   std::vector<ISignalSource *> sources{s0.get(), s1.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.75, 0.25}), CombineMethod::IcWeighted};
+  CombinedSignalSource src{std::move(sources), combo({0.75, 0.25}), CombineMethod::IcWeighted, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 3U);
@@ -223,7 +224,7 @@ TEST(CombinedSignalSource, LinearBlend_AllNaNCell_IsNaN) {
   auto s0 = scripted({7.0, kNaN});
   auto s1 = scripted({3.0, kNaN});
   std::vector<ISignalSource *> sources{s0.get(), s1.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.5, 0.5}), CombineMethod::EqualWeight};
+  CombinedSignalSource src{std::move(sources), combo({0.5, 0.5}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 2U);
@@ -239,7 +240,7 @@ TEST(CombinedSignalSource, RankAverage_AllNaNCell_IsNaN) {
   auto s0 = scripted({1.0, kNaN});
   auto s1 = scripted({2.0, kNaN});
   std::vector<ISignalSource *> sources{s0.get(), s1.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.5, 0.5}), CombineMethod::RankAverage};
+  CombinedSignalSource src{std::move(sources), combo({0.5, 0.5}), CombineMethod::RankAverage, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 2U);
@@ -258,10 +259,10 @@ TEST(CombinedSignalSource, MaxLookback_IsMaxOverConstituents) {
   auto s1 = scripted({3.0, 4.0}, /*lookback=*/12U);
   auto s2 = scripted({5.0, 6.0}, /*lookback=*/3U);
   std::vector<ISignalSource *> sources{s0.get(), s1.get(), s2.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.4, 0.4, 0.2}), CombineMethod::EqualWeight};
+  CombinedSignalSource src{std::move(sources), combo({0.4, 0.4, 0.2}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
   EXPECT_EQ(src.max_lookback(), 12U);
 
-  CombinedSignalSource empty{{}, combo({}), CombineMethod::EqualWeight};
+  CombinedSignalSource empty{{}, combo({}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
   EXPECT_EQ(empty.max_lookback(), 0U);
 }
 
@@ -273,7 +274,7 @@ TEST(CombinedSignalSource, MaxLookback_IsMaxOverConstituents) {
 TEST(CombinedSignalSource, SingleConstituent_NegativeWeight_SignFlips) {
   auto s0 = scripted({3.0, 5.0, -2.0});
   std::vector<ISignalSource *> sources{s0.get()};
-  CombinedSignalSource src{std::move(sources), combo({-2.0}), CombineMethod::EqualWeight};
+  CombinedSignalSource src{std::move(sources), combo({-2.0}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 3U);
@@ -285,7 +286,7 @@ TEST(CombinedSignalSource, SingleConstituent_NegativeWeight_SignFlips) {
 TEST(CombinedSignalSource, SingleConstituent_PositiveWeight_PassesThrough) {
   auto s0 = scripted({3.0, 5.0, -2.0});
   std::vector<ISignalSource *> sources{s0.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.4}), CombineMethod::EqualWeight};
+  CombinedSignalSource src{std::move(sources), combo({0.4}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 3U);
@@ -304,7 +305,7 @@ TEST(CombinedSignalSource, DollarNeutralWeights_GrossRenorm_Finite) {
   auto s0 = scripted({10.0, 4.0});
   auto s1 = scripted({2.0, 4.0});
   std::vector<ISignalSource *> sources{s0.get(), s1.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.5, -0.5}), CombineMethod::EqualWeight};
+  CombinedSignalSource src{std::move(sources), combo({0.5, -0.5}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 2U);
@@ -323,7 +324,7 @@ TEST(CombinedSignalSource, ZeroGrossSurvivingSet_IsNaN) {
   auto s0 = scripted({5.0, 9.0});
   auto s1 = scripted({1.0, kNaN});
   std::vector<ISignalSource *> sources{s0.get(), s1.get()};
-  CombinedSignalSource src{std::move(sources), combo({0.0, 0.6}), CombineMethod::EqualWeight};
+  CombinedSignalSource src{std::move(sources), combo({0.0, 0.6}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
 
   const std::vector<f64> out = eval_copy(src);
   ASSERT_EQ(out.size(), 2U);
@@ -419,7 +420,7 @@ struct Outcome {
   ScriptedSignalSource c0{sched, /*universe_size=*/3, /*max_lookback=*/1};
   ScriptedSignalSource c1{sched, /*universe_size=*/3, /*max_lookback=*/1};
   std::vector<ISignalSource *> constituents{&c0, &c1};
-  CombinedSignalSource mega{std::move(constituents), combo({0.5, 0.5}), CombineMethod::EqualWeight};
+  CombinedSignalSource mega{std::move(constituents), combo({0.5, 0.5}), CombineMethod::EqualWeight, CombinedSourceRule::LegacyPerCellV1};
 
   const WeightPolicy policy{};
   ExecutionSimulator sim = make_frictionless_sim();
@@ -477,5 +478,44 @@ TEST(CombinedSignalSource, RealLoop_RepeatRun_IsByteIdentical) {
   }
 }
 
+
+TEST(CombinedSignalSource, V2MissingCoverageDoesNotAmplifyAnOpinionAndDateHasUnitVariance) {
+  auto a = scripted({2.0, 2.0, -2.0, -2.0, kNaN});
+  auto b = scripted({2.0, kNaN, kNaN, -2.0, kNaN});
+  CombinedSignalSource source{{a.get(), b.get()}, combo({0.5, 0.5}), CombineMethod::EqualWeight};
+  EXPECT_EQ(source.rule(), CombinedSourceRule::StandardizedFixedGrossV2);
+  const auto out = eval_copy(source);
+  const std::vector<f64> expected{2.0, 1.0, -1.0, -2.0};
+  ASSERT_EQ(out.size(), 5U);
+  for (usize i = 0; i < expected.size(); ++i)
+    EXPECT_NEAR(out[i], expected[i] / std::sqrt(2.5), 1e-12);
+  EXPECT_TRUE(std::isnan(out[4]));
+}
+
+TEST(CombinedSignalSource, V2RankTiesAreEqualAndMissingConstituentIsNeutral) {
+  auto a = scripted({1.0, 1.0, 2.0, 2.0, kNaN});
+  auto b = scripted({kNaN, kNaN, kNaN, kNaN, kNaN});
+  CombinedSignalSource source{{a.get(), b.get()}, combo({0.5, 0.5}), CombineMethod::RankAverage};
+  const auto out = eval_copy(source);
+  ASSERT_EQ(out.size(), 5U);
+  EXPECT_NEAR(out[0], -1.0, 1e-12); EXPECT_EQ(out[0], out[1]);
+  EXPECT_NEAR(out[2], 1.0, 1e-12); EXPECT_EQ(out[2], out[3]);
+  EXPECT_TRUE(std::isnan(out[4]));
+}
+
+TEST(CombinedSignalSource, V2FiniteExtremesRemainFiniteAndConstantOpinionsAreZero) {
+  auto a = scripted({1e308, -1e308, 0.0, kNaN});
+  auto b = scripted({1e308, -1e308, 0.0, std::numeric_limits<f64>::infinity()});
+  CombinedSignalSource source{{a.get(), b.get()}, combo({1e308, 1e308}), CombineMethod::EqualWeight};
+  const auto out = eval_copy(source);
+  ASSERT_EQ(out.size(), 4U);
+  EXPECT_NEAR(out[0], std::sqrt(1.5), 1e-12);
+  EXPECT_NEAR(out[1], -std::sqrt(1.5), 1e-12); EXPECT_EQ(out[2], 0.0);
+  EXPECT_TRUE(std::isnan(out[3]));
+  auto flat = scripted({7.0, 7.0, kNaN});
+  CombinedSignalSource constant{{flat.get()}, combo({1.0}), CombineMethod::EqualWeight};
+  const auto neutral = eval_copy(constant);
+  EXPECT_EQ(neutral[0], 0.0); EXPECT_EQ(neutral[1], 0.0); EXPECT_TRUE(std::isnan(neutral[2]));
+}
 
 }  // namespace atxtest_combine_combined_source_test
