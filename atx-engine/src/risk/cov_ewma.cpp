@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include <locale>
 
 #include "atx/engine/risk/estimator_policy.hpp"
 
@@ -91,6 +92,7 @@ co::Result<f64> covariance(std::span<const f64> a, std::span<const f64> b,
 
 std::string risk_estimator_recipe(const RiskEstimatorPolicy& p) {
   std::ostringstream out;
+  out.imbue(std::locale::classic());
   out << "risk-estimator/" << static_cast<unsigned>(p.rule) << ':'
       << p.vol_halflife << ':' << p.correlation_halflife << ':' << p.factor_nw_lags << ':'
       << p.specific_halflife << ':' << p.specific_nw_lags << ':' << p.nw_halflife << ':'

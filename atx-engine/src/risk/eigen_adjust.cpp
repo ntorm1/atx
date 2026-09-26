@@ -16,14 +16,16 @@ atx::core::Result<EigenAdjustmentV2> eigen_adjust_v2(
   const auto t = static_cast<atx::usize>(std::floor(effective + 0.5));
   if (k > budget / 128 / k || t > budget / 64 / k)
     return co::Err(co::ErrorCode::OutOfRange, "eigen adjustment V2: workspace exceeds budget");
-  if (simulations == 0 || amplification == 0.0)
-    return co::Ok(EigenAdjustmentV2{f, effective, 0});
-  if (t <= k)
-    return co::Err(co::ErrorCode::InvalidArgument, "eigen adjustment V2: effective sample cannot identify K eigenfactors");
+  if (!f.isApprox(f.transpose(), 1e-12))
+    return co::Err(co::ErrorCode::InvalidArgument, "eigen adjustment V2: covariance is not symmetric");
   ATX_TRY(const auto eig, atx::core::linalg::symmetric_eig(f));
   for (Eigen::Index i = 0; i < eig.values.size(); ++i)
     if (!std::isfinite(eig.values[i]) || eig.values[i] <= 0.0)
       return co::Err(co::ErrorCode::InvalidArgument, "eigen adjustment V2: covariance is not positive definite");
+  if (simulations == 0 || amplification == 0.0)
+    return co::Ok(EigenAdjustmentV2{f, effective, 0});
+  if (t <= k)
+    return co::Err(co::ErrorCode::InvalidArgument, "eigen adjustment V2: effective sample cannot identify K eigenfactors");
   atx::core::Xoshiro256pp rng{seed};
   atx::usize invalid_samples = 0;
   const auto bias = detail::accumulate_vol_bias(eig.vectors, eig.values, simulations, t, rng, &invalid_samples);
