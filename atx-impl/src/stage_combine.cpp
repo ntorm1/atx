@@ -1590,7 +1590,9 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
             const MatX cov = (risk_cfg.kind == risk::RiskModelKind::Factor)
                                  ? atx::engine::data::cleaned_alpha_cov(centered)
                                  : combine::detail::mle_covariance(centered, na);
-            effective_n = ev::effective_breadth(cov);
+            // Both covariance constructors above produce PSD matrices. The
+            // trace identity removes an eigensolve from recorded-only telemetry.
+            effective_n = ev::effective_breadth(cov, ev::BreadthRule::PsdTraceV2);
 
             // Step 2 — realized IR: annualized Sharpe of the weighted-blend PnL stream
             // over the fit window [fit_begin, fit_end) (fixed order a = 0..na).
@@ -1689,6 +1691,7 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
         {"holdout_begin",       std::to_string(test_begin)},
         {"combo",               to_hex16(digest)},
         {"breadth_effective_n", std::to_string(effective_n)},
+        {"breadth_rule", "psd-trace-v2"},
         {"breadth_realized_ir", std::to_string(realized_ir)},
         {"breadth_implied_ic",  std::to_string(implied_ic)},
     };

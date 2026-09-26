@@ -292,7 +292,8 @@ if(ATX_USE_PCH)
 endif()
 
 add_executable(atx-engine-w1-eval-tests EXCLUDE_FROM_ALL
-    eval/eval_pbo_test.cpp)
+    eval/eval_pbo_test.cpp
+    eval/eval_breadth_test.cpp)
 atx_engine_test_compile_environment(atx-engine-w1-eval-tests)
 target_link_libraries(atx-engine-w1-eval-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)
@@ -311,4 +312,13 @@ atx_engine_test_compile_environment(atx-engine-w1-library-tests)
 target_link_libraries(atx-engine-w1-library-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-library-tests REUSE_FROM atx-engine-test-pch)
+endif()
+
+add_executable(atx-engine-w1-data-tests EXCLUDE_FROM_ALL
+    data/data_security_link_intervals_test.cpp
+    data/fundamental_fields_test.cpp)
+atx_engine_test_compile_environment(atx-engine-w1-data-tests)
+target_link_libraries(atx-engine-w1-data-tests PRIVATE atx-test-scratch)
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine-w1-data-tests REUSE_FROM atx-engine-test-pch)
 endif()
