@@ -92,3 +92,26 @@ it does not compare cold versus warm performance.
 The Release benchmark tree and its frozen flags were not configured or compiled
 during this alpha gate. Its current executable still requires D0 rebuilding before
 eligible timings. No benchmark was launched during this qualification.
+
+## Remaining engine owner closure audit
+
+Read-only source audit at pool5 `9d72d787dea8fc9d57356a04bd79745e71fb1907`
+(engine production/benchmark parity with frozen root fcbcc9d1) found no additional
+default-policy runtime owner. The authoritative group list is tests/CMakeLists.txt;
+outside alpha/data/book, the twelve remaining groups are risk, factory, parallel,
+learn, eval, library, combine, fund, core, regime, store and quant.
+
+Those groups contain no direct calls to with_datafields, with_alpha101_fields,
+price_to_panel, augmented DataContext, shared augment_for_alpha101 or real-panel
+construction. Two parallel fixtures use the shared WQ helper:
+`global_dag_eval_test.cpp:42` at 280 x 19 and `batch_eval_cache_test.cpp:32` at
+260 x 15. `alpha/wq101_battery.hpp:284` explicitly selects AdjustedTypicalV1;
+the valid fixture recipe remains unchanged, consistent with the independent
+all-bit N128 oracle above. These are not newly opted-in V2 consumers. The risk
+qp_augment.hpp include is unrelated to alpha datafield augmentation.
+
+Graph tools were unavailable; scoped source identifier searches and reads covered
+the remaining groups, including helper references and context entrypoints. No
+Ninja dependency log was accessed during another owner's build, and no configure,
+compile or numeric workload was run for this audit. Transitive header exposure
+alone does not justify blanket extra group retests for this change.
