@@ -339,6 +339,9 @@ TEST(StreamingEngine_Batch, Wq101BatteryBitExactResearchFast) {
       uni[i] = (u(rng) < 0.03) ? 0 : 1;
     }
   }
+  // This generator applies no adjustment factors; retain its raw close and holes.
+  names.emplace_back("raw_close");
+  cols.push_back(cols[3]);
   auto p = Panel::create(dates, inst, std::move(names), std::move(cols), std::move(uni));
   EXPECT_TRUE(p.has_value());
   return std::move(p).value();
