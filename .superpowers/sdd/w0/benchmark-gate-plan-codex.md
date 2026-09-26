@@ -141,8 +141,11 @@ The historical 20-case, three-repetition JSON contains 467.94 seconds of measure
 iteration wall time. It was contended and is unsuitable as a performance baseline,
 but suggests reserving at least 15-25 minutes for the WQ101 pair alone including
 setup, warmup and calibration. The full kernel/search/optimizer gate adds work;
-reserve 25-45 minutes for the quiet pair until list-tests and pilot runtime make
-the estimate firmer. Runtime estimates are not acceptance evidence.
+reserve 25-45 minutes for the quiet pair. The final registry confirms 81 cases;
+registration metadata supplies only 216 seconds of nominal adaptive measured
+time for the pair, plus 90 complete throughput searches, 162 optimizer iterations,
+calibration and setup. No extra timing pilot is required or authorized. Runtime
+estimates are not acceptance evidence.
 
 Archive both JSONs, complete stdout/stderr, exact commands, git SHAs/status,
 executable SHA256, preset/cache flags, synthetic dimensions, CPU affinity/topology,
@@ -151,3 +154,14 @@ cost by defect ID without silently changing the acceptance criterion. No real
 market input is needed for this gate. The optimizer cases intentionally omit
 trade-cost and turnover terms; their timing must not be represented as a costed
 optimizer benchmark or evidence of tradable performance.
+
+The final current build, registry, exact executable/runner hashes and replacement
+commands are recorded in the final D0 Release section of
+`lane-benchmark-preflight-report.md`. Its compiled source is
+`b7afdec8c54a440c8ce8659bdaf48db1fef7bb96`; use
+`w0-current-vwap-registry.json` and `w0-vwap-registry-pair.json`, preserving frozen
+N128 and all 81 cases. Startup ProcessExecutor workers are accounted through a
+job assigned before the benchmark resumes; short-lived descendants cannot be
+misclassified as external CPU. Both snapshots must use the identical final
+runner hash and original dimension-protocol hash. Await L9 completion and all
+writers becoming quiescent before any new timing attempt.

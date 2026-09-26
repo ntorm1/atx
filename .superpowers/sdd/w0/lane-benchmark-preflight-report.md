@@ -186,14 +186,104 @@ The prepared runner finishes its own source/process queries, then samples native
 host busy CPU minus runner CPU once per second for five seconds. Every sample must
 remain at most one external logical core and above the fixed N128 memory launch
 floor. A failed preflight leaves a JSON receipt and launches no benchmark. During
-execution it subtracts both runner and benchmark process CPU, aborting only its
-own benchmark after five consecutive samples above one external logical core.
-All selected kernel/WQ/search/optimizer cases execute in-process; their worker
-threads are included in GetProcessTimes. ProcessExecutor benchmark cases are not
-selected. Thus measured workers are not classified as external activity.
+execution it subtracts runner CPU and the cumulative CPU of the benchmark's owned
+Windows job, aborting only that job after five consecutive samples above one
+external logical core. All selected kernel/WQ/search/optimizer cases execute
+in-process, but an unfiltered static `SpeedupReport` in `executor_bench.cpp` also
+runs ProcessExecutor self-checks at every executable startup, including list-tests.
+The benchmark is created suspended, assigned to an unnamed job, then its verified
+sole initial thread is resumed. Job accounting includes exited descendants, so
+short-lived startup workers cannot be mistaken for unrelated CPU activity. The
+receipt preserves root PID/creation FILETIME/thread ID and final job process/CPU
+counts. The job has no breakaway flag; an abort targets only processes inherited
+from this verified owned launch. A successful exit with surviving descendants is
+rejected and those owned descendants are terminated.
 
 Native preflight receipts bind runner SHA, executable SHA, compiled source and
 the original dimension protocol SHA. The merger rejects missing/mismatched
 preflights and both snapshots must use the same runner version. Every failed or
 contaminated attempt is retained. This changes quiet-window verification, not
 dimensions, case coverage, repetitions, timing thresholds or native numeric code.
+
+## Final D0 Release build and frozen execution receipts
+
+The final current executable is compiled from
+`b7afdec8c54a440c8ce8659bdaf48db1fef7bb96`, whose production, benchmark and build
+inputs equal root `fcbcc9d1a351ccd339687389b118aca65e2812b5`. Later report-only commits
+do not require rebuilding. The completed owning wrapper command was:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/atx-wt/pool-5/scripts/atx-build.ps1 build -Preset equity-bench -Jobs 1 atx-engine-bench atx-shm-worker
+```
+
+Native exit 0 in **52.469 seconds**: eight compiler actions and three links, with
+no PCH, test or dependency rebuild. Per-build ccache recorded eight cacheable
+calls, eight misses, zero hits and zero errors. This is incremental closure
+evidence, not a speedup comparison. The native worker limit was one; telemetry
+also observed at most one compiler. Peak owned-tree RSS was 1006.926 MiB, minimum
+physical availability 1.031 GiB and minimum commit headroom 3.197 GiB; no pressure
+stop occurred. The same unchanged wrapper invocation then exited 0 in **3.869
+seconds**, printed `ninja: no work to do.`, made zero new ccache calls and left both
+executable hashes unchanged.
+
+Release `/O2 /Ob2 /DNDEBUG`, PCH ON, static libraries, equity-only scope and isolated
+`deps/equity-bench` remain fixed. All **161** normalized first-party core/TSDB/
+engine/benchmark compiler commands match the baseline settings exactly. This
+comparison normalizes only worktree location; it does not hide flag differences.
+
+| Artifact | SHA256 |
+|---|---|
+| Current benchmark | `e708b1928846af6e8d846af97f944fdfc2b73e584956a0f1b33217ca91c57ee2` |
+| Current worker | `dbc05f3587532e4b185e2b416cd61758532169e701b28e98e125e3fd72c6d58d` |
+| Baseline benchmark | `8bd72411065d71edbdd62eb37ffc2230aee0bf050681aa2096d85b5f04eea966` |
+| Baseline worker | `1fde832f0b998e67f615ab2f1b37700728115a315077a72d841dae5e89e23e33` |
+| Final timing runner | `63bba16cd4ef53fe18eb2d7e50826aa9d58df2f8772945cb418e1ae4acf37ac7` |
+| Frozen dimension protocol | `f29b4a0fcfdc918d3d84fdca2c5464c20ba5ac9111bc08126b8af3b976c0ecb6` |
+
+The final native registry command exited 0 with exactly **81** selected names in
+the same order as baseline. Its stdout additionally contains 22 pre-existing
+static startup diagnostic lines, including the executor self-check. A first
+parser attempt treated those as names and failed; that raw output is retained.
+The corrected extractor accepts only the registered `BM_`/`Wq101_` name lines and
+then requires exact equality to the frozen baseline list. The diagnostic phrase
+`Debug build` is a hardcoded reporter string; the actual cache/commands above are
+Release. This list invocation and its startup timings are not gate measurements.
+
+All following receipts are in pool5 `build-equity-bench/`:
+
+- `w0-vwap-current-build.{log,receipt.json}` and `w0-vwap-current-ccache-own.{txt,json}`.
+- `w0-vwap-build-comparability.json` and `w0-vwap-current-noop.{log,receipt.json}`.
+- `w0-current-vwap-registry.json`, `w0-current-vwap-registry-final.{stdout,stderr}.log`
+  and `w0-vwap-registry-pair.json`.
+- `w0-owned-job-smoke.{py,json}`: one tiny owned Python parent/child API check,
+  native exit 0; job count two, active count zero, root/descendant creation identity
+  preserved and cumulative job CPU exactly equals parent plus exited-child CPU.
+  Both inherited affinity 0xFF through the parent; this is an OS-accounting smoke
+  check only, not numerical timing validation. No benchmark was launched by it.
+
+The final commands use distinct attempt labels (the first kernel attempt remains
+invalid), frozen N128 and the same runner for both snapshots. Repeat each command
+for `FAMILY` in `kernels,wq,throughput,optimizer,search`, all baseline families
+before any current family, only after the explicit quiet-window release:
+
+```powershell
+python C:/atx-wt/pool-5/build-equity-bench/w0-run-bench.py C:/atx-wt/pool-6 w0-baseline-v2-attempt2-FAMILY --registry C:/atx-wt/pool-6/build-equity-bench/w0-baseline-registry.json --compiled-source-head 3ccf012c40ef42c49ed21aaec96476455e06e049 --wq-instruments 128 --family FAMILY --execute-after-quiet-release
+python C:/atx-wt/pool-5/build-equity-bench/w0-run-bench.py C:/atx-wt/pool-5 w0-current-v2-attempt2-FAMILY --registry C:/atx-wt/pool-5/build-equity-bench/w0-current-vwap-registry.json --compiled-source-head b7afdec8c54a440c8ce8659bdaf48db1fef7bb96 --wq-instruments 128 --family FAMILY --execute-after-quiet-release
+```
+
+The registration-based runtime budget per snapshot is 49.5 seconds for 33 kernel
+cases, 52.5 seconds for 20 WQ cases and 6 seconds for four scalar/multiobjective
+search cases, each with three repetitions. Fifteen WQ cases set MinTime(1.0);
+the other adaptive cases inherit pinned Google Benchmark's 0.5-second default.
+This totals **108 nominal measured seconds per snapshot**, before calibration,
+setup and iteration overshoot; some registrations use CPU time rather than wall
+time. The fixed registrations additionally execute **45 full six-generation
+throughput searches and 81 optimizer iterations per snapshot**, with untimed
+quality/reference/setup work. Ten family processes each also run 40 executor
+startup self-check workloads. These fixed-iteration and setup costs have no
+registration wall-time cap. Keep the existing **25–45 minute** pair reservation
+as a practical planning estimate, not a proven upper bound or performance result.
+
+D0 correctness is separately approved in `review-vwap-final-codex.md`. L9 and the
+quiet full benchmark comparison remain separate open evidence gates. There is
+still no eligible performance comparison, no regression pass and no scale claim.
