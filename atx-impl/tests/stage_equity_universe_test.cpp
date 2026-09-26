@@ -511,7 +511,8 @@ TEST_F(StageEquityUniverse, V2DatedTypesBindMembershipExclusionsAndExactPublicat
     const std::array<Name, 5> names{{{101, 5, 1'000'000, 10, 10}, {202, 10, 1'000'000, 10, 10},
         {303, 4.999, 2'000'000, 10, 10}, {404, 10, 1'000'000, 10, 10}, {505, 10, 1'000'000, 10, 10}}};
     auto a = spec_a(), b = spec_b(); a.names = names; b.names = names;
-    ASSERT_NO_FATAL_FAILURE(write_dir(a)); ASSERT_NO_FATAL_FAILURE(write_dir(b));
+    ASSERT_NO_FATAL_FAILURE(write_dir(a));
+    ASSERT_NO_FATAL_FAILURE(write_dir(b));
     auto cfg = universe_config("v2_missing"); cfg.equity_universe_rule = "common-stock-v2";
     EXPECT_FALSE(impl::run_equity_universe(cfg));
     EXPECT_FALSE(fs::exists(root / "v2_missing")); EXPECT_FALSE(fs::exists(ledger()));
@@ -564,7 +565,8 @@ TEST_F(StageEquityUniverse, V2DatedTypesBindMembershipExclusionsAndExactPublicat
     EXPECT_NE(excluded.find(",505,"), std::string::npos); // unverified
     for (const auto& file : manifest.at("files")) {
         const auto hash = atx::core::sha256_file((root / "v2" / file.at("filename").get<std::string>()).string());
-        ASSERT_TRUE(hash); EXPECT_EQ(*hash, file.at("sha256"));
+        ASSERT_TRUE(hash);
+        EXPECT_EQ(*hash, file.at("sha256").get<std::string>());
     }
 }
 
