@@ -183,10 +183,10 @@ TEST(LibraryCompressed, AppendPeriodsAndLaterAdmissionsSurviveReopenWithoutRewri
   atx::u32 original_crc = 0, extended_crc = 0;
   {
     lib::LibraryStore store(dir, compact_options(0));
+    ASSERT_TRUE(store.bind_index_recipe(2, 42));
     const std::array<f64, 4> first{1, 2, 3, 4}, second{-1, -2, -3, -4};
     ASSERT_TRUE(store.stage(nullptr, first, {}, metrics(), {"first", {}, 0, 0}, 1));
     ASSERT_TRUE(store.stage(nullptr, second, {}, metrics(), {"second", {}, 0, 0}, 2));
-    ASSERT_TRUE(store.bind_index_recipe(2, 42));
     ASSERT_TRUE(store.flush());
     auto original = lib::SegmentReaderLite::attach(store.segment_path(0));
     ASSERT_TRUE(original); original_crc = original->integrity_crc();
