@@ -274,4 +274,28 @@ TEST(RiskDiscretize, FactorSpaceResolveMatchesAugmented) {
   EXPECT_LE(f->max_violation, 1e-9);
 }
 
+TEST(RiskDiscretizeR1, PinsAppendAfterImplicitCsrBoxesWithoutDenseMaterialization) {
+  risk::ConstraintSet cs;
+  cs.pos = risk::PositionCap{0.5};
+  cs.storage.rule = risk::ConstraintStorageRule::SparseCsrV2;
+  const atx::core::linalg::MatX x = atx::core::linalg::MatX::Zero(3, 1);
+  const auto original = cs.materialize(x, {}, 3);
+  ASSERT_TRUE(original);
+  const std::vector<atx::u8> pinned{1, 0, 1};
+  const std::vector<atx::f64> target{0.1, 0.0, -0.1};
+  const auto constrained = risk::detail::with_pins(*original, pinned, target);
+  ASSERT_TRUE(constrained) << constrained.error().message();
+  EXPECT_EQ(constrained->A.size(), 0);
+  EXPECT_EQ(constrained->row_count(), 6U);
+  EXPECT_EQ(constrained->csr.box_count, 3U);
+  EXPECT_EQ(constrained->csr.column_indices[3], 0U);
+  EXPECT_EQ(constrained->csr.column_indices[4], 2U);
+  EXPECT_DOUBLE_EQ(constrained->l[4], 0.1);
+  EXPECT_DOUBLE_EQ(constrained->u[5], -0.1);
+  EXPECT_DOUBLE_EQ(risk::detail::book_violation(*constrained, target), 0.0);
+  auto limited = *original;
+  limited.storage.max_nnz = original->stored_nonzeros() + 1;
+  EXPECT_FALSE(risk::detail::with_pins(limited, pinned, target));
+}
+
 } // namespace atx_test_l6_optim_discretize

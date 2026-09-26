@@ -353,6 +353,11 @@ TEST_F(StageEquityBaseline, ConstrainedBookPublishesActualAllocationsAndContextA
     const auto id = manifest.at("book_id").get<std::string>();
     EXPECT_EQ(id.size(), 64U);
     EXPECT_TRUE(manifest.at("recipe").is_object());
+    EXPECT_EQ(manifest.at("recipe").at("allocation_rule"), "sparse-relative-v2");
+    EXPECT_EQ(manifest.at("recipe").at("constraint_storage").at("rule"), "SparseCsrV2");
+    EXPECT_EQ(manifest.at("recipe").at("constraint_storage").at("max_solver_bytes"), "1073741824");
+    EXPECT_EQ(manifest.at("recipe").at("constraint_storage").at("effective_max_factor_bytes"), "268435456");
+    EXPECT_EQ(manifest.at("recipe").at("solver_route"), "unchanged-augmented-admm-fixed-iterations");
     EXPECT_FALSE(manifest.at("files").empty());
     bool context_bound = false;
     for (const auto &parent : manifest.at("parents")) {
@@ -378,6 +383,8 @@ TEST_F(StageEquityBaseline, ConstrainedBookPublishesActualAllocationsAndContextA
     for (atx::usize i = 0; i < decisions.size(); ++i) {
         const auto &decision = decisions[i];
         EXPECT_TRUE(decision.at("solver_used").get<bool>());
+        EXPECT_EQ(decision.at("allocation_rule"), "sparse-relative-v2");
+        EXPECT_GT(decision.at("effective_solver_relative_tolerance").get<double>(), 0.0);
         EXPECT_EQ(decision.at("solver_certificate_scope"), "continuous-weights-before-representation");
         EXPECT_EQ(decision.at("continuous_weights_canonical_order").size(), 2U);
         EXPECT_EQ(decision.at("proposed_intents_canonical_order").size(), 2U);
@@ -413,6 +420,20 @@ TEST_F(StageEquityBaseline, ConstrainedBookPublishesActualAllocationsAndContextA
     const auto repeated = impl::run_equity_book(cfg);
     ASSERT_TRUE(repeated) << repeated.error().message();
     EXPECT_EQ(json_file(root / "book_repeat/manifest.json")["book_id"].get<std::string>(), id);
+    cfg.equity_allocation_rule = "legacy-dense-absolute-v1";
+    cfg.out = (root / "book_legacy").string();
+    const auto legacy = impl::run_equity_book(cfg);
+    ASSERT_TRUE(legacy) << legacy.error().message();
+    const auto old_manifest = json_file(root / "book_legacy/manifest.json");
+    const auto &old_recipe = old_manifest.at("recipe");
+    EXPECT_EQ(old_recipe.at("profile"), "constrained-preference-weekly-observed-close-v3");
+    EXPECT_FALSE(old_recipe.contains("allocation_rule"));
+    EXPECT_FALSE(old_recipe.contains("constraint_storage"));
+    EXPECT_FALSE(old_recipe.contains("solver_relative_tolerance"));
+    EXPECT_NE(old_manifest.at("book_id").get<std::string>(), id);
+    const auto old_certificates = json_file(root / "book_legacy/allocation_certificates.json");
+    for (const auto &decision : old_certificates.at("decisions"))
+        EXPECT_FALSE(decision.contains("effective_solver_relative_tolerance"));
 }
 
 TEST_F(StageEquityBaseline, ConstrainedBookPreservesMissingHeldMarkFailureOnOriginalWindow) {
@@ -473,7 +494,7 @@ TEST_F(StageEquityBaseline, ObservedCloseEntryConstraintBindsAvailabilityWithout
     const auto directory = root / "observed_close_book";
     const auto manifest = json_file(directory / "manifest.json");
     const auto &recipe = manifest.at("recipe");
-    EXPECT_EQ(recipe.at("profile"), "constrained-preference-weekly-observed-close-v3");
+    EXPECT_EQ(recipe.at("profile"), "constrained-preference-weekly-sparse-relative-v4");
     const auto &policy = recipe.at("execution_availability");
     EXPECT_EQ(policy.at("model"), "ObservedCloseEntryConstraintV1");
     EXPECT_EQ(policy.at("available_by_order_submission"), "unverified");

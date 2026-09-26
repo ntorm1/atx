@@ -77,6 +77,56 @@ TEST(EquityAllocation, UnchangedPreferenceTradesAgainstDriftedMarkedHoldings) {
     EXPECT_GT(allocation->certificate.actual_turnover, 0.019);
 }
 
+TEST(EquityAllocationR1, SparsePlanningAdmitsFiveThousandWithoutSolvingOrAllocatingDenseMatrices) {
+    impl::EquityAllocationConfig cfg;
+    EXPECT_EQ(cfg.rule, impl::EquityAllocationRule::LegacyDenseAbsoluteV1);
+    EXPECT_FALSE(impl::plan_equity_allocation(5000, 5000, cfg));
+    cfg.rule = impl::EquityAllocationRule::SparseRelativeV2;
+    const auto plan = impl::plan_equity_allocation(5000, 5000, cfg);
+    ASSERT_TRUE(plan) << plan.error().message();
+    EXPECT_EQ(plan->primal_dimension, 15'001U);
+    EXPECT_EQ(plan->augmented_rows, 35'004U);
+    EXPECT_EQ(plan->kkt_dimension, 50'005U);
+    EXPECT_LT(plan->additional_bytes_bound, cfg.max_additional_bytes);
+    cfg.max_additional_bytes = plan->additional_bytes_bound - 1;
+    EXPECT_FALSE(impl::plan_equity_allocation(5000, 5000, cfg));
+    cfg.max_additional_bytes = 3'000'000'000ULL;
+    cfg.sparse_storage.max_nnz = 9999;
+    EXPECT_FALSE(impl::plan_equity_allocation(5000, 5000, cfg));
+}
+
+TEST(EquityAllocationR1, ExplicitLegacyRepeatsBitsAndSparseRelativeRecertifiesSameSmallBook) {
+    Fixture f;
+    f.config.trade_bps = 5.0;
+    const auto original = f.freeze();
+    ASSERT_TRUE(original);
+    const auto before = impl::allocate_equity_preference(*original, f.execution());
+    ASSERT_TRUE(before) << before.error().message();
+    f.config.rule = impl::EquityAllocationRule::LegacyDenseAbsoluteV1;
+    const auto legacy = f.freeze();
+    ASSERT_TRUE(legacy);
+    const auto repeated = impl::allocate_equity_preference(*legacy, f.execution());
+    ASSERT_TRUE(repeated) << repeated.error().message();
+    for (atx::usize i = 0; i < f.n; ++i)
+        EXPECT_EQ(std::bit_cast<atx::u64>(before->weights[i]), std::bit_cast<atx::u64>(repeated->weights[i]));
+    EXPECT_DOUBLE_EQ(repeated->certificate.effective_solver_relative_tolerance, 0.0);
+    f.config.rule = impl::EquityAllocationRule::SparseRelativeV2;
+    const auto sparse = f.freeze();
+    ASSERT_TRUE(sparse);
+    const auto now = impl::allocate_equity_preference(*sparse, f.execution());
+    ASSERT_TRUE(now) << now.error().message();
+    EXPECT_EQ(now->certificate.rule, impl::EquityAllocationRule::SparseRelativeV2);
+    EXPECT_GT(now->certificate.effective_solver_relative_tolerance, 0.0);
+    EXPECT_LE(now->certificate.actual_turnover, f.config.turnover_limit + f.config.feasibility_tolerance);
+    EXPECT_LE(std::abs(now->certificate.postfee_net), f.config.feasibility_tolerance);
+    for (atx::usize i = 0; i < f.n; ++i)
+        EXPECT_NEAR(now->weights[i], before->weights[i], f.config.feasibility_tolerance);
+    f.config.sparse_storage.max_solver_bytes = 4;
+    const auto limited = f.freeze();
+    ASSERT_TRUE(limited);
+    EXPECT_FALSE(impl::allocate_equity_preference(*limited, f.execution()));
+}
+
 TEST(EquityAllocation, AllCashStartupAndNextAllocationRespectFullL1WithoutGrossRenormalization) {
     Fixture f;
     f.config.trade_bps = 5.0;
