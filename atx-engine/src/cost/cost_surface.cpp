@@ -28,6 +28,10 @@ using atx::core::Status;
 
 bool nonnegative(atx::f64 x) noexcept { return std::isfinite(x) && x >= 0.0; }
 bool positive(atx::f64 x) noexcept { return std::isfinite(x) && x > 0.0; }
+atx::f64 impact_base(const CostSurfaceRecipe& r, const CostSurfaceRow& row) noexcept {
+  const auto base = r.impact_y * row.daily_vol;
+  return r.rule == CostSurfaceRule::ModeledInputsV2 ? base * row.impact_multiplier : base;
+}
 bool valid_fill(CostFillRule fill) noexcept {
   return fill == CostFillRule::FullRequest || fill == CostFillRule::ParticipationCapped;
 }
@@ -48,7 +52,8 @@ void text_field(std::string& out, std::string_view x) {
 
 Status validate(const CostSurfaceRecipe& r, const CostSurfaceIdentity& id,
                 std::span<const CostSurfaceRow> rows, atx::u64 budget) {
-  if (r.rule != CostSurfaceRule::SqrtOneWayV1 || !nonnegative(r.impact_y) ||
+  if ((r.rule != CostSurfaceRule::SqrtOneWayV1 && r.rule != CostSurfaceRule::ModeledInputsV2) ||
+      !nonnegative(r.impact_y) ||
       !nonnegative(r.commission_bps) || !nonnegative(r.spread_scale) ||
       std::isnan(r.max_participation) || r.max_participation <= 0.0)
     return Err(ErrorCode::InvalidArgument, "cost surface: invalid one-way recipe");
@@ -62,17 +67,27 @@ Status validate(const CostSurfaceRecipe& r, const CostSurfaceIdentity& id,
   // Includes owned rows, duplicate-ID scratch, canonical serialization, identities
   // and fixed object/hash overhead. Check before any population-sized allocation.
   constexpr atx::u64 fixed = 32768U;
-  constexpr atx::u64 per_name = sizeof(CostSurfaceRow) + sizeof(atx::u64) + 96U;
+  constexpr atx::u64 per_name = sizeof(CostSurfaceRow) + sizeof(atx::u64) + 160U;
   if (rows.empty() || budget < fixed || rows.size() > (budget - fixed) / per_name ||
       rows.size() > (std::numeric_limits<atx::usize>::max() - fixed) / per_name)
     return Err(ErrorCode::InvalidArgument, "cost surface: empty geometry or working budget exceeded");
   for (const auto& row : rows) {
+    if (r.rule == CostSurfaceRule::ModeledInputsV2) {
+      if (row.borrow_state != CostInputState::Unavailable &&
+          (row.borrow_state != CostInputState::Available || row.borrow_available_at_ns <= 0 ||
+           row.borrow_available_at_ns >= id.decision_time_ns ||
+           !nonnegative(row.borrow_annual_fraction)))
+        return Err(ErrorCode::InvalidArgument, "cost surface: invalid modeled borrow row");
+      if (row.state == CostInputState::Available &&
+          (!nonnegative(row.impact_multiplier) || row.available_at_ns <= 0))
+        return Err(ErrorCode::InvalidArgument, "cost surface: invalid modeled impact input");
+    }
     if (row.state == CostInputState::Unavailable) continue;
     if (row.state != CostInputState::Available || row.available_at_ns >= id.decision_time_ns ||
         !positive(row.adv_dollars) || !nonnegative(row.daily_vol) || !nonnegative(row.full_spread))
       return Err(ErrorCode::InvalidArgument, "cost surface: invalid or not-yet-available liquidity row");
     const auto spread = (0.5 * row.full_spread) * r.spread_scale;
-    const auto impact = (r.impact_y * row.daily_vol) / std::sqrt(row.adv_dollars);
+    const auto impact = impact_base(r, row) / std::sqrt(row.adv_dollars);
     if (!nonnegative(spread) || !nonnegative(impact) ||
         !nonnegative(spread + r.commission_bps * 1e-4))
       return Err(ErrorCode::InvalidArgument, "cost surface: nonfinite derived coefficient");
@@ -82,7 +97,9 @@ Status validate(const CostSurfaceRecipe& r, const CostSurfaceIdentity& id,
 
 Result<std::string> recipe_hash(const CostSurfaceRecipe& r, const CostSurfaceIdentity& id) {
   std::string body;
-  text_field(body, "atx-cost-surface-recipe-v1/one-way/USD/fraction/delta=0.5");
+  text_field(body, r.rule == CostSurfaceRule::SqrtOneWayV1 ?
+      "atx-cost-surface-recipe-v1/one-way/USD/fraction/delta=0.5" :
+      "atx-cost-surface-recipe-v2/modeled/one-way/USD/fraction/delta=0.5/borrow-separate");
   word(body, static_cast<atx::u64>(r.rule));
   number(body, r.impact_y); number(body, r.commission_bps);
   number(body, r.spread_scale); number(body, r.max_participation);
@@ -92,16 +109,26 @@ Result<std::string> recipe_hash(const CostSurfaceRecipe& r, const CostSurfaceIde
 
 Result<std::string> snapshot_hash(const cost_surface_detail::Data& data) {
   std::string body;
-  body.reserve(256U + data.rows.size() * 56U);
-  text_field(body, "atx-cost-surface-snapshot-v1");
+  body.reserve(256U + data.rows.size() * 96U);
+  const auto modeled = data.recipe.rule == CostSurfaceRule::ModeledInputsV2;
+  text_field(body, modeled ? "atx-cost-surface-snapshot-v2" : "atx-cost-surface-snapshot-v1");
   text_field(body, data.recipe_hash); text_field(body, data.identity.source_sha256);
   word(body, std::bit_cast<atx::u64>(data.identity.decision_time_ns));
   word(body, static_cast<atx::u64>(data.rows.size()));
   for (const auto& row : data.rows) {
     word(body, row.instrument_id); word(body, static_cast<atx::u64>(row.state));
-    if (row.state == CostInputState::Unavailable) continue; // explicit missing tag, not NaN bits
-    word(body, std::bit_cast<atx::u64>(row.available_at_ns));
-    number(body, row.adv_dollars); number(body, row.daily_vol); number(body, row.full_spread);
+    if (row.state == CostInputState::Available) {
+      word(body, std::bit_cast<atx::u64>(row.available_at_ns));
+      number(body, row.adv_dollars); number(body, row.daily_vol); number(body, row.full_spread);
+      if (modeled) number(body, row.impact_multiplier);
+    }
+    if (modeled) {
+      word(body, static_cast<atx::u64>(row.borrow_state));
+      if (row.borrow_state == CostInputState::Available) {
+        word(body, std::bit_cast<atx::u64>(row.borrow_available_at_ns));
+        number(body, row.borrow_annual_fraction);
+      }
+    }
   }
   return atx::core::sha256_hex(body);
 }
@@ -128,6 +155,13 @@ Result<CostSurface> CostSurface::create(const CostSurfaceRecipe& recipe,
   for (auto& row : data->rows) {
     if (row.state == CostInputState::Unavailable) {
       row.available_at_ns = 0; row.adv_dollars = 0.0; row.daily_vol = 0.0; row.full_spread = 0.0;
+      row.impact_multiplier = 1.0;
+    }
+    if (recipe.rule == CostSurfaceRule::SqrtOneWayV1) {
+      row.impact_multiplier = 1.0; row.borrow_state = CostInputState::Unavailable;
+    }
+    if (row.borrow_state == CostInputState::Unavailable) {
+      row.borrow_available_at_ns = 0; row.borrow_annual_fraction = 0.0;
     }
   }
   ATX_TRY(data->recipe_hash, recipe_hash(recipe, data->identity));
@@ -155,7 +189,7 @@ CostSurfaceCoefficients CostSurface::coefficients(atx::usize instrument, atx::i6
   const auto& r = data_->recipe;
   out.spread_linear = (0.5 * row.full_spread) * r.spread_scale;
   out.commission_linear = r.commission_bps * 1e-4;
-  out.impact_three_halves = ((r.impact_y * row.daily_vol) / std::sqrt(row.adv_dollars)) * std::sqrt(nav);
+  out.impact_three_halves = (impact_base(r, row) / std::sqrt(row.adv_dollars)) * std::sqrt(nav);
   out.max_trade_weight = std::numeric_limits<atx::f64>::infinity();
   if (std::isfinite(r.max_participation)) {
     // Compute the dollar cap first, matching quote_dollars. Overflow means it
@@ -169,6 +203,18 @@ CostSurfaceCoefficients CostSurface::coefficients(atx::usize instrument, atx::i6
   }
   out.status = CostQuoteStatus::Priced;
   return out;
+}
+
+CostBorrowRateQuote CostSurface::borrow_annual_rate(atx::usize instrument,
+                                                  atx::i64 time) const noexcept {
+  if (!data_ || instrument >= data_->rows.size())
+    return {CostQuoteStatus::OutOfRange, std::numeric_limits<atx::f64>::quiet_NaN()};
+  if (time != data_->identity.decision_time_ns)
+    return {CostQuoteStatus::WrongDecision, std::numeric_limits<atx::f64>::quiet_NaN()};
+  const auto& row = data_->rows[instrument];
+  if (data_->recipe.rule != CostSurfaceRule::ModeledInputsV2 ||
+      row.borrow_state != CostInputState::Available) return {};
+  return {CostQuoteStatus::Priced, row.borrow_annual_fraction};
 }
 
 CostQuote CostSurface::quote_dollars(atx::usize instrument, atx::i64 time,

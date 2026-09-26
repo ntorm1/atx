@@ -11,7 +11,7 @@
 
 namespace atx::engine::cost {
 
-enum class CostSurfaceRule : atx::u8 { SqrtOneWayV1 = 1 };
+enum class CostSurfaceRule : atx::u8 { SqrtOneWayV1 = 1, ModeledInputsV2 = 2 };
 enum class CostInputState : atx::u8 { Available = 1, Unavailable = 2 };
 enum class CostFillRule : atx::u8 { FullRequest = 1, ParticipationCapped = 2 };
 enum class CostQuoteStatus : atx::u8 {
@@ -42,6 +42,16 @@ struct CostSurfaceRow {
   atx::f64 adv_dollars{};
   atx::f64 daily_vol{}; // daily return fraction, not percent
   atx::f64 full_spread{}; // full spread fraction, not bps or half spread
+  // Used only by explicit ModeledInputsV2; V1 ignores/canonicalizes these fields.
+  atx::f64 impact_multiplier{1.0};
+  CostInputState borrow_state{CostInputState::Unavailable};
+  atx::i64 borrow_available_at_ns{};
+  atx::f64 borrow_annual_fraction{}; // separate holding fee; NOT a locate assertion
+};
+
+struct CostBorrowRateQuote {
+  CostQuoteStatus status{CostQuoteStatus::Unavailable};
+  atx::f64 annual_fraction{std::numeric_limits<atx::f64>::quiet_NaN()};
 };
 
 struct CostQuote {
@@ -100,6 +110,10 @@ public:
       CostFillRule fill = CostFillRule::FullRequest) const noexcept;
   [[nodiscard]] CostSurfaceCoefficients coefficients(atx::usize instrument,
       atx::i64 decision_time_ns, atx::f64 pretrade_nav) const noexcept;
+  // V2 modeled annual holding rate; V1 has no borrow input and returns Unavailable.
+  // The caller must apply its explicit elapsed/day-count convention separately.
+  [[nodiscard]] CostBorrowRateQuote borrow_annual_rate(atx::usize instrument,
+      atx::i64 decision_time_ns) const noexcept;
 
 private:
   explicit CostSurface(std::shared_ptr<const cost_surface_detail::Data> data) noexcept;
