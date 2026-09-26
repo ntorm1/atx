@@ -32,7 +32,8 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | payout_issuance | anomaly | 11 | 11 |
 | efficiency | anomaly | 13 | 13 |
 | earnings_stability | anomaly | 5 | 4 |
-| size | control | 4 | 4 |
+| liquidity | anomaly | 2 | 2 |
+| size | control | 2 | 2 |
 | momentum | control | 5 | 5 |
 | reversal | control | 1 | 1 |
 | volatility | control | 4 | 4 |
@@ -249,14 +250,19 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | `cfo_variability_8q` | `cfo_variability_8q` (q) | -1 | Eight-quarter sample standard deviation of single-quarter operating cash flow over opening total assets. | Huang 2009 (Journal of Empirical Finance) | published_analogue | cash_flow_variability | rank_normal | unrestricted | conservative_filing_46h | 9q/0s | eligible_with_caveat [fiscal_seasonality]: Fiscal seasonality in single-quarter operating cash flow inflates the dispersion of seasonal businesses. |
 | `sales_growth_variability_8q` | `sales_growth_variability_8q` (q) | -1 | Eight-quarter sample standard deviation of year-over-year quarterly revenue growth. | Mohanram 2005 (Review of Accounting Studies) | published_analogue | sales_growth_variability | rank_normal | unrestricted | conservative_filing_46h | 12q/0s | eligible |
 
+## liquidity
+
+| feature | source | sign | definition | reference | evidence | family | transform | domain | clock | history | admission |
+|---|---|:-:|---|---|---|---|---|---|---|---|---|
+| `amihud_illiquidity_21d` | `amihud_illiquidity_21d` (daily, panel) | +1 | Mean absolute daily return per dollar traded (x 1e9) over the positive-volume days of the last 21 XNYS sessions. | Amihud 2002 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | modeled_trade_date_22h | 0q/22s | eligible_with_caveat [coverage_bias]: A line with fewer than 19 positive-volume days or observed returns in the window has no value (zero_volume_in_window or window_gaps) so the most thinly traded names of the illiquid tail are missing. |
+| `turnover_21d` | `turnover_21d` (daily, panel) | -1 | Mean daily share volume over the last 21 XNYS sessions divided by the verified DEI shares outstanding. | Datar Naik and Radcliffe 1998 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 0q/21s | eligible_with_caveat [coverage_bias]: Only lines with a verified DEI share count have a value: multi-class and ADR and unlinked lines and withheld counts are missing and a window holding an exact split or stock-dividend ratio (R1d classifier) has no value. |
+
 ## size
 
 | feature | source | sign | definition | reference | evidence | family | transform | domain | clock | history | admission |
 |---|---|:-:|---|---|---|---|---|---|---|---|---|
 | `market_cap` | `market_cap` (daily) | -1 | Price times point-in-time shares outstanding. | Banz 1981 (Journal of Financial Economics); Fama and French 1992 (Journal of Finance) | published_anomaly | size | log_winsor_z | positive_value_required | max_filing_46h_trade_date_22h | 0q/1s | eligible |
 | `dollar_volume_20d` | `dollar_volume_20d` (daily) | -1 | Twenty-day average daily dollar trading volume. | Brennan Chordia and Subrahmanyam 1998 (Journal of Financial Economics); Amihud 2002 (Journal of Financial Markets) | published_anomaly | trading_liquidity | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/20s | eligible |
-| `amihud_illiquidity_21d` | `amihud_illiquidity_21d` (daily, panel) | +1 | Mean absolute daily return per dollar traded (x 1e9) over the positive-volume days of the last 21 XNYS sessions. | Amihud 2002 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | modeled_trade_date_22h | 0q/22s | eligible_with_caveat [coverage_bias]: A line with fewer than 19 positive-volume days or observed returns in the window has no value (zero_volume_in_window or window_gaps) so the most thinly traded names of the illiquid tail are missing. |
-| `turnover_21d` | `turnover_21d` (daily, panel) | -1 | Mean daily share volume over the last 21 XNYS sessions divided by the verified DEI shares outstanding. | Datar Naik and Radcliffe 1998 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 0q/21s | eligible_with_caveat [coverage_bias]: Only lines with a verified DEI share count have a value: multi-class and ADR and unlinked lines and withheld counts are missing and a window holding an exact split or stock-dividend ratio (R1d classifier) has no value. |
 
 ## momentum
 

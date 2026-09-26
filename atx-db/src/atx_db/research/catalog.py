@@ -114,6 +114,9 @@ ANOMALY_CLASSES = (
     "payout_issuance",
     "efficiency",
     "earnings_stability",
+    #: Liquidity premia (CB1): an anomaly class, not a control, so the feature store
+    #: generates and tests the size-neutral variant (illiquidity net of size).
+    "liquidity",
 )
 #: Priced characteristics used as controls and benchmarks, not as new anomalies.
 CONTROL_CLASSES = ("size", "momentum", "reversal", "volatility")

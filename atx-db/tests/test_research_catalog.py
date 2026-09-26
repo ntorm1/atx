@@ -81,6 +81,10 @@ def test_every_seed_metric_has_exactly_one_reviewed_disposition():
                 seed[entry.metric_code].metric_code, seed[entry.metric_code].window)
     # CB1: the P2 panel natives are cataloged as panel_native rows (R2b plans them as panel features).
     assert {entry.feature_id for entry in entries if entry.source_kind == "panel_native"} == PANEL_NATIVES
+    # Liquidity premia are anomalies, not size controls: their size-neutral variant is tested.
+    for code in ("amihud_illiquidity_21d", "turnover_21d"):
+        entry = next(entry for entry in entries if entry.feature_id == code)
+        assert entry.anomaly_class == "liquidity" and not entry.is_control, code
 
 
 def test_every_row_is_a_signed_referenced_hypothesis_and_all_classes_are_present():
