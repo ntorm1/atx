@@ -167,7 +167,8 @@ void BM_PriceToPanel(benchmark::State &state) {
   const Dataset price = make_price_dataset();
   const std::vector<u16> adv{};
   for (auto _ : state) {
-    auto r = price_to_panel(price, std::span<const u16>{adv});
+    auto r = price_to_panel(price, std::span<const u16>{adv},
+        atx::engine::alpha::VwapRule::AdjustedTypicalV1); // preserve the existing measured recipe
     benchmark::DoNotOptimize(r);
     benchmark::ClobberMemory();
   }

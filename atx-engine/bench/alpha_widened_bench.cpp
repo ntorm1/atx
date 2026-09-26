@@ -107,7 +107,8 @@ constexpr atx::usize kInstruments = 128;
   }
   std::vector<std::string> names = {"close", "open", "high", "low", "volume", "IndClass.sector"};
   std::vector<atx::u16> adv = {20};
-  auto p = df::with_datafields(dates, instruments, std::move(names), std::move(cols), {}, adv);
+  auto p = df::with_datafields(dates, instruments, std::move(names), std::move(cols), {}, adv,
+      atx::engine::alpha::VwapRule::AdjustedTypicalV1); // preserve the frozen benchmark recipe
   return p.value_or(Panel::create(0, 0, {}, {}, {}).value());
 }
 
