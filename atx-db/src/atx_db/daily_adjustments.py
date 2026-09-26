@@ -8,7 +8,6 @@ from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import quality_check
 
-
 SOURCE_NAME = "public daily adjustment factors"
 
 
@@ -241,12 +240,18 @@ def _label_unapplied_split_candidates(store: DuckDBStore, dataset_id: str,
     """Label the split-sized steps these factors do not apply as of the snapshot (P8).
 
     A split-sized vendor-factor step whose classification is pending at the
-    cutoff, or that stays unresolved, is an OTHER event: the split-adjusted and
+    cutoff, that stays unresolved, or whose confirmed ratio is implausible
+    (``split_ratio_implausible``) is an OTHER event: the split-adjusted and
     total-return closes keep its raw price jump. Late-confirmed splits apply only
     from their confirmation clock, so earlier snapshots show the same jump.
     """
     # Imported here: corporate_actions imports (via market_daily) modules that import this one.
-    from .corporate_actions import PENDING_REASONS, UNRESOLVED_HAZARDS, corporate_actions_asof_sql
+    from .corporate_actions import (
+        PENDING_REASONS,
+        SPLIT_RATIO_IMPLAUSIBLE,
+        UNAPPLIED_SPLIT_REASONS,
+        corporate_actions_asof_sql,
+    )
 
     as_of_date = options.as_of_date or _max_bar_trade_date(store)
     if as_of_date is None:
@@ -257,7 +262,7 @@ def _label_unapplied_split_candidates(store: DuckDBStore, dataset_id: str,
     ).fetchone()[0]:
         return
     pending_reasons = ", ".join(f"'{reason}'" for reason in PENDING_REASONS)
-    reasons = ", ".join(f"'{reason}'" for reason in (*PENDING_REASONS, *UNRESOLVED_HAZARDS))
+    reasons = ", ".join(f"'{reason}'" for reason in UNAPPLIED_SPLIT_REASONS)
     reason = "CASE WHEN json_valid(details_json) THEN json_extract_string(details_json, '$.reason') END"
     counts = store.con.execute(
         f"""
@@ -267,13 +272,15 @@ def _label_unapplied_split_candidates(store: DuckDBStore, dataset_id: str,
                count(*) FILTER (WHERE action_type IN ('split', 'stock_dividend')
                                   AND available_at > ex_date::TIMESTAMP + INTERVAL 22 HOUR),
                count(DISTINCT security_id) FILTER (WHERE action_type = 'adjustment_unclassified'
-                                  AND list_has_any(string_split({reason}, ','), [{reasons}]))
+                                  AND list_has_any(string_split({reason}, ','), [{reasons}])),
+               count(*) FILTER (WHERE action_type = 'adjustment_unclassified'
+                                  AND {reason} = '{SPLIT_RATIO_IMPLAUSIBLE}')
         FROM ({corporate_actions_asof_sql("CAST(? AS TIMESTAMP)")})
         WHERE ex_date <= ?
         """,
         [as_of_ts, as_of_date],
     ).fetchone()
-    pending, unapplied, late, securities = (int(value or 0) for value in counts)
+    pending, unapplied, late, securities, implausible = (int(value or 0) for value in counts)
     quality_check(
         store,
         dataset_id=dataset_id,
@@ -286,6 +293,7 @@ def _label_unapplied_split_candidates(store: DuckDBStore, dataset_id: str,
             "as_of_ts": as_of_ts.isoformat(),
             "split_candidates_not_applied": unapplied,
             "of_which_pending_classification": pending,
+            "of_which_split_ratio_implausible": implausible,
             "securities": securities,
             "splits_applied_from_a_late_confirmation": late,
             "note": "OTHER steps keep their raw price jump in split_adjusted_close and total_return_adjusted_close",

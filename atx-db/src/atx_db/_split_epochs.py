@@ -41,7 +41,10 @@ of a later cover-page count, known only the A8 filer-family lag
 bar. Either way the evidence compares the count with the pre-step count, which
 it reveals, so it is never known before that pre-step run is (A8 follow-up:
 the line's first run at its first bar, any later run the family lag after its
-first bar; a DEI-matched run may be public earlier, so this is conservative).
+first bar -- A8's modeled clock of an unmatched run; A8 dates a split-derived
+run at its prior run and a DEI-matched one at its filing, both no later than
+this except a DEI match filed more than the family lag after the run start,
+the late-filer tail A8's own modeled lag accepts).
 
 - explicit ``split_factor``: a split (``vendor_split_field``) known at that bar;
 - out-of-band (k outside [SPLIT_MIN_RATIO, SPLIT_MAX_RATIO]) and simple: a split
@@ -79,7 +82,13 @@ sessions, which makes it the permanent ``flat_factor_split_signature`` (a split
 the vendor factor missed); otherwise it closes as ``signature_unconfirmed`` at
 the window's end. A hazard is closed early
 when a split confirmed in another series explains it. Hazards may use share
-observations after their opening bar: they only ever withdraw a proof.
+observations after their opening bar: they only ever withdraw a proof. A
+hazard row's ``known_at`` is the clock by which its negative verdict is final
+(``distribution`` of a candidate that needed shares, ``split_unconfirmed``,
+``no_share_data`` once the late window is complete, ``signature_unconfirmed``):
+the window's end plus the line's family lag, since a matching count inside the
+window can stay unpublished that long. ``corporate_actions`` (P8) dates its
+labels by it; the engine's hazard interval still ends at the window's end.
 
 Coverage (``_pit_split_coverage``) is a run of one factor series' factored bars
 with no gap above COVERAGE_MAX_GAP_DAYS. A basis is known when one run spans the
@@ -472,9 +481,12 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                     WHEN s.cls = 'simple_out' THEN
                         CASE WHEN s.late_complete THEN 'split_unconfirmed' ELSE 'split_pending_share_confirmation' END
                     WHEN s.window_complete THEN 'distribution'
-                    ELSE 'pending_confirmation' END AS outcome
+                    ELSE 'pending_confirmation' END AS outcome,
+               -- A count inside the window can stay unpublished this long (A8 modeled run clock).
+               {family_lag} AS family_lag
         FROM _split_stage_steps s
         LEFT JOIN dated c USING (security_id, series, ex_date)
+        LEFT JOIN _split_stage_lag l ON l.security_id = s.security_id
     """)
     con.execute(f"""
         INSERT INTO {relation} (security_id, kind, series, ex_date, from_at, known_at, until_at, ratio, evidence)
@@ -510,13 +522,18 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                    CASE WHEN cls = 'signature' THEN 1 / price_ratio ELSE coalesce(split_field, k) END AS ratio,
                    CASE WHEN outcome = 'split' AND cls = 'simple_out' THEN 'split_pending_share_confirmation'
                         WHEN outcome IN ('split', 'distribution') THEN 'pending_confirmation'
-                        ELSE outcome END AS evidence
+                        ELSE outcome END AS evidence,
+                   -- A negative verdict is final only once any count inside its window would be public.
+                   CASE WHEN outcome = 'distribution' THEN window_end_at + family_lag
+                        WHEN outcome IN ('split_unconfirmed', 'no_share_data') AND late_complete
+                            THEN late_end_at + family_lag
+                        WHEN outcome = 'signature_unconfirmed' THEN late_end_at + family_lag END AS verdict_at
             FROM _split_stage_classified
             WHERE (outcome = 'split' AND cls <> 'field' AND confirm_at > ex_at)
                OR (outcome = 'distribution' AND cls <> 'inexact_in')
                OR outcome NOT IN ('split', 'distribution')
             UNION ALL
-            SELECT security_id, series, ex_date, ex_at, NULL, ratio, 'conflicting_series'
+            SELECT security_id, series, ex_date, ex_at, NULL, ratio, 'conflicting_series', NULL
             FROM conflicted WHERE conflict
         ), hazards AS (
             -- A split confirmed in any series closes a hazard it explains.
@@ -546,7 +563,7 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                CASE WHEN cls = 'inexact_in' THEN ex_at ELSE window_end_at END, NULL, k, 'distribution'
         FROM _split_stage_classified WHERE outcome = 'distribution'
         UNION ALL
-        SELECT security_id, 'hazard', series, ex_date, from_at, NULL,
+        SELECT security_id, 'hazard', series, ex_date, from_at, verdict_at,
                CASE WHEN explained_at IS NULL THEN until_at WHEN until_at IS NULL THEN explained_at
                     ELSE least(until_at, explained_at) END, ratio, evidence
         FROM hazards

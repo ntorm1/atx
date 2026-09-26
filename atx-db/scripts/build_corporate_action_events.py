@@ -13,7 +13,7 @@ Usage
 -----
   python scripts/build_corporate_action_events.py --work-db SCRATCH.duckdb --parquet TickerHistory3.parquet
   python scripts/build_corporate_action_events.py --work-db SCRATCH.duckdb --bars-db BARS.duckdb
-         [--memory-limit 384MB] [--threads 2] [--summary OUT.json]
+         [--memory-limit 320MB] [--threads 2] [--summary OUT.json]
 """
 from __future__ import annotations
 
@@ -39,7 +39,8 @@ def parse_args() -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--parquet", type=Path, help="Retained TickerHistory3.parquet (materialized once).")
     source.add_argument("--bars-db", type=Path, help="A DuckDB holding equity_daily_bars (read-only).")
-    parser.add_argument("--memory-limit", default="384MB")
+    # 320MB keeps the full retained build under 0.6 GiB (measured: 607 MB private at 320MB, 670 MB at 384MB).
+    parser.add_argument("--memory-limit", default="320MB")
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--summary", type=Path)
     return parser.parse_args()

@@ -16,11 +16,18 @@ derived engine and ``market_daily`` use:
 ``adjustment_unclassified``
     a split-sized step whose classification is pending at its clock
     (PENDING_REASONS: ``split_candidate_pending`` out of band,
-    ``distribution_pending_classification`` in band), a candidate R1d decided
-    cannot be resolved (``split_unconfirmed``, ``no_share_data`` at the late
-    window's close; ``conflicting_series``), a factor step across a data gap, a
-    factor decrease, or float noise (``factor_noise``: a factor increase whose
-    yield 1 - 1/k is below FACTOR_NOISE_YIELD). Never a split.
+    ``distribution_pending_classification`` in band; a ``conflicting_series``
+    candidate, which has no decision clock, stays pending), a candidate R1d
+    decided cannot be resolved (``split_unconfirmed``, ``no_share_data`` at
+    R1d's verdict clock: the late window's close plus the line's family lag,
+    as a matching count could stay unpublished that long), an R1d-confirmed
+    out-of-band ratio that is not exact
+    and is not an integer split times a same-day cash residual of at most
+    SPLIT_RESIDUAL_MAX_YIELD (``split_ratio_implausible``, M2: year-end fund
+    distributions, spin-offs and E&P purges whose volatile count happened to
+    match), a factor step across a data gap, a factor decrease, or float noise
+    (``factor_noise``: a factor increase whose yield 1 - 1/k is below
+    FACTOR_NOISE_YIELD). Never a split.
 ``cash_dividend``
     a factor residual below SPECIAL_DISTRIBUTION_MIN_YIELD of the prior close:
     cash amount = (1 - 1/k) x prior close; upgraded to
@@ -31,17 +38,23 @@ derived engine and ``market_daily`` use:
     spin-off-like), or an exact stock-dividend ratio whose share count never
     followed.
 
-Revisions (point in time). Each step (``details.step_id``) has one row per
-state, each available from the clock its state was decidable: a step whose
-label is decided later (a late share confirmation, a share window closing, the
-late window closing on an unconfirmed split) first has a pending row at the
-ex-date bar clock; an XBRL corroboration is a later revision of the cash
-dividend at max(ex-date clock, the fact's ``available_at``). A later revision
-names ``supersedes_event_id``; a superseded row carries ``superseded_at`` and
-``is_latest_revision = false``. :func:`corporate_actions_asof_sql` is the
-as-of relation (each step's latest row visible at a cutoff);
-:func:`corporate_actions_current_sql` is each step's final row dated at the
-first clock of its label (for event consumers that count economics once).
+Revisions (point in time). Each step has a stable id (``details.step_id``,
+:func:`step_id_sql`: md5 of ``source|security_id|ex_date``) and one row per
+state, each available from the clock its state was decidable: (0) a step
+whose label is decided later (a late share confirmation; a negative verdict
+at R1d's verdict clock -- a share window closing on a distribution, including
+a factor decrease R1d reads as one, or the late window closing on an
+unconfirmed split) or not by the end of the data first has a pending row at
+the ex-date bar clock; (1) the
+decided label at its decision clock; (2) an XBRL corroboration of a cash
+dividend at max(decision clock, the fact's ``available_at``). Revisions are
+numbered by clock (``details.revision``); ``details.event_id`` =
+md5(step_id|revision); a later revision names ``supersedes_event_id``; a
+superseded row carries ``superseded_at`` and ``is_latest_revision = false``.
+:func:`corporate_actions_asof_sql` is the as-of relation (each step's latest
+row visible at a cutoff); :func:`corporate_actions_current_sql` is each step's
+final row dated at the first clock of its label (for event consumers that
+count economics once).
 
 Every row's ``details_json`` carries ``evidence_basis``, ``corroboration``,
 ``reason``, the step ratio and the prior close. Everything is reconstructed
@@ -52,7 +65,10 @@ that carry a vendor factor anywhere (R1d's factor-series set; a factor-free
 load never carries events); factored bars of any other series are counted,
 never silently dropped. The build is set-based: R1d's epochs are staged once
 per build, the XBRL facts once, and the bars are read in hash buckets of about
-``_split_epochs.STAGE_CHUNK_ROWS`` rows.
+``_split_epochs.STAGE_CHUNK_ROWS`` rows. The load raises before its
+transaction when the tie-out fails, and replaces its rows through an
+INSERT-only table swap (``corporate_actions`` has a ``DEFAULT now()`` column),
+then checkpoints.
 """
 
 from __future__ import annotations
@@ -63,7 +79,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from . import _split_epochs
-from ._split_epochs import LATE_SHARE_WINDOW_BARS, SPLIT_MAX_RATIO, SPLIT_MIN_RATIO, _stock_dividend_sql
+from ._split_epochs import SPLIT_MAX_RATIO, SPLIT_MIN_RATIO, _stock_dividend_sql
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import quality_check
@@ -92,18 +108,43 @@ DPS_MAX_PERIOD_DAYS = 100
 OPEN_HAZARDS = ("pending_confirmation", "split_pending_share_confirmation")
 #: R1d hazards decided only when the late share window closes.
 LATE_HAZARDS = ("split_unconfirmed", "no_share_data")
+#: R1d hazards with no decision clock (two series disagree): the step stays pending.
+UNDATED_HAZARDS = ("conflicting_series",)
 #: R1d hazards that leave a split candidate unresolved (signature hazards are not factor steps).
-UNRESOLVED_HAZARDS = (*OPEN_HAZARDS, *LATE_HAZARDS, "conflicting_series")
+UNRESOLVED_HAZARDS = (*OPEN_HAZARDS, *LATE_HAZARDS, *UNDATED_HAZARDS)
+#: M2: an R1d-confirmed out-of-band step whose ratio is not exact (not p/q with q <= 10) and is not an
+#: integer split n:1 / 1:n times a same-day cash residual of at most SPLIT_RESIDUAL_MAX_YIELD. Never a split.
+SPLIT_RATIO_IMPLAUSIBLE = "split_ratio_implausible"
+SPLIT_RESIDUAL_MAX_YIELD = 0.02
+#: Reasons of split-sized steps that are never applied as splits (``daily_adjustments`` labels them).
+UNAPPLIED_SPLIT_REASONS = (*PENDING_REASONS, *UNRESOLVED_HAZARDS, SPLIT_RATIO_IMPLAUSIBLE)
 EVENT_COLUMNS = ("source", "security_id", "symbol", "action_type", "ex_date", "declaration_date", "record_date",
                  "payable_date", "cash_amount", "split_from", "split_to", "adjustment_factor", "details_json",
                  "available_at", "run_id")
-_HELPERS = ("_ca_raw", "_ca_series", "_ca_bars", "_ca_steps", "_ca_events")
+_HELPERS = ("_ca_raw", "_ca_series", "_ca_bars", "_ca_steps", "_ca_events", "_ca_dressed")
 _BUILD_HELPERS = ("_ca_factor_series", "_ca_dps")
 
 
 def _json_text(field: str, alias: str = "") -> str:
     column = f"{alias}.details_json" if alias else "details_json"
     return f"CASE WHEN json_valid({column}) THEN json_extract_string({column}, '$.{field}') END"
+
+
+def step_id_sql(source: str, security_id: str, ex_date: str) -> str:
+    """The stable id of one P8 step (SQL expressions in): md5 of ``source|security_id|ex_date``.
+
+    A line has one step per ex-date (its primary series), so the id is the same in every build and
+    every revision of the step; ``details.event_id`` = md5(step_id|revision) names one revision.
+    """
+    return f"md5(concat_ws('|', {source}, {security_id}, CAST({ex_date} AS VARCHAR)))"
+
+
+def _integer_split_residual_sql(k: str) -> str:
+    """Whether step ``k`` is an integer split (n:1 or 1:n, n >= 2) times a cash residual of at most
+    SPLIT_RESIDUAL_MAX_YIELD (a dividend paid on the split's ex-date)."""
+    n = f"(CASE WHEN {k} >= 1 THEN floor({k}) ELSE ceil(1 / ({k})) END)"
+    residual = f"(CASE WHEN {k} >= 1 THEN {k} / floor({k}) ELSE {k} * ceil(1 / ({k})) END)"
+    return f"({n} >= 2 AND 1 - 1 / {residual} <= {SPLIT_RESIDUAL_MAX_YIELD})"
 
 
 def step_key_sql(alias: str = "") -> str:
@@ -288,9 +329,7 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
         SELECT * FROM (
             SELECT security_id, trade_date AS ex_date, symbol, available_at AS ex_at,
                    ln_factor - lag(ln_factor) OVER w AS ln_k, lag(close) OVER w AS prior_close,
-                   date_diff('day', lag(trade_date) OVER w, trade_date) AS gap_days,
-                   -- the clock at which R1d's late share window (LATE_SHARE_WINDOW_BARS sessions) closes
-                   lead(available_at, {LATE_SHARE_WINDOW_BARS}) OVER w AS late_close_at
+                   date_diff('day', lag(trade_date) OVER w, trade_date) AS gap_days
             FROM _ca_bars WINDOW w AS (PARTITION BY security_id ORDER BY trade_date)
         ) WHERE abs(ln_k) > {FACTOR_NOISE}
     """)
@@ -307,6 +346,8 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
                    max(evidence) FILTER (WHERE kind = 'split') AS split_evidence,
                    bool_or(kind = 'distribution') AS distribution,
                    min(known_at) FILTER (WHERE kind = 'distribution') AS distribution_known_at,
+                   -- R1d's negative verdicts are final only once any count in their window is public.
+                   max(known_at) FILTER (WHERE kind = 'hazard') AS verdict_at,
                    -- Unresolved candidates only: a closed pending hazard belongs to a decided step.
                    list_sort(list_distinct(list(evidence) FILTER (
                        WHERE kind = 'hazard' AND evidence IN ({_in_list(UNRESOLVED_HAZARDS)})
@@ -315,16 +356,23 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
               AND security_id IN (SELECT DISTINCT security_id FROM _ca_steps)
             GROUP BY ALL
         ), classed AS (
-            SELECT s.*, r.split_ratio, r.split_known_at, r.split_evidence, r.distribution_known_at,
+            SELECT s.*, r.split_ratio, r.split_known_at, r.split_evidence, r.distribution_known_at, r.verdict_at,
                    coalesce(r.distribution, false) AS distribution,
                    nullif(array_to_string(r.hazard_list, ','), '') AS hazards,
-                   coalesce(list_has_any(r.hazard_list, [{_in_list(OPEN_HAZARDS)}]), false) AS open_hazard,
+                   coalesce(list_has_any(r.hazard_list, [{_in_list((*OPEN_HAZARDS, *UNDATED_HAZARDS))}]), false)
+                       AS open_hazard,
                    coalesce(list_has_any(r.hazard_list, [{_in_list(LATE_HAZARDS)}]), false) AS late_hazard,
                    1 - 1 / s.k AS yield,
                    -- what is knowable at the ex-date clock about a step whose label is decided later
                    CASE WHEN s.k {band} THEN 'distribution_pending_classification'
                         ELSE 'split_candidate_pending' END AS pending_reason,
+                   -- M2: a confirmed out-of-band ratio that is not exact is a split only as an integer
+                   -- split plus a same-day cash residual (a dividend); otherwise it is never applied.
+                   coalesce(r.split_ratio IS NOT NULL AND r.split_evidence <> 'vendor_split_field'
+                            AND s.k NOT {band} AND NOT {_split_epochs._simple_sql('s.k')}
+                            AND NOT {_integer_split_residual_sql('s.k')}, false) AS implausible,
                    CASE
+                       WHEN implausible THEN 'adjustment_unclassified'
                        WHEN r.split_ratio IS NOT NULL THEN
                            CASE WHEN s.k > 1 AND s.k {band} AND r.split_evidence <> 'vendor_split_field'
                                 THEN 'stock_dividend' ELSE 'split' END
@@ -337,6 +385,7 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
                        WHEN 1 - 1 / s.k >= {SPECIAL_DISTRIBUTION_MIN_YIELD} THEN 'distribution_unclassified'
                        ELSE 'cash_dividend' END AS action_type,
                    CASE
+                       WHEN implausible THEN '{SPLIT_RATIO_IMPLAUSIBLE}'
                        WHEN r.split_ratio IS NOT NULL THEN NULL
                        WHEN len(r.hazard_list) > 0 THEN array_to_string(r.hazard_list, ',')
                        WHEN s.gap_days > {gap} THEN 'factor_step_across_data_gap'
@@ -354,12 +403,15 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
                    list_filter(range(1, 201), lambda q_x: abs(greatest(c.k, 1 / c.k) * q_x
                        - round(greatest(c.k, 1 / c.k) * q_x)) <= 1e-5 * greatest(c.k, 1 / c.k) * q_x)[1] END
                    AS ratio_q,
-               -- When the label is decidable; NULL: still pending at the end of the data.
-               CASE WHEN c.action_type IN ('split', 'stock_dividend') THEN greatest(c.ex_at, c.split_known_at)
+               -- When the label is decidable; NULL: still pending at the end of the data. A step R1d
+               -- read as a distribution is decided at R1d's clocks whatever its label here (a factor
+               -- decrease that could have confirmed as a reverse split is pending until then too); a
+               -- negative verdict waits for R1d's verdict clock (window end plus the family lag).
+               CASE WHEN c.split_ratio IS NOT NULL THEN greatest(c.ex_at, c.split_known_at)
                     WHEN c.open_hazard THEN NULL
-                    WHEN c.late_hazard THEN c.late_close_at
-                    WHEN c.distribution AND c.action_type = 'distribution_unclassified'
-                        THEN greatest(c.ex_at, coalesce(c.distribution_known_at, c.ex_at))
+                    WHEN c.late_hazard THEN c.verdict_at
+                    WHEN c.distribution THEN greatest(c.ex_at, coalesce(c.distribution_known_at, c.ex_at),
+                                                      coalesce(c.verdict_at, c.ex_at))
                     ELSE c.ex_at END AS decided_at
         FROM classed c
     """)
@@ -392,39 +444,41 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
     split_from = "CASE WHEN ratio_q IS NULL THEN 1.0 WHEN k >= 1 THEN ratio_q ELSE round(ratio_q / k) END"
     split_to = "CASE WHEN ratio_q IS NULL THEN k WHEN k >= 1 THEN round(k * ratio_q) ELSE ratio_q END"
     event_id = "md5(step_id || '|' || CAST({} AS VARCHAR))"
+    # One row per step, with its stable id and the clock of its XBRL corroboration: never before the
+    # fact's own clock, and never before the label it corroborates is decided.
     con.execute(f"""
-        INSERT INTO {relation} ({', '.join(EVENT_COLUMNS)}, is_latest_revision)
+        CREATE OR REPLACE TEMP TABLE _ca_dressed AS
         WITH ev AS (
             SELECT *, CASE WHEN action_type IN ('cash_dividend', 'distribution_unclassified')
                            THEN yield * prior_close END AS cash
             FROM _ca_events
-        ), dressed AS ({dressed}),
-        steps AS (
-            SELECT d.*, md5(concat_ws('|', ?, security_id, CAST(ex_date AS VARCHAR))) AS step_id,
-                   d.decided_at IS NULL AS unresolved,
-                   coalesce(d.action_type = 'cash_dividend' AND d.dps.available_at > d.ex_at, false) AS xbrl_later
-            FROM dressed d
-        ), finals AS (
-            SELECT s.*,
-                   (NOT s.unresolved AND s.decided_at > s.ex_at) OR s.xbrl_later AS revised,
-                   CASE WHEN s.unresolved THEN s.ex_at WHEN s.xbrl_later THEN s.dps.available_at
-                        ELSE s.decided_at END AS final_at
-            FROM steps s
-        ), revisions AS (
-            -- The latest state of every step (pending when still undecided at the end of the data).
-            SELECT f.*, CASE WHEN f.revised THEN 1 ELSE 0 END AS revision, f.unresolved AS pending, f.final_at AS row_at,
-                   true AS latest, NULL::TIMESTAMP AS superseded_at,
-                   CASE WHEN f.unresolved THEN 'adjustment_unclassified' ELSE f.action_type END AS row_type,
-                   CASE WHEN f.unresolved THEN f.pending_reason ELSE f.reason END AS row_reason,
-                   f.dps AS row_dps
-            FROM finals f
+        ), dressed AS ({dressed})
+        SELECT d.*, {step_id_sql('?', 'd.security_id', 'd.ex_date')} AS step_id,
+               CASE WHEN d.action_type = 'cash_dividend' AND d.decided_at IS NOT NULL AND d.dps IS NOT NULL
+                    THEN greatest(d.decided_at, d.dps.available_at) END AS xbrl_at
+        FROM dressed d
+    """, [source])
+    con.execute(f"""
+        INSERT INTO {relation} ({', '.join(EVENT_COLUMNS)}, is_latest_revision)
+        WITH states AS (
+            -- (0) pending at the ex-date clock: the label is decided later, or not by the end of the data.
+            SELECT s.*, s.ex_at AS row_at, 'adjustment_unclassified' AS row_type, s.pending_reason AS row_reason,
+                   true AS pending, CASE WHEN false THEN s.dps END AS row_dps
+            FROM _ca_dressed s WHERE s.decided_at IS NULL OR s.decided_at > s.ex_at
             UNION ALL
-            -- The state at the ex-date clock, superseded when the label (or its XBRL evidence) is decided.
-            SELECT f.*, 0, NOT f.xbrl_later, f.ex_at, false, f.final_at,
-                   CASE WHEN f.xbrl_later THEN f.action_type ELSE 'adjustment_unclassified' END,
-                   CASE WHEN f.xbrl_later THEN f.reason ELSE f.pending_reason END,
-                   NULL
-            FROM finals f WHERE f.revised
+            -- (1) the decided label at its decision clock, with XBRL evidence only if already public then.
+            SELECT s.*, s.decided_at, s.action_type, s.reason, false,
+                   CASE WHEN s.xbrl_at = s.decided_at THEN s.dps END
+            FROM _ca_dressed s WHERE s.decided_at IS NOT NULL
+            UNION ALL
+            -- (2) a cash dividend corroborated by a later XBRL dividends-per-share fact, from its clock.
+            SELECT s.*, s.xbrl_at, s.action_type, s.reason, false, s.dps
+            FROM _ca_dressed s WHERE s.xbrl_at > s.decided_at
+        ), revisions AS (
+            -- Revisions of a step are numbered by clock; each is superseded at the next one's clock.
+            SELECT *, row_number() OVER (PARTITION BY step_id ORDER BY row_at) - 1 AS revision,
+                   lead(row_at) OVER (PARTITION BY step_id ORDER BY row_at) AS superseded_at
+            FROM states
         )
         SELECT ?, security_id, symbol, row_type, ex_date, NULL, NULL, NULL,
                CASE WHEN row_type IN ('cash_dividend', 'distribution_unclassified') THEN cash END,
@@ -445,10 +499,20 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
                    event_id := {event_id.format('revision')},
                    supersedes_event_id := CASE WHEN revision > 0 THEN {event_id.format('revision - 1')} END,
                    superseded_at := superseded_at, classifier := 'r1d_split_epochs', basis := 'vendor_reconstructed')),
-               row_at, ?, latest
+               row_at, ?, superseded_at IS NULL
         FROM revisions
-    """, [source, source, run_id])
-    # Tie-out: one (latest) row per step rebuilds the vendor's cumulative factor on every bar of every line.
+    """, [source, run_id])
+    tie = _tie_out(con, relation)
+    return {"lines": int(tie[0]), "deviation": tie[1], "over": int(tie[2]),
+            "bars_outside_primary_series": int(accounting[0]), "lines_with_other_series": int(accounting[1]),
+            "lines_without_factor_series": int(accounting[2])}
+
+
+def _tie_out(con: Any, relation: str) -> tuple[int, float | None, int]:
+    """(lines, max |deviation|, lines over TIE_OUT_TOLERANCE) of the bucket's lines in ``_ca_bars``.
+
+    One (latest) row per step must rebuild the vendor's cumulative factor on every bar of every line.
+    """
     tie = con.execute(f"""
         WITH marked AS (
             SELECT b.security_id, b.trade_date, b.ln_factor,
@@ -465,9 +529,47 @@ def _build_chunk(con: Any, relation: str, epochs: str, bars: set[str], series: s
         )
         SELECT count(*), max(deviation), count(*) FILTER (WHERE deviation > {TIE_OUT_TOLERANCE}) FROM lines
     """).fetchone()
-    return {"lines": int(tie[0]), "deviation": tie[1], "over": int(tie[2]),
-            "bars_outside_primary_series": int(accounting[0]), "lines_with_other_series": int(accounting[1]),
-            "lines_without_factor_series": int(accounting[2])}
+    assert tie is not None
+    return int(tie[0]), tie[1], int(tie[2])
+
+
+def _replace_rows_by_swap(con: Any, relation: str, sources: list[str], scope: str, scope_params: list[Any]) -> int:
+    """Replace the ``sources`` rows of ``corporate_actions`` (in ``scope``) with ``relation``; return its rows.
+
+    ``corporate_actions`` has a ``DEFAULT now()`` column, so this batch path never UPDATEs or DELETEs it in
+    place (DuckDB 1.5.5 WAL replay trap): the kept rows and the new ones are copied INSERT-only into a
+    table made from the live DDL, which replaces the old one. Run it inside the caller's transaction.
+    """
+    table, swap = "corporate_actions", "corporate_actions__swap"
+    where = "database_name = current_database() AND schema_name = current_schema() AND table_name = ?"
+    ddl = con.execute(f"SELECT sql FROM duckdb_tables() WHERE {where}", [table]).fetchone()
+    if ddl is None or not str(ddl[0]).startswith(f"CREATE TABLE {table}("):
+        raise RuntimeError(f"cannot derive the {table} DDL for a row swap")
+    indexes = [row[0] for row in con.execute(f"SELECT sql FROM duckdb_indexes() WHERE {where}", [table]).fetchall()]
+    if any(sql is None for sql in indexes):
+        raise RuntimeError(f"cannot recreate the {table} indexes without their stored SQL")
+    names = [row[0] for row in con.execute(
+        "SELECT column_name FROM duckdb_columns() WHERE table_name = ? AND schema_name = current_schema() "
+        "AND database_name = current_database() ORDER BY column_index", [table]).fetchall()]
+    every = ", ".join(f'"{name}"' for name in names)
+    columns = ", ".join([*EVENT_COLUMNS, *(["is_latest_revision"] if "is_latest_revision" in names else [])])
+    replaced = f"source IN ({', '.join('?' for _ in sources)}) {scope}"
+    kept = int(con.execute(f"SELECT count(*) FROM {table} WHERE NOT ({replaced})", [*sources, *scope_params])
+               .fetchone()[0])
+    rows = int(con.execute(f"SELECT count(*) FROM {relation}").fetchone()[0])
+    con.execute(f"DROP TABLE IF EXISTS {swap}")
+    con.execute(f"CREATE TABLE {swap}{str(ddl[0])[len(f'CREATE TABLE {table}'):]}")
+    con.execute(f"INSERT INTO {swap} ({every}) SELECT {every} FROM {table} WHERE NOT ({replaced})",
+                [*sources, *scope_params])
+    con.execute(f"INSERT INTO {swap} ({columns}) SELECT {columns} FROM {relation}")
+    copied = int(con.execute(f"SELECT count(*) FROM {swap}").fetchone()[0])
+    if copied != kept + rows:
+        raise RuntimeError(f"{table} swap row-count proof failed: {kept} kept + {rows} new != {copied}")
+    con.execute(f"DROP TABLE {table}")
+    con.execute(f"ALTER TABLE {swap} RENAME TO {table}")
+    for sql in indexes:
+        con.execute(sql)
+    return rows
 
 
 class CorporateActionsDataset(Dataset):
@@ -504,14 +606,9 @@ class CorporateActionsDataset(Dataset):
                 raise RuntimeError(f"corporate action events do not rebuild the vendor factor on "
                                    f"{summary['tie_out_lines_over']} lines (max {summary['tie_out_max_abs']:.3g})")
             sources = [options.source] + ([LEGACY_SOURCE_NAME] if options.replace_legacy_inferred else [])
-            target = _columns(store.con, "corporate_actions")
-            columns = [*EVENT_COLUMNS, *(["is_latest_revision"] if "is_latest_revision" in target else [])]
             with store.transaction():
-                store.con.execute(f"DELETE FROM corporate_actions WHERE source IN "
-                                  f"({', '.join('?' for _ in sources)}) {scope}", [*sources, *scope_params])
-                store.con.execute(f"INSERT INTO corporate_actions ({', '.join(columns)}) "
-                                  f"SELECT {', '.join(columns)} FROM {relation}")
-            rows = int(store.con.execute(f"SELECT count(*) FROM {relation}").fetchone()[0])
+                rows = _replace_rows_by_swap(store.con, relation, sources, scope, scope_params)
+            store.con.execute("CHECKPOINT")
         finally:
             store.con.execute(f"DROP TABLE IF EXISTS {relation}")
         legacy_after = int(store.con.execute(legacy_sql, [LEGACY_SOURCE_NAME, *scope_params]).fetchone()[0])
