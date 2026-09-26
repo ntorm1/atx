@@ -155,8 +155,11 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
   if (end > panel.dates() || cfg.window_begin > end || maturity > panel.dates())
     return Err(ErrorCode::InvalidArgument, "IC screen: invalid training/maturity window");
   if (!member.empty()) {
+    const usize cutoff = std::min(end, maturity);
+    const usize first_lag = cfg.execution_delay + cfg.horizons.front();
+    const usize decision_end = cutoff > first_lag ? std::max(cfg.window_begin, cutoff - first_lag) : cfg.window_begin;
     const auto visible = member.subspan(cfg.window_begin * panel.instruments(),
-                                       (end - cfg.window_begin) * panel.instruments());
+                                       (decision_end - cfg.window_begin) * panel.instruments());
     if (std::any_of(visible.begin(), visible.end(), [](atx::u8 x) { return x > 1U; }))
       return Err(ErrorCode::InvalidArgument, "IC screen: membership must be binary");
   }
@@ -283,7 +286,7 @@ atx::core::Result<IcScreenCache> prepare_ic_screen(
     return Err(ErrorCode::InvalidArgument, "IC screen: price shape mismatch");
   std::vector<usize> order(n);
   data->eligible.assign(data->rows, 0U);
-  for (usize row = 0; row < data->rows; ++row) {
+  for (usize row = 0; row < data->active.front(); ++row) {
     const usize d = cfg.window_begin + row;
     for (usize i = 0; i < n; ++i)
       if (panel.in_universe(d, i) && (member.empty() || member[d * n + i] != 0U)) ++data->eligible[row];
