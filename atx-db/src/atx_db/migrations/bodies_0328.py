@@ -16,8 +16,9 @@ their writer stores them.
    from the labels the P6 writer already puts in ``source``.
 5. ``fundamental_periods.rdq_basis`` / ``rdq_available_at`` / ``rdq_accession_number``
    (FP-rdq): lineage of the 8-K that set ``rdq``; ``rdq`` stays NULL when no 8-K matched.
-6. TODO(MIG0328-item6): P14 bar-revision tables, DDL pending (see
-   :func:`_equity_bar_revision_tables`). 0328 must not be registered before it lands.
+6. P14 ledger (251f1188): ``equity_adjustment_rebases`` (one row per line per vendor
+   factor rebase) and ``equity_daily_bar_revisions`` (rare raw-value restatements), DDL
+   frozen from the loader; new tables, no swap.
 
 Cost: each swap copies its table once in the migration transaction and rebuilds its
 primary key (and secondary indexes). Cheap while the tables are empty or small; a
@@ -184,14 +185,107 @@ def _fundamental_period_rdq_lineage(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _equity_bar_revision_tables(conn: duckdb.DuckDBPyConnection) -> None:
-    """Item 6 slot -- TODO(MIG0328-item6), intentionally empty until the DDL is final.
+    """P14 (ledger variant, 251f1188): the vendor factor-rebase ledger and raw restatements.
 
-    P14 (ledger variant): ``equity_adjustment_rebases`` (one row per line per factor
-    rebase) and the rare raw-restatement ``equity_daily_bar_revisions``. The exact DDL
-    lands in claude-ctl/P14-report.md ("Fix (ledger)"); add it here (CREATE TABLE IF NOT
-    EXISTS, catalog rows) before 0328 is registered.
+    DDL frozen verbatim from ``ticker_history_incremental.REBASES_TABLE_DDL`` /
+    ``REVISIONS_TABLE_DDL`` (P14-report "Fix (ledger)"): no ``DEFAULT now()`` column (WAL
+    replay) and no ART index; keys are catalogued, not constrained. Until 0328 the loader
+    creates them only with ``allow_unmigrated_revisions_table`` (non-production).
     """
-    _ = conn
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS equity_adjustment_rebases (
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            partition_date DATE NOT NULL,
+            available_at TIMESTAMP NOT NULL,
+            multiplier DOUBLE NOT NULL,
+            first_affected_date DATE NOT NULL,
+            last_affected_date DATE NOT NULL,
+            detection_basis VARCHAR NOT NULL,
+            cumul_return_factor DOUBLE,
+            return_factor DOUBLE,
+            prior_close DOUBLE,
+            prior_adjusted_close DOUBLE,
+            run_id VARCHAR NOT NULL,
+            source_loaded_at TIMESTAMP NOT NULL,
+            CHECK (multiplier > 0 AND isfinite(multiplier)),
+            CHECK (first_affected_date <= last_affected_date),
+            CHECK (last_affected_date < partition_date)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS equity_daily_bar_revisions (
+            source VARCHAR NOT NULL,
+            security_id VARCHAR NOT NULL,
+            vendor_security_id VARCHAR,
+            symbol VARCHAR NOT NULL,
+            trade_date DATE NOT NULL,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE,
+            adjusted_close DOUBLE,
+            volume BIGINT,
+            vwap DOUBLE,
+            dividend_amount DOUBLE,
+            split_factor DOUBLE,
+            is_adjusted BOOLEAN NOT NULL,
+            available_at TIMESTAMP,
+            run_id VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL,
+            as_of_date DATE,
+            is_latest_revision BOOLEAN NOT NULL,
+            shares_outstanding BIGINT,
+            market_cap_usd DOUBLE,
+            superseded_at TIMESTAMP NOT NULL,
+            superseded_by_run_id VARCHAR NOT NULL,
+            revision_reason VARCHAR NOT NULL,
+            CHECK (NOT is_latest_revision),
+            CHECK (revision_reason IN ('partition_restatement')),
+            CHECK (available_at IS NULL OR superseded_at >= available_at)
+        )
+    """)
+    pit_note = ("Read with equity_daily_bars through ticker_history_incremental.bars_asof_sql; ledger "
+                "multipliers are undone for receipts after the cutoff.")
+    tables = (
+        ("equity_adjustment_rebases", "source,security_id,partition_date,available_at",
+         "Vendor factor-rebase ledger: one row per (price line, rebase) with the receipt clock, the multiplier m "
+         "and the first/last affected trade date. Stored adjusted_close of those bars is on the basis after every "
+         "row; the value known before a row's available_at is stored / m. Raw prices and bar clocks never move."),
+        ("equity_daily_bar_revisions", "source,security_id,trade_date,superseded_at",
+         "Superseded equity_daily_bars rows from raw-value restatements of a re-delivered partition "
+         "(revision_reason partition_restatement); equity_daily_bars keeps one latest row per key."),
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO table_catalog
+          (table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at)
+        VALUES (?, 'silver', 'equity_daily_bars', ?, ?, ?, ?, now())
+        """,
+        [(name, grain, description, '["' + grain.replace(",", '","') + '"]', pit_note)
+         for name, grain, description in tables],
+    )
+    _describe_fields(conn, "equity_adjustment_rebases", (
+        ("partition_date", "Daily partition whose delivery revealed the rebase."),
+        ("available_at", "Receipt clock of the rebase: greatest(partition_date + 22h, receipt), the clock of the "
+                         "partition's new bars."),
+        ("multiplier", "m > 0: the line's stored adjusted_close from first_affected_date to last_affected_date "
+                       "was multiplied by m; divide it out for cutoffs before available_at."),
+        ("detection_basis", "How the rebase was detected (vendor_crf_return_factor_recurrence)."),
+    ))
+    _describe_fields(conn, "equity_daily_bar_revisions", (
+        ("superseded_at", "When the restating partition replaced this row (at or after its available_at)."),
+        ("revision_reason", "partition_restatement: a re-delivered partition changed raw values."),
+    ))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO pit_exemption
+          (table_name, missing_columns, reason, exempted_by, exempted_at, source_loaded_at)
+        VALUES ('equity_adjustment_rebases', '["as_of_date"]', ?, 'MIG0328 migration 0328', now(), now())
+        """,
+        ["Ledger rows carry the receipt clock available_at and the partition_date session; bars_asof_sql applies "
+         "them by available_at against the cutoff."],
+    )
 
 
 def _post_b0_bundle(conn: duckdb.DuckDBPyConnection) -> None:

@@ -13,6 +13,7 @@ import shutil
 
 import duckdb
 
+from atx_db import ticker_history_incremental as p14
 from atx_db.migration_admin import verify_schema
 from atx_db.migrations import bodies_0328 as b0328
 
@@ -124,7 +125,15 @@ def test_0328_widens_only_its_tables_keeps_rows_backfills_and_replays_from_the_w
                 f"SELECT count(*) FROM {table} WHERE " + " OR ".join(f'"{n}" IS NOT NULL' for n, _ in additions)
             ).fetchone() == ((2,) if table == "entity_classification" else (0,)), table
         tables = {name for (name,) in con.execute("SELECT table_name FROM duckdb_tables() WHERE NOT internal").fetchall()}
-        assert tables == others | set(WIDENED)  # no scratch table left, nothing new
+        new_tables = {p14.REBASES_TABLE, p14.REVISIONS_TABLE}
+        assert tables == others | set(WIDENED) | new_tables  # no scratch table left
+        # The P14 tables are exactly the loader's DDL (its CREATE IF NOT EXISTS would accept a drifted table).
+        loader = duckdb.connect()
+        loader.execute(p14.REBASES_TABLE_DDL)
+        loader.execute(p14.REVISIONS_TABLE_DDL)
+        for table in sorted(new_tables):
+            assert _shape(con, table) == _shape(loader, table), table
+        loader.close()
         assert {table: _shape(con, table) for table in sorted(others)} == {t: before[t] for t in sorted(others)}
         # Back-fill only from what source states.
         assert con.execute(
