@@ -596,7 +596,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   if (res.ic_screen_resume_mismatch) {
     rep.ic_screen_resume_mismatch = true;
     rep.seed = res.seed;
-    return rep; // never rescore or admit from incompatible screen state
+    return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
   }
   std::vector<Genome> admission_storage;
   const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
@@ -910,7 +910,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   if (res.ic_screen_resume_mismatch) {
     rep.ic_screen_resume_mismatch = true;
     rep.seed = res.seed;
-    return rep; // never rescore or admit from incompatible screen state
+    return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
   }
   std::vector<Genome> admission_storage;
   const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
@@ -1543,7 +1543,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   if (res.ic_screen_resume_mismatch) {
     rep.ic_screen_resume_mismatch = true;
     rep.seed = res.seed;
-    return rep; // never rescore or admit from incompatible screen state
+    return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
   }
   std::vector<Genome> admission_storage;
   const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
@@ -1953,7 +1953,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   if (res.ic_screen_resume_mismatch) {
     rep.ic_screen_resume_mismatch = true;
     rep.seed = res.seed;
-    return rep; // never rescore or admit from incompatible screen state
+    return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
   }
   std::vector<Genome> admission_storage;
   const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
