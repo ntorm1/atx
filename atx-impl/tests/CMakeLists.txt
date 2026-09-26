@@ -83,6 +83,7 @@ atx_impl_test_target_environment(atx-impl-w1-contract-tests)
 # the shared execution ledger checks without building every factory/mine test.
 add_executable(atx-impl-strategy-tests EXCLUDE_FROM_ALL
     strategy_dsl_test.cpp
+    strategy_runner_test.cpp
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/data/strategy_data_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/execution_schedule_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/execution_objective_test.cpp")
