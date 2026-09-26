@@ -182,8 +182,8 @@ namespace detail {
 // constraint block C (linear rows + gross/turnover L1 metadata).
 //
 // PRECONDITIONS (the solver validates these up front; build is a pure assembler):
-//   q.size() == V.n_instruments();  C.A.cols() == M when C.A has rows;
-//   C.l.size() == C.u.size() == C.A.rows();  λ ≥ 0.
+//   q.size() == V.n_instruments(); C.validate_layout(M) succeeds;
+//   C.validate_augmented_workspace(M,K) succeeds; lambda >= 0.
 //   C.turnover_penalty is finite and >= 0; a budget or positive penalty requires
 //   M finite entries in C.turnover_ref.
 [[nodiscard]] inline AugmentedQp build_augmented(const FactorModel &V, atx::f64 lambda,

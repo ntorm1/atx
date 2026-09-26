@@ -113,6 +113,9 @@ namespace detail {
     return co::Err(co::ErrorCode::InvalidArgument, "mpc_stack: w_prev must be empty or M");
   }
   const MaterializedConstraints &c = p.C;
+  if (c.storage.rule != ConstraintStorageRule::LegacyDenseV1)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "mpc_stack: only explicit LegacyDenseV1 constraint storage is supported");
   if (c.A.rows() > 0 && static_cast<atx::usize>(c.A.cols()) != m) {
     return co::Err(co::ErrorCode::InvalidArgument, "mpc_stack: A.cols() must equal M");
   }
