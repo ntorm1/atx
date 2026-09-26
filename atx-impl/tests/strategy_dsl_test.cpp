@@ -81,6 +81,8 @@ TEST(StrategyDsl, FrozenLibraryCompilesRunsAndPreservesCausalMaskedPrefix) {
     ASSERT_TRUE(mutated) << mutated.error().message();
     const auto member = strategy_membership();
     alpha::Engine engine{*original}, changed_engine{*mutated};
+    engine.set_eval_mode(alpha::EvalMode::ResearchFast);
+    changed_engine.set_eval_mode(alpha::EvalMode::ResearchFast);
     ASSERT_TRUE(engine.set_cross_section_mask(member));
     ASSERT_TRUE(changed_engine.set_cross_section_mask(member));
     alpha::Library ops;
