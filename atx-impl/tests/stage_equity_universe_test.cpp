@@ -526,6 +526,18 @@ TEST_F(StageEquityUniverse, V2DatedTypesBindMembershipExclusionsAndExactPublicat
             {"availability_status", name.id == 505 ? "unverified" : "verified"},
             {"endpoints_known_at_source_clock", true}});
     }
+    // An undated contradictory row must not suppress 101's already-public proof.
+    // Exercise all three ways the projection can lack an established public clock.
+    for (int missing = 0; missing < 3; ++missing) {
+        auto unknown_clock = rows.front();
+        unknown_clock["instrument_type"] = "etf";
+        unknown_clock["source_published_at_ns"] = 0;
+        unknown_clock["available_at_ns"] = 0;
+        if (missing == 0) unknown_clock["availability_status"] = "unverified";
+        else if (missing == 1) unknown_clock["vintage_status"] = "unverified";
+        else unknown_clock["endpoints_known_at_source_clock"] = false;
+        rows.push_back(std::move(unknown_clock));
+    }
     const Json types{{"schema", "atx-instrument-types-v1"}, {"status", "complete"},
         {"sealed_end_exclusive", "2020-01-01"}, {"clock_rule", "verified-publication-strict-before-session"},
         {"validity_rule", "endpoints-known-at-source-clock"},

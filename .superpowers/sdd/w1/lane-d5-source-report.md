@@ -65,7 +65,11 @@ with publication no later than availability and all clocks/intervals pre-2020.
 An unavailable row never qualifies membership. No verified evidence at all fails
 construction. Unknown and unverified types cannot be silently promoted to common.
 At least one verified known type is needed per eligible line; all available
-qualified types must agree, and available unknown/unverified records block trading.
+qualified types must agree, and unknown/unverified classification records block
+trading only when their publication/vintage/validity clock is independently
+verified and strictly earlier. Unknown-clock records remain unavailable and cannot
+suppress an existing qualified common-stock record. If no qualified record exists,
+the line remains excluded; no unknown-clock record is promoted into common stock.
 Type categories REIT and LP are explicitly excluded in this narrow common-stock
 policy; they are not silently treated as ordinary common-stock evidence.
 
@@ -98,7 +102,7 @@ its eligibility recipe.
 
 Implementation preceded the fixture additions. Pure synthetic Python QA checks:
 **7/7 passed, 0.370 s**, log `pool-3/build-equity/d5-qa-synthetic-tests.log`.
-`git diff --check` passed. Owning C++ fixtures added (uncompiled/unrun): three
+`git diff --check` passed. Owning C++ fixtures added (uncompiled/unrun): four
 builder cases for floors/types/strict clocks/expiry/future evidence/codec; one
 configuration case; one actual-stage type-to-membership/excluded-manifest case;
 one native QA-v2 provenance/load case including false-claim rejection. Existing
@@ -109,3 +113,24 @@ projection acquisition/verification, the actual 19-session repair, 2013-2015
 segment byte comparison, full membership identity where filters do not bind,
 historical churn/coverage and the rebuilt 2018 context for 252-session families
 all remain unrun. No CMake or original DAG/global ledger edit is included here.
+
+## Independent-review corrections after a5250e25
+
+The auditor identified two source blockers; this follow-up implements both for
+independent re-review, without compilation or new numeric runs:
+
+- QA-v2 daily accepted and unchanged totals must fit their global counts. Each
+  addition is bounded by the remaining global count before addition, preventing
+  overflow. Fixtures reject a one-row manifest claiming 100 daily accepted rows,
+  a maximum-u64 claim, and individually small daily claims whose sum is too large.
+- `PitInstrumentTypeEvidence::clock_verified` separates publication/vintage/known
+  validity endpoints from classification quality. A qualified classification
+  requires a verified positive clock; an unverified clock cannot acquire an
+  epoch-zero exclusion effect. Builder fixtures cover mixed qualified/undated
+  rows, a lone undated line, and dated ambiguous evidence at/beyond the strict
+  publication boundary. The actual-stage fixture appends contradictory rows with
+  unknown availability, vintage or endpoint timing and preserves qualified
+  membership. The artifact recipe now states this distinction explicitly.
+
+All seven owning C++ cases remain uncompiled/unrun here; V1 source paths and the
+prior seven Python QA checks are unchanged. Historical acceptance remains open.

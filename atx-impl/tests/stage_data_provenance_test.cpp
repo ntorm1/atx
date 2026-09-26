@@ -321,11 +321,18 @@ TEST_F(AtxImplDataProvenance, QaV2TruthfulModifiedRowsLoadAndBindWhileFalseClaim
     doc["qa_v2_rescuable_reasons"] = {"ohlc_order_violation"};
     doc["qa_v2_dates"] = {"2016-01-15"};
     doc["qa_v2_daily_counts"] = {{"2016-01-15", {{"accepted_v1", 0}, {"accepted_v2_rescued", 1}, {"accepted", 1}}}};
-    std::vector<Json> bad(4, doc);
+    std::vector<Json> bad(7, doc);
     bad[0]["accepted"]["rows_preserved_byte_for_byte"] = true;
     bad[1]["qa_v2_allowlist_sha256"] = std::string(64, 'b');
     bad[2]["qa_v2_blanked_fields"] = {"close"};
     bad[3]["qa_v2_daily_counts"]["2016-01-15"]["accepted_v2_rescued"] = 0;
+    bad[4]["qa_v2_daily_counts"]["2016-01-15"]["accepted_v1"] = 99;
+    bad[4]["qa_v2_daily_counts"]["2016-01-15"]["accepted"] = 100;
+    bad[5]["qa_v2_daily_counts"]["2016-01-15"]["accepted_v1"] = std::numeric_limits<atx::u64>::max() - 1;
+    bad[5]["qa_v2_daily_counts"]["2016-01-15"]["accepted"] = std::numeric_limits<atx::u64>::max();
+    bad[6]["window"]["end_inclusive"] = "2016-02-12";
+    bad[6]["qa_v2_dates"].push_back("2016-02-12");
+    bad[6]["qa_v2_daily_counts"]["2016-02-12"] = {{"accepted_v1", 1}, {"accepted_v2_rescued", 0}, {"accepted", 1}};
     for (const auto& invalid : bad) {
         write_json(prep, invalid);
         EXPECT_FALSE(begin_ingestion_provenance(zip.string(), load.out, prep.string()));

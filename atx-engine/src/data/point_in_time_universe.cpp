@@ -442,7 +442,8 @@ Result<PitUniverseBuilder> PitUniverseBuilder::create(
         (row.source != PitTypeSource::Vendor && row.source != PitTypeSource::Sec) ||
         row.source_published_at < 0 || row.available_at < row.source_published_at ||
         row.available_at >= kPitSessionKeyEndExclusive ||
-        (row.verified && (row.source_published_at == 0 || row.available_at == 0)))
+        (row.verified && !row.clock_verified) ||
+        (row.clock_verified && (row.source_published_at == 0 || row.available_at == 0)))
       return Err(ErrorCode::InvalidArgument, "pit universe: invalid or unsealed type evidence");
     any_verified = any_verified || row.verified;
   }
@@ -743,7 +744,7 @@ Result<PitRebalanceView> PitUniverseBuilder::rebalance(atx::i64 rank_session_key
       for (; type != m.types.end() && type->security_id == m.id[u]; ++type) {
         if (rank_session_key < type->valid_from || rank_session_key >= type->valid_to) continue;
         // Strict source clock; no later record can alter an earlier decision.
-        if (type->available_at >= rank_session_key) { unavailable = true; continue; }
+        if (!type->clock_verified || type->available_at >= rank_session_key) { unavailable = true; continue; }
         if (!type->verified) { unverified = true; continue; }
         if (type->type == PitInstrumentType::Unknown) { unknown = true; continue; }
         if (qualified && type->type != exclusion.type) conflict = true;

@@ -189,15 +189,18 @@ Result<IngestionInput> validate_preparation(const std::string &path,
                 doc.at("qa_v2_dates") != expected ||
                 !doc.at("qa_v2_daily_counts").is_object() || doc.at("qa_v2_daily_counts").size() != expected.size())
                 return Err(ErrorCode::InvalidArgument, "provenance: invalid QA-v2 policy/counts/allowlist");
-            atx::u64 total_rescued = 0;
+            atx::u64 total_rescued = 0, total_accepted = 0, total_unchanged = 0;
             for (const auto& date : expected) {
                 const auto& daily = doc.at("qa_v2_daily_counts").at(date.get<std::string>());
                 ATX_TRY(auto old_rows, count(daily.at("accepted_v1")));
                 ATX_TRY(auto new_rows, count(daily.at("accepted_v2_rescued")));
                 ATX_TRY(auto all_rows, count(daily.at("accepted")));
-                if (new_rows > changed - total_rescued || new_rows > all_rows || old_rows != all_rows - new_rows)
+                if (new_rows > changed - total_rescued || all_rows > accepted - total_accepted ||
+                    old_rows > unchanged - total_unchanged || new_rows > all_rows || old_rows != all_rows - new_rows)
                     return Err(ErrorCode::InvalidArgument, "provenance: inconsistent QA-v2 daily counts");
                 total_rescued += new_rows;
+                total_accepted += all_rows;
+                total_unchanged += old_rows;
             }
             if (total_rescued != changed)
                 return Err(ErrorCode::InvalidArgument, "provenance: QA-v2 rescue total mismatch");

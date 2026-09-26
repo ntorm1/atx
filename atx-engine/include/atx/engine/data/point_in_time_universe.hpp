@@ -92,8 +92,11 @@ struct PitInstrumentTypeEvidence {
   atx::i64 available_at{};
   PitInstrumentType type{PitInstrumentType::Unknown};
   PitTypeSource source{PitTypeSource::Vendor};
-  bool verified{false}; // evidence AND publication/vintage clocks verified
+  bool verified{false}; // classification evidence qualified; also requires clock_verified
   atx::u32 source_row{};
+  // Publication, payload vintage and both validity endpoints are established.
+  // Unknown-clock records may not affect a dated decision, even as an exclusion.
+  bool clock_verified{false};
 };
 
 enum PitExclusion : atx::u32 {

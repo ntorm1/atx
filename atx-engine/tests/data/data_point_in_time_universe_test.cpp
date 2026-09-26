@@ -2518,7 +2518,7 @@ PitUniverseConfig v2_config() {
 PitInstrumentTypeEvidence type_proof(atx::i64 id, atx::u32 row,
                                     PitInstrumentType type = PitInstrumentType::CommonStock) {
   return {id, key(0), kPitSessionKeyEndExclusive, key(0) - kDay, key(0) - kDay,
-          type, PitTypeSource::Vendor, true, row};
+          type, PitTypeSource::Vendor, true, row, true};
 }
 
 TEST(DataPointInTimeUniverseV2, InclusiveFloorsAndExplicitTypeExclusions) {
@@ -2589,6 +2589,10 @@ TEST(DataPointInTimeUniverseV2, EvidenceValidationAndVersionedCodecPreserveLegac
   EXPECT_FALSE(PitUniverseBuilder::create(cfg, std::span{&bad, 1U}));
   bad = proof; bad.verified = false;
   EXPECT_FALSE(PitUniverseBuilder::create(cfg, std::span{&bad, 1U}));
+  bad = proof; bad.clock_verified = false;
+  EXPECT_FALSE(PitUniverseBuilder::create(cfg, std::span{&bad, 1U}));
+  bad = proof; bad.source_published_at = 0;
+  EXPECT_FALSE(PitUniverseBuilder::create(cfg, std::span{&bad, 1U}));
   bad = proof; bad.valid_to = bad.valid_from;
   EXPECT_FALSE(PitUniverseBuilder::create(cfg, std::span{&bad, 1U}));
   Feed v2(cfg, std::span{&proof, 1U});
@@ -2615,6 +2619,43 @@ TEST(DataPointInTimeUniverseV2, EvidenceValidationAndVersionedCodecPreserveLegac
   auto corrupt = bytes; corrupt[50] ^= 1;
   EXPECT_FALSE(decode_membership_bin(corrupt));
   EXPECT_FALSE(decode_membership_bin(bytes.substr(0, 64)));
+}
+
+TEST(DataPointInTimeUniverseV2, UnknownClockCannotRewriteQualifiedMembership) {
+  const auto cfg = v2_config();
+  const auto common = type_proof(1, 1);
+  auto undated = type_proof(1, 2, PitInstrumentType::Etf);
+  undated.verified = false;
+  undated.clock_verified = false;
+  undated.source_published_at = 0;
+  undated.available_at = 0;
+  auto lone_undated = undated;
+  lone_undated.security_id = 2;
+  lone_undated.source_row = 3;
+  auto dated_ambiguous = type_proof(1, 4, PitInstrumentType::Unknown);
+  dated_ambiguous.verified = false;
+  dated_ambiguous.available_at = key(2);
+  const std::vector<PitInstrumentTypeEvidence> types{common, undated, lone_undated, dated_ambiguous};
+  Feed full(cfg, types);
+  Feed prefix(cfg, std::span{&common, 1U});
+  const std::vector<Bar> bars{raw(1, 10, 1'000'000), raw(2, 10, 1'000'000)};
+  for (atx::usize t = 0; t < 4; ++t) {
+    require(full.observe(bars), "full");
+    const auto actual = full.rebalance_now();
+    if (t <= 2) {
+      require(prefix.observe(bars), "prefix");
+      const auto expected = prefix.rebalance_now();
+      EXPECT_EQ(member_ids(full, actual, 0), member_ids(prefix, expected, 0));
+      EXPECT_NE(find_ranked(actual, 1), nullptr);
+    } else {
+      EXPECT_EQ(find_ranked(actual, 1), nullptr);
+      for (const auto& excluded : actual.excluded)
+        if (excluded.security_id == 1) EXPECT_NE(excluded.reasons & PitTypeUnverified, 0U);
+    }
+    EXPECT_EQ(find_ranked(actual, 2), nullptr);
+    for (const auto& excluded : actual.excluded)
+      if (excluded.security_id == 2) EXPECT_NE(excluded.reasons & PitTypeUnavailable, 0U);
+  }
 }
 
 } // namespace atxtest_data_point_in_time_universe

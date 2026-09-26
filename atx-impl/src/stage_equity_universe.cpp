@@ -644,13 +644,15 @@ Status bind_types(const Profile& profile, Inputs& inputs) {
             return Err(ErrorCode::InvalidArgument, "equity universe: type source must be vendor or sec");
         row.source = origin == "vendor" ? data::PitTypeSource::Vendor : data::PitTypeSource::Sec;
         row.verified = true;
+        row.clock_verified = item.at("endpoints_known_at_source_clock") == true;
         for (auto name : {"evidence_status", "availability_status", "vintage_status"}) {
             const auto status = item.at(name).get<std::string>();
             if (status != "verified" && status != "unverified")
                 return Err(ErrorCode::InvalidArgument, "equity universe: unknown type qualification status");
-            row.verified = row.verified && status == "verified";
+            if (std::string_view(name) == "evidence_status") row.verified = status == "verified";
+            else row.clock_verified = row.clock_verified && status == "verified";
         }
-        if (item.at("endpoints_known_at_source_clock") != true) row.verified = false;
+        row.verified = row.verified && row.clock_verified;
         row.source_row = static_cast<atx::u32>(inputs.types.size() + 1U);
         inputs.types.push_back(row);
     }
@@ -844,7 +846,7 @@ Json config_json(const RunConfig &cfg, const Inputs &inputs) {
         recipe["instrument_types_sha256"] = inputs.types_sha256;
         recipe["type_clock_rule"] = "verified-publication-strict-before-session";
         recipe["type_validity_rule"] = "endpoints-known-at-source-clock";
-        recipe["excluded_type_policy"] = "ETF/ADR/preferred/fund/REIT/LP/other excluded; unknown/unverified/conflict excluded for trading, never inferred common";
+        recipe["excluded_type_policy"] = "ETF/ADR/preferred/fund/REIT/LP/other excluded; unknown/unverified/conflict excluded only under verified clocks; unknown-clock rows unavailable, never inferred common";
         recipe["exclusion_reason_bits"] = Json{{"no_rank_bar", 1}, {"below_price", 2}, {"insufficient_history", 4},
             {"below_adv", 8}, {"type_unknown", 16}, {"type_unverified", 32}, {"type_unavailable", 64},
             {"type_conflict", 128}, {"not_common_stock", 256}};
