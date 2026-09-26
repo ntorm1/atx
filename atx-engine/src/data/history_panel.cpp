@@ -14,6 +14,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <numeric>
 #include <optional>
@@ -42,6 +43,94 @@ namespace atx::engine::data {
 
 namespace {
 
+core::Result<std::vector<std::string>> bounded_history_paths(const std::string& directory) {
+  std::vector<std::string> paths; std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator(directory, ec)) {
+    if (e.path().extension() != ".seg") continue;
+    if (paths.size() == 10000 || e.path().string().size() > 4096)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source file/path bound");
+    paths.push_back(e.path().string());
+  }
+  if (ec || paths.empty()) return core::Err(core::ErrorCode::IoError, "history: no readable segment paths");
+  std::sort(paths.begin(), paths.end()); return core::Ok(std::move(paths));
+}
+
+core::Result<alpha::IndexedPanel> fixed_history_panel(const HistoryDataConfig& cfg) {
+  const auto& ids = cfg.fixed_axis_ids;
+  if (ids.empty() || ids.size() > 100000 || cfg.compact_to_universe || !cfg.allow_ids.empty())
+    return core::Err(core::ErrorCode::InvalidArgument, "history: fixed union forbids compaction/allow-list");
+  for (atx::usize i = 0; i < ids.size(); ++i)
+    if (ids[i] <= 0 || (i && ids[i - 1] >= ids[i]))
+      return core::Err(core::ErrorCode::InvalidArgument, "history: fixed IDs must be sorted unique positive");
+  ATX_TRY(auto dates, history_session_keys(cfg.seg_dir, cfg.window));
+  ATX_TRY(auto paths, bounded_history_paths(cfg.seg_dir));
+  atx::u64 largest_mapping = 0;
+  for (const auto& path : paths) {
+    std::error_code ec; const auto bytes = std::filesystem::file_size(path, ec);
+    if (ec || bytes > 256ULL * 1024 * 1024)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source mapping budget exceeded");
+    largest_mapping = std::max(largest_mapping, static_cast<atx::u64>(bytes));
+  }
+  const auto n = ids.size(); const auto cells64 = atx::u64{dates.size()} * n;
+  // Conservative concurrent raw/corp/derived/panel copies plus cold metadata.
+  // This is an admission estimate, not a measured process RSS guarantee.
+  const atx::u64 fixed_bytes = 64ULL * 1024 * 1024 + largest_mapping;
+  if (cells64 > (std::numeric_limits<atx::usize>::max)() || cfg.max_working_bytes < fixed_bytes ||
+      cells64 > (cfg.max_working_bytes - fixed_bytes) / 512)
+    return core::Err(core::ErrorCode::InvalidArgument, "history: fixed union working-memory budget exceeded");
+  const auto cells = static_cast<atx::usize>(cells64);
+  std::vector<std::string> fields(kOratsFields.begin(), kOratsFields.end()), names;
+  for (auto id : ids) names.push_back(std::to_string(id));
+  std::vector<std::vector<atx::f64>> values(fields.size());
+  for (auto& column : values) column.assign(cells, std::numeric_limits<atx::f64>::quiet_NaN());
+  std::vector<atx::u8> present(cells, 0);
+  std::vector<std::string> selected;
+  for (const auto& path : paths) {
+    std::error_code ec; const auto bytes = std::filesystem::file_size(path, ec);
+    if (ec || bytes > cfg.max_working_bytes / 2)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source mapping budget exceeded");
+    ATX_TRY(auto reader, atx::tsdb::SegmentReader::attach(path, largest_mapping));
+    const auto times = reader.times();
+    auto lo = std::lower_bound(times.begin(), times.end(), cfg.window.start_nanos);
+    auto hi = std::lower_bound(times.begin(), times.end(), cfg.window.end_nanos);
+    if (lo == hi) continue;
+    if (reader.instrument_count() > 100000)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source instrument metadata bound");
+    selected.push_back(path);
+    std::vector<atx::u32> field_ids; field_ids.reserve(fields.size());
+    for (const auto& f : fields) {
+      const auto found = reader.field_index(f);
+      if (!found) return core::Err(core::ErrorCode::NotFound, "history: source field absent: " + f);
+      field_ids.push_back(*found);
+    }
+    std::vector<atx::i64> source_ids; source_ids.reserve(reader.instrument_count());
+    for (atx::u32 j = 0; j < reader.instrument_count(); ++j) {
+      const auto name = reader.symbol_name(j); atx::i64 id{};
+      const auto parsed = std::from_chars(name.data(), name.data() + name.size(), id);
+      if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size() || id <= 0 || std::to_string(id) != name)
+        return core::Err(core::ErrorCode::InvalidArgument, "history: noncanonical source ID");
+      source_ids.push_back(id);
+      const auto member = std::lower_bound(ids.begin(), ids.end(), id);
+      if (member == ids.end() || *member != id) continue;
+      const auto col = static_cast<atx::usize>(member - ids.begin());
+      for (auto it = lo; it != hi; ++it) {
+        const auto local = static_cast<atx::usize>(it - times.begin());
+        if (!reader.present(local, j)) continue;
+        const auto date = static_cast<atx::usize>(std::lower_bound(dates.begin(), dates.end(), *it) - dates.begin());
+        const auto cell = date * n + col;
+        if (present[cell]) return core::Err(core::ErrorCode::InvalidArgument, "history: duplicate fixed-axis cell");
+        present[cell] = 1;
+        for (atx::usize f = 0; f < fields.size(); ++f) values[f][cell] = reader.value(field_ids[f], local, j);
+      }
+    }
+    std::sort(source_ids.begin(), source_ids.end());
+    if (std::adjacent_find(source_ids.begin(), source_ids.end()) != source_ids.end())
+      return core::Err(core::ErrorCode::InvalidArgument, "history: duplicate source instrument identity");
+  }
+  ATX_TRY(auto panel, alpha::Panel::create(dates.size(), n, std::move(fields), std::move(values), std::move(present)));
+  return core::Ok(alpha::IndexedPanel{std::move(panel), std::move(dates), std::move(names), std::move(selected)});
+}
+
 // The source cumulative factor already includes splits and cash distributions.
 // Apply it once to every research price; chaining ratios adds avoidable rounding
 // and can put close on a slightly different scale from the same row's O/H/L.
@@ -66,6 +155,31 @@ adjusted_history_prices(std::span<const atx::f64> prices,
 }
 
 } // namespace
+
+core::Result<std::vector<atx::i64>> history_session_keys(const std::string& seg_dir, alpha::TimeWindow window) {
+  if (window.start_nanos >= window.end_nanos || window.start_nanos <= 0 ||
+      window.end_nanos > 1'577'836'800'000'000'000LL)
+    return core::Err(core::ErrorCode::InvalidArgument, "history: bounded path requires explicit pre-2020 window");
+  ATX_TRY(auto paths, bounded_history_paths(seg_dir));
+  std::vector<atx::i64> dates;
+  for (const auto& path : paths) {
+    std::error_code ec; const auto extent = std::filesystem::file_size(path, ec);
+    if (ec || extent > 256ULL * 1024 * 1024)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source metadata mapping limit");
+    ATX_TRY(auto reader, atx::tsdb::SegmentReader::attach(path, 256ULL * 1024 * 1024));
+    const auto times = reader.times();
+    for (atx::usize t = 0; t < times.size(); ++t) {
+      if (times[t] <= 0 || times[t] >= 1'577'836'800'000'000'000LL || (t && times[t - 1] >= times[t]))
+        return core::Err(core::ErrorCode::InvalidArgument, "history: unsealed/nonascending source session axis");
+      if (times[t] < window.start_nanos || times[t] >= window.end_nanos) continue;
+      if (dates.size() == 100000) return core::Err(core::ErrorCode::InvalidArgument, "history: session metadata bound");
+      dates.push_back(times[t]);
+    }
+  }
+  std::sort(dates.begin(), dates.end()); dates.erase(std::unique(dates.begin(), dates.end()), dates.end());
+  if (dates.empty()) return core::Err(core::ErrorCode::InvalidArgument, "history: empty selected session axis");
+  return core::Ok(std::move(dates));
+}
 
 // ---------------------------------------------------------------------------
 //  history_field_level_basis (W0-D0, D-01)
@@ -175,7 +289,9 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   // -------------------------------------------------------------------------
   const std::vector<std::string> want_fields(kOratsFields.begin(), kOratsFields.end());
   ATX_TRY(auto indexed,
-          alpha::attach_indexed_multi_segment_panel(cfg.seg_dir, cfg.window, want_fields));
+          cfg.fixed_axis_ids.empty()
+              ? alpha::attach_indexed_multi_segment_panel(cfg.seg_dir, cfg.window, want_fields)
+              : fixed_history_panel(cfg));
   auto raw = std::move(indexed.panel);
   const atx::usize D = raw.dates();
   const atx::usize N = raw.instruments();
@@ -416,6 +532,10 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   std::vector<atx::usize> original_instrument_indices(N);
   std::iota(original_instrument_indices.begin(), original_instrument_indices.end(), atx::usize{0});
   std::vector<std::uint8_t> mask_out(uni.in_universe.begin(), uni.in_universe.end());
+  if (!cfg.fixed_axis_ids.empty()) {
+    for (atx::usize t = 0; t < D; ++t) for (atx::usize i = 0; i < N; ++i)
+      mask_out[t * N + i] = raw.in_universe(t, i) ? 1 : 0;
+  }
   if (cfg.compact_to_universe) {
     std::vector<atx::usize> keep;
     keep.reserve(N);

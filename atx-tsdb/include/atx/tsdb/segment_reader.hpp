@@ -24,6 +24,10 @@ public:
   /// short file; Err(IoError) if it cannot be mapped (propagated from Mapping);
   /// Err(Internal) on integrity-crc mismatch.
   [[nodiscard]] static atx::core::Result<SegmentReader> attach(const std::string &path);
+  // Captured-handle extent is admitted before mapping; the legacy overload is
+  // unchanged. Intended for bounded out-of-core assembly, not a path-size hint.
+  [[nodiscard]] static atx::core::Result<SegmentReader> attach(
+      const std::string &path, atx::u64 max_bytes);
 
   [[nodiscard]] atx::u64 time_count() const noexcept { return header().time_count; }
   [[nodiscard]] atx::u32 instrument_count() const noexcept { return header().instrument_count; }

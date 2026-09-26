@@ -123,6 +123,12 @@ struct HistoryDataConfig {
   // empty ⇒ off, and every code path is byte-identical to a build without it.
   // Order and duplicates are irrelevant: the build sorts and dedupes a copy.
   std::vector<atx::i64> allow_ids{};
+  // D6 explicit bounded path. Nonempty sorted positive IDs define the COMPLETE
+  // axis, including IDs absent from this date window. No compaction/allow-list
+  // is allowed. The returned Panel's mask is source presence; dated tradability
+  // is supplied separately by the panel-store stage. Legacy empty path unchanged.
+  std::vector<atx::i64> fixed_axis_ids{};
+  atx::u64 max_working_bytes{2ULL * 1024 * 1024 * 1024};
 };
 
 // =========================================================================
@@ -147,6 +153,12 @@ struct HistoryPanel {
   // no-op append path, whose callers use history_field_level_basis(name) instead.
   std::vector<LevelBasis> field_basis{};
 };
+
+// Bounded source-axis inspection, one reader at a time; no field-value copies.
+// Includes all actual session labels in the half-open window. Refuses malformed
+// axes and oversized segment/session metadata. Does not authenticate availability.
+[[nodiscard]] atx::core::Result<std::vector<atx::i64>>
+history_session_keys(const std::string& seg_dir, alpha::TimeWindow window);
 
 // =========================================================================
 //  orats_total_return_close (S3-3)

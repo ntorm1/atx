@@ -534,4 +534,59 @@ Status require_panel_parent(const PanelIdentity &child, std::string_view role,
     }
 }
 
+Result<PanelStoreWindow> read_panel_store_window(const std::string& directory,
+    atx::usize begin, atx::usize end, atx::u64 budget, std::string_view expected) {
+    using namespace atx::engine;
+    ATX_TRY(auto store, data::PanelStore::open(directory, expected));
+    const auto& c = store.config();
+    if (begin >= end || end > c.session_keys.size())
+        return Err(ErrorCode::InvalidArgument, "panel store: invalid materialization window");
+    const auto n = c.instrument_ids.size(), d = end - begin;
+    const atx::u64 cells = atx::u64{n} * d;
+    const atx::u64 bytes_per_cell = c.fields.size() * sizeof(atx::f64) + 2;
+    const atx::u64 metadata = 32ULL * 1024 * 1024 + atx::u64{n} * 128;
+    if (budget < metadata || cells > (budget - metadata) / bytes_per_cell ||
+        cells > (std::numeric_limits<atx::usize>::max)())
+        return Err(ErrorCode::InvalidArgument, "panel store: f64 window materialization budget exceeded");
+    const auto count = static_cast<atx::usize>(cells);
+    std::vector<std::string> names;
+    std::vector<std::vector<atx::f64>> columns(c.fields.size());
+    for (atx::usize f = 0; f < c.fields.size(); ++f) { names.push_back(c.fields[f].name); columns[f].resize(count); }
+    std::vector<atx::u8> present(count), tradable(count);
+    for (atx::usize index = begin / c.chunk_dates; index <= (end - 1) / c.chunk_dates; ++index) {
+        ATX_TRY(auto chunk, store.open_chunk(index));
+        const auto first = std::max(begin, chunk.begin_date());
+        const auto last = std::min(end, chunk.begin_date() + chunk.dates());
+        for (atx::usize date = first; date < last; ++date) {
+            const auto local = date - chunk.begin_date(), offset = (date - begin) * n;
+            for (atx::usize f = 0; f < c.fields.size(); ++f) {
+                auto row = std::span<atx::f64>(columns[f]).subspan(offset, n);
+                if (c.fields[f].name == "close") ATX_TRY_VOID(chunk.read_exact_close_row(local, row));
+                else ATX_TRY_VOID(chunk.read_field_row(f, local, row));
+            }
+            ATX_TRY(auto p, chunk.present(local)); ATX_TRY(auto m, chunk.tradable(local));
+            std::copy(p.begin(), p.end(), present.begin() + static_cast<std::ptrdiff_t>(offset));
+            std::copy(m.begin(), m.end(), tradable.begin() + static_cast<std::ptrdiff_t>(offset));
+        }
+    }
+    ATX_TRY(auto panel, alpha::Panel::create(d, n, std::move(names), std::move(columns), std::move(present)));
+    PanelIdentity identity; identity.instrument_namespace = c.instrument_namespace;
+    identity.session_keys.assign(c.session_keys.begin() + static_cast<std::ptrdiff_t>(begin),
+                                 c.session_keys.begin() + static_cast<std::ptrdiff_t>(end));
+    for (auto id : c.instrument_ids) identity.instrument_ids.push_back(std::to_string(id));
+    for (auto index : c.original_indices) {
+        if (index > (std::numeric_limits<atx::usize>::max)())
+            return Err(ErrorCode::InvalidArgument, "panel store: source index does not fit consumer");
+        identity.original_instrument_indices.push_back(static_cast<atx::usize>(index));
+    }
+    const std::string manifest(store.manifest_sha256());
+    identity.recipe = Json{{"rule", "panel-store-window-v2"}, {"begin", begin}, {"end", end},
+        {"source_recipe", c.recipe}, {"close_read", "original-f64-adjusted"},
+        {"mask", "source-presence;separate-dated-tradable"}}.dump();
+    identity.parents = {{"panel_store", manifest}, {"membership", c.membership_sha256}};
+    ATX_TRY(auto id, atx::core::sha256_hex("atx-panel-store-window-v2\n" + manifest + "\n" + identity.recipe));
+    return Ok(PanelStoreWindow{PanelArtifact{std::move(panel), std::move(identity), std::move(id), manifest},
+                               std::move(tradable), c.fields});
+}
+
 } // namespace atx::impl

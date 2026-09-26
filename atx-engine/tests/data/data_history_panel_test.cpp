@@ -1,5 +1,6 @@
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <limits>
@@ -48,6 +49,42 @@ void write_day(const fs::path &dir, const char *name, atx::i64 dn,
   ASSERT_TRUE(atx::tsdb::build_from_long(cols, (dir / name).string(), 0).has_value());
 }
 } // namespace
+
+class DataHistoryPanelFixedUnion : public ::testing::Test {
+protected:
+  fs::path root;
+  void SetUp() override {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (int i = 0; i < 32; ++i) {
+      const auto candidate = fs::temp_directory_path() / ("atx-fixed-history-" + std::to_string(stamp) + "-" + std::to_string(i));
+      std::error_code ec;
+      if (fs::create_directory(candidate, ec)) { root = candidate; return; }
+    }
+    FAIL() << "cannot exclusively reserve synthetic history fixture";
+  }
+  void TearDown() override { if (!root.empty()) { std::error_code ec; fs::remove_all(root, ec); } }
+};
+
+TEST_F(DataHistoryPanelFixedUnion, KeepsAbsentAndFutureColumnsWithOriginalF64History) {
+  const auto start = day_nanos(15707); // synthetic 2013-01-02
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "a.seg", start, {"20", "10"}, {20, 10.00000002}, {1, 1}, {1e8, 1e8}));
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "b.seg", start + day_nanos(1), {"10"}, {11.00000002}, {1}, {1e8}));
+  EXPECT_FALSE(atx::tsdb::SegmentReader::attach((root / "a.seg").string(), 1));
+  EXPECT_TRUE(atx::tsdb::SegmentReader::attach((root / "a.seg").string(), fs::file_size(root / "a.seg")));
+  HistoryDataConfig cfg; cfg.seg_dir = root.string(); cfg.window = {start, start + day_nanos(2)};
+  cfg.fixed_axis_ids = {10, 20, 30};
+  auto fixed = build_history_panel(cfg); ASSERT_TRUE(fixed) << fixed.error().message();
+  EXPECT_EQ(fixed->instrument_ids, (std::vector<std::string>{"10", "20", "30"}));
+  EXPECT_EQ(fixed->original_instrument_indices, (std::vector<atx::usize>{0, 1, 2}));
+  EXPECT_TRUE(fixed->panel.in_universe(0, 0)); EXPECT_FALSE(fixed->panel.in_universe(1, 1));
+  EXPECT_FALSE(fixed->panel.in_universe(0, 2)); EXPECT_FALSE(fixed->panel.in_universe(1, 2));
+  auto close = fixed->panel.field_id("close"); ASSERT_TRUE(close);
+  EXPECT_EQ(std::bit_cast<atx::u64>(fixed->panel.field_cross_section(*close, 1)[0]), std::bit_cast<atx::u64>(11.00000002));
+  EXPECT_TRUE(std::isnan(fixed->panel.field_cross_section(*close, 1)[1]));
+  cfg.max_working_bytes = 1; EXPECT_FALSE(build_history_panel(cfg));
+  cfg.max_working_bytes = 2ULL * 1024 * 1024 * 1024; cfg.compact_to_universe = true;
+  EXPECT_FALSE(build_history_panel(cfg));
+}
 
 TEST(DataHistoryPanel, DeterministicDigestAndCanonicalFields) {
   const fs::path dir = fs::temp_directory_path() / "atx_hist_panel";
