@@ -42,6 +42,11 @@ def fixture(path, future=False):
 
 
 class RecentResearch(unittest.TestCase):
+    def test_nonfinite_or_unbounded_deadline_is_refused(self):
+        for seconds in (float("nan"), float("inf"), 0, -1, 601):
+            with self.assertRaises(ValueError):
+                tool.Limits(seconds)
+
     def test_projection_filters_before_qa_preserves_calendar_and_quarantines_duplicates(self):
         with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
             base = Path(temp); source = base / "source.parquet"; days = fixture(source)

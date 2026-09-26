@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -39,8 +40,8 @@ def canonical(value) -> str:
 
 
 class Limits:
-    def __init__(self, seconds=900, memory_bytes=768 << 20, disk_bytes=12 << 30):
-        if seconds <= 0 or memory_bytes < 128 << 20 or disk_bytes < 64 << 20:
+    def __init__(self, seconds=300, memory_bytes=768 << 20, disk_bytes=12 << 30):
+        if not math.isfinite(seconds) or not 0 < seconds <= 600 or memory_bytes < 256 << 20 or disk_bytes < 64 << 20:
             raise ValueError("invalid resource budget")
         self.deadline = time.monotonic() + seconds
         self.memory_bytes, self.disk_bytes = memory_bytes, disk_bytes
@@ -52,6 +53,20 @@ class Limits:
     def report(self, stage: str, **values):
         self.check(stage)
         print(canonical({"stage": stage, **values}), flush=True)
+
+    def check_owned(self, directory: Path):
+        # Only the newly owned artifact directory, never warehouse/source paths.
+        size = 0
+        for p in directory.rglob("*"):
+            try:
+                if p.is_file():
+                    size += p.stat().st_size
+            except FileNotFoundError:
+                pass  # a private external-sort temporary was retired meanwhile
+        if size > self.disk_bytes:
+            raise ValueError("owned-directory total byte budget exceeded")
+        self.check("owned-directory budget")
+        return size
 
 
 def sha_file(path: Path, limits: Limits | None = None) -> str:
@@ -114,7 +129,12 @@ def prepare_cache(source: Path, output: Path, begin: str, end: str, limits: Limi
     connection.execute("SET threads=1")
     connection.execute("SET preserve_insertion_order=false")
     connection.execute(f"SET temp_directory={sql_path(output / 'spill')}")
-    connection.execute(f"SET max_temp_directory_size='{limits.disk_bytes >> 20}MiB'")
+    # Reserve the admitted fixed-width DB/output envelope outside the spill cap.
+    spill_bytes = limits.disk_bytes - pf.metadata.num_rows * 128
+    if spill_bytes < 1 << 20:
+        connection.close()
+        raise ValueError("no remaining external-sort spill budget")
+    connection.execute(f"SET max_temp_directory_size='{spill_bytes >> 20}MiB'")
     connection.execute("CREATE TABLE rows(d DATE, id BIGINT, raw DOUBLE, volume DOUBLE, factor DOUBLE)")
     selected = 0
     try:
@@ -131,7 +151,8 @@ def prepare_cache(source: Path, output: Path, begin: str, end: str, limits: Limi
                 connection.unregister("selected_batch")
                 selected += table.num_rows
             if batch_index % 16 == 0:
-                limits.report("projection-batch", batch=batch_index, selected_rows=selected)
+                limits.report("projection-batch", batch=batch_index, selected_rows=selected,
+                              owned_bytes=limits.check_owned(output))
         calendar = connection.execute("SELECT DISTINCT d FROM rows ORDER BY d LIMIT 4097").fetchall()
         if len(calendar) > 4096:
             raise ValueError("selected source calendar exceeds bound")
@@ -148,17 +169,35 @@ def prepare_cache(source: Path, output: Path, begin: str, end: str, limits: Limi
         import threading
         timer = threading.Timer(max(.01, limits.deadline - time.monotonic()), connection.interrupt)
         timer.daemon = True
+        stopped = threading.Event()
+        disk_failure = []
+        def monitor():
+            while not stopped.wait(.25):
+                try:
+                    limits.check_owned(output)
+                except (ValueError, TimeoutError) as error:
+                    disk_failure.append(error)
+                    connection.interrupt()
+                    break
+        monitor_thread = threading.Thread(target=monitor, daemon=True)
+        monitor_thread.start()
         timer.start()
         try:
             connection.execute(f"COPY ({query}) TO {sql_path(accepted)} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 65536)")
         finally:
             timer.cancel()
+            stopped.set()
+            monitor_thread.join()
+        if disk_failure:
+            raise disk_failure[0]
         limits.check("sort-complete")
+        limits.check_owned(output)
     finally:
         connection.close()
     if not unchanged():
         raise ValueError("source changed during captured projection")
     metadata = pq.ParquetFile(accepted).metadata
+    limits.check_owned(output)
     manifest = {"schema": CACHE_SCHEMA, "status": "complete", "source": str(source.resolve()),
                 "source_sha256": source_sha, "source_bytes": captured.st_size,
                 "source_mtime_ns": captured.st_mtime_ns, "start": begin, "end_exclusive": end,
@@ -194,7 +233,15 @@ def cache_receipt(directory: Path, limits: Limits):
 def date_rows(path: Path, begin: int, end: int, limits: Limits):
     """Sorted accepted batches -> bounded vectors for one date, no Python row loop."""
     pending = None
-    for b in pq.ParquetFile(path).iter_batches(batch_size=65536, use_threads=False):
+    pf = pq.ParquetFile(path)
+    # The accepted cache is date sorted; unlike the vendor source, its footer
+    # now permits skipping unrelated roles/years before numeric column decoding.
+    groups = []
+    for i in range(pf.metadata.num_row_groups):
+        stats = pf.metadata.row_group(i).column(0).statistics
+        if not stats or not stats.has_min_max or (day(stats.max) >= begin and day(stats.min) < end):
+            groups.append(i)
+    for b in pf.iter_batches(batch_size=65536, row_groups=groups, use_threads=False):
         limits.check("accepted-date-scan")
         a = [b.column(0).cast(pa.int32()).to_numpy(), *[b.column(i).to_numpy() for i in range(1, 5)]]
         keep = (a[0] >= begin) & (a[0] < end)
@@ -321,6 +368,7 @@ def create_role(cache: Path, output: Path, warmup: str, score_start: str, score_
     for a in arrays.values():
         a.flush()
         a._mmap.close()
+    limits.check_owned(output)
     for name in ("sessions.i64", "ids.u64", *arrays):
         p = output / name
         files[name] = {"bytes": p.stat().st_size, "sha256": sha_file(p, limits)}
@@ -354,7 +402,7 @@ def main():
     p.add_argument("--score-start", default="2020-01-01")
     p.add_argument("--top-n", type=int, default=3000); p.add_argument("--max-union", type=int, default=8000)
     p.add_argument("--memory-mib", type=int, default=768); p.add_argument("--disk-mib", type=int, default=12288)
-    p.add_argument("--max-output-mib", type=int, default=1024); p.add_argument("--max-seconds", type=float, default=900)
+    p.add_argument("--max-output-mib", type=int, default=1024); p.add_argument("--max-seconds", type=float, default=300)
     a = p.parse_args(); limits = Limits(a.max_seconds, a.memory_mib << 20, a.disk_mib << 20)
     if a.mode == "project":
         if a.source is None: p.error("project requires --source")
