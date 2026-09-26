@@ -166,7 +166,22 @@ with_datafields(atx::usize dates, atx::usize instruments, std::vector<std::strin
   if (close_basis != ClosePriceBasis::Unknown && close_basis != ClosePriceBasis::Raw) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "with_datafields: unknown close basis");
   }
+  // Validate the Panel geometry before reading any column. In particular,
+  // raw_close used to be an ignored extra column until Panel::create; V2 reads it.
+  if ((instruments != 0 && dates > std::numeric_limits<atx::usize>::max() / instruments) ||
+      field_names.size() != field_data.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "with_datafields: invalid or overflowing panel geometry");
+  }
   const atx::usize cells = dates * instruments;
+  for (const auto &col : field_data) {
+    if (col.size() != cells) return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "with_datafields: field column is not dates*instruments cells");
+  }
+  if (!universe.empty() && universe.size() != cells) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "with_datafields: universe is neither empty nor dates*instruments cells");
+  }
   const std::span<const std::uint8_t> univ{universe};
 
   auto require = [&](std::string_view name) -> atx::core::Result<atx::usize> {
