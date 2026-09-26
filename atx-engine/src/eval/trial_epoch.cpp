@@ -324,7 +324,11 @@ Result<State> scan(std::FILE *f, const std::string &epoch, const TrialEpochLimit
                 "frame SHA256 mismatch");
         const auto event = parse(body);
         require(event.dump() == body, "noncanonical event encoding");
-        ATX_TRY_VOID(apply(s, event, hash, epoch, limits));
+        auto growth_limits = limits;
+        // room() proved these subtractions safe. Also charge newly retained
+        // cells while the captured body/JSON and the caller's old index coexist.
+        growth_limits.max_working_bytes -= held_bytes + length * 64U;
+        ATX_TRY_VOID(apply(s, event, hash, epoch, growth_limits));
         s.file_bytes += 81U + length;
     }
     return s;
@@ -385,7 +389,9 @@ struct TrialEpochCatalog::Impl {
             return Err(ErrorCode::OutOfRange, "trial epoch: transactional-index budget exceeded");
         State next = state;
         ATX_TRY(auto hash, core::sha256_hex(body));
-        ATX_TRY_VOID(apply(next, event, hash, epoch, limits));
+        auto growth_limits = limits;
+        growth_limits.max_working_bytes -= state_bytes(state) + body.size() * 64U;
+        ATX_TRY_VOID(apply(next, event, hash, epoch, growth_limits));
         auto length = std::to_string(body.size());
         length.insert(0, 8 - length.size(), '0');
         const auto frame = std::string(kMagic) + length + body + hash + "\n";

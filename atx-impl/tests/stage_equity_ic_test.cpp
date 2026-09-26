@@ -803,6 +803,9 @@ TEST_F(StageEquityIc, EpochReservationSurvivesLegacyPreAppendAndFamilyVmFailures
         if (pre_append_failure) EXPECT_EQ(result.error().message().find("lookback"), std::string::npos);
         if (!pre_append_failure) EXPECT_NE(result.error().message().find("lookback"), std::string::npos);
         const auto receipt = Json::parse(contents(root / out_name / "epoch-anchor.json"));
+        const auto failure_sha = atx::core::sha256_hex(contents(root / out_name / "epoch-failure.json"));
+        ASSERT_TRUE(failure_sha);
+        EXPECT_EQ(receipt.at("terminal_result_sha256"), *failure_sha);
         anchor = receipt.at("head_sha256").get<std::string>();
         EXPECT_EQ(receipt.at("counts").at("known_unique_cells"), 4);
         EXPECT_EQ(receipt.at("counts").at("incomplete"), 0);

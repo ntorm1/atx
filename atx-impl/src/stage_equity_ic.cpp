@@ -2042,9 +2042,10 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
             const Json failure{{"schema", "atx-equity-ic-e2-failure-v1"},
                 {"token", epoch_token}, {"reservation_head_sha256", reservation->reservation_head_sha256},
                 {"error", registered_run.error().to_string()}, {"manifest_sha256", manifest_sha}};
-            ATX_TRY(result_sha, atx::core::sha256_hex(failure.dump()));
+            const auto failure_text = failure.dump(2) + "\n";
+            ATX_TRY(result_sha, atx::core::sha256_hex(failure_text));
             // Failure publication is secondary to recording the terminal event.
-            const auto written = write_text(directory, "epoch-failure.json", failure.dump(2) + "\n");
+            const auto written = write_text(directory, "epoch-failure.json", failure_text);
             if (!written) attempt["epoch_failure_publication_error"] = written.error().to_string();
         }
         const auto finalized = epoch->finish_attempt(epoch_token, registered_run
