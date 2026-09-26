@@ -251,6 +251,7 @@ public:
     ATX_TRY_VOID(validate(p, m));
 
     // (1) Build the factor-augmented sparse form  x = [w; y; s; r]  (R4 — no dense Ã).
+    ATX_TRY_VOID(p.C.validate_augmented_workspace(m, p.V.n_factors()));
     const AugmentedQp aug = build_augmented(p.V, p.risk_aversion, p.q, p.C);
 
     // (2..8) The augmented-form solve, extracted so the S8.6 elasticity layer can re-solve
@@ -272,6 +273,7 @@ public:
     if (cfg.factor_space && factor_admm_eligible(p.C)) {
       return solve_factor_space(p, sched, ws);
     }
+    ATX_TRY_VOID(p.C.validate_augmented_workspace(m, p.V.n_factors()));
     const AugmentedQp aug = build_augmented(p.V, p.risk_aversion, p.q, p.C);
     return solve_augmented_form(aug, p, &sched, ws);
   }
@@ -404,14 +406,7 @@ private:
     if (p.q.size() != m) {
       return co::Err(co::ErrorCode::InvalidArgument, "QP: q.size() must equal M (n_instruments)");
     }
-    const auto rows = p.C.A.rows();
-    if (rows > 0 && static_cast<atx::usize>(p.C.A.cols()) != m) {
-      return co::Err(co::ErrorCode::InvalidArgument, "QP: A.cols() must equal M");
-    }
-    if (p.C.l.size() != rows || p.C.u.size() != rows) {
-      return co::Err(co::ErrorCode::InvalidArgument,
-                     "QP: A.rows() must equal l.size() == u.size()");
-    }
+    ATX_TRY_VOID(p.C.validate_layout(m));
     if (!std::isfinite(p.C.turnover_penalty) || p.C.turnover_penalty < 0.0) {
       return co::Err(co::ErrorCode::InvalidArgument,
                      "QP: turnover_penalty must be finite and nonnegative");
@@ -535,6 +530,7 @@ private:
     out.n_w = aug.n_w;
     out.n_y = aug.n_y;
     out.n_aux = aug.n_aux;
+    out.max_factor_bytes = aug.max_factor_bytes;
     out.P = P;
     if (sc.c != 1.0) {
       out.P *= sc.c;
@@ -655,7 +651,7 @@ private:
 
     const SpMat kkt = build_kkt(aug);
     QuasiDefiniteLdl ldl;
-    ATX_TRY_VOID(ldl.factor_symbolic(kkt, cfg.max_factor_bytes));
+    ATX_TRY_VOID(ldl.factor_symbolic(kkt, std::min(cfg.max_factor_bytes, aug.max_factor_bytes)));
     ATX_TRY_VOID(ldl.factor_numeric(kkt));
 
     const atx::f64 rho_inv = 1.0 / cfg.rho;
@@ -747,7 +743,7 @@ private:
     SpMat kkt = build_kkt(aug);
     set_kkt_rho_diag(kkt, n, rho_inv);
     QuasiDefiniteLdl ldl;
-    ATX_TRY_VOID(ldl.factor_symbolic(kkt, cfg.max_factor_bytes));
+    ATX_TRY_VOID(ldl.factor_symbolic(kkt, std::min(cfg.max_factor_bytes, aug.max_factor_bytes)));
     ATX_TRY_VOID(ldl.factor_numeric(kkt));
 
     cl::VecX x = cl::VecX::Zero(n);
@@ -1029,7 +1025,7 @@ private:
 
     SpMat rkkt = build_reduced_kkt(aug.P, A_act, n, na, sig_p, delta);
     QuasiDefiniteLdl ldl;
-    const auto symbolic = ldl.factor_symbolic(rkkt, cfg.max_factor_bytes);
+    const auto symbolic = ldl.factor_symbolic(rkkt, std::min(cfg.max_factor_bytes, aug.max_factor_bytes));
     if (!symbolic) {
       if (symbolic.error().code() == co::ErrorCode::OutOfRange) {
         return co::Err(symbolic.error()); // resource bound is mandatory, including polish

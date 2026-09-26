@@ -161,17 +161,25 @@ struct FaProblem {
   FaProblem f;
   const atx::usize m = V.n_instruments();
   const auto em = static_cast<Eigen::Index>(m);
+  ATX_TRY_VOID(C.validate_layout(m));
+  ATX_TRY_VOID(C.validate_factor_workspace(m, V.n_factors(), 0));
   f.m = m;
   f.lo.assign(m, -kAugInf);
   f.hi.assign(m, kAugInf);
 
   // (1) Classify the rows of A by nonzero count in ONE column-major pass (A is dense
   //     column-major; a row-wise scan would stride through it).
-  const Eigen::Index r = C.A.rows();
+  const Eigen::Index r = static_cast<Eigen::Index>(C.row_count());
   std::vector<atx::usize> nnz(static_cast<atx::usize>(r), 0U);
   std::vector<Eigen::Index> col(static_cast<atx::usize>(r), -1);
   std::vector<atx::f64> val(static_cast<atx::usize>(r), 0.0);
-  if (r > 0) {
+  if (C.sparse()) {
+    for (atx::usize i = 0; i < C.row_count(); ++i) {
+      C.visit_row(i, [&](atx::usize j, atx::f64 value) {
+        ++nnz[i]; col[i] = static_cast<Eigen::Index>(j); val[i] = value;
+      });
+    }
+  } else if (r > 0) {
     for (Eigen::Index j = 0; j < em; ++j) {
       const atx::f64 *cj = C.A.data() + j * r;
       for (Eigen::Index i = 0; i < r; ++i) {
@@ -213,6 +221,7 @@ struct FaProblem {
 
   // (2) Dense rows, row-scaled to unit ∞-norm.
   const auto rd = static_cast<Eigen::Index>(f.dense_rows.size());
+  ATX_TRY_VOID(C.validate_factor_workspace(m, V.n_factors(), f.dense_rows.size()));
   f.ad.resize(rd, em);
   f.e.assign(static_cast<atx::usize>(rd), 1.0);
   f.dl.assign(static_cast<atx::usize>(rd), 0.0);
@@ -221,7 +230,14 @@ struct FaProblem {
   for (Eigen::Index k = 0; k < rd; ++k) {
     const Eigen::Index i = f.dense_rows[static_cast<atx::usize>(k)];
     const auto ku = static_cast<atx::usize>(k);
-    f.ad.row(k) = C.A.row(i);
+    if (C.sparse()) {
+      f.ad.row(k).setZero();
+      C.visit_row(static_cast<atx::usize>(i), [&](atx::usize j, atx::f64 value) {
+        f.ad(k, static_cast<Eigen::Index>(j)) = value;
+      });
+    } else {
+      f.ad.row(k) = C.A.row(i);
+    }
     const atx::f64 mx = f.ad.row(k).cwiseAbs().maxCoeff();
     const atx::f64 s = (mx > 0.0) ? 1.0 / mx : 1.0;
     f.e[ku] = s;

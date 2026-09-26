@@ -63,6 +63,28 @@
 
 namespace atx::engine::risk {
 
+enum class ConstraintStorageRule : atx::u8 { LegacyDenseV1 = 1, SparseCsrV2 = 2 };
+
+struct ConstraintStorageConfig {
+  ConstraintStorageRule rule{ConstraintStorageRule::LegacyDenseV1};
+  atx::usize max_nnz{16'000'000};
+  atx::u64 max_materialization_bytes{268'435'456};
+  // Sparse input does not imply a sparse factor-ADMM Woodbury update. Bound its
+  // remaining dense general-row and capacitance workspace before allocating.
+  atx::u64 max_solver_bytes{536'870'912};
+};
+
+struct ConstraintCsr {
+  atx::usize columns{};
+  std::vector<atx::usize> row_offsets;
+  std::vector<atx::usize> column_indices;
+  std::vector<atx::f64> values;
+  // Logical identity rows retain their V1 positions but store no coefficients.
+  // The corresponding lower/upper bounds remain in MaterializedConstraints l/u.
+  atx::usize box_begin{};
+  atx::usize box_count{};
+};
+
 // ===========================================================================
 //  Descriptors — each is a small value type describing one constraint family.
 //
@@ -232,6 +254,47 @@ struct MaterializedConstraints {
   // no-op (the relaxed builder emits zero slack columns ⇒ byte-identical to S8.5, R10).
   // See cone.hpp::ElasticSpec for the two carriers + the augmented-frame mapping.
   ElasticSpec elastic;                 // S8.6 relaxation metadata (empty ⇒ nothing relaxes)
+
+  ConstraintStorageConfig storage;
+  ConstraintCsr csr; // used only by SparseCsrV2; A stays empty in that version
+
+  [[nodiscard]] bool sparse() const noexcept {
+    return storage.rule == ConstraintStorageRule::SparseCsrV2;
+  }
+  [[nodiscard]] atx::usize row_count() const noexcept {
+    return static_cast<atx::usize>(sparse() ? l.size() : A.rows());
+  }
+  [[nodiscard]] atx::usize column_count() const noexcept {
+    return sparse() ? csr.columns : static_cast<atx::usize>(A.cols());
+  }
+  [[nodiscard]] atx::core::Status validate_layout(atx::usize instruments) const;
+  [[nodiscard]] atx::usize stored_nonzeros() const noexcept;
+  [[nodiscard]] atx::core::Status validate_factor_workspace(
+      atx::usize instruments, atx::usize factors, atx::usize general_rows) const;
+  [[nodiscard]] atx::core::Status validate_augmented_workspace(
+      atx::usize instruments, atx::usize factors) const;
+
+  // Ascending-column traversal, same order as the frozen dense assembler.
+  // Requires validated geometry; never allocates or exposes a dense fallback.
+  template<class Visitor>
+  void visit_row(atx::usize row, Visitor&& visitor) const {
+    if (!sparse()) {
+      for (Eigen::Index j = 0; j < A.cols(); ++j) {
+        const auto value = A(static_cast<Eigen::Index>(row), j);
+        if (value != 0.0) visitor(static_cast<atx::usize>(j), value);
+      }
+    } else if (row >= csr.box_begin && row - csr.box_begin < csr.box_count) {
+      visitor(row - csr.box_begin, 1.0);
+    } else {
+      for (auto entry = csr.row_offsets[row]; entry < csr.row_offsets[row + 1]; ++entry)
+        visitor(csr.column_indices[entry], csr.values[entry]);
+    }
+  }
+
+  // Builder-only: rows/columns must arrive in ascending order. Sparse row
+  // offsets initially hold counts; finish_sparse_rows converts them to offsets.
+  void put_coefficient(atx::usize row, atx::usize column, atx::f64 value);
+  void finish_sparse_rows() noexcept;
 };
 
 // ===========================================================================
@@ -249,6 +312,7 @@ struct ConstraintSet {
   std::optional<SectorRiskBudget> sector;  // sector net-weight rows (S8.4)
   std::optional<TrackingError> track;      // tracking-error SOC (S8.5a; cone, not a linear row)
   std::optional<RobustAlpha> robust;       // robust alpha-uncertainty SOC (S8.5c; cone, not a linear row)
+  ConstraintStorageConfig storage;
 
   // Materialize l <= A w <= u over the M-dim weight space. `X` is the M×K
   // exposure matrix (FactorComponents.X); `w_prev` keys the turnover L1 (an
@@ -259,44 +323,8 @@ struct ConstraintSet {
   // exposure, (4) group, (5) beta, (6) sector net-weight. Σ|w|<=L and turnover go
   // into the L1-budget metadata. PURE const.
   [[nodiscard]] atx::core::Result<MaterializedConstraints>
-  materialize(const atx::core::linalg::MatX &X, std::span<const atx::f64> w_prev, atx::usize M,
-              const CapacityRef &ref = {}) const {
-    namespace co = atx::core;
-    // --- validate every descriptor up front (R3); fail before allocating ----
-    ATX_TRY_VOID(validate(X, M));
-
-    // --- count linear rows in the FIXED emission order ----------------------
-    const atx::usize rows = linear_row_count(M);
-    const auto er = static_cast<Eigen::Index>(rows);
-    const auto em = static_cast<Eigen::Index>(M);
-
-    MaterializedConstraints mc;
-    mc.A = co::linalg::MatX::Zero(er, em);
-    mc.l = co::linalg::VecX::Zero(er);
-    mc.u = co::linalg::VecX::Zero(er);
-
-    // --- emit rows in the fixed order; `next` is the running row cursor ------
-    Eigen::Index next = 0;
-    emit_dollar_neutral(mc, M, next);
-    emit_position_box(mc, M, ref, next);
-    emit_factor_exposure(mc, X, M, next);
-    emit_group(mc, M, next);
-    emit_beta(mc, M, next);
-    emit_sector(mc, M, next);
-
-    // --- L1-budget metadata (non-linear; carried for the S1-2 ADMM) ---------
-    mc.gross_l1_budget = gross.gross_leverage;
-    fill_turnover(mc, w_prev, M);
-    // --- cone metadata (S8.5a tracking-error SOC; assembled in build_augmented) ---
-    fill_tracking(mc, M);
-    // --- sector-risk SOC metadata (S8.5b; assembled in build_augmented) ---
-    fill_sector_soc(mc, M);
-    // --- robust alpha-uncertainty SOC metadata (S8.5c; assembled in build_augmented) ---
-    fill_robust(mc);
-    // --- S8.6 elasticity metadata (CONSUMED only by risk/elasticity.hpp on infeasibility) ---
-    fill_elastic(mc, M);
-    return co::Ok(std::move(mc));
-  }
+  materialize(const atx::core::linalg::MatX &X, std::span<const atx::f64> w_prev,
+              atx::usize M, const CapacityRef &ref = {}) const;
 
 private:
   // The "no active cap" sentinel for the per-name box min-fold: a finite, very large
@@ -562,7 +590,7 @@ private:
       return;
     }
     for (atx::usize i = 0; i < M; ++i) {
-      mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
+      mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
     }
     mc.l[next] = 0.0;
     mc.u[next] = 0.0;
@@ -583,7 +611,7 @@ private:
     }
     for (atx::usize i = 0; i < M; ++i) {
       const atx::f64 cap = name_box_cap(i, ref);
-      mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
+      mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
       mc.l[next] = -cap;
       mc.u[next] = cap;
       ++next;
@@ -619,7 +647,7 @@ private:
     for (atx::usize j = 0; j < fexp->factor_cols.size(); ++j) {
       const auto col = static_cast<Eigen::Index>(fexp->factor_cols[j]);
       for (atx::usize i = 0; i < M; ++i) {
-        mc.A(next, static_cast<Eigen::Index>(i)) = X(static_cast<Eigen::Index>(i), col);
+        mc.put_coefficient(static_cast<atx::usize>(next), i, X(static_cast<Eigen::Index>(i), col));
       }
       mc.l[next] = -fexp->bound[j];
       mc.u[next] = fexp->bound[j];
@@ -637,7 +665,7 @@ private:
     for (atx::usize g = 0; g < g_count; ++g) {
       for (atx::usize i = 0; i < M; ++i) {
         if (grp->group_id[i] == g) {
-          mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
+          mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
         }
       }
       mc.l[next] = -grp->cap[g];
@@ -652,7 +680,7 @@ private:
       return;
     }
     for (atx::usize i = 0; i < M; ++i) {
-      mc.A(next, static_cast<Eigen::Index>(i)) = beta->beta[i];
+      mc.put_coefficient(static_cast<atx::usize>(next), i, beta->beta[i]);
     }
     mc.l[next] = -beta->tol;
     mc.u[next] = beta->tol;
@@ -671,7 +699,7 @@ private:
     for (atx::usize g = 0; g < s_count; ++g) {
       for (atx::usize i = 0; i < M; ++i) {
         if (sector->sector_id[i] == g) {
-          mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
+          mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
         }
       }
       mc.l[next] = -sector->cap[g];

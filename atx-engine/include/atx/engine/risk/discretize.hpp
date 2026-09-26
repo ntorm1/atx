@@ -32,6 +32,7 @@
 #include <algorithm> // std::stable_sort, std::max, std::min
 #include <cstddef>   // std::ptrdiff_t
 #include <cmath>     // std::fabs, std::round, std::isfinite
+#include <limits>
 #include <span>      // std::span
 #include <utility>   // std::move
 #include <vector>    // std::vector
@@ -75,10 +76,14 @@ namespace detail {
 [[nodiscard]] inline atx::f64 book_violation(const MaterializedConstraints &c,
                                              std::span<const atx::f64> w) {
   atx::f64 worst = 0.0;
-  for (Eigen::Index r = 0; r < c.A.rows(); ++r) {
+  for (atx::usize row = 0; row < c.row_count(); ++row) {
+    const auto r = static_cast<Eigen::Index>(row);
     atx::f64 a = 0.0;
-    for (Eigen::Index j = 0; j < c.A.cols(); ++j) {
-      a += c.A(r, j) * w[static_cast<atx::usize>(j)];
+    if (c.sparse()) {
+      c.visit_row(row, [&](atx::usize j, atx::f64 value) { a += value * w[j]; });
+    } else {
+      for (Eigen::Index j = 0; j < c.A.cols(); ++j)
+        a += c.A(r, j) * w[static_cast<atx::usize>(j)];
     }
     worst = std::max(worst, std::max(a - c.u[r], c.l[r] - a));
   }
@@ -100,7 +105,7 @@ namespace detail {
 }
 
 // Copy of `c` with one equality row w_i = target_i appended per pinned name.
-[[nodiscard]] inline MaterializedConstraints with_pins(const MaterializedConstraints &c,
+[[nodiscard]] inline atx::core::Result<MaterializedConstraints> with_pins(const MaterializedConstraints &c,
                                                        std::span<const atx::u8> pinned,
                                                        std::span<const atx::f64> target) {
   const auto m = static_cast<Eigen::Index>(pinned.size());
@@ -108,26 +113,48 @@ namespace detail {
   for (const atx::u8 p : pinned) {
     n_pins += (p != 0U) ? 1 : 0;
   }
+  ATX_TRY_VOID(c.validate_layout(pinned.size()));
+  if (target.size() != pinned.size())
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "discretize: pin target shape mismatch");
+  if (c.sparse() && static_cast<atx::usize>(n_pins) > c.storage.max_nnz - c.stored_nonzeros())
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "discretize: pin rows exceed nnz budget");
+  if (c.sparse()) {
+    // validate_layout bounds all three dimensions by int_max/4, so these u64
+    // resource calculations cannot overflow, including before the copy below.
+    const auto pins = static_cast<atx::usize>(n_pins);
+    const auto bytes = 256ULL * (c.row_count() + pinned.size() + pins) +
+        32ULL * (c.csr.values.size() + pins) + sizeof(MaterializedConstraints);
+    if (c.row_count() + pins > static_cast<atx::usize>(std::numeric_limits<int>::max()) / 4 ||
+        bytes > c.storage.max_materialization_bytes)
+      return atx::core::Err(atx::core::ErrorCode::OutOfRange, "discretize: pin workspace exceeds budget");
+  }
   MaterializedConstraints out = c;
-  const Eigen::Index r0 = c.A.rows();
-  out.A = atx::core::linalg::MatX::Zero(r0 + n_pins, m);
+  const Eigen::Index r0 = static_cast<Eigen::Index>(c.row_count());
+  if (!c.sparse()) out.A = atx::core::linalg::MatX::Zero(r0 + n_pins, m);
   out.l = atx::core::linalg::VecX::Zero(r0 + n_pins);
   out.u = atx::core::linalg::VecX::Zero(r0 + n_pins);
   if (r0 > 0) {
-    out.A.topRows(r0) = c.A;
+    if (!c.sparse()) out.A.topRows(r0) = c.A;
     out.l.head(r0) = c.l;
     out.u.head(r0) = c.u;
   }
   Eigen::Index row = r0;
   for (Eigen::Index i = 0; i < m; ++i) {
     if (pinned[static_cast<atx::usize>(i)] != 0U) {
-      out.A(row, i) = 1.0;
+      if (c.sparse()) {
+        out.csr.column_indices.push_back(static_cast<atx::usize>(i));
+        out.csr.values.push_back(1.0);
+        out.csr.row_offsets.push_back(out.csr.values.size());
+      } else {
+        out.A(row, i) = 1.0;
+      }
       out.l[row] = target[static_cast<atx::usize>(i)];
       out.u[row] = target[static_cast<atx::usize>(i)];
       ++row;
     }
   }
-  return out;
+  ATX_TRY_VOID(out.validate_layout(pinned.size()));
+  return atx::core::Ok(std::move(out));
 }
 
 // Re-lay-out a continuous solve's augmented dual around the n_pins equality rows that
@@ -144,7 +171,7 @@ namespace detail {
   if (y_full.size() != r) {
     return {};
   }
-  const auto split = static_cast<std::ptrdiff_t>(k + static_cast<atx::usize>(p.C.A.rows()));
+  const auto split = static_cast<std::ptrdiff_t>(k + p.C.row_count());
   std::vector<atx::f64> out;
   out.reserve(r + n_pins);
   out.insert(out.end(), y_full.begin(), y_full.begin() + split);
@@ -236,7 +263,7 @@ discretize_and_resolve(const ConstrainedQpSolver &solver, const QpProblem &p,
   } else if (pin_moves) {
     // The pins are equality rows: the scheduled ADMM (equality-row rho boost) converges on
     // them far faster than the fixed-rho loop.
-    const MaterializedConstraints pinned_c = detail::with_pins(p.C, out.pinned, target);
+    ATX_TRY(const MaterializedConstraints pinned_c, detail::with_pins(p.C, out.pinned, target));
     const QpProblem rp{p.V, p.risk_aversion, p.q, pinned_c};
     std::vector<atx::f64> y_seed;
     WarmStart ws;
