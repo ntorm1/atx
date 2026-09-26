@@ -404,6 +404,11 @@ struct FitnessReport {
   // cost_bps/turnover above. Do NOT enter `raw`; pure reporting + the objective copy.
   atx::f64 capacity_score{0.0};    // S4-1: bounded [0,1) sqrt-law capacity score
   atx::f64 turnover_autocorr{0.0}; // S4-2: |w|-weighted mean AR(1) coefficient
+  // V2 uses mature net Sharpe in the historical `wq` scalar slot; it is not a
+  // CPCV/WQ claim. Calendar descriptors keep NaN outside this realized range.
+  ExecutionObjectiveRule execution_rule{ExecutionObjectiveRule::LegacyStreamsV1};
+  std::string execution_context_sha256{};
+  atx::usize realized_begin{}, realized_end{};
 };
 
 // =========================================================================
@@ -580,6 +585,11 @@ struct FitnessCore {
   // the off-path -> the objective slots stay at their uniform default (inert in NSGA).
   atx::f64 capacity_score{0.0};    // S4-1: sqrt-law capacity headroom, bounded [0,1)
   atx::f64 turnover_autocorr{0.0}; // S4-2: |w|-weighted mean AR(1) coefficient
+  // V2 uses mature net Sharpe in the historical `wq` scalar slot; it is not a
+  // CPCV/WQ claim. Calendar descriptors keep NaN outside this realized range.
+  ExecutionObjectiveRule execution_rule{ExecutionObjectiveRule::LegacyStreamsV1};
+  std::string execution_context_sha256{};
+  atx::usize realized_begin{}, realized_end{};
 };
 
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:

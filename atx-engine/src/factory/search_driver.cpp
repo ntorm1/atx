@@ -102,14 +102,45 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   }
 }
 
-[[nodiscard]] SearchResult SearchDriver::run(const SearchConfig &cfg,
+[[nodiscard]] SearchResult SearchDriver::run(const SearchConfig &input,
                                              const combine::AlphaStore &pool,
                                              SearchProgressSink *sink,
                                              const SearchResumeState *resume,
-                                             const IcScreenCache *prepared_ic_screen) {
+                                             const IcScreenCache *prepared_ic_screen,
+                                             const ExecutionObjectiveContext *execution_context) {
   SearchResult res;
-  res.seed = cfg.master_seed;
-  std::optional<atx::u64> cpcv_identity = cfg.fitness.cpcv.rule == eval::CpcvRule::ObservationV1
+  res.seed = input.master_seed;
+  const bool execution_on = input.fitness.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2;
+  std::optional<SearchConfig> execution_cfg;
+  const auto fail_execution = [&](std::string message) {
+    res.execution_invalid = true; res.execution_error = std::move(message);
+  };
+  if (input.fitness.execution.rule != ExecutionObjectiveRule::LegacyStreamsV1 && !execution_on) {
+    fail_execution("unknown execution objective rule"); return res;
+  }
+  if (execution_on) {
+    const auto* context = execution_context != nullptr ? execution_context : input.fitness.execution_context;
+    if (context == nullptr || (execution_context != nullptr && input.fitness.execution_context != nullptr &&
+        execution_context != input.fitness.execution_context) ||
+        !execution_objective_matches(*context, panel_, policy_, input.fitness.execution)) {
+      fail_execution("execution context/policy/panel mismatch"); return res;
+    }
+    if (resume != nullptr || sink != nullptr || input.fidelity.enabled || weak_panel_ != nullptr ||
+        input.capacity_objective || input.turnover_objective || input.fitness.target_aum != 0.0 ||
+        input.fitness.cost_selection.impact_in_selection || input.fitness.turnover_penalty_slope != 0.0 ||
+        pool.n_alphas() != 0) {
+      fail_execution("execution V2 does not support unbound pools, checkpoints, fidelity or legacy cost/weak overlays");
+      return res;
+    }
+    execution_cfg = input;
+    execution_cfg->fitness.execution_context = context;
+    res.execution_context_sha256 = context->identity_sha256();
+    // Immutable execution identity contributes before any candidate digest.
+    for (const char ch : res.execution_context_sha256)
+      res.digest = (res.digest ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
+  }
+  const SearchConfig& cfg = execution_cfg ? *execution_cfg : input;
+  std::optional<atx::u64> cpcv_identity = execution_on || cfg.fitness.cpcv.rule == eval::CpcvRule::ObservationV1
       ? std::nullopt : std::optional<atx::u64>{(eval::cpcv_recipe_identity(cfg.fitness.cpcv) ^
           (static_cast<atx::u64>(panel_.dates()) * 1099511628211ULL))};
   if (cpcv_identity) {
@@ -173,6 +204,16 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // raw scalar AND the S4.1 multi-objective vector (CachedScore).
   std::unordered_map<atx::u64, CachedScore> fitness_cache;
   parallel::DetPool det_pool{cfg.n_workers};
+  if (execution_on) {
+    const auto& context = *cfg.fitness.execution_context;
+    const auto maximum = context.config().max_working_bytes;
+    const auto owned = context.bytes(), per_worker = context.per_signal_working_bytes();
+    // Execution-only payload budget; existing per-worker VM and search caches
+    // are outside it. Check before their construction and any candidate work.
+    if (owned > maximum || per_worker == 0 || det_pool.n_workers() > (maximum - owned) / per_worker) {
+      fail_execution("execution context plus worker scratch exceeds budget"); return res;
+    }
+  }
 
   std::optional<IcScreenCache> owned_ic_cache;
   const std::optional<atx::u64> ic_identity =
@@ -401,6 +442,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
     // determinism digest, and score each via pool_aware_fitness (cached by canon).
     scored = evaluate_generation(pop, cfg, gen, pool, canon, fitness_cache, det_pool, engines, res,
                                  ic_cache, ic_scratch);
+    if (res.execution_invalid) return res;
 
     // (d2) S4.2 behavioral-novelty pass: write the population-relative phenotypic
     // novelty into objectives[3] (n_objectives -> 4) BEFORE ranking, but ONLY when
@@ -779,6 +821,8 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   atx::usize n_fresh = fresh.size();
   std::vector<atx::u64> digest_slot(n_fresh, atx::u64{0});
   std::vector<std::uint8_t> compiled(n_fresh, std::uint8_t{0});
+  const bool execution_on = cfg.fitness.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2;
+  std::vector<std::string> execution_errors(execution_on ? n_fresh : 0);
 
   // One stateless Scheduler for the merged parallel region's Tier 1 LPT
   // dispatch order. Default-constructed: the single-node fallback topology, NO
@@ -1021,6 +1065,10 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, gen_fit,
                                    /*weak_panel=*/weak_panel_, /*engine=*/engines[wid].get(),
                                    /*signals=*/&*ss, /*cpcv_cache=*/&cpcv_cache);
+      if (!rep && execution_on) {
+        execution_errors[k] = rep.error().to_string();
+        return; // unpriceable execution must never become a successful zero score
+      }
       if (rep.has_value()) {
         score_slot[j].raw = rep->raw;
         score_slot[j].objectives = rep->objectives; // S4.1: cache the objectives
@@ -1066,6 +1114,13 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
       }
     }
   });
+
+  for (const auto& error : execution_errors) {
+    if (!error.empty()) {
+      res.execution_invalid = true; res.execution_error = error;
+      return {}; // deterministic first canonical error; no admission from this generation
+    }
+  }
 
   for (const atx::u8 status : ic_status) {
     if (status != atx::u8{0}) {

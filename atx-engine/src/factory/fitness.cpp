@@ -278,6 +278,72 @@ eval_streams(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   return alpha::extract_streams(ss, policy, panel, sim);
 }
 
+// Explicit V2 objective: mature, chronological NET return SR. No fold slicing,
+// target-difference turnover, structural zero observation or second cost overlay.
+// This bounded execution slice does not claim residual/HAC/half-life calibration.
+[[nodiscard]] atx::core::Result<FitnessCore>
+execution_fitness_core(const Genome& cand, const alpha::Panel& panel,
+                       const WeightPolicy& policy, const FitnessCfg& cfg,
+                       const alpha::Panel* weak_panel, alpha::Engine* engine,
+                       const alpha::SignalSet* signals) {
+  const auto* context = cfg.execution_context;
+  if (context == nullptr || !execution_objective_matches(*context, panel, policy, cfg.execution))
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "execution fitness: context mismatch");
+  if (weak_panel != nullptr || cfg.target_aum != 0.0 || cfg.cost_selection.impact_in_selection ||
+      cfg.capacity_objective || cfg.turnover_objective || cfg.turnover_penalty_slope != 0.0)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "execution fitness: legacy cost/turnover/capacity/weak-panel overlay unsupported");
+  auto evaluate = [&]() -> atx::core::Result<alpha::AlphaStreams> {
+    if (signals != nullptr) {
+      if (signals->alphas.size() != 1)
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "execution fitness: one root required");
+      return extract_execution_streams(*signals, *context);
+    }
+    ATX_TRY(const alpha::Program program, alpha::compile(cand.ast, cand.analysis));
+    alpha::Engine local{panel};
+    auto& evaluator = engine != nullptr ? *engine : local;
+    ATX_TRY(const alpha::SignalSet evaluated, evaluator.evaluate(program));
+    if (evaluated.alphas.size() != 1)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "execution fitness: one root required");
+    return extract_execution_streams(evaluated, *context);
+  };
+  ATX_TRY(auto streams, evaluate());
+  if (streams.n_alphas() != 1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "execution fitness: one root required");
+  const auto begin = streams.first_realization_, end = streams.realization_end_;
+  const auto count = end - begin;
+  if (count < 3)
+    return atx::core::Err(atx::core::ErrorCode::Unavailable, "execution fitness: fewer than three mature returns");
+  const auto returns = streams.pnl(0).subspan(begin, count);
+  atx::f64 turnover = 0;
+  for (atx::usize t = begin; t < end; ++t) {
+    if (streams.valid_flat[t] == 0 || !std::isfinite(streams.pnl_flat[t]) ||
+        !std::isfinite(streams.turnover_flat[t]))
+      return atx::core::Err(atx::core::ErrorCode::Unavailable, "execution fitness: invalid interior realization");
+    turnover += streams.turnover_flat[t];
+  }
+  const auto moments = eval::mean_std_pop(returns);
+  const auto per_period = moments.std > 0 ? moments.mean / moments.std : 0.0;
+  const auto skew = eval::skewness(returns), kurtosis = eval::excess_kurtosis(returns);
+  const auto deflated = eval::deflated_sharpe(per_period, count, skew, kurtosis, cfg.trial_count, std::nullopt);
+  const auto annual = per_period * std::sqrt(combine::kAnnualizationDays);
+  if (!std::isfinite(moments.mean) || !std::isfinite(moments.std) || !std::isfinite(skew) ||
+      !std::isfinite(kurtosis) || !std::isfinite(annual) || !std::isfinite(turnover) ||
+      !std::isfinite(deflated.dsr) || !std::isfinite(deflated.haircut_sharpe))
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "execution fitness: nonfinite moments");
+  const auto split = split_half_sharpe(returns, per_period > 0 ? 1.0 : per_period < 0 ? -1.0 : 0.0);
+  FitnessCore out{};
+  out.oos_pnl = std::move(streams.pnl_flat); // uncompressed calendar, NaN outside maturity
+  out.wq = annual; out.robust = 1.0; out.dsr = deflated.dsr;
+  out.haircut_sharpe = deflated.haircut_sharpe;
+  out.turnover = turnover / static_cast<atx::f64>(count);
+  out.sharpe_h1 = split.sharpe_h1; out.sharpe_h2 = split.sharpe_h2; out.split_stable = split.stable;
+  out.execution_rule = ExecutionObjectiveRule::DelayedSurfaceV2;
+  out.execution_context_sha256 = streams.execution_context_sha256;
+  out.realized_begin = begin; out.realized_end = end;
+  return atx::core::Ok(std::move(out));
+}
+
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:
 // the OOS WQ aggregate, the sub-universe robustness re-eval, and the deflation).
 // IDENTICAL control flow + values to the original pool_aware_fitness body for
@@ -289,6 +355,10 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
              const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
              const alpha::Panel *weak_panel, alpha::Engine *engine,
              const alpha::SignalSet *signals, CpcvCache *cpcv_cache) {
+  if (cfg.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2)
+    return execution_fitness_core(cand, panel, policy, cfg, weak_panel, engine, signals);
+  if (cfg.execution.rule != ExecutionObjectiveRule::LegacyStreamsV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "fitness: unknown execution rule");
   // SAFETY (eps): the robustness ratio divides by wq; floor the denominator so a
   //               near-zero full-universe wq cannot blow the ratio to ±inf.
   constexpr atx::f64 kEps = 1e-12;
@@ -531,6 +601,9 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   // S3-0: surface the OOS mean turnover the penalty reads (pure projection — does
   // NOT enter `raw`, the objective vector, or the digest; byte-identical reporting).
   rep.turnover = core.turnover;
+  rep.execution_rule = core.execution_rule;
+  rep.execution_context_sha256 = core.execution_context_sha256;
+  rep.realized_begin = core.realized_begin; rep.realized_end = core.realized_end;
   return rep;
 }
 
@@ -689,6 +762,9 @@ pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const al
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel,
                    alpha::Engine *engine, const alpha::SignalSet *signals,
                    CpcvCache *cpcv_cache) {
+  if (cfg.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2 && pool.n_alphas() != 0)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "execution fitness: nonempty pool has no bound execution/calendar recipe");
   // Steps 1, 3, 5 (pool-INDEPENDENT) — written once in fitness_core (byte-identical
   // to the original body for those steps).  S3-1: cpcv_cache forwarded to eliminate
   // redundant span+fold rebuilds across genomes sharing the same (n_periods, cpcv).
