@@ -32,14 +32,16 @@ TEST(ImplIcScreenConfig, DefaultEnabledAndExplicitLegacyAvailable) {
 
 TEST(ImplIcScreenConfig, RejectsInvalidAndAmbiguousScreenRecipes) {
     for (const auto& horizons : {"", "5,21,63", "5,21,63,126,252", "5,5,63,126",
-                                "0,21,63,126", "5,21,63,126,", "5,21,x,126"}) {
+                                "0,21,63,126", "21,5,63,126", "5,21,63,126,", "5,21,x,126"}) {
         EXPECT_FALSE(parse({"atx-impl", "discover", "--ic-screen-horizons", horizons}));
     }
-    for (const auto& value : {"nan", "inf", "-1", "0", "1.1"}) {
+    for (const auto& value : {"nan", "inf", "-1", "0", "1", "1.1"}) {
         EXPECT_FALSE(parse({"atx-impl", "discover", "--ic-screen-min-abs-ic", value}));
     }
     EXPECT_FALSE(parse({"atx-impl", "discover", "--ic-screen-confidence", "1.0"}));
+    EXPECT_FALSE(parse({"atx-impl", "discover", "--ic-screen-confidence", "2.5"}));
     EXPECT_FALSE(parse({"atx-impl", "discover", "--ic-screen-min-dates", "-1"}));
+    EXPECT_FALSE(parse({"atx-impl", "discover", "--ic-screen-min-dates", "7"}));
     EXPECT_FALSE(parse({"atx-impl", "discover", "--ic-screen-max-cache-mib", "0"}));
     EXPECT_FALSE(parse({"atx-impl", "discover", "--ic-screen-rule", "fast"}));
 }

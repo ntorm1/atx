@@ -131,9 +131,7 @@ atx::core::Result<bool> apply_ic_screen_option(
             const auto token = rest.substr(0, separator);
             auto parsed = parse_count(flag, token);
             if (!parsed || *parsed == 0 || *parsed > 65535) return invalid();
-            for (atx::usize j = 0; j < i; ++j) {
-                if (horizons[j] == *parsed) return invalid();
-            }
+            if (i > 0 && *parsed <= horizons[i - 1]) return invalid();
             horizons[i] = *parsed;
             if (i + 1 == horizons.size()) {
                 if (separator != std::string_view::npos) return invalid();
@@ -151,10 +149,10 @@ atx::core::Result<bool> apply_ic_screen_option(
         if (error != std::errc{} || end != value.data() + value.size() ||
             !std::isfinite(number)) return invalid();
         if (flag == "ic-screen-min-abs-ic") {
-            if (!(number > 0.0) || number > 1.0) return invalid();
+            if (!(number > 0.0) || number >= 1.0) return invalid();
             config.practical_abs_ic = number;
         } else {
-            if (number < 2.0 || number > 20.0) return invalid();
+            if (number < 3.0 || number > 20.0) return invalid();
             config.confidence_multiplier = number;
         }
         return Ok(true);
@@ -167,7 +165,7 @@ atx::core::Result<bool> apply_ic_screen_option(
         if (*count < 3 || *count > 262144) return invalid();
         config.min_names = *count;
     } else if (flag == "ic-screen-min-dates") {
-        if (*count < 3 || *count > 65536) return invalid();
+        if (*count < 8 || *count > 65536) return invalid();
         config.min_dates = *count;
     } else {
         if (*count == 0 || *count > 65536) return invalid();
