@@ -18,8 +18,8 @@ manifest also records:
     ``raw_source_files`` SHA-256 receipts of the four raw sources (CompanyFacts,
     submissions, TickerHistory, Nasdaq directory).
 ``evidence``
-    One block per released dataset (plus the unreleased survivorship-safe forward
-    labels) stating what is modeled, reconstructed, inferred or policy: fundamentals
+    One block per release dataset stating what is modeled, reconstructed, inferred or
+    policy: fundamentals
     availability ``conservative_filing_date_46h``, prices/market ``modeled_trade_date_22h``,
     the market owner-bridge identity and share basis (A5/A8; vendor share-run clocks are
     modeled, never verified), the evidence status of every ``universe_id`` (strict vs
@@ -33,6 +33,17 @@ manifest also records:
     ``eligibility`` is ``eligible`` only when every required gate is ``passed``; anything
     else, including a gate that cannot be evaluated, yields ``candidate``. Nothing here
     promotes reconstructed or inferred history to verified historical vintage.
+
+Coverage extension (P13, contract 1.2.0). Every :data:`RELEASE_DATASETS` entry is listed
+in the manifest with its natural key, basis and evidence basis. A dataset is
+``published`` (Parquet + schema hash), ``absent`` (its producer is not landed, not
+persisted, or the research store is not attached; the reason is recorded) or
+``withheld`` (present but its release key is not unique). Per-dataset ``eligibility``:
+``research_only`` for research-basis datasets (never ``eligible``); ``candidate`` for a
+production dataset produced outside the activation ladder (its freshness is not bound
+by the gates); otherwise the release eligibility. Research-store datasets (RX6: earnings
+events, factor returns/exposures, the qualified-signal ledger) are read from a research
+store attached READ_ONLY for the duration of the publication.
 """
 
 from __future__ import annotations
@@ -43,16 +54,18 @@ import json
 import re
 import shutil
 import tempfile
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import duckdb
+
 from ._forward_return_publication import CALCULATION_VERSION as FORWARD_RETURN_CALCULATION_VERSION
 from ._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
-from .api.catalog import RecordSchema, _record_schema_sha256, get_schema
+from .api.catalog import EXTENDED_DATASET_CODE, RecordSchema, _record_schema_sha256, get_schema
 from .connection import DuckDBStore
-from .delisting import delisting_policy_bias_exposure
+from .delisting import DEFAULT_FORWARD_RETURN_SS_SOURCE, delisting_policy_bias_exposure
 from .item_coverage import (
     DEFAULT_SOURCE as ITEM_COVERAGE_SOURCE,
 )
@@ -68,20 +81,34 @@ from .item_coverage import (
 from .item_coverage_cohort import COHORT_SIZE
 from .lake import _object_schema, _schema_sha256
 from .market_daily import (
-    ARCHIVE_MODELED_LAG_DAYS,
+    ARCHIVE_MODELED_LAG_DAYS_BY_FAMILY,
     ARCHIVE_RUN_CLOCKS,
     MARKET_DAILY_STRICT_SOURCE_NAME,
     OWNER_BRIDGE_CHECK_NAME,
+    SHARE_CLOCK_KINDS,
     SHARES_AVAILABILITY_BASIS,
+    SHARES_SOURCES_WITHHELD,
     MarketDailyDataset,
 )
+from .market_owner_bridge import IDENTITY_BASIS_RECONSTRUCTED_HISTORY
 from .provider_coverage import DEFAULT_PROVIDER_COVERAGE_SLOS
+from .reference_classifications import (
+    CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT,
+    CLASSIFICATION_BASIS_NOTE,
+    CLASSIFICATION_MAPPING_VERSIONS,
+)
+from .symbol_directory import IDENTITY_BASIS_CURRENT_TICKER
 from .universe_us_listed import DEFAULT_US_LISTED_UNIVERSE_ID
 from .warehouse import file_sha256
 
 __all__ = [
+    "BASIS_PRODUCTION",
+    "BASIS_RESEARCH",
     "CANDIDATE",
     "CANDIDATE_EXIT_CODE",
+    "DATASET_ABSENT",
+    "DATASET_PUBLISHED",
+    "DATASET_WITHHELD",
     "ELIGIBLE",
     "ELIGIBLE_EXIT_CODE",
     "EVIDENCE_STAGES",
@@ -91,11 +118,13 @@ __all__ = [
     "GATE_UNMEASURED",
     "MANIFEST_NAME",
     "MARKET_AVAILABILITY_BASIS",
+    "MONTHLY_FORWARD_LABEL_SOURCE",
     "PUBLICATION_CONTRACT_VERSION",
     "RELEASE_DATASETS",
     "RELEASE_DATASET_STAGES",
     "RELEASE_GATES",
     "RELEASE_SOURCES",
+    "RESEARCH_ONLY",
     "ReleaseDataset",
     "ReleaseDatasetResult",
     "ReleaseResult",
@@ -110,7 +139,9 @@ __all__ = [
 ]
 
 # 1.1.0: additive source pins, per-dataset evidence, gates and eligibility (C4).
-PUBLICATION_CONTRACT_VERSION = "1.1.0"
+# 1.2.0: additive P13 datasets; per-dataset status, natural key, basis, evidence basis and
+# eligibility; absent/withheld datasets listed with a reason (no Parquet).
+PUBLICATION_CONTRACT_VERSION = "1.2.0"
 MANIFEST_NAME = "manifest.json"
 
 # --- Release eligibility -------------------------------------------------------------
@@ -141,6 +172,11 @@ RELEASE_GATES: tuple[str, ...] = (
 FUNDAMENTALS_AVAILABILITY_BASIS = "conservative_filing_date_46h"
 #: Every bar (and each market-panel row) is modeled as known at trade_date + 22h.
 MARKET_AVAILABILITY_BASIS = "modeled_trade_date_22h"
+#: A daily-window derived metric needs both its filing inputs and its bars (C4 M5).
+DERIVED_DAILY_AVAILABILITY_BASIS = f"max({FUNDAMENTALS_AVAILABILITY_BASIS}, {MARKET_AVAILABILITY_BASIS})"
+#: research.labels.MONTHLY_LABEL_SOURCE (R3a); not imported: ``atx_db.research`` loads the
+#: research stack on import.
+MONTHLY_FORWARD_LABEL_SOURCE = "atx_forward_returns_survivorship_safe_monthly_v1"
 #: historical_identity vocabulary: only verified_dated identity with verified
 #: availability counts toward certification.
 CERTIFIED_EVIDENCE_STATUS = "verified_dated"
@@ -154,16 +190,6 @@ RELEASE_SOURCES: tuple[tuple[str, str], ...] = (
     ("ticker_history", "tbltickerhistory_daily"),
     ("symbol_directory", "nasdaq_symbol_directory"),
 )
-#: Activation stage producing each released dataset. Gate evidence recorded before the
-#: newest completed run of any of them describes an older warehouse state (stale).
-RELEASE_DATASET_STAGES: dict[str, str] = {
-    "security_master": "security_master",
-    "universe": "universe_us_listed",
-    "delistings": "delisting_evidence",
-    "fundamentals_core": "standardized",
-    "derived_metrics": "derived_metrics",
-    "market_daily": "market_daily",
-}
 #: Gate -> the activation stage that produces its evidence (runs after every release stage).
 EVIDENCE_STAGES: dict[str, str] = {
     "item_coverage": "item_coverage",
@@ -174,14 +200,42 @@ _FAILURE_STATUSES = frozenset({"failed", "error"})
 _LIST_CAP = 50
 _PIN_CAP = 32
 
+# --- Dataset basis, store and status (P13) ---------------------------------------------
+#: ``production`` datasets follow the release eligibility; ``research`` never is eligible.
+BASIS_PRODUCTION = "production"
+BASIS_RESEARCH = "research"
+RESEARCH_ONLY = "research_only"
+STORE_WAREHOUSE = "warehouse"
+#: The separate research store (ruling RX6), attached READ_ONLY under this alias.
+STORE_RESEARCH = "research"
+RESEARCH_STORE_ALIAS = "atx_release_research"
+DATASET_PUBLISHED = "published"
+DATASET_ABSENT = "absent"
+DATASET_WITHHELD = "withheld"
+
 
 @dataclass(frozen=True)
 class ReleaseDataset:
     name: str
     object_name: str
+    #: Physical release key: unique per exported row, the Parquet ORDER BY and diff key.
     key_columns: tuple[str, ...]
     schema_dataset: str | None
     schema_code: str | None
+    #: Logical key a consumer ranks revisions within (defaults to ``key_columns``).
+    natural_key: tuple[str, ...] = ()
+    basis: str = BASIS_PRODUCTION
+    store: str = STORE_WAREHOUSE
+    #: Activation stage producing it; a production dataset's stage bounds gate freshness.
+    stage: str | None = None
+    #: Trusted constant SQL predicate selecting this dataset's rows of ``object_name``.
+    row_filter: str | None = None
+    #: The six original datasets: always exported; a missing object fails the release.
+    required: bool = False
+    #: Static reason when no persisted producer exists: listed absent, never exported.
+    absent_reason: str | None = None
+    #: Short label of what the dataset's clocks/identity rest on (details in ``evidence``).
+    evidence_basis: str | None = None
 
     @property
     def schema_ref(self) -> str | None:
@@ -190,9 +244,15 @@ class ReleaseDataset:
         return f"{self.schema_dataset}/{self.schema_code}"
 
 
-# The six full-universe release datasets (Tier1-S4 Task 8). ``fundamentals_core`` cites
-# the pre-existing ``standardized`` schema code rather than a fourth fundamentals-core
-# schema code -- see the S4 preflight ruling recorded in
+def _source_filter(source: str) -> str:
+    return f"\"source\" = '{source}'"
+
+
+_RESEARCH_EVIDENCE_BASIS = "research_store_rx6"
+
+# The six full-universe release datasets (Tier1-S4 Task 8), then the P13 extension.
+# ``fundamentals_core`` cites the pre-existing ``standardized`` schema code rather than a
+# fourth fundamentals-core schema code -- see the S4 preflight ruling recorded in
 # .superpowers/sdd/tier1-parity/program.md ("no fourth fundamentals-core schema code").
 RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
     ReleaseDataset(
@@ -201,6 +261,9 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         ("security_id",),
         "ATX.US.FUNDAMENTALS",
         "security-master",
+        stage="security_master",
+        required=True,
+        evidence_basis="current_source_snapshot",
     ),
     ReleaseDataset(
         "universe",
@@ -208,6 +271,9 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         ("universe_id", "security_id", "valid_from"),
         "ATX.US.EQUITIES",
         "universe",
+        stage="universe_us_listed",
+        required=True,
+        evidence_basis="per_universe_evidence_status",
     ),
     ReleaseDataset(
         "delistings",
@@ -217,6 +283,10 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         ("delisting_event_id",),
         "ATX.US.EQUITIES",
         "delistings",
+        natural_key=("source", "security_id", "symbol", "delist_date"),
+        stage="delisting_evidence",
+        required=True,
+        evidence_basis="inferred_events_observed_or_policy_terminals",
     ),
     ReleaseDataset(
         "fundamentals_core",
@@ -224,6 +294,10 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         ("standardized_id",),
         "ATX.US.FUNDAMENTALS",
         "standardized",
+        natural_key=("security_id", "item_id", "basis", "period_end"),
+        stage="standardized",
+        required=True,
+        evidence_basis=FUNDAMENTALS_AVAILABILITY_BASIS,
     ),
     ReleaseDataset(
         "derived_metrics",
@@ -233,6 +307,10 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         ("derived_value_id",),
         "ATX.US.FUNDAMENTALS",
         "derived-metrics",
+        natural_key=("revision_group_id",),
+        stage="derived_metrics",
+        required=True,
+        evidence_basis="per_metric_window",
     ),
     ReleaseDataset(
         "market_daily",
@@ -240,7 +318,159 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         ("market_daily_id",),
         "ATX.US.EQUITIES",
         "market-daily-1d",
+        natural_key=("security_id", "trade_date"),
+        stage="market_daily",
+        required=True,
+        evidence_basis=MARKET_AVAILABILITY_BASIS,
     ),
+    # --- P13: survivorship-safe forward labels (R3a), one table, split by source --------
+    ReleaseDataset(
+        "forward_labels_daily",
+        "forward_returns_survivorship_safe",
+        ("forward_return_id",),
+        EXTENDED_DATASET_CODE,
+        "forward-labels",
+        natural_key=("source", "security_id", "as_of_date", "horizon_days"),
+        stage="survivorship_forward_returns",
+        row_filter=_source_filter(DEFAULT_FORWARD_RETURN_SS_SOURCE),
+        evidence_basis="observed_or_policy_terminal_stitch",
+    ),
+    ReleaseDataset(
+        "forward_labels_monthly",
+        "forward_returns_survivorship_safe",
+        ("forward_return_id",),
+        EXTENDED_DATASET_CODE,
+        "forward-labels",
+        natural_key=("source", "security_id", "as_of_date", "horizon_days"),
+        # Published by research.labels.refresh_monthly_forward_labels, outside activation.
+        row_filter=_source_filter(MONTHLY_FORWARD_LABEL_SOURCE),
+        evidence_basis="observed_or_policy_terminal_stitch",
+    ),
+    ReleaseDataset(
+        "equity_price_metrics",
+        "equity_price_metrics",
+        ("metric_id",),
+        EXTENDED_DATASET_CODE,
+        "price-metrics-1d",
+        natural_key=("source", "security_id", "trade_date"),
+        stage="equity_price_metrics",
+        evidence_basis=MARKET_AVAILABILITY_BASIS,
+    ),
+    ReleaseDataset(
+        "listing_status",
+        "listing_status_intervals",
+        ("listing_status_id",),
+        EXTENDED_DATASET_CODE,
+        "listing-status",
+        natural_key=("source", "symbol", "listing_venue_code", "valid_from"),
+        stage="listing_status",
+        evidence_basis=IDENTITY_BASIS_CURRENT_TICKER,
+    ),
+    ReleaseDataset(
+        "owner_links",
+        "market_owner_bridge_links",
+        ("security_id", "owner_security_id", "valid_from"),
+        None,
+        None,
+        absent_reason=(
+            "not_persisted: the A5/P1 owner bridge is computed inside market_daily; per-row links are released "
+            "in market_daily (owner_security_id, identity_basis, availability_basis, link_method). A standalone "
+            "link table awaits the post-B0 0328 bundle."
+        ),
+        evidence_basis="owner_bridge_identity_basis",
+    ),
+    ReleaseDataset(
+        "entity_classification",
+        "entity_classification",
+        ("classification_id",),
+        EXTENDED_DATASET_CODE,
+        "classification",
+        natural_key=("security_id", "taxonomy_id", "is_primary", "valid_from"),
+        basis=BASIS_RESEARCH,
+        stage="entity_classification",
+        evidence_basis=CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT,
+    ),
+    ReleaseDataset(
+        "corporate_action_events",
+        "corporate_actions",
+        # No physical id column: the event key plus its clocks (duplicates -> withheld).
+        ("source", "security_id", "ex_date", "action_type", "available_at", "source_loaded_at"),
+        EXTENDED_DATASET_CODE,
+        "corporate-actions",
+        natural_key=("source", "security_id", "ex_date", "action_type"),
+        # Built by scripts/build_corporate_action_events.py (P8), outside activation.
+        evidence_basis="reconstructed_vendor_factor",
+    ),
+    ReleaseDataset(
+        "foreign_filer_disclosure",
+        "foreign_filer_reason_intervals",
+        ("cik", "reason_code", "interval_no"),
+        None,
+        None,
+        evidence_basis="companyfacts_archive_snapshot",
+    ),
+    # --- P13: research-store datasets (RX6); research basis, never eligible -------------
+    ReleaseDataset(
+        "earnings_events",
+        "research_earnings_events",
+        ("event_version", "owner_cik", "fiscal_period_end"),
+        None,
+        None,
+        basis=BASIS_RESEARCH,
+        store=STORE_RESEARCH,
+        evidence_basis=_RESEARCH_EVIDENCE_BASIS,
+    ),
+    ReleaseDataset(
+        "factor_returns",
+        "research_factor_returns",
+        ("run_id", "frequency", "period_date", "factor_id"),
+        None,
+        None,
+        basis=BASIS_RESEARCH,
+        store=STORE_RESEARCH,
+        evidence_basis=_RESEARCH_EVIDENCE_BASIS,
+    ),
+    ReleaseDataset(
+        "factor_exposures",
+        "research_factor_exposures",
+        ("run_id", "formation_date", "security_id"),
+        None,
+        None,
+        basis=BASIS_RESEARCH,
+        store=STORE_RESEARCH,
+        evidence_basis=_RESEARCH_EVIDENCE_BASIS,
+    ),
+    ReleaseDataset(
+        "qualified_signals",
+        "research_qualification_features",
+        ("ledger_id", "feature_id"),
+        None,
+        None,
+        basis=BASIS_RESEARCH,
+        store=STORE_RESEARCH,
+        evidence_basis=_RESEARCH_EVIDENCE_BASIS,
+    ),
+)
+#: Activation stage producing each released production dataset. Gate evidence recorded
+#: before the newest completed run of any of them describes an older warehouse state.
+#: Research-basis datasets never bound the floor: they are never eligible.
+RELEASE_DATASET_STAGES: dict[str, str] = {
+    dataset.name: dataset.stage
+    for dataset in RELEASE_DATASETS
+    if dataset.stage is not None and dataset.basis == BASIS_PRODUCTION and dataset.absent_reason is None
+}
+#: Why a dataset has no public record schema (manifest ``schema_absent_reason``).
+_NO_API_SCHEMA_REASONS: dict[str, str] = {
+    "owner_links": "no persisted relation to serve",
+    "foreign_filer_disclosure": (
+        "CIK-keyed reason intervals (valid_from/valid_to clocks) without the security_id, as_of_date and "
+        "available_at columns the PIT range service ranks on"
+    ),
+}
+_RESEARCH_API_REASON = "research store outputs (RX6) are not served by the warehouse API"
+_FOREIGN_FILER_ABSENT = (
+    "not_persisted: P11 builds foreign_filer_reason_intervals as a TEMP table and parquet artifacts "
+    "(foreign_filers.write_taxonomy_artifacts); no warehouse table"
 )
 
 
@@ -316,7 +546,16 @@ def release_query(dataset: ReleaseDataset, columns: list[str]) -> str:
 
     projection = ", ".join(_quote(column) for column in columns)
     order = ", ".join(f"{_quote(column)} ASC NULLS LAST" for column in dataset.key_columns)
-    return f"SELECT {projection} FROM {_quote(dataset.object_name)} ORDER BY {order}"
+    where = "" if dataset.row_filter is None else f" WHERE {dataset.row_filter}"
+    return f"SELECT {projection} FROM {_relation(dataset)}{where} ORDER BY {order}"
+
+
+def _relation(dataset: ReleaseDataset) -> str:
+    """The quoted relation a dataset reads (research-store objects are catalog-qualified)."""
+
+    if dataset.store == STORE_RESEARCH:
+        return f'{_quote(RESEARCH_STORE_ALIAS)}."main".{_quote(dataset.object_name)}'
+    return _quote(dataset.object_name)
 
 
 def row_digest_sql(alias: str, columns: list[str]) -> str:
@@ -333,12 +572,16 @@ def _parquet_columns(store: DuckDBStore, path: Path) -> list[tuple[str, str]]:
     ]
 
 
-def _validate_keys(store: DuckDBStore, dataset: ReleaseDataset, path: Path) -> None:
+def _has_duplicate_keys(store: DuckDBStore, dataset: ReleaseDataset, path: Path) -> bool:
     keys = ", ".join(_quote(column) for column in dataset.key_columns)
     duplicate = store.con.execute(
         f"SELECT 1 FROM read_parquet(?) GROUP BY {keys} HAVING count(*) > 1 LIMIT 1", [str(path)]
     ).fetchone()
-    if duplicate is not None:
+    return duplicate is not None
+
+
+def _validate_keys(store: DuckDBStore, dataset: ReleaseDataset, path: Path) -> None:
+    if _has_duplicate_keys(store, dataset, path):
         raise ValueError(f"Duplicate publication keys for {dataset.name!r}: {dataset.key_columns}")
 
 
@@ -455,11 +698,18 @@ def _previous_release(previous_dir: Path | str | None) -> tuple[str | None, dict
     if not isinstance(release_id, str) or not release_id or not isinstance(datasets, list):
         raise ValueError("Previous release manifest lacks release_id or datasets")
     files: dict[str, Path] = {}
+    seen: set[str] = set()
     for entry in datasets:
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
             raise ValueError("Invalid previous release dataset")
         name = entry["name"]
-        if not re.fullmatch(r"[A-Za-z0-9_]+", name) or name in files or entry.get("parquet") != f"{name}.parquet":
+        if not re.fullmatch(r"[A-Za-z0-9_]+", name) or name in seen:
+            raise ValueError("Invalid or duplicate previous release dataset path")
+        seen.add(name)
+        # Contract < 1.2.0 entries carry no status: every one of them was published.
+        if entry.get("status", DATASET_PUBLISHED) != DATASET_PUBLISHED:
+            continue
+        if entry.get("parquet") != f"{name}.parquet":
             raise ValueError("Invalid or duplicate previous release dataset path")
         path = root / f"{name}.parquet"
         if file_sha256(path) != entry.get("parquet_sha256"):
@@ -498,6 +748,33 @@ def _table_columns(store: DuckDBStore, table: str) -> set[str]:
         [table],
     ).fetchall()
     return {str(row[0]) for row in rows}
+
+
+def _catalog_schema(store: DuckDBStore, database: str | None, name: str) -> list[dict[str, object]]:
+    """``lake._object_schema``'s shape for ``name`` in one catalog (``None``: the warehouse)."""
+
+    rows = store.con.execute(
+        "SELECT column_name, data_type, is_nullable, column_index FROM duckdb_columns() "
+        "WHERE database_name = coalesce(?, current_database()) AND schema_name = 'main' AND table_name = ? "
+        "ORDER BY column_index",
+        [database, name],
+    ).fetchall()
+    return [
+        {"ordinal": int(index), "name": str(column), "type": str(kind), "nullable": bool(nullable)}
+        for column, kind, nullable, index in rows
+    ]
+
+
+def _rounded(value: object) -> object:
+    """Floats rounded to 12 places: multi-threaded float aggregates can differ in the last ulp."""
+
+    if isinstance(value, float):
+        return round(value, 12)
+    if isinstance(value, Mapping):
+        return {key: _rounded(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_rounded(item) for item in value]
+    return value
 
 
 def _count_rows(rows: Iterable[Sequence[Any]], fields: Sequence[str]) -> list[dict[str, object]]:
@@ -748,15 +1025,21 @@ def _critical_dqc_gate(
 
     ``data_quality_checks.checked_at`` is wall-clock insertion time, the ledger's clock:
     a result counts only when recorded at or after the start of the newest completed
-    ``quality`` attempt (``run``) and not after the release's ``created_at``.
+    ``quality`` attempt (``run``) and not after the release's ``created_at``. Registered
+    checks join results by name (the registry's key), so only the latest variant per
+    (dataset_id, table_name, check_name) recorded inside that window is evaluated (C4 N1):
+    an obsolete variant recorded under another dataset_id/table_name by an older run can
+    neither fail nor stale a check forever. A check with only older variants is ``stale``.
     """
 
+    window_start = None if run is None else run.started_at
     rows = store.con.execute(
         """
         WITH latest AS (
             SELECT dataset_id, table_name, check_name, status, severity, checked_at,
                    status = 'warning' AND json_valid(details_json)
-                       AND json_extract(details_json, '$.missing_tables') IS NOT NULL AS missing_inputs
+                       AND json_extract(details_json, '$.missing_tables') IS NOT NULL AS missing_inputs,
+                   (CAST(? AS TIMESTAMP) IS NULL OR checked_at >= CAST(? AS TIMESTAMP)) AS in_window
             FROM data_quality_checks
             QUALIFY row_number() OVER (
                 PARTITION BY dataset_id, table_name, check_name ORDER BY checked_at DESC, check_id DESC
@@ -771,19 +1054,21 @@ def _critical_dqc_gate(
             UNION ALL
             SELECT l.check_name, min(l.dataset_id), false
             FROM latest l
-            WHERE l.severity = 'critical'
+            WHERE l.severity = 'critical' AND l.in_window
               AND NOT EXISTS (SELECT 1 FROM registry r WHERE r.check_name = l.check_name)
             GROUP BY l.check_name
         )
         SELECT c.dataset_id, c.check_name, c.registered,
-               count(l.status)::BIGINT,
-               count(l.status) FILTER (WHERE l.status = 'passed')::BIGINT,
-               count(l.status) FILTER (WHERE l.status = 'skipped' OR l.missing_inputs)::BIGINT,
-               min(l.checked_at), max(l.checked_at)
+               count(l.status) FILTER (WHERE l.in_window)::BIGINT,
+               count(l.status) FILTER (WHERE l.in_window AND l.status = 'passed')::BIGINT,
+               count(l.status) FILTER (WHERE l.in_window AND (l.status = 'skipped' OR l.missing_inputs))::BIGINT,
+               count(l.status) FILTER (WHERE NOT l.in_window)::BIGINT,
+               max(l.checked_at) FILTER (WHERE l.in_window)
         FROM critical c
         LEFT JOIN latest l ON l.check_name = c.check_name
         GROUP BY c.dataset_id, c.check_name, c.registered
-        """
+        """,
+        [window_start, window_start],
     ).fetchall()
     outcomes: dict[str, list[str]] = {
         "passed": [],
@@ -794,11 +1079,12 @@ def _critical_dqc_gate(
         "recorded_after_release": [],
     }
     registered = 0
-    for dataset_id, check_name, is_registered, results, passed, not_evaluated, oldest, newest in rows:
+    for dataset_id, check_name, is_registered, results, passed, not_evaluated, older, newest in rows:
         name = f"{dataset_id}/{check_name}"
         registered += bool(is_registered)
         if not results:
-            outcomes["not_run"].append(name)
+            # Nothing recorded in the quality run's window: stale when only older variants exist.
+            outcomes["stale" if older else "not_run"].append(name)
         elif results - passed - not_evaluated:
             # Any other latest status (failed, error, a warning-grade failure) fails a
             # critical check: failure_status='warning' never downgrades it.
@@ -808,8 +1094,6 @@ def _critical_dqc_gate(
             outcomes["not_evaluated"].append(name)
         elif newest > created_at:
             outcomes["recorded_after_release"].append(name)
-        elif run is not None and oldest < run.started_at:
-            outcomes["stale"].append(name)
         else:
             outcomes["passed"].append(name)
     unmeasured = [
@@ -831,8 +1115,9 @@ def _critical_dqc_gate(
         unmeasured,
         "Every enabled critical quality check has a latest result 'passed', recorded (wall clock) "
         "at or after the start of the newest completed 'quality' activation attempt, which itself "
-        "started after all release data, and not after the release; skipped, missing-input, not-run "
-        "and stale checks never pass.",
+        "started after all release data, and not after the release; only variants recorded in that "
+        "window are evaluated (any failed one fails the check); skipped, missing-input, not-run and "
+        "stale (only older variants) checks never pass.",
         quality_run=_attempt_block(run),
         critical_checks=len(rows),
         registered_critical_checks=registered,
@@ -916,7 +1201,10 @@ def _provider_slo_gate(
         "Every active provider coverage SLO (including every code-defined default) has a latest "
         "snapshot with condition 'available' at the active SLO version, written by the newest completed "
         "'provider_coverage' activation attempt (run id '<run>-coverage'), which started after all "
-        "release data, and observed no later than the release.",
+        "release data, and observed no later than the release. Activation stamps snapshots at the "
+        "pinned as_of_date 22:00, so a ladder pinned to the release date keeps a release published "
+        "before 22:00 that day a candidate (observed_after_release): pin the ladder to the last "
+        "completed session or publish after 22:00.",
         coverage_run=_attempt_block(run),
         required_slos=len(required),
         active_slos=len(rows),
@@ -1168,7 +1456,10 @@ def _market_evidence(store: DuckDBStore) -> dict[str, object]:
             ).fetchall(),
             ("source", "shares_source"),
         )
-    bridges: dict[str, object] = {}
+    withheld: object = GATE_UNMEASURED
+    if isinstance(shares, list):
+        withheld = sum(int(str(item["rows"])) for item in shares if item["shares_source"] in SHARES_SOURCES_WITHHELD)
+    bridges: dict[str, dict[str, object]] = {}
     for source, details, checked_at in store.con.execute(
         """
         SELECT json_extract_string(details_json, '$.source'), details_json, checked_at
@@ -1195,8 +1486,29 @@ def _market_evidence(store: DuckDBStore) -> dict[str, object]:
                     "linked_by_identity_basis",
                     "unlinked_by_reason",
                     "share_basis_lines",
+                    # P1 bridge rule 5: RI1 reconstructed-history links by PIT tier.
+                    "reconstructed_history",
                 )
             },
+            "rows_by_share_clock": (summary.get("share_basis") or {}).get("rows_by_share_clock"),
+        }
+    # A8 N6: the per-row share clock is stored only once the post-B0 0328 columns exist;
+    # before that the owner-bridge quality row of each source's latest run counts it.
+    clocks: object = GATE_UNMEASURED
+    if "shares_clock" in columns:
+        clocks = {
+            "measured_from": "market_daily_metrics.shares_clock",
+            "rows": _count_rows(
+                store.con.execute(
+                    "SELECT source, shares_clock, count(*)::BIGINT FROM market_daily_metrics GROUP BY ALL"
+                ).fetchall(),
+                ("source", "shares_clock"),
+            ),
+        }
+    elif any(bridge["rows_by_share_clock"] is not None for bridge in bridges.values()):
+        clocks = {
+            "measured_from": f"latest {OWNER_BRIDGE_CHECK_NAME} quality row per source (that run's rows)",
+            "rows_by_source": {source: bridge["rows_by_share_clock"] for source, bridge in sorted(bridges.items())},
         }
     return {
         "availability_basis": MARKET_AVAILABILITY_BASIS,
@@ -1205,7 +1517,9 @@ def _market_evidence(store: DuckDBStore) -> dict[str, object]:
         "note": (
             "Bars and panel rows are modeled as known at trade_date + 22h. Owner links are verified only "
             "for identity_basis 'verified_dated' with availability_basis 'verified' (strict bridge); "
-            "current_ticker_unverified links are the labeled RX1 reconstruction."
+            "current_ticker_unverified links are the labeled RX1 reconstruction, and "
+            f"'{IDENTITY_BASIS_RECONSTRUCTED_HISTORY}' links (P1 rule 5: RI1 share fingerprints, link_method "
+            "reconstructed_history_<tier>, availability modeled) are reconstructed history, never verified."
         ),
         "owner_identity": identity,
         "owner_bridge_by_source": bridges,
@@ -1215,9 +1529,13 @@ def _market_evidence(store: DuckDBStore) -> dict[str, object]:
             "vendor_share_run_clocks": dict(ARCHIVE_RUN_CLOCKS),
             "vendor_share_run_clock_status": "modeled",
             "vendor_share_run_clock_verified": False,
-            "modeled_lag_days": ARCHIVE_MODELED_LAG_DAYS,
-            # The per-row run clock kind is computed in the panel SQL but not stored.
-            "rows_by_vendor_share_run_clock": GATE_UNMEASURED,
+            "share_clock_kinds": list(SHARE_CLOCK_KINDS),
+            # Unmatched vendor runs: known a filer-family lag after the run start (modeled).
+            "modeled_lag_days_by_family": dict(ARCHIVE_MODELED_LAG_DAYS_BY_FAMILY),
+            "rows_by_vendor_share_run_clock": clocks,
+            # Rows whose shares, market cap and valuation metrics are withheld, by reason.
+            "withheld_shares_sources": list(SHARES_SOURCES_WITHHELD),
+            "withheld_rows": withheld,
         },
     }
 
@@ -1251,41 +1569,250 @@ def _delisting_evidence(store: DuckDBStore) -> dict[str, object]:
             reasons, ("delist_reason", "inferred_from_absence", "evidence_confidence", "unresolved_security")
         ),
         "rows_by_identity_basis": _count_rows(identity, ("identity_basis",)),
-        "terminal_returns": delisting_policy_bias_exposure(store),
+        # C4 M3: rounded so float aggregates cannot change manifest bytes between reruns.
+        "terminal_returns": _rounded(delisting_policy_bias_exposure(store)),
     }
 
 
-def _forward_return_evidence(store: DuckDBStore) -> dict[str, object]:
+def _forward_return_evidence(store: DuckDBStore, source: str) -> dict[str, object]:
+    """Observed vs policy terminal counts of one label source (R3a), latest revisions."""
+
     columns = _table_columns(store, "forward_returns_survivorship_safe")
     version = "calculation_version" if "calculation_version" in columns else "NULL::VARCHAR"
+    price = "price_basis" if "price_basis" in columns else "NULL::VARCHAR"
     rows = store.con.execute(
         f"""
-        SELECT source, {version}, is_stitched, terminal_return_source, count(*)::BIGINT
-        FROM forward_returns_survivorship_safe WHERE is_latest_revision GROUP BY ALL
-        """
+        SELECT {version}, {price}, horizon_days, is_stitched, terminal_return_source, is_latest_revision,
+               count(*)::BIGINT
+        FROM forward_returns_survivorship_safe WHERE source = ? GROUP BY ALL
+        """,
+        [source],
     ).fetchall()
-    stitched = [row for row in rows if row[2]]
+    latest = [row for row in rows if row[5]]
+    stitched = [row for row in latest if row[3]]
     return {
-        "released": False,
+        "label_source": source,
+        "label_basis": "survivorship_safe_forward_return",
+        "availability_status": "modeled",
         "expected_calculation_version": FORWARD_RETURN_CALCULATION_VERSION,
-        "verified_vintage": False,
-        "note": "Latest-revision survivorship-safe labels; a stitched label's terminal is observed or policy.",
-        "rows": sum(int(row[-1]) for row in rows),
-        "current_version_rows": sum(int(row[-1]) for row in rows if row[1] == FORWARD_RETURN_CALCULATION_VERSION),
-        "unversioned_legacy_rows": sum(int(row[-1]) for row in rows if row[1] is None),
+        "note": (
+            "Latest-revision survivorship-safe labels on the observed XNYS session calendar; a label whose "
+            "line delists inside the window is stitched with an observed or a policy (Shumway convention) "
+            "terminal return. Every revision is exported."
+        ),
+        "rows": sum(int(row[-1]) for row in latest),
+        "all_revision_rows": sum(int(row[-1]) for row in rows),
+        "current_version_rows": sum(int(row[-1]) for row in latest if row[0] == FORWARD_RETURN_CALCULATION_VERSION),
+        "unversioned_legacy_rows": sum(int(row[-1]) for row in latest if row[0] is None),
         "other_version_rows": sum(
-            int(row[-1]) for row in rows if row[1] not in (None, FORWARD_RETURN_CALCULATION_VERSION)
+            int(row[-1]) for row in latest if row[0] not in (None, FORWARD_RETURN_CALCULATION_VERSION)
         ),
-        "stitched_observed_terminal_rows": sum(int(row[-1]) for row in stitched if row[3] == "observed"),
-        "stitched_policy_terminal_rows": sum(int(row[-1]) for row in stitched if row[3] == "policy"),
-        "stitched_other_terminal_rows": sum(int(row[-1]) for row in stitched if row[3] not in ("observed", "policy")),
+        "stitched_observed_terminal_rows": sum(int(row[-1]) for row in stitched if row[4] == "observed"),
+        "stitched_policy_terminal_rows": sum(int(row[-1]) for row in stitched if row[4] == "policy"),
+        "stitched_other_terminal_rows": sum(int(row[-1]) for row in stitched if row[4] not in ("observed", "policy")),
         "rows_by_version": _count_rows(
-            rows, ("source", "calculation_version", "is_stitched", "terminal_return_source")
+            [(*row[:2], *row[3:5], row[-1]) for row in latest],
+            ("calculation_version", "price_basis", "is_stitched", "terminal_return_source"),
         ),
+        "rows_by_horizon": _count_rows([(row[2], row[-1]) for row in latest], ("horizon_days",)),
     }
 
 
-def _release_evidence(store: DuckDBStore, universes: Mapping[str, object]) -> dict[str, object]:
+def _price_metric_evidence(store: DuckDBStore) -> dict[str, object]:
+    rows = store.con.execute(
+        "SELECT source, is_latest_revision, count(*)::BIGINT FROM equity_price_metrics GROUP BY ALL"
+    ).fetchall()
+    return {
+        "availability_basis": MARKET_AVAILABILITY_BASIS,
+        "availability_status": "modeled",
+        "identity_basis": "price_line",
+        "note": (
+            "Per price line (security_id of the bar series), known at trade_date + 22h. Bars are a later vendor "
+            "snapshot; cross-sectional ranks are over that day's panel of lines."
+        ),
+        "rows_by_source": _count_rows(rows, ("source", "is_latest_revision")),
+    }
+
+
+def _listing_status_evidence(store: DuckDBStore) -> dict[str, object]:
+    rows = store.con.execute(
+        "SELECT source, status, method, security_id IS NULL, count(*)::BIGINT FROM listing_status_intervals "
+        "GROUP BY ALL"
+    ).fetchall()
+    return {
+        "identity_basis": IDENTITY_BASIS_CURRENT_TICKER,
+        "history_basis": "latest_build",
+        "availability_status": "modeled",
+        "note": (
+            "security_id resolved through the current ticker (unverified); unresolved symbols are kept. Each "
+            "build replaces the source's prior build, so valid_to reflects the latest build, not PIT revisions."
+        ),
+        "rows": sum(int(row[-1]) for row in rows),
+        "unresolved_security_rows": sum(int(row[-1]) for row in rows if row[3]),
+        "rows_by_status": _count_rows(rows, ("source", "status", "method", "unresolved_security")),
+    }
+
+
+def _classification_evidence(store: DuckDBStore) -> dict[str, object]:
+    rows = store.con.execute(
+        "SELECT taxonomy_id, source, valid_to IS NULL, count(*)::BIGINT FROM entity_classification GROUP BY ALL"
+    ).fetchall()
+    return {
+        "classification_basis": CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT,
+        "point_in_time_history": False,
+        "valid_to_closed_in_place": True,
+        "mapping_versions": dict(CLASSIFICATION_MAPPING_VERSIONS),
+        "note": CLASSIFICATION_BASIS_NOTE,
+        "rows_by_taxonomy": _count_rows(rows, ("taxonomy_id", "source", "open")),
+    }
+
+
+def _corporate_action_evidence(store: DuckDBStore) -> dict[str, object]:
+    rows = store.con.execute(
+        """
+        SELECT source, action_type,
+               CASE WHEN json_valid(details_json) THEN json_extract_string(details_json, '$.evidence_basis') END,
+               count(*)::BIGINT
+        FROM corporate_actions GROUP BY ALL
+        """
+    ).fetchall()
+    return {
+        "event_basis": "reconstructed",
+        "availability_status": "modeled",
+        "note": (
+            "P8: every step of a line's vendor adjustment factor is one labelled event, reconstructed from a later "
+            "vendor snapshot (never a verified corporate-action record); available_at is the ex-date bar clock or "
+            "the later share-count confirmation. adjustment_unclassified is a hazard, never a split."
+        ),
+        "rows": sum(int(row[-1]) for row in rows),
+        "rows_by_type": _count_rows(rows, ("source", "action_type", "evidence_basis")),
+    }
+
+
+def _foreign_filer_evidence(store: DuckDBStore) -> dict[str, object]:
+    columns = _table_columns(store, "foreign_filer_reason_intervals")
+    fields = [column for column in ("reason_code", "evidence_basis", "clock_policy") if column in columns]
+    open_flag = "valid_to IS NULL" if "valid_to" in columns else "NULL::BOOLEAN"
+    rows = store.con.execute(
+        f"SELECT {', '.join([*fields, open_flag])}, count(*)::BIGINT FROM foreign_filer_reason_intervals GROUP BY ALL"
+    ).fetchall()
+    return {
+        "availability_basis": FUNDAMENTALS_AVAILABILITY_BASIS,
+        "availability_status": "modeled",
+        "note": (
+            "P11 reason intervals from one retained companyfacts archive snapshot; valid_from/valid_to are filed "
+            "+ 46h. A reason applies at t only when valid_from <= t < valid_to."
+        ),
+        "rows_by_reason": _count_rows(rows, (*fields, "open")),
+    }
+
+
+def _owner_link_evidence(store: DuckDBStore) -> dict[str, object]:
+    columns = _table_columns(store, "market_daily_metrics")
+    needed = ("owner_security_id", "identity_basis", "availability_basis", "link_method")
+    if not set(needed) <= columns:
+        return {"linked_rows": GATE_UNMEASURED, "missing_columns": [c for c in needed if c not in columns]}
+    rows = store.con.execute(
+        "SELECT identity_basis, availability_basis, link_method, count(*)::BIGINT FROM market_daily_metrics "
+        "WHERE owner_security_id IS NOT NULL GROUP BY ALL"
+    ).fetchall()
+    return {
+        "released_within": "market_daily",
+        "link_columns": list(needed),
+        "linked_rows": sum(int(row[-1]) for row in rows),
+        "reconstructed_history_rows": sum(
+            int(row[-1]) for row in rows if row[0] == IDENTITY_BASIS_RECONSTRUCTED_HISTORY
+        ),
+        "linked_rows_by_basis": _count_rows(rows, ("identity_basis", "availability_basis", "link_method")),
+    }
+
+
+#: Research-store evidence: (grouping columns of the dataset, version/run header table,
+#: header columns). Columns missing from an attached store are skipped, never guessed.
+_RESEARCH_EVIDENCE: dict[str, tuple[tuple[str, ...], str, tuple[str, ...]]] = {
+    "earnings_events": (
+        ("event_version", "announcement_basis", "session_timing"),
+        "research_event_versions",
+        ("event_version", "status", "query_version"),
+    ),
+    "factor_returns": (
+        ("run_id", "frequency", "basis", "status"),
+        "research_factor_runs",
+        ("run_id", "status", "factor_version"),
+    ),
+    "factor_exposures": (("run_id", "basis"), "research_factor_runs", ("run_id", "status", "factor_version")),
+    "qualified_signals": (
+        ("ledger_id", "status"),
+        "research_qualification_ledgers",
+        ("ledger_id", "policy_version", "qualification_version", "ledger_sha256"),
+    ),
+}
+
+
+def _research_evidence(store: DuckDBStore, dataset: ReleaseDataset) -> dict[str, object]:
+    fields, header_table, header_fields = _RESEARCH_EVIDENCE[dataset.name]
+    present = {str(c["name"]) for c in _catalog_schema(store, RESEARCH_STORE_ALIAS, dataset.object_name)}
+    grouped = [field for field in fields if field in present]
+    rows = store.con.execute(
+        f"SELECT {''.join(f'{_quote(f)}, ' for f in grouped)}count(*)::BIGINT FROM {_relation(dataset)} GROUP BY ALL"
+    ).fetchall()
+    header_present = {str(c["name"]) for c in _catalog_schema(store, RESEARCH_STORE_ALIAS, header_table)}
+    headers: object = "absent"
+    if set(header_fields) <= header_present:
+        header_rows = store.con.execute(
+            f"SELECT {', '.join(_quote(f) for f in header_fields)} "
+            f'FROM {_quote(RESEARCH_STORE_ALIAS)}."main".{_quote(header_table)}'
+        ).fetchall()
+        items = sorted(
+            ({f: _iso(v) for f, v in zip(header_fields, row, strict=True)} for row in header_rows),
+            key=lambda item: tuple(_sort_key(item[f]) for f in header_fields),
+        )
+        headers = {"table": header_table, "rows": items[:_LIST_CAP], "truncated": len(items) > _LIST_CAP}
+    return {
+        "note": (
+            "Research store output (RX6): research basis, never eligible; versions and runs are research "
+            "artifacts, not governed warehouse data."
+        ),
+        "rows": sum(int(row[-1]) for row in rows),
+        "rows_by_version": _count_rows(rows, grouped),
+        "versions": headers,
+    }
+
+
+#: Evidence of each published P13 dataset (keyed by release dataset name).
+_EVIDENCE_BUILDERS: dict[str, Callable[[DuckDBStore], dict[str, object]]] = {
+    "forward_labels_daily": lambda store: _forward_return_evidence(store, DEFAULT_FORWARD_RETURN_SS_SOURCE),
+    "forward_labels_monthly": lambda store: _forward_return_evidence(store, MONTHLY_FORWARD_LABEL_SOURCE),
+    "equity_price_metrics": _price_metric_evidence,
+    "listing_status": _listing_status_evidence,
+    "entity_classification": _classification_evidence,
+    "corporate_action_events": _corporate_action_evidence,
+    "foreign_filer_disclosure": _foreign_filer_evidence,
+}
+
+
+def _extension_evidence(store: DuckDBStore, dataset: ReleaseDataset, entry: Mapping[str, object]) -> dict[str, object]:
+    block: dict[str, object] = {
+        "status": entry["status"],
+        "basis": dataset.basis,
+        "evidence_basis": dataset.evidence_basis,
+        "verified_vintage": False,
+    }
+    if entry["status"] != DATASET_PUBLISHED:
+        block["absent_reason"] = entry["absent_reason"]
+        if dataset.name == "owner_links":
+            block.update(_owner_link_evidence(store))
+        return block
+    if dataset.store == STORE_RESEARCH and dataset.name in _RESEARCH_EVIDENCE:
+        block.update(_research_evidence(store, dataset))
+    elif dataset.name in _EVIDENCE_BUILDERS:
+        block.update(_EVIDENCE_BUILDERS[dataset.name](store))
+    return block
+
+
+def _release_evidence(
+    store: DuckDBStore, universes: Mapping[str, object], entries: Mapping[str, Mapping[str, object]]
+) -> dict[str, object]:
     fundamentals = {
         "availability_basis": FUNDAMENTALS_AVAILABILITY_BASIS,
         "clock_policy": FUNDAMENTAL_CLOCK_POLICY,
@@ -1304,10 +1831,19 @@ def _release_evidence(store: DuckDBStore, universes: Mapping[str, object]) -> di
     derived = store.con.execute(
         f"SELECT {history}, count(*)::BIGINT FROM derived_metric_values GROUP BY ALL"
     ).fetchall()
+    windows = store.con.execute(
+        "SELECT metric_window, count(*)::BIGINT FROM derived_metric_values GROUP BY ALL"
+    ).fetchall()
     security_master = store.con.execute(
         "SELECT source, count(*)::BIGINT FROM v_security_master_public GROUP BY ALL"
     ).fetchall()
+    extension = {
+        dataset.name: _extension_evidence(store, dataset, entries[dataset.name])
+        for dataset in RELEASE_DATASETS
+        if not dataset.required and dataset.name in entries
+    }
     return {
+        **extension,
         "security_master": {
             "identity_basis": "current_source_snapshot",
             "verified_vintage": False,
@@ -1325,14 +1861,32 @@ def _release_evidence(store: DuckDBStore, universes: Mapping[str, object]) -> di
         },
         "derived_metrics": {
             **fundamentals,
+            # C4 M5: a daily (price-window) metric is known only once its bars are.
+            "availability_basis": "per_metric_window",
+            "availability_basis_by_window": {
+                "daily": DERIVED_DAILY_AVAILABILITY_BASIS,
+                "other_windows": FUNDAMENTALS_AVAILABILITY_BASIS,
+            },
             "note": (
-                "Derived from fundamentals (and bars for daily windows); inherits their modeled clocks. "
-                "history_status 'event_reconstructed' is reconstructed history, not a verified vintage."
+                "Derived from fundamentals (and bars for daily windows); inherits their modeled clocks: "
+                f"{FUNDAMENTALS_AVAILABILITY_BASIS} for filing windows, {DERIVED_DAILY_AVAILABILITY_BASIS} for "
+                "daily windows. history_status 'event_reconstructed' is reconstructed history, not a verified "
+                "vintage."
             ),
             "rows_by_history_status": _count_rows(derived, ("history_status",)),
+            "rows_by_window": [
+                {
+                    **item,
+                    "availability_basis": (
+                        DERIVED_DAILY_AVAILABILITY_BASIS
+                        if item["metric_window"] == "daily"
+                        else FUNDAMENTALS_AVAILABILITY_BASIS
+                    ),
+                }
+                for item in _count_rows(windows, ("metric_window",))
+            ],
         },
         "market_daily": _market_evidence(store),
-        "forward_returns": _forward_return_evidence(store),
     }
 
 
@@ -1344,10 +1898,11 @@ def publish_release(
     created_at: dt.datetime,
     previous_dir: Path | str | None = None,
     run_id: str | None = None,
+    research_store: Path | str | None = None,
 ) -> ReleaseResult:
     """Publish every release dataset to ``<out_dir>/<release_id>/`` with one manifest.
 
-    The caller supplies the load stamp; no clock is read here. All six exports and ledger
+    The caller supplies the load stamp; no clock is read here. All exports and ledger
     writes share one database snapshot. A staging directory is renamed only after all
     files are complete. Existing release IDs/directories cannot be overwritten.
 
@@ -1363,6 +1918,10 @@ def publish_release(
     every stored release gate passes, otherwise ``candidate`` with ``gates_not_passed``.
     ``created_at`` also fixes the coverage gate's required fiscal years (FY2015 through
     the year before ``created_at``).
+
+    ``research_store`` (optional) is a research DuckDB file (RX6) attached READ_ONLY for
+    the publication and detached afterwards; without it the research-store datasets are
+    listed absent with the reason.
     """
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", release_id) or release_id.endswith("."):
@@ -1374,6 +1933,7 @@ def publish_release(
         raise FileExistsError(f"Release directory already exists: {release_dir}")
     previous_release_id, previous_files = _previous_release(previous_dir)
     release_dir.parent.mkdir(parents=True, exist_ok=True)
+    research_reason = _attach_research_store(store, research_store)
     renamed = False
     try:
         with (
@@ -1391,6 +1951,7 @@ def publish_release(
                 previous_release_id,
                 previous_files,
                 run_id,
+                research_reason,
             )
             Path(staging).rename(release_dir)
             renamed = True
@@ -1399,6 +1960,136 @@ def publish_release(
         if renamed:
             shutil.rmtree(release_dir)
         raise
+    finally:
+        if research_reason is None:
+            store.con.execute(f"DETACH {_quote(RESEARCH_STORE_ALIAS)}")
+
+
+def _attach_research_store(store: DuckDBStore, research_store: Path | str | None) -> str | None:
+    """Attach the research store READ_ONLY; ``None`` when attached, else why it is not."""
+
+    if research_store is None:
+        return "research_store_not_supplied"
+    path = Path(research_store)
+    if not path.is_file():
+        return "research_store_missing"
+    literal = str(path.resolve()).replace("'", "''")
+    try:
+        store.con.execute(f"ATTACH '{literal}' AS {_quote(RESEARCH_STORE_ALIAS)} (READ_ONLY)")
+    except duckdb.Error as exc:
+        # e.g. a writer process holds the file lock: never block or fail the release on it.
+        return f"research_store_unavailable:{type(exc).__name__}"
+    return None
+
+
+def _export_dataset(
+    store: DuckDBStore,
+    dataset: ReleaseDataset,
+    staging: Path,
+    release_dir: Path,
+    previous_files: Mapping[str, Path],
+    research_reason: str | None,
+) -> tuple[dict[str, object], ReleaseDatasetResult | None]:
+    """One manifest dataset entry, and its result when the dataset is published."""
+
+    record_schema = _schema_for(dataset)
+    entry: dict[str, object] = {
+        "name": dataset.name,
+        "object": dataset.object_name,
+        "schema": dataset.schema_ref,
+        "record_schema_sha256": None if record_schema is None else _record_schema_sha256(record_schema),
+        "key_columns": list(dataset.key_columns),
+        "natural_key": list(dataset.natural_key or dataset.key_columns),
+        "basis": dataset.basis,
+        "store": dataset.store,
+        "stage": dataset.stage,
+        "evidence_basis": dataset.evidence_basis,
+    }
+    if record_schema is None:
+        entry["schema_absent_reason"] = (
+            _RESEARCH_API_REASON if dataset.store == STORE_RESEARCH else _NO_API_SCHEMA_REASONS.get(dataset.name)
+        )
+    reason = dataset.absent_reason
+    if reason is None and dataset.store == STORE_RESEARCH:
+        reason = research_reason
+    schema: list[dict[str, object]] = []
+    if reason is None:
+        if dataset.required:
+            schema = _object_schema(store, dataset.object_name)
+        else:
+            database = RESEARCH_STORE_ALIAS if dataset.store == STORE_RESEARCH else None
+            schema = _catalog_schema(store, database, dataset.object_name)
+            if not schema:
+                reason = (
+                    _FOREIGN_FILER_ABSENT
+                    if dataset.name == "foreign_filer_disclosure"
+                    else f"object_missing:{dataset.object_name}"
+                )
+    if reason is not None:
+        return {**entry, "status": DATASET_ABSENT, "absent_reason": reason}, None
+    # The shared catalog helper's ORDER BY inherits DuckDB's default direction.
+    schema.sort(key=lambda column: int(str(column["ordinal"])))
+    columns = [str(column["name"]) for column in schema]
+    query = release_query(dataset, columns)
+    parquet_path = staging / f"{dataset.name}.parquet"
+    _copy_parquet(store, query, parquet_path)
+    if not dataset.required and _has_duplicate_keys(store, dataset, parquet_path):
+        # An optional dataset never fails the release: it is withheld, with the reason.
+        parquet_path.unlink()
+        return {**entry, "status": DATASET_WITHHELD, "absent_reason": "duplicate_release_keys"}, None
+    count_row = store.con.execute("SELECT count(*) FROM read_parquet(?)", [str(parquet_path)]).fetchone()
+    if count_row is None:
+        raise RuntimeError(f"could not count rows for dataset {dataset.name!r}")
+    added = removed = changed = None
+    if dataset.name in previous_files:
+        added, removed, changed = diff_against(store, dataset, columns, parquet_path, previous_files[dataset.name])
+    else:
+        _validate_keys(store, dataset, parquet_path)
+    result = ReleaseDatasetResult(
+        name=dataset.name,
+        object_name=dataset.object_name,
+        parquet_path=release_dir / parquet_path.name,
+        row_count=int(count_row[0]),
+        byte_count=parquet_path.stat().st_size,
+        schema_sha256=_schema_sha256(schema),
+        query_sha256=_sha256_text(query),
+        parquet_sha256=file_sha256(parquet_path),
+        rows_added=added,
+        rows_removed=removed,
+        rows_changed=changed,
+    )
+    entry.update(
+        {
+            "status": DATASET_PUBLISHED,
+            "schema_sha256": result.schema_sha256,
+            "query_sha256": result.query_sha256,
+            "query": query,
+            "columns": schema,
+            "parquet": parquet_path.name,
+            "parquet_sha256": result.parquet_sha256,
+            "row_count": result.row_count,
+            "byte_count": result.byte_count,
+            "diff": {
+                "rows_added": result.rows_added,
+                "rows_removed": result.rows_removed,
+                "rows_changed": result.rows_changed,
+            },
+        }
+    )
+    return entry, result
+
+
+def _dataset_eligibility(dataset: ReleaseDataset, status: object, release: str) -> tuple[str | None, str | None]:
+    """(eligibility, reason) of one dataset entry; research basis is never ``eligible``."""
+
+    if status != DATASET_PUBLISHED:
+        return None, "not_published"
+    if dataset.basis == BASIS_RESEARCH:
+        return RESEARCH_ONLY, "research_basis"
+    if dataset.stage is None or RELEASE_DATASET_STAGES.get(dataset.name) != dataset.stage:
+        # Produced outside the activation ladder: no gate is bound to its freshness.
+        return CANDIDATE, "not_produced_by_activation"
+    return release, "release_gates"
 
 
 def _publish_snapshot(
@@ -1410,65 +2101,18 @@ def _publish_snapshot(
     previous_release_id: str | None,
     previous_files: dict[str, Path],
     run_id: str | None,
+    research_reason: str | None = None,
 ) -> ReleaseResult:
 
     results: list[ReleaseDatasetResult] = []
+    published: list[ReleaseDataset] = []
     manifest_datasets: list[dict[str, object]] = []
     for dataset in RELEASE_DATASETS:
-        schema = _object_schema(store, dataset.object_name)
-        # The shared catalog helper's ORDER BY inherits DuckDB's default direction.
-        schema.sort(key=lambda column: int(str(column["ordinal"])))
-        columns = [str(column["name"]) for column in schema]
-        query = release_query(dataset, columns)
-        parquet_path = staging / f"{dataset.name}.parquet"
-        _copy_parquet(store, query, parquet_path)
-        count_row = store.con.execute("SELECT count(*) FROM read_parquet(?)", [str(parquet_path)]).fetchone()
-        if count_row is None:
-            raise RuntimeError(f"could not count rows for dataset {dataset.name!r}")
-        row_count = int(count_row[0])
-        added = removed = changed = None
-        if dataset.name in previous_files:
-            added, removed, changed = diff_against(store, dataset, columns, parquet_path, previous_files[dataset.name])
-        else:
-            _validate_keys(store, dataset, parquet_path)
-        record_schema = _schema_for(dataset)
-        record_sha = None if record_schema is None else _record_schema_sha256(record_schema)
-        result = ReleaseDatasetResult(
-            name=dataset.name,
-            object_name=dataset.object_name,
-            parquet_path=release_dir / parquet_path.name,
-            row_count=row_count,
-            byte_count=parquet_path.stat().st_size,
-            schema_sha256=_schema_sha256(schema),
-            query_sha256=_sha256_text(query),
-            parquet_sha256=file_sha256(parquet_path),
-            rows_added=added,
-            rows_removed=removed,
-            rows_changed=changed,
-        )
-        results.append(result)
-        manifest_datasets.append(
-            {
-                "name": dataset.name,
-                "object": dataset.object_name,
-                "schema": dataset.schema_ref,
-                "schema_sha256": result.schema_sha256,
-                "record_schema_sha256": record_sha,
-                "query_sha256": result.query_sha256,
-                "query": query,
-                "columns": schema,
-                "key_columns": list(dataset.key_columns),
-                "parquet": parquet_path.name,
-                "parquet_sha256": result.parquet_sha256,
-                "row_count": result.row_count,
-                "byte_count": result.byte_count,
-                "diff": {
-                    "rows_added": result.rows_added,
-                    "rows_removed": result.rows_removed,
-                    "rows_changed": result.rows_changed,
-                },
-            }
-        )
+        entry, result = _export_dataset(store, dataset, staging, release_dir, previous_files, research_reason)
+        manifest_datasets.append(entry)
+        if result is not None:
+            results.append(result)
+            published.append(dataset)
 
     # Evidence and gates share the exports' snapshot, so they describe exactly these files.
     ledger = _stage_ledger(store, sorted({*RELEASE_DATASET_STAGES.values(), *EVIDENCE_STAGES.values()}))
@@ -1484,6 +2128,8 @@ def _publish_snapshot(
         "universe_certification": _universe_certification_gate(universes),
     }
     eligibility, gates_not_passed = release_eligibility(gates)
+    for dataset, entry in zip(RELEASE_DATASETS, manifest_datasets, strict=True):
+        entry["eligibility"], entry["eligibility_reason"] = _dataset_eligibility(dataset, entry["status"], eligibility)
     manifest: dict[str, object] = {
         "release_id": release_id,
         "contract_version": PUBLICATION_CONTRACT_VERSION,
@@ -1491,8 +2137,9 @@ def _publish_snapshot(
         "previous_release_id": previous_release_id,
         "activation_stage_run_ids": activation_stage_run_ids(store),
         "datasets": manifest_datasets,
+        "research_store": {"attached": research_reason is None, "absent_reason": research_reason},
         "source_pins": source_pins,
-        "evidence": _release_evidence(store, universes),
+        "evidence": _release_evidence(store, universes, {str(entry["name"]): entry for entry in manifest_datasets}),
         "evidence_floor": floor_block,
         "gates": gates,
         "eligibility": eligibility,
@@ -1500,7 +2147,9 @@ def _publish_snapshot(
         "eligibility_rule": (
             "eligible only when every gate in "
             + ", ".join(RELEASE_GATES)
-            + " is 'passed'; failed or unmeasured gates make the release a candidate"
+            + " is 'passed'; failed or unmeasured gates make the release a candidate. Per dataset: "
+            "research-basis datasets are research_only (never eligible); a production dataset produced outside "
+            "the activation ladder is a candidate; every other published dataset takes the release eligibility"
         ),
     }
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
@@ -1553,7 +2202,7 @@ def _publish_snapshot(
                 result.rows_changed,
                 created_at,
             )
-            for dataset, result in zip(RELEASE_DATASETS, results, strict=True)
+            for dataset, result in zip(published, results, strict=True)
         ],
     )
 

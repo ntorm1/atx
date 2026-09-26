@@ -209,16 +209,21 @@ def _gate_status(manifest):
     return {name: gate["status"] for name, gate in manifest["gates"].items()}
 
 
+def _published(manifest):
+    return [entry["name"] for entry in manifest["datasets"] if entry["status"] == "published"]
+
+
 def test_publish_release_writes_a_parquet_per_dataset(tmp_store, tmp_path):
-    from atx_db.publication import RELEASE_DATASETS, publish_release
+    from atx_db.publication import publish_release, read_release_manifest
 
     _seed_release_inputs(tmp_store)
     result = publish_release(tmp_store, "2026-09-19", tmp_path, created_at=CREATED_AT, run_id="t")
-    assert len(result.datasets) == len(RELEASE_DATASETS)
+    assert [d.name for d in result.datasets] == _published(read_release_manifest(result.manifest_path))
     for dataset in result.datasets:
         assert dataset.parquet_path.exists()
         assert dataset.parquet_path.parent == tmp_path / "2026-09-19"
-    assert {d.name: d.row_count for d in result.datasets} == {
+    counts = {d.name: d.row_count for d in result.datasets}
+    assert {name: counts[name] for name in list(counts)[:6]} == {
         "security_master": 2,
         "universe": 2,
         "delistings": 2,
@@ -241,7 +246,12 @@ def test_the_universe_parquet_round_trips(tmp_store, tmp_path):
 
 
 def test_the_manifest_carries_every_required_key(tmp_store, tmp_path):
-    from atx_db.publication import PUBLICATION_CONTRACT_VERSION, publish_release, read_release_manifest
+    from atx_db.publication import (
+        PUBLICATION_CONTRACT_VERSION,
+        RELEASE_DATASETS,
+        publish_release,
+        read_release_manifest,
+    )
 
     _seed_release_inputs(tmp_store)
     result = publish_release(tmp_store, "2026-09-19", tmp_path, created_at=CREATED_AT, run_id="t")
@@ -256,25 +266,27 @@ def test_the_manifest_carries_every_required_key(tmp_store, tmp_path):
     assert set(manifest["source_pins"]) == {"companyfacts", "submissions", "ticker_history", "symbol_directory"}
     assert set(manifest["gates"]) == set(ALL_GATES)
     evidence = manifest["evidence"]
-    assert set(evidence) == {d.name for d in result.datasets} | {"forward_returns"}
+    assert set(evidence) == {d.name for d in RELEASE_DATASETS}
+    assert manifest["research_store"] == {"attached": False, "absent_reason": "research_store_not_supplied"}
     # Modeled clocks are labeled as such and never as verified historical vintage.
     assert evidence["fundamentals_core"]["availability_basis"] == "conservative_filing_date_46h"
     assert evidence["fundamentals_core"]["clock_policy"] == "sec_filed_date_plus_46h_v1"
     assert evidence["market_daily"]["availability_basis"] == "modeled_trade_date_22h"
     assert evidence["market_daily"]["share_basis"]["vendor_share_run_clock_verified"] is False
-    assert evidence["forward_returns"]["expected_calculation_version"] == "forward_return_publication_v2"
+    assert evidence["forward_labels_daily"]["expected_calculation_version"] == "forward_return_publication_v2"
     assert not any(block.get("verified_vintage") for block in evidence.values() if isinstance(block, dict))
+    base = {"name", "object", "schema", "record_schema_sha256", "key_columns", "natural_key", "basis", "store"}
+    base |= {"stage", "evidence_basis", "status", "eligibility", "eligibility_reason"}
     for entry in manifest["datasets"]:
-        assert set(entry) == {
-            "name",
-            "object",
-            "schema",
+        extra = {"schema_absent_reason"} if entry["schema"] is None else set()
+        if entry["status"] != "published":
+            assert set(entry) == base | extra | {"absent_reason"} and entry["eligibility"] is None
+            continue
+        assert set(entry) == base | extra | {
             "schema_sha256",
-            "record_schema_sha256",
             "query_sha256",
             "query",
             "columns",
-            "key_columns",
             "parquet",
             "parquet_sha256",
             "row_count",
@@ -341,18 +353,19 @@ def test_the_release_is_recorded_in_the_warehouse(tmp_store, tmp_path):
     from atx_db.publication import publish_release
 
     _seed_release_inputs(tmp_store)
-    publish_release(tmp_store, "2026-09-19", tmp_path, created_at=CREATED_AT, run_id="t")
+    result = publish_release(tmp_store, "2026-09-19", tmp_path, created_at=CREATED_AT, run_id="t")
     header = tmp_store.con.execute(
         "SELECT dataset_count, previous_release_id FROM publication_releases WHERE release_id = ?",
         ["2026-09-19"],
     ).fetchone()
-    assert int(header[0]) == 6
+    # Only published datasets are ledgered; absent ones live in the manifest alone.
+    assert int(header[0]) == len(result.datasets) >= 6
     assert header[1] is None
     rows = tmp_store.con.execute(
         "SELECT count(*) FROM publication_release_datasets WHERE release_id = ?",
         ["2026-09-19"],
     ).fetchone()[0]
-    assert int(rows) == 6
+    assert int(rows) == len(result.datasets)
 
 
 def test_the_cli_publishes_a_release(tmp_store, tmp_path, built_warehouse, capsys):
@@ -376,9 +389,9 @@ def test_the_cli_publishes_a_release(tmp_store, tmp_path, built_warehouse, capsy
     assert code == CANDIDATE_EXIT_CODE
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload["release_id"] == "cli-1"
-    assert payload["dataset_count"] == 6
+    manifest = json.loads((tmp_path / "cli-1" / "manifest.json").read_text(encoding="utf-8"))
+    assert payload["dataset_count"] == len(_published(manifest))
     assert payload["eligibility"] == "candidate" and payload["gates_not_passed"] == list(ALL_GATES)
-    assert (tmp_path / "cli-1" / "manifest.json").exists()
 
 
 def test_diff_preserves_null_positions_separators_and_nullable_keys(tmp_store, tmp_path):
@@ -817,17 +830,18 @@ def test_evidence_labels_reconstruction_inference_and_policy_honestly(tmp_store,
          'verified_dated', 'verified', 'dated_evidence', 'archive')
     """)
     v2 = "forward_return_publication_v2"
+    daily = "atx_forward_returns_survivorship_safe_v1"
     con.execute(
         """
         INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date,
             horizon_days, forward_return, is_delisted_in_horizon, is_stitched, terminal_return_source,
             available_at, calculation_version) VALUES
-        ('fr1', 't', 'SEC-1', DATE '2024-01-02', 21, 0.1, false, false, NULL, TIMESTAMP '2024-02-01', ?),
-        ('fr2', 't', 'SEC-1', DATE '2024-01-03', 21, -0.3, true, true, 'observed', TIMESTAMP '2024-02-01', ?),
-        ('fr3', 't', 'SEC-2', DATE '2024-01-03', 21, -0.4, true, true, 'policy', TIMESTAMP '2024-02-01', ?),
-        ('fr4', 't', 'SEC-2', DATE '2024-01-04', 21, 0.0, false, false, NULL, TIMESTAMP '2024-02-01', NULL)
+        ('fr1', ?, 'SEC-1', DATE '2024-01-02', 21, 0.1, false, false, NULL, TIMESTAMP '2024-02-01', ?),
+        ('fr2', ?, 'SEC-1', DATE '2024-01-03', 21, -0.3, true, true, 'observed', TIMESTAMP '2024-02-01', ?),
+        ('fr3', ?, 'SEC-2', DATE '2024-01-03', 21, -0.4, true, true, 'policy', TIMESTAMP '2024-02-01', ?),
+        ('fr4', ?, 'SEC-2', DATE '2024-01-04', 21, 0.0, false, false, NULL, TIMESTAMP '2024-02-01', NULL)
         """,
-        [v2, v2, v2],
+        [daily, v2, daily, v2, daily, v2, daily],
     )
     result = publish_release(tmp_store, "r1", tmp_path, created_at=CREATED_AT)
     manifest = read_release_manifest(result.manifest_path)
@@ -850,7 +864,7 @@ def test_evidence_labels_reconstruction_inference_and_policy_honestly(tmp_store,
         2,
     )
     assert delistings["verified_vintage"] is False
-    forward = evidence["forward_returns"]
+    forward = evidence["forward_labels_daily"]
     assert (
         forward["rows"],
         forward["current_version_rows"],
@@ -910,6 +924,77 @@ def test_publish_script_exit_code_distinguishes_candidate_from_eligible(built_wa
     assert code == (0 if all_pass else CANDIDATE_EXIT_CODE)
 
 
+def test_p13_datasets_carry_basis_absence_and_research_is_never_eligible(tmp_store, tmp_path):
+    """P13: natural key, schema hash and evidence basis per dataset; absent/withheld with a
+    reason; research basis is research_only even in an eligible release."""
+
+    from atx_db.publication import publish_release, read_release_manifest
+
+    con = tmp_store.con
+    _seed_all_gates_passing(con)
+    con.execute(
+        "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
+        "horizon_days, forward_return, is_delisted_in_horizon, is_stitched, available_at) VALUES "
+        "('fd', 'atx_forward_returns_survivorship_safe_v1', 'SEC-1', DATE '2024-01-02', 21, 0.1, false, false, "
+        "TIMESTAMP '2024-02-01'), ('fm', 'atx_forward_returns_survivorship_safe_monthly_v1', 'SEC-1', "
+        "DATE '2024-01-02', 21, 0.1, false, false, TIMESTAMP '2024-02-01'), ('fo', 'legacy', 'SEC-1', "
+        "DATE '2024-01-02', 21, 0.1, false, false, TIMESTAMP '2024-02-01')"
+    )
+    con.execute(
+        "INSERT INTO entity_classification (classification_id, security_id, taxonomy_id, node_id, node_code, "
+        "valid_from, as_of_date, source) VALUES ('c1', 'SEC-1', 'FAMA_FRENCH_49', 'n', 'Softw', DATE '2026-09-01', "
+        "DATE '2026-09-01', 'snapshot')"
+    )
+    # The same corporate-action event twice: a non-unique release key withholds the dataset.
+    con.execute(
+        "INSERT INTO corporate_actions (source, security_id, action_type, ex_date, available_at, source_loaded_at) "
+        "SELECT 'ca', 'SEC-1', 'split', DATE '2024-01-02', TIMESTAMP '2024-01-02 22:00', TIMESTAMP '2024-02-01' "
+        "FROM range(2)"
+    )
+    research = tmp_path / "research.duckdb"
+    with duckdb.connect(str(research)) as rcon:
+        rcon.execute(
+            "CREATE TABLE research_factor_returns (run_id VARCHAR, frequency VARCHAR, period_date DATE, "
+            "factor_id VARCHAR, value DOUBLE, basis VARCHAR, status VARCHAR)"
+        )
+        rcon.execute(
+            "INSERT INTO research_factor_returns VALUES ('f1', 'monthly', DATE '2024-01-31', 'hml', 0.01, "
+            "'reconstructed', 'ok'), ('f1', 'monthly', DATE '2024-01-31', 'smb', 0.02, 'reconstructed', 'ok')"
+        )
+        rcon.execute("CREATE TABLE research_factor_runs AS SELECT 'f1' run_id, 'sealed' status, 'v3' factor_version")
+    result = publish_release(tmp_store, "r1", tmp_path / "out", created_at=CREATED_AT, research_store=research)
+    manifest = read_release_manifest(result.manifest_path)
+    entries = {entry["name"]: entry for entry in manifest["datasets"]}
+    assert result.eligibility == manifest["eligibility"] == "eligible"
+    assert manifest["research_store"]["attached"] is True
+    assert not con.execute("SELECT 1 FROM duckdb_databases() WHERE database_name = 'atx_release_research'").fetchall()
+    expected = {
+        "forward_labels_daily": ("published", "eligible"),
+        "forward_labels_monthly": ("published", "candidate"),  # published outside activation
+        "entity_classification": ("published", "research_only"),
+        "factor_returns": ("published", "research_only"),
+        "corporate_action_events": ("withheld", None),
+        "owner_links": ("absent", None),
+        "foreign_filer_disclosure": ("absent", None),
+        "earnings_events": ("absent", None),
+    }
+    assert {name: (entries[name]["status"], entries[name]["eligibility"]) for name in expected} == expected
+    assert entries["corporate_action_events"]["absent_reason"] == "duplicate_release_keys"
+    assert entries["earnings_events"]["absent_reason"] == "object_missing:research_earnings_events"
+    assert entries["owner_links"]["absent_reason"].startswith("not_persisted")
+    # Daily and monthly labels split one table by source; other sources are not released.
+    assert (entries["forward_labels_daily"]["row_count"], entries["forward_labels_monthly"]["row_count"]) == (1, 1)
+    assert entries["factor_returns"]["row_count"] == 2 and entries["factor_returns"]["store"] == "research"
+    assert manifest["evidence"]["factor_returns"]["versions"]["rows"] == [
+        {"run_id": "f1", "status": "sealed", "factor_version": "v3"}
+    ]
+    assert not [e for e in manifest["datasets"] if e["basis"] == "research" and e["eligibility"] == "eligible"]
+    for entry in manifest["datasets"]:
+        assert entry["natural_key"] and entry["evidence_basis"]
+        assert entry["schema"] is None or len(entry["record_schema_sha256"]) == 64
+        assert entry["status"] != "published" or len(entry["schema_sha256"]) == 64
+
+
 def test_release_producing_stages_run_before_the_gate_evidence_stages():
     """One full activation always leaves coverage, SLO and DQC evidence fresh (not stale)."""
 
@@ -917,6 +1002,10 @@ def test_release_producing_stages_run_before_the_gate_evidence_stages():
     from atx_db.publication import EVIDENCE_STAGES, RELEASE_DATASET_STAGES, RELEASE_DATASETS
 
     order = {stage: index for index, stage in enumerate(STAGE_ORDER)}
-    assert set(RELEASE_DATASET_STAGES) == {dataset.name for dataset in RELEASE_DATASETS}
+    assert set(RELEASE_DATASET_STAGES) == {
+        dataset.name
+        for dataset in RELEASE_DATASETS
+        if dataset.stage and dataset.basis == "production" and dataset.absent_reason is None
+    }
     for stage in RELEASE_DATASET_STAGES.values():
         assert all(order[stage] < order[evidence] for evidence in EVIDENCE_STAGES.values())

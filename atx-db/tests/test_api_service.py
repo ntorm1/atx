@@ -24,7 +24,7 @@ from atx_db.api.admin import (
 from atx_db.api.app import create_app
 from atx_db.api.auth import ApiPrincipal, StaticApiKeyAuthenticator
 from atx_db.api.batch import InMemoryBatchJobRepository, LocalBatchManager
-from atx_db.api.catalog import DATASETS
+from atx_db.api.catalog import DATASETS, PENDING_REGISTRATION_DATASETS
 from atx_db.api.models import BatchSubmitRequest, RangeRequest
 from atx_db.api.service import WarehouseReadService
 from atx_db.api.usage import InMemoryUsageLedger, UsageEvent
@@ -319,6 +319,52 @@ def test_delisting_range_preserves_unresolved_symbols_sources_and_revisions(
         ("source-a", "SEC-1", "SAME"): expected_reason,
         ("source-a", "SEC-2", "SAME"): "merger",
     }
+
+
+_SQL_TYPES = {
+    "string": "VARCHAR",
+    "json": "VARCHAR",
+    "date": "DATE",
+    "timestamp": "TIMESTAMP",
+    "float64": "DOUBLE",
+    "int32": "INTEGER",
+    "int64": "BIGINT",
+    "boolean": "BOOLEAN",
+}
+
+
+@pytest.mark.parametrize("schema", PENDING_REGISTRATION_DATASETS[0].schemas, ids=lambda schema: schema.code)
+def test_extended_schemas_rank_revisions_by_available_at(tmp_path: Path, schema) -> None:
+    """P13: every pending-registration schema answers ``as_of`` from ``available_at``."""
+
+    columns = {field.source_column: _SQL_TYPES[field.data_type] for field in schema.fields}
+    path = tmp_path / f"{schema.code}.duckdb"
+
+    def value(column: str, kind: str, revision: str, available: dt.datetime) -> object:
+        if column in ("run_id", "security_id"):
+            return revision if column == "run_id" else "SEC-1"
+        return {"TIMESTAMP": available, "DATE": dt.date(2024, 1, 31), "VARCHAR": "x", "DOUBLE": 1.0}.get(
+            kind, True if kind == "BOOLEAN" else 21
+        )
+
+    # Two revisions of one natural key, known 2024-02-01 and 2024-03-01.
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(f"CREATE TABLE {schema.source_table} ({', '.join(f'{c} {k}' for c, k in columns.items())})")
+        for revision, available in (("old", dt.datetime(2024, 2, 1)), ("new", dt.datetime(2024, 3, 1))):
+            conn.execute(
+                f"INSERT INTO {schema.source_table} VALUES ({', '.join('?' * len(columns))})",
+                [value(column, kind, revision, available) for column, kind in columns.items()],
+            )
+    service = WarehouseReadService(path)
+
+    def visible(as_of: str) -> list[object]:
+        request = {"dataset": schema.dataset, "schema": schema.code, "symbols": ["ALL_SYMBOLS"], "as_of": as_of}
+        request |= {"start": "2024-01-01", "end": "2024-02-01"}
+        return [row["run_id"] for row in service.get_range(RangeRequest.model_validate(request)).data]
+
+    assert visible("2024-01-15T00:00:00Z") == []
+    assert visible("2024-02-15T00:00:00Z") == ["old"]
+    assert visible("2024-04-15T00:00:00Z") == ["new"]
 
 
 def test_industry_standardized_schema_emits_pit_classification_updates(tmp_store):

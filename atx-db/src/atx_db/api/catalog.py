@@ -1007,8 +1007,253 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
 )
 
 
+# --- P13: extended record contracts, pending control-plane registration ----------------
+# These schemas are pinned here so release manifests carry their record-schema hash and the
+# read service can answer PIT range queries over them. They are deliberately NOT in
+# ``DATASETS``: migrations 0267/0270/0296/0298 seed the control-plane catalog, coverage
+# SLOs and unit prices from ``DATASETS``, and entitlements can only be granted for a
+# catalogued dataset (``admin.grant_entitlement``). Until a registration migration adds
+# their catalog rows and SLOs they are resolvable by code but never served over HTTP.
+EXTENDED_DATASET_CODE: Final = "ATX.US.EXTENDED"
+
+FORWARD_LABELS_SCHEMA = RecordSchema(
+    dataset=EXTENDED_DATASET_CODE,
+    code="forward-labels",
+    version="1.0.0",
+    title="Survivorship-safe forward-return labels",
+    description=(
+        "Forward returns from the entry session (as_of_date) over horizon_days observed XNYS sessions on the "
+        "adjusted_close price basis. When the line delists inside the window the leg is stitched with the "
+        "observed or policy (Shumway convention) terminal return; terminal_return_source says which. Daily "
+        "source atx_forward_returns_survivorship_safe_v1 and monthly source "
+        "atx_forward_returns_survivorship_safe_monthly_v1 (month-end entry sessions, 21/63/126/252 sessions). "
+        "Every revision is retained; availability is modeled, not a verified return vintage."
+    ),
+    source_table="forward_returns_survivorship_safe",
+    time_column="as_of_date",
+    natural_key=("source", "security_id", "as_of_date", "horizon_days"),
+    basis_column="source",
+    fields=(
+        FieldSpec("forward_return_id", "forward_return_id", "string", "Label revision identifier.", nullable=False),
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("symbol", "symbol", "string", "Ticker at the entry session."),
+        FieldSpec("source", "source", "string", "Daily or monthly label source.", nullable=False, filterable=True),
+        FieldSpec("horizon_days", "horizon_days", "int32", "Observed XNYS sessions in the window.", nullable=False),
+        FieldSpec("forward_end_date", "forward_end_date", "date", "Endpoint session of the window."),
+        FieldSpec("forward_return", "forward_return", "float64", "Label return, stitched when delisted.", "ratio"),
+        FieldSpec("raw_forward_return", "raw_forward_return", "float64", "Price leg before the stitch.", "ratio"),
+        FieldSpec("terminal_return", "terminal_return", "float64", "Delisting terminal return compounded in.", "ratio"),
+        FieldSpec("is_delisted_in_horizon", "is_delisted_in_horizon", "boolean", "Delisted inside the window."),
+        FieldSpec("is_stitched", "is_stitched", "boolean", "Whether a terminal return was compounded in."),
+        FieldSpec("delist_date", "delist_date", "date", "Effective delisting date inside the window."),
+        FieldSpec(
+            "terminal_return_source", "terminal_return_source", "string", "observed or policy; null when not stitched."
+        ),
+        FieldSpec("return_observation_id", "return_observation_id", "string", "Observed terminal evidence id."),
+        FieldSpec("price_basis", "price_basis", "string", "Price series of the price leg (adjusted_close)."),
+        FieldSpec("calculation_version", "calculation_version", "string", "Label publication calculation version."),
+        FieldSpec("is_latest_revision", "is_latest_revision", "boolean", "Whether this is the current revision."),
+        *_PIT_FIELDS,
+    ),
+)
+
+_PRICE_METRICS: Final[tuple[tuple[str, str, str, str | None], ...]] = (
+    ("close", "float64", "Unadjusted close.", "USD"),
+    ("adjusted_close", "float64", "Vendor-adjusted close.", "USD"),
+    ("volume", "int64", "Share volume.", "shares"),
+    ("dollar_volume", "float64", "Close times volume.", "USD"),
+    ("daily_return", "float64", "Adjusted close-to-close return.", "ratio"),
+    ("log_return", "float64", "Adjusted close-to-close log return.", None),
+    ("gap_return", "float64", "Open versus prior adjusted close.", "ratio"),
+    ("realized_vol_20d", "float64", "Annualized 20-session realized volatility.", None),
+    ("realized_vol_60d", "float64", "Annualized 60-session realized volatility.", None),
+    ("momentum_21d", "float64", "21-session adjusted return.", "ratio"),
+    ("momentum_126d", "float64", "126-session adjusted return.", "ratio"),
+    ("pct_from_high_252d", "float64", "Distance from the 252-session high.", "ratio"),
+    ("avg_dollar_volume_21d", "float64", "21-session average dollar volume.", "USD"),
+    ("amihud_illiquidity_21d", "float64", "21-session Amihud illiquidity.", None),
+    ("max_drawdown_126d", "float64", "126-session maximum drawdown.", "ratio"),
+    ("downside_deviation_60d", "float64", "60-session downside deviation.", None),
+    ("market_return_ew", "float64", "Equal-weight panel market return that day.", "ratio"),
+    ("beta_60d", "float64", "60-session beta to the equal-weight market.", None),
+    ("market_correlation_60d", "float64", "60-session correlation to the equal-weight market.", None),
+    ("idiosyncratic_vol_60d", "float64", "60-session residual volatility.", None),
+    ("daily_return_cs_pct_rank", "float64", "Cross-sectional percentile rank of daily_return.", None),
+    ("momentum_21d_cs_pct_rank", "float64", "Cross-sectional percentile rank of momentum_21d.", None),
+    ("realized_vol_20d_cs_pct_rank", "float64", "Cross-sectional percentile rank of realized_vol_20d.", None),
+    ("dollar_volume_cs_pct_rank", "float64", "Cross-sectional percentile rank of dollar_volume.", None),
+    ("amihud_illiquidity_21d_cs_pct_rank", "float64", "Cross-sectional percentile rank of Amihud illiquidity.", None),
+)
+
+PRICE_METRICS_SCHEMA = RecordSchema(
+    dataset=EXTENDED_DATASET_CODE,
+    code="price-metrics-1d",
+    version="1.0.0",
+    title="Daily price-derived equity metrics",
+    description=(
+        "Per-line daily returns, volatility, momentum, liquidity, drawdown, beta and cross-sectional ranks "
+        "from the daily bars. Rows are modeled as known at trade_date + 22h (modeled_trade_date_22h); the "
+        "bar history is a later vendor snapshot, not a verified vendor vintage."
+    ),
+    source_table="equity_price_metrics",
+    time_column="trade_date",
+    natural_key=("source", "security_id", "trade_date"),
+    fields=(
+        FieldSpec("metric_id", "metric_id", "string", "Physical row identifier.", nullable=False),
+        FieldSpec("security_id", "security_id", "string", "Stable ATX price-line identifier.", nullable=False),
+        FieldSpec("symbol", "symbol", "string", "Ticker for the observation."),
+        FieldSpec("trade_date", "trade_date", "date", "Exchange trading date.", nullable=False),
+        *(FieldSpec(name, name, kind, description, unit) for name, kind, description, unit in _PRICE_METRICS),
+        FieldSpec("source", "source", "string", "ATX engine identifier.", nullable=False),
+        FieldSpec("is_latest_revision", "is_latest_revision", "boolean", "Whether this is the current revision."),
+        *_PIT_FIELDS,
+    ),
+)
+
+LISTING_STATUS_SCHEMA = RecordSchema(
+    dataset=EXTENDED_DATASET_CODE,
+    code="listing-status",
+    version="1.0.0",
+    title="Listing status intervals",
+    description=(
+        "Active/inactive listing intervals per symbol and venue from Nasdaq directory snapshots and listing "
+        "events. security_id is resolved through the current ticker (identity basis current_ticker_unverified) "
+        "and is null when unresolved. Each build replaces the source's prior build, so valid_to and "
+        "last_evidence_* reflect the latest build rather than a point-in-time revision history."
+    ),
+    source_table="listing_status_intervals",
+    time_column="valid_from",
+    natural_key=("source", "symbol", "listing_venue_code", "valid_from"),
+    supports_vintages=False,
+    fields=(
+        FieldSpec("listing_status_id", "listing_status_id", "string", "Physical interval identifier.", nullable=False),
+        FieldSpec("security_id", "security_id", "string", "Current-ticker resolved security; null when unresolved."),
+        FieldSpec("symbol", "symbol", "string", "Directory symbol.", nullable=False),
+        FieldSpec("listing_venue_code", "listing_venue_code", "string", "Directory venue code."),
+        FieldSpec("listing_venue_name", "listing_venue_name", "string", "Directory venue name."),
+        FieldSpec("listing_exchange_code", "listing_exchange_code", "string", "Exchange MIC-style code."),
+        FieldSpec("status", "status", "string", "active or inactive.", nullable=False, filterable=True),
+        FieldSpec("valid_from", "valid_from", "date", "First date of the interval.", nullable=False),
+        FieldSpec("valid_to", "valid_to", "date", "Last date of the interval in the latest build; null while open."),
+        FieldSpec("last_evidence_as_of_date", "last_evidence_as_of_date", "date", "Date of the latest evidence."),
+        FieldSpec("last_evidence_at", "last_evidence_at", "timestamp", "Availability of the latest evidence."),
+        FieldSpec("source", "source", "string", "ATX interval builder source.", nullable=False),
+        FieldSpec("evidence_source", "evidence_source", "string", "Evidence family.", nullable=False),
+        FieldSpec("method", "method", "string", "Interval construction method.", nullable=False),
+        FieldSpec("details_json", "details_json", "json", "Identity basis and evidence details."),
+        FieldSpec("is_latest_revision", "is_latest_revision", "boolean", "Whether this is the current revision."),
+        *_PIT_FIELDS,
+    ),
+)
+
+CLASSIFICATION_SCHEMA = RecordSchema(
+    dataset=EXTENDED_DATASET_CODE,
+    code="classification",
+    version="1.0.0",
+    title="Security industry classification (research basis)",
+    description=(
+        "SIC primary and derived FAMA_FRENCH_12 (french_siccodes12_v2), FAMA_FRENCH_49 (french_siccodes49_v1) "
+        "and NAICS_2022 (approximate) classifications. Basis current_sic_snapshot: each filer's CURRENT SIC "
+        "from the retained SEC submissions snapshot, valid from the snapshot receipt date, never earlier. Not "
+        "point-in-time SIC history; a later snapshot closes valid_to in place."
+    ),
+    source_table="entity_classification",
+    time_column="valid_from",
+    natural_key=("security_id", "taxonomy_id", "is_primary", "valid_from"),
+    item_column="taxonomy_id",
+    supports_vintages=False,
+    fields=(
+        FieldSpec("classification_id", "classification_id", "string", "Physical row identifier.", nullable=False),
+        FieldSpec("security_id", "security_id", "string", "Classified security or SEC owner id.", nullable=False),
+        FieldSpec(
+            "taxonomy_id",
+            "taxonomy_id",
+            "string",
+            "SIC, FAMA_FRENCH_12, FAMA_FRENCH_49 or NAICS_2022.",
+            nullable=False,
+            filterable=True,
+        ),
+        FieldSpec("node_id", "node_id", "string", "Taxonomy node identifier."),
+        FieldSpec("node_code", "node_code", "string", "Taxonomy node code."),
+        FieldSpec("is_primary", "is_primary", "boolean", "Whether this is the primary classification."),
+        FieldSpec("valid_from", "valid_from", "date", "Snapshot receipt date it applies from.", nullable=False),
+        FieldSpec("valid_to", "valid_to", "date", "Closed in place by a later snapshot; null while current."),
+        FieldSpec("source", "source", "string", "Source label carrying the classification basis.", nullable=False),
+        FieldSpec("is_latest_revision", "is_latest_revision", "boolean", "Whether this is the current revision."),
+        *_PIT_FIELDS,
+    ),
+)
+
+CORPORATE_ACTIONS_SCHEMA = RecordSchema(
+    dataset=EXTENDED_DATASET_CODE,
+    code="corporate-actions",
+    version="1.0.0",
+    title="Corporate-action events from the vendor adjustment factor",
+    description=(
+        "One event per step of a line's vendor adjustment factor: split and stock_dividend from corroborated "
+        "split epochs, cash_dividend residuals, distribution_unclassified and adjustment_unclassified (a hazard, "
+        "never a split). details_json carries evidence_basis, corroboration and reason. Reconstructed from a "
+        "later vendor snapshot, never a verified corporate-action record; available_at is the ex-date bar clock "
+        "or the later share-count confirmation."
+    ),
+    source_table="corporate_actions",
+    time_column="ex_date",
+    natural_key=("source", "security_id", "ex_date", "action_type"),
+    item_column="action_type",
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX price-line identifier.", nullable=False),
+        FieldSpec("symbol", "symbol", "string", "Ticker at the ex-date."),
+        FieldSpec("action_type", "action_type", "string", "Classified event type.", nullable=False, filterable=True),
+        FieldSpec("ex_date", "ex_date", "date", "Ex-date bar of the factor step.", nullable=False),
+        FieldSpec("declaration_date", "declaration_date", "date", "Declaration date when known."),
+        FieldSpec("record_date", "record_date", "date", "Record date when known."),
+        FieldSpec("payable_date", "payable_date", "date", "Payable date when known."),
+        FieldSpec("cash_amount", "cash_amount", "float64", "Implied cash per share.", "USD"),
+        FieldSpec("split_from", "split_from", "float64", "Split ratio denominator (p:q form)."),
+        FieldSpec("split_to", "split_to", "float64", "Split ratio numerator (p:q form)."),
+        FieldSpec("adjustment_factor", "adjustment_factor", "float64", "Factor step k of the event.", "ratio"),
+        FieldSpec("details_json", "details_json", "json", "Evidence basis, corroboration, reason and step inputs."),
+        FieldSpec("source", "source", "string", "ATX event builder source.", nullable=False),
+        FieldSpec("is_latest_revision", "is_latest_revision", "boolean", "Whether this is the current revision."),
+        *_PIT_FIELDS,
+    ),
+)
+
+PENDING_REGISTRATION_DATASETS: Final[tuple[DatasetSpec, ...]] = (
+    DatasetSpec(
+        code=EXTENDED_DATASET_CODE,
+        version="0.1.0",
+        title="ATX US Extended (pending registration)",
+        description=(
+            "Forward labels, price metrics, listing status, research-basis classification and corporate-action "
+            "events. Contracts are pinned; control-plane registration (catalog rows, coverage SLOs, "
+            "entitlements) is pending, so these are not served over HTTP yet."
+        ),
+        asset_class="equity",
+        region="US",
+        entitlement="us_equities_extended",
+        default_schema="forward-labels",
+        schemas=(
+            FORWARD_LABELS_SCHEMA,
+            PRICE_METRICS_SCHEMA,
+            LISTING_STATUS_SCHEMA,
+            CLASSIFICATION_SCHEMA,
+            CORPORATE_ACTIONS_SCHEMA,
+        ),
+    ),
+)
+
+
+def is_registered(code: str) -> bool:
+    """Whether ``code`` is in the control-plane-registered public catalog (``DATASETS``)."""
+
+    return any(dataset.code == code for dataset in DATASETS)
+
+
 def get_dataset(code: str) -> DatasetSpec:
-    for dataset in DATASETS:
+    """A registered dataset, else a pinned dataset pending control-plane registration."""
+
+    for dataset in (*DATASETS, *PENDING_REGISTRATION_DATASETS):
         if dataset.code == code:
             return dataset
     raise KeyError(code)
