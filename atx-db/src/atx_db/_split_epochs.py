@@ -29,13 +29,19 @@ beyond); in band, x - 1 is a whole number of STOCK_DIVIDEND_RATIO_STEP (a 5,
 which a cash distribution matches only by chance (20:19 = a 5 % yield does
 not). Share evidence is
 the archive count reaching the pre-step count x k (read SHARE_LEAD_BARS bars
-before the step), and it counts only from its own availability (the A8 vendor
-share-run clock, ``market_daily``): a count within SPLIT_DERIVED_SHARE_TOLERANCE
-of the pre-step count x k is split-derived and known at its first bar; a looser
-match (up to SHARE_CORROBORATION_TOLERANCE) is a copy of a later cover-page
-count and known only the A8 filer-family lag (SHARE_MODELED_LAG_DAYS: domestic
-90 days; foreign, a 20-F/40-F in ``shares_outstanding_history``, and unknown,
-no rows, 150 days) after its first bar.
+before the step), and it counts only from its own availability, the A8 vendor
+share-run clock (``market_daily``): a split-derived count -- a split-like step
+(max(k, 1/k) >= ``market_daily.SPLIT_FACTOR_MIN``) whose count is within
+SPLIT_DERIVED_SHARE_TOLERANCE (A8 ``SPLIT_RUN_TOLERANCE``) of the pre-step count
+x k -- is known at its first bar; any other match (a looser one, up to
+SHARE_CORROBORATION_TOLERANCE, a smaller stock dividend, a signature) is a copy
+of a later cover-page count, known only the A8 filer-family lag
+(SHARE_MODELED_LAG_DAYS: domestic 90 days; foreign, a 20-F/40-F in
+``shares_outstanding_history``, and unknown, no rows, 150 days) after its first
+bar. Either way the evidence compares the count with the pre-step count, which
+it reveals, so it is never known before that pre-step run is (A8 follow-up:
+the line's first run at its first bar, any later run the family lag after its
+first bar; a DEI-matched run may be public earlier, so this is conservative).
 
 - explicit ``split_factor``: a split (``vendor_split_field``) known at that bar;
 - out-of-band (k outside [SPLIT_MIN_RATIO, SPLIT_MAX_RATIO]) and simple: a split
@@ -126,7 +132,12 @@ from contextvars import ContextVar
 from typing import Any
 from uuid import uuid4
 
-from .market_daily import ARCHIVE_MODELED_LAG_DAYS_BY_FAMILY, FOREIGN_FILER_FORMS
+from .market_daily import (
+    ARCHIVE_MODELED_LAG_DAYS_BY_FAMILY,
+    FOREIGN_FILER_FORMS,
+    SPLIT_FACTOR_MIN,
+    SPLIT_RUN_TOLERANCE,
+)
 from .market_owner_bridge import (
     OWNER_MODE_RECONSTRUCTED,
     SINGLE_CLASS_LINK_COLUMNS,
@@ -164,6 +175,7 @@ __all__ = [
     "basis_links_sql",
     "bridge_links",
     "cleanup_split_epochs",
+    "factor_series_sql",
     "prepare_split_epochs",
     "rebase_factor_sql",
     "refresh_scope",
@@ -179,7 +191,7 @@ STOCK_DIVIDEND_RATIO_STEP = 0.005
 SIMPLE_RATIO_TOLERANCE = 1e-5
 SHARE_CORROBORATION_TOLERANCE = 0.1
 #: A8 ``SPLIT_RUN_TOLERANCE``: a count this close to the pre-step count x k is split-derived.
-SPLIT_DERIVED_SHARE_TOLERANCE = 0.05
+SPLIT_DERIVED_SHARE_TOLERANCE = SPLIT_RUN_TOLERANCE
 #: An in-band count jump must match k within this fraction of |k - 1|.
 STOCK_DIVIDEND_SHARE_TOLERANCE = 0.2
 #: A8 ``ARCHIVE_MODELED_LAG_DAYS_BY_FAMILY``: an unmatched vendor share run is known this long after it
@@ -237,6 +249,14 @@ def _series_sql(columns: set[str]) -> str:
     return f"concat_ws('|', {', '.join(parts)})" if parts else "''"
 
 
+def factor_series_sql(columns: set[str]) -> str:
+    """The (source|run_id) series of ``equity_daily_bars`` that carry a vendor factor anywhere, table-wide.
+
+    A factor-free load (``adjusted_close = close`` on every bar) never proves coverage or carries events.
+    """
+    return f"SELECT DISTINCT {_series_sql(columns)} AS series FROM equity_daily_bars WHERE abs({_FACTOR} - 1) > 1e-9"
+
+
 def _simple_sql(k: str) -> str:
     """Whether max(k, 1/k) is p/q with q <= SIMPLE_RATIO_MAX_DENOMINATOR, within the vendor's rounding."""
     x = f"greatest({k}, 1 / ({k}))"
@@ -283,10 +303,7 @@ def _stage(con: Any, relation: str, kind: str, security_ids: Sequence[str] | Non
     if security_ids is not None:
         scoped, params = "AND security_id IN (SELECT unnest(?::VARCHAR[]))", [sorted(set(security_ids))]
     try:
-        con.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _split_stage_factor_series AS
-            SELECT DISTINCT {series} AS series FROM equity_daily_bars WHERE abs({_FACTOR} - 1) > 1e-9
-        """)
+        con.execute(f"CREATE OR REPLACE TEMP TABLE _split_stage_factor_series AS {factor_series_sql(columns)}")
         # The A8 filer-family lag of a vendor share run matched only loosely (a cover-page copy).
         con.execute("CREATE OR REPLACE TEMP TABLE _split_stage_lag (security_id VARCHAR, lag_days INTEGER)")
         history = {row[0] for row in con.execute(
@@ -331,16 +348,26 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
     before = f"{partition} ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _split_stage_bars AS
-        SELECT *, last_value(shares IGNORE NULLS) OVER ({before}) AS prev_shares
-        FROM (
-            SELECT security_id, {series} AS series, trade_date, CAST(close AS DOUBLE) AS close,
-                   {shares} AS shares, {clock} AS available_at, {field} AS split_field, {_FACTOR} AS factor
-            FROM equity_daily_bars
-            WHERE security_id IS NOT NULL AND trade_date IS NOT NULL {scope}
-            QUALIFY row_number() OVER (PARTITION BY security_id, {series}, trade_date
-                                       ORDER BY {clock} DESC NULLS LAST, adjusted_close DESC NULLS LAST,
-                                                close DESC NULLS LAST) = 1
+        WITH counted AS (
+            SELECT *, last_value(shares IGNORE NULLS) OVER ({before}) AS prev_shares
+            FROM (
+                SELECT security_id, {series} AS series, trade_date, CAST(close AS DOUBLE) AS close,
+                       {shares} AS shares, {clock} AS available_at, {field} AS split_field, {_FACTOR} AS factor
+                FROM equity_daily_bars
+                WHERE security_id IS NOT NULL AND trade_date IS NOT NULL {scope}
+                QUALIFY row_number() OVER (PARTITION BY security_id, {series}, trade_date
+                                           ORDER BY {clock} DESC NULLS LAST, adjusted_close DESC NULLS LAST,
+                                                    close DESC NULLS LAST) = 1
+            )
+        ), runs AS (
+            -- Vendor share runs (A8): a run starts where the count changes; run 1 is the line's first count.
+            SELECT *, sum(CASE WHEN shares IS NOT NULL AND shares IS DISTINCT FROM prev_shares THEN 1 ELSE 0 END)
+                          OVER ({partition} ROWS UNBOUNDED PRECEDING) AS share_run
+            FROM counted
         )
+        SELECT *, CASE WHEN shares IS NOT NULL
+                       THEN min(available_at) OVER (PARTITION BY security_id, series, share_run) END AS run_at
+        FROM runs
     """, params)
     # One pass: every step of interest, classified by the evidence it needs.
     con.execute(f"""
@@ -352,8 +379,10 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                    last_value(CASE WHEN factor IS NOT NULL THEN trade_date END IGNORE NULLS) OVER ({before})
                        AS prior_factor_date,
                    lag(trade_date, {lead}) OVER w AS lead_date,
-                   last_value(shares IGNORE NULLS) OVER ({partition}
-                       ROWS BETWEEN {window + lead} PRECEDING AND {lead + 1} PRECEDING) AS shares_before,
+                   last_value(shares IGNORE NULLS) OVER wb AS shares_before,
+                   -- The pre-step count's run (its first bar's clock; run 1 is the line's first count).
+                   last_value(CASE WHEN shares IS NOT NULL THEN share_run END IGNORE NULLS) OVER wb AS before_run,
+                   last_value(CASE WHEN shares IS NOT NULL THEN run_at END IGNORE NULLS) OVER wb AS before_run_at,
                    last_value(shares IGNORE NULLS) OVER wl AS shares_later,
                    last_value(trade_date) OVER ws AS short_end_date, last_value(available_at) OVER ws AS short_end_at,
                    count(*) OVER ws AS short_bars,
@@ -361,11 +390,13 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                    count(*) OVER wl AS late_bars
             FROM _split_stage_bars
             WINDOW w AS ({partition}),
+                   wb AS ({partition} ROWS BETWEEN {window + lead} PRECEDING AND {lead + 1} PRECEDING),
                    ws AS ({partition} ROWS BETWEEN CURRENT ROW AND {window} FOLLOWING),
                    wl AS ({partition} ROWS BETWEEN CURRENT ROW AND {late} FOLLOWING)
         ), measured AS (
             SELECT security_id, series, trade_date AS ex_date, available_at AS ex_at, split_field,
-                   coalesce(lead_date, trade_date) AS lead_date, shares_before, shares_later,
+                   coalesce(lead_date, trade_date) AS lead_date, shares_before, shares_later, before_run,
+                   before_run_at,
                    short_end_date, short_end_at, short_bars = {window + 1} AS short_complete,
                    late_end_date, late_end_at, late_bars = {late + 1} AS late_complete,
                    CASE WHEN factor IS NOT NULL AND prior_factor IS NOT NULL
@@ -393,16 +424,17 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                CASE WHEN cls = 'simple_in' THEN late_end_at ELSE short_end_at END AS window_end_at
         FROM classed WHERE cls IS NOT NULL
     """)
-    # Corroboration: the earliest availability of share evidence for each candidate.
+    # Corroboration: the earliest availability of share evidence for each candidate (the A8 run clock).
+    family_lag = f"to_days(coalesce(l.lag_days, {SHARE_MODELED_LAG_DAYS['unknown']}))"
+    split_like = f"greatest(s.k, 1 / s.k) >= {SPLIT_FACTOR_MIN * (1 - SIMPLE_RATIO_TOLERANCE)!r}"
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _split_stage_classified AS
         WITH confirmed AS (
             SELECT s.security_id, s.series, s.ex_date,
-                   min(CASE WHEN s.cls IN ('simple_out', 'inexact_out')
-                                 AND abs(b.shares / (s.shares_before * s.k) - 1) > {SPLIT_DERIVED_SHARE_TOLERANCE}
+                   min(CASE WHEN {split_like}
+                                 AND abs(b.shares / (s.shares_before * s.k) - 1) <= {SPLIT_DERIVED_SHARE_TOLERANCE}
                             THEN b.available_at
-                                 + to_days(coalesce(l.lag_days, {SHARE_MODELED_LAG_DAYS['unknown']}))
-                            ELSE b.available_at END) AS confirm_at
+                            ELSE b.available_at + {family_lag} END) AS count_at
             FROM _split_stage_steps s
             JOIN _split_stage_bars b
               ON b.security_id = s.security_id AND b.series = s.series
@@ -420,6 +452,13 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                   ELSE abs(b.shares / (s.shares_before * s.k) - 1) <= {tol}
                        AND abs(b.shares / s.shares_before - 1) >= {step} END
             GROUP BY ALL
+        ), dated AS (
+            -- The evidence reveals the pre-step count: never known before that run is (A8 follow-up).
+            SELECT s.*, greatest(c.count_at, CASE WHEN s.before_run = 1 THEN s.before_run_at
+                                                  ELSE s.before_run_at + {family_lag} END) AS confirm_at
+            FROM _split_stage_steps s
+            JOIN confirmed c USING (security_id, series, ex_date)
+            LEFT JOIN _split_stage_lag l ON l.security_id = s.security_id
         )
         SELECT s.*, c.confirm_at,
                CASE WHEN s.cls = 'field' THEN 'split'
@@ -435,7 +474,7 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                     WHEN s.window_complete THEN 'distribution'
                     ELSE 'pending_confirmation' END AS outcome
         FROM _split_stage_steps s
-        LEFT JOIN confirmed c USING (security_id, series, ex_date)
+        LEFT JOIN dated c USING (security_id, series, ex_date)
     """)
     con.execute(f"""
         INSERT INTO {relation} (security_id, kind, series, ex_date, from_at, known_at, until_at, ratio, evidence)

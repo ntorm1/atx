@@ -352,18 +352,20 @@ WHERE rn = 1
 ORDER BY symbol, security_id
 """
 
+# ``{visible}`` is each step's latest revision visible at the cutoff
+# (``corporate_actions.corporate_actions_asof_sql``, P8 revisions).
 CORPORATE_ACTIONS_ASOF_SQL = """
 WITH params AS (
     SELECT
         CAST(? AS DATE) AS as_of_date,
         CAST(? AS TIMESTAMP) AS as_of_ts
-)
+),
+visible AS ({visible})
 SELECT c.*
-FROM corporate_actions c
+FROM visible c
 {symbol_join}
 CROSS JOIN params p
 WHERE c.ex_date <= p.as_of_date
-  AND (c.available_at IS NULL OR c.available_at <= p.as_of_ts)
 ORDER BY c.ex_date, c.security_id, c.action_type
 """
 
@@ -599,7 +601,11 @@ def corporate_actions_asof(
             if _register_filter(store, "asof_corporate_action_symbol_filter", "symbol", symbol_values):
                 registered.append("asof_corporate_action_symbol_filter")
                 symbol_join = "JOIN asof_corporate_action_symbol_filter sf ON sf.symbol = c.symbol"
-            sql = CORPORATE_ACTIONS_ASOF_SQL.format(symbol_join=symbol_join)
+            # Imported here: corporate_actions imports (via market_daily) this package.
+            from ..corporate_actions import corporate_actions_asof_sql
+
+            visible = corporate_actions_asof_sql("(SELECT as_of_ts FROM params)")
+            sql = CORPORATE_ACTIONS_ASOF_SQL.format(symbol_join=symbol_join, visible=visible)
             return store.con.execute(sql, [as_of_date, as_of_ts]).df()
         finally:
             for relation in registered:

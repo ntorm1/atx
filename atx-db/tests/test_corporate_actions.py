@@ -8,9 +8,15 @@ import json
 import duckdb
 import pytest
 
-from atx_db.corporate_actions import TIE_OUT_TOLERANCE, build_corporate_action_events
+from atx_db.corporate_actions import (
+    TIE_OUT_TOLERANCE,
+    build_corporate_action_events,
+    corporate_actions_asof_sql,
+    corporate_actions_current_sql,
+)
 
 EX, LATE_SHARES, DIVIDEND = dt.date(2021, 3, 15), dt.date(2021, 6, 23), dt.date(2021, 6, 15)
+XBRL_AT = dt.datetime(2021, 8, 5, 16)
 SPECIAL_CUT = 0.2513  # 25.13 % of the price: an inexact ratio (an exact 25 %, k = 4/3, is a 4:3 split candidate)
 
 
@@ -48,39 +54,62 @@ def events():
     _bars(con, "FLAT")  # a flat vendor factor
     _bars(con, "LATE", split=True, shares_from=LATE_SHARES)  # 2:1 whose count follows 100 days late
     con.execute("INSERT INTO sec_company_facts VALUES ('SPLIT', 'CommonStockDividendsPerShareDeclared', "
-                "'USD/shares', DATE '2021-04-01', DATE '2021-06-30', 0.10, TIMESTAMP '2021-08-05 16:00:00')")
+                f"'USD/shares', DATE '2021-04-01', DATE '2021-06-30', 0.10, TIMESTAMP '{XBRL_AT}')")
     summary = build_corporate_action_events(con, "ca", run_id="t")
-    rows = {(r[0], r[1]): r for r in con.execute(
-        "SELECT security_id, action_type, ex_date, cash_amount, split_from, split_to, adjustment_factor, "
-        "details_json, available_at FROM ca").fetchall()}
-    yield con, summary, rows
+    yield con, summary
     con.close()
 
 
-def test_events_are_labelled_split_or_distribution_by_their_evidence_and_tie_out(events):
-    con, summary, rows = events
-    assert set(rows) == {("SPLIT", "split"), ("SPLIT", "cash_dividend"), ("SPECIAL", "distribution_unclassified"),
-                         ("LATE", "split")}
-    # 2:1 with share corroboration: a split of 2.0, known at the ex-date bar.
-    _, _, ex, cash, split_from, split_to, factor, details, available = rows[("SPLIT", "split")]
+def _visible(con, cutoff: dt.datetime):
+    """(security, action type, reason or evidence) of each step's row visible at ``cutoff``."""
+    visible = corporate_actions_asof_sql(f"TIMESTAMP '{cutoff}'", "ca")
+    rows = con.execute(f"SELECT security_id, action_type, details_json FROM ({visible}) ORDER BY 1, 2")
+    return [(sid, kind, json.loads(details)["reason"] or json.loads(details)["evidence_basis"])
+            for sid, kind, details in rows.fetchall()]
+
+
+def test_events_are_labelled_by_their_evidence_revisioned_at_its_clocks_and_tie_out(events):
+    con, summary = events
+    latest = {(r[0], r[1]): r for r in con.execute(
+        "SELECT security_id, action_type, ex_date, cash_amount, split_from, split_to, adjustment_factor, "
+        "details_json, available_at FROM ca WHERE is_latest_revision").fetchall()}
+    assert set(latest) == {("SPLIT", "split"), ("SPLIT", "cash_dividend"), ("SPECIAL", "distribution_unclassified"),
+                           ("LATE", "split")}
+    # 2:1 with share corroboration: a split of 2.0, known at the ex-date bar (no earlier revision).
+    _, _, ex, cash, split_from, split_to, factor, details, available = latest[("SPLIT", "split")]
     assert (ex, cash, split_from, split_to, factor, available) == (EX, None, 1.0, 2.0, pytest.approx(0.5), _at(EX))
-    assert json.loads(details)["corroboration"] == "share_count"
+    assert (json.loads(details)["corroboration"], json.loads(details)["revision"]) == ("share_count", 0)
     # A 25 % special with a flat count is a distribution, never a split.
-    _, _, ex, cash, split_from, _, factor, details, _ = rows[("SPECIAL", "distribution_unclassified")]
+    _, _, ex, cash, split_from, _, _, details, _ = latest[("SPECIAL", "distribution_unclassified")]
     assert (ex, cash, split_from) == (EX, pytest.approx(10.0 * SPECIAL_CUT), None)
     assert (json.loads(details)["reason"], json.loads(details)["evidence_basis"]) == ("special_or_spinoff",
                                                                                      "vendor_factor")
-    # A 1 % cash residual, corroborated by the quarter's XBRL dividends per share.
-    _, _, ex, cash, _, _, factor, details, _ = rows[("SPLIT", "cash_dividend")]
-    assert (ex, cash, factor) == (DIVIDEND, pytest.approx(0.10), pytest.approx(0.99))
-    assert json.loads(details)["evidence_basis"] == "vendor_factor+xbrl_dps"
-    # The events rebuild every line's vendor factor (FLAT: a line without events).
-    assert summary["lines"] == 4 and summary["tie_out_lines_over"] == 0
+    # A 1 % cash residual, later corroborated by the quarter's XBRL dividends per share.
+    assert latest[("SPLIT", "cash_dividend")][2:4] == (DIVIDEND, pytest.approx(0.10))
+    # The events rebuild every line's vendor factor (FLAT: a line without events), one row per step.
+    assert summary["lines"] == 4 and summary["tie_out_lines_over"] == 0 and summary["revisions"] == 3
     assert summary["tie_out_max_abs"] <= TIE_OUT_TOLERANCE
-    # No event is visible before its clock: a late-confirmed split only from its share evidence, and a
-    # split-sized step read as a distribution only once its share window closed with the count flat.
-    visible = "SELECT security_id, action_type FROM ca WHERE available_at <= ? ORDER BY 1, 2"
-    assert con.execute(visible, [_at(EX, 21)]).fetchall() == []
-    assert con.execute(visible, [_at(EX)]).fetchall() == [("SPLIT", "split")]
-    assert rows[("LATE", "split")][8] == _at(LATE_SHARES)
-    assert _at(EX + dt.timedelta(days=80)) < rows[("SPECIAL", "distribution_unclassified")][8] < _at(LATE_SHARES)
+    # Point in time: each step's state is visible from the clock it was decidable, never earlier.
+    pending = "split_candidate_pending"
+    assert _visible(con, _at(EX, 21)) == []
+    assert _visible(con, _at(EX)) == [("LATE", "adjustment_unclassified", pending),
+                                      ("SPECIAL", "adjustment_unclassified", pending),
+                                      ("SPLIT", "split", "vendor_factor+shares")]
+    assert _visible(con, _at(DIVIDEND + dt.timedelta(days=1), 12)) == [
+        ("LATE", "adjustment_unclassified", pending), ("SPECIAL", "distribution_unclassified", "special_or_spinoff"),
+        ("SPLIT", "cash_dividend", "vendor_factor"), ("SPLIT", "split", "vendor_factor+shares")]
+    assert _visible(con, XBRL_AT) == [
+        ("LATE", "split", "vendor_factor+shares"), ("SPECIAL", "distribution_unclassified", "special_or_spinoff"),
+        ("SPLIT", "cash_dividend", "vendor_factor+xbrl_dps"), ("SPLIT", "split", "vendor_factor+shares")]
+    # Revisions chain: the pending row is superseded at the confirmation; the late split names it.
+    chain = [(r[0], json.loads(r[1]), r[2]) for r in con.execute(
+        "SELECT action_type, details_json, available_at FROM ca WHERE security_id = 'LATE' ORDER BY available_at"
+    ).fetchall()]
+    assert [(kind, at) for kind, _, at in chain] == [("adjustment_unclassified", _at(EX)), ("split", _at(LATE_SHARES))]
+    assert chain[0][1]["superseded_at"] == _at(LATE_SHARES).isoformat(sep=" ")
+    assert chain[1][1]["supersedes_event_id"] == chain[0][1]["event_id"]
+    # The current relation counts the dividend once, at its ex-date clock, with its final evidence.
+    current = con.execute(f"SELECT available_at, details_json FROM ({corporate_actions_current_sql('ca')}) "
+                          "WHERE security_id = 'SPLIT' AND action_type = 'cash_dividend'").fetchall()
+    assert [(at, json.loads(details)["evidence_basis"]) for at, details in current] == [
+        (_at(DIVIDEND), "vendor_factor+xbrl_dps")]

@@ -513,6 +513,10 @@ def compute_factor_reconciliation(
 
 
 def _load_sql(action_types: tuple[str, ...]) -> str:
+    # One row per corporate-action step (P8 revisions: an XBRL-corroborated dividend is counted once,
+    # at its ex-date clock). Imported here: corporate_actions imports (via market_daily) this module.
+    from .corporate_actions import corporate_actions_current_sql
+
     placeholders = ", ".join(["?"] * len(action_types))
     max_yield = MAX_SINGLE_DIVIDEND_YIELD
     return f"""
@@ -525,7 +529,7 @@ def _load_sql(action_types: tuple[str, ...]) -> str:
             ca.cash_amount,
             b.close AS close_on_ex,
             greatest(ca.available_at, coalesce(b.available_at, ca.available_at)) AS available_at
-        FROM corporate_actions ca
+        FROM ({corporate_actions_current_sql()}) ca
         LEFT JOIN equity_daily_bars b
           ON b.security_id = ca.security_id AND b.trade_date = ca.ex_date
         WHERE ca.action_type IN ({placeholders})

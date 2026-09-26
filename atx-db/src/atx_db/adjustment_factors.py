@@ -167,11 +167,16 @@ def refresh_adjustment_factor_history(
     """Build event-level price/share/volume factors from normalized corporate actions."""
 
     options = options or AdjustmentFactorHistoryOptions()
+    # One row per corporate-action step (P8 revisions): its final label at that label's first clock.
+    # Imported here: corporate_actions imports (via market_daily) modules that import this one.
+    from .corporate_actions import corporate_actions_current_sql
+
+    current = corporate_actions_current_sql()
     with store.transaction():
         seed_corp_action_type_dim(store)
         store.con.execute("DELETE FROM adjustment_factor_history WHERE source = ?", [options.source])
         store.con.execute(
-            """
+            f"""
             INSERT INTO adjustment_factor_history (
                 adjustment_factor_id,
                 source,
@@ -226,7 +231,7 @@ def refresh_adjustment_factor_history(
                             ELSE NULL
                         END AS DOUBLE
                     ) AS evidence_close_price
-                FROM corporate_actions c
+                FROM ({current}) c
                 WHERE c.security_id IS NOT NULL
                   AND c.security_id <> ''
                   AND c.ex_date IS NOT NULL
@@ -348,17 +353,19 @@ def refresh_adjustment_factor_history(
                   AND f.factor_shares > 0
             ),
             sequenced AS (
+                -- OTHER (unclassified adjustments: unresolved split-sized steps, vendor artifacts) is never
+                -- applied downstream, so it stays out of the cumulative factors too.
                 SELECT
                     t.*,
                     exp(
-                        sum(ln(t.factor_price)) OVER (
+                        sum(CASE WHEN t.event_type = 'OTHER' THEN 0.0 ELSE ln(t.factor_price) END) OVER (
                             PARTITION BY t.security_id
                             ORDER BY t.ex_date ASC, t.event_ref_id ASC
                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                         )
                     ) AS cumulative_price_factor,
                     exp(
-                        sum(ln(t.factor_shares)) OVER (
+                        sum(CASE WHEN t.event_type = 'OTHER' THEN 0.0 ELSE ln(t.factor_shares) END) OVER (
                             PARTITION BY t.security_id
                             ORDER BY t.ex_date ASC, t.event_ref_id ASC
                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW

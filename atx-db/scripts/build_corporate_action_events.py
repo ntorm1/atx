@@ -81,11 +81,13 @@ def main() -> int:
     con.execute(f"DROP TABLE IF EXISTS {TABLE}")
     summary = build_corporate_action_events(con, TABLE, run_id="scratch-build", kind="")
     summary["bars"] = con.execute("SELECT count(*) FROM equity_daily_bars").fetchone()[0]
-    summary["by_reason"] = [list(row) for row in con.execute(f"""
-        SELECT action_type, coalesce(json_extract_string(details_json, '$.reason'), '') AS reason,
-               coalesce(json_extract_string(details_json, '$.evidence_basis'), '') AS evidence_basis,
-               count(*) AS events, count(DISTINCT security_id) AS lines
-        FROM {TABLE} GROUP BY ALL ORDER BY 1, 2, 3""").fetchall()]
+    # Latest revision per step, then the superseded (earlier-clock) revisions.
+    for key, latest in (("by_reason", "is_latest_revision"), ("superseded_by_reason", "NOT is_latest_revision")):
+        summary[key] = [list(row) for row in con.execute(f"""
+            SELECT action_type, coalesce(json_extract_string(details_json, '$.reason'), '') AS reason,
+                   coalesce(json_extract_string(details_json, '$.evidence_basis'), '') AS evidence_basis,
+                   count(*) AS events, count(DISTINCT security_id) AS lines
+            FROM {TABLE} WHERE {latest} GROUP BY ALL ORDER BY 1, 2, 3""").fetchall()]
     summary["load_seconds"] = round(loaded - started, 1)
     summary["build_seconds"] = round(time.perf_counter() - loaded, 1)
     text = json.dumps(summary, indent=2, default=str)

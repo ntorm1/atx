@@ -236,6 +236,63 @@ def refresh_daily_adjustment_factors(
     )
 
 
+def _label_unapplied_split_candidates(store: DuckDBStore, dataset_id: str,
+                                      options: DailyAdjustmentFactorOptions) -> None:
+    """Label the split-sized steps these factors do not apply as of the snapshot (P8).
+
+    A split-sized vendor-factor step whose classification is pending at the
+    cutoff, or that stays unresolved, is an OTHER event: the split-adjusted and
+    total-return closes keep its raw price jump. Late-confirmed splits apply only
+    from their confirmation clock, so earlier snapshots show the same jump.
+    """
+    # Imported here: corporate_actions imports (via market_daily) modules that import this one.
+    from .corporate_actions import PENDING_REASONS, UNRESOLVED_HAZARDS, corporate_actions_asof_sql
+
+    as_of_date = options.as_of_date or _max_bar_trade_date(store)
+    if as_of_date is None:
+        return
+    as_of_ts = options.as_of_ts or _end_of_day(as_of_date)
+    if not store.con.execute(
+        "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'corporate_actions' AND schema_name = 'main'"
+    ).fetchone()[0]:
+        return
+    pending_reasons = ", ".join(f"'{reason}'" for reason in PENDING_REASONS)
+    reasons = ", ".join(f"'{reason}'" for reason in (*PENDING_REASONS, *UNRESOLVED_HAZARDS))
+    reason = "CASE WHEN json_valid(details_json) THEN json_extract_string(details_json, '$.reason') END"
+    counts = store.con.execute(
+        f"""
+        SELECT count(*) FILTER (WHERE action_type = 'adjustment_unclassified' AND {reason} IN ({pending_reasons})),
+               count(*) FILTER (WHERE action_type = 'adjustment_unclassified'
+                                  AND list_has_any(string_split({reason}, ','), [{reasons}])),
+               count(*) FILTER (WHERE action_type IN ('split', 'stock_dividend')
+                                  AND available_at > ex_date::TIMESTAMP + INTERVAL 22 HOUR),
+               count(DISTINCT security_id) FILTER (WHERE action_type = 'adjustment_unclassified'
+                                  AND list_has_any(string_split({reason}, ','), [{reasons}]))
+        FROM ({corporate_actions_asof_sql("CAST(? AS TIMESTAMP)")})
+        WHERE ex_date <= ?
+        """,
+        [as_of_ts, as_of_date],
+    ).fetchone()
+    pending, unapplied, late, securities = (int(value or 0) for value in counts)
+    quality_check(
+        store,
+        dataset_id=dataset_id,
+        table_name="daily_adjustment_factors",
+        check_name="unapplied_split_candidates",
+        status="warning" if unapplied else "passed",
+        observed_value=float(unapplied),
+        threshold_value=0.0,
+        details={
+            "as_of_ts": as_of_ts.isoformat(),
+            "split_candidates_not_applied": unapplied,
+            "of_which_pending_classification": pending,
+            "securities": securities,
+            "splits_applied_from_a_late_confirmation": late,
+            "note": "OTHER steps keep their raw price jump in split_adjusted_close and total_return_adjusted_close",
+        },
+    )
+
+
 class DailyAdjustmentFactorDataset(Dataset):
     dataset_id = "daily_adjustment_factors"
     source_name = SOURCE_NAME
@@ -249,6 +306,7 @@ class DailyAdjustmentFactorDataset(Dataset):
         options: DailyAdjustmentFactorOptions,
     ) -> DatasetLoadResult:
         rows = refresh_daily_adjustment_factors(store, options)
+        _label_unapplied_split_candidates(store, self.dataset_id, options)
         quality_check(
             store,
             dataset_id=self.dataset_id,
