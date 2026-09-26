@@ -1,5 +1,38 @@
 # Active task: recent-data DSL ensemble
 
+## Latest checkpoint: native qualified; first real refusal preserved
+
+At clean source497f567e all19 focused native cases pass (0.918s native,
+1.062s wrapper). Initial18/19 DSL path failure corrected by test-onlyd8cc7b65.
+Initial build88.873s Jobs3; fixture-only13.521s, warm PCH/dependencies retained.
+Detailed source/import/evidence index:
+.superpowers/sdd/strategy/2026-09-26-native-and-first-rehearsal.md.
+
+First real run build-equity/recent-dev-rehearsal-v1 failed in6.234s/208MiB on
+momentum_12_1_s21 positive orientation: missing/guarded held return. One real
+trial attempted, zero completed, no Sharpe result. Q2/2023-24/2025+ not read.
+Pool4 diagnostic sourcee2b97317/fixturee53d13a3 ready for review; preserve
+strict behavior and identify the exact data issue. No future filtering.
+
+Reuse accepted cache build-equity/recent-projection-v1. TRAIN role
+recent-dev-smoke-v1 manifest900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b
+is461x3950 with399warmup/62scored and2872..3000 eligible names/day.
+Development check recent-dev-check-v1 manifest2129ed162ca3eb1e2bce3bd74f456b83ea11187c26729d06712677bbb6848e84
+is524x4101 with461warmup/63scored. Cached prep6.391s/7.359s.
+No source rescan needed. Frozen24 expressions,6families,1/24 contributions,
+primary cadence5/fraction.25, diagnostic fraction1; TRAIN-only signs.
+Budget52 completed evaluations per stage,104 across rehearsal/full experiment;
+all failed/retried attempts additionally recorded. First admission min_names2000,
+workspace1024MiB, external180s/RSS1536MiB/free768MiB; fixed$1bn cost scenario.
+2025+ reserved. Current stock-type/source-vintage qualification remains open.
+
+Pool3 masks audit7a69b22a->3f9e1749; dated stock-type inventory3614788d ready.
+Pool5 source review5f03b4df->e86a7bd0 and fixture fix complete. Pool4 source
+report30f25f26->53163fbd and strict diagnostics ready. Root alone builds/runs.
+No active compilation or numerical process at this checkpoint.
+
+The sections below are historical checkpoints, superseded where indicated.
+
 Owner pivot and confirmed$1bn NAV supersede fullsprint/pre2020scope. Activeplan docs/plans/2026-09-26-mega-alpha-strategy.md. RootHEADbeforethischeckpointcf252c5b. Rootonlybuilds, pool2ownedtree, noC:/atxmutation/push/warehousewrites. No compiler/runtimeactive.
 
 Sourceintegrated: executioncadence54b4ec99->34fcac6b, libraryeeb76477->cf252c5b, boundedrunner257ffd3b. Nativequalificationpending. Runtimeguardshortsuccess andintentionaltimeoutpass; JSONreceiptcopiedhere. Initial24candidates sixfamilies, primarypartial25every5sessions, fixed50TRAINtrialbudget, $1bn NAV, lowturnoverworkingtarget30%monthlysumabsfills/NAV. No recentperformancevalues read.
