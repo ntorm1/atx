@@ -100,7 +100,7 @@ compiled/runtime result is claimed. `git diff --check` passed for the frozen edi
 
 | Requirement | Current evidence |
 |---|---|
-| 10k synthetic alphas, T5000, recall >=.99 at |corr|>=.7 including negatives | Unrun; 128-query small fixture authored only |
+| 10k synthetic alphas, T5000, recall >=.99 at abs(corr)>=.7 including negatives | Unrun; 128-query small fixture authored only |
 | Query p99 <=5ms | Unmeasured; no performance claim |
 | Disk <=1MB/alpha at target scale | Unmeasured; one-record size fixture authored, no universal record-byte cap |
 | Period append works | Production API implemented; focused tests not yet executed |
