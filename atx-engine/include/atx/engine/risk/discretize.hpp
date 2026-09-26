@@ -123,7 +123,8 @@ namespace detail {
     // resource calculations cannot overflow, including before the copy below.
     const auto pins = static_cast<atx::usize>(n_pins);
     const auto bytes = 256ULL * (c.row_count() + pinned.size() + pins) +
-        32ULL * (c.csr.values.size() + pins) + sizeof(MaterializedConstraints);
+        32ULL * (c.csr.values.size() + pins) +
+        16ULL * static_cast<atx::u64>(c.robust.omega_f.size()) + sizeof(MaterializedConstraints);
     if (c.row_count() + pins > static_cast<atx::usize>(std::numeric_limits<int>::max()) / 4 ||
         bytes > c.storage.max_materialization_bytes)
       return atx::core::Err(atx::core::ErrorCode::OutOfRange, "discretize: pin workspace exceeds budget");
