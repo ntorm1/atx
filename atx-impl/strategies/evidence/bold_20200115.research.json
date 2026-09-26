@@ -1,0 +1,48 @@
+{
+  "schema": "atx.curated-corporate-action-evidence/v1",
+  "artifact_kind": "curated-primary-source-facts-not-original-document-bytes",
+  "research_status": "reconstructed-publication-clock;historical-delivery-vintage-unverified",
+  "checked_utc_date": "2026-09-26",
+  "instrument_namespace": "spiderrock.securityID",
+  "instrument_id": 4677674,
+  "historical_ticker": "BOLD",
+  "company": "Audentes Therapeutics",
+  "security_class": "ordinary common stock",
+  "currency": "USD",
+  "cash_entitlement_per_share": 60.0,
+  "completion_date": "2020-01-15",
+  "displayed_publication_minute_utc": "2020-01-15T13:22:00Z",
+  "completion_and_availability_upper_bound_utc": "2020-01-15T13:23:00Z",
+  "clock_convention": "following minute bounds displayed publication precision; no exact legal closing second inferred",
+  "settlement_time": null,
+  "settlement_status": "unknown; fixed nonspendable signed claim only",
+  "primary_source_urls": [
+    "https://www.prnewswire.com/news-releases/astellas-completes-acquisition-of-audentes-therapeutics-300987461.html",
+    "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2020-8"
+  ],
+  "source_research_report_commit": "7ae76e915086f147dd3c52f1f60513e5cd1ec3b8",
+  "source_research_report_path": ".superpowers/sdd/w2/four-cash-event-primary-evidence.md",
+  "price_source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "forensic_batch_sha256": "037234f9c3f427dd45160a8f19ab7ecbc40dd941699cc73f56c94f717f11ed56",
+  "prior_source_record": {
+    "row_group": 21,
+    "row_in_group": 45138,
+    "values": {
+      "tradingDate": "2020-01-14",
+      "securityID": 4677674,
+      "ticker_tk": "BOLD",
+      "close": 59.970001220703125,
+      "cumulReturnFactor": 1.0
+    },
+    "ieee754_le_hex": {
+      "close": "48e16f42",
+      "cumulReturnFactor": "000000000000f03f"
+    }
+  },
+  "limitations": [
+    "No original historical delivery capture.",
+    "No shareholder cash-receipt or stock-loan termination clock.",
+    "Ordinary-share conversion only; appraisal/tax exceptions are not modeled.",
+    "No source-price or historical universe mutation."
+  ]
+}
