@@ -38,3 +38,16 @@ target_link_libraries(atx-impl-ic-screen-tests PRIVATE
     atx-test-scratch Threads::Threads atx_miniz)
 target_compile_definitions(atx-impl-ic-screen-tests PRIVATE
     ATX_IMPL_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Bounded W1 universe/provenance and allocation contracts. No worker dependency.
+add_executable(atx-impl-w1-contract-tests EXCLUDE_FROM_ALL
+    stage_equity_universe_test.cpp
+    stage_data_provenance_test.cpp
+    equity_allocation_test.cpp
+    equity_allocation_factor_test.cpp
+    config_equity_book_test.cpp)
+target_link_libraries(atx-impl-w1-contract-tests PRIVATE
+    atx-impl-core GTest::gtest_main atx_warnings nlohmann_json::nlohmann_json
+    atx-test-scratch Threads::Threads atx_miniz)
+target_compile_definitions(atx-impl-w1-contract-tests PRIVATE
+    ATX_IMPL_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

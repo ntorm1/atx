@@ -138,6 +138,10 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/risk/cost_terms.cpp
     src/book/replay_cost.cpp
     src/cost/cost_surface.cpp
+    src/cost/spread_estimators.cpp
+    src/cost/borrow_tiers.cpp
+    src/cost/fim_adjustment.cpp
+    src/cost/modeled_inputs.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 

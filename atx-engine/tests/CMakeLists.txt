@@ -279,6 +279,7 @@ endif()
 # Shared cost-surface adapters; further B1 fixtures join this bounded target as
 # their implementations are integrated. Normal owning core tests remain intact.
 add_executable(atx-engine-w1-cost-tests EXCLUDE_FROM_ALL
+    core/cost_modeled_inputs_test.cpp
     core/cost_surface_test.cpp
     core/calibration_refit_test.cpp
     core/calibration_test.cpp
@@ -322,6 +323,7 @@ if(ATX_USE_PCH)
 endif()
 
 add_executable(atx-engine-w1-data-tests EXCLUDE_FROM_ALL
+    data/data_point_in_time_universe_test.cpp
     data/data_security_link_intervals_test.cpp
     data/fundamental_fields_test.cpp)
 atx_engine_test_compile_environment(atx-engine-w1-data-tests)
