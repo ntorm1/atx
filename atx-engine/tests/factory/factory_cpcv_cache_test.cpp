@@ -297,6 +297,8 @@ TEST(CpcvCache, DateRecipeBudgetAndFidelitySessionStrideAreNotAliased) {
   cfg.max_working_bytes=1U<<20U; cfg.embargo_dates=3;
   const auto changed=cache.get_or_build_checked(12,cfg,4);
   ASSERT_TRUE(changed); EXPECT_NE(*changed,*strided);
+  cfg.rule=static_cast<atx::engine::eval::CpcvRule>(255);
+  EXPECT_FALSE(cache.get_or_build_checked(std::numeric_limits<atx::usize>::max(),cfg));
 }
 TEST(CpcvCache, DateFitnessErrorsPropagateAndCachedResultsMatch) {
   Library lib; auto genome=make_genome("rank(returns)",lib);

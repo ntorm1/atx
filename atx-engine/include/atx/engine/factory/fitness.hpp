@@ -138,6 +138,8 @@ struct CpcvCache {
   [[nodiscard]] atx::core::Result<const Entry*>
   get_or_build_checked(atx::usize n_periods, const eval::CpcvConfig &cpcv,
                        atx::usize session_stride = 1U) {
+    if (cpcv.rule != eval::CpcvRule::ObservationV1 && cpcv.rule != eval::CpcvRule::DateV2)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "CPCV cache: unknown rule");
     // Build the key: embed embargo as its bit pattern for a reliable map key.
     atx::u64 embargo_bits{};
     static_assert(sizeof(embargo_bits) == sizeof(cpcv.embargo), "f64 size mismatch");

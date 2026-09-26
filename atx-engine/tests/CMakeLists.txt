@@ -298,8 +298,10 @@ add_executable(atx-engine-w1-eval-tests EXCLUDE_FROM_ALL
     eval/eval_pbo_test.cpp
     eval/eval_breadth_test.cpp
     eval/eval_regime_slice_test.cpp
+    factory/factory_cpcv_cache_test.cpp
     factory/factory_research_driver_test.cpp
     factory/blocking_pbo_test.cpp
+    learn/learn_cpcv_date_test.cpp
     learn/learn_nn_gate_test.cpp
     combine/combine_combined_source_test.cpp)
 atx_engine_test_compile_environment(atx-engine-w1-eval-tests)
