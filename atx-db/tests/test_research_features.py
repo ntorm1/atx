@@ -933,13 +933,18 @@ def test_standardize_frame_is_formation_independent() -> None:
 
 def _seal_research_sources(con: Any, panel_sha: str, parent_version: str) -> None:
     """E1 fixture: a sealed P3 event version ``ev1`` (``ear_m1p1``), a complete P4 factor run ``fr1``
-    (``beta_mkt_252d``) and a sealed P9 ownership version ``ow1`` (``io_ratio_13f``) of ``panel_recon``.
+    (``beta_mkt_252d``) and a sealed P9 v2 ownership version ``ow1`` (``io_ratio_13f``, ``days_to_cover_si``) of
+    ``panel_recon``.
 
     Events: no row when i % 7 == 0; i % 7 == 1 is valid in January and ``event_value_pending`` (NULL)
-    afterwards. Ownership: no row when i % 11 == 4; i % 5 == 0 ``no_mapped_13f_holding``; i % 5 == 1 valid in
-    January and ``unverified_shares`` afterwards; issuer 2's IO is 1.3, flagged ``io_above_one``. Factor: every
-    ranked line (unlinked ones too) but issuer 3's; January is the beta burn-in (``insufficient_obs``); tail
-    line 7's March beta is clocked after the March cutoff.
+    afterwards. Ownership (v2 shape: dense over linked primary and unlinked lines, ``owner_basis`` per row):
+    IO has no row when i % 11 == 4; i % 5 == 0 ``no_mapped_13f_holding``; i % 5 == 1 valid in January and
+    ``unverified_shares`` afterwards; issuer 2's IO is 1.3, flagged ``io_above_one``; a valid IO with
+    i % 3 == 0 is ``cusip_survivor_conditioned``; every unlinked line has an IO row ``no_owner_link`` (no
+    owner). Days to cover is line level: valid on every line (tail line j: 2 + j) but
+    ``no_recent_short_interest`` when i % 9 == 2. Factor: every ranked line (unlinked ones too) but issuer 3's;
+    January is the beta burn-in (``insufficient_obs``); tail line 7's March beta is clocked after the March
+    cutoff.
     """
     from atx_db import ownership_identity
     from atx_db.research import events as rev
@@ -969,7 +974,24 @@ def _seal_research_sources(con: Any, panel_sha: str, parent_version: str) -> Non
                 owners.append(["ow1", day, _owner(i), _cik(i), "io_ratio_13f",
                                (1.3 if i == 2 else 0.2 + 0.03 * (i % 17)) if valid else None, reason,
                                deadline if valid else None, period, deadline,
-                               "io_above_one" if valid and i == 2 else None, "cusip_exact"])
+                               "io_above_one" if valid and i == 2 else None, "cusip_exact", rf.OWNER_BASIS_LINKED,
+                               (ownership_identity.CONDITIONING_SURVIVOR if i % 3 == 0
+                                else ownership_identity.CONDITIONING_DATED) if valid else None])
+            settlement = day - dt.timedelta(days=20)
+            published = dt.datetime.combine(settlement + dt.timedelta(days=12), dt.time(22))
+            fresh = i % 9 != 2
+            owners.append(["ow1", day, _owner(i), _cik(i), "days_to_cover_si", 1.0 + 0.5 * (i % 7) if fresh else None,
+                           "valid" if fresh else "no_recent_short_interest", published if fresh else None,
+                           settlement if fresh else None, published if fresh else None, None,
+                           "finra_symbol_date_line", rf.OWNER_BASIS_LINKED, "line_level"])
+        for line in sorted(_unlinked_lines(day)):
+            owners.append(["ow1", day, line, None, "io_ratio_13f", None, "no_owner_link", None, None, None, None,
+                           None, rf.OWNER_BASIS_UNLINKED, None])
+            settlement = day - dt.timedelta(days=20)
+            published = dt.datetime.combine(settlement + dt.timedelta(days=12), dt.time(22))
+            owners.append(["ow1", day, line, None, "days_to_cover_si", 2.0 + int(line[-3:]) if "TAIL" in line else 1.5,
+                           "valid", published, settlement, published, None, "finra_symbol_date_line",
+                           rf.OWNER_BASIS_UNLINKED, "line_level"])
         for line in sorted(linked | _unlinked_lines(day)):
             if line == _owner(3):
                 continue
@@ -989,8 +1011,9 @@ def _seal_research_sources(con: Any, panel_sha: str, parent_version: str) -> Non
         VALUES (?,?,?,?,?,?,?,?,?,?,?)""", events)
     con.executemany("""
         INSERT INTO research_ownership_features (ownership_version, formation_date, security_id, owner_cik,
-            feature_id, raw_value, reason, available_at, source_period, source_clock, value_flag, identity_basis)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", owners)
+            feature_id, raw_value, reason, available_at, source_period, source_clock, value_flag, identity_basis,
+            owner_basis, sample_conditioning)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", owners)
     con.executemany("""
         INSERT INTO research_ownership_identity (ownership_version, source, source_key, source_period, name_key,
             owner_cik, security_id, identity_basis, confidence, reason) VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -1025,7 +1048,9 @@ def test_research_store_sources_enter_point_in_time_and_count_every_member(built
     """E1: P3 event, P4 factor-exposure and P9 ownership features enter from pinned sealed versions. Per kind a
     value enters only from the same formation's source row, when its reason is valid and its own clock is
     visible at the cutoff; an invalid newest state is NULL with its reason (never January's value), missing
-    rows are counted, IO above one is kept and flagged, and a source failing its own validator is refused."""
+    rows are counted, IO above one is kept and flagged, and a source failing its own validator is refused.
+    P9 v2: 13F rows on unlinked lines are in the contract and never read, survivor-conditioned IO is flagged
+    per formation, and short interest is a line feature that ranks the unlinked lines."""
     from atx_db.research import events as rev
 
     store = built["store"]
@@ -1043,13 +1068,14 @@ def test_research_store_sources_enter_point_in_time_and_count_every_member(built
     entries = _catalog_entries(built["root"] / "catalog_e1.csv", extra=(
         source_row("ear_m1p1", "event", "ear_m1p1", "event", "growth", "+1"),
         source_row("beta_252d", "factor_exposure", "beta_mkt_252d", "252d", "volatility", "-1"),
-        source_row("io_ratio_13f", "ownership", "io_ratio_13f", "13f_quarter", "quality", "+1")))
+        source_row("io_ratio_13f", "ownership", "io_ratio_13f", "13f_quarter", "quality", "+1"),
+        source_row("days_to_cover_si", "ownership", "days_to_cover_si", "short_interest", "quality", "-1")))
     unpinned = rf._plan_features(entries, rf._panel_context(store, "panel_recon", False),
                                  rf._validate_options(_options(entries)))
     assert [(p.status, p.reason) for p in unpinned if p.feature_id == "ear_m1p1"] == [
         (rf.FEATURE_SOURCE_NOT_PINNED, "event_version:none")]
-    options = _options(entries, features=("beta_252d", "ear_m1p1", "io_ratio_13f"), event_version="ev1",
-                       factor_run_id="fr1", ownership_version="ow1")
+    options = _options(entries, features=("beta_252d", "days_to_cover_si", "ear_m1p1", "io_ratio_13f"),
+                       event_version="ev1", factor_run_id="fr1", ownership_version="ow1")
     result = rf.build_feature_version(store, options)
     assert result.status == rf.STATUS_SEALED
     rf.validate_feature_version(store, result.feature_version)   # status counts sum to the members, flags aside
@@ -1097,6 +1123,23 @@ def test_research_store_sources_enter_point_in_time_and_count_every_member(built
     counts = reasons("io_ratio_13f", feb)
     assert counts["ownership:unverified_shares"] == sum(1 for i in issuers if i % 5 == 1 and i % 11 != 4)
     assert counts["ownership:missing_source_row"] == sum(1 for i in issuers if i % 11 == 4)
+    # P9 v2: IO rows on unlinked lines (no owner) are never read: the universe gate counts those lines first.
+    counts = reasons("io_ratio_13f", jan)
+    assert counts["cohort:missing_owner_link"] == TAIL and "ownership:no_owner_link" not in counts
+    assert counts["flag:cusip_survivor_conditioned"] == sum(1 for i in issuers
+                                                            if i % 11 != 4 and i % 5 != 0 and i % 3 == 0)
+    # Days to cover is a line feature since P9 v2: the unlinked lines are ranked names too.
+    assert con.execute("SELECT universe_scope FROM research_feature_catalog WHERE feature_version=? "
+                       "AND feature_id='days_to_cover_si'", [result.feature_version]).fetchone()[0] \
+        == rf.UNIVERSE_SCOPE_ALL_LINES
+    assert value("days_to_cover_si", feb, "TBL-TAIL-008") == (-10.0, dt.datetime.combine(
+        feb - dt.timedelta(days=8), dt.time(22)), 20, rf.OWNER_BASIS_UNLINKED)
+    counts = reasons("days_to_cover_si", feb)
+    assert counts["ownership:no_recent_short_interest"] == sum(1 for i in issuers if i % 9 == 2)
+    assert "cohort:missing_owner_link" not in counts
+    assert con.execute("SELECT DISTINCT universe_names FROM research_feature_dates WHERE feature_version=? "
+                       "AND feature_id='days_to_cover_si' AND formation_date=?",
+                       [result.feature_version, feb]).fetchall() == [(N_ISSUERS + TAIL,)]
     # A source row visible after its cutoff fails the source's own validator: the build is refused.
     con.execute("UPDATE research_event_features SET available_at = available_at + INTERVAL 10 DAY "
                 "WHERE event_version='ev1' AND formation_date=? AND security_id=?", [jan, _owner(2)])

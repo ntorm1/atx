@@ -140,22 +140,37 @@ results digest (P4, a ``complete`` run); its id and content digest enter the ver
 and its blockers the version blockers (``event:``, ``factor:``, ``ownership:``).
 ``metric_code`` names the source feature (for P4 the exposure column) and ``metric_window``
 its declared window (:data:`EXTERNAL_FEATURES`); these rows take no domain operand. Event
-and ownership values are owner features placed on the owner's primary line (joined on the
-line and checked against its owner) and rank the valid primary lines; factor exposures are
-line features and rank the unlinked lines too. Every eligible member gets one row from the
-source row of the *same* formation and line: the source already chose the newest state
+values and the P9 13F features (IO, change in IO, breadth) are owner features on the owner's
+primary line and rank the valid primary lines; P4 exposures and the P9 short-interest
+features (line level since P9 v2) are line features and rank the unlinked lines too
+(:data:`EXTERNAL_LINE_FEATURES`). Every source row must sit on a line of the R2b universe
+with the owner basis R2b gives that line (P3 rows on linked primary lines only; P4 and P9
+rows carry their ``owner_basis``) and, where the source names an owner, on that line's owner
+(a P9 row on an unlinked line names none); anything else, or a duplicate, breaks the pinned
+contract and stops the build. Every eligible member gets one row from the source row of the
+*same* formation and line: the source already chose the newest state
 visible at that cutoff, NULL states included, so an invalid newest state is NULL with its
 reason and never an earlier formation's value. A value enters only when its source reason
 is valid (P4 ``estimated``) and its own ``available_at`` is at or before the cutoff;
 otherwise it is NULL and counted as ``<kind>:<source reason>`` (for example
 ``factor_exposure:insufficient_obs`` in the beta burn-in), ``<kind>:missing_source_row`` or
 ``<kind>:not_visible_at_cutoff``, so the universe is never narrowed silently. A source row
-flag (P9 ``io_above_one``: IO above one is kept, never clipped) is counted per formation as
-``flag:<flag>`` beside the status counts, outside their sum. ``age_days`` is the days since
+flag is counted per formation as ``flag:<flag>`` beside the status counts, outside their
+sum: P9 ``io_above_one`` (IO above one is kept, never clipped) and P9
+``cusip_survivor_conditioned`` (a 13F value whose CUSIP mapped through a current snapshot:
+coverage conditioned on survival). ``age_days`` is the days since
 the event session (event) or the source period (ownership). One SUE hypothesis: the panel's
 ``sue_ni`` and P3's ``sue_ni_event`` (the same states on the event clock, never earlier than
 the filing clock, only where an event is visible) are never built together. No table or
 column is added, so the store schema stays v3.
+
+Derived versions (public writer)
+--------------------------------
+:func:`write_derived_feature_version` writes a *derived* feature version: every row of one
+sealed constituent version plus new features whose standardized rows the caller supplies
+(P5 composites). The rows go through the same writer as this module's own features
+(:class:`_FeatureWriter`: matrix rows, date rows, owner-basis diagnostic, digests), so a
+derived version digests and validates exactly as a built one.
 
 Versions
 --------
@@ -200,13 +215,14 @@ pruned).
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
 import math
 import re
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import NormalDist
@@ -605,13 +621,14 @@ class _Plan:
         return self.entry.source_kind == "composition"
 
     def inputs(self) -> dict[str, Any]:
-        inputs = {"panel_feature": self.panel_feature,
-                  "legs": [[leg.role, leg.kind, leg.code, leg.panel_feature, leg.size_feature] for leg in self.legs],
-                  "operand": None if self.operand is None else [
-                      self.operand.kind, self.operand.code, self.operand.window, self.operand.panel_feature,
-                      self.operand.size_feature, self.operand.leg],
-                  "size_feature": self.size_feature,
-                  "universe_scope": self.universe_scope}
+        inputs: dict[str, Any] = {
+            "panel_feature": self.panel_feature,
+            "legs": [[leg.role, leg.kind, leg.code, leg.panel_feature, leg.size_feature] for leg in self.legs],
+            "operand": None if self.operand is None else [
+                self.operand.kind, self.operand.code, self.operand.window, self.operand.panel_feature,
+                self.operand.size_feature, self.operand.leg],
+            "size_feature": self.size_feature,
+            "universe_scope": self.universe_scope}
         if self.external is not None:
             inputs["external"] = list(self.external)
         return inputs
@@ -763,10 +780,20 @@ EXTERNAL_FEATURES: Mapping[str, Mapping[str, str]] = {
                        "breadth_change_13f": "13f_quarter", "short_interest_ratio": "short_interest",
                        "days_to_cover_si": "short_interest"},
 }
-#: The source contract this adapter is written against; any other version is refused.
-EXTERNAL_QUERY_VERSIONS: Mapping[str, str] = {SOURCE_EVENT: "research-earnings-events-v2",
-                                              SOURCE_FACTOR: "research-factor-returns-v3",
-                                              SOURCE_OWNERSHIP: "research-ownership-features-v1"}
+#: The source contract this adapter is written against; any other version is refused (read
+#: from the producers: ``events.QUERY_VERSION``, ``factor_returns.FACTOR_VERSION``,
+#: ``ownership_features.QUERY_VERSION``; a producer bump is refused here until re-verified).
+EXTERNAL_QUERY_VERSIONS: Mapping[str, str] = {SOURCE_EVENT: "research-earnings-events-v3",
+                                              SOURCE_FACTOR: "research-factor-returns-v4",
+                                              SOURCE_OWNERSHIP: "research-ownership-features-v2"}
+#: Source features that are line features (every eligible line, unlinked lines included, each
+#: row with its ``owner_basis``): P4 exposures and, since P9 v2, P9 short interest. The other
+#: source features need the owner (P9 13F: ``no_owner_link`` on an unlinked line).
+EXTERNAL_LINE_FEATURES: Mapping[str, frozenset[str]] = {
+    SOURCE_EVENT: frozenset(),
+    SOURCE_FACTOR: frozenset(EXTERNAL_FEATURES[SOURCE_FACTOR]),
+    SOURCE_OWNERSHIP: frozenset({"short_interest_ratio", "days_to_cover_si"}),
+}
 _PIN_FIELDS = {SOURCE_EVENT: "event_version", SOURCE_FACTOR: "factor_run_id", SOURCE_OWNERSHIP: "ownership_version"}
 _BLOCKER_PREFIX = {SOURCE_EVENT: "event", SOURCE_FACTOR: "factor", SOURCE_OWNERSHIP: "ownership"}
 #: kind -> (version table, key column, content digest column, contract column).
@@ -819,7 +846,7 @@ def _plan_features(entries: Sequence[AnomalyCatalogEntry], context: _PanelContex
             if getattr(options, _PIN_FIELDS[kind]) is None:
                 plans.append(_Plan(entry, FEATURE_SOURCE_NOT_PINNED, f"{_PIN_FIELDS[kind]}:none"))
                 continue
-            scope = UNIVERSE_SCOPE_ALL_LINES if kind == SOURCE_FACTOR else UNIVERSE_SCOPE_LINKED
+            scope = UNIVERSE_SCOPE_ALL_LINES if code in EXTERNAL_LINE_FEATURES[kind] else UNIVERSE_SCOPE_LINKED
             plans.append(_Plan(entry, "planned", None, None, (), None, False, variants, scope, (kind, code)))
             continue
         if entry.source_kind in PANEL_FEATURE_SOURCE_KINDS:
@@ -1212,23 +1239,39 @@ def _external_sources(store: ResearchStore, context: _PanelContext, options: Fea
 
 
 def _external_source_sql(kind: str, code: str) -> str:
-    """One source feature's rows: formation_date, security_id, source_owner, value, source_reason,
-    available_at, age_days, value_flag (parameters: the pin, then the feature id except for P4)."""
+    """One source feature's rows: formation_date, security_id, source_basis, source_cik, value,
+    source_reason, available_at, age_days, value_flag, conditioning_flag (parameters: the pin,
+    then the feature id except for P4).
+
+    ``source_basis`` is the owner basis the source gives the row (P3 is dense over the linked
+    primary lines only, so its rows are ``linked_primary``); ``source_cik`` the owner it names
+    (NULL for P4, which names none, and for a P9 row on an unlinked line).
+    """
     if kind == SOURCE_FACTOR:
         status = _FACTOR_STATUS[code]
         return f"""
-            SELECT formation_date, security_id, owner_basis AS source_owner, CAST({code} AS DOUBLE) AS value,
+            SELECT formation_date, security_id, owner_basis AS source_basis, CAST(NULL AS VARCHAR) AS source_cik,
+                   CAST({code} AS DOUBLE) AS value,
                    CASE WHEN {status} = '{_FACTOR_ESTIMATED}' THEN 'valid' ELSE {status} END AS source_reason,
-                   available_at, CAST(NULL AS INTEGER) AS age_days, CAST(NULL AS VARCHAR) AS value_flag
+                   available_at, CAST(NULL AS INTEGER) AS age_days, CAST(NULL AS VARCHAR) AS value_flag,
+                   CAST(NULL AS VARCHAR) AS conditioning_flag
             FROM research_factor_exposures WHERE run_id = ?"""
-    table, key, anchor, flag = (("research_event_features", "event_version", "event_session",
-                                 "CAST(NULL AS VARCHAR)") if kind == SOURCE_EVENT else
-                                ("research_ownership_features", "ownership_version", "source_period", "value_flag"))
+    if kind == SOURCE_EVENT:
+        return f"""
+            SELECT formation_date, security_id, '{OWNER_BASIS_LINKED}' AS source_basis, owner_cik AS source_cik,
+                   CAST(raw_value AS DOUBLE) AS value, reason AS source_reason, available_at,
+                   CAST(date_diff('day', event_session, formation_date) AS INTEGER) AS age_days,
+                   CAST(NULL AS VARCHAR) AS value_flag, CAST(NULL AS VARCHAR) AS conditioning_flag
+            FROM research_event_features WHERE event_version = ? AND feature_id = ?"""
+    from ..ownership_identity import CONDITIONING_SURVIVOR
+
     return f"""
-        SELECT formation_date, security_id, owner_cik AS source_owner, CAST(raw_value AS DOUBLE) AS value,
-               reason AS source_reason, available_at,
-               CAST(date_diff('day', {anchor}, formation_date) AS INTEGER) AS age_days, {flag} AS value_flag
-        FROM {table} WHERE {key} = ? AND feature_id = ?"""
+        SELECT formation_date, security_id, owner_basis AS source_basis, owner_cik AS source_cik,
+               CAST(raw_value AS DOUBLE) AS value, reason AS source_reason, available_at,
+               CAST(date_diff('day', source_period, formation_date) AS INTEGER) AS age_days, value_flag,
+               CASE WHEN sample_conditioning = {_sql_text(CONDITIONING_SURVIVOR)} THEN sample_conditioning END
+                 AS conditioning_flag
+        FROM research_ownership_features WHERE ownership_version = ? AND feature_id = ?"""
 
 
 def _stage_external_rows(con: Any, plan: _Plan, pin: str) -> None:
@@ -1237,32 +1280,39 @@ def _stage_external_rows(con: Any, plan: _Plan, pin: str) -> None:
     The source row of the same formation and line (the source's newest state visible at
     that cutoff, NULL included) gives the value only when its reason is valid and its own
     clock is at or before the cutoff; a missing row, an invalid reason or a late clock is
-    NULL with ``<kind>:<reason>``. A source row off the source's universe, on another owner,
-    or duplicated breaks the pinned contract and stops the build.
+    NULL with ``<kind>:<reason>``. The pinned contract: every source row is on a line of the
+    R2b universe (a linked primary or an unlinked eligible line), with the owner basis R2b
+    gives that line and, when the source names an owner, that line's owner (none on an
+    unlinked line); one row per formation and line. A break stops the build. A source row on
+    a line outside the feature's scope (a P9 13F row on an unlinked line) is in the contract
+    and never read: the universe gate counts that line first.
     """
     if plan.external is None:
         raise FeatureStoreError(f"{plan.feature_id} is not a research-store source feature")
     kind, code = plan.external
     params = [pin] if kind == SOURCE_FACTOR else [pin, code]
     con.execute(f"CREATE OR REPLACE TEMP TABLE _rf_source AS {_external_source_sql(kind, code)}", params)
-    member, owner = (("k.owner_basis IS NOT NULL", "k.owner_basis") if plan.price_line
-                     else ("k.in_universe", "k.owner_cik"))
-    duplicates, outside, other_owner = (int(v) for v in con.execute(f"""
+    owner_check = ("false" if kind == SOURCE_FACTOR else
+                   f"CASE WHEN k.owner_basis = '{OWNER_BASIS_LINKED}' THEN s.source_cik IS DISTINCT FROM k.owner_cik "
+                   "ELSE s.source_cik IS NOT NULL END")
+    duplicates, outside, other_basis, other_owner = (int(v) for v in con.execute(f"""
         SELECT count(*) - count(DISTINCT (s.formation_date, s.security_id)),
-               count(*) FILTER (WHERE NOT coalesce({member}, false)),
-               count(*) FILTER (WHERE coalesce({member}, false) AND s.source_owner IS DISTINCT FROM {owner})
+               count(*) FILTER (WHERE k.owner_basis IS NULL),
+               count(*) FILTER (WHERE k.owner_basis IS NOT NULL AND s.source_basis IS DISTINCT FROM k.owner_basis),
+               count(*) FILTER (WHERE k.owner_basis IS NOT NULL AND {owner_check})
         FROM _rf_source s
         LEFT JOIN _rf_cohort k ON k.formation_date = s.formation_date AND k.security_id = s.security_id
     """).fetchone())
-    if duplicates or outside or other_owner:
+    if duplicates or outside or other_basis or other_owner:
         raise FeatureStoreError(f"{plan.feature_id}: {kind} source {pin} breaks its contract (duplicates="
-                                f"{duplicates}, rows_outside_universe={outside}, owner_mismatch={other_owner})")
+                                f"{duplicates}, rows_outside_universe={outside}, owner_basis_mismatch={other_basis}, "
+                                f"owner_mismatch={other_owner})")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _rf_rows AS
         WITH r AS (
             SELECT k.formation_date, k.security_id, k.owner_basis, k.cohort_reason, k.primary_line, c.cutoff,
                    s.security_id IS NOT NULL AS has_source, s.source_reason, s.value AS raw_value,
-                   s.available_at AS source_at, s.age_days, s.value_flag
+                   s.available_at AS source_at, s.age_days, s.value_flag, s.conditioning_flag
             FROM _rf_cohort k
             JOIN _rf_calendar c ON c.formation_date = k.formation_date
             LEFT JOIN _rf_source s ON s.formation_date = k.formation_date AND s.security_id = k.security_id
@@ -1278,7 +1328,7 @@ def _stage_external_rows(con: Any, plan: _Plan, pin: str) -> None:
         )
         SELECT formation_date, security_id, owner_basis, raw_value,
                CASE WHEN gate IS NULL THEN source_at END AS available_at, age_days,
-               CAST(NULL AS VARCHAR) AS size_status, value_flag,
+               CAST(NULL AS VARCHAR) AS size_status, value_flag, conditioning_flag,
                {_status_sql(plan.entry, 'raw_value', None, plan.log_base)} AS status
         FROM g
     """)
@@ -1793,6 +1843,129 @@ def _unlinked_excluded(frame: pd.DataFrame, variants: Sequence[str]) -> dict[tup
     return counts
 
 
+class _FeatureWriter:
+    """Writes one feature of a version: matrix rows, date rows, owner-basis diagnostic, digest.
+
+    The one write path of R2b's own features (:func:`_build_feature`) and of the features a
+    derived version adds (:func:`write_derived_feature_version`), so both digest and validate
+    alike. :meth:`add` takes standardized rows of *whole* formations (the output of
+    :func:`standardize_frame` or an equivalent, with its per (formation, variant) statistics)
+    and inserts them; :meth:`finish` writes the date rows from the per-formation ``reasons``
+    and, for a price-line feature, the owner-basis diagnostic, and returns the feature digest
+    and its build summary. The caller owns the transaction(s) and the catalog row.
+    """
+
+    def __init__(self, con: Any, version: str, feature_id: str, *, expected_sign: int, variants: Sequence[str],
+                 price_line: bool, formations: Sequence[dt.date], universe: Mapping[dt.date, Mapping[str, int]],
+                 digest_chunk: int) -> None:
+        self.con, self.version, self.feature_id = con, version, feature_id
+        self.expected_sign, self.variants, self.price_line = int(expected_sign), tuple(variants), price_line
+        self.formations, self.universe, self.digest_chunk = tuple(formations), universe, digest_chunk
+        self.stats: dict[tuple[dt.date, str], dict[str, Any]] = {}
+        self.owner_stats: dict[tuple[dt.date, str], tuple[Any, ...]] = {}
+        self.excluded: dict[tuple[dt.date, str], int] = {}
+        self.candidates: dict[dt.date, int] = {}
+        #: Stored rows per formation and domain status (a derived feature's reason counts).
+        self.domain_counts: dict[dt.date, dict[str, int]] = {}
+        self.total_rows = 0
+        self.in_domain_rows = 0
+
+    def names(self, day: dt.date) -> tuple[int, int]:
+        """(eligible members, ranked universe names) of a formation for this feature's scope."""
+        counts = self.universe.get(day, {})
+        linked, unlinked = int(counts.get("linked", 0)), int(counts.get("unlinked", 0))
+        return int(counts.get("eligible", 0)), linked + (unlinked if self.price_line else 0)
+
+    def add(self, standardized: pd.DataFrame, stats: Mapping[tuple[Any, str], Mapping[str, Any]]) -> None:
+        if not len(standardized):
+            return
+        days = pd.to_datetime(standardized["formation_date"]).dt.date
+        per_day = standardized.groupby(days).size()
+        split = sorted(day for day in per_day.index if day in self.candidates)
+        if split:
+            raise FeatureStoreError(f"{self.feature_id}: formations {split} arrive in two chunks (whole formations "
+                                    "per chunk: standardization is per formation)")
+        for (day, variant), value in stats.items():
+            self.stats[(pd.Timestamp(day).date(), variant)] = dict(value)
+        for day, n in per_day.items():
+            self.candidates[day] = int(n)
+        for (day, status), n in standardized.groupby([days, standardized["domain_status"]]).size().items():
+            self.domain_counts.setdefault(day, {})[str(status)] = int(n)
+        self.total_rows += len(standardized)
+        self.in_domain_rows += int((standardized["domain_status"] == IN_DOMAIN).sum())
+        if self.price_line:
+            self.owner_stats.update(_owner_basis_stats(standardized))
+            self.excluded.update(_unlinked_excluded(standardized, self.variants))
+        matrix = pd.DataFrame({
+            "feature_version": self.version,
+            "formation_date": standardized["formation_date"],
+            "security_id": standardized["security_id"],
+            "feature_id": self.feature_id,
+            "owner_basis": standardized["owner_basis"],
+            "expected_sign": self.expected_sign,
+            "available_at": standardized["available_at"],
+            "raw_value": _floats(standardized["raw_value"]),
+            "domain_status": standardized["domain_status"],
+            "age_days": standardized["age_days"],
+            **{variant: standardized[variant].to_numpy(dtype=float) for variant in VARIANTS},
+        })
+        _insert_frame(self.con, "research_feature_matrix", matrix, _MATRIX_CASTS)
+
+    def finish(self, reasons: Mapping[dt.date, Mapping[str, int]]) -> tuple[str, dict[str, Any]]:
+        """Date rows, owner-basis diagnostic and digest; ``reasons`` partition each formation's members."""
+        date_rows = []
+        conditioned: dict[str, int] = {}
+        for day in self.formations:
+            members, names = self.names(day)
+            counts = reasons.get(day, {})
+            for variant in self.variants:
+                item = self.stats.get((day, variant))
+                if item is None:  # no candidate row at all: nothing to standardize
+                    item = {"date_status": DATE_THIN, "valid_names": 0, "in_domain_names": 0,
+                            "covariate_names": None, "covariate_coverage": None}
+                left_out = self.excluded.get((day, variant), 0) if self.price_line else None
+                label = CONDITIONING_LINKED_ONLY if left_out and item["date_status"] == DATE_FORMED else None
+                if label:
+                    conditioned[variant] = conditioned.get(variant, 0) + 1
+                date_rows.append({
+                    "feature_version": self.version, "formation_date": day, "feature_id": self.feature_id,
+                    "variant": variant, "date_status": item["date_status"], "eligible_members": members,
+                    "universe_names": names, "valid_names": int(item["valid_names"]),
+                    "coverage_fraction": (item["valid_names"] / names) if names else None,
+                    "candidate_names": int(self.candidates.get(day, 0)),
+                    "in_domain_names": int(item["in_domain_names"]),
+                    "covariate_names": item["covariate_names"], "covariate_coverage": item["covariate_coverage"],
+                    "reasons_json": _canonical(dict(sorted(counts.items()))), "unlinked_excluded": left_out,
+                    "sample_conditioning": label})
+        _insert_frame(self.con, "research_feature_dates", pd.DataFrame(date_rows, columns=list(_DATE_COLUMNS)),
+                      _DATE_CASTS)
+        ranked_by_basis: dict[str, int] = {}
+        if self.price_line:
+            empty = (0, None, None, 0, None, None)
+            owner_rows = [[self.version, day, self.feature_id, owner_basis,
+                           *self.owner_stats.get((day, owner_basis), empty)]
+                          for day in self.formations for owner_basis in OWNER_BASES]
+            owner_frame = pd.DataFrame(owner_rows, columns=list(_OWNER_BASIS_COLUMNS)).astype(
+                {name: "float64" for name in _OWNER_MOMENTS})
+            _insert_frame(self.con, "research_feature_owner_basis", owner_frame, _OWNER_BASIS_CASTS)
+            for row in owner_rows:
+                ranked_by_basis[row[3]] = ranked_by_basis.get(row[3], 0) + int(row[7])
+        totals: dict[str, int] = {}
+        for counts in reasons.values():
+            for key, n in counts.items():
+                totals[key] = totals.get(key, 0) + n
+        digest = _feature_digest(self.con, self.version, self.feature_id, self.formations, self.digest_chunk)
+        thin = {variant: sum(1 for day in self.formations
+                             if (self.stats.get((day, variant)) or {"date_status": DATE_THIN})["date_status"]
+                             != DATE_FORMED) for variant in self.variants}
+        result: dict[str, Any] = {"rows": self.total_rows, "in_domain": self.in_domain_rows, "reasons": totals,
+                                  "not_formed_dates": thin}
+        if self.price_line:
+            result["ranked_rows_by_owner_basis"] = ranked_by_basis
+            result["survivor_conditioned_dates"] = dict(sorted(conditioned.items()))
+        return digest, result
+
+
 def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _PanelContext,
                    options: FeatureStoreOptions, policy: StandardizationPolicy,
                    universe: Mapping[dt.date, Mapping[str, int]]) -> dict[str, Any]:
@@ -1814,11 +1987,16 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
         reasons.setdefault(day, {})[str(status)] = int(n)
     candidates_sql = f"r.status IN ({_sql_list(DOMAIN_STATUSES)})"
     if plan.external is not None:
-        # Source row flags of stored rows (P9 io_above_one: kept, never clipped), counted
-        # beside the status counts (the validator leaves them out of the member sum).
+        # Source row flags of stored rows (P9 io_above_one: kept, never clipped; P9
+        # cusip_survivor_conditioned), counted beside the status counts (the validator
+        # leaves them out of the member sum).
         for day, flag, n in con.execute(f"""
-            SELECT r.formation_date, r.value_flag, count(*) FROM _rf_rows r
-            WHERE r.value_flag IS NOT NULL AND {candidates_sql} GROUP BY ALL ORDER BY ALL
+            SELECT r.formation_date, r.flag, count(*) FROM (
+                SELECT formation_date, status, value_flag AS flag FROM _rf_rows
+                UNION ALL
+                SELECT formation_date, status, conditioning_flag AS flag FROM _rf_rows
+            ) r
+            WHERE r.flag IS NOT NULL AND {candidates_sql} GROUP BY ALL ORDER BY ALL
         """).fetchall():
             reasons.setdefault(day, {})[f"{FLAG_PREFIX}{flag}"] = int(n)
     late = int(con.execute(f"""
@@ -1828,11 +2006,9 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
     if late:
         raise FeatureStoreError(f"{plan.feature_id}: {late} candidate values are not visible at the formation "
                                 "cutoff")
-    stats: dict[tuple[dt.date, str], dict[str, Any]] = {}
-    owner_stats: dict[tuple[dt.date, str], tuple[Any, ...]] = {}
-    excluded: dict[tuple[dt.date, str], int] = {}
-    candidates: dict[dt.date, int] = {}
-    total_rows = in_domain_rows = 0
+    writer = _FeatureWriter(con, version, plan.feature_id, expected_sign=int(plan.entry.expected_sign),
+                            variants=plan.variants, price_line=plan.price_line, formations=context.formations,
+                            universe=universe, digest_chunk=options.formation_chunk)
     formations = context.formations
     for start in range(0, len(formations), options.formation_chunk):
         part = formations[start:start + options.formation_chunk]
@@ -1851,82 +2027,12 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
         standardized, part_stats = standardize_frame(
             frame, feature_id=plan.feature_id, orientation=plan.orientation, log_base=plan.log_base,
             variants=plan.variants, policy=policy)
-        for (day, variant), value in part_stats.items():
-            stats[(day.date(), variant)] = value
-        for day, n in standardized.groupby(pd.to_datetime(standardized["formation_date"]).dt.date).size().items():
-            candidates[day] = int(n)
-        total_rows += len(standardized)
-        in_domain_rows += int((standardized["domain_status"] == IN_DOMAIN).sum())
-        if plan.price_line:
-            owner_stats.update(_owner_basis_stats(standardized))
-            excluded.update(_unlinked_excluded(standardized, plan.variants))
-        matrix = pd.DataFrame({
-            "feature_version": version,
-            "formation_date": standardized["formation_date"],
-            "security_id": standardized["security_id"],
-            "feature_id": plan.feature_id,
-            "owner_basis": standardized["owner_basis"],
-            "expected_sign": int(plan.entry.expected_sign),
-            "available_at": standardized["available_at"],
-            "raw_value": _floats(standardized["raw_value"]),
-            "domain_status": standardized["domain_status"],
-            "age_days": standardized["age_days"],
-            **{variant: standardized[variant].to_numpy(dtype=float) for variant in VARIANTS},
-        })
-        _insert_frame(con, "research_feature_matrix", matrix, _MATRIX_CASTS)
-    date_rows = []
-    conditioned: dict[str, int] = {}
-    for day in formations:
-        counts_of_day = universe.get(day, {})
-        members = int(counts_of_day.get("eligible", 0))
-        names = int(counts_of_day.get("linked", 0)) + (int(counts_of_day.get("unlinked", 0)) if plan.price_line
-                                                       else 0)
-        counts = reasons.get(day, {})
-        for variant in plan.variants:
-            item = stats.get((day, variant))
-            if item is None:  # no candidate row at all: nothing to standardize
-                item = {"date_status": DATE_THIN, "valid_names": 0, "in_domain_names": 0,
-                        "covariate_names": None, "covariate_coverage": None}
-            left_out = excluded.get((day, variant), 0) if plan.price_line else None
-            label = CONDITIONING_LINKED_ONLY if left_out and item["date_status"] == DATE_FORMED else None
-            if label:
-                conditioned[variant] = conditioned.get(variant, 0) + 1
-            date_rows.append({
-                "feature_version": version, "formation_date": day, "feature_id": plan.feature_id,
-                "variant": variant, "date_status": item["date_status"], "eligible_members": members,
-                "universe_names": names, "valid_names": int(item["valid_names"]),
-                "coverage_fraction": (item["valid_names"] / names) if names else None,
-                "candidate_names": int(candidates.get(day, 0)), "in_domain_names": int(item["in_domain_names"]),
-                "covariate_names": item["covariate_names"], "covariate_coverage": item["covariate_coverage"],
-                "reasons_json": _canonical(dict(sorted(counts.items()))), "unlinked_excluded": left_out,
-                "sample_conditioning": label})
-    _insert_frame(con, "research_feature_dates", pd.DataFrame(date_rows, columns=list(_DATE_COLUMNS)), _DATE_CASTS)
-    ranked_by_basis: dict[str, int] = {}
-    if plan.price_line:
-        empty = (0, None, None, 0, None, None)
-        owner_rows = [[version, day, plan.feature_id, owner_basis, *owner_stats.get((day, owner_basis), empty)]
-                      for day in formations for owner_basis in OWNER_BASES]
-        owner_frame = pd.DataFrame(owner_rows, columns=list(_OWNER_BASIS_COLUMNS)).astype(
-            {name: "float64" for name in _OWNER_MOMENTS})
-        _insert_frame(con, "research_feature_owner_basis", owner_frame, _OWNER_BASIS_CASTS)
-        for row in owner_rows:
-            ranked_by_basis[row[3]] = ranked_by_basis.get(row[3], 0) + int(row[7])
-    totals: dict[str, int] = {}
-    for counts in reasons.values():
-        for key, n in counts.items():
-            totals[key] = totals.get(key, 0) + n
-    digest = _feature_digest(con, version, plan.feature_id, formations, options.formation_chunk)
-    _insert_catalog_rows(con, [_catalog_row(version, plan, FEATURE_BUILT, None, value_rows=total_rows,
-                                            in_domain_rows=in_domain_rows,
-                                            reasons_json=_canonical(dict(sorted(totals.items()))),
+        writer.add(standardized, part_stats)
+    digest, result = writer.finish(reasons)
+    _insert_catalog_rows(con, [_catalog_row(version, plan, FEATURE_BUILT, None, value_rows=writer.total_rows,
+                                            in_domain_rows=writer.in_domain_rows,
+                                            reasons_json=_canonical(dict(sorted(result["reasons"].items()))),
                                             values_sha256=digest)])
-    thin = {variant: sum(1 for day in formations if (stats.get((day, variant)) or {"date_status": DATE_THIN})
-                         ["date_status"] != DATE_FORMED) for variant in plan.variants}
-    result: dict[str, Any] = {"rows": total_rows, "in_domain": in_domain_rows, "reasons": totals,
-                              "not_formed_dates": thin}
-    if plan.price_line:
-        result["ranked_rows_by_owner_basis"] = ranked_by_basis
-        result["survivor_conditioned_dates"] = dict(sorted(conditioned.items()))
     return result
 
 
@@ -2093,16 +2199,9 @@ def build_feature_version(store: ResearchStore, options: FeatureStoreOptions) ->
                 done = {row[0] for row in con.execute(
                     "SELECT DISTINCT feature_id FROM research_feature_dates WHERE feature_version=?",
                     [version]).fetchall()}
-                rows = [{"feature_version": version, "formation_date": day, "feature_id": p.feature_id,
-                         "variant": variant, "date_status": DATE_EMPTY,
-                         "eligible_members": universe.get(day, {}).get("eligible", 0), "universe_names": 0,
-                         "valid_names": 0, "coverage_fraction": None, "candidate_names": 0, "in_domain_names": 0,
-                         "covariate_names": None, "covariate_coverage": None, "reasons_json": _canonical({}),
-                         "unlinked_excluded": None, "sample_conditioning": None}
-                        for p in buildable if p.feature_id not in done for day in context.formations
-                        for variant in p.variants]
-                _insert_frame(con, "research_feature_dates", pd.DataFrame(rows, columns=list(_DATE_COLUMNS)),
-                              _DATE_CASTS)
+                _insert_frame(con, "research_feature_dates", _empty_date_rows(
+                    version, [(p.feature_id, p.variants) for p in buildable if p.feature_id not in done],
+                    context.formations, universe), _DATE_CASTS)
         else:
             done = {row[0] for row in con.execute(
                 "SELECT feature_id FROM research_feature_catalog WHERE feature_version=? AND status=?",
@@ -2190,6 +2289,396 @@ def _finalize(store: ResearchStore, version: str, context: _PanelContext, plans:
         """, [status, values_sha, _canonical(diagnostic), _canonical(blockers), _now(), version])
     return FeatureVersionResult(version, status, context.basis, context.run_id, built, len(plans) - built,
                                 value_rows, values_sha, tuple(blockers))
+
+
+def _empty_date_rows(version: str, features: Iterable[tuple[str, Sequence[str]]], formations: Sequence[dt.date],
+                     universe: Mapping[dt.date, Mapping[str, int]]) -> pd.DataFrame:
+    """``empty_common_cohort`` date rows of features on an ``untestable_strict`` panel (no values)."""
+    rows = [{"feature_version": version, "formation_date": day, "feature_id": feature_id, "variant": variant,
+             "date_status": DATE_EMPTY, "eligible_members": universe.get(day, {}).get("eligible", 0),
+             "universe_names": 0, "valid_names": 0, "coverage_fraction": None, "candidate_names": 0,
+             "in_domain_names": 0, "covariate_names": None, "covariate_coverage": None,
+             "reasons_json": _canonical({}), "unlinked_excluded": None, "sample_conditioning": None}
+            for feature_id, variants in features for day in formations for variant in variants]
+    return pd.DataFrame(rows, columns=list(_DATE_COLUMNS))
+
+
+# ---------------------------------------------------------------------------
+# Derived versions (public writer; P5 composites)
+# ---------------------------------------------------------------------------
+
+#: Spec and input keys :func:`write_derived_feature_version` sets itself.
+_DERIVED_SPEC_KEYS = ("kind", "constituent_feature_version", "constituent_values_sha256", "features")
+_DERIVED_INPUT_KEYS = ("constituent_version", "constituent_values_sha256", "external_sources")
+_DERIVED_PREFIX = re.compile(r"^[a-z][a-z0-9]{0,15}_$")
+#: Reason of an eligible member outside a derived feature's ranked lines.
+DERIVED_NOT_RANKED = "not_a_ranked_line"
+#: Catalog reason of a derived feature on an ``untestable_strict`` constituent.
+DERIVED_UNTESTABLE_REASON = "constituent_untestable_strict"
+#: Columns a derived row chunk must carry (``domain_status`` and ``age_days`` are optional).
+DERIVED_ROW_COLUMNS = ("formation_date", "security_id", "owner_basis", "raw_value", "available_at", *VARIANTS)
+
+
+@dataclass(frozen=True)
+class DerivedFeature:
+    """The catalog row of one feature a derived version adds (:func:`write_derived_feature_version`).
+
+    Per formation its reasons partition the R2a eligible members: stored rows count under
+    their ``domain_status``, ranked lines of ``universe_scope`` without a stored row under
+    ``unvalued_reason``, and every other eligible member under ``not_a_ranked_line``.
+    """
+
+    feature_id: str
+    source_kind: str
+    anomaly_class: str
+    hypothesis_family: str
+    expected_sign: int
+    preferred_transform: str
+    inputs: Mapping[str, Any] = field(default_factory=dict)
+    universe_scope: str = UNIVERSE_SCOPE_ALL_LINES
+    variants: tuple[str, ...] = VARIANTS
+    domain: str = "none"
+    caveat_codes: tuple[str, ...] = ()
+    admission: str = "eligible"
+    is_control: bool = False
+    unvalued_reason: str = "not_valued"
+
+    @property
+    def orientation(self) -> int:
+        return self.expected_sign if self.expected_sign in (-1, 1) else 1
+
+    @property
+    def price_line(self) -> bool:
+        return self.universe_scope == UNIVERSE_SCOPE_ALL_LINES
+
+    def catalog_inputs(self) -> dict[str, Any]:
+        return {**dict(self.inputs), "universe_scope": self.universe_scope}
+
+
+@dataclass(frozen=True)
+class DerivedVersionSpec:
+    """A derived feature version: every row of one sealed constituent version plus ``features``.
+
+    The version spec is the constituent's spec updated with ``spec`` and the keys the writer
+    sets (``kind``, ``constituent_feature_version``, ``constituent_values_sha256`` and
+    ``features``: the constituent's plus these); the version inputs are ``inputs`` plus
+    ``constituent_version``, ``constituent_values_sha256`` and the constituent's pinned
+    research-store ``external_sources`` (re-checked by :func:`validate_feature_version`). The
+    id is ``version_prefix`` + the first 40 hex digits of sha256(spec digest, inputs digest):
+    it pins content, not code (``code_sha256`` is recorded; empty records this module's).
+    ``blockers`` are added to the constituent's; ``diagnostic`` is stored as given plus counts.
+    """
+
+    constituent_version: str
+    kind: str
+    features: tuple[DerivedFeature, ...]
+    spec: Mapping[str, Any] = field(default_factory=dict)
+    inputs: Mapping[str, Any] = field(default_factory=dict)
+    blockers: tuple[str, ...] = ()
+    diagnostic: Mapping[str, Any] = field(default_factory=dict)
+    code_sha256: str = ""
+    version_prefix: str = "drv_"
+
+
+@dataclass(frozen=True)
+class DerivedFeatureRows:
+    """Standardized rows of one derived feature over *whole* formations, with their statistics.
+
+    ``frame``: :data:`DERIVED_ROW_COLUMNS` (``available_at`` at or before the formation's
+    cutoff; a variant outside the feature's ``variants`` all NaN), optionally
+    ``domain_status`` (default ``in_domain``) and ``age_days``; at most one row per
+    (formation, line), on the feature's ranked lines only. ``stats``: for every (formation,
+    variant) of the frame the :func:`standardize_frame` statistics (``date_status``,
+    ``valid_names``, ``in_domain_names``, ``covariate_names``, ``covariate_coverage``).
+    """
+
+    feature_id: str
+    frame: pd.DataFrame
+    stats: Mapping[tuple[Any, str], Mapping[str, Any]]
+
+
+@contextlib.contextmanager
+def _transaction(con: Any) -> Iterator[Any]:
+    con.execute("BEGIN TRANSACTION")
+    try:
+        yield con
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    else:
+        con.execute("COMMIT")
+
+
+def _validate_derived_spec(spec: DerivedVersionSpec) -> None:
+    if not isinstance(spec, DerivedVersionSpec):
+        raise FeatureStoreError("spec must be a DerivedVersionSpec")
+    if not isinstance(spec.constituent_version, str) or not _PIN.fullmatch(spec.constituent_version):
+        raise FeatureStoreError("constituent_version must be a feature version id")
+    if not isinstance(spec.kind, str) or not _ID.fullmatch(spec.kind):
+        raise FeatureStoreError("kind must be a lower-case identifier")
+    if not isinstance(spec.version_prefix, str) or not _DERIVED_PREFIX.fullmatch(spec.version_prefix):
+        raise FeatureStoreError("version_prefix must be 1-16 lower-case characters and an underscore")
+    reserved = sorted(set(spec.spec) & set(_DERIVED_SPEC_KEYS)) + sorted(set(spec.inputs) & set(_DERIVED_INPUT_KEYS))
+    if reserved:
+        raise FeatureStoreError(f"spec/inputs keys {reserved} are set by the writer")
+    if not spec.features or not all(isinstance(f, DerivedFeature) for f in spec.features):
+        raise FeatureStoreError("a derived version adds one or more DerivedFeature rows")
+    ids = [f.feature_id for f in spec.features]
+    if len(set(ids)) != len(ids):
+        raise FeatureStoreError(f"derived feature ids are not unique: {ids}")
+    for feature in spec.features:
+        where = f"derived feature {feature.feature_id!r}"
+        if not isinstance(feature.feature_id, str) or not _ID.fullmatch(feature.feature_id):
+            raise FeatureStoreError(f"{where}: the id must be a lower-case identifier")
+        if feature.universe_scope not in UNIVERSE_SCOPES:
+            raise FeatureStoreError(f"{where}: universe_scope must be one of {UNIVERSE_SCOPES}")
+        if feature.inputs.get("universe_scope", feature.universe_scope) != feature.universe_scope:
+            raise FeatureStoreError(f"{where}: inputs name another universe scope")
+        if not feature.variants or len(set(feature.variants)) != len(feature.variants) \
+                or not set(feature.variants) <= set(VARIANTS):
+            raise FeatureStoreError(f"{where}: variants must be unique members of {VARIANTS}")
+        if feature.expected_sign not in (-1, 0, 1) or isinstance(feature.expected_sign, bool):
+            raise FeatureStoreError(f"{where}: expected_sign must be -1, 0 or +1")
+        if not _ID.fullmatch(feature.unvalued_reason) or feature.unvalued_reason == DERIVED_NOT_RANKED \
+                or feature.unvalued_reason in DOMAIN_STATUSES:
+            raise FeatureStoreError(f"{where}: unvalued_reason must be its own lower-case reason")
+
+
+def _derived_constituent(con: Any, version: str) -> dict[str, Any]:
+    row = con.execute("""
+        SELECT status, basis, panel_run_id, panel_sha256, classification_basis, catalog_sha256, spec_json,
+               values_sha256, blockers_json, inputs_json
+        FROM research_feature_versions WHERE feature_version = ?
+    """, [version]).fetchone()
+    if row is None or row[0] not in SEALED_STATUSES:
+        raise FeatureStoreError(f"constituent feature version {version!r} is absent or not sealed")
+    spec = json.loads(row[6])
+    if spec.get("store_schema") != FEATURE_SCHEMA_VERSION or spec.get("query_version") != QUERY_VERSION:
+        raise FeatureStoreError(f"constituent version {version} predates feature store schema "
+                                f"{FEATURE_SCHEMA_VERSION} / {QUERY_VERSION}")
+    if "constituent_feature_version" in spec:
+        raise FeatureStoreError(f"{version} is itself a derived version: derived versions never seed derived ones")
+    return {"status": row[0], "basis": row[1], "panel_run_id": row[2], "panel_sha256": row[3],
+            "classification_basis": row[4], "catalog_sha256": row[5], "spec": spec, "values_sha256": row[7],
+            "blockers": json.loads(row[8] or "[]"), "inputs": json.loads(row[9] or "{}")}
+
+
+def _derived_chunk(chunk: DerivedFeatureRows, feature: DerivedFeature,
+                   cutoffs: Mapping[dt.date, dt.datetime]) -> pd.DataFrame:
+    """A derived chunk checked against the row contract, sorted by (formation, line)."""
+    where = f"derived feature {feature.feature_id}"
+    missing = [c for c in DERIVED_ROW_COLUMNS if c not in chunk.frame.columns]
+    if missing:
+        raise FeatureStoreError(f"{where}: rows lack {missing}")
+    frame = chunk.frame.copy()
+    if "domain_status" not in frame.columns:
+        frame["domain_status"] = IN_DOMAIN
+    if "age_days" not in frame.columns:
+        frame["age_days"] = None
+    frame = frame.sort_values(["formation_date", "security_id"], kind="stable").reset_index(drop=True)
+    days = pd.to_datetime(frame["formation_date"]).dt.date
+    unknown = sorted(set(days) - set(cutoffs))
+    if unknown:
+        raise FeatureStoreError(f"{where}: rows on {unknown[:3]} (not formed formations of the panel run)")
+    if frame.duplicated(["formation_date", "security_id"]).any():
+        raise FeatureStoreError(f"{where}: more than one row per formation and line")
+    allowed = OWNER_BASES if feature.price_line else (OWNER_BASIS_LINKED,)
+    if not frame["owner_basis"].isin(allowed).all():
+        raise FeatureStoreError(f"{where}: owner_basis outside {allowed}")
+    if not frame["domain_status"].isin(DOMAIN_STATUSES).all():
+        raise FeatureStoreError(f"{where}: domain_status outside {DOMAIN_STATUSES}")
+    clocks = pd.to_datetime(frame["available_at"])
+    late = clocks.isna() | (clocks > pd.to_datetime(days.map(cutoffs)))
+    if late.any():
+        raise FeatureStoreError(f"{where}: {int(late.sum())} rows are not visible at their formation cutoff")
+    stray = [v for v in VARIANTS if v not in feature.variants and np.isfinite(_floats(frame[v])).any()]
+    if stray:
+        raise FeatureStoreError(f"{where}: values in variants {stray} it does not produce")
+    stated = {(pd.Timestamp(day).date(), variant) for day, variant in chunk.stats}
+    lacking = sorted({(day, v) for day in set(days) for v in feature.variants} - stated)
+    if lacking:
+        raise FeatureStoreError(f"{where}: no statistics for {lacking[:3]}")
+    return frame
+
+
+def _derived_catalog_row(version: str, feature: DerivedFeature, status: str, reason: str | None,
+                         **extra: Any) -> list[Any]:
+    return [version, feature.feature_id, feature.source_kind, feature.anomaly_class, feature.hypothesis_family,
+            int(feature.expected_sign), feature.orientation, feature.preferred_transform,
+            PREFERRED_VARIANT.get(feature.preferred_transform), feature.domain,
+            _canonical(list(feature.caveat_codes)), feature.admission, bool(feature.is_control),
+            feature.universe_scope, _canonical(feature.catalog_inputs()), status, reason,
+            _canonical(list(feature.variants)), extra.get("value_rows"), extra.get("in_domain_rows"),
+            extra.get("reasons_json"), extra.get("values_sha256")]
+
+
+def write_derived_feature_version(conn: Any, *, spec: DerivedVersionSpec,
+                                  rows: Iterable[DerivedFeatureRows] | None) -> str:
+    """Write the derived feature version ``spec`` describes and return its id (P5 composites).
+
+    ``conn``: an open research-store connection (``ResearchStore.con``) outside a
+    transaction; the writer runs its own. Every row of the sealed constituent version is
+    copied (one transaction per feature, so a rerun resumes after the last copied feature),
+    then ``rows`` are written through the same writer as R2b's own features (one transaction
+    per chunk: the chunk size bounds each transaction), then the version is sealed with its
+    date rows, owner-basis diagnostic, catalog rows and digests in one transaction.
+    ``rows`` is consumed after the constituent copy, so a generator may read the
+    constituent's covariates (``research_feature_context`` of ``constituent_version``: the
+    copy is identical). A sealed version with the same id is returned unchanged without
+    consuming ``rows``; a building or failed one resumes (its derived rows are rewritten).
+    ``rows`` is ``None`` exactly when the constituent is ``untestable_strict``: the derived
+    features are then untestable too (``empty_common_cohort`` date rows). The version
+    passes :func:`validate_feature_version`. Raises :class:`FeatureStoreError`.
+    """
+    con = conn
+    _validate_derived_spec(spec)
+    with _transaction(con):
+        ensure_feature_schema(con)
+    base = _derived_constituent(con, spec.constituent_version)
+    untestable = base["status"] == STATUS_UNTESTABLE
+    if untestable != (rows is None):
+        raise FeatureStoreError("derived rows are required exactly when the constituent version is sealed "
+                                "(None for an untestable_strict constituent)")
+    run_id = base["panel_run_id"]
+    calendar = con.execute("SELECT formation_date, cutoff, eligible_members FROM research_panel_calendar "
+                           "WHERE run_id = ? AND status = ? ORDER BY formation_date",
+                           [run_id, _panel.CALENDAR_FORMED]).fetchall()
+    formations = [row[0] for row in calendar]
+    cutoffs = {row[0]: row[1] for row in calendar}
+    universe: dict[dt.date, dict[str, int]] = {
+        row[0]: {"eligible": int(row[2] or 0), "linked": 0, "unlinked": 0} for row in calendar}
+    for day, owner_basis, n in con.execute(f"""
+        SELECT k.formation_date, {_expected_owner_basis_sql("k")} AS owner_basis, count(*)
+        FROM research_panel_cohort k WHERE k.run_id = ? GROUP BY ALL
+    """, [run_id]).fetchall():
+        if owner_basis is not None and day in universe:
+            universe[day]["linked" if owner_basis == OWNER_BASIS_LINKED else "unlinked"] = int(n)
+    features = tuple(spec.features)
+    ids = [f.feature_id for f in features]
+    constituent_ids = [r[0] for r in con.execute(
+        "SELECT feature_id FROM research_feature_catalog WHERE feature_version = ? ORDER BY feature_id",
+        [spec.constituent_version]).fetchall()]
+    clash = sorted(set(constituent_ids) & set(ids))
+    if clash:
+        raise FeatureStoreError(f"{spec.constituent_version} already has features named {clash}")
+    version_spec = {**base["spec"], **dict(spec.spec), "kind": spec.kind,
+                    "constituent_feature_version": spec.constituent_version,
+                    "constituent_values_sha256": base["values_sha256"],
+                    "features": [*base["spec"].get("features", []),
+                                 *([f.feature_id, "planned", None, f.catalog_inputs(), list(f.variants)]
+                                   for f in features)]}
+    inputs = {**dict(spec.inputs), "constituent_version": spec.constituent_version,
+              "constituent_values_sha256": base["values_sha256"]}
+    if base["inputs"].get("external_sources"):
+        inputs["external_sources"] = base["inputs"]["external_sources"]
+    spec_json, inputs_json = _canonical(version_spec), _canonical(inputs)
+    spec_sha, inputs_sha = _sha(spec_json), _sha(inputs_json)
+    version = spec.version_prefix + _sha(_canonical({"spec_sha256": spec_sha, "inputs_sha256": inputs_sha}))[:40]
+    existing = con.execute("SELECT status FROM research_feature_versions WHERE feature_version = ?",
+                           [version]).fetchone()
+    if existing is not None and existing[0] in SEALED_STATUSES:
+        return version
+    with _transaction(con):
+        if existing is None:
+            con.execute("""
+                INSERT INTO research_feature_versions (feature_version, status, basis, panel_run_id, panel_sha256,
+                    classification_basis, query_version, universe_rule, spec_json, spec_sha256, code_sha256,
+                    catalog_sha256, inputs_json, inputs_sha256, blockers_json, created_at)
+                VALUES (?, 'building', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?)
+            """, [version, base["basis"], run_id, base["panel_sha256"], base["classification_basis"], QUERY_VERSION,
+                  UNIVERSE_RULE, spec_json, spec_sha, spec.code_sha256 or _code_sha(), base["catalog_sha256"],
+                  inputs_json, inputs_sha, _now()])
+            names = ", ".join(_CONTEXT_COLUMNS)
+            con.execute(f"INSERT INTO research_feature_context (feature_version, {names}) "
+                        f"SELECT ?, {names} FROM research_feature_context WHERE feature_version = ?",
+                        [version, spec.constituent_version])
+        else:
+            con.execute("UPDATE research_feature_versions SET status='building' WHERE feature_version=?", [version])
+    try:
+        # The constituent's features, one transaction each (its catalog row last: present = copied).
+        copied = {r[0] for r in con.execute("SELECT feature_id FROM research_feature_catalog "
+                                            "WHERE feature_version = ?", [version]).fetchall()}
+        tables = (("research_feature_matrix", tuple(name for name, _ in _MATRIX_COLUMNS)),
+                  ("research_feature_dates", _DATE_COLUMNS),
+                  ("research_feature_owner_basis", _OWNER_BASIS_COLUMNS),
+                  ("research_feature_catalog", _CATALOG_COLUMNS))
+        for feature_id in constituent_ids:
+            if feature_id in copied:
+                continue
+            with _transaction(con):
+                for table, columns in tables:
+                    names = ", ".join(c for c in columns if c != "feature_version")
+                    con.execute(f"INSERT INTO {table} (feature_version, {names}) SELECT ?, {names} FROM {table} "
+                                "WHERE feature_version = ? AND feature_id = ?",
+                                [version, spec.constituent_version, feature_id])
+        for feature_id in ids:  # rows of an interrupted earlier attempt
+            with _transaction(con):
+                for table, _ in tables:
+                    con.execute(f"DELETE FROM {table} WHERE feature_version = ? AND feature_id = ?",
+                                [version, feature_id])
+        con.execute("CHECKPOINT")
+        writers = {f.feature_id: _FeatureWriter(con, version, f.feature_id, expected_sign=f.expected_sign,
+                                                variants=f.variants, price_line=f.price_line,
+                                                formations=formations, universe=universe,
+                                                digest_chunk=_DIGEST_CHUNK) for f in features}
+        by_id = {f.feature_id: f for f in features}
+        for chunk in rows or ():
+            if not isinstance(chunk, DerivedFeatureRows) or chunk.feature_id not in by_id:
+                raise FeatureStoreError(f"unexpected derived rows {getattr(chunk, 'feature_id', chunk)!r}")
+            frame = _derived_chunk(chunk, by_id[chunk.feature_id], cutoffs)
+            with _transaction(con):
+                writers[chunk.feature_id].add(frame, chunk.stats)
+        con.execute("CHECKPOINT")
+        with _transaction(con):
+            if untestable:
+                _insert_frame(con, "research_feature_dates",
+                              _empty_date_rows(version, [(f.feature_id, f.variants) for f in features], formations,
+                                               universe), _DATE_CASTS)
+                _insert_catalog_rows(con, [_derived_catalog_row(version, f, FEATURE_UNTESTABLE,
+                                                                DERIVED_UNTESTABLE_REASON) for f in features])
+                status = STATUS_UNTESTABLE
+            else:
+                for feature in features:
+                    writer = writers[feature.feature_id]
+                    reasons: dict[dt.date, dict[str, int]] = {}
+                    for day in formations:
+                        members, names_of_day = writer.names(day)
+                        stored = writer.candidates.get(day, 0)
+                        if stored > names_of_day or names_of_day > members:
+                            raise FeatureStoreError(f"{feature.feature_id} {day}: {stored} stored rows, "
+                                                    f"{names_of_day} ranked lines, {members} eligible members")
+                        counts = dict(writer.domain_counts.get(day, {}))
+                        if names_of_day > stored:
+                            counts[feature.unvalued_reason] = names_of_day - stored
+                        if members > names_of_day:
+                            counts[DERIVED_NOT_RANKED] = members - names_of_day
+                        reasons[day] = counts
+                    digest, summary = writer.finish(reasons)
+                    _insert_catalog_rows(con, [_derived_catalog_row(
+                        version, feature, FEATURE_BUILT, None, value_rows=writer.total_rows,
+                        in_domain_rows=writer.in_domain_rows,
+                        reasons_json=_canonical(dict(sorted(summary["reasons"].items()))), values_sha256=digest)])
+                status = STATUS_SEALED
+            conditioned = int(con.execute("SELECT count(*) FROM research_feature_dates WHERE feature_version = ? "
+                                          "AND sample_conditioning IS NOT NULL", [version]).fetchone()[0])
+            blockers = [b for b in base["blockers"] if not str(b).startswith(f"{NEUTRAL_CONDITIONING_BLOCKER}:")]
+            blockers += list(spec.blockers)
+            if conditioned:
+                blockers.append(f"{NEUTRAL_CONDITIONING_BLOCKER}:{conditioned}")
+            values_sha, _, _ = _combined_digest(con, version, _context_digest(con, version, formations, _DIGEST_CHUNK))
+            diagnostic = {**dict(spec.diagnostic), "derived_features": ids, "formations": len(formations),
+                          "survivor_conditioned_date_rows": conditioned}
+            con.execute("UPDATE research_feature_versions SET status = ?, values_sha256 = ?, blockers_json = ?, "
+                        "diagnostic_json = ?, finished_at = ? WHERE feature_version = ?",
+                        [status, values_sha, _canonical(sorted(set(blockers))), _canonical(diagnostic), _now(),
+                         version])
+    except Exception as exc:
+        with _transaction(con):
+            con.execute("UPDATE research_feature_versions SET status=?, diagnostic_json=? "
+                        "WHERE feature_version=? AND status='building'",
+                        [STATUS_FAILED, _canonical({"error": type(exc).__name__, "message": str(exc)}), version])
+        raise
+    return version
 
 
 # ---------------------------------------------------------------------------
@@ -2580,8 +3069,12 @@ __all__ = [
     "DATE_THIN",
     "DATE_THIN_COVARIATE",
     "DEFAULT_CONTROLS",
+    "DERIVED_NOT_RANKED",
+    "DERIVED_ROW_COLUMNS",
+    "DERIVED_UNTESTABLE_REASON",
     "DOMAIN_STATUSES",
     "EXTERNAL_FEATURES",
+    "EXTERNAL_LINE_FEATURES",
     "EXTERNAL_QUERY_VERSIONS",
     "EXTERNAL_SOURCE_KINDS",
     "FEATURE_BLOCKED",
@@ -2609,6 +3102,9 @@ __all__ = [
     "UNLINKED_COHORT_REASONS",
     "UNLINKED_LINES_BLOCKER",
     "VARIANTS",
+    "DerivedFeature",
+    "DerivedFeatureRows",
+    "DerivedVersionSpec",
     "FeaturePruneResult",
     "FeatureStoreError",
     "FeatureStoreOptions",
@@ -2620,4 +3116,5 @@ __all__ = [
     "prune_feature_versions",
     "standardize_frame",
     "validate_feature_version",
+    "write_derived_feature_version",
 ]
