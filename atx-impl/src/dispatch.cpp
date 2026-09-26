@@ -74,6 +74,8 @@ static void print_usage(std::ostream& out) {
            "Boolean flags take an optional true|false|1|0 (--metabook false; key=false in a file).\n"
            "Double-valued flags must be finite (nan/inf are rejected).\n"
            "Panel inputs require matching .manifest.json identity files.\n"
+           "Augmentation: --vwap-rule raw-daily-close-v2 (default) or adjusted-typical-v1.\n"
+           "VWAP is a daily price proxy, not an intraday observation.\n"
            "Legacy diagnostics: --allow-unidentified-panels true (unknown identity).\n"
            "Load provenance: --preparation-manifest <completed preparation manifest>.\n"
            "Identified reports replay holdings/cash with --report-aum as initial NAV.\n"

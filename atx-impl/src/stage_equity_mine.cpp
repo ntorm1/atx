@@ -1139,6 +1139,7 @@ namespace eval = atx::engine::eval;
 using nlohmann::json;
 
 struct MineArgs {
+    alpha::VwapRule vwap_rule{alpha::VwapRule::RawDailyCloseV2};
     std::vector<std::string> train_ctx, val_ctx, hold_ctx;
     std::string membership;
     atx::usize membership_cut{0};
@@ -1222,6 +1223,13 @@ template <class T>
 }
 
 [[nodiscard]] atx::core::Status apply_value(MineArgs &a, std::string_view f, std::string_view v) {
+    if (f == "vwap-rule") {
+        const auto rule = alpha::parse_vwap_rule(v);
+        if (!rule) return Err(ErrorCode::InvalidArgument,
+            "--vwap-rule must be raw-daily-close-v2 or adjusted-typical-v1");
+        a.vwap_rule = *rule;
+        return Ok();
+    }
     if (f == "train-contexts") { a.train_ctx = split_list(v); return Ok(); }
     if (f == "validation-contexts") { a.val_ctx = split_list(v); return Ok(); }
     if (f == "holdout-contexts") { a.hold_ctx = split_list(v); return Ok(); }
@@ -1487,7 +1495,7 @@ build_role(std::string name, const std::vector<std::string> &paths, atx::i64 sta
            atx::i64 end_ns, const std::string &end_label, atx::i64 seal_ns,
            const atx::engine::data::PitMembershipImage *image, atx::usize cut,
            std::span<const atx::u16> adv_windows, atx::u64 max_bytes,
-           const mine::ScoreCfg &score) {
+           const mine::ScoreCfg &score, alpha::VwapRule vwap_rule) {
     std::vector<ContextInfo> contexts;
     std::vector<mine::SpanSource> sources;
     for (const auto &p : paths) {
@@ -1526,7 +1534,8 @@ build_role(std::string name, const std::vector<std::string> &paths, atx::i64 sta
         rule = "context-year-union-not-as-of";
     }
     sources.clear();
-    ATX_TRY(auto aug, alpha::with_alpha101_fields(span.panel, adv_windows));
+    ATX_TRY(auto aug, alpha::with_alpha101_fields(span.panel, adv_windows,
+        alpha::DollarVolumeBasis::RawCloseV2, vwap_rule));
     span.panel = std::move(aug);
     const auto lo = std::lower_bound(span.session_keys.begin(), span.session_keys.end(), start_ns);
     const auto hi = std::lower_bound(span.session_keys.begin(), span.session_keys.end(), end_ns);
@@ -1892,7 +1901,7 @@ struct Windows {
     {
         ATX_TRY(Role train, build_role("train", a.train_ctx, w.train_start, w.val_start,
                                        "--validation-start " + a.val_start, w.seal, img,
-                                       a.membership_cut, adv, a.max_working_bytes, score_cfg));
+                                       a.membership_cut, adv, a.max_working_bytes, score_cfg, a.vwap_rule));
         train.data.panel = &train.span.panel;
         report["train"] = role_json(train);
         report["train"]["return_guard"] = guard_json(train, score_cfg);
@@ -1914,7 +1923,7 @@ struct Windows {
         log_line(err, a.quiet, "building validation span");
         ATX_TRY(Role val, build_role("validation", a.val_ctx, w.val_start, w.hold_start,
                                      "--holdout-start " + a.hold_start, w.seal, img,
-                                     a.membership_cut, adv, a.max_working_bytes, score_cfg));
+                                     a.membership_cut, adv, a.max_working_bytes, score_cfg, a.vwap_rule));
         val.data.panel = &val.span.panel;
         report["validation"] = role_json(val);
         report["validation"]["return_guard"] = guard_json(val, score_cfg);
@@ -1932,7 +1941,7 @@ struct Windows {
         log_line(err, a.quiet, "building holdout span");
         ATX_TRY(Role hold, build_role("holdout", a.hold_ctx, w.hold_start, w.hold_end,
                                       "--holdout-end " + a.hold_end, w.seal, img,
-                                      a.membership_cut, adv, a.max_working_bytes, score_cfg));
+                                      a.membership_cut, adv, a.max_working_bytes, score_cfg, a.vwap_rule));
         hold.data.panel = &hold.span.panel;
         report["holdout"].update(role_json(hold));
         report["holdout"]["return_guard"] = guard_json(hold, score_cfg);
@@ -1972,6 +1981,10 @@ struct Windows {
                         {"ic_horizons", score_cfg.ic_horizons},
                         {"periods_per_year", score_cfg.periods_per_year},
                         {"membership_rule", a.membership_rule},
+                        {"vwap_rule", alpha::vwap_rule_name(a.vwap_rule)},
+                        {"vwap_basis", a.vwap_rule == alpha::VwapRule::RawDailyCloseV2
+                            ? "raw" : "adjusted_level"},
+                        {"vwap_is_intraday_observation", false},
                         {"dsr_rule_requested", mine::train_dsr_rule_label(a.dsr_rule)},
                         {"min_names", a.min_names},
                         {"max_validate", a.max_validate},
@@ -2038,6 +2051,10 @@ struct Windows {
     }
     report["qualifications"] = json::array(
         {"session keys are labels, not availability times; one-session execution delay assumed",
+         a.vwap_rule == alpha::VwapRule::RawDailyCloseV2
+             ? "vwap is a raw daily-close proxy; adjusted close/vwap spans different price bases"
+             : "vwap is the legacy adjusted typical-price proxy, not observed intraday VWAP",
+         "adjusted OHLC levels retain snapshot factors; cross-sectional basis lint remains outstanding",
          a.membership_rule == "as-of-v2"
              ? "membership as-of the PIT top-N cut; contexts are year-union compacted"
              : "membership: context year-union (pre-W0 look-ahead, requested explicitly)",

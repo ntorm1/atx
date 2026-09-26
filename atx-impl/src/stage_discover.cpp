@@ -172,6 +172,9 @@ namespace {
     kv_i("v", 1);
     // Panel + seed/search environment.
     kv_s("panel", cfg.panel);
+    if (cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0) {
+        kv_s("vwap_rule", std::string(atx::engine::alpha::vwap_rule_name(cfg.vwap_rule)));
+    }
     kv_i("seed", static_cast<long long>(cfg.seed));
     kv_i("population", cfg.population);
     kv_i("generations", cfg.generations);
@@ -242,7 +245,8 @@ namespace {
 atx::core::Result<atx::engine::alpha::Panel>
 atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
                                          atx::f64 min_price, atx::f64 min_adv,
-                                         long adv_window) {
+                                         long adv_window,
+                                         atx::engine::alpha::VwapRule vwap_rule) {
     namespace alpha = atx::engine::alpha;
     namespace df    = atx::engine::alpha::datafields;
     using EC        = atx::core::ErrorCode;
@@ -296,9 +300,8 @@ atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
     }
     const atx::u16 win = static_cast<atx::u16>(adv_window);
 
-    // with_datafields derives vwap when absent, requiring high/low. We only need
-    // adv{W} for the screen, so if vwap/high/low are ALL absent, pre-supply a NaN
-    // vwap column to short-circuit the derivation (NaN vwap has no effect on adv).
+    // Legacy reproduction permits a NaN VWAP stub when candle inputs are absent.
+    // V2 requires an explicit raw_close and derives its raw daily-close proxy.
     {
         bool has_vwap = false, has_high = false, has_low = false;
         for (const std::string& n : field_names) {
@@ -306,7 +309,8 @@ atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
             if (n == "high")  has_high = true;
             if (n == "low")   has_low  = true;
         }
-        if (!has_vwap && (!has_high || !has_low)) {
+        if (vwap_rule == alpha::VwapRule::AdjustedTypicalV1 &&
+            !has_vwap && (!has_high || !has_low)) {
             field_names.emplace_back("vwap");
             field_data.emplace_back(D * I,
                                     std::numeric_limits<atx::f64>::quiet_NaN());
@@ -316,7 +320,7 @@ atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
     const std::array<atx::u16, 1> adv_wins = {win};
     ATX_TRY(auto aug,
             df::with_datafields(D, I, field_names, field_data, orig_univ,
-                                std::span<const atx::u16>{adv_wins}));
+                                std::span<const atx::u16>{adv_wins}, vwap_rule));
 
     // Resolve field ids in the augmented panel.
     ATX_TRY(const auto close_id, aug.field_id("close"));
@@ -935,6 +939,7 @@ atx::core::Result<StageResult> run_discover_gated(
                 mf << "capacity_min_price="   << cfg.min_price
                    << " capacity_min_adv="    << cfg.min_adv_usd
                    << " capacity_adv_window=" << cfg.adv_window
+                   << " vwap_rule=" << atx::engine::alpha::vwap_rule_name(cfg.vwap_rule)
                    << " capacity_names_per_day=" << detail::mean_names_per_day(panel)
                    << '\n';
             }
@@ -1112,7 +1117,7 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
     if (capacity_on) {
         ATX_TRY(auto screened,
                 detail::apply_capacity_screen(panel, cfg.min_price, cfg.min_adv_usd,
-                                              cfg.adv_window));
+                                              cfg.adv_window, cfg.vwap_rule));
         panel = std::move(screened);
     }
 

@@ -30,16 +30,18 @@
 //     volume (DollarVolumeBasis::RawCloseV2, the default). On a history panel
 //     `close` is close x a snapshot backward factor that already contains future
 //     splits and dividends, so close x volume put future corporate actions into a
-//     liquidity level. vwap stays the typical-price proxy on the close basis, so
-//     vwap/close ratios stay on one basis (it is tagged adjusted_level). A panel
-//     without `raw_close` keeps close x volume: its close is the only price basis.
+//     liquidity level. VWAP defaults independently to RawDailyCloseV2: a raw
+//     daily-close proxy, requiring raw_close or an explicit Raw close basis.
+//     AdjustedTypicalV1 preserves the old adjusted typical-price proxy. Adjusted
+//     OHLC remain on their existing basis; mixing them with raw VWAP does not
+//     establish causal cross-sectional economics (basis lint belongs to W2-A3).
 //
 // This function is the production lift of `atx_impl_test::augment_for_alpha101`
 // from atx-impl/tests/alpha101_support.hpp.  The two are byte-identical until
 // Task 2 makes the test helper delegate here (pinned by DelegationIdentity test).
 //
-// ADDITIVE / IDEMPOTENT: every derivation is guarded by a presence check.
-// Re-calling on an already-augmented panel adds NO duplicate columns.
+// Re-calling adds no duplicate columns. V2 rebuilds VWAP even if supplied;
+// other derived columns retain their presence guards.
 //
 // Header-only; construction is a COLD path — std::vector allocations are fine.
 // Errors travel in Result; nothing throws.
@@ -80,13 +82,16 @@ enum class DollarVolumeBasis : std::uint8_t {
 // must provide at least open/high/low/close/volume). `adv_windows` is the set of
 // adv{d} columns to materialize (e.g. {5,20,60}). `dv_basis` picks the price the
 // derived dollar_volume/adv{d} use (default RawCloseV2; see DollarVolumeBasis).
-// Field order is the same under both rules; only the derived values differ.
+// VWAP is independently versioned by vwap_rule; V2 refuses unknown close basis
+// without raw_close. Field order stays stable; only the derived values differ.
 //
 // Err(NotFound) if `base` has no `close` field (the minimum required input).
 // Ragged panel geometry propagates through Panel::create as Err(InvalidArgument).
 [[nodiscard]] inline atx::core::Result<Panel>
 with_alpha101_fields(const Panel &base, std::span<const atx::u16> adv_windows,
-                     DollarVolumeBasis dv_basis = DollarVolumeBasis::RawCloseV2) {
+                     DollarVolumeBasis dv_basis = DollarVolumeBasis::RawCloseV2,
+                     VwapRule vwap_rule = VwapRule::RawDailyCloseV2,
+                     ClosePriceBasis close_basis = ClosePriceBasis::Unknown) {
   const atx::usize D = base.dates();
   const atx::usize I = base.instruments();
   const atx::usize cells = D * I;
@@ -199,32 +204,34 @@ with_alpha101_fields(const Panel &base, std::span<const atx::u16> adv_windows,
   const auto npos = static_cast<atx::usize>(-1);
   const atx::usize raw_i = datafields::detail::field_index(names, "raw_close");
   const atx::usize vol_i = datafields::detail::field_index(names, datafields::kVolume);
-  const atx::usize high_i = datafields::detail::field_index(names, datafields::kHigh);
-  const atx::usize low_i = datafields::detail::field_index(names, datafields::kLow);
-  const bool derive_vwap = !datafields::detail::has_field(names, datafields::kVwap);
-  const bool vwap_inputs = !derive_vwap || (high_i != npos && low_i != npos);
-  const bool rebase_liquidity =
-      dv_basis == DollarVolumeBasis::RawCloseV2 && raw_i != npos && vol_i != npos && vwap_inputs;
-  if (rebase_liquidity) {
-    const std::vector<atx::f64> &raw_close = data[raw_i];
+  if (dv_basis != DollarVolumeBasis::RawCloseV2 && dv_basis != DollarVolumeBasis::CloseV1) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "with_alpha101_fields: unknown dollar-volume basis");
+  }
+  if (vol_i != npos) {
+    const auto economic_i = dv_basis == DollarVolumeBasis::RawCloseV2 && raw_i != npos
+                                ? raw_i : close_i;
+    const std::vector<atx::f64> &economic_close = data[economic_i];
     const std::vector<atx::f64> &volume = data[vol_i];
-    const std::vector<atx::f64> &close = data[close_i];
     // dollar_volume = raw_close · volume, masked to the universe (NaN out-of-universe).
     std::vector<atx::f64> raw_dvol(cells, kAugNaN);
     for (atx::usize i = 0; i < cells; ++i) {
       if (universe[i] != 0) {
-        raw_dvol[i] = raw_close[i] * volume[i]; // NaN inputs propagate
+        raw_dvol[i] = economic_close[i] * volume[i]; // NaN inputs propagate
       }
     }
-    // vwap: the delegate's typical-price proxy on the close basis, unchanged.
-    std::vector<atx::f64> vwap;
-    if (derive_vwap) {
-      const std::vector<atx::f64> &high = data[high_i];
-      const std::vector<atx::f64> &low = data[low_i];
-      vwap.assign(cells, kAugNaN);
-      for (atx::usize i = 0; i < cells; ++i) {
-        if (universe[i] != 0) {
-          vwap[i] = (high[i] + low[i] + close[i]) / 3.0;
+    // Preserve V1 arithmetic and the old dollar_volume/vwap/ADV field order.
+    std::vector<atx::f64> legacy_vwap;
+    if (vwap_rule == VwapRule::AdjustedTypicalV1 &&
+        !datafields::detail::has_field(names, datafields::kVwap)) {
+      const auto high_i = datafields::detail::field_index(names, datafields::kHigh);
+      const auto low_i = datafields::detail::field_index(names, datafields::kLow);
+      if (high_i != npos && low_i != npos) {
+        legacy_vwap.assign(cells, kAugNaN);
+        for (atx::usize i = 0; i < cells; ++i) {
+          if (universe[i] != 0) {
+            legacy_vwap[i] = (data[high_i][i] + data[low_i][i] + data[close_i][i]) / 3.0;
+          }
         }
       }
     }
@@ -241,14 +248,20 @@ with_alpha101_fields(const Panel &base, std::span<const atx::u16> adv_windows,
                               datafields::detail::rolling_mean(raw_dvol, D, I, d));
       }
     }
-    // Append in the delegate's order: dollar_volume, vwap, adv{d}...
+    // Reserve the VWAP position before ADV so the field order stays unchanged;
+    // the delegate fills it under the explicit rule below.
     if (!datafields::detail::has_field(names, datafields::kDollarVolume)) {
       names.emplace_back(datafields::kDollarVolume);
       data.push_back(std::move(raw_dvol));
     }
-    if (derive_vwap) {
+    if (!datafields::detail::has_field(names, datafields::kVwap) &&
+        (vwap_rule == VwapRule::RawDailyCloseV2 || !legacy_vwap.empty())) {
       names.emplace_back(datafields::kVwap);
-      data.push_back(std::move(vwap));
+      if (vwap_rule == VwapRule::RawDailyCloseV2) {
+        data.emplace_back(cells, kAugNaN);
+      } else {
+        data.push_back(std::move(legacy_vwap));
+      }
     }
     for (auto &c : adv_cols) {
       names.push_back(std::move(c.first));
@@ -256,7 +269,7 @@ with_alpha101_fields(const Panel &base, std::span<const atx::u16> adv_windows,
     }
   }
   return datafields::with_datafields(D, I, std::move(names), std::move(data), std::move(universe),
-                                     adv_windows);
+                                     adv_windows, vwap_rule, close_basis);
 }
 
 // ===========================================================================

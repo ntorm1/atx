@@ -1,5 +1,7 @@
 #pragma once
 
+#include "atx/engine/alpha/vwap_rule.hpp"
+
 #include <array>
 #include <limits>
 #include <set>
@@ -209,6 +211,8 @@ struct RunConfig {
     // already assigns cfg.adv_windows directly into a std::vector<atx::u16>. empty => {adv_window}.
     std::vector<atx::u16> adv_windows;      // --adv-windows (comma-separated list)
     bool                  augment_panel = false; // --augment-panel (valueless bool)
+    atx::engine::alpha::VwapRule vwap_rule =
+        atx::engine::alpha::VwapRule::RawDailyCloseV2; // --vwap-rule
 
     // --library-dir (8.A): a STABLE on-disk library::Library directory that
     // ACCUMULATES admitted alphas across discover runs/seeds (the library is

@@ -68,6 +68,11 @@ atx::u64 compute_discover_fingerprint(const RunConfig& cfg) {
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.min_dsr));
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.oos_fraction));
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.oos_embargo));
+  // The capacity adapter augments the panel; its price rule changes derived
+  // inputs. Preserve existing fingerprints when that adapter is inactive.
+  if (cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0) {
+    h = fp::fold_string(h, atx::engine::alpha::vwap_rule_name(cfg.vwap_rule));
+  }
   return h;
 }
 

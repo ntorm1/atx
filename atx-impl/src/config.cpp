@@ -402,6 +402,14 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         return atx::core::Ok();
     }
 
+    if (flag == "vwap-rule") {
+        const auto rule = atx::engine::alpha::parse_vwap_rule(value);
+        if (!rule) return atx::core::Err(EC::InvalidArgument,
+            "--vwap-rule must be raw-daily-close-v2 or adjusted-typical-v1");
+        cfg.vwap_rule = *rule;
+        return atx::core::Ok();
+    }
+
     // --adv-windows (S7-3): comma-separated list of u16 ADV windows (e.g. "5,10,20,60").
     if (flag == "adv-windows") {
         cfg.adv_windows.clear();

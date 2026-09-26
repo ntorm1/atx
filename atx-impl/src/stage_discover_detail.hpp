@@ -12,6 +12,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/vwap_rule.hpp"
 #include "atx/engine/alpha/typecheck.hpp" // alpha::detail::is_group_field
 #include "atx/core/types.hpp"
 
@@ -30,7 +31,9 @@ namespace atx::impl::detail {
 // Predicate mirrors single_alpha_capacity_test.cpp::capacity_universe exactly.
 [[nodiscard]] atx::core::Result<atx::engine::alpha::Panel>
 apply_capacity_screen(const atx::engine::alpha::Panel& panel,
-                      atx::f64 min_price, atx::f64 min_adv, long adv_window);
+                      atx::f64 min_price, atx::f64 min_adv, long adv_window,
+                      atx::engine::alpha::VwapRule vwap_rule =
+                          atx::engine::alpha::VwapRule::RawDailyCloseV2);
 
 // Build the W4a robust-factor weak/holdout sub-universe Panel (Deliverable 2).
 //

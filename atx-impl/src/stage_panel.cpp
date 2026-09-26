@@ -245,7 +245,8 @@ std::string panel_recipe(const atx::engine::data::HistoryDataConfig &cfg,
                          const std::string &executable_sha,
                          const MembershipRestriction &membership,
                          const std::vector<AsofFieldInput> &asof_fields,
-                         atx::i64 asof_max_stale_days) {
+                         atx::i64 asof_max_stale_days,
+                         atx::engine::alpha::VwapRule vwap_rule) {
     // nlohmann's ordered object keys and exact dump bytes are our versioned
     // serialization contract; this is not a claim of RFC 8785 canonical JSON.
     nlohmann::json recipe{
@@ -266,7 +267,13 @@ std::string panel_recipe(const atx::engine::data::HistoryDataConfig &cfg,
         {"compact_to_universe", cfg.compact_to_universe},
         {"compaction", "keep-original-order-if-ever-in-universe-in-selected-window"},
         {"augmentation", {{"enabled", !adv_windows.empty()}, {"adv_windows", adv_windows},
-                           {"dollar_volume_basis", "adjusted-close*raw-volume-research-proxy"}}},
+                           {"dollar_volume_basis", "raw_close*raw_volume"},
+                           {"vwap_rule", atx::engine::alpha::vwap_rule_name(vwap_rule)},
+                           {"vwap_kind", vwap_rule == atx::engine::alpha::VwapRule::RawDailyCloseV2
+                               ? "daily-close-price-proxy-not-intraday-vwap"
+                               : "adjusted-typical-price-legacy-proxy"},
+                           {"vwap_basis", vwap_rule == atx::engine::alpha::VwapRule::RawDailyCloseV2
+                               ? "raw" : "adjusted_level"}}},
         {"research_ohlc", "raw-OHLC*cumulReturnFactor-pointwise"},
         {"invalid_price_factor_or_product", "NaN-gap-next-valid-cell-independent"},
         {"raw_close", "unadjusted-as-traded"},
@@ -437,7 +444,18 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
     // empty) skips this entirely -> panel.bin byte-identical. Empty list falls back to the
     // single legacy --adv-window.
     if (!adv_wins.empty()) {
-        ATX_TRY(hp.panel, atx::engine::alpha::with_alpha101_fields(hp.panel, adv_wins));
+        ATX_TRY(hp.panel, atx::engine::alpha::with_alpha101_fields(hp.panel, adv_wins,
+            atx::engine::alpha::DollarVolumeBasis::RawCloseV2, cfg.vwap_rule));
+        hp.field_basis.clear();
+        hp.field_basis.reserve(hp.panel.num_fields());
+        for (atx::usize f = 0; f < hp.panel.num_fields(); ++f) {
+            const auto basis = atx::engine::data::history_field_level_basis(
+                hp.panel.field_name(static_cast<atx::engine::alpha::FieldId>(f)),
+                atx::engine::alpha::DollarVolumeBasis::RawCloseV2, cfg.vwap_rule);
+            if (!basis) return atx::core::Err(atx::core::ErrorCode::Internal,
+                "panel augmentation produced a field without a level basis");
+            hp.field_basis.push_back(*basis);
+        }
         hp.digest = atx::engine::data::digest_panel(hp.panel);
     }
 
@@ -455,7 +473,7 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
     identity.instrument_ids = std::move(hp.instrument_ids);
     identity.original_instrument_indices = std::move(hp.original_instrument_indices);
     identity.recipe = panel_recipe(hc, adv_wins, sources, executable_sha, membership,
-                                   asof_fields, cfg.panel_asof_max_stale_days);
+                                   asof_fields, cfg.panel_asof_max_stale_days, cfg.vwap_rule);
     identity.parents = std::move(sources.parents);
     if (!executable_sha.empty()) identity.parents.push_back({"producer_executable", executable_sha});
     // PanelParent carries (role, sha256) only; the CSV path goes to the sidecar.
@@ -510,6 +528,7 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
            << "universe_min_price=" << cfg.min_price << "\n"
            << "universe_require_sector=" << (cfg.require_sector ? "true" : "false") << "\n"
            << "adv_windows=" << adv_windows_val << "\n"
+           << "vwap_rule=" << atx::engine::alpha::vwap_rule_name(cfg.vwap_rule) << "\n"
            << "augmented=" << augmented_val << "\n"
            << "engine_digest=" << to_hex16(hp.digest) << "\n"
            << "dates=" << hp.panel.dates() << "\n"

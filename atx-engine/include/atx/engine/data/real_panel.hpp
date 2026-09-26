@@ -31,9 +31,10 @@
 //   6. Register price / corp_actions / universe in a DatasetCatalog, record the
 //      derivation lineage, assemble the final Panel (close=TRI, raw_close, volume,
 //      dollar_volume, adv, market_cap, sector; mask applied), and digest it.
-//      W0-D0: open/high/low/vwap are restated on close's TRI basis (D-03), the corp
+//      W0-D0: open/high/low are restated on close's TRI basis (D-03), the corp
 //      join treats dividends as events with a coverage guard (D-05), the TRI
 //      carries dividends across gaps (D-04), and every field is basis-tagged.
+//      V2 VWAP stays raw; explicit AdjustedTypicalV1 retains legacy scaling.
 //      These moved the smoke golden digest; see the lane-d0 report (re-pin at G0).
 //
 // THE DIGEST PIN (§0.7 #5 — the whole point is determinism)
@@ -88,7 +89,7 @@ namespace atx::engine::data {
 //   MixedV1     — legacy: close = TRI while open/high/low/vwap stayed raw, so one
 //                 panel mixed two price bases (open/close ratios jumped at every
 //                 dividend and split).
-//   TriScaledV2 — open/high/low/vwap are restated on close's TRI basis: each cell
+//   TriScaledV2 — open/high/low are restated on close's TRI basis: each cell
 //                 is multiplied by that cell's TRI / raw_close (NaN where either is
 //                 missing). volume, dollar_volume and adv{w} stay raw. Default.
 enum class RealPanelPriceBasis : std::uint8_t {
@@ -100,7 +101,8 @@ enum class RealPanelPriceBasis : std::uint8_t {
 //   out[k] = raw_price[k] · total_return_index[k] / raw_close[k]
 // NaN where the TRI or raw close is missing, non-finite or non-positive (a price is
 // never fabricated where close itself is a gap). Returns an empty vector when the
-// three spans differ in length. build_real_panel applies it to open/high/low/vwap
+// three spans differ in length. build_real_panel applies it to open/high/low
+// and legacy V1 VWAP
 // under TriScaledV2, so a candle's ratios to close are the raw-bar ratios.
 [[nodiscard]] std::vector<atx::f64>
 restate_on_tri_basis(std::span<const atx::f64> raw_price,
@@ -109,10 +111,12 @@ restate_on_tri_basis(std::span<const atx::f64> raw_price,
 
 // Level basis of a real-data panel field (see LevelBasis in history_panel.hpp).
 // Same tags as history_field_level_basis, except that under MixedV1 the raw candle
-// (open/high/low/vwap) is Raw. Unknown names return nullopt.
+// (open/high/low) is Raw. V2 VWAP is always Raw; V1 follows the candle basis.
+// Unknown names/rules return nullopt.
 [[nodiscard]] std::optional<LevelBasis> real_panel_field_level_basis(
     std::string_view name,
-    RealPanelPriceBasis price_basis = RealPanelPriceBasis::TriScaledV2) noexcept;
+    RealPanelPriceBasis price_basis = RealPanelPriceBasis::TriScaledV2,
+    alpha::VwapRule vwap_rule = alpha::VwapRule::RawDailyCloseV2) noexcept;
 
 // =========================================================================
 //  Canonical field order of the assembled real-data Panel.
@@ -162,6 +166,7 @@ struct RealDataConfig {
 
   // W0-D0 point-in-time rules (each keeps its legacy behaviour behind a V1 value).
   RealPanelPriceBasis price_basis = RealPanelPriceBasis::TriScaledV2; // D-03
+  alpha::VwapRule vwap_rule = alpha::VwapRule::RawDailyCloseV2;         // D-01
   CorpAlignRule corp_align = CorpAlignRule::EventOnceCappedV2;          // D-05
   TriGapRule tri_gap_rule = TriGapRule::RatioChainV2;                   // D-04
 };

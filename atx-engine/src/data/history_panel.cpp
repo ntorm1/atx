@@ -72,15 +72,15 @@ adjusted_history_prices(std::span<const atx::f64> prices,
 // ---------------------------------------------------------------------------
 
 std::optional<LevelBasis> history_field_level_basis(std::string_view name) noexcept {
-  // Research prices on the snapshot-factor basis (and the typical-price vwap proxy
-  // derived from them): their LEVEL contains future corporate actions.
-  static constexpr std::array<std::string_view, 5> kAdjusted{
-      kHistFieldClose, kHistFieldHigh, kHistFieldLow, kHistFieldOpen, "vwap"};
+  // Research prices on the snapshot-factor basis contain future corporate actions.
+  // Legacy VWAP is handled by the explicit-rule overload below.
+  static constexpr std::array<std::string_view, 4> kAdjusted{
+      kHistFieldClose, kHistFieldHigh, kHistFieldLow, kHistFieldOpen};
   // As-traded / as-published levels, counts and category codes.
-  static constexpr std::array<std::string_view, 12> kRaw{
+  static constexpr std::array<std::string_view, 13> kRaw{
       kHistFieldRawClose,   kHistFieldVolume,   kHistFieldMarketCap, kHistFieldSector,
       kHistFieldEarnFlag,   kHistFieldEarnCnt5, "cap",               "IndClass.sector",
-      "IndClass.industry",  "IndClass.subindustry", "dollar_volume", "shares"};
+      "IndClass.industry",  "IndClass.subindustry", "dollar_volume", "shares", "vwap"};
   // Dimensionless quantities.
   static constexpr std::array<std::string_view, 10> kRatio{
       kHistFieldAtmIv21, kHistFieldAtmIv126, "returns", "iv_term", "iv_vrp",
@@ -112,7 +112,13 @@ std::optional<LevelBasis> history_field_level_basis(std::string_view name) noexc
 }
 
 std::optional<LevelBasis> history_field_level_basis(std::string_view name,
-                                                    alpha::DollarVolumeBasis dv_basis) noexcept {
+                                                  alpha::DollarVolumeBasis dv_basis,
+                                                  alpha::VwapRule vwap_rule) noexcept {
+  if (name == "vwap") {
+    if (vwap_rule == alpha::VwapRule::RawDailyCloseV2) return LevelBasis::Raw;
+    if (vwap_rule == alpha::VwapRule::AdjustedTypicalV1) return LevelBasis::AdjustedLevel;
+    return std::nullopt;
+  }
   const std::optional<LevelBasis> by_name = history_field_level_basis(name);
   if (dv_basis == alpha::DollarVolumeBasis::RawCloseV2 || !by_name.has_value()) {
     return by_name;

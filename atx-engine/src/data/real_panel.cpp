@@ -362,7 +362,14 @@ std::vector<atx::f64> restate_on_tri_basis(std::span<const atx::f64> raw_price,
 //  real_panel_field_level_basis — the D-01 metadata for a real-data field.
 // ---------------------------------------------------------------------------
 std::optional<LevelBasis> real_panel_field_level_basis(std::string_view name,
-                                                       RealPanelPriceBasis price_basis) noexcept {
+                                                     RealPanelPriceBasis price_basis,
+                                                     alpha::VwapRule vwap_rule) noexcept {
+  if (name == "vwap") {
+    if (vwap_rule == alpha::VwapRule::RawDailyCloseV2) return LevelBasis::Raw;
+    if (vwap_rule != alpha::VwapRule::AdjustedTypicalV1) return std::nullopt;
+    return price_basis == RealPanelPriceBasis::MixedV1 ? LevelBasis::Raw
+                                                      : LevelBasis::AdjustedLevel;
+  }
   if (price_basis == RealPanelPriceBasis::MixedV1 && is_candle_price_field(name)) {
     return LevelBasis::Raw; // legacy: the candle stayed on the raw basis
   }
@@ -407,7 +414,9 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
   ATX_TRY(auto price, build_price_dataset(cfg.databento_hive_root, cfg.window, canon));
   const atx::u16 adv_w = static_cast<atx::u16>(cfg.universe.adv_window);
   const std::vector<atx::u16> adv_windows = {adv_w};
-  ATX_TRY(auto base_panel, price_to_panel(price, adv_windows));
+  // This Dataset was assembled above from unadjusted Databento daily OHLCV.
+  ATX_TRY(auto base_panel, price_to_panel(price, adv_windows, cfg.vwap_rule,
+                                        alpha::ClosePriceBasis::Raw));
 
   // (4) align corp-actions onto the price axis; per-symbol total-return adjust.
   //     D-05: the dividend joins its own session only, the other columns carry a
@@ -441,7 +450,8 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
       continue; // raw close already retained as raw_close
     }
     const std::span<const atx::f64> col = base_panel.field_all(static_cast<alpha::FieldId>(f));
-    if (scale_candle && is_candle_price_field(fn)) {
+    if (scale_candle && is_candle_price_field(fn) &&
+        (fn != "vwap" || cfg.vwap_rule == alpha::VwapRule::AdjustedTypicalV1)) {
       // Same axis and length as the TRI / raw_close (all nd*ni date-major).
       put_field(names, data, fn,
                 restate_on_tri_basis(col, adj.total_return_index, adj.raw_close));
@@ -485,7 +495,8 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
   field_basis.reserve(panel.num_fields());
   for (atx::usize f = 0; f < panel.num_fields(); ++f) {
     const std::string_view fn = panel.field_name(static_cast<alpha::FieldId>(f));
-    const std::optional<LevelBasis> basis = real_panel_field_level_basis(fn, cfg.price_basis);
+    const std::optional<LevelBasis> basis =
+        real_panel_field_level_basis(fn, cfg.price_basis, cfg.vwap_rule);
     if (!basis.has_value()) {
       return Err(ErrorCode::Internal, "build_real_panel: field '" + std::string{fn} +
                                           "' has no level-basis tag");

@@ -23,6 +23,7 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/vwap_rule.hpp"
 #include "atx/engine/alpha/segment_panel.hpp"  // alpha::TimeWindow
 #include "atx/engine/data/universe.hpp"         // UniverseConfig
 
@@ -43,7 +44,7 @@ namespace atx::engine::data {
 //                   date t uses only information available on t, so comparing levels
 //                   across instruments on one date is point-in-time clean.
 //   AdjustedLevel — a price level multiplied by a snapshot backward adjustment factor
-//                   (the TRI close and the research open/high/low/vwap). The factor at
+//                   (the TRI close, research open/high/low and legacy VWAP). The factor at
 //                   t already contains every split and dividend up to the snapshot
 //                   date, so the LEVEL carries future corporate actions. Ratios of the
 //                   same instrument's own series (returns) are clean; a cross-sectional
@@ -74,23 +75,18 @@ enum class LevelBasis : std::uint8_t {
 // `dollar_volume`, `vwap`, `adv{d}`), the opt-in IV/liquidity families, the FINRA
 // short-interest fields and `regime_*` overlays. `dollar_volume`/`adv{d}` are Raw
 // because with_alpha101_fields builds them from raw_close x volume by default
-// (alpha::DollarVolumeBasis::RawCloseV2); `vwap` is the typical price on the close
-// basis, so it is AdjustedLevel. Unknown names return nullopt — a lint must treat an
-// untagged field as unknown, never as clean.
-//
-// The name-only Raw tag on `dollar_volume`/`adv{d}` holds ONLY for a panel augmented
-// by with_alpha101_fields under RawCloseV2 (the default). A panel augmented under
-// DollarVolumeBasis::CloseV1, or run through datafields::with_datafields directly
-// (which always uses close x volume, i.e. the adjusted close on a history panel),
-// carries adjusted-level liquidity: tag it with the overload below.
+// (alpha::DollarVolumeBasis::RawCloseV2); vwap is the raw daily-close proxy under
+// RawDailyCloseV2. Unknown names return nullopt. These name-only defaults describe
+// the default augmentation recipe; legacy recipes must use the explicit overload.
 [[nodiscard]] std::optional<LevelBasis> history_field_level_basis(std::string_view name) noexcept;
 
 // Same tags, for a panel whose dollar_volume/adv{d} were derived under `dv_basis`:
 // RawCloseV2 → identical to the name-only overload; CloseV1 (and any unknown enum
 // value, fail closed) → dollar_volume and adv{d} are AdjustedLevel. Every other
-// name is tagged exactly as the name-only overload tags it.
+// name is tagged as above, except VWAP follows its independent explicit rule.
 [[nodiscard]] std::optional<LevelBasis>
-history_field_level_basis(std::string_view name, alpha::DollarVolumeBasis dv_basis) noexcept;
+history_field_level_basis(std::string_view name, alpha::DollarVolumeBasis dv_basis,
+                         alpha::VwapRule vwap_rule = alpha::VwapRule::RawDailyCloseV2) noexcept;
 
 // =========================================================================
 //  Canonical assembled-Panel field order (digest hashes fields in THIS order).
