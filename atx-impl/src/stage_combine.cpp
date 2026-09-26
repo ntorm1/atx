@@ -1584,7 +1584,8 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
             // (S3-4) risk_cfg.kind==Factor: breadth is measured against the SAME
             // cleaned_alpha_cov the ShrinkageMv weight fit above uses, so the
             // telemetry stays coherent with whichever covariance actually shipped.
-            // Default risk_cfg.kind==Diagonal keeps mle_covariance -> byte-identical.
+            // Default risk_cfg.kind==Diagonal keeps the original MLE covariance;
+            // the explicitly reported V2 breadth reduction can change rounding.
             const VecX mu = combine::detail::window_means(pool, na, fit_begin, t);
             const MatX centered = combine::detail::complete_case_centered(pool, na, fit_begin, t, mu);
             const MatX cov = (risk_cfg.kind == risk::RiskModelKind::Factor)
