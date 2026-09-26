@@ -24,7 +24,14 @@ atx::core::Result<impl::RunConfig> parse(std::initializer_list<std::string> inpu
 TEST(ImplIcScreenConfig, DefaultEnabledAndExplicitLegacyAvailable) {
     auto current = parse({"atx-impl", "discover"});
     ASSERT_TRUE(current);
-    EXPECT_EQ(current->ic_screen.rule, IcScreenRule::ConservativeV2);
+    EXPECT_EQ(current->ic_screen.rule, IcScreenRule::EquivalenceV3);
+    EXPECT_DOUBLE_EQ(current->ic_screen.practical_abs_ic, 0.002);
+    EXPECT_DOUBLE_EQ(current->ic_screen.confidence_multiplier, 3.5);
+    auto v2 = parse({"atx-impl", "discover", "--ic-screen-rule", "conservative-v2",
+                     "--ic-screen-min-abs-ic", "0.02"});
+    ASSERT_TRUE(v2);
+    EXPECT_EQ(v2->ic_screen.rule, IcScreenRule::ConservativeV2);
+    EXPECT_DOUBLE_EQ(v2->ic_screen.practical_abs_ic, 0.02);
     auto legacy = parse({"atx-impl", "discover", "--ic-screen-rule", "disabled-v1"});
     ASSERT_TRUE(legacy);
     EXPECT_EQ(legacy->ic_screen.rule, IcScreenRule::DisabledV1);

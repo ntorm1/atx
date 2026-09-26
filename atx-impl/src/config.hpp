@@ -74,11 +74,10 @@ struct RunConfig {
     unsigned long long seed = 0ULL;    // --seed
     long        population   = 0;     // --population
     long        generations  = 0;     // --generations
-    atx::engine::factory::IcScreenConfig ic_screen = [] {
-        atx::engine::factory::IcScreenConfig screen;
-        screen.rule = atx::engine::factory::IcScreenRule::ConservativeV2;
-        return screen;
-    }(); // --ic-screen-rule disabled-v1 explicitly reproduces unscreened discovery.
+    atx::engine::factory::IcScreenConfig ic_screen =
+        atx::engine::factory::equivalence_ic_screen_config();
+    // disabled-v1 reproduces unscreened discovery. V2 reproduction also needs
+    // its recorded numeric recipe (previous practical_abs_ic default: 0.02).
     std::vector<std::string> seed_exprs; // --seed-expr (repeatable)
     double      min_dsr      = 0.5;   // --min-dsr
 

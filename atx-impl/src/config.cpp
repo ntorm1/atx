@@ -120,6 +120,7 @@ atx::core::Result<bool> apply_ic_screen_option(
     if (flag == "ic-screen-rule") {
         if (value == "disabled-v1") config.rule = IcScreenRule::DisabledV1;
         else if (value == "conservative-v2") config.rule = IcScreenRule::ConservativeV2;
+        else if (value == "equivalence-v3") config.rule = IcScreenRule::EquivalenceV3;
         else return invalid();
         return Ok(true);
     }
