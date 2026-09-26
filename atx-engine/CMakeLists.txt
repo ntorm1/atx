@@ -7,6 +7,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/crossover.cpp
     src/factory/factory.cpp
     src/factory/fitness.cpp
+    src/factory/execution_objective.cpp
     src/factory/ic_screen.cpp
     src/factory/genome.cpp
     src/factory/mutation.cpp
@@ -38,6 +39,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/alpha/parser.cpp
     src/alpha/registry.cpp
     src/alpha/segment_panel.cpp
+    src/alpha/streams.cpp
     src/alpha/typecheck.cpp
     src/alpha/unparse.cpp
     src/learn/elastic_net.cpp
