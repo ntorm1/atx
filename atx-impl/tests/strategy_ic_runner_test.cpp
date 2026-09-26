@@ -82,11 +82,11 @@ bool fixture(Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg) {
       !role(dir.path/"validation",18200,cfg.validation_sha256,-1)) return false;
   return json_file(cfg.library_path,{{"schema","atx.dsl-ic-library/v1"},{"id","synthetic-ic-two"},
       {"fields",Json::array({{{"name","close"}},{{"name","raw_close"}},{{"name","volume"}}})},
-      {"families",Json::array({{{"id","fixed-volume"}}})},
+      {"families",Json::array({{{"id","fixed_volume"}}})},
       {"candidates",Json::array({
-          {{"id","volume-level"},{"family","fixed-volume"},{"dsl","volume"},
+          {{"id","volume_level"},{"family","fixed_volume"},{"dsl","volume"},
            {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}},
-          {{"id","volume-rank"},{"family","fixed-volume"},{"dsl","rank(volume)"},
+          {{"id","volume_rank"},{"family","fixed_volume"},{"dsl","rank(volume)"},
            {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}}})}},cfg.library_sha256);
 }
 Json read_json(const std::filesystem::path& path) { std::ifstream in(path); return Json::parse(in); }

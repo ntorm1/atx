@@ -61,6 +61,11 @@ co::Status write_json(const std::filesystem::path& path,const Json& j) {
   out<<j.dump(2)<<'\n'; out.close();
   return out?co::Ok():co::Status(co::Err(co::ErrorCode::IoError,"IC runner: JSON final close"));
 }
+bool composition_id(std::string_view s) {
+  return !s.empty() && s.size()<=64 && std::all_of(s.begin(),s.end(),[](char c) {
+    return (c>='a' && c<='z') || (c>='0' && c<='9') || c=='_';
+  });
+}
 co::Result<Library> library(const IcRunnerConfig& cfg) {
   ATX_TRY(auto j,pinned_json(cfg.library_path,cfg.library_sha256));
   if (j.at("schema")!="atx.dsl-ic-library/v1")
@@ -80,7 +85,7 @@ co::Result<Library> library(const IcRunnerConfig& cfg) {
   for (const auto& row:j.at("candidates")) {
     Candidate c; c.id=row.at("id").get<std::string>(); c.family=row.at("family").get<std::string>();
     const auto dsl=row.at("dsl").get<std::string>();
-    if (c.id.empty() || c.id.size()>128 || c.family.empty() || c.family.size()>128 ||
+    if (!composition_id(c.id) || !composition_id(c.family) ||
         !ids.insert(c.id).second || !expressions.insert(dsl).second || !families.contains(c.family) ||
         row.at("sign_policy")!="train-rank-ic21" || row.at("horizons")!=Json::array({5,21,63}) ||
         dsl.empty() || dsl.size()>4096)
