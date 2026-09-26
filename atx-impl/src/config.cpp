@@ -228,6 +228,13 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "min-date")     { cfg.min_date      = value; return atx::core::Ok(); }
     if (flag == "segs")         { cfg.segs          = value; return atx::core::Ok(); }
     if (flag == "panel-out")    { cfg.panel_out     = value; return atx::core::Ok(); }
+    if (flag == "panel-storage-rule") {
+        if (value != "legacy-f64-v1" && value != "mmap-f32-v2")
+            return atx::core::Err(EC::InvalidArgument,
+                "--panel-storage-rule requires legacy-f64-v1 or mmap-f32-v2");
+        cfg.panel_storage_rule = value;
+        return atx::core::Ok();
+    }
     if (flag == "start")        { cfg.start         = value; return atx::core::Ok(); }
     if (flag == "end")          { cfg.end           = value; return atx::core::Ok(); }
     if (flag == "allocation-rule") {

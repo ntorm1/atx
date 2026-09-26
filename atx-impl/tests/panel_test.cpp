@@ -550,6 +550,18 @@ TEST(AtxImplPanelMembership, RestrictionFlagsAreAllThreeOrNone) {
     }
 }
 
+TEST(AtxImplPanelMembership, StorageRuleRequiresKnownExplicitFormat) {
+    const auto legacy = parse_panel_args({"atx-impl", "panel"});
+    ASSERT_TRUE(legacy);
+    EXPECT_EQ(legacy->panel_storage_rule, "legacy-f64-v1");
+    const auto store = parse_panel_args({"atx-impl", "panel", "--panel-storage-rule", "mmap-f32-v2"});
+    ASSERT_TRUE(store);
+    EXPECT_EQ(store->panel_storage_rule, "mmap-f32-v2");
+    EXPECT_TRUE(store->set_flags.contains("panel-storage-rule"));
+    EXPECT_FALSE(parse_panel_args({"atx-impl", "panel", "--panel-storage-rule", "float"}));
+    EXPECT_FALSE(parse_panel_args({"atx-impl", "panel", "--panel-storage-rule", ""}));
+}
+
 TEST(AtxImplPanelMembership, AllowListUnionAddsTheLastRebalanceBeforeEvalStart) {
     const atx::i64 day = 86400LL * 1'000'000'000LL;
     const atx::i64 eval_start = 18'263LL * day; // 2020-01-02

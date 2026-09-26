@@ -62,6 +62,7 @@ struct RunConfig {
     // -- panel --
     std::string segs;                  // --segs
     std::string panel_out;             // --panel-out
+    std::string panel_storage_rule{"legacy-f64-v1"}; // --panel-storage-rule
     std::string start;                 // --start
     std::string end;                   // --end
     double      min_adv_usd   = 0.0;  // --min-adv-usd
