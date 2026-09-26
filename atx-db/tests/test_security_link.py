@@ -36,6 +36,10 @@ def clock(day):
     return dt.datetime(2013, 1, day, 18, tzinfo=UTC)
 
 
+def decision(day):
+    return clock(day) + dt.timedelta(hours=4)
+
+
 def filing(name, day, cik="1", available=None, **kw):
     fields = dict(evidence_id=name, accession="acc-" + name, cik=cik, ticker="XYZ",
                   effective_date=D(2013, 1, day), accepted_at=clock(day),
@@ -60,7 +64,8 @@ class SecurityLinkTest(unittest.TestCase):
         self.assertEqual(links[0].cik, "0000000001")
         self.assertEqual(links[0].ticker, "XYZ")
         self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 8), clock(8)).link)
-        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 9), clock(9)).link)
+        self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 9), clock(9)).link)
+        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 9), decision(9)).link)
         self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 10), clock(10)).link)
         revised = replace(right, revision_status="revision-confirmed", revision_available_at=clock(12))
         late, _ = sl.build_links([vendor()], [left, revised])
@@ -95,11 +100,11 @@ class SecurityLinkTest(unittest.TestCase):
         a, b = filing("a", 1), filing("b", 19)
         rival = filing("rival", 10, cik="2", available=20)
         links, _ = sl.build_links([v], [a, b, rival])
-        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 19), clock(19)).link)
-        self.assertEqual(sl.resolve_link(links, "7", D(2013, 1, 19), clock(20)).reason,
+        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 19), decision(19)).link)
+        self.assertEqual(sl.resolve_link(links, "7", D(2013, 1, 19), decision(20)).reason,
                          "conflicting_available_identity_evidence")
         overlap, _ = sl.build_links([vendor(), vendor("v2", "8")], [filing("l", 1), filing("r", 9)])
-        self.assertIsNone(sl.resolve_link(overlap, "7", D(2013, 1, 9), clock(9)).link)
+        self.assertIsNone(sl.resolve_link(overlap, "7", D(2013, 1, 9), decision(9)).link)
 
     def test_dated_override_is_explicit_and_has_its_own_clock(self):
         proof = filing("proof", 1)
@@ -108,7 +113,8 @@ class SecurityLinkTest(unittest.TestCase):
         links = sl.read_overrides(io.StringIO(header + row), {"proof": proof})
         self.assertEqual(links[0].available_at, clock(10))
         self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 9), clock(9)).link)
-        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 10), clock(10)).link)
+        self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 10), clock(10)).link)
+        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 10), decision(10)).link)
         with self.assertRaisesRegex(ValueError, "qualified"):
             sl.read_overrides(io.StringIO(header + row), {"proof": replace(proof, published_at=None)})
 
@@ -130,7 +136,7 @@ class SecurityLinkTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "byte count"):
                 sl.read_link_artifact(path)
         report = sl.coverage_report(links, [("7", D(2013, 1, 8), clock(8)),
-                                           ("7", D(2013, 1, 9), clock(9))])
+                                           ("7", D(2013, 1, 9), decision(9))])
         self.assertEqual((report["requests"], report["linked"], report["rate"]), (2, 1, 0.5))
         self.assertFalse(report["plan_coverage_qualified"])
         self.assertIsNone(sl.coverage_report(links, [])["rate"])

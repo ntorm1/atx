@@ -624,8 +624,8 @@ def align_interval_values(rows: list[dict], session_keys: list[int], lag_session
         raise ValueError("invalid interval alignment policy")
     if any(a >= b for a, b in zip(session_keys, session_keys[1:])):
         raise ValueError("session keys must increase")
-    visibility = [(max(bisect.bisect_left(session_keys, r["link_available_ns"]),
-                       0 if r["identity_only"] else bisect.bisect_left(session_keys, r["available_ns"]) + lag_sessions), r)
+    visibility = [(max(bisect.bisect_right(session_keys, r["link_available_ns"]),
+                       0 if r["identity_only"] else bisect.bisect_right(session_keys, r["available_ns"]) + lag_sessions), r)
                   for r in rows]
     output = []
     for t, key in enumerate(session_keys):
@@ -795,6 +795,13 @@ def main(argv: list[str] | None = None) -> int:
                 unmapped[sr] = "cik_absent_from_companyfacts"
             continue
         doc = json.loads(zf.read(member))
+        if strict:
+            try:
+                if _security_link_module().cik_key(doc.get("cik", "")) != cik:
+                    raise ValueError("Company Facts body issuer does not match dated link CIK")
+            except ValueError:
+                zf.close()
+                raise
         snaps = company_snapshots(parse_company_facts(doc), seal)
         for s in snaps:
             lag_by_form.setdefault(s["form"], []).append((s["filed"] - s["period_end"]).days)

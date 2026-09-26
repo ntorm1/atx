@@ -179,6 +179,16 @@ validate_axis(std::span<const atx::i64> session_keys, atx::usize instruments) {
   return (first >= n || lag >= n - first) ? n : first + lag;
 }
 
+// New dated identity/fact clocks require available_at < decision, including
+// exact boundary equality. Keep the legacy lower-bound convention above intact.
+[[nodiscard]] inline atx::usize strict_visible_index(std::span<const atx::i64> session_keys,
+                                                     atx::i64 available_ns, atx::usize lag) noexcept {
+  const auto it = std::upper_bound(session_keys.begin(), session_keys.end(), available_ns);
+  const auto first = static_cast<atx::usize>(it - session_keys.begin());
+  const atx::usize n = session_keys.size();
+  return (first >= n || lag >= n - first) ? n : first + lag;
+}
+
 // True when candidate `b` should replace the current choice `a`.
 [[nodiscard]] inline bool supersedes(const PitRecord &b, const PitRecord &a) noexcept {
   if (b.period_end_ns != a.period_end_ns) return b.period_end_ns > a.period_end_ns;
@@ -245,9 +255,11 @@ align_pit_records(std::span<const PitRecord> records, std::span<const atx::i64> 
                             "fundamentals: malformed dated issuer link");
     }
     const atx::usize filing_vis = rec.identity_only ? 0U
-        : detail::visible_index(session_keys, rec.available_ns, cfg.lag_sessions);
+        : rec.identity_rule == IdentityRule::DatedLinksV2
+          ? detail::strict_visible_index(session_keys, rec.available_ns, cfg.lag_sessions)
+          : detail::visible_index(session_keys, rec.available_ns, cfg.lag_sessions);
     const atx::usize vis = rec.identity_rule == IdentityRule::DatedLinksV2
-        ? std::max(filing_vis, detail::visible_index(session_keys, rec.link_available_ns, 0U))
+        ? std::max(filing_vis, detail::strict_visible_index(session_keys, rec.link_available_ns, 0U))
         : filing_vis;
     if (vis >= dates) {
       ++out.stats.records_after_axis;

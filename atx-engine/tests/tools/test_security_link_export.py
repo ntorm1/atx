@@ -49,6 +49,17 @@ def company(cik, value, period="2012-12-31"):
 
 
 class SecurityLinkExportTest(unittest.TestCase):
+    def test_link_and_filing_clock_equality_are_withheld(self):
+        rows = ex.project_dated_snapshots(link(1, 1, 10, 3), [snapshot(10)])
+        boundary = ex._ns(clock(3))
+        got = ex.align_interval_values(rows, [boundary, boundary + 1], 0, 365, 550)
+        self.assertTrue(math.isnan(got[0]["book_equity"]))
+        self.assertEqual(got[1]["book_equity"], 10)
+        rows[1]["available_ns"] = boundary + 2
+        got = ex.align_interval_values(rows, [boundary + 2, boundary + 3], 0, 365, 550)
+        self.assertTrue(math.isnan(got[0]["book_equity"]))
+        self.assertEqual(got[1]["book_equity"], 10)
+
     def test_sequential_issuers_expiry_and_separate_clocks(self):
         rows = ex.project_dated_snapshots(link(1, 1, 6, 3), [snapshot(10)])
         rows += ex.project_dated_snapshots(link(2, 6, 10, 7), [snapshot(20, D(2012, 9, 30))])
@@ -116,6 +127,19 @@ class SecurityLinkExportTest(unittest.TestCase):
             self.assertEqual(audit["contexts"][0]["finite_cells"]["book_equity"], 6)
             with self.assertRaises(SystemExit):
                 ex.main(argv)  # immutable output
+            bad_payload = root / "synthetic-wrong-issuer.zip"
+            with zipfile.ZipFile(bad_payload, "w") as archive:
+                archive.writestr("CIK0000000001.json", json.dumps(company(2, 999)))
+            bad_receipt = root / "synthetic-wrong-issuer-sealed.json"
+            bad_receipt.write_text(json.dumps({"schema": "atx.sec-companyfacts-sealed/v1",
+                "seal_exclusive": "2020-01-01", "payload_sha256": ex.sha256_file(bad_payload)}))
+            wrong = list(argv)
+            wrong[wrong.index("--out") + 1] = str(root / "wrong-export")
+            wrong[wrong.index("--companyfacts") + 1] = str(bad_payload)
+            wrong[wrong.index("--companyfacts-sealed-manifest") + 1] = str(bad_receipt)
+            with self.assertRaisesRegex(ValueError, "body issuer"):
+                ex.main(wrong)
+            self.assertFalse((root / "wrong-export/manifest.json").exists())
 
     def test_legacy_bridge_requires_opt_in_and_strict_receipt_is_mandatory(self):
         with self.assertRaisesRegex(ValueError, "explicit"):

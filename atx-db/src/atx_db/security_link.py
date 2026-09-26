@@ -273,7 +273,7 @@ def resolve_link(links: Iterable[SecurityLink], sr_id: str, session: dt.date,
     if session >= SEAL or clock.date() >= SEAL:
         raise ValueError("link decision reaches sealed era")
     eligible = [x for x in links if x.sr_id == sr_id and x.valid_from <= session < x.valid_to
-                and utc(x.available_at) <= clock]
+                and utc(x.available_at) < clock]
     if not eligible:
         return LinkDecision(None, "no_available_covering_link")
     overrides = [x for x in eligible if x.method == "dated-override-v1"]

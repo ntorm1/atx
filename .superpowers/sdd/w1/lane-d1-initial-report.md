@@ -86,3 +86,21 @@ This verifies machinery, not historical identity coverage or tradeable alpha.
    Requested-decision coverage is explicitly not that plan gate.
 
 No original DAG element is marked complete by this report.
+
+## Independent-review corrections (after a2f3f373)
+
+The strict identity resolver and new Python/C++ interval paths now require both
+link and filing availability to be **strictly earlier** than the decision/session
+key. Equality is withheld; the legacy lower-bound alignment is preserved. Strict
+exports also verify the JSON body's canonical issuer CIK against the linked CIK
+before emitting owner-labelled facts, including when a hash-bound ZIP member has
+the wrong issuer body. The synthetic tests include equality and mislabeled-member
+regressions: core **8/8**, 0.019 s; export **5/5**, 0.091 s, exit 0. Logs are
+`build-equity/d1-clock-identity-{core,export}-tests.log`. Four C++ fixtures remain
+uncompiled source.
+
+The automatic whole-interval rule is not a usable broad live master: it waits for
+a right-hand proof at/after the last valid calendar day, offering at most a narrow
+final-day decision opportunity and commonly none. A separately authorized causal
+prospective rule is required; the retrospective rule must not backfill history or
+be represented as meeting the original D1 acceptance gate.
