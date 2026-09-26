@@ -167,7 +167,8 @@ def refresh_adjustment_factor_history(
     """Build event-level price/share/volume factors from normalized corporate actions."""
 
     options = options or AdjustmentFactorHistoryOptions()
-    # One row per corporate-action step (P8 revisions): its final label at that label's first clock.
+    # One row per corporate-action step (P8 revisions): its first decided revision at its own clock; pending
+    # steps are absent.
     # Imported here: corporate_actions imports (via market_daily) modules that import this one.
     from .corporate_actions import corporate_actions_current_sql
 

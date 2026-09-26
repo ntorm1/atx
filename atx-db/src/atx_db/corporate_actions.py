@@ -529,16 +529,19 @@ def _stage_m2(con: Any) -> None:
     A confirmed out-of-band step whose ratio is not exact is a split only if all hold:
     (b) the raw close moves with the factor on the step bar (max(x, 1/x) of price ratio x k at most
     M2_PRICE_TOLERANCE); (d) the line is not fund-like (fewer than M2_FUND_COUNT_CHANGES vendor count
-    changes in the M2_HISTORY_BARS bars before the step); (a) a discrete count move corroborates it: a bar
-    of R1d's window (SHARE_LEAD_BARS before to SHARE_WINDOW_BARS after the step) whose count ratio r to the
-    previous count has |k/r - 1| at most M2_JUMP_TOLERANCE; (c) and whose residual k/r - 1, beyond
+    changes in the M2_HISTORY_BARS bars before the step, up to the pre-step bar SHARE_LEAD_BARS + 1 before
+    it: a lead bar's count may be unpublished at the verdict); (a) a discrete count move corroborates it: a
+    bar of R1d's window (SHARE_LEAD_BARS before to SHARE_WINDOW_BARS after the step) whose count ratio r to
+    the previous count has |k/r - 1| at most M2_JUMP_TOLERANCE; (c) and whose residual k/r - 1, beyond
     M2_EXACT_RESIDUAL, is a same-day dividend (positive, on a line with a cash-dividend step in the
     M2_HISTORY_BARS bars before). Otherwise it is ``split_ratio_implausible`` (fail closed).
 
     Clocks: (b) and (d) are known at the step bar, so failing either decides the label at R1d's
     confirmation clock; a split is decided at the later of R1d's confirmation and the first corroborating
-    bar; no corroborating bar is a verdict only once the window has closed and any count in it would be
-    public (window end + the longest A8 family lag); until then the step is pending.
+    bar whose previous count is public (R1d's A8 run clock: a count run is public at its first bar when it
+    is the line's first, else the longest family lag after it -- the previous count can be an unpublished
+    intermediate run); no corroborating bar is a verdict only once the window has closed and any count in it
+    would be public (window end + the longest A8 family lag); until then the step is pending.
     """
     lead, window = _split_epochs.SHARE_LEAD_BARS, _split_epochs.SHARE_WINDOW_BARS
     lag_days = max(_split_epochs.SHARE_MODELED_LAG_DAYS.values())
@@ -558,13 +561,25 @@ def _stage_m2(con: Any) -> None:
             JOIN _ca_series p ON p.security_id = r.security_id AND p.series = r.series AND p.is_primary
             WHERE r.security_id IN (SELECT security_id FROM cand)
             WINDOW w AS (PARTITION BY r.security_id ORDER BY r.trade_date)
+        ), runs AS (
+            -- Vendor count runs (R1d's A8 model): a run starts where the count changes; run 1 is the first count.
+            SELECT *, sum(CASE WHEN shares IS NOT NULL AND shares IS DISTINCT FROM prev_shares THEN 1 ELSE 0 END)
+                          OVER (PARTITION BY security_id ORDER BY trade_date ROWS UNBOUNDED PRECEDING) AS share_run
+            FROM bars
+        ), published AS (
+            -- When a run's count is public: at its first bar for the line's first run, else the family lag after.
+            SELECT security_id, share_run,
+                   CASE WHEN share_run = 1 THEN min(available_at)
+                        ELSE min(available_at) + INTERVAL {lag_days} DAY END AS public_at
+            FROM runs WHERE shares IS NOT NULL GROUP BY security_id, share_run
         ), at_ex AS (
             SELECT c.*, b.bar_no AS ex_no, b.close / b.prior_close AS price_ratio
             FROM cand c JOIN bars b ON b.security_id = c.security_id AND b.trade_date = c.ex_date
         ), history AS (
             SELECT x.security_id, x.ex_date,
                    count(*) FILTER (WHERE b.shares IS NOT NULL AND b.prev_shares IS NOT NULL
-                                      AND b.shares <> b.prev_shares) AS count_changes,
+                                      AND b.shares <> b.prev_shares AND b.bar_no <= x.ex_no - {lead + 1})
+                       AS count_changes,
                    count(e.ex_date) AS cash_steps
             FROM at_ex x
             JOIN bars b ON b.security_id = x.security_id AND b.bar_no BETWEEN x.ex_no - {M2_HISTORY_BARS} AND x.ex_no - 1
@@ -572,15 +587,17 @@ def _stage_m2(con: Any) -> None:
                  AND e.action_type = 'cash_dividend'
             GROUP BY x.security_id, x.ex_date
         ), jumps AS (
-            SELECT x.security_id, x.ex_date, b.available_at, b.shares / b.prev_shares AS r,
-                   x.k / (b.shares / b.prev_shares) - 1 AS residual
+            -- A count move is evidence only once its previous count is public too.
+            SELECT x.security_id, x.ex_date, greatest(b.available_at, p.public_at) AS public_at,
+                   b.shares / b.prev_shares AS r, x.k / (b.shares / b.prev_shares) - 1 AS residual
             FROM at_ex x
-            JOIN bars b ON b.security_id = x.security_id AND b.bar_no BETWEEN x.ex_no - {lead} AND x.ex_no + {window}
+            JOIN runs b ON b.security_id = x.security_id AND b.bar_no BETWEEN x.ex_no - {lead} AND x.ex_no + {window}
+            JOIN published p ON p.security_id = b.security_id AND p.share_run = b.share_run - 1
             WHERE b.shares > 0 AND b.prev_shares > 0 AND b.shares <> b.prev_shares
         ), corroborated AS (
             SELECT j.security_id, j.ex_date,
-                   min(j.available_at) FILTER (WHERE {qualifies}) AS jump_at,
-                   arg_min(j.r, j.available_at) FILTER (WHERE {qualifies}) AS first_r,
+                   min(j.public_at) FILTER (WHERE {qualifies}) AS jump_at,
+                   arg_min(j.r, j.public_at) FILTER (WHERE {qualifies}) AS first_r,
                    arg_min(j.r, abs(j.residual)) AS closest_r
             FROM jumps j LEFT JOIN history h USING (security_id, ex_date)
             GROUP BY j.security_id, j.ex_date
