@@ -6,7 +6,7 @@ Complete the 2026-09-24 DAG series with sub-agent development, implementation be
 and real engine/alpha improvements. The goal remains ACTIVE and unlimited; do not create
 another goal or claim series completion. W0's original ten lanes and FIXUP were merged at
 bc5cc646b46f6a7c23a60e87d28dfa9b972671ec, but its integrated gates and G0 are still open.
-W1-W5 implementation has not started.
+W1-W5 are not complete; the owner pulled forward the IC-screen subset of W2-A4.
 
 The current user request authorizes continuation beyond the old W0 stop. Owner-controlled
 2020+ data remains sealed. Only 2013-2019 development data may be evaluated. Do not write,
@@ -46,7 +46,21 @@ Do not launch it or automatically rerun mining. User prioritized vectorized roug
 forward-return IC across several horizons before full backtests, retaining true alphas.
 This explicitly authorizes proceeding with the scoped W2-A4 subset before that long gate.
 
-Scaffold adds only factory/ic_screen.cpp to CMake. Root branch remains integration;
+Source integrated through4924341a: kernel45682ec9/0c9820d7/ee24fa6d, search
+a9606e6d/8ad38bef, globalconfigd060cd81/f9a6be88, V3registry561ed7bf/10dfdc80,
+mined8f0968e/4924341a. Focused tests3b834f89/52a67eb2 are NOT compiled yet.
+Independent reviews fixed paired coverage and duplicate V3 metadata; borrowed cache
+recipe/geometry compatibility is being added by kernel/search owners. Root adding
+StageResult counters and two EXCLUDE_FROM_ALL focused targets: four engine test TUs,
+five impl test TUs, both real production libraries and normal PCH settings. One root
+combined compile only after final source arrives and RAM admits it; no other compiler.
+Last host sample1.299GiB physical/2.424GiB commit/zero compilers: no build launched.
+Kernel owner also adds short noisy retention/null cohorts; do not claim general alpha
+recall from prior high-precision fixtures. G0 independently reviews search/admission;
+root reviews mine. V3 rejects have no P&L; DSR total raw N uses max of observed and
+existing candidate marginal variance, explicitly disclosed. Long gates stay deferred.
+
+Scaffold adds factory/ic_screen.cpp to CMake. Root branch remains integration;
 main has NOT been fast-forwarded. Existing production correctness evidence remains valid
 for frozenfcbcc; new implementation will get bounded owning checks after implementation.
 Kernel owner /root/w0_replay_integration inpool4: newfactory/ic_screen.hpp/.cpp + tests.
@@ -74,7 +88,8 @@ C:/atx-wt/g0-data/w0-vwap-v2_e464000f_20260926. Old->V2:candidates2504->2523,
 scored2306->2293,family56->47,admitted0->0;validationblendSR-.535778->-.106037,
 BY/RW1. ActualDSRclusters3(distinctfromfamily47),Nraw2293/Neff6.0949568. Manifest
 SHAa1bae0951662f08298ae2483011059957ee0079dd7dab04aec0fa5dbb10651ea,31files,
-oldparent3e2fd328...preserved. Final report pending ownercommit/rootverification.
+oldparent3e2fd328...preserved. Final report9889f2a imported5c933ba6; root independently
+verified all31file sizes/hashes/pathbounds and unchanged parent. Numerical closure done.
 
 Finalbenchbuild/registryreport source3fdb60ce imported151b92cb. Root independently
 rehashedfinalbench/worker/runner/protocol and verified81exactnames/order, receipt at

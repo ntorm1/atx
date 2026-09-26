@@ -1082,6 +1082,12 @@ atx::core::Result<StageResult> run_discover_gated(
         {"population",      std::to_string(sc.population)},
         {"generations",     std::to_string(sc.generations)},
     };
+    if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+        sr.kvs.emplace_back("ic_screen_evaluations", std::to_string(rep.ic_screen_evaluations));
+        sr.kvs.emplace_back("ic_screen_rejected", std::to_string(rep.ic_rejected));
+        sr.kvs.emplace_back("ic_screen_unavailable", std::to_string(rep.ic_screen_unavailable));
+        sr.kvs.emplace_back("ic_prepass_vm_evaluations", std::to_string(rep.ic_prepass_vm_evaluations));
+    }
     // R3b: add oos_pbo kv ONLY when OOS is active (eff_oos_fraction > 0) so the
     // non-accumulation path's kvs are byte-identical to the pre-R3 baseline.
     if (eff_oos_fraction > 0.0) {
@@ -1395,6 +1401,12 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
         {"population",    std::to_string(sc.population)},
         {"generations",   std::to_string(sc.generations)},
     };
+    if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+        sr.kvs.emplace_back("ic_screen_evaluations", std::to_string(res.ic_screen_evaluations));
+        sr.kvs.emplace_back("ic_screen_rejected", std::to_string(res.ic_rejected_hashes.size()));
+        sr.kvs.emplace_back("ic_screen_unavailable", std::to_string(res.ic_screen_unavailable));
+        sr.kvs.emplace_back("ic_prepass_vm_evaluations", std::to_string(res.ic_prepass_vm_evaluations));
+    }
     if (discover_end > 0U) {
         sr.kvs.emplace_back("discover_end", std::to_string(panel.dates()));
     }

@@ -22,3 +22,17 @@ include(GoogleTest)
 # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
 # pays a test-enumeration run (and a non-launchable exe no longer fails the *build*).
 gtest_discover_tests(atx-impl-tests DISCOVERY_MODE PRE_TEST)
+
+# Focused IC-screen integration checks, using the real production library.
+# The ordinary owning suite and its CTest registrations remain unchanged.
+add_executable(atx-impl-ic-screen-tests EXCLUDE_FROM_ALL
+    ic_screen_config_test.cpp
+    stage_equity_mine_core_test.cpp
+    stage_equity_mine_pipeline_test.cpp
+    stage_equity_mine_cli_test.cpp
+    store_discover_test.cpp)
+target_link_libraries(atx-impl-ic-screen-tests PRIVATE
+    atx-impl-core GTest::gtest_main atx_warnings nlohmann_json::nlohmann_json
+    atx-test-scratch Threads::Threads atx_miniz)
+target_compile_definitions(atx-impl-ic-screen-tests PRIVATE
+    ATX_IMPL_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

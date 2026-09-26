@@ -234,3 +234,23 @@ foreach(grp IN LISTS _atx_groups)
     # longer pays a per-group test-enumeration run at build time.
     gtest_discover_tests(${_tgt} DISCOVERY_MODE PRE_TEST)
 endforeach()
+
+# Explicit, bounded IC-screen qualification. These sources remain in their
+# normal subsystem targets; this additional target avoids rebuilding unrelated
+# test translation units after a shared search/registry header changes.
+# Run it directly with a gtest filter. Do not duplicate CTest registrations.
+add_executable(atx-engine-ic-screen-tests EXCLUDE_FROM_ALL
+    factory/ic_screen_test.cpp
+    factory/factory_fidelity_test.cpp
+    factory/search_progress_test.cpp
+    eval/eval_trial_registry_test.cpp)
+atx_engine_test_compile_environment(atx-engine-ic-screen-tests)
+target_link_libraries(atx-engine-ic-screen-tests PRIVATE atx-test-scratch)
+if(ATX_USE_PCH)
+    if(NOT TARGET atx-engine-test-pch)
+        add_library(atx-engine-test-pch OBJECT EXCLUDE_FROM_ALL pch.cpp)
+        atx_engine_test_compile_environment(atx-engine-test-pch)
+        target_precompile_headers(atx-engine-test-pch PRIVATE pch.hpp)
+    endif()
+    target_precompile_headers(atx-engine-ic-screen-tests REUSE_FROM atx-engine-test-pch)
+endif()
