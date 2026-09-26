@@ -43,6 +43,8 @@ struct ExecutionObjectiveIdentity {
 };
 struct ExecutionCashClaimEvent;
 struct ExecutionCashClaimStreams;
+struct ExecutionStockTransitionEvent;
+struct ExecutionStockTransitionStreams;
 namespace execution_objective_detail { struct Context; }
 
 // Immutable owned execution inputs and WeightPolicy; copies share read-only storage.
@@ -79,6 +81,15 @@ private:
       std::span<const atx::i64>,std::span<const atx::u64>,
       const ExecutionObjectiveIdentity&,std::span<const ExecutionCashClaimEvent>,
       std::span<const atx::u8>,std::span<const atx::u32>,std::span<const atx::u32>);
+  friend atx::core::Result<ExecutionObjectiveContext> prepare_execution_objective_transitions(
+      const alpha::Panel&,const WeightPolicy&,const ExecutionObjectiveConfig&,
+      std::span<const cost::CostSurface>,std::span<const atx::i64>,
+      std::span<const atx::i64>,std::span<const atx::u64>,
+      const ExecutionObjectiveIdentity&,std::span<const ExecutionCashClaimEvent>,
+      std::span<const ExecutionStockTransitionEvent>,std::span<const atx::u8>,
+      std::span<const atx::u32>,std::span<const atx::u32>);
+  friend atx::core::Result<ExecutionStockTransitionStreams> extract_execution_signal_transitions(
+      std::span<const atx::f64>,const ExecutionObjectiveContext&,atx::f64);
   friend atx::core::Result<ExecutionCashClaimStreams> extract_execution_signal_claims(
       std::span<const atx::f64>,const ExecutionObjectiveContext&,atx::f64);
   friend bool execution_objective_matches(const ExecutionObjectiveContext&,
