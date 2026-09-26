@@ -144,7 +144,7 @@ TEST(WithAlpha101Fields, AddsExpectedColumns) {
     EXPECT_TRUE(field_unique(aug, name)) << "duplicate field: " << name;
   }
 
-  // Exactly 15 fields (7 base + 8 derived).
+  // Exactly 16 fields (8 base including explicit raw_close + 8 derived).
   EXPECT_EQ(aug.num_fields(), 16u);
 }
 
@@ -344,6 +344,21 @@ TEST(WithAlpha101Fields, MultiAdv) {
   // Incomplete-window cell: adv60 at date 3, instrument 0 -> NaN (3+1 < 60).
   EXPECT_TRUE(std::isnan(cell(aug, "adv60", 3, 0)))
       << "adv60[3,0] should be NaN (incomplete window)";
+}
+
+TEST(WithAlpha101Fields, LegacyEmptyPanelRetainsDerivedFieldOrder) {
+  namespace alpha = atx::engine::alpha;
+  const auto base = Panel::create(0, 2, {"close", "volume", "high", "low", "raw_close"},
+                                  {{}, {}, {}, {}, {}}, {});
+  ASSERT_TRUE(base);
+  const std::vector<atx::u16> windows{1};
+  const auto result = alpha::with_alpha101_fields(*base, windows,
+      alpha::DollarVolumeBasis::RawCloseV2, alpha::VwapRule::AdjustedTypicalV1);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(result->num_fields(), 13U);
+  EXPECT_EQ(result->field_name(10), "dollar_volume");
+  EXPECT_EQ(result->field_name(11), "vwap");
+  EXPECT_EQ(result->field_name(12), "adv1");
 }
 
 // ============================================================================
