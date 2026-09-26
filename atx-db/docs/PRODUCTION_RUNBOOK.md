@@ -38,6 +38,16 @@ atx-db status --db-path $env:ATX_DB_PATH --strict
 python scripts/db_dev_tests.py --smoke --workers 0
 ```
 
+`warehouse_migrate.py` logs `migration NNNN committed` / `migration NNNN checkpointed` per migration on stderr.
+**Resume in place after a killed governed migrate:** every committed migration stays recorded, but the killed run's
+`migration_apply_lock` row stays too, so a rerun stops with "migration apply lock is already held by run_id ...".
+With no migrate process alive, open the warehouse once under the memory guard with a bounded connection (the
+open replays the WAL inside the budget; `verify_schema` must return `()`), release the dead run's row
+(`atx_db.migrations.release_apply_lock(con, "<dead run_id>")`), `CHECKPOINT`, close, and rerun
+`warehouse_migrate.py`: it backs up again and resumes with the first unapplied migration. If the replayed file fails
+`verify_schema`, restore the pre-migrate backup instead (`migration_admin.restore_database`, which clears the lock).
+Drilled on a full production copy (tier-1 v2 1.2: kill after the 0328 COMMIT, replay, resume through 0329).
+
 Some analytical commands default to a 4 GB DuckDB cap and four threads. On this roughly 16 GiB host every
 Python/DuckDB process runs under the memory guard (`.superpowers/sdd/tier1-parity/run_memory_guarded.py`,
 ruling C-58): a Windows job object caps the process tree's committed memory at `--job-gb` (at most 1.0 GiB;
