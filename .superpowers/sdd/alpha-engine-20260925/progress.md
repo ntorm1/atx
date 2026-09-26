@@ -45,10 +45,10 @@ SHAs there, keep pushing and work around RAM. Original plan completion index is 
 in docs/plans/2026-09-24-alpha-engine-production-swarm.md (26b232ab,053de610,05570f27,
 ba806242 and the pending current update). Source/import SHAs are distinguished; source
 PCH3f2c25fb imports asd3d04510 with identical patch-id. No W1-W5 production implementation
-has started. W0 remains OPEN for D0 remaining runtime/hygiene/L9 and quiet performance.
+has started. W0 remains OPEN for final D0 review/L9 and quiet performance.
 
-Root HEAD3103b4f6 (only later report/prep commits after frozen productionfcbcc9d1).
-Checkpoint/plan edits may be dirty pending commit. The four-target Debug build session99434
+Root HEAD932c1061 (only later report/prep commits after frozen productionfcbcc9d1).
+Checkpoint edits may be dirty pending commit. The four-target Debug build session99434
 COMPLETE exit0, sourcefcbcc9d1a351ccd339687389b118aca65e2812b5, 991.797s, 170native actions
 (163compiler,6links plus ordinary glob edge), 163cache misses/zero preprocessing errors.
 Includes first-use stable common/data PCH carriers in root and new shared-header consumers.
@@ -58,11 +58,27 @@ never claim sampled max1. Three bounded independent snapshots saw0/1/1. Peak own
 Same exact wrapper repeat5.047s exited0, 'ninja: no work to do', no cache log created.
 Do not restart either job. build-equity/w0-vwap-closure holds all receipts and build-result.
 
-Root runtime runner prepared: build-equity/w0-vwap-closure/run-tests.ps1. It requires
-build-result exit0, runs whole data/book/impl serial, retains prior exact external-data
-exclusions and clears opt-ins; records per-target log/JSON/hash/exit. NOT launched yet.
-Root gave sole compiler slot to pool4 for one remaining context.cpp hygiene check, active
-session69120. Wait its explicit release then launch runtime runner. No Release build yet.
+Root runtime runner COMPLETE session73678: build-equity/w0-vwap-closure/run-tests.ps1. Whole
+data PASS239/240 with1known documentation-fixture skip,9.348s; book PASS128/128,7.817s.
+Whole impl PASS605/610 with5known skips,252.852s, native0. All prior external-data
+exclusions/cleared opt-ins retained; per-target log/JSON/hash/exit receipts. No root job
+remains. Do not restart successful targets. Final report932c1061 records all1683passes/
+6known skips/0failures across alpha/data/book/impl. Auditowner finalreview now active.
+Pool4 first context PCH-off check compiled1 object, but Start-Process ExitCode was null;
+exact repeat native0. Its83/84 parity exposed older transitive VM. Local report641a89df
+imported079cf294. Root standalone check failed BEFORE compiler because pool2 has no
+equity-hygiene tree (earlier fresh config evidence belonged to pool4); receipt retained.
+Explicitly authorized pool4 restore of reviewed rootfcbcc vm.hpp at30994375, no redesign.
+Integrated-header context check PASSED authoritative native0 in16.473s (session9860),
+one compiler action/PCHoff/isolated warmdeps. Fresh2.515GiB physical/4.638GiB commit;
+post2.382/4.513GiB; sampledmin1.416/3.518, compilerpeak0.959GiB. ALL84/84 first-party
+inputs matchrootfcbcc,347valid total deps. Final report760041dd imported63d28b5c.
+G0 ACTIVE sole compiler session47187: warm Release atx-impl ate464000f, fresh2.98GiB
+physical/4.75GiB commit, zero other compiler/Ninja. Configure passed; build2/46 atlast
+message, native1worker. Logs pool3/build-equity-rel/g0-vwap-build-e464000f_20260925/.
+Pressure guard samples2seconds and stops only owned verified tree after10seconds below
+0.75GiB physical or1GiB commit. No timing claim. G0 L9 STILL HELD until finalreview/binary/
+heavyrelease; root runtime complete. Benchmark build stillheld until compiler release.
 Five current root impl-core commands (config, mine, discover, progresssink, panel) already
 have no PCH and all compiled successfully; receipt impl-no-pch-commands.json. Reuse them
 for header qualification, never duplicate large TUs solely for hygiene. real_panel prior
@@ -72,9 +88,9 @@ Alpha qualification GREEN at033b89c2 (source8a47c48f), scope auditf1620990 (sour
 711/711 whole tests47.328s and independent N128 oracle1/1 1.472s, every19field/mask/f64bit
 matches frozen pre-D0. Digest75b4a957ff30e9c3. Alpha source90d965df7233bdd7e716ccd8a8ae78c72a68817c;
 exeSHA256 bb1e6dabd2a2c529cdaad50fd8f0d09993844138de7f5d8cfb974f5ab381a8e1.
-Initial build failed test literal overload only, fixed520bc0cc?root1e4ee053; first suite
+Initial build failed test literal overload only, fixed520bc0cc -> root1e4ee053; first suite
 707/711 failed unadjusted synthetic streaming generator missingraw_close; fixture-only
-7be27928?rootefe57fd9 fixed it. Failure receipts retained. Actual final alpha no-op3.106138s,
+7be27928 -> rootefe57fd9 fixed it. Failure receipts retained. Actual final alpha no-op3.106138s,
 zero cachecalls/hashchanges. No additional default-policy owner among remaining12 groups;
 two parallel tests use explicitly V1 WQ helper, corroborated by independent byte oracle.
 Root attempted Ninja deps discovery during live build; it refused locked deps log. Do NOT
@@ -90,7 +106,8 @@ AdjustedTypicalV1 is explicit exact legacy. Raw daily proxy is not true intraday
 Adjusted OHLC/mixed-basis lint remains W2-A3; do not call that defect already closed.
 
 Agent current states:
-- pool4/replay owner: context hygiene session69120; no other compile allowed. Docs-only
+- pool4/replay owner: integrated context hygiene complete; final parity/report read-only.
+  No other compile allowed. Docs-only
   W1-X1 shared causal adapter brief e00ef0a9 imported3103b4f6, eight components/controls,
   availability versus session/label clocks, positive execution-clock control. No W1 code.
 - pool5/audit: clean927e798e after root production merge9d72d787dea8fc9d57356a04bd79745e71fb1907.
