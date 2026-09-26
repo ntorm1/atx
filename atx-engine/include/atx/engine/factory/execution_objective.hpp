@@ -127,9 +127,9 @@ private:
 // endpoint e+1, and includes entry-e costs plus the e -> e+1 holding return/borrow.
 // Valid rows are the contiguous [first_realization, realization_end); outside
 // rows are NaN/invalid, never structural zero observations. The corresponding
-// decision index is realized_index-delay-1. Sign is independently rescored, not
-// A nonempty cash-claim context requires extract_execution_signal_claims.
-// Negating PnL cannot synthesize the negative sign (borrow/caps/NAV make that invalid).
+// decision index is realized_index-delay-1. Each sign is independently rescored;
+// negating PnL is invalid with borrow/caps/NAV. A nonempty cash-claim context
+// requires extract_execution_signal_claims.
 [[nodiscard]] atx::core::Result<alpha::AlphaStreams> extract_execution_streams(
     const alpha::SignalSet& signals,const ExecutionObjectiveContext& context,atx::f64 sign=1.0);
 [[nodiscard]] atx::core::Result<alpha::AlphaStreams> extract_execution_signal(

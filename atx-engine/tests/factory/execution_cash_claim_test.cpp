@@ -203,9 +203,10 @@ TEST(ExecutionCashClaim, PublicationBetweenMarkAndDecisionAlreadyClosesFormation
   f.extinct(2,3);
   auto p=f.panel(); ASSERT_TRUE(p); auto c=f.context(*p,{&e,1}); ASSERT_TRUE(c);
   auto r=ex::extract_execution_signal_claims(f.signal,*c); ASSERT_TRUE(r);
-  // d2 ranks only the first TWO names. It queues +/-500 using then-known NAV;
-  // d3 recognizes the claim before filling, so the second name actually holds500.
-  EXPECT_NEAR(r->streams.positions(0,4)[1],500.0/1100.0,1e-15);
+  // d2 ranks only the first TWO names and reserves the known locked500 equity,
+  // even before claim recognition. It queues +/-250 from the remaining500 NAV.
+  // Earlier d1 targets stay frozen; d3 recognizes the claim before the new fill.
+  EXPECT_NEAR(r->streams.positions(0,4)[1],250.0/1100.0,1e-15);
   EXPECT_DOUBLE_EQ(r->streams.positions(0,4)[2],0);
   f.cfg.window_begin=4; e.recognition_mark_ns=f.marks[5];
   EXPECT_FALSE(f.context(*p,{&e,1})); // cannot delay an already pre-role completion
@@ -217,13 +218,24 @@ TEST(ExecutionCashClaim, EmptyEventsPreserveDefaultDigestAndAllOutputBits) {
   EXPECT_EQ(old->identity_sha256(),empty->identity_sha256());
   auto a=ex::extract_execution_signal(f.signal,*old); ASSERT_TRUE(a);
   auto b=ex::extract_execution_signal_claims(f.signal,*empty); ASSERT_TRUE(b);
-  ASSERT_EQ(a->pnl_flat.size(),b->streams.pnl_flat.size());
-  for (usize t=0;t<D;++t) {
-    EXPECT_EQ(std::bit_cast<u64>(a->pnl_flat[t]),std::bit_cast<u64>(b->streams.pnl_flat[t]));
-    EXPECT_EQ(std::bit_cast<u64>(a->end_nav_flat[t]),std::bit_cast<u64>(b->streams.end_nav_flat[t]));
+  for (const auto pair:{std::pair{&a->pnl_flat,&b->streams.pnl_flat},
+      std::pair{&a->end_nav_flat,&b->streams.end_nav_flat},
+      std::pair{&a->gross_flat,&b->streams.gross_flat},
+      std::pair{&a->pos_flat,&b->streams.pos_flat},
+      std::pair{&a->execution_cost_flat,&b->streams.execution_cost_flat},
+      std::pair{&a->borrow_cost_flat,&b->streams.borrow_cost_flat},
+      std::pair{&a->turnover_flat,&b->streams.turnover_flat},
+      std::pair{&a->pretrade_nav_flat,&b->streams.pretrade_nav_flat}}) {
+    ASSERT_EQ(pair.first->size(),pair.second->size());
+    for (usize k=0;k<pair.first->size();++k)
+      EXPECT_EQ(std::bit_cast<u64>((*pair.first)[k]),std::bit_cast<u64>((*pair.second)[k]));
   }
-  for (usize k=0;k<a->pos_flat.size();++k)
-    EXPECT_EQ(std::bit_cast<u64>(a->pos_flat[k]),std::bit_cast<u64>(b->streams.pos_flat[k]));
+  EXPECT_EQ(a->valid_flat,b->streams.valid_flat);
+  EXPECT_EQ(a->names_flat,b->streams.names_flat);
+  EXPECT_EQ(a->capped_names_flat,b->streams.capped_names_flat);
+  EXPECT_EQ(a->execution_context_sha256,b->streams.execution_context_sha256);
+  EXPECT_EQ(a->first_realization_,b->streams.first_realization_);
+  EXPECT_EQ(a->realization_end_,b->streams.realization_end_);
   EXPECT_TRUE(b->signed_claim_dollars.empty()); EXPECT_TRUE(b->recognitions.empty());
   f.cfg.max_working_bytes=1;
   EXPECT_FALSE(f.context(*p));
