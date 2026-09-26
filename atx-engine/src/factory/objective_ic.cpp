@@ -555,7 +555,7 @@ Result<ObjectiveIcResult> evaluate_objective_ic(std::span<const f64> signal,
     if (result.persistence_pairs) {
         result.persistence_defined = true;
         result.mean_rank_autocorrelation /= static_cast<f64>(result.persistence_pairs);
-        if (result.mean_rank_autocorrelation >= 0 && result.mean_rank_autocorrelation < 1) {
+        if (result.mean_rank_autocorrelation >= 0 && 1 - result.mean_rank_autocorrelation > 64 * kEps) {
             result.persistence_holding_proxy = 1 / (1 - result.mean_rank_autocorrelation);
             result.persistence_holding_proxy_defined = std::isfinite(result.persistence_holding_proxy);
         }

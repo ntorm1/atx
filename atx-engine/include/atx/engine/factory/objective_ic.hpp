@@ -89,7 +89,8 @@ struct ObjectiveIcResult {
     usize persistence_pairs{};
     f64 mean_rank_autocorrelation{};
     bool persistence_defined{};
-    // Diagnostic 1/(1-rho), only for 0 <= rho < 1; not executed turnover/holding time.
+    // Diagnostic 1/(1-rho), only for rho>=0 and 1-rho>64*epsilon;
+    // not executed turnover/holding time or a near-unit numerical extrapolation.
     f64 persistence_holding_proxy{};
     bool persistence_holding_proxy_defined{};
     std::string context_sha256;
