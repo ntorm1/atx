@@ -54,6 +54,11 @@ target_link_libraries(atx-impl-core PRIVATE Threads::Threads)
 if(ATX_USE_PCH)
     target_precompile_headers(atx-impl-core PRIVATE pch.hpp)
 endif()
+# This TU intentionally changes CRT declarations before its first include to use
+# portable exclusive fopen("wx"). Preserve that local environment: force-including
+# the common PCH would parse the CRT before the source's suppression takes effect.
+set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
 
 # ---------------------------------------------------------------------------
 # engine_git_sha provenance bake (p7 S6-4).

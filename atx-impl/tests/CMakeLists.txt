@@ -1,5 +1,14 @@
 find_package(Threads REQUIRED)
 
+# These existing fixtures select their own CRT declaration policy before includes
+# (getenv / optional-data hooks). A forced PCH would precede that local policy.
+# Keep the exception per source, shared by ordinary and focused owning targets.
+set_source_files_properties(
+    alpha101_orats_test.cpp discover_test.cpp fundamental_zoo_test.cpp
+    seed_parse_test.cpp single_alpha_capacity_test.cpp
+    PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
+
 # Keep the ordinary/focused test targets and the PCH carrier in exactly the same
 # compile environment. In particular, GTest, JSON, miniz and the fixture-path
 # definition make this different from the production library's environment.
