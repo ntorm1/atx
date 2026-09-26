@@ -145,4 +145,70 @@ TEST(StrategyIcRunner, InsufficientHorizonProducesNullRatherThanZeroMean) {
   const auto orientations=read_json(dir.path/"output"/"orientations.json");
   for (const auto& row:orientations.at("candidates")) EXPECT_EQ(row.at("sign"),0);
 }
+TEST(StrategyIcRunner, SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  std::ostringstream serial_progress;
+  auto status=atx::impl::strategy::run_ic(cfg,serial_progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  cfg.workers=2; cfg.output_directory=(dir.path/"parallel").string();
+  std::ostringstream parallel_progress;
+  status=atx::impl::strategy::run_ic(cfg,parallel_progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto serial=read_json(dir.path/"output"/"summary.json");
+  const auto parallel=read_json(dir.path/"parallel"/"summary.json");
+  EXPECT_NE(serial.at("recipe_sha256"),parallel.at("recipe_sha256"));
+  auto parallel_recipe=read_json(dir.path/"parallel"/"recipe.json");
+  EXPECT_EQ(parallel_recipe.at("vm_workers"),2);
+  parallel_recipe.erase("vm_workers");
+  EXPECT_EQ(read_json(dir.path/"output"/"recipe.json"),parallel_recipe);
+  EXPECT_EQ(read_json(dir.path/"output"/"orientations.json").at("candidates"),
+            read_json(dir.path/"parallel"/"orientations.json").at("candidates"));
+  ASSERT_EQ(serial.at("roles").size(),parallel.at("roles").size());
+  for (usize r=0;r<serial.at("roles").size();++r) {
+    auto a=serial.at("roles").at(r); auto b=parallel.at("roles").at(r);
+    EXPECT_EQ(a.at("workers"),1); EXPECT_EQ(b.at("workers"),2);
+    EXPECT_GT(b.at("admitted_working_bytes").get<u64>(),a.at("admitted_working_bytes").get<u64>());
+    for (const auto* key:{"load","label_preparation","vm","ic","composition"})
+      EXPECT_GE(b.at("stage_seconds").at(key).get<f64>(),0);
+    for (auto* role_result:{&a,&b}) {
+      for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes"})
+        role_result->erase(key);
+      for (auto& candidate:role_result->at("candidates")) {
+        candidate.erase("wall_seconds"); candidate.erase("stage_seconds");
+      }
+    }
+    EXPECT_EQ(a,b); // Full candidate/combined IC, coverage and proxy diagnostics.
+  }
+  // Daily rank() uses the shared CS pool here; compare the emitted f64 values
+  // and full calendar as bytes, not merely sign or rounded summary agreement.
+  for (const auto* name:{"train_daily_ic.csv","validation_daily_ic.csv",
+                         "train_planned_targets.csv","validation_planned_targets.csv"}) {
+    auto a=core::sha256_file((dir.path/"output"/name).string()); ASSERT_TRUE(a);
+    auto b=core::sha256_file((dir.path/"parallel"/name).string()); ASSERT_TRUE(b);
+    EXPECT_EQ(*a,*b) << name;
+  }
+  EXPECT_NE(parallel_progress.str().find("IC VM-complete"),std::string::npos);
+  EXPECT_NE(parallel_progress.str().find(" composition="),std::string::npos);
+}
+TEST(StrategyIcRunner, WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  cfg.plan_only=true;
+  std::ostringstream serial_plan; ASSERT_TRUE(atx::impl::strategy::run_ic(cfg,serial_plan));
+  cfg.workers=2;
+  std::ostringstream parallel_plan; ASSERT_TRUE(atx::impl::strategy::run_ic(cfg,parallel_plan));
+  const auto serial=Json::parse(serial_plan.str()); const auto parallel=Json::parse(parallel_plan.str());
+  EXPECT_EQ(parallel.at("workers"),2);
+  EXPECT_GT(parallel.at("roles").at(0).at("required_bytes").get<u64>(),
+            serial.at("roles").at(0).at("required_bytes").get<u64>());
+  // Invalid explicit counts refuse in configuration preflight, before the
+  // deliberately missing payload or output-directory creation can be reached.
+  cfg.plan_only=false;
+  for (const usize workers:{usize{0},usize{5}}) {
+    cfg.workers=workers; std::ostringstream progress;
+    auto status=atx::impl::strategy::run_ic(cfg,progress);
+    ASSERT_FALSE(status); EXPECT_NE(status.error().to_string().find("bounded config"),std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(dir.path/"output")); EXPECT_TRUE(progress.str().empty());
+  }
+}
 } // namespace
