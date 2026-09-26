@@ -428,3 +428,28 @@ TEST(StrategyRunner, CashClaimPinsAndStrictSchemaRefuseBeforeOutputOrTrials) {
   const auto digest = core::sha256_hex(duplicate); ASSERT_TRUE(digest); cfg.cash_claims_sha256 = *digest;
   rejected();
 }
+
+TEST(StrategyRunner, AggregateCashClaimReportsRefuseBudgetBeforePayloadLoading) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  auto document = cash_claim_document();
+  const auto prototype = document["events"][0];
+  document["events"] = Json::array();
+  for (u64 i = 0; i < 96; ++i) {
+    auto event = prototype;
+    event["event_id"] = "bounded-report-event-" + std::to_string(i);
+    event["instrument_id"] = 1000 + i;
+    document["events"].push_back(std::move(event));
+  }
+  ASSERT_TRUE(pin_claims(dir, cfg, document));
+  // All events remain in report identity even when outside this small axis.
+  // Two candidates and 96 bounded event descriptions require no large panel.
+  // A missing payload proves the whole-run summary refusal precedes its read.
+  ASSERT_TRUE(std::filesystem::remove(dir.path / "train" / "close.f64"));
+  std::ostringstream progress;
+  const auto result = atx::impl::strategy::run(cfg, progress);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), core::ErrorCode::Unavailable);
+  EXPECT_NE(result.error().to_string().find("retained cash-claim summary/copy/serialization budget"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(cfg.output_directory));
+  EXPECT_TRUE(progress.str().empty());
+}
