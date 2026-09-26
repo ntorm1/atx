@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import dataclasses
 import datetime as dt
 import hashlib
 import json
@@ -718,6 +719,9 @@ def test_owner_features_attach_to_one_primary_line_per_issuer(tmp_path, registry
     # A second current class line of issuer 1, trading 5x AAA's volume.
     wh.listing(1, "TBLTICKERHISTORY-8", "AAA-B", "common", "XNAS", first=dt.date(2023, 9, 1), last=AS_OF,
                volume=5000, shares=250_000)
+    # Read by A8's share runs (market_daily's bar-session SQL reads volume too).
+    wh.con.execute("ALTER TABLE shares_outstanding_history ADD COLUMN form VARCHAR")
+    wh.con.execute("ALTER TABLE equity_daily_bars ADD COLUMN volume BIGINT")
     wh.close()
     aaa, class_b = LINES[1][0], "TBLTICKERHISTORY-8"
     line_cap = rp.PanelFeature("line_market_cap", "line_market_cap", "daily")
@@ -743,15 +747,15 @@ def test_owner_features_attach_to_one_primary_line_per_issuer(tmp_path, registry
             GROUP BY formation_date, feature_id, owner_cik ORDER BY 1 DESC LIMIT 1
         """).fetchone()[0] == 1
         # Price-line features stay on every line; the opt-in line size is the
-        # line's own vendor count, labeled unverified end to end (N1).
+        # line's own vendor count at its A8 run clock, labeled unverified end to end.
         assert _value(con, "lines", january, aaa, "momentum_12_1")[1] == "valid"
         assert _value(con, "lines", january, aaa, "line_market_cap")[0] == 100.0 * 1_000_000
         b_cap = _value(con, "lines", january, class_b, "line_market_cap")
-        assert b_cap[0] == 100.0 * 250_000 and b_cap[8] == rp.VENDOR_SHARES_AVAILABILITY_BASIS
+        assert b_cap[0] == 100.0 * 250_000 and b_cap[8] == f"{rp.VENDOR_SHARES_AVAILABILITY_BASIS}:first_run"
         assert con.execute("""
             SELECT DISTINCT shares_source, size_status FROM research_panel_values
             WHERE run_id='lines' AND feature_id='line_market_cap' AND raw_value IS NOT NULL
-        """).fetchall() == [("equity_daily_bars_vendor", rp.UNVERIFIED_VENDOR_SHARES)]
+        """).fetchall() == [(rp.LINE_SHARES_SOURCE, rp.UNVERIFIED_VENDOR_SHARES)]
         spec = json.loads(con.execute("SELECT spec_json FROM research_panel_runs WHERE run_id='lines'").fetchone()[0])
         assert spec["unverified_vendor_shares"] is True
         assert spec["size_policy"]["size_features"] == ["line_market_cap", "market_cap"]
@@ -770,6 +774,78 @@ def test_vendor_share_size_is_opt_in_only(registry):
         rp._validate(_options("gate", features=(line_cap,)))
     _, features, spec = rp._validate(_options("gate", features=(line_cap,), unverified_vendor_shares=True))
     assert [f.feature_id for f in features] == ["line_market_cap"] and spec["unverified_vendor_shares"] is True
+
+
+def test_line_shares_are_read_at_their_run_clock_and_adr_counts_need_a_ratio(tmp_path, registry):
+    """R2d: line_market_cap prices a line with the vendor count of the latest A8 share run known at the cutoff,
+    never the bar's own count. DDD's vendor starts a 1.1M run on 2024-01-12 that no filing matches (modeled
+    lag, 90+ days), so January still uses the 1M first run; a 2:1 split on 2024-02-12 with a 2.2M run
+    (split-derived, known at its own start) prices February. An ADR line's ADS count is used only with a known
+    ratio. P11: a valid owner inside a foreign-filer interval at the cutoff carries its reason in place of
+    missing_metric_state; an interval closed before the cutoff does not apply, and values are never dropped."""
+    wh = Warehouse(tmp_path / "wh.duckdb")
+    _populate(wh)
+    ddd = "TBLTICKERHISTORY-11"
+    wh.listing(4, ddd, "DDD", "common", "XNAS", first=dt.date(2023, 9, 1), last=AS_OF)
+    wh.con.execute("ALTER TABLE shares_outstanding_history ADD COLUMN form VARCHAR")
+    wh.con.execute("ALTER TABLE equity_daily_bars ADD COLUMN volume BIGINT")
+    # Back-adjusted for the 2:1 split: adj = 50 throughout, close 100 before and 50 from 02-12.
+    wh.con.execute("UPDATE equity_daily_bars SET adjusted_close = 50.0 WHERE security_id=?", [ddd])
+    wh.con.execute("UPDATE equity_daily_bars SET shares_outstanding = 1100000 "
+                   "WHERE security_id=? AND trade_date >= DATE '2024-01-12' AND trade_date < DATE '2024-02-12'", [ddd])
+    wh.con.execute("UPDATE equity_daily_bars SET close = 50.0, shares_outstanding = 2200000 "
+                   "WHERE security_id=? AND trade_date >= DATE '2024-02-12'", [ddd])
+    wh.close()
+    bbb, ccc = LINES[2][0], LINES[3][0]
+    october, november = dt.date(2023, 10, 31), dt.date(2023, 11, 30)
+    january, february = dt.date(2024, 1, 31), dt.date(2024, 2, 29)
+    line_cap = rp.PanelFeature("line_market_cap", "line_market_cap", "daily")
+    roa = rp.PanelFeature("roa_q", "roa_q", "q")
+    with ResearchStore(tmp_path / "research.duckdb", warehouse_path=tmp_path / "wh.duckdb") as store:
+        con = store.con
+        # BBB is an ADR line with a stated ratio, CCC one without.
+        built = rp._build_bridge(store, rp.BASIS_RECONSTRUCTED)
+        adr = {bbb: 2.0, ccc: None}
+        assert all(any(r.linked for r in built.rows if r.price_security_id == line) for line in adr)
+        share_bridge = dataclasses.replace(built, rows=tuple(
+            dataclasses.replace(r, share_basis="adr", adr_ratio=adr[r.price_security_id])
+            if r.price_security_id in adr else r for r in built.rows))
+        con.execute(f"""
+            CREATE TEMP TABLE {rp.FOREIGN_FILER_INTERVALS_RELATION} AS
+            SELECT * FROM (VALUES
+              ('0000000003', 'foreign_filer_no_xbrl_financials', TIMESTAMP '2023-06-01 22:00:00',
+               TIMESTAMP '2023-10-31 12:00:00'),
+              ('0000000003', 'ifrs_reporter_not_standardized', TIMESTAMP '2023-10-31 12:00:00', NULL)
+            ) AS t(cik, reason_code, valid_from, valid_to)
+        """)
+        result = rp.build_research_panel(store, _options("shares", features=(roa, line_cap),
+                                                         unverified_vendor_shares=True), share_bridge=share_bridge)
+        assert result.status == "complete"
+
+        def cap(day, line):
+            return con.execute("""
+                SELECT raw_value, reason, available_at, latest_input_clock, availability_basis, shares_source,
+                       size_status
+                FROM research_panel_values
+                WHERE run_id='shares' AND formation_date=? AND security_id=? AND feature_id='line_market_cap'
+            """, [day, line]).fetchone()
+
+        # The bar says 1.1M from 01-12, but that run is not known at the January cutoff.
+        assert cap(january, ddd) == (100.0 * 1_000_000, "valid", dt.datetime(2024, 1, 31, 22),
+                                     dt.datetime(2024, 1, 31, 22), f"{rp.VENDOR_SHARES_AVAILABILITY_BASIS}:first_run",
+                                     rp.LINE_SHARES_SOURCE, rp.UNVERIFIED_VENDOR_SHARES)
+        assert cap(february, ddd)[:2] == (50.0 * 2_200_000, "valid")
+        assert cap(february, ddd)[4] == f"{rp.VENDOR_SHARES_AVAILABILITY_BASIS}:split_derived"
+        # The ADS count priced by the ADS close (not rescaled by the ratio); none without a ratio.
+        assert cap(january, bbb)[:2] == (100.0 * 1_000_000, "valid") and cap(january, bbb)[5] == "archive_ads"
+        assert cap(january, ccc)[:2] == (None, "adr_ratio_unknown") and cap(january, ccc)[5] == "adr_ratio_unknown"
+        # P11: CCC has no roa_q state in October (its Q3 lands 11-09) and is inside the IFRS window.
+        assert _value(con, "shares", october, ccc, "roa_q")[:2] == (None, rp.IFRS_REPORTER_REASON)
+        assert _value(con, "shares", november, ccc, "roa_q")[:2] == (0.05, "valid")
+        spec = json.loads(con.execute("SELECT spec_json FROM research_panel_runs WHERE run_id='shares'").fetchone()[0])
+        assert spec["foreign_filer_reasons"]["source"] == rp.FOREIGN_FILER_INTERVALS_RELATION
+        assert spec["foreign_filer_reasons"]["intervals"] == 2
+        rp.validate_research_panel(store, "shares")
 
 
 def _selection_fixture(con, seed: int) -> list[tuple[dt.date, dt.datetime]]:

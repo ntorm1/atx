@@ -29,16 +29,36 @@ row's ``reasons_json`` sums to its ``eligible_members``. Features have a scope:
     delisted tail that the owner bridge cannot link (``no_current_ticker``)
     therefore stays in every market feature and control.
 
-Size (interim, R2a fix round 2). Vendor share counts (``equity_daily_bars``
-and market_daily's ``archive*``/``class_sum`` share sources) are in vendor
-units (thousands) and dated from the cover as-of date, before the filing is
-public. Until the filing-matched share relation (A8) lands (follow-up R2d):
-``line_market_cap`` (own close x own vendor count) is not a default feature
-and is computed only with ``unverified_vendor_shares=True`` (rows labeled
-``availability_basis='vendor_shares_bar_clock_unverified'``); every size row
-carries ``shares_source`` and ``size_status`` (``verified_dei_shares`` only
-for DEI counts, else ``unverified_vendor_shares``), and the spec's
-``size_policy`` tells R2b to use only verified size.
+Size (R2d). A share count is read only at its own availability clock, at or
+before the cutoff, never at the bar date: the vendor starts a share run on the
+DEI cover date, before the filing is public. ``line_market_cap`` (own close x own
+vendor count; opt-in with ``unverified_vendor_shares=True``) takes the count from
+A8's vendor share relation (``market_daily.vendor_share_state_query``): the
+latest run known at the session's cutoff, folded into the row's clock
+(``latest_input_clock``) and named in ``availability_basis``
+(``vendor_share_run_clock:<dei_matched|split_derived|first_run|modeled_lag>``;
+``modeled_lag`` and ``first_run`` are modeled, not verified). An ADR line's count
+is an ADS count, used only when the ADS ratio is known. A withheld count
+(``archive_run_pending``, ``split_pending_share_update``, ``adr_ratio_unknown``,
+``vendor_shares_zero``, ``bar_price_invalid`` and every other A8 withheld label)
+is NULL with its label as the reason for ``line_market_cap`` and turnover; a
+market_daily size feature (``market_cap`` and what reads it) is NULL with the
+label as its ``shares_source`` and keeps ``invalid_current_state``, so its R2a
+digests are unchanged. When market_daily records a row's share clock (0328
+``shares_clock``/``shares_available_at``), it is folded into the size row's clock
+and named in its basis. Every size row carries ``shares_source`` and
+``size_status`` (``verified_dei_shares`` only for DEI counts, else
+``unverified_vendor_shares``); the spec's ``size_policy`` tells R2b to use only
+verified size.
+
+Foreign filers (P11). A valid owner with no metric state at a formation whose
+CIK is inside a ``foreign_filers`` reason interval at the cutoff
+(``ifrs_reporter_not_standardized``, ``foreign_filer_no_xbrl_financials``) carries
+that reason instead of ``missing_metric_state``: a label, never a dropped row or
+value. The intervals are read from the ``foreign_filer_reason_intervals``
+relation of the connection (:func:`stage_foreign_filer_reasons` builds it from
+the verified taxonomy artifacts); the spec records their source and digest, or
+``not_supplied``.
 ``owner``
     Fundamental (derived) features and issuer-share market features
     (``market_cap``, valuation ratios). They attach to exactly one line per
@@ -129,6 +149,7 @@ from typing import Any
 from .. import _split_epochs
 from .. import derived_lineage as _derived_lineage
 from .. import fundamental_signal_research as fsr
+from .. import market_daily as _market_daily
 from .. import market_owner_bridge as _market_owner_bridge
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from ..derived_registry import DERIVED_SOURCE_NAME
@@ -144,7 +165,9 @@ from .store import ResearchStore
 # v5 (P2): price/liquidity natives. Existing features' value digests are unchanged.
 # v6 (P2 fix round 1): the natives' windows are XNYS session windows over bars read
 # with market_daily's one bar rule (arg_max_null); equity_price_metrics is never read.
-QUERY_VERSION = "research-monthly-pit-panel-v6"
+# v7 (R2d): shares at their own availability clock (A8 vendor share relation), ADR
+# ratio gate, withheld share labels as reasons, P11 foreign-filer reasons.
+QUERY_VERSION = "research-monthly-pit-panel-v7"
 MARKET_REVISION_RULE = ("newest market_daily revision visible at the cutoff wins per column, "
                         "a NULL included (arg_max_null)")
 BASIS_STRICT = "strict"
@@ -176,12 +199,30 @@ OWNER_LINK_FAILURES = ("missing_owner_link", "invalid_owner_link_cik", "ambiguou
 # market_daily inputs that carry issuer-level (owner) share counts.
 OWNER_MARKET_INPUTS = frozenset({"shares_outstanding", "dei_shares"})
 OWNER_MARKET_CODES = frozenset({"market_cap"})
-# Size verification (interim until the A8 filing-matched share relation, R2d).
+# Size verification: only a DEI count is verified; vendor counts (every A8 run
+# clock, the modeled ones included) are not.
 UNVERIFIED_VENDOR_SHARES = "unverified_vendor_shares"
-VENDOR_SHARES_AVAILABILITY_BASIS = "vendor_shares_bar_clock_unverified"
+#: ``line_market_cap``'s availability basis: the A8 vendor share-run clock. A row with a
+#: known run is labeled ``vendor_share_run_clock:<clock kind>``.
+VENDOR_SHARES_AVAILABILITY_BASIS = "vendor_share_run_clock"
 VERIFIED_SHARES_SOURCES = ("dei",)
 SIZE_VERIFIED = "verified_dei_shares"
-LINE_SHARES_SOURCE = "equity_daily_bars_vendor"
+#: ``line_market_cap``'s ``shares_source``: A8's vocabulary (``archive`` a line's vendor
+#: count, ``archive_ads`` an ADR line's ADS count with a known ratio).
+LINE_SHARES_SOURCE = "archive"
+LINE_ADS_SHARES_SOURCE = "archive_ads"
+#: Eligible lines per :func:`market_daily.vendor_share_state_query` call.
+LINE_SHARES_CHUNK = 1000
+SHARE_CLOCK_POLICY = ("a share count is read at its own availability clock at or before the cutoff: DEI at its "
+                      "filing, a vendor count at the A8 run clock (vendor_share_state_query; modeled_lag and "
+                      "first_run are modeled, not verified); the clock is folded into latest_input_clock; a "
+                      "withheld count is NULL with its A8 label")
+# P11 foreign-filer reasons (``foreign_filers``; not imported: that module loads pandas
+# and the archive readers). They label a valid owner's missing_metric_state rows.
+FOREIGN_FILER_INTERVALS_RELATION = "foreign_filer_reason_intervals"
+IFRS_REPORTER_REASON = "ifrs_reporter_not_standardized"
+NO_XBRL_FINANCIALS_REASON = "foreign_filer_no_xbrl_financials"
+FOREIGN_FILER_REASONS = (IFRS_REPORTER_REASON, NO_XBRL_FINANCIALS_REASON)
 # P2 price/liquidity natives: where they read from, and their reasons.
 BARS_SOURCE = "equity_daily_bars"
 #: Calendar days of bars read per formation: 252 XNYS sessions plus holidays, with slack.
@@ -207,10 +248,6 @@ SPLIT_WINDOW_REASON = "split_in_price_window"
 
 def _min_observed(sessions: int) -> int:
     return math.ceil(MIN_OBSERVED_SHARE * sessions - 1e-9)
-#: P11 hook (not assigned yet): an owner whose statements are IFRS (20-F/40-F) and not
-#: standardized will carry this reason on owner (derived) features instead of
-#: ``missing_metric_state``. See ``_derived_formations``.
-IFRS_REPORTER_REASON = "ifrs_reporter_not_standardized"
 # Panel-native features (not warehouse metrics). ``scope``: price_line (every
 # eligible line) or owner (the issuer's primary line); ``size``: the value reads a
 # share count, so rows carry ``shares_source``/``size_status``; ``requires`` names
@@ -222,11 +259,14 @@ IFRS_REPORTER_REASON = "ifrs_reporter_not_standardized"
 NATIVE_FEATURES: dict[str, dict[str, Any]] = {
     "line_market_cap": {
         "metric_window": MARKET_WINDOW,
-        "expression": "close * shares_outstanding",
-        "inputs": ["equity_daily_bars.close", "equity_daily_bars.shares_outstanding"],
-        "version": "1",
-        "source_column": "equity_daily_bars.close*equity_daily_bars.shares_outstanding",
-        "unit_basis": "vendor_units_unverified",
+        "expression": "close x the line's vendor share count of the latest A8 share run known at the cutoff; an "
+                      "ADR line's ADS count only with a known ADS ratio; NULL with the A8 label when withheld",
+        "inputs": ["equity_daily_bars.close", "equity_daily_bars.adjusted_close",
+                   "equity_daily_bars.shares_outstanding", "shares_outstanding_history",
+                   "market_owner_bridge.share_basis", "market_owner_bridge.adr_ratio"],
+        "version": "2",
+        "source_column": "equity_daily_bars.close*market_daily.vendor_share_state_query.pit_shares",
+        "unit_basis": "usd_line_market_value",
         "requires": UNVERIFIED_VENDOR_SHARES,
         "scope": SCOPE_PRICE_LINE,
         "size": True,
@@ -343,7 +383,8 @@ NYSE_SPECIAL_CLOSURES = frozenset({
 # Every module whose semantics a run's rows depend on: a change between a
 # failed run and its resume refuses the resume.
 _CODE_FILES = (*(Path(str(module.__file__)) for module in (
-    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store, _split_epochs)), Path(__file__))
+    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store, _split_epochs, _market_daily)),
+    Path(__file__))
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +823,7 @@ def _validate(options: ResearchPanelOptions) -> tuple[dt.datetime, tuple[PanelFe
             "verified_status": SIZE_VERIFIED,
             "unverified_status": UNVERIFIED_VENDOR_SHARES,
             "rule": "use a size feature only where size_status = verified_status",
+            "share_clock": SHARE_CLOCK_POLICY,
         },
         "metric_batch_size": size,
         "max_age_days": options.max_age_days,
@@ -825,7 +867,12 @@ def _require_inputs(store: ResearchStore, basis: str, features: tuple[PanelFeatu
     if any(f.is_market and f.metric_code in sized and f.metric_code not in NATIVE_FEATURES for f in features):
         columns.append(("market_daily_metrics", "shares_source"))
     if any(f.metric_code == "line_market_cap" for f in features):
-        columns += [("equity_daily_bars", c) for c in ("close", "adjusted_close", "shares_outstanding")]
+        # The A8 vendor share relation reads the bars and the DEI cover counts.
+        columns += [("equity_daily_bars", c) for c in ("trade_date", "close", "adjusted_close", "volume",
+                                                       "shares_outstanding", "available_at", "source", "symbol")]
+        columns += [("shares_outstanding_history", c) for c in (
+            "security_id", "form", "share_count_type", "taxonomy", "concept", "available_at", "share_count",
+            "effective_date")]
     if any(f.metric_code in PRICE_WINDOW_FEATURES for f in features):
         columns += [("equity_daily_bars", c) for c in ("trade_date", "close", "adjusted_close", "volume",
                                                        "available_at", "source")]
@@ -882,12 +929,143 @@ def stage_owner_links(con: Any, rows: Iterable[Any], table: str = "_fs_owner_lin
             "unlinked_by_reason": dict(sorted(unlinked.items()))}
 
 
-def _owner_bridge_rows(store: ResearchStore) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    from ..market_owner_bridge import OWNER_MODE_RECONSTRUCTED, build_market_owner_bridge
+def _build_bridge(store: ResearchStore, basis: str) -> Any:
+    """The A5/A8 market owner bridge of the basis (reconstructed, or strict: dated evidence only)."""
+    mode = (_market_owner_bridge.OWNER_MODE_STRICT if basis == BASIS_STRICT
+            else _market_owner_bridge.OWNER_MODE_RECONSTRUCTED)
+    return _market_owner_bridge.build_market_owner_bridge(store, mode=mode,  # type: ignore[arg-type]
+                                                          derived_source=DERIVED_SOURCE_NAME)
 
-    bridge = build_market_owner_bridge(store, mode=OWNER_MODE_RECONSTRUCTED,  # type: ignore[arg-type]
-                                       derived_source=DERIVED_SOURCE_NAME)
-    return bridge.rows, bridge.summary()
+
+def _owner_links(store: ResearchStore, basis: str, owner_links: Sequence[Any] | None,
+                 ) -> tuple[dict[str, Any] | None, Any]:
+    """Stage the reconstructed owner links; return (bridge accounting, the built bridge or None)."""
+    if basis != BASIS_RECONSTRUCTED:
+        return None, None
+    bridge = None
+    if owner_links is None:
+        bridge = _build_bridge(store, basis)
+        rows, summary = bridge.rows, bridge.summary()
+    else:
+        rows, summary = tuple(owner_links), None
+    return {"staged": stage_owner_links(store.con, rows), "bridge_summary": summary}, bridge
+
+
+def _share_bridge(store: ResearchStore, basis: str, features: Sequence[PanelFeature], built: Any,
+                  supplied: Any) -> Any:
+    """The bridge ``line_market_cap`` reads A8's share state through, or None when it is not requested.
+
+    ``supplied`` (a ``MarketOwnerBridge``) wins; else the owner bridge this call built;
+    else one is built for the basis (the strict bridge links nothing without dated
+    evidence, so every run there has the unknown filer family's lag).
+    """
+    if not any(f.metric_code == "line_market_cap" for f in features):
+        return None
+    if supplied is not None:
+        return supplied
+    return built if built is not None else _build_bridge(store, basis)
+
+
+def _stage_line_shares(store: ResearchStore, bridge: Any, dates: Sequence[dt.date]) -> dict[str, int]:
+    """``_rp_share_state``: A8's vendor share state of every eligible line at each formation session.
+
+    One :func:`market_daily.vendor_share_state_query` per chunk of lines, over their
+    bars up to the last session (a run's clock and a bar's state use only bars and
+    filings up to that bar, so the state at an earlier session is the same), kept only
+    at the formation sessions. ``_rp_share_dates`` records the sessions staged.
+    """
+    con = store.con
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_share_dates (decision_date DATE)")
+    con.executemany("INSERT INTO _rp_share_dates VALUES (?)", [[day] for day in sorted(set(dates))])
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_share_state (
+          security_id VARCHAR, trade_date DATE, pit_shares DOUBLE, pit_clock VARCHAR,
+          pit_available_at TIMESTAMP, run_pending BOOLEAN, split_pending BOOLEAN, share_basis VARCHAR,
+          adr_ratio DOUBLE, adr_ratio_reason VARCHAR)
+    """)
+    lines = [row[0] for row in con.execute("""
+        SELECT DISTINCT k.security_id FROM _rp_cohort_all k SEMI JOIN _rp_share_dates d ON d.decision_date=k.decision_date
+        WHERE k.eligible ORDER BY 1
+    """).fetchall()]
+    for start in range(0, len(lines), LINE_SHARES_CHUNK):
+        sql, params = _market_daily.vendor_share_state_query(bridge, lines[start:start + LINE_SHARES_CHUNK],
+                                                             end_date=max(dates))
+        con.execute(f"""
+            INSERT INTO _rp_share_state
+            SELECT v.security_id, v.trade_date, CAST(v.pit_shares AS DOUBLE), v.pit_clock, v.pit_available_at,
+                   v.run_pending, v.split_pending, v.share_basis, CAST(v.adr_ratio AS DOUBLE), v.adr_ratio_reason
+            FROM ({sql}) v SEMI JOIN _rp_share_dates d ON d.decision_date=v.trade_date
+        """, params)
+    return {"lines": len(lines), "states": int(con.execute("SELECT count(*) FROM _rp_share_state").fetchone()[0])}
+
+
+def _stage_foreign_filer_intervals(store: ResearchStore) -> dict[str, Any]:
+    """``_rp_ff_intervals`` from the connection's ``foreign_filer_reason_intervals`` (P11), or empty.
+
+    The relation is looked up in the connection's temp catalog, the research catalog
+    and the warehouse (no failing statement, so a caller's transaction is safe).
+    Returns the spec entry: the source, the interval count and a digest of the rows
+    the panel reads, so a resume over other intervals is refused.
+    """
+    con = store.con
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_ff_intervals "
+                "(cik VARCHAR, reason_code VARCHAR, valid_from TIMESTAMP, valid_to TIMESTAMP)")
+    entry: dict[str, Any] = {"reasons": list(FOREIGN_FILER_REASONS), "relation": FOREIGN_FILER_INTERVALS_RELATION,
+                             "rule": "a valid owner's missing_metric_state takes the reason of the interval "
+                                     "containing the cutoff (valid_from <= cutoff < valid_to); label only"}
+    found = con.execute("""
+        SELECT count(*) FROM (
+          SELECT database_name, schema_name, table_name AS name FROM duckdb_tables()
+          UNION ALL SELECT database_name, schema_name, view_name FROM duckdb_views() WHERE NOT internal)
+        WHERE name=? AND schema_name='main' AND database_name IN ('temp', ?, ?)
+    """, [FOREIGN_FILER_INTERVALS_RELATION, store.catalog, store.warehouse_alias]).fetchone()[0]
+    if not found:
+        return {**entry, "source": "not_supplied"}
+    con.execute(f"""
+        INSERT INTO _rp_ff_intervals
+        SELECT CAST(cik AS VARCHAR), reason_code, CAST(valid_from AS TIMESTAMP), CAST(valid_to AS TIMESTAMP)
+        FROM {FOREIGN_FILER_INTERVALS_RELATION}
+        WHERE reason_code IN ({_sql_list(FOREIGN_FILER_REASONS)}) AND cik IS NOT NULL AND valid_from IS NOT NULL
+    """)
+    return {**entry, "source": FOREIGN_FILER_INTERVALS_RELATION, **_ff_intervals_digest(con)}
+
+
+def _check_ff_intervals(con: Any, spec: dict[str, Any]) -> None:
+    """Refuse to label over intervals other than the ones the spec recorded."""
+    entry = spec.get("foreign_filer_reasons") or {}
+    got = _ff_intervals_digest(con)
+    if entry.get("source") == "not_supplied":
+        ok = got["intervals"] == 0
+    else:
+        ok = entry.get("source") is not None and all(entry.get(key) == value for key, value in got.items())
+    if not ok:
+        raise RuntimeError("the staged foreign-filer intervals differ from the spec; stage the run again")
+
+
+def _ff_intervals_digest(con: Any) -> dict[str, Any]:
+    count = int(con.execute("SELECT count(*) FROM _rp_ff_intervals").fetchone()[0])
+    digest = _stream_digest(con, "SELECT cik, reason_code, valid_from, valid_to FROM _rp_ff_intervals ORDER BY ALL",
+                            [])
+    return {"intervals": count, "intervals_sha256": digest}
+
+
+def stage_foreign_filer_reasons(store: ResearchStore, companyfacts_zip: str | Path, *,
+                                artifacts_dir: str | Path | None = None) -> dict[str, Any]:
+    """Build the P11 ``foreign_filer_reason_intervals`` relation on the store's connection.
+
+    From the verified taxonomy artifacts of the live ``companyfacts.zip``
+    (``foreign_filers.resolve_taxonomy_artifacts``; a stale or partial scan raises) and
+    the warehouse ``sec_submissions`` when present. Call it before
+    :func:`build_research_panel` / :func:`stage_formation`; returns the disclosure summary.
+    """
+    from .. import foreign_filers as ff
+
+    artifacts = ff.resolve_taxonomy_artifacts(companyfacts_zip, artifacts_dir)
+    submissions = "sec_submissions" if store.warehouse_has("sec_submissions") else None
+    return ff.build_foreign_filer_disclosure(
+        store.con, members=ff.parquet_relation(artifacts.members_path),
+        filings=ff.parquet_relation(artifacts.filings_path), submissions=submissions,
+        intervals_table=FOREIGN_FILER_INTERVALS_RELATION)
 
 
 # ---------------------------------------------------------------------------
@@ -1386,9 +1564,18 @@ def _derived_formations(store: ResearchStore, run_id: str, batch: _Batch, spec: 
     fsr.stage_owner_legs(con, run_id=run_id, calendar_table="_rp_cal_part", cohort_table="_rp_leg_cohort",
                          metrics_table="_rp_metrics", proof_table="_rp_batch_proofs", staged_slim=True)
     kept = "l.cohort_reason='valid'"
-    # P11 hook (IFRS_REPORTER_REASON): once P11 lands, a valid owner whose filings are
-    # IFRS and unstandardized takes ``ifrs_reporter_not_standardized`` here in place of
-    # ``missing_metric_state`` (l.reason), keeping the NULL value and the row count.
+    # P11: a valid owner with no metric state whose CIK is inside a foreign-filer reason
+    # interval at the cutoff takes that reason in place of ``missing_metric_state``,
+    # keeping the NULL value and the row count (label only). Windows of one CIK are
+    # disjoint; min() keeps one row per (formation, CIK) regardless.
+    _check_ff_intervals(con, spec)
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_ff_reason AS
+        SELECT c.decision_date, i.cik, min(i.reason_code) AS reason_code
+        FROM _rp_cal_part c
+        JOIN _rp_ff_intervals i ON i.valid_from <= c.cutoff AND (i.valid_to IS NULL OR c.cutoff < i.valid_to)
+        GROUP BY ALL
+    """)
     state = {column: f"CASE WHEN {kept} THEN l.{column} END" for column in (
         "lineage_status", "available_at", "latest_input_clock", "period_end", "fiscal_period_start",
         "fiscal_period_end", "value_origin", "derived_value_id", "derived_owner_security_id",
@@ -1403,7 +1590,9 @@ def _derived_formations(store: ResearchStore, run_id: str, batch: _Batch, spec: 
                               AND l.latest_input_clock<=l.available_at
                               AND (l.state_valid_to IS NULL OR l.state_valid_to>l.cutoff)
                          THEN l.raw_value END AS DOUBLE) AS raw_value,
-               l.reason, {state['lineage_status']} AS lineage_status,
+               CASE WHEN l.reason='missing_metric_state' AND {kept} AND ff.reason_code IS NOT NULL
+                    THEN ff.reason_code ELSE l.reason END AS reason,
+               {state['lineage_status']} AS lineage_status,
                {state['available_at']} AS available_at, {state['latest_input_clock']} AS latest_input_clock,
                {state['period_end']} AS period_end, {state['fiscal_period_start']} AS fiscal_period_start,
                {state['fiscal_period_end']} AS fiscal_period_end, {state['value_origin']} AS value_origin,
@@ -1417,6 +1606,7 @@ def _derived_formations(store: ResearchStore, run_id: str, batch: _Batch, spec: 
         FROM _fs_leg l
         JOIN _rp_features f ON f.metric_code=l.metric_code AND f.metric_window=l.metric_window
         JOIN _rp_cohort_all k ON k.decision_date=l.decision_date AND k.security_id=l.security_id
+        LEFT JOIN _rp_ff_reason ff ON ff.decision_date=l.decision_date AND ff.cik=k.owner_cik
     """, [spec["universe_id"], FUNDAMENTAL_AVAILABILITY_BASIS])
     features = {(f.metric_code, f.metric_window): f.feature_id for f in batch.features}
     unmatched: dict[tuple[dt.date, str], int] = {}
@@ -1437,6 +1627,21 @@ def _derived_formations(store: ResearchStore, run_id: str, batch: _Batch, spec: 
 # ---------------------------------------------------------------------------
 
 _BAR_CLOCK_SQL = f"greatest(b.available_at, CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)"
+
+
+def _share_clock_picks(spec: dict[str, Any], alias: str = "m") -> str:
+    """market_daily's row share clock (A8 I3 columns, 0328), newest visible revision; NULL before 0328."""
+    if spec.get("market_share_clock", "not_in_warehouse") == "not_in_warehouse":
+        return "CAST(NULL AS TIMESTAMP) AS shares_available_at, CAST(NULL AS VARCHAR) AS shares_clock"
+    key = f"({alias}.available_at, {alias}.market_daily_id)"
+    return (f"arg_max_null({alias}.shares_available_at, {key}) AS shares_available_at, "
+            f"arg_max_null({alias}.shares_clock, {key}) AS shares_clock")
+
+
+def _share_clock_basis_sql(clock: str) -> str:
+    """A size row's availability basis naming its share clock kind (NULL: the feature's own basis)."""
+    return (f"CASE WHEN {clock} IS NOT NULL THEN {_sql_text(MARKET_AVAILABILITY_BASIS + ';shares_clock:')} "
+            f"|| {clock} END")
 
 
 #: Why a session has no price: its newest visible bar row has no positive, finite
@@ -1567,7 +1772,8 @@ def _price_window_parts(con: Any, features: Sequence[PanelFeature], spec: dict[s
         value, count_column, extra = window_sql[f.metric_code]
         parts.append(f"""
             SELECT security_id, feature_id, CAST(CASE WHEN reason_hint IS NULL THEN v END AS DOUBLE) AS value,
-                   available_at, fundamental_available_at, value_origin, shares_source, reason_hint
+                   available_at, fundamental_available_at, value_origin, shares_source, reason_hint,
+                   CAST(NULL AS VARCHAR) AS availability_basis
             FROM (SELECT security_id, {_sql_text(f.feature_id)} AS feature_id, {value} AS v, available_at,
                          CAST(NULL AS TIMESTAMP) AS fundamental_available_at, '{BARS_SOURCE}' AS value_origin,
                          CAST(NULL AS VARCHAR) AS shares_source,
@@ -1576,15 +1782,17 @@ def _price_window_parts(con: Any, features: Sequence[PanelFeature], spec: dict[s
     turnover = next((f for f in features if f.metric_code == "turnover_21d"), None)
     if turnover is not None:
         # The line's verified share count at the session: the newest visible
-        # market_daily revision (arg_max_null, as every market pick).
-        con.execute("""
+        # market_daily revision (arg_max_null, as every market pick), with its share
+        # clock when market_daily records it (R2d).
+        con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _rp_line_shares AS
             SELECT m.security_id, max(m.available_at) AS available_at,
                    arg_max_null(m.fundamental_available_at, (m.available_at, m.market_daily_id))
                      AS fundamental_available_at,
                    CAST(arg_max_null(m.shares_outstanding, (m.available_at, m.market_daily_id)) AS DOUBLE)
                      AS shares,
-                   arg_max_null(m.shares_source, (m.available_at, m.market_daily_id)) AS shares_source
+                   arg_max_null(m.shares_source, (m.available_at, m.market_daily_id)) AS shares_source,
+                   {_share_clock_picks(spec)}
             FROM market_daily_metrics m
             JOIN _rp_cal_one c ON m.trade_date=c.decision_date AND m.available_at<=c.cutoff
                               AND m.as_of_date<=c.decision_date
@@ -1596,11 +1804,13 @@ def _price_window_parts(con: Any, features: Sequence[PanelFeature], spec: dict[s
         parts.append(f"""
             SELECT security_id, feature_id,
                    CAST(CASE WHEN reason_hint IS NULL AND shares > 0 THEN volume_21 / shares END AS DOUBLE) AS value,
-                   available_at, fundamental_available_at, value_origin, shares_source, reason_hint
+                   available_at, fundamental_available_at, value_origin, shares_source, reason_hint,
+                   availability_basis
             FROM (
               SELECT w.security_id, {_sql_text(turnover.feature_id)} AS feature_id, w.volume_21, s.shares,
-                     greatest(w.available_at, s.available_at) AS available_at, s.fundamental_available_at,
-                     '{BARS_SOURCE}' AS value_origin, s.shares_source,
+                     greatest(w.available_at, s.available_at, s.shares_available_at) AS available_at,
+                     s.fundamental_available_at, '{BARS_SOURCE}' AS value_origin, s.shares_source,
+                     {_share_clock_basis_sql('s.shares_clock')} AS availability_basis,
                      CAST(CASE WHEN s.security_id IS NULL THEN 'missing_market_row'
                                WHEN s.shares_source IN ({_sql_list(SHARES_SOURCES_WITHHELD)}) THEN s.shares_source
                                WHEN s.shares_source IS NULL OR s.shares_source NOT IN ({verified})
@@ -1610,6 +1820,72 @@ def _price_window_parts(con: Any, features: Sequence[PanelFeature], spec: dict[s
                                END AS VARCHAR) AS reason_hint
               FROM _rp_price_window w LEFT JOIN _rp_line_shares s ON s.security_id=w.security_id)""")
     return parts
+
+
+def _line_cap_part(con: Any, feature: PanelFeature, row: CalendarRow) -> str:
+    """The long-form ``line_market_cap`` rows of one formation (UNVERIFIED; opt-in only).
+
+    The line's own close, picked with market_daily's one bar rule (every column from
+    the newest ``(available_at, source)`` row, a NULL included; the price checked
+    after the pick), times the vendor share count of the latest A8 share run known at
+    the session's cutoff (``_rp_share_state``, :func:`_stage_line_shares`), never the
+    bar's own count: the vendor starts a run on the DEI cover date, before the filing
+    is public. The run's availability is folded into the row's clock and its kind
+    named in ``availability_basis``. An ADR line's count is an ADS count (priced by the
+    ADS close), used only when the bridge states the ADS ratio. Withheld, with the
+    count's A8 label as the reason and ``shares_source``: ``bar_price_invalid``,
+    ``adr_ratio_unknown``, ``vendor_shares_zero``, ``archive_run_pending`` (no run
+    known yet) and ``split_pending_share_update`` (the known run started before a
+    split ex-date at or before the bar). A bar with no vendor count has no value
+    (``invalid_current_state``).
+    """
+    staged = con.execute("SELECT count(*) FROM _rp_share_dates WHERE decision_date=?",
+                         [row.formation_date]).fetchone()[0]
+    if not staged:
+        raise RuntimeError(f"the line share state was not staged for {row.formation_date}")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _rp_line_cap AS
+        WITH picked AS (
+          SELECT b.security_id,
+                 CAST(arg_max_null(b.close, (b.available_at, b.source)) AS DOUBLE) AS close,
+                 CAST(arg_max_null(b.adjusted_close, (b.available_at, b.source)) AS DOUBLE) AS adj,
+                 CAST(arg_max_null(b.shares_outstanding, (b.available_at, b.source)) AS DOUBLE) AS vendor_shares,
+                 greatest(max(b.available_at), CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)
+                   AS bar_at
+          FROM equity_daily_bars b
+          JOIN _rp_cohort_all k ON k.decision_date=? AND k.security_id=b.security_id AND k.eligible
+          WHERE b.trade_date=?
+          GROUP BY b.security_id, b.trade_date
+        ), judged AS (
+          SELECT p.security_id, p.close, p.vendor_shares, s.pit_shares, s.pit_clock, s.share_basis,
+                 greatest(p.bar_at, s.pit_available_at) AS available_at,
+                 CASE WHEN NOT coalesce(p.close > 0 AND p.adj > 0 AND isfinite(p.close) AND isfinite(p.adj), false)
+                           THEN {_sql_text(BAR_PRICE_INVALID_REASON)}
+                      WHEN s.share_basis = {_sql_text(_market_owner_bridge.SHARE_BASIS_ADR)}
+                           AND s.adr_ratio_reason IS NOT NULL THEN s.adr_ratio_reason
+                      WHEN p.vendor_shares <= 0 THEN 'vendor_shares_zero'
+                      WHEN p.vendor_shares IS NULL THEN NULL
+                      WHEN s.security_id IS NULL OR s.run_pending THEN 'archive_run_pending'
+                      WHEN s.split_pending THEN 'split_pending_share_update'
+                      END AS reason_hint
+          FROM picked p
+          LEFT JOIN _rp_share_state s ON s.security_id=p.security_id AND s.trade_date=?
+        )
+        SELECT security_id,
+               CASE WHEN reason_hint IS NULL AND vendor_shares > 0 AND pit_shares > 0 THEN close * pit_shares END
+                 AS value,
+               available_at, reason_hint,
+               CASE WHEN reason_hint IS NOT NULL THEN reason_hint
+                    WHEN vendor_shares > 0 AND share_basis = {_sql_text(_market_owner_bridge.SHARE_BASIS_ADR)}
+                         THEN {_sql_text(LINE_ADS_SHARES_SOURCE)}
+                    WHEN vendor_shares > 0 THEN {_sql_text(LINE_SHARES_SOURCE)} END AS shares_source,
+               CASE WHEN reason_hint IS NULL AND pit_clock IS NOT NULL
+                    THEN {_sql_text(VENDOR_SHARES_AVAILABILITY_BASIS + ':')} || pit_clock END AS availability_basis
+        FROM judged
+    """, [row.formation_date, row.formation_date, row.formation_date])
+    return (f"SELECT security_id, {_sql_text(feature.feature_id)} AS feature_id, value, available_at, "
+            f"CAST(NULL AS TIMESTAMP) AS fundamental_available_at, '{BARS_SOURCE}' AS value_origin, shares_source, "
+            f"CAST(reason_hint AS VARCHAR) AS reason_hint, availability_basis FROM _rp_line_cap")
 
 
 def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any], market_source: str,
@@ -1627,15 +1903,22 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
                            for code in columns)
         # The share basis of the row's size (market_cap and what reads it):
         # only a DEI count is verified; vendor ('archive*', 'class_sum') is not.
-        shares = ("arg_max_null(m.shares_source, (m.available_at, m.market_daily_id))"
-                  if any(f.feature_id in sized for f in batch.features if f.metric_code in columns)
+        # A size row's clock folds in its share clock when market_daily records it
+        # (0328). A withheld count is NULL (market_daily withholds the value) and its
+        # A8 label is the row's ``shares_source``; the reason stays
+        # ``invalid_current_state``, so R2a digests with unchanged inputs are unchanged
+        # (the P7 screen maps these rows to ``share_basis_withheld``).
+        size_columns = any(f.feature_id in sized for f in batch.features if f.metric_code in columns)
+        shares = ("arg_max_null(m.shares_source, (m.available_at, m.market_daily_id))" if size_columns
                   else "CAST(NULL AS VARCHAR)")
+        clock = (_share_clock_picks(spec) if size_columns
+                 else "CAST(NULL AS TIMESTAMP) AS shares_available_at, CAST(NULL AS VARCHAR) AS shares_clock")
         con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _rp_market AS
             SELECT m.security_id, max(m.available_at) AS available_at,
                    arg_max_null(m.fundamental_available_at, (m.available_at, m.market_daily_id))
                      AS fundamental_available_at,
-                   {shares} AS shares_source,
+                   {shares} AS shares_source, {clock},
                    {picks}
             FROM market_daily_metrics m
             JOIN _rp_cal_one c ON m.trade_date=c.decision_date AND m.available_at<=c.cutoff
@@ -1645,39 +1928,22 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
             WHERE m.source=?
             GROUP BY m.security_id
         """, [market_source])
-        long_parts += [
-            f"SELECT security_id, {_sql_text(f.feature_id)} AS feature_id, CAST(\"{f.metric_code}\" AS DOUBLE) "
-            f"AS value, available_at, fundamental_available_at, 'market_daily' AS value_origin, "
-            f"{'shares_source' if f.feature_id in sized else 'CAST(NULL AS VARCHAR)'} AS shares_source, "
-            f"CAST(NULL AS VARCHAR) AS reason_hint FROM _rp_market"
-            for f in batch.features if f.metric_code in columns]
+        for f in batch.features:
+            if f.metric_code not in columns:
+                continue
+            if f.feature_id in sized:
+                size_sql = ("greatest(available_at, shares_available_at) AS available_at, fundamental_available_at, "
+                            "'market_daily' AS value_origin, shares_source, CAST(NULL AS VARCHAR) AS reason_hint, "
+                            f"{_share_clock_basis_sql('shares_clock')} AS availability_basis")
+            else:
+                size_sql = ("available_at, fundamental_available_at, 'market_daily' AS value_origin, "
+                            "CAST(NULL AS VARCHAR) AS shares_source, CAST(NULL AS VARCHAR) AS reason_hint, "
+                            "CAST(NULL AS VARCHAR) AS availability_basis")
+            long_parts.append(f"SELECT security_id, {_sql_text(f.feature_id)} AS feature_id, "
+                              f"CAST(\"{f.metric_code}\" AS DOUBLE) AS value, {size_sql} FROM _rp_market")
     if any(f.metric_code == "line_market_cap" for f in batch.features):
-        # UNVERIFIED (opt-in only): the line's own close x its own vendor share
-        # count, picked with market_daily's one bar rule (``_bars_by_session_sql``):
-        # every column from the newest (available_at, source) row, a NULL included
-        # (arg_max_null), and the price checked after the pick. The vendor count is
-        # dated from the cover as-of date, which precedes the filing; R2d replaces it
-        # with the A8 share relation.
-        con.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _rp_line_cap AS
-            SELECT security_id, CASE WHEN close > 0 AND adj > 0 THEN close * shares END AS value, available_at
-            FROM (
-              SELECT b.security_id,
-                     CAST(arg_max_null(b.close, (b.available_at, b.source)) AS DOUBLE) AS close,
-                     CAST(arg_max_null(b.adjusted_close, (b.available_at, b.source)) AS DOUBLE) AS adj,
-                     CAST(arg_max_null(b.shares_outstanding, (b.available_at, b.source)) AS DOUBLE) AS shares,
-                     greatest(max(b.available_at), CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)
-                       AS available_at
-              FROM equity_daily_bars b
-              JOIN _rp_cohort_all k ON k.decision_date=? AND k.security_id=b.security_id AND k.eligible
-              WHERE b.trade_date=?
-              GROUP BY b.security_id, b.trade_date)
-        """, [row.formation_date, row.formation_date])
-        feature = next(f for f in batch.features if f.metric_code == "line_market_cap")
-        long_parts.append(f"SELECT security_id, {_sql_text(feature.feature_id)} AS feature_id, value, "
-                          f"available_at, CAST(NULL AS TIMESTAMP) AS fundamental_available_at, "
-                          f"'equity_daily_bars' AS value_origin, '{LINE_SHARES_SOURCE}' AS shares_source, "
-                          f"CAST(NULL AS VARCHAR) AS reason_hint FROM _rp_line_cap")
+        long_parts.append(_line_cap_part(con, next(f for f in batch.features if f.metric_code == "line_market_cap"),
+                                         row))
     window = [f for f in batch.features if f.metric_code in PRICE_WINDOW_FEATURES]
     if window:
         long_parts += _price_window_parts(con, window, spec, market_source, row)
@@ -1699,7 +1965,7 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
           WHERE k.eligible
         ), judged AS (
           SELECT g.*, x.value, x.available_at, x.fundamental_available_at, x.value_origin, x.shares_source,
-                 x.security_id IS NOT NULL AS has_row,
+                 x.availability_basis AS row_availability_basis, x.security_id IS NOT NULL AS has_row,
                  CASE WHEN g.feature_scope='{SCOPE_OWNER}' AND g.leg_reason<>'valid' THEN g.leg_reason
                       WHEN g.cohort_reason='overlapping_membership' THEN 'overlapping_membership'
                       WHEN x.security_id IS NULL THEN 'missing_market_row'
@@ -1727,7 +1993,9 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
                CAST(NULL AS VARCHAR) AS lineage_digest,
                CASE WHEN feature_scope='{SCOPE_PRICE_LINE}' THEN '{PRICE_LINE_IDENTITY_BASIS}'
                     ELSE identity_basis END AS identity_basis,
-               ? AS universe_basis, feature_availability_basis AS availability_basis, feature_scope,
+               ? AS universe_basis,
+               CASE WHEN kept AND row_availability_basis IS NOT NULL THEN row_availability_basis
+                    ELSE feature_availability_basis END AS availability_basis, feature_scope,
                CASE WHEN kept AND size_feature THEN shares_source END AS shares_source,
                CASE WHEN kept AND size_feature AND has_row AND shares_source IS NOT NULL THEN
                     CASE WHEN shares_source IN ({_sql_list(VERIFIED_SHARES_SOURCES)}) THEN '{SIZE_VERIFIED}'
@@ -1798,19 +2066,32 @@ def _panel_digest(con: Any, run_id: str, manifest: Sequence[Any]) -> str:
     return _sha(_canonical([*manifest, calendar_sha, coverage_sha]))
 
 
+def _warehouse_spec(store: ResearchStore, spec: dict[str, Any]) -> dict[str, Any]:
+    """The spec plus what the warehouse and connection supply: P11 reasons, market_daily's share clock."""
+    clock = all(store.warehouse_has("market_daily_metrics", c) for c in ("shares_clock", "shares_available_at"))
+    return {**spec, "foreign_filer_reasons": _stage_foreign_filer_intervals(store),
+            "market_share_clock": ("market_daily_metrics.shares_clock,shares_available_at" if clock
+                                   else "not_in_warehouse")}
+
+
 def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
-                         owner_links: Sequence[Any] | None = None) -> ResearchPanelResult:
+                         owner_links: Sequence[Any] | None = None,
+                         share_bridge: Any = None) -> ResearchPanelResult:
     """Build (or resume) one monthly research panel run in the research store.
 
     ``owner_links`` overrides the reconstructed bridge (A5 ``BridgeRow``-shaped
     rows); by default it is built from the attached warehouse. It is ignored for
-    the strict basis.
+    the strict basis. ``share_bridge`` (a ``MarketOwnerBridge``) overrides the bridge
+    ``line_market_cap`` reads A8's share state through (default: the basis's bridge).
+    P11 reasons are read from the connection's ``foreign_filer_reason_intervals``
+    (:func:`stage_foreign_filer_reasons`) when it exists.
     """
     run_at, features, spec = _validate(options)
     con = store.con
     basis = options.basis
     labels = _basis_labels(basis)
     _require_inputs(store, basis, features, build_bridge=owner_links is None)
+    spec = _warehouse_spec(store, spec)
     batches = _batches(features, options.metric_batch_size)
     scopes = {item[0]: item[3] for item in spec["features"]}
     native_sources = _native_sources(store, features)
@@ -1834,17 +2115,14 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
         "owner_links": ("market_owner_bridge:reconstructed" if basis == BASIS_RECONSTRUCTED
                         else "security_identifier_history:dated"),
     }
-    source_json = _canonical(source_ids)
-    bridge_json = None
     phases: dict[str, float] = {}
     started = time.perf_counter()
-    if basis == BASIS_RECONSTRUCTED:
-        if owner_links is None:
-            rows, summary = _owner_bridge_rows(store)
-        else:
-            rows, summary = tuple(owner_links), None
-        staged = stage_owner_links(con, rows)
-        bridge_json = _canonical({"staged": staged, "bridge_summary": summary})
+    staged_links, built = _owner_links(store, basis, owner_links)
+    bridge_json = None if staged_links is None else _canonical(staged_links)
+    shares_bridge = _share_bridge(store, basis, features, built, share_bridge)
+    if shares_bridge is not None:
+        source_ids["line_shares"] = f"market_daily.vendor_share_state_query:{shares_bridge.mode}"
+    source_json = _canonical(source_ids)
     phases["owner_bridge"] = time.perf_counter() - started
     con.execute("CREATE OR REPLACE TEMP TABLE _rp_features "
                 "(feature_id VARCHAR, metric_code VARCHAR, metric_window VARCHAR)")
@@ -1895,6 +2173,11 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
         cohorts = _stage_cohorts(store, spec, labels["market_source"]) if formed else {}
         _persist_cohorts(store, options.run_id, formed, cohorts)
         phases["cohorts"] = time.perf_counter() - started
+        if shares_bridge is not None and formed:
+            started = time.perf_counter()
+            phases_detail = _stage_line_shares(store, shares_bridge, [row.formation_date for row in formed])
+            phases["line_shares"] = time.perf_counter() - started
+            batch_stats.append({"line_shares": phases_detail})
         done = {(row[0], row[1]) for row in con.execute(
             "SELECT formation_date, feature_id FROM research_panel_coverage WHERE run_id=?",
             [options.run_id]).fetchall()}
@@ -2048,7 +2331,9 @@ class StagedFormation:
     stores them in ``research_panel_calendar``; ``spec`` is the panel spec and
     ``scopes`` maps each feature to ``price_line`` / ``owner``. ``cutoff`` is naive UTC.
     ``cohort_sha256`` is the staged cohort's digest, re-checked before every batch;
-    ``native_sources`` is where each P2 native reads from in this formation.
+    ``native_sources`` is where each P2 native reads from in this formation;
+    ``share_bridge`` is the bridge ``line_market_cap`` reads A8's share state through
+    (None when it is not requested).
     """
 
     run_id: str
@@ -2064,6 +2349,7 @@ class StagedFormation:
     metric_batch_size: int
     cohort_sha256: str = ""
     native_sources: dict[str, str] = field(default_factory=dict)
+    share_bridge: Any = field(default=None, repr=False, compare=False)
 
     @property
     def members(self) -> int:
@@ -2102,7 +2388,8 @@ def stage_formation(store: ResearchStore, *, basis: str, formation_date: dt.date
                     annual_max_age_days: int = DEFAULT_ANNUAL_MAX_AGE_DAYS,
                     eligible_security_types: tuple[str, ...] = fsr.RECONSTRUCTED_ELIGIBLE_TYPES,
                     include_unlisted_tail: bool = True, unverified_vendor_shares: bool = False,
-                    metric_batch_size: int = 16, owner_links: Sequence[Any] | None = None) -> StagedFormation:
+                    metric_batch_size: int = 16, owner_links: Sequence[Any] | None = None,
+                    share_bridge: Any = None) -> StagedFormation:
     """Stage one formation's owner links, calendar and cohort with the panel's own rules.
 
     ``formation_date`` is the session the market features read (normally an
@@ -2111,8 +2398,10 @@ def stage_formation(store: ResearchStore, *, basis: str, formation_date: dt.date
     cohort, primary lines and, through :func:`formation_batches`, the values and
     digests are what :func:`build_research_panel` produces for a formation with
     this session and cutoff. ``features=None`` is the default panel feature set;
-    ``()`` stages the cohort only. ``owner_links`` overrides the reconstructed
-    bridge, as in the panel.
+    ``()`` stages the cohort only. ``owner_links`` and ``share_bridge`` override the
+    reconstructed bridge and the line-share bridge, as in the panel. A vendor share
+    count is read as known at the session's bar cutoff (22:00), never later, even
+    when ``cutoff`` is later.
 
     Derived batches prove lineage into the store's ``research_lineage_proofs``
     under ``run_id``. Proofs do not depend on the cutoff and are reused.
@@ -2143,14 +2432,9 @@ def stage_formation(store: ResearchStore, *, basis: str, formation_date: dt.date
     if con.execute("SELECT count(*) FROM research_panel_runs WHERE run_id=?", [run_id]).fetchone()[0]:
         raise ValueError(f"run_id {run_id!r} names a panel run of this store; use a formation-only id")
     _require_inputs(store, basis, staged_features, build_bridge=owner_links is None)
+    spec = _warehouse_spec(store, spec)
     labels = _basis_labels(basis)
-    bridge = None
-    if basis == BASIS_RECONSTRUCTED:
-        if owner_links is None:
-            rows, summary = _owner_bridge_rows(store)
-        else:
-            rows, summary = tuple(owner_links), None
-        bridge = {"staged": stage_owner_links(con, rows), "bridge_summary": summary}
+    bridge, built = _owner_links(store, basis, owner_links)
     _stage_run_calendar(con, [CalendarRow(month, formation_date, formation_date, formation_date, run_at, None,
                                           CALENDAR_FORMED)])
     cohort = _stage_cohorts(store, spec, labels["market_source"]).get(formation_date) or _empty_cohort_stats()
@@ -2160,7 +2444,8 @@ def stage_formation(store: ResearchStore, *, basis: str, formation_date: dt.date
         run_id=run_id, basis=basis, formation_date=formation_date, cutoff=run_at, features=staged_features,
         scopes={item[0]: item[3] for item in spec["features"]}, spec=spec, labels=labels, cohort=cohort,
         owner_bridge=bridge, metric_batch_size=metric_batch_size, cohort_sha256=str(cohort_sha),
-        native_sources=_native_sources(store, staged_features))
+        native_sources=_native_sources(store, staged_features),
+        share_bridge=_share_bridge(store, basis, staged_features, built, share_bridge))
 
 
 def _check_staged(con: Any, staged: StagedFormation) -> None:
@@ -2205,6 +2490,8 @@ def formation_batches(store: ResearchStore, staged: StagedFormation, *,
                     [[f.feature_id, f.metric_code, f.metric_window] for f in staged.features])
     _, definitions_sha, hashes = _definitions(con, staged.features, staged.native_sources)
     work_spec = {**staged.spec, "scopes": staged.scopes, "native_sources": staged.native_sources}
+    if staged.share_bridge is not None:
+        _stage_line_shares(store, staged.share_bridge, [staged.formation_date])
     for batch in _batches(staged.features, staged.metric_batch_size):
         _check_staged(con, staged)
         started = time.perf_counter()
@@ -2331,6 +2618,8 @@ __all__ = [
     "CALENDAR_MISSING_MONTH_END",
     "CALENDAR_MISSING_NEXT_SESSION",
     "CALENDAR_RULE_CONFLICT",
+    "FOREIGN_FILER_INTERVALS_RELATION",
+    "FOREIGN_FILER_REASONS",
     "FORMATION_COHORT_RELATION",
     "FORMATION_VALUES_RELATION",
     "FUNDAMENTAL_AVAILABILITY_BASIS",
@@ -2365,7 +2654,9 @@ __all__ = [
     "observed_sessions",
     "price_line_codes",
     "size_codes",
+    "stage_foreign_filer_reasons",
     "stage_formation",
     "stage_owner_links",
     "validate_research_panel",
+    "xnys_sessions",
 ]
