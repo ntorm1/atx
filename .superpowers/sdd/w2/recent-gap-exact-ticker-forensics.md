@@ -1,0 +1,13 @@
+# Exact historical ticker forensic selector
+
+2026-09-26. Implementation-first extension of `atx-engine/tools/audit_recent_price_gap.py`; no real source or warehouse payload was read by the author.
+
+New `--tickers VALUE [VALUE ...]` is mutually exclusive with `--id` and `--ids`. It selects 1–64 unique, exact case-sensitive `ticker_tk` strings, each 1–128 UTF-8 bytes without control characters. There is no trimming, alias conversion, ticker-to-ID inference, duplicate collapse, stock classification or universe modification. Multiple IDs sharing an exact source ticker remain separate original records. The existing eight projected fields retain raw values, IEEE bits, original row-group/row offsets and duplicates.
+
+The new output schema is `atx.recent-price-gap-ticker-audit/v1`, with sorted `historical_tickers`, `record_counts_by_ticker` including zero matches, and an explicit selector policy. Existing single-ID and batch-ID published schemas/bytes are unchanged. Ticker footer ranges prune only when usable string min/max statistics exist; otherwise bounded projected batches are filtered exactly. Date pruning and the inclusive/exclusive requested window remain unchanged.
+
+The external whole-source SHA is still checked exactly once through a captured read handle. Source extent/identity is rechecked before exclusive publication. Existing bounds remain: at most 366 days, cooperative deadline at most 120 seconds, 10,000 total matching records, 16 MiB output, 128 MiB admitted projected row-group extent, and no overwrite. Unprunable row groups can physically decode other rows in the projected columns; only exact selected rows within the date window are emitted.
+
+Focused postimplementation checks: **9/9 passed in 1.156 seconds**, including three new cases for exact/case-sensitive matching and zero counts, ticker reuse across two IDs with/without footer statistics, and selector/conflict/record-budget refusals. A separate bounded synthetic comparison loaded the committed prior implementation and verified **exact published JSON byte parity for both old ID modes** on the same captured fixture. `git diff --check` passed. No C++ build or real archive run occurred.
+
+Root can replace the ID selector in its already pinned bounded invocation with `--tickers PE --start 2020-01-08 --end 2020-01-14`, using a new exclusive output. This retrieves source records for successor investigation; it does not prove that any returned vendor ID is the legally correct successor. Source `close` and `cumulReturnFactor` remain separate exact fields; no adjusted price or terminal return is invented by this forensic tool.

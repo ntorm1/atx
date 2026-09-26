@@ -1,6 +1,8 @@
 """Read-only, hash-pinned source-record forensics; never infer a terminal return.
 
-Only the explicitly requested ID(s) and [start,end) dates are emitted. Unprunable
+Only the explicitly requested ID(s) or exact historical ticker(s), within
+[start,end), are emitted. Ticker matches never establish security identity.
+Unprunable
 Parquet groups may physically decode other rows in the eight projected columns.
 No QA, duplicate removal, price statistics, universe selection or warehouse I/O.
 The deadline is checked between hash chunks/Arrow batches, not an OS hard timeout.
@@ -72,12 +74,22 @@ def exact_value(array, row):
 
 def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | None,
           start: str, end: str, max_seconds=120, max_records=10000, batch_rows=65536,
-          *, instrument_ids: list[int] | None = None):
+          *, instrument_ids: list[int] | None = None, tickers: list[str] | None = None):
     deadline = Deadline(max_seconds)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", source_sha256):
         raise ValueError("an external SHA256 source pin is required")
     batch_mode = instrument_ids is not None
-    if batch_mode:
+    ticker_mode = tickers is not None
+    if ticker_mode:
+        if instrument_id is not None or batch_mode or not 1 <= len(tickers) <= 64:
+            raise ValueError("choose IDs or1..64 unique exact historical tickers")
+        if any(type(x) is not str or not 1 <= len(x.encode("utf8")) <= 128 or
+               any(ord(c) < 32 or ord(c) == 127 for c in x) for x in tickers):
+            raise ValueError("tickers must be nonempty bounded strings without control characters")
+        requested = sorted(tickers)  # No case folding, stripping or alias conversion.
+        if len(set(requested)) != len(requested):
+            raise ValueError("historical ticker selectors must be unique")
+    elif batch_mode:
         if instrument_id is not None or not 1 <= len(instrument_ids) <= 64:
             raise ValueError("choose single ID or a batch of1..64 unique IDs")
         if any(type(x) is not int or not 0 < x < 1 << 63 for x in instrument_ids):
@@ -87,7 +99,8 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | N
             raise ValueError("batch IDs must be unique")
     else:
         requested = [instrument_id]
-    if any(type(x) is not int or not 0 < x < 1 << 63 for x in requested) or not 1 <= max_records <= 10000:
+    if ((not ticker_mode and any(type(x) is not int or not 0 < x < 1 << 63 for x in requested))
+            or not 1 <= max_records <= 10000):
         raise ValueError("invalid positive ID or record budget")
     if not 1024 <= batch_rows <= 65536:
         raise ValueError("batch_rows must be in [1024,65536]")
@@ -98,8 +111,10 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | N
         raise ValueError("output must be a new file in an existing directory")
 
     records, groups, records_bytes = [], [], 0
-    counts_by_id = {str(x): 0 for x in requested}
+    counts_by_id = {str(x): 0 for x in requested} if not ticker_mode else {}
+    counts_by_ticker = {x: 0 for x in requested} if ticker_mode else {}
     id_set = pa.array(requested, type=pa.int64()) if batch_mode else None
+    ticker_set = pa.array(requested, type=pa.string()) if ticker_mode else None
     with source.open("rb") as handle:
         captured = os.fstat(handle.fileno())
         if not 12 <= captured.st_size <= 16 << 30:
@@ -138,7 +153,12 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | N
             reason = None
             id_stats = group.column(projected_indices[1]).statistics
             date_stats = group.column(projected_indices[0]).statistics
-            if id_stats and id_stats.has_min_max and not any(id_stats.min <= x <= id_stats.max for x in requested):
+            ticker_stats = group.column(projected_indices[2]).statistics if ticker_mode else None
+            ticker_range = bool(ticker_stats and ticker_stats.has_min_max and
+                                isinstance(ticker_stats.min, str) and isinstance(ticker_stats.max, str))
+            if ticker_mode and ticker_range and not any(ticker_stats.min <= x <= ticker_stats.max for x in requested):
+                reason = "ticker_tk-footer-range"
+            if not ticker_mode and id_stats and id_stats.has_min_max and not any(id_stats.min <= x <= id_stats.max for x in requested):
                 reason = "securityID-footer-range"
             if date_stats and date_stats.has_min_max and (date_stats.max < first or date_stats.min >= last):
                 reason = "date-footer-range"
@@ -146,6 +166,8 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | N
                      "id_stats_available": bool(id_stats and id_stats.has_min_max),
                      "date_stats_available": bool(date_stats and date_stats.has_min_max),
                      "pruned_by": reason, "matched_records": 0}
+            if ticker_mode:
+                entry["ticker_stats_available"] = ticker_range
             groups.append(entry)
             if reason:
                 continue
@@ -158,8 +180,11 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | N
                                               columns=list(COLUMNS), use_threads=False):
                 deadline.check("projected batch")
                 dates, ids = batch.column(0), batch.column(1)
-                selected_ids = pc.is_in(ids, value_set=id_set) if batch_mode else pc.equal(ids, pa.scalar(instrument_id, pa.int64()))
-                selected = pc.and_(selected_ids,
+                if ticker_mode:
+                    selected_names = pc.is_in(batch.column(2), value_set=ticker_set)
+                else:
+                    selected_names = pc.is_in(ids, value_set=id_set) if batch_mode else pc.equal(ids, pa.scalar(instrument_id, pa.int64()))
+                selected = pc.and_(selected_names,
                                    pc.and_(pc.greater_equal(dates, pa.scalar(first)),
                                            pc.less(dates, pa.scalar(last))))
                 indices = pc.indices_nonzero(pc.fill_null(selected, False)).to_pylist()
@@ -177,7 +202,10 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | N
                     if records_bytes > MAX_OUTPUT // 2:
                         raise ValueError("matching record bytes exceed output budget")
                     records.append(record)
-                    counts_by_id[str(record["values"]["securityID"])] += 1
+                    if ticker_mode:
+                        counts_by_ticker[record["values"]["ticker_tk"]] += 1
+                    else:
+                        counts_by_id[str(record["values"]["securityID"])] += 1
                 entry["matched_records"] += len(indices)
                 offset += batch.num_rows
             if offset != group.num_rows:
@@ -197,7 +225,15 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | N
               "scope": "exact-source-records-only;no-QA-repair-or-terminal-return-inference",
               "physical_decode": "unprunable groups decode projected columns before ID/date filtering",
               "deadline": "cooperative-between-hash-chunks-and-Arrow-batches;max120seconds"}
-    if batch_mode:
+    if ticker_mode:
+        result["schema"] = "atx.recent-price-gap-ticker-audit/v1"
+        del result["instrument_id"]
+        result["historical_tickers"] = requested
+        result["record_counts_by_ticker"] = counts_by_ticker
+        result["selector_policy"] = "case-sensitive-exact-source-ticker_tk;no-normalization-or-security-identity-inference"
+        result["batch_policy"] = "one-source-hash-and-one-projected-pass;max64-unique-tickers;global-record-byte-budgets"
+        result["physical_decode"] = "unprunable groups decode projected columns before exact historical ticker/date filtering"
+    elif batch_mode:
         result["schema"] = "atx.recent-price-gap-batch-audit/v1"
         del result["instrument_id"]
         result["instrument_ids"] = requested
@@ -211,10 +247,12 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | N
         out.write(payload)
         out.flush()
         os.fsync(out.fileno())
-    return {"output": str(output.resolve()), "sha256": hashlib.sha256(payload).hexdigest(),
-            "records": len(records), "row_groups_decoded": sum(g["pruned_by"] is None for g in groups),
-            "record_counts_by_id": counts_by_id,
-            "elapsed_seconds": time.monotonic() - deadline.started}
+    receipt = {"output": str(output.resolve()), "sha256": hashlib.sha256(payload).hexdigest(),
+               "records": len(records), "row_groups_decoded": sum(g["pruned_by"] is None for g in groups),
+               "elapsed_seconds": time.monotonic() - deadline.started}
+    receipt["record_counts_by_ticker" if ticker_mode else "record_counts_by_id"] = (
+        counts_by_ticker if ticker_mode else counts_by_id)
+    return receipt
 
 
 def main():
@@ -224,6 +262,7 @@ def main():
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--id", type=int)
     selection.add_argument("--ids", type=int, nargs="+", help="batch of at most64 unique positive IDs")
+    selection.add_argument("--tickers", nargs="+", help="at most64 exact, case-sensitive historical ticker_tk values; no identity inference")
     parser.add_argument("--start", required=True, help="inclusive YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="exclusive YYYY-MM-DD")
     parser.add_argument("--out", type=Path, required=True)
@@ -233,7 +272,7 @@ def main():
     try:
         print(canonical(audit(args.source, args.out, args.source_sha256, args.id,
                               args.start, args.end, args.max_seconds, args.max_records,
-                              instrument_ids=args.ids)))
+                              instrument_ids=args.ids, tickers=args.tickers)))
     except (ValueError, OSError, TimeoutError, KeyError, pa.ArrowException) as error:
         print(f"audit refused: {error}", file=sys.stderr)
         return 1

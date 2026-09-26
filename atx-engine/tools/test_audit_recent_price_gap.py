@@ -132,6 +132,66 @@ class RecentPriceGapAudit(unittest.TestCase):
                            max_records=3, instrument_ids=[7, 99])
             self.assertFalse(out.exists())
 
+    def test_exact_tickers_keep_id_record_bytes_case_and_zero_match_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); source = base / "source.parquet"
+            pin = fixture(source)
+            out, id_out = base / "tickers.json", base / "id.json"
+            with patch.object(tool.hashlib, "sha256", wraps=hashlib.sha256) as hashes:
+                receipt = tool.audit(source, out, pin, None, "2020-01-01", "2020-01-10", 10,
+                                     tickers=["old.a", "OLD.A", "NONE"])
+                self.assertEqual(sum(not c.args and not c.kwargs for c in hashes.call_args_list), 1)
+            result = json.loads(out.read_bytes())
+            self.assertEqual(result["schema"], "atx.recent-price-gap-ticker-audit/v1")
+            self.assertEqual(result["historical_tickers"], ["NONE", "OLD.A", "old.a"])
+            self.assertEqual(result["record_counts_by_ticker"], {"NONE": 0, "OLD.A": 2, "old.a": 0})
+            self.assertEqual(receipt["record_counts_by_ticker"], result["record_counts_by_ticker"])
+            self.assertNotIn("instrument_id", result)
+            self.assertNotIn("record_counts_by_id", result)
+            self.assertEqual([g["pruned_by"] for g in result["row_groups"]],
+                             ["ticker_tk-footer-range", None, "date-footer-range"])
+            tool.audit(source, id_out, pin, 7, "2020-01-01", "2020-01-10", 10)
+            self.assertEqual(result["records"], json.loads(id_out.read_bytes())["records"])
+
+    def test_ticker_reuse_does_not_infer_identity_or_normalize_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); source = base / "source.parquet"
+            fixture(source)
+            original = pq.read_table(source)
+            # The same exact text occurs on two distinct source IDs. Neither
+            # case variants nor suffixes are aliases; later dates stay out.
+            table = original.set_column(2, "ticker_tk", pa.array(["PE", "PE", "PE", "PE.A", "PE", "pe"]))
+            results = []
+            for stats in (True, False):
+                pq.write_table(table, source, row_group_size=2, write_statistics=stats)
+                pin = hashlib.sha256(source.read_bytes()).hexdigest()
+                out = base / f"ticker-{stats}.json"
+                receipt = tool.audit(source, out, pin, None, "2020-01-01", "2020-01-10", 10, tickers=["PE"])
+                result = json.loads(out.read_bytes()); results.append(result["records"])
+                self.assertEqual(receipt["record_counts_by_ticker"], {"PE": 3})
+                self.assertEqual([r["values"]["securityID"] for r in result["records"]], [99, 99, 7])
+                self.assertTrue(all(r["values"]["ticker_tk"] == "PE" for r in result["records"]))
+                if not stats:
+                    self.assertEqual(receipt["row_groups_decoded"], 3)
+                    self.assertTrue(all(not g["ticker_stats_available"] for g in result["row_groups"]))
+            self.assertEqual(results[0], results[1])
+
+    def test_ticker_selector_bounds_mutual_exclusion_and_global_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); source = base / "source.parquet"; out = base / "audit.json"
+            pin = fixture(source)
+            for tickers in ([], [str(i) for i in range(65)], ["PE", "PE"], [""], [1],
+                            ["x" * 129], ["PE\n"], ["PE\0"]):
+                with self.assertRaises(ValueError):
+                    tool.audit(source, out, pin, None, "2020-01-01", "2020-01-10", 10, tickers=tickers)
+            for kwargs in ({"instrument_id": 7}, {"instrument_id": None, "instrument_ids": [7]}):
+                with self.assertRaises(ValueError):
+                    tool.audit(source, out, pin, start="2020-01-01", end="2020-01-10", tickers=["OLD.A"], **kwargs)
+            with self.assertRaisesRegex(ValueError, "no truncation"):
+                tool.audit(source, out, pin, None, "2020-01-01", "2020-01-10", 10,
+                           tickers=["OLD.A"], max_records=1)
+            self.assertFalse(out.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
