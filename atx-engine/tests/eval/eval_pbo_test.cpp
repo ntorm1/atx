@@ -51,7 +51,7 @@ TEST(EvalPbo, RejectsRaggedCandidatesButKeepsDocumentedPeriodTrimming) {
   ragged.push_back(0.125);
   const auto invalid = pbo_cscv_checked(ragged, 4, 4);
   ASSERT_FALSE(invalid.has_value());
-  EXPECT_EQ(invalid.error().code, atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(invalid.error().code(), atx::core::ErrorCode::InvalidArgument);
   const auto trimmed = pbo_cscv_checked(noise_matrix(4, 17), 4, 4);
   const auto reference = pbo_cscv_checked(noise_matrix(4, 16), 4, 4);
   ASSERT_TRUE(trimmed.has_value()); ASSERT_TRUE(reference.has_value());
@@ -64,7 +64,7 @@ TEST(EvalPbo, BoundsExhaustiveSplitEnumerationBeforeAllocation) {
   EXPECT_EQ(boundary->split_logits.size(), 12870U);
   const auto oversized = pbo_cscv_checked(noise_matrix(2, 18), 2, 18);
   ASSERT_FALSE(oversized.has_value());
-  EXPECT_EQ(oversized.error().code, atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(oversized.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 
