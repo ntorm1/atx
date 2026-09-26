@@ -232,7 +232,8 @@ void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
     }
   }
   if (count < cfg.min_names ||
-      static_cast<f64>(count) < kMinCoverage * static_cast<f64>(cached_names)) return;
+      static_cast<f64>(count) < kMinCoverage * static_cast<f64>(cached_names) ||
+      static_cast<f64>(count) < kMinCoverage * static_cast<f64>(eligible)) return;
   const auto x = std::span{scratch.x}.first(count);
   const auto y = std::span{scratch.y}.first(count);
   auto xr = std::span{scratch.xr}.first(count);

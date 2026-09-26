@@ -168,6 +168,28 @@ TEST(IcScreen, ShortSparseAndConstantCandidatesPassThrough) {
   EXPECT_FALSE(sparse->reject); EXPECT_EQ(sparse->reason, IcScreenReason::InsufficientEvidence);
 }
 
+TEST(IcScreen, PairCoverageUsesOriginalDecisionEligibleNames) {
+  constexpr usize dates = 40, names = 100;
+  auto raw = prices(dates, names);
+  std::vector<f64> signal(dates * names, nan);
+  for (usize d = 0; d < dates; ++d) {
+    // All 100 names are decision-eligible in the declared membership. Only 80
+    // have finite labels and only 64 have finite signals: 80% twice is 64%.
+    for (usize i = 80; i < names; ++i) raw[d * names + i] = nan;
+    for (usize i = 0; i < 64; ++i)
+      signal[d * names + i] = static_cast<f64>((i + 14U) % 64U);
+  }
+  auto p = panel(dates, names, std::move(raw)); ASSERT_TRUE(p);
+  const auto cfg = small_config();
+  auto cache = prepare_ic_screen(*p, cfg); ASSERT_TRUE(cache);
+  auto scratch = prepare_ic_screen_scratch(*cache); ASSERT_TRUE(scratch);
+  const auto result = screen_ic(signal, *cache, *scratch); ASSERT_TRUE(result);
+  EXPECT_FALSE(result->reject); EXPECT_EQ(result->reason, IcScreenReason::InsufficientEvidence);
+  for (const auto& h : result->horizons) {
+    EXPECT_EQ(h.pearson.valid_dates, 0U); EXPECT_EQ(h.rank.valid_dates, 0U);
+  }
+}
+
 TEST(IcScreen, AlternatingNullIsRejectedWithoutAFullBacktest) {
   constexpr usize dates = 384, names = 32;
   auto p = panel(dates, names, prices(dates, names)); ASSERT_TRUE(p);
