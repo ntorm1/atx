@@ -138,7 +138,10 @@ the version first). It reads, in the research store:
     :data:`FEATURE_UNIVERSE_RULES`), ``catalog_sha256`` (compared with the committed
     catalog's file digest), ``blockers_json`` (carried into the run blockers) and
     ``spec_json.store_schema`` (>= :data:`MIN_FEATURE_STORE_SCHEMA`, i.e. built after R2e;
-    checked even when the validators are skipped).
+    checked even when the validators are skipped). A P5 composite version
+    (``spec_json.kind='composite'``) is evaluated only in its holdout window's one recorded
+    run (``research_composite_builds``, read-only): the run's split must be the window's,
+    the registry must hold the version's build, and no other run may have used the window.
 ``research_feature_catalog`` (version x catalog row: the catalog snapshot)
     ``feature_id``, ``anomaly_class``, ``hypothesis_family``, ``expected_sign``,
     ``status``, ``status_reason``. Every row not ``blocked_admission`` is a hypothesis of
@@ -213,6 +216,8 @@ FEATURE_QUERY_VERSIONS = ("research-feature-store-v1", "research-feature-store-v
 #: ``spec_json.store_schema``); versions below it revive stale market values and leave survivor
 #: conditioning unlabeled, so they are refused even when validators are skipped.
 MIN_FEATURE_STORE_SCHEMA = 3
+#: P5 composite feature versions carry ``kind='composite'`` in their spec (one holdout look each).
+COMPOSITE_KIND = "composite"
 FEATURE_VERSION_STATUSES = ("sealed", "untestable_strict")
 FEATURE_VARIANTS = ("signed_raw", "winsor", "zscore", "rank_normal", "industry_neutral", "size_neutral")
 #: Variants on a standardized scale (FM slopes comparable across features); the others are raw units.
@@ -2525,6 +2530,8 @@ class FeatureTable:
     blockers: tuple[str, ...] = ()
     #: R2b's status of every catalog row it listed, ``status`` or ``status:reason``.
     catalog_status: Mapping[str, str] = field(default_factory=dict)
+    #: A P5 composite version (spec ``kind='composite'``): its ``holdout_key`` and ``build_sha256``.
+    composite: Mapping[str, Any] | None = None
 
 
 def _research_columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
@@ -2599,9 +2606,16 @@ def load_feature_table(store: ResearchStore, feature_version: str) -> FeatureTab
     (status, basis, panel_run_id, panel_sha, classification, values_sha, query_version, universe_rule,
      catalog_sha, blockers_json, version_spec) = row[0]
     try:
-        store_schema = json.loads(version_spec or "{}").get("store_schema")
+        parsed_spec = json.loads(version_spec or "{}")
+        store_schema = parsed_spec.get("store_schema")
     except (AttributeError, ValueError) as error:
         raise EvaluationInputError(f"feature version {feature_version}: unreadable spec_json") from error
+    composite = None
+    if parsed_spec.get("kind") == COMPOSITE_KIND:
+        composite = {"holdout_key": parsed_spec.get("holdout_key"), "build_sha256": parsed_spec.get("build_sha256")}
+        if not all(isinstance(value, str) and value for value in composite.values()):
+            raise EvaluationInputError(f"composite feature version {feature_version}: its spec lacks the P5 "
+                                       "holdout_key / build_sha256 that tie it to one holdout window")
     if isinstance(store_schema, bool) or not isinstance(store_schema, int) or store_schema < MIN_FEATURE_STORE_SCHEMA:
         raise EvaluationInputError(
             f"R2b feature contract: version {feature_version} was built under feature store schema "
@@ -2685,7 +2699,52 @@ def load_feature_table(store: ResearchStore, feature_version: str) -> FeatureTab
                         None if classification is None else str(classification),
                         None if values_sha is None else str(values_sha), dates, load_values,
                         str(query_version), None if catalog_sha is None else str(catalog_sha), blockers,
-                        catalog_status)
+                        catalog_status, composite)
+
+
+def _check_composite_window(store: ResearchStore, table: FeatureTable, spec: EvaluationSpec) -> None:
+    """P5 allows one holdout evaluation per composite build and holdout window (read-only check).
+
+    A composite version may be evaluated only by the run P5 records for its window
+    (``research_composite_builds``): the run's frozen split must be the window's, the
+    registry must hold this version's build for the window, and no other run may have
+    evaluated the window (recorded ``holdout_run_id``) or these versions.
+    """
+    assert table.composite is not None
+    con, version = store.con, table.feature_version
+    key, build = table.composite["holdout_key"], table.composite["build_sha256"]
+    split_sha = key.rsplit(":", 1)[0]
+    if spec.split is None or spec.split.sha256 != split_sha:
+        raise EvaluationInputError(f"composite feature version {version}: the run's split "
+                                   f"{None if spec.split is None else spec.split.sha256} is not its holdout window "
+                                   f"{key}; composites are evaluated only in their recorded holdout run (P5)")
+    if not {"holdout_key", "build_sha256", "holdout_run_id"} <= _research_columns(con, "research_composite_builds"):
+        raise EvaluationInputError(f"composite feature version {version}: this research store has no P5 composite "
+                                   "registry (research_composite_builds); refusing an unregistered holdout look")
+    row = con.execute("SELECT build_sha256, holdout_run_id FROM research_composite_builds WHERE holdout_key = ?",
+                      [key]).fetchone()
+    if row is None:
+        raise EvaluationInputError(f"composite feature version {version}: no P5 registry entry for holdout window "
+                                   f"{key}")
+    if row[0] != build:
+        raise EvaluationInputError(f"composite feature version {version}: built by {build}, but the registry holds "
+                                   f"build {row[0]} for holdout window {key} (a replaced build is never evaluated)")
+    if row[1] is not None and row[1] != spec.run_id:
+        raise EvaluationInputError(f"composite feature version {version}: holdout window {key} was already evaluated "
+                                   f"by run {row[1]}; one holdout evaluation per build and window")
+    # Another run looked at the window if it completed, or wrote any feature rows on this basis
+    # (a run refused before evaluating, e.g. by this check, never saw the holdout).
+    others = [r[0] for r in con.execute("""
+        SELECT r.run_id FROM research_eval_runs r
+        WHERE r.run_id <> ? AND contains(r.spec_json, ?)
+          AND (r.status = 'complete' OR EXISTS (SELECT 1 FROM research_eval_feature_inputs f
+                                                WHERE f.run_id = r.run_id AND f.basis = ?))
+        ORDER BY r.run_id
+    """, [spec.run_id, f'"{version}"', table.basis]).fetchall()] \
+        if _research_columns(con, "research_eval_feature_inputs") else []
+    if others:
+        raise EvaluationInputError(f"composite feature version {version}: already evaluated by run(s) {others}; "
+                                   f"one holdout evaluation per build and window ({key})")
 
 
 def _panel_run(store: ResearchStore, table: FeatureTable, verify: bool) -> dict[str, Any]:
@@ -2863,6 +2922,8 @@ def open_basis_inputs(store: ResearchStore, feature_version: str, spec: Evaluati
     """
     con = store.con
     table = load_feature_table(store, feature_version)
+    if table.composite is not None:  # always, whatever verify_panels says (P5: one holdout look)
+        _check_composite_window(store, table, spec)
     panel = _panel_run(store, table, spec.verify_panels)
     if spec.verify_panels:
         from .features import FeatureStoreError, validate_feature_version
@@ -2876,6 +2937,7 @@ def open_basis_inputs(store: ResearchStore, feature_version: str, spec: Evaluati
             "classification_basis": table.classification_basis, "r2b_values_sha256": table.values_sha256,
             "feature_query_version": table.query_version, "feature_catalog_sha256": table.catalog_sha256,
             "feature_blockers": list(table.blockers), "feature_catalog_status": dict(table.catalog_status),
+            "composite_window": None if table.composite is None else dict(table.composite),
             **{k: v for k, v in panel.items() if k != "panel_diagnostic"}}
     variants_by_feature: dict[str, tuple[str, ...]] = {}
     for (feature_id, variant), _ in table.dates.groupby(["feature_id", "variant"], sort=True):
