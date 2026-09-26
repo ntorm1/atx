@@ -1,0 +1,172 @@
+{
+  "schema": "atx.curated-corporate-action-evidence/v1",
+  "artifact_kind": "curated-primary-source-facts-not-original-document-bytes",
+  "research_status": "reconstructed-publication-clock;historical-delivery-vintage-unverified",
+  "checked_utc_date": "2026-09-26",
+  "currency": "USD",
+  "predecessor": {
+    "instrument_namespace": "spiderrock.securityID",
+    "instrument_id": 4997008,
+    "historical_ticker": "JAG",
+    "company": "Jagged Peak Energy Inc.",
+    "security_class": "common stock"
+  },
+  "successor": {
+    "instrument_namespace": "spiderrock.securityID",
+    "instrument_id": 4245819,
+    "historical_ticker": "PE",
+    "company": "Parsley Energy Inc.",
+    "security_class": "Class A common stock",
+    "cusip": "701877102"
+  },
+  "completion_date": "2020-01-10",
+  "completion_confirmed_by_utc": "2020-01-10T13:52:00Z",
+  "stock_ratio_numerator": 447,
+  "stock_ratio_denominator": 1000,
+  "fixed_cash_usd_per_predecessor_raw_share": 0,
+  "fixed_cash_scope": "No general fixed cash purchase-price leg; fractional cash-in-lieu is separately unresolved.",
+  "stock_units_policy": "continuous-research-share-equivalents-v1",
+  "settlement_time": null,
+  "fractional_cash_in_lieu": {
+    "status": "unresolved; not modeled as zero cash or settled",
+    "agreement_rule": "Holder-level aggregation, whole successor shares and cash for the fraction using five preceding trading-day PE Class A Bloomberg VWAP.",
+    "model": "Carry the exact rational fractional research equity exposure; do not fabricate holder rounding or a cash amount."
+  },
+  "sources": [
+    {
+      "kind": "issuer-release-on-distribution-service",
+      "url": "https://www.prnewswire.com/news-releases/parsley-energy-completes-acquisition-of-jagged-peak-energy-300984916.html",
+      "publisher": "Parsley Energy, Inc.",
+      "displayed_publication_time": "2020-01-10 08:51 ET",
+      "publication_time_utc": "2020-01-10T13:51:00Z",
+      "publication_precision": "displayed minute; use following minute as conservative availability upper bound",
+      "supports": [
+        "completed acquisition",
+        "0.447 Parsley Class A shares for each eligible JAG common share"
+      ],
+      "access_method": "web tool archival text extraction"
+    },
+    {
+      "kind": "successor SEC Form 8-K",
+      "url": "https://www.sec.gov/Archives/edgar/data/1685715/000119312520005402/d864557d8k.htm",
+      "accession": "0001193125-20-005402",
+      "supports": [
+        "completion January10",
+        "Class A ratio",
+        "JAG trading ceased before January10 open",
+        "fractional cash separately payable"
+      ],
+      "access_method": "web tool archival text extraction"
+    },
+    {
+      "kind": "OCC memorandum hosted by MIAX",
+      "url": "https://www.miaxglobal.com/sites/default/files/alert-files/JAG_Merger_46324.pdf",
+      "notice": "46324",
+      "supports": [
+        "successor PE CUSIP701877102",
+        "fractional amount and payment then unresolved"
+      ],
+      "limitation": "Options contract adjustment is corroboration, not an equity-account delivery receipt."
+    },
+    {
+      "kind": "executed merger agreement",
+      "url": "https://www.sec.gov/Archives/edgar/data/1594466/000119312519267260/d820520dex21.htm",
+      "sections": [
+        "3.3(b)",
+        "3.3(h)"
+      ],
+      "supports": [
+        "holder-level fractional cash mechanics"
+      ],
+      "limitation": "Does not establish actual account delivery or loan discharge."
+    }
+  ],
+  "price_identity_binding": {
+    "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+    "forensic_artifact_sha256": "7d873526fa69428ce51fd67272e510fba3e5c8c0dec4776b0abfb50ea156c63f",
+    "selected_role_basis_sha256": "daf2ff3d3e2d3172e33ba94e48eecaf12ff12373534e1d8c6dae5c33ba2c6831",
+    "role_manifest_sha256": "900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b",
+    "records": [
+      {
+        "ticker": "JAG",
+        "instrument_id": 4997008,
+        "source_record": {
+          "ieee754_le_hex": {
+            "close": "14ae0341",
+            "cumulReturnFactor": "000000000000f03f",
+            "returnFactor": "0000803f",
+            "totalReturn": "80399cbc",
+            "volume": "000000e0886d7d41"
+          },
+          "row_group": 255,
+          "row_in_group": 116090,
+          "values": {
+            "close": 8.229999542236328,
+            "cumulReturnFactor": 1.0,
+            "returnFactor": 1.0,
+            "securityID": 4997008,
+            "ticker_tk": "JAG",
+            "totalReturn": -0.01907038688659668,
+            "tradingDate": "2020-01-09",
+            "volume": 30857358.0
+          }
+        },
+        "role_instrument_index": 3446,
+        "role_date_index": 404,
+        "mark_ns": 1578607200000000000,
+        "raw_close": 8.229999542236328,
+        "adjusted_close": 8.229999542236328,
+        "raw_close_f64_le_hex": "00000080c2752040",
+        "adjusted_close_f64_le_hex": "00000080c2752040",
+        "source_present": 1,
+        "decision_member": 1
+      },
+      {
+        "ticker": "PE",
+        "instrument_id": 4245819,
+        "source_record": {
+          "ieee754_le_hex": {
+            "close": "3d0a9141",
+            "cumulReturnFactor": "8576a798df74ef3f",
+            "returnFactor": "0000803f",
+            "totalReturn": "00b889bc",
+            "volume": "00000000fb875a41"
+          },
+          "row_group": 49,
+          "row_in_group": 65014,
+          "values": {
+            "close": 18.1299991607666,
+            "cumulReturnFactor": 0.9830167752767954,
+            "returnFactor": 1.0,
+            "securityID": 4245819,
+            "ticker_tk": "PE",
+            "totalReturn": -0.016811370849609375,
+            "tradingDate": "2020-01-10",
+            "volume": 6954988.0
+          }
+        },
+        "role_instrument_index": 2975,
+        "role_date_index": 405,
+        "mark_ns": 1578693600000000000,
+        "raw_close": 18.1299991607666,
+        "adjusted_close": 17.822093310787793,
+        "raw_close_f64_le_hex": "000000a047213240",
+        "adjusted_close_f64_le_hex": "0c180cb574d23140",
+        "source_present": 1,
+        "decision_member": 1
+      }
+    ],
+    "identity_scope": "Reconstructed dated source securityID/historical-ticker matches corroborated by named issuer/security-class event; no universal vendor-ID lifecycle proof."
+  },
+  "adjustment_component_assessment": {
+    "stock_and_cash_excluded_from_adjusted_close": true,
+    "basis": "The observed JAG reference bar precedes completion, has cumulative/one-day factors1, and no JAG completion bar is supplied. PE factors are constant across observed January8/9/10/13, with ordinary observed marks. The adapter models raw close times the source cumulative factor. Add successor exposure only after separately marking existing successor holdings.",
+    "scope": "Explicit research assertion for this bridge, supported by pinned records; not a claim of universal vendor corporate-action coverage."
+  },
+  "limitations": [
+    "Original historical delivery files were not retained by this capture.",
+    "Physical whole-share settlement, fractional cash amount/payment and stock-loan transfer/discharge are unverified.",
+    "Continuous research successor exposure is not broker settlement evidence.",
+    "No return, signal, source-presence or source universe payload is overwritten."
+  ]
+}

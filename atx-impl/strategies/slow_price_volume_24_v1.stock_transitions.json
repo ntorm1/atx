@@ -1,0 +1,42 @@
+{
+  "schema": "atx.strategy-stock-transitions/v1",
+  "source_snapshot_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "currency": "USD",
+  "publication_evidence": "reconstructed-source-publication-research-v1",
+  "settlement_status": "unknown",
+  "units_policy": "continuous-research-share-equivalents-v1",
+  "events": [
+    {
+      "event_id": "jag-pe-stock-merger-20200110",
+      "revision": 1,
+      "predecessor_instrument_id": 4997008,
+      "successor_instrument_id": 4245819,
+      "security_id_namespace": "spiderrock.securityID",
+      "predecessor_historical_identity": "Jagged Peak Energy common stock / JAG",
+      "successor_historical_identity": "Parsley Energy Class A common stock / PE / CUSIP701877102",
+      "predecessor_identity_evidence_sha256": "785d6bda81d4e8ce9aaa288df588935f4c097606fabe0798f7fa3c5ed1da9648",
+      "successor_identity_evidence_sha256": "785d6bda81d4e8ce9aaa288df588935f4c097606fabe0798f7fa3c5ed1da9648",
+      "completion_evidence_sha256": "785d6bda81d4e8ce9aaa288df588935f4c097606fabe0798f7fa3c5ed1da9648",
+      "basis_evidence_sha256": "785d6bda81d4e8ce9aaa288df588935f4c097606fabe0798f7fa3c5ed1da9648",
+      "evidence_urls": [
+        "https://www.prnewswire.com/news-releases/parsley-energy-completes-acquisition-of-jagged-peak-energy-300984916.html",
+        "https://www.sec.gov/Archives/edgar/data/1685715/000119312520005402/d864557d8k.htm",
+        "https://www.miaxglobal.com/sites/default/files/alert-files/JAG_Merger_46324.pdf",
+        "https://www.sec.gov/Archives/edgar/data/1594466/000119312519267260/d820520dex21.htm"
+      ],
+      "reference_mark_ns": 1578607200000000000,
+      "reference_raw_close": 8.229999542236328,
+      "reference_adjusted_close": 8.229999542236328,
+      "effective_after_ns": 1578607200000000000,
+      "effective_by_ns": 1578664320000000000,
+      "available_at_ns": 1578664320000000000,
+      "recognition_mark_ns": 1578693600000000000,
+      "stock_ratio_numerator": 447,
+      "stock_ratio_denominator": 1000,
+      "successor_recognition_raw_close": 18.1299991607666,
+      "successor_recognition_adjusted_close": 17.822093310787793,
+      "fixed_cash_usd_per_predecessor_raw_share": 0,
+      "stock_and_cash_excluded_from_adjusted_close": true
+    }
+  ]
+}

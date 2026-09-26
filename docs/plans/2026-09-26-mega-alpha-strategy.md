@@ -54,6 +54,37 @@ rehearsal retains its 180-second/1536-MiB sampled process-tree limit, 768-MiB
 free-memory floor, 1024-MiB internal workspace and minimum 2000 names. It adds
 the pinned claim configuration without expanding the candidate search.
 
+## Stock-transition rehearsal registration (before a completed result)
+
+Cash/monthly qualification at `ab049a50` passes all32 focused native cases;
+report/evidence `3780a55d`. The third real attempt stops on a JAG short at
+January10,2020, after the prior cash endpoints. Cumulative trials are three
+attempted and zero completed. No strategy-selection rule is changed.
+
+The next rehearsal additionally opts into the explicit stock-transition recipe
+using `atx-impl/strategies/slow_price_volume_24_v1.stock_transitions.json`,
+SHA256 `5601e0b441c69dc864b27b44bf40fca7bd2ca64e6d7d4814ff9fdac8e0eb5ac5`.
+Primary issuer/SEC evidence and exact archive/role basis support a447/1000
+conversion from JAG4997008 into Parsley Class A PE4245819. The conservative
+completion/publication upper bound is January10 13:52UTC; recognition is at
+the observed22UTC mark. Existing successor holdings are marked before signed
+delivery, predecessor orders are retired, successor targets net against actual
+post-transition research holdings, and delivery is not counted as an exchange
+fill or execution turnover. An absent required successor mark remains an error.
+
+This is a continuous research share-equivalent transition. It does not model
+physical whole-share rounding, unknown fractional cash-in-lieu, actual account
+delivery or stock-loan transfer/discharge. No fractional cash amount or payment
+date is invented. Those qualifications remain explicit in results and limit
+any later tradability claim. Optional fixed cash in other evidenced events
+must use the signed nonspendable reserve/carry policy already qualified.
+
+The five-event cash configuration, all24 candidates, family weights, costs,
+TRAIN-only orientation selection, role manifests, trial accounting and external
+runtime/RAM limits remain fixed. Later role and future-only event dispositions
+must not create hypothetical opening holdings. No2023-24/2025+ data is used by
+this accounting correction or its bounded source audit.
+
 ## Research contract
 
 - Target universe: a dated liquid common-stock universe of approximately

@@ -1,0 +1,77 @@
+{
+  "schema": "atx.selected-stock-transition-basis/v1",
+  "scope": "exact source/role identity and two observed basis points; no portfolio statistics",
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "forensic_sha256": "7d873526fa69428ce51fd67272e510fba3e5c8c0dec4776b0abfb50ea156c63f",
+  "role_manifest_sha256": "900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b",
+  "records": [
+    {
+      "ticker": "JAG",
+      "instrument_id": 4997008,
+      "source_record": {
+        "ieee754_le_hex": {
+          "close": "14ae0341",
+          "cumulReturnFactor": "000000000000f03f",
+          "returnFactor": "0000803f",
+          "totalReturn": "80399cbc",
+          "volume": "000000e0886d7d41"
+        },
+        "row_group": 255,
+        "row_in_group": 116090,
+        "values": {
+          "close": 8.229999542236328,
+          "cumulReturnFactor": 1.0,
+          "returnFactor": 1.0,
+          "securityID": 4997008,
+          "ticker_tk": "JAG",
+          "totalReturn": -0.01907038688659668,
+          "tradingDate": "2020-01-09",
+          "volume": 30857358.0
+        }
+      },
+      "role_instrument_index": 3446,
+      "role_date_index": 404,
+      "mark_ns": 1578607200000000000,
+      "raw_close": 8.229999542236328,
+      "adjusted_close": 8.229999542236328,
+      "raw_close_f64_le_hex": "00000080c2752040",
+      "adjusted_close_f64_le_hex": "00000080c2752040",
+      "source_present": 1,
+      "decision_member": 1
+    },
+    {
+      "ticker": "PE",
+      "instrument_id": 4245819,
+      "source_record": {
+        "ieee754_le_hex": {
+          "close": "3d0a9141",
+          "cumulReturnFactor": "8576a798df74ef3f",
+          "returnFactor": "0000803f",
+          "totalReturn": "00b889bc",
+          "volume": "00000000fb875a41"
+        },
+        "row_group": 49,
+        "row_in_group": 65014,
+        "values": {
+          "close": 18.1299991607666,
+          "cumulReturnFactor": 0.9830167752767954,
+          "returnFactor": 1.0,
+          "securityID": 4245819,
+          "ticker_tk": "PE",
+          "totalReturn": -0.016811370849609375,
+          "tradingDate": "2020-01-10",
+          "volume": 6954988.0
+        }
+      },
+      "role_instrument_index": 2975,
+      "role_date_index": 405,
+      "mark_ns": 1578693600000000000,
+      "raw_close": 18.1299991607666,
+      "adjusted_close": 17.822093310787793,
+      "raw_close_f64_le_hex": "000000a047213240",
+      "adjusted_close_f64_le_hex": "0c180cb574d23140",
+      "source_present": 1,
+      "decision_member": 1
+    }
+  ]
+}
