@@ -16,10 +16,13 @@ look back, volatility/high are trailing windows), so there is no forward leakage
 are computed on the adjusted close so corporate actions don't create spurious jumps;
 momentum and volatility are reported in fractions / annualized fractions.
 
-The math lives in :func:`compute_equity_price_metrics`, a pure DataFrame->DataFrame
-transform unit-tested without DuckDB; :class:`EquityPriceMetricsDataset` /
-:func:`refresh_equity_price_metrics` feed it the cached bars and write the result.
-No network.
+The released dataset (``price-metrics-1d``) is built by :func:`refresh_equity_price_metrics`
+in bounded SQL over one picked bar per ``(security_id, trade_date)`` (the shared bar pick)
+whose adjusted close is the ``vendor_artifact_repaired`` series (:mod:`atx_db._vendor_artifact`,
+:data:`ADJ_CLOSE_BASIS`), so the vendor's 2021-01-04 factor-decrease artifact enters no return,
+window or the equal-weight market proxy. :func:`compute_equity_price_metrics` is the same math
+as a pure DataFrame->DataFrame transform over the adjusted closes the caller passes (unit-tested
+without DuckDB). No network.
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ import pandas as pd
 
 from .asof import equity_price_metrics_asof  # noqa: F401  (re-exported for callers)
 from ._bulk_publication import publish_validated_shadow
+from ._vendor_artifact import REPAIR_VERSION, bar_pick_order_sql, repaired_bars_sql
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import insert_frame, quality_check
@@ -39,6 +43,11 @@ from .warehouse import insert_frame, quality_check
 
 SOURCE_NAME = "Derived daily price analytics"
 DEFAULT_SOURCE = "derived_equity_price_metrics_v1"
+#: Adjusted-close basis of the refresh (0.13 / I1): every return, momentum, volatility, drawdown,
+#: high and the equal-weight market proxy read the vendor_artifact_repaired adjusted close of one
+#: picked bar per (security_id, trade_date). The table has no version column (rows keep the source
+#: id, so metric_id is unchanged); the basis is recorded in the refresh's quality-check details.
+ADJ_CLOSE_BASIS = REPAIR_VERSION
 
 TRADING_DAYS = 252
 VOL_WINDOW_SHORT = 20
@@ -299,15 +308,43 @@ def load_price_inputs(store: DuckDBStore, options: EquityPriceMetricsOptions) ->
             store.con.unregister("eqpm_symbol_filter")
 
 
-_REFRESH_SQL = """
-CREATE OR REPLACE TABLE equity_price_metrics_bulk_stage AS
-WITH inputs AS (
-    SELECT b.security_id, b.symbol, b.trade_date, b.open, b.close,
-           b.adjusted_close, b.volume, b.available_at
+_BARS_STAGE_TABLE = "equity_price_metrics_bars_stage"
+
+
+def _bars_sql(symbol_pred: str) -> str:
+    """Stage 1: one picked bar per (security_id, trade_date) visible at the cutoff and its
+    ``vendor_artifact_repaired`` adjusted close. Binds ``(cutoff, cutoff, cutoff_at, cutoff_at)``.
+
+    The pick is the shared total order of every bar builder (with the share count the repair
+    reads), then volume and open (the columns only this dataset reads) so tied revisions give one
+    row on every run. The repair reads the picked bars' full history (every run rebuilds the
+    whole source).
+    """
+    return f"""
+CREATE OR REPLACE TABLE {_BARS_STAGE_TABLE} AS
+WITH picked AS (
+    SELECT b.security_id, b.symbol, b.trade_date, b.open, b.close, b.adjusted_close, b.volume,
+           b.shares_outstanding, b.available_at
     FROM equity_daily_bars b
     WHERE (? IS NULL OR b.trade_date <= ?)
       AND (? IS NULL OR b.available_at <= ?)
       AND ({symbol_pred})
+    QUALIFY row_number() OVER (
+        PARTITION BY b.security_id, b.trade_date
+        ORDER BY {bar_pick_order_sql('b', with_shares=True)}, b.volume DESC NULLS LAST, b.open DESC NULLS LAST
+    ) = 1
+)
+SELECT security_id, symbol, trade_date, open, close, adjusted_close * va_multiplier AS adjusted_close,
+       volume, available_at
+FROM ({repaired_bars_sql('picked', shares='shares_outstanding')}) repaired
+"""
+
+
+_REFRESH_SQL = f"""
+CREATE OR REPLACE TABLE equity_price_metrics_bulk_stage AS
+WITH inputs AS (
+    SELECT security_id, symbol, trade_date, open, close, adjusted_close, volume, available_at
+    FROM {_BARS_STAGE_TABLE}
 ), normalized AS (
     SELECT *,
         CASE WHEN isfinite(adjusted_close) AND adjusted_close > 0
@@ -538,7 +575,8 @@ def _build_publication_shadow(store: DuckDBStore, source: str) -> int:
 def refresh_equity_price_metrics(store: DuckDBStore, options: EquityPriceMetricsOptions) -> int:
     """Bounded SQL refresh with disk spill; never loads the bar universe into pandas.
 
-    A persistent stage and a PK-only shadow are built before the short atomic table
+    The picked, artifact-repaired bars are materialized first (:func:`_bars_sql`), then the
+    metrics stage reads them. A persistent stage and a PK-only shadow are built before the short atomic table
     swap.  Hash-prefix inserts and checkpoint/reopen cycles bound primary-key index
     work; a failed build leaves the preceding live table untouched.  Production
     callers must keep DuckDB at one thread and 1GB.
@@ -556,10 +594,9 @@ def refresh_equity_price_metrics(store: DuckDBStore, options: EquityPriceMetrics
     cutoff = options.as_of_date
     cutoff_at = None if cutoff is None else dt.datetime.combine(cutoff, dt.time.max)
     try:
-        store.con.execute(
-            _REFRESH_SQL.format(symbol_pred=symbol_pred),
-            [cutoff, cutoff, cutoff_at, cutoff_at, options.source, options.source, options.run_id],
-        )
+        store.con.execute(_bars_sql(symbol_pred), [cutoff, cutoff, cutoff_at, cutoff_at])
+        store.con.execute(_REFRESH_SQL, [options.source, options.source, options.run_id])
+        store.con.execute(f"DROP TABLE {_BARS_STAGE_TABLE}")
         row = store.con.execute(f"SELECT count(*) FROM {_BULK_STAGE_TABLE}").fetchone()
         rows = 0 if row is None else int(row[0])
         shadow_rows = _build_publication_shadow(store, options.source)
@@ -598,11 +635,11 @@ class EquityPriceMetricsDataset(Dataset):
             status="passed" if rows > 0 else "warning",
             observed_value=float(rows),
             threshold_value=1.0,
-            details={"source": options.source},
+            details={"source": options.source, "adj_close_basis": ADJ_CLOSE_BASIS},
         )
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
             rows_loaded=rows,
             source=options.source,
-            details={"grain": "security_id,trade_date"},
+            details={"grain": "security_id,trade_date", "adj_close_basis": ADJ_CLOSE_BASIS},
         )

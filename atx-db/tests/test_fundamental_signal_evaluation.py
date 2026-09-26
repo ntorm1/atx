@@ -109,7 +109,7 @@ def test_canonical_publisher_persists_actual_basis_and_atomic_source_swap(tmp_pa
             FROM forward_returns_survivorship_safe WHERE source='target'
         """).fetchone()
         assert adjusted[0] == pytest.approx(.1)
-        assert adjusted[1:] == ("adjusted_close", "forward_return_publication_v2")
+        assert adjusted[1:] == ("adjusted_close", publication.CALCULATION_VERSION)
         assert con.execute("""
             SELECT price_basis,calculation_version FROM forward_returns_survivorship_safe
             WHERE source='other'
@@ -122,7 +122,7 @@ def test_canonical_publisher_persists_actual_basis_and_atomic_source_swap(tmp_pa
         assert before[0] == ("other", .5, None, None)
         assert before[1][1] == pytest.approx(.2)
         assert (before[1][0], *before[1][2:]) == (
-            "target", "close", "forward_return_publication_v2")
+            "target", "close", publication.CALCULATION_VERSION)
 
         def fail_swap(*_args, **_kwargs):
             raise RuntimeError("synthetic swap failure")
@@ -234,7 +234,7 @@ def _warehouse(tmp_path):
             labels.append((f"L{index:03d}_{horizon}", "labels", security,
                            entry, horizon, ending, .001*index, .001*index, False, False,
                            dt.datetime.combine(ending, dt.time(13)),
-                           "adjusted_close", "forward_return_publication_v2"))
+                           "adjusted_close", publication.CALCULATION_VERSION))
     con.executemany("""
         INSERT INTO fundamental_signal_values
         (run_id,signal_id,decision_date,security_id,decision_at,entry_date,
@@ -376,9 +376,9 @@ def test_newest_unsupported_basis_suppresses_older_adjusted_label(tmp_path):
              available_at,price_basis,calculation_version)
             SELECT 'newer_raw','labels',security_id,as_of_date,horizon_days,
                    forward_end_date,raw_forward_return,forward_return,false,false,
-                   available_at+INTERVAL 1 HOUR,'close','forward_return_publication_v2'
+                   available_at+INTERVAL 1 HOUR,'close',?
             FROM forward_returns_survivorship_safe WHERE forward_return_id='L000_21'
-        """)
+        """, [publication.CALCULATION_VERSION])
         evaluate_fundamental_signals(store, FundamentalSignalEvaluationOptions(
             build_run_id="build", run_id="raw_eval", as_of_date=as_of,
             run_at=dt.datetime.combine(as_of, dt.time(22, 30), dt.UTC),
@@ -405,9 +405,9 @@ def test_malformed_latest_terminal_is_invalid_and_valid_policy_is_counted(tmp_pa
              return_observation_id,available_at,price_basis,calculation_version)
             SELECT 'malformed','labels',security_id,as_of_date,horizon_days,
                    forward_end_date,0,.5,.5,true,true,NULL,'observed','obs',
-                   available_at+INTERVAL 1 HOUR,'adjusted_close','forward_return_publication_v2'
+                   available_at+INTERVAL 1 HOUR,'adjusted_close',?
             FROM forward_returns_survivorship_safe WHERE forward_return_id='L000_21'
-        """)
+        """, [publication.CALCULATION_VERSION])
         store.con.execute("""
             INSERT INTO forward_returns_survivorship_safe
             (forward_return_id,source,security_id,as_of_date,horizon_days,
@@ -417,9 +417,9 @@ def test_malformed_latest_terminal_is_invalid_and_valid_policy_is_counted(tmp_pa
             SELECT 'valid_policy','labels',security_id,as_of_date,horizon_days,
                    forward_end_date,0,-.5,-.5,true,true,as_of_date+INTERVAL 1 DAY,
                    'policy',NULL,available_at+INTERVAL 1 HOUR,
-                   'adjusted_close','forward_return_publication_v2'
+                   'adjusted_close',?
             FROM forward_returns_survivorship_safe WHERE forward_return_id='L001_21'
-        """)
+        """, [publication.CALCULATION_VERSION])
         evaluate_fundamental_signals(store, FundamentalSignalEvaluationOptions(
             build_run_id="build", run_id="terminal_eval", as_of_date=as_of,
             run_at=dt.datetime.combine(as_of, dt.time(22, 30), dt.UTC),

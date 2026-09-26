@@ -19,6 +19,7 @@ import pytest
 
 import atx_db.migrations as migrations_pkg
 from atx_db import historical_identity as hi
+from atx_db._forward_return_publication import CALCULATION_VERSION
 from atx_db.connection import DuckDBStore
 from atx_db.estimates import EstimateMeasureSeedDataset, EstimateMeasureSeedOptions
 from atx_db.migration_admin import verify_schema
@@ -822,7 +823,7 @@ def _coverage_fixture(con):
     # H: halted after 2024-03-22, terminal dated 2024-04-10 (12 absent sessions) -> published 2024-03-25.
     bars("H", dt.date(2024, 3, 22))
     terminal("H", dt.date(2024, 4, 10))
-    stitched("H", dt.date(2024, 3, 25), "forward_return_publication_v2")
+    stitched("H", dt.date(2024, 3, 25), CALCULATION_VERSION)
     # M: terminal on the next session, never stitched -> a genuine drop.
     bars("M", dt.date(2024, 5, 10))
     terminal("M", dt.date(2024, 5, 13))

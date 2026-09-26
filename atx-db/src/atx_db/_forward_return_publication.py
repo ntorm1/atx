@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from uuid import uuid4
 
 from ._bulk_publication import publish_validated_shadow
-from ._vendor_artifact import repaired_bars_sql
+from ._vendor_artifact import bar_pick_order_sql, bars_relation_sql, repaired_bars_sql
 from .connection import DuckDBStore
 
 _LOG = logging.getLogger(__name__)
@@ -330,35 +330,39 @@ def selected_bars_sql(price_basis: str, *, security_filter: str = "TRUE") -> str
     ``equity_daily_bars`` applied before the pick. Binds ``(cutoff, cutoff)``.
 
     ``adjusted_close`` is the VA1 repaired series (:mod:`atx_db._vendor_artifact`,
-    ``vendor_artifact_repaired``): the vendor factor-decrease artifact steps between
-    consecutive picked bars are neutralized, every other factor step is kept. A contiguous
-    date filter gives the same returns as a full-history read.
+    ``vendor_artifact_repaired``, rule ``vendor_artifact_repair_v2``): the vendor factor-decrease
+    artifact steps between consecutive picked bars are neutralized (the picked bar's vendor
+    ``shares_outstanding`` feeds the rule's share veto), every other factor step is kept. A
+    contiguous date filter gives the same returns as a full-history read. The pick is the shared
+    total order :func:`atx_db._vendor_artifact.bar_pick_order_sql`.
     """
     if price_basis not in {"adjusted_close", "close"}:
         raise ValueError("price_basis must be adjusted_close or close")
     picked = """
-                    SELECT security_id, symbol, trade_date, close, adjusted_close, price_available_at
+                    SELECT security_id, symbol, trade_date, close, adjusted_close, shares_outstanding,
+                           price_available_at
                     FROM chosen WHERE pick = 1"""
     if price_basis == "adjusted_close":
         priced = (f"SELECT security_id, symbol, trade_date, adjusted_close * va_multiplier AS price, "
-                  f"price_available_at FROM ({repaired_bars_sql('picked')}) va_repaired")
+                  f"price_available_at FROM ({repaired_bars_sql('picked', shares='shares_outstanding')}) va_repaired")
     else:
         priced = "SELECT security_id, symbol, trade_date, close AS price, price_available_at FROM picked"
+    # The derived table keeps the name equity_daily_bars so a security_filter may qualify its
+    # columns; bars_relation_sql reads a column a minimal bars relation lacks (fixtures without
+    # shares_outstanding, which migration 0263 adds to the warehouse table) as NULL.
     return f"""
                 WITH eligible AS (
                     SELECT *, coalesce(available_at,
                         CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') AS price_available_at
-                    FROM equity_daily_bars
+                    FROM {bars_relation_sql()} equity_daily_bars
                     WHERE ({security_filter}) AND (?::TIMESTAMP IS NULL OR coalesce(available_at,
                         CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= ?)
                 ), chosen AS (
-                    SELECT security_id, symbol, trade_date, close, adjusted_close, price_available_at,
+                    SELECT security_id, symbol, trade_date, close, adjusted_close, shares_outstanding,
+                           price_available_at,
                            row_number() OVER (
                                PARTITION BY security_id, trade_date
-                               ORDER BY price_available_at DESC, source ASC,
-                                        vendor_security_id ASC NULLS LAST, symbol ASC,
-                                        adjusted_close DESC NULLS LAST, close DESC NULLS LAST,
-                                        source_loaded_at DESC
+                               ORDER BY {bar_pick_order_sql(with_shares=True)}
                            ) AS pick
                     FROM eligible
                 ), picked AS ({picked}

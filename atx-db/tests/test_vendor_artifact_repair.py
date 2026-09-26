@@ -1,6 +1,11 @@
 """VA1: the shared repaired adjusted close neutralizes a vendor factor-decrease artifact (small and
 large, raw price flat), keeps a genuine dividend and a genuine reverse split (raw price followed the
-factor), never repairs across a data gap, and gives the same returns on a date-scoped read."""
+factor), never repairs across a data gap, and gives the same returns on a date-scoped read.
+
+The v2 rule (0.13, ruling C-35): on the artifact session an exact flat step is repaired unless the raw
+close or the vendor share count followed on the bar; off it, a same-bar raw rise, a raw jump on the 5
+preceding bars (out of band) or a same-bar share move by k keeps the step, and exact ratios are never
+repaired."""
 
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ BARS = {
     "BIG": list(zip(D, [50, 50, 50, 50.5, 50.5, 51], [1, 1, 1, 0.0413, 0.0413, 0.0413], strict=True)),
     # in-band inexact artifact (x0.93) on a day the raw close rose 5%: in R1d's non-split band, repaired
     "INB": list(zip(D, [40, 40, 40, 42, 42, 42], [1, 1, 1, 0.93, 0.93, 0.93], strict=True)),
-    # an exact-ratio decrease (x0.5) with a flat price is an R1d split hazard: never repaired here
+    # an exact-ratio decrease (x0.5) with a flat price on the artifact session: repaired (v2, C-35)
     "EXACT": list(zip(D, [30, 30, 30, 30, 30, 30], [1, 1, 1, 0.5, 0.5, 0.5], strict=True)),
     # a factor decrease across a 21-day data gap is never repaired (P8: factor_step_across_data_gap)
     "GAP": [(dt.date(2020, 12, 14), 20, 1), (dt.date(2021, 1, 4), 20, ART), (dt.date(2021, 1, 5), 20.2, ART)],
@@ -56,7 +61,7 @@ def test_artifact_neutralized_dividend_and_reverse_split_kept():
     assert repaired[("BIG", art)] == pytest.approx(0.01, abs=1e-12)              # vendor: -95.8%
     assert repaired[("INB", art)] == pytest.approx(0.05, abs=1e-12)              # vendor: -2.35%
     assert repaired[("RS", art)] == pytest.approx(0.0, abs=1e-12)                # reverse split kept
-    assert repaired[("EXACT", art)] == pytest.approx(-0.5, abs=1e-12)            # R1d hazard: untouched
+    assert repaired[("EXACT", art)] == pytest.approx(0.0, abs=1e-12)             # on the session: repaired
     assert repaired[("GAP", art)] == pytest.approx(ART - 1, abs=1e-12)           # across a gap: untouched
     for key, value in raw.items():                                                # every other day: raw x factor
         if key[1] not in (D[2], art):
@@ -70,3 +75,48 @@ def test_artifact_neutralized_dividend_and_reverse_split_kept():
         FROM ({selected_bars_sql('adjusted_close', security_filter="security_id = 'DIV'")}) b""",
                               [None, None]).fetchone())
     assert last / first - 1 == pytest.approx(99.5 / 99 - 1, abs=1e-12)
+
+
+# Off the artifact session: eight sessions in October 2019, the factor step on the seventh (index 6).
+D_OFF = [dt.date(2019, 10, day) for day in (21, 22, 23, 24, 25, 28, 29, 30)]
+SH = 1_000_000
+# line -> (dates, closes, vendor factors adjusted/close, vendor share counts)
+BARS_V2 = {
+    # on the session, an exact 1:10 reverse split whose raw close followed on the bar (x9.5): kept (HSDT shape)
+    "RSX": (D, [10, 10, 10, 95, 95, 95], [1, 1, 1, 0.1, 0.1, 0.1], [SH] * 6),
+    # on the session, an exact 1:5 step with a flat price but the vendor count x0.2 on the bar: kept (share veto)
+    "RSSH": (D, [10] * 6, [1, 1, 1, 0.2, 0.2, 0.2], [SH] * 3 + [SH // 5] * 3),
+    # off the session, an inexact x0.2137 step one session after a x5 raw jump: kept (look-back veto, ARCM shape)
+    "LOOK": (D_OFF, [10] * 5 + [50] * 3, [1] * 6 + [0.2137] * 2, [SH] * 8),
+    # off the session, the same inexact out-of-band step with a flat price and no jump before: repaired (v1 rule)
+    "OOB": (D_OFF, [20] * 8, [1] * 6 + [0.3137] * 2, [SH] * 8),
+    # off the session, an in-band inexact x0.9008 consolidation whose raw close rose 10.4%: kept (IMOS shape)
+    "INB2": (D_OFF, [40] * 6 + [44.16] * 2, [1] * 6 + [0.9008] * 2, [SH] * 8),
+    # off the session, an inexact x0.6756 step with a flat price and the vendor count x0.6756: kept (FURY shape)
+    "SHR": (D_OFF, [30] * 8, [1] * 6 + [0.6756] * 2, [SH] * 6 + [675_600] * 2),
+    # off the session, an exact x0.5 flat step is an R1d split hazard: never repaired here
+    "EXOFF": (D_OFF, [30] * 8, [1] * 6 + [0.5] * 2, [SH] * 8),
+}
+
+
+def test_v2_session_rule_and_off_session_vetoes():
+    con = duckdb.connect(config={"threads": 1, "memory_limit": "256MB"})
+    con.execute("""CREATE TABLE equity_daily_bars (source VARCHAR, security_id VARCHAR, symbol VARCHAR,
+        vendor_security_id VARCHAR, trade_date DATE, close DOUBLE, adjusted_close DOUBLE, shares_outstanding BIGINT,
+        available_at TIMESTAMP, source_loaded_at TIMESTAMP)""")
+    con.executemany("INSERT INTO equity_daily_bars VALUES ('v', ?, ?, 'x', ?, ?, ?, ?, ?, '2026-01-01')",
+                    [(line, line, day, close, close * factor, shares, dt.datetime.combine(day, dt.time(22)))
+                     for line, series in BARS_V2.items() for day, close, factor, shares in zip(*series, strict=True)])
+    repaired, raw = _returns(con, "adjusted_close"), _returns(con, "close")
+    art, step = D[3], D_OFF[6]
+    assert repaired[("RSX", art)] == pytest.approx(9.5 * 0.1 - 1, abs=1e-12)       # vendor return kept
+    assert repaired[("RSSH", art)] == pytest.approx(0.2 - 1, abs=1e-12)            # vendor return kept
+    assert repaired[("LOOK", D_OFF[5])] == pytest.approx(4.0, abs=1e-12)           # the raw jump, as the vendor
+    assert repaired[("LOOK", step)] == pytest.approx(0.2137 - 1, abs=1e-12)        # step kept: no fabricated x5
+    assert repaired[("OOB", step)] == pytest.approx(0.0, abs=1e-12)                # vendor: -68.6%, repaired
+    assert repaired[("INB2", step)] == pytest.approx(1.104 * 0.9008 - 1, abs=1e-12)  # v1 fabricated +10.4%
+    assert repaired[("SHR", step)] == pytest.approx(0.6756 - 1, abs=1e-12)         # vendor return kept
+    assert repaired[("EXOFF", step)] == pytest.approx(0.5 - 1, abs=1e-12)          # R1d hazard: untouched
+    for key, value in raw.items():                                                # every other bar: raw x factor
+        if key[1] not in (art, step):
+            assert repaired[key] == pytest.approx(value, abs=1e-12)

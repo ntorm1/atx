@@ -131,7 +131,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ._vendor_artifact import REPAIR_VERSION, repaired_bars_sql
+from ._vendor_artifact import REPAIR_VERSION, bar_pick_order_sql, bars_relation_sql, repaired_bars_sql
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .derived_dsl import LowerContext, compile_expression
@@ -479,16 +479,21 @@ def _asof_joins(codes: tuple[str, ...]) -> tuple[str, str]:
 def _bars_by_session_sql(*, security_count: int, bars_extra_predicate: str, with_recent: bool) -> str:
     """One deduped row per ``(security_id, trade_date)`` of the batch's bars.
 
-    Revisions are ranked first and the price checked after: the newest physical
-    row wins even when its close or adjusted close is NULL or not positive (the
-    session is then ``price_valid = false`` with NULL prices, never an older
-    revision's price).
+    One whole physical row is picked by the publisher's total order
+    (:func:`atx_db._vendor_artifact.bar_pick_order_sql`, shared with the label,
+    event and factor-return builders), then ``shares_outstanding`` and ``volume``
+    break the remaining ties, so tied revisions give the same row on every run and
+    thread count (C-20). Revisions are ranked first and the price checked after:
+    the newest physical row wins even when its close or adjusted close is NULL or
+    not positive (the session is then ``price_valid = false`` with NULL prices,
+    never an older revision's price). ``bar_at`` is the latest clock of any row.
+    A bars relation without ``vendor_security_id`` / ``source_loaded_at`` /
+    ``volume`` / ``shares_outstanding`` reads them as NULL
+    (:func:`atx_db._vendor_artifact.bars_relation_sql`).
 
     Bind order: the effective start date (only ``with_recent``), the batch's
     security ids, then the ``bars_extra_predicate`` params.
     """
-    # arg_max_null: the newest physical row's value, NULL included. Plain
-    # arg_max skips a NULL and would revive an older revision's value (R2e).
     recent = ",\n           (trade_date >= ?) AS is_recent" if with_recent else ""
     return f"""SELECT security_id, trade_date, symbol,
            CASE WHEN close > 0 THEN close END AS close,
@@ -496,21 +501,21 @@ def _bars_by_session_sql(*, security_count: int, bars_extra_predicate: str, with
            volume, archive_shares, bar_at, cutoff,
            coalesce(close > 0 AND adj_close > 0, false) AS price_valid{recent}
     FROM (
-        SELECT security_id, trade_date,
-               arg_max_null(symbol, (available_at, source)) AS symbol,
-               arg_max_null(close, (available_at, source)) AS close,
-               arg_max_null(adjusted_close, (available_at, source)) AS adj_close,
-               arg_max_null(volume, (available_at, source)) AS volume,
-               arg_max_null(shares_outstanding, (available_at, source)) AS archive_shares,
-               greatest(max(available_at),
+        SELECT security_id, trade_date, symbol, close, adjusted_close AS adj_close, volume,
+               shares_outstanding AS archive_shares,
+               greatest(max(available_at) OVER (PARTITION BY security_id, trade_date),
                         CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR) AS bar_at,
-               CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR AS cutoff
-        FROM equity_daily_bars
+               CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR AS cutoff,
+               row_number() OVER (
+                   PARTITION BY security_id, trade_date
+                   ORDER BY {bar_pick_order_sql(with_shares=True)}, volume DESC NULLS LAST
+               ) AS bar_pick
+        FROM {bars_relation_sql()} equity_daily_bars
         WHERE trade_date IS NOT NULL
           AND security_id IN ({", ".join(["?"] * security_count)})
           {bars_extra_predicate}
-        GROUP BY security_id, trade_date
-    )"""
+    )
+    WHERE bar_pick = 1"""
 
 
 #: The owner links the vendor share-run clock matches DEI cover counts through:
@@ -543,7 +548,44 @@ def _real_split_sql(k: str) -> str:
     )
 
 
-def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
+def real_split_events_sql(bars: str, *, repaired: str | None = None) -> str:
+    """SELECT ``security_id, ex_date`` of the real split ex-dates of ``bars``.
+
+    ``bars`` names one row per ``(security_id, trade_date)`` with ``close``,
+    ``adj_close`` (a NULL or non-positive price marks an invalid session) and
+    ``archive_shares`` (the vendor count). An ex-date is a daily
+    price-adjustment factor step between valid-price sessions (daily, so
+    ordinary dividends never accumulate into one) that :func:`_real_split_sql`
+    calls a split, **unless** the vendor-artifact repair neutralizes the step
+    (:func:`atx_db._vendor_artifact.repaired_bars_sql` ``va_ln_k < 0``, 0.13
+    M9): the 2021-01-04 exact flat steps (CVNA x0.2, CRWD x0.25, MNST x0.5,
+    ...) are a later forward split applied from that session, not a split
+    there, and would otherwise open ``split_pending`` windows from it.
+    ``repaired`` names that repair's output over ``bars`` (``security_id,
+    trade_date, va_ln_k``) when the caller already computes it; otherwise it
+    is computed here, over the full bars of the lines with a split candidate
+    only (a line's repair reads only its own bars). Binds no parameters.
+    """
+    if repaired is None:
+        lines = f"(SELECT * FROM {bars} WHERE security_id IN (SELECT security_id FROM split_candidates))"
+        repaired = f"({repaired_bars_sql(lines, adjusted='adj_close', shares='archive_shares')})"
+    return f"""WITH split_candidates AS MATERIALIZED (
+        SELECT security_id, trade_date FROM (
+            SELECT security_id, trade_date,
+                   (lag(close) OVER w * adj_close) / (lag(adj_close) OVER w * close) AS day_factor
+            FROM {bars}
+            WHERE close > 0 AND adj_close > 0
+            WINDOW w AS (PARTITION BY security_id ORDER BY trade_date)
+        )
+        WHERE {_real_split_sql("day_factor")}
+    ), artifact_steps AS (
+        SELECT va.security_id, va.trade_date FROM {repaired} va WHERE va.va_ln_k < 0
+    )
+    SELECT security_id, trade_date AS ex_date FROM split_candidates
+    ANTI JOIN artifact_steps USING (security_id, trade_date)"""
+
+
+def vendor_share_state_ctes(*, bars: str, links: str, targets: str, repaired: str | None = None) -> str:
     """The A8 vendor share-run clock as ``WITH`` clauses (no leading ``WITH``).
 
     ``bars`` names one row per ``(security_id, trade_date)`` with the columns
@@ -564,7 +606,9 @@ def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
     ex-date at or before the bar, ``run_pending`` (no run known yet) and
     ``split_pending`` (the known run started before that ex-date: it spans a
     split, so its count must not price the bar). ``split_events`` holds the
-    real split ex-dates (see :func:`_real_split_sql`).
+    real split ex-dates (:func:`real_split_events_sql`: vendor-artifact steps
+    are not splits); ``repaired`` optionally names the caller's
+    ``repaired_bars_sql`` output over ``bars`` so it is not computed twice.
     """
     split_hi, split_lo = _sql_double(SPLIT_FACTOR_MIN), _sql_double(1.0 / SPLIT_FACTOR_MIN)
     run_split_tol = _sql_double(SPLIT_RUN_TOLERANCE)
@@ -683,17 +727,10 @@ def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
 ), split_events AS (
     -- Real split ex-dates only: a daily price-adjustment factor step (daily, so
     -- ordinary dividends never accumulate into one, between valid-price
-    -- sessions) that R1d's classifier calls an exact split ratio. A spin-off,
-    -- special dividend or other inexact step leaves the share count valid.
-    SELECT security_id, trade_date AS ex_date
-    FROM (
-        SELECT security_id, trade_date,
-               (lag(close) OVER w * adj_close) / (lag(adj_close) OVER w * close) AS day_factor
-        FROM {bars}
-        WHERE close > 0 AND adj_close > 0
-        WINDOW w AS (PARTITION BY security_id ORDER BY trade_date)
-    )
-    WHERE {_real_split_sql("day_factor")}
+    -- sessions) that R1d's classifier calls an exact split ratio and the
+    -- vendor-artifact repair does not neutralize. A spin-off, special dividend
+    -- or other inexact step leaves the share count valid.
+    {real_split_events_sql(bars, repaired=repaired)}
 ), vendor_share_state AS (
     SELECT t.security_id, t.trade_date, s.pit_shares, s.pit_clock, s.pit_lag_family, s.pit_run_start,
            s.pit_available_at, x.ex_date AS last_split_date,
@@ -882,7 +919,8 @@ def build_market_daily_sql(
     bars_by_session = _bars_by_session_sql(
         security_count=security_count, bars_extra_predicate=bars_extra_predicate, with_recent=True
     )
-    vendor_state = vendor_share_state_ctes(bars="bars_by_session", links="vendor_share_links", targets="bars")
+    vendor_state = vendor_share_state_ctes(bars="bars_by_session", links="vendor_share_links", targets="bars",
+                                           repaired="adj_repair")
     # VA1: the published adjusted close (and log_return, and every metric chained on them).
     repaired_adj = "(j.adj_close * coalesce(rp.va_multiplier, 1.0))"
     availability_terms = ", ".join(
@@ -958,14 +996,15 @@ WITH owner_bridge AS (
     -- sibling's (row_number() over trade_date DESC would otherwise have to
     -- break same-trade_date ties on undefined physical/plan order).
     {bars_by_session}
-), adj_repair AS (
+), adj_repair AS MATERIALIZED (
     -- VA1: the vendor_artifact_repaired multiplier of each session over the line's full
     -- history (bars_by_session is never lower-date bounded), so the published adj_close
     -- level and log_return do not depend on the refresh's start date. Only the published
     -- adj_close/log_return (and the metrics chained on them) read it; the A8 share logic
-    -- keeps the vendor factor.
-    SELECT security_id, trade_date, va_multiplier
-    FROM ({repaired_bars_sql('bars_by_session', adjusted='adj_close')}) va
+    -- keeps the vendor factor, except that a neutralized step is never a split ex-date
+    -- (split_events reads va_ln_k; materialized once for both readers).
+    SELECT security_id, trade_date, va_ln_k, va_multiplier
+    FROM ({repaired_bars_sql('bars_by_session', adjusted='adj_close', shares='archive_shares')}) va
 ), bars AS (
     SELECT security_id, trade_date, symbol, close, adj_close, volume, archive_shares, bar_at, cutoff, price_valid
     FROM (
@@ -1483,8 +1522,9 @@ def _refresh_market_daily(
             affected = store.con.execute(sql, bind).fetchall()
             # Row counts of this batch by share basis, share clock kind and
             # currency status (materialized before the commit, like the INSERT
-            # count). The clock is not stored yet (0328), so the count query
-            # re-derives the vendor share state from the same bars.
+            # count). The count query re-derives the vendor share state from the
+            # same deterministic bar pick as the INSERT (_bars_by_session_sql), so
+            # its counts match the written rows.
             counts.add(
                 store.con.execute(
                     _share_basis_count_sql(

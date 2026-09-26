@@ -62,12 +62,15 @@ WITH p AS (
            WHEN e.status<>'complete' OR e.build_run_id<>b.run_id
              OR e.build_sha256 IS DISTINCT FROM b.panel_sha256
              OR e.as_of_date>x.cutoff::DATE OR e.run_at>x.cutoff THEN 'evaluation_manifest_mismatch'
-           -- v2 labels realize a halt-gap delisting loss at the first absent session (R3a);
-           -- sealed v1 runs stay readable: their unstitched halt windows surface as label attrition.
+           -- Only the publisher's current label version is evaluated: forward_return_publication_v3
+           -- (VA1: adjusted_close is the vendor_artifact_repaired series). Sealed v1 (no halt-gap
+           -- stitch) and v2 (the 2021-01-04 vendor factor-decrease artifact, a dividend-yield-correlated
+           -- bias) runs are refused. Keep this literal equal to publication.CALCULATION_VERSION
+           -- (tests/test_desk_question_pack.py pins it).
            -- fq2_v2 and fq2_v3 share the observation contract; they differ only in inference.
            WHEN coalesce(json_extract_string(e.config_json,'$.evaluation_version'),'') NOT IN ('fq2_v2','fq2_v3')
              OR coalesce(json_extract_string(e.config_json,'$.label_version'),'')
-                NOT IN ('forward_return_publication_v1','forward_return_publication_v2')
+                <> 'forward_return_publication_v3'
              THEN 'unsupported_evaluation_contract'
            END AS contract_failure,
       -- The FQ2 split of the month's decision session (train<=2020, validation 2021..2023, holdout>=2024).

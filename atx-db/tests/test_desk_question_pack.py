@@ -513,6 +513,7 @@ def test_q3_share_basis_owner_link_deciles_floor_and_latest_null(tmp_store):
 
 
 def test_q5_never_substitutes_a_populated_midmonth_for_missing_month_end(tmp_path):
+    from atx_db._forward_return_publication import CALCULATION_VERSION
     from atx_db.fundamental_signal_evaluation import (
         FundamentalSignalEvaluationOptions,
         evaluate_fundamental_signals,
@@ -531,7 +532,7 @@ def test_q5_never_substitutes_a_populated_midmonth_for_missing_month_end(tmp_pat
         assert len(rows) == 2 and all(r["decision_date"] != day for r in rows)
         assert all(r["status"] == "month_end_not_evaluated" for r in rows)
         assert all(r["complete_cohort_q10_minus_q1"] is None for r in rows)
-        assert {r["label_version"] for r in rows} == {"forward_return_publication_v2"}
+        assert {r["label_version"] for r in rows} == {CALCULATION_VERSION}
 
         def q5_statuses_with_label_version(version):
             store.con.execute(
@@ -543,10 +544,11 @@ def test_q5_never_substitutes_a_populated_midmonth_for_missing_month_end(tmp_pat
                 start_date=dt.date(2024, 3, 1), end_date=dt.date(2024, 3, 31),
                 build_run_id="build", evaluation_run_id="eval", signal_id=signal)}
 
-        # Sealed v1 runs stay readable; any other label contract is refused.
-        assert q5_statuses_with_label_version("forward_return_publication_v1") == {"month_end_not_evaluated"}
-        assert q5_statuses_with_label_version("forward_return_publication_v3") == {"unsupported_evaluation_contract"}
-        assert q5_statuses_with_label_version("forward_return_publication_v2") == {"month_end_not_evaluated"}
+        # Only the publisher's current label version is read (the SQL literal must track it);
+        # sealed v1 (no halt-gap stitch) and v2 (vendor 2021-01-04 artifact) runs are refused.
+        assert q5_statuses_with_label_version("forward_return_publication_v1") == {"unsupported_evaluation_contract"}
+        assert q5_statuses_with_label_version("forward_return_publication_v2") == {"unsupported_evaluation_contract"}
+        assert q5_statuses_with_label_version(CALCULATION_VERSION) == {"month_end_not_evaluated"}
         assert store.con.execute("""
           SELECT sum(eligible_count),sum(labeled_count) FROM fundamental_signal_evaluation_deciles
           WHERE run_id='eval' AND horizon_sessions=21

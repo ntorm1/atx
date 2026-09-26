@@ -98,7 +98,8 @@ import duckdb
 
 from .. import ownership_identity as _identity
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
-from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME, _real_split_sql
+from .._vendor_artifact import bar_pick_order_sql, bars_relation_sql
+from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME, real_split_events_sql
 from . import panel as _panel
 from .features import OWNER_BASIS_LINKED, OWNER_BASIS_UNLINKED, UNLINKED_COHORT_REASONS, UNLINKED_LINES_BLOCKER
 from .store import ResearchStore
@@ -161,7 +162,7 @@ _TEMP_TABLES = ("_ow_cal", "_ow_days", "_ow_bday", "_ow_forms", "_ow_lines", "_o
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PKG = Path(__file__).resolve().parents[1]
 _CODE_FILES = (Path(__file__), _PKG / "ownership_identity.py", _PKG / "research" / "panel.py",
-               _PKG / "_fundamental_clock.py")
+               _PKG / "_fundamental_clock.py", _PKG / "market_daily.py", _PKG / "_vendor_artifact.py")
 _DIGEST_CHUNK = 12
 _VALS_COLUMNS = ("formation_date DATE, security_id VARCHAR, owner_cik VARCHAR, feature_id VARCHAR, value DOUBLE, "
                  "reason VARCHAR, available_at TIMESTAMP, source_period DATE, source_clock TIMESTAMP, "
@@ -742,6 +743,27 @@ def _build_thirteenf(store: ResearchStore, options: OwnershipFeatureOptions, mar
             "position_rows_loaded": position_rows}
 
 
+def _si_splits_sql(revisions: bool) -> str:
+    """``_ow_si_splits``: the real split ex-dates on the bars of the lines in ``_ow_si_rows``.
+
+    R1d exact split ratios (the A8 real-split rule, ``market_daily.real_split_events_sql``) over one
+    whole physical row per ``(security_id, trade_date)``: the shared bar pick
+    (``_vendor_artifact.bar_pick_order_sql``, newest revision first, NULL included, deterministic on
+    tied revisions) when the bars carry ``available_at`` and ``source`` (``revisions``); a step the
+    vendor-artifact repair neutralizes (the 2021-01-04 exact flat steps) is not a split (0.13 M9).
+    """
+    order = bar_pick_order_sql(with_shares=True) if revisions else "trade_date"
+    return f"""
+        CREATE OR REPLACE TEMP TABLE _ow_si_splits AS
+        WITH ow_bars AS MATERIALIZED (
+            SELECT security_id, trade_date, close, adjusted_close AS adj_close, shares_outstanding AS archive_shares
+            FROM {bars_relation_sql()} equity_daily_bars
+            WHERE security_id IN (SELECT DISTINCT security_id FROM _ow_si_rows)
+            QUALIFY row_number() OVER (PARTITION BY security_id, trade_date ORDER BY {order}) = 1
+        )
+        SELECT security_id, ex_date AS trade_date FROM ({real_split_events_sql('ow_bars')})"""
+
+
 def _build_short_interest(store: ResearchStore, options: OwnershipFeatureOptions, market_source: str) -> dict[str, Any]:
     con = store.con
     revised = ("coalesce(trim(CAST(revision_flag AS VARCHAR)), '') <> ''"
@@ -780,25 +802,9 @@ def _build_short_interest(store: ResearchStore, options: OwnershipFeatureOptions
         JOIN published p ON p.settlement_date=r.settlement_date
         LEFT JOIN published n ON n.settlement_date=p.next_settlement
     """, [options.si_publication_business_days])
-    # R1d exact split ratios (the A8 real-split rule) on the mapped lines' own bars.
     if all(store.warehouse_has("equity_daily_bars", column) for column in ("close", "adjusted_close")):
-        order = [column for column in ("available_at", "source") if store.warehouse_has("equity_daily_bars", column)]
-        rank = f"({', '.join(order)})" if len(order) > 1 else (order[0] if order else "trade_date")
-        con.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _ow_si_splits AS
-            SELECT security_id, trade_date FROM (
-                SELECT security_id, trade_date,
-                       (lag(close) OVER w * adjusted_close) / (lag(adjusted_close) OVER w * close) AS day_factor
-                FROM (
-                    SELECT security_id, trade_date,
-                           arg_max_null(close, {rank}) AS close,
-                           arg_max_null(adjusted_close, {rank}) AS adjusted_close
-                    FROM equity_daily_bars WHERE security_id IN (SELECT DISTINCT security_id FROM _ow_si_rows)
-                    GROUP BY security_id, trade_date
-                ) WHERE close > 0 AND adjusted_close > 0
-                WINDOW w AS (PARTITION BY security_id ORDER BY trade_date)
-            ) WHERE {_real_split_sql('day_factor')}
-        """)
+        con.execute(_si_splits_sql(all(store.warehouse_has("equity_daily_bars", column)
+                                       for column in ("available_at", "source"))))
     else:
         con.execute("CREATE OR REPLACE TEMP TABLE _ow_si_splits (security_id VARCHAR, trade_date DATE)")
     con.execute(f"""
