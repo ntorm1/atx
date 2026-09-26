@@ -268,6 +268,7 @@ co::Result<std::string> write_store(const Fixture& f, const std::filesystem::pat
   for (usize i = 0; i < f.names; ++i) c.original_indices.push_back(i);
   c.instrument_namespace = f.cfg.output.instrument_namespace;
   c.recipe = "synthetic-price-provider-fixture"; c.membership_sha256 = std::string(64, 'b');
+  c.parents = {{"synthetic-prices", f.cfg.price_source_sha256}};
   c.fields = {{"close", da::LevelBasis::AdjustedLevel, da::PanelStorePrecision::Float32V2},
       {"raw_close", da::LevelBasis::Raw, da::PanelStorePrecision::Float32V2},
       {"volume", wrong_volume_basis ? da::LevelBasis::Ratio : da::LevelBasis::Raw,
@@ -287,8 +288,10 @@ co::Result<std::string> write_store(const Fixture& f, const std::filesystem::pat
 TEST(PriceExposureProvider, D6UsesExactCloseAndChecksPinnedAxesBasesAndJointBudget) {
   TempDir temp; ASSERT_TRUE(temp.owned);
   Fixture f(270, 6);
-  const auto hash = write_store(f, temp.path / "good"); ASSERT_TRUE(hash);
-  const auto store = da::PanelStore::open((temp.path / "good").string(), *hash); ASSERT_TRUE(store);
+  const auto hash = write_store(f, temp.path / "good");
+  ASSERT_TRUE(hash) << hash.error().message();
+  const auto store = da::PanelStore::open((temp.path / "good").string(), *hash);
+  ASSERT_TRUE(store) << store.error().message();
   auto cfg = f.cfg; cfg.price_source_sha256 = *hash; cfg.output.parents[0].sha256 = *hash;
   auto p = f.panel(); ASSERT_TRUE(p);
   const auto direct = da::build_price_exposures(*p, f.evidence, cfg);
@@ -308,8 +311,10 @@ TEST(PriceExposureProvider, D6UsesExactCloseAndChecksPinnedAxesBasesAndJointBudg
   wrong.max_working_bytes = 1024;
   const auto oversized = da::build_price_exposures(*store, f.evidence, wrong);
   ASSERT_FALSE(oversized); EXPECT_EQ(oversized.error().code(), co::ErrorCode::InvalidArgument);
-  const auto bad_hash = write_store(f, temp.path / "bad", true); ASSERT_TRUE(bad_hash);
-  const auto bad = da::PanelStore::open((temp.path / "bad").string(), *bad_hash); ASSERT_TRUE(bad);
+  const auto bad_hash = write_store(f, temp.path / "bad", true);
+  ASSERT_TRUE(bad_hash) << bad_hash.error().message();
+  const auto bad = da::PanelStore::open((temp.path / "bad").string(), *bad_hash);
+  ASSERT_TRUE(bad) << bad.error().message();
   wrong = cfg; wrong.price_source_sha256 = *bad_hash; wrong.output.parents[0].sha256 = *bad_hash;
   EXPECT_FALSE(da::build_price_exposures(*bad, f.evidence, wrong));
   f.evidence.member[269 * f.names] = 0;
