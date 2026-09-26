@@ -226,7 +226,7 @@ def latest(series: dict[dt.date, float]) -> tuple[dt.date, float] | None:
 
 
 def sue_from_quarters(eps_quarters: dict[dt.date, tuple[dt.date, float]], min_history: int = 4,
-                      window: int = 8) -> tuple[dt.date, float] | None:
+                      window: int = 8, *, finite_statistics: bool = False) -> tuple[dt.date, float] | None:
     """Standardized unexpected earnings of the latest quarter (seasonal random walk).
 
     SUE = (EPS_q - EPS_{q-4}) / sd(previous `window` seasonal differences),
@@ -246,6 +246,8 @@ def sue_from_quarters(eps_quarters: dict[dt.date, tuple[dt.date, float]], min_hi
         return None
     hist = [d for _, d in diffs[-(window + 1):-1]]
     if len(hist) < min_history:
+        return None
+    if finite_statistics and not all(math.isfinite(value) for value in [cur, *hist]):
         return None
     sd = statistics.stdev(hist)
     if not (sd > 0.0) or not math.isfinite(sd):
@@ -319,7 +321,7 @@ class Knowledge:
         return merged
 
 
-def snapshot(k: Knowledge) -> tuple[dt.date | None, dict[str, float]]:
+def snapshot(k: Knowledge, *, finite_statistics: bool = False) -> tuple[dt.date | None, dict[str, float]]:
     """Derive the raw fields from the current knowledge.
 
     Returns (period_end, values). A field whose own period end is more than 100
@@ -392,7 +394,7 @@ def snapshot(k: Knowledge) -> tuple[dt.date | None, dict[str, float]]:
     for c in C_NET_INCOME:
         q = derive_quarters(k.durations.get(c, {}))
         if q:
-            got = sue_from_quarters(q)
+            got = sue_from_quarters(q, finite_statistics=finite_statistics)
             if got is not None:
                 parts["sue"] = got
             break

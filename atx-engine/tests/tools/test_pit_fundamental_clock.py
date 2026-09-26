@@ -139,6 +139,19 @@ class FundamentalAcceptanceV2(unittest.TestCase):
         self.assertEqual(rows[1]["fact_vintage_qualified"], 1)
         self.assertTrue(math.isfinite(rows[1]["sue"]))
 
+    def test_v4_nonfinite_derived_seasonal_differences_are_unavailable(self):
+        ends = [D(year, month, day) for year in (2013, 2014, 2015)
+                for month, day in ((3, 31), (6, 30), (9, 30), (12, 31))][:10]
+        fs = []
+        for q, end in enumerate(ends):
+            start = D(end.year, ((end.month - 1) // 3) * 3 + 1, 1)
+            value = -1.e308 if q < 4 else 1.e308
+            fs.append(fact("NetIncomeLoss", value, A, D(2016, 5, 1), end, start))
+        clock = evidence(filed="2016-05-01", accepted="2016-05-01T16:00:00Z", published="2016-05-01T16:02:00Z")
+        rows, _, _ = snapshots(fs, clock)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(math.isnan(rows[0]["sue"]))
+
     def test_actual_exporter_writes_hash_bound_v4_and_separate_true_shares(self):
         with tempfile.TemporaryDirectory(prefix="atx-d3-synthetic-") as owned:
             root = Path(owned); out = root / "export"

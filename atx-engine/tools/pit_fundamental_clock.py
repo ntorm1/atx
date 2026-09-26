@@ -290,7 +290,7 @@ def snapshot_events(facts: list[Fact], cik: str, clocks: dict, seal: dt.date, de
                                for c, rows in knowledge.instants.items()}
             finite.durations = {c: {k: v for k, v in rows.items() if math.isfinite(v)}
                                 for c, rows in knowledge.durations.items()}
-            period, values = snapshot_fn(finite)
+            period, values = snapshot_fn(finite, finite_statistics=True)
             if period is None and qualifiers:
                 period = max(key[2] for key in qualifiers)
             if period is not None:
