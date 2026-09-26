@@ -1697,6 +1697,22 @@ TEST(AtxImplDiscover, W4b_ParseArgsMaxPboThreads) {
     }
 }
 
+TEST(AtxImplDiscover, W1_PboRuleCliIsExplicitAndRejectsUnknownRecipe) {
+    const char* defaults[] = {"atx", "discover"};
+    const auto cfg = atx::impl::parse_args(2, const_cast<char**>(defaults));
+    ASSERT_TRUE(cfg.has_value());
+    EXPECT_EQ(cfg->pbo_rule, atx::engine::eval::PboRule::CachedMomentsV2);
+    for (const char* name : {"legacy-gather-v1", "cached-moments-v2"}) {
+        const char* argv[] = {"atx", "discover", "--pbo-rule", name};
+        const auto parsed = atx::impl::parse_args(4, const_cast<char**>(argv));
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(atx::engine::eval::pbo_rule_name(parsed->pbo_rule), name);
+        EXPECT_TRUE(parsed->set_flags.contains("pbo-rule"));
+    }
+    const char* invalid[] = {"atx", "discover", "--pbo-rule", "fast"};
+    EXPECT_FALSE(atx::impl::parse_args(4, const_cast<char**>(invalid)).has_value());
+}
+
 // ---------------------------------------------------------------------------
 //  W5_MeanNamesPerDayUnit — detail::mean_names_per_day (the W5 capacity-universe
 //  name-count recorded as an admission metric) over hand-built universe masks.

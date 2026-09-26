@@ -23,6 +23,7 @@
 // use the full run; the in-memory sink test is kept as the fast, isolated regression.
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -33,6 +34,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include "atx/engine/store/fingerprint.hpp"
 
 #include <gtest/gtest.h>
 
@@ -175,6 +177,31 @@ TEST(AtxImplStoreDiscover, FingerprintStableAndSensitive) {
     cfg4.panel = "other_panel.bin";
     EXPECT_NE(atx::impl::compute_discover_fingerprint(cfg4), a)
         << "a different panel must change the fingerprint";
+}
+
+TEST(AtxImplStoreDiscover, PboV2SeparatesResumeAndExplicitV1PreservesFrozenIdentity) {
+    auto cfg = gated_cfg("panel.bin", "out");
+    cfg.ic_screen.rule = atx::engine::factory::IcScreenRule::DisabledV1;
+    cfg.min_price = cfg.min_adv_usd = 0.0;
+    cfg.pbo_rule = atx::engine::eval::PboRule::LegacyGatherV1;
+    // Frozen pre-PBO-binding recipe, with IC and capacity augmentation disabled.
+    // The primitive FNV encoding is shared, but no current config-fold function
+    // is used to derive this expected legacy identity.
+    namespace fp = atx::engine::store::fingerprint;
+    auto expected = fp::fold_string(fp::kFnvOffset, cfg.panel);
+    expected = fp::fold_u64(expected, static_cast<atx::u64>(cfg.seed));
+    expected = fp::fold_u64(expected, static_cast<atx::u64>(cfg.population));
+    expected = fp::fold_u64(expected, static_cast<atx::u64>(cfg.generations));
+    auto seeds = cfg.seed_exprs;
+    std::sort(seeds.begin(), seeds.end());
+    for (const auto& seed : seeds) expected = fp::fold_string(expected, seed);
+    for (const double value : {cfg.min_sharpe, cfg.min_fitness, cfg.max_turnover,
+                               cfg.max_pool_corr, cfg.min_dsr, cfg.oos_fraction,
+                               cfg.oos_embargo})
+        expected = fp::fold_u64(expected, std::bit_cast<atx::u64>(value));
+    EXPECT_EQ(atx::impl::compute_discover_fingerprint(cfg), expected);
+    cfg.pbo_rule = atx::engine::eval::PboRule::CachedMomentsV2;
+    EXPECT_NE(atx::impl::compute_discover_fingerprint(cfg), expected);
 }
 
 TEST(AtxImplStoreDiscover, VwapRuleSeparatesResumeOnlyWhenAugmentationIsActive) {

@@ -140,7 +140,8 @@ struct Provenance {
     std::string engine_git_sha;
 };
 
-Provenance run_and_read(const std::string& tag, bool capacity = false) {
+Provenance run_and_read(const std::string& tag, bool capacity = false,
+    atx::engine::eval::PboRule pbo_rule = atx::engine::eval::PboRule::CachedMomentsV2) {
     Provenance out;
     auto panel = make_panel();
     if (!panel.has_value()) return out;
@@ -160,6 +161,7 @@ Provenance run_and_read(const std::string& tag, bool capacity = false) {
     fs::remove(db_path, ec0);
 
     auto cfg = gated_cfg(panel_path, alpha_out);
+    cfg.pbo_rule = pbo_rule;
     if (capacity) {
         cfg.min_price = 1.25;
         cfg.min_adv_usd = 1e6;
@@ -194,6 +196,16 @@ TEST(AtxImplProvenance, ActiveCapacityRecipeIsPersisted) {
     for (const auto *key : {"vwap_rule", "min_price", "min_adv_usd", "adv_window"}) {
         EXPECT_TRUE(json_value_of(off.config_json, key).empty());
     }
+}
+
+TEST(AtxImplProvenance, PboRuleIsPersistedAndExplicitV1KeepsLegacySchema) {
+    const auto cached = run_and_read("pbo_recipe_v2");
+    EXPECT_EQ(json_value_of(cached.config_json, "v"), "3");
+    EXPECT_EQ(json_value_of(cached.config_json, "pbo_rule"), "cached-moments-v2");
+    const auto legacy = run_and_read("pbo_recipe_v1", false,
+        atx::engine::eval::PboRule::LegacyGatherV1);
+    EXPECT_EQ(json_value_of(legacy.config_json, "v"), "2"); // IC screen remains active
+    EXPECT_TRUE(json_value_of(legacy.config_json, "pbo_rule").empty());
 }
 
 // ---------------------------------------------------------------------------

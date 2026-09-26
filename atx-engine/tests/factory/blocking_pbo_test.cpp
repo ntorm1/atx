@@ -253,4 +253,29 @@ TEST(BlockingPbo, InertAtMaxPboOffDefault) {
   EXPECT_TRUE(rep_r->pbo_gate_passed);
 }
 
+TEST(BlockingPbo, NumericalRulePropagatesToRunReport) {
+  const std::vector<std::vector<f64>> admitted{
+      {0, -0.02, 0.04, 0.01, 0.03, -0.01, 0.05, 0.02, -0.03},
+      {0, 0.01, -0.03, 0.02, -0.04, 0.03, 0.01, -0.02, 0.04},
+      {0, 0.03, 0.01, -0.04, 0.02, 0.04, -0.03, 0.01, 0.02}};
+  std::vector<f64> matrix;
+  for (const auto& row : admitted) matrix.insert(matrix.end(), row.begin() + 1, row.end());
+  EXPECT_EQ(FactoryConfig{}.pbo_rule, atx::engine::eval::PboRule::CachedMomentsV2);
+  for (const auto rule : {atx::engine::eval::PboRule::LegacyGatherV1,
+                          atx::engine::eval::PboRule::CachedMomentsV2}) {
+    FactoryReport report;
+    atx::engine::factory::detail::finalize_run_pbo(report, admitted, 1.0, true, rule);
+    const auto expected = atx::engine::eval::pbo_cscv_checked(matrix, 3, 8, rule);
+    ASSERT_TRUE(expected.has_value());
+    EXPECT_EQ(report.pbo_rule, rule);
+    EXPECT_DOUBLE_EQ(report.pbo, expected->pbo);
+    EXPECT_DOUBLE_EQ(report.pbo_mean_logit, expected->mean_logit);
+    EXPECT_EQ(report.pbo_cached_evaluations, expected->cached_evaluations);
+    EXPECT_EQ(report.pbo_reference_evaluations, expected->reference_evaluations);
+    EXPECT_EQ(report.pbo_ambiguous_comparisons, expected->ambiguous_comparisons);
+    EXPECT_EQ(report.pbo_n_candidates, 3U);
+    EXPECT_TRUE(report.pbo_gate_passed); // recording is active; threshold is off
+  }
+}
+
 } // namespace atxtest_blocking_pbo
