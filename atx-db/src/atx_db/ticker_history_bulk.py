@@ -6,6 +6,12 @@ row indexed table turns linear ingestion into an effectively quadratic job.
 This module stages a projection of a local TSV or Parquet file, measures original-row
 quality before exclusions, builds the replacement beside the live table,
 validates it, and swaps it in atomically. Raw source bytes remain the lineage.
+
+Daily date partitions after the full load go through
+:mod:`atx_db.ticker_history_incremental` (P14), which reuses this module's
+projection (``_RAW_CTE``), symbol map and :func:`vendor_share_unit_check`. A
+later full republish replaces the source's rows in ``equity_daily_bars``; the
+incremental path's superseded revisions in ``equity_daily_bar_revisions`` stay.
 """
 
 from __future__ import annotations
@@ -423,9 +429,25 @@ def _validate_next(
 
 
 def _check_share_units(store: DuckDBStore, options: BulkTickerHistoryOptions) -> dict[str, object]:
+    """The A8 share-unit check on the bulk shadow table (see :func:`vendor_share_unit_check`)."""
+    return vendor_share_unit_check(
+        store,
+        table="equity_daily_bars_bulk_next",
+        source=options.source,
+        run_id=options.run_id,
+        unit=options.resolved_shares_unit,
+        min_pairs=options.shares_unit_min_pairs,
+    )
+
+
+def vendor_share_unit_check(
+    store: DuckDBStore, *, table: str, source: str, run_id: str | None, unit: str, min_pairs: int
+) -> dict[str, object]:
     """Sanity-check the stored (scaled) vendor share counts before publication (A8).
 
-    Two independent checks on ``equity_daily_bars_bulk_next``:
+    ``table`` is a staged relation with the ``equity_daily_bars`` columns
+    ``source, security_id, trade_date, shares_outstanding`` (the bulk shadow
+    table, or an incremental partition's staged rows). Two independent checks:
 
     * magnitude: the median positive share count on the latest date must lie in
       :data:`SHARES_MEDIAN_BAND` once at least ``_UNIT_MAGNITUDE_MIN_ROWS`` lines
@@ -435,24 +457,23 @@ def _check_share_units(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
       (the vendor starts its share run on that date) is compared with the DEI
       count; the median ratio must lie in :data:`SHARES_DEI_RATIO_BAND`.
 
-    A conclusive disagreement (enough rows or ``shares_unit_min_pairs`` pairs)
-    records a failed ``vendor_shares_unit`` check and raises before the swap; a
-    disagreement on fewer pairs is flagged as a warning, as is a run with no
+    A conclusive disagreement (enough rows or ``min_pairs`` pairs) records a
+    failed ``vendor_shares_unit`` check and raises before anything is published;
+    a disagreement on fewer pairs is flagged as a warning, as is a run with no
     conclusive evidence either way.
     """
-    unit = options.resolved_shares_unit
     magnitude = store.con.execute(
-        """
+        f"""
         SELECT count(*), median(shares_outstanding)
-        FROM equity_daily_bars_bulk_next
+        FROM {table}
         WHERE source = ? AND shares_outstanding > 0
-          AND trade_date = (SELECT max(trade_date) FROM equity_daily_bars_bulk_next WHERE source = ?)
+          AND trade_date = (SELECT max(trade_date) FROM {table} WHERE source = ?)
         """,
-        [options.source, options.source],
+        [source, source],
     ).fetchone()
     latest_rows, latest_median = (int(magnitude[0]), magnitude[1]) if magnitude else (0, None)
     dei = store.con.execute(
-        """
+        f"""
         WITH single_ciks AS (
             SELECT try_cast(cik AS BIGINT) AS cik
             FROM sec_company_tickers
@@ -477,14 +498,14 @@ def _check_share_units(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
             SELECT c.security_id, c.effective_date,
                    arg_min(b.shares_outstanding / c.dei_shares, c.lag_days) AS ratio
             FROM candidates c
-            JOIN equity_daily_bars_bulk_next b
+            JOIN {table} b
               ON b.security_id = c.security_id AND b.trade_date = c.trade_date
             WHERE b.source = ? AND b.shares_outstanding > 0
             GROUP BY ALL
         )
         SELECT count(*), median(ratio) FROM pairs
         """,
-        [options.source],
+        [source],
     ).fetchone()
     dei_pairs, dei_median = (int(dei[0]), dei[1]) if dei else (0, None)
     low, high = SHARES_DEI_RATIO_BAND
@@ -492,7 +513,7 @@ def _check_share_units(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
     magnitude_conclusive = latest_rows >= _UNIT_MAGNITUDE_MIN_ROWS and latest_median is not None
     magnitude_ok = not magnitude_conclusive or magnitude_low <= latest_median <= magnitude_high
     dei_ok = dei_median is None or low <= dei_median <= high
-    dei_conclusive = dei_pairs >= options.shares_unit_min_pairs
+    dei_conclusive = dei_pairs >= min_pairs
     failures = []
     if not magnitude_ok:
         failures.append(f"latest-date median shares {latest_median:,.0f} outside {SHARES_MEDIAN_BAND}")
@@ -505,7 +526,7 @@ def _check_share_units(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
     else:
         status = "warning"
     details: dict[str, object] = {
-        "run_id": options.run_id,
+        "run_id": run_id,
         "shares_unit": unit,
         "shares_scale": SHARES_UNIT_SCALE[unit],
         "latest_date_share_rows": latest_rows,
@@ -514,7 +535,7 @@ def _check_share_units(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
         "dei_pairs": dei_pairs,
         "dei_median_ratio": dei_median,
         "dei_ratio_band": list(SHARES_DEI_RATIO_BAND),
-        "dei_min_pairs": options.shares_unit_min_pairs,
+        "dei_min_pairs": min_pairs,
         "failures": failures,
     }
     quality_check(
