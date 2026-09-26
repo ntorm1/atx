@@ -50,7 +50,8 @@ SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "warehouse_activ
 
 RUN5_SUFFIX = (
     "statement_points", "periods", "ttm", "calendarization", "standardized", "entity_classification",
-    "industry_templates", "reconciliation", "derived_metrics", "market_daily", "equity_price_metrics", "listing_events",
+    "industry_templates", "reconciliation", "derived_metrics", "identity_reconstruction", "market_daily",
+    "equity_price_metrics", "listing_events",
     "listing_status", "legacy_liquid_universe", "factor_projections", "delisting_evidence",
     "universe_us_listed", "delisting_terminal_returns", "trading_calendar", "survivorship_forward_returns",
     "item_coverage", "provider_coverage", "quality",
@@ -185,12 +186,12 @@ def test_market_daily_stage_detail_carries_the_owner_bridge_accounting(tmp_store
     assert result.detail["owner_bridge_current"] is True
 
 
-def test_run5_suffix_is_the_23_stage_ladder():
+def test_run5_suffix_is_the_24_stage_ladder():
     assert select_stages(start="statement_points") == RUN5_SUFFIX
-    assert len(RUN5_SUFFIX) == 23
+    assert len(RUN5_SUFFIX) == 24
 
 
-def test_dry_run_from_statement_points_emits_the_23_stage_suffix(built_warehouse, capsys):
+def test_dry_run_from_statement_points_emits_the_24_stage_suffix(built_warehouse, capsys):
     spec = importlib.util.spec_from_file_location("warehouse_activate_a1", SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

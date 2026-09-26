@@ -66,6 +66,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "industry_templates",
     "reconciliation",
     "derived_metrics",
+    "identity_reconstruction",
     "market_daily",
     "equity_price_metrics",
     "listing_events",
@@ -107,7 +108,12 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "industry_templates": ("standardized", "entity_classification"),
     "reconciliation": ("standardized",),
     "derived_metrics": ("standardized", "reconciliation"),
-    "market_daily": ("ticker_history_publish", "statement_points", "derived_metrics"),
+    # RI1 reconstructed price-line -> issuer links (0327 security_identity_evidence) from the
+    # retained TickerHistory3.parquet, companyfacts.zip, submissions.zip and company_tickers.json
+    # (0 network); line ids come from the published bars. market_daily's owner bridge (rule 5)
+    # consumes them for lines without a current-ticker link.
+    "identity_reconstruction": ("migrate", "security_master", "ticker_history_publish", "sec_bulk_download"),
+    "market_daily": ("ticker_history_publish", "statement_points", "derived_metrics", "identity_reconstruction"),
     "equity_price_metrics": ("ticker_history_publish",),
     # Both resolve symbols to security ids through security_identifier_history TICKER
     # rows, which ticker_history_publish writes (ticker_history_bulk).
@@ -1219,6 +1225,64 @@ def stage_derived_metrics(store: DuckDBStore, options: ActivationOptions) -> Sta
     )
 
 
+#: Scratch directory (under ``--staging-dir``) of the identity_reconstruction staging DuckDB.
+IDENTITY_RECONSTRUCTION_SCRATCH = "identity-reconstruction"
+
+
+def stage_identity_reconstruction(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Write RI1 reconstructed price-line -> issuer links into ``security_identity_evidence`` (RI2; 0 network).
+
+    Reads the retained native ``TickerHistory3.parquet`` (``--ticker-history-source-path``;
+    its vendor share counts are the fingerprint), ``companyfacts.zip``, ``submissions.zip``
+    and ``company_tickers.json``. A missing input fails the stage; so does one received
+    (cache receipt, else mtime) after the cutoff day -- checked for every input before
+    anything is read or written. Staging runs in a private scratch DuckDB under
+    ``--staging-dir`` (``SCRATCH_MEMORY_LIMIT``, at most 2 threads), never the warehouse.
+    Rows are ``reconstructed``/``modeled`` (conflict sides ``conflicting``) with the
+    point-in-time tier history in ``value_json``; a rerun on the same files writes
+    nothing, a new revision supersedes the previous one (see
+    ``identity_reconstruction.refresh_identity_reconstruction``). Every tier is written:
+    the high-only sensitivity is a consumer filter at the tier in force at the cutoff
+    (``market_owner_bridge.RECONSTRUCTION_TIERS_HIGH_ONLY``), never a write filter.
+    """
+    from .identity_reconstruction import ReconstructionInputs, RetainedInput, refresh_identity_reconstruction
+    from .security_master import guard_snapshot_received_by_cutoff
+
+    source = options.ticker_history_source_path
+    if source is None or Path(source).suffix.lower() not in (".parquet", ".pq"):
+        raise FileNotFoundError(
+            f"identity_reconstruction reads the retained native TickerHistory3.parquet (vendor share counts); "
+            f"pass it as --ticker-history-source-path (got {source})"
+        )
+    named = (
+        ("ticker_history", Path(source), str(Path(source))),
+        ("companyfacts", Path(options.companyfacts_zip), COMPANYFACTS_ZIP_URL),
+        ("submissions", Path(options.submissions_zip), SUBMISSIONS_ZIP_URL),
+        ("company_tickers", Path(options.cache_dir) / "company_tickers.json", SEC_COMPANY_TICKERS_URL),
+    )
+    missing = [str(path) for _name, path, _url in named if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"identity_reconstruction reads retained files only (no network); missing: {missing}")
+    retained: list[RetainedInput] = []
+    for name, path, url in named:
+        checksum = sha256_file(path)
+        received_at, receipt_basis = _read_cache_receipt(path, checksum)
+        if options.as_of_date is not None:
+            guard_snapshot_received_by_cutoff(received_at, options.as_of_date, source_url=url,
+                                              receipt_basis=receipt_basis)
+        retained.append(RetainedInput(name, path.resolve(), checksum, received_at, receipt_basis))
+    detail = refresh_identity_reconstruction(
+        store,
+        ReconstructionInputs(*retained),
+        scratch_dir=Path(options.staging_dir) / IDENTITY_RECONSTRUCTION_SCRATCH,
+        run_id=f"{options.run_id}-identity-reconstruction",
+        threads=min(2, options.threads),
+    )
+    rows = detail["rows_inserted"]
+    assert isinstance(rows, int)
+    return StageResult(rows, {**detail, "cutoff": options.as_of_date, "network_requests": 0})
+
+
 def stage_market_daily(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Build the daily market panel from bars plus the point-in-time fundamental state."""
     from .market_daily import (
@@ -1419,6 +1483,7 @@ STAGES.update(
         "industry_templates": stage_industry_templates,
         "reconciliation": stage_reconciliation,
         "derived_metrics": stage_derived_metrics,
+        "identity_reconstruction": stage_identity_reconstruction,
         "market_daily": stage_market_daily,
         "listing_events": stage_listing_events,
         "listing_status": stage_listing_status,

@@ -206,7 +206,8 @@ migrates without the activation retention option.
 -> `ticker_history_publish` -> `sec_bulk_download` -> `submissions_load` ->
 `earnings_release_facts` -> `companyfacts_load` -> `statement_points` -> `periods` -> `ttm` ->
 `calendarization` -> `standardized` -> `entity_classification` -> `industry_templates`
--> `reconciliation` -> `derived_metrics` -> `market_daily` -> `equity_price_metrics`
+-> `reconciliation` -> `derived_metrics` -> `identity_reconstruction` -> `market_daily`
+-> `equity_price_metrics`
 -> `listing_events` -> `listing_status` -> `legacy_liquid_universe`
 -> `factor_projections` -> `delisting_evidence`
 -> `universe_us_listed` -> `delisting_terminal_returns` -> `trading_calendar`
@@ -220,8 +221,32 @@ fails before any work starts. `equity_price_metrics` runs directly after
 `delisting_terminal_returns` reads it on a first run. `listing_events` and
 `listing_status` build `nasdaq_listing_events` and `listing_status_intervals`
 before their consumers (`legacy_liquid_universe`, `delisting_evidence`). The
-run5 suffix, `--start-stage statement_points`, is 23 stages:
+run5 suffix, `--start-stage statement_points`, is 24 stages:
 `statement_points` through `quality`.
+
+`identity_reconstruction` (RI2) writes the RI1 reconstructed price-line -> issuer
+(CIK) links into 0327 `security_identity_evidence` before `market_daily`, whose owner
+bridge (rule 5) links a delisted/renamed line without a current SEC ticker through
+them. It makes no network request and reads four retained files: the native
+`TickerHistory3.parquet` (pass it as `--ticker-history-source-path` on every
+invocation that runs this stage, including `--start-stage statement_points`; its
+vendor share counts are the fingerprint, the TSV export is not accepted),
+`data/cache/companyfacts.zip`, `data/cache/submissions.zip` and
+`data/cache/company_tickers.json`. A missing input fails the stage, and so does one
+received (cache receipt, else mtime) after the cutoff day, before anything is
+written. Staging runs in a private scratch DuckDB under
+`<staging-dir>/identity-reconstruction/` (256MB, at most 2 threads; deleted
+afterwards), never in the warehouse; the process peak must stay under ~600 MB, so
+run it under the memory guard like any heavy stage. Rows are `reconstructed` /
+`modeled` (both sides of a two-CIK conflict as `conflicting`), `available_at` is the
+RI1 evidence clock, and `value_json` carries the point-in-time tier history
+(`tier_history`, `tier_at_available_at`, `tier_attained_at`). A rerun on the same
+files writes nothing; files with other bytes or receipt clocks are a new revision
+that supersedes (`is_latest_revision = false`), never deletes, the previous one.
+Every tier is written: the bridge's default filter is high+medium as in force at
+each bar cutoff, and the high-only sensitivity is a consumer option
+(`market_owner_bridge.RECONSTRUCTION_TIERS_HIGH_ONLY`), not yet exposed through
+`MarketDailyOptions`.
 
 `entity_classification` (P6) classifies every security-master CIK id and every
 Company Facts accounting owner (`SEC-CIK-*`, `SEC-COMPANYFACTS-UNRESOLVED-CIK-*`,
@@ -283,6 +308,7 @@ run offline source prepasses separately from the downstream rebuild:
   --backup-keep 100 --force --run-id activation-source-prepass
 .venv/Scripts/python.exe scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
   --as-of-date 2026-09-20 --start-stage statement_points --force `
+  --ticker-history-source-path data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet `
   --memory-limit 1GB --threads 1 --shards 16 --backup-keep 100 --run-id activation-run5
 ```
 

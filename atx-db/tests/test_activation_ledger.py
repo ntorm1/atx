@@ -36,6 +36,7 @@ def test_stage_order_is_the_documented_dependency_order():
         "industry_templates",
         "reconciliation",
         "derived_metrics",
+        "identity_reconstruction",
         "market_daily",
         "equity_price_metrics",
         "listing_events",

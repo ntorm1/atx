@@ -148,21 +148,25 @@ link that would have been accepted at the time). The archives themselves are
 2026 retrievals whose historical vintage is unverified, hence
 ``availability_status='modeled'``.
 
-Bridge hook (follow-up after A8; not wired here)
-------------------------------------------------
-In reconstructed mode, after the current-ticker pass, a line left unlinked
-(``no_current_ticker``, ``symbol_held_by_other_line``, ``superseded_cik_line``)
-takes the accepted segments of :meth:`ReconstructionResult.owner_links` as
-bridge rows (``identity_basis='reconstructed_identity_unverified'``,
-``availability_basis='modeled'``, ``link_method=METHOD``, ``available_at`` as
-given). Strict mode must keep rejecting them. The same segments also guard the
-current-ticker pass: a *stale* current-ticker holder whose accepted segment
-names another CIK is a reused ticker (measured: 10 of 104 reconstructable
-stale holders, e.g. the 2012-2014 Compuware line linked to today's CPWR
-issuer) and should take the reconstructed segment instead.
+Warehouse writer (RI2) and bridge hook (P1)
+-------------------------------------------
+The ``identity_reconstruction`` activation stage runs
+:func:`refresh_identity_reconstruction` on the retained files and writes every
+accepted segment and both sides of every conflict into
+``security_identity_evidence`` as one revision (append-only; a rerun on the same
+files writes nothing; a new revision supersedes, never deletes, the previous
+one). :mod:`atx_db.market_owner_bridge` rule 5 reads the latest revision: in
+reconstructed mode a line left unlinked by the current-ticker pass takes its
+segments (``identity_basis='reconstructed_history'``, the tier in force at each
+bar cutoff); strict mode rejects them. Not wired: the same segments could guard
+the current-ticker pass -- a *stale* current-ticker holder whose accepted
+segment names another CIK is a reused ticker (measured: 10 of 104
+reconstructable stale holders, e.g. the 2012-2014 Compuware line linked to
+today's CPWR issuer).
 
 Resources: stage and match in a private scratch DuckDB (``memory_limit``
-<= 384MB, 2 threads; never the warehouse) and reconstruct with
+<= 384MB, 2 threads; never the warehouse; the stage uses
+:data:`SCRATCH_MEMORY_LIMIT`) and reconstruct with
 :func:`reconstruct_in_batches`; write evidence rows in bounded transactions
 (DuckDB transaction-local storage does not spill). Measured on the retained
 files (``scripts/identity_reconstruction_measure.py``, 192MB, batch 500): vendor
@@ -178,18 +182,24 @@ import datetime as dt
 import hashlib
 import json
 import math
+import time
 import zipfile
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import duckdb
 
 from ._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
-from .historical_identity import EVIDENCE_COLUMNS, normalize_cik
+from .historical_identity import EVIDENCE_COLUMNS, EVIDENCE_TABLE, normalize_cik
 from .market_owner_bridge import OwnerLinkEvidence, normalize_symbol
-from .warehouse import cik_security_id
+from .ticker_history import SOURCE_NAME as TICKER_HISTORY_SOURCE
+from .warehouse import cik_security_id, now_utc_naive
+
+if TYPE_CHECKING:
+    from .connection import DuckDBStore
 
 __all__ = [
     "AVAILABILITY_STATUS",
@@ -207,6 +217,7 @@ __all__ = [
     "REJECT_CONFLICT_DOMINATED",
     "REJECT_EMPTY_SEGMENT",
     "REJECT_INCONSISTENT",
+    "SCRATCH_MEMORY_LIMIT",
     "SHARE_CONCEPTS",
     "SOURCE",
     "TERMINAL_FORMS",
@@ -221,9 +232,11 @@ __all__ = [
     "IssuerFiling",
     "IssuerShareFact",
     "ReconstructedLink",
+    "ReconstructionInputs",
     "ReconstructionParams",
     "ReconstructionResult",
     "RejectedCandidate",
+    "RetainedInput",
     "VendorLine",
     "VendorShareRun",
     "iter_companyfacts_share_facts",
@@ -233,9 +246,11 @@ __all__ = [
     "read_vendor_lines",
     "reconstruct_in_batches",
     "reconstruct_issuer_links",
+    "refresh_identity_reconstruction",
     "stage_share_facts",
     "stage_share_runs",
     "stage_vendor_ticker_history",
+    "write_reconstruction_evidence",
 ]
 
 SOURCE = "atx-db identity reconstruction v1"
@@ -556,7 +571,9 @@ class ReconstructionResult:
             "holdout_agree": sum(1 for link in holdout if link.agrees_with_current),
         }
 
-    def owner_links(self, *, artifact_sha256: str = "", source_locator: str = "") -> list[OwnerLinkEvidence]:
+    def owner_links(
+        self, *, artifact_sha256: str = "", source_locator: str = "", revision_key: str | None = None
+    ) -> list[OwnerLinkEvidence]:
         """Accepted segments shaped as bridge evidence (reconstructed/modeled; strict mode rejects them)."""
         return [
             OwnerLinkEvidence(
@@ -571,7 +588,7 @@ class ReconstructionResult:
                 source_locator=source_locator or _locator(link),
                 owner_security_id=link.owner_security_id,
                 share_class_symbol=link.symbol,
-                evidence_id=_evidence_id(link.vendor_id, link.cik, link.valid_from, self.params),
+                evidence_id=_evidence_id(link.vendor_id, link.cik, link.valid_from, self.params, revision_key),
             )
             for link in self.links
         ]
@@ -585,6 +602,7 @@ class ReconstructionResult:
         artifact_sha256: str | None = None,
         artifacts: Mapping[str, str] | None = None,
         include_rejected: bool = True,
+        revision_key: str | None = None,
     ) -> list[dict[str, object]]:
         """``security_identity_evidence`` rows (column order of :data:`EVIDENCE_COLUMNS`).
 
@@ -595,8 +613,11 @@ class ReconstructionResult:
         ``rejection_reason`` and no ``available_at`` -- never linkable.
         ``artifact_sha256`` is the Company Facts archive digest (the source of
         every share fact); ``artifacts`` names every input digest in the payload.
+        ``revision_key`` (RI2: the digest of the input files and their receipt
+        clocks) joins ``source_revision_id`` and every ``evidence_id``, so a
+        refresh from other inputs is a new revision with new ids.
         """
-        revision = f"{METHOD}:{self.params.digest()}"
+        revision = f"{METHOD}:{self.params.digest()}" + (f":{revision_key}" if revision_key else "")
         loaded = source_loaded_at or observed_at
         rows: list[dict[str, object]] = []
         for link in self.links:
@@ -632,7 +653,7 @@ class ReconstructionResult:
             }
             rows.append(
                 _row(
-                    evidence_id=_evidence_id(link.vendor_id, link.cik, link.valid_from, self.params),
+                    evidence_id=_evidence_id(link.vendor_id, link.cik, link.valid_from, self.params, revision_key),
                     link_vendor=link.vendor_id,
                     security_id=link.price_security_id,
                     cik=link.cik,
@@ -668,7 +689,9 @@ class ReconstructionResult:
                 }
                 rows.append(
                     _row(
-                        evidence_id=_evidence_id(item.vendor_id, item.cik, span[0] if span else None, self.params)
+                        evidence_id=_evidence_id(
+                            item.vendor_id, item.cik, span[0] if span else None, self.params, revision_key
+                        )
                         + "-R",
                         link_vendor=item.vendor_id,
                         security_id=item.price_security_id,
@@ -695,8 +718,16 @@ class ReconstructionResult:
 # Row helpers
 
 
-def _evidence_id(vendor_id: int, cik: str, valid_from: dt.date | None, params: ReconstructionParams) -> str:
-    key = f"{METHOD}|{params.digest()}|{vendor_id}|{cik}|{valid_from}"
+def _evidence_id(
+    vendor_id: int,
+    cik: str,
+    valid_from: dt.date | None,
+    params: ReconstructionParams,
+    revision_key: str | None = None,
+) -> str:
+    # ``revision_key`` (the RI2 input digest) keeps ids unique across revisions of the table:
+    # 0327's key is ``evidence_id`` over every row, superseded revisions included.
+    key = f"{METHOD}|{params.digest()}|{vendor_id}|{cik}|{valid_from}" + (f"|{revision_key}" if revision_key else "")
     return "RI1-" + hashlib.sha256(key.encode()).hexdigest()[:24]
 
 
@@ -1143,9 +1174,13 @@ def match_share_counts(
               AND (r.first_date BETWEEN f.as_of - CAST(? AS INTEGER) AND f.as_of + CAST(? AS INTEGER)
                    OR (r.first_date <= f.as_of AND r.last_date >= f.as_of))
         ), matched AS (
-            -- One fact per (issuer, concept, as_of, value): its first filing.
+            -- One fact per (issuer, concept, as_of, value): its first filing (ties: smallest accession,
+            -- then form -- every tie-break is total, so reruns on the same files are identical).
             SELECT vendor_id, cik, concept, as_of, value, min(filed) AS filed,
-                   arg_min(accession, filed) AS accession, arg_min(form, filed) AS form,
+                   arg_min(accession, CAST(filed AS VARCHAR) || '|' || coalesce(accession, '') || '|'
+                                      || coalesce(form, '')) AS accession,
+                   arg_min(form, CAST(filed AS VARCHAR) || '|' || coalesce(accession, '') || '|'
+                                 || coalesce(form, '')) AS form,
                    shares, run_first, run_last, aligned, nearby
             FROM raw
             GROUP BY vendor_id, cik, concept, as_of, value, shares, run_first, run_last, aligned, nearby
@@ -1161,7 +1196,8 @@ def match_share_counts(
         ), best AS (
             SELECT * FROM weighted
             QUALIFY row_number() OVER (
-                PARTITION BY vendor_id, cik, as_of ORDER BY weight DESC, filed, concept, run_first) = 1
+                PARTITION BY vendor_id, cik, as_of
+                ORDER BY weight DESC, filed, concept, run_first, shares, value, accession, form) = 1
         ), valued AS (
             -- Independent evidence is a *distinct* matched count: an unchanged count
             -- re-reported every quarter (or a flickering vendor run) is one coincidence,
@@ -1636,3 +1672,299 @@ def _segments(
         (starts[index], min(ends[index], starts[index + 1]) if index + 1 < len(ordered) else ends[index])
         for index in range(len(ordered))
     ]
+
+
+# ---------------------------------------------------------------------------------------------
+# Warehouse refresh (RI2): the ``identity_reconstruction`` activation stage
+
+#: DuckDB ``memory_limit`` of the private staging database (the RI1 measurement ran at 192MB).
+SCRATCH_MEMORY_LIMIT = "256MB"
+_SCRATCH_DB = "ri2_stage.duckdb"
+#: Vendor lines per candidate-CIK matching pass (the runs are the hash-join build side).
+_CANDIDATE_CHUNK = 2000
+#: Bookkeeping columns: a rerun may restamp them; every other column is the row's content.
+_BOOKKEEPING = frozenset({"is_latest_revision", "run_id", "source_loaded_at"})
+_CONTENT_COLUMNS = tuple(name for name, _kind in EVIDENCE_COLUMNS if name not in _BOOKKEEPING)
+_SEC_CIK_PREFIX = "SEC-CIK-"
+
+
+@dataclass(frozen=True)
+class RetainedInput:
+    """One retained input file of the refresh and the ORIGINAL receipt clock of its bytes."""
+
+    name: str
+    path: Path
+    sha256: str
+    received_at: dt.datetime
+    receipt_basis: str
+
+    def as_detail(self) -> dict[str, object]:
+        return {
+            "path": str(self.path),
+            "sha256": self.sha256,
+            "received_at": self.received_at.isoformat(),
+            "receipt_basis": self.receipt_basis,
+        }
+
+
+@dataclass(frozen=True)
+class ReconstructionInputs:
+    """The retained files RI1 reads (no network): vendor bars, share facts, lifecycle filings, tickers."""
+
+    ticker_history: RetainedInput
+    companyfacts: RetainedInput
+    submissions: RetainedInput
+    company_tickers: RetainedInput
+
+    def files(self) -> tuple[RetainedInput, ...]:
+        return (self.ticker_history, self.companyfacts, self.submissions, self.company_tickers)
+
+    def revision_key(self) -> str:
+        """Digest of every input's bytes and receipt clock: the same files give the same revision."""
+        material = "|".join(f"{item.name}={item.sha256}@{item.received_at.isoformat()}" for item in self.files())
+        return hashlib.sha256(material.encode()).hexdigest()[:16]
+
+
+def refresh_identity_reconstruction(
+    store: DuckDBStore,
+    inputs: ReconstructionInputs,
+    *,
+    scratch_dir: Path,
+    run_id: str,
+    params: ReconstructionParams | None = None,
+    memory_limit: str = SCRATCH_MEMORY_LIMIT,
+    threads: int = 2,
+    batch_size: int = 500,
+) -> dict[str, object]:
+    """Run RI1 on the retained files and write its evidence into ``security_identity_evidence`` (RI2).
+
+    Staging and matching run in a private scratch DuckDB under ``scratch_dir``
+    (``memory_limit``, deleted afterwards), never in the warehouse. The
+    warehouse is read once, for the published price-line id of every vendor
+    line (``equity_daily_bars``: the id the bridge sees) -- a line published
+    under ``SEC-CIK-*`` also names its current CIK (payload ``current_cik``,
+    holdout only). Every accepted link and both sides of every conflict are
+    written as one revision (:func:`write_reconstruction_evidence`):
+    ``source_revision_id`` carries the params digest and the digest of the
+    input files and their receipt clocks, so a rerun on the same files writes
+    nothing. ``observed_at`` is the Company Facts receipt; ``available_at`` is
+    RI1's evidence clock, unchanged.
+    """
+    params = params or ReconstructionParams()
+    revision_key = inputs.revision_key()
+    revision = f"{METHOD}:{params.digest()}:{revision_key}"
+    seconds: dict[str, float] = {}
+    clock = time.perf_counter()
+    line_ids, mapping = _published_line_ids(store)
+    seconds["published_lines"] = round(time.perf_counter() - clock, 1)
+
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    path = scratch_dir / _SCRATCH_DB
+    _remove_scratch(path)
+    con = duckdb.connect(str(path), config={"memory_limit": memory_limit, "threads": threads})
+    totals: dict[str, int] = defaultdict(int)
+    rows: list[dict[str, object]] = []
+    try:
+        spill = scratch_dir / "duckdb-tmp"
+        spill.mkdir(exist_ok=True)
+        con.execute(f"SET temp_directory='{spill.as_posix()}'")
+        con.execute("SET preserve_insertion_order=false")
+        con.execute("PRAGMA disable_progress_bar")
+        clock = time.perf_counter()
+        stage_vendor_ticker_history(con, inputs.ticker_history.path)
+        seconds["vendor_lines"] = round(time.perf_counter() - clock, 1)
+        clock = time.perf_counter()
+        share_facts = stage_share_facts(con, iter_companyfacts_share_facts(inputs.companyfacts.path), batch=20_000)
+        seconds["share_facts"] = round(time.perf_counter() - clock, 1)
+        vendor_ids = [int(value) for (value,) in con.execute("SELECT vendor_id FROM ri_vendor_lines ORDER BY 1").fetchall()]
+        if not vendor_ids:
+            raise ValueError(f"{inputs.ticker_history.path}: no price line with a positive vendor securityID")
+        if not share_facts:
+            raise ValueError(f"{inputs.companyfacts.path}: no share-count facts ({SHARE_CONCEPTS})")
+
+        clock = time.perf_counter()
+        candidate_ciks: set[str] = set()
+        for start in range(0, len(vendor_ids), _CANDIDATE_CHUNK):
+            chunk = vendor_ids[start : start + _CANDIDATE_CHUNK]
+            candidate_ciks.update(str(row[1]) for row in match_share_counts(con, params, vendor_ids=chunk))
+        filings = read_lifecycle_filings(inputs.submissions.path, sorted(candidate_ciks))
+        seconds["lifecycle_filings"] = round(time.perf_counter() - clock, 1)
+
+        clock = time.perf_counter()
+        current = {
+            vendor_id: line_id[len(_SEC_CIK_PREFIX) :]
+            for vendor_id, line_id in line_ids.items()
+            if line_id.startswith(_SEC_CIK_PREFIX) and line_id[len(_SEC_CIK_PREFIX) :].isdigit()
+        }
+        lines = read_vendor_lines(con, line_ids, current)
+        unpublished = sum(1 for line in lines if line.vendor_id not in line_ids)
+        loaded_at = now_utc_naive()
+        artifacts = {f"{item.name}_sha256": item.sha256 for item in inputs.files()}
+        for result in reconstruct_in_batches(
+            con,
+            lines,
+            filings=filings,
+            tickers=read_sec_ticker_snapshot(inputs.company_tickers.path),
+            ticker_observed_at=inputs.company_tickers.received_at,
+            params=params,
+            batch_size=batch_size,
+        ):
+            _accumulate_summary(totals, result.summary())
+            rows.extend(
+                result.evidence_rows(
+                    observed_at=inputs.companyfacts.received_at,
+                    source_loaded_at=loaded_at,
+                    run_id=run_id,
+                    artifact_sha256=inputs.companyfacts.sha256,
+                    artifacts=artifacts,
+                    revision_key=revision_key,
+                )
+            )
+        seconds["reconstruction"] = round(time.perf_counter() - clock, 1)
+    finally:
+        con.close()
+        _remove_scratch(path)
+
+    clock = time.perf_counter()
+    with store.transaction():
+        written = write_reconstruction_evidence(store.con, rows, revision=revision)
+    seconds["write"] = round(time.perf_counter() - clock, 1)
+    statuses: dict[str, int] = defaultdict(int)
+    for row in rows:
+        statuses[str(row["evidence_status"])] += 1
+    return {
+        **written,
+        "method": METHOD,
+        "params_digest": params.digest(),
+        "revision_key": revision_key,
+        "identity_basis": IDENTITY_BASIS,
+        "evidence_rows": len(rows),
+        "evidence_rows_by_status": dict(sorted(statuses.items())),
+        **{key: value for key, value in sorted(totals.items())},
+        "share_facts": share_facts,
+        "candidate_ciks": len(candidate_ciks),
+        "lifecycle_filings": len(filings),
+        **mapping,
+        "vendor_lines_without_published_bars": unpublished,
+        "inputs": {item.name: item.as_detail() for item in inputs.files()},
+        "tier_basis": "tier_history in value_json; consumers filter on the tier in force at their cutoff",
+        "scratch_memory_limit": memory_limit,
+        "scratch_threads": threads,
+        "seconds": seconds,
+    }
+
+
+def write_reconstruction_evidence(
+    con: duckdb.DuckDBPyConnection,
+    rows: Sequence[Mapping[str, object]],
+    *,
+    revision: str,
+    table: str = EVIDENCE_TABLE,
+) -> dict[str, object]:
+    """Write one RI1 revision into the 0327 evidence table; append-only and idempotent.
+
+    ``rows`` are :meth:`ReconstructionResult.evidence_rows` of one revision
+    (``source_revision_id == revision``). A revision already held with the
+    same content (every column but the flag, run id and load stamp) writes
+    nothing; one held with other content fails loudly (a logic change must
+    bump :data:`METHOD` or the params). Every other RI1 revision's latest rows
+    are superseded (``is_latest_revision = false``, never deleted), and a
+    rerun of an older revision's inputs makes that revision latest again. Run
+    it inside the caller's transaction.
+    """
+    import pyarrow as pa
+
+    fresh: dict[str, str] = {}
+    for row in rows:
+        if row["source_revision_id"] != revision or row["method"] != METHOD:
+            raise ValueError(f"row {row['evidence_id']} is not of revision {revision}")
+        if row["evidence_id"] in fresh:
+            raise ValueError(f"duplicate evidence_id {row['evidence_id']} in revision {revision}")
+        fresh[str(row["evidence_id"])] = _content_digest(row[name] for name in _CONTENT_COLUMNS)
+    held = {
+        str(found[0]): _content_digest(found)
+        for found in con.execute(
+            f"SELECT {', '.join(_CONTENT_COLUMNS)} FROM {table} "
+            "WHERE method = ? AND fact_kind = 'issuer_link' AND source_revision_id = ?",
+            [METHOD, revision],
+        ).fetchall()
+    }
+    if held and held != fresh:
+        raise RuntimeError(
+            f"{table} already holds revision {revision} with other content ({len(held)} rows held, "
+            f"{len(fresh)} computed); a logic change must bump METHOD or the reconstruction params"
+        )
+    inserted = 0
+    if not held and rows:
+        kinds = {"VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "BOOLEAN": pa.bool_()}
+        names = [name for name, _kind in EVIDENCE_COLUMNS]
+        batch = pa.Table.from_pylist(
+            [dict(row) for row in rows], schema=pa.schema([(name, kinds[kind]) for name, kind in EVIDENCE_COLUMNS])
+        )
+        con.register("ri_evidence_batch", batch)
+        try:
+            con.execute(f"INSERT INTO {table} ({', '.join(names)}) SELECT {', '.join(names)} FROM ri_evidence_batch")
+        finally:
+            con.unregister("ri_evidence_batch")
+        inserted = len(rows)
+    superseded = _changed(
+        con,
+        f"UPDATE {table} SET is_latest_revision = false WHERE method = ? AND fact_kind = 'issuer_link' "
+        "AND source_revision_id IS DISTINCT FROM ? AND is_latest_revision",
+        [METHOD, revision],
+    )
+    restored = _changed(
+        con,
+        f"UPDATE {table} SET is_latest_revision = true WHERE method = ? AND fact_kind = 'issuer_link' "
+        "AND source_revision_id = ? AND NOT is_latest_revision",
+        [METHOD, revision],
+    )
+    return {
+        "revision": revision,
+        "rows_inserted": inserted,
+        "rows_unchanged": len(rows) - inserted,
+        "rows_superseded": superseded,
+        "rows_restored": restored,
+    }
+
+
+def _published_line_ids(store: DuckDBStore) -> tuple[dict[int, str], dict[str, int]]:
+    """Vendor id -> the price-line id ``equity_daily_bars`` publishes it under (one bounded aggregate)."""
+    found = store.con.execute(
+        """
+        SELECT try_cast(vendor_security_id AS BIGINT) AS vendor_id, min(security_id), max(security_id)
+        FROM equity_daily_bars
+        WHERE source = ? AND try_cast(vendor_security_id AS BIGINT) > 0
+        GROUP BY 1
+        """,
+        [TICKER_HISTORY_SOURCE],
+    ).fetchall()
+    ids = {int(vendor_id): str(low) for vendor_id, low, high in found if low == high}
+    # A vendor id under two line ids keeps the loader default id (never guessed); counted.
+    return ids, {"published_vendor_lines": len(found), "published_vendor_lines_ambiguous": len(found) - len(ids)}
+
+
+def _accumulate_summary(totals: dict[str, int], summary: Mapping[str, object]) -> None:
+    for key, value in summary.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            totals[key] += value
+        elif isinstance(value, dict):
+            for sub, count in value.items():
+                totals[f"{key}.{sub}"] += int(count)
+
+
+def _content_digest(values: Iterable[object]) -> str:
+    canonical = [value.isoformat() if isinstance(value, dt.date) else value for value in values]
+    return hashlib.sha256(json.dumps(canonical, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _changed(con: duckdb.DuckDBPyConnection, sql: str, parameters: Sequence[object]) -> int:
+    found = con.execute(sql, list(parameters)).fetchone()
+    return 0 if found is None else int(found[0])
+
+
+def _remove_scratch(path: Path) -> None:
+    for stale in (path, path.with_name(path.name + ".wal")):
+        stale.unlink(missing_ok=True)
