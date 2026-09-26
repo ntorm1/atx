@@ -15,6 +15,7 @@
 #include <set>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
@@ -186,7 +187,7 @@ co::Result<std::vector<cost::CostSurface>> surfaces(const en::data::StrategyRole
       for (usize k = t - w; k < t; ++k) {
         const auto b = k * n + i, a = (k - 1) * n + i;
         if (!p.in_universe(k, i) || !p.in_universe(k - 1, i) ||
-            !std::isfinite(raw[b]) || raw[b] <= 0 || !std::isfinite(vol[b]) || vol[b] <= 0 ||
+            !std::isfinite(raw[b]) || raw[b] <= 0 || !std::isfinite(vol[b]) || vol[b] < 0 ||
             !std::isfinite(close[a]) || !std::isfinite(close[b]) || close[a] <= 0 || close[b] <= 0 || guard[a] != guard[b]) {
           complete = false; break;
         }
@@ -230,8 +231,11 @@ struct Moments {
 co::Result<Json> summarize(const al::AlphaStreams& s, const en::data::StrategyRoleData& role,
     const std::filesystem::path& series_path = {}) {
   Moments gross, net; f64 turnover = 0, execution = 0, borrow = 0, max_weight = 0;
+  f64 peak_nav = 0, max_drawdown = 0;
   usize held_sum = 0, held_min = std::numeric_limits<usize>::max(), active = 0, capped = 0;
   const auto begin = s.first_realization_, end = s.realization_end_, n = role.panel.instruments();
+  if (begin >= end) return co::Err(co::ErrorCode::Unavailable, "strategy: no mature execution interval");
+  peak_nav = s.pretrade_nav_flat[begin];
   std::ofstream csv;
   if (!series_path.empty()) {
     csv.open(series_path, std::ios::binary); csv.imbue(std::locale::classic()); csv << std::setprecision(17);
@@ -242,6 +246,8 @@ co::Result<Json> summarize(const al::AlphaStreams& s, const en::data::StrategyRo
     if (!s.valid_flat[t] || !std::isfinite(s.pnl_flat[t]) || !std::isfinite(s.gross_flat[t]))
       return co::Err(co::ErrorCode::Unavailable, "strategy: noncontiguous/nonfinite mature execution interval");
     gross.add(s.gross_flat[t]); net.add(s.pnl_flat[t]); turnover += s.turnover_flat[t];
+    peak_nav = std::max(peak_nav, s.end_nav_flat[t]);
+    max_drawdown = std::max(max_drawdown, 1.0 - s.end_nav_flat[t] / peak_nav);
     execution += s.execution_cost_flat[t]; borrow += s.borrow_cost_flat[t]; capped += s.capped_names_flat[t];
     usize held = 0;
     for (usize i = 0; i < n; ++i) {
@@ -254,34 +260,48 @@ co::Result<Json> summarize(const al::AlphaStreams& s, const en::data::StrategyRo
         << s.turnover_flat[t] << ',' << s.execution_cost_flat[t] << ',' << s.borrow_cost_flat[t] << ','
         << s.pretrade_nav_flat[t] << ',' << s.end_nav_flat[t] << ',' << held << ',' << s.capped_names_flat[t] << '\n';
   }
-  if (csv.is_open() && !csv) return co::Err(co::ErrorCode::IoError, "strategy: series write");
+  if (csv.is_open()) {
+    csv.close();
+    if (!csv) return co::Err(co::ErrorCode::IoError, "strategy: series flush/close");
+  }
   if (net.n < 2) return co::Err(co::ErrorCode::Unavailable, "strategy: too few mature observations");
   const auto inference = en::eval::hac::mean_inference(std::span<const f64>{s.pnl_flat}.subspan(begin, end - begin),
       en::eval::hac::Kernel::BartlettV1, 5, true, true);
   Json j{{"observations", net.n}, {"realized_begin", begin}, {"realized_end", end},
       {"gross_sharpe", gross.sharpe()}, {"net_sharpe", net.sharpe()}, {"mean_net_return", net.mean},
-      {"hac_lag", 5}, {"hac_defined", inference.defined != 0}, {"hac_t", inference.defined ? Json(inference.t) : Json(nullptr)},
+      {"hac_lag_requested", 5}, {"hac_lag", inference.lag}, {"hac_defined", inference.defined != 0}, {"hac_t", inference.defined ? Json(inference.t) : Json(nullptr)},
       {"total_one_way_turnover", turnover}, {"mean_daily_one_way_turnover", turnover / static_cast<f64>(net.n)},
       {"monthly21_one_way_turnover", turnover * 21 / static_cast<f64>(net.n)},
       {"summed_execution_cost_returns", execution}, {"summed_borrow_cost_returns", borrow},
       {"final_nav", s.end_nav_flat[end - 1]}, {"total_net_return", s.end_nav_flat[end - 1] / s.pretrade_nav_flat[begin] - 1}, {"mean_held_names", static_cast<f64>(held_sum) / static_cast<f64>(net.n)},
       {"minimum_held_names", held_min}, {"active_interval_fraction", static_cast<f64>(active) / static_cast<f64>(net.n)},
       {"maximum_abs_interval_entry_weight", max_weight}, {"capped_name_fills", capped},
+      {"maximum_net_nav_drawdown", max_drawdown},
       {"execution_context_sha256", s.execution_context_sha256}};
   return co::Ok(std::move(j));
 }
-void add_ranked(std::span<const f64> signal, f64 sign, f64 weight,
+struct ContributionCoverage { u64 eligible{}, finite{}, ranked{}; };
+ContributionCoverage add_ranked(std::span<const f64> signal, f64 sign, f64 weight,
     const en::data::StrategyRoleData& role, std::vector<f64>& blend, std::vector<usize>& order) {
   const auto n = role.panel.instruments();
   const auto close = role.panel.field_all(*role.panel.field_id("close"));
+  ContributionCoverage coverage;
   for (usize t = 0; t < role.panel.dates(); ++t) {
     order.clear();
-    for (usize i = 0; i < n; ++i)
-      if (role.decision_member[t * n + i] && role.panel.in_universe(t, i) && std::isfinite(close[t * n + i]) && close[t * n + i] > 0 && std::isfinite(signal[t * n + i])) order.push_back(i);
+    const bool reported = t >= role.score_begin && t < role.score_end - 2;
+    for (usize i = 0; i < n; ++i) {
+      const auto k = t * n + i;
+      if (role.decision_member[k] && role.panel.in_universe(t, i) && std::isfinite(close[k]) && close[k] > 0) {
+        if (reported) ++coverage.eligible;
+        if (std::isfinite(signal[k])) order.push_back(i);
+      }
+    }
+    if (reported) coverage.finite += order.size();
     std::sort(order.begin(), order.end(), [&](usize a, usize b) {
       const auto x = sign * signal[t * n + a], y = sign * signal[t * n + b]; return x != y ? x < y : a < b;
     });
     if (order.size() < 2) continue; // fixed neutral contribution, no denominator change
+    if (reported) coverage.ranked += order.size();
     for (usize a = 0; a < order.size();) {
       usize b = a + 1;
       while (b < order.size() && signal[t * n + order[a]] == signal[t * n + order[b]]) ++b;
@@ -291,6 +311,7 @@ void add_ranked(std::span<const f64> signal, f64 sign, f64 weight,
       a = b;
     }
   }
+  return coverage;
 }
 co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const RoleSpec& spec,
     std::vector<f64>& signs, const std::string& cost_recipe, std::ostream& progress) {
@@ -304,6 +325,7 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
   ATX_TRY_VOID(engine.set_cross_section_mask(role.decision_member));
   std::vector<f64> blend(role.panel.cells(), 0.0); std::vector<usize> order; order.reserve(role.panel.instruments());
   Json orientation = Json::array(), combined = Json::array();
+  std::map<std::string, ContributionCoverage> family_coverage;
   const bool train = spec.role == "train";
   std::ofstream ledger(std::filesystem::path(cfg.output_directory) / (spec.role + "_trials.jsonl"), std::ios::binary);
   if (!ledger) return co::Err(co::ErrorCode::IoError, "strategy: trial receipt output");
@@ -354,7 +376,9 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
         orientation.push_back({{"id", candidate.id}, {"family", candidate.family}, {"weight", candidate.weight},
             {"sign", signs.back()}, {"plus", two[0]}, {"minus", two[1]}});
       }
-      add_ranked(signal, signs[k], candidate.weight, role, blend, order);
+      const auto coverage = add_ranked(signal, signs[k], candidate.weight, role, blend, order);
+      auto& family = family_coverage[candidate.family];
+      family.eligible += coverage.eligible; family.finite += coverage.finite; family.ranked += coverage.ranked;
       progress << spec.role << " candidate " << (k + 1) << '/' << lib.candidates.size() << ' ' << candidate.id << '\n' << std::flush;
     }
     ATX_TRY(auto summary, trial(blend, ctx, 1.0, lib.variants[0].id, "combined-strategy",
@@ -367,10 +391,19 @@ co::Result<Json> score_role(const RunnerConfig& cfg, const Library& lib, const R
         std::filesystem::path(cfg.output_directory) / (spec.role + "_" + lib.variants[1].id + ".csv")));
     summary["variant"] = lib.variants[1].id; combined.push_back(std::move(summary));
   }
+  Json coverage_report = Json::array();
+  for (const auto& [family, coverage] : family_coverage)
+    coverage_report.push_back({{"family", family}, {"candidate_member_cells", coverage.eligible},
+        {"finite_candidate_cells", coverage.finite}, {"ranked_contribution_cells", coverage.ranked},
+        {"fixed_denominator_contribution_fraction", coverage.eligible ? Json(static_cast<f64>(coverage.ranked) / static_cast<f64>(coverage.eligible)) : Json(nullptr)},
+        {"basis", "sum across fixed family candidates and mature decision dates; member/source-present/positive current close; rank needs >=2;no renormalization"}});
+  ledger.close();
+  if (!ledger) return co::Err(co::ErrorCode::IoError, "strategy: trial ledger flush/close");
   return co::Ok(Json{{"role", spec.role}, {"manifest_sha256", role.manifest_sha256},
       {"source_sha256", role.source_sha256}, {"membership_recipe", role.membership_recipe},
       {"clock_recipe", role.clock_recipe}, {"admitted_working_bytes", spec.admitted_bytes},
       {"trial_attempts", started}, {"completed_trials", completed},
+      {"family_contribution_coverage", coverage_report},
       {"dates", role.panel.dates()}, {"instruments", role.panel.instruments()},
       {"score_begin", role.score_begin}, {"score_end", role.score_end}, {"orientations", orientation}, {"combined", combined}});
 }
