@@ -19,8 +19,8 @@ Evaluation (R3b/R4) tests these hypotheses; it never chooses a sign from data.
 Research metadata (CB2) on every row: ``population`` (:data:`POPULATIONS`: the firms
 the hypothesis is defined on, against which coverage is measured), ``evidence_class``
 (:data:`EVIDENCE_CLASSES`, derived: ``replication`` for a published anomaly or analogue
-with a pre-registered sign, ``discovery`` otherwise), ``publication_year`` (derived: the
-earliest year the reference cites, for published rows only), ``jkp_theme``
+with a pre-registered sign, ``discovery`` otherwise), ``publication_year`` (a year the
+reference cites, the anomaly's first publication, for published rows only), ``jkp_theme``
 (:data:`JKP_THEMES` or ``none``) and ``wave`` (:data:`WAVES`: the pre-registration wave
 that evaluates the row). One hypothesis is never tested twice: a second construction of
 a cataloged hypothesis is ``blocked_duplicate_hypothesis`` and names its primary in
@@ -92,6 +92,7 @@ __all__ = [
     "derive_metric_shapes",
     "load_anomaly_catalog",
     "read_anomaly_catalog",
+    "reference_cited_years",
     "reference_publication_year",
     "render_anomaly_catalog_markdown",
     "validate_anomaly_catalog",
@@ -390,7 +391,7 @@ class AnomalyCatalogEntry:
     #: CB2 research metadata (see the module docstring).
     population: str
     evidence_class: str
-    #: The earliest year the reference cites; None for an economic conjecture.
+    #: A year the reference cites (the anomaly's first publication); None for an economic conjecture.
     publication_year: int | None
     jkp_theme: str
     wave: str
@@ -451,8 +452,13 @@ def reference_publication_year(reference: str) -> int | None:
     The catalog's ``publication_year`` of a published row: the first publication of the
     relation among the cited works (the pre/post-publication split keys on it).
     """
-    years = [int(year) for year in _YEAR.findall(reference or "")]
+    years = reference_cited_years(reference)
     return min(years) if years else None
+
+
+def reference_cited_years(reference: str) -> frozenset[int]:
+    """Every four-digit year the reference cites (a published row's ``publication_year`` is one of them)."""
+    return frozenset(int(year) for year in _YEAR.findall(reference or ""))
 
 
 def derive_evidence_class(prior_evidence: str, expected_sign: int) -> str:
@@ -977,12 +983,15 @@ def _metadata_errors(entry: AnomalyCatalogEntry) -> list[str]:
         problems.append(f"evidence_class {entry.evidence_class!r} but a {entry.prior_evidence} row with "
                         f"{_SIGN_LABELS.get(entry.expected_sign, entry.expected_sign)} sign is {derived!r}")
     if entry.prior_evidence in _PUBLISHED_EVIDENCE:
-        year = reference_publication_year(entry.reference)
-        if year is None:
+        # Any year the reference cites (node 0.10 review minor): the anomaly's first publication is not
+        # always the earliest cited work (Altman Z 1968 / Ohlson O 1980 are the scoring papers; the
+        # distress anomaly is Dichev 1998), so the row names it among the cited years.
+        cited = reference_cited_years(entry.reference)
+        if not cited:
             problems.append("a published row's reference must cite a publication year")
-        elif entry.publication_year != year:
-            problems.append(f"publication_year {entry.publication_year} but the earliest year the reference cites "
-                            f"is {year}")
+        elif entry.publication_year not in cited:
+            problems.append(f"publication_year {entry.publication_year} is not a year the reference cites "
+                            f"({sorted(cited)})")
     elif entry.publication_year is not None:
         problems.append(f"publication_year must be empty for a {entry.prior_evidence} row")
     if entry.jkp_theme not in (*JKP_THEMES, JKP_THEME_NONE):
@@ -1418,7 +1427,8 @@ def _render_metadata(rows: Sequence[AnomalyCatalogEntry]) -> list[str]:
         "`population` names the firms a hypothesis is defined on (coverage is measured against it); "
         "`evidence_class` is derived: `replication` for a published anomaly or analogue with a "
         "pre-registered sign, `discovery` for an economic conjecture or a two-sided hypothesis; "
-        "`publication_year` is the earliest year the reference cites (published rows only); "
+        "`publication_year` is the year the reference cites for the anomaly's first publication, by default "
+        "the earliest cited year (published rows only); "
         "`jkp_theme` is the Jensen-Kelly-Pedersen (2023) theme cluster of the JKP characteristic "
         "measuring the same construct, else the theme the construct belongs to, else `none`; "
         "`wave` is the pre-registration wave whose frozen catalog digest evaluates the row.",

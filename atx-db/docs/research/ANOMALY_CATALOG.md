@@ -453,7 +453,7 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 
 ## Research metadata
 
-`population` names the firms a hypothesis is defined on (coverage is measured against it); `evidence_class` is derived: `replication` for a published anomaly or analogue with a pre-registered sign, `discovery` for an economic conjecture or a two-sided hypothesis; `publication_year` is the earliest year the reference cites (published rows only); `jkp_theme` is the Jensen-Kelly-Pedersen (2023) theme cluster of the JKP characteristic measuring the same construct, else the theme the construct belongs to, else `none`; `wave` is the pre-registration wave whose frozen catalog digest evaluates the row.
+`population` names the firms a hypothesis is defined on (coverage is measured against it); `evidence_class` is derived: `replication` for a published anomaly or analogue with a pre-registered sign, `discovery` for an economic conjecture or a two-sided hypothesis; `publication_year` is the year the reference cites for the anomaly's first publication, by default the earliest cited year (published rows only); `jkp_theme` is the Jensen-Kelly-Pedersen (2023) theme cluster of the JKP characteristic measuring the same construct, else the theme the construct belongs to, else `none`; `wave` is the pre-registration wave whose frozen catalog digest evaluates the row.
 
 | population | meaning |
 |---|---|
@@ -489,11 +489,11 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | `profit_growth` | 44 | 42 |
 | `profitability` | 19 | 19 |
 | `quality` | 18 | 18 |
-| `seasonality` | 5 | 5 |
+| `seasonality` | 4 | 4 |
 | `size` | 13 | 13 |
 | `short_term_reversal` | 3 | 3 |
 | `value` | 22 | 22 |
-| `none` | 5 | 5 |
+| `none` | 6 | 6 |
 
 | wave | rows | research-eligible |
 |---|---:|---:|
@@ -535,10 +535,10 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | `cfo_to_assets` | all | replication | 2000 | profitability | w0_existing |
 | `piotroski_f` | all | replication | 2000 | profitability | w0_existing |
 | `piotroski_f_cash_issuance` | all | replication | 2000 | profitability | w0_existing |
-| `altman_z_book` | all | replication | 1968 | low_leverage | w0_existing |
-| `altman_z` | all | replication | 1968 | low_leverage | w0_existing |
+| `altman_z_book` | all | replication | 1998 | low_leverage | w0_existing |
+| `altman_z` | all | replication | 1998 | low_leverage | w0_existing |
 | `beneish_m` | all | replication | 1999 | accruals | w0_existing |
-| `ohlson_o` | all | replication | 1980 | profitability | w0_existing |
+| `ohlson_o` | all | replication | 1998 | profitability | w0_existing |
 | `tax_to_book_income` | all | replication | 2004 | seasonality | w0_existing |
 | `revenue_growth_yoy` | all | discovery | 1994 | investment | w0_existing |
 | `revenue_cagr_3y` | all | replication | 1994 | investment | w0_existing |
@@ -683,7 +683,7 @@ Research metadata (see the section below): `population`, `evidence_class`, `publ
 | `cash_to_assets` | all | replication | 2012 | low_leverage | w0_existing |
 | `ear_m1p1` | all | replication | 1996 | profit_growth | w4_events |
 | `runup_m21_m2` | all | discovery | 2010 | short_term_reversal | w4_events |
-| `days_since_announcement` | all | replication | 2007 | seasonality | w4_events |
+| `days_since_announcement` | all | replication | 2007 | none | w4_events |
 | `sue_ni_event` | all | replication | 1984 | profit_growth | w4_events |
 | `beta_mkt_252d` | all | replication | 1972 | low_risk | w4_events |
 | `ivol_252d` | all | replication | 2006 | low_risk | w4_events |
