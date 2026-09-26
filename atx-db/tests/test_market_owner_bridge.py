@@ -41,7 +41,11 @@ P1 (RI1 reconstructed history -> bridge):
   strict mode;
 * an RI1 conflict stays unlinked (``conflicting_reconstruction``); a link
   contested later is linked only before the contest; one issuer is linked on
-  one line per day (the other line's overlap is trimmed and counted).
+  one line per day (the other line's overlap is trimmed and counted);
+* the per-issuer-day dedupe never uses hindsight: on every day, the issuer's
+  one visible line is the link visible first among those visible at that day's
+  cutoff -- a link that surfaces later (or a line's longer life) never blanks
+  a link already visible.
 """
 
 from __future__ import annotations
@@ -1337,3 +1341,54 @@ def test_reconstructed_conflicts_stay_unlinked_and_tiers_and_issuers_are_point_i
     assert stats["cik_day_dedupe"] == {
         "rule": "common_lines_only;current_ticker_first_then_first_visible_then_first_bar_then_id", "ciks": 1,
         "segments_trimmed": 1, "days_removed": 275, "lines_removed": 0}
+
+
+def test_issuer_day_dedupe_never_blanks_a_visible_link_for_one_visible_later():
+    """PIT edge case: the dedupe decides each issuer-day only on links visible at that day's cutoff.
+
+    W (the longer line: more bars, earlier first bar) carries issuer X from 2015, visible early, and
+    issuer Y after a 2016-07-01 reorganization -- a link that surfaces only in mid-2018. L is Y's other
+    line, visible from 2016-09-30. Ranking W by its line's earliest clock (X's) or by its lifetime bars
+    would let W's late Y link blank L on every day from 2016-09-30 to 2018-06-29, when only L's Y link
+    was knowable. The link visible first wins: L keeps Y; W keeps X and its Y days are trimmed.
+    """
+    w, l_line = "TBLTICKERHISTORY-21", "TBLTICKERHISTORY-22"
+    x_cik, y_cik = "0000000801", "0000000802"
+    d = dt.date
+    lines = [PriceLine(w, "WWW", d(2015, 1, 2), d(2018, 12, 31), 1000),
+             PriceLine(l_line, "LLL", d(2016, 1, 4), d(2018, 12, 31), 300)]
+    x_clock, l_clock, y_clock = dt.datetime(2015, 3, 31, 22), dt.datetime(2016, 9, 30, 22), dt.datetime(2018, 6, 29, 23)
+    evidence = [
+        _ri1(w, x_cik, (d(2015, 1, 2), d(2016, 7, 1)), x_clock, (("medium", x_clock),)),
+        _ri1(w, y_cik, (d(2016, 7, 1), d(2019, 1, 1)), y_clock, (("medium", y_clock),)),
+        _ri1(l_line, y_cik, (d(2016, 1, 4), d(2019, 1, 1)), l_clock, (("medium", l_clock),)),
+    ]
+    rows, _members, _ambiguous, stats = classify_reconstructed_with_history(lines, (), {}, reconstructed=evidence)
+
+    assert [(row.price_security_id, row.cik, row.valid_from, row.valid_to, row.available_at)
+            for row in rows if row.linked] == [
+        (w, x_cik, d(2015, 1, 2), d(2016, 7, 1), x_clock),
+        (l_line, y_cik, d(2016, 1, 4), d(2019, 1, 1), l_clock),
+    ]
+    assert {key: stats["cik_day_dedupe"][key] for key in ("ciks", "segments_trimmed", "days_removed")} == {
+        "ciks": 1, "segments_trimmed": 1, "days_removed": 914}  # W's Y link, 2016-07-01 .. 2019-01-01
+
+    # Every calendar day, both issuers: the one visible bridge line is the link visible first among
+    # the RI1 links visible at that day's 22:00 cutoff -- never blank while one is visible, never two.
+    spans = {line.price_security_id: (line.first_trade_date, line.last_trade_date) for line in lines}
+
+    def visible(day, cik, links):
+        cutoff = dt.datetime.combine(day, dt.time(22))
+        return {(line, at) for line, owner, low, high, at in links
+                if owner == cik and low <= day < high and spans[line][0] <= day <= spans[line][1] and at <= cutoff}
+
+    known = [(item.price_security_id, item.cik, item.valid_from, item.valid_to, item.available_at) for item in evidence]
+    linked = [(row.price_security_id, row.cik, row.valid_from, row.valid_to, row.available_at)
+              for row in rows if row.linked]
+    day = d(2015, 1, 1)
+    while day <= d(2018, 12, 31):
+        for cik in (x_cik, y_cik):
+            candidates = visible(day, cik, known)
+            first = {min(candidates, key=lambda c: (c[1], spans[c[0]][0], c[0]))[0]} if candidates else set()
+            assert {line for line, _at in visible(day, cik, linked)} == first, (day, cik, candidates)
+        day += dt.timedelta(days=1)

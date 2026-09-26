@@ -72,7 +72,7 @@ symbol is normalized (upper case; ``.``, ``/`` and blanks -> ``-``):
 5. ``reconstructed_history`` (P1): a line left unlinked by rules 1-4 (except a
    symbol-keyed line) takes its RI1 reconstructed issuer links
    (:mod:`atx_db.identity_reconstruction`, ``security_identity_evidence`` rows
-   with ``method='ri1_share_fingerprint_v1'``). ``identity_basis=
+   with the RI1 ``METHOD``, ``ri1_share_fingerprint_v2``). ``identity_basis=
    'reconstructed_history'``, ``availability_basis='modeled'``; each row keeps
    its ``evidence_id`` and ``available_at`` is exactly the RI1 evidence clock
    (the link is never visible before it). The RI1 tier is point in time: the
@@ -93,9 +93,10 @@ symbol is normalized (upper case; ``.``, ``/`` and blanks -> ``-``):
    withheld (``non_common_line``: no DEI, no valuation). Owner links are
    deduplicated per CIK per day among common-equity lines: an issuer already
    linked on another common line that day (current-ticker rules first, then
-   the reconstructed line whose link is visible first, then the earlier first
-   bar, then the smaller id -- nothing known only in hindsight) keeps it and the
-   other reconstructed segment is trimmed -- counted. The issuer's preferred,
+   the reconstructed issuer link visible first -- by that link's own clock,
+   never another link of its line -- then the earlier first bar, then the
+   smaller id: nothing known only in hindsight) keeps it and the other
+   reconstructed segment is trimmed -- counted. The issuer's preferred,
    note or warrant lines never claim or lose a day (they trade alongside the
    common line). Strict mode never consumes these links (they are not
    ``verified_dated``). A bridge with rule-5 rows is labelled
@@ -1976,9 +1977,12 @@ def _with_reconstructed_history(
             reasons[line_id] = UNLINKED_RECONSTRUCTION_BELOW_TIER
 
     # Dedupe per CIK per day: one common line per issuer on any day. Current-ticker
-    # common links win; then the reconstructed line whose link is visible first,
-    # then the earlier first bar, then the smaller id (all known at the time --
-    # never lifetime bar counts). Non-common rule-5 lines neither claim nor lose days.
+    # common links win; then the reconstructed issuer link visible first -- each RI1
+    # link by its OWN clock, never its line's other links (another CIK's earlier
+    # clock) -- then the earlier first bar, then the smaller id. So on any day a
+    # loser's link is visible, the winner's is visible too: nothing known only
+    # later (lifetime bar counts, a link that surfaces later) blanks a visible
+    # link. Non-common rule-5 lines neither claim nor lose days.
     def span(row_from: dt.date | None, row_to: dt.date | None, line_id: str) -> tuple[dt.date, dt.date]:
         line = lines[line_id]
         low = max(row_from or line.first_trade_date, line.first_trade_date)
@@ -1992,19 +1996,28 @@ def _with_reconstructed_history(
             low, high = span(row.valid_from, row.valid_to, row.price_security_id)
             if low < high:
                 taken[row.cik].append((low, high, row.price_security_id))
-    def first_visible(line_id: str) -> dt.date:
-        clocks = [item.available_at for _low, _high, _tier, item in kept[line_id] if item.available_at is not None]
-        return _cutoff_date(min(clocks)) if clocks else _MAX_DATE
+    # One claim per issuer link (line, RI1 evidence row): its tier segments share its clock.
+    links: dict[tuple[str, str], tuple[ReconstructedLinkEvidence, list[tuple[dt.date, dt.date | None, str]]]] = {}
+    for line_id, line_segments in kept.items():
+        for low, high, tier, item in line_segments:
+            links.setdefault((line_id, item.evidence_id), (item, []))[1].append((low, high, tier))
 
-    order = sorted(kept, key=lambda line_id: (first_visible(line_id), lines[line_id].first_trade_date, line_id))
+    def claim_order(key: tuple[str, str]) -> tuple[dt.date, dt.date, str, dt.date, str]:
+        item = links[key][0]
+        assert item.available_at is not None  # accepted rows without a clock are rejected above
+        line_id = key[0]
+        first = lines[line_id].first_trade_date
+        return (_cutoff_date(item.available_at), first, line_id, item.valid_from or first, item.evidence_id)
+
     trimmed = days_removed = 0
     dedupe_ciks: set[str] = set()
-    new_rows: dict[str, list[BridgeRow]] = {}
+    linked_rows: dict[str, list[BridgeRow]] = defaultdict(list)
     non_common: dict[str, str] = {}
-    for line_id in order:
-        line_rows: list[BridgeRow] = []
-        for low, high, tier, item in kept[line_id]:
-            assert item.cik is not None
+    for key in sorted(links, key=claim_order):
+        line_id = key[0]
+        item, link_segments = links[key]
+        assert item.cik is not None
+        for low, high, tier in link_segments:
             seg_low, seg_high = span(low, high, line_id)
             if seg_low >= seg_high:
                 continue
@@ -2025,7 +2038,7 @@ def _with_reconstructed_history(
                 piece_to: dt.date | None = piece_high
                 if high is None and piece_high == lines[line_id].last_trade_date + dt.timedelta(days=1):
                     piece_to = None
-                line_rows.append(
+                linked_rows[line_id].append(
                     BridgeRow(
                         price_security_id=line_id,
                         owner_security_id=cik_security_id(item.cik),
@@ -2044,8 +2057,10 @@ def _with_reconstructed_history(
                 )
                 if label is None:
                     taken[item.cik].append((piece_low, piece_high, line_id))
-        if line_rows:
-            new_rows[line_id] = line_rows
+    new_rows: dict[str, list[BridgeRow]] = {}
+    for line_id in sorted(kept):
+        if linked_rows.get(line_id):
+            new_rows[line_id] = sorted(linked_rows[line_id], key=lambda row: (row.valid_from or dt.date.min))
         else:
             reasons[line_id] = UNLINKED_RECONSTRUCTED_CIK_ON_OTHER_LINE
 
