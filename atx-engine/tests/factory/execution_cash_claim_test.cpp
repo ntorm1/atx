@@ -194,6 +194,23 @@ TEST(ExecutionCashClaim, PreRoleExtinctionCreatesNoOpeningClaimAndOtherAxesAreEx
   EXPECT_EQ(fr->event_uses[0].use,ex::ExecutionCashClaimUse::AfterRole);
 }
 
+TEST(ExecutionCashClaim, PublicationBetweenMarkAndDecisionAlreadyClosesFormation) {
+  ClaimInput f; f.cfg.rebalance_sessions=1;
+  for (usize t=0;t<D;++t) f.decisions[t]=f.marks[t]+10;
+  auto e=f.event(2,3);
+  e.effective_after_ns=f.marks[2]; e.effective_by_ns=f.marks[2]+2;
+  e.available_at_ns=f.marks[2]+3; // before d2 decision, after its mark
+  f.extinct(2,3);
+  auto p=f.panel(); ASSERT_TRUE(p); auto c=f.context(*p,{&e,1}); ASSERT_TRUE(c);
+  auto r=ex::extract_execution_signal_claims(f.signal,*c); ASSERT_TRUE(r);
+  // d2 ranks only the first TWO names. It queues +/-500 using then-known NAV;
+  // d3 recognizes the claim before filling, so the second name actually holds500.
+  EXPECT_NEAR(r->streams.positions(0,4)[1],500.0/1100.0,1e-15);
+  EXPECT_DOUBLE_EQ(r->streams.positions(0,4)[2],0);
+  f.cfg.window_begin=4; e.recognition_mark_ns=f.marks[5];
+  EXPECT_FALSE(f.context(*p,{&e,1})); // cannot delay an already pre-role completion
+}
+
 TEST(ExecutionCashClaim, EmptyEventsPreserveDefaultDigestAndAllOutputBits) {
   ClaimInput f; auto p=f.panel(); ASSERT_TRUE(p);
   auto old=f.context(*p,{},true); ASSERT_TRUE(old); auto empty=f.context(*p); ASSERT_TRUE(empty);
