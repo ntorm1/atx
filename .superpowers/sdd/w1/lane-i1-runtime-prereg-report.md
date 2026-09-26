@@ -73,7 +73,7 @@ Caps are 1 MiB input, 64 families, 8 union horizons, horizons 1..4096, 4096 DSL 
 256 lexer tokens per DSL (bounds recursive parser work), 12 JSON nesting levels. IDs/names
 are restricted ASCII alphanumeric/underscore/hyphen. Unknown/duplicate keys, invalid or
 nonfinite folded DSL, ambiguous counts, changed retained configurations and unsupported
-variant/restriction lists fail before market data or VM work. Runtime family/ancillary VM
+variant/restriction lists fail before candidate VM work or registration. Runtime family/ancillary VM
 allocation budgets deduct already-accounted resident estimates before evaluation; this is
 not a measured process-RSS bound or a new global CSV-output streaming guarantee.
 
