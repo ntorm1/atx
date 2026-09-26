@@ -24,7 +24,13 @@ One fixture, daily partitions of three vendor lines (the vendor's
   published; an excluded no-trade row keeps its returnFactor (a carried ledger
   step the next bar continues through, visible to the vendor-basis read from
   its receipt); a session the vendor never published is accepted only with a
-  recorded reason; a stale late file is refused without blocking newer ones.
+  recorded reason; a stale late file is refused (with a durable warning row)
+  without blocking newer ones;
+* a late session applied before the next one, received earlier (the refused
+  S+1 of the recovery flow), is not visible before the late session's receipt
+  in the stored or the vendor-basis read (N1: the visibility clock is monotone
+  in apply order), and neither is a re-delivered factor correction through the
+  next session's bars.
 """
 
 from __future__ import annotations
@@ -334,4 +340,51 @@ def test_every_session_and_every_excluded_step_stays_in_the_factor_chain(tmp_sto
         minimum_partition_lines=1))
     assert len(refresh.refused) == 1 and "late.parquet" in refresh.refused[0]["path"]
     assert [(result.partition_date, result.status) for result in refresh.partitions] == [(_DAYS[6], "applied")]
+    assert tmp_store.con.execute(  # m-d: the refusal is durable, not only a log line
+        "SELECT status, json_extract_string(details_json, '$.source_path') FROM data_quality_checks "
+        "WHERE check_name = 'incremental_partition_refused'").fetchall() == [("warning", str(stale))]
     assert _wal_bytes(tmp_store) == 0
+
+
+def test_a_late_session_is_not_visible_through_the_next_session_before_its_receipt(tmp_store, tmp_path):
+    """N1 (the re-review's reproduction). 09-24 (S+1) is received 09-25 10:00 and refused; 09-23 (S), with a 2 %
+    distribution on line 101, is received 09-27 10:00; S then S+1 apply. S+1's factor continues S's step, so S+1
+    must not be visible before 09-27 10:00: the distribution never shows before its receipt."""
+    for index in range(2):
+        _ingest(tmp_store, _write_partition(tmp_path / f"p{index}.parquet", index), _RECEIPTS[index])
+    s_plus_1 = _write_partition(tmp_path / "p3.parquet", 3)
+    with pytest.raises(SessionGapError):
+        _ingest(tmp_store, s_plus_1, _RECEIPTS[3])
+    late = _RECEIPTS[3] + dt.timedelta(days=2)  # 2026-09-27 10:00
+    _ingest(tmp_store, _write_partition(tmp_path / "p2.parquet", 2, rf={101: 0.98}), late)
+    applied = _ingest(tmp_store, s_plus_1, _RECEIPTS[3])
+    assert (applied.detail["available_at"], applied.detail["receipt_floored_from"]) == (
+        late.isoformat(), _RECEIPTS[3].isoformat())
+    assert applied.detail["receipt_floored"] == 1 and applied.detail["receipt_floor_partition"] == "2026-09-23"
+    assert tmp_store.con.execute(
+        "SELECT min(available_at) FROM equity_daily_bars WHERE trade_date > ?", [_DAYS[1]]).fetchone() == (late,)
+    assert tmp_store.con.execute(f"SELECT min(available_at) FROM {REBASES_TABLE}").fetchone() == (late,)
+
+    line = _LINES[101]
+    for cutoff in (_RECEIPTS[3] + dt.timedelta(hours=1), late - dt.timedelta(seconds=1)):
+        for basis in ("vendor", BASIS_STORED):
+            known = _asof(tmp_store, cutoff, basis=basis)
+            assert max(day for (sid, day) in known if sid == line) == _DAYS[1], (cutoff, basis)
+            assert [known[(line, day)][1] for day in _DAYS[:2]] == pytest.approx([10.0, 10.5]), (cutoff, basis)
+    known = _asof(tmp_store, late)  # from S's receipt: both sessions, and the step restates 101's history
+    assert [known[(line, day)][1] for day in _DAYS[:4]] == pytest.approx([9.8, 10.29, 11.0, 11.2])
+    assert _asof(tmp_store, late, basis=BASIS_STORED)[(line, _DAYS[3])][1] == pytest.approx(11.2 / 0.98)
+
+    # The same through a re-delivery: 09-24 re-delivered on 09-28 10:00 with a 1 % step on line 102, then 09-25
+    # (received 09-26 10:00, earlier) applies; its 102 bar continues the corrected factor.
+    corrected = _RECEIPTS[3] + dt.timedelta(days=3)
+    redelivery = _ingest(tmp_store, _write_partition(tmp_path / "p3b.parquet", 3, rf={102: 0.99}), corrected)
+    assert (redelivery.restated_rows, redelivery.rebased_lines) == (1, 1)
+    nxt = _ingest(tmp_store, _write_partition(tmp_path / "p4.parquet", 4), _RECEIPTS[4])
+    assert nxt.detail["available_at"] == corrected.isoformat()
+    other = _LINES[102]
+    known = _asof(tmp_store, corrected - dt.timedelta(seconds=1))
+    assert max(day for (sid, day) in known if sid == other) == _DAYS[3]
+    assert [known[(other, day)][1] for day in _DAYS[:4]] == pytest.approx([20.0, 20.2, 20.4, 20.3])
+    known = _asof(tmp_store, corrected)
+    assert [known[(other, day)][1] for day in _DAYS[:5]] == pytest.approx([19.8, 19.998, 20.196, 20.3, 20.6])

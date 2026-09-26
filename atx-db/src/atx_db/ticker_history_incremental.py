@@ -26,6 +26,21 @@ Sessions (every factor chain needs every session)
     retained file) is accepted with ``session_gap_reason`` and recorded, on the
     same evidence only. :func:`refresh_daily_prices` stops at a gap and skips a
     stale never-applied partition, so a late file never blocks newer sessions.
+    A contiguous ``dn`` whose lines do not name the stored previous closes is
+    applied, but also writes an ``incremental_partition_session_evidence``
+    warning row (a vendor ``dn`` mis-numbering would hide a missing session).
+
+Visibility clock (monotone in apply order)
+    A partition's rows, ledger rows and new-line links are available at its
+    receipt clock (floored at trade_date + 22h), floored again at the clock of
+    every partition applied before it (the partition watermarks'
+    ``available_at``). A late session S applied before S+1 makes S+1's factors
+    continue S's steps (``f = f_S / returnFactor``); without the floor S+1,
+    received earlier, would show S's dividend or split before S's receipt, in
+    the stored bars and in the vendor-basis scale. The same holds for a
+    re-delivery that corrects a factor before the next session applies. A
+    floored partition records ``receipt_floored_from`` (its own clock) and
+    ``receipt_floor_partition``, and warns (``receipt_floored``).
 
 Rows
     A partition holds exactly one trade date. Its rows are projected exactly as
@@ -139,7 +154,9 @@ Directory and scheduling
     Adds/Deletes files under the A1 pinned-snapshot policy
     (:mod:`atx_db.symbol_directory`). :func:`refresh_daily_prices` is the hand-off
     hook for C12 scheduling. It applies given partitions in date order, then the
-    directory files. :func:`pending_partitions` lists what is not yet applied.
+    directory files; a refused stale partition leaves one
+    ``incremental_partition_refused`` warning row per file bytes (sha256).
+    :func:`pending_partitions` lists what is not yet applied.
     There is no scheduler and no network code here. A real fetcher
     (:class:`PartitionFetcher`) must identify itself with
     :data:`APPROVED_USER_AGENT`.
@@ -230,6 +247,10 @@ ADJACENCY_TOLERANCE = 1e-6
 #: recorded session number to follow the stored history, and for a session-gap
 #: override to be accepted.
 SESSION_ADJACENCY_MIN = 0.9
+#: Quality rows beyond ``incremental_partition_applied``: a contiguous ``dn``
+#: without the previous-close evidence (applied), a stale file refused.
+CHECK_SESSION_EVIDENCE = "incremental_partition_session_evidence"
+CHECK_REFUSED = "incremental_partition_refused"
 STATUS_APPLIED = "applied"
 STATUS_UNCHANGED = "unchanged"
 
@@ -341,8 +362,9 @@ class SessionGapError(ValueError):
 class PartitionIngestOptions:
     partition_path: Path
     #: Receipt clock of the partition's bytes: every new or restated row's
-    #: ``available_at`` (floored at trade_date + 22h). None reads the retained
-    #: file's ``<file>.receipt.json``, else its modification time (A1 rule).
+    #: ``available_at`` (floored at trade_date + 22h and at the clock of every
+    #: partition applied before it, N1). None reads the retained file's
+    #: ``<file>.receipt.json``, else its modification time (A1 rule).
     received_at: dt.datetime | None = None
     source: str = SOURCE_NAME
     run_id: str | None = None
@@ -417,8 +439,8 @@ class DailyRefreshResult:
 class PartitionFetcher(Protocol):
     """What C12 plugs in once RX11 approves a daily price source (not implemented here).
 
-    Implementations must send ``User-Agent: atx-db/0.1 atx-research@example.com``
-    (:data:`APPROVED_USER_AGENT`) on every request, write each partition to a
+    Implementations must send :data:`APPROVED_USER_AGENT` (``sec_http.APPROVED_SEC_USER_AGENT``,
+    the only approved agent) on every request, write each partition to a
     retained local file with a ``<file>.receipt.json`` receipt (the A1 cache
     receipt: source_url, received_at, sha256, bytes), and never overwrite a
     retained partition.
@@ -511,6 +533,41 @@ def _receipt(path: Path, sha256: str) -> tuple[dt.datetime, str]:
     from .activation import _read_cache_receipt
 
     return _read_cache_receipt(path, sha256)
+
+
+def _utc_naive(value: dt.datetime) -> dt.datetime:
+    """A clock as naive UTC (the warehouse's TIMESTAMP convention)."""
+    return value.astimezone(dt.UTC).replace(tzinfo=None) if value.tzinfo is not None else value
+
+
+def _session_clock(partition_date: dt.date, received_at: dt.datetime) -> dt.datetime:
+    """A partition's own visibility clock: its receipt, floored at trade_date + 22h (every row shares the date)."""
+    return max(_utc_naive(received_at), dt.datetime.combine(partition_date, dt.time()) + dt.timedelta(hours=22))
+
+
+def _applied_clock(store: DuckDBStore, source: str) -> tuple[dt.datetime | None, str | None]:
+    """The latest visibility clock of any partition applied so far, and its date (N1).
+
+    Read from the partition watermarks (one per applied date, ~250 a year; a
+    re-delivery overwrites its date's with a clock that is not earlier). A
+    watermark written before the floor existed has no ``available_at``; its
+    clock is its own receipt floored at trade_date + 22h, as its rows were.
+    """
+    rows = store.con.execute(
+        "SELECT watermark_value FROM dataset_watermarks WHERE dataset_id = ? AND starts_with(watermark_name, ?)",
+        [DATASET_ID, f"partition:{source}:"],
+    ).fetchall()
+    latest: tuple[dt.datetime | None, str | None] = (None, None)
+    for (raw,) in rows:
+        value = json.loads(raw)
+        partition_date = dt.date.fromisoformat(str(value["partition_date"]))
+        if value.get("available_at"):
+            clock = _utc_naive(dt.datetime.fromisoformat(str(value["available_at"])))
+        else:
+            clock = _session_clock(partition_date, dt.datetime.fromisoformat(str(value["received_at"])))
+        if latest[0] is None or clock > latest[0]:
+            latest = (clock, partition_date.isoformat())
+    return latest
 
 
 def _drop_temporaries(store: DuckDBStore) -> None:
@@ -1064,13 +1121,19 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
     source = options.source
     con = store.con
     loaded_at = now_utc_naive()
+    # N1: visible no earlier than any partition applied before it. A late session S applied before S+1 makes
+    # S+1's factors continue S's steps; S+1's own (earlier) receipt would show S's step before S's receipt.
+    own_clock = _session_clock(partition_date, received_at)
+    floor_clock, floor_partition = _applied_clock(store, source)
+    available_at = max(own_clock, floor_clock) if floor_clock is not None else own_clock
+    floored = available_at > own_clock
     scale, raw_unit, unit_decision = _unit_decision(store, path)
     _map_lines(store, source)
-    _stage_rows(store, source=source, run_id=run_id, received_at=received_at, loaded_at=loaded_at, scale=scale)
+    _stage_rows(store, source=source, run_id=run_id, received_at=available_at, loaded_at=loaded_at, scale=scale)
     lines = _count(store, "SELECT count(DISTINCT security_id) FROM _p14_new")
     if lines < options.minimum_partition_lines:
         raise RuntimeError(f"partition {partition_date} has {lines:,} valid lines < {options.minimum_partition_lines:,}")
-    _stage_basis(store, source=source, partition_date=partition_date, received_at=received_at,
+    _stage_basis(store, source=source, partition_date=partition_date, received_at=available_at,
                  tolerance=options.rebase_tolerance)
     session = (_session_check(store, partition_date=partition_date, dn=dn, latest=latest, latest_date=latest_date,
                               reason=options.session_gap_reason)
@@ -1137,16 +1200,21 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
     summary: dict[str, Any] = {
         "partition_date": partition_date.isoformat(), "sha256": sha, "run_id": run_id, "dn": dn,
         "received_at": received_at.isoformat(), "receipt_basis": receipt_basis, "source_path": str(path),
+        # N1: every row, ledger row and link of this partition is available from here (read back as the floor).
+        "available_at": available_at.isoformat(),
         "appended_rows": appended, "restated_rows": restated, "rebased_lines": rebase_lines,
         "excluded_event_rows_carried": carried,
     }
+    if floored:
+        summary.update(receipt_floored_from=own_clock.isoformat(), receipt_floor_partition=floor_partition)
     # Every count here is a warning: the chain is complete but the vendor data needed an assumption or a carry.
     warnings = {"rebase_unverifiable_lines": unverifiable, "gap_fill_rows": gap_fills,
                 "off_convention_lines": off_convention, "ignored_factor_corrections": ignored_corrections,
                 "excluded_event_rows": excluded_events, "excluded_event_rows_not_carried": not_carried,
                 "excluded_rows_without_factor": excluded_without_factor,
                 "session_gap_overridden": int(session.get("status") == "gap_overridden"),
-                "session_low_adjacency": int(session.get("status") == "contiguous_low_adjacency")}
+                "session_low_adjacency": int(session.get("status") == "contiguous_low_adjacency"),
+                "receipt_floored": int(floored)}
     excluded_detail = {"excluded_rows": excluded_rows, "lines_continued_over_excluded_rows": continued_over_excluded}
     with store.transaction():  # a failure rolls back every write below; nothing is left half-applied
         for ddl in missing.values():
@@ -1191,25 +1259,41 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
             """
         )
         summary["new_lines"] = _publish_new_lines(store, source=source, run_id=run_id, partition_date=partition_date,
-                                                  received_at=received_at)
+                                                  received_at=available_at)
         finished_at = now_utc_naive()
         _set_watermark(store, _watermark_name(source, partition_date), {**summary, "session": session}, finished_at)
         if latest_date is None or partition_date > latest_date:
             _set_watermark(store, _latest_name(source), {"partition_date": partition_date.isoformat(),
                                                          "run_id": run_id, "sha256": sha, "dn": dn,
+                                                         "available_at": available_at.isoformat(),
                                                          "basis": "incremental_partition"}, finished_at)
+        clocks = {"received_at": received_at.isoformat(), "available_at": available_at.isoformat(),
+                  **{key: summary[key] for key in ("receipt_floored_from", "receipt_floor_partition") if key in summary}}
         _record_partition_file(store, path=path, sha=sha, at=finished_at, metadata={
             "mode": "incremental_partition", "partition_date": partition_date.isoformat(), "run_id": run_id,
-            "received_at": received_at.isoformat(), "receipt_basis": receipt_basis})
+            "receipt_basis": receipt_basis, **clocks})
         con.execute(
             "INSERT INTO dataset_runs (run_id, dataset_id, status, started_at, finished_at, rows_loaded, source, "
             "params_json) VALUES (?, ?, 'succeeded', ?, ?, ?, ?, ?)",
             [run_id, DATASET_ID, loaded_at, finished_at, appended + restated, source, json.dumps({
                 "source_path": str(path), "partition_date": partition_date.isoformat(), "sha256": sha,
-                "received_at": received_at.isoformat(), "receipt_basis": receipt_basis, "shares_unit": raw_unit,
-                "mode": "incremental_partition", "session": session,
+                "receipt_basis": receipt_basis, "shares_unit": raw_unit,
+                "mode": "incremental_partition", "session": session, **clocks,
             }, sort_keys=True, default=str)],
         )
+        if session.get("status") == "contiguous_low_adjacency":
+            # m-a: applied (the vendor's dn is contiguous), but the lines' previous closes are not the stored
+            # bars' (0.035 on a real skipped session, 0.99 on contiguous ones): a dn mis-numbering would hide a
+            # missing session. A durable row of its own, not only the applied row's warning count.
+            quality_check(
+                store, dataset_id=DATASET_ID, table_name="equity_daily_bars", check_name=CHECK_SESSION_EVIDENCE,
+                status="warning", severity="warning", observed_value=session.get("adjacent_share"),
+                threshold_value=SESSION_ADJACENCY_MIN, details={
+                    "partition_date": partition_date.isoformat(), "run_id": run_id, "sha256": sha,
+                    "source_path": str(path), "session": session,
+                    "finding": "vendor session number is contiguous, but too few lines name the stored previous "
+                               "close; check the vendor for a session missing under a mis-numbered dn"},
+            )
         detail = {
             **summary, **warnings, **excluded_detail,
             "session": session,
@@ -1221,8 +1305,9 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
             "share_units": share_units,
             "source_diagnostics": diagnostics,
             "provenance": {**source_provenance(path), "availability_policy":
-                           "partition receipt clock; stored bars never rebased (factor continued through "
-                           "returnFactor); vendor rebases in equity_adjustment_rebases"},
+                           "partition receipt clock, floored at every earlier-applied partition's clock; stored "
+                           "bars never rebased (factor continued through returnFactor); vendor rebases in "
+                           "equity_adjustment_rebases"},
         }
         quality_check(
             store, dataset_id=DATASET_ID, table_name="equity_daily_bars", check_name="incremental_partition_applied",
@@ -1230,6 +1315,9 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
             observed_value=float(appended), threshold_value=float(options.minimum_partition_lines), details=detail,
         )
     _checkpoint(store)
+    if session.get("status") == "contiguous_low_adjacency":
+        LOGGER.warning("partition %s applied on a contiguous dn without previous-close evidence: %s",
+                       partition_date, session)
     LOGGER.info("applied ticker-history partition %s: %s", partition_date, summary)
     return PartitionIngestResult(partition_date, STATUS_APPLIED, run_id, sha, received_at, appended_rows=appended,
                                  restated_rows=restated, rebased_lines=rebase_lines + carried,
@@ -1489,6 +1577,29 @@ def ingest_directory_files(
     return loads
 
 
+def _record_refusal(store: DuckDBStore, item: PartitionFile, exc: Exception) -> None:
+    """m-d: one durable warning row per refused stale file bytes (a skipped vendor correction is never silent).
+
+    A file passed again to a later refresh is refused again but not recorded twice (same sha256).
+    """
+    sha = file_sha256(item.path)
+    seen = store.con.execute(
+        "SELECT count(*) FROM data_quality_checks WHERE dataset_id = ? AND check_name = ? "
+        "AND json_extract_string(details_json, '$.sha256') = ?", [DATASET_ID, CHECK_REFUSED, sha],
+    ).fetchone()
+    if seen and seen[0]:
+        return
+    quality_check(
+        store, dataset_id=DATASET_ID, table_name="equity_daily_bars", check_name=CHECK_REFUSED, status="warning",
+        severity="warning", details={
+            "source_path": str(item.path), "sha256": sha, "error": type(exc).__name__, "reason": str(exc),
+            "received_at": item.received_at.isoformat() if item.received_at else None,
+            "action": "not applied: dated at or before the latest applied session and never applied (partitions "
+                      "apply in session order); its rows and factor steps are not in the warehouse"},
+    )
+    _checkpoint(store)
+
+
 def refresh_daily_prices(store: DuckDBStore, request: DailyRefreshRequest) -> DailyRefreshResult:
     """The C12 hand-off: apply the given partitions in date order, then the directory files.
 
@@ -1496,7 +1607,8 @@ def refresh_daily_prices(store: DuckDBStore, request: DailyRefreshRequest) -> Da
     and stops the refresh (nothing past a gap is applied). A stale partition,
     dated at or before the latest applied session and never applied (a late copy
     of a session declared unpublished, or one a bulk load covers), is refused,
-    recorded in ``refused`` and skipped, so it never blocks newer sessions.
+    recorded in ``refused`` and in an ``incremental_partition_refused`` warning
+    row (once per file sha256), and skipped, so it never blocks newer sessions.
     Already-applied partitions are no-ops. No network access.
     """
     results: list[PartitionIngestResult] = []
@@ -1512,5 +1624,6 @@ def refresh_daily_prices(store: DuckDBStore, request: DailyRefreshRequest) -> Da
         except OutOfOrderPartitionError as exc:
             LOGGER.warning("refused stale partition %s: %s", item.path, exc)
             refused.append({"path": str(item.path), "reason": str(exc)})
+            _record_refusal(store, item, exc)
     directory = ingest_directory_files(store, request.directory_files, cutoff=request.directory_cutoff)
     return DailyRefreshResult(tuple(results), tuple(directory), tuple(refused))
