@@ -6,12 +6,13 @@ One fixture, three daily partitions of three vendor lines (the vendor's
 * the second partition appends only its own date; the first date's rows are untouched;
 * re-applying a partition changes nothing;
 * an ex-dividend on one line in the third partition (``returnFactor`` 0.98)
-  rebases that line's stored adjusted history by 0.98 as a new revision at the
-  third partition's receipt; the prior revision is retained in
-  ``equity_daily_bar_revisions`` and a point-in-time read before that receipt
-  still sees it; the other lines are untouched;
-* the rebase is refused, with nothing written, until the revisions table is
-  allowed (migration 0328 formalizes it).
+  moves that line's stored adjusted history to the new basis (x 0.98) and
+  records one ledger row (``equity_adjustment_rebases``) at the third
+  partition's receipt; raw fields and every bar's clock stay as first
+  published; a point-in-time read before that receipt still returns the
+  pre-rebase adjusted history; the other lines are untouched;
+* the rebase is refused, with nothing written, until the ledger is allowed
+  (migration 0328 formalizes it).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import duckdb
 import pytest
 
 from atx_db.ticker_history_incremental import (
+    REBASES_TABLE,
     REVISIONS_TABLE,
     PartitionIngestOptions,
     RevisionsTableNotMigratedError,
@@ -91,8 +93,13 @@ def test_partitions_append_idempotently_and_a_factor_rebase_revises_only_its_lin
     with pytest.raises(RevisionsTableNotMigratedError):
         _ingest(tmp_store, p3, 2)
     assert _bars(tmp_store) == after_second and tmp_store.con.execute(ledger_sql).fetchone() == ledger
-    assert not tmp_store.con.execute(
-        "SELECT count(*) FROM duckdb_tables() WHERE table_name = ?", [REVISIONS_TABLE]).fetchone()[0]
+
+    def tables():
+        return {row[0] for row in tmp_store.con.execute(
+            "SELECT table_name FROM duckdb_tables() WHERE table_name IN (?, ?)",
+            [REBASES_TABLE, REVISIONS_TABLE]).fetchall()}
+
+    assert tables() == set()
 
     third = _ingest(tmp_store, p3, 2, allow_unmigrated_revisions_table=True)
     assert (third.appended_rows, third.rebased_lines, third.rebased_rows, third.restated_rows) == (3, 1, 2, 0)
@@ -100,26 +107,25 @@ def test_partitions_append_idempotently_and_a_factor_rebase_revises_only_its_lin
     by_key = {(row[0], row[1]): row for row in _bars(tmp_store)}
     for row in after_second:
         now = by_key[(row[0], row[1])]
-        if row[0] == rebased:  # adjusted history x 0.98 at the third receipt; raw close unchanged
-            assert now[2] == row[2] and now[3] == pytest.approx(row[3] * 0.98) and now[4] == _RECEIPTS[2]
+        if row[0] == rebased:  # adjusted history x 0.98; raw close, clock, run and shares as first published
+            assert now[3] == pytest.approx(row[3] * 0.98) and now[:3] + now[4:] == row[:3] + row[4:]
         else:
             assert now == row
-    revisions = tmp_store.con.execute(
-        f"SELECT security_id, trade_date, adjusted_close, available_at, is_latest_revision, revision_reason "
-        f"FROM {REVISIONS_TABLE} ORDER BY trade_date"
+    # A factor-only revision is one ledger row per rebase, never a copy of history.
+    assert tables() == {REBASES_TABLE}
+    ledger_rows = tmp_store.con.execute(
+        f"SELECT security_id, partition_date, available_at, multiplier, first_affected_date, last_affected_date "
+        f"FROM {REBASES_TABLE}"
     ).fetchall()
-    assert revisions == [
-        (rebased, _DAYS[0], 30.0, _RECEIPTS[0], False, "vendor_factor_rebase"),
-        (rebased, _DAYS[1], 31.0, _RECEIPTS[1], False, "vendor_factor_rebase"),
-    ]
+    assert ledger_rows == [(rebased, _DAYS[2], _RECEIPTS[2], pytest.approx(0.98), _DAYS[0], _DAYS[1])]
     assert not tmp_store.con.execute(
         "SELECT count(*) FROM (SELECT source, security_id, trade_date FROM equity_daily_bars GROUP BY ALL "
         "HAVING count(*) > 1)").fetchone()[0]
 
     # Point in time: before the third receipt the pre-rebase history is what was known.
     sql = bars_asof_sql(tmp_store)
-    for cutoff, expected in ((_RECEIPTS[1] + dt.timedelta(hours=2), 31.0),
-                             (_RECEIPTS[2] + dt.timedelta(hours=2), 31.0 * 0.98)):
+    for cutoff, scale in ((_RECEIPTS[1] + dt.timedelta(hours=2), 1.0), (_RECEIPTS[2] + dt.timedelta(hours=2), 0.98)):
         known = {(row[1], row[4]): row[9] for row in tmp_store.con.execute(sql, [cutoff]).fetchall()}
-        assert known[(rebased, _DAYS[1])] == pytest.approx(expected)
-        assert (rebased, _DAYS[2]) in known if cutoff > _RECEIPTS[2] else (rebased, _DAYS[2]) not in known
+        assert [known[(rebased, day)] for day in _DAYS[:2]] == pytest.approx([30.0 * scale, 31.0 * scale])
+        assert known[("TBLTICKERHISTORY-101", _DAYS[1])] == 10.5
+        assert ((rebased, _DAYS[2]) in known) == (cutoff > _RECEIPTS[2])

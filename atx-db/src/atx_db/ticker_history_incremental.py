@@ -33,24 +33,32 @@ Vendor factor rebases
     stored history's basis multiple is ``m = crf_day x returnFactor x close_prev
     / adjusted_close_prev`` (previous = the line's latest stored bar before the
     partition date). When ``|m - 1| > rebase_tolerance``, that line's stored
-    adjusted history is republished as a new revision: ``adjusted_close x m``.
-    Raw prices, volume and share counts do not change, and neither does any
-    return. Only that line is touched.
+    adjusted history moves to the new basis in place (``adjusted_close x m``),
+    and one row is recorded in the rebase ledger ``equity_adjustment_rebases``:
+    (line, receipt clock, ``multiplier`` m, first and last affected trade
+    date, detection evidence). Raw prices, volume, share counts and every
+    bar's own clock (``available_at``, ``as_of_date``, ``run_id``) do not
+    change, and neither does any return. Only that line is touched. Detection
+    runs only for lines with no stored bar after the partition date (a
+    re-delivered older date never rebases).
 
 Revisions and point-in-time reads
     ``equity_daily_bars`` keeps exactly one row per (source, security_id,
-    trade_date): the latest revision (``is_latest_revision = true``). A
-    superseded row is never deleted. It is copied first into
-    ``equity_daily_bar_revisions`` (``is_latest_revision = false``,
-    ``superseded_at``, ``superseded_by_run_id``, ``revision_reason``). Every new
-    or restated row carries the partition's receipt clock as ``available_at``,
-    so a PIT read never sees a restatement before it arrived. Readers that need
-    the history as known at a cutoff (backtests that need pre-rebase adjusted
-    prices) must read through :func:`bars_asof_sql`. The revisions table awaits
-    formalization by migration 0328 (:data:`REVISIONS_TABLE_DDL`). Until then
-    it is created only when the caller passes
+    trade_date). Its raw fields and clocks are as first published; its
+    adjusted fields hold the latest basis. A factor-only revision is one ledger
+    row per (line, rebase), never a copy of history. A restatement of raw values
+    (a re-delivered, corrected partition; rare) copies the superseded row first
+    into ``equity_daily_bar_revisions`` (``is_latest_revision = false``,
+    ``superseded_at``, ``superseded_by_run_id``, ``revision_reason``), and the
+    restated row carries the partition's receipt clock as ``available_at``.
+    Nothing is deleted. :func:`bars_asof_sql` reconstructs the bars as known
+    at a cutoff: the newest version available then, with the adjusted close
+    divided by every later rebase's multiplier. Backtests that need pre-rebase
+    adjusted prices must read through it. Both tables await formalization by
+    migration 0328 (:data:`REBASES_TABLE_DDL`, :data:`REVISIONS_TABLE_DDL`).
+    Until then they are created only when the caller passes
     ``allow_unmigrated_revisions_table=True`` (non-production). Otherwise a
-    partition that needs it is refused before any write
+    partition that needs one is refused before any write
     (:class:`RevisionsTableNotMigratedError`).
 
 Share units (A8)
@@ -101,6 +109,8 @@ LOGGER = logging.getLogger(__name__)
 __all__ = [
     "APPROVED_USER_AGENT",
     "DATASET_ID",
+    "REBASES_TABLE",
+    "REBASES_TABLE_DDL",
     "REBASE_TOLERANCE",
     "REVISIONS_TABLE",
     "REVISIONS_TABLE_DDL",
@@ -126,8 +136,11 @@ DATASET_ID = "tbltickerhistory_daily"
 #: single precision (~6e-8 relative); a 0.01 % dividend moves m by 1e-4.
 REBASE_TOLERANCE = 1e-6
 REVISIONS_TABLE = "equity_daily_bar_revisions"
-REVISION_REASON_FACTOR_REBASE = "vendor_factor_rebase"
 REVISION_REASON_RESTATEMENT = "partition_restatement"
+REBASES_TABLE = "equity_adjustment_rebases"
+#: The ledger's ``detection_basis``: m from the vendor recurrence
+#: ``crf_prev = crf_day x returnFactor`` against the stored previous bar.
+REBASE_DETECTION_BASIS = "vendor_crf_return_factor_recurrence"
 STATUS_APPLIED = "applied"
 STATUS_UNCHANGED = "unchanged"
 
@@ -140,13 +153,43 @@ BAR_COLUMNS = (
 _COLUMNS = ", ".join(BAR_COLUMNS)
 #: Values that make a stored row differ from a re-delivered one. The adjusted
 #: close is not among them: a re-delivered day's factor is on the basis of its
-#: delivery, and the basis only moves through the rebase path (appended days).
+#: delivery, and the basis only moves through the rebase ledger.
 #: A restated row keeps the stored factor (``adjusted_close / close``).
 _VALUE_COLUMNS = ("vendor_security_id", "symbol", "open", "high", "low", "close", "volume",
                   "shares_outstanding", "market_cap_usd")
 
-#: The superseded-revision history table. For migration 0328 to formalize (the
-#: loader creates it only with ``allow_unmigrated_revisions_table``). No
+#: The rebase ledger: one row per (line, vendor factor rebase). Stored
+#: ``adjusted_close`` of the line's bars dated first..last_affected_date is on
+#: the basis after every ledger row; the value known at a cutoff before
+#: ``available_at`` is the stored value / ``multiplier``. For migration 0328 to
+#: formalize (created only with ``allow_unmigrated_revisions_table``). Key
+#: (source, security_id, partition_date, available_at). No ``DEFAULT now()``
+#: (DuckDB 1.5 WAL replay), no ART index.
+REBASES_TABLE_DDL = f"""
+CREATE TABLE IF NOT EXISTS {REBASES_TABLE} (
+    source VARCHAR NOT NULL,
+    security_id VARCHAR NOT NULL,
+    partition_date DATE NOT NULL,
+    available_at TIMESTAMP NOT NULL,
+    multiplier DOUBLE NOT NULL,
+    first_affected_date DATE NOT NULL,
+    last_affected_date DATE NOT NULL,
+    detection_basis VARCHAR NOT NULL,
+    cumul_return_factor DOUBLE,
+    return_factor DOUBLE,
+    prior_close DOUBLE,
+    prior_adjusted_close DOUBLE,
+    run_id VARCHAR NOT NULL,
+    source_loaded_at TIMESTAMP NOT NULL,
+    CHECK (multiplier > 0 AND isfinite(multiplier)),
+    CHECK (first_affected_date <= last_affected_date),
+    CHECK (last_affected_date < partition_date)
+)
+"""
+
+#: The superseded-revision history table, for raw-value restatements only
+#: (factor-only revisions go to the rebase ledger). For migration 0328 to
+#: formalize (created only with ``allow_unmigrated_revisions_table``). No
 #: ``DEFAULT now()`` column (DuckDB 1.5 WAL replay), no ART index.
 REVISIONS_TABLE_DDL = f"""
 CREATE TABLE IF NOT EXISTS {REVISIONS_TABLE} (
@@ -176,7 +219,7 @@ CREATE TABLE IF NOT EXISTS {REVISIONS_TABLE} (
     superseded_by_run_id VARCHAR NOT NULL,
     revision_reason VARCHAR NOT NULL,
     CHECK (NOT is_latest_revision),
-    CHECK (revision_reason IN ('{REVISION_REASON_FACTOR_REBASE}', '{REVISION_REASON_RESTATEMENT}')),
+    CHECK (revision_reason IN ('{REVISION_REASON_RESTATEMENT}')),
     CHECK (available_at IS NULL OR superseded_at >= available_at)
 )
 """
@@ -192,7 +235,7 @@ class OutOfOrderPartitionError(ValueError):
 
 
 class RevisionsTableNotMigratedError(RuntimeError):
-    """A revision is needed but ``equity_daily_bar_revisions`` is not formalized (0328) and not allowed."""
+    """The rebase ledger or the revisions table is needed but not formalized (0328) and not allowed."""
 
 
 @dataclass(frozen=True)
@@ -208,8 +251,8 @@ class PartitionIngestOptions:
     minimum_partition_lines: int = 5_000
     shares_unit_min_pairs: int = 20
     rebase_tolerance: float = REBASE_TOLERANCE
-    #: Create ``equity_daily_bar_revisions`` when missing (non-production only,
-    #: until migration 0328 formalizes it).
+    #: Create ``equity_adjustment_rebases`` / ``equity_daily_bar_revisions`` when
+    #: missing (non-production only, until migration 0328 formalizes them).
     allow_unmigrated_revisions_table: bool = False
 
 
@@ -460,16 +503,23 @@ def _stage_changes(store: DuckDBStore, source: str, tolerance: float) -> None:
         """
     )
     # m = crf_day x returnFactor x close_prev / adjusted_close_prev over the line's
-    # latest stored bar before the partition date (only for newly appended days).
+    # latest stored bar before the partition date. Only for lines with no stored
+    # bar after it: the partition's crf is on the basis of its own date, so an
+    # older date's crf says nothing about the line's later bars.
     store.con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE _p14_rebase AS
-        WITH prior AS (
-            SELECT n.security_id, n.trade_date AS partition_date, n.cumul_return_factor AS crf,
-                   n.return_factor AS rf, p.trade_date AS prior_date, p.close AS prior_close,
-                   p.adjusted_close AS prior_adj
+        WITH span AS (
+            SELECT security_id, min(trade_date) AS first_date, max(trade_date) AS last_date
+            FROM equity_daily_bars
+            WHERE source = ? AND security_id IN (SELECT security_id FROM _p14_new)
+            GROUP BY security_id
+        ), prior AS (
+            SELECT n.security_id, n.trade_date AS partition_date, n.available_at AS rebase_at,
+                   n.cumul_return_factor AS crf, n.return_factor AS rf, s.first_date,
+                   p.trade_date AS prior_date, p.close AS prior_close, p.adjusted_close AS prior_adj
             FROM _p14_new n
-            JOIN _p14_diff d ON d.security_id = n.security_id AND d.trade_date = n.trade_date AND d.is_new
+            JOIN span s ON s.security_id = n.security_id AND s.last_date <= n.trade_date
             ASOF JOIN (SELECT security_id, trade_date, close, adjusted_close
                        FROM equity_daily_bars WHERE source = ?) p
               ON p.security_id = n.security_id AND n.trade_date > p.trade_date
@@ -481,7 +531,7 @@ def _stage_changes(store: DuckDBStore, source: str, tolerance: float) -> None:
                    AND crf > 0 AND rf > 0 AND prior_close > 0 AND prior_adj > 0 AS rebased
         FROM prior
         """,
-        [source],
+        [source, source],
     )
 
 
@@ -606,18 +656,23 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
     restated = _count(store, "SELECT count(*) FROM _p14_diff WHERE is_changed")
     rebase_lines = _count(store, "SELECT count(*) FROM _p14_rebase WHERE rebased")
     unverifiable = _count(store, "SELECT count(*) FROM _p14_rebase WHERE multiple IS NULL")
-    create_revisions = (restated or rebase_lines) and not _table_exists(store, REVISIONS_TABLE)
-    if create_revisions and not options.allow_unmigrated_revisions_table:
+    missing = {
+        name: ddl
+        for name, ddl, needed in ((REBASES_TABLE, REBASES_TABLE_DDL, rebase_lines),
+                                  (REVISIONS_TABLE, REVISIONS_TABLE_DDL, restated))
+        if needed and not _table_exists(store, name)
+    }
+    if missing and not options.allow_unmigrated_revisions_table:
         raise RevisionsTableNotMigratedError(
-            f"partition {partition_date} restates {restated:,} rows and rebases {rebase_lines:,} lines, which "
-            f"needs {REVISIONS_TABLE}; it is not formalized (migration 0328). Nothing was written"
+            f"partition {partition_date} rebases {rebase_lines:,} lines and restates {restated:,} rows, which "
+            f"needs {', '.join(missing)}; not formalized (migration 0328). Nothing was written"
         )
     # The first write: the A8 unit check's quality row (it raises on a conclusive failure).
     share_units = vendor_share_unit_check(
         store, table="_p14_new", source=source, run_id=run_id, unit=raw_unit, min_pairs=options.shares_unit_min_pairs
     )
-    if create_revisions:
-        store.con.execute(REVISIONS_TABLE_DDL)
+    for ddl in missing.values():
+        store.con.execute(ddl)
     with store.transaction():  # a failure rolls back every write below, the run row included
         store.con.execute(
             "INSERT OR REPLACE INTO dataset_runs (run_id, dataset_id, status, started_at, source, params_json) "
@@ -653,22 +708,30 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
             store.con.execute(f"DELETE FROM equity_daily_bars AS b WHERE {where}", [source])
             store.con.execute(f"INSERT INTO equity_daily_bars ({_COLUMNS}) SELECT * FROM _p14_restated")
         if rebase_lines:
-            where = ("b.source = ? AND EXISTS (SELECT 1 FROM _p14_rebase r WHERE r.rebased "
-                     "AND r.security_id = b.security_id AND b.trade_date < r.partition_date)")
-            rebased_rows = _supersede(store, where=where, params=[source], superseded_at=received_at, run_id=run_id,
-                                      reason=REVISION_REASON_FACTOR_REBASE)
+            # One ledger row per rebased line; the bars move to the new basis in
+            # place. Raw fields and every bar clock stay as first published.
             store.con.execute(
-                """
-                UPDATE equity_daily_bars AS b
-                SET adjusted_close = b.adjusted_close * r.multiple,
-                    available_at = greatest(CAST(? AS TIMESTAMP), coalesce(b.available_at, CAST(? AS TIMESTAMP))),
-                    as_of_date = CAST(greatest(CAST(? AS TIMESTAMP),
-                                               coalesce(b.available_at, CAST(? AS TIMESTAMP))) AS DATE),
-                    run_id = ?, source_loaded_at = CAST(? AS TIMESTAMP), is_latest_revision = true
-                FROM _p14_rebase r
-                WHERE r.rebased AND b.source = ? AND b.security_id = r.security_id AND b.trade_date < r.partition_date
+                f"""
+                INSERT INTO {REBASES_TABLE} (source, security_id, partition_date, available_at, multiplier,
+                                             first_affected_date, last_affected_date, detection_basis,
+                                             cumul_return_factor, return_factor, prior_close, prior_adjusted_close,
+                                             run_id, source_loaded_at)
+                SELECT ?, security_id, partition_date, rebase_at, multiple, first_date, prior_date, ?,
+                       crf, rf, prior_close, prior_adj, ?, CAST(? AS TIMESTAMP)
+                FROM _p14_rebase WHERE rebased
                 """,
-                [received_at, received_at, received_at, received_at, run_id, loaded_at, source],
+                [source, REBASE_DETECTION_BASIS, run_id, loaded_at],
+            )
+            affected = ("r.rebased AND b.source = ? AND b.security_id = r.security_id "
+                        "AND b.trade_date BETWEEN r.first_date AND r.prior_date")
+            row = store.con.execute(
+                f"SELECT count(*) FROM equity_daily_bars b, _p14_rebase r WHERE {affected}", [source]
+            ).fetchone()
+            rebased_rows = int(row[0]) if row else 0
+            store.con.execute(
+                "UPDATE equity_daily_bars AS b SET adjusted_close = b.adjusted_close * r.multiple "
+                f"FROM _p14_rebase r WHERE {affected}",
+                [source],
             )
         appended = _count(store, "SELECT count(*) FROM _p14_diff WHERE is_new")
         store.con.execute(
@@ -688,9 +751,11 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
             _set_watermark(store, _latest_name(source), {"partition_date": partition_date.isoformat(),
                                                          "run_id": run_id, "sha256": sha})
     rebased_detail = [
-        {"security_id": row[0], "prior_date": str(row[1]), "multiple": row[2]}
+        {"security_id": row[0], "first_affected_date": str(row[1]), "last_affected_date": str(row[2]),
+         "multiplier": row[3]}
         for row in store.con.execute(
-            "SELECT security_id, prior_date, multiple FROM _p14_rebase WHERE rebased ORDER BY security_id LIMIT 50"
+            "SELECT security_id, first_date, prior_date, multiple FROM _p14_rebase WHERE rebased "
+            "ORDER BY security_id LIMIT 50"
         ).fetchall()
     ]
     detail = {
@@ -703,7 +768,8 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
         "share_unit_decision": unit_decision,
         "share_units": share_units,
         "source_diagnostics": diagnostics,
-        "provenance": {**source_provenance(path), "availability_policy": "partition receipt clock"},
+        "provenance": {**source_provenance(path), "availability_policy":
+                       "partition receipt clock; factor rebases in the ledger, bar clocks unchanged"},
     }
     record_source_file(
         store, dataset_id=DATASET_ID, source_url=str(path), cache_path=path, status="available", sha256=sha,
@@ -729,24 +795,50 @@ def _apply(store: DuckDBStore, options: PartitionIngestOptions, *, path: Path, s
 def bars_asof_sql(store: DuckDBStore) -> str:
     """Point-in-time bars: one row per (source, security_id, trade_date) as known at a cutoff.
 
-    One ``?`` placeholder: the cutoff ``TIMESTAMP``. Among the latest rows
-    (``equity_daily_bars``) and superseded revisions
-    (``equity_daily_bar_revisions``, when present) the newest revision with
-    ``available_at <= cutoff`` wins. So a factor rebase or a restated partition
-    is never visible before its receipt, and the history known then (pre-rebase
-    adjusted prices) is. Backtests that need pre-rebase history must read bars
-    through this relation. ``equity_daily_bars`` alone holds only the latest
-    revision.
+    One ``?`` placeholder: the cutoff ``TIMESTAMP``. The version: among the
+    latest rows (``equity_daily_bars``) and raw-value restatements
+    (``equity_daily_bar_revisions``, when present), the newest with
+    ``available_at <= cutoff``. Its adjusted close: the stored value divided by
+    the multiplier of every ledger rebase (``equity_adjustment_rebases``, when
+    present) of that line that covers the date, arrived after the cutoff, and
+    was applied to that version (a superseded version holds the basis as of its
+    ``superseded_at``). So neither a restatement nor a factor rebase is visible
+    before its receipt, and the pre-rebase adjusted history known then is
+    returned. Backtests that need pre-rebase adjusted history must read bars
+    through this relation. ``equity_daily_bars`` alone holds the latest basis.
     """
-    parts = [f"SELECT {_COLUMNS} FROM equity_daily_bars"]
+    versions = [f"SELECT {_COLUMNS}, NULL::TIMESTAMP AS basis_through FROM equity_daily_bars"]
     if _table_exists(store, REVISIONS_TABLE):
-        parts.append(f"SELECT {_COLUMNS} FROM {REVISIONS_TABLE}")
-    return f"""
-SELECT {_COLUMNS}
-FROM ({' UNION ALL '.join(parts)})
-WHERE coalesce(available_at, CAST(trade_date AS TIMESTAMP) + INTERVAL 22 HOUR) <= CAST(? AS TIMESTAMP)
-QUALIFY row_number() OVER (PARTITION BY source, security_id, trade_date
-                           ORDER BY available_at DESC NULLS LAST, source_loaded_at DESC) = 1
+        versions.append(f"SELECT {_COLUMNS}, superseded_at AS basis_through FROM {REVISIONS_TABLE}")
+    known = f"""params AS (SELECT CAST(? AS TIMESTAMP) AS cutoff),
+known AS (
+    SELECT v.*
+    FROM ({' UNION ALL '.join(versions)}) v, params
+    WHERE coalesce(v.available_at, CAST(v.trade_date AS TIMESTAMP) + INTERVAL 22 HOUR) <= params.cutoff
+    QUALIFY row_number() OVER (PARTITION BY v.source, v.security_id, v.trade_date
+                               ORDER BY v.available_at DESC NULLS LAST, v.source_loaded_at DESC) = 1
+)"""
+    if not _table_exists(store, REBASES_TABLE):
+        return f"WITH {known}\nSELECT {_COLUMNS} FROM known"
+    select = ", ".join(
+        "k.adjusted_close / coalesce(u.undo, 1.0) AS adjusted_close" if name == "adjusted_close" else f"k.{name}"
+        for name in BAR_COLUMNS
+    )
+    return f"""WITH {known},
+undo AS (
+    SELECT k.source, k.security_id, k.trade_date, product(r.multiplier) AS undo
+    FROM known k
+    JOIN {REBASES_TABLE} r
+      ON r.source = k.source AND r.security_id = k.security_id
+     AND k.trade_date BETWEEN r.first_affected_date AND r.last_affected_date
+    CROSS JOIN params
+    WHERE r.available_at > params.cutoff
+      AND (k.basis_through IS NULL OR r.available_at <= k.basis_through)
+    GROUP BY k.source, k.security_id, k.trade_date
+)
+SELECT {select}
+FROM known k
+LEFT JOIN undo u ON u.source = k.source AND u.security_id = k.security_id AND u.trade_date = k.trade_date
 """
 
 

@@ -11,7 +11,9 @@ Daily date partitions after the full load go through
 :mod:`atx_db.ticker_history_incremental` (P14), which reuses this module's
 projection (``_RAW_CTE``), symbol map and :func:`vendor_share_unit_check`. A
 later full republish replaces the source's rows in ``equity_daily_bars``; the
-incremental path's superseded revisions in ``equity_daily_bar_revisions`` stay.
+incremental path's rebase ledger (``equity_adjustment_rebases``) and restated
+revisions (``equity_daily_bar_revisions``) stay. The republished file must be
+newer than every ledger row, so its basis already includes them all.
 """
 
 from __future__ import annotations
