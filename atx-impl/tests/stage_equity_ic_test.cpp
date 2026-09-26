@@ -16,14 +16,18 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include "atx/core/error.hpp"
+#include "atx/core/sha256.hpp"
 #include "atx/engine/data/orats_history.hpp"
 #include "panel_artifact.hpp"
+#include "prereg.hpp"
 #include "stage_equity_baseline.hpp"
 #include "equity_baseline_views.hpp"
 #include "stage_equity_ic.hpp"
@@ -566,4 +570,130 @@ TEST_F(StageEquityIc, RequiredMarkAuditFailuresRejectBeforePublishingAManifest) 
     // Nothing above appended a ledger line: the pre-registration happens only
     // after every input binding has succeeded.
     EXPECT_FALSE(fs::exists(ledger()));
+}
+
+
+TEST_F(StageEquityIc, RuntimePreregistrationConsumesSignsAndHeterogeneousHorizonsWithoutRebuild) {
+    ASSERT_NO_FATAL_FAILURE(build_baseline());
+    write_audit(audit_ids(), data() / "equity_source_reconciliation_2013_20260919");
+    Json declaration{{"schema", "atx-equity-ic-prereg-v1"}, {"epoch", "synthetic-runtime"},
+        {"checkpoint", 1001}, {"declared_n", 12},
+        {"forward_variants", {"DropMissingForward", "IncludeAuditedTerminalV1"}},
+        {"restrictions", {"full", "_ex34"}}, {"families", Json::array()}};
+    for (const auto &[name, sign, horizon] :
+         {std::tuple{"runtime_positive", 1, 21}, std::tuple{"runtime_negative", -1, 21},
+          std::tuple{"runtime_long", 1, 63}}) {
+        declaration["families"].push_back(Json{{"id", name}, {"name", name},
+            {"dsl", "close"}, {"sign", sign}, {"theme", "synthetic-direction"},
+            {"horizons", {horizon}}, {"lineage", {{"kind", "new"}}}});
+    }
+    const auto original = impl::parse_equity_ic_prereg(declaration.dump());
+    ASSERT_TRUE(original) << original.error().message();
+    // All-retained is legal declared-new N=0, but E2 has not verified the assertion.
+    // The stage must not divide by declared N or subtract these trials from its ledger.
+    for (atx::usize a = 0; a < original->families.size(); ++a) {
+        declaration["families"][a]["lineage"] = Json{{"kind", "retained"},
+            {"prereg_sha256", original->canonical_sha256},
+            {"configuration_sha256", original->families[a].configuration_sha256},
+            {"trial_id", "synthetic-prior-attempt"}};
+    }
+    declaration["declared_n"] = 0;
+    const auto file = root / "runtime-prereg.json";
+    const auto source = declaration.dump(2) + "\n";
+    { std::ofstream out(file, std::ios::binary); out << source; }
+    const auto sha = atx::core::sha256_hex(source);
+    ASSERT_TRUE(sha);
+    auto cfg = ic_config("runtime_ic");
+    cfg.equity_ic_prereg_file = file.string();
+    cfg.equity_ic_prereg_sha256 = *sha;
+    const auto result = impl::run_equity_ic(cfg);
+    ASSERT_TRUE(result) << result.error().message();
+    const auto manifest = Json::parse(contents(root / "runtime_ic" / "manifest.json"));
+    const auto &recipe = manifest.at("recipe");
+    EXPECT_EQ(recipe.at("profile"), "runtime-preregistered-cross-section-ic-v1");
+    EXPECT_EQ(recipe.at("signals").size(), 6U);
+    EXPECT_EQ(recipe.at("horizons"), Json::array({21, 63}));
+    EXPECT_EQ(recipe.at("bootstrap").at("block_lens"), Json::array({42, 126}));
+    EXPECT_EQ(recipe.at("preregistration").at("file_sha256"), *sha);
+    EXPECT_EQ(recipe.at("preregistration").at("declared_new_n"), 0);
+    EXPECT_EQ(recipe.at("preregistration").at("measured_n_charged_to_ledger"), 12);
+    const auto summary = Json::parse(contents(root / "runtime_ic" / "ic_summary.json"));
+    EXPECT_EQ(summary.at("series").size(), (3U * 2U + 3U) * 4U);
+    for (const auto &row : summary.at("series")) {
+        const auto name = row.at("signal").get<std::string>();
+        if (name == "runtime_long") EXPECT_EQ(row.at("horizon"), 63);
+        if (name == "runtime_positive" || name == "runtime_negative") {
+            EXPECT_EQ(row.at("horizon"), 21);
+            EXPECT_EQ(row.at("block_len"), 42);
+        }
+    }
+    // Per-date statistics remain available even when the short fixture cannot
+    // report a bootstrap interval. The multiplier must invert both IC metrics once.
+    std::vector<std::vector<std::string>> positives, negatives;
+    std::istringstream rows(contents(root / "runtime_ic" / "ic.csv"));
+    std::string line;
+    while (std::getline(rows, line)) {
+        auto fields = split_csv(line);
+        if (fields.size() < 9) continue;
+        if (fields[2] == "runtime_positive") positives.push_back(std::move(fields));
+        if (fields[2] == "runtime_negative") negatives.push_back(std::move(fields));
+    }
+    ASSERT_FALSE(positives.empty());
+    ASSERT_EQ(positives.size(), negatives.size());
+    atx::usize compared = 0;
+    for (atx::usize r = 0; r < positives.size(); ++r) {
+        if (positives[r][7].empty()) continue;
+        ASSERT_FALSE(negatives[r][7].empty());
+        EXPECT_NEAR(std::stod(positives[r][7]), -std::stod(negatives[r][7]), 1e-12);
+        EXPECT_NEAR(std::stod(positives[r][8]), -std::stod(negatives[r][8]), 1e-12);
+        ++compared;
+    }
+    EXPECT_GT(compared, 0U);
+    EXPECT_EQ(line_count(contents(ledger())), 2U);
+    std::istringstream ledger_rows(contents(ledger()));
+    ASSERT_TRUE(static_cast<bool>(std::getline(ledger_rows, line)));
+    const auto pre = Json::parse(line);
+    EXPECT_EQ(pre.at("trial_count_declared"), 12);
+    EXPECT_EQ(pre.at("checkpoint"), 1001);
+    EXPECT_TRUE(pre.at("trial_id").get<std::string>().starts_with("prereg-"));
+    EXPECT_EQ(pre.at("recipe").at("horizons"), Json::array({21, 63}));
+}
+
+TEST_F(StageEquityIc, RuntimeFamilyVmFailureStillHasPreregistrationAndFailedTerminalReceipt) {
+    ASSERT_NO_FATAL_FAILURE(build_baseline());
+    write_audit(audit_ids(), data() / "equity_source_reconciliation_2013_20260919");
+    const Json declaration{{"schema", "atx-equity-ic-prereg-v1"}, {"epoch", "synthetic-failure"},
+        {"checkpoint", 1002}, {"declared_n", 4},
+        {"forward_variants", {"DropMissingForward", "IncludeAuditedTerminalV1"}},
+        {"restrictions", {"full", "_ex34"}},
+        {"families", Json::array({Json{{"id", "too_much_history"},
+            {"name", "too_much_history"}, {"dsl", "delay(close, 10000)"}, {"sign", 1},
+            {"theme", "synthetic-only"}, {"horizons", {21}}, {"lineage", {{"kind", "new"}}}}})}};
+    const auto source = declaration.dump();
+    const auto file = root / "failure-prereg.json";
+    { std::ofstream out(file, std::ios::binary); out << source; }
+    const auto sha = atx::core::sha256_hex(source);
+    ASSERT_TRUE(sha);
+    auto cfg = ic_config("runtime_failure");
+    cfg.equity_ic_prereg_file = file.string();
+    cfg.equity_ic_prereg_sha256 = *sha;
+    const auto result = impl::run_equity_ic(cfg);
+    ASSERT_FALSE(result);
+    EXPECT_NE(result.error().message().find("lookback"), std::string::npos);
+    std::istringstream rows(contents(ledger()));
+    std::string line;
+    ASSERT_TRUE(static_cast<bool>(std::getline(rows, line)));
+    const auto pre = Json::parse(line);
+    EXPECT_EQ(pre.at("status"), "pre-registered");
+    ASSERT_TRUE(static_cast<bool>(std::getline(rows, line)));
+    const auto failed = Json::parse(line);
+    EXPECT_EQ(failed.at("status"), "failed");
+    EXPECT_EQ(failed.at("trial_id"), pre.at("trial_id"));
+    EXPECT_EQ(pre.at("trial_count_declared"), 4);
+    EXPECT_TRUE(fs::exists(root / "runtime_failure" / ".pending"));
+    EXPECT_FALSE(fs::exists(root / "runtime_failure" / "manifest.json"));
+    const auto failure = contents(root / "runtime_failure" / "failure.json");
+    const auto failure_sha = atx::core::sha256_hex(failure);
+    ASSERT_TRUE(failure_sha);
+    EXPECT_EQ(failed.at("result").at("failure_sha256"), *failure_sha);
 }
