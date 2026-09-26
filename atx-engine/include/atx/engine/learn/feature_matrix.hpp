@@ -43,8 +43,9 @@
 //  map a row back to its (date, instrument). The feature column order is fixed:
 //  the raw_fields (in spec order) first, then the pool_alphas (in spec order).
 //
-// Header-only; every member / free function is defined inline. Construction is a
-// COLD path (once per training window), so std::vector allocation is fine (M7).
+// Cold builders and field/label helpers are implemented in feature_matrix.cpp.
+// Small row and maturity accessors remain inline. Construction runs once per
+// training window, so std::vector allocation is fine (M7).
 
 #include <limits>        // std::numeric_limits<f64>::quiet_NaN
 #include <span>          // std::span (aliasing Panel / store cross-sections)
@@ -194,16 +195,8 @@ namespace detail {
 
 // Resolve every raw field name in `spec` to a Panel FieldId, in spec order.
 // Propagates Panel::field_id's Err(NotFound) for an unknown field.
-[[nodiscard]] inline atx::core::Result<std::vector<alpha::FieldId>>
-resolve_raw_fields(const alpha::Panel &panel, const FeatureSpec &spec) {
-  std::vector<alpha::FieldId> ids;
-  ids.reserve(spec.raw_fields.size());
-  for (const std::string &name : spec.raw_fields) {
-    ATX_TRY(const alpha::FieldId fid, panel.field_id(name));
-    ids.push_back(fid);
-  }
-  return atx::core::Ok(std::move(ids));
-}
+[[nodiscard]] atx::core::Result<std::vector<alpha::FieldId>>
+resolve_raw_fields(const alpha::Panel &panel, const FeatureSpec &spec);
 
 // Write the feature row for cell (date, inst) into X[row*n_features ..]: the raw
 // fields (in id order) then the pool alphas (in id order). Returns true iff every
@@ -221,17 +214,9 @@ write_feature_row(std::span<atx::f64> X, atx::usize row, atx::usize n_features,
 // Forward-return label for cell (date, inst) at horizon H: close[d+H]/close[d]-1
 // when d+H < n_dates, else quiet NaN (the tail is unknowable — §0.6 / M8).
 // `close_all` is the whole close field, date-major (length dates*instruments).
-[[nodiscard]] inline atx::f64 forward_return(std::span<const atx::f64> close_all,
+[[nodiscard]] atx::f64 forward_return(std::span<const atx::f64> close_all,
                                              atx::usize n_dates, atx::usize n_instruments,
-                                             atx::usize date, atx::usize inst, atx::u16 horizon) {
-  const atx::usize ahead = date + static_cast<atx::usize>(horizon);
-  if (ahead >= n_dates) {
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  const atx::f64 now = close_all[date * n_instruments + inst];
-  const atx::f64 fut = close_all[ahead * n_instruments + inst];
-  return fut / now - 1.0;
-}
+                                             atx::usize date, atx::usize inst, atx::u16 horizon);
 
 } // namespace detail
 

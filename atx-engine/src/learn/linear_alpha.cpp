@@ -26,6 +26,33 @@
 
 namespace atx::engine::learn {
 
+lin::VecX predict_at(const LearnedModel &m, const FeatureMatrix &fm,
+                                          atx::usize date) {
+  const atx::usize p = fm.n_features;
+  const atx::usize adim = m.augmented_dim();
+  const atx::usize k = m.aug.pca.has_value() ? static_cast<atx::usize>(m.aug.pca->k) : 0U;
+  std::vector<atx::f64> base(p, 0.0);
+  std::vector<atx::f64> latent(k, 0.0);
+  std::vector<atx::f64> aug(adim, 0.0);
+  std::vector<atx::f64> out;
+  for (atx::usize r = 0; r < fm.n_rows(); ++r) {
+    if (fm.row_date[r] != date || fm.row_valid[r] == 0) {
+      continue;
+    }
+    for (atx::usize f = 0; f < p; ++f) {
+      base[f] = fm.X[r * p + f];
+    }
+    const bool finite = build_augmented_row(m, std::span<const atx::f64>{base},
+                                            std::span<atx::f64>{latent}, std::span<atx::f64>{aug});
+    out.push_back(finite ? predict_blended(m, std::span<const atx::f64>{aug}) : 0.0);
+  }
+  lin::VecX v(static_cast<Eigen::Index>(out.size()));
+  for (atx::usize i = 0; i < out.size(); ++i) {
+    v(static_cast<Eigen::Index>(i)) = out[i];
+  }
+  return v;
+}
+
 atx::core::Result<DatasetLinearFit> fit_linear_dataset(const PanelDataset& dataset,
     atx::usize begin, atx::usize end, atx::usize asof, atx::u64 max_bytes,
     const LatentAugmentation& aug, const LinearAlphaCfg& cfg, LearnFitTrace* trace) {
