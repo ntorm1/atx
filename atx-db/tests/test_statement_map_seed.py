@@ -20,7 +20,12 @@ from atx_db.statement_map_seed import (
 # extracted (main @ e4bdcf54). Later sprint tasks that add concepts bump this
 # number in the same commit that adds the rows, with the new count justified in
 # the commit body.
-EXPECTED_STATEMENT_MAP_ROWS = 331  # 286 + 45 (Tier1-S2 T7 Wave A-2; the wave CSV enumerates 56 alias
+EXPECTED_STATEMENT_MAP_ROWS = 344  # 331 + 13 debt alias companion rows (468eb2f5, catalog round
+# 2 follow-up: convertible/notes/loans/lines-of-credit concepts -> short-term debt 1205 and
+# long-term debt 1207, added with their fundamental_items and standardization_rules
+# companions; that commit did not bump this pin). S1 (tier-1 v2 node 0.3) re-points
+# PaymentsToAcquireProductiveAssets and re-signs three capex aliases in place: no rows added.
+# 331 = 286 + 45 (Tier1-S2 T7 Wave A-2; the wave CSV enumerates 56 alias
 # rows, but 11 (three targeting 1205, two targeting 1209, one targeting 1215, and
 # all five targeting 1224) already had active, non-derived statement-map rows for
 # their item before this wave, so apply_alias_wave.py's dedup-by-(taxonomy,concept,

@@ -7,10 +7,11 @@ our revenue / EPS / assets agree with what SEC itself extracted from the same fi
 Code: `src/atx_db/fsds_baseline.py` (loader, canonical mapping, coverage grid, comparison harness),
 `scripts/benchmark_fsds.py` (CLI), `tests/test_fsds_baseline.py` (one end-to-end fixture, no network).
 
-**Status (2026-09-25):** mapping coverage measured on real FSDS data; comparison harness proven on a
-fixture over the test-template schema. **The warehouse comparison has NOT been run**: it needs the
-heavy slot after run5 B1 materializes `fundamental_standardized` (0 rows today). There is no
-agreement ratio against the warehouse yet; do not quote one.
+**Status (2026-09-26, after S1 / tier-1 v2 node 0.3):** mapping coverage re-measured on real FSDS
+data with the S1 rules: **2,226 / 2,500 cells (89.0 %)**, up from 2,112 (84.5 %). Comparison harness
+proven on a fixture over the test-template schema. **The warehouse comparison has NOT been run**: it
+needs the heavy slot after run5 B1 materializes `fundamental_standardized` (0 rows today). There is
+no agreement ratio against the warehouse yet; do not quote one.
 
 ## Source and fetch (ruling RX10)
 
@@ -77,6 +78,12 @@ agreement ratio against the warehouse yet; do not quote one.
      `atx-rule-output:<canonical_code>` in `source_tags_json`, as the engine labels it in
      `input_codes_json`. The FSDS side has no industry-template routing, so item 1801 (a UT-template
      concept in the warehouse) applies to every FSDS filer; only utilities report it.
+   - **Direct covers derived across filings.** As in the engine, a `coalesce_or_*` composition is
+     dropped when the rule's own direct value for the same issuer and date was reported in the same
+     or an earlier filing. Example: a 10-K's three-year equity statement carries only the
+     NCI-inclusive total for an older balance date; it does not re-derive stockholders' equity that
+     the earlier 10-K reported directly. This cut the cells whose value differs across filings from
+     153 to 95 (common_equity 85 to 29).
    - Core items: revenue (1001), gross_profit (1004), operating_income (1014), net_income_total
      (1031), eps_diluted (1035), total_assets (1101), total_liabilities (1201), common_equity (1220),
      cash_flow_from_operations (1301), capex (1305).
@@ -164,7 +171,56 @@ agreement ratio against the warehouse yet; do not quote one.
   - A second run gave identical results. Both guards refused with exit 2: `--db` pointing at the
     governed warehouse, and `--copy-from-warehouse` without `--heavy-slot`.
 
-## Mapping coverage (measured 2026-09-25 on the eight quarters)
+## Mapping coverage after S1 (tier-1 v2 node 0.3, measured 2026-09-26)
+
+Command (light, subset DB only, after the agent memory gate):
+`OPENBLAS_NUM_THREADS=1 .venv\Scripts\python.exe scripts\benchmark_fsds.py coverage --out <dir>`.
+Peak process memory: 273 MiB working set, 238 MiB private.
+
+**2,226 / 2,500 cells map (89.0 %)**: 1,811 direct and 415 derived; all 2,500 cells are in the
+window. The 90 % target is not reached; every remaining gap is structural (no such line in the
+filing) or an alias the S1 scope did not cover (listed below). 95 mapped cells carry different FSDS
+values across filings (153 before direct-covers-derived was applied across filings).
+
+| item | P12 baseline | after S1 | direct | derived | unmapped (reason: count) |
+|---|---:|---:|---:|---:|---|
+| revenue | 240 | **250** | 240 | 10 | - (DUK, NEE via `utility_operating_revenue`) |
+| gross_profit | 130 (52 %) | **130 (52 %)** | 55 | 75 | derivation_incomplete 110; not_reported 5 (NEE); dimensional_only 5 (DUK) |
+| operating_income | 145 (58 %) | **145 (58 %)** | 145 | 0 | not_reported 105 (no `OperatingIncomeLoss` subtotal; EBIT fallback is node 2.5) |
+| net_income | 250 | 250 | 250 | 0 | - |
+| eps_diluted | 245 | 245 | 245 | 0 | dimensional_only 5 (V: per-class EPS) |
+| total_assets | 250 | 250 | 250 | 0 | - |
+| total_liabilities | 229 | **250** | 175 | 75 | - |
+| common_equity | 217 | **250** | 0 | 250 | - |
+| cfo | 250 | 250 | 245 | 5 | - |
+| capex | 156 (62 %) | **206 (82 %)** | 206 | 0 | alias_gap_us_gaap 25 (MET, TRV: real-estate investment purchases; PLD: `PaymentsToAcquireRealEstate`; VZ: `PaymentsToAcquireOtherProductiveAssets`; NEE: only `CapitalExpendituresIncurredButNotYetPaid`, a non-cash disclosure); not_reported 19 (BAC, COP, JPM, WFC) |
+
+Unmapped reasons across all items: not_reported 129, derivation_incomplete 110,
+alias_gap_us_gaap 25, dimensional_only 10.
+
+**How the common_equity cells are derived** (probe over the filing each cell was read from, and
+over every balance date in the window):
+- At the 250 fiscal-year-end cells, stockholders' equity is reported directly, or derived with a
+  reported NCI line (CAT, PG, T, UNH, VZ: exact), or derived with NCI taken as zero where the
+  filings show no NCI at all (JNJ, V). No fiscal-year-end cell derives equity while an NCI exists
+  only as a dimensional member.
+- Across all balance dates with an NCI-inclusive total (669 issuer-dates), 287 have no
+  undimensioned stockholders' equity and no `MinorityInterest` line while a non-zero
+  `EquityComponents=NoncontrollingInterest` member exists (27 issuers, median NCI 2.3 % of parent
+  equity). There, the zero-filled NCI overstates derived stockholders' equity by the NCI. In the
+  eight-quarter window most of these are dates whose own balance-sheet filing is outside the window;
+  with full filing history the engine uses the directly reported value (direct covers derived).
+  Filers that never tag NCI undimensioned (SO in this panel: 10-Q dates, +10 to +15 %) stay
+  exposed.
+  The derivation basis is visible in `input_codes_json`
+  (`["us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]` alone means
+  NCI was taken as zero).
+- 29 common_equity cells still differ across filings: 22 because a later filing omits
+  `PreferredStockValue` for the older date, so the same-filing derivation cannot subtract it (the
+  engine reads the earlier filing's preferred as a visible input; the comparison harness's
+  `same_filing_agreement_ratio` is the like-for-like measure).
+
+## P12 baseline mapping coverage (measured 2026-09-25 on the eight quarters, before S1)
 
 **2,112 / 2,500 cells map cleanly (84.5 %)**: 1,761 direct and 351 derived. All 2,500 cells have
 a filing in the window, so no cell is lost to the 8-zip cap. 74 mapped cells carry different FSDS
@@ -197,10 +253,24 @@ Unmapped reasons across all items: derivation_incomplete 147, not_reported 129, 
 dimensional_only 18. None are `period_not_in_window`, `issuer_not_in_window`, `ifrs_filer` or
 `unit_mismatch`.
 
-### What the unmapped cells say about the warehouse rules (findings, no rule changed here)
+### What the unmapped cells said about the warehouse rules (P12 findings; 1-4 closed by S1)
 
-Because the mapping uses the warehouse's own rules, these gaps are expected in
-`fundamental_standardized` too. The post-B1 comparison will show them as `missing_warehouse_*`.
+Because the mapping uses the warehouse's own rules, these gaps were expected in
+`fundamental_standardized` too. S1 (tier-1 v2 node 0.3) closed findings 1-4 in the committed
+rules:
+- 1: `PaymentsToAcquireProductiveAssets` is a capex (1305) fallback alias at priority 50 and is no
+  longer an alias of 1306. The 1305 aliases all carry `value_multiplier` -1.0 (capex is a signed
+  outflow for every tag; `PaymentsForCapitalImprovements`, `PaymentsToAcquireMachineryAndEquipment`
+  and `PaymentsToAcquireOtherPropertyPlantAndEquipment` were +1.0). Free cash flow (1325) is
+  therefore `sum(cfo, capex)`, as `formula_registry.csv` defines it; the old `difference` added
+  capex back (AAPL FY2025: 124.2B instead of 98.8B).
+- 2: stockholders' equity (1221) = NCI-inclusive equity - NCI with NCI zero-filled when absent;
+  common_equity (1220) = stockholders_equity(output) - preferred.
+- 3: equity_incl_NCI (1222) = stockholders' equity + NCI; total_liabilities (1201) =
+  LiabilitiesAndStockholdersEquity - equity_incl_NCI(output).
+- 4: revenue (1001) falls back to the utility operating revenue rule's output (1801).
+
+The original findings, as measured before S1:
 
 1. **capex (item 1305) misses `PaymentsToAcquireProductiveAssets`.** This is the top alias-gap tag.
    AMZN, CVX, FDX, GE, PEP, T, V and others use it for "purchases of property and equipment". The

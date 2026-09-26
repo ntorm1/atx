@@ -1321,7 +1321,6 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
                 candidates="_std_level_candidates",
                 level_predicate=f"r.dependency_level = {level}",
                 input_match="AND c.input_source = ri.input_source",
-                own_quarters_are_direct=True,
             )
         )
     store.con.execute(
@@ -1407,31 +1406,21 @@ def _create_rule_output_candidates(store: DuckDBStore) -> None:
     )
 
 
-def _combination_select_sql(
-    *, candidates: str, level_predicate: str, input_match: str, own_quarters_are_direct: bool = False
-) -> str:
+def _combination_select_sql(*, candidates: str, level_predicate: str, input_match: str) -> str:
     """Composition SELECT for one dependency level (level 0 = the original raw-item query).
 
     Differences are n-ary: input 1 minus every later input. ``zero_fill_subtrahends`` needs
     input 1 and counts absent later inputs as zero; ``zero_fill`` and ``skip`` are unchanged.
-    ``own_quarters_are_direct`` (levels >= 1 only) also lets the rule's own discrete-quarter
-    row suppress a coalesce_or_* composition, as its direct value does: at level 0 both rows
-    can share a standardized key (same rule/period/event/accession).
+
+    A coalesce_or_* composition yields to the rule's own item: its direct value, and also its
+    own discrete quarter derived from its own cumulative facts (annual - nine months). Without
+    the second guard the own Q4 and a composition over the components' derived Q4s land on one
+    standardized key (same rule / period / event clock / accession) and the publication refuses
+    the build; the FSDS 50-filer probe with year-to-date facts hit 28 such keys
+    (std_quarterly_1004, std_quarterly_1301). Without year-to-date facts no quarter is derived,
+    so the guard never fires and outputs are unchanged (digest-proved, node 0.3).
     """
 
-    own_quarter_guard = (
-        """
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM _std_derived_quarters own_quarter
-                    WHERE own_quarter.rule_id = agg.rule_id
-                      AND own_quarter.security_id = agg.security_id
-                      AND own_quarter.period_end = agg.period_end
-                      AND own_quarter.available_at <= agg.available_at
-                )"""
-        if own_quarters_are_direct
-        else ""
-    )
     return f"""
         WITH events AS (
             SELECT DISTINCT
@@ -1555,7 +1544,14 @@ def _combination_select_sql(
                       AND direct.period_end = agg.period_end
                       AND direct.available_at <= agg.available_at
                 )
-                {own_quarter_guard}
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM _std_derived_quarters own_quarter
+                    WHERE own_quarter.rule_id = agg.rule_id
+                      AND own_quarter.security_id = agg.security_id
+                      AND own_quarter.period_end = agg.period_end
+                      AND own_quarter.available_at <= agg.available_at
+                )
            )
         """
 

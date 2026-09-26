@@ -906,6 +906,34 @@ def canonical_fsds_facts(
     filings = frame[_FILING_COLUMNS].drop_duplicates(subset=["adsh"])
     name_by_id = {item.item_id: item.name for item in items}
     outputs: dict[tuple[int, str], pd.DataFrame] = {}
+    filing_clock = {
+        adsh: (cik, accepted)
+        for adsh, cik, accepted in zip(filings["adsh"], filings["cik"], filings["accepted"], strict=True)
+    }
+
+    def without_covered(derived: pd.DataFrame, direct: pd.DataFrame) -> pd.DataFrame:
+        """Drop compositions the rule's own direct value already covers (engine semantics).
+
+        The engine suppresses a coalesce_or_* composition when a direct value for the same
+        issuer and period is visible at or before the composition's clock, from any filing: a
+        later 10-K whose equity statement carries only the NCI-inclusive total for an older
+        balance date does not re-derive stockholders' equity the earlier 10-K reported.
+        """
+
+        if derived.empty or direct.empty:
+            return derived
+        first_direct: dict[tuple[str, dt.date], pd.Timestamp] = {}
+        for adsh, ddate in zip(direct["adsh"], direct["ddate"], strict=True):
+            cik, accepted = filing_clock[adsh]
+            seen = first_direct.get((cik, ddate))
+            if seen is None or accepted < seen:
+                first_direct[(cik, ddate)] = accepted
+        keep = []
+        for adsh, ddate in zip(derived["adsh"], derived["ddate"], strict=True):
+            cik, accepted = filing_clock[adsh]
+            seen = first_direct.get((cik, ddate))
+            keep.append(seen is None or seen > accepted)
+        return derived[keep]
 
     def raw_rows(item_id: int, basis: str) -> pd.DataFrame:
         part = raw[(raw["item_id"] == item_id) & (raw["basis"] == basis)]
@@ -941,9 +969,8 @@ def canonical_fsds_facts(
                 for input_id, kind in zip(rule.inputs, rule.input_kinds or ("item",) * len(rule.inputs), strict=True)
             ]
             derived = _derive(sources, labels, rule)
-            if not derived.empty and parts and rule.combination_rule.startswith("coalesce_or_"):
-                have = set(zip(parts[0]["adsh"], parts[0]["ddate"], strict=True))
-                derived = derived[[k not in have for k in zip(derived["adsh"], derived["ddate"], strict=True)]]
+            if parts and rule.combination_rule.startswith("coalesce_or_"):
+                derived = without_covered(derived, parts[0])
             parts.append(derived)
         non_empty = [p for p in parts if not p.empty]
         result = (

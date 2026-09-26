@@ -172,3 +172,73 @@ def test_composition_reads_another_rules_output_in_dependency_order(tmp_store):
          '["us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest","us-gaap:MinorityInterest"]',
          "[1222,1213]"),
     ]
+
+
+def _insert_cumulative(store, *, concept: str, metric: str, item_id: int, period_end: dt.date,
+                       value: float, available_at: dt.datetime, accession: str) -> None:
+    """One year-to-date income-statement fact of security GPQ (fiscal year = calendar 2025)."""
+    point_id = f"{concept}-{period_end}"
+    store.con.execute(
+        """
+        INSERT INTO fundamental_statement_points (
+            statement_point_id,fact_revision_id,revision_group_id,source,security_id,symbol,cik,
+            statement_type,statement_section,canonical_metric,canonical_label,taxonomy,concept,
+            unit,unit_type,period_type,normal_balance,period_start,period_end,as_of_date,
+            available_at,fiscal_year,fiscal_period,form,accession_number,source_accession,
+            filed_date,revision_sequence,revision_count,is_latest_revision,is_value_changed,
+            raw_value,value,item_id,run_id,source_url,source_loaded_at
+        ) VALUES (?,?,?,'sec_companyfacts','SEC-GPQ','GPQ','0000000007','income_statement','revenue',?,?,
+                  'us-gaap',?,'USD','monetary','duration','credit',DATE '2025-01-01',?,?,?,2025,?,?,?,?,?,
+                  1,1,true,false,?,?,?,'test','https://data.sec.gov/',?)
+        """,
+        [
+            point_id, f"fact-{point_id}", f"group-{point_id}", metric, metric, concept, period_end,
+            period_end, available_at, "FY" if period_end.month == 12 else "Q3",
+            "10-K" if period_end.month == 12 else "10-Q", accession, accession, available_at.date(),
+            value, value, item_id, available_at,
+        ],
+    )
+
+
+def test_own_derived_quarter_wins_over_a_composition_at_the_same_clock(tmp_store):
+    """Node 0.3: gross profit's own Q4 (its annual minus its nine months) and a composition of
+    the revenue and cost-of-revenue Q4s both come from one 10-K: same rule, period, clock and
+    accession. The own quarter wins, as a direct value would. Unguarded, the two rows shared one
+    standardized key and the publication refused the whole build (the FSDS 50-filer probe with
+    year-to-date facts hit 28 such keys on std_quarterly_1004 / std_quarterly_1301)."""
+    q3_clock = dt.datetime(2025, 11, 1, 22, 0)
+    fy_clock = dt.datetime(2026, 2, 1, 22, 0)
+    for concept, metric, item_id, nine_months, annual in (
+        ("Revenues", "revenue", 1001, 900.0, 1250.0),
+        ("CostOfRevenue", "cost_of_revenue", 1003, 600.0, 850.0),
+        ("GrossProfit", "gross_profit", 1004, 300.0, 400.0),
+    ):
+        _insert_cumulative(tmp_store, concept=concept, metric=metric, item_id=item_id,
+                           period_end=dt.date(2025, 9, 30), value=nine_months,
+                           available_at=q3_clock, accession="q3-10q")
+        _insert_cumulative(tmp_store, concept=concept, metric=metric, item_id=item_id,
+                           period_end=dt.date(2025, 12, 31), value=annual,
+                           available_at=fy_clock, accession="fy-10k")
+    rules = (
+        _rule(1001, basis="quarterly", canonical_code="revenue"),
+        _rule(1003, basis="quarterly", canonical_code="cost_of_revenue"),
+        _rule(1004, basis="quarterly", combination_rule="coalesce_or_difference",
+              source_item_ids=(1001, 1003), canonical_code="gross_profit__1004"),
+    )
+    refresh_standardized_set_based(
+        tmp_store, FundamentalStandardizationOptions(symbols=("GPQ",)), rules
+    )
+    rows = tmp_store.con.execute(
+        """
+        SELECT item_id, value, available_at, combination_rule, source_accession, is_latest_revision
+        FROM fundamental_standardized
+        WHERE period_end = DATE '2025-12-31'
+        ORDER BY item_id
+        """
+    ).fetchall()
+
+    assert rows == [
+        (1001, pytest.approx(350.0), fy_clock, "discrete_quarter_difference", "fy-10k", True),
+        (1003, pytest.approx(250.0), fy_clock, "discrete_quarter_difference", "fy-10k", True),
+        (1004, pytest.approx(100.0), fy_clock, "discrete_quarter_difference", "fy-10k", True),
+    ]
