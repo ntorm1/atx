@@ -1,7 +1,9 @@
 # W0 benchmark preflight and incremental-build evidence
 
-Status: both binaries built; no performance measurements started. This report
-supersedes the initial preparation estimates. Root owns the quiet-window release.
+Status: both original binaries built; first baseline kernel timing completed but
+was invalidated for host contention. No eligible performance result exists.
+Final-current snapshot awaits the narrow D0 VWAP correction. This report supersedes
+the initial preparation estimates. Root owns the quiet-window release.
 
 ## Frozen comparable builds
 
@@ -116,7 +118,10 @@ and no numerical benchmark was run to produce the model.
 
 ## Final protocol pending quiet release
 
-Choose the single N before timings and record it. For families `kernels`, `wq`,
+N128 was selected and frozen before the first timing at a fresh 3.902 GiB available
+with no compiler/test/engine process active. It remains fixed even though the first
+batch was invalidated; the unused N96 fallback is no longer a selection option.
+Receipt: pool5 `build-equity-bench/w0-protocol-freeze.json`. For families `kernels`, `wq`,
 `throughput`, `optimizer`, `search`, run all five baseline families, then all five
 final-current families serially, three
 repetitions each, P-core affinity 0xFF verified through Windows processor topology.
@@ -147,3 +152,24 @@ median independently; paired dimensions must match. Only then run the existing
 Budget approximately 25–45 minutes for the pair; SearchThroughput and optimizer
 setup remain unchanged and can dominate. This is a scheduling estimate, not timing
 evidence. No performance gate or production-scale acceptance is claimed yet.
+
+## First timing invalidated; window released for D0 qualification
+
+The baseline kernel child PID16448 ran 2026-09-26 00:34:16.902–00:36:43.609 UTC,
+native exit 0 in 146.701 seconds. Peak working set was only 50,921,472 bytes,
+but minimum host available memory fell to 428,990,464 bytes and the process
+reported 505,741 page faults. A mid-run nominal two-second process sample showed
+many competing Python/PowerShell/Claude processes consuming CPU. Native repetition
+variability increased (e.g. order-stat batch /52/250 real-time CV43.94%). These
+timings are ineligible even though native execution returned success.
+
+No process was killed: the owned benchmark had already exited before the verified
+stop attempt. Other process ownership was not established; root disclosed a
+metadata-only Git-SHA Python loop, which may account for one sampled Python.
+The explicit `w0-baseline-wq128-kernels.invalidity.json` marker accompanies the
+native JSON/stdout/stderr/receipt in pool6's build-equity-bench. It records sampled
+PIDs and CPU deltas; pool5's `w0-baseline-contamination-process-ownership.json`
+contains surviving PID/parent/executable metadata. The merge helper rejects any
+native batch with an invalidity marker. No automatic timing retry is authorized;
+the quiet window was released for D0 implementation/qualification. N128, 81 cases,
+three repetitions and the 20% threshold remain unchanged.
