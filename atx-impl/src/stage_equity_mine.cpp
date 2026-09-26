@@ -884,8 +884,9 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
         const atx::f64 skew = eval::skewness(row.train.net);
         const atx::f64 kurt = eval::excess_kurtosis(row.train.net);
         if (acct) {
-            row.dsr_train = eval::deflated_sharpe(sr, *acct, row.train.net.size(), skew, kurt)
-                                .result.dsr;
+            const auto result = eval::deflated_sharpe(sr, *acct, row.train.net.size(), skew, kurt);
+            row.dsr_train = result.result.dsr;
+            row.dsr_selection_benchmark = result.result.sr_star;
         } else {
             auto result = eval::deflated_sharpe(sr, out.trials, row.train.net.size(), skew,
                                                kurt, summary_rule);
