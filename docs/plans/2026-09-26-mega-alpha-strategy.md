@@ -12,6 +12,48 @@ The new instruction authorizes recent-data use and supersedes the older
 pre-2020-only restriction. It does not authorize warehouse writes, broker
 trading, pushes, or changes in the separately owned C:/atx checkout.
 
+## Cash-claim rehearsal registration (before any completed strategy result)
+
+The first two real attempts stopped on MDCO's missing 2020-01-06 mark; zero
+orientations or portfolios completed. The exact pinned source identifies MDCO
+and confirms its final January 3 print. This is an accounting/data dependency,
+not evidence for selecting a candidate or changing its sign. The original
+library, weights, date roles, costs, cadence, trial budget and failure records
+remain fixed.
+
+The next bounded rehearsal opts into
+`atx.dsl-combined-execution/cash-claims-v2` using
+`atx-impl/strategies/slow_price_volume_24_v1.cash_claims.json`, SHA256
+`257c6d645292b9f9464e6401ed1f9adb5e41a66089fdc4f7e23db0724f6da510`.
+Its five independently sourced fixed-cash rights are MDCO, WAIR, BOLD, ARQL
+and THOR. Their identities, previous raw/adjusted prices and source-publication
+clocks are evidence-bound. Publication clocks use the following minute when
+the source supplies only minute precision. Historical delivery is unverified.
+
+On known completion, stop new decisions and queued trading in the converted
+line. Recognize the signed entitlement at the first eligible valuation mark,
+using marked holdings divided by the evidenced previous raw price. Receivables
+are included in valuation but cannot fund new positions; payables reserve
+settled cash. Continue the last modeled short-borrow rate while payment remains
+unknown. No payment date, cash receipt, stock conversion or missing return is
+invented. VM and blend eligibility follow strict decision-time knowledge,
+including warmup. These claims are used consistently in TRAIN orientations and
+both combined role evaluations; pre-role claims create no opening position.
+
+Actual calendar-month turnover sums actual filled dollars/pretrade NAV and
+includes initial deployment, also disclosed separately. No turnover, Sharpe,
+common-stock coverage or tradability target has yet been achieved. Stock
+conversions and unexplained price gaps still fail strictly. A masks-only queue
+contains 38 affected Q1 identifiers; absence alone is not event evidence. The
+existing warehouse's event, terminal-return and universe-type tables are empty
+under read-only inspection, so they cannot currently close this dependency.
+
+Qualification first uses only the focused strategy executable/test targets,
+warm equity-dev PCH/dependencies and RAM-admitted 2-4 compiler workers. The real
+rehearsal retains its 180-second/1536-MiB sampled process-tree limit, 768-MiB
+free-memory floor, 1024-MiB internal workspace and minimum 2000 names. It adds
+the pinned claim configuration without expanding the candidate search.
+
 ## Research contract
 
 - Target universe: a dated liquid common-stock universe of approximately

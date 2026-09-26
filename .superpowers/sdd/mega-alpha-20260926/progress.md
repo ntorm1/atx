@@ -1,5 +1,47 @@
 # Active task: recent-data DSL ensemble
 
+## Current checkpoint: five sourced cash claims integrated; focused runtime next
+
+This checkpoint supersedes the historical sections below. Root source before
+this checkpoint is d52ed04b, pool2 only. No active build or numerical process.
+Owner target is $1bn NAV, net annualized Sharpe>=1, calendar-month one-way
+turnover<=30%, thousands of stocks, 2020+ data. No achieved result: two real
+attempts failed, zero completed trials. Recent strict diagnostic evidence is
+eb2559e8; source gap is genuine MDCO archive ending January3,2020.
+
+Cash engine core c0be402e->eb67e4d5, clock1ef2524d->8ae8294c,
+capital440d538f->963adbc0, fixtures25ff0a88->a2fe3280,
+3d1ef20a->9d8a718f and47696031->f8d1062f. Independent source review
+eeb6dc03->88f1e2c3 approves seven fixtures/source; native runtime pending.
+Runner80ebf709->1ab4a490, decision-mask5e1fa849->be2ce0ad,
+three fixturesa86b274d->010cc1a8, report1b62048e->d52ed04b.
+Monthlyreport779add70->494ecc75 and fixture91329304->6a05ec3f pending.
+Root CMake registration65e1e50a/2d06b704 already included.
+
+Five event records MDCO/WAIR/BOLD/ARQL/THOR are committed atba58bab2;
+cash config SHA256257c6d645292b9f9464e6401ed1f9adb5e41a66089fdc4f7e23db0724f6da510.
+They are reconstructed publication evidence, not verified delivery/settlement.
+No invented payment: signed nonspendable claims, reserve short payables,
+continue last modeled short borrow. Active plan preregisters v2 retry with all
+previous candidates, trial counts, costs and role/data pins unchanged.
+
+Source forensic batch2a41477a ran38IDs in10.5s/121MiB; output
+build-equity/recent-q1-gap-batch-v1.json SHA256
+037234f9c3f427dd45160a8f19ab7ecbc40dd941699cc73f56c94f717f11ed56.
+Masks-only queue is data QA, not terminal proof or future universe filtering.
+Read-only warehouse event, terminal and universe-type tables are empty.
+Optional user data-location question remains unanswered. Stock conversions,
+temporary gaps, dated common-stock/type coverage remain unresolved.
+
+Next: finish G0 adapter source review; freeze/checkpoint; build ONLY
+atx-equity-strategy and atx-impl-strategy-tests via warm equity-dev wrapper,
+RAM-admitted2-4 workers. CMake regeneration updates configured provenance.
+Run bounded focused native, then one fresh claim-aware v3 rehearsal with
+180s/1536MiB RSS/768MiB free, internal1024MiB/min_names2000. Preserve failures.
+Root alone builds/runs; pool3 reviewsadapter, pool4 inventories existing stock
+conversion support, pool5 source frozen available for fixes. No C:/atx writes,
+warehouse writes, push, broad build, long performance workload or goal success.
+
 ## Latest checkpoint: native qualified; first real refusal preserved
 
 At clean source497f567e all19 focused native cases pass (0.918s native,
