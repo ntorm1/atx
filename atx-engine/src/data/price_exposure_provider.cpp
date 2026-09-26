@@ -292,7 +292,7 @@ co::Result<PriceExposureResult> build(Reader& reader, PriceExposureEvidenceSourc
   std::vector<f64> markets(kLong, kNaN), close(n), raw(n), volume(n), step(n, kNaN);
   std::vector<u32> bad_prefix(kCloseRing * n), bad_count(n);
   std::vector<u8> present(n), source_member(n), effective_present(n);
-  std::vector<i64> presence_clock(n), member_clock(n);
+  std::vector<i64> presence_clock(n), member_clock(n), input_clock(n);
   std::vector<Sum> dollar_sum(n), amihud_sum(n);
   std::vector<Moments> moments(n);
   std::vector<ExposureObservation> descriptors(6 * n);
@@ -329,6 +329,7 @@ co::Result<PriceExposureResult> build(Reader& reader, PriceExposureEvidenceSourc
         return co::Err(co::ErrorCode::InvalidArgument, "price exposures: bar before observed mark");
       const bool bar = seen && have_bar && row.bar_available_ns[i] >= mark &&
           known(row.bar_available_ns[i], row.bar_qualified[i], decision);
+      input_clock[i] = bar ? std::max(row.bar_available_ns[i], e.presence_available_ns[i]) : 0;
       effective_present[i] = static_cast<u8>(seen);
       presence_clock[i] = have_presence ? e.presence_available_ns[i] : 0;
       const f64 value = bar && std::isfinite(close[i]) && close[i] > 0 ? close[i] : kNaN;
@@ -363,6 +364,10 @@ co::Result<PriceExposureResult> build(Reader& reader, PriceExposureEvidenceSourc
     PriceExposureDate diagnostics;
     if (d) diagnostics = market(weights, step);
     else diagnostics.market_reasons = PriceMarketNoPriorDate;
+    if (std::isfinite(diagnostics.market_return))
+      for (usize i = 0; i < n; ++i) if (std::isfinite(weights.cap[i]))
+        diagnostics.market_available_at_ns = std::max(
+            diagnostics.market_available_at_ns, input_clock[i]);
     const auto old_market = markets[d % kLong];
     markets[d % kLong] = diagnostics.market_return;
     for (usize i = 0; i < n; ++i) {
@@ -412,12 +417,13 @@ co::Result<PriceExposureResult> build(Reader& reader, PriceExposureEvidenceSourc
       if (d >= 21 && prefix(d) == prefix(d - 21) &&
           std::isfinite(endpoint(d)) && std::isfinite(endpoint(d - 21)))
         values[5] = std::log(endpoint(d - 21)) - std::log(endpoint(d));
-      const bool clock = !row.bar_available_ns.empty() && !row.bar_qualified.empty() &&
-          row.bar_available_ns[i] >= mark && known(row.bar_available_ns[i], row.bar_qualified[i], decision);
+      const bool clock = input_clock[i] > 0;
       for (usize k = 0; k < 6; ++k) {
         descriptors[k * n + i] = {};
         if (clock && std::isfinite(values[k])) {
-          descriptors[k * n + i] = {values[k], mark, row.bar_available_ns[i], true};
+          const auto available = k == 2 || k == 3 ?
+              std::max(input_clock[i], diagnostics.market_available_at_ns) : input_clock[i];
+          descriptors[k * n + i] = {values[k], mark, available, true};
           ++diagnostics.finite_raw_descriptors[k];
         }
       }

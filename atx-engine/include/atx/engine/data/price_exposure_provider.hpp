@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -62,6 +64,7 @@ struct PriceExposureDate {
   // Coverage is NaN when the denominator's membership/caps/identity are unknown.
   atx::f64 admitted_cap_weight_fraction{std::numeric_limits<atx::f64>::quiet_NaN()};
   atx::f64 market_return{std::numeric_limits<atx::f64>::quiet_NaN()};
+  atx::i64 market_available_at_ns{};
   atx::u32 market_reasons{};
   std::array<atx::usize, kExposureRawDescriptorCount> finite_raw_descriptors{};
 };
