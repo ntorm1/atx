@@ -15,6 +15,7 @@
 
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/eval/hac.hpp"
+#include "atx/engine/parallel/det_pool.hpp"
 
 namespace atx::engine::factory {
 namespace ic_screen_detail {
@@ -33,12 +34,17 @@ struct Cache {
   std::vector<atx::usize> eligible;
 };
 
+struct RowScratch {
+  std::vector<atx::f64> x, y, xr, yr;
+  std::vector<atx::usize> order, ranked_names;
+  std::array<atx::u64, 4> paired{};
+};
 struct Scratch {
   // Binding prevents accidental reuse with a different window/configuration.
   std::shared_ptr<const Cache> cache;
   atx::u64 bytes{};
-  std::vector<atx::f64> x, y, xr, yr, influence;
-  std::vector<atx::usize> order, ranked_names;
+  std::vector<RowScratch> rows;
+  std::vector<atx::f64> influence;
   std::array<std::vector<atx::f64>, 4> pearson, rank;
 };
 } // namespace ic_screen_detail
@@ -50,6 +56,7 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 using ic_screen_detail::Cache;
+using ic_screen_detail::RowScratch;
 using ic_screen_detail::Scratch;
 using Batch = xsimd::batch<f64>;
 constexpr f64 kNan = std::numeric_limits<f64>::quiet_NaN();
@@ -228,7 +235,7 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
 
 void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
                   std::span<const f64> cached_ranks, usize cached_names,
-                  usize eligible, const IcScreenConfig& cfg, Scratch& scratch,
+                  usize eligible, const IcScreenConfig& cfg, RowScratch& scratch,
                   usize& ranked_count,
                   f64& pearson, f64& rank,atx::u64* paired=nullptr) noexcept {
   pearson = kNan; rank = kNan;
@@ -277,6 +284,8 @@ atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
     const alpha::Panel& panel, const IcScreenConfig& config, const ResearchIcOptions& options,
     std::span<const atx::u8> member, std::span<const atx::u32> bad,
     std::string_view price_field) {
+  if (options.workers == 0 || options.workers > 4)
+    return Err(ErrorCode::InvalidArgument, "IC research: workers must be explicit 1..4");
   const auto valid = validate(panel, config, member, bad,options.active_horizons);
   if (!valid) return Err(valid.error());
   auto data = std::make_shared<Cache>();
@@ -367,13 +376,18 @@ atx::core::Result<std::unique_ptr<Scratch>> prepare_scratch(std::shared_ptr<cons
   if (!cache) return Err(ErrorCode::InvalidArgument, "IC screen: unprepared cache");
   atx::u64 bytes = sizeof(Scratch);
   if (cache->config.rule != IcScreenRule::DisabledV1) {
-    if (!checked_add_bytes(bytes, cache->instruments, 4U * sizeof(f64) + 2U * sizeof(usize)) ||
+    if (!checked_add_bytes(bytes, cache->options.workers, sizeof(RowScratch)) ||
+        !checked_add_bytes(bytes, cache->instruments,
+            cache->options.workers * (4U * sizeof(f64) + 2U * sizeof(usize))) ||
         !checked_add_bytes(bytes, cache->rows, sizeof(f64)))
       return Err(ErrorCode::InvalidArgument, "IC screen: scratch size overflow");
     for (const usize rows : cache->active)
       if (!checked_add_bytes(bytes, rows, 2U * sizeof(f64)))
         return Err(ErrorCode::InvalidArgument, "IC screen: scratch size overflow");
-    if (bytes > cache->config.max_cache_bytes)
+    // One-worker legacy retains its separate scratch cap. Parallel research
+    // must fit its aggregate cache + all row workspaces under the supplied cap.
+    if (bytes > cache->config.max_cache_bytes ||
+        (cache->options.workers > 1 && cache->bytes > cache->config.max_cache_bytes - bytes))
       return Err(ErrorCode::InvalidArgument, "IC screen: worker scratch memory budget exceeded");
   }
   auto result = std::make_unique<Scratch>();
@@ -382,8 +396,11 @@ atx::core::Result<std::unique_ptr<Scratch>> prepare_scratch(std::shared_ptr<cons
   s.cache = cache;
   if (s.cache->config.rule == IcScreenRule::DisabledV1) return Ok(std::move(result));
   const usize n = s.cache->instruments;
-  s.x.resize(n); s.y.resize(n); s.xr.resize(n); s.yr.resize(n); s.order.resize(n);
-  s.ranked_names.resize(n);
+  s.rows.resize(s.cache->options.workers);
+  for (auto& row : s.rows) {
+    row.x.resize(n); row.y.resize(n); row.xr.resize(n); row.yr.resize(n);
+    row.order.resize(n); row.ranked_names.resize(n);
+  }
   s.influence.resize(s.cache->rows);
   for (usize k = 0; k < s.pearson.size(); ++k) {
     s.pearson[k].resize(s.cache->active[k]); s.rank[k].resize(s.cache->active[k]);
@@ -422,7 +439,7 @@ IcScreenResult classify_estimates(const std::array<IcScreenHorizon,4>&,
                                   const IcScreenConfig&,usize) noexcept;
 atx::core::Result<IcScreenResult> evaluate_cache(std::span<const f64> signal,
     const std::shared_ptr<const Cache>& cache,Scratch& scratch,
-    std::array<ResearchIcCoverage,4>* coverage=nullptr) {
+    std::array<ResearchIcCoverage,4>* coverage=nullptr,parallel::DetPool* pool=nullptr) {
   const auto& data = *cache;
   const auto& cfg = data.config;
   IcScreenResult out;
@@ -430,17 +447,38 @@ atx::core::Result<IcScreenResult> evaluate_cache(std::span<const f64> signal,
   if (signal.size() != data.dates * data.instruments)
     return Err(ErrorCode::InvalidArgument, "IC screen: signal shape mismatch");
   auto& s = scratch;
-  for (usize row = 0; row < data.active.front(); ++row) {
-    usize ranked_count = 0U;
-    for (usize k = 0; k < data.options.active_horizons; ++k) {
-      if (row >= data.active[k]) continue;
-      const usize n = data.instruments, d = cfg.window_begin + row;
-      evaluate_row(signal.subspan(d * n, n), std::span{data.labels[k]}.subspan(row * n, n),
-                   std::span{data.ranks[k]}.subspan(row * n, n), data.names[k][row],
-                   data.eligible[row], cfg, s, ranked_count, s.pearson[k][row], s.rank[k][row],
-                   coverage?&(*coverage)[k].paired_signal_pairs:nullptr);
+  for (auto& row : s.rows) row.paired.fill(0);
+  const auto run_rows = [&](usize begin, usize end, usize worker) {
+    auto& work = s.rows[worker];
+    for (usize row = begin; row < end; ++row) {
+      usize ranked_count = 0U;
+      for (usize k = 0; k < data.options.active_horizons; ++k) {
+        if (row >= data.active[k]) continue;
+        const usize n = data.instruments, d = cfg.window_begin + row;
+        evaluate_row(signal.subspan(d * n, n), std::span{data.labels[k]}.subspan(row * n, n),
+                     std::span{data.ranks[k]}.subspan(row * n, n), data.names[k][row],
+                     data.eligible[row], cfg, work, ranked_count, s.pearson[k][row], s.rank[k][row],
+                     coverage?&work.paired[k]:nullptr);
+      }
     }
+  };
+  if (pool != nullptr && data.active.front() > 1) {
+    const usize count = data.active.front();
+    const usize bands = std::min(count, data.options.workers * 4U);
+    pool->parallel_for(bands, [&](usize band, usize worker) {
+      // Quotient/remainder split avoids overflow from count*band.
+      const usize begin = count / bands * band + count % bands * band / bands;
+      const usize end = count / bands * (band + 1U) + count % bands * (band + 1U) / bands;
+      run_rows(begin, end, worker);
+    });
+  } else {
+    run_rows(0, data.active.front(), 0);
   }
+  if (coverage != nullptr) for (usize worker = 0; worker < s.rows.size(); ++worker)
+    for (usize k = 0; k < data.options.active_horizons; ++k)
+      (*coverage)[k].paired_signal_pairs += s.rows[worker].paired[k];
+  // Only the row kernels are parallel: retain the original chronological
+  // mean, segment and HAC arithmetic, shared influence buffer and horizon order.
   for (usize k = 0; k < data.options.active_horizons; ++k) {
     auto& h = out.horizons[k]; h.horizon = cfg.horizons[k];
     h.pearson = estimate(s.pearson[k], h.horizon, cfg, s.influence);
@@ -457,12 +495,16 @@ atx::core::Result<IcScreenResult> screen_ic(std::span<const f64> signal,
   return evaluate_cache(signal,cache.data_,*scratch.data_);
 }
 atx::core::Result<ResearchIcResult> evaluate_research_ic(std::span<const f64> signal,
-    const ResearchIcCache& cache,ResearchIcScratch& scratch) {
+    const ResearchIcCache& cache,ResearchIcScratch& scratch,parallel::DetPool* pool) {
   if (!cache.data_ || !scratch.data_ || scratch.data_->cache != cache.data_)
     return Err(ErrorCode::InvalidArgument,"IC research: scratch/cache binding mismatch");
+  const auto workers = cache.data_->options.workers;
+  if ((workers == 1 && pool != nullptr) ||
+      (workers > 1 && (pool == nullptr || pool->n_workers() != workers)))
+    return Err(ErrorCode::InvalidArgument,"IC research: borrowed pool/worker recipe mismatch");
   ResearchIcResult out; out.active_horizons=cache.data_->options.active_horizons;
   out.coverage=cache.data_->coverage;
-  ATX_TRY(out.screen,evaluate_cache(signal,cache.data_,*scratch.data_,&out.coverage));
+  ATX_TRY(out.screen,evaluate_cache(signal,cache.data_,*scratch.data_,&out.coverage,pool));
   return Ok(std::move(out));
 }
 
