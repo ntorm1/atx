@@ -171,8 +171,9 @@ public:
   /// identically across runs. T (the corr-index vector length) is the store's
   /// n_periods once any alpha exists, else kDefaultT until the first admit fixes it.
   [[nodiscard]] static Library open(const std::string &dir, GateConfig cfg,
-                                    std::vector<atx::u64> master_seeds) {
-    return Library{dir, cfg, std::move(master_seeds)};
+                                    std::vector<atx::u64> master_seeds,
+                                    CorrIndexRule corr_rule = CorrIndexRule::SignedHammingV2) {
+    return Library{dir, cfg, std::move(master_seeds), corr_rule};
   }
 
   /// Geometry-checked admit (Task 8 cross-run accumulation guard). Returns a CLEAN
@@ -273,13 +274,14 @@ public:
   ///
   /// SAFETY: reads the CALLER's `pnl` buffer + store spans within this call only (no
   /// store growth), so nothing dangles — same discipline as verdict_for.
-  [[nodiscard]] atx::f64 worst_corr_to_pool(std::span<const atx::f64> pnl) const {
+  [[nodiscard]] atx::f64 worst_corr_to_pool(std::span<const atx::f64> pnl,
+                                                       atx::f64 absolute_floor = 0.7) const {
     if (!corr_.has_value()) {
       return 0.0;
     }
     CorrNeighborIndex &idx =
         const_cast<CorrNeighborIndex &>(*corr_); // NOLINT: logical-const scratch (as in verdict_for)
-    return online_corr_to_pool(pnl, store_, idx);
+    return online_corr_to_pool(pnl, store_, idx, absolute_floor);
   }
 
   // --- R1: cumulative cross-run trial counter --------------------------------
@@ -360,8 +362,10 @@ public:
 private:
   static constexpr atx::u32 kCorrK = 64; // SimHash hyperplanes (matches S4-3 fixtures)
 
-  Library(const std::string &dir, GateConfig cfg, std::vector<atx::u64> master_seeds)
-      : dir_{dir}, cfg_{cfg}, master_seeds_{std::move(master_seeds)}, store_{dir}, dedup_{dir},
+  Library(const std::string &dir, GateConfig cfg, std::vector<atx::u64> master_seeds,
+          CorrIndexRule corr_rule)
+      : dir_{dir}, cfg_{cfg}, master_seeds_{std::move(master_seeds)}, corr_rule_{corr_rule},
+        store_{dir}, dedup_{dir},
         journal_{dir} {
     // R1: load the cumulative trial counter from the sidecar manifest if one
     // exists in `dir`. A fresh/never-snapshotted library has no sidecar -> 0,
@@ -415,7 +419,7 @@ private:
       ATX_ASSERT(corr_->t() == t); // all alphas share one period count
       return;
     }
-    corr_.emplace(seed0(master_seeds_), t, kCorrK);
+    corr_.emplace(seed0(master_seeds_), t, kCorrK, corr_rule_);
   }
 
   // Rebuild the corr index from every alpha currently in the store, in AlphaId
@@ -485,7 +489,7 @@ private:
     // yet => corr_ unconstructed) has worst_corr = 0, matching AlphaGate's empty-pool
     // convention. Routed through the public worst_corr_to_pool accessor so there is
     // exactly ONE incremental-corr code path (the PoolView seam shares it, S4b-2).
-    const atx::f64 worst_corr = worst_corr_to_pool(c.pnl);
+    const atx::f64 worst_corr = worst_corr_to_pool(c.pnl, cfg.max_pool_corr);
     if (worst_corr > cfg.max_pool_corr) {
       return AdmitKind::RejectCorrelated;
     }
@@ -544,6 +548,7 @@ private:
   std::string dir_;             // R1: library directory (for sidecar writes)
   GateConfig cfg_;
   std::vector<atx::u64> master_seeds_;
+  CorrIndexRule corr_rule_;
   LibraryStore store_;          // S4-1 (segmented append-only store)
   DedupIndex dedup_;            // S4-2 (canonical-hash dedup)
   LifecycleJournal journal_;    // S4-4 (PIT lifecycle journal)
