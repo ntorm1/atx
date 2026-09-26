@@ -56,8 +56,11 @@ SPLIT_GATED = {
 #: on R1d's cross-filing split rebasing were unblocked once the R1d split guard
 #: passed review (68170a44, 4649571b; CB1).
 KNOWN_BIAS: set[str] = set()
-#: Contested signs pre-registered two-sided (R1a I3/I5, R1b J1, CB1 downside risk).
-TWO_SIDED = {"revenue_growth_yoy", "debt_to_market", "assets_to_market", "sga_to_sales", "downside_deviation_60d"}
+#: Second constructions of a cataloged hypothesis (CB2): P3's event-clocked SUE duplicates sue_ni.
+DUPLICATES = {"sue_ni_event"}
+#: Contested signs pre-registered two-sided (R1a I3/I5, R1b J1, CB1 downside risk, CB2 run-up).
+TWO_SIDED = {"revenue_growth_yoy", "debt_to_market", "assets_to_market", "sga_to_sales", "downside_deviation_60d",
+             "runup_m21_m2"}
 #: Research-panel natives (P2), computed from the line's own bars.
 PANEL_NATIVES = {"amihud_illiquidity_21d", "pct_from_high_252d", "max_daily_return_21d", "turnover_21d",
                  "downside_deviation_60d"}
@@ -201,7 +204,7 @@ def test_incomparable_by_construction_metrics_are_blocked_and_only_those():
     blocked = {entry.feature_id for entry in entries if not entry.is_research_eligible}
 
     by_id = _by_id()
-    assert blocked == set(BLOCKED) | KNOWN_BIAS
+    assert blocked == set(BLOCKED) | KNOWN_BIAS | DUPLICATES
     for code, reason in BLOCKED.items():
         assert shapes[code].incomparable_reason == reason
         assert by_id[code].admission == "blocked_incomparable_origin"

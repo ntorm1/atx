@@ -3,7 +3,10 @@
 Each row of ``seeds/research_anomaly_catalog.csv`` maps one declarative derived
 metric ``(metric_code, window)``, one research-panel native (``panel_native``: a
 price/liquidity feature the panel computes from the line's own daily bars, declared
-in ``research.panel.NATIVE_FEATURES``) or one formation-time market-scaled
+in ``research.panel.NATIVE_FEATURES``), one research-store source feature (``event``:
+P3 earnings events, ``factor_exposure``: P4 factor exposures, ``ownership``: P9 13F and
+FINRA features; read by the feature store from one pinned sealed source version, declared
+in ``research.features.EXTERNAL_FEATURES``) or one formation-time market-scaled
 composition to a pre-registered hypothesis: anomaly class, expected sign (``+1`` means a higher
 value predicts higher forward returns; ``two_sided`` pre-registers no direction
 where the published evidence disagrees) with a rationale and a literature
@@ -13,8 +16,20 @@ inherited availability clock, minimum history, research admission with
 machine-readable caveat codes and the legacy factor ids it supersedes.
 Evaluation (R3b/R4) tests these hypotheses; it never chooses a sign from data.
 
+Research metadata (CB2) on every row: ``population`` (:data:`POPULATIONS`: the firms
+the hypothesis is defined on, against which coverage is measured), ``evidence_class``
+(:data:`EVIDENCE_CLASSES`, derived: ``replication`` for a published anomaly or analogue
+with a pre-registered sign, ``discovery`` otherwise), ``publication_year`` (derived: the
+earliest year the reference cites, for published rows only), ``jkp_theme``
+(:data:`JKP_THEMES` or ``none``) and ``wave`` (:data:`WAVES`: the pre-registration wave
+that evaluates the row). One hypothesis is never tested twice: a second construction of
+a cataloged hypothesis is ``blocked_duplicate_hypothesis`` and names its primary in
+:data:`DUPLICATE_HYPOTHESES`.
+
 Clocks, minimum history and incomparable-by-construction status are *derived* from
-the derived-metric seed (for a panel native: from its panel declaration) and must
+the derived-metric seed (for a panel native: from its panel declaration; for a
+research-store source: from :data:`EXTERNAL_FEATURE_SHAPES`, declared from each
+producer's rules) and must
 equal the declared values, so the catalog cannot drift from the metric engine silently. Every seed metric is either a catalog row or
 an explicit exclusion in :data:`EXCLUDED_SEED_METRICS`; adding a seed metric without
 a catalog decision fails validation.
@@ -31,7 +46,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
@@ -58,16 +73,26 @@ __all__ = [
     "CAVEAT_CODES",
     "CONTROL_CLASSES",
     "DOMAIN_RULES",
+    "DUPLICATE_HYPOTHESES",
+    "EVIDENCE_CLASSES",
     "EXCLUDED_SEED_METRICS",
+    "EXTERNAL_FEATURE_SHAPES",
+    "EXTERNAL_SOURCE_KINDS",
+    "JKP_THEMES",
+    "JKP_THEME_NONE",
+    "POPULATIONS",
+    "WAVES",
     "AnomalyCatalogEntry",
     "AnomalyCatalogError",
     "MetricShape",
     "anomaly_catalog_sha256",
     "anomaly_class_counts",
     "default_anomaly_catalog",
+    "derive_evidence_class",
     "derive_metric_shapes",
     "load_anomaly_catalog",
     "read_anomaly_catalog",
+    "reference_publication_year",
     "render_anomaly_catalog_markdown",
     "validate_anomaly_catalog",
 ]
@@ -101,6 +126,12 @@ ANOMALY_CATALOG_COLUMNS = (
     "caveat_code",
     "admission_note",
     "supersedes",
+    # CB2 research metadata.
+    "population",
+    "evidence_class",
+    "publication_year",
+    "jkp_theme",
+    "wave",
 )
 
 ANOMALY_CLASSES = (
@@ -117,10 +148,18 @@ ANOMALY_CLASSES = (
     #: Liquidity premia (CB1): an anomaly class, not a control, so the feature store
     #: generates and tests the size-neutral variant (illiquidity net of size).
     "liquidity",
+    #: CB2: institutional ownership, ownership breadth and short interest (P9 13F / FINRA).
+    "ownership",
+    #: CB2: where a firm stands in its reporting calendar (earnings announcement premium).
+    "event_timing",
 )
 #: Priced characteristics used as controls and benchmarks, not as new anomalies.
 CONTROL_CLASSES = ("size", "momentum", "reversal", "volatility")
-SOURCE_KINDS = frozenset({"seed_metric", "panel_native", "composition"})
+#: Research-store sources (E1): read by the feature store from one pinned sealed source
+#: version -- ``event`` (P3 ``research_event_features``), ``factor_exposure`` (P4
+#: ``research_factor_exposures``) and ``ownership`` (P9 ``research_ownership_features``).
+EXTERNAL_SOURCE_KINDS = frozenset({"event", "factor_exposure", "ownership"})
+SOURCE_KINDS = frozenset({"seed_metric", "panel_native", "composition"}) | EXTERNAL_SOURCE_KINDS
 #: Bar-table prefix of a panel native's inputs: bar-only natives keep the bar clock.
 _BAR_INPUT_PREFIX = "equity_daily_bars."
 SCALE_TYPES = frozenset(
@@ -131,11 +170,53 @@ PREFERRED_TRANSFORMS = frozenset({"winsor_z", "rank_normal", "log_winsor_z"})
 #: Strictly positive levels whose cross-section is log-normal-like.
 LOG_SCALE_TYPES = frozenset({"dollar_level", "volatility"})
 PRIOR_EVIDENCE = frozenset({"published_anomaly", "published_analogue", "economic_conjecture"})
-ADMISSIONS = frozenset({"eligible", "eligible_with_caveat", "blocked_incomparable_origin", "blocked_known_bias"})
+#: Prior evidence that cites a publication documenting the relation (or its close relative).
+_PUBLISHED_EVIDENCE = frozenset({"published_anomaly", "published_analogue"})
+ADMISSION_DUPLICATE = "blocked_duplicate_hypothesis"
+ADMISSIONS = frozenset({"eligible", "eligible_with_caveat", "blocked_incomparable_origin", "blocked_known_bias",
+                        ADMISSION_DUPLICATE})
 #: Admissions that keep a row out of research: the engine labels every quarterly
-#: value incomparable, or a known construction bias the span labels cannot see
-#: (the reason is noted and coded per row).
-BLOCKED_ADMISSIONS = frozenset({"blocked_incomparable_origin", "blocked_known_bias"})
+#: value incomparable, a known construction bias the span labels cannot see, or a
+#: second construction of a cataloged hypothesis (the reason is noted and coded per row).
+BLOCKED_ADMISSIONS = frozenset({"blocked_incomparable_origin", "blocked_known_bias", ADMISSION_DUPLICATE})
+#: A second construction of a cataloged hypothesis -> its primary row. The primary is the
+#: one tested; the duplicate stays cataloged (diagnostics) as ``blocked_duplicate_hypothesis``.
+#: ``sue_ni_event`` (P3) reads the very ``sue_ni`` states on a clock never earlier than their
+#: filing clock and only where an earnings event is visible, so it adds no timing and at
+#: most ``sue_ni``'s coverage (the feature store refuses to build both).
+DUPLICATE_HYPOTHESES: Mapping[str, str] = {"sue_ni_event": "sue_ni"}
+
+#: CB2 ``population``: the firms a hypothesis is defined on (its coverage denominator). A
+#: conditional feature names the optional activity whose absence leaves it without a value.
+POPULATIONS: Mapping[str, str] = {
+    "all": "every firm of the research universe",
+    "rd_reporters": "firms that report research and development expense (a missing R&D tag is never read as zero)",
+    "dividend_payers": "firms that pay common dividends (a non-payer that never tags a dividend has no value)",
+    "inventory_holders": "firms that report inventory (no presence-rule zero is read)",
+    "advertising_reporters": "firms that report advertising expense",
+    "interest_payers": "firms that report interest expense (a firm without debt has no coverage ratio)",
+}
+#: CB2 ``evidence_class`` (derived, :func:`derive_evidence_class`): the gate a row is graded under.
+EVIDENCE_CLASSES: Mapping[str, str] = {
+    "replication": "a published anomaly or published analogue with a pre-registered sign (one-sided test)",
+    "discovery": "an economic conjecture, or a two-sided hypothesis with no pre-registered sign",
+}
+#: CB2 ``jkp_theme``: the 13 theme clusters of Jensen, Kelly and Pedersen (2023, Journal of
+#: Finance). A row takes the cluster of the JKP characteristic measuring the same construct,
+#: else the theme its construct belongs to, else :data:`JKP_THEME_NONE`.
+JKP_THEMES = ("accruals", "debt_issuance", "investment", "low_leverage", "low_risk", "momentum", "profit_growth",
+              "profitability", "quality", "seasonality", "size", "short_term_reversal", "value")
+JKP_THEME_NONE = "none"
+#: CB2 ``wave``: the pre-registration wave whose frozen catalog digest evaluates the row.
+WAVES: Mapping[str, str] = {
+    "w0_existing": "the catalog rows that existed before the tier-1 v2 waves (R1a-R1b, CB1)",
+    "w1_price": "price and friction natives computed from the retained daily bars",
+    "w2_fund_a": "accounting characteristics, fundamental batch A",
+    "w3_compositions": "market-scaled compositions and market-dependent scores",
+    "w4_events": "event features and pinned research-store sources (P3 earnings events, P4 factor exposures, "
+                 "EDGAR filing events)",
+    "w5_ownership": "13F institutional ownership and FINRA short interest",
+}
 #: ``expected_sign`` text -> value; ``two_sided`` (0) pre-registers no direction.
 _SIGNS: Mapping[str, int] = {"+1": 1, "-1": -1, "two_sided": 0}
 
@@ -177,6 +258,10 @@ CAVEAT_CODES: Mapping[str, str] = {
                       "intangibles) is read as zero with no presence guard",
     "construct_deviation": "the definition deviates from the published construction (see the note)",
     "filing_clock_lag": "the filing clock trails the market's first information (the earnings release)",
+    "io_above_one": "13F shares above the verified share count (double counting, lending, stale counts) are kept, "
+                    "never clipped, and counted per formation",
+    "duplicate_hypothesis": "a second construction of a cataloged hypothesis (DUPLICATE_HYPOTHESES names the primary "
+                            "row); cataloged for diagnostics, never tested beside the primary",
 }
 #: A sign-flipping ratio names the operand to test; a non-monotone relation names
 #: the subgroup the feature store carries separately.
@@ -188,10 +273,14 @@ _CAVEAT_DOMAINS: Mapping[str, frozenset[str]] = {
 CLOCK_FILING = "conservative_filing_46h"
 CLOCK_BAR = "modeled_trade_date_22h"
 CLOCK_MAX = "max_filing_46h_trade_date_22h"
+CLOCK_FINRA = "finra_publication_modeled"
 AVAILABILITY_CLOCKS: Mapping[str, str] = {
     CLOCK_FILING: f"SEC filing date + 46h ({FUNDAMENTAL_CLOCK_POLICY}); modeled, not measured delivery",
     CLOCK_BAR: "bar trade_date + 22h; modeled end-of-day availability of the daily bar",
     CLOCK_MAX: "latest of the filing clock of every fundamental input and the bar clock",
+    CLOCK_FINRA: "FINRA settlement + 8 business days at 22:00 UTC (never before the loader's settlement + 10 days "
+                 "+ 22h, nor before the clock of a verified share count it reads); modeled dissemination, not "
+                 "measured",
 }
 #: Daily market columns that carry only the bar clock. ``dei_shares`` and the
 #: ``shares_outstanding`` coalesce are SEC-filing share counts (filing-clocked).
@@ -298,6 +387,13 @@ class AnomalyCatalogEntry:
     caveat_codes: tuple[str, ...]
     admission_note: str
     supersedes: tuple[str, ...]
+    #: CB2 research metadata (see the module docstring).
+    population: str
+    evidence_class: str
+    #: The earliest year the reference cites; None for an economic conjecture.
+    publication_year: int | None
+    jkp_theme: str
+    wave: str
 
     @property
     def is_control(self) -> bool:
@@ -325,7 +421,8 @@ class AnomalyCatalogEntry:
     def operands(self) -> tuple[str, ...]:
         """``metric:``/``item:`` seed inputs: the seed metric itself or the composition legs.
 
-        A panel native has none: it is computed by the panel, not a seed metric.
+        A panel native or a research-store source row has none: it is computed by the
+        panel or by its source module, not read as a seed metric.
         """
         if self.source_kind == "seed_metric":
             return (f"metric:{self.metric_code}",)
@@ -343,6 +440,28 @@ def _blank(value: str | None) -> str | None:
 def _split(value: str | None) -> tuple[str, ...]:
     """A ``|``-separated list cell (empty means none)."""
     return tuple(part.strip() for part in (value or "").split("|") if part.strip())
+
+
+_YEAR = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+
+
+def reference_publication_year(reference: str) -> int | None:
+    """The earliest four-digit year the reference cites (None when it cites none).
+
+    The catalog's ``publication_year`` of a published row: the first publication of the
+    relation among the cited works (the pre/post-publication split keys on it).
+    """
+    years = [int(year) for year in _YEAR.findall(reference or "")]
+    return min(years) if years else None
+
+
+def derive_evidence_class(prior_evidence: str, expected_sign: int) -> str:
+    """``replication`` for a published anomaly or analogue with a pre-registered sign, else ``discovery``.
+
+    A two-sided row pre-registers no direction, so it cannot be a one-sided replication
+    even when its relation is published; an economic conjecture is always a discovery.
+    """
+    return "replication" if prior_evidence in _PUBLISHED_EVIDENCE and expected_sign != 0 else "discovery"
 
 
 def read_anomaly_catalog(path: Path | str = ANOMALY_CATALOG_PATH) -> tuple[AnomalyCatalogEntry, ...]:
@@ -368,6 +487,11 @@ def read_anomaly_catalog(path: Path | str = ANOMALY_CATALOG_PATH) -> tuple[Anoma
                 sessions = int((raw["min_history_sessions"] or "").strip())
             except ValueError as error:
                 raise AnomalyCatalogError(f"{where}: min_history_* must be integers") from error
+            year_text = (raw["publication_year"] or "").strip()
+            try:
+                year = int(year_text) if year_text else None
+            except ValueError as error:
+                raise AnomalyCatalogError(f"{where}: publication_year must be a year or empty") from error
             entries.append(
                 AnomalyCatalogEntry(
                     feature_id=(raw["feature_id"] or "").strip(),
@@ -393,6 +517,11 @@ def read_anomaly_catalog(path: Path | str = ANOMALY_CATALOG_PATH) -> tuple[Anoma
                     caveat_codes=_split(raw["caveat_code"]),
                     admission_note=(raw["admission_note"] or "").strip(),
                     supersedes=_split(raw["supersedes"]),
+                    population=(raw["population"] or "").strip(),
+                    evidence_class=(raw["evidence_class"] or "").strip(),
+                    publication_year=year,
+                    jkp_theme=(raw["jkp_theme"] or "").strip(),
+                    wave=(raw["wave"] or "").strip(),
                 )
             )
     return tuple(entries)
@@ -420,6 +549,41 @@ class MetricShape:
     #: The value (or an input) reads a missing input as a literal constant with no
     #: presence guard (``coalesce(<input>, 0)``).
     reads_unguarded_zero: bool = False
+
+
+#: Clock and minimum history of every research-store source feature, declared from its
+#: producer's rules (the source modules carry no machine-readable history). Sessions follow
+#: the panel convention: a window of k daily returns needs k + 1 bars.
+#:
+#: * P3 ``research/events.py``: every event value is visible from the later of the evidence
+#:   clock (acceptance, SEC filed date + 46 h) and the 22:00 UTC close of event session E + 1,
+#:   and no earlier than its bars (max clock). ``ear_m1p1`` sums the abnormal returns of
+#:   E-1..E+1 (3 returns, 4 bars), ``runup_m21_m2`` those of E-21..E-2 (20 returns, 21 bars),
+#:   ``days_since_announcement`` reads the event session only, ``sue_ni_event`` re-clocks the
+#:   ``sue_ni`` states (its history is ``sue_ni``'s: :data:`_EXTERNAL_SEED_STATES`).
+#: * P4 ``research/factor_returns.py``: 252 daily excess returns (253 bars, at least 200
+#:   observed) on the daily VW market weighted by verified DEI caps (filing-clocked): max clock.
+#: * P9 ``research/ownership_features.py``: a 13F value is visible from the later of its report
+#:   quarter end + 45 days + 46 h (the filing deadline) and the clocks of the filings it reads;
+#:   IO and its change also read the DEI share count at the quarter end (max clock), breadth
+#:   reads filings only (filing clock); one report quarter for IO, two for a change. Short
+#:   interest is visible from the modeled FINRA publication (and the share count it reads).
+EXTERNAL_FEATURE_SHAPES: Mapping[tuple[str, str], MetricShape] = {
+    ("event", "ear_m1p1"): MetricShape(0, 4, CLOCK_MAX, None),
+    ("event", "runup_m21_m2"): MetricShape(0, 21, CLOCK_MAX, None),
+    ("event", "days_since_announcement"): MetricShape(0, 0, CLOCK_MAX, None),
+    ("event", "sue_ni_event"): MetricShape(0, 0, CLOCK_MAX, None),
+    ("factor_exposure", "beta_mkt_252d"): MetricShape(0, 253, CLOCK_MAX, None),
+    ("factor_exposure", "ivol_252d"): MetricShape(0, 253, CLOCK_MAX, None),
+    ("ownership", "io_ratio_13f"): MetricShape(1, 0, CLOCK_MAX, None),
+    ("ownership", "io_change_13f"): MetricShape(2, 0, CLOCK_MAX, None),
+    ("ownership", "breadth_change_13f"): MetricShape(2, 0, CLOCK_FILING, None),
+    ("ownership", "short_interest_ratio"): MetricShape(0, 0, CLOCK_FINRA, None),
+    ("ownership", "days_to_cover_si"): MetricShape(0, 0, CLOCK_FINRA, None),
+}
+#: A source feature that re-clocks a seed metric's states inherits that metric's engine
+#: shape (history, comparability, split basis, presence rules) under its own clock.
+_EXTERNAL_SEED_STATES: Mapping[tuple[str, str], str] = {("event", "sue_ni_event"): "sue_ni"}
 
 
 @dataclass(frozen=True)
@@ -768,18 +932,80 @@ def _domain_errors(where: str, domain: str, metrics: Mapping[str, object], items
     return []
 
 
+def _external_shape(
+    entry: AnomalyCatalogEntry, externals: Mapping[str, Mapping[str, str]], shapes: Mapping[str, MetricShape],
+) -> tuple[MetricShape | None, list[str]]:
+    """The inherited shape of a research-store source row, or the reasons it has none.
+
+    The source feature must be declared by the feature store (``EXTERNAL_FEATURES``) with the
+    row's window, and its clock and history in :data:`EXTERNAL_FEATURE_SHAPES`; a feature that
+    re-clocks seed-metric states also inherits that metric's engine shape.
+    """
+    kind, code = entry.source_kind, entry.metric_code or ""
+    window = externals.get(kind, {}).get(code)
+    if window is None:
+        return None, [f"unknown {kind} source feature {code!r} (research.features.EXTERNAL_FEATURES)"]
+    problems: list[str] = []
+    if entry.metric_window != window:
+        problems.append(f"metric_window {entry.metric_window!r} but the {kind} window of {code!r} is {window!r}")
+    if entry.feature_id != code:
+        problems.append(f"a {kind} feature_id must equal its metric_code")
+    declared = EXTERNAL_FEATURE_SHAPES.get((kind, code))
+    if declared is None:
+        return None, [*problems, f"no declared clock and history for the {kind} feature {code!r}"]
+    state = _EXTERNAL_SEED_STATES.get((kind, code))
+    if state is None:
+        return declared, problems
+    inner = shapes.get(state)
+    if inner is None:
+        return None, [*problems, f"re-clocks the seed metric {state!r}, which is not in the seed"]
+    return MetricShape(max(declared.min_history_quarters, inner.min_history_quarters),
+                       max(declared.min_history_sessions, inner.min_history_sessions), declared.availability_clock,
+                       inner.incomparable_reason, inner.split_gated, inner.reads_absence,
+                       inner.reads_unguarded_zero), problems
+
+
+def _metadata_errors(entry: AnomalyCatalogEntry) -> list[str]:
+    """CB2 research metadata: vocabularies, and the fields derived from evidence and reference."""
+    problems: list[str] = []
+    if entry.population not in POPULATIONS:
+        problems.append(f"population must be one of {sorted(POPULATIONS)}, got {entry.population!r}")
+    derived = derive_evidence_class(entry.prior_evidence, entry.expected_sign)
+    if entry.evidence_class not in EVIDENCE_CLASSES:
+        problems.append(f"evidence_class must be one of {sorted(EVIDENCE_CLASSES)}, got {entry.evidence_class!r}")
+    elif entry.evidence_class != derived:
+        problems.append(f"evidence_class {entry.evidence_class!r} but a {entry.prior_evidence} row with "
+                        f"{_SIGN_LABELS.get(entry.expected_sign, entry.expected_sign)} sign is {derived!r}")
+    if entry.prior_evidence in _PUBLISHED_EVIDENCE:
+        year = reference_publication_year(entry.reference)
+        if year is None:
+            problems.append("a published row's reference must cite a publication year")
+        elif entry.publication_year != year:
+            problems.append(f"publication_year {entry.publication_year} but the earliest year the reference cites "
+                            f"is {year}")
+    elif entry.publication_year is not None:
+        problems.append(f"publication_year must be empty for a {entry.prior_evidence} row")
+    if entry.jkp_theme not in (*JKP_THEMES, JKP_THEME_NONE):
+        problems.append(f"jkp_theme must be one of {[*JKP_THEMES, JKP_THEME_NONE]}, got {entry.jkp_theme!r}")
+    if entry.wave not in WAVES:
+        problems.append(f"wave must be one of {sorted(WAVES)}, got {entry.wave!r}")
+    return problems
+
+
 def validate_anomaly_catalog(
     entries: Iterable[AnomalyCatalogEntry],
     *,
     definitions: Iterable[DerivedMetricDefinition] | None = None,
     exclusions: Mapping[str, str] | None = None,
     natives: Mapping[str, Mapping[str, Any]] | None = None,
+    externals: Mapping[str, Mapping[str, str]] | None = None,
 ) -> None:
     """Reject unknown codes, bad enumerations and any disagreement with the engine.
 
-    ``natives`` defaults to ``research.panel.NATIVE_FEATURES`` (imported here: the
-    panel imports this module). All problems are collected and raised together as
-    one :class:`AnomalyCatalogError`.
+    ``natives`` defaults to ``research.panel.NATIVE_FEATURES`` and ``externals`` (research-
+    store source kind -> source feature -> window) to ``research.features.EXTERNAL_FEATURES``
+    (both imported here: the panel and the feature store import this module). All problems
+    are collected and raised together as one :class:`AnomalyCatalogError`.
     """
     rows = tuple(entries)
     seed = default_derived_definitions() if definitions is None else tuple(definitions)
@@ -788,6 +1014,10 @@ def validate_anomaly_catalog(
         from .panel import NATIVE_FEATURES
 
         natives = NATIVE_FEATURES
+    if externals is None:
+        from .features import EXTERNAL_FEATURES
+
+        externals = EXTERNAL_FEATURES
     by_code = {definition.metric_code: definition for definition in seed}
     shapes = derive_metric_shapes(seed)
     item_codes = frozenset(item.canonical_code for item in read_fundamental_item_seed())
@@ -879,6 +1109,15 @@ def validate_anomaly_catalog(
                                     any(leg.split_gated for leg in leg_shapes),
                                     any(leg.reads_absence for leg in leg_shapes),
                                     any(leg.reads_unguarded_zero for leg in leg_shapes))
+        elif entry.source_kind in EXTERNAL_SOURCE_KINDS:
+            shape, problems = _external_shape(entry, externals, shapes)
+            errors.extend(f"{where}: {problem}" for problem in problems)
+            if entry.feature_id in by_code or entry.feature_id in item_codes or entry.feature_id in natives:
+                errors.append(f"{where}: {entry.source_kind} id collides with a seed metric, item or panel native code")
+            if entry.numerator or entry.denominator:
+                errors.append(f"{where}: a {entry.source_kind} row has no numerator/denominator")
+            if entry.domain_operand:
+                errors.append(f"{where}: a {entry.source_kind} row takes no domain operand")
         else:
             errors.append(f"{where}: source_kind must be one of {sorted(SOURCE_KINDS)}")
         if entry.anomaly_class not in ANOMALY_CLASSES + CONTROL_CLASSES:
@@ -931,6 +1170,16 @@ def validate_anomaly_catalog(
                 errors.append(f"{where}: {token!r} is already superseded by {superseded[token]!r}")
             else:
                 superseded[token] = entry.feature_id
+        if entry.availability_clock not in AVAILABILITY_CLOCKS:
+            errors.append(f"{where}: unknown availability_clock {entry.availability_clock!r}")
+        errors.extend(f"{where}: {problem}" for problem in _metadata_errors(entry))
+        # One hypothesis is tested once: a duplicate construction names its primary.
+        if (entry.admission == ADMISSION_DUPLICATE) != (entry.feature_id in DUPLICATE_HYPOTHESES):
+            errors.append(f"{where}: admission {ADMISSION_DUPLICATE} goes with a DUPLICATE_HYPOTHESES row "
+                          "and only with one")
+        if ("duplicate_hypothesis" in entry.caveat_codes) != (entry.admission == ADMISSION_DUPLICATE):
+            errors.append(f"{where}: caveat duplicate_hypothesis goes with admission {ADMISSION_DUPLICATE} "
+                          "and only with it")
         if shape is None:
             continue
         if entry.availability_clock != shape.availability_clock:
@@ -957,6 +1206,17 @@ def validate_anomaly_catalog(
         if blocked and not shape.incomparable_reason:
             errors.append(f"{where}: blocked_incomparable_origin but the engine can label it comparable")
     feature_ids = {entry.feature_id for entry in rows}
+    by_id = {entry.feature_id: entry for entry in rows}
+    for duplicate, primary in sorted(DUPLICATE_HYPOTHESES.items()):
+        if duplicate not in by_id:
+            continue
+        target = by_id.get(primary)
+        if target is None or not target.is_research_eligible:
+            errors.append(f"duplicate hypothesis {duplicate!r}: its primary {primary!r} must be a research-eligible "
+                          "catalog row")
+        elif (target.hypothesis_family, target.expected_sign) != (
+                by_id[duplicate].hypothesis_family, by_id[duplicate].expected_sign):
+            errors.append(f"duplicate hypothesis {duplicate!r}: family and sign must equal its primary {primary!r}'s")
     for code, reason in sorted(excluded.items()):
         if code not in by_code:
             errors.append(f"exclusion {code!r} is not a seed metric")
@@ -1041,7 +1301,12 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
         "coded and noted per row); `blocked_incomparable_origin` (the derived engine labels every "
         "quarterly value `value_origin='incomparable'`, which the research gate rejects; "
         "not testable until the engine can prove comparability); `blocked_known_bias` (the "
-        "engine can label values comparable but a known construction bias is noted per row).",
+        "engine can label values comparable but a known construction bias is noted per row); "
+        "`blocked_duplicate_hypothesis` (a second construction of a cataloged hypothesis, cataloged for "
+        "diagnostics: "
+        + "; ".join(f"`{duplicate}` duplicates the tested `{primary}`"
+                    for duplicate, primary in sorted(DUPLICATE_HYPOTHESES.items()))
+        + ").",
         "",
         "`domain` is enforced by the feature store before any transform: an out-of-domain "
         "value is excluded or carried as the named separate indicator, never ranked as valid. "
@@ -1059,6 +1324,15 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
         "computes from the line's own daily bars on XNYS session windows "
         "(`research.panel.NATIVE_FEATURES`); their minimum history is the panel's declared one "
         "and their clock is the bar clock, or the latest input clock when a filed share count is read.",
+        "",
+        "Research-store sources (source `(<window>, <kind>)`: `event` = P3 earnings events, "
+        "`factor_exposure` = P4 factor exposures, `ownership` = P9 13F and FINRA features) are read by "
+        "the feature store from one pinned sealed source version (`research.features.EXTERNAL_FEATURES`); "
+        "their clock and minimum history are declared from each producer's rules "
+        "(`EXTERNAL_FEATURE_SHAPES`).",
+        "",
+        "Research metadata (see the section below): `population`, `evidence_class`, "
+        "`publication_year`, `jkp_theme` and `wave` on every row.",
         "",
         "## Class counts",
         "",
@@ -1086,6 +1360,8 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
                 source = f"`{entry.metric_code}` ({entry.metric_window})"
             elif entry.source_kind == "panel_native":
                 source = f"`{entry.metric_code}` ({entry.metric_window}, panel)"
+            elif entry.source_kind in EXTERNAL_SOURCE_KINDS:
+                source = f"`{entry.metric_code}` ({entry.metric_window}, {entry.source_kind})"
             else:
                 source = f"`{entry.numerator}` / `{entry.denominator}`"
             admission = entry.admission
@@ -1116,6 +1392,7 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
     lines += [f"| `{rule}` | {meaning} |" for rule, meaning in DOMAIN_RULES.items()]
     lines += ["", "## Caveat codes", "", "| code | meaning |", "|---|---|"]
     lines += [f"| `{code}` | {meaning} |" for code, meaning in CAVEAT_CODES.items()]
+    lines += _render_metadata(rows)
     lines += [
         "",
         "## Seed metrics that are not research features",
@@ -1125,6 +1402,45 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
     ]
     lines += [f"| `{code}` | {reason} |" for code, reason in sorted(EXCLUDED_SEED_METRICS.items())]
     return "\n".join(lines) + "\n"
+
+
+def _render_metadata(rows: Sequence[AnomalyCatalogEntry]) -> list[str]:
+    """The research-metadata section: vocabularies, theme and wave counts, one line per row."""
+
+    def counts(values: Iterable[str], key: Callable[[AnomalyCatalogEntry], str]) -> list[str]:
+        return [f"| `{value}` | {sum(1 for e in rows if key(e) == value)} "
+                f"| {sum(1 for e in rows if key(e) == value and e.is_research_eligible)} |" for value in values]
+
+    lines = [
+        "",
+        "## Research metadata",
+        "",
+        "`population` names the firms a hypothesis is defined on (coverage is measured against it); "
+        "`evidence_class` is derived: `replication` for a published anomaly or analogue with a "
+        "pre-registered sign, `discovery` for an economic conjecture or a two-sided hypothesis; "
+        "`publication_year` is the earliest year the reference cites (published rows only); "
+        "`jkp_theme` is the Jensen-Kelly-Pedersen (2023) theme cluster of the JKP characteristic "
+        "measuring the same construct, else the theme the construct belongs to, else `none`; "
+        "`wave` is the pre-registration wave whose frozen catalog digest evaluates the row.",
+        "",
+        "| population | meaning |",
+        "|---|---|",
+    ]
+    lines += [f"| `{name}` | {meaning} |" for name, meaning in POPULATIONS.items()]
+    lines += ["", "| evidence class | meaning |", "|---|---|"]
+    lines += [f"| `{name}` | {meaning} |" for name, meaning in EVIDENCE_CLASSES.items()]
+    lines += ["", "| wave | meaning |", "|---|---|"]
+    lines += [f"| `{name}` | {meaning} |" for name, meaning in WAVES.items()]
+    lines += ["", "| JKP theme | rows | research-eligible |", "|---|---:|---:|"]
+    lines += counts((*JKP_THEMES, JKP_THEME_NONE), lambda e: e.jkp_theme)
+    lines += ["", "| wave | rows | research-eligible |", "|---|---:|---:|"]
+    lines += counts(WAVES, lambda e: e.wave)
+    lines += ["", "| feature | population | evidence class | publication year | JKP theme | wave |",
+              "|---|---|---|---:|---|---|"]
+    lines += [f"| `{e.feature_id}` | {e.population} | {e.evidence_class} | "
+              f"{'' if e.publication_year is None else e.publication_year} | {e.jkp_theme} | {e.wave} |"
+              for e in rows]
+    return lines
 
 
 _SIGN_LABELS: Mapping[int, str] = {1: "+1", -1: "-1", 0: "two-sided"}

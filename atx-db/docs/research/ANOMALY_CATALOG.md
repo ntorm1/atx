@@ -8,15 +8,19 @@ Every row is a pre-registered hypothesis: `expected_sign` +1 means a higher valu
 
 `hypothesis_family` groups near-duplicates and same-construct variants (one economic hypothesis); multiple-testing and deduplication work over families, not rows.
 
-Admission: `eligible`; `eligible_with_caveat` (a known construction hazard, coded and noted per row); `blocked_incomparable_origin` (the derived engine labels every quarterly value `value_origin='incomparable'`, which the research gate rejects; not testable until the engine can prove comparability); `blocked_known_bias` (the engine can label values comparable but a known construction bias is noted per row).
+Admission: `eligible`; `eligible_with_caveat` (a known construction hazard, coded and noted per row); `blocked_incomparable_origin` (the derived engine labels every quarterly value `value_origin='incomparable'`, which the research gate rejects; not testable until the engine can prove comparability); `blocked_known_bias` (the engine can label values comparable but a known construction bias is noted per row); `blocked_duplicate_hypothesis` (a second construction of a cataloged hypothesis, cataloged for diagnostics: `sue_ni_event` duplicates the tested `sue_ni`).
 
 `domain` is enforced by the feature store before any transform: an out-of-domain value is excluded or carried as the named separate indicator, never ranked as valid. A rule without an operand tests the feature value itself.
 
-Clocks are inherited, never declared freely: `conservative_filing_46h` = SEC filing date + 46h (sec_filed_date_plus_46h_v1); modeled, not measured delivery; `modeled_trade_date_22h` = bar trade_date + 22h; modeled end-of-day availability of the daily bar; `max_filing_46h_trade_date_22h` = latest of the filing clock of every fundamental input and the bar clock. Minimum history counts fiscal quarters (`q`) and daily bars (`s`) needed for one value, derived from the metric's expression and its dependencies.
+Clocks are inherited, never declared freely: `conservative_filing_46h` = SEC filing date + 46h (sec_filed_date_plus_46h_v1); modeled, not measured delivery; `modeled_trade_date_22h` = bar trade_date + 22h; modeled end-of-day availability of the daily bar; `max_filing_46h_trade_date_22h` = latest of the filing clock of every fundamental input and the bar clock; `finra_publication_modeled` = FINRA settlement + 8 business days at 22:00 UTC (never before the loader's settlement + 10 days + 22h, nor before the clock of a verified share count it reads); modeled dissemination, not measured. Minimum history counts fiscal quarters (`q`) and daily bars (`s`) needed for one value, derived from the metric's expression and its dependencies.
 
 Compositions are market-scaled ratios declared here and computed at formation by the feature store (R2b), clock = latest input clock.
 
 Panel natives (source `(daily, panel)`) are price/liquidity features the research panel computes from the line's own daily bars on XNYS session windows (`research.panel.NATIVE_FEATURES`); their minimum history is the panel's declared one and their clock is the bar clock, or the latest input clock when a filed share count is read.
+
+Research-store sources (source `(<window>, <kind>)`: `event` = P3 earnings events, `factor_exposure` = P4 factor exposures, `ownership` = P9 13F and FINRA features) are read by the feature store from one pinned sealed source version (`research.features.EXTERNAL_FEATURES`); their clock and minimum history are declared from each producer's rules (`EXTERNAL_FEATURE_SHAPES`).
+
+Research metadata (see the section below): `population`, `evidence_class`, `publication_year`, `jkp_theme` and `wave` on every row.
 
 ## Class counts
 
@@ -25,7 +29,7 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | value | anomaly | 12 | 12 |
 | profitability | anomaly | 23 | 23 |
 | quality | anomaly | 8 | 8 |
-| growth | anomaly | 50 | 48 |
+| growth | anomaly | 52 | 49 |
 | investment | anomaly | 20 | 20 |
 | accruals | anomaly | 5 | 5 |
 | leverage | anomaly | 14 | 14 |
@@ -33,11 +37,13 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | efficiency | anomaly | 13 | 13 |
 | earnings_stability | anomaly | 5 | 4 |
 | liquidity | anomaly | 2 | 2 |
+| ownership | anomaly | 5 | 5 |
+| event_timing | anomaly | 1 | 1 |
 | size | control | 2 | 2 |
 | momentum | control | 5 | 5 |
-| reversal | control | 1 | 1 |
-| volatility | control | 4 | 4 |
-| **all** | | **175** | **172** |
+| reversal | control | 2 | 2 |
+| volatility | control | 6 | 6 |
+| **all** | | **186** | **182** |
 
 ## value
 
@@ -151,6 +157,8 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | `earnings_surprise_to_market` | `metric:ni_q_change_yoy` / `metric:market_cap` | +1 | Seasonal change in quarterly net income over market capitalization (price-scaled earnings surprise). | Livnat and Mendenhall 2006 (Journal of Accounting Research); Bernard and Thomas 1989 (Journal of Accounting Research) | published_analogue | earnings_surprise | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 5q/1s | eligible_with_caveat [filing_clock_lag]: Filing-clocked (10-Q plus 46 hours) so the value arrives weeks after the earnings release and misses the announcement return and early drift. |
 | `roe_q_change_yoy` | `roe_q_change_yoy` (q) | +1 | Single-quarter ROE less the same fiscal quarter's ROE a year earlier (dRoe). | Hou Xue and Zhang 2020 (Review of Financial Studies); Hou Mo Xue and Zhang 2021 (Review of Finance) | published_anomaly | profitability_change | rank_normal | guarded_in_definition | conservative_filing_46h | 6q/0s | eligible |
 | `roa_q_change_yoy` | `roa_q_change_yoy` (q) | +1 | Single-quarter ROA less the same fiscal quarter's ROA a year earlier (dRoa). | Balakrishnan Bartov and Faurel 2010 (Journal of Accounting and Economics); Hou Xue and Zhang 2020 (Review of Financial Studies) | published_anomaly | profitability_change | rank_normal | guarded_in_definition | conservative_filing_46h | 6q/0s | eligible |
+| `ear_m1p1` | `ear_m1p1` (event, event) | +1 | Market-adjusted return (the line's one-session adjusted-close return less the equal-weighted bar-return market of the panel's eligible lines) summed over sessions E-1 to E+1 around the latest visible earnings announcement session E (the earliest 8-K Item 2.02 after the period end else the periodic filing). | Chan Jegadeesh and Lakonishok 1996 (Journal of Finance); Brandt Kishore Santa-Clara and Venkatachalam 2008 (working paper) | published_anomaly | earnings_surprise | winsor_z | unrestricted | max_filing_46h_trade_date_22h | 0q/4s | eligible_with_caveat [coverage_bias]: Events are keyed by original 10-K/10-Q periods so a release never followed by a periodic filing is absent and only linked primary lines carry a value; announcement times are EDGAR acceptance stamps (an unknown time takes the next session) and early closes are not modeled. |
+| `sue_ni_event` | `sue_ni_event` (event, event) | +1 | The panel's sue_ni state of the latest visible earnings event's fiscal period read at the later of the state's own clock and the event clock (the close of event session E+1). | Foster Olsen and Shevlin 1984 (The Accounting Review); Bernard and Thomas 1989 (Journal of Accounting Research); Chan Jegadeesh and Lakonishok 1996 (Journal of Finance) | published_analogue | earnings_surprise | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 13q/0s | blocked_duplicate_hypothesis [duplicate_hypothesis, filing_clock_lag, construct_deviation]: Duplicate of the primary sue_ni: the same derived states on a clock never earlier than their filing clock and only where an earnings event is visible so it adds no timing and at most sue_ni's coverage; the feature store never builds both (one SUE hypothesis). |
 
 ## investment
 
@@ -257,6 +265,22 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | `amihud_illiquidity_21d` | `amihud_illiquidity_21d` (daily, panel) | +1 | Mean absolute daily return per dollar traded (x 1e9) over the positive-volume days of the last 21 XNYS sessions. | Amihud 2002 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | modeled_trade_date_22h | 0q/22s | eligible_with_caveat [coverage_bias]: A line with fewer than 19 positive-volume days or observed returns in the window has no value (zero_volume_in_window or window_gaps) so the most thinly traded names of the illiquid tail are missing. |
 | `turnover_21d` | `turnover_21d` (daily, panel) | -1 | Mean daily share volume over the last 21 XNYS sessions divided by the verified DEI shares outstanding. | Datar Naik and Radcliffe 1998 (Journal of Financial Markets) | published_anomaly | trading_liquidity | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 0q/21s | eligible_with_caveat [coverage_bias]: Only lines with a verified DEI share count have a value: multi-class and ADR and unlinked lines and withheld counts are missing and a window holding an exact split or stock-dividend ratio (R1d classifier) has no value. |
 
+## ownership
+
+| feature | source | sign | definition | reference | evidence | family | transform | domain | clock | history | admission |
+|---|---|:-:|---|---|---|---|---|---|---|---|---|
+| `io_ratio_13f` | `io_ratio_13f` (13f_quarter, ownership) | +1 | 13F common shares held by all managers in the owner's mapped CUSIPs at the latest report quarter past its filing deadline over the line's verified DEI share count at that quarter end. | Gompers and Metrick 2001 (Quarterly Journal of Economics); Nagel 2005 (Journal of Financial Economics) | published_analogue | institutional_ownership | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 1q/0s | eligible_with_caveat [coverage_bias, io_above_one]: CUSIP-to-owner identity is reconstructed and modeled not certified (a CUSIP mapped through a current snapshot is flagged cusip_survivor_conditioned); visible from the quarter's filing deadline (quarter end plus 45 days plus 46 hours) at the earliest; only verified DEI share counts give a value (multi-class and unlinked lines have none); IO above one is kept and counted. |
+| `io_change_13f` | `io_change_13f` (13f_quarter, ownership) | +1 | Change in 13F institutional ownership from the previous report quarter to the latest one (both as known at the same cutoff and each over its own quarter-end verified share count). | Nofsinger and Sias 1999 (Journal of Finance); Sias Starks and Titman 2006 (Journal of Business) | published_analogue | institutional_demand | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 2q/0s | eligible_with_caveat [coverage_bias, io_above_one]: CUSIP-to-owner identity is reconstructed and modeled not certified (a CUSIP mapped through a current snapshot is flagged cusip_survivor_conditioned); visible from the quarter's filing deadline (quarter end plus 45 days plus 46 hours) at the earliest; only verified DEI share counts give a value and both quarters must have one; IO above one is kept and counted. |
+| `breadth_change_13f` | `breadth_change_13f` (13f_quarter, ownership) | +1 | Change in the number of 13F managers holding the stock from the previous report quarter to the latest one over the managers with a visible full filing in both quarters (counting only those managers). | Chen Hong and Stein 2002 (Journal of Financial Economics) | published_anomaly | ownership_breadth | rank_normal | unrestricted | conservative_filing_46h | 2q/0s | eligible_with_caveat [coverage_bias]: CUSIP-to-owner identity is reconstructed and modeled not certified (a CUSIP mapped through a current snapshot is flagged cusip_survivor_conditioned); visible from the quarter's filing deadline (quarter end plus 45 days plus 46 hours) at the earliest; a value needs the stock held in both quarters. |
+| `short_interest_ratio` | `short_interest_ratio` (short_interest, ownership) | -1 | Latest published FINRA short interest over the line's verified DEI share count at the last session on or before the settlement date. | Asquith Pathak and Ritter 2005 (Journal of Financial Economics); Boehmer Huszar and Jordan 2010 (Journal of Financial Economics) | published_anomaly | short_interest | rank_normal | unrestricted | finra_publication_modeled | 0q/0s | eligible_with_caveat [coverage_bias]: Visible from a modeled FINRA publication clock (settlement plus 8 business days at 22:00 UTC) never the settlement date; symbol-date line identity; only verified DEI share counts give a value (unlinked and multi-class lines have none). |
+| `days_to_cover_si` | `days_to_cover_si` (short_interest, ownership) | -1 | Latest published FINRA short interest over FINRA's average daily volume of the reporting period. | Hong Li Ni Scheinkman and Yan 2015 (NBER working paper) | published_analogue | short_interest | rank_normal | unrestricted | finra_publication_modeled | 0q/0s | eligible_with_caveat [coverage_bias]: Visible from a modeled FINRA publication clock (settlement plus 8 business days at 22:00 UTC) never the settlement date; symbol-date line identity; no value when a split falls inside the reporting period (short interest and volume on mixed share bases). |
+
+## event_timing
+
+| feature | source | sign | definition | reference | evidence | family | transform | domain | clock | history | admission |
+|---|---|:-:|---|---|---|---|---|---|---|---|---|
+| `days_since_announcement` | `days_since_announcement` (event, event) | +1 | Calendar days from the latest visible earnings announcement session to the formation date (an event at most 200 days old). | Frazzini and Lamont 2007 (NBER working paper); Barber De George Lehavy and Trueman 2013 (Journal of Financial Economics) | published_analogue | earnings_announcement_premium | rank_normal | unrestricted | max_filing_46h_trade_date_22h | 0q/0s | eligible_with_caveat [construct_deviation, coverage_bias]: The published premium is keyed to the predicted announcement month; days since the last announcement is a monotone proxy that ignores fiscal-calendar shifts and stops being monotone beyond one quarter (late filers); events are keyed by original 10-K/10-Q periods and only linked primary lines carry a value. |
+
 ## size
 
 | feature | source | sign | definition | reference | evidence | family | transform | domain | clock | history | admission |
@@ -279,6 +303,7 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | feature | source | sign | definition | reference | evidence | family | transform | domain | clock | history | admission |
 |---|---|:-:|---|---|---|---|---|---|---|---|---|
 | `total_return_1m` | `total_return_1m` (daily) | -1 | Total return over the last 21 trading days. | Jegadeesh 1990 (Journal of Finance); Lehmann 1990 (Quarterly Journal of Economics) | published_anomaly | short_term_reversal | winsor_z | unrestricted | modeled_trade_date_22h | 0q/22s | eligible |
+| `runup_m21_m2` | `runup_m21_m2` (event, event) | two-sided | Market-adjusted return (the line's one-session return less the equal-weighted bar-return market) summed over sessions E-21 to E-2 before the latest visible earnings announcement session E. | Aboody Lehavy and Trueman 2010 (Review of Accounting Studies) | published_analogue | earnings_announcement_runup | winsor_z | unrestricted | max_filing_46h_trade_date_22h | 0q/21s | eligible_with_caveat [mixed_evidence, coverage_bias]: Published evidence disagrees on the sign after a pre-announcement run-up (continuation into the announcement versus a reversal after it) so it is tested two-sided; events are keyed by original 10-K/10-Q periods and only linked primary lines carry a value. |
 
 ## volatility
 
@@ -288,6 +313,8 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | `realized_vol_252d` | `realized_vol_252d` (daily) | -1 | Annualized 252-day realized volatility of daily log returns. | Baker Bradley and Wurgler 2011 (Financial Analysts Journal); Ang Hodrick Xing and Zhang 2006 (Journal of Finance) | published_analogue | volatility | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/253s | eligible |
 | `max_daily_return_21d` | `max_daily_return_21d` (daily, panel) | -1 | Largest daily return over the last 21 XNYS sessions. | Bali Cakici and Whitelaw 2011 (Journal of Financial Economics) | published_anomaly | volatility | winsor_z | unrestricted | modeled_trade_date_22h | 0q/22s | eligible |
 | `downside_deviation_60d` | `downside_deviation_60d` (daily, panel) | two-sided | Annualized zero-target semideviation (root mean square of the negative daily returns) over the last 60 XNYS sessions. | Ang Chen and Xing 2006 (Review of Financial Studies); Ang Hodrick Xing and Zhang 2006 (Journal of Finance) | published_analogue | volatility | log_winsor_z | positive_value_required | modeled_trade_date_22h | 0q/61s | eligible_with_caveat [mixed_evidence]: Published evidence disagrees on the sign: Ang Chen and Xing price downside beta positively while the low-volatility literature prices total volatility negatively; tested two-sided. |
+| `beta_mkt_252d` | `beta_mkt_252d` (252d, factor_exposure) | -1 | OLS slope of the line's daily excess return on the daily value-weighted research-universe market excess return over the trailing 252 sessions (at least 200 observations; P4 research_factor_exposures). | Black Jensen and Scholes 1972 (Studies in the Theory of Capital Markets); Frazzini and Pedersen 2014 (Journal of Financial Economics) | published_anomaly | market_beta | winsor_z | unrestricted | max_filing_46h_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: The market is the research universe weighted by verified DEI caps only (not CRSP) with the risk-free rate from FRED DTB3 (current vintage) when cached; plain OLS without the Frazzini-Pedersen shrinkage and correlation split; the daily market starts at the first formation so the first year of formations is burn-in (insufficient_obs). |
+| `ivol_252d` | `ivol_252d` (252d, factor_exposure) | -1 | Annualized standard deviation of the residuals of the 252-session one-factor market model of daily excess returns (at least 200 observations; P4 research_factor_exposures). | Ang Hodrick Xing and Zhang 2006 (Journal of Finance); Ang Hodrick Xing and Zhang 2009 (Journal of Financial Economics) | published_anomaly | idiosyncratic_volatility | log_winsor_z | positive_value_required | max_filing_46h_trade_date_22h | 0q/253s | eligible_with_caveat [construct_deviation]: Residuals of a one-factor market model over 252 sessions where the published measure uses Fama-French three-factor residuals over one month; the market is the verified-DEI-cap value-weighted research universe; the first year of formations is burn-in (insufficient_obs). |
 
 ## Hypothesis families with more than one member
 
@@ -311,7 +338,7 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | debt_service | `net_debt_ebitda`, `interest_coverage` |
 | distress_risk | `altman_z_book`, `altman_z`, `ohlson_o` |
 | earnings_growth_1y | `operating_income_growth_yoy`, `net_income_growth_yoy`, `eps_diluted_growth_yoy` |
-| earnings_surprise | `operating_income_q_growth_yoy`, `net_income_q_growth_yoy`, `eps_diluted_q_growth_yoy`, `eps_basic_q_growth_yoy`, `sue_ni`, `earnings_surprise_to_market` |
+| earnings_surprise | `operating_income_q_growth_yoy`, `net_income_q_growth_yoy`, `eps_diluted_q_growth_yoy`, `eps_basic_q_growth_yoy`, `sue_ni`, `earnings_surprise_to_market`, `ear_m1p1`, `sue_ni_event` |
 | enterprise_value_yield | `gross_profit_to_ev`, `cfo_to_ev`, `ebit_to_ev`, `sales_to_ev`, `ebitda_to_ev` |
 | equity_issuance | `net_equity_issuance`, `shares_growth_yoy`, `buyback_yield`, `share_issuance_1y`, `share_issuance_3y` |
 | fundamental_signals | `sga_growth_less_sales_growth`, `inventory_growth_less_sales_growth`, `receivables_growth_less_sales_growth` |
@@ -342,6 +369,7 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | return_on_net_operating_assets | `rnoa_q`, `rnoa` |
 | revenue_growth_sequential | `revenue_growth_qoq`, `revenue_q_growth_qoq` |
 | revenue_surprise | `revenue_q_growth_yoy`, `sue_revenue` |
+| short_interest | `short_interest_ratio`, `days_to_cover_si` |
 | trading_liquidity | `dollar_volume_20d`, `amihud_illiquidity_21d`, `turnover_21d` |
 | volatility | `realized_vol_60d`, `realized_vol_252d`, `max_daily_return_21d`, `downside_deviation_60d` |
 
@@ -373,6 +401,250 @@ Panel natives (source `(daily, panel)`) are price/liquidity features the researc
 | `unguarded_zero` | a missing optional balance (preferred stock, minority interest, goodwill, other intangibles) is read as zero with no presence guard |
 | `construct_deviation` | the definition deviates from the published construction (see the note) |
 | `filing_clock_lag` | the filing clock trails the market's first information (the earnings release) |
+| `io_above_one` | 13F shares above the verified share count (double counting, lending, stale counts) are kept, never clipped, and counted per formation |
+| `duplicate_hypothesis` | a second construction of a cataloged hypothesis (DUPLICATE_HYPOTHESES names the primary row); cataloged for diagnostics, never tested beside the primary |
+
+## Research metadata
+
+`population` names the firms a hypothesis is defined on (coverage is measured against it); `evidence_class` is derived: `replication` for a published anomaly or analogue with a pre-registered sign, `discovery` for an economic conjecture or a two-sided hypothesis; `publication_year` is the earliest year the reference cites (published rows only); `jkp_theme` is the Jensen-Kelly-Pedersen (2023) theme cluster of the JKP characteristic measuring the same construct, else the theme the construct belongs to, else `none`; `wave` is the pre-registration wave whose frozen catalog digest evaluates the row.
+
+| population | meaning |
+|---|---|
+| `all` | every firm of the research universe |
+| `rd_reporters` | firms that report research and development expense (a missing R&D tag is never read as zero) |
+| `dividend_payers` | firms that pay common dividends (a non-payer that never tags a dividend has no value) |
+| `inventory_holders` | firms that report inventory (no presence-rule zero is read) |
+| `advertising_reporters` | firms that report advertising expense |
+| `interest_payers` | firms that report interest expense (a firm without debt has no coverage ratio) |
+
+| evidence class | meaning |
+|---|---|
+| `replication` | a published anomaly or published analogue with a pre-registered sign (one-sided test) |
+| `discovery` | an economic conjecture, or a two-sided hypothesis with no pre-registered sign |
+
+| wave | meaning |
+|---|---|
+| `w0_existing` | the catalog rows that existed before the tier-1 v2 waves (R1a-R1b, CB1) |
+| `w1_price` | price and friction natives computed from the retained daily bars |
+| `w2_fund_a` | accounting characteristics, fundamental batch A |
+| `w3_compositions` | market-scaled compositions and market-dependent scores |
+| `w4_events` | event features and pinned research-store sources (P3 earnings events, P4 factor exposures, EDGAR filing events) |
+| `w5_ownership` | 13F institutional ownership and FINRA short interest |
+
+| JKP theme | rows | research-eligible |
+|---|---:|---:|
+| `accruals` | 5 | 5 |
+| `debt_issuance` | 3 | 3 |
+| `investment` | 29 | 28 |
+| `low_leverage` | 17 | 17 |
+| `low_risk` | 10 | 9 |
+| `momentum` | 5 | 5 |
+| `profit_growth` | 44 | 42 |
+| `profitability` | 19 | 19 |
+| `quality` | 18 | 18 |
+| `seasonality` | 3 | 3 |
+| `size` | 4 | 4 |
+| `short_term_reversal` | 2 | 2 |
+| `value` | 22 | 22 |
+| `none` | 5 | 5 |
+
+| wave | rows | research-eligible |
+|---|---:|---:|
+| `w0_existing` | 175 | 172 |
+| `w1_price` | 0 | 0 |
+| `w2_fund_a` | 0 | 0 |
+| `w3_compositions` | 0 | 0 |
+| `w4_events` | 6 | 5 |
+| `w5_ownership` | 5 | 5 |
+
+| feature | population | evidence class | publication year | JKP theme | wave |
+|---|---|---|---:|---|---|
+| `earnings_yield` | all | replication | 1977 | value | w0_existing |
+| `book_to_market` | all | replication | 1985 | value | w0_existing |
+| `fcf_yield` | all | replication | 1994 | value | w0_existing |
+| `dividend_yield` | dividend_payers | replication | 1979 | value | w0_existing |
+| `rd_to_market_equity` | rd_reporters | replication | 2001 | size | w0_existing |
+| `gross_profit_to_ev` | all | replication | 2011 | value | w0_existing |
+| `cfo_to_ev` | all | replication | 1994 | value | w0_existing |
+| `ebit_to_ev` | all | replication | 2011 | value | w0_existing |
+| `sales_to_ev` | all | replication | 1996 | value | w0_existing |
+| `sales_to_price` | all | replication | 1994 | value | w0_existing |
+| `cfo_to_price` | all | replication | 1994 | value | w0_existing |
+| `ebitda_to_ev` | all | replication | 2011 | value | w0_existing |
+| `gross_margin` | all | discovery |  | profitability | w0_existing |
+| `operating_margin` | all | replication | 2015 | profitability | w0_existing |
+| `net_margin` | all | replication | 1996 | profitability | w0_existing |
+| `ebitda_margin` | all | replication | 2015 | profitability | w0_existing |
+| `gross_margin_q` | all | discovery |  | profitability | w0_existing |
+| `operating_margin_q` | all | replication | 2015 | profitability | w0_existing |
+| `net_margin_q` | all | replication | 1996 | profitability | w0_existing |
+| `roa` | all | replication | 1996 | quality | w0_existing |
+| `roe` | all | replication | 1996 | profitability | w0_existing |
+| `roic` | all | replication | 2015 | profitability | w0_existing |
+| `roic_ex_goodwill` | all | replication | 2015 | profitability | w0_existing |
+| `gross_profitability` | all | replication | 2013 | quality | w0_existing |
+| `operating_profitability` | all | replication | 2015 | quality | w0_existing |
+| `cash_profitability` | all | replication | 2016 | quality | w0_existing |
+| `cfo_to_assets` | all | replication | 2000 | profitability | w0_existing |
+| `piotroski_f` | all | replication | 2000 | profitability | w0_existing |
+| `piotroski_f_cash_issuance` | all | replication | 2000 | profitability | w0_existing |
+| `altman_z_book` | all | replication | 1968 | low_leverage | w0_existing |
+| `altman_z` | all | replication | 1968 | low_leverage | w0_existing |
+| `beneish_m` | all | replication | 1999 | accruals | w0_existing |
+| `ohlson_o` | all | replication | 1980 | profitability | w0_existing |
+| `tax_to_book_income` | all | replication | 2004 | seasonality | w0_existing |
+| `revenue_growth_yoy` | all | discovery | 1994 | investment | w0_existing |
+| `revenue_cagr_3y` | all | replication | 1994 | investment | w0_existing |
+| `gross_profit_growth_yoy` | all | discovery |  | profit_growth | w0_existing |
+| `operating_income_growth_yoy` | all | replication | 1996 | profit_growth | w0_existing |
+| `net_income_growth_yoy` | all | replication | 1984 | profit_growth | w0_existing |
+| `eps_diluted_growth_yoy` | all | replication | 1989 | profit_growth | w0_existing |
+| `cfo_growth_yoy` | all | discovery |  | profit_growth | w0_existing |
+| `fcf_growth_yoy` | all | discovery |  | profit_growth | w0_existing |
+| `tax_expense_change_yoy` | all | replication | 2011 | profit_growth | w0_existing |
+| `revenue_growth_qoq` | all | discovery |  | investment | w0_existing |
+| `eps_diluted_growth_qoq` | all | discovery |  | profit_growth | w0_existing |
+| `eps_cagr_3y` | all | discovery |  | investment | w0_existing |
+| `cfo_cagr_3y` | all | discovery |  | investment | w0_existing |
+| `gross_profit_cagr_3y` | all | discovery |  | investment | w0_existing |
+| `operating_income_cagr_3y` | all | discovery |  | investment | w0_existing |
+| `ebitda_cagr_3y` | all | discovery |  | investment | w0_existing |
+| `fcf_cagr_3y` | all | discovery |  | investment | w0_existing |
+| `gross_margin_change_yoy` | all | replication | 1998 | quality | w0_existing |
+| `operating_margin_change_yoy` | all | replication | 1998 | profit_growth | w0_existing |
+| `net_margin_change_yoy` | all | replication | 1998 | profit_growth | w0_existing |
+| `operating_profitability_change_yoy` | all | replication | 2017 | profit_growth | w0_existing |
+| `roe_change_yoy` | all | replication | 2020 | profit_growth | w0_existing |
+| `gross_margin_q_change_yoy` | all | replication | 1998 | quality | w0_existing |
+| `operating_margin_q_change_yoy` | all | replication | 1998 | profit_growth | w0_existing |
+| `net_margin_q_change_yoy` | all | replication | 1998 | profit_growth | w0_existing |
+| `revenue_q_growth_yoy` | all | replication | 2006 | investment | w0_existing |
+| `gross_profit_q_growth_yoy` | all | discovery |  | profit_growth | w0_existing |
+| `operating_income_q_growth_yoy` | all | replication | 1984 | profit_growth | w0_existing |
+| `net_income_q_growth_yoy` | all | replication | 1984 | profit_growth | w0_existing |
+| `eps_diluted_q_growth_yoy` | all | replication | 1984 | profit_growth | w0_existing |
+| `eps_basic_q_growth_yoy` | all | replication | 1984 | profit_growth | w0_existing |
+| `cfo_q_growth_yoy` | all | discovery |  | profit_growth | w0_existing |
+| `fcf_q_growth_yoy` | all | discovery |  | profit_growth | w0_existing |
+| `revenue_q_growth_qoq` | all | discovery |  | investment | w0_existing |
+| `gross_profit_q_growth_qoq` | all | discovery |  | profit_growth | w0_existing |
+| `operating_income_q_growth_qoq` | all | discovery |  | profit_growth | w0_existing |
+| `net_income_q_growth_qoq` | all | discovery |  | profit_growth | w0_existing |
+| `cfo_q_growth_qoq` | all | discovery |  | profit_growth | w0_existing |
+| `fcf_q_growth_qoq` | all | discovery |  | profit_growth | w0_existing |
+| `eps_diluted_q_growth_qoq` | all | discovery |  | profit_growth | w0_existing |
+| `eps_basic_q_growth_qoq` | all | discovery |  | profit_growth | w0_existing |
+| `eps_diluted_q_growth_yoy_accel` | all | replication | 2020 | profit_growth | w0_existing |
+| `revenue_q_growth_yoy_accel` | all | replication | 2006 | profit_growth | w0_existing |
+| `gross_margin_q_change_yoy_accel` | all | discovery |  | profit_growth | w0_existing |
+| `operating_margin_q_change_yoy_accel` | all | discovery |  | profit_growth | w0_existing |
+| `asset_growth` | all | replication | 2008 | investment | w0_existing |
+| `total_assets_cagr_3y` | all | replication | 2008 | investment | w0_existing |
+| `book_value_growth_yoy` | all | discovery |  | investment | w0_existing |
+| `common_equity_cagr_3y` | all | discovery |  | investment | w0_existing |
+| `delta_noa` | all | replication | 2004 | investment | w0_existing |
+| `capex_growth_yoy` | all | replication | 2006 | investment | w0_existing |
+| `capex_q_growth_yoy` | all | replication | 2006 | investment | w0_existing |
+| `capex_q_growth_qoq` | all | discovery |  | investment | w0_existing |
+| `capex_to_depreciation` | all | discovery |  | investment | w0_existing |
+| `capex_to_sales` | all | discovery |  | investment | w0_existing |
+| `rd_intensity_sales` | rd_reporters | discovery |  | low_leverage | w0_existing |
+| `rd_expense_growth_yoy` | rd_reporters | replication | 2004 | investment | w0_existing |
+| `rd_expense_q_growth_yoy` | rd_reporters | discovery |  | investment | w0_existing |
+| `rd_expense_q_growth_qoq` | rd_reporters | discovery |  | investment | w0_existing |
+| `total_accruals` | all | replication | 1996 | accruals | w0_existing |
+| `percent_accruals` | all | replication | 2011 | accruals | w0_existing |
+| `working_capital_accruals` | all | replication | 1996 | accruals | w0_existing |
+| `rsst_accruals` | all | replication | 2005 | accruals | w0_existing |
+| `noa_to_assets` | all | replication | 2004 | debt_issuance | w0_existing |
+| `debt_to_equity` | all | replication | 2007 | low_leverage | w0_existing |
+| `debt_to_assets` | all | replication | 2007 | low_leverage | w0_existing |
+| `long_term_debt_to_assets` | all | replication | 2010 | low_leverage | w0_existing |
+| `net_debt_ebitda` | all | discovery |  | low_leverage | w0_existing |
+| `interest_coverage` | interest_payers | discovery |  | low_leverage | w0_existing |
+| `current_ratio` | all | discovery |  | low_leverage | w0_existing |
+| `quick_ratio` | all | discovery |  | low_leverage | w0_existing |
+| `cash_ratio` | all | replication | 2008 | low_leverage | w0_existing |
+| `debt_to_market` | all | discovery | 1988 | value | w0_existing |
+| `assets_to_market` | all | discovery | 1992 | value | w0_existing |
+| `net_equity_issuance` | all | replication | 2006 | value | w0_existing |
+| `net_debt_issuance` | all | replication | 1999 | seasonality | w0_existing |
+| `external_financing` | all | replication | 2006 | debt_issuance | w0_existing |
+| `shares_growth_yoy` | all | replication | 2006 | value | w0_existing |
+| `payout_ratio` | dividend_payers | discovery |  | value | w0_existing |
+| `buyback_yield` | all | replication | 1995 | value | w0_existing |
+| `net_payout_yield` | all | replication | 2007 | value | w0_existing |
+| `total_payout_yield` | all | replication | 2007 | value | w0_existing |
+| `shareholder_yield` | all | replication | 2006 | value | w0_existing |
+| `asset_turnover` | all | replication | 2008 | quality | w0_existing |
+| `asset_turnover_change_yoy` | all | replication | 2008 | profit_growth | w0_existing |
+| `dso_days` | all | replication | 2019 | quality | w0_existing |
+| `dio_days` | inventory_holders | replication | 2002 | quality | w0_existing |
+| `dpo_days` | all | replication | 2019 | quality | w0_existing |
+| `cash_conversion_cycle` | inventory_holders | replication | 2019 | quality | w0_existing |
+| `earnings_variability` | all | replication | 2009 | low_risk | w0_existing |
+| `market_cap` | all | replication | 1981 | size | w0_existing |
+| `dollar_volume_20d` | all | replication | 1998 | size | w0_existing |
+| `amihud_illiquidity_21d` | all | replication | 2002 | size | w0_existing |
+| `turnover_21d` | all | replication | 1998 | low_risk | w0_existing |
+| `momentum_12_1` | all | replication | 1993 | momentum | w0_existing |
+| `total_return_12m` | all | replication | 1993 | momentum | w0_existing |
+| `total_return_6m` | all | replication | 1993 | momentum | w0_existing |
+| `total_return_3m` | all | replication | 1993 | momentum | w0_existing |
+| `pct_from_high_252d` | all | replication | 2004 | momentum | w0_existing |
+| `total_return_1m` | all | replication | 1990 | short_term_reversal | w0_existing |
+| `realized_vol_60d` | all | replication | 2006 | low_risk | w0_existing |
+| `realized_vol_252d` | all | replication | 2006 | low_risk | w0_existing |
+| `max_daily_return_21d` | all | replication | 2011 | low_risk | w0_existing |
+| `downside_deviation_60d` | all | discovery | 2006 | low_risk | w0_existing |
+| `roe_q` | all | replication | 2015 | profitability | w0_existing |
+| `roa_q` | all | replication | 2010 | quality | w0_existing |
+| `rnoa_q` | all | replication | 2008 | profitability | w0_existing |
+| `rnoa` | all | replication | 2008 | profitability | w0_existing |
+| `gross_profitability_q` | all | replication | 2013 | quality | w0_existing |
+| `operating_profitability_q` | all | replication | 2015 | quality | w0_existing |
+| `cfo_to_assets_q` | all | replication | 1996 | profitability | w0_existing |
+| `fcf_to_assets` | all | replication | 2019 | profitability | w0_existing |
+| `sue_ni` | all | replication | 1984 | profit_growth | w0_existing |
+| `sue_revenue` | all | replication | 2006 | profit_growth | w0_existing |
+| `earnings_surprise_to_market` | all | replication | 1989 | profit_growth | w0_existing |
+| `roe_q_change_yoy` | all | replication | 2020 | profit_growth | w0_existing |
+| `roa_q_change_yoy` | all | replication | 2010 | profit_growth | w0_existing |
+| `sga_to_sales` | all | discovery |  | quality | w0_existing |
+| `sga_growth_less_sales_growth` | all | replication | 1993 | profit_growth | w0_existing |
+| `inventory_growth_less_sales_growth` | inventory_holders | replication | 1993 | profit_growth | w0_existing |
+| `receivables_growth_less_sales_growth` | all | replication | 1993 | profit_growth | w0_existing |
+| `sales_growth_less_gross_profit_growth` | all | replication | 1993 | quality | w0_existing |
+| `noa_turnover` | all | replication | 2008 | quality | w0_existing |
+| `noa_turnover_change_yoy` | all | replication | 2008 | profit_growth | w0_existing |
+| `roe_variability_8q` | all | replication | 2005 | low_leverage | w0_existing |
+| `roa_variability_8q` | all | replication | 2005 | low_leverage | w0_existing |
+| `cfo_variability_8q` | all | replication | 2009 | low_risk | w0_existing |
+| `sales_growth_variability_8q` | all | replication | 2005 | low_risk | w0_existing |
+| `investment_to_assets` | all | replication | 2008 | investment | w0_existing |
+| `inventory_change_to_assets` | all | replication | 2002 | investment | w0_existing |
+| `capex_to_assets` | all | replication | 2004 | investment | w0_existing |
+| `capex_growth_2y` | all | replication | 2006 | investment | w0_existing |
+| `capex_growth_3y` | all | replication | 2006 | investment | w0_existing |
+| `rd_to_assets` | rd_reporters | replication | 2001 | low_leverage | w0_existing |
+| `share_issuance_1y` | all | replication | 2006 | value | w0_existing |
+| `share_issuance_3y` | all | replication | 2006 | value | w0_existing |
+| `debt_to_assets_change_yoy` | all | replication | 2000 | debt_issuance | w0_existing |
+| `net_debt_to_book_equity` | all | replication | 2007 | low_leverage | w0_existing |
+| `current_ratio_change_yoy` | all | replication | 2000 | low_leverage | w0_existing |
+| `operating_leverage` | all | replication | 2011 | quality | w0_existing |
+| `cash_to_assets` | all | replication | 2012 | low_leverage | w0_existing |
+| `ear_m1p1` | all | replication | 1996 | profit_growth | w4_events |
+| `runup_m21_m2` | all | discovery | 2010 | short_term_reversal | w4_events |
+| `days_since_announcement` | all | replication | 2007 | seasonality | w4_events |
+| `sue_ni_event` | all | replication | 1984 | profit_growth | w4_events |
+| `beta_mkt_252d` | all | replication | 1972 | low_risk | w4_events |
+| `ivol_252d` | all | replication | 2006 | low_risk | w4_events |
+| `io_ratio_13f` | all | replication | 2001 | none | w5_ownership |
+| `io_change_13f` | all | replication | 1999 | none | w5_ownership |
+| `breadth_change_13f` | all | replication | 2002 | none | w5_ownership |
+| `short_interest_ratio` | all | replication | 2005 | none | w5_ownership |
+| `days_to_cover_si` | all | replication | 2015 | none | w5_ownership |
 
 ## Seed metrics that are not research features
 
