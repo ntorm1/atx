@@ -1,6 +1,7 @@
 """P9 ownership features: 13F IO / dIO / breadth at the quarter's deadline clock (IO > 1 kept and
-flagged, put/call rows excluded), the verified-shares gate, and FINRA short interest visible only
-from its publication clock (never at settlement)."""
+flagged, put/call rows excluded, survivor conditioning labeled), the verified-shares gate, FINRA short
+interest visible only from its publication clock (never at settlement), line-level short interest on
+an unlinked line (owner features NULL + reason) and days-to-cover withheld over a split period."""
 
 from __future__ import annotations
 
@@ -18,23 +19,38 @@ from atx_db.research.ownership_features import (
 )
 from atx_db.research.store import ResearchStore
 
+
+def _cusip(base8):
+    total = 0
+    for i, ch in enumerate(base8, 1):
+        value = int(ch) if ch.isdigit() else ord(ch) - 55
+        value *= 2 if i % 2 == 0 else 1
+        total += value // 10 + value % 10
+    return base8 + str((10 - total % 10) % 10)
+
+
 SESSIONS = [d.date() for d in pd.bdate_range("2020-01-01", "2020-12-31")]
 FORMATIONS = [max(d for d in SESSIONS if d.month == m) for m in range(5, 10)]      # May..Sep month ends
 CLOSE = dt.time(22)
-LINES = {"LA": ("1", "ALPHA INC", "dei", 100.0), "LB": ("2", "BETA INC", "xbrl", 200.0)}
-# 13F: (accession, manager, period, filed, [(cusip, shares, put_call)])
+CUSIPS = {"LA": _cusip("ALPHA001"), "LB": _cusip("BETA0001"), "NB": _cusip("NOBODY01")}
+NAMES = {"LA": "ALPHA INC", "LB": "BETA INC", "NB": "NOBODY CORP"}
+LINES = {"LA": ("1", "dei", 100.0), "LB": ("2", "xbrl", 200.0)}   # linked: owner, shares source, shares
+UNLINKED = "LU"                                                    # eligible line without an owner link
+# 13F: (manager, period, filed, [(line, shares, put_call)])
 FILINGS = [
-    ("q1-m1", "9001", "2020-03-31", "2020-05-10", [("CUSIPLA01", 60, ""), ("CUSIPLB01", 5, "")]),
-    ("q1-m2", "9002", "2020-03-31", "2020-05-10", [("CUSIPLA01", 30, "")]),
-    ("q1-m3", "9003", "2020-03-31", "2020-05-10", [("CUSIPLB01", 10, ""), ("NOBODY001", 7, "")]),
-    ("q2-m1", "9001", "2020-06-30", "2020-08-10", [("CUSIPLA01", 70, "")]),
-    ("q2-m2", "9002", "2020-06-30", "2020-08-10", [("CUSIPLA01", 50, "")]),
-    ("q2-m3", "9003", "2020-06-30", "2020-08-10", [("CUSIPLA01", 5, ""), ("CUSIPLA01", 1000, "PUT"),
-                                                     ("CUSIPLB01", 20, ""), ("NOBODY001", 7, "")]),
+    ("9001", "2020-03-31", "2020-05-10", [("LA", 60, ""), ("LB", 5, "")]),
+    ("9002", "2020-03-31", "2020-05-10", [("LA", 30, "")]),
+    ("9003", "2020-03-31", "2020-05-10", [("LB", 10, ""), ("NB", 7, "")]),
+    ("9001", "2020-06-30", "2020-08-10", [("LA", 70, "")]),
+    ("9002", "2020-06-30", "2020-08-10", [("LA", 50, "")]),
+    ("9003", "2020-06-30", "2020-08-10", [("LA", 5, ""), ("LA", 1000, "PUT"), ("LB", 20, ""), ("NB", 7, "")]),
+    # two Q2-only filers keep LB's CUSIP current (>= 3 filers); not continuing managers for breadth
+    ("9004", "2020-06-30", "2020-08-10", [("LB", 1, "")]),
+    ("9005", "2020-06-30", "2020-08-10", [("LB", 1, "")]),
 ]
-# FINRA: (symbol, settlement, short interest, ADV)
-SHORTS = [("LA", "2020-07-15", 10, 5), ("LA", "2020-07-31", 20, 4), ("LA", "2020-08-25", 30, 10),
-          ("LB", "2020-07-15", 50, 0)]
+# FINRA: (symbol, settlement, short interest, ADV, stock split flag)
+SHORTS = [("LA", "2020-07-15", 10, 5, ""), ("LA", "2020-07-31", 20, 4, "S"), ("LA", "2020-08-25", 30, 10, ""),
+          ("LB", "2020-07-15", 50, 0, ""), (UNLINKED, "2020-07-15", 8, 4, "")]
 
 
 def _store(tmp_path):
@@ -51,29 +67,32 @@ def _store(tmp_path):
         CREATE TABLE thirteenf_submissions (accession_number VARCHAR, filing_date DATE, submission_type VARCHAR,
             cik VARCHAR, period_of_report DATE, source_period VARCHAR);
         CREATE TABLE thirteenf_holdings (accession_number VARCHAR, cusip VARCHAR, name_of_issuer VARCHAR,
-            share_quantity DOUBLE, share_quantity_type VARCHAR, put_call VARCHAR, source_period VARCHAR);
+            share_quantity DOUBLE, share_quantity_type VARCHAR, put_call VARCHAR, title_of_class VARCHAR,
+            source_period VARCHAR);
         CREATE TABLE finra_short_interest (symbol VARCHAR, settlement_date DATE, market_class_code VARCHAR,
-            current_short_position_quantity BIGINT, average_daily_volume_quantity BIGINT, available_at TIMESTAMP);
+            current_short_position_quantity BIGINT, average_daily_volume_quantity BIGINT, available_at TIMESTAMP,
+            revision_flag VARCHAR, stock_split_flag VARCHAR);
     """)
     con.executemany("INSERT INTO trading_calendar VALUES ('XNYS', ?, true, 'equity_daily_bars calendar')",
                     [(d,) for d in SESSIONS])
-    for line, (cik, name, shares_source, shares) in LINES.items():
+    for line in (*LINES, UNLINKED):
         con.executemany("INSERT INTO equity_daily_bars VALUES (?, ?, ?)", [(line, line, d) for d in SESSIONS])
+    for line, (cik, shares_source, shares) in LINES.items():
         con.executemany("INSERT INTO market_daily_metrics VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         [(f"{line}-{d}", line, d, d, dt.datetime.combine(d, CLOSE), MARKET_DAILY_SOURCE_NAME, shares,
                           shares_source) for d in SESSIONS])
-        con.execute("INSERT INTO sec_company_tickers VALUES (?, ?, ?, NULL)", [cik, line, name.title()])
-        con.executemany("INSERT INTO security_identifier_history VALUES (?, ?, ?, 'master', NULL, NULL)",
-                        [(line, "CUSIP", f"CUSIP{line}01"), (line, "TICKER", line)])
-    names = {"CUSIPLA01": "ALPHA INC", "CUSIPLB01": "BETA INC", "NOBODY001": "NOBODY CORP"}
-    for accession, manager, period, filed, rows in FILINGS:
+        con.execute("INSERT INTO sec_company_tickers VALUES (?, ?, ?, NULL)", [cik, line, NAMES[line].title()])
+        con.executemany("INSERT INTO security_identifier_history VALUES (?, ?, ?, 'master', ?, NULL)",
+                        [(line, "CUSIP", CUSIPS[line], None), (line, "TICKER", line, dt.date(2000, 1, 1))])
+    for manager, period, filed, rows in FILINGS:
+        accession = f"{manager}-{period}"
         con.execute("INSERT INTO thirteenf_submissions VALUES (?, ?, '13F-HR', ?, ?, 'p')",
                     [accession, filed, manager, period])
-        con.executemany("INSERT INTO thirteenf_holdings VALUES (?, ?, ?, ?, 'SH', ?, 'p')",
-                        [(accession, cusip, names[cusip], n, put) for cusip, n, put in rows])
-    con.executemany("INSERT INTO finra_short_interest VALUES (?, ?, 'N', ?, ?, ?)",
-                    [(symbol, settle, si, adv, dt.datetime.fromisoformat(settle) + dt.timedelta(days=10, hours=22))
-                     for symbol, settle, si, adv in SHORTS])
+        con.executemany("INSERT INTO thirteenf_holdings VALUES (?, ?, ?, ?, 'SH', ?, 'COM', 'p')",
+                        [(accession, CUSIPS[line], NAMES[line], n, put) for line, n, put in rows])
+    con.executemany("INSERT INTO finra_short_interest VALUES (?, ?, 'N', ?, ?, ?, '', ?)",
+                    [(symbol, settle, si, adv, dt.datetime.fromisoformat(settle) + dt.timedelta(days=10, hours=22),
+                      split) for symbol, settle, si, adv, split in SHORTS])
     con.close()
     research = ResearchStore(tmp_path / "research.duckdb", warehouse_path=warehouse)
     research.open()
@@ -94,6 +113,9 @@ def _store(tmp_path):
             rc.execute("INSERT INTO research_panel_cohort (run_id, formation_date, security_id, owner_cik, "
                        "identity_basis, cohort_reason, eligible, primary_line) VALUES ('run1', ?, ?, ?, 'r', "
                        "'valid', true, true)", [f, line, f"{int(cik):010d}"])
+        rc.execute("INSERT INTO research_panel_cohort (run_id, formation_date, security_id, owner_cik, identity_basis, "
+                   "cohort_reason, eligible, primary_line) VALUES ('run1', ?, ?, NULL, 'r', 'missing_owner_link', "
+                   "true, NULL)", [f, UNLINKED])
     return research
 
 
@@ -106,19 +128,25 @@ def store(tmp_path):
         research.close()
 
 
-def test_ownership_features_clocks_io_flag_and_verified_shares(store):
+def test_ownership_features_clocks_io_flag_verified_shares_and_line_level_si(store):
     result = build_ownership_features(store, OwnershipFeatureOptions(panel_run_id="run1"))
     assert result.status == "sealed" and not result.reused
-    assert result.feature_rows == len(FORMATIONS) * 2 * 5                          # dense: lines x features
+    assert result.feature_rows == len(FORMATIONS) * 3 * 5                          # dense: 3 lines x 5 features
     assert "thirteenf_unmapped_cusip_periods:2/6" in result.blockers                # NOBODY CORP, both quarters
+    # no dated name windows: every 13F value is survivor-conditioned (LA IO x5, dIO x2, breadth LA/LB x2 each)
+    assert "thirteenf_identity_survivor_conditioned:11" in result.blockers
+    assert any(b.startswith("price_line_features_rank_unlinked_lines") for b in result.blockers)
     feats = {(str(r[0]), r[1], r[2]): r[3:] for r in store.con.execute("""
-        SELECT formation_date, security_id, feature_id, raw_value, reason, available_at, source_period, value_flag
+        SELECT formation_date, security_id, feature_id, raw_value, reason, available_at, source_period, value_flag,
+               owner_basis, sample_conditioning, identity_basis
         FROM research_ownership_features WHERE ownership_version=?""", [result.ownership_version]).fetchall()}
     may, jun, jul, aug, sep = (str(f) for f in FORMATIONS)
     d, ts = dt.date.fromisoformat, dt.datetime.fromisoformat
 
     # 13F: nothing before Q1's deadline clock (05-15 + 46 h); Q2 only from 08-15 22:00 (08-14 + 46 h)
     assert feats[(may, "LA", "io_ratio_13f")][:5] == (0.9, "valid", ts("2020-05-16 22:00"), d("2020-03-31"), None)
+    assert feats[(may, "LA", "io_ratio_13f")][5:] == ("linked_primary", "cusip_survivor_conditioned",
+                                                       "cusip_ticker_current/high")
     assert feats[(jul, "LA", "io_ratio_13f")][3] == d("2020-03-31")
     io = feats[(aug, "LA", "io_ratio_13f")]
     assert io[:5] == (pytest.approx(1.25), "valid", ts("2020-08-15 22:00"), d("2020-06-30"), "io_above_one")
@@ -134,12 +162,17 @@ def test_ownership_features_clocks_io_flag_and_verified_shares(store):
     assert feats[(jun, "LA", "short_interest_ratio")][:2] == (None, "no_recent_short_interest")
     assert feats[(jul, "LA", "short_interest_ratio")][:4] == (0.1, "valid", ts("2020-07-27 22:00"), d("2020-07-15"))
     assert feats[(aug, "LA", "short_interest_ratio")][:4] == (0.2, "valid", ts("2020-08-12 22:00"), d("2020-07-31"))
-    assert feats[(aug, "LA", "days_to_cover_si")][:2] == (5.0, "valid")            # 08-25 publishes 09-04
-    assert feats[(sep, "LA", "days_to_cover_si")][:2] == (3.0, "valid")
+    assert feats[(aug, "LA", "days_to_cover_si")][:2] == (None, "split_in_period")      # FINRA split flag
+    assert feats[(sep, "LA", "days_to_cover_si")][:2] == (3.0, "valid")                 # 08-25 publishes 09-04
     assert feats[(jul, "LB", "days_to_cover_si")][:2] == (None, "missing_adv")
-    for (formation, _, _), (_value, _, available, _, _) in feats.items():
-        if available is not None:
-            assert available <= dt.datetime.combine(d(formation), CLOSE)
+    # the unlinked line: line-level days-to-cover, owner features NULL with a reason
+    assert feats[(jul, "LU", "days_to_cover_si")][:2] == (2.0, "valid")
+    assert feats[(jul, "LU", "days_to_cover_si")][5] == "unlinked_line"
+    assert feats[(jul, "LU", "short_interest_ratio")][:2] == (None, "missing_market_row")
+    assert feats[(aug, "LU", "io_ratio_13f")][:2] == (None, "no_owner_link")
+    for (formation, _, _), row in feats.items():
+        if row[2] is not None:
+            assert row[2] <= dt.datetime.combine(d(formation), CLOSE)
 
     assert validate_ownership_version(store, result.ownership_version)["short_interest_before_publication"] == 0
     again = build_ownership_features(store, OwnershipFeatureOptions(panel_run_id="run1"))

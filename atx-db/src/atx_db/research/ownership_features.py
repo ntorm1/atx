@@ -1,69 +1,80 @@
-"""Ownership and short-interest research features (task P9).
+"""Ownership and short-interest research features (task P9, fix round 1).
 
 For one sealed R2a monthly panel run (one basis) this module builds one immutable,
 content-addressed *ownership version*: the formation-aligned table
-``research_ownership_features`` (dense over the panel's valid primary lines, the shape of
+``research_ownership_features`` (dense over the panel's eligible lines: linked primary
+lines ``owner_basis='linked_primary'`` and eligible lines without an owner link
+``owner_basis='unlinked_line'``, the R2b I1 universe of price-line features; the shape of
 P3's ``research_event_features`` for the planned R2b adapter) and the identity rows it used
 (``research_ownership_identity``). Identity comes from :mod:`atx_db.ownership_identity`.
 
 Features (:data:`OWNERSHIP_FEATURES`)
 ------------------------------------
-13F (quarter R* = the latest report quarter whose filing deadline, ``R + 45 days`` plus the
-FC1 46 h floor, has passed at the formation cutoff and that is at most
-``max_13f_age_days`` old; R* - 1 = the previous calendar quarter end):
+13F features need the owner: on an unlinked line they are NULL with ``no_owner_link``.
+Quarter R* = the latest calendar quarter end whose filing deadline, ``R + 45 days`` plus
+the FC1 46 h floor, has passed at the formation cutoff and that is at most
+``max_13f_age_days`` old; R* - 1 = the previous calendar quarter end.
 
 ``io_ratio_13f``
-    Institutional ownership: 13F common shares (``SH``, no put/call) summed over every
-    manager's position state in the owner's mapped CUSIPs at R* / the line's **verified**
-    share count at R* (the ``market_daily_metrics`` row of the last session on or before
-    R*, newest revision visible at the cutoff, ``shares_source='dei'``); otherwise NULL with
-    ``unverified_shares`` / ``missing_market_row``. IO > 1 is kept (never clipped) and
-    flagged ``value_flag='io_above_one'`` (double counting, short-sale lending, stale share
-    counts).
+    Institutional ownership: the 13F **common-equity** shares (eligible holdings of
+    :func:`atx_db.ownership_identity.holding_exclusion_sql`: ``SH``, no put/call, a common
+    ``title_of_class``, a valid non-placeholder CUSIP) summed over every manager's position
+    state in the owner's mapped CUSIPs at R* / the line's **verified** share count at R* (the
+    ``market_daily_metrics`` row of the last session on or before R*, newest revision
+    visible at the cutoff, ``shares_source='dei'``); otherwise NULL with ``unverified_shares``
+    / ``missing_market_row``. IO > 1 is kept (never clipped) and flagged
+    ``value_flag='io_above_one'``.
 ``io_change_13f``
-    IO(R*) - IO(R* - 1), both as known at the same cutoff, each over its own quarter-end
-    verified share count.
+    IO(R*) - IO(R* - 1), both as known at the same cutoff; the weaker identity of the two.
 ``breadth_change_13f``
     Chen, Hong and Stein (2002): (managers holding the stock at R* - managers holding it at
-    R* - 1) / managers filing in both quarters, counting only managers that file in both.
-    NULL (``not_held_both_quarters``) unless the owner is held in both quarters.
+    R* - 1) / managers with a visible full filing in both quarters, counting only those.
 
-A manager-quarter's position state at a cutoff follows the 13F amendment rules of
-:mod:`atx_db.thirteenf_amendments`: the latest visible FULL filing (original or
-RESTATEMENT) plus the visible ADD-NEW-HOLDINGS amendments after it; only filings visible
-at the cutoff count. A filing's clock is the later of its EDGAR acceptance (when
-``sec_submissions`` has it) and filed date + 46 h; the 45-day filing lag is inherent.
+A manager-quarter's position state at a cutoff: the latest visible FULL filing (original or
+RESTATEMENT) plus the visible ADD-NEW-HOLDINGS amendments after it (the
+:mod:`atx_db.thirteenf_amendments` sequencing); filings are deduplicated by accession. A
+filing's clock is the later of its EDGAR acceptance (when ``sec_submissions`` has it) and
+filed date + 46 h; the 45-day filing lag is inherent.
 
-FINRA short interest (the latest settlement mapped to the line whose publication clock is
-at or before the cutoff and at most ``max_si_age_days`` old):
+FINRA short interest (line-level: every eligible line; the latest settlement mapped to the
+line whose publication clock is at or before the cutoff and at most ``max_si_age_days``
+old):
 
 ``short_interest_ratio``
     Short interest / the line's verified share count at the last session on or before the
-    settlement (same gate as IO).
+    settlement (same gate as IO; an unlinked line has no DEI count: ``unverified_shares``).
 ``days_to_cover_si``
-    Short interest / FINRA's average daily volume (``missing_adv`` when not positive).
+    Short interest / FINRA's average daily volume (``missing_adv`` when not positive);
+    NULL with ``split_in_period`` when FINRA's ``stock_split_flag`` is set or an R1d exact
+    split ratio (the A8 real-split rule) goes ex on the line inside the reporting period
+    (after the symbol's previous settlement, at most 16 days back, through the settlement):
+    SI and the period ADV are then on mixed share bases.
 
 Short interest is visible only from its **publication** clock, never the settlement: the
 later of the loader's ``available_at`` and settlement + ``si_publication_business_days``
-business days (default 8; FINRA disseminates about seven business days after settlement)
-at 22:00 UTC. Business days are the observed XNYS sessions inside the calendar and
-weekdays outside it. A 13F value is visible from the later of the quarter's deadline
-clock, its included filings' clocks and its share count's clock.
+business days (default 8; FINRA disseminates about seven business days after settlement,
+after the close) at 22:00 UTC; formations trade at the next session. A row FINRA revised
+(``revision_flag`` set: the loader keeps only the revised values) is visible only from the
+modeled publication of the **next** settlement cycle, never at the original's clock.
+Business days are the observed XNYS sessions inside the calendar and weekdays outside it.
 
-Every row carries ``source_period`` (report quarter or settlement), ``source_clock``
-(quarter deadline clock or publication clock), ``identity_basis`` (the weakest mapping
-basis/confidence among the owner's CUSIPs at R*, or ``finra_symbol_date_line``) and
-``reason``: ``valid``, ``unverified_shares``, ``missing_market_row``,
-``no_mapped_13f_holding`` (no visible 13F position in a CUSIP mapped to the owner for
-that quarter), ``not_held_both_quarters``, ``no_continuing_managers``,
-``previous_quarter_<reason>``, ``missing_adv``, ``no_recent_13f_quarter`` or
-``no_recent_short_interest``.
+Every row carries ``owner_basis``, ``source_period``, ``source_clock``, ``identity_basis``
+(the weakest mapping basis/confidence among the owner's CUSIPs, or
+``finra_symbol_date_line``), ``sample_conditioning`` (13F: ``cusip_survivor_conditioned``
+when any CUSIP used was mapped through a current snapshot, else ``dated_name_window``) and
+``reason``: ``valid``, ``unverified_shares``, ``missing_market_row``, ``no_owner_link``,
+``no_mapped_13f_holding`` (no visible eligible 13F position in a CUSIP mapped to the owner
+for that quarter), ``not_held_both_quarters``, ``no_continuing_managers``,
+``previous_quarter_<reason>``, ``missing_adv``, ``split_in_period``,
+``no_recent_13f_quarter`` or ``no_recent_short_interest``.
 
 Versions and seal checks follow P3: ``ownership_version`` = sha256(spec incl. panel seal,
 parameters, input fingerprints; code digest). Seal checks: no value visible after its
 cutoff; no short-interest value before its publication clock or on its settlement day; no
 13F value before its quarter's deadline clock; every 13F value's owner mapped for its
-quarter; grain. The identity is reconstructed research identity (blocker label).
+quarter; no owner feature on an unlinked line; grain. Blockers label the reconstructed
+identity, the modeled FINRA calendar, revised FINRA rows, unlinked lines and -- until dated
+name windows (0327) exist in the warehouse -- the survivor-conditioned 13F coverage.
 """
 
 from __future__ import annotations
@@ -82,13 +93,14 @@ import duckdb
 
 from .. import ownership_identity as _identity
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
-from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME
+from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME, _real_split_sql
 from . import panel as _panel
+from .features import OWNER_BASIS_LINKED, OWNER_BASIS_UNLINKED, UNLINKED_COHORT_REASONS, UNLINKED_LINES_BLOCKER
 from .store import ResearchStore
 
-QUERY_VERSION = "research-ownership-features-v1"
-OWNERSHIP_SCHEMA_VERSION = 1
-KNOWN_SCHEMA_VERSIONS = (1,)
+QUERY_VERSION = "research-ownership-features-v2"
+OWNERSHIP_SCHEMA_VERSION = 2
+KNOWN_SCHEMA_VERSIONS = (1, 2)
 
 FEATURE_IO = "io_ratio_13f"
 FEATURE_IO_CHANGE = "io_change_13f"
@@ -102,19 +114,23 @@ OWNERSHIP_FEATURES = (*THIRTEENF_FEATURES, *SI_FEATURES)
 VALID = "valid"
 REASON_UNVERIFIED = _panel.UNVERIFIED_SHARES_REASON
 REASON_NO_MARKET_ROW = "missing_market_row"
+REASON_NO_OWNER = "no_owner_link"
 REASON_NO_CUSIP = "no_mapped_13f_holding"
 REASON_NOT_BOTH = "not_held_both_quarters"
 REASON_NO_CONTINUING = "no_continuing_managers"
 REASON_NO_ADV = "missing_adv"
+REASON_SPLIT = "split_in_period"
 REASON_NO_13F = "no_recent_13f_quarter"
 REASON_NO_SI = "no_recent_short_interest"
 FLAG_IO_ABOVE_ONE = "io_above_one"
 SI_IDENTITY_BASIS = "finra_symbol_date_line"
+SI_CONDITIONING = "line_level"
 VERIFIED_SHARES_SOURCES = _panel.VERIFIED_SHARES_SOURCES
 
 FILING_DEADLINE_DAYS = 45
 EVIDENCE_FLOOR_HOURS = 46
 PUBLICATION_HOUR = 22
+SI_PERIOD_MAX_DAYS = 16
 
 STATUS_BUILDING = "building"
 STATUS_SEALED = "sealed"
@@ -125,22 +141,25 @@ SEALED_STATUSES = (STATUS_SEALED, STATUS_EMPTY)
 IDENTITY_BLOCKER = "ownership_identity_reconstructed_modeled_not_certified"
 PUBLICATION_BLOCKER = "short_interest_publication_modeled_business_days"
 RECONSTRUCTED_BLOCKER = "reconstructed_identity_universe_and_availability_not_certifiable"
+SURVIVOR_BLOCKER = "thirteenf_identity_survivor_conditioned"
+REVISED_BLOCKER = "finra_revised_rows_modeled_next_cycle"
 
 REQUIRED_WAREHOUSE_TABLES = ("trading_calendar", "market_daily_metrics", "equity_daily_bars", "sec_company_tickers")
 THIRTEENF_TABLES = ("thirteenf_submissions", "thirteenf_holdings")
 _VERSION_TABLES = ("research_ownership_features", "research_ownership_identity", "research_ownership_versions")
 _TEMP_TABLES = ("_ow_cal", "_ow_days", "_ow_bday", "_ow_forms", "_ow_lines", "_ow_owners", "_ow_filings",
-                "_ow_form_q", "_ow_positions", "_ow_vals", "_ow_si", "_ow_shares_at", "_oi_cusip_periods",
-                "_oi_cusip_owner", "_oi_names", "_oi_current_cusips", "_oi_ticker_links", "_oi_name_links",
-                "_oi_si_keys", "_oi_si_line")
+                "_ow_form_q", "_ow_positions", "_ow_vals", "_ow_si", "_ow_si_rows", "_ow_si_splits", "_ow_shares_at",
+                "_ow_state", "_ow_managers", "_ow_share_keys", "_ow_si_pick", "_oi_cusip_periods", "_oi_cusip_owner",
+                "_oi_names", "_oi_current_cusips", "_oi_flagged", "_oi_ticker_links", "_oi_primary_diag",
+                "_oi_name_links", "_oi_raw", "_oi_cusip_status", "_oi_eligible", "_oi_si_keys", "_oi_si_line")
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PKG = Path(__file__).resolve().parents[1]
 _CODE_FILES = (Path(__file__), _PKG / "ownership_identity.py", _PKG / "research" / "panel.py",
-               _PKG / "thirteenf_amendments.py", _PKG / "_fundamental_clock.py")
+               _PKG / "_fundamental_clock.py")
 _DIGEST_CHUNK = 12
 _VALS_COLUMNS = ("formation_date DATE, security_id VARCHAR, owner_cik VARCHAR, feature_id VARCHAR, value DOUBLE, "
                  "reason VARCHAR, available_at TIMESTAMP, source_period DATE, source_clock TIMESTAMP, "
-                 "value_flag VARCHAR, identity_basis VARCHAR")
+                 "value_flag VARCHAR, identity_basis VARCHAR, sample_conditioning VARCHAR")
 
 
 class OwnershipStoreError(ValueError):
@@ -182,7 +201,7 @@ def _calendar_keys() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def ensure_ownership_schema(con: Any) -> None:
-    """Create the ``research_ownership_*`` tables (schema v1); refuse a newer unknown schema."""
+    """Create or upgrade the ``research_ownership_*`` tables (schema v2); refuse a newer unknown schema."""
     con.execute("""
         CREATE TABLE IF NOT EXISTS research_ownership_schema (
             version INTEGER PRIMARY KEY, name VARCHAR NOT NULL, applied_at TIMESTAMP NOT NULL)""")
@@ -226,7 +245,7 @@ def ensure_ownership_schema(con: Any) -> None:
             ownership_version VARCHAR NOT NULL,
             formation_date DATE NOT NULL,
             security_id VARCHAR NOT NULL,
-            owner_cik VARCHAR NOT NULL,
+            owner_cik VARCHAR,
             feature_id VARCHAR NOT NULL,
             raw_value DOUBLE,
             reason VARCHAR NOT NULL,
@@ -237,8 +256,18 @@ def ensure_ownership_schema(con: Any) -> None:
             identity_basis VARCHAR
         );
     """)
+    # v1 -> v2 in place (no-ops on a fresh store): owner basis, sample conditioning, nullable owner.
+    con.execute("ALTER TABLE research_ownership_features ADD COLUMN IF NOT EXISTS owner_basis VARCHAR")
+    con.execute("ALTER TABLE research_ownership_features ADD COLUMN IF NOT EXISTS sample_conditioning VARCHAR")
+    con.execute("ALTER TABLE research_ownership_identity ADD COLUMN IF NOT EXISTS sample_conditioning VARCHAR")
+    nullable = con.execute("""
+        SELECT is_nullable FROM duckdb_columns()
+        WHERE table_name='research_ownership_features' AND column_name='owner_cik' AND NOT internal
+          AND database_name=current_database()""").fetchone()
+    if nullable is not None and not nullable[0]:
+        con.execute("ALTER TABLE research_ownership_features ALTER COLUMN owner_cik DROP NOT NULL")
     con.execute("INSERT INTO research_ownership_schema VALUES (?, ?, ?)",
-                [OWNERSHIP_SCHEMA_VERSION, "ownership_features_v1", _now()])
+                [OWNERSHIP_SCHEMA_VERSION, "ownership_features_v2_line_level_conditioning", _now()])
 
 
 # ---------------------------------------------------------------------------
@@ -340,14 +369,24 @@ def _spec(options: OwnershipFeatureOptions, context: dict[str, Any], calendar: t
         "basis": context["basis"],
         "market_source": context["market_source"],
         "verified_shares_sources": list(VERIFIED_SHARES_SOURCES),
+        "universe": {"owner_bases": [OWNER_BASIS_LINKED, OWNER_BASIS_UNLINKED],
+                     "unlinked_cohort_reasons": list(UNLINKED_COHORT_REASONS),
+                     "owner_features": list(THIRTEENF_FEATURES), "line_features": list(SI_FEATURES)},
         "thirteenf": {"filing_deadline_days": FILING_DEADLINE_DAYS, "max_age_days": options.max_13f_age_days,
                       "clock": f"max(acceptance, filed + {EVIDENCE_FLOOR_HOURS}h) ({FUNDAMENTAL_CLOCK_POLICY})",
-                      "positions": "SH, no put/call; latest visible FULL + later visible ADD",
-                      "breadth": "chen_hong_stein_2002_continuing_managers"},
+                      "positions": "eligible common-equity holdings; latest visible FULL + later visible ADD",
+                      "common_title_pattern": _identity.COMMON_TITLE_PATTERN,
+                      "non_common_title_pattern": _identity.NON_COMMON_TITLE_PATTERN,
+                      "breadth": "chen_hong_stein_2002_continuing_managers_with_full_filings"},
         "short_interest": {"max_age_days": options.max_si_age_days,
                            "publication_business_days": options.si_publication_business_days,
-                           "publication_hour_utc": PUBLICATION_HOUR, "line_lookback_days": _identity.SI_LOOKBACK_DAYS},
-        "identity": {"bases": list(_identity.IDENTITY_BASES), "availability": _identity.MAPPING_AVAILABILITY},
+                           "publication_hour_utc": PUBLICATION_HOUR, "line_lookback_days": _identity.SI_LOOKBACK_DAYS,
+                           "revised_rows": "next_settlement_cycle_publication",
+                           "split_in_period": "stock_split_flag_or_a8_real_split_rule",
+                           "period_max_days": SI_PERIOD_MAX_DAYS},
+        "identity": {"bases": list(_identity.IDENTITY_BASES), "availability": _identity.MAPPING_AVAILABILITY,
+                     "min_current_filers": _identity.MIN_CURRENT_FILERS,
+                     "name_dominance_min": _identity.NAME_DOMINANCE_MIN},
         "calendar": list(calendar),
         "features": list(OWNERSHIP_FEATURES),
         "inputs": inputs,
@@ -388,21 +427,33 @@ def _stage_panel(con: Any, run_id: str, calendar: tuple[str, str]) -> dict[str, 
         SELECT formation_date, cutoff FROM research_panel_calendar
         WHERE run_id=? AND status=? AND formation_date IS NOT NULL AND cutoff IS NOT NULL
     """, [run_id, _panel.CALENDAR_FORMED])
-    con.execute("""
+    # R2b I1: linked primary lines plus eligible lines without a usable owner link.
+    con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _ow_lines AS
-        SELECT c.formation_date, f.cutoff, c.security_id, c.owner_cik
-        FROM research_panel_cohort c JOIN _ow_forms f ON f.formation_date=c.formation_date
-        WHERE c.run_id=? AND c.cohort_reason='valid' AND coalesce(c.primary_line, false) AND c.owner_cik IS NOT NULL
+        SELECT * FROM (
+            SELECT c.formation_date, f.cutoff, c.security_id,
+                   CASE WHEN c.cohort_reason='valid' AND coalesce(c.primary_line, false) THEN c.owner_cik END
+                       AS owner_cik,
+                   CASE WHEN c.cohort_reason='valid' AND coalesce(c.primary_line, false) AND c.owner_cik IS NOT NULL
+                        THEN '{OWNER_BASIS_LINKED}'
+                        WHEN c.cohort_reason IN ({_sql_list(UNLINKED_COHORT_REASONS)}) THEN '{OWNER_BASIS_UNLINKED}'
+                        END AS owner_basis
+            FROM research_panel_cohort c JOIN _ow_forms f ON f.formation_date=c.formation_date
+            WHERE c.run_id=? AND coalesce(c.eligible, false)
+        ) WHERE owner_basis IS NOT NULL
     """, [run_id])
-    con.execute("CREATE OR REPLACE TEMP TABLE _ow_owners AS SELECT DISTINCT owner_cik FROM _ow_lines")
-    formations, lines, owners = con.execute(
-        "SELECT (SELECT count(*) FROM _ow_forms), (SELECT count(*) FROM _ow_lines), (SELECT count(*) FROM _ow_owners)"
-    ).fetchone()
-    return {"formations": int(formations), "owner_line_formations": int(lines), "owners": int(owners)}
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _ow_owners AS SELECT DISTINCT owner_cik FROM _ow_lines "
+                f"WHERE owner_basis='{OWNER_BASIS_LINKED}'")
+    formations, lines, unlinked, owners = con.execute(f"""
+        SELECT (SELECT count(*) FROM _ow_forms), (SELECT count(*) FROM _ow_lines),
+               (SELECT count(*) FROM _ow_lines WHERE owner_basis='{OWNER_BASIS_UNLINKED}'),
+               (SELECT count(*) FROM _ow_owners)""").fetchone()
+    return {"formations": int(formations), "line_formations": int(lines), "unlinked_line_formations": int(unlinked),
+            "owners": int(owners)}
 
 
 def _shares_sql(market_source: str) -> str:
-    """``_ow_shares_at(security_id, session, cutoff) -> shares, shares_source, clock`` as a staged join.
+    """``_ow_shares_at(security_id, anchor_date, cutoff) -> session, clock, shares, shares_source``.
 
     Callers stage ``_ow_share_keys(security_id, anchor_date, cutoff)``; the result is the newest
     ``market_daily_metrics`` revision of the last session on or before ``anchor_date`` visible
@@ -443,29 +494,33 @@ def _stage_identity(store: ResearchStore, version: str, has_13f: bool, has_si: b
         out["cusip_owner_map"] = _identity.stage_cusip_owner_map(con)
         with store.transaction():  # audit: every unmapped CUSIP-period and the mappings to panel owners
             con.execute(f"""
-                INSERT INTO research_ownership_identity
-                SELECT ?, '13f', cusip, report_period, name_key, owner_cik, NULL, identity_basis, confidence, reason
+                INSERT INTO research_ownership_identity (ownership_version, source, source_key, source_period,
+                    name_key, owner_cik, security_id, identity_basis, confidence, reason, sample_conditioning)
+                SELECT ?, '13f', cusip, report_period, name_key, owner_cik, NULL, identity_basis, confidence, reason,
+                       sample_conditioning
                 FROM _oi_cusip_owner
                 WHERE reason<>'{_identity.MAPPED}' OR owner_cik IN (SELECT owner_cik FROM _ow_owners)
             """, [version])
     else:
         con.execute("CREATE OR REPLACE TEMP TABLE _oi_cusip_owner (cusip VARCHAR, report_period DATE, name_key VARCHAR, "
-                    "owner_cik VARCHAR, identity_basis VARCHAR, confidence VARCHAR, reason VARCHAR)")
+                    "owner_cik VARCHAR, identity_basis VARCHAR, confidence VARCHAR, reason VARCHAR, "
+                    "sample_conditioning VARCHAR)")
     if has_si:
         out["si_line_map"] = _identity.stage_si_line_map(con)
         with store.transaction():  # audit: rows mapped to panel lines (unmapped rows are counted only)
             con.execute(f"""
-                INSERT INTO research_ownership_identity
+                INSERT INTO research_ownership_identity (ownership_version, source, source_key, source_period,
+                    name_key, owner_cik, security_id, identity_basis, confidence, reason, sample_conditioning)
                 SELECT ?, 'finra', symbol, settlement_date, symbol_key, NULL, security_id,
-                       '{SI_IDENTITY_BASIS}', NULL, reason
+                       '{SI_IDENTITY_BASIS}', NULL, reason, '{SI_CONDITIONING}'
                 FROM _oi_si_line
                 WHERE reason='{_identity.SI_MAPPED}' AND security_id IN (SELECT security_id FROM _ow_lines)
             """, [version])
     return out
 
 
-def _stage_filings(store: ResearchStore) -> int:
-    """``_ow_filings``: 13F-HR filings with manager, quarter, amendment sequence/mode and clock."""
+def _stage_filings(store: ResearchStore) -> dict[str, int]:
+    """``_ow_filings``: quarter-end 13F-HR filings (one per accession) with manager, mode, sequence and clock."""
     con = store.con
     cover = store.warehouse_has("thirteenf_cover_pages")
     acceptance = store.warehouse_has("sec_submissions", "acceptance_datetime")
@@ -491,6 +546,9 @@ def _stage_filings(store: ResearchStore) -> int:
             FROM thirteenf_submissions s {cover_join}
             WHERE upper(trim(s.submission_type)) IN ('13F-HR', '13F-HR/A') AND s.cik IS NOT NULL
               AND s.period_of_report IS NOT NULL AND s.filing_date IS NOT NULL
+              AND {_identity.quarter_end_sql('s.period_of_report')}
+            -- an accession present in two data-set periods is one filing (the latest data set)
+            QUALIFY row_number() OVER (PARTITION BY s.accession_number ORDER BY s.source_period DESC) = 1
         )
         SELECT n.accession_number, n.source_period, n.manager_cik, n.report_period, n.filing_date,
                CASE WHEN NOT n.is_amendment OR n.amendment_type LIKE '%RESTATEMENT%' THEN 'FULL' ELSE 'ADD' END
@@ -502,20 +560,25 @@ def _stage_filings(store: ResearchStore) -> int:
                    AS clock
         FROM normalized n LEFT JOIN accepted a ON a.accession_number=n.accession_number
     """)
-    return int(con.execute("SELECT count(*) FROM _ow_filings").fetchone()[0])
+    filings = int(con.execute("SELECT count(*) FROM _ow_filings").fetchone()[0])
+    rejected = con.execute(f"""
+        SELECT count(*) FROM thirteenf_submissions s
+        WHERE upper(trim(s.submission_type)) IN ('13F-HR', '13F-HR/A') AND s.period_of_report IS NOT NULL
+          AND NOT {_identity.quarter_end_sql('s.period_of_report')}""").fetchone()
+    return {"filings": filings, "rejected_non_quarter_end_filings": int(rejected[0])}
 
 
 def _load_quarter(con: Any, quarter: dt.date) -> int:
-    """Append one quarter's mapped common positions to ``_ow_positions`` (streamed by quarter)."""
-    con.execute("""
+    """Append one quarter's mapped eligible common positions to ``_ow_positions`` (streamed by quarter)."""
+    con.execute(f"""
         INSERT INTO _ow_positions
         SELECT f.manager_cik, f.report_period, f.accession_number, m.owner_cik, sum(h.share_quantity) AS shares
         FROM _ow_filings f
         JOIN thirteenf_holdings h ON h.accession_number=f.accession_number AND h.source_period=f.source_period
         JOIN _oi_cusip_owner m
-          ON m.cusip=upper(replace(replace(trim(h.cusip), ' ', ''), '-', '')) AND m.report_period=f.report_period
-         AND m.owner_cik IS NOT NULL
-        WHERE f.report_period=? AND coalesce(trim(h.put_call), '')='' AND upper(coalesce(h.share_quantity_type, ''))='SH'
+          ON m.cusip={_identity.cusip_key_sql('h.cusip')} AND m.report_period=f.report_period
+         AND m.reason='{_identity.MAPPED}'
+        WHERE f.report_period=? AND {_identity.holding_exclusion_sql('h')} IS NULL
           AND m.owner_cik IN (SELECT owner_cik FROM _ow_owners)
         GROUP BY f.manager_cik, f.report_period, f.accession_number, m.owner_cik
     """, [quarter])
@@ -524,7 +587,7 @@ def _load_quarter(con: Any, quarter: dt.date) -> int:
 
 def _thirteenf_formation(con: Any, formation: dt.date, cutoff: dt.datetime, current: dt.date,
                          previous: dt.date, market_source: str) -> None:
-    """Append the three 13F features of one formation's lines to ``_ow_vals``."""
+    """Append the three 13F features of one formation's linked lines to ``_ow_vals``."""
     con.execute("""
         CREATE OR REPLACE TEMP TABLE _ow_state AS
         WITH vis AS (
@@ -542,24 +605,33 @@ def _thirteenf_formation(con: Any, formation: dt.date, cutoff: dt.datetime, curr
         FROM live l JOIN _ow_positions p ON p.accession_number=l.accession_number
         GROUP BY p.report_period, p.owner_cik, p.manager_cik
     """, [current, previous, cutoff])
+    # Continuing managers: a visible FULL filing in both quarters (a lone ADD carries no state).
     con.execute("""
         CREATE OR REPLACE TEMP TABLE _ow_managers AS
-        SELECT manager_cik FROM _ow_filings WHERE report_period IN (?, ?) AND clock <= ?
+        SELECT manager_cik FROM _ow_filings
+        WHERE report_period IN (?, ?) AND clock <= ? AND filing_mode='FULL'
         GROUP BY manager_cik HAVING count(DISTINCT report_period) = 2
     """, [current, previous, cutoff])
     continuing = int(con.execute("SELECT count(*) FROM _ow_managers").fetchone()[0])
-    con.execute("""
+    con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _ow_share_keys AS
         SELECT l.security_id, q.anchor_date, CAST(? AS TIMESTAMP) AS cutoff
         FROM _ow_lines l CROSS JOIN (SELECT CAST(? AS DATE) AS anchor_date UNION ALL SELECT CAST(? AS DATE)) q
-        WHERE l.formation_date=?
+        WHERE l.formation_date=? AND l.owner_basis='{OWNER_BASIS_LINKED}'
     """, [cutoff, current, previous, formation])
     con.execute(_shares_sql(market_source))
     deadline = f"CAST(r AS TIMESTAMP) + INTERVAL {FILING_DEADLINE_DAYS} DAY + INTERVAL {EVIDENCE_FLOOR_HOURS} HOUR"
+    weaker_basis = ("CASE WHEN c.identity_basis IS NULL OR p.identity_basis IS NULL "
+                    "THEN coalesce(c.identity_basis, p.identity_basis) "
+                    "WHEN c.identity_rank >= p.identity_rank THEN c.identity_basis ELSE p.identity_basis END")
+    weaker_conditioning = (f"CASE WHEN '{_identity.CONDITIONING_SURVIVOR}' IN (c.sample_conditioning, "
+                           f"p.sample_conditioning) THEN '{_identity.CONDITIONING_SURVIVOR}' "
+                           f"ELSE coalesce(c.sample_conditioning, p.sample_conditioning) END")
     con.execute(f"""
         INSERT INTO _ow_vals
-        WITH lines AS (SELECT security_id, owner_cik FROM _ow_lines WHERE formation_date=?),
-        agg AS (
+        WITH lines AS (
+            SELECT security_id, owner_cik FROM _ow_lines WHERE formation_date=? AND owner_basis='{OWNER_BASIS_LINKED}'
+        ), agg AS (
             SELECT report_period, owner_cik, sum(shares) AS inst_shares, max(clock) AS clock,
                    count(DISTINCT manager_cik) FILTER (WHERE shares > 0
                        AND manager_cik IN (SELECT manager_cik FROM _ow_managers)) AS continuing_holders
@@ -568,13 +640,22 @@ def _thirteenf_formation(con: Any, formation: dt.date, cutoff: dt.datetime, curr
             SELECT report_period, owner_cik,
                    CASE WHEN bool_or(identity_basis='{_identity.IDENTITY_NAME_MATCH}') THEN '{_identity.IDENTITY_NAME_MATCH}'
                         ELSE '{_identity.IDENTITY_CUSIP_TICKER}' END || '/' ||
-                   CASE WHEN bool_or(confidence='{_identity.CONFIDENCE_MEDIUM}') THEN '{_identity.CONFIDENCE_MEDIUM}'
-                        ELSE '{_identity.CONFIDENCE_HIGH}' END AS identity_basis
-            FROM _oi_cusip_owner WHERE owner_cik IS NOT NULL AND report_period IN (?, ?)
+                   CASE WHEN bool_or(confidence='{_identity.CONFIDENCE_LOW}') THEN '{_identity.CONFIDENCE_LOW}'
+                        WHEN bool_or(confidence='{_identity.CONFIDENCE_MEDIUM}') THEN '{_identity.CONFIDENCE_MEDIUM}'
+                        ELSE '{_identity.CONFIDENCE_HIGH}' END AS identity_basis,
+                   CASE WHEN bool_or(confidence='{_identity.CONFIDENCE_LOW}') THEN 3
+                        WHEN bool_or(confidence='{_identity.CONFIDENCE_MEDIUM}') THEN 2 ELSE 1 END
+                     + CASE WHEN bool_or(identity_basis='{_identity.IDENTITY_NAME_MATCH}') THEN 0.5 ELSE 0 END
+                       AS identity_rank,
+                   CASE WHEN bool_or(sample_conditioning='{_identity.CONDITIONING_SURVIVOR}')
+                        THEN '{_identity.CONDITIONING_SURVIVOR}' ELSE '{_identity.CONDITIONING_DATED}' END
+                       AS sample_conditioning
+            FROM _oi_cusip_owner
+            WHERE reason='{_identity.MAPPED}' AND owner_cik IS NOT NULL AND report_period IN (?, ?)
             GROUP BY report_period, owner_cik
         ), per_q AS (
             SELECT l.security_id, l.owner_cik, q.r, a.inst_shares, a.clock, a.continuing_holders, b.identity_basis,
-                   s.shares, s.clock AS share_clock,
+                   b.identity_rank, b.sample_conditioning, s.shares, s.clock AS share_clock,
                    CASE WHEN a.owner_cik IS NULL THEN '{REASON_NO_CUSIP}' ELSE {_share_reason_sql('s')} END AS reason
             FROM lines l CROSS JOIN (SELECT CAST(? AS DATE) AS r UNION ALL SELECT CAST(? AS DATE)) q
             LEFT JOIN agg a ON a.owner_cik=l.owner_cik AND a.report_period=q.r
@@ -588,7 +669,7 @@ def _thirteenf_formation(con: Any, formation: dt.date, cutoff: dt.datetime, curr
         SELECT CAST(? AS DATE), c.security_id, c.owner_cik, '{FEATURE_IO}', c.io, c.reason,
                CASE WHEN c.reason='{VALID}' THEN c.io_clock END, c.r,
                CAST(c.r AS TIMESTAMP) + INTERVAL {FILING_DEADLINE_DAYS} DAY + INTERVAL {EVIDENCE_FLOOR_HOURS} HOUR,
-               CASE WHEN c.io > 1 THEN '{FLAG_IO_ABOVE_ONE}' END, c.identity_basis
+               CASE WHEN c.io > 1 THEN '{FLAG_IO_ABOVE_ONE}' END, c.identity_basis, c.sample_conditioning
         FROM cur c
         UNION ALL
         SELECT CAST(? AS DATE), c.security_id, c.owner_cik, '{FEATURE_IO_CHANGE}',
@@ -597,7 +678,7 @@ def _thirteenf_formation(con: Any, formation: dt.date, cutoff: dt.datetime, curr
                     ELSE '{VALID}' END,
                CASE WHEN c.reason='{VALID}' AND p.reason='{VALID}' THEN greatest(c.io_clock, p.io_clock) END, c.r,
                CAST(c.r AS TIMESTAMP) + INTERVAL {FILING_DEADLINE_DAYS} DAY + INTERVAL {EVIDENCE_FLOOR_HOURS} HOUR,
-               NULL, c.identity_basis
+               NULL, {weaker_basis}, {weaker_conditioning}
         FROM cur c JOIN prev p ON p.security_id=c.security_id
         UNION ALL
         SELECT CAST(? AS DATE), c.security_id, c.owner_cik, '{FEATURE_BREADTH}',
@@ -609,7 +690,7 @@ def _thirteenf_formation(con: Any, formation: dt.date, cutoff: dt.datetime, curr
                     THEN greatest(CAST(c.r AS TIMESTAMP) + INTERVAL {FILING_DEADLINE_DAYS} DAY
                                   + INTERVAL {EVIDENCE_FLOOR_HOURS} HOUR, c.clock, p.clock) END, c.r,
                CAST(c.r AS TIMESTAMP) + INTERVAL {FILING_DEADLINE_DAYS} DAY + INTERVAL {EVIDENCE_FLOOR_HOURS} HOUR,
-               NULL, c.identity_basis
+               NULL, {weaker_basis}, {weaker_conditioning}
         FROM cur c JOIN prev p ON p.security_id=c.security_id
     """, [formation, current, previous, current, previous, current, previous, formation, formation, formation,
           continuing, continuing, continuing, continuing])
@@ -617,7 +698,7 @@ def _thirteenf_formation(con: Any, formation: dt.date, cutoff: dt.datetime, curr
 
 def _build_thirteenf(store: ResearchStore, options: OwnershipFeatureOptions, market_source: str) -> dict[str, Any]:
     con = store.con
-    filings = _stage_filings(store)
+    staged = _stage_filings(store)
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _ow_form_q AS
         WITH q AS (
@@ -651,42 +732,90 @@ def _build_thirteenf(store: ResearchStore, options: OwnershipFeatureOptions, mar
             loaded.discard(stale)
         _thirteenf_formation(con, formation, cutoff, current, previous, market_source)
         formed += 1
-    return {"filings": filings, "formations_with_quarter": formed, "quarters_streamed": streamed,
+    return {**staged, "formations_with_quarter": formed, "quarters_streamed": streamed,
             "position_rows_loaded": position_rows}
 
 
 def _build_short_interest(store: ResearchStore, options: OwnershipFeatureOptions, market_source: str) -> dict[str, Any]:
     con = store.con
+    revised = ("coalesce(trim(CAST(revision_flag AS VARCHAR)), '') <> ''"
+               if store.warehouse_has("finra_short_interest", "revision_flag") else "false")
+    split_flag = ("coalesce(trim(CAST(stock_split_flag AS VARCHAR)), '') <> ''"
+                  if store.warehouse_has("finra_short_interest", "stock_split_flag") else "false")
     con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _ow_si AS
+        CREATE OR REPLACE TEMP TABLE _ow_si_rows AS
         WITH rows AS (  -- one market-class row per symbol-settlement; several classes are not summed
             SELECT symbol, settlement_date, max(current_short_position_quantity) AS short_interest,
-                   max(average_daily_volume_quantity) AS adv, max(available_at) AS loader_available_at
+                   max(average_daily_volume_quantity) AS adv, max(available_at) AS loader_available_at,
+                   bool_or({revised}) AS revised, bool_or({split_flag}) AS split_flag
             FROM finra_short_interest WHERE symbol IS NOT NULL AND settlement_date IS NOT NULL
             GROUP BY symbol, settlement_date HAVING count(*) = 1
+        ), cycles AS (  -- FINRA's settlement calendar and each cycle's modeled publication day
+            SELECT settlement_date, lead(settlement_date) OVER (ORDER BY settlement_date) AS next_settlement
+            FROM (SELECT DISTINCT settlement_date FROM finra_short_interest WHERE settlement_date IS NOT NULL)
+        ), published AS (
+            SELECT c.settlement_date, c.next_settlement, b.day AS publication_day
+            FROM cycles c JOIN _ow_days d ON d.day=c.settlement_date
+            JOIN _ow_bday b ON b.business_le=d.business_le + CAST(? AS INTEGER)
         )
         SELECT r.*, m.security_id,
-               greatest(r.loader_available_at,
-                        CAST(b.day AS TIMESTAMP) + INTERVAL {PUBLICATION_HOUR} HOUR) AS publication_clock
+               lag(r.settlement_date) OVER (PARTITION BY r.symbol ORDER BY r.settlement_date) AS prior_settlement,
+               CASE WHEN r.revised  -- the revised value is public only with the next cycle
+                    THEN greatest(r.loader_available_at, CAST(n.publication_day AS TIMESTAMP)
+                                  + INTERVAL {PUBLICATION_HOUR} HOUR)
+                    ELSE greatest(r.loader_available_at, CAST(p.publication_day AS TIMESTAMP)
+                                  + INTERVAL {PUBLICATION_HOUR} HOUR) END AS publication_clock
         FROM rows r
         JOIN _oi_si_line m ON m.symbol=r.symbol AND m.settlement_date=r.settlement_date
          AND m.reason='{_identity.SI_MAPPED}'
-        JOIN _ow_days d ON d.day=r.settlement_date
-        JOIN _ow_bday b ON b.business_le=d.business_le + CAST(? AS INTEGER)
+        JOIN published p ON p.settlement_date=r.settlement_date
+        LEFT JOIN published n ON n.settlement_date=p.next_settlement
     """, [options.si_publication_business_days])
+    # R1d exact split ratios (the A8 real-split rule) on the mapped lines' own bars.
+    if all(store.warehouse_has("equity_daily_bars", column) for column in ("close", "adjusted_close")):
+        order = [column for column in ("available_at", "source") if store.warehouse_has("equity_daily_bars", column)]
+        rank = f"({', '.join(order)})" if len(order) > 1 else (order[0] if order else "trade_date")
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _ow_si_splits AS
+            SELECT security_id, trade_date FROM (
+                SELECT security_id, trade_date,
+                       (lag(close) OVER w * adjusted_close) / (lag(adjusted_close) OVER w * close) AS day_factor
+                FROM (
+                    SELECT security_id, trade_date,
+                           arg_max_null(close, {rank}) AS close,
+                           arg_max_null(adjusted_close, {rank}) AS adjusted_close
+                    FROM equity_daily_bars WHERE security_id IN (SELECT DISTINCT security_id FROM _ow_si_rows)
+                    GROUP BY security_id, trade_date
+                ) WHERE close > 0 AND adjusted_close > 0
+                WINDOW w AS (PARTITION BY security_id ORDER BY trade_date)
+            ) WHERE {_real_split_sql('day_factor')}
+        """)
+    else:
+        con.execute("CREATE OR REPLACE TEMP TABLE _ow_si_splits (security_id VARCHAR, trade_date DATE)")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _ow_si AS
+        SELECT r.* EXCLUDE (prior_settlement),
+               r.split_flag OR EXISTS (
+                   SELECT 1 FROM _ow_si_splits x
+                   WHERE x.security_id=r.security_id AND x.trade_date <= r.settlement_date
+                     AND x.trade_date > greatest(coalesce(r.prior_settlement, r.settlement_date - {SI_PERIOD_MAX_DAYS}),
+                                                 r.settlement_date - {SI_PERIOD_MAX_DAYS})) AS split_in_period
+        FROM _ow_si_rows r
+        WHERE r.publication_clock IS NOT NULL
+    """)
     formations = [row[0] for row in con.execute("SELECT formation_date FROM _ow_forms ORDER BY 1").fetchall()]
     for start in range(0, len(formations), options.formation_chunk):
         batch = formations[start:start + options.formation_chunk]
         con.execute("""
             CREATE OR REPLACE TEMP TABLE _ow_si_pick AS
             SELECT l.formation_date, l.cutoff, l.security_id, l.owner_cik, s.settlement_date, s.short_interest,
-                   s.adv, s.publication_clock
+                   s.adv, s.publication_clock, s.split_in_period
             FROM _ow_lines l JOIN _ow_si s
               ON s.security_id=l.security_id AND s.publication_clock <= l.cutoff
              AND s.settlement_date >= l.formation_date - CAST(? AS INTEGER)
             WHERE l.formation_date BETWEEN ? AND ?
             QUALIFY row_number() OVER (PARTITION BY l.formation_date, l.security_id
-                                       ORDER BY s.settlement_date DESC) = 1
+                                       ORDER BY s.settlement_date DESC, s.symbol) = 1
         """, [options.max_si_age_days, batch[0], batch[-1]])
         con.execute("CREATE OR REPLACE TEMP TABLE _ow_share_keys AS SELECT security_id, settlement_date AS anchor_date, "
                     "cutoff FROM _ow_si_pick")
@@ -697,23 +826,25 @@ def _build_short_interest(store: ResearchStore, options: OwnershipFeatureOptions
                    CASE WHEN {_share_reason_sql('s')}='{VALID}' THEN p.short_interest / s.shares END,
                    {_share_reason_sql('s')},
                    CASE WHEN {_share_reason_sql('s')}='{VALID}' THEN greatest(p.publication_clock, s.clock) END,
-                   p.settlement_date, p.publication_clock, NULL, '{SI_IDENTITY_BASIS}'
+                   p.settlement_date, p.publication_clock, NULL, '{SI_IDENTITY_BASIS}', '{SI_CONDITIONING}'
             FROM _ow_si_pick p
             LEFT JOIN _ow_shares_at s ON s.security_id=p.security_id AND s.anchor_date=p.settlement_date
              AND s.cutoff=p.cutoff
             UNION ALL
             SELECT formation_date, security_id, owner_cik, '{FEATURE_DTC}',
-                   CASE WHEN adv > 0 THEN short_interest / adv END,
-                   CASE WHEN adv > 0 THEN '{VALID}' ELSE '{REASON_NO_ADV}' END,
-                   CASE WHEN adv > 0 THEN publication_clock END,
-                   settlement_date, publication_clock, NULL, '{SI_IDENTITY_BASIS}'
+                   CASE WHEN NOT split_in_period AND adv > 0 THEN short_interest / adv END,
+                   CASE WHEN split_in_period THEN '{REASON_SPLIT}' WHEN adv > 0 THEN '{VALID}'
+                        ELSE '{REASON_NO_ADV}' END,
+                   CASE WHEN NOT split_in_period AND adv > 0 THEN publication_clock END,
+                   settlement_date, publication_clock, NULL, '{SI_IDENTITY_BASIS}', '{SI_CONDITIONING}'
             FROM _ow_si_pick
         """)
-    rows = con.execute("SELECT count(*), count(DISTINCT security_id) FROM _ow_si").fetchone()
+    rows = con.execute("SELECT count(*), count(DISTINCT security_id), count(*) FILTER (WHERE revised), "
+                       "count(*) FILTER (WHERE split_in_period) FROM _ow_si").fetchone()
     multi = con.execute("SELECT count(*) FROM (SELECT 1 FROM finra_short_interest GROUP BY symbol, settlement_date "
                         "HAVING count(*) > 1)").fetchone()
-    return {"mapped_settlement_rows": int(rows[0]), "mapped_lines": int(rows[1]),
-            "multi_market_class_rows_excluded": int(multi[0])}
+    return {"mapped_settlement_rows": int(rows[0]), "mapped_lines": int(rows[1]), "revised_rows": int(rows[2]),
+            "split_in_period_rows": int(rows[3]), "multi_market_class_rows_excluded": int(multi[0])}
 
 
 def _insert_features(store: ResearchStore, version: str, options: OwnershipFeatureOptions) -> int:
@@ -724,18 +855,24 @@ def _insert_features(store: ResearchStore, version: str, options: OwnershipFeatu
         batch = formations[start:start + options.formation_chunk]
         with store.transaction():
             con.execute(f"""
-                INSERT INTO research_ownership_features
+                INSERT INTO research_ownership_features (ownership_version, formation_date, security_id, owner_cik,
+                    feature_id, raw_value, reason, available_at, source_period, source_clock, value_flag,
+                    identity_basis, owner_basis, sample_conditioning)
                 WITH grid AS (
-                    SELECT l.formation_date, l.security_id, l.owner_cik, f.feature_id
+                    SELECT l.formation_date, l.security_id, l.owner_cik, l.owner_basis, f.feature_id
                     FROM _ow_lines l CROSS JOIN (SELECT unnest(?::VARCHAR[]) AS feature_id) f
                     WHERE l.formation_date BETWEEN ? AND ?
                 )
                 SELECT ?, g.formation_date, g.security_id, g.owner_cik, g.feature_id,
                        CASE WHEN v.reason='{VALID}' THEN v.value END,
-                       coalesce(v.reason, CASE WHEN g.feature_id IN ({thirteenf}) THEN '{REASON_NO_13F}'
-                                               ELSE '{REASON_NO_SI}' END),
+                       coalesce(v.reason,
+                                CASE WHEN g.feature_id IN ({thirteenf}) AND g.owner_basis<>'{OWNER_BASIS_LINKED}'
+                                     THEN '{REASON_NO_OWNER}'
+                                     WHEN g.feature_id IN ({thirteenf}) THEN '{REASON_NO_13F}'
+                                     ELSE '{REASON_NO_SI}' END),
                        CASE WHEN v.reason='{VALID}' THEN v.available_at END,
-                       v.source_period, v.source_clock, v.value_flag, v.identity_basis
+                       v.source_period, v.source_clock, v.value_flag, v.identity_basis, g.owner_basis,
+                       v.sample_conditioning
                 FROM grid g LEFT JOIN _ow_vals v
                   ON v.formation_date=g.formation_date AND v.security_id=g.security_id AND v.feature_id=g.feature_id
             """, [list(OWNERSHIP_FEATURES), batch[0], batch[-1], version])
@@ -756,10 +893,12 @@ def _features_digest(con: Any, version: str) -> str:
     for start in range(0, len(formations), _DIGEST_CHUNK):
         batch = formations[start:start + _DIGEST_CHUNK]
         digests.extend(str(row[1]) for row in con.execute("""
-            SELECT formation_date, sha256(string_agg(md5(concat_ws('|', security_id, owner_cik, feature_id,
-                       coalesce(printf('%.12e', raw_value), ''), reason, coalesce(CAST(available_at AS VARCHAR), ''),
-                       coalesce(CAST(source_period AS VARCHAR), ''), coalesce(CAST(source_clock AS VARCHAR), ''),
-                       coalesce(value_flag, ''), coalesce(identity_basis, ''))), '' ORDER BY security_id, feature_id))
+            SELECT formation_date, sha256(string_agg(md5(concat_ws('|', security_id, coalesce(owner_cik, ''),
+                       feature_id, coalesce(printf('%.12e', raw_value), ''), reason,
+                       coalesce(CAST(available_at AS VARCHAR), ''), coalesce(CAST(source_period AS VARCHAR), ''),
+                       coalesce(CAST(source_clock AS VARCHAR), ''), coalesce(value_flag, ''),
+                       coalesce(identity_basis, ''), coalesce(owner_basis, ''), coalesce(sample_conditioning, ''))),
+                   '' ORDER BY security_id, feature_id))
             FROM research_ownership_features WHERE ownership_version=? AND formation_date BETWEEN ? AND ?
             GROUP BY formation_date ORDER BY formation_date
         """, [version, batch[0], batch[-1]]).fetchall())
@@ -769,9 +908,9 @@ def _features_digest(con: Any, version: str) -> str:
 def _identity_digest(con: Any, version: str) -> str:
     row = con.execute("""
         SELECT sha256(coalesce(string_agg(md5(concat_ws('|', source, source_key, CAST(source_period AS VARCHAR),
-                   coalesce(name_key, ''),
-                   coalesce(owner_cik, ''), coalesce(security_id, ''), coalesce(identity_basis, ''),
-                   coalesce(confidence, ''), reason)), '' ORDER BY source, source_key, source_period), ''))
+                   coalesce(name_key, ''), coalesce(owner_cik, ''), coalesce(security_id, ''),
+                   coalesce(identity_basis, ''), coalesce(confidence, ''), reason,
+                   coalesce(sample_conditioning, ''))), '' ORDER BY source, source_key, source_period), ''))
         FROM research_ownership_identity WHERE ownership_version=?
     """, [version]).fetchone()
     return str(row[0])
@@ -804,6 +943,10 @@ def _checks(con: Any, version: str) -> dict[str, int]:
                               WHERE i.ownership_version=x.ownership_version AND i.source='13f'
                                 AND i.owner_cik=x.owner_cik AND i.source_period=x.source_period
                                 AND i.reason='{_identity.MAPPED}')""", [version]),
+        "owner_feature_on_unlinked_line": (f"""
+            SELECT count(*) FROM research_ownership_features WHERE ownership_version=?
+              AND feature_id IN ({thirteenf}) AND raw_value IS NOT NULL
+              AND owner_basis IS DISTINCT FROM '{OWNER_BASIS_LINKED}'""", [version]),
         "feature_grain": ("""
             SELECT count(*) FROM (SELECT formation_date, security_id, feature_id FROM research_ownership_features
                                   WHERE ownership_version=? GROUP BY ALL HAVING count(*) > 1)""", [version]),
@@ -840,7 +983,7 @@ def validate_ownership_version(store: ResearchStore, ownership_version: str) -> 
 # ---------------------------------------------------------------------------
 
 def _drop_temps(con: Any) -> None:
-    for table in (*_TEMP_TABLES, "_ow_state", "_ow_managers", "_ow_share_keys", "_ow_si_pick"):
+    for table in _TEMP_TABLES:
         with contextlib.suppress(duckdb.Error):
             con.execute(f"DROP TABLE IF EXISTS {table}")
 
@@ -862,9 +1005,17 @@ def _reason_counts(con: Any, version: str) -> dict[str, Any]:
         GROUP BY 1, 2 ORDER BY 1, 2
     """, [version]).fetchall():
         features.setdefault(str(feature), {})[str(reason)] = int(n)
-    flagged = con.execute("SELECT count(*) FROM research_ownership_features WHERE ownership_version=? "
-                          "AND value_flag=?", [version, FLAG_IO_ABOVE_ONE]).fetchone()
-    return {"features": features, "io_above_one": int(flagged[0])}
+    flagged, survivor = con.execute(f"""
+        SELECT count(*) FILTER (WHERE value_flag=?),
+               count(*) FILTER (WHERE raw_value IS NOT NULL AND feature_id IN ({_sql_list(THIRTEENF_FEATURES)})
+                                AND sample_conditioning=?)
+        FROM research_ownership_features WHERE ownership_version=?
+    """, [FLAG_IO_ABOVE_ONE, _identity.CONDITIONING_SURVIVOR, version]).fetchone()
+    by_basis = {str(basis): int(n) for basis, n in con.execute("""
+        SELECT owner_basis, count(DISTINCT formation_date || '|' || security_id) FROM research_ownership_features
+        WHERE ownership_version=? GROUP BY 1 ORDER BY 1""", [version]).fetchall()}
+    return {"features": features, "io_above_one": int(flagged), "survivor_conditioned_13f_values": int(survivor),
+            "line_formations_by_owner_basis": by_basis}
 
 
 def build_ownership_features(store: ResearchStore, options: OwnershipFeatureOptions) -> OwnershipFeatureResult:
@@ -915,14 +1066,22 @@ def build_ownership_features(store: ResearchStore, options: OwnershipFeatureOpti
         blockers = [IDENTITY_BLOCKER, PUBLICATION_BLOCKER]
         if context["basis"] == _panel.BASIS_RECONSTRUCTED:
             blockers.append(RECONSTRUCTED_BLOCKER)
+        if diagnostic["panel"]["unlinked_line_formations"]:
+            blockers.append(UNLINKED_LINES_BLOCKER)
         if not has_13f:
             blockers.append("thirteenf_tables_absent")
         if not has_si:
             blockers.append("finra_short_interest_absent")
-        unmapped = diagnostic["identity"].get("cusip_owner_map", {}).get("unmapped", {})
+        owner_map = diagnostic["identity"].get("cusip_owner_map", {})
+        unmapped = owner_map.get("unmapped", {})
         if unmapped:
-            blockers.append(f"thirteenf_unmapped_cusip_periods:{sum(unmapped.values())}/"
-                            f"{diagnostic['identity']['cusip_owner_map']['cusip_periods']}")
+            blockers.append(f"thirteenf_unmapped_cusip_periods:{sum(unmapped.values())}/{owner_map['cusip_periods']}")
+        # I-1: until dated name windows (0327) exist, 13F coverage is conditioned on CUSIP survival.
+        if has_13f and not owner_map.get("dated_name_windows"):
+            blockers.append(f"{SURVIVOR_BLOCKER}:{diagnostic['reasons']['survivor_conditioned_13f_values']}")
+        revised = diagnostic.get("short_interest", {}).get("revised_rows", 0)
+        if revised:
+            blockers.append(f"{REVISED_BLOCKER}:{revised}")
         status = STATUS_SEALED if feature_rows else STATUS_EMPTY
         with store.transaction():
             con.execute("""
