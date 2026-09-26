@@ -209,4 +209,32 @@ TEST(AlphaPairRouting_LegacyAndPrefix, FutureMutationPreservesOutputBitsAndLegac
     }
   }
 }
+
+TEST(AlphaPairRouting_Overflow, FiniteRawSumsWithOverflowedCenteringUseDirectClassification) {
+  constexpr atx::usize dates = 100, names = 1;
+  std::vector<atx::f64> x(dates, 1e153);
+  x[0] = 0.0;
+  auto panel = Panel::create(dates, names, {"close"}, {x}, {});
+  ASSERT_TRUE(panel);
+  const Library lib;
+  auto ast = parse_program("a=correlation(close,close,100)\n"
+                           "b=covariance(close,close,100)\n"
+                           "c=ts_regression(close,close,100)\n", lib);
+  ASSERT_TRUE(ast);
+  auto analysis = analyze(*ast);
+  ASSERT_TRUE(analysis);
+  auto program = compile(*ast, *analysis);
+  ASSERT_TRUE(program);
+  auto reference = evaluate_reference(*program, *panel);
+  ASSERT_TRUE(reference);
+  Engine engine{*panel};
+  engine.set_eval_mode(EvalMode::ResearchFast);
+  auto result = engine.evaluate(*program);
+  ASSERT_TRUE(result);
+  for (atx::usize root = 0; root < result->alphas.size(); ++root) {
+    const atx::f64 expected = reference->alphas[root].values.back();
+    ASSERT_TRUE(std::isfinite(expected));
+    EXPECT_EQ(result->alphas[root].values.back(), expected);
+  }
+}
 } // namespace atxtest_alpha_ts_sliding_routing

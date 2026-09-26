@@ -154,7 +154,8 @@ struct CoMoment {
   [[nodiscard]] atx::f64 inv_n() const noexcept { return 1.0 / static_cast<atx::f64>(n); }
   [[nodiscard]] bool finite() const noexcept {
     return std::isfinite(sx) && std::isfinite(sy) && std::isfinite(sxx) &&
-           std::isfinite(syy) && std::isfinite(sxy) && std::isfinite(pxx) && std::isfinite(pyy);
+           std::isfinite(syy) && std::isfinite(sxy) && std::isfinite(pxx) && std::isfinite(pyy) &&
+           std::isfinite(sx * sx) && std::isfinite(sy * sy) && std::isfinite(sx * sy);
   }
   // True when either centred second moment is below kDriftRatio of the PEAK raw
   // shifted sum since the last reset (see kDriftRatio). Comparing against the
@@ -309,6 +310,10 @@ struct CoMomentLane {
       const bool flat_y = std::sqrt(m.cyy(inv) * inv) <= 1e-10 * std::fabs(m.cy + m.sy * inv);
       if ((op == OpCode::TsCorr && (flat_x || flat_y)) ||
           (op == OpCode::TsRegression && flat_y)) return kSlNaN;
+      // AuditExact covariance has no relative-flat zeroing policy. Preserve its
+      // chronological result in this exceptional region, including large-level
+      // rounding residuals, rather than silently changing that oracle contract.
+      if (op == OpCode::TsCov && (flat_x || flat_y)) return direct_pair(op, d, win);
     }
     switch (op) {
     case OpCode::TsCorr:
