@@ -90,6 +90,7 @@ atx::core::Result<std::vector<PitRecord>> decode_qualified_interval_points(
       if (cells[0].empty() || cells[1].empty() || cells[2].empty() ||
           marker < 0 || marker > 1 || priority < 0 || priority > 1 ||
           vintage < 0 || vintage > 1 || knowledge < 0 || knowledge > 1 ||
+          number[2] < 0 || number[4] < 0 ||
           number[2] >= number[3] || number[1] > number[0] ||
           number[7] < 0 || number[8] < 0 ||
           ((number[7] == std::numeric_limits<atx::i64>::max()) !=

@@ -281,7 +281,18 @@ def snapshot_events(facts: list[Fact], cik: str, clocks: dict, seal: dt.date, de
                 else:
                     knowledge.durations.get(concept, {}).pop((start, end), None)
         if event_facts:
-            period, values = snapshot_fn(knowledge)
+            # Preserve NaN tombstones and their qualification in the authoritative
+            # state, but do not feed them to legacy statistics.stdev (which can
+            # raise on NaN). The finite calculation view cannot grant admission:
+            # all active tombstones still make the row vintage-unqualified.
+            finite = knowledge_factory()
+            finite.instants = {c: {k: v for k, v in rows.items() if math.isfinite(v)}
+                               for c, rows in knowledge.instants.items()}
+            finite.durations = {c: {k: v for k, v in rows.items() if math.isfinite(v)}
+                                for c, rows in knowledge.durations.items()}
+            period, values = snapshot_fn(finite)
+            if period is None and qualifiers:
+                period = max(key[2] for key in qualifiers)
             if period is not None:
                 # All clocks in this simultaneous group have the same availability.
                 clock = max(possible_clocks, key=lambda c: (c["clock_kind"], c["filed_ns"]))
