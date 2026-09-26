@@ -36,10 +36,12 @@ TEST(AlphaPairRouting_Production, FastBatchStreamingAndOracleAcrossHolesFlatness
   }
   x[23 * names + 3] = std::numeric_limits<atx::f64>::quiet_NaN();
   y[31 * names + 65] = std::numeric_limits<atx::f64>::infinity();
+  x[11 * names + 66] = 1e200;
+  y[11 * names + 66] = 1e200; // overflowed pair products must not poison later clean windows
   auto panel = Panel::create(dates, names, {"close", "open"}, {x, y}, {});
   ASSERT_TRUE(panel);
   const Library lib;
-  for (const atx::usize d : {atx::usize{3}, atx::usize{17}}) {
+  for (const atx::usize d : {atx::usize{3}, atx::usize{5}, atx::usize{17}}) {
     const std::string source = "c=correlation(close,open," + std::to_string(d) + ")\n" +
         "v=covariance(close,open," + std::to_string(d) + ")\n" +
         "b=ts_regression(close,open," + std::to_string(d) + ")\n";
@@ -73,6 +75,7 @@ TEST(AlphaPairRouting_Production, FastBatchStreamingAndOracleAcrossHolesFlatness
             ASSERT_EQ(std::bit_cast<atx::u64>(got), std::bit_cast<atx::u64>(stream->output(root)[j]))
                 << "mode=" << static_cast<unsigned>(mode) << " root=" << root << " cell=" << i;
             if (std::isnan(expected)) EXPECT_TRUE(std::isnan(got));
+            else if (std::isinf(expected)) EXPECT_EQ(got, expected);
             else if (mode == EvalMode::AuditExact)
               EXPECT_EQ(std::bit_cast<atx::u64>(got), std::bit_cast<atx::u64>(expected));
             else EXPECT_NEAR(got, expected, 1e-9 * (1.0 + std::abs(expected)));

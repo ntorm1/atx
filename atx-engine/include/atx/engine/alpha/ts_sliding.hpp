@@ -152,6 +152,10 @@ struct CoMoment {
   }
   [[nodiscard]] atx::f64 cxy(atx::f64 inv) const noexcept { return sxy - sx * sy * inv; }
   [[nodiscard]] atx::f64 inv_n() const noexcept { return 1.0 / static_cast<atx::f64>(n); }
+  [[nodiscard]] bool finite() const noexcept {
+    return std::isfinite(sx) && std::isfinite(sy) && std::isfinite(sxx) &&
+           std::isfinite(syy) && std::isfinite(sxy) && std::isfinite(pxx) && std::isfinite(pyy);
+  }
   // True when either centred second moment is below kDriftRatio of the PEAK raw
   // shifted sum since the last reset (see kDriftRatio). Comparing against the
   // peak rather than the current sum also catches an outlier LEAVING the window:
@@ -283,7 +287,7 @@ struct CoMomentLane {
     if (d <= kDirectMaxWindow) {
       return direct_pair(op, d, win, relative_flat);
     }
-    if (++age >= reseed_period(d) || m.drifted()) {
+    if (++age >= reseed_period(d) || !m.finite() || m.drifted()) {
       age = 0;
       m.reset(xe, ye);
       for (atx::usize i = 0; i < d; ++i) {
@@ -291,6 +295,11 @@ struct CoMomentLane {
         m.push(wx, wy);
       }
     }
+    // A finite observation can overflow shifted squares/products. Once it
+    // leaves, reseeding must recover immediately (NaN drift comparisons cannot
+    // trigger it). If this window itself still overflows, preserve the direct
+    // formula's NaN/inf classification instead of carrying corrupted moments.
+    if (!m.finite()) return direct_pair(op, d, win, relative_flat);
     // W0 RelativeV2 flatness is part of the production pair contract. Keep the
     // standalone lane's legacy default for existing callers, while the VM and
     // streaming explicitly select the corrected policy. No window pre-scan.
