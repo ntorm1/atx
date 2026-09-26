@@ -236,6 +236,21 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         cfg.panel_storage_rule = value;
         return atx::core::Ok();
     }
+    if (flag == "ic-trial-accounting-rule") {
+        if (value != "legacy-ledger-v1" && value != "epoch-e2-v1")
+            return atx::core::Err(EC::InvalidArgument,
+                "--ic-trial-accounting-rule requires legacy-ledger-v1 or epoch-e2-v1");
+        cfg.equity_ic_trial_accounting_rule = value;
+        return atx::core::Ok();
+    }
+    if (flag == "ic-epoch-catalog" || flag == "ic-epoch-anchor") {
+        if (value.empty() || value.starts_with("--"))
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a nonempty value");
+        if (flag == "ic-epoch-catalog") cfg.equity_ic_epoch_catalog = value;
+        else cfg.equity_ic_epoch_anchor = value;
+        return atx::core::Ok();
+    }
     if (flag == "ic-prereg-file" || flag == "ic-prereg-sha256") {
         if (value.empty() || value.starts_with("--"))
             return atx::core::Err(EC::InvalidArgument,
@@ -976,6 +991,31 @@ atx::core::Status validate_ic_prereg_flags(const RunConfig& cfg) {
     return atx::core::Ok();
 }
 
+atx::core::Status validate_ic_epoch_flags(const RunConfig& cfg) {
+    using EC = atx::core::ErrorCode;
+    if (cfg.equity_ic_trial_accounting_rule == "legacy-ledger-v1") {
+        if (!cfg.equity_ic_epoch_catalog.empty() || !cfg.equity_ic_epoch_anchor.empty())
+            return atx::core::Err(EC::InvalidArgument,
+                "IC epoch catalog/anchor require --ic-trial-accounting-rule epoch-e2-v1");
+        return atx::core::Ok();
+    }
+    if (cfg.equity_ic_trial_accounting_rule != "epoch-e2-v1")
+        return atx::core::Err(EC::InvalidArgument, "unknown IC trial accounting rule");
+    if (cfg.subcommand != "equity-ic")
+        return atx::core::Err(EC::InvalidArgument, "IC epoch accounting is only valid for equity-ic");
+    ATX_TRY_VOID(validate_ic_prereg_flags(cfg));
+    if (cfg.equity_ic_prereg_file.empty() || cfg.equity_ic_epoch_catalog.empty())
+        return atx::core::Err(EC::InvalidArgument,
+            "IC epoch accounting requires runtime pre-registration and an explicit catalog");
+    if (cfg.equity_ic_epoch_anchor.size() != 64 ||
+        !std::all_of(cfg.equity_ic_epoch_anchor.begin(), cfg.equity_ic_epoch_anchor.end(),
+            [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+        return atx::core::Err(EC::InvalidArgument, "IC epoch anchor must be 64 lowercase hex digits");
+    // Whether an all-zero anchor is valid depends on catalog state. The catalog
+    // checks this under its lock, so parsing never reads or creates that file.
+    return atx::core::Ok();
+}
+
 atx::core::Status validate_cross_flags(const RunConfig& cfg) {
     using EC = atx::core::ErrorCode;
     // --resume requires --run-db.
@@ -986,6 +1026,7 @@ atx::core::Status validate_cross_flags(const RunConfig& cfg) {
     // silently pick a cut or a window the operator never named.
     ATX_TRY_VOID(validate_membership_flags(cfg));
     ATX_TRY_VOID(validate_ic_prereg_flags(cfg));
+    ATX_TRY_VOID(validate_ic_epoch_flags(cfg));
     ATX_TRY_VOID(validate_execution_delay(cfg));
     if (cfg.si_publication_lag < 0) {
         return atx::core::Err(EC::InvalidArgument, "--si-publication-lag must be >= 0");

@@ -518,6 +518,10 @@ struct RunConfig {
     std::string equity_trial_ledger; // --trial-ledger
     std::string equity_ic_prereg_file{}; // --ic-prereg-file, paired with exact SHA256
     std::string equity_ic_prereg_sha256{}; // --ic-prereg-sha256
+    // Opt-in durable numerical-cell accounting, separate from the legacy ledger.
+    std::string equity_ic_trial_accounting_rule{"legacy-ledger-v1"};
+    std::string equity_ic_epoch_catalog{}; // --ic-epoch-catalog
+    std::string equity_ic_epoch_anchor{}; // --ic-epoch-anchor, externally retained head
     // W0-I0b / D-12: point-in-time membership for equity-baseline / equity-ic. A
     // context built with --universe-membership carries a YEAR-UNION allow-list; under
     // the default rule "as-of-v2" the stage re-applies the membership AS OF each
@@ -626,6 +630,7 @@ read_seed_file(const std::string& path);
 // Paired explicit runtime declaration for equity-ic; direct stage callers use
 // the same validation as CLI/config parsing before reading a declaration file.
 [[nodiscard]] atx::core::Status validate_ic_prereg_flags(const RunConfig& cfg);
+[[nodiscard]] atx::core::Status validate_ic_epoch_flags(const RunConfig& cfg);
 
 // Parse a config file (newline-separated flag=value, # comments). A boolean key takes
 // true|false|1|0 (or an empty value, meaning true). A nested `config=` key is refused.
