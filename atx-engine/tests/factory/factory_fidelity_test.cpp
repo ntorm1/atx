@@ -539,6 +539,68 @@ TEST(FactoryIcScreenIntegration, RejectedOriginIsNeverRankedOrEmittedAsFull) {
   EXPECT_EQ(result.admitted_candidates.front().canon_hash, genomes[1].canon_hash);
 }
 
+TEST(FactoryIcScreenIntegration, InjectedCacheMustMatchAndCannotResumeWithoutSupportIdentity) {
+  using atx::engine::factory::IcScreenCache;
+  using atx::engine::factory::IcScreenRule;
+  using atx::engine::factory::SearchResumeState;
+  using atx::engine::factory::prepare_ic_screen;
+  DriverFixture fx;
+  const AlphaStore pool;
+  SearchConfig cfg = cfg_of(59, 1);
+  cfg.generations = 1;
+  cfg.ic_screen.rule = IcScreenRule::ConservativeV2;
+  auto cache_cfg = cfg.ic_screen;
+  cache_cfg.window_end = fx.panel.dates();
+  cache_cfg.maturity_end = fx.panel.dates();
+  auto cache = prepare_ic_screen(fx.panel, cache_cfg);
+  ASSERT_TRUE(cache);
+  const SearchResult owned = fx.driver().run(cfg, pool);
+  const SearchResult injected = fx.driver().run(cfg, pool, nullptr, nullptr, &*cache);
+  EXPECT_FALSE(injected.ic_screen_cache_mismatch);
+  EXPECT_FALSE(injected.ic_screen_resume_mismatch);
+  EXPECT_EQ(injected.digest, owned.digest);
+  EXPECT_EQ(injected.trial_count, owned.trial_count);
+  EXPECT_EQ(injected.ic_screen_evaluations, owned.ic_screen_evaluations);
+  const auto rejects = [&](const SearchConfig &recipe, const IcScreenCache &candidate) {
+    const SearchResult result = fx.driver().run(recipe, pool, nullptr, nullptr, &candidate);
+    EXPECT_TRUE(result.ic_screen_cache_mismatch);
+    EXPECT_FALSE(result.ic_screen_resume_mismatch);
+    EXPECT_EQ(result.candidates_generated, 0U);
+    EXPECT_EQ(result.trial_count, 0U);
+    EXPECT_EQ(result.fidelity_evals, 0U);
+    EXPECT_EQ(result.ic_screen_evaluations, 0U);
+    EXPECT_TRUE(result.all_scored.empty());
+    EXPECT_TRUE(result.admitted_candidates.empty());
+  };
+  SearchConfig changed = cfg;
+  changed.ic_screen.window_end = fx.panel.dates() / 2U;
+  changed.fidelity.enabled = true; // reject before even the first fidelity rung
+  rejects(changed, *cache);
+  changed = cfg;
+  changed.ic_screen.horizons[0] = 4U;
+  rejects(changed, *cache);
+  auto disabled = prepare_ic_screen(fx.panel, {});
+  ASSERT_TRUE(disabled);
+  rejects(cfg, *disabled);
+  rejects(cfg, IcScreenCache{});
+
+  SearchResumeState resume;
+  const SearchResult resumed = fx.driver().run(cfg, pool, nullptr, &resume, &*cache);
+  EXPECT_TRUE(resumed.ic_screen_resume_mismatch);
+  EXPECT_FALSE(resumed.ic_screen_cache_mismatch);
+  EXPECT_EQ(resumed.candidates_generated, 0U);
+  EXPECT_EQ(resumed.trial_count, 0U);
+  EXPECT_EQ(resumed.ic_screen_evaluations, 0U);
+
+  cfg.ic_screen.rule = IcScreenRule::DisabledV1;
+  const IcScreenCache unprepared;
+  const SearchResult legacy = fx.driver().run(cfg, pool);
+  const SearchResult ignored = fx.driver().run(cfg, pool, nullptr, nullptr, &unprepared);
+  EXPECT_FALSE(ignored.ic_screen_cache_mismatch);
+  EXPECT_FALSE(ignored.ic_screen_resume_mismatch);
+  EXPECT_EQ(ignored.digest, legacy.digest);
+}
+
 // A deliberately alternating weak correlation, not a fitted noise threshold:
 // cyclic rank shift 7 has rho=-27/1023, and reversing every other date cancels
 // its temporal mean while retaining nonzero inference variance.

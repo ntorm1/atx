@@ -343,6 +343,7 @@ struct SearchResult {
   atx::usize ic_screen_unavailable{0}; // preparation/scratch/runtime errors; fail open
   atx::usize ic_prepass_vm_evaluations{0}; // both-on path, no population signal cache
   bool ic_screen_resume_mismatch{false}; // incompatible/missing active checkpoint identity
+  bool ic_screen_cache_mismatch{false}; // injected recipe/geometry differs from this run
 };
 
 namespace detail {
@@ -462,6 +463,9 @@ public:
   // `prepared_ic_screen` optionally borrows a cache prepared for this exact panel
   // and active config, including caller-specific training membership/return guards.
   // It must outlive run(); DisabledV1 ignores it. Otherwise run prepares its own.
+  // Active injected-cache resume is rejected: the checkpoint does not persist
+  // identity for the caller-owned membership/return guards. Driver-owned caches
+  // retain resume support; a matching recipe alone cannot certify injected labels.
   [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool,
                                  SearchProgressSink *sink = nullptr,
                                  const SearchResumeState *resume = nullptr,

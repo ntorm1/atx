@@ -293,6 +293,7 @@ struct FactoryReport {
   atx::usize ic_prepass_vm_evaluations{0};
   atx::usize ic_rejected{0};
   bool ic_screen_resume_mismatch{false};
+  bool ic_screen_cache_mismatch{false};
 
   // --- S4b-3 mine_into() telemetry (additive; default-init so mine() is untouched).
   // These fields are populated ONLY by mine_into (the persistent-library admit path);

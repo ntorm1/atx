@@ -109,6 +109,16 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                                              const IcScreenCache *prepared_ic_screen) {
   SearchResult res;
   res.seed = cfg.master_seed;
+  if (cfg.ic_screen.rule != IcScreenRule::DisabledV1 && prepared_ic_screen != nullptr) {
+    if (!ic_screen_cache_matches(*prepared_ic_screen, panel_, cfg.ic_screen)) {
+      res.ic_screen_cache_mismatch = true;
+      return res; // never screen against another training window or recipe
+    }
+    if (resume != nullptr) {
+      res.ic_screen_resume_mismatch = true;
+      return res; // caller membership/guard identity is absent from checkpoints
+    }
+  }
   res.best_fitness_per_gen.reserve(cfg.generations);
   // L3 per-run state: the canonical key config and the fingerprint index start
   // clean on every run() so a same-seed replay is byte-identical (F1).
