@@ -33,7 +33,10 @@ There is no default database: the caller names it.
 Fields
 ------
 ``derived:<metric_code>`` (q/ttm/avg2 seed metrics) and ``market:<metric_code>``
-(daily ``market_daily_metrics`` columns, plus the opt-in native
+(daily ``market_daily_metrics`` columns, plus the panel natives
+``research.panel.NATIVE_FEATURES``: the P2 price/liquidity windows
+``amihud_illiquidity_21d``, ``pct_from_high_252d``, ``max_daily_return_21d``,
+``turnover_21d``, ``downside_deviation_60d`` and the opt-in
 ``line_market_cap``) -- a bare metric code resolves through the seed registry --
 follow R2a exactly. ``item:<code>:<basis>`` reads ``fundamental_standardized``: per owner CIK the
 latest visible period, then availability, then source/rule/basis/id (the derived
@@ -45,7 +48,8 @@ engine's gate, so a transition-period stub is never the annual value).
 research store (attached ``READ_ONLY``): the latest feature formation whose 22:00
 UTC cutoff is at or before ``as_of_ts``; its age is the staleness, and a formation
 more than ``FEATURE_MAX_LAG_DAYS`` before the screen session yields
-``stale_feature_formation`` (no value). Pre-R2e feature versions may carry R2b's
+``stale_feature_formation`` (no value). A feature version whose
+``spec_json.store_schema`` is below 3 (built before R2e) may carry R2b's
 older-value revival in item legs/operands (blocker
 ``research_feature_newer_null_rule_unverified``).
 
@@ -56,7 +60,20 @@ basis does not admit (``not_common``, ``overlapping_membership``) keep a NULL ro
 with that status. Owner-scoped fields attach to the issuer's primary line; every
 other line carries its exclusion (``missing_owner_link``,
 ``secondary_issuer_line``, ...). Size rows carry ``shares_source`` /
-``size_status`` (only DEI counts are ``verified_dei_shares``). Reconstructed rows
+``size_status`` (only DEI counts are ``verified_dei_shares``). A size row whose
+share basis A8 withholds (``market_daily.SHARES_SOURCES_WITHHELD``: split pending
+a share update, unknown ADR ratio, pending archive run, zero vendor count,
+invalid bar price, ...) keeps its row with a NULL value, ``value_status`` and
+``size_status`` ``share_basis_withheld`` and the label itself in
+``shares_source`` (blocker ``withheld_share_basis_rows``). With P11 evidence
+(``foreign_filer_artifacts``: the companyfacts taxonomy scan, plus the
+warehouse's ``sec_submissions`` when present), a fundamentals row (derived or
+item) of an owner whose reason interval covers the cutoff
+(``foreign_filers.reason_interval_predicate``) and that has no state carries
+``ifrs_reporter_not_standardized`` or ``foreign_filer_no_xbrl_financials``
+instead of ``missing_metric_state`` / ``missing_item_state`` (the panel's P11
+hook); without that evidence the screen says so
+(``foreign_filer_reasons_not_applied``). Reconstructed rows
 carry ``identity_basis='current_ticker_unverified'`` and
 ``universe_basis='us_listed_reconstructed_v1'`` and are research/inspection input,
 never certifiable history; blockers name owner-link attrition, unverified size
@@ -100,7 +117,7 @@ from typing import Any
 
 import pandas as pd
 
-QUERY_VERSION = "pit-cross-section-v2"
+QUERY_VERSION = "pit-cross-section-v3"
 SCREEN_RUN_ID = "pit_screen"
 BASIS_STRICT = "strict"
 BASIS_RECONSTRUCTED = "reconstructed"
@@ -133,6 +150,14 @@ WAREHOUSE_ALIAS = "wh"
 RESEARCH_ALIAS = "rs"
 # Reasons whose value is point-in-time safe to publish (R2a VALUE_BEARING_REASONS).
 VALUE_BEARING_REASONS = ("valid", "stale_current_anchor")
+#: value_status and size_status of a size row whose share basis A8 withholds.
+SHARE_BASIS_WITHHELD = "share_basis_withheld"
+#: Panel/item reasons a withheld share basis replaces (the value is NULL either way).
+WITHHELD_REPLACES = (*VALUE_BEARING_REASONS, "invalid_current_state", "unverified_shares")
+#: Fundamentals reasons a P11 foreign-filer reason replaces (the panel's P11 hook).
+FUNDAMENTAL_MISSING_REASONS = ("missing_metric_state", "missing_item_state")
+FOREIGN_FILER_INTERVALS = "_xs_ff_intervals"
+FOREIGN_FILER_DISCLOSURE = "_xs_ff_disclosure"
 SCREEN_BLOCKERS = (
     "modeled_filing_availability_not_exact_delivery_vintage",
     "source_backfill_and_historical_membership_may_be_incomplete",
@@ -312,11 +337,18 @@ class ScreenStore:
     once everything is attached and the configuration is then locked, so no
     later statement can lift memory, threads or spill. There is no default
     warehouse: the caller names the file.
+
+    ``foreign_filer_artifacts`` (P11: an object with ``members_path`` and
+    ``filings_path``, e.g. ``foreign_filers.resolve_taxonomy_artifacts(zip)``)
+    stages the foreign-filer reason intervals in the scratch store while it
+    opens, from that companyfacts taxonomy scan and the warehouse's
+    ``sec_submissions`` when it has one; the screen then labels fundamentals
+    rows by date with them.
     """
 
     def __init__(self, warehouse_path: Path | str, *, scratch_dir: Path | str | None = None,
                  memory_limit: str = "256MB", threads: int = 1, spill_limit: str = "2GB",
-                 research_db_path: Path | str | None = None) -> None:
+                 research_db_path: Path | str | None = None, foreign_filer_artifacts: Any = None) -> None:
         if not isinstance(warehouse_path, (str, Path)) or not str(warehouse_path):
             raise ValueError("warehouse_path is required (no default warehouse)")
         if not isinstance(memory_limit, str) or not _MEMORY.fullmatch(memory_limit):
@@ -329,6 +361,12 @@ class ScreenStore:
         self.research_db_path = None if research_db_path is None else Path(research_db_path).resolve()
         self.scratch_dir = None if scratch_dir is None else Path(scratch_dir)
         self.memory_limit, self.threads, self.spill_limit = memory_limit, threads, spill_limit
+        self.foreign_filer_paths: tuple[Path, Path] | None = None
+        if foreign_filer_artifacts is not None:
+            self.foreign_filer_paths = (Path(foreign_filer_artifacts.members_path).resolve(),
+                                        Path(foreign_filer_artifacts.filings_path).resolve())
+        #: P11 evidence staged at open (``None``: no foreign-filer reasons are applied).
+        self.foreign_filer_evidence: dict[str, Any] | None = None
         self.research: Any = None
         self.spill_directory: str | None = None
         self._tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -364,6 +402,9 @@ class ScreenStore:
             if self.research_db_path is not None:
                 literal = "'" + self.research_db_path.as_posix().replace("'", "''") + "'"
                 con.execute(f"ATTACH {literal} AS {RESEARCH_ALIAS} (READ_ONLY)")
+            if self.foreign_filer_paths is not None:
+                # Read before external access is disabled (the scan is parquet).
+                self.foreign_filer_evidence = _stage_foreign_filer_intervals(self.research, *self.foreign_filer_paths)
             con.execute(f"SET max_temp_directory_size='{self.spill_limit}'")
             con.execute("SET enable_external_access=false")
             attached = dict(con.execute(
@@ -402,14 +443,46 @@ class ScreenStore:
         """).fetchall())
 
     def iter_screen_frames(self, chunk_rows: int = STREAM_CHUNK_ROWS) -> Iterator[pd.DataFrame]:
-        """The last screen's full output, in order, as bounded pandas chunks (store must still be open)."""
+        """The last screen's full output, in order, as bounded pandas chunks (store must still be open).
+
+        The first frame always comes (empty, with the output columns, for a
+        screen without rows, e.g. ``no_observed_session``). A screen that did
+        not finish leaves no output: every run drops the previous one first.
+        """
         _bounded_int("chunk_rows", chunk_rows, 2048, 1_000_000)
+        if not self.con.execute("SELECT count(*) FROM duckdb_views() WHERE view_name='_xs_out'").fetchone()[0]:
+            raise RuntimeError("no finished screen in this store")
         cursor = self.con.execute("SELECT * FROM _xs_out ORDER BY field_order, security_id")
+        first = True
         while True:
             chunk = cursor.fetch_df_chunk(chunk_rows // 2048)
             if chunk.empty:
+                if first:
+                    yield _empty_frame()
                 return
+            first = False
             yield _output_frame(chunk)
+
+
+def _stage_foreign_filer_intervals(store: Any, members: Path, filings: Path) -> dict[str, Any]:
+    """P11 reason intervals (and disclosure) as temp tables of the scratch store."""
+    from .. import foreign_filers as ff
+
+    for path in (members, filings):
+        if not path.is_file():
+            raise FileNotFoundError(f"foreign-filer taxonomy artifact not found: {path}")
+    submissions = (f"{WAREHOUSE_ALIAS}.main.sec_submissions"
+                   if all(store.warehouse_has("sec_submissions", column)
+                          for column in ("cik", "accession_number", "form", "filing_date")) else None)
+    summary = ff.build_foreign_filer_disclosure(
+        store.con, members=ff.parquet_relation(members), filings=ff.parquet_relation(filings),
+        submissions=submissions, disclosure_table=FOREIGN_FILER_DISCLOSURE, intervals_table=FOREIGN_FILER_INTERVALS,
+        temporary=True)
+    sha = store.con.execute(f"SELECT list(DISTINCT source_sha256) FROM {ff.parquet_relation(members)}").fetchone()[0]
+    return {"taxonomy_source_sha256": sha, "members_path": str(members), "filings_path": str(filings),
+            "submissions_evidence": "warehouse_sec_submissions" if submissions else "not_supplied",
+            "clock_policy": ff.REASON_CLOCK_POLICY, "evidence_basis": ff.EVIDENCE_BASIS,
+            "disclosure_version": ff.DISCLOSURE_VERSION, "summary": summary}
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +595,10 @@ def run_cross_section(
     store, con = screen.research, screen.con
     if not store.warehouse_has("market_daily_metrics"):
         raise RuntimeError("warehouse is missing market_daily_metrics (screen sessions)")
+    # A reused store never streams a previous (or unfinished) screen's rows.
+    con.execute("DROP VIEW IF EXISTS _xs_out")
+    con.execute("CREATE OR REPLACE TEMP TABLE _xs_values ("
+                + ", ".join(f"{name} {kind}" for name, kind in _VALUE_TYPES) + ")")
     phases: dict[str, float] = {}
     started = time.perf_counter()
     panel_features = tuple(panel.PanelFeature(f.code, f.code, str(f.window)) for f in parsed
@@ -532,7 +609,7 @@ def run_cross_section(
                                        as_of_date=as_of_date, run_at=cutoff)
     identity = fsr.IDENTITY_BASIS_STRICT if basis == BASIS_STRICT else fsr.IDENTITY_BASIS_RECONSTRUCTED
     base = {"basis": basis, "universe": universe, "identity_basis": identity, "fields": parsed, "cutoff": cutoff,
-            "frame_rows": frame_rows}
+            "frame_rows": frame_rows, "foreign_filers": screen.foreign_filer_evidence is not None}
     if not sessions:
         return _result(con, base, "no_observed_session", None, {}, {}, {"session_lookback_days":
                                                                         session_lookback_days}, [])
@@ -548,8 +625,6 @@ def run_cross_section(
         raise ScreenBoundExceeded(f"{staged.members} members x {len(parsed)} fields exceeds max_rows={max_rows}")
     phases["owner_bridge_and_cohort"] = time.perf_counter() - started
     _stage_fields(con, parsed, staged.scopes, max_age_days, annual_max_age_days)
-    con.execute("CREATE OR REPLACE TEMP TABLE _xs_values ("
-                + ", ".join(f"{name} {kind}" for name, kind in _VALUE_TYPES) + ")")
     r2a_digests: dict[str, str] = {}
     diagnostics: dict[str, Any] = {"session_lookback_days": session_lookback_days,
                                    "observed_sessions_in_lookback": len(sessions),
@@ -562,11 +637,15 @@ def run_cross_section(
         diagnostics["batches"].append({"batch": batch.ordinal, "features": list(batch.feature_ids), **batch.stats})
         _append_panel_values(con, panel.FORMATION_VALUES_RELATION, panel.FORMATION_COHORT_RELATION)
     phases["panel_fields"] = time.perf_counter() - started
+    diagnostics["withheld_share_basis"] = _label_withheld_share_basis(con)
     members = staged.members
     started = time.perf_counter()
     if any(f.kind == FIELD_ITEM for f in parsed) and members:
         diagnostics["item_states"] = _append_item_values(con, cutoff, screen_date, universe)
     phases["item_fields"] = time.perf_counter() - started
+    if screen.foreign_filer_evidence is not None and members:
+        diagnostics["foreign_filer_reasons"] = {**screen.foreign_filer_evidence,
+                                                **_label_foreign_filers(con, cutoff)}
     started = time.perf_counter()
     if feature_fields and members:
         diagnostics["research_features"] = _append_feature_values(con, feature_fields, feature_version,
@@ -621,6 +700,58 @@ def _append_panel_values(con: Any, values_relation: str, cohort_relation: str) -
         JOIN _xs_fields f ON f.field_id=v.feature_id
         JOIN {cohort_relation} k ON k.decision_date=v.formation_date AND k.security_id=v.security_id
     """)
+
+
+def _sql_list(values: Iterable[str]) -> str:
+    return ",".join(_sql_text(value) for value in values)
+
+
+def _label_withheld_share_basis(con: Any) -> dict[str, int]:
+    """Size rows whose share basis A8 withholds: NULL value, ``share_basis_withheld``, row kept.
+
+    The panel labels every non-DEI basis ``unverified_vendor_shares``; a withheld
+    label (split pending a share update, unknown ADR ratio, ...) is not a vendor
+    count at all. ``shares_source`` keeps the label as the reason. Returns the
+    rows per label.
+    """
+    from ..market_daily import SHARES_SOURCES_WITHHELD
+
+    withheld = _sql_list(SHARES_SOURCES_WITHHELD)
+    con.execute(f"""
+        UPDATE _xs_values
+        SET raw_value = NULL, size_status = '{SHARE_BASIS_WITHHELD}',
+            reason = CASE WHEN reason IN ({_sql_list(WITHHELD_REPLACES)}) THEN '{SHARE_BASIS_WITHHELD}'
+                          ELSE reason END
+        WHERE shares_source IN ({withheld})
+    """)
+    return {label: int(n) for label, n in con.execute(
+        "SELECT shares_source, count(*) FROM _xs_values WHERE size_status=? GROUP BY ALL ORDER BY ALL",
+        [SHARE_BASIS_WITHHELD]).fetchall()}
+
+
+def _label_foreign_filers(con: Any, cutoff: dt.datetime) -> dict[str, Any]:
+    """P11 reasons by date: a fundamentals row with no state whose owner is in a reason interval at the cutoff."""
+    from .. import foreign_filers as ff
+
+    at = f"TIMESTAMP '{cutoff.isoformat(sep=' ')}'"
+    con.execute(f"""
+        UPDATE _xs_values AS v SET reason = i.reason_code
+        FROM {FOREIGN_FILER_INTERVALS} AS i
+        WHERE v.field_kind IN ('{FIELD_DERIVED}','{FIELD_ITEM}') AND v.raw_value IS NULL
+          AND v.reason IN ({_sql_list(FUNDAMENTAL_MISSING_REASONS)})
+          AND {ff.reason_interval_predicate('i', 'v.owner_cik', at)}
+    """)
+    reasons = _sql_list((ff.IFRS_REPORTER_REASON, ff.NO_XBRL_FINANCIALS_REASON))
+    rows = {f"{field_id}|{reason}": int(n) for field_id, reason, n in con.execute(f"""
+        SELECT feature_id, reason, count(*) FROM _xs_values WHERE reason IN ({reasons}) GROUP BY ALL ORDER BY ALL
+    """).fetchall()}
+    owners = {reason: int(n) for reason, n in con.execute(f"""
+        SELECT i.reason_code, count(DISTINCT k.owner_cik)
+        FROM {_COHORT_RELATION} k JOIN {FOREIGN_FILER_INTERVALS} i
+          ON {ff.reason_interval_predicate('i', 'k.owner_cik', at)}
+        WHERE k.eligible GROUP BY ALL ORDER BY ALL
+    """).fetchall()}
+    return {"decision_ts": cutoff.isoformat(), "labeled_rows": rows, "owners_in_reason_interval": owners}
 
 
 #: The staged formation cohort (``research.panel.FORMATION_COHORT_RELATION``) the item,
@@ -747,7 +878,7 @@ FEATURE_VALUES_SQL = """
 def _append_feature_values(con: Any, fields: Sequence[ScreenField], version: str | None, screen_date: dt.date,
                            cutoff: dt.datetime, basis: str, universe: str) -> dict[str, Any]:
     """Rows of a sealed R2b feature version at its latest formation knowable by the cutoff."""
-    row = con.execute(f"SELECT status, basis FROM {RESEARCH_ALIAS}.main.research_feature_versions "
+    row = con.execute(f"SELECT status, basis, spec_json FROM {RESEARCH_ALIAS}.main.research_feature_versions "
                       "WHERE feature_version=?", [version]).fetchone()
     if row is None:
         raise ValueError(f"feature version {version} is not in the research store")
@@ -755,6 +886,14 @@ def _append_feature_values(con: Any, fields: Sequence[ScreenField], version: str
         raise ValueError(f"feature version {version} is {row[0]!r}, not sealed")
     if row[1] != basis:
         raise ValueError(f"feature version {version} was built on the {row[1]} basis, not {basis}")
+    # The version's own build schema (R2e records it in spec_json), not the store's:
+    # a store migrated to v3 still holds versions built before R2e.
+    try:
+        store_schema = json.loads(row[2] or "{}").get("store_schema")
+    except (AttributeError, ValueError):
+        store_schema = None
+    if isinstance(store_schema, bool) or not isinstance(store_schema, int):
+        store_schema = None
     formation = con.execute(f"""
         SELECT max(formation_date) FROM {RESEARCH_ALIAS}.main.research_feature_dates
         WHERE feature_version=? AND formation_date<=?
@@ -773,16 +912,11 @@ def _append_feature_values(con: Any, fields: Sequence[ScreenField], version: str
         SELECT column_name FROM duckdb_columns()
         WHERE database_name=? AND schema_name='main' AND table_name='research_feature_dates'
     """, [RESEARCH_ALIAS]).fetchall())
-    has_schema = con.execute("""
-        SELECT count(*) FROM duckdb_tables()
-        WHERE database_name=? AND schema_name='main' AND table_name='research_feature_schema'
-    """, [RESEARCH_ALIAS]).fetchone()[0]
-    schema = (con.execute(f"SELECT max(version) FROM {RESEARCH_ALIAS}.main.research_feature_schema").fetchone()[0]
-              if has_schema else None)
     lag = None if formation is None else (screen_date - formation).days
     stale = "stale_feature_formation" if lag is not None and lag > FEATURE_MAX_LAG_DAYS else None
     detail: dict[str, Any] = {"feature_version": version, "formation_date": formation, "formation_lag_days": lag,
-                              "max_lag_days": FEATURE_MAX_LAG_DAYS, "feature_schema_version": schema, "fields": {}}
+                              "max_lag_days": FEATURE_MAX_LAG_DAYS, "feature_store_schema": store_schema,
+                              "fields": {}}
     conditioning = ("sample_conditioning" if "sample_conditioning" in date_columns
                     else "CAST(NULL AS VARCHAR)")
     for item in fields:
@@ -817,11 +951,12 @@ def _feature_blockers(detail: dict[str, Any] | None) -> list[str]:
     lag = detail.get("formation_lag_days")
     if lag is not None and lag > detail["max_lag_days"]:
         blockers.append(f"feature_formation_lag_days:{lag}")
-    schema = detail.get("feature_schema_version")
+    schema = detail.get("feature_store_schema")
     if schema is None or int(schema) < FEATURE_SCHEMA_R2E:
-        # Before store schema v3 the newest-NULL rule for item legs/operands and the
-        # survivor-conditioning labels are not guaranteed (R2b M3 / R2e).
-        blockers.append(f"research_feature_newer_null_rule_unverified:schema_v{schema}")
+        # A version built before store schema v3 (spec_json.store_schema) does not
+        # guarantee the newest-NULL rule for item legs/operands or the
+        # survivor-conditioning labels (R2b M3 / R2e).
+        blockers.append(f"research_feature_newer_null_rule_unverified:store_schema_{schema}")
     blockers += [f"feature_survivor_conditioned:{field_id}" for field_id, info in sorted(detail["fields"].items())
                  if info.get("sample_conditioning") == "survivor_conditioned_linked_only"]
     return blockers
@@ -850,18 +985,19 @@ def _result(con: Any, base: dict[str, Any], status: str, screen_date: dt.date | 
     cutoff: dt.datetime = base["cutoff"]
     parsed: tuple[ScreenField, ...] = base["fields"]
     total = 0
+    # A view: the screen is held once, in DuckDB (spillable); pandas sees at
+    # most frame_rows of it, the rest streams (ScreenStore.iter_screen_frames).
+    # Without a session it is the empty screen (no rows, same columns).
+    con.execute(f"""
+        CREATE OR REPLACE TEMP VIEW _xs_out AS
+        SELECT TIMESTAMP '{cutoff.isoformat(sep=" ")}' AS as_of_ts, *,
+               date_diff('day', reference_date, DATE '{cutoff.date().isoformat()}') AS staleness_days
+        FROM _xs_values
+    """)
     if screen_date is None:
         frame, digests, counts = _empty_frame(), {item.field_id: _sha("") for item in parsed}, {}
         members = eligible = valid = 0
     else:
-        # A view: the screen is held once, in DuckDB (spillable); pandas sees at
-        # most frame_rows of it, the rest streams (ScreenStore.iter_screen_frames).
-        con.execute(f"""
-            CREATE OR REPLACE TEMP VIEW _xs_out AS
-            SELECT TIMESTAMP '{cutoff.isoformat(sep=" ")}' AS as_of_ts, *,
-                   date_diff('day', reference_date, DATE '{cutoff.date().isoformat()}') AS staleness_days
-            FROM _xs_values
-        """)
         grain = con.execute(
             "SELECT count(*), count(DISTINCT feature_id || chr(31) || security_id) FROM _xs_out").fetchone()
         if grain[0] != grain[1]:
@@ -899,11 +1035,20 @@ def _result(con: Any, base: dict[str, Any], status: str, screen_date: dt.date | 
                                      ["unverified_vendor_shares"]).fetchone()[0])
         if unverified:
             blockers.append(f"unverified_vendor_share_size_rows:{unverified}")
+        withheld = sum(diagnostics.get("withheld_share_basis", {}).values())
+        if withheld:
+            blockers.append(f"withheld_share_basis_rows:{withheld}")
+        labeled = sum(diagnostics.get("foreign_filer_reasons", {}).get("labeled_rows", {}).values())
+        if labeled:
+            blockers.append(f"foreign_filer_reason_rows:{labeled}")
         lag = (cutoff.date() - screen_date).days
         if lag > 4:
             blockers.append(f"screen_session_lag_days:{lag}")
         if total > len(frame):
             blockers.append(f"screen_frame_truncated:{len(frame)}/{total}")
+    if any(item.kind in (FIELD_DERIVED, FIELD_ITEM) for item in parsed) and not base.get("foreign_filers"):
+        # IFRS / no-XBRL owners then read as missing_metric_state / missing_item_state.
+        blockers.append("foreign_filer_reasons_not_applied")
     if any(item.kind == FIELD_FEATURE for item in parsed):
         blockers += _feature_blockers(diagnostics.get("research_features")) or ["research_feature_values_research_only"]
     empty = [item.field_id for item in parsed if not counts.get(item.field_id, {}).get("valid")]
@@ -949,6 +1094,7 @@ def cross_section_asof(
     scratch_dir: Path | str | None = None,
     memory_limit: str = "256MB",
     threads: int = 1,
+    foreign_filer_artifacts: Any = None,
     **options: Any,
 ) -> CrossSectionResult:
     """One row per (tier-1 universe member active at ``as_of_ts``, field); see the module docstring.
@@ -964,7 +1110,7 @@ def cross_section_asof(
         raise ValueError(f"cross_section_asof returns the whole screen: max_rows <= {MAX_FRAME_ROWS}, "
                          "no frame_rows; stream larger screens through ScreenStore")
     with ScreenStore(db_path, scratch_dir=scratch_dir, memory_limit=memory_limit, threads=threads,
-                     research_db_path=research_db_path) as screen:
+                     research_db_path=research_db_path, foreign_filer_artifacts=foreign_filer_artifacts) as screen:
         return run_cross_section(screen, as_of_ts, fields, basis=basis, universe_id=universe_id,
                                  feature_version=feature_version, **options)
 

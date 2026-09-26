@@ -464,9 +464,14 @@ def test_q3_share_basis_owner_link_deciles_floor_and_latest_null(tmp_store):
     _q3_owner(con, "issuer_12", "0000000013")
     _q3_line(con, "class_a", "issuer_12", "0000000013", pe=100.0, cap=5e9, shares_source="class_sum", volume=100)
     _q3_line(con, "class_b", "issuer_12", "0000000013", pe=100.0, cap=5e9, shares_source="class_sum", volume=10_000)
-    # Stored multiples under a withheld or missing share basis are never shown.
+    # Stored multiples under a withheld or missing share basis are never shown
+    # (vendor_shares_zero: an A8 final label); the SQL withholds every A8 label.
+    from atx_db.market_daily import SHARES_SOURCES_WITHHELD
+
+    q3_sql = (ROOT / "sql/research" / reader.SQL_FILES["q3"]).read_text(encoding="utf-8")
+    assert all(f"'{label}'" in q3_sql for label in SHARES_SOURCES_WITHHELD)
     _q3_owner(con, "issuer_14", "0000000015")
-    _q3_line(con, "withheld", "issuer_14", "0000000015", pe=5.0, shares_source="multiclass_unresolved")
+    _q3_line(con, "withheld", "issuer_14", "0000000015", pe=5.0, shares_source="vendor_shares_zero")
     _q3_owner(con, "issuer_15", "0000000016")
     _q3_line(con, "unlabeled", "issuer_15", "0000000016", pe=7.0, shares_source=None)
     # The panel joined another owner's fundamentals to this line.

@@ -5,17 +5,23 @@ NULL restatement, a withheld market revision and standardized items) screened at
 several knowledge cutoffs: nothing known only after the cutoff appears, a member
 delisted after the cutoff is listed with its as-of state, a newer NULL state is
 never replaced by an older value, and a month-end screen equals the R2a panel
-formation byte for byte. A second test pins one governed-read refusal of the
-screen CLI (a hard-linked database, C1 re-review N1).
+formation byte for byte. W1: an A8 withheld share basis surfaces as a NULL
+row with its reason, a P2 panel native is requested like any market field, and
+an IFRS filer's missing fundamentals carry the P11 reason at the cutoff. A
+second test pins one governed-read refusal of the screen CLI (a hard-linked
+database, C1 re-review N1).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import json
 import os
+import zipfile
 from pathlib import Path
 
+from atx_db import foreign_filers as ff
 from atx_db import fundamental_signal_research as fsr
 from atx_db.asof import cross_section_asof
 from atx_db.market_daily import MARKET_DAILY_SOURCE_NAME
@@ -27,6 +33,7 @@ DDD = "SEC-CIK-0000000004"
 REVENUE = "item:revenue:quarterly"
 ANNUAL = "item:revenue:annual"
 FIELDS = ("roa_q", "accruals_ttm", "market_cap", "momentum_12_1", REVENUE, ANNUAL)
+P2 = "max_daily_return_21d"
 
 
 def _utc(*parts: int) -> dt.datetime:
@@ -49,6 +56,19 @@ def _revenue(wh: Warehouse, state_id: str, cik: int, period_end: dt.date, value:
           period_end - dt.timedelta(days=days - 1), period_end, clock, value, clock.date()])
 
 
+def _ifrs_artifacts(tmp_path: Path) -> ff.TaxonomyArtifacts:
+    """P11 evidence: DDD (CIK 4) files an IFRS 20-F on 2023-04-14 (its reason opens 46 h later)."""
+    fact = {"start": "2022-01-01", "end": "2022-12-31", "val": 1, "accn": "d-22", "fy": 2022, "fp": "FY",
+            "form": "20-F", "filed": "2023-04-14", "frame": "CY2022"}
+    member = {"cik": 4, "entityName": "DDD", "facts": {"ifrs-full": {"Revenue": {
+        "label": "Revenue", "description": "", "units": {"USD": [fact]}}}}}
+    archive = tmp_path / "companyfacts.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+        handle.writestr("CIK0000000004.json", json.dumps(member, separators=(",", ":")))
+    ff.write_taxonomy_artifacts(ff.scan_companyfacts_taxonomies(archive), tmp_path / "taxonomy")
+    return ff.resolve_taxonomy_artifacts(archive, tmp_path / "taxonomy")
+
+
 def _build(tmp_path, monkeypatch):
     defs = _definitions()
     monkeypatch.setattr(fsr, "default_derived_definitions", lambda: defs)
@@ -59,13 +79,17 @@ def _build(tmp_path, monkeypatch):
     wh.listing(4, DDD, "DDD", "common", "XNAS", first=dt.date(2023, 9, 1), last=dt.date(2023, 12, 15))
     # CCC's Q3 roa is restated to an explicit NULL state before the November cutoff.
     ids["q3_3_null"] = wh.state(3, "roa_q", "q", dt.date(2023, 9, 30), None, _at("2023-11-20"))
-    # A later market revision for BBB on 2023-11-30 withholds market_cap (NULL).
+    # A later market revision for BBB on 2023-11-30 withholds market_cap (NULL):
+    # a split waits for its share update (an A8 final withheld label).
     bbb = LINES[2][0]
     wh.con.execute("""
         INSERT INTO market_daily_metrics
         VALUES (?,?,?,DATE '2023-11-30',TIMESTAMP '2023-11-30 21:30:00',DATE '2023-11-30',100.0,1000,NULL,NULL,
-                0.1,'split_unresolved')
+                0.1,'split_pending_share_update')
     """, [f"{bbb}|2023-11-30|r2", MARKET_DAILY_SOURCE_NAME, bbb])
+    # Bars gain volume (the P2 natives read it).
+    wh.con.execute("ALTER TABLE equity_daily_bars ADD COLUMN volume BIGINT")
+    wh.con.execute("UPDATE equity_daily_bars SET volume=1000")
     # Standardized items (the fixture table gains the real schema's PIT columns).
     for ddl in ("as_of_date DATE", "valid_to TIMESTAMP", "rule_id VARCHAR"):
         wh.con.execute(f"ALTER TABLE fundamental_standardized ADD COLUMN {ddl}")
@@ -125,6 +149,7 @@ def test_pit_screen_end_to_end(tmp_path, monkeypatch):
     assert rows[("market_cap", bbb)].size_status == rp.UNVERIFIED_VENDOR_SHARES
     assert "reconstructed_identity_universe_and_availability_not_certifiable" in jan.blockers
     assert any(b.startswith("unverified_vendor_share_size_rows:") for b in jan.blockers)
+    assert "foreign_filer_reasons_not_applied" in jan.blockers  # no P11 evidence given
     assert DDD not in set(jan.rows.security_id)  # delisted on 2023-12-15
 
     # Thirty minutes later the late filings are visible.
@@ -137,7 +162,8 @@ def test_pit_screen_end_to_end(tmp_path, monkeypatch):
                               scratch_dir=tmp_path).screen_date == dt.date(2024, 1, 30)
 
     # A member delisted after the cutoff is still listed, with its as-of state.
-    nov = cross_section_asof(_utc(2023, 11, 30, 22), FIELDS, path, scratch_dir=tmp_path)
+    nov = cross_section_asof(_utc(2023, 11, 30, 22), (*FIELDS, P2), path, scratch_dir=tmp_path,
+                             foreign_filer_artifacts=_ifrs_artifacts(tmp_path))
     rows = _rows(nov)
     member = rows[("momentum_12_1", DDD)]
     assert (member.symbol, member.exchange_code, member.membership_reason, member.cohort_reason) == (
@@ -149,10 +175,27 @@ def test_pit_screen_end_to_end(tmp_path, monkeypatch):
     restated = rows[("roa_q", ccc)]
     assert restated.derived_value_id == ids["q3_3_null"] and restated.value_status != "valid"
     assert restated.value != restated.value  # NaN: the earlier 0.05 is not revived
-    withheld = rows[("market_cap", bbb)]
-    assert withheld.value_status == "invalid_current_state" and withheld.value != withheld.value
     assert nov.diagnostics["market_revision_rule"] == rp.MARKET_REVISION_RULE
     assert rows[("market_cap", aaa)].value_status == "valid"
+    # A8 withheld share basis: the row stays, NULL, with the label as its reason.
+    withheld = rows[("market_cap", bbb)]
+    assert (withheld.value_status, withheld.size_status, withheld.shares_source) == (
+        "share_basis_withheld", "share_basis_withheld", "split_pending_share_update")
+    assert withheld.value != withheld.value
+    assert "withheld_share_basis_rows:1" in nov.blockers
+    assert not any(b.startswith("unverified_vendor_share_size_rows:") for b in nov.blockers)
+    # A P2 panel native through the public panel API (flat bars: a zero max return).
+    native = rows[(P2, aaa)]
+    assert (native.field_kind, native.value, native.value_status, native.identity_basis) == (
+        "market", 0.0, "valid", rp.PRICE_LINE_IDENTITY_BASIS)
+    # P11 by date: DDD is an IFRS reporter from 2023-04-15 22:00; its fundamentals
+    # read the reason instead of a bare missing state; its market field is untouched.
+    for field_id in ("roa_q", REVENUE):
+        assert rows[(field_id, DDD)].value_status == ff.IFRS_REPORTER_REASON
+    assert rows[("roa_q", aaa)].value_status == "valid"
+    assert nov.diagnostics["foreign_filer_reasons"]["owners_in_reason_interval"] == {ff.IFRS_REPORTER_REASON: 1}
+    assert any(b.startswith("foreign_filer_reason_rows:") for b in nov.blockers)
+    assert "foreign_filer_reasons_not_applied" not in nov.blockers
 
 
 def test_screen_cli_refuses_a_hard_linked_database_before_opening_it(tmp_path, capsys):

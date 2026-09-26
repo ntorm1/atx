@@ -10,9 +10,12 @@
 --                            class_sum: vendor counts on the modeled vendor-run
 --                            clock (class_sum = multi-class issuer cap, sum of
 --                            close_i x class count_i; archive_ads = ADS basis).
--- Withheld bases (multiclass_unresolved, adr_ratio_unresolved,
--- dei_archive_conflict, split_unresolved) and rows without a share-basis label
--- never show a market cap or multiple, whatever the stored row holds.
+-- Withheld bases (market_daily.SHARES_SOURCES_WITHHELD: adr_ratio_unknown,
+-- adr_ratio_unresolved, archive_run_pending, bar_price_invalid,
+-- dei_archive_conflict, multiclass_unresolved, split_pending_share_update,
+-- split_unresolved, vendor_shares_zero) and rows without a share-basis label
+-- never show a market cap or multiple, whatever the stored row holds; the row
+-- stays, with status share_basis_withheld and its shares_source as the reason.
 -- The market row's owner (A5 bridge) must be this reader's dated-CIK issuer:
 -- CIKs are compared when the owner id carries one (SEC-CIK-X, *-CIK-X member
 -- ids), else the owner ids. Requires schema >= 0327 (identity label columns).
@@ -68,8 +71,10 @@ session AS (
       CASE WHEN m.shares_source='dei' THEN 'verified_dei_shares'
            WHEN m.shares_source IN ('archive','archive_ads','archive_split_adjusted','class_sum')
              THEN 'unverified_vendor_shares'
-           WHEN m.shares_source IN ('multiclass_unresolved','adr_ratio_unresolved',
-                                    'dei_archive_conflict','split_unresolved') THEN 'withheld'
+           WHEN m.shares_source IN ('adr_ratio_unknown','adr_ratio_unresolved','archive_run_pending',
+                                    'bar_price_invalid','dei_archive_conflict','multiclass_unresolved',
+                                    'split_pending_share_update','split_unresolved','vendor_shares_zero')
+             THEN 'withheld'
            ELSE 'unlabeled' END AS share_basis_status
     FROM market_ranked m WHERE m.state_rank=1
 ), market AS (

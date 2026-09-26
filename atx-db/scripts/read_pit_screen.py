@@ -46,7 +46,16 @@ pandas frame.
 
 Fields: <metric_code> | derived:<code> | market:<code> | item:<code>:<basis> |
 feature:<feature_id>[:<variant>] (feature fields need --research-db-path and
---feature-version). Example (PowerShell, from atx-db, on a fixture copy):
+--feature-version). Market codes include the panel natives (P2:
+amihud_illiquidity_21d, pct_from_high_252d, max_daily_return_21d, turnover_21d,
+downside_deviation_60d). Size rows under a share basis A8 withholds are NULL
+with value_status share_basis_withheld. --companyfacts-zip (P11) labels
+fundamentals rows of IFRS / no-XBRL foreign filers by date from the verified
+taxonomy artifacts of that archive (foreign_filers.resolve_taxonomy_artifacts;
+L1 refuses an archive inside an atx-db/data directory); without it the screen
+carries the foreign_filer_reasons_not_applied blocker. When the full screen was
+written to --output-csv, the receipt drops the screen_frame_truncated blocker
+(the JSON rows stay capped). Example (PowerShell, from atx-db, on a fixture copy):
   .venv\\Scripts\\python.exe scripts\\read_pit_screen.py --db-path "$env:TEMP\\fixture.duckdb" `
     --as-of 2024-01-31T22:00:00Z --field roa_q --field market_cap --field item:revenue:quarterly `
     --output-json "$env:TEMP\\screen.json" --output-csv "$env:TEMP\\screen.csv"
@@ -127,6 +136,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--feature-version", default=None)
     p.add_argument("--unverified-vendor-shares", action="store_true",
                    help="allow line_market_cap (vendor share counts, labeled unverified)")
+    p.add_argument("--companyfacts-zip", type=Path, default=None,
+                   help="P11: companyfacts.zip whose verified taxonomy artifacts label foreign filers by date")
+    p.add_argument("--taxonomy-dir", type=Path, default=None,
+                   help="directory of the taxonomy artifacts (default: beside --companyfacts-zip)")
     p.add_argument("--session-lookback-days", type=int, default=10)
     p.add_argument("--memory-limit", type=_gr.memory_limit_arg, default=None, help="L1 only (default 256MB)")
     p.add_argument("--threads", type=int, choices=(1, 2), default=None, help="L1 only (default 1)")
@@ -163,6 +176,22 @@ def validate_paths(db_path: Path, output: Path, csv: Path | None, research: Path
         csv = _gr.validate_output(csv, runner_root=ROOT, suffix=".csv", inputs=(*inputs, output),
                                   label="output-csv")
     return db_path, output, csv, research
+
+
+def validate_foreign_filer_evidence(zip_path: Path | None, directory: Path | None, *,
+                                    production: bool) -> tuple[Path | None, Path | None]:
+    """P11 evidence paths (read by zipfile and as parquet, never as a database); L1 keeps off production data."""
+    if zip_path is None:
+        if directory is not None:
+            raise Refused("--taxonomy-dir needs --companyfacts-zip")
+        return None, None
+    zip_path = Path(zip_path).resolve()
+    if not zip_path.is_file():
+        raise Refused(f"companyfacts archive not found: {zip_path}")
+    directory = zip_path.parent if directory is None else Path(directory).resolve()
+    if not production and any(_gr.in_data_directory(path, ROOT) for path in (zip_path, directory)):
+        raise Refused("L1 inspection refuses P11 evidence inside an atx-db/data directory; use a fixture copy")
+    return zip_path, directory
 
 
 def resolve_limits(args: argparse.Namespace) -> Any:
@@ -204,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         db_path, output, csv_path, research = validate_paths(
             args.db_path, args.output_json, args.output_csv, args.research_db_path, production=args.production,
             governed=governed)
+        companyfacts, taxonomy_dir = validate_foreign_filer_evidence(
+            args.companyfacts_zip, args.taxonomy_dir, production=args.production)
         limits = resolve_limits(args)
         guard = None
         if args.production:
@@ -213,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refused(f"{free} bytes free beside the output; the spill cap needs "
                               f"{PRODUCTION_DISK_FLOOR_BYTES}")
         receipt: dict[str, Any] = {
-            "contract": "pit-screen-governed-v2" if args.production else "pit-screen-l1-v2",
+            "contract": "pit-screen-governed-v3" if args.production else "pit-screen-l1-v3",
             "access_mode": limits.access_mode, "database": str(db_path), "research_database":
                 None if research is None else str(research),
             "read_only": True, "production_qualified": False, "limits": {**limits._asdict(),
@@ -224,13 +255,16 @@ def main(argv: list[str] | None = None) -> int:
             "request": {"as_of": args.as_of.isoformat(), "fields": list(args.field), "basis": args.basis,
                         "universe_id": args.universe_id, "feature_version": args.feature_version,
                         "unverified_vendor_shares": args.unverified_vendor_shares,
-                        "session_lookback_days": args.session_lookback_days},
+                        "session_lookback_days": args.session_lookback_days,
+                        "companyfacts_zip": None if companyfacts is None else str(companyfacts),
+                        "taxonomy_dir": None if taxonomy_dir is None else str(taxonomy_dir)},
             "database_file_before": _gr.file_state(db_path),
         }
         # One deadline for the whole screen (import, open, owner bridge, values,
         # CSV): the screen is many statements and an interrupt landing between
         # two of them is a no-op, so the watchdog keeps interrupting until it stops.
-        deadline_hit, stop, active = threading.Event(), threading.Event(), {}
+        deadline_hit, stop = threading.Event(), threading.Event()
+        active: dict[str, Any] = {}
 
         def watchdog() -> None:
             if stop.wait(limits.timeout_seconds):
@@ -251,9 +285,15 @@ def main(argv: list[str] | None = None) -> int:
             # Imported only after every refusal: nothing above touches DuckDB.
             from atx_db.asof.cross_section import ScreenStore, run_cross_section
 
+            artifacts = None
+            if companyfacts is not None:
+                from atx_db.foreign_filers import resolve_taxonomy_artifacts
+
+                # Verified against the archive as it is now (SHA, scope, scanner, row counts).
+                artifacts = resolve_taxonomy_artifacts(companyfacts, taxonomy_dir)
             with ScreenStore(db_path, scratch_dir=output.parent, memory_limit=limits.memory_limit,
                              threads=limits.threads, spill_limit=limits.spill_limit,
-                             research_db_path=research) as screen:
+                             research_db_path=research, foreign_filer_artifacts=artifacts) as screen:
                 active["con"] = screen.con
                 try:
                     attached = ("wh",) if research is None else ("wh", "rs")
@@ -269,17 +309,28 @@ def main(argv: list[str] | None = None) -> int:
                         frame_rows=limits.max_rows, session_lookback_days=args.session_lookback_days,
                         unverified_vendor_shares=args.unverified_vendor_shares)
                     if csv_path is not None:
+                        written = {"rows": 0}
+
                         def stream(sink: Any) -> None:
+                            # The first frame always comes (the header of an empty screen too).
                             for index, chunk in enumerate(screen.iter_screen_frames()):
                                 chunk.to_csv(sink, index=False, header=index == 0)
+                                written["rows"] += len(chunk)
 
                         digest = _gr.publish_text(csv_path, stream, prefix=".pit-screen-", newline="")
-                        receipt["csv"] = {"path": str(csv_path), "rows": result.total_rows, "sha256": digest}
+                        if written["rows"] != result.total_rows:
+                            raise RuntimeError(f"CSV holds {written['rows']} of {result.total_rows} screen rows")
+                        receipt["csv"] = {"path": str(csv_path), "rows": written["rows"], "sha256": digest,
+                                          "complete": True}
                 finally:
                     active.pop("con", None)
             if deadline_hit.is_set():
                 raise TimeoutError(f"screen deadline of {limits.timeout_seconds} s exceeded")
             rows, size = _bounded_rows(result.rows, limits)
+            blockers = list(result.blockers)
+            if receipt.get("csv", {}).get("complete"):
+                # The whole screen is in the CSV: only the JSON rows are capped (``truncated``).
+                blockers = [b for b in blockers if not b.startswith("screen_frame_truncated:")]
             receipt["screen"] = {
                 "query_version": result.query_version, "status": result.status,
                 "as_of_ts_utc": result.as_of_ts.isoformat(),
@@ -289,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
                 "eligible_members": result.eligible_members, "valid_members": result.valid_members,
                 "screen_rows": result.total_rows, "field_digests": result.field_digests,
                 "r2a_field_digests": result.r2a_field_digests, "screen_sha256": result.screen_sha256,
-                "blockers": list(result.blockers), "diagnostics": result.diagnostics,
+                "blockers": blockers, "diagnostics": result.diagnostics,
             }
             receipt.update(rows=rows, returned_rows=len(rows), truncated=result.total_rows > len(rows),
                            transferred_bytes=size)
