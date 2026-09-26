@@ -608,6 +608,29 @@ def seed_fundamental_item_registry(
                 """
             )
 
+            # A seed alias that moved to another item (S1: PaymentsToAcquireProductiveAssets
+            # 1306 -> 1305) must not survive under its old item: the upsert below never
+            # deletes, so a reseeded warehouse would map the alias to both items and fail the
+            # critical duplicate_fundamental_item_alias_item_mappings DQC. The table has no
+            # DEFAULT now() column (WAL-safe delete); the kept and new rows differ in item_id,
+            # so no unique key is deleted and re-inserted in this transaction.
+            store.con.execute(
+                """
+                DELETE FROM fundamental_item_alias existing
+                WHERE EXISTS (
+                        SELECT 1 FROM _fundamental_item_alias_seed seed
+                        WHERE seed.alias_scheme = existing.alias_scheme
+                          AND seed.alias_code = existing.alias_code
+                  )
+                  AND NOT EXISTS (
+                        SELECT 1 FROM _fundamental_item_alias_seed seed
+                        WHERE seed.alias_scheme = existing.alias_scheme
+                          AND seed.alias_code = existing.alias_code
+                          AND seed.item_id IS NOT DISTINCT FROM existing.item_id
+                  )
+                """
+            )
+
             store.con.execute(
                 """
                 UPDATE fundamental_item_alias existing
