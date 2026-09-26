@@ -138,6 +138,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/fidelity.cpp
     src/eval/trial_registry.cpp
     src/eval/trial_epoch.cpp
+    src/data/exposure_panel.cpp
+    src/factory/objective_ic.cpp
     src/eval/multiple_testing.cpp
     src/eval/lockbox_audit.cpp
     src/combine/signal_combiner.cpp
@@ -160,7 +162,8 @@ add_library(atx::engine ALIAS atx-engine)
 
 # JSON is private to these artifact implementations. Keep its include path
 # source-local so adding this dependency does not invalidate every engine TU/PCH.
-set_property(SOURCE src/combine/signal_cube.cpp src/eval/trial_epoch.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
+set_property(SOURCE src/combine/signal_cube.cpp src/eval/trial_epoch.cpp
+    src/factory/objective_ic.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
     "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
 
 target_include_directories(atx-engine

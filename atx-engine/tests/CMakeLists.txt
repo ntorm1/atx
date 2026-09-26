@@ -349,6 +349,7 @@ if(ATX_USE_PCH)
 endif()
 
 add_executable(atx-engine-w1-data-tests EXCLUDE_FROM_ALL
+    data/exposure_panel_test.cpp
     data/data_panel_store_test.cpp
     data/data_history_panel_test.cpp
     data/data_point_in_time_universe_test.cpp
