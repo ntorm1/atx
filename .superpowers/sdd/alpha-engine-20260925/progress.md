@@ -38,7 +38,61 @@ All commands need explicit workdir/path. Lease acquisition can fail in automatic
 configuration AFTER publishing a valid lease; inspect the record, then use equity presets.
 Reuse existing pools, -MaxPool11; do not create more. Four agent slots including root.
 
-## Live jobs (latest checkpoint)
+## Current checkpoint (supersedes historical job notes below)
+
+Root HEAD before this update: bc16ff76. Tree clean. No active root compiler or test.
+W0 correctness source b185d056 passed all nine whole targets: 3081 run,3074 passed,
+7 documented skips. G0 is complete, with no promoted alpha. W0 remains OPEN for final
+changed impl/risk target qualification and the full quiet performance gate. W1-W5
+production implementation has not started; preparation notes are not lane completion.
+
+Root final equity-dev configure completed at source b1fc62b8 in55.5s with PCH ON,
+the original eight groups/order and isolated pool2/deps/equity-dev. A build attempt
+stopped BEFORE launch at2.356GiB free. No pending process or session needs resuming.
+Next build targets: atx-impl-tests,atx-engine-risk-tests,atx-shm-worker, Jobs1.
+Keep old warm PCH ownership for that closure; run only the two changed whole suites.
+Configure/logs are in build-equity/w0-final-closure. Later commits changed docs only.
+
+Build improvements through0c5f87a0 merged root at e54602fe, independent approval
+imported b1fc62b8. Explicit -Jobs now controls BOTH build and check, overriding valid
+CMAKE_BUILD_PARALLEL_LEVEL; default1. Raw native concurrency overrides rejected.
+Seven oracle preparation callers migrated; their focused argument checks7/7 passed.
+Git SHA now belongs only to stage_discover.cpp: across385 configured command strings,
+one revision change altered exactly that one command. No compiler flag changes.
+
+Stable PCH commit3f2c25fb is APPROVED but deliberately NOT YET IMPORTED into root.
+Two minimal carriers (common/data) avoid first-test-group ownership changes and worker
+dependency expansion. Actual six-output compile passed54.336s, exact repeat no-op6.876s.
+Do not forget integration after final warm risk closure, before W1 Lane0. Owner reports
+75005562/e1a4f085/53239ffb imported bd2ce34a/202c06f5/87f7c609; independent PCH review
+2a0cc4c2 imported ef35c141. Fresh equity-hygiene metadata configure passed19.450s,
+380 commands, zero PCH flags/targets. Eight owned dependency sources seeded offline;
+separate hygiene binary directories; installed vcpkg payload unchanged, no package build.
+Development PCH remained ON. No full hygiene-source compile claim.
+
+Baseline/current Release benchmark+worker builds COMPLETE, same81-case registry/order.
+Current unchanged warm rebuild passed3.4759664s, native no-work, zero ccache calls,
+unchanged executable/statslog hashes. Fresh current build224calls:84direct hits,
+140cacheable misses, zero preprocessing failures. Historical7581 preprocessing errors
+are not attributed to this build. No speculative cache flags/global cache mutation.
+Both benchmark trees are idle; no measurements have run. Full81cases x3 repetitions,
+0.20 regression gate, no missing/skipped cases or threshold bypass remains required.
+P-core mask0xFF independently verified. Agent derives memory requirement; WQ fixed
+panel+output storage~0.84GiB, WarmCache budget2GiB plus live DAG scratch/retained pools.
+
+Scheduling: exclusive ONE compiler can launch above3GiB free with zero existing compiler
+workers; monitor2GiB reserve. This is orchestration policy, not owner-imposed acceptance.
+Latest host available RAM fluctuates~1.8-2.8GiB; no compiler launched at that level.
+Small metadata work proceeds without project/package compilation. Never kill other apps.
+
+Agent duties: replay owner independently reviews D1 source acquisition note;
+G0 owner does bounded provenance recovery for82 recycled-ticker cases/19 corrupt dates;
+audit owner derives benchmark memory bound. Root owns changed-target gate/checkpoint.
+Source acquisition note0c0aef56 imported bc16ff76:56 Insider quarters,43 populated-range
+FSDS quarters, historical acceptance/header caveats. No filing payloads acquired.
+W1 prep now includes A1,B1,D1/D5,I1,Lane0 and source inventory; all documentation only.
+
+## Historical live-job notes
 
 Root session56041 COMPLETE exit0. Integrated sourceb185d056 built394 outputs in2375.269s,
 then all9 exes passed:3074 passed,7 documented skips,3081 run. Per-target counts/seconds,
@@ -58,11 +112,10 @@ direct Ninja ignored CMAKE_BUILD_PARALLEL_LEVEL and spawned many workers. Its ow
 ONLY the verified pool-5/build-hygiene Ninja824 process tree. No other pool was killed.
 Memory recovered to7.8GiB and regular root/G0/ASan one-worker builds resumed.
 
-Use CMAKE_BUILD_PARALLEL_LEVEL=1 for build (Jobs controls ctest). Wrapper check invokes Ninja
-directly, so use one production TU per check and inspect dependency closure; never test
-objects that pull worker/link dependencies. New builds require >4GiB free and <=3 total
-compiler workers. Existing jobs may continue above2GiB. No quiet performance claims while
-other builds, tests, or G0 runs are active.
+At the time of the original broad build, Jobs controlled only ctest; this is FIXED above.
+Inspect check dependency closures before running: test objects can pull worker/link
+dependencies. Current single-worker memory policy is in the checkpoint above. No quiet
+performance claims while other builds, tests, or G0 runs are active.
 
 ## Repairs merged and reviewed
 
