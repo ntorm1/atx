@@ -80,7 +80,8 @@
 //  * PURE in `panel` (the ISignalSource contract): each constituent is pure in the
 //    panel, so the blend is too. No hidden state mutated by evaluate() except the
 //    owned out_ buffer the returned SignalView borrows.
-//  * NON-OWNING constituents: sources_ holds raw ISignalSource* — the CALLER owns
+//  * NON-OWNING constituents: sources must be distinct, nonnull instances.
+//    sources_ holds raw ISignalSource* — the CALLER owns
 //    each constituent's lifetime (and must keep them alive for this source's
 //    lifetime). Mirrors the loop's non-owning collaborator discipline.
 //  * SignalView borrow: evaluate() returns a SignalView over out_ (the owned blend
@@ -200,6 +201,7 @@ public:
     ATX_ASSERT(combo_.weights.size() == sources_.size());
     ATX_CHECK(rule == CombinedSourceRule::LegacyPerCellV1 ||
               rule == CombinedSourceRule::StandardizedFixedGrossV2);
+    for (const auto* source : sources_) ATX_CHECK(source != nullptr);
   }
 
   [[nodiscard]] CombinedSourceRule rule() const noexcept { return rule_; }
@@ -254,7 +256,7 @@ public:
     // is applied identically here — no new apply-side math for either method.
     case CombineMethod::Stack:
     case CombineMethod::RegimeStack:
-      blend_linear(m, n_instruments);
+      ATX_TRY_VOID(blend_linear(m, n_instruments));
       break;
     case CombineMethod::RankAverage:
       blend_rank(m, n_instruments);
@@ -279,29 +281,42 @@ private:
   ///   out[k] = (Σ_{i∈V} w_i·s_i[k]) / (Σ_{i∈V} |w_i|),  V = non-NaN constituents.
   /// V empty OR zero surviving gross -> out[k] = NaN. Fixed constituent + instrument
   /// order (determinism). Reads combo_.weights[i] (P4-4 gross-normalized to Σ|w|=1).
-  void blend_linear(atx::usize m, atx::usize n_instruments) noexcept {
+  atx::core::Status blend_linear(atx::usize m, atx::usize n_instruments) {
     if (rule_ == CombinedSourceRule::StandardizedFixedGrossV2) {
-      // One common signal scale cancels in the final standardization. Scaling
-      // both inputs first avoids overflow from finite weights or signal values.
-      atx::f64 weight_scale = 0.0, signal_scale = 0.0;
-      for (const auto w : combo_.weights) weight_scale = std::max(weight_scale, std::abs(w));
-      for (const auto row : cross_)
-        for (const auto v : row) if (std::isfinite(v)) signal_scale = std::max(signal_scale, std::abs(v));
-      atx::f64 gross = 0.0;
-      if (weight_scale > 0.0)
-        for (const auto w : combo_.weights) gross += std::abs(w / weight_scale);
+      // Common gross and product scale cancel in the final standardization.
+      // Scale actual weighted products by their binary exponent, not weights
+      // and signals separately: reciprocal scales can make both products matter.
+      int largest_exponent = std::numeric_limits<int>::min();
+      for (atx::usize i = 0; i < m; ++i) {
+        if (combo_.weights[i] == 0.0) continue;
+        int we = 0; (void)std::frexp(combo_.weights[i], &we);
+        for (const auto v : cross_[i]) if (std::isfinite(v) && v != 0.0) {
+          int ve = 0; (void)std::frexp(v, &ve);
+          largest_exponent = std::max(largest_exponent, we + ve);
+        }
+      }
       for (atx::usize k = 0; k < n_instruments; ++k) {
-        atx::f64 sum = 0.0;
+        atx::f64 sum = 0.0, correction = 0.0;
         bool covered = false;
-        for (atx::usize i = 0; i < m && gross > 0.0; ++i) {
+        for (atx::usize i = 0; i < m; ++i) {
           const auto v = cross_[i][k];
           if (!std::isfinite(v) || combo_.weights[i] == 0.0) continue;
           covered = true;
-          if (signal_scale > 0.0) sum += (combo_.weights[i] / weight_scale) * (v / signal_scale);
+          if (v == 0.0) continue;
+          int we = 0, ve = 0;
+          const auto wm = std::frexp(combo_.weights[i], &we);
+          const auto vm = std::frexp(v, &ve);
+          const auto term = std::ldexp(wm * vm, we + ve - largest_exponent);
+          if (term == 0.0)
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                   "combined source: weighted contribution range underflows");
+          const auto next = sum + term;
+          correction += std::abs(sum) >= std::abs(term) ? (sum - next) + term : (term - next) + sum;
+          sum = next;
         }
-        out_[k] = covered ? sum / gross : detail::kCombineNaN;
+        out_[k] = covered ? sum + correction : detail::kCombineNaN;
       }
-      return;
+      return atx::core::Ok();
     }
     for (atx::usize k = 0U; k < n_instruments; ++k) {
       atx::f64 num = 0.0;
@@ -317,6 +332,7 @@ private:
       }
       out_[k] = (gross > 0.0) ? (num / gross) : detail::kCombineNaN;
     }
+    return atx::core::Ok();
   }
 
   /// RankAverage blend: out[k] = mean over non-NaN constituents of rank_i[k], where

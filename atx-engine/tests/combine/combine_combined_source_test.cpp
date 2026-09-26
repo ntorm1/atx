@@ -518,4 +518,21 @@ TEST(CombinedSignalSource, V2FiniteExtremesRemainFiniteAndConstantOpinionsAreZer
   EXPECT_EQ(neutral[0], 0.0); EXPECT_EQ(neutral[1], 0.0); EXPECT_TRUE(std::isnan(neutral[2]));
 }
 
+TEST(CombinedSignalSource, V2ZeroWeightAndReciprocalScalesCannotEraseActiveContributions) {
+  auto active = scripted({1e-200, -1e-200});
+  auto ignored = scripted({1e200, 1e200});
+  CombinedSignalSource zero_weight{{active.get(), ignored.get()}, combo({1.0, 0.0}),
+                                  CombineMethod::EqualWeight};
+  const auto retained = eval_copy(zero_weight);
+  EXPECT_EQ(retained, (std::vector<f64>{1.0, -1.0}));
+  auto large = scripted({1e200, -1e200, 0.0});
+  auto small = scripted({0.0, 1e-200, -1e-200});
+  CombinedSignalSource reciprocal{{large.get(), small.get()}, combo({1e-200, 1e200}),
+                                 CombineMethod::EqualWeight};
+  const auto scaled = eval_copy(reciprocal);
+  ASSERT_EQ(scaled.size(), 3U);
+  EXPECT_NEAR(scaled[0], std::sqrt(1.5), 1e-12);
+  EXPECT_NEAR(scaled[1], 0.0, 1e-12); EXPECT_NEAR(scaled[2], -std::sqrt(1.5), 1e-12);
+}
+
 }  // namespace atxtest_combine_combined_source_test
