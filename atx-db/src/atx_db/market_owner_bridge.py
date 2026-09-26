@@ -104,7 +104,7 @@ symbol is normalized (upper case; ``.``, ``/`` and blanks -> ``-``):
 
 Stale current-ticker holders stay linked (a delisted issuer that still files
 under the same ticker is common) but are counted (``stale_links``; rule-5
-lines are delisted by construction and are not counted there).
+lines have no current-ticker link and are counted in ``reconstructed_history``).
 
 Share class structure (A5 guard, A8 share basis)
 -----------------------------------------------
@@ -198,7 +198,7 @@ import datetime as dt
 import json
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from itertools import groupby, pairwise
@@ -910,8 +910,8 @@ class MarketOwnerBridge:
                     # Bridge-eligible, but the panel withholds DEI and valuation
                     # from the first per-class DEI filing of the owner onward.
                     per_class_dei += 1
-                # A5 stale-current-holder signal: rule-5 (reconstructed-history) lines are delisted
-                # by construction and are counted in ``reconstructed_history`` instead.
+                # A5 stale-current-holder signal: rule-5 (reconstructed-history) lines -- mostly
+                # delisted, some displaced live lines -- are counted in ``reconstructed_history``.
                 if (
                     line is not None
                     and horizon is not None
@@ -1236,25 +1236,83 @@ def _suffix_class(key: str, cik_keys: set[str]) -> str | None:
     return None
 
 
-def _line_symbol_class(line_keys: Iterable[str], cik_keys: Iterable[str]) -> str | None:
+def _line_symbol_class(
+    line_keys: Iterable[str], cik_keys: Iterable[str], trades_apart: Callable[[str], bool] | None = None
+) -> str | None:
     """Non-common class implied by ANY symbol a rule-5 line traded, or None (P1 fix I1).
 
     A delisted/renamed symbol is not a current SEC ticker, so the ticker-class
-    lookup cannot see it. Every symbol of the line is checked: the separator
-    rules (``-P``, ``-PR``, ``-WS``, ``-U``, ``-R`` ...), the fifth-letter rules
-    against a base among the line's own symbols or the CIK's current tickers,
-    and the Nasdaq fifth letter P/W/U/R of any 5-letter symbol without a base
-    check (e.g. ``NHPAP``, ``TECTP``).
+    lookup cannot see it. Every symbol of the line is checked:
+
+    * the separator rules (``-P``, ``-PR``, ``-WS``, ``-U``, ``-R`` ...);
+    * the fifth-letter sibling rules against a base that is a current SEC
+      ticker of the CIK -- never one of the line's own symbols: a security is
+      not its own sibling class, and a base+suffix pair on one line is a symbol
+      change (the when-issued ``LKSDW`` -> ``LKSD``);
+    * the Nasdaq fifth letter P/W/U/R of any 5-letter symbol without a base
+      check (e.g. ``NHPAP``, ``TECTP``), unless its 4-letter base is also a
+      symbol of the same line (the same symbol-change pattern).
+
+    A unit (``-U``/``-UN``, fifth letter ``U``) is non-common only when its base
+    is a current SEC ticker of the CIK or trades on another line at the same
+    time (``trades_apart``): units whose base never trades apart are the
+    issuer's only equity (stapled units, e.g. ``GRP.U``).
     """
     own = {key for key in line_keys if key}
-    bases = own | set(cik_keys)
+    bases = set(cik_keys)
     for key in sorted(own):
         label = _suffix_class(key, bases)
-        if label is None and _PLAIN_SYMBOL.fullmatch(key) and len(key) == 5:
+        if label is None and _PLAIN_SYMBOL.fullmatch(key) and len(key) == 5 and key[:4] not in own:
             label = _NASDAQ_FIFTH_LETTER_NON_COMMON.get(key[-1])
+        if label == "unit":
+            root = key.split("-")[0] if "-" in key else key[:4]
+            if root not in bases and not (trades_apart is not None and trades_apart(root)):
+                label = None
         if label is not None:
             return label
     return None
+
+
+#: ``(line id, CIK, share-class symbol) -> non-common class or None`` of a rule-5 line.
+Rule5Classifier = Callable[[str, str | None, str | None], str | None]
+
+
+def _rule5_classifier(
+    lines: Mapping[str, PriceLine], line_symbols: Sequence[LineSymbol], classes: Sequence[TickerClass]
+) -> Rule5Classifier:
+    """One non-common classifier for rule-5 lines, shared by the CIK-day dedupe and the class guard.
+
+    A line's keys are every symbol it traded plus the row's share-class symbol
+    (:func:`_line_symbol_class`); both callers pass the same row fields, so a
+    line the guard withholds never claims issuer-days.
+    """
+    traded: dict[str, set[str]] = defaultdict(set)
+    holders: dict[str, list[tuple[str, dt.date, dt.date]]] = defaultdict(list)
+    for line in lines.values():
+        if (key := normalize_symbol(line.last_symbol)) is not None:
+            traded[line.price_security_id].add(key)
+            holders[key].append((line.price_security_id, line.first_trade_date, line.last_trade_date))
+    for item in line_symbols:
+        if (key := normalize_symbol(item.symbol)) is not None:
+            traded[item.price_security_id].add(key)
+            holders[key].append((item.price_security_id, item.first_trade_date, item.last_trade_date))
+    cik_keys = _cik_ticker_keys(classes)
+
+    def classify(line_id: str, cik: str | None, share_class_symbol: str | None) -> str | None:
+        keys = set(traded.get(line_id, ()))
+        if (key := normalize_symbol(share_class_symbol)) is not None:
+            keys.add(key)
+        line = lines.get(line_id)
+
+        def trades_apart(root: str) -> bool:
+            return line is not None and any(
+                other != line_id and first <= line.last_trade_date and line.first_trade_date <= last
+                for other, first, last in holders.get(root, ())
+            )
+
+        return _line_symbol_class(keys, cik_keys.get(cik or "", set()), trades_apart)
+
+    return classify
 
 
 def _is_class_suffix_sibling(key: str, cik_keys: set[str]) -> bool:
@@ -1321,19 +1379,60 @@ def _class_index(classes: Sequence[TickerClass]) -> dict[tuple[str, str | None],
 
 
 def _line_class(
-    row: BridgeRow, by_key: dict[tuple[str, str | None], TickerClass], common_types: frozenset[str]
+    row: BridgeRow,
+    by_key: dict[tuple[str, str | None], TickerClass],
+    common_types: frozenset[str],
+    *,
+    suffix_fallback: bool = True,
 ) -> tuple[str, str, str]:
-    """(class, basis, category) of a linked row's symbol: category is common / unverified / non_common."""
-    key = normalize_symbol(row.share_class_symbol)
-    item = by_key.get((row.cik or "", key or ""))
+    """(class, basis, category) of a linked row's symbol: category is common / unverified / non_common.
+
+    Without ``suffix_fallback`` a symbol that is no current SEC ticker of the
+    row's CIK stays ``unclassified``: rule-5 rows apply the suffix rules over
+    every symbol of their line instead (:func:`_rule5_row_kind`).
+    """
+    return _symbol_class(row.cik, row.share_class_symbol, by_key, common_types, suffix_fallback=suffix_fallback)
+
+
+def _symbol_class(
+    cik: str | None,
+    share_class_symbol: str | None,
+    by_key: dict[tuple[str, str | None], TickerClass],
+    common_types: frozenset[str],
+    *,
+    suffix_fallback: bool = True,
+) -> tuple[str, str, str]:
+    key = normalize_symbol(share_class_symbol)
+    item = by_key.get((cik or "", key or ""))
     if item is not None:
         kind, basis = item.security_class, item.basis
     else:
-        suffix = _suffix_class(key, set()) if key else None
+        suffix = _suffix_class(key, set()) if key and suffix_fallback else None
         kind, basis = (suffix, CLASS_BASIS_SUFFIX) if suffix else ("unclassified", CLASS_BASIS_UNCLASSIFIED)
     if kind in common_types or kind in ("unclassified", _CLASS_SHARE):
         return kind, basis, "common"
     return kind, basis, "unverified" if kind == _UNVERIFIED_COMMON else "non_common"
+
+
+def _rule5_row_kind(
+    price_security_id: str,
+    cik: str | None,
+    share_class_symbol: str | None,
+    rule5_class: Rule5Classifier,
+    by_key: dict[tuple[str, str | None], TickerClass],
+    common_types: frozenset[str],
+) -> tuple[str, str, str]:
+    """(class, basis, category) of a rule-5 row: the class guard and the CIK-day dedupe both use this.
+
+    The line's symbol classes (:func:`_rule5_classifier`, every symbol it
+    traded) decide first; otherwise only a current SEC ticker class of the same
+    CIK can -- the bare ticker-suffix fallback never re-types a line the
+    rule-5 classifier found common (e.g. stapled units ``GRP.U``).
+    """
+    label = rule5_class(price_security_id, cik, share_class_symbol)
+    if label is not None:
+        return label, CLASS_BASIS_LINE_SYMBOLS, "non_common"
+    return _symbol_class(cik, share_class_symbol, by_key, common_types, suffix_fallback=False)
 
 
 def _cik_ticker_keys(classes: Sequence[TickerClass]) -> dict[str, set[str]]:
@@ -1345,31 +1444,18 @@ def _cik_ticker_keys(classes: Sequence[TickerClass]) -> dict[str, set[str]]:
     return keys
 
 
-def _reconstructed_row_class(
-    row: BridgeRow, line_keys: Mapping[str, frozenset[str]], cik_keys: Mapping[str, set[str]]
-) -> tuple[str, str, str] | None:
-    """(class, basis, 'non_common') of a rule-5 row whose line traded a non-common symbol, else None."""
-    if row.identity_basis != IDENTITY_BASIS_RECONSTRUCTED_HISTORY:
-        return None
-    keys = set(line_keys.get(row.price_security_id, ())) | {
-        key for key in (normalize_symbol(row.share_class_symbol),) if key
-    }
-    label = _line_symbol_class(keys, cik_keys.get(row.cik or "", ()))
-    return None if label is None else (label, CLASS_BASIS_LINE_SYMBOLS, "non_common")
-
-
 def _with_class_guards(
     rows: list[BridgeRow],
     lines: dict[str, PriceLine],
     classes: Sequence[TickerClass],
     *,
     strict: bool,
-    line_keys: Mapping[str, frozenset[str]] | None = None,
+    rule5_class: Rule5Classifier | None = None,
 ) -> tuple[BridgeRow, ...]:
     """Assign each linked row its share basis and DEI/valuation eligibility.
 
     A rule-5 (reconstructed-history) row is first classified over every symbol
-    its line traded (``line_keys``, :func:`_line_symbol_class`): a non-common
+    its line traded (``rule5_class``, :func:`_rule5_classifier`): a non-common
     signal withholds it as ``non_common_line`` (P1 fix I1).
 
     An issuer (CIK, else owner id) is multi-class when it has more than one
@@ -1388,9 +1474,12 @@ def _with_class_guards(
         if item.counted_common:
             common_counts[item.cik] += 1
 
-    cik_keys = _cik_ticker_keys(classes)
     kinds = {
-        id(row): _reconstructed_row_class(row, line_keys or {}, cik_keys) or _line_class(row, by_key, common_types)
+        id(row): (
+            _rule5_row_kind(row.price_security_id, row.cik, row.share_class_symbol, rule5_class, by_key, common_types)
+            if rule5_class is not None and row.identity_basis == IDENTITY_BASIS_RECONSTRUCTED_HISTORY
+            else _line_class(row, by_key, common_types)
+        )
         for row in rows
         if row.owner_security_id is not None
     }
@@ -1733,17 +1822,11 @@ def classify_reconstructed_with_history(
             rows.append(BridgeRow(**unlinked, unlinked_reason=UNLINKED_NO_CURRENT_TICKER))
 
     by_id = {line.price_security_id: line for line in lines}
-    # Every symbol each line traded (rule-5 rows are classified over all of them).
-    traded: dict[str, set[str]] = defaultdict(set)
-    for line in lines:
-        if (key := normalize_symbol(line.last_symbol)) is not None:
-            traded[line.price_security_id].add(key)
-    for item in line_symbols:
-        if (key := normalize_symbol(item.symbol)) is not None:
-            traded[item.price_security_id].add(key)
-    line_keys = {line_id: frozenset(keys) for line_id, keys in traded.items()}
-    rows, stats = _with_reconstructed_history(rows, by_id, reconstructed, tiers, classes, line_keys)
-    resolved = _with_class_guards(rows, by_id, classes, strict=False, line_keys=line_keys)
+    # Rule-5 rows are classified over every symbol their line traded, by one classifier for the
+    # CIK-day dedupe and the class guard.
+    rule5_class = _rule5_classifier(by_id, line_symbols, classes)
+    rows, stats = _with_reconstructed_history(rows, by_id, reconstructed, tiers, classes, rule5_class)
+    resolved = _with_class_guards(rows, by_id, classes, strict=False, rule5_class=rule5_class)
     resolved = _with_adr_ratios(_with_sibling_segments(resolved, line_symbols, directory), adr_ratios or {})
     members, ambiguous = _owner_members(resolved, content)
     return resolved, members, ambiguous, stats
@@ -1892,20 +1975,18 @@ def _with_reconstructed_history(
     evidence: Sequence[ReconstructedLinkEvidence],
     tiers: tuple[str, ...],
     classes: Sequence[TickerClass] = (),
-    line_keys: Mapping[str, frozenset[str]] | None = None,
+    rule5_class: Rule5Classifier | None = None,
 ) -> tuple[list[BridgeRow], dict[str, object]]:
     """Rule 5: link lines the current-ticker rules left unlinked through RI1 evidence (module docstring).
 
     ``classes`` (the SEC ticker classes) decide which current links are common-equity lines: only
     those claim an issuer-day in the per-CIK dedupe -- a preferred, note or warrant line of the same
     issuer legitimately trades alongside its common line. Likewise a rule-5 line that traded a
-    non-common symbol (``line_keys``, :func:`_line_symbol_class`) is linked without claiming or
-    losing days; the class guard withholds it (``non_common_line``). A line whose accepted RI1
-    intervals overlap is refused (``overlapping_reconstruction``): bridge rows of one price line
-    must be disjoint.
+    non-common symbol (``rule5_class``, :func:`_rule5_classifier` -- the class guard's own
+    classifier) is linked without claiming or losing days; the class guard withholds it
+    (``non_common_line``). A line whose accepted RI1 intervals overlap is refused
+    (``overlapping_reconstruction``): bridge rows of one price line must be disjoint.
     """
-    line_keys = line_keys or {}
-    cik_keys = _cik_ticker_keys(classes)
     by_vendor: dict[int, str] = {}
     for line in lines.values():
         vendor = _line_vendor_id(line)
@@ -2017,11 +2098,18 @@ def _with_reconstructed_history(
         line_id = key[0]
         item, link_segments = links[key]
         assert item.cik is not None
+        symbol = item.share_class_symbol or lines[line_id].last_symbol
         for low, high, tier in link_segments:
             seg_low, seg_high = span(low, high, line_id)
             if seg_low >= seg_high:
                 continue
-            label = _line_symbol_class(line_keys.get(line_id, ()), cik_keys.get(item.cik, ()))
+            # The class guard's own classification of this row (same line, CIK and share-class symbol).
+            kind = (
+                _rule5_row_kind(line_id, item.cik, symbol, rule5_class, by_key, common_types)
+                if rule5_class is not None
+                else None
+            )
+            label = kind[0] if kind is not None and kind[2] == "non_common" else None
             if label is not None:
                 non_common[line_id] = label
                 pieces = [(seg_low, seg_high)]
@@ -2043,7 +2131,7 @@ def _with_reconstructed_history(
                         price_security_id=line_id,
                         owner_security_id=cik_security_id(item.cik),
                         cik=item.cik,
-                        share_class_symbol=item.share_class_symbol or lines[line_id].last_symbol,
+                        share_class_symbol=symbol,
                         valid_from=piece_low,
                         valid_to=piece_to,
                         available_at=item.available_at,
