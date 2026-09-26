@@ -1522,7 +1522,10 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "adjustment_factor_history",
         "daily_adjustment_factors",
     ),
-    "corporate_actions": ("tbltickerhistory_daily",),
+    # The stage reads every row of equity_daily_bars (all sources; P8-review M3), so it depends on
+    # every registered writer of that table: the TickerHistory chunk loader and bulk publisher (both
+    # record as tbltickerhistory_daily) and the offline bulk bar loaders.
+    "corporate_actions": ("bulk_daily_bars", "bulk_daily_bars_backfill", "tbltickerhistory_daily"),
     "daily_adjustment_factors": ("adjustment_factor_history",),
     "delisting_events": ("listing_status_intervals",),
     "derived_metrics": ("fundamental_standardized",),

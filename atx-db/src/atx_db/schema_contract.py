@@ -86,6 +86,13 @@ PIT_COLUMN_NAMES = ("as_of_date", "available_at", "source_loaded_at", "run_id", 
 # check, matching schema.py::_seed_field_catalog's existing filter.
 _EPHEMERAL_TABLE_PATTERNS = ("duckdb_%", "sqlite_%", "pragma_%")
 
+# Scratch tables of batch and migration paths (LIKE patterns, escape character "\"): the
+# forward-return publisher's ``_ss_*`` prefix, migration rebuilds ``*__rebuild_<version>``,
+# create/copy/swap targets ``*__swap`` and ``*__next``, and ``*_bulk_stage`` publication
+# stages. They are transient and never part of the contract: a leftover one (a killed
+# batch) is neither declared, pinned nor reported as drift.
+_SCRATCH_TABLE_PATTERNS = ("\\_ss\\_%", "%\\_\\_rebuild\\_%", "%\\_\\_swap", "%\\_\\_next", "%\\_bulk\\_stage")
+
 
 @dataclass(frozen=True)
 class ColumnSpec:
@@ -322,17 +329,20 @@ def _fetch_live_tables(con) -> set[str]:
     ``_field_catalog_seed`` pattern in schema.py) are excluded for free -- con.register()
     relations show up in duckdb_columns() but never in duckdb_tables(). The explicit
     duckdb_%/sqlite_%/pragma_% filters are kept anyway to mirror _seed_field_catalog's
-    filter literally.
+    filter literally. Scratch tables (_SCRATCH_TABLE_PATTERNS) are excluded too.
     """
+    scratch = " OR ".join("table_name LIKE ? ESCAPE '\\'" for _ in _SCRATCH_TABLE_PATTERNS)
     rows = con.execute(
-        """
+        f"""
         SELECT table_name
         FROM duckdb_tables()
         WHERE schema_name = 'main'
           AND table_name NOT LIKE 'duckdb_%'
           AND table_name NOT LIKE 'sqlite_%'
           AND table_name NOT LIKE 'pragma_%'
-        """
+          AND NOT ({scratch})
+        """,
+        list(_SCRATCH_TABLE_PATTERNS),
     ).fetchall()
     return {row[0] for row in rows}
 

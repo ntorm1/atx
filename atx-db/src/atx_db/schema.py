@@ -3954,7 +3954,11 @@ COMMON_FIELD_DESCRIPTIONS = {
     "period_start": "Fundamental reporting period start date.",
     "period_end": "Fundamental reporting period end date.",
     "datadate": "Compustat-style fiscal period end date; mirrors period_end for fundamental_periods.",
-    "rdq": "Earnings report date, inferred from the matching SEC 8-K Item 2.02 report date when available.",
+    "rdq": (
+        "Earnings report date from the earliest SEC 8-K Item 2.02 matched to the period. NULL when no 8-K "
+        "Item 2.02 exists (never substituted by the periodic filing date); rdq_basis, rdq_available_at and "
+        "rdq_accession_number carry its lineage."
+    ),
     "pdate": "Preliminary earnings-release date; currently mirrors rdq when an Item 2.02 filing is matched.",
     "fdate": "Formal 10-Q/10-K filing date for the fundamental period.",
     "ldate": "Latest known vintage date for the period revision chain.",
@@ -4092,9 +4096,13 @@ def _seed_field_catalog(store: DuckDBStore) -> None:
     )
     con.register("_field_catalog_seed", seed_frame)
     try:
+        # Insert only the missing rows. ensure_quant_schema also runs on existing warehouses
+        # (DuckDBStore.initialize with a pending migration, the governed migrate's base
+        # schema), and a replace would revert every description and unit a migration set to
+        # this generic text, so upgraded warehouses would diverge from fresh bootstraps.
         con.execute(
             """
-            INSERT OR REPLACE INTO field_catalog (
+            INSERT INTO field_catalog (
                 table_name,
                 field_name,
                 semantic_type,
@@ -4104,9 +4112,13 @@ def _seed_field_catalog(store: DuckDBStore) -> None:
                 source_field,
                 updated_at
             )
-            SELECT table_name, field_name, semantic_type, description,
-                   nullable, unit, source_field, now()
-            FROM _field_catalog_seed
+            SELECT s.table_name, s.field_name, s.semantic_type, s.description,
+                   s.nullable, s.unit, s.source_field, now()
+            FROM _field_catalog_seed AS s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM field_catalog AS f
+                WHERE f.table_name = s.table_name AND f.field_name = s.field_name
+            )
             """
         )
     finally:
