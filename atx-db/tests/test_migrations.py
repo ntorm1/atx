@@ -979,35 +979,62 @@ _EST_ACTUAL_0327_KEY = [
 ]
 
 
-# Source checksums of the two migrations production has not applied yet (prod max 0326 on
+# Source checksums of the three migrations production has not applied yet (prod max 0326 on
 # 2026-09-26). Once production applies them they are append-only: a changed body fails here.
-_CHECKSUM_0327 = "01ffa6f5dc91cd55a769bd9e33187acd2b94ac9a078c2d0acd7dd703f2fa413b"
-_CHECKSUM_0328 = "1be792a510c7957b2db3d75d9e4aa9ee009e219739379b3d9e047d49bd710e3e"
+_CHECKSUM_0327 = "76e6b424a27e03dfa57fb98e3b050ea4dc96984fc2bc46043648437bea895e91"
+_CHECKSUM_0328 = "a65dc87b30275c95b929ac6a4d374ddb7ed477eba2df84128c379b8eb7927d48"
+_CHECKSUM_0329 = "927cb929f6647f68770905d551763ca1a3a98ae739afb0df10e274fe1207c5b6"
 
 
-def test_migration_0328_is_the_registered_head_and_0327_0328_are_recorded_with_their_checksums(tmp_store):
-    """Pin: 0328 is the last registered migration; a fresh bootstrap records 0327 and 0328."""
+def _unkeyed_bulk_violations(con) -> list[tuple[str, str]]:
+    """PRIMARY KEY / UNIQUE constraints or indexes left on the 0329 bulk tables (R-4 / M5)."""
+    from atx_db.migrations.bodies_0329 import UNKEYED_BULK_TABLES
+
+    tables = sorted(UNKEYED_BULK_TABLES)
+    placeholders = ", ".join("?" for _ in tables)
+    return sorted(
+        con.execute(
+            f"""
+            SELECT table_name, constraint_type FROM duckdb_constraints()
+            WHERE table_name IN ({placeholders}) AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+            UNION ALL
+            SELECT table_name, index_name FROM duckdb_indexes() WHERE table_name IN ({placeholders})
+            """,
+            [*tables, *tables],
+        ).fetchall()
+    )
+
+
+def test_migration_0329_is_the_registered_head_and_0327_0329_are_recorded_with_their_checksums(tmp_store):
+    """Pin: 0329 is the last registered migration; a fresh bootstrap records 0327, 0328 and 0329."""
     from atx_db.migrations import MIGRATIONS, _migration_source_checksum
 
-    pre_run5, head = MIGRATIONS[-2:]
+    pre_run5, post_b0, head = MIGRATIONS[-3:]
     assert (pre_run5.version, pre_run5.name) == (327, "pre_run5_identity_bundle")
-    assert (head.version, head.name) == (328, "post_b0_bundle")
-    assert (_migration_source_checksum(pre_run5), _migration_source_checksum(head)) == (_CHECKSUM_0327, _CHECKSUM_0328)
+    assert (post_b0.version, post_b0.name) == (328, "post_b0_bundle")
+    assert (head.version, head.name) == (329, "build_ledger_bulk_keys")
+    assert tuple(_migration_source_checksum(m) for m in (pre_run5, post_b0, head)) == (
+        _CHECKSUM_0327, _CHECKSUM_0328, _CHECKSUM_0329,
+    )
     assert tmp_store.con.execute(
-        "SELECT version, description, checksum FROM schema_migrations WHERE version IN ('0327', '0328') ORDER BY 1"
+        "SELECT version, description, checksum FROM schema_migrations "
+        "WHERE version IN ('0327', '0328', '0329') ORDER BY 1"
     ).fetchall() == [
         ("0327", "pre_run5_identity_bundle", _CHECKSUM_0327),
         ("0328", "post_b0_bundle", _CHECKSUM_0328),
+        ("0329", "build_ledger_bulk_keys", _CHECKSUM_0329),
     ]
     tables = {row[0] for row in tmp_store.con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
     assert {"security_identity_evidence", "historical_security_decisions"} <= tables
     assert {"equity_adjustment_rebases", "equity_daily_bar_revisions"} <= tables
+    assert {"build_runs", "build_batches", "equity_bar_unit_corrections"} <= tables
     assert _est_actual_primary_key(tmp_store.con) == _EST_ACTUAL_0327_KEY
+    assert _unkeyed_bulk_violations(tmp_store.con) == []
 
 
 @pytest.mark.slow
-def test_migrations_0327_0328_upgrade_a_0326_warehouse(tmp_path):
-    """Pin: a warehouse bootstrapped at 0326 reaches 0328 through the runner (production is at 0326)."""
+def test_migrations_0327_0329_upgrade_a_0326_warehouse(tmp_path):
+    """Pin: a warehouse bootstrapped at 0326 reaches 0329 through the runner (production is at 0326)."""
     import duckdb
 
     import atx_db.migrations as migrations_pkg
@@ -1031,8 +1058,9 @@ def test_migrations_0327_0328_upgrade_a_0326_warehouse(tmp_path):
             "SELECT max(CAST(version AS INTEGER)) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
         ).fetchone() == (326,)
         assert _est_actual_primary_key(con) == _EST_ACTUAL_0327_KEY[:5]
+        assert _unkeyed_bulk_violations(con) != []  # the 0326 bulk tables still carry their sha256 keys
 
-        assert apply_pending_migrations(con) == [327, 328]
+        assert apply_pending_migrations(con) == [327, 328, 329]
         verify_migration_checksums(con)
         assert verify_schema(con) == ()
         assert _est_actual_primary_key(con) == _EST_ACTUAL_0327_KEY
@@ -1042,6 +1070,11 @@ def test_migrations_0327_0328_upgrade_a_0326_warehouse(tmp_path):
             ).fetchall()
         }
         assert {"rdq_basis", "rdq_available_at", "rdq_accession_number"} <= rdq_lineage
+        assert _unkeyed_bulk_violations(con) == []
+        assert con.execute(
+            "SELECT table_name, data_type, is_nullable FROM duckdb_columns() "
+            "WHERE column_name = 'adj_close_basis' ORDER BY 1"
+        ).fetchall() == [("equity_price_metrics", "VARCHAR", True), ("market_daily_metrics", "VARCHAR", True)]
         assert apply_pending_migrations(con) == []
     finally:
         store.connection.close()

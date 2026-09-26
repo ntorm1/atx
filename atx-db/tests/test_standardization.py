@@ -740,11 +740,12 @@ def test_migrations_catalog_and_contract_include_standardization_tables(tmp_stor
         ).fetchall()
     }
     assert "idx_fundamental_standardized_item" not in indexes
+    # Migration 0329 (R-4) drops the bulk sha256 key: uniqueness is a publish-time check + DQC.
     primary_key = tmp_store.con.execute(
         "SELECT constraint_column_names FROM duckdb_constraints() "
         "WHERE table_name = 'fundamental_standardized' AND constraint_type = 'PRIMARY KEY'"
     ).fetchall()
-    assert primary_key == [(["standardized_id"],)]
+    assert primary_key == []
 
 
 def test_standardization_quality_gates_fire_and_pass(tmp_store):

@@ -33,7 +33,7 @@ def _insert_period(
     calendar_quarter = ((end.month - 1) // 3) + 1
     store.con.execute(
         """
-        INSERT OR REPLACE INTO fundamental_periods (
+        INSERT INTO fundamental_periods (
             fundamental_period_id,
             period_group_id,
             source,
@@ -129,7 +129,7 @@ def _insert_statement_point(
 ) -> None:
     store.con.execute(
         """
-        INSERT OR REPLACE INTO fundamental_statement_points (
+        INSERT INTO fundamental_statement_points (
             statement_point_id,
             fact_revision_id,
             revision_group_id,

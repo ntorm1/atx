@@ -448,10 +448,11 @@ def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, 
             SELECT is_nullable FROM duckdb_columns()
             WHERE table_name='derived_metric_values' AND column_name='value'
         """).fetchone() == (True,)
+        # Migration 0329 (R-4) drops the bulk sha256 key: uniqueness is a publish-time check + DQC.
         assert con.execute("""
             SELECT constraint_column_names FROM duckdb_constraints()
             WHERE table_name='derived_metric_values' AND constraint_type='PRIMARY KEY'
-        """).fetchall() == [(["derived_value_id"],)]
+        """).fetchall() == []
         assert con.execute("""
             SELECT count(*) FROM duckdb_indexes() WHERE index_name='idx_derived_metric_values_lookup'
         """).fetchone() == (0,)
@@ -486,8 +487,9 @@ def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, 
         con.execute("UPDATE derived_metric_values SET value=NULL WHERE derived_value_id='legacy-a'")
         assert con.execute("SELECT value FROM derived_metric_values WHERE derived_value_id='legacy-a'").fetchone() == (None,)
         con.execute("ROLLBACK")
+        # No duplicate-key probe: 0329 dropped the sha256 PRIMARY KEY (R-4); the id stays NOT NULL.
         with pytest.raises(duckdb.ConstraintException):
-            con.execute("INSERT INTO derived_metric_values SELECT * FROM derived_metric_values WHERE derived_value_id='legacy-a'")
+            con.execute("UPDATE derived_metric_values SET derived_value_id=NULL WHERE derived_value_id='legacy-a'")
         assert migrations.apply_pending_migrations(con) == []
         upgrade_store._initialized = False
         upgrade_store.initialize()

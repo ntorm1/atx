@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -21,6 +22,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    # The runner logs "migration NNNN committed" / "... checkpointed" per migration (stderr):
+    # the wall time of each migration, and where a killed run stopped (0.2 m2).
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr,
+                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
     result = run_governed_migrations(
         args.db_path,
         label=args.label,

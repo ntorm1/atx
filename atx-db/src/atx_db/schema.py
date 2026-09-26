@@ -631,7 +631,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS daily_adjustment_factors (
-            daily_adjustment_id VARCHAR PRIMARY KEY,
+            daily_adjustment_id VARCHAR NOT NULL,
             source VARCHAR NOT NULL,
             bar_source VARCHAR NOT NULL,
             factor_source VARCHAR NOT NULL,
@@ -1177,8 +1177,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             run_id VARCHAR,
             source_url VARCHAR NOT NULL,
             source_loaded_at TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT now(),
-            PRIMARY KEY (fact_revision_id)
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
         )
         """
     )
@@ -1252,8 +1251,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             run_id VARCHAR,
             source_url VARCHAR NOT NULL,
             source_loaded_at TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT now(),
-            PRIMARY KEY (statement_point_id)
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
         )
         """
     )
@@ -1298,8 +1296,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             is_value_changed BOOLEAN NOT NULL,
             calculation_method VARCHAR NOT NULL,
             source_loaded_at TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT now(),
-            PRIMARY KEY (ttm_point_id)
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
         )
         """
     )
@@ -1347,8 +1344,7 @@ def ensure_quant_schema(store: DuckDBStore) -> None:
             first_available_at TIMESTAMP,
             latest_available_at TIMESTAMP,
             source_loaded_at TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT now(),
-            PRIMARY KEY (fundamental_period_id)
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
         )
         """
     )
@@ -1883,8 +1879,6 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_corp_action_type_dim_event ON corp_action_type_dim(event_type, type_code)",
         "CREATE INDEX IF NOT EXISTS idx_adjustment_factor_history_security ON adjustment_factor_history(security_id, ex_date, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_adjustment_factor_history_event ON adjustment_factor_history(event_type, type_code, ex_date)",
-        "CREATE INDEX IF NOT EXISTS idx_daily_adjustment_factors_security ON daily_adjustment_factors(security_id, trade_date, as_of_date, available_at)",
-        "CREATE INDEX IF NOT EXISTS idx_daily_adjustment_factors_symbol ON daily_adjustment_factors(symbol, trade_date, as_of_date)",
         "CREATE INDEX IF NOT EXISTS idx_shares_outstanding_history_security ON shares_outstanding_history(security_id, share_count_type, effective_date, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_shares_outstanding_history_latest ON shares_outstanding_history(is_latest_revision, security_id, share_count_type)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_market_cap_key ON market_cap(source, security_id, trade_date)",
@@ -2667,7 +2661,8 @@ def _seed_catalog(store: DuckDBStore) -> None:
             "trading_calendar",
             "atx_warehouse",
             "Trading calendar",
-            "Open trading dates inferred from loaded daily bars.",
+            "Open XNYS sessions from the NYSE rule calendar (calendar.py, xnys_rules_v1), written over the "
+            "loaded daily-bar date range; bars are reconciled against it, never read as sessions.",
             "calendar_id,trade_date",
             "trading_calendar",
             "trade_date",
@@ -3676,9 +3671,11 @@ def _seed_catalog(store: DuckDBStore) -> None:
             "silver",
             "calendar",
             "calendar_id,trade_date",
-            "Trading calendar dates inferred from bars.",
+            "XNYS trading sessions from the NYSE holiday and special-closure rules (calendar.py rule set "
+            "xnys_rules_v1), not from bars; source stays 'equity_daily_bars calendar'.",
             '["calendar_id","trade_date","source"]',
-            "Derived calendar inherits availability from loaded bars.",
+            "Rule sessions are knowable in advance except unscheduled closures (known when they happen); "
+            "rows are written over the loaded bar date range.",
         ),
         (
             "universes",

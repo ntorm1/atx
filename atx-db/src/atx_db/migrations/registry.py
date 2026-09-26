@@ -152,6 +152,7 @@ from .bodies_0325 import MIGRATIONS as _MIGRATIONS_0325
 from .bodies_0326 import MIGRATIONS as _MIGRATIONS_0326
 from .bodies_0327 import MIGRATIONS as _MIGRATIONS_0327
 from .bodies_0328 import MIGRATIONS as _MIGRATIONS_0328
+from .bodies_0329 import MIGRATIONS as _MIGRATIONS_0329
 
 MIGRATIONS = [
     *_MIGRATIONS_0001_0137,
@@ -308,6 +309,10 @@ MIGRATIONS = [
     # 0328 (MIG0328, tier1-v2 0.2): post-B0 bundle. B0 applies 0327 and 0328 in one governed
     # migrate while market_daily_metrics is still empty (its swap copies that table).
     *_MIGRATIONS_0328,
+    # 0329 (MIG-B, tier1-v2 1.2): build ledger (build_runs/build_batches), A9 unit-correction
+    # ledger, bulk sha256 primary keys dropped, adj_close_basis. B0 applies 0327-0329 together
+    # while the bulk tables are empty (0329 refuses a table above 2M rows).
+    *_MIGRATIONS_0329,
 ]
 
 

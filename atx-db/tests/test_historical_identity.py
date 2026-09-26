@@ -28,7 +28,7 @@ from atx_db.quality import pit_column_presence_check
 from atx_db.schema_contract import build_contract_manifest
 
 SHA = "ab" * 32
-NEW_TABLES = {"security_identity_evidence", "historical_security_decisions", "equity_bar_unit_corrections"}
+NEW_TABLES = {"security_identity_evidence", "historical_security_decisions"}
 
 
 def _registered_0327() -> bool:
@@ -199,7 +199,7 @@ def test_0327_changes_exactly_the_bundle_schema_and_is_idempotent(con_0326):
     presence = pit_column_presence_check(types.SimpleNamespace(con=con_0326))
     assert presence.status == "passed", presence.details
     manifest = build_contract_manifest(con_0326)
-    for table in NEW_TABLES - {"equity_bar_unit_corrections"}:  # the ledger is a control table
+    for table in NEW_TABLES:
         assert all(spec.unit and spec.sign and spec.scale for spec in manifest[table]), table
 
 
@@ -931,9 +931,9 @@ _TSV = json.dumps({"source_path": None, "tsv_path": "C:\\atx\\staging\\tblticker
 _ZIP = json.dumps({"zip_path": "C:\\Users\\ops\\Downloads\\tbltickerhistory3_10y.zip", "symbols": ["SEB", "NEW"]})
 
 
-def test_ticker_history_thousands_runs_are_scaled_once_and_nothing_else_moves(tmp_store):
+def test_ticker_history_unit_gate_decides_every_run_and_writes_nothing(tmp_store):
+    """0327 item 7 is read-only (tier-1 v2 1.2): the inventory decides, bars_unit_correction scales."""
     con = tmp_store.con
-    con.execute("DROP TABLE IF EXISTS equity_bar_unit_corrections")  # a pre-0327 warehouse state
     th = b0327.TICKER_HISTORY_SOURCE
     _run(con, "parquet-run", _PARQUET)
     _run(con, "tsv-run", _TSV)
@@ -942,57 +942,26 @@ def test_ticker_history_thousands_runs_are_scaled_once_and_nothing_else_moves(tm
     _bar(con, source=th, run_id="parquet-run", security="MID", shares=17_644, close=20.0)
     _bar(con, source=th, run_id="parquet-run", security="SMALL", shares=29_464, close=5.0)
     _bar(con, source=th, run_id="parquet-run", security="NOSHARES", shares=None)
-    # TSV delivery (shares) under the same source name: never scaled.
+    # TSV delivery (shares) under the same source name.
     _bar(con, source=th, run_id="tsv-run", security="AAPL", shares=15_204_137_000)
     _bar(con, source=th, run_id="tsv-run", security="NVDA", shares=24_598_341_970, close=120.0)
-    # Another vendor with small counts: other sources are never touched.
+    # Another vendor with small counts: other sources are never inventoried.
     _bar(con, source="bulk_bars_2015plus", run_id="parquet-run", security="AAPL", shares=17_644)
+    before = _bars(con)
+    ledger_before = con.execute("SELECT count(*) FROM equity_bar_unit_corrections").fetchone()
 
-    _in_transaction(con, b0327._ticker_history_share_units)
-
-    assert _bars(con) == [
-        ("bulk_bars_2015plus", "parquet-run", "AAPL", 17_644, 17_644 * 250.0),
-        (th, "parquet-run", "AAPL", 15_204_137_000, 15_204_137_000 * 250.0),
-        (th, "parquet-run", "MID", 17_644_000, 17_644_000 * 20.0),
-        (th, "parquet-run", "NOSHARES", None, None),
-        (th, "parquet-run", "SMALL", 29_464_000, 29_464_000 * 5.0),
-        (th, "tsv-run", "AAPL", 15_204_137_000, 15_204_137_000 * 250.0),
-        (th, "tsv-run", "NVDA", 24_598_341_970, 24_598_341_970 * 120.0),
+    assert [
+        (run["run_id"], run["rows_in_run"], run["distinct_securities"], run["source_format"], run["format_unit"],
+         run["median_verdict"], run["decision_basis"], run["action"])
+        for run in b0327.ticker_history_unit_inventory(con)
+    ] == [
+        ("parquet-run", 3, 3, "parquet", "thousands", "either", "format_and_median", "scale_x1000"),
+        ("tsv-run", 2, 2, "tsv", "units", "units", "format_and_median", "none"),
     ]
-    assert con.execute("""
-        SELECT run_id, rows_in_run, distinct_securities, source_format, format_unit, median_verdict,
-               decision_basis, decision, factor, rows_corrected
-        FROM equity_bar_unit_corrections ORDER BY run_id
-    """).fetchall() == [
-        ("parquet-run", 3, 3, "parquet", "thousands", "either", "format_and_median",
-         "scaled_thousands_to_shares", 1000.0, 3),
-        ("tsv-run", 2, 2, "tsv", "units", "units", "format_and_median", "already_shares", 1.0, 0),
-    ]
-    # The ledger refuses a row whose decision contradicts its evidence.
-    with pytest.raises(duckdb.ConstraintException):
-        con.execute("""
-            INSERT INTO equity_bar_unit_corrections (correction_id, table_name, source, run_id, column_name,
-                rows_in_run, distinct_securities, median_verdict, format_unit, decision_basis, decision,
-                factor, rows_corrected, recomputed_columns, rule, applied_by)
-            VALUES ('x', 'equity_daily_bars', 'tbltickerhistory3_10y', 'x', 'shares_outstanding', 1, 1,
-                'units', 'thousands', 'format_and_median', 'scaled_thousands_to_shares', 1000.0, 1, 'm', 'r', 't')
-        """)
-
-    # Re-running never double-scales; a later thousands run is corrected on its own.
-    _in_transaction(con, b0327._ticker_history_share_units)
-    _run(con, "late-parquet", _PARQUET)
-    for security, shares in (("MSFT", 8_390_771), ("TINY", 17_000), ("MIDB", 25_000)):
-        _bar(con, source=th, run_id="late-parquet", security=security, shares=shares, close=30.0)
-    _in_transaction(con, b0327._ticker_history_share_units)
-    assert con.execute(
-        "SELECT shares_outstanding FROM equity_daily_bars WHERE source = ? AND security_id = 'AAPL' "
-        "AND run_id = 'parquet-run'", [th]
-    ).fetchone() == (15_204_137_000,)
-    assert con.execute(
-        "SELECT shares_outstanding, market_cap_usd FROM equity_daily_bars WHERE run_id = 'late-parquet' "
-        "AND security_id = 'MSFT'"
-    ).fetchone() == (8_390_771_000, 8_390_771_000 * 30.0)
-    assert con.execute("SELECT count(*) FROM equity_bar_unit_corrections").fetchone() == (3,)
+    _in_transaction(con, b0327._ticker_history_unit_gate)
+    assert _bars(con) == before
+    # The 0329 ledger belongs to the bars_unit_correction stage; the gate never writes to it.
+    assert con.execute("SELECT count(*) FROM equity_bar_unit_corrections").fetchone() == ledger_before
 
 
 @pytest.mark.parametrize(
@@ -1023,10 +992,9 @@ def test_ticker_history_thousands_runs_are_scaled_once_and_nothing_else_moves(tm
 def test_ticker_history_unit_needs_format_evidence_and_median_to_agree(
     tmp_store, monkeypatch, params_json, shares, expected
 ):
-    """I1: never scale a production run on a guess; every doubt aborts 0327 before any write."""
+    """I1: never decide a production run's unit on a guess; every doubt aborts 0327, which writes nothing."""
     monkeypatch.setattr(b0327, "NO_EVIDENCE_MIN_ROWS", 1_000)
     con = tmp_store.con
-    con.execute("DROP TABLE IF EXISTS equity_bar_unit_corrections")  # a pre-0327 warehouse state
     th = b0327.TICKER_HISTORY_SOURCE
     if params_json is not None:
         _run(con, "run", params_json)
@@ -1045,25 +1013,18 @@ def test_ticker_history_unit_needs_format_evidence_and_median_to_agree(
     before = _bars(con)
     action, detail = expected
 
-    # The read-only B0 inventory reports exactly what the migration then does.
+    # The read-only B0 inventory reports exactly what the migration gate then decides.
     [run] = b0327.ticker_history_unit_inventory(con)
     assert (run["run_id"], run["action"]) == ("run", action)
 
     if action == "abort":
         assert detail in run["reason"]
         with pytest.raises(RuntimeError, match=detail):
-            _in_transaction(con, b0327._ticker_history_share_units)
-        assert _bars(con) == before
-        return
-    _in_transaction(con, b0327._ticker_history_share_units)
-    factor = 1000 if action == "scale_x1000" else 1
-    assert _bars(con) == [
-        (source, run_id, security, stored * factor, stored * factor * 250.0)
-        for source, run_id, security, stored, _ in before
-    ]
-    assert con.execute(
-        "SELECT decision_basis, factor, rows_corrected FROM equity_bar_unit_corrections"
-    ).fetchall() == [(detail, float(factor), len(before) if factor == 1000 else 0)]
+            _in_transaction(con, b0327._ticker_history_unit_gate)
+    else:
+        assert run["decision_basis"] == detail
+        _in_transaction(con, b0327._ticker_history_unit_gate)
+    assert _bars(con) == before  # the correction is the bars_unit_correction stage, never 0327
 
 
 # --------------------------------------------------------------------------- helpers

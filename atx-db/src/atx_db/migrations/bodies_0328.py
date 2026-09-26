@@ -14,7 +14,8 @@ their writer stores them.
 3. Release eligibility (C4): ``publication_releases.eligibility`` / ``gates_not_passed_json``
    and ``publication_release_datasets.eligibility`` / ``eligibility_reason``.
 4. ``entity_classification.classification_basis`` / ``mapping_version`` (P6 M4), back-filled
-   from the labels the P6 writer already puts in ``source``.
+   from the labels the P6 writer already puts in ``source`` inside the swap's copy (C-31: no
+   in-place UPDATE of the ``DEFAULT now()`` table).
 5. ``fundamental_periods.rdq_basis`` / ``rdq_available_at`` / ``rdq_accession_number``
    (FP-rdq): lineage of the 8-K that set ``rdq``; ``rdq`` stays NULL when no 8-K matched.
 6. P14 ledger (251f1188): ``equity_adjustment_rebases`` (one row per line per vendor
@@ -60,13 +61,18 @@ FUNDAMENTAL_PERIOD_RDQ_COLUMNS = (
 )
 
 
-def _widen(conn: duckdb.DuckDBPyConnection, table: str, additions: tuple[tuple[str, str], ...]) -> bool:
+def _widen(
+    conn: duckdb.DuckDBPyConnection, table: str, additions: tuple[tuple[str, str], ...],
+    fill: dict[str, str] | None = None,
+) -> bool:
     """Append nullable columns by the replay-safe swap. False when they already exist.
 
     The scratch table takes the live catalog DDL plus the new columns; rows are copied
     with a row-count proof, the old table is dropped, the scratch renamed, and secondary
     indexes recreated after the rename (DuckDB refuses to rename an indexed table).
-    Views over the table rebind by name.
+    Views over the table rebind by name. ``fill`` maps a new column to the SQL expression
+    over the old row that back-fills it during the copy (INSERT-only: no in-place UPDATE
+    of the swapped table, whose WAL replay DuckDB 1.5.5 cannot be trusted with).
     """
     existing = _columns(conn, table)
     names = [str(row[0]) for row in existing]
@@ -90,9 +96,14 @@ def _widen(conn: duckdb.DuckDBPyConnection, table: str, additions: tuple[tuple[s
     scratch = f"{table}{_SCRATCH_SUFFIX}"
     before = _row_count(conn, table)
     added = ", ".join(f'"{name}" {data_type}' for name, data_type in missing)
+    filled = [(name, expression) for name, expression in (fill or {}).items() if name in dict(missing)]
+    if len(filled) != len(fill or {}):
+        raise RuntimeError(f"0328 {table} back-fill names columns it does not add: {sorted(fill or {})}")
+    targets = _quoted([*names, *(name for name, _ in filled)])
+    values = ", ".join([_quoted(names), *(expression for _, expression in filled)])
     conn.execute(f"DROP TABLE IF EXISTS {scratch}")
     conn.execute(f"CREATE TABLE {scratch}({str(ddl[0])[len(prefix):-2]}, {added});")
-    conn.execute(f"INSERT INTO {scratch} ({_quoted(names)}) SELECT {_quoted(names)} FROM {table}")
+    conn.execute(f"INSERT INTO {scratch} ({targets}) SELECT {values} FROM {table}")
     after = _row_count(conn, scratch)
     if after != before:
         raise RuntimeError(f"0328 {table} rebuild row-count proof failed: {before} source rows, {after} copied")
@@ -143,20 +154,22 @@ def _release_eligibility(conn: duckdb.DuckDBPyConnection) -> None:
          "Dataset eligibility: eligible | candidate | research_only (research basis, never eligible). NULL "
          "for a dataset recorded before 0328."),
         ("eligibility_reason",
-         "Why: release_gates (takes the release eligibility) | research_basis | not_produced_by_activation. "
-         "NULL for a dataset recorded before 0328."),
+         "Why: release_gates (takes the release eligibility) | research_basis | not_produced_by_activation | "
+         "latest_build_not_pit_current_ticker_identity (listing status built from the latest, not point-in-time, "
+         "ticker identity: capped at candidate) | calculation_version_not_allowed (forward labels at a "
+         "calculation version outside the eligible set: capped at candidate). NULL for a dataset recorded "
+         "before 0328."),
     ))
 
 
 def _classification_basis(conn: duckdb.DuckDBPyConnection) -> None:
-    if _widen(conn, "entity_classification", CLASSIFICATION_COLUMNS):
-        # Back-fill once, only from what the P6 writer stated in `source`:
-        # "SEC submissions.zip SIC [<basis>] archive:<sha16>[; <mapping version>]". Nothing inferred.
-        conn.execute(r"""
-            UPDATE entity_classification
-            SET classification_basis = nullif(regexp_extract(source, '\[([A-Za-z0-9_]+)\]', 1), ''),
-                mapping_version = nullif(regexp_extract(source, ';\s*([A-Za-z0-9_.-]+)\s*$', 1), '')
-        """)
+    # Back-filled once, in the swap's copy (entity_classification has a DEFAULT now() column:
+    # no in-place UPDATE, C-31), only from what the P6 writer stated in `source`:
+    # "SEC submissions.zip SIC [<basis>] archive:<sha16>[; <mapping version>]". Nothing inferred.
+    _widen(conn, "entity_classification", CLASSIFICATION_COLUMNS, fill={
+        "classification_basis": r"nullif(regexp_extract(source, '\[([A-Za-z0-9_]+)\]', 1), '')",
+        "mapping_version": r"nullif(regexp_extract(source, ';\s*([A-Za-z0-9_.-]+)\s*$', 1), '')",
+    })
     _describe_fields(conn, "entity_classification", (
         ("classification_basis",
          "Basis of the row: current_sic_snapshot = the filer's CURRENT SIC from a retained SEC submissions "
@@ -185,8 +198,10 @@ def _fundamental_period_rdq_lineage(conn: duckdb.DuckDBPyConnection) -> None:
          "acceptance_date_implausible_report | filing_date_implausible_report | filing_date_no_report_date. "
          "NULL when rdq is NULL or on a row written before its writer stores it."),
         ("rdq_available_at",
-         "Acceptance time of the 8-K that set rdq (rdq is never known before it). NULL when rdq is NULL or "
-         "on a row written before its writer stores it."),
+         "Decision clock of the 8-K that set rdq (FC1 sec_filed_date_plus_46h_v1): greatest(its timed acceptance, "
+         "filing date + 46h), the research.events evidence clock; an untimed acceptance stamp is never used. NULL "
+         "when rdq is NULL (an 8-K without a finite filing date never sets rdq) or on a row written before its "
+         "writer stores it."),
         ("rdq_accession_number",
          "Accession number of the 8-K Item 2.02 filing that set rdq. NULL when rdq is NULL or on a row "
          "written before its writer stores it."),
@@ -254,16 +269,21 @@ def _equity_bar_revision_tables(conn: duckdb.DuckDBPyConnection) -> None:
             CHECK (available_at IS NULL OR superseded_at >= available_at)
         )
     """)
-    pit_note = ("Read with equity_daily_bars through ticker_history_incremental.bars_asof_sql; ledger "
-                "multipliers are undone for receipts after the cutoff.")
+    pit_note = ("Read with equity_daily_bars through ticker_history_incremental.bars_asof_sql; stored bars are "
+                "never rebased, and its vendor basis takes each line's scale from its latest bar known at the "
+                "cutoff times the ledger steps dated after that bar and known by the cutoff.")
     tables = (
         ("equity_adjustment_rebases", "source,security_id,partition_date,available_at",
-         "Vendor factor-rebase ledger: one row per (price line, rebase) with the receipt clock, the multiplier m "
-         "and the first/last affected trade date. Stored adjusted_close of those bars is on the basis after every "
-         "row; the value known before a row's available_at is stored / m. Raw prices and bar clocks never move."),
+         "Vendor factor-rebase ledger (audit evidence): one row per (price line, rebase) with the receipt clock, "
+         "the multiplier m (cumulReturnFactor x returnFactor: the vendor's restatement of the line's earlier "
+         "adjusted history) and the first/last affected trade date, plus one row per factor step of a vendor row "
+         "the projection excluded (detection_basis vendor_crf_return_factor_excluded_row, "
+         "bulk_excluded_tail_rows). Stored bars are never rebased: incremental bars continue the line's stored "
+         "factor through returnFactor. Raw prices and bar clocks never move."),
         ("equity_daily_bar_revisions", "source,security_id,trade_date,superseded_at",
-         "Superseded equity_daily_bars rows from raw-value restatements of a re-delivered partition "
-         "(revision_reason partition_restatement); equity_daily_bars keeps one latest row per key."),
+         "Superseded equity_daily_bars rows of keys restated by a re-delivered partition (raw values, or the "
+         "factor after a corrected returnFactor; revision_reason partition_restatement); equity_daily_bars keeps "
+         "one latest row per key."),
     )
     conn.executemany(
         """
@@ -278,13 +298,20 @@ def _equity_bar_revision_tables(conn: duckdb.DuckDBPyConnection) -> None:
         ("partition_date", "Daily partition whose delivery revealed the rebase."),
         ("available_at", "Receipt clock of the rebase: greatest(partition_date + 22h, receipt), the clock of the "
                          "partition's new bars."),
-        ("multiplier", "m > 0: the line's stored adjusted_close from first_affected_date to last_affected_date "
-                       "was multiplied by m; divide it out for cutoffs before available_at."),
-        ("detection_basis", "How the rebase was detected (vendor_crf_return_factor_recurrence)."),
+        ("multiplier", "m > 0: at available_at the vendor restated the line's adjusted history from "
+                       "first_affected_date to last_affected_date by m (for an excluded vendor row: its factor "
+                       "step). Stored bars do not change; the vendor-basis read applies m only from available_at."),
+        ("detection_basis",
+         "How the row was detected: vendor_crf_return_factor_recurrence (a rebase: the vendor recurrence "
+         "crf_prev = crf_day x returnFactor against the stored previous bar) | "
+         "vendor_crf_return_factor_excluded_row (the factor step of a vendor row the projection excluded: invalid "
+         "OHLCV or a quarantined key; its bar is not stored) | bulk_excluded_tail_rows (a bulk file whose last "
+         "row(s) of a line were excluded: the stored tail's factor up to the vendor anchor)."),
     ))
     _describe_fields(conn, "equity_daily_bar_revisions", (
         ("superseded_at", "When the restating partition replaced this row (at or after its available_at)."),
-        ("revision_reason", "partition_restatement: a re-delivered partition changed raw values."),
+        ("revision_reason", "partition_restatement: a re-delivered partition changed raw values or the bar's "
+                            "factor (a corrected returnFactor on the latest date)."),
     ))
     conn.execute(
         """
@@ -292,8 +319,9 @@ def _equity_bar_revision_tables(conn: duckdb.DuckDBPyConnection) -> None:
           (table_name, missing_columns, reason, exempted_by, exempted_at, source_loaded_at)
         VALUES ('equity_adjustment_rebases', '["as_of_date"]', ?, 'MIG0328 migration 0328', now(), now())
         """,
-        ["Ledger rows carry the receipt clock available_at and the partition_date session; bars_asof_sql applies "
-         "them by available_at against the cutoff."],
+        ["Ledger rows carry the receipt clock available_at and the partition_date session. Stored bars are never "
+         "rebased; bars_asof_sql's vendor basis derives each line's scale from its latest bar known at the cutoff "
+         "and multiplies in only the ledger steps dated after that bar with available_at <= cutoff."],
     )
 
 

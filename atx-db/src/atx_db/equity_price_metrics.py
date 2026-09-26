@@ -484,21 +484,25 @@ _PHYSICAL_PUBLICATION_COLUMN_NAMES = (
     "dollar_volume_cs_pct_rank", "amihud_illiquidity_21d_cs_pct_rank",
 )
 _PUBLICATION_COLUMNS = ", ".join(_PHYSICAL_PUBLICATION_COLUMN_NAMES)
+#: Physical column order of the live table since migration 0329 (no PRIMARY KEY, R-4;
+#: ``adj_close_basis`` appended, C-61): the shadow must match it for the swap's contract check.
 _PHYSICAL_COLUMN_NAMES = (
     *_PHYSICAL_PUBLICATION_COLUMN_NAMES[:21],
     "source_loaded_at", "updated_at",
     *_PHYSICAL_PUBLICATION_COLUMN_NAMES[21:],
+    "adj_close_basis",
 )
 _PHYSICAL_COLUMNS = ", ".join(_PHYSICAL_COLUMN_NAMES)
 _STAGE_PHYSICAL_SELECT = ", ".join((
     *_PHYSICAL_PUBLICATION_COLUMN_NAMES[:21],
     "now() AS source_loaded_at", "now() AS updated_at",
     *_PHYSICAL_PUBLICATION_COLUMN_NAMES[21:],
+    f"'{ADJ_CLOSE_BASIS}' AS adj_close_basis",
 ))
 
 _BULK_SHADOW_DDL = f"""
 CREATE TABLE {_BULK_SHADOW_TABLE} (
-    metric_id VARCHAR PRIMARY KEY,
+    metric_id VARCHAR NOT NULL,
     source VARCHAR NOT NULL,
     security_id VARCHAR NOT NULL,
     symbol VARCHAR,
@@ -533,7 +537,8 @@ CREATE TABLE {_BULK_SHADOW_TABLE} (
     momentum_21d_cs_pct_rank DOUBLE,
     realized_vol_20d_cs_pct_rank DOUBLE,
     dollar_volume_cs_pct_rank DOUBLE,
-    amihud_illiquidity_21d_cs_pct_rank DOUBLE
+    amihud_illiquidity_21d_cs_pct_rank DOUBLE,
+    adj_close_basis VARCHAR
 )
 """
 

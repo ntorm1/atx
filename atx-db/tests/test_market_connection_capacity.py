@@ -202,12 +202,13 @@ def test_failing_batch_rolls_back_after_an_earlier_committed_reopen(store, monke
         if calls == 2:
             identity = "sha256(? || '|' || f.security_id || '|' || CAST(f.trade_date AS VARCHAR))"
             assert identity in sql
-            # Fail inside INSERT, after DELETE, by colliding the two trade dates.
-            return sql.replace(identity, "sha256(? || '|forced-duplicate')", 1)
+            # Fail inside INSERT, after DELETE: a NULL id breaks market_daily_id NOT NULL (migration
+            # 0329 dropped the sha256 PRIMARY KEY a duplicate id used to break, R-4).
+            return sql.replace(identity, "CAST(CASE WHEN ? IS NULL THEN 'unreachable' END AS VARCHAR)", 1)
         return sql
 
     monkeypatch.setattr(engine, "build_market_daily_sql", failing_second_insert)
-    with pytest.raises(duckdb.ConstraintException, match=r"(?i)(primary key|duplicate)"):
+    with pytest.raises(duckdb.ConstraintException, match=r"(?i)not null"):
         engine.refresh_market_daily_metrics(store, engine.MarketDailyOptions(batch_size=1, run_id="new"))
 
     assert calls == 2
