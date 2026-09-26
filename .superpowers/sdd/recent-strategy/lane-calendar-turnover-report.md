@@ -1,0 +1,13 @@
+# Actual calendar turnover reporting
+
+2026-09-26. Production `779add70`; postimplementation fixture `91329304` and its direct string-include follow-up. Source-only, no C++ build, test execution or real payload run. The existing runner dependencies were aligned locally from `7fa3c6ab`, `97da349f`, and `dbd50b14`; those are not new lane implementation and must not be imported again.
+
+The private runner summary now groups each realized row's actual one-way turnover by `role.session_keys[t-1]`, the execution session for the interval closing at `t`. This uses the previous actual session rather than subtracting a calendar day, so weekends and month/year boundaries are preserved. CSV keeps existing columns and appends `execution_session_ns`.
+
+`calendar_month_turnover` reports month, interval/trade counts, summed turnover and filled dollars reconstructed from interval turnover times pretrade NAV. It includes initial deployment. Maximum monthly turnover, grouped total and its floating-point reconciliation residual against the existing chronological total are explicit. The old `monthly21_one_way_turnover` calculation is unchanged and is now marked as an approximation.
+
+`initial_deployment` identifies the first nonzero actual-fill interval, with its execution session, turnover/NAV fraction, reconstructed dollar amount, and share of total turnover. It is separately disclosed without subtraction from any primary total. A run with no fills reports no deployment and an undefined share when total turnover is zero. The dollar values are reconstructed from normalized stream diagnostics, not claimed as an additional exact fill ledger.
+
+`calendar_year_net_returns` uses realized endpoint year and reports observations and compounded return via last end NAV / first interval pretrade NAV -1. Annual return attribution is deliberately distinct from execution-month turnover attribution. No candidate, sign, weight, score, execution arithmetic, cost context, or recipe/hash calculation is changed.
+
+The bounded new actual-runner fixture puts TRAIN's first execution on January 31 and first realized endpoint on February 1. Its validation window crosses December/January and includes a December 31 rebalance realized January 1. For both fixed variants and roles, it independently derives expected execution dates from the known daily synthetic calendar, reconciles JSON month totals and dollar amounts against emitted CSV, checks first deployment remains included, checks maximum/monthly21, and compares annual returns to a direct product of CSV net returns. Existing fixture defaults remain unchanged. Runtime qualification is pending the root's owning target build.
