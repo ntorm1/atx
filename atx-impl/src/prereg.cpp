@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <fstream>
+#include <ios>
 #include <initializer_list>
 #include <set>
 #include <stdexcept>

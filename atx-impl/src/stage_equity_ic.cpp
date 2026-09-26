@@ -18,6 +18,7 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -544,6 +545,10 @@ Result<Profile> resolve(const RunConfig &cfg) {
         recipe["trial_count_declared"] = profile.ledger_count();
         recipe["trial_count_rule"] = profile.count_rule();
         recipe["horizons"] = profile.horizons;
+        recipe["bootstrap"]["block_lens"] = profile.rules.block_lens;
+        recipe["bootstrap"]["predicted_null_horizons"] = Json::array();
+        recipe["bootstrap"]["horizon_index_scope"] =
+            "index within each signal registered horizon list; reference signals use union";
         recipe["signals"].erase(recipe["signals"].begin() + 3, recipe["signals"].end());
         for (const auto &family : profile.prereg->families) {
             recipe["signals"].push_back(Json{{"name", family.name}, {"dsl", family.dsl},
