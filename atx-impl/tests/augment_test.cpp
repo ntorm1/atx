@@ -356,9 +356,9 @@ TEST(WithAlpha101Fields, LegacyEmptyPanelRetainsDerivedFieldOrder) {
       alpha::DollarVolumeBasis::RawCloseV2, alpha::VwapRule::AdjustedTypicalV1);
   ASSERT_TRUE(result);
   ASSERT_EQ(result->num_fields(), 13U);
-  EXPECT_EQ(result->field_name(10), "dollar_volume");
-  EXPECT_EQ(result->field_name(11), "vwap");
-  EXPECT_EQ(result->field_name(12), "adv1");
+  EXPECT_EQ(result->field_name(atx::usize{10}), "dollar_volume");
+  EXPECT_EQ(result->field_name(atx::usize{11}), "vwap");
+  EXPECT_EQ(result->field_name(atx::usize{12}), "adv1");
 }
 
 // ============================================================================

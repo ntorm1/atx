@@ -247,7 +247,7 @@ TEST(DatafieldsVwapV2, RawPriceBitsReplaceStaleProxyAndInvalidCellsStayMissing) 
     EXPECT_EQ(std::bit_cast<std::uint64_t>(vw[k]), std::bit_cast<std::uint64_t>(raw[k]));
   }
   for (atx::usize k = 3; k <= 11; ++k) EXPECT_TRUE(std::isnan(vw[k])) << k;
-  EXPECT_EQ(p->field_name(3), "vwap"); // replaced in place, not appended twice
+  EXPECT_EQ(p->field_name(atx::usize{3}), "vwap"); // replaced in place, not appended twice
   EXPECT_EQ(p->num_fields(), 5U);
 }
 
