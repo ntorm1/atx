@@ -16,6 +16,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/research_driver.cpp
     src/factory/search_driver.cpp
     src/eval/cpcv.cpp
+    src/eval/cpcv_date.cpp
     src/eval/cross_section_ic.cpp
     src/eval/pbo.cpp
     src/eval/perf_metrics.cpp
