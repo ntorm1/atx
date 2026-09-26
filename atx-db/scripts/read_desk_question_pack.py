@@ -33,14 +33,15 @@ refused before DuckDB is imported:
     the guard receipt's command with the same path);
   * ATX_DESK_GUARD_RECEIPT naming the run_memory_guarded.py receipt of THIS
     launch: status "running", child_pid = this process (or its venv launcher),
-    rewritten within the last 120 s, job_limit_gb <= 2, command naming this
-    script with --production;
+    rewritten within the last 120 s, job_limit_gb <= 2 (a ceiling check; the
+    memory guard itself refuses caps above 1.0, ruling C-65), command naming
+    this script with --production;
   * this process inside a Windows job whose memory limit is <= that cap;
   * >= 3 GiB free beside the output (spill cap 2GB + 1 GiB floor).
 The runner may run from an RX3 pinned export (it then executes the export's SQL
 files); the receipt records the runner root, its script sha256 and the export
 commit when the root sits in exports/<sha>/atx-db.
-Connection: read_only, memory_limit 1GB, 1 thread, spill <= 2GB in a private
+Connection: read_only, memory_limit 512MB, 1 thread, spill <= 2GB in a private
 temporary directory beside the output (removed afterwards), external access
 disabled once the spill directory is set, UTC; the effective DuckDB settings are
 re-read (access_mode read_only, the private temp_directory, limits as ceilings)
@@ -54,7 +55,7 @@ observe headroom first per the controller rules; <runner> is scripts\\ of the
 live tree or of the pinned export):
   $env:ATX_DESK_GUARD_RECEIPT = "<dir>\\desk-guard.json"
   .venv\\Scripts\\python.exe ..\\.superpowers\\sdd\\tier1-parity\\run_memory_guarded.py `
-    --job-gb 2 --receipt "<dir>\\desk-guard.json" -- `
+    --job-gb 1.0 --wait-minutes 30 --receipt "<dir>\\desk-guard.json" -- `
     .venv\\Scripts\\python.exe <runner>\\read_desk_question_pack.py --production `
     --db-path data\\warehouse.duckdb --mode run --output-json "<dir>\\desk-pack.json"
 """
@@ -120,8 +121,10 @@ GUARD_RECEIPT_MAX_BYTES = _gr.GUARD_RECEIPT_MAX_BYTES
 GUARD_RECEIPT_MAX_AGE_SECONDS = _gr.GUARD_RECEIPT_MAX_AGE_SECONDS
 GUARD_RECEIPT_WAIT_SECONDS = _gr.GUARD_RECEIPT_WAIT_SECONDS
 PRODUCTION_MAX_JOB_BYTES = _gr.PRODUCTION_MAX_JOB_BYTES
-PRODUCTION_MEMORY_LIMIT = _gr.PRODUCTION_MEMORY_LIMIT
-PRODUCTION_MEMORY_BYTES = _gr.PRODUCTION_MEMORY_BYTES
+#: DuckDB budget inside the 1.0 GiB guard job (index §4 budget table, set-based pass): the
+#: shared contract's 1GB needs a 2 GiB job, which the guard refuses since ruling C-65.
+PRODUCTION_MEMORY_LIMIT = "512MB"
+PRODUCTION_MEMORY_BYTES = 512 * 10 ** 6
 PRODUCTION_THREADS = _gr.PRODUCTION_THREADS
 PRODUCTION_SPILL_LIMIT = _gr.PRODUCTION_SPILL_LIMIT
 PRODUCTION_SPILL_BYTES = _gr.PRODUCTION_SPILL_BYTES
@@ -192,10 +195,13 @@ def validate_paths(db_path: Path, output: Path, *, production: bool,
 
 
 def resolve_limits(args) -> Limits:
-    return _gr.resolve_limits(production=args.production, memory_limit=args.memory_limit, threads=args.threads,
-                              timeout_seconds=args.timeout_seconds, max_rows=args.max_rows,
-                              max_result_bytes=args.max_result_bytes, l1_timeouts=L1_TIMEOUT_SECONDS,
-                              production_timeouts=PRODUCTION_TIMEOUT_SECONDS, timeout_scope="per query")
+    limits = _gr.resolve_limits(production=args.production, memory_limit=args.memory_limit, threads=args.threads,
+                                timeout_seconds=args.timeout_seconds, max_rows=args.max_rows,
+                                max_result_bytes=args.max_result_bytes, l1_timeouts=L1_TIMEOUT_SECONDS,
+                                production_timeouts=PRODUCTION_TIMEOUT_SECONDS, timeout_scope="per query")
+    if args.production:
+        limits = limits._replace(memory_limit=PRODUCTION_MEMORY_LIMIT, memory_bytes=PRODUCTION_MEMORY_BYTES)
+    return limits
 
 
 def verify_guard_receipt(governed_override: Path | None = None) -> dict:

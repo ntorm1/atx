@@ -1,484 +1,775 @@
-"""Point-in-time US equity data infrastructure."""
+import os
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
-from .asof import (
-    adjustment_factors_asof,
-    blockholder_asof,
-    corporate_actions_asof,
-    daily_adjustment_factors_asof,
-    daily_panel_asof,
-    delisting_events_asof,
-    delisting_return_observations_asof,
-    entity_classification_asof,
-    est_actual_asof,
-    est_consensus_asof,
-    est_detail_asof,
-    est_guidance_asof,
-    est_recommendation_asof,
-    est_recommendation_summary_asof,
-    est_security_links_asof,
-    est_surprise_asof,
-    features_asof,
-    filer_aliases_asof,
-    form144_intents_asof,
-    form144_reconciliation_asof,
-    formula_registry_asof,
-    warehouse_catalog_asof,
-    fundamental_periods_asof,
-    fundamental_ratios_asof_month,
-    fundamental_ratios_asof,
-    fundamental_statements_asof,
-    fundamental_ttm_asof,
-    fundamental_xbrl_metric_asof,
-    fundamentals_asof,
-    short_interest_metrics_asof,
-    macro_metrics_asof,
-    market_cap_asof,
-    enterprise_value_asof,
-    valuation_multiples_asof,
-    equity_price_metrics_asof,
-    thirteenf_concentration_metrics_asof,
-    thirteenf_position_metrics_asof,
-    thirteenf_option_metrics_asof,
-    corporate_action_dividend_metrics_asof,
-    corporate_action_factor_reconciliation_asof,
-    corporate_action_split_metrics_asof,
-    identifier_decisions_asof,
-    insider_relationships_asof,
-    insider_transaction_metrics_asof,
-    insider_transactions_asof,
-    listing_status_asof,
-    security_listing_metrics_asof,
-    macro_asof,
-    offexchange_quality_report_asof,
-    offexchange_security_period_asof,
-    offexchange_volume_asof,
-    ownership_asof,
-    pit_snapshot_asof,
-    security_master_asof,
-    shares_outstanding_asof,
-    finra_short_volume_asof,
-    short_volume_metrics_asof,
-    short_interest_asof,
-    thirteenf_positioning_asof,
-    universe_asof,
-    universe_membership_asof,
-)
-from .adjustment_factors import (
-    AdjustmentFactorHistoryDataset,
-    AdjustmentFactorHistoryOptions,
-    refresh_adjustment_factor_history,
-    seed_corp_action_type_dim,
-)
-from .alpha_research import AlphaResearchDataset, AlphaResearchOptions
-from .connection import DEFAULT_DB_PATH, DuckDBStore, connect, resolve_default_db_path
-from .corporate_actions import CorporateActionsDataset, CorporateActionsOptions
-from .daily_adjustments import (
-    DailyAdjustmentFactorDataset,
-    DailyAdjustmentFactorOptions,
-    refresh_daily_adjustment_factors,
-)
-from .delisting import (
-    DelistingCodeReconciliationOptions,
-    DelistingEventDataset,
-    DelistingEventOptions,
-    DelistingReturnObservationDataset,
-    DelistingReturnObservationOptions,
-    DelistingTerminalReturnOptions,
-    SurvivorshipSafeForwardReturnOptions,
-    load_delisting_return_observations,
-    load_terminal_return_policy_dim,
-    reconcile_delisting_codes,
-    refresh_delisting_events,
-    refresh_delisting_terminal_returns,
-    refresh_survivorship_safe_forward_returns,
-    seed_delist_code_dim,
-)
-from .dataset import Dataset, DatasetLoadResult
-from .features import (
-    EquityDailyFeatureDataset,
-    FeatureBuildOptions,
-    FundamentalFeatureBuildOptions,
-    FundamentalFeatureDataset,
-    refresh_feature_lineage,
-)
-from .filer_alias import (
-    FilerAliasDataset,
-    FilerAliasOptions,
-    normalize_filer_name,
-    refresh_filer_aliases,
-    resolve_primary_cik,
-)
-from .finra import FinraShortInterestDataset, FinraShortInterestOptions
-from .fundamental_ratios import (
-    RATIO_DEFS,
-    FundamentalRatiosDataset,
-    FundamentalRatiosOptions,
-    compute_ratio_rows,
-    refresh_fundamental_ratios,
-)
-from .filing_context_backfill import (
-    FilingContextBackfillQueueDataset,
-    FilingContextBackfillQueueOptions,
-    FilingContextBackfillQueueResult,
-    refresh_filing_context_backfill_queue,
-)
-from .filing_context_backfill_executor import (
-    FilingContextBackfillExecutionOptions,
-    FilingContextBackfillExecutionResult,
-    FilingContextBackfillExecutorDataset,
-    execute_filing_context_backfill,
-)
-from .fundamental_reconciliation import (
-    FundamentalReconciliationDataset,
-    FundamentalReconciliationRefreshOptions,
-    FundamentalReconciliationRefreshResult,
-    refresh_fundamental_reconciliation_serving,
-)
-from .pit_snapshot import (
-    PitSnapshotDataset,
-    PitSnapshotOptions,
-    compute_pit_snapshot_rows,
-    refresh_pit_snapshot,
-)
-from .standardization import (
-    FundamentalStandardizationDataset,
-    FundamentalStandardizationOptions,
-    StandardizationResult,
-    StandardizationRule,
-    compute_standardization_exceptions,
-    compute_standardization_result,
-    compute_standardized_rows,
-    read_standardization_rules,
-    refresh_fundamental_standardized,
-)
-from .calendarization import (
-    CalendarizationDataset,
-    CalendarizationOptions,
-    calendar_period_label,
-    calendar_quarter,
-    compute_calendar_map_rows,
-    fiscal_year_label,
-    is_53_week_period,
-    refresh_calendarization_coverage,
-    refresh_fundamental_calendar_map,
-    refresh_fundamental_calendar_ttm,
-    run_calendarization_refresh,
-)
-from .segments import (
-    SegmentDataset,
-    SegmentOptions,
-    compute_segment_rows,
-    infer_segment_type,
-    refresh_segment_footnote_coverage,
-    refresh_segments,
-    run_segment_refresh,
-)
-from .footnotes import (
-    FootnoteDataset,
-    FootnoteOptions,
-    compute_footnote_rows,
-    refresh_footnotes,
-    run_footnote_refresh,
-)
-from .press_release import (
-    PressReleaseDataset,
-    PressReleaseOptions,
-    normalize_press_release_rows,
-    press_release_coverage,
-    press_release_facts_asof,
-    refresh_press_release_facts,
-    refresh_press_release_reconciliation,
-    run_press_release_refresh,
-)
-from .fundamental_xbrl_metrics import (
-    CONCEPT_MAP,
-    FundamentalXbrlMetricDataset,
-    FundamentalXbrlMetricOptions,
-    normalize_xbrl_metric_rows,
-    refresh_fundamental_xbrl_metrics,
-)
-from .short_interest_metrics import (
-    ShortInterestMetricsDataset,
-    ShortInterestMetricsOptions,
-    compute_short_interest_metrics,
-    refresh_short_interest_metrics,
-)
-from .macro_metrics import (
-    MacroMetricsDataset,
-    MacroMetricsOptions,
-    compute_macro_metrics,
-    refresh_macro_metrics,
-)
-from .equity_price_metrics import (
-    EquityPriceMetricsDataset,
-    EquityPriceMetricsOptions,
-    compute_equity_price_metrics,
-    refresh_equity_price_metrics,
-)
-from .valuation_multiples import (
-    MarketCapDataset,
-    MarketCapOptions,
-    ValuationMultiplesDataset,
-    ValuationMultiplesOptions,
-    compute_market_cap_rows,
-    compute_valuation_multiple_rows,
-    refresh_market_cap,
-    refresh_valuation_overlap_slice,
-    refresh_valuation_multiples,
-    valuation_multiples_overlap_coverage,
-)
-from .enterprise_value import (
-    EnterpriseValueDataset,
-    EnterpriseValueOptions,
-    compute_enterprise_value_rows,
-    refresh_enterprise_value,
-)
-from .fact_disagreement import (
-    FactDisagreementDataset,
-    FactDisagreementOptions,
-    compute_fact_disagreement_rows,
-    fact_disagreement_summary,
-    normalize_vendor_baseline_rows,
-    refresh_fact_disagreement,
-    refresh_vendor_baseline_facts,
-)
-from .thirteenf_concentration_metrics import (
-    ThirteenFConcentrationMetricsDataset,
-    ThirteenFConcentrationMetricsOptions,
-    compute_concentration_metrics,
-    refresh_concentration_metrics,
-)
-from .thirteenf_position_metrics import (
-    ThirteenFPositionMetricsDataset,
-    ThirteenFPositionMetricsOptions,
-    compute_position_metrics,
-    refresh_position_metrics,
-)
-from .thirteenf_option_metrics import (
-    ThirteenFOptionMetricsDataset,
-    ThirteenFOptionMetricsOptions,
-    compute_option_metrics,
-    refresh_option_metrics,
-)
-from .corporate_action_metrics import (
-    CorporateActionDividendMetricsDataset,
-    CorporateActionDividendMetricsOptions,
-    CorporateActionFactorReconciliationDataset,
-    CorporateActionFactorReconciliationOptions,
-    CorporateActionSplitMetricsDataset,
-    CorporateActionSplitMetricsOptions,
-    compute_dividend_metrics,
-    compute_factor_reconciliation,
-    compute_split_metrics,
-    refresh_dividend_metrics,
-    refresh_factor_reconciliation,
-    refresh_split_metrics,
-)
-from .fundamental_statements import (
-    refresh_fundamental_periods,
-    refresh_fundamental_statement_points,
-    refresh_fundamental_ttm_points,
-    seed_fundamental_statement_map,
-)
-from .industry_templates import (
-    IndustryTemplateOptions,
-    refresh_entity_industry_templates,
-    refresh_industry_template_coverage,
-    run_industry_template_refresh,
-    seed_industry_templates,
-    template_for_sic,
-)
-from .item_registry import read_fundamental_item_seed, seed_fundamental_item_registry
-from .fundamentals import (
-    COMPANY_FACT_SYMBOL_SOURCES,
-    SecCompanyFactsDataset,
-    SecCompanyFactsOptions,
-    refresh_fundamental_fact_revisions,
-    refresh_xbrl_concept_catalog,
-    resolve_companyfacts_targets,
-)
-from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
-from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
-from .estimate_security_links import EstimateSecurityLinkDataset, EstimateSecurityLinkOptions
-from .insider_ownership import (
-    BlockholderOwnershipDataset,
-    BlockholderOwnershipOptions,
-    InsiderOwnershipDataset,
-    InsiderOwnershipOptions,
-)
-from .insider_metrics import (
-    InsiderTransactionMetricsDataset,
-    InsiderTransactionMetricsOptions,
-    compute_insider_transaction_metrics,
-    refresh_insider_transaction_metrics,
-)
-from .listing_metrics import (
-    SecurityListingMetricsDataset,
-    SecurityListingMetricsOptions,
-    compute_security_listing_metrics,
-    refresh_security_listing_metrics,
-)
-from .form144 import (
-    Form144IntentDataset,
-    Form144Options,
-    Form144ReconciliationDataset,
-    compute_form144_links,
-    load_form144_intents,
-    normalize_form144_rows,
-    parse_form144_xml,
-    refresh_form144_reconciliation,
-)
-from .jobs import JobManager
-from .lake import LakeValidationProblem, LakeValidationSummary, validate_lake_export
-from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions, build_listing_status_intervals
-from .macro import FredMacroDataset, FredMacroOptions
-from .offexchange import (
-    FinraOffExchangeDataset,
-    FinraOffExchangeOptions,
-    OffExchangeSecurityPeriodDataset,
-    load_offexchange_volume,
-    normalize_offexchange_rows,
-    refresh_offexchange_security_period,
-)
-from .offexchange_quality import (
-    OffExchangeQualityReportDataset,
-    OffExchangeQualityReportOptions,
-    compute_offexchange_quality_reports,
-    refresh_offexchange_quality_report,
-)
-from .short_volume import (
-    FinraShortVolumeDataset,
-    FinraShortVolumeOptions,
-    ShortVolumeMetricsDataset,
-    compute_short_volume_metrics,
-    load_finra_short_volume,
-    normalize_short_volume_rows,
-    refresh_short_volume_metrics,
-)
-from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
-from .observability import (
-    DataQualityAnomaly,
-    detect_rowcount_anomalies,
-    evaluate_freshness_slas,
-)
-from .quality import GateResult, QualityResult, evaluate_quality_gate, run_warehouse_quality_checks
-from .queries import SHORT_INTEREST_WITH_13F_SQL, short_interest_with_13f_positioning
-from .rebuild import WarehouseRebuildResult, run_warehouse_rebuild
-from .sec_submissions import (
-    SecSubmissionsBulkDataset,
-    SecSubmissionsBulkOptions,
-    SecSubmissionsDataset,
-    SecSubmissionsOptions,
-)
-from .security_master import SecurityMasterDataset, SecurityMasterOptions
-from .shares_outstanding import (
-    SharesOutstandingHistoryDataset,
-    SharesOutstandingHistoryOptions,
-    refresh_shares_outstanding_history,
-)
-from .short_interest_features import ShortInterestFeatureDataset, ShortInterestFeatureOptions
-from .storage_admin import (
-    StorageCompactionResult,
-    StorageStatsResult,
-    checkpoint_and_compact,
-    record_storage_stats,
-)
-from .symbol_directory import (
-    NasdaqListingEventsDataset,
-    NasdaqListingEventsOptions,
-    NasdaqSymbolDirectoryDataset,
-    NasdaqSymbolDirectoryOptions,
-)
-from .pricing_bulk import BulkBarsBackfillDataset, BulkBarsBackfillOptions, BulkBarsDataset, BulkBarsOptions
-from .thirteenf import ThirteenFDataSet, ThirteenFOptions
-from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
-from .universe import (
-    GovernedUniverseMembershipDataset,
-    UniverseMembershipOptions,
-    compute_universe_membership_intervals,
-)
-from .universes import UniverseBuildOptions, UniverseMembershipDataset
-from .migrations import (
-    MIGRATIONS,
-    Migration,
-    acquire_apply_lock,
-    apply_pending_migrations,
-    release_apply_lock,
-    verify_migration_checksums,
-)
-from .migration_admin import (
-    BackupArtifact,
-    GovernedMigrationResult,
-    RetentionResult,
-    SchemaVerificationError,
-    backup_database,
-    checkpoint,
-    complete_backup_record,
-    enforce_backup_retention,
-    prune_backups,
-    recover_from_wal_failure,
-    record_backup,
-    restore_database,
-    run_governed_migrations,
-    verify_schema,
-)
-from .estimates import (
-    EstimateMeasureSeedDataset,
-    EstimateMeasureSeedOptions,
-    EstimateActualsDataset,
-    EstimateActualsOptions,
-    EstimateSurpriseDataset,
-    EstimateSurpriseOptions,
-    EstimateDetailDataset,
-    EstimateDetailOptions,
-    EstimateConsensusDataset,
-    EstimateConsensusOptions,
-    EstimateGuidanceDataset,
-    EstimateGuidanceOptions,
-    EstimateRecommendationDataset,
-    EstimateRecommendationOptions,
-    EstimateRecommendationSummaryDataset,
-    EstimateRecommendationSummaryOptions,
-    load_estimate_detail_rows,
-    normalize_estimate_detail_rows,
-)
-from .reference_classifications import (
-    EntityClassificationDataset,
-    EntityClassificationOptions,
-    FamaFrenchTaxonomyDataset,
-    FamaFrenchTaxonomyOptions,
-    NaicsTaxonomyDataset,
-    NaicsTaxonomyOptions,
-    SicTaxonomyDataset,
-    SicTaxonomyOptions,
-    fama_french_12_for_sic,
-)
-from .watermarks import WatermarkRefreshResult, refresh_warehouse_watermarks
-from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions, archive_primary_document_url
-from .xbrl_processor import (
-    ArelleValidationDataset,
-    ArelleValidationOptions,
-    ArelleValidationResult,
-    parse_arelle_xml_log,
-    run_arelle_validation,
-)
-from .xbrl_taxonomy_packages import (
-    XbrlTaxonomyPackageDataset,
-    XbrlTaxonomyPackageOptions,
-    XbrlTaxonomyPackageResult,
-    capture_xbrl_taxonomy_packages,
-)
-from .xbrl_taxonomy import (
-    XbrlTaxonomyDataset,
-    XbrlTaxonomyOptions,
-    refresh_xbrl_fact_frames,
-    refresh_xbrl_taxonomy,
-)
-from .xbrl_validation import (
-    XbrlValidationDataset,
-    XbrlValidationOptions,
-    refresh_xbrl_validation_results,
-)
+__doc__ = """Point-in-time US equity data infrastructure.
+
+Every public name resolves lazily (PEP 562 ``__getattr__``): ``import atx_db`` imports no
+submodule, so a lean worker pays only for the modules it touches (index §4 M6: ``import atx_db``
+<= 120 MB private). ``OPENBLAS_NUM_THREADS`` defaults to 1 before anything can import numpy,
+whose OpenBLAS sizes per-thread buffers at load (index §3: numpy commits ~536 MB otherwise vs
+~53 MB).
+"""
+
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # Static checkers and IDEs see the eager imports; runtime uses __getattr__.
+    from .asof import (
+        adjustment_factors_asof,
+        blockholder_asof,
+        corporate_actions_asof,
+        daily_adjustment_factors_asof,
+        daily_panel_asof,
+        delisting_events_asof,
+        delisting_return_observations_asof,
+        entity_classification_asof,
+        est_actual_asof,
+        est_consensus_asof,
+        est_detail_asof,
+        est_guidance_asof,
+        est_recommendation_asof,
+        est_recommendation_summary_asof,
+        est_security_links_asof,
+        est_surprise_asof,
+        features_asof,
+        filer_aliases_asof,
+        form144_intents_asof,
+        form144_reconciliation_asof,
+        formula_registry_asof,
+        warehouse_catalog_asof,
+        fundamental_periods_asof,
+        fundamental_ratios_asof_month,
+        fundamental_ratios_asof,
+        fundamental_statements_asof,
+        fundamental_ttm_asof,
+        fundamental_xbrl_metric_asof,
+        fundamentals_asof,
+        short_interest_metrics_asof,
+        macro_metrics_asof,
+        market_cap_asof,
+        enterprise_value_asof,
+        valuation_multiples_asof,
+        equity_price_metrics_asof,
+        thirteenf_concentration_metrics_asof,
+        thirteenf_position_metrics_asof,
+        thirteenf_option_metrics_asof,
+        corporate_action_dividend_metrics_asof,
+        corporate_action_factor_reconciliation_asof,
+        corporate_action_split_metrics_asof,
+        identifier_decisions_asof,
+        insider_relationships_asof,
+        insider_transaction_metrics_asof,
+        insider_transactions_asof,
+        listing_status_asof,
+        security_listing_metrics_asof,
+        macro_asof,
+        offexchange_quality_report_asof,
+        offexchange_security_period_asof,
+        offexchange_volume_asof,
+        ownership_asof,
+        pit_snapshot_asof,
+        security_master_asof,
+        shares_outstanding_asof,
+        finra_short_volume_asof,
+        short_volume_metrics_asof,
+        short_interest_asof,
+        thirteenf_positioning_asof,
+        universe_asof,
+        universe_membership_asof,
+    )
+    from .adjustment_factors import (
+        AdjustmentFactorHistoryDataset,
+        AdjustmentFactorHistoryOptions,
+        refresh_adjustment_factor_history,
+        seed_corp_action_type_dim,
+    )
+    from .alpha_research import AlphaResearchDataset, AlphaResearchOptions
+    from .connection import DEFAULT_DB_PATH, DuckDBStore, connect, resolve_default_db_path
+    from .corporate_actions import CorporateActionsDataset, CorporateActionsOptions
+    from .daily_adjustments import (
+        DailyAdjustmentFactorDataset,
+        DailyAdjustmentFactorOptions,
+        refresh_daily_adjustment_factors,
+    )
+    from .delisting import (
+        DelistingCodeReconciliationOptions,
+        DelistingEventDataset,
+        DelistingEventOptions,
+        DelistingReturnObservationDataset,
+        DelistingReturnObservationOptions,
+        DelistingTerminalReturnOptions,
+        SurvivorshipSafeForwardReturnOptions,
+        load_delisting_return_observations,
+        load_terminal_return_policy_dim,
+        reconcile_delisting_codes,
+        refresh_delisting_events,
+        refresh_delisting_terminal_returns,
+        refresh_survivorship_safe_forward_returns,
+        seed_delist_code_dim,
+    )
+    from .dataset import Dataset, DatasetLoadResult
+    from .features import (
+        EquityDailyFeatureDataset,
+        FeatureBuildOptions,
+        FundamentalFeatureBuildOptions,
+        FundamentalFeatureDataset,
+        refresh_feature_lineage,
+    )
+    from .filer_alias import (
+        FilerAliasDataset,
+        FilerAliasOptions,
+        normalize_filer_name,
+        refresh_filer_aliases,
+        resolve_primary_cik,
+    )
+    from .finra import FinraShortInterestDataset, FinraShortInterestOptions
+    from .fundamental_ratios import (
+        RATIO_DEFS,
+        FundamentalRatiosDataset,
+        FundamentalRatiosOptions,
+        compute_ratio_rows,
+        refresh_fundamental_ratios,
+    )
+    from .filing_context_backfill import (
+        FilingContextBackfillQueueDataset,
+        FilingContextBackfillQueueOptions,
+        FilingContextBackfillQueueResult,
+        refresh_filing_context_backfill_queue,
+    )
+    from .filing_context_backfill_executor import (
+        FilingContextBackfillExecutionOptions,
+        FilingContextBackfillExecutionResult,
+        FilingContextBackfillExecutorDataset,
+        execute_filing_context_backfill,
+    )
+    from .fundamental_reconciliation import (
+        FundamentalReconciliationDataset,
+        FundamentalReconciliationRefreshOptions,
+        FundamentalReconciliationRefreshResult,
+        refresh_fundamental_reconciliation_serving,
+    )
+    from .pit_snapshot import (
+        PitSnapshotDataset,
+        PitSnapshotOptions,
+        compute_pit_snapshot_rows,
+        refresh_pit_snapshot,
+    )
+    from .standardization import (
+        FundamentalStandardizationDataset,
+        FundamentalStandardizationOptions,
+        StandardizationResult,
+        StandardizationRule,
+        compute_standardization_exceptions,
+        compute_standardization_result,
+        compute_standardized_rows,
+        read_standardization_rules,
+        refresh_fundamental_standardized,
+    )
+    from .calendarization import (
+        CalendarizationDataset,
+        CalendarizationOptions,
+        calendar_period_label,
+        calendar_quarter,
+        compute_calendar_map_rows,
+        fiscal_year_label,
+        is_53_week_period,
+        refresh_calendarization_coverage,
+        refresh_fundamental_calendar_map,
+        refresh_fundamental_calendar_ttm,
+        run_calendarization_refresh,
+    )
+    from .segments import (
+        SegmentDataset,
+        SegmentOptions,
+        compute_segment_rows,
+        infer_segment_type,
+        refresh_segment_footnote_coverage,
+        refresh_segments,
+        run_segment_refresh,
+    )
+    from .footnotes import (
+        FootnoteDataset,
+        FootnoteOptions,
+        compute_footnote_rows,
+        refresh_footnotes,
+        run_footnote_refresh,
+    )
+    from .press_release import (
+        PressReleaseDataset,
+        PressReleaseOptions,
+        normalize_press_release_rows,
+        press_release_coverage,
+        press_release_facts_asof,
+        refresh_press_release_facts,
+        refresh_press_release_reconciliation,
+        run_press_release_refresh,
+    )
+    from .fundamental_xbrl_metrics import (
+        CONCEPT_MAP,
+        FundamentalXbrlMetricDataset,
+        FundamentalXbrlMetricOptions,
+        normalize_xbrl_metric_rows,
+        refresh_fundamental_xbrl_metrics,
+    )
+    from .short_interest_metrics import (
+        ShortInterestMetricsDataset,
+        ShortInterestMetricsOptions,
+        compute_short_interest_metrics,
+        refresh_short_interest_metrics,
+    )
+    from .macro_metrics import (
+        MacroMetricsDataset,
+        MacroMetricsOptions,
+        compute_macro_metrics,
+        refresh_macro_metrics,
+    )
+    from .equity_price_metrics import (
+        EquityPriceMetricsDataset,
+        EquityPriceMetricsOptions,
+        compute_equity_price_metrics,
+        refresh_equity_price_metrics,
+    )
+    from .valuation_multiples import (
+        MarketCapDataset,
+        MarketCapOptions,
+        ValuationMultiplesDataset,
+        ValuationMultiplesOptions,
+        compute_market_cap_rows,
+        compute_valuation_multiple_rows,
+        refresh_market_cap,
+        refresh_valuation_overlap_slice,
+        refresh_valuation_multiples,
+        valuation_multiples_overlap_coverage,
+    )
+    from .enterprise_value import (
+        EnterpriseValueDataset,
+        EnterpriseValueOptions,
+        compute_enterprise_value_rows,
+        refresh_enterprise_value,
+    )
+    from .fact_disagreement import (
+        FactDisagreementDataset,
+        FactDisagreementOptions,
+        compute_fact_disagreement_rows,
+        fact_disagreement_summary,
+        normalize_vendor_baseline_rows,
+        refresh_fact_disagreement,
+        refresh_vendor_baseline_facts,
+    )
+    from .thirteenf_concentration_metrics import (
+        ThirteenFConcentrationMetricsDataset,
+        ThirteenFConcentrationMetricsOptions,
+        compute_concentration_metrics,
+        refresh_concentration_metrics,
+    )
+    from .thirteenf_position_metrics import (
+        ThirteenFPositionMetricsDataset,
+        ThirteenFPositionMetricsOptions,
+        compute_position_metrics,
+        refresh_position_metrics,
+    )
+    from .thirteenf_option_metrics import (
+        ThirteenFOptionMetricsDataset,
+        ThirteenFOptionMetricsOptions,
+        compute_option_metrics,
+        refresh_option_metrics,
+    )
+    from .corporate_action_metrics import (
+        CorporateActionDividendMetricsDataset,
+        CorporateActionDividendMetricsOptions,
+        CorporateActionFactorReconciliationDataset,
+        CorporateActionFactorReconciliationOptions,
+        CorporateActionSplitMetricsDataset,
+        CorporateActionSplitMetricsOptions,
+        compute_dividend_metrics,
+        compute_factor_reconciliation,
+        compute_split_metrics,
+        refresh_dividend_metrics,
+        refresh_factor_reconciliation,
+        refresh_split_metrics,
+    )
+    from .fundamental_statements import (
+        refresh_fundamental_periods,
+        refresh_fundamental_statement_points,
+        refresh_fundamental_ttm_points,
+        seed_fundamental_statement_map,
+    )
+    from .industry_templates import (
+        IndustryTemplateOptions,
+        refresh_entity_industry_templates,
+        refresh_industry_template_coverage,
+        run_industry_template_refresh,
+        seed_industry_templates,
+        template_for_sic,
+    )
+    from .item_registry import read_fundamental_item_seed, seed_fundamental_item_registry
+    from .fundamentals import (
+        COMPANY_FACT_SYMBOL_SOURCES,
+        SecCompanyFactsDataset,
+        SecCompanyFactsOptions,
+        refresh_fundamental_fact_revisions,
+        refresh_xbrl_concept_catalog,
+        resolve_companyfacts_targets,
+    )
+    from .identifier_decisions import IdentifierResolutionDecisionDataset, IdentifierResolutionDecisionOptions
+    from .identifier_resolution import IdentifierResolutionCandidateDataset, IdentifierResolutionOptions
+    from .estimate_security_links import EstimateSecurityLinkDataset, EstimateSecurityLinkOptions
+    from .insider_ownership import (
+        BlockholderOwnershipDataset,
+        BlockholderOwnershipOptions,
+        InsiderOwnershipDataset,
+        InsiderOwnershipOptions,
+    )
+    from .insider_metrics import (
+        InsiderTransactionMetricsDataset,
+        InsiderTransactionMetricsOptions,
+        compute_insider_transaction_metrics,
+        refresh_insider_transaction_metrics,
+    )
+    from .listing_metrics import (
+        SecurityListingMetricsDataset,
+        SecurityListingMetricsOptions,
+        compute_security_listing_metrics,
+        refresh_security_listing_metrics,
+    )
+    from .form144 import (
+        Form144IntentDataset,
+        Form144Options,
+        Form144ReconciliationDataset,
+        compute_form144_links,
+        load_form144_intents,
+        normalize_form144_rows,
+        parse_form144_xml,
+        refresh_form144_reconciliation,
+    )
+    from .jobs import JobManager
+    from .lake import LakeValidationProblem, LakeValidationSummary, validate_lake_export
+    from .listing_status import (
+        ListingStatusIntervalDataset,
+        ListingStatusIntervalOptions,
+        build_listing_status_intervals,
+    )
+    from .macro import FredMacroDataset, FredMacroOptions
+    from .offexchange import (
+        FinraOffExchangeDataset,
+        FinraOffExchangeOptions,
+        OffExchangeSecurityPeriodDataset,
+        load_offexchange_volume,
+        normalize_offexchange_rows,
+        refresh_offexchange_security_period,
+    )
+    from .offexchange_quality import (
+        OffExchangeQualityReportDataset,
+        OffExchangeQualityReportOptions,
+        compute_offexchange_quality_reports,
+        refresh_offexchange_quality_report,
+    )
+    from .short_volume import (
+        FinraShortVolumeDataset,
+        FinraShortVolumeOptions,
+        ShortVolumeMetricsDataset,
+        compute_short_volume_metrics,
+        load_finra_short_volume,
+        normalize_short_volume_rows,
+        refresh_short_volume_metrics,
+    )
+    from .ownership import OwnershipFeatureDataset, OwnershipFeatureOptions
+    from .observability import (
+        DataQualityAnomaly,
+        detect_rowcount_anomalies,
+        evaluate_freshness_slas,
+    )
+    from .quality import GateResult, QualityResult, evaluate_quality_gate, run_warehouse_quality_checks
+    from .queries import SHORT_INTEREST_WITH_13F_SQL, short_interest_with_13f_positioning
+    from .rebuild import WarehouseRebuildResult, run_warehouse_rebuild
+    from .sec_submissions import (
+        SecSubmissionsBulkDataset,
+        SecSubmissionsBulkOptions,
+        SecSubmissionsDataset,
+        SecSubmissionsOptions,
+    )
+    from .security_master import SecurityMasterDataset, SecurityMasterOptions
+    from .shares_outstanding import (
+        SharesOutstandingHistoryDataset,
+        SharesOutstandingHistoryOptions,
+        refresh_shares_outstanding_history,
+    )
+    from .short_interest_features import ShortInterestFeatureDataset, ShortInterestFeatureOptions
+    from .storage_admin import (
+        StorageCompactionResult,
+        StorageStatsResult,
+        checkpoint_and_compact,
+        record_storage_stats,
+    )
+    from .symbol_directory import (
+        NasdaqListingEventsDataset,
+        NasdaqListingEventsOptions,
+        NasdaqSymbolDirectoryDataset,
+        NasdaqSymbolDirectoryOptions,
+    )
+    from .pricing_bulk import BulkBarsBackfillDataset, BulkBarsBackfillOptions, BulkBarsDataset, BulkBarsOptions
+    from .thirteenf import ThirteenFDataSet, ThirteenFOptions
+    from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
+    from .universe import (
+        GovernedUniverseMembershipDataset,
+        UniverseMembershipOptions,
+        compute_universe_membership_intervals,
+    )
+    from .universes import UniverseBuildOptions, UniverseMembershipDataset
+    from .migrations import (
+        MIGRATIONS,
+        Migration,
+        acquire_apply_lock,
+        apply_pending_migrations,
+        release_apply_lock,
+        verify_migration_checksums,
+    )
+    from .migration_admin import (
+        BackupArtifact,
+        GovernedMigrationResult,
+        RetentionResult,
+        SchemaVerificationError,
+        backup_database,
+        checkpoint,
+        complete_backup_record,
+        enforce_backup_retention,
+        prune_backups,
+        recover_from_wal_failure,
+        record_backup,
+        restore_database,
+        run_governed_migrations,
+        verify_schema,
+    )
+    from .estimates import (
+        EstimateMeasureSeedDataset,
+        EstimateMeasureSeedOptions,
+        EstimateActualsDataset,
+        EstimateActualsOptions,
+        EstimateSurpriseDataset,
+        EstimateSurpriseOptions,
+        EstimateDetailDataset,
+        EstimateDetailOptions,
+        EstimateConsensusDataset,
+        EstimateConsensusOptions,
+        EstimateGuidanceDataset,
+        EstimateGuidanceOptions,
+        EstimateRecommendationDataset,
+        EstimateRecommendationOptions,
+        EstimateRecommendationSummaryDataset,
+        EstimateRecommendationSummaryOptions,
+        load_estimate_detail_rows,
+        normalize_estimate_detail_rows,
+    )
+    from .reference_classifications import (
+        EntityClassificationDataset,
+        EntityClassificationOptions,
+        FamaFrenchTaxonomyDataset,
+        FamaFrenchTaxonomyOptions,
+        NaicsTaxonomyDataset,
+        NaicsTaxonomyOptions,
+        SicTaxonomyDataset,
+        SicTaxonomyOptions,
+        fama_french_12_for_sic,
+    )
+    from .watermarks import WatermarkRefreshResult, refresh_warehouse_watermarks
+    from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions, archive_primary_document_url
+    from .xbrl_processor import (
+        ArelleValidationDataset,
+        ArelleValidationOptions,
+        ArelleValidationResult,
+        parse_arelle_xml_log,
+        run_arelle_validation,
+    )
+    from .xbrl_taxonomy_packages import (
+        XbrlTaxonomyPackageDataset,
+        XbrlTaxonomyPackageOptions,
+        XbrlTaxonomyPackageResult,
+        capture_xbrl_taxonomy_packages,
+    )
+    from .xbrl_taxonomy import (
+        XbrlTaxonomyDataset,
+        XbrlTaxonomyOptions,
+        refresh_xbrl_fact_frames,
+        refresh_xbrl_taxonomy,
+    )
+    from .xbrl_validation import (
+        XbrlValidationDataset,
+        XbrlValidationOptions,
+        refresh_xbrl_validation_results,
+    )
+
+#: Runtime resolution table: the same names and modules as the TYPE_CHECKING imports above
+#: (keep the two in step; the public API snapshot test pins the resulting ``dir(atx_db)``).
+_EXPORTS_BY_MODULE: dict[str, tuple[str, ...]] = {
+    ".asof": (
+        "adjustment_factors_asof", "blockholder_asof", "corporate_actions_asof", "daily_adjustment_factors_asof",
+        "daily_panel_asof", "delisting_events_asof", "delisting_return_observations_asof",
+        "entity_classification_asof", "est_actual_asof", "est_consensus_asof", "est_detail_asof", "est_guidance_asof",
+        "est_recommendation_asof", "est_recommendation_summary_asof", "est_security_links_asof", "est_surprise_asof",
+        "features_asof", "filer_aliases_asof", "form144_intents_asof", "form144_reconciliation_asof",
+        "formula_registry_asof", "warehouse_catalog_asof", "fundamental_periods_asof",
+        "fundamental_ratios_asof_month", "fundamental_ratios_asof", "fundamental_statements_asof",
+        "fundamental_ttm_asof", "fundamental_xbrl_metric_asof", "fundamentals_asof", "short_interest_metrics_asof",
+        "macro_metrics_asof", "market_cap_asof", "enterprise_value_asof", "valuation_multiples_asof",
+        "equity_price_metrics_asof", "thirteenf_concentration_metrics_asof", "thirteenf_position_metrics_asof",
+        "thirteenf_option_metrics_asof", "corporate_action_dividend_metrics_asof",
+        "corporate_action_factor_reconciliation_asof", "corporate_action_split_metrics_asof",
+        "identifier_decisions_asof", "insider_relationships_asof", "insider_transaction_metrics_asof",
+        "insider_transactions_asof", "listing_status_asof", "security_listing_metrics_asof", "macro_asof",
+        "offexchange_quality_report_asof", "offexchange_security_period_asof", "offexchange_volume_asof",
+        "ownership_asof", "pit_snapshot_asof", "security_master_asof", "shares_outstanding_asof",
+        "finra_short_volume_asof", "short_volume_metrics_asof", "short_interest_asof", "thirteenf_positioning_asof",
+        "universe_asof", "universe_membership_asof",
+    ),
+    ".adjustment_factors": (
+        "AdjustmentFactorHistoryDataset", "AdjustmentFactorHistoryOptions", "refresh_adjustment_factor_history",
+        "seed_corp_action_type_dim",
+    ),
+    ".alpha_research": ("AlphaResearchDataset", "AlphaResearchOptions"),
+    ".connection": ("DEFAULT_DB_PATH", "DuckDBStore", "connect", "resolve_default_db_path"),
+    ".corporate_actions": ("CorporateActionsDataset", "CorporateActionsOptions"),
+    ".daily_adjustments": (
+        "DailyAdjustmentFactorDataset", "DailyAdjustmentFactorOptions", "refresh_daily_adjustment_factors",
+    ),
+    ".delisting": (
+        "DelistingCodeReconciliationOptions", "DelistingEventDataset", "DelistingEventOptions",
+        "DelistingReturnObservationDataset", "DelistingReturnObservationOptions", "DelistingTerminalReturnOptions",
+        "SurvivorshipSafeForwardReturnOptions", "load_delisting_return_observations",
+        "load_terminal_return_policy_dim", "reconcile_delisting_codes", "refresh_delisting_events",
+        "refresh_delisting_terminal_returns", "refresh_survivorship_safe_forward_returns", "seed_delist_code_dim",
+    ),
+    ".dataset": ("Dataset", "DatasetLoadResult"),
+    ".features": (
+        "EquityDailyFeatureDataset", "FeatureBuildOptions", "FundamentalFeatureBuildOptions",
+        "FundamentalFeatureDataset", "refresh_feature_lineage",
+    ),
+    ".filer_alias": (
+        "FilerAliasDataset", "FilerAliasOptions", "normalize_filer_name", "refresh_filer_aliases",
+        "resolve_primary_cik",
+    ),
+    ".finra": ("FinraShortInterestDataset", "FinraShortInterestOptions"),
+    ".fundamental_ratios": (
+        "RATIO_DEFS", "FundamentalRatiosDataset", "FundamentalRatiosOptions", "compute_ratio_rows",
+        "refresh_fundamental_ratios",
+    ),
+    ".filing_context_backfill": (
+        "FilingContextBackfillQueueDataset", "FilingContextBackfillQueueOptions", "FilingContextBackfillQueueResult",
+        "refresh_filing_context_backfill_queue",
+    ),
+    ".filing_context_backfill_executor": (
+        "FilingContextBackfillExecutionOptions", "FilingContextBackfillExecutionResult",
+        "FilingContextBackfillExecutorDataset", "execute_filing_context_backfill",
+    ),
+    ".fundamental_reconciliation": (
+        "FundamentalReconciliationDataset", "FundamentalReconciliationRefreshOptions",
+        "FundamentalReconciliationRefreshResult", "refresh_fundamental_reconciliation_serving",
+    ),
+    ".pit_snapshot": (
+        "PitSnapshotDataset", "PitSnapshotOptions", "compute_pit_snapshot_rows", "refresh_pit_snapshot",
+    ),
+    ".standardization": (
+        "FundamentalStandardizationDataset", "FundamentalStandardizationOptions", "StandardizationResult",
+        "StandardizationRule", "compute_standardization_exceptions", "compute_standardization_result",
+        "compute_standardized_rows", "read_standardization_rules", "refresh_fundamental_standardized",
+    ),
+    ".calendarization": (
+        "CalendarizationDataset", "CalendarizationOptions", "calendar_period_label", "calendar_quarter",
+        "compute_calendar_map_rows", "fiscal_year_label", "is_53_week_period", "refresh_calendarization_coverage",
+        "refresh_fundamental_calendar_map", "refresh_fundamental_calendar_ttm", "run_calendarization_refresh",
+    ),
+    ".segments": (
+        "SegmentDataset", "SegmentOptions", "compute_segment_rows", "infer_segment_type",
+        "refresh_segment_footnote_coverage", "refresh_segments", "run_segment_refresh",
+    ),
+    ".footnotes": (
+        "FootnoteDataset", "FootnoteOptions", "compute_footnote_rows", "refresh_footnotes", "run_footnote_refresh",
+    ),
+    ".press_release": (
+        "PressReleaseDataset", "PressReleaseOptions", "normalize_press_release_rows", "press_release_coverage",
+        "press_release_facts_asof", "refresh_press_release_facts", "refresh_press_release_reconciliation",
+        "run_press_release_refresh",
+    ),
+    ".fundamental_xbrl_metrics": (
+        "CONCEPT_MAP", "FundamentalXbrlMetricDataset", "FundamentalXbrlMetricOptions", "normalize_xbrl_metric_rows",
+        "refresh_fundamental_xbrl_metrics",
+    ),
+    ".short_interest_metrics": (
+        "ShortInterestMetricsDataset", "ShortInterestMetricsOptions", "compute_short_interest_metrics",
+        "refresh_short_interest_metrics",
+    ),
+    ".macro_metrics": (
+        "MacroMetricsDataset", "MacroMetricsOptions", "compute_macro_metrics", "refresh_macro_metrics",
+    ),
+    ".equity_price_metrics": (
+        "EquityPriceMetricsDataset", "EquityPriceMetricsOptions", "compute_equity_price_metrics",
+        "refresh_equity_price_metrics",
+    ),
+    ".valuation_multiples": (
+        "MarketCapDataset", "MarketCapOptions", "ValuationMultiplesDataset", "ValuationMultiplesOptions",
+        "compute_market_cap_rows", "compute_valuation_multiple_rows", "refresh_market_cap",
+        "refresh_valuation_overlap_slice", "refresh_valuation_multiples", "valuation_multiples_overlap_coverage",
+    ),
+    ".enterprise_value": (
+        "EnterpriseValueDataset", "EnterpriseValueOptions", "compute_enterprise_value_rows",
+        "refresh_enterprise_value",
+    ),
+    ".fact_disagreement": (
+        "FactDisagreementDataset", "FactDisagreementOptions", "compute_fact_disagreement_rows",
+        "fact_disagreement_summary", "normalize_vendor_baseline_rows", "refresh_fact_disagreement",
+        "refresh_vendor_baseline_facts",
+    ),
+    ".thirteenf_concentration_metrics": (
+        "ThirteenFConcentrationMetricsDataset", "ThirteenFConcentrationMetricsOptions",
+        "compute_concentration_metrics", "refresh_concentration_metrics",
+    ),
+    ".thirteenf_position_metrics": (
+        "ThirteenFPositionMetricsDataset", "ThirteenFPositionMetricsOptions", "compute_position_metrics",
+        "refresh_position_metrics",
+    ),
+    ".thirteenf_option_metrics": (
+        "ThirteenFOptionMetricsDataset", "ThirteenFOptionMetricsOptions", "compute_option_metrics",
+        "refresh_option_metrics",
+    ),
+    ".corporate_action_metrics": (
+        "CorporateActionDividendMetricsDataset", "CorporateActionDividendMetricsOptions",
+        "CorporateActionFactorReconciliationDataset", "CorporateActionFactorReconciliationOptions",
+        "CorporateActionSplitMetricsDataset", "CorporateActionSplitMetricsOptions", "compute_dividend_metrics",
+        "compute_factor_reconciliation", "compute_split_metrics", "refresh_dividend_metrics",
+        "refresh_factor_reconciliation", "refresh_split_metrics",
+    ),
+    ".fundamental_statements": (
+        "refresh_fundamental_periods", "refresh_fundamental_statement_points", "refresh_fundamental_ttm_points",
+        "seed_fundamental_statement_map",
+    ),
+    ".industry_templates": (
+        "IndustryTemplateOptions", "refresh_entity_industry_templates", "refresh_industry_template_coverage",
+        "run_industry_template_refresh", "seed_industry_templates", "template_for_sic",
+    ),
+    ".item_registry": ("read_fundamental_item_seed", "seed_fundamental_item_registry"),
+    ".fundamentals": (
+        "COMPANY_FACT_SYMBOL_SOURCES", "SecCompanyFactsDataset", "SecCompanyFactsOptions",
+        "refresh_fundamental_fact_revisions", "refresh_xbrl_concept_catalog", "resolve_companyfacts_targets",
+    ),
+    ".identifier_decisions": ("IdentifierResolutionDecisionDataset", "IdentifierResolutionDecisionOptions"),
+    ".identifier_resolution": ("IdentifierResolutionCandidateDataset", "IdentifierResolutionOptions"),
+    ".estimate_security_links": ("EstimateSecurityLinkDataset", "EstimateSecurityLinkOptions"),
+    ".insider_ownership": (
+        "BlockholderOwnershipDataset", "BlockholderOwnershipOptions", "InsiderOwnershipDataset",
+        "InsiderOwnershipOptions",
+    ),
+    ".insider_metrics": (
+        "InsiderTransactionMetricsDataset", "InsiderTransactionMetricsOptions", "compute_insider_transaction_metrics",
+        "refresh_insider_transaction_metrics",
+    ),
+    ".listing_metrics": (
+        "SecurityListingMetricsDataset", "SecurityListingMetricsOptions", "compute_security_listing_metrics",
+        "refresh_security_listing_metrics",
+    ),
+    ".form144": (
+        "Form144IntentDataset", "Form144Options", "Form144ReconciliationDataset", "compute_form144_links",
+        "load_form144_intents", "normalize_form144_rows", "parse_form144_xml", "refresh_form144_reconciliation",
+    ),
+    ".jobs": ("JobManager",),
+    ".lake": ("LakeValidationProblem", "LakeValidationSummary", "validate_lake_export"),
+    ".listing_status": (
+        "ListingStatusIntervalDataset", "ListingStatusIntervalOptions", "build_listing_status_intervals",
+    ),
+    ".macro": ("FredMacroDataset", "FredMacroOptions"),
+    ".offexchange": (
+        "FinraOffExchangeDataset", "FinraOffExchangeOptions", "OffExchangeSecurityPeriodDataset",
+        "load_offexchange_volume", "normalize_offexchange_rows", "refresh_offexchange_security_period",
+    ),
+    ".offexchange_quality": (
+        "OffExchangeQualityReportDataset", "OffExchangeQualityReportOptions", "compute_offexchange_quality_reports",
+        "refresh_offexchange_quality_report",
+    ),
+    ".short_volume": (
+        "FinraShortVolumeDataset", "FinraShortVolumeOptions", "ShortVolumeMetricsDataset",
+        "compute_short_volume_metrics", "load_finra_short_volume", "normalize_short_volume_rows",
+        "refresh_short_volume_metrics",
+    ),
+    ".ownership": ("OwnershipFeatureDataset", "OwnershipFeatureOptions"),
+    ".observability": ("DataQualityAnomaly", "detect_rowcount_anomalies", "evaluate_freshness_slas"),
+    ".quality": ("GateResult", "QualityResult", "evaluate_quality_gate", "run_warehouse_quality_checks"),
+    ".queries": ("SHORT_INTEREST_WITH_13F_SQL", "short_interest_with_13f_positioning"),
+    ".rebuild": ("WarehouseRebuildResult", "run_warehouse_rebuild"),
+    ".sec_submissions": (
+        "SecSubmissionsBulkDataset", "SecSubmissionsBulkOptions", "SecSubmissionsDataset", "SecSubmissionsOptions",
+    ),
+    ".security_master": ("SecurityMasterDataset", "SecurityMasterOptions"),
+    ".shares_outstanding": (
+        "SharesOutstandingHistoryDataset", "SharesOutstandingHistoryOptions", "refresh_shares_outstanding_history",
+    ),
+    ".short_interest_features": ("ShortInterestFeatureDataset", "ShortInterestFeatureOptions"),
+    ".storage_admin": (
+        "StorageCompactionResult", "StorageStatsResult", "checkpoint_and_compact", "record_storage_stats",
+    ),
+    ".symbol_directory": (
+        "NasdaqListingEventsDataset", "NasdaqListingEventsOptions", "NasdaqSymbolDirectoryDataset",
+        "NasdaqSymbolDirectoryOptions",
+    ),
+    ".pricing_bulk": ("BulkBarsBackfillDataset", "BulkBarsBackfillOptions", "BulkBarsDataset", "BulkBarsOptions"),
+    ".thirteenf": ("ThirteenFDataSet", "ThirteenFOptions"),
+    ".ticker_history": ("TickerHistoryDataset", "TickerHistoryOptions"),
+    ".universe": (
+        "GovernedUniverseMembershipDataset", "UniverseMembershipOptions", "compute_universe_membership_intervals",
+    ),
+    ".universes": ("UniverseBuildOptions", "UniverseMembershipDataset"),
+    ".migrations": (
+        "MIGRATIONS", "Migration", "acquire_apply_lock", "apply_pending_migrations", "release_apply_lock",
+        "verify_migration_checksums",
+    ),
+    ".migration_admin": (
+        "BackupArtifact", "GovernedMigrationResult", "RetentionResult", "SchemaVerificationError", "backup_database",
+        "checkpoint", "complete_backup_record", "enforce_backup_retention", "prune_backups",
+        "recover_from_wal_failure", "record_backup", "restore_database", "run_governed_migrations", "verify_schema",
+    ),
+    ".estimates": (
+        "EstimateMeasureSeedDataset", "EstimateMeasureSeedOptions", "EstimateActualsDataset",
+        "EstimateActualsOptions", "EstimateSurpriseDataset", "EstimateSurpriseOptions", "EstimateDetailDataset",
+        "EstimateDetailOptions", "EstimateConsensusDataset", "EstimateConsensusOptions", "EstimateGuidanceDataset",
+        "EstimateGuidanceOptions", "EstimateRecommendationDataset", "EstimateRecommendationOptions",
+        "EstimateRecommendationSummaryDataset", "EstimateRecommendationSummaryOptions", "load_estimate_detail_rows",
+        "normalize_estimate_detail_rows",
+    ),
+    ".reference_classifications": (
+        "EntityClassificationDataset", "EntityClassificationOptions", "FamaFrenchTaxonomyDataset",
+        "FamaFrenchTaxonomyOptions", "NaicsTaxonomyDataset", "NaicsTaxonomyOptions", "SicTaxonomyDataset",
+        "SicTaxonomyOptions", "fama_french_12_for_sic",
+    ),
+    ".watermarks": ("WatermarkRefreshResult", "refresh_warehouse_watermarks"),
+    ".xbrl_filing_contexts": ("XbrlFilingContextDataset", "XbrlFilingContextOptions", "archive_primary_document_url"),
+    ".xbrl_processor": (
+        "ArelleValidationDataset", "ArelleValidationOptions", "ArelleValidationResult", "parse_arelle_xml_log",
+        "run_arelle_validation",
+    ),
+    ".xbrl_taxonomy_packages": (
+        "XbrlTaxonomyPackageDataset", "XbrlTaxonomyPackageOptions", "XbrlTaxonomyPackageResult",
+        "capture_xbrl_taxonomy_packages",
+    ),
+    ".xbrl_taxonomy": (
+        "XbrlTaxonomyDataset", "XbrlTaxonomyOptions", "refresh_xbrl_fact_frames", "refresh_xbrl_taxonomy",
+    ),
+    ".xbrl_validation": ("XbrlValidationDataset", "XbrlValidationOptions", "refresh_xbrl_validation_results"),
+}
+_EXPORTS: dict[str, str] = {name: module for module, names in _EXPORTS_BY_MODULE.items() for name in names}
+#: Module-level helpers that are not part of the package surface (hidden from ``dir()``).
+_INTERNAL = frozenset({"os", "import_module", "TYPE_CHECKING", "Any", "_EXPORTS_BY_MODULE", "_EXPORTS", "_INTERNAL"})
+
+
+def __getattr__(name: str) -> Any:
+    """Import a public name's module on first use (PEP 562) and cache the name on the package."""
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted((globals().keys() - _INTERNAL) | _EXPORTS.keys())
+
 
 __all__ = [
     "DEFAULT_DB_PATH",

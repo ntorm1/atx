@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import json
 import logging
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .activation import add_activation_arguments, run_activation_from_args
-from .connection import DEFAULT_DB_PATH, DuckDBStore
+from .connection import DEFAULT_DB_PATH, DEFAULT_MAX_TEMP_DIRECTORY_SIZE, DuckDBStore
 from .filing_context_backfill import (
     FilingContextBackfillQueueOptions,
     refresh_filing_context_backfill_queue,
@@ -75,13 +76,23 @@ def _table_exists(store: DuckDBStore, table_name: str) -> bool:
     return bool(row[0])
 
 
-def _configure_analytical_session(store: DuckDBStore, *, memory_limit: str, threads: int) -> None:
+def _configure_analytical_session(
+    store: DuckDBStore,
+    *,
+    memory_limit: str,
+    threads: int,
+    max_temp_directory_size: str = DEFAULT_MAX_TEMP_DIRECTORY_SIZE,
+) -> None:
     """Tune a DuckDB session for large aggregate refreshes.
 
-    Also records the settings on ``store`` (``analytical_memory_limit`` /
-    ``analytical_threads``) so ``DuckDBStore.reopen()`` can replay them after a
-    ``close()``/``reopen()`` cycle -- shared with ``atx_db.activation``, whose
-    ladder calls this once per store open/reopen instead of per stage.
+    Spills go to the store's private directory below the shared spill root
+    (``connection.private_temp_directory``, ruling C-56), capped at
+    ``max_temp_directory_size``. Also records the settings on ``store``
+    (``analytical_memory_limit`` / ``analytical_threads`` /
+    ``max_temp_directory_size``) so ``DuckDBStore.reopen()`` applies them in the
+    connect config after a ``close()``/``reopen()`` cycle -- shared with
+    ``atx_db.activation``, whose ladder calls this once per store open/reopen
+    instead of per stage.
     """
     if threads < 1:
         raise ValueError("threads must be positive")
@@ -89,8 +100,14 @@ def _configure_analytical_session(store: DuckDBStore, *, memory_limit: str, thre
     store.con.execute("SET memory_limit = ?", [memory_limit])
     store.con.execute("SET threads = ?", [threads])
     store.con.execute("SET preserve_insertion_order = false")
+    # Already the connect-time value for a store-opened connection; DuckDB refuses to
+    # switch a directory it has spilled into, so a failed switch keeps the current one.
+    with contextlib.suppress(Exception):
+        store.con.execute("SET temp_directory = ?", [str(store.temp_directory)])
+    store.con.execute("SET max_temp_directory_size = ?", [max_temp_directory_size])
     store.analytical_memory_limit = memory_limit
     store.analytical_threads = threads
+    store.max_temp_directory_size = max_temp_directory_size
 
 
 def warehouse_status(db_path: Path) -> dict[str, Any]:

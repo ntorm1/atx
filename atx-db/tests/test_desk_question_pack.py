@@ -192,9 +192,9 @@ def test_governed_production_read_binds_and_runs_every_query_inside_the_guard(
     assert receipt["read_only"] and not receipt["production_qualified"]
     limits = receipt["limits"]
     assert (limits["memory_limit"], limits["threads"], limits["spill_limit"], limits["timeout_seconds"]) == (
-        "1GB", 1, "2GB", 600)
+        "512MB", 1, "2GB", 600)
     settings = receipt["effective_settings"]
-    assert reader._setting_bytes(settings["memory_limit"]) <= 10 ** 9
+    assert reader._setting_bytes(settings["memory_limit"]) <= 512 * 10 ** 6
     assert 0 < reader._setting_bytes(settings["max_temp_directory_size"]) <= 2 * 10 ** 9
     assert (settings["threads"], settings["enable_external_access"], settings["access_mode"],
             settings["lock_configuration"]) == ("1", "false", "read_only", "true")

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 
 import duckdb
 import pytest
 
-from atx_db.connection import DuckDBStore
+from atx_db.connection import DuckDBStore, spill_root
 
 
 @pytest.mark.parametrize("read_only", [False, True])
@@ -36,11 +37,14 @@ def test_reopen_budget_is_active_before_session_setup(tmp_path, monkeypatch, rea
         assert store.con.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)
         assert observations == [(
             {"read_only": read_only, "config": {
-                "memory_limit": "64MB", "threads": "1", "preserve_insertion_order": "false",
-                "temp_directory": (path.parent / f".{path.name}.duckdb_tmp").as_posix(),
+                "memory_limit": "64MB", "threads": 1, "preserve_insertion_order": False,
+                "temp_directory": str(store.temp_directory), "max_temp_directory_size": "40GB",
             }},
             (expected_memory, 1, False),
         )]
+        # A private spill directory for this (process, file) below the shared root (ruling C-56).
+        assert store.temp_directory.parent == spill_root()
+        assert store.temp_directory.name.startswith(f"conn-{os.getpid()}-")
     finally:
         store.close()
 

@@ -80,7 +80,9 @@ class Dataset(ABC):
         )
         try:
             result = self.load(store, with_run_id(options, run_id))
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException too: a host-wide SEC block (sec_http.SecBlockedError) or an
+            # interrupt must not leave this dataset_runs row 'running'.
             finished_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
             # Capture the load traceback before a failed ledger write replaces the
             # active exception being formatted. The load error must remain primary.
