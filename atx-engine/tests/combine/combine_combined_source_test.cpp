@@ -535,4 +535,20 @@ TEST(CombinedSignalSource, V2ZeroWeightAndReciprocalScalesCannotEraseActiveContr
   EXPECT_NEAR(scaled[1], 0.0, 1e-12); EXPECT_NEAR(scaled[2], -std::sqrt(1.5), 1e-12);
 }
 
+TEST(CombinedSignalSource, V2UnrepresentableWeightedRangeReturnsAnError) {
+  auto active = scripted({1e308, 1e-308});
+  CombinedSignalSource source{{active.get()}, combo({1.0}), CombineMethod::EqualWeight};
+  const std::vector<InstrumentId> dummy{Symbol{1}};
+  EmptyPanel panel{std::span<const InstrumentId>{dummy}, 1};
+  const auto result = source.evaluate(panel.view());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(CombinedSignalSourceDeathTest, DuplicateConstituentCannotInvalidateEarlierBorrow) {
+  auto active = scripted({1.0, -1.0});
+  EXPECT_DEATH((void)CombinedSignalSource({active.get(), active.get()}, combo({0.5, 0.5}),
+                                         CombineMethod::EqualWeight), ".*");
+}
+
 }  // namespace atxtest_combine_combined_source_test

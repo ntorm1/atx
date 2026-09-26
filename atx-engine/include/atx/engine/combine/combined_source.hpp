@@ -95,6 +95,7 @@
 
 #include <algorithm> // std::max, std::stable_sort
 #include <cmath>     // std::isnan, std::fabs
+#include <functional>
 #include <limits>    // std::numeric_limits (the "no opinion" quiet-NaN sentinel)
 #include <span>      // std::span (SignalView borrow)
 #include <utility>   // std::move
@@ -186,13 +187,14 @@ class CombinedSignalSource final : public ISignalSource {
 public:
   /// Wrap the constituent sources + a frozen Combination + the blend method.
   /// NON-OWNING constituents (the caller keeps each alive for this source's
-  /// lifetime). noexcept: moves the vectors/combo in (no allocation, no throw).
+  /// lifetime). Constructor validates distinct source identities using O(m)
+  /// temporary storage; evaluate retains the allocation-free steady-state blend.
   /// PRECONDITION: combo.weights.size() == sources.size() (the blend reads
   /// weights[i] for every constituent i; a length disagreement is a wiring bug that
   /// would read OOB on the apply path — ABORTS in debug, fail-closed).
   CombinedSignalSource(std::vector<ISignalSource *> sources, Combination combo,
                        CombineMethod method,
-                       CombinedSourceRule rule = CombinedSourceRule::StandardizedFixedGrossV2) noexcept
+                       CombinedSourceRule rule = CombinedSourceRule::StandardizedFixedGrossV2)
       : sources_{std::move(sources)}, combo_{std::move(combo)}, method_{method}, rule_{rule} {
     // ATX_ASSERT aborts (noexcept-compatible): the per-alpha weight vector must be
     // index-aligned to the constituents (combiner.hpp documents Σ|w|=1 over exactly
@@ -202,6 +204,9 @@ public:
     ATX_CHECK(rule == CombinedSourceRule::LegacyPerCellV1 ||
               rule == CombinedSourceRule::StandardizedFixedGrossV2);
     for (const auto* source : sources_) ATX_CHECK(source != nullptr);
+    auto identities = sources_;
+    std::sort(identities.begin(), identities.end(), std::less<ISignalSource*>{});
+    ATX_CHECK(std::adjacent_find(identities.begin(), identities.end()) == identities.end());
   }
 
   [[nodiscard]] CombinedSourceRule rule() const noexcept { return rule_; }
