@@ -42,8 +42,8 @@
 //  this path returns NaN — the documented, more-correct divergence.
 //
 //  These kernels are NOT bit-identical to the batch two-pass recompute, so they
-//  ship only under EvalMode::ResearchFast (ts_ops.hpp routes the unary ones;
-//  the pair ops are exported for the VM owner to wire — see sweep_comoment).
+//  ship only under EvalMode::ResearchFast. VM and streaming share unary and
+//  pair lanes; AuditExact retains its independent per-window arithmetic.
 //
 //  NaN / inf POLICY — identical outputs to the batch kernels:
 //    * warm-up (t+1 < d) or any NaN in the window -> NaN.
@@ -687,7 +687,6 @@ inline void sweep_unary(OpCode op, std::span<const atx::f64> x, std::span<atx::f
                         atx::usize dates, atx::usize instruments, atx::usize d, atx::usize j0,
                         atx::usize j1) {
   ATX_ASSERT(is_unary_sliding_op(op) && j0 <= j1 && j1 <= instruments);
-  const atx::usize lanes = j1 - j0;
   if (d == 0) {
     for (atx::usize t = 0; t < dates; ++t) {
       for (atx::usize j = j0; j < j1; ++j) {
@@ -697,29 +696,27 @@ inline void sweep_unary(OpCode op, std::span<const atx::f64> x, std::span<atx::f
     return;
   }
   const bool decay = is_decay_op(op);
-  // A single column (the per-column VM entry) keeps its lane on the stack, so the
-  // column sweep allocates nothing; a multi-column sweep allocates once per call.
-  LinDecayLane one_dl;
-  TimeRegLane one_tl;
-  std::vector<LinDecayLane> many_dl(decay && lanes > 1 ? lanes : 0);
-  std::vector<TimeRegLane> many_tl(!decay && lanes > 1 ? lanes : 0);
-  LinDecayLane *dl = lanes > 1 ? many_dl.data() : &one_dl;
-  TimeRegLane *tl = lanes > 1 ? many_tl.data() : &one_tl;
-  for (atx::usize t = 0; t < dates; ++t) {
-    const bool has_leave = t >= d;
-    const bool full = t + 1 >= d;
-    const atx::f64 *row = x.data() + t * instruments;
-    const atx::f64 *lrow = has_leave ? x.data() + (t - d) * instruments : row;
-    atx::f64 *orow = out.data() + t * instruments;
-    for (atx::usize j = j0; j < j1; ++j) {
-      // SAFETY: the window view is only read on a re-centre, i.e. when full
-      // (t+1 >= d), so (t+1-d+i) is a valid date for i < d.
-      const auto win = [&x, t, d, instruments, j](atx::usize i) noexcept {
-        return x[(t + 1 - d + i) * instruments + j];
-      };
-      orow[j] = decay ? dl[j - j0].step(row[j], has_leave, lrow[j], full, d, win)
-                      : tl[j - j0].step(op, row[j], has_leave, lrow[j], full, d, win);
+  constexpr atx::usize tile_size = 64;
+  for (atx::usize begin = j0; begin < j1;) {
+    const atx::usize end = begin + std::min(tile_size, j1 - begin);
+    std::array<LinDecayLane, tile_size> dl{};
+    std::array<TimeRegLane, tile_size> tl{};
+    for (atx::usize t = 0; t < dates; ++t) {
+      const bool has_leave = t >= d;
+      const bool full = t + 1 >= d;
+      const atx::f64 *row = x.data() + t * instruments;
+      const atx::f64 *lrow = has_leave ? x.data() + (t - d) * instruments : row;
+      atx::f64 *orow = out.data() + t * instruments;
+      for (atx::usize j = begin; j < end; ++j) {
+        // Only reseeding reads win, once the complete causal window exists.
+        const auto win = [&x, t, d, instruments, j](atx::usize i) noexcept {
+          return x[(t + 1 - d + i) * instruments + j];
+        };
+        orow[j] = decay ? dl[j - begin].step(row[j], has_leave, lrow[j], full, d, win)
+                        : tl[j - begin].step(op, row[j], has_leave, lrow[j], full, d, win);
+      }
     }
+    begin = end;
   }
 }
 

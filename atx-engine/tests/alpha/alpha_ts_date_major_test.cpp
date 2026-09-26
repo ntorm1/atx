@@ -135,4 +135,36 @@ TEST(AlphaTsDateMajor_Sum, TiledSimdAndWorkerCutsMatchScalarCompensatedStateBits
     }
   }
 }
+
+TEST(AlphaTsDateMajor_UnarySliding, TiledWorkerDispatchPreservesEachExistingLaneBits) {
+  constexpr atx::usize dates = 83, names = 131, cells = dates * names, d = 17;
+  std::vector<atx::f64> x(cells);
+  for (atx::usize i = 0; i < cells; ++i)
+    x[i] = 100.0 + std::sin(static_cast<atx::f64>(i) * 0.31);
+  x[21 * names + 64] = std::numeric_limits<atx::f64>::quiet_NaN();
+  x[32 * names + 130] = std::numeric_limits<atx::f64>::infinity();
+  auto panel = Panel::create(dates, names, {"close"}, {x}, {});
+  ASSERT_TRUE(panel);
+  atx::engine::parallel::DetPool pool{2};
+  Engine engine{*panel};
+  engine.set_eval_mode(EvalMode::ResearchFast);
+  engine.set_ts_pool(&pool);
+  for (const OpCode op : {OpCode::TsDecayLinear, OpCode::TsWma, OpCode::TsSlope,
+                          OpCode::TsRsquare, OpCode::TsResid}) {
+    std::vector<atx::f64> expected(cells), actual(cells), window(cells, static_cast<atx::f64>(d));
+    for (atx::usize j = 0; j < names; ++j)
+      detail::tsv_welford_dispatch(op, x, expected, dates, j, d, names);
+    Instr in{};
+    in.op = op;
+    in.src[0] = 0;
+    in.src[1] = 1;
+    in.dst = 2;
+    const std::array<ExtSlot, 3> slots{{{x.data(), nullptr, cells},
+                                      {window.data(), nullptr, cells},
+                                      {actual.data(), actual.data(), cells}}};
+    ASSERT_TRUE(engine.execute_range(in, slots, 0, names));
+    for (atx::usize i = 0; i < cells; ++i)
+      ASSERT_EQ(std::bit_cast<atx::u64>(actual[i]), std::bit_cast<atx::u64>(expected[i])) << i;
+  }
+}
 } // namespace atxtest_alpha_ts_date_major

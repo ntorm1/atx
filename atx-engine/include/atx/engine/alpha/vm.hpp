@@ -1619,6 +1619,22 @@ private:
     // is never consulted, so the variance family falls through to the batch path
     // below — byte-identical to the oracle. The Welford sweep is per-instrument-
     // column and self-contained (no scratch), so it needs no column-extract.
+    if (mode_ == EvalMode::ResearchFast && sliding::is_unary_sliding_op(in.op)) {
+      const atx::usize width = j1 - j0;
+      const atx::usize tiles = width / detail::kTsInstrumentTile +
+                              static_cast<atx::usize>(width % detail::kTsInstrumentTile != 0);
+      const auto tile = [&](atx::usize i) {
+        const atx::usize begin = j0 + i * detail::kTsInstrumentTile;
+        const atx::usize end = begin + std::min(detail::kTsInstrumentTile, j1 - begin);
+        sliding::sweep_unary(in.op, x, out, dates, instruments, d, begin, end);
+      };
+      if (ts_pool_ != nullptr && tiles > 1) {
+        ts_pool_->parallel_for(tiles, [&](atx::usize i, atx::usize) { tile(i); });
+      } else {
+        for (atx::usize i = 0; i < tiles; ++i) tile(i);
+      }
+      return atx::core::Ok();
+    }
     if (mode_ == EvalMode::ResearchFast && detail::ts_is_online_variance_op(in.op)) {
       for (atx::usize j = j0; j < j1; ++j) {
         detail::tsv_welford_dispatch(in.op, x, out, dates, j, d, instruments);
