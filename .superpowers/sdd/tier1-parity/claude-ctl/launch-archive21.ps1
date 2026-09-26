@@ -15,6 +15,8 @@ $launch = "$ctl\activation-companyfacts-archive21-launch.json"
 $launcherLog = "$ctl\activation-companyfacts-archive21-launcher.log"
 if (Test-Path $launch) { throw "Refusing: $launch exists (use a new run name)" }
 $env:PYTHONPATH = "$exp\src"
+# Session 3: numpy's OpenBLAS commits ~0.5 GB private per process on this 16-thread host; the job is DuckDB-bound.
+$env:OPENBLAS_NUM_THREADS = '1'
 $importProof = & $py -c "import sys; sys.path.insert(0, r'$exp\src'); import atx_db, atx_db.activation, atx_db.fundamentals, atx_db._companyfacts_resume; print(atx_db.__file__ + '|' + atx_db.fundamentals.__file__ + '|' + atx_db._companyfacts_resume.__file__)"
 if ($importProof -notlike "$exp\src\atx_db\__init__.py|*") { throw "Import proof failed: $importProof" }
 $meta = [ordered]@{
