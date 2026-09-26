@@ -22,9 +22,12 @@ The registry is cumulative across waves (policy v4 ``trial_registry``):
 ``n_trials``; :meth:`TrialRegistry.gating_hypotheses_before` is the number of gating
 hypotheses of earlier waves, which enter the gating Benjamini-Hochberg family of a later
 wave as p = 1. A wave's holdout is opened exactly once, on final labels identified by their
-label-set digest (:func:`open_holdout`, ``label_sha`` =
-``evaluation.prepared_label_set_sha256`` of the final labels); while it is not opened, every
-grade of the wave is a selection-sample grade and the holdout formations stay sealed.
+label-matrix spec sha (:func:`open_holdout`, ``label_sha`` = ``label_matrix.compute_label_sha`` of
+the final label spec, ruling C-52): the store identity ``LabelMatrix`` compares with the opening
+before it lets a holdout read through, known before any holdout label is read. The opening
+checks that label set (final, complete, sealed from the policy's holdout start) rather than
+trusting the flag. While the holdout is not opened, every grade of the wave is a
+selection-sample grade and the holdout formations stay sealed.
 
 Grading (``qualification.grade_wave_v4``) checks the registry's anchor
 (:meth:`TrialRegistry.verify_anchor`), recomputes the registered rows' digests from the
@@ -255,6 +258,36 @@ def _reported_only_rule(policy_id: str) -> tuple[str, ...]:
     from .qualification import load_policy_v4_by_id
 
     return load_policy_v4_by_id(policy_id).reported_only
+
+
+def _final_label_set(label_sha: str, labels_root: Path | str | None, policy_id: str) -> dict[str, Any]:
+    """What a holdout opening checks of its label-matrix set (ruling C-52); no label is read.
+
+    The set's spec (``_label.json``, which must hash to ``label_sha``) says ``provisional`` false
+    and seals from the wave policy's holdout start, and the set is complete (its
+    ``_complete.json`` seal record exists; the reader checks every file against it).
+    """
+    from .label_matrix import DEFAULT_ROOT, LabelMatrix, LabelMatrixError
+    from .qualification import load_policy_v4_by_id
+
+    matrix = LabelMatrix(Path(labels_root) if labels_root is not None else DEFAULT_ROOT)
+    where = f"label set {label_sha[:12]} under {matrix.root.as_posix()}"
+    try:
+        spec = matrix.spec(label_sha)
+        # Read-only: the seal record LabelMatrix.complete wrote (LabelMatrix exposes no public reader).
+        complete = matrix._complete_record(label_sha)
+    except LabelMatrixError as error:
+        raise RegistryError(f"{where}: {error} (the holdout opens only on a created, complete label-matrix "
+                            "set)") from error
+    if spec.get("provisional") is not False:
+        raise RegistryError(f"{where} is provisional: the holdout opens only on final labels (R-6)")
+    holdout = load_policy_v4_by_id(policy_id).split.holdout_start.isoformat()
+    if str(spec.get("holdout_start")) != holdout:
+        raise RegistryError(f"{where} seals from {spec.get('holdout_start')!r}, not from the wave policy's "
+                            f"holdout start {holdout}")
+    return {"verified": True, "labels_root": matrix.root.as_posix(), "provisional": False,
+            "holdout_start": holdout, "horizons": [int(h) for h in complete["horizons"]],
+            "years": [int(y) for y in complete["years"]]}
 
 
 def _registration(record: Mapping[str, Any]) -> WaveRegistration:
@@ -624,26 +657,36 @@ class TrialRegistry:
                                         "needs a new wave id")
             return self._append({**content, "registered_at": _now()}, records)
 
-    def open_holdout(self, wave: str, *, final_labels: bool = False, label_sha: str | None = None) -> None:
+    def open_holdout(self, wave: str, *, final_labels: bool = False, label_sha: str | None = None,
+                     labels_root: Path | str | None = None) -> None:
         """Record the wave's one holdout opening (policy v4: once per wave, final labels only).
 
-        ``label_sha`` is required: ``evaluation.prepared_label_set_sha256`` of the final labels.
-        A final grade refuses a run whose label set is not this one, so the flag is checked, not trusted.
+        ``label_sha`` is required: the label-matrix spec sha of the final labels
+        (``label_matrix.compute_label_sha``, ruling C-52) -- the identity ``LabelMatrix`` compares
+        with this record before it lets a holdout read through, known before any holdout label is
+        read. The set is checked, not trusted (:func:`_final_label_set`: final, complete, sealed
+        from the wave policy's holdout start) in the label matrix at ``labels_root`` (default: the
+        label matrix's default root) -- always for the production registry, for a scratch registry
+        when ``labels_root`` is given. The record keeps what was checked as ``label_set`` (None
+        when unchecked; a final grade then carries the blocker ``holdout_label_set_not_verified``).
         """
         if not final_labels:
             raise RegistryError(f"wave {wave!r}: the holdout opens only on final labels (policy v4 "
                                 "holdout.requires_final_labels); provisional grades stay on the selection sample")
         if label_sha is None or not _SHA.fullmatch(str(label_sha)):
-            raise RegistryError("label_sha (evaluation.prepared_label_set_sha256 of the final labels) is required "
-                                "as a sha256 hex digest")
+            raise RegistryError("label_sha (the label-matrix spec sha of the final labels, "
+                                "label_matrix.compute_label_sha) is required as a sha256 hex digest")
         with self._locked():
             records = self.records()
-            if not any(r["event"] == "register_wave" and r["wave"] == wave for r in records):
+            registration = next((r for r in records if r["event"] == "register_wave" and r["wave"] == wave), None)
+            if registration is None:
                 raise RegistryError(f"wave {wave!r} is not registered")
             if any(r["event"] == "open_holdout" and r["wave"] == wave for r in records):
                 raise RegistryError(f"wave {wave!r}: the holdout was already opened (policy v4: once per wave)")
+            checked = _final_label_set(str(label_sha), labels_root, str(registration["policy_id"])) \
+                if self.is_default or labels_root is not None else None
             self._append({"event": "open_holdout", "wave": wave, "label_sha": label_sha, "final_labels": True,
-                          "opened_at": _now()}, records)
+                          "label_set": checked, "opened_at": _now()}, records)
 
 
 class _Lock:
@@ -689,6 +732,7 @@ def trials_so_far(root: Path | str | None = None) -> int:
 
 
 def open_holdout(wave: str, *, final_labels: bool = False, label_sha: str | None = None,
-                 root: Path | str | None = None) -> None:
-    """Open ``wave``'s holdout once, on final labels (see :meth:`TrialRegistry.open_holdout`)."""
-    TrialRegistry(root).open_holdout(wave, final_labels=final_labels, label_sha=label_sha)
+                 labels_root: Path | str | None = None, root: Path | str | None = None) -> None:
+    """Open ``wave``'s holdout once, on the final label-matrix set ``label_sha`` (see
+    :meth:`TrialRegistry.open_holdout`); commit the anchor after."""
+    TrialRegistry(root).open_holdout(wave, final_labels=final_labels, label_sha=label_sha, labels_root=labels_root)

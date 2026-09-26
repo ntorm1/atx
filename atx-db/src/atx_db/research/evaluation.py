@@ -138,11 +138,14 @@ Policy v4 additions (tier-1 v2 node 1.10; off unless the spec enables them)
   holdout-period return. The count per horizon is ``labels_<h>m_sealed_formations`` in the
   prepared digests.
 * Order and label binding: ``wave_registration_id`` (the trial-registry record sha of the
-  wave's registration), ``created_at`` and ``label_sha256``. :func:`label_set_sha256` digests
-  the label set a run saw (every basis's prepared ``labels_<h>m_sha256``);
-  :func:`prepared_label_set_sha256` gives the same value before evaluating (what
-  ``trial_registry.open_holdout`` records). A run whose spec declares ``label_sha256`` refuses
-  a different label set.
+  wave's registration), ``created_at`` and ``label_sha256``: the label-matrix spec sha of the
+  opened holdout's labels (``label_matrix.compute_label_sha``, what
+  ``trial_registry.open_holdout`` records; ruling C-52). A basis read from the label matrix
+  records that read in ``meta['label_read']`` (:func:`label_read_meta` of
+  ``LabelMatrix.r3b_inputs``'s info). A run whose spec declares ``label_sha256`` refuses a basis
+  whose recorded read names another set, or none, before it prepares that basis: no statistic
+  or row of another label set exists. :func:`label_set_sha256` digests the prepared label arrays
+  a run saw (every basis's ``labels_<h>m_sha256``): an audit digest, not the holdout identity.
 
 Point-in-time guards
 --------------------
@@ -478,9 +481,10 @@ class EvaluationSpec:
     #: drops every label whose expected end is on/after the split's holdout start (or unknown)
     #: before anything is computed, so no holdout-period return enters any statistic;
     #: ``wave_registration_id`` binds the run to its trial-registry registration (a record sha
-    #: that exists only after the wave was registered); ``label_sha256`` declares the label set
-    #: (:func:`label_set_sha256`) the run must see (an opened holdout's labels; the engine refuses
-    #: another); ``created_at`` is when the spec was built (naive-UTC ISO seconds).
+    #: that exists only after the wave was registered); ``label_sha256`` declares the label-matrix
+    #: set (spec sha) the run must see -- an opened holdout's labels; the engine refuses a basis
+    #: whose ``meta['label_read']`` names another (ruling C-52); ``created_at`` is when the spec
+    #: was built (naive-UTC ISO seconds).
     seal_holdout: bool = False
     wave_registration_id: str | None = None
     label_sha256: str | None = None
@@ -2796,6 +2800,16 @@ def _evaluate_into(con: duckdb.DuckDBPyConnection | None, run_id: str, bases: It
             raise EvaluationInputError(f"basis {inputs.basis} supplied twice")
         if inputs.status not in (BASIS_AVAILABLE, BASIS_UNTESTABLE):
             raise EvaluationInputError(f"basis {inputs.basis}: unknown status {inputs.status!r}")
+        if spec.label_sha256 is not None and inputs.status != BASIS_UNTESTABLE:
+            # Policy v4 (ruling C-52): refused before the basis is prepared, so no statistic or row of
+            # another label set is ever computed or written.
+            read = basis_label_read(inputs.meta)
+            seen = None if read is None else read.get("label_sha")
+            if seen != spec.label_sha256:
+                raise EvaluationInputError(
+                    f"basis {inputs.basis}: its labels were read from label set {seen} (meta['{LABEL_READ_META}'], "
+                    f"label_read_meta), not the declared label_sha256 {spec.label_sha256} (policy v4: the opened "
+                    "holdout's label-matrix set); refused before any statistic")
         features, absent = _selected_features(inputs, spec)
         prep = None if inputs.status == BASIS_UNTESTABLE else _prepare(inputs, spec)
         manifests[inputs.basis] = _basis_manifest(inputs, prep, absent, catalog_sha)
@@ -2820,23 +2834,47 @@ def _evaluate_into(con: duckdb.DuckDBPyConnection | None, run_id: str, bases: It
                 write("feature_inputs", _frame([input_row], "feature_inputs"))
             del produced
         del prep
-    if spec.label_sha256 is not None:
-        seen = label_set_sha256(manifests)
-        if seen != spec.label_sha256:
-            raise EvaluationInputError(f"the run's label set {seen} is not the declared label_sha256 "
-                                       f"{spec.label_sha256} (policy v4: the labels of the opened holdout)")
     return manifests, info
 
 
 _LABEL_DIGEST = re.compile(r"labels_\d+m_sha256")
+#: ``BasisInputs.meta`` key of the basis's label-matrix read (:func:`label_read_meta`).
+LABEL_READ_META = "label_read"
+
+
+def label_read_meta(info: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``BasisInputs.meta['label_read']`` record of a label-matrix read (ruling C-52).
+
+    ``info`` is the third value ``LabelMatrix.r3b_inputs`` returns. The record names the
+    label-matrix spec sha the basis's labels came from (the identity ``trial_registry.open_holdout``
+    records), whether they are provisional, the read window and the trial-registry opening that
+    let a holdout read through (its ``wave``, ``sequence`` and ``record_sha``; None when the read
+    stayed sealed). A v4 run binds to it: the engine refuses a basis whose record names another
+    set than the spec's ``label_sha256``, and ``qualification.grade_wave_v4`` compares it with the
+    wave's opening.
+    """
+    sha = info.get("label_sha")
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise EvaluationInputError("label_read_meta takes LabelMatrix.r3b_inputs info (with its label_sha)")
+    opening = info.get("holdout_opening")
+    return {"label_sha": sha, "provisional": info.get("provisional"), "holdout_start": info.get("holdout_start"),
+            "eom_before": info.get("eom_before"),
+            "holdout_opening": None if not opening else {key: opening.get(key)
+                                                         for key in ("wave", "sequence", "record_sha")}}
+
+
+def basis_label_read(meta: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """A basis's recorded label-matrix read (``meta['label_read']``, :func:`label_read_meta`), or None."""
+    read = (meta or {}).get(LABEL_READ_META)
+    return dict(read) if isinstance(read, Mapping) else None
 
 
 def label_set_sha256(bases: Mapping[str, Any]) -> str:
-    """Digest of the label set a run saw: every basis's prepared per-horizon label digests.
+    """Digest of the label arrays a run saw: every basis's prepared per-horizon label digests.
 
-    ``bases`` is ``EvaluationTables.bases`` (or the stored run manifest's bases). Policy v4
-    records it when a wave's holdout is opened (``trial_registry.open_holdout``); a final
-    grade refuses a run whose label set differs.
+    ``bases`` is ``EvaluationTables.bases`` (or the stored run manifest's bases). An audit digest
+    (the v4 grade records it in its manifest), not the holdout identity: that is the label-matrix
+    spec sha (ruling C-52, :func:`label_read_meta`).
     """
     parts: dict[str, dict[str, str]] = {}
     for basis, manifest in sorted(bases.items()):
@@ -2847,24 +2885,6 @@ def label_set_sha256(bases: Mapping[str, Any]) -> str:
     if not parts:
         raise EvaluationInputError("no prepared label digests in the run's basis manifests")
     return _sha(_canonical(parts))
-
-
-def prepared_label_set_sha256(bases: Iterable[BasisInputs], spec: EvaluationSpec) -> str:
-    """:func:`label_set_sha256` of the inputs *before* evaluating them (what ``open_holdout`` records).
-
-    Prepares every available basis (labels, maturity, context) and computes no statistic; the
-    inputs' frames are kept (``release_frames`` is not honoured here) so the same inputs can then
-    be evaluated.
-    """
-    spec = validate_spec(spec)
-    manifests: dict[str, Any] = {}
-    for inputs in bases:
-        if inputs.status == BASIS_UNTESTABLE:
-            continue
-        prep = _prepare(replace(inputs, release_frames=False), spec)
-        manifests[inputs.basis] = {"prepared_digests": dict(prep.digests)}
-        del prep
-    return label_set_sha256(manifests)
 
 
 def evaluate_bases(bases: Iterable[BasisInputs], spec: EvaluationSpec, *,
@@ -3696,6 +3716,7 @@ __all__ = [
     "INVESTABLE_SLICE_KIND",
     "INVESTABLE_SLICE_NAME",
     "JT_SLICE_KIND",
+    "LABEL_READ_META",
     "MIN_FEATURE_STORE_SCHEMA",
     "OWNER_BASIS_UNLINKED",
     "POPULATION_ALL",
@@ -3717,6 +3738,7 @@ __all__ = [
     "FeatureTable",
     "FrozenSplit",
     "LookaheadError",
+    "basis_label_read",
     "breakpoint_quantiles",
     "catalog_features",
     "compute_family",
@@ -3732,12 +3754,12 @@ __all__ = [
     "grouped_quantiles",
     "grouped_rank_correlation",
     "jegadeesh_titman_series",
+    "label_read_meta",
     "label_set_sha256",
     "load_feature_table",
     "load_frozen_split",
     "load_label_inputs",
     "open_basis_inputs",
-    "prepared_label_set_sha256",
     "results_digest",
     "run_evaluation",
     "spec_from_payload",

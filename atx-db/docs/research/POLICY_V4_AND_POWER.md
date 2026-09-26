@@ -93,7 +93,9 @@ v3 (`research_qualification_policy.json`, `r4-qualification-v3`) stays the legac
   breakpoints, e.g. Fama-French `ME_Breakpoints`, else point-in-time NYSE names).
 * **Holdout**: opened once per wave (`open_holdout(wave, final_labels=True, label_sha=<final label set>)`),
   only on final labels; the rule is *sign consistent and no significant shrink* instead of v3's
-  `holdout z >= 1.5`.
+  `holdout z >= 1.5`. The `label_sha` is the label-matrix spec sha of the final labels
+  (`label_matrix.compute_label_sha`, ruling C-52). The label matrix checks it before it lets a holdout read
+  through, and the opening checks that set: its spec is final, it is complete, and it seals from 2024-01-01.
 * **Coverage** against the catalog population (`population`), on the feature's history-eligible selection
   formations.
 * **Long-horizon evidence**: Jegadeesh-Titman calendar-time portfolios for K = 6 and 12 months (reported).
@@ -133,7 +135,7 @@ All statistics on the primary cell over the selection sample; EWC fixed-b infere
 ## 4. How a wave uses it (node 1.13 and later)
 
 ```python
-from atx_db.research import evaluation as ev, qualification as rq, trial_registry as tr
+from atx_db.research import evaluation as ev, label_matrix as lm, qualification as rq, trial_registry as tr
 from atx_db.research.catalog import anomaly_catalog_sha256, load_anomaly_catalog
 
 policy = rq.load_policy_v4()
@@ -147,13 +149,24 @@ tr.register_wave("w1_price", digest, policy.sha256, [e.feature_id for e in catal
 registration = tr.TrialRegistry().require_registration("w1_price", catalog_digest=digest, policy_sha=policy.sha256)
 spec = ev.EvaluationSpec(run_id="w1_price_provisional", verify_panels=False,
                          **rq.evaluation_spec_kwargs_v4(policy, registration=registration))   # sealed holdout
+# bases: per basis, labels, maturity, info = lm.LabelMatrix().r3b_inputs(provisional_sha, ...) (sealed read);
+#   ev.BasisInputs(..., meta={..., ev.LABEL_READ_META: ev.label_read_meta(info)})
 tables = ev.evaluate_bases(bases, spec, catalog=ev.catalog_features(catalog))
 ledger = rq.grade_wave_v4(tables.cells, tables.slices, tables.series, policy, wave="w1_price", spec=spec,
                           catalog=catalog, catalog_digest=digest, grade_basis=rq.GRADE_PROVISIONAL,
                           run_bases=tables.bases)
-# final labels (later): label_sha = ev.prepared_label_set_sha256(final_bases, unsealed_spec)
-#   tr.open_holdout("w1_price", final_labels=True, label_sha=label_sha); commit the anchor;
-#   evaluation_spec_kwargs_v4(policy, registration=registration, label_sha=label_sha); grade with GRADE_FINAL
+# final labels (node 3.8, later; ruling C-52): the holdout identity is the label-matrix spec sha, known
+# before any holdout label is read:
+#   final_sha = lm.compute_label_sha(final_label_spec)   # provisional=False, holdout_start="2024-01-01"
+#   tr.open_holdout("w1_price", final_labels=True, label_sha=final_sha)   # checks: final, complete, sealed
+#   commit the anchor; then per basis:
+#   labels, maturity, info = lm.LabelMatrix().r3b_inputs(final_sha, (1, 3, 6, 12), calendar=..., securities=...,
+#       label_cutoff=..., eom_before=<after the last formation>, allow_holdout=True, holdout_wave="w1_price")
+#   ev.BasisInputs(..., meta={..., ev.LABEL_READ_META: ev.label_read_meta(info)})
+#   spec = ev.EvaluationSpec(..., **rq.evaluation_spec_kwargs_v4(policy, registration=registration,
+#                                                                  label_sha=final_sha))
+#   grade with rq.GRADE_FINAL: the opening, the spec and every basis's recorded read name final_sha, and
+#   each basis read the holdout through this opening
 ```
 
 The engine options the spec turns on (all off by default; a pre-v4 spec gives byte-identical results):

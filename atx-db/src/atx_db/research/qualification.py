@@ -148,8 +148,11 @@ digest differ from the registered rows, evaluated cells that were not registered
 spec is not bound to the registration (``wave_registration_id``) or was built before it
 (``created_at``), and holdout-period statistics -- an unsealed run, or frames that carry them
 (:func:`holdout_statistics`) -- unless the wave's holdout was opened for exactly the run's label
-set (``evaluation.label_set_sha256``). :func:`evaluation_spec_kwargs_v4` builds a sealed run by
-default (the engine drops every label ending in the holdout). Every row reports
+set: the opening's label-matrix spec sha equals the spec's ``label_sha256`` and every prepared
+basis's recorded read (``evaluation.label_read_meta``), each read through that opening (ruling
+C-52). A sealed spec must show the engine seal in every prepared basis.
+:func:`evaluation_spec_kwargs_v4` builds a sealed run by default (the engine drops every label
+ending in the holdout). Every row reports
 ``ewc_oversize_risk``: the feature's rank autocorrelation is at or above the persistence where the
 null EWC test over-rejects (ruling C-50; reported, never gating). The manifest records the
 digest of every graded-path module (:func:`v4_code_sha256s`) and the audit trail (anchor, order,
@@ -1981,8 +1984,9 @@ def evaluation_spec_kwargs_v4(policy: QualificationPolicyV4, *, registration: An
     run to it and ``created_at`` (now) must not precede it (R-6 order, checked by
     :func:`grade_wave_v4`). ``label_sha`` None (default) builds a sealed selection-sample run: the
     engine drops every label that ends in the holdout. For the final run pass the opened label
-    set (``evaluation.prepared_label_set_sha256`` of the final labels, recorded by
-    ``trial_registry.open_holdout``); the engine refuses any other label set.
+    set: its label-matrix spec sha (``label_matrix.compute_label_sha``), the ``label_sha`` that
+    ``trial_registry.open_holdout`` recorded (ruling C-52). The engine then refuses a basis whose
+    ``meta['label_read']`` (``evaluation.label_read_meta``) names another set.
     """
     if policy.file_sha256 is None:
         raise PolicyError(f"policy {policy.version} was not loaded from a file")
@@ -2570,18 +2574,65 @@ def holdout_statistics(series: pd.DataFrame, slices: pd.DataFrame, policy: Quali
 
 
 def _order_problems(payload: Mapping[str, Any], registration: Any) -> list[str]:
-    """R-6 order in code: the run's spec names the registration and was built after it."""
+    """R-6 order in code: the run's spec names the registration and was built after it.
+
+    ``created_at`` is naive-UTC ISO (``evaluation.validate_spec`` normalizes an ``EvaluationSpec``);
+    a raw payload with an unparseable or timezone-aware stamp is refused, never compared.
+    """
     problems = []
     if payload.get("wave_registration_id") != registration.registration_id:
         problems.append("evaluation_spec_not_bound_to_the_wave_registration")
-    try:
-        created = dt.datetime.fromisoformat(str(payload["created_at"])) if payload.get("created_at") else None
-    except ValueError:
-        created = None
-    if created is None:
+    raw = payload.get("created_at")
+    if not raw:
         problems.append("evaluation_spec_without_created_at")
+        return problems
+    try:
+        created = dt.datetime.fromisoformat(str(raw))
+    except ValueError:
+        problems.append("evaluation_spec_created_at_not_iso")
+        return problems
+    if created.tzinfo is not None:
+        problems.append("evaluation_spec_created_at_not_naive_utc")
     elif created < dt.datetime.fromisoformat(str(registration.registered_at)):
         problems.append("evaluation_created_before_the_wave_registration")
+    return problems
+
+
+def _label_reads(run_bases: Mapping[str, Any]) -> dict[str, dict[str, Any] | None]:
+    """Each prepared basis's recorded label-matrix read (``evaluation.label_read_meta``; None: none)."""
+    from .evaluation import basis_label_read
+
+    return {str(basis): basis_label_read((manifest or {}).get("meta"))
+            for basis, manifest in sorted(run_bases.items()) if (manifest or {}).get("prepared_digests") is not None}
+
+
+def _sealed_run_problems(run_bases: Mapping[str, Any], payload: Mapping[str, Any]) -> list[str]:
+    """A sealed spec's run shows the engine seal: every prepared basis carries
+    ``labels_<h>m_sealed_formations`` at each spec horizon (only the engine seal writes that digest)."""
+    horizons = [int(h) for h in payload.get("horizons_months") or ()]
+    missing = sorted(f"{basis}:{h}m" for basis, manifest in run_bases.items()
+                     if isinstance((manifest or {}).get("prepared_digests"), Mapping)
+                     for h in horizons if f"labels_{h}m_sealed_formations" not in manifest["prepared_digests"])
+    return ["sealed_spec_but_run_bases_not_sealed:" + ",".join(missing)] if missing else []
+
+
+def _opening_problems(opening: Mapping[str, Any], payload: Mapping[str, Any],
+                      reads: Mapping[str, Mapping[str, Any] | None]) -> list[str]:
+    """Ruling C-52: the opening, the spec and every prepared basis name one label-matrix set, and each
+    basis read it through this opening (``LabelMatrix`` records the opening that let the holdout through)."""
+    opened = opening.get("label_sha")
+    problems = []
+    if payload.get("label_sha256") != opened:
+        problems.append("evaluation_spec_label_sha_differs_from_the_opening")
+    if not reads:
+        problems.append("run_without_prepared_bases")
+    for basis, read in reads.items():
+        if read is None:
+            problems.append(f"run_labels_not_read_from_the_label_matrix:{basis}")
+        elif read.get("label_sha") != opened:
+            problems.append(f"holdout_label_set_differs_from_the_opening:{basis}")
+        elif (read.get("holdout_opening") or {}).get("record_sha") != opening.get("record_sha"):
+            problems.append(f"run_labels_not_read_through_the_opening:{basis}")
     return problems
 
 
@@ -2591,17 +2642,22 @@ def grade_wave_v4(cells: pd.DataFrame, slices: pd.DataFrame, series: pd.DataFram
                   run: Mapping[str, Any] | None = None) -> V4Ledger:
     """Grade one registered wave's R3b result frames under policy v4.
 
-    ``run_bases`` is the run's ``EvaluationTables.bases`` (its prepared label digests identify the
-    label set). The trial registry (default: the production registry, whose anchor must be
-    committed) supplies the registration, ``n_trials``, the earlier waves' gating hypotheses and
-    the holdout opening. Refuses (:class:`QualificationRefused`):
+    ``run_bases`` is the run's ``EvaluationTables.bases``: each prepared basis's ``meta`` carries
+    its label-matrix read (``evaluation.label_read_meta``) and its prepared digests show the seal
+    (``evaluation.label_set_sha256`` of them is recorded as an audit digest). The trial registry
+    (default: the production registry, whose anchor must be committed) supplies the registration,
+    ``n_trials``, the earlier waves' gating hypotheses and the holdout opening. Refuses
+    (:class:`QualificationRefused`):
 
     * a registry that fails its chain or anchor (empty, unanchored, dropped tail, changed record);
     * an unregistered wave, a catalog digest or policy other than the registration's, catalog rows
       whose sign, class or definition differ from the registered rows;
     * a run whose spec is not bound to the registration or was built before it (R-6 order);
+    * a sealed spec whose run bases lack the engine seal's digests;
     * holdout-period statistics (an unsealed run, or frames carrying them) unless the wave's
-      holdout was opened for exactly this run's label set;
+      holdout was opened for exactly this run's label set: the opening's label-matrix sha equals
+      the spec's ``label_sha256`` and every prepared basis's recorded read, each read through that
+      opening (ruling C-52);
     * everything :func:`evidence_from_evaluation` refuses (spec, unregistered features or cells).
 
     A provisional-label grade never grades the holdout; a final grade grades it only on an unsealed
@@ -2628,20 +2684,23 @@ def grade_wave_v4(cells: pd.DataFrame, slices: pd.DataFrame, series: pd.DataFram
     payload = spec if isinstance(spec, Mapping) else _spec_payload(spec)
     reasons += _order_problems(payload, registration)
     try:
-        label_set: str | None = label_set_sha256(run_bases)
+        label_set: str | None = label_set_sha256(run_bases)   # audit digest of the prepared label arrays
     except ValueError:
         label_set = None
         reasons.append("run_bases_without_prepared_label_digests")
+    reads = _label_reads(run_bases)
     sealed = bool(payload.get("seal_holdout"))
     present = holdout_statistics(series, slices, policy)
+    if sealed:
+        reasons += _sealed_run_problems(run_bases, payload)
     if sealed and present:
         reasons.append("sealed_run_carries_holdout_statistics:" + ",".join(present))
     elif not sealed or present:
         if opening is None:
             reasons.append("holdout_statistics_without_an_opened_holdout:"
                            + (",".join(present) if present else "unsealed_run"))
-        elif not opening.get("label_sha") == label_set == payload.get("label_sha256"):
-            reasons.append("holdout_label_set_differs_from_the_opening")
+        else:
+            reasons += _opening_problems(opening, payload, reads)
     if reasons:
         raise QualificationRefused(sorted(set(reasons)))
     grade_holdout = grade_basis == GRADE_FINAL and opening is not None and not sealed
@@ -2650,14 +2709,17 @@ def grade_wave_v4(cells: pd.DataFrame, slices: pd.DataFrame, series: pd.DataFram
     blockers = [] if anchor.committed else ["registry_anchor_not_committed"]
     if grade_basis == GRADE_FINAL and opening is not None and sealed:
         blockers.append("final_grade_on_a_sealed_run")
+    if grade_holdout and not opening.get("label_set"):
+        blockers.append("holdout_label_set_not_verified")
     audit = {"anchor": anchor.as_dict(), "registered_at": registration.registered_at,
              "registry_version": registration.registry_version,
              "preregistration_sha256": registration.preregistration_sha256,
              "spec_created_at": payload.get("created_at"), "spec_registration_id": payload.get("wave_registration_id"),
              "sealed_run": sealed, "label_set_sha256": label_set, "spec_label_sha256": payload.get("label_sha256"),
+             "label_reads": reads,
              "holdout_opening": None if opening is None else {
                  "record_sha": opening.get("record_sha"), "label_sha": opening.get("label_sha"),
-                 "opened_at": opening.get("opened_at")}}
+                 "opened_at": opening.get("opened_at"), "label_set": opening.get("label_set")}}
     return ledger_from_evidence_v4(evidence, policy, wave=wave, registration_id=registration.registration_id,
                                    catalog_digest=catalog_digest, n_trials=n_trials, prior_gating_hypotheses=prior,
                                    grade_basis=grade_basis, holdout_opened=opening is not None, run=run,
