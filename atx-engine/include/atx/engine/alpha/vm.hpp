@@ -71,6 +71,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -78,6 +80,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <xsimd/xsimd.hpp>
 
 #include "atx/core/error.hpp"
 #include "atx/core/macro.hpp"
@@ -1516,17 +1520,11 @@ private:
     // they take the same windowed path but a distinct per-cell kernel.
     const bool ou_rolling = (in.op == OpCode::OuTheta || in.op == OpCode::OuHalflife ||
                              in.op == OpCode::OuMean || in.op == OpCode::OuZscore);
-    // S1-3 (narrowed): pure-lookback ops read a FIXED O(1) set of elements per
-    // cell — NOT a d-length window scan — so the column-extract transpose can
-    // never help them: there is no window reuse to make contiguous, and copying
-    // the whole O(dates) column (strided) just to serve single-element lookups is
-    // pure overhead (a guaranteed ~2x regression by construction). delay reads
-    // one element x[(t-d)*I+j]; delta reads two (x[t]-x[t-d]). Both are among the
-    // most common alpha operators, so they STAY on the original direct strided
-    // path below. (Every OTHER batch op — Var/Std/Rank/Med/Mad/Skew/Kurt/Slope/
-    // Rsquare/Resid/Product/ArgMin/ArgMax/Decay*/Wma/Ema/Zscore/AvDiff/Backfill/
-    // CountNans/Quantile/Moment/Entropy/Corr/Cov/Regression/OU* — scans a window
-    // of up to d elements per cell and is wash-to-win under the transpose.)
+    // Lookback needs no window scratch or column transpose. Whole-width delay
+    // copies one contiguous block; subranges and delta follow contiguous rows.
+    if (in.op == OpCode::TsDelay || in.op == OpCode::TsDelta) {
+      return eval_ts_lookback(in.op, x, out, dates, instruments, d, j0, j1);
+    }
 
     // Reusable scratch sized to the window: NO per-cell allocation (grown only
     // when `d` exceeds any prior call). Only the batch sort/pair ops touch it.
@@ -1573,20 +1571,6 @@ private:
       }
       return atx::core::Ok();
     }
-    // Pure-lookback direct path (TsDelay/TsDelta): ORIGINAL strided access,
-    // instrument-outer/date-inner, reading x[(t-d)*I+j] (+ x[t*I+j] for delta)
-    // directly from the panel. This is the EXACT pre-transpose code — trivially
-    // bit-exact (it is the unmodified original lookup) — and it pays NO column
-    // extraction cost, so these high-frequency ops keep their baseline speed.
-    if (in.op == OpCode::TsDelay || in.op == OpCode::TsDelta) {
-      for (atx::usize j = j0; j < j1; ++j) {
-        for (atx::usize t = 0; t < dates; ++t) {
-          out[t * instruments + j] =
-              detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_, in.imm[0]);
-        }
-      }
-      return atx::core::Ok();
-    }
     // S1-3: Column-extract transpose — extract instrument column j once into a
     // contiguous scratch buffer, then call the kernel with instruments=1, j=0.
     //
@@ -1626,6 +1610,72 @@ private:
     }
     for (atx::usize j = j0; j < j1; ++j) {
       eval_ts_column(ctx, j, ts_col_, ts_col_b_, ts_scratch_a_, ts_scratch_b_);
+    }
+    return atx::core::Ok();
+  }
+
+  // Each subrange owns [j0,j1) on every date. No neighboring worker's cells are
+  // read as scratch or written. Full-width delay also supports overlapping
+  // buffers: copy BEFORE filling the warmup prefix. Partial/delta overlap is
+  // rejected explicitly; ordinary VM slots and strategy-B slots are disjoint.
+  [[nodiscard]] atx::core::Status eval_ts_lookback(
+      OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
+      atx::usize dates, atx::usize instruments, atx::usize d,
+      atx::usize j0, atx::usize j1) const {
+    if (j0 > j1 || j1 > instruments ||
+        (instruments != 0 && dates > std::numeric_limits<atx::usize>::max() / instruments)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "time-series lookback: invalid geometry or range");
+    }
+    const atx::usize cells = dates * instruments;
+    if (x.size() < cells || out.size() < cells ||
+        cells > std::numeric_limits<atx::usize>::max() / sizeof(atx::f64)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "time-series lookback: invalid buffer size");
+    }
+    if (cells == 0 || j0 == j1) return atx::core::Ok();
+    const bool block_delay = op == OpCode::TsDelay && j0 == 0 && j1 == instruments;
+    const std::less<const atx::f64 *> less;
+    const bool overlap = less(x.data(), out.data() + cells) &&
+                         less(out.data(), x.data() + cells);
+    if (!block_delay && overlap) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "time-series lookback: overlapping partial/delta buffers");
+    }
+    const atx::usize first = d == 0 ? dates : std::min(d, dates);
+    if (block_delay) {
+      if (first < dates) {
+        std::memmove(out.data() + first * instruments, x.data(),
+                     (dates - first) * instruments * sizeof(atx::f64));
+      }
+      std::fill_n(out.data(), first * instruments, detail::kTsNaN);
+      return atx::core::Ok();
+    }
+    for (atx::usize t = 0; t < first; ++t) {
+      std::fill_n(out.data() + t * instruments + j0, j1 - j0, detail::kTsNaN);
+    }
+    using Batch = xsimd::batch<atx::f64>;
+    constexpr atx::usize tile_size = 64;
+    for (atx::usize t = first; t < dates; ++t) {
+      const atx::f64 *const current = x.data() + t * instruments;
+      const atx::f64 *const prior = x.data() + (t - d) * instruments;
+      atx::f64 *const dst = out.data() + t * instruments;
+      if (op == OpCode::TsDelay) {
+        std::memcpy(dst + j0, prior + j0, (j1 - j0) * sizeof(atx::f64));
+        continue;
+      }
+      for (atx::usize begin = j0; begin < j1;) {
+        const atx::usize end = begin + std::min(tile_size, j1 - begin);
+        atx::usize j = begin;
+        if (mode_ == EvalMode::ResearchFast) {
+          for (; end - j >= Batch::size; j += Batch::size) {
+            (Batch::load_unaligned(current + j) - Batch::load_unaligned(prior + j))
+                .store_unaligned(dst + j);
+          }
+        }
+        for (; j < end; ++j) dst[j] = current[j] - prior[j];
+        begin = end;
+      }
     }
     return atx::core::Ok();
   }
