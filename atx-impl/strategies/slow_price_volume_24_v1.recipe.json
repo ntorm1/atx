@@ -94,11 +94,11 @@
     "delay_sessions": 1,
     "cadence_unit": "observed trading sessions",
     "extra_signal_smoothing_sessions": 0,
-    "trade_fraction_unit": "fraction of requested target-minus-marked-holding dollars at scheduled rebalance",
+    "trade_fraction_unit": "interpolate desired target dollars from decision-known marked holdings before queuing; entry fills net stored target against actual entry-marked holdings",
     "fills": "netted across all subalpha signals; immutable prior-known costs and liquidity; actual capped fills",
     "costs": "explicit modeled B1 spread/impact and annual borrow assumptions must be pinned in the run receipt; missing nonzero costs fail",
-    "turnover_report": "actual sum(abs(filled_dollars))/pretrade_NAV, with initial deployment shown separately; monthly sums also reported",
-    "terminal_rule": "report actual ending marked holdings and the chosen liquidation policy; no invented zero terminal cost",
+    "turnover_report": "actual sum(abs(filled_dollars))/pretrade_NAV; initial deployment INCLUDED in totals and primary monthly sums and optionally also disclosed separately",
+    "terminal_rule": "no automatic terminal liquidation; ending NAV marks held positions; liquidation costs are not charged or invented",
     "low_turnover_is_measured_not_guaranteed": true
   },
   "data_contract": {
