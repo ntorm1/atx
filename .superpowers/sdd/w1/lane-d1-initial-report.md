@@ -104,3 +104,40 @@ a right-hand proof at/after the last valid calendar day, offering at most a narr
 final-day decision opportunity and commonly none. A separately authorized causal
 prospective rule is required; the retrospective rule must not backfill history or
 be represented as meeting the original D1 acceptance gate.
+
+## Separate prospective rule: causal corroboration V2
+
+`build_prospective_links` adds the explicit `prospective-two-filings-v2` evidence
+rule. Two agreeing, qualified issuer/symbol observations must have distinct
+accessions and effective dates inside the same known vendor line. Link availability
+is the maximum of the vendor known-at clock and both original public proof clocks;
+live eligibility is strictly later. This is prospective corroboration, **not** the
+original plan's retrospective whole-interval acceptance proof.
+
+An open vendor line remains economically open and is clipped only by the declared
+pre-2020 artifact seal (`end_kind=seal-bound`). A finite vendor endpoint is accepted
+only as part of that row's original known-at payload. Later-learned endpoints must
+be separate hash-bound `VendorExpiry` events; they must not silently rewrite the
+open row. Both effective expiry and its independent verified availability are
+required before invalidation. Expiry/conflict markers persist through the open
+line's seal, carry no invented accounting values or EDGAR acceptance timestamp,
+and survive artifact/export/aligner projection. Contradictory future-effective
+observations start their marker at that effective date, preserving earlier state.
+
+`atx.security-link/v2` persists method, end-kind, strict-clock rule, and source
+bindings. V1 artifacts remain readable under their original methods. V2 semantics
+cannot be mislabeled V1. The original `build_links` remains retrospective audit;
+`resolve_link(..., retrospective_audit=True)` is its explicit audit opt-in.
+Live resolution and the fundamental exporter exclude its V1 automatic methods;
+direct projection rejects audit-only links rather than emitting tradable fields.
+Reviewed manual overrides retain their explicit priority and own dated clock.
+
+Postimplementation final checks: core **14/14**, 0.059 s; export **6/6**, 0.161 s,
+native exit 0. Logs `build-equity/d1-prospective-final-{core,export}-tests.log`. New cases cover
+usable open intervals, strict corroboration timing, independent-observation rules,
+future-effective known-early conflicts, late-known expiry, persistent invalidation,
+versioned round trips, and actual exporter projection of no-value expiry markers.
+Five C++ checks are source only; no C++ compilation or data evaluation was run.
+
+All original acquisition, operating-company coverage, non-survivor, original82,
+active-loader and production file-reader/manifest-verification gaps remain open.

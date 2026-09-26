@@ -91,4 +91,24 @@ TEST(SecurityLinkIntervals, DatedClockEqualityIsWithheldAndLegacyArithmeticIsPre
   got = fund::align_pit_records(rows, axis(), 1, cfg);
   ASSERT_TRUE(got); EXPECT_EQ(got->raw[0][1], 10.0);
 }
+
+TEST(SecurityLinkIntervals, ExpiryMarkerRequiresBothEffectiveDateAndStrictKnowledgeTime) {
+  auto value = record(100, 106, 100, "A", 99, 10.0);
+  auto expiry = record(103, 106, 100, "CONFLICT:A", 0, 0.0);
+  expiry.identity_only = true;
+  expiry.values.fill(std::numeric_limits<double>::quiet_NaN());
+  fund::AlignConfig cfg; cfg.lag_sessions = 0;
+  std::vector<fund::PitRecord> rows{value, expiry};
+  auto got = fund::align_pit_records(rows, axis(), 1, cfg);
+  ASSERT_TRUE(got);
+  EXPECT_EQ(got->raw[0][2], 10.0); // known-early future expiry does not suppress today
+  EXPECT_TRUE(std::isnan(got->raw[0][3]));
+  EXPECT_TRUE(std::isnan(got->raw[0][5])); // no resurrection of the open issuer
+  rows[1].link_available_ns = 104 * day;
+  got = fund::align_pit_records(rows, axis(), 1, cfg);
+  ASSERT_TRUE(got);
+  EXPECT_EQ(got->raw[0][3], 10.0); // later-known expiry does not rewrite prefix
+  EXPECT_EQ(got->raw[0][4], 10.0); // equality remains unknown
+  EXPECT_TRUE(std::isnan(got->raw[0][5]));
+}
 } // namespace atx_test_d1_security_link

@@ -559,7 +559,7 @@ def load_dated_id_bridge(directory: str, sr_ids: set[str]):
     links, manifest = _security_link_module().read_link_artifact(Path(directory))
     grouped = {sr: [] for sr in sr_ids}
     for link in links:
-        if link.sr_id in grouped:
+        if link.sr_id in grouped and link.live_eligible:
             grouped[link.sr_id].append(link)
     reasons = {sr: "no_qualified_dated_link" for sr, rows in grouped.items() if not rows}
     return grouped, reasons, manifest
@@ -583,6 +583,8 @@ def project_dated_snapshots(link, snapshots: list[dict]) -> list[dict]:
     A marker is emitted even without issuer facts so a later competing identity
     cannot leave the old issuer's values visible. Conflict markers never get facts.
     """
+    if not link.live_eligible:
+        raise ValueError("retrospective identity is audit-only; cannot produce live fundamental fields")
     base = {"sr_id": link.sr_id, "owner_id": link.owner_id, "link_id": link.link_id,
             "identity_valid_from_ns": _ns(link.valid_from),
             "identity_valid_to_ns": _ns(link.valid_to), "link_available_ns": _ns(link.available_at),
@@ -590,7 +592,7 @@ def project_dated_snapshots(link, snapshots: list[dict]) -> list[dict]:
     marker = dict(base, available_ns=0, period_end_ns=0, identity_only=1,
                   **{name: math.nan for name in RAW_FIELDS})
     rows = [marker]
-    if link.method == "conflict-v1":
+    if link.is_marker:
         return rows
     for snapshot in snapshots:
         if snapshot["available_date"] >= link.valid_to:
@@ -780,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
         for sr, links in mapping.items():
             for link in links:
                 rows_by_sr.setdefault(sr, []).extend(project_dated_snapshots(link, []))
-                if link.method != "conflict-v1":
+                if not link.is_marker:
                     by_cik.setdefault(link.cik, []).append(link)
     else:
         for sr, cik in mapping.items():

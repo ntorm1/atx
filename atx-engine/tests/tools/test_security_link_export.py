@@ -25,7 +25,7 @@ def clock(day):
     return dt.datetime(2013, 1, day, 18, tzinfo=UTC)
 
 
-def link(cik, begin, end, available, method="bracketed-filings-v1"):
+def link(cik, begin, end, available, method="prospective-two-filings-v2"):
     return sl.SecurityLink("link-" + str(cik) + "-" + method, "7", str(cik).zfill(10), "XYZ",
         D(2013, 1, begin), D(2013, 1, end), clock(1), clock(available), ("proof-" + str(cik),),
         method, "reviewer" if method == "dated-override-v1" else "",
@@ -49,6 +49,33 @@ def company(cik, value, period="2012-12-31"):
 
 
 class SecurityLinkExportTest(unittest.TestCase):
+    def test_prospective_open_link_and_expiry_survive_artifact_and_export_projection(self):
+        vendor = sl.VendorInterval("vendor", "7", "XYZ", D(2013, 1, 1), None,
+                                   clock(1), H, "synthetic:vendor", True)
+        observations = [sl.FilingEvidence("filing-" + str(day), "acc-" + str(day), "1", "XYZ",
+            D(2013, 1, day), clock(day), H, "synthetic:filing", clock(20), clock(day),
+            revision_status="original-confirmed") for day in (2, 3)]
+        expiry = sl.VendorExpiry("expiry", "vendor", D(2013, 1, 6), clock(7), H,
+                                 "synthetic:expiry", True)
+        links, gaps = sl.build_prospective_links([vendor], observations, [expiry])
+        with tempfile.TemporaryDirectory(prefix="atx-d1-prospective-") as tmp:
+            root = Path(tmp)
+            sl.write_link_artifact(root / "links", links, gaps, {p: H for x in links for p in x.evidence_ids})
+            grouped, _, _ = ex.load_dated_id_bridge(str(root / "links"), {"7"})
+            rows = [row for item in grouped["7"] for row in ex.project_dated_snapshots(item, [snapshot(10)])]
+            path = root / "points.interval-v2.tsv"
+            ex.write_interval_points(path, {"7": rows})
+            decoded = list(csv.DictReader(path.read_text().splitlines()[1:], delimiter="\t"))
+            expiry_rows = [r for r in decoded if r["owner_id"].startswith("CONFLICT:")]
+            self.assertEqual(len(expiry_rows), 1)
+            self.assertTrue(all(expiry_rows[0][f] == "" for f in ex.RAW_FIELDS))
+            values = ex.align_interval_values(rows, keys(), 0, 365, 550)
+            self.assertEqual([r["book_equity"] for r in values[1:5]], [10, 10, 10, 10])
+            self.assertTrue(all(math.isnan(r["book_equity"]) for r in values[5:]))
+        retrospective = link(1, 1, 10, 3, "bracketed-filings-v1")
+        with self.assertRaisesRegex(ValueError, "audit-only"):
+            ex.project_dated_snapshots(retrospective, [snapshot(10)])
+
     def test_link_and_filing_clock_equality_are_withheld(self):
         rows = ex.project_dated_snapshots(link(1, 1, 10, 3), [snapshot(10)])
         boundary = ex._ns(clock(3))
@@ -78,7 +105,7 @@ class SecurityLinkExportTest(unittest.TestCase):
     def test_future_conflict_without_facts_withholds_then_override_restores(self):
         rows = ex.project_dated_snapshots(link(1, 1, 11, 2), [snapshot(10)])
         prefix = ex.align_interval_values(rows, keys(), 0, 365, 550)
-        rows += ex.project_dated_snapshots(link(2, 1, 11, 6, "conflict-v1"), [snapshot(999)])
+        rows += ex.project_dated_snapshots(link(2, 1, 11, 6, "prospective-conflict-v2"), [snapshot(999)])
         changed = ex.align_interval_values(rows, keys(), 0, 365, 550)
         self.assertEqual(changed[1:4], prefix[1:4])
         self.assertTrue(all(math.isnan(r["book_equity"]) for r in changed[4:]))

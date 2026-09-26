@@ -55,6 +55,83 @@ def vendor(name="v1", sr="7", begin=2, end=10, available=2):
 
 
 class SecurityLinkTest(unittest.TestCase):
+    def test_prospective_open_line_is_live_only_after_independent_corroboration(self):
+        v = replace(vendor(), valid_to=None)
+        first, second = filing("first", 2), filing("second", 5)
+        links, gaps = sl.build_prospective_links([v], [first, second])
+        self.assertFalse(gaps)
+        self.assertEqual(len(links), 1)
+        self.assertEqual((links[0].valid_from, links[0].valid_to, links[0].end_kind),
+                         (D(2013, 1, 5), sl.SEAL, "seal-bound"))
+        self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 5), clock(5)).link)
+        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 5), decision(5)).link)
+        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 25), decision(25)).link)
+        report = sl.coverage_report(links, [("7", D(2013, 1, 4), decision(4)),
+                                           ("7", D(2013, 1, 25), decision(25))])
+        self.assertEqual(report["linked"], 1)
+        self.assertFalse(report["plan_coverage_qualified"])
+        self.assertEqual((links, gaps), sl.build_prospective_links([v, v], [second, first, first]))
+
+    def test_prospective_observations_must_be_inside_line_and_independent(self):
+        v = replace(vendor(), valid_to=None)
+        first = filing("first", 2)
+        for second in [filing("second", 1), filing("second", 2),
+                       filing("second", 5, accession=first.accession),
+                       filing("second", 5, published_at=None)]:
+            with self.subTest(second=second):
+                links, gaps = sl.build_prospective_links([v], [first, second])
+                self.assertFalse(links)
+                self.assertTrue(gaps)
+
+    def test_future_effective_conflict_and_late_known_expiry_preserve_prefix(self):
+        v = replace(vendor(), valid_to=None)
+        observations = [filing("a", 2), filing("b", 5)]
+        original, _ = sl.build_prospective_links([v], observations)
+        rival = filing("rival", 10, cik="2", accepted_at=clock(3), published_at=clock(4))
+        conflicted, _ = sl.build_prospective_links([v], observations + [rival])
+        self.assertEqual(sl.resolve_link(original, "7", D(2013, 1, 8), decision(8)).reason,
+                         sl.resolve_link(conflicted, "7", D(2013, 1, 8), decision(8)).reason)
+        self.assertIsNone(sl.resolve_link(conflicted, "7", D(2013, 1, 10), decision(10)).link)
+        expiry = sl.VendorExpiry("expiry", "v1", D(2013, 1, 10), clock(15), H, "synthetic:expiry", True)
+        expired, _ = sl.build_prospective_links([v], observations, [expiry])
+        self.assertIsNotNone(sl.resolve_link(expired, "7", D(2013, 1, 12), decision(12)).link)
+        self.assertIsNotNone(sl.resolve_link(expired, "7", D(2013, 1, 15), clock(15)).link)
+        self.assertIsNone(sl.resolve_link(expired, "7", D(2013, 1, 15), decision(15)).link)
+        self.assertIsNone(sl.resolve_link(expired, "7", D(2013, 1, 25), decision(25)).link)
+        self.assertIsNone(next(x for x in expired if x.method == "prospective-expiry-v2").accepted_at)
+
+    def test_known_early_expiry_waits_for_effective_date_and_unknown_clock_is_not_used(self):
+        v = replace(vendor(), valid_to=None)
+        observations = [filing("a", 2), filing("b", 5)]
+        expiry = sl.VendorExpiry("expiry", "v1", D(2013, 1, 10), clock(4), H, "synthetic:expiry", True)
+        links, _ = sl.build_prospective_links([v], observations, [expiry])
+        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 9), decision(9)).link)
+        self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 10), decision(10)).link)
+        unknown, gaps = sl.build_prospective_links([v], observations, [replace(expiry, availability_verified=False)])
+        self.assertIsNotNone(sl.resolve_link(unknown, "7", D(2013, 1, 10), decision(10)).link)
+        self.assertIn("expiry_availability_unverified", {g["reason"] for g in gaps})
+
+    def test_finite_vendor_row_known_only_after_end_does_not_backfill(self):
+        links, gaps = sl.build_prospective_links([vendor(available=15)], [filing("a", 2), filing("b", 5)])
+        self.assertFalse(links)
+        self.assertEqual(gaps[0]["reason"], "corroboration_after_known_expiry")
+
+    def test_prospective_expiry_roundtrip_and_rule_version_binding(self):
+        v = replace(vendor(), valid_to=None)
+        expiry = sl.VendorExpiry("expiry", "v1", D(2013, 1, 10), clock(10), H, "synthetic:expiry", True)
+        links, gaps = sl.build_prospective_links([v], [filing("a", 2), filing("b", 5)], [expiry])
+        with tempfile.TemporaryDirectory(prefix="atx-d1-v2-") as tmp:
+            path = Path(tmp) / "links"
+            digest = sl.write_link_artifact(path, links, gaps, {p: H for x in links for p in x.evidence_ids})
+            loaded, manifest = sl.read_link_artifact(path, digest)
+            self.assertEqual(loaded, links)
+            self.assertEqual(manifest["schema"], "atx.security-link/v2")
+            self.assertIn("prospective-two-filings-v2", manifest["rules"])
+            manifest["schema"] = "atx.security-link/v1"
+            (path / "manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "v2 link semantics"):
+                sl.read_link_artifact(path)
+
     def test_bracket_cannot_backdate_right_proof_or_revision(self):
         left, right = filing("left", 1), filing("right", 9, available=9)
         links, gaps = sl.build_links([vendor()], [right, left])
@@ -65,7 +142,8 @@ class SecurityLinkTest(unittest.TestCase):
         self.assertEqual(links[0].ticker, "XYZ")
         self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 8), clock(8)).link)
         self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 9), clock(9)).link)
-        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 9), decision(9)).link)
+        self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 9), decision(9)).link)
+        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 9), decision(9), retrospective_audit=True).link)
         self.assertIsNone(sl.resolve_link(links, "7", D(2013, 1, 10), clock(10)).link)
         revised = replace(right, revision_status="revision-confirmed", revision_available_at=clock(12))
         late, _ = sl.build_links([vendor()], [left, revised])
@@ -100,8 +178,8 @@ class SecurityLinkTest(unittest.TestCase):
         a, b = filing("a", 1), filing("b", 19)
         rival = filing("rival", 10, cik="2", available=20)
         links, _ = sl.build_links([v], [a, b, rival])
-        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 19), decision(19)).link)
-        self.assertEqual(sl.resolve_link(links, "7", D(2013, 1, 19), decision(20)).reason,
+        self.assertIsNotNone(sl.resolve_link(links, "7", D(2013, 1, 19), decision(19), retrospective_audit=True).link)
+        self.assertEqual(sl.resolve_link(links, "7", D(2013, 1, 19), decision(20), retrospective_audit=True).reason,
                          "conflicting_available_identity_evidence")
         overlap, _ = sl.build_links([vendor(), vendor("v2", "8")], [filing("l", 1), filing("r", 9)])
         self.assertIsNone(sl.resolve_link(overlap, "7", D(2013, 1, 9), decision(9)).link)
@@ -137,7 +215,7 @@ class SecurityLinkTest(unittest.TestCase):
                 sl.read_link_artifact(path)
         report = sl.coverage_report(links, [("7", D(2013, 1, 8), clock(8)),
                                            ("7", D(2013, 1, 9), decision(9))])
-        self.assertEqual((report["requests"], report["linked"], report["rate"]), (2, 1, 0.5))
+        self.assertEqual((report["requests"], report["linked"], report["rate"]), (2, 0, 0.0))
         self.assertFalse(report["plan_coverage_qualified"])
         self.assertIsNone(sl.coverage_report(links, [])["rate"])
 
