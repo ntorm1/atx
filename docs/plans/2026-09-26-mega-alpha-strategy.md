@@ -132,3 +132,27 @@ operations while preserving raw time-series history.
 The first bounded run is a wiring/data-quality observation, not the final
 Sharpe claim. Missing held returns remain an error; the runner cannot invent
 zero returns or silently drop an exposed name to make the backtest complete.
+
+## Development rehearsal registered before any strategy performance
+
+The first real execution rehearsal uses TRAIN2020Q1 and a subsequent2020Q2
+check, both inside the declared2020-2022 development period. This preserves
+2023-2024 validation and2025+ final evaluation from the rehearsal. The primary
+variant,24expressions,familyweights,costscenario and sign-fitting algorithm do
+not change after seeing the rehearsal. Its metrics are development evidence.
+
+Budget: one development rehearsal (50 TRAIN orientations/blends +2 subsequent
+combined checks), followed by one full declared experiment (50 TRAIN +2
+validation), at most104 completed role evaluations across these two stages.
+Every failed/retried attempt is additionally recorded; the count does not reset
+when a run fails. The existing recipe's52 count is per complete run. No extra
+candidates/variants or selection using the rehearsal check is authorized by
+this registration. The independent synthetic checks are correctness evidence.
+
+First recent source extraction completed in39.203s, sampled process-tree peak
+795,824,128bytes. It accepted16,035,158of16,237,003 selected rows. Projection
+manifest SHA25625a96be8611bf97eddccea3b254220aa750a66b98953069c51cd392d30f0e446.
+TRAIN2020Q1 data preparation completed in6.391s;461sessions including399warmup,
+3,950union identifiers,62scored sessions, dailyeligible count2872..3000
+(median2943). This establishes a thousands-name research cohort, not verified
+common-stock status or achieved portfolio performance.
