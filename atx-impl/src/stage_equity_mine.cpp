@@ -28,6 +28,9 @@
 #include <nlohmann/json.hpp>
 
 #include "atx/core/sha256.hpp"
+#include "atx/core/macro.hpp"
+#include "atx/engine/alpha/streams.hpp"
+#include "atx/engine/factory/execution_objective.hpp"
 #include "atx/engine/alpha/augment.hpp"
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/parser.hpp"
@@ -153,6 +156,26 @@ void average_ranks(std::span<const atx::f64> v, std::vector<atx::usize> &order,
     if (!(lrv > 0.0)) return 0.0;
     return m / std::sqrt(lrv / static_cast<atx::f64>(T));
 }
+
+// Explicit mine V2 book: average ranks, no winsorization, neutral, gross one.
+[[nodiscard]] atx::engine::WeightPolicy execution_policy() {
+    atx::engine::WeightPolicy p;
+    p.transform = atx::engine::Transform::Rank;
+    p.winsorize_limit = 0.0;
+    p.industry_neutral = false;
+    p.dollar_neutral = true;
+    p.gross_leverage = 1.0;
+    p.truncation = 0.0;
+    return p;
+}
+
+[[nodiscard]] atx::core::Status validate_execution(
+    const alpha::Panel &, atx::u32, std::span<const atx::u8>, EvalWindow,
+    const ScoreCfg &, const ReturnGuard *, const factory::ExecutionObjectiveContext *);
+[[nodiscard]] atx::core::Result<SignalScore> score_execution_signal(
+    std::span<const atx::f64>, atx::f64, const alpha::Panel &, atx::u32,
+    std::span<const atx::u8>, EvalWindow, const ScoreCfg &, const ReturnGuard *,
+    const factory::ExecutionObjectiveContext &);
 
 } // namespace
 
@@ -342,6 +365,8 @@ void finalize_score(SignalScore &s, const ScoreCfg &cfg) {
 }
 
 SignalScore flip_score(const SignalScore &in, const ScoreCfg &cfg) {
+    ATX_CHECK(cfg.execution_rule == factory::ExecutionObjectiveRule::LegacyStreamsV1 &&
+              in.execution_rule == factory::ExecutionObjectiveRule::LegacyStreamsV1);
     SignalScore s = in;
     for (atx::usize t = 0; t < s.gross.size(); ++t) {
         const atx::f64 cost = in.gross[t] - in.net[t];
@@ -413,7 +438,8 @@ atx::core::Result<ReturnGuard> build_return_guard(const alpha::Panel &panel, atx
 atx::core::Result<SignalScore> score_signal(std::span<const atx::f64> signal, atx::f64 sign,
                                             const alpha::Panel &panel, atx::u32 close_field,
                                             std::span<const atx::u8> member, EvalWindow window,
-                                            const ScoreCfg &cfg, const ReturnGuard *guard) {
+                                            const ScoreCfg &cfg, const ReturnGuard *guard,
+                                            const factory::ExecutionObjectiveContext *execution) {
     const atx::usize D = panel.dates();
     const atx::usize I = panel.instruments();
     if (signal.size() != D * I || member.size() != D * I) {
@@ -436,6 +462,10 @@ atx::core::Result<SignalScore> score_signal(std::span<const atx::f64> signal, at
                              guard->bad_prefix.size() != D * I)) {
         return Err(ErrorCode::InvalidArgument, "score_signal: return guard shape mismatch");
     }
+    ATX_TRY_VOID(validate_execution(panel, close_field, member, window, cfg, guard, execution));
+    if (cfg.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2)
+        return score_execution_signal(signal, sign, panel, close_field, member, window,
+                                      cfg, guard, *execution);
     const atx::usize T = window.size();
     const atx::f64 cost_rate = cfg.cost_bps * 1e-4;
     SignalScore s;
@@ -530,6 +560,150 @@ atx::core::Result<SignalScore> score_signal(std::span<const atx::f64> signal, at
     }
     return Ok(std::move(s));
 }
+
+namespace {
+
+atx::core::Status validate_execution(const alpha::Panel &panel, atx::u32 close_id,
+    std::span<const atx::u8> member, EvalWindow window, const ScoreCfg &cfg,
+    const ReturnGuard *guard, const factory::ExecutionObjectiveContext *execution) {
+    if (cfg.execution_rule == factory::ExecutionObjectiveRule::LegacyStreamsV1) {
+        if (execution != nullptr)
+            return Err(ErrorCode::InvalidArgument, "mine: execution context supplied for legacy rule");
+        return Ok();
+    }
+    if (cfg.execution_rule != factory::ExecutionObjectiveRule::DelayedSurfaceV2 ||
+        execution == nullptr || execution->dates() == 0)
+        return Err(ErrorCode::InvalidArgument, "mine: V2 requires a prepared execution context");
+    if (!(cfg.periods_per_year > 0.0) || !std::isfinite(cfg.periods_per_year) ||
+        close_id >= panel.num_fields() || window.begin > window.end || window.end > panel.dates())
+        return Err(ErrorCode::InvalidArgument, "mine: invalid V2 scorer recipe/window");
+    auto expected = execution->config();
+    expected.rule = cfg.execution_rule;
+    expected.delay = cfg.delay;
+    expected.min_names = cfg.min_names;
+    expected.guard_returns = cfg.guard_returns;
+    expected.window_begin = window.begin;
+    expected.window_end = window.end;
+    expected.maturity_end = window.end;
+    expected.price_field = std::string{panel.field_name(static_cast<atx::usize>(close_id))};
+    const auto prefix = guard != nullptr ? std::span<const atx::u32>{guard->bad_prefix}
+                                         : std::span<const atx::u32>{};
+    if (!factory::execution_objective_matches(*execution, panel, execution_policy(), expected) ||
+        !factory::execution_support_matches(*execution, member, prefix))
+        return Err(ErrorCode::InvalidArgument, "mine: execution context recipe/panel/support mismatch");
+    if (execution->realization_end() <= execution->first_realization() ||
+        execution->first_realization() < window.begin || execution->realization_end() > window.end)
+        return Err(ErrorCode::InvalidArgument, "mine: V2 has no mature contiguous observations");
+    return Ok();
+}
+
+// Execution allocations only: existing per-worker VM buffers are a separate
+// caller budget. Never multiply unchecked, or silently oversubscribe contexts.
+[[nodiscard]] atx::core::Status validate_execution_workers(
+    const factory::ExecutionObjectiveContext *execution, atx::usize workers) {
+    if (execution == nullptr || workers == 0) return Ok();
+    const atx::u64 budget = execution->config().max_working_bytes;
+    const atx::u64 retained = execution->bytes();
+    const atx::u64 per_worker = execution->per_signal_working_bytes();
+    if (retained > budget || per_worker == 0 ||
+        workers > (budget - retained) / per_worker)
+        return Err(ErrorCode::InvalidArgument, "mine: execution workers exceed declared memory budget");
+    return Ok();
+}
+
+atx::core::Result<SignalScore> score_execution_signal(std::span<const atx::f64> signal,
+    atx::f64 sign, const alpha::Panel &panel, atx::u32 close_id,
+    std::span<const atx::u8> member, EvalWindow window, const ScoreCfg &cfg,
+    const ReturnGuard *guard, const factory::ExecutionObjectiveContext &execution) {
+    ATX_TRY(auto streams, factory::extract_execution_signal(signal, execution, sign));
+    const atx::usize D = panel.dates(), I = panel.instruments();
+    const atx::usize begin = execution.first_realization(), end = execution.realization_end();
+    const atx::usize T = end - begin;
+    if (streams.n_alphas() != 1 || streams.n_periods() != D || streams.n_instruments() != I ||
+        streams.pnl_flat.size() != D || streams.gross_flat.size() != D ||
+        streams.execution_cost_flat.size() != D || streams.borrow_cost_flat.size() != D ||
+        streams.turnover_flat.size() != D || streams.valid_flat.size() != D ||
+        streams.names_flat.size() != D || streams.pos_flat.size() != panel.cells() ||
+        streams.first_realization_ != begin || streams.realization_end_ != end ||
+        streams.execution_context_sha256 != execution.identity_sha256())
+        return Err(ErrorCode::InvalidArgument, "mine: malformed V2 execution stream");
+    SignalScore out;
+    out.execution_rule = cfg.execution_rule;
+    out.execution_context_sha256 = execution.identity_sha256();
+    out.realization_begin = begin;
+    out.realization_end = end;
+    out.gross.reserve(T); out.net.reserve(T); out.turnover.reserve(T);
+    out.ic.assign(T, kNaN);
+    // The kernel identity binds policy, AUM, costs, clocks, support and inputs.
+    // Bind the consumer's inference/IC recipe separately without float rounding.
+    out.execution_recipe = nlohmann::json{
+        {"rule", "delayed-surface-v2"}, {"context_sha256", out.execution_context_sha256},
+        {"ic_horizons", cfg.ic_horizons}, {"nw_lags", cfg.nw_lags},
+        {"periods_per_year_bits", std::bit_cast<atx::u64>(cfg.periods_per_year)},
+        {"guard_max_log_bits", std::bit_cast<atx::u64>(cfg.max_abs_log_return)},
+        {"guard_adj_raw_tolerance_bits", std::bit_cast<atx::u64>(cfg.adj_raw_log_tol)},
+        {"raw_close_field", cfg.raw_close_field}}.dump();
+    atx::usize invested = 0;
+    atx::f64 names_sum = 0.0;
+    for (atx::usize e = begin; e < end; ++e) {
+        if (streams.valid_flat[e] != 1 || !std::isfinite(streams.pnl_flat[e]) ||
+            !std::isfinite(streams.gross_flat[e]) || !std::isfinite(streams.turnover_flat[e]) ||
+            !std::isfinite(streams.execution_cost_flat[e]) || !std::isfinite(streams.borrow_cost_flat[e]))
+            return Err(ErrorCode::InvalidArgument, "mine: invalid V2 mature observation");
+        out.net.push_back(streams.pnl_flat[e]);
+        out.gross.push_back(streams.gross_flat[e]);
+        out.turnover.push_back(streams.turnover_flat[e]);
+        out.total_cost_return += streams.execution_cost_flat[e];
+        out.total_borrow_return += streams.borrow_cost_flat[e];
+        bool held = false;
+        for (const auto w : streams.positions(0, e)) {
+            if (!std::isfinite(w))
+                return Err(ErrorCode::InvalidArgument, "mine: nonfinite V2 held weight");
+            held = held || w != 0.0;
+        }
+        if (held) { ++invested; names_sum += static_cast<atx::f64>(streams.names_flat[e]); }
+    }
+    if (!std::isfinite(out.total_cost_return) || !std::isfinite(out.total_borrow_return))
+        return Err(ErrorCode::InvalidArgument, "mine: V2 aggregate cost overflow");
+    out.coverage = static_cast<atx::f64>(invested) / static_cast<atx::f64>(T);
+    out.mean_names = invested > 0 ? names_sum / static_cast<atx::f64>(invested) : 0.0;
+    const auto close = panel.field_all(close_id);
+    std::array<atx::f64, 3> ic_sum{};
+    std::array<atx::usize, 3> ic_count{};
+    std::vector<atx::f64> xs, ys, xr, yr;
+    std::vector<atx::usize> order;
+    for (atx::usize d = execution.first_decision(); d < execution.decision_end(); ++d) {
+        const atx::usize entry = d + cfg.delay;
+        for (atx::usize h = 0; h < cfg.ic_horizons.size(); ++h) {
+            const atx::usize horizon = cfg.ic_horizons[h];
+            if (horizon == 0 || entry >= window.end || horizon >= window.end - entry) continue;
+            const atx::usize endpoint = entry + horizon;
+            xs.clear(); ys.clear();
+            for (atx::usize i = 0; i < I; ++i) {
+                const atx::usize c = d * I + i;
+                if (!member[c] || !panel.in_universe(d, i) || !panel.in_universe(entry, i) ||
+                    !panel.in_universe(endpoint, i) || !std::isfinite(signal[c]) ||
+                    !std::isfinite(close[c]) || !(close[c] > 0.0) ||
+                    (guard != nullptr && guard->bad(entry, endpoint, i))) continue;
+                const atx::f64 r = simple_return(close, I, entry, endpoint, i);
+                if (!std::isfinite(r)) continue;
+                xs.push_back(sign * signal[c]); ys.push_back(r);
+            }
+            if (xs.size() < cfg.min_names) continue;
+            average_ranks(xs, order, xr); average_ranks(ys, order, yr);
+            const atx::f64 ic = pearson(xr, yr);
+            if (!std::isfinite(ic)) continue;
+            if (h == 0) out.ic[d - execution.first_decision()] = ic;
+            ic_sum[h] += ic; ++ic_count[h];
+        }
+    }
+    finalize_score(out, cfg);
+    for (atx::usize h = 1; h < cfg.ic_horizons.size(); ++h)
+        out.ic_mean[h] = ic_count[h] > 0 ? ic_sum[h] / static_cast<atx::f64>(ic_count[h]) : 0.0;
+    return Ok(std::move(out));
+}
+
+} // namespace
 
 // ===========================================================================
 // Seeds and parsing
@@ -698,7 +872,9 @@ guard_for(const MineData &m, atx::u32 close_id, const ScoreCfg &cfg, ReturnGuard
 }
 
 [[nodiscard]] atx::u64 candidate_hash(const CandidateRow &row) {
-    const std::string key = row.dsl + (row.sign > 0.0 ? "|+1" : "|-1");
+    std::string key = row.dsl + (row.sign > 0.0 ? "|+1" : "|-1");
+    if (row.train.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2)
+        key += "|delayed-surface-v2|" + row.train.execution_recipe;
     return fnv1a64(key.data(), key.size());
 }
 
@@ -776,14 +952,22 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
         }
     }
     auto sc = score_signal(*sig, 1.0, *train.panel, close_id, train.member, train.window, cfg,
-                           guard);
+                           guard, train.execution);
     if (!sc) {
         row.error = "score: " + sc.error().message();
         return;
     }
     if (sc->sharpe_gross < 0.0) {
         row.sign = -1.0;
-        row.train = flip_score(*sc, cfg);
+        if (cfg.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2) {
+            auto negative = score_signal(*sig, -1.0, *train.panel, close_id, train.member,
+                                         train.window, cfg, guard, train.execution);
+            if (!negative) {
+                row.error = "negative score: " + negative.error().message();
+                return;
+            }
+            row.train = std::move(*negative);
+        } else row.train = flip_score(*sc, cfg);
     } else {
         row.train = std::move(*sc);
     }
@@ -791,12 +975,15 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
 }
 
 [[nodiscard]] atx::core::Status register_trials(MineOutcome &out, eval::TrialRegistry &registry,
-                                               TrainDsrRule dsr_rule, atx::usize train_len) {
+                                               TrainDsrRule dsr_rule, EvalWindow train_window) {
+    const atx::usize train_len = train_window.size();
     for (CandidateRow &row : out.candidates) {
         if (row.ic_rejected) {
             const std::string reason{factory::ic_screen_reason_name(row.ic_screen_reason)};
-            const std::string key = "ic-screen|" + std::to_string(row.canonical_hash) + "|" +
-                                    out.ic_screen_recipe + "|" + reason;
+            std::string key = "ic-screen|" + std::to_string(row.canonical_hash) + "|" +
+                              out.ic_screen_recipe + "|" + reason;
+            if (out.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2)
+                key += "|delayed-surface-v2|" + out.train_execution_context_sha256;
             row.config_hash = fnv1a64(key.data(), key.size());
             row.dsr_train = kNaN;
             eval::TrialMeta meta;
@@ -824,8 +1011,10 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
         // calendar may extend past it (train + validation), and the family / theme
         // tags let accounting() group trials that share a seed family.
         eval::TrialMeta meta;
-        meta.window_start = 0;
-        meta.window_end = row.train.net.empty() ? 0 : row.train.net.size() - 1U;
+        meta.window_start = row.train.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2
+            ? row.train.realization_begin - train_window.begin : 0U;
+        meta.window_end = row.train.net.empty() ? meta.window_start
+            : meta.window_start + row.train.net.size() - 1U;
         meta.fidelity = 0;
         meta.sample = eval::TrialSample::InSample;
         meta.family_tag = eval::trial_tag(trial_family_of(row.origin));
@@ -974,6 +1163,7 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
     const alpha::Panel &panel = *train.panel;
     ATX_TRY(const atx::u32 close_id, close_field_of(panel));
     MineOutcome out;
+    out.execution_rule = cfg.score.execution_rule;
     out.ic_screen = cfg.search.ic_screen;
     out.ic_screen.execution_delay = cfg.score.delay;
     out.ic_screen.window_begin = train.window.begin;
@@ -985,6 +1175,10 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
     }
     ReturnGuard local_guard;
     ATX_TRY(const ReturnGuard *guard, guard_for(train, close_id, cfg.score, local_guard));
+    ATX_TRY_VOID(validate_execution(panel, close_id, train.member, train.window,
+                                     cfg.score, guard, train.execution));
+    if (cfg.score.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2)
+        out.train_execution_context_sha256 = train.execution->identity_sha256();
     std::optional<factory::IcScreenCache> screen_cache;
     if (screen_enabled) {
         out.ic_screen_recipe = screen_recipe(out.ic_screen, train, cfg.score, guard);
@@ -1025,17 +1219,32 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
                 fields.emplace_back(panel.field_name(f));
             }
         }
-        const atx::engine::WeightPolicy policy{};
+        const atx::engine::WeightPolicy policy =
+            cfg.score.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2
+                ? execution_policy() : atx::engine::WeightPolicy{};
         const auto sim = frictionless_sim();
         const atx::engine::combine::AlphaStore pool{};
         factory::SearchDriver driver{lib, panel, policy, sim, valid_seed_dsl, fields};
         auto search_cfg = cfg.search;
+        if (cfg.score.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2) {
+            search_cfg.fitness.execution = train.execution->config();
+            search_cfg.fitness.execution_context = train.execution;
+        } else if (search_cfg.fitness.execution.rule != factory::ExecutionObjectiveRule::LegacyStreamsV1 ||
+                   search_cfg.fitness.execution_context != nullptr) {
+            return Err(ErrorCode::InvalidArgument, "mine_train: search and scorer execution rules differ");
+        }
         search_cfg.ic_screen = out.ic_screen;
         // A failed preparation must not make SearchDriver rebuild without the
         // caller's membership/ReturnGuard support. The whole screen fails open.
         if (screen_enabled && !screen_cache) search_cfg.ic_screen.rule = factory::IcScreenRule::DisabledV1;
         const factory::SearchResult res = driver.run(search_cfg, pool, nullptr, nullptr,
-                                                     screen_cache ? &*screen_cache : nullptr);
+                                                     screen_cache ? &*screen_cache : nullptr,
+                                                     train.execution);
+        if (res.execution_invalid)
+            return Err(ErrorCode::InvalidArgument, "mine_train: " + res.execution_error);
+        if (cfg.score.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2 &&
+            res.execution_context_sha256 != train.execution->identity_sha256())
+            return Err(ErrorCode::InvalidArgument, "mine_train: search execution identity mismatch");
         if (res.ic_screen_cache_mismatch || res.ic_screen_resume_mismatch) {
             return Err(ErrorCode::InvalidArgument,
                        "mine_train: SearchDriver rejected incompatible IC screening state");
@@ -1073,6 +1282,7 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
     }
 
     const atx::usize workers = std::max<atx::usize>(1, std::min(cfg.threads, out.candidates.size()));
+    ATX_TRY_VOID(validate_execution_workers(train.execution, out.candidates.empty() ? 0U : workers));
     std::vector<std::optional<factory::IcScreenScratch>> scratches(workers);
     if (screen_cache) {
         for (auto &scratch : scratches) {
@@ -1096,8 +1306,10 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
         out.ic_screen_unavailable += row.ic_screen_unavailable ? 1U : 0U;
         out.ic_screen_rejected += row.ic_rejected ? 1U : 0U;
     }
-    ATX_TRY_VOID(register_trials(out, registry, cfg.dsr_rule, train.window.size()));
-    select_family(out, cfg, train.window.size());
+    ATX_TRY_VOID(register_trials(out, registry, cfg.dsr_rule, train.window));
+    const atx::usize scored_periods = cfg.score.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2
+        ? train.execution->realization_end() - train.execution->first_realization() : train.window.size();
+    select_family(out, cfg, scored_periods);
     return Ok(std::move(out));
 }
 
@@ -1105,12 +1317,22 @@ atx::core::Status mine_validate(const alpha::Library &lib, const MineData &valid
                                 const MineConfig &cfg, MineOutcome &out) {
     ATX_TRY_VOID(check_data(validation, "validation"));
     out.admitted.clear();
-    if (out.family.empty()) return Ok();
+    if (out.execution_rule != cfg.score.execution_rule)
+        return Err(ErrorCode::InvalidArgument, "mine_validate: execution rule differs from train");
+    if (out.family.empty() && cfg.score.execution_rule == factory::ExecutionObjectiveRule::LegacyStreamsV1)
+        return Ok();
     const alpha::Panel &panel = *validation.panel;
     ATX_TRY(const atx::u32 close_id, close_field_of(panel));
     const atx::usize K = out.family.size();
     ReturnGuard local_guard;
     ATX_TRY(const ReturnGuard *guard, guard_for(validation, close_id, cfg.score, local_guard));
+    ATX_TRY_VOID(validate_execution(panel, close_id, validation.member, validation.window,
+                                     cfg.score, guard, validation.execution));
+    if (cfg.score.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2)
+        out.validation_execution_context_sha256 = validation.execution->identity_sha256();
+    if (out.family.empty()) return Ok();
+    ATX_TRY_VOID(validate_execution_workers(validation.execution,
+        std::max<atx::usize>(1, std::min(cfg.threads, K))));
     std::vector<std::string> errors(K);
     parallel_over(K, cfg.threads, panel, [&](atx::usize k, alpha::Engine &engine) {
         CandidateRow &row = out.candidates[out.family[k]];
@@ -1120,7 +1342,7 @@ atx::core::Status mine_validate(const alpha::Library &lib, const MineData &valid
             return;
         }
         auto sc = score_signal(*sig, row.sign, panel, close_id, validation.member,
-                               validation.window, cfg.score, guard);
+                               validation.window, cfg.score, guard, validation.execution);
         if (!sc) {
             errors[k] = sc.error().message();
             return;
@@ -1140,7 +1362,9 @@ atx::core::Status mine_validate(const alpha::Library &lib, const MineData &valid
         out.family_blend_scored = true;
     }
     const atx::usize H = K + (out.family_blend_scored ? 1 : 0);
-    const atx::usize T = validation.window.size();
+    const atx::usize T = cfg.score.execution_rule == factory::ExecutionObjectiveRule::DelayedSurfaceV2
+        ? validation.execution->realization_end() - validation.execution->first_realization()
+        : validation.window.size();
     std::vector<atx::f64> p(H, 1.0);
     std::vector<atx::f64> mat(H * T, 0.0);
     const auto put = [&](atx::usize h, const SignalScore &s) {
@@ -1227,6 +1451,10 @@ atx::core::Result<SignalScore> evaluate_blend(const alpha::Library &lib, const M
     if (rows.empty()) return Err(ErrorCode::InvalidArgument, "evaluate_blend: no rows");
     const alpha::Panel &panel = *data.panel;
     ATX_TRY(const atx::u32 close_id, close_field_of(panel));
+    ReturnGuard local_guard;
+    ATX_TRY(const ReturnGuard *guard, guard_for(data, close_id, cfg, local_guard));
+    ATX_TRY_VOID(validate_execution(panel, close_id, data.member, data.window,
+                                     cfg, guard, data.execution));
     const atx::usize cells = panel.cells();
     const auto close = panel.field_all(close_id);
     std::vector<atx::f64> sum(cells, 0.0);
@@ -1240,9 +1468,7 @@ atx::core::Result<SignalScore> evaluate_blend(const alpha::Library &lib, const M
     for (atx::usize c = 0; c < cells; ++c) {
         if (cnt[c] > 0) blend[c] = sum[c] / static_cast<atx::f64>(cnt[c]);
     }
-    ReturnGuard local_guard;
-    ATX_TRY(const ReturnGuard *guard, guard_for(data, close_id, cfg, local_guard));
-    return score_signal(blend, 1.0, panel, close_id, data.member, data.window, cfg, guard);
+    return score_signal(blend, 1.0, panel, close_id, data.member, data.window, cfg, guard, data.execution);
 }
 
 atx::core::Result<std::vector<HoldoutRow>>
@@ -1258,11 +1484,13 @@ evaluate_holdout(const alpha::Library &lib, const MineData &holdout,
     std::vector<atx::u32> blend_n(cells, 0);
     ReturnGuard local_guard;
     ATX_TRY(const ReturnGuard *guard, guard_for(holdout, close_id, cfg, local_guard));
+    ATX_TRY_VOID(validate_execution(panel, close_id, holdout.member, holdout.window,
+                                     cfg, guard, holdout.execution));
     alpha::Engine engine{panel};
     for (const CandidateRow &row : admitted) {
         ATX_TRY(auto sig, evaluate_dsl(lib, engine, row.dsl));
         ATX_TRY(auto sc, score_signal(sig, row.sign, panel, close_id, holdout.member,
-                                      holdout.window, cfg, guard));
+                                      holdout.window, cfg, guard, holdout.execution));
         rows.push_back(HoldoutRow{row.dsl, std::move(sc)});
         accumulate_blend(sig, row.sign, holdout, close, blend_sum, blend_n);
     }
@@ -1272,7 +1500,7 @@ evaluate_holdout(const alpha::Library &lib, const MineData &holdout,
             if (blend_n[c] > 0) blend[c] = blend_sum[c] / static_cast<atx::f64>(blend_n[c]);
         }
         ATX_TRY(auto sc, score_signal(blend, 1.0, panel, close_id, holdout.member, holdout.window,
-                                      cfg, guard));
+                                      cfg, guard, holdout.execution));
         rows.push_back(HoldoutRow{"<equal-weight blend>", std::move(sc)});
     }
     return Ok(std::move(rows));
@@ -1744,13 +1972,23 @@ build_role(std::string name, const std::vector<std::string> &paths, atx::i64 sta
 }
 
 [[nodiscard]] json score_json(const mine::SignalScore &s) {
-    return json{{"sharpe_net", s.sharpe_net},     {"sharpe_gross", s.sharpe_gross},
+    json j{{"sharpe_net", s.sharpe_net},     {"sharpe_gross", s.sharpe_gross},
                 {"mean_net_bps", s.mean_net * 1e4}, {"t_nw", s.t_nw},
                 {"p_one_sided", s.p_one_sided},    {"ic_h1", s.ic_mean[0]},
                 {"ic_h5", s.ic_mean[1]},           {"ic_h21", s.ic_mean[2]},
                 {"icir_h1", s.icir},               {"turnover", s.mean_turnover},
                 {"coverage", s.coverage},          {"mean_names", s.mean_names},
                 {"excluded_return_terms", s.excluded_returns}};
+    if (s.execution_rule == atx::engine::factory::ExecutionObjectiveRule::DelayedSurfaceV2) {
+        j["execution"] = {{"rule", "delayed-surface-v2"},
+            {"context_sha256", s.execution_context_sha256}, {"recipe", s.execution_recipe},
+            {"realization_begin", s.realization_begin}, {"realization_end", s.realization_end},
+            {"mature_observations", s.net.size()}, {"execution_cost_return_sum", s.total_cost_return},
+            {"borrow_return_sum", s.total_borrow_return},
+            {"coverage_rule", "fraction of mature intervals with nonzero actual held gross"},
+            {"turnover_rule", "actual filled one-way dollars / interval-entry pretrade NAV"}};
+    }
+    return j;
 }
 
 [[nodiscard]] std::string score_cols(const mine::SignalScore &s) {
@@ -2202,6 +2440,11 @@ struct Windows {
         {"search_rejected_unique", outcome.search_ic_screen_rejected},
         {"search_prepass_vm_evaluations", outcome.search_ic_prepass_vm_evaluations},
         {"search_resume_mismatch", outcome.search_ic_screen_resume_mismatch}};
+    if (outcome.execution_rule == atx::engine::factory::ExecutionObjectiveRule::DelayedSurfaceV2)
+        report["execution_objective"] = {{"rule", "delayed-surface-v2"},
+            {"train_context_sha256", outcome.train_execution_context_sha256},
+            {"validation_context_sha256", outcome.validation_execution_context_sha256},
+            {"cli_cost_source_available", false}};
     report["search"] = {{"digest", to_hex16(outcome.search_digest)},
                         {"trial_count", outcome.search_trial_count},
                         {"fidelity_evals", outcome.search_fidelity_evals},

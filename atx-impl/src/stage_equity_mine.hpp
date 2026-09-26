@@ -60,6 +60,7 @@
 #include "atx/engine/eval/trial_registry.hpp"
 #include "atx/engine/factory/search_driver.hpp"
 #include "atx/engine/factory/ic_screen.hpp"
+#include "atx/engine/factory/execution_objective.hpp"
 
 #include "stages.hpp"
 
@@ -142,6 +143,11 @@ struct ScoreCfg {
     std::array<atx::usize, 3> ic_horizons{{1, 5, 21}};
     atx::usize nw_lags{5};     // Newey-West lag for the pnl t-statistic
     atx::f64 periods_per_year{252.0};
+    // Programmatic opt-in only. V2 requires a prepared context on every role;
+    // its AUM, borrow and cost recipe are authoritative. delay/min_names/guard
+    // and the role window must match this scorer. No CLI cost source is implied.
+    atx::engine::factory::ExecutionObjectiveRule execution_rule{
+        atx::engine::factory::ExecutionObjectiveRule::LegacyStreamsV1};
 };
 
 // [begin, end) over signal dates of a span panel.
@@ -198,25 +204,41 @@ struct SignalScore {
     atx::f64 mean_turnover{};
     atx::f64 coverage{};      // fraction of window dates that traded
     atx::f64 mean_names{};    // mean eligible names on traded dates
-    atx::usize excluded_returns{}; // held-name pnl terms dropped by the return guard
+    atx::usize excluded_returns{}; // held-name pnl terms dropped by the legacy return guard
+    atx::engine::factory::ExecutionObjectiveRule execution_rule{
+        atx::engine::factory::ExecutionObjectiveRule::LegacyStreamsV1};
+    std::string execution_context_sha256{};
+    std::string execution_recipe{};
+    // V2 vectors contain exactly this contiguous realized-endpoint interval of
+    // the original panel. No structural zero tail or missing-date compression.
+    // Legacy vectors retain their historical signal-date alignment.
+    atx::usize realization_begin{};
+    atx::usize realization_end{};
+    atx::f64 total_cost_return{};
+    atx::f64 total_borrow_return{};
 };
 
 // Score one signal (dates x instruments, date-major, same shape as `panel`)
-// multiplied by `sign` (+1/-1). Positions formed from signal date d are
+// multiplied by `sign` (+1/-1). In the explicit legacy rule, positions formed from signal date d are
 // rank-demeaned, scaled to gross 1 and held over the close-to-close return
 // ending at d + delay + 1. Eligibility uses information at d only (member,
 // finite signal, finite positive close); a missing realized return contributes
 // 0. `close` is the adjusted research close field id. Realized returns (pnl
 // and every IC horizon) flagged by the return guard are treated as missing;
 // `guard` must be built for `panel` (nullptr: built here from cfg).
+// Explicit DelayedSurfaceV2 instead consumes `execution`, errors on an unpriced
+// nonzero fill or missing held return, and returns its mature realized prefix.
+// It recomputes signed marked-dollar holdings through the shared engine kernel.
 [[nodiscard]] atx::core::Result<SignalScore>
 score_signal(std::span<const atx::f64> signal, atx::f64 sign,
              const atx::engine::alpha::Panel &panel, atx::u32 close_field,
              std::span<const atx::u8> member, EvalWindow window, const ScoreCfg &cfg,
-             const ReturnGuard *guard = nullptr);
+             const ReturnGuard *guard = nullptr,
+             const atx::engine::factory::ExecutionObjectiveContext *execution = nullptr);
 
 // Flip a +1-signed score to sign -1 without re-scoring (gross/IC negate,
-// turnover and cost are sign-invariant); statistics are recomputed.
+// turnover and cost are sign-invariant); statistics are recomputed. Legacy only;
+// V2 must be independently rescored because borrow, caps and NAV are asymmetric.
 [[nodiscard]] SignalScore flip_score(const SignalScore &s, const ScoreCfg &cfg);
 
 // Recompute the scalar statistics of `s` from its series (used after flips and
@@ -247,6 +269,9 @@ struct MineData {
     EvalWindow window;
     // Optional prebuilt return guard for `panel` (empty: built per call).
     ReturnGuard guard{};
+    // Borrowed for the whole call. Required only for explicit DelayedSurfaceV2.
+    // The context owns immutable costs/price/support; caller data must match.
+    const atx::engine::factory::ExecutionObjectiveContext *execution{nullptr};
 };
 
 // W0-I0b (RULES §2): the versioned rule behind every row's report-only dsr_train.
@@ -309,6 +334,10 @@ struct CandidateRow {
 
 struct MineOutcome {
     std::vector<CandidateRow> candidates; // seeds first (input order), then search
+    atx::engine::factory::ExecutionObjectiveRule execution_rule{
+        atx::engine::factory::ExecutionObjectiveRule::LegacyStreamsV1};
+    std::string train_execution_context_sha256{};
+    std::string validation_execution_context_sha256{};
     std::vector<atx::usize> family;       // validation family, selection order
     std::vector<atx::usize> admitted;     // subset of family, selection order
     atx::engine::eval::TrialSummary trials{};
@@ -358,6 +387,8 @@ struct MineOutcome {
 // calendar may extend past the train window (the stage uses train + validation,
 // E-16); train trials are recorded on the window [0, train.window.size() - 1] as
 // TrialSample::InSample with family / theme tags derived from the seed origin.
+// V2 instead records the actual mature realized subinterval, offset relative to
+// train.window.begin, with no padded zeros and a context-bound trial identity.
 // The validation span is not needed yet, so a caller can free the train span
 // before building it (memory bound on a shared 16 GB machine).
 [[nodiscard]] atx::core::Result<MineOutcome>
