@@ -14,7 +14,8 @@
 
 This is the original DAG plan and its completion index. Fill implementation, integration,
 and evidence SHAs here as each element finishes; a merged implementation is not a passed
-wave gate. All recorded commits are reachable from the current integration branch.
+wave gate. Each implementation is reachable through its recorded integration/import;
+cherry-picked source SHAs remain listed alongside their resulting integration SHAs.
 
 | Element | Implementation and integration SHAs | Completed evidence / remaining work |
 |---|---|---|
