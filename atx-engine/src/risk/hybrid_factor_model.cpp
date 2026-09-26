@@ -720,7 +720,8 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
     d = std::move(clean.specific_variances);
     diagnostics = std::move(clean.diagnostics);
     const bool requested_stat = cfg.select == StatFactorSelect::Fixed ? cfg.n_stat_fixed > 0 : cfg.k_max > 0;
-    diagnostics.statistical_fallback_assets = requested_stat && ks > 0 ? assets.size() - panel_rows.size() : 0;
+    diagnostics.statistical_fallback_assets = !requested_stat ? 0 :
+        (ks > 0 ? assets.size() - panel_rows.size() : (panel_rows.size() < 2 ? assets.size() : 0));
     // A selection rule choosing zero factors is not a thin-asset fallback.
   } else {
     for (Eigen::Index r = 0; r < m; ++r) d[r] = spec_var(e, r, cfg.spec_halflife);

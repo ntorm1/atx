@@ -37,6 +37,7 @@ atx::core::Result<EigenAdjustmentV2> eigen_adjust_v2(
     adjusted[i] *= gamma * gamma;
     if (!std::isfinite(gamma) || gamma <= 0.0 || !std::isfinite(adjusted[i]) || adjusted[i] <= 0.0)
       return co::Err(co::ErrorCode::OutOfRange, "eigen adjustment V2: invalid simulated adjustment");
+  }
   atx::core::linalg::MatX out = eig.vectors * adjusted.asDiagonal() * eig.vectors.transpose();
   out = 0.5 * (out + out.transpose().eval());
   if (!out.allFinite())
