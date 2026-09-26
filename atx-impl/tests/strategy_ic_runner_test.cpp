@@ -1,0 +1,148 @@
+#include <gtest/gtest.h>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <span>
+#include <utility>
+#include <vector>
+#include <nlohmann/json.hpp>
+#include "atx/core/sha256.hpp"
+#include "strategy_ic_runner.hpp"
+
+namespace {
+using namespace atx;
+using Json = nlohmann::json;
+constexpr usize D = 480, N = 8;
+constexpr i64 day = 86'400'000'000'000LL;
+struct Directory {
+  std::filesystem::path path;
+  Directory() {
+    static std::atomic<unsigned> sequence{};
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (unsigned a = 0; a < 32; ++a) {
+      auto candidate = std::filesystem::temp_directory_path() /
+          ("atx-strategy-ic-runner-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1)));
+      if (std::filesystem::create_directory(candidate)) { path = std::move(candidate); break; }
+    }
+  }
+  ~Directory() { if (!path.empty()) { std::error_code ec; std::filesystem::remove_all(path, ec); } }
+};
+template<class T> bool payload(const std::filesystem::path& dir, Json& files, const char* name, const std::vector<T>& data) {
+  std::ofstream f(dir / name, std::ios::binary); const auto bytes = std::as_bytes(std::span(data));
+  f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())); f.close();
+  if (!f) return false;
+  auto sha = core::sha256_file((dir / name).string()); if (!sha) return false;
+  files[name] = {{"bytes", bytes.size()}, {"sha256", *sha}}; return true;
+}
+bool json_file(const std::filesystem::path& path, const Json& j, std::string& sha) {
+  const auto text = j.dump(2) + "\n";
+  std::ofstream out(path, std::ios::binary); out << text; out.close();
+  auto digest = core::sha256_hex(text); if (!out || !digest) return false; sha = *digest; return true;
+}
+bool role(const std::filesystem::path& dir, i64 first_day, std::string& sha, f64 direction=1) {
+  if (!std::filesystem::create_directory(dir)) return false;
+  std::vector<i64> sessions(D); std::vector<u8> member(D * N, 0), present(D * N, 1);
+  std::vector<f64> price(D * N), volume(D * N);
+  for (usize d = 0; d < D; ++d) {
+    sessions[d] = (first_day + static_cast<i64>(d)) * day;
+    for (usize i = 0; i < N; ++i) {
+      const auto drift=direction*(static_cast<f64>(i)-3.5)*.00002;
+      price[d*N+i]=100*std::exp(drift*static_cast<f64>(d));
+      volume[d*N+i]=1e8*static_cast<f64>(i+1);
+      member[d * N + i] = static_cast<u8>(d >= 63);
+    }
+  }
+  Json files;
+  if (!payload(dir, files, "sessions.i64", sessions) || !payload(dir, files, "ids.u64", std::vector<u64>{10,20,30,40,50,60,70,80}) ||
+      !payload(dir, files, "member.u8", member) || !payload(dir, files, "present.u8", present) ||
+      !payload(dir, files, "close.f64", price) || !payload(dir, files, "raw_close.f64", price) ||
+      !payload(dir, files, "volume.f64", volume)) return false;
+  const Json membership{{"rule", "research-prior63-usd-adv-topn-v1"}, {"top_n", N},
+      {"lookback_sessions",63}, {"lag_sessions",1}, {"min_raw_price_exclusive",5}, {"min_adv_exclusive",5000000},
+      {"ties","securityID-ascending"}, {"missing","complete-prior-calendar-window-required"}, {"common_stock_verified",false}};
+  return json_file(dir / "manifest.json", {{"schema","atx.recent-research-role/v1"}, {"status","complete"},
+      {"instrument_namespace","spiderrock.securityID"}, {"dates",D}, {"instruments",N}, {"score_begin",383}, {"score_end",D},
+      {"score_start_ns",sessions[383]}, {"score_end_ns",sessions.back()+day}, {"source_sha256",std::string(64,'a')},
+      {"membership_recipe",membership.dump()}, {"clock_recipe","modeled-session+22h-mark+23h-decision-v1"},
+      {"close_basis","f64(raw-f32-close)*f64-cumulReturnFactor"}, {"volume_basis","raw-share-volume"},
+      {"common_stock_verified",false}, {"historical_vintage_verified",false},
+      {"declared_output_bytes",D*N*26+D*8+N*8}, {"files",files}}, sha);
+}
+bool fixture(Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg) {
+  if (dir.path.empty()) return false;
+  cfg.library_path=(dir.path/"library.json").string();
+  cfg.train_manifest=(dir.path/"train"/"manifest.json").string();
+  cfg.validation_manifest=(dir.path/"validation"/"manifest.json").string();
+  cfg.output_directory=(dir.path/"output").string(); cfg.min_names=3; cfg.min_dates=8;
+  cfg.max_working_bytes=64ULL<<20;
+  if (!role(dir.path/"train",17683,cfg.train_sha256) ||
+      !role(dir.path/"validation",18200,cfg.validation_sha256,-1)) return false;
+  return json_file(cfg.library_path,{{"schema","atx.dsl-ic-library/v1"},{"id","synthetic-ic-two"},
+      {"fields",Json::array({{{"name","close"}},{{"name","raw_close"}},{{"name","volume"}}})},
+      {"families",Json::array({{{"id","fixed-volume"}}})},
+      {"candidates",Json::array({
+          {{"id","volume-level"},{"family","fixed-volume"},{"dsl","volume"},
+           {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}},
+          {{"id","volume-rank"},{"family","fixed-volume"},{"dsl","rank(volume)"},
+           {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}}})}},cfg.library_sha256);
+}
+Json read_json(const std::filesystem::path& path) { std::ifstream in(path); return Json::parse(in); }
+TEST(StrategyIcRunner, FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  std::ostringstream progress; auto status=atx::impl::strategy::run_ic(cfg,progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto summary=read_json(dir.path/"output"/"summary.json");
+  EXPECT_EQ(summary.at("status"),"complete"); EXPECT_EQ(summary.at("full_book_evaluations"),0);
+  ASSERT_EQ(summary.at("roles").size(),2U);
+  const auto orientations=read_json(dir.path/"output"/"orientations.json");
+  for (const auto& row:orientations.at("candidates")) EXPECT_EQ(row.at("sign"),1);
+  const auto& train=summary.at("roles").at(0); const auto& val=summary.at("roles").at(1);
+  EXPECT_EQ(train.at("candidate_evaluations"),2); EXPECT_EQ(val.at("candidate_evaluations"),2);
+  EXPECT_GT(train.at("combined_ic").at("horizons").at(1).at("rank").at("mean").get<f64>(),.99);
+  EXPECT_LT(val.at("combined_ic").at("horizons").at(1).at("rank").at("mean").get<f64>(),-.99);
+  for (const auto& row:val.at("candidates")) EXPECT_EQ(row.at("frozen_train_sign"),1);
+  const auto& long_h=train.at("combined_ic").at("horizons").at(2);
+  EXPECT_EQ(long_h.at("coverage").at("mature_dates"),33);
+  EXPECT_EQ(long_h.at("coverage").at("structural_tail_dates"),64);
+  EXPECT_FALSE(long_h.at("rank").at("inference_defined").get<bool>());
+  EXPECT_FALSE(train.at("combined_ic").at("reject").get<bool>());
+  EXPECT_FALSE(train.at("planned_target_proxy").at("actual_trades_or_costs").get<bool>());
+  EXPECT_NEAR(train.at("planned_target_proxy").at("deployment_turnover").get<f64>(),.25,1e-14);
+  auto sha=core::sha256_file((dir.path/"output"/"orientations.json").string()); ASSERT_TRUE(sha);
+  EXPECT_EQ(summary.at("orientations_artifact_sha256"),*sha);
+  EXPECT_NE(progress.str().find("IC eval-start"),std::string::npos);
+}
+TEST(StrategyIcRunner, PlanOnlyPinsMetadataAndNeverLoadsPayload) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.plan_only=true;
+  // Exact metadata pins remain intact; a payload is absent to prove no reader call.
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  std::ostringstream progress; EXPECT_TRUE(atx::impl::strategy::run_ic(cfg,progress));
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+  const auto plan=Json::parse(progress.str()); EXPECT_EQ(plan.at("candidates"),2);
+  EXPECT_GE(plan.at("max_compiled_slots").get<usize>(),1U);
+  cfg.train_sha256=std::string(64,'0');
+  EXPECT_FALSE(atx::impl::strategy::run_ic(cfg,progress));
+}
+TEST(StrategyIcRunner, InsufficientHorizonProducesNullRatherThanZeroMean) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Keep format geometry, move score start to leave only ten decision sessions.
+  for (const auto& path:{cfg.train_manifest,cfg.validation_manifest}) {
+    auto j=read_json(path); j["score_begin"]=470;
+    j["score_start_ns"]=j.at("score_end_ns").get<i64>()-10*day;
+    std::string pin; ASSERT_TRUE(json_file(path,j,pin));
+    if (path==cfg.train_manifest) cfg.train_sha256=pin; else cfg.validation_sha256=pin;
+  }
+  std::ostringstream progress; auto status=atx::impl::strategy::run_ic(cfg,progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto summary=read_json(dir.path/"output"/"summary.json");
+  const auto& horizons=summary.at("roles").at(0).at("combined_ic").at("horizons");
+  EXPECT_TRUE(horizons.at(1).at("rank").at("mean").is_null());
+  EXPECT_TRUE(horizons.at(2).at("rank").at("mean").is_null());
+  const auto orientations=read_json(dir.path/"output"/"orientations.json");
+  for (const auto& row:orientations.at("candidates")) EXPECT_EQ(row.at("sign"),0);
+}
+} // namespace
