@@ -3,6 +3,8 @@
 #include <algorithm> // std::sort, std::fill
 #include <cmath>     // std::isfinite, std::sqrt (OOF dispersion floor)
 #include <cstddef>   // std::ptrdiff_t (subset slice index)
+#include <bit>
+#include <string>
 #include <limits>    // std::numeric_limits (trace NaN for uncovered rows)
 #include <span>      // std::span
 #include <utility>   // std::move
@@ -18,6 +20,7 @@
 #include "atx/engine/learn/latent.hpp"         // LatentAugmentation, detail::pearson
 #include "atx/engine/learn/learned_source.hpp" // LearnedModel, ModelKind, GbtForest/Tree/Node, gbt_*_predict
 #include "atx/engine/learn/linear_alpha.hpp"   // detail::build_design, fit_standardization, pearson
+#include "atx/engine/parallel/det_pool.hpp"
 #include "atx/engine/learn/train.hpp"          // seed_for, date_label_spans, expand_date_folds, RowFold
 
 namespace atx::engine::learn {
@@ -499,22 +502,516 @@ namespace {
 
 } // namespace
 
-LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
-                     const GbtCfg &cfg) {
+namespace {
+using atx::f64;
+using atx::u64;
+using atx::usize;
+namespace co = atx::core;
+constexpr usize kMissingBin = 255;
+constexpr usize kHistogramWidth = 256;
+struct HistCell {
+  f64 gradient{};
+  atx::u32 count{};
+};
+struct FitBudget {
+  u64 maximum{}, used{};
+  bool add(u64 count, u64 width) {
+    if (width != 0 && count > (maximum - used) / width)
+      return false;
+    used += count * width;
+    return true;
+  }
+};
+co::Result<u64> v2_workspace(usize n, usize p, const GbtCfg &c) {
+  if (n == 0 || p == 0 || n > std::numeric_limits<atx::u32>::max() ||
+      p > std::numeric_limits<atx::u32>::max() || c.n_bins < 2 || c.n_bins > 255 ||
+      c.max_depth > 16 || c.n_trees == 0 || c.workers == 0 || c.workers > 64 ||
+      !std::isfinite(c.learning_rate) || c.learning_rate <= 0 || c.learning_rate > 1 ||
+      !std::isfinite(c.row_subsample) || c.row_subsample <= 0 || c.row_subsample > 1 ||
+      !std::isfinite(c.feature_subsample) || c.feature_subsample <= 0 || c.feature_subsample > 1 ||
+      !std::isfinite(c.min_child) || c.min_child < 1 || !std::isfinite(c.l2) || c.l2 < 0 ||
+      !std::isfinite(c.min_split_gain) || c.min_split_gain < 0)
+    return co::Err(co::ErrorCode::InvalidArgument, "GBT V2: invalid geometry/recipe");
+  const auto nodes = (u64{1} << (c.max_depth + 1U)) - 1U;
+  FitBudget b{c.max_working_bytes, 0};
+  // Owned bytes only; caller designs/labels are charged by their materializer.
+  // Parent/smaller/sibling histograms and row vectors can coexist along depth.
+  if (!b.add(n, p) || !b.add(n, 64) || !b.add(p, 4096) ||
+      !b.add(n, u64{c.max_depth + 2U} * 3U * sizeof(usize)) ||
+      !b.add(p, u64{c.max_depth + 2U} * 3U * kHistogramWidth * sizeof(HistCell)) ||
+      !b.add(c.n_trees, nodes * sizeof(GbtNode) + sizeof(GbtTree)) ||
+      !b.add(c.workers, 64U * 1024U) || !b.add(1, 64U * 1024U))
+    return co::Err(co::ErrorCode::OutOfRange, "GBT V2: fit workspace budget exceeded");
+  return co::Ok(b.used);
+}
+
+struct BinsV2 {
+  usize rows{}, features{};
+  std::vector<atx::u8> values; // feature-major: values[f*rows+r]
+  gbt_detail::BinEdges edges;
+};
+BinsV2 make_bins_v2(const gbt_lin::MatX &X, atx::u32 requested) {
+  BinsV2 out;
+  out.rows = static_cast<usize>(X.rows());
+  out.features = static_cast<usize>(X.cols());
+  out.values.resize(out.rows * out.features);
+  out.edges.edges.resize(out.features);
+  std::vector<f64> column;
+  column.reserve(out.rows);
+  for (usize f = 0; f < out.features; ++f) {
+    column.clear();
+    for (usize r = 0; r < out.rows; ++r) {
+      const auto value = X(static_cast<Eigen::Index>(r), static_cast<Eigen::Index>(f));
+      if (std::isfinite(value))
+        column.push_back(value);
+    }
+    std::sort(column.begin(), column.end());
+    auto &edges = out.edges.edges[f];
+    edges.reserve(requested - 1U);
+    if (!column.empty())
+      for (usize cut = 1; cut < requested; ++cut) {
+        const auto value = column[(cut * column.size()) / requested];
+        if (edges.empty() || value > edges.back())
+          edges.push_back(value);
+      }
+    for (usize r = 0; r < out.rows; ++r) {
+      const auto value = X(static_cast<Eigen::Index>(r), static_cast<Eigen::Index>(f));
+      out.values[f * out.rows + r] =
+          std::isnan(value)
+              ? static_cast<atx::u8>(kMissingBin)
+              : static_cast<atx::u8>(std::upper_bound(edges.begin(), edges.end(), value) -
+                                     edges.begin());
+    }
+  }
+  return out;
+}
+
+using Histogram = std::vector<HistCell>;
+struct SplitV2 {
+  usize feature_slot{}, bin{};
+  f64 gain{};
+  bool found{};
+};
+struct BuilderV2 {
+  const BinsV2 &bins;
+  const std::vector<f64> &gradient;
+  const std::vector<usize> &features;
+  const GbtCfg &cfg;
+  parallel::DetPool &pool;
+  GbtFitDiagnostics &stats;
+  std::vector<f64> &gains;
+
+  co::Result<Histogram> histogram(std::span<const usize> rows) {
+    Histogram out(features.size() * kHistogramWidth);
+    std::vector<atx::u8> invalid(features.size(), 0);
+    // Scheduling changes only the feature owner; every sum retains row order.
+    pool.parallel_for(features.size(), [&](usize slot, usize) {
+      const auto f = features[slot];
+      auto *hist = out.data() + slot * kHistogramWidth;
+      for (const auto r : rows) {
+        auto &cell = hist[bins.values[f * bins.rows + r]];
+        cell.gradient += gradient[r];
+        ++cell.count;
+        if (!std::isfinite(cell.gradient))
+          invalid[slot] = 1;
+      }
+    });
+    if (std::find(invalid.begin(), invalid.end(), atx::u8{1}) != invalid.end())
+      return co::Err(co::ErrorCode::OutOfRange, "GBT V2: histogram overflow");
+    if (features.size() != 0 &&
+        rows.size() > (std::numeric_limits<u64>::max() - stats.histogram_rows) / features.size())
+      return co::Err(co::ErrorCode::OutOfRange, "GBT V2: histogram counter overflow");
+    stats.histogram_rows += rows.size() * features.size();
+    return co::Ok(std::move(out));
+  }
+  co::Result<SplitV2> split(const Histogram &hist, f64 total, usize count, f64 floor) const {
+    SplitV2 best;
+    best.gain = floor;
+    const auto parent = total * total / (static_cast<f64>(count) + cfg.l2);
+    if (!std::isfinite(parent))
+      return co::Err(co::ErrorCode::OutOfRange, "GBT V2: parent gain overflow");
+    for (usize slot = 0; slot < features.size(); ++slot) {
+      f64 left = 0;
+      usize nleft = 0;
+      // The reserved missing bin remains on the right at every split.
+      const auto cuts = bins.edges.edges[features[slot]].size();
+      for (usize bin = 1; bin <= cuts; ++bin) {
+        const auto &cell = hist[slot * kHistogramWidth + bin - 1];
+        left += cell.gradient;
+        nleft += cell.count;
+        if (nleft > count)
+          return co::Err(co::ErrorCode::Internal, "GBT V2: histogram count differs");
+        const auto nright = count - nleft;
+        if (static_cast<f64>(nleft) < cfg.min_child || static_cast<f64>(nright) < cfg.min_child)
+          continue;
+        const auto right = total - left;
+        const auto gain = 0.5 * (left * left / (static_cast<f64>(nleft) + cfg.l2) +
+                                 right * right / (static_cast<f64>(nright) + cfg.l2) - parent);
+        if (!std::isfinite(gain))
+          return co::Err(co::ErrorCode::OutOfRange, "GBT V2: split gain overflow");
+        if (gain > best.gain)
+          best = {slot, bin, gain, true};
+      }
+    }
+    return co::Ok(best);
+  }
+  co::Result<atx::i32> grow(GbtTree &tree, const std::vector<usize> &rows, const Histogram &hist,
+                            atx::u32 depth, f64 gain_floor, bool root) {
+    f64 total = 0;
+    for (const auto r : rows)
+      total += gradient[r];
+    if (!std::isfinite(total))
+      return co::Err(co::ErrorCode::OutOfRange, "GBT V2: node sum overflow");
+    GbtNode node;
+    node.leaf_value = -total / (static_cast<f64>(rows.size()) + cfg.l2);
+    if (!std::isfinite(node.leaf_value))
+      return co::Err(co::ErrorCode::OutOfRange, "GBT V2: leaf overflow");
+    const auto self = static_cast<atx::i32>(tree.nodes.size());
+    tree.nodes.push_back(node);
+    if (depth == 0 || rows.size() < 2)
+      return co::Ok(self);
+    ATX_TRY(auto choice, split(hist, total, rows.size(), root ? 0.0 : gain_floor));
+    if (!choice.found)
+      return co::Ok(self);
+    const auto f = features[choice.feature_slot];
+    std::vector<usize> left, right;
+    left.reserve(rows.size());
+    right.reserve(rows.size());
+    for (const auto r : rows)
+      (bins.values[f * bins.rows + r] < choice.bin ? left : right).push_back(r);
+    if (left.empty() || right.empty())
+      return co::Ok(self);
+    const bool build_left = left.size() <= right.size();
+    ATX_TRY(auto smaller,
+            histogram(build_left ? std::span<const usize>{left} : std::span<const usize>{right}));
+    Histogram sibling(hist.size());
+    bool cancellation = false;
+    for (usize i = 0; i < hist.size(); ++i) {
+      if (smaller[i].count > hist[i].count)
+        return co::Err(co::ErrorCode::Internal, "GBT V2: invalid histogram subtraction");
+      sibling[i] = {hist[i].gradient - smaller[i].gradient, hist[i].count - smaller[i].count};
+      if (sibling[i].count == 0)
+        sibling[i].gradient = 0; // no phantom gradient in an empty bin
+      else if (std::abs(sibling[i].gradient) <=
+               64 * std::numeric_limits<f64>::epsilon() *
+                   (std::abs(hist[i].gradient) + std::abs(smaller[i].gradient)))
+        cancellation = true;
+      if (!std::isfinite(sibling[i].gradient))
+        return co::Err(co::ErrorCode::OutOfRange, "GBT V2: histogram subtraction overflow");
+    }
+    if (cancellation) {
+      ATX_TRY(sibling,
+              histogram(build_left ? std::span<const usize>{right} : std::span<const usize>{left}));
+      ++stats.histogram_rebuilds;
+    }
+    ++stats.histogram_subtractions;
+    const auto &left_hist = build_left ? smaller : sibling;
+    const auto &right_hist = build_left ? sibling : smaller;
+    node.is_leaf = false;
+    node.feature = static_cast<atx::u32>(f);
+    node.threshold = bins.edges.edges[f][choice.bin - 1];
+    ATX_TRY(node.left, grow(tree, left, left_hist, depth - 1, gain_floor, false));
+    ATX_TRY(node.right, grow(tree, right, right_hist, depth - 1, gain_floor, false));
+    gains[f] += choice.gain;
+    if (!std::isfinite(gains[f]))
+      return co::Err(co::ErrorCode::OutOfRange, "GBT V2: importance overflow");
+    tree.nodes[static_cast<usize>(self)] = node;
+    return co::Ok(self);
+  }
+};
+
+f64 matrix_tree_predict(const GbtTree &tree, const gbt_lin::MatX &X, usize row) {
+  atx::i32 index = 0;
+  for (usize steps = 0; steps < tree.nodes.size(); ++steps) {
+    const auto &node = tree.nodes[static_cast<usize>(index)];
+    if (node.is_leaf)
+      return node.leaf_value;
+    index =
+        X(static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(node.feature)) < node.threshold
+            ? node.left
+            : node.right;
+  }
+  return std::numeric_limits<f64>::quiet_NaN();
+}
+} // namespace
+
+co::Result<GbtForest> fit_gbt_forest_checked(const gbt_lin::MatX &X, const gbt_lin::VecX &y,
+                                             const GbtCfg &cfg, u64 seed,
+                                             std::span<const usize> row_dates,
+                                             GbtFitDiagnostics *diagnostics) {
+  if (cfg.rule == GbtRule::LegacyV1) {
+    if (X.rows() != y.size())
+      return co::Err(co::ErrorCode::InvalidArgument, "GBT: label shape differs");
+    const auto edges = gbt_detail::fit_bin_edges(X, cfg.n_bins);
+    if (diagnostics)
+      *diagnostics = GbtFitDiagnostics{};
+    return co::Ok(gbt_detail::fit_forest(X, y, edges, cfg, seed));
+  }
+  if (cfg.rule != GbtRule::ColumnBinsV2 || X.rows() != y.size())
+    return co::Err(co::ErrorCode::InvalidArgument, "GBT V2: rule/label shape");
+  const auto n = static_cast<usize>(X.rows()), p = static_cast<usize>(X.cols());
+  ATX_TRY(const auto budget, v2_workspace(n, p, cfg));
+  if (cfg.demean_loss_by_date &&
+      (row_dates.size() != n || !std::is_sorted(row_dates.begin(), row_dates.end())))
+    return co::Err(co::ErrorCode::InvalidArgument, "GBT V2: ordered original row dates required");
+  for (Eigen::Index r = 0; r < X.rows(); ++r) {
+    if (!std::isfinite(y(r)))
+      return co::Err(co::ErrorCode::InvalidArgument, "GBT V2: nonfinite used label");
+    for (Eigen::Index f = 0; f < X.cols(); ++f)
+      if (std::isinf(X(r, f)))
+        return co::Err(co::ErrorCode::InvalidArgument, "GBT V2: infinite feature");
+  }
+  GbtFitDiagnostics stats;
+  stats.rule = cfg.rule;
+  stats.workspace_bound_bytes = budget;
+  stats.bin_bytes = n * p;
+  stats.forest_fits = 1;
+  auto bins = make_bins_v2(X, cfg.n_bins);
+  GbtForest forest;
+  forest.trees.reserve(cfg.n_trees);
+  if (!cfg.demean_loss_by_date) {
+    for (usize r = 0; r < n; ++r)
+      forest.base += y(static_cast<Eigen::Index>(r));
+    forest.base /= static_cast<f64>(n);
+  }
+  std::vector<f64> prediction(n, forest.base), gradient(n), gains(p, 0);
+  f64 variance = 0;
+  for (usize r = 0; r < n; ++r) {
+    const auto value = y(static_cast<Eigen::Index>(r)) - forest.base;
+    variance += value * value;
+  }
+  if (cfg.demean_loss_by_date) {
+    variance = 0;
+    for (usize first = 0; first < n;) {
+      usize last = first + 1;
+      while (last < n && row_dates[last] == row_dates[first])
+        ++last;
+      f64 mean = 0;
+      for (usize r = first; r < last; ++r)
+        mean += y(static_cast<Eigen::Index>(r));
+      mean /= static_cast<f64>(last - first);
+      for (usize r = first; r < last; ++r) {
+        const auto delta = y(static_cast<Eigen::Index>(r)) - mean;
+        variance += delta * delta;
+      }
+      first = last;
+    }
+  }
+  const auto gain_floor = cfg.min_split_gain * (variance / static_cast<f64>(n));
+  if (!std::isfinite(forest.base) || !std::isfinite(gain_floor))
+    return co::Err(co::ErrorCode::OutOfRange, "GBT V2: label moments overflow");
+  parallel::DetPool pool{cfg.workers};
+  for (atx::u32 t = 0; t < cfg.n_trees; ++t) {
+    for (usize r = 0; r < n; ++r)
+      gradient[r] = prediction[r] - y(static_cast<Eigen::Index>(r));
+    if (cfg.demean_loss_by_date) {
+      for (usize first = 0; first < n;) {
+        usize last = first + 1;
+        while (last < n && row_dates[last] == row_dates[first])
+          ++last;
+        f64 mean = 0;
+        for (usize r = first; r < last; ++r)
+          mean += gradient[r];
+        mean /= static_cast<f64>(last - first);
+        for (usize r = first; r < last; ++r)
+          gradient[r] -= mean;
+        first = last;
+      }
+    }
+    for (const auto value : gradient)
+      if (!std::isfinite(value))
+        return co::Err(co::ErrorCode::OutOfRange, "GBT V2: gradient overflow");
+    atx::core::Xoshiro256pp row_rng{seed_for(seed, "gbt-rows", t, 0)},
+        feature_rng{seed_for(seed, "gbt-feat", t, 0)};
+    const auto rows = gbt_detail::seeded_subset(n, cfg.row_subsample, row_rng);
+    const auto features = gbt_detail::seeded_subset(p, cfg.feature_subsample, feature_rng);
+    BuilderV2 builder{bins, gradient, features, cfg, pool, stats, gains};
+    ATX_TRY(auto hist, builder.histogram(rows));
+    GbtTree tree;
+    tree.nodes.reserve(static_cast<usize>((u64{1} << (cfg.max_depth + 1U)) - 1U));
+    ATX_TRY(auto root, builder.grow(tree, rows, hist, cfg.max_depth, gain_floor, true));
+    (void)root;
+    for (auto &node : tree.nodes)
+      if (node.is_leaf)
+        node.leaf_value *= cfg.learning_rate;
+    for (usize r = 0; r < n; ++r) {
+      prediction[r] += matrix_tree_predict(tree, X, r);
+      if (!std::isfinite(prediction[r]))
+        return co::Err(co::ErrorCode::OutOfRange, "GBT V2: prediction overflow");
+    }
+    forest.trees.push_back(std::move(tree));
+  }
+  f64 total = 0;
+  for (auto gain : gains)
+    total += gain;
+  if (!std::isfinite(total))
+    return co::Err(co::ErrorCode::OutOfRange, "GBT V2: total importance overflow");
+  if (total > 0)
+    for (auto &gain : gains)
+      gain /= total;
+  stats.split_gain_total = total;
+  stats.gain_importance = std::move(gains);
+  if (diagnostics)
+    *diagnostics = std::move(stats);
+  return co::Ok(std::move(forest));
+}
+
+namespace {
+co::Result<usize> v2_augmented_columns(usize base, const LatentAugmentation &aug) {
+  const auto latent = aug.pca ? aug.pca->k : 0U;
+  const auto maximum = std::numeric_limits<atx::u32>::max();
+  if (base == 0 || base > maximum || latent > maximum - base ||
+      aug.interactions.size() > maximum - base - latent)
+    return co::Err(co::ErrorCode::OutOfRange, "GBT V2: augmented column geometry");
+  if (aug.pca && latent != 0 &&
+      (aug.pca->model.mean.size() != static_cast<Eigen::Index>(base) ||
+       aug.pca->model.components.rows() != static_cast<Eigen::Index>(base) ||
+       aug.pca->model.components.cols() != static_cast<Eigen::Index>(latent) ||
+       !aug.pca->model.mean.allFinite() || !aug.pca->model.components.allFinite()))
+    return co::Err(co::ErrorCode::InvalidArgument, "GBT V2: malformed PCA basis");
+  for (auto [a, b] : aug.interactions)
+    if (a >= base || b >= base)
+      return co::Err(co::ErrorCode::InvalidArgument, "GBT V2: interaction outside feature axis");
+  return co::Ok(base + latent + aug.interactions.size());
+}
+co::Result<u64> v2_model_workspace(usize rows, usize base, const LatentAugmentation &aug,
+                                   const GbtCfg &cfg, bool trace) {
+  if (cfg.cpcv.rule != eval::CpcvRule::DateV2 ||
+      cfg.protocol.fold_aug != FoldAugRule::FoldLocalV2 || cfg.horizons.empty() ||
+      cfg.horizons.size() > 256 || cfg.cpcv.n_groups > 20 || cfg.cpcv.n_groups < 2 ||
+      cfg.cpcv.n_test_groups == 0 || cfg.cpcv.n_test_groups >= cfg.cpcv.n_groups)
+    return co::Err(co::ErrorCode::InvalidArgument, "GBT V2: DateV2/fold-local recipe required");
+  ATX_TRY(auto columns, v2_augmented_columns(base, aug));
+  ATX_TRY(auto backend, v2_workspace(rows, columns, cfg));
+  const auto nodes = (u64{1} << (cfg.max_depth + 1U)) - 1U;
+  const auto forest_bytes = u64{cfg.n_trees} * (nodes * sizeof(GbtNode) + sizeof(GbtTree));
+  FitBudget b{cfg.max_working_bytes, 0};
+  // Includes simultaneous train/test f64 designs, OOF/row scratch, augmentation
+  // covariance work, retained deployed forests/shell copies and the separately
+  // checked CPCV plan/expanded rows/metadata ceilings. Caller FeatureMatrix is
+  // not owned here; the dataset bridge charges its materialization separately.
+  if (!b.add(backend, 1) || !b.add(rows, columns * 16U + 256U) || !b.add(base, base * 64U) ||
+      !b.add(cfg.cpcv.max_working_bytes, 3U) || !b.add(cfg.horizons.size(), forest_bytes * 3U))
+    return co::Err(co::ErrorCode::OutOfRange, "GBT V2: model fit aggregate budget");
+  if (trace) {
+    const auto folds = eval::detail::binomial(cfg.cpcv.n_groups, cfg.cpcv.n_test_groups);
+    FitBudget per_fold{cfg.max_working_bytes, 0};
+    if (!per_fold.add(rows, 32U) || !per_fold.add(forest_bytes, 2U) ||
+        !per_fold.add(base, base * 16U + 64U) || !b.add(folds * cfg.horizons.size(), per_fold.used))
+      return co::Err(co::ErrorCode::OutOfRange, "GBT V2: retained trace budget");
+  }
+  return co::Ok(b.used);
+}
+co::Status accumulate_fit_stats(GbtFitDiagnostics &out, const GbtFitDiagnostics &in,
+                                bool deployed) {
+  out.rule = GbtRule::ColumnBinsV2;
+  out.bin_bytes = std::max(out.bin_bytes, in.bin_bytes);
+  out.workspace_bound_bytes = std::max(out.workspace_bound_bytes, in.workspace_bound_bytes);
+  const auto add = [](u64 &a, u64 b) {
+    if (b > std::numeric_limits<u64>::max() - a)
+      return false;
+    a += b;
+    return true;
+  };
+  if (!add(out.forest_fits, in.forest_fits) || !add(out.histogram_rows, in.histogram_rows) ||
+      !add(out.histogram_subtractions, in.histogram_subtractions) ||
+      !add(out.histogram_rebuilds, in.histogram_rebuilds))
+    return co::Err(co::ErrorCode::OutOfRange, "GBT V2: fit diagnostic counter overflow");
+  if (deployed) {
+    if (out.gain_importance.empty())
+      out.gain_importance.assign(in.gain_importance.size(), 0);
+    if (out.gain_importance.size() != in.gain_importance.size())
+      return co::Err(co::ErrorCode::Internal, "GBT V2: deployed importance geometry");
+    for (usize i = 0; i < in.gain_importance.size(); ++i) {
+      out.gain_importance[i] += in.gain_importance[i] * in.split_gain_total;
+      if (!std::isfinite(out.gain_importance[i]))
+        return co::Err(co::ErrorCode::OutOfRange, "GBT V2: aggregate importance overflow");
+    }
+    out.split_gain_total += in.split_gain_total;
+    if (!std::isfinite(out.split_gain_total))
+      return co::Err(co::ErrorCode::OutOfRange, "GBT V2: aggregate split gain overflow");
+  }
+  return co::Ok();
+}
+std::string gbt_v2_recipe(const GbtCfg &c) {
+  std::string out =
+      "gbt-column-bins-v2;missing255-fixed-right;hist-subtract-cancel-rebuild-v1;early-stop=none";
+  const auto word = [&](u64 v) {
+    out += ';';
+    out += std::to_string(v);
+  };
+  for (u64 v : {static_cast<u64>(c.rule), u64{c.n_trees}, u64{c.max_depth}, u64{c.n_bins},
+                c.master_seed, u64{c.demean_loss_by_date}, static_cast<u64>(c.protocol.fold_aug),
+                static_cast<u64>(c.protocol.trials), static_cast<u64>(c.protocol.blend_ic),
+                eval::cpcv_recipe_identity(c.cpcv)})
+    word(v);
+  for (f64 v :
+       {c.learning_rate, c.row_subsample, c.feature_subsample, c.min_child, c.l2, c.min_split_gain})
+    word(std::bit_cast<u64>(v));
+  for (auto h : c.horizons)
+    word(h);
+  return out; // worker count is not a numerical recipe input
+}
+} // namespace
+
+co::Result<DatasetGbtFit> fit_gbt_dataset(const PanelDataset &dataset, usize begin, usize end,
+                                          usize asof, u64 max_bytes, const LatentAugmentation &aug,
+                                          const GbtCfg &cfg, LearnFitTrace *trace) {
+  const auto &source = dataset.config();
+  if (cfg.rule != GbtRule::ColumnBinsV2 || begin >= end || end > source.session_keys.size() ||
+      asof >= source.session_keys.size() || end - 1 > asof ||
+      (aug.pca && aug.pca->fit_upto_date > asof))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "dataset GBT: V2/bounded asof/nonfuture PCA required");
+  if (cfg.horizons.size() != source.holding_horizons.size())
+    return co::Err(co::ErrorCode::InvalidArgument, "dataset GBT: horizon identity differs");
+  for (usize h = 0; h < cfg.horizons.size(); ++h) {
+    const auto endpoint = usize{source.holding_horizons[h]} + source.execution_delay;
+    if (endpoint > std::numeric_limits<atx::u16>::max() || cfg.horizons[h] != endpoint)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "dataset GBT: holding-plus-delay endpoint differs");
+  }
+  const auto count = source.instrument_ids.size(), features = source.feature_names.size() * 2U;
+  if (count != 0 && end - begin > std::numeric_limits<usize>::max() / count)
+    return co::Err(co::ErrorCode::OutOfRange, "dataset GBT: row bound overflow");
+  const auto rows = (end - begin) * count;
+  ATX_TRY(auto fit_bytes, v2_model_workspace(rows, features, aug, cfg, trace != nullptr));
+  FitBudget combined{cfg.max_working_bytes, fit_bytes};
+  if (!combined.add(1, 32U * 1024U * 1024U) || !combined.add(source.max_mapped_bytes, 1U) ||
+      !combined.add(rows, u64{features + cfg.horizons.size()} * 8U + 192U))
+    return co::Err(co::ErrorCode::OutOfRange, "dataset GBT: combined materialization/fit budget");
+  ATX_TRY(auto fm, read_dataset_features(dataset, begin, end, asof, max_bytes));
+  GbtFitDiagnostics diagnostics;
+  ATX_TRY(auto model, fit_gbt_checked(fm, aug, cfg, trace, &diagnostics));
+  diagnostics.workspace_bound_bytes = combined.used;
+  return co::Ok(DatasetGbtFit{std::move(model), fm.dataset_manifest_sha256, fm.dataset_recipe,
+                              gbt_v2_recipe(cfg), std::move(diagnostics)});
+}
+
+LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug, const GbtCfg &cfg) {
   return fit_gbt(fm, aug, cfg, nullptr);
 }
 
-LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
-                        const GbtCfg &cfg, LearnFitTrace *trace) {
+LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug, const GbtCfg &cfg,
+                     LearnFitTrace *trace) {
   auto result = fit_gbt_checked(fm, aug, cfg, trace);
   ATX_CHECK(result.has_value());
   return std::move(*result);
 }
 
-atx::core::Result<LearnedModel> fit_gbt_checked(
-    const FeatureMatrix &fm, const LatentAugmentation &aug,
-    const GbtCfg &cfg, LearnFitTrace *trace) {
+atx::core::Result<LearnedModel> fit_gbt_checked(const FeatureMatrix &fm,
+                                                const LatentAugmentation &aug, const GbtCfg &cfg,
+                                                LearnFitTrace *trace,
+                                                GbtFitDiagnostics *diagnostics) {
   ATX_TRY_VOID(validate_date_cpcv_inputs(fm, cfg.horizons, cfg.cpcv));
+  GbtFitDiagnostics fit_stats;
+  if (cfg.rule == GbtRule::ColumnBinsV2) {
+    ATX_TRY(fit_stats.workspace_bound_bytes,
+            v2_model_workspace(fm.n_rows(), fm.n_features, aug, cfg, trace != nullptr));
+    fit_stats.rule = cfg.rule;
+  } else if (cfg.rule != GbtRule::LegacyV1) {
+    return co::Err(co::ErrorCode::InvalidArgument, "GBT: unknown fit rule");
+  }
   LearnedModel m;
   std::vector<eval::CpcvMetadata> cpcv_metadata;
   m.kind = ModelKind::Gbt;
@@ -548,14 +1045,14 @@ atx::core::Result<LearnedModel> fit_gbt_checked(
     ATX_TRY(auto plan, learn_cpcv_plan(fm, cfg.horizons[h], cfg.cpcv));
     ATX_TRY(auto folds, expand_date_folds_checked(plan.folds, fm, cfg.cpcv));
     if (cfg.cpcv.rule == eval::CpcvRule::DateV2)
-      ATX_TRY_VOID(retain_cpcv_metadata(cpcv_metadata, std::move(plan.metadata), cfg.cpcv.max_working_bytes));
+      ATX_TRY_VOID(retain_cpcv_metadata(cpcv_metadata, std::move(plan.metadata),
+                                        cfg.cpcv.max_working_bytes));
 
     std::vector<atx::f64> oos_pred;
     std::vector<atx::f64> oos_label;
     std::vector<atx::f64> oof_sum_h(fm.n_rows(), 0.0); // horizon-h OOF (MeanDateIcV2)
     std::vector<atx::u32> oof_cnt_h(fm.n_rows(), 0U);
-    const atx::usize sel_label =
-        fold_selection_label(std::span<const atx::u16>{cfg.horizons}, h);
+    const atx::usize sel_label = fold_selection_label(std::span<const atx::u16>{cfg.horizons}, h);
     atx::usize fold_idx = 0;
     for (const RowFold &f : folds) {
       // Fold-local standardization on the TRAIN rows only (M2), applied forward to
@@ -569,17 +1066,28 @@ atx::core::Result<LearnedModel> fit_gbt_checked(
                                          sel_label, cfg.protocol.fold_aug);
       gbt_lin::MatX Xtr;
       gbt_lin::VecX ytr;
-      const atx::usize ntr = detail::build_design(
-          fm, fold_shell, std::span<const atx::usize>{f.train_rows}, h, Xtr, ytr);
+      std::vector<atx::usize> kept_train;
+      const atx::usize ntr =
+          detail::build_design(fm, fold_shell, std::span<const atx::usize>{f.train_rows}, h, Xtr,
+                               ytr, cfg.rule == GbtRule::ColumnBinsV2 ? &kept_train : nullptr);
       if (ntr == 0U) {
         ++fold_idx;
         continue;
       }
       // TRAIN-only bin edges, then a fold-local boosted forest (seeded per fold so
       // distinct folds draw distinct subsamples but are reproducible — M1).
-      const gbt_detail::BinEdges be = gbt_detail::fit_bin_edges(Xtr, cfg.n_bins);
       const atx::u64 fold_seed = seed_for(cfg.master_seed, "gbt-fold", h, fold_idx);
-      const GbtForest forest = gbt_detail::fit_forest(Xtr, ytr, be, cfg, fold_seed);
+      GbtForest forest;
+      if (cfg.rule == GbtRule::LegacyV1) {
+        const auto be = gbt_detail::fit_bin_edges(Xtr, cfg.n_bins);
+        forest = gbt_detail::fit_forest(Xtr, ytr, be, cfg, fold_seed);
+      } else {
+        for (auto &row : kept_train)
+          row = fm.row_date[row];
+        GbtFitDiagnostics local;
+        ATX_TRY(forest, fit_gbt_forest_checked(Xtr, ytr, cfg, fold_seed, kept_train, &local));
+        ATX_TRY_VOID(accumulate_fit_stats(fit_stats, local, false));
+      }
       ++n_fold_fits;
 
       gbt_lin::MatX Xte;
@@ -628,12 +1136,23 @@ atx::core::Result<LearnedModel> fit_gbt_checked(
     // full-window standardization + full-window bin edges (forward-applied, M2).
     gbt_lin::MatX Xfull;
     gbt_lin::VecX yfull;
+    std::vector<atx::usize> kept_full;
     const atx::usize nfull =
-        detail::build_design(fm, m, std::span<const atx::usize>{all_valid}, h, Xfull, yfull);
+        detail::build_design(fm, m, all_valid, h, Xfull, yfull,
+                             cfg.rule == GbtRule::ColumnBinsV2 ? &kept_full : nullptr);
     if (nfull > 0U) {
-      const gbt_detail::BinEdges be = gbt_detail::fit_bin_edges(Xfull, cfg.n_bins);
       const atx::u64 deploy_seed = seed_for(cfg.master_seed, "gbt-deploy", h, 0U);
-      m.forests[h] = gbt_detail::fit_forest(Xfull, yfull, be, cfg, deploy_seed);
+      if (cfg.rule == GbtRule::LegacyV1) {
+        const auto be = gbt_detail::fit_bin_edges(Xfull, cfg.n_bins);
+        m.forests[h] = gbt_detail::fit_forest(Xfull, yfull, be, cfg, deploy_seed);
+      } else {
+        for (auto &row : kept_full)
+          row = fm.row_date[row];
+        GbtFitDiagnostics local;
+        ATX_TRY(m.forests[h],
+                fit_gbt_forest_checked(Xfull, yfull, cfg, deploy_seed, kept_full, &local));
+        ATX_TRY_VOID(accumulate_fit_stats(fit_stats, local, true));
+      }
     }
   }
 
@@ -673,6 +1192,11 @@ atx::core::Result<LearnedModel> fit_gbt_checked(
       w = u;
     }
   }
+  if (cfg.rule == GbtRule::ColumnBinsV2 && fit_stats.split_gain_total > 0)
+    for (auto &gain : fit_stats.gain_importance)
+      gain /= fit_stats.split_gain_total;
+  if (diagnostics)
+    *diagnostics = std::move(fit_stats);
   m.cpcv_metadata = std::move(cpcv_metadata);
   return atx::core::Ok(std::move(m));
 }
