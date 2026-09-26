@@ -155,6 +155,21 @@ co::Result<RoleSpec> admit_role(const RunnerConfig& cfg, const Library& lib,
     return co::Err(co::ErrorCode::Unavailable, "strategy: combined role/VM/surface/context/scratch budget; use a smaller declared role");
   if (claims && (!b.add(cells, 1) || !b.add(d, 64) || !b.add(claims->events.size(), 8192) || !b.add(1, 2 * metadata_limit)))
     return co::Err(co::ErrorCode::Unavailable, "strategy: additional cash-claim context/diagnostic budget");
+  if (claims) {
+    // TRAIN keeps both orientations, while every declared role keeps two
+    // combined summaries. Charge the complete run even while loading one role:
+    // earlier role summaries stay in the root report. Two further slots cover
+    // live trial/receipt scratch. Bounded event IDs and the fixed recognition /
+    // event-use schema fit an 8 KiB envelope per event, plus 8 KiB fixed summary
+    // overhead. Four representations conservatively cover retained JSON,
+    // role/receipt copies and pretty-printed serialization during publication.
+    // C<=64, E<=256 and roles<=3 are checked before this arithmetic.
+    const u64 roles = cfg.holdout_manifest.empty() ? 2 : 3;
+    const u64 summary_slots = 2 * static_cast<u64>(lib.candidates.size()) + 2 * roles + 2;
+    const u64 bytes_per_slot = 8192 * (1 + static_cast<u64>(claims->events.size()));
+    if (!b.add(summary_slots, 4 * bytes_per_slot))
+      return co::Err(co::ErrorCode::Unavailable, "strategy: retained cash-claim summary/copy/serialization budget");
+  }
   return co::Ok(RoleSpec{std::move(path), std::move(sha), std::move(role), std::move(j), b.used});
 }
 co::Result<std::vector<u32>> make_guard(const en::data::StrategyRoleData& role) {
