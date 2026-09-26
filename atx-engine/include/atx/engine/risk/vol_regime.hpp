@@ -50,14 +50,43 @@
 
 #include <cmath>   // std::sqrt
 #include <utility> // std::move
+#include <span>
+#include <vector>
 
 #include <Eigen/Dense>
 
 #include "atx/core/types.hpp" // f64, usize
+#include "atx/core/error.hpp"
 
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX (column-major Eigen)
 
 namespace atx::engine::risk {
+
+struct PriorVarianceForecasts {
+  atx::core::linalg::MatX variances; // T x K, forecast at the start of each realized session
+  // Newest-first session ages. At realized row r, available_age[r] must be
+  // strictly greater than that row's age. max(usize) explicitly means unknown.
+  std::vector<atx::usize> available_ages;
+  atx::core::linalg::MatX weights; // optional T x K known-prior cross-section weights
+};
+
+struct RegimeAdjustV2 {
+  atx::f64 lambda2{1.0};
+  bool available{false};
+  atx::usize dates_used{};
+  atx::usize pairs_used{};
+  atx::usize pairs_unavailable{};
+  atx::core::linalg::VecX bias_squared; // NaN for a date without eligible observed forecasts
+};
+
+// No current covariance is accepted here. Forecast values, clocks and optional
+// cap weights must be actual records available before their corresponding
+// realized return. Unavailable observations are reported, never made neutral
+// calibration samples. Separate calls/inputs are required for factor/specific.
+[[nodiscard]] atx::core::Result<RegimeAdjustV2> vol_regime_multiplier_v2(
+    const atx::core::linalg::MatX& realized, const PriorVarianceForecasts& prior,
+    std::span<const atx::usize> session_ages, atx::usize half_life = 42,
+    atx::usize min_dates = 21, atx::u64 max_working_bytes = 268'435'456);
 
 // The VRA result: the market-wide volatility-regime multiplier λ² (applied to F and
 // D in the build path) and the per-kept-date factor cross-sectional bias-statistic
