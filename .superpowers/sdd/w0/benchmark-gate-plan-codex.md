@@ -1,8 +1,11 @@
 # W0 fair benchmark gate preparation
 
-Baseline lease and configuration preparation are complete; no target build or
-measurement has started. Root owns integrated correctness and merges, and will
-release compiler slots and the later quiet measurement window separately.
+Both isolated Release builds and identical 81-case registries are complete;
+measurements have not started. The current compiled production snapshot is
+`b185d056440704e7ebcfe2b9395601d7e5264269` (docs-only child `766bac4a`);
+the new D0 VWAP follow-up may require an incremental current build before timing.
+Root owns integration and release of the quiet measurement window. The preflight
+report records actual build/cache/no-op evidence and the allocation model.
 
 ## Authorized preparation receipt
 
@@ -18,7 +21,7 @@ exited 0 (52.9 seconds). Its completed cache confirms Release, equity only,
 benchmarks enabled, all test groups, and
 `FETCHCONTENT_BASE_DIR=C:/atx-wt/pool-6/deps/equity-bench`.
 
-No target compilation or measurement has started. The read-only Ninja command
+At initial preparation, no target compilation or measurement had started. The Ninja command
 graph contains 224 compiler commands / 234 total commands for bench plus worker;
 this is the full dependency closure, not a claim of remaining cache misses.
 The dry-run stopped at CMake regeneration, so an exact remaining-action count
@@ -74,15 +77,36 @@ same process affinity to both runs. Record mask/topology and competing-process
 state. If a mask cannot be verified, disclose that and resolve before claiming a
 P-core benchmark.
 
-Explicitly set `ATX_WQ101_INSTRUMENTS=500`; the fixture is synthetic, 2520 dates,
-70 alphas. Clear optional real-data environment variables. The 3000-name setting
-uses roughly six times the panel/slot storage and is not this 16 GiB host gate.
-The warm-cache case additionally permits a 2 GiB cache; reserve memory accordingly.
+Explicitly set `ATX_WQ101_INSTRUMENTS=128` in BOTH snapshots; the fixture remains
+synthetic with 2520 dates, all 70 alphas, and every 1/2/4/8/16-worker variant. This
+revises the earlier agent-selected 500-name protocol before any measurement, as
+authorized by the user's RAM-workaround instruction and root. The authoritative
+W0 plan sets no 500-name floor. This is a bounded-workload regression gate; larger
+production-scale gates remain required by later tasks. Clear inherited ATX
+environment variables and pin search dimensions to 756 dates, 500 names and six
+generations. Optimizer sizes remain 1000/3000/5000.
+
+Use five disjoint native process batches per snapshot: 33 raw kernels, 20 WQ101,
+15 SearchThroughput, nine optimizer, and four scalar/multiobjective search cases.
+Run baseline then current for each family, serially. Every native process has
+three repetitions and verified P-core affinity 0xFF. Process exit releases its
+fixture/cache/scratch allocations before the next family. Keep native JSONs and
+contexts; concatenate unchanged rows only for the existing comparison script.
+Require the combined set to equal all 81 registered cases with no duplicates,
+errors, skips or nonpositive times, exactly three iteration rows and an independently
+verified median per case. No filter or threshold is weakened.
+
+The source-only allocation model estimates WQ128's dominant cold-cache warmup
+payload at 2.202 GiB. Launch with at least 3 GiB available and sample process peak
+working set/private memory and host available memory once per second. A run stopped
+for memory pressure is failed evidence. The 2 GiB cache holds all 549 modeled
+cacheable nodes at this size (~1.319 GiB), so cache-eviction pressure at 500 names
+is explicitly unmeasured; warm root-hit behavior is still exercised.
 
 For baseline and current, use identical arguments and distinct output files:
 
 ```powershell
-$env:ATX_WQ101_INSTRUMENTS='500'
+$env:ATX_WQ101_INSTRUMENTS='128'
 & "$P/build-equity-bench/bin/atx-engine-bench.exe" '--benchmark_filter=^BM_Kernel|^Wq101_|^BM_Search|^BM_OptimizerProduction/M:(1000|3000|5000)/mode:(4|6|7)/' '--benchmark_repetitions=3' '--benchmark_out_format=json' "--benchmark_out=$OutputJson"
 # Require native exit 0 and every expected case/repetition present.
 ```
