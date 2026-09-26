@@ -1,6 +1,6 @@
 # I1/E2 declaration catalog and equity-IC consumer — source qualification
 
-Production: `ec9182666a36664898e6c5f133b4389ccaef5de4`; resource-accounting follow-up `e79abf882bab4b8d70f4ba172a8dd56d7d80bbf6`. Postimplementation fixtures: `9ee644582a2cef6829377dd248327a78fdc41ba3`. Root owns the matching config/parser/shared validator at `a8d41b360ba4fe157ef5ad0317591e3bf75a6b22`, read-only reviewed for the expected names/contract. No CMake, ledger, warehouse or real catalog was changed by this lane. No compilation or runtime checks were run.
+Production: `ec9182666a36664898e6c5f133b4389ccaef5de4`; resource-accounting follow-up `e79abf882bab4b8d70f4ba172a8dd56d7d80bbf6`. Postimplementation fixtures: `9ee644582a2cef6829377dd248327a78fdc41ba3`. Independent-review repairs `5bd681b5429be335e97e1a1ab94e5c9285233eab` bind the exact published failure bytes and explicitly charge replacement-index growth after old-index/JSON scratch. Root owns the matching config/parser/shared validator at `a8d41b360ba4fe157ef5ad0317591e3bf75a6b22`, read-only reviewed for the expected names/contract. No CMake, ledger, warehouse or real catalog was changed by this lane. No compilation or runtime checks were run.
 
 ## Implemented consumer and accounting
 
@@ -17,6 +17,8 @@ Bootstrap streams currently depend on positional indices: moving a family or cha
 ## Failure and identity protocol
 
 Each event is framed as 8-byte magic, 8 decimal length bytes, canonical JSON, 64 lowercase SHA256 bytes and newline. The JSON binds epoch, schema, sequence and prior head. Each operation takes a fail-fast exclusive OS file lock over the existing handle, scans/verifies all bounded events and requires the exact expected external head. No adjacent mutable sidecar is trusted. Sixty-four zeros permit an empty catalog only; reopening an existing nonempty catalog with zeros or a stale head fails before a new reservation.
+
+The current consumer serializes catalog mutation through explicit head handoff. It does not silently merge another writer's events while a handle is running: an intervening valid append makes that handle stale, and finalization then requires reopening with a trusted current anchor. Catalog proof means correspondence to hash-bound declarations, not authentication of a caller. The actual stage computes prereg/family digests from the same validated bytes; generic API callers retain that input-provenance obligation.
 
 Append validates and allocates its next index before writing, then flushes and uses `_commit`/`fsync` before acknowledging the event. A partial write or failed sync poisons the handle. Torn/checksum-invalid frames fail closed without truncating or repairing any bytes. A valid pending reservation survives process death and stays counted. Filesystem/power-loss guarantees beyond the OS sync contract are not claimed.
 
