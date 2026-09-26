@@ -85,16 +85,25 @@ symbol is normalized (upper case; ``.``, ``/`` and blanks -> ``-``):
    dominance-resolved conflict) is never linked. A line whose RI1 candidates
    conflict, or whose only link is contested (``low``), is unlinked as
    ``conflicting_reconstruction``; one whose link is below the filter as
-   ``reconstruction_below_tier``. Owner links are deduplicated per CIK per day
-   among common-equity lines: an issuer already linked on another common line
-   that day (current-ticker rules first, then the reconstructed line with more
-   bars, then the smaller id) keeps it and the other reconstructed segment is
-   trimmed -- counted. The issuer's preferred, note or warrant lines never
-   claim a day (they trade alongside the common line). Strict mode never
-   consumes these links (they are not ``verified_dated``).
+   ``reconstruction_below_tier``; one whose accepted RI1 intervals overlap
+   (two revisions, a partial load) is refused as ``overlapping_reconstruction``.
+   A rule-5 line is classified over *every* symbol it traded (separator
+   rules, fifth-letter rules, and the Nasdaq fifth letter P/W/U/R of any
+   5-letter symbol): a preferred, warrant, unit or right line is linked but
+   withheld (``non_common_line``: no DEI, no valuation). Owner links are
+   deduplicated per CIK per day among common-equity lines: an issuer already
+   linked on another common line that day (current-ticker rules first, then
+   the reconstructed line whose link is visible first, then the earlier first
+   bar, then the smaller id -- nothing known only in hindsight) keeps it and the
+   other reconstructed segment is trimmed -- counted. The issuer's preferred,
+   note or warrant lines never claim or lose a day (they trade alongside the
+   common line). Strict mode never consumes these links (they are not
+   ``verified_dated``). A bridge with rule-5 rows is labelled
+   ``current_ticker_unverified+reconstructed_history``.
 
 Stale current-ticker holders stay linked (a delisted issuer that still files
-under the same ticker is common) but are counted (``stale_links``).
+under the same ticker is common) but are counted (``stale_links``; rule-5
+lines are delisted by construction and are not counted there).
 
 Share class structure (A5 guard, A8 share basis)
 -----------------------------------------------
@@ -202,10 +211,12 @@ __all__ = [
     "AVAILABILITY_MODELED",
     "AVAILABILITY_VERIFIED",
     "BRIDGE_VALUE_COLUMNS",
+    "CLASS_BASIS_LINE_SYMBOLS",
     "CURRENCY_MIXED",
     "CURRENCY_NON_USD",
     "CURRENCY_UNKNOWN",
     "CURRENCY_VALUE_COLUMNS",
+    "IDENTITY_BASIS_CURRENT_AND_RECONSTRUCTED",
     "IDENTITY_BASIS_CURRENT_TICKER",
     "IDENTITY_BASIS_RECONSTRUCTED_HISTORY",
     "IDENTITY_BASIS_SHARED_ID",
@@ -228,6 +239,7 @@ __all__ = [
     "SINGLE_CLASS_LINK_COLUMNS",
     "STALE_LINK_DAYS",
     "UNLINKED_CONFLICTING_RECONSTRUCTION",
+    "UNLINKED_OVERLAPPING_RECONSTRUCTION",
     "UNLINKED_RECONSTRUCTED_CIK_ON_OTHER_LINE",
     "UNLINKED_RECONSTRUCTION_BELOW_TIER",
     "WITHHELD_MULTI_COMMON_CLASS",
@@ -266,6 +278,8 @@ IDENTITY_BASIS_CURRENT_TICKER = "current_ticker_unverified"
 IDENTITY_BASIS_SHARED_ID = "shared_security_id_unverified"
 IDENTITY_BASIS_VERIFIED_DATED = "verified_dated"
 IDENTITY_BASIS_RECONSTRUCTED_HISTORY = "reconstructed_history"
+#: Bridge-level label of a reconstructed-mode bridge that links rule-5 rows too (rows keep theirs).
+IDENTITY_BASIS_CURRENT_AND_RECONSTRUCTED = f"{IDENTITY_BASIS_CURRENT_TICKER}+{IDENTITY_BASIS_RECONSTRUCTED_HISTORY}"
 AVAILABILITY_MODELED = "modeled"
 AVAILABILITY_VERIFIED = "verified"
 
@@ -283,6 +297,8 @@ UNLINKED_SUPERSEDED_CIK_LINE = "superseded_cik_line"
 UNLINKED_CONFLICTING_RECONSTRUCTION = "conflicting_reconstruction"
 UNLINKED_RECONSTRUCTION_BELOW_TIER = "reconstruction_below_tier"
 UNLINKED_RECONSTRUCTED_CIK_ON_OTHER_LINE = "reconstructed_cik_on_other_line"
+#: P1 fix m1: a line whose accepted RI1 intervals overlap (a second revision, a partial load) is refused.
+UNLINKED_OVERLAPPING_RECONSTRUCTION = "overlapping_reconstruction"
 
 #: ``link_method`` prefix of reconstructed-history rows (suffixed with the tier in force).
 LINK_RECONSTRUCTED_HISTORY = "reconstructed_history"
@@ -302,6 +318,8 @@ CLASS_BASIS_SUFFIX = "ticker_suffix"
 CLASS_BASIS_CLASS_SUFFIX = "ticker_class_suffix"
 CLASS_BASIS_UNCLASSIFIED = "unclassified"
 CLASS_BASIS_UNLISTED = "unlisted_untraded"
+#: A rule-5 (reconstructed-history) line typed non-common by a symbol it traded (P1 fix I1).
+CLASS_BASIS_LINE_SYMBOLS = "line_symbol_history"
 
 #: Why a linked line's DEI shares / valuation metrics are withheld.
 #: ``multi_common_class`` now marks a multi-class issuer's lines as priced only
@@ -360,6 +378,11 @@ _SIBLING_SUFFIX_CLASSES: tuple[tuple[str, str], ...] = (
     ("H", "note"),
     ("I", "note"),
 )
+
+#: P1 fix I1: Nasdaq fifth letters that mark a 5-letter symbol non-common on their own (no base
+#: ticker needed): a delisted preferred / warrant / unit / right line's base is rarely a current
+#: SEC ticker, so rule-5 lines are classified over every symbol they traded with these too.
+_NASDAQ_FIFTH_LETTER_NON_COMMON: dict[str, str] = {"P": "preferred", "W": "warrant", "U": "unit", "R": "right"}
 
 #: Modeled reconstructed-link availability: the first bar's end-of-day cutoff
 #: (same ``trade_date + 22h`` convention as ``market_daily.END_OF_DAY_HOURS``).
@@ -622,7 +645,12 @@ class MarketOwnerBridge:
 
     @property
     def identity_basis(self) -> str:
-        return IDENTITY_BASIS_VERIFIED_DATED if self.mode == OWNER_MODE_STRICT else IDENTITY_BASIS_CURRENT_TICKER
+        """Bridge-level label; a reconstructed bridge with rule-5 rows says so (rows keep their own)."""
+        if self.mode == OWNER_MODE_STRICT:
+            return IDENTITY_BASIS_VERIFIED_DATED
+        if any(row.linked and row.identity_basis == IDENTITY_BASIS_RECONSTRUCTED_HISTORY for row in self.rows):
+            return IDENTITY_BASIS_CURRENT_AND_RECONSTRUCTED
+        return IDENTITY_BASIS_CURRENT_TICKER
 
     @property
     def availability_basis(self) -> str:
@@ -679,8 +707,8 @@ class MarketOwnerBridge:
         segment), has only ADR / non-common lines (an ADS price factor is not an
         ordinary-share split), or has no available link. The panel's data-side
         per-class DEI guard is not applied here. Reconstructed links are
-        ``current_ticker_unverified`` with modeled availability; never present
-        them as verified.
+        ``current_ticker_unverified`` or ``reconstructed_history`` (rule 5) with
+        modeled availability; never present them as verified.
         """
         clock = as_of if as_of is not None else dt.datetime.combine(on, dt.time(_MODELED_LINK_HOURS))
         owners = set(self._owners_by_member.get(content_security_id, ()))
@@ -881,7 +909,14 @@ class MarketOwnerBridge:
                     # Bridge-eligible, but the panel withholds DEI and valuation
                     # from the first per-class DEI filing of the owner onward.
                     per_class_dei += 1
-                if line is not None and horizon is not None and _is_stale(line, horizon):
+                # A5 stale-current-holder signal: rule-5 (reconstructed-history) lines are delisted
+                # by construction and are counted in ``reconstructed_history`` instead.
+                if (
+                    line is not None
+                    and horizon is not None
+                    and _is_stale(line, horizon)
+                    and any(row.identity_basis != IDENTITY_BASIS_RECONSTRUCTED_HISTORY for row in linked)
+                ):
                     stale += 1
                 match = _SEC_CIK_ID.fullmatch(price_id)
                 if match is not None and any(row.cik not in (None, match.group(1)) for row in linked):
@@ -1200,6 +1235,27 @@ def _suffix_class(key: str, cik_keys: set[str]) -> str | None:
     return None
 
 
+def _line_symbol_class(line_keys: Iterable[str], cik_keys: Iterable[str]) -> str | None:
+    """Non-common class implied by ANY symbol a rule-5 line traded, or None (P1 fix I1).
+
+    A delisted/renamed symbol is not a current SEC ticker, so the ticker-class
+    lookup cannot see it. Every symbol of the line is checked: the separator
+    rules (``-P``, ``-PR``, ``-WS``, ``-U``, ``-R`` ...), the fifth-letter rules
+    against a base among the line's own symbols or the CIK's current tickers,
+    and the Nasdaq fifth letter P/W/U/R of any 5-letter symbol without a base
+    check (e.g. ``NHPAP``, ``TECTP``).
+    """
+    own = {key for key in line_keys if key}
+    bases = own | set(cik_keys)
+    for key in sorted(own):
+        label = _suffix_class(key, bases)
+        if label is None and _PLAIN_SYMBOL.fullmatch(key) and len(key) == 5:
+            label = _NASDAQ_FIFTH_LETTER_NON_COMMON.get(key[-1])
+        if label is not None:
+            return label
+    return None
+
+
 def _is_class_suffix_sibling(key: str, cik_keys: set[str]) -> bool:
     """``ROOT-X`` (X in A/B/C/K) whose ``ROOT`` or another ``ROOT-Y`` is a ticker of the same CIK."""
     match = _SEPARATOR_CLASS.fullmatch(key)
@@ -1279,14 +1335,41 @@ def _line_class(
     return kind, basis, "unverified" if kind == _UNVERIFIED_COMMON else "non_common"
 
 
+def _cik_ticker_keys(classes: Sequence[TickerClass]) -> dict[str, set[str]]:
+    keys: dict[str, set[str]] = defaultdict(set)
+    for item in classes:
+        key = normalize_symbol(item.ticker)
+        if key:
+            keys[item.cik].add(key)
+    return keys
+
+
+def _reconstructed_row_class(
+    row: BridgeRow, line_keys: Mapping[str, frozenset[str]], cik_keys: Mapping[str, set[str]]
+) -> tuple[str, str, str] | None:
+    """(class, basis, 'non_common') of a rule-5 row whose line traded a non-common symbol, else None."""
+    if row.identity_basis != IDENTITY_BASIS_RECONSTRUCTED_HISTORY:
+        return None
+    keys = set(line_keys.get(row.price_security_id, ())) | {
+        key for key in (normalize_symbol(row.share_class_symbol),) if key
+    }
+    label = _line_symbol_class(keys, cik_keys.get(row.cik or "", ()))
+    return None if label is None else (label, CLASS_BASIS_LINE_SYMBOLS, "non_common")
+
+
 def _with_class_guards(
     rows: list[BridgeRow],
     lines: dict[str, PriceLine],
     classes: Sequence[TickerClass],
     *,
     strict: bool,
+    line_keys: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[BridgeRow, ...]:
     """Assign each linked row its share basis and DEI/valuation eligibility.
+
+    A rule-5 (reconstructed-history) row is first classified over every symbol
+    its line traded (``line_keys``, :func:`_line_symbol_class`): a non-common
+    signal withholds it as ``non_common_line`` (P1 fix I1).
 
     An issuer (CIK, else owner id) is multi-class when it has more than one
     common-equity-class current SEC ticker (see :func:`classify_sec_tickers`)
@@ -1304,7 +1387,12 @@ def _with_class_guards(
         if item.counted_common:
             common_counts[item.cik] += 1
 
-    kinds = {id(row): _line_class(row, by_key, common_types) for row in rows if row.owner_security_id is not None}
+    cik_keys = _cik_ticker_keys(classes)
+    kinds = {
+        id(row): _reconstructed_row_class(row, line_keys or {}, cik_keys) or _line_class(row, by_key, common_types)
+        for row in rows
+        if row.owner_security_id is not None
+    }
     issuer_lines: dict[str, set[str]] = defaultdict(set)
     for row in rows:
         if row.owner_security_id is not None and kinds[id(row)][2] != "non_common":
@@ -1644,8 +1732,17 @@ def classify_reconstructed_with_history(
             rows.append(BridgeRow(**unlinked, unlinked_reason=UNLINKED_NO_CURRENT_TICKER))
 
     by_id = {line.price_security_id: line for line in lines}
-    rows, stats = _with_reconstructed_history(rows, by_id, reconstructed, tiers, classes)
-    resolved = _with_class_guards(rows, by_id, classes, strict=False)
+    # Every symbol each line traded (rule-5 rows are classified over all of them).
+    traded: dict[str, set[str]] = defaultdict(set)
+    for line in lines:
+        if (key := normalize_symbol(line.last_symbol)) is not None:
+            traded[line.price_security_id].add(key)
+    for item in line_symbols:
+        if (key := normalize_symbol(item.symbol)) is not None:
+            traded[item.price_security_id].add(key)
+    line_keys = {line_id: frozenset(keys) for line_id, keys in traded.items()}
+    rows, stats = _with_reconstructed_history(rows, by_id, reconstructed, tiers, classes, line_keys)
+    resolved = _with_class_guards(rows, by_id, classes, strict=False, line_keys=line_keys)
     resolved = _with_adr_ratios(_with_sibling_segments(resolved, line_symbols, directory), adr_ratios or {})
     members, ambiguous = _owner_members(resolved, content)
     return resolved, members, ambiguous, stats
@@ -1794,13 +1891,20 @@ def _with_reconstructed_history(
     evidence: Sequence[ReconstructedLinkEvidence],
     tiers: tuple[str, ...],
     classes: Sequence[TickerClass] = (),
+    line_keys: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[list[BridgeRow], dict[str, object]]:
     """Rule 5: link lines the current-ticker rules left unlinked through RI1 evidence (module docstring).
 
     ``classes`` (the SEC ticker classes) decide which current links are common-equity lines: only
     those claim an issuer-day in the per-CIK dedupe -- a preferred, note or warrant line of the same
-    issuer legitimately trades alongside its common line.
+    issuer legitimately trades alongside its common line. Likewise a rule-5 line that traded a
+    non-common symbol (``line_keys``, :func:`_line_symbol_class`) is linked without claiming or
+    losing days; the class guard withholds it (``non_common_line``). A line whose accepted RI1
+    intervals overlap is refused (``overlapping_reconstruction``): bridge rows of one price line
+    must be disjoint.
     """
+    line_keys = line_keys or {}
+    cik_keys = _cik_ticker_keys(classes)
     by_vendor: dict[int, str] = {}
     for line in lines.values():
         vendor = _line_vendor_id(line)
@@ -1841,11 +1945,22 @@ def _with_reconstructed_history(
     reasons: dict[str, str] = {}
     for line_id in sorted(eligible & set(by_line)):
         items = by_line[line_id]
-        accepted = [item for item in items if item.evidence_status == "reconstructed"]
+        accepted = sorted(
+            (item for item in items if item.evidence_status == "reconstructed"),
+            key=lambda ev: (ev.valid_from or dt.date.min, ev.evidence_id),
+        )
         contested = not accepted and any(item.evidence_status == "conflicting" for item in items)
+        if any(
+            (later.valid_from or dt.date.min) < (earlier.valid_to or _MAX_DATE)
+            for earlier, later in pairwise(accepted)
+        ):
+            # Overlapping accepted intervals on one line (two revisions, a partial or mixed load):
+            # refused and counted, never emitted as overlapping bridge rows.
+            reasons[line_id] = UNLINKED_OVERLAPPING_RECONSTRUCTION
+            continue
         seen: set[str] = set()
         segments: list[tuple[dt.date, dt.date | None, str, ReconstructedLinkEvidence]] = []
-        for item in sorted(accepted, key=lambda ev: (ev.valid_from or dt.date.min, ev.evidence_id)):
+        for item in accepted:
             for low, high, tier in _tier_segments(item):
                 seen.add(tier)
                 if tier in tiers:
@@ -1860,8 +1975,10 @@ def _with_reconstructed_history(
         elif seen:
             reasons[line_id] = UNLINKED_RECONSTRUCTION_BELOW_TIER
 
-    # Dedupe per CIK per day: one line per issuer on any day. Current-ticker links
-    # win; then the reconstructed line with more bars, then the smaller id.
+    # Dedupe per CIK per day: one common line per issuer on any day. Current-ticker
+    # common links win; then the reconstructed line whose link is visible first,
+    # then the earlier first bar, then the smaller id (all known at the time --
+    # never lifetime bar counts). Non-common rule-5 lines neither claim nor lose days.
     def span(row_from: dt.date | None, row_to: dt.date | None, line_id: str) -> tuple[dt.date, dt.date]:
         line = lines[line_id]
         low = max(row_from or line.first_trade_date, line.first_trade_date)
@@ -1875,10 +1992,15 @@ def _with_reconstructed_history(
             low, high = span(row.valid_from, row.valid_to, row.price_security_id)
             if low < high:
                 taken[row.cik].append((low, high, row.price_security_id))
-    order = sorted(kept, key=lambda line_id: (-lines[line_id].bar_rows, line_id))
+    def first_visible(line_id: str) -> dt.date:
+        clocks = [item.available_at for _low, _high, _tier, item in kept[line_id] if item.available_at is not None]
+        return _cutoff_date(min(clocks)) if clocks else _MAX_DATE
+
+    order = sorted(kept, key=lambda line_id: (first_visible(line_id), lines[line_id].first_trade_date, line_id))
     trimmed = days_removed = 0
     dedupe_ciks: set[str] = set()
     new_rows: dict[str, list[BridgeRow]] = {}
+    non_common: dict[str, str] = {}
     for line_id in order:
         line_rows: list[BridgeRow] = []
         for low, high, tier, item in kept[line_id]:
@@ -1886,8 +2008,13 @@ def _with_reconstructed_history(
             seg_low, seg_high = span(low, high, line_id)
             if seg_low >= seg_high:
                 continue
-            others = [(o_low, o_high) for o_low, o_high, other in taken[item.cik] if other != line_id]
-            pieces = _subtract(seg_low, seg_high, others)
+            label = _line_symbol_class(line_keys.get(line_id, ()), cik_keys.get(item.cik, ()))
+            if label is not None:
+                non_common[line_id] = label
+                pieces = [(seg_low, seg_high)]
+            else:
+                others = [(o_low, o_high) for o_low, o_high, other in taken[item.cik] if other != line_id]
+                pieces = _subtract(seg_low, seg_high, others)
             removed = (seg_high - seg_low).days - sum((p_high - p_low).days for p_low, p_high in pieces)
             if removed:
                 trimmed += 1
@@ -1915,7 +2042,8 @@ def _with_reconstructed_history(
                         evidence_id=item.evidence_id,
                     )
                 )
-                taken[item.cik].append((piece_low, piece_high, line_id))
+                if label is None:
+                    taken[item.cik].append((piece_low, piece_high, line_id))
         if line_rows:
             new_rows[line_id] = line_rows
         else:
@@ -1940,6 +2068,20 @@ def _with_reconstructed_history(
     unlinked_reasons: dict[str, int] = defaultdict(int)
     for reason in reasons.values():
         unlinked_reasons[reason] += 1
+    # Linked, but no bar can ever show the link: its RI1 clock is after the line's last bar
+    # cutoff (typically acceptance that needed the terminal filing, knowable only after the end).
+    never_visible = [
+        line_id
+        for line_id, line_rows in new_rows.items()
+        if all(
+            row.available_at is None
+            or row.available_at > dt.datetime.combine(lines[line_id].last_trade_date, dt.time(_MODELED_LINK_HOURS))
+            for row in line_rows
+        )
+    ]
+    non_common_by_class: dict[str, int] = defaultdict(int)
+    for label in non_common.values():
+        non_common_by_class[label] += 1
     stats: dict[str, object] = {
         "tier_filter": _RECONSTRUCTION_TIER_FILTERS[tiers],
         "tiers_linked": list(tiers),
@@ -1954,11 +2096,16 @@ def _with_reconstructed_history(
         "eligible_lines_with_evidence": len(eligible & set(by_line)),
         "linked_lines": len(new_rows),
         "linked_lines_by_tier": dict(sorted(linked_by_tier.items())),
+        # Of the linked lines: never visible at any bar (RI1 clock after the last bar's cutoff).
+        "linked_lines_never_visible": len(never_visible),
+        "linked_rows_never_visible": sum(len(new_rows[line_id]) for line_id in never_visible),
+        # Of the linked lines: traded a non-common symbol (withheld as non_common_line by the class guard).
+        "linked_lines_non_common": dict(sorted(non_common_by_class.items())),
         "segments_by_tier": dict(sorted(segments_by_tier.items())),
         "segments_excluded_by_tier": dict(sorted(excluded.items())),
         "unlinked_lines_by_reason": dict(sorted(unlinked_reasons.items())),
         "cik_day_dedupe": {
-            "rule": "current_ticker_first_then_more_bars_then_smaller_id",
+            "rule": "common_lines_only;current_ticker_first_then_first_visible_then_first_bar_then_id",
             "ciks": len(dedupe_ciks),
             "segments_trimmed": trimmed,
             "days_removed": days_removed,

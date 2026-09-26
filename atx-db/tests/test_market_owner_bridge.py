@@ -985,7 +985,13 @@ def test_non_usd_reporter_keeps_market_cap_but_no_valuation_and_is_counted(tmp_s
             _bar(tmp_store, owner, ticker, trade_date, 30.0, shares=1_000_000)
         _dei(tmp_store, owner, cik, 1_000_000, _ISSUER_CLOCK, f"{ticker}-dei")
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
+    # 0328's nullable column: the writer labels the row once the column exists.
+    tmp_store.con.execute("ALTER TABLE market_daily_metrics ADD COLUMN IF NOT EXISTS currency_status VARCHAR")
     refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+    labels = dict(tmp_store.con.execute(
+        "SELECT security_id, list_distinct(list(coalesce(currency_status, 'usd'))) FROM market_daily_metrics GROUP BY 1"
+    ).fetchall())
+    assert labels == {"SEC-CIK-0000000404": ["usd"], "SEC-CIK-0000000405": ["non_usd"]}
 
     def valuations(owner):
         return tmp_store.con.execute(
