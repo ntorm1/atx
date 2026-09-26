@@ -32,7 +32,7 @@ namespace atx::engine::library {
 // ===========================================================================
 //  CorrNeighborIndex — SimHash LSH over admitted-alpha demeaned PnL vectors.
 // ===========================================================================
-enum class CorrIndexRule : atx::u8 { LegacyBandsV1 = 1, SignedHammingV2 = 2 };
+enum class CorrIndexRule : atx::u8 { ExistingOrSignedV2 = 0, LegacyBandsV1 = 1, SignedHammingV2 = 2 };
 
 class CorrNeighborIndex {
 public:
@@ -114,13 +114,13 @@ public:
     }
   }
 
-  /// The approximate near-neighbors of `pnl`: the union of its L band buckets,
-  /// de-duplicated and returned in ascending AlphaId order (determinism). An
-  /// empty union (no admitted alpha collides in any band) returns an empty
-  /// vector. COLD path (allocates the union); this is the gate path, not the VM
-  /// hot path, so a per-call allocation is acceptable (documented).
+  /// V1 returns the old band union. V2 returns both-sign Hamming candidates
+  /// at the caller's actual absolute floor. refine_top16 additionally returns
+  /// the nearest sixteen signatures for a continuous approximate fitness score;
+  /// callers still score their actual PnL exactly. Sorted unique AlphaIds.
   [[nodiscard]] std::vector<combine::AlphaId>
-  neighbors(std::span<const atx::f64> pnl, atx::f64 absolute_floor = 0.7) const {
+  neighbors(std::span<const atx::f64> pnl, atx::f64 absolute_floor = 0.7,
+            bool refine_top16 = false) const {
     ATX_CHECK(pnl.size() == t_);
     if (rule_ == CorrIndexRule::SignedHammingV2) {
       const auto bits = signature_words(pnl);
@@ -131,13 +131,26 @@ public:
       const auto limit = static_cast<atx::u32>(std::min(128.0, std::ceil(
           kSignedBits * p + 3.5 * std::sqrt(kSignedBits * p * (1.0 - p)))));
       std::vector<combine::AlphaId> out;
+      struct Nearby { atx::u32 distance{257U}; combine::AlphaId id{0}; };
+      std::array<Nearby, 16> nearest{};
       for (const auto& entry : entries_) {
         atx::u32 different = 0U;
         for (atx::usize word = 0; word < bits.size(); ++word)
           different += static_cast<atx::u32>(std::popcount(bits[word] ^ entry.bits[word]));
-        if (all || entry.missing || std::min(different, kSignedBits - different) <= limit)
+        const auto distance = std::min(different, kSignedBits - different);
+        if (refine_top16) {
+          Nearby value{distance, entry.id};
+          for (auto& old : nearest) {
+            if (value.distance < old.distance ||
+                (value.distance == old.distance && value.id.value < old.id.value))
+              std::swap(value, old);
+          }
+        }
+        if (all || entry.missing || distance <= limit)
           out.push_back(entry.id);
       }
+      if (refine_top16)
+        for (const auto& value : nearest) if (value.distance <= kSignedBits) out.push_back(value.id);
       sort_unique(out);
       return out;
     }
@@ -252,9 +265,10 @@ private:
 [[nodiscard]] inline atx::f64 online_corr_to_pool(std::span<const atx::f64> candidate_pnl,
                                                   const LibraryStore &store,
                                                   CorrNeighborIndex &index,
-                                                  atx::f64 absolute_floor = 0.7) {
+                                                  atx::f64 absolute_floor = 0.7,
+                                                  bool refine_top16 = false) {
   atx::f64 worst = 0.0;
-  for (const combine::AlphaId id : index.neighbors(candidate_pnl, absolute_floor)) {
+  for (const combine::AlphaId id : index.neighbors(candidate_pnl, absolute_floor, refine_top16)) {
     // EXACT correlation over the recalled candidate (the accelerator only chose
     // WHICH ids to score; the score itself is the reference value).
     const atx::f64 c = combine::pairwise_complete_corr(candidate_pnl, store.pnl(id));

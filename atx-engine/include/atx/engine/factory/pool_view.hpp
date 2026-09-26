@@ -86,14 +86,17 @@ private:
   const combine::AlphaStore &pool_;
 };
 
-// Library backing: the O(neighbors) SimHash MAX |corr| scan (the real engine).
+// Library backing: approximate MAX |corr| over refined signed-SimHash neighbors.
 // Forwards to the persistent index nothing in the factory previously touched.
 // Borrows `lib`.
 class LibraryPool final : public PoolView {
 public:
   explicit LibraryPool(const library::Library &lib) noexcept : lib_{lib} {}
   [[nodiscard]] atx::f64 worst_corr(std::span<const atx::f64> pnl) const override {
-    return lib_.worst_corr_to_pool(pnl);
+    // Continuous penalty uses exact scores over a top-16 refinement plus the
+    // .7 threshold shortlist. It is approximate; never reuse it as a hard
+    // lower-threshold admission decision (pass that threshold explicitly).
+    return lib_.estimated_corr_to_pool(pnl);
   }
 
 private:
