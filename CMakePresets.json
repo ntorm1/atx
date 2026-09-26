@@ -73,6 +73,17 @@
       }
     },
     {
+      "name": "equity-hygiene",
+      "inherits": "equity-dev",
+      "displayName": "equity-hygiene: isolated PCH-off header checks",
+      "description": "Same Debug compiler/CRT/warnings as equity-dev, with PCH disabled in a separate tree. Run scoped check commands here without invalidating the warm equity-dev PCH and consumer objects.",
+      "binaryDir": "${sourceDir}/build-equity-hygiene",
+      "cacheVariables": {
+        "ATX_USE_PCH": "OFF",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/equity-hygiene"
+      }
+    },
+    {
       "name": "equity-bench",
       "inherits": "equity-rel",
       "displayName": "equity-bench: equity-rel + benchmarks + every test group (bench measurement tree)",
@@ -170,6 +181,7 @@
     { "name": "ninja", "configurePreset": "ninja" },
     { "name": "dev", "configurePreset": "dev" },
     { "name": "equity-dev", "configurePreset": "equity-dev" },
+    { "name": "equity-hygiene", "configurePreset": "equity-hygiene" },
     { "name": "equity-rel", "configurePreset": "equity-rel" },
     {
       "name": "equity-asan", "configurePreset": "equity-asan",
