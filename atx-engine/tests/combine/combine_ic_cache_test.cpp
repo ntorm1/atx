@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <span>
@@ -162,12 +163,21 @@ TEST(CombineSignalCubeConsumer, DelayedCacheWalkForwardMatchesLegacyEmbargoAndRe
 
 TEST(CombineSignalCubeConsumer, CubeAdapterUsesPrequantizationExactStatsAndExplicitLossyOptIn) {
   const auto store = Fixture{}.store();
-  const auto directory = std::filesystem::temp_directory_path() / "atx_e1_ic_cache_consumer";
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  std::filesystem::path directory;
+  for (usize attempt = 0U; attempt < 32U && directory.empty(); ++attempt) {
+    const auto candidate = std::filesystem::temp_directory_path() /
+        ("atx_e1_ic_cache_consumer_" + std::to_string(stamp) + "_" + std::to_string(attempt));
+    std::error_code error;
+    const bool created = std::filesystem::create_directory(candidate, error);
+    ASSERT_FALSE(error) << error.message();
+    if (created) directory = candidate;
+  }
+  ASSERT_FALSE(directory.empty());
   struct Cleanup {
     std::filesystem::path path;
     ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
   } cleanup{directory};
-  std::error_code error; std::filesystem::remove_all(directory, error);
   cb::SignalCubeConfig cfg;
   cfg.dates = dates; cfg.alphas = alphas; cfg.instruments = names;
   cfg.normalization = cb::CubeNormalize::AlreadyNormalizedV1;
