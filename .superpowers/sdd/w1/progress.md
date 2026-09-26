@@ -66,3 +66,5 @@ compact library records, absolute-correlation retrieval, segments and lifecycle.
 Pool-5 owns the W1-B1 immutable cost-surface core and consistent fitness,
 optimizer and replay adapters. The full B1 spread/calibration/borrow work remains
 separate. These agents do source work while root owns the only compiler slot.
+
+B1 core imports: a3ee26f0 -> e5f8ea8d, checks7cad09c9 -> a3aed92c, report3a9ae917 -> 86e50ae8. Root independently approved source and registered cost_surface.cpp plus an EXCLUDE_FROM_ALL focused cost target. No compilation yet. Calibration63ea1ef4/cdddaaab requires the identified near-singular raw-fit correction before import. A5 source d9925eec/10f0d46e awaits G0 independent review and focused fixtures. D1 source freeze forthcoming. Packet123163e2 is independently approved by the audit owner after XML, binary-hash and source-diff verification.

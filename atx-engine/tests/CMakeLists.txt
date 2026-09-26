@@ -275,3 +275,13 @@ target_link_libraries(atx-engine-w1-foundation-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-foundation-tests REUSE_FROM atx-engine-test-pch)
 endif()
+
+# Shared cost-surface adapters; further B1 fixtures join this bounded target as
+# their implementations are integrated. Normal owning core tests remain intact.
+add_executable(atx-engine-w1-cost-tests EXCLUDE_FROM_ALL
+    core/cost_surface_test.cpp)
+atx_engine_test_compile_environment(atx-engine-w1-cost-tests)
+target_link_libraries(atx-engine-w1-cost-tests PRIVATE atx-test-scratch)
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-engine-w1-cost-tests REUSE_FROM atx-engine-test-pch)
+endif()

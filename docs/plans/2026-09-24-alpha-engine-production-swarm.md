@@ -38,7 +38,7 @@ cherry-picked source SHAs remain listed alongside their resulting integration SH
 | W1 remainder | Working implementation base `7e16ed26`; root Lane0 registration and bounded targets `95d0773d` | Other W1 lanes and wave gates remain open. Large performance runs remain owner-deferred. |
 | W1-D1 | Implementation in progress, pool-3 | Dated security links and minimum exporter/consumer validity wiring. No warehouse writes or migration execution; real coverage remains unmeasured. |
 | W1-A5 | Implementation in progress, pool-4 | Compact records, signed absolute-correlation retrieval, extensible periods and lifecycle graph. Scale/recall gates remain open. |
-| W1-B1 core/adapters | Implementation in progress, pool-5 | Shared immutable cost surface and fitness/optimizer/replay adapters. Spread estimators, calibration refit, borrow tiers and full consumer migration remain separate work. |
+| W1-B1 core/adapters | Source `a3ee26f0` → `e5f8ea8d`; checks `7cad09c9` → `a3aed92c`; report `3a9ae917` → `86e50ae8` | Independent source review approved core/shared fitness-optimizer-replay adapters; compilation/runtime pending next combined batch. Calibration refit source is in numerical-rank review. Spread estimators, borrow tiers and full consumer migration remain open. |
 | W2 | Priority IC subset pulled forward; full wave pending W1 gate | Remaining A4 cost/objective/exposure requirements and other W2 lanes remain open. |
 | W3 | Pending W2 gate | Not started. |
 | W4 | Pending W3 gate | Not started. |

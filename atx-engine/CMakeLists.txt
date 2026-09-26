@@ -136,6 +136,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/risk/hybrid_factor_model.cpp
     src/risk/cost_terms.cpp
     src/book/replay_cost.cpp
+    src/cost/cost_surface.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
