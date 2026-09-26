@@ -112,9 +112,12 @@ window is the last N rule sessions ending at the formation session, a line
 *observes* a session when it has a valid-price bar on it, and a daily return
 exists only between two consecutive sessions both observed. A line whose history
 does not reach the window's first session (for returns, the session before it)
-is ``insufficient_history``; one observing fewer than ``MIN_OBSERVED_SHARE`` of
-the window's sessions (returns) is ``window_gaps``; Amihud averages
-positive-volume days and is ``zero_volume_in_window`` below that share. Turnover
+is ``insufficient_history``; one with fewer observations than the native's
+declared minimum (``min_observed``: the literature's monthly minimums, 15 valid
+daily returns of 21 for MAX and Amihud, 45 of 60 for downside deviation, 200
+observed prices of 252 for the 52-week high; 90 % of turnover's 21 sessions) is
+``window_gaps``; Amihud averages positive-volume days and is
+``zero_volume_in_window`` below its minimum. Turnover
 is NULL with ``unverified_shares`` (a vendor count), the A8 withheld label (a
 withheld count) or ``split_in_price_window`` (an exact split or stock-dividend
 ratio by R1d's classifier inside its window). Only bars whose clock is at or
@@ -229,8 +232,14 @@ BARS_SOURCE = "equity_daily_bars"
 PRICE_LOOKBACK_DAYS = 400
 PRICE_WINDOW_SESSIONS = 252
 AMIHUD_SCALE = 1e9
-#: The declared minimum share of a window's sessions (daily returns for the return
-#: windows) a line must observe; below it the value is NULL with ``window_gaps``.
+#: Minimum observations per window (below it the value is NULL with ``window_gaps``):
+#: the literature's monthly conventions for the return windows (Bali, Cakici and
+#: Whitelaw; Amihud: 15 valid daily returns of 21; 45 of 60 for downside deviation;
+#: 200 observed prices of 252 for the 52-week high), and this share of the sessions
+#: for turnover's volume window.
+MIN_DAILY_RETURNS_21D = 15
+MIN_DAILY_RETURNS_60D = 45
+MIN_OBSERVED_PRICES_252D = 200
 MIN_OBSERVED_SHARE = 0.9
 INSUFFICIENT_HISTORY_REASON = "insufficient_history"
 WINDOW_GAPS_REASON = "window_gaps"
@@ -274,49 +283,50 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
     "amihud_illiquidity_21d": {
         "metric_window": MARKET_WINDOW,
         "expression": "1e9 * mean(|r_t| / (close_t * volume_t)) over the daily returns of the last 21 XNYS sessions "
-                      "with positive volume; >= 19 such days required",
+                      "with positive volume; >= 15 such days required",
         "inputs": ["equity_daily_bars.adjusted_close", "equity_daily_bars.close", "equity_daily_bars.volume"],
-        "version": "2",
+        "version": "3",
         "unit_basis": "abs_return_per_1e9_dollars_traded",
         "reference": "Amihud (2002)",
         "scope": SCOPE_PRICE_LINE,
         "size": False,
         "window_sessions": 21,
         "min_history_sessions": 22,
-        "min_observed": _min_observed(21),
+        "min_observed": MIN_DAILY_RETURNS_21D,
     },
     "pct_from_high_252d": {
         "metric_window": MARKET_WINDOW,
-        "expression": "adj_t / max(adj over the observed sessions of the last 252 XNYS sessions) - 1",
+        "expression": "adj_t / max(adj over the observed sessions of the last 252 XNYS sessions) - 1; >= 252 "
+                      "sessions since the first bar and >= 200 observed prices in the window required",
         "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "2",
+        "version": "3",
         "unit_basis": "fraction",
         "reference": "George and Hwang (2004)",
         "scope": SCOPE_PRICE_LINE,
         "size": False,
         "window_sessions": PRICE_WINDOW_SESSIONS,
         "min_history_sessions": PRICE_WINDOW_SESSIONS,
-        "min_observed": _min_observed(PRICE_WINDOW_SESSIONS),
+        "min_observed": MIN_OBSERVED_PRICES_252D,
     },
     "max_daily_return_21d": {
         "metric_window": MARKET_WINDOW,
-        "expression": "max(r_t) over the daily returns of the last 21 XNYS sessions; >= 19 returns required",
+        "expression": "max(r_t) over the daily returns of the last 21 XNYS sessions; >= 15 returns required",
         "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "2",
+        "version": "3",
         "unit_basis": "fraction",
         "reference": "Bali, Cakici and Whitelaw (2011)",
         "scope": SCOPE_PRICE_LINE,
         "size": False,
         "window_sessions": 21,
         "min_history_sessions": 22,
-        "min_observed": _min_observed(21),
+        "min_observed": MIN_DAILY_RETURNS_21D,
     },
     "downside_deviation_60d": {
         "metric_window": MARKET_WINDOW,
         "expression": "sqrt(252 * mean(min(r_t, 0)^2)) over the daily returns of the last 60 XNYS sessions; "
-                      ">= 54 returns required (zero-target semideviation, LPM2)",
+                      ">= 45 returns required (zero-target semideviation, LPM2)",
         "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "2",
+        "version": "3",
         "unit_basis": "annualized_fraction",
         "reference": "published analogue: downside risk of Ang, Chen and Xing (2006), who price downside beta; "
                      "this is the Sortino zero-target semideviation",
@@ -324,7 +334,7 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
         "size": False,
         "window_sessions": 60,
         "min_history_sessions": 61,
-        "min_observed": _min_observed(60),
+        "min_observed": MIN_DAILY_RETURNS_60D,
     },
     "turnover_21d": {
         "metric_window": MARKET_WINDOW,

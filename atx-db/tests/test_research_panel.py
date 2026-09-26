@@ -475,8 +475,8 @@ def test_price_liquidity_natives_equal_hand_computation_and_never_read_a_bar_aft
     of the session itself and a later revision of an earlier bar) are never inputs. Turnover is NULL with a
     reason on unverified shares and across a split, and unlinked lines keep the price-line natives.
     Fix round 1: windows are XNYS sessions. CCC (listed 2023-09-01) has no 52-week ratio
-    (``insufficient_history``); BBB misses two January sessions, so its 21-session window has 17 daily
-    returns (``window_gaps``), and the price drop across its gap is not a daily return."""
+    (``insufficient_history``); BBB misses four January sessions, so its 21-session window has 13 daily
+    returns, under the 15 MAX needs (``window_gaps``), and the price drop across a gap is not a daily return."""
     wh_path, _ = warehouse
     aaa, bbb, ccc = (LINES[i][0] for i in (1, 2, 3))
     october, january = dt.date(2023, 10, 31), dt.date(2024, 1, 31)
@@ -487,9 +487,9 @@ def test_price_liquidity_natives_equal_hand_computation_and_never_read_a_bar_aft
     # CCC: a 2:1 split on 2024-01-22 (back-adjusted closes halve before it) inside its turnover window.
     con.execute("UPDATE equity_daily_bars SET volume = 5000, adjusted_close = CASE WHEN trade_date < "
                 "DATE '2024-01-22' THEN 50.0 ELSE 100.0 END WHERE security_id=?", [ccc])
-    # BBB: no bars on 2024-01-10 and 2024-01-18, and its price halves across the second gap.
+    # BBB: no bars on four January sessions, and its price halves across the 01-18 gap.
     con.execute("DELETE FROM equity_daily_bars WHERE security_id=? AND trade_date IN "
-                "(DATE '2024-01-10', DATE '2024-01-18')", [bbb])
+                "(DATE '2024-01-04', DATE '2024-01-09', DATE '2024-01-12', DATE '2024-01-18')", [bbb])
     con.execute("UPDATE equity_daily_bars SET close = 50.0, adjusted_close = 50.0 "
                 "WHERE security_id=? AND trade_date > DATE '2024-01-18'", [bbb])
     con.execute("DELETE FROM equity_daily_bars WHERE security_id=?", [aaa])
@@ -539,8 +539,8 @@ def test_price_liquidity_natives_equal_hand_computation_and_never_read_a_bar_aft
         # CCC has 42 sessions since September 1: no 61-session history in October, no 252 in January.
         assert _value(con, "p2", october, ccc, "downside_deviation_60d")[:2] == (None, rp.INSUFFICIENT_HISTORY_REASON)
         assert _value(con, "p2", january, ccc, "pct_from_high_252d")[:2] == (None, rp.INSUFFICIENT_HISTORY_REASON)
-        # BBB: 21 - 4 = 17 daily returns in January (< 19); 56 of 60 still make the downside window, where
-        # the -50 % move from 01-17 to 01-19 spans the missing 01-18 and is not a daily return.
+        # BBB: 21 - 8 = 13 daily returns in January (< 15); 52 of 60 still make the downside window (>= 45),
+        # where the -50 % move from 01-17 to 01-19 spans the missing 01-18 and is not a daily return.
         assert _value(con, "p2", january, bbb, "max_daily_return_21d")[:2] == (None, rp.WINDOW_GAPS_REASON)
         assert _value(con, "p2", january, bbb, "downside_deviation_60d")[:2] == (0.0, "valid")
         # The unlinked delisted tail keeps the identity-free natives; turnover is owner-scoped.
