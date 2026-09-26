@@ -65,7 +65,8 @@ input bars, terminal returns and market days.
 
 Returns (survivorship)
 ----------------------
-One-session ``adjusted_close`` returns (the forward-label bar pick). The market is the
+One-session ``adjusted_close`` returns (the forward-label bar pick, VA1
+``vendor_artifact_repaired``: vendor factor-decrease artifacts neutralized). The market is the
 equal-weighted mean of **bar returns only** over the panel's eligible lines of the latest
 formation before the day (linked, unlinked, later-delisting lines; a name leaves after its
 last bar: CRSP EW ex-DLRET), counting a return only when both bars were known at the day's
@@ -133,12 +134,14 @@ from typing import Any
 import duckdb
 
 from .. import _forward_return_publication as _publication
+from .. import _vendor_artifact
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from ..derived_registry import DERIVED_SOURCE_NAME
 from . import panel as _panel
 from .store import ResearchStore
 
-QUERY_VERSION = "research-earnings-events-v2"
+# v3 (VA1): bar returns read the vendor_artifact_repaired adjusted close (selected_bars_sql).
+QUERY_VERSION = "research-earnings-events-v3"
 EVENT_SCHEMA_VERSION = 2
 KNOWN_SCHEMA_VERSIONS = (1, 2)
 
@@ -533,7 +536,8 @@ def _spec(options: EarningsEventOptions, context: dict[str, Any], calendar: tupl
                     "early_close": "not_modeled", "calendar_id": calendar[0], "calendar_source": calendar[1]},
         "clocks": {"evidence_policy": FUNDAMENTAL_CLOCK_POLICY, "evidence_floor_hours": EVIDENCE_FLOOR_HOURS,
                    "bar_clock_hours": BAR_CLOCK_HOURS, "raw_acceptance_column": raw_acceptance},
-        "returns": {"price_basis": PRICE_BASIS, "market_basis": MARKET_BASIS, "ear_window": list(EAR_WINDOW),
+        "returns": {"price_basis": PRICE_BASIS, "adjustment_repair": _vendor_artifact.REPAIR_VERSION,
+                    "market_basis": MARKET_BASIS, "ear_window": list(EAR_WINDOW),
                     "runup_window": list(RUNUP_WINDOW), "abnormal": "sum_of_daily_return_minus_market",
                     "market_min_names": options.market_min_names, "terminal_lookback_days": TERMINAL_LOOKBACK_DAYS,
                     "post_delisting_abnormal": 0.0, "terminal_rule": _publication.CALCULATION_VERSION},

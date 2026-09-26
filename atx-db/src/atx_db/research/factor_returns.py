@@ -90,7 +90,8 @@ Return windows and clocks
   monthly rows gaps or double-counts sessions (a month has 19-23 sessions, a monthly
   label 21) and rebalances monthly instead of holding.
 * **Daily** rows are close-to-close returns of the selected bars (the label publisher's
-  pick, ``adjusted_close``) of the names held from the formation close to the last
+  pick, ``adjusted_close`` as the VA1 ``vendor_artifact_repaired`` series) of the names held
+  from the formation close to the last
   session of the next calendar month, capped at the next formation (a missing month never
   extends a hold, holds never overlap and a trade date appears once). A return after a
   halt is attributed to the day of the next trade (CRSP convention; counted as a gap
@@ -166,7 +167,9 @@ from .labels import _calendar_keys as _label_calendar_keys  # the label calendar
 from .panel import CALENDAR_FORMED, OWNER_LINK_FAILURES, VERIFIED_SHARES_SOURCES
 from .store import ResearchStore
 
-FACTOR_VERSION = "research-factor-returns-v3"
+# v4 (VA1): daily bar returns read the vendor_artifact_repaired adjusted close (selected_bars_sql)
+# and the monthly/h-month rows read forward_return_publication_v3 labels.
+FACTOR_VERSION = "research-factor-returns-v4"
 FACTOR_SCHEMA_VERSION = 2
 BASES = ("strict", "reconstructed")
 #: market_daily source of each basis (the R2a panel's own mapping).

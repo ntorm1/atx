@@ -162,8 +162,8 @@ def test_monthly_labels_equal_daily_rows_on_month_end_entry_sessions(store):
     assert store.con.execute("""
         SELECT DISTINCT price_basis, calculation_version, run_id FROM forward_returns_survivorship_safe
         WHERE source=?""", [MONTHLY_LABEL_SOURCE]).fetchall() == [
-        ("adjusted_close", "forward_return_publication_v2", "r3a")]
-    assert publication.CALCULATION_VERSION == "forward_return_publication_v2"
+        ("adjusted_close", "forward_return_publication_v3", "r3a")]
+    assert publication.CALCULATION_VERSION == "forward_return_publication_v3"
 
 
 def test_long_horizons_stitch_terminals_and_exclude_post_terminal_formations(store):
@@ -279,21 +279,21 @@ def test_label_status_sql_is_reusable_with_column_expressions():
     try:
         con.execute("""
             CREATE TABLE l AS SELECT * FROM (VALUES
-              ('valid', 'id1', 'adjusted_close', 'forward_return_publication_v2', 0.1, 0.1, NULL, false, false,
+              ('valid', 'id1', 'adjusted_close', 'forward_return_publication_v3', 0.1, 0.1, NULL, false, false,
                NULL, NULL, NULL, DATE '2024-02-01', DATE '2024-01-02', TIMESTAMP '2024-02-01 22:00'),
-              ('valid', 'id2', 'adjusted_close', 'forward_return_publication_v2', -0.45, 0.1, -0.5, true, true,
+              ('valid', 'id2', 'adjusted_close', 'forward_return_publication_v3', -0.45, 0.1, -0.5, true, true,
                DATE '2024-01-20', 'observed', 'obs', DATE '2024-02-01', DATE '2024-01-02', TIMESTAMP '2024-02-01 22:00'),
-              ('invalid', 'id3', 'adjusted_close', 'forward_return_publication_v2', -0.45, 0.1, -0.5, true, true,
+              ('invalid', 'id3', 'adjusted_close', 'forward_return_publication_v3', -0.45, 0.1, -0.5, true, true,
                DATE '2024-01-20', 'policy', 'obs', DATE '2024-02-01', DATE '2024-01-02', TIMESTAMP '2024-02-01 22:00'),
-              ('invalid', 'id4', 'adjusted_close', 'forward_return_publication_v2', -0.45, 0.1, -0.5, true, true,
+              ('invalid', 'id4', 'adjusted_close', 'forward_return_publication_v3', -0.45, 0.1, -0.5, true, true,
                DATE '2024-01-02', 'observed', 'obs', DATE '2024-02-01', DATE '2024-01-02', TIMESTAMP '2024-02-01 22:00'),
-              ('invalid', 'id5', 'adjusted_close', 'forward_return_publication_v2', 0.1, 0.1, NULL, false, false,
+              ('invalid', 'id5', 'adjusted_close', 'forward_return_publication_v3', 0.1, 0.1, NULL, false, false,
                NULL, NULL, NULL, DATE '2024-02-02', DATE '2024-01-02', TIMESTAMP '2024-02-01 22:00'),
-              ('invalid', 'id6', 'adjusted_close', 'forward_return_publication_v2', 0.1, 0.1, NULL, false, false,
+              ('invalid', 'id6', 'adjusted_close', 'forward_return_publication_v3', 0.1, 0.1, NULL, false, false,
                NULL, NULL, NULL, DATE '2024-02-01', DATE '2024-01-02', TIMESTAMP '2024-07-01 22:00'),
-              ('unsupported_basis', 'id7', 'close', 'forward_return_publication_v2', 0.1, 0.1, NULL, false, false,
+              ('unsupported_basis', 'id7', 'close', 'forward_return_publication_v3', 0.1, 0.1, NULL, false, false,
                NULL, NULL, NULL, DATE '2024-02-01', DATE '2024-01-02', TIMESTAMP '2024-02-01 22:00'),
-              ('unsupported_basis', 'id8', 'adjusted_close', 'forward_return_publication_v1', 0.1, 0.1, NULL,
+              ('unsupported_basis', 'id8', 'adjusted_close', 'forward_return_publication_v2', 0.1, 0.1, NULL,
                false, false, NULL, NULL, NULL, DATE '2024-02-01', DATE '2024-01-02', TIMESTAMP '2024-02-01 22:00'),
               ('missing', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
                NULL, NULL, NULL, NULL, DATE '2024-01-02', NULL)
@@ -305,7 +305,7 @@ def test_label_status_sql_is_reusable_with_column_expressions():
                                     expected_end="DATE '2024-02-01'", entry="l.entry",
                                     cutoff="TIMESTAMP '2024-06-01 22:00:00'")
         rows = con.execute(f"SELECT expected, {fragment} FROM l").fetchall()
-        # A pre-v2 label (terminals dated without the halt-gap rule) is never consumed.
+        # A pre-v3 label (VA1: vendor factor-decrease artifact not repaired) is never consumed.
         assert [row[1] for row in rows] == [row[0] for row in rows]
         assert label_status_sql().count("?") == 5
     finally:

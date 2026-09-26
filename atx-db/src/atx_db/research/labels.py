@@ -16,8 +16,12 @@ stitching and the same ``calculation_version``. Only two things differ:
 * horizons are 21/63/126/252 observed sessions (~1/3/6/12 months; formation units
   1/3/6/12, see :data:`HORIZON_FORMATION_UNITS`).
 
-Row economics (shared publisher, ``forward_return_publication_v2``):
-``forward_return = P(E+h)/P(E) - 1``; when a selected terminal's *effective* delist date
+Row economics (shared publisher, ``forward_return_publication_v3``):
+``forward_return = P(E+h)/P(E) - 1`` with ``P`` the VA1 ``vendor_artifact_repaired`` adjusted
+close (:mod:`atx_db._vendor_artifact`: the vendor factor-decrease artifact steps, e.g. the
+2021-01-04 step on ~3.4k dividend payers, are neutralized; dividends and splits are kept; a
+``forward_return_publication_v2`` label carries the artifact and is ``unsupported_basis``);
+when a selected terminal's *effective* delist date
 lies in ``(E, E+h]`` the leg ends at the last positive price strictly before delisting and
 is compounded with the observed/policy terminal return; anchors on/after it are
 excluded. The effective date is the first session after the last trade when the terminal

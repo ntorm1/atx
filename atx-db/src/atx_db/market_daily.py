@@ -96,13 +96,16 @@ run on the DEI cover ("as of") date, about two weeks before the filing is
 public, so a bar's own count is look-ahead. Each run (a stretch of equal
 positive vendor counts on one line) gets an availability instant
 (:data:`ARCHIVE_RUN_CLOCKS`): ``split_derived`` (the prior run's count times a
-split-like price factor, known at its own start), ``dei_matched`` (equal, up to
+split-like price factor, known at its own start but never before the prior
+run it reveals), ``dei_matched`` (equal, up to
 vendor rounding, to a DEI cover count of the line's owner dated within a week
 of the run start: known at that filing's ``available_at``; or to one already
 public at the run start: known then), ``first_run`` (the line's first count,
 modeled as known at its first bar) or ``modeled_lag`` (unmatched: modeled, not
 verified, as known a filer-family lag after the run start,
-:data:`ARCHIVE_MODELED_LAG_DAYS_BY_FAMILY`). A bar that carries a vendor count
+:data:`ARCHIVE_MODELED_LAG_DAYS_BY_FAMILY`). No run is known before the bars
+that define it (its first bar, the count bar before it, the prior run's first
+bar) are. A bar that carries a vendor count
 uses the latest-starting run known at its cutoff; the split/basis guards read
 the anchor-date count the same way. :func:`vendor_share_state_query` exposes
 this per-bar state (count, clock kind, run availability, split pending) as a
@@ -127,6 +130,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ._vendor_artifact import REPAIR_VERSION, repaired_bars_sql
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .derived_dsl import LowerContext, compile_expression
@@ -157,6 +161,7 @@ from .market_owner_bridge import (
 from .warehouse import quality_check
 
 __all__ = [
+    "ADJ_CLOSE_BASIS",
     "ADR_RATIO_LIMIT",
     "ANCHOR_BAR_MAX_GAP_DAYS",
     "ARCHIVE_MODELED_LAG_DAYS",
@@ -204,6 +209,11 @@ MARKET_DAILY_SOURCE_NAME = "atx-db daily market panel v1"
 #: owner bridge, so a strict variant can never overwrite or be mistaken for the
 #: reconstructed panel.
 MARKET_DAILY_STRICT_SOURCE_NAME = "atx-db daily market panel v1 strict identity"
+
+#: VA1: the published ``adj_close`` (and ``log_return`` and every daily metric chained on
+#: them) is the ``vendor_artifact_repaired`` series of :mod:`atx_db._vendor_artifact`; the
+#: tag is part of every row's ``inputs_hash``, so a pre-repair row never hashes equal.
+ADJ_CLOSE_BASIS = REPAIR_VERSION
 
 #: ``data_quality_checks.check_name`` of the per-refresh bridge accounting row.
 OWNER_BRIDGE_CHECK_NAME = "owner_bridge_linkage"
@@ -271,8 +281,8 @@ ARCHIVE_MODELED_LAG_DAYS_BY_FAMILY: dict[str, int] = {
 SPLIT_RUN_TOLERANCE = 0.05
 #: How a vendor share run's availability (``archive_clock``) is decided.
 ARCHIVE_RUN_CLOCKS: dict[str, str] = {
-    "split_derived": "prior run count x split-like price factor (within 5%); known at its own start (split "
-    "terms are public at the ex-date)",
+    "split_derived": "prior run count x split-like price factor (within 5%); known at max(its own start, the "
+    "prior run's availability): split terms are public at the ex-date, but the count reveals the prior run's",
     "dei_matched": "equals a DEI cover count up to vendor rounding (1,000 shares) dated 7 days before to 1 day "
     "after the run start, or one already public at the run start (cover date at most 90 days earlier); known at "
     "max(run start, the earliest such filing's available_at)",
@@ -530,9 +540,11 @@ def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
     """The A8 vendor share-run clock as ``WITH`` clauses (no leading ``WITH``).
 
     ``bars`` names one row per ``(security_id, trade_date)`` with the columns
-    ``security_id, trade_date, close, adj_close, archive_shares`` (the vendor
-    count in shares; a NULL price marks an invalid session) -- the line's full
-    history, since runs and split ex-dates are found over it. ``links`` names
+    ``security_id, trade_date, close, adj_close, archive_shares, bar_at`` (the
+    vendor count in shares; a NULL price marks an invalid session; ``bar_at``
+    when the bar was known) -- the line's full history, since runs and split
+    ex-dates are found over it. A run is never known before the bars that
+    define it (``run_bars_at``). ``links`` names
     ``(price_security_id, member_security_id, valid_from, valid_to, adr_line)``:
     the owner member ids whose DEI cover counts a run may match, and the filer
     family evidence. ``targets`` names the bars to resolve (``security_id,
@@ -552,14 +564,20 @@ def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
     return f"""share_rows AS (
     -- A run is a maximal stretch of equal positive vendor counts on one line
     -- over its full bar history (a NULL-count bar does not break it).
-    SELECT security_id, trade_date, close, adj_close, archive_shares,
-           archive_shares IS DISTINCT FROM lag(archive_shares) OVER w AS new_run
+    SELECT security_id, trade_date, close, adj_close, archive_shares, bar_at,
+           archive_shares IS DISTINCT FROM lag(archive_shares) OVER w AS new_run,
+           -- The count change is seen once both bars that show it are known.
+           greatest(bar_at, coalesce(lag(bar_at) OVER w, bar_at)) AS change_at
     FROM {bars}
     WHERE archive_shares > 0
     WINDOW w AS (PARTITION BY security_id ORDER BY trade_date)
 ), share_runs AS (
     SELECT security_id, trade_date AS run_start, archive_shares AS run_shares,
            CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR AS run_cutoff,
+           -- The bars that define the run (its first bar, the count bar before
+           -- it, the prior run's first bar its split factor reads): a run is
+           -- never known before they are (a late or restated bar delays it).
+           greatest(change_at, coalesce(lag(bar_at) OVER r, change_at)) AS run_bars_at,
            row_number() OVER r = 1 AS first_run,
            lag(archive_shares) OVER r AS prior_shares,
            -- Price-adjustment factor change between the prior run's start and this one's.
@@ -605,7 +623,7 @@ def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
       AND abs(h.share_count - k.run_shares) <= {ARCHIVE_RUN_ROUNDING_SHARES}
     GROUP BY k.security_id, k.run_start
 ), run_base AS (
-    SELECT r.security_id, r.run_start, r.run_shares, r.run_cutoff,
+    SELECT r.security_id, r.run_start, r.run_shares, r.run_cutoff, r.run_bars_at,
            coalesce(f.lag_family, 'unknown') AS lag_family,
            coalesce(r.prior_shares > 0 AND (r.run_factor >= {split_hi} OR r.run_factor <= {split_lo})
                     AND abs(r.run_shares / (r.prior_shares * r.run_factor) - 1) <= {run_split_tol},
@@ -613,20 +631,29 @@ def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
            CASE WHEN d.dei_available_at IS NOT NULL THEN 'dei_matched'
                 WHEN r.first_run THEN 'first_run'
                 ELSE 'modeled_lag' END AS base_clock,
-           CASE WHEN d.dei_available_at IS NOT NULL THEN greatest(r.run_cutoff, d.dei_available_at)
-                WHEN r.first_run THEN r.run_cutoff
-                WHEN f.lag_family = 'domestic' THEN r.run_cutoff + INTERVAL {ARCHIVE_MODELED_LAG_DAYS} DAY
-                ELSE r.run_cutoff + INTERVAL {ARCHIVE_MODELED_LAG_DAYS_FOREIGN} DAY END AS base_at
+           greatest(r.run_bars_at,
+                    CASE WHEN d.dei_available_at IS NOT NULL THEN greatest(r.run_cutoff, d.dei_available_at)
+                         WHEN r.first_run THEN r.run_cutoff
+                         WHEN f.lag_family = 'domestic' THEN r.run_cutoff + INTERVAL {ARCHIVE_MODELED_LAG_DAYS} DAY
+                         ELSE r.run_cutoff + INTERVAL {ARCHIVE_MODELED_LAG_DAYS_FOREIGN} DAY END) AS base_at
     FROM share_runs r
     LEFT JOIN run_dei d ON d.security_id = r.security_id AND d.run_start = r.run_start
     LEFT JOIN run_family f ON f.security_id = r.security_id AND f.run_start = r.run_start
+), run_chain AS (
+    -- A chain: a run that is not split-derived and the split-derived runs after it.
+    SELECT *, sum(CASE WHEN split_derived THEN 0 ELSE 1 END) OVER c AS chain
+    FROM run_base
+    WINDOW c AS (PARTITION BY security_id ORDER BY run_start ROWS UNBOUNDED PRECEDING)
 ), run_clock AS (
-    -- A split-derived run is known at its own start: split terms are public
-    -- at the ex-date, so it never waits for the prior run's clock.
+    -- A split-derived run's count is the prior run's count x the public split
+    -- terms, so it reveals the prior count: known at its own start and bars,
+    -- but never before the prior run is (the running max over its chain).
     SELECT security_id, run_start, run_shares, lag_family,
            CASE WHEN split_derived THEN 'split_derived' ELSE base_clock END AS run_clock,
-           CASE WHEN split_derived THEN run_cutoff ELSE base_at END AS available_at
-    FROM run_base
+           max(CASE WHEN split_derived THEN greatest(run_cutoff, run_bars_at) ELSE base_at END) OVER c
+               AS available_at
+    FROM run_chain
+    WINDOW c AS (PARTITION BY security_id, chain ORDER BY run_start ROWS UNBOUNDED PRECEDING)
 ), run_anchor AS (
     SELECT *, lag(run_shares) OVER r AS prior_run_shares, lag(available_at) OVER r AS prior_available_at
     FROM run_clock
@@ -847,6 +874,8 @@ def build_market_daily_sql(
         security_count=security_count, bars_extra_predicate=bars_extra_predicate, with_recent=True
     )
     vendor_state = vendor_share_state_ctes(bars="bars_by_session", links="vendor_share_links", targets="bars")
+    # VA1: the published adjusted close (and log_return, and every metric chained on them).
+    repaired_adj = "(j.adj_close * coalesce(rp.va_multiplier, 1.0))"
     availability_terms = ", ".join(
         f"coalesce(f{index}.available_at, TIMESTAMP '-infinity')" for index in range(len(codes))
     )
@@ -920,6 +949,14 @@ WITH owner_bridge AS (
     -- sibling's (row_number() over trade_date DESC would otherwise have to
     -- break same-trade_date ties on undefined physical/plan order).
     {bars_by_session}
+), adj_repair AS (
+    -- VA1: the vendor_artifact_repaired multiplier of each session over the line's full
+    -- history (bars_by_session is never lower-date bounded), so the published adj_close
+    -- level and log_return do not depend on the refresh's start date. Only the published
+    -- adj_close/log_return (and the metrics chained on them) read it; the A8 share logic
+    -- keeps the vendor factor.
+    SELECT security_id, trade_date, va_multiplier
+    FROM ({repaired_bars_sql('bars_by_session', adjusted='adj_close')}) va
 ), bars AS (
     SELECT security_id, trade_date, symbol, close, adj_close, volume, archive_shares, bar_at, cutoff, price_valid
     FROM (
@@ -1194,7 +1231,7 @@ WITH owner_bridge AS (
     LEFT JOIN resolved_groups r
       ON c.basis = '{SHARE_BASIS_MULTI_CLASS}' AND r.issuer_key = c.issuer_key AND r.trade_date = c.trade_date
 ), panel AS (
-    SELECT j.security_id, j.trade_date, j.symbol, j.close, j.adj_close, j.volume,
+    SELECT j.security_id, j.trade_date, j.symbol, j.close, {repaired_adj} AS adj_close, j.volume,
            j.archive_shares, j.bar_at, j.fundamental_available_at, j.shares_source,
            CASE WHEN j.shares_source = 'dei' THEN j.dei_total END AS dei_shares,
            CASE WHEN j.shares_source = 'dei' THEN j.dei_total
@@ -1225,13 +1262,14 @@ WITH owner_bridge AS (
                     coalesce(lag(j.bar_at) OVER (PARTITION BY j.security_id ORDER BY j.trade_date), j.bar_at))
                AS "log_return__at",
            j.bar_at AS "archive_shares__at", j.bar_at AS "dei_shares__at",
-           CASE WHEN lag(j.adj_close) OVER (PARTITION BY j.security_id ORDER BY j.trade_date) > 0
-                THEN ln(j.adj_close / lag(j.adj_close) OVER (PARTITION BY j.security_id
-                                                             ORDER BY j.trade_date)) END
+           CASE WHEN lag({repaired_adj}) OVER (PARTITION BY j.security_id ORDER BY j.trade_date) > 0
+                THEN ln({repaired_adj} / lag({repaired_adj}) OVER (PARTITION BY j.security_id
+                                                                   ORDER BY j.trade_date)) END
                AS "log_return",
            j.* EXCLUDE (security_id, trade_date, symbol, close, adj_close, volume,
                         archive_shares, bar_at, cutoff, fundamental_available_at, shares_source)
     FROM decided j
+    LEFT JOIN adj_repair rp ON rp.security_id = j.security_id AND rp.trade_date = j.trade_date
 ),
 {chain_sql}final AS (SELECT * FROM {previous})
 SELECT sha256(? || '|' || f.security_id || '|' || CAST(f.trade_date AS VARCHAR)),
@@ -1241,7 +1279,8 @@ SELECT sha256(? || '|' || f.security_id || '|' || CAST(f.trade_date AS VARCHAR))
        f.fundamental_available_at,
        {row_available_at},
        sha256(to_json(struct_pack(security_id := f.security_id, trade_date := f.trade_date,
-              close := f.close, adj_close := f.adj_close, shares := f."shares_outstanding",
+              close := f.close, adj_close := f.adj_close, adj_close_basis := '{ADJ_CLOSE_BASIS}',
+              shares := f."shares_outstanding",
               shares_source := f.shares_source, dei_state_id := f.dei_state_id, archive_clock := f.archive_clock,
               owner_key := f.owner_key, identity_basis := f.identity_basis,
               availability_basis := f.availability_basis, link_method := f.link_method,

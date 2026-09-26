@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from uuid import uuid4
 
 from ._bulk_publication import publish_validated_shadow
+from ._vendor_artifact import repaired_bars_sql
 from .connection import DuckDBStore
 
 _LOG = logging.getLogger(__name__)
@@ -25,7 +26,9 @@ _CHECKPOINT_ROWS = 400_000
 # formation filter only selects WHICH anchor rows are computed; every published
 # row is the identical per-row calculation, so the version is shared.
 # v2 (R3a fix 1): terminals are dated by the halt-gap rule of effective_terminals_sql.
-CALCULATION_VERSION = "forward_return_publication_v2"
+# v3 (VA1): the adjusted_close basis is the vendor_artifact_repaired series (selected_bars_sql);
+# v2 rows carry the 2021-01-04 vendor factor-decrease artifact and are refused by the validators.
+CALCULATION_VERSION = "forward_return_publication_v3"
 # every_session: every positive selected bar is an anchor (the daily panel).
 # month_end_next_session: only the first observed session after the last observed
 # session of each closed calendar month (entry after a month-end decision).
@@ -325,9 +328,22 @@ def selected_bars_sql(price_basis: str, *, security_filter: str = "TRUE") -> str
     Columns ``security_id, symbol, trade_date, price, price_available_at``; only positive
     finite ``price_basis`` prices. ``security_filter`` is a SQL predicate over
     ``equity_daily_bars`` applied before the pick. Binds ``(cutoff, cutoff)``.
+
+    ``adjusted_close`` is the VA1 repaired series (:mod:`atx_db._vendor_artifact`,
+    ``vendor_artifact_repaired``): the vendor factor-decrease artifact steps between
+    consecutive picked bars are neutralized, every other factor step is kept. A contiguous
+    date filter gives the same returns as a full-history read.
     """
     if price_basis not in {"adjusted_close", "close"}:
         raise ValueError("price_basis must be adjusted_close or close")
+    picked = """
+                    SELECT security_id, symbol, trade_date, close, adjusted_close, price_available_at
+                    FROM chosen WHERE pick = 1"""
+    if price_basis == "adjusted_close":
+        priced = (f"SELECT security_id, symbol, trade_date, adjusted_close * va_multiplier AS price, "
+                  f"price_available_at FROM ({repaired_bars_sql('picked')}) va_repaired")
+    else:
+        priced = "SELECT security_id, symbol, trade_date, close AS price, price_available_at FROM picked"
     return f"""
                 WITH eligible AS (
                     SELECT *, coalesce(available_at,
@@ -336,8 +352,7 @@ def selected_bars_sql(price_basis: str, *, security_filter: str = "TRUE") -> str
                     WHERE ({security_filter}) AND (?::TIMESTAMP IS NULL OR coalesce(available_at,
                         CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= ?)
                 ), chosen AS (
-                    SELECT security_id, symbol, trade_date,
-                           {price_basis} AS price, price_available_at,
+                    SELECT security_id, symbol, trade_date, close, adjusted_close, price_available_at,
                            row_number() OVER (
                                PARTITION BY security_id, trade_date
                                ORDER BY price_available_at DESC, source ASC,
@@ -346,9 +361,10 @@ def selected_bars_sql(price_basis: str, *, security_filter: str = "TRUE") -> str
                                         source_loaded_at DESC
                            ) AS pick
                     FROM eligible
-                )
+                ), picked AS ({picked}
+                ), priced AS ({priced})
                 SELECT security_id, symbol, trade_date, price, price_available_at
-                FROM chosen WHERE pick = 1 AND price > 0 AND isfinite(price)"""
+                FROM priced WHERE price > 0 AND isfinite(price)"""
 
 
 def selected_terminals_sql() -> str:
