@@ -174,6 +174,9 @@ namespace {
     kv_s("panel", cfg.panel);
     if (cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0) {
         kv_s("vwap_rule", std::string(atx::engine::alpha::vwap_rule_name(cfg.vwap_rule)));
+        kv_d("min_price", cfg.min_price);
+        kv_d("min_adv_usd", cfg.min_adv_usd);
+        kv_i("adv_window", cfg.adv_window);
     }
     kv_i("seed", static_cast<long long>(cfg.seed));
     kv_i("population", cfg.population);
