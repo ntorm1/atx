@@ -78,7 +78,7 @@
 //  Durability, tamper evidence, multiple writers
 // ===========================================================================
 //  open(path) creates or replays an append-only binary log. Each record is
-//  fixed-size and carries its own checksum; it is written (handed to the OS)
+//  checksummed (V1/V2 fixed-size, V3 length-framed); it is written (handed to the OS)
 //  before record() returns. On reopen, a torn tail (a crash mid-append: a
 //  trailing partial record, or a bad-checksum record that is the LAST one in
 //  the file) is detected by size or checksum and truncated, so the registry
@@ -98,6 +98,12 @@
 //  logs) adds the metadata: 72 + 8·d byte records (id, config_hash, sharpe,
 //  kind|fidelity|sample, window_start, window_end, family_tag, theme_tag,
 //  sketch, checksum).
+//  V3 (magic ATXTRG03, opt-in) prefixes byte length and observation kind. Full
+//  P&L frames carry the same evidence (88 + 8*d bytes); IC-screen frames carry
+//  metadata and complete recipe/reason tags only (96 bytes), without a Sharpe
+//  or sketch. n_raw includes both; SR moments and explicitly partial n_eff use
+//  full P&L only. Complete-set n_eff is NaN and correlation/MC/accounting return
+//  unavailable when any screened trial exists. Callers use total raw N for DSR.
 //
 //  Tamper evidence: chain_head() = {records, head}, where head chains a stable
 //  digest of every log record's full bytes in log order. It is meant to be
@@ -146,7 +152,10 @@ enum class TrialKind : atx::u8 {
 enum class TrialLogFormat : atx::u8 {
   V1 = 1, // pre-E-16: fixed full-calendar pnl, no metadata
   V2 = 2, // E-16: windows, fidelity, family/theme tags, IS/OOS flag
+  V3 = 3, // explicit framed full-P&L or metadata-only IC-screen observations
 };
+
+enum class TrialObservation : atx::u8 { FullPnl = 0, IcScreened = 1 };
 
 // Which sample the recorded pnl comes from (E-16).
 enum class TrialSample : atx::u8 {
@@ -184,8 +193,11 @@ struct TrialInfo {
   TrialId id{};
   TrialKind kind{TrialKind::MinerExpr};
   atx::u64 config_hash{};
-  atx::f64 sharpe{};
+  atx::f64 sharpe{}; // NaN for metadata-only screened observations
   TrialMeta meta{};
+  TrialObservation observation{TrialObservation::FullPnl};
+  atx::u64 screen_rule_tag{};   // binds the complete screening recipe, not just its name
+  atx::u64 screen_reason_tag{};
 };
 
 struct TrialRegistryConfig {
@@ -219,6 +231,14 @@ struct TrialSummary {
   atx::u64 n_in_sample{};     // trials recorded with TrialSample::InSample
   atx::u64 n_out_of_sample{}; // trials recorded with TrialSample::OutOfSample
   atx::u64 n_unspecified{};   // trials recorded with TrialSample::Unspecified
+  atx::u64 n_full_pnl{};
+  atx::u64 n_screened{};
+  // With screened-only observations, n_eff fields above are NaN (unknown for
+  // the complete trial set). These explicitly partial estimates use full P&L
+  // observations only, as do mean_sr/var_sr/max_sr. No synthetic P&L is inserted.
+  bool pnl_statistics_complete{true};
+  atx::f64 n_eff_full_pnl{};
+  atx::f64 n_eff_uncorrected_full_pnl{};
 };
 
 struct RecordOutcome {
@@ -296,9 +316,16 @@ public:
   // accepts only the legacy shape (full window, fidelity 0, Unspecified, no
   // tags); anything else is Err(InvalidArgument). Same error contract as above.
   [[nodiscard]] atx::core::Result<RecordOutcome> record(TrialKind kind, atx::u64 config_hash,
-                                                        const TrialMeta &meta,
-                                                        std::span<const atx::f64> pnl,
-                                                        atx::f64 sharpe);
+                                                         const TrialMeta &meta,
+                                                         std::span<const atx::f64> pnl,
+                                                         atx::f64 sharpe);
+  // V3 only. A screen-only trial has no P&L/Sharpe/sketch payload. config_hash
+  // and rule_tag must bind the complete screening recipe and candidate identity;
+  // reason_tag names the observed rejection. Counts and the durable chain include
+  // these identities, while correlation/MC/cluster accounting is unavailable.
+  [[nodiscard]] atx::core::Result<RecordOutcome> record_screened(
+      TrialKind kind, atx::u64 config_hash, const TrialMeta &meta,
+      atx::u64 rule_tag, atx::u64 reason_tag);
   // Ingest every record other handles appended to the durable log since this
   // handle last looked; returns how many records were read (0 in memory).
   [[nodiscard]] atx::core::Result<atx::u64> refresh();

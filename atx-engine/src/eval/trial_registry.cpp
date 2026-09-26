@@ -61,12 +61,15 @@ using atx::core::Status;
 constexpr u64 kGolden = 0x9e3779b97f4a7c15ULL;
 constexpr std::array<char, 8> kMagicV1{'A', 'T', 'X', 'T', 'R', 'G', '0', '1'};
 constexpr std::array<char, 8> kMagicV2{'A', 'T', 'X', 'T', 'R', 'G', '0', '2'};
+constexpr std::array<char, 8> kMagicV3{'A', 'T', 'X', 'T', 'R', 'G', '0', '3'};
 constexpr usize kMagicStem = 7U;    // "ATXTRG0" — the version digit follows
 constexpr usize kHeaderBytes = 48U; // magic, version, pnl_len, sketch_dim, seed, checksum
 constexpr usize kRecordFixedV1 = 40U; // id, config_hash, sharpe, kind, (sketch), checksum
 // id, config_hash, sharpe, kind|fidelity|sample, window_start, window_end,
 // family_tag, theme_tag, (sketch), checksum
 constexpr usize kRecordFixedV2 = 72U;
+constexpr usize kRecordFixedV3 = 88U; // length, observation, identity/meta, SR, sketch, checksum
+constexpr usize kScreenRecordV3 = 96U; // identity/meta, recipe/reason tags; NO SR or sketch
 constexpr usize kMinSketchDim = 8U;
 constexpr usize kMinWindow = 3U;
 constexpr u64 kLegacyChainSeed = 0x6a09e667f3bcc909ULL;  // registry_hash (V1 semantics)
@@ -445,6 +448,7 @@ struct TrialRegistry::Impl {
   Eigen::Index n_pending{};
   f64 sum_s4{}; // Σ_i ||s_i||⁴ (the Gram's diagonal-pair mass)
   u64 n{};
+  u64 n_screened{};
   f64 sr_mean{};
   f64 sr_m2{};
   f64 sr_max{};
@@ -489,7 +493,8 @@ struct TrialRegistry::Impl {
   }
 
   [[nodiscard]] usize record_bytes() const noexcept {
-    return (fmt == TrialLogFormat::V1 ? kRecordFixedV1 : kRecordFixedV2) + 8U * dim;
+    return (fmt == TrialLogFormat::V1 ? kRecordFixedV1
+            : fmt == TrialLogFormat::V2 ? kRecordFixedV2 : kRecordFixedV3) + 8U * dim;
   }
   void set_format(TrialLogFormat f) {
     fmt = f;
@@ -610,6 +615,17 @@ struct TrialRegistry::Impl {
     }
   }
 
+  void apply_screened(const TrialInfo &info) {
+    ids.insert(info.id.value);
+    ++n_screened;
+    ++by_sample[static_cast<usize>(info.meta.sample)];
+    infos.push_back(info);
+    chain = splitmix64(chain ^ info.id.value);
+    chain = splitmix64(chain ^ static_cast<u64>(TrialObservation::IcScreened));
+    chain = splitmix64(chain ^ info.screen_rule_tag);
+    chain = splitmix64(chain ^ info.screen_reason_tag);
+  }
+
   void chain_record(const unsigned char *rec, usize len) noexcept {
     content = splitmix64(content ^ stable_digest(rec, len));
     ++n_log;
@@ -625,6 +641,31 @@ struct TrialRegistry::Impl {
   }
 
   void encode(const TrialInfo &info, const f64 *sk) {
+    if (fmt == TrialLogFormat::V3) {
+      const bool screened = info.observation == TrialObservation::IcScreened;
+      rec_buf.resize(screened ? kScreenRecordV3 : record_bytes());
+      put_u64(rec_buf, 0U, static_cast<u64>(rec_buf.size()));
+      put_u64(rec_buf, 8U, static_cast<u64>(info.observation));
+      put_u64(rec_buf, 16U, info.id.value);
+      put_u64(rec_buf, 24U, info.config_hash);
+      put_u64(rec_buf, 32U, static_cast<u64>(info.kind) |
+          (static_cast<u64>(info.meta.fidelity) << 8U) |
+          (static_cast<u64>(info.meta.sample) << 16U));
+      put_u64(rec_buf, 40U, info.meta.window_start);
+      put_u64(rec_buf, 48U, info.meta.window_end);
+      put_u64(rec_buf, 56U, info.meta.family_tag);
+      put_u64(rec_buf, 64U, info.meta.theme_tag);
+      if (screened) {
+        put_u64(rec_buf, 72U, info.screen_rule_tag);
+        put_u64(rec_buf, 80U, info.screen_reason_tag);
+      } else {
+        put_u64(rec_buf, 72U, std::bit_cast<u64>(info.sharpe));
+        std::memcpy(rec_buf.data() + 80U, sk, 8U * dim);
+      }
+      const usize body = rec_buf.size() - 8U;
+      put_u64(rec_buf, body, stable_digest(rec_buf.data(), body));
+      return;
+    }
     put_u64(rec_buf, 0U, info.id.value);
     put_u64(rec_buf, 8U, info.config_hash);
     put_u64(rec_buf, 16U, std::bit_cast<u64>(info.sharpe));
@@ -695,9 +736,43 @@ struct TrialRegistry::Impl {
     return true;
   }
 
+  [[nodiscard]] bool decode_v3(const unsigned char *r, usize bytes, TrialInfo &out) {
+    const u64 observation = get_u64(r + 8U);
+    if (observation > static_cast<u64>(TrialObservation::IcScreened) ||
+        get_u64(r) != static_cast<u64>(bytes) ||
+        bytes != (observation == 1U ? kScreenRecordV3 : record_bytes()) ||
+        get_u64(r + bytes - 8U) != stable_digest(r, bytes - 8U)) return false;
+    out.id = TrialId{get_u64(r + 16U)};
+    out.config_hash = get_u64(r + 24U);
+    const u64 packed = get_u64(r + 32U);
+    const u64 kind = packed & 0xffU;
+    const u64 sample = (packed >> 16U) & 0xffU;
+    if ((packed >> 24U) != 0U || !valid_kind(kind) || !valid_sample(sample)) return false;
+    out.kind = static_cast<TrialKind>(kind);
+    out.meta.fidelity = static_cast<u8>((packed >> 8U) & 0xffU);
+    out.meta.sample = static_cast<TrialSample>(sample);
+    out.meta.window_start = get_u64(r + 40U);
+    out.meta.window_end = get_u64(r + 48U);
+    out.meta.family_tag = get_u64(r + 56U);
+    out.meta.theme_tag = get_u64(r + 64U);
+    if (!validate_meta(out.meta) || !(trial_id(out.kind, out.config_hash) == out.id)) return false;
+    out.observation = static_cast<TrialObservation>(observation);
+    if (out.observation == TrialObservation::IcScreened) {
+      out.sharpe = std::numeric_limits<f64>::quiet_NaN();
+      out.screen_rule_tag = get_u64(r + 72U);
+      out.screen_reason_tag = get_u64(r + 80U);
+      return out.screen_rule_tag != 0U && out.screen_reason_tag != 0U;
+    }
+    out.sharpe = std::bit_cast<f64>(get_u64(r + 72U));
+    if (!std::isfinite(out.sharpe)) return false;
+    std::memcpy(s.data(), r + 80U, 8U * dim);
+    return std::all_of(s.begin(), s.end(), [](f64 x) { return std::isfinite(x); });
+  }
+
   [[nodiscard]] std::vector<unsigned char> header_bytes() const {
     std::vector<unsigned char> h(kHeaderBytes, 0U);
-    const auto &magic = fmt == TrialLogFormat::V1 ? kMagicV1 : kMagicV2;
+    const auto &magic = fmt == TrialLogFormat::V1 ? kMagicV1
+                         : fmt == TrialLogFormat::V2 ? kMagicV2 : kMagicV3;
     std::memcpy(h.data(), magic.data(), magic.size());
     put_u64(h, 8U, static_cast<u64>(fmt));
     put_u64(h, 16U, static_cast<u64>(cfg.pnl_len));
@@ -720,6 +795,8 @@ struct TrialRegistry::Impl {
       f = TrialLogFormat::V1;
     } else if (digit == '2' && version == 2U) {
       f = TrialLogFormat::V2;
+    } else if (digit == '3' && version == 3U) {
+      f = TrialLogFormat::V3;
     } else {
       return Err(ErrorCode::ParseError, "TrialRegistry: unknown log version");
     }
@@ -730,6 +807,57 @@ struct TrialRegistry::Impl {
                  "TrialRegistry: config does not match the registry file header");
     }
     set_format(f);
+    return atx::core::Ok();
+  }
+
+  // V3 frames carry their exact byte length, allowing a metadata-only record to
+  // contain no Sharpe or sketch. Existing V1/V2 fixed-record replay is untouched.
+  [[nodiscard]] Status sync_v3(u64 size, const TrialChainHead *anchor) {
+    const LogFile &f = *file;
+    bool captured = anchor != nullptr && n_log == anchor->records;
+    u64 anchor_value = captured ? content : 0U;
+    while (size - synced_len >= 8U) {
+      std::array<unsigned char, 8> prefix{};
+      ATX_TRY_VOID(f.read_at(synced_len, prefix.data(), prefix.size()));
+      const u64 length = get_u64(prefix.data());
+      if (length != kScreenRecordV3 && length != record_bytes()) {
+        return Err(ErrorCode::ParseError, "TrialRegistry: invalid V3 frame length");
+      }
+      if (length > size - synced_len) break; // torn final append
+      const auto bytes = static_cast<usize>(length);
+      io_buf.resize(bytes);
+      ATX_TRY_VOID(f.read_at(synced_len, io_buf.data(), bytes));
+      TrialInfo info;
+      if (!decode_v3(io_buf.data(), bytes, info)) {
+        if (length < size - synced_len) {
+          return Err(ErrorCode::ParseError, "TrialRegistry: corrupt V3 record mid-log");
+        }
+        break; // complete-size torn tail; verify anchor before truncating
+      }
+      if (!ids.contains(info.id.value)) {
+        if (info.observation == TrialObservation::IcScreened) apply_screened(info);
+        else apply_trial(info, s.data());
+      } else {
+        const auto prior = std::find_if(infos.begin(), infos.end(), [&](const TrialInfo &v) {
+          return v.id == info.id;
+        });
+        if (prior->observation != info.observation ||
+            prior->screen_rule_tag != info.screen_rule_tag ||
+            prior->screen_reason_tag != info.screen_reason_tag) {
+          return Err(ErrorCode::ParseError, "TrialRegistry: conflicting V3 observation identity");
+        }
+      }
+      chain_record(io_buf.data(), bytes);
+      synced_len += length;
+      if (anchor != nullptr && !captured && n_log == anchor->records) {
+        captured = true;
+        anchor_value = content;
+      }
+    }
+    if (anchor != nullptr && (!captured || anchor_value != anchor->head)) {
+      return Err(ErrorCode::ParseError, "TrialRegistry: V3 log does not match its anchored chain head");
+    }
+    if (synced_len != size) ATX_TRY_VOID(f.truncate(synced_len));
     return atx::core::Ok();
   }
 
@@ -766,6 +894,7 @@ struct TrialRegistry::Impl {
       ATX_TRY_VOID(adopt_header(head.data()));
       synced_len = kHeaderBytes;
     }
+    if (fmt == TrialLogFormat::V3) return sync_v3(size, anchor);
     const usize rb = record_bytes();
     const u64 chunk_records = std::max<u64>(1U, static_cast<u64>(kIoChunk / rb));
     bool captured = anchor != nullptr && n_log == anchor->records;
@@ -827,6 +956,13 @@ struct TrialRegistry::Impl {
                                              const TrialMeta &meta, std::span<const f64> pnl,
                                              f64 sharpe) {
     if (ids.find(id.value) != ids.end()) {
+      if (fmt == TrialLogFormat::V3) {
+        const auto prior = std::find_if(infos.begin(), infos.end(), [&](const TrialInfo &v) {
+          return v.id == id;
+        });
+        if (prior->observation != TrialObservation::FullPnl)
+          return Err(ErrorCode::InvalidArgument, "TrialRegistry: identity already belongs to a screened trial");
+      }
       return atx::core::Ok(RecordOutcome{id, false});
     }
     ATX_TRY_VOID(make_sketch(meta, pnl));
@@ -849,6 +985,44 @@ struct TrialRegistry::Impl {
     chain_record(rec_buf.data(), rec_buf.size());
     return atx::core::Ok(RecordOutcome{id, true});
   }
+
+  [[nodiscard]] Result<RecordOutcome> insert_screened(TrialKind kind, u64 config_hash,
+                                                      const TrialMeta &meta, u64 rule, u64 reason) {
+    if (fmt != TrialLogFormat::V3) {
+      return Err(ErrorCode::InvalidArgument, "TrialRegistry: screened observations require explicit V3");
+    }
+    const TrialId id = trial_id(kind, config_hash);
+    if (ids.contains(id.value)) {
+      const auto prior = std::find_if(infos.begin(), infos.end(), [&](const TrialInfo &v) {
+        return v.id == id;
+      });
+      if (prior->observation != TrialObservation::IcScreened ||
+          prior->screen_rule_tag != rule || prior->screen_reason_tag != reason)
+        return Err(ErrorCode::InvalidArgument,
+                   "TrialRegistry: changed screening recipe/reason requires a distinct config hash");
+      return atx::core::Ok(RecordOutcome{id, false});
+    }
+    TrialInfo info;
+    info.id = id;
+    info.kind = kind;
+    info.config_hash = config_hash;
+    info.sharpe = std::numeric_limits<f64>::quiet_NaN();
+    info.meta = meta;
+    info.observation = TrialObservation::IcScreened;
+    info.screen_rule_tag = rule;
+    info.screen_reason_tag = reason;
+    encode(info, nullptr);
+    if (file.has_value()) {
+      if (!file->append(rec_buf.data(), rec_buf.size())) {
+        (void)file->truncate(synced_len);
+        return Err(ErrorCode::IoError, "TrialRegistry: screened durable append failed");
+      }
+      synced_len += rec_buf.size();
+    }
+    apply_screened(info);
+    chain_record(rec_buf.data(), rec_buf.size());
+    return atx::core::Ok(RecordOutcome{id, true});
+  }
 };
 
 namespace {
@@ -860,7 +1034,8 @@ atx::core::Status validate_cfg(const TrialRegistryConfig &cfg) {
   if (cfg.sketch_dim < kMinSketchDim) {
     return Err(ErrorCode::InvalidArgument, "TrialRegistry: sketch_dim must be >= 8");
   }
-  if (cfg.format != TrialLogFormat::V1 && cfg.format != TrialLogFormat::V2) {
+  if (cfg.format != TrialLogFormat::V1 && cfg.format != TrialLogFormat::V2 &&
+      cfg.format != TrialLogFormat::V3) {
     return Err(ErrorCode::InvalidArgument, "TrialRegistry: unknown TrialLogFormat");
   }
   return atx::core::Ok();
@@ -935,6 +1110,20 @@ Result<RecordOutcome> TrialRegistry::record(TrialKind kind, u64 config_hash, con
   return im.insert(id, kind, config_hash, meta, pnl, sharpe);
 }
 
+Result<RecordOutcome> TrialRegistry::record_screened(TrialKind kind, u64 config_hash,
+                                                     const TrialMeta &meta, u64 rule_tag,
+                                                     u64 reason_tag) {
+  Impl &im = *impl_;
+  if (!valid_kind(static_cast<u64>(kind)) || rule_tag == 0U || reason_tag == 0U) {
+    return Err(ErrorCode::InvalidArgument, "TrialRegistry: invalid screened observation identity");
+  }
+  ATX_TRY_VOID(im.validate_meta(meta));
+  if (!im.file.has_value()) return im.insert_screened(kind, config_hash, meta, rule_tag, reason_tag);
+  ATX_TRY(const LogLock lock, LogLock::acquire(*im.file));
+  ATX_TRY_VOID(im.sync(nullptr));
+  return im.insert_screened(kind, config_hash, meta, rule_tag, reason_tag);
+}
+
 Result<u64> TrialRegistry::refresh() {
   Impl &im = *impl_;
   if (!im.file.has_value()) {
@@ -949,13 +1138,23 @@ Result<u64> TrialRegistry::refresh() {
 TrialSummary TrialRegistry::summary() const {
   const Impl &im = *impl_;
   TrialSummary out;
-  out.n_raw = im.n;
+  out.n_raw = im.n + im.n_screened;
+  out.n_full_pnl = im.n;
+  out.n_screened = im.n_screened;
+  out.pnl_statistics_complete = im.n_screened == 0U;
+  if (!out.pnl_statistics_complete) {
+    out.n_eff = std::numeric_limits<f64>::quiet_NaN();
+    out.n_eff_uncorrected = std::numeric_limits<f64>::quiet_NaN();
+  }
   out.pnl_len = im.cfg.pnl_len;
   out.registry_hash = im.chain;
   out.n_unspecified = im.by_sample[static_cast<usize>(TrialSample::Unspecified)];
   out.n_in_sample = im.by_sample[static_cast<usize>(TrialSample::InSample)];
   out.n_out_of_sample = im.by_sample[static_cast<usize>(TrialSample::OutOfSample)];
   if (im.n == 0U) {
+    if (im.n_screened != 0U) {
+      out.mean_sr = out.var_sr = out.max_sr = std::numeric_limits<f64>::quiet_NaN();
+    }
     return out;
   }
   out.mean_sr = im.sr_mean;
@@ -1000,10 +1199,16 @@ TrialSummary TrialRegistry::summary() const {
   const f64 off_corr = std::max(0.0, (s_off - pairs * c) / (1.0 - c));
   const f64 total = nf + off_corr;
   out.n_eff = std::clamp((nf * nf) / total, 1.0, nf);
+  out.n_eff_full_pnl = out.n_eff;
+  out.n_eff_uncorrected_full_pnl = out.n_eff_uncorrected;
+  if (!out.pnl_statistics_complete) {
+    out.n_eff = std::numeric_limits<f64>::quiet_NaN();
+    out.n_eff_uncorrected = std::numeric_limits<f64>::quiet_NaN();
+  }
   return out;
 }
 
-u64 TrialRegistry::size() const noexcept { return impl_->n; }
+u64 TrialRegistry::size() const noexcept { return impl_->n + impl_->n_screened; }
 
 bool TrialRegistry::contains(TrialId id) const {
   return impl_->ids.find(id.value) != impl_->ids.end();
@@ -1021,6 +1226,10 @@ TrialChainHead TrialRegistry::chain_head() const noexcept {
 
 Result<std::vector<f64>> TrialRegistry::correlation() const {
   const Impl &im = *impl_;
+  if (im.n_screened != 0U) {
+    return Err(ErrorCode::InvalidArgument,
+               "TrialRegistry: correlation unavailable; screened trials have no observed P&L");
+  }
   if (!im.cfg.keep_sketches) {
     return Err(ErrorCode::InvalidArgument,
                "TrialRegistry: correlation needs keep_sketches (sketches were not retained)");
@@ -1042,6 +1251,10 @@ Result<std::vector<f64>> TrialRegistry::correlation() const {
 
 Result<McMaxNull> TrialRegistry::mc_max_null(usize draws, u64 seed) const {
   const Impl &im = *impl_;
+  if (im.n_screened != 0U) {
+    return Err(ErrorCode::InvalidArgument,
+               "TrialRegistry: MC unavailable; screened trials have no observed P&L");
+  }
   if (!im.cfg.keep_sketches) {
     return Err(ErrorCode::InvalidArgument,
                "TrialRegistry: mc_max_null needs keep_sketches (sketches were not retained)");
@@ -1060,6 +1273,10 @@ Result<McMaxNull> TrialRegistry::mc_max_null(usize draws, u64 seed) const {
 
 Result<TrialAccounting> TrialRegistry::accounting(const TrialAccountingConfig &cfg) const {
   const Impl &im = *impl_;
+  if (im.n_screened != 0U) {
+    return Err(ErrorCode::InvalidArgument,
+               "TrialRegistry: cluster/MC accounting unavailable; screened trial correlation is unknown");
+  }
   if (im.n == 0U) {
     return Err(ErrorCode::InvalidArgument, "TrialRegistry: accounting on an empty registry");
   }
