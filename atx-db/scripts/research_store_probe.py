@@ -3,8 +3,10 @@
 Stage ``lake`` exports the month-end bars of ``TickerHistory3.parquet`` (2012-04 .. 2026-08) into a lake
 snapshot (L1); stage ``feature`` builds ``prc_log`` (price at the month-end session; log_winsor_z, sign -1,
 positive price required) from that snapshot into the Parquet feature store (L2, basis ``probe``) with R2b's
-transforms, then times a scan. ``run`` launches both stages through ``workers.run_jobs`` (one job object each,
-0.6 GiB cap) and prints every measurement with the job's native peak committed memory.
+transforms, then times a scan. ``run`` launches both stages through ``workers.run_jobs`` (each under the
+memory guard, 0.6 GiB cap; admission and queueing are the guard's, ruling C-58) and prints every measurement
+with the job's native peak committed memory. ``run`` itself is an orchestrator: start it under the guard with
+``run_memory_guarded.py --job-gb 0.2 --allow-nested-guards --wait-minutes 30 -- python ... run``.
 
 The month-end session is the last bar date of the month with >= 1,000 bars (a probe rule: stray bars on
 exchange closures are few lines; node 1.11 supplies the canonical XNYS calendar). No warehouse is opened.
@@ -132,17 +134,6 @@ def _stage_feature(root: Path, snapshot: str, out: Path) -> None:
                       "eom_max": str(full[4]), "seconds": round(scan_full_s, 3)}}, indent=1), encoding="utf-8")
 
 
-def _gate() -> None:
-    """The agent memory gate (physical >= 1.8 GiB and commit >= 3.6 GiB free): wait, never fail."""
-    from atx_db.research.workers import host_headroom
-
-    while True:
-        head = host_headroom()
-        if head["physical_free_gb"] >= 1.8 and head["commit_free_gb"] >= 3.6:
-            return
-        time.sleep(20)
-
-
 def _run(args: argparse.Namespace) -> int:
     from atx_db.research.workers import EXIT_HEADROOM, run_jobs
 
@@ -158,8 +149,7 @@ def _run(args: argparse.Namespace) -> int:
     summary = {"snapshot": snapshot, "job_gb": args.job_gb, "stages": {}}
     for name, argv in stages:
         stopped = []
-        for attempt in range(1, 6):  # a host-floor stop (another lane's load) is re-run after re-admission
-            _gate()
+        for attempt in range(1, 6):  # a guard in-run stop is re-run; the guard queues it for re-admission
             receipts: list[dict] = []
             codes = run_jobs([argv], max_workers=1, job_gb=args.job_gb, receipts=receipts,
                              log_dir=work / "logs" / f"{name}-{attempt}")
