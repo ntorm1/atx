@@ -305,6 +305,7 @@ add_executable(atx-engine-w1-eval-tests EXCLUDE_FROM_ALL
     factory/factory_research_driver_test.cpp
     factory/blocking_pbo_test.cpp
     learn/learn_panel_dataset_test.cpp
+    learn/gbt_v2_test.cpp
     learn/learn_cpcv_date_test.cpp
     learn/learn_nn_gate_test.cpp
     combine/combine_combined_source_test.cpp)
