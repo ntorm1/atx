@@ -652,3 +652,34 @@ TEST(SearchProgress, IcResumeRejectsChangedRulesBoundsAndLegacyIdentity) {
 }
 
 } // namespace atxtest_search_progress_test
+
+namespace atxtest_search_progress_test {
+TEST(SearchProgress, DateCpcvResumeRejectsChangedBudgetGeometryAndLegacyState) {
+  Fixture fx; auto driver=fx.driver(); SearchConfig cfg;
+  cfg.population=2; cfg.generations=2;
+  cfg.fitness.cpcv.rule=atx::engine::eval::CpcvRule::DateV2;
+  cfg.fitness.cpcv.n_groups=3; cfg.fitness.cpcv.n_test_groups=1;
+  cfg.fitness.cpcv.embargo_dates=2;
+  RecordingSink sink; const AlphaStore pool;
+  const auto full=driver.run(cfg,pool,&sink);
+  ASSERT_FALSE(full.cpcv_invalid); ASSERT_EQ(sink.seen.size(),2U);
+  const auto& cp=sink.seen.back(); SearchResumeState resume;
+  resume.start_generation=cp.generation; resume.population=cp.population;
+  resume.cache_blob=cp.cache_blob; resume.canon_blob=cp.canon_blob;
+  resume.archive_blob=cp.archive_blob; resume.best_per_gen_blob=cp.best_per_gen_blob;
+  resume.digest=cp.digest; resume.candidates_generated=cp.candidates_generated;
+  const auto continued=driver.run(cfg,pool,nullptr,&resume);
+  EXPECT_FALSE(continued.cpcv_resume_mismatch); EXPECT_EQ(continued.digest,full.digest);
+  EXPECT_EQ(continued.trial_count,full.trial_count);
+  const auto refuses=[&](const SearchConfig& changed) {
+    const auto r=driver.run(changed,pool,nullptr,&resume);
+    EXPECT_TRUE(r.cpcv_resume_mismatch); EXPECT_TRUE(r.admitted_candidates.empty());
+  };
+  auto changed=cfg; ++changed.fitness.cpcv.max_working_bytes; refuses(changed);
+  changed=cfg; ++changed.fitness.cpcv.embargo_dates; refuses(changed);
+  changed=cfg; changed.fitness.cpcv.rule=atx::engine::eval::CpcvRule::ObservationV1; refuses(changed);
+  resume.cache_blob.clear(); refuses(cfg);
+  changed=cfg; changed.fitness.cpcv.max_working_bytes=1;
+  EXPECT_TRUE(driver.run(changed,pool).cpcv_invalid);
+}
+}

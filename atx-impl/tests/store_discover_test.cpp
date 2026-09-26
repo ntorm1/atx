@@ -459,3 +459,19 @@ TEST(AtxImplStoreDiscover, DiscoverWithRunDbOffPathByteIdentical) {
 }
 
 }  // namespace atxtest_store_discover
+
+namespace atxtest_store_discover {
+TEST(AtxImplStoreDiscover, ActiveDateCpcvRecipeInvalidatesResumeAndV1IgnoresDormantKnobs) {
+    auto cfg=gated_cfg("panel.bin","out");
+    const auto legacy=atx::impl::compute_discover_fingerprint(cfg);
+    cfg.cpcv_embargo_dates=9; cfg.cpcv_max_working_bytes=1;
+    EXPECT_EQ(atx::impl::compute_discover_fingerprint(cfg),legacy);
+    cfg.cpcv_rule=atx::engine::eval::CpcvRule::DateV2;
+    const auto active=atx::impl::compute_discover_fingerprint(cfg);
+    EXPECT_NE(active,legacy);
+    ++cfg.cpcv_embargo_dates;
+    EXPECT_NE(atx::impl::compute_discover_fingerprint(cfg),active);
+    --cfg.cpcv_embargo_dates; ++cfg.cpcv_max_working_bytes;
+    EXPECT_NE(atx::impl::compute_discover_fingerprint(cfg),active);
+}
+}

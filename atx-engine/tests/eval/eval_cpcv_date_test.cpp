@@ -114,3 +114,45 @@ TEST(EvalCpcvDate, UnitDateZeroEmbargoReproducesLegacyFolds) {
   }
 }
 } // namespace atxtest_cpcv_date
+
+namespace atxtest_cpcv_date {
+TEST(EvalCpcvDate, SelectableDispatcherPreservesV1AndBindsOnlyActiveSettings) {
+  const std::array<LabelSpan, 8> labels{{{0,1},{0,1},{1,2},{2,3},{4,5},{5,6},{6,7},{7,8}}};
+  CpcvConfig cfg{4, 1, 0.125};
+  const auto legacy = cpcv_folds(labels, cfg);
+  const auto wrapped = cpcv_plan(labels, cfg);
+  ASSERT_TRUE(wrapped);
+  ASSERT_EQ(wrapped->folds.size(), legacy.size());
+  for (usize i=0; i<legacy.size(); ++i) {
+    EXPECT_EQ(wrapped->folds[i].test_idx, legacy[i].test_idx);
+    EXPECT_EQ(wrapped->folds[i].train_idx, legacy[i].train_idx);
+  }
+  const auto old_id = cpcv_recipe_identity(cfg);
+  cfg.embargo_dates = 77; cfg.max_working_bytes = 1;
+  EXPECT_EQ(cpcv_recipe_identity(cfg), old_id);
+  cfg.rule = CpcvRule::DateV2;
+  EXPECT_FALSE(cpcv_plan(labels, cfg));
+  cfg.max_working_bytes = 1U << 20U; cfg.embargo_dates = 2;
+  const auto date = cpcv_plan(labels, cfg);
+  ASSERT_TRUE(date);
+  EXPECT_EQ(date->metadata.paths.size(), 1U);
+  EXPECT_EQ(date->metadata.group_offsets.size(), 5U);
+  const auto new_id = cpcv_recipe_identity(cfg);
+  cfg.embargo = std::numeric_limits<double>::quiet_NaN(); // irrelevant to DateV2
+  EXPECT_EQ(cpcv_recipe_identity(cfg), new_id);
+  EXPECT_TRUE(cpcv_plan(labels, cfg));
+  ++cfg.max_working_bytes;
+  EXPECT_NE(cpcv_recipe_identity(cfg), new_id);
+}
+TEST(EvalCpcvDate, InnerSubsetUsesUncompressedDatesAndEndpointEmbargo) {
+  const std::array<LabelSpan, 6> labels{{{0,3},{4,7},{8,11},{12,15},{20,23},{30,33}}};
+  const std::array<usize,4> candidates{0,2,3,5};
+  const std::array<usize,2> validation{1,4};
+  const auto result = cpcv_date_train(labels, candidates, validation, 2);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(*result, (std::vector<usize>{0,3,5})); // [8,11) overlaps [4,9)
+  const std::array<usize,1> bad{labels.size()};
+  EXPECT_FALSE(cpcv_date_train(labels, candidates, bad, 2));
+  EXPECT_FALSE(cpcv_date_train(labels, candidates, validation, std::numeric_limits<usize>::max()));
+}
+}

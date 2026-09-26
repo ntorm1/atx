@@ -2142,3 +2142,25 @@ TEST(AtxImplDiscover, PboHardBlock_Pure_Deterministic) {
 }
 
 } // namespace atxtest_discover
+
+namespace atxtest_discover {
+TEST(AtxImplDiscover, DateCpcvCliIsOptInAndChecksIntegerSettings) {
+    using atx::engine::eval::CpcvRule;
+    const char* defaults[]={"atx","discover"};
+    const auto legacy=atx::impl::parse_args(2,const_cast<char**>(defaults));
+    ASSERT_TRUE(legacy); EXPECT_EQ(legacy->cpcv_rule,CpcvRule::ObservationV1);
+    const char* active[]={"atx","discover","--cpcv-rule","date-v2",
+        "--cpcv-embargo-dates","3","--cpcv-max-working-bytes","1048576"};
+    const auto parsed=atx::impl::parse_args(8,const_cast<char**>(active));
+    ASSERT_TRUE(parsed); EXPECT_EQ(parsed->cpcv_rule,CpcvRule::DateV2);
+    EXPECT_EQ(parsed->cpcv_embargo_dates,3U); EXPECT_EQ(parsed->cpcv_max_working_bytes,1048576U);
+    for (const char* bad:{"-1","1.5","18446744073709551615"}) {
+        const char* args[]={"atx","discover","--cpcv-embargo-dates",bad};
+        EXPECT_FALSE(atx::impl::parse_args(4,const_cast<char**>(args)));
+    }
+    const char* zero[]={"atx","discover","--cpcv-max-working-bytes","0"};
+    EXPECT_FALSE(atx::impl::parse_args(4,const_cast<char**>(zero)));
+    const char* unknown[]={"atx","discover","--cpcv-rule","fast"};
+    EXPECT_FALSE(atx::impl::parse_args(4,const_cast<char**>(unknown)));
+}
+}

@@ -138,10 +138,12 @@ std::string json_value_of(const std::string& json, const std::string& key) {
 struct Provenance {
     std::string config_json;
     std::string engine_git_sha;
+    std::string manifest;
 };
 
 Provenance run_and_read(const std::string& tag, bool capacity = false,
-    atx::engine::eval::PboRule pbo_rule = atx::engine::eval::PboRule::CachedMomentsV2) {
+    atx::engine::eval::PboRule pbo_rule = atx::engine::eval::PboRule::CachedMomentsV2,
+    atx::engine::eval::CpcvRule cpcv_rule = atx::engine::eval::CpcvRule::ObservationV1) {
     Provenance out;
     auto panel = make_panel();
     if (!panel.has_value()) return out;
@@ -162,6 +164,11 @@ Provenance run_and_read(const std::string& tag, bool capacity = false,
 
     auto cfg = gated_cfg(panel_path, alpha_out);
     cfg.pbo_rule = pbo_rule;
+    cfg.cpcv_rule = cpcv_rule;
+    if (cpcv_rule == atx::engine::eval::CpcvRule::DateV2) {
+        cfg.cpcv_embargo_dates = 2; cfg.cpcv_max_working_bytes = 1048576;
+        cfg.population = 2; cfg.generations = 1;
+    }
     if (capacity) {
         cfg.min_price = 1.25;
         cfg.min_adv_usd = 1e6;
@@ -179,6 +186,10 @@ Provenance run_and_read(const std::string& tag, bool capacity = false,
         out.engine_git_sha = read_run_text(db, "engine_git_sha");
     }
 
+    if (cpcv_rule == atx::engine::eval::CpcvRule::DateV2) {
+        std::ifstream input(fs::path(alpha_out) / "_manifest.txt");
+        std::ostringstream text; text << input.rdbuf(); out.manifest = text.str();
+    }
     std::error_code ec;
     fs::remove(panel_path, ec);
     fs::remove_all(alpha_out, ec);
@@ -319,3 +330,20 @@ TEST(AtxImplProvenance, EngineGitShaFormat) {
 }
 
 } // namespace atxtest_provenance
+
+namespace atxtest_provenance {
+TEST(AtxImplProvenance, DateCpcvPersistsActiveRecipeAndActualPathMetadata) {
+    const auto date=run_and_read("date_cpcv_v2",false,
+        atx::engine::eval::PboRule::LegacyGatherV1,atx::engine::eval::CpcvRule::DateV2);
+    EXPECT_EQ(json_value_of(date.config_json,"v"),"4");
+    EXPECT_EQ(json_value_of(date.config_json,"cpcv_rule"),"date-v2");
+    EXPECT_EQ(json_value_of(date.config_json,"cpcv_embargo_dates"),"2");
+    EXPECT_EQ(json_value_of(date.config_json,"cpcv_max_working_bytes"),"1048576");
+    EXPECT_NE(date.manifest.find("cpcv_fold_count=15"),std::string::npos);
+    EXPECT_NE(date.manifest.find("cpcv_path_count=5"),std::string::npos);
+    EXPECT_NE(date.manifest.find("cpcv_path_4="),std::string::npos);
+    const auto legacy=run_and_read("date_cpcv_legacy",false,
+        atx::engine::eval::PboRule::LegacyGatherV1);
+    EXPECT_TRUE(json_value_of(legacy.config_json,"cpcv_rule").empty());
+}
+}
