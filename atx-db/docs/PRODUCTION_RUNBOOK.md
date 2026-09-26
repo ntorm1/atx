@@ -240,10 +240,14 @@ afterwards), never in the warehouse; the process peak must stay under ~600 MB, s
 run it under the memory guard like any heavy stage. Rows are `reconstructed` /
 `modeled` (both sides of a two-CIK conflict as `conflicting`), `available_at` is the
 RI1 evidence clock, and `value_json` carries the point-in-time tier history
-(`tier_history`, `tier_at_available_at`, `tier_attained_at`). A rerun on the same
-files writes nothing; files with other bytes or receipt clocks are a new revision
-that supersedes (`is_latest_revision = false`), never deletes, the previous one.
-Every tier is written: the bridge's default filter is high+medium as in force at
+(`tier_history`, `tier_at_available_at`, `tier_attained_at`). The content is
+deterministic (method `ri1_share_fingerprint_v2`): a rerun on the same files writes
+nothing, and a rerun whose content differs from the held revision fails loud. Files
+with other bytes or receipt clocks are a new revision (INSERT only) that supersedes
+(`is_latest_revision = false`), never deletes, the previous one; the flag change
+rebuilds `security_identity_evidence` by the governed create/copy/swap (never an
+in-place UPDATE: the table has a `DEFAULT now()` column), and the stage ends with a
+`CHECKPOINT`. Every tier is written: the bridge's default filter is high+medium as in force at
 each bar cutoff, and the high-only sensitivity is a consumer option
 (`market_owner_bridge.RECONSTRUCTION_TIERS_HIGH_ONLY`), not yet exposed through
 `MarketDailyOptions`.

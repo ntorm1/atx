@@ -155,7 +155,15 @@ The ``identity_reconstruction`` activation stage runs
 accepted segment and both sides of every conflict into
 ``security_identity_evidence`` as one revision (append-only; a rerun on the same
 files writes nothing; a new revision supersedes, never deletes, the previous
-one). :mod:`atx_db.market_owner_bridge` rule 5 reads the latest revision: in
+one -- by a governed create/copy/swap, never an in-place UPDATE, because the
+table has a ``DEFAULT now()`` column: the DuckDB 1.5.5 WAL trap). A revision's
+content is a pure function of the input bytes and the params: every window,
+``arg_max`` and ``row_number`` order is total (the vendor file repeats 1,345
+vendor-days, 188 with two share counts and 622 with two symbols), and every
+weight threshold is decided by ``math.fsum`` -- the SQL ``sum`` is only a
+prefilter, since its float summation order follows the parallel plan (one
+retained pair sits exactly on the rival floor). :data:`METHOD` ``v2`` marks
+that content. :mod:`atx_db.market_owner_bridge` rule 5 reads the latest revision: in
 reconstructed mode a line left unlinked by the current-ticker pass takes its
 segments (``identity_basis='reconstructed_history'``, the tier in force at each
 bar cutoff); strict mode rejects them. Not wired: the same segments could guard
@@ -254,7 +262,10 @@ __all__ = [
 ]
 
 SOURCE = "atx-db identity reconstruction v1"
-METHOD = "ri1_share_fingerprint_v1"
+#: v2 (tier1-v2 0.6): the v1 code gave run-dependent content for the same inputs (non-total
+#: window/arg_max order over repeated vendor-days; a float ``sum`` at the rival floor), so the
+#: deterministic logic is a new method -- a revision id never names two contents.
+METHOD = "ri1_share_fingerprint_v2"
 EVIDENCE_STATUS = "reconstructed"
 AVAILABILITY_STATUS = "modeled"
 IDENTITY_BASIS = "reconstructed_identity_unverified"
@@ -302,6 +313,10 @@ _FILED_AVAILABILITY = dt.timedelta(hours=46)  # FUNDAMENTAL_CLOCK_POLICY
 _ONE_DAY = dt.timedelta(days=1)
 #: Items kept in value_json per link (the decisive ones first, then latest).
 _MAX_JSON_ITEMS = 16
+#: The SQL pair prefilter keeps sums this close below the floor: a float ``sum``'s order follows
+#: DuckDB's parallel plan (measured: one retained pair's four weights sum to exactly 1.0 = the
+#: rival floor in some orders only); ``math.fsum`` then decides exactly.
+_SUM_PREFILTER_SLACK = 1e-9
 
 
 @dataclass(frozen=True)
@@ -880,21 +895,31 @@ def stage_vendor_ticker_history(con: duckdb.DuckDBPyConnection, parquet_path: st
     as gaps-and-islands in ``chunks`` vendor-id slices so no window ever holds
     the whole 32M-row file. Only positive vendor ids (symbol-keyed lines may
     concatenate issuers and are out of scope).
+
+    Every order is total: the file repeats some vendor-days (measured: 1,345, 188
+    with two share counts, 622 with two symbols), so the last symbol breaks a
+    same-day tie on the symbol itself and the share runs are built over distinct
+    ``(date, shares)`` observations in that order -- the same file always gives
+    the same lines and runs (``n`` counts distinct days of the run).
     """
     source = str(parquet_path)
     con.execute(
         """
         CREATE TABLE ri_vendor_lines AS
-        SELECT securityID AS vendor_id,
+        WITH bars AS (
+            SELECT securityID AS vendor_id, tradingDate,
+                   upper(trim(coalesce(nullif(ticker_tk, ''), nullif(todayTicker, '')))) AS symbol,
+                   upper(trim(coalesce(nullif(todayTicker, ''), nullif(ticker_tk, '')))) AS today
+            FROM read_parquet(?)
+            WHERE securityID > 0 AND close > 0 AND tradingDate IS NOT NULL
+              AND coalesce(nullif(trim(ticker_tk), ''), nullif(trim(todayTicker), '')) IS NOT NULL
+        )
+        SELECT vendor_id,
                min(tradingDate) AS first_trade_date, max(tradingDate) AS last_trade_date, count(*) AS bar_rows,
-               arg_max(upper(trim(coalesce(nullif(ticker_tk, ''), nullif(todayTicker, '')))), tradingDate)
-                   AS last_symbol,
-               arg_max(upper(trim(coalesce(nullif(todayTicker, ''), nullif(ticker_tk, '')))), tradingDate)
-                   AS today_ticker
-        FROM read_parquet(?)
-        WHERE securityID > 0 AND close > 0 AND tradingDate IS NOT NULL
-          AND coalesce(nullif(trim(ticker_tk), ''), nullif(trim(todayTicker), '')) IS NOT NULL
-        GROUP BY securityID
+               arg_max(symbol, (tradingDate, symbol)) AS last_symbol,
+               arg_max(today, (tradingDate, today)) AS today_ticker
+        FROM bars
+        GROUP BY vendor_id
         """,
         [source],
     )
@@ -915,15 +940,20 @@ def stage_vendor_ticker_history(con: duckdb.DuckDBPyConnection, parquet_path: st
             """
             INSERT INTO ri_share_runs
             WITH s AS (
-                SELECT securityID AS vendor_id, tradingDate AS d, shares
+                -- One row per (line, day, count): a repeated identical bar is one observation, so
+                -- (d, shares) below is a total order and a repeated vendor-day with two counts
+                -- splits the runs the same way on every run.
+                SELECT DISTINCT securityID AS vendor_id, tradingDate AS d, shares
                 FROM read_parquet(?)
                 WHERE securityID > 0 AND shares > 0 AND tradingDate IS NOT NULL AND securityID % ? = ?
             ), marked AS (
-                SELECT *, CASE WHEN lag(shares) OVER (PARTITION BY vendor_id ORDER BY d) IS DISTINCT FROM shares
+                SELECT *, CASE WHEN lag(shares) OVER (PARTITION BY vendor_id ORDER BY d, shares)
+                                    IS DISTINCT FROM shares
                                THEN 1 ELSE 0 END AS brk
                 FROM s
             ), grouped AS (
-                SELECT *, sum(brk) OVER (PARTITION BY vendor_id ORDER BY d ROWS UNBOUNDED PRECEDING) AS run_no
+                SELECT *, sum(brk) OVER (PARTITION BY vendor_id ORDER BY d, shares ROWS UNBOUNDED PRECEDING)
+                           AS run_no
                 FROM marked
             )
             SELECT vendor_id, shares, min(d), max(d), count(*) FROM grouped GROUP BY vendor_id, run_no, shares
@@ -1113,12 +1143,15 @@ def match_share_counts(
     ``[as_of - lead, as_of + lag]`` (``aligned``) or spans ``as_of``. The
     weight is ``1 / collisions`` (distinct CIKs matching the same run) times
     the covering and round-count discounts. Only (line, CIK) pairs whose
-    share weight reaches ``min(min_share_weight, competitor_floor)`` are
-    returned -- weaker pairs can neither link nor compete -- so the result
-    stays small (bounded SQL; nothing per bar reaches Python).
+    share weight (``math.fsum``, exact) reaches ``min(min_share_weight,
+    competitor_floor)`` are returned -- weaker pairs can neither link nor
+    compete -- so the result stays small (bounded SQL; nothing per bar reaches
+    Python). Every ordering and tie-break is total, so the same staged tables
+    always give the same rows.
 
     Columns: vendor_id, cik, concept, as_of, value, filed, accession, form,
-    shares, run_first, run_last, aligned, collisions, weight.
+    shares, run_first, run_last, aligned, collisions, weight, match_weight,
+    reported_quarters, match_ratio.
     """
     lead, lag = params.run_start_lead_days, params.run_start_lag_days
     floor = min(params.min_share_weight, params.competitor_floor)
@@ -1145,14 +1178,14 @@ def match_share_counts(
         params.covering_match_weight,
         params.round_value_weight,
         params.quantized_value_weight,
-        floor,
+        floor - _SUM_PREFILTER_SLACK,
         params.min_fact_shares,
         lag,
         lead,
     ]
     # Memory: the (vendor-filtered) runs are the hash-join build side; the fact
     # table is streamed through the probe once, and only matched rows are grouped.
-    return con.execute(
+    rows = con.execute(
         f"""
         WITH runs AS (
             -- Trials: how many count changes the line had around this run. A line that
@@ -1208,6 +1241,9 @@ def match_share_counts(
                    weight AS match_weight
             FROM best
         ), pairs AS (
+            -- Prefilter only: a float sum's order follows the parallel plan, so the SQL keeps
+            -- every pair within _SUM_PREFILTER_SLACK of the floor and the exact decision is the
+            -- math.fsum below.
             SELECT vendor_id, cik,
                    count(DISTINCT as_of) FILTER (WHERE concept LIKE 'dei:%') AS matched_dei,
                    count(DISTINCT as_of) FILTER (WHERE concept NOT LIKE 'dei:%') AS matched_other
@@ -1234,6 +1270,13 @@ def match_share_counts(
         """,
         arguments,
     ).fetchall()
+    # The exact floor decision (correctly rounded, independent of summation order), like every
+    # other weight threshold of the reconstruction (:func:`_share_weight`).
+    weights: dict[tuple[object, object], list[float]] = defaultdict(list)
+    for row in rows:
+        weights[(row[0], row[1])].append(float(row[13]))  # type: ignore[arg-type]
+    kept = {pair for pair, values in weights.items() if math.fsum(values) >= floor}
+    return [row for row in rows if (row[0], row[1]) in kept]
 
 
 def _at(day: dt.date, delta: dt.timedelta) -> dt.datetime:
@@ -1828,6 +1871,8 @@ def refresh_identity_reconstruction(
     clock = time.perf_counter()
     with store.transaction():
         written = write_reconstruction_evidence(store.con, rows, revision=revision)
+    # Fold the commit (and any flag swap) into the database file: nothing is left to WAL replay.
+    store.con.execute("CHECKPOINT")
     seconds["write"] = round(time.perf_counter() - clock, 1)
     statuses: dict[str, int] = defaultdict(int)
     for row in rows:
@@ -1861,16 +1906,21 @@ def write_reconstruction_evidence(
     revision: str,
     table: str = EVIDENCE_TABLE,
 ) -> dict[str, object]:
-    """Write one RI1 revision into the 0327 evidence table; append-only and idempotent.
+    """Write one RI1 revision into the 0327 evidence table; append-only, idempotent, WAL-safe.
 
     ``rows`` are :meth:`ReconstructionResult.evidence_rows` of one revision
     (``source_revision_id == revision``). A revision already held with the
     same content (every column but the flag, run id and load stamp) writes
     nothing; one held with other content fails loudly (a logic change must
-    bump :data:`METHOD` or the params). Every other RI1 revision's latest rows
-    are superseded (``is_latest_revision = false``, never deleted), and a
-    rerun of an older revision's inputs makes that revision latest again. Run
-    it inside the caller's transaction.
+    bump :data:`METHOD` or the params). A new revision is appended (INSERT
+    only). Then exactly this revision's rows are latest among the module's
+    ``issuer_link`` rows (``source = SOURCE``, every :data:`METHOD` version):
+    other revisions are superseded (``is_latest_revision = false``, never
+    deleted), and a rerun of an older revision's inputs makes it latest again.
+    A flag change rebuilds the table INSERT-only and swaps it in (the governed
+    0327 row swap), never an in-place UPDATE: the table has a ``DEFAULT now()``
+    column, and DuckDB 1.5.5 cannot be trusted to replay such a write from the
+    WAL. Run it inside the caller's transaction; CHECKPOINT after the commit.
     """
     import pyarrow as pa
 
@@ -1907,25 +1957,49 @@ def write_reconstruction_evidence(
         finally:
             con.unregister("ri_evidence_batch")
         inserted = len(rows)
-    superseded = _changed(
-        con,
-        f"UPDATE {table} SET is_latest_revision = false WHERE method = ? AND fact_kind = 'issuer_link' "
-        "AND source_revision_id IS DISTINCT FROM ? AND is_latest_revision",
-        [METHOD, revision],
-    )
-    restored = _changed(
-        con,
-        f"UPDATE {table} SET is_latest_revision = true WHERE method = ? AND fact_kind = 'issuer_link' "
-        "AND source_revision_id = ? AND NOT is_latest_revision",
-        [METHOD, revision],
-    )
+    flags = con.execute(
+        f"""
+        SELECT count(*) FILTER (WHERE is_latest_revision AND source_revision_id IS DISTINCT FROM ?),
+               count(*) FILTER (WHERE NOT is_latest_revision AND source_revision_id IS NOT DISTINCT FROM ?)
+        FROM {table} WHERE source = ? AND fact_kind = 'issuer_link'
+        """,
+        [revision, revision, SOURCE],
+    ).fetchone()
+    superseded, restored = (0, 0) if flags is None else (int(flags[0]), int(flags[1]))
+    if superseded or restored:
+        _swap_latest_revision(con, table, revision)
     return {
         "revision": revision,
         "rows_inserted": inserted,
         "rows_unchanged": len(rows) - inserted,
         "rows_superseded": superseded,
         "rows_restored": restored,
+        "latest_flags_rebuilt_by_swap": bool(superseded or restored),
     }
+
+
+def _swap_latest_revision(con: duckdb.DuckDBPyConnection, table: str, revision: str) -> None:
+    """Rebuild ``table`` with this module's latest flag on ``revision`` only (INSERT-only swap)."""
+    from .migrations.bodies_0327 import _replace_rows_by_swap
+
+    names = tuple(
+        str(name)
+        for (name,) in con.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE database_name = current_database() "
+            "AND schema_name = current_schema() AND table_name = ? ORDER BY column_index",
+            [table],
+        ).fetchall()
+    )
+    flag = (
+        "CASE WHEN source = ? AND fact_kind = 'issuer_link' "
+        "THEN source_revision_id IS NOT DISTINCT FROM ? ELSE is_latest_revision END"
+    )
+    select = ", ".join(flag if name == "is_latest_revision" else f'"{name}"' for name in names)
+    before = _changed(con, f"SELECT count(*) FROM {table}", [])
+    _replace_rows_by_swap(con, table, names, f"SELECT {select} FROM {table}", [SOURCE, revision])
+    after = _changed(con, f"SELECT count(*) FROM {table}", [])
+    if after != before:
+        raise RuntimeError(f"{table} latest-flag swap row-count proof failed: {before} rows before, {after} after")
 
 
 def _published_line_ids(store: DuckDBStore) -> tuple[dict[int, str], dict[str, int]]:
@@ -1956,7 +2030,12 @@ def _accumulate_summary(totals: dict[str, int], summary: Mapping[str, object]) -
 
 
 def _content_digest(values: Iterable[object]) -> str:
-    canonical = [value.isoformat() if isinstance(value, dt.date) else value for value in values]
+    # TIMESTAMP columns hold naive UTC: an aware clock (a cache receipt with an offset) compares as such.
+    canonical = [
+        (value.astimezone(dt.UTC).replace(tzinfo=None) if isinstance(value, dt.datetime) and value.tzinfo else value)
+        for value in values
+    ]
+    canonical = [value.isoformat() if isinstance(value, dt.date) else value for value in canonical]
     return hashlib.sha256(json.dumps(canonical, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
