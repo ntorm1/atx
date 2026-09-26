@@ -4,6 +4,7 @@
 #include "atx/engine/risk/model_validation.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <numeric>
 #include "atx/core/linalg/decompose.hpp"
@@ -380,6 +381,33 @@ namespace {
 struct Acc21 {
   atx::usize n{}, unavailable{}, zero{};
   atx::f64 mz{}, m2z{}, mr{}, m2r{}, pred{}, q{};
+  bool rolling_enabled{false};
+  std::array<atx::f64,12> rolling{};
+  atx::usize rolling_cursor{}, rolling_slots{}, rolling_windows{};
+  atx::f64 rolling_deviation{};
+  void push_slot(atx::f64 z) {
+    if (!rolling_enabled) return;
+    rolling[rolling_cursor] = z;
+    rolling_cursor = (rolling_cursor + 1) % rolling.size();
+    rolling_slots = std::min(rolling_slots + 1, rolling.size());
+    if (rolling_slots < rolling.size()) return;
+    atx::f64 mean = 0, m2 = 0;
+    atx::usize count = 0;
+    for (auto value : rolling) {
+      if (!std::isfinite(value)) return;
+      ++count;
+      const auto delta = value - mean;
+      mean += delta / static_cast<atx::f64>(count);
+      m2 += delta * (value - mean);
+    }
+    const auto bias = std::sqrt(std::max(0.0,m2 / 11.0));
+    rolling_deviation += std::abs(bias - 1.0);
+    ++rolling_windows;
+  }
+  void mark_unavailable() {
+    ++unavailable;
+    push_slot(std::numeric_limits<atx::f64>::quiet_NaN());
+  }
   bool add(atx::f64 r, atx::f64 v) {
     if (!std::isfinite(r) || !std::isfinite(v) || v <= 0) return false;
     const auto sigma = std::sqrt(v), z = r / sigma, zz = z * z;
@@ -389,8 +417,9 @@ struct Acc21 {
     mz += dz / static_cast<atx::f64>(n); m2z += dz * (z - mz);
     mr += dr / static_cast<atx::f64>(n); m2r += dr * (r - mr);
     pred += sigma;
+    push_slot(z);
     if (zz == 0) ++zero; else q += zz - std::log(zz) - 1.0;
-    return std::isfinite(m2z) && std::isfinite(m2r) && std::isfinite(pred) && std::isfinite(q);
+    return std::isfinite(m2z) && std::isfinite(m2r) && std::isfinite(pred) && std::isfinite(q) && std::isfinite(rolling_deviation);
   }
   ValidationMetric21 finish(std::string name, std::string cohort) const {
     ValidationMetric21 out{std::move(name), std::move(cohort), n, unavailable, zero};
@@ -402,8 +431,11 @@ struct Acc21 {
     if (n >= 2) {
       out.bias = std::sqrt(std::max(0.0, m2z / static_cast<atx::f64>(n - 1)));
       out.realized_vol = std::sqrt(std::max(0.0, m2r / static_cast<atx::f64>(n - 1)));
-      out.mrad = std::abs(out.bias - 1.0);
+      out.absolute_bias_deviation = std::abs(out.bias - 1.0);
     }
+    out.rolling_windows = rolling_windows;
+    out.mrad_defined = rolling_windows > 0;
+    if (out.mrad_defined) out.mrad = rolling_deviation / static_cast<atx::f64>(rolling_windows);
     return out;
   }
 };
@@ -434,8 +466,11 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
   Acc21 ew, mv;
   std::vector<Acc21> minvars(cfg.n_min_variance), opt(cfg.n_optimized), custom(cfg.books.size()), eigen;
   std::vector<Acc21> decile(10);
+  const bool mrad_clock = cfg.step == horizon;
+  ew.rolling_enabled = mv.rolling_enabled = mrad_clock;
+  for (auto* group : {&minvars,&opt,&custom}) for (auto& acc : *group) acc.rolling_enabled = mrad_clock;
   ValidationScorecard21 out;
-  out.label = cfg.label; out.forecast_dates = cfg.n_periods; out.overlapping = cfg.step < horizon;
+  out.label = cfg.label; out.forecast_dates = cfg.n_periods; out.overlapping = cfg.step < horizon; out.mrad_clock_eligible = mrad_clock;
   atx::usize stable_k = 0;
   for (atx::usize period = 0; period < cfg.n_periods; ++period) {
     const auto a = cfg.first_as_of + period * cfg.step;
@@ -445,7 +480,7 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
     if (m == 0 || m != model.n_instruments() || model.fit_begin() < a ||
         k == 0 || k > cfg.max_working_bytes / 128 / k || m > cfg.max_working_bytes / 128 / k)
       return Err(ErrorCode::InvalidArgument, "risk validation V2: snapshot shape/fit clock/budget");
-    if (period == 0) { stable_k = k; eigen.resize(k); }
+    if (period == 0) { stable_k = k; eigen.resize(k); for (auto& acc : eigen) acc.rolling_enabled = mrad_clock; }
     if (k != stable_k)
       return Err(ErrorCode::InvalidArgument, "risk validation V2: eigenportfolio axis changes across forecasts");
     std::vector<atx::u8> seen(n,0), available(m,1);
@@ -469,9 +504,9 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
       for (atx::usize i = 0; i < m; ++i) {
         if (!std::isfinite(w[i])) return false;
         gross += std::abs(w[i]);
-        if (w[i] != 0 && available[i] == 0) { ++acc.unavailable; return true; }
+        if (w[i] != 0 && available[i] == 0) { acc.mark_unavailable(); return true; }
       }
-      if (!std::isfinite(gross) || gross <= 0) { ++acc.unavailable; return true; }
+      if (!std::isfinite(gross) || gross <= 0) { acc.mark_unavailable(); return true; }
       for (atx::usize i = 0; i < m; ++i) { w[i] /= gross; r += w[i] * realized[i]; }
       return acc.add(r, static_cast<atx::f64>(horizon) * model.risk(w));
     };
@@ -494,7 +529,7 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
     for (atx::usize j = 0; j < cfg.books.size(); ++j) {
       bool absent_holding = false;
       for (atx::usize i = 0; i < n; ++i) absent_holding |= seen[i] == 0 && cfg.books[j].w[i] != 0;
-      if (absent_holding) { ++custom[j].unavailable; continue; }
+      if (absent_holding) { custom[j].mark_unavailable(); continue; }
       for (atx::usize i = 0; i < m; ++i) w[i] = cfg.books[j].w[snap.assets[i]];
       if (!score(custom[j])) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid custom observation");
     }
@@ -504,8 +539,8 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
     Eigen::LDLT<MatX> solve(gram);
     const bool invertible = solve.info() == Eigen::Success && solve.isPositive() && solve.rcond() > 1e-12;
     if (!invertible) {
-      for (auto& acc : eigen) ++acc.unavailable;
-      for (auto& acc : decile) ++acc.unavailable;
+      for (auto& acc : eigen) acc.mark_unavailable();
+      for (atx::usize rank = 0; rank < m; ++rank) decile[rank * 10 / m].mark_unavailable();
       continue;
     }
     ATX_TRY(auto eig, atx::core::linalg::symmetric_eig(model.factor_cov()));
@@ -517,7 +552,7 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
       if (!score(eigen[j])) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid eigenportfolio observation");
     }
     if (std::find(available.begin(),available.end(),atx::u8{0}) != available.end()) {
-      for (auto& acc : decile) ++acc.unavailable;
+      for (atx::usize rank = 0; rank < m; ++rank) decile[rank * 10 / m].mark_unavailable();
       continue;
     }
     const Eigen::Map<const VecX> r(realized.data(),static_cast<Eigen::Index>(m));
@@ -533,7 +568,7 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
       // Correct residual variance for projection leverage: diag(M D M').
       const auto variance = static_cast<atx::f64>(horizon) *
           (d[i] - (x.row(i) * inverse_gram).dot(x.row(i)));
-      if (variance <= 0) { ++acc.unavailable; continue; }
+      if (variance <= 0) { acc.mark_unavailable(); continue; }
       if (!acc.add(residual[i],variance)) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid residual-decile observation");
     }
   }
@@ -544,6 +579,19 @@ atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
   for (atx::usize i=0;i<eigen.size();++i) out.metrics.push_back(eigen[i].finish("factor_eigen_"+std::to_string(i),"eigenportfolio"));
   for (atx::usize i=0;i<decile.size();++i) out.metrics.push_back(decile[i].finish("specific_decile_"+std::to_string(i),"specific_risk_decile"));
   for (atx::usize i=0;i<custom.size();++i) out.metrics.push_back(custom[i].finish(cfg.books[i].name,"custom"));
+  for (const auto& metric : out.metrics) {
+    if (!metric.mrad_defined) continue;
+    auto it = std::find_if(out.cohort_mrad.begin(),out.cohort_mrad.end(),
+        [&](const auto& c){return c.cohort == metric.cohort;});
+    if (it == out.cohort_mrad.end()) {
+      out.cohort_mrad.push_back({metric.cohort,metric.rolling_windows,
+          metric.mrad * static_cast<atx::f64>(metric.rolling_windows)});
+    } else {
+      it->rolling_windows += metric.rolling_windows;
+      it->mrad += metric.mrad * static_cast<atx::f64>(metric.rolling_windows);
+    }
+  }
+  for (auto& cohort : out.cohort_mrad) cohort.mrad /= static_cast<atx::f64>(cohort.rolling_windows);
   return atx::core::Ok(std::move(out));
 }
 
@@ -552,6 +600,7 @@ std::string ValidationScorecard21::to_json() const {
       ",\"forecast_dates\":" + std::to_string(forecast_dates) +
       ",\"unverified_vra_dates\":" + std::to_string(unverified_vra_dates) +
       ",\"overlapping\":" + (overlapping ? "true" : "false") +
+      ",\"mrad_clock_eligible\":" + (mrad_clock_eligible ? "true" : "false") +
       ",\"calibrated_confidence_bands\":false,\"qlike\":\"z^2-log(z^2)-1; zero => infinity\",\"metrics\":[";
   for (atx::usize i=0;i<metrics.size();++i) {
     const auto& m=metrics[i];
@@ -559,10 +608,19 @@ std::string ValidationScorecard21::to_json() const {
     out+="{\"name\":"+json_quote(m.name)+",\"cohort\":"+json_quote(m.cohort)+
         ",\"observations\":"+std::to_string(m.observations)+",\"unavailable\":"+std::to_string(m.unavailable)+
         ",\"zero_realizations\":"+std::to_string(m.zero_realizations)+",\"defined\":"+(m.defined?"true":"false")+
-        ",\"bias\":"+(m.defined?num(m.bias):"null")+",\"mrad\":"+(m.defined?num(m.mrad):"null")+
+        ",\"bias\":"+(m.defined?num(m.bias):"null")+",\"absolute_bias_deviation\":"+(m.defined?num(m.absolute_bias_deviation):"null")+
+        ",\"rolling_windows\":"+std::to_string(m.rolling_windows)+
+        ",\"mrad\":"+(m.mrad_defined?num(m.mrad):"null")+
         ",\"qlike\":"+(m.observations?num(m.qlike):"null")+
         ",\"mean_pred_vol\":"+(m.observations?num(m.mean_pred_vol):"null")+
         ",\"realized_vol\":"+(m.defined?num(m.realized_vol):"null")+"}";
+  }
+  out += "],\"cohort_mrad\":[";
+  for (atx::usize i=0;i<cohort_mrad.size();++i) {
+    if (i>0) out+=",";
+    const auto& c=cohort_mrad[i];
+    out+="{\"cohort\":"+json_quote(c.cohort)+",\"rolling_windows\":"+
+        std::to_string(c.rolling_windows)+",\"mrad\":"+num(c.mrad)+"}";
   }
   return out+"]}";
 }

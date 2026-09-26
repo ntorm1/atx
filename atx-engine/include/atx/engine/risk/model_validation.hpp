@@ -139,16 +139,26 @@ struct Validation21Cfg {
 struct ValidationMetric21 {
   std::string name, cohort;
   atx::usize observations{}, unavailable{}, zero_realizations{};
-  atx::f64 bias{}, mrad{}, qlike{}, mean_pred_vol{}, realized_vol{};
-  bool defined{false};
+  atx::f64 bias{}, absolute_bias_deviation{}, mrad{}, qlike{}, mean_pred_vol{}, realized_vol{};
+  atx::usize rolling_windows{};
+  bool defined{false}, mrad_defined{false};
+};
+struct ValidationCohortMrad21 {
+  std::string cohort;
+  atx::usize rolling_windows{};
+  atx::f64 mrad{};
 };
 struct ValidationScorecard21 {
   std::string label;
   atx::usize forecast_dates{}, unverified_vra_dates{};
-  bool overlapping{false};
+  bool overlapping{false}, mrad_clock_eligible{false};
   // Bands are deliberately absent: overlap, optimized selection and pooled
   // decile residuals do not supply independent Gaussian calibration evidence.
   std::vector<ValidationMetric21> metrics;
+  // 12 contiguous 21-session forecast slots per window, averaged over all
+  // eligible book/window pairs. Missing slots invalidate a window, never compact.
+  // Specific-decile pooled observations are excluded from this time-series metric.
+  std::vector<ValidationCohortMrad21> cohort_mrad;
   [[nodiscard]] std::string to_json() const;
 };
 [[nodiscard]] atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
