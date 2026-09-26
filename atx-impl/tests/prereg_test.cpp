@@ -68,7 +68,7 @@ TEST(EquityIcPrereg, RejectsAmbiguousKeysCountsUnsupportedVariantsAndUnsafeIdent
     auto duplicate_key = valid.dump();
     duplicate_key.insert(1, "\"epoch\":\"duplicate\",");
     EXPECT_FALSE(impl::parse_equity_ic_prereg(duplicate_key));
-    for (int mutation = 0; mutation < 9; ++mutation) {
+    for (int mutation = 0; mutation < 10; ++mutation) {
         auto bad = valid;
         switch (mutation) {
         case 0: bad["unknown"] = 1; break;
@@ -79,7 +79,8 @@ TEST(EquityIcPrereg, RejectsAmbiguousKeysCountsUnsupportedVariantsAndUnsafeIdent
         case 5: bad["families"][0]["horizons"] = Json::array({21, 5}); break;
         case 6: bad["forward_variants"] = Json::array({"DropMissingForward"}); break;
         case 7: bad["families"][0]["lineage"]["unknown"] = 1; break;
-        default: bad["families"][0]["dsl"] = "1 / 0"; break;
+        case 8: bad["families"][0]["dsl"] = "1 / 0"; break;
+        default: bad["checkpoint"] = 22; break;
         }
         EXPECT_FALSE(impl::parse_equity_ic_prereg(bad.dump())) << mutation;
     }

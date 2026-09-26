@@ -40,7 +40,9 @@ void require(bool valid, const char *message) {
 }
 void keys(const Json &value, std::initializer_list<std::string_view> expected) {
     require(value.is_object() && value.size() == expected.size(), "object keys differ");
-    for (const auto key : expected) require(value.contains(std::string(key)), "unknown/missing key");
+    for (const auto key : expected) {
+        require(value.contains(std::string(key)), "unknown/missing key");
+    }
 }
 std::string text(const Json &value, atx::usize maximum) {
     require(value.is_string(), "expected string");
@@ -96,7 +98,9 @@ Result<EquityIcPrereg> parse_equity_ic_prereg(std::string_view source) {
                 "unsupported restrictions/order");
         EquityIcPrereg out;
         out.epoch = identifier(root.at("epoch"));
-        out.checkpoint = integer(root.at("checkpoint"), 1, 2147483647);
+        // Historical checkpoints have count-derived legacy attempt IDs. Keep runtime
+        // accounting outside that namespace when both modes share a ledger.
+        out.checkpoint = integer(root.at("checkpoint"), 1000, 2147483647);
         out.declared_n = integer(root.at("declared_n"), 0, 64 * 8 * 4);
         auto &families = root.at("families");
         require(families.is_array() && !families.empty() && families.size() <= kMaxFamilies,
