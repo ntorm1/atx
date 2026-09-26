@@ -1,6 +1,6 @@
 # atx alpha engine: engine and implementation sprint series (v2)
 
-**Status (2026-09-25):** W0 lane implementations integrated and G0 complete; final W0 qualification is in progress. W1–W5 implementation has not started.
+**Status (2026-09-25):** W0 implementations and frozen G0 comparisons are integrated; a remaining D0 VWAP correction and final performance qualification are in progress. W1–W5 implementation has not started.
 **Version:** v2, 2026-09-24. It replaces the v1 content of this file, which covered production runtime and paper trading; those are now out of scope.
 **Companion:** [`2026-09-24-alpha-engine-review-findings.md`](2026-09-24-alpha-engine-review-findings.md). It holds the defect register (IDs `A-xx`, `D-xx`, `E-xx`, `L-xx`, `R-xx`, `B-xx`, `I-xx`, each with file:line) and the research digest (§3). Every lane below cites those IDs. A lane brief is incomplete until it lists the IDs it closes.
 
@@ -20,16 +20,16 @@ wave gate. All recorded commits are reachable from the current integration branc
 |---|---|---|
 | W0-O1 | L6 `1cf59cb7`; fixes `c339ead5`, `853d1dd9`; merge `14ce9172` | Approved at `3ccf012c`. Release binaries built; quiet benchmark comparison still pending. |
 | W0-A0 | `cb3b4e78`, `3a1197b5`, `b74e27d3`; merge `1d78cc14` | Report `9a4e1f46`; owning targets green. A-18 production cache wiring remains W2-A4. |
-| W0-D0 | `115cfb57`, `02d34323`, `be32d7ac`; merge `2bc9f034` | Report `822524f6`; owning targets green. The adjusted typical-price VWAP proxy is a disclosed limit, not tick-level VWAP; source shares remain W2-D3. |
+| W0-D0 | `115cfb57`, `02d34323`, `be32d7ac`; merge `2bc9f034` | Report `822524f6`; original targets green. **Open correction:** VWAP still uses future-scaled adjusted levels. A versioned raw daily-close proxy is being implemented; true tick-level VWAP is unavailable. Source shares remain W2-D3. |
 | W0-E0a | `2f814fbe`, `a95df360`; merge `4ef916db`; follow-up `52b8c6ea` | Reports `33d9b2f3`, `c225b2cf`. Public V1 reproduction and overlap inference repaired; HAC coverage 94.5%. Bootstrap is a separate estimator. |
 | W0-E0b | `d0a37e02`, `e0d157ee`; merge `1e0a7cf9` | Report `a0b06547`. Null FPR 5.45% qualifies `MonteCarloMaxV2`; the conservative default is a different rule. |
 | W0-L0 | `67819c8f`, `3ec645a8`, `c962996a`; merge `1b766875` | Report `5b11f7cb`; whole learn target green. Autoencoder trial accounting remains W3-L4. |
 | W0-R0 | `40e26729`, `bde13cc8`; merge `a5523e21`; native ASan `370f7af4` | Approval `bae90033`, ASan report `3e6886ce`. Five scoped bounds tests pass; final changed risk target 470 passed / one nightly skip. Production PIT exposure wiring remains W3-R4. |
-| W0-B0 | `7fa44bc8`, `8421646f`; merge `79c120ed`; causal replay `8ba15b0e`; disclosure `1bdeed38` | Reports `3ddf5b46`, `47e5ef8e`, `d4b86cd2`. Book 128/128 and focused impl 32/32 pass; final whole impl target running. Unevidenced liquidation stress remains ineligible alpha evidence. |
+| W0-B0 | `7fa44bc8`, `8421646f`; merge `79c120ed`; causal replay `8ba15b0e`; disclosure `1bdeed38` | Reports `3ddf5b46`, `47e5ef8e`, `d4b86cd2`, final closure `21ede21d`. Book 128/128 and whole impl 600 passed / five disclosed skips. Unevidenced liquidation stress remains ineligible alpha evidence. |
 | W0-I0a | `6c31e0fe`, `38f64385`, `5559417c`; merge `9a20221f` | Report `9d10ec43`; lane checks and integrated target passed. |
-| W0-I0b | `4b4a48c6`, `190c2fb4`; merge `42503d8e`; membership `af40186d`; replay `8ba15b0e`, `1bdeed38` | Reports `9d3eddb2`, `b09f45ce`, `47e5ef8e`, `d4b86cd2`. Earlier Abort workaround `794d88da` superseded. Final whole impl target running; real terminal evidence remains W2-D2. |
+| W0-I0b | `4b4a48c6`, `190c2fb4`; merge `42503d8e`; membership `af40186d`; replay `8ba15b0e`, `1bdeed38` | Reports `9d3eddb2`, `b09f45ce`, `47e5ef8e`, `d4b86cd2`, final closure `21ede21d`. Earlier Abort workaround `794d88da` superseded. Whole impl green; real terminal evidence remains W2-D2. |
 | W0 integration fixup | `e8b1785d`; merge `2dc21315` | JSONL normalization and degenerate zoo fixture corrected. |
-| G0 | Harness imports `b004d7c7`, `f19d522b`; final report import `9225cb30` | **Complete.** Frozen old/new comparisons, source/input hashes and manifest verified; no alpha promoted. |
+| G0 | Harness imports `b004d7c7`, `f19d522b`; report import `9225cb30` | **Frozen comparisons complete.** Old/new measurements and manifests verified; no alpha promoted. The new D0 correction requires affected-recipe impact review and additional measurements. |
 | W1 | Gate base and Lane 0 SHA pending | Preparation only; no completed lane SHA yet. |
 | W2 | Pending W1 gate | Not started. |
 | W3 | Pending W2 gate | Not started. |
@@ -38,19 +38,20 @@ wave gate. All recorded commits are reachable from the current integration branc
 
 Integrated correctness report `c040476d` qualifies source `b185d056`: **3,074 passed,
 seven documented skips, zero failures** across nine whole targets. Later disclosure/ASan
-changes have a separate final target closure; the benchmark gate is still open. Do not
+changes passed the separate final target closure `21ede21d`; the D0 correction and benchmark gate remain open. Do not
 fast-forward `main` or record a W0 gate SHA until the required gates pass.
 
 Compiler follow-up: worker limits, isolated hygiene configuration, and source-local Git
 provenance are integrated at `e54602fe` (code through `0c5f87a0`). Stable test-PCH carriers
-`3f2c25fb` are independently approved and compiled, but await import after the warm final
-target closure. Final changed-target build passed in 158.15s; its unchanged repeat was a
+`3f2c25fb` are independently approved, compiled and integrated at `d3d04510` after the warm
+final target closure. Final changed-target build passed in 158.15s; its unchanged repeat was a
 6.72s no-op with zero cache calls. These are measured build receipts, not a controlled
 compiler-speedup claim.
 
 RAM adaptation for W0 timing: retain all 81 registered cases, three repetitions, unchanged
 optimizer sizes and the 20% regression threshold. Freeze the same smaller synthetic WQ
-width for baseline and current before either measurement. Report the width and reduced
+width for baseline and current before either measurement. **N128 is now frozen**, selected
+at 3.902GiB available before the first baseline process. Report the width and reduced
 cache-pressure scope explicitly; this does not satisfy the later production-scale gates.
 
 Current gate state and detailed receipts: [continuation checkpoint](../../.superpowers/sdd/alpha-engine-20260925/progress.md),
