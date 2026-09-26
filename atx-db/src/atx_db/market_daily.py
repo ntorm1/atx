@@ -118,8 +118,9 @@ Row identity lineage: every row's owner id, identity basis, availability basis
 and link method are computed from its bridge row; they are written to the
 nullable :data:`IDENTITY_ROW_COLUMNS` only when the table has them (A9
 migration), so the writer runs unchanged on an older schema. The row's share
-clock (:data:`SHARE_CLOCK_ROW_COLUMNS`: clock kind and share availability) is
-written the same way once a migration adds those columns.
+clock (:data:`SHARE_CLOCK_ROW_COLUMNS`: clock kind and share availability) and
+its reporting-currency guard (:data:`CURRENCY_ROW_COLUMNS`) are written the same
+way once a migration (0328) adds those columns.
 """
 
 from __future__ import annotations
@@ -174,6 +175,7 @@ __all__ = [
     "ARCHIVE_RUN_ROUNDING_SHARES",
     "BASIS_RATIO_LIMIT",
     "CLASS_SUM_TOLERANCE",
+    "CURRENCY_ROW_COLUMNS",
     "END_OF_DAY_HOURS",
     "FOREIGN_FILER_FORMS",
     "IDENTITY_ROW_COLUMNS",
@@ -337,7 +339,12 @@ SHARE_CLOCK_ROW_COLUMNS: dict[str, str] = {
     "shares_clock": "f.shares_clock",
     "shares_available_at": "f.shares_available_at",
 }
-_OPTIONAL_ROW_COLUMNS: dict[str, str] = {**IDENTITY_ROW_COLUMNS, **SHARE_CLOCK_ROW_COLUMNS}
+#: Row-level reporting-currency guard (C1 concern 2; column added by 0328),
+#: written only once the table has it: ``non_usd`` / ``mixed`` / ``unknown``
+#: (every valuation metric withheld, ``valuation_withheld``; nothing is ever
+#: converted), NULL for a USD reporter or an unlinked row.
+CURRENCY_ROW_COLUMNS: dict[str, str] = {"currency_status": "f.currency_status"}
+_OPTIONAL_ROW_COLUMNS: dict[str, str] = {**IDENTITY_ROW_COLUMNS, **SHARE_CLOCK_ROW_COLUMNS, **CURRENCY_ROW_COLUMNS}
 
 #: Columns of :func:`vendor_share_state_query` (one row per bar with a vendor count).
 VENDOR_SHARE_STATE_COLUMNS = (
@@ -793,8 +800,10 @@ def build_market_daily_sql(
 ) -> str:
     """Return the full ``INSERT`` statement for one batch of securities.
 
-    ``identity_columns`` names the :data:`IDENTITY_ROW_COLUMNS` the target
-    table has (none on a pre-A9 schema); they are appended to the INSERT.
+    ``identity_columns`` names the optional row columns the target table has
+    (:data:`IDENTITY_ROW_COLUMNS`, :data:`SHARE_CLOCK_ROW_COLUMNS`,
+    :data:`CURRENCY_ROW_COLUMNS`; none on a pre-A9 schema); they are appended
+    to the INSERT.
 
     Trailing-window metrics (``tret``/``rvol``/``avg_d`` -> total returns,
     momentum, realized vol, dollar volume) are computed over the ``bars`` CTE,
@@ -1512,8 +1521,8 @@ def _refresh_market_daily(
 def _identity_row_columns(store: DuckDBStore) -> tuple[str, ...]:
     """The optional row columns present on ``market_daily_metrics``.
 
-    :data:`IDENTITY_ROW_COLUMNS` (none before A9's 0327) and
-    :data:`SHARE_CLOCK_ROW_COLUMNS` (none before 0328).
+    :data:`IDENTITY_ROW_COLUMNS` (none before A9's 0327),
+    :data:`SHARE_CLOCK_ROW_COLUMNS` and :data:`CURRENCY_ROW_COLUMNS` (none before 0328).
     """
     present = {
         str(row[0])
