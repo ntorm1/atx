@@ -1,0 +1,38 @@
+[
+    {
+        "Source":  "recent-strategy-stock-qualification/receipt.json",
+        "File":  "recent-strategy-stock-qualification--receipt.json",
+        "Bytes":  1783,
+        "Sha256":  "e6b4cc65d44f2063f4bab11358fead9d1f7d073cf87d2518c64239c834cee6af"
+    },
+    {
+        "Source":  "recent-strategy-stock-qualification/results.xml",
+        "File":  "recent-strategy-stock-qualification--results.xml",
+        "Bytes":  13248,
+        "Sha256":  "ec5eeb7fa999cb4d000ad20374983abf720f6529c3334c29e8919b409df5a299"
+    },
+    {
+        "Source":  "recent-strategy-stock-qualification/stdout.log",
+        "File":  "recent-strategy-stock-qualification--stdout.log",
+        "Bytes":  9509,
+        "Sha256":  "29e3f023ee0d5c4388dc810e0ac1f7d0814f667b8cc4f4497d76eedb6e95798c"
+    },
+    {
+        "Source":  "recent-strategy-stock-qualification/stderr.log",
+        "File":  "recent-strategy-stock-qualification--stderr.log",
+        "Bytes":  0,
+        "Sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+        "Source":  "recent-strategy-stock-resume-start.json",
+        "File":  "recent-strategy-stock-resume-start.json",
+        "Bytes":  268,
+        "Sha256":  "477b2312df524c6c388a03ee647fba662173cacf0f0f637c969279931caf2cbd"
+    },
+    {
+        "Source":  "recent-strategy-stock-resume-build-receipt.json",
+        "File":  "recent-strategy-stock-resume-build-receipt.json",
+        "Bytes":  218,
+        "Sha256":  "1b2be392d3b20a740fa4a638c34e25fc7f6d6c64614dcfc0d3991881cdd4de48"
+    }
+]

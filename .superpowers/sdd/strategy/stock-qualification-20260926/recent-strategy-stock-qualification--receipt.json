@@ -1,0 +1,49 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "b036fa32186d9765664d1efe75b1f3880f79e832",
+  "started_utc": "2026-09-26T23:17:21.182690+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-tests.exe",
+    "--gtest_output=xml:build-equity/recent-strategy-stock-qualification/results.xml"
+  ],
+  "executable_sha256": "4ee878b0cebaa01928f2427dddbd94543e167a8b5846a31472f40fe5cab52be1",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_24_v1.json",
+      "sha256": "1851cd07d41a68d3b47009875aa54703bbb59bf5335bd6e09e4dd426c9fff40b"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_24_v1.cash_claims.json",
+      "sha256": "257c6d645292b9f9464e6401ed1f9adb5e41a66089fdc4f7e23db0724f6da510"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_24_v1.stock_transitions.json",
+      "sha256": "2fc4cc34103cb7cf591b7a27e4b8da58f749d76193e36fe474014c66f3d76691"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 768,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 18907136,
+  "minimum_system_free_bytes": 1994633216,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 3.25,
+  "owned_processes": [
+    {
+      "pid": 11492,
+      "create_time": 1790464641.192668
+    },
+    {
+      "pid": 15784,
+      "create_time": 1790464641.2165504
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "29e3f023ee0d5c4388dc810e0ac1f7d0814f667b8cc4f4497d76eedb6e95798c",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

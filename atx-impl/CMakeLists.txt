@@ -10,6 +10,8 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/panel_pipeline.cpp
     src/stage_data_provenance.cpp
     src/strategy_runner.cpp
+    src/strategy_ic_runner.cpp
+    src/strategy_ic_composition.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
@@ -108,6 +110,11 @@ target_link_libraries(atx-impl PRIVATE atx-impl-core atx_warnings)
 # this does not require the broad pipeline main or a second compiler environment.
 add_executable(atx-equity-strategy EXCLUDE_FROM_ALL tools/equity_strategy.cpp)
 target_link_libraries(atx-equity-strategy PRIVATE atx-impl-core atx_warnings)
+
+# Fast supplied-DSL screening and streaming composition share the warm core PCH.
+# Research options live in private sources, outside the pipeline config headers.
+add_executable(atx-equity-strategy-ic EXCLUDE_FROM_ALL tools/equity_strategy_ic.cpp)
+target_link_libraries(atx-equity-strategy-ic PRIVATE atx-impl-core atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)

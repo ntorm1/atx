@@ -90,3 +90,10 @@ add_executable(atx-impl-strategy-tests EXCLUDE_FROM_ALL
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/execution_stock_transition_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/execution_objective_test.cpp")
 atx_impl_test_target_environment(atx-impl-strategy-tests)
+
+# Small postimplementation checks for the fast research path and its actual DSLs.
+add_executable(atx-impl-strategy-ic-tests EXCLUDE_FROM_ALL
+    strategy_ic_composition_test.cpp
+    strategy_ic_runner_test.cpp
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_research_test.cpp")
+atx_impl_test_target_environment(atx-impl-strategy-ic-tests)

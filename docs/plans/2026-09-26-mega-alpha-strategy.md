@@ -48,6 +48,32 @@ Root owns bounded real data and focused compilation, with RAM-admitted2-4
 workers, warm PCH/dependencies and runs capped at180seconds. Corporate-action
 catalog completion, CVR valuation and exhaustive realism work are deferred.
 
+### First fast IC experiment: frozen inputs
+
+The exact 48-alpha library is
+`atx-impl/strategies/slow_price_volume_ic48_v1.json`, SHA256
+`1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff`.
+Its recipe SHA256 is
+`3b6707f7a46e392391281a9f84585e6c6b1a1b5567cd9ff2656931b72481130b`.
+The native compiler checks the generator's maximum 314 prior bars. All 48
+candidates enter the fixed blend; the initial experiment fits only their signs.
+No candidate IC has been measured at this registration.
+
+Cached role preparation at `527add1c` completed without another raw-data scan:
+
+| Role | Geometry and scored period | Manifest SHA256 | Preparation |
+| --- | --- | --- | --- |
+| TRAIN | 1,155 dates, 5,627 union IDs; 756 scored sessions in 2020–2022, daily 2,758–3,000 members | `3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493` | 12.266s, sampled peak 320 MiB |
+| Validation | 903 dates, 5,048 union IDs; 502 scored sessions in 2023–2024, daily 3,000 members | `0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7` | 8.016s, sampled peak 264 MiB |
+
+Both use accepted cache `recent-projection-v1`. Role directories under
+`build-equity` are `recent-fast-train-2020-2022-v1` and
+`recent-fast-validation-2023-2024-v1`. These are liquidity research cohorts;
+dated common-stock classification and historical source vintage remain unverified.
+Validation uses the frozen TRAIN signs. Count 48 candidate evaluations and one
+combined evaluation per completed role, retaining any partial attempts separately.
+The former strict-book attempts remain three attempted and zero completed.
+
 ## Historical cash-claim rehearsal registration
 
 The first two real attempts stopped on MDCO's missing 2020-01-06 mark; zero

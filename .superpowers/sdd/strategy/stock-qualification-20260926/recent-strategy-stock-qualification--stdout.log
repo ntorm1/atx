@@ -1,0 +1,117 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 45 tests from 7 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from StrategyDsl
+[ RUN      ] StrategyDsl.FrozenLibraryCompilesRunsAndPreservesCausalMaskedPrefix
+[       OK ] StrategyDsl.FrozenLibraryCompilesRunsAndPreservesCausalMaskedPrefix (428 ms)
+[----------] 1 test from StrategyDsl (428 ms total)
+
+[----------] 12 tests from StrategyRunner
+[ RUN      ] StrategyRunner.FixedCostedPortfoliosAcceptObservedZeroVolumeAndFreezeTrainSigns
+[       OK ] StrategyRunner.FixedCostedPortfoliosAcceptObservedZeroVolumeAndFreezeTrainSigns (243 ms)
+[ RUN      ] StrategyRunner.ShortMaturePrefixReportsActualClampedHacLag
+[       OK ] StrategyRunner.ShortMaturePrefixReportsActualClampedHacLag (157 ms)
+[ RUN      ] StrategyRunner.RefusesExternalPinOrCombinedBudgetBeforePayloadEvaluation
+[       OK ] StrategyRunner.RefusesExternalPinOrCombinedBudgetBeforePayloadEvaluation (107 ms)
+[ RUN      ] StrategyRunner.CalendarTurnoverUsesExecutionMonthAndIncludesInitialDeployment
+[       OK ] StrategyRunner.CalendarTurnoverUsesExecutionMonthAndIncludesInitialDeployment (218 ms)
+[ RUN      ] StrategyRunner.CashClaimsRetireAtDecisionAndKeepSignedUnknownSettlementAcrossRoles
+[       OK ] StrategyRunner.CashClaimsRetireAtDecisionAndKeepSignedUnknownSettlementAcrossRoles (220 ms)
+[ RUN      ] StrategyRunner.FutureClaimsChangeIdentityWithoutChangingEarlierNumericalResults
+[       OK ] StrategyRunner.FutureClaimsChangeIdentityWithoutChangingEarlierNumericalResults (273 ms)
+[ RUN      ] StrategyRunner.CashClaimPinsAndStrictSchemaRefuseBeforeOutputOrTrials
+[       OK ] StrategyRunner.CashClaimPinsAndStrictSchemaRefuseBeforeOutputOrTrials (101 ms)
+[ RUN      ] StrategyRunner.AggregateCashClaimReportsRefuseBudgetBeforePayloadLoading
+[       OK ] StrategyRunner.AggregateCashClaimReportsRefuseBudgetBeforePayloadLoading (155 ms)
+[ RUN      ] StrategyRunner.StockTransitionsDeliverSignedUnitsWithoutInventedCashOrOpeningEntitlement
+[       OK ] StrategyRunner.StockTransitionsDeliverSignedUnitsWithoutInventedCashOrOpeningEntitlement (167 ms)
+[ RUN      ] StrategyRunner.CashAndStockEventsUseSeparateRecognitionIdentitiesInTheSameTrial
+[       OK ] StrategyRunner.CashAndStockEventsUseSeparateRecognitionIdentitiesInTheSameTrial (171 ms)
+[ RUN      ] StrategyRunner.FutureStockAnnouncementsPreserveCashOnlyNumericalPrefixAndIgnoreInactiveSuccessor
+[       OK ] StrategyRunner.FutureStockAnnouncementsPreserveCashOnlyNumericalPrefixAndIgnoreInactiveSuccessor (379 ms)
+[ RUN      ] StrategyRunner.StockTransitionSchemaAndActiveMissingSuccessorRefuseExplicitly
+[       OK ] StrategyRunner.StockTransitionSchemaAndActiveMissingSuccessorRefuseExplicitly (198 ms)
+[----------] 12 tests from StrategyRunner (2395 ms total)
+
+[----------] 2 tests from StrategyResearchRole
+[ RUN      ] StrategyResearchRole.PreservesIndependentMembershipMissingMarksAndDeclaredClocks
+[       OK ] StrategyResearchRole.PreservesIndependentMembershipMissingMarksAndDeclaredClocks (75 ms)
+[ RUN      ] StrategyResearchRole.RejectsFiniteAbsentPayloadExtentHashAndBudgetViolations
+[       OK ] StrategyResearchRole.RejectsFiniteAbsentPayloadExtentHashAndBudgetViolations (72 ms)
+[----------] 2 tests from StrategyResearchRole (147 ms total)
+
+[----------] 5 tests from ExecutionSchedule
+[ RUN      ] ExecutionSchedule.DefaultCadencePreservesIdentityAndIndependentInitialLedger
+[       OK ] ExecutionSchedule.DefaultCadencePreservesIdentityAndIndependentInitialLedger (2 ms)
+[ RUN      ] ExecutionSchedule.OffCycleKeepsMarkedReturnsAndCalendarBorrowWithoutTrades
+[       OK ] ExecutionSchedule.OffCycleKeepsMarkedReturnsAndCalendarBorrowWithoutTrades (1 ms)
+[ RUN      ] ExecutionSchedule.LongerDelayFreezesPartialTargetsBeforeOtherQueuedFills
+[       OK ] ExecutionSchedule.LongerDelayFreezesPartialTargetsBeforeOtherQueuedFills (0 ms)
+[ RUN      ] ExecutionSchedule.MembershipExitIsPartialAtScheduledEntry
+[       OK ] ExecutionSchedule.MembershipExitIsPartialAtScheduledEntry (0 ms)
+[ RUN      ] ExecutionSchedule.StrictRefusalIdentifiesActualClockNameExposureAndGuard
+[       OK ] ExecutionSchedule.StrictRefusalIdentifiesActualClockNameExposureAndGuard (3 ms)
+[----------] 5 tests from ExecutionSchedule (9 ms total)
+
+[----------] 7 tests from ExecutionCashClaim
+[ RUN      ] ExecutionCashClaim.LongRecognizesRawShareReceivableWithoutCashOrTurnover
+[       OK ] ExecutionCashClaim.LongRecognizesRawShareReceivableWithoutCashOrTurnover (1 ms)
+[ RUN      ] ExecutionCashClaim.ShortKeepsSignedLiabilityCashReserveAndCalendarBorrow
+[       OK ] ExecutionCashClaim.ShortKeepsSignedLiabilityCashReserveAndCalendarBorrow (1 ms)
+[ RUN      ] ExecutionCashClaim.RetiresPendingOrdersAndExcludesReceivableFromNewTargets
+[       OK ] ExecutionCashClaim.RetiresPendingOrdersAndExcludesReceivableFromNewTargets (2 ms)
+[ RUN      ] ExecutionCashClaim.RejectsLateKnowledgeBadBasisAndPreservesFuturePrefix
+[       OK ] ExecutionCashClaim.RejectsLateKnowledgeBadBasisAndPreservesFuturePrefix (5 ms)
+[ RUN      ] ExecutionCashClaim.PreRoleExtinctionCreatesNoOpeningClaimAndOtherAxesAreExplicit
+[       OK ] ExecutionCashClaim.PreRoleExtinctionCreatesNoOpeningClaimAndOtherAxesAreExplicit (1 ms)
+[ RUN      ] ExecutionCashClaim.PublicationBetweenMarkAndDecisionAlreadyClosesFormation
+[       OK ] ExecutionCashClaim.PublicationBetweenMarkAndDecisionAlreadyClosesFormation (1 ms)
+[ RUN      ] ExecutionCashClaim.EmptyEventsPreserveDefaultDigestAndAllOutputBits
+[       OK ] ExecutionCashClaim.EmptyEventsPreserveDefaultDigestAndAllOutputBits (2 ms)
+[----------] 7 tests from ExecutionCashClaim (15 ms total)
+
+[----------] 9 tests from ExecutionStockTransition
+[ RUN      ] ExecutionStockTransition.MarksExistingSuccessorThenAddsSignedRawShareDelivery
+[       OK ] ExecutionStockTransition.MarksExistingSuccessorThenAddsSignedRawShareDelivery (2 ms)
+[ RUN      ] ExecutionStockTransition.DelayedSuccessorTargetNetsDeliveredBookAndCancelsPredecessor
+[       OK ] ExecutionStockTransition.DelayedSuccessorTargetNetsDeliveredBookAndCancelsPredecessor (0 ms)
+[ RUN      ] ExecutionStockTransition.ShortDeliveryAndFixedCashLiabilityRetainModeledBorrow
+[       OK ] ExecutionStockTransition.ShortDeliveryAndFixedCashLiabilityRetainModeledBorrow (1 ms)
+[ RUN      ] ExecutionStockTransition.MultiplePredecessorsAddToSameSuccessorWithoutDoubleMark
+[       OK ] ExecutionStockTransition.MultiplePredecessorsAddToSameSuccessorWithoutDoubleMark (1 ms)
+[ RUN      ] ExecutionStockTransition.RefusesClockIdentityRawBasisAndAbsentSuccessorMark
+[       OK ] ExecutionStockTransition.RefusesClockIdentityRawBasisAndAbsentSuccessorMark (6 ms)
+[ RUN      ] ExecutionStockTransition.PreRoleOutsideAndFutureEventsNeedNoIrrelevantSuccessorAxis
+[       OK ] ExecutionStockTransition.PreRoleOutsideAndFutureEventsNeedNoIrrelevantSuccessorAxis (2 ms)
+[ RUN      ] ExecutionStockTransition.FutureTermsDoNotChangeEarlierExecutionPrefix
+[       OK ] ExecutionStockTransition.FutureTermsDoNotChangeEarlierExecutionPrefix (1 ms)
+[ RUN      ] ExecutionStockTransition.CashAndStockRecordsHaveIndependentIndexesAndCombinedBalances
+[       OK ] ExecutionStockTransition.CashAndStockRecordsHaveIndependentIndexesAndCombinedBalances (0 ms)
+[ RUN      ] ExecutionStockTransition.EmptyStockPreservesCashRecipeAndAllNumericalArrays
+[       OK ] ExecutionStockTransition.EmptyStockPreservesCashRecipeAndAllNumericalArrays (1 ms)
+[----------] 9 tests from ExecutionStockTransition (19 ms total)
+
+[----------] 9 tests from ExecutionObjective
+[ RUN      ] ExecutionObjective.DelayedCashLedgerUsesMarkedDollarCostsAndCalendarSlots
+[       OK ] ExecutionObjective.DelayedCashLedgerUsesMarkedDollarCostsAndCalendarSlots (0 ms)
+[ RUN      ] ExecutionObjective.DelayTwoKeepsDecisionDollarsAfterEntryNavChanges
+[       OK ] ExecutionObjective.DelayTwoKeepsDecisionDollarsAfterEntryNavChanges (0 ms)
+[ RUN      ] ExecutionObjective.ParticipationCapChangesActualHoldingsAndTurnover
+[       OK ] ExecutionObjective.ParticipationCapChangesActualHoldingsAndTurnover (0 ms)
+[ RUN      ] ExecutionObjective.CalendarBorrowAndInverseSignalHaveDifferentCashLedgers
+[       OK ] ExecutionObjective.CalendarBorrowAndInverseSignalHaveDifferentCashLedgers (0 ms)
+[ RUN      ] ExecutionObjective.AbsentFiniteEntryOrHeldMarkCannotBecomeRealizedPnl
+[       OK ] ExecutionObjective.AbsentFiniteEntryOrHeldMarkCannotBecomeRealizedPnl (1 ms)
+[ RUN      ] ExecutionObjective.RoleMaturityAndFutureMutationPreserveRealizedPrefix
+[       OK ] ExecutionObjective.RoleMaturityAndFutureMutationPreserveRealizedPrefix (0 ms)
+[ RUN      ] ExecutionObjective.ClocksIdentitySupportAndBudgetAreExplicitAdmission
+[       OK ] ExecutionObjective.ClocksIdentitySupportAndBudgetAreExplicitAdmission (1 ms)
+[ RUN      ] ExecutionObjective.MissingCostBorrowAndGuardedHeldReturnNeverBecomeZeroCost
+[       OK ] ExecutionObjective.MissingCostBorrowAndGuardedHeldReturnNeverBecomeZeroCost (1 ms)
+[ RUN      ] ExecutionObjective.UnfundedLongAndAsymmetricallyCappedNeutralBooksAreRefused
+[       OK ] ExecutionObjective.UnfundedLongAndAsymmetricallyCappedNeutralBooksAreRefused (1 ms)
+[----------] 9 tests from ExecutionObjective (10 ms total)
+
+[----------] Global test environment tear-down
+[==========] 45 tests from 7 test suites ran. (3028 ms total)
+[  PASSED  ] 45 tests.

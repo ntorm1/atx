@@ -1,5 +1,37 @@
 # Active task: recent-data DSL ensemble
 
+## Fast IC integration checkpoint
+
+Current root before this checkpoint: `9bb58f9e`. Event expansion is stopped.
+New frozen 48-alpha library/helper source `c4c8dc59` -> `0139cb15`, fixtures
+`67b28ba0` -> `2a26e674`; kernel `1dba7035` -> `3048951c`, fixtures
+`ade1e99d` -> `9b65981a`; runner `08940e88` -> `1e67b5c5`, fixtures
+`767d8894` -> `d0c9ade6`, identifier fix `86671916` -> `9bb58f9e`.
+Independent kernel/composition review `d91514f4` -> `4c4f579c`; runner source
+has no substantive review blocker, final fixture review pending with G0.
+
+Full roles are ready from cached data at source `527add1c`:
+TRAIN `recent-fast-train-2020-2022-v1`: 1,155 dates × 5,627 IDs, score 399..1155,
+manifest `3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493`;
+validation `recent-fast-validation-2023-2024-v1`: 903 × 5,048, score 401..903,
+manifest `0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7`.
+Preparation 12.266s/8.016s. No IC or portfolio result has been evaluated.
+
+Next: commit focused CMake registration, run ignored helper
+`build-equity/build-recent-strategy-fast-ic.ps1` (RAM-admitted 2–4 workers;
+only atx-equity-strategy-ic and atx-impl-strategy-ic-tests). Run all 11 new
+native cases, then metadata-only CLI to obtain actual slots/memory before
+loading data. Real runs <=180s, sampled RSS/free floor, min-names 2000.
+The fixed baseline includes all TRAIN-oriented candidates irrespective of
+diagnostic screen rejection. Signs fit on TRAIN 21-session mean rank IC;
+undefined/zero signs are neutral. 2025+ reserved. No book/event surfaces.
+Pool5 is inspecting existing DetPool APIs for a narrow runtime follow-up only
+if timings justify it; no edits or numerical runs there.
+
+Stock batch 45/45 evidence is archived in
+`.superpowers/sdd/strategy/stock-qualification-20260926`; no real stock run.
+Older checkpoints below are superseded where inconsistent.
+
 ## LATEST OWNER STEERING: runtime, generation and composition before realism
 
 Owner explicitly stopped overoptimizing realism/registering every action.
