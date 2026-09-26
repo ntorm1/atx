@@ -6,7 +6,10 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <locale>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -36,6 +39,34 @@ namespace {
 using Context = execution_objective_detail::Context;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr f64 ns_per_day = 86'400'000'000'000.0;
+
+// Error-only formatting: the immutable context has mark/decision clocks rather
+// than calendar session labels. Report those exact timestamps, never infer a
+// session date by rounding an arbitrary caller's clock. No successful-path math
+// or serialized recipe changes. Geometry was checked during preparation.
+std::string price_failure(const Context& c, std::string_view reason, usize t, usize i,
+                          f64 held, bool held_interval, usize decision = 0,
+                          f64 requested = 0, f64 filled = 0) {
+  const auto k = t * c.instruments + i;
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out << std::setprecision(17) << reason << " [date_index=" << t
+      << " mark_time_ns=" << c.marks[t] << " instrument_index=" << i
+      << " instrument_id=" << c.ids[i] << " source_present=" << static_cast<unsigned>(c.panel_member[k])
+      << " price=" << c.prices[k] << " held_dollars=" << held;
+  if (held_interval) {
+    const auto previous = k - c.instruments;
+    out << " previous_date_index=" << (t - 1) << " previous_mark_time_ns=" << c.marks[t - 1]
+        << " previous_source_present=" << static_cast<unsigned>(c.panel_member[previous])
+        << " previous_price=" << c.prices[previous]
+        << " guard_crossed=" << (c.config.guard_returns && c.guard[k] != c.guard[previous]);
+  } else {
+    out << " decision_index=" << decision << " decision_time_ns=" << c.decisions[decision]
+        << " requested_dollars=" << requested << " quoted_fill_dollars=" << filled;
+  }
+  out << ']';
+  return out.str();
+}
 
 // The dollar-book recipe has no funding-rate input. Permit only tiny cash
 // roundoff relative to CURRENT positive NAV; do not scale by gross leverage or
@@ -226,7 +257,7 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
             !std::isfinite(c.prices[a]) || !std::isfinite(c.prices[b]) || c.prices[a] <= 0 ||
             c.prices[b] <= 0 || (c.config.guard_returns && c.guard[b] != c.guard[a]))
           return co::Err(co::ErrorCode::Unavailable,
-                         "execution streams: missing/guarded held return");
+                         price_failure(c, "execution streams: missing/guarded held return", t, i, old, true));
         const auto next = old * (c.prices[b] / c.prices[a]);
         if (!std::isfinite(next))
           return co::Err(co::ErrorCode::OutOfRange, "execution streams: holding mark overflow");
@@ -294,16 +325,19 @@ co::Status fill(const Context &c, std::span<const f64> signal, f64 sign, usize a
                                                  cost::CostFillRule::ParticipationCapped);
         if (!quote.priced())
           return co::Err(co::ErrorCode::Unavailable,
-                         "execution streams: unpriceable nonzero trade");
+                         price_failure(c, "execution streams: unpriceable nonzero trade", t, i,
+                                       holdings[i], false, d, requested, quote.filled_dollars));
         if (quote.filled_dollars != 0) {
           const auto price = c.prices[t * n + i];
           if (c.panel_member[t * n + i] == 0 || !std::isfinite(price) || price <= 0)
             return co::Err(co::ErrorCode::Unavailable,
-                           "execution streams: unavailable entry price");
+                           price_failure(c, "execution streams: unavailable entry price", t, i,
+                                         holdings[i], false, d, requested, quote.filled_dollars));
           const auto units = quote.filled_dollars / price;
           if (!std::isfinite(units) || units == 0)
             return co::Err(co::ErrorCode::Unavailable,
-                           "execution streams: unavailable execution price/units");
+                           price_failure(c, "execution streams: unavailable execution price/units", t, i,
+                                         holdings[i], false, d, requested, quote.filled_dollars));
         }
         holdings[i] += quote.filled_dollars;
         cash -= quote.filled_dollars;
