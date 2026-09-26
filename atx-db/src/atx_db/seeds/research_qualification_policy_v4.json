@@ -1,0 +1,65 @@
+{
+  "policy_id": "r4-qualification-v4",
+  "title": "Qualification policy v4: pre-registered waves, replication and discovery evidence classes, investable co-primary cell (tier-1 v2)",
+  "frozen_on": "2026-09-26",
+  "authority": "tier-1 v2 S1 node 1.10 brief; rulings R-6 (wave pre-registration: catalog rows and this policy hash frozen before a wave reads any return, cumulative trial registry, holdout opened once and only on final labels), R-7 (published signals are replications with a one-sided test, conjectures and composites are discoveries with HLZ + DSR, an investable co-primary cell must pass), C-24 (value-weight market beta and FF-residual ivol are the tested hypotheses; equal-weight twins are reported only), C-25 (two-sided rows carry no pre-registered sign: discovery gate, excluded from signed composites and reported separately), C-22/C-34 (the composite null-simulation evidence stays with node 4.4). Frozen before any tier-1 v2 wave read a forward return; the r4-qualification-v3 file remains the legacy R3b/R4 DuckDB-oracle policy (R-5).",
+  "primary_cell": {"variant": "rank_normal", "horizon_months": 3},
+  "gating_family": "primary_cells_over_eligible_hypotheses",
+  "reported_family": "all_cells",
+  "investable_slice": {"min_price_usd": 5.0, "min_me_percentile_nyse": 20},
+  "replication_gate": {"one_sided_p_max": 0.05, "bh_q": 0.10, "investable_one_sided_p_max": 0.05,
+                       "size_bucket_sign_agreement": true},
+  "discovery_gate": {"hlz_abs_z_min": 3.0, "dsr_min": 0.95, "bh_q": 0.05, "investable_one_sided_p_max": 0.05},
+  "holdout": {"rule": "sign_consistent_and_no_significant_shrink", "shrink_test_one_sided_p_min": 0.05,
+              "opened_once_per_wave": true, "requires_final_labels": true},
+  "coverage": {"against": "catalog_population", "min_share": 0.60, "min_formation_share": 0.90},
+  "long_horizon": {"method": "jegadeesh_titman_calendar_time", "holding_months": [6, 12]},
+  "split": {"selection_end": "2023-12", "holdout_start": "2024-01"},
+  "inference": "ewc_fixed_b",
+  "trial_registry": "cumulative_across_waves",
+  "evaluation_split": {
+    "split_version": "r4-split-v1",
+    "segments": [
+      {"name": "train", "start": "2000-01-01", "end": "2019-12-31"},
+      {"name": "validation", "start": "2020-01-01", "end": "2023-12-31"},
+      {"name": "holdout", "start": "2024-01-01", "end": "2026-12-31"}
+    ],
+    "embargo_months": 0,
+    "sha256": "b1271e3f38186897649ce8b327e4259e9df6934ec017d290d4708b994e286f26"
+  },
+  "evaluation_inputs": {"horizons_months": [1, 3, 6, 12], "min_names": 200, "min_bucket_names": 50,
+                        "nyse_min_names": 20, "min_formations": 36,
+                        "meaning": "gate-feeding R3b EvaluationSpec values; a run whose spec differs on any of them, or that did not evaluate the investable slice, the Jegadeesh-Titman holdings and population coverage, is refused. Build the spec with qualification.evaluation_spec_kwargs_v4(policy)"},
+  "evidence_classes": {
+    "source": "catalog evidence_class (catalog.derive_evidence_class)",
+    "replication": "a published anomaly or analogue with a pre-registered sign: one-sided EWC test in that direction",
+    "discovery": "an economic conjecture, a two-sided row (no pre-registered sign) or a composite: the two-sided HLZ hurdle; a signed conjecture must clear it in its pre-registered direction (clearing it in the opposite direction is sign_reversed), a two-sided row fixes its realized sign"
+  },
+  "grade_basis": {
+    "provisional_labels": "selection sample only, the holdout stays sealed; statuses stop at selection_pass",
+    "final_labels": "the holdout is graded only after trial_registry.open_holdout(wave) recorded the wave's one opening"
+  },
+  "reported_only": {
+    "feature_ids": ["beta_ew_252d", "ivol_ew_21d", "ivol_ew_252d"],
+    "rule": "ruling C-24: the equal-weight-market twins of the value-weight market beta (beta_mkt_252d) and the FF-residual idiosyncratic volatility (ivol_252d) are evaluated and reported, never gated; they stay out of the gating family and count as trials. A wave may register further reported-only rows at registration, before any return is read."
+  },
+  "two_sided_rows": "ruling C-25: graded under the discovery gate (two-sided); excluded from signed composites and reported separately",
+  "strict_evidence": {"basis": "strict", "identity_bases": ["dated_identifier_history"], "universe_bases": ["us_listed_v1"],
+                      "universe_scopes": ["valid_primary_lines"]},
+  "methods": {
+    "significance": "EWC fixed-b (stats.mean_inference, horizon_periods = 3) on the primary cell's per-formation rank IC over the selection sample; p = the robust Student-t p-value; one-sided p in direction d = p/2 when d*t > 0, else 1 - p/2; |z| = the normal-equivalent z of the two-sided p",
+    "gating_bh": "Benjamini-Hochberg per basis over the gating family: the primary cells of this wave's research-eligible, not reported-only hypotheses, each at its evidence class p-value (replication one-sided in the pre-registered direction, discovery two-sided), plus p = 1 for every gating hypothesis of every earlier registered wave (trial registry); an untested gating cell enters as p = 1",
+    "dsr": "deflated Sharpe probability of the direction-oriented ls_ew10 series of the primary cell (horizon_periods = 3), n_trials = trial_registry.trials_so_far() at grading, sharpe_variance = the cross-cell variance of the wave's tested cells at the primary horizon",
+    "sign_reversed": "replication: one-sided p against the pre-registered sign <= one_sided_p_max; signed discovery: |z| >= hlz_abs_z_min against the pre-registered sign",
+    "investable": "rank IC re-ranked among names with price >= min_price_usd and market cap >= the NYSE min_me_percentile_nyse percentile at the formation (supplied NYSE breakpoints, else point-in-time NYSE names; formations with neither are excluded and counted); one-sided p in the fixed direction; no investable IC over >= min_formations formations is insufficient evidence",
+    "size_buckets": "replication only: the small and the large NYSE 20/50 size bucket IC means keep the pre-registered sign; NYSE buckets (supplied NYSE breakpoints, else point-in-time NYSE names) where both have >= min_formations formations, else the labeled cap-tercile fallback; a bucket without min_formations formations is insufficient evidence",
+    "coverage_share": "share of the feature's history-eligible selection formations whose value coverage of the catalog population is >= min_share; history-eligible = on or after the first formation recorded for the feature at wave registration (its minimum history after its source's first observation), else every selection formation; fewer than evaluation_inputs.min_formations history-eligible selection formations is insufficient coverage",
+    "holdout_shrink_test": "sign consistent: d * holdout IC mean > 0; shrink: t = d*(m_holdout - m_selection)/sqrt(se_holdout^2 + se_selection^2) with EWC standard errors and Welch-Satterthwaite df; one-sided p = P(T <= t); passes when p >= shrink_test_one_sided_p_min",
+    "long_horizon": "Jegadeesh-Titman calendar-time EW decile long-short: the month-t return averages the cohorts formed at t-1 ... t-K (one-month labels); months with all K cohorts enter the EWC test (horizon_periods = 1); reported, never gating",
+    "resolution": "one status per feature: a basis that qualifies or passes selection while another basis is sign_reversed makes the feature unstable; else the strict basis status when it qualifies, else the reference research basis (reconstructed) status"
+  },
+  "statuses": ["qualified_strict", "qualified_reconstructed", "selection_pass", "holdout_failed", "not_investable",
+               "unstable", "insufficient_evidence", "not_significant", "sign_reversed", "insufficient_coverage",
+               "reported_only"],
+  "policy_sha256": "776db445df6323c5d0dfd7db8e080631d94665c6a84e548f4b1d01b148546d9a"
+}

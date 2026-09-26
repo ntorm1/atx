@@ -110,6 +110,29 @@ Inference policy (controller ruling on the R3a review)
   ``labels.py``; panel/store/catalog inputs are covered by their manifests. Byte
   identity relies on batched LAPACK solves, so ``verify`` belongs on the same host/BLAS.
 
+Policy v4 additions (tier-1 v2 node 1.10; off unless the spec enables them)
+--------------------------------------------------------------------------
+* Investable co-primary slice (``investable_min_price`` / ``investable_nyse_percentile``):
+  ``slice_kind='investable'``: the rank IC re-ranked among names with a price (context
+  ``price``) at or above the minimum and a verified cap at or above the NYSE percentile
+  breakpoint -- supplied with the calendar (``nyse_me_p<k>``, e.g. the Fama-French NYSE ME
+  breakpoints: ``venue_basis='nyse_breakpoints'``), else from point-in-time NYSE names
+  (``nyse_pit``); formations with neither have no investable names. Its spread is the
+  value-weighted decile long-short formed within the investable names.
+* Supplied NYSE 20/50 breakpoints (calendar ``nyse_me_p20`` and ``nyse_me_p50``) also set
+  the size buckets of their formations (``slice_kind='size_bucket_nyse_bp'``).
+* Jegadeesh-Titman calendar-time holdings (``jt_holding_months``, needs the 1-month labels):
+  ``slice_kind='jt_calendar'``, ``slice_name='k<K>'``, ``horizon_months=1``: the month-t
+  return averages the EW decile long-shorts formed at t-1 ... t-K
+  (:func:`jegadeesh_titman_series`); months with all K cohorts inside the selection sample
+  enter the EWC test (``horizon_periods = 1``). Reported, never gating.
+* Population coverage (``population_coverage``): a feature whose catalog ``population`` is
+  not ``all`` measures coverage against the ranked-universe members flagged
+  ``population_<name>`` in the context (NaN when the flag is absent), not the ranked universe.
+* Family scope: :func:`family_scope` marks the gating family (primary cells of a wave's
+  gating hypotheses); :func:`gating_bh_q` computes its Benjamini-Hochberg q-values with the
+  earlier waves' gating hypotheses at p = 1. The R3b family columns stay the reported family.
+
 Point-in-time guards
 --------------------
 * Formation authority is the R2a ``research_panel_calendar``: only ``formed`` months
@@ -181,7 +204,7 @@ import json
 import math
 import re
 import tempfile
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -251,9 +274,22 @@ NYSE_EXCHANGE_CODE = "XNYS"
 #: ``venue_basis`` of a formation's size breakpoints: point-in-time NYSE 20/50, verified-cap
 #: terciles (no point-in-time venue), none (fewer than 3 verified caps), no context rows.
 VENUE_NYSE_PIT, VENUE_CAP_TERCILES = "nyse_pit", "cap_terciles"
-VENUE_BASES = (VENUE_NYSE_PIT, VENUE_CAP_TERCILES, "none", "no_context")
+#: Policy v4: NYSE market-cap breakpoints supplied with the calendar (``nyse_me_p20`` / ``nyse_me_p50``,
+#: e.g. the Fama-French NYSE ME breakpoints) take precedence over point-in-time NYSE names.
+VENUE_NYSE_BREAKPOINTS = "nyse_breakpoints"
+VENUE_BASES = (VENUE_NYSE_PIT, VENUE_CAP_TERCILES, "none", "no_context", VENUE_NYSE_BREAKPOINTS)
 #: Size-bucket slice kind per breakpoint basis (an NYSE-bucket slice never mixes in terciles).
 SIZE_SLICE_KINDS = {VENUE_NYSE_PIT: "size_bucket", VENUE_CAP_TERCILES: "size_tercile"}
+#: Size-bucket slice kind of formations bucketed on supplied NYSE breakpoints (emitted only when supplied).
+SUPPLIED_SIZE_SLICE_KIND = "size_bucket_nyse_bp"
+#: Policy v4 slices: the investable co-primary cell and the Jegadeesh-Titman calendar-time holdings.
+INVESTABLE_SLICE_KIND, INVESTABLE_SLICE_NAME = "investable", "investable"
+JT_SLICE_KIND = "jt_calendar"
+#: Calendar column of a supplied NYSE market-cap percentile breakpoint (units of ``market_cap``).
+SUPPLIED_BREAKPOINT_COLUMN = "nyse_me_p{percentile}"
+#: Context column prefix of a catalog-population membership flag (``population_<name>``).
+POPULATION_FLAG_PREFIX = "population_"
+POPULATION_ALL = "all"
 SIZE_FEATURES = frozenset({"market_cap"})
 LABEL_BASIS = "adjusted_close_forward_return_with_observed_or_policy_terminal_stitch"
 BH_ALPHA = 0.05
@@ -419,6 +455,14 @@ class EvaluationSpec:
     verify_panels: bool = True
     #: sha256 of the frozen R4 policy file the split came from (recorded, not interpreted).
     policy_sha256: str | None = None
+    #: Policy v4 (off by default; a spec that leaves them off has the pre-v4 payload and results):
+    #: the investable slice (price >= this and market cap >= the NYSE ``investable_nyse_percentile``
+    #: percentile), Jegadeesh-Titman calendar-time holdings (months; needs the 1-month labels) and
+    #: coverage measured against the catalog population instead of the ranked universe.
+    investable_min_price: float | None = None
+    investable_nyse_percentile: int | None = None
+    jt_holding_months: tuple[int, ...] = ()
+    population_coverage: bool = False
 
 
 def _positive_int(value: Any, label: str, low: int, high: int) -> int:
@@ -485,14 +529,45 @@ def validate_spec(spec: EvaluationSpec) -> EvaluationSpec:
     if spec.policy_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", str(spec.policy_sha256)):
         raise EvaluationInputError("policy_sha256 must be a sha256 hex digest")
     controls = _ids(spec.control_features, "control_features") if spec.control_features else ()
+    price, percentile = spec.investable_min_price, spec.investable_nyse_percentile
+    if (price is None) != (percentile is None):
+        raise EvaluationInputError("investable_min_price and investable_nyse_percentile come together")
+    if price is not None:
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not 0.0 <= float(price) <= 10_000.0:
+            raise EvaluationInputError("investable_min_price must be a non-negative price")
+        price = float(price)
+        _positive_int(percentile, "investable_nyse_percentile", 1, 99)
+    holding = tuple(sorted(set(spec.jt_holding_months)))
+    if len(holding) != len(spec.jt_holding_months) or any(isinstance(k, bool) or not isinstance(k, int)
+                                                          or not 1 <= k <= 12 for k in holding):
+        raise EvaluationInputError("jt_holding_months must be distinct integers 1..12")
+    if holding and 1 not in horizons:
+        raise EvaluationInputError("Jegadeesh-Titman holdings need the 1-month labels (horizons_months must hold 1)")
+    if not isinstance(spec.population_coverage, bool):
+        raise EvaluationInputError("population_coverage must be a boolean")
     return replace(spec, feature_versions=versions, horizons_months=horizons, marginal_months=marginal,
                    label_cutoff=cutoff, features=_ids(spec.features, "features"),
                    variants=_ids(spec.variants, "variants"), subperiods=tuple(subperiods),
-                   control_features=controls or ())
+                   control_features=controls or (), investable_min_price=price, jt_holding_months=holding)
 
 
 def spec_payload(spec: EvaluationSpec) -> dict[str, Any]:
-    """Canonical JSON-able form of a validated spec (``run_id`` excluded)."""
+    """Canonical JSON-able form of a validated spec (``run_id`` excluded).
+
+    The policy v4 options appear only when set, so a pre-v4 spec keeps its payload and hash.
+    """
+    payload = _spec_payload_base(spec)
+    if spec.investable_min_price is not None:
+        payload["investable_min_price"] = spec.investable_min_price
+        payload["investable_nyse_percentile"] = spec.investable_nyse_percentile
+    if spec.jt_holding_months:
+        payload["jt_holding_months"] = list(spec.jt_holding_months)
+    if spec.population_coverage:
+        payload["population_coverage"] = True
+    return payload
+
+
+def _spec_payload_base(spec: EvaluationSpec) -> dict[str, Any]:
     return {
         "evaluation_version": EVALUATION_VERSION,
         "feature_contract": FEATURE_CONTRACT,
@@ -544,6 +619,10 @@ def spec_from_payload(payload: Mapping[str, Any], run_id: str) -> EvaluationSpec
         marginal_months=tuple(payload["marginal_months"]),
         label_diagnostics=payload["label_diagnostics"], verify_panels=payload["verify_panels"],
         policy_sha256=payload["policy_sha256"],
+        investable_min_price=payload.get("investable_min_price"),
+        investable_nyse_percentile=payload.get("investable_nyse_percentile"),
+        jt_holding_months=tuple(payload.get("jt_holding_months") or ()),
+        population_coverage=bool(payload.get("population_coverage", False)),
     )
     return validate_spec(spec)
 
@@ -570,6 +649,8 @@ class FeatureData:
     dates: pd.DataFrame | None = None
     anomaly_class: str | None = None
     hypothesis_family: str | None = None
+    #: CB2 catalog ``population`` (coverage denominator under ``EvaluationSpec.population_coverage``).
+    population: str | None = None
 
 
 @dataclass(frozen=True)
@@ -582,6 +663,8 @@ class CatalogFeature:
     variants: tuple[str, ...] = FEATURE_VARIANTS
     #: R1b grouping of near-duplicate / same-construct hypotheses (carried to every cell).
     hypothesis_family: str | None = None
+    #: CB2 ``population`` (not part of the family digest; read only under population coverage).
+    population: str | None = None
 
 
 def expected_variants(anomaly_class: str) -> tuple[str, ...]:
@@ -607,7 +690,8 @@ def catalog_features(entries: Iterable[Any] | None = None) -> tuple[CatalogFeatu
             continue
         features.append(CatalogFeature(entry.feature_id, int(entry.expected_sign), entry.anomaly_class,
                                        expected_variants(entry.anomaly_class),
-                                       getattr(entry, "hypothesis_family", None)))
+                                       getattr(entry, "hypothesis_family", None),
+                                       getattr(entry, "population", None) or None))
     return tuple(sorted(features, key=lambda item: item.feature_id))
 
 
@@ -978,6 +1062,11 @@ class _Prepared:
     control_values: dict[str, np.ndarray]
     samples: dict[int, _Samples]
     digests: dict[str, str]
+    #: Policy v4 inputs (None/empty unless the spec enables them or the calendar supplies them).
+    context_investable: np.ndarray | None = None   # per context row
+    investable_basis: list[str] | None = None      # per formation: nyse_breakpoints / nyse_pit / none
+    population_flags: dict[str, np.ndarray] = field(default_factory=dict)  # per context row
+    supplied_breakpoints: bool = False
 
 
 def _ints(values: np.ndarray, name: str) -> np.ndarray:
@@ -1023,14 +1112,17 @@ class _SizeBuckets:
 
 def _size_buckets(keys: np.ndarray, cap: np.ndarray, months: int, span: int, spec: EvaluationSpec, *,
                   universe: np.ndarray | None = None, venue_pit: np.ndarray | None = None,
-                  nyse_pit: np.ndarray | None = None) -> _SizeBuckets:
+                  nyse_pit: np.ndarray | None = None,
+                  supplied: tuple[np.ndarray, np.ndarray] | None = None) -> _SizeBuckets:
     """Micro/small/large per formation (0 = unknown: no verified cap).
 
     ``keys`` must be sorted. Breakpoints come only from ranked-universe rows with a
     positive (verified) cap: the 20th and 50th percentiles of those on the point-in-time
     NYSE (``venue_pit & nyse_pit``) when at least ``nyse_min_names`` exist
     (``nyse_pit``), else their cap terciles (``cap_terciles``), else none. A backcast or
-    current venue is never used.
+    current venue is never used. ``supplied`` (policy v4: per-formation NYSE 20th/50th
+    percentile breakpoints given with the calendar) wins where both are finite
+    (``nyse_breakpoints``).
     """
     size = len(keys)
     universe = np.ones(size, dtype=bool) if universe is None else universe
@@ -1056,7 +1148,10 @@ def _size_buckets(keys: np.ndarray, cap: np.ndarray, months: int, span: int, spe
             pit_share[m] = float(venue_pit[begin:end][members].mean())
         reference = positive & venue_pit[begin:end] & nyse_pit[begin:end]
         nyse_names[m] = int(reference.sum())
-        if nyse_names[m] >= spec.nyse_min_names:
+        if supplied is not None and np.isfinite(supplied[0][m]) and np.isfinite(supplied[1][m]):
+            method = VENUE_NYSE_BREAKPOINTS
+            low, high = float(supplied[0][m]), float(supplied[1][m])
+        elif nyse_names[m] >= spec.nyse_min_names:
             method = VENUE_NYSE_PIT
             low, high = np.percentile(caps[reference], [20.0, 50.0])
         elif positive.sum() >= 3:
@@ -1206,18 +1301,35 @@ def _prepare(inputs: BasisInputs, spec: EvaluationSpec) -> _Prepared:
         member, primary = flag("valid_member", True), flag("primary_line", True)
         unlinked = flag("unlinked_member", False)
         venue_pit, nyse_pit = flag("venue_pit", False), flag("is_nyse_pit", False)
+        price = (pd.to_numeric(context["price"], errors="coerce").to_numpy(dtype=float)[order]
+                 if "price" in context else np.full(len(context), _NAN))
+        population_flags = {str(name)[len(POPULATION_FLAG_PREFIX):]: flag(str(name), False)
+                            for name in context.columns
+                            if spec.population_coverage and str(name).startswith(POPULATION_FLAG_PREFIX)}
     else:
-        ctx_keys, cap = np.zeros(0, np.int64), np.zeros(0)
+        ctx_keys, cap, price = np.zeros(0, np.int64), np.zeros(0), np.zeros(0)
         member = primary = unlinked = venue_pit = nyse_pit = np.zeros(0, bool)
+        population_flags = {}
     universe = member & primary
     unlinked &= ~universe
+    supplied = _supplied_breakpoints(calendar, (20, 50))
     sized = _size_buckets(ctx_keys, cap, months, span, spec, universe=universe, venue_pit=venue_pit,
-                          nyse_pit=nyse_pit)
+                          nyse_pit=nyse_pit, supplied=supplied)
     universe_names = np.bincount(ctx_keys[universe] // span, minlength=months)[:months] if len(ctx_keys) \
         else np.zeros(months, np.int64)
     unlinked_names = np.bincount(ctx_keys[unlinked] // span, minlength=months)[:months] if len(ctx_keys) \
         else np.zeros(months, np.int64)
     digests["context_sha256"] = _array_digest(ctx_keys, cap, member, primary, unlinked, venue_pit, nyse_pit)
+    if supplied is not None:
+        digests["supplied_breakpoints_sha256"] = _array_digest(*supplied)
+    investable = investable_basis = None
+    if spec.investable_min_price is not None:
+        investable, investable_basis = _investable(
+            ctx_keys, cap, price, months, span, spec, universe=universe, venue_pit=venue_pit, nyse_pit=nyse_pit,
+            supplied=_supplied_breakpoints(calendar, (int(spec.investable_nyse_percentile or 0),)))
+        digests["investable_sha256"] = _array_digest(price, investable)
+    for name, flags in sorted(population_flags.items()):
+        digests[f"population_{name}_sha256"] = _array_digest(flags)
     segment = np.full(months, "full" if spec.split is None else "outside", dtype=object)
     if spec.split is not None:
         for name, start, end in spec.split.segments:
@@ -1242,7 +1354,59 @@ def _prepare(inputs: BasisInputs, spec: EvaluationSpec) -> _Prepared:
                      label_keys, label_return, label_status, label_terminal, matured, expected_end,
                      ctx_keys, cap, sized.buckets, member, universe, unlinked, venue_pit & nyse_pit,
                      sized.venue_basis, sized.venue_pit_share, sized.nyse_pit_names, universe_names, unlinked_names,
-                     segment, control_keys, control_values, samples, digests)
+                     segment, control_keys, control_values, samples, digests,
+                     context_investable=investable, investable_basis=investable_basis,
+                     population_flags=population_flags, supplied_breakpoints=supplied is not None)
+
+
+def _supplied_breakpoints(calendar: pd.DataFrame, percentiles: Sequence[int]) -> tuple[np.ndarray, ...] | None:
+    """Per-formation supplied NYSE market-cap breakpoints (calendar ``nyse_me_p<k>``), or None if absent."""
+    columns = [SUPPLIED_BREAKPOINT_COLUMN.format(percentile=k) for k in percentiles]
+    if not columns or any(column not in calendar for column in columns):
+        return None
+    arrays = tuple(pd.to_numeric(calendar[column], errors="coerce").to_numpy(dtype=float) for column in columns)
+    if any(np.any(np.isfinite(a) & (a <= 0)) for a in arrays):
+        raise EvaluationInputError("supplied NYSE breakpoints must be positive market caps")
+    return arrays
+
+
+def _investable(keys: np.ndarray, cap: np.ndarray, price: np.ndarray, months: int, span: int,
+                spec: EvaluationSpec, *, universe: np.ndarray, venue_pit: np.ndarray, nyse_pit: np.ndarray,
+                supplied: tuple[np.ndarray, ...] | None) -> tuple[np.ndarray, list[str]]:
+    """Policy v4 investable flag per context row, and the breakpoint basis per formation.
+
+    Investable = a positive (verified) cap at or above the NYSE ``investable_nyse_percentile``
+    percentile and a price at or above ``investable_min_price``. The breakpoint is the supplied
+    one (``nyse_breakpoints``) where finite, else the percentile of the ranked universe's
+    point-in-time NYSE names with a verified cap when at least ``nyse_min_names`` exist
+    (``nyse_pit``), else the formation has no investable names (``none``). ``keys`` sorted.
+    """
+    month = keys // span
+    counts = np.bincount(month, minlength=months)[:months]
+    starts = _starts(counts)
+    flags = np.zeros(len(keys), dtype=bool)
+    methods: list[str] = []
+    percentile = float(spec.investable_nyse_percentile or 0)
+    minimum = float(spec.investable_min_price or 0.0)
+    for m in range(months):
+        begin, end = int(starts[m]), int(starts[m] + counts[m])
+        if end == begin:
+            methods.append("no_context")
+            continue
+        caps = cap[begin:end]
+        known = np.isfinite(caps) & (caps > 0)
+        if supplied is not None and np.isfinite(supplied[0][m]):
+            method, breakpoint = VENUE_NYSE_BREAKPOINTS, float(supplied[0][m])
+        else:
+            reference = known & universe[begin:end] & venue_pit[begin:end] & nyse_pit[begin:end]
+            if int(reference.sum()) < spec.nyse_min_names:
+                methods.append("none")
+                continue
+            method, breakpoint = VENUE_NYSE_PIT, float(np.percentile(caps[reference], percentile))
+        methods.append(method)
+        prices = price[begin:end]
+        flags[begin:end] = known & (caps >= breakpoint) & np.isfinite(prices) & (prices >= minimum)
+    return flags, methods
 
 
 # ---------------------------------------------------------------------------
@@ -1460,10 +1624,19 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
     size = _take(prep.context_size, context_index, 0).astype(np.int8)
     nyse_deciles = breakpoint_quantiles(month, value, _take(prep.context_nyse, context_index, False).astype(bool),
                                         months, 10, spec.nyse_min_names)
+    investable = (None if prep.context_investable is None
+                  else _take(prep.context_investable, context_index, False).astype(bool))
+    if spec.population_coverage and feature.population not in (None, "", POPULATION_ALL):
+        # Policy v4: coverage of the catalog population (members of the ranked universe flagged
+        # population_<name>); without the flag the coverage is unknown (NaN), never the universe's.
+        value_coverage = _population_coverage(prep, feature.population, month, context_index)
     del context_index
     formed_index = np.flatnonzero(prep.formed)
+    size_kinds = dict(SIZE_SLICE_KINDS)
+    if prep.supplied_breakpoints:
+        size_kinds[VENUE_NYSE_BREAKPOINTS] = SUPPLIED_SIZE_SLICE_KIND
     venue_masks = {venue: np.array([basis == venue for basis in prep.venue_basis], dtype=bool)
-                   for venue in SIZE_SLICE_KINDS}
+                   for venue in size_kinds}
 
     # Turnover and rank autocorrelation (horizon independent).
     top = (deciles == 10) & formation_ok[month]
@@ -1685,7 +1858,7 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
             bucket_ls[bucket_n < spec.min_bucket_names] = _NAN
             with np.errstate(invalid="ignore", divide="ignore"):
                 share = bucket_n / used_counts
-            for venue, kind in SIZE_SLICE_KINDS.items():
+            for venue, kind in size_kinds.items():
                 sample = primary & venue_masks[venue]
                 valid_months = in_sample & venue_masks[venue] & (bucket_n >= spec.min_bucket_names)
                 out["slices"].append(_slice_row(
@@ -1694,6 +1867,9 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
                     float(bucket_n[valid_months].mean()) if valid_months.any() else None,
                     _nanmean(share[in_sample & venue_masks[venue]]), venue,
                     _nanmean(prep.venue_pit_share[sample])))
+        if investable is not None:
+            out["slices"].append(_investable_slice(prep, spec, feature, variant, h, month, security, value,
+                                                   returns, cap, use, investable, used_counts, primary, in_sample))
 
     first = cumulative[0][1].mean if cumulative else _NAN
     for h, inference in cumulative:
@@ -1701,7 +1877,116 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
                                        inference.mean / first if first else _NAN))
     if 1 in spec.horizons_months:
         out["decay"].extend(_marginal_decay(prep, spec, feature, variant, month, keys, value))
+        legs = np.where(top, 1, np.where(bottom, -1, 0)).astype(np.int8)
+        for holding in spec.jt_holding_months:
+            series, cohorts, names = jegadeesh_titman_series(
+                month, security, legs, span, months, prep.label_keys[1], prep.label_return[1],
+                prep.label_status[1], prep.matured[1], holding)
+            mask = prep.samples[1].primary & (cohorts == holding)
+            used = mask & np.isfinite(series)
+            out["slices"].append(_slice_row(
+                prep, feature, variant, 1, JT_SLICE_KIND, f"k{holding}", _infer(np.full(months, _NAN), mask, 1),
+                _infer(series, mask, 1), "jt_ew10", int(used.sum()), 0, 0, _nanmean(names[used]), None, None,
+                None))
     return out
+
+
+def _population_coverage(prep: _Prepared, population: str, month: np.ndarray,
+                         context_index: np.ndarray) -> np.ndarray:
+    """Per formation: valued names in the catalog population / population members of the ranked universe.
+
+    Members are ranked-universe context rows flagged ``population_<name>``; NaN everywhere when
+    the inputs carry no such flag (coverage unknown, never measured against another denominator).
+    """
+    flags = prep.population_flags.get(population)
+    if flags is None or not len(prep.context_keys):
+        return np.full(prep.months, _NAN)
+    members = np.bincount(prep.context_keys[flags & prep.context_universe] // prep.span,
+                          minlength=prep.months)[:prep.months]
+    valued = np.bincount(month[_take(flags, context_index, False).astype(bool)], minlength=prep.months)[:prep.months]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return valued / np.where(members > 0, members, np.nan)
+
+
+def _investable_slice(prep: _Prepared, spec: EvaluationSpec, feature: FeatureData, variant: str, h: int,
+                      month: np.ndarray, security: np.ndarray, value: np.ndarray, returns: np.ndarray,
+                      cap: np.ndarray, use: np.ndarray, investable: np.ndarray, used_counts: np.ndarray,
+                      primary: np.ndarray, in_sample: np.ndarray) -> dict[str, Any]:
+    """Policy v4 investable co-primary slice: rank IC re-ranked among investable names, and the
+    value-weighted decile long-short formed within them (``min_bucket_names`` per formation)."""
+    months = prep.months
+    chosen = use & investable
+    ic, n = grouped_rank_correlation(month[chosen], value[chosen], returns[chosen], months)
+    thin = n < spec.min_bucket_names
+    ic[thin] = _NAN
+    deciles = grouped_quantiles(month[investable], value[investable], security[investable], months, 10,
+                                spec.min_bucket_names)
+    labeled = use[investable]
+    _, weighted, _ = _bucket_means(month[investable][labeled], deciles[labeled], returns[investable][labeled],
+                                   months, 10, cap[investable][labeled])
+    assert weighted is not None
+    spread = weighted[:, 9] - weighted[:, 0]
+    spread[thin] = _NAN
+    valid_months = in_sample & ~thin
+    with np.errstate(invalid="ignore", divide="ignore"):
+        share = n / used_counts
+    return _slice_row(prep, feature, variant, h, INVESTABLE_SLICE_KIND, INVESTABLE_SLICE_NAME,
+                      _infer(ic, primary, h), _infer(spread, primary, h), "vw10", int(valid_months.sum()), 0, 0,
+                      float(n[valid_months].mean()) if valid_months.any() else None, _nanmean(share[in_sample]),
+                      _method_counts(prep.investable_basis or [], primary), None)
+
+
+def jegadeesh_titman_series(month: np.ndarray, security: np.ndarray, legs: np.ndarray, span: int, months: int,
+                            label_keys: np.ndarray, label_return: np.ndarray, label_status: np.ndarray,
+                            matured: np.ndarray, holding: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Calendar-time returns of an equal-weighted long-short held ``holding`` months (Jegadeesh-Titman 1993).
+
+    ``legs`` marks each value row (``month``, ``security``: one cohort per formation) +1 long,
+    -1 short, 0 neither. ``label_*`` / ``matured`` are the one-month labels (keys sorted
+    ``month * span + security``). Cohort ``s`` earns in its k-th holding month (k = 1..K) the
+    one-month label return of formation ``s + k - 1`` of its names, equally weighted over the
+    names with a valid matured label (a name that stops trading leaves the leg; nothing is
+    imputed). The return of label period ``j`` averages the cohorts formed at ``j, j-1, ...,
+    j-K+1``: calendar month ``t = j + 1`` averages the cohorts formed at ``t-1 ... t-K``.
+
+    Returns per label period ``j``: the calendar-time return (NaN without a cohort), the number
+    of cohorts averaged and the names (long + short, summed over cohorts) that earned it.
+    """
+    if holding < 1:
+        raise EvaluationInputError("holding must be a positive number of months")
+    month = np.asarray(month, dtype=np.int64)
+    security = np.asarray(security, dtype=np.int64)
+    legs = np.asarray(legs)
+    cohort_returns = np.full((months, holding), _NAN)
+    cohort_names = np.zeros((months, holding), dtype=np.int64)
+    for k in range(holding):
+        target = month + k
+        inside = target < months
+        index = np.where(inside, _lookup(label_keys, target * span + security), -1)
+        returns = _take(label_return, index, _NAN)
+        valid = (inside & (index >= 0) & matured[np.minimum(target, months - 1)]
+                 & (_take(label_status, index, LABEL_MISSING) == LABEL_VALID) & np.isfinite(returns))
+        means = []
+        for side in (1, -1):
+            rows = valid & (legs == side)
+            count = np.bincount(month[rows], minlength=months)[:months]
+            total = np.bincount(month[rows], weights=returns[rows], minlength=months)[:months]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                means.append(np.where(count > 0, total / np.maximum(count, 1), _NAN))
+            cohort_names[:, k] += count
+        cohort_returns[:, k] = means[0] - means[1]
+    series = np.full(months, _NAN)
+    cohorts = np.zeros(months, dtype=np.int64)
+    names = np.zeros(months, dtype=np.int64)
+    for j in range(months):
+        values = [cohort_returns[j - k, k] for k in range(holding) if j - k >= 0]
+        counts = [cohort_names[j - k, k] for k in range(holding) if j - k >= 0]
+        finite = [(v, c) for v, c in zip(values, counts, strict=True) if math.isfinite(v)]
+        if finite:
+            series[j] = sum(v for v, _ in finite) / len(finite)
+            cohorts[j] = len(finite)
+            names[j] = sum(c for _, c in finite)
+    return series, cohorts, names
 
 
 def _half(traded: np.ndarray, mask: np.ndarray) -> float | None:
@@ -1796,7 +2081,8 @@ def _evaluate_feature(prep: _Prepared, inputs: BasisInputs, spec: EvaluationSpec
             raise EvaluationInputError(f"{feature_id}: expected_sign {feature.expected_sign} differs from the R1a "
                                        f"catalog ({entry.expected_sign})")
         feature = replace(feature, anomaly_class=feature.anomaly_class or entry.anomaly_class,
-                          hypothesis_family=feature.hypothesis_family or entry.hypothesis_family)
+                          hypothesis_family=feature.hypothesis_family or entry.hypothesis_family,
+                          population=feature.population or entry.population)
     variants = [v for v in inputs.variants_by_feature.get(feature_id, ())
                 if spec.variants is None or v in spec.variants]
     out: dict[str, list[Any]] = {"cells": [], "slices": [], "quantiles": [], "decay": [], "series": []}
@@ -1997,6 +2283,39 @@ def _basis_attrition(prep: _Prepared, spec: EvaluationSpec) -> list[dict[str, An
 
 FAMILY_COLUMNS = ("family_member", "bh_q", "holm_p", "bh_discovery", "hlz_pass", "psr", "dsr", "dsr_z",
                   "dsr_benchmark", "dsr_n_trials", "dsr_effective_n", "dsr_sharpe_variance", "family_best")
+#: Policy v4 family scopes: the gating family is the primary cells of a wave's gating hypotheses;
+#: every cell (gating or not) is in the reported family, whose statistics are the R3b family columns.
+FAMILY_SCOPE_GATING, FAMILY_SCOPE_REPORTED = "gating", "reported"
+
+
+def family_scope(cells: pd.DataFrame, *, gating_features: Iterable[str], primary_variant: str,
+                 primary_horizon: int) -> pd.Series:
+    """Policy v4 scope of every cell: ``gating`` for the primary cell (``primary_variant`` x
+    ``primary_horizon``) of a gating hypothesis (registered, research-eligible, not reported-only),
+    else ``reported``. Untestable-strict cells are reported (outside every family, as in R3b)."""
+    gating = set(gating_features)
+    chosen = (cells["feature_id"].astype(str).isin(gating) & (cells["variant"].astype(str) == primary_variant)
+              & (pd.to_numeric(cells["horizon_months"]) == int(primary_horizon))
+              & (cells["status"].astype(str) != BASIS_UNTESTABLE))
+    return pd.Series(np.where(chosen.to_numpy(dtype=bool), FAMILY_SCOPE_GATING, FAMILY_SCOPE_REPORTED),
+                     index=cells.index, name="family_scope")
+
+
+def gating_bh_q[K: Hashable](p_values: Mapping[K, float | None], *,
+                             prior_hypotheses: int = 0) -> dict[K, float | None]:
+    """Benjamini-Hochberg q-values of a policy v4 gating family.
+
+    ``p_values``: each gating hypothesis's evidence-class p-value (None = untested, counted at
+    p = 1). ``prior_hypotheses`` gating hypotheses of earlier registered waves (trial registry,
+    cumulative across waves) join the family at p = 1: a later wave never tests against a
+    smaller family than the waves before it. Returns the q-values of ``p_values``' keys.
+    """
+    if isinstance(prior_hypotheses, bool) or not isinstance(prior_hypotheses, int) or prior_hypotheses < 0:
+        raise EvaluationInputError("prior_hypotheses must be a non-negative integer")
+    padded: dict[Any, float | None] = {("family", key): value for key, value in p_values.items()}
+    padded.update({("prior_wave", i): None for i in range(prior_hypotheses)})
+    q = stats.benjamini_hochberg(padded) if padded else {}
+    return {key: q[("family", key)] for key in p_values}
 
 
 def compute_family(cells: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -3262,17 +3581,27 @@ __all__ = [
     "DEFAULT_HORIZONS",
     "DEFAULT_SUBPERIODS",
     "EVALUATION_VERSION",
+    "FAMILY_SCOPE_GATING",
+    "FAMILY_SCOPE_REPORTED",
     "FEATURE_CONTRACT",
     "FEATURE_QUERY_VERSIONS",
     "FEATURE_UNIVERSE_RULES",
     "FEATURE_VARIANTS",
     "HORIZON_SESSIONS",
+    "INVESTABLE_SLICE_KIND",
+    "INVESTABLE_SLICE_NAME",
+    "JT_SLICE_KIND",
     "MIN_FEATURE_STORE_SCHEMA",
     "OWNER_BASIS_UNLINKED",
+    "POPULATION_ALL",
+    "POPULATION_FLAG_PREFIX",
     "SIZE_BUCKETS",
     "SIZE_SLICE_KINDS",
+    "SUPPLIED_BREAKPOINT_COLUMN",
+    "SUPPLIED_SIZE_SLICE_KIND",
     "UNIVERSE_RULE",
     "VENUE_BASES",
+    "VENUE_NYSE_BREAKPOINTS",
     "BasisInputs",
     "CatalogFeature",
     "EvaluationInputError",
@@ -3290,11 +3619,14 @@ __all__ = [
     "ensure_evaluation_schema",
     "evaluate_bases",
     "expected_variants",
+    "family_scope",
     "feature_version_catalog",
     "freeze_split",
+    "gating_bh_q",
     "grouped_average_ranks",
     "grouped_quantiles",
     "grouped_rank_correlation",
+    "jegadeesh_titman_series",
     "load_feature_table",
     "load_frozen_split",
     "load_label_inputs",

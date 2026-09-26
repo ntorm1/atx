@@ -111,6 +111,36 @@ Outputs
 Research-store tables ``research_qualification_*`` (policy registry, ledger manifest,
 feature ledger, per-basis evidence), versioned JSON/CSV artifacts and the generated
 ``docs/research/QUALIFIED_SIGNALS.md``.
+
+Policy v4 (tier-1 v2 node 1.10; ``seeds/research_qualification_policy_v4.json``)
+-------------------------------------------------------------------------------
+v4 grades pre-registered *waves* (``research.trial_registry``), not whole-catalog R3b
+runs; v3 stays the legacy R3b/R4 DuckDB-oracle policy (R-5). :func:`load_policy` returns a
+:class:`QualificationPolicyV4` for a file with ``policy_id`` (same freeze mechanism:
+content hash declared in the file, pinned in :data:`FROZEN_POLICY_SHA256`, registered by
+``research_qualify.py freeze``). Evidence classes come from the catalog (``evidence_class``):
+
+* replication (published sign): one-sided EWC p <= 0.05 in the pre-registered direction
+  and gating-family BH q <= 0.10; the investable co-primary cell one-sided p <= 0.05; the
+  small and large size buckets keep the sign;
+* discovery (conjecture, two-sided row, composite): HLZ |z| >= 3 (in the pre-registered
+  direction for a signed conjecture), deflated Sharpe probability >= 0.95 with ``n_trials``
+  from the trial registry, gating-family BH q <= 0.05, investable one-sided p <= 0.05;
+* holdout (final labels only, opened once per wave through the registry): the sign holds
+  and the Welch shrink test of holdout vs selection IC is not significant (one-sided
+  p >= 0.05).
+
+The gating family is the primary cells (``rank_normal`` x 3 months) of the wave's gating
+hypotheses (registered, research-eligible, not reported-only: the ruling C-24
+equal-weight twins are reported only), each at its class p-value, plus every earlier
+wave's gating hypotheses at p = 1. Coverage is measured against the catalog population on
+the feature's history-eligible selection formations. :func:`evidence_from_evaluation`
+reads the R3b result frames of a wave run (refusing a spec that differs from the policy's
+pinned inputs, an unregistered feature, a catalog sign that differs), :func:`grade_v4`
+grades :class:`FeatureEvidence` rows (the power study calls it directly) and
+:func:`grade_wave_v4` ties both to the registry (``n_trials``, earlier waves, the holdout
+state) and returns a sealed :class:`V4Ledger`. A provisional-label grade never reads the
+holdout: it stops at ``selection_pass``.
 """
 
 from __future__ import annotations
@@ -121,7 +151,9 @@ import hashlib
 import io
 import json
 import math
+import re
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -129,6 +161,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 from . import stats
@@ -152,7 +185,13 @@ FROZEN_POLICY_SHA256: Mapping[str, str] = {
     "r4-qualification-v1": "d33ac7044a5b67d656f37a4f9c0ef61afacc403b4e4ff65ae6eec595452f4f22",
     "r4-qualification-v2": "d517b6c8372ae8ee18d09418be5f400d6b797f1015098c37f0aab1b2813093c2",
     "r4-qualification-v3": "3c26bfb68db4d98c3a25c20ac050cbb45bced1fabbe4bde07930ab18d48d7042",
+    #: Frozen 2026-09-26 (tier-1 v2 node 1.10) before any tier-1 v2 wave read a forward return (R-6).
+    "r4-qualification-v4": "776db445df6323c5d0dfd7db8e080631d94665c6a84e548f4b1d01b148546d9a",
 }
+#: Policy v4+ files (``policy_id`` schema): graded per registered wave, see the v4 section.
+POLICY_V4_PATH = POLICY_PATH.with_name("research_qualification_policy_v4.json")
+POLICY_V4_PATHS: Mapping[str, Path] = {"r4-qualification-v4": POLICY_V4_PATH}
+V4_POLICY_IDS = frozenset(POLICY_V4_PATHS)
 
 QUALIFIED_STRICT = "qualified_strict"
 QUALIFIED_RECONSTRUCTED = "qualified_reconstructed"
@@ -412,8 +451,9 @@ def _names(section: Mapping[str, Any], key: str) -> tuple[str, ...]:
 
 
 def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
-                allow_unpinned: bool = False) -> QualificationPolicy:
-    """Load and verify a frozen policy.
+                allow_unpinned: bool = False) -> Any:
+    """Load and verify a frozen policy (:class:`QualificationPolicy`, or
+    :class:`QualificationPolicyV4` for a v4 ``policy_id`` file).
 
     Refuses a declared ``policy_sha256`` that differs from the content hash (an edited
     policy), a pinned version whose content hash differs from its pin (a frozen policy
@@ -430,6 +470,8 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
         file_hashes, file_sha = policy_file_sha256s(path), hashlib.sha256(raw).hexdigest()
     if not isinstance(content, dict):
         raise PolicyError("policy must be a JSON object")
+    if "policy_id" in content:
+        return _load_policy_v4(content, file_hashes, file_sha, allow_unpinned=allow_unpinned)
     if not _POLICY_KEYS <= set(content) <= _POLICY_KEYS | _POLICY_OPTIONAL_KEYS:
         raise PolicyError(f"policy keys must be {sorted(_POLICY_KEYS)} (+ optional {sorted(_POLICY_OPTIONAL_KEYS)}); "
                           f"unknown {sorted(set(content) - _POLICY_KEYS - _POLICY_OPTIONAL_KEYS)}, "
@@ -532,10 +574,12 @@ def superseded_policy_versions() -> frozenset[str]:
     return frozenset(names)
 
 
-def current_policy_problem(policy: QualificationPolicy) -> str | None:
+def current_policy_problem(policy: Any) -> str | None:
     """Why a policy may not freeze, grade or persist (N1): superseded, or pins no evaluation spec."""
     if policy.version in superseded_policy_versions():
         return f"policy_superseded:{policy.version}"
+    if isinstance(policy, QualificationPolicyV4):
+        return None  # v4 pins its evaluation inputs (``evaluation_inputs``)
     if policy.evaluation_spec is None:
         return f"policy_pins_no_evaluation_spec:{policy.version}"
     return None
@@ -1156,6 +1200,8 @@ def qualify(results: EvaluationResults, policy: QualificationPolicy, catalog: It
     waives that for :func:`verify_ledger` alone, and such a ledger is never persisted.
     Raises :class:`QualificationRefused` for an unqualifiable run.
     """
+    if isinstance(policy, QualificationPolicyV4):
+        raise PolicyError(f"{policy.version} grades registered waves: use grade_wave_v4, not the R4 run ledger")
     catalog_rows = _catalog_rows(catalog)
     reasons = refusal_reasons(results, policy, None if catalog_rows is None else catalog_rows.values(),
                               policy_registered_at=policy_registered_at, historical=historical)
@@ -1473,6 +1519,8 @@ def qualify_run(con: duckdb.DuckDBPyConnection, run_id: str, policy: Qualificati
     this call registers the policy (None when it was not yet frozen) and the post-hoc
     reasons that followed from it; :func:`verify_ledger` reproduces from those.
     """
+    if isinstance(policy, QualificationPolicyV4):
+        raise PolicyError(f"{policy.version} grades registered waves: use grade_wave_v4, not the R4 run ledger")
     results = load_evaluation_results(con, run_id, policy, verify_seal=verify_seal)
     ledger = qualify(results, policy, catalog, policy_registered_at=policy_registered_at(con, policy),
                      allow_post_hoc_policy=allow_post_hoc_policy)
@@ -1668,36 +1716,837 @@ def render_qualified_signals_markdown(policy: QualificationPolicy, ledger: Quali
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Policy v4: pre-registered waves (tier-1 v2 node 1.10)
+# ---------------------------------------------------------------------------
+
+V4_QUALIFIED_STRICT, V4_QUALIFIED_RECONSTRUCTED = QUALIFIED_STRICT, QUALIFIED_RECONSTRUCTED
+SELECTION_PASS = "selection_pass"
+HOLDOUT_FAILED = "holdout_failed"
+NOT_INVESTABLE = "not_investable"
+INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+REPORTED_ONLY = "reported_only"
+V4_STATUSES = (V4_QUALIFIED_STRICT, V4_QUALIFIED_RECONSTRUCTED, SELECTION_PASS, HOLDOUT_FAILED, NOT_INVESTABLE,
+               UNSTABLE, INSUFFICIENT_EVIDENCE, NOT_SIGNIFICANT, SIGN_REVERSED, INSUFFICIENT_COVERAGE, REPORTED_ONLY)
+#: Statuses that passed every selection-sample gate (qualified ones also passed the holdout).
+V4_PASSING = frozenset({V4_QUALIFIED_STRICT, V4_QUALIFIED_RECONSTRUCTED, SELECTION_PASS})
+REPLICATION, DISCOVERY = "replication", "discovery"
+GRADE_PROVISIONAL, GRADE_FINAL = "provisional_labels", "final_labels"
+GRADE_BASES = (GRADE_PROVISIONAL, GRADE_FINAL)
+#: Reported subperiods of a v4 spec (not gating in v4): the three selection-sample subperiods.
+V4_REPORTED_SUBPERIODS: tuple[tuple[str, dt.date, dt.date], ...] = (
+    ("sub_2013_2016", dt.date(2013, 1, 1), dt.date(2016, 12, 31)),
+    ("sub_2017_2020", dt.date(2017, 1, 1), dt.date(2020, 12, 31)),
+    ("sub_2021_2023", dt.date(2021, 1, 1), dt.date(2023, 12, 31)),
+)
+_V4_KEYS = frozenset({
+    "policy_id", "title", "frozen_on", "authority", "primary_cell", "gating_family", "reported_family",
+    "investable_slice", "replication_gate", "discovery_gate", "holdout", "coverage", "long_horizon", "split",
+    "inference", "trial_registry", "evaluation_split", "evaluation_inputs", "evidence_classes", "grade_basis",
+    "reported_only", "two_sided_rows", "strict_evidence", "methods", "statuses", "policy_sha256"})
+_V4_SECTIONS: Mapping[str, frozenset[str]] = {
+    "primary_cell": frozenset({"variant", "horizon_months"}),
+    "investable_slice": frozenset({"min_price_usd", "min_me_percentile_nyse"}),
+    "replication_gate": frozenset({"one_sided_p_max", "bh_q", "investable_one_sided_p_max",
+                                   "size_bucket_sign_agreement"}),
+    "discovery_gate": frozenset({"hlz_abs_z_min", "dsr_min", "bh_q", "investable_one_sided_p_max"}),
+    "holdout": frozenset({"rule", "shrink_test_one_sided_p_min", "opened_once_per_wave", "requires_final_labels"}),
+    "coverage": frozenset({"against", "min_share", "min_formation_share"}),
+    "long_horizon": frozenset({"method", "holding_months"}),
+    "split": frozenset({"selection_end", "holdout_start"}),
+    "evaluation_inputs": frozenset({"horizons_months", "min_names", "min_bucket_names", "nyse_min_names",
+                                    "min_formations", "meaning"}),
+    "reported_only": frozenset({"feature_ids", "rule"}),
+    "strict_evidence": frozenset({"basis", "identity_bases", "universe_bases", "universe_scopes"}),
+    "grade_basis": frozenset(GRADE_BASES),
+    "evidence_classes": frozenset({"source", REPLICATION, DISCOVERY}),
+}
+#: The only implemented semantics of v4's named rules (a policy cannot name a rule the code lacks).
+_V4_FIXED = {"gating_family": "primary_cells_over_eligible_hypotheses", "reported_family": "all_cells",
+             "inference": "ewc_fixed_b", "trial_registry": "cumulative_across_waves"}
+
+
+@dataclass(frozen=True)
+class QualificationPolicyV4:
+    """A parsed, hash-checked policy v4 (see the v4 section of the module docstring)."""
+
+    version: str
+    sha256: str
+    content: Mapping[str, Any]
+    split: FrozenSplit
+    primary_variant: str
+    primary_horizon: int
+    selection_end: str
+    holdout_start: str
+    min_price_usd: float
+    min_me_percentile_nyse: int
+    replication_one_sided_p_max: float
+    replication_bh_q: float
+    replication_investable_p_max: float
+    replication_size_signs: bool
+    discovery_hlz_z: float
+    discovery_dsr_min: float
+    discovery_bh_q: float
+    discovery_investable_p_max: float
+    holdout_rule: str
+    shrink_p_min: float
+    holdout_once: bool
+    holdout_final_labels: bool
+    coverage_min_share: float
+    coverage_min_formation_share: float
+    jt_holding_months: tuple[int, ...]
+    evaluation_inputs: Mapping[str, Any]
+    reported_only: tuple[str, ...]
+    strict_basis: str
+    strict_identity_bases: tuple[str, ...]
+    strict_universe_bases: tuple[str, ...]
+    strict_universe_scopes: tuple[str, ...]
+    file_sha256s: frozenset[str] = field(default_factory=frozenset)
+    file_sha256: str | None = None
+
+    @property
+    def evaluation_spec(self) -> Mapping[str, Any]:
+        """The pinned evaluation inputs (the CLI prints them as the policy's evaluation spec)."""
+        return self.evaluation_inputs
+
+    @property
+    def min_formations(self) -> int:
+        return int(self.evaluation_inputs["min_formations"])
+
+
+def _v4_section(content: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    section = content.get(name)
+    if not isinstance(section, Mapping) or set(section) != _V4_SECTIONS[name]:
+        raise PolicyError(f"policy v4 section {name!r} must hold exactly {sorted(_V4_SECTIONS[name])}")
+    return section
+
+
+def _month_text(value: Any, label: str) -> dt.date:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}", value):
+        raise PolicyError(f"policy v4 {label} must be YYYY-MM")
+    return dt.date(int(value[:4]), int(value[5:]), 1)
+
+
+def _load_policy_v4(content: Mapping[str, Any], file_hashes: frozenset[str], file_sha: str | None, *,
+                    allow_unpinned: bool) -> QualificationPolicyV4:
+    if set(content) != _V4_KEYS:
+        raise PolicyError(f"policy v4 keys must be {sorted(_V4_KEYS)}; unknown {sorted(set(content) - _V4_KEYS)}, "
+                          f"missing {sorted(_V4_KEYS - set(content))}")
+    version = content["policy_id"]
+    if not isinstance(version, str) or not 0 < len(version) <= 64:
+        raise PolicyError("policy_id must be a short string")
+    actual = policy_sha256(content)
+    if content["policy_sha256"] != actual:
+        raise PolicyError(f"policy {version} is not frozen: declared policy_sha256 {content['policy_sha256']!r} "
+                          f"!= content sha256 {actual}")
+    pinned = FROZEN_POLICY_SHA256.get(version)
+    if pinned is not None and pinned != actual:
+        raise PolicyError(f"policy {version} is frozen with sha256 {pinned}; its content changed ({actual}). "
+                          "A changed policy needs a new policy_id")
+    if pinned is None and not allow_unpinned:
+        raise PolicyError(f"policy {version} is not pinned in FROZEN_POLICY_SHA256")
+    for key, expected in _V4_FIXED.items():
+        if content[key] != expected:
+            raise PolicyError(f"policy v4 {key} must be {expected!r} (the only one implemented)")
+    if list(content["statuses"]) != list(V4_STATUSES):
+        raise PolicyError(f"policy v4 statuses must be exactly {list(V4_STATUSES)}")
+    primary = _v4_section(content, "primary_cell")
+    investable = _v4_section(content, "investable_slice")
+    replication = _v4_section(content, "replication_gate")
+    discovery = _v4_section(content, "discovery_gate")
+    holdout = _v4_section(content, "holdout")
+    coverage = _v4_section(content, "coverage")
+    long_horizon = _v4_section(content, "long_horizon")
+    split_months = _v4_section(content, "split")
+    inputs = _v4_section(content, "evaluation_inputs")
+    reported = _v4_section(content, "reported_only")
+    strict = _v4_section(content, "strict_evidence")
+    _v4_section(content, "grade_basis")
+    _v4_section(content, "evidence_classes")
+    if holdout["rule"] != "sign_consistent_and_no_significant_shrink" or coverage["against"] != "catalog_population" \
+            or long_horizon["method"] != "jegadeesh_titman_calendar_time":
+        raise PolicyError("policy v4 names a holdout rule, coverage denominator or long-horizon method the code lacks")
+    for section, key in (("holdout", "opened_once_per_wave"), ("holdout", "requires_final_labels"),
+                         ("replication_gate", "size_bucket_sign_agreement")):
+        if not isinstance(content[section][key], bool):
+            raise PolicyError(f"policy v4 {section}.{key} must be a boolean")
+    try:
+        split = load_frozen_split(content["evaluation_split"])
+    except ValueError as error:
+        raise PolicyError(f"policy v4 evaluation_split: {error}") from error
+    selection_end, holdout_start = (_month_text(split_months["selection_end"], "split.selection_end"),
+                                    _month_text(split_months["holdout_start"], "split.holdout_start"))
+    validation_end = split.segments[-2][2]
+    if (validation_end.year, validation_end.month) != (selection_end.year, selection_end.month) \
+            or split.holdout_start != holdout_start:
+        raise PolicyError("policy v4 split months disagree with its evaluation_split")
+    horizons = inputs["horizons_months"]
+    if not isinstance(horizons, list) or sorted(set(horizons)) != horizons or \
+            any(isinstance(h, bool) or not isinstance(h, int) for h in horizons):
+        raise PolicyError("evaluation_inputs.horizons_months must be ascending distinct integers")
+    horizon = _count(primary, "horizon_months", 1, 12)
+    holding = long_horizon["holding_months"]
+    if not isinstance(holding, list) or sorted(set(holding)) != holding or not holding or \
+            any(isinstance(k, bool) or not isinstance(k, int) or not 1 <= k <= 12 for k in holding):
+        raise PolicyError("long_horizon.holding_months must be ascending distinct integers 1..12")
+    if horizon not in horizons or 1 not in horizons:
+        raise PolicyError("the primary horizon and the 1-month labels (JT holdings) must be evaluated")
+    reported_ids = _names({"ids": reported["feature_ids"]}, "ids")
+    return QualificationPolicyV4(
+        version=version, sha256=actual, content=content, split=split,
+        primary_variant=str(primary["variant"]), primary_horizon=horizon,
+        selection_end=str(split_months["selection_end"]), holdout_start=str(split_months["holdout_start"]),
+        min_price_usd=_number(investable, "min_price_usd", 0.0, 10_000.0),
+        min_me_percentile_nyse=_count(investable, "min_me_percentile_nyse", 1, 99),
+        replication_one_sided_p_max=_number(replication, "one_sided_p_max", 0.0, 1.0),
+        replication_bh_q=_number(replication, "bh_q", 0.0, 1.0),
+        replication_investable_p_max=_number(replication, "investable_one_sided_p_max", 0.0, 1.0),
+        replication_size_signs=bool(replication["size_bucket_sign_agreement"]),
+        discovery_hlz_z=_number(discovery, "hlz_abs_z_min", 0.0, 10.0),
+        discovery_dsr_min=_number(discovery, "dsr_min", 0.0, 1.0),
+        discovery_bh_q=_number(discovery, "bh_q", 0.0, 1.0),
+        discovery_investable_p_max=_number(discovery, "investable_one_sided_p_max", 0.0, 1.0),
+        holdout_rule=str(holdout["rule"]), shrink_p_min=_number(holdout, "shrink_test_one_sided_p_min", 0.0, 1.0),
+        holdout_once=bool(holdout["opened_once_per_wave"]), holdout_final_labels=bool(holdout["requires_final_labels"]),
+        coverage_min_share=_number(coverage, "min_share", 0.0, 1.0),
+        coverage_min_formation_share=_number(coverage, "min_formation_share", 0.0, 1.0),
+        jt_holding_months=tuple(holding),
+        evaluation_inputs={"horizons_months": list(horizons), "min_names": _count(inputs, "min_names", 3, 100_000),
+                           "min_bucket_names": _count(inputs, "min_bucket_names", 5, 100_000),
+                           "nyse_min_names": _count(inputs, "nyse_min_names", 1, 100_000),
+                           "min_formations": _count(inputs, "min_formations", 2, 10_000)},
+        reported_only=tuple(sorted(reported_ids)), strict_basis=str(strict["basis"]),
+        strict_identity_bases=_names(strict, "identity_bases"), strict_universe_bases=_names(strict, "universe_bases"),
+        strict_universe_scopes=_names(strict, "universe_scopes"),
+        file_sha256s=file_hashes, file_sha256=file_sha)
+
+
+def load_policy_v4(source: Path | str | Mapping[str, Any] = POLICY_V4_PATH) -> QualificationPolicyV4:
+    """Load the frozen policy v4 (refuses anything that is not a v4 policy)."""
+    policy = load_policy(source)
+    if not isinstance(policy, QualificationPolicyV4):
+        raise PolicyError(f"{source} is not a v4 qualification policy")
+    return policy
+
+
+def load_policy_v4_by_id(policy_id: str) -> QualificationPolicyV4:
+    """The committed v4+ policy file of ``policy_id``."""
+    if policy_id not in POLICY_V4_PATHS:
+        raise PolicyError(f"unknown v4 policy {policy_id!r}")
+    return load_policy_v4(POLICY_V4_PATHS[policy_id])
+
+
+def evaluation_spec_kwargs_v4(policy: QualificationPolicyV4) -> dict[str, Any]:
+    """The R3b ``EvaluationSpec`` keyword arguments a v4 wave run must use: the frozen split, the
+    pinned inputs, the investable slice, the JT holdings, population coverage and the policy file
+    hash (``EvaluationSpec(run_id=..., **evaluation_spec_kwargs_v4(policy))``). ``verify_panels`` is
+    the caller's (a Parquet-store run has no R2a panel to verify)."""
+    if policy.file_sha256 is None:
+        raise PolicyError(f"policy {policy.version} was not loaded from a file")
+    inputs = policy.evaluation_inputs
+    return {"split": policy.split, "horizons_months": tuple(inputs["horizons_months"]),
+            "subperiods": V4_REPORTED_SUBPERIODS, "min_names": inputs["min_names"],
+            "min_bucket_names": inputs["min_bucket_names"], "nyse_min_names": inputs["nyse_min_names"],
+            "min_formations": inputs["min_formations"], "investable_min_price": policy.min_price_usd,
+            "investable_nyse_percentile": policy.min_me_percentile_nyse,
+            "jt_holding_months": policy.jt_holding_months, "population_coverage": True,
+            "policy_sha256": policy.file_sha256}
+
+
+def v4_spec_problems(spec: Any, policy: QualificationPolicyV4) -> list[str]:
+    """Why an evaluation spec (``EvaluationSpec`` or its payload) cannot feed a v4 grade (sorted)."""
+    payload = spec if isinstance(spec, Mapping) else _spec_payload(spec)
+    wanted = {**policy.evaluation_inputs, "investable_min_price": policy.min_price_usd,
+              "investable_nyse_percentile": policy.min_me_percentile_nyse,
+              "jt_holding_months": list(policy.jt_holding_months), "population_coverage": True}
+    problems = [f"evaluation_spec_differs:{name}" for name, value in sorted(wanted.items())
+                if payload.get(name) != value]
+    split = payload.get("split")
+    if not isinstance(split, Mapping) or split.get("sha256") != policy.split.sha256:
+        problems.append("evaluation_split_differs")
+    if payload.get("policy_sha256") not in policy.file_sha256s:
+        problems.append("evaluation_policy_file_differs")
+    return sorted(problems)
+
+
+def _spec_payload(spec: Any) -> dict[str, Any]:
+    from .evaluation import spec_payload, validate_spec
+
+    return spec_payload(validate_spec(spec))
+
+
+def one_sided_p(p_two_sided: float | None, t: float | None, direction: int) -> float | None:
+    """One-sided p-value in ``direction`` from a two-sided p and its t: p/2 when direction*t > 0."""
+    p, stat = _f(p_two_sided), _f(t)
+    if p is None or stat is None:
+        return None
+    return p / 2.0 if direction * stat > 0 else 1.0 - p / 2.0
+
+
+def holdout_shrink_test(selection_mean: float | None, selection_t: float | None, selection_df: float | None,
+                        holdout_mean: float | None, holdout_t: float | None, holdout_df: float | None,
+                        direction: int) -> tuple[float | None, float | None, float | None]:
+    """Welch shrink test of the holdout IC against the selection IC in ``direction``.
+
+    EWC standard errors ``|mean / t|``; ``t = d (m_h - m_s) / sqrt(se_h^2 + se_s^2)``,
+    Welch-Satterthwaite df; returns ``(t, df, one-sided p = P(T <= t))`` (None when
+    untestable). A small p means the holdout IC is significantly below the selection IC.
+    """
+    values = [_f(v) for v in (selection_mean, selection_t, selection_df, holdout_mean, holdout_t, holdout_df)]
+    if any(v is None for v in values):
+        return None, None, None
+    m_s, t_s, df_s, m_h, t_h, df_h = (float(v) for v in values)  # type: ignore[arg-type]
+    if t_s == 0 or t_h == 0 or df_s <= 0 or df_h <= 0:
+        return None, None, None
+    a, b = (m_h / t_h) ** 2, (m_s / t_s) ** 2
+    if not a + b > 0:
+        return None, None, None
+    df = (a + b) ** 2 / (a * a / df_h + b * b / df_s)
+    stat = direction * (m_h - m_s) / math.sqrt(a + b)
+    p_two = stats.student_t_two_sided_p(stat, df)
+    return stat, df, (p_two / 2.0 if stat < 0 else 1.0 - p_two / 2.0)
+
+
+@dataclass(frozen=True)
+class FeatureEvidence:
+    """What a v4 grade reads for one feature on one basis (the primary cell and its slices).
+
+    IC statistics are EWC fixed-b on sign-oriented values (a signed hypothesis is a positive
+    IC); ``*_p`` are two-sided robust p-values, ``*_t`` robust t, ``*_df`` EWC df.
+    ``coverage_share``: share of the feature's history-eligible selection formations with
+    catalog-population coverage >= ``coverage.min_share``. Size buckets and the investable
+    slice carry their formations; holdout fields are None unless the wave's holdout was opened
+    on final labels.
+    """
+
+    feature_id: str
+    basis: str
+    evidence_class: str
+    expected_sign: int
+    reported_only: bool = False
+    cell_status: str = "tested"
+    strict_labels: bool = False
+    ic_mean: float | None = None
+    ic_t: float | None = None
+    ic_df: float | None = None
+    ic_p: float | None = None
+    ic_n: int | None = None
+    coverage_share: float | None = None
+    coverage_formations: int = 0
+    investable_mean: float | None = None
+    investable_t: float | None = None
+    investable_p: float | None = None
+    investable_formations: int = 0
+    small_mean: float | None = None
+    small_formations: int = 0
+    large_mean: float | None = None
+    large_formations: int = 0
+    size_venue_basis: str | None = None
+    sharpe: float | None = None
+    sharpe_skew: float | None = None
+    sharpe_kurt: float | None = None
+    sharpe_n: int | None = None
+    sharpe_variance: float | None = None
+    holdout_mean: float | None = None
+    holdout_t: float | None = None
+    holdout_df: float | None = None
+    holdout_formations: int | None = None
+    annotations: Mapping[str, Any] = field(default_factory=dict)
+
+
+V4_ROW_COLUMNS: tuple[str, ...] = (
+    "feature_id", "basis", "status", "status_reasons", "evidence_class", "evidence_basis", "reported_only",
+    "expected_sign", "two_sided", "direction", "cell_status", "family_scope",
+    "ic_mean", "ic_t", "ic_df", "ic_n", "ic_z", "p_two_sided", "p_one_sided", "p_against", "family_p", "gating_q",
+    "dsr", "dsr_z", "dsr_n_trials", "coverage_share", "coverage_formations",
+    "investable_ic_mean", "investable_p_one_sided", "investable_formations",
+    "small_ic_mean", "small_formations", "large_ic_mean", "large_formations", "size_venue_basis",
+    "gate_coverage", "gate_sign", "gate_significance", "gate_investable", "gate_size_buckets", "gate_holdout",
+    "holdout_graded", "holdout_ic_mean", "holdout_formations", "holdout_sign_consistent", "holdout_shrink_t",
+    "holdout_shrink_df", "holdout_shrink_p",
+)
+V4_FEATURE_COLUMNS: tuple[str, ...] = (
+    "feature_id", "status", "status_basis", "status_reasons", *[c for c in V4_ROW_COLUMNS
+                                                               if c not in ("feature_id", "basis", "status",
+                                                                            "status_reasons")],
+    "anomaly_class", "hypothesis_family", "jkp_theme", "population", "wave",
+)
+
+
+def _z_signed(p: float | None, t: float | None) -> float | None:
+    p, t = _f(p), _f(t)
+    if p is None or t is None:
+        return None
+    return math.copysign(stats.normal_equivalent_z(p), t) if t != 0 else 0.0
+
+
+def _v4_direction(item: FeatureEvidence, z: float | None) -> int:
+    if item.expected_sign != 0:
+        return 1  # values are sign-oriented: the hypothesis is a positive IC
+    return _signum(z) or _signum(_f(item.ic_mean)) or 1
+
+
+def _v4_family_p(item: FeatureEvidence, p_one: float | None) -> float | None:
+    if item.cell_status != "tested":
+        return None
+    return p_one if item.evidence_class == REPLICATION else _f(item.ic_p)
+
+
+def _grade_v4_row(item: FeatureEvidence, policy: QualificationPolicyV4, q: float | None, *, n_trials: int,
+                  grade_holdout: bool) -> dict[str, Any]:
+    z = _z_signed(item.ic_p, item.ic_t)
+    direction = _v4_direction(item, z)
+    two_sided = item.expected_sign == 0
+    replication = item.evidence_class == REPLICATION
+    p_one = one_sided_p(item.ic_p, item.ic_t, direction)
+    p_against = None if two_sided else one_sided_p(item.ic_p, item.ic_t, -1)
+    tested = item.cell_status == "tested" and p_one is not None
+    row: dict[str, Any] = {name: None for name in V4_ROW_COLUMNS}
+    row.update({"feature_id": item.feature_id, "basis": item.basis, "evidence_class": item.evidence_class,
+                "reported_only": item.reported_only, "expected_sign": item.expected_sign, "two_sided": two_sided,
+                "direction": direction, "cell_status": item.cell_status,
+                "family_scope": "reported" if item.reported_only else "gating",
+                "ic_mean": _f(item.ic_mean), "ic_t": _f(item.ic_t), "ic_df": _f(item.ic_df), "ic_n": item.ic_n,
+                "ic_z": z, "p_two_sided": _f(item.ic_p), "p_one_sided": p_one, "p_against": p_against,
+                "family_p": None if item.reported_only else _v4_family_p(item, p_one), "gating_q": q,
+                "coverage_share": _f(item.coverage_share), "coverage_formations": item.coverage_formations,
+                "investable_ic_mean": _f(item.investable_mean), "investable_formations": item.investable_formations,
+                "small_ic_mean": _f(item.small_mean), "small_formations": item.small_formations,
+                "large_ic_mean": _f(item.large_mean), "large_formations": item.large_formations,
+                "size_venue_basis": item.size_venue_basis, "holdout_graded": grade_holdout})
+    evidence = "strict" if item.basis == policy.strict_basis and item.strict_labels else "reconstructed"
+    row["evidence_basis"] = evidence
+    # Deflated Sharpe of the direction-oriented EW decile long-short (discovery gate; reported for all).
+    dsr = None
+    sharpe, skew, kurt = _f(item.sharpe), _f(item.sharpe_skew), _f(item.sharpe_kurt)
+    variance, n_obs = _f(item.sharpe_variance), item.sharpe_n
+    if None not in (sharpe, skew, kurt, variance) and n_obs and n_trials >= 1:
+        assert sharpe is not None and skew is not None and kurt is not None and variance is not None
+        with suppress(ValueError, ArithmeticError):
+            deflated = stats.deflated_sharpe_ratio(direction * sharpe, n_obs=int(n_obs), skewness=direction * skew,
+                                                   kurtosis=kurt, n_trials=int(n_trials), sharpe_variance=variance,
+                                                   horizon_periods=policy.primary_horizon)
+            dsr = deflated.deflated_sharpe_ratio
+            row["dsr_z"] = _f(deflated.z)
+    row.update({"dsr": _f(dsr), "dsr_n_trials": n_trials})
+    investable_p = one_sided_p(item.investable_p, item.investable_t, direction)
+    row["investable_p_one_sided"] = investable_p
+    if item.reported_only:
+        row.update({"status": REPORTED_ONLY, "status_reasons": "reported_only_never_gated"})
+        return row
+
+    # 1. Coverage of the catalog population on the history-eligible selection formations.
+    coverage_fail = []
+    if not tested:
+        coverage_fail.append(f"cell_{item.cell_status}")
+    share = _f(item.coverage_share)
+    if share is None or share < policy.coverage_min_formation_share:
+        coverage_fail.append(f"coverage_share={_g(share)}<{policy.coverage_min_formation_share:g}")
+    if item.coverage_formations < policy.min_formations:
+        coverage_fail.append(f"coverage_formations={item.coverage_formations}<{policy.min_formations}")
+    row["gate_coverage"] = not coverage_fail
+    if coverage_fail:
+        row.update({"status": INSUFFICIENT_COVERAGE, "status_reasons": "; ".join(coverage_fail)})
+        return row
+    # 2. Sign against a pre-registered direction.
+    if replication:
+        reversed_sign = p_against is not None and p_against <= policy.replication_one_sided_p_max
+    else:
+        reversed_sign = not two_sided and z is not None and z <= -policy.discovery_hlz_z
+    row["gate_sign"] = not reversed_sign
+    if reversed_sign:
+        row.update({"status": SIGN_REVERSED, "status_reasons": f"ic_z={_g(z)}_against_the_pre_registered_sign"})
+        return row
+    # 3. Significance of the evidence class (the gating family's BH q included).
+    reasons: list[str] = []
+    if replication:
+        if p_one is None or p_one > policy.replication_one_sided_p_max:
+            reasons.append(f"p_one_sided={_g(p_one)}>{policy.replication_one_sided_p_max:g}")
+        if q is None or q > policy.replication_bh_q:
+            reasons.append(f"bh_q={_g(q)}>{policy.replication_bh_q:g}")
+    else:
+        if z is None or direction * z < policy.discovery_hlz_z:
+            reasons.append(f"|z|={_g(None if z is None else abs(z))}<{policy.discovery_hlz_z:g}")
+        if q is None or q > policy.discovery_bh_q:
+            reasons.append(f"bh_q={_g(q)}>{policy.discovery_bh_q:g}")
+        if dsr is None or dsr < policy.discovery_dsr_min:
+            reasons.append(f"dsr={_g(dsr)}<{policy.discovery_dsr_min:g}")
+    row["gate_significance"] = not reasons
+    if reasons:
+        row.update({"status": NOT_SIGNIFICANT, "status_reasons": "; ".join(reasons)})
+        return row
+    # 4. Investable co-primary cell.
+    p_max = policy.replication_investable_p_max if replication else policy.discovery_investable_p_max
+    if investable_p is None or item.investable_formations < policy.min_formations:
+        row.update({"gate_investable": None, "status": INSUFFICIENT_EVIDENCE,
+                    "status_reasons": f"investable_untestable(formations={item.investable_formations})"})
+        return row
+    row["gate_investable"] = investable_p <= p_max
+    if not row["gate_investable"]:
+        row.update({"status": NOT_INVESTABLE, "status_reasons": f"investable_p_one_sided={_g(investable_p)}>{p_max:g}"})
+        return row
+    # 5. Size buckets (replication): small and large keep the sign.
+    if replication and policy.replication_size_signs:
+        buckets = (("small", _f(item.small_mean), item.small_formations),
+                   ("large", _f(item.large_mean), item.large_formations))
+        missing = [name for name, mean, formations in buckets if mean is None or formations < policy.min_formations]
+        if missing:
+            row.update({"gate_size_buckets": None, "status": INSUFFICIENT_EVIDENCE,
+                        "status_reasons": f"size_buckets_untestable({','.join(missing)};{item.size_venue_basis})"})
+            return row
+        flipped = [f"size_{name}_sign(ic={_g(mean)})" for name, mean, _ in buckets
+                   if mean is not None and not direction * mean > 0]
+        row["gate_size_buckets"] = not flipped
+        if flipped:
+            row.update({"status": UNSTABLE, "status_reasons": "; ".join(flipped)})
+            return row
+    # 6. Holdout (final labels, opened once): the sign holds and no significant shrink.
+    if not grade_holdout:
+        row.update({"status": SELECTION_PASS, "status_reasons": "holdout_sealed"})
+        return row
+    hold_mean = _f(item.holdout_mean)
+    stat, df, p_shrink = holdout_shrink_test(item.ic_mean, item.ic_t, item.ic_df, item.holdout_mean,
+                                             item.holdout_t, item.holdout_df, direction)
+    row.update({"holdout_ic_mean": hold_mean, "holdout_formations": item.holdout_formations,
+                "holdout_shrink_t": stat, "holdout_shrink_df": df, "holdout_shrink_p": p_shrink})
+    if hold_mean is None or p_shrink is None:
+        row.update({"gate_holdout": None, "status": INSUFFICIENT_EVIDENCE, "status_reasons": "holdout_untestable"})
+        return row
+    sign_ok = direction * hold_mean > 0
+    row["holdout_sign_consistent"] = sign_ok
+    row["gate_holdout"] = sign_ok and p_shrink >= policy.shrink_p_min
+    if not row["gate_holdout"]:
+        why = [] if sign_ok else [f"holdout_sign_flip(ic={_g(hold_mean)})"]
+        if p_shrink < policy.shrink_p_min:
+            why.append(f"holdout_shrink_p={_g(p_shrink)}<{policy.shrink_p_min:g}")
+        row.update({"status": HOLDOUT_FAILED, "status_reasons": "; ".join(why)})
+        return row
+    row.update({"status": V4_QUALIFIED_STRICT if evidence == "strict" else V4_QUALIFIED_RECONSTRUCTED,
+                "status_reasons": None if evidence == "strict" else "reconstructed_evidence"})
+    return row
+
+
+def grade_v4(evidence: Sequence[FeatureEvidence], policy: QualificationPolicyV4, *, n_trials: int,
+             prior_gating_hypotheses: int = 0, grade_holdout: bool = False) -> list[dict[str, Any]]:
+    """Grade every (feature, basis) row of one wave under policy v4 (pure; no I/O).
+
+    Per basis, the gating family's BH q-values are computed over the non-reported-only rows at
+    their evidence-class p-values (untested = p 1) plus ``prior_gating_hypotheses`` earlier-wave
+    hypotheses at p = 1 (``evaluation.gating_bh_q``). ``n_trials`` is the trial registry's
+    cumulative configuration count (DSR). ``grade_holdout`` only for a wave whose holdout was
+    opened on final labels. Returns one row per input (``V4_ROW_COLUMNS``), in input order.
+    """
+    from .evaluation import gating_bh_q
+
+    if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials < 1:
+        raise QualificationError("n_trials must be a positive integer (trial_registry.trials_so_far())")
+    keys = [(item.basis, item.feature_id) for item in evidence]
+    if len(set(keys)) != len(keys):
+        raise QualificationError("one evidence row per (basis, feature)")
+    q_values: dict[tuple[str, str], float | None] = {}
+    for basis in sorted({item.basis for item in evidence}):
+        members = {}
+        for item in evidence:
+            if item.basis != basis or item.reported_only:
+                continue
+            z = _z_signed(item.ic_p, item.ic_t)
+            members[item.feature_id] = _v4_family_p(item, one_sided_p(item.ic_p, item.ic_t,
+                                                                       _v4_direction(item, z)))
+        for feature_id, q in gating_bh_q(members, prior_hypotheses=prior_gating_hypotheses).items():
+            q_values[(basis, feature_id)] = q
+    return [_grade_v4_row(item, policy, q_values.get((item.basis, item.feature_id)), n_trials=n_trials,
+                          grade_holdout=grade_holdout) for item in evidence]
+
+
+def _resolve_v4(rows: Mapping[str, Mapping[str, Any]], policy: QualificationPolicyV4) -> tuple[str, str, str | None]:
+    """(status, status_basis, reasons) of one feature: RX1 reference-basis reporting with a symmetric veto."""
+    order = sorted(rows, key=lambda b: (b == policy.strict_basis, b != REFERENCE_BASIS, b))
+    passing = [b for b in order if rows[b]["status"] in V4_PASSING]
+    reversed_bases = [b for b in order if rows[b]["status"] == SIGN_REVERSED]
+    if passing and reversed_bases:
+        return UNSTABLE, reversed_bases[0], f"{reversed_bases[0]}_basis_sign_reversed"
+    strict = rows.get(policy.strict_basis)
+    if strict is not None and strict["status"] == V4_QUALIFIED_STRICT:
+        return V4_QUALIFIED_STRICT, policy.strict_basis, strict["status_reasons"]
+    basis = order[0]
+    return str(rows[basis]["status"]), basis, rows[basis]["status_reasons"]
+
+
+def _catalog_by_id(catalog: Iterable[Any]) -> dict[str, Any]:
+    return {str(entry.feature_id): entry for entry in catalog}
+
+
+def _selection_coverage(series: pd.DataFrame, basis: str, feature_id: str, first: str | None,
+                        policy: QualificationPolicyV4) -> tuple[float | None, int]:
+    part = series[(series["basis"].astype(str) == basis) & (series["feature_id"].astype(str) == feature_id)]
+    if not len(part):
+        return None, 0
+    chosen = part["in_selection"].fillna(False).astype(bool).to_numpy()
+    if first is not None:
+        chosen &= pd.to_datetime(part["formation_date"]).to_numpy() >= np.datetime64(first)
+    coverage = pd.to_numeric(part["coverage"], errors="coerce").to_numpy(dtype=float)[chosen]
+    if not len(coverage):
+        return None, 0
+    covered = np.isfinite(coverage) & (coverage >= policy.coverage_min_share)
+    return float(covered.mean()), len(coverage)
+
+
+def evidence_from_evaluation(cells: pd.DataFrame, slices: pd.DataFrame, series: pd.DataFrame,
+                             policy: QualificationPolicyV4, *, spec: Any, catalog: Iterable[Any],
+                             registration: Any, grade_holdout: bool = False) -> list[FeatureEvidence]:
+    """:class:`FeatureEvidence` rows of a wave run's R3b result frames (every registered feature x basis).
+
+    ``cells`` / ``slices`` / ``series``: R3b ``research_eval_*`` frames of the wave run
+    (``series`` at the primary variant and horizon is enough); ``spec`` the run's
+    ``EvaluationSpec`` (or payload); ``catalog`` the catalog entries the wave was registered
+    from; ``registration`` its ``trial_registry.WaveRegistration``. Holdout slices are read
+    only with ``grade_holdout``. Raises :class:`QualificationRefused` for a spec that differs
+    from the policy's pinned inputs, a feature evaluated but not registered, a registered
+    feature missing from the catalog or a sign that differs from it.
+    """
+    reasons = v4_spec_problems(spec, policy)
+    by_id = _catalog_by_id(catalog)
+    registered = tuple(registration.feature_ids)
+    reported = set(registration.reported_only)
+    first_formations = dict(getattr(registration, "first_formations", {}) or {})
+    evaluated = set(cells["feature_id"].astype(str)) if len(cells) else set()
+    if evaluated - set(registered):
+        reasons.append(f"features_not_registered:{len(evaluated - set(registered))}")
+    if set(registered) - set(by_id):
+        reasons.append(f"registered_features_not_in_catalog:{len(set(registered) - set(by_id))}")
+    h, variant = policy.primary_horizon, policy.primary_variant
+    primary = cells[(cells["variant"].astype(str) == variant) & (pd.to_numeric(cells["horizon_months"]) == h)] \
+        if len(cells) else cells
+    for record in primary.to_dict("records"):
+        entry = by_id.get(str(record["feature_id"]))
+        if entry is not None and _i(record.get("expected_sign")) != int(entry.expected_sign):
+            reasons.append(f"expected_sign_differs_from_catalog:{record['feature_id']}")
+    if reasons:
+        raise QualificationRefused(sorted(set(reasons)))
+    cell_index = {(str(r["basis"]), str(r["feature_id"])): r for r in primary.to_dict("records")}
+    slice_index = _index(slices[(slices["variant"].astype(str) == variant)
+                                & (pd.to_numeric(slices["horizon_months"]) == h)],
+                         ("basis", "feature_id", "slice_kind", "slice_name")) if len(slices) else {}
+    primary_series = series[(series["variant"].astype(str) == variant)
+                            & (pd.to_numeric(series["horizon_months"]) == h)] if len(series) else series
+    bases = sorted(set(cells["basis"].astype(str))) if len(cells) else []
+    from .evaluation import INVESTABLE_SLICE_KIND, INVESTABLE_SLICE_NAME, SUPPLIED_SIZE_SLICE_KIND
+
+    out: list[FeatureEvidence] = []
+    for basis in bases:
+        for feature_id in registered:
+            entry = by_id[feature_id]
+            cell = cell_index.get((basis, feature_id), {})
+            coverage, formations = _selection_coverage(primary_series, basis, feature_id,
+                                                       first_formations.get(feature_id), policy) \
+                if len(primary_series) else (None, 0)
+            inv = slice_index.get((basis, feature_id, INVESTABLE_SLICE_KIND, INVESTABLE_SLICE_NAME), {})
+            size_venue, small, large = None, {}, {}
+            for kind in (SUPPLIED_SIZE_SLICE_KIND, "size_bucket", "size_tercile"):
+                s, lg = (slice_index.get((basis, feature_id, kind, name), {}) for name in ("small", "large"))
+                if all(_f(x.get("ic_mean")) is not None and (_i(x.get("formations")) or 0) >= policy.min_formations
+                       for x in (s, lg)):
+                    size_venue, small, large = kind, s, lg
+                    break
+            hold = slice_index.get((basis, feature_id, "split", "holdout"), {}) if grade_holdout else {}
+            labels_strict = (_s(cell.get("identity_basis")) in policy.strict_identity_bases
+                             and _s(cell.get("universe_basis")) in policy.strict_universe_bases
+                             and _s(cell.get("universe_scope")) in policy.strict_universe_scopes)
+            out.append(FeatureEvidence(
+                feature_id=feature_id, basis=basis, evidence_class=str(entry.evidence_class),
+                expected_sign=int(entry.expected_sign), reported_only=feature_id in reported,
+                cell_status=str(cell.get("status") or "not_produced"), strict_labels=bool(labels_strict),
+                ic_mean=_f(cell.get("ic_mean")), ic_t=_f(cell.get("ic_robust_t")), ic_df=_f(cell.get("ic_robust_df")),
+                ic_p=_f(cell.get("ic_robust_p")), ic_n=_i(cell.get("ic_n")), coverage_share=coverage,
+                coverage_formations=formations,
+                investable_mean=_f(inv.get("ic_mean")), investable_t=_f(inv.get("ic_robust_t")),
+                investable_p=_f(inv.get("ic_robust_p")), investable_formations=_i(inv.get("formations")) or 0,
+                small_mean=_f(small.get("ic_mean")), small_formations=_i(small.get("formations")) or 0,
+                large_mean=_f(large.get("ic_mean")), large_formations=_i(large.get("formations")) or 0,
+                size_venue_basis=size_venue, sharpe=_f(cell.get("sharpe")), sharpe_skew=_f(cell.get("sharpe_skew")),
+                sharpe_kurt=_f(cell.get("sharpe_kurt")), sharpe_n=_i(cell.get("sharpe_n")),
+                sharpe_variance=_f(cell.get("dsr_sharpe_variance")),
+                holdout_mean=_f(hold.get("ic_mean")), holdout_t=_f(hold.get("ic_robust_t")),
+                holdout_df=_f(hold.get("ic_robust_df")), holdout_formations=_i(hold.get("formations")),
+                annotations={"anomaly_class": _s(getattr(entry, "anomaly_class", None)),
+                             "hypothesis_family": _s(getattr(entry, "hypothesis_family", None)),
+                             "jkp_theme": _s(getattr(entry, "jkp_theme", None)),
+                             "population": _s(getattr(entry, "population", None)),
+                             "wave": _s(getattr(entry, "wave", None))}))
+    return out
+
+
+@dataclass(frozen=True)
+class V4Ledger:
+    """A sealed v4 wave ledger: manifest, one row per feature, one row per feature x basis."""
+
+    ledger_id: str
+    manifest: Mapping[str, Any]
+    features: tuple[Mapping[str, Any], ...]
+    bases: tuple[Mapping[str, Any], ...]
+    sha256: str
+
+    def payload(self) -> dict[str, Any]:
+        return {"manifest": dict(self.manifest), "features": [dict(r) for r in self.features],
+                "bases": [dict(r) for r in self.bases], "ledger_sha256": self.sha256}
+
+    def to_json_bytes(self) -> bytes:
+        text = json.dumps(self.payload(), sort_keys=True, indent=1, ensure_ascii=True, allow_nan=False)
+        return (text + "\n").encode("ascii")
+
+    def to_csv_bytes(self) -> bytes:
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+        writer.writerow(V4_FEATURE_COLUMNS)
+        for row in self.features:
+            writer.writerow([_csv_cell(row.get(name)) for name in V4_FEATURE_COLUMNS])
+        return buffer.getvalue().encode("utf-8")
+
+    def status_of(self, feature_id: str) -> str:
+        for row in self.features:
+            if row["feature_id"] == feature_id:
+                return str(row["status"])
+        raise KeyError(feature_id)
+
+
+def ledger_from_evidence_v4(evidence: Sequence[FeatureEvidence], policy: QualificationPolicyV4, *, wave: str,
+                            registration_id: str, catalog_digest: str, n_trials: int, prior_gating_hypotheses: int,
+                            grade_basis: str, holdout_opened: bool, run: Mapping[str, Any] | None = None) -> V4Ledger:
+    """Grade the evidence (:func:`grade_v4`), resolve one status per feature and seal the ledger."""
+    if grade_basis not in GRADE_BASES:
+        raise QualificationError(f"grade_basis must be one of {GRADE_BASES}")
+    grade_holdout = grade_basis == GRADE_FINAL and holdout_opened
+    graded = grade_v4(evidence, policy, n_trials=n_trials, prior_gating_hypotheses=prior_gating_hypotheses,
+                      grade_holdout=grade_holdout)
+    annotations = {item.feature_id: item.annotations for item in evidence}
+    by_feature: dict[str, dict[str, Mapping[str, Any]]] = {}
+    for row in graded:
+        by_feature.setdefault(str(row["feature_id"]), {})[str(row["basis"])] = row
+    features = []
+    for feature_id in sorted(by_feature):
+        status, basis, why = _resolve_v4(by_feature[feature_id], policy)
+        chosen = by_feature[feature_id][basis]
+        record = {name: chosen.get(name) for name in V4_FEATURE_COLUMNS if name in chosen}
+        record.update({"feature_id": feature_id, "status": status, "status_basis": basis, "status_reasons": why,
+                       **{k: v for k, v in annotations.get(feature_id, {}).items()}})
+        features.append({name: _clean(record.get(name)) for name in V4_FEATURE_COLUMNS})
+    bases = [{name: _clean(row.get(name)) for name in V4_ROW_COLUMNS} for row in
+             sorted(graded, key=lambda r: (str(r["feature_id"]), str(r["basis"])))]
+    counts = {status: 0 for status in V4_STATUSES}
+    for row in features:
+        counts[str(row["status"])] += 1
+    blockers = []
+    if grade_basis == GRADE_PROVISIONAL:
+        blockers.append("provisional_labels_selection_sample_only")
+    elif not holdout_opened:
+        blockers.append("final_labels_holdout_not_opened")
+    if counts[V4_QUALIFIED_RECONSTRUCTED]:
+        blockers.append(f"qualified_on_reconstructed_evidence_only:{counts[V4_QUALIFIED_RECONSTRUCTED]}")
+    manifest = {
+        "qualification_version": QUALIFICATION_VERSION, "qualification_code_sha256": qualification_code_sha256(),
+        "policy": {"version": policy.version, "sha256": policy.sha256, "split_sha256": policy.split.sha256,
+                   "primary_variant": policy.primary_variant, "primary_horizon_months": policy.primary_horizon},
+        "wave": wave, "registration_id": registration_id, "catalog_digest": catalog_digest,
+        "grade_basis": grade_basis, "holdout_opened": holdout_opened, "holdout_graded": grade_holdout,
+        "n_trials": n_trials, "prior_gating_hypotheses": prior_gating_hypotheses,
+        "gating_hypotheses": sum(1 for item in evidence if not item.reported_only) // max(
+            1, len({item.basis for item in evidence})),
+        "features": len(features), "status_counts": counts, "blockers": sorted(blockers),
+        "run": dict(run or {}),
+    }
+    ledger_id = f"{wave}:{policy.version}:{grade_basis}"
+    manifest = {**manifest, "ledger_id": ledger_id}
+    sha = _sha(_canonical({"manifest": manifest, "features": features, "bases": bases}))
+    return V4Ledger(ledger_id, manifest, tuple(features), tuple(bases), sha)
+
+
+def grade_wave_v4(cells: pd.DataFrame, slices: pd.DataFrame, series: pd.DataFrame, policy: QualificationPolicyV4,
+                  *, wave: str, spec: Any, catalog: Iterable[Any], catalog_digest: str, grade_basis: str,
+                  registry: Any = None, run: Mapping[str, Any] | None = None) -> V4Ledger:
+    """Grade one registered wave's R3b result frames under policy v4 (the trial registry supplies the
+    registration, ``n_trials``, the earlier waves' gating hypotheses and the holdout state).
+
+    Refuses an unregistered wave, a catalog digest or policy other than the registration's, and
+    everything :func:`evidence_from_evaluation` refuses. A provisional-label grade never reads the
+    holdout.
+    """
+    from .trial_registry import RegistryError, TrialRegistry
+
+    registry = registry if registry is not None else TrialRegistry()
+    try:
+        registration = registry.require_registration(wave, catalog_digest=catalog_digest, policy_sha=policy.sha256)
+    except RegistryError as error:
+        raise QualificationRefused([f"wave_registration:{error}"]) from error
+    opened = registry.holdout_opened(wave)
+    grade_holdout = grade_basis == GRADE_FINAL and opened
+    catalog_rows = list(catalog)
+    evidence = evidence_from_evaluation(cells, slices, series, policy, spec=spec, catalog=catalog_rows,
+                                        registration=registration, grade_holdout=grade_holdout)
+    return ledger_from_evidence_v4(evidence, policy, wave=wave, registration_id=registration.registration_id,
+                                   catalog_digest=catalog_digest, n_trials=registry.trials_so_far(),
+                                   prior_gating_hypotheses=registry.gating_hypotheses_before(wave),
+                                   grade_basis=grade_basis, holdout_opened=opened, run=run)
+
+
 __all__ = [
     "BASIS_COLUMNS",
     "CANDIDATE",
+    "DISCOVERY",
     "EVALUATION_SPEC_FIELDS",
     "FEATURE_COLUMNS",
     "FROZEN_POLICY_SHA256",
+    "GRADE_BASES",
+    "GRADE_FINAL",
+    "GRADE_PROVISIONAL",
+    "HOLDOUT_FAILED",
     "INSUFFICIENT_COVERAGE",
+    "INSUFFICIENT_EVIDENCE",
+    "NOT_INVESTABLE",
     "NOT_SIGNIFICANT",
     "POLICY_HISTORY_PATHS",
     "POLICY_PATH",
+    "POLICY_V4_PATH",
+    "POLICY_V4_PATHS",
     "POST_HOC_REASONS",
     "QUALIFICATION_VERSION",
     "QUALIFIED_RECONSTRUCTED",
     "QUALIFIED_STATUSES",
     "QUALIFIED_STRICT",
+    "REPLICATION",
+    "REPORTED_ONLY",
+    "SELECTION_PASS",
     "SIGN_REVERSED",
     "STATUSES",
     "UNSTABLE",
     "UNTESTABLE_STRICT",
+    "V4_FEATURE_COLUMNS",
+    "V4_PASSING",
+    "V4_POLICY_IDS",
+    "V4_ROW_COLUMNS",
+    "V4_STATUSES",
     "EvaluationResults",
+    "FeatureEvidence",
     "PolicyError",
     "QualificationError",
     "QualificationLedger",
     "QualificationPolicy",
+    "QualificationPolicyV4",
     "QualificationRefused",
+    "V4Ledger",
     "current_policy_problem",
     "ensure_qualification_schema",
     "evaluation_spec_kwargs",
+    "evaluation_spec_kwargs_v4",
+    "evidence_from_evaluation",
+    "grade_v4",
+    "grade_wave_v4",
+    "holdout_shrink_test",
+    "ledger_from_evidence_v4",
     "load_evaluation_results",
     "load_policy",
+    "load_policy_v4",
+    "load_policy_v4_by_id",
+    "one_sided_p",
     "persist_ledger",
     "policy_file_sha256s",
     "policy_registered_at",
@@ -1711,6 +2560,7 @@ __all__ = [
     "stored_catalog_snapshot",
     "stored_ledger_sha256",
     "superseded_policy_versions",
+    "v4_spec_problems",
     "verify_ledger",
     "write_artifacts",
 ]
