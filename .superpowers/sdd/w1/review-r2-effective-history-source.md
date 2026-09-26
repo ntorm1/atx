@@ -82,3 +82,33 @@ focused compilation qualification once the narrow budget repair is reviewed. Exi
 legacy paths remain explicitly selectable; no new application default or all-artifact
 serialization claim is inferred. Runtime/hygiene, K60/T252 calibration, regime-shift
 acceptance and large-universe RSS remain separate gates, exactly as the owner report states.
+
+
+## Fix-only closure: 57b4279d / 8c246ebf
+
+Independently reviewed root production `57b4279d88e031f99410ee70a0546bc5b252e96e`
+and postimplementation fixtures `8c246ebf229c368429c272050182f09202825e08` by frozen
+Git objects. R2-R1 is CLOSED at source level; the earlier HOLD above is historical.
+No source change, compiler, runtime rerun or market-data read was performed.
+
+The initial admission now reserves fixed overhead, all known accumulator groups,
+anticipated metric/string storage, random input matrices, label and custom names
+before allocation or factory invocation. The reserve helper retains reserved <=
+max_working_bytes; short-circuit refusal prevents subtraction underflow. Book-count
+caps bound group and coefficient arithmetic. The per-snapshot admission subtracts
+factor-k accumulator/output capacity, then K-squared workspace, then admits MK
+workspace against the same remainder. Division guards precede products, K is
+nonzero, and m > n is refused before per-model vectors. Metric capacity matches the
+known group count plus K; fixed overhead and per-group slack cover bounded cohort
+and name/container storage. Caller-owned input books/returns and factory-created
+model storage are explicitly outside this owned scratch/result admission contract.
+
+The two source fixtures discriminate the reported defect: 10,000 custom books at
+128 KiB refuse before the factory; two books succeed; a long result name again
+refuses before another factory call. The K=M=20 model fails the combined 64 KiB
+budget after the necessary factory call and succeeds at 1 MiB. These are reviewed
+assertions, not independently observed passing runtime results.
+
+Verdict: APPROVE this narrow source repair for focused compilation qualification.
+No additional confirmed blocker in the inspected correction. Runtime/hygiene and
+all empirical/large-universe gates remain separate as listed above.
