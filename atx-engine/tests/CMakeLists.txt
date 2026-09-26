@@ -301,6 +301,7 @@ add_executable(atx-engine-w1-eval-tests EXCLUDE_FROM_ALL
     factory/factory_cpcv_cache_test.cpp
     factory/factory_research_driver_test.cpp
     factory/blocking_pbo_test.cpp
+    learn/learn_panel_dataset_test.cpp
     learn/learn_cpcv_date_test.cpp
     learn/learn_nn_gate_test.cpp
     combine/combine_combined_source_test.cpp)
@@ -334,6 +335,8 @@ add_executable(atx-engine-w1-risk-tests EXCLUDE_FROM_ALL
     risk/risk_constraints_test.cpp
     risk/risk_qp_solver_test.cpp
     risk/risk_qp_factor_admm_test.cpp
+    risk/risk_cost_terms_test.cpp
+    risk/risk_cost_factor_v2_test.cpp
     risk/risk_discretize_test.cpp)
 atx_engine_test_compile_environment(atx-engine-w1-risk-tests)
 target_link_libraries(atx-engine-w1-risk-tests PRIVATE atx-test-scratch)

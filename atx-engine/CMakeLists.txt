@@ -43,6 +43,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/learn/elastic_net.cpp
     src/learn/ensemble.cpp
     src/learn/feature_matrix.cpp
+    src/learn/panel_dataset.cpp
     src/learn/gbt.cpp
     src/learn/hmm.cpp
     src/learn/latent.cpp
