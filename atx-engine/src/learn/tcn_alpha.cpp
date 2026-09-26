@@ -201,6 +201,21 @@ seq_label_spans(const std::vector<atx::usize> &used_dates, atx::u16 horizon) {
   return samples_for_dates(seq, date_membership(used_dates, ordinals));
 }
 
+[[nodiscard]] std::vector<atx::usize> samples_for_ordinals_v2(
+    const SequenceTensor& seq, const std::vector<atx::usize>& used_dates,
+    std::span<const atx::usize> ordinals) {
+  std::vector<bool> selected(used_dates.size(),false);
+  for (const auto ordinal : ordinals) { ATX_CHECK(ordinal < selected.size()); selected[ordinal]=true; }
+  std::vector<atx::usize> out;
+  for (atx::usize i=0; i<seq.n_samples; ++i) {
+    if (seq.sample_valid[i]==0U) continue;
+    const auto found=std::lower_bound(used_dates.begin(),used_dates.end(),seq.date_of[i]);
+    if (found!=used_dates.end() && *found==seq.date_of[i] &&
+        selected[static_cast<atx::usize>(found-used_dates.begin())]) out.push_back(i);
+  }
+  return out;
+}
+
 InnerSplit inner_purged_split(std::span<const eval::LabelSpan> spans,
                               std::span<const atx::usize> train_ord, atx::f64 frac,
                               atx::usize embargo_len) {
@@ -412,6 +427,15 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
        used_dates.size() > cpcv.max_working_bytes / 128U))
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "sequence DateV2: rule/horizon/span budget");
 
+  if (cpcv.rule == eval::CpcvRule::DateV2 &&
+      (seq.n_samples > cpcv.max_working_bytes / 128U ||
+       (!used_dates.empty() && used_dates.back() >= cpcv.max_working_bytes / 128U)))
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "sequence DateV2: date/sample workspace budget");
+  const auto gather = [&](std::span<const atx::usize> ordinals) {
+    return cpcv.rule == eval::CpcvRule::DateV2
+        ? samples_for_ordinals_v2(seq, used_dates, ordinals)
+        : samples_for_ordinals(seq, used_dates, ordinals);
+  };
   const atx::usize embargo_len = cpcv.rule == eval::CpcvRule::DateV2
       ? cpcv.embargo_dates : embargo_len_of(cpcv, used_dates.size());
 
@@ -428,7 +452,7 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
     ATX_TRY(auto plan, eval::cpcv_plan(spans, cpcv));
     const auto& dfolds = plan.folds;
     if (cpcv.rule == eval::CpcvRule::DateV2)
-      m.cpcv_metadata.push_back(std::move(plan.metadata));
+      ATX_TRY_VOID(retain_cpcv_metadata(m.cpcv_metadata, std::move(plan.metadata), cpcv.max_working_bytes));
 
     std::vector<atx::f64> oos_pred;
     std::vector<atx::f64> oos_label;
@@ -437,7 +461,7 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
     for (atx::usize fold_idx = 0; fold_idx < dfolds.size(); ++fold_idx) {
       const eval::CpcvFold &df = dfolds[fold_idx];
       const std::vector<atx::usize> test_samples =
-          samples_for_ordinals(seq, used_dates, std::span<const atx::usize>{df.test_idx});
+          gather(std::span<const atx::usize>{df.test_idx});
       // The checkpoint-selection split (L-01). TestFoldV1 (legacy) trains on every
       // train date and validates on the TEST fold; InnerPurgedV2 carves a purged inner
       // validation block out of the TRAIN dates so the test fold is only predicted.
@@ -446,17 +470,16 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
       switch (proto.validation) {
       case SeqValidationRule::TestFoldV1:
         fit_samples =
-            samples_for_ordinals(seq, used_dates, std::span<const atx::usize>{df.train_idx});
+            gather(std::span<const atx::usize>{df.train_idx});
         val_samples = test_samples;
         break;
       case SeqValidationRule::InnerPurgedV2: {
         ATX_TRY(auto split, inner_split_checked(std::span<const eval::LabelSpan>{spans},
                                std::span<const atx::usize>{df.train_idx},
                                proto.inner_val_frac, embargo_len, cpcv.rule));
-        fit_samples = samples_for_ordinals(seq, used_dates,
-                                           std::span<const atx::usize>{split.inner_train});
+        fit_samples = gather(std::span<const atx::usize>{split.inner_train});
         val_samples =
-            samples_for_ordinals(seq, used_dates, std::span<const atx::usize>{split.val});
+            gather(std::span<const atx::usize>{split.val});
         break;
       }
       }
@@ -624,8 +647,8 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
                            std::span<const atx::usize>{all_ord}, proto.inner_val_frac,
                            embargo_len, cpcv.rule));
     fit_samples =
-        samples_for_ordinals(seq, used_dates, std::span<const atx::usize>{split.inner_train});
-    val_samples = samples_for_ordinals(seq, used_dates, std::span<const atx::usize>{split.val});
+        gather(std::span<const atx::usize>{split.inner_train});
+    val_samples = gather(std::span<const atx::usize>{split.val});
     break;
   }
   }

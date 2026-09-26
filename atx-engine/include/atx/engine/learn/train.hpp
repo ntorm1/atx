@@ -148,4 +148,13 @@ namespace detail {
 [[nodiscard]] Folds expand_date_folds(const std::vector<eval::CpcvFold> &folds,
                                       const FeatureMatrix &fm);
 
+// DateV2 expands through used-date ordinals, never an n_dates-sized mask.
+// Checks the separately bounded row-index workspace before allocation.
+[[nodiscard]] atx::core::Result<Folds>
+expand_date_folds_checked(const std::vector<eval::CpcvFold>& folds,
+                          const FeatureMatrix& fm, const eval::CpcvConfig& config);
+[[nodiscard]] atx::core::Status retain_cpcv_metadata(
+    std::vector<eval::CpcvMetadata>& retained, eval::CpcvMetadata metadata,
+    atx::u64 max_working_bytes);
+
 } // namespace atx::engine::learn

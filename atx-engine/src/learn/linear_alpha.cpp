@@ -221,9 +221,9 @@ atx::core::Result<LearnedModel> fit_linear_checked(
   for (atx::usize h = 0; h < cfg.horizons.size(); ++h) {
     // CPCV date-folds for this horizon's label span.
     ATX_TRY(auto plan, learn_cpcv_plan(fm, cfg.horizons[h], cfg.cpcv));
-    const Folds folds = expand_date_folds(plan.folds, fm);
+    ATX_TRY(auto folds, expand_date_folds_checked(plan.folds, fm, cfg.cpcv));
     if (cfg.cpcv.rule == eval::CpcvRule::DateV2)
-      cpcv_metadata.push_back(std::move(plan.metadata));
+      ATX_TRY_VOID(retain_cpcv_metadata(cpcv_metadata, std::move(plan.metadata), cfg.cpcv.max_working_bytes));
 
     // OOS prediction + label accumulation across folds (for the horizon IC).
     std::vector<atx::f64> oos_pred;

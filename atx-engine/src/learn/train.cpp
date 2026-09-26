@@ -1,5 +1,6 @@
 #include "atx/engine/learn/train.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 #include <vector> // std::vector
@@ -60,6 +61,10 @@ atx::core::Status validate_date_cpcv_inputs(const FeatureMatrix& fm,
       (fm.n_features != 0U && fm.n_rows() > std::numeric_limits<atx::usize>::max() / fm.n_features) ||
       fm.X.size() != fm.n_rows() * fm.n_features)
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "learn DateV2: invalid feature/label geometry");
+  // Downstream date-IC/OOF arrays still use the declared dense date axis.
+  // Refuse pathological sparse-axis declarations before those allocations.
+  if (fm.n_dates > cfg.max_working_bytes / 128U)
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "learn DateV2: date-axis workspace budget");
   for (atx::usize h = 0; h < horizons.size(); ++h) {
     if (horizons[h] == 0U || fm.Y[h].size() != fm.n_rows() ||
         (!fm.label_horizons.empty() &&
@@ -140,6 +145,70 @@ namespace detail {
                           detail::rows_for_dates(fm, in_test)});
   }
   return out;
+}
+
+atx::core::Result<Folds> expand_date_folds_checked(
+    const std::vector<eval::CpcvFold>& folds, const FeatureMatrix& fm,
+    const eval::CpcvConfig& cfg) {
+  if (cfg.rule == eval::CpcvRule::ObservationV1)
+    return atx::core::Ok(expand_date_folds(folds, fm));
+  atx::u64 remaining = cfg.max_working_bytes;
+  const auto charge = [&](atx::u64 count, atx::u64 bytes) {
+    if (bytes != 0U && count > remaining / bytes) return false;
+    remaining -= count * bytes; return true;
+  };
+  if (!charge(folds.size(),128U) || !charge(fm.n_rows(),32U) ||
+      (fm.n_rows() != 0U &&
+       (folds.size() > remaining / fm.n_rows() / 32U)))
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "learn DateV2: expanded row-fold budget");
+  const auto dates = detail::used_dates(fm);
+  Folds out; out.reserve(folds.size());
+  std::vector<atx::u8> membership(dates.size());
+  for (const auto& fold : folds) {
+    std::fill(membership.begin(),membership.end(),atx::u8{0});
+    for (const auto o : fold.train_idx) {
+      if (o >= dates.size()) return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "date fold: train ordinal");
+      membership[o]=1;
+    }
+    for (const auto o : fold.test_idx) {
+      if (o >= dates.size() || membership[o] != 0U)
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "date fold: test ordinal/overlap");
+      membership[o]=2;
+    }
+    RowFold expanded;
+    atx::usize ordinal=0;
+    for (atx::usize row=0; row<fm.n_rows(); ++row) {
+      while (ordinal<dates.size() && dates[ordinal]<fm.row_date[row]) ++ordinal;
+      if (ordinal==dates.size() || dates[ordinal]!=fm.row_date[row] || row>=fm.row_valid.size())
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "date fold: invalid row date");
+      if (fm.row_valid[row] == 0U) continue;
+      if (membership[ordinal]==1U) expanded.train_rows.push_back(row);
+      else if (membership[ordinal]==2U) expanded.test_rows.push_back(row);
+    }
+    out.push_back(std::move(expanded));
+  }
+  return atx::core::Ok(std::move(out));
+}
+
+atx::core::Status retain_cpcv_metadata(std::vector<eval::CpcvMetadata>& retained,
+    eval::CpcvMetadata metadata, atx::u64 budget) {
+  const auto charge = [&](const eval::CpcvMetadata& m) {
+    const auto take = [&](atx::u64 n, atx::u64 bytes) {
+      if (n > budget / bytes) return false;
+      budget -= n * bytes; return true;
+    };
+    if (!take(1,256U) || !take(m.group_offsets.capacity(),sizeof(atx::usize)) ||
+        !take(m.paths.capacity(),sizeof(std::vector<atx::usize>))) return false;
+    for (const auto& path : m.paths)
+      if (!take(path.capacity(),sizeof(atx::usize))) return false;
+    return true;
+  };
+  for (const auto& prior : retained) if (!charge(prior))
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "learn DateV2: retained path budget");
+  if (!charge(metadata))
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "learn DateV2: retained path budget");
+  retained.push_back(std::move(metadata));
+  return atx::core::Ok();
 }
 
 } // namespace atx::engine::learn

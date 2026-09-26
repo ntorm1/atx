@@ -103,6 +103,9 @@ struct CpcvConfig {
   // V1 ignores these appended knobs. V2 ignores the fractional embargo above.
   CpcvRule rule{CpcvRule::ObservationV1};
   atx::usize embargo_dates{0};
+  // Ceiling for each plan/index workspace, not overall training RSS. Learn
+  // separately caps row-fold expansion and retained path metadata at this limit;
+  // caller feature matrices, model state and optional traces are excluded.
   atx::u64 max_working_bytes{64ULL * 1024ULL * 1024ULL};
 };
 
