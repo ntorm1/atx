@@ -93,6 +93,13 @@ atx::u64 compute_discover_fingerprint(const RunConfig& cfg) {
     h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.min_adv_usd));
     h = fp::fold_u64(h, static_cast<atx::u64>(cfg.adv_window));
   }
+  // V1 omits this addition to reproduce existing checkpoint identities. V2
+  // must never resume a run recorded under the old numerical recipe, including
+  // off-gate runs whose always-on OOS diagnostic can still calculate PBO.
+  if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
+    h = fp::fold_string(h, "pbo-numerical-rule");
+    h = fp::fold_u64(h, static_cast<atx::u64>(cfg.pbo_rule));
+  }
   return h;
 }
 

@@ -52,15 +52,17 @@ namespace atx::engine::learn {
 // ===========================================================================
 //  NnGateCfg — the admission thresholds (tiny by design).
 //
-//  n_splits : CSCV splits for the PBO (must be EVEN and <= T, the OOS-series
+//  n_splits : CSCV splits for the PBO (must be EVEN, <=16 and <= T, the OOS-series
 //             length); the deeper the split the finer the overfit estimate.
 //  dsr_min  : admit requires the winner's sweep-deflated DSR strictly above this.
 //  pbo_max  : admit requires the CSCV PBO strictly below this (the ~20-30% bar).
 // ===========================================================================
 struct NnGateCfg {
-  atx::usize n_splits = 8;   // CSCV splits for PBO (even, <= T)
+  atx::usize n_splits = 8;   // CSCV splits for PBO (even, <=16, <= T)
   atx::f64 dsr_min = 0.0;    // admit requires DSR > dsr_min
   atx::f64 pbo_max = 0.30;   // admit requires PBO < pbo_max (the ~20-30% bar, R4)
+  // A sweep artifact must retain this rule with its gate configuration.
+  eval::PboRule pbo_rule{eval::PboRule::CachedMomentsV2};
 };
 
 // ===========================================================================
@@ -79,6 +81,7 @@ struct NnGateResult {
   atx::usize n_trials{0};
   atx::usize winner{0};
   bool admit{false};
+  eval::PboRule pbo_rule{eval::PboRule::CachedMomentsV2};
 };
 
 // ===========================================================================
@@ -89,7 +92,7 @@ struct NnGateResult {
 //    - Err(InvalidArgument) when candidates.size() < 2 (PBO needs >= 2),
 //    - Err(InvalidArgument) when any oos_score_series is empty or they are not all
 //      the SAME length T (PBO needs an aligned [n x T] matrix),
-//    - the pbo_cscv_checked error when n_splits is odd/zero or > T,
+//    - the pbo_cscv_checked error for invalid splits, rule or used values/scores,
 //    - Ok(NnGateResult) otherwise.
 // ===========================================================================
 [[nodiscard]] inline atx::core::Result<NnGateResult>
@@ -155,11 +158,13 @@ gate_nn_sweep(std::span<const LearnedModel> candidates, const NnGateCfg &cfg) {
       perf.push_back(v);
     }
   }
-  auto pbo = eval::pbo_cscv_checked(std::span<const atx::f64>{perf}, candidates.size(), cfg.n_splits);
+  auto pbo = eval::pbo_cscv_checked(std::span<const atx::f64>{perf}, candidates.size(),
+                                  cfg.n_splits, cfg.pbo_rule);
   if (!pbo.has_value()) {
     return Err(pbo.error().code(), pbo.error().message()); // surface the CSCV error verbatim
   }
   res.pbo = pbo->pbo;
+  res.pbo_rule = pbo->rule;
 
   // (6) Admit iff the winner clears BOTH bars (strict on each).
   res.admit = (res.dsr > cfg.dsr_min) && (res.pbo < cfg.pbo_max);

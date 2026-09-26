@@ -169,10 +169,14 @@ namespace {
 
     os << '{';
     // Provenance-format version so a reader can branch on schema evolution.
-    kv_i("v", cfg.ic_screen.rule ==
-        atx::engine::factory::IcScreenRule::DisabledV1 ? 1 : 2);
+    kv_i("v", cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1 ? 3 :
+        (cfg.ic_screen.rule == atx::engine::factory::IcScreenRule::DisabledV1 ? 1 : 2));
     // Panel + seed/search environment.
     kv_s("panel", cfg.panel);
+    // An omitted rule in old schema1/2 means LegacyGatherV1. Preserve that exact
+    // representation for explicit V1; schema3 always names the new recipe.
+    if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1)
+        kv_s("pbo_rule", std::string(atx::engine::eval::pbo_rule_name(cfg.pbo_rule)));
     if (cfg.ic_screen.rule != atx::engine::factory::IcScreenRule::DisabledV1) {
         const auto& screen = cfg.ic_screen;
         kv_s("ic_screen_rule", std::string(
@@ -723,6 +727,7 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.min_dsr                   = cfg.min_dsr;
     fcfg.min_split_sharpe          = cfg.min_split_sharpe;       // W4a split-sample stability floor (off by default)
     fcfg.max_pbo                   = cfg.max_pbo;                 // W4b run-level CSCV-PBO batch gate (off by default = 1.0)
+    fcfg.pbo_rule                  = cfg.pbo_rule;
     fcfg.blocking_pbo               = cfg.blocking_pbo;           // S5-2: escalate an advisory PBO breach to a fail-closed run (off by default)
     fcfg.robustness_battery         = cfg.robustness_battery;    // p8 final-wave Item 3: eval::RobustnessBattery noise-control at admission (off by default)
     fcfg.robustness_sub_universe        = cfg.robustness_sub_universe;        // S5-3: sub_universe check (off by default)
@@ -942,8 +947,11 @@ atx::core::Result<StageResult> run_discover_gated(
                 "discover (gated): cannot write manifest: " + manifest_path);
         }
         mf << "gated=1\n";
-        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
+            cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
             mf << "config_json=" << build_config_json(cfg) << '\n';
+        }
+        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
             mf << "ic_screen_evaluations=" << rep.ic_screen_evaluations << '\n';
             mf << "ic_screen_rejected=" << rep.ic_rejected << '\n';
             mf << "ic_screen_unavailable=" << rep.ic_screen_unavailable << '\n';
@@ -1010,6 +1018,14 @@ atx::core::Result<StageResult> run_discover_gated(
                << " pbo_n_splits="    << rep.pbo_n_splits
                << " max_pbo="         << cfg.max_pbo
                << '\n';
+        }
+        if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
+            mf << "pbo_rule=" << atx::engine::eval::pbo_rule_name(rep.pbo_rule) << '\n';
+            if (std::isfinite(rep.pbo)) {
+                mf << "pbo_cached_evaluations=" << rep.pbo_cached_evaluations << '\n';
+                mf << "pbo_reference_evaluations=" << rep.pbo_reference_evaluations << '\n';
+                mf << "pbo_ambiguous_comparisons=" << rep.pbo_ambiguous_comparisons << '\n';
+            }
         }
         mf << "panel="           << cfg.panel            << '\n';
         for (atx::u64 a = 0; a < n; ++a) {
@@ -1088,6 +1104,14 @@ atx::core::Result<StageResult> run_discover_gated(
         sr.kvs.emplace_back("ic_screen_rejected", std::to_string(rep.ic_rejected));
         sr.kvs.emplace_back("ic_screen_unavailable", std::to_string(rep.ic_screen_unavailable));
         sr.kvs.emplace_back("ic_prepass_vm_evaluations", std::to_string(rep.ic_prepass_vm_evaluations));
+    }
+    if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
+        sr.kvs.emplace_back("pbo_rule", std::string(atx::engine::eval::pbo_rule_name(rep.pbo_rule)));
+        if (std::isfinite(rep.pbo)) {
+            sr.kvs.emplace_back("pbo_cached_evaluations", std::to_string(rep.pbo_cached_evaluations));
+            sr.kvs.emplace_back("pbo_reference_evaluations", std::to_string(rep.pbo_reference_evaluations));
+            sr.kvs.emplace_back("pbo_ambiguous_comparisons", std::to_string(rep.pbo_ambiguous_comparisons));
+        }
     }
     // R3b: add oos_pbo kv ONLY when OOS is active (eff_oos_fraction > 0) so the
     // non-accumulation path's kvs are byte-identical to the pre-R3 baseline.
@@ -1370,8 +1394,11 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
         mf << "seed="          << cfg.seed             << '\n';
         mf << "count="         << n                    << '\n';
         mf << "search_digest=" << to_hex16(res.digest) << '\n';
-        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
+            cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
             mf << "config_json=" << build_config_json(cfg) << '\n';
+        }
+        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
             mf << "ic_screen_evaluations=" << res.ic_screen_evaluations << '\n';
             mf << "ic_screen_rejected=" << res.ic_rejected_hashes.size() << '\n';
             mf << "ic_screen_unavailable=" << res.ic_screen_unavailable << '\n';

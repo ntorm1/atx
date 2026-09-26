@@ -21,7 +21,8 @@ bool catches_overfit_synthetic() {
       m[c * kT + t] = (t / kW == c % kS) ? kSpike : kFlatNeg;
     }
   }
-  const atx::f64 pbo = eval::pbo_cscv(std::span<const atx::f64>{m}, kN, kS).pbo;
+  const atx::f64 pbo = eval::pbo_cscv(std::span<const atx::f64>{m}, kN, kS,
+                                     eval::PboRule::LegacyGatherV1).pbo;
 
   // (2) DSR synthetic: single-test "significant", deflated kill across N trials.
   constexpr atx::f64 kSr = 0.12;

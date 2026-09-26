@@ -110,7 +110,9 @@ namespace detail {
 void finalize_run_pbo(FactoryReport &rep,
                       const std::vector<std::vector<atx::f64>> &admitted_pnls,
                       atx::f64 max_pbo,
-                      bool always_compute) {
+                      bool always_compute,
+                      eval::PboRule rule) {
+  rep.pbo_rule = rule;
   // (1) Off (the disabling 1.0 default): NO compute, all PBO fields stay at sentinels
   // (rep.pbo == NaN, gate passes) -> byte-identical to the pre-W4b path. A3: when
   // always_compute is true (the OOS always-on holdout diagnostic, oos_pbo), proceed to
@@ -162,7 +164,7 @@ void finalize_run_pbo(FactoryReport &rep,
 
   // (6) Run the CHECKED CSCV-PBO (handles an infeasible matrix via Err, never aborts).
   auto pbo_r =
-      eval::pbo_cscv_checked(std::span<const atx::f64>{matrix}, n_candidates, n_splits);
+      eval::pbo_cscv_checked(std::span<const atx::f64>{matrix}, n_candidates, n_splits, rule);
   if (!pbo_r.has_value()) {
     return; // infeasible matrix -> leave sentinels, gate passes (fail-OPEN).
   }
@@ -178,6 +180,10 @@ void finalize_run_pbo(FactoryReport &rep,
   rep.pbo_mean_logit = res.mean_logit;
   rep.pbo_n_candidates = n_candidates;
   rep.pbo_n_splits = n_splits;
+  rep.pbo_rule = res.rule;
+  rep.pbo_cached_evaluations = res.cached_evaluations;
+  rep.pbo_reference_evaluations = res.reference_evaluations;
+  rep.pbo_ambiguous_comparisons = res.ambiguous_comparisons;
   rep.pbo_gate_passed = (max_pbo >= 1.0) ? true : !(rep.pbo > max_pbo);
 }
 
@@ -551,7 +557,7 @@ void finalize_run_pbo(FactoryReport &rep,
 
   // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default;
   // never alters rep.digest or any admission decision).
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, false, cfg.pbo_rule);
 
   return rep;
 }
@@ -761,7 +767,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   }
 
   // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default).
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, false, cfg.pbo_rule);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   // R1: increment the cumulative trial counter ONCE per mine run (by this run's N),
@@ -1049,7 +1055,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default;
   // accumulated at the SEQUENTIAL parent admit-Ok point, so it is deterministic on every
   // substrate + worker count). Never alters rep.digest.
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, false, cfg.pbo_rule);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   // R1: increment once per mine run, AFTER the loop — same as serial mine_into.
@@ -1845,7 +1851,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   // holdout diagnostic (oos_pbo) is recorded even at the 1.0 default; the gate verdict
   // still fail-opens when the gate is off. oos_pbo ALIASES this single computation
   // (NaN when < 2 admitted or the holdout is too short for any split).
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true, cfg.pbo_rule);
   rep.oos_pbo = rep.pbo; // A3: oos_pbo aliases the single holdout PBO
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
@@ -2248,7 +2254,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // mine_into_oos, so oos_pbo is bit-identical across substrate + worker count AND equal to
   // the serial path. always_compute=true records the always-on holdout diagnostic even at
   // the 1.0 default; the gate verdict fail-opens when off. Never alters rep.digest.
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true, cfg.pbo_rule);
   rep.oos_pbo = rep.pbo; // A3: oos_pbo aliases the single holdout PBO
 
   rep.library_n_alphas_after = lib_lib.n_alphas();

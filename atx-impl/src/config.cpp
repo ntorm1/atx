@@ -565,6 +565,13 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "min-dsr")           return parse_double(cfg.min_dsr);
     if (flag == "min-split-sharpe")  return parse_double(cfg.min_split_sharpe);   // W4a split-sample stability floor
     if (flag == "max-pbo")           return parse_double(cfg.max_pbo);            // W4b run-level CSCV-PBO batch gate
+    if (flag == "pbo-rule") {
+        if (value == "legacy-gather-v1") cfg.pbo_rule = atx::engine::eval::PboRule::LegacyGatherV1;
+        else if (value == "cached-moments-v2") cfg.pbo_rule = atx::engine::eval::PboRule::CachedMomentsV2;
+        else return atx::core::Err(EC::InvalidArgument,
+            "--pbo-rule must be legacy-gather-v1 or cached-moments-v2");
+        return atx::core::Ok();
+    }
     if (flag == "robust-holdout-frac") return parse_double(cfg.robust_holdout_frac); // W4a robust-factor weak sub-universe
     if (flag == "reject-price-scale") {                                               // R2 price-scale admission gate
         ATX_TRY_VOID(parse_double(cfg.max_price_scale_corr));
