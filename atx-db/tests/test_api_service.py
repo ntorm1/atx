@@ -24,9 +24,9 @@ from atx_db.api.admin import (
 from atx_db.api.app import create_app
 from atx_db.api.auth import ApiPrincipal, StaticApiKeyAuthenticator
 from atx_db.api.batch import InMemoryBatchJobRepository, LocalBatchManager
-from atx_db.api.catalog import DATASETS, PENDING_REGISTRATION_DATASETS
+from atx_db.api.catalog import DATASETS, PENDING_REGISTRATION_DATASETS, get_schema
 from atx_db.api.models import BatchSubmitRequest, RangeRequest
-from atx_db.api.service import WarehouseReadService
+from atx_db.api.service import DatasetNotFound, WarehouseReadService
 from atx_db.api.usage import InMemoryUsageLedger, UsageEvent
 from atx_db.api.worker import BatchWorker, build_worker
 
@@ -335,7 +335,8 @@ _SQL_TYPES = {
 
 @pytest.mark.parametrize("schema", PENDING_REGISTRATION_DATASETS[0].schemas, ids=lambda schema: schema.code)
 def test_extended_schemas_rank_revisions_by_available_at(tmp_path: Path, schema) -> None:
-    """P13: every pending-registration schema answers ``as_of`` from ``available_at``."""
+    """P13: every pending-registration schema answers ``as_of`` from ``available_at`` through
+    the service's range query, yet no serving path resolves it until it is registered."""
 
     columns = {field.source_column: _SQL_TYPES[field.data_type] for field in schema.fields}
     path = tmp_path / f"{schema.code}.duckdb"
@@ -356,15 +357,22 @@ def test_extended_schemas_rank_revisions_by_available_at(tmp_path: Path, schema)
                 [value(column, kind, revision, available) for column, kind in columns.items()],
             )
     service = WarehouseReadService(path)
+    base = {"dataset": schema.dataset, "schema": schema.code, "symbols": ["ALL_SYMBOLS"]}
+    base |= {"start": "2024-01-01", "end": "2024-02-01"}
+    # Pending registration: not served, even to a key whose datasets are ["*"].
+    with pytest.raises(DatasetNotFound):
+        service.get_range(RangeRequest.model_validate(base))
+    assert get_schema(schema.dataset, schema.code, include_pending=True) is schema
 
-    def visible(as_of: str) -> list[object]:
-        request = {"dataset": schema.dataset, "schema": schema.code, "symbols": ["ALL_SYMBOLS"], "as_of": as_of}
-        request |= {"start": "2024-01-01", "end": "2024-02-01"}
-        return [row["run_id"] for row in service.get_range(RangeRequest.model_validate(request)).data]
+    def visible(as_of: dt.datetime) -> list[object]:
+        request = RangeRequest.model_validate({**base, "as_of": as_of.isoformat()})
+        with duckdb.connect(str(path), read_only=True) as conn:
+            rows = service._range_cursor(conn, request, schema, as_of, ["run_id"], None).fetchall()
+        return [row[0] for row in rows]
 
-    assert visible("2024-01-15T00:00:00Z") == []
-    assert visible("2024-02-15T00:00:00Z") == ["old"]
-    assert visible("2024-04-15T00:00:00Z") == ["new"]
+    assert visible(dt.datetime(2024, 1, 15, tzinfo=dt.UTC)) == []
+    assert visible(dt.datetime(2024, 2, 15, tzinfo=dt.UTC)) == ["old"]
+    assert visible(dt.datetime(2024, 4, 15, tzinfo=dt.UTC)) == ["new"]
 
 
 def test_industry_standardized_schema_emits_pit_classification_updates(tmp_store):

@@ -48,6 +48,7 @@ store attached READ_ONLY for the duration of the publication.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -111,6 +112,7 @@ __all__ = [
     "DATASET_WITHHELD",
     "ELIGIBLE",
     "ELIGIBLE_EXIT_CODE",
+    "ELIGIBLE_FORWARD_LABEL_VERSIONS",
     "EVIDENCE_STAGES",
     "FUNDAMENTALS_AVAILABILITY_BASIS",
     "GATE_FAILED",
@@ -236,6 +238,8 @@ class ReleaseDataset:
     absent_reason: str | None = None
     #: Short label of what the dataset's clocks/identity rest on (details in ``evidence``).
     evidence_basis: str | None = None
+    #: Static reason capping a published production dataset at ``candidate`` (P13 fix 1 I2).
+    eligibility_cap: str | None = None
 
     @property
     def schema_ref(self) -> str | None:
@@ -249,6 +253,13 @@ def _source_filter(source: str) -> str:
 
 
 _RESEARCH_EVIDENCE_BASIS = "research_store_rx6"
+#: P13 fix 1 rulings (binding).
+CORPORATE_ACTIONS_ABSENT = "pending_p8_fix_revisioned_events"
+LISTING_STATUS_ELIGIBILITY_CAP = "latest_build_not_pit_current_ticker_identity"
+#: Label calculation versions a forward-label dataset may be ``eligible`` at. VA1 bumps the
+#: label version: add the new one here once its relabel has landed.
+ELIGIBLE_FORWARD_LABEL_VERSIONS: tuple[str, ...] = (FORWARD_RETURN_CALCULATION_VERSION,)
+FORWARD_LABEL_VERSION_CAP = "calculation_version_not_allowed"
 
 # The six full-universe release datasets (Tier1-S4 Task 8), then the P13 extension.
 # ``fundamentals_core`` cites the pre-existing ``standardized`` schema code rather than a
@@ -318,7 +329,9 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         ("market_daily_id",),
         "ATX.US.EQUITIES",
         "market-daily-1d",
-        natural_key=("security_id", "trade_date"),
+        # The table holds the strict and the reconstructed panel as separately labeled
+        # sources; ranking without ``source`` would merge the two identity bases (RX1).
+        natural_key=("source", "security_id", "trade_date"),
         stage="market_daily",
         required=True,
         evidence_basis=MARKET_AVAILABILITY_BASIS,
@@ -365,6 +378,9 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         natural_key=("source", "symbol", "listing_venue_code", "valid_from"),
         stage="listing_status",
         evidence_basis=IDENTITY_BASIS_CURRENT_TICKER,
+        # Current-ticker identity, and valid_to/last_evidence_* rewritten in place by each
+        # build: a PIT read sees hindsight. Revisit when revisions or C10 identity land.
+        eligibility_cap=LISTING_STATUS_ELIGIBILITY_CAP,
     ),
     ReleaseDataset(
         "owner_links",
@@ -393,12 +409,16 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
     ReleaseDataset(
         "corporate_action_events",
         "corporate_actions",
-        # No physical id column: the event key plus its clocks (duplicates -> withheld).
-        ("source", "security_id", "ex_date", "action_type", "available_at", "source_loaded_at"),
-        EXTENDED_DATASET_CODE,
-        "corporate-actions",
-        natural_key=("source", "security_id", "ex_date", "action_type"),
-        # Built by scripts/build_corporate_action_events.py (P8), outside activation.
+        # One vendor-factor step per (line, ex_date); its revisions differ by clock.
+        ("source", "security_id", "ex_date", "available_at", "source_loaded_at"),
+        None,
+        None,
+        # Per-step identity (never action_type: a pending event and its resolution are one
+        # step), newest visible revision wins. P8 fix1 replaces it with its step id + revision.
+        natural_key=("source", "security_id", "ex_date"),
+        # Withheld (P13 fix 1, ruling I1): a84111db stamps final build-time labels at earlier
+        # clocks (rv-p8 I2). Built by scripts/build_corporate_action_events.py, outside activation.
+        absent_reason=CORPORATE_ACTIONS_ABSENT,
         evidence_basis="reconstructed_vendor_factor",
     ),
     ReleaseDataset(
@@ -466,6 +486,7 @@ _NO_API_SCHEMA_REASONS: dict[str, str] = {
         "CIK-keyed reason intervals (valid_from/valid_to clocks) without the security_id, as_of_date and "
         "available_at columns the PIT range service ranks on"
     ),
+    "corporate_action_events": "no contract until P8 fix1 (revisioned per-step events, step id + revision key)",
 }
 _RESEARCH_API_REASON = "research store outputs (RX6) are not served by the warehouse API"
 _FOREIGN_FILER_ABSENT = (
@@ -686,7 +707,8 @@ def read_release_manifest(path: Path | str) -> dict[str, object]:
 def _schema_for(dataset: ReleaseDataset) -> RecordSchema | None:
     if dataset.schema_dataset is None or dataset.schema_code is None:
         return None
-    return get_schema(dataset.schema_dataset, dataset.schema_code)
+    # Release manifests pin contracts still pending control-plane registration too.
+    return get_schema(dataset.schema_dataset, dataset.schema_code, include_pending=True)
 
 
 def _previous_release(previous_dir: Path | str | None) -> tuple[str | None, dict[str, Path]]:
@@ -748,6 +770,13 @@ def _table_columns(store: DuckDBStore, table: str) -> set[str]:
         [table],
     ).fetchall()
     return {str(row[0]) for row in rows}
+
+
+def _present_columns(store: DuckDBStore, table: str, columns: Sequence[str]) -> tuple[str, ...]:
+    """The subset of ``columns`` ``table`` has (e.g. 0328's, absent on older warehouses)."""
+
+    present = _table_columns(store, table)
+    return tuple(column for column in columns if column in present)
 
 
 def _catalog_schema(store: DuckDBStore, database: str | None, name: str) -> list[dict[str, object]]:
@@ -1510,10 +1539,27 @@ def _market_evidence(store: DuckDBStore) -> dict[str, object]:
             "measured_from": f"latest {OWNER_BRIDGE_CHECK_NAME} quality row per source (that run's rows)",
             "rows_by_source": {source: bridge["rows_by_share_clock"] for source, bridge in sorted(bridges.items())},
         }
+    panels = [
+        {
+            **item,
+            "panel": "strict_identity" if item["source"] == MARKET_DAILY_STRICT_SOURCE_NAME else "other_labeled_source",
+        }
+        for item in _count_rows(
+            store.con.execute("SELECT source, count(*)::BIGINT FROM market_daily_metrics GROUP BY ALL").fetchall(),
+            ("source",),
+        )
+    ]
     return {
         "availability_basis": MARKET_AVAILABILITY_BASIS,
         "availability_status": "modeled",
         "verified_vintage": False,
+        # P13 fix 1 I3: one export, every row labeled by its panel source; consumers rank
+        # revisions within (source, security_id, trade_date) and never across panels.
+        "panels_by_source": panels,
+        "panel_rule": (
+            f"The strict panel ('{MARKET_DAILY_STRICT_SOURCE_NAME}') and the reconstructed panel are separate "
+            "sources in one export; the natural key includes source, so the identity bases are never merged."
+        ),
         "note": (
             "Bars and panel rows are modeled as known at trade_date + 22h. Owner links are verified only "
             "for identity_basis 'verified_dated' with availability_basis 'verified' (strict bridge); "
@@ -1590,11 +1636,20 @@ def _forward_return_evidence(store: DuckDBStore, source: str) -> dict[str, objec
     ).fetchall()
     latest = [row for row in rows if row[5]]
     stitched = [row for row in latest if row[3]]
+    allowed = sum(int(row[-1]) for row in latest if row[0] in ELIGIBLE_FORWARD_LABEL_VERSIONS)
+    total = sum(int(row[-1]) for row in latest)
+    block: dict[str, object] = {}
+    if allowed != total:
+        # A latest label at another (or no) calculation version is never eligible.
+        block["eligibility_cap"] = FORWARD_LABEL_VERSION_CAP
     return {
+        **block,
         "label_source": source,
         "label_basis": "survivorship_safe_forward_return",
         "availability_status": "modeled",
         "expected_calculation_version": FORWARD_RETURN_CALCULATION_VERSION,
+        "eligible_calculation_versions": list(ELIGIBLE_FORWARD_LABEL_VERSIONS),
+        "eligible_version_rows": allowed,
         "note": (
             "Latest-revision survivorship-safe labels on the observed XNYS session calendar; a label whose "
             "line delists inside the window is stitched with an observed or a policy (Shumway convention) "
@@ -1643,9 +1698,13 @@ def _listing_status_evidence(store: DuckDBStore) -> dict[str, object]:
         "identity_basis": IDENTITY_BASIS_CURRENT_TICKER,
         "history_basis": "latest_build",
         "availability_status": "modeled",
+        "eligibility_cap": LISTING_STATUS_ELIGIBILITY_CAP,
         "note": (
             "security_id resolved through the current ticker (unverified); unresolved symbols are kept. Each "
-            "build replaces the source's prior build, so valid_to reflects the latest build, not PIT revisions."
+            "build replaces the source's prior build and rewrites valid_to/last_evidence_* in place, while "
+            "available_at is the interval's first evidence, so a PIT read sees a later-known valid_to "
+            "(hindsight). Capped at candidate until listing status keeps revisions or verified identity "
+            "(C10) lands."
         ),
         "rows": sum(int(row[-1]) for row in rows),
         "unresolved_security_rows": sum(int(row[-1]) for row in rows if row[3]),
@@ -1681,8 +1740,8 @@ def _corporate_action_evidence(store: DuckDBStore) -> dict[str, object]:
         "availability_status": "modeled",
         "note": (
             "P8: every step of a line's vendor adjustment factor is one labelled event, reconstructed from a later "
-            "vendor snapshot (never a verified corporate-action record); available_at is the ex-date bar clock or "
-            "the later share-count confirmation. adjustment_unclassified is a hazard, never a split."
+            "vendor snapshot (never a verified corporate-action record); adjustment_unclassified is a hazard, "
+            "never a split. Released only once P8 fix1 revisions each step's label at the clock it became known."
         ),
         "rows": sum(int(row[-1]) for row in rows),
         "rows_by_type": _count_rows(rows, ("source", "action_type", "evidence_basis")),
@@ -1962,7 +2021,9 @@ def publish_release(
         raise
     finally:
         if research_reason is None:
-            store.con.execute(f"DETACH {_quote(RESEARCH_STORE_ALIAS)}")
+            # Never mask the export's own exception with a failed detach.
+            with contextlib.suppress(duckdb.Error):
+                store.con.execute(f"DETACH {_quote(RESEARCH_STORE_ALIAS)}")
 
 
 def _attach_research_store(store: DuckDBStore, research_store: Path | str | None) -> str | None:
@@ -2033,17 +2094,36 @@ def _export_dataset(
     query = release_query(dataset, columns)
     parquet_path = staging / f"{dataset.name}.parquet"
     _copy_parquet(store, query, parquet_path)
-    if not dataset.required and _has_duplicate_keys(store, dataset, parquet_path):
-        # An optional dataset never fails the release: it is withheld, with the reason.
+    previous = previous_files.get(dataset.name)
+    # An optional dataset never fails the release: it is withheld, with the reason.
+    withheld: str | None = None
+    if not dataset.required:
+        if previous is not None and _parquet_columns(store, parquet_path) != _parquet_columns(store, previous):
+            # A schema change cannot be diffed; the next release (against this one) publishes
+            # it as a new baseline.
+            withheld = "schema_changed_since_previous_release"
+        elif (
+            previous is None
+            and not _key_is_primary_key(store, dataset)
+            and _has_duplicate_keys(store, dataset, parquet_path)
+        ):
+            withheld = "duplicate_release_keys"
+    if withheld is not None:
         parquet_path.unlink()
-        return {**entry, "status": DATASET_WITHHELD, "absent_reason": "duplicate_release_keys"}, None
+        return {**entry, "status": DATASET_WITHHELD, "absent_reason": withheld}, None
     count_row = store.con.execute("SELECT count(*) FROM read_parquet(?)", [str(parquet_path)]).fetchone()
     if count_row is None:
         raise RuntimeError(f"could not count rows for dataset {dataset.name!r}")
     added = removed = changed = None
-    if dataset.name in previous_files:
-        added, removed, changed = diff_against(store, dataset, columns, parquet_path, previous_files[dataset.name])
-    else:
+    if previous is not None:
+        try:
+            added, removed, changed = diff_against(store, dataset, columns, parquet_path, previous)
+        except ValueError:
+            if dataset.required:
+                raise
+            parquet_path.unlink()
+            return {**entry, "status": DATASET_WITHHELD, "absent_reason": "duplicate_release_keys"}, None
+    elif dataset.required:
         _validate_keys(store, dataset, parquet_path)
     result = ReleaseDatasetResult(
         name=dataset.name,
@@ -2079,8 +2159,28 @@ def _export_dataset(
     return entry, result
 
 
-def _dataset_eligibility(dataset: ReleaseDataset, status: object, release: str) -> tuple[str | None, str | None]:
-    """(eligibility, reason) of one dataset entry; research basis is never ``eligible``."""
+def _key_is_primary_key(store: DuckDBStore, dataset: ReleaseDataset) -> bool:
+    """Whether the release key is the source table's primary key (unique, row filter or not)."""
+
+    database = RESEARCH_STORE_ALIAS if dataset.store == STORE_RESEARCH else None
+    rows = store.con.execute(
+        "SELECT constraint_column_names FROM duckdb_constraints() "
+        "WHERE database_name = coalesce(?, current_database()) AND schema_name = 'main' AND table_name = ? "
+        "AND constraint_type = 'PRIMARY KEY'",
+        [database, dataset.object_name],
+    ).fetchall()
+    return any(tuple(row[0]) == dataset.key_columns for row in rows)
+
+
+def _dataset_eligibility(
+    dataset: ReleaseDataset, status: object, release: str, evidence_cap: object = None
+) -> tuple[str | None, str | None]:
+    """(eligibility, reason) of one dataset entry; research basis is never ``eligible``.
+
+    A production dataset is capped at ``candidate`` by a static cap (``eligibility_cap``)
+    or by its evidence block's ``eligibility_cap`` (e.g. forward labels at a calculation
+    version outside :data:`ELIGIBLE_FORWARD_LABEL_VERSIONS`).
+    """
 
     if status != DATASET_PUBLISHED:
         return None, "not_published"
@@ -2089,6 +2189,9 @@ def _dataset_eligibility(dataset: ReleaseDataset, status: object, release: str) 
     if dataset.stage is None or RELEASE_DATASET_STAGES.get(dataset.name) != dataset.stage:
         # Produced outside the activation ladder: no gate is bound to its freshness.
         return CANDIDATE, "not_produced_by_activation"
+    cap = dataset.eligibility_cap or (str(evidence_cap) if evidence_cap else None)
+    if cap is not None:
+        return CANDIDATE, cap
     return release, "release_gates"
 
 
@@ -2128,8 +2231,13 @@ def _publish_snapshot(
         "universe_certification": _universe_certification_gate(universes),
     }
     eligibility, gates_not_passed = release_eligibility(gates)
+    evidence = _release_evidence(store, universes, {str(entry["name"]): entry for entry in manifest_datasets})
     for dataset, entry in zip(RELEASE_DATASETS, manifest_datasets, strict=True):
-        entry["eligibility"], entry["eligibility_reason"] = _dataset_eligibility(dataset, entry["status"], eligibility)
+        block = evidence.get(dataset.name)
+        cap = block.get("eligibility_cap") if isinstance(block, dict) else None
+        entry["eligibility"], entry["eligibility_reason"] = _dataset_eligibility(
+            dataset, entry["status"], eligibility, cap
+        )
     manifest: dict[str, object] = {
         "release_id": release_id,
         "contract_version": PUBLICATION_CONTRACT_VERSION,
@@ -2139,7 +2247,7 @@ def _publish_snapshot(
         "datasets": manifest_datasets,
         "research_store": {"attached": research_reason is None, "absent_reason": research_reason},
         "source_pins": source_pins,
-        "evidence": _release_evidence(store, universes, {str(entry["name"]): entry for entry in manifest_datasets}),
+        "evidence": evidence,
         "evidence_floor": floor_block,
         "gates": gates,
         "eligibility": eligibility,
@@ -2149,7 +2257,9 @@ def _publish_snapshot(
             + ", ".join(RELEASE_GATES)
             + " is 'passed'; failed or unmeasured gates make the release a candidate. Per dataset: "
             "research-basis datasets are research_only (never eligible); a production dataset produced outside "
-            "the activation ladder is a candidate; every other published dataset takes the release eligibility"
+            "the activation ladder, or capped by its evidence (eligibility_cap: e.g. current-ticker listing "
+            "status, forward labels outside the eligible calculation versions), is a candidate; every other "
+            "published dataset takes the release eligibility"
         ),
     }
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
@@ -2157,13 +2267,25 @@ def _publish_snapshot(
     (staging / MANIFEST_NAME).write_bytes(payload.encode("utf-8"))
     manifest_sha256 = _sha256_text(payload)
 
+    # 0328 eligibility columns are written only where the table already has them, so a
+    # pre-0328 warehouse still publishes (the manifest carries the same values).
+    release_extra = _present_columns(store, "publication_releases", ("eligibility", "gates_not_passed_json"))
+    release_values = {"eligibility": eligibility, "gates_not_passed_json": json.dumps(list(gates_not_passed))}
+    release_columns = (
+        "release_id",
+        "contract_version",
+        "out_dir",
+        "manifest_sha256",
+        "dataset_count",
+        "total_rows",
+        "previous_release_id",
+        "created_at",
+        "run_id",
+        "source_loaded_at",
+        *release_extra,
+    )
     store.con.execute(
-        """
-            INSERT INTO publication_releases (
-                release_id, contract_version, out_dir, manifest_sha256, dataset_count,
-                total_rows, previous_release_id, created_at, run_id, source_loaded_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
-            """,
+        f"INSERT INTO publication_releases ({', '.join(release_columns)}) VALUES ({_marks(release_columns)})",
         [
             release_id,
             PUBLICATION_CONTRACT_VERSION,
@@ -2175,16 +2297,30 @@ def _publish_snapshot(
             created_at,
             run_id,
             created_at,
+            *(release_values[column] for column in release_extra),
         ],
     )
+    dataset_extra = _present_columns(store, "publication_release_datasets", ("eligibility", "eligibility_reason"))
+    entries_by_name = {str(entry["name"]): entry for entry in manifest_datasets}
+    dataset_columns = (
+        "release_id",
+        "dataset_name",
+        "object_name",
+        "schema_code",
+        "parquet_path",
+        "row_count",
+        "byte_count",
+        "schema_sha256",
+        "query_sha256",
+        "parquet_sha256",
+        "rows_added",
+        "rows_removed",
+        "rows_changed",
+        "source_loaded_at",
+        *dataset_extra,
+    )
     store.con.executemany(
-        """
-            INSERT INTO publication_release_datasets (
-                release_id, dataset_name, object_name, schema_code, parquet_path, row_count,
-                byte_count, schema_sha256, query_sha256, parquet_sha256, rows_added,
-                rows_removed, rows_changed, source_loaded_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
+        f"INSERT INTO publication_release_datasets ({', '.join(dataset_columns)}) VALUES ({_marks(dataset_columns)})",
         [
             (
                 release_id,
@@ -2201,6 +2337,7 @@ def _publish_snapshot(
                 result.rows_removed,
                 result.rows_changed,
                 created_at,
+                *(entries_by_name[result.name][column] for column in dataset_extra),
             )
             for dataset, result in zip(published, results, strict=True)
         ],

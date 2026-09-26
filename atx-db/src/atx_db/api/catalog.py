@@ -1008,12 +1008,13 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
 
 
 # --- P13: extended record contracts, pending control-plane registration ----------------
-# These schemas are pinned here so release manifests carry their record-schema hash and the
-# read service can answer PIT range queries over them. They are deliberately NOT in
+# These schemas are pinned here so release manifests carry their record-schema hash and
+# the range query's PIT ranking is proven over them. They are deliberately NOT in
 # ``DATASETS``: migrations 0267/0270/0296/0298 seed the control-plane catalog, coverage
 # SLOs and unit prices from ``DATASETS``, and entitlements can only be granted for a
-# catalogued dataset (``admin.grant_entitlement``). Until a registration migration adds
-# their catalog rows and SLOs they are resolvable by code but never served over HTTP.
+# catalogued dataset (``admin.grant_entitlement``). ``get_dataset``/``get_schema`` resolve
+# them only with ``include_pending=True``, so no serving path (static ``["*"]`` keys
+# included) can reach them until a registration migration moves them into ``DATASETS``.
 EXTENDED_DATASET_CODE: Final = "ATX.US.EXTENDED"
 
 FORWARD_LABELS_SCHEMA = RecordSchema(
@@ -1184,40 +1185,9 @@ CLASSIFICATION_SCHEMA = RecordSchema(
     ),
 )
 
-CORPORATE_ACTIONS_SCHEMA = RecordSchema(
-    dataset=EXTENDED_DATASET_CODE,
-    code="corporate-actions",
-    version="1.0.0",
-    title="Corporate-action events from the vendor adjustment factor",
-    description=(
-        "One event per step of a line's vendor adjustment factor: split and stock_dividend from corroborated "
-        "split epochs, cash_dividend residuals, distribution_unclassified and adjustment_unclassified (a hazard, "
-        "never a split). details_json carries evidence_basis, corroboration and reason. Reconstructed from a "
-        "later vendor snapshot, never a verified corporate-action record; available_at is the ex-date bar clock "
-        "or the later share-count confirmation."
-    ),
-    source_table="corporate_actions",
-    time_column="ex_date",
-    natural_key=("source", "security_id", "ex_date", "action_type"),
-    item_column="action_type",
-    fields=(
-        FieldSpec("security_id", "security_id", "string", "Stable ATX price-line identifier.", nullable=False),
-        FieldSpec("symbol", "symbol", "string", "Ticker at the ex-date."),
-        FieldSpec("action_type", "action_type", "string", "Classified event type.", nullable=False, filterable=True),
-        FieldSpec("ex_date", "ex_date", "date", "Ex-date bar of the factor step.", nullable=False),
-        FieldSpec("declaration_date", "declaration_date", "date", "Declaration date when known."),
-        FieldSpec("record_date", "record_date", "date", "Record date when known."),
-        FieldSpec("payable_date", "payable_date", "date", "Payable date when known."),
-        FieldSpec("cash_amount", "cash_amount", "float64", "Implied cash per share.", "USD"),
-        FieldSpec("split_from", "split_from", "float64", "Split ratio denominator (p:q form)."),
-        FieldSpec("split_to", "split_to", "float64", "Split ratio numerator (p:q form)."),
-        FieldSpec("adjustment_factor", "adjustment_factor", "float64", "Factor step k of the event.", "ratio"),
-        FieldSpec("details_json", "details_json", "json", "Evidence basis, corroboration, reason and step inputs."),
-        FieldSpec("source", "source", "string", "ATX event builder source.", nullable=False),
-        FieldSpec("is_latest_revision", "is_latest_revision", "boolean", "Whether this is the current revision."),
-        *_PIT_FIELDS,
-    ),
-)
+# Corporate-action events (P8) have no contract here until P8 fix1 lands revisioned per-step
+# events with PIT label clocks (P13 fix 1, ruling I1); the contract is then keyed by the
+# per-step event id and its revision, never by action_type.
 
 PENDING_REGISTRATION_DATASETS: Final[tuple[DatasetSpec, ...]] = (
     DatasetSpec(
@@ -1225,9 +1195,9 @@ PENDING_REGISTRATION_DATASETS: Final[tuple[DatasetSpec, ...]] = (
         version="0.1.0",
         title="ATX US Extended (pending registration)",
         description=(
-            "Forward labels, price metrics, listing status, research-basis classification and corporate-action "
-            "events. Contracts are pinned; control-plane registration (catalog rows, coverage SLOs, "
-            "entitlements) is pending, so these are not served over HTTP yet."
+            "Forward labels, price metrics, listing status and research-basis classification. Contracts are "
+            "pinned; control-plane registration (catalog rows, coverage SLOs, entitlements) is pending, so "
+            "these are never served until registered."
         ),
         asset_class="equity",
         region="US",
@@ -1238,7 +1208,6 @@ PENDING_REGISTRATION_DATASETS: Final[tuple[DatasetSpec, ...]] = (
             PRICE_METRICS_SCHEMA,
             LISTING_STATUS_SCHEMA,
             CLASSIFICATION_SCHEMA,
-            CORPORATE_ACTIONS_SCHEMA,
         ),
     ),
 )
@@ -1250,17 +1219,19 @@ def is_registered(code: str) -> bool:
     return any(dataset.code == code for dataset in DATASETS)
 
 
-def get_dataset(code: str) -> DatasetSpec:
-    """A registered dataset, else a pinned dataset pending control-plane registration."""
+def get_dataset(code: str, *, include_pending: bool = False) -> DatasetSpec:
+    """A registered dataset. Serving paths use this default, so a pending dataset is unknown
+    to them (never served, whatever a key's dataset wildcard); release publication and
+    contract tests opt in with ``include_pending=True``."""
 
-    for dataset in (*DATASETS, *PENDING_REGISTRATION_DATASETS):
+    for dataset in (*DATASETS, *(PENDING_REGISTRATION_DATASETS if include_pending else ())):
         if dataset.code == code:
             return dataset
     raise KeyError(code)
 
 
-def get_schema(dataset_code: str, schema_code: str) -> RecordSchema:
-    return get_dataset(dataset_code).schema(schema_code)
+def get_schema(dataset_code: str, schema_code: str, *, include_pending: bool = False) -> RecordSchema:
+    return get_dataset(dataset_code, include_pending=include_pending).schema(schema_code)
 
 
 def public_catalog() -> list[dict[str, object]]:
