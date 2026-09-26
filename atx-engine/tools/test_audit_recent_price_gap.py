@@ -7,6 +7,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -92,6 +93,44 @@ class RecentPriceGapAudit(unittest.TestCase):
             for seconds in [math.nan, math.inf, 0, -1, 121]:
                 with self.assertRaises(ValueError):
                     tool.Deadline(seconds)
+
+    def test_batch_counts_zero_matches_and_exact_single_id_record_parity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); source = base / "source.parquet"
+            pin = fixture(source)
+            batch_out, single_out = base / "batch.json", base / "single.json"
+            with patch.object(tool.hashlib, "sha256", wraps=hashlib.sha256) as hashes:
+                receipt = tool.audit(source, batch_out, pin, None, "2020-01-01", "2020-01-10", 10,
+                                     instrument_ids=[777, 99, 7])
+                # The streaming whole-source digest is initialized once; the
+                # footer/record/output digests receive already bounded bytes.
+                self.assertEqual(sum(not c.args and not c.kwargs for c in hashes.call_args_list), 1)
+            batch = json.loads(batch_out.read_bytes())
+            self.assertEqual(batch["schema"], "atx.recent-price-gap-batch-audit/v1")
+            self.assertEqual(batch["instrument_ids"], [7, 99, 777])
+            self.assertNotIn("instrument_id", batch)
+            self.assertEqual(batch["record_counts_by_id"], {"7": 2, "99": 2, "777": 0})
+            self.assertEqual(receipt["record_counts_by_id"], batch["record_counts_by_id"])
+            tool.audit(source, single_out, pin, 7, "2020-01-01", "2020-01-10", 10)
+            single = json.loads(single_out.read_bytes())
+            self.assertEqual(single["schema"], "atx.recent-price-gap-audit/v1")
+            self.assertEqual(single["instrument_id"], 7)
+            self.assertEqual(single["records"], [r for r in batch["records"] if r["values"]["securityID"] == 7])
+
+    def test_batch_id_admission_and_global_record_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); source = base / "source.parquet"; out = base / "audit.json"
+            pin = fixture(source)
+            for ids in ([], list(range(1, 66)), [7, 7], [0], [-1], [1 << 63], [True]):
+                with self.assertRaises(ValueError):
+                    tool.audit(source, out, pin, None, "2020-01-01", "2020-01-10", 10,
+                               instrument_ids=ids)
+            with self.assertRaises(ValueError):
+                tool.audit(source, out, pin, 7, "2020-01-01", "2020-01-10", 10, instrument_ids=[7])
+            with self.assertRaisesRegex(ValueError, "no truncation"):
+                tool.audit(source, out, pin, None, "2020-01-01", "2020-01-10", 10,
+                           max_records=3, instrument_ids=[7, 99])
+            self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """Read-only, hash-pinned source-record forensics; never infer a terminal return.
 
-Only the explicitly requested ID and [start,end) dates are emitted. Unprunable
+Only the explicitly requested ID(s) and [start,end) dates are emitted. Unprunable
 Parquet groups may physically decode other rows in the eight projected columns.
 No QA, duplicate removal, price statistics, universe selection or warehouse I/O.
 The deadline is checked between hash chunks/Arrow batches, not an OS hard timeout.
@@ -70,12 +70,24 @@ def exact_value(array, row):
     return value, None
 
 
-def audit(source: Path, output: Path, source_sha256: str, instrument_id: int,
-          start: str, end: str, max_seconds=120, max_records=10000, batch_rows=65536):
+def audit(source: Path, output: Path, source_sha256: str, instrument_id: int | None,
+          start: str, end: str, max_seconds=120, max_records=10000, batch_rows=65536,
+          *, instrument_ids: list[int] | None = None):
     deadline = Deadline(max_seconds)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", source_sha256):
         raise ValueError("an external SHA256 source pin is required")
-    if not 0 < instrument_id < 1 << 63 or not 1 <= max_records <= 10000:
+    batch_mode = instrument_ids is not None
+    if batch_mode:
+        if instrument_id is not None or not 1 <= len(instrument_ids) <= 64:
+            raise ValueError("choose single ID or a batch of1..64 unique IDs")
+        if any(type(x) is not int or not 0 < x < 1 << 63 for x in instrument_ids):
+            raise ValueError("batch IDs must be positive int64 values")
+        requested = sorted(instrument_ids)
+        if len(set(requested)) != len(requested):
+            raise ValueError("batch IDs must be unique")
+    else:
+        requested = [instrument_id]
+    if any(type(x) is not int or not 0 < x < 1 << 63 for x in requested) or not 1 <= max_records <= 10000:
         raise ValueError("invalid positive ID or record budget")
     if not 1024 <= batch_rows <= 65536:
         raise ValueError("batch_rows must be in [1024,65536]")
@@ -86,6 +98,8 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int,
         raise ValueError("output must be a new file in an existing directory")
 
     records, groups, records_bytes = [], [], 0
+    counts_by_id = {str(x): 0 for x in requested}
+    id_set = pa.array(requested, type=pa.int64()) if batch_mode else None
     with source.open("rb") as handle:
         captured = os.fstat(handle.fileno())
         if not 12 <= captured.st_size <= 16 << 30:
@@ -124,7 +138,7 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int,
             reason = None
             id_stats = group.column(projected_indices[1]).statistics
             date_stats = group.column(projected_indices[0]).statistics
-            if id_stats and id_stats.has_min_max and not id_stats.min <= instrument_id <= id_stats.max:
+            if id_stats and id_stats.has_min_max and not any(id_stats.min <= x <= id_stats.max for x in requested):
                 reason = "securityID-footer-range"
             if date_stats and date_stats.has_min_max and (date_stats.max < first or date_stats.min >= last):
                 reason = "date-footer-range"
@@ -144,7 +158,8 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int,
                                               columns=list(COLUMNS), use_threads=False):
                 deadline.check("projected batch")
                 dates, ids = batch.column(0), batch.column(1)
-                selected = pc.and_(pc.equal(ids, pa.scalar(instrument_id, pa.int64())),
+                selected_ids = pc.is_in(ids, value_set=id_set) if batch_mode else pc.equal(ids, pa.scalar(instrument_id, pa.int64()))
+                selected = pc.and_(selected_ids,
                                    pc.and_(pc.greater_equal(dates, pa.scalar(first)),
                                            pc.less(dates, pa.scalar(last))))
                 indices = pc.indices_nonzero(pc.fill_null(selected, False)).to_pylist()
@@ -162,6 +177,7 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int,
                     if records_bytes > MAX_OUTPUT // 2:
                         raise ValueError("matching record bytes exceed output budget")
                     records.append(record)
+                    counts_by_id[str(record["values"]["securityID"])] += 1
                 entry["matched_records"] += len(indices)
                 offset += batch.num_rows
             if offset != group.num_rows:
@@ -181,6 +197,12 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int,
               "scope": "exact-source-records-only;no-QA-repair-or-terminal-return-inference",
               "physical_decode": "unprunable groups decode projected columns before ID/date filtering",
               "deadline": "cooperative-between-hash-chunks-and-Arrow-batches;max120seconds"}
+    if batch_mode:
+        result["schema"] = "atx.recent-price-gap-batch-audit/v1"
+        del result["instrument_id"]
+        result["instrument_ids"] = requested
+        result["record_counts_by_id"] = counts_by_id
+        result["batch_policy"] = "one-source-hash-and-one-projected-pass;max64-unique-IDs;global-record-byte-budgets"
     payload = (canonical(result) + "\n").encode("utf8")
     if len(payload) > MAX_OUTPUT:
         raise ValueError("audit JSON exceeds16MiB output bound")
@@ -191,6 +213,7 @@ def audit(source: Path, output: Path, source_sha256: str, instrument_id: int,
         os.fsync(out.fileno())
     return {"output": str(output.resolve()), "sha256": hashlib.sha256(payload).hexdigest(),
             "records": len(records), "row_groups_decoded": sum(g["pruned_by"] is None for g in groups),
+            "record_counts_by_id": counts_by_id,
             "elapsed_seconds": time.monotonic() - deadline.started}
 
 
@@ -198,7 +221,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--source-sha256", required=True)
-    parser.add_argument("--id", type=int, required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--id", type=int)
+    selection.add_argument("--ids", type=int, nargs="+", help="batch of at most64 unique positive IDs")
     parser.add_argument("--start", required=True, help="inclusive YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="exclusive YYYY-MM-DD")
     parser.add_argument("--out", type=Path, required=True)
@@ -207,7 +232,8 @@ def main():
     args = parser.parse_args()
     try:
         print(canonical(audit(args.source, args.out, args.source_sha256, args.id,
-                              args.start, args.end, args.max_seconds, args.max_records)))
+                              args.start, args.end, args.max_seconds, args.max_records,
+                              instrument_ids=args.ids)))
     except (ValueError, OSError, TimeoutError, KeyError, pa.ArrowException) as error:
         print(f"audit refused: {error}", file=sys.stderr)
         return 1
