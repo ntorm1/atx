@@ -237,6 +237,54 @@ TEST(RiskEstimatorV2, Validation21FixesHoldingsAndMakesMissingBooksUnavailable) 
   EXPECT_FALSE(validate_risk_model_21d(factory, ret, cfg));
 }
 
+TEST(RiskEstimatorV2, ValidationAdmitsAllPersistentBookGroupsBeforeCallingFactory) {
+  ReturnPanel ret;
+  ret.r = MatX::Zero(30, 1);
+  usize calls = 0;
+  const RiskModelFactory factory = [&](usize a) -> atx::core::Result<ModelSnapshot> {
+    ++calls;
+    ATX_TRY(auto model, FactorModel::create(MatX::Ones(1, 1), MatX::Constant(1, 1, .0001),
+                                           VecX::Constant(1, .0002), a, a + 1));
+    return atx::core::Ok(ModelSnapshot{std::move(model), {0}});
+  };
+  Validation21Cfg cfg;
+  cfg.n_periods = 1;
+  cfg.n_min_variance = cfg.n_optimized = 0;
+  cfg.max_working_bytes = 128 * 1024;
+  cfg.books.assign(10'000, NamedBook{"custom", {1.0}});
+  EXPECT_FALSE(validate_risk_model_21d(factory, ret, cfg));
+  EXPECT_EQ(calls, 0U);
+  cfg.books.resize(2);
+  ASSERT_TRUE(validate_risk_model_21d(factory, ret, cfg));
+  EXPECT_EQ(calls, 1U);
+  cfg.books[0].name.assign(128 * 1024, 'x');
+  EXPECT_FALSE(validate_risk_model_21d(factory, ret, cfg));
+  EXPECT_EQ(calls, 1U);
+}
+
+TEST(RiskEstimatorV2, ValidationModelWorkspaceUsesRemainingCombinedBudget) {
+  ReturnPanel ret;
+  ret.r = MatX::Zero(30, 20);
+  usize calls = 0;
+  const RiskModelFactory factory = [&](usize a) -> atx::core::Result<ModelSnapshot> {
+    ++calls;
+    ATX_TRY(auto model, FactorModel::create(MatX::Identity(20, 20),
+        MatX::Identity(20, 20) * .0001, VecX::Constant(20, .0002), a, a + 1));
+    std::vector<usize> assets(20);
+    std::iota(assets.begin(), assets.end(), 0);
+    return atx::core::Ok(ModelSnapshot{std::move(model), std::move(assets)});
+  };
+  Validation21Cfg cfg;
+  cfg.n_periods = 1;
+  cfg.n_min_variance = cfg.n_optimized = 0;
+  cfg.max_working_bytes = 64 * 1024;
+  EXPECT_FALSE(validate_risk_model_21d(factory, ret, cfg));
+  EXPECT_EQ(calls, 1U);
+  cfg.max_working_bytes = 1024 * 1024;
+  EXPECT_TRUE(validate_risk_model_21d(factory, ret, cfg));
+  EXPECT_EQ(calls, 2U);
+}
+
 TEST(RiskEstimatorV2, RecipeIdentityUsesClassicLocaleAndActiveKnobs) {
   struct Punct : std::numpunct<char> {
     char do_thousands_sep() const override { return '_'; }
