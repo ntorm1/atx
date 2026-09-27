@@ -7,7 +7,7 @@ print(f"rule={s.get('rule')} status={s.get('status')} primary={s.get('primary_sc
 for v in s["scenarios"]:
     yrs = v.get("calendar_year_returns") or []
     ys = " ".join(
-        f"{y.get('year')}:{(y.get('net_return', y.get('return')) or 0):+.3f}" if isinstance(y, dict) else str(y)
+        f"{y.get('year')}:{(y.get("net_compounded_return") or 0):+.3f}" if isinstance(y, dict) else str(y)
         for y in yrs
     )
     t = v.get("daily_turnover_gmv") or {}
