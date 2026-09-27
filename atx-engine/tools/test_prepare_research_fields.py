@@ -1006,31 +1006,40 @@ BRIDGE = [
     (202, 2003, dt.date(2024, 10, 1), OPEN, LONG_AGO, "P", "high", "current_ticker_verified"),  # excluded basis
     (101, 1009, dt.date(2015, 1, 1), OPEN, at(2025, 2, 1), "P", "high", "reconstructed_high"),  # sealed
 ]
-# (cik, clock, clock_basis, period_end, annual_only, be, at)
+# (cik, accepted_utc, clock_basis, period_end, staleness_days, be, at, accession)
 EVENTS = [
-    (1001, at(2024, 6, 1, 12), "accepted_utc", dt.date(2024, 3, 31), False, 100.0, 1000.0),
-    (1001, mark(dt.date(2024, 10, 10)) - dt.timedelta(microseconds=1), "accepted_utc", dt.date(2024, 6, 30), False, 110.0, 1100.0),
-    (1001, mark(dt.date(2024, 10, 21)), "fc1", dt.date(2024, 6, 30), False, 111.0, 1101.0),  # restated, exactly at a mark
-    (1001, at(2024, 11, 12, 21), "accepted_utc", dt.date(2024, 9, 30), False, math.nan, 1300.0),  # visible NaN be
-    (1001, at(2025, 1, 5, 12), "accepted_utc", dt.date(2024, 12, 31), False, 999.0, 9999.0),  # sealed
-    (2002, at(2024, 5, 10, 20), "accepted_utc", dt.date(2024, 4, 15), False, 50.0, 500.0),   # stale after 2024-11-01
-    (4004, at(2024, 8, 1, 20), "accepted_utc", dt.date(2024, 6, 30), False, 40.0, 400.0),
-    (4004, at(2024, 9, 3, 20), "accepted_utc", dt.date(2024, 6, 30), False, 41.0, 410.0),    # same CIK and clock:
-    (4004, at(2024, 9, 3, 20), "accepted_utc", dt.date(2024, 6, 30), False, 42.0, 420.0),    # the later row wins
-    (4005, at(2024, 8, 1, 20), "accepted_utc", dt.date(2024, 6, 30), False, 45.0, 450.0),
-    (5005, at(2024, 1, 20, 20), "fc1", dt.date(2023, 10, 1), True, 55.0, 550.0),            # annual-only: 400 days
-    (7777, at(2024, 8, 1, 20), "accepted_utc", dt.date(2024, 6, 30), False, 77.0, 770.0),   # unlinked CIK
+    (1001, at(2024, 6, 1, 12), "fsds_accepted_utc", dt.date(2024, 3, 31), 200, 100.0, 1000.0, "0000001001-24-000001"),
+    (1001, mark(dt.date(2024, 10, 10)) - dt.timedelta(microseconds=1), "fsds_accepted_utc", dt.date(2024, 6, 30), 200,
+     110.0, 1100.0, "0000001001-24-000002"),
+    (1001, mark(dt.date(2024, 10, 21)), "cf_fc1", dt.date(2024, 6, 30), 200, 111.0, 1101.0,
+     "0000001001-24-000003"),                                                    # restated, clock exactly at a mark
+    (1001, at(2024, 11, 12, 21), "fsds_accepted_utc", dt.date(2024, 9, 30), 200, math.nan, 1300.0,
+     "0000001001-24-000004"),                                                    # visible NaN be
+    (1001, at(2025, 1, 5, 12), "fsds_accepted_utc", dt.date(2024, 12, 31), 200, 999.0, 9999.0,
+     "0000001001-25-000001"),                                                    # sealed
+    (2002, at(2024, 5, 10, 20), "fsds_accepted_utc", dt.date(2024, 4, 15), 200, 50.0, 500.0,
+     "0000002002-24-000001"),                                                    # stale after 2024-11-01
+    (4004, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 40.0, 400.0, "0000004004-24-000001"),
+    (4004, at(2024, 9, 3, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 42.0, 420.0,
+     "0000004004-24-000009"),                                                    # same CIK and clock: the larger
+    (4004, at(2024, 9, 3, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 41.0, 410.0,
+     "0000004004-24-000002"),                                                    # accession wins, not file order
+    (4005, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 45.0, 450.0, "0000004005-24-000001"),
+    (5005, at(2024, 1, 20, 20), "cf_fc1", dt.date(2023, 10, 1), 400, 55.0, 550.0,
+     "0000005005-24-000001"),                                                    # annual-only filer: 400 days
+    (7777, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 77.0, 770.0,
+     "0000007777-24-000001"),                                                    # unlinked CIK
 ]
-# (cik, clock, sic)
+# (cik, accepted_utc, sic, accession)
 SIC_EVENTS = [
-    (1001, at(2024, 1, 10, 15), 7372),
-    (1001, at(2024, 10, 24, 15), 3674),     # SIC change: visible from 10-25 (lag 1)
-    (1001, at(2025, 2, 1, 15), 1000),       # sealed
-    (2002, at(2023, 5, 1, 12), 6022),       # 550 days old on 2024-11-01
-    (4004, at(2024, 2, 1, 12), 9999),       # no FF49 industry
-    (5005, at(2024, 3, 1, 12), 2834),
-    (5005, at(2024, 6, 1, 12), None),       # carries no SIC: skipped
-    (4005, at(2024, 3, 1, 12), 0),          # invalid: skipped
+    (1001, at(2024, 1, 10, 15), 7372, "0000001001-24-000000"),
+    (1001, at(2024, 10, 24, 15), 3674, "0000001001-24-000005"),  # SIC change: visible from 10-25 (lag 1)
+    (1001, at(2025, 2, 1, 15), 1000, "0000001001-25-000002"),    # sealed
+    (2002, at(2023, 5, 1, 12), 6022, "0000002002-23-000001"),    # 550 days old on 2024-11-01
+    (4004, at(2024, 2, 1, 12), 9999, "0000004004-24-000000"),    # no FF49 industry
+    (5005, at(2024, 3, 1, 12), 2834, "0000005005-24-000002"),
+    (5005, at(2024, 6, 1, 12), None, "0000005005-24-000003"),    # carries no SIC: skipped (guard)
+    (4005, at(2024, 3, 1, 12), 0, "0000004005-24-000000"),       # invalid: skipped (guard)
 ]
 ITEM_NAMES = [x[0] for x in tool.FUND_ITEMS]
 
@@ -1048,44 +1057,54 @@ def write_published(root, schema, tables, **flags):
     files = {}
     for name, table in tables.items():
         pq.write_table(table, root / name)
-        files[name] = {"bytes": (root / name).stat().st_size, "sha256": sha(root / name)}
+        files[name] = {"bytes": (root / name).stat().st_size, "sha256": sha(root / name), "rows": table.num_rows}
     (root / "manifest.json").write_text(json.dumps({"schema": schema, "status": "complete", "files": files, **flags}),
                                         encoding="utf-8")
     return sha(root / "manifest.json")
 
 
+def naive(values):
+    return [x.replace(tzinfo=None) for x in values]
+
+
 def write_bridge(root, rows=BRIDGE, **flags):
+    """The T19 contract: links.parquet with a naive-UTC timestamp[us] available_at."""
     flags.setdefault("rehearsal_identity", True)
-    flags.setdefault("scope_complete", False)
+    flags.setdefault("source", {"scope_complete": False})
     cols = list(zip(*rows))
     table = pa.table({"sr_id": pa.array(cols[0], pa.int64()), "cik": pa.array(cols[1], pa.int64()),
                       "start": pa.array(cols[2], pa.date32()), "end_incl": pa.array(cols[3], pa.date32()),
-                      "available_at": pa.array(cols[4], pa.timestamp("us", tz="UTC")),
+                      "available_at": pa.array(naive(cols[4]), pa.timestamp("us")),
                       "primary": pa.array(cols[5], pa.string()), "tier": pa.array(cols[6], pa.string()),
                       "basis": pa.array(cols[7], pa.string())})
     return write_published(root, "atx.identity-bridge/v1", {"links.parquet": table}, **flags)
 
 
-def write_events(root, events=EVENTS, sic_events=SIC_EVENTS, drop_items=()):
+def write_events(root, events=EVENTS, sic_events=SIC_EVENTS, drop_items=(), staleness=None):
+    """The T20 contract: fundamental_events.parquet and sic_events.parquet (accepted_utc timestamp[us, UTC])."""
     cols = list(zip(*events))
-    data = {"cik": pa.array(cols[0], pa.int64()), "available_at": pa.array(cols[1], pa.timestamp("us", tz="UTC")),
+    data = {"cik": pa.array(cols[0], pa.int64()), "accession": pa.array(cols[7], pa.string()),
+            "accepted_utc": pa.array(cols[1], pa.timestamp("us", tz="UTC")),
             "clock_basis": pa.array(cols[2], pa.string()), "period_end": pa.array(cols[3], pa.date32()),
-            "annual_only": pa.array(cols[4], pa.bool_())}
+            "staleness_days": pa.array(staleness or cols[4], pa.int32())}
     for item in ITEM_NAMES:
         if item not in drop_items:
             data[item] = pa.array([item_value(item, r, e[5], e[6]) for r, e in enumerate(events)], pa.float64())
     s = list(zip(*sic_events))
-    sic = pa.table({"cik": pa.array(s[0], pa.int64()), "available_at": pa.array(s[1], pa.timestamp("us", tz="UTC")),
+    sic = pa.table({"cik": pa.array(s[0], pa.int64()), "accession": pa.array(s[3], pa.string()),
+                    "accepted_utc": pa.array(s[1], pa.timestamp("us", tz="UTC")),
+                    "clock_basis": pa.array(["fsds_accepted_utc"] * len(s[0]), pa.string()),
                     "sic": pa.array(s[2], pa.int32())})
     return write_published(root, "atx.fundamental-events/v1",
-                           {"fundamental_events.parquet": pa.table(data), "sic_events.parquet": sic})
+                           {"fundamental_events.parquet": pa.table(data), "sic_events.parquet": sic},
+                           values_label="modeled_unaccepted", rehearsal_identity=True, items=ITEM_NAMES)
 
 
-def oracle_link(sid, d):
+def oracle_link(sid, d, strict=True):
     """(cik or None or 'amb', primary) of line sid at session d under the declared link rule."""
     q = [(cik, kind) for s, cik, start, end, avail, kind, _, basis in BRIDGE
          if s == sid and kind in ("P", "J") and basis != "current_ticker_verified" and avail < at(2025, 1, 1)
-         and start <= d and (end is None or d <= end) and avail < mark(d)]
+         and start <= d and (end is None or d <= end) and (avail < mark(d) if strict else avail <= mark(d))]
     ciks = {c for c, _ in q}
     if not ciks:
         return None, False
@@ -1095,27 +1114,28 @@ def oracle_link(sid, d):
     return c, any(k == "P" for _, k in q)
 
 
-def oracle_latest(rows, cik, cutoff):
+def oracle_latest(rows, cik, cutoff, accession):
+    """Index of the CIK's row with clock < cutoff (not sealed) and the largest (clock, accession)."""
     best = None
     for r, row in enumerate(rows):
         if row[0] == cik and row[1] < cutoff and row[1] < at(2025, 1, 1):
-            if best is None or row[1] >= rows[best][1]:
+            if best is None or (row[1], row[accession]) > (rows[best][1], rows[best][accession]):
                 best = r
     return best
 
 
-def oracle_fund(item, lag):
+def oracle_fund(item, lag, strict=True):
     out = np.full((len(SESSIONS), len(IDS)), np.nan)
     for t, d in enumerate(SESSIONS):
         for i, sid in enumerate(IDS):
-            cik, primary = oracle_link(sid, d)
+            cik, primary = oracle_link(sid, d, strict)
             if not primary or t < lag:
                 continue
-            r = oracle_latest(EVENTS, cik, mark(SESSIONS[t - lag]))
+            r = oracle_latest(EVENTS, cik, mark(SESSIONS[t - lag]), 7)
             if r is None:
                 continue
-            _, _, _, pe, annual, be, at_ = EVENTS[r]
-            if (d - pe).days <= (400 if annual else 200):
+            _, _, _, pe, stale_days, be, at_, _ = EVENTS[r]
+            if (d - pe).days <= stale_days:
                 out[t, i] = item_value(item, r, be, at_)
     return out
 
@@ -1131,7 +1151,7 @@ def oracle_grp(kind, lag):
             cik, primary = oracle_link(sid, d)
             if not primary or t < lag:
                 continue
-            r = oracle_latest(valid, cik, mark(SESSIONS[t - lag]))
+            r = oracle_latest(valid, cik, mark(SESSIONS[t - lag]), 3)
             if r is not None and (d - valid[r][1].date()).days <= 550:
                 out[t, i] = FF[valid[r][2]][("sic2", "ff12", "ff49").index(kind)]
     return out
@@ -1305,13 +1325,15 @@ class IssuerFields(unittest.TestCase):
         self.assertEqual((b["rows_total"], b["rows_dropped_kind_not_p_or_j"], b["rows_dropped_excluded_basis"],
                           b["rows_available_on_or_after_2025_dropped"], b["rows_ignored_off_axis"], b["rows_used"]),
                          (10, 1, 1, 1, 1, 6))
-        self.assertIs(b["rehearsal_identity"], True)
-        self.assertEqual(b["columns"]["sr_id"], "sr_id")
+        self.assertEqual((b["rehearsal_identity"], b["scope_complete"]), (True, False))
+        self.assertIn("strict", b["available_at_rule"])
         self.assertEqual(b["ambiguous_cells"], sum(d.month == 11 for d in SESSIONS))
         ev = st["fund_events"]
         self.assertEqual((ev["rows_total"], ev["rows_available_on_or_after_2025_dropped"], ev["rows_ignored_unlinked_cik"],
-                          ev["rows_sharing_cik_and_clock"], ev["rows_used_fc1_clock"]), (12, 1, 1, 1, 2))
-        self.assertEqual(ev["columns"]["clock"], "available_at")
+                          ev["rows_sharing_cik_and_clock"], ev["rows_used_fc1_clock"], ev["rows_used_staleness_400"]),
+                         (12, 1, 1, 1, 2, 1))
+        self.assertEqual((ev["values_label"], ev["rehearsal_identity"]), ("modeled_unaccepted", True))
+        self.assertEqual(st["fund_events_manifest"]["items"], ITEM_NAMES)
         lc = st["link_member_cells"]
         self.assertEqual(lc["member_cells"], lc["unlinked"] + lc["ambiguous"] + lc["secondary"] + lc["primary"])
         names = {Path(s["path"]).name for s in self.entry("be")["sources"]}
@@ -1319,10 +1341,27 @@ class IssuerFields(unittest.TestCase):
         self.assertEqual({Path(s["path"]).name for s in self.entry("grp_ff12")["sources"]},
                          {"manifest.json", "links.parquet", "sic_events.parquet"})
 
+    def test_link_rule_non_strict_variant(self):
+        # The declared rule is strict (available_at < mark). With LINK_AVAILABLE_STRICT off (T19's own <= semantics),
+        # 202's link whose available_at is exactly the 2024-10-15 mark also qualifies on 2024-10-15.
+        saved = tool.LINK_AVAILABLE_STRICT
+        tool.LINK_AVAILABLE_STRICT = False
+        try:
+            self.produce("non-strict", ["be"])
+        finally:
+            tool.LINK_AVAILABLE_STRICT = saved
+        got = self.fx.field("non-strict", "be")
+        np.testing.assert_array_equal(got, oracle_fund("be", 1, strict=False))
+        self.assertEqual(got[t_of("2024-10-15"), 1], 50)
+        ref = self.fx.field("issuer", "be")
+        same = (got == ref) | (np.isnan(got) & np.isnan(ref))
+        self.assertEqual(np.argwhere(~same).tolist(), [[t_of("2024-10-15"), 1]])  # the only cell that differs
+
     def test_point_in_time_later_rows_change_no_earlier_cell(self):
         late = mark(dt.date(2024, 12, 10)) - dt.timedelta(microseconds=1)
-        extra = EVENTS + [(1001, late, "accepted_utc", dt.date(2024, 9, 30), False, 123.0, 1234.0)]
-        sic_extra = SIC_EVENTS + [(1001, late, 2834)]
+        extra = EVENTS + [(1001, late, "fsds_accepted_utc", dt.date(2024, 9, 30), 200, 123.0, 1234.0,
+                           "0000001001-24-000009")]
+        sic_extra = SIC_EVENTS + [(1001, late, 2834, "0000001001-24-000009")]
         root = self.fx.base / "events-late"
         sha_late = write_events(root, extra, sic_extra)
         self.produce("late", ["be", "grp_ff49"], fund_events=root, fund_events_sha256=sha_late)
@@ -1364,6 +1403,18 @@ class IssuerFields(unittest.TestCase):
             flag_sha = write_bridge(base / "noflag", rehearsal_identity="yes")
             with self.assertRaisesRegex(ValueError, "rehearsal_identity"):
                 self.produce("noflag", ["be"], identity_bridge=base / "noflag", identity_bridge_sha256=flag_sha)
+            odd_sha = write_events(base / "odd-staleness", staleness=[300] * len(EVENTS))
+            with self.assertRaisesRegex(ValueError, r"staleness_days outside the declared \[200, 400\]"):
+                self.produce("odd-staleness", ["be"], fund_events=base / "odd-staleness", fund_events_sha256=odd_sha)
+            schema_sha = write_published(base / "wrong-schema", "atx.identity-bridge/v0", {}, rehearsal_identity=True)
+            with self.assertRaisesRegex(ValueError, "not a complete atx.identity-bridge/v1 artifact"):
+                self.produce("wrong-schema", ["be"], identity_bridge=base / "wrong-schema",
+                             identity_bridge_sha256=schema_sha)
+            nocol_sha = write_published(base / "no-accession", "atx.fundamental-events/v1", {
+                "fundamental_events.parquet": pa.table({"cik": pa.array([1001], pa.int64())}),
+                "sic_events.parquet": pa.table({"cik": pa.array([1001], pa.int64())})})
+            with self.assertRaisesRegex(ValueError, r"lacks contract column\(s\)"):
+                self.produce("no-accession", ["grp_ff12"], fund_events=base / "no-accession", fund_events_sha256=nocol_sha)
             bad_sha = write_events(base / "tampered")
             path = base / "tampered" / "fundamental_events.parquet"
             path.write_bytes(path.read_bytes() + b"\0")
@@ -1371,43 +1422,45 @@ class IssuerFields(unittest.TestCase):
                 self.produce("tampered", ["be"], fund_events=base / "tampered", fund_events_sha256=bad_sha)
             self.assertFalse((self.fx.base / "tampered" / "manifest.json").exists())
 
-    def test_adapter_variants(self):
-        # Bridge: prefixed string ids, boolean primary flag, no basis column. Events: naive (declared UTC) clocks,
-        # no annual_only / clock_basis columns (every row quarterly, no FC1 count), string SIC codes.
+    def test_clock_units_and_empty_inputs(self):
+        # tz-aware ns bridge clocks and naive ms event clocks read as the same UTC instants.
         base = self.fx.base / "variants"
-        keep = [r for r in BRIDGE if r[5] in ("P", "J") and r[7] != "current_ticker_verified"]
-        c = list(zip(*keep))
-        bridge_sha = write_published(base / "bridge", "x", {"security_company_links.parquet": pa.table({
-            "sr_id": pa.array([f"TBLTICKERHISTORY-{x}" for x in c[0]]), "cik": pa.array([str(x) for x in c[1]]),
+        c = list(zip(*BRIDGE))
+        bridge_sha = write_published(base / "bridge", "atx.identity-bridge/v1", {"links.parquet": pa.table({
+            "sr_id": pa.array(c[0], pa.int64()), "cik": pa.array(c[1], pa.int64()),
             "start": pa.array(c[2], pa.date32()), "end_incl": pa.array(c[3], pa.date32()),
-            "available_at": pa.array(c[4], pa.timestamp("ns", tz="UTC")),
-            "primary": pa.array([x == "P" for x in c[5]], pa.bool_())})}, rehearsal_identity=True)
-        e = list(zip(*EVENTS))
-        naive = [x.replace(tzinfo=None) for x in e[1]]
-        s = list(zip(*SIC_EVENTS))
-        events_sha = write_published(base / "events", "x", {
-            "events.part-0.parquet": pa.table({"cik": pa.array(e[0], pa.int64()), "clock_utc": pa.array(naive, pa.timestamp("us")),
-                                               "period_end": pa.array(e[3], pa.date32()),
-                                               "be": pa.array(e[5], pa.float64())}),
-            "sic.parquet": pa.table({"cik": pa.array(s[0], pa.int64()),
-                                     "available_at": pa.array(s[1], pa.timestamp("ms", tz="UTC")),
-                                     "sic": pa.array([None if x is None else str(x) for x in s[2]], pa.string())})})
-        m = self.produce("variants-out", ["be", "grp_sic2"], identity_bridge=base / "bridge",
-                         identity_bridge_sha256=bridge_sha, fund_events=base / "events", fund_events_sha256=events_sha)
-        be, ref = self.fx.field("variants-out", "be"), self.fx.field("issuer", "be")
-        np.testing.assert_array_equal(be[:, :4], ref[:, :4])
-        self.assertTrue(np.all(np.isnan(be[:, 4])))  # 5005's annual row, now quarterly: 2023-10-01 + 200 days < role
-        np.testing.assert_array_equal(self.fx.field("variants-out", "grp_sic2"), self.fx.field("issuer", "grp_sic2"))
-        st = m["source_checks"]["issuer"]
-        self.assertEqual(st["fund_events"]["columns"], {"cik": "cik", "clock": "clock_utc", "period_end": "period_end",
-                                                        "annual_only": None, "clock_basis": None})
-        self.assertEqual(st["fund_events"]["rows_used_fc1_clock"], 0)
-        self.assertEqual(st["identity_bridge"]["columns"]["basis"], None)
+            "available_at": pa.array(c[4], pa.timestamp("ns", tz="UTC")), "primary": pa.array(c[5], pa.string()),
+            "basis": pa.array(c[7], pa.string())})}, rehearsal_identity=True)
+        events_sha = write_events(base / "events")
+        table = pq.read_table(base / "events" / "fundamental_events.parquet")
+        i = table.schema.get_field_index("accepted_utc")
+        table = table.set_column(i, "accepted_utc", pa.array(naive(list(zip(*EVENTS))[1]), pa.timestamp("us")))
+        pq.write_table(table, base / "events" / "fundamental_events.parquet")
+        m = json.loads((base / "events" / "manifest.json").read_bytes())
+        m["files"]["fundamental_events.parquet"].update(
+            bytes=(base / "events" / "fundamental_events.parquet").stat().st_size,
+            sha256=sha(base / "events" / "fundamental_events.parquet"))
+        (base / "events" / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+        events_sha = sha(base / "events" / "manifest.json")
+        self.produce("variants-out", ["be", "grp_sic2"], identity_bridge=base / "bridge",
+                     identity_bridge_sha256=bridge_sha, fund_events=base / "events", fund_events_sha256=events_sha)
+        for name in ("be", "grp_sic2"):
+            np.testing.assert_array_equal(self.fx.field("variants-out", name), self.fx.field("issuer", name), name)
         # Events with no row for any linked CIK: every cell NaN, nothing refused.
-        lone_sha = write_events(base / "lone", [x for x in EVENTS if x[0] == 7777], [(7777, at(2024, 1, 1), 1000)])
+        lone_sha = write_events(base / "lone", [x for x in EVENTS if x[0] == 7777],
+                                [(7777, at(2024, 1, 1), 1000, "0000007777-24-000000")])
         self.produce("lone-out", ["be", "grp_ff12"], fund_events=base / "lone", fund_events_sha256=lone_sha)
         for name in ("be", "grp_ff12"):
             self.assertTrue(np.all(np.isnan(self.fx.field("lone-out", name))), name)
+
+    def test_library_v4_field_names_are_producible(self):
+        # atx-impl/strategies/fund_industry_ic_v4.json (T24, pool-7 3bb3fbf3) declares these non-base fields.
+        declared = ["mkt_ret", "si_shares", "si_dtc", "iv_atm_21d", "earn_recent", "shares_out", "be", "at", "at_lag4",
+                    "lt", "che", "debt", "sale_ttm", "gp_ttm", "oi_ttm", "ni_ttm", "ni_q", "ni_q_lag4", "be_lag1q",
+                    "cfo_ttm", "capx_ttm", "xrd_ttm", "dvc_ttm", "prstkc_ttm", "sstk_ttm", "txt_q", "txt_q_lag4",
+                    "shrs_q", "shrs_q_lag4", "noa", "sue", "fscore", "me_company", "grp_ff12", "grp_ff49"]
+        self.assertEqual([x for x in declared if x not in tool.ALL_FIELDS], [])
+        self.assertIn("be_lag1q_lag4", tool.ISSUER_FIELDS)  # canonical dROE (controller note)
 
     def test_cli_issuer_subset(self):
         with contextlib.redirect_stdout(io.StringIO()):

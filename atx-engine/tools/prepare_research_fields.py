@@ -28,7 +28,8 @@ Sources (all read-only; exact bytes hashed, pinned against their producers' rece
   ``grp_ff12``, ``grp_ff49``) read the CIK's latest row with clock < the mark of session d-L, L =
   ``--fund-lag-sessions`` (declared 1), with 200/400/550-day staleness, on primary (P) lines only;
   ``me_company`` sums shares_out x raw_close over every role line (P and J) of the issuer. The input
-  schemas are read through a small adapter (``BRIDGE_ADAPTER``, ``EVENTS_ADAPTER``).
+  contracts (``atx.identity-bridge/v1``, ``atx.fundamental-events/v1``) are bound in ``BRIDGE_ADAPTER``,
+  ``EVENTS_ADAPTER`` and ``SIC_ADAPTER``.
 
 Every manifest field entry carries a machine-readable ``point_in_time`` flag (see
 ``POINT_IN_TIME_DEFINITION``); a false flag names its reason and the non-PIT aspect (values or
@@ -46,7 +47,6 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
-import fnmatch
 import hashlib
 import io
 import json
@@ -263,8 +263,12 @@ EXCLUDED_SOURCE_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 FUND_LAG_SESSIONS_DECLARED = 1   # v4-prereg R2: +1 declared lag session (--fund-lag-sessions 1)
-FUND_STALE_DAYS = 200            # quarterly / instant rows
-FUND_STALE_DAYS_ANNUAL = 400     # annual-only rows
+# Link visibility (T18 section 7 rule quoted by the T21 brief): available_at < date(session) 22:00 UTC, strict.
+# T19's intervals already apply r4's available_at <= mark, so the strict rule only drops the first session of a
+# link version whose available_at is exactly that session's 22:00 mark (FC1 evidence = filed + 46 h lands there).
+LINK_AVAILABLE_STRICT = True
+FUND_STALE_DAYS = 200            # rows of quarterly filers (events staleness_days)
+FUND_STALE_DAYS_ANNUAL = 400     # rows of annual-only filers
 GRP_STALE_DAYS = 550
 MARK_NS = 22 * 3_600_000_000_000  # the role close mark: session date 22:00 UTC
 SEAL_NS = (SEAL - EPOCH).days * DAY_NS
@@ -278,25 +282,30 @@ SIC_MAPPING_VERSIONS = {"ff12": "french_siccodes12_v2", "ff49": "french_siccodes
 
 LINK_RULE = (
     "line -> CIK: the pinned identity-bridge link of the line whose [start, end_incl] contains date(session t) and whose "
-    "available_at < date(session t) 22:00 UTC; the value is published on primary (P) lines only (secondary J lines, "
+    f"available_at {'<' if LINK_AVAILABLE_STRICT else '<='} date(session t) 22:00 UTC; the value is published on primary "
+    "(P) lines only (secondary J lines, "
     "unlinked lines and lines with two qualifying links to different CIKs -> NaN)")
 FUND_CLOCK = (
     "fund-events-lagged-v1: the linked CIK's latest events row with clock < date(session t-L) 22:00 UTC, L = {lag} declared "
     "lag session(s) on the role calendar (--fund-lag-sessions): usable from the first session whose 22:00 UTC mark follows "
-    "the clock, plus L sessions; sessions t < L -> NaN; clock = FSDS SUB accepted_utc of the filing, else FC1 (filed "
-    "00:00 UTC + 46 h, labelled); rows sharing one CIK and clock: the later events-file row wins. " + LINK_RULE)
+    "the clock, plus L sessions; sessions t < L -> NaN; clock = events accepted_utc (FSDS SUB accepted_utc of the "
+    "filing, else FC1 = filed 00:00 UTC + 46 h, clock_basis cf_fc1); latest row = max accepted_utc, tie by accession. "
+    + LINK_RULE)
 FUND_STALENESS = (
-    "age = date(session) - period_end of the visible events row, calendar days; age > 200 -> NaN (> 400 when the row is "
-    "annual-only); no visible row or null period_end -> NaN; a visible NaN item stays NaN (no skip-back to an older row); "
-    "latest-clock-wins restatements: a restated value enters at the restating filing's clock and is never backdated")
+    "age = date(session) - period_end of the visible events row, calendar days; age > staleness_days of that row -> NaN "
+    "(200, or 400 for an annual-only filer: no 10-Q/10-QT in the prior 400 days; only 200 and 400 are admitted); no "
+    "visible row or null period_end -> NaN; the whole row is used: a visible NaN item stays NaN (no skip-back to an "
+    "older row); latest-clock-wins restatements: a restated value enters at the restating filing's clock and is never "
+    "backdated")
 FUND_CAVEATS = [
     "values modeled/unaccepted (not F.1-accepted): bounded v4 events producer over the CompanyFacts CF-R snapshot "
     "2026-09-20 (us-gaap + dei only: IFRS filers and most ADRs have no values) and FSDS SUB acceptance clocks",
     "identity from the pinned identity bridge (r4 rehearsal links, rehearsal_identity recorded in source_checks; "
     "scope_complete=false: about 80% of common member cells are linked)",
     "FC1 fallback clock (filed + 46 h) where FSDS SUB lacks the accession: counted per field (fc1_finite_member_cells)",
-    "item definitions (concept chains, TTM and discrete-quarter derivation) belong to the events producer "
-    "(atx-engine/tools/fundamental_events_schema.md); the events manifest SHA-256 is pinned in sources",
+    "item definitions (concept chains, TTM and discrete-quarter derivation, zero-fill rules for debt, dvc_ttm, "
+    "prstkc_ttm, sstk_ttm) belong to the events producer (atx-engine/tools/fundamental_events_schema.md, "
+    "atx.fundamental-events/v1); the events manifest SHA-256 is pinned in sources",
 ]
 ME_CLOCK = (
     "role-close-mark: sum over every role line with a qualifying P or J identity-bridge link to the CIK at session t of "
@@ -314,10 +323,12 @@ ME_CAVEATS = [
 ]
 GRP_CLOCK = (
     "fund-events-lagged-v1 applied to the SIC events table: the linked CIK's latest SIC row (FSDS SUB sic as of the "
-    "filing) with clock < date(session t-L) 22:00 UTC, L = {lag}; sessions t < L -> NaN; a row whose sic is null or "
+    "filing; max accepted_utc, tie by accession) with accepted_utc < date(session t-L) 22:00 UTC, L = {lag}; sessions "
+    "t < L -> NaN; a row whose sic is null or "
     "outside [100, 9999] carries no SIC and is skipped (counted). " + LINK_RULE)
 GRP_STALENESS = (
-    "age = date(session) - UTC date of the visible SIC row's clock, calendar days; age > 550 -> NaN; no visible SIC row -> "
+    "age = date(session) - UTC date of the visible SIC row's accepted_utc, calendar days; age > 550 -> NaN; no visible "
+    "SIC row -> "
     "NaN; NaN is an unknown label (the VM keeps NaN labels out of every group)")
 GRP_CAVEATS = [
     "SIC as of each filing (FSDS SUB), not the SEC's current snapshot: about 11% of CIKs changed SIC in 2015-2024",
@@ -350,9 +361,10 @@ FUND_ITEMS = (
     ("sstk_ttm", "USD", "proceeds from issuance of common stock, trailing twelve months"),
     ("txt_q", "USD", "income tax expense, latest discrete fiscal quarter"),
     ("txt_q_lag4", "USD", "income tax expense, the same fiscal quarter one year earlier"),
-    ("shrs_q", "shares", "common shares outstanding at the latest period end"),
-    ("shrs_q_lag4", "shares", "common shares outstanding four fiscal quarters earlier"),
-    ("noa", "USD", "net operating assets at the latest period end"),
+    ("shrs_q", "shares", "weighted-average diluted (else basic) shares of the fiscal quarter (else year) ending at "
+                         "the latest period end"),
+    ("shrs_q_lag4", "shares", "the same share concept ending four fiscal quarters earlier (pair NaN on a scale error)"),
+    ("noa", "USD", "net operating assets at the latest period end: at - che - lt + debt"),
     ("noa_lag4", "USD", "net operating assets four fiscal quarters earlier"),
     ("sue", "unitless", "standardized unexpected earnings (seasonal random walk, 8 quarters, first-reported EPS)"),
     ("fscore", "count 0-9", "Piotroski F-score, all nine terms required"),
@@ -361,7 +373,7 @@ ISSUER_FIELDS = {}
 for _name, _units, _what in FUND_ITEMS:
     ISSUER_FIELDS[_name] = {
         "group": "issuer", "kind": "fund", "item": _name, "point_in_time": True, "lagged": True,
-        "source_columns": [_name, "cik", "clock", "period_end", "annual_only"],
+        "source_columns": [_name, "cik", "accepted_utc", "accession", "period_end", "staleness_days"],
         "units": _units, "clock": FUND_CLOCK, "staleness": FUND_STALENESS, "caveats": FUND_CAVEATS,
         "definition": f"{_what}: item `{_name}` of the pinned fundamental events artifact, value of the linked CIK's "
                       f"latest visible events row (see clock and staleness)"}
@@ -380,7 +392,8 @@ for _name, _code, _units in (
                              "no FF49 industry -> NaN (never 49 Other)")):
     ISSUER_FIELDS[_name] = {
         "group": "issuer", "kind": "grp", "code": _code, "point_in_time": True, "lagged": True,
-        "source_columns": ["sic", "cik", "clock"], "units": _units, "clock": GRP_CLOCK, "staleness": GRP_STALENESS,
+        "source_columns": ["sic", "cik", "accepted_utc", "accession"], "units": _units, "clock": GRP_CLOCK,
+        "staleness": GRP_STALENESS,
         "caveats": GRP_CAVEATS,
         "definition": f"{_code} of the linked CIK's latest visible valid SIC row: sic2 = floor(sic / 100); ff12 / ff49 = "
                       f"atx_db.reference_classifications fama_french_12_for_sic / fama_french_49_for_sic "
@@ -1388,94 +1401,58 @@ def market_return_field(role: Role, output: Path, budget: Budget):
 # Issuer-level fields: input adapter (T19 bridge, T20 events), links, per-session joins
 # ---------------------------------------------------------------------------
 
-# Adapter: which manifest-listed parquet files and columns carry each input. Written against the T18 section 7
-# declarations while T19/T20 were being written; candidates are tried in order and the chosen column is recorded
-# in source_checks. Files are every manifest-listed ".parquet" path whose basename matches the pattern.
+# Adapter: the committed input contracts. T19 `atx.identity-bridge/v1` (prepare_identity_bridge.py docstring,
+# commit 83fbbf84) and T20 `atx.fundamental-events/v1` (fundamental_events_schema.md, commit 77771dd2). Each
+# input is one manifest-listed parquet file, verified against the manifest's bytes and SHA-256 before parsing.
 BRIDGE_ADAPTER = {
-    "files": ("*link*.parquet",), "exclude": (),
-    "columns": {"sr_id": ("sr_id", "security_id", "perm_security_id"), "cik": ("cik",),
-                "start": ("start", "link_start"), "end_incl": ("end_incl", "link_end"),
-                "available_at": ("available_at",), "primary": ("primary", "link_primary"),
-                "basis": ("basis", "link_basis")},
-    "optional": ("basis",),
+    "schema": "atx.identity-bridge/v1", "file": "links.parquet",
+    "columns": ("sr_id", "cik", "start", "end_incl", "available_at", "primary", "basis"),
 }
 EVENTS_ADAPTER = {
-    "files": ("*event*.parquet",), "exclude": ("*sic*",),
-    "columns": {"cik": ("cik",), "clock": ("available_at", "clock_utc", "clock", "accepted_utc"),
-                "period_end": ("period_end", "report_period"), "annual_only": ("annual_only",),
-                "clock_basis": ("clock_basis", "clock_source")},
-    "optional": ("annual_only", "clock_basis"),
+    "schema": "atx.fundamental-events/v1", "file": "fundamental_events.parquet",
+    "columns": ("cik", "accepted_utc", "accession", "clock_basis", "period_end", "staleness_days"),
 }
 SIC_ADAPTER = {
-    "files": ("*sic*.parquet",), "exclude": (),
-    "columns": {"cik": ("cik",), "clock": ("available_at", "clock_utc", "clock", "accepted_utc"), "sic": ("sic",)},
-    "optional": (),
+    "schema": "atx.fundamental-events/v1", "file": "sic_events.parquet",
+    "columns": ("cik", "accepted_utc", "accession", "sic"),
 }
-BRIDGE_KINDS = {"P": True, "J": False}          # primary flag; any other value (N, ...) is dropped and counted
-BRIDGE_EXCLUDED_BASES = ("current_ticker_verified",)  # T18: starts at the 2026 snapshot, never backfills history
+BRIDGE_KINDS = ("P", "J")                              # any other primary value (N, ...) is dropped and counted
+BRIDGE_EXCLUDED_BASES = ("current_ticker_verified",)   # T18: starts at the 2026 snapshot, never backfills history
+STALENESS_DAYS_ALLOWED = (FUND_STALE_DAYS, FUND_STALE_DAYS_ANNUAL)  # v4-prereg R2: 200 / 400 only
 
 
-def pinned_manifest(directory: Path, expected_sha256: str, what: str):
+def pinned_manifest(directory: Path, expected_sha256: str, what: str, schema: str):
     blob = (directory / "manifest.json").read_bytes()
     digest = sha_bytes(blob)
     if digest != str(expected_sha256).lower():
         raise ValueError(f"{what} manifest SHA-256 does not match --{what}-sha256")
     m = json.loads(blob)
-    if m.get("status") != "complete":
-        raise ValueError(f"{what} manifest status is not complete (unpublished artifact)")
-    return m, {"path": str((directory / "manifest.json").resolve()), "bytes": len(blob), "sha256": digest,
-               "schema": m.get("schema")}
+    if m.get("schema") != schema or m.get("status") != "complete":
+        raise ValueError(f"{what} manifest is not a complete {schema} artifact")
+    return m, {"path": str((directory / "manifest.json").resolve()), "bytes": len(blob), "sha256": digest}
 
 
-def listed_files(manifest: dict, what: str) -> dict:
-    files = manifest.get("files")
-    if isinstance(files, dict):
-        return {str(k): v for k, v in files.items()}
-    if isinstance(files, list):
-        return {str(f.get("path") or f.get("name")): f for f in files}
-    raise ValueError(f"{what} manifest lists no files")
-
-
-def read_listed(directory: Path, manifest: dict, adapter: dict, what: str, budget: Budget):
-    """Every manifest-listed parquet file the adapter selects, hash-verified from the exact bytes parsed, concatenated
-    in path order, with the adapter's columns picked from the candidates (first present wins)."""
-    listed = listed_files(manifest, what)
-    names = sorted(rel for rel in listed if rel.endswith(".parquet")
-                   and any(fnmatch.fnmatch(Path(rel).name, p) for p in adapter["files"])
-                   and not any(fnmatch.fnmatch(Path(rel).name, p) for p in adapter["exclude"]))
-    if not names:
-        raise ValueError(f"{what}: no manifest-listed parquet file matches {list(adapter['files'])}")
-    tables, sources, picked = [], [], None
-    for rel in names:
-        entry = listed[rel]
-        blob = (directory / rel).read_bytes()
-        digest = sha_bytes(blob)
-        if len(blob) != int(entry.get("bytes", -1)) or digest != entry.get("sha256"):
-            raise ValueError(f"{what}: {rel} does not match its manifest entry")
-        schema = pq.read_schema(pa.BufferReader(blob))
-        if picked is None:
-            picked = {}
-            for role, candidates in adapter["columns"].items():
-                hit = next((c for c in candidates if c in schema.names), None)
-                if hit is None and role not in adapter["optional"]:
-                    raise ValueError(f"{what}: no column for {role} (tried {list(candidates)})")
-                picked[role] = hit
-        extra = adapter.get("extra", ())
-        missing = [c for c in extra if c not in schema.names]
-        if missing:
-            raise ValueError(f"{what}: {rel} lacks requested column(s) {missing}")
-        wanted = [c for c in picked.values() if c is not None] + [c for c in extra if c not in picked.values()]
-        if any(c not in schema.names for c in wanted):
-            raise ValueError(f"{what}: {rel} has a different schema from {names[0]}")
-        tables.append(pq.read_table(pa.BufferReader(blob), columns=wanted))
-        sources.append({"path": str((directory / rel).resolve()), "bytes": len(blob), "sha256": digest})
-        del blob
-        budget.check(f"{what}-read")
-    try:
-        table = pa.concat_tables(tables)
-    except pa.ArrowInvalid as exc:
-        raise ValueError(f"{what}: listed parquet files disagree on the schema ({exc})") from None
-    return table, sources, picked
+def read_listed(directory: Path, manifest: dict, adapter: dict, what: str, budget: Budget, extra=()):
+    """The adapter's manifest-listed parquet file, hash-verified from the exact bytes parsed; contract columns plus
+    `extra` (requested items) must all be present."""
+    entry = (manifest.get("files") or {}).get(adapter["file"])
+    if not isinstance(entry, dict):
+        raise ValueError(f"{what}: manifest does not list {adapter['file']}")
+    blob = (directory / adapter["file"]).read_bytes()
+    digest = sha_bytes(blob)
+    if len(blob) != int(entry.get("bytes", -1)) or digest != entry.get("sha256"):
+        raise ValueError(f"{what}: {adapter['file']} does not match its manifest entry")
+    names = pq.read_schema(pa.BufferReader(blob)).names
+    missing = [c for c in adapter["columns"] if c not in names]
+    if missing:
+        raise ValueError(f"{what}: {adapter['file']} lacks contract column(s) {missing}")
+    missing = [c for c in extra if c not in names]
+    if missing:
+        raise ValueError(f"{what}: {adapter['file']} lacks requested column(s) {missing}")
+    table = pq.read_table(pa.BufferReader(blob), columns=list(adapter["columns"]) + [c for c in extra
+                                                                                     if c not in adapter["columns"]])
+    budget.check(f"{what}-read")
+    return table, [{"path": str((directory / adapter["file"]).resolve()), "bytes": len(blob), "sha256": digest}]
 
 
 def column_of(table, name: str):
@@ -1493,10 +1470,8 @@ def as_instants_ns(col, what: str) -> np.ndarray:
 
 
 def as_days(col, what: str, null_day=None) -> np.ndarray:
-    if pa.types.is_date64(col.type):
-        col = pc.cast(col, pa.date32())
     if not pa.types.is_date32(col.type):
-        raise ValueError(f"{what} is {col.type}, expected a date")
+        raise ValueError(f"{what} is {col.type}, expected date32")
     if col.null_count and null_day is None:
         raise ValueError(f"{what} has null values")
     days = pc.fill_null(pc.cast(col, pa.int32()), 0).to_numpy(zero_copy_only=False).astype(np.int64)
@@ -1505,72 +1480,55 @@ def as_days(col, what: str, null_day=None) -> np.ndarray:
     return days
 
 
-def as_integer_ids(col, what: str, prefix: str = "") -> np.ndarray:
-    """Positive i64 ids from an integer column or a digit string column (optionally prefixed)."""
-    if col.null_count:
-        raise ValueError(f"{what} has null values")
-    if pa.types.is_integer(col.type):
-        ids = pc.cast(col, pa.int64()).to_numpy(zero_copy_only=False)
-    elif pa.types.is_string(col.type) or pa.types.is_large_string(col.type):
-        if prefix:
-            col = pc.if_else(pc.starts_with(col, prefix), pc.utf8_slice_codeunits(col, len(prefix)), col)
-        if not pc.all(pc.match_substring_regex(col, r"^[0-9]+$")).as_py():
-            raise ValueError(f"{what} is not an integer id")
-        ids = pc.cast(col, pa.int64()).to_numpy(zero_copy_only=False)
-    else:
-        raise ValueError(f"{what} is {col.type}, expected an integer id")
+def as_ids(col, what: str) -> np.ndarray:
+    if not pa.types.is_integer(col.type) or col.null_count:
+        raise ValueError(f"{what} is not a non-null integer column")
+    ids = pc.cast(col, pa.int64()).to_numpy(zero_copy_only=False).astype(np.int64)
     if np.any(ids <= 0):
         raise ValueError(f"{what} is not a positive id")
-    return ids.astype(np.int64)
+    return ids
 
 
 def as_f64(col, what: str) -> np.ndarray:
-    if (pa.types.is_string(col.type) or pa.types.is_large_string(col.type)) and what.endswith(" sic"):
-        digits = pc.fill_null(pc.match_substring_regex(col, r"^[0-9]{1,4}$"), False)
-        col = pc.if_else(digits, col, pa.scalar(None, col.type))  # non-digit SIC text -> null (invalid, skipped)
-        return pc.fill_null(pc.cast(col, pa.float64()), np.nan).to_numpy(zero_copy_only=False).astype(np.float64)
-    if not (pa.types.is_floating(col.type) or pa.types.is_integer(col.type) or pa.types.is_decimal(col.type)):
+    if not (pa.types.is_floating(col.type) or pa.types.is_integer(col.type)):
         raise ValueError(f"{what} is {col.type}, expected a number")
     return pc.fill_null(pc.cast(col, pa.float64()), np.nan).to_numpy(zero_copy_only=False).astype(np.float64)
 
 
+def as_text(col) -> pa.Array:
+    return pc.fill_null(pc.cast(col, pa.string()), "")
+
+
 def load_bridge(directory: Path, expected_sha256: str, role: Role, budget: Budget):
-    """T19 identity bridge -> link rows on the role axis (column, dense CIK, start/end day, available_at ns, P flag)."""
-    m, man_src = pinned_manifest(directory, expected_sha256, "identity-bridge")
+    """T19 identity bridge -> link rows on the role axis (column, CIK, start/end day, available_at ns, P flag)."""
+    m, man_src = pinned_manifest(directory, expected_sha256, "identity-bridge", BRIDGE_ADAPTER["schema"])
     if not isinstance(m.get("rehearsal_identity"), bool):
         raise ValueError("identity-bridge manifest carries no boolean rehearsal_identity flag")
-    table, sources, picked = read_listed(directory, m, BRIDGE_ADAPTER, "identity-bridge", budget)
-    sid = as_integer_ids(column_of(table, picked["sr_id"]), "identity-bridge sr_id", LINE_PREFIX)
-    cik = as_integer_ids(column_of(table, picked["cik"]), "identity-bridge cik")
-    start = as_days(column_of(table, picked["start"]), "identity-bridge start")
-    end = as_days(column_of(table, picked["end_incl"]), "identity-bridge end_incl", null_day=OPEN_END_DAY)
-    avail = as_instants_ns(column_of(table, picked["available_at"]), "identity-bridge available_at")
-    kind = column_of(table, picked["primary"])
-    if pa.types.is_boolean(kind.type):
-        if kind.null_count:
-            raise ValueError("identity-bridge primary has null values")
-        is_p = kind.to_numpy(zero_copy_only=False).astype(bool)
-        known = np.ones(len(is_p), dtype=bool)
-    else:
-        text = pc.fill_null(pc.cast(kind, pa.string()), "")
-        is_p = pc.equal(text, "P").to_numpy(zero_copy_only=False)
-        known = pc.is_in(text, value_set=pa.array(list(BRIDGE_KINDS))).to_numpy(zero_copy_only=False)
-    excluded = np.zeros(len(sid), dtype=bool)
-    if picked["basis"] is not None:
-        basis = pc.fill_null(pc.cast(column_of(table, picked["basis"]), pa.string()), "")
-        excluded = pc.is_in(basis, value_set=pa.array(list(BRIDGE_EXCLUDED_BASES))).to_numpy(zero_copy_only=False)
+    table, sources = read_listed(directory, m, BRIDGE_ADAPTER, "identity-bridge", budget)
+    sid = as_ids(column_of(table, "sr_id"), "identity-bridge sr_id")
+    cik = as_ids(column_of(table, "cik"), "identity-bridge cik")
+    start = as_days(column_of(table, "start"), "identity-bridge start")
+    end = as_days(column_of(table, "end_incl"), "identity-bridge end_incl", null_day=OPEN_END_DAY)
+    avail = as_instants_ns(column_of(table, "available_at"), "identity-bridge available_at")
+    kind = as_text(column_of(table, "primary"))
+    is_p = pc.equal(kind, "P").to_numpy(zero_copy_only=False)
+    known = pc.is_in(kind, value_set=pa.array(list(BRIDGE_KINDS))).to_numpy(zero_copy_only=False)
+    excluded = pc.is_in(as_text(column_of(table, "basis")),
+                        value_set=pa.array(list(BRIDGE_EXCLUDED_BASES))).to_numpy(zero_copy_only=False)
     if np.any(start > end):
         raise ValueError("identity-bridge link with start after end_incl")
     sealed = avail >= SEAL_NS
     pos, on = role.columns_of(sid)
     keep = known & ~excluded & ~sealed & on
-    st = {"rehearsal_identity": m["rehearsal_identity"], "scope_complete": m.get("scope_complete"),
-          "schema": m.get("schema"), "columns": picked, "rows_total": int(len(sid)),
+    st = {"rehearsal_identity": m["rehearsal_identity"], "rule": m.get("rule"),
+          "scope_complete": (m.get("source") or {}).get("scope_complete"), "rows_total": int(len(sid)),
           "rows_dropped_kind_not_p_or_j": int(np.count_nonzero(~known)),
           "rows_dropped_excluded_basis": int(np.count_nonzero(known & excluded)),
           "rows_available_on_or_after_2025_dropped": int(np.count_nonzero(known & ~excluded & sealed)),
           "rows_ignored_off_axis": int(np.count_nonzero(known & ~excluded & ~sealed & ~on)),
-          "rows_used": int(np.count_nonzero(keep)), "rows_used_primary": int(np.count_nonzero(keep & is_p))}
+          "rows_used": int(np.count_nonzero(keep)), "rows_used_primary": int(np.count_nonzero(keep & is_p)),
+          "available_at_rule": "strict: available_at < date(session) 22:00 UTC" if LINK_AVAILABLE_STRICT
+          else "available_at <= date(session) 22:00 UTC"}
     links = {"col": pos[keep].astype(np.int64), "cik": cik[keep], "start": start[keep], "end": end[keep],
              "avail": avail[keep], "primary": is_p[keep]}
     return links, [man_src] + sources, st
@@ -1579,14 +1537,15 @@ def load_bridge(directory: Path, expected_sha256: str, role: Role, budget: Budge
 def resolve_links(links: dict, role: Role, marks: np.ndarray, budget: Budget):
     """Session x line matrix of the dense CIK index (-1 unlinked, -2 ambiguous) and a primary flag.
 
-    A link qualifies at session t when start <= date(t) <= end_incl and available_at < mark(t). Two qualifying links
-    of one line to different CIKs make the cell ambiguous; P and J links to the same CIK make it primary."""
+    A link qualifies at session t when start <= date(t) <= end_incl and available_at < mark(t) (<= when
+    LINK_AVAILABLE_STRICT is off). Two qualifying links of one line to different CIKs make the cell ambiguous
+    (T19 guarantees disjoint intervals per line; kept as a guard); P and J links to one CIK make it primary."""
     ciks = np.unique(links["cik"])
     cidx = np.searchsorted(ciks, links["cik"]).astype(np.int32)
     link = np.full((role.n_dates, role.n), -1, dtype=np.int32)
     primary = np.zeros((role.n_dates, role.n), dtype=bool)
     t_lo = np.maximum(np.searchsorted(role.days, links["start"], side="left"),
-                      np.searchsorted(marks, links["avail"], side="right"))
+                      np.searchsorted(marks, links["avail"], side="right" if LINK_AVAILABLE_STRICT else "left"))
     t_hi = np.searchsorted(role.days, links["end"], side="right")
     never = 0
     for k in np.lexsort((links["avail"], links["start"], links["col"])):
@@ -1607,45 +1566,44 @@ def resolve_links(links: dict, role: Role, marks: np.ndarray, budget: Budget):
 
 
 def load_events(directory: Path, manifest: dict, adapter: dict, items, ciks: np.ndarray, what: str, budget: Budget):
-    """Rows of linked CIKs, sealed rows dropped, stably sorted by clock (file order breaks ties)."""
-    adapter = {**adapter, "extra": tuple(items)}
-    table, sources, picked = read_listed(directory, manifest, adapter, what, budget)
-    cik = as_integer_ids(column_of(table, picked["cik"]), f"{what} cik")
-    clock = as_instants_ns(column_of(table, picked["clock"]), f"{what} clock")
+    """Rows of linked CIKs, sealed rows dropped, ordered by (accepted_utc, accession): the contract's
+    latest-row selection (max accepted_utc, tie by accession) is then the last row visible before a mark."""
+    table, sources = read_listed(directory, manifest, adapter, what, budget, extra=tuple(items))
+    cik = as_ids(column_of(table, "cik"), f"{what} cik")
+    clock = as_instants_ns(column_of(table, "accepted_utc"), f"{what} accepted_utc")
+    accession = as_text(column_of(table, "accession"))
     sealed = clock >= SEAL_NS
     pos = np.minimum(np.searchsorted(ciks, cik), max(len(ciks) - 1, 0))
     linked = (ciks[pos] == cik) if len(ciks) else np.zeros(len(cik), dtype=bool)
     keep = ~sealed & linked
-    order = np.flatnonzero(keep)[np.argsort(clock[keep], kind="stable")]
-    ev = {"clock": clock[order], "cidx": pos[order].astype(np.int64), "picked": picked}
-    st = {"schema": manifest.get("schema"), "columns": picked, "rows_total": int(len(cik)),
+    by_clock = pc.sort_indices(pa.table({"c": clock, "a": accession, "i": np.arange(len(cik))}),
+                               sort_keys=[("c", "ascending"), ("a", "ascending"), ("i", "ascending")])
+    order = by_clock.to_numpy(zero_copy_only=False).astype(np.int64)
+    order = order[keep[order]]
+    ev = {"clock": clock[order], "cidx": pos[order].astype(np.int64)}
+    st = {"schema": manifest.get("schema"), "values_label": manifest.get("values_label"),
+          "rehearsal_identity": manifest.get("rehearsal_identity"), "rows_total": int(len(cik)),
           "rows_available_on_or_after_2025_dropped": int(np.count_nonzero(sealed)),
           "rows_ignored_unlinked_cik": int(np.count_nonzero(~sealed & ~linked)), "rows_used": int(len(order))}
     key = np.lexsort((ev["clock"], ev["cidx"]))
-    same = (np.diff(ev["cidx"][key]) == 0) & (np.diff(ev["clock"][key]) == 0)
-    st["rows_sharing_cik_and_clock"] = int(np.count_nonzero(same))
-    if "period_end" in picked:
-        pe = as_days(column_of(table, picked["period_end"]), f"{what} period_end", null_day=NULL_PERIOD_DAY)[order]
+    st["rows_sharing_cik_and_clock"] = int(np.count_nonzero((np.diff(ev["cidx"][key]) == 0)
+                                                            & (np.diff(ev["clock"][key]) == 0)))
+    if "period_end" in adapter["columns"]:
+        pe = as_days(column_of(table, "period_end"), f"{what} period_end", null_day=NULL_PERIOD_DAY)[order]
         ev["period_end"] = pe
         st["rows_null_period_end"] = int(np.count_nonzero(pe == NULL_PERIOD_DAY))
-    if "annual_only" in picked:
-        if picked["annual_only"] is None:
-            ev["annual"] = np.zeros(len(order), dtype=bool)
-        else:
-            col = column_of(table, picked["annual_only"])
-            if not pa.types.is_boolean(col.type):
-                raise ValueError(f"{what} annual_only is {col.type}, expected bool")
-            st["rows_null_annual_only_as_false"] = int(col.null_count)
-            ev["annual"] = pc.fill_null(col, False).to_numpy(zero_copy_only=False).astype(bool)[order]
-    if "clock_basis" in picked:
-        if picked["clock_basis"] is None:
-            ev["fc1"] = np.zeros(len(order), dtype=bool)
-        else:
-            text = pc.utf8_lower(pc.fill_null(pc.cast(column_of(table, picked["clock_basis"]), pa.string()), ""))
-            ev["fc1"] = pc.match_substring(text, "fc1").to_numpy(zero_copy_only=False).astype(bool)[order]
+        stale = column_of(table, "staleness_days")
+        if not pa.types.is_integer(stale.type) or stale.null_count:
+            raise ValueError(f"{what} staleness_days is not a non-null integer column")
+        ev["stale_days"] = pc.cast(stale, pa.int64()).to_numpy(zero_copy_only=False).astype(np.int64)[order]
+        if np.any(~np.isin(ev["stale_days"], STALENESS_DAYS_ALLOWED)):
+            raise ValueError(f"{what} staleness_days outside the declared {list(STALENESS_DAYS_ALLOWED)}")
+        st["rows_used_staleness_400"] = int(np.count_nonzero(ev["stale_days"] == FUND_STALE_DAYS_ANNUAL))
+        basis = pc.utf8_lower(as_text(column_of(table, "clock_basis")))
+        ev["fc1"] = pc.match_substring(basis, "fc1").to_numpy(zero_copy_only=False).astype(bool)[order]
         st["rows_used_fc1_clock"] = int(np.count_nonzero(ev["fc1"]))
-    if "sic" in picked:
-        sic = as_f64(column_of(table, picked["sic"]), f"{what} sic")[order]
+    if "sic" in adapter["columns"]:
+        sic = as_f64(column_of(table, "sic"), f"{what} sic")[order]
         valid = np.isfinite(sic) & (sic == np.floor(sic)) & (sic >= SIC_RANGE[0]) & (sic <= SIC_RANGE[1])
         st["rows_used_invalid_sic_skipped"] = int(np.count_nonzero(~valid))
         for k in ("clock", "cidx"):
@@ -1706,8 +1664,9 @@ def issuer_fields(names, role: Role, output: Path, budget: Budget, *, bridge: Pa
     sources = {x: list(bridge_sources) for x in names}
     extras = {}
     if fund_names or grp_names:
-        m, man_src = pinned_manifest(events, events_sha256, "fund-events")
-        st["fund_events_manifest"] = {"schema": m.get("schema"), "sha256": man_src["sha256"]}
+        m, man_src = pinned_manifest(events, events_sha256, "fund-events", EVENTS_ADAPTER["schema"])
+        st["fund_events_manifest"] = {"sha256": man_src["sha256"], "values_label": m.get("values_label"),
+                                      "rehearsal_identity": m.get("rehearsal_identity"), "items": m.get("items")}
     if fund_names:
         items = [ISSUER_FIELDS[x]["item"] for x in fund_names]
         fund, src, st["fund_events"] = load_events(events, m, EVENTS_ADAPTER, items, ciks, "fund-events", budget)
@@ -1761,9 +1720,7 @@ def issuer_fields(names, role: Role, output: Path, budget: Budget, *, bridge: Pa
                 has = e >= 0
                 es = np.maximum(e, 0)
                 if len(fund["clock"]):
-                    age = day - fund["period_end"][es]
-                    limit = np.where(fund["annual"][es], FUND_STALE_DAYS_ANNUAL, FUND_STALE_DAYS)
-                    fresh = has & (age <= limit)
+                    fresh = has & ((day - fund["period_end"][es]) <= fund["stale_days"][es])
                     fc1 = fund["fc1"][es]
                 else:
                     fresh = fc1 = np.zeros(n, dtype=bool)
