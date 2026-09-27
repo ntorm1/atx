@@ -599,8 +599,11 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& 
     if (!x.present[t * n + i]) { ++day.blocked_absent; continue; }
     const f64 requested = s.order[i] - s.held[i];
     if (requested == 0) { s.active[i] = 0; continue; }
-    assert(!cache.on() || !std::isnan(cache.adv[i])); // fill_liquidity formed it
-    const auto liquidity = cache.on()
+    // fill_liquidity formed it (MARK only cancels orders). Fail loud in debug; in
+    // release an unformed (NaN) entry recomputes the window -- the same arithmetic, so
+    // the same bytes -- instead of reading as an unusable ADV that silently fills nothing.
+    assert(!cache.on() || !std::isnan(cache.adv[i]));
+    const auto liquidity = cache.on() && !std::isnan(cache.adv[i])
         ? liquidity_row(c, WindowLiquidity{cache.adv[i], cache.sigma[i]})
         : liquidity_row(c, t, i);
     const auto priced = c.model.cost(i, t, requested, liquidity.row);
