@@ -23,6 +23,8 @@ RULE_VERSION = "submissions-extract-v1"
 ARCHIVE_SHA = "702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165"
 OBSERVED_AT = "2026-09-20T00:07:35.073781"
 TARGET_BYTES = 55_000_000
+MAX_BATCH_MEMBERS = 4000
+MAX_BATCH_CIKS = 4000
 ITEM_202 = re.compile(r"(^|[^0-9])2\.02([^0-9]|$)")
 SOURCE_COLUMNS = (
     ("cik", "string"), ("accession_number", "string"),
@@ -130,16 +132,18 @@ def _directory_groups(archive):
         yield current, group
 
 
-def write_plan(archive_path: Path, out: Path, *, ciks=None, target_bytes=TARGET_BYTES):
+def write_plan(archive_path: Path, out: Path, *, ciks=None, target_bytes=TARGET_BYTES,
+               max_members=MAX_BATCH_MEMBERS, max_ciks=MAX_BATCH_CIKS):
     """Stream directory metadata; the JSON plan contains only small batch ranges."""
     archive_path, out = Path(archive_path).resolve(), Path(out).resolve()
     selected = None if ciks is None else sorted({f"{int(cik):010d}" for cik in ciks})
-    if selected == [] or target_bytes < 1:
+    if selected == [] or min(target_bytes, max_members, max_ciks) < 1:
         raise ValueError("empty scope or invalid byte target")
     if (out / "plan.json").exists():
         plan = load_plan(out)
         if (plan["archive"]["path"] != str(archive_path) or plan["scope"]["ciks"] != selected
-                or plan["target_bytes"] != target_bytes or _file_sha256(archive_path) != ARCHIVE_SHA):
+                or plan["target_bytes"] != target_bytes or plan["max_batch_members"] != max_members
+                or plan["max_batch_ciks"] != max_ciks or _file_sha256(archive_path) != ARCHIVE_SHA):
             raise ValueError("submissions existing plan/request differs")
         return plan
     out.mkdir(parents=True, exist_ok=True)
@@ -160,7 +164,12 @@ def write_plan(archive_path: Path, out: Path, *, ciks=None, target_bytes=TARGET_
                 if cik is not None and sum(row["kind"] == 1 for row in members) != 1:
                     raise ValueError(f"missing or duplicate main member: {cik}")
                 size = sum(row["uncompressed_bytes"] for row in members)
-                if batch is None or (batch["members"] and batch["uncompressed_bytes"] + size > target_bytes):
+                if len(members) > max_members:
+                    raise ValueError(f"one whole CIK exceeds the member bound: {cik}; never split its history")
+                if batch is None or (batch["members"] and (
+                        batch["uncompressed_bytes"] + size > target_bytes
+                        or batch["members"] + len(members) > max_members
+                        or batch["main_members"] + int(cik is not None) > max_ciks)):
                     batch = {"batch_id": len(batches), "first_cik": cik, "last_cik": cik,
                              "main_members": 0, "members": 0, "uncompressed_bytes": 0}
                     batches.append(batch)
@@ -193,7 +202,8 @@ def write_plan(archive_path: Path, out: Path, *, ciks=None, target_bytes=TARGET_
     os.replace(temporary, path)
     plan = {"rule_version": RULE_VERSION, "code_files": code_pins(), "archive": archive_info,
             "scope": {"ciks": selected, "all_forms": True, "include_history": True},
-            "target_bytes": target_bytes, "batches": batches, "member_kinds": dict(counts),
+            "target_bytes": target_bytes, "max_batch_members": max_members, "max_batch_ciks": max_ciks,
+            "batches": batches, "member_kinds": dict(counts),
             "directory": {"file": path.name, "sha256": _file_sha256(path), "rows": writer.rows},
             "normalization": "legacy recent-then-history, first accession per CIK; no current identity in extract"}
     _write_json_atomic(out / "plan.json", plan)
