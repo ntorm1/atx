@@ -1,5 +1,27 @@
 # Active task: recent-data DSL ensemble
 
+## T31 re-review 1 — ADDRESSED — Task T31: complete
+task-T31-rereview-1.md: DSR matches §4.E term by term; inverse normal 1e-12; fixture independent (recomputed, 7e-7); no new
+breakage; 2 minors (fallback label with mixed-defined dirs; one bad dir stops output for earlier dirs) deferred to T41.
+- Cherry-picked into pool-2: 81e9977d, 22c30c38, c8358931. Root pytest test_nav_summ + test_fit_composition_weights: 81 passed.
+- Task T31: fix round 1/5 (1 addressed, 0 open; commits 90926148..e33405da). Task T31: complete (d4ec515d..e33405da in pool-4).
+- Ruling: T38 steps 1-2 (aim fit; weighted IC pass with the unchanged IC binary 647c71a7) run BEFORE T37 — they need no v5 C++
+  build and the prereg (56e5b148) is committed; the NAV grid (step 3) waits for the v5-1 build — cost if wrong: none (same
+  inputs either way; receipts record order).
+
+
+## T31 review — spec ❌ (1 Important) — fix round 1 dispatched
+task-T31-review.md: 0C/1I/8m. Important 1: R6' DSR at N = 10 has no producer (nav_summ.py lacks it; T40 is controller-only).
+Named risks checked: ew-theme-v1 path cannot change bytes; masking covers exactly the 3 SHA-derived fields; Memmel SE correct;
+v5_train.sh binds TRAIN only. ⚠️ ratified: -L$LEV suffix; coverage-effective weight definition; extra provenance.aim keys.
+⚠️ root checks at T38: per-name flags + --cadence 1 with aim-partial-v5; mean_gross_leverage CSV vs summary; EW-REFIT vs 9a9c949a.
+- Ruling: DSR producer belongs in nav_summ.py multi-dir mode (V[SR_n] = variance of daily SR across the cells given; single-cell
+  fallback Lo-2002 (1+SR²/2)/T; N via --dsr-n default 10) — cost if wrong: none (T40 consumes it).
+- Task T31: fix round 1/5 (0 addressed, 1 open — DSR producer; resumed t31-aimfit).
+- T31 fix 1 landed: pool-4 e33405da (nav_summ DSR for every dir, --dsr-n 10, V[SR_n] across dirs / Lo fallback; 81 tests pass:
+  12 nav_summ incl. 6 new, 69 fitter). review-T31-fix1.diff packaged; t31-rereview-1 (Opus) dispatched.
+
+
 ## D2 byte-stability on real data (T30 binary, pre-T37) — PASS — 2026-09-27
 Bounded run mega-nav-v5-baseline-check-run (exit 0, 22.4 s; exe b6b21d88 from v5-0): frozen v4.1 TRAIN cell (combined 24a6cc76,
 role 210fff96, fields-v6 32565c32, baseline-v1 c1 f.25 band 2 price-risk-v1) -> recipe.json af058239 and
