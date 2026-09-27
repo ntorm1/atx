@@ -1,5 +1,16 @@
 # Active task: recent-data DSL ensemble
 
+## T41 fix wave — handed in; scoped re-review dispatched — 2026-09-27
+t41-fix (Opus 5.5, pool-3 feat/mega-alpha-v5-t41fix-20260927, base faf5943f): 927343ac (I1 release fallback), 9a9bb5d3
+(nav_summ M1 all-rows gross/net + gate label, M2 cost/GMV-tau numerator = sum trade_cost_dollars/pretrade_nav over the tau
+sessions [deployment cost is booked on the next row, so dropping the row alone changed nothing], M5 warnings, M7 nav_summ_run
+provenance per row), 76c879f1 report. pytest 87 (nav_summ 18 incl. a pre-fix-vs-post-fix field-identity test; fitter 69).
+No GoogleTest for I1 (anonymous namespace; debug assert fires first). review-T41fix.diff packaged; t41-rereview dispatched.
+- Ruling: root cherry-picks and verifies (build v5-2, tests, D2, nav_summ 13-cell diff) while the re-review runs — compile
+  evidence is what the desk-check lacks (v5-0 precedent); a finding the re-review opens is adjudicated at the breaker (no
+  second fix wave) -- cost if wrong: one extra build tag.
+
+
 ## T41 whole-branch review — ready to merge after 1 Important — 2026-09-27
 task-T41-review.md (Opus 5.5; packages review-v5-only.diff 41fb5e39..ce04d7d5 primary, review-v5-branch.diff d63a7058..ce04d7d5
 minus untracked .mypy_cache deletion hunks and SHA-pinned generated library/recipe JSON). 0C / 1I / 7 new minors; named risks
