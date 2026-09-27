@@ -1072,7 +1072,8 @@ TEST(StrategyIcRunner, AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged) {
     const auto name=role_result.at("role").get<std::string>();
     EXPECT_FALSE(read_json(dir.path/"plain"/(name+"_combined.json")).contains("research_fields_manifest_sha256"));
   }
-  EXPECT_EQ(plain.log.find("IC fields-loaded"),std::string::npos);
+  for (const auto* line:{"IC fields-verified","IC field-load","IC field-release"})
+    EXPECT_EQ(plain.log.find(line),std::string::npos) << line;
   auto plan_cfg=cfg; plan_cfg.plan_only=true; std::ostringstream plan;
   ASSERT_TRUE(atx::impl::strategy::run_ic(plan_cfg,plan)); EXPECT_FALSE(Json::parse(plan.str()).contains("research_fields"));
   // Pinned but unreferenced fields: identical numerics; only the pin records differ.
