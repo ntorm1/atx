@@ -6,22 +6,25 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from atx_db.quality import QualityResult, evaluate_quality_gate, run_warehouse_quality_checks
 from atx_db.signal_eval import (
+    COVERAGE_DQC_CHECK_NAME,
     IC_HORIZONS,
+    LEAKAGE_DQC_CHECK_NAME,
     IcResult,
+    compute_breadth,
+    compute_coverage,
+    compute_crowding,
+    compute_factor_correlation,
     compute_forward_returns,
     compute_information_coefficient,
+    compute_leakage,
     compute_quantile_spread,
     compute_turnover,
-    compute_factor_correlation,
-    compute_crowding,
-    compute_breadth,
-    compute_leakage,
-    compute_coverage,
+    evaluate_panel,
     load_pit_classifications_for_panel,
     load_survivorship_safe_forward_returns,
     neutralize_panel_by_industry,
-    evaluate_panel,
 )
 
 
@@ -171,10 +174,14 @@ def test_warehouse_forward_returns_are_split_adjusted_and_panel_scoped(tmp_store
             ],
         )
 
+    # Features dated 2019-12-31 and 2020-01-02 are known at 22:00 UTC, after the close: they
+    # enter at the next sessions (2020-01-02 across the New Year holiday, and 2020-01-03), so
+    # they read the returns anchored there (split-neutral 0.0, then 0.10), never the return
+    # anchored on their own date (node 2.2 m1, CLOCKS.md).
     panel = pd.DataFrame(
         {
             "security_id": ["S1", "S1"],
-            "as_of_date": [dt.date(2020, 1, 2), dt.date(2020, 1, 3)],
+            "as_of_date": [dt.date(2019, 12, 31), dt.date(2020, 1, 2)],
         }
     )
     result = _derive_forward_returns_from_prices(
@@ -184,6 +191,10 @@ def test_warehouse_forward_returns_are_split_adjusted_and_panel_scoped(tmp_store
     ).sort_values("as_of_date")
 
     assert len(result) == 2
+    assert pd.to_datetime(result["as_of_date"]).dt.date.tolist() == [
+        dt.date(2019, 12, 31),
+        dt.date(2020, 1, 2),
+    ]
     assert result.iloc[0]["forward_return"] == pytest.approx(0.0)
     assert result.iloc[1]["forward_return"] == pytest.approx(0.10)
 
@@ -625,13 +636,6 @@ def test_compute_correlation_is_order_invariant() -> None:
 # ---------------------------------------------------------------------------
 # PF4-S1-3: gated factor DQC (leakage + coverage)
 # ---------------------------------------------------------------------------
-
-from atx_db.quality import QualityResult, evaluate_quality_gate, run_warehouse_quality_checks
-from atx_db.signal_eval import (
-    LEAKAGE_DQC_CHECK_NAME,
-    COVERAGE_DQC_CHECK_NAME,
-)
-
 
 def test_planted_leaky_factor_is_red_and_lagged_is_green() -> None:
     rng = np.random.default_rng(4)

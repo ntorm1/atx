@@ -44,7 +44,7 @@ if str(_SOURCE_ROOT) not in sys.path:
 # Bound every template and fixture-copy connection before running any bootstrap
 # SQL. Under xdist, one DuckDB thread per worker also avoids oversubscription.
 _DUCKDB_TEST_THREADS = 1
-_DUCKDB_TEST_MEMORY_LIMIT = "1GB"
+_DUCKDB_TEST_MEMORY_LIMIT = "256MB"
 
 _SCHEMA_CACHE_DIR = _PROJECT_ROOT / ".pytest_cache" / "db_schema_templates"
 _SCHEMA_FINGERPRINT_FILES = (

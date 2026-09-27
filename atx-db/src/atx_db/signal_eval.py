@@ -1071,6 +1071,9 @@ def load_panel_for_eval(
     """Read-only SELECT over ``v_factor_panel`` (the pf3-S10 exported panel).
 
     Never writes to the panel; only filters by an optional date window and/or factor_id set.
+    With ``factor_ids`` the base factor tables are read directly: each value is dated by the
+    22:00 UTC decision rule, retired rows (``is_latest_revision`` = false, a retirement marker
+    on these one-row-per-key tables) are excluded, and the newest visible row per key wins.
     """
 
     filters: list[str] = []
@@ -1089,22 +1092,29 @@ def load_panel_for_eval(
         params: list[Any] = [*factor_list, *factor_list, *date_params]
         return store.con.execute(
             f"""
+            -- is_latest_revision on the factor tables is a RETIREMENT marker, not a
+            -- revision flag: every writer keys one row per (source, factor, security,
+            -- as_of_date), and derived_factor_projection retires the legacy source's rows
+            -- of a projected factor (is_latest_revision=false). The filter drops retired
+            -- rows only; it never hides an older revision (v_factor_panel filters alike).
             WITH raw_factor_values AS (
                 SELECT
                     security_id, as_of_date, factor_id, value, available_at,
-                    source_loaded_at, run_id, input_lineage_json
+                    source_loaded_at, run_id, input_lineage_json, source, factor_value_id
                 FROM fundamental_factor_values
                 WHERE available_at IS NOT NULL
+                  AND is_latest_revision
                   AND factor_id IN ({placeholders})
                 UNION ALL
                 SELECT
                     security_id, as_of_date, factor_id, value, available_at,
-                    source_loaded_at, run_id, input_lineage_json
+                    source_loaded_at, run_id, input_lineage_json, source, factor_value_id
                 FROM cross_domain_factor_values
                 WHERE available_at IS NOT NULL
+                  AND is_latest_revision
                   AND factor_id IN ({placeholders})
             ),
-            -- Every revision enters at its own clock (no stored latest flag): a value is
+            -- Every live row enters at its own clock (no revision flag): a value is
             -- dated by the first date whose {DECISION_HOUR_UTC}:00 UTC cutoff it meets.
             factor_values AS (
                 SELECT
@@ -1119,7 +1129,9 @@ def load_panel_for_eval(
                     available_at,
                     source_loaded_at,
                     run_id,
-                    input_lineage_json
+                    input_lineage_json,
+                    source,
+                    factor_value_id
                 FROM raw_factor_values
             ),
             scoped AS (
@@ -1129,8 +1141,10 @@ def load_panel_for_eval(
             universe_filtered AS (
                 SELECT
                     f.*,
+                    u.is_member AS universe_is_member,
                     row_number() OVER (
-                        PARTITION BY f.security_id, f.as_of_date, f.factor_id
+                        PARTITION BY f.security_id, f.as_of_date, f.factor_id,
+                                     f.source, f.factor_value_id
                         ORDER BY u.valid_from DESC,
                                  u.available_at DESC NULLS LAST,
                                  u.source_loaded_at DESC NULLS LAST,
@@ -1143,7 +1157,6 @@ def load_panel_for_eval(
                  AND u.valid_from <= f.as_of_date
                  AND (u.valid_to IS NULL OR u.valid_to >= f.as_of_date)
                  AND u.as_of_date <= f.as_of_date
-                 AND u.is_member
                  AND u.available_at <= CAST(f.as_of_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR_UTC} HOUR
             ),
             -- The newest revision per key wins whole: a NULL value is a missing
@@ -1154,10 +1167,12 @@ def load_panel_for_eval(
                     row_number() OVER (
                         PARTITION BY security_id, as_of_date, factor_id
                         ORDER BY available_at DESC, source_loaded_at DESC,
-                                 input_lineage_json DESC
+                                 input_lineage_json DESC, source DESC,
+                                 factor_value_id DESC
                     ) AS factor_rn
                 FROM universe_filtered
                 WHERE universe_rn = 1
+                  AND universe_is_member
                   AND available_at <= CAST(as_of_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR_UTC} HOUR
             )
             SELECT
@@ -2011,14 +2026,21 @@ def _derive_forward_returns_from_prices(
     horizons: tuple[int, ...],
     panel: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Build split/dividend-adjusted targets at the panel's formation dates.
+    """Build split/dividend-adjusted targets for the panel's formation keys.
 
     Uses positive finite canonical adjusted-close endpoints directly. Invalid
     adjusted values remain missing observations in the date sequence; they never
-    become raw-price returns or shift a target to a later valid bar. ``panel=None``
-    explicitly requests every formation key; an empty panel returns no rows.
-    DuckDB computes per-security windows and emits only requested panel keys, but
-    an unscoped call still materializes all resulting targets in pandas.
+    become raw-price returns or shift a target to a later valid bar.
+
+    With a panel, each formation key reads the return anchored at its entry session
+    (:func:`survivorship_entry_keys`: the next session after the feature date, clock-aware),
+    returned under the panel's own ``as_of_date`` -- the same entry rule as the
+    survivorship-safe target, so a feature known after a day's close is never scored against
+    that day's close. An empty panel returns no rows. ``panel=None`` returns every bar's
+    return keyed by its ANCHOR (label) date, not by a formation date: a caller joining those
+    rows to features must key them by entry session itself. DuckDB computes per-security
+    windows and emits only requested panel keys, but an unscoped call still materializes all
+    resulting targets in pandas.
     """
 
     horizons = tuple(dict.fromkeys(int(horizon) for horizon in horizons))
@@ -2027,20 +2049,21 @@ def _derive_forward_returns_from_prices(
 
     registered = False
     key_join = ""
+    key_date = "w.as_of_date"
     bar_scope_join = ""
     if panel is not None:
         if panel.empty:
             return pd.DataFrame(
                 columns=["security_id", "as_of_date", "horizon", "forward_return"]
             )
-        keys = panel.loc[:, ["security_id", "as_of_date"]].drop_duplicates().copy()
-        keys["as_of_date"] = pd.to_datetime(keys["as_of_date"]).dt.date
+        keys = survivorship_entry_keys(panel)
         store.con.register("signal_eval_formation_keys", keys)
         registered = True
         key_join = (
             "JOIN signal_eval_formation_keys k "
-            "ON k.security_id = w.security_id AND k.as_of_date = w.as_of_date"
+            "ON k.security_id = w.security_id AND k.entry_date = w.as_of_date"
         )
+        key_date = "k.as_of_date"
         bar_scope_join = (
             "SEMI JOIN signal_eval_formation_keys k "
             "ON k.security_id = b.security_id"
@@ -2053,7 +2076,7 @@ def _derive_forward_returns_from_prices(
         for horizon in horizons
     )
     return_branches = "\nUNION ALL\n".join(
-        f"SELECT w.security_id, w.as_of_date, {horizon} AS horizon, "
+        f"SELECT w.security_id, {key_date} AS as_of_date, {horizon} AS horizon, "
         f"w.close_fwd_{horizon} / w.adjusted_close - 1.0 AS forward_return "
         f"FROM wide_returns w {key_join} "
         f"WHERE w.close_fwd_{horizon} > 0 AND w.adjusted_close > 0 "
@@ -2122,7 +2145,8 @@ def evaluate_panel(
     Reads ``v_factor_panel`` read-only via ``load_panel_for_eval`` unless an explicit
     research ``panel`` is supplied. If ``forward_returns`` is not supplied, ``return_target``
     selects adjusted-close warehouse prices or the governed survivorship-safe target at only the
-    panel's formation keys. ``neutralize_taxonomy`` optionally replaces raw values with strict,
+    panel's formation keys; both enter at the next session after each feature's decision
+    cutoff (:func:`survivorship_entry_keys`). ``neutralize_taxonomy`` optionally replaces raw values with strict,
     point-in-time within-industry ranks; current classifications never leak into past dates.
 
     Runs and persists, in order: the IC / IC-decay surface (PF4-S1-0), the quantile/decile
