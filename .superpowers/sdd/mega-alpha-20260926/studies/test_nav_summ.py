@@ -26,8 +26,11 @@ COLUMNS = ("session_index", "session_ns", "executed", "return_observation", "net
            "trade_cost_return", "traded_dollars", "trade_cost_dollars", "pretrade_gross_dollars", "gross_leverage",
            "net_leverage", "held_names", "one_way_turnover_gmv", "neutralize", "pretrade_nav")
 PRE_T41_BLOB = "5c414e38e45979c8cad616522550dfedb4d46452"  # nav_summ.py at faf5943f (T31 fix 1, c8358931)
+PRE_V6_BLOB = "73fbb7497a639831ffdf0b0c17f84a153cb4d836"   # nav_summ.py at 04e9d5bc (T41 fix wave, 1b68ed90)
+V6_KEYS = {"mean_gross_leverage_post_ramp", "mean_net_leverage_post_ramp", "post_ramp_rows"}
 NEW_KEYS = {"mean_gross_leverage_all_rows", "mean_net_leverage_all_rows", "csv_rows", "leverage_gate_basis",
-            "nav_summ_run"}
+            "nav_summ_run"} | V6_KEYS
+V6_LINE = "   leverage post-ramp "
 DAY = 86_400_000_000_000
 T0 = 1_577_923_200_000_000_000
 
@@ -449,7 +452,8 @@ def test_json_records_argv_script_sha_and_git_head(tmp_path, capsys, monkeypatch
 
 def test_existing_fields_and_text_unchanged_against_the_pre_t41_blob(tmp_path, capsys):
     """Every pre-T41 JSON field and text line is byte-identical for the same inputs, except cost_per_gmv_turnover
-    (T41 M2); the only additions are the all-rows leverage keys and line (M1) and nav_summ_run (M7)."""
+    (T41 M2); the only additions are the all-rows leverage keys and line (M1), nav_summ_run (M7) and the v6 C4
+    post-ramp keys and line."""
     try:
         old = subprocess.run(["git", "cat-file", "-p", PRE_T41_BLOB], capture_output=True, check=True,
                              cwd=Path(NS.__file__).resolve().parent).stdout
@@ -493,8 +497,8 @@ def test_existing_fields_and_text_unchanged_against_the_pre_t41_blob(tmp_path, c
             if key != "cost_per_gmv_turnover":
                 assert json.dumps(new[key], sort_keys=True) == json.dumps(old_row[key], sort_keys=True), key
         assert new["cost_per_gmv_turnover"] < old_row["cost_per_gmv_turnover"]   # the 2e5 $ deployment is out
-    kept = [line for line in texts["new"] if not line.startswith("   leverage over all ")]
-    assert len(texts["new"]) - len(kept) == 3 and len(kept) == len(texts["old"])
+    kept = [line for line in texts["new"] if not line.startswith(("   leverage over all ", V6_LINE))]
+    assert len(texts["new"]) - len(kept) == 6 and len(kept) == len(texts["old"])
     cost = re.compile(r"cost/GMV-tau \S+")
     for new_line, old_line in zip(kept, texts["old"]):
         if "cost/GMV-tau" in old_line:
@@ -502,3 +506,83 @@ def test_existing_fields_and_text_unchanged_against_the_pre_t41_blob(tmp_path, c
             assert cost.sub("cost/GMV-tau <M2>", new_line) == cost.sub("cost/GMV-tau <M2>", old_line)
         else:
             assert new_line == old_line
+
+
+# ------------------------------------------------ v6 prereg C4: post-ramp leverage (L calibration rows)
+def test_post_ramp_leverage_by_hand_in_text_and_json(tmp_path, capsys):
+    nets = list(0.0003 + 0.01 * np.random.default_rng(51).normal(size=100))
+    t = len(nets) + 2                                              # 102 CSV rows: 39 after the first 63
+    gross = np.r_[0.0, 0.2, np.linspace(0.6, 1.1, t - 2)]
+    net = np.r_[0.0, 0.03, np.linspace(0.02, -0.01, t - 2)]
+    d = write_nav(tmp_path / "c", nets, gross=gross, net=net, summary_tau=0.05)
+    out = tmp_path / "res.json"
+    assert NS.main([str(d), "--dsr-n", "2", "--json", str(out)]) == 0
+    text = capsys.readouterr().out
+    r = json.loads(out.read_text())[0]
+    assert NS.RAMP_ROWS == 63 and r["post_ramp_rows"] == t - 63 == 39
+    assert r["mean_gross_leverage_post_ramp"] == pytest.approx(gross[63:].mean(), abs=1e-15)
+    assert r["mean_net_leverage_post_ramp"] == pytest.approx(net[63:].mean(), abs=1e-15)
+    assert r["mean_gross_leverage_post_ramp"] > r["mean_gross_leverage_all_rows"]   # the ramp deflates all rows
+    assert r["mean_gross_leverage_all_rows"] == pytest.approx(gross.mean(), abs=1e-15)  # the gate is unchanged
+    assert (f"   leverage post-ramp over the 39 CSV rows after the first 63 [v6 C4 L calibration; gate stays all "
+            f"rows]: gross_lev_post_ramp {gross[63:].mean():.4f} net_lev_post_ramp {net[63:].mean():+.4f}"
+            in text.splitlines())
+    # 63 rows or fewer: no post-ramp rows, null means, "na" in the text
+    short = write_nav(tmp_path / "s", nets[:61], summary_tau=0.05)   # exactly 63 CSV rows
+    s = NS.construction_stats(NS.load_daily(short, SCEN), NS.scenario_of(NS.load_summary(short)))
+    assert s["csv_rows"] == 63 and s["post_ramp_rows"] == 0
+    assert s["mean_gross_leverage_post_ramp"] is None and s["mean_net_leverage_post_ramp"] is None
+    assert NS.main([str(short), "--dsr-n", "2"]) == 0
+    assert ("   leverage post-ramp over the 0 CSV rows after the first 63 [v6 C4 L calibration; gate stays all "
+            "rows]: gross_lev_post_ramp na net_lev_post_ramp na") in capsys.readouterr().out.splitlines()
+
+
+def test_every_pre_v6_field_and_line_is_byte_identical(tmp_path, capsys):
+    """Against nav_summ.py at 04e9d5bc: every JSON field (cost_per_gmv_turnover included; nav_summ_run is this
+    run's provenance) and every text line is byte-identical for the same inputs; the only additions are the three
+    post-ramp keys and one post-ramp line per dir."""
+    try:
+        old = subprocess.run(["git", "cat-file", "-p", PRE_V6_BLOB], capture_output=True, check=True,
+                             cwd=Path(NS.__file__).resolve().parent).stdout
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("git history with the pre-v6 nav_summ blob is unavailable")
+    (tmp_path / "old").mkdir()
+    path = tmp_path / "old" / "nav_summ_pre_v6.py"
+    path.write_bytes(old)
+    spec = importlib.util.spec_from_file_location("nav_summ_pre_v6", path)
+    pre = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pre)
+    rng = np.random.default_rng(29)
+    t = 200
+    e = rng.normal(size=t)
+    w_sha = write_weights(tmp_path / "w.json", 0.06)
+    nav = 1e9 * np.cumprod(np.r_[1.0, 1.0 + 0.001 * rng.normal(size=t + 1)])
+    cost_dollars = np.r_[0.0, 2e5, 1e3 + 3e3 * rng.random(t - 1), 0.0]
+    executed = [0] + [1] * t + [0]
+    dirs = []
+    for k, (mu, rho) in enumerate(((0.0003, 0.0), (0.0006, 0.8))):
+        nets = mu + 0.01 * (rho * e + math.sqrt(1 - rho * rho) * rng.normal(size=t))
+        gross = np.r_[0.0, 0.2, 0.9 + 0.2 * rng.random(t)]
+        net = np.r_[0.0, 0.01, 0.02 * rng.normal(size=t)]
+        tau = np.r_[np.nan, np.nan, 0.05 + 0.1 * rng.random(t - 1), 0.0]
+        dirs.append(str(write_nav(tmp_path / f"c{k}", list(nets), weights_sha=w_sha, gross=gross, net=net, tau=tau,
+                                  summary_tau=float(np.nanmean(tau[2:-1])), executed=executed,
+                                  cost_dollars=cost_dollars, pretrade_nav=nav,
+                                  cost_return=lagged_cost_return(list(cost_dollars), list(nav)),
+                                  v5={"mean_held_share": 0.9})))
+    texts, rows = {}, {}
+    for tag, module in (("new", NS), ("old", pre)):
+        out = tmp_path / f"{tag}.json"
+        assert module.main(dirs + ["--weights", str(tmp_path / "w.json"), "--reference", dirs[0], "--draws", "200",
+                                   "--dsr-n", "2", "--json", str(out)]) == 0
+        texts[tag] = capsys.readouterr().out.splitlines()
+        rows[tag] = json.loads(out.read_text())
+    assert len(rows["new"]) == len(rows["old"]) == 2
+    for new, old_row in zip(rows["new"], rows["old"]):
+        assert set(new) - set(old_row) == V6_KEYS and set(old_row) <= set(new)
+        for key in old_row:
+            if key != "nav_summ_run":
+                assert json.dumps(new[key], sort_keys=True) == json.dumps(old_row[key], sort_keys=True), key
+        assert new["post_ramp_rows"] == new["csv_rows"] - 63
+    kept = [line for line in texts["new"] if not line.startswith(V6_LINE)]
+    assert len(texts["new"]) - len(kept) == 2 and kept == texts["old"]

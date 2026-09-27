@@ -18,6 +18,9 @@ writes them; rows and definitions mirror its summary):
   leverage gate  mean_gross_leverage_all_rows / mean_net_leverage_all_rows = mean of gross_leverage / net_leverage
                  over EVERY row of the daily CSV: the ruled D1/R6' definition the R6' mechanics gate uses (the
                  return-row means above are kept for continuity and equal the summary's mean_gross_leverage).
+  post-ramp      (v6 prereg C4) mean_gross_leverage_post_ramp / mean_net_leverage_post_ramp = the same means over
+                 the CSV rows after the first 63 (post_ramp_rows of them; null when there are none): the steady-state
+                 book that L is calibrated on. The gate itself stays the all-rows mean.
   netting ratio  NR = tau mean / weighted_standalone_turnover of the weights file whose SHA-256 equals the NAV
                  summary's composition_weights_sha256 (--weights may repeat; a single unmatched file is used
                  with a warning). NR = tau_book / sum_k w_k tau_k (lane contract), reported on TRAIN.
@@ -63,6 +66,7 @@ EULER_GAMMA = 0.5772156649015329
 LEVERAGE_GATE_BASIS = ("all_rows: the R6' mechanics gate (ruled D1/R6') reads mean_gross_leverage_all_rows / "
                        "mean_net_leverage_all_rows; mean_gross_leverage / mean_net_leverage are return-row means "
                        "(previous close), kept for continuity")
+RAMP_ROWS = 63  # v6 prereg C4: the theta-ramp rows dropped from the post-ramp (L calibration) means
 
 
 def fmt(v, spec: str) -> str:
@@ -166,7 +170,11 @@ def construction_stats(daily: dict, scenario: dict) -> dict:
     cost_tau = float((daily["trade_cost_dollars"][keep] / daily["pretrade_nav"][keep]).sum())
     rows = int(daily["gross_leverage"].size)
     any_prev = prev.size > 0
+    post_ramp = rows > RAMP_ROWS
     return {
+        "mean_gross_leverage_post_ramp": float(daily["gross_leverage"][RAMP_ROWS:].mean()) if post_ramp else None,
+        "mean_net_leverage_post_ramp": float(daily["net_leverage"][RAMP_ROWS:].mean()) if post_ramp else None,
+        "post_ramp_rows": max(rows - RAMP_ROWS, 0),
         "mean_gross_leverage": float(daily["gross_leverage"][prev].mean()) if any_prev else None,
         "mean_net_leverage": float(daily["net_leverage"][prev].mean()) if any_prev else None,
         "mean_abs_net_leverage": float(np.abs(daily["net_leverage"][prev]).mean()) if any_prev else None,
@@ -469,6 +477,10 @@ def print_analysis(r: dict, reference: str | None) -> None:
           f"gross_lev_all_rows {fmt(r['mean_gross_leverage_all_rows'], '.4f')} "
           f"net_lev_all_rows {fmt(r['mean_net_leverage_all_rows'], '+.4f')} "
           "(construction gross_lev/net_lev: previous close over return rows)")
+    print(f"   leverage post-ramp over the {r['post_ramp_rows']} CSV rows after the first {RAMP_ROWS} "
+          f"[v6 C4 L calibration; gate stays all rows]: gross_lev_post_ramp "
+          f"{fmt(r['mean_gross_leverage_post_ramp'], '.4f')} net_lev_post_ramp "
+          f"{fmt(r['mean_net_leverage_post_ramp'], '+.4f')}")
     if "warning_tau" in r:
         print(f"   WARNING {r['warning_tau']}")
     if "weights_match" in r:
