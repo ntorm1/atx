@@ -1,0 +1,67 @@
+{
+  "batch_sha256": "037234f9c3f427dd45160a8f19ab7ecbc40dd941699cc73f56c94f717f11ed56",
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "selection": "unique last pre-gap record for four authorized IDs; no return or PnL statistics",
+  "records": [
+    {
+      "row_group": 55,
+      "row_in_group": 15742,
+      "values": {
+        "tradingDate": "2020-01-08",
+        "securityID": 2752722,
+        "ticker_tk": "WAIR",
+        "close": 11.039999961853027,
+        "cumulReturnFactor": 1.0
+      },
+      "ieee754_le_hex": {
+        "close": "d7a33041",
+        "cumulReturnFactor": "000000000000f03f"
+      }
+    },
+    {
+      "row_group": 21,
+      "row_in_group": 45138,
+      "values": {
+        "tradingDate": "2020-01-14",
+        "securityID": 4677674,
+        "ticker_tk": "BOLD",
+        "close": 59.970001220703125,
+        "cumulReturnFactor": 1.0
+      },
+      "ieee754_le_hex": {
+        "close": "48e16f42",
+        "cumulReturnFactor": "000000000000f03f"
+      }
+    },
+    {
+      "row_group": 143,
+      "row_in_group": 62035,
+      "values": {
+        "tradingDate": "2020-01-15",
+        "securityID": 33551,
+        "ticker_tk": "ARQL",
+        "close": 20.0,
+        "cumulReturnFactor": 1.0
+      },
+      "ieee754_le_hex": {
+        "close": "0000a041",
+        "cumulReturnFactor": "000000000000f03f"
+      }
+    },
+    {
+      "row_group": 85,
+      "row_in_group": 72766,
+      "values": {
+        "tradingDate": "2020-01-22",
+        "securityID": 5747162,
+        "ticker_tk": "THOR",
+        "close": 67.98999786376953,
+        "cumulReturnFactor": 1.0
+      },
+      "ieee754_le_hex": {
+        "close": "e1fa8742",
+        "cumulReturnFactor": "000000000000f03f"
+      }
+    }
+  ]
+}

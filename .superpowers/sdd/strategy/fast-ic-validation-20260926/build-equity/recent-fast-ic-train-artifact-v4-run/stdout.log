@@ -1,0 +1,32 @@
+IC loading train admitted_bytes=1546204681
+IC eval-start train 1/48 mom_12_1_s21 slots=5
+IC VM-complete mom_12_1_s21 seconds=1.13738
+IC train 1/48 mom_12_1_s21 seconds=3.04382 vm=1.13738 ic=1.15605 composition=0.598259 sign=1 reason=possible-alpha
+IC eval-start train 2/48 mom_12_1_s63 slots=4
+IC VM-complete mom_12_1_s63 seconds=0.931866
+IC train 2/48 mom_12_1_s63 seconds=2.37491 vm=0.931866 ic=0.859794 composition=0.469147 sign=1 reason=insufficient-evidence
+IC eval-start train 3/48 mom_9_1_s21 slots=5
+IC VM-complete mom_9_1_s21 seconds=0.992127
+IC train 3/48 mom_9_1_s21 seconds=3.10063 vm=0.992127 ic=1.26047 composition=0.696356 sign=1 reason=possible-alpha
+IC eval-start train 4/48 mom_9_1_s63 slots=4
+IC VM-complete mom_9_1_s63 seconds=0.942743
+IC train 4/48 mom_9_1_s63 seconds=2.12479 vm=0.942743 ic=0.767147 composition=0.370383 sign=1 reason=insufficient-evidence
+IC eval-start train 5/48 mom_6_1_s21 slots=5
+IC VM-complete mom_6_1_s21 seconds=0.652639
+IC train 5/48 mom_6_1_s21 seconds=2.11274 vm=0.652639 ic=0.85161 composition=0.528652 sign=1 reason=possible-alpha
+IC eval-start train 6/48 mom_6_1_s63 slots=4
+IC VM-complete mom_6_1_s63 seconds=0.839719
+IC train 6/48 mom_6_1_s63 seconds=2.31918 vm=0.839719 ic=0.920276 composition=0.481043 sign=1 reason=insufficient-evidence
+IC eval-start train 7/48 efficiency_63_s21 slots=4
+IC VM-complete efficiency_63_s21 seconds=0.901883
+IC train 7/48 efficiency_63_s21 seconds=2.42157 vm=0.901883 ic=0.903689 composition=0.538527 sign=1 reason=possible-alpha
+IC eval-start train 8/48 efficiency_63_s63 slots=4
+IC VM-complete efficiency_63_s63 seconds=0.916104
+IC train 8/48 efficiency_63_s63 seconds=2.45869 vm=0.916104 ic=0.873695 composition=0.580472 sign=1 reason=possible-alpha
+IC eval-start train 9/48 sign_consistency_126_s21 slots=4
+IC VM-complete sign_consistency_126_s21 seconds=0.966207
+IC train 9/48 sign_consistency_126_s21 seconds=2.64306 vm=0.966207 ic=0.966012 composition=0.611415 sign=1 reason=possible-alpha
+IC eval-start train 10/48 sign_consistency_126_s63 slots=4
+IC VM-complete sign_consistency_126_s63 seconds=0.920818
+IC train 10/48 sign_consistency_126_s63 seconds=2.41395 vm=0.920818 ic=0.830233 composition=0.557953 sign=1 reason=insufficient-evidence
+IC eval-start train 11/48 risk_scaled_6_1_s21 slots=7

@@ -1,0 +1,77 @@
+{
+  "schema": "atx.selected-stock-transition-basis/v1",
+  "scope": "exact source/role identity and two observed basis points; no portfolio statistics",
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "forensic_sha256": "d109e8139f8b23c848acbbad20d2b36f949521186bfe89ecad94b373eae48740",
+  "role_manifest_sha256": "900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b",
+  "records": [
+    {
+      "ticker": "WCG",
+      "instrument_id": 160964,
+      "source_record": {
+        "ieee754_le_hex": {
+          "close": "00a0ac43",
+          "cumulReturnFactor": "000000000000f03f",
+          "returnFactor": "0000803f",
+          "totalReturn": "00ed693c",
+          "volume": "000000008a573a41"
+        },
+        "row_group": 215,
+        "row_in_group": 113014,
+        "values": {
+          "close": 345.25,
+          "cumulReturnFactor": 1.0,
+          "returnFactor": 1.0,
+          "securityID": 160964,
+          "ticker_tk": "WCG",
+          "totalReturn": 0.01427769660949707,
+          "tradingDate": "2020-01-22",
+          "volume": 1726346.0
+        }
+      },
+      "role_instrument_index": 1499,
+      "role_date_index": 412,
+      "mark_ns": 1579730400000000000,
+      "raw_close": 345.25,
+      "adjusted_close": 345.25,
+      "raw_close_f64_le_hex": "0000000000947540",
+      "adjusted_close_f64_le_hex": "0000000000947540",
+      "source_present": 1,
+      "decision_member": 1
+    },
+    {
+      "ticker": "CNC",
+      "instrument_id": 79219,
+      "source_record": {
+        "ieee754_le_hex": {
+          "close": "3d0a8842",
+          "cumulReturnFactor": "000000000000f03f",
+          "returnFactor": "0000803f",
+          "totalReturn": "809c9a3c",
+          "volume": "0000000062526541"
+        },
+        "row_group": 48,
+        "row_in_group": 36217,
+        "values": {
+          "close": 68.0199966430664,
+          "cumulReturnFactor": 1.0,
+          "returnFactor": 1.0,
+          "securityID": 79219,
+          "ticker_tk": "CNC",
+          "totalReturn": 0.01887345314025879,
+          "tradingDate": "2020-01-23",
+          "volume": 11178768.0
+        }
+      },
+      "role_instrument_index": 1371,
+      "role_date_index": 413,
+      "mark_ns": 1579816800000000000,
+      "raw_close": 68.0199966430664,
+      "adjusted_close": 68.0199966430664,
+      "raw_close_f64_le_hex": "000000a047015140",
+      "adjusted_close_f64_le_hex": "000000a047015140",
+      "source_present": 1,
+      "decision_member": 1
+    }
+  ]
+}

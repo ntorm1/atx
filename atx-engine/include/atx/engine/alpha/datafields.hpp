@@ -17,10 +17,11 @@
 // rolling mean is the engine's full-window / any-NaN -> NaN / causal policy, so
 // the derived `adv{d}` column equals `ts_mean(dollar_volume, d)` bit-for-bit).
 //
-//   * dollar_volume = close · volume
-//   * vwap          = supplied `vwap` field if present, else the typical-price
-//                     proxy (high + low + close) / 3 (documented as a proxy when
-//                     a true volume-weighted price is unavailable)
+//   * dollar_volume = raw_close * volume under V2; close * volume under V1
+//   * vwap          = raw daily-close proxy under V2, requiring finite positive
+//                     raw price and share volume. V1 preserves supplied values
+//                     or derives the old (high + low + close) / 3 proxy.
+//                     Neither derived proxy observes intraday trade prices.
 //   * adv{d}        = ts_mean(dollar_volume, d)  — causal trailing mean
 //
 // Header-only; construction is a COLD path (once per backtest window), so the
@@ -40,6 +41,7 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/vwap_rule.hpp"
 
 namespace atx::engine::alpha::datafields {
 
@@ -143,18 +145,43 @@ inline constexpr atx::f64 kDfNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 
 // Build an augmented Panel: copy the base field set, then append the derived
 // `dollar_volume`, `vwap`, and one `adv{d}` column per requested window. A
-// derived name that is ALREADY supplied in `field_names` is left untouched (the
-// caller's column wins — e.g. a true `vwap` overrides the typical-price proxy).
+// supplied dollar_volume/adv columns remain unchanged. V2 always replaces
+// supplied vwap: an unversioned column cannot bypass the raw-price contract.
 //
-// Requires `close` and `volume` for dollar_volume/adv; if `vwap` is absent it is
-// derived from `high`/`low`/`close` (so those are required only in that case).
+// Requires close and volume. V2 also requires raw_close or an explicit Raw close
+// basis; Unknown never infers that a generic close is raw. V1 requires high/low
+// only when vwap is absent and preserves the old arithmetic and supplied values.
 // Err(NotFound) names the first missing required base field; ragged input maps
 // to Panel::create's Err(InvalidArgument).
 [[nodiscard]] inline atx::core::Result<Panel>
 with_datafields(atx::usize dates, atx::usize instruments, std::vector<std::string> field_names,
                 std::vector<std::vector<atx::f64>> field_data, std::vector<std::uint8_t> universe,
-                std::span<const atx::u16> adv_windows) {
+                std::span<const atx::u16> adv_windows,
+                VwapRule vwap_rule = VwapRule::RawDailyCloseV2,
+                ClosePriceBasis close_basis = ClosePriceBasis::Unknown) {
+  if (vwap_rule != VwapRule::RawDailyCloseV2 &&
+      vwap_rule != VwapRule::AdjustedTypicalV1) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "with_datafields: unknown VWAP rule");
+  }
+  if (close_basis != ClosePriceBasis::Unknown && close_basis != ClosePriceBasis::Raw) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "with_datafields: unknown close basis");
+  }
+  // Validate the Panel geometry before reading any column. In particular,
+  // raw_close used to be an ignored extra column until Panel::create; V2 reads it.
+  if ((instruments != 0 && dates > std::numeric_limits<atx::usize>::max() / instruments) ||
+      field_names.size() != field_data.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "with_datafields: invalid or overflowing panel geometry");
+  }
   const atx::usize cells = dates * instruments;
+  for (const auto &col : field_data) {
+    if (col.size() != cells) return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "with_datafields: field column is not dates*instruments cells");
+  }
+  if (!universe.empty() && universe.size() != cells) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "with_datafields: universe is neither empty nor dates*instruments cells");
+  }
   const std::span<const std::uint8_t> univ{universe};
 
   auto require = [&](std::string_view name) -> atx::core::Result<atx::usize> {
@@ -171,19 +198,41 @@ with_datafields(atx::usize dates, atx::usize instruments, std::vector<std::strin
   ATX_TRY(const atx::usize volume_i, require(datafields::kVolume));
   const std::span<const atx::f64> close{field_data[close_i]};
   const std::span<const atx::f64> volume{field_data[volume_i]};
+  const bool raw_rule = vwap_rule == VwapRule::RawDailyCloseV2;
+  const auto raw_i = detail::field_index(field_names, "raw_close");
+  const auto npos = static_cast<atx::usize>(-1);
+  if (raw_rule && raw_i == npos && close_basis != ClosePriceBasis::Raw) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "with_datafields: raw-daily-close-v2 requires raw_close or an explicit raw close basis");
+  }
+  const std::span<const atx::f64> economic_close =
+      raw_rule && raw_i != npos ? std::span<const atx::f64>{field_data[raw_i]} : close;
 
   // dollar_volume = close · volume, masked to the universe (NaN out-of-universe).
   std::vector<atx::f64> dvol(cells, detail::kDfNaN);
   for (atx::usize i = 0; i < cells; ++i) {
     if (detail::df_in_universe(univ, i)) {
-      dvol[i] = close[i] * volume[i]; // NaN inputs propagate
+      dvol[i] = economic_close[i] * volume[i]; // NaN inputs propagate
     }
   }
 
-  // vwap: keep a supplied column; else derive the typical-price proxy.
-  const bool derive_vwap = !detail::has_field(field_names, datafields::kVwap);
+  // V2 deliberately replaces supplied values: an old augmented panel can carry
+  // a snapshot-adjusted proxy. V1 retains the old supplied-column behavior.
+  const auto supplied_vwap_i = detail::field_index(field_names, datafields::kVwap);
+  const bool derive_vwap = raw_rule || supplied_vwap_i == npos;
   std::vector<atx::f64> vwap;
-  if (derive_vwap) {
+  if (raw_rule) {
+    vwap.assign(cells, detail::kDfNaN);
+    for (atx::usize i = 0; i < cells; ++i) {
+      if (detail::df_in_universe(univ, i) && std::isfinite(economic_close[i]) &&
+          economic_close[i] > 0.0 && std::isfinite(volume[i]) && volume[i] > 0.0) {
+        // (raw_close * volume) / volume has price units. Simplify before
+        // evaluation to avoid product overflow/underflow and preserve raw bits.
+        // This is a daily-close proxy; it contains no intraday trade information.
+        vwap[i] = economic_close[i];
+      }
+    }
+  } else if (derive_vwap) {
     ATX_TRY(const atx::usize high_i, require(datafields::kHigh));
     ATX_TRY(const atx::usize low_i, require(datafields::kLow));
     const std::span<const atx::f64> high{field_data[high_i]};
@@ -220,8 +269,12 @@ with_datafields(atx::usize dates, atx::usize instruments, std::vector<std::strin
     field_data.push_back(std::move(dvol));
   }
   if (derive_vwap) {
-    field_names.emplace_back(datafields::kVwap);
-    field_data.push_back(std::move(vwap));
+    if (supplied_vwap_i != npos) {
+      field_data[supplied_vwap_i] = std::move(vwap);
+    } else {
+      field_names.emplace_back(datafields::kVwap);
+      field_data.push_back(std::move(vwap));
+    }
   }
   for (auto &c : adv_cols) {
     field_names.push_back(std::move(c.first));

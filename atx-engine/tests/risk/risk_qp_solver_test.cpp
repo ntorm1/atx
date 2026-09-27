@@ -23,6 +23,7 @@
 #include <bit>     // std::bit_cast
 #include <cmath>   // std::fabs, std::isfinite
 #include <cstdint> // std::uint64_t
+#include <limits>
 #include <span>
 #include <utility> // std::move
 #include <vector>
@@ -613,5 +614,73 @@ TEST(RiskQpSolver, ZeroObjectiveFeasibleBook) {
   }
 }
 
+
+TEST(RiskQpSparseR1, LegacyAbsoluteDenseAndCsrProduceIdenticalAugmentedAndFactorBooks) {
+  namespace risk = atx::engine::risk;
+  constexpr usize n = 6;
+  const auto model = make_multi_model(n);
+  const std::vector<f64> previous(n, 0.0), q{-0.02, 0.02, -0.01, 0.01, -0.03, 0.03};
+  ConstraintSet cs;
+  cs.pos = PositionCap{0.25};
+  cs.turn = TurnoverBudget{0.8};
+  cs.fexp = FactorExposure{{0}, {0.5}};
+  const auto dense = cs.materialize(model.exposures(), previous, n);
+  ASSERT_TRUE(dense) << dense.error().message();
+  cs.storage.rule = risk::ConstraintStorageRule::SparseCsrV2;
+  const auto sparse = cs.materialize(model.exposures(), previous, n);
+  ASSERT_TRUE(sparse) << sparse.error().message();
+  const auto old_aug = risk::build_augmented(model, 0.5, q, *dense);
+  const auto new_aug = risk::build_augmented(model, 0.5, q, *sparse);
+  ASSERT_EQ(old_aug.A_tilde.nonZeros(), new_aug.A_tilde.nonZeros());
+  ASSERT_EQ(old_aug.A_tilde.outerSize(), new_aug.A_tilde.outerSize());
+  for (Eigen::Index i = 0; i <= old_aug.A_tilde.outerSize(); ++i)
+    EXPECT_EQ(old_aug.A_tilde.outerIndexPtr()[i], new_aug.A_tilde.outerIndexPtr()[i]);
+  for (Eigen::Index i = 0; i < old_aug.A_tilde.nonZeros(); ++i) {
+    EXPECT_EQ(old_aug.A_tilde.innerIndexPtr()[i], new_aug.A_tilde.innerIndexPtr()[i]);
+    EXPECT_EQ(std::bit_cast<atx::u64>(old_aug.A_tilde.valuePtr()[i]),
+        std::bit_cast<atx::u64>(new_aug.A_tilde.valuePtr()[i]));
+  }
+  for (bool factor_space : {false, true}) {
+    ConstrainedQpSolver solver;
+    solver.cfg.iters = 1200;
+    solver.cfg.feas_tol = 1e-7;
+    solver.cfg.factor_space = factor_space;
+    const QpProblem old_problem{model, 0.5, q, *dense}, new_problem{model, 0.5, q, *sparse};
+    const auto old = factor_space ? solver.solve_with_cert(old_problem, risk::AdmmSchedule{})
+                                  : solver.solve_with_cert(old_problem);
+    const auto now = factor_space ? solver.solve_with_cert(new_problem, risk::AdmmSchedule{})
+                                  : solver.solve_with_cert(new_problem);
+    ASSERT_TRUE(old) << old.error().message();
+    ASSERT_TRUE(now) << now.error().message();
+    ASSERT_EQ(old->book.size(), now->book.size());
+    for (usize i = 0; i < old->book.size(); ++i)
+      EXPECT_EQ(std::bit_cast<atx::u64>(old->book[i]), std::bit_cast<atx::u64>(now->book[i]));
+    EXPECT_EQ(std::bit_cast<atx::u64>(old->cert.prim_res), std::bit_cast<atx::u64>(now->cert.prim_res));
+    EXPECT_EQ(std::bit_cast<atx::u64>(old->cert.dual_res), std::bit_cast<atx::u64>(now->cert.dual_res));
+  }
+}
+
+TEST(RiskQpSparseR1, RelativePolicySolvesAndRejectsMalformedBudgetBeforeEitherRoute) {
+  namespace risk = atx::engine::risk;
+  const auto model = make_multi_model(4);
+  const std::vector<f64> q{-0.01, 0.01, -0.02, 0.02};
+  ConstraintSet cs;
+  cs.pos = PositionCap{0.2};
+  cs.storage.rule = risk::ConstraintStorageRule::SparseCsrV2;
+  auto constraints = cs.materialize(model.exposures(), {}, 4);
+  ASSERT_TRUE(constraints);
+  ConstrainedQpSolver solver;
+  solver.cfg.iters = 1200;
+  solver.cfg.feas_tol = 1e-7;
+  solver.cfg.feasibility_rule = risk::ConstraintFeasibilityRule::RelativeEconomicV2;
+  solver.cfg.feasibility_relative_tolerance = 1e-8;
+  const auto out = solver.solve_with_cert(QpProblem{model, 0.5, q, *constraints});
+  ASSERT_TRUE(out) << out.error().message();
+  EXPECT_TRUE(constraints->check_relative_feasible(out->book, 1e-7, 1e-8));
+  constraints->gross_l1_budget = std::numeric_limits<f64>::quiet_NaN();
+  EXPECT_FALSE(solver.solve_with_cert(QpProblem{model, 0.5, q, *constraints}));
+  solver.cfg.factor_space = true;
+  EXPECT_FALSE(solver.solve_with_cert(QpProblem{model, 0.5, q, *constraints}, risk::AdmmSchedule{}));
+}
 
 }  // namespace atxtest_risk_qp_solver_test

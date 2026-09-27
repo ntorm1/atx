@@ -1,0 +1,151 @@
+{
+  "schema": "atx.bounded-qualification/v1",
+  "index": {
+    "path": "build-equity/w2-exposure-ic-qualification-index.json",
+    "sha256": "ef523c3cc985a7731d993de905b69a80773cbcd73dcbdcea2889448756dc5f93"
+  },
+  "build_artifacts": [
+    {
+      "path": "build-equity/w2-exposure-ic-configure.log",
+      "sha256": "f7635fcfc5f30b42d67f997ba851bab6442ee67dfa986be85b2a9d9c059e8904"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-configure-receipt.json",
+      "sha256": "7ab6e9510f0d7d0b429aac506230ec79096e7c906a5e4de3c26ad1aae831e65c"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-start.json",
+      "sha256": "d57f74eb876403ae442610c8af4d6e4e70fcf94f2e9a7a5fcee6e05c0da0ebd4"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-build-receipt.json",
+      "sha256": "f0ae9b41b64f9ab0601f43b90a60933ba7afd2f1a6b8b6630424b0e6bcc742c8"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-build.log",
+      "sha256": "aeeee1f727f5d07dc2bf2469b6cd0af005989360ce021e7175c9a875000c2dbf"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-cache-summary.txt",
+      "sha256": "90fa4f99a588465d0a9afdae3a178bfd9e02a0fea49f4a8c2562ea134ad30ecd"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-resume-start.json",
+      "sha256": "5114f6859e88922f5fa1f24f0184355ea775ddf419568fd8c3308a7e42ab44a1"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-resume-build-receipt.json",
+      "sha256": "63310cc299d275f304c3b895d358a9835bd3d7394420b041bf60b2975c0c37e8"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-resume-build.log",
+      "sha256": "3e9c1eca402e90573d874603c77443c47566d84cd0f6c50a44b684742d79bef6"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-resume-cache-summary.txt",
+      "sha256": "ce0ae2611c98660cce0e4c5203130f05882978190dac319f4c67584b6471f0d0"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-noop-start.json",
+      "sha256": "ca231cfa628123853a4a341fdb4a4dd89e53b9dae506994d9ec16485aa1e10d7"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-noop-build-receipt.json",
+      "sha256": "947d82a5d2c233422d8362a7141b3377eb3ff44fb9bed35fe09facde5cd67003"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-noop-build.log",
+      "sha256": "4a308decda346c7e10aef738855f00dfaa7069805d8b7b3911e8350cdca9fe15"
+    },
+    {
+      "path": "build-equity/w2-exposure-ic-noop-cache-summary.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "qualification": {
+    "source": "4816bb85e221c80d1ca7544d0a0208f4e5670475",
+    "distinct_passes": 12,
+    "failures": 0,
+    "skips": 0,
+    "cohorts": [
+      {
+        "label": "data",
+        "receipt": {
+          "Source": "4816bb85e221c80d1ca7544d0a0208f4e5670475",
+          "Target": "atx-engine-w1-data-tests",
+          "Filter": "ExposurePanel.*",
+          "BinarySha256": "b9829f248a45264c93d758b78f341da38b6683bbfa4defa2b93dcfe93b04dea9",
+          "ExitCode": 0,
+          "WallSeconds": 0.0952437
+        },
+        "cases": [
+          "ExposurePanel.PlantedColumnsMatchIndependentCapCenterAndKeepOriginalAxes",
+          "ExposurePanel.FutureKnownClosureAndFutureObservationsCannotChangeEarlierNumericRows",
+          "ExposurePanel.SourceAbsenceUnqualifiedCapAndIndustryKeepDenominatorAndReasons",
+          "ExposurePanel.PartialWarmupDoesNotBanCompleteLaterDateAndUnknownMembersStayVisible",
+          "ExposurePanel.RawWinsorizationDoesNotPromiseFinalZBoundAndFlagsDegenerateColumns",
+          "ExposurePanel.CheckedIdentityGeometryBudgetsAndClockFailuresDoNotPublishBadRows"
+        ],
+        "files": [
+          {
+            "path": "build-equity/w2-exposure-ic-data-qualified.xml",
+            "sha256": "5d518177bc2d5d0295c61be85b332a02f2d07a8f96643b7a13fd5076d8b628cc"
+          },
+          {
+            "path": "build-equity/w2-exposure-ic-data-qualified.log",
+            "sha256": "b1288f3c23b3c81bed4a94525b74083cbcb1f3d0ca5d4ac0c24cbc206ee25471"
+          },
+          {
+            "path": "build-equity/w2-exposure-ic-data-qualified-receipt.json",
+            "sha256": "d6e6c6d24b9ee11ea28cbac7f74096b7c46423af8df9e415901ce2b15e167a60"
+          }
+        ],
+        "binary": {
+          "path": "build-equity/bin/atx-engine-w1-data-tests.exe",
+          "sha256": "b9829f248a45264c93d758b78f341da38b6683bbfa4defa2b93dcfe93b04dea9"
+        },
+        "native_seconds": 0.01
+      },
+      {
+        "label": "residual",
+        "receipt": {
+          "Source": "4816bb85e221c80d1ca7544d0a0208f4e5670475",
+          "Target": "atx-engine-ic-screen-tests",
+          "Filter": "FactoryResidualObjective.*",
+          "BinarySha256": "d38430293fe2a62e13d77535d65e9201ad318d692add775dff5305f15f394e3a",
+          "ExitCode": 0,
+          "WallSeconds": 5.7896733
+        },
+        "cases": [
+          "FactoryResidualObjective.SqrtCapProjectionRemovesProxyAndPreservesSmallRealResidual",
+          "FactoryResidualObjective.NearCollinearExactProxyCannotRankCancellationDust",
+          "FactoryResidualObjective.WarmupMissingAndRankDeficiencyAreUnavailableNotZeroScores",
+          "FactoryResidualObjective.CausalMaturityAndExplicitPricePresenceSurviveFutureMutation",
+          "FactoryResidualObjective.CalendarHacMatchesIndependentLagSumAndPersistenceSkipsGaps",
+          "FactoryResidualObjective.RefusesUnboundAxesSourceClocksScratchAndWorkingBudget"
+        ],
+        "files": [
+          {
+            "path": "build-equity/w2-exposure-ic-residual-qualified.xml",
+            "sha256": "152da707619a31b9aec40e48b553773c674abf174d7c206069c5d0738c6e854f"
+          },
+          {
+            "path": "build-equity/w2-exposure-ic-residual-qualified.log",
+            "sha256": "4972aa76c2bb42bd71a8c72ed0bada798bd0917339a2c208e442f13b1a5cf42e"
+          },
+          {
+            "path": "build-equity/w2-exposure-ic-residual-qualified-receipt.json",
+            "sha256": "0057210e51721fac90529f5ff92d467453ec01178869f4cb53f0068708138b97"
+          }
+        ],
+        "binary": {
+          "path": "build-equity/bin/atx-engine-ic-screen-tests.exe",
+          "sha256": "d38430293fe2a62e13d77535d65e9201ad318d692add775dff5305f15f394e3a"
+        },
+        "native_seconds": 5.746
+      }
+    ]
+  },
+  "initial_build_failure": "Missing closing brace in digest helper; f4c6ff38 adds it. Successful objects retained.",
+  "scope": "Declared dated exposures and private residual IC kernel only; synthetic inputs, no full A4/I2 or alpha acceptance."
+}

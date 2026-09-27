@@ -43,8 +43,9 @@
 //  map a row back to its (date, instrument). The feature column order is fixed:
 //  the raw_fields (in spec order) first, then the pool_alphas (in spec order).
 //
-// Header-only; every member / free function is defined inline. Construction is a
-// COLD path (once per training window), so std::vector allocation is fine (M7).
+// Cold builders and field/label helpers are implemented in feature_matrix.cpp.
+// Small row and maturity accessors remain inline. Construction runs once per
+// training window, so std::vector allocation is fine (M7).
 
 #include <limits>        // std::numeric_limits<f64>::quiet_NaN
 #include <span>          // std::span (aliasing Panel / store cross-sections)
@@ -59,6 +60,9 @@
 
 #include "atx/engine/alpha/panel.hpp"   // alpha::Panel, FieldId
 #include "atx/engine/combine/store.hpp" // combine::AlphaStore, combine::AlphaId
+#include "atx/engine/learn/panel_dataset.hpp"
+
+namespace atx::engine::data { class PanelStore; }
 
 namespace atx::engine::learn {
 
@@ -100,8 +104,29 @@ struct FeatureMatrix {
   std::vector<std::vector<atx::f64>> Y; // Y[h] = [n_rows] fwd-return at H[h]; NaN where unknowable
   std::vector<atx::u8> row_valid;       // 1 iff all features finite at the row
 
+  // Label-horizon metadata (W0-L0, L-02). label_horizons[h] is the forward horizon, in
+  // dates, of Y[h]: the label at row r depends on prices through date row_date[r] +
+  // label_horizons[h], so it is only KNOWN at a decision date t once that date has
+  // passed (label_matured below). EMPTY == unannotated: a hand-built matrix whose label
+  // convention is unknown. Maturity-aware consumers (select_interactions) refuse to
+  // guess a horizon for an unannotated matrix. build_features copies spec.horizons;
+  // the explicit dataset adapter stores execution_delay + holding_horizon.
+  std::vector<atx::u16> label_horizons;
+  // Populated only by the explicit V2 dataset adapter. Legacy matrices retain
+  // their raw/drop-invalid interpretation. Presence is independent of emitted
+  // member rows; an absent member can have finite neutral features + indicators.
+  std::vector<atx::u8> row_present{};
+  std::string dataset_manifest_sha256{};
+  std::string dataset_recipe{};
+
   // Number of emitted rows (in-universe cells).
   [[nodiscard]] atx::usize n_rows() const noexcept { return row_date.size(); }
+
+  // True iff every label channel Y[h] carries its horizon (label_horizons is the same
+  // length as Y and Y is non-empty).
+  [[nodiscard]] bool has_label_horizons() const noexcept {
+    return !Y.empty() && label_horizons.size() == Y.size();
+  }
 
   // True iff (date, inst) was emitted as a row (i.e. was in-universe).
   [[nodiscard]] bool has_row(atx::usize date, atx::usize inst) const {
@@ -142,20 +167,36 @@ private:
   std::unordered_map<atx::u64, atx::usize> row_lookup_; // (date,inst)->row; built off the emit loop
 };
 
+// ===========================================================================
+//  label_matured — the label-maturity filter (W0-L0, L-02).
+//
+//  A horizon-H forward label anchored at date r is realized at the close of r + H.
+//  At a decision date t with an embargo e it may be used iff
+//      r + H <= t - e
+//  (a label ending exactly at t - e is admissible under the same-close convention).
+//  Overflow-safe: evaluated as r <= (t - e) - H with every subtraction bounds-checked,
+//  so no usize wrap is possible for any input. t < e or t - e < H -> false.
+// ===========================================================================
+[[nodiscard]] inline bool label_matured(atx::usize row_date, atx::u16 horizon, atx::usize t,
+                                        atx::u16 embargo) noexcept {
+  const atx::usize e = static_cast<atx::usize>(embargo);
+  const atx::usize h = static_cast<atx::usize>(horizon);
+  if (t < e) {
+    return false;
+  }
+  const atx::usize cutoff = t - e;
+  if (cutoff < h) {
+    return false;
+  }
+  return row_date <= cutoff - h;
+}
+
 namespace detail {
 
 // Resolve every raw field name in `spec` to a Panel FieldId, in spec order.
 // Propagates Panel::field_id's Err(NotFound) for an unknown field.
-[[nodiscard]] inline atx::core::Result<std::vector<alpha::FieldId>>
-resolve_raw_fields(const alpha::Panel &panel, const FeatureSpec &spec) {
-  std::vector<alpha::FieldId> ids;
-  ids.reserve(spec.raw_fields.size());
-  for (const std::string &name : spec.raw_fields) {
-    ATX_TRY(const alpha::FieldId fid, panel.field_id(name));
-    ids.push_back(fid);
-  }
-  return atx::core::Ok(std::move(ids));
-}
+[[nodiscard]] atx::core::Result<std::vector<alpha::FieldId>>
+resolve_raw_fields(const alpha::Panel &panel, const FeatureSpec &spec);
 
 // Write the feature row for cell (date, inst) into X[row*n_features ..]: the raw
 // fields (in id order) then the pool alphas (in id order). Returns true iff every
@@ -173,17 +214,9 @@ write_feature_row(std::span<atx::f64> X, atx::usize row, atx::usize n_features,
 // Forward-return label for cell (date, inst) at horizon H: close[d+H]/close[d]-1
 // when d+H < n_dates, else quiet NaN (the tail is unknowable — §0.6 / M8).
 // `close_all` is the whole close field, date-major (length dates*instruments).
-[[nodiscard]] inline atx::f64 forward_return(std::span<const atx::f64> close_all,
+[[nodiscard]] atx::f64 forward_return(std::span<const atx::f64> close_all,
                                              atx::usize n_dates, atx::usize n_instruments,
-                                             atx::usize date, atx::usize inst, atx::u16 horizon) {
-  const atx::usize ahead = date + static_cast<atx::usize>(horizon);
-  if (ahead >= n_dates) {
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  const atx::f64 now = close_all[date * n_instruments + inst];
-  const atx::f64 fut = close_all[ahead * n_instruments + inst];
-  return fut / now - 1.0;
-}
+                                             atx::usize date, atx::usize inst, atx::u16 horizon);
 
 } // namespace detail
 
@@ -200,5 +233,31 @@ write_feature_row(std::span<atx::f64> X, atx::usize row, atx::usize n_features,
 [[nodiscard]] atx::core::Result<FeatureMatrix>
 build_features(const alpha::Panel &panel, const combine::AlphaStore &store,
                const FeatureSpec &spec);
+
+// Actual V2 producers. Panel features/AlphaStore streams borrow their existing
+// source lifetime for this synchronous call; member is T*N, clocks is T and
+// Panel::in_universe explicitly means source presence on this adapter.
+// Plain Panel/AlphaStore carry no durable numeric axes or input artifact SHA:
+// config axes/source_sha256/source_recipe are CALLER ASSERTIONS on this adapter.
+// The output manifest hashes actual produced bytes, not proof of those source
+// assertions. Spec horizons must match config holding horizons; all supplied
+// identity/knobs persist. Absent source closes become NaN even if the backing
+// Panel carries a finite placeholder. Legacy build_features is unchanged.
+[[nodiscard]] atx::core::Result<PanelDatasetBuildResult> build_panel_dataset_from_panel(
+    const alpha::Panel&, const combine::AlphaStore&, const FeatureSpec&,
+    const PanelDatasetConfig&, std::span<const atx::u8> member,
+    std::span<const atx::i64> membership_clocks, const std::string& directory);
+// Reads original-f64 close and independent masks from D6. Raw feature names are
+// config.feature_names; close features also use the original-f64 channel.
+[[nodiscard]] atx::core::Result<PanelDatasetBuildResult> build_panel_dataset_from_store(
+    const data::PanelStore&, const PanelDatasetConfig&, const std::string& directory);
+
+// Explicit bounded materialization for existing learners, NOT an out-of-core
+// fit. Preserve full source ordinals; label_horizons = delay + holding horizon.
+// asof_date is inclusive under L0's same-close convention. Labels beyond asof
+// are NaN; member rows survive regardless of feature missingness/label maturity.
+[[nodiscard]] atx::core::Result<FeatureMatrix> read_dataset_features(
+    const PanelDataset&, atx::usize begin_date, atx::usize end_date,
+    atx::usize asof_date, atx::u64 max_working_bytes);
 
 } // namespace atx::engine::learn

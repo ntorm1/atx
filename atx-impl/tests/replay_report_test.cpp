@@ -139,6 +139,11 @@ protected:
         cfg.books = path("books.bin");
         cfg.report_out = path("report");
         cfg.report_aum = 100.0;
+        // W0-I0b: analytical replays are frictionless and may fill at the decision
+        // close BY EXPLICIT CHOICE: I-11 made both rates mandatory, B-02 made delay 0
+        // an opt-in. Tests that probe the implicit-fee refusal clear these flags.
+        cfg.set_flags = {"replay-trade-bps", "replay-annual-borrow-bps"};
+        cfg.allow_same_close = true;
         if (fit_boundary) cfg.combo = path("combo.bin");
         return Ok(std::move(cfg));
     }
@@ -227,6 +232,7 @@ TEST_F(ReplayReport, RejectsIgnoredLegacyRatesAndRequiresExplicitFeeForCostlyBoo
     auto input = inputs({100, 100, 100}, {0}, {0.5}, 5.0);
     ASSERT_TRUE(input.has_value());
     auto cfg = *input;
+    cfg.set_flags.erase("replay-trade-bps"); // W0-I0b: probe the implicit fee explicitly
     auto implicit_zero = impl::run_report(cfg);
     ASSERT_FALSE(implicit_zero.has_value());
     EXPECT_NE(implicit_zero.error().message().find("choose --replay-trade-bps explicitly"), std::string::npos);
@@ -264,6 +270,9 @@ TEST_F(ReplayReport, RejectsIgnoredLegacyRatesAndRequiresExplicitFeeForCostlyBoo
     cfg.replay_trade_bps = 5;
     EXPECT_FALSE(impl::run_report(cfg).has_value());
     cfg.replay_trade_bps = 0;
+    cfg.replay_delisting_policy = impl::ReplayDelistingPolicy::AbortV1;
+    EXPECT_FALSE(impl::run_report(cfg).has_value());
+    cfg.replay_delisting_policy = impl::ReplayDelistingPolicy::TerminalReturnV2;
     cfg.replay_execution_delay = 0;
     EXPECT_FALSE(impl::run_report(cfg).has_value());
     EXPECT_FALSE(fs::exists(root / "legacy-report"));
@@ -272,6 +281,7 @@ TEST_F(ReplayReport, RejectsIgnoredLegacyRatesAndRequiresExplicitFeeForCostlyBoo
 TEST_F(ReplayReport, MissingHeldPriceMapsExactSecurityAndDateWithoutCompletePublication) {
     auto input = inputs({100, 110, std::numeric_limits<double>::quiet_NaN()}, {0}, {0.5});
     ASSERT_TRUE(input.has_value());
+    input->replay_delisting_policy = impl::ReplayDelistingPolicy::AbortV1;
     auto result = impl::run_report(*input);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().message().find("period=2"), std::string::npos);
@@ -281,6 +291,43 @@ TEST_F(ReplayReport, MissingHeldPriceMapsExactSecurityAndDateWithoutCompletePubl
     EXPECT_TRUE(fs::exists(root / "report/.pending"));
     EXPECT_FALSE(fs::exists(root / "report/manifest.json"));
     EXPECT_FALSE(fs::exists(root / "report/summary.json"));
+}
+
+TEST_F(ReplayReport, DefaultMissingHeldCloseCompletesWithIdentifiedFlaggedTerminalReturn) {
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    auto input = inputs({100, 110, nan, 200}, {0}, {0.5});
+    ASSERT_TRUE(input.has_value());
+    const auto result = impl::run_report(*input);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    const auto summary = json_file(root / "report/summary.json");
+    EXPECT_DOUBLE_EQ(summary["full"]["final_nav"].get<double>(), 72.5);
+    EXPECT_EQ(summary["full"]["observed_intervals"], 3);
+    EXPECT_EQ(summary["flagged_delistings"], 1);
+    EXPECT_EQ(summary["gap_carry_count"], 0);
+    EXPECT_EQ(summary["flagged_short_delistings"], 0);
+    EXPECT_EQ(json_file(root / "report/manifest.json")["recipe"]["replay_delisting_policy"],
+              "terminal-return");
+    const auto evidence = contents(root / "report/terminal_returns.csv");
+    EXPECT_NE(evidence.find(kSecurity), std::string::npos);
+    EXPECT_NE(evidence.find(",5,true\n"), std::string::npos);
+    EXPECT_FALSE(summary["usable_for_alpha_evidence"].get<bool>());
+    EXPECT_EQ(summary["performance_evidence_eligibility"],
+              "ineligible-assumed-missing-price-liquidation");
+    EXPECT_FALSE(fs::exists(root / "report/.pending"));
+}
+
+TEST_F(ReplayReport, DefaultMissingShortCloseSeparatelyDisclosesAssumedStressLoss) {
+    auto input = inputs({100, 100, std::numeric_limits<double>::quiet_NaN()}, {0}, {-0.5});
+    ASSERT_TRUE(input.has_value());
+    const auto result = impl::run_report(*input);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    const auto summary = json_file(root / "report/summary.json");
+    EXPECT_DOUBLE_EQ(summary["full"]["final_nav"].get<double>(), 85.0);
+    EXPECT_EQ(summary["flagged_short_delistings"], 1);
+    EXPECT_DOUBLE_EQ(summary["flagged_short_pnl_dollars"].get<double>(), -15.0);
+    EXPECT_EQ(summary["assumed_liquidation_count"], 1);
+    EXPECT_DOUBLE_EQ(summary["assumed_liquidation_pnl_dollars"].get<double>(), -15.0);
+    EXPECT_FALSE(summary["usable_for_alpha_evidence"].get<bool>());
 }
 
 TEST_F(ReplayReport, ScheduleBytesAreBoundAndDuplicateCostCannotDefaultToFreeReplay) {

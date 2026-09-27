@@ -1,0 +1,36 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "bfb6b859e1819b241cc9064908c37b04827eeac1",
+  "started_utc": "2026-09-27T00:27:09.943172+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+    "--gtest_output=xml:build-equity/recent-strategy-targets-v1-target-qualification/results.xml"
+  ],
+  "executable_sha256": "3566f0911f2299cf98c61a6b6ab0bf2f7b4b55561d6365b385cefb256f5faf71",
+  "bindings": [],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 768,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 6246400,
+  "minimum_system_free_bytes": 1598726144,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 0.26600000000325963,
+  "owned_processes": [
+    {
+      "pid": 14576,
+      "create_time": 1790468829.9582293
+    },
+    {
+      "pid": 22976,
+      "create_time": 1790468829.9687965
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "b8e957c0dda836ce88e1c87cd4e76e81a413acdc3c4f172bba96819f6c694059",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

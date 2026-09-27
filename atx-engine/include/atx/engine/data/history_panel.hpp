@@ -12,18 +12,82 @@
 // digest-pinned alpha::Panel from the on-disk ORATS per-date partition.
 // Multi-segment attach -> raw-price universe screen -> adjusted OHLC -> lineage/digest.
 
+#include <cstdint>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/vwap_rule.hpp"
 #include "atx/engine/alpha/segment_panel.hpp"  // alpha::TimeWindow
 #include "atx/engine/data/universe.hpp"         // UniverseConfig
 
+namespace atx::engine::alpha {
+// Opaque declaration; defined in atx/engine/alpha/augment.hpp (W0-D0, D-01).
+enum class DollarVolumeBasis : std::uint8_t;
+} // namespace atx::engine::alpha
+
 namespace atx::engine::data {
+
+// =========================================================================
+//  Level basis — panel metadata for the level-basis lint (W0-D0, D-01).
+// =========================================================================
+//
+// Every assembled field carries one of three level bases:
+//   Raw           — an as-traded or as-published value (raw close, raw volume, raw
+//                   dollar volume, market cap, counts, category codes). Its level on
+//                   date t uses only information available on t, so comparing levels
+//                   across instruments on one date is point-in-time clean.
+//   AdjustedLevel — a price level multiplied by a snapshot backward adjustment factor
+//                   (the TRI close, research open/high/low and legacy VWAP). The factor at
+//                   t already contains every split and dividend up to the snapshot
+//                   date, so the LEVEL carries future corporate actions. Ratios of the
+//                   same instrument's own series (returns) are clean; a cross-sectional
+//                   operation on the level is a look-ahead and is a lint error (W2-A3).
+//   Ratio         — a dimensionless quantity (returns, implied vols, short-interest
+//                   ratios). Cross-sectional use is clean.
+enum class LevelBasis : std::uint8_t {
+  Raw = 1,
+  AdjustedLevel = 2,
+  Ratio = 3,
+};
+
+// Stable lower-case name of a basis ("raw" / "adjusted_level" / "ratio").
+[[nodiscard]] constexpr std::string_view level_basis_name(LevelBasis basis) noexcept {
+  switch (basis) {
+  case LevelBasis::Raw:
+    return "raw";
+  case LevelBasis::AdjustedLevel:
+    return "adjusted_level";
+  case LevelBasis::Ratio:
+    return "ratio";
+  }
+  return "unknown";
+}
+
+// Level basis of a history-panel field by NAME. Covers the twelve kHistField*
+// fields, the Alpha101 augmentation (`returns`, `cap`, `IndClass.*`,
+// `dollar_volume`, `vwap`, `adv{d}`), the opt-in IV/liquidity families, the FINRA
+// short-interest fields and `regime_*` overlays. `dollar_volume`/`adv{d}` are Raw
+// because with_alpha101_fields builds them from raw_close x volume by default
+// (alpha::DollarVolumeBasis::RawCloseV2); vwap is the raw daily-close proxy under
+// RawDailyCloseV2. Unknown names return nullopt. These name-only defaults describe
+// the default augmentation recipe; legacy recipes must use the explicit overload.
+[[nodiscard]] std::optional<LevelBasis> history_field_level_basis(std::string_view name) noexcept;
+
+// Same tags, for a panel whose dollar_volume/adv{d} were derived under `dv_basis`:
+// RawCloseV2 → identical to the name-only overload; CloseV1 (and any unknown enum
+// value, fail closed) → dollar_volume and adv{d} are AdjustedLevel. Every other
+// name is tagged as above, except VWAP follows its independent explicit rule.
+[[nodiscard]] std::optional<LevelBasis>
+history_field_level_basis(std::string_view name, alpha::DollarVolumeBasis dv_basis,
+                         alpha::VwapRule vwap_rule = alpha::VwapRule::RawDailyCloseV2) noexcept;
 
 // =========================================================================
 //  Canonical assembled-Panel field order (digest hashes fields in THIS order).
@@ -44,6 +108,39 @@ inline constexpr std::string_view kHistFieldEarnCnt5  = "nEarnCnt_5d";   // earn
 // =========================================================================
 //  Configuration
 // =========================================================================
+struct HistorySourceFile {
+  std::string path;
+  atx::u64 bytes{};
+  std::string sha256;
+  std::vector<atx::i64> sessions;
+  atx::u64 time_axis_offset{};
+};
+
+// Immutable bounded source-axis capture. All files retain admitted metadata;
+// only intersecting files receive a payload SHA (empty for disjoint files).
+// The complete initial path/axis set supports final publication validation.
+// One index is shared by all chunks. No source mapping survives its construction.
+class HistorySourceIndex {
+public:
+  [[nodiscard]] const std::string& directory() const noexcept { return directory_; }
+  [[nodiscard]] alpha::TimeWindow window() const noexcept { return window_; }
+  [[nodiscard]] std::span<const HistorySourceFile> files() const noexcept { return files_; }
+  [[nodiscard]] const std::vector<atx::i64>& sessions() const noexcept { return sessions_; }
+  [[nodiscard]] atx::core::Status verify_paths() const;
+private:
+  HistorySourceIndex() = default;
+  friend atx::core::Result<std::shared_ptr<const HistorySourceIndex>>
+  capture_history_sources(const std::string&, alpha::TimeWindow);
+  std::string directory_;
+  alpha::TimeWindow window_{};
+  std::vector<std::string> paths_;
+  std::vector<HistorySourceFile> files_;
+  std::vector<atx::i64> sessions_;
+};
+
+[[nodiscard]] atx::core::Result<std::shared_ptr<const HistorySourceIndex>>
+capture_history_sources(const std::string& seg_dir, alpha::TimeWindow window);
+
 struct HistoryDataConfig {
   std::string seg_dir;          // data/orats_history_1d
   alpha::TimeWindow window{};   // [start,end) trading dates (unix-nanos)
@@ -60,6 +157,15 @@ struct HistoryDataConfig {
   // empty ⇒ off, and every code path is byte-identical to a build without it.
   // Order and duplicates are irrelevant: the build sorts and dedupes a copy.
   std::vector<atx::i64> allow_ids{};
+  // D6 explicit bounded path. Nonempty sorted positive IDs define the COMPLETE
+  // axis, including IDs absent from this date window. No compaction/allow-list
+  // is allowed. The returned Panel's mask is source presence; dated tradability
+  // is supplied separately by the panel-store stage. Legacy empty path unchanged.
+  std::vector<atx::i64> fixed_axis_ids{};
+  atx::u64 max_working_bytes{2ULL * 1024 * 1024 * 1024};
+  // D6 only. Chunk window must lie inside this immutable source capture. Missing
+  // index causes one capture per standalone call; legacy empty fixed axis ignores it.
+  std::shared_ptr<const HistorySourceIndex> source_index{};
 };
 
 // =========================================================================
@@ -79,7 +185,17 @@ struct HistoryPanel {
   // Columns the HistoryDataConfig::allow_ids restriction forced out of the universe
   // on every date; 0 whenever the allow-list is empty (the restriction is off).
   atx::usize allow_list_excluded_columns{};
+  // Level basis of each panel field, parallel to panel's FieldIds (field_basis[f]
+  // tags field f). Filled by build_history_panel; empty only on the legacy numeric
+  // no-op append path, whose callers use history_field_level_basis(name) instead.
+  std::vector<LevelBasis> field_basis{};
 };
+
+// Bounded source-axis inspection, one reader at a time; no field-value copies.
+// Includes all actual session labels in the half-open window. Refuses malformed
+// axes and oversized segment/session metadata. Does not authenticate availability.
+[[nodiscard]] atx::core::Result<std::vector<atx::i64>>
+history_session_keys(const std::string& seg_dir, alpha::TimeWindow window);
 
 // =========================================================================
 //  orats_total_return_close (S3-3)
@@ -119,8 +235,17 @@ orats_total_return_close(std::span<const atx::f64> close,
 //
 // Digest migration: OHLC now share one basis; close uses direct products instead
 // of a rounded return chain. Existing panel digests/caches need a full rebuild.
-// Optional with_alpha101_fields still derives dollar_volume/adv from adjusted
-// close*raw volume; those fields are research proxies, not raw dollar liquidity.
+// with_alpha101_fields derives dollar_volume/adv{d} from raw_close x raw volume
+// (D-01): an adjusted-close product scales liquidity by the snapshot factor, which
+// contains future splits and dividends.
+// Every field is tagged in HistoryPanel::field_basis (see LevelBasis).
+//
+// Point-in-time contract (DataHistoryPanelFuturePerturb_* pins it): with
+// compact_to_universe == false, every output row <= t — every field, the mask and
+// the field-basis tags — is bit-identical when any source row dated after t is
+// changed (prices, volume, shares, sector, factors, options fields). Column
+// compaction is a whole-window decision, so a compacted panel keeps this property
+// only for the columns both builds retain.
 // Two calls with identical inputs return an identical digest. Err on: missing
 // partition, an empty window, or a shape mismatch (propagated).
 [[nodiscard]] atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg);

@@ -32,7 +32,9 @@
 
 #include "config.hpp"
 #include "serialize_panel.hpp"
+#include "stage_combine.hpp" // W0-I0a nested split
 #include "stages.hpp"
+#include "w0o1_report_kv.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
 
@@ -123,7 +125,14 @@ run_reachable_graph(const atx::impl::RunConfig &cfg, const std::string &panel_pa
     c_disc.alpha_out = (work / "alphas").string();
     c_disc.gated = true;
     c_disc.library_dir = (work / "_library").string();
-    ATX_TRY(auto d_disc, atx::impl::run_discover(c_disc));
+    // W0-I0a (I-01): mirror run_all's NESTED split -- discover sees only
+    // [0, discover_end), the combiner fits on the fresh [fit_begin, fit_end), and the
+    // final test [test_begin, n) is read by no selection or fitting step.
+    atx::impl::NestedSplitConfig ns;
+    if (cfg.set_flags.count("holdout-frac") != 0) ns.test_frac = cfg.combine_holdout_frac;
+    ns.embargo = 1U + cfg.replay_execution_delay;
+    ATX_TRY(const auto split, atx::impl::resolve_nested_split(kDates, ns));
+    ATX_TRY(auto d_disc, atx::impl::run_discover_window(c_disc, split.discover_end));
 
     atx::impl::RunConfig c_comb = cfg;
     c_comb.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
@@ -131,7 +140,13 @@ run_reachable_graph(const atx::impl::RunConfig &cfg, const std::string &panel_pa
     c_comb.alphas = (work / "alphas").string();
     c_comb.combo_out = (work / "combo.bin").string();
     c_comb.library_dir = c_disc.library_dir;
-    ATX_TRY(auto d_comb, atx::impl::run_combine(c_comb));
+    c_comb.fit_begin = static_cast<long>(split.fit_begin);
+    c_comb.fit_end = static_cast<long>(split.fit_end);
+    c_comb.set_flags.insert("fit-end");
+    atx::impl::CombinePitConfig comb_pit;
+    comb_pit.test_begin = split.test_begin;
+    comb_pit.execution_delay = cfg.replay_execution_delay;
+    ATX_TRY(auto d_comb, atx::impl::run_combine(c_comb, comb_pit));
 
     atx::impl::RunConfig c_opt = cfg;
     c_opt.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
@@ -264,7 +279,9 @@ TEST_F(StageRunSyntheticSmoke, SyntheticSmoke_OnFlagsProducesFiniteScorecard) {
     for (const auto &[k, v] : res->opt.kvs) {
         if (k == "book_turnover_per_day") {
             saw_turnover_kv = true;
-            EXPECT_TRUE(std::isfinite(std::stod(v))) << "book_turnover_per_day must be finite: " << v;
+            const auto x = atx_test_w0_o1_report_kv::parse_numeric_kv(v);
+            ASSERT_TRUE(x.has_value()) << "book_turnover_per_day must be a number: " << v;
+            EXPECT_TRUE(std::isfinite(*x)) << "book_turnover_per_day must be finite: " << v;
         }
     }
     EXPECT_TRUE(saw_turnover_kv) << "book_turnover_per_day kv missing from the optimize stage";
@@ -273,10 +290,25 @@ TEST_F(StageRunSyntheticSmoke, SyntheticSmoke_OnFlagsProducesFiniteScorecard) {
     // proper: portfolio_sharpe, the capacity-footprint fields, total_pnl_borrow
     // (S5-4), ...) must be finite -- this synthetic (never a real V1) run's
     // honest scorecard.
+    //
+    // W0-O1 fix ("invalid stod argument"): the report also carries two IDENTITY kvs
+    // (research_artifact_id / books_artifact_id), which are "unknown" for this
+    // unidentified legacy panel. The old loop fed them to std::stod, which threw and
+    // aborted the test. The audit checks identity kvs as ids and every other kv as a
+    // fully-parsed finite number, and reports malformed values instead of throwing
+    // (regression: w0o1_stage_run_smoke_malformed_test.cpp).
     ASSERT_FALSE(res->rep.kvs.empty());
+    const atx_test_w0_o1_report_kv::KvAudit audit =
+        atx_test_w0_o1_report_kv::audit_report_kvs(res->rep.kvs);
+    EXPECT_EQ(audit.failures, std::vector<std::string>{});
+    EXPECT_EQ(audit.identity_checked, atx_test_w0_o1_report_kv::kReportIdentityKeys.size())
+        << "both report identity kvs must be present and well-formed";
+    EXPECT_EQ(audit.numeric_checked + audit.identity_checked, res->rep.kvs.size());
+    EXPECT_GE(audit.numeric_checked, 12U) << "the scorecard's numeric kvs must all be checked";
     for (const auto &[k, v] : res->rep.kvs) {
-        const f64 parsed = std::stod(v);
-        EXPECT_TRUE(std::isfinite(parsed)) << "report kv '" << k << "' is not finite: " << v;
+        if (atx_test_w0_o1_report_kv::is_identity_key(k)) {
+            EXPECT_EQ(v, "unknown") << k << ": the smoke panel is an unidentified legacy panel";
+        }
     }
 
     // Sanity: the borrow lever is genuinely non-zero-financed (S5-4 actually
@@ -287,8 +319,10 @@ TEST_F(StageRunSyntheticSmoke, SyntheticSmoke_OnFlagsProducesFiniteScorecard) {
     for (const auto &[k, v] : res->rep.kvs) {
         if (k == "total_pnl_borrow") {
             saw_borrow_kv = true;
-            EXPECT_GT(std::stod(v), 0.0) << "a positive borrow_bps with a real short leg must "
-                                            "produce a genuinely non-zero total_pnl_borrow debit";
+            const auto x = atx_test_w0_o1_report_kv::parse_numeric_kv(v);
+            ASSERT_TRUE(x.has_value()) << "total_pnl_borrow must be a number: " << v;
+            EXPECT_GT(*x, 0.0) << "a positive borrow_bps with a real short leg must "
+                                  "produce a genuinely non-zero total_pnl_borrow debit";
         }
     }
     EXPECT_TRUE(saw_borrow_kv) << "total_pnl_borrow kv missing from the report stage";

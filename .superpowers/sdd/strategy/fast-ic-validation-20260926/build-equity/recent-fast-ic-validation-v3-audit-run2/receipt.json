@@ -1,0 +1,50 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "a9b8814c5797599dd73fd448f5c5d63d88149dc6",
+  "started_utc": "2026-09-27T00:04:59.376492+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-B",
+    "build-equity/audit-fast-ic-validation-v3.py"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\audit-fast-ic-validation-v3.py",
+      "sha256": "5c4e80b0a881b6256ae66eb9feef6fce0c8411f9cce20143fcbbc8aa9dc7d2c3"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\summary.json",
+      "sha256": "3f361bac7f3369bc6f58898b32b6671d4c643dce260e0bbcd8b3221a5fc8c1b9"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_combined.json",
+      "sha256": "7407d7e7b72548e5577fdf94e2f52d238f9ff751a8ebc5640987130c1390d8e1"
+    }
+  ],
+  "limits": {
+    "seconds": 30.0,
+    "max_rss_mib": 256,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 92405760,
+  "minimum_system_free_bytes": 2256031744,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 1.422000000020489,
+  "owned_processes": [
+    {
+      "pid": 15420,
+      "create_time": 1790467499.3864696
+    },
+    {
+      "pid": 10884,
+      "create_time": 1790467499.4015837
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "97521ded22ed91e1d81335e5f34055f6fb6cd01fc2b1f40f19023400db07780f",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

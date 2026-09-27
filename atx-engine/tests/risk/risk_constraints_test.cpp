@@ -20,6 +20,9 @@
 //   6. Minimal set — only GrossNet dollar-neutral -> A is 1×M.
 
 #include <algorithm> // std::min (min-composition expectation)
+#include <array>
+#include <bit>
+#include <limits>
 #include <optional>  // std::optional descriptors
 #include <span>      // std::span (group_id / beta / w_prev)
 #include <string>    // error message inspection
@@ -738,6 +741,158 @@ TEST(RiskConstraints, ParticipationCap_NoRefData_FallsBackToNameCap) {
   ASSERT_EQ(mc.A.rows(), static_cast<Eigen::Index>(kM));
   for (usize i = 0; i < kM; ++i) {
     EXPECT_DOUBLE_EQ(box_cap(mc, i, /*dollar_neutral=*/false), 0.5) << "name " << i;
+  }
+}
+
+TEST(RiskConstraintsR1, CsrMatchesOrderedDenseRowsAndImplicitBoxes) {
+  namespace risk = atx::engine::risk;
+  const auto x = make_exposures();
+  const std::vector<usize> groups{0, 0, 1, 1};
+  const std::vector<f64> beta{1.0, -0.5, 0.0, 0.25};
+  const std::vector<f64> previous{0.1, -0.1, 0.0, 0.0};
+  ConstraintSet cs;
+  cs.pos = PositionCap{0.25};
+  cs.fexp = FactorExposure{{1, 0}, {0.2, 0.3}};
+  cs.grp = GroupCap{groups, {0.1, 0.2}};
+  cs.beta = BetaNeutral{beta, 0.1};
+  cs.turn = risk::TurnoverBudget{0.4};
+  const auto dense = cs.materialize(x, previous, kM);
+  ASSERT_TRUE(dense) << dense.error().message();
+  cs.storage.rule = risk::ConstraintStorageRule::SparseCsrV2;
+  const auto sparse = cs.materialize(x, previous, kM);
+  ASSERT_TRUE(sparse) << sparse.error().message();
+  EXPECT_EQ(sparse->A.size(), 0);
+  ASSERT_EQ(sparse->row_count(), dense->row_count());
+  EXPECT_EQ(sparse->csr.box_begin, 1U);
+  EXPECT_EQ(sparse->csr.box_count, kM);
+  for (usize row = 0; row < sparse->row_count(); ++row) {
+    std::vector<f64> values(kM, 0.0);
+    sparse->visit_row(row, [&](usize column, f64 value) { values[column] = value; });
+    for (usize column = 0; column < kM; ++column)
+      EXPECT_EQ(std::bit_cast<atx::u64>(values[column]),
+          std::bit_cast<atx::u64>(dense->A(static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(column))));
+    EXPECT_EQ(std::bit_cast<atx::u64>(sparse->l[static_cast<Eigen::Index>(row)]),
+        std::bit_cast<atx::u64>(dense->l[static_cast<Eigen::Index>(row)]));
+    EXPECT_EQ(std::bit_cast<atx::u64>(sparse->u[static_cast<Eigen::Index>(row)]),
+        std::bit_cast<atx::u64>(dense->u[static_cast<Eigen::Index>(row)]));
+  }
+  for (usize row = 1; row <= kM; ++row)
+    EXPECT_EQ(sparse->csr.row_offsets[row], sparse->csr.row_offsets[row + 1]);
+  EXPECT_EQ(sparse->turnover_ref, previous);
+  EXPECT_DOUBLE_EQ(sparse->gross_l1_budget, dense->gross_l1_budget);
+}
+
+TEST(RiskConstraintsR1, DollarTradeAndLiquidationCapsIntersectAndZeroLiquidityBinds) {
+  namespace risk = atx::engine::risk;
+  const std::vector<f64> adv{1000.0, 0.0, 4000.0, 2000.0};
+  const std::vector<f64> previous{0.02, 0.0, -0.03, 0.01};
+  ConstraintSet cs;
+  cs.storage.rule = risk::ConstraintStorageRule::SparseCsrV2;
+  cs.pos = PositionCap{0.5};
+  cs.trade = risk::TradeParticipationCap{0.1, {adv, 10'000.0}};
+  cs.liquidation = risk::DaysToLiquidate{3.0, 0.1, {adv, 10'000.0}};
+  auto out = cs.materialize(make_exposures(), previous, kM);
+  ASSERT_TRUE(out) << out.error().message();
+  const std::array<f64, 4> lo{0.01, 0.0, -0.07, -0.01}, hi{0.03, 0.0, 0.01, 0.03};
+  for (usize i = 0; i < kM; ++i) {
+    EXPECT_NEAR(out->l[static_cast<Eigen::Index>(i + 1)], lo[i], 1e-15);
+    EXPECT_NEAR(out->u[static_cast<Eigen::Index>(i + 1)], hi[i], 1e-15);
+  }
+  auto held_zero_adv = previous;
+  held_zero_adv[1] = 0.1;
+  EXPECT_FALSE(cs.materialize(make_exposures(), held_zero_adv, kM)); // cannot both flatten and refrain from trading
+  cs.liquidation.reset();
+  out = cs.materialize(make_exposures(), held_zero_adv, kM);
+  ASSERT_TRUE(out);
+  EXPECT_DOUBLE_EQ(out->l[2], 0.1);
+  EXPECT_DOUBLE_EQ(out->u[2], 0.1);
+  EXPECT_FALSE(cs.materialize(make_exposures(), {}, kM));
+  cs.trade->liquidity.adv_usd = {};
+  EXPECT_FALSE(cs.materialize(make_exposures(), previous, kM));
+  auto invalid_adv = adv;
+  invalid_adv[0] = std::numeric_limits<f64>::quiet_NaN();
+  cs.trade->liquidity.adv_usd = invalid_adv;
+  EXPECT_FALSE(cs.materialize(make_exposures(), previous, kM));
+  cs.trade->liquidity.adv_usd = adv;
+  cs.pos->elastic = true;
+  EXPECT_FALSE(cs.materialize(make_exposures(), previous, kM));
+}
+
+TEST(RiskConstraintsR1, SparseStorageAndSolverBudgetsRefuseBeforeDenseExpansion) {
+  namespace risk = atx::engine::risk;
+  constexpr usize n = 256;
+  const MatX x = MatX::Zero(n, 1);
+  ConstraintSet cs;
+  cs.pos = PositionCap{0.1};
+  cs.storage.rule = risk::ConstraintStorageRule::SparseCsrV2;
+  auto out = cs.materialize(x, {}, n);
+  ASSERT_TRUE(out) << out.error().message();
+  EXPECT_EQ(out->A.size(), 0);
+  EXPECT_EQ(out->csr.values.size(), n); // only the net row
+  EXPECT_EQ(out->stored_nonzeros(), 2 * n);
+  EXPECT_TRUE(out->validate_factor_workspace(n, 1, 1));
+  EXPECT_TRUE(out->validate_augmented_workspace(n, 1));
+  out->storage.max_solver_bytes = 1;
+  EXPECT_FALSE(out->validate_factor_workspace(n, 1, 1));
+  EXPECT_FALSE(out->validate_augmented_workspace(n, 1));
+  cs.storage.max_nnz = 2 * n - 1;
+  EXPECT_FALSE(cs.materialize(x, {}, n));
+  cs.storage.max_nnz = 2 * n;
+  cs.storage.max_materialization_bytes = 100;
+  EXPECT_FALSE(cs.materialize(x, {}, n));
+}
+
+TEST(RiskConstraintsR1, RelativeBudgetUsesActualGrossAndTurnoverWithoutNameCountMultiplier) {
+  namespace risk = atx::engine::risk;
+  constexpr usize n = 64;
+  const MatX x = MatX::Zero(n, 1);
+  const std::vector<f64> previous(n, 0.0), weights(n, (1.0 + 1e-5) / static_cast<f64>(n));
+  ConstraintSet cs;
+  cs.gross = {1.0, false};
+  cs.turn = risk::TurnoverBudget{1.0};
+  cs.storage.rule = risk::ConstraintStorageRule::SparseCsrV2;
+  auto out = cs.materialize(x, previous, n);
+  ASSERT_TRUE(out);
+  EXPECT_FALSE(out->check_relative_feasible(weights, 1e-6, 1e-8));
+  out->gross_l1_budget = -1.0;
+  EXPECT_FALSE(out->check_relative_feasible(weights, 1e-6, 1e-8));
+  out->has_turnover = false;
+  EXPECT_TRUE(out->check_relative_feasible(weights, 1e-6, 1e-8));
+  EXPECT_DOUBLE_EQ(risk::relative_constraint_tolerance(0.0, -1e30, 1e30, 1e-6, 0.1), 1e-6);
+}
+
+TEST(RiskConstraintsR1, RelativeMetadataAndOverflowFailClosedOnDenseAndSparseInputs) {
+  namespace risk = atx::engine::risk;
+  const auto nan = std::numeric_limits<f64>::quiet_NaN();
+  const auto huge = std::numeric_limits<f64>::max();
+  const std::vector<f64> zero(kM, 0.0), overflow(kM, huge / 2.0);
+  for (const auto rule : {risk::ConstraintStorageRule::LegacyDenseV1, risk::ConstraintStorageRule::SparseCsrV2}) {
+    ConstraintSet cs;
+    cs.gross = {1.0, false};
+    cs.storage.rule = rule;
+    const auto good = cs.materialize(make_exposures(), {}, kM);
+    ASSERT_TRUE(good);
+    auto bad = *good;
+    bad.gross_l1_budget = nan;
+    EXPECT_FALSE(bad.check_relative_feasible(zero, 1e-6, 1e-6));
+    bad = *good; bad.has_turnover = true; bad.turnover_budget = nan; bad.turnover_ref = zero;
+    EXPECT_FALSE(bad.check_relative_feasible(zero, 1e-6, 1e-6));
+    bad.turnover_budget = 1.0; bad.turnover_ref[0] = nan;
+    EXPECT_FALSE(bad.check_relative_feasible(zero, 1e-6, 1e-6));
+    bad = *good; bad.tracking.active = true; bad.tracking.te_budget = nan;
+    EXPECT_FALSE(bad.check_relative_feasible(zero, 1e-6, 1e-6));
+    bad = *good; bad.sector_risk.active = true; bad.sector_risk.sector_id.assign(kM, 0); bad.sector_risk.sigma = {nan};
+    EXPECT_FALSE(bad.check_relative_feasible(zero, 1e-6, 1e-6));
+    bad = *good; bad.robust.active = true; bad.robust.kappa = nan;
+    EXPECT_FALSE(bad.check_relative_feasible(zero, 1e-6, 1e-6));
+    bad = *good; bad.impact.active = true; bad.impact.coeff.assign(kM, nan);
+    EXPECT_FALSE(bad.check_relative_feasible(zero, 1e-6, 1e-6));
+    bad = *good; bad.gross_l1_budget = huge;
+    EXPECT_FALSE(bad.check_relative_feasible(overflow, 1e-6, 1e-6));
+    cs.gross.elastic = true;
+    const auto elastic = cs.materialize(make_exposures(), {}, kM);
+    ASSERT_TRUE(elastic);
+    EXPECT_FALSE(elastic->check_relative_feasible(zero, 1e-6, 1e-6));
   }
 }
 

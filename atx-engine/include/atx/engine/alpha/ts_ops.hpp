@@ -38,6 +38,10 @@
 //      slope/rsquare/resid (OLS on the time axis 0..n-1; resid = last -
 //      fitted_last); correlation (Pearson, population cross-moments so in
 //      [-1,1], zero variance -> NaN); covariance (sample ddof=1).
+//    * W0-A0 (A-09): the flat-window guard (FlatGuard::RelativeV2, see
+//      tsv_is_flat) is part of the pinned policy — var/std 0, zscore/skew/
+//      kurt/corr/rsquare NaN, slope/resid 0 on a flat window; the oracle
+//      restates the identical test.
 //
 //  BIT-EXACTNESS — IDENTICAL SUMMATION ORDER. We deliberately do NOT use an
 //  incremental / online O(1) rolling accumulator (Welford, running sums):
@@ -69,6 +73,8 @@
 #include <limits>
 #include <span>
 #include <vector>
+
+#include <xsimd/xsimd.hpp>
 
 #include "atx/core/macro.hpp"
 #include "atx/core/types.hpp"
@@ -116,6 +122,47 @@ inline constexpr atx::f64 kTsNaN = std::numeric_limits<atx::f64>::quiet_NaN();
   }
   return static_cast<atx::usize>(v);
 }
+
+// ===========================================================================
+//  W0-A0 versioned numeric policies (defaults are the corrected behaviour; the
+//  *V1 enumerators re-derive pre-W0 digests bit-exactly).
+// ===========================================================================
+
+// A-09 — flat-window (relative cancellation) guard on the BATCH path. A window
+// of equal values (every forward-filled fundamental) has an exact variance of
+// 0, but mean = Σ/n rounds, so Σ(v-m)² is ~1e-35 instead of 0 and ts_zscore
+// came out as ±0.97 noise, corr/slope/skew as noise. RelativeV2 treats a window
+// whose population std is at or below kTsFlatRelTol·|mean| as exactly flat:
+// var/std -> 0, zscore/skew/kurt/corr/rsquare -> NaN, slope -> 0, resid -> 0,
+// regression on a flat predictor -> NaN. The oracle restates the identical
+// test (oracle.cpp), so the VM↔oracle differential stays bit-exact.
+enum class FlatGuard : atx::u8 {
+  RelativeV2 = 0, // default: relative cancellation guard
+  NoneV1 = 1,     // legacy: no guard (pre-W0 noise on flat windows)
+};
+
+// Relative flatness tolerance on std/|mean|. The rounding noise of a d-term
+// chronological mean is bounded by ~d·eps (~1e-13 at d = 500), so 1e-10 clears
+// it by three orders; a real series with a relative dispersion below 1e-10
+// (price 100 moving by < 1e-8) carries no usable variation.
+inline constexpr atx::f64 kTsFlatRelTol = 1e-10;
+
+// True iff a window of `n` values with mean `mean` and Σ(v-mean)² == `ss` is
+// flat under the relative guard: sqrt(ss/n) <= kTsFlatRelTol·|mean|. An exact
+// all-zero window (ss == 0, mean == 0) is flat; a NaN ss is never flat.
+[[nodiscard]] inline bool tsv_is_flat(atx::f64 ss, atx::f64 mean, atx::usize n) noexcept {
+  return std::sqrt(ss / static_cast<atx::f64>(n)) <= kTsFlatRelTol * std::fabs(mean);
+}
+
+// A-13 — how TsSum / TsMean execute. WindowedV2 (default): under
+// EvalMode::AuditExact they take the batch per-window recompute (ts_value_at,
+// oracle-exact, independent of the panel start); under ResearchFast they keep
+// the O(T) online sweep, now Neumaier-compensated. OnlineV1: the pre-W0
+// uncompensated online sweep in every mode.
+enum class TsSumPath : atx::u8 {
+  WindowedV2 = 0, // default
+  OnlineV1 = 1,   // legacy
+};
 
 // ===========================================================================
 //  Strided window gather + reductions. The trailing window of instrument
@@ -166,9 +213,11 @@ inline constexpr atx::f64 kTsNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 }
 
 // Sample (ddof=1) variance: m = Σ/n, then Σ(v-m)² chronologically; NaN if n<2.
-// Mirrors oracle `sample_var` operation order exactly.
+// Mirrors oracle `sample_var` operation order exactly. Under FlatGuard::
+// RelativeV2 a flat window (tsv_is_flat) returns exactly 0.0.
 [[nodiscard]] inline atx::f64 tsv_var(std::span<const atx::f64> x, atx::usize t, atx::usize j,
-                                      atx::usize d, atx::usize instruments) noexcept {
+                                      atx::usize d, atx::usize instruments,
+                                      FlatGuard guard = FlatGuard::RelativeV2) noexcept {
   if (d < 2) {
     return kTsNaN;
   }
@@ -177,6 +226,9 @@ inline constexpr atx::f64 kTsNaN = std::numeric_limits<atx::f64>::quiet_NaN();
   for (atx::usize k = t + 1 - d; k <= t; ++k) {
     const atx::f64 v = x[k * instruments + j];
     ss += (v - m) * (v - m);
+  }
+  if (guard == FlatGuard::RelativeV2 && tsv_is_flat(ss, m, d)) {
+    return 0.0;
   }
   return ss / static_cast<atx::f64>(d - 1);
 }
@@ -218,8 +270,12 @@ struct TsvFit {
   atx::f64 fitted_last{kTsNaN};
 };
 
+// Under FlatGuard::RelativeV2 a flat value window (tsv_is_flat on Σ(y-ȳ)²)
+// fits slope 0 / intercept ȳ, r2 NaN (no variance to explain) and
+// fitted_last == the newest value, so resid is exactly 0.
 [[nodiscard]] inline TsvFit tsv_lin_fit(std::span<const atx::f64> x, atx::usize t, atx::usize j,
-                                        atx::usize d, atx::usize instruments) noexcept {
+                                        atx::usize d, atx::usize instruments,
+                                        FlatGuard guard = FlatGuard::RelativeV2) noexcept {
   TsvFit f;
   if (d < 2) {
     return f;
@@ -237,6 +293,20 @@ struct TsvFit {
     sy += yi;
     sxx += xi * xi;
     sxy += xi * yi;
+  }
+  if (guard == FlatGuard::RelativeV2) {
+    const atx::f64 my0 = sy / nf;
+    atx::f64 ss_y = 0.0;
+    for (atx::usize i = 0; i < d; ++i) {
+      const atx::f64 yi = x[base + i * instruments];
+      ss_y += (yi - my0) * (yi - my0);
+    }
+    if (tsv_is_flat(ss_y, my0, d)) {
+      f.slope = 0.0;
+      f.intercept = my0;
+      f.fitted_last = x[base + (d - 1) * instruments];
+      return f; // r2 stays NaN
+    }
   }
   const atx::f64 denom = nf * sxx - sx * sx;
   if (denom == 0.0) {
@@ -369,6 +439,10 @@ struct TsvFit {
   // magnitude (sum ~ n*mean, mean ~ values), so the rolling-sum drift stays a
   // bounded RELATIVE error (~1e-11 even at volume 1e7..1e8 scale). NO squaring
   // -> no catastrophic cancellation. Tolerance-conformant vs the batch oracle.
+  // W0-A0 (A-13): under EvalMode::AuditExact + TsSumPath::WindowedV2 (the
+  // default) vm.hpp does NOT take this online route for TsSum/TsMean — they use
+  // the batch ts_value_at recompute (oracle-exact); ResearchFast slides the
+  // Neumaier-compensated TsvRunSum.
   case OpCode::TsSum:
   case OpCode::TsMean:
   // EXTREME online ops (monotonic deque — bit-exact vs the batch oracle).
@@ -416,15 +490,142 @@ struct TsvFit {
 // [0, dates*instruments). The leaving subtraction reverses the SAME value that
 // entered d steps earlier (FP add/sub of an identical operand), so Sx tracks the
 // window without a fresh re-sum.
+// A-13 (W0-A0): the ResearchFast running window-sum. A NEUMAIER-compensated
+// accumulator: a leaving cell is removed by adding its negation through the same
+// compensated step, so the carried correction `cx` keeps the low-order bits the
+// naive add/subtract slide shed (the pre-W0 sweep drifted with the panel start).
+// Missing cells (NaN and ±inf, R21-1) are counted, never folded in. Shared by
+// the VM sweep below and the StreamingEngine's one-date RunSum step.
+struct TsvRunSum {
+  atx::f64 sx{0.0};      // compensated running sum of the window's finite cells
+  atx::f64 cx{0.0};      // Neumaier correction term
+  atx::usize nan_cnt{0}; // missing cells currently in the window
+
+  void add(atx::f64 v) noexcept {
+    const atx::f64 tt = sx + v;
+    cx += (std::fabs(sx) >= std::fabs(v)) ? (sx - tt) + v : (v - tt) + sx;
+    sx = tt;
+  }
+  void enter(atx::f64 v) noexcept {
+    if (ts_is_missing(v)) {
+      ++nan_cnt;
+    } else {
+      add(v);
+    }
+  }
+  void leave(atx::f64 v) noexcept {
+    if (ts_is_missing(v)) {
+      --nan_cnt;
+    } else {
+      add(-v);
+    }
+  }
+  [[nodiscard]] atx::f64 sum() const noexcept { return sx + cx; }
+};
+
+inline constexpr atx::usize kTsInstrumentTile = 64;
+
+// A date-major tile of the SAME compensated state machine as TsvRunSum.
+// SIMD lanes are independent instruments: no horizontal reduction or changed
+// add/remove ordering. Scratch is bounded (3*64 doubles) and invocation-local,
+// so tiles may run on distinct workers without allocation or shared mutation.
+inline void ts_sum_tile(OpCode op, std::span<const atx::f64> x,
+                        std::span<atx::f64> out, atx::usize dates,
+                        atx::usize instruments, atx::usize d,
+                        atx::usize begin, atx::usize end) noexcept {
+  ATX_ASSERT(begin <= end && end <= instruments && end - begin <= kTsInstrumentTile);
+  // A manually assembled instruction may exceed the DSL's bounded window.
+  // Keep integer missing counts exact even for that theoretical geometry.
+  if (static_cast<atx::f64>(d) >= 0x1p53) {
+    for (atx::usize j = begin; j < end; ++j) {
+      TsvRunSum state;
+      for (atx::usize t = 0; t < dates; ++t) {
+        state.enter(x[t * instruments + j]);
+        if (t >= d) state.leave(x[(t - d) * instruments + j]);
+        out[t * instruments + j] = t + 1 < d || state.nan_cnt != 0 ? kTsNaN
+            : op == OpCode::TsSum ? state.sum() : state.sum() / static_cast<atx::f64>(d);
+      }
+    }
+    return;
+  }
+  using Batch = xsimd::batch<atx::f64>;
+  std::array<atx::f64, kTsInstrumentTile> sums{};
+  std::array<atx::f64, kTsInstrumentTile> corrections{};
+  // At most d+1 entering/live missing cells; the guard above guarantees exact
+  // integer representation even for manually assembled (non-DSL) instructions.
+  std::array<atx::f64, kTsInstrumentTile> missing{};
+  const atx::usize width = end - begin;
+  const atx::f64 nf = static_cast<atx::f64>(d);
+  for (atx::usize t = 0; t < dates; ++t) {
+    const atx::f64 *const row = x.data() + t * instruments + begin;
+    atx::f64 *const dst = out.data() + t * instruments + begin;
+    atx::usize j = 0;
+    for (; width - j >= Batch::size; j += Batch::size) {
+      Batch sum = Batch::load_unaligned(sums.data() + j);
+      Batch correction = Batch::load_unaligned(corrections.data() + j);
+      Batch miss = Batch::load_unaligned(missing.data() + j);
+      const auto add = [&](Batch value, bool leaving) {
+        const auto finite = xsimd::isfinite(value);
+        const Batch v = leaving ? -value : value;
+        const Batch next = sum + v;
+        const Batch residual = xsimd::select(xsimd::abs(sum) >= xsimd::abs(v),
+                                             (sum - next) + v, (v - next) + sum);
+        correction = xsimd::select(finite, correction + residual, correction);
+        sum = xsimd::select(finite, next, sum);
+        const Batch bad = xsimd::select(finite, Batch{0.0}, Batch{1.0});
+        miss = leaving ? miss - bad : miss + bad;
+      };
+      add(Batch::load_unaligned(row + j), false);
+      if (t >= d) add(Batch::load_unaligned(x.data() + (t - d) * instruments + begin + j), true);
+      sum.store_unaligned(sums.data() + j);
+      correction.store_unaligned(corrections.data() + j);
+      miss.store_unaligned(missing.data() + j);
+      const Batch value = op == OpCode::TsSum ? sum + correction : (sum + correction) / Batch{nf};
+      const Batch result = t + 1 < d ? Batch{kTsNaN}
+          : xsimd::select(miss == Batch{0.0}, value, Batch{kTsNaN});
+      result.store_unaligned(dst + j);
+    }
+    for (; j < width; ++j) {
+      TsvRunSum state{sums[j], corrections[j], static_cast<atx::usize>(missing[j])};
+      state.enter(row[j]);
+      if (t >= d) state.leave(x[(t - d) * instruments + begin + j]);
+      sums[j] = state.sx;
+      corrections[j] = state.cx;
+      missing[j] = static_cast<atx::f64>(state.nan_cnt);
+      dst[j] = t + 1 < d || state.nan_cnt != 0 ? kTsNaN
+          : op == OpCode::TsSum ? state.sum() : state.sum() / nf;
+    }
+  }
+}
+
+// `compensated` selects the ResearchFast Neumaier slide (TsvRunSum, the W0-A0
+// default) or the legacy uncompensated slide (TsSumPath::OnlineV1).
 inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
                                  atx::usize dates, atx::usize j, atx::usize d,
-                                 atx::usize instruments) noexcept {
+                                 atx::usize instruments, bool compensated = true) noexcept {
   // Lane 1: the order-statistic ops share this online entry (vm.hpp routes every
   // non-extreme ts_is_online_op here). Their sweep keeps grow-only thread_local
   // scratch; an allocation failure there terminates (noexcept), which is the
   // same failure mode as the VM's own scratch growth.
   if (ordstat::is_order_stat_op(op)) {
     ordstat::sweep_strided(op, x, out, dates, j, d, instruments);
+    return;
+  }
+  if (compensated) {
+    TsvRunSum rs;
+    const atx::f64 nfc = static_cast<atx::f64>(d);
+    for (atx::usize t = 0; t < dates; ++t) {
+      rs.enter(x[t * instruments + j]);
+      if (t >= d) {
+        rs.leave(x[(t - d) * instruments + j]);
+      }
+      const atx::usize oi = t * instruments + j;
+      if (t + 1 < d || rs.nan_cnt != 0) {
+        out[oi] = kTsNaN; // short window or any-missing -> NaN (pinned policy)
+        continue;
+      }
+      out[oi] = (op == OpCode::TsSum) ? rs.sum() : rs.sum() / nfc;
+    }
     return;
   }
   atx::f64 sx = 0.0;
@@ -793,9 +994,12 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
 //  the VM routes them through the sweep — the two agree to the documented
 //  tolerance (FP ops) or bit-exactly (min/max/scale).
 // ===========================================================================
+// `guard` (A-09) applies the flat-window guard to var/std/zscore/skew/kurt and
+// the slope/rsquare/resid fit; FlatGuard::NoneV1 reproduces the pre-W0 values.
 [[nodiscard]] inline atx::f64 ts_value_at(OpCode op, std::span<const atx::f64> x, atx::usize t,
                                           atx::usize j, atx::usize d, atx::usize instruments,
-                                          std::vector<atx::f64> &sort_buf, atx::f64 p0) {
+                                          std::vector<atx::f64> &sort_buf, atx::f64 p0,
+                                          FlatGuard guard = FlatGuard::RelativeV2) {
   // delay/delta: x[t-d] with min_periods==1; NaN if the shift falls off the top.
   if (op == OpCode::TsDelay || op == OpCode::TsDelta) {
     if (d == 0 || t < d) {
@@ -828,9 +1032,9 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
   case OpCode::TsMean:
     return tsv_sum(x, t, j, d, instruments) / nf;
   case OpCode::TsVar:
-    return tsv_var(x, t, j, d, instruments);
+    return tsv_var(x, t, j, d, instruments, guard);
   case OpCode::TsStd:
-    return std::sqrt(tsv_var(x, t, j, d, instruments));
+    return std::sqrt(tsv_var(x, t, j, d, instruments, guard));
   case OpCode::TsMin:
   case OpCode::TsMax: {
     const atx::usize base = (t + 1 - d) * instruments + j;
@@ -897,7 +1101,7 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
       return kTsNaN;
     }
     const atx::f64 m = tsv_sum(x, t, j, d, instruments) / nf;
-    const atx::f64 sd = std::sqrt(tsv_var(x, t, j, d, instruments));
+    const atx::f64 sd = std::sqrt(tsv_var(x, t, j, d, instruments, guard));
     if (sd == 0.0) {
       return kTsNaN;
     }
@@ -913,7 +1117,7 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
       return kTsNaN;
     }
     const atx::f64 m = tsv_sum(x, t, j, d, instruments) / nf;
-    const atx::f64 var = tsv_var(x, t, j, d, instruments);
+    const atx::f64 var = tsv_var(x, t, j, d, instruments, guard);
     if (var == 0.0) {
       return kTsNaN;
     }
@@ -925,18 +1129,21 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
     return s / nf / (var * var) - 3.0; // excess kurtosis
   }
   case OpCode::TsSlope:
-    return tsv_lin_fit(x, t, j, d, instruments).slope;
+    return tsv_lin_fit(x, t, j, d, instruments, guard).slope;
   case OpCode::TsRsquare:
-    return tsv_lin_fit(x, t, j, d, instruments).r2;
+    return tsv_lin_fit(x, t, j, d, instruments, guard).r2;
   case OpCode::TsResid: {
-    const TsvFit f = tsv_lin_fit(x, t, j, d, instruments);
+    const TsvFit f = tsv_lin_fit(x, t, j, d, instruments, guard);
     return x[t * instruments + j] - f.fitted_last;
   }
   case OpCode::TsZscore: {
     // (x[t] - rolling mean) / rolling SAMPLE std; reuse tsv_sum / tsv_var so the
     // reduction order matches ts_mean / ts_std (hence the oracle) bit-for-bit.
     const atx::f64 mean = tsv_sum(x, t, j, d, instruments) / nf;
-    const atx::f64 sd = std::sqrt(tsv_var(x, t, j, d, instruments));
+    const atx::f64 sd = std::sqrt(tsv_var(x, t, j, d, instruments, guard));
+    if (guard == FlatGuard::RelativeV2 && sd == 0.0) {
+      return kTsNaN; // A-09: a flat window has no dispersion to score against
+    }
     return (x[t * instruments + j] - mean) / sd; // sd NaN (d<2) -> NaN
   }
   case OpCode::TsAvDiff: {
@@ -1051,10 +1258,13 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
 //  oracle `pearson` / `sample_cov` summation order. `bx`/`by` are caller-owned
 //  scratch (>= d) holding the two gathered windows.
 // ===========================================================================
+// `guard` (A-09): under FlatGuard::RelativeV2 a flat window on either side makes
+// corr NaN, and a flat predictor makes the regression slope NaN.
 [[nodiscard]] inline atx::f64 ts_pair_at(OpCode op, std::span<const atx::f64> x,
                                          std::span<const atx::f64> y, atx::usize t, atx::usize j,
                                          atx::usize d, atx::usize instruments,
-                                         std::vector<atx::f64> &bx, std::vector<atx::f64> &by) {
+                                         std::vector<atx::f64> &bx, std::vector<atx::f64> &by,
+                                         FlatGuard guard = FlatGuard::RelativeV2) {
   if (!tsv_window_valid(x, t, j, d, instruments) || !tsv_window_valid(y, t, j, d, instruments)) {
     return kTsNaN;
   }
@@ -1082,6 +1292,9 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
       sab += (by[i] - mb) * (bx[i] - ma);
       sbb += (by[i] - mb) * (by[i] - mb);
     }
+    if (guard == FlatGuard::RelativeV2 && tsv_is_flat(sbb, mb, d)) {
+      return kTsNaN; // A-09: a flat predictor has no variance to regress on
+    }
     return sbb == 0.0 ? kTsNaN : sab / sbb;
   }
   if (op == OpCode::TsCov) {
@@ -1099,6 +1312,9 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
     sab += (bx[i] - ma) * (by[i] - mb);
     saa += (bx[i] - ma) * (bx[i] - ma);
     sbb += (by[i] - mb) * (by[i] - mb);
+  }
+  if (guard == FlatGuard::RelativeV2 && (tsv_is_flat(saa, ma, d) || tsv_is_flat(sbb, mb, d))) {
+    return kTsNaN; // A-09: correlation with a flat window is undefined
   }
   const atx::f64 denom = std::sqrt(saa * sbb);
   return denom == 0.0 ? kTsNaN : sab / denom;

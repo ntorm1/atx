@@ -1,0 +1,122 @@
+[
+    {
+        "Original":  "recent-strategy-native-build-receipt.json",
+        "File":  "recent-strategy-native-build-receipt.json",
+        "SHA256":  "e66f48dc2d39606a3ffab9546775a4760a3fefabc23502980daeb55761c756d3"
+    },
+    {
+        "Original":  "recent-strategy-native-build.log",
+        "File":  "recent-strategy-native-build.log",
+        "SHA256":  "59c55e3606037c6e3db9f1366cbeb329dd3488512fc5c78a3f4d234b5eb06b0e"
+    },
+    {
+        "Original":  "recent-strategy-native-cache-summary.txt",
+        "File":  "recent-strategy-native-cache-summary.txt",
+        "SHA256":  "c46c3aa4a33a9ac3e3b94ad17a58e75b5ed0beb4ce75e4bfd3e18f1b77193abd"
+    },
+    {
+        "Original":  "recent-strategy-fixture-path-build-receipt.json",
+        "File":  "recent-strategy-fixture-path-build-receipt.json",
+        "SHA256":  "3a7570456bde5a7677ce6756549d79061b3146a1475619fab7b968619cac0a43"
+    },
+    {
+        "Original":  "recent-strategy-fixture-path-build.log",
+        "File":  "recent-strategy-fixture-path-build.log",
+        "SHA256":  "5214ac3705b8fff2cab6a0302d6ed457db8d38c1cc8326d95174b4dfd9b06e26"
+    },
+    {
+        "Original":  "recent-strategy-native-qualification/receipt.json",
+        "File":  "recent-strategy-native-qualification__receipt.json",
+        "SHA256":  "6e417a7306d3aad389a33b0ae4388318fde4aefcb6ca17ccf67531c1fa6c41ab"
+    },
+    {
+        "Original":  "recent-strategy-native-qualification/results.xml",
+        "File":  "recent-strategy-native-qualification__results.xml",
+        "SHA256":  "a31e0218ebc4eab5dd3446e3f0783958bf48f76f2e55982657899c76c4f3c0cc"
+    },
+    {
+        "Original":  "recent-strategy-native-qualification-final/receipt.json",
+        "File":  "recent-strategy-native-qualification-final__receipt.json",
+        "SHA256":  "b051a30f9c9cab83a5bf78f3434960636db324108756529e160bc867c962455e"
+    },
+    {
+        "Original":  "recent-strategy-native-qualification-final/results.xml",
+        "File":  "recent-strategy-native-qualification-final__results.xml",
+        "SHA256":  "9b6f5166ceee7b49acd495b3b2bdb531cfa5b43f971936bc3695554d6aeb0681"
+    },
+    {
+        "Original":  "recent-strategy-native-qualification-final/stdout.log",
+        "File":  "recent-strategy-native-qualification-final__stdout.log",
+        "SHA256":  "80f6698c4ce9e23ebfba5db3c3dd0873f0e124200f3f527004c1a5d9c74522a0"
+    },
+    {
+        "Original":  "recent-data-binding-python-qualification/receipt.json",
+        "File":  "recent-data-binding-python-qualification__receipt.json",
+        "SHA256":  "d262be2f27c3c5b240cee414b0fb68e1318ce09910d142ad3215517eb56fe6bd"
+    },
+    {
+        "Original":  "recent-data-binding-python-qualification/stderr.log",
+        "File":  "recent-data-binding-python-qualification__stderr.log",
+        "SHA256":  "e70260da27217c22eaa2e97257da54ef2571cd37bbb5711a19866cd641196e87"
+    },
+    {
+        "Original":  "recent-projection-v1/manifest.json",
+        "File":  "recent-projection-v1__manifest.json",
+        "SHA256":  "25a96be8611bf97eddccea3b254220aa750a66b98953069c51cd392d30f0e446"
+    },
+    {
+        "Original":  "recent-projection-v1-run/receipt.json",
+        "File":  "recent-projection-v1-run__receipt.json",
+        "SHA256":  "fbc7d2c53a9b66ae3b70d33658ee540ca83b1aa82741271c5a49390a316dca98"
+    },
+    {
+        "Original":  "recent-dev-smoke-v1/manifest.json",
+        "File":  "recent-dev-smoke-v1__manifest.json",
+        "SHA256":  "900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b"
+    },
+    {
+        "Original":  "recent-dev-smoke-v1-run/receipt.json",
+        "File":  "recent-dev-smoke-v1-run__receipt.json",
+        "SHA256":  "5324a18de3e246c52e480918ff64c8c690bfb7a0cafdd442a0ad9ec4177f79e4"
+    },
+    {
+        "Original":  "recent-dev-check-v1/manifest.json",
+        "File":  "recent-dev-check-v1__manifest.json",
+        "SHA256":  "2129ed162ca3eb1e2bce3bd74f456b83ea11187c26729d06712677bbb6848e84"
+    },
+    {
+        "Original":  "recent-dev-check-v1-run/receipt.json",
+        "File":  "recent-dev-check-v1-run__receipt.json",
+        "SHA256":  "929a6ccbca8a0b2074a12ae7003b3d86a18ccc42710822507adad3dc46056fbf"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v1-run/receipt.json",
+        "File":  "recent-dev-rehearsal-v1-run__receipt.json",
+        "SHA256":  "90d778e753b6b913265df9665795eef20f16577e1fa972fe9ead799db191e46a"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v1-run/stdout.log",
+        "File":  "recent-dev-rehearsal-v1-run__stdout.log",
+        "SHA256":  "11b40eeef76cb71eb09c1842a2a82e39706d8fe0d31bc9f450e21aa0db965f60"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v1-run/stderr.log",
+        "File":  "recent-dev-rehearsal-v1-run__stderr.log",
+        "SHA256":  "c12a71be44057daadd99fe3b2c78e48e2e28feb9e50489fa8eae0f8fd7d8af5c"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v1/summary.json",
+        "File":  "recent-dev-rehearsal-v1__summary.json",
+        "SHA256":  "06453af64ce5e6d5db0a119d2acb19c7c2637b902f5c6d48e6556f9bf6f8d3cc"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v1/recipe.json",
+        "File":  "recent-dev-rehearsal-v1__recipe.json",
+        "SHA256":  "634f916e60727ae0599bbada946f5a3027e8d4e73bd3e9e3fbaba5ad20acb400"
+    },
+    {
+        "Original":  "recent-dev-rehearsal-v1/train_trials.jsonl",
+        "File":  "recent-dev-rehearsal-v1__train_trials.jsonl",
+        "SHA256":  "b9c7cdf0addeff4893bd17a8eabddb28f9b5461ea0fb6439a0d0583cb000b2bc"
+    }
+]

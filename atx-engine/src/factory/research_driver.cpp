@@ -33,6 +33,15 @@ namespace atx::engine::factory {
   // folded in below in run order (F1).
   atx::u64 digest_acc =
       static_cast<atx::u64>(atx::core::hash_combine(std::size_t{0}, cfg.master_seed));
+  if (cfg.robustness_gate) {
+    rep.robustness_regime_rule = cfg.robustness_cfg.regime_rule;
+    rep.robustness_vol_window = cfg.robustness_cfg.vol_window;
+    rep.robustness_min_history = cfg.robustness_cfg.min_regime_history;
+    rep.robustness_recipe_id = eval::regime_recipe_id(cfg.robustness_cfg);
+    if (cfg.robustness_cfg.regime_rule != eval::RegimeSliceRule::LegacyFullSampleV1)
+      digest_acc = static_cast<atx::u64>(atx::core::hash_combine(
+          static_cast<std::size_t>(digest_acc), rep.robustness_recipe_id));
+  }
 
   // One Factory over the FIXED panel â€” reused across every run (it carries no
   // per-run state; a fresh seeded SearchDriver is built inside each mine_into).
@@ -43,7 +52,7 @@ namespace atx::engine::factory {
   // and reused per-survivor. Empty (all-sentinel) when the gate is OFF (never read).
   const std::vector<atx::u8> regime_labels =
       cfg.robustness_gate
-          ? eval::regime_labels(panel_, cfg.robustness_cfg.vol_window, eval::kNumRegimes)
+          ? eval::regime_labels(panel_, cfg.robustness_cfg)
           : std::vector<atx::u8>{};
 
   // C2.2 (measurement-only; REPORT-ONLY) — the UNION of every run's distinct-scored

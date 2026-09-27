@@ -17,6 +17,7 @@
 #include <bit>     // std::bit_cast (bit-exact f64 <-> u64 serialization)
 #include <cstdint> // std::uint64_t
 #include <cstdio>  // std::snprintf (fixed-width hex codec)
+#include <optional>
 #include <string>
 #include <utility> // std::move
 #include <vector>
@@ -183,11 +184,23 @@ deserialize_canon(const std::string &blob) {
 //   key raw n_objectives obj0..obj_{kMaxObjectives-1} n_desc desc0..desc_{n-1}
 // Fields are space-joined; records are '\n'-joined. The key (canon_hash) is stored
 // INLINE so a record is self-describing; the cache is emitted in sorted-key order.
+// IC-screen rejections append the explicit token `ic3`; legacy records stay byte
+// identical. The tag distinguishes IC rejection from the historical -inf fidelity
+// sentinel without changing old checkpoint decoding or inventing a fitness value.
 [[nodiscard]] inline std::string serialize_cache(const std::vector<atx::u64> &keys,
-                                                 const std::vector<CachedScore> &vals) {
+                                                 const std::vector<CachedScore> &vals,
+                                                 std::optional<atx::u64> ic_identity = std::nullopt,
+                                                 std::optional<atx::u64> cpcv_identity = std::nullopt) {
   std::string out;
+  if (ic_identity) {
+    out = "ic-screen-v2 " + u64_to_hex(*ic_identity);
+  }
+  if (cpcv_identity) {
+    if (!out.empty()) out += '\n';
+    out += "cpcv-date-v2 " + u64_to_hex(*cpcv_identity);
+  }
   for (atx::usize r = 0; r < keys.size(); ++r) {
-    if (r != 0) {
+    if (!out.empty()) {
       out += '\n';
     }
     const CachedScore &cs = vals[r];
@@ -206,20 +219,54 @@ deserialize_canon(const std::string &blob) {
       out += ' ';
       out += f64_to_hex(d);
     }
+    if (cs.origin == ScoreOrigin::IcRejected) {
+      out += " ic3";
+    } else if (cs.origin == ScoreOrigin::ResidualUnavailable) {
+      out += " residual2";
+    }
   }
   return out;
 }
 
 [[nodiscard]] inline atx::core::Status
 deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
-                  std::vector<CachedScore> &vals) {
+                  std::vector<CachedScore> &vals,
+                  std::optional<atx::u64> *ic_identity = nullptr,
+                  std::optional<atx::u64> *cpcv_identity = nullptr) {
   keys.clear();
   vals.clear();
+  if (ic_identity != nullptr) {
+    ic_identity->reset();
+  }
+  if (cpcv_identity != nullptr) cpcv_identity->reset();
   if (blob.empty()) {
     return atx::core::Ok();
   }
+  bool saw_cpcv_identity = false;
+  bool saw_identity = false;
   for (const std::string &line : detail::split_on(blob, '\n')) {
     const std::vector<std::string> f = detail::split_on(line, ' ');
+    if (!f.empty() && f.front() == "cpcv-date-v2") {
+      atx::u64 identity = 0;
+      if (saw_cpcv_identity || !keys.empty() || f.size() != 2U || !hex_to_u64(f[1], identity))
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "deserialize_cache: bad CPCV identity");
+      saw_cpcv_identity = true;
+      if (cpcv_identity != nullptr) *cpcv_identity = identity;
+      continue;
+    }
+    if (!f.empty() && f.front() == "ic-screen-v2") {
+      atx::u64 identity = 0;
+      if (saw_identity || !keys.empty() || f.size() != 2U ||
+          !hex_to_u64(f[1], identity)) {
+        return atx::core::Err(atx::core::ErrorCode::Internal,
+                              "deserialize_cache: invalid IC screen identity");
+      }
+      saw_identity = true;
+      if (ic_identity != nullptr) {
+        *ic_identity = identity;
+      }
+      continue;
+    }
     // Minimum fields: key, raw, n_objectives, kMaxObjectives objs, n_desc.
     const atx::usize fixed = 3 + kMaxObjectives + 1;
     if (f.size() < fixed) {
@@ -248,7 +295,15 @@ deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
     if (!hex_to_u64(f[idx++], ndesc)) {
       return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: bad n_desc");
     }
-    if (f.size() != fixed + static_cast<atx::usize>(ndesc)) {
+    const bool ic_tag = f.back() == "ic3";
+    const bool residual_tag = f.back() == "residual2";
+    const bool rejection_tag = ic_tag || residual_tag;
+    if (rejection_tag && f.size() == fixed) {
+      return atx::core::Err(atx::core::ErrorCode::Internal,
+                            "deserialize_cache: IC tag without descriptor count");
+    }
+    const atx::usize expected_desc = f.size() - fixed - (rejection_tag ? 1U : 0U);
+    if (ndesc != expected_desc) {
       return atx::core::Err(atx::core::ErrorCode::Internal, "deserialize_cache: desc count mismatch");
     }
     cs.descriptor.reserve(static_cast<atx::usize>(ndesc));
@@ -261,6 +316,13 @@ deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
     }
     if (cs.raw == kRejectedRaw) {
       cs.origin = ScoreOrigin::FidelityRejected; // L3 sentinel survives the round-trip
+    }
+    if (rejection_tag) {
+      if (cs.raw != kRejectedRaw || cs.n_objectives != 0U || !cs.descriptor.empty()) {
+        return atx::core::Err(atx::core::ErrorCode::Internal,
+                              "deserialize_cache: invalid IC rejection sentinel");
+      }
+      cs.origin = ic_tag ? ScoreOrigin::IcRejected : ScoreOrigin::ResidualUnavailable;
     }
     keys.push_back(key);
     vals.push_back(std::move(cs));

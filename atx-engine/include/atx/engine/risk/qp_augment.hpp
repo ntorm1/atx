@@ -81,6 +81,7 @@
 #include <cmath>   // std::sqrt (sqrt(D) cone-argument block)
 #include <span>    // std::span (q)
 #include <utility> // std::move (SocBlock into out.cones)
+#include <limits>
 #include <vector>  // std::vector (triplet scratch)
 
 #include <Eigen/Cholesky> // Eigen::LLT (L_F = chol(F) for the tracking-error cone)
@@ -124,6 +125,8 @@ struct AugmentedQp {
   // ±kAugInf so the inert elementwise clamp leaves them untouched before the projection
   // overwrites them. (S8.5a uses exactly one block: the tracking-error ball.)
   std::vector<SocBlock> cones;
+  // V2 workspace admission reserves half for up to two live LDL factors.
+  atx::u64 max_factor_bytes{std::numeric_limits<atx::u64>::max()};
 };
 
 namespace detail {
@@ -152,7 +155,7 @@ namespace detail {
                                                const MaterializedConstraints &c, bool has_gross,
                                                bool has_turn) noexcept {
   atx::usize r = k;                              // (0) the K  y − Xᵀw = 0  rows
-  r += static_cast<atx::usize>(c.A.rows());      // (1) the S1-1 linear rows
+  r += c.row_count();                           // (1) logical linear rows, including implicit boxes
   if (has_gross) {
     r += m + m + m + 1U;                         // (2) ±w−s≤0 ; s≥0 ; Σs≤L
   }
@@ -179,8 +182,8 @@ namespace detail {
 // constraint block C (linear rows + gross/turnover L1 metadata).
 //
 // PRECONDITIONS (the solver validates these up front; build is a pure assembler):
-//   q.size() == V.n_instruments();  C.A.cols() == M when C.A has rows;
-//   C.l.size() == C.u.size() == C.A.rows();  λ ≥ 0.
+//   q.size() == V.n_instruments(); C.validate_layout(M) succeeds;
+//   C.validate_augmented_workspace(M,K) succeeds; lambda >= 0.
 //   C.turnover_penalty is finite and >= 0; a budget or positive penalty requires
 //   M finite entries in C.turnover_ref.
 [[nodiscard]] inline AugmentedQp build_augmented(const FactorModel &V, atx::f64 lambda,
@@ -201,6 +204,7 @@ namespace detail {
   const bool has_robust = C.robust.active && C.robust.kappa > 0.0;
 
   AugmentedQp out;
+  if (C.sparse()) out.max_factor_bytes = C.storage.max_solver_bytes / 4;
   out.n_w = m;
   out.n_y = k;
   out.n_aux = (has_gross ? m : 0U) + (has_turn ? m : 0U) + (has_robust ? 1U : 0U);
@@ -296,7 +300,8 @@ namespace detail {
 
   std::vector<Trip> a_trips;
   // worst-case nnz: K(M+1) factor rows + nnz(A) + gross(4M) + turn(4M).
-  a_trips.reserve(k * (m + 1U) + static_cast<atx::usize>(C.A.rows()) * m + 8U * m);
+  const auto linear_reserve = C.sparse() ? C.stored_nonzeros() : C.row_count() * m;
+  a_trips.reserve(k * (m + 1U) + linear_reserve + 8U * m);
 
   atx::usize row = 0U; // running row cursor (fixed advance, mirrors aug_total_rows)
 
@@ -314,15 +319,12 @@ namespace detail {
   }
 
   // (1) the S1-1 linear rows A (w-block only); skip exact-zero entries (sparse).
-  for (Eigen::Index ar = 0; ar < C.A.rows(); ++ar) {
-    for (atx::usize j = 0; j < m; ++j) {
-      const atx::f64 aij = C.A(ar, static_cast<Eigen::Index>(j));
-      if (aij != 0.0) {
-        a_trips.emplace_back(static_cast<int>(row), static_cast<int>(w_off + j), aij);
-      }
-    }
-    out.l[static_cast<Eigen::Index>(row)] = C.l[ar];
-    out.u[static_cast<Eigen::Index>(row)] = C.u[ar];
+  for (atx::usize ar = 0; ar < C.row_count(); ++ar) {
+    C.visit_row(ar, [&](atx::usize j, atx::f64 value) {
+      a_trips.emplace_back(static_cast<int>(row), static_cast<int>(w_off + j), value);
+    });
+    out.l[static_cast<Eigen::Index>(row)] = C.l[static_cast<Eigen::Index>(ar)];
+    out.u[static_cast<Eigen::Index>(row)] = C.u[static_cast<Eigen::Index>(ar)];
     ++row;
   }
 

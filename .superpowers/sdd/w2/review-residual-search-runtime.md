@@ -1,0 +1,11 @@
+# Independent residual-consumer runtime audit
+
+2026-09-26. **Approved as bounded runtime evidence**: report `26378979bd792c12faa7ad63e8918a8ea4adb56e` and its companion receipt. Read-only audit; no build, configure, rerun or actual payload. Exact evidence is retained in `residual-search-runtime-audit.json`.
+
+All13 artifact bindings match, including index `0725bb3643ef3cb66b2fe4c58ad63bdc38fa3bc3cd5584c19564c61d4a9cbb16`, both executable hashes, both XML/log/receipt sets and build/cache receipts. XML contains64 distinct `run/completed` cases, without failure/error/skip:45 engine cases in17.241 native seconds and19 mine cases in18.969s. Full case-name sets and source/target/filter/exit/time receipts match exactly. The three new `FactoryResidualConsumer` definitions in `16c3d28b` are all present and passing; the other61 cases preserve their existing scope.
+
+The successful build receipt names clean source `0bfac41e2e07f56327254d116fe07fbf352da293`, configured provenance `08240b13f3355c29f84a42af04acbda5f3747ce2`, Jobs2, exit0 and151.976952s. The log independently contains23 CPP actions and four links, with no failure, PCH/dependency actions or configure. Its per-build cache summary reports23/23 cacheable misses. This first public-API integration cost is correctly separated from the earlier private-kernel build and is not represented as a steady-state numerical edit or controlled speedup result.
+
+At audit, current engine-IC SHA256 was `18d06ad8317afddae241a696f35aacc6e19940b2f958437e0e3a7ea77ad34de4` and application-IC was `f02eac1f7d1c0f45a1221d406f42906444a9280f0de050342629bdfec5813599`, both matching this packet. Prior kernel/application packet binary hashes remain historical after this relink. The concurrent provider build targets the separate data executable and is not attributed to these executions.
+
+The scope distinction is correct: new checks qualify explicit signed residual IC-only Fitness/Search and unavailable-trial handling; the19 mine checks exercise existing modes. They do not establish a residual CLI/library route, P&L/DSR for IC, a combined residual-plus-delayed-net objective, practical sampled-screen recall, real exposure coverage or tradeable alpha. These overlapping historical cohorts must not be summed into a new global pass total.

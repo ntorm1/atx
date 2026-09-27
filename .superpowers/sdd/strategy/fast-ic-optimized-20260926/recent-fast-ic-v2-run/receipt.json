@@ -1,0 +1,72 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "0f618a45b3bd256eddd3a96f64893746063818d9",
+  "started_utc": "2026-09-26T23:40:54.734538+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+    "--library",
+    "atx-impl/strategies/slow_price_volume_ic48_v1.json",
+    "--library-sha256",
+    "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+    "--train",
+    "build-equity/recent-fast-train-2020-2022-v1/manifest.json",
+    "--train-sha256",
+    "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+    "--validation",
+    "build-equity/recent-fast-validation-2023-2024-v1/manifest.json",
+    "--validation-sha256",
+    "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7",
+    "--output",
+    "build-equity/recent-fast-ic-v2",
+    "--max-memory-mib",
+    "1536",
+    "--min-names",
+    "2000",
+    "--workers",
+    "4"
+  ],
+  "executable_sha256": "0e5849071d9a5dec3604fb6f15b30ec095ef85bfc1c3fe40e36b84130316ecfe",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_ic48_v1.json",
+      "sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_ic48_v1.recipe.json",
+      "sha256": "3b6707f7a46e392391281a9f84585e6c6b1a1b5567cd9ff2656931b72481130b"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-train-2020-2022-v1\\manifest.json",
+      "sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-validation-2023-2024-v1\\manifest.json",
+      "sha256": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 768
+  },
+  "sampled_peak_tree_rss_bytes": 896258048,
+  "minimum_system_free_bytes": 2177929216,
+  "outcome": "time-limit",
+  "exit_code": 15,
+  "wall_seconds": 180.21799999999348,
+  "owned_processes": [
+    {
+      "pid": 3228,
+      "create_time": 1790466054.7401829
+    },
+    {
+      "pid": 18904,
+      "create_time": 1790466054.757194
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "e85920001f08d283c22f3b24a6d5acbcb299e99ab7c73eafeffbc71834beda83",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -2,8 +2,10 @@
 
 #include <algorithm> // std::clamp
 #include <cmath>     // std::abs, std::isnan, std::sqrt
+#include <limits>
 #include <optional>  // std::optional (weak-universe panel; deflation var arg)
 #include <span>      // std::span
+#include <string>
 #include <utility>   // std::move (OosAggregate hand-off)
 #include <vector>    // std::vector (fold-sliced streams)
 
@@ -20,6 +22,22 @@
 #include "atx/engine/factory/fitness_cost_selection.hpp" // factory::apply_selection_cost (B7)
 
 namespace atx::engine::factory {
+
+bool ResidualFitnessBinding::matches(const alpha::Panel &panel) const noexcept {
+  return panel_ == &panel && context_.dates() == panel.dates() &&
+      context_.instruments() == panel.instruments() && !context_.identity_sha256().empty();
+}
+const ObjectiveIcContext &ResidualFitnessBinding::context() const noexcept { return context_; }
+atx::core::Result<ResidualFitnessBinding> prepare_residual_fitness_binding(
+    const ObjectiveIcContext &context, const alpha::Panel &panel) {
+  ATX_TRY(const bool matches, objective_ic_panel_matches(context, panel));
+  if (!matches)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "residual fitness: captured price/presence payload differs");
+  ResidualFitnessBinding binding;
+  binding.panel_ = &panel; binding.context_ = context;
+  return binding;
+}
 
 [[nodiscard]] atx::f64 corr_to_pool(std::span<const atx::f64> candidate_pnl,
                                     const combine::AlphaStore &pool, Reduce reduce) noexcept {
@@ -278,6 +296,120 @@ eval_streams(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   return alpha::extract_streams(ss, policy, panel, sim);
 }
 
+// IC-only training objective. No backtest, invented P&L, sign search or DSR.
+[[nodiscard]] atx::core::Result<FitnessCore>
+residual_fitness_core(const Genome &cand, const alpha::Panel &panel, const FitnessCfg &cfg,
+                     const alpha::Panel *weak_panel, alpha::Engine *engine,
+                     const alpha::SignalSet *signals) {
+  if (!cfg.residual_binding || !cfg.residual_binding->matches(panel))
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "residual fitness: unbound panel/context");
+  if (cfg.execution.rule != ExecutionObjectiveRule::LegacyStreamsV1 || cfg.execution_context ||
+      weak_panel || cfg.target_aum != 0 || cfg.cost_selection.impact_in_selection ||
+      cfg.capacity_objective || cfg.turnover_objective || cfg.turnover_penalty_slope != 0)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "residual fitness: execution/cost/weak/turnover overlays are unsupported");
+  const auto &context = cfg.residual_binding->context();
+  std::optional<ObjectiveIcScratch> owned_scratch;
+  auto *scratch = cfg.residual_scratch;
+  if (scratch == nullptr) {
+    ATX_TRY(auto prepared, prepare_objective_ic_scratch(context));
+    owned_scratch.emplace(std::move(prepared)); scratch = &*owned_scratch;
+  }
+  std::optional<alpha::SignalSet> evaluated;
+  if (signals == nullptr) {
+    ATX_TRY(auto program, alpha::compile(cand.ast, cand.analysis));
+    if (engine) {
+      ATX_TRY(auto ss, engine->evaluate(program)); evaluated.emplace(std::move(ss));
+    } else {
+      alpha::Engine owned_engine{panel};
+      ATX_TRY(auto ss, owned_engine.evaluate(program)); evaluated.emplace(std::move(ss));
+    }
+    signals = &*evaluated;
+  }
+  if (signals->dates != panel.dates() || signals->instruments != panel.instruments() ||
+      signals->alphas.size() != 1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "residual fitness: one matching signal required");
+  ATX_TRY(auto result, evaluate_objective_ic(signals->alphas.front().values, context, *scratch));
+  FitnessCore out{};
+  out.objective_rule = FitnessObjectiveRule::ResidualHacIcV2;
+  out.residual_available = true;
+  for (const auto &h : result.horizons) {
+    out.residual_available = out.residual_available && h.inference_defined && std::isfinite(h.hac_ir);
+    out.residual_score += h.hac_ir / 3; // signed equal-weight mean, not absolute IC
+  }
+  out.residual_available = out.residual_available && std::isfinite(out.residual_score);
+  out.residual_ic = std::move(result);
+  return out;
+}
+
+// Explicit V2 objective: mature, chronological NET return SR. No fold slicing,
+// target-difference turnover, structural zero observation or second cost overlay.
+// This bounded execution slice does not claim residual/HAC/half-life calibration.
+[[nodiscard]] atx::core::Result<FitnessCore>
+execution_fitness_core(const Genome& cand, const alpha::Panel& panel,
+                       const WeightPolicy& policy, const FitnessCfg& cfg,
+                       const alpha::Panel* weak_panel, alpha::Engine* engine,
+                       const alpha::SignalSet* signals) {
+  const auto* context = cfg.execution_context;
+  if (context == nullptr || !execution_objective_matches(*context, panel, policy, cfg.execution))
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "execution fitness: context mismatch");
+  if (weak_panel != nullptr || cfg.target_aum != 0.0 || cfg.cost_selection.impact_in_selection ||
+      cfg.capacity_objective || cfg.turnover_objective || cfg.turnover_penalty_slope != 0.0)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "execution fitness: legacy cost/turnover/capacity/weak-panel overlay unsupported");
+  auto evaluate = [&]() -> atx::core::Result<alpha::AlphaStreams> {
+    if (signals != nullptr) {
+      if (signals->alphas.size() != 1)
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "execution fitness: one root required");
+      return extract_execution_streams(*signals, *context);
+    }
+    ATX_TRY(const alpha::Program program, alpha::compile(cand.ast, cand.analysis));
+    alpha::Engine local{panel};
+    auto& evaluator = engine != nullptr ? *engine : local;
+    ATX_TRY(const alpha::SignalSet evaluated, evaluator.evaluate(program));
+    if (evaluated.alphas.size() != 1)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "execution fitness: one root required");
+    return extract_execution_streams(evaluated, *context);
+  };
+  ATX_TRY(auto streams, evaluate());
+  if (streams.n_alphas() != 1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "execution fitness: one root required");
+  const auto begin = streams.first_realization_, end = streams.realization_end_;
+  const auto count = end - begin;
+  if (count < 3)
+    return atx::core::Err(atx::core::ErrorCode::Unavailable, "execution fitness: fewer than three mature returns");
+  const auto returns = streams.pnl(0).subspan(begin, count);
+  atx::f64 turnover = 0;
+  for (atx::usize t = begin; t < end; ++t) {
+    if (streams.valid_flat[t] == 0 || !std::isfinite(streams.pnl_flat[t]) ||
+        !std::isfinite(streams.turnover_flat[t]))
+      return atx::core::Err(atx::core::ErrorCode::Unavailable, "execution fitness: invalid interior realization");
+    turnover += streams.turnover_flat[t];
+  }
+  const auto moments = eval::mean_std_pop(returns);
+  const auto per_period = moments.std > 0 ? moments.mean / moments.std : 0.0;
+  const auto skew = eval::skewness(returns), kurtosis = eval::excess_kurtosis(returns);
+  const auto deflated = eval::deflated_sharpe(per_period, count, skew, kurtosis, cfg.trial_count, std::nullopt);
+  const auto annual = per_period * std::sqrt(combine::kAnnualizationDays);
+  if (!std::isfinite(moments.mean) || !std::isfinite(moments.std) || !std::isfinite(skew) ||
+      !std::isfinite(kurtosis) || !std::isfinite(annual) || !std::isfinite(turnover) ||
+      !std::isfinite(deflated.dsr) || !std::isfinite(deflated.haircut_sharpe))
+    return atx::core::Err(atx::core::ErrorCode::OutOfRange, "execution fitness: nonfinite moments");
+  const auto split = split_half_sharpe(returns, per_period > 0 ? 1.0 : per_period < 0 ? -1.0 : 0.0);
+  FitnessCore out{};
+  out.oos_pnl = std::move(streams.pnl_flat); // uncompressed calendar, NaN outside maturity
+  // DSR remains a reported diagnostic. A multiplicative DSR haircut is invalid
+  // for signed scores; SearchDriver refuses that legacy selection overlay.
+  out.wq = annual; out.robust = 1.0; out.dsr = deflated.dsr;
+  out.haircut_sharpe = deflated.haircut_sharpe;
+  out.turnover = turnover / static_cast<atx::f64>(count);
+  out.sharpe_h1 = split.sharpe_h1; out.sharpe_h2 = split.sharpe_h2; out.split_stable = split.stable;
+  out.execution_rule = ExecutionObjectiveRule::DelayedSurfaceV2;
+  out.execution_context_sha256 = streams.execution_context_sha256;
+  out.realized_begin = begin; out.realized_end = end;
+  return atx::core::Ok(std::move(out));
+}
+
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:
 // the OOS WQ aggregate, the sub-universe robustness re-eval, and the deflation).
 // IDENTICAL control flow + values to the original pool_aware_fitness body for
@@ -289,6 +421,14 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
              const exec::ExecutionSimulator &sim, const FitnessCfg &cfg,
              const alpha::Panel *weak_panel, alpha::Engine *engine,
              const alpha::SignalSet *signals, CpcvCache *cpcv_cache) {
+  if (cfg.objective_rule == FitnessObjectiveRule::ResidualHacIcV2)
+    return residual_fitness_core(cand, panel, cfg, weak_panel, engine, signals);
+  if (cfg.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "fitness: unknown objective rule");
+  if (cfg.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2)
+    return execution_fitness_core(cand, panel, policy, cfg, weak_panel, engine, signals);
+  if (cfg.execution.rule != ExecutionObjectiveRule::LegacyStreamsV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "fitness: unknown execution rule");
   // SAFETY (eps): the robustness ratio divides by wq; floor the denominator so a
   //               near-zero full-universe wq cannot blow the ratio to ±inf.
   constexpr atx::f64 kEps = 1e-12;
@@ -302,15 +442,17 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 
   // S3-1 PERF: use cpcv_cache when supplied; fall back to recomputing when nullptr.
   // Both paths produce bit-identical spans and folds (pure deterministic functions).
+  CpcvCache local_cache;
+  if (cpcv_cache == nullptr && cfg.cpcv.rule != eval::CpcvRule::ObservationV1)
+    cpcv_cache = &local_cache;
   OosAggregate agg{};
   if (cpcv_cache != nullptr) {
-    const CpcvCache::Entry &entry = cpcv_cache->get_or_build(strm.n_periods(), cfg.cpcv);
-    agg = aggregate_oos(strm, entry.folds, insts, cfg.book_size);
+    ATX_TRY(const auto* entry, cpcv_cache->get_or_build_checked(strm.n_periods(), cfg.cpcv, cfg.cpcv_session_stride));
+    agg = aggregate_oos(strm, entry->folds, insts, cfg.book_size);
   } else {
     const std::vector<eval::LabelSpan> spans = point_label_spans(strm.n_periods());
-    const std::vector<eval::CpcvFold> folds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
-    agg = aggregate_oos(strm, folds, insts, cfg.book_size);
+    ATX_TRY(auto plan, eval::cpcv_plan(std::span<const eval::LabelSpan>{spans}, cfg.cpcv));
+    agg = aggregate_oos(strm, plan.folds, insts, cfg.book_size);
   }
   const atx::f64 wq = agg.wq;
 
@@ -324,14 +466,14 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
     // function of n_periods; only the streams differ).
     OosAggregate weak_agg{};
     if (cpcv_cache != nullptr) {
-      const CpcvCache::Entry &weak_entry =
-          cpcv_cache->get_or_build(weak_strm.n_periods(), cfg.cpcv);
-      weak_agg = aggregate_oos(weak_strm, weak_entry.folds, weak_insts, cfg.book_size);
+      ATX_TRY(const auto* weak_entry,
+              cpcv_cache->get_or_build_checked(weak_strm.n_periods(), cfg.cpcv, cfg.cpcv_session_stride));
+      weak_agg = aggregate_oos(weak_strm, weak_entry->folds, weak_insts, cfg.book_size);
     } else {
       const std::vector<eval::LabelSpan> weak_spans = point_label_spans(weak_strm.n_periods());
-      const std::vector<eval::CpcvFold> weak_folds =
-          eval::cpcv_folds(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv);
-      weak_agg = aggregate_oos(weak_strm, weak_folds, weak_insts, cfg.book_size);
+      ATX_TRY(auto weak_plan,
+              eval::cpcv_plan(std::span<const eval::LabelSpan>{weak_spans}, cfg.cpcv));
+      weak_agg = aggregate_oos(weak_strm, weak_plan.folds, weak_insts, cfg.book_size);
     }
     const atx::f64 denom = (std::abs(wq) > kEps) ? wq : kEps;
     robust = std::clamp(weak_agg.wq / denom, 0.0, 1.0);
@@ -437,6 +579,21 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
 // both slope > 0 AND max_turnover_target is finite.
 [[nodiscard]] FitnessReport finish_report(const FitnessCore &core, atx::f64 redundancy,
                                           bool cost_active, const FitnessCfg &cfg) {
+  if (core.objective_rule == FitnessObjectiveRule::ResidualHacIcV2) {
+    FitnessReport report{};
+    const auto missing = std::numeric_limits<atx::f64>::quiet_NaN();
+    report.wq = missing; report.redundancy = missing; report.diversify = missing;
+    report.robust = missing; report.dsr = missing; report.haircut_sharpe = missing;
+    report.cost_bps = missing; report.turnover = missing;
+    report.sharpe_h1 = missing; report.sharpe_h2 = missing;
+    report.objective_rule = core.objective_rule;
+    report.residual_available = core.residual_available;
+    report.residual_ic = core.residual_ic;
+    report.raw = core.residual_available ? core.residual_score :
+        -std::numeric_limits<atx::f64>::infinity();
+    if (core.residual_available) { report.objectives[0] = report.raw; report.n_objectives = 1; }
+    return report;
+  }
   // kFloor: prevents raw going negative (a negative raw would invert the selection
   // ordering in ScalarRaw mode — floor at 0.0 means a heavily-penalised alpha
   // scores the same as a degenerate zero-signal alpha, which is the right ceiling
@@ -529,6 +686,9 @@ fitness_core(const Genome &cand, const alpha::Panel &panel, const WeightPolicy &
   // S3-0: surface the OOS mean turnover the penalty reads (pure projection — does
   // NOT enter `raw`, the objective vector, or the digest; byte-identical reporting).
   rep.turnover = core.turnover;
+  rep.execution_rule = core.execution_rule;
+  rep.execution_context_sha256 = core.execution_context_sha256;
+  rep.realized_begin = core.realized_begin; rep.realized_end = core.realized_end;
   return rep;
 }
 
@@ -687,6 +847,12 @@ pool_aware_fitness(const Genome &cand, const combine::AlphaStore &pool, const al
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel,
                    alpha::Engine *engine, const alpha::SignalSet *signals,
                    CpcvCache *cpcv_cache) {
+  if (cfg.objective_rule == FitnessObjectiveRule::ResidualHacIcV2 && pool.n_alphas() != 0)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "residual fitness: a P&L pool has no residual IC recipe");
+  if (cfg.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2 && pool.n_alphas() != 0)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "execution fitness: nonempty pool has no bound execution/calendar recipe");
   // Steps 1, 3, 5 (pool-INDEPENDENT) — written once in fitness_core (byte-identical
   // to the original body for those steps).  S3-1: cpcv_cache forwarded to eliminate
   // redundant span+fold rebuilds across genomes sharing the same (n_periods, cpcv).

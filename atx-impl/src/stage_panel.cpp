@@ -6,7 +6,11 @@
 #include <cmath>
 #include <ctime>
 #include <limits>
+#include <filesystem>
 #include <fstream>
+#include <numeric>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,10 +28,12 @@
 #include "atx/engine/alpha/augment.hpp"        // with_alpha101_fields (opt-in panel augmentation)
 #include "atx/engine/alpha/segment_panel.hpp"  // alpha::TimeWindow
 #include "atx/engine/data/history_panel.hpp"   // build_history_panel, HistoryDataConfig
+#include "atx/engine/data/panel_store.hpp"
 #include "atx/engine/data/orats_history.hpp"   // detail::date_to_nanos
 #include "atx/engine/data/panel_digest.hpp"
 #include "atx/engine/data/point_in_time_universe.hpp" // decode_membership_bin, PitMembershipImage
 #include "atx/engine/data/universe.hpp"        // UniverseConfig
+#include "atx/tsdb/mapping.hpp"
 
 namespace atx::impl {
 
@@ -104,6 +110,8 @@ struct MembershipRestriction {
     std::string cut;        // "<top_n>:<band>", exactly as supplied
     std::string eval_start; // ISO date, exactly as supplied
     std::vector<atx::i64> allow_ids;
+    std::optional<atx::engine::data::PitMembershipImage> store_image;
+    atx::usize store_cut{};
 };
 
 // Decode membership.bin, pick the named cut, and union its members over the panel's
@@ -148,6 +156,10 @@ resolve_membership_restriction(const RunConfig &cfg, atx::i64 end_exclusive_nano
     out.membership_sha256 = std::move(sha);
     out.cut = cfg.panel_universe_cut;
     out.eval_start = cfg.panel_universe_eval_start;
+    if (cfg.panel_storage_rule == "mmap-f32-v2") {
+        out.store_cut = cut;
+        out.store_image = std::move(image);
+    }
     return atx::core::Ok(std::move(out));
 }
 
@@ -245,7 +257,8 @@ std::string panel_recipe(const atx::engine::data::HistoryDataConfig &cfg,
                          const std::string &executable_sha,
                          const MembershipRestriction &membership,
                          const std::vector<AsofFieldInput> &asof_fields,
-                         atx::i64 asof_max_stale_days) {
+                         atx::i64 asof_max_stale_days,
+                         atx::engine::alpha::VwapRule vwap_rule) {
     // nlohmann's ordered object keys and exact dump bytes are our versioned
     // serialization contract; this is not a claim of RFC 8785 canonical JSON.
     nlohmann::json recipe{
@@ -266,7 +279,13 @@ std::string panel_recipe(const atx::engine::data::HistoryDataConfig &cfg,
         {"compact_to_universe", cfg.compact_to_universe},
         {"compaction", "keep-original-order-if-ever-in-universe-in-selected-window"},
         {"augmentation", {{"enabled", !adv_windows.empty()}, {"adv_windows", adv_windows},
-                           {"dollar_volume_basis", "adjusted-close*raw-volume-research-proxy"}}},
+                           {"dollar_volume_basis", "raw_close*raw_volume"},
+                           {"vwap_rule", atx::engine::alpha::vwap_rule_name(vwap_rule)},
+                           {"vwap_kind", vwap_rule == atx::engine::alpha::VwapRule::RawDailyCloseV2
+                               ? "daily-close-price-proxy-not-intraday-vwap"
+                               : "adjusted-typical-price-legacy-proxy"},
+                           {"vwap_basis", vwap_rule == atx::engine::alpha::VwapRule::RawDailyCloseV2
+                               ? "raw" : "adjusted_level"}}},
         {"research_ohlc", "raw-OHLC*cumulReturnFactor-pointwise"},
         {"invalid_price_factor_or_product", "NaN-gap-next-valid-cell-independent"},
         {"raw_close", "unadjusted-as-traded"},
@@ -312,6 +331,158 @@ std::string panel_recipe(const atx::engine::data::HistoryDataConfig &cfg,
     return recipe.dump();
 }
 
+atx::core::Result<StageResult> run_panel_store_v2(const RunConfig& cfg) {
+    using namespace atx::engine;
+    using atx::core::Err; using atx::core::ErrorCode; using atx::core::Ok;
+    if (cfg.segs.empty() || cfg.panel_out.empty() || cfg.start.empty() || cfg.end.empty() ||
+        cfg.incremental_panel || cfg.compact_universe || !cfg.panel_asof_fields.empty())
+        return Err(ErrorCode::InvalidArgument,
+            "panel store V2 requires explicit dates/fresh output/no compaction; custom asof fields require basis metadata");
+    const auto start = data::detail::date_to_nanos(cfg.start), end = data::detail::date_to_nanos(cfg.end);
+    if (!start || !end || *start <= 0 || *start >= *end || *end > data::kPitSessionKeyEndExclusive)
+        return Err(ErrorCode::InvalidArgument, "panel store V2 requires a sealed pre-2020 window");
+    ATX_TRY(auto membership, resolve_membership_restriction(cfg, *end));
+    if (!membership.store_image || membership.store_image->rule != data::PitUniverseRule::CommonStockV2)
+        return Err(ErrorCode::InvalidArgument, "panel store V2 requires dated common-stock-v2 membership");
+    const auto& image = *membership.store_image;
+    data::PanelStoreConfig store_cfg;
+    for (const auto& r : image.rebalances) {
+        if (r.rank_session_key <= 0 || r.rank_session_key >= r.effective_session_key ||
+            r.effective_session_key >= data::kPitSessionKeyEndExclusive || membership.store_cut >= r.cuts.size())
+            return Err(ErrorCode::InvalidArgument, "panel store: invalid/sealed membership clock/cut");
+        const auto& ids = r.cuts[membership.store_cut].security_ids;
+        if (ids.size() > 4'000'000 - store_cfg.instrument_ids.size())
+            return Err(ErrorCode::InvalidArgument, "panel store: global membership-union input bound");
+        store_cfg.instrument_ids.insert(store_cfg.instrument_ids.end(), ids.begin(), ids.end());
+    }
+    std::sort(store_cfg.instrument_ids.begin(), store_cfg.instrument_ids.end());
+    store_cfg.instrument_ids.erase(std::unique(store_cfg.instrument_ids.begin(), store_cfg.instrument_ids.end()), store_cfg.instrument_ids.end());
+    if (store_cfg.instrument_ids.empty() || store_cfg.instrument_ids.size() > 100000)
+        return Err(ErrorCode::InvalidArgument, "panel store: empty/oversized complete membership union");
+    // The source axis is the membership artifact's COMPLETE sorted union, not the
+    // subset selected by this year/window or names whose current bars exist.
+    store_cfg.original_indices.resize(store_cfg.instrument_ids.size());
+    std::iota(store_cfg.original_indices.begin(), store_cfg.original_indices.end(), atx::u64{0});
+    ATX_TRY(auto source_index, data::capture_history_sources(cfg.segs, {*start, *end}));
+    store_cfg.session_keys = source_index->sessions();
+    std::vector<SourceFileDigest> before;
+    for (const auto& file : source_index->files()) {
+        if (file.sha256.empty()) continue; // metadata-only, disjoint from the complete output window
+        before.push_back({std::filesystem::path(file.path).filename().string(), file.sha256, file.bytes});
+    }
+    std::vector<std::string> initial_paths;
+    for (const auto& file : before) initial_paths.push_back((std::filesystem::path(cfg.segs) / file.filename).string());
+    ATX_TRY(auto sources, validate_panel_sources(cfg.segs, before, initial_paths, cfg.preparation_manifest));
+    ATX_TRY(auto executable_sha, current_executable_sha256());
+    std::vector<atx::u16> windows;
+    if (cfg.augment_panel || !cfg.adv_windows.empty()) {
+        if (cfg.adv_windows.empty()) {
+            if (cfg.adv_window <= 0 || cfg.adv_window > 65535)
+                return Err(ErrorCode::InvalidArgument, "panel store: invalid ADV window");
+            windows.push_back(static_cast<atx::u16>(cfg.adv_window));
+        } else windows = cfg.adv_windows;
+        if (std::find(windows.begin(), windows.end(), 0) != windows.end())
+            return Err(ErrorCode::InvalidArgument, "panel store: zero ADV window");
+    }
+    atx::usize warmup = 1;
+    for (auto window : windows) warmup = std::max(warmup, static_cast<atx::usize>(window));
+    if (windows.size() > 256)
+        return Err(ErrorCode::InvalidArgument, "panel store: augmentation field bound");
+    constexpr atx::u64 assembly_budget = 2ULL * 1024 * 1024 * 1024;
+    constexpr atx::u64 fixed_budget = 384ULL * 1024 * 1024; // source mapping + writer + metadata
+    const atx::u64 assembly_cells = atx::u64{std::min(warmup + store_cfg.chunk_dates, store_cfg.session_keys.size())} * store_cfg.instrument_ids.size();
+    const atx::u64 bytes_per_cell = 512 + 24 * windows.size(); // raw/derived/augmentation overlap
+    if (assembly_cells > (assembly_budget - fixed_budget) / bytes_per_cell)
+        return Err(ErrorCode::InvalidArgument, "panel store: assembly/augmentation working budget exceeded");
+    store_cfg.instrument_namespace = kSpiderRockSecurityIdNamespace;
+    store_cfg.membership_sha256 = membership.membership_sha256;
+    for (const auto& p : sources.parents) store_cfg.parents.push_back({p.role, p.sha256});
+    store_cfg.parents.push_back({"membership", membership.membership_sha256});
+    if (!executable_sha.empty()) store_cfg.parents.push_back({"producer_executable", executable_sha});
+    store_cfg.recipe = nlohmann::json{{"rule", "mmap-f32-v2"}, {"source_window_start", std::to_string(*start)},
+        {"source_window_end_exclusive", std::to_string(*end)}, {"axis", "complete-bound-membership-union-numeric-order"},
+        {"source_index_namespace", "complete-bound-membership-union"},
+        {"membership_rule", "common-stock-v2;rank<session;effective<=session;last-effective"},
+        {"membership_cut", membership.cut}, {"masks", "present-independent-of-asof-member"},
+        {"precision", "f32-fields;original-f64-adjusted-close;original-f64-returns"},
+        {"return_rule", "original-adjusted-close-ratio-minus-one;no-terminal-imputation"},
+        {"augmentation_adv_windows", windows}, {"vwap_rule", alpha::vwap_rule_name(cfg.vwap_rule)},
+        {"warmup_sessions", warmup}, {"assembly_max_working_bytes", assembly_budget},
+        {"assembly_admission_bytes_per_cell", bytes_per_cell},
+        {"source_admission", "one-bounded-axis-index;intersecting-payload-only;captured-sha-before-values;final-path-axis-and-sha-check"},
+        {"screen", "dated-membership-artifact;no-current-session-reranking"},
+        {"historical_availability", "unknown-archive-snapshot;session-label-is-not-publication"},
+        {"historical_vintages_verified", false}, {"ingestion_content_binding_verified", sources.ingestion_verified},
+        {"preparation_content_binding_verified", sources.preparation_verified}}.dump();
+    ATX_TRY(auto output_guard, reserve_pipeline_output(cfg.panel_out, true)); (void)output_guard;
+    std::optional<data::PanelStoreWriter> writer;
+    std::set<std::string> selected_paths;
+    const auto n = store_cfg.instrument_ids.size();
+    std::vector<atx::u8> present(n), tradable(n);
+    for (atx::usize begin = 0; begin < store_cfg.session_keys.size(); begin += store_cfg.chunk_dates) {
+        const auto finish = std::min(begin + store_cfg.chunk_dates, store_cfg.session_keys.size());
+        const auto first = begin > warmup ? begin - warmup : 0;
+        data::HistoryDataConfig hc;
+        hc.seg_dir = cfg.segs;
+        hc.window = {store_cfg.session_keys[first], finish < store_cfg.session_keys.size() ? store_cfg.session_keys[finish] : *end};
+        hc.fixed_axis_ids = store_cfg.instrument_ids;
+        hc.source_index = source_index;
+        hc.universe.min_adv_usd = 0; hc.universe.adv_window = 1;
+        ATX_TRY(auto hp, data::build_history_panel(hc));
+        if (hp.session_keys.size() != finish - first || hp.panel.instruments() != n ||
+            !std::equal(hp.session_keys.begin(), hp.session_keys.end(), store_cfg.session_keys.begin() + static_cast<std::ptrdiff_t>(first)))
+            return Err(ErrorCode::InvalidArgument, "panel store: source axes changed during chunk assembly");
+        selected_paths.insert(hp.source_segment_paths.begin(), hp.source_segment_paths.end());
+        if (!windows.empty()) {
+            ATX_TRY(hp.panel, alpha::with_alpha101_fields(hp.panel, windows,
+                alpha::DollarVolumeBasis::RawCloseV2, cfg.vwap_rule));
+        }
+        if (!writer) {
+            for (atx::usize f = 0; f < hp.panel.num_fields(); ++f) {
+                const auto name = hp.panel.field_name(f);
+                const auto basis = data::history_field_level_basis(name, alpha::DollarVolumeBasis::RawCloseV2, cfg.vwap_rule);
+                if (!basis) return Err(ErrorCode::InvalidArgument, "panel store: untagged output field");
+                store_cfg.fields.push_back({name, *basis, name == "returns" ? data::PanelStorePrecision::ExactFloat64V2 : data::PanelStorePrecision::Float32V2});
+            }
+            ATX_TRY(auto created, data::PanelStoreWriter::create(cfg.panel_out, store_cfg));
+            writer.emplace(std::move(created));
+        }
+        ATX_TRY(auto close, hp.panel.field_id("close"));
+        std::vector<std::span<const atx::f64>> rows(hp.panel.num_fields());
+        for (atx::usize date = begin; date < finish; ++date) {
+            const auto local = date - first;
+            const auto session = store_cfg.session_keys[date];
+            const data::PitMembershipRebalance* active = nullptr;
+            for (const auto& r : image.rebalances) {
+                if (r.effective_session_key <= session && r.rank_session_key < session &&
+                    (!active || r.effective_session_key > active->effective_session_key)) active = &r;
+            }
+            std::fill(tradable.begin(), tradable.end(), atx::u8{0});
+            if (active) for (auto id : active->cuts[membership.store_cut].security_ids) {
+                const auto pos = std::lower_bound(store_cfg.instrument_ids.begin(), store_cfg.instrument_ids.end(), id);
+                if (pos == store_cfg.instrument_ids.end() || *pos != id)
+                    return Err(ErrorCode::Internal, "panel store: member absent from fixed union");
+                tradable[static_cast<atx::usize>(pos - store_cfg.instrument_ids.begin())] = 1;
+            }
+            for (atx::usize i = 0; i < n; ++i) present[i] = hp.panel.in_universe(local, i) ? 1 : 0;
+            for (atx::usize f = 0; f < rows.size(); ++f) rows[f] = hp.panel.field_cross_section(static_cast<alpha::FieldId>(f), local);
+            ATX_TRY_VOID(writer->append_date(date, rows, hp.panel.field_cross_section(close, local), present, tradable,
+                                            active ? active->rank_session_key : 0));
+        }
+    }
+    ATX_TRY_VOID(source_index->verify_paths());
+    const std::vector<std::string> actual_paths(selected_paths.begin(), selected_paths.end());
+    ATX_TRY(auto unchanged, validate_panel_sources(cfg.segs, before, actual_paths, cfg.preparation_manifest)); (void)unchanged;
+    ATX_TRY(auto manifest_sha, writer->finish());
+    StageResult result;
+    result.digest = fnv1a64(manifest_sha.data(), manifest_sha.size());
+    result.kvs = {{"panel_storage_rule", "mmap-f32-v2"}, {"manifest_sha256", manifest_sha},
+        {"digest_rule", "fnv1a64-of-manifest-sha256-ascii"},
+        {"dates", std::to_string(store_cfg.session_keys.size())}, {"instruments", std::to_string(n)},
+        {"fields", std::to_string(store_cfg.fields.size())}, {"precision_acceptance", "unqualified"}};
+    return Ok(std::move(result));
+}
+
 } // namespace
 
 atx::core::Result<std::vector<atx::i64>>
@@ -354,6 +525,10 @@ pit_membership_allow_ids(const atx::engine::data::PitMembershipImage &image, atx
 }
 
 atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
+
+    if (cfg.panel_storage_rule == "mmap-f32-v2") return run_panel_store_v2(cfg);
+    if (cfg.panel_storage_rule != "legacy-f64-v1")
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "panel: unsupported storage rule");
 
     // 1. Validate required fields.
     if (cfg.segs.empty() || cfg.panel_out.empty()) {
@@ -437,7 +612,18 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
     // empty) skips this entirely -> panel.bin byte-identical. Empty list falls back to the
     // single legacy --adv-window.
     if (!adv_wins.empty()) {
-        ATX_TRY(hp.panel, atx::engine::alpha::with_alpha101_fields(hp.panel, adv_wins));
+        ATX_TRY(hp.panel, atx::engine::alpha::with_alpha101_fields(hp.panel, adv_wins,
+            atx::engine::alpha::DollarVolumeBasis::RawCloseV2, cfg.vwap_rule));
+        hp.field_basis.clear();
+        hp.field_basis.reserve(hp.panel.num_fields());
+        for (atx::usize f = 0; f < hp.panel.num_fields(); ++f) {
+            const auto basis = atx::engine::data::history_field_level_basis(
+                hp.panel.field_name(static_cast<atx::engine::alpha::FieldId>(f)),
+                atx::engine::alpha::DollarVolumeBasis::RawCloseV2, cfg.vwap_rule);
+            if (!basis) return atx::core::Err(atx::core::ErrorCode::Internal,
+                "panel augmentation produced a field without a level basis");
+            hp.field_basis.push_back(*basis);
+        }
         hp.digest = atx::engine::data::digest_panel(hp.panel);
     }
 
@@ -455,7 +641,7 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
     identity.instrument_ids = std::move(hp.instrument_ids);
     identity.original_instrument_indices = std::move(hp.original_instrument_indices);
     identity.recipe = panel_recipe(hc, adv_wins, sources, executable_sha, membership,
-                                   asof_fields, cfg.panel_asof_max_stale_days);
+                                   asof_fields, cfg.panel_asof_max_stale_days, cfg.vwap_rule);
     identity.parents = std::move(sources.parents);
     if (!executable_sha.empty()) identity.parents.push_back({"producer_executable", executable_sha});
     // PanelParent carries (role, sha256) only; the CSV path goes to the sidecar.
@@ -510,6 +696,7 @@ atx::core::Result<StageResult> run_panel(const RunConfig& cfg) {
            << "universe_min_price=" << cfg.min_price << "\n"
            << "universe_require_sector=" << (cfg.require_sector ? "true" : "false") << "\n"
            << "adv_windows=" << adv_windows_val << "\n"
+           << "vwap_rule=" << atx::engine::alpha::vwap_rule_name(cfg.vwap_rule) << "\n"
            << "augmented=" << augmented_val << "\n"
            << "engine_digest=" << to_hex16(hp.digest) << "\n"
            << "dates=" << hp.panel.dates() << "\n"

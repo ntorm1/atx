@@ -507,15 +507,20 @@ static constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 // (b) the shuffled case gives different values for the tied pair — i.e. the
 // invariant is genuinely load-bearing and not just defensive documentation.
 
+// W0-A0 (A-01) re-pin: the valid-set-order tie-break is a property of the LEGACY
+// RankTies::OrdinalV1 policy only, so the two load-bearing blocks below select it
+// explicitly (their expectations are unchanged). Under the default Average policy
+// the tied pair shares rank 0.25 regardless of the valid-set order (last block).
 TEST(CsValidSet_KernelDirect_TiedValues, RankTiebreakByAscendingIndex) {
   const std::vector<atx::f64> x{kNaN, 1.0, 1.0, 2.0, kNaN};
   CsScratch scratch;
+  constexpr auto kOrdinal = atx::engine::alpha::detail::RankTies::OrdinalV1;
 
   // --- ascending valid = {1, 2, 3} (CORRECT: forward scan over instruments) --
   {
     const std::vector<atx::usize> valid_asc{1, 2, 3};
     std::vector<atx::f64> out(5, kNaN);
-    cs_rank_row(x, valid_asc, out, scratch);
+    cs_rank_row(x, valid_asc, out, scratch, kOrdinal);
 
     EXPECT_TRUE(std::isnan(out[0])) << "inst0 (NaN input) must stay NaN";
     EXPECT_EQ(out[1], 0.0 / 2.0) << "inst1: tied-low -> rank 0/(3-1)=0.0 (ascending-index wins)";
@@ -530,7 +535,7 @@ TEST(CsValidSet_KernelDirect_TiedValues, RankTiebreakByAscendingIndex) {
   {
     const std::vector<atx::usize> valid_shuffled{2, 1, 3};
     std::vector<atx::f64> out_shuf(5, kNaN);
-    cs_rank_row(x, valid_shuffled, out_shuf, scratch);
+    cs_rank_row(x, valid_shuffled, out_shuf, scratch, kOrdinal);
 
     // Shuffled order flips the tied pair:
     EXPECT_EQ(out_shuf[2], 0.0 / 2.0) << "shuffled: inst2 wins tie (appears first) -> 0.0";
@@ -545,6 +550,16 @@ TEST(CsValidSet_KernelDirect_TiedValues, RankTiebreakByAscendingIndex) {
            "(tie-break is independent of valid-set order — reassess the vm.hpp invariant comment)";
     EXPECT_NE(out_shuf[2], 1.0 / 2.0)
         << "INVARIANT NOT LOAD-BEARING: shuffled valid gives same rank for inst2 as ascending";
+  }
+
+  // --- default Average policy: the tie is pooled, order-independent ---------
+  for (const std::vector<atx::usize> &valid :
+       {std::vector<atx::usize>{1, 2, 3}, std::vector<atx::usize>{2, 1, 3}}) {
+    std::vector<atx::f64> out_avg(5, kNaN);
+    cs_rank_row(x, valid, out_avg, scratch);
+    EXPECT_EQ(out_avg[1], 0.5 / 2.0) << "Average: tied pair shares rank 0.5/(3-1)";
+    EXPECT_EQ(out_avg[2], 0.5 / 2.0);
+    EXPECT_EQ(out_avg[3], 2.0 / 2.0);
   }
 }
 

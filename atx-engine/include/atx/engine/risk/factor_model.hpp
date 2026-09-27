@@ -35,10 +35,23 @@
 //  D floor: d_i ← max(d_i, kSpecificVarFloor). An all-zero specific-variance
 //  instrument would make D⁻¹ infinite and V only PSD; flooring keeps D⁻¹ finite and
 //  V positive-DEFINITE. kSpecificVarFloor = 1e-12 is far below any real variance.
+//  It is only a NUMERICAL guard: the ESTIMATION floor for thin-history names (R-05)
+//  is FactorModelBuilder's SpecificFloorRule::StructuralMedianV2 (default), which
+//  keeps every estimated D_i >= specific_floor_frac·median(D) so the optimizer cannot
+//  pile into a name whose specific variance is merely unobserved.
 //  Neutralize ridge: XᵀX (K×K) is singular when X has collinear columns, so
 //  neutralize solves (XᵀX + kNeutralizeRidge·I) z = Xᵀs. kNeutralizeRidge = 1e-10
 //  is a numerical guard so a collinear exposure block still residualizes; it is far
 //  below any real factor-exposure scale and does not bias a full-rank X materially.
+//
+// ===========================================================================
+//  W0-R0 estimator corrections (FactorModelBuilder; each with a V1 enum)
+// ===========================================================================
+//  R-03 ExposureTiming::LaggedV2 — r_s is regressed on X built at row s+1.
+//  R-04 per-date sector columns are mapped onto X[0] by group id (never by position);
+//       each date is solved with its own column count.
+//  R-05 SpecificFloorRule::StructuralMedianV2 — see detail::floor_specific_variances.
+//  R-06 ZScoreRule::CapWeightedWinsorV2 + PitSideInputs (per-date cap and group).
 //
 // ===========================================================================
 //  NaN-in-neutralize policy
@@ -168,7 +181,7 @@ public:
   // a non-SPD F, or K exceeding the risk() stack-buffer bound.
   [[nodiscard]] static atx::core::Result<FactorModel>
   create(atx::core::linalg::MatX x, atx::core::linalg::MatX f, atx::core::linalg::VecX d,
-         atx::usize fit_begin, atx::usize fit_end);
+         atx::usize fit_begin, atx::usize fit_end, RiskEstimatorDiagnostics diagnostics = {});
 
   // Value semantics, preserved EXACTLY from the pre-split (header-only) class: the
   // old FactorModel held Eigen members by value and was copyable. The pimpl keeps
@@ -222,6 +235,7 @@ public:
 
   [[nodiscard]] atx::usize fit_begin() const noexcept;
   [[nodiscard]] atx::usize fit_end() const noexcept;
+  [[nodiscard]] const RiskEstimatorDiagnostics& estimator_diagnostics() const noexcept;
 
   // Max K we materialize the risk() g-buffer for on the stack. K is the factor count
   // (sector dummies + ≤5 style factors); 256 is far above any realistic factor block
@@ -260,7 +274,65 @@ namespace detail {
 [[nodiscard]] atx::core::linalg::MatX factor_covariance(atx::core::linalg::MatX fseries,
                                                         atx::f64 cfg_shrink);
 
+// W0-R0 (R-05) diagnostics of one floor_specific_variances call.
+struct SpecificFloorStats {
+  atx::usize min_obs = 0U;   // effective thin threshold min(cfg, max(2, ⌈full/2⌉))
+  atx::usize n_thin = 0U;    // names with fewer than min_obs residuals
+  bool structural = false;   // true iff the ln-D-on-exposures OLS fitted (else median fallback)
+  atx::f64 median = 0.0;     // median(D) after the thin-name fallback
+  atx::f64 floor = 0.0;      // specific_floor_frac · median — the per-name lower bound
+  atx::usize n_floored = 0U; // names raised to `floor`
+};
+
+// SpecificFloorRule::StructuralMedianV2 (R-05), IN PLACE on the current-cross-section
+// specific variances `d` (length M == x0.n_instruments(); `obs[r]` = residual count of
+// row r). Steps (order-fixed, RNG-free):
+//   1. min_obs = min(cov.specific_min_obs, max(2, ⌈full/2⌉)), full = max obs.
+//   2. THICK = rows with obs ≥ min_obs and finite d > 0. Structural model: OLS of ln d
+//      on the thick rows' exposures (x0 columns that are non-zero on the thick set,
+//      plus an intercept when x0 has no sector column), predicting D_str for every
+//      row, clamped to [min, max] thick d. Too few thick rows (≤ columns) or a
+//      rank-deficient fit ⇒ D_str = median thick d (the cross-sectional fallback).
+//   3. THIN rows (obs < min_obs) shrink in σ space: σ = γ·√d + (1−γ)·√D_str with
+//      γ = obs/min_obs (a name with 0/1 residuals is ~all structural).
+//   4. floor = clamp(cov.specific_floor_frac, 0, 1) · median(d); d_i ← max(d_i, floor)
+//      for EVERY row, so no D is below frac·median(D) (median unchanged by the floor).
+//      A non-finite frac is treated as 0 here (no global floor); the builder entry
+//      points reject it with InvalidArgument before any estimation.
+// No thick rows ⇒ step 2-3 skipped (nothing to anchor on); step 4 still applies.
+[[nodiscard]] SpecificFloorStats floor_specific_variances(const ExposureMatrix &x0,
+                                                          std::span<const atx::usize> obs,
+                                                          const CovarianceConfig &cov,
+                                                          atx::core::linalg::VecX &d);
+
+// The panel row whose exposures explain the date-`s` return r_s (R-03): s+1 under
+// ExposureTiming::LaggedV2 (the prior close), s under ContemporaneousV1.
+[[nodiscard]] constexpr atx::usize exposure_row(ExposureTiming timing, atx::usize s) noexcept {
+  return (timing == ExposureTiming::LaggedV2) ? s + 1U : s;
+}
+
+// Map each column of a per-date design to its column in the model's X[0] by IDENTITY
+// (R-04): a style column by StyleFactor, a sector column by group id. A column X[0]
+// does not carry (a group that existed at s but not today) maps to kNoColumn.
+inline constexpr atx::usize kNoColumn = static_cast<atx::usize>(-1);
+[[nodiscard]] std::vector<atx::usize> map_columns(const std::vector<ColumnTag> &date_cols,
+                                                  const std::vector<ColumnTag> &model_cols);
+
 } // namespace detail
+
+// ===========================================================================
+//  FactorReturnPanel — the per-date factor returns the builder regressed (W0-R0
+//  diagnostic / causality-harness seam). Row u is the u-th USABLE estimation date
+//  (newest first); column c is the model's X[0] column c (`columns[c]`), mapped by
+//  identity, never by position (R-04). A model factor with no members on a date has
+//  return 0 there and is counted in `missing[c]`.
+// ===========================================================================
+struct FactorReturnPanel {
+  atx::core::linalg::MatX f;       // used × K factor returns (newest usable date first)
+  std::vector<ColumnTag> columns;  // K model columns (X[0] order)
+  std::vector<atx::usize> dates;   // estimation date s (panel row of r_s) of each row
+  std::vector<atx::usize> missing; // per column: usable dates on which it had no members
+};
 
 // ===========================================================================
 //  FactorComponents — the estimated (X, F, D, fit_end) FactorModelBuilder feeds to
@@ -276,6 +348,7 @@ struct FactorComponents {
   atx::core::linalg::MatX F; // K×K factor covariance (Ledoit-Wolf shrunk, SPD)
   atx::core::linalg::VecX D; // M specific (idiosyncratic) variances
   atx::usize fit_end;        // the fit window upper bound (== window)
+  RiskEstimatorDiagnostics diagnostics{};
 };
 
 // ===========================================================================
@@ -291,6 +364,8 @@ struct FactorComponents {
 class FactorModelBuilder {
 public:
   FactorModelConfig cfg;
+  // Borrowed only for the build call. Actual prior forecast records, never a final-fit proxy.
+  const RiskVraEvidence* prior_forecasts{nullptr};
 
   // Estimate (X, F, D) over the trailing `window` cross-sections and assemble the
   // FactorModel. THIN WRAPPER (§0.3): runs build_components then FactorModel::create
@@ -311,7 +386,39 @@ public:
   build_components(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
                    std::span<const atx::u32> group_id) const;
 
+  // W0-R0 point-in-time overloads (R-06). `side` carries the cap and group of EVERY
+  // date the build reads (PitSideInputs::per_date, rows [0, window] under the default
+  // LaggedV2 timing); the (market_cap, group_id) overloads above are the STATIC
+  // broadcast form (PitSideInputs::broadcast) — today's values reused at every date,
+  // correct only when those values are genuinely constant over the window.
+  [[nodiscard]] atx::core::Result<FactorModel> build(const PanelView &panel, atx::usize window,
+                                                     const PitSideInputs &side) const;
+  [[nodiscard]] atx::core::Result<FactorComponents>
+  build_components(const PanelView &panel, atx::usize window, const PitSideInputs &side) const;
+
+  // The exposure block that explains the date-`s` return r_s in the regression passes:
+  // build_exposures at detail::exposure_row(cfg.exposure_timing, s) with that row's
+  // side inputs (R-03). Err as build_exposures.
+  [[nodiscard]] atx::core::Result<ExposureMatrix>
+  regression_exposures(const PanelView &panel, atx::usize s, const PitSideInputs &side) const;
+
+  // Run the regression passes only (OLS bootstrap → WLS / robust) and return the
+  // per-date factor-return series with its column identity (diagnostic seam; same
+  // arithmetic build_components feeds to the factor covariance).
+  [[nodiscard]] atx::core::Result<FactorReturnPanel>
+  factor_returns(const PanelView &panel, atx::usize window, const PitSideInputs &side) const;
+
 private:
+  // Shared body of factor_returns / build_components: validates, builds X[0], runs
+  // pass A and pass B. Fills `x0`, `fseries` (window×K, first `used` rows valid),
+  // `u_by_inst`, `dates`, `missing`; returns the usable WLS date count.
+  [[nodiscard]] atx::core::Result<atx::usize>
+  run_passes(const PanelView &panel, atx::usize window, const PitSideInputs &side,
+             ExposureMatrix &x0, atx::core::linalg::MatX &fseries,
+             std::vector<std::vector<atx::f64>> &u_by_inst, std::vector<atx::usize> &dates,
+             std::vector<atx::usize> &missing,
+             atx::core::linalg::MatX* dated_residuals = nullptr) const;
+
   // ε floor for the bootstrap weights so 1/d0_i is finite for a zero-residual
   // instrument (a date with M_s==K fits exactly -> 0 OLS residual). Far below any
   // real return variance, so it never tilts a well-populated instrument's weight.
@@ -321,34 +428,37 @@ private:
   // member so it shares the .cpp's detail:: kernels + FactorModel assembly with no
   // include cycle. Body + full algorithm doc in src/risk/factor_model.cpp.
   [[nodiscard]] static atx::core::Result<FactorModel>
-  build_stat_factor_model(const PanelView &panel, atx::usize window,
-                          std::span<const atx::f64> market_cap, std::span<const atx::u32> group_id,
+  build_stat_factor_model(const PanelView &panel, atx::usize window, const PitSideInputs &side,
                           const FactorModelConfig &cfg, atx::usize n_stat, bool gls_reweight,
                           atx::f64 factor_cov_shrink);
 
   // Pass A (OLS, equal weights) -> bootstrap specific variances d0. Returns the count
-  // of usable dates. Body in src/risk/factor_model.cpp.
+  // of usable dates. Per-date designs use the lagged exposures (R-03) and each date's
+  // own column count (R-04). Body in src/risk/factor_model.cpp.
   [[nodiscard]] atx::core::Result<atx::usize>
-  accumulate_ols(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
-                 std::span<const atx::u32> group_id, atx::usize k,
+  accumulate_ols(const PanelView &panel, atx::usize window, const PitSideInputs &side,
                  atx::core::linalg::VecX &d0_out) const;
 
-  // Pass B (WLS, weights 1/d0_i) -> factor-return series f[s] + per-instrument
-  // residuals. Returns the count of usable WLS dates. Body in the .cpp.
+  // Pass B (WLS, weights 1/d0_i) -> factor-return series f[s] (columns mapped onto
+  // X[0] by identity, R-04) + per-instrument residuals. Returns the count of usable
+  // WLS dates; `dates` / `missing` as FactorReturnPanel. Body in the .cpp.
   [[nodiscard]] atx::core::Result<atx::usize>
-  accumulate_wls(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
-                 std::span<const atx::u32> group_id, const atx::core::linalg::VecX &d0,
-                 atx::core::linalg::MatX &fseries,
-                 std::vector<std::vector<atx::f64>> &u_by_inst) const;
+  accumulate_wls(const PanelView &panel, atx::usize window, const PitSideInputs &side,
+                 const ExposureMatrix &x0, const atx::core::linalg::VecX &d0,
+                 atx::core::linalg::MatX &fseries, std::vector<std::vector<atx::f64>> &u_by_inst,
+                 std::vector<atx::usize> &dates, std::vector<atx::usize> &missing,
+             atx::core::linalg::MatX* dated_residuals = nullptr) const;
 
   // Pass B (ROBUST, S8.1; opt-in) — √-cap / inverse-specific-variance prior composed
   // with the Huber IRLS kernel (fixed cfg.cov.robust_iters steps, tol=0). Body in the
   // .cpp. Returns the usable-date count.
   [[nodiscard]] atx::core::Result<atx::usize>
-  accumulate_robust(const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
-                    std::span<const atx::u32> group_id, const atx::core::linalg::VecX &d0,
+  accumulate_robust(const PanelView &panel, atx::usize window, const PitSideInputs &side,
+                    const ExposureMatrix &x0, const atx::core::linalg::VecX &d0,
                     atx::core::linalg::MatX &fseries,
-                    std::vector<std::vector<atx::f64>> &u_by_inst) const;
+                    std::vector<std::vector<atx::f64>> &u_by_inst, std::vector<atx::usize> &dates,
+                    std::vector<atx::usize> &missing,
+             atx::core::linalg::MatX* dated_residuals = nullptr) const;
 
   // Specific (idiosyncratic) variances D over the current cross-section. EXHAUSTIVE
   // dispatch on cfg.cov.specific_method (PopVariance default = P4 byte-identical;

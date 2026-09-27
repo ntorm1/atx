@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="11" failures="0" disabled="0" errors="0" time="1.344" timestamp="2026-09-26T19:31:11.776" name="AllTests">
+  <testsuite name="StrategyIcComposition" tests="5" failures="0" disabled="0" skipped="0" errors="0" time="0.822" timestamp="2026-09-26T19:31:11.777">
+    <testcase name="Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask" file="..\atx-impl\tests\strategy_ic_composition_test.cpp" line="56" status="run" result="completed" time="0.822" timestamp="2026-09-26T19:31:11.777" classname="StrategyIcComposition" />
+    <testcase name="FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting" file="..\atx-impl\tests\strategy_ic_composition_test.cpp" line="107" status="run" result="completed" time="0." timestamp="2026-09-26T19:31:12.599" classname="StrategyIcComposition" />
+    <testcase name="UnorientedAndConstantSignalsCannotInventPositions" file="..\atx-impl\tests\strategy_ic_composition_test.cpp" line="135" status="run" result="completed" time="0." timestamp="2026-09-26T19:31:12.600" classname="StrategyIcComposition" />
+    <testcase name="FuturePayloadAndMembershipDoNotChangePrefix" file="..\atx-impl\tests\strategy_ic_composition_test.cpp" line="148" status="run" result="completed" time="0." timestamp="2026-09-26T19:31:12.600" classname="StrategyIcComposition" />
+    <testcase name="AdmissionPrecedesAllocationAndIncompleteInputRefuses" file="..\atx-impl\tests\strategy_ic_composition_test.cpp" line="169" status="run" result="completed" time="0." timestamp="2026-09-26T19:31:12.600" classname="StrategyIcComposition" />
+  </testsuite>
+  <testsuite name="StrategyIcRunner" tests="3" failures="0" disabled="0" skipped="0" errors="0" time="0.506" timestamp="2026-09-26T19:31:12.600">
+    <testcase name="FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns" file="..\atx-impl\tests\strategy_ic_runner_test.cpp" line="93" status="run" result="completed" time="0.208" timestamp="2026-09-26T19:31:12.600" classname="StrategyIcRunner" />
+    <testcase name="PlanOnlyPinsMetadataAndNeverLoadsPayload" file="..\atx-impl\tests\strategy_ic_runner_test.cpp" line="118" status="run" result="completed" time="0.121" timestamp="2026-09-26T19:31:12.809" classname="StrategyIcRunner" />
+    <testcase name="InsufficientHorizonProducesNullRatherThanZeroMean" file="..\atx-impl\tests\strategy_ic_runner_test.cpp" line="130" status="run" result="completed" time="0.176" timestamp="2026-09-26T19:31:12.930" classname="StrategyIcRunner" />
+  </testsuite>
+  <testsuite name="ResearchIc" tests="3" failures="0" disabled="0" skipped="0" errors="0" time="0.014" timestamp="2026-09-26T19:31:13.107">
+    <testcase name="LegacyFourHorizonSeriesRemainBitIdentical" file="..\atx-engine\tests\factory\ic_research_test.cpp" line="18" status="run" result="completed" time="0.013" timestamp="2026-09-26T19:31:13.107" classname="ResearchIc" />
+    <testcase name="EndpointPresenceAndCandidatePairsAreCountedWithoutFutureMembership" file="..\atx-engine\tests\factory\ic_research_test.cpp" line="42" status="run" result="completed" time="0." timestamp="2026-09-26T19:31:13.121" classname="ResearchIc" />
+    <testcase name="ShortLongHorizonIsUnavailableAndNeverRejected" file="..\atx-engine\tests\factory\ic_research_test.cpp" line="71" status="run" result="completed" time="0." timestamp="2026-09-26T19:31:13.121" classname="ResearchIc" />
+  </testsuite>
+</testsuites>

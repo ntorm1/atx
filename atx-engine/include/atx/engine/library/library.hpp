@@ -63,6 +63,7 @@
 //  caller's buffer (add copies only the signature). No store.pnl(id) span is held
 //  across a stage()/flush().
 
+#include <limits>
 #include <optional> // lazily-sized corr index (T fixed at first admit)
 #include <span>
 #include <string>
@@ -119,6 +120,8 @@ struct AlphaCandidate {
   // sites (factory.cpp) populate this from the per-candidate dsr/split_stable they
   // already compute; a caller that omits it never trips the S5-1 screens.
   combine::GateDeflation defl = combine::kInertDeflation;
+  AlphaMetadata metadata{};
+  std::span<const atx::i16> signal_sketch{};
 };
 
 // ===========================================================================
@@ -171,8 +174,10 @@ public:
   /// identically across runs. T (the corr-index vector length) is the store's
   /// n_periods once any alpha exists, else kDefaultT until the first admit fixes it.
   [[nodiscard]] static Library open(const std::string &dir, GateConfig cfg,
-                                    std::vector<atx::u64> master_seeds) {
-    return Library{dir, cfg, std::move(master_seeds)};
+                                    std::vector<atx::u64> master_seeds,
+                                    CorrIndexRule corr_rule = CorrIndexRule::ExistingOrSignedV2,
+                                    LibraryStorageOptions storage = {}) {
+    return Library{dir, cfg, std::move(master_seeds), corr_rule, std::move(storage)};
   }
 
   /// Geometry-checked admit (Task 8 cross-run accumulation guard). Returns a CLEAN
@@ -186,13 +191,16 @@ public:
   /// abort (debug) / out-of-bounds projection read (release).
   [[nodiscard]] atx::core::Result<AdmitVerdict> try_admit(const AlphaCandidate &c,
                                                           const AlphaGate &gate) {
+    if (c.pnl.empty() || c.as_of > static_cast<atx::u64>(std::numeric_limits<atx::i64>::max()))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "library: empty PnL or lifecycle period outside supported range");
     if (const atx::usize fixed = fixed_period_count(); fixed != 0U && c.pnl.size() != fixed) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "library holdout geometry mismatch: candidate pnl length " +
                                 std::to_string(c.pnl.size()) +
                                 " != library period count t_ " + std::to_string(fixed));
     }
-    return atx::core::Ok(admit(c, gate));
+    return admit_checked(c, gate);
   }
 
   /// admit `c` through the full pipeline (see the header order). On Accept the
@@ -204,22 +212,30 @@ public:
   /// OOS geometry violates this; callers that accumulate should gate through
   /// try_admit() (which returns a clean error) rather than relying on the asserts.
   [[nodiscard]] AdmitVerdict admit(const AlphaCandidate &c, const AlphaGate &gate) {
+    auto verdict = try_admit(c, gate);
+    ATX_CHECK(verdict.has_value());
+    return *verdict;
+  }
+
+private:
+  [[nodiscard]] atx::core::Result<AdmitVerdict>
+  admit_checked(const AlphaCandidate& c, const AlphaGate& gate) {
     // 1. library-wide dedup (cheapest gate first).
     if (dedup_.contains(c.canon_hash)) {
-      return AdmitVerdict{AdmitKind::Duplicate, AlphaId{0}};
+      return atx::core::Ok(AdmitVerdict{AdmitKind::Duplicate, AlphaId{0}});
     }
     // 2. + 3. the verdict (corr-to-pool BEFORE staging, then the P4 floors).
     const AdmitKind verdict = verdict_for(c, gate);
     if (verdict != AdmitKind::Accept) {
-      return AdmitVerdict{verdict, AlphaId{0}};
+      return atx::core::Ok(AdmitVerdict{verdict, AlphaId{0}});
     }
     // 4. admit, all in AlphaId order (L7).
-    ensure_corr(c.pnl.size()); // size the corr index to T on the first admit
-    const auto staged = store_.stage(c.source, c.pnl, c.pos_flat, c.metrics, c.prov, c.canon_hash);
-    ATX_CHECK(staged.has_value()); // shape mismatch is a programmer error; *staged below
-                                   // would be UB on the error state under NDEBUG (always-on)
+    const auto staged = store_.stage(c.source, c.pnl, c.pos_flat, c.metrics, c.prov, c.canon_hash,
+                                      c.metadata, c.signal_sketch);
+    if (!staged) return atx::core::Err(staged.error());
     const AlphaId id = *staged;
-    corr_->add(id, c.pnl);                      // reads the caller's buffer (copies signature only)
+    ensure_corr(c.pnl.size()); // fix T only after a successful stage
+    corr_->add(id, store_.pnl(id));                      // reads the caller's buffer (copies signature only)
     const auto ins = dedup_.insert(c.canon_hash, id);
     ATX_ASSERT(ins.has_value() && *ins);        // we already proved it was new (step 1)
     (void)ins;
@@ -227,9 +243,10 @@ public:
     ATX_ASSERT(tr.has_value());                 // Candidate->Admitted is always legal
     (void)tr;
     maybe_flush();
-    return AdmitVerdict{AdmitKind::Accept, id};
+    return atx::core::Ok(AdmitVerdict{AdmitKind::Accept, id});
   }
 
+public:
   /// The verdict admit() WOULD return for `c`, WITHOUT staging / mutating any
   /// state. Used by the differential test against the exact AlphaGate. Computes
   /// the dedup check + the corr-to-pool + the P4 floors (same order as admit()).
@@ -273,13 +290,40 @@ public:
   ///
   /// SAFETY: reads the CALLER's `pnl` buffer + store spans within this call only (no
   /// store growth), so nothing dangles — same discipline as verdict_for.
-  [[nodiscard]] atx::f64 worst_corr_to_pool(std::span<const atx::f64> pnl) const {
+  [[nodiscard]] atx::f64 worst_corr_to_pool(std::span<const atx::f64> pnl,
+                                                       atx::f64 absolute_floor) const {
     if (!corr_.has_value()) {
       return 0.0;
     }
     CorrNeighborIndex &idx =
         const_cast<CorrNeighborIndex &>(*corr_); // NOLINT: logical-const scratch (as in verdict_for)
-    return online_corr_to_pool(pnl, store_, idx);
+    return online_corr_to_pool(pnl, store_, idx, absolute_floor);
+  }
+
+  // Continuous fitness estimate: exact-score the top 16 signed-Hamming rows
+  // as well as all .7-screen neighbors. This is a bounded refinement, not a
+  // claim that the approximate shortlist contains the global maximum.
+  [[nodiscard]] atx::f64 estimated_corr_to_pool(std::span<const atx::f64> pnl) const {
+    if (!corr_) return 0.0;
+    return online_corr_to_pool(pnl, store_, *corr_, 0.7, true);
+  }
+  [[nodiscard]] atx::core::Status append_periods(std::span<const atx::f64> pnl_alpha_major,
+                                                atx::usize periods,
+                                                std::span<const AlphaMetadata> position_metadata = {}) {
+    ATX_TRY_VOID(store_.append_periods(pnl_alpha_major, periods, position_metadata));
+    memtable_pending_ = 0U;
+    corr_.reset(); ensure_corr(store_.n_periods()); rebuild_corr_index();
+    return atx::core::Ok();
+  }
+  void set_position_resolver(PositionResolver resolver) {
+    store_.set_position_resolver(std::move(resolver));
+  }
+  [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
+  positions_checked(AlphaId id, atx::usize period) const {
+    return store_.positions_checked(id, period);
+  }
+  [[nodiscard]] std::span<const atx::i16> signal_sketch(AlphaId id) const noexcept {
+    return store_.signal_sketch(id);
   }
 
   // --- R1: cumulative cross-run trial counter --------------------------------
@@ -300,13 +344,13 @@ public:
     return store_.segment_path(i);
   }
   [[nodiscard]] AlphaRecordView get(AlphaId id) const { return store_.get(id); }
-  [[nodiscard]] std::span<const atx::f64> pnl(AlphaId id) const noexcept { return store_.pnl(id); }
+  [[nodiscard]] std::span<const atx::f64> pnl(AlphaId id) const { return store_.pnl(id); }
   /// Alpha `id`'s target-weight cross-section at `period` (length n_instruments()).
-  /// SAFETY: same aliasing contract as pnl() — the span ALIASES a segment Mapping
-  /// (dangles when the store dies) or the live memtable (dangles on the next
-  /// stage()/flush()). Copy out before the store grows. Consumed by S7-3 dead-alpha
-  /// factor extraction (risk::extract_dead_factors reads dead holdings at as_of).
-  [[nodiscard]] std::span<const atx::f64> positions(AlphaId id, atx::usize period) const noexcept {
+  /// V1 aliases mapping/memtable storage until growth/destruction. V2 aliases
+  /// ONE reusable resolver buffer and expires on the next positions() call,
+  /// stage, flush, append or destruction. Use owning positions_checked() when
+  /// retaining more than one row; missing resolver/recipe is a checked error there.
+  [[nodiscard]] std::span<const atx::f64> positions(AlphaId id, atx::usize period) const {
     return store_.positions(id, period);
   }
   /// Shared period count of the store (0 for a fully-empty store). Exposed so a
@@ -314,6 +358,9 @@ public:
   /// pos_row does NO bounds check under NDEBUG (S7-3 dead-factor extraction guards
   /// as_of_period against this before reading dead holdings).
   [[nodiscard]] atx::usize n_periods() const noexcept { return store_.n_periods(); }
+  [[nodiscard]] CorrIndexRule corr_rule() const noexcept { return corr_rule_; }
+  [[nodiscard]] atx::u64 corr_seed() const noexcept { return store_.index_seed(); }
+  [[nodiscard]] LibraryStorageRule storage_rule() const noexcept { return store_.storage_rule(); }
   [[nodiscard]] atx::core::Result<LifecycleState> state_as_of(AlphaId id, atx::usize t) const {
     return journal_.state_as_of(id, static_cast<atx::u64>(t));
   }
@@ -360,9 +407,13 @@ public:
 private:
   static constexpr atx::u32 kCorrK = 64; // SimHash hyperplanes (matches S4-3 fixtures)
 
-  Library(const std::string &dir, GateConfig cfg, std::vector<atx::u64> master_seeds)
-      : dir_{dir}, cfg_{cfg}, master_seeds_{std::move(master_seeds)}, store_{dir}, dedup_{dir},
+  Library(const std::string &dir, GateConfig cfg, std::vector<atx::u64> master_seeds,
+          CorrIndexRule corr_rule, LibraryStorageOptions storage)
+      : dir_{dir}, cfg_{cfg}, master_seeds_{std::move(master_seeds)}, corr_rule_{corr_rule},
+        store_{dir, storage}, dedup_{dir},
         journal_{dir} {
+    const bool use_existing_recipe = corr_rule_ == CorrIndexRule::ExistingOrSignedV2;
+    atx::u64 projection_seed = seed0(master_seeds_);
     // R1: load the cumulative trial counter from the sidecar manifest if one
     // exists in `dir`. A fresh/never-snapshotted library has no sidecar -> 0,
     // which is byte-identical to the pre-R1 single-run behavior (prior == 0 =>
@@ -374,9 +425,16 @@ private:
       const auto maybe = read_manifest(dir + "/_manifest.bin");
       if (maybe.has_value()) {
         cumulative_trials_ = maybe->cumulative_trials;
+        if (use_existing_recipe) projection_seed = seed0(maybe->master_seeds);
+        if (master_seeds_.empty()) master_seeds_ = maybe->master_seeds;
       }
       // else: no sidecar or unreadable/corrupt — leave cumulative_trials_ at 0.
     }
+
+    const auto recipe = store_.bind_index_recipe(static_cast<atx::u32>(corr_rule_),
+        projection_seed, storage.allow_recipe_migration, use_existing_recipe);
+    ATX_CHECK(recipe.has_value());
+    corr_rule_ = static_cast<CorrIndexRule>(*recipe);
 
     // The corr index's vector length T is fixed at construction. A reopened store
     // already knows T (n_periods()), so size + rebuild now; a fresh store defers
@@ -415,7 +473,7 @@ private:
       ATX_ASSERT(corr_->t() == t); // all alphas share one period count
       return;
     }
-    corr_.emplace(seed0(master_seeds_), t, kCorrK);
+    corr_.emplace(store_.index_seed(), t, kCorrK, corr_rule_);
   }
 
   // Rebuild the corr index from every alpha currently in the store, in AlphaId
@@ -485,7 +543,7 @@ private:
     // yet => corr_ unconstructed) has worst_corr = 0, matching AlphaGate's empty-pool
     // convention. Routed through the public worst_corr_to_pool accessor so there is
     // exactly ONE incremental-corr code path (the PoolView seam shares it, S4b-2).
-    const atx::f64 worst_corr = worst_corr_to_pool(c.pnl);
+    const atx::f64 worst_corr = worst_corr_to_pool(c.pnl, cfg.max_pool_corr);
     if (worst_corr > cfg.max_pool_corr) {
       return AdmitKind::RejectCorrelated;
     }
@@ -519,35 +577,24 @@ private:
     }
   }
 
-  // For each global AlphaId, the integrity_crc of the segment that holds it. Built
-  // by attaching each sealed segment once and reading its base_alpha_id / n_alphas /
-  // integrity_crc. PRECONDITION: every alpha is sealed (snapshot() flushes first).
+  // V1 retains the original segment CRC. V2 binds original bytes, the durable
+  // index recipe and all applicable immutable period slabs into this value.
+  // PRECONDITION: every alpha is sealed (snapshot() flushes first).
   [[nodiscard]] std::vector<atx::u32> segment_crc_per_alpha() const {
     std::vector<atx::u32> out(static_cast<atx::usize>(store_.n_alphas()), 0U);
-    for (atx::usize s = 0; s < store_.n_segments(); ++s) {
-      auto reader = SegmentReaderLite::attach(store_.segment_path(s));
-      ATX_CHECK(reader.has_value()); // reader->... below would be UB on a failed attach
-                                     // under NDEBUG (always-on guard, not elided)
-      const atx::u64 base = reader->base_alpha_id();
-      const atx::u32 cnt = reader->n_alphas();
-      const atx::u32 crc = reader->integrity_crc();
-      for (atx::u32 i = 0; i < cnt; ++i) {
-        const atx::usize g = static_cast<atx::usize>(base) + i;
-        ATX_CHECK(g < out.size()); // guards the out[g] HEAP WRITE below: a catalog row whose
-                                   // base+n_alphas overruns must abort, not silently corrupt
-        out[g] = crc;
-      }
-    }
+    for (atx::u64 a = 0; a < store_.n_alphas(); ++a)
+      out[static_cast<atx::usize>(a)] = store_.record_crc(AlphaId{static_cast<atx::u32>(a)});
     return out;
   }
 
   std::string dir_;             // R1: library directory (for sidecar writes)
   GateConfig cfg_;
   std::vector<atx::u64> master_seeds_;
+  CorrIndexRule corr_rule_;
   LibraryStore store_;          // S4-1 (segmented append-only store)
   DedupIndex dedup_;            // S4-2 (canonical-hash dedup)
   LifecycleJournal journal_;    // S4-4 (PIT lifecycle journal)
-  std::optional<CorrNeighborIndex> corr_; // S4-3 (sized to T on the first admit)
+  mutable std::optional<CorrNeighborIndex> corr_; // S4-3 (sized to T on the first admit)
   atx::usize memtable_pending_{0};        // staged-since-last-flush count (flush batching)
   atx::u64 cumulative_trials_{0};         // R1: cross-run cumulative trial counter
 };

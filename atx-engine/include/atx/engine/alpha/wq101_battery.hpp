@@ -280,7 +280,8 @@ inline constexpr std::array<atx::u16, 7> kWq101AdvWindows = {20, 30, 40, 50, 60,
                                     "volume",  "returns", "cap",         "IndClass.sector",
                                     "IndClass.industry", "IndClass.subindustry"};
   return datafields::with_datafields(dates, instruments, std::move(names), std::move(cols),
-                                     std::move(universe), kWq101AdvWindows);
+                                     std::move(universe), kWq101AdvWindows,
+                                     VwapRule::AdjustedTypicalV1); // frozen synthetic battery recipe
 }
 
 } // namespace atx::engine::alpha

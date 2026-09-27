@@ -31,6 +31,7 @@
 #include "artifacts.hpp"
 #include "config.hpp"
 #include "serialize_panel.hpp"
+#include "stage_combine.hpp" // W0-I0a nested split
 #include "stages.hpp"
 
 #include "atx/engine/combine/gate.hpp"       // combine::GateConfig (A1 library readback)
@@ -204,7 +205,25 @@ static ::testing::AssertionResult run_staged(const atx::impl::RunConfig& base_cf
     // A1 — mirror run_all's library accumulation wiring so staged == run.
     c_disc.gated       = true;
     c_disc.library_dir = (fs::path{work} / "_library").string();
-    auto r_disc = atx::impl::run_discover(c_disc);
+    // W0-I0a (I-01): mirror run_all's NESTED split (discover < combine fit < final test).
+    const bool nested = !(cfg.set_flags.count("holdout-frac") != 0 &&
+                          cfg.combine_holdout_frac <= 0.0) &&
+                        cfg.set_flags.count("fit-end") == 0;
+    atx::impl::NestedSplit split{};
+    if (nested) {
+        atx::usize n_dates = 0;
+        for (const auto& [k, v] : r_panel->kvs) {
+            if (k == "dates") n_dates = static_cast<atx::usize>(std::stoull(v));
+        }
+        atx::impl::NestedSplitConfig ns;
+        if (cfg.set_flags.count("holdout-frac") != 0) ns.test_frac = cfg.combine_holdout_frac;
+        ns.embargo = 1U + cfg.replay_execution_delay;
+        auto sp = atx::impl::resolve_nested_split(n_dates, ns);
+        if (!sp.has_value())
+            return ::testing::AssertionFailure() << "nested split: " << sp.error().message();
+        split = *sp;
+    }
+    auto r_disc = atx::impl::run_discover_window(c_disc, nested ? split.discover_end : 0U);
     if (!r_disc.has_value())
         return ::testing::AssertionFailure() << "run_discover: " << r_disc.error().message();
     out.discover = r_disc->digest;
@@ -216,8 +235,15 @@ static ::testing::AssertionResult run_staged(const atx::impl::RunConfig& base_cf
     c_comb.combo_out = (fs::path{work} / "combo.bin").string();
     // A1 — feed combine from the same accumulated library (mirrors run_all).
     c_comb.library_dir = c_disc.library_dir;
-    if (cfg.set_flags.count("holdout-frac") == 0) c_comb.combine_holdout_frac = 0.25;
-    auto r_comb = atx::impl::run_combine(c_comb);
+    atx::impl::CombinePitConfig comb_pit;
+    comb_pit.execution_delay = cfg.replay_execution_delay;
+    if (nested) {
+        c_comb.fit_begin = static_cast<long>(split.fit_begin);
+        c_comb.fit_end = static_cast<long>(split.fit_end);
+        c_comb.set_flags.insert("fit-end");
+        comb_pit.test_begin = split.test_begin;
+    }
+    auto r_comb = atx::impl::run_combine(c_comb, comb_pit);
     if (!r_comb.has_value())
         return ::testing::AssertionFailure() << "run_combine: " << r_comb.error().message();
     out.combine = r_comb->digest;

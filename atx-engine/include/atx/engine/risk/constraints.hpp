@@ -63,6 +63,37 @@
 
 namespace atx::engine::risk {
 
+enum class ConstraintStorageRule : atx::u8 { LegacyDenseV1 = 1, SparseCsrV2 = 2 };
+// V1 owns a dense A. V2 represents the same ordered logical operator in CSR,
+// with identity boxes implicit. Bounds and auxiliary L1 metadata are unchanged.
+enum class ConstraintFeasibilityRule : atx::u8 { LegacyAbsoluteV1 = 1, RelativeEconomicV2 = 2 };
+
+// Unbounded +/-1e30 sentinels do not inflate the relative tolerance. A row's
+// units are those of lhs/bounds; L1 budgets use actual economic weights.
+[[nodiscard]] atx::f64 relative_constraint_tolerance(
+    atx::f64 lhs, atx::f64 lower, atx::f64 upper,
+    atx::f64 absolute_tolerance, atx::f64 relative_tolerance) noexcept;
+
+struct ConstraintStorageConfig {
+  ConstraintStorageRule rule{ConstraintStorageRule::LegacyDenseV1};
+  atx::usize max_nnz{16'000'000};
+  atx::u64 max_materialization_bytes{268'435'456};
+  // Sparse input does not imply a sparse factor-ADMM Woodbury update. Bound its
+  // remaining dense general-row and capacitance workspace before allocating.
+  atx::u64 max_solver_bytes{536'870'912};
+};
+
+struct ConstraintCsr {
+  atx::usize columns{};
+  std::vector<atx::usize> row_offsets;
+  std::vector<atx::usize> column_indices;
+  std::vector<atx::f64> values;
+  // Logical identity rows retain their V1 positions but store no coefficients.
+  // The corresponding lower/upper bounds remain in MaterializedConstraints l/u.
+  atx::usize box_begin{};
+  atx::usize box_count{};
+};
+
 // ===========================================================================
 //  Descriptors — each is a small value type describing one constraint family.
 //
@@ -134,6 +165,23 @@ struct ParticipationCap {
   atx::f64 adv_frac = 1.0; // ρ — allowed fraction of (H-day) dollar ADV
   atx::usize priority = 0;
   bool elastic = false;
+};
+
+// Explicit dollar-volume inputs, available before the portfolio decision. This
+// API never multiplies by a price or infers the units of CapacityRef::adv.
+// Missing/nonfinite inputs refuse the active limit; zero ADV is a hard zero.
+struct DollarLiquidityRef {
+  std::span<const atx::f64> adv_usd;
+  atx::f64 nav_usd{};
+};
+struct TradeParticipationCap {
+  atx::f64 adv_fraction{1.0}; // rho in [0,1]; |w_i-w_prev_i| <= rho*ADV_usd_i/NAV
+  DollarLiquidityRef liquidity;
+};
+struct DaysToLiquidate {
+  atx::f64 max_days{1.0};
+  atx::f64 adv_fraction{1.0}; // |w_i| <= days*rho*ADV_usd_i/NAV
+  DollarLiquidityRef liquidity;
 };
 
 // Ownership cap (%shares-outstanding, S8.4): |w_i| <= κ·shares_out_i·price_i/NAV,
@@ -232,6 +280,56 @@ struct MaterializedConstraints {
   // no-op (the relaxed builder emits zero slack columns ⇒ byte-identical to S8.5, R10).
   // See cone.hpp::ElasticSpec for the two carriers + the augmented-frame mapping.
   ElasticSpec elastic;                 // S8.6 relaxation metadata (empty ⇒ nothing relaxes)
+
+  ConstraintStorageConfig storage;
+  ConstraintCsr csr; // used only by SparseCsrV2; A stays empty in that version
+
+  [[nodiscard]] bool sparse() const noexcept {
+    return storage.rule == ConstraintStorageRule::SparseCsrV2;
+  }
+  [[nodiscard]] atx::usize row_count() const noexcept {
+    return static_cast<atx::usize>(sparse() ? l.size() : A.rows());
+  }
+  [[nodiscard]] atx::usize column_count() const noexcept {
+    return sparse() ? csr.columns : static_cast<atx::usize>(A.cols());
+  }
+  [[nodiscard]] atx::core::Status validate_layout(atx::usize instruments) const;
+  [[nodiscard]] atx::usize stored_nonzeros() const noexcept;
+  [[nodiscard]] atx::core::Status validate_factor_workspace(
+      atx::usize instruments, atx::usize factors, atx::usize general_rows) const;
+  [[nodiscard]] atx::core::Status validate_augmented_workspace(
+      atx::usize instruments, atx::usize factors) const;
+  [[nodiscard]] atx::core::Status validate_kkt_workspace(
+      atx::usize dimension, atx::usize nonzeros) const;
+  [[nodiscard]] atx::core::Status validate_relative_metadata(atx::usize instruments) const;
+  // Linear rows and actual-weight L1 budgets only. Cones require the solver's
+  // factor-aware augmented certificate; this checker is not that certificate.
+  // Elastic constraints are refused rather than certified as hard limits.
+  [[nodiscard]] atx::core::Status check_relative_feasible(
+      std::span<const atx::f64> weights, atx::f64 absolute_tolerance,
+      atx::f64 relative_tolerance) const;
+
+  // Ascending-column traversal, same order as the frozen dense assembler.
+  // Requires validated geometry; never allocates or exposes a dense fallback.
+  template<class Visitor>
+  void visit_row(atx::usize row, Visitor&& visitor) const {
+    if (!sparse()) {
+      for (Eigen::Index j = 0; j < A.cols(); ++j) {
+        const auto value = A(static_cast<Eigen::Index>(row), j);
+        if (value != 0.0) visitor(static_cast<atx::usize>(j), value);
+      }
+    } else if (row >= csr.box_begin && row - csr.box_begin < csr.box_count) {
+      visitor(row - csr.box_begin, 1.0);
+    } else {
+      for (auto entry = csr.row_offsets[row]; entry < csr.row_offsets[row + 1]; ++entry)
+        visitor(csr.column_indices[entry], csr.values[entry]);
+    }
+  }
+
+  // Builder-only: rows/columns must arrive in ascending order. Sparse row
+  // offsets initially hold counts; finish_sparse_rows converts them to offsets.
+  void put_coefficient(atx::usize row, atx::usize column, atx::f64 value);
+  void finish_sparse_rows() noexcept;
 };
 
 // ===========================================================================
@@ -249,6 +347,9 @@ struct ConstraintSet {
   std::optional<SectorRiskBudget> sector;  // sector net-weight rows (S8.4)
   std::optional<TrackingError> track;      // tracking-error SOC (S8.5a; cone, not a linear row)
   std::optional<RobustAlpha> robust;       // robust alpha-uncertainty SOC (S8.5c; cone, not a linear row)
+  ConstraintStorageConfig storage;
+  std::optional<TradeParticipationCap> trade;
+  std::optional<DaysToLiquidate> liquidation;
 
   // Materialize l <= A w <= u over the M-dim weight space. `X` is the M×K
   // exposure matrix (FactorComponents.X); `w_prev` keys the turnover L1 (an
@@ -259,46 +360,14 @@ struct ConstraintSet {
   // exposure, (4) group, (5) beta, (6) sector net-weight. Σ|w|<=L and turnover go
   // into the L1-budget metadata. PURE const.
   [[nodiscard]] atx::core::Result<MaterializedConstraints>
-  materialize(const atx::core::linalg::MatX &X, std::span<const atx::f64> w_prev, atx::usize M,
-              const CapacityRef &ref = {}) const {
-    namespace co = atx::core;
-    // --- validate every descriptor up front (R3); fail before allocating ----
-    ATX_TRY_VOID(validate(X, M));
-
-    // --- count linear rows in the FIXED emission order ----------------------
-    const atx::usize rows = linear_row_count(M);
-    const auto er = static_cast<Eigen::Index>(rows);
-    const auto em = static_cast<Eigen::Index>(M);
-
-    MaterializedConstraints mc;
-    mc.A = co::linalg::MatX::Zero(er, em);
-    mc.l = co::linalg::VecX::Zero(er);
-    mc.u = co::linalg::VecX::Zero(er);
-
-    // --- emit rows in the fixed order; `next` is the running row cursor ------
-    Eigen::Index next = 0;
-    emit_dollar_neutral(mc, M, next);
-    emit_position_box(mc, M, ref, next);
-    emit_factor_exposure(mc, X, M, next);
-    emit_group(mc, M, next);
-    emit_beta(mc, M, next);
-    emit_sector(mc, M, next);
-
-    // --- L1-budget metadata (non-linear; carried for the S1-2 ADMM) ---------
-    mc.gross_l1_budget = gross.gross_leverage;
-    fill_turnover(mc, w_prev, M);
-    // --- cone metadata (S8.5a tracking-error SOC; assembled in build_augmented) ---
-    fill_tracking(mc, M);
-    // --- sector-risk SOC metadata (S8.5b; assembled in build_augmented) ---
-    fill_sector_soc(mc, M);
-    // --- robust alpha-uncertainty SOC metadata (S8.5c; assembled in build_augmented) ---
-    fill_robust(mc);
-    // --- S8.6 elasticity metadata (CONSUMED only by risk/elasticity.hpp on infeasibility) ---
-    fill_elastic(mc, M);
-    return co::Ok(std::move(mc));
-  }
+  materialize(const atx::core::linalg::MatX &X, std::span<const atx::f64> w_prev,
+              atx::usize M, const CapacityRef &ref = {}) const;
 
 private:
+  [[nodiscard]] atx::core::Status validate_liquidity(
+      std::span<const atx::f64> w_prev, atx::usize M, const CapacityRef& ref) const;
+  [[nodiscard]] std::pair<atx::f64, atx::f64> name_box_bounds(
+      atx::usize i, std::span<const atx::f64> w_prev, const CapacityRef& ref) const noexcept;
   // The "no active cap" sentinel for the per-name box min-fold: a finite, very large
   // bound (far above any realistic |w_i|) so a present-but-unevaluable participation /
   // ownership cap never spuriously zeroes the box. Mirrors qp_augment.hpp's kAugInf
@@ -531,7 +600,8 @@ private:
   // into the box, §0.3). The per-name bound is the elementwise min of whichever caps
   // are active for that name.
   [[nodiscard]] bool has_box() const noexcept {
-    return pos.has_value() || part.has_value() || own.has_value();
+    return pos.has_value() || part.has_value() || own.has_value() || trade.has_value() ||
+           liquidation.has_value();
   }
 
   // -------------------------------------------------------------------------
@@ -562,7 +632,7 @@ private:
       return;
     }
     for (atx::usize i = 0; i < M; ++i) {
-      mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
+      mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
     }
     mc.l[next] = 0.0;
     mc.u[next] = 0.0;
@@ -577,15 +647,16 @@ private:
   // NOT evaluable for that name and is simply skipped (it does not bind). When ONLY
   // PositionCap is set this reduces EXACTLY to the as-built uniform box (the pin).
   void emit_position_box(MaterializedConstraints &mc, atx::usize M, const CapacityRef &ref,
+                         std::span<const atx::f64> w_prev,
                          Eigen::Index &next) const noexcept {
     if (!has_box()) {
       return;
     }
     for (atx::usize i = 0; i < M; ++i) {
-      const atx::f64 cap = name_box_cap(i, ref);
-      mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
-      mc.l[next] = -cap;
-      mc.u[next] = cap;
+      const auto [lo, hi] = name_box_bounds(i, w_prev, ref);
+      mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
+      mc.l[next] = lo;
+      mc.u[next] = hi;
       ++next;
     }
   }
@@ -619,7 +690,7 @@ private:
     for (atx::usize j = 0; j < fexp->factor_cols.size(); ++j) {
       const auto col = static_cast<Eigen::Index>(fexp->factor_cols[j]);
       for (atx::usize i = 0; i < M; ++i) {
-        mc.A(next, static_cast<Eigen::Index>(i)) = X(static_cast<Eigen::Index>(i), col);
+        mc.put_coefficient(static_cast<atx::usize>(next), i, X(static_cast<Eigen::Index>(i), col));
       }
       mc.l[next] = -fexp->bound[j];
       mc.u[next] = fexp->bound[j];
@@ -637,7 +708,7 @@ private:
     for (atx::usize g = 0; g < g_count; ++g) {
       for (atx::usize i = 0; i < M; ++i) {
         if (grp->group_id[i] == g) {
-          mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
+          mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
         }
       }
       mc.l[next] = -grp->cap[g];
@@ -652,7 +723,7 @@ private:
       return;
     }
     for (atx::usize i = 0; i < M; ++i) {
-      mc.A(next, static_cast<Eigen::Index>(i)) = beta->beta[i];
+      mc.put_coefficient(static_cast<atx::usize>(next), i, beta->beta[i]);
     }
     mc.l[next] = -beta->tol;
     mc.u[next] = beta->tol;
@@ -671,7 +742,7 @@ private:
     for (atx::usize g = 0; g < s_count; ++g) {
       for (atx::usize i = 0; i < M; ++i) {
         if (sector->sector_id[i] == g) {
-          mc.A(next, static_cast<Eigen::Index>(i)) = 1.0;
+          mc.put_coefficient(static_cast<atx::usize>(next), i, 1.0);
         }
       }
       mc.l[next] = -sector->cap[g];

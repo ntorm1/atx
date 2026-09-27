@@ -9,6 +9,11 @@
 // MUST reproduce `evaluate_reference` BIT-FOR-BIT for every element-wise /
 // logical / select program (the differential test enforces this).
 //
+// CACHE IDENTITY: the IC runner's candidate signal cache keys stored VM outputs
+// by `dsl_vm_semantics_version` (atx-impl/src/strategy_ic_runner.cpp). Bump it
+// with ANY change here, in the Cs/Ts kernels, or in parse/compile that can alter
+// one evaluated bit; otherwise a reused cache serves pre-change signals.
+//
 // ===========================================================================
 //  EVAL MODEL — FULL-BUFFER COLUMNAR, batch-per-opcode (NOT a date-loop-outer)
 // ===========================================================================
@@ -71,6 +76,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -78,6 +85,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <xsimd/xsimd.hpp>
 
 #include "atx/core/error.hpp"
 #include "atx/core/macro.hpp"
@@ -317,6 +326,39 @@ enum class EvalMode : atx::u8 {
 };
 
 // =========================================================================
+//  KernelPolicy (W0-A0) — the versioned numeric policies of the kernel fixes.
+//
+//  Every default is the corrected behaviour: average-rank ties (A-01), the
+//  seeding / NaN-emitting / stale-capped hump (A-02), the flat-window guard
+//  (A-09) and oracle-exact windowed AuditExact ts_sum/ts_mean with a Neumaier
+//  ResearchFast slide (A-13). legacy_v1() selects every pre-W0 rule at once and
+//  re-derives pre-W0 digests bit-exactly (AlphaCsRankTies_Digest and siblings).
+//  The oracle pins the default policy only. A non-default policy bypasses the
+//  SubtreeCache (its key does not carry the policy).
+// =========================================================================
+using RankTies = detail::RankTies;
+using HumpNaN = detail::HumpNaN;
+using FlatGuard = detail::FlatGuard;
+using TsSumPath = detail::TsSumPath;
+
+struct KernelPolicy {
+  RankTies rank_ties{RankTies::Average};
+  HumpNaN hump{HumpNaN::SeedCapV2};
+  FlatGuard flat{FlatGuard::RelativeV2};
+  TsSumPath ts_sum{TsSumPath::WindowedV2};
+
+  // Every pre-W0 rule (the policy the old golden digests were produced under).
+  [[nodiscard]] static constexpr KernelPolicy legacy_v1() noexcept {
+    return KernelPolicy{RankTies::OrdinalV1, HumpNaN::StickyV1, FlatGuard::NoneV1,
+                        TsSumPath::OnlineV1};
+  }
+  [[nodiscard]] constexpr bool is_default() const noexcept {
+    return rank_ties == RankTies::Average && hump == HumpNaN::SeedCapV2 &&
+           flat == FlatGuard::RelativeV2 && ts_sum == TsSumPath::WindowedV2;
+  }
+};
+
+// =========================================================================
 //  Range execution vocabulary (Lane 2 — strategy B / level-scheduled eval).
 //
 //  Every opcode's kernel is independent along ONE axis of the date-major panel:
@@ -373,6 +415,30 @@ public:
   // Set BEFORE evaluate(); affects only the variance-family ops, nothing else.
   void set_eval_mode(EvalMode mode) noexcept { mode_ = mode; }
   [[nodiscard]] EvalMode eval_mode() const noexcept { return mode_; }
+
+  // W0-A0 kernel policy (see KernelPolicy). Default-constructed == corrected
+  // behaviour; KernelPolicy::legacy_v1() re-derives pre-W0 outputs. Set BEFORE
+  // evaluate().
+  void set_kernel_policy(KernelPolicy policy) noexcept { policy_ = policy; }
+  [[nodiscard]] KernelPolicy kernel_policy() const noexcept { return policy_; }
+
+  // Optional date-major eligibility for cross-sectional operations ONLY. Field
+  // loads retain the Panel's observation mask, so a newly eligible name can use
+  // its observed price history in a trailing time-series window. Every Cs* op
+  // excludes ineligible names from its reductions and emits NaN for them.
+  // Call before evaluation (never concurrently). Takes ownership; empty restores
+  // the default valid-set behavior. A nonempty mask must contain cells() values
+  // in {0,1}; invalid input returns Err without changing the current mask.
+  // Subtree caching is bypassed while masked: its key has no eligibility field.
+  [[nodiscard]] atx::core::Status set_cross_section_mask(std::vector<atx::u8> mask) {
+    if ((!mask.empty() && mask.size() != panel_.cells()) ||
+        std::any_of(mask.begin(), mask.end(), [](atx::u8 v) { return v > 1U; })) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Engine: cross-section mask must be empty or cells() binary flags");
+    }
+    cs_mask_ = std::move(mask);
+    return atx::core::Ok();
+  }
 
   // Cross-instrument column parallelism (p7 S3-3). When a non-null DetPool is set,
   // the BATCH Ts path (eval_time_series's column-extract loop) dispatches its
@@ -563,6 +629,9 @@ public:
 
   [[nodiscard]] atx::core::Result<SignalSet>
   evaluate_nodes(const Program &prog, std::span<const atx::u32> roots, SubtreeCache *cache) {
+    if (!policy_.is_default() || !cs_mask_.empty()) {
+      cache = nullptr; // SubtreeKey carries neither KernelPolicy nor CS eligibility.
+    }
     const atx::usize dates = panel_.dates();
     const atx::usize instruments = panel_.instruments();
     const atx::usize cells = dates * instruments;
@@ -1273,8 +1342,11 @@ private:
          in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize);
     std::span<const atx::f64> g{};
     std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
-    // The scalar 2nd operand: CsScale's target L1 norm `a`, or CsWinsorize's
-    // std multiplier `k`. Read EXACTLY as CsScale does (cell [0] of the slot).
+    // The scalar 2nd operand: CsScale's target L1 norm `a`, CsWinsorize's std
+    // multiplier `k` or CsQuantile's bucket count. Read EXACTLY as CsScale does
+    // (cell [0] of the slot). SAFETY (A-03): analyze() requires a finite Literal
+    // in this slot (detail::validate_scalar_literal_operand), so the slot is a
+    // Const broadcast and cell [0] IS the value — never a panel's first cell.
     atx::f64 scale_a = 1.0;
     if (grouped) {
       g = src_col(in, 1);
@@ -1291,7 +1363,8 @@ private:
     // clear()s it before each rebuild, so no stale entry is ever read -> byte-identical
     // to the previous fresh-per-call vector. The Engine is single-owner per worker, so
     // this member is touched by exactly one thread at a time (no cross-worker sharing).
-    const CsRowsCtx ctx{in.op, x, g, z, out, scale_a, instruments, grouped};
+    const CsRowsCtx ctx{in.op, x, g, z, out, scale_a, instruments, grouped,
+                        policy_.rank_ties, cs_mask_};
     // Lane 2: date-band parallelism. Each band is a contiguous date range run by
     // ONE worker with ITS private valid/scratch, so every row executes the exact
     // serial row kernel — bit-identical for any band split or pool size.
@@ -1320,6 +1393,8 @@ private:
     atx::f64 scale_a;
     atx::usize instruments;
     bool grouped;
+    RankTies ties; // W0-A0 (A-01): rank-family tie policy
+    std::span<const atx::u8> mask;
   };
 
   // Run the Cs row kernel for dates [d0, d1) with the caller's scratch.
@@ -1334,7 +1409,9 @@ private:
           c.grouped ? c.g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
       const std::span<const atx::f64> zrow =
           c.z.empty() ? std::span<const atx::f64>{} : c.z.subspan(d * instruments, instruments);
-      cs_one_date(c.op, xr, grow, zrow, c.scale_a, orow, valid, scratch);
+      const auto mask = c.mask.empty() ? std::span<const atx::u8>{}
+                                       : c.mask.subspan(d * instruments, instruments);
+      cs_one_date(c.op, xr, grow, zrow, c.scale_a, orow, valid, scratch, c.ties, mask);
     }
   }
 
@@ -1343,7 +1420,8 @@ private:
   // valid set is rebuilt into `valid` (caller-owned scratch), then dispatched.
   static void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
                           std::span<const atx::f64> z, atx::f64 scale_a, std::span<atx::f64> out,
-                          std::vector<atx::usize> &valid, detail::CsScratch &scratch) {
+                          std::vector<atx::usize> &valid, detail::CsScratch &scratch,
+                          RankTies ties, std::span<const atx::u8> mask) {
     // INVARIANT (REQUIRED — not accidental): the forward scan produces `valid`
     // in strictly ascending instrument-index order, and every downstream kernel
     // depends on it for AuditExact-determinism:
@@ -1357,13 +1435,13 @@ private:
     valid.clear();
     for (atx::usize i = 0; i < x.size(); ++i) {
       out[i] = detail::kVmNaN; // default every cell (out-of-set stays NaN)
-      if (!detail::cs_is_nan(x[i])) {
+      if (!detail::cs_is_nan(x[i]) && (mask.empty() || mask[i] != 0U)) {
         valid.push_back(i);
       }
     }
     switch (op) {
     case OpCode::CsRank:
-      detail::cs_rank_row(x, valid, out, scratch);
+      detail::cs_rank_row(x, valid, out, scratch, ties);
       break;
     case OpCode::CsZscore:
       detail::cs_zscore_row(x, valid, out);
@@ -1385,7 +1463,7 @@ private:
       detail::cs_residualize_row(x, g, z, valid, out, scratch);
       break;
     case OpCode::CsQuantile: // discretize the valid set into `scale_a` buckets
-      detail::cs_quantile_row(x, valid, scale_a, out, scratch);
+      detail::cs_quantile_row(x, valid, scale_a, out, scratch, ties);
       break;
     case OpCode::CsVecSum:
       detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/false);
@@ -1394,7 +1472,7 @@ private:
       detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/true);
       break;
     case OpCode::CsRankG:
-      detail::cs_group_row(x, g, valid, out, /*zscore=*/false, scratch);
+      detail::cs_group_row(x, g, valid, out, /*zscore=*/false, scratch, ties);
       break;
     case OpCode::CsZscoreG:
       detail::cs_group_row(x, g, valid, out, /*zscore=*/true, scratch);
@@ -1447,17 +1525,11 @@ private:
     // they take the same windowed path but a distinct per-cell kernel.
     const bool ou_rolling = (in.op == OpCode::OuTheta || in.op == OpCode::OuHalflife ||
                              in.op == OpCode::OuMean || in.op == OpCode::OuZscore);
-    // S1-3 (narrowed): pure-lookback ops read a FIXED O(1) set of elements per
-    // cell — NOT a d-length window scan — so the column-extract transpose can
-    // never help them: there is no window reuse to make contiguous, and copying
-    // the whole O(dates) column (strided) just to serve single-element lookups is
-    // pure overhead (a guaranteed ~2x regression by construction). delay reads
-    // one element x[(t-d)*I+j]; delta reads two (x[t]-x[t-d]). Both are among the
-    // most common alpha operators, so they STAY on the original direct strided
-    // path below. (Every OTHER batch op — Var/Std/Rank/Med/Mad/Skew/Kurt/Slope/
-    // Rsquare/Resid/Product/ArgMin/ArgMax/Decay*/Wma/Ema/Zscore/AvDiff/Backfill/
-    // CountNans/Quantile/Moment/Entropy/Corr/Cov/Regression/OU* — scans a window
-    // of up to d elements per cell and is wash-to-win under the transpose.)
+    // Lookback needs no window scratch or column transpose. Whole-width delay
+    // copies one contiguous block; subranges and delta follow contiguous rows.
+    if (in.op == OpCode::TsDelay || in.op == OpCode::TsDelta) {
+      return eval_ts_lookback(in.op, x, out, dates, instruments, d, j0, j1);
+    }
 
     // Reusable scratch sized to the window: NO per-cell allocation (grown only
     // when `d` exceeds any prior call). Only the batch sort/pair ops touch it.
@@ -1467,7 +1539,69 @@ private:
     }
     // Online path (Task 7): rolling sweep down each instrument column. The deque
     // scratch is sized to `dates` (grown once); the sweep allocates nothing.
-    if (detail::ts_is_online_op(in.op)) {
+    // W0-A0 (A-13): under AuditExact + TsSumPath::WindowedV2 (the default)
+    // TsSum/TsMean skip the online slide and fall through to the batch per-window
+    // recompute below (oracle-exact, independent of the panel start); under
+    // ResearchFast the slide is Neumaier-compensated. OnlineV1 is the pre-W0
+    // uncompensated slide in every mode.
+    const bool sum_op = (in.op == OpCode::TsSum || in.op == OpCode::TsMean);
+    const bool legacy_sum = policy_.ts_sum == TsSumPath::OnlineV1;
+    const bool windowed_sum = sum_op && !legacy_sum && mode_ == EvalMode::AuditExact;
+    if (in.op == OpCode::TsDecayExp && mode_ == EvalMode::ResearchFast && policy_.is_default()) {
+      if (d == 0 || d > dates) {
+        for (atx::usize t = 0; t < dates; ++t)
+          std::fill_n(out.data() + t * instruments + j0, j1 - j0, detail::kTsNaN);
+        return atx::core::Ok();
+      }
+      ts_exp_coeff_.prepare(d, in.imm[0]);
+      const atx::usize width = j1 - j0;
+      const atx::usize tiles = width / detail::kTsInstrumentTile +
+                              static_cast<atx::usize>(width % detail::kTsInstrumentTile != 0);
+      const auto tile = [&](atx::usize i) {
+        const atx::usize begin = j0 + i * detail::kTsInstrumentTile;
+        const atx::usize end = begin + std::min(detail::kTsInstrumentTile, j1 - begin);
+        sliding::sweep_exp_decay(x, out, dates, instruments, ts_exp_coeff_, begin, end);
+      };
+      if (ts_pool_ != nullptr && tiles > 1) {
+        ts_pool_->parallel_for(tiles, [&](atx::usize i, atx::usize) { tile(i); });
+      } else {
+        for (atx::usize i = 0; i < tiles; ++i) tile(i);
+      }
+      return atx::core::Ok();
+    }
+    if (sum_op && !legacy_sum && mode_ == EvalMode::ResearchFast) {
+      const atx::usize width = j1 - j0;
+      const atx::usize tiles = width / detail::kTsInstrumentTile +
+                              static_cast<atx::usize>(width % detail::kTsInstrumentTile != 0);
+      const auto tile = [&](atx::usize i) {
+        const atx::usize begin = j0 + i * detail::kTsInstrumentTile;
+        const atx::usize end = begin + std::min(detail::kTsInstrumentTile, j1 - begin);
+        detail::ts_sum_tile(in.op, x, out, dates, instruments, d, begin, end);
+      };
+      if (ts_pool_ != nullptr && tiles > 1) {
+        ts_pool_->parallel_for(tiles, [&](atx::usize i, atx::usize) { tile(i); });
+      } else {
+        for (atx::usize i = 0; i < tiles; ++i) tile(i);
+      }
+      return atx::core::Ok();
+    }
+    if (binary_series && mode_ == EvalMode::ResearchFast && policy_.flat == FlatGuard::RelativeV2) {
+      const atx::usize width = j1 - j0;
+      const atx::usize tiles = width / detail::kTsInstrumentTile +
+                              static_cast<atx::usize>(width % detail::kTsInstrumentTile != 0);
+      const auto tile = [&](atx::usize i) {
+        const atx::usize begin = j0 + i * detail::kTsInstrumentTile;
+        const atx::usize end = begin + std::min(detail::kTsInstrumentTile, j1 - begin);
+        sliding::sweep_comoment(in.op, x, y, out, dates, instruments, d, begin, end, true);
+      };
+      if (ts_pool_ != nullptr && tiles > 1) {
+        ts_pool_->parallel_for(tiles, [&](atx::usize i, atx::usize) { tile(i); });
+      } else {
+        for (atx::usize i = 0; i < tiles; ++i) tile(i);
+      }
+      return atx::core::Ok();
+    }
+    if (detail::ts_is_online_op(in.op) && !windowed_sum) {
       const bool extreme =
           (in.op == OpCode::TsMin || in.op == OpCode::TsMax || in.op == OpCode::TsScale);
       if (extreme && dates > ts_dq_lo_.size()) {
@@ -1478,7 +1612,8 @@ private:
         if (extreme) {
           detail::ts_online_extreme(in.op, x, out, dates, j, d, instruments, ts_dq_lo_, ts_dq_hi_);
         } else {
-          detail::ts_online_sum_family(in.op, x, out, dates, j, d, instruments);
+          detail::ts_online_sum_family(in.op, x, out, dates, j, d, instruments,
+                                       /*compensated=*/!legacy_sum);
         }
       }
       return atx::core::Ok();
@@ -1489,23 +1624,25 @@ private:
     // is never consulted, so the variance family falls through to the batch path
     // below — byte-identical to the oracle. The Welford sweep is per-instrument-
     // column and self-contained (no scratch), so it needs no column-extract.
-    if (mode_ == EvalMode::ResearchFast && detail::ts_is_online_variance_op(in.op)) {
-      for (atx::usize j = j0; j < j1; ++j) {
-        detail::tsv_welford_dispatch(in.op, x, out, dates, j, d, instruments);
+    if (mode_ == EvalMode::ResearchFast && sliding::is_unary_sliding_op(in.op)) {
+      const atx::usize width = j1 - j0;
+      const atx::usize tiles = width / detail::kTsInstrumentTile +
+                              static_cast<atx::usize>(width % detail::kTsInstrumentTile != 0);
+      const auto tile = [&](atx::usize i) {
+        const atx::usize begin = j0 + i * detail::kTsInstrumentTile;
+        const atx::usize end = begin + std::min(detail::kTsInstrumentTile, j1 - begin);
+        sliding::sweep_unary(in.op, x, out, dates, instruments, d, begin, end);
+      };
+      if (ts_pool_ != nullptr && tiles > 1) {
+        ts_pool_->parallel_for(tiles, [&](atx::usize i, atx::usize) { tile(i); });
+      } else {
+        for (atx::usize i = 0; i < tiles; ++i) tile(i);
       }
       return atx::core::Ok();
     }
-    // Pure-lookback direct path (TsDelay/TsDelta): ORIGINAL strided access,
-    // instrument-outer/date-inner, reading x[(t-d)*I+j] (+ x[t*I+j] for delta)
-    // directly from the panel. This is the EXACT pre-transpose code — trivially
-    // bit-exact (it is the unmodified original lookup) — and it pays NO column
-    // extraction cost, so these high-frequency ops keep their baseline speed.
-    if (in.op == OpCode::TsDelay || in.op == OpCode::TsDelta) {
+    if (mode_ == EvalMode::ResearchFast && detail::ts_is_online_variance_op(in.op)) {
       for (atx::usize j = j0; j < j1; ++j) {
-        for (atx::usize t = 0; t < dates; ++t) {
-          out[t * instruments + j] =
-              detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_, in.imm[0]);
-        }
+        detail::tsv_welford_dispatch(in.op, x, out, dates, j, d, instruments);
       }
       return atx::core::Ok();
     }
@@ -1530,7 +1667,8 @@ private:
     // independence (disjoint output slots, per-band scratch) makes the parallel
     // result bit-identical to serial, so this stays AuditExact. The pool is used
     // only for instruments>1 (a single column has no work to split).
-    const TsBatchCtx ctx{in, x, y, out, dates, instruments, d, binary_series, ou_rolling};
+    const TsBatchCtx ctx{in, x, y, out, dates, instruments, d, binary_series, ou_rolling,
+                         policy_.flat};
     if (ts_pool_ != nullptr && j1 - j0 > 1) {
       // Each index j is handled by exactly one worker `wid`; the body writes only
       // column j's output slots and reads only column j (+ shared read-only x/y),
@@ -1551,6 +1689,72 @@ private:
     return atx::core::Ok();
   }
 
+  // Each subrange owns [j0,j1) on every date. No neighboring worker's cells are
+  // read as scratch or written. Full-width delay also supports overlapping
+  // buffers: copy BEFORE filling the warmup prefix. Partial/delta overlap is
+  // rejected explicitly; ordinary VM slots and strategy-B slots are disjoint.
+  [[nodiscard]] atx::core::Status eval_ts_lookback(
+      OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
+      atx::usize dates, atx::usize instruments, atx::usize d,
+      atx::usize j0, atx::usize j1) const {
+    if (j0 > j1 || j1 > instruments ||
+        (instruments != 0 && dates > std::numeric_limits<atx::usize>::max() / instruments)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "time-series lookback: invalid geometry or range");
+    }
+    const atx::usize cells = dates * instruments;
+    if (x.size() < cells || out.size() < cells ||
+        cells > std::numeric_limits<atx::usize>::max() / sizeof(atx::f64)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "time-series lookback: invalid buffer size");
+    }
+    if (cells == 0 || j0 == j1) return atx::core::Ok();
+    const bool block_delay = op == OpCode::TsDelay && j0 == 0 && j1 == instruments;
+    const std::less<const atx::f64 *> less;
+    const bool overlap = less(x.data(), out.data() + cells) &&
+                         less(out.data(), x.data() + cells);
+    if (!block_delay && overlap) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "time-series lookback: overlapping partial/delta buffers");
+    }
+    const atx::usize first = d == 0 ? dates : std::min(d, dates);
+    if (block_delay) {
+      if (first < dates) {
+        std::memmove(out.data() + first * instruments, x.data(),
+                     (dates - first) * instruments * sizeof(atx::f64));
+      }
+      std::fill_n(out.data(), first * instruments, detail::kTsNaN);
+      return atx::core::Ok();
+    }
+    for (atx::usize t = 0; t < first; ++t) {
+      std::fill_n(out.data() + t * instruments + j0, j1 - j0, detail::kTsNaN);
+    }
+    using Batch = xsimd::batch<atx::f64>;
+    constexpr atx::usize tile_size = 64;
+    for (atx::usize t = first; t < dates; ++t) {
+      const atx::f64 *const current = x.data() + t * instruments;
+      const atx::f64 *const prior = x.data() + (t - d) * instruments;
+      atx::f64 *const dst = out.data() + t * instruments;
+      if (op == OpCode::TsDelay) {
+        std::memcpy(dst + j0, prior + j0, (j1 - j0) * sizeof(atx::f64));
+        continue;
+      }
+      for (atx::usize begin = j0; begin < j1;) {
+        const atx::usize end = begin + std::min(tile_size, j1 - begin);
+        atx::usize j = begin;
+        if (mode_ == EvalMode::ResearchFast) {
+          for (; end - j >= Batch::size; j += Batch::size) {
+            (Batch::load_unaligned(current + j) - Batch::load_unaligned(prior + j))
+                .store_unaligned(dst + j);
+          }
+        }
+        for (; j < end; ++j) dst[j] = current[j] - prior[j];
+        begin = end;
+      }
+    }
+    return atx::core::Ok();
+  }
+
   // Immutable per-evaluate context shared by every instrument column of a single
   // batch Ts op (so the column body — serial or parallel — reads one bundle).
   struct TsBatchCtx {
@@ -1563,6 +1767,7 @@ private:
     atx::usize d;
     bool binary_series;
     bool ou_rolling;
+    FlatGuard flat; // W0-A0 (A-09): flat-window guard policy
   };
 
   // Evaluate ONE instrument column `j` of a batch Ts op into ctx.out, using the
@@ -1602,7 +1807,8 @@ private:
       }
       const std::span<const atx::f64> cb{col_b.data(), dates};
       for (atx::usize t = 0; t < dates; ++t) {
-        ctx.out[t * instruments + j] = detail::ts_pair_at(ctx.in.op, cspan, cb, t, 0, d, 1, sa, sb);
+        ctx.out[t * instruments + j] =
+            detail::ts_pair_at(ctx.in.op, cspan, cb, t, 0, d, 1, sa, sb, ctx.flat);
       }
     } else if (ctx.ou_rolling) {
       for (atx::usize t = 0; t < dates; ++t) {
@@ -1611,7 +1817,7 @@ private:
     } else {
       for (atx::usize t = 0; t < dates; ++t) {
         ctx.out[t * instruments + j] =
-            detail::ts_value_at(ctx.in.op, cspan, t, 0, d, 1, sa, ctx.in.imm[0]);
+            detail::ts_value_at(ctx.in.op, cspan, t, 0, d, 1, sa, ctx.in.imm[0], ctx.flat);
       }
     }
   }
@@ -1650,13 +1856,27 @@ private:
     }
     if (in.op == OpCode::Hump) {
       const std::span<const atx::f64> x = src_col(in, 0);
+      // SAFETY (A-03): analyze() requires a finite Literal threshold, so src[1]
+      // is a Const broadcast and cell [0] is the threshold itself.
       const atx::f64 thr = in.src.at(1) == kNoSlot ? atx::f64{0.01} : src_col(in, 1).front();
+      if (policy_.hump == HumpNaN::StickyV1) {
+        for (atx::usize j = j0; j < j1; ++j) {
+          for (atx::usize t = 0; t < dates; ++t) {
+            const atx::usize i = t * instruments + j;
+            const atx::f64 v = detail::hump_step_v1(state_[j], x[i], thr, /*first=*/t == 0);
+            out[i] = v;
+            state_[j] = v;
+          }
+        }
+        return atx::core::Ok();
+      }
+      // W0-A0 (A-02): per-instrument HumpState (prior + NaN-run length) lives on
+      // the stack for its column's forward scan — the column is independent.
       for (atx::usize j = j0; j < j1; ++j) {
+        detail::HumpState s{};
         for (atx::usize t = 0; t < dates; ++t) {
           const atx::usize i = t * instruments + j;
-          const atx::f64 v = detail::hump_step(state_[j], x[i], thr, /*first=*/t == 0);
-          out[i] = v;
-          state_[j] = v;
+          out[i] = detail::hump_step(s, x[i], thr);
         }
       }
       return atx::core::Ok();
@@ -1768,10 +1988,13 @@ private:
 
   const Panel &panel_;
   EvalMode mode_{EvalMode::AuditExact}; // determinism tier (p7 S3-1); default inert
+  KernelPolicy policy_{};               // W0-A0 versioned kernel policies; default corrected
+  std::vector<atx::u8> cs_mask_;        // owned Cs* eligibility; empty preserves the default
   SlotPool pool_{1, 1};                // reused across calls; grown on demand
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
   std::vector<atx::f64> ts_scratch_b_; // Ts* second-window scratch (corr/cov)
+  sliding::ExpDecayCoefficients ts_exp_coeff_; // grow-only, immutable during tile dispatch
   // S1-3: per-instrument column-extract buffers (dates-sized).  Grown
   // monotonically; never allocated inside the (t,j) hot loop.  ts_col_ holds the
   // extracted x column; ts_col_b_ the y column for binary ops.

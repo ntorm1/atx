@@ -1,9 +1,12 @@
 #include "config.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,6 +14,182 @@
 #include "atx/core/error.hpp"
 
 namespace atx::impl {
+
+const char *replay_delisting_policy_name(ReplayDelistingPolicy policy) noexcept {
+    switch (policy) {
+    case ReplayDelistingPolicy::AbortV1: return "abort";
+    case ReplayDelistingPolicy::TerminalReturnV2: return "terminal-return";
+    }
+    return "invalid";
+}
+
+atx::core::Result<ReplayDelistingPolicy>
+parse_replay_delisting_policy(std::string_view value) {
+    if (value == "terminal-return") return atx::core::Ok(ReplayDelistingPolicy::TerminalReturnV2);
+    if (value == "abort") return atx::core::Ok(ReplayDelistingPolicy::AbortV1);
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "--replay-delisting-policy requires terminal-return or abort");
+}
+
+namespace {
+
+// W0-I0b / I-10: every boolean flag in one table. A boolean's value is PARSED
+// (parse_bool_flag_value) rather than ignored, so `metabook=false` in a config file
+// turns the stage off instead of on. On the CLI a boolean is valueless, optionally
+// followed by one boolean literal token (parse_args). The literals are `true` /
+// `false` and their numeric spellings `1` / `0`, which committed runbooks pass
+// (`--require-sector 1 --compact-universe 1`, fix pass 1).
+[[nodiscard]] constexpr bool is_bool_literal(std::string_view token) noexcept {
+    return token == "true" || token == "false" || token == "1" || token == "0";
+}
+
+struct BoolFlag {
+    std::string_view name;
+    bool RunConfig::*field;
+};
+
+constexpr std::array<BoolFlag, 35> kBoolFlags{{
+    {"help", &RunConfig::help},
+    {"quiet", &RunConfig::quiet},
+    {"digest-only", &RunConfig::digest_only},
+    {"gated", &RunConfig::gated},
+    {"sector-neutral", &RunConfig::sector_neutral},
+    {"conviction", &RunConfig::conviction},
+    {"position-mode", &RunConfig::position_mode},
+    {"resume", &RunConfig::resume},
+    {"exclude-no-sector", &RunConfig::exclude_no_sector},
+    {"require-sector", &RunConfig::require_sector},
+    {"compact-universe", &RunConfig::compact_universe},
+    {"industry-neutral", &RunConfig::industry_neutral},
+    {"enable-wrap-in-op", &RunConfig::enable_wrap_in_op},
+    {"typed-fields", &RunConfig::typed_fields},             // R1
+    {"pbo-hard-block", &RunConfig::pbo_hard_block},         // R3
+    {"deflate-selection", &RunConfig::deflate_selection},   // R4
+    {"protect-seed-elites", &RunConfig::protect_seed_elites}, // S7-1
+    {"mutate-seed-copies", &RunConfig::mutate_seed_copies},   // S7-1
+    {"augment-panel", &RunConfig::augment_panel},             // S7-3
+    {"dead-alpha-factors", &RunConfig::dead_alpha_factors},   // S5-0 (S1)
+    {"group-neutralize", &RunConfig::group_neutralize},       // S5-0 (S1)
+    {"metabook", &RunConfig::metabook},                       // S5-0 (S2)
+    {"impact-in-selection", &RunConfig::impact_in_selection}, // S5-0 (S4)
+    {"capacity-curve", &RunConfig::capacity_curve},           // S5-0 (S4)
+    {"require-split-stable", &RunConfig::require_split_stable}, // S5-0 (deflation)
+    {"blocking-pbo", &RunConfig::blocking_pbo},                 // S5-2
+    {"incremental-panel", &RunConfig::incremental_panel},       // S5-0 (p7 carry-forward)
+    {"robustness-battery", &RunConfig::robustness_battery},     // p8 final-wave (Item 3)
+    {"robustness-sub-universe", &RunConfig::robustness_sub_universe},             // S5-3
+    {"robustness-alt-neutralization", &RunConfig::robustness_alt_neutralization}, // S5-3
+    {"robustness-param-perturb", &RunConfig::robustness_param_perturb},           // S5-3
+    {"gp-trading", &RunConfig::gp_trading},                   // p9 S3
+    {"capacity-objective", &RunConfig::capacity_objective},   // p9 S4
+    {"turnover-objective", &RunConfig::turnover_objective},   // p9 S4
+    {"allow-same-close", &RunConfig::allow_same_close},       // W0-I0b / B-02
+}};
+
+[[nodiscard]] const BoolFlag *find_bool_flag(std::string_view flag) noexcept {
+    for (const auto &entry : kBoolFlags) {
+        if (entry.name == flag) return &entry;
+    }
+    return nullptr;
+}
+
+// A size_t-valued flag: a canonical nonnegative integer (from_chars, whole value).
+[[nodiscard]] atx::core::Result<atx::usize> parse_count(std::string_view flag,
+                                                        std::string_view value) {
+    atx::usize parsed = 0;
+    const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (value.empty() || ec != std::errc{} || ptr != value.data() + value.size()) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "--" + std::string(flag) + " requires a nonnegative integer: got '" +
+                std::string(value) + "'");
+    }
+    return atx::core::Ok(parsed);
+}
+
+} // namespace
+
+atx::core::Result<bool> apply_ic_screen_option(
+    atx::engine::factory::IcScreenConfig& config, std::string_view flag,
+    std::string_view value) {
+    using atx::core::Err;
+    using atx::core::Ok;
+    using atx::core::ErrorCode;
+    using atx::engine::factory::IcScreenRule;
+    const auto invalid = [&] {
+        return Err(ErrorCode::InvalidArgument,
+            "--" + std::string(flag) + ": invalid value '" + std::string(value) + "'");
+    };
+    if (flag == "ic-screen-rule") {
+        if (value == "disabled-v1") config.rule = IcScreenRule::DisabledV1;
+        else if (value == "conservative-v2") config.rule = IcScreenRule::ConservativeV2;
+        else if (value == "equivalence-v3") config.rule = IcScreenRule::EquivalenceV3;
+        else return invalid();
+        return Ok(true);
+    }
+    if (flag == "ic-screen-horizons") {
+        auto horizons = config.horizons;
+        auto rest = value;
+        for (atx::usize i = 0; i < horizons.size(); ++i) {
+            const auto separator = rest.find_first_of(",;");
+            const auto token = rest.substr(0, separator);
+            auto parsed = parse_count(flag, token);
+            if (!parsed || *parsed == 0 || *parsed > 65535) return invalid();
+            if (i > 0 && *parsed <= horizons[i - 1]) return invalid();
+            horizons[i] = *parsed;
+            if (i + 1 == horizons.size()) {
+                if (separator != std::string_view::npos) return invalid();
+            } else {
+                if (separator == std::string_view::npos) return invalid();
+                rest.remove_prefix(separator + 1);
+            }
+        }
+        config.horizons = horizons;
+        return Ok(true);
+    }
+    if (flag == "ic-screen-min-abs-ic" || flag == "ic-screen-confidence") {
+        double number{};
+        const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (error != std::errc{} || end != value.data() + value.size() ||
+            !std::isfinite(number)) return invalid();
+        if (flag == "ic-screen-min-abs-ic") {
+            if (!(number > 0.0) || number >= 1.0) return invalid();
+            config.practical_abs_ic = number;
+        } else {
+            if (number < 3.0 || number > 20.0) return invalid();
+            config.confidence_multiplier = number;
+        }
+        return Ok(true);
+    }
+    if (flag != "ic-screen-min-names" && flag != "ic-screen-min-dates" &&
+        flag != "ic-screen-max-cache-mib") return Ok(false);
+    auto count = parse_count(flag, value);
+    if (!count) return Err(count.error());
+    if (flag == "ic-screen-min-names") {
+        if (*count < 3 || *count > 262144) return invalid();
+        config.min_names = *count;
+    } else if (flag == "ic-screen-min-dates") {
+        if (*count < 8 || *count > 65536) return invalid();
+        config.min_dates = *count;
+    } else {
+        if (*count == 0 || *count > 65536) return invalid();
+        config.max_cache_bytes = static_cast<atx::u64>(*count) * 1024U * 1024U;
+    }
+    return Ok(true);
+}
+
+atx::core::Result<bool> parse_bool_flag_value(std::string_view flag, std::string_view value) {
+    if (value.empty() || value == "true" || value == "1") return atx::core::Ok(true);
+    if (value == "false" || value == "0") return atx::core::Ok(false);
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "--" + std::string(flag) + " takes true or false (or 1 / 0): got '" +
+            std::string(value) + "'");
+}
+
+bool subcommand_rejects_config(std::string_view subcommand) noexcept {
+    // Frozen pre-registered recipes: their allowed-flag sets deliberately exclude
+    // `config` (rulings AR-9 / DR15-7), so they reject rather than merge.
+    return subcommand == "equity-ic" || subcommand == "equity-universe";
+}
 
 // ---------------------------------------------------------------------------
 // Worker: apply one recognized (flag, value) pair to a RunConfig.
@@ -22,6 +201,9 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                                                 std::string_view value) {
     using EC = atx::core::ErrorCode;
 
+    ATX_TRY(const bool ic_handled, apply_ic_screen_option(cfg.ic_screen, flag, value));
+    if (ic_handled) return atx::core::Ok();
+
     if (flag == "allow-unidentified-panels") {
         if (value != "true" && value != "false") {
             return atx::core::Err(EC::InvalidArgument,
@@ -31,42 +213,12 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         return atx::core::Ok();
     }
 
-    // Boolean flags (value is ignored / empty for valueless booleans).
-    if (flag == "help")           { cfg.help          = true; return atx::core::Ok(); }
-    if (flag == "quiet")          { cfg.quiet         = true; return atx::core::Ok(); }
-    if (flag == "digest-only")    { cfg.digest_only   = true; return atx::core::Ok(); }
-    if (flag == "gated")          { cfg.gated         = true; return atx::core::Ok(); }
-    if (flag == "sector-neutral") { cfg.sector_neutral = true; return atx::core::Ok(); }
-    if (flag == "conviction")     { cfg.conviction     = true; return atx::core::Ok(); }
-    if (flag == "position-mode")  { cfg.position_mode  = true; return atx::core::Ok(); }
-    if (flag == "resume")         { cfg.resume         = true; return atx::core::Ok(); }
-    if (flag == "exclude-no-sector") { cfg.exclude_no_sector = true; return atx::core::Ok(); }
-    if (flag == "require-sector")    { cfg.require_sector    = true; return atx::core::Ok(); }
-    if (flag == "compact-universe")  { cfg.compact_universe  = true; return atx::core::Ok(); }
-    if (flag == "industry-neutral")  { cfg.industry_neutral  = true; return atx::core::Ok(); }
-    if (flag == "enable-wrap-in-op")  { cfg.enable_wrap_in_op = true; return atx::core::Ok(); }
-    if (flag == "typed-fields")       { cfg.typed_fields       = true; return atx::core::Ok(); } // R1
-    if (flag == "pbo-hard-block")     { cfg.pbo_hard_block     = true; return atx::core::Ok(); } // R3
-    if (flag == "deflate-selection")  { cfg.deflate_selection  = true; return atx::core::Ok(); } // R4
-    if (flag == "protect-seed-elites") { cfg.protect_seed_elites = true; return atx::core::Ok(); } // S7-1
-    if (flag == "mutate-seed-copies")  { cfg.mutate_seed_copies  = true; return atx::core::Ok(); } // S7-1
-    if (flag == "augment-panel")       { cfg.augment_panel        = true; return atx::core::Ok(); } // S7-3
-    if (flag == "dead-alpha-factors")  { cfg.dead_alpha_factors   = true; return atx::core::Ok(); } // S5-0 (S1)
-    if (flag == "group-neutralize")    { cfg.group_neutralize     = true; return atx::core::Ok(); } // S5-0 (S1)
-    if (flag == "metabook")            { cfg.metabook             = true; return atx::core::Ok(); } // S5-0 (S2)
-    if (flag == "impact-in-selection") { cfg.impact_in_selection  = true; return atx::core::Ok(); } // S5-0 (S4)
-    if (flag == "capacity-curve")      { cfg.capacity_curve       = true; return atx::core::Ok(); } // S5-0 (S4)
-    if (flag == "require-split-stable"){ cfg.require_split_stable = true; return atx::core::Ok(); } // S5-0 (deflation)
-    if (flag == "blocking-pbo")        { cfg.blocking_pbo         = true; return atx::core::Ok(); } // S5-2
-    if (flag == "incremental-panel")   { cfg.incremental_panel    = true; return atx::core::Ok(); } // S5-0 (p7 carry-forward)
-    if (flag == "robustness-battery")  { cfg.robustness_battery   = true; return atx::core::Ok(); } // p8 final-wave (Item 3)
-    if (flag == "robustness-sub-universe")       { cfg.robustness_sub_universe       = true; return atx::core::Ok(); } // S5-0 (S5-3)
-    if (flag == "robustness-alt-neutralization") { cfg.robustness_alt_neutralization = true; return atx::core::Ok(); } // S5-0 (S5-3)
-    if (flag == "robustness-param-perturb")      { cfg.robustness_param_perturb      = true; return atx::core::Ok(); } // S5-0 (S5-3)
-    if (flag == "gp-trading")          { cfg.gp_trading           = true; return atx::core::Ok(); } // p9 S3
-    if (flag == "capacity-objective")  { cfg.capacity_objective   = true; return atx::core::Ok(); } // p9 S4
-    if (flag == "turnover-objective")  { cfg.turnover_objective   = true; return atx::core::Ok(); } // p9 S4
-
+    // Boolean flags (W0-I0b / I-10): the value is parsed, never ignored.
+    if (const BoolFlag *entry = find_bool_flag(flag); entry != nullptr) {
+        ATX_TRY(const bool parsed, parse_bool_flag_value(flag, value));
+        cfg.*(entry->field) = parsed;
+        return atx::core::Ok();
+    }
     // String flags
     if (flag == "preparation-manifest") {
         cfg.preparation_manifest = value;
@@ -77,8 +229,45 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "min-date")     { cfg.min_date      = value; return atx::core::Ok(); }
     if (flag == "segs")         { cfg.segs          = value; return atx::core::Ok(); }
     if (flag == "panel-out")    { cfg.panel_out     = value; return atx::core::Ok(); }
+    if (flag == "panel-storage-rule") {
+        if (value != "legacy-f64-v1" && value != "mmap-f32-v2")
+            return atx::core::Err(EC::InvalidArgument,
+                "--panel-storage-rule requires legacy-f64-v1 or mmap-f32-v2");
+        cfg.panel_storage_rule = value;
+        return atx::core::Ok();
+    }
+    if (flag == "ic-trial-accounting-rule") {
+        if (value != "legacy-ledger-v1" && value != "epoch-e2-v1")
+            return atx::core::Err(EC::InvalidArgument,
+                "--ic-trial-accounting-rule requires legacy-ledger-v1 or epoch-e2-v1");
+        cfg.equity_ic_trial_accounting_rule = value;
+        return atx::core::Ok();
+    }
+    if (flag == "ic-epoch-catalog" || flag == "ic-epoch-anchor") {
+        if (value.empty() || value.starts_with("--"))
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a nonempty value");
+        if (flag == "ic-epoch-catalog") cfg.equity_ic_epoch_catalog = value;
+        else cfg.equity_ic_epoch_anchor = value;
+        return atx::core::Ok();
+    }
+    if (flag == "ic-prereg-file" || flag == "ic-prereg-sha256") {
+        if (value.empty() || value.starts_with("--"))
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a nonempty value");
+        if (flag == "ic-prereg-file") cfg.equity_ic_prereg_file = value;
+        else cfg.equity_ic_prereg_sha256 = value;
+        return atx::core::Ok();
+    }
     if (flag == "start")        { cfg.start         = value; return atx::core::Ok(); }
     if (flag == "end")          { cfg.end           = value; return atx::core::Ok(); }
+    if (flag == "allocation-rule") {
+        if (value != "legacy-dense-absolute-v1" && value != "sparse-relative-v2")
+            return atx::core::Err(EC::InvalidArgument,
+                "--allocation-rule requires legacy-dense-absolute-v1 or sparse-relative-v2");
+        cfg.equity_allocation_rule = value;
+        return atx::core::Ok();
+    }
     if (flag == "baseline-dir") {
         if (value.empty() || value.starts_with("--")) {
             return atx::core::Err(EC::InvalidArgument,
@@ -93,6 +282,83 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                 "--trial-ledger requires a ledger path value");
         }
         cfg.equity_trial_ledger = value;
+        return atx::core::Ok();
+    }
+    // W0-I0b equity-stage flags. Values are shape-checked here; membership image
+    // contents, cut agreement and the terminal table are the stages' boundary checks.
+    if (flag == "membership" || flag == "terminal-returns") {
+        if (value.empty() || value.starts_with("--")) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a path value");
+        }
+        if (flag == "membership") cfg.equity_membership = value;
+        else cfg.equity_terminal_returns = value;
+        return atx::core::Ok();
+    }
+    if (flag == "membership-rule") {
+        if (value != "as-of-v2" && value != "year-union-v1") {
+            return atx::core::Err(EC::InvalidArgument,
+                "--membership-rule must be as-of-v2 or year-union-v1: got '" +
+                    std::string(value) + "'");
+        }
+        cfg.equity_membership_rule = value;
+        return atx::core::Ok();
+    }
+    if (flag == "ic-block-len-rule") {
+        if (value != "two-horizon-v2" && value != "half-horizon-v1" &&
+            value != "politis-white-v2") {
+            return atx::core::Err(EC::InvalidArgument,
+                "--ic-block-len-rule must be two-horizon-v2|half-horizon-v1|politis-white-v2: "
+                "got '" + std::string(value) + "'");
+        }
+        cfg.equity_ic_block_len_rule = value;
+        return atx::core::Ok();
+    }
+    if (flag == "min-names-per-date") {
+        ATX_TRY(const auto parsed, parse_count(flag, value));
+        if (parsed < 2) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--min-names-per-date must be >= 2: got " + std::string(value));
+        }
+        cfg.equity_ic_min_names_per_date = parsed;
+        return atx::core::Ok();
+    }
+    if (flag == "ic-execution-delay") {
+        ATX_TRY(cfg.equity_ic_execution_delay, parse_count(flag, value));
+        return atx::core::Ok();
+    }
+    if (flag == "si-publication-lag") {
+        long parsed = 0;
+        const auto [ptr, ec] =
+            std::from_chars(value.data(), value.data() + value.size(), parsed);
+        if (value.empty() || ec != std::errc{} || ptr != value.data() + value.size() ||
+            parsed < 0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--si-publication-lag requires a nonnegative integer: got '" +
+                    std::string(value) + "'");
+        }
+        cfg.si_publication_lag = parsed;
+        return atx::core::Ok();
+    }
+    if (flag == "si-publication-lag-rule") {
+        if (value != "nyse-sessions-v2" && value != "calendar-days-v1") {
+            return atx::core::Err(EC::InvalidArgument,
+                "--si-publication-lag-rule must be nyse-sessions-v2 or calendar-days-v1: got '" +
+                    std::string(value) + "'");
+        }
+        cfg.si_publication_lag_rule = value;
+        return atx::core::Ok();
+    }
+    if (flag == "universe-rule") {
+        if (value != "legacy-v1" && value != "common-stock-v2")
+            return atx::core::Err(EC::InvalidArgument, "--universe-rule must be legacy-v1 or common-stock-v2");
+        cfg.equity_universe_rule = value;
+        return atx::core::Ok();
+    }
+    if (flag == "instrument-types") {
+        if (value.empty() || value.starts_with("--"))
+            return atx::core::Err(EC::InvalidArgument, "--instrument-types requires a path");
+        cfg.equity_instrument_types = value;
         return atx::core::Ok();
     }
     // Checkpoint 15 `equity-universe` flags (design §5.2): each rejects an empty or
@@ -259,6 +525,14 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         return atx::core::Ok();
     }
 
+    if (flag == "vwap-rule") {
+        const auto rule = atx::engine::alpha::parse_vwap_rule(value);
+        if (!rule) return atx::core::Err(EC::InvalidArgument,
+            "--vwap-rule must be raw-daily-close-v2 or adjusted-typical-v1");
+        cfg.vwap_rule = *rule;
+        return atx::core::Ok();
+    }
+
     // --adv-windows (S7-3): comma-separated list of u16 ADV windows (e.g. "5,10,20,60").
     if (flag == "adv-windows") {
         cfg.adv_windows.clear();
@@ -283,6 +557,9 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     }
 
     // Numeric flags
+    // W0-I0b / I-12: every double flag must be FINITE. from_chars accepts "nan" and
+    // "inf", and a NaN silently fails every `x > 0` guard downstream (--holdout-frac nan
+    // disabled the holdout). Flags whose default is +/-inf mean "off" by omission only.
     auto parse_double = [&](double& dest) -> atx::core::Result<void> {
         // std::from_chars for double requires C++17; available on MSVC 19.24+.
         double tmp = 0.0;
@@ -292,6 +569,11 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
             return atx::core::Err(EC::InvalidArgument,
                 std::string("invalid double value for --") + std::string(flag)
                 + ": '" + std::string(value) + "'");
+        }
+        if (!std::isfinite(tmp)) {
+            return atx::core::Err(EC::InvalidArgument,
+                std::string("--") + std::string(flag) + " requires a finite value: got '"
+                + std::string(value) + "'");
         }
         dest = tmp;
         return atx::core::Ok();
@@ -334,6 +616,30 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "min-dsr")           return parse_double(cfg.min_dsr);
     if (flag == "min-split-sharpe")  return parse_double(cfg.min_split_sharpe);   // W4a split-sample stability floor
     if (flag == "max-pbo")           return parse_double(cfg.max_pbo);            // W4b run-level CSCV-PBO batch gate
+    if (flag == "cpcv-rule") {
+        if (value == "observation-v1") cfg.cpcv_rule = atx::engine::eval::CpcvRule::ObservationV1;
+        else if (value == "date-v2") cfg.cpcv_rule = atx::engine::eval::CpcvRule::DateV2;
+        else return atx::core::Err(EC::InvalidArgument,
+            "--cpcv-rule must be observation-v1 or date-v2");
+        return atx::core::Ok();
+    }
+    if (flag == "cpcv-embargo-dates" || flag == "cpcv-max-working-bytes") {
+        unsigned long long parsed = 0;
+        ATX_TRY_VOID(parse_ull(parsed));
+        if (parsed > static_cast<unsigned long long>(std::numeric_limits<long long>::max()) ||
+            (flag == "cpcv-max-working-bytes" && parsed == 0U))
+            return atx::core::Err(EC::InvalidArgument, "CPCV integer setting out of range");
+        if (flag == "cpcv-embargo-dates") cfg.cpcv_embargo_dates = static_cast<atx::usize>(parsed);
+        else cfg.cpcv_max_working_bytes = static_cast<atx::u64>(parsed);
+        return atx::core::Ok();
+    }
+    if (flag == "pbo-rule") {
+        if (value == "legacy-gather-v1") cfg.pbo_rule = atx::engine::eval::PboRule::LegacyGatherV1;
+        else if (value == "cached-moments-v2") cfg.pbo_rule = atx::engine::eval::PboRule::CachedMomentsV2;
+        else return atx::core::Err(EC::InvalidArgument,
+            "--pbo-rule must be legacy-gather-v1 or cached-moments-v2");
+        return atx::core::Ok();
+    }
     if (flag == "robust-holdout-frac") return parse_double(cfg.robust_holdout_frac); // W4a robust-factor weak sub-universe
     if (flag == "reject-price-scale") {                                               // R2 price-scale admission gate
         ATX_TRY_VOID(parse_double(cfg.max_price_scale_corr));
@@ -443,7 +749,6 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "selection-aum")      return parse_double(cfg.selection_aum);      // S5-0 (S4)
     if (flag == "kelly-fraction")     return parse_double(cfg.kelly_fraction);     // S5-0 (p7 carry-forward)
     if (flag == "kelly-max-gross")    return parse_double(cfg.kelly_max_gross);    // S5-0 (p7 carry-forward)
-    if (flag == "si-publication-lag") return parse_long(cfg.si_publication_lag);   // S5-0 (p7 carry-forward)
     if (flag == "report-aum") {
         ATX_TRY_VOID(parse_double(cfg.report_aum));
         if (!std::isfinite(cfg.report_aum) || cfg.report_aum <= 0.0) {
@@ -453,6 +758,8 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
         return atx::core::Ok();
     }
     if (flag == "replay-execution-delay") {
+        // A 0 parses here; validate_execution_delay (after every flag is seen, so
+        // --allow-same-close may come later on the line) refuses it without the opt-in.
         atx::usize parsed = 0;
         const auto [ptr, ec] =
             std::from_chars(value.data(), value.data() + value.size(), parsed);
@@ -461,6 +768,11 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                 "--replay-execution-delay requires a nonnegative observation count");
         }
         cfg.replay_execution_delay = parsed;
+        return atx::core::Ok();
+    }
+    if (flag == "replay-delisting-policy") {
+        ATX_TRY(auto parsed, parse_replay_delisting_policy(value));
+        cfg.replay_delisting_policy = parsed;
         return atx::core::Ok();
     }
     if (flag == "replay-day-basis") {
@@ -608,9 +920,19 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         }
         std::string_view flag = tok.substr(2); // strip leading "--"
 
-        // Valueless boolean flags.
-        if (flag == "help" || flag == "quiet" || flag == "digest-only" || flag == "gated" || flag == "sector-neutral" || flag == "conviction" || flag == "position-mode" || flag == "resume" || flag == "industry-neutral" || flag == "enable-wrap-in-op" || flag == "typed-fields" || flag == "pbo-hard-block" || flag == "deflate-selection" || flag == "protect-seed-elites" || flag == "mutate-seed-copies" || flag == "augment-panel" || flag == "dead-alpha-factors" || flag == "group-neutralize" || flag == "metabook" || flag == "impact-in-selection" || flag == "capacity-curve" || flag == "require-split-stable" || flag == "blocking-pbo" || flag == "incremental-panel" || flag == "robustness-battery" || flag == "robustness-sub-universe" || flag == "robustness-alt-neutralization" || flag == "robustness-param-perturb" || flag == "gp-trading" || flag == "capacity-objective" || flag == "turnover-objective") { // R1: typed-fields; R3: pbo-hard-block; R4: deflate-selection; S7-1: protect-seed-elites/mutate-seed-copies; S7-3: augment-panel; S5-0: p8 hub valueless bools; Item 3: robustness-battery (p8 final-wave); p9 S5-3: robustness-sub-universe/alt-neutralization/param-perturb; p9 S3: gp-trading; p9 S4: capacity-objective/turnover-objective
-            auto r = apply_flag(cfg, flag, "");
+        // Boolean flags (kBoolFlags): valueless means true; an immediately following
+        // boolean literal (true / false / 1 / 0) is consumed as the value (I-10), so
+        // `--metabook false` is off and `--compact-universe 1` keeps working.
+        if (find_bool_flag(flag) != nullptr) {
+            std::string_view bool_value;
+            if (i + 1 < argc) {
+                const std::string_view next{argv[i + 1]};
+                if (is_bool_literal(next)) {
+                    bool_value = next;
+                    ++i;
+                }
+            }
+            auto r = apply_flag(cfg, flag, bool_value);
             if (!r) return atx::core::Err(std::move(r).error());
             ++i;
             continue;
@@ -628,17 +950,88 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         ++i;
     }
 
-    // Cross-flag validation: --resume requires --run-db.
-    if (cfg.resume && cfg.run_db.empty()) {
-        return atx::core::Err(EC::InvalidArgument,
-            "--resume requires --run-db");
-    }
-
-    // Cross-flag validation: the panel membership restriction is all-three-or-none.
-    // A partial set would silently pick a cut or a window the operator never named.
-    ATX_TRY_VOID(validate_membership_flags(cfg));
-
+    // With --config the cross-flag pass runs after the file merge instead (dispatch),
+    // so an opt-in the file supplies (allow-same-close=true) counts for a CLI
+    // --replay-execution-delay 0. The merged result meets the same rules.
+    if (cfg.config_file.empty()) ATX_TRY_VOID(validate_cross_flags(cfg));
     return atx::core::Ok(cfg);
+}
+
+// ---------------------------------------------------------------------------
+// validate_execution_delay / validate_cross_flags
+// ---------------------------------------------------------------------------
+atx::core::Status validate_execution_delay(const RunConfig& cfg) {
+    if (cfg.allow_same_close) return atx::core::Ok();
+    if (cfg.replay_execution_delay < 1) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "--replay-execution-delay 0 fills at the signal's own close; pass "
+            "--allow-same-close to request that explicitly");
+    }
+    if (cfg.equity_ic_execution_delay < 1) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "--ic-execution-delay 0 evaluates from the signal's own close; pass "
+            "--allow-same-close to request that explicitly");
+    }
+    return atx::core::Ok();
+}
+
+atx::core::Status validate_ic_prereg_flags(const RunConfig& cfg) {
+    using EC = atx::core::ErrorCode;
+    const bool supplied = !cfg.equity_ic_prereg_file.empty();
+    if (supplied != !cfg.equity_ic_prereg_sha256.empty())
+        return atx::core::Err(EC::InvalidArgument,
+            "--ic-prereg-file and --ic-prereg-sha256 must be supplied together");
+    if (!supplied) return atx::core::Ok();
+    if (cfg.subcommand != "equity-ic")
+        return atx::core::Err(EC::InvalidArgument, "IC pre-registration is only valid for equity-ic");
+    if (cfg.equity_ic_prereg_sha256.size() != 64 ||
+        !std::all_of(cfg.equity_ic_prereg_sha256.begin(), cfg.equity_ic_prereg_sha256.end(),
+            [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+        return atx::core::Err(EC::InvalidArgument, "IC pre-registration SHA256 must be 64 lowercase hex digits");
+    return atx::core::Ok();
+}
+
+atx::core::Status validate_ic_epoch_flags(const RunConfig& cfg) {
+    using EC = atx::core::ErrorCode;
+    if (cfg.equity_ic_trial_accounting_rule == "legacy-ledger-v1") {
+        if (!cfg.equity_ic_epoch_catalog.empty() || !cfg.equity_ic_epoch_anchor.empty())
+            return atx::core::Err(EC::InvalidArgument,
+                "IC epoch catalog/anchor require --ic-trial-accounting-rule epoch-e2-v1");
+        return atx::core::Ok();
+    }
+    if (cfg.equity_ic_trial_accounting_rule != "epoch-e2-v1")
+        return atx::core::Err(EC::InvalidArgument, "unknown IC trial accounting rule");
+    if (cfg.subcommand != "equity-ic")
+        return atx::core::Err(EC::InvalidArgument, "IC epoch accounting is only valid for equity-ic");
+    ATX_TRY_VOID(validate_ic_prereg_flags(cfg));
+    if (cfg.equity_ic_prereg_file.empty() || cfg.equity_ic_epoch_catalog.empty())
+        return atx::core::Err(EC::InvalidArgument,
+            "IC epoch accounting requires runtime pre-registration and an explicit catalog");
+    if (cfg.equity_ic_epoch_anchor.size() != 64 ||
+        !std::all_of(cfg.equity_ic_epoch_anchor.begin(), cfg.equity_ic_epoch_anchor.end(),
+            [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+        return atx::core::Err(EC::InvalidArgument, "IC epoch anchor must be 64 lowercase hex digits");
+    // Whether an all-zero anchor is valid depends on catalog state. The catalog
+    // checks this under its lock, so parsing never reads or creates that file.
+    return atx::core::Ok();
+}
+
+atx::core::Status validate_cross_flags(const RunConfig& cfg) {
+    using EC = atx::core::ErrorCode;
+    // --resume requires --run-db.
+    if (cfg.resume && cfg.run_db.empty()) {
+        return atx::core::Err(EC::InvalidArgument, "--resume requires --run-db");
+    }
+    // The panel membership restriction is all-three-or-none. A partial set would
+    // silently pick a cut or a window the operator never named.
+    ATX_TRY_VOID(validate_membership_flags(cfg));
+    ATX_TRY_VOID(validate_ic_prereg_flags(cfg));
+    ATX_TRY_VOID(validate_ic_epoch_flags(cfg));
+    ATX_TRY_VOID(validate_execution_delay(cfg));
+    if (cfg.si_publication_lag < 0) {
+        return atx::core::Err(EC::InvalidArgument, "--si-publication-lag must be >= 0");
+    }
+    return atx::core::Ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -678,6 +1071,13 @@ static atx::core::Status read_config_file_into(
 
         std::string flag = line.substr(0, eq);
         std::string_view value{line.data() + eq + 1, line.size() - eq - 1};
+
+        // dispatch merges exactly one file; a nested reference would be ignored.
+        if (flag == "config") {
+            return atx::core::Err(EC::ParseError,
+                path + ":" + std::to_string(lineno) + ": a config file cannot name another "
+                "config file");
+        }
 
         // A flag already supplied on the CLI wins: do not let the file override
         // it (regardless of value, including an explicit 0.0).

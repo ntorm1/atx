@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="32" failures="0" disabled="0" errors="0" time="1.738" timestamp="2026-09-26T18:52:38.491" name="AllTests">
+  <testsuite name="StrategyDsl" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.377" timestamp="2026-09-26T18:52:38.492">
+    <testcase name="FrozenLibraryCompilesRunsAndPreservesCausalMaskedPrefix" file="..\atx-impl\tests\strategy_dsl_test.cpp" line="62" status="run" result="completed" time="0.377" timestamp="2026-09-26T18:52:38.492" classname="StrategyDsl" />
+  </testsuite>
+  <testsuite name="StrategyRunner" tests="8" failures="0" disabled="0" skipped="0" errors="0" time="1.215" timestamp="2026-09-26T18:52:38.869">
+    <testcase name="FixedCostedPortfoliosAcceptObservedZeroVolumeAndFreezeTrainSigns" file="..\atx-impl\tests\strategy_runner_test.cpp" line="154" status="run" result="completed" time="0.161" timestamp="2026-09-26T18:52:38.869" classname="StrategyRunner" />
+    <testcase name="ShortMaturePrefixReportsActualClampedHacLag" file="..\atx-impl\tests\strategy_runner_test.cpp" line="188" status="run" result="completed" time="0.127" timestamp="2026-09-26T18:52:39.031" classname="StrategyRunner" />
+    <testcase name="RefusesExternalPinOrCombinedBudgetBeforePayloadEvaluation" file="..\atx-impl\tests\strategy_runner_test.cpp" line="208" status="run" result="completed" time="0.076" timestamp="2026-09-26T18:52:39.158" classname="StrategyRunner" />
+    <testcase name="CalendarTurnoverUsesExecutionMonthAndIncludesInitialDeployment" file="..\atx-impl\tests\strategy_runner_test.cpp" line="223" status="run" result="completed" time="0.136" timestamp="2026-09-26T18:52:39.235" classname="StrategyRunner" />
+    <testcase name="CashClaimsRetireAtDecisionAndKeepSignedUnknownSettlementAcrossRoles" file="..\atx-impl\tests\strategy_runner_test.cpp" line="302" status="run" result="completed" time="0.14" timestamp="2026-09-26T18:52:39.371" classname="StrategyRunner" />
+    <testcase name="FutureClaimsChangeIdentityWithoutChangingEarlierNumericalResults" file="..\atx-impl\tests\strategy_runner_test.cpp" line="361" status="run" result="completed" time="0.303" timestamp="2026-09-26T18:52:39.512" classname="StrategyRunner" />
+    <testcase name="CashClaimPinsAndStrictSchemaRefuseBeforeOutputOrTrials" file="..\atx-impl\tests\strategy_runner_test.cpp" line="397" status="run" result="completed" time="0.144" timestamp="2026-09-26T18:52:39.815" classname="StrategyRunner" />
+    <testcase name="AggregateCashClaimReportsRefuseBudgetBeforePayloadLoading" file="..\atx-impl\tests\strategy_runner_test.cpp" line="432" status="run" result="completed" time="0.124" timestamp="2026-09-26T18:52:39.960" classname="StrategyRunner" />
+  </testsuite>
+  <testsuite name="StrategyResearchRole" tests="2" failures="0" disabled="0" skipped="0" errors="0" time="0.121" timestamp="2026-09-26T18:52:40.085">
+    <testcase name="PreservesIndependentMembershipMissingMarksAndDeclaredClocks" file="..\atx-engine\tests\data\strategy_data_test.cpp" line="75" status="run" result="completed" time="0.044" timestamp="2026-09-26T18:52:40.085" classname="StrategyResearchRole" />
+    <testcase name="RejectsFiniteAbsentPayloadExtentHashAndBudgetViolations" file="..\atx-engine\tests\data\strategy_data_test.cpp" line="90" status="run" result="completed" time="0.077" timestamp="2026-09-26T18:52:40.130" classname="StrategyResearchRole" />
+  </testsuite>
+  <testsuite name="ExecutionSchedule" tests="5" failures="0" disabled="0" skipped="0" errors="0" time="0.005" timestamp="2026-09-26T18:52:40.207">
+    <testcase name="DefaultCadencePreservesIdentityAndIndependentInitialLedger" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="64" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:52:40.207" classname="ExecutionSchedule" />
+    <testcase name="OffCycleKeepsMarkedReturnsAndCalendarBorrowWithoutTrades" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="81" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:52:40.208" classname="ExecutionSchedule" />
+    <testcase name="LongerDelayFreezesPartialTargetsBeforeOtherQueuedFills" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="104" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.210" classname="ExecutionSchedule" />
+    <testcase name="MembershipExitIsPartialAtScheduledEntry" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="121" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.210" classname="ExecutionSchedule" />
+    <testcase name="StrictRefusalIdentifiesActualClockNameExposureAndGuard" file="..\atx-engine\tests\factory\execution_schedule_test.cpp" line="132" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:52:40.211" classname="ExecutionSchedule" />
+  </testsuite>
+  <testsuite name="ExecutionCashClaim" tests="7" failures="0" disabled="0" skipped="0" errors="0" time="0.01" timestamp="2026-09-26T18:52:40.212">
+    <testcase name="LongRecognizesRawShareReceivableWithoutCashOrTurnover" file="..\atx-engine\tests\factory\execution_cash_claim_test.cpp" line="84" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.212" classname="ExecutionCashClaim" />
+    <testcase name="ShortKeepsSignedLiabilityCashReserveAndCalendarBorrow" file="..\atx-engine\tests\factory\execution_cash_claim_test.cpp" line="108" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.213" classname="ExecutionCashClaim" />
+    <testcase name="RetiresPendingOrdersAndExcludesReceivableFromNewTargets" file="..\atx-engine\tests\factory\execution_cash_claim_test.cpp" line="128" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.214" classname="ExecutionCashClaim" />
+    <testcase name="RejectsLateKnowledgeBadBasisAndPreservesFuturePrefix" file="..\atx-engine\tests\factory\execution_cash_claim_test.cpp" line="147" status="run" result="completed" time="0.004" timestamp="2026-09-26T18:52:40.215" classname="ExecutionCashClaim" />
+    <testcase name="PreRoleExtinctionCreatesNoOpeningClaimAndOtherAxesAreExplicit" file="..\atx-engine\tests\factory\execution_cash_claim_test.cpp" line="173" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:52:40.220" classname="ExecutionCashClaim" />
+    <testcase name="PublicationBetweenMarkAndDecisionAlreadyClosesFormation" file="..\atx-engine\tests\factory\execution_cash_claim_test.cpp" line="197" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.221" classname="ExecutionCashClaim" />
+    <testcase name="EmptyEventsPreserveDefaultDigestAndAllOutputBits" file="..\atx-engine\tests\factory\execution_cash_claim_test.cpp" line="215" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:52:40.222" classname="ExecutionCashClaim" />
+  </testsuite>
+  <testsuite name="ExecutionObjective" tests="9" failures="0" disabled="0" skipped="0" errors="0" time="0.007" timestamp="2026-09-26T18:52:40.223">
+    <testcase name="DelayedCashLedgerUsesMarkedDollarCostsAndCalendarSlots" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="92" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.223" classname="ExecutionObjective" />
+    <testcase name="DelayTwoKeepsDecisionDollarsAfterEntryNavChanges" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="131" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.224" classname="ExecutionObjective" />
+    <testcase name="ParticipationCapChangesActualHoldingsAndTurnover" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="150" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.224" classname="ExecutionObjective" />
+    <testcase name="CalendarBorrowAndInverseSignalHaveDifferentCashLedgers" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="166" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.225" classname="ExecutionObjective" />
+    <testcase name="AbsentFiniteEntryOrHeldMarkCannotBecomeRealizedPnl" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="188" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.225" classname="ExecutionObjective" />
+    <testcase name="RoleMaturityAndFutureMutationPreserveRealizedPrefix" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="200" status="run" result="completed" time="0." timestamp="2026-09-26T18:52:40.226" classname="ExecutionObjective" />
+    <testcase name="ClocksIdentitySupportAndBudgetAreExplicitAdmission" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="233" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:52:40.227" classname="ExecutionObjective" />
+    <testcase name="MissingCostBorrowAndGuardedHeldReturnNeverBecomeZeroCost" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="253" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:52:40.228" classname="ExecutionObjective" />
+    <testcase name="UnfundedLongAndAsymmetricallyCappedNeutralBooksAreRefused" file="..\atx-engine\tests\factory\execution_objective_test.cpp" line="270" status="run" result="completed" time="0.001" timestamp="2026-09-26T18:52:40.229" classname="ExecutionObjective" />
+  </testsuite>
+</testsuites>

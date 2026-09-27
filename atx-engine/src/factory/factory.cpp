@@ -66,11 +66,39 @@ namespace {
 // NOT folded into rep.digest and changes no admission decision, so the digest, admitted
 // set, and library version_id stay byte-identical. Called at each rep.evaluated site.
 inline void fill_scored_hashes(FactoryReport &rep, const SearchResult &res) {
+  rep.ic_screen_evaluations = res.ic_screen_evaluations;
+  rep.ic_screen_unavailable = res.ic_screen_unavailable;
+  rep.ic_prepass_vm_evaluations = res.ic_prepass_vm_evaluations;
+  rep.ic_rejected = res.ic_rejected_hashes.size();
+  rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+  rep.cpcv_invalid = res.cpcv_invalid;
+  rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
+  rep.cpcv_metadata = res.cpcv_metadata;
+  rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
   rep.scored_canon_hashes.clear();
   rep.scored_canon_hashes.reserve(res.all_scored.size());
   for (const Genome &g : res.all_scored) {
     rep.scored_canon_hashes.push_back(g.canon_hash);
   }
+}
+
+// Preserve the complete trial ledger while removing IC rejects from EVERY later
+// admission/rescore path. The disabled/no-rejection path borrows the original
+// vector (no copies); filtering keeps original order and all prior generations.
+[[nodiscard]] const std::vector<Genome> &admission_candidates(
+    const SearchResult &res, std::vector<Genome> &storage) {
+  if (res.ic_rejected_hashes.empty()) {
+    return res.all_scored;
+  }
+  storage.reserve(res.all_scored.size());
+  for (const Genome &g : res.all_scored) {
+    if (!std::binary_search(res.ic_rejected_hashes.begin(), res.ic_rejected_hashes.end(),
+                            g.canon_hash)) {
+      storage.push_back(g.clone());
+      storage.back().canon_hash = g.canon_hash;
+    }
+  }
+  return storage;
 }
 
 } // namespace
@@ -85,7 +113,9 @@ namespace detail {
 void finalize_run_pbo(FactoryReport &rep,
                       const std::vector<std::vector<atx::f64>> &admitted_pnls,
                       atx::f64 max_pbo,
-                      bool always_compute) {
+                      bool always_compute,
+                      eval::PboRule rule) {
+  rep.pbo_rule = rule;
   // (1) Off (the disabling 1.0 default): NO compute, all PBO fields stay at sentinels
   // (rep.pbo == NaN, gate passes) -> byte-identical to the pre-W4b path. A3: when
   // always_compute is true (the OOS always-on holdout diagnostic, oos_pbo), proceed to
@@ -137,7 +167,7 @@ void finalize_run_pbo(FactoryReport &rep,
 
   // (6) Run the CHECKED CSCV-PBO (handles an infeasible matrix via Err, never aborts).
   auto pbo_r =
-      eval::pbo_cscv_checked(std::span<const atx::f64>{matrix}, n_candidates, n_splits);
+      eval::pbo_cscv_checked(std::span<const atx::f64>{matrix}, n_candidates, n_splits, rule);
   if (!pbo_r.has_value()) {
     return; // infeasible matrix -> leave sentinels, gate passes (fail-OPEN).
   }
@@ -153,6 +183,10 @@ void finalize_run_pbo(FactoryReport &rep,
   rep.pbo_mean_logit = res.mean_logit;
   rep.pbo_n_candidates = n_candidates;
   rep.pbo_n_splits = n_splits;
+  rep.pbo_rule = res.rule;
+  rep.pbo_cached_evaluations = res.cached_evaluations;
+  rep.pbo_reference_evaluations = res.reference_evaluations;
+  rep.pbo_ambiguous_comparisons = res.ambiguous_comparisons;
   rep.pbo_gate_passed = (max_pbo >= 1.0) ? true : !(rep.pbo > max_pbo);
 }
 
@@ -385,6 +419,11 @@ void finalize_run_pbo(FactoryReport &rep,
 [[nodiscard]] FactoryReport Factory::mine(const FactoryConfig &cfg, combine::AlphaStore &pool,
                                           const combine::AlphaGate &gate) {
   FactoryReport rep;
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1) {
+    rep.residual_invalid = true;
+    rep.residual_error = "Factory admission does not support the residual IC-only objective";
+    return rep;
+  }
 
   // (1) run the S3-5 search. The driver re-derives a clean per-run state from the
   // seed, so a fresh driver per mine() preserves F1 replay (no carried state).
@@ -392,6 +431,17 @@ void finalize_run_pbo(FactoryReport &rep,
                       cfg.seed_exprs, cfg.panel_fields, cfg.weak_panel,  // W4a robust factor
                       cfg.numeric_excluded_fields, cfg.extra_group_fields}; // R1 typed-fields
   const SearchResult res = driver.run(cfg.search, pool);
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
+    rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
+    rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
+    rep.seed = res.seed;
+    return rep; // never rescore or admit from incompatible screen state
+  }
+  std::vector<Genome> admission_storage;
+  const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
 
   rep.evaluated = res.trial_count;
   fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
@@ -426,7 +476,7 @@ void finalize_run_pbo(FactoryReport &rep,
   // Re-score each against the pool AS IT STANDS NOW (run start) to get its dsr;
   // the per-candidate re-score INSIDE the admission loop below then reflects the
   // GROWING pool. all_scored is the set of distinct structures (F5/F6).
-  std::vector<Ranked> ranked = rank_by_deflated_fitness(res.all_scored, admit_fit, pool);
+  std::vector<Ranked> ranked = rank_by_deflated_fitness(admission_scored, admit_fit, pool);
 
   // W4b — accumulate each admitted alpha's realized OOS PnL (deterministic admit order)
   // for the POST-HOC run-level CSCV-PBO verdict; finalized once after the loop. Empty +
@@ -435,7 +485,7 @@ void finalize_run_pbo(FactoryReport &rep,
 
   // (3) the mine -> gate -> admit loop (§4.8), best-deflated first.
   for (const Ranked &r : ranked) {
-    const Genome &cand = res.all_scored[r.idx];
+    const Genome &cand = admission_scored[r.idx];
 
     // (3a) realize the candidate's FULL OOS streams (PnL + positions). Computed
     // BEFORE any insert — the OWNED vectors below survive the insert (§0.6).
@@ -518,7 +568,7 @@ void finalize_run_pbo(FactoryReport &rep,
 
   // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default;
   // never alters rep.digest or any admission decision).
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, false, cfg.pbo_rule);
 
   return rep;
 }
@@ -527,6 +577,9 @@ void finalize_run_pbo(FactoryReport &rep,
 Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                    const combine::AlphaGate &gate, SearchProgressSink *sink,
                    const SearchResumeState *resume) {
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "Factory admission does not support the residual IC-only objective");
   // P2a — out-of-sample (holdout) validation is an ADDITIVE branch at the TOP:
   // when oos_fraction > 0 the search SELECTS on a train window and admission is
   // CONFIRMED on a held-out window. When oos_fraction == 0 (the default) this is
@@ -562,6 +615,17 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1);
   const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
+    rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
+    rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
+    rep.seed = res.seed;
+    return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
+  }
+  std::vector<Genome> admission_storage;
+  const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
 
   // The persistent library is the ADMISSION pool: the deflated-fitness ranking and
   // the per-candidate re-score below score marginal corr against it (O(neighbors)).
@@ -587,7 +651,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
 
   // (2) rank the distinct scored candidates by deflated fitness against the LIBRARY
   // (the PoolView overload routes the corr-to-pool through the O(neighbors) index).
-  std::vector<Ranked> ranked = rank_by_deflated_fitness(res.all_scored, admit_fit, view);
+  std::vector<Ranked> ranked = rank_by_deflated_fitness(admission_scored, admit_fit, view);
 
   // W4b — accumulate each admitted alpha's realized OOS PnL (deterministic admit order)
   // for the POST-HOC run-level CSCV-PBO verdict; finalized once after the loop. Empty +
@@ -596,7 +660,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
 
   // (3) the mine -> deflate -> library::admit loop, best-deflated first.
   for (const Ranked &r : ranked) {
-    const Genome &g = res.all_scored[r.idx];
+    const Genome &g = admission_scored[r.idx];
 
     // (3a) realize the candidate's FULL OOS streams (PnL + positions). Computed
     // BEFORE any admit; the OWNED vectors below outlive the admit() call (§0.6).
@@ -720,7 +784,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   }
 
   // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default).
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, false, cfg.pbo_rule);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   // R1: increment the cumulative trial counter ONCE per mine run (by this run's N),
@@ -823,6 +887,9 @@ gather_mine_scores(const std::vector<Genome> &scored, const parallel::MineWorkIt
 [[nodiscard]] atx::core::Result<FactoryReport>
 Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
                    const combine::AlphaGate &gate, parallel::IExecutor &exec) {
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "Factory admission does not support the residual IC-only objective");
   // P2a — OOS validation requires a train/holdout panel split. The MultiProcess wire
   // format serializes ONE panel and decodes streams sized to that panel's dims, so the
   // OOS path runs TWO submits (one per sub-panel) reusing the SAME wire format unchanged
@@ -869,6 +936,17 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_par);
   const SearchResult res = driver.run(search_cfg, search_pool);
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
+    rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
+    rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
+    rep.seed = res.seed;
+    return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
+  }
+  std::vector<Genome> admission_storage;
+  const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
 
   rep.evaluated = res.trial_count;
   fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
@@ -898,7 +976,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   pool_item.pool_seed = lib_lib.master_seeds().empty() ? 0ULL : lib_lib.master_seeds().front();
 
   const std::vector<GatheredScore> gathered =
-      gather_mine_scores(res.all_scored, pool_item, admit_fit, panel_, policy_, sim_, exec);
+      gather_mine_scores(admission_scored, pool_item, admit_fit, panel_, policy_, sim_, exec);
 
   // (3) rank by deflated fitness (DESC dsr, then raw, then idx) over the GATHERED scores
   // — byte-identical to rank_by_deflated_fitness(all_scored, admit_fit, LibraryPool) at
@@ -906,19 +984,19 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // independent; raw's redundancy is the SAME SimHash MAX-|corr|). canon_hash is 0 on
   // the S3 search path, so the idx tiebreak pins the total order (F1).
   std::vector<Ranked> ranked;
-  ranked.reserve(res.all_scored.size());
-  for (atx::usize i = 0; i < res.all_scored.size(); ++i) {
+  ranked.reserve(admission_scored.size());
+  for (atx::usize i = 0; i < admission_scored.size(); ++i) {
     ranked.push_back(Ranked{i, gathered[i].dsr, gathered[i].raw});
   }
-  std::sort(ranked.begin(), ranked.end(), [&res](const Ranked &a, const Ranked &b) {
+  std::sort(ranked.begin(), ranked.end(), [&admission_scored](const Ranked &a, const Ranked &b) {
     if (a.dsr != b.dsr) {
       return a.dsr > b.dsr;
     }
     if (a.raw != b.raw) {
       return a.raw > b.raw;
     }
-    if (res.all_scored[a.idx].canon_hash != res.all_scored[b.idx].canon_hash) {
-      return res.all_scored[a.idx].canon_hash < res.all_scored[b.idx].canon_hash;
+    if (admission_scored[a.idx].canon_hash != admission_scored[b.idx].canon_hash) {
+      return admission_scored[a.idx].canon_hash < admission_scored[b.idx].canon_hash;
     }
     return a.idx < b.idx;
   });
@@ -933,7 +1011,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // gathered run-start value, which equals the sequential 3c re-score (pool-INDEPENDENT).
   for (const Ranked &r : ranked) {
     const GatheredScore &gs = gathered[r.idx];
-    const Genome &g = res.all_scored[r.idx];
+    const Genome &g = admission_scored[r.idx];
     if (gs.ok != 1U) {
       continue; // an un-evaluable candidate is silently dropped (F5) — no digest fold.
     }
@@ -1000,7 +1078,7 @@ Factory::mine_into(const FactoryConfig &cfg, library::Library &lib_lib,
   // W4b — POST-HOC run-level CSCV-PBO over the admitted set (no-op at the 1.0 default;
   // accumulated at the SEQUENTIAL parent admit-Ok point, so it is deterministic on every
   // substrate + worker count). Never alters rep.digest.
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, false, cfg.pbo_rule);
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
   // R1: increment once per mine run, AFTER the loop — same as serial mine_into.
@@ -1405,6 +1483,9 @@ namespace {
 Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
                        const combine::AlphaGate &gate, SearchProgressSink *sink,
                        const SearchResumeState *resume) {
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "Factory admission does not support the residual IC-only objective");
   FactoryReport rep;
   rep.library_n_alphas_before = lib_lib.n_alphas();
 
@@ -1495,6 +1576,17 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_oos_pre);
   const SearchResult res = driver.run(search_cfg, search_pool, sink, resume);
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
+    rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
+    rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
+    rep.seed = res.seed;
+    return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
+  }
+  std::vector<Genome> admission_storage;
+  const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
 
   // (8.C) OOS train-ranking corr length safety: rank the OOS candidates against an
   // EMPTY pool for the corr/diversify term. The candidate's ranking pnl here is
@@ -1552,14 +1644,14 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     bool ok{false};
     combine::AlphaMetrics train_metrics{};
   };
-  const atx::usize n_cands = res.all_scored.size();
+  const atx::usize n_cands = admission_scored.size();
   std::vector<TrainResult> train_cache(n_cands); // indexed by all_scored index
 
   std::vector<Ranked> ranked;
   ranked.reserve(n_cands);
   alpha::Engine train_engine{train}; // single Engine reused across all candidates (F4)
   for (atx::usize i = 0U; i < n_cands; ++i) {
-    const Genome &cand = res.all_scored[i];
+    const Genome &cand = admission_scored[i];
     atx::f64 dsr = 0.0;
     atx::f64 raw = 0.0;
 
@@ -1597,15 +1689,15 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
     }
     ranked.push_back(Ranked{i, dsr, raw});
   }
-  std::sort(ranked.begin(), ranked.end(), [&res](const Ranked &a, const Ranked &b) {
+  std::sort(ranked.begin(), ranked.end(), [&admission_scored](const Ranked &a, const Ranked &b) {
     if (a.dsr != b.dsr) {
       return a.dsr > b.dsr;
     }
     if (a.raw != b.raw) {
       return a.raw > b.raw;
     }
-    if (res.all_scored[a.idx].canon_hash != res.all_scored[b.idx].canon_hash) {
-      return res.all_scored[a.idx].canon_hash < res.all_scored[b.idx].canon_hash;
+    if (admission_scored[a.idx].canon_hash != admission_scored[b.idx].canon_hash) {
+      return admission_scored[a.idx].canon_hash < admission_scored[b.idx].canon_hash;
     }
     return a.idx < b.idx;
   });
@@ -1631,7 +1723,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   // aliases rep.pbo). The separate R3b admitted_hold_pnls vector was removed — it
   // carried identical bytes and fed a duplicate CSCV pass.
   for (const Ranked &r : ranked) {
-    const Genome &g = res.all_scored[r.idx];
+    const Genome &g = admission_scored[r.idx];
 
     // (3a) TRAIN metrics (for the manifest's is_metrics — reporting only). Read from
     // the cache populated in step (2); no second train eval. A genome that failed to
@@ -1788,7 +1880,7 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
   // holdout diagnostic (oos_pbo) is recorded even at the 1.0 default; the gate verdict
   // still fail-opens when the gate is off. oos_pbo ALIASES this single computation
   // (NaN when < 2 admitted or the holdout is too short for any split).
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true, cfg.pbo_rule);
   rep.oos_pbo = rep.pbo; // A3: oos_pbo aliases the single holdout PBO
 
   rep.library_n_alphas_after = lib_lib.n_alphas();
@@ -1804,6 +1896,9 @@ Factory::mine_into_oos(const FactoryConfig &cfg, library::Library &lib_lib,
 [[nodiscard]] atx::core::Result<FactoryReport>
 Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_lib,
                                 const combine::AlphaGate &gate, parallel::IExecutor &exec) {
+  if (cfg.search.fitness.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "Factory admission does not support the residual IC-only objective");
   // Task 5 — the PARALLEL out-of-sample admit path. This REPRODUCES the serial
   // mine_into_oos bit-for-bit (same digest / admitted / version_id / reject histogram /
   // oos_metrics), but the two expensive per-candidate VM evals — the TRAIN ranking eval
@@ -1898,6 +1993,17 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   SearchConfig search_cfg = cfg.search;
   search_cfg.prior_trial_count = static_cast<atx::usize>(prior_r1_par_oos);
   const SearchResult res = driver.run(search_cfg, search_pool);
+  if (res.ic_screen_resume_mismatch || res.ic_screen_cache_mismatch ||
+      res.cpcv_invalid || res.cpcv_resume_mismatch) {
+    rep.ic_screen_resume_mismatch = res.ic_screen_resume_mismatch;
+    rep.cpcv_invalid = res.cpcv_invalid;
+    rep.cpcv_resume_mismatch = res.cpcv_resume_mismatch;
+    rep.ic_screen_cache_mismatch = res.ic_screen_cache_mismatch;
+    rep.seed = res.seed;
+    return atx::core::Ok(std::move(rep)); // incompatible state never reaches admission
+  }
+  std::vector<Genome> admission_storage;
+  const std::vector<Genome> &admission_scored = admission_candidates(res, admission_storage);
 
   rep.evaluated = res.trial_count;
   fill_scored_hashes(rep, res); // C2.2 report-only: distinct scored canon_hashes (not in digest)
@@ -1945,7 +2051,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   train_pool_item.n_periods = train.dates();
   train_pool_item.pool_seed = 0ULL; // unused (no corr index built for an empty pool)
   const std::vector<GatheredScore> train_gathered =
-      gather_mine_scores(res.all_scored, train_pool_item, admit_fit, train, policy_, sim_, exec);
+      gather_mine_scores(admission_scored, train_pool_item, admit_fit, train, policy_, sim_, exec);
 
   // Derive each candidate's TRAIN metrics (serial step 2b — the manifest is_metrics) from
   // the gathered train streams via compute_metrics, IDENTICAL to the serial
@@ -1959,7 +2065,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
     bool ok{false};
     combine::AlphaMetrics train_metrics{};
   };
-  const atx::usize n_cands = res.all_scored.size();
+  const atx::usize n_cands = admission_scored.size();
   std::vector<TrainResult> train_cache(n_cands);
   for (atx::usize i = 0U; i < n_cands; ++i) {
     const GatheredScore &ts = train_gathered[i];
@@ -1989,15 +2095,15 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   for (atx::usize i = 0U; i < n_cands; ++i) {
     ranked.push_back(Ranked{i, train_gathered[i].dsr, train_gathered[i].raw});
   }
-  std::sort(ranked.begin(), ranked.end(), [&res](const Ranked &a, const Ranked &b) {
+  std::sort(ranked.begin(), ranked.end(), [&admission_scored](const Ranked &a, const Ranked &b) {
     if (a.dsr != b.dsr) {
       return a.dsr > b.dsr;
     }
     if (a.raw != b.raw) {
       return a.raw > b.raw;
     }
-    if (res.all_scored[a.idx].canon_hash != res.all_scored[b.idx].canon_hash) {
-      return res.all_scored[a.idx].canon_hash < res.all_scored[b.idx].canon_hash;
+    if (admission_scored[a.idx].canon_hash != admission_scored[b.idx].canon_hash) {
+      return admission_scored[a.idx].canon_hash < admission_scored[b.idx].canon_hash;
     }
     return a.idx < b.idx;
   });
@@ -2029,7 +2135,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   hold_pool_item.n_periods = holdout.dates();
   hold_pool_item.pool_seed = 0ULL; // unused (no corr index built for an empty pool)
   const std::vector<GatheredScore> hold_gathered =
-      gather_mine_scores(res.all_scored, hold_pool_item, admit_fit, holdout, policy_, sim_, exec);
+      gather_mine_scores(admission_scored, hold_pool_item, admit_fit, holdout, policy_, sim_, exec);
 
   // W4b — accumulate each admitted alpha's realized HOLDOUT PnL at the SEQUENTIAL parent
   // admit-Ok point (NOT in workers) for the POST-HOC run-level CSCV-PBO verdict; finalized
@@ -2045,7 +2151,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // post-loop finalize_run_pbo computation — this PRESERVES the seq==parallel oos_pbo
   // match the old R3b block guaranteed (same admit-order vectors, same n_splits rule).
   for (const Ranked &r : ranked) {
-    const Genome &g = res.all_scored[r.idx];
+    const Genome &g = admission_scored[r.idx];
 
     // (3a) TRAIN metrics from the cache (serial step 3a). A genome that failed the train
     // eval (cache.ok == false) is dropped (F5) — IDENTICAL to serial mine_into_oos:763-766.
@@ -2183,7 +2289,7 @@ Factory::mine_into_oos_parallel(const FactoryConfig &cfg, library::Library &lib_
   // mine_into_oos, so oos_pbo is bit-identical across substrate + worker count AND equal to
   // the serial path. always_compute=true records the always-on holdout diagnostic even at
   // the 1.0 default; the gate verdict fail-opens when off. Never alters rep.digest.
-  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true);
+  detail::finalize_run_pbo(rep, admitted_pnls, cfg.max_pbo, /*always_compute=*/true, cfg.pbo_rule);
   rep.oos_pbo = rep.pbo; // A3: oos_pbo aliases the single holdout PBO
 
   rep.library_n_alphas_after = lib_lib.n_alphas();

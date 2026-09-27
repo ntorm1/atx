@@ -1,7 +1,10 @@
 // Lane 9 equity-mine: span stitching, as-of membership, and the honest
 // delay-1 rank long/short scorer, pinned against hand-computed values.
 
+#include <array>
 #include <cmath>
+#include <span>
+#include <utility>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -9,7 +12,14 @@
 
 #include <gtest/gtest.h>
 
+#include "atx/core/error.hpp"
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/streams.hpp"
+#include "atx/engine/cost/cost_surface.hpp"
+#include "atx/engine/eval/trial_registry.hpp"
+#include "atx/engine/factory/execution_objective.hpp"
+#include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/data/point_in_time_universe.hpp"
 
 #include "stage_equity_mine.hpp"
@@ -320,6 +330,188 @@ TEST(EquityMineParse, FixtureLinesAndDates) {
     EXPECT_FALSE(mine::parse_iso_date_ns("2020-13-01").has_value());
     EXPECT_FALSE(mine::parse_iso_date_ns("20200101").has_value());
     EXPECT_FALSE(mine::literature_seeds().empty());
+}
+
+namespace factory = atx::engine::factory;
+namespace cost = atx::engine::cost;
+namespace eval = atx::engine::eval;
+
+// Synthetic, declared input recipe only: no measured liquidity or locate claim.
+atx::core::Result<factory::ExecutionObjectiveContext> execution_context(
+    const Panel &panel, std::span<const atx::u8> member, mine::EvalWindow window,
+    const mine::ScoreCfg &score, char source = 'a', bool unpriced_first = false) {
+    factory::ExecutionObjectiveConfig cfg;
+    cfg.rule = factory::ExecutionObjectiveRule::DelayedSurfaceV2;
+    cfg.delay = score.delay;
+    cfg.min_names = score.min_names;
+    cfg.guard_returns = score.guard_returns;
+    cfg.window_begin = window.begin;
+    cfg.window_end = cfg.maturity_end = window.end;
+    cfg.initial_nav = 1000.0;
+    cfg.max_working_bytes = 4U * 1024U * 1024U;
+    std::vector<atx::i64> marks(panel.dates()), decisions(panel.dates());
+    std::vector<atx::u64> ids(panel.instruments());
+    for (atx::usize d = 0; d < panel.dates(); ++d) {
+        marks[d] = 1'000'000'000LL + static_cast<atx::i64>(d) * 86'400'000'000'000LL;
+        decisions[d] = marks[d] + 1;
+    }
+    for (atx::usize i = 0; i < ids.size(); ++i) ids[i] = 100U + i;
+    cost::CostSurfaceRecipe recipe;
+    recipe.rule = cost::CostSurfaceRule::ModeledInputsV2;
+    recipe.impact_y = 0.0;
+    recipe.commission_bps = 0.1;
+    recipe.max_participation = 1.0;
+    std::vector<cost::CostSurface> snapshots;
+    for (atx::usize d = window.begin; d < window.end - score.delay - 1U; ++d) {
+        std::vector<cost::CostSurfaceRow> rows(ids.size());
+        for (atx::usize i = 0; i < rows.size(); ++i) {
+            auto &r = rows[i];
+            r.instrument_id = ids[i];
+            r.state = unpriced_first && d == window.begin && i == 0
+                ? cost::CostInputState::Unavailable : cost::CostInputState::Available;
+            r.available_at_ns = marks[d] - 1;
+            r.adv_dollars = 1e8;
+            r.daily_vol = 0.02;
+            r.full_spread = 0.0;
+            r.borrow_state = cost::CostInputState::Available;
+            r.borrow_available_at_ns = marks[d] - 1;
+            r.borrow_annual_fraction = 0.02 + 0.03 * static_cast<double>(i);
+        }
+        cost::CostSurfaceIdentity id;
+        id.decision_time_ns = decisions[d];
+        id.source_sha256 = std::string(64, source);
+        id.liquidity_recipe = "synthetic-constant-adv-vol-spread-v1";
+        id.calibration_identity = "synthetic-uncalibrated-v1";
+        ATX_TRY(auto snapshot, cost::CostSurface::create(recipe, id, rows));
+        snapshots.push_back(std::move(snapshot));
+    }
+    atx::engine::WeightPolicy policy;
+    policy.winsorize_limit = 0.0;
+    const factory::ExecutionObjectiveIdentity identity{
+        std::string(64, source), "synthetic-mine", "synthetic-total-return-close-v1"};
+    return factory::prepare_execution_objective(panel, policy, cfg, snapshots, marks,
+                                                decisions, ids, identity, member);
+}
+
+TEST(EquityMineExecution, V2UsesMatureKernelValuesAndRejectsIncompatibleSupport) {
+    constexpr atx::usize D = 14, I = 4;
+    const auto px = growth_close(D, I);
+    const Panel panel = close_panel(D, I, px);
+    const std::vector<atx::u8> member(panel.cells(), 1);
+    const auto signal = index_signal(D, I);
+    auto cfg = small_cfg();
+    cfg.guard_returns = false;
+    cfg.execution_rule = factory::ExecutionObjectiveRule::DelayedSurfaceV2;
+    const mine::EvalWindow window{1, 11};
+    auto context = execution_context(panel, member, window, cfg);
+    ASSERT_TRUE(context.has_value()) << context.error().message();
+    auto core = factory::extract_execution_signal(signal, *context);
+    ASSERT_TRUE(core.has_value()) << core.error().message();
+    auto score = mine::score_signal(signal, 1.0, panel, 0, member, window, cfg, nullptr, &*context);
+    ASSERT_TRUE(score.has_value()) << score.error().message();
+    ASSERT_EQ(score->net.size(), 8U);
+    EXPECT_EQ(score->realization_begin, 3U);
+    EXPECT_EQ(score->realization_end, 11U);
+    EXPECT_EQ(score->execution_context_sha256, context->identity_sha256());
+    for (atx::usize t = 0; t < score->net.size(); ++t) {
+        EXPECT_DOUBLE_EQ(score->net[t], core->pnl_flat[t + 3]);
+        EXPECT_DOUBLE_EQ(score->gross[t], core->gross_flat[t + 3]);
+        EXPECT_DOUBLE_EQ(score->turnover[t], core->turnover_flat[t + 3]);
+    }
+    auto negative = mine::score_signal(signal, -1.0, panel, 0, member, window, cfg, nullptr, &*context);
+    auto negative_core = factory::extract_execution_signal(signal, *context, -1.0);
+    ASSERT_TRUE(negative.has_value()); ASSERT_TRUE(negative_core.has_value());
+    EXPECT_DOUBLE_EQ(negative->net[0], negative_core->pnl_flat[3]);
+    EXPECT_NE(negative->total_borrow_return, score->total_borrow_return);
+    EXPECT_FALSE(mine::score_signal(signal, 1.0, panel, 0, member, window, cfg).has_value());
+    auto different_member = member;
+    different_member[window.begin * I] = 0;
+    EXPECT_FALSE(mine::score_signal(signal, 1.0, panel, 0, different_member, window,
+                                   cfg, nullptr, &*context).has_value());
+    EXPECT_FALSE(mine::score_signal(signal, 1.0, panel, 0, member, {1, 10},
+                                   cfg, nullptr, &*context).has_value());
+    auto bad_context = execution_context(panel, member, window, cfg, 'a', true);
+    ASSERT_TRUE(bad_context.has_value()) << bad_context.error().message();
+    EXPECT_FALSE(mine::score_signal(signal, 1.0, panel, 0, member, window,
+                                   cfg, nullptr, &*bad_context).has_value());
+    auto future = px;
+    for (atx::usize d = window.end; d < D; ++d)
+        for (atx::usize i = 0; i < I; ++i) future[d * I + i] *= 5.0 + static_cast<double>(i);
+    const Panel mutated = close_panel(D, I, future);
+    auto future_context = execution_context(mutated, member, window, cfg);
+    ASSERT_TRUE(future_context.has_value());
+    auto future_score = mine::score_signal(signal, 1.0, mutated, 0, member, window,
+                                           cfg, nullptr, &*future_context);
+    ASSERT_TRUE(future_score.has_value());
+    EXPECT_EQ(future_score->net, score->net);
+    EXPECT_EQ(future_score->ic_mean, score->ic_mean);
+}
+
+TEST(EquityMineExecution, ActualMineRolesRescoreSignAndBindMatureTrialIdentity) {
+    constexpr atx::usize D = 36, I = 4;
+    const Panel panel = close_panel(D, I, growth_close(D, I));
+    const std::vector<atx::u8> member(panel.cells(), 1);
+    mine::MineConfig cfg;
+    cfg.run_search = false;
+    cfg.search.ic_screen.rule = factory::IcScreenRule::DisabledV1;
+    cfg.score = small_cfg();
+    cfg.score.guard_returns = false;
+    cfg.score.execution_rule = factory::ExecutionObjectiveRule::DelayedSurfaceV2;
+    cfg.min_train_sharpe = -1e6;
+    cfg.min_coverage = 0.0;
+    cfg.boot.n_boot = 16;
+    cfg.boot.mean_block = 2.0;
+    const mine::EvalWindow train_window{1, 19}, validation_window{20, 35};
+    auto train_context = execution_context(panel, member, train_window, cfg.score);
+    auto validation_context = execution_context(panel, member, validation_window, cfg.score);
+    ASSERT_TRUE(train_context.has_value()); ASSERT_TRUE(validation_context.has_value());
+    mine::MineData train{&panel, member, train_window}; train.execution = &*train_context;
+    mine::MineData validation{&panel, member, validation_window};
+    validation.execution = &*validation_context;
+    eval::TrialRegistryConfig registry_cfg;
+    registry_cfg.pnl_len = train_window.size();
+    registry_cfg.sketch_dim = 32;
+    auto registry = eval::TrialRegistry::in_memory(registry_cfg);
+    ASSERT_TRUE(registry.has_value());
+    const atx::engine::alpha::Library library;
+    const std::array<mine::SeedExpr, 1> seeds{{{"-1 * rank(close)", "extra"}}};
+    auto outcome = mine::mine_train(library, train, seeds, cfg, *registry);
+    ASSERT_TRUE(outcome.has_value()) << outcome.error().message();
+    ASSERT_EQ(outcome->candidates.size(), 1U);
+    const auto &row = outcome->candidates[0];
+    ASSERT_TRUE(row.scored) << row.error;
+    EXPECT_EQ(row.sign, -1.0);
+    auto positive = mine::score_signal(index_signal(D, I), 1.0, panel, 0, member,
+                                       train_window, cfg.score, nullptr, &*train_context);
+    ASSERT_TRUE(positive.has_value());
+    EXPECT_EQ(row.train.net, positive->net); // rerun selected orientation, including borrow/NAV
+    ASSERT_EQ(registry->trials().size(), 1U);
+    EXPECT_EQ(registry->trials()[0].meta.window_start, 2U);
+    EXPECT_EQ(registry->trials()[0].meta.window_end, train_window.size() - 1U);
+    ASSERT_EQ(outcome->family.size(), 1U);
+    auto validated = mine::mine_validate(library, validation, cfg, *outcome);
+    ASSERT_TRUE(validated.has_value()) << validated.error().message();
+    EXPECT_EQ(outcome->validation_execution_context_sha256, validation_context->identity_sha256());
+    EXPECT_EQ(outcome->candidates[0].validation.net.size(), validation_window.size() - 2U);
+    const std::span<const mine::CandidateRow> one{outcome->candidates.data(), 1};
+    auto holdout = mine::evaluate_holdout(library, train, one, cfg.score);
+    ASSERT_TRUE(holdout.has_value()) << holdout.error().message();
+    ASSERT_EQ(holdout->size(), 2U);
+    EXPECT_EQ((*holdout)[0].score.net, row.train.net);
+    EXPECT_EQ((*holdout)[1].score.net, row.train.net);
+    auto blend = mine::evaluate_blend(library, train, one, cfg.score);
+    ASSERT_TRUE(blend.has_value()); EXPECT_EQ(blend->net, row.train.net);
+    auto changed_context = execution_context(panel, member, train_window, cfg.score, 'b');
+    ASSERT_TRUE(changed_context.has_value());
+    train.execution = &*changed_context;
+    auto changed_registry = eval::TrialRegistry::in_memory(registry_cfg);
+    ASSERT_TRUE(changed_registry.has_value());
+    auto changed = mine::mine_train(library, train, seeds, cfg, *changed_registry);
+    ASSERT_TRUE(changed.has_value());
+    EXPECT_NE(changed->candidates[0].config_hash, row.config_hash);
+    train.execution = nullptr;
+    EXPECT_FALSE(mine::mine_train(library, train, seeds, cfg, *registry).has_value());
+    EXPECT_FALSE(mine::evaluate_holdout(library, train, {}, cfg.score).has_value());
 }
 
 } // namespace atx_test_l9_realmine_core

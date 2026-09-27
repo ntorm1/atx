@@ -68,6 +68,46 @@ atx::u64 compute_discover_fingerprint(const RunConfig& cfg) {
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.min_dsr));
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.oos_fraction));
   h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.oos_embargo));
+  // DisabledV1 preserves the old resume identity. Every enabled-screen input
+  // must bind a checkpoint because it can permanently eliminate candidates.
+  if (cfg.ic_screen.rule != atx::engine::factory::IcScreenRule::DisabledV1) {
+    const auto& screen = cfg.ic_screen;
+    h = fp::fold_string(h, "ic-screen-config-v2");
+    h = fp::fold_u64(h, static_cast<atx::u64>(screen.rule));
+    for (const auto horizon : screen.horizons) h = fp::fold_u64(h, horizon);
+    h = fp::fold_u64(h, screen.execution_delay);
+    h = fp::fold_u64(h, screen.window_begin);
+    h = fp::fold_u64(h, screen.window_end);
+    h = fp::fold_u64(h, screen.maturity_end);
+    h = fp::fold_u64(h, screen.min_names);
+    h = fp::fold_u64(h, screen.min_dates);
+    h = fp::fold_u64(h, screen.max_cache_bytes);
+    h = fp::fold_u64(h, std::bit_cast<atx::u64>(screen.practical_abs_ic));
+    h = fp::fold_u64(h, std::bit_cast<atx::u64>(screen.confidence_multiplier));
+  }
+  // The capacity adapter augments the panel; its price rule changes derived
+  // inputs. Preserve existing fingerprints when that adapter is inactive.
+  if (cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0) {
+    h = fp::fold_string(h, atx::engine::alpha::vwap_rule_name(cfg.vwap_rule));
+    h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.min_price));
+    h = fp::fold_u64(h, std::bit_cast<atx::u64>(cfg.min_adv_usd));
+    h = fp::fold_u64(h, static_cast<atx::u64>(cfg.adv_window));
+  }
+  // V1 omits this addition to reproduce existing checkpoint identities. V2
+  // must never resume a run recorded under the old numerical recipe, including
+  // off-gate runs whose always-on OOS diagnostic can still calculate PBO.
+  if (cfg.cpcv_rule != atx::engine::eval::CpcvRule::ObservationV1) {
+    h = fp::fold_string(h, "cpcv-date-recipe-v2");
+    h = fp::fold_u64(h, static_cast<atx::u64>(cfg.cpcv_rule));
+    h = fp::fold_u64(h, cfg.cpcv_embargo_dates);
+    h = fp::fold_u64(h, cfg.cpcv_max_working_bytes);
+    h = fp::fold_u64(h, 6U); // discover's fixed K,k
+    h = fp::fold_u64(h, 2U);
+  }
+  if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
+    h = fp::fold_string(h, "pbo-numerical-rule");
+    h = fp::fold_u64(h, static_cast<atx::u64>(cfg.pbo_rule));
+  }
   return h;
 }
 

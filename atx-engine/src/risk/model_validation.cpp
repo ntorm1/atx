@@ -3,6 +3,11 @@
 // See model_validation.hpp for the statistics and the walk-forward protocol.
 #include "atx/engine/risk/model_validation.hpp"
 
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <numeric>
+#include "atx/core/linalg/decompose.hpp"
 #include <cmath>   // std::sqrt, std::log, std::isnan, std::abs, std::isfinite
 #include <cstdio>  // std::snprintf
 #include <utility> // std::move
@@ -369,6 +374,285 @@ validate_risk_model(const RiskModelFactory &factory, const ReturnPanel &ret,
   sc.mean_factors = k_sum / static_cast<atx::f64>(scored);
   sc.mean_excluded = excluded_sum / static_cast<atx::f64>(scored);
   return atx::core::Ok(std::move(sc));
+}
+
+
+namespace {
+struct Acc21 {
+  atx::usize n{}, unavailable{}, zero{};
+  atx::f64 mz{}, m2z{}, mr{}, m2r{}, pred{}, q{};
+  bool rolling_enabled{false};
+  std::array<atx::f64,12> rolling{};
+  atx::usize rolling_cursor{}, rolling_slots{}, rolling_windows{};
+  atx::f64 rolling_deviation{};
+  void push_slot(atx::f64 z) {
+    if (!rolling_enabled) return;
+    rolling[rolling_cursor] = z;
+    rolling_cursor = (rolling_cursor + 1) % rolling.size();
+    rolling_slots = std::min(rolling_slots + 1, rolling.size());
+    if (rolling_slots < rolling.size()) return;
+    atx::f64 mean = 0, m2 = 0;
+    atx::usize count = 0;
+    for (auto value : rolling) {
+      if (!std::isfinite(value)) return;
+      ++count;
+      const auto delta = value - mean;
+      mean += delta / static_cast<atx::f64>(count);
+      m2 += delta * (value - mean);
+    }
+    const auto bias = std::sqrt(std::max(0.0,m2 / 11.0));
+    rolling_deviation += std::abs(bias - 1.0);
+    ++rolling_windows;
+  }
+  void mark_unavailable() {
+    ++unavailable;
+    push_slot(std::numeric_limits<atx::f64>::quiet_NaN());
+  }
+  bool add(atx::f64 r, atx::f64 v) {
+    if (!std::isfinite(r) || !std::isfinite(v) || v <= 0) return false;
+    const auto sigma = std::sqrt(v), z = r / sigma, zz = z * z;
+    if (!std::isfinite(zz)) return false;
+    ++n;
+    const auto dz = z - mz, dr = r - mr;
+    mz += dz / static_cast<atx::f64>(n); m2z += dz * (z - mz);
+    mr += dr / static_cast<atx::f64>(n); m2r += dr * (r - mr);
+    pred += sigma;
+    push_slot(z);
+    if (zz == 0) ++zero; else q += zz - std::log(zz) - 1.0;
+    return std::isfinite(m2z) && std::isfinite(m2r) && std::isfinite(pred) && std::isfinite(q) && std::isfinite(rolling_deviation);
+  }
+  ValidationMetric21 finish(std::string name, std::string cohort) const {
+    ValidationMetric21 out{std::move(name), std::move(cohort), n, unavailable, zero};
+    out.defined = n >= 2;
+    if (n > 0) {
+      out.mean_pred_vol = pred / static_cast<atx::f64>(n);
+      out.qlike = zero > 0 ? std::numeric_limits<atx::f64>::infinity() : q / static_cast<atx::f64>(n);
+    }
+    if (n >= 2) {
+      out.bias = std::sqrt(std::max(0.0, m2z / static_cast<atx::f64>(n - 1)));
+      out.realized_vol = std::sqrt(std::max(0.0, m2r / static_cast<atx::f64>(n - 1)));
+      out.absolute_bias_deviation = std::abs(out.bias - 1.0);
+    }
+    out.rolling_windows = rolling_windows;
+    out.mrad_defined = rolling_windows > 0;
+    if (out.mrad_defined) out.mrad = rolling_deviation / static_cast<atx::f64>(rolling_windows);
+    return out;
+  }
+};
+}
+
+atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
+    const RiskModelFactory& factory, const ReturnPanel& ret, const Validation21Cfg& cfg) {
+  constexpr atx::usize horizon = 21;
+  const auto n = ret.n_assets(), t = ret.n_dates();
+  if (!factory || n == 0 || cfg.first_as_of < horizon || cfg.first_as_of >= t ||
+      cfg.n_periods == 0 || cfg.step == 0 ||
+      cfg.n_periods - 1 > (t - 1 - cfg.first_as_of) / cfg.step ||
+      cfg.n_min_variance > 10'000 || cfg.n_optimized > 10'000 || cfg.books.size() > 10'000)
+    return Err(ErrorCode::InvalidArgument, "risk validation V2: invalid horizon/shape/budget");
+  // Admit the combined live storage before constructing any random matrices or
+  // accumulator groups. Caller-owned inputs and factory-owned models are outside
+  // this scratch/result budget; their sizes are checked before our model work.
+  atx::u64 reserved = 0;
+  const auto reserve = [&](atx::u64 count, atx::u64 bytes) {
+    if (bytes != 0 && count > (cfg.max_working_bytes - reserved) / bytes) return false;
+    reserved += count * bytes;
+    return true;
+  };
+  constexpr atx::u64 group_bytes = sizeof(Acc21) + 2 * sizeof(ValidationMetric21) + 256;
+  const auto groups = cfg.n_min_variance + cfg.n_optimized + cfg.books.size() + 12;
+  if (!reserve(1, 4096) || !reserve(groups, group_bytes) ||
+      !reserve(n, 128 * (cfg.n_min_variance + cfg.n_optimized + 1)) ||
+      !reserve(cfg.label.size(), 2))
+    return Err(ErrorCode::OutOfRange, "risk validation V2: aggregate persistent workspace budget");
+  for (const auto& b : cfg.books) {
+    if (b.w.size() != n) return Err(ErrorCode::InvalidArgument, "risk validation V2: book shape");
+    if (!reserve(b.name.size(), 2))
+      return Err(ErrorCode::OutOfRange, "risk validation V2: result name workspace budget");
+    for (auto w : b.w) if (!std::isfinite(w))
+      return Err(ErrorCode::InvalidArgument, "risk validation V2: nonfinite book");
+  }
+  atx::core::Xoshiro256pp rng{cfg.seed};
+  MatX budgets(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(cfg.n_min_variance));
+  MatX alphas(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(cfg.n_optimized));
+  for (Eigen::Index i = 0; i < budgets.rows(); ++i) {
+    for (Eigen::Index j = 0; j < budgets.cols(); ++j) budgets(i,j) = rng.normal() > 0 ? 1.0 : 2.0;
+    for (Eigen::Index j = 0; j < alphas.cols(); ++j) alphas(i,j) = rng.normal();
+  }
+  Acc21 ew, mv;
+  std::vector<Acc21> minvars(cfg.n_min_variance), opt(cfg.n_optimized), custom(cfg.books.size()), eigen;
+  std::vector<Acc21> decile(10);
+  const bool mrad_clock = cfg.step == horizon;
+  ew.rolling_enabled = mv.rolling_enabled = mrad_clock;
+  for (auto* group : {&minvars,&opt,&custom}) for (auto& acc : *group) acc.rolling_enabled = mrad_clock;
+  ValidationScorecard21 out;
+  out.label = cfg.label; out.forecast_dates = cfg.n_periods; out.overlapping = cfg.step < horizon; out.mrad_clock_eligible = mrad_clock;
+  atx::usize stable_k = 0;
+  for (atx::usize period = 0; period < cfg.n_periods; ++period) {
+    const auto a = cfg.first_as_of + period * cfg.step;
+    ATX_TRY(auto snap, factory(a));
+    const auto& model = snap.model;
+    const auto m = snap.assets.size(), k = model.n_factors();
+    if (m == 0 || m > n || m != model.n_instruments() || model.fit_begin() < a || k == 0)
+      return Err(ErrorCode::InvalidArgument, "risk validation V2: snapshot shape/fit clock/budget");
+    auto remaining = cfg.max_working_bytes - reserved;
+    if (k > remaining / group_bytes)
+      return Err(ErrorCode::OutOfRange, "risk validation V2: eigen accumulator workspace budget");
+    remaining -= k * group_bytes;
+    if (k > remaining / 128 / k)
+      return Err(ErrorCode::OutOfRange, "risk validation V2: factor workspace budget");
+    remaining -= 128 * k * k;
+    if (m > remaining / 128 / k)
+      return Err(ErrorCode::OutOfRange, "risk validation V2: combined factor workspace budget");
+    if (period == 0) {
+      stable_k = k;
+      eigen.resize(k);
+      out.metrics.reserve(groups + k);
+      out.cohort_mrad.reserve(6);
+      for (auto& acc : eigen) acc.rolling_enabled = mrad_clock;
+    }
+    if (k != stable_k)
+      return Err(ErrorCode::InvalidArgument, "risk validation V2: eigenportfolio axis changes across forecasts");
+    std::vector<atx::u8> seen(n,0), available(m,1);
+    std::vector<atx::f64> realized(m,0), w(m), rhs(m), inverse(m);
+    for (atx::usize i = 0; i < m; ++i) {
+      if (snap.assets[i] >= n || seen[snap.assets[i]] != 0)
+        return Err(ErrorCode::InvalidArgument, "risk validation V2: invalid/duplicate asset axis");
+      seen[snap.assets[i]] = 1;
+      for (atx::usize d = a - horizon; d < a; ++d) {
+        const auto r = ret.r(static_cast<Eigen::Index>(d), static_cast<Eigen::Index>(snap.assets[i]));
+        if (std::isinf(r)) return Err(ErrorCode::InvalidArgument, "risk validation V2: infinite realized return");
+        if (std::isnan(r)) available[i] = 0; else realized[i] += r;
+      }
+      if (!std::isfinite(realized[i])) return Err(ErrorCode::OutOfRange, "risk validation V2: realized sum overflow");
+    }
+    const auto& provenance = model.estimator_diagnostics();
+    if (provenance.factor_vra != PriorAdjustmentStatus::ObservedPriorV2 ||
+        provenance.specific_vra != PriorAdjustmentStatus::ObservedPriorV2) ++out.unverified_vra_dates;
+    auto score = [&](Acc21& acc) -> bool {
+      atx::f64 gross = 0, r = 0;
+      for (atx::usize i = 0; i < m; ++i) {
+        if (!std::isfinite(w[i])) return false;
+        gross += std::abs(w[i]);
+        if (w[i] != 0 && available[i] == 0) { acc.mark_unavailable(); return true; }
+      }
+      if (!std::isfinite(gross) || gross <= 0) { acc.mark_unavailable(); return true; }
+      for (atx::usize i = 0; i < m; ++i) { w[i] /= gross; r += w[i] * realized[i]; }
+      return acc.add(r, static_cast<atx::f64>(horizon) * model.risk(w));
+    };
+    w.assign(m,1.0);
+    if (!score(ew)) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid equal-weight observation");
+    rhs.assign(m,1.0); model.apply_inverse(rhs,inverse); w = inverse;
+    if (!score(mv)) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid min-variance observation");
+    for (atx::usize j = 0; j < cfg.n_min_variance; ++j) {
+      for (atx::usize i = 0; i < m; ++i) rhs[i] = budgets(static_cast<Eigen::Index>(snap.assets[i]),static_cast<Eigen::Index>(j));
+      model.apply_inverse(rhs,inverse); w = inverse;
+      // Minimum variance subject to the fixed random budget vector's unit
+      // exposure; unit-gross rescaling leaves standardized forecast error invariant.
+      if (!score(minvars[j])) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid randomized min-variance observation");
+    }
+    for (atx::usize j = 0; j < cfg.n_optimized; ++j) {
+      for (atx::usize i = 0; i < m; ++i) rhs[i] = alphas(static_cast<Eigen::Index>(snap.assets[i]),static_cast<Eigen::Index>(j));
+      model.apply_inverse(rhs,inverse); w = inverse;
+      if (!score(opt[j])) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid optimized observation");
+    }
+    for (atx::usize j = 0; j < cfg.books.size(); ++j) {
+      bool absent_holding = false;
+      for (atx::usize i = 0; i < n; ++i) absent_holding |= seen[i] == 0 && cfg.books[j].w[i] != 0;
+      if (absent_holding) { custom[j].mark_unavailable(); continue; }
+      for (atx::usize i = 0; i < m; ++i) w[i] = cfg.books[j].w[snap.assets[i]];
+      if (!score(custom[j])) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid custom observation");
+    }
+    const auto& x = model.exposures(); const auto& d = model.specific_var();
+    MatX dx = d.cwiseInverse().asDiagonal() * x;
+    MatX gram = x.transpose() * dx;
+    Eigen::LDLT<MatX> solve(gram);
+    const bool invertible = solve.info() == Eigen::Success && solve.isPositive() && solve.rcond() > 1e-12;
+    if (!invertible) {
+      for (auto& acc : eigen) acc.mark_unavailable();
+      for (atx::usize rank = 0; rank < m; ++rank) decile[rank * 10 / m].mark_unavailable();
+      continue;
+    }
+    ATX_TRY(auto eig, atx::core::linalg::symmetric_eig(model.factor_cov()));
+    for (atx::usize j = 0; j < k; ++j) {
+      // Minimum-specific-risk book with X' w = eigenvector(F), using a K x K solve.
+      const VecX coeff = solve.solve(eig.vectors.col(static_cast<Eigen::Index>(j)));
+      const VecX weights = dx * coeff;
+      for (atx::usize i = 0; i < m; ++i) w[i] = weights[static_cast<Eigen::Index>(i)];
+      if (!score(eigen[j])) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid eigenportfolio observation");
+    }
+    if (std::find(available.begin(),available.end(),atx::u8{0}) != available.end()) {
+      for (atx::usize rank = 0; rank < m; ++rank) decile[rank * 10 / m].mark_unavailable();
+      continue;
+    }
+    const Eigen::Map<const VecX> r(realized.data(),static_cast<Eigen::Index>(m));
+    const VecX beta = solve.solve(dx.transpose() * r);
+    const VecX residual = r - x * beta;
+    const MatX inverse_gram = solve.solve(MatX::Identity(static_cast<Eigen::Index>(k),static_cast<Eigen::Index>(k)));
+    std::vector<atx::usize> order(m); std::iota(order.begin(),order.end(),0);
+    std::stable_sort(order.begin(),order.end(),[&](auto i,auto j){return d[static_cast<Eigen::Index>(i)] < d[static_cast<Eigen::Index>(j)];});
+    for (atx::usize rank = 0; rank < m; ++rank) {
+      const auto i = static_cast<Eigen::Index>(order[rank]);
+      auto& acc = decile[rank * 10 / m];
+      // Frozen-exposure GLS residuals are ex-post diagnostics, not VRA records.
+      // Correct residual variance for projection leverage: diag(M D M').
+      const auto variance = static_cast<atx::f64>(horizon) *
+          (d[i] - (x.row(i) * inverse_gram).dot(x.row(i)));
+      if (variance <= 0) { acc.mark_unavailable(); continue; }
+      if (!acc.add(residual[i],variance)) return Err(ErrorCode::OutOfRange, "risk validation V2: invalid residual-decile observation");
+    }
+  }
+  out.metrics.push_back(ew.finish("equal_weight","equal_weight"));
+  out.metrics.push_back(mv.finish("min_variance","min_variance"));
+  for (atx::usize i=0;i<minvars.size();++i) out.metrics.push_back(minvars[i].finish("random_budget_"+std::to_string(i),"min_variance"));
+  for (atx::usize i=0;i<opt.size();++i) out.metrics.push_back(opt[i].finish("optimized_"+std::to_string(i),"optimized"));
+  for (atx::usize i=0;i<eigen.size();++i) out.metrics.push_back(eigen[i].finish("factor_eigen_"+std::to_string(i),"eigenportfolio"));
+  for (atx::usize i=0;i<decile.size();++i) out.metrics.push_back(decile[i].finish("specific_decile_"+std::to_string(i),"specific_risk_decile"));
+  for (atx::usize i=0;i<custom.size();++i) out.metrics.push_back(custom[i].finish(cfg.books[i].name,"custom"));
+  for (const auto& metric : out.metrics) {
+    if (!metric.mrad_defined) continue;
+    auto it = std::find_if(out.cohort_mrad.begin(),out.cohort_mrad.end(),
+        [&](const auto& c){return c.cohort == metric.cohort;});
+    if (it == out.cohort_mrad.end()) {
+      out.cohort_mrad.push_back({metric.cohort,metric.rolling_windows,
+          metric.mrad * static_cast<atx::f64>(metric.rolling_windows)});
+    } else {
+      it->rolling_windows += metric.rolling_windows;
+      it->mrad += metric.mrad * static_cast<atx::f64>(metric.rolling_windows);
+    }
+  }
+  for (auto& cohort : out.cohort_mrad) cohort.mrad /= static_cast<atx::f64>(cohort.rolling_windows);
+  return atx::core::Ok(std::move(out));
+}
+
+std::string ValidationScorecard21::to_json() const {
+  std::string out = "{\"rule\":\"fixed-book-21d-v2\",\"label\":" + json_quote(label) +
+      ",\"forecast_dates\":" + std::to_string(forecast_dates) +
+      ",\"unverified_vra_dates\":" + std::to_string(unverified_vra_dates) +
+      ",\"overlapping\":" + (overlapping ? "true" : "false") +
+      ",\"mrad_clock_eligible\":" + (mrad_clock_eligible ? "true" : "false") +
+      ",\"calibrated_confidence_bands\":false,\"qlike\":\"z^2-log(z^2)-1; zero => infinity\",\"metrics\":[";
+  for (atx::usize i=0;i<metrics.size();++i) {
+    const auto& m=metrics[i];
+    if (i>0) out+=",";
+    out+="{\"name\":"+json_quote(m.name)+",\"cohort\":"+json_quote(m.cohort)+
+        ",\"observations\":"+std::to_string(m.observations)+",\"unavailable\":"+std::to_string(m.unavailable)+
+        ",\"zero_realizations\":"+std::to_string(m.zero_realizations)+",\"defined\":"+(m.defined?"true":"false")+
+        ",\"bias\":"+(m.defined?num(m.bias):"null")+",\"absolute_bias_deviation\":"+(m.defined?num(m.absolute_bias_deviation):"null")+
+        ",\"rolling_windows\":"+std::to_string(m.rolling_windows)+
+        ",\"mrad\":"+(m.mrad_defined?num(m.mrad):"null")+
+        ",\"qlike\":"+(m.observations?num(m.qlike):"null")+
+        ",\"mean_pred_vol\":"+(m.observations?num(m.mean_pred_vol):"null")+
+        ",\"realized_vol\":"+(m.defined?num(m.realized_vol):"null")+"}";
+  }
+  out += "],\"cohort_mrad\":[";
+  for (atx::usize i=0;i<cohort_mrad.size();++i) {
+    if (i>0) out+=",";
+    const auto& c=cohort_mrad[i];
+    out+="{\"cohort\":"+json_quote(c.cohort)+",\"rolling_windows\":"+
+        std::to_string(c.rolling_windows)+",\"mrad\":"+num(c.mrad)+"}";
+  }
+  return out+"]}";
 }
 
 } // namespace atx::engine::risk

@@ -16,6 +16,10 @@ struct PipelinePanel {
     atx::engine::alpha::Panel panel;
     std::optional<PanelIdentity> identity;
     std::string artifact_id;
+    // Nonempty only for the explicit bounded V2 reader. Panel's own mask is
+    // presence; consumers must use this for CS/trading admission.
+    std::vector<atx::u8> tradable{};
+    std::vector<atx::engine::data::PanelStoreField> store_fields{};
 };
 
 // Reserves all companion writes for one stage. Failed runs leave diagnostic
@@ -35,6 +39,11 @@ reserve_pipeline_output(const std::string& path, bool identified);
 
 [[nodiscard]] atx::core::Result<PipelinePanel>
 read_pipeline_panel(const std::string& path, bool allow_unidentified);
+
+[[nodiscard]] atx::core::Result<PipelinePanel> read_pipeline_store_window(
+    const std::string& directory, atx::usize begin, atx::usize end,
+    atx::u64 max_materialized_bytes = 256ULL * 1024 * 1024,
+    std::string_view expected_manifest_sha256 = {});
 
 // A positional combination must have exactly the parent's axes and derivation.
 [[nodiscard]] atx::core::Status

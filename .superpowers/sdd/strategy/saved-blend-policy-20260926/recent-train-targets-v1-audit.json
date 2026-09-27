@@ -1,0 +1,792 @@
+{
+  "schema": "atx.fixed-target-comparison-audit/v2",
+  "status": "pass",
+  "audit_script_sha256": "d8e5fb27060d9412089acf2fa01f88a11ec14e49bad3699b6191a00d7f7508a6",
+  "inputs": [
+    {
+      "path": "build-equity\\recent-fast-ic-v2\\train_planned_targets.csv",
+      "sha256": "db5d4dbcd23b03be109f8d1832bada553ad39913dcba7c084fa7204ce7b539e0",
+      "bytes": 84869
+    },
+    {
+      "path": "build-equity\\recent-train-targets-v1-baseline-v1\\recipe.json",
+      "sha256": "98e5be796e3b60d1140fe9fbad59e3820e32977c3ecbb2ed2e3eed13a18bed76",
+      "bytes": 949
+    },
+    {
+      "path": "build-equity\\recent-train-targets-v1-baseline-v1\\daily.csv",
+      "sha256": "cb8277417652603a123f809a30f71231cc0ad1c990a6f874e165df9bcc890acc",
+      "bytes": 286377
+    },
+    {
+      "path": "build-equity\\recent-train-targets-v1-baseline-v1\\summary.json",
+      "sha256": "e0b5d7babe9ccd84de1e61eb5cdbc939f51657f0c72f6fe8fad4917548bc8383",
+      "bytes": 12811
+    },
+    {
+      "path": "build-equity\\recent-train-targets-v1-monthly-budget-v2\\recipe.json",
+      "sha256": "52f251b7629572f5b49cf398952506cc5577f8c9c6cb66724538d83b33cc4429",
+      "bytes": 955
+    },
+    {
+      "path": "build-equity\\recent-train-targets-v1-monthly-budget-v2\\daily.csv",
+      "sha256": "2372b55c1347ad4836e6337e58c26d0e69c47a2da30ab0a6cade591a2facd129",
+      "bytes": 290077
+    },
+    {
+      "path": "build-equity\\recent-train-targets-v1-monthly-budget-v2\\summary.json",
+      "sha256": "65ac674491108835cf86eb7b9926ff329ef02d5b1a58081c5c038e43c5fd59fe",
+      "bytes": 13360
+    }
+  ],
+  "combined_sha256": "51740eff34bc3a74f42ea028b45282117c92c8f32ed029de31cd6500471363dc",
+  "role_sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+  "score_window": [
+    399,
+    1155
+  ],
+  "exact_baseline_f64_comparisons": 2268,
+  "baseline_textual_format_differences": 0,
+  "results": [
+    {
+      "policy": "baseline",
+      "rule": "baseline-target-v1",
+      "directory": "build-equity\\recent-train-targets-v1-baseline-v1",
+      "decisions": 756,
+      "first_decision": 399,
+      "last_decision": 1154,
+      "months": 36,
+      "total_turnover": 12.715395534494947,
+      "mean_monthly_turnover": 0.35320543151374834,
+      "max_monthly_turnover": 0.8008264904139168,
+      "forced_turnover": 1.1613783644261484,
+      "discretionary_turnover": 11.554017170068793,
+      "deployment_decision": 399,
+      "deployment_turnover": 0.25000000000000044,
+      "months_above_monthly_budget": [
+        {
+          "month": 202001,
+          "turnover": 0.8008264904139168,
+          "excess": 0.5008264904139168,
+          "forced": 0.009137464868543013,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202003,
+          "turnover": 0.5036702898949449,
+          "excess": 0.2036702898949449,
+          "forced": 0.09300237090906659,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202004,
+          "turnover": 0.3815749671976617,
+          "excess": 0.08157496719766172,
+          "forced": 0.025050143362973017,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202005,
+          "turnover": 0.30767705308217136,
+          "excess": 0.00767705308217137,
+          "forced": 0.019203677660586862,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202006,
+          "turnover": 0.3593009890950337,
+          "excess": 0.05930098909503373,
+          "forced": 0.09781057158437512,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202007,
+          "turnover": 0.32569229399884025,
+          "excess": 0.025692293998840265,
+          "forced": 0.021062072344985115,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202009,
+          "turnover": 0.32463664323173286,
+          "excess": 0.02463664323173287,
+          "forced": 0.0449475983174169,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202010,
+          "turnover": 0.3896974171680774,
+          "excess": 0.08969741716807739,
+          "forced": 0.03204608501008623,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202012,
+          "turnover": 0.30081053441262917,
+          "excess": 0.0008105344126291825,
+          "forced": 0.030306437644121307,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202101,
+          "turnover": 0.3485483306068478,
+          "excess": 0.04854833060684782,
+          "forced": 0.033549666938239166,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202102,
+          "turnover": 0.36255518471557546,
+          "excess": 0.06255518471557547,
+          "forced": 0.03928753292177229,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202103,
+          "turnover": 0.42125332592632886,
+          "excess": 0.12125332592632887,
+          "forced": 0.033239302528925437,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202104,
+          "turnover": 0.46605005336193295,
+          "excess": 0.16605005336193296,
+          "forced": 0.025351764483467952,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202105,
+          "turnover": 0.37023323230757477,
+          "excess": 0.07023323230757478,
+          "forced": 0.03285129082713717,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202106,
+          "turnover": 0.42055320084740144,
+          "excess": 0.12055320084740145,
+          "forced": 0.030808594785539663,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202107,
+          "turnover": 0.32435802024497784,
+          "excess": 0.02435802024497785,
+          "forced": 0.03166184204917916,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202108,
+          "turnover": 0.33252279579166394,
+          "excess": 0.03252279579166395,
+          "forced": 0.03081411051668124,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202109,
+          "turnover": 0.3814603360119516,
+          "excess": 0.08146033601195163,
+          "forced": 0.026778133998450172,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202110,
+          "turnover": 0.3017117643823905,
+          "excess": 0.0017117643823905127,
+          "forced": 0.026216702995845168,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202111,
+          "turnover": 0.30969081032574675,
+          "excess": 0.009690810325746757,
+          "forced": 0.03154562708816706,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202112,
+          "turnover": 0.30803464977681666,
+          "excess": 0.008034649776816671,
+          "forced": 0.03949048745091016,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202201,
+          "turnover": 0.32182886524337145,
+          "excess": 0.021828865243371465,
+          "forced": 0.03439917204807493,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202202,
+          "turnover": 0.3497202540383434,
+          "excess": 0.0497202540383434,
+          "forced": 0.028167122333113283,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202203,
+          "turnover": 0.39846848331931567,
+          "excess": 0.09846848331931568,
+          "forced": 0.04593685205424449,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202208,
+          "turnover": 0.400001198546434,
+          "excess": 0.10000119854643402,
+          "forced": 0.024856629315159702,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202209,
+          "turnover": 0.309025852472009,
+          "excess": 0.009025852472008988,
+          "forced": 0.02498334873962861,
+          "disclosed_budget_excess": 0.0
+        },
+        {
+          "month": 202212,
+          "turnover": 0.39296288764363124,
+          "excess": 0.09296288764363125,
+          "forced": 0.026777446569778453,
+          "disclosed_budget_excess": 0.0
+        }
+      ],
+      "mean_gross": 0.9012115324648943,
+      "max_abs_net": 0.06453410730515528,
+      "max_abs_name_weight": 0.0007130187003706777,
+      "min_held_names": 2730,
+      "mean_held_names": 2956.813492063492,
+      "mean_effective_names": 2120.169990932518,
+      "mature_days": 754,
+      "complete_days": 253,
+      "incomplete_nan_days": 501,
+      "incomplete_days_with_guarded_names": 10,
+      "incomplete_missing_long_sum": 0.2853475726535278,
+      "incomplete_missing_short_sum": 0.1663803773641103,
+      "incomplete_missing_gross_max": 0.07202748842404974,
+      "trade_cost_all_decisions": 0.007629237320696958,
+      "borrow_cost_all_decisions": 0.039896892909464396,
+      "complete_day_gross_return_sum_not_period_return": 0.1323307088509659,
+      "complete_day_net_return_sum_not_period_return": 0.11625637179403323,
+      "complete_day_gross_return_mean_per_day": 0.0005230462800433434,
+      "complete_day_net_return_mean_per_day": 0.0004595113509645582,
+      "common_complete_days": 253,
+      "common_complete_gross_return_sum_not_period_return": 0.13233070885096584,
+      "common_complete_net_return_sum_not_period_return": 0.1162563717940332,
+      "common_complete_gross_return_mean_per_day": 0.0005230462800433432,
+      "common_complete_net_return_mean_per_day": 0.0004595113509645581
+    },
+    {
+      "policy": "budget",
+      "rule": "monthly-target-budget-v2",
+      "directory": "build-equity\\recent-train-targets-v1-monthly-budget-v2",
+      "decisions": 756,
+      "first_decision": 399,
+      "last_decision": 1154,
+      "months": 36,
+      "total_turnover": 11.036671595164652,
+      "mean_monthly_turnover": 0.3065742109767956,
+      "max_monthly_turnover": 0.36690446129777443,
+      "forced_turnover": 1.0558318489474032,
+      "discretionary_turnover": 9.980839746217232,
+      "deployment_decision": 399,
+      "deployment_turnover": 0.25000000000000044,
+      "months_above_monthly_budget": [
+        {
+          "month": 202001,
+          "turnover": 0.30366338753954125,
+          "excess": 0.003663387539541263,
+          "forced": 0.004653790563612426,
+          "disclosed_budget_excess": 0.003663387539541263
+        },
+        {
+          "month": 202002,
+          "turnover": 0.3075790447644885,
+          "excess": 0.007579044764488507,
+          "forced": 0.011297871888877048,
+          "disclosed_budget_excess": 0.007579044764488507
+        },
+        {
+          "month": 202003,
+          "turnover": 0.3364481475277156,
+          "excess": 0.036448147527715635,
+          "forced": 0.07219590849504985,
+          "disclosed_budget_excess": 0.036448147527715635
+        },
+        {
+          "month": 202004,
+          "turnover": 0.30551849925212143,
+          "excess": 0.005518499252121445,
+          "forced": 0.018372657473430993,
+          "disclosed_budget_excess": 0.005518499252121445
+        },
+        {
+          "month": 202005,
+          "turnover": 0.3079912293160796,
+          "excess": 0.007991229316079596,
+          "forced": 0.016559969532162756,
+          "disclosed_budget_excess": 0.007991229316079596
+        },
+        {
+          "month": 202006,
+          "turnover": 0.36690446129777443,
+          "excess": 0.06690446129777444,
+          "forced": 0.08779643297228787,
+          "disclosed_budget_excess": 0.06690446129777444
+        },
+        {
+          "month": 202007,
+          "turnover": 0.3047933568963933,
+          "excess": 0.004793356896393319,
+          "forced": 0.02018084612311416,
+          "disclosed_budget_excess": 0.004793356896393319
+        },
+        {
+          "month": 202008,
+          "turnover": 0.3008374664061347,
+          "excess": 0.0008374664061346904,
+          "forced": 0.019453972805145638,
+          "disclosed_budget_excess": 0.0008374664061346904
+        },
+        {
+          "month": 202009,
+          "turnover": 0.30796829803959247,
+          "excess": 0.00796829803959248,
+          "forced": 0.044203313470755914,
+          "disclosed_budget_excess": 0.00796829803959248
+        },
+        {
+          "month": 202010,
+          "turnover": 0.308815179622996,
+          "excess": 0.008815179622995994,
+          "forced": 0.031456221037164445,
+          "disclosed_budget_excess": 0.008815179622995994
+        },
+        {
+          "month": 202011,
+          "turnover": 0.30000000000000004,
+          "excess": 5.551115123125783e-17,
+          "forced": 0.02291911019612449,
+          "disclosed_budget_excess": 5.551115123125783e-17
+        },
+        {
+          "month": 202012,
+          "turnover": 0.30339575722620366,
+          "excess": 0.003395757226203666,
+          "forced": 0.029162027664961683,
+          "disclosed_budget_excess": 0.003395757226203666
+        },
+        {
+          "month": 202101,
+          "turnover": 0.3022810177562886,
+          "excess": 0.0022810177562885836,
+          "forced": 0.03292050646578984,
+          "disclosed_budget_excess": 0.0022810177562885836
+        },
+        {
+          "month": 202102,
+          "turnover": 0.30761419553762753,
+          "excess": 0.007614195537627544,
+          "forced": 0.038312439315793874,
+          "disclosed_budget_excess": 0.007614195537627544
+        },
+        {
+          "month": 202103,
+          "turnover": 0.307105708244765,
+          "excess": 0.00710570824476503,
+          "forced": 0.0312236306894843,
+          "disclosed_budget_excess": 0.00710570824476503
+        },
+        {
+          "month": 202104,
+          "turnover": 0.3145133763029446,
+          "excess": 0.014513376302944636,
+          "forced": 0.0225010990622188,
+          "disclosed_budget_excess": 0.014513376302944636
+        },
+        {
+          "month": 202105,
+          "turnover": 0.30922720086088473,
+          "excess": 0.009227200860884743,
+          "forced": 0.026902776805596273,
+          "disclosed_budget_excess": 0.009227200860884743
+        },
+        {
+          "month": 202106,
+          "turnover": 0.31208987174331765,
+          "excess": 0.01208987174331766,
+          "forced": 0.025352151388348967,
+          "disclosed_budget_excess": 0.01208987174331766
+        },
+        {
+          "month": 202107,
+          "turnover": 0.3080905581763198,
+          "excess": 0.008090558176319818,
+          "forced": 0.02527345969945169,
+          "disclosed_budget_excess": 0.008090558176319818
+        },
+        {
+          "month": 202108,
+          "turnover": 0.31011526973904124,
+          "excess": 0.010115269739041255,
+          "forced": 0.026575291853457927,
+          "disclosed_budget_excess": 0.010115269739041255
+        },
+        {
+          "month": 202109,
+          "turnover": 0.30729425316949005,
+          "excess": 0.007294253169490061,
+          "forced": 0.024684383409419915,
+          "disclosed_budget_excess": 0.007294253169490061
+        },
+        {
+          "month": 202110,
+          "turnover": 0.30192309401355527,
+          "excess": 0.001923094013555282,
+          "forced": 0.023111965354463995,
+          "disclosed_budget_excess": 0.001923094013555282
+        },
+        {
+          "month": 202111,
+          "turnover": 0.30390798134294905,
+          "excess": 0.003907981342949063,
+          "forced": 0.02995797302028551,
+          "disclosed_budget_excess": 0.003907981342949063
+        },
+        {
+          "month": 202112,
+          "turnover": 0.3049213440257131,
+          "excess": 0.0049213440257130925,
+          "forced": 0.03842755503301494,
+          "disclosed_budget_excess": 0.0049213440257130925
+        },
+        {
+          "month": 202201,
+          "turnover": 0.3069125970217872,
+          "excess": 0.0069125970217872035,
+          "forced": 0.03370217211266257,
+          "disclosed_budget_excess": 0.0069125970217872035
+        },
+        {
+          "month": 202202,
+          "turnover": 0.30709055981621075,
+          "excess": 0.007090559816210762,
+          "forced": 0.027532417996181887,
+          "disclosed_budget_excess": 0.007090559816210762
+        },
+        {
+          "month": 202203,
+          "turnover": 0.30615685692180555,
+          "excess": 0.006156856921805565,
+          "forced": 0.044215817383651136,
+          "disclosed_budget_excess": 0.006156856921805565
+        },
+        {
+          "month": 202204,
+          "turnover": 0.301249311001002,
+          "excess": 0.001249311001002007,
+          "forced": 0.02387532557606887,
+          "disclosed_budget_excess": 0.001249311001002007
+        },
+        {
+          "month": 202205,
+          "turnover": 0.3021677099852696,
+          "excess": 0.002167709985269606,
+          "forced": 0.03448688927569466,
+          "disclosed_budget_excess": 0.002167709985269606
+        },
+        {
+          "month": 202208,
+          "turnover": 0.3058298149473354,
+          "excess": 0.005829814947335421,
+          "forced": 0.024681572429567807,
+          "disclosed_budget_excess": 0.005829814947335421
+        },
+        {
+          "month": 202209,
+          "turnover": 0.3024036983194881,
+          "excess": 0.0024036983194881123,
+          "forced": 0.02354312296948419,
+          "disclosed_budget_excess": 0.0024036983194881123
+        },
+        {
+          "month": 202210,
+          "turnover": 0.3010893685369504,
+          "excess": 0.001089368536950408,
+          "forced": 0.022382237817255072,
+          "disclosed_budget_excess": 0.001089368536950408
+        },
+        {
+          "month": 202212,
+          "turnover": 0.30517423904541513,
+          "excess": 0.005174239045415141,
+          "forced": 0.02663766044090714,
+          "disclosed_budget_excess": 0.005174239045415141
+        }
+      ],
+      "mean_gross": 0.8472382248442614,
+      "max_abs_net": 0.057753639321624854,
+      "max_abs_name_weight": 0.0007115226113113572,
+      "min_held_names": 2730,
+      "mean_held_names": 2948.363756613757,
+      "mean_effective_names": 2091.014689518933,
+      "mature_days": 754,
+      "complete_days": 253,
+      "incomplete_nan_days": 501,
+      "incomplete_days_with_guarded_names": 10,
+      "incomplete_missing_long_sum": 0.2619225461618406,
+      "incomplete_missing_short_sum": 0.15452202299128212,
+      "incomplete_missing_gross_max": 0.0656144568909042,
+      "trade_cost_all_decisions": 0.006622002957098786,
+      "borrow_cost_all_decisions": 0.03728149232098471,
+      "complete_day_gross_return_sum_not_period_return": 0.1247909179284126,
+      "complete_day_net_return_sum_not_period_return": 0.1097411082080241,
+      "complete_day_gross_return_mean_per_day": 0.0004932447348949114,
+      "complete_day_net_return_mean_per_day": 0.0004337593209803324,
+      "forced_exit_breach_months": [
+        {
+          "month": 202001,
+          "turnover": 0.30366338753954125,
+          "excess": 0.003663387539541263,
+          "forced": 0.004653790563612426,
+          "disclosed_budget_excess": 0.003663387539541263
+        },
+        {
+          "month": 202002,
+          "turnover": 0.3075790447644885,
+          "excess": 0.007579044764488507,
+          "forced": 0.011297871888877048,
+          "disclosed_budget_excess": 0.007579044764488507
+        },
+        {
+          "month": 202003,
+          "turnover": 0.3364481475277156,
+          "excess": 0.036448147527715635,
+          "forced": 0.07219590849504985,
+          "disclosed_budget_excess": 0.036448147527715635
+        },
+        {
+          "month": 202004,
+          "turnover": 0.30551849925212143,
+          "excess": 0.005518499252121445,
+          "forced": 0.018372657473430993,
+          "disclosed_budget_excess": 0.005518499252121445
+        },
+        {
+          "month": 202005,
+          "turnover": 0.3079912293160796,
+          "excess": 0.007991229316079596,
+          "forced": 0.016559969532162756,
+          "disclosed_budget_excess": 0.007991229316079596
+        },
+        {
+          "month": 202006,
+          "turnover": 0.36690446129777443,
+          "excess": 0.06690446129777444,
+          "forced": 0.08779643297228787,
+          "disclosed_budget_excess": 0.06690446129777444
+        },
+        {
+          "month": 202007,
+          "turnover": 0.3047933568963933,
+          "excess": 0.004793356896393319,
+          "forced": 0.02018084612311416,
+          "disclosed_budget_excess": 0.004793356896393319
+        },
+        {
+          "month": 202008,
+          "turnover": 0.3008374664061347,
+          "excess": 0.0008374664061346904,
+          "forced": 0.019453972805145638,
+          "disclosed_budget_excess": 0.0008374664061346904
+        },
+        {
+          "month": 202009,
+          "turnover": 0.30796829803959247,
+          "excess": 0.00796829803959248,
+          "forced": 0.044203313470755914,
+          "disclosed_budget_excess": 0.00796829803959248
+        },
+        {
+          "month": 202010,
+          "turnover": 0.308815179622996,
+          "excess": 0.008815179622995994,
+          "forced": 0.031456221037164445,
+          "disclosed_budget_excess": 0.008815179622995994
+        },
+        {
+          "month": 202012,
+          "turnover": 0.30339575722620366,
+          "excess": 0.003395757226203666,
+          "forced": 0.029162027664961683,
+          "disclosed_budget_excess": 0.003395757226203666
+        },
+        {
+          "month": 202101,
+          "turnover": 0.3022810177562886,
+          "excess": 0.0022810177562885836,
+          "forced": 0.03292050646578984,
+          "disclosed_budget_excess": 0.0022810177562885836
+        },
+        {
+          "month": 202102,
+          "turnover": 0.30761419553762753,
+          "excess": 0.007614195537627544,
+          "forced": 0.038312439315793874,
+          "disclosed_budget_excess": 0.007614195537627544
+        },
+        {
+          "month": 202103,
+          "turnover": 0.307105708244765,
+          "excess": 0.00710570824476503,
+          "forced": 0.0312236306894843,
+          "disclosed_budget_excess": 0.00710570824476503
+        },
+        {
+          "month": 202104,
+          "turnover": 0.3145133763029446,
+          "excess": 0.014513376302944636,
+          "forced": 0.0225010990622188,
+          "disclosed_budget_excess": 0.014513376302944636
+        },
+        {
+          "month": 202105,
+          "turnover": 0.30922720086088473,
+          "excess": 0.009227200860884743,
+          "forced": 0.026902776805596273,
+          "disclosed_budget_excess": 0.009227200860884743
+        },
+        {
+          "month": 202106,
+          "turnover": 0.31208987174331765,
+          "excess": 0.01208987174331766,
+          "forced": 0.025352151388348967,
+          "disclosed_budget_excess": 0.01208987174331766
+        },
+        {
+          "month": 202107,
+          "turnover": 0.3080905581763198,
+          "excess": 0.008090558176319818,
+          "forced": 0.02527345969945169,
+          "disclosed_budget_excess": 0.008090558176319818
+        },
+        {
+          "month": 202108,
+          "turnover": 0.31011526973904124,
+          "excess": 0.010115269739041255,
+          "forced": 0.026575291853457927,
+          "disclosed_budget_excess": 0.010115269739041255
+        },
+        {
+          "month": 202109,
+          "turnover": 0.30729425316949005,
+          "excess": 0.007294253169490061,
+          "forced": 0.024684383409419915,
+          "disclosed_budget_excess": 0.007294253169490061
+        },
+        {
+          "month": 202110,
+          "turnover": 0.30192309401355527,
+          "excess": 0.001923094013555282,
+          "forced": 0.023111965354463995,
+          "disclosed_budget_excess": 0.001923094013555282
+        },
+        {
+          "month": 202111,
+          "turnover": 0.30390798134294905,
+          "excess": 0.003907981342949063,
+          "forced": 0.02995797302028551,
+          "disclosed_budget_excess": 0.003907981342949063
+        },
+        {
+          "month": 202112,
+          "turnover": 0.3049213440257131,
+          "excess": 0.0049213440257130925,
+          "forced": 0.03842755503301494,
+          "disclosed_budget_excess": 0.0049213440257130925
+        },
+        {
+          "month": 202201,
+          "turnover": 0.3069125970217872,
+          "excess": 0.0069125970217872035,
+          "forced": 0.03370217211266257,
+          "disclosed_budget_excess": 0.0069125970217872035
+        },
+        {
+          "month": 202202,
+          "turnover": 0.30709055981621075,
+          "excess": 0.007090559816210762,
+          "forced": 0.027532417996181887,
+          "disclosed_budget_excess": 0.007090559816210762
+        },
+        {
+          "month": 202203,
+          "turnover": 0.30615685692180555,
+          "excess": 0.006156856921805565,
+          "forced": 0.044215817383651136,
+          "disclosed_budget_excess": 0.006156856921805565
+        },
+        {
+          "month": 202204,
+          "turnover": 0.301249311001002,
+          "excess": 0.001249311001002007,
+          "forced": 0.02387532557606887,
+          "disclosed_budget_excess": 0.001249311001002007
+        },
+        {
+          "month": 202205,
+          "turnover": 0.3021677099852696,
+          "excess": 0.002167709985269606,
+          "forced": 0.03448688927569466,
+          "disclosed_budget_excess": 0.002167709985269606
+        },
+        {
+          "month": 202208,
+          "turnover": 0.3058298149473354,
+          "excess": 0.005829814947335421,
+          "forced": 0.024681572429567807,
+          "disclosed_budget_excess": 0.005829814947335421
+        },
+        {
+          "month": 202209,
+          "turnover": 0.3024036983194881,
+          "excess": 0.0024036983194881123,
+          "forced": 0.02354312296948419,
+          "disclosed_budget_excess": 0.0024036983194881123
+        },
+        {
+          "month": 202210,
+          "turnover": 0.3010893685369504,
+          "excess": 0.001089368536950408,
+          "forced": 0.022382237817255072,
+          "disclosed_budget_excess": 0.001089368536950408
+        },
+        {
+          "month": 202212,
+          "turnover": 0.30517423904541513,
+          "excess": 0.005174239045415141,
+          "forced": 0.02663766044090714,
+          "disclosed_budget_excess": 0.005174239045415141
+        }
+      ],
+      "rounding_level_breach_months": [
+        {
+          "month": 202011,
+          "turnover": 0.30000000000000004,
+          "excess": 5.551115123125783e-17,
+          "forced": 0.02291911019612449,
+          "disclosed_budget_excess": 5.551115123125783e-17
+        }
+      ],
+      "common_complete_days": 253,
+      "common_complete_gross_return_sum_not_period_return": 0.1247909179284125,
+      "common_complete_net_return_sum_not_period_return": 0.10974110820802407,
+      "common_complete_gross_return_mean_per_day": 0.0004932447348949111,
+      "common_complete_net_return_mean_per_day": 0.0004337593209803323
+    }
+  ],
+  "limitation": "Planned-target proxy without drift, fills or cash book; rough returns are constant-weight d+1->d+2 approximations; incomplete (missing/guarded) days are NaN and excluded, their exposure disclosed. Sums/means are over complete days only: not period returns, NAV, Sharpe, impact or capacity estimates."
+}

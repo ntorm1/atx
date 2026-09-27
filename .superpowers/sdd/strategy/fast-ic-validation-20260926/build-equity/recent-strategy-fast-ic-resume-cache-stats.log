@@ -1,0 +1,63 @@
+# ..\atx-engine\src\factory\ic_screen.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# atx-impl\generated\build_provenance.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tools\equity_strategy_ic.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_runner_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\ic_screen_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\ic_research_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_runner.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss

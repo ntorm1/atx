@@ -14,6 +14,7 @@
 
 #include "atx/core/linalg/decompose.hpp" // symmetric_eig
 
+#include "atx/engine/risk/specific_risk.hpp"
 #include "atx/engine/risk/cov_ewma.hpp"          // ewma_factor_covariance
 #include "atx/engine/risk/shrinkage.hpp"         // shrunk_factor_covariance
 #include "atx/engine/risk/stat_factor_model.hpp" // APCA kernels, bai_ng_ic2, mp_edge_count
@@ -445,9 +446,9 @@ atx::core::Result<StatBlock> stat_block(const MatX &u, atx::usize k, const Hybri
 atx::core::Result<FactorReturnSeries> estimate_factor_returns(const ReturnPanel &ret,
                                                               const ExposureSeries &exp,
                                                               atx::usize as_of,
-                                                              atx::usize window) {
+                                                              atx::usize window, bool missing_factors_are_nan) {
   const atx::usize n = ret.n_assets();
-  if (window == 0U || as_of + window > ret.n_dates()) {
+  if (window == 0U || as_of >= ret.n_dates() || window > ret.n_dates() - as_of) {
     return Err(ErrorCode::InvalidArgument,
                "estimate_factor_returns: window must be > 0 and within the return panel");
   }
@@ -501,6 +502,9 @@ atx::core::Result<FactorReturnSeries> estimate_factor_returns(const ReturnPanel 
     if (!solve_date(exp, lay, xs, ret.r, static_cast<Eigen::Index>(t), ws, f, resid, r2)) {
       continue;
     }
+    if (missing_factors_are_nan)
+      for (atx::usize g = 0; g < lay.g; ++g)
+        if (ws.cnt[g] == 0) f[static_cast<Eigen::Index>(lay.oi + g)] = kNaN;
     out.f.row(static_cast<Eigen::Index>(j)) = f.transpose();
     out.resid.row(static_cast<Eigen::Index>(j)) = resid.transpose();
     out.used[j] = 1U;
@@ -513,11 +517,33 @@ atx::core::Result<FactorReturnSeries> estimate_factor_returns(const ReturnPanel 
 atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel &ret,
                                                                const ExposureSeries &exp,
                                                                const HybridCfg &cfg,
-                                                               atx::usize as_of) {
+                                                               atx::usize as_of,
+                                                               const RiskVraEvidence* prior_forecasts) {
   if (cfg.window < 2U) {
     return Err(ErrorCode::InvalidArgument, "HybridFactorModelBuilder: window must be >= 2");
   }
-  ATX_TRY(FactorReturnSeries fr, estimate_factor_returns(ret, exp, as_of, cfg.window));
+  const bool v2 = cfg.estimator.rule == RiskEstimatorRule::EffectiveHistoryV2;
+  if (cfg.estimator.rule != RiskEstimatorRule::LegacyV1 && !v2)
+    return Err(ErrorCode::InvalidArgument, "hybrid: unknown estimator rule");
+  if (v2 && (!exp.market || !has_caps(exp)))
+    return Err(ErrorCode::InvalidArgument, "hybrid V2: explicit market factor and current/PIT caps required");
+  if (v2) {
+    const auto limit = static_cast<atx::usize>(FactorModel::kMaxFactorsStack);
+    const auto ns = exp.n_style(), ng = exp.n_ind();
+    const auto stat = cfg.select == StatFactorSelect::Fixed ? cfg.n_stat_fixed : cfg.k_max;
+    if (ns > limit || ng > limit || stat > limit || ns + ng + 1 > limit - stat)
+      return Err(ErrorCode::OutOfRange, "hybrid V2: factor dimension bound before allocation");
+    const auto k_bound = ns + ng + 1 + stat;
+    const auto share = cfg.estimator.max_working_bytes / 4;
+    if (ret.n_assets() == 0 || cfg.window > share / 64 / ret.n_assets() ||
+        cfg.window > share / 64 / cfg.window || k_bound > share / 128 / k_bound ||
+        ret.n_assets() > share / 128 / k_bound)
+      return Err(ErrorCode::OutOfRange, "hybrid V2: complete fitting workspace budget");
+    for (auto industry : exp.industry)
+      if (industry >= ng)
+        return Err(ErrorCode::InvalidArgument, "hybrid V2: unavailable/out-of-range current industry");
+  }
+  ATX_TRY(FactorReturnSeries fr, estimate_factor_returns(ret, exp, as_of, cfg.window, v2));
   const Layout lay = layout_of(exp);
   if (fr.n_used < 2U) {
     return Err(ErrorCode::InvalidArgument, "HybridFactorModelBuilder: fewer than 2 usable dates");
@@ -535,7 +561,9 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
       obs += std::isnan(fr.resid(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i))) ? 0U
                                                                                              : 1U;
     }
-    if (obs >= cfg.min_spec_obs && obs >= 2U && asset_valid(exp, lay, x0, i, as_of)) {
+    if (v2 && !asset_valid(exp, lay, x0, i, as_of))
+      return Err(ErrorCode::InvalidArgument, "hybrid V2: current exposure/industry/cap unavailable; asset not silently dropped");
+    if ((v2 || (obs >= cfg.min_spec_obs && obs >= 2U)) && asset_valid(exp, lay, x0, i, as_of)) {
       assets.push_back(i);
     }
   }
@@ -588,12 +616,15 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
   // Free-coordinate factor-return series over the used dates (newest first).
   MatX gser(tu, static_cast<Eigen::Index>(kf));
   MatX u(m, tu); // model residual panel (asset rows, used-date columns)
+  std::vector<atx::usize> ages;
+  ages.reserve(fr.n_used);
   {
     Eigen::Index col = 0;
     for (atx::usize j = 0U; j < cfg.window; ++j) {
       if (fr.used[j] == 0U) {
         continue;
       }
+      ages.push_back(j);
       const Eigen::Index jj = static_cast<Eigen::Index>(j);
       for (atx::usize p = 0U; p < kf; ++p) {
         gser(col, static_cast<Eigen::Index>(p)) = fr.f(jj, static_cast<Eigen::Index>(free_[p]));
@@ -605,6 +636,9 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
     }
   }
 
+  if (v2)
+    for (Eigen::Index i = 0; i < u.size(); ++i)
+      if (std::isinf(u.data()[i])) return Err(ErrorCode::InvalidArgument, "hybrid V2: infinite residual");
   // Statistical block.
   std::vector<atx::usize> panel_rows;
   for (Eigen::Index r = 0; r < m; ++r) {
@@ -612,7 +646,8 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
     for (Eigen::Index c = 0; c < tu; ++c) {
       obs += std::isnan(u(r, c)) ? 0U : 1U;
     }
-    if (static_cast<atx::f64>(obs) >= cfg.min_coverage * static_cast<atx::f64>(tu)) {
+    if ((v2 && obs == static_cast<atx::usize>(tu)) ||
+        (!v2 && static_cast<atx::f64>(obs) >= cfg.min_coverage * static_cast<atx::f64>(tu))) {
       panel_rows.push_back(static_cast<atx::usize>(r));
     }
   }
@@ -638,6 +673,16 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
     b = std::move(sb.b);
     fhat = std::move(sb.fhat);
     e = std::move(sb.resid);
+    if (v2) {
+      // No zero-filled statistical loading for thin assets: retain fundamental
+      // exposure and structural specific risk, with an explicit zero APCA loading.
+      for (Eigen::Index r = 0; r < m; ++r) {
+        if (!std::binary_search(panel_rows.begin(), panel_rows.end(), static_cast<atx::usize>(r))) {
+          b.row(r).setZero();
+          e.row(r) = u.row(r);
+        }
+      }
+    }
   }
   if (kf + ks == 0U) {
     return Err(ErrorCode::InvalidArgument, "HybridFactorModelBuilder: model has no factors");
@@ -649,20 +694,40 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
   MatX f = MatX::Zero(kt, kt);
   if (kf > 0U) {
     x.leftCols(static_cast<Eigen::Index>(kf)) = xf;
-    ATX_TRY(MatX ff, factor_cov(gser, cfg));
-    f.topLeftCorner(static_cast<Eigen::Index>(kf), static_cast<Eigen::Index>(kf)) = ff;
+    if (!v2) {
+      ATX_TRY(MatX ff, factor_cov(gser, cfg));
+      f.topLeftCorner(static_cast<Eigen::Index>(kf), static_cast<Eigen::Index>(kf)) = ff;
+    }
   }
   if (ks > 0U) {
     x.rightCols(static_cast<Eigen::Index>(ks)) = b;
-    ATX_TRY(MatX fs, factor_cov(fhat, cfg));
-    f.bottomRightCorner(static_cast<Eigen::Index>(ks), static_cast<Eigen::Index>(ks)) = fs;
+    if (!v2) {
+      ATX_TRY(MatX fs, factor_cov(fhat, cfg));
+      f.bottomRightCorner(static_cast<Eigen::Index>(ks), static_cast<Eigen::Index>(ks)) = fs;
+    }
   }
   VecX d(m);
-  for (Eigen::Index r = 0; r < m; ++r) {
-    d[r] = spec_var(e, r, cfg.spec_halflife);
+  RiskEstimatorDiagnostics diagnostics;
+  if (v2) {
+    MatX series(tu, kt);
+    if (kf > 0) series.leftCols(static_cast<Eigen::Index>(kf)) = gser;
+    if (ks > 0) series.rightCols(static_cast<Eigen::Index>(ks)) = fhat;
+    std::vector<atx::f64> caps(assets.size());
+    for (atx::usize i = 0; i < assets.size(); ++i) caps[i] = cap_at(exp, assets[i], as_of);
+    ATX_TRY(auto clean, clean_risk_estimates_v2(series, e.transpose(), x, caps, ages,
+        cfg.estimator, prior_forecasts));
+    f = std::move(clean.factor_covariance);
+    d = std::move(clean.specific_variances);
+    diagnostics = std::move(clean.diagnostics);
+    const bool requested_stat = cfg.select == StatFactorSelect::Fixed ? cfg.n_stat_fixed > 0 : cfg.k_max > 0;
+    diagnostics.statistical_fallback_assets = !requested_stat ? 0 :
+        (ks > 0 ? assets.size() - panel_rows.size() : (panel_rows.size() < 2 ? assets.size() : 0));
+    // A selection rule choosing zero factors is not a thin-asset fallback.
+  } else {
+    for (Eigen::Index r = 0; r < m; ++r) d[r] = spec_var(e, r, cfg.spec_halflife);
   }
   ATX_TRY(FactorModel model, FactorModel::create(std::move(x), std::move(f), std::move(d), as_of,
-                                                 as_of + cfg.window));
+                                                 as_of + cfg.window, std::move(diagnostics)));
   return atx::core::Ok(HybridModel{std::move(model), std::move(assets), kf, ks, std::move(sel),
                                    std::move(fr)});
 }

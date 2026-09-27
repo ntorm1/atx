@@ -159,6 +159,10 @@ TEST_F(StageEquityBaseline, FixedUnfitBlendReplaysOnlyEvaluationAndBindsAncestry
     const auto report = json_file(directory / "report/summary.json");
     EXPECT_EQ(report["effective_rebalances"], 2);
     EXPECT_EQ(report["actual_trade_count"], 4);
+    EXPECT_EQ(summary["usable_for_alpha_evidence"], false);
+    EXPECT_EQ(summary["performance_evidence_eligibility"], "unverified-research-diagnostic");
+    EXPECT_EQ(summary["assumed_liquidation_count"], 0);
+    EXPECT_EQ(summary["assumed_liquidation_pnl_dollars"], 0);
     const auto ledger = contents(directory / "report/ledger.csv");
     // The first complete interval is all cash under the default one-observation delay.
     EXPECT_NE(ledger.find(",1000,1000,0,1000,0,0,0,0,0,0,0\n"), std::string::npos);
@@ -171,7 +175,9 @@ TEST_F(StageEquityBaseline, ExplicitZeroCostsDelayAndGlobalDefaultAumArePreserve
     cfg->replay_trade_bps = 0;
     cfg->replay_annual_borrow_bps = 0;
     cfg->report_aum = 1e9;
-    cfg->set_flags = {"replay-execution-delay", "replay-trade-bps", "replay-annual-borrow-bps", "report-aum"};
+    cfg->allow_same_close = true; // W0-I0b / B-02: delay 0 is an explicit opt-in now
+    cfg->set_flags = {"replay-execution-delay", "replay-trade-bps", "replay-annual-borrow-bps",
+                      "report-aum", "allow-same-close"};
     auto result = impl::run_equity_baseline(*cfg);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     const auto manifest = json_file(root / "baseline/manifest.json");
@@ -199,6 +205,8 @@ TEST_F(StageEquityBaseline, CommonReadinessGatesBothStreamsBeforeRanking) {
 TEST_F(StageEquityBaseline, MissingHeldMarkPreservesBoundFailureAndNoCompleteManifest) {
     auto cfg = input(true);
     ASSERT_TRUE(cfg.has_value());
+    cfg->replay_delisting_policy = impl::ReplayDelistingPolicy::AbortV1;
+    cfg->set_flags.insert("replay-delisting-policy");
     auto result = impl::run_equity_baseline(*cfg);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().message().find("required close"), std::string::npos);
@@ -211,6 +219,66 @@ TEST_F(StageEquityBaseline, MissingHeldMarkPreservesBoundFailureAndNoCompleteMan
     EXPECT_EQ(failure["source_context_artifact_id"].get<std::string>().size(), 64U);
     EXPECT_EQ(failure["recipe"]["evaluation_end_exclusive"], "2013-04-12");
     EXPECT_TRUE(fs::exists(root / "baseline/books.bin.manifest.json"));
+}
+
+TEST_F(StageEquityBaseline, CorrectedDefaultCompletesOriginalWindowAndConstrainedBook) {
+    auto baseline = input(true);
+    ASSERT_TRUE(baseline);
+    baseline->set_flags.insert("replay-delisting-policy");
+    const auto result = impl::run_equity_baseline(*baseline);
+    ASSERT_TRUE(result) << result.error().message();
+    const auto summary = json_file(root / "baseline/report/summary.json");
+    EXPECT_EQ(summary["full"]["observed_intervals"], 7);
+    EXPECT_EQ(summary["flagged_delistings"], 1);
+    EXPECT_EQ(summary["gap_carry_count"], 0);
+    EXPECT_EQ(json_file(root / "baseline/manifest.json")["recipe"]["replay_delisting_policy"],
+              "terminal-return");
+    impl::RunConfig cfg;
+    cfg.panel = baseline->panel;
+    cfg.equity_baseline_dir = baseline->out;
+    cfg.out = (root / "book_causal").string();
+    cfg.set_flags.insert("replay-delisting-policy");
+    const auto constrained = impl::run_equity_book(cfg);
+    ASSERT_TRUE(constrained) << constrained.error().message();
+    const auto book_summary = json_file(root / "book_causal/report/summary.json");
+    EXPECT_EQ(book_summary["full"]["observed_intervals"], 7);
+    EXPECT_EQ(book_summary["flagged_delistings"], 1);
+    EXPECT_EQ(json_file(root / "book_causal/report/manifest.json")
+        ["recipe"]["replay_delisting_policy"], "terminal-return");
+    for (const auto &directory : {root / "baseline", root / "book_causal"}) {
+        const auto outer = json_file(directory / "summary.json");
+        const auto nested = json_file(directory / "report/summary.json");
+        EXPECT_EQ(outer["replay"], nested["full"]);
+        for (const char *key : {"usable_for_alpha_evidence", "performance_evidence_eligibility",
+                 "terminal_liquidation_count", "evidenced_delisting_count", "flagged_delistings",
+                 "flagged_short_delistings", "flagged_short_pnl_dollars",
+                 "assumed_liquidation_count",
+                 "assumed_liquidation_pnl_dollars", "gap_carry_count"}) {
+            EXPECT_EQ(outer.at(key), nested.at(key)) << directory << " " << key;
+        }
+        EXPECT_EQ(outer["usable_for_alpha_evidence"], false);
+        EXPECT_EQ(outer["assumed_liquidation_count"], 1);
+        EXPECT_EQ(outer["evidenced_delisting_count"], 0);
+        EXPECT_LT(outer["assumed_liquidation_pnl_dollars"].get<double>(), 0);
+        EXPECT_EQ(outer["qualification"], "failed");
+        EXPECT_EQ(outer["performance_evidence_eligibility"],
+                  "ineligible-assumed-missing-price-liquidation");
+        const auto &reasons = outer.at("qualification_reasons");
+        EXPECT_NE(std::find(reasons.begin(), reasons.end(),
+            "ineligible-assumed-missing-price-liquidation"), reasons.end());
+        const auto manifest = json_file(directory / "manifest.json");
+        EXPECT_EQ(manifest["qualification"], "failed");
+        const auto sha = atx::core::sha256_file((directory / "summary.json").string());
+        ASSERT_TRUE(sha);
+        bool bound = false;
+        for (const auto &file : manifest.at("files")) {
+            if (file.at("filename") == "summary.json") {
+                bound = true;
+                EXPECT_EQ(file.at("sha256"), *sha);
+            }
+        }
+        EXPECT_TRUE(bound) << directory;
+    }
 }
 
 TEST_F(StageEquityBaseline, RejectsUnsupportedModesSealedDatesCoverageAndMemoryFloor) {
@@ -285,6 +353,11 @@ TEST_F(StageEquityBaseline, ConstrainedBookPublishesActualAllocationsAndContextA
     const auto id = manifest.at("book_id").get<std::string>();
     EXPECT_EQ(id.size(), 64U);
     EXPECT_TRUE(manifest.at("recipe").is_object());
+    EXPECT_EQ(manifest.at("recipe").at("allocation_rule"), "sparse-relative-v2");
+    EXPECT_EQ(manifest.at("recipe").at("constraint_storage").at("rule"), "SparseCsrV2");
+    EXPECT_EQ(manifest.at("recipe").at("constraint_storage").at("max_solver_bytes"), "1073741824");
+    EXPECT_EQ(manifest.at("recipe").at("constraint_storage").at("effective_max_factor_bytes"), "268435456");
+    EXPECT_EQ(manifest.at("recipe").at("solver_route"), "unchanged-augmented-admm-fixed-iterations");
     EXPECT_FALSE(manifest.at("files").empty());
     bool context_bound = false;
     for (const auto &parent : manifest.at("parents")) {
@@ -310,6 +383,8 @@ TEST_F(StageEquityBaseline, ConstrainedBookPublishesActualAllocationsAndContextA
     for (atx::usize i = 0; i < decisions.size(); ++i) {
         const auto &decision = decisions[i];
         EXPECT_TRUE(decision.at("solver_used").get<bool>());
+        EXPECT_EQ(decision.at("allocation_rule"), "sparse-relative-v2");
+        EXPECT_GT(decision.at("effective_solver_relative_tolerance").get<double>(), 0.0);
         EXPECT_EQ(decision.at("solver_certificate_scope"), "continuous-weights-before-representation");
         EXPECT_EQ(decision.at("continuous_weights_canonical_order").size(), 2U);
         EXPECT_EQ(decision.at("proposed_intents_canonical_order").size(), 2U);
@@ -345,11 +420,26 @@ TEST_F(StageEquityBaseline, ConstrainedBookPublishesActualAllocationsAndContextA
     const auto repeated = impl::run_equity_book(cfg);
     ASSERT_TRUE(repeated) << repeated.error().message();
     EXPECT_EQ(json_file(root / "book_repeat/manifest.json")["book_id"].get<std::string>(), id);
+    cfg.equity_allocation_rule = "legacy-dense-absolute-v1";
+    cfg.out = (root / "book_legacy").string();
+    const auto legacy = impl::run_equity_book(cfg);
+    ASSERT_TRUE(legacy) << legacy.error().message();
+    const auto old_manifest = json_file(root / "book_legacy/manifest.json");
+    const auto &old_recipe = old_manifest.at("recipe");
+    EXPECT_EQ(old_recipe.at("profile"), "constrained-preference-weekly-observed-close-v3");
+    EXPECT_FALSE(old_recipe.contains("allocation_rule"));
+    EXPECT_FALSE(old_recipe.contains("constraint_storage"));
+    EXPECT_FALSE(old_recipe.contains("solver_relative_tolerance"));
+    EXPECT_NE(old_manifest.at("book_id").get<std::string>(), id);
+    const auto old_certificates = json_file(root / "book_legacy/allocation_certificates.json");
+    for (const auto &decision : old_certificates.at("decisions"))
+        EXPECT_FALSE(decision.contains("effective_solver_relative_tolerance"));
 }
 
 TEST_F(StageEquityBaseline, ConstrainedBookPreservesMissingHeldMarkFailureOnOriginalWindow) {
-    const auto baseline = input(true);
+    auto baseline = input(true);
     ASSERT_TRUE(baseline.has_value());
+    baseline->replay_delisting_policy = impl::ReplayDelistingPolicy::AbortV1;
     ASSERT_FALSE(impl::run_equity_baseline(*baseline).has_value());
     ASSERT_TRUE(fs::exists(root / "baseline/evaluation.bin.manifest.json"));
     ASSERT_TRUE(fs::exists(root / "baseline/combo.bin.manifest.json"));
@@ -385,8 +475,9 @@ TEST_F(StageEquityBaseline, ConstrainedBookPreservesMissingHeldMarkFailureOnOrig
 }
 
 TEST_F(StageEquityBaseline, ObservedCloseEntryConstraintBindsAvailabilityWithoutShrinkingUnion) {
-    const auto baseline = input(false, false, false, true);
+    auto baseline = input(false, false, false, true);
     ASSERT_TRUE(baseline.has_value());
+    baseline->replay_delisting_policy = impl::ReplayDelistingPolicy::AbortV1;
     // Strict fixed-weight replay cannot price the first entry, but its frozen
     // evaluation/preferences remain valid input to a separately identified book.
     const auto strict = impl::run_equity_baseline(*baseline);
@@ -403,7 +494,7 @@ TEST_F(StageEquityBaseline, ObservedCloseEntryConstraintBindsAvailabilityWithout
     const auto directory = root / "observed_close_book";
     const auto manifest = json_file(directory / "manifest.json");
     const auto &recipe = manifest.at("recipe");
-    EXPECT_EQ(recipe.at("profile"), "constrained-preference-weekly-observed-close-v3");
+    EXPECT_EQ(recipe.at("profile"), "constrained-preference-weekly-sparse-relative-v4");
     const auto &policy = recipe.at("execution_availability");
     EXPECT_EQ(policy.at("model"), "ObservedCloseEntryConstraintV1");
     EXPECT_EQ(policy.at("available_by_order_submission"), "unverified");

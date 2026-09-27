@@ -1,0 +1,20 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "bfb6b859e1819b241cc9064908c37b04827eeac1",
+  "started_utc": "2026-09-27T00:27:09.943172+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+    "--gtest_output=xml:build-equity/recent-strategy-targets-v1-target-qualification/results.xml"
+  ],
+  "executable_sha256": "3566f0911f2299cf98c61a6b6ab0bf2f7b4b55561d6365b385cefb256f5faf71",
+  "bindings": [],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 768,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 1601032192,
+  "outcome": "launch-failed",
+  "exit_code": null
+}

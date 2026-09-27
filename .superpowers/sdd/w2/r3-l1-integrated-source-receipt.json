@@ -1,0 +1,114 @@
+{
+  "root_commit": "53109ab3a78408dcb64f919adda64e0d1391058c",
+  "kind": "read-only Git object equality; not compiled evidence",
+  "r3_reference": "6be7f67f2dc0a214d525625449c67779a1f1188c",
+  "l1_reference": "3d1998929a2a7f25eb5a9e266a5bb42ac79d27a0",
+  "qp_private_boundary_unchanged_by_r3_import": true,
+  "files": [
+    {
+      "scope": "R3",
+      "path": "atx-engine/include/atx/engine/cost/optimizer_cost_terms.hpp",
+      "integrated_blob": "70de2dbf7ca22c0a1486e08923dd96bff530e1d5",
+      "reviewed_blob": "70de2dbf7ca22c0a1486e08923dd96bff530e1d5",
+      "equal": true
+    },
+    {
+      "scope": "R3",
+      "path": "atx-engine/include/atx/engine/risk/cost_terms.hpp",
+      "integrated_blob": "39634cf57e8520fa30e99ddb1c7ac6a9cd484a06",
+      "reviewed_blob": "39634cf57e8520fa30e99ddb1c7ac6a9cd484a06",
+      "equal": true
+    },
+    {
+      "scope": "R3",
+      "path": "atx-engine/include/atx/engine/risk/cost_types.hpp",
+      "integrated_blob": "371fad4a8ab93f06f4961cf28d1ac83ff2acab32",
+      "reviewed_blob": "371fad4a8ab93f06f4961cf28d1ac83ff2acab32",
+      "equal": true
+    },
+    {
+      "scope": "R3",
+      "path": "atx-engine/include/atx/engine/risk/optimizer.hpp",
+      "integrated_blob": "dd2305d31bab146e4aaea0c787e3e57526a43649",
+      "reviewed_blob": "dd2305d31bab146e4aaea0c787e3e57526a43649",
+      "equal": true
+    },
+    {
+      "scope": "R3",
+      "path": "atx-engine/include/atx/engine/risk/qp_factor_admm.hpp",
+      "integrated_blob": "656c209db2926a15f5291af381ee55e2f248c44e",
+      "reviewed_blob": "656c209db2926a15f5291af381ee55e2f248c44e",
+      "equal": true
+    },
+    {
+      "scope": "R3",
+      "path": "atx-engine/src/risk/cost_terms.cpp",
+      "integrated_blob": "bab12385621d9a33dee737b4251016072c80afad",
+      "reviewed_blob": "bab12385621d9a33dee737b4251016072c80afad",
+      "equal": true
+    },
+    {
+      "scope": "R3",
+      "path": "atx-engine/src/risk/qp_factor_admm.cpp",
+      "integrated_blob": "43d3b3ba06e6f8eee3ef5d2f2f0e88d2d1fd2070",
+      "reviewed_blob": "43d3b3ba06e6f8eee3ef5d2f2f0e88d2d1fd2070",
+      "equal": true
+    },
+    {
+      "scope": "R3",
+      "path": "atx-engine/tests/risk/risk_cost_factor_v2_test.cpp",
+      "integrated_blob": "4cd271d0dbcb44a1c01d55d15fee5d9877f76473",
+      "reviewed_blob": "4cd271d0dbcb44a1c01d55d15fee5d9877f76473",
+      "equal": true
+    },
+    {
+      "scope": "L1",
+      "path": "atx-engine/include/atx/engine/learn/feature_matrix.hpp",
+      "integrated_blob": "30967b509b26bdf0f1abeee3610cc00eaf368787",
+      "reviewed_blob": "30967b509b26bdf0f1abeee3610cc00eaf368787",
+      "equal": true
+    },
+    {
+      "scope": "L1",
+      "path": "atx-engine/include/atx/engine/learn/linear_alpha.hpp",
+      "integrated_blob": "e92d29beace0a324549c36c4f8ed3a242eeed2ee",
+      "reviewed_blob": "e92d29beace0a324549c36c4f8ed3a242eeed2ee",
+      "equal": true
+    },
+    {
+      "scope": "L1",
+      "path": "atx-engine/include/atx/engine/learn/panel_dataset.hpp",
+      "integrated_blob": "bb951b531541d7dcc0d45ce5083fd3fad6bf9c2c",
+      "reviewed_blob": "bb951b531541d7dcc0d45ce5083fd3fad6bf9c2c",
+      "equal": true
+    },
+    {
+      "scope": "L1",
+      "path": "atx-engine/src/learn/feature_matrix.cpp",
+      "integrated_blob": "b0e1cdeeaf1bdc7dc96108bca93e1518691bb453",
+      "reviewed_blob": "b0e1cdeeaf1bdc7dc96108bca93e1518691bb453",
+      "equal": true
+    },
+    {
+      "scope": "L1",
+      "path": "atx-engine/src/learn/linear_alpha.cpp",
+      "integrated_blob": "549dd68cf2c1240f9f837dc079c6945a5b5be302",
+      "reviewed_blob": "549dd68cf2c1240f9f837dc079c6945a5b5be302",
+      "equal": true
+    },
+    {
+      "scope": "L1",
+      "path": "atx-engine/src/learn/panel_dataset.cpp",
+      "integrated_blob": "eb9e81bf7e116f7015a587629341653f69c33c23",
+      "reviewed_blob": "eb9e81bf7e116f7015a587629341653f69c33c23",
+      "equal": true
+    },
+    {
+      "scope": "L1",
+      "path": "atx-engine/tests/learn/learn_panel_dataset_test.cpp",
+      "integrated_blob": "31fb11b1a838eecf675190d6615a7252d620abd7",
+      "reviewed_blob": "31fb11b1a838eecf675190d6615a7252d620abd7",
+      "equal": true
+    }
+  ]
+}

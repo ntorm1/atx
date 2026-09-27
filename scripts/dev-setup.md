@@ -86,12 +86,37 @@ Two standing rules that keep this safe (research-verified 2026-07-12):
    hash differently and never share. All presets pin `${sourceDir}/build`, so this holds
    unless someone hand-rolls `-B`.
 
-**PCH semantics:** TUs compiled against the precompiled header (atx-engine, all test
+**PCH semantics:** TUs compiled against the precompiled header (atx-engine and its test
 targets) hit the cache **within** a worktree but miss **across** worktrees — the clang
 `.pch` bytes embed absolute paths (`-ffile-prefix-map` does not reach PCH serialization),
 so each worktree builds its own PCH and PCH-consumer objects once, at PCH speed
 (~3-5s/TU instead of 10-30s). Everything else — the whole engine, atx-core, atx-vol lib,
 third-party — transfers across worktrees as byte-identical cache hits.
+
+**Bounded incremental equity builds (2026-09-25):** `atx-build.ps1 build` and
+`check` use explicit `-Jobs N`, otherwise a nonempty `CMAKE_BUILD_PARALLEL_LEVEL`,
+otherwise **one** worker. Values must be integers in `[1,256]`; malformed values
+fail, and explicit `-Jobs` wins even over a malformed environment value. `-Ctest`
+keeps its own explicit/default `-Jobs` value. Raw `--parallel`, `--jobs` and `-j`
+flags are refused: migrate those calls to `-Jobs` so a trailing native option
+cannot override the bound. A build must name its targets. `check` applies the
+limit to Ninja itself, including PCH/dependency work, not just the named TUs.
+
+Use `-Preset equity-hygiene` for scoped PCH-off checks. It has separate
+`build-equity-hygiene/` and `deps/equity-hygiene/`; never switch `ATX_USE_PCH`
+OFF/ON in the warm `equity-dev` tree. Configure and build only the targets needed
+for the changed code. `ATX_ENGINE_GIT_SHA` remains configure-time provenance,
+but only `stage_discover.cpp` receives its compile definition: metadata changes
+do not invalidate the other pipeline object commands. An ordinary build without
+reconfigure does not refresh that SHA; publication still requires an explicit
+configured, hash-bound source/binary receipt.
+
+Inspect cache statistics without resetting them while another build is active.
+Global statistics are cumulative across callers; use per-build
+`CCACHE_STATSLOG`/`CCACHE_LOGFILE` for attribution. Never classify every miss as
+necessary PCH cost or assume a historical cache-hit percentage describes the
+current build. Changing warning, FP, ISA, CRT or optimization flags to make an
+incremental build look faster invalidates the comparison.
 
 **History note (why sccache was replaced):** the previous design (sccache +
 `SCCACHE_BASEDIR`) never worked: `SCCACHE_BASEDIR` is not implemented in sccache ≤0.15

@@ -32,12 +32,13 @@
 // Hot inline bits (seed_for, TrialCounter) stay here; cold run-once span/fold
 // builders are declared here and defined in src/learn/train.cpp.
 
+#include <span>
 #include <string_view>
 #include <vector>
 
 #include "atx/core/types.hpp" // f64, u16, u64, usize
 
-#include "atx/engine/eval/cpcv.hpp" // eval::LabelSpan, eval::CpcvFold, eval::cpcv_folds
+#include "atx/engine/eval/cpcv_date.hpp" // eval::LabelSpan, eval::CpcvFold, eval::cpcv_folds
 #include "atx/engine/learn/feature_matrix.hpp" // FeatureMatrix
 
 namespace atx::engine::learn {
@@ -109,6 +110,16 @@ struct TrialCounter {
 [[nodiscard]] std::vector<eval::LabelSpan> date_label_spans(const FeatureMatrix &fm,
                                                             atx::u16 horizon);
 
+// V2 includes the endpoint price close[d+h]: [d,d+h+1). Dates are
+// uncompressed session ordinals; no clamp to the last observed anchor date.
+[[nodiscard]] atx::core::Result<std::vector<eval::LabelSpan>>
+date_label_spans_v2(std::span<const atx::usize> dates, atx::u16 horizon);
+[[nodiscard]] atx::core::Status
+validate_date_cpcv_inputs(const FeatureMatrix& fm, std::span<const atx::u16> horizons,
+                         const eval::CpcvConfig& config);
+[[nodiscard]] atx::core::Result<eval::CpcvPlan>
+learn_cpcv_plan(const FeatureMatrix& fm, atx::u16 horizon, const eval::CpcvConfig& config);
+
 namespace detail {
 
 // The ascending list of distinct USED dates (the date axis of date_label_spans):
@@ -136,5 +147,14 @@ namespace detail {
 // ===========================================================================
 [[nodiscard]] Folds expand_date_folds(const std::vector<eval::CpcvFold> &folds,
                                       const FeatureMatrix &fm);
+
+// DateV2 expands through used-date ordinals, never an n_dates-sized mask.
+// Checks the separately bounded row-index workspace before allocation.
+[[nodiscard]] atx::core::Result<Folds>
+expand_date_folds_checked(const std::vector<eval::CpcvFold>& folds,
+                          const FeatureMatrix& fm, const eval::CpcvConfig& config);
+[[nodiscard]] atx::core::Status retain_cpcv_metadata(
+    std::vector<eval::CpcvMetadata>& retained, eval::CpcvMetadata metadata,
+    atx::u64 max_working_bytes);
 
 } // namespace atx::engine::learn

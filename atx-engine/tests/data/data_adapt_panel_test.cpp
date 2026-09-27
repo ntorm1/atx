@@ -164,13 +164,17 @@ TEST(DataAdaptPanel, PriceOnlyPanelEqualsWithDatafields) {
   auto univ_a = make_universe();
 
   // Path A — direct call.
-  auto res_a = with_datafields(kDates, kInsts, names_a, data_a, univ_a, adv_sp);
+  auto res_a = with_datafields(kDates, kInsts, names_a, data_a, univ_a, adv_sp,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(res_a.has_value()) << res_a.error().message();
   const Panel panel_a = std::move(res_a).value();
 
   // Path B — Dataset + adapter.
   const Dataset ds = make_dataset(make_universe());
-  auto res_b = price_to_panel(ds, adv_sp);
+  auto res_b = price_to_panel(ds, adv_sp,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(res_b.has_value()) << res_b.error().message();
   const Panel panel_b = std::move(res_b).value();
 
@@ -186,12 +190,16 @@ TEST(DataAdaptPanel, AdvWindowsMatch) {
   auto data_a = make_field_data();
   auto univ_a = make_universe();
 
-  auto res_a = with_datafields(kDates, kInsts, names_a, data_a, univ_a, adv_sp);
+  auto res_a = with_datafields(kDates, kInsts, names_a, data_a, univ_a, adv_sp,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(res_a.has_value()) << res_a.error().message();
   const Panel panel_a = std::move(res_a).value();
 
   const Dataset ds = make_dataset(make_universe());
-  auto res_b = price_to_panel(ds, adv_sp);
+  auto res_b = price_to_panel(ds, adv_sp,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(res_b.has_value()) << res_b.error().message();
   const Panel panel_b = std::move(res_b).value();
 
@@ -223,12 +231,16 @@ TEST(DataAdaptPanel, MaskPreserved) {
   auto data_a = make_field_data();
   const auto univ_a = make_universe();
 
-  auto res_a = with_datafields(kDates, kInsts, names_a, data_a, univ_a, adv_sp);
+  auto res_a = with_datafields(kDates, kInsts, names_a, data_a, univ_a, adv_sp,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(res_a.has_value()) << res_a.error().message();
   const Panel panel_a = std::move(res_a).value();
 
   const Dataset ds = make_dataset(make_universe());
-  auto res_b = price_to_panel(ds, adv_sp);
+  auto res_b = price_to_panel(ds, adv_sp,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(res_b.has_value()) << res_b.error().message();
   const Panel panel_b = std::move(res_b).value();
 
@@ -273,13 +285,17 @@ TEST(DataAdaptPanel, EmptyMaskAllInUniverse) {
 
   // Path A with empty universe.
   auto res_a = with_datafields(kDates, kInsts, names_a, data_a,
-                               /*universe=*/{}, adv_sp);
+                               /*universe=*/{}, adv_sp,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(res_a.has_value()) << res_a.error().message();
   const Panel panel_a = std::move(res_a).value();
 
   // Path B with empty mask Dataset.
   const Dataset ds = make_dataset(/*mask=*/{});
-  auto res_b = price_to_panel(ds, adv_sp);
+  auto res_b = price_to_panel(ds, adv_sp,
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(res_b.has_value()) << res_b.error().message();
   const Panel panel_b = std::move(res_b).value();
 
@@ -295,7 +311,9 @@ TEST(DataAdaptPanel, MissingCloseErrs) {
   const Dataset ds = make_dataset(/*mask=*/{}, &bad_names);
 
   const std::vector<atx::u16> adv = {2u};
-  auto res = price_to_panel(ds, std::span<const atx::u16>{adv});
+  auto res = price_to_panel(ds, std::span<const atx::u16>{adv},
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   EXPECT_FALSE(res.has_value());
 }
 

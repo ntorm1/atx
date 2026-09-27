@@ -37,8 +37,11 @@
 //  window are a PURE PARTITION of that one OOS stream. No walk-forward window
 //  trains on its own test slice — there is no training here at all, only a
 //  disjoint slice of an out-of-sample series. The vol-tercile labels are derived
-//  from the panel's price history (a property of the market, not of the alpha),
-//  so labelling carries no alpha look-ahead either. (Where this header is used
+//  from the panel's price history (a property of the market, not of the alpha).
+//  The default ExpandingPastV2 also fits cuts on STRICTLY PRIOR volatility dates;
+//  neither current returns nor future cut calibration affects a label. Explicit
+//  LegacyFullSampleV1 retains the old retrospective full-sample rank partition.
+//  (Where this header is used
 //  to slice a CPCV TEST-fold PnL, the CPCV embargo — cpcv.hpp, embargo=0.01 —
 //  already separates each test block from the train labels; the slicing here
 //  inherits that firewall and adds no leakage of its own.)
@@ -46,12 +49,11 @@
 // ===========================================================================
 //  Determinism (load-bearing)
 // ===========================================================================
-//  No RNG, no clock. regime_labels resolves the tercile cut by sorting the
-//  labelled dates' trailing vols in (vol, date) ascending order with an
-//  ascending-DATE tie-break, then assigning the lower third -> low, middle ->
-//  mid, upper -> high by RANK POSITION — so a tie at a cut boundary resolves to
-//  the earlier date deterministically and the partition is run-to-run byte-
-//  identical. Walk-forward windows are fixed contiguous index ranges. Every
+//  No RNG, no clock. ExpandingPastV2 keeps prior finite vols ordered by (vol,date)
+//  and uses empirical tercile cuts, with equality assigned to the middle regime.
+//  A flat history remains middle; there is no forced ex-post balance. The legacy
+//  rule preserves its full-sample date-rank tie break. Walk-forward windows are
+//  fixed contiguous index ranges. Every
 //  Sharpe reduction (eval::mean_std_pop) walks its slice in ascending index.
 //
 // ===========================================================================
@@ -67,11 +69,16 @@
 //  recorded here as the deferred upgrade.
 
 #include <algorithm> // std::sort
+#include <bit>
 #include <array>     // std::array (fixed-K per-regime Sharpe)
 #include <cmath>     // std::isnan
+#include <cstddef>
 #include <cstdint>   // (u8 sentinel)
 #include <limits>    // std::numeric_limits (kNoRegime sentinel)
 #include <span>      // std::span
+#include <set>
+#include <string_view>
+#include <utility>
 #include <vector>    // std::vector
 
 #include "atx/core/macro.hpp" // ATX_ASSERT
@@ -98,6 +105,15 @@ inline constexpr atx::usize kNumRegimes = 3;
 // ===========================================================================
 inline constexpr atx::u8 kNoRegime = std::numeric_limits<atx::u8>::max();
 
+enum class RegimeSliceRule : atx::u8 { LegacyFullSampleV1 = 1, ExpandingPastV2 = 2 };
+[[nodiscard]] inline constexpr std::string_view regime_slice_rule_name(RegimeSliceRule rule) noexcept {
+  switch (rule) {
+  case RegimeSliceRule::LegacyFullSampleV1: return "legacy-full-sample-v1";
+  case RegimeSliceRule::ExpandingPastV2: return "expanding-past-v2";
+  }
+  return "unknown";
+}
+
 // ===========================================================================
 //  RobustnessConfig — the knobs robustness_verdict screens on.
 //
@@ -112,7 +128,24 @@ struct RobustnessConfig {
   atx::usize vol_window = 10;
   atx::f64 min_regime_sharpe = 0.0;
   atx::usize n_walk_forward = 4;
+  RegimeSliceRule regime_rule = RegimeSliceRule::ExpandingPastV2;
+  atx::usize min_regime_history = 3; // prior finite volatility dates; V2 requires >=3
 };
+
+// Explicit recipe identity for persisted robustness outputs. V1 callers retain
+// their old digest path; the identity is still available as report metadata.
+[[nodiscard]] inline atx::u64 regime_recipe_id(const RobustnessConfig& cfg) noexcept {
+  atx::u64 hash = 14695981039346656037ULL;
+  const std::array<atx::u64, 5> words{static_cast<atx::u64>(cfg.regime_rule),
+      static_cast<atx::u64>(cfg.vol_window), static_cast<atx::u64>(cfg.min_regime_history),
+      static_cast<atx::u64>(cfg.n_walk_forward), std::bit_cast<atx::u64>(cfg.min_regime_sharpe)};
+  for (auto word : words)
+    for (unsigned byte = 0; byte < 8U; ++byte) {
+      hash = (hash ^ (word & 255U)) * 1099511628211ULL;
+      word >>= 8U;
+    }
+  return hash;
+}
 
 // ===========================================================================
 //  RobustnessVerdict — the plain copyable value the S4.5 gate (and S4.4b driver
@@ -143,6 +176,10 @@ struct RobustnessVerdict {
   atx::f64 worst_window_sharpe{0.0};
   atx::f64 recovery_corr{std::numeric_limits<atx::f64>::quiet_NaN()};
   bool is_robust{false};
+  RegimeSliceRule regime_rule{RegimeSliceRule::ExpandingPastV2};
+  atx::u64 regime_recipe{0};
+  std::array<atx::usize, kNumRegimes> regime_observations{};
+  bool regime_coverage_complete{false};
 };
 
 // ===========================================================================
@@ -206,8 +243,95 @@ namespace detail {
 
 } // namespace detail
 
+namespace detail {
+
+// One finite-only median per date, computed once. Missing market returns remain
+// unavailable; t=0 is never a fabricated zero return in V2.
+[[nodiscard]] inline std::vector<atx::f64>
+causal_market_returns(const alpha::Panel& panel, alpha::FieldId close) {
+  std::vector<atx::f64> history(panel.dates(), std::numeric_limits<atx::f64>::quiet_NaN());
+  std::vector<atx::f64> values;
+  values.reserve(panel.instruments());
+  for (atx::usize t = 1; t < panel.dates(); ++t) {
+    values.clear();
+    const auto prior = panel.field_cross_section(close, t - 1);
+    const auto current = panel.field_cross_section(close, t);
+    for (atx::usize i = 0; i < panel.instruments(); ++i) {
+      if (!std::isfinite(prior[i]) || !std::isfinite(current[i]) || prior[i] <= 0.0 || current[i] <= 0.0)
+        continue;
+      const auto value = current[i] / prior[i] - 1.0;
+      if (std::isfinite(value)) values.push_back(value);
+    }
+    if (values.empty()) continue;
+    const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2U);
+    std::nth_element(values.begin(), middle, values.end());
+    history[t] = *middle;
+    if (values.size() % 2U == 0U)
+      history[t] = *std::max_element(values.begin(), middle) * 0.5 + *middle * 0.5;
+  }
+  return history;
+}
+
+// A chronological, two-pass population standard deviation with a window-local
+// scale. No future normalization and no rolling NaN/overflow poison to recover.
+[[nodiscard]] inline atx::f64 finite_window_vol(std::span<const atx::f64> values) noexcept {
+  if (values.empty()) return std::numeric_limits<atx::f64>::quiet_NaN();
+  atx::f64 scale = 0.0;
+  for (auto value : values) {
+    if (!std::isfinite(value)) return std::numeric_limits<atx::f64>::quiet_NaN();
+    scale = std::max(scale, std::abs(value));
+  }
+  if (scale == 0.0) return 0.0;
+  atx::f64 mean = 0.0;
+  for (auto value : values) mean += value / scale;
+  mean /= static_cast<atx::f64>(values.size());
+  atx::f64 variance = 0.0;
+  for (auto value : values) { const auto delta = value / scale - mean; variance += delta * delta; }
+  return scale * std::sqrt(variance / static_cast<atx::f64>(values.size()));
+}
+
+// Online ordered quantiles: O(log T) insertion and O(1) cut updates. The two
+// iterators track floor((n-1)/3) and floor(2*(n-1)/3); no future coordinates exist.
+class ExpandingVolCuts {
+  using Values = std::multiset<std::pair<atx::f64, atx::usize>>;
+public:
+  ExpandingVolCuts() = default;
+  ExpandingVolCuts(const ExpandingVolCuts&) = delete;
+  ExpandingVolCuts& operator=(const ExpandingVolCuts&) = delete;
+  ExpandingVolCuts(ExpandingVolCuts&&) = delete;
+  ExpandingVolCuts& operator=(ExpandingVolCuts&&) = delete;
+  [[nodiscard]] atx::usize size() const noexcept { return values_.size(); }
+  [[nodiscard]] atx::u8 label(atx::f64 value) const noexcept {
+    return value < low_->first ? atx::u8{0} : value > high_->first ? atx::u8{2} : atx::u8{1};
+  }
+  void add(atx::f64 value, atx::usize date) {
+    const auto previous = values_.size();
+    const auto inserted = values_.emplace(value, date);
+    if (previous == 0U) { low_ = high_ = inserted; return; }
+    auto low_rank = (previous - 1U) / 3U;
+    auto high_rank = upper_rank(previous);
+    if (*inserted < *low_) ++low_rank;
+    if (*inserted < *high_) ++high_rank;
+    const auto want_low = previous / 3U;
+    const auto want_high = upper_rank(previous + 1U);
+    while (low_rank < want_low) { ++low_; ++low_rank; }
+    while (low_rank > want_low) { --low_; --low_rank; }
+    while (high_rank < want_high) { ++high_; ++high_rank; }
+    while (high_rank > want_high) { --high_; --high_rank; }
+  }
+private:
+  [[nodiscard]] static atx::usize upper_rank(atx::usize count) noexcept {
+    const auto n = count - 1U;
+    return 2U * (n / 3U) + 2U * (n % 3U) / 3U;
+  }
+  Values values_;
+  Values::const_iterator low_{values_.end()}, high_{values_.end()};
+};
+
+} // namespace detail
+
 // ===========================================================================
-//  regime_labels — the deterministic volatility-tercile partition.
+//  legacy_regime_labels — frozen retrospective full-sample partition.
 //
 //  For each date t >= vol_window, compute the trailing realized vol of the
 //  market (cross-sectional-median) return over [t-vol_window, t). Sort the
@@ -221,7 +345,7 @@ namespace detail {
 //  `n_regimes` is accepted for API symmetry with the spec but MUST equal
 //  kNumRegimes (the shipped partition is terciles); other values trip the assert.
 // ===========================================================================
-[[nodiscard]] inline std::vector<atx::u8> regime_labels(const alpha::Panel &panel,
+[[nodiscard]] inline std::vector<atx::u8> legacy_regime_labels(const alpha::Panel &panel,
                                                         atx::usize vol_window,
                                                         atx::usize n_regimes = kNumRegimes) {
   ATX_ASSERT(n_regimes == kNumRegimes);
@@ -260,6 +384,34 @@ namespace detail {
     labels[vols[rank].first] = static_cast<atx::u8>(g);
   }
   return labels;
+}
+
+// V2 trailing volatility at t uses returns [t-window,t), and cuts use only
+// finite volatility observations at dates <t. No label is retrospectively revised.
+// Full return windows and >=min_history prior vol observations are required.
+[[nodiscard]] inline std::vector<atx::u8> regime_labels(const alpha::Panel& panel,
+    atx::usize vol_window, atx::usize n_regimes = kNumRegimes,
+    RegimeSliceRule rule = RegimeSliceRule::ExpandingPastV2, atx::usize min_history = 3) {
+  if (rule == RegimeSliceRule::LegacyFullSampleV1)
+    return legacy_regime_labels(panel, vol_window, n_regimes);
+  std::vector<atx::u8> labels(panel.dates(), kNoRegime);
+  const auto close = panel.field_id("close");
+  if (rule != RegimeSliceRule::ExpandingPastV2 || n_regimes != kNumRegimes ||
+      !close || vol_window == 0U || panel.dates() <= vol_window || min_history < 3U) return labels;
+  const auto returns = detail::causal_market_returns(panel, *close);
+  detail::ExpandingVolCuts cuts;
+  for (atx::usize t = vol_window + 1U; t < panel.dates(); ++t) {
+    const auto vol = detail::finite_window_vol(std::span<const atx::f64>{returns}.subspan(t - vol_window, vol_window));
+    if (!std::isfinite(vol)) continue;
+    if (cuts.size() >= min_history) labels[t] = cuts.label(vol);
+    cuts.add(vol, t); // insertion AFTER classification is the fit/apply boundary
+  }
+  return labels;
+}
+
+[[nodiscard]] inline std::vector<atx::u8> regime_labels(const alpha::Panel& panel,
+                                                       const RobustnessConfig& cfg) {
+  return regime_labels(panel, cfg.vol_window, kNumRegimes, cfg.regime_rule, cfg.min_regime_history);
 }
 
 // ===========================================================================
@@ -346,7 +498,11 @@ namespace detail {
 //
 //  An alpha is ROBUST iff its worst per-regime OOS Sharpe AND its worst walk-
 //  forward-window Sharpe BOTH clear cfg.min_regime_sharpe — survival in EVERY
-//  vol regime and across EVERY rolling window, not merely full-sample. The
+//  vol regime and across EVERY rolling window, not merely full-sample. V2 also
+//  requires finite full-sample, per-regime and walk-forward Sharpes, as well as
+//  at least two finite observations in each regime; missing slices are
+//  explicitly unqualified even though the legacy descriptive Sharpe slot is zero.
+//  The
 //  full_sample_sharpe is reported for contrast (the naive number). recovery_corr
 //  is left NaN here (the caller folds in synthetic_alpha::recovery_correlation
 //  when it runs the planted-signal probe). PRECONDITION (debug): alpha_pnl and
@@ -357,6 +513,12 @@ namespace detail {
                                                           const RobustnessConfig &cfg) {
   ATX_ASSERT(alpha_pnl.size() == labels.size());
   RobustnessVerdict v;
+  v.regime_rule = cfg.regime_rule;
+  v.regime_recipe = regime_recipe_id(cfg);
+  for (atx::usize t = 0; t < labels.size(); ++t)
+    if (labels[t] < kNumRegimes && std::isfinite(alpha_pnl[t])) ++v.regime_observations[labels[t]];
+  v.regime_coverage_complete = std::all_of(v.regime_observations.begin(), v.regime_observations.end(),
+                                         [](auto count) { return count >= 2U; });
   v.regime_sharpe = per_regime_sharpe<kNumRegimes>(alpha_pnl, labels);
   v.walk_forward_sharpe = walk_forward_sharpe(alpha_pnl, cfg.n_walk_forward);
   v.full_sample_sharpe = sharpe_pp(alpha_pnl);
@@ -365,6 +527,16 @@ namespace detail {
   v.worst_window_sharpe = detail::min_sharpe(std::span<const atx::f64>{v.walk_forward_sharpe});
   v.is_robust = (v.worst_regime_sharpe >= cfg.min_regime_sharpe) &&
                 (v.worst_window_sharpe >= cfg.min_regime_sharpe);
+  if (cfg.regime_rule != RegimeSliceRule::LegacyFullSampleV1) {
+    const auto finite_score = [](atx::f64 score) { return std::isfinite(score); };
+    // The legacy minimum reduction deliberately retains its old NaN behavior.
+    // V2 must qualify every score directly: a later NaN cannot be hidden by a
+    // finite first slice, even when finite observation counts are sufficient.
+    v.is_robust = v.is_robust && cfg.regime_rule == RegimeSliceRule::ExpandingPastV2 &&
+                  v.regime_coverage_complete && std::isfinite(v.full_sample_sharpe) &&
+                  std::all_of(v.regime_sharpe.begin(), v.regime_sharpe.end(), finite_score) &&
+                  std::all_of(v.walk_forward_sharpe.begin(), v.walk_forward_sharpe.end(), finite_score);
+  }
   return v;
 }
 

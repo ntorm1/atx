@@ -26,6 +26,7 @@
 #include <algorithm>  // std::sort
 #include <cmath>      // std::abs
 #include <filesystem> // per-test temp directory (LibraryStore catalog)
+#include <limits>
 #include <span>       // std::span (brute-force reference)
 #include <string>
 #include <system_error> // std::error_code
@@ -222,6 +223,66 @@ TEST(LibraryCorrIndex, SameSeedSameSignatures) { // determinism (L7)
   lib::CorrNeighborIndex a(/*seed*/ 42, /*T*/ 64, /*K*/ 32);
   lib::CorrNeighborIndex b(/*seed*/ 42, /*T*/ 64, /*K*/ 32);
   EXPECT_EQ(a.signature(one[0]), b.signature(one[0]));
+}
+
+
+TEST(LibraryCorrIndex, SignedV2RecallsNegativeAndPreservesLegacySignature) {
+  const auto rows = random_pnl_pool(1, 128, 91);
+  std::vector<f64> negative = rows[0];
+  for (auto& x : negative) x = -x;
+  lib::CorrNeighborIndex current(8, 128, 64);
+  lib::CorrNeighborIndex legacy(8, 128, 64, lib::CorrIndexRule::LegacyBandsV1);
+  current.add(AlphaId{7}, rows[0]); legacy.add(AlphaId{7}, rows[0]);
+  EXPECT_EQ(current.signature(rows[0]), legacy.signature(rows[0]));
+  const auto hits = current.neighbors(negative);
+  ASSERT_EQ(hits.size(), 1U);
+  EXPECT_EQ(hits[0].value, 7U);
+  EXPECT_TRUE(legacy.neighbors(negative).empty());
+}
+
+TEST(LibraryCorrIndex, SignedV2BoundedRecallAtPointSevenInBothSigns) {
+  constexpr usize T = 128, queries = 128;
+  Xoshiro256pp rng(512);
+  lib::CorrNeighborIndex index(27, T, 64);
+  std::vector<std::vector<f64>> bases, probes;
+  for (usize a = 0; a < queries; ++a) {
+    std::vector<f64> x(T), z(T);
+    f64 mx = 0.0, mz = 0.0;
+    for (usize t = 0; t < T; ++t) { x[t] = rng.normal(); z[t] = rng.normal(); mx += x[t]; mz += z[t]; }
+    for (usize t = 0; t < T; ++t) { x[t] -= mx / T; z[t] -= mz / T; }
+    f64 xx = 0.0, xz = 0.0;
+    for (usize t = 0; t < T; ++t) { xx += x[t] * x[t]; xz += x[t] * z[t]; }
+    f64 zz = 0.0;
+    for (usize t = 0; t < T; ++t) { z[t] -= x[t] * xz / xx; zz += z[t] * z[t]; }
+    std::vector<f64> q(T);
+    const f64 sign = (a % 2U) == 0U ? 1.0 : -1.0;
+    for (usize t = 0; t < T; ++t)
+      q[t] = sign * (0.700001 * x[t] / std::sqrt(xx) +
+                    std::sqrt(1.0 - 0.700001 * 0.700001) * z[t] / std::sqrt(zz));
+    index.add(AlphaId{static_cast<u32>(a)}, x);
+    bases.push_back(std::move(x)); probes.push_back(std::move(q));
+  }
+  usize hits = 0;
+  for (usize a = 0; a < queries; ++a) {
+    ASSERT_NEAR(std::abs(pairwise_complete_corr(bases[a], probes[a])), 0.700001, 1e-12);
+    const auto ids = index.neighbors(probes[a]);
+    hits += static_cast<usize>(std::any_of(ids.begin(), ids.end(),
+        [a](auto id) { return id.value == a; }));
+  }
+  EXPECT_GE(static_cast<f64>(hits) / queries, 0.99);
+  // This is a bounded synthetic recall check, not the 10k/T5000 timing gate.
+}
+
+TEST(LibraryCorrIndex, MissingOverlapBypassesApproximateScreen) {
+  const auto rows = random_pnl_pool(2, 128, 17);
+  lib::CorrNeighborIndex index(5, 128, 64);
+  auto incomplete = rows[0];
+  incomplete[9] = std::numeric_limits<f64>::quiet_NaN();
+  index.add(AlphaId{0}, incomplete); index.add(AlphaId{1}, rows[1]);
+  const auto finite_query = index.neighbors(rows[1]);
+  ASSERT_EQ(finite_query.size(), 2U); // incomplete member is always scored exactly
+  EXPECT_EQ(index.neighbors(incomplete).size(), 2U); // incomplete query scans all
+  EXPECT_EQ(index.neighbors(rows[1], std::numeric_limits<f64>::quiet_NaN()).size(), 2U);
 }
 
 

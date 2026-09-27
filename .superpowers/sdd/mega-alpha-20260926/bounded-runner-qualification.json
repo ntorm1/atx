@@ -1,0 +1,54 @@
+{
+  "strategy-runner-smoke": {
+    "schema": "atx.bounded-research-run/v1",
+    "source_sha": "257ffd3b53477a0c2609cb365d7421daa239ea53",
+    "started_utc": "2026-09-26T21:37:05.111171+00:00",
+    "command": [
+      "C:\\Program Files\\Python312\\python.exe",
+      "-c",
+      "print('bounded research runner smoke')"
+    ],
+    "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+    "bindings": [],
+    "limits": {
+      "seconds": 5.0,
+      "max_rss_mib": 128,
+      "min_free_mib": 256
+    },
+    "sampled_peak_tree_rss_bytes": 6455296,
+    "minimum_system_free_bytes": 1622458368,
+    "outcome": "completed",
+    "exit_code": 0,
+    "wall_seconds": 0.264999999984866,
+    "logs": {
+      "stdout.log": "f108997f32badad0911a9d704d7e54b57d4f9877e471f9bdef6743f5f1cae227",
+      "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "strategy-runner-time-limit": {
+    "schema": "atx.bounded-research-run/v1",
+    "source_sha": "257ffd3b53477a0c2609cb365d7421daa239ea53",
+    "started_utc": "2026-09-26T21:37:05.654907+00:00",
+    "command": [
+      "C:\\Program Files\\Python312\\python.exe",
+      "-c",
+      "import time; time.sleep(10)"
+    ],
+    "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+    "bindings": [],
+    "limits": {
+      "seconds": 1.0,
+      "max_rss_mib": 128,
+      "min_free_mib": 256
+    },
+    "sampled_peak_tree_rss_bytes": 24186880,
+    "minimum_system_free_bytes": 1571737600,
+    "outcome": "time-limit",
+    "exit_code": 15,
+    "wall_seconds": 1.1089999999967404,
+    "logs": {
+      "stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

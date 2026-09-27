@@ -392,7 +392,15 @@ TEST(EvalTrialRegistry, SketchModeIdenticalTrialsCollapseAcrossSeeds) {
   EXPECT_NEAR(indep_sum / static_cast<f64>(seeds), static_cast<f64>(n), 8.0);
 }
 
-TEST(EvalTrialRegistry, RegistryFedDsrIsLessOverDeflatedOnCorrelatedTrials) {
+// W0-E0b (findings E-01): this test replaces
+// RegistryFedDsrIsLessOverDeflatedOnCorrelatedTrials, which locked the defect
+// in (it asserted that pairing N_eff with the cross-trial variance lowers SR*).
+// The cross-trial variance has already removed the component the trials
+// share, so the correlation must be discounted ONCE: the registry-fed
+// benchmark has to equal the expected maximum Sharpe of these trials under
+// their estimated correlation (the Monte-Carlo cross-check), and the pre-W0
+// rule — kept only as SummaryDsrRule::NEffCrossVarV1 — understates it.
+TEST(EvalTrialRegistry, RegistryFedDsrDiscountsCorrelationOnce) {
   const usize t = 252U;
   TrialRegistry reg = must_mem(t);
   const std::vector<f64> base = noise(t, 17U);
@@ -407,16 +415,210 @@ TEST(EvalTrialRegistry, RegistryFedDsrIsLessOverDeflatedOnCorrelatedTrials) {
   const TrialSummary s = reg.summary();
   ASSERT_LT(s.n_eff, 5.0);
   const f64 sr = s.max_sr;
-  const DsrResult raw = deflated_sharpe(sr, t, 0.0, 0.0, static_cast<usize>(s.n_raw), s.var_sr);
-  const DsrResult fed = deflated_sharpe(sr, s, t, 0.0, 0.0);
-  EXPECT_GE(fed.dsr, raw.dsr);
-  EXPECT_LE(fed.sr_star, raw.sr_star);
+  const DsrResult fed = deflated_sharpe(sr, s, t, 0.0, 0.0); // default: RawNCrossVarV2
+  EXPECT_DOUBLE_EQ(fed.sr_star, expected_max_sharpe(static_cast<usize>(s.n_raw), s.var_sr));
+  // The benchmark is the expected maximum under the estimated correlation.
+  auto mc = reg.mc_max_null(4000U, 3U);
+  ASSERT_TRUE(mc.has_value());
+  EXPECT_NEAR(fed.sr_star / mc->mean, 1.0, 0.2)
+      << "fed SR*=" << fed.sr_star << " MC E[max]=" << mc->mean;
+  // The pre-W0 rule double-discounts: its SR* is far below the true E[max],
+  // so it deflates less than it must.
+  const DsrResult v1 = deflated_sharpe(sr, s, t, 0.0, 0.0, SummaryDsrRule::NEffCrossVarV1);
+  EXPECT_LT(v1.sr_star, 0.5 * mc->mean);
+  EXPECT_GE(v1.dsr, fed.dsr);
+  EXPECT_DOUBLE_EQ(v1.sr_star, expected_max_sharpe_eff(s.n_eff, s.var_sr));
   // One trial == no selection: the overload collapses to PSR(0).
   TrialRegistry one = must_mem(t);
   const std::vector<f64> x = noise(t, 4U);
   ASSERT_TRUE(one.record(TrialKind::MinerExpr, 1U, x, 0.1).has_value());
   EXPECT_NEAR(deflated_sharpe(0.1, one.summary(), t, 0.0, 0.0).dsr,
               probabilistic_sharpe(0.1, 0.0, t, 0.0, 0.0), 1e-12);
+}
+
+TEST(EvalTrialRegistry, V3ScreenedTrialsCountWithoutInventedPnl) {
+  TrialRegistryConfig cfg;
+  cfg.pnl_len = 32;
+  cfg.sketch_dim = 16;
+  cfg.format = TrialLogFormat::V3;
+  auto reg = TrialRegistry::in_memory(cfg);
+  ASSERT_TRUE(reg);
+  TrialMeta meta;
+  meta.window_end = 31;
+  meta.sample = TrialSample::InSample;
+  ASSERT_TRUE(reg->record_screened(TrialKind::MinerExpr, 41, meta, 101, 201));
+  auto duplicate = reg->record_screened(TrialKind::MinerExpr, 41, meta, 101, 201);
+  ASSERT_TRUE(duplicate);
+  EXPECT_FALSE(duplicate->inserted);
+  EXPECT_FALSE(reg->record_screened(TrialKind::MinerExpr, 41, meta, 102, 201));
+  EXPECT_FALSE(reg->record_screened(TrialKind::MinerExpr, 41, meta, 101, 202));
+  ASSERT_TRUE(reg->record_screened(TrialKind::MinerExpr, 42, meta, 102, 201));
+  auto summary = reg->summary();
+  EXPECT_EQ(summary.n_raw, 2U);
+  EXPECT_EQ(summary.n_full_pnl, 0U);
+  EXPECT_EQ(summary.n_screened, 2U);
+  EXPECT_TRUE(std::isnan(summary.mean_sr));
+  EXPECT_TRUE(std::isnan(summary.n_eff));
+  EXPECT_FALSE(summary.pnl_statistics_complete);
+  EXPECT_TRUE(std::isnan(reg->trials()[0].sharpe));
+  const auto pnl = noise(32, 88);
+  ASSERT_TRUE(reg->record(TrialKind::MinerExpr, 43, meta, pnl, 0.25));
+  EXPECT_FALSE(reg->record(TrialKind::MinerExpr, 41, meta, pnl, 0.25));
+  summary = reg->summary();
+  EXPECT_EQ(summary.n_raw, 3U);
+  EXPECT_EQ(summary.n_in_sample, 3U);
+  EXPECT_EQ(summary.n_full_pnl, 1U);
+  EXPECT_DOUBLE_EQ(summary.mean_sr, 0.25);
+  EXPECT_DOUBLE_EQ(summary.n_eff_full_pnl, 1.0);
+  EXPECT_TRUE(std::isnan(summary.n_eff));
+  EXPECT_FALSE(reg->correlation());
+  EXPECT_FALSE(reg->mc_max_null(16, 5));
+  EXPECT_FALSE(reg->accounting({}));
+  EXPECT_EQ(reg->size(), 3U);
+  EXPECT_EQ(reg->chain_head().records, 3U);
+}
+
+TEST(EvalTrialRegistry, V3MixedReplayAndLegacyFormatsRemainExplicit) {
+  const auto path = fresh_path("v3_mixed");
+  TrialRegistryConfig cfg;
+  cfg.pnl_len = 32;
+  cfg.sketch_dim = 16;
+  cfg.format = TrialLogFormat::V3;
+  TrialMeta meta;
+  meta.window_end = 31;
+  meta.sample = TrialSample::InSample;
+  TrialChainHead anchor;
+  u64 hash = 0;
+  {
+    auto a = TrialRegistry::open(path, cfg);
+    auto b = TrialRegistry::open(path, cfg);
+    ASSERT_TRUE(a); ASSERT_TRUE(b);
+    ASSERT_TRUE(a->record(TrialKind::MinerExpr, 1, meta, noise(32, 10), 0.1));
+    ASSERT_TRUE(b->record_screened(TrialKind::MinerExpr, 2, meta, 10, 20));
+    auto duplicate = a->record_screened(TrialKind::MinerExpr, 2, meta, 10, 20);
+    ASSERT_TRUE(duplicate); EXPECT_FALSE(duplicate->inserted);
+    ASSERT_TRUE(a->record(TrialKind::MinerExpr, 3, meta, noise(32, 11), 0.3));
+    anchor = a->chain_head();
+    hash = a->summary().registry_hash;
+    EXPECT_EQ(std::filesystem::file_size(path), 48U + 2U * (88U + 16U * 8U) + 96U);
+  }
+  cfg.format = TrialLogFormat::V2; // Existing file adopts its explicit format.
+  auto replay = TrialRegistry::open(path, cfg, anchor);
+  ASSERT_TRUE(replay);
+  EXPECT_EQ(replay->format(), TrialLogFormat::V3);
+  EXPECT_EQ(replay->summary().registry_hash, hash);
+  EXPECT_EQ(replay->summary().n_raw, 3U);
+  EXPECT_EQ(replay->summary().n_full_pnl, 2U);
+  EXPECT_NEAR(replay->summary().mean_sr, 0.2, 1e-15);
+  EXPECT_NEAR(replay->summary().var_sr, 0.02, 1e-15);
+  EXPECT_EQ(replay->trials()[1].observation, TrialObservation::IcScreened);
+  for (const auto format : {TrialLogFormat::V1, TrialLogFormat::V2}) {
+    cfg.format = format;
+    auto legacy = TrialRegistry::in_memory(cfg);
+    ASSERT_TRUE(legacy);
+    EXPECT_FALSE(legacy->record_screened(TrialKind::MinerExpr, 9, meta, 10, 20));
+    EXPECT_EQ(legacy->size(), 0U);
+    EXPECT_TRUE(legacy->record(TrialKind::MinerExpr, 1, noise(32, 10), 0.1));
+    EXPECT_TRUE(legacy->summary().pnl_statistics_complete);
+  }
+}
+
+TEST(EvalTrialRegistry, V3TornTailRepairChecksAnchorBeforeTruncation) {
+  const auto path = fresh_path("v3_tail");
+  TrialRegistryConfig cfg;
+  cfg.pnl_len = 32; cfg.sketch_dim = 16; cfg.format = TrialLogFormat::V3;
+  TrialMeta meta; meta.window_end = 31;
+  TrialChainHead first, complete;
+  {
+    auto reg = TrialRegistry::open(path, cfg);
+    ASSERT_TRUE(reg);
+    ASSERT_TRUE(reg->record_screened(TrialKind::MinerExpr, 1, meta, 10, 20));
+    first = reg->chain_head();
+    ASSERT_TRUE(reg->record_screened(TrialKind::MinerExpr, 2, meta, 10, 20));
+    complete = reg->chain_head();
+  }
+  std::filesystem::resize_file(path, 48U + 96U + 37U);
+  const auto torn_size = std::filesystem::file_size(path);
+  EXPECT_FALSE(TrialRegistry::open(path, cfg, complete));
+  EXPECT_EQ(std::filesystem::file_size(path), torn_size);
+  auto recovered = TrialRegistry::open(path, cfg, first);
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(recovered->chain_head(), first);
+  EXPECT_EQ(recovered->size(), 1U);
+  EXPECT_EQ(std::filesystem::file_size(path), 48U + 96U);
+}
+
+TEST(EvalTrialRegistry, V3MidLogChecksumFailureDoesNotDeleteTrials) {
+  const auto path = fresh_path("v3_checksum");
+  TrialRegistryConfig cfg;
+  cfg.pnl_len = 32; cfg.sketch_dim = 16; cfg.format = TrialLogFormat::V3;
+  TrialMeta meta; meta.window_end = 31;
+  {
+    auto reg = TrialRegistry::open(path, cfg);
+    ASSERT_TRUE(reg);
+    ASSERT_TRUE(reg->record_screened(TrialKind::MinerExpr, 1, meta, 10, 20));
+    ASSERT_TRUE(reg->record(TrialKind::MinerExpr, 2, noise(32, 90), 0.1));
+  }
+  const auto size = std::filesystem::file_size(path);
+  {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+    file.seekp(48U + 72U); // first screen recipe tag, without a matching checksum
+    const char byte = '\x55';
+    file.write(&byte, 1);
+  }
+  EXPECT_FALSE(TrialRegistry::open(path, cfg));
+  EXPECT_EQ(std::filesystem::file_size(path), size);
+}
+
+TEST(EvalTrialRegistry, V3DuplicateMetadataCannotChangeSampleOrWindow) {
+  TrialRegistryConfig cfg;
+  cfg.pnl_len = 32; cfg.sketch_dim = 16; cfg.format = TrialLogFormat::V3;
+  TrialMeta meta;
+  meta.window_end = 31; meta.sample = TrialSample::InSample;
+  auto reg = TrialRegistry::in_memory(cfg);
+  ASSERT_TRUE(reg);
+  ASSERT_TRUE(reg->record_screened(TrialKind::MinerExpr, 1, meta, 10, 20));
+  const auto anchor = reg->chain_head();
+  for (int field = 0; field < 6; ++field) {
+    auto changed = meta;
+    switch (field) {
+    case 0: changed.sample = TrialSample::OutOfSample; break;
+    case 1: changed.window_start = 1; break;
+    case 2: changed.window_end = 30; break;
+    case 3: changed.fidelity = 1; break;
+    case 4: changed.family_tag = 3; break;
+    case 5: changed.theme_tag = 4; break;
+    }
+    EXPECT_FALSE(reg->record_screened(TrialKind::MinerExpr, 1, changed, 10, 20));
+    EXPECT_EQ(reg->chain_head(), anchor);
+  }
+  EXPECT_EQ(reg->summary().n_in_sample, 1U);
+  EXPECT_EQ(reg->summary().n_out_of_sample, 0U);
+
+  // Append a correctly checksummed duplicate from a separate valid log. Its
+  // changed sample must be rejected during replay, not silently deduplicated.
+  const auto first_path = fresh_path("v3_duplicate_meta_first");
+  const auto changed_path = fresh_path("v3_duplicate_meta_changed");
+  {
+    auto first = TrialRegistry::open(first_path, cfg);
+    auto changed = TrialRegistry::open(changed_path, cfg);
+    ASSERT_TRUE(first); ASSERT_TRUE(changed);
+    ASSERT_TRUE(first->record_screened(TrialKind::MinerExpr, 1, meta, 10, 20));
+    meta.sample = TrialSample::OutOfSample;
+    ASSERT_TRUE(changed->record_screened(TrialKind::MinerExpr, 1, meta, 10, 20));
+  }
+  {
+    std::ifstream source(changed_path, std::ios::binary);
+    source.seekg(48);
+    std::vector<char> record(96);
+    source.read(record.data(), static_cast<std::streamsize>(record.size()));
+    ASSERT_TRUE(source);
+    std::ofstream target(first_path, std::ios::binary | std::ios::app);
+    target.write(record.data(), static_cast<std::streamsize>(record.size()));
+  }
+  const auto size = std::filesystem::file_size(first_path);
+  EXPECT_FALSE(TrialRegistry::open(first_path, cfg));
+  EXPECT_EQ(std::filesystem::file_size(first_path), size);
 }
 
 } // namespace atx_test_l4_mtest_trial_registry

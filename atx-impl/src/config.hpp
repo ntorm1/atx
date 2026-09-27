@@ -1,5 +1,10 @@
 #pragma once
 
+#include "atx/engine/alpha/vwap_rule.hpp"
+#include "atx/engine/factory/ic_screen_config.hpp"
+#include "atx/engine/eval/cpcv_config.hpp"
+#include "atx/engine/eval/pbo_config.hpp"
+
 #include <array>
 #include <limits>
 #include <set>
@@ -12,6 +17,21 @@
 #include "atx/core/types.hpp"  // atx::u16 (needed for adv_windows)
 
 namespace atx::impl {
+
+// B-04: keep the pre-W0 rejection available only as an explicit legacy policy.
+enum class ReplayDelistingPolicy : atx::u8 { AbortV1 = 1, TerminalReturnV2 = 2 };
+
+// Canonical CLI/recipe spelling; an invalid programmatic enum returns "invalid".
+[[nodiscard]] const char *replay_delisting_policy_name(ReplayDelistingPolicy policy) noexcept;
+// Accept only terminal-return or abort; invalid text returns InvalidArgument.
+[[nodiscard]] atx::core::Result<ReplayDelistingPolicy>
+parse_replay_delisting_policy(std::string_view value);
+
+// Shared by discover/config-file and equity-mine parsing. Returns false for an
+// unrelated flag; recognized invalid values return InvalidArgument unchanged.
+[[nodiscard]] atx::core::Result<bool> apply_ic_screen_option(
+    atx::engine::factory::IcScreenConfig& config, std::string_view flag,
+    std::string_view value);
 
 // The single source of truth for valid subcommand names. parse_args validates
 // against this; dispatch's routing if-chain consumes the same names.
@@ -42,6 +62,7 @@ struct RunConfig {
     // -- panel --
     std::string segs;                  // --segs
     std::string panel_out;             // --panel-out
+    std::string panel_storage_rule{"legacy-f64-v1"}; // --panel-storage-rule
     std::string start;                 // --start
     std::string end;                   // --end
     double      min_adv_usd   = 0.0;  // --min-adv-usd
@@ -56,6 +77,10 @@ struct RunConfig {
     unsigned long long seed = 0ULL;    // --seed
     long        population   = 0;     // --population
     long        generations  = 0;     // --generations
+    atx::engine::factory::IcScreenConfig ic_screen =
+        atx::engine::factory::equivalence_ic_screen_config();
+    // disabled-v1 reproduces unscreened discovery. V2 reproduction also needs
+    // its recorded numeric recipe (previous practical_abs_ic default: 0.02).
     std::vector<std::string> seed_exprs; // --seed-expr (repeatable)
     double      min_dsr      = 0.5;   // --min-dsr
 
@@ -104,6 +129,13 @@ struct RunConfig {
     // but it never un-persists an alpha or changes the exit code. Threaded into
     // FactoryConfig::max_pbo.
     double      max_pbo = 1.0; // --max-pbo (run-level CSCV-PBO batch gate; 1.0 = off, active when < 1.0)
+    // --pbo-rule cached-moments-v2|legacy-gather-v1. V2 binds a new resume
+    // identity; explicit V1 keeps the previous numerical recipe/identity.
+    // DateV2 is opt-in; legacy CPCV bytes remain unchanged.
+    atx::engine::eval::CpcvRule cpcv_rule{atx::engine::eval::CpcvRule::ObservationV1};
+    atx::usize cpcv_embargo_dates{0};
+    atx::u64 cpcv_max_working_bytes{64ULL * 1024ULL * 1024ULL};
+    atx::engine::eval::PboRule pbo_rule{atx::engine::eval::PboRule::CachedMomentsV2};
     // --robust-holdout-frac (W4a): OPTIONAL. When > 0, discover builds a weak/holdout
     // sub-universe Panel = the main panel with its universe restricted to a
     // DETERMINISTIC seeded instrument sub-sample (~this fraction of in-universe
@@ -200,6 +232,8 @@ struct RunConfig {
     // already assigns cfg.adv_windows directly into a std::vector<atx::u16>. empty => {adv_window}.
     std::vector<atx::u16> adv_windows;      // --adv-windows (comma-separated list)
     bool                  augment_panel = false; // --augment-panel (valueless bool)
+    atx::engine::alpha::VwapRule vwap_rule =
+        atx::engine::alpha::VwapRule::RawDailyCloseV2; // --vwap-rule
 
     // --library-dir (8.A): a STABLE on-disk library::Library directory that
     // ACCUMULATES admitted alphas across discover runs/seeds (the library is
@@ -396,7 +430,13 @@ struct RunConfig {
     // (never a hard block) rather than fabricated.
     std::string short_interest;             // --short-interest <csv> (deferred stage; see ledger)
     std::string augment_out;                // --augment-out <bin>   (deferred stage; see ledger)
-    long        si_publication_lag = 2;     // --si-publication-lag <days>
+    // W0-I0b / D-02: FINRA short interest becomes usable on the 8th NYSE session after
+    // settlement (7 sessions plus the after-close +1, FinraPublicationLag{} in
+    // data/finra_short.hpp). The count is in NYSE SESSIONS under the default rule
+    // "nyse-sessions-v2"; "calendar-days-v1" keeps the pre-W0 calendar-day meaning
+    // (the old default was 2 calendar days, which leaked 1-2 sessions on ~40% of rows).
+    long        si_publication_lag = 7;     // --si-publication-lag <sessions|days>
+    std::string si_publication_lag_rule = "nyse-sessions-v2"; // --si-publication-lag-rule
     // --incremental-panel (S6/p7 carry-forward): runtime opt-in for
     // stage_panel.cpp's acquire_history_panel incremental append path (previously
     // gated behind the ATX_PANEL_INCREMENTAL compile macro, unreachable from any
@@ -447,10 +487,19 @@ struct RunConfig {
     double borrow_bps = 0.0;
     // Identified report replay: hypothetical close execution after this many
     // stored observations. This delay does not certify historical availability.
+    // W0-I0b / B-02: 0 (same-close fills) is rejected unless --allow-same-close.
     atx::usize replay_execution_delay = 1; // --replay-execution-delay
+    // W0-I0b / I-11: the identified report refuses to run unless BOTH rates were
+    // chosen explicitly (a flag, a config key, or a nonzero programmatic value); an
+    // intentional frictionless replay must say --replay-trade-bps 0 etc. out loud.
     double replay_trade_bps = 0.0;         // --replay-trade-bps per actual dollar traded
     double replay_annual_borrow_bps = 0.0; // --replay-annual-borrow-bps annual simple rate
+    // W0-I0b / B-02: explicit opt-in to a zero execution delay (same-close fills) in
+    // the replay, equity IC and equity-mine delays. Default false: delay < 1 is refused.
+    bool allow_same_close = false;         // --allow-same-close [true|false]
     int replay_day_basis = 365;            // --replay-day-basis 360|365 calendar days
+    ReplayDelistingPolicy replay_delisting_policy = ReplayDelistingPolicy::TerminalReturnV2;
+                                          // --replay-delisting-policy terminal-return|abort
     // Fixed equity-baseline recipe: explicit scored window, separate from the
     // source panel's feature warmup. Dates are validated by the baseline stage.
     std::string equity_evaluation_start; // --evaluation-start, inclusive
@@ -462,9 +511,35 @@ struct RunConfig {
     // The stage inherits baseline dates/financial assumptions unless overridden;
     // set_flags distinguishes an explicit zero fee from an omitted override.
     std::string equity_baseline_dir; // --baseline-dir
+    // Explicit numerical/storage recipe; legacy selection omits the V2 metadata.
+    std::string equity_allocation_rule = "sparse-relative-v2"; // --allocation-rule
     // Append-only hash-chained pre-registration ledger consumed by equity-ic.
     // Empty = the stage's own frozen default, atx-engine/reviews/trial-ledger.jsonl.
     std::string equity_trial_ledger; // --trial-ledger
+    std::string equity_ic_prereg_file{}; // --ic-prereg-file, paired with exact SHA256
+    std::string equity_ic_prereg_sha256{}; // --ic-prereg-sha256
+    // Opt-in durable numerical-cell accounting, separate from the legacy ledger.
+    std::string equity_ic_trial_accounting_rule{"legacy-ledger-v1"};
+    std::string equity_ic_epoch_catalog{}; // --ic-epoch-catalog
+    std::string equity_ic_epoch_anchor{}; // --ic-epoch-anchor, externally retained head
+    // W0-I0b / D-12: point-in-time membership for equity-baseline / equity-ic. A
+    // context built with --universe-membership carries a YEAR-UNION allow-list; under
+    // the default rule "as-of-v2" the stage re-applies the membership AS OF each
+    // session (a name is admitted only once the last rebalance effective on or before
+    // that session lists it), which needs the same membership.bin the context names.
+    // "year-union-v1" reproduces the pre-W0 (look-ahead) mask for frozen artifacts.
+    std::string equity_membership;                  // --membership <membership.bin>
+    std::string equity_membership_rule = "as-of-v2"; // --membership-rule as-of-v2|year-union-v1
+    // W0-I0b / E-18: equity-ic minimum admitted names for a date to emit (was 2).
+    atx::usize equity_ic_min_names_per_date = 50; // --min-names-per-date
+    // W0-I0b / E-09 wiring: equity-ic entry delay (sessions from the signal close to
+    // the entry close). 0 requires --allow-same-close.
+    atx::usize equity_ic_execution_delay = 1;     // --ic-execution-delay
+    // W0-I0b / E-02 wiring: two-horizon-v2 (default) | half-horizon-v1 | politis-white-v2.
+    std::string equity_ic_block_len_rule = "two-horizon-v2"; // --ic-block-len-rule
+    // W0-I0b / I-15: optional terminal-return table (CSV; W2-D2 delivers the data).
+    // Empty = the frozen checkpoint-14 2013 table built into equity-ic.
+    std::string equity_terminal_returns;          // --terminal-returns <csv>
     // Checkpoint 15 `equity-universe` (design 2026-09-20-iteration15 §5.1-§5.2): the
     // `;`-separated segment directories and their positionally paired preparation
     // manifests, plus the inclusive rank-date window. Parsed and validated by the stage.
@@ -472,6 +547,8 @@ struct RunConfig {
     std::string equity_preparation_manifests; // --preparation-manifests a;b;...
     std::string equity_rank_start;            // --rank-start, inclusive YYYY-MM-DD
     std::string equity_rank_end;              // --rank-end, inclusive YYYY-MM-DD
+    std::string equity_universe_rule = "common-stock-v2"; // --universe-rule; explicit legacy-v1 reproduces cp15
+    std::string equity_instrument_types;     // --instrument-types, sealed dated type projection JSON
     // --robustness-sub-universe / --robustness-alt-neutralization / --robustness-param-perturb
     // (S5-3): expose the 3 currently-unreachable eval::BatteryConfig checks (noise_control is
     // already wired via --robustness-battery alone, p8 final-wave). Each requires BOTH its own
@@ -521,12 +598,42 @@ read_seed_file(const std::string& path);
 // (which never runs parse_args' cross-flag pass) fails the same way.
 [[nodiscard]] atx::core::Status validate_membership_flags(const RunConfig& cfg);
 
+// W0-I0b / B-02: an execution delay below one session means the book fills at the
+// same close that produced its signal. Refused (InvalidArgument) for
+// replay_execution_delay and equity_ic_execution_delay unless allow_same_close.
+[[nodiscard]] atx::core::Status validate_execution_delay(const RunConfig& cfg);
+
+// Every cross-flag rule (--resume needs --run-db, membership all-three-or-none, the
+// execution-delay guard, the si-lag rule). parse_args applies it when no --config is
+// given; with --config it is deferred and the caller (dispatch) MUST run it on the
+// merged result, so a file cannot bypass what the CLI enforces and an opt-in named in
+// the file (allow-same-close=true) counts for a CLI value.
+[[nodiscard]] atx::core::Status validate_cross_flags(const RunConfig& cfg);
+
+// Parse a boolean flag value (W0-I0b / I-10): "" (a valueless CLI flag or a bare
+// `flag=` config line), "true" and "1" mean true, "false" and "0" mean false; anything
+// else is Err(InvalidArgument). Exposed for the stages that parse their own flags.
+[[nodiscard]] atx::core::Result<bool> parse_bool_flag_value(std::string_view flag,
+                                                            std::string_view value);
+
+// The subcommands that refuse --config outright (their allowed-flag sets are
+// frozen); every other subcommand merges the file (W0-I0b / I-10).
+[[nodiscard]] bool subcommand_rejects_config(std::string_view subcommand) noexcept;
+
 // Parse CLI arguments.
-// argv[1] is the subcommand (or --help/-h).
+// argv[1] is the subcommand (or --help/-h). A boolean flag consumes one following
+// literal true / false / 1 / 0 token as its value. Runs validate_cross_flags unless
+// --config is present (see validate_cross_flags).
 // Returns Err(InvalidArgument) on unknown flag/subcommand.
 [[nodiscard]] atx::core::Result<RunConfig> parse_args(int argc, char** argv);
 
-// Parse a config file (newline-separated flag=value, # comments).
+// Paired explicit runtime declaration for equity-ic; direct stage callers use
+// the same validation as CLI/config parsing before reading a declaration file.
+[[nodiscard]] atx::core::Status validate_ic_prereg_flags(const RunConfig& cfg);
+[[nodiscard]] atx::core::Status validate_ic_epoch_flags(const RunConfig& cfg);
+
+// Parse a config file (newline-separated flag=value, # comments). A boolean key takes
+// true|false|1|0 (or an empty value, meaning true). A nested `config=` key is refused.
 // Returns Err(IoError/ParseError) on failure.
 [[nodiscard]] atx::core::Result<RunConfig> parse_config_file(
         const std::string& path,

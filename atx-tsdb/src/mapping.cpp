@@ -1,6 +1,7 @@
 #include "atx/tsdb/mapping.hpp"
 
 #include <string>
+#include <limits>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
@@ -24,6 +25,10 @@ namespace atx::tsdb {
 using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Result;
+
+Result<Mapping> Mapping::map_file_ro(const std::string &path) {
+  return map_file_ro(path, 0, (std::numeric_limits<atx::usize>::max)());
+}
 
 Mapping::~Mapping() { reset(); }
 
@@ -88,7 +93,9 @@ void Mapping::reset() noexcept {
   size_ = 0;
 }
 
-Result<Mapping> Mapping::map_file_ro(const std::string &path) {
+Result<Mapping> Mapping::map_file_ro(const std::string &path, atx::u64 expected_bytes, atx::u64 max_bytes) {
+  if (max_bytes == 0 || expected_bytes > max_bytes)
+    return Err(ErrorCode::InvalidArgument, "invalid mapping extent budget");
   const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
   if (wlen <= 0) {
     return Err(ErrorCode::InvalidArgument, "path is not valid UTF-8: " + path);
@@ -105,16 +112,23 @@ Result<Mapping> Mapping::map_file_ro(const std::string &path) {
     return Err(ErrorCode::IoError, "CreateFileW failed: " + path);
   }
   LARGE_INTEGER fsize{};
-  if (GetFileSizeEx(file, &fsize) == 0 || fsize.QuadPart == 0) {
+  if (GetFileSizeEx(file, &fsize) == 0 || fsize.QuadPart <= 0) {
     CloseHandle(file);
     return Err(ErrorCode::InvalidArgument, "empty or unsizable file: " + path);
   }
-  HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+  const auto bytes = static_cast<atx::u64>(fsize.QuadPart);
+  if (bytes > max_bytes || bytes > (std::numeric_limits<atx::usize>::max)() ||
+      (expected_bytes != 0 && bytes != expected_bytes)) {
+    CloseHandle(file);
+    return Err(ErrorCode::InvalidArgument, "captured file extent exceeds/mismatches mapping admission: " + path);
+  }
+  HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY,
+      static_cast<DWORD>(bytes >> 32), static_cast<DWORD>(bytes & 0xffffffffULL), nullptr);
   if (mapping == nullptr) {
     CloseHandle(file);
     return Err(ErrorCode::IoError, "CreateFileMappingW failed: " + path);
   }
-  void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+  void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, static_cast<SIZE_T>(bytes));
   if (view == nullptr) {
     CloseHandle(mapping);
     CloseHandle(file);
@@ -164,15 +178,23 @@ void Mapping::reset() noexcept {
   size_ = 0;
 }
 
-Result<Mapping> Mapping::map_file_ro(const std::string &path) {
+Result<Mapping> Mapping::map_file_ro(const std::string &path, atx::u64 expected_bytes, atx::u64 max_bytes) {
+  if (max_bytes == 0 || expected_bytes > max_bytes)
+    return Err(ErrorCode::InvalidArgument, "invalid mapping extent budget");
   const int fd = ::open(path.c_str(), O_RDONLY);
   if (fd < 0) {
     return Err(ErrorCode::IoError, "open failed: " + path);
   }
   struct stat st {};
-  if (::fstat(fd, &st) != 0 || st.st_size == 0) {
+  if (::fstat(fd, &st) != 0 || st.st_size <= 0) {
     ::close(fd);
     return Err(ErrorCode::InvalidArgument, "empty or unstatable file: " + path);
+  }
+  const auto extent = static_cast<atx::u64>(st.st_size);
+  if (extent > max_bytes || extent > (std::numeric_limits<atx::usize>::max)() ||
+      (expected_bytes != 0 && extent != expected_bytes)) {
+    ::close(fd);
+    return Err(ErrorCode::InvalidArgument, "captured file extent exceeds/mismatches mapping admission: " + path);
   }
   const auto bytes = static_cast<atx::usize>(st.st_size);
   void *addr = ::mmap(nullptr, bytes, PROT_READ, MAP_SHARED, fd, 0);

@@ -85,6 +85,12 @@
 #include "atx/engine/risk/qp_solver.hpp"    // ConstrainedQpSolver, QpProblem, QpConfig (S8.4 dispatch)
 #include "atx/engine/risk/reference_data.hpp" // CapacityRef (%ADV / %shares box inputs — S8.4)
 
+namespace atx::engine::cost {
+class CostSurface;
+struct SurfaceSolvePolicy;
+struct SurfaceSolveResult;
+} // namespace atx::engine::cost
+
 namespace atx::engine::risk {
 
 // ===========================================================================
@@ -161,6 +167,19 @@ public:
     }
     return solve_fast(alpha, V, w_prev);
   }
+
+  // Explicit executable-cost path. Alpha MUST be an expected return over the
+  // decision interval, in NAV-return units (NaN = zero tilt, never a dropped
+  // holding). Uses FactorProxV2 with hard sparse constraints and the live prior
+  // book. No fallback to solve_fast; surface.hpp/optimizer_cost_terms.hpp supply
+  // the explicit policy and result types. Existing solve() defaults are unchanged.
+  [[nodiscard]] atx::core::Result<cost::SurfaceSolveResult>
+  solve_surface(std::span<const atx::f64> expected_returns, const FactorModel &V,
+                std::span<const atx::f64> held_weights, const cost::CostSurface &surface,
+                std::span<const atx::u64> model_instrument_ids, atx::i64 decision_time_ns,
+                atx::f64 pretrade_nav, const cost::SurfaceSolvePolicy &policy,
+                std::span<const atx::f64> observed_locate_dollars = {},
+                const AdmmSchedule *schedule = nullptr, const WarmStart *warm = nullptr) const;
 
   // The as-built projected/proximal fast path (the minimal-constraint book). Kept as a
   // named method so the dispatch in solve() routes to it VERBATIM — the pins exercise

@@ -1,0 +1,59 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 19 tests from 5 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from StrategyDsl
+[ RUN      ] StrategyDsl.FrozenLibraryCompilesRunsAndPreservesCausalMaskedPrefix
+[       OK ] StrategyDsl.FrozenLibraryCompilesRunsAndPreservesCausalMaskedPrefix (456 ms)
+[----------] 1 test from StrategyDsl (456 ms total)
+
+[----------] 3 tests from StrategyRunner
+[ RUN      ] StrategyRunner.FixedCostedPortfoliosAcceptObservedZeroVolumeAndFreezeTrainSigns
+[       OK ] StrategyRunner.FixedCostedPortfoliosAcceptObservedZeroVolumeAndFreezeTrainSigns (147 ms)
+[ RUN      ] StrategyRunner.ShortMaturePrefixReportsActualClampedHacLag
+[       OK ] StrategyRunner.ShortMaturePrefixReportsActualClampedHacLag (134 ms)
+[ RUN      ] StrategyRunner.RefusesExternalPinOrCombinedBudgetBeforePayloadEvaluation
+[       OK ] StrategyRunner.RefusesExternalPinOrCombinedBudgetBeforePayloadEvaluation (96 ms)
+[----------] 3 tests from StrategyRunner (378 ms total)
+
+[----------] 2 tests from StrategyResearchRole
+[ RUN      ] StrategyResearchRole.PreservesIndependentMembershipMissingMarksAndDeclaredClocks
+[       OK ] StrategyResearchRole.PreservesIndependentMembershipMissingMarksAndDeclaredClocks (29 ms)
+[ RUN      ] StrategyResearchRole.RejectsFiniteAbsentPayloadExtentHashAndBudgetViolations
+[       OK ] StrategyResearchRole.RejectsFiniteAbsentPayloadExtentHashAndBudgetViolations (39 ms)
+[----------] 2 tests from StrategyResearchRole (69 ms total)
+
+[----------] 4 tests from ExecutionSchedule
+[ RUN      ] ExecutionSchedule.DefaultCadencePreservesIdentityAndIndependentInitialLedger
+[       OK ] ExecutionSchedule.DefaultCadencePreservesIdentityAndIndependentInitialLedger (2 ms)
+[ RUN      ] ExecutionSchedule.OffCycleKeepsMarkedReturnsAndCalendarBorrowWithoutTrades
+[       OK ] ExecutionSchedule.OffCycleKeepsMarkedReturnsAndCalendarBorrowWithoutTrades (1 ms)
+[ RUN      ] ExecutionSchedule.LongerDelayFreezesPartialTargetsBeforeOtherQueuedFills
+[       OK ] ExecutionSchedule.LongerDelayFreezesPartialTargetsBeforeOtherQueuedFills (0 ms)
+[ RUN      ] ExecutionSchedule.MembershipExitIsPartialAtScheduledEntry
+[       OK ] ExecutionSchedule.MembershipExitIsPartialAtScheduledEntry (0 ms)
+[----------] 4 tests from ExecutionSchedule (5 ms total)
+
+[----------] 9 tests from ExecutionObjective
+[ RUN      ] ExecutionObjective.DelayedCashLedgerUsesMarkedDollarCostsAndCalendarSlots
+[       OK ] ExecutionObjective.DelayedCashLedgerUsesMarkedDollarCostsAndCalendarSlots (0 ms)
+[ RUN      ] ExecutionObjective.DelayTwoKeepsDecisionDollarsAfterEntryNavChanges
+[       OK ] ExecutionObjective.DelayTwoKeepsDecisionDollarsAfterEntryNavChanges (0 ms)
+[ RUN      ] ExecutionObjective.ParticipationCapChangesActualHoldingsAndTurnover
+[       OK ] ExecutionObjective.ParticipationCapChangesActualHoldingsAndTurnover (0 ms)
+[ RUN      ] ExecutionObjective.CalendarBorrowAndInverseSignalHaveDifferentCashLedgers
+[       OK ] ExecutionObjective.CalendarBorrowAndInverseSignalHaveDifferentCashLedgers (0 ms)
+[ RUN      ] ExecutionObjective.AbsentFiniteEntryOrHeldMarkCannotBecomeRealizedPnl
+[       OK ] ExecutionObjective.AbsentFiniteEntryOrHeldMarkCannotBecomeRealizedPnl (0 ms)
+[ RUN      ] ExecutionObjective.RoleMaturityAndFutureMutationPreserveRealizedPrefix
+[       OK ] ExecutionObjective.RoleMaturityAndFutureMutationPreserveRealizedPrefix (0 ms)
+[ RUN      ] ExecutionObjective.ClocksIdentitySupportAndBudgetAreExplicitAdmission
+[       OK ] ExecutionObjective.ClocksIdentitySupportAndBudgetAreExplicitAdmission (1 ms)
+[ RUN      ] ExecutionObjective.MissingCostBorrowAndGuardedHeldReturnNeverBecomeZeroCost
+[       OK ] ExecutionObjective.MissingCostBorrowAndGuardedHeldReturnNeverBecomeZeroCost (1 ms)
+[ RUN      ] ExecutionObjective.UnfundedLongAndAsymmetricallyCappedNeutralBooksAreRefused
+[       OK ] ExecutionObjective.UnfundedLongAndAsymmetricallyCappedNeutralBooksAreRefused (1 ms)
+[----------] 9 tests from ExecutionObjective (8 ms total)
+
+[----------] Global test environment tear-down
+[==========] 19 tests from 5 test suites ran. (918 ms total)
+[  PASSED  ] 19 tests.

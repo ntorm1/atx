@@ -111,7 +111,7 @@ struct FactorReturnSeries {
 // SKIPPED (used == 0), never fabricated. Empty industries on a date get f = 0.
 [[nodiscard]] atx::core::Result<FactorReturnSeries>
 estimate_factor_returns(const ReturnPanel &ret, const ExposureSeries &exp, atx::usize as_of,
-                        atx::usize window);
+                        atx::usize window, bool missing_factors_are_nan = false);
 
 // Latent-factor count selection for the statistical block.
 enum class StatFactorSelect : atx::u8 { Fixed, BaiNgIc2, MarchenkoPastur };
@@ -134,6 +134,7 @@ struct HybridCfg {
   // path (factor_cov_shrink), byte-identical. The EWMA/Newey-West path above takes
   // precedence when any of its knobs is set.
   std::optional<atx::engine::combine::CovTarget> factor_cov_target;
+  RiskEstimatorPolicy estimator{}; // Explicit V2 supersedes covariance/specific cleaning knobs.
 };
 
 // What the selection rule saw (reported in the validation scorecard).
@@ -161,7 +162,7 @@ public:
   // observations.
   [[nodiscard]] static atx::core::Result<HybridModel>
   build(const ReturnPanel &ret, const ExposureSeries &exp, const HybridCfg &cfg,
-        atx::usize as_of = 0U);
+        atx::usize as_of = 0U, const RiskVraEvidence* prior_forecasts = nullptr);
 };
 
 // ===========================================================================

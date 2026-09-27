@@ -1,0 +1,49 @@
+{
+  "schema": "atx.curated-corporate-action-evidence/v1",
+  "artifact_kind": "curated-primary-source-facts-not-original-document-bytes",
+  "research_status": "reconstructed-publication-clock;historical-delivery-vintage-unverified",
+  "checked_utc_date": "2026-09-26",
+  "instrument_namespace": "spiderrock.securityID",
+  "instrument_id": 2752722,
+  "historical_ticker": "WAIR",
+  "company": "Wesco Aircraft",
+  "security_class": "ordinary common stock",
+  "currency": "USD",
+  "cash_entitlement_per_share": 11.05,
+  "completion_date": "2020-01-09",
+  "displayed_publication_minute_utc": "2020-01-09T15:09:00Z",
+  "completion_and_availability_upper_bound_utc": "2020-01-09T15:10:00Z",
+  "clock_convention": "following minute bounds displayed publication precision; no exact legal closing second inferred",
+  "settlement_time": null,
+  "settlement_status": "unknown; fixed nonspendable signed claim only",
+  "primary_source_urls": [
+    "https://www.globenewswire.com/news-release/2020/01/09/1968543/0/en/Wesco-Aircraft-Acquired-by-Affiliate-of-Platinum-Equity-Combined-with-Pattonair-at-Closing.html",
+    "https://www.sec.gov/Archives/edgar/data/1378718/000110465920002480/tm201225d2_8k.htm",
+    "https://www.sec.gov/Archives/edgar/data/1378718/000104746919005228/a2239644zdefm14a.htm"
+  ],
+  "source_research_report_commit": "7ae76e915086f147dd3c52f1f60513e5cd1ec3b8",
+  "source_research_report_path": ".superpowers/sdd/w2/four-cash-event-primary-evidence.md",
+  "price_source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "forensic_batch_sha256": "037234f9c3f427dd45160a8f19ab7ecbc40dd941699cc73f56c94f717f11ed56",
+  "prior_source_record": {
+    "row_group": 55,
+    "row_in_group": 15742,
+    "values": {
+      "tradingDate": "2020-01-08",
+      "securityID": 2752722,
+      "ticker_tk": "WAIR",
+      "close": 11.039999961853027,
+      "cumulReturnFactor": 1.0
+    },
+    "ieee754_le_hex": {
+      "close": "d7a33041",
+      "cumulReturnFactor": "000000000000f03f"
+    }
+  },
+  "limitations": [
+    "No original historical delivery capture.",
+    "No shareholder cash-receipt or stock-loan termination clock.",
+    "Ordinary-share conversion only; appraisal/tax exceptions are not modeled.",
+    "No source-price or historical universe mutation."
+  ]
+}

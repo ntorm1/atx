@@ -1,0 +1,45 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "bfb6b859e1819b241cc9064908c37b04827eeac1",
+  "started_utc": "2026-09-27T00:27:04.494982+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+    "--gtest_output=xml:build-equity/recent-strategy-targets-v1-ic-qualification/results.xml"
+  ],
+  "executable_sha256": "0314178ec7e29d286172acdd0d6f09a90b49c26dcb8e2f16097bff68f6b99e96",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_ic48_v1.json",
+      "sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_ic48_v1.recipe.json",
+      "sha256": "3b6707f7a46e392391281a9f84585e6c6b1a1b5567cd9ff2656931b72481130b"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 768,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 35971072,
+  "minimum_system_free_bytes": 1469833216,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 5.25,
+  "owned_processes": [
+    {
+      "pid": 13644,
+      "create_time": 1790468824.502602
+    },
+    {
+      "pid": 16380,
+      "create_time": 1790468824.5217965
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "191808de7c05f47ca908c1370324e84e9852a007ab5971127155d9af133b679c",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

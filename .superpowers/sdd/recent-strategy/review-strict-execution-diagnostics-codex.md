@@ -1,0 +1,10 @@
+# Independent strict execution diagnostic review
+
+2026-09-26. **Source APPROVE** for private production `e2b97317a7f17821eb1a4fa326b420963a876205` and fixture `e53d13a38f8cde9467eb03983dd16007bfc7dbbd` (root integrations `32f074b3` / `429bf26c`). No build, test rerun, or real payload read was performed by this reviewer.
+
+- The production diff adds error-only formatting and substitutes four existing error messages. All refusal conditions, error codes, successful arithmetic, accumulation order, configuration, and serialized context/hash logic are unchanged. It does not invent a price or relax any refusal.
+- Preparation already checks `dates * instruments` overflow, price/presence/guard geometry, IDs, and clock extents before copying immutable context storage. Every formatter call uses indices from the existing bounded fill loop. The held-return branch is reached only for `t > window_begin`, hence `t >= 1`; its previous-cell subtraction is valid. Execution branches use `decision = t - delay` inside the existing admitted decision range.
+- The formatter reports the actual mark and decision timestamps and supplied instrument ID. It does not infer calendar dates from arbitrary caller clocks. Source presence is reported separately from finite backing price, and `guard_crossed` short-circuits guard access when guarding is disabled.
+- The new fixture covers finite backing value 777 with absent source presence at entry, an absent held-return endpoint, and a separately present endpoint with a crossed cumulative guard. It asserts the actual indices, supplied clocks/ID, held exposure, decision, requested/quoted dollars, and distinct guard states. Existing fixtures retain their all-present behavior through the new explicit presence vector.
+
+No remaining source blocker in this bounded diagnostic patch. Runtime approval remains with the root's focused build/test receipt. The previously failed real rehearsal remains a strict refusal with no completed strategy trial; this diagnostic patch supplies evidence for investigation and does not convert it into a result.

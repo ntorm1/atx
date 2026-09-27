@@ -42,15 +42,19 @@
 // ===========================================================================
 //  Numeric / determinism conventions (load-bearing)
 // ===========================================================================
-//  * Eigenvalues come from the atx-core symmetric eigensolver (decompose.hpp),
+//  * Default PsdTraceV2 uses the equivalent trace/Frobenius identity in O(K^2)
+//    time and O(1) scratch, scaling finite entries before compensated reductions.
+//    Inputs must be PSD; this mode does not repair indefinite matrices. Shape,
+//    finite values, nonnegative diagonal and symmetry are checked in every build.
+//  * LegacyClippedEigenV1 eigenvalues come from the symmetric eigensolver,
 //    which returns them ASCENDING. We clamp each to max(λ, 0): a covariance is
 //    PSD in exact arithmetic, but a finite-precision eigensolver can emit a tiny
 //    NEGATIVE eigenvalue for a (near-)singular input (e.g. the rank-1 identical-
 //    bets case). A negative λ is physically a zero-variance direction; clamping
 //    keeps Σλ² honest and never lets a numerical artifact inflate or sign-flip
 //    the ratio.
-//  * Reductions run in ascending eigenvalue order (the order the solver returns),
-//    so the result is run-to-run byte-identical. No RNG; pure functions.
+//  * Each rule has a fixed reduction order and is deterministic. The two rules
+//    are numerically equivalent on PSD inputs, not promised bit-identical.
 //  * A zero matrix (every λ clamped to 0 ⇒ Σλ == 0) is DOCUMENTED to yield
 //    N_eff = 0: there is no variance, hence no bet to count. Guarding the 0/0
 //    avoids a NaN leaking into the report.
@@ -59,6 +63,12 @@
 #include "atx/core/types.hpp"         // atx::f64
 
 namespace atx::engine::eval {
+
+// V2 uses tr(C)^2 / ||C||_F^2, an O(K^2) identity for symmetric PSD
+// covariance. PSD is a caller precondition, not an O(K^3) validation step.
+// V1 retains eigenvalue clipping and its historical reduction order for replay
+// and for callers deliberately supplying an indefinite diagnostic matrix.
+enum class BreadthRule : atx::u8 { LegacyClippedEigenV1 = 1, PsdTraceV2 = 2 };
 
 // ===========================================================================
 //  BreadthResult — the three scalars of the IR = IC·√breadth decomposition.
@@ -70,6 +80,7 @@ struct BreadthResult {
   atx::f64 effective_n; // N_eff = (Σλ)² / Σλ² over the covariance eigenvalues (λ clamped ≥ 0)
   atx::f64 ic;          // realized information coefficient (caller-supplied skill per bet)
   atx::f64 ir;          // implied IR = ic · √effective_n (Fundamental Law of Active Management)
+  BreadthRule rule{BreadthRule::PsdTraceV2};
 };
 
 // ===========================================================================
@@ -82,12 +93,13 @@ struct BreadthResult {
 //  (rank-1 cov) ⇒ N_eff = 1. A zero matrix (Σλ == 0) ⇒ N_eff = 0 (documented —
 //  no variance, no bet).
 //
-//  PRECONDITION (ATX_ASSERT): `cov` is square with rows() >= 1. The matrix must
-//  be symmetric for the symmetric eigensolver (a covariance always is); a non-
-//  symmetric input is rejected by the solver and surfaces as N_eff = 0 with a
-//  logged reason rather than a silent wrong answer.
+//  PRECONDITION: `cov` is symmetric PSD, square with rows() >= 1. V2 reports 0
+//  for malformed shape/nonfinite entries/negative diagonal/asymmetry. PSD itself
+//  is the caller's contract, not verified by decomposition. Use explicit V1 for
+//  historical clipped-eigenvalue behavior on an indefinite diagnostic matrix.
 // ===========================================================================
-[[nodiscard]] atx::f64 effective_breadth(const atx::core::linalg::MatX &cov);
+[[nodiscard]] atx::f64 effective_breadth(const atx::core::linalg::MatX &cov,
+    BreadthRule rule = BreadthRule::PsdTraceV2);
 
 // ===========================================================================
 //  breadth_decomposition — the full IR = IC·√breadth split: N_eff from `cov`,
@@ -97,6 +109,7 @@ struct BreadthResult {
 //  caller because it is a property of the forecast/realization pairing, not of the
 //  covariance. PRECONDITION (ATX_ASSERT): `ic` is finite.
 // ===========================================================================
-[[nodiscard]] BreadthResult breadth_decomposition(const atx::core::linalg::MatX &cov, atx::f64 ic);
+[[nodiscard]] BreadthResult breadth_decomposition(const atx::core::linalg::MatX &cov, atx::f64 ic,
+    BreadthRule rule = BreadthRule::PsdTraceV2);
 
 } // namespace atx::engine::eval

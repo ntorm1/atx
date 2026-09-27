@@ -20,7 +20,8 @@
 namespace atx::engine::data {
 
 [[nodiscard]] atx::core::Result<alpha::Panel>
-price_to_panel(const Dataset &price, std::span<const atx::u16> adv_windows) {
+price_to_panel(const Dataset &price, std::span<const atx::u16> adv_windows,
+               alpha::VwapRule vwap_rule, alpha::ClosePriceBasis close_basis) {
   if (price.schema().pit_delay != 0U) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "price_to_panel: align delayed data onto a zero-delay canonical "
@@ -50,7 +51,7 @@ price_to_panel(const Dataset &price, std::span<const atx::u16> adv_windows) {
   //    adv{d}, and builds the Panel.  Do NOT re-derive anything here; that is
   //    what guarantees byte-identity with a direct call to with_datafields.
   return alpha::datafields::with_datafields(nd, ni, std::move(field_names), std::move(field_data),
-                                            std::move(universe), adv_windows);
+                                            std::move(universe), adv_windows, vwap_rule, close_basis);
 }
 
 } // namespace atx::engine::data

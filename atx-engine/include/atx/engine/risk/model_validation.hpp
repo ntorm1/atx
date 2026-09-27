@@ -124,4 +124,44 @@ struct ValidationScorecard {
 validate_risk_model(const RiskModelFactory &factory, const ReturnPanel &ret,
                     const ValidationCfg &cfg);
 
+// Explicit V2 protocol; old validate_risk_model remains the exact daily recipe.
+// Fixed forecast-date holdings; realized P&L is the sum of 21 daily arithmetic
+// returns, predicted variance is 21 * daily long-run variance. This is NOT a
+// compounded buy-and-hold forecast. Missing nonzero holdings invalidate a book
+// observation; holdings are never renormalized using realized availability.
+struct Validation21Cfg {
+  std::string label{"model"};
+  atx::usize first_as_of{21}, n_periods{20}, step{21};
+  atx::usize n_min_variance{100}, n_optimized{20};
+  atx::u64 seed{7}, max_working_bytes{268'435'456};
+  std::vector<NamedBook> books;
+};
+struct ValidationMetric21 {
+  std::string name, cohort;
+  atx::usize observations{}, unavailable{}, zero_realizations{};
+  atx::f64 bias{}, absolute_bias_deviation{}, mrad{}, qlike{}, mean_pred_vol{}, realized_vol{};
+  atx::usize rolling_windows{};
+  bool defined{false}, mrad_defined{false};
+};
+struct ValidationCohortMrad21 {
+  std::string cohort;
+  atx::usize rolling_windows{};
+  atx::f64 mrad{};
+};
+struct ValidationScorecard21 {
+  std::string label;
+  atx::usize forecast_dates{}, unverified_vra_dates{};
+  bool overlapping{false}, mrad_clock_eligible{false};
+  // Bands are deliberately absent: overlap, optimized selection and pooled
+  // decile residuals do not supply independent Gaussian calibration evidence.
+  std::vector<ValidationMetric21> metrics;
+  // 12 contiguous 21-session forecast slots per window, averaged over all
+  // eligible book/window pairs. Missing slots invalidate a window, never compact.
+  // Specific-decile pooled observations are excluded from this time-series metric.
+  std::vector<ValidationCohortMrad21> cohort_mrad;
+  [[nodiscard]] std::string to_json() const;
+};
+[[nodiscard]] atx::core::Result<ValidationScorecard21> validate_risk_model_21d(
+    const RiskModelFactory& factory, const ReturnPanel& ret, const Validation21Cfg& cfg);
+
 } // namespace atx::engine::risk

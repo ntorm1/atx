@@ -90,7 +90,7 @@ TEST(ConfigParse, MegaBookFlags_OmittedAreInert) {
     EXPECT_FALSE(cfg.blocking_pbo);
     EXPECT_TRUE(cfg.short_interest.empty());
     EXPECT_TRUE(cfg.augment_out.empty());
-    EXPECT_EQ(cfg.si_publication_lag, 2);
+    EXPECT_EQ(cfg.si_publication_lag, 7); // W0-I0b / D-02: 7 NYSE sessions (D0)
     EXPECT_DOUBLE_EQ(cfg.kelly_fraction, 0.0);
     EXPECT_DOUBLE_EQ(cfg.kelly_max_gross, 1.0);
     EXPECT_FALSE(cfg.incremental_panel);

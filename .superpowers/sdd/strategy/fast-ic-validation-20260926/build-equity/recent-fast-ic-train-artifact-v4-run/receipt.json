@@ -1,0 +1,65 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "a9b8814c5797599dd73fd448f5c5d63d88149dc6",
+  "started_utc": "2026-09-27T00:05:47.492515+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+    "--library",
+    "atx-impl/strategies/slow_price_volume_ic48_v1.json",
+    "--library-sha256",
+    "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+    "--train",
+    "build-equity/recent-fast-train-2020-2022-v1/manifest.json",
+    "--train-sha256",
+    "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+    "--output",
+    "build-equity/recent-fast-ic-train-artifact-v4",
+    "--max-memory-mib",
+    "1536",
+    "--min-names",
+    "2000",
+    "--workers",
+    "4",
+    "--save-combined"
+  ],
+  "executable_sha256": "8833a852edec05d7ecaca0d92a5bbe48095c8c76340fa7f0fa169542a3b726d0",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_ic48_v1.json",
+      "sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-train-2020-2022-v1\\manifest.json",
+      "sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-v2\\orientations.json",
+      "sha256": "5106fdc13fc5347c9c2c670714c134a1978e6b7a0d2d2b5dd79bacb7dfb782d6"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 768
+  },
+  "sampled_peak_tree_rss_bytes": 1101864960,
+  "minimum_system_free_bytes": 794648576,
+  "outcome": "system-memory-limit",
+  "exit_code": 15,
+  "wall_seconds": 41.578000000008615,
+  "owned_processes": [
+    {
+      "pid": 20388,
+      "create_time": 1790467547.504958
+    },
+    {
+      "pid": 22160,
+      "create_time": 1790467547.5519378
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "c743bd8cb06051040d880a448ef652184acfbd5616929affbad28835f9ab9e70",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

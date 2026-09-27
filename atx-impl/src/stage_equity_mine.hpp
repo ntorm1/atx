@@ -13,8 +13,10 @@
 //   2. MASK     trading eligibility is the AS-OF point-in-time membership of the
 //               checkpoint 15 universe (membership.bin, cut top-N/band): a name is
 //               tradeable on session d only when the last rebalance effective on
-//               or before d lists it. Without a membership image the mask falls
-//               back to the context year-union (declared in the gate report).
+//               or before d lists it. W0-I0b / I-16: `--membership` is REQUIRED;
+//               the pre-W0 context year-union fallback (a within-year selection
+//               look-ahead) is reachable only by asking for it explicitly with
+//               `--membership-rule year-union-v1` (declared in the gate report).
 //   3. SEARCH   factory::SearchDriver (L3 multi-fidelity racing, semantic canon,
 //               output-fingerprint dedup) over the TRAIN span only, seeded by the
 //               WQ101 fixture + literature families + grammar-random genomes.
@@ -22,7 +24,10 @@
 //               window by one honest evaluator: delay-`delay` rank-weighted
 //               dollar-neutral long/short (gross 1), net of `cost_bps` per unit of
 //               one-way traded weight. The sign is fixed on TRAIN gross Sharpe.
-//               Every scored candidate is recorded in an eval::TrialRegistry.
+//               Every scored candidate is recorded in an eval::TrialRegistry with
+//               its window, IS flag and family/theme tags (E-16), and its train
+//               DSR is the cluster-N DSR of TrialRegistry::accounting() (E-01).
+//               `--delay 0` (same-close fills) needs --allow-same-close (B-02).
 //   5. FAMILY   the validation family = top `max_validate` by train net Sharpe,
 //               greedily de-duplicated by train-pnl correlation (SketchIndex).
 //   6. GATE     the family is evaluated ONCE on the validation window; one-sided
@@ -54,6 +59,8 @@
 #include "atx/engine/eval/multiple_testing.hpp"
 #include "atx/engine/eval/trial_registry.hpp"
 #include "atx/engine/factory/search_driver.hpp"
+#include "atx/engine/factory/ic_screen.hpp"
+#include "atx/engine/factory/execution_objective.hpp"
 
 #include "stages.hpp"
 
@@ -136,6 +143,11 @@ struct ScoreCfg {
     std::array<atx::usize, 3> ic_horizons{{1, 5, 21}};
     atx::usize nw_lags{5};     // Newey-West lag for the pnl t-statistic
     atx::f64 periods_per_year{252.0};
+    // Programmatic opt-in only. V2 requires a prepared context on every role;
+    // its AUM, borrow and cost recipe are authoritative. delay/min_names/guard
+    // and the role window must match this scorer. No CLI cost source is implied.
+    atx::engine::factory::ExecutionObjectiveRule execution_rule{
+        atx::engine::factory::ExecutionObjectiveRule::LegacyStreamsV1};
 };
 
 // [begin, end) over signal dates of a span panel.
@@ -192,25 +204,41 @@ struct SignalScore {
     atx::f64 mean_turnover{};
     atx::f64 coverage{};      // fraction of window dates that traded
     atx::f64 mean_names{};    // mean eligible names on traded dates
-    atx::usize excluded_returns{}; // held-name pnl terms dropped by the return guard
+    atx::usize excluded_returns{}; // held-name pnl terms dropped by the legacy return guard
+    atx::engine::factory::ExecutionObjectiveRule execution_rule{
+        atx::engine::factory::ExecutionObjectiveRule::LegacyStreamsV1};
+    std::string execution_context_sha256{};
+    std::string execution_recipe{};
+    // V2 vectors contain exactly this contiguous realized-endpoint interval of
+    // the original panel. No structural zero tail or missing-date compression.
+    // Legacy vectors retain their historical signal-date alignment.
+    atx::usize realization_begin{};
+    atx::usize realization_end{};
+    atx::f64 total_cost_return{};
+    atx::f64 total_borrow_return{};
 };
 
 // Score one signal (dates x instruments, date-major, same shape as `panel`)
-// multiplied by `sign` (+1/-1). Positions formed from signal date d are
+// multiplied by `sign` (+1/-1). In the explicit legacy rule, positions formed from signal date d are
 // rank-demeaned, scaled to gross 1 and held over the close-to-close return
 // ending at d + delay + 1. Eligibility uses information at d only (member,
 // finite signal, finite positive close); a missing realized return contributes
 // 0. `close` is the adjusted research close field id. Realized returns (pnl
 // and every IC horizon) flagged by the return guard are treated as missing;
 // `guard` must be built for `panel` (nullptr: built here from cfg).
+// Explicit DelayedSurfaceV2 instead consumes `execution`, errors on an unpriced
+// nonzero fill or missing held return, and returns its mature realized prefix.
+// It recomputes signed marked-dollar holdings through the shared engine kernel.
 [[nodiscard]] atx::core::Result<SignalScore>
 score_signal(std::span<const atx::f64> signal, atx::f64 sign,
              const atx::engine::alpha::Panel &panel, atx::u32 close_field,
              std::span<const atx::u8> member, EvalWindow window, const ScoreCfg &cfg,
-             const ReturnGuard *guard = nullptr);
+             const ReturnGuard *guard = nullptr,
+             const atx::engine::factory::ExecutionObjectiveContext *execution = nullptr);
 
 // Flip a +1-signed score to sign -1 without re-scoring (gross/IC negate,
-// turnover and cost are sign-invariant); statistics are recomputed.
+// turnover and cost are sign-invariant); statistics are recomputed. Legacy only;
+// V2 must be independently rescored because borrow, caps and NAV are asymmetric.
 [[nodiscard]] SignalScore flip_score(const SignalScore &s, const ScoreCfg &cfg);
 
 // Recompute the scalar statistics of `s` from its series (used after flips and
@@ -228,6 +256,12 @@ struct SeedExpr {
     std::string origin; // "wq101:<id>", "lit:<name>", "extra"
 };
 
+// E-16 registry tags from a candidate origin. family = the origin up to its first
+// ':' or '+' ("wq101", "lit", "search", "extra"); theme = the origin without any
+// "+decay<N>" smoothing suffix ("lit:momentum_12_1+decay5" -> "lit:momentum_12_1").
+[[nodiscard]] std::string trial_family_of(std::string_view origin);
+[[nodiscard]] std::string trial_theme_of(std::string_view origin);
+
 // One role's evaluation data. `panel` is borrowed for the call.
 struct MineData {
     const atx::engine::alpha::Panel *panel{nullptr};
@@ -235,7 +269,27 @@ struct MineData {
     EvalWindow window;
     // Optional prebuilt return guard for `panel` (empty: built per call).
     ReturnGuard guard{};
+    // Borrowed for the whole call. Required only for explicit DelayedSurfaceV2.
+    // The context owns immutable costs/price/support; caller data must match.
+    const atx::engine::factory::ExecutionObjectiveContext *execution{nullptr};
 };
+
+// W0-I0b (RULES §2): the versioned rule behind every row's report-only dsr_train.
+//   ClusterMcFloorV2 (default): the cluster-N DSR of TrialRegistry::accounting()
+//     (E-01 wiring, E0b note), falling back to SummaryRawNV2 when accounting is
+//     unavailable (the report names the reason).
+//   SummaryRawNV2: the registry-summary DSR with N = n_raw (no accounting).
+//   SummaryNEffV1: the pre-W0 rule, N = n_eff over the registry summary (E-01
+//     double discount), kept so pre-W0 dsr_train values can be re-derived.
+enum class TrainDsrRule : atx::u8 {
+    ClusterMcFloorV2 = 0,
+    SummaryRawNV2 = 1,
+    SummaryNEffV1 = 2,
+};
+
+// The stable label of a TrainDsrRule ("cluster-mc-floor-v2", "summary-raw-n-v2",
+// "summary-n-eff-v1"): the --dsr-rule spelling and the gate report's dsr_rule value.
+[[nodiscard]] std::string_view train_dsr_rule_label(TrainDsrRule rule) noexcept;
 
 struct MineConfig {
     bool run_search{true};
@@ -251,6 +305,7 @@ struct MineConfig {
     atx::engine::eval::BootstrapCfg boot{};
     GateMode gate{GateMode::By};
     atx::usize threads{1};
+    TrainDsrRule dsr_rule{TrainDsrRule::ClusterMcFloorV2};
 };
 
 struct CandidateRow {
@@ -267,10 +322,22 @@ struct CandidateRow {
     atx::f64 p_by{1.0};
     atx::f64 p_rw{1.0};
     bool admitted{false};
+    atx::u64 canonical_hash{};
+    bool ic_screen_evaluated{false};
+    bool ic_screen_unavailable{false};
+    bool ic_rejected{false};
+    atx::engine::factory::IcScreenReason ic_screen_reason{
+        atx::engine::factory::IcScreenReason::Disabled};
+    bool dsr_marginal_floor_applied{false};
+    atx::f64 dsr_selection_benchmark{};
 };
 
 struct MineOutcome {
     std::vector<CandidateRow> candidates; // seeds first (input order), then search
+    atx::engine::factory::ExecutionObjectiveRule execution_rule{
+        atx::engine::factory::ExecutionObjectiveRule::LegacyStreamsV1};
+    std::string train_execution_context_sha256{};
+    std::string validation_execution_context_sha256{};
     std::vector<atx::usize> family;       // validation family, selection order
     std::vector<atx::usize> admitted;     // subset of family, selection order
     atx::engine::eval::TrialSummary trials{};
@@ -290,11 +357,38 @@ struct MineOutcome {
     atx::usize search_fidelity_evals{};
     atx::usize search_fidelity_rejected{};
     atx::usize search_fingerprint_hits{};
+    atx::engine::factory::IcScreenConfig ic_screen{}; // resolved TRAIN-only bounds
+    std::string ic_screen_recipe;
+    std::string ic_screen_unavailable_reason;
+    atx::usize ic_screen_evaluations{};
+    atx::usize ic_screen_unavailable{};
+    atx::usize ic_screen_rejected{}; // candidate rows (registry deduplicates identities)
+    atx::usize search_ic_screen_evaluations{};
+    atx::usize search_ic_screen_unavailable{};
+    atx::usize search_ic_screen_rejected{};
+    atx::usize search_ic_prepass_vm_evaluations{};
+    bool search_ic_screen_resume_mismatch{false};
+    atx::usize dsr_marginal_floor_count{};
+    // W0-I0b recording (E-16 / E-01 wiring). dsr_rule names the rule behind every
+    // row's dsr_train (train_dsr_rule_label): "cluster-mc-floor-v2" (the default,
+    // TrialRegistry::accounting()), "summary-raw-n-v2" (requested, or the default's
+    // fallback when accounting is unavailable, reason given) or "summary-n-eff-v1"
+    // (the pre-W0 rule, requested explicitly).
+    std::string dsr_rule;
+    std::string dsr_fallback_reason;
+    atx::usize dsr_clusters{};  // ONC clusters behind the cluster-N DSR (0 on fallback)
+    atx::f64 dsr_sr_star_mc{};  // Monte-Carlo E[max SR] under the estimated correlation
+    atx::engine::eval::TrialChainHead chain_head{}; // registry head after recording
 };
 
 // Steps 3-5 on the TRAIN span only (search, score, registry, family). The
 // Library must be the one every parse in the run uses and must outlive the
-// call. `registry` must be configured with pnl_len == train.window.size().
+// call. `registry` must be configured with pnl_len >= train.window.size(): its
+// calendar may extend past the train window (the stage uses train + validation,
+// E-16); train trials are recorded on the window [0, train.window.size() - 1] as
+// TrialSample::InSample with family / theme tags derived from the seed origin.
+// V2 instead records the actual mature realized subinterval, offset relative to
+// train.window.begin, with no padded zeros and a context-bound trial identity.
 // The validation span is not needed yet, so a caller can free the train span
 // before building it (memory bound on a shared 16 GB machine).
 [[nodiscard]] atx::core::Result<MineOutcome>

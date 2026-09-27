@@ -127,6 +127,10 @@ TEST_F(AtxImplDataProvenance, BoundLoadAndAugmentedPanelPreserveExactAxes) {
     const auto recipe = Json::parse(panel->identity.recipe);
     EXPECT_EQ(recipe["universe"]["adv_window_bars"], 21);
     EXPECT_EQ(recipe["augmentation"]["adv_windows"], Json::array({2}));
+    EXPECT_EQ(recipe["augmentation"]["dollar_volume_basis"], "raw_close*raw_volume");
+    EXPECT_EQ(recipe["augmentation"]["vwap_rule"], "raw-daily-close-v2");
+    EXPECT_EQ(recipe["augmentation"]["vwap_basis"], "raw");
+    EXPECT_EQ(recipe["augmentation"]["vwap_kind"], "daily-close-price-proxy-not-intraday-vwap");
     EXPECT_EQ(recipe["historical_availability"], "unknown-archive-snapshot");
     EXPECT_EQ(recipe["historical_vintages_verified"], false);
     EXPECT_EQ(recipe["preparation_content_binding_verified"], true);
@@ -137,6 +141,15 @@ TEST_F(AtxImplDataProvenance, BoundLoadAndAugmentedPanelPreserveExactAxes) {
     const auto other = read_panel_artifact(cfg.panel_out);
     ASSERT_TRUE(other.has_value());
     EXPECT_EQ(other->artifact_id, panel->artifact_id);
+    cfg.panel_out = (dir / "legacy.bin").string();
+    cfg.vwap_rule = atx::engine::alpha::VwapRule::AdjustedTypicalV1;
+    ASSERT_TRUE(run_panel(cfg));
+    const auto legacy = read_panel_artifact(cfg.panel_out);
+    ASSERT_TRUE(legacy);
+    EXPECT_NE(legacy->artifact_id, panel->artifact_id);
+    const auto legacy_recipe = Json::parse(legacy->identity.recipe);
+    EXPECT_EQ(legacy_recipe["augmentation"]["vwap_rule"], "adjusted-typical-v1");
+    EXPECT_EQ(legacy_recipe["augmentation"]["vwap_basis"], "adjusted_level");
     const auto input_after = atx::core::sha256_file(zip.string());
     ASSERT_TRUE(input_after.has_value());
     EXPECT_EQ(*input_after, *input_before);
@@ -282,6 +295,56 @@ TEST_F(AtxImplDataProvenance, InvalidConfigurationAndIncrementalFailBeforePublic
     cfg.adv_window = 65536;
     EXPECT_FALSE(run_panel(cfg).has_value());
     EXPECT_FALSE(fs::exists(cfg.panel_out));
+}
+
+TEST_F(AtxImplDataProvenance, QaV2TruthfulModifiedRowsLoadAndBindWhileFalseClaimsFail) {
+    auto rescued = atx_impl_test::make_orats_row("2016-01-15", "42", "SYN", "SYN", 11.0, 1.0, 1000);
+    // Drop only the three synthetic OHL cells (indices 5..7), retaining every other byte.
+    std::size_t begin = 0;
+    for (int field = 0; field < 5; ++field) begin = rescued.find('\t', begin) + 1;
+    auto end = begin;
+    for (int field = 0; field < 3; ++field) end = rescued.find('\t', end) + 1;
+    rescued.replace(begin, end - begin, "\t\t\t");
+    ASSERT_NO_FATAL_FAILURE(atx_impl_test::write_orats_zip(std::string(atx_impl_test::kHeader) + "\n" + rescued, zip.string()));
+    const auto sha = atx::core::sha256_file(zip.string());
+    ASSERT_TRUE(sha);
+    auto doc = read_json(prep);
+    doc["policy_version"] = "tickerhistory-qa-v2";
+    doc["qa_version"] = "v2";
+    doc["window"] = {{"start_inclusive", "2016-01-15"}, {"end_inclusive", "2016-01-15"}};
+    doc["counts"] = {{"source_rows", 1}, {"selected_rows", 1}, {"accepted_rows", 1}, {"qa_v2_rescued_rows", 1}};
+    doc["accepted"] = {{"filename", "accepted.zip"}, {"sha256", *sha}, {"size_bytes", fs::file_size(zip)},
+        {"rows_preserved_byte_for_byte", false}, {"rows_modified_qa_v2", 1}, {"unmodified_rows", 0},
+        {"unmodified_rows_preserved_byte_for_byte", true}};
+    doc["qa_v2_allowlist_sha256"] = "0589dc9ae5c96e68d183820f4733ade7df94245d805e285e43e1bdf29c0fef60";
+    doc["qa_v2_blanked_fields"] = {"open", "high", "low"};
+    doc["qa_v2_rescuable_reasons"] = {"ohlc_order_violation"};
+    doc["qa_v2_dates"] = {"2016-01-15"};
+    doc["qa_v2_daily_counts"] = {{"2016-01-15", {{"accepted_v1", 0}, {"accepted_v2_rescued", 1}, {"accepted", 1}}}};
+    std::vector<Json> bad(7, doc);
+    bad[0]["accepted"]["rows_preserved_byte_for_byte"] = true;
+    bad[1]["qa_v2_allowlist_sha256"] = std::string(64, 'b');
+    bad[2]["qa_v2_blanked_fields"] = {"close"};
+    bad[3]["qa_v2_daily_counts"]["2016-01-15"]["accepted_v2_rescued"] = 0;
+    bad[4]["qa_v2_daily_counts"]["2016-01-15"]["accepted_v1"] = 99;
+    bad[4]["qa_v2_daily_counts"]["2016-01-15"]["accepted"] = 100;
+    bad[5]["qa_v2_daily_counts"]["2016-01-15"]["accepted_v1"] = std::numeric_limits<atx::u64>::max() - 1;
+    bad[5]["qa_v2_daily_counts"]["2016-01-15"]["accepted"] = std::numeric_limits<atx::u64>::max();
+    bad[6]["window"]["end_inclusive"] = "2016-02-12";
+    bad[6]["qa_v2_dates"].push_back("2016-02-12");
+    bad[6]["qa_v2_daily_counts"]["2016-02-12"] = {{"accepted_v1", 1}, {"accepted_v2_rescued", 0}, {"accepted", 1}};
+    for (const auto& invalid : bad) {
+        write_json(prep, invalid);
+        EXPECT_FALSE(begin_ingestion_provenance(zip.string(), load.out, prep.string()));
+        EXPECT_FALSE(fs::exists(load.out));
+    }
+    write_json(prep, doc);
+    load.min_date = "2016-01-01";
+    const auto loaded = run_load(load);
+    ASSERT_TRUE(loaded) << loaded.error().message();
+    const auto receipt = read_json(fs::path(load.out) / "_ingestion.manifest.json");
+    EXPECT_EQ(receipt["preparation"]["policy_version"], "tickerhistory-qa-v2");
+    EXPECT_EQ(receipt["preparation"]["accepted_sha256"], *sha);
 }
 
 } // namespace

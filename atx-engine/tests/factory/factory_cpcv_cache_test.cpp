@@ -277,3 +277,42 @@ TEST(CpcvCache, TimedBench_CachedVsUncached) {
 }
 
 } // namespace atxtest_cpcv_cache_test
+
+namespace atxtest_cpcv_cache_test {
+TEST(CpcvCache, DateRecipeBudgetAndFidelitySessionStrideAreNotAliased) {
+  CpcvConfig cfg{3,1,0.0}; cfg.rule=atx::engine::eval::CpcvRule::DateV2;
+  cfg.embargo_dates=2;
+  CpcvCache cache;
+  const auto daily=cache.get_or_build_checked(12,cfg);
+  const auto strided=cache.get_or_build_checked(12,cfg,4);
+  ASSERT_TRUE(daily); ASSERT_TRUE(strided);
+  EXPECT_NE(*daily,*strided);
+  EXPECT_EQ((*strided)->spans[1].t0,4U);
+  EXPECT_EQ((*strided)->spans[1].t1,8U);
+  EXPECT_NE((*daily)->metadata.label_identity,(*strided)->metadata.label_identity);
+  const auto same=cache.get_or_build_checked(12,cfg,4);
+  ASSERT_TRUE(same); EXPECT_EQ(*same,*strided);
+  cfg.max_working_bytes=1;
+  EXPECT_FALSE(cache.get_or_build_checked(12,cfg,4)); // cannot bypass lowered budget via cache
+  cfg.max_working_bytes=1U<<20U; cfg.embargo_dates=3;
+  const auto changed=cache.get_or_build_checked(12,cfg,4);
+  ASSERT_TRUE(changed); EXPECT_NE(*changed,*strided);
+  cfg.rule=static_cast<atx::engine::eval::CpcvRule>(255);
+  EXPECT_FALSE(cache.get_or_build_checked(std::numeric_limits<atx::usize>::max(),cfg));
+}
+TEST(CpcvCache, DateFitnessErrorsPropagateAndCachedResultsMatch) {
+  Library lib; auto genome=make_genome("rank(returns)",lib);
+  auto panel=make_panel(36,4); auto sim=frictionless_sim();
+  FitnessCfg cfg; cfg.cpcv.rule=atx::engine::eval::CpcvRule::DateV2;
+  cfg.cpcv.n_groups=3; cfg.cpcv.n_test_groups=1; cfg.cpcv.embargo_dates=2;
+  CpcvCache cache;
+  const auto fresh=pool_aware_fitness(genome,empty_pool(),panel,WeightPolicy{},sim,cfg);
+  const auto cached=pool_aware_fitness(genome,empty_pool(),panel,WeightPolicy{},sim,cfg,
+                                     nullptr,nullptr,nullptr,&cache);
+  ASSERT_TRUE(fresh); ASSERT_TRUE(cached);
+  EXPECT_DOUBLE_EQ(fresh->raw,cached->raw); EXPECT_DOUBLE_EQ(fresh->wq,cached->wq);
+  cfg.cpcv.max_working_bytes=1;
+  EXPECT_FALSE(pool_aware_fitness(genome,empty_pool(),panel,WeightPolicy{},sim,cfg,
+                                 nullptr,nullptr,nullptr,&cache));
+}
+}

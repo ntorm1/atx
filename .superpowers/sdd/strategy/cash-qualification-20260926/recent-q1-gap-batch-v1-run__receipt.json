@@ -1,0 +1,97 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "c1a384b407f48840784248d9e68924001cb1e185",
+  "started_utc": "2026-09-26T22:28:50.939908+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-B",
+    "atx-engine/tools/audit_recent_price_gap.py",
+    "--source",
+    "C:/Users/natha/Downloads/TickerHistory3.parquet",
+    "--source-sha256",
+    "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+    "--ids",
+    "33764",
+    "39621",
+    "2752722",
+    "4997008",
+    "4677674",
+    "33551",
+    "5747162",
+    "160964",
+    "383531",
+    "5178122",
+    "4166548",
+    "228112",
+    "3951140",
+    "428680",
+    "5804722",
+    "1272388",
+    "4159499",
+    "4438373",
+    "4335207",
+    "5122670",
+    "3984255",
+    "273222",
+    "1836262",
+    "67851",
+    "5884670",
+    "4354916",
+    "2373253",
+    "4095961",
+    "2003601",
+    "4380194",
+    "4623063",
+    "4625325",
+    "398524",
+    "33767",
+    "4614249",
+    "4657753",
+    "5094125",
+    "5094126",
+    "--start",
+    "2020-01-01",
+    "--end",
+    "2020-04-01",
+    "--out",
+    "build-equity/recent-q1-gap-batch-v1.json",
+    "--max-seconds",
+    "120"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-engine\\tools\\audit_recent_price_gap.py",
+      "sha256": "7d4cb92f33ca907cd19a21c601819aed87b71eeb9656332a07a5dafa8736849d"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\.superpowers\\sdd\\w2\\recent-q1-event-queue.json",
+      "sha256": "c7384a7a30745f262bcab96491c194e2d1547e7d2ad8be9e43d30eea9b6655c1"
+    }
+  ],
+  "limits": {
+    "seconds": 120.0,
+    "max_rss_mib": 768,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 126365696,
+  "minimum_system_free_bytes": 2373263360,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 10.5,
+  "owned_processes": [
+    {
+      "pid": 16256,
+      "create_time": 1790461730.9452798
+    },
+    {
+      "pid": 18684,
+      "create_time": 1790461730.9537313
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "63a82c95c9fe08388dbd7beee4806bf44a1c058d699c27c026ee204765682f5b",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

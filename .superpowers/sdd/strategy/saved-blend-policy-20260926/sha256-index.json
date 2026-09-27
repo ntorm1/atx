@@ -1,0 +1,334 @@
+{
+ "copied": {
+  "audit-target-replay.py": {
+   "bytes": 22524,
+   "sha256": "d8e5fb27060d9412089acf2fa01f88a11ec14e49bad3699b6191a00d7f7508a6",
+   "source": "build-equity/audit-target-replay.py"
+  },
+  "recent-fast-ic-train-artifact-v5-run__receipt.json": {
+   "bytes": 2247,
+   "sha256": "23a3d20aa6224e823087529add22ae50c84a8095a4b29e2f4b34609f7db66fd1",
+   "source": "build-equity/recent-fast-ic-train-artifact-v5-run/receipt.json"
+  },
+  "recent-fast-ic-train-artifact-v5-run__start.json": {
+   "bytes": 1724,
+   "sha256": "2137c5a0bf2c2f20f097575cd69738190b123e151073602e12f1e5046ab265d4",
+   "source": "build-equity/recent-fast-ic-train-artifact-v5-run/start.json"
+  },
+  "recent-fast-ic-train-artifact-v5-run__stderr.log": {
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source": "build-equity/recent-fast-ic-train-artifact-v5-run/stderr.log"
+  },
+  "recent-fast-ic-train-artifact-v5-run__stdout.log": {
+   "bytes": 2468,
+   "sha256": "5c0a5a8e2daf6dbdc3029e5dc598e4bc0ad05afc0d834c5826f7c041f39a802a",
+   "source": "build-equity/recent-fast-ic-train-artifact-v5-run/stdout.log"
+  },
+  "recent-fast-ic-train-artifact-v5__recipe.json": {
+   "bytes": 1328,
+   "sha256": "d1fa87826e0e0810b8fda89a70eb36d5a7f8b90a419a26feb6e8135afcd93cd8",
+   "source": "build-equity/recent-fast-ic-train-artifact-v5/recipe.json"
+  },
+  "recent-fast-ic-train-artifact-v5__summary.json": {
+   "bytes": 192,
+   "sha256": "de7508467b8771ac6357481ea5b46dc8543a517683eba7d7650c97d6f587f45e",
+   "source": "build-equity/recent-fast-ic-train-artifact-v5/summary.json"
+  },
+  "recent-fast-ic-train-artifact-v5__train_candidates.jsonl": {
+   "bytes": 31457,
+   "sha256": "0fe68995b68cdea42b307f9e0d6a78cad96834d8f752bc99503815c924813d4a",
+   "source": "build-equity/recent-fast-ic-train-artifact-v5/train_candidates.jsonl"
+  },
+  "recent-fast-ic-train-artifact-v6-run__receipt.json": {
+   "bytes": 2238,
+   "sha256": "7fa523faa27750dcf3c534ed5630c117cda1f48659ae39dc0cb50c809ede51f2",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6-run/receipt.json"
+  },
+  "recent-fast-ic-train-artifact-v6-run__start.json": {
+   "bytes": 1724,
+   "sha256": "71aee0c739251244d98801e6630154b6cd21c22f6b1acd53a446f07441004964",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6-run/start.json"
+  },
+  "recent-fast-ic-train-artifact-v6-run__stderr.log": {
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6-run/stderr.log"
+  },
+  "recent-fast-ic-train-artifact-v6-run__stdout.log": {
+   "bytes": 11840,
+   "sha256": "b11436922a531054c5fe46e21c4ddb7dad868a77a3086f0a9d4a57556ba51241",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6-run/stdout.log"
+  },
+  "recent-fast-ic-train-artifact-v6__orientations.json": {
+   "bytes": 255259,
+   "sha256": "c014e71f7d6a16da894d680dda583d1e644e70d5ccc43e7f19c983d32d9f9312",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6/orientations.json"
+  },
+  "recent-fast-ic-train-artifact-v6__recipe.json": {
+   "bytes": 1328,
+   "sha256": "d1fa87826e0e0810b8fda89a70eb36d5a7f8b90a419a26feb6e8135afcd93cd8",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6/recipe.json"
+  },
+  "recent-fast-ic-train-artifact-v6__summary.json": {
+   "bytes": 262578,
+   "sha256": "62ba456eecae012632b6021c87e6e5bcd331740768e771d2040d8db305da76d5",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6/summary.json"
+  },
+  "recent-fast-ic-train-artifact-v6__train_combined.json": {
+   "bytes": 2115,
+   "sha256": "51740eff34bc3a74f42ea028b45282117c92c8f32ed029de31cd6500471363dc",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6/train_combined.json"
+  },
+  "recent-fast-ic-train-artifact-v6__train_planned_targets.csv": {
+   "bytes": 84869,
+   "sha256": "db5d4dbcd23b03be109f8d1832bada553ad39913dcba7c084fa7204ce7b539e0",
+   "source": "build-equity/recent-fast-ic-train-artifact-v6/train_planned_targets.csv"
+  },
+  "recent-strategy-targets-v1-build-receipt.json": {
+   "bytes": 210,
+   "sha256": "c1a6becd6397c02bc96dce5495ae4b9da704ae53ab61d1e66c715d151929e8e4",
+   "source": "build-equity/recent-strategy-targets-v1-build-receipt.json"
+  },
+  "recent-strategy-targets-v1-build.log": {
+   "bytes": 15314,
+   "sha256": "bbfab375a915e3e4f5df4afc6ed2f14e575f35fd0f855aba2195b48180ef5446",
+   "source": "build-equity/recent-strategy-targets-v1-build.log"
+  },
+  "recent-strategy-targets-v1-cache-summary.txt": {
+   "bytes": 458,
+   "sha256": "394469fe0264b4cfec30b325d8bb68a200719e11b3cc51cfc9f1bec97db1453f",
+   "source": "build-equity/recent-strategy-targets-v1-cache-summary.txt"
+  },
+  "recent-strategy-targets-v1-ic-qualification__receipt.json": {
+   "bytes": 1587,
+   "sha256": "36727479678b389a1f46d90df7ae17cbb298dda5456da5e2af8dc2432b92d66b",
+   "source": "build-equity/recent-strategy-targets-v1-ic-qualification/receipt.json"
+  },
+  "recent-strategy-targets-v1-ic-qualification__results.xml": {
+   "bytes": 9605,
+   "sha256": "924545a1588423321884f6d3064962b2ea410912979985fc825189e7b05c3e5a",
+   "source": "build-equity/recent-strategy-targets-v1-ic-qualification/results.xml"
+  },
+  "recent-strategy-targets-v1-ic-qualification__start.json": {
+   "bytes": 1088,
+   "sha256": "f13c02911b50aeeccf9a2735caa2be31e49ad9f35d48b054272f7742c3cd76a3",
+   "source": "build-equity/recent-strategy-targets-v1-ic-qualification/start.json"
+  },
+  "recent-strategy-targets-v1-ic-qualification__stderr.log": {
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source": "build-equity/recent-strategy-targets-v1-ic-qualification/stderr.log"
+  },
+  "recent-strategy-targets-v1-ic-qualification__stdout.log": {
+   "bytes": 12177,
+   "sha256": "191808de7c05f47ca908c1370324e84e9852a007ab5971127155d9af133b679c",
+   "source": "build-equity/recent-strategy-targets-v1-ic-qualification/stdout.log"
+  },
+  "recent-strategy-targets-v1-start.json": {
+   "bytes": 381,
+   "sha256": "e43433f2c8b415fbff1e03f2d88ac2193aeb29422bb468d49d9427e65c587694",
+   "source": "build-equity/recent-strategy-targets-v1-start.json"
+  },
+  "recent-strategy-targets-v1-target-qualification__receipt.json": {
+   "bytes": 1220,
+   "sha256": "b2a01a5ceed4146fedbd2148e81faa615c2d94463152e77708b645f1946cff7d",
+   "source": "build-equity/recent-strategy-targets-v1-target-qualification/receipt.json"
+  },
+  "recent-strategy-targets-v1-target-qualification__results.xml": {
+   "bytes": 2211,
+   "sha256": "1a00cab7e1ecf148bdb8eb351b20ad98cdbb9dd49d4873450ad206a8be549b68",
+   "source": "build-equity/recent-strategy-targets-v1-target-qualification/results.xml"
+  },
+  "recent-strategy-targets-v1-target-qualification__start.json": {
+   "bytes": 706,
+   "sha256": "84a12883c61c1f40263aacdf61fa4a7c27b19b8dbf84b2c474fd60e3819b36c5",
+   "source": "build-equity/recent-strategy-targets-v1-target-qualification/start.json"
+  },
+  "recent-strategy-targets-v1-target-qualification__stderr.log": {
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source": "build-equity/recent-strategy-targets-v1-target-qualification/stderr.log"
+  },
+  "recent-strategy-targets-v1-target-qualification__stdout.log": {
+   "bytes": 1853,
+   "sha256": "b8e957c0dda836ce88e1c87cd4e76e81a413acdc3c4f172bba96819f6c694059",
+   "source": "build-equity/recent-strategy-targets-v1-target-qualification/stdout.log"
+  },
+  "recent-train-targets-v1-audit.json": {
+   "bytes": 27294,
+   "sha256": "a21b061db42ed903b2e2dbc677dbe31f653e155cae3975c6cf4ff216dc9d4938",
+   "source": "build-equity/recent-train-targets-v1-audit.json"
+  },
+  "recent-train-targets-v1-baseline-v1-run__receipt.json": {
+   "bytes": 2212,
+   "sha256": "b039c889af4ce1faf3ff4fc419d284687424c8397ce1463be74a96c78029462e",
+   "source": "build-equity/recent-train-targets-v1-baseline-v1-run/receipt.json"
+  },
+  "recent-train-targets-v1-baseline-v1-run__start.json": {
+   "bytes": 1698,
+   "sha256": "e865267434d516e9a71b1d3d42779f112f40875b2364d616f783c6b10bd27b4c",
+   "source": "build-equity/recent-train-targets-v1-baseline-v1-run/start.json"
+  },
+  "recent-train-targets-v1-baseline-v1-run__stderr.log": {
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source": "build-equity/recent-train-targets-v1-baseline-v1-run/stderr.log"
+  },
+  "recent-train-targets-v1-baseline-v1-run__stdout.log": {
+   "bytes": 82,
+   "sha256": "fd9a609e2d6a867809e77622026cbc0e93b1c33933171b0b0d9904c13b812dbe",
+   "source": "build-equity/recent-train-targets-v1-baseline-v1-run/stdout.log"
+  },
+  "recent-train-targets-v1-baseline-v1__daily.csv": {
+   "bytes": 286377,
+   "sha256": "cb8277417652603a123f809a30f71231cc0ad1c990a6f874e165df9bcc890acc",
+   "source": "build-equity/recent-train-targets-v1-baseline-v1/daily.csv"
+  },
+  "recent-train-targets-v1-baseline-v1__recipe.json": {
+   "bytes": 949,
+   "sha256": "98e5be796e3b60d1140fe9fbad59e3820e32977c3ecbb2ed2e3eed13a18bed76",
+   "source": "build-equity/recent-train-targets-v1-baseline-v1/recipe.json"
+  },
+  "recent-train-targets-v1-baseline-v1__summary.json": {
+   "bytes": 12811,
+   "sha256": "e0b5d7babe9ccd84de1e61eb5cdbc939f51657f0c72f6fe8fad4917548bc8383",
+   "source": "build-equity/recent-train-targets-v1-baseline-v1/summary.json"
+  },
+  "recent-train-targets-v1-monthly-budget-v2-run__receipt.json": {
+   "bytes": 2222,
+   "sha256": "8ef1e3d654063ecd69f59896833d0adaaad1ec5ee9a3c035afebd70bde0c2a2f",
+   "source": "build-equity/recent-train-targets-v1-monthly-budget-v2-run/receipt.json"
+  },
+  "recent-train-targets-v1-monthly-budget-v2-run__start.json": {
+   "bytes": 1710,
+   "sha256": "59096cd9e51f4272a25de4a48f66c7a72d71d5caaaac079aa8011381e32871d2",
+   "source": "build-equity/recent-train-targets-v1-monthly-budget-v2-run/start.json"
+  },
+  "recent-train-targets-v1-monthly-budget-v2-run__stderr.log": {
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source": "build-equity/recent-train-targets-v1-monthly-budget-v2-run/stderr.log"
+  },
+  "recent-train-targets-v1-monthly-budget-v2-run__stdout.log": {
+   "bytes": 82,
+   "sha256": "2edeabbafde75306743bc06e40c2ad1bfffd9e8204b34de5eaf13feb30d446e4",
+   "source": "build-equity/recent-train-targets-v1-monthly-budget-v2-run/stdout.log"
+  },
+  "recent-train-targets-v1-monthly-budget-v2__daily.csv": {
+   "bytes": 290077,
+   "sha256": "2372b55c1347ad4836e6337e58c26d0e69c47a2da30ab0a6cade591a2facd129",
+   "source": "build-equity/recent-train-targets-v1-monthly-budget-v2/daily.csv"
+  },
+  "recent-train-targets-v1-monthly-budget-v2__recipe.json": {
+   "bytes": 955,
+   "sha256": "52f251b7629572f5b49cf398952506cc5577f8c9c6cb66724538d83b33cc4429",
+   "source": "build-equity/recent-train-targets-v1-monthly-budget-v2/recipe.json"
+  },
+  "recent-train-targets-v1-monthly-budget-v2__summary.json": {
+   "bytes": 13360,
+   "sha256": "65ac674491108835cf86eb7b9926ff329ef02d5b1a58081c5c038e43c5fd59fe",
+   "source": "build-equity/recent-train-targets-v1-monthly-budget-v2/summary.json"
+  },
+  "recent-validation-targets-v1-baseline-v1-run__receipt.json": {
+   "bytes": 2229,
+   "sha256": "aa36e741ab3d7287408678a7b3380d34e3891a2b29464854df6c4a1bf80d9e2d",
+   "source": "build-equity/recent-validation-targets-v1-baseline-v1-run/receipt.json"
+  },
+  "recent-validation-targets-v1-baseline-v1-run__start.json": {
+   "bytes": 1715,
+   "sha256": "251faa6ef1a375ee36408bd6b12cc026f9d757776433b14651c19550c6a7367c",
+   "source": "build-equity/recent-validation-targets-v1-baseline-v1-run/start.json"
+  },
+  "recent-validation-targets-v1-baseline-v1-run__stderr.log": {
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source": "build-equity/recent-validation-targets-v1-baseline-v1-run/stderr.log"
+  },
+  "recent-validation-targets-v1-baseline-v1-run__stdout.log": {
+   "bytes": 82,
+   "sha256": "bf391e9fe711f89f8e312381f613420df06cb465e73a877bf5c1e1251dcacc1f",
+   "source": "build-equity/recent-validation-targets-v1-baseline-v1-run/stdout.log"
+  },
+  "recent-validation-targets-v1-baseline-v1__daily.csv": {
+   "bytes": 189755,
+   "sha256": "0db45155468ee0fbb7b7533d4c322d8b0aa8c4f5e7cf3d03eb494de87152699a",
+   "source": "build-equity/recent-validation-targets-v1-baseline-v1/daily.csv"
+  },
+  "recent-validation-targets-v1-baseline-v1__recipe.json": {
+   "bytes": 949,
+   "sha256": "99ce4b799bffa37e033c0f1b13db102cdb3613e082fd8f52bb27f53346f7bc11",
+   "source": "build-equity/recent-validation-targets-v1-baseline-v1/recipe.json"
+  },
+  "recent-validation-targets-v1-baseline-v1__summary.json": {
+   "bytes": 9921,
+   "sha256": "16d31635bae318184b1aeaf0439e0bc8a11c5e617173b0df9a7cf3f5ae997afd",
+   "source": "build-equity/recent-validation-targets-v1-baseline-v1/summary.json"
+  },
+  "recent-validation-targets-v1-monthly-budget-v2-run__receipt.json": {
+   "bytes": 2239,
+   "sha256": "d3bb0093f778ad30a315f9927d91e21d4190d114b24c12b03ab60025f47aba8a",
+   "source": "build-equity/recent-validation-targets-v1-monthly-budget-v2-run/receipt.json"
+  },
+  "recent-validation-targets-v1-monthly-budget-v2-run__start.json": {
+   "bytes": 1727,
+   "sha256": "b72c079c8b02d93762f9007aed3821b1e3b6f1311afe7d8debc49759c061176c",
+   "source": "build-equity/recent-validation-targets-v1-monthly-budget-v2-run/start.json"
+  },
+  "recent-validation-targets-v1-monthly-budget-v2-run__stderr.log": {
+   "bytes": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source": "build-equity/recent-validation-targets-v1-monthly-budget-v2-run/stderr.log"
+  },
+  "recent-validation-targets-v1-monthly-budget-v2-run__stdout.log": {
+   "bytes": 82,
+   "sha256": "8684a3986fd30f7eb7a067ecf41ddb6cd1e381cfb75829a4e34819ed0e883621",
+   "source": "build-equity/recent-validation-targets-v1-monthly-budget-v2-run/stdout.log"
+  },
+  "recent-validation-targets-v1-monthly-budget-v2__daily.csv": {
+   "bytes": 191943,
+   "sha256": "0092fa227793802d61351c7e540aadf8802d186f39aa91a25118e371e78fc7e3",
+   "source": "build-equity/recent-validation-targets-v1-monthly-budget-v2/daily.csv"
+  },
+  "recent-validation-targets-v1-monthly-budget-v2__recipe.json": {
+   "bytes": 955,
+   "sha256": "2c82c1a0b2a20206094a90401fb549e5dfc842a4ae3c26bd00a8224b315da99d",
+   "source": "build-equity/recent-validation-targets-v1-monthly-budget-v2/recipe.json"
+  },
+  "recent-validation-targets-v1-monthly-budget-v2__summary.json": {
+   "bytes": 10231,
+   "sha256": "63f89f82cddbd38d8b982b73af6b008455471ea6de840d1df71781ed7441bb75",
+   "source": "build-equity/recent-validation-targets-v1-monthly-budget-v2/summary.json"
+  }
+ },
+ "not_copied_dense_or_duplicate": {
+  "build-equity/recent-fast-ic-train-artifact-v6/train_candidates.jsonl": {
+   "bytes": 152087,
+   "sha256": "6497eef929f1f5febd5314b3e053ef02298db0aae66113e73993758ed7755b13"
+  },
+  "build-equity/recent-fast-ic-train-artifact-v6/train_combined.f64": {
+   "bytes": 51993480,
+   "sha256": "7826b5aeb5078e270ee6ab9afa5703aab75723c22d6abedaf66a3ca4d7478664"
+  },
+  "build-equity/recent-fast-ic-train-artifact-v6/train_combined_finite.u8": {
+   "bytes": 6499185,
+   "sha256": "3120a7e3fcc3e7230856ac97160473f8709a4bf077f44bf9fcea91499534a725"
+  },
+  "build-equity/recent-fast-ic-train-artifact-v6/train_combined_ids.u64": {
+   "bytes": 45016,
+   "sha256": "102e89c649f614c37d4026bdd302bcd20afc2ed8371ba420b9ceb6abe0a0741c"
+  },
+  "build-equity/recent-fast-ic-train-artifact-v6/train_combined_member.u8": {
+   "bytes": 6499185,
+   "sha256": "3120a7e3fcc3e7230856ac97160473f8709a4bf077f44bf9fcea91499534a725"
+  },
+  "build-equity/recent-fast-ic-train-artifact-v6/train_combined_sessions.i64": {
+   "bytes": 9240,
+   "sha256": "89af53404744b48e2344785ee4f0be8337d7a2ea7c4a0984e1c964bae3862830"
+  },
+  "build-equity/recent-fast-ic-train-artifact-v6/train_daily_ic.csv": {
+   "bytes": 11579768,
+   "sha256": "3333029505291544e77b9a34e10eb45633d9c1edd54cedfee51381b460c62fc2"
+  }
+ }
+}

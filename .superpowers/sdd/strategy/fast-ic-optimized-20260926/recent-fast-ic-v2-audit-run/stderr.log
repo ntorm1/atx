@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "C:\atx-wt\pool-2\build-equity\audit-fast-ic-v2.py", line 24, in <module>
+    raise RuntimeError('changed availability')
+RuntimeError: changed availability

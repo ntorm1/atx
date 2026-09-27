@@ -10,18 +10,27 @@
 #include "atx/engine/data/history_panel.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/core/sha256.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/augment.hpp"    // DollarVolumeBasis
+#include "atx/engine/alpha/datafields.hpp" // parse_adv_field
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/segment_panel.hpp"
 
@@ -36,6 +45,217 @@
 namespace atx::engine::data {
 
 namespace {
+
+constexpr atx::i64 kHistorySeal = 1'577'836'800'000'000'000LL;
+constexpr atx::u64 kSourceMappingLimit = 256ULL * 1024 * 1024;
+
+bool has_unsealed_calendar_name(std::string_view name, bool source_filename) {
+  // Only recognizable source calendar names, never arbitrary numeric tokens in
+  // t3000 universe labels, build-20260925 directories or other provenance names.
+  if (source_filename) {
+    constexpr std::array<std::string_view, 6> prefixes{
+        "prices-", "prices_", "orats-", "orats_", "history-", "history_"};
+    for (auto prefix : prefixes) if (name.starts_with(prefix)) { name.remove_prefix(prefix.size()); break; }
+  }
+  const auto number = [](std::string_view value) {
+    int result{};
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+    return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() ? result : -1;
+  };
+  if (name.size() == 4) return number(name) >= 2020; // exact year component
+  if (name.size() == 9 && (name[4] == '-' || name[4] == '_')) {
+    const auto first = number(name.substr(0, 4)), last = number(name.substr(5, 4));
+    return first >= 1900 && last >= first && last >= 2020; // explicit year range
+  }
+  std::string_view year, month, day;
+  if (name.size() == 8) {
+    year = name.substr(0, 4); month = name.substr(4, 2); day = name.substr(6, 2);
+  } else if (name.size() == 10 && name[4] == '-' && name[7] == '-') {
+    year = name.substr(0, 4); month = name.substr(5, 2); day = name.substr(8, 2);
+  } else return false;
+  return number(year) >= 2020 && number(month) >= 1 && number(month) <= 12 &&
+      number(day) >= 1 && number(day) <= 31;
+}
+
+core::Result<std::vector<std::string>> bounded_history_paths(const std::string& directory) {
+  std::vector<std::string> paths; std::error_code ec; atx::u64 path_bytes = 0;
+  if (directory.size() > 4096)
+    return core::Err(core::ErrorCode::InvalidArgument, "history: source directory bound");
+  for (const auto& component : std::filesystem::path(directory))
+    if (has_unsealed_calendar_name(component.string(), false))
+      return core::Err(core::ErrorCode::InvalidArgument, "history: named unsealed/mixed-era source refused before mapping");
+  std::filesystem::directory_iterator it(directory, ec), end;
+  for (; !ec && it != end; it.increment(ec)) {
+    const auto& e = *it;
+    if (e.path().extension() != ".seg") continue;
+    if (paths.size() == 10000 || e.path().string().size() > 4096)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source file/path bound");
+    if (has_unsealed_calendar_name(e.path().stem().string(), true))
+      return core::Err(core::ErrorCode::InvalidArgument, "history: named unsealed/mixed-era source refused before mapping");
+    path_bytes += e.path().string().size();
+    if (path_bytes > 8ULL * 1024 * 1024)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source path metadata bound");
+    paths.push_back(e.path().string());
+  }
+  if (ec || paths.empty()) return core::Err(core::ErrorCode::IoError, "history: no readable segment paths");
+  std::sort(paths.begin(), paths.end()); return core::Ok(std::move(paths));
+}
+
+core::Status validate_source_times(std::span<const atx::i64> times) {
+  if (times.empty() || times.size() > 100000)
+    return core::Err(core::ErrorCode::InvalidArgument, "history: source time-axis metadata bound");
+  for (atx::usize t = 0; t < times.size(); ++t)
+    if (times[t] <= 0 || times[t] >= kHistorySeal || (t && times[t - 1] >= times[t]))
+      return core::Err(core::ErrorCode::InvalidArgument, "history: unsealed/nonascending source session axis");
+  return core::Ok();
+}
+
+bool intersects_source(std::span<const atx::i64> times, alpha::TimeWindow window) {
+  const auto first = std::lower_bound(times.begin(), times.end(), window.start_nanos);
+  return first != times.end() && *first < window.end_nanos;
+}
+
+// Metadata-only admission. Read a bounded header and time axis from one handle;
+// never map, read prices or calculate payload CRC for a disjoint/mixed-era file.
+// Selected files still require the full captured-handle CRC/SHA below.
+core::Result<HistorySourceFile> inspect_source_axis(const std::string& path) {
+  using namespace atx::tsdb;
+  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  if (!input) return core::Err(core::ErrorCode::IoError, "history: cannot inspect source metadata");
+  const auto end = static_cast<std::streamoff>(input.tellg());
+  if (end < std::streamoff{0} || static_cast<atx::u64>(end) > kSourceMappingLimit ||
+      static_cast<atx::u64>(end) < sizeof(SegmentHeader) + sizeof(SegmentFooter))
+    return core::Err(core::ErrorCode::InvalidArgument, "history: source metadata extent bound");
+  const auto bytes = static_cast<atx::u64>(end);
+  SegmentHeader header{};
+  input.seekg(0);
+  input.read(reinterpret_cast<char*>(&header), sizeof(header));
+  if (!input || header.magic != kMagic || !is_supported_version(header.format_version) ||
+      (header.flags & kFlagSealed) == 0 || header.total_bytes != bytes ||
+      header.off_footer != bytes - sizeof(SegmentFooter) || header.time_count == 0 || header.time_count > 100000 ||
+      header.off_time_axis < sizeof(SegmentHeader) || header.off_time_axis % alignof(atx::i64) != 0 ||
+      header.off_field_blocks < header.off_time_axis || header.off_field_blocks > header.off_footer ||
+      header.time_count > (header.off_field_blocks - header.off_time_axis) / sizeof(atx::i64))
+    return core::Err(core::ErrorCode::InvalidArgument, "history: invalid bounded source-axis geometry");
+  HistorySourceFile result{path, bytes, {}, std::vector<atx::i64>(static_cast<atx::usize>(header.time_count)), header.off_time_axis};
+  input.seekg(static_cast<std::streamoff>(header.off_time_axis));
+  input.read(reinterpret_cast<char*>(result.sessions.data()), static_cast<std::streamsize>(result.sessions.size() * sizeof(atx::i64)));
+  if (!input) return core::Err(core::ErrorCode::IoError, "history: truncated source time metadata");
+  ATX_TRY_VOID(validate_source_times(result.sessions));
+  return core::Ok(std::move(result));
+}
+
+core::Status verify_captured_time_geometry(const atx::tsdb::SegmentReader& reader, const HistorySourceFile& file) {
+  const auto bytes = reader.mapped_bytes();
+  if (bytes.size() != file.bytes || bytes.size() < sizeof(atx::tsdb::SegmentHeader))
+    return core::Err(core::ErrorCode::InvalidArgument, "history: captured source extent changed");
+  atx::tsdb::SegmentHeader header{};
+  std::memcpy(&header, bytes.data(), sizeof(header));
+  // Before reader.times() constructs a borrowed span, require the exact offset
+  // and count already checked against the captured extent by metadata admission.
+  if (header.off_time_axis != file.time_axis_offset || header.time_count != file.sessions.size())
+    return core::Err(core::ErrorCode::InvalidArgument, "history: captured source time-axis geometry changed");
+  return core::Ok();
+}
+
+core::Result<alpha::IndexedPanel> fixed_history_panel(const HistoryDataConfig& cfg) {
+  const auto& ids = cfg.fixed_axis_ids;
+  if (ids.empty() || ids.size() > 100000 || cfg.compact_to_universe || !cfg.allow_ids.empty())
+    return core::Err(core::ErrorCode::InvalidArgument, "history: fixed union forbids compaction/allow-list");
+  for (atx::usize i = 0; i < ids.size(); ++i)
+    if (ids[i] <= 0 || (i && ids[i - 1] >= ids[i]))
+      return core::Err(core::ErrorCode::InvalidArgument, "history: fixed IDs must be sorted unique positive");
+  auto index = cfg.source_index;
+  if (!index) { ATX_TRY(index, capture_history_sources(cfg.seg_dir, cfg.window)); }
+  if (std::filesystem::path(index->directory()).lexically_normal() != std::filesystem::path(cfg.seg_dir).lexically_normal() ||
+      cfg.window.start_nanos < index->window().start_nanos || cfg.window.end_nanos > index->window().end_nanos ||
+      cfg.window.start_nanos >= cfg.window.end_nanos)
+    return core::Err(core::ErrorCode::InvalidArgument, "history: chunk window/directory differs from captured source index");
+  const auto first = std::lower_bound(index->sessions().begin(), index->sessions().end(), cfg.window.start_nanos);
+  const auto last = std::lower_bound(index->sessions().begin(), index->sessions().end(), cfg.window.end_nanos);
+  if (first == last) return core::Err(core::ErrorCode::InvalidArgument, "history: empty selected session axis");
+  std::vector<atx::i64> dates(first, last);
+  atx::u64 largest_mapping = 0;
+  for (const auto& file : index->files()) {
+    if (!intersects_source(file.sessions, cfg.window)) continue;
+    largest_mapping = std::max(largest_mapping, file.bytes);
+  }
+  const auto n = ids.size(); const auto cells64 = atx::u64{dates.size()} * n;
+  // Conservative concurrent raw/corp/derived/panel copies plus cold metadata.
+  // This is an admission estimate, not a measured process RSS guarantee.
+  const atx::u64 fixed_bytes = 64ULL * 1024 * 1024 + largest_mapping;
+  if (cells64 > (std::numeric_limits<atx::usize>::max)() || cfg.max_working_bytes < fixed_bytes ||
+      cells64 > (cfg.max_working_bytes - fixed_bytes) / 512)
+    return core::Err(core::ErrorCode::InvalidArgument, "history: fixed union working-memory budget exceeded");
+  const auto cells = static_cast<atx::usize>(cells64);
+  std::vector<std::string> fields(kOratsFields.begin(), kOratsFields.end()), names;
+  for (auto id : ids) names.push_back(std::to_string(id));
+  std::vector<std::vector<atx::f64>> values(fields.size());
+  for (auto& column : values) column.assign(cells, std::numeric_limits<atx::f64>::quiet_NaN());
+  std::vector<atx::u8> present(cells, 0);
+  std::vector<std::string> selected;
+  for (const auto& file : index->files()) {
+    // Immutable validated axes admit only files intersecting this chunk. No map,
+    // payload CRC or SHA is computed for the other source files on this path.
+    if (!intersects_source(file.sessions, cfg.window)) continue;
+    ATX_TRY(auto reader, atx::tsdb::SegmentReader::attach(file.path, file.bytes));
+    ATX_TRY_VOID(verify_captured_time_geometry(reader, file));
+    const auto times = reader.times();
+    ATX_TRY_VOID(validate_source_times(times));
+    if (times.size() != file.sessions.size() || !std::equal(times.begin(), times.end(), file.sessions.begin()))
+      return core::Err(core::ErrorCode::InvalidArgument, "history: captured source time axis changed");
+    ATX_TRY(auto source_sha, atx::core::sha256_hex(reader.mapped_bytes()));
+    if (source_sha != file.sha256)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: captured source content changed");
+    auto lo = std::lower_bound(times.begin(), times.end(), cfg.window.start_nanos);
+    auto hi = std::lower_bound(times.begin(), times.end(), cfg.window.end_nanos);
+    if (lo == hi) continue;
+    // Check the exact captured destination date BEFORE any cell address, even
+    // for rows/instruments whose present bit is false.
+    std::vector<atx::usize> date_indices;
+    date_indices.reserve(static_cast<atx::usize>(hi - lo));
+    for (auto date = lo; date != hi; ++date) {
+      const auto found = std::lower_bound(dates.begin(), dates.end(), *date);
+      if (found == dates.end() || *found != *date)
+        return core::Err(core::ErrorCode::InvalidArgument, "history: reopened source date absent from captured axis");
+      date_indices.push_back(static_cast<atx::usize>(found - dates.begin()));
+    }
+    if (reader.instrument_count() > 100000)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source instrument metadata bound");
+    selected.push_back(file.path);
+    std::vector<atx::u32> field_ids; field_ids.reserve(fields.size());
+    for (const auto& f : fields) {
+      const auto found = reader.field_index(f);
+      if (!found) return core::Err(core::ErrorCode::NotFound, "history: source field absent: " + f);
+      field_ids.push_back(*found);
+    }
+    std::vector<atx::i64> source_ids; source_ids.reserve(reader.instrument_count());
+    for (atx::u32 j = 0; j < reader.instrument_count(); ++j) {
+      const auto name = reader.symbol_name(j); atx::i64 id{};
+      const auto parsed = std::from_chars(name.data(), name.data() + name.size(), id);
+      if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size() || id <= 0 || std::to_string(id) != name)
+        return core::Err(core::ErrorCode::InvalidArgument, "history: noncanonical source ID");
+      source_ids.push_back(id);
+      const auto member = std::lower_bound(ids.begin(), ids.end(), id);
+      if (member == ids.end() || *member != id) continue;
+      const auto col = static_cast<atx::usize>(member - ids.begin());
+      for (auto it = lo; it != hi; ++it) {
+        const auto local = static_cast<atx::usize>(it - times.begin());
+        if (!reader.present(local, j)) continue;
+        const auto date = date_indices[static_cast<atx::usize>(it - lo)];
+        const auto cell = date * n + col;
+        if (present[cell]) return core::Err(core::ErrorCode::InvalidArgument, "history: duplicate fixed-axis cell");
+        present[cell] = 1;
+        for (atx::usize f = 0; f < fields.size(); ++f) values[f][cell] = reader.value(field_ids[f], local, j);
+      }
+    }
+    std::sort(source_ids.begin(), source_ids.end());
+    if (std::adjacent_find(source_ids.begin(), source_ids.end()) != source_ids.end())
+      return core::Err(core::ErrorCode::InvalidArgument, "history: duplicate source instrument identity");
+  }
+  ATX_TRY(auto panel, alpha::Panel::create(dates.size(), n, std::move(fields), std::move(values), std::move(present)));
+  return core::Ok(alpha::IndexedPanel{std::move(panel), std::move(dates), std::move(names), std::move(selected)});
+}
 
 // The source cumulative factor already includes splits and cash distributions.
 // Apply it once to every research price; chaining ratios adds avoidable rounding
@@ -61,6 +281,133 @@ adjusted_history_prices(std::span<const atx::f64> prices,
 }
 
 } // namespace
+
+core::Result<std::shared_ptr<const HistorySourceIndex>>
+capture_history_sources(const std::string& seg_dir, alpha::TimeWindow window) {
+  if (window.start_nanos >= window.end_nanos || window.start_nanos <= 0 || window.end_nanos > kHistorySeal)
+    return core::Err(core::ErrorCode::InvalidArgument, "history: bounded path requires explicit pre-2020 window");
+  ATX_TRY(auto paths, bounded_history_paths(seg_dir)); // ALL names before any file read
+  auto result = std::shared_ptr<HistorySourceIndex>(new HistorySourceIndex);
+  result->directory_ = seg_dir; result->window_ = window; result->paths_ = std::move(paths);
+  result->files_.reserve(result->paths_.size());
+  atx::u64 metadata_bytes = 0;
+  // Read all admitted axes first. Unknown mixed-era content fails here, before
+  // any source payload is mapped. Capacity accounting includes vector slack.
+  for (const auto& path : result->paths_) {
+    ATX_TRY(auto file, inspect_source_axis(path));
+    metadata_bytes += 2 * (file.path.size() + file.sessions.size() * sizeof(atx::i64) + sizeof(HistorySourceFile));
+    if (metadata_bytes > 16ULL * 1024 * 1024)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: captured source-index metadata bound");
+    result->files_.push_back(std::move(file));
+  }
+  for (auto& file : result->files_) {
+    if (!intersects_source(file.sessions, window)) continue;
+    ATX_TRY(auto reader, atx::tsdb::SegmentReader::attach(file.path, file.bytes));
+    ATX_TRY_VOID(verify_captured_time_geometry(reader, file));
+    const auto times = reader.times();
+    ATX_TRY_VOID(validate_source_times(times));
+    if (reader.mapped_size() != file.bytes || times.size() != file.sessions.size() ||
+        !std::equal(times.begin(), times.end(), file.sessions.begin()))
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source changed during axis capture");
+    ATX_TRY(file.sha256, atx::core::sha256_hex(reader.mapped_bytes()));
+    for (const auto date : times) {
+      if (date < window.start_nanos || date >= window.end_nanos) continue;
+      if (result->sessions_.size() == 100000)
+        return core::Err(core::ErrorCode::InvalidArgument, "history: session metadata bound");
+      result->sessions_.push_back(date);
+    }
+  }
+  auto& dates = result->sessions_;
+  std::sort(dates.begin(), dates.end()); dates.erase(std::unique(dates.begin(), dates.end()), dates.end());
+  if (dates.empty()) return core::Err(core::ErrorCode::InvalidArgument, "history: empty selected session axis");
+  return core::Ok(std::shared_ptr<const HistorySourceIndex>(std::move(result)));
+}
+
+core::Status HistorySourceIndex::verify_paths() const {
+  ATX_TRY(auto paths, bounded_history_paths(directory_));
+  if (paths != paths_)
+    return core::Err(core::ErrorCode::InvalidArgument, "history: source path set changed before publication");
+  // Includes previously disjoint files: an in-place replacement must not silently
+  // move a previously ignored file into the output window. Read metadata only;
+  // the stage separately rehashes the selected payload set before publication.
+  for (const auto& file : files_) {
+    ATX_TRY(auto after, inspect_source_axis(file.path));
+    if (after.bytes != file.bytes || after.time_axis_offset != file.time_axis_offset || after.sessions != file.sessions)
+      return core::Err(core::ErrorCode::InvalidArgument, "history: source axis/extent changed before publication");
+  }
+  return core::Ok();
+}
+
+core::Result<std::vector<atx::i64>> history_session_keys(const std::string& seg_dir, alpha::TimeWindow window) {
+  ATX_TRY(auto sources, capture_history_sources(seg_dir, window));
+  return core::Ok(std::vector<atx::i64>(sources->sessions()));
+}
+
+// ---------------------------------------------------------------------------
+//  history_field_level_basis (W0-D0, D-01)
+// ---------------------------------------------------------------------------
+
+std::optional<LevelBasis> history_field_level_basis(std::string_view name) noexcept {
+  // Research prices on the snapshot-factor basis contain future corporate actions.
+  // Legacy VWAP is handled by the explicit-rule overload below.
+  static constexpr std::array<std::string_view, 4> kAdjusted{
+      kHistFieldClose, kHistFieldHigh, kHistFieldLow, kHistFieldOpen};
+  // As-traded / as-published levels, counts and category codes.
+  static constexpr std::array<std::string_view, 13> kRaw{
+      kHistFieldRawClose,   kHistFieldVolume,   kHistFieldMarketCap, kHistFieldSector,
+      kHistFieldEarnFlag,   kHistFieldEarnCnt5, "cap",               "IndClass.sector",
+      "IndClass.industry",  "IndClass.subindustry", "dollar_volume", "shares", "vwap"};
+  // Dimensionless quantities.
+  static constexpr std::array<std::string_view, 10> kRatio{
+      kHistFieldAtmIv21, kHistFieldAtmIv126, "returns", "iv_term", "iv_vrp",
+      "iv_lo",           "illiq",            "si_dtc",  "si_util", "si_chg"};
+  for (const std::string_view n : kAdjusted) {
+    if (n == name) {
+      return LevelBasis::AdjustedLevel;
+    }
+  }
+  for (const std::string_view n : kRaw) {
+    if (n == name) {
+      return LevelBasis::Raw;
+    }
+  }
+  for (const std::string_view n : kRatio) {
+    if (n == name) {
+      return LevelBasis::Ratio;
+    }
+  }
+  atx::u16 window = 0;
+  if (alpha::datafields::parse_adv_field(name, window)) {
+    return LevelBasis::Raw; // ts_mean of the raw dollar_volume
+  }
+  constexpr std::string_view kRegimePrefix = "regime_";
+  if (name.size() > kRegimePrefix.size() && name.substr(0, kRegimePrefix.size()) == kRegimePrefix) {
+    return LevelBasis::Raw; // macro series broadcast as published
+  }
+  return std::nullopt;
+}
+
+std::optional<LevelBasis> history_field_level_basis(std::string_view name,
+                                                  alpha::DollarVolumeBasis dv_basis,
+                                                  alpha::VwapRule vwap_rule) noexcept {
+  if (name == "vwap") {
+    if (vwap_rule == alpha::VwapRule::RawDailyCloseV2) return LevelBasis::Raw;
+    if (vwap_rule == alpha::VwapRule::AdjustedTypicalV1) return LevelBasis::AdjustedLevel;
+    return std::nullopt;
+  }
+  const std::optional<LevelBasis> by_name = history_field_level_basis(name);
+  if (dv_basis == alpha::DollarVolumeBasis::RawCloseV2 || !by_name.has_value()) {
+    return by_name;
+  }
+  // CloseV1 (or an unknown enum value — fail closed): liquidity is close x volume,
+  // and close on a history panel carries the snapshot factor.
+  atx::u16 window = 0;
+  if (name == alpha::datafields::kDollarVolume ||
+      alpha::datafields::parse_adv_field(name, window)) {
+    return LevelBasis::AdjustedLevel;
+  }
+  return by_name;
+}
 
 // ---------------------------------------------------------------------------
 //  orats_total_return_close (S3-3)
@@ -104,7 +451,9 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   // -------------------------------------------------------------------------
   const std::vector<std::string> want_fields(kOratsFields.begin(), kOratsFields.end());
   ATX_TRY(auto indexed,
-          alpha::attach_indexed_multi_segment_panel(cfg.seg_dir, cfg.window, want_fields));
+          cfg.fixed_axis_ids.empty()
+              ? alpha::attach_indexed_multi_segment_panel(cfg.seg_dir, cfg.window, want_fields)
+              : fixed_history_panel(cfg));
   auto raw = std::move(indexed.panel);
   const atx::usize D = raw.dates();
   const atx::usize N = raw.instruments();
@@ -345,6 +694,10 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   std::vector<atx::usize> original_instrument_indices(N);
   std::iota(original_instrument_indices.begin(), original_instrument_indices.end(), atx::usize{0});
   std::vector<std::uint8_t> mask_out(uni.in_universe.begin(), uni.in_universe.end());
+  if (!cfg.fixed_axis_ids.empty()) {
+    for (atx::usize t = 0; t < D; ++t) for (atx::usize i = 0; i < N; ++i)
+      mask_out[t * N + i] = raw.in_universe(t, i) ? 1 : 0;
+  }
   if (cfg.compact_to_universe) {
     std::vector<atx::usize> keep;
     keep.reserve(N);
@@ -391,6 +744,19 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
     original_instrument_indices = std::move(keep);
   }
 
+  // Level-basis tags, parallel to the field order (D-01 metadata for the A3 lint).
+  // Every assembled name is a kHistField* constant, so an untagged name is a bug.
+  std::vector<LevelBasis> field_basis;
+  field_basis.reserve(names.size());
+  for (const std::string &name : names) {
+    const std::optional<LevelBasis> basis = history_field_level_basis(name);
+    if (!basis.has_value()) {
+      return Err(ErrorCode::Internal,
+                 "build_history_panel: field '" + name + "' has no level-basis tag");
+    }
+    field_basis.push_back(*basis);
+  }
+
   ATX_TRY(auto final_panel,
           alpha::Panel::create(D, N_out, std::move(names), std::move(data), std::move(mask_out)));
 
@@ -432,7 +798,8 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   HistoryPanel result{std::move(final_panel), digest, catalog.names(),
                       std::move(indexed.session_keys), std::move(indexed.instrument_ids),
                       std::move(original_instrument_indices),
-                      std::move(indexed.source_segment_paths), allow_list_excluded_columns};
+                      std::move(indexed.source_segment_paths), allow_list_excluded_columns,
+                      std::move(field_basis)};
   return Ok(std::move(result));
 }
 

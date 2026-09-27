@@ -99,7 +99,9 @@ protected:
             cols.emplace_back(c.begin() + static_cast<std::ptrdiff_t>(b * kInst),
                               c.begin() + static_cast<std::ptrdiff_t>(e * kInst));
         }
-        auto panel = Panel::create(D, kInst, {"close", "open", "high", "low", "volume", "sig"},
+        // Synthetic closes are unadjusted prices.
+        cols.push_back(cols[0]);
+        auto panel = Panel::create(D, kInst, {"close", "open", "high", "low", "volume", "sig", "raw_close"},
                                    std::move(cols), std::vector<std::uint8_t>(D * kInst, 1));
         EXPECT_TRUE(panel.has_value());
         atx::impl::PanelIdentity id;
@@ -151,6 +153,9 @@ protected:
                 "--cost-bps", "1",
                 "--n-boot", "200",
                 "--threads", "2",
+                // W0-I0b / D-12: as-of membership is the default and needs an
+                // image; this fixture has none, so it opts into the legacy rule.
+                "--membership-rule", "year-union-v1",
                 "--out", out.string()};
     }
 
@@ -181,6 +186,18 @@ TEST_F(EquityMineCli, PublishesHashBoundLibraryWithPlantedAlpha) {
     }
     std::ifstream gf(out / "gate_report.json");
     const json g = json::parse(gf);
+    EXPECT_EQ(g["config"]["vwap_rule"], "raw-daily-close-v2");
+    EXPECT_EQ(g["config"]["vwap_basis"], "raw");
+    EXPECT_EQ(g["config"]["vwap_is_intraday_observation"], false);
+    EXPECT_EQ(g["ic_screen"]["rule"], "equivalence-v3");
+    EXPECT_DOUBLE_EQ(g["ic_screen"]["practical_abs_ic"].get<double>(), 0.002);
+    EXPECT_DOUBLE_EQ(g["ic_screen"]["confidence_multiplier"].get<double>(), 3.5);
+    EXPECT_EQ(g["ic_screen"]["horizons"], json::array({5, 21, 63, 126}));
+    EXPECT_EQ(g["ic_screen"]["execution_delay"], 1);
+    EXPECT_EQ(g["ic_screen"]["window_end"], g["ic_screen"]["maturity_end"]);
+    EXPECT_EQ(g["trials"]["log_format"], 3);
+    EXPECT_EQ(g["trials"]["n_raw"].get<atx::u64>(),
+              g["trials"]["n_full_pnl"].get<atx::u64>() + g["trials"]["n_screened"].get<atx::u64>());
     EXPECT_EQ(g["counts"]["seeds_invalid"].get<int>(), 1);
     EXPECT_GE(g["counts"]["admitted"].get<int>(), 1);
     EXPECT_EQ(g["train"]["overlap_mismatch_cells"].get<int>(), 0);
@@ -211,17 +228,29 @@ TEST_F(EquityMineCli, PublishesHashBoundLibraryWithPlantedAlpha) {
 TEST_F(EquityMineCli, SmoothWindowsAddDecayedVariantsAsTrials) {
     const fs::path out = root_ / "smooth";
     auto args = base_args(out);
-    args.insert(args.end(), {"--smooth-windows", "5;10"});
+    // V2 reproduction pins its original margin; changing only the rule leaves
+    // independently configured numeric knobs intact.
+    args.insert(args.end(), {"--smooth-windows", "5;10", "--ic-screen-rule", "conservative-v2",
+                             "--ic-screen-min-abs-ic", "0.02"});
     std::string o, e;
     ASSERT_EQ(run(args, o, e), 0) << e;
     std::ifstream gf(out / "gate_report.json");
     const json g = json::parse(gf);
+    EXPECT_EQ(g["ic_screen"]["rule"], "conservative-v2");
+    EXPECT_DOUBLE_EQ(g["ic_screen"]["practical_abs_ic"].get<double>(), 0.02);
+    EXPECT_DOUBLE_EQ(g["ic_screen"]["confidence_multiplier"].get<double>(), 3.5);
     EXPECT_EQ(g["counts"]["seeds"].get<int>(), 15);        // 5 base lines x (1 + 2 windows)
     EXPECT_EQ(g["counts"]["seeds_invalid"].get<int>(), 3); // the bad line in every form
-    EXPECT_EQ(g["trials"]["n_raw"].get<int>(), 12);        // 4 valid base seeds x 3 forms
+    // 4 valid base seeds x 3 forms = 12 scored candidates. W0-A0 / A-01 (average rank
+    // ties): the world's volume is a constant 1e6, so rank(volume) and its two decayed
+    // forms are all-tie cross-sections and now degenerate (ordinal ties used to break
+    // them by index into a spurious signal); they are never registered as trials.
+    EXPECT_EQ(g["counts"]["degenerate"].get<int>(), 3);
+    EXPECT_EQ(g["trials"]["n_raw"].get<int>(), 9);
     std::string o2, e2;
     auto bad = args;
-    bad.back() = (root_ / "smooth_bad").string();
+    bad[std::find(bad.begin(), bad.end(), "--out") - bad.begin() + 1] =
+        (root_ / "smooth_bad").string();
     bad.insert(bad.end(), {"--smooth-windows", "1"});
     EXPECT_EQ(run(bad, o2, e2), 2);
 }
@@ -240,6 +269,7 @@ TEST_F(EquityMineCli, RefusesContextsAtOrAfterTheSeal) {
 TEST_F(EquityMineCli, HoldoutOffByDefaultNeverLoadsHoldoutContexts) {
     const fs::path out = root_ / "no_holdout";
     auto args = base_args(out);
+    args.insert(args.end(), {"--vwap-rule", "adjusted-typical-v1", "--ic-screen-rule", "disabled-v1"});
     // Point the holdout at a file that does not exist: off must never open it.
     args[std::find(args.begin(), args.end(), "--holdout-contexts") - args.begin() + 1] =
         (root_ / "missing_holdout.bin").string();
@@ -248,6 +278,12 @@ TEST_F(EquityMineCli, HoldoutOffByDefaultNeverLoadsHoldoutContexts) {
     EXPECT_FALSE(fs::exists(out / "holdout.csv"));
     std::ifstream gf(out / "gate_report.json");
     const json g = json::parse(gf);
+    EXPECT_EQ(g["config"]["vwap_rule"], "adjusted-typical-v1");
+    EXPECT_EQ(g["config"]["vwap_basis"], "adjusted_level");
+    EXPECT_EQ(g["ic_screen"]["rule"], "disabled-v1");
+    EXPECT_EQ(g["trials"]["log_format"], 2);
+    EXPECT_EQ(g["ic_screen"]["mine_evaluations"], 0);
+    EXPECT_EQ(g["trials"]["n_screened"], 0);
     EXPECT_FALSE(g["holdout"]["evaluated"].get<bool>());
     EXPECT_EQ(g["holdout"]["mode"].get<std::string>(), "off");
     EXPECT_FALSE(g["holdout"].contains("contexts"));
@@ -303,6 +339,7 @@ TEST_F(EquityMineCli, NeverWritesIntoAnExistingOut) {
 TEST_F(EquityMineCli, RejectsUnknownFlagAndMissingRequired) {
     std::string o, e;
     EXPECT_EQ(run({"--bogus", "1"}, o, e), 2);
+    EXPECT_EQ(run({"--vwap-rule", "unversioned"}, o, e), 2);
     EXPECT_EQ(run({"--out", (root_ / "x").string()}, o, e), 2);
     EXPECT_NE(e.find("required"), std::string::npos);
 }

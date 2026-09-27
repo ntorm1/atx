@@ -1,0 +1,45 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "fcd4061d9ab8841df93e4a4bf9608dd900154ef0",
+  "started_utc": "2026-09-26T22:15:15.269135+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "build-equity/audit-first-refusal-source.py"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\audit-first-refusal-source.py",
+      "sha256": "ad34050f0e3416a601d83f83803136fe2433f3d7cfdd3eca08cf9c4d5135bca8"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-projection-v1\\manifest.json",
+      "sha256": "25a96be8611bf97eddccea3b254220aa750a66b98953069c51cd392d30f0e446"
+    }
+  ],
+  "limits": {
+    "seconds": 120.0,
+    "max_rss_mib": 768,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 150044672,
+  "minimum_system_free_bytes": 1342242816,
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 13.25,
+  "owned_processes": [
+    {
+      "pid": 8672,
+      "create_time": 1790460915.2799664
+    },
+    {
+      "pid": 15000,
+      "create_time": 1790460915.2958033
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "b3b70a84114801062266dba160364c22bca96fe072a50e07b5e7507d21b38783",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

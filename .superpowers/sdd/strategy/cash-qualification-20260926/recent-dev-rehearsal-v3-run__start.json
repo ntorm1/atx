@@ -1,0 +1,94 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "ab049a505aa530dec2b7b31c5d9aa14ec323b110",
+  "started_utc": "2026-09-26T22:52:50.396584+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy.exe",
+    "--library",
+    "atx-impl/strategies/slow_price_volume_24_v1.json",
+    "--library-sha256",
+    "1851cd07d41a68d3b47009875aa54703bbb59bf5335bd6e09e4dd426c9fff40b",
+    "--train",
+    "build-equity/recent-dev-smoke-v1/manifest.json",
+    "--train-sha256",
+    "900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b",
+    "--validation",
+    "build-equity/recent-dev-check-v1/manifest.json",
+    "--validation-sha256",
+    "2129ed162ca3eb1e2bce3bd74f456b83ea11187c26729d06712677bbb6848e84",
+    "--output",
+    "build-equity/recent-dev-rehearsal-v3",
+    "--max-memory-mib",
+    "1024",
+    "--min-names",
+    "2000",
+    "--seed",
+    "42",
+    "--spread-bps",
+    "10",
+    "--commission-bps",
+    "1",
+    "--borrow-bps",
+    "300",
+    "--impact-y",
+    "0.6",
+    "--max-participation",
+    "0.01",
+    "--cash-claims",
+    "atx-impl/strategies/slow_price_volume_24_v1.cash_claims.json",
+    "--cash-claims-sha256",
+    "257c6d645292b9f9464e6401ed1f9adb5e41a66089fdc4f7e23db0724f6da510"
+  ],
+  "executable_sha256": "e926917cc36b79b9fa0821eccd37652ddaa73133d2b4bcc164f5b493a556caaf",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_24_v1.json",
+      "sha256": "1851cd07d41a68d3b47009875aa54703bbb59bf5335bd6e09e4dd426c9fff40b"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_24_v1.recipe.json",
+      "sha256": "425df0171096357b33efdf1b80d18150317e095f1d0f5cfb271ea710cc643a13"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-dev-smoke-v1\\manifest.json",
+      "sha256": "900839a1ea8e21edc0f5edd5e9cd8f2bc7884a9295a86d5d6f2de19a79aed36b"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-dev-check-v1\\manifest.json",
+      "sha256": "2129ed162ca3eb1e2bce3bd74f456b83ea11187c26729d06712677bbb6848e84"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_24_v1.cash_claims.json",
+      "sha256": "257c6d645292b9f9464e6401ed1f9adb5e41a66089fdc4f7e23db0724f6da510"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\evidence\\mdco_20200106.research.json",
+      "sha256": "bdf46164d2311c8acd7b75b9f0eef9922e3990b9cbe2175b2d71737c894b6682"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\evidence\\wair_20200109.research.json",
+      "sha256": "30511d2b588b1f35247a67703f839ffe3d0bea51cdf4c2d6100b494a7e5bf03b"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\evidence\\bold_20200115.research.json",
+      "sha256": "370f557be1e16bc8f5c9871950536bb70c90c33677dc0a5f447263d995559ec2"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\evidence\\arql_20200116.research.json",
+      "sha256": "a9be00dc4b7adac3db486124b8138139490b2f6d5ca83df8b6af53c95e459bd4"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\evidence\\thor_20200123.research.json",
+      "sha256": "2b6451de5e57b7e0c11663603a865ce1c7588a6d3b0610f38930ea5fa40db7d5"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 768
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 3220037632,
+  "outcome": "launch-failed",
+  "exit_code": null
+}

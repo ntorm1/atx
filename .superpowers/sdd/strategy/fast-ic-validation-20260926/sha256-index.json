@@ -1,0 +1,343 @@
+{
+  "schema": "atx.evidence-archive-sha256/v1",
+  "source_root": "C:\\atx-wt\\pool-2",
+  "files": [
+    {
+      "archive_path": "atx-impl/strategies/slow_price_volume_ic48_v1.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_ic48_v1.json",
+      "bytes": 15850,
+      "sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff"
+    },
+    {
+      "archive_path": "atx-impl/strategies/slow_price_volume_ic48_v1.recipe.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_ic48_v1.recipe.json",
+      "bytes": 16479,
+      "sha256": "3b6707f7a46e392391281a9f84585e6c6b1a1b5567cd9ff2656931b72481130b"
+    },
+    {
+      "archive_path": "build-equity/audit-fast-ic-validation-v3.py",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\audit-fast-ic-validation-v3.py",
+      "bytes": 5320,
+      "sha256": "5c4e80b0a881b6256ae66eb9feef6fce0c8411f9cce20143fcbbc8aa9dc7d2c3"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-train-artifact-v4/recipe.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-train-artifact-v4\\recipe.json",
+      "bytes": 1328,
+      "sha256": "d1fa87826e0e0810b8fda89a70eb36d5a7f8b90a419a26feb6e8135afcd93cd8"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-train-artifact-v4/summary.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-train-artifact-v4\\summary.json",
+      "bytes": 192,
+      "sha256": "de7508467b8771ac6357481ea5b46dc8543a517683eba7d7650c97d6f587f45e"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-train-artifact-v4/train_candidates.jsonl",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-train-artifact-v4\\train_candidates.jsonl",
+      "bytes": 31456,
+      "sha256": "766da55eb821aac805611259bc218c2ce5b1776fff1ec7394e97d84a5db7abf6"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-train-artifact-v4-run/receipt.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-train-artifact-v4-run\\receipt.json",
+      "bytes": 2249,
+      "sha256": "9df881ad2d34d1cbd953c1d186cc6faff7ebe1e9ae6d11f807bc3a68c95509a2"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-train-artifact-v4-run/start.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-train-artifact-v4-run\\start.json",
+      "bytes": 1724,
+      "sha256": "80d38a495212e83e2b992b2527ad64e64c2e503a5e7593e8eeb04f85abc2a930"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-train-artifact-v4-run/stderr.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-train-artifact-v4-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-train-artifact-v4-run/stdout.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-train-artifact-v4-run\\stdout.log",
+      "bytes": 2324,
+      "sha256": "c743bd8cb06051040d880a448ef652184acfbd5616929affbad28835f9ab9e70"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-v2/orientations.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-v2\\orientations.json",
+      "bytes": 255259,
+      "sha256": "5106fdc13fc5347c9c2c670714c134a1978e6b7a0d2d2b5dd79bacb7dfb782d6"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-v2/recipe.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-v2\\recipe.json",
+      "bytes": 1323,
+      "sha256": "c2635f5a88e5d76f2f53fce2412193fc81e3323167308b854828370ea8e83b09"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-v2/validation_candidates.jsonl",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-v2\\validation_candidates.jsonl",
+      "bytes": 41784,
+      "sha256": "9d41e470db8c337f40cd72d54dce88b412d1529a4f02271d5acd7f6b2d335dde"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3/frozen_train_receipt.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\frozen_train_receipt.json",
+      "bytes": 268728,
+      "sha256": "78f3e7ddf9d4984df672c3a31e4bf066c0d57b10299962d2853e2ce9fab0cb26"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3/recipe.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\recipe.json",
+      "bytes": 3062,
+      "sha256": "4ea03e8c824442a8bc9ea52bec43938c8d8c4c424873175b73a9a07481b61f3b"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3/summary.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\summary.json",
+      "bytes": 265627,
+      "sha256": "3f361bac7f3369bc6f58898b32b6671d4c643dce260e0bbcd8b3221a5fc8c1b9"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3/validation_candidates.jsonl",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_candidates.jsonl",
+      "bytes": 154985,
+      "sha256": "f44f662ebac1bea0a2e840194999b4ba062505650a56e4b48f91b3bdb71f0232"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3/validation_combined.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_combined.json",
+      "bytes": 2205,
+      "sha256": "7407d7e7b72548e5577fdf94e2f52d238f9ff751a8ebc5640987130c1390d8e1"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3/validation_planned_targets.csv",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_planned_targets.csv",
+      "bytes": 56415,
+      "sha256": "7584b69f877f0cbae57a8ca6caa62841621ffd7ffed271ed6816da13f2a377a2"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit-run/receipt.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit-run\\receipt.json",
+      "bytes": 1737,
+      "sha256": "ff20f55e8f7ae1689ef21e3e7cc7f16fc10adbb88521c9044708e7fdd01907a2"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit-run/start.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit-run\\start.json",
+      "bytes": 1220,
+      "sha256": "6fc2e23a557f0f8c6984404e0ea95b6c596d166821538b0d9071280c896baf28"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit-run/stderr.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit-run\\stderr.log",
+      "bytes": 187,
+      "sha256": "7a4912157544f777b10534b459ccc0e680ec52a0832e9767e90634acf12c0f6a"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit-run/stdout.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit-run\\stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit-run2/receipt.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit-run2\\receipt.json",
+      "bytes": 1733,
+      "sha256": "620fe71f000c2c5e751faac0f91ffbb1c8cffd92d9588d7bc37b6f9050bf8f4e"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit-run2/start.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit-run2\\start.json",
+      "bytes": 1220,
+      "sha256": "b8ee9c37e116d48713e008eb0a53c4a08d2048ec323f3c73e25ce67a06028741"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit-run2/stderr.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit-run2\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit-run2/stdout.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit-run2\\stdout.log",
+      "bytes": 2387,
+      "sha256": "97521ded22ed91e1d81335e5f34055f6fb6cd01fc2b1f40f19023400db07780f"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-audit.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-audit.json",
+      "bytes": 3338,
+      "sha256": "3e8aec5b1567a12c9cdd4cbcae3a3578698848eac0340a51f6e44dde658e9675"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-run/receipt.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-run\\receipt.json",
+      "bytes": 2981,
+      "sha256": "db7647d8579ba6189d28ba1a96faf92a7436f1685f2c7843f0177dab32691940"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-run/start.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-run\\start.json",
+      "bytes": 2480,
+      "sha256": "27b95b6736a329b69db5836ae1858a88f69e330a2a4158b3a77095fa2be3e04c"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-run/stderr.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-ic-validation-v3-run/stdout.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3-run\\stdout.log",
+      "bytes": 12035,
+      "sha256": "8002fd1cd21df5b443b981e3ded3b4e6d0aa441b783a9b6de8c0ff722b11e0f6"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-train-2020-2022-v1/manifest.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-train-2020-2022-v1\\manifest.json",
+      "bytes": 9789,
+      "sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493"
+    },
+    {
+      "archive_path": "build-equity/recent-fast-validation-2023-2024-v1/manifest.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-validation-2023-2024-v1\\manifest.json",
+      "bytes": 7247,
+      "sha256": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-build-receipt.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-build-receipt.json",
+      "bytes": 210,
+      "sha256": "f4bd5b31401cf46d8497e3f2f6aef6ccdc791697c2bb4ede5331492a48b9c037"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-build.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-build.log",
+      "bytes": 14702,
+      "sha256": "5b2b4c0ab3a6d87471f9158a5d00829f96a81f0394ba155ee6630dfb15ec571d"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-cache-stats.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-cache-stats.log",
+      "bytes": 1435,
+      "sha256": "ca8e4daafea0d6e5dd6eb0a650fe35d3426ef63137286baada575002ead79f00"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-cache-summary.txt",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-cache-summary.txt",
+      "bytes": 458,
+      "sha256": "5ba023128a422fe984f8be8f3b285aebbc7d825ff46824e3892409450b807503"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-qualification/receipt.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-qualification\\receipt.json",
+      "bytes": 1599,
+      "sha256": "d60c511adac308d3ea807a752e7c2ead257736d00e301f87fb78d10a763a0916"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-qualification/results.xml",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-qualification\\results.xml",
+      "bytes": 9362,
+      "sha256": "684ab76814491e89a8133532728a5a985f4ea3dc82d5780b8cf03aedb43b0138"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-qualification/start.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-qualification\\start.json",
+      "bytes": 1089,
+      "sha256": "902acbc8b83428b684fafe28ae813d0d5509ad287409bf932d0898c582f0e252"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-qualification/stderr.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-qualification\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-qualification/stdout.log",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-qualification\\stdout.log",
+      "bytes": 12015,
+      "sha256": "9d755cfb6201a2d8e74400eaaa4e9cb1bd1f868ca00c9488ad46856259da2e7f"
+    },
+    {
+      "archive_path": "build-equity/recent-strategy-fast-ic-resume-start.json",
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-strategy-fast-ic-resume-start.json",
+      "bytes": 274,
+      "sha256": "ce39b2ac8f68ba650c37fbf43531b20bab94112d82ddc9736b2e120f80f215a4"
+    },
+    {
+      "archive_path": "review-checks.json",
+      "origin_path": null,
+      "bytes": 4691,
+      "sha256": "c76be6d623725456ed92a2b9fa9ed352dcd4bdb76303f325016d319bc59d992c",
+      "generated_by": "independent metadata/receipt inspection in pool3"
+    },
+    {
+      "archive_path": ".gitattributes",
+      "origin_path": null,
+      "bytes": 8,
+      "sha256": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da",
+      "generated_by": "preserve exact origin bytes in Git"
+    }
+  ],
+  "omitted_large_artifacts": [
+    {
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-v2\\validation_daily_ic.csv",
+      "bytes": 1957888,
+      "sha256": "2f9d389a626dd2177d0c329ec96e414baaebf3e4ac6183e6785f0298bb1934e4",
+      "archived": false,
+      "verification": "bytes hashed only; numeric parity not rerun"
+    },
+    {
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_daily_ic.csv",
+      "bytes": 7748598,
+      "sha256": "d14f23b8450e3eebcf5e2358d2f43658a9f84e392195262bb73dfb06bd0ac614",
+      "archived": false,
+      "verification": "bytes hashed only; numeric parity not rerun"
+    },
+    {
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-train-artifact-v4\\train_daily_ic.csv",
+      "bytes": 2228224,
+      "sha256": "3c64498686d838e791ff32466e3465ec84192acc915caac5e1912a4aae12b192",
+      "archived": false,
+      "verification": "bytes hashed only; numeric parity not rerun"
+    },
+    {
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_combined.f64",
+      "bytes": 36466752,
+      "sha256": "614d59f3e7bd15a2c5372bf23f7ab498c45bbf3f15856744259b9947e6ce645d",
+      "archived": false,
+      "verification": "root final audit verified; reviewer did not reopen payload"
+    },
+    {
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_combined_finite.u8",
+      "bytes": 4558344,
+      "sha256": "8b12b93d752016f14618704e9439f4c6f3b3de3e4f0987de5d8ebeadb5885d7d",
+      "archived": false,
+      "verification": "root final audit verified; reviewer did not reopen payload"
+    },
+    {
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_combined_ids.u64",
+      "bytes": 40384,
+      "sha256": "9b1ba628d1bb71ac969d9fbd6735e986f3617fcd3d84259d8e2a5b51f8a13eb1",
+      "archived": false,
+      "verification": "root final audit verified; reviewer did not reopen payload"
+    },
+    {
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_combined_member.u8",
+      "bytes": 4558344,
+      "sha256": "8b12b93d752016f14618704e9439f4c6f3b3de3e4f0987de5d8ebeadb5885d7d",
+      "archived": false,
+      "verification": "root final audit verified; reviewer did not reopen payload"
+    },
+    {
+      "origin_path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_combined_sessions.i64",
+      "bytes": 7224,
+      "sha256": "92013075f09e90f2ac982b5579980b1ef0d66f5015a1d737c9c59a0a1e3523d4",
+      "archived": false,
+      "verification": "root final audit verified; reviewer did not reopen payload"
+    }
+  ],
+  "self_hash": "index is bound by its Git blob and sibling report; not recursively included"
+}

@@ -7,6 +7,10 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/crossover.cpp
     src/factory/factory.cpp
     src/factory/fitness.cpp
+    src/factory/execution_objective.cpp
+    src/factory/execution_cash_claim.cpp
+    src/factory/execution_stock_transition.cpp
+    src/factory/ic_screen.cpp
     src/factory/genome.cpp
     src/factory/mutation.cpp
     src/factory/op_catalog.cpp
@@ -15,6 +19,12 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/research_driver.cpp
     src/factory/search_driver.cpp
     src/eval/cpcv.cpp
+    src/eval/cpcv_date.cpp
+    src/risk/constraints.cpp
+    src/risk/cov_ewma.cpp
+    src/risk/eigen_adjust.cpp
+    src/risk/vol_regime.cpp
+    src/risk/specific_risk.cpp
     src/eval/cross_section_ic.cpp
     src/eval/pbo.cpp
     src/eval/perf_metrics.cpp
@@ -31,11 +41,13 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/alpha/parser.cpp
     src/alpha/registry.cpp
     src/alpha/segment_panel.cpp
+    src/alpha/streams.cpp
     src/alpha/typecheck.cpp
     src/alpha/unparse.cpp
     src/learn/elastic_net.cpp
     src/learn/ensemble.cpp
     src/learn/feature_matrix.cpp
+    src/learn/panel_dataset.cpp
     src/learn/gbt.cpp
     src/learn/hmm.cpp
     src/learn/latent.cpp
@@ -82,6 +94,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/data/orats_history.cpp
     # ORATS history panel helpers: orats_total_return_close (p3 S3-3)
     src/data/history_panel.cpp
+    src/data/panel_store.cpp
     # FINRA consolidated short-interest causal loader (p7 S2-1 / track-b B1)
     src/data/finra_short.cpp
     src/parallel/batch_eval.cpp
@@ -126,16 +139,37 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/rewrite.cpp
     src/factory/fidelity.cpp
     src/eval/trial_registry.cpp
+    src/eval/trial_epoch.cpp
+    src/data/exposure_panel.cpp
+    src/data/price_exposure_provider.cpp
+    src/data/fundamental_clock_artifact.cpp
+    src/data/strategy_data.cpp
+    src/factory/objective_ic.cpp
     src/eval/multiple_testing.cpp
     src/eval/lockbox_audit.cpp
     src/combine/signal_combiner.cpp
+    src/combine/signal_cube.cpp
     src/combine/orthogonalize.cpp
     src/risk/model_validation.cpp
+    src/risk/qp_solver.cpp
+    src/risk/qp_factor_admm.cpp
+    src/risk/exposures.cpp
     src/risk/hybrid_factor_model.cpp
     src/risk/cost_terms.cpp
     src/book/replay_cost.cpp
+    src/cost/cost_surface.cpp
+    src/cost/spread_estimators.cpp
+    src/cost/borrow_tiers.cpp
+    src/cost/fim_adjustment.cpp
+    src/cost/modeled_inputs.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
+
+# JSON is private to these artifact implementations. Keep its include path
+# source-local so adding this dependency does not invalidate every engine TU/PCH.
+set_property(SOURCE src/combine/signal_cube.cpp src/eval/trial_epoch.cpp
+    src/factory/objective_ic.cpp src/data/strategy_data.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
+    "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
 
 target_include_directories(atx-engine
     PUBLIC
@@ -149,6 +183,14 @@ target_compile_features(atx-engine PUBLIC cxx_std_20)
 # PRIVATE so it never leaks into consumers' include hygiene. See atx-engine/pch.hpp.
 if(ATX_USE_PCH)
     target_precompile_headers(atx-engine PRIVATE pch.hpp)
+endif()
+
+# Keep fast IC screening optimized in the iterative Debug tree without changing
+# the engine-wide PCH, Debug ABI, precise FP defaults, or other source objects.
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/factory/ic_screen.cpp APPEND PROPERTY COMPILE_OPTIONS
+        /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/factory/ic_screen.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
 # Engine builds on top of core; the warnings gate (§8) applies to engine TUs.

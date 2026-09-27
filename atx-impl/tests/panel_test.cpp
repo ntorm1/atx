@@ -1,4 +1,7 @@
 #include <cmath>
+#include <array>
+#include <bit>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -19,6 +22,8 @@
 
 #include "config.hpp"
 #include "serialize_panel.hpp"
+#include "panel_pipeline.hpp"
+#include "atx/engine/data/panel_store.hpp"
 #include "stages.hpp"
 
 // ---------------------------------------------------------------------------
@@ -226,6 +231,87 @@ void write_seg_day(const fs::path& dir, const std::string& name, atx::i64 dn,
 }
 
 } // anonymous namespace
+
+class AtxImplPanelStoreV2 : public ::testing::Test {
+protected:
+    fs::path root;
+    void SetUp() override {
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        for (int i = 0; i < 32; ++i) {
+            const auto candidate = fs::temp_directory_path() /
+                ("atx_impl_d6_" + std::to_string(stamp) + "_" + std::to_string(i));
+            std::error_code ec;
+            if (fs::create_directory(candidate, ec)) { root = candidate; return; }
+        }
+        FAIL() << "cannot reserve exclusive synthetic stage fixture";
+    }
+    void TearDown() override { if (!root.empty()) { std::error_code ec; remove_owned_test_tree(root, ec); } }
+};
+
+TEST_F(AtxImplPanelStoreV2, FixedMultiChunkUnionAbsentMemberWarmupAndExactConsumer) {
+    namespace data = atx::engine::data;
+    namespace impl = atx::impl;
+    constexpr atx::i64 day = 86'400'000'000'000LL;
+    constexpr atx::i64 start = 1'357'084'800'000'000'000LL; // 2013-01-02
+    ASSERT_TRUE(fs::create_directory(root / "segs"));
+    data::PitUniverseConfig uc;
+    uc.rule = data::PitUniverseRule::CommonStockV2; uc.adv_window = 1; uc.min_valid_observations = 1;
+    uc.min_adv_usd = 5'000'000; uc.instrument_types_sha256.fill('a');
+    uc.top_n[0] = 3; uc.top_n_count = 1; uc.band_bp[0] = 0; uc.band_count = 1;
+    uc.max_source_ids = 8; uc.max_rebalances = 4; uc.max_sessions = 64;
+    std::vector<data::PitInstrumentTypeEvidence> proofs;
+    for (atx::u32 i = 0; i < 3; ++i) proofs.push_back({10001 + i, start - day,
+        data::kPitSessionKeyEndExclusive, start - 2 * day, start - 2 * day,
+        data::PitInstrumentType::CommonStock, data::PitTypeSource::Vendor, true, i + 1, true});
+    auto membership = data::PitUniverseBuilder::create(uc, proofs); ASSERT_TRUE(membership);
+    const std::array<atx::i64, 3> ids{10001, 10002, 10003};
+    const std::array<atx::f64, 3> prices{100, 101, 102}, volumes{1e6, 1e6, 1e6};
+    ASSERT_TRUE(membership->observe_session(start - day, std::span(ids).first(2), std::span(prices).first(2),
+                                            std::span(volumes).first(2), {}, {}));
+    ASSERT_TRUE(membership->rebalance(start - day));
+    for (int t = 0; t < 36; ++t) {
+        const int names = t < 2 ? 1 : (t < 33 ? 2 : 3);
+        const auto session = start + static_cast<atx::i64>(t) * day;
+        ASSERT_NO_FATAL_FAILURE(write_seg_day(root / "segs", "date-" + std::to_string(100 + t) + ".seg",
+                                               session, names, 100.00000002 + static_cast<double>(t) * .125));
+        ASSERT_TRUE(membership->observe_session(session, std::span(ids).first(names), std::span(prices).first(names),
+                                                std::span(volumes).first(names), {}, {}));
+        if (t == 33) ASSERT_TRUE(membership->rebalance(session));
+    }
+    const auto encoded = data::encode_membership_bin(*membership); ASSERT_TRUE(encoded);
+    const auto membership_path = root / "membership.bin";
+    { std::ofstream file(membership_path, std::ios::binary); file << *encoded; ASSERT_TRUE(file.good()); }
+    impl::RunConfig cfg;
+    cfg.panel_storage_rule = "mmap-f32-v2"; cfg.segs = (root / "segs").string();
+    cfg.panel_out = (root / "store").string(); cfg.start = "2013-01-02"; cfg.end = "2013-02-07";
+    cfg.panel_universe_membership = membership_path.string(); cfg.panel_universe_cut = "3:0.00";
+    cfg.panel_universe_eval_start = "2013-01-02"; cfg.augment_panel = true; cfg.adv_windows = {3};
+    auto bad = cfg; bad.compact_universe = true; EXPECT_FALSE(impl::run_panel(bad));
+    const auto run = impl::run_panel(cfg); ASSERT_TRUE(run) << run.error().message();
+    const auto store = data::PanelStore::open(cfg.panel_out); ASSERT_TRUE(store);
+    EXPECT_EQ(store->config().instrument_ids, (std::vector<atx::i64>{10001, 10002, 10003}));
+    EXPECT_EQ(store->chunks(), 2U);
+    auto first = store->open_chunk(0); ASSERT_TRUE(first);
+    EXPECT_EQ((*first->present(0))[1], 0); EXPECT_EQ((*first->tradable(0))[1], 1); // missing held mark
+    EXPECT_EQ((*first->present(0))[2], 0); EXPECT_EQ((*first->tradable(0))[2], 0); // fixed future column
+    auto second = store->open_chunk(1); ASSERT_TRUE(second);
+    EXPECT_EQ((*second->present(1))[2], 1); EXPECT_EQ((*second->tradable(1))[2], 0); // rank day is warmup
+    EXPECT_EQ((*second->tradable(2))[2], 1); // effective next session
+    EXPECT_FALSE(impl::read_pipeline_panel(cfg.panel_out, true)); // never discard separate membership
+    EXPECT_FALSE(impl::read_pipeline_store_window(cfg.panel_out, 31, 35, 1));
+    const auto window = impl::read_pipeline_store_window(cfg.panel_out, 31, 35, 64ULL * 1024 * 1024);
+    ASSERT_TRUE(window) << window.error().message();
+    ASSERT_TRUE(window->identity); EXPECT_EQ(window->identity->instrument_ids.size(), 3U);
+    EXPECT_EQ(window->tradable[2 * 3 + 2], 0); EXPECT_TRUE(window->panel.in_universe(2, 2));
+    const auto close = window->panel.field_id("close"), returns = window->panel.field_id("returns");
+    ASSERT_TRUE(close); ASSERT_TRUE(returns);
+    const double exact_close = 100.00000002 + 32.0 * .125;
+    EXPECT_EQ(std::bit_cast<atx::u64>(window->panel.field_cross_section(*close, 1)[0]), std::bit_cast<atx::u64>(exact_close));
+    const double expected_return = exact_close / (100.00000002 + 31.0 * .125) - 1.0;
+    EXPECT_EQ(std::bit_cast<atx::u64>(window->panel.field_cross_section(*returns, 1)[0]), std::bit_cast<atx::u64>(expected_return));
+    EXPECT_FALSE(impl::write_pipeline_panel(window->panel, (root / "unsafe.bin").string(), *window, {}, "drops mask"));
+    EXPECT_FALSE(fs::exists(root / "unsafe.bin"));
+}
 
 TEST(AtxImplPanel, BuildsPanelFromSegments) {
     // ---- build synthetic temp partition: 60 dates x 30 instruments ----
@@ -548,6 +634,18 @@ TEST(AtxImplPanelMembership, RestrictionFlagsAreAllThreeOrNone) {
         ASSERT_FALSE(parsed.has_value());
         EXPECT_EQ(parsed.error().code(), atx::core::ErrorCode::InvalidArgument);
     }
+}
+
+TEST(AtxImplPanelMembership, StorageRuleRequiresKnownExplicitFormat) {
+    const auto legacy = parse_panel_args({"atx-impl", "panel"});
+    ASSERT_TRUE(legacy);
+    EXPECT_EQ(legacy->panel_storage_rule, "legacy-f64-v1");
+    const auto store = parse_panel_args({"atx-impl", "panel", "--panel-storage-rule", "mmap-f32-v2"});
+    ASSERT_TRUE(store);
+    EXPECT_EQ(store->panel_storage_rule, "mmap-f32-v2");
+    EXPECT_TRUE(store->set_flags.contains("panel-storage-rule"));
+    EXPECT_FALSE(parse_panel_args({"atx-impl", "panel", "--panel-storage-rule", "float"}));
+    EXPECT_FALSE(parse_panel_args({"atx-impl", "panel", "--panel-storage-rule", ""}));
 }
 
 TEST(AtxImplPanelMembership, AllowListUnionAddsTheLastRebalanceBeforeEvalStart) {

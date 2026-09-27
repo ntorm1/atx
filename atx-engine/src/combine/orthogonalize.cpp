@@ -14,6 +14,7 @@
 #include "atx/core/linalg/linalg.hpp"
 #include "atx/core/types.hpp"
 #include "atx/engine/combine/signal_store.hpp" // cross_section_corr, kSignalNaN
+#include "atx/engine/eval/hac.hpp"             // W0-E0a: HAC t-statistic (E-03)
 
 namespace atx::engine::combine {
 
@@ -192,7 +193,15 @@ lowdin_orthogonalize(std::span<const PanelView> panels) {
 }
 
 atx::core::Result<MarginalIc> marginal_ic(PanelView cand, std::span<const PanelView> pool,
-                                          PanelView fwd, usize begin, usize end) {
+                                          PanelView fwd, usize begin, usize end,
+                                          eval::hac::TStatRule tstat_rule, usize label_horizon) {
+  using eval::hac::TStatRule;
+  if (label_horizon == 0U ||
+      (tstat_rule != TStatRule::IidV1 && tstat_rule != TStatRule::NeweyWestAutoV2 &&
+       tstat_rule != TStatRule::HorizonAwareV3)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "marginal_ic: invalid inference rule or label horizon");
+  }
   const usize t_n = cand.n_dates;
   const usize n = cand.n_instruments;
   if (end == 0U) {
@@ -262,14 +271,13 @@ atx::core::Result<MarginalIc> marginal_ic(PanelView cand, std::span<const PanelV
     sum += x;
   }
   out.mean_ic = sum / static_cast<f64>(ics.size());
-  if (ics.size() >= 2U) {
-    f64 ss = 0.0;
-    for (const f64 x : ics) {
-      ss += (x - out.mean_ic) * (x - out.mean_ic);
-    }
-    const f64 sd = std::sqrt(ss / static_cast<f64>(ics.size() - 1U));
-    out.tstat = (sd > 0.0) ? out.mean_ic / (sd / std::sqrt(static_cast<f64>(ics.size()))) : 0.0;
-  }
+  // W0-E0a / E-03: the marginal-IC series inherits the MA(h-1) overlap of the forward
+  // return, so its t-stat is HAC (Newey-West at the NW-1994 automatic lag) by default.
+  // TStatRule::IidV1 reproduces the pre-W0 mean / (sd / sqrt(n)) term for term. Lags run
+  // over consecutive USABLE dates (skipped dates are dropped, not NaN-filled). The
+  // contract is unchanged: 0 when n < 2 or the (long-run) variance is zero.
+  const eval::hac::MeanInference mi = eval::hac::mean_tstat(ics, tstat_rule, label_horizon);
+  out.tstat = (mi.defined != 0U) ? mi.t : 0.0;
   return atx::core::Ok(out);
 }
 

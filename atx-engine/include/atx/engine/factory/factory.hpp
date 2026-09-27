@@ -98,6 +98,7 @@
 #include "atx/engine/library/library.hpp" // library::Library, AlphaCandidate, AdmitKind, AdmitVerdict
 
 #include "atx/engine/eval/robustness_battery.hpp" // eval::BatteryConfig, RobustnessBattery (p8 Item 3)
+#include "atx/engine/eval/pbo.hpp" // eval::PboRule, versioned CSCV arithmetic
 
 #include "atx/engine/factory/fitness.hpp" // factory::pool_aware_fitness, FitnessCfg
 #include "atx/engine/factory/genome.hpp"  // factory::Genome
@@ -151,6 +152,9 @@ struct FactoryConfig {
   //  is ADVISORY-but-RECORDED: it is surfaced (rep.pbo_gate_passed) but never un-
   //  persists an alpha or changes admission — recording + a loud warning ARE the gate.
   atx::f64 max_pbo = 1.0;
+  // Persist this numerical recipe when reusing run artifacts. Explicit V1
+  // reproduces the pre-caching gather/sort calculation on valid inputs.
+  eval::PboRule pbo_rule{eval::PboRule::CachedMomentsV2};
   // --- P2a out-of-sample (holdout) validation (additive; 0.0 == OFF, default).
   //  When oos_fraction > 0, mine_into SELECTS on a TRAIN window [0, lockbox_begin -
   //  embargo) but CONFIRMS the AlphaGate floors + the DSR bar on the HELD-OUT
@@ -288,6 +292,17 @@ struct FactoryReport {
   atx::usize trials{0};
   atx::u64 seed{0};
   atx::u64 digest{0};
+  atx::usize ic_screen_evaluations{0};
+  atx::usize ic_screen_unavailable{0};
+  atx::usize ic_prepass_vm_evaluations{0};
+  atx::usize ic_rejected{0};
+  bool cpcv_invalid{false}; // invalid checked plan: no evaluation/admission
+  bool cpcv_resume_mismatch{false};
+  eval::CpcvMetadata cpcv_metadata; // populated only for active DateV2
+  bool ic_screen_resume_mismatch{false};
+  bool ic_screen_cache_mismatch{false};
+  bool residual_invalid{false}; // IC-only search has no qualified P&L admission route
+  std::string residual_error{};
 
   // --- S4b-3 mine_into() telemetry (additive; default-init so mine() is untouched).
   // These fields are populated ONLY by mine_into (the persistent-library admit path);
@@ -348,6 +363,10 @@ struct FactoryReport {
   atx::usize pbo_n_candidates = 0;
   atx::usize pbo_n_splits = 0;
   bool pbo_gate_passed = true;
+  eval::PboRule pbo_rule{eval::PboRule::CachedMomentsV2};
+  atx::u64 pbo_cached_evaluations{0};
+  atx::u64 pbo_reference_evaluations{0};
+  atx::u64 pbo_ambiguous_comparisons{0};
   // --- R3b/A3: run-level CSCV PBO (probability of backtest overfitting) over the
   //  admitted alphas' holdout PnL streams for this run. SET-LEVEL statistic: one
   //  value per run (NOT per candidate). Computed AFTER all admission decisions
@@ -394,7 +413,8 @@ namespace detail {
 void finalize_run_pbo(FactoryReport &rep,
                       const std::vector<std::vector<atx::f64>> &admitted_pnls,
                       atx::f64 max_pbo,
-                      bool always_compute = false);
+                      bool always_compute = false,
+                      eval::PboRule rule = eval::PboRule::CachedMomentsV2);
 
 // check_blocking_pbo — S5-2: the blocking-PBO fail-closed escalation. Called AFTER
 // finalize_run_pbo (so rep.pbo_gate_passed reflects the just-computed verdict) and

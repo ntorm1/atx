@@ -52,10 +52,16 @@
 //                  equal-weight mean over present instruments per row
 //   * Liquidity  = ln(adv20), adv20 = mean(close·volume) over 20 rows
 //  A factor is NaN when the trailing rows are insufficient (documented per helper).
-//  Then each STYLE column is z-scored cross-sectionally over its non-NaN universe:
+//  Then each STYLE column is z-scored cross-sectionally over its non-NaN universe
+//  per cfg.zscore_rule: DEFAULT CapWeightedWinsorV2 = iterative ±3σ winsorizing, then
+//  cap-weighted mean and equal-weight population std (W0-R0, R-06); EqualWeightV1 = the pre-W0
 //  (v − mean)/popstd. A single-instrument or zero-variance column standardizes to
 //  0 (DEGENERATE — there is no cross-sectional spread to normalize). Sector dummies
 //  (0/1) are NOT standardized.
+//
+//  W0-R0 PIT note: this builder standardizes ONE date with the cap/group spans it is
+//  given. A multi-date caller must pass each date's own cap/group — use the
+//  PitSideInputs overload (per_date) rather than today's values for every date.
 //
 // ===========================================================================
 //  Drop rule (§3.3) + column order
@@ -77,8 +83,9 @@
 //  the surviving-instrument list and sector-group list are ascending. Same inputs
 //  -> byte-identical X.
 
-#include <algorithm> // std::sort, std::unique
-#include <cmath>     // std::isnan, std::log, std::sqrt
+// Non-template exposure math is implemented in src/risk/exposures.cpp.
+// Keep these declarations available to existing builder and diagnostic callers.
+
 #include <limits>    // std::numeric_limits (quiet NaN sentinel)
 #include <span>      // std::span (optional external inputs)
 #include <vector>    // std::vector (cold-path scratch)
@@ -89,6 +96,7 @@
 #include "atx/core/linalg/linalg.hpp" // MatX (column-major Eigen), VecX
 
 #include "atx/engine/loop/panel_types.hpp" // PanelView
+#include "atx/engine/risk/estimator_policy.hpp"
 #include "atx/engine/risk/fwd.hpp"         // StyleFactor / FactorModelConfig fwd decls
 
 namespace atx::engine::risk {
@@ -146,6 +154,47 @@ inline constexpr atx::usize kAllStyleFactorCount = 15U;
 enum class FactorCovMethod : atx::u8 { LedoitWolfSingle /*P4 default*/, EwmaNeweyWest };
 enum class SpecificRiskMethod : atx::u8 { PopVariance /*P4 default*/, EwmaNeweyWestStructural };
 
+// ===========================================================================
+//  W0-R0 versioned numeric rules (plan §5 "Correctness first"). Each V1 enumerator
+//  restores the pre-W0 arithmetic OF ITS OWN RULE; the DEFAULTS are the corrected V2
+//  behaviour. Append-only. An all-V1 config is NOT a full pre-W0 replay: three R-04 /
+//  R-06 changes are unversioned because the pre-W0 behaviour was a defect —
+//    (a) a date whose sector has no member with a clean return drops that empty
+//        column and is estimated (pre-W0 skipped it as rank-deficient);
+//    (b) a date whose column set differs from X[0] is mapped by column identity
+//        (pre-W0 wrote by position and could read past the coefficient vector, UB);
+//    (c) an instrument with group id kNoGroup is dropped from that date.
+//  Pre-W0 output is therefore reproduced only on panels where every date has the same
+//  sector set as X[0] with at least one clean member per sector and no kNoGroup id.
+// ===========================================================================
+
+// R-03: which panel row's exposures explain the return r_s = close(s)/close(s+1) − 1.
+//   ContemporaneousV1 — X built at row s. Its trailing windows (vol, beta, momentum,
+//                       adv) start AT row s, so they contain r_s (and close(s)) itself:
+//                       the regressor is built from the regressand (look-ahead).
+//   LaggedV2          — X built at row s+1 (the prior close). Every window ends before
+//                       r_s is realized, so X_{s−1} explains r_s in calendar terms.
+// The model's OWN exposures X[0] (the forecast exposures for the next return) are
+// built at row 0 under both rules.
+enum class ExposureTiming : atx::u8 { ContemporaneousV1, LaggedV2 };
+
+// R-06: cross-sectional standardization of a style column.
+//   EqualWeightV1       — (v − equal-weight mean) / population std, no winsorizing.
+//   CapWeightedWinsorV2 — iterative ±kZScoreWinsor·σ winsorizing of the raw values
+//                         (equal-weight centre), then cap-weighted mean and
+//                         equal-weighted population std (Barra USE4 convention: trim the
+//                         raw descriptor, do NOT clip after cap-weighted centring). Without
+//                         caps the mean is equal-weighted (still winsorized).
+enum class ZScoreRule : atx::u8 { EqualWeightV1, CapWeightedWinsorV2 };
+
+// R-05: specific-variance floor for names with too little residual history.
+//   NoneV1             — D is used as estimated; a name with < 2 residuals gets D = 0,
+//                        floored only to kSpecificVarFloor (1e-12) by FactorModel::create.
+//   StructuralMedianV2 — a name with fewer than the effective min_obs residuals is
+//                        shrunk toward a structural ln-D-on-exposures prediction, then
+//                        EVERY name is floored at specific_floor_frac·median(D).
+enum class SpecificFloorRule : atx::u8 { NoneV1, StructuralMedianV2 };
+
 struct CovarianceConfig {
   // --- S8.1 robust regression (WIRED in S8.1) ---
   bool robust_regression = false;    // false ⇒ plain inverse-d0 WLS (P4)
@@ -177,6 +226,16 @@ struct CovarianceConfig {
   atx::usize vol_halflife_long = 0;  // long-horizon vol HL  (short HL is the existing vol_halflife)
   atx::usize corr_halflife_long = 0; // long-horizon corr HL (short = existing corr_halflife)
   atx::usize spec_halflife_long = 0; // long-horizon specific HL (short = existing spec_halflife)
+  // --- W0-R0 thin-name specific-variance floor (R-05) ---
+  SpecificFloorRule specific_floor = SpecificFloorRule::StructuralMedianV2; // V1 ⇒ pre-W0
+  // A name is THIN when its residual count n < min(specific_min_obs, max(2, ⌈full/2⌉)),
+  // `full` = the deepest residual count in the current cross-section (so a short test
+  // window does not mark every name thin). 21 ≈ one trading month.
+  atx::usize specific_min_obs = 21;
+  // D_i >= frac · median(D) for EVERY name (V2), on both the fundamental and the
+  // statistical (APCA) builder. Clamped to [0, 1]; non-finite ⇒ InvalidArgument.
+  atx::f64 specific_floor_frac = 0.1;
+  RiskEstimatorPolicy estimator{}; // LegacyV1 by default; V2 supersedes old cleaning knobs.
 };
 
 struct FactorModelConfig {
@@ -186,6 +245,89 @@ struct FactorModelConfig {
   atx::usize n_dead_factors = 0;     // P4-7 — ignored here
   atx::f64 factor_cov_shrink = -1.0; // P4-7 — ignored here
   CovarianceConfig cov{};            // S8 covariance-construction knobs (defaults ⇒ P4)
+  // W0-R0 (R-03 / R-06). Defaults are the corrected V2 rules; V1 reproduces pre-W0.
+  ExposureTiming exposure_timing = ExposureTiming::LaggedV2;
+  ZScoreRule zscore_rule = ZScoreRule::CapWeightedWinsorV2;
+};
+
+// ===========================================================================
+//  W0-R0 point-in-time side inputs (R-06): per-date market cap and group id.
+//
+//  Layout: `market_cap` / `group_id` are row-major [n_rows × instruments()] with
+//  row r ↔ panel row r (newest-first, row 0 = the current date), so the cap and the
+//  group used for the exposures of date r are the values KNOWN AT r — never today's
+//  value broadcast backwards. An EMPTY span means "absent" (Size / sector columns
+//  omitted, exactly as in the single-date build_exposures).
+//
+//  n_rows == 0 is the STATIC (broadcast) form: each non-empty span has length
+//  instruments() and is reused at every date. That is the legacy contract of the
+//  (market_cap, group_id) FactorModelBuilder overloads — correct only when the
+//  values really are constant over the fit window; PIT callers use per_date().
+//
+//  Group sentinel: an instrument whose group id is kNoGroup at a date (not yet
+//  classified / not listed) is DROPPED from that date's cross-section when sector
+//  columns are emitted (it cannot be given a sector dummy).
+// ===========================================================================
+inline constexpr atx::u32 kNoGroup = std::numeric_limits<atx::u32>::max();
+
+struct PitSideInputs {
+  std::span<const atx::f64> market_cap{}; // [n_rows × instruments] (or [instruments] static)
+  std::span<const atx::u32> group_id{};   // [n_rows × instruments] (or [instruments] static)
+  atx::usize n_rows = 0U;                 // rows covered; 0 ⇒ static broadcast
+
+  // Legacy static form: the same cap/group span at every date.
+  [[nodiscard]] static PitSideInputs broadcast(std::span<const atx::f64> cap,
+                                               std::span<const atx::u32> group) noexcept {
+    return PitSideInputs{cap, group, 0U};
+  }
+  // Point-in-time form: one row of cap/group per panel row [0, n_rows).
+  [[nodiscard]] static PitSideInputs per_date(std::span<const atx::f64> cap,
+                                              std::span<const atx::u32> group,
+                                              atx::usize rows) noexcept {
+    return PitSideInputs{cap, group, rows};
+  }
+
+  [[nodiscard]] bool is_static() const noexcept { return n_rows == 0U; }
+
+  // Shape check against the panel's universe width. Err(InvalidArgument) on a length
+  // that is neither empty nor the documented layout.
+  [[nodiscard]] atx::core::Status validate(atx::usize n_inst) const {
+    const atx::usize want = is_static() ? n_inst : n_rows * n_inst;
+    if (!is_static() && n_inst != 0U && n_rows > std::numeric_limits<atx::usize>::max() / n_inst) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "PitSideInputs: n_rows × instruments overflows");
+    }
+    if (!market_cap.empty() && market_cap.size() != want) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "PitSideInputs: market_cap length must be n_rows × instruments "
+                            "(or instruments when static)");
+    }
+    if (!group_id.empty() && group_id.size() != want) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "PitSideInputs: group_id length must be n_rows × instruments "
+                            "(or instruments when static)");
+    }
+    return atx::core::Ok();
+  }
+
+  // True iff panel row `row` has side data (always true when static).
+  [[nodiscard]] bool covers(atx::usize row) const noexcept { return is_static() || row < n_rows; }
+
+  // The date-`row` slice (length instruments(), or empty when absent). PRECONDITION:
+  // validate(n_inst) succeeded and covers(row).
+  [[nodiscard]] std::span<const atx::f64> cap_at(atx::usize row, atx::usize n_inst) const noexcept {
+    if (market_cap.empty() || is_static()) {
+      return market_cap;
+    }
+    return market_cap.subspan(row * n_inst, n_inst);
+  }
+  [[nodiscard]] std::span<const atx::u32> group_at(atx::usize row,
+                                                   atx::usize n_inst) const noexcept {
+    if (group_id.empty() || is_static()) {
+      return group_id;
+    }
+    return group_id.subspan(row * n_inst, n_inst);
+  }
 };
 
 // ===========================================================================
@@ -213,30 +355,13 @@ namespace detail {
 
 // One trailing return: ret[r][i] = close(r,i)/close(r+1,i) − 1 (row r NEWER than
 // r+1). NaN if either close is NaN/absent or the denominator is non-positive.
-[[nodiscard]] inline atx::f64 step_return(const PanelView &panel, atx::usize r,
-                                          atx::usize i) noexcept {
-  const atx::f64 c_new = panel.close(r, i);
-  const atx::f64 c_old = panel.close(r + 1U, i);
-  if (std::isnan(c_new) || std::isnan(c_old) || c_old <= 0.0) {
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  return c_new / c_old - 1.0;
-}
+[[nodiscard]] atx::f64 step_return(const PanelView &panel, atx::usize r,
+                                          atx::usize i) noexcept;
 
 // Number of consecutive valid returns available starting at `row` (needs row+1 to
 // exist). `want` caps the scan so the lookbacks stay bounded.
-[[nodiscard]] inline atx::usize valid_returns(const PanelView &panel, atx::usize row, atx::usize i,
-                                              atx::usize want) noexcept {
-  atx::usize n = 0U;
-  for (atx::usize k = 0U; k < want; ++k) {
-    const atx::usize r = row + k;
-    if (r + 1U >= panel.rows() || std::isnan(step_return(panel, r, i))) {
-      break;
-    }
-    ++n;
-  }
-  return n;
-}
+[[nodiscard]] atx::usize valid_returns(const PanelView &panel, atx::usize row, atx::usize i,
+                                              atx::usize want) noexcept;
 
 // CROSS-REFERENCE (atx-impl/src/stage_riskmodel.cpp's `deepest_lookback`): a
 // PanelView-backing buffer must carry `estimation_window + deepest_lookback`
@@ -260,264 +385,93 @@ inline constexpr atx::usize kAdvWindow = 20U;   // adv20 lookback
 
 // Momentum = Σ_{r∈[row,row+252)} ret − Σ_{r∈[row,row+21)} ret. NaN if fewer than
 // 252 valid returns are available (need closes through row+252).
-[[nodiscard]] inline atx::f64 momentum(const PanelView &panel, atx::usize row,
-                                       atx::usize i) noexcept {
-  if (valid_returns(panel, row, i, kMomLong) < kMomLong) {
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  atx::f64 long_sum = 0.0;
-  atx::f64 short_sum = 0.0;
-  for (atx::usize k = 0U; k < kMomLong; ++k) { // ascending row -> order-fixed sum
-    const atx::f64 ret = step_return(panel, row + k, i);
-    long_sum += ret;
-    if (k < kMomShort) {
-      short_sum += ret;
-    }
-  }
-  return long_sum - short_sum;
-}
+[[nodiscard]] atx::f64 momentum(const PanelView &panel, atx::usize row,
+                                       atx::usize i) noexcept;
 
 // Volatility = population stddev of the newest 60 returns. NaN if < 60 valid.
-[[nodiscard]] inline atx::f64 volatility(const PanelView &panel, atx::usize row,
-                                         atx::usize i) noexcept {
-  if (valid_returns(panel, row, i, kVolWindow) < kVolWindow) {
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  atx::f64 sum = 0.0;
-  for (atx::usize k = 0U; k < kVolWindow; ++k) {
-    sum += step_return(panel, row + k, i);
-  }
-  const atx::f64 mean = sum / static_cast<atx::f64>(kVolWindow);
-  atx::f64 ss = 0.0;
-  for (atx::usize k = 0U; k < kVolWindow; ++k) {
-    const atx::f64 d = step_return(panel, row + k, i) - mean;
-    ss += d * d;
-  }
-  return std::sqrt(ss / static_cast<atx::f64>(kVolWindow)); // population std
-}
+[[nodiscard]] atx::f64 volatility(const PanelView &panel, atx::usize row,
+                                         atx::usize i) noexcept;
 
 // Liquidity = ln(adv20), adv20 = mean over 20 trailing rows of close·volume. NaN
 // if fewer than 20 rows exist from `row`, any cell is NaN, or adv20 <= 0.
-[[nodiscard]] inline atx::f64 liquidity(const PanelView &panel, atx::usize row,
-                                        atx::usize i) noexcept {
-  if (row + kAdvWindow > panel.rows()) {
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  atx::f64 sum = 0.0;
-  for (atx::usize k = 0U; k < kAdvWindow; ++k) {
-    const atx::f64 c = panel.close(row + k, i);
-    const atx::f64 v = panel.volume(row + k, i);
-    if (std::isnan(c) || std::isnan(v)) {
-      return std::numeric_limits<atx::f64>::quiet_NaN();
-    }
-    sum += c * v;
-  }
-  const atx::f64 adv = sum / static_cast<atx::f64>(kAdvWindow);
-  return (adv <= 0.0) ? std::numeric_limits<atx::f64>::quiet_NaN() : std::log(adv);
-}
+[[nodiscard]] atx::f64 liquidity(const PanelView &panel, atx::usize row,
+                                        atx::usize i) noexcept;
 
 // Equal-weight market return at row r: mean over PRESENT instruments of ret[r][·].
 // NaN if no instrument has a valid return at r.
-[[nodiscard]] inline atx::f64 market_return(const PanelView &panel, atx::usize r) noexcept {
-  atx::f64 sum = 0.0;
-  atx::usize n = 0U;
-  for (atx::usize i = 0U; i < panel.instruments(); ++i) { // ascending instrument
-    const atx::f64 ret = step_return(panel, r, i);
-    if (!std::isnan(ret)) {
-      sum += ret;
-      ++n;
-    }
-  }
-  return (n == 0U) ? std::numeric_limits<atx::f64>::quiet_NaN() : sum / static_cast<atx::f64>(n);
-}
+[[nodiscard]] atx::f64 market_return(const PanelView &panel, atx::usize r) noexcept;
 
 // Beta = cov(ret_i, ret_mkt)/var(ret_mkt) over the trailing 252 rows. NaN if
 // fewer than 252 paired (ret_i, ret_mkt) observations exist or var(ret_mkt)==0.
-[[nodiscard]] inline atx::f64 beta(const PanelView &panel, atx::usize row, atx::usize i) noexcept {
-  if (row + kBetaWindow + 1U > panel.rows()) {
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  atx::f64 si = 0.0;
-  atx::f64 sm = 0.0;
-  atx::usize n = 0U;
-  for (atx::usize k = 0U; k < kBetaWindow; ++k) {
-    const atx::f64 ri = step_return(panel, row + k, i);
-    const atx::f64 rm = market_return(panel, row + k);
-    if (std::isnan(ri) || std::isnan(rm)) {
-      return std::numeric_limits<atx::f64>::quiet_NaN();
-    }
-    si += ri;
-    sm += rm;
-    ++n;
-  }
-  const atx::f64 nf = static_cast<atx::f64>(n);
-  const atx::f64 mi = si / nf;
-  const atx::f64 mm = sm / nf;
-  atx::f64 cov = 0.0;
-  atx::f64 var = 0.0;
-  for (atx::usize k = 0U; k < kBetaWindow; ++k) {
-    const atx::f64 di = step_return(panel, row + k, i) - mi;
-    const atx::f64 dm = market_return(panel, row + k) - mm;
-    cov += di * dm;
-    var += dm * dm;
-  }
-  return (var <= 0.0) ? std::numeric_limits<atx::f64>::quiet_NaN() : cov / var;
-}
+[[nodiscard]] atx::f64 beta(const PanelView &panel, atx::usize row, atx::usize i) noexcept;
 
 // The equal-weight market return for rows [row, row + n) — mkt[k] ==
 // market_return(panel, row + k) BIT-FOR-BIT (same function, same order). Rows past
 // the panel end are NaN. Hoisting this out of the per-instrument beta loop turns the
 // cross-section's O(M²·252) market-return recompute into O(M·252): the values (and
 // therefore every downstream beta) are byte-identical to the uncached path.
-[[nodiscard]] inline std::vector<atx::f64> market_returns(const PanelView &panel, atx::usize row,
-                                                          atx::usize n) {
-  std::vector<atx::f64> mkt(n, std::numeric_limits<atx::f64>::quiet_NaN());
-  for (atx::usize k = 0U; k < n; ++k) {
-    if (row + k + 1U < panel.rows()) {
-      mkt[k] = market_return(panel, row + k);
-    }
-  }
-  return mkt;
-}
+[[nodiscard]] std::vector<atx::f64> market_returns(const PanelView &panel, atx::usize row,
+                                                          atx::usize n);
 
 // beta() with the market series precomputed by market_returns(panel, row, kBetaWindow).
 // Identical arithmetic (same accumulation order) to beta(); `mkt.size() >= kBetaWindow`.
-[[nodiscard]] inline atx::f64 beta_cached(const PanelView &panel, atx::usize row, atx::usize i,
-                                          std::span<const atx::f64> mkt) noexcept {
-  if (row + kBetaWindow + 1U > panel.rows() || mkt.size() < kBetaWindow) {
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  atx::f64 si = 0.0;
-  atx::f64 sm = 0.0;
-  atx::usize n = 0U;
-  for (atx::usize k = 0U; k < kBetaWindow; ++k) {
-    const atx::f64 ri = step_return(panel, row + k, i);
-    const atx::f64 rm = mkt[k];
-    if (std::isnan(ri) || std::isnan(rm)) {
-      return std::numeric_limits<atx::f64>::quiet_NaN();
-    }
-    si += ri;
-    sm += rm;
-    ++n;
-  }
-  const atx::f64 nf = static_cast<atx::f64>(n);
-  const atx::f64 mi = si / nf;
-  const atx::f64 mm = sm / nf;
-  atx::f64 cov = 0.0;
-  atx::f64 var = 0.0;
-  for (atx::usize k = 0U; k < kBetaWindow; ++k) {
-    const atx::f64 di = step_return(panel, row + k, i) - mi;
-    const atx::f64 dm = mkt[k] - mm;
-    cov += di * dm;
-    var += dm * dm;
-  }
-  return (var <= 0.0) ? std::numeric_limits<atx::f64>::quiet_NaN() : cov / var;
-}
+[[nodiscard]] atx::f64 beta_cached(const PanelView &panel, atx::usize row, atx::usize i,
+                                          std::span<const atx::f64> mkt) noexcept;
 
 // Raw (un-standardized) style value for factor `f` at instrument i. Size reads the
 // external cap; the rest read the panel. EXHAUSTIVE switch over StyleFactor (no
 // default — a new enumerator is a compile error).
-[[nodiscard]] inline atx::f64 raw_style(StyleFactor f, const PanelView &panel, atx::usize row,
+[[nodiscard]] atx::f64 raw_style(StyleFactor f, const PanelView &panel, atx::usize row,
                                         atx::usize i,
-                                        std::span<const atx::f64> market_cap) noexcept {
-  switch (f) {
-  case StyleFactor::Size: {
-    const atx::f64 cap = market_cap[i];
-    return (std::isnan(cap) || cap <= 0.0) ? std::numeric_limits<atx::f64>::quiet_NaN()
-                                           : std::log(cap);
-  }
-  case StyleFactor::Momentum:
-    return momentum(panel, row, i);
-  case StyleFactor::Volatility:
-    return volatility(panel, row, i);
-  case StyleFactor::Beta:
-    return beta(panel, row, i);
-  case StyleFactor::Liquidity:
-    return liquidity(panel, row, i);
-  case StyleFactor::BookToPrice:
-  case StyleFactor::EarningsYield:
-  case StyleFactor::Growth:
-  case StyleFactor::Profitability:
-  case StyleFactor::Leverage:
-  case StyleFactor::DivYield:
-  case StyleFactor::ResidVol:
-  case StyleFactor::ShortInterest:
-  case StyleFactor::STReversal:
-  case StyleFactor::Market:
-    // L7 fundamental/intercept styles are built by fundamental_factors.hpp; the
-    // legacy emit set (bits < kStyleFactorCount) never reaches here.
-    return std::numeric_limits<atx::f64>::quiet_NaN();
-  }
-  return std::numeric_limits<atx::f64>::quiet_NaN(); // unreachable (switch exhaustive)
-}
+                                        std::span<const atx::f64> market_cap) noexcept;
 
 // The style factors EMITTED this date, in enum order: in style_mask AND — for Size
 // — with a non-empty cap span. (Availability of the panel rows is per-instrument
 // and handled by the drop rule, not the emit set.)
-[[nodiscard]] inline std::vector<StyleFactor> emitted_styles(const FactorModelConfig &cfg,
-                                                             bool have_cap) {
-  std::vector<StyleFactor> out;
-  for (atx::usize b = 0U; b < kStyleFactorCount; ++b) {
-    if ((cfg.style_mask & static_cast<atx::u8>(1U << b)) == 0U) {
-      continue;
-    }
-    const auto f = static_cast<StyleFactor>(b);
-    if (f == StyleFactor::Size && !have_cap) {
-      continue; // cap absent -> Size never fabricated
-    }
-    out.push_back(f);
-  }
-  return out;
-}
+[[nodiscard]] std::vector<StyleFactor> emitted_styles(const FactorModelConfig &cfg,
+                                                             bool have_cap);
 
 // In-place cross-sectional z-score of one column over the surviving rows: subtract
 // the mean, divide by population std. DEGENERATE (single row or zero variance) ->
 // the whole column is set to 0 (no cross-sectional spread to normalize). All rows
 // are non-NaN here (the drop rule already removed NaN-style instruments).
-inline void zscore_column(atx::core::linalg::MatX &x, Eigen::Index col) noexcept {
-  const Eigen::Index m = x.rows();
-  if (m <= 1) {
-    for (Eigen::Index r = 0; r < m; ++r) {
-      x(r, col) = 0.0; // single instrument -> degenerate
-    }
-    return;
-  }
-  atx::f64 sum = 0.0;
-  for (Eigen::Index r = 0; r < m; ++r) {
-    sum += x(r, col);
-  }
-  const atx::f64 mean = sum / static_cast<atx::f64>(m);
-  atx::f64 ss = 0.0;
-  for (Eigen::Index r = 0; r < m; ++r) {
-    const atx::f64 d = x(r, col) - mean;
-    ss += d * d;
-  }
-  const atx::f64 var = ss / static_cast<atx::f64>(m); // population variance
-  if (var <= 0.0) {
-    for (Eigen::Index r = 0; r < m; ++r) {
-      x(r, col) = 0.0; // zero-variance column -> degenerate
-    }
-    return;
-  }
-  const atx::f64 inv_std = 1.0 / std::sqrt(var);
-  for (Eigen::Index r = 0; r < m; ++r) {
-    x(r, col) = (x(r, col) - mean) * inv_std;
-  }
-}
+void zscore_column(atx::core::linalg::MatX &x, Eigen::Index col) noexcept;
+
+// ±kZScoreWinsor is the ZScoreRule::CapWeightedWinsorV2 winsorizing bound (in σ).
+inline constexpr atx::f64 kZScoreWinsor = 3.0;
+// Upper bound on the iterative winsorizing passes (each pass clips at μ ± 3σ and
+// re-estimates μ, σ; clipping only ever shrinks σ, so the loop converges quickly —
+// the bound keeps it provably finite).
+inline constexpr atx::usize kZScoreWinsorPasses = 16U;
+
+// ZScoreRule::CapWeightedWinsorV2 standardization of one column IN PLACE (R-06).
+//   w_r = cap weight of row r (`weights`, length x.rows(), NaN/≤0 ⇒ 0). When `weights`
+//         is empty or sums to ≤ 0 the mean is equal-weighted.
+//   Winsorize (≤ kZScoreWinsorPasses passes): μ_eq, σ = equal-weight mean and population
+//         std; clip every x to [μ_eq − 3σ, μ_eq + 3σ]; stop when nothing was clipped.
+//         The bounds are centred on the EQUAL-weight mean on purpose: a cap-weighted
+//         centre is owned by the few largest names, so one mega-cap outlier would
+//         capture it and push every other name to the bound.
+//   Standardize: z = (x − μ_w)/σ on the winsorized values, μ_w = Σ w x / Σ w (the
+//         cap-weighted mean, Barra USE4), σ the equal-weight population std.
+// Contract: the cap-weighted mean of z is 0 and its equal-weight population std is 1
+// (up to rounding), and every |z − mean_eq(z)| ≤ 3 + δ, where δ is the residual of the
+// bounded winsorizing iteration: 0 when it stops with nothing clipped; it converges
+// geometrically, so an extreme outlier can leave δ > 0 after kZScoreWinsorPasses
+// (4.4e-8 for a planted 40-log-point ln-adv outlier among 40 names).
+// There is deliberately NO clip of z itself after cap-weighted centring (W0-R0 fix 1,
+// reviewer minor 3): μ_w sits about σ_ln above μ_eq for a lognormal cap spread, so a
+// ±3 clip of z would pin the whole small-cap tail of Size (≈16% of names at ln-cap
+// sd 2) at −3 and erase its ordering. |z| can therefore exceed 3 by |μ_eq − μ_w|/σ.
+// DEGENERATE (≤ 1 row or σ == 0) ⇒ the column is 0, same as V1.
+// Order-fixed (ascending row). All inputs non-NaN.
+void zscore_column_v2(atx::core::linalg::MatX &x, Eigen::Index col,
+                             std::span<const atx::f64> weights) noexcept;
 
 // Distinct sector group ids among the surviving instruments, ASCENDING (the sector
 // column order). Each becomes one 0/1 dummy column.
-[[nodiscard]] inline std::vector<atx::u32> sector_groups(const std::vector<atx::usize> &survivors,
-                                                         std::span<const atx::u32> group_id) {
-  std::vector<atx::u32> groups;
-  groups.reserve(survivors.size());
-  for (const atx::usize inst : survivors) {
-    groups.push_back(group_id[inst]);
-  }
-  std::sort(groups.begin(), groups.end());
-  groups.erase(std::unique(groups.begin(), groups.end()), groups.end());
-  return groups;
-}
+[[nodiscard]] std::vector<atx::u32> sector_groups(const std::vector<atx::usize> &survivors,
+                                                         std::span<const atx::u32> group_id);
 
 // ===========================================================================
 //  §4/§5 robust-regression exposure helpers (S8.1; reuse home for later units +
@@ -540,28 +494,9 @@ inline void zscore_column(atx::core::linalg::MatX &x, Eigen::Index col) noexcept
 //     positive, and a 0.0 prior weight is never the intended robust weighting.
 //   * Order-fixed (ascending kept index). Returns a length == kept_instrument_rows.size()
 //     vector. `market_cap` MUST be non-empty (the caller gates on cap availability).
-[[nodiscard]] inline atx::core::linalg::VecX
+[[nodiscard]] atx::core::linalg::VecX
 sqrt_cap_weight(std::span<const atx::f64> market_cap,
-                const std::vector<atx::usize> &kept_instrument_rows) {
-  const Eigen::Index nk = static_cast<Eigen::Index>(kept_instrument_rows.size());
-  atx::core::linalg::VecX w(nk);
-  atx::f64 sum_root = 0.0; // Σ_j √(cap_j) over positive-cap kept names (order-fixed)
-  atx::usize n_pos = 0U;
-  for (const atx::usize inst : kept_instrument_rows) {
-    const atx::f64 cap = market_cap[inst];
-    if (cap > 0.0) {
-      sum_root += std::sqrt(cap);
-      ++n_pos;
-    }
-  }
-  const atx::f64 mean_root = (n_pos == 0U) ? 0.0 : sum_root / static_cast<atx::f64>(n_pos);
-  for (atx::usize j = 0U; j < kept_instrument_rows.size(); ++j) {
-    const atx::f64 cap = market_cap[kept_instrument_rows[j]];
-    w[static_cast<Eigen::Index>(j)] =
-        (cap > 0.0 && mean_root > 0.0) ? std::sqrt(cap) / mean_root : 0.0; // 0.0 ⇒ fallback flag
-  }
-  return w;
-}
+                const std::vector<atx::usize> &kept_instrument_rows);
 
 // Cap-weighted industry-sum-to-zero constraint, applied IN PLACE to a date's kept
 // design `xsr` (rows aligned with `keep`, columns described by `xm.columns`). The
@@ -585,40 +520,9 @@ sqrt_cap_weight(std::span<const atx::f64> market_cap,
 // rank K−1 and the design becomes rank-deficient; the builder's OLS rank probe then
 // skips that date. The constraint is non-degenerate only when a market-level column
 // accompanies the dummies (it absorbs the removed direction).
-inline void apply_industry_sum_to_zero(atx::core::linalg::MatX &xsr, const ExposureMatrix &xm,
+void apply_industry_sum_to_zero(atx::core::linalg::MatX &xsr, const ExposureMatrix &xm,
                                        const std::vector<atx::usize> &keep,
-                                       std::span<const atx::f64> market_cap) {
-  const Eigen::Index nk = xsr.rows();
-  if (nk == 0) {
-    return;
-  }
-  atx::core::linalg::VecX nu(nk); // cap weights ν_i, normalized to Σ ν_i = 1
-  atx::f64 total = 0.0;
-  const bool use_cap = !market_cap.empty();
-  for (atx::usize j = 0U; j < keep.size(); ++j) {
-    const atx::f64 cap = use_cap ? market_cap[xm.instrument_rows[keep[j]]] : 1.0;
-    const atx::f64 root = (cap > 0.0) ? std::sqrt(cap) : 0.0;
-    nu[static_cast<Eigen::Index>(j)] = root;
-    total += root;
-  }
-  if (total <= 0.0) {
-    return; // no positive cap weight ⇒ constraint undefined ⇒ leave design as-is
-  }
-  nu /= total;
-  for (atx::usize c = 0U; c < xm.columns.size(); ++c) {
-    if (xm.columns[c].kind != ColumnTag::Kind::Sector) {
-      continue; // only industry/sector dummies are mean-centered
-    }
-    const Eigen::Index col = static_cast<Eigen::Index>(c);
-    atx::f64 wmean = 0.0;
-    for (Eigen::Index r = 0; r < nk; ++r) {
-      wmean += nu[r] * xsr(r, col);
-    }
-    for (Eigen::Index r = 0; r < nk; ++r) {
-      xsr(r, col) -= wmean;
-    }
-  }
-}
+                                       std::span<const atx::f64> market_cap);
 
 } // namespace detail
 
@@ -629,97 +533,20 @@ inline void apply_industry_sum_to_zero(atx::core::linalg::MatX &xsr, const Expos
 //  (a) row >= panel.rows(), or (b) a non-empty cap/group span whose length !=
 //  instruments(). Empty optional spans mean the corresponding columns are omitted.
 // ===========================================================================
-[[nodiscard]] inline atx::core::Result<ExposureMatrix>
+[[nodiscard]] atx::core::Result<ExposureMatrix>
 build_exposures(const PanelView &panel, const FactorModelConfig &cfg, atx::usize row,
-                std::span<const atx::f64> market_cap, std::span<const atx::u32> group_id) {
-  if (row >= panel.rows()) {
-    return atx::core::Err(atx::core::ErrorCode::OutOfRange,
-                          "build_exposures: row offset is beyond the panel's valid rows");
-  }
-  const atx::usize n_inst = panel.instruments();
-  if (!market_cap.empty() && market_cap.size() != n_inst) {
-    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "build_exposures: market_cap span length must equal instruments()");
-  }
-  if (!group_id.empty() && group_id.size() != n_inst) {
-    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "build_exposures: group_id span length must equal instruments()");
-  }
+                std::span<const atx::f64> market_cap, std::span<const atx::u32> group_id);
 
-  const bool have_cap = !market_cap.empty();
-  const bool have_sectors = cfg.sector_factors && !group_id.empty();
-  const std::vector<StyleFactor> styles = detail::emitted_styles(cfg, have_cap);
-
-  // Pass 1: compute every emitted style's raw value per present instrument, apply
-  // the §3.3 drop rule (any required-style NaN drops the instrument), and collect
-  // the surviving rows (ascending universe column) + their raw style values.
-  std::vector<atx::usize> survivors;
-  std::vector<std::vector<atx::f64>> raw; // raw[surviving_row][style_index]
-  survivors.reserve(n_inst);
-  raw.reserve(n_inst);
-  // Beta's market series is shared by every instrument of the cross-section: hoist it
-  // (byte-identical values, see detail::market_returns) instead of recomputing it per
-  // instrument.
-  bool need_mkt = false;
-  for (const StyleFactor f : styles) {
-    need_mkt = need_mkt || (f == StyleFactor::Beta);
-  }
-  const std::vector<atx::f64> mkt =
-      need_mkt ? detail::market_returns(panel, row, detail::kBetaWindow) : std::vector<atx::f64>{};
-  for (atx::usize i = 0U; i < n_inst; ++i) {
-    if (!panel.present(row, i)) {
-      continue; // no bar at the current date -> not in the cross-section
-    }
-    std::vector<atx::f64> vals(styles.size());
-    bool drop = false;
-    for (atx::usize s = 0U; s < styles.size() && !drop; ++s) {
-      vals[s] = (styles[s] == StyleFactor::Beta)
-                    ? detail::beta_cached(panel, row, i, mkt)
-                    : detail::raw_style(styles[s], panel, row, i, market_cap);
-      drop = std::isnan(vals[s]); // missing a required style -> drop the instrument
-    }
-    if (!drop) {
-      survivors.push_back(i);
-      raw.push_back(std::move(vals));
-    }
-  }
-
-  // Column layout: sector dummies first (ascending group id), then style columns.
-  std::vector<atx::u32> groups =
-      have_sectors ? detail::sector_groups(survivors, group_id) : std::vector<atx::u32>{};
-  const atx::usize n_sector = groups.size();
-  const atx::usize n_style = styles.size();
-  const atx::usize m = survivors.size();
-
-  // SAFETY: m, n_sector, n_style are bounded by instruments()/kStyleFactorCount;
-  //         the static_casts to Eigen::Index (signed) cannot overflow on any
-  //         realistic universe (<< 2^31). Column-major MatX matches P4-7's WLS.
-  atx::core::linalg::MatX x(static_cast<Eigen::Index>(m),
-                            static_cast<Eigen::Index>(n_sector + n_style));
-  std::vector<ColumnTag> columns;
-  columns.reserve(n_sector + n_style);
-
-  // Sector dummy columns (0/1, NOT standardized).
-  for (atx::usize g = 0U; g < n_sector; ++g) {
-    const atx::u32 gid = groups[g];
-    for (atx::usize r = 0U; r < m; ++r) {
-      const bool in_group = (group_id[survivors[r]] == gid);
-      x(static_cast<Eigen::Index>(r), static_cast<Eigen::Index>(g)) = in_group ? 1.0 : 0.0;
-    }
-    columns.push_back(ColumnTag{ColumnTag::Kind::Sector, StyleFactor{}, gid});
-  }
-
-  // Style columns (raw -> cross-sectional z-score over the surviving set).
-  for (atx::usize s = 0U; s < n_style; ++s) {
-    const Eigen::Index col = static_cast<Eigen::Index>(n_sector + s);
-    for (atx::usize r = 0U; r < m; ++r) {
-      x(static_cast<Eigen::Index>(r), col) = raw[r][s];
-    }
-    detail::zscore_column(x, col);
-    columns.push_back(ColumnTag{ColumnTag::Kind::Style, styles[s], 0U});
-  }
-
-  return atx::core::Ok(ExposureMatrix{std::move(x), std::move(survivors), std::move(columns)});
-}
+// ===========================================================================
+//  build_exposures — point-in-time side-input overload (W0-R0, R-06).
+//
+//  Same builder, but the cap and group used at `row` are side.cap_at(row) /
+//  side.group_at(row): the values known at that date. Err(InvalidArgument) on a
+//  malformed side-input shape; Err(OutOfRange) when a per-date side input does not
+//  cover `row` (never silently falls back to another date's value).
+// ===========================================================================
+[[nodiscard]] atx::core::Result<ExposureMatrix>
+build_exposures(const PanelView &panel, const FactorModelConfig &cfg, atx::usize row,
+                const PitSideInputs &side);
 
 } // namespace atx::engine::risk

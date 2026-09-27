@@ -99,9 +99,13 @@ Result<atx::i64> integer(const Json &value) {
 Status arguments(const RunConfig &cfg) {
     const std::set<std::string> allowed{"panel", "baseline-dir", "out", "max-working-bytes",
         "report-aum", "replay-execution-delay", "replay-trade-bps", "replay-annual-borrow-bps",
-        "replay-day-basis", "quiet", "digest-only", "config"};
+        "replay-day-basis", "quiet", "digest-only", "config", "allow-same-close",
+        "replay-delisting-policy", "allocation-rule"};
     for (const auto &flag : cfg.set_flags) if (!allowed.contains(flag))
         return Err(ErrorCode::InvalidArgument, "equity book: unsupported flag --" + flag);
+    if (cfg.equity_allocation_rule != "legacy-dense-absolute-v1" &&
+        cfg.equity_allocation_rule != "sparse-relative-v2")
+        return Err(ErrorCode::InvalidArgument, "equity book: unknown allocation rule");
     if (cfg.panel.empty() || cfg.equity_baseline_dir.empty() || cfg.out.empty() ||
         cfg.equity_max_working_bytes <= kReserve || cfg.allow_unidentified_panels ||
         !cfg.equity_evaluation_start.empty() || !cfg.equity_evaluation_end.empty() ||
@@ -256,7 +260,7 @@ Result<Inputs> load(const RunConfig &cfg) {
 
 Json certificate(const EquityAllocationResult &out) {
     const auto &c = out.certificate;
-    return Json{{"solver_used", c.solver_used}, {"primal_residual", c.solver.prim_res},
+    Json value{{"solver_used", c.solver_used}, {"primal_residual", c.solver.prim_res},
         {"dual_residual", c.solver.dual_res}, {"polished", c.solver.polished},
         {"effective_solver_feasibility_tolerance", c.effective_solver_feasibility_tolerance},
         {"fee_reserve", c.fee_reserve}, {"requested_prefee_net", c.requested_prefee_net},
@@ -285,6 +289,11 @@ Json certificate(const EquityAllocationResult &out) {
         {"close_count", c.close_count}, {"hold_count", c.hold_count},
         {"union_instruments", out.plan.union_instruments},
         {"additional_bytes_bound", std::to_string(out.plan.additional_bytes_bound)}};
+    if (c.rule == EquityAllocationRule::SparseRelativeV2) {
+        value["allocation_rule"] = "sparse-relative-v2";
+        value["effective_solver_relative_tolerance"] = c.effective_solver_relative_tolerance;
+    }
+    return value;
 }
 
 const char *close_classification(atx::f64 mark) {
@@ -364,17 +373,31 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
         return Err(ErrorCode::InvalidArgument, "equity book: invalid inherited delay");
     report.replay_execution_delay = cfg.set_flags.contains("replay-execution-delay") || cfg.replay_execution_delay != 1
         ? cfg.replay_execution_delay : static_cast<atx::usize>(delay);
+    // B-02: an inherited or explicit zero delay (same-close fills) needs the opt-in,
+    // so a legacy delay-0 baseline cannot silently seed a same-close book.
+    report.allow_same_close = cfg.allow_same_close;
+    if (report.replay_execution_delay < 1 && !cfg.allow_same_close)
+        return Err(ErrorCode::InvalidArgument,
+                   "equity book: execution delay 0 fills at the signal close; pass "
+                   "--allow-same-close to request it explicitly");
     if (!base.at("borrow_day_basis").is_number_integer() ||
         (base.at("borrow_day_basis") != 360 && base.at("borrow_day_basis") != 365))
         return Err(ErrorCode::InvalidArgument, "equity book: invalid inherited borrow day basis");
     report.replay_day_basis = cfg.set_flags.contains("replay-day-basis") || cfg.replay_day_basis != 365
         ? cfg.replay_day_basis : base.at("borrow_day_basis").get<int>();
+    ATX_TRY(auto inherited_delisting, parse_replay_delisting_policy(
+        base.value("replay_delisting_policy", std::string("terminal-return"))));
+    report.replay_delisting_policy = cfg.set_flags.contains("replay-delisting-policy") ||
+        cfg.replay_delisting_policy != ReplayDelistingPolicy::TerminalReturnV2
+        ? cfg.replay_delisting_policy : inherited_delisting;
     report.set_flags = {"replay-trade-bps", "replay-annual-borrow-bps"};
     report.panel = (fs::path(cfg.equity_baseline_dir) / "evaluation.bin").string();
     report.combo = (fs::path(cfg.equity_baseline_dir) / "combo.bin").string();
     report.books = (fs::path(cfg.equity_baseline_dir) / "books.bin").string();
     report.report_out = (directory / "report").string();
     EquityAllocationConfig allocation;
+    allocation.rule = cfg.equity_allocation_rule == "sparse-relative-v2"
+        ? EquityAllocationRule::SparseRelativeV2 : EquityAllocationRule::LegacyDenseAbsoluteV1;
     allocation.representation = EquityAllocationRepresentation::MachinePrecisionIntentsV1;
     allocation.execution_availability = EquityExecutionAvailability::ObservedCloseEntryConstraintV1;
     allocation.trade_bps = report.replay_trade_bps;
@@ -386,6 +409,8 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
         {"execution_delay_observations", std::to_string(report.replay_execution_delay)},
         {"trade_bps_per_absolute_dollar", report.replay_trade_bps},
         {"annual_borrow_bps", report.replay_annual_borrow_bps}, {"borrow_day_basis", report.replay_day_basis},
+        {"replay_delisting_policy",
+            replay_delisting_policy_name(report.replay_delisting_policy)},
         {"objective", "0.5*sum((weight-preference)^2)+lambda*sum(variance*weight^2)"},
         {"preference_interpretation", "rank-position-preference-not-expected-return"},
         {"risk_return_count", 63}, {"risk_estimator", "population-variance-adjacent-TRI-returns-no-gap-bridging"},
@@ -435,6 +460,23 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
         {"qualification", "unknown"}, {"strategy_capacity", "unavailable"},
         {"sector_beta_constraints", "not-enforced"}, {"live_orders_authorized", false},
         {"producer_executable_sha256", executable.empty() ? "unknown" : executable}};
+    if (allocation.rule == EquityAllocationRule::SparseRelativeV2) {
+        recipe["profile"] = "constrained-preference-weekly-sparse-relative-v4";
+        recipe["allocation_rule"] = cfg.equity_allocation_rule;
+        recipe["constraint_storage"] = {{"rule", "SparseCsrV2"},
+            {"max_nnz", std::to_string(allocation.sparse_storage.max_nnz)},
+            {"max_materialization_bytes", std::to_string(allocation.sparse_storage.max_materialization_bytes)},
+            {"max_solver_bytes", std::to_string(allocation.sparse_storage.max_solver_bytes)},
+            {"effective_max_factor_bytes", std::to_string(std::min(allocation.solver.max_factor_bytes,
+                allocation.sparse_storage.max_solver_bytes / 4))}};
+        recipe["solver_feasibility_rule"] = "RelativeEconomicV2-direct-actual-weight-linear-gross-turnover";
+        recipe["solver_absolute_tolerance"] =
+            "min(configured,economic_tolerance*fee_reserve/(32*(1+fee_rate*(1+gross_limit+name_limit))))";
+        recipe["solver_relative_tolerance"] =
+            "economic_tolerance*fee_reserve/(32*(1+fee_rate*(1+gross_limit+name_limit))*(1+gross_limit+turnover_limit+name_limit+max(0,beta_tolerance)+max(0,sector_net_cap)))";
+        recipe["solver_route"] = "unchanged-augmented-admm-fixed-iterations";
+        recipe["final_economic_certificate"] = "unchanged-post-fee-and-represented-execution-absolute-limits";
+    }
     const Json parents = Json::array({Json{{"role", "source-context"}, {"sha256", inputs.context.artifact_id}},
         Json{{"role", "evaluation"}, {"sha256", inputs.evaluation.artifact_id}},
         Json{{"role", "combo"}, {"sha256", inputs.combo.artifact_id}},
@@ -563,21 +605,56 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
     ATX_TRY(auto actual_id, atx::core::sha256_hex("atx-replay-report-v1\n" + report_manifest.dump()));
     if (actual_id != report_id || report_manifest.at("status") != "complete")
         return Err(ErrorCode::ParseError, "equity book: report identity mismatch");
+    ATX_TRY(auto summary_text, read_small(directory / "report/summary.json"));
+    ATX_TRY(auto summary_sha, atx::core::sha256_hex(summary_text));
+    bool summary_bound = false;
+    for (const auto &file : report_manifest.at("files")) {
+        if (file.at("filename") == "summary.json" && file.at("sha256") == summary_sha)
+            summary_bound = true;
+    }
+    if (!summary_bound)
+        return Err(ErrorCode::ParseError, "equity book: replay summary is not bound");
+    const Json replay_summary = parse(summary_text);
+    const bool assumed_liquidations =
+        replay_summary.at("assumed_liquidation_count").get<atx::usize>() != 0;
+    const char *qualification = assumed_liquidations ? "failed" : "unknown";
+    Json summary{{"schema", "atx-equity-book-summary-v1"},
+        {"purpose", "training-only-software-and-book-diagnostic"},
+        {"replay", replay_summary.at("full")},
+        {"trade_liquidity", replay_summary.at("trade_liquidity")},
+        {"strategy_capacity", "unavailable"}, {"qualification", qualification},
+        {"qualification_reasons", Json::array({
+            "source-economics-and-publication-vintages-unverified",
+            "instrument-types-and-locates-unknown", "no-heldout-selection-evidence"})}};
+    for (const char *key : {"usable_for_alpha_evidence", "performance_evidence_eligibility",
+             "terminal_liquidation_count", "evidenced_delisting_count", "flagged_delistings",
+             "flagged_short_delistings", "flagged_short_pnl_dollars", "assumed_liquidation_count",
+             "assumed_liquidation_pnl_dollars", "gap_carry_count"}) {
+        summary[key] = replay_summary.at(key);
+    }
+    if (assumed_liquidations) {
+        summary["qualification_reasons"].push_back(
+            replay_summary.at("performance_evidence_eligibility"));
+    }
+    ATX_TRY(auto summary_file, publish(directory, "summary.json", summary));
     ATX_TRY(auto report_sha, atx::core::sha256_hex(report_text));
-    Json manifest{{"schema", "atx-equity-book-v1"}, {"status", "complete"}, {"qualification", "unknown"},
+    Json manifest{{"schema", "atx-equity-book-v1"}, {"status", "complete"},
+        {"qualification", qualification},
         {"recipe", recipe}, {"parents", parents}, {"report_id", report_id},
-        {"files", Json::array({request_file, certificate_file, Json{{"filename", "report/manifest.json"},
+        {"files", Json::array({request_file, certificate_file, summary_file,
+            Json{{"filename", "report/manifest.json"},
             {"sha256", report_sha}, {"size_bytes", std::to_string(report_text.size())}}})}};
     ATX_TRY(auto book_id, atx::core::sha256_hex("atx-equity-book-v1\n" + manifest.dump()));
     manifest["book_id"] = book_id;
-    std::error_code ec;
-    if (!fs::remove(directory / ".pending", ec) || ec)
-        return Err(ErrorCode::IoError, "equity book: cannot release pending marker");
-    ATX_TRY(auto completed, publish(directory, "manifest.json", manifest));
-    (void)completed;
+    // I-17: manifest first, `.pending` released last.
+    ATX_TRY_VOID(publish_manifest_then_release_pending(directory, [&]() -> Status {
+        ATX_TRY(auto completed, publish(directory, "manifest.json", manifest));
+        (void)completed;
+        return Ok();
+    }));
     reported->digest = fnv1a64(book_id.data(), book_id.size());
     reported->kvs.emplace_back("book_id", book_id);
-    reported->kvs.emplace_back("qualification", "unknown");
+    reported->kvs.emplace_back("qualification", qualification);
     return Ok(std::move(*reported));
 }
 } // namespace

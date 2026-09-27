@@ -118,6 +118,9 @@ private:
   // -------------------------------------------------------------------------
   [[nodiscard]] static atx::core::Status validate(const QpProblem &p, atx::usize m) {
     namespace co = atx::core;
+    if (p.C.storage.rule != ConstraintStorageRule::LegacyDenseV1)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "Reference QP: only explicit LegacyDenseV1 constraint storage is supported");
     // This frozen dense oracle predates objective turnover costs. Refuse them
     // explicitly rather than returning an optimum for a different objective.
     if (p.C.turnover_penalty != 0.0) {

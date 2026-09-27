@@ -14,6 +14,15 @@
 //
 //      raw = wq * diversify * robust
 //
+//  This opening convention describes explicit LegacyStreamsV1. DelayedSurfaceV2
+//  instead uses annualized NET Sharpe over its contiguous mature role calendar
+//  in the historical `wq` scalar slot; turnover is actual filled dollars / NAV.
+//  That is a role/training score, not a CPCV out-of-sample or WQ fitness claim.
+//  Direct V2 fitness reports DSR separately and never multiplies signed raw by
+//  it. Search refuses the legacy deflate_selection overlay for this rule.
+//  V2 refuses unbound nonempty pools until their execution/calendar recipe can
+//  be certified, so its supported empty-pool diversification term is exactly 1.
+//
 //  where wq is the OOS WorldQuant fitness (combine::compute_metrics().fitness,
 //  reused VERBATIM — no second convention), diversify = 1 − mean|corr-to-pool|
 //  (F7), and robust is the sub-universe-stability ratio (§0.8). Admission (S3-6)
@@ -51,9 +60,12 @@
 //  panel as an optional borrow; when none is configured, robust = 1.0 (a clean,
 //  documented degenerate — robustness neither rewards nor penalizes).
 //
-//  Header-only, every function inline; the fitness path is COLD (one call per
+//  Core fitness is compiled in src/factory/fitness.cpp; only small helpers and
+//  the cache remain inline. The fitness path is COLD (one call per
 //  distinct candidate, never on the VM hot loop), so std::vector is fine.
 
+#include "atx/engine/factory/execution_objective.hpp"
+#include "atx/engine/factory/objective_ic.hpp"
 #include <array>   // std::array (the multi-objective vector, S4.1)
 #include <cstring> // std::memcpy (CpcvCache: embed embargo f64 as bit pattern for map key)
 #include <limits>  // std::numeric_limits (FitnessCfg::max_turnover_target default +inf)
@@ -61,9 +73,11 @@
 #include <mutex>   // std::mutex, std::lock_guard (CpcvCache thread-safety)
 #include <span>    // std::span
 #include <tuple>   // std::tuple (CpcvCache key)
+#include <utility>
 #include <vector>  // std::vector (fold-sliced streams)
 
 #include "atx/core/error.hpp" // Result, Ok, Err, ErrorCode
+#include "atx/core/macro.hpp"
 #include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
 
 #include "atx/engine/alpha/panel.hpp"        // alpha::Panel, alpha::SignalSet
@@ -71,7 +85,7 @@
 #include "atx/engine/combine/store.hpp"      // combine::AlphaStore, AlphaId
 #include "atx/engine/cost/calibration.hpp"   // cost::CalibratedCost (the calibrated coeffs, S4.3)
 #include "atx/engine/cost/cost_selection_config.hpp" // cost::CostSelectionConfig (B7 selection-cost wire)
-#include "atx/engine/eval/cpcv.hpp"          // eval::cpcv_folds, CpcvFold, LabelSpan
+#include "atx/engine/eval/cpcv_date.hpp"          // eval::cpcv_folds, CpcvFold, LabelSpan
 #include "atx/engine/exec/execution_sim.hpp" // exec::ExecutionSimulator
 #include "atx/engine/factory/genome.hpp"     // factory::Genome
 #include "atx/engine/loop/weight_policy.hpp" // engine::WeightPolicy
@@ -84,6 +98,25 @@ class Engine;
 }
 
 namespace atx::engine::factory {
+
+enum class FitnessObjectiveRule : atx::u8 { LegacyV1 = 1, ResidualHacIcV2 = 2 };
+
+// Validates captured label prices/presence once, and owns the immutable prepared
+// context. The exact Panel object and any borrowed backing must remain alive,
+// immutable and unmoved for the binding lifetime. Candidate checks are O(1).
+class ResidualFitnessBinding {
+public:
+  ResidualFitnessBinding() = default;
+  [[nodiscard]] bool matches(const alpha::Panel &) const noexcept;
+  [[nodiscard]] const ObjectiveIcContext &context() const noexcept;
+private:
+  const alpha::Panel *panel_{};
+  ObjectiveIcContext context_;
+  friend atx::core::Result<ResidualFitnessBinding> prepare_residual_fitness_binding(
+      const ObjectiveIcContext &, const alpha::Panel &);
+};
+[[nodiscard]] atx::core::Result<ResidualFitnessBinding> prepare_residual_fitness_binding(
+    const ObjectiveIcContext &, const alpha::Panel &);
 
 // =========================================================================
 //  CpcvCache — a thread-safe cache of pre-built CPCV label spans + folds,
@@ -114,29 +147,47 @@ struct CpcvCache {
   // ---- key -----------------------------------------------------------------
   // (n_periods, n_groups, n_test_groups, embargo_bits)
   // embargo is stored as its IEEE-754 bit pattern to avoid float-equality UB.
-  using Key = std::tuple<atx::usize, atx::usize, atx::usize, atx::u64>;
+  using Key = std::tuple<atx::usize, atx::usize, atx::usize, atx::u64,
+                         eval::CpcvRule, atx::usize, atx::u64, atx::usize>;
 
   struct Entry {
     std::vector<eval::LabelSpan>  spans;
     std::vector<eval::CpcvFold>   folds;
+    eval::CpcvMetadata metadata;
   };
 
   // ---- get_or_build --------------------------------------------------------
   // Returns a CONST REFERENCE to the cached spans+folds for (n_periods, cpcv).
   // On the first call for a given key the spans and folds are built and stored;
   // subsequent calls return the stored result without recomputing.  Thread-safe.
-  [[nodiscard]] const Entry &get_or_build(atx::usize n_periods, const eval::CpcvConfig &cpcv) {
+  [[nodiscard]] const Entry &get_or_build(atx::usize n_periods, const eval::CpcvConfig &cpcv,
+                                        atx::usize session_stride = 1U) {
+    auto result = get_or_build_checked(n_periods, cpcv, session_stride);
+    ATX_CHECK(result.has_value());
+    return **result;
+  }
+  [[nodiscard]] atx::core::Result<const Entry*>
+  get_or_build_checked(atx::usize n_periods, const eval::CpcvConfig &cpcv,
+                       atx::usize session_stride = 1U) {
+    if (cpcv.rule != eval::CpcvRule::ObservationV1 && cpcv.rule != eval::CpcvRule::DateV2)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "CPCV cache: unknown rule");
     // Build the key: embed embargo as its bit pattern for a reliable map key.
     atx::u64 embargo_bits{};
     static_assert(sizeof(embargo_bits) == sizeof(cpcv.embargo), "f64 size mismatch");
     std::memcpy(&embargo_bits, &cpcv.embargo, sizeof(embargo_bits));
-    const Key key{n_periods, cpcv.n_groups, cpcv.n_test_groups, embargo_bits};
+    const bool date_rule = cpcv.rule == eval::CpcvRule::DateV2;
+    const Key key{n_periods, cpcv.n_groups, cpcv.n_test_groups,
+                  date_rule ? 0U : embargo_bits, cpcv.rule,
+                  date_rule ? cpcv.embargo_dates : 0U,
+                  date_rule ? cpcv.max_working_bytes : 0U, date_rule ? session_stride : 1U};
+    if (date_rule && n_periods > cpcv.max_working_bytes / 128U)
+      return atx::core::Err(atx::core::ErrorCode::OutOfRange, "CPCV cache: span budget exceeded");
 
     {
       std::lock_guard<std::mutex> g{mu_};
       const auto it = map_.find(key);
       if (it != map_.end()) {
-        return it->second; // cache hit — no recompute
+        return atx::core::Ok(&it->second); // cache hit — no recompute
       }
     }
 
@@ -145,17 +196,22 @@ struct CpcvCache {
     // idempotent, so a racing double-build is harmless (the second insert is
     // a no-op via try_emplace).
     Entry entry;
+    const auto stride = date_rule ? session_stride : 1U;
+    if (stride == 0U || n_periods > std::numeric_limits<atx::usize>::max() / stride)
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "CPCV cache: invalid session stride");
     entry.spans.reserve(n_periods);
     for (atx::usize t = 0U; t < n_periods; ++t) {
-      entry.spans.push_back(eval::LabelSpan{t, t + 1U});
+      entry.spans.push_back(eval::LabelSpan{t * stride, (t + 1U) * stride});
     }
-    entry.folds = eval::cpcv_folds(std::span<const eval::LabelSpan>{entry.spans}, cpcv);
+    ATX_TRY(auto plan, eval::cpcv_plan(std::span<const eval::LabelSpan>{entry.spans}, cpcv));
+    entry.folds = std::move(plan.folds);
+    entry.metadata = std::move(plan.metadata);
 
     std::lock_guard<std::mutex> g{mu_};
     // try_emplace: if another thread raced and already inserted, keep theirs
     // (deterministic same value; this build is discarded).
     const auto [it, inserted] = map_.try_emplace(key, std::move(entry));
-    return it->second;
+    return atx::core::Ok(&it->second);
   }
 
 private:
@@ -378,6 +434,14 @@ struct FitnessReport {
   // cost_bps/turnover above. Do NOT enter `raw`; pure reporting + the objective copy.
   atx::f64 capacity_score{0.0};    // S4-1: bounded [0,1) sqrt-law capacity score
   atx::f64 turnover_autocorr{0.0}; // S4-2: |w|-weighted mean AR(1) coefficient
+  // V2 uses mature net Sharpe in the historical `wq` scalar slot; it is not a
+  // CPCV/WQ claim. Calendar descriptors keep NaN outside this realized range.
+  ExecutionObjectiveRule execution_rule{ExecutionObjectiveRule::LegacyStreamsV1};
+  std::string execution_context_sha256{};
+  atx::usize realized_begin{}, realized_end{};
+  FitnessObjectiveRule objective_rule{FitnessObjectiveRule::LegacyV1};
+  bool residual_available{false};
+  ObjectiveIcResult residual_ic{}; // training IC diagnostics, never P&L/DSR/CPCV
 };
 
 // =========================================================================
@@ -430,6 +494,7 @@ struct FitnessReport {
 struct FitnessCfg {
   atx::usize trial_count = 1;
   eval::CpcvConfig cpcv{};
+  atx::usize cpcv_session_stride{1}; // internal fidelity axis; V1 ignores it
   atx::f64 book_size = 1.0;
   atx::f64 target_aum = 0.0;                                    // S4.3: 0 ⇒ cost objective off
   cost::CalibratedCost cost{};                                   // S4.3: calibrated impact/slippage
@@ -444,6 +509,17 @@ struct FitnessCfg {
   // two inert bools appended at the end -- no aggregate-init break, no digest drift.
   bool capacity_objective = false; // S4-1: gates the kObjCapacity compute
   bool turnover_objective = false; // S4-2: gates the kObjTurnover compute
+  // V2 is an explicit mature net-return objective. The immutable context is
+  // borrowed only during scoring; its identity is validated before use.
+  ExecutionObjectiveConfig execution{};
+  const ExecutionObjectiveContext* execution_context{nullptr};
+  // ResidualHacIcV2 is an IC-only TRAINING objective: signed equal mean of all
+  // three defined HAC IRs, no full backtest/CPCV/DSR or automatic sign inversion.
+  // Bind once with prepare_residual_fitness_binding; concurrent workers each
+  // borrow their own scratch. No legacy cost/execution overlay is supported.
+  FitnessObjectiveRule objective_rule{FitnessObjectiveRule::LegacyV1};
+  const ResidualFitnessBinding *residual_binding{nullptr}; // runtime borrow
+  ObjectiveIcScratch *residual_scratch{nullptr}; // optional exclusive worker borrow
 };
 
 namespace detail {
@@ -549,6 +625,15 @@ struct FitnessCore {
   // the off-path -> the objective slots stay at their uniform default (inert in NSGA).
   atx::f64 capacity_score{0.0};    // S4-1: sqrt-law capacity headroom, bounded [0,1)
   atx::f64 turnover_autocorr{0.0}; // S4-2: |w|-weighted mean AR(1) coefficient
+  // V2 uses mature net Sharpe in the historical `wq` scalar slot; it is not a
+  // CPCV/WQ claim. Calendar descriptors keep NaN outside this realized range.
+  ExecutionObjectiveRule execution_rule{ExecutionObjectiveRule::LegacyStreamsV1};
+  std::string execution_context_sha256{};
+  atx::usize realized_begin{}, realized_end{};
+  FitnessObjectiveRule objective_rule{FitnessObjectiveRule::LegacyV1};
+  bool residual_available{false};
+  ObjectiveIcResult residual_ic{};
+  atx::f64 residual_score{};
 };
 
 // Compute every pool-independent fitness term (steps 1, 3, 5 of the §4.6 score:

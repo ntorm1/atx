@@ -1,0 +1,53 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "527add1cfdaab3d76202b51df8ab9661b8a9f400",
+  "started_utc": "2026-09-26T23:20:50.634595+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-B",
+    "atx-engine/tools/prepare_recent_research.py",
+    "role",
+    "--cache",
+    "build-equity/recent-projection-v1",
+    "--out",
+    "build-equity/recent-fast-validation-2023-2024-v1",
+    "--start",
+    "2021-06-01",
+    "--score-start",
+    "2023-01-01",
+    "--end",
+    "2025-01-01",
+    "--top-n",
+    "3000",
+    "--max-union",
+    "8000",
+    "--memory-mib",
+    "768",
+    "--disk-mib",
+    "1024",
+    "--max-output-mib",
+    "512",
+    "--max-seconds",
+    "120"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-engine\\tools\\prepare_recent_research.py",
+      "sha256": "58b0cc322c117fbadde410b8a178bfe0aeb49edaea9a0046820c231e23550bdf"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-projection-v1\\manifest.json",
+      "sha256": "25a96be8611bf97eddccea3b254220aa750a66b98953069c51cd392d30f0e446"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1024,
+    "min_free_mib": 768
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 2542231552,
+  "outcome": "launch-failed",
+  "exit_code": null
+}

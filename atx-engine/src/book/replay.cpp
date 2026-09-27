@@ -113,12 +113,29 @@ Status validate_cost_model(const ReplayConfig &cfg, atx::usize cells) {
   return Ok();
 }
 
+Status validate_listing_exchange(const ReplayConfig &cfg, atx::usize instruments) {
+  if (cfg.listing_exchange.empty()) return Ok();
+  if (cfg.listing_exchange.size() != instruments) {
+    return Err(ErrorCode::InvalidArgument, "replay: listing_exchange shape mismatch");
+  }
+  for (const auto exchange : cfg.listing_exchange) {
+    if (exchange != ListingExchange::Unknown && exchange != ListingExchange::NyseAmex &&
+        exchange != ListingExchange::Nasdaq) {
+      return Err(ErrorCode::InvalidArgument, "replay: unrecognized listing exchange");
+    }
+  }
+  return Ok();
+}
+
 Status validate_delistings(const ReplayConfig &cfg, atx::usize dates, atx::usize instruments) {
   if (cfg.delisting_policy != DelistingPolicy::Abort &&
       cfg.delisting_policy != DelistingPolicy::CrspDelistReturn &&
-      cfg.delisting_policy != DelistingPolicy::LastMarkZeroReturn) {
+      cfg.delisting_policy != DelistingPolicy::LastMarkZeroReturn &&
+      cfg.delisting_policy != DelistingPolicy::TerminalReturn &&
+      cfg.delisting_policy != DelistingPolicy::TerminalReturnExPostV1) {
     return Err(ErrorCode::InvalidArgument, "replay: unrecognized delisting policy");
   }
+  ATX_TRY_VOID(validate_listing_exchange(cfg, instruments));
   std::vector<atx::u8> seen(cfg.delistings.empty() ? 0 : instruments, atx::u8{0});
   for (const auto &event : cfg.delistings) {
     if (event.instrument >= instruments || event.last_valid_period >= dates ||
@@ -126,8 +143,16 @@ Status validate_delistings(const ReplayConfig &cfg, atx::usize dates, atx::usize
       return Err(ErrorCode::InvalidArgument, "replay: invalid or duplicate delisting event");
     }
     seen[event.instrument] = 1;
-    if (cfg.delisting_policy == DelistingPolicy::CrspDelistReturn &&
-        (!std::isfinite(event.delist_return) || event.delist_return < -1.0)) {
+    // TerminalReturn reads NaN as "unknown" (the flagged Shumway fallback);
+    // every policy rejects an infinite return or one below -100 %.
+    const bool terminal = cfg.delisting_policy == DelistingPolicy::TerminalReturn ||
+                          cfg.delisting_policy == DelistingPolicy::TerminalReturnExPostV1;
+    const bool unknown_ok = terminal &&
+                            std::isnan(event.delist_return);
+    const bool invalid = !unknown_ok && (!std::isfinite(event.delist_return) ||
+                                         event.delist_return < -1.0);
+    const bool checked = cfg.delisting_policy == DelistingPolicy::CrspDelistReturn || terminal;
+    if (checked && invalid) {
       return Err(ErrorCode::InvalidArgument,
                  "replay: missing or invalid delisting return for instrument=" +
                      std::to_string(event.instrument));
@@ -148,9 +173,14 @@ Status validate_extensions(const ReplayConfig &cfg, atx::usize dates, atx::usize
   return validate_delistings(cfg, dates, instruments);
 }
 
+// The claims-aware entry point supports no extension. The default
+// TerminalReturn policy is admitted with an empty table and exchange list and
+// is run with Abort semantics there (see replay_scheduled_intents_with_events).
 bool uses_extensions(const ReplayConfig &cfg) noexcept {
-  return cfg.cost_model != nullptr || cfg.borrow_schedule != nullptr ||
-         cfg.delisting_policy != DelistingPolicy::Abort;
+  const bool policy_ok = cfg.delisting_policy == DelistingPolicy::Abort ||
+                         cfg.delisting_policy == DelistingPolicy::TerminalReturn;
+  return cfg.cost_model != nullptr || cfg.borrow_schedule != nullptr || !policy_ok ||
+         !cfg.delistings.empty() || !cfg.listing_exchange.empty();
 }
 
 Status validate_inputs(const alpha::Panel &panel, std::span<const atx::i64> times,
@@ -170,6 +200,16 @@ Status validate_inputs(const alpha::Panel &panel, std::span<const atx::i64> time
       (cfg.borrow_day_basis != ReplayDayBasis::D360 &&
        cfg.borrow_day_basis != ReplayDayBasis::D365)) {
     return Err(ErrorCode::InvalidArgument, "replay: invalid cost rate or day basis");
+  }
+  // B-02: a zero delay fills at the decision close, the same close any signal
+  // computed at that decision has already seen. Only an explicit opt-in admits it.
+  if (cfg.execution_delay_periods == 0 && !cfg.allow_same_close) {
+    return Err(ErrorCode::InvalidArgument,
+               "replay: execution_delay_periods=0 fills at the decision close; set "
+               "allow_same_close to opt in");
+  }
+  if (cfg.locate_breach != LocateBreach::AbortV1 && cfg.locate_breach != LocateBreach::ClipV2) {
+    return Err(ErrorCode::InvalidArgument, "replay: unrecognized locate breach rule");
   }
   ATX_TRY_VOID(validate_extensions(cfg, dates, instruments));
   for (atx::usize d = 1; d < dates; ++d) {
@@ -220,16 +260,25 @@ Result<atx::f64> required_price(std::span<const atx::f64> close, atx::usize inst
 // `carry_period` (always `period - 1`) instead of at `period`. Every other held
 // instrument still requires a valid close at `period`, so an event never
 // rescues a missing mark for a name it does not retire.
+// `carry_from` is the delisting seam's per-name equivalent (empty unless a
+// delisting policy is active; never used together with `carried`): an entry
+// other than kNoCarry values that held name at the given earlier period, its
+// last valid close — the pending liquidation of a delisted name, or a name
+// carried over an interior gap under DelistingPolicy::TerminalReturn.
+constexpr atx::usize kNoCarry = std::numeric_limits<atx::usize>::max();
+
 Result<MarkedPortfolio> mark_holdings(std::span<const atx::f64> units,
                                       std::span<const atx::f64> close, atx::usize period,
                                       std::span<atx::f64> values,
                                       std::span<const atx::u8> carried = {},
-                                      atx::usize carry_period = 0) {
+                                      atx::usize carry_period = 0,
+                                      std::span<const atx::usize> carry_from = {}) {
   MarkedPortfolio marked;
   for (atx::usize i = 0; i < units.size(); ++i) {
     values[i] = 0.0;
     if (units[i] == 0.0) continue; // Unused missing prices have no economic effect.
-    const auto valued_at = (!carried.empty() && carried[i] != 0) ? carry_period : period;
+    auto valued_at = (!carried.empty() && carried[i] != 0) ? carry_period : period;
+    if (!carry_from.empty() && carry_from[i] != kNoCarry) valued_at = carry_from[i];
     ATX_TRY(auto price, required_price(close, units.size(), valued_at, i));
     values[i] = units[i] * price;
     if (!std::isfinite(values[i]) || values[i] == 0.0) {
@@ -260,13 +309,22 @@ struct AppliedTarget {
 };
 
 // Opt-in per-name execution terms. Default-constructed == the historical path:
-// no per-name model (the aggregate trade_rate applies), no working orders and
-// no locate check.
+// no per-name model (the aggregate trade_rate applies), no working orders, no
+// locate check and no unfillable-target skip.
 struct TradeContext {
   const ReplayCostModel *model{};          // Per-name model; null == aggregate rate.
   std::span<const LiquidityRow> liquidity; // This period's N rows, or empty.
   std::span<atx::f64> working;             // N goal TRI units; NaN == no working order.
   const BorrowSchedule *borrow{};
+  LocateBreach locate_rule{LocateBreach::AbortV1};
+  std::vector<ReplayLocateClip> *clips{};  // Required when locate_rule == ClipV2.
+  // TerminalReturn: a nonzero target on an unheld name with no valid close is
+  // recorded here and left in cash instead of failing the replay.
+  std::vector<ReplayUnfilledTarget> *unfilled{};
+  // TerminalReturn: N indices into *gaps (kNoCarry == not carried at this
+  // period). A carried held name is not traded; its row records the block.
+  std::span<const atx::usize> gap_record;
+  std::vector<ReplayGapCarry> *gaps{};
 };
 
 constexpr atx::f64 kNoWorkingOrder = std::numeric_limits<atx::f64>::quiet_NaN();
@@ -308,14 +366,57 @@ Result<PricedFill> priced_fill(const TradeContext &ctx, atx::usize period, atx::
   return Ok(fill);
 }
 
-// A trade may not grow a short beyond its locate; carrying or covering is free.
+// LocateBreach::AbortV1: a trade may not grow a short beyond its locate;
+// carrying or covering is free. Checked on the executed fill (pre-W0 order).
 Status check_locate(const TradeContext &ctx, atx::usize period, atx::usize i,
                     atx::f64 value_before, atx::f64 value_after) {
-  if (ctx.borrow == nullptr || value_after >= 0.0 || value_after >= value_before) return Ok();
+  if (ctx.borrow == nullptr || ctx.locate_rule != LocateBreach::AbortV1 ||
+      value_after >= 0.0 || value_after >= value_before) {
+    return Ok();
+  }
   if (-value_after > ctx.borrow->locate(i, period)) {
     return Err(ErrorCode::InvalidArgument, "replay: short exceeds locate" + location(period, i));
   }
   return Ok();
+}
+
+struct LocateGoal {
+  atx::f64 units{};
+  atx::f64 value{};
+  bool clipped{};
+};
+
+// LocateBreach::ClipV2 (B-04): the post-trade goal is clipped BEFORE pricing, so
+// a cost model prices only the locatable trade. A short may grow to the locate;
+// a carried short that already exceeds a shrunken locate is held, never grown
+// and never force-covered. Each clip is recorded. `price` is the valid
+// execution close whenever the goal is nonzero.
+Result<LocateGoal> locate_goal(const TradeContext &ctx, atx::usize period, atx::usize i,
+                               atx::f64 units_before, atx::f64 value_before,
+                               atx::f64 goal_units, atx::f64 goal_value, atx::f64 price) {
+  LocateGoal goal{goal_units, goal_value, false};
+  if (ctx.borrow == nullptr || ctx.locate_rule != LocateBreach::ClipV2 || goal_value >= 0.0 ||
+      goal_value >= value_before) {
+    return Ok(goal);
+  }
+  const auto locate = ctx.borrow->locate(i, period);
+  if (-goal_value <= locate) return Ok(goal);
+  const auto allowed = std::min(value_before, -locate);
+  if (allowed == value_before) {
+    goal = LocateGoal{units_before, value_before, true};
+  } else if (allowed == 0.0) {
+    goal = LocateGoal{0.0, 0.0, true}; // Flat, as +0 (no signed-zero holding).
+  } else {
+    const auto units = allowed / price;
+    const auto value = units * price;
+    if (!std::isfinite(units) || !std::isfinite(value) || units == 0.0 || value == 0.0) {
+      return Err(ErrorCode::OutOfRange, "replay: locate clip overflow/underflow" +
+                                            location(period, i));
+    }
+    goal = LocateGoal{units, value, true};
+  }
+  ctx.clips->push_back(ReplayLocateClip{period, i, goal_value, goal.value, locate});
+  return Ok(goal);
 }
 
 // Books one executed move: cash, traded dollars and the trade record.
@@ -344,7 +445,11 @@ Result<AppliedTarget> work_residuals(const TradeContext &ctx, std::span<const at
     if (std::isnan(goal)) continue;
     const auto price = close[period * units.size() + i];
     if (!std::isfinite(price) || price <= 0.0) continue;
-    const auto goal_value = goal * price;
+    // ClipV2 amends the order to what is locatable now (no-op otherwise).
+    ATX_TRY(const auto target, locate_goal(ctx, period, i, units[i], values[i], goal,
+                                           goal * price, price));
+    if (target.clipped) ctx.working[i] = target.units;
+    const auto goal_value = target.value;
     const auto requested = goal_value - values[i];
     ATX_TRY_VOID(require_finite(requested, "working order" + location(period, i)));
     if (requested == 0.0) {
@@ -352,7 +457,7 @@ Result<AppliedTarget> work_residuals(const TradeContext &ctx, std::span<const at
       continue;
     }
     ATX_TRY(const auto fill, priced_fill(ctx, period, i, requested, price, units[i], values[i],
-                                         goal, goal_value));
+                                         target.units, goal_value));
     ATX_TRY_VOID(check_locate(ctx, period, i, values[i], fill.marked_dollars));
     ATX_TRY_VOID(book_move(fill.dollar_delta, period, decision, i, applied, cash, trades));
     model_cost += fill.cost;
@@ -386,24 +491,63 @@ Result<AppliedTarget> apply_target(std::span<const atx::f64> weights,
   for (atx::usize i = 0; i < weights.size(); ++i) {
     const auto intent = intents.empty()
         ? ReplayTargetIntent{ReplayTargetAction::TargetWeight, weights[i]} : intents[i];
+    const auto price = close[period * units.size() + i];
+    const bool eligible = eligibility.empty() || eligibility[i] != 0;
+    // TerminalReturn: an eligible nonzero target on an unheld name that has no
+    // valid close at execution (it left the panel after the decision) cannot
+    // trade. It stays in cash and is reported; nothing is traded blind.
+    if (ctx.unfilled != nullptr && units[i] == 0.0 && eligible &&
+        intent.action == ReplayTargetAction::TargetWeight && std::isfinite(intent.weight) &&
+        intent.weight != 0.0 && (!std::isfinite(price) || price <= 0.0)) {
+      ctx.unfilled->push_back(ReplayUnfilledTarget{period, decision, i, intent.weight});
+      if (!resolved_weights.empty()) resolved_weights[i] = 0.0;
+      if (ctx.model != nullptr) ctx.working[i] = kNoWorkingOrder;
+      continue;
+    }
+    // TerminalReturn: a held name carried over an interior gap has no close to
+    // trade at. It keeps its units at the carried value (a Hold), the new
+    // decision still replaces its open order, and a non-Hold instruction is
+    // recorded as blocked on the carry row. The payload is still validated;
+    // eligibility is not, because nothing executes (a gap day commonly drops the
+    // name from the decision universe, and a Hold there must not abort).
+    if (!ctx.gap_record.empty() && ctx.gap_record[i] != kNoCarry) {
+      const bool zero_payload = intent.action == ReplayTargetAction::TargetWeight ||
+                                intent.weight == 0.0;
+      const bool known = intent.action == ReplayTargetAction::TargetWeight ||
+                         intent.action == ReplayTargetAction::HoldCurrent ||
+                         intent.action == ReplayTargetAction::Close;
+      if (!std::isfinite(intent.weight) || !zero_payload || !known) {
+        return Err(ErrorCode::InvalidArgument,
+                   "replay: invalid instruction on a gap-carried name" + location(period, i));
+      }
+      if (!resolved_weights.empty()) resolved_weights[i] = values[i] / nav;
+      if (ctx.model != nullptr) ctx.working[i] = kNoWorkingOrder;
+      if (intent.action != ReplayTargetAction::HoldCurrent) {
+        (*ctx.gaps)[ctx.gap_record[i]].trade_blocked = true;
+      }
+      ATX_TRY_VOID(add_mark(applied.marked, values[i]));
+      continue;
+    }
     // Older weight paths validated every target's original eligibility already.
-    const auto sized = resolve_replay_target(intent, units[i], values[i],
-        close[period * units.size() + i], nav, eligibility.empty() || eligibility[i] != 0);
+    const auto sized = resolve_replay_target(intent, units[i], values[i], price, nav, eligible);
     if (!sized) {
       return Err(sized.error().code(), sized.error().message() + location(period, i));
     }
     if (!resolved_weights.empty()) resolved_weights[i] = sized->resolved_weight;
+    // ClipV2 caps a short-growing goal at the locate before it is priced.
+    ATX_TRY(const auto goal, locate_goal(ctx, period, i, units[i], values[i], sized->tri_units,
+                                         sized->marked_dollars, price));
     // Debit the actually representable new TRI holding, preserving self-financing
     // even when dividing target dollars by price rounds the requested unit count.
-    auto fill = PricedFill{sized->tri_units, sized->marked_dollars, sized->dollar_delta, 0.0,
+    auto fill = PricedFill{goal.units, goal.value,
+                           goal.clipped ? goal.value - values[i] : sized->dollar_delta, 0.0,
                            false};
     if (ctx.model != nullptr) {
       ctx.working[i] = kNoWorkingOrder; // A new decision replaces every open order.
       if (fill.dollar_delta != 0.0) {
-        ATX_TRY(fill, priced_fill(ctx, period, i, sized->dollar_delta,
-                                  close[period * units.size() + i], units[i], values[i],
-                                  sized->tri_units, sized->marked_dollars));
-        if (fill.residual) ctx.working[i] = sized->tri_units;
+        ATX_TRY(fill, priced_fill(ctx, period, i, fill.dollar_delta, price, units[i], values[i],
+                                  goal.units, goal.value));
+        if (fill.residual) ctx.working[i] = goal.units;
       }
     }
     ATX_TRY_VOID(check_locate(ctx, period, i, values[i], fill.marked_dollars));
@@ -427,10 +571,12 @@ Result<AppliedTarget> apply_target(std::span<const atx::f64> weights,
   return Ok(applied);
 }
 
-// Net financing under a BorrowSchedule: per-name fees on post-trade marked
-// short dollars, less the short rebate, less interest on FREE cash. Short-sale
-// proceeds sit in settled cash but are collateral: they earn only the rebate,
-// so the cash rate accrues on (cash - shorts), never on the proceeds as well.
+// Net financing under a BorrowSchedule (see borrow_schedule.hpp, B-05).
+// FeeAndRebateV1, and a rebate-quoted FeeOnceV2 schedule (whose fees are all
+// zero by validation): per-name fees on post-trade marked short dollars, less
+// the short rebate, less interest on FREE cash (cash - shorts); the proceeds
+// earn only the rebate. A fee-quoted FeeOnceV2 schedule: the fee is the whole
+// borrow cost and the proceeds are ordinary settled cash earning the cash rate.
 Result<atx::f64> scheduled_financing(const BorrowSchedule &schedule,
                                      std::span<const atx::f64> values, atx::f64 shorts,
                                      atx::f64 cash, atx::usize period, atx::f64 days,
@@ -439,9 +585,12 @@ Result<atx::f64> scheduled_financing(const BorrowSchedule &schedule,
   for (atx::usize i = 0; i < values.size(); ++i) {
     if (values[i] < 0.0) fee_dollars += -values[i] * schedule.fee(i, period);
   }
+  const bool fee_quoted_once =
+      schedule.financing == ShortFinancing::FeeOnceV2 && schedule.rebate_bps == 0.0;
   const auto free_cash = cash - shorts;
-  const auto bps_dollars =
-    fee_dollars - shorts * schedule.rebate_bps - free_cash * schedule.cash_bps;
+  const auto bps_dollars = fee_quoted_once
+      ? fee_dollars - cash * schedule.cash_bps
+      : fee_dollars - shorts * schedule.rebate_bps - free_cash * schedule.cash_bps;
   const auto basis = static_cast<atx::f64>(cfg.borrow_day_basis);
   const auto charge = bps_dollars * ((kBpsToFraction / basis) * days);
   ATX_TRY_VOID(require_finite(charge, "scheduled financing charge"));
@@ -779,9 +928,34 @@ struct ReplayExtensions {
   std::vector<atx::f64> working;         // N goal units; NaN == none.
   std::vector<atx::usize> delist_event;  // N indices into config->delistings.
   std::vector<atx::u8> delisting;        // N mask for the pending valuation.
+  std::vector<TerminalReturn> terminal;  // N returns resolved for the pending valuation.
+  // N periods of the last valid close a held name is valued at instead of the
+  // current one (kNoCarry == its own close): a pending liquidation or, under
+  // TerminalReturn, an interior-gap carry. Persists across a multi-session gap.
+  std::vector<atx::usize> carry_from;
+  // TerminalReturn only: N final valid-close periods (kNoCarry == never prints)
+  // and N indices of this valuation's gap_carries row (kNoCarry == none).
+  std::vector<atx::usize> last_print;
+  std::vector<atx::usize> gap_record;
   bool delisting_pending{};
+  bool terminal_policy{};                // DelistingPolicy::TerminalReturn.
+  std::vector<ReplayLocateClip> *clips{};
+  std::vector<ReplayUnfilledTarget> *unfilled{};
+  std::vector<ReplayGapCarry> *gaps{};
 
-  void init(const ReplayConfig &cfg, atx::usize n) {
+  // The "last bar" evidence: the final period with a valid close, per name.
+  void scan_last_print(std::span<const atx::f64> close, atx::usize dates) {
+    last_print.assign(instruments, kNoCarry);
+    for (atx::usize t = 0; t < dates; ++t) {
+      for (atx::usize i = 0; i < instruments; ++i) {
+        const auto price = close[t * instruments + i];
+        if (std::isfinite(price) && price > 0.0) last_print[i] = t;
+      }
+    }
+  }
+
+  void init(const ReplayConfig &cfg, atx::usize n, ReplayResult &result,
+            std::span<const atx::f64> close, atx::usize dates) {
     config = &cfg;
     instruments = n;
     if (cfg.cost_model != nullptr) {
@@ -791,11 +965,27 @@ struct ReplayExtensions {
         working.assign(n, kNoWorkingOrder);
       }
     }
-    if (cfg.delisting_policy != DelistingPolicy::Abort && !cfg.delistings.empty()) {
+    terminal_policy = cfg.delisting_policy == DelistingPolicy::TerminalReturn ||
+                      cfg.delisting_policy == DelistingPolicy::TerminalReturnExPostV1;
+    if (terminal_policy ||
+        (cfg.delisting_policy != DelistingPolicy::Abort && !cfg.delistings.empty())) {
       delist_event.assign(n, kNoEvent);
       delisting.assign(n, atx::u8{0});
+      terminal.assign(n, TerminalReturn{});
+      carry_from.assign(n, kNoCarry);
       for (atx::usize k = 0; k < cfg.delistings.size(); ++k) {
         delist_event[cfg.delistings[k].instrument] = k;
+      }
+    }
+    if (cfg.borrow_schedule != nullptr && cfg.locate_breach == LocateBreach::ClipV2) {
+      clips = &result.locate_clips;
+    }
+    if (terminal_policy) {
+      unfilled = &result.unfilled_targets;
+      gaps = &result.gap_carries;
+      gap_record.assign(n, kNoCarry);
+      if (cfg.delisting_policy == DelistingPolicy::TerminalReturnExPostV1) {
+        scan_last_print(close, dates);
       }
     }
   }
@@ -807,6 +997,11 @@ struct ReplayExtensions {
   [[nodiscard]] TradeContext context(atx::usize period) {
     TradeContext ctx;
     ctx.borrow = config->borrow_schedule;
+    ctx.locate_rule = config->locate_breach;
+    ctx.clips = clips;
+    ctx.unfilled = unfilled;
+    ctx.gap_record = gap_record;
+    ctx.gaps = gaps;
     if (per_name_model != nullptr) {
       ctx.model = per_name_model;
       ctx.working = working;
@@ -828,32 +1023,83 @@ struct ReplayExtensions {
   [[nodiscard]] atx::usize open_working_orders() const noexcept { return open_orders; }
   [[nodiscard]] bool has_working_orders() const noexcept { return open_orders != 0; }
 
-  [[nodiscard]] atx::f64 delist_return(atx::usize i) const noexcept {
-    return config->delisting_policy == DelistingPolicy::CrspDelistReturn
-        ? config->delistings[delist_event[i]].delist_return : 0.0;
+  // The terminal return of flagged name i whose event (if any) is due or not.
+  [[nodiscard]] TerminalReturn resolve_terminal(atx::usize i, bool event_due,
+                                                bool is_short) const noexcept {
+    switch (config->delisting_policy) {
+    case DelistingPolicy::CrspDelistReturn:
+      return {config->delistings[delist_event[i]].delist_return, TerminalReturnSource::Table};
+    case DelistingPolicy::LastMarkZeroReturn:
+      return {0.0, TerminalReturnSource::LastMarkZero};
+    default:
+      break;
+    }
+    if (event_due) {
+      const auto supplied = config->delistings[delist_event[i]].delist_return;
+      if (std::isfinite(supplied)) return {supplied, TerminalReturnSource::Table};
+    }
+    const auto exchange = config->listing_exchange.empty() ? ListingExchange::Unknown
+                                                           : config->listing_exchange[i];
+    if (!event_due && config->delisting_policy == DelistingPolicy::TerminalReturn) {
+      return assumed_missing_price_return(exchange, is_short);
+    }
+    return shumway_terminal_return(exchange, is_short);
   }
 
-  // Flags held names that have printed their final close before `period` and
-  // have no valid mark at it. Returns whether any name is flagged.
+  // Per-name last-close periods for mark_holdings; empty when no policy is active.
+  [[nodiscard]] std::span<const atx::usize> carry_view() const noexcept { return carry_from; }
+
+  // Only the explicit ex-post diagnostic may use future print/event evidence.
+  // The default liquidates conservatively at the first missing held valuation.
+  [[nodiscard]] bool gap_carried(atx::usize i, atx::usize period, bool event_due) const noexcept {
+    if (config->delisting_policy != DelistingPolicy::TerminalReturnExPostV1 || event_due) {
+      return false;
+    }
+    const bool listed_by_table = delist_event[i] != kNoEvent; // Not due == still listed.
+    const bool prints_again = last_print[i] != kNoCarry && last_print[i] > period;
+    return listed_by_table || prints_again;
+  }
+
+  // Classifies every held name with no valid mark at `period`: carried over an
+  // interior gap (TerminalReturn, recorded) or flagged for liquidation — under
+  // TerminalReturn every other such name, otherwise only names whose event says
+  // the final close preceded `period`. Each such name is valued at its last
+  // valid close (carry_from). Returns whether any name is flagged for liquidation.
   bool flag_delistings(std::span<const atx::f64> close, atx::usize period,
-                       std::span<const atx::f64> units) noexcept {
+                       std::span<const atx::f64> units) {
     delisting_pending = false;
     if (delist_event.empty()) return false;
     for (atx::usize i = 0; i < instruments; ++i) {
       delisting[i] = 0;
+      if (!gap_record.empty()) gap_record[i] = kNoCarry;
       const auto event = delist_event[i];
-      if (event == kNoEvent) continue;
-      if (config->delistings[event].last_valid_period >= period) continue;
+      const bool event_due =
+          event != kNoEvent && config->delistings[event].last_valid_period < period &&
+          config->delistings[event].available_period <= period;
+      if (!event_due && !terminal_policy) continue;
       // A delisted name can never fill again: cancel its working order even when
       // nothing is held yet, so the order cannot stay open silently for good.
-      if (!working.empty() && !std::isnan(working[i])) {
+      if (event_due && !working.empty() && !std::isnan(working[i])) {
         working[i] = kNoWorkingOrder;
         --open_orders;
       }
-      if (units[i] == 0.0) continue;
       const auto price = close[period * instruments + i];
-      if (std::isfinite(price) && price > 0.0) continue;
+      if (units[i] == 0.0 || (std::isfinite(price) && price > 0.0)) {
+        carry_from[i] = kNoCarry; // Valued at its own close (or not held).
+        continue;
+      }
+      // Its last valid close: kept through a multi-session gap, else period - 1
+      // (the close it was valued at, or bought at, in the previous observation).
+      if (carry_from[i] == kNoCarry) carry_from[i] = period - 1;
+      if (gap_carried(i, period, event_due)) {
+        const auto mark = close[carry_from[i] * instruments + i];
+        gap_record[i] = gaps->size();
+        gaps->push_back(ReplayGapCarry{period, i, carry_from[i], units[i], units[i] * mark,
+                                       false});
+        continue;
+      }
       delisting[i] = 1;
+      terminal[i] = resolve_terminal(i, event_due, units[i] < 0.0);
       delisting_pending = true;
     }
     return delisting_pending;
@@ -864,7 +1110,7 @@ struct ReplayExtensions {
                                                std::span<atx::f64> end_values) const {
     for (atx::usize i = 0; i < instruments; ++i) {
       if (delisting[i] == 0) continue;
-      end_values[i] *= 1.0 + delist_return(i);
+      end_values[i] *= 1.0 + terminal[i].value;
       ATX_TRY_VOID(require_finite(end_values[i], "delisting value" + location(period, i)));
     }
     return total_marked(end_values);
@@ -875,16 +1121,33 @@ struct ReplayExtensions {
   Result<MarkedPortfolio> liquidate(atx::usize period, std::span<atx::f64> units,
                                     std::span<const atx::f64> last_values,
                                     std::span<atx::f64> end_values, atx::f64 &cash,
-                                    std::vector<ReplayDelisting> &out) {
+                                    ReplayResult &result) {
     for (atx::usize i = 0; i < instruments; ++i) {
       if (delisting[i] == 0) continue;
       const auto proceeds = end_values[i];
       cash += proceeds;
       ATX_TRY_VOID(require_finite(cash, "cash after delisting" + location(period, i)));
-      out.push_back(ReplayDelisting{period, i, units[i], last_values[i], delist_return(i),
-                                    proceeds});
+      const auto source = terminal[i].source;
+      const bool flagged = source == TerminalReturnSource::ShumwayNyseAmex ||
+                           source == TerminalReturnSource::ShumwayNasdaq ||
+                           source == TerminalReturnSource::ShumwayUnknownAdverse ||
+                           source == TerminalReturnSource::AssumedMissingPriceAdverse;
+      if (source == TerminalReturnSource::AssumedMissingPriceAdverse) {
+        ++result.assumed_liquidations;
+        result.assumed_liquidation_pnl += proceeds - last_values[i];
+        ATX_TRY_VOID(require_finite(result.assumed_liquidation_pnl, "assumed liquidation P&L"));
+      }
+      result.flagged_delistings += flagged ? 1U : 0U;
+      if (flagged && units[i] < 0.0) {
+        ++result.flagged_short_delistings;
+        result.flagged_short_pnl += proceeds - last_values[i];
+        ATX_TRY_VOID(require_finite(result.flagged_short_pnl, "flagged short P&L"));
+      }
+      result.delistings.push_back(ReplayDelisting{period, i, units[i], last_values[i],
+                                                  terminal[i].value, proceeds, source, flagged});
       units[i] = 0.0;
       end_values[i] = 0.0;
+      carry_from[i] = kNoCarry;
       if (!working.empty() && !std::isnan(working[i])) {
         working[i] = kNoWorkingOrder;
         --open_orders;
@@ -927,7 +1190,7 @@ Result<ReplayResult> replay_targets(
     capture->allocations.reserve(decision_periods.size());
   }
   ReplayExtensions ext;
-  ext.init(config, instruments);
+  ext.init(config, instruments, result, close, dates);
   if (claims != nullptr) {
     claims->retired.assign(instruments, atx::u8{0});
     claims->carried.assign(instruments, atx::u8{0});
@@ -941,8 +1204,10 @@ Result<ReplayResult> replay_targets(
     // batch this observation will apply.
     const auto carried = (claims != nullptr && claims->batch_period == d)
         ? std::span<const atx::u8>(claims->carried) : std::span<const atx::u8>{};
+    // A gap-carried name (TerminalReturn) keeps the last-close valuation its
+    // end mark at d already used.
     ATX_TRY(auto start, mark_holdings(result.final_tri_units, close, d, start_values, carried,
-                                      d == 0 ? 0 : d - 1));
+                                      d == 0 ? 0 : d - 1, ext.carry_view()));
     auto pretrade_nav = result.final_cash + start.assets;
     ClaimsNav claims_nav{};
     if (claims != nullptr) {
@@ -1047,8 +1312,10 @@ Result<ReplayResult> replay_targets(
     } else {
       ATX_TRY(borrow, borrow_charge(start.shorts, days, config));
     }
+    // Names flagged for liquidation and gap-carried names are valued at their
+    // last valid close through ext.carry_view(); claims predecessors at d.
     std::span<const atx::u8> next_carried;
-    if (ext.flag_delistings(close, d + 1, result.final_tri_units)) next_carried = ext.delisting;
+    (void)ext.flag_delistings(close, d + 1, result.final_tri_units);
     if (claims != nullptr) {
       // Step 0 for the NEXT observation, requested here because the valuation
       // of d + 1 happens first as this interval's end mark.
@@ -1058,7 +1325,7 @@ Result<ReplayResult> replay_targets(
       if (claims->batch_period == d + 1) next_carried = claims->carried;
     }
     ATX_TRY(auto end, mark_holdings(result.final_tri_units, close, d + 1, end_values,
-                                    next_carried, d));
+                                    next_carried, d, ext.carry_view()));
     if (ext.delisting_pending) {
       ATX_TRY(end, ext.apply_delist_returns(d + 1, end_values));
     }
@@ -1070,7 +1337,7 @@ Result<ReplayResult> replay_targets(
     result.final_cash -= borrow;
     if (ext.delisting_pending) {
       ATX_TRY(end, ext.liquidate(d + 1, result.final_tri_units, start_values, end_values,
-                                 result.final_cash, result.delistings));
+                                 result.final_cash, result));
     }
     result.final_assets = end.assets;
     result.final_nav = result.final_cash + end.assets;
@@ -1226,15 +1493,21 @@ Result<ReplayClaimsResult> replay_scheduled_intents_with_events(
   }
   if (uses_extensions(config)) {
     return Err(ErrorCode::InvalidArgument,
-               "replay: cost model, borrow schedule and delisting policy are not supported "
-               "with mandatory events");
+               "replay: cost model, borrow schedule, delisting table/exchanges and "
+               "non-default delisting policies are not supported with mandatory events");
   }
+  // Mandatory events are this path's terminal mechanism (a retiring
+  // predecessor is carried by its admitted transition), and the path is
+  // synthetic-fixture only: the default TerminalReturn policy runs with Abort
+  // semantics here, so a held name missing a close outside an event rejects.
+  ReplayConfig effective = config;
+  effective.delisting_policy = DelistingPolicy::Abort;
   PolicyCapture capture{nullptr, &policy, {}, {}};
   auto owned = std::make_unique<ClaimsCapture>();
   owned->events = &events;
   owned->config = claims;
   ATX_TRY(auto replay, replay_targets(research, session_keys, decision_periods,
-      preference_weights, config, &capture, owned.get()));
+      preference_weights, effective, &capture, owned.get()));
   ReplayClaimsResult result;
   result.policy = ReplayPolicyResult{std::move(replay), std::move(capture.allocations)};
   result.movements = std::move(owned->movements);

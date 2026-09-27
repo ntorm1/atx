@@ -9,6 +9,12 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/panel_artifact.cpp
     src/panel_pipeline.cpp
     src/stage_data_provenance.cpp
+    src/strategy_runner.cpp
+    src/strategy_ic_runner.cpp
+    src/strategy_ic_composition.cpp
+    src/strategy_target_replay.cpp
+    src/strategy_price_exposures.cpp
+    src/strategy_nav_replay.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
@@ -34,6 +40,7 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/preference_source.cpp
     src/stage_equity_book.cpp
     src/trial_ledger.cpp
+    src/prereg.cpp
     src/stage_equity_ic.cpp
     src/stage_equity_universe.cpp
     src/stage_run.cpp
@@ -47,10 +54,34 @@ target_link_libraries(atx-impl-core
 find_package(Threads REQUIRED)
 target_link_libraries(atx-impl-core PRIVATE Threads::Threads)
 
+# Stable third-party/std headers only; pipeline/config headers stay outside the
+# PCH so an ordinary engine change does not invalidate this parse cache. PRIVATE
+# keeps it out of downstream targets, and hygiene still disables ATX_USE_PCH.
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-impl-core PRIVATE pch.hpp)
+endif()
+# This TU intentionally changes CRT declarations before its first include to use
+# portable exclusive fopen("wx"). Preserve that local environment: force-including
+# the common PCH would parse the CRT before the source's suppression takes effect.
+set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
+# Full recent-data IC runs need optimized VM/collection loops even in the warm
+# iterative Debug tree. Keep the Debug CRT, assertions, FP and ISA settings;
+# change only these private implementations, not the target or shared PCH.
+# clang-cl /Ob0 leaves -fno-inline behind even after /O2 /Ob2; explicitly clear
+# it with the public clang driver option. LLVM ignores the inherited /RTC1.
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
+        APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()
+
+
 # ---------------------------------------------------------------------------
 # engine_git_sha provenance bake (p7 S6-4).
-# Resolve the engine's git commit at configure time and bake it into a compile
-# definition ATX_ENGINE_GIT_SHA consumed by stage_discover.cpp. Appends "-dirty"
+# Resolve the engine's git commit at configure time and bake it into a
+# private generated source consumed through build_provenance.hpp. Appends "-dirty"
 # when the working tree has uncommitted changes; falls back to "unknown" if git
 # is unavailable (CI / source tarball). This is provenance only — it never enters
 # panel.bin or the discover search digest (guarded by the S6-5 tripwire).
@@ -79,11 +110,30 @@ if(GIT_FOUND)
     endif()
 endif()
 message(STATUS "atx-impl engine_git_sha: ${ATX_ENGINE_GIT_SHA}")
-target_compile_definitions(atx-impl-core PRIVATE
-    ATX_ENGINE_GIT_SHA="${ATX_ENGINE_GIT_SHA}")
+# A changing command-line macro conflicts with clang-cl PCH reuse. Keep the
+# value in one tiny generated implementation, outside the stable PCH payload.
+# configure_file writes only when content changes, preserving no-op builds.
+set(_atx_provenance_cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/build_provenance.cpp")
+configure_file(src/build_provenance.cpp.in "${_atx_provenance_cpp}" @ONLY)
+target_sources(atx-impl-core PRIVATE "${_atx_provenance_cpp}")
+set_source_files_properties("${_atx_provenance_cpp}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
 add_executable(atx-impl src/main.cpp)
 target_link_libraries(atx-impl PRIVATE atx-impl-core atx_warnings)
+
+# Small supplied-DSL research entry point. Reuse the warm production libraries;
+# this does not require the broad pipeline main or a second compiler environment.
+add_executable(atx-equity-strategy EXCLUDE_FROM_ALL tools/equity_strategy.cpp)
+target_link_libraries(atx-equity-strategy PRIVATE atx-impl-core atx_warnings)
+
+# Fast supplied-DSL screening and streaming composition share the warm core PCH.
+# Research options live in private sources, outside the pipeline config headers.
+add_executable(atx-equity-strategy-ic EXCLUDE_FROM_ALL tools/equity_strategy_ic.cpp)
+target_link_libraries(atx-equity-strategy-ic PRIVATE atx-impl-core atx_warnings)
+
+# Reuse a saved composition for portfolio iteration without reevaluating DSLs.
+add_executable(atx-equity-strategy-targets EXCLUDE_FROM_ALL tools/equity_strategy_targets.cpp)
+target_link_libraries(atx-equity-strategy-targets PRIVATE atx-impl-core atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)

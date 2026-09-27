@@ -56,21 +56,17 @@
 //  ascending order, so the fold vector is run-to-run byte-identical. Reductions
 //  are O(N^2) (CPCV is not a hot path; correctness first).
 
+#include <string_view>
 #include <span>     // std::span
 #include <vector>   // std::vector
 
 #include "atx/core/macro.hpp" // ATX_ASSERT
+#include "atx/engine/eval/cpcv_config.hpp"
 #include "atx/core/types.hpp" // atx::f64, atx::usize
 
-// detail::binomial / detail::next_combination are the SHARED combinatorics
-// helpers. They were originally duplicated verbatim here and in pbo.hpp with the
-// documented assumption that a single TU never includes both. S3-4 (pool-aware
-// fitness) is the first consumer to include BOTH cpcv.hpp (folds) and, via
-// validation/bias_audit.hpp, pbo.hpp — which made the two inline definitions
-// collide (redefinition in one TU). The dedup: cpcv.hpp now REUSES pbo.hpp's
-// detail::binomial / detail::next_combination instead of redefining them (the
-// bodies were byte-identical), so a TU may include both headers safely.
-#include "atx/engine/eval/pbo.hpp" // eval::detail::binomial, eval::detail::next_combination
+// Share only the small combinatorics helpers. PBO arithmetic/API changes no
+// longer force recompilation of every learner that consumes CPCV geometry.
+#include "atx/engine/eval/combinatorics.hpp"
 
 namespace atx::engine::eval {
 
@@ -91,12 +87,6 @@ struct LabelSpan {
 //    n_test_groups  — k groups held out per fold; C(K, k) folds in total.
 //    embargo        — embargo fraction h of N (embargo_len = ceil(h*N)).
 // ===========================================================================
-struct CpcvConfig {
-  atx::usize n_groups = 6;
-  atx::usize n_test_groups = 2;
-  atx::f64 embargo = 0.01;
-};
-
 // ===========================================================================
 //  CpcvFold — one combinatorial fold: ascending train and test index sets.
 //  Rule of Zero aggregate owning its two index vectors.
@@ -108,9 +98,7 @@ struct CpcvFold {
 
 namespace detail {
 
-// binomial / next_combination are REUSED from pbo.hpp (included above) — they
-// were previously duplicated here verbatim. See the include-site note for why
-// the dedup was required (S3-4 includes both headers in one TU).
+// binomial / next_combination are shared by CPCV and PBO via combinatorics.hpp.
 
 // ---------------------------------------------------------------------------
 //  group_start — first observation index of group g in the contiguous,

@@ -11,7 +11,8 @@
 //
 // Preconditions (forwarded to with_datafields):
 //   * The Dataset must carry at least "close" and "volume" columns.
-//   * If "vwap" is absent the Dataset must also carry "high" and "low".
+//   * V2 requires raw_close or the caller's explicit Raw close basis.
+//   * Legacy V1 requires high/low only when vwap is absent.
 //   * with_datafields Err(NotFound)s on the first missing required field.
 // Cold path; copies are intentional.
 
@@ -21,6 +22,7 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/vwap_rule.hpp"
 #include "atx/engine/data/dataset.hpp"
 
 namespace atx::engine::data {
@@ -39,6 +41,8 @@ namespace atx::engine::data {
 // grid first and wrap the already-aligned values with zero delay. A Panel has
 // no date keys with which to enforce the source dataset's availability.
 [[nodiscard]] atx::core::Result<alpha::Panel> price_to_panel(const Dataset &price,
-                                                             std::span<const atx::u16> adv_windows);
+    std::span<const atx::u16> adv_windows,
+    alpha::VwapRule vwap_rule = alpha::VwapRule::RawDailyCloseV2,
+    alpha::ClosePriceBasis close_basis = alpha::ClosePriceBasis::Unknown);
 
 } // namespace atx::engine::data

@@ -1,0 +1,325 @@
+#pragma once
+
+#include <array>
+#include <iosfwd>
+#include <span>
+#include <string>
+#include <vector>
+#include "strategy_target_replay.hpp"
+
+namespace atx::impl::strategy {
+// Self-financing marked-dollar NAV replay of one pinned saved blend under the
+// same target rules as replay_targets (baseline-v1 / monthly-budget-v2).
+//
+// Timing: decide at session d (after its mark), fill at session d+1's close,
+// first return row d+2. Decisions [begin, end-2); executions <= end-2; return rows
+// [begin+2, end); the final session is valuation only. Results never depend on
+// rows at or beyond decision_end (they are only contract-validated); session t
+// reads only rows <= t (liquidity: [t-w, t)).
+// Order per session t: MARK (financing on pre-mark dollars, drift, stale/write-off)
+// -> EXECUTE (working orders at close t, costs to cash) -> DECIDE (targets in
+// decision-NAV dollars). Cash earns 0%, short proceeds stay in cash, no rebate:
+// excess-return accounting, the benchmark cancelling against collateral.
+//
+// Missing prices are detected only from present[t]. A held absent name is carried
+// at its last observed adjusted close with its orders blocked; a reprint within K
+// sessions realizes the true cumulative return and then executes pending orders;
+// K consecutive absences write it off at last mark x (1 + haircut). A reprint after
+// a write-off is a diagnostic event only. No lookahead anywhere.
+//
+// Construction (TargetReplayConfig neutralize / band_multiple) is the target
+// replay's own, applied at the NAV path's single desired-target extension point;
+// with the defaults every pre-existing output value is unchanged.
+
+enum class NavCostRule : atx::u8 { FlatBpsV1 = 1, SqrtImpactV1 = 2 };
+
+// Adverse terminal haircuts of scenario S3: copies of the engine's causal default
+// book::assumed_missing_price_return(ListingExchange::Unknown, side) (Shumway
+// -0.55 long / +0.30 short, both losses). Parity is asserted by the NAV tests.
+inline constexpr atx::f64 nav_adverse_long_return = -0.55;
+inline constexpr atx::f64 nav_adverse_short_return = 0.30;
+// Owner targets reported (never optimized against) in every summary.
+inline constexpr atx::f64 nav_sharpe_target = 1.0;
+// LEGACY (retired 2026-09-27): monthly turnover is reported for continuity only.
+inline constexpr atx::f64 nav_monthly_turnover_target = 0.30;
+// Declared daily one-way turnover ceilings in GMV units (owner ruling 2026-09-27):
+// tau_t = sum|fill$| / pre-trade (long$ + short$), deployment session excluded,
+// forced exits included. Recorded in every recipe; CLI-overridable.
+inline constexpr atx::f64 nav_daily_turnover_mean_max = 0.20;
+inline constexpr atx::f64 nav_daily_turnover_p95_max = 0.30;
+struct NavTurnoverLimits {
+  atx::f64 daily_mean_max{nav_daily_turnover_mean_max};
+  atx::f64 daily_p95_max{nav_daily_turnover_p95_max};
+};
+
+// Financing of one scenario book, accrued at MARK t over (t-1, t] on pre-mark
+// dollars x calendar days / day_count (the same basis the legacy borrow used):
+// - FlatShortV0: flat_short_bps on every short dollar, day_count 365, no long leg,
+//   no tiers, no locate rule: the legacy accrual, bit for bit.
+// - TieredSwapV1 (prime-broker portfolio swap): long_spread_bps on long dollars plus
+//   (short_spread_bps + tier fee) on each short dollar, the fee (gc/warm/special_bps)
+//   from the name's borrow tier at the latest decision <= t-1 (so a short that
+//   migrates into special pays special until it exits). block_special_shorts: at
+//   DECIDE a special-tier name may not open or grow a short,
+//   next = max(next, min(cur, 0)); reductions and exits pass.
+enum class NavFinancingRule : atx::u8 { FlatShortV0 = 0, TieredSwapV1 = 1 };
+struct NavFinancing {
+  std::string id{"flat-300-v0"};
+  NavFinancingRule rule{NavFinancingRule::FlatShortV0};
+  atx::f64 flat_short_bps{300};                   // FlatShortV0 only (0 otherwise)
+  atx::f64 long_spread_bps{}, short_spread_bps{}; // TieredSwapV1 only
+  atx::f64 gc_bps{}, warm_bps{}, special_bps{};   // TieredSwapV1 only, gc <= warm <= special
+  atx::u32 day_count{365};                        // 360 | 365 (FlatShortV0: 365)
+  bool block_special_shorts{};                    // TieredSwapV1 only
+};
+// Declared financing scenarios (owner ruling 2026-09-27, handoff 2 section 2b):
+// [0] swap-fin-v1 PRIMARY (long 40, short spread 20, tiers 30/100/500 bps, ACT/360,
+// locate block), [1] flat-300-v0 (legacy), [2] engine-tiers-v1 (swap-fin-v1 with
+// the engine BorrowTierRecipe default fees 27.5/300/2750 bps).
+[[nodiscard]] std::vector<NavFinancing> nav_financing_scenarios();
+
+struct NavScenario {
+  std::string id; // the trading scenario; the financing carries its own id
+  NavCostRule cost{NavCostRule::FlatBpsV1};
+  atx::f64 flat_bps{};          // FlatBpsV1 per-dollar rate
+  atx::f64 half_spread_bps{};   // SqrtImpactV1 liquidity-row half spread
+  atx::f64 commission_bps{};    // SqrtImpactV1 commission
+  atx::f64 impact_y{}, impact_delta{0.5};
+  atx::f64 max_participation{}; // SqrtImpactV1 cap per session (fraction of ADV)
+  NavFinancing financing{};     // default: flat-300-v0
+  atx::f64 fallback_daily_vol{0.05};
+  atx::usize stale_exit_sessions{5}; // K consecutive absent marks -> write-off
+  bool adverse_terminal{};           // false: haircut 0; true: nav_adverse_* returns
+};
+// Fixed research trading scenarios, each with flat-300-v0 financing, in this order:
+// S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 (PRIMARY),
+// S3 modeled-1bn-terminal-adverse-v1.
+[[nodiscard]] std::vector<NavScenario> fixed_nav_scenarios();
+inline constexpr atx::usize nav_primary_scenario_index = 1;
+// The books of one run. Without borrow fields: fixed_nav_scenarios() (flat-300-v0).
+// With them: S1/S2/S3 x swap-fin-v1, then S2 x flat-300-v0 and S2 x engine-tiers-v1.
+// Either way the primary is nav_primary_scenario_index (S2, swap-fin-v1 if tiered).
+[[nodiscard]] std::vector<NavScenario> nav_scenario_matrix(bool tiered);
+
+struct NavReplayConfig {
+  TargetReplayConfig target{}; // one_way_bps and annual_borrow_bps must be zero
+  NavScenario scenario{};
+  atx::f64 initial_nav{1'000'000'000.0};
+  atx::usize liquidity_window{63}, min_vol_pairs{20};
+  atx::u64 max_events{262'144}; // explicit refusal beyond
+};
+// Point-in-time role fields (atx.research-role-fields/v1: date-major, role dates x
+// ids, NaN = not visible by the session's 22:00 UTC mark) behind the borrow tiers.
+// Both empty (no tiers) or both dates x instruments; any value is admitted.
+struct NavFinancingFields {
+  std::span<const atx::f64> shares_out, si_shares;
+};
+// Borrowed for the synchronous call. Prices and volume are required; members must
+// be present. Present cells: close/raw finite > 0, volume finite >= 0. volume is
+// authoritative (it also feeds price-risk neutralization); target.volume is ignored.
+// A TieredSwapV1 scenario requires the financing fields; with them every book also
+// reports its short dollars by tier.
+struct NavReplayInput {
+  TargetReplayInput target;
+  std::span<const atx::f64> volume;
+  NavFinancingFields financing{};
+};
+
+// Borrow tier of every name at decision d, from rows <= d only (formed once per
+// decision and shared by every book; the fees are each scenario's own):
+// engine estimate_borrow_tier (PublicPredictorPriorV1, default thresholds) with
+//   market cap = shares_out[d] x raw_close[d] (mktcap_lagged is not used: its
+//     presence is not point in time),
+//   raw price = raw_close[d], SI ratio = si_shares[d] / shares_out[d] (shares_out
+//     >= float, so the ratio is understated),
+//   IPO age = calendar days since the name's first present role session (present
+//     at role session 0: seasoned),
+//   available_at = session + 22h (the fields' visibility mark), decision = +23h.
+// shares_out outside [nav_shares_out_min, nav_shares_out_max], a non-finite or
+// negative si_shares, an absent name, or an engine Unavailable -> Warm, missing.
+inline constexpr atx::f64 nav_shares_out_min = 1e5, nav_shares_out_max = 5e10;
+struct NavBorrowTiers {
+  std::vector<atx::u8> tier;    // engine BorrowTier value: 1 GC, 2 warm, 3 special
+  std::vector<atx::u8> missing; // 1: a predictor was missing (charged warm)
+};
+[[nodiscard]] atx::core::Result<NavBorrowTiers> nav_borrow_tiers(const NavReplayInput& in,
+                                                                atx::usize d);
+
+// One row per session t in [decision_begin, decision_end). Row decision_begin
+// carries only the first decision. Return fields are relative to the previous
+// row's pre-trade NAV: net = gross - trade_cost - borrow - long_financing, where
+// trade cost is the PREVIOUS session's fills (costs of fills at t land in the
+// return of t+1) and borrow is the whole short financing leg (flat rate, or short
+// spread + tier fee). rebalance is effective (a cadence decision not skipped by the
+// neutralize guard).
+struct NavReplayDay {
+  atx::usize session_index{};
+  atx::i64 session{};
+  atx::u32 calendar_month{}; // YYYYMM of this session; the execution month of its fills
+  bool decision{}, rebalance{}, executed{}, return_observation{};
+  atx::f64 pretrade_nav{}, posttrade_nav{};
+  atx::f64 net_return{}, gross_return{}, writeoff_return{}, trade_cost_return{}, borrow_return{};
+  atx::f64 mark_pnl_dollars{}, writeoff_dollars{}, borrow_dollars{};
+  atx::f64 traded_dollars{}, one_way_turnover{}; // turnover = traded / pre-trade NAV
+  atx::f64 trade_cost_dollars{}, linear_cost_dollars{}, impact_cost_dollars{};
+  atx::f64 unrationed_cost_dollars{}, unfilled_dollars{};
+  atx::usize fills{}, capped_fills{}, blocked_absent{}, blocked_liquidity{};
+  atx::usize fallback_vol_fills{}, unrationed_unpriced{};
+  atx::f64 planned_turnover{}, planned_forced{}, planned_discretionary{}, applied_fraction{};
+  atx::f64 planned_gross{}, planned_net{}; // planned weights after the decision
+  atx::f64 month_planned{}, budget_excess{}; // decision-month planned turnover (v2 budget)
+  atx::f64 long_dollars{}, short_dollars{}, gross_leverage{}, net_leverage{};
+  atx::usize held_names{}, stale_names{};
+  atx::f64 stale_long_dollars{}, stale_short_dollars{};
+  atx::usize guarded_intervals{};
+  atx::f64 cash_ratio{}; // cash / post-trade NAV at end of session
+  // GMV turnover: pre-trade gross = sum |held| after MARK, before EXECUTE (stale
+  // names at stale marks); one_way_turnover_gmv = traded / that gross on execution
+  // sessions (NaN when the pre-trade gross is 0, e.g. deployment), 0 otherwise.
+  atx::f64 pretrade_gross_dollars{}, one_way_turnover_gmv{};
+  ConstructionDay construction{}; // decision rows only
+  // Financing at MARK t on pre-mark dollars. The by-tier arrays (GC, warm, special)
+  // split the short leg and are filled whenever the replay has borrow tiers,
+  // whatever the rule; a short whose predictors were missing is charged warm.
+  atx::f64 long_financing_dollars{}, long_financing_return{};
+  std::array<atx::f64, 3> short_dollars_by_tier{}, short_financing_by_tier{};
+  atx::usize missing_predictor_shorts{};
+  atx::f64 missing_predictor_short_dollars{};
+  // DECIDE: short growth refused by the locate rule (planned weights in decision-NAV
+  // dollars; a kept working order in its own dollars), and the decision's member
+  // census by tier (GC, warm, special) with the members missing a predictor.
+  atx::usize blocked_short_names{};
+  atx::f64 blocked_short_dollars{};
+  std::array<atx::usize, 3> member_tiers{};
+  atx::usize member_missing_predictors{};
+};
+enum class NavEventKind : atx::u8 {
+  GapResolved = 1, WriteOff = 2, Guarded = 3, ReappearedAfterWriteOff = 4, UnresolvedAtEnd = 5
+};
+struct NavEvent {
+  NavEventKind kind{NavEventKind::GapResolved};
+  bool short_side{};
+  atx::usize run_length{};
+  atx::i64 session{};
+  atx::u64 instrument_id{};
+  atx::f64 exposure{}; // signed dollars at the event's pre-event mark
+  atx::f64 r_adj{}, r_raw{}, haircut{}, pnl{}; // NaN where not observable
+};
+struct NavBucket {
+  atx::usize count{};
+  atx::f64 gross_exposure{}, pnl{};
+};
+struct NavReplayResult {
+  std::vector<NavReplayDay> days;
+  std::vector<NavEvent> events;
+  NavBucket gap_run_1, gap_run_2_4, gap_run_5_plus, written_off, reappeared, unresolved, guarded;
+  atx::f64 guard_sensitivity{}; // sum h * (r_raw - r_adj) over realized guarded intervals
+  atx::u64 participation_fills{};
+  atx::f64 participation_p95{}, participation_max{}; // p95: 0.01-decade histogram upper edge
+  atx::f64 max_return_identity_error{}, max_cash_book_error{};
+  atx::usize deployment_index{}; // decision_end sentinel when nothing ever filled
+};
+[[nodiscard]] atx::core::Result<NavReplayResult> replay_nav(const NavReplayInput& in,
+                                                          const NavReplayConfig& cfg);
+// Several scenarios over one input in lockstep: each decision's desired target
+// (and, for price-risk-v1, its price exposures) is formed ONCE and shared by every
+// scenario book; the books are otherwise independent. results[k] is bit-identical
+// to replay_nav(in, base with scenario = scenarios[k]). 1 <= scenarios <= 8.
+[[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios);
+
+struct NavMonth {
+  atx::u32 month{};
+  atx::usize execution_sessions{}, traded_sessions{}, decision_sessions{};
+  atx::f64 one_way_turnover{}, traded_dollars{}, planned_turnover{};
+  bool is_deployment_month{};
+};
+struct NavYear {
+  atx::i32 year{};
+  atx::usize observations{};
+  atx::f64 net_return{};
+};
+struct NavSummary {
+  atx::usize observations{};
+  atx::f64 net_sharpe{}, gross_sharpe{}, mean_daily_net{}, ann_mean{}, ann_vol{}, cagr{};
+  atx::f64 max_drawdown{}, total_net_return{}, final_nav{};
+  bool hac_defined{};
+  atx::f64 hac_t{}; // Bartlett lag 5, small-sample corrected; NaN when undefined
+  atx::usize hac_lag{};
+  std::vector<NavYear> years;
+  std::vector<NavMonth> months; // every month with an execution or a decision session
+  atx::usize execution_months{};
+  atx::f64 mean_monthly_turnover{}, max_monthly_turnover{};
+  atx::f64 mean_monthly_turnover_ex_deployment{}, max_monthly_turnover_ex_deployment{};
+  atx::usize months_within_target{}, months_within_target_ex_deployment{};
+  bool deployed{};
+  atx::i64 deployment_session{};
+  atx::f64 deployment_turnover{}, deployment_dollars{};
+  atx::f64 total_actual_turnover{}, total_planned_turnover{};
+  atx::f64 trade_cost_dollars{}, linear_cost_dollars{}, impact_cost_dollars{};
+  atx::f64 unrationed_cost_dollars{}, borrow_dollars{}, writeoff_dollars{};
+  atx::f64 summed_trade_cost_return{}, summed_borrow_return{}, summed_writeoff_return{};
+  atx::usize fills{}, capped_fills{}, blocked_absent{}, blocked_liquidity{};
+  atx::usize fallback_vol_fills{}, unrationed_unpriced{};
+  atx::f64 unfilled_dollars{};
+  atx::f64 mean_gross_leverage{}, max_gross_leverage{}, max_abs_net_leverage{};
+  atx::f64 mean_held_names{}, mean_stale_names{}, max_stale_gross_fraction{};
+  atx::usize max_stale_names{};
+  atx::f64 min_cash_ratio{};
+  bool meets_sharpe_target{}, meets_turnover_target_mean{}; // monthly flags: LEGACY
+  bool meets_turnover_target_mean_ex_deployment{};
+  bool meets_turnover_target_all_months{}, meets_turnover_target_all_months_ex_deployment{};
+  // Daily one-way turnover in GMV units over execution sessions with a positive
+  // pre-trade gross, the deployment session excluded (forced exits included; every
+  // fill counts, planned turnover never does). Quantiles interpolate linearly at
+  // (n-1)q over the sorted sessions (numpy default); NaN when no session qualifies.
+  NavTurnoverLimits daily_limits{};
+  atx::usize daily_turnover_sessions{}, daily_turnover_zero_gmv_sessions{};
+  atx::f64 daily_turnover_mean{}, daily_turnover_median{}, daily_turnover_p95{};
+  atx::f64 daily_turnover_max{};
+  atx::i64 daily_turnover_max_session{};
+  bool meets_daily_turnover_mean{}, meets_daily_turnover_p95{}; // NaN never meets
+  // Financing: the long leg; the short leg (borrow_dollars) by tier; each tier's
+  // share of pre-mark short dollars over return rows with shorts (mean, p95; NaN
+  // without tiers or shorts); missing predictors; locate blocks; net exposure over
+  // return rows (the previous session's closing book: the block can un-neutralize).
+  atx::f64 long_financing_dollars{}, summed_long_financing_return{};
+  std::array<atx::f64, 3> short_financing_by_tier{}, short_share_mean{}, short_share_p95{};
+  atx::usize short_share_sessions{}, missing_predictor_short_name_days{};
+  atx::usize missing_predictor_member_days{}, blocked_short_name_decisions{};
+  std::array<atx::usize, 3> member_tier_days{};
+  atx::f64 blocked_short_dollars{}, mean_net_leverage{}, mean_abs_net_leverage{};
+};
+// Return statistics over rows with return_observation; turnover by the calendar
+// month of the EXECUTION session (all months include deployment; *_ex_deployment
+// exclude the deployment month); planned turnover by decision month; daily GMV
+// turnover against `limits`.
+[[nodiscard]] atx::core::Result<NavSummary> summarize_nav(const NavReplayResult& result,
+                                                          const NavTurnoverLimits& limits = {});
+
+// Pinned role fields for the borrow tiers: the atx.research-role-fields/v1
+// manifest.json path and its SHA-256. Both empty: no tiers (legacy flat-300-v0).
+// The manifest's role pins (manifest, sessions, ids, member SHA) must equal the
+// pinned --role, and shares_out and si_shares must be declared point_in_time true.
+struct NavFieldsPin {
+  std::string manifest_path, manifest_sha256;
+};
+// Pinned saved blend + role (with volume); every scenario of nav_scenario_matrix,
+// run in lockstep; exclusive output directory: recipe.json, daily_<S>.csv,
+// events_<S>.csv, summary.json LAST (S: the trading id, or "<trading>+<financing>"
+// with fields). Everything, fields pins included, is checked and computed before
+// the directory is created.
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               std::ostream& progress);
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               std::ostream& progress);
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               const NavFieldsPin& fields,
+                                               std::ostream& progress);
+// argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
+// --fields PATH/manifest.json --fields-sha256 SHA enables the financing matrix.
+[[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
+                                      std::ostream& err);
+} // namespace atx::impl::strategy

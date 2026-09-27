@@ -1,0 +1,626 @@
+#include <gtest/gtest.h>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <initializer_list>
+#include <iterator>
+#include <map>
+#include <sstream>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#include <nlohmann/json.hpp>
+#include "atx/core/sha256.hpp"
+#include "strategy_runner.hpp"
+
+namespace {
+using namespace atx;
+using Json = nlohmann::json;
+constexpr usize D = 404, N = 4;
+constexpr i64 day = 86'400'000'000'000LL;
+struct Directory {
+  std::filesystem::path path;
+  Directory() {
+    static std::atomic<unsigned> sequence{};
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (unsigned a = 0; a < 32; ++a) {
+      auto candidate = std::filesystem::temp_directory_path() /
+          ("atx-strategy-runner-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1)));
+      if (std::filesystem::create_directory(candidate)) { path = std::move(candidate); break; }
+    }
+  }
+  ~Directory() { if (!path.empty()) { std::error_code ec; std::filesystem::remove_all(path, ec); } }
+};
+template<class T> bool payload(const std::filesystem::path& dir, Json& files, const char* name, const std::vector<T>& data) {
+  std::ofstream f(dir / name, std::ios::binary); const auto bytes = std::as_bytes(std::span(data));
+  f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())); f.close();
+  if (!f) return false;
+  auto sha = core::sha256_file((dir / name).string()); if (!sha) return false;
+  files[name] = {{"bytes", bytes.size()}, {"sha256", *sha}}; return true;
+}
+bool json_file(const std::filesystem::path& path, const Json& j, std::string& sha) {
+  const auto text = j.dump(2) + "\n";
+  std::ofstream out(path, std::ios::binary); out << text; out.close();
+  auto digest = core::sha256_hex(text); if (!out || !digest) return false; sha = *digest; return true;
+}
+bool role(const std::filesystem::path& dir, i64 first_day, std::string& sha) {
+  if (!std::filesystem::create_directory(dir)) return false;
+  std::vector<i64> sessions(D); std::vector<u8> member(D * N, 0), present(D * N, 1);
+  std::vector<f64> price(D * N), volume(D * N, 1e12);
+  for (usize d = 0; d < D; ++d) {
+    sessions[d] = (first_day + static_cast<i64>(d)) * day;
+    for (usize i = 0; i < N; ++i) {
+      const auto drift = (static_cast<f64>(i) - 1.5) * .0002;
+      price[d * N + i] = 100 * std::exp(drift * static_cast<f64>(d) +
+          .001 * std::sin(static_cast<f64>(d) * .21 + static_cast<f64>(i)));
+      member[d * N + i] = static_cast<u8>(d >= 63);
+    }
+  }
+  // Observed zero shares is valid zero dollar volume inside a complete positive
+  // ADV window. It must not turn this source-present name into unknown liquidity.
+  volume[360 * N] = 0;
+  Json files;
+  if (!payload(dir, files, "sessions.i64", sessions) || !payload(dir, files, "ids.u64", std::vector<u64>{10,20,30,40}) ||
+      !payload(dir, files, "member.u8", member) || !payload(dir, files, "present.u8", present) ||
+      !payload(dir, files, "close.f64", price) || !payload(dir, files, "raw_close.f64", price) ||
+      !payload(dir, files, "volume.f64", volume)) return false;
+  const Json membership{{"rule", "research-prior63-usd-adv-topn-v1"}, {"top_n", N},
+      {"lookback_sessions",63}, {"lag_sessions",1}, {"min_raw_price_exclusive",5}, {"min_adv_exclusive",5000000},
+      {"ties","securityID-ascending"}, {"missing","complete-prior-calendar-window-required"}, {"common_stock_verified",false}};
+  return json_file(dir / "manifest.json", {{"schema","atx.recent-research-role/v1"}, {"status","complete"},
+      {"instrument_namespace","spiderrock.securityID"}, {"dates",D}, {"instruments",N}, {"score_begin",383}, {"score_end",D},
+      {"score_start_ns",sessions[383]}, {"score_end_ns",sessions.back()+day}, {"source_sha256",std::string(64,'a')},
+      {"membership_recipe",membership.dump()}, {"clock_recipe","modeled-session+22h-mark+23h-decision-v1"},
+      {"close_basis","f64(raw-f32-close)*f64-cumulReturnFactor"}, {"volume_basis","raw-share-volume"},
+      {"common_stock_verified",false}, {"historical_vintage_verified",false},
+      {"declared_output_bytes",D*N*26+D*8+N*8}, {"files",files}}, sha);
+}
+bool fixture(Directory& dir, atx::impl::strategy::RunnerConfig& cfg,
+             i64 train_first_day = 17683, i64 validation_first_day = 18200) {
+  if (dir.path.empty()) return false;
+  cfg.library_path = (dir.path / "library.json").string();
+  cfg.train_manifest = (dir.path / "train" / "manifest.json").string();
+  cfg.validation_manifest = (dir.path / "validation" / "manifest.json").string();
+  cfg.output_directory = (dir.path / "output").string(); cfg.min_names = 2; cfg.max_working_bytes = 64ULL << 20;
+  if (!role(dir.path / "train", train_first_day, cfg.train_sha256) ||
+      !role(dir.path / "validation", validation_first_day, cfg.validation_sha256)) return false;
+  return json_file(cfg.library_path, {{"schema","atx.dsl-strategy-library/v1"}, {"id","synthetic-two"},
+      {"primary_variant","weekly_partial25"},
+      {"fields",Json::array({{{"name","close"}},{{"name","raw_close"}},{{"name","volume"}}})},
+      {"families",Json::array({{{"id","synthetic"}}})},
+      {"candidates",Json::array({{{"id","slow"},{"family","synthetic"},{"dsl","close / delay(close, 21)"},{"sign_policy","train-net"}},
+          {{"id","fast"},{"family","synthetic"},{"dsl","raw_close / delay(raw_close, 10)"},{"sign_policy","train-net"}}})},
+      {"execution_variants",Json::array({{{"id","weekly_partial25"},{"rebalance_sessions",5},{"trade_fraction",.25},{"signal_smoothing_sessions",0}},
+          {{"id","weekly_full"},{"rebalance_sessions",5},{"trade_fraction",1.0},{"signal_smoothing_sessions",0}}})}}, cfg.library_sha256);
+}
+Json read(const std::filesystem::path& path) { std::ifstream in(path); Json j; in >> j; return j; }
+std::string read_bytes(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+Json cash_claim_document() {
+  // Public completion falls between date388's 22h mark and 23h decision.
+  // It changes date388 decision support; valuation occurs at date389's mark.
+  constexpr i64 hour = day / 24;
+  const auto reference = (17683 + i64{388}) * day + 22 * hour;
+  const auto price = 100 * std::exp((3.0 - 1.5) * .0002 * 388.0 + .001 * std::sin(388.0 * .21 + 3.0));
+  return {{"schema", "atx.strategy-cash-claims/v1"}, {"source_snapshot_sha256", std::string(64, 'a')},
+      {"currency", "USD"}, {"publication_evidence", "reconstructed-source-publication-research-v1"},
+      {"settlement_status", "unknown"}, {"events", Json::array({{
+        {"event_id", "synthetic-completion-40"}, {"revision", 1}, {"instrument_id", 40},
+        {"security_id_namespace", "spiderrock.securityID"}, {"historical_identity", "Synthetic fixture issuer 40"},
+        {"identity_evidence_sha256", std::string(64, 'b')}, {"completion_evidence_sha256", std::string(64, 'c')},
+        {"basis_evidence_sha256", std::string(64, 'd')}, {"evidence_urls", Json::array({"https://example.com/synthetic-fixture"})},
+        {"reference_mark_ns", reference}, {"reference_raw_close", price}, {"reference_adjusted_close", price},
+        {"effective_after_ns", reference}, {"effective_by_ns", reference + hour / 6},
+        {"available_at_ns", reference + hour / 2}, {"recognition_mark_ns", reference + day},
+        {"cash_usd_per_raw_share", price * 1.01}, {"cash_excluded_from_adjusted_close", true}
+      }})}};
+}
+bool pin_claims(Directory& dir, atx::impl::strategy::RunnerConfig& cfg, const Json& document) {
+  cfg.cash_claims_path = (dir.path / "claims.json").string();
+  return json_file(cfg.cash_claims_path, document, cfg.cash_claims_sha256);
+}
+Json stock_transition_document() {
+  const auto cash = cash_claim_document();
+  const auto& base = cash["events"][0];
+  const auto successor_price = 100 * std::exp((2.0 - 1.5) * .0002 * 389.0 + .001 * std::sin(389.0 * .21 + 2.0));
+  return {{"schema", "atx.strategy-stock-transitions/v1"}, {"source_snapshot_sha256", std::string(64, 'a')},
+      {"currency", "USD"}, {"publication_evidence", "reconstructed-source-publication-research-v1"},
+      {"settlement_status", "unknown"}, {"units_policy", "continuous-research-share-equivalents-v1"},
+      {"events", Json::array({{{"event_id", "synthetic-stock-40-to-30"}, {"revision", 1},
+        {"predecessor_instrument_id", 40}, {"successor_instrument_id", 30}, {"security_id_namespace", "spiderrock.securityID"},
+        {"predecessor_historical_identity", "Synthetic predecessor 40"}, {"successor_historical_identity", "Synthetic successor 30"},
+        {"predecessor_identity_evidence_sha256", std::string(64, 'b')}, {"successor_identity_evidence_sha256", std::string(64, 'e')},
+        {"completion_evidence_sha256", std::string(64, 'c')}, {"basis_evidence_sha256", std::string(64, 'd')},
+        {"evidence_urls", Json::array({"https://example.com/synthetic-stock-fixture"})},
+        {"reference_mark_ns", base["reference_mark_ns"]}, {"reference_raw_close", base["reference_raw_close"]},
+        {"reference_adjusted_close", base["reference_adjusted_close"]}, {"effective_after_ns", base["effective_after_ns"]},
+        {"effective_by_ns", base["effective_by_ns"]}, {"available_at_ns", base["available_at_ns"]},
+        {"recognition_mark_ns", base["recognition_mark_ns"]}, {"stock_ratio_numerator", 1}, {"stock_ratio_denominator", 1},
+        {"successor_recognition_raw_close", successor_price}, {"successor_recognition_adjusted_close", successor_price},
+        {"fixed_cash_usd_per_predecessor_raw_share", 0}, {"stock_and_cash_excluded_from_adjusted_close", true}
+      }})}};
+}
+bool pin_stocks(Directory& dir, atx::impl::strategy::RunnerConfig& cfg, const Json& document) {
+  cfg.stock_transitions_path = (dir.path / "stock-transitions.json").string();
+  return json_file(cfg.stock_transitions_path, document, cfg.stock_transitions_sha256);
+}
+i64 epoch_day(int year, unsigned month, unsigned date) {
+  return std::chrono::sys_days{std::chrono::year_month_day{
+      std::chrono::year{year}, std::chrono::month{month}, std::chrono::day{date}}}.time_since_epoch().count();
+}
+struct CsvInterval {
+  i64 realized{}, execution{};
+  f64 net{}, turnover{}, pretrade_nav{}, end_nav{};
+};
+std::vector<CsvInterval> read_intervals(const std::filesystem::path& path) {
+  std::ifstream input(path);
+  std::string line;
+  if (!std::getline(input, line) || !line.ends_with(",execution_session_ns")) return {};
+  std::vector<CsvInterval> out;
+  while (std::getline(input, line)) {
+    std::istringstream row(line);
+    std::vector<std::string> fields;
+    std::string field;
+    while (std::getline(row, field, ',')) fields.push_back(field);
+    if (fields.size() != 11) return {};
+    out.push_back({std::stoll(fields[0]), std::stoll(fields[10]),
+        std::stod(fields[2]), std::stod(fields[3]), std::stod(fields[6]), std::stod(fields[7])});
+  }
+  return out;
+}
+}
+
+TEST(StrategyRunner, FixedCostedPortfoliosAcceptObservedZeroVolumeAndFreezeTrainSigns) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  std::ostringstream progress; auto result = atx::impl::strategy::run(cfg,progress);
+  ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+  const auto report = read(dir.path / "output" / "summary.json");
+  EXPECT_EQ(report.at("status"), "complete");
+  EXPECT_EQ(report.at("train_hypotheses_planned"), 6);
+  ASSERT_EQ(report.at("roles").size(), 2U);
+  EXPECT_EQ(report["roles"][0]["completed_trials"], 6);
+  EXPECT_EQ(report["roles"][1]["completed_trials"], 2);
+  EXPECT_EQ(report["roles"][0]["orientations"].size(), 2U);
+  EXPECT_TRUE(report["roles"][1]["orientations"].empty());
+  EXPECT_EQ(report["frozen_signs"].size(), 2U);
+  EXPECT_EQ(report["fitted_strategy_sha256"].get<std::string>().size(), 64U);
+  for (const auto& r : report["roles"]) {
+    ASSERT_EQ(r["family_contribution_coverage"].size(), 1U);
+    EXPECT_DOUBLE_EQ(r["family_contribution_coverage"][0]["fixed_denominator_contribution_fraction"].get<f64>(), 1);
+    for (const auto& c : r["combined"]) {
+    EXPECT_EQ(c["observations"], 19);
+    EXPECT_GE(c["mean_held_names"].get<f64>(), 2);
+    EXPECT_GT(c["summed_execution_cost_returns"].get<f64>(), 0);
+    EXPECT_GT(c["summed_borrow_cost_returns"].get<f64>(), 0);
+    EXPECT_EQ(c["execution_context_sha256"].get<std::string>().size(), 64U);
+    EXPECT_EQ(c["hac_lag_requested"], 5);
+    EXPECT_EQ(c["hac_lag"], 5);
+    EXPECT_GE(c["maximum_net_nav_drawdown"].get<f64>(), 0);
+    EXPECT_LT(c["maximum_net_nav_drawdown"].get<f64>(), 1);
+    }
+  }
+  EXPECT_LT(report["roles"][0]["combined"][0]["total_one_way_turnover"].get<f64>(),
+            report["roles"][0]["combined"][1]["total_one_way_turnover"].get<f64>());
+  EXPECT_FALSE(atx::impl::strategy::run(cfg,progress)); // no overwrite/reuse of prior outputs
+}
+
+TEST(StrategyRunner, ShortMaturePrefixReportsActualClampedHacLag) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  for (const auto& pair : {std::pair{cfg.train_manifest, &cfg.train_sha256},
+                           std::pair{cfg.validation_manifest, &cfg.validation_sha256}}) {
+    auto j = read(pair.first);
+    const auto old_begin = j["score_begin"].get<i64>();
+    j["score_start_ns"] = j["score_start_ns"].get<i64>() + (static_cast<i64>(D - 4) - old_begin) * day;
+    j["score_begin"] = D - 4;
+    ASSERT_TRUE(json_file(pair.first, j, *pair.second));
+  }
+  std::ostringstream progress; auto result = atx::impl::strategy::run(cfg,progress);
+  ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+  const auto report = read(dir.path / "output" / "summary.json");
+  for (const auto& r : report["roles"]) for (const auto& c : r["combined"]) {
+    EXPECT_EQ(c["observations"], 2);
+    EXPECT_EQ(c["hac_lag_requested"], 5);
+    EXPECT_EQ(c["hac_lag"], 1);
+  }
+}
+
+TEST(StrategyRunner, RefusesExternalPinOrCombinedBudgetBeforePayloadEvaluation) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  std::ostringstream progress;
+  cfg.train_sha256 = std::string(64,'f');
+  auto mismatch = atx::impl::strategy::run(cfg,progress); ASSERT_FALSE(mismatch);
+  EXPECT_EQ(mismatch.error().code(), core::ErrorCode::InvalidArgument);
+  EXPECT_FALSE(std::filesystem::exists(cfg.output_directory));
+  auto original = core::sha256_file(cfg.train_manifest); ASSERT_TRUE(original); cfg.train_sha256 = *original;
+  cfg.max_working_bytes = 32ULL << 20;
+  auto budget = atx::impl::strategy::run(cfg,progress); ASSERT_FALSE(budget);
+  EXPECT_EQ(budget.error().code(), core::ErrorCode::Unavailable);
+  EXPECT_FALSE(std::filesystem::exists(cfg.output_directory));
+  EXPECT_TRUE(progress.str().empty());
+}
+
+TEST(StrategyRunner, CalendarTurnoverUsesExecutionMonthAndIncludesInitialDeployment) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg;
+  // TRAIN: decision Jan30 -> first entry Jan31 -> first realized endpoint Feb1.
+  // Validation spans December/January and has a Dec31 entry realized on Jan1.
+  ASSERT_TRUE(fixture(dir, cfg, epoch_day(2020, 1, 30) - 383,
+                              epoch_day(2020, 12, 25) - 383));
+  std::ostringstream progress;
+  const auto result = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+  const auto report = read(dir.path / "output" / "summary.json");
+  for (const auto& role_report : report["roles"]) {
+    const auto role_name = role_report["role"].get<std::string>();
+    for (const auto& combined : role_report["combined"]) {
+      const auto variant = combined["variant"].get<std::string>();
+      const auto rows = read_intervals(dir.path / "output" / (role_name + "_" + variant + ".csv"));
+      ASSERT_EQ(rows.size(), 19U);
+      if (role_name == "train") {
+        EXPECT_EQ(rows.front().realized, epoch_day(2020, 2, 1) * day);
+        EXPECT_EQ(rows.front().execution, epoch_day(2020, 1, 31) * day);
+      }
+      std::map<std::string, f64> month_turnover, month_dollars;
+      std::map<int, std::pair<usize, f64>> year_returns;
+      f64 total = 0;
+      for (const auto& row : rows) {
+        // This synthetic calendar has one session per day. Derive execution
+        // independently from the existing realized CSV column, not the new field.
+        const auto expected_entry = row.realized - day;
+        EXPECT_EQ(row.execution, expected_entry);
+        const bool train = role_name == "train";
+        const auto boundary = epoch_day(train ? 2020 : 2021, train ? 2U : 1U, 1) * day;
+        const std::string month = train ? (expected_entry < boundary ? "2020-01" : "2020-02")
+                                       : (expected_entry < boundary ? "2020-12" : "2021-01");
+        month_turnover[month] += row.turnover;
+        month_dollars[month] += row.turnover * row.pretrade_nav;
+        total += row.turnover;
+        const int year = row.realized < epoch_day(2021, 1, 1) * day ? 2020 : 2021;
+        auto& annual = year_returns[year];
+        if (annual.first++ == 0) annual.second = 1;
+        annual.second *= 1 + row.net;
+        if (!train && row.realized == epoch_day(2021, 1, 1) * day) {
+          EXPECT_EQ(row.execution, epoch_day(2020, 12, 31) * day);
+          EXPECT_GT(row.turnover, 0); // the actual boundary trade belongs to December
+        }
+      }
+      ASSERT_EQ(combined["calendar_month_turnover"].size(), 2U);
+      f64 monthly_sum = 0, maximum_month = 0;
+      for (const auto& monthly : combined["calendar_month_turnover"]) {
+        const auto month = monthly["month"].get<std::string>();
+        ASSERT_TRUE(month_turnover.contains(month));
+        EXPECT_NEAR(monthly["one_way_turnover"].get<f64>(), month_turnover.at(month), 1e-12);
+        EXPECT_NEAR(monthly["filled_dollars_from_turnover"].get<f64>(), month_dollars.at(month), 1e-6);
+        monthly_sum += monthly["one_way_turnover"].get<f64>();
+        maximum_month = std::max(maximum_month, month_turnover.at(month));
+      }
+      EXPECT_NEAR(monthly_sum, total, 1e-12);
+      EXPECT_NEAR(combined["total_one_way_turnover"].get<f64>(), total, 1e-12);
+      EXPECT_NEAR(combined["calendar_month_turnover_sum"].get<f64>(), total, 1e-12);
+      EXPECT_NEAR(combined["calendar_month_turnover_reconciliation_error"].get<f64>(), 0, 1e-12);
+      EXPECT_NEAR(combined["maximum_calendar_month_one_way_turnover"].get<f64>(), maximum_month, 1e-12);
+      EXPECT_EQ(combined["monthly21_is_approximation"], true);
+      EXPECT_NEAR(combined["monthly21_one_way_turnover"].get<f64>(), total * 21 / 19, 1e-12);
+      const auto& deployment = combined["initial_deployment"];
+      EXPECT_EQ(deployment["occurred"], true);
+      EXPECT_EQ(deployment["included_in_totals"], true);
+      EXPECT_EQ(deployment["execution_session_ns"], rows.front().execution);
+      EXPECT_DOUBLE_EQ(deployment["one_way_turnover"].get<f64>(), rows.front().turnover);
+      EXPECT_NEAR(deployment["filled_dollars_from_turnover"].get<f64>(),
+                  rows.front().turnover * rows.front().pretrade_nav, 1e-6);
+      EXPECT_NEAR(deployment["share_of_total_one_way_turnover"].get<f64>(), rows.front().turnover / total, 1e-12);
+      ASSERT_EQ(combined["calendar_year_net_returns"].size(), year_returns.size());
+      for (const auto& annual : combined["calendar_year_net_returns"]) {
+        const auto expected = year_returns.at(annual["year"].get<int>());
+        EXPECT_EQ(annual["observations"], expected.first);
+        EXPECT_NEAR(annual["net_compounded_return"].get<f64>(), expected.second - 1, 1e-12);
+      }
+    }
+  }
+}
+
+TEST(StrategyRunner, CashClaimsRetireAtDecisionAndKeepSignedUnknownSettlementAcrossRoles) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  const auto document = cash_claim_document();
+  ASSERT_TRUE(pin_claims(dir, cfg, document));
+  const auto source_member_before = read_bytes(dir.path / "train" / "member.u8");
+  const auto source_price_before = read_bytes(dir.path / "train" / "close.f64");
+  std::ostringstream progress;
+  const auto result = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+  const auto report = read(dir.path / "output" / "summary.json");
+  const auto recipe = read(dir.path / "output" / "recipe.json");
+  EXPECT_EQ(recipe["schema"], "atx.dsl-combined-execution/cash-claims-v2");
+  EXPECT_EQ(recipe["cash_claims"]["sha256"], cfg.cash_claims_sha256);
+  EXPECT_EQ(report["cash_claims_evidence"], document);
+  ASSERT_EQ(report["roles"].size(), 2U);
+  EXPECT_EQ(report["roles"][0]["completed_trials"], 6);
+  EXPECT_EQ(report["roles"][1]["completed_trials"], 2);
+  // Nineteen mature decisions: five dates with four names, fourteen with three.
+  // Both candidates retain their fixed contribution denominator and weight.
+  EXPECT_EQ(report["roles"][0]["family_contribution_coverage"][0]["candidate_member_cells"], 2 * (5 * 4 + 14 * 3));
+  EXPECT_EQ(report["roles"][1]["family_contribution_coverage"][0]["candidate_member_cells"], 2 * 19 * 3);
+  for (const auto& oriented : report["roles"][0]["orientations"]) {
+    const auto& plus = oriented["plus"]["cash_claims"];
+    const auto& minus = oriented["minus"]["cash_claims"];
+    EXPECT_GT(plus["final_receivable_dollars"].get<f64>(), 0);
+    EXPECT_EQ(plus["final_payable_dollars"], 0);
+    EXPECT_GT(minus["final_payable_dollars"].get<f64>(), 0);
+    EXPECT_EQ(minus["final_receivable_dollars"], 0);
+    EXPECT_GT(minus["summed_claim_borrow_dollars"].get<f64>(), 0);
+    for (const auto* side : {&plus, &minus}) {
+      ASSERT_EQ(side->at("recognitions").size(), 1U);
+      const auto& recognized = side->at("recognitions")[0];
+      EXPECT_EQ(recognized["period"], 389);
+      EXPECT_EQ(recognized["recognition_mark_ns"], document["events"][0]["recognition_mark_ns"]);
+      EXPECT_EQ(recognized["instrument_id"], 40);
+      EXPECT_NEAR(recognized["signed_claim_dollars"].get<f64>(),
+                  recognized["research_share_equivalents"].get<f64>() * document["events"][0]["cash_usd_per_raw_share"].get<f64>(), 1e-6);
+      EXPECT_EQ(side->at("settlement_status"), "unknown-no-payment-modeled");
+      EXPECT_EQ(side->at("historical_delivery_verified"), false);
+    }
+  }
+  for (const auto& role_report : report["roles"]) for (const auto& combined : role_report["combined"]) {
+    const auto& claims = combined["cash_claims"];
+    EXPECT_DOUBLE_EQ(claims["final_nav_including_unsettled_claims"].get<f64>(), combined["final_nav"].get<f64>());
+    EXPECT_DOUBLE_EQ(claims["final_signed_unsettled_claim_dollars"].get<f64>(),
+                     claims["final_receivable_dollars"].get<f64>() - claims["final_payable_dollars"].get<f64>());
+    const auto name = role_report["role"].get<std::string>() + "_" + combined["variant"].get<std::string>() + "_cash_claims.csv";
+    EXPECT_TRUE(std::filesystem::exists(dir.path / "output" / name));
+    if (role_report["role"] == "validation") {
+      EXPECT_TRUE(claims["recognitions"].empty());
+      EXPECT_EQ(claims["event_uses"][0]["use"], "pre-role-retired-no-opening-claim");
+      EXPECT_EQ(claims["final_signed_unsettled_claim_dollars"], 0);
+      EXPECT_EQ(claims["summed_recognition_pnl_dollars"], 0);
+    }
+  }
+  EXPECT_EQ(read_bytes(dir.path / "train" / "member.u8"), source_member_before);
+  EXPECT_EQ(read_bytes(dir.path / "train" / "close.f64"), source_price_before);
+}
+
+TEST(StrategyRunner, FutureClaimsChangeIdentityWithoutChangingEarlierNumericalResults) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  std::ostringstream progress;
+  auto baseline = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(baseline) << (baseline ? "" : baseline.error().to_string());
+  const auto original = read(dir.path / "output" / "summary.json");
+  const auto original_recipe = read(dir.path / "output" / "recipe.json");
+  EXPECT_EQ(original_recipe["schema"], "atx.dsl-combined-execution/v1");
+  EXPECT_FALSE(original_recipe.contains("cash_claims"));
+  EXPECT_FALSE(original.contains("cash_claims_evidence"));
+  std::string previous_recipe_hash = original["recipe_sha256"].get<std::string>();
+  for (const i64 shift : {2000 * day, 2100 * day}) {
+    auto document = cash_claim_document();
+    for (const auto* clock : {"reference_mark_ns", "effective_after_ns", "effective_by_ns", "available_at_ns", "recognition_mark_ns"})
+      document["events"][0][clock] = document["events"][0][clock].get<i64>() + shift;
+    ASSERT_TRUE(pin_claims(dir, cfg, document));
+    const auto output = dir.path / ("future-" + std::to_string(shift / day));
+    cfg.output_directory = output.string();
+    const auto result = atx::impl::strategy::run(cfg, progress);
+    ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+    const auto current = read(output / "summary.json");
+    EXPECT_NE(current["recipe_sha256"], previous_recipe_hash);
+    previous_recipe_hash = current["recipe_sha256"].get<std::string>();
+    EXPECT_EQ(current["frozen_signs"], original["frozen_signs"]);
+    for (const auto& role_report : current["roles"]) for (const auto& combined : role_report["combined"]) {
+      const auto filename = role_report["role"].get<std::string>() + "_" + combined["variant"].get<std::string>() + ".csv";
+      const auto before = read_bytes(dir.path / "output" / filename);
+      ASSERT_FALSE(before.empty());
+      EXPECT_EQ(read_bytes(output / filename), before);
+      EXPECT_EQ(combined["cash_claims"]["event_uses"][0]["use"], "after-role-retained-in-identity");
+      EXPECT_EQ(combined["cash_claims"]["final_signed_unsettled_claim_dollars"], 0);
+      EXPECT_TRUE(combined["cash_claims"]["recognitions"].empty());
+    }
+  }
+}
+
+TEST(StrategyRunner, CashClaimPinsAndStrictSchemaRefuseBeforeOutputOrTrials) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  std::ostringstream progress;
+  const auto rejected = [&] {
+    const auto result = atx::impl::strategy::run(cfg, progress);
+    EXPECT_FALSE(result);
+    if (!result) EXPECT_EQ(result.error().code(), core::ErrorCode::InvalidArgument);
+    EXPECT_FALSE(std::filesystem::exists(cfg.output_directory));
+    EXPECT_TRUE(progress.str().empty());
+  };
+  ASSERT_TRUE(pin_claims(dir, cfg, cash_claim_document()));
+  cfg.cash_claims_sha256.clear(); rejected();
+  ASSERT_TRUE(pin_claims(dir, cfg, cash_claim_document()));
+  cfg.cash_claims_sha256 = std::string(64, 'f'); rejected();
+  for (unsigned change = 0; change < 6; ++change) {
+    auto document = cash_claim_document();
+    switch (change) {
+      case 0: document["source_snapshot_sha256"] = std::string(64, 'e'); break;
+      case 1: document["events"][0]["unknown_policy"] = "ignored"; break;
+      case 2: document["events"][0]["identity_evidence_sha256"] = std::string(64, '0'); break;
+      case 3: document["events"][0]["available_at_ns"] = document["events"][0]["recognition_mark_ns"]; break;
+      case 4: document["events"][0]["historical_identity"] = std::string(257, 'x'); break;
+      case 5: document["events"][0]["cash_excluded_from_adjusted_close"] = false; break;
+      default: FAIL() << "unhandled refusal fixture";
+    }
+    ASSERT_TRUE(pin_claims(dir, cfg, document)); rejected();
+  }
+  ASSERT_TRUE(pin_claims(dir, cfg, cash_claim_document()));
+  auto duplicate = read_bytes(cfg.cash_claims_path);
+  duplicate.insert(1, "\"currency\":\"USD\",");
+  std::ofstream file(cfg.cash_claims_path, std::ios::binary); file << duplicate; file.close(); ASSERT_TRUE(file);
+  const auto digest = core::sha256_hex(duplicate); ASSERT_TRUE(digest); cfg.cash_claims_sha256 = *digest;
+  rejected();
+}
+
+TEST(StrategyRunner, AggregateCashClaimReportsRefuseBudgetBeforePayloadLoading) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  auto document = cash_claim_document();
+  const auto prototype = document["events"][0];
+  document["events"] = Json::array();
+  for (u64 i = 0; i < 96; ++i) {
+    auto event = prototype;
+    event["event_id"] = "bounded-report-event-" + std::to_string(i);
+    event["instrument_id"] = 1000 + i;
+    document["events"].push_back(std::move(event));
+  }
+  ASSERT_TRUE(pin_claims(dir, cfg, document));
+  // All events remain in report identity even when outside this small axis.
+  // Two candidates and 96 bounded event descriptions require no large panel.
+  // A missing payload proves the whole-run summary refusal precedes its read.
+  ASSERT_TRUE(std::filesystem::remove(dir.path / "train" / "close.f64"));
+  std::ostringstream progress;
+  const auto result = atx::impl::strategy::run(cfg, progress);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), core::ErrorCode::Unavailable);
+  EXPECT_NE(result.error().to_string().find("retained cash-claim summary/copy/serialization budget"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(cfg.output_directory));
+  EXPECT_TRUE(progress.str().empty());
+}
+
+TEST(StrategyRunner, StockTransitionsDeliverSignedUnitsWithoutInventedCashOrOpeningEntitlement) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  const auto document = stock_transition_document();
+  ASSERT_TRUE(pin_stocks(dir, cfg, document));
+  std::ostringstream progress;
+  const auto result = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+  const auto report = read(dir.path / "output" / "summary.json");
+  const auto recipe = read(dir.path / "output" / "recipe.json");
+  EXPECT_EQ(recipe["schema"], "atx.dsl-combined-execution/stock-transitions-v3");
+  EXPECT_EQ(recipe["stock_transitions"]["sha256"], cfg.stock_transitions_sha256);
+  EXPECT_FALSE(recipe.contains("cash_claims"));
+  EXPECT_EQ(report["stock_transitions_evidence"], document);
+  ASSERT_EQ(report["roles"].size(), 2U);
+  EXPECT_EQ(report["roles"][0]["completed_trials"], 6);
+  EXPECT_EQ(report["roles"][1]["completed_trials"], 2);
+  EXPECT_EQ(report["roles"][0]["family_contribution_coverage"][0]["candidate_member_cells"], 2 * (5 * 4 + 14 * 3));
+  EXPECT_EQ(report["roles"][1]["family_contribution_coverage"][0]["candidate_member_cells"], 2 * 19 * 3);
+  for (const auto& orientation : report["roles"][0]["orientations"]) {
+    for (const auto* sign : {"plus", "minus"}) {
+      const auto& summary = orientation[sign];
+      const auto& stock = summary["stock_transitions"];
+      ASSERT_EQ(stock["recognitions"].size(), 1U);
+      const auto& r = stock["recognitions"][0];
+      EXPECT_EQ(r["period"], 389);
+      EXPECT_EQ(r["predecessor_id"], 40); EXPECT_EQ(r["successor_id"], 30);
+      const auto delivered = r["delivered_successor_share_equivalents"].get<f64>();
+      EXPECT_DOUBLE_EQ(delivered, r["predecessor_share_equivalents"].get<f64>()); // ratio 1/1
+      EXPECT_NEAR(r["delivered_successor_dollars"].get<f64>(),
+                  delivered * document["events"][0]["successor_recognition_raw_close"].get<f64>(), 1e-6);
+      EXPECT_NEAR(r["recognition_pnl_dollars"].get<f64>(),
+                  r["delivered_successor_dollars"].get<f64>() - r["removed_equity_dollars"].get<f64>(), 1e-6);
+      EXPECT_GT(delivered * (std::string_view(sign) == "plus" ? 1.0 : -1.0), 0);
+      EXPECT_EQ(r["fixed_cash_claim_dollars"], 0);
+      EXPECT_EQ(stock["summed_fixed_cash_component_dollars"], 0);
+      EXPECT_EQ(stock["physical_delivery_and_fraction_cash_unresolved"], true);
+      EXPECT_EQ(stock["stock_loan_discharge_assumed"], false);
+      EXPECT_TRUE(summary["cash_claims"]["recognitions"].empty());
+      EXPECT_EQ(summary["cash_claims"]["final_signed_unsettled_claim_dollars"], 0);
+    }
+  }
+  for (const auto& role_report : report["roles"]) for (const auto& combined : role_report["combined"]) {
+    const auto name = role_report["role"].get<std::string>() + "_" + combined["variant"].get<std::string>() + "_stock_transitions.csv";
+    EXPECT_TRUE(std::filesystem::exists(dir.path / "output" / name));
+    if (role_report["role"] == "validation") {
+      EXPECT_EQ(combined["stock_transitions"]["event_uses"][0]["use"], "pre-role-retired-no-opening-delivery");
+      EXPECT_TRUE(combined["stock_transitions"]["recognitions"].empty());
+      EXPECT_EQ(combined["stock_transitions"]["summed_signed_delivered_dollars"], 0);
+    }
+  }
+}
+
+TEST(StrategyRunner, CashAndStockEventsUseSeparateRecognitionIdentitiesInTheSameTrial) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  auto cash = cash_claim_document();
+  auto& event = cash["events"][0];
+  event["event_id"] = "synthetic-cash-10"; event["instrument_id"] = 10;
+  event["historical_identity"] = "Synthetic issuer 10";
+  const auto price = 100 * std::exp((0.0 - 1.5) * .0002 * 388.0 + .001 * std::sin(388.0 * .21));
+  event["reference_raw_close"] = price; event["reference_adjusted_close"] = price;
+  event["cash_usd_per_raw_share"] = price * 1.01;
+  ASSERT_TRUE(pin_claims(dir, cfg, cash)); ASSERT_TRUE(pin_stocks(dir, cfg, stock_transition_document()));
+  std::ostringstream progress;
+  const auto result = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+  const auto report = read(dir.path / "output" / "summary.json");
+  const auto recipe = read(dir.path / "output" / "recipe.json");
+  EXPECT_EQ(recipe["cash_claims"]["sha256"], cfg.cash_claims_sha256);
+  EXPECT_EQ(recipe["stock_transitions"]["sha256"], cfg.stock_transitions_sha256);
+  for (const auto& orientation : report["roles"][0]["orientations"]) for (const auto* sign : {"plus", "minus"}) {
+    const auto& summary = orientation[sign];
+    ASSERT_EQ(summary["cash_claims"]["recognitions"].size(), 1U);
+    ASSERT_EQ(summary["stock_transitions"]["recognitions"].size(), 1U);
+    EXPECT_EQ(summary["cash_claims"]["recognitions"][0]["event_id"], "synthetic-cash-10");
+    EXPECT_EQ(summary["cash_claims"]["recognitions"][0]["instrument_id"], 10);
+    EXPECT_EQ(summary["stock_transitions"]["recognitions"][0]["event_id"], "synthetic-stock-40-to-30");
+    EXPECT_EQ(summary["stock_transitions"]["recognitions"][0]["predecessor_id"], 40);
+  }
+}
+
+TEST(StrategyRunner, FutureStockAnnouncementsPreserveCashOnlyNumericalPrefixAndIgnoreInactiveSuccessor) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  ASSERT_TRUE(pin_claims(dir, cfg, cash_claim_document()));
+  std::ostringstream progress;
+  const auto baseline = atx::impl::strategy::run(cfg, progress);
+  ASSERT_TRUE(baseline) << (baseline ? "" : baseline.error().to_string());
+  const auto original = read(dir.path / "output" / "summary.json");
+  EXPECT_EQ(read(dir.path / "output" / "recipe.json")["schema"], "atx.dsl-combined-execution/cash-claims-v2");
+  for (const i64 shift : {2000 * day, 2100 * day}) {
+    auto document = stock_transition_document();
+    auto& event = document["events"][0];
+    // Different predecessor from the cash event; an inactive future successor
+    // need not be on this earlier role axis and cannot change current support.
+    event["predecessor_instrument_id"] = 20; event["successor_instrument_id"] = 900;
+    for (const auto* clock : {"reference_mark_ns", "effective_after_ns", "effective_by_ns", "available_at_ns", "recognition_mark_ns"})
+      event[clock] = event[clock].get<i64>() + shift;
+    ASSERT_TRUE(pin_stocks(dir, cfg, document));
+    const auto output = dir.path / ("future-stock-" + std::to_string(shift / day));
+    cfg.output_directory = output.string();
+    const auto result = atx::impl::strategy::run(cfg, progress);
+    ASSERT_TRUE(result) << (result ? "" : result.error().to_string());
+    const auto current = read(output / "summary.json");
+    EXPECT_NE(current["recipe_sha256"], original["recipe_sha256"]);
+    EXPECT_EQ(current["frozen_signs"], original["frozen_signs"]);
+    for (const auto& role_report : current["roles"]) for (const auto& combined : role_report["combined"]) {
+      const auto stem = role_report["role"].get<std::string>() + "_" + combined["variant"].get<std::string>();
+      for (const auto* suffix : {".csv", "_cash_claims.csv"}) {
+        const auto before = read_bytes(dir.path / "output" / (stem + suffix));
+        ASSERT_FALSE(before.empty()); EXPECT_EQ(read_bytes(output / (stem + suffix)), before);
+      }
+      EXPECT_EQ(combined["stock_transitions"]["event_uses"][0]["use"], "after-role-retained-in-identity");
+      EXPECT_TRUE(combined["stock_transitions"]["recognitions"].empty());
+    }
+  }
+}
+
+TEST(StrategyRunner, StockTransitionSchemaAndActiveMissingSuccessorRefuseExplicitly) {
+  Directory dir; atx::impl::strategy::RunnerConfig cfg; ASSERT_TRUE(fixture(dir, cfg));
+  std::ostringstream progress;
+  for (unsigned change = 0; change < 5; ++change) {
+    auto document = stock_transition_document();
+    switch (change) {
+      case 0: document["events"][0]["stock_ratio_denominator"] = 0; break;
+      case 1: document["events"][0]["successor_identity_evidence_sha256"] = std::string(64, '0'); break;
+      case 2: document["events"][0]["stock_and_cash_excluded_from_adjusted_close"] = false; break;
+      case 3: document["source_snapshot_sha256"] = std::string(64, 'f'); break;
+      case 4: document["units_policy"] = "invent-physical-fraction-cash"; break;
+      default: FAIL() << "unhandled stock schema fixture";
+    }
+    ASSERT_TRUE(pin_stocks(dir, cfg, document));
+    const auto result = atx::impl::strategy::run(cfg, progress);
+    ASSERT_FALSE(result); EXPECT_EQ(result.error().code(), core::ErrorCode::InvalidArgument);
+    EXPECT_FALSE(std::filesystem::exists(cfg.output_directory)); EXPECT_TRUE(progress.str().empty());
+  }
+  auto document = stock_transition_document();
+  document["events"][0]["successor_instrument_id"] = 900;
+  ASSERT_TRUE(pin_stocks(dir, cfg, document));
+  const auto missing = atx::impl::strategy::run(cfg, progress);
+  ASSERT_FALSE(missing);
+  EXPECT_NE(missing.error().to_string().find("successor"), std::string::npos);
+  const auto failed = read(dir.path / "output" / "summary.json");
+  EXPECT_EQ(failed["status"], "failed"); EXPECT_TRUE(failed["roles"].empty());
+  EXPECT_TRUE(read_bytes(dir.path / "output" / "train_trials.jsonl").empty());
+}

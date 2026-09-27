@@ -1,0 +1,17 @@
+{
+  "scope": "footer/stat/filemetadata only; no row values read",
+  "source_path": "C:\\Users\\natha\\Downloads\\TickerHistory3.parquet",
+  "file_bytes": 3617973507,
+  "mtime_ns": 1789920127331396300,
+  "footer_bytes": 1673719,
+  "footer_sha256": "a5578ed0fcb12856720f05a7815affeed224749d1ee88049bd092574f96666a6",
+  "num_rows": 32323644,
+  "row_groups": 262,
+  "date_min": "2012-03-26",
+  "date_max": "2026-09-18",
+  "all_row_groups_mix_all_years": true,
+  "columns": 71,
+  "pyarrow_available": true,
+  "duckdb_available": true,
+  "other_snapshot_declared_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae"
+}

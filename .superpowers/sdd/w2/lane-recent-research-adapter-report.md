@@ -1,0 +1,40 @@
+# Recent research adapter source and metadata inventory
+
+2026-09-26. Production `5f3b6631`, postimplementation fixtures `e5f9630f`, bounded-resource correction `70dd7213`. This implements the user's newly authorized recent-data research path and supersedes the former pre-2020 task boundary for this work only. No real price rows, warehouse, C++ build, or numerical strategy run was used in development. Metadata/footer reads and four small synthetic Python checks only. Root owns execution and acceptance.
+
+## Available source and historical qualification limits
+
+`C:/Users/natha/Downloads/TickerHistory3.parquet`: 3,617,973,507 bytes; footer reports32,323,644 rows,262 groups,71 columns, date extent2012-03-26..2026-09-18. Every group spans the full date extent, so the original file cannot prune entire groups by date. Footer+trailer SHA256 `a5578ed0fcb12856720f05a7815affeed224749d1ee88049bd092574f96666a6`. The checked footer schema is date32 tradingDate, int64 securityID, float32 close, float64 volume and cumulReturnFactor. Exact metadata receipt is `recent-price-metadata-inventory.json` beside this note. Its sidecar SHA is explicitly a declaration from another staged snapshot, not a freshly verified full-file hash.
+
+The older ZIP `C:/Users/natha/Downloads/tbltickerhistory3_10y.zip` has a recorded June2026 end. Its existing prepared May1..June15 window has31sessions/372,014 accepted rows; its saved panel is31x213 from a top200 cohort, insufficient for the requested multiyear/thousands-name experiment. No annual recent-name coverage or stock-only coverage has been measured by this inventory.
+
+The newer footer has no explicit instrument type, exchange or listing-vintage field. GICS, todayTicker, ticker, shares and existing options/earnings fields do not establish historical common-stock qualification. No such classification is invented. Existing `history_panel`/source-audit convention computes adjusted close as raw close times cumulative return factor; the new path preserves that numerical convention and its archive-vintage/economic-adjustment qualifications. Raw close has only source float32 precision; multiplying its widened value by a float64 factor cannot restore precision. No adjusted OHL, cap, borrow, publication proof or split-only interpretation is fabricated.
+
+## Actual implementation
+
+New `tools/prepare_recent_research.py` projects five columns in bounded Arrow batches, applies the date filter before numerical QA/statistics, and spills/sorts into a newly owned private DuckDB file. It never connects to the warehouse. All positive duplicate(date,securityID) rows are quarantined before numeric QA. Valid raw close and factor must be finite positive; raw share volume finite nonnegative. Missing bars do not become zero return/volume. The original source is fully hashed once for a completed reusable projection; no later role requires another source scan/hash. Size/mtime/file identity are checked around acquisition. The sorted accepted cache hashes its payload, captures the source calendar before QA, and permits later role-specific row-group pruning. A date with no valid bars remains a missing calendar date.
+
+Each role is three streamed passes over the bounded accepted window: stable source axes, prior-liquidity decisions, then dense output. The selected ID union includes every eligible date in both warmup and scored history. Membership uses only the preceding63 source sessions' raw USD volume, prior raw close>5 and ADV>5m, top3000 with numeric securityID tie breaks. It requires a complete prior window; first63 dates are explicitly unready. At least320 usable membership warmup dates must precede scoring, so score_begin>=383. Historical raw values are retained for the selected union; physical presence and membership have separate byte masks, including member-but-missing-current-mark cases. Unknown common-stock status remains explicit.
+
+New `data/strategy_data.hpp` and private CPP read a publish-last `atx.recent-research-role/v1` manifest, axes and three little-endian f64 date-major fields plus masks. Hashing uses the same captured handle that fills each final vector, with no duplicate full-payload buffer. The caller must separately pin the returned manifest SHA before evaluation; a self-reported source hash is not independent authenticity. Root registers this single CPP and its test TU with source-local JSON includes. No existing calendar seal or warehouse path was weakened.
+
+Role manifest keys `dates`, `instruments`, `declared_output_bytes`, `score_begin/end`, score date bounds and per-file bytes/hashes support runner metadata admission before loading. Decoder admission is26 bytes/cell +24 bytes/date +8 bytes/name +16MiB overhead. The runner must additionally admit VM, signal, return-guard and execution workspaces. One role is loaded at a time. Modeled marks=sessionlabel+22h and decisions=+23h bind strict clock ordering without claiming observed historical availability.
+
+The projection uses one DuckDB thread and a memory limit below the declared process envelope. Source-row fixed-width DB/output space is reserved outside its spill allowance. Total owned-directory bytes are checked periodically and every250ms during sort, with interrupt on violation. Deadlines must be finite and in(0,600] seconds; default300. These are cooperative guards with polling granularity, not measured RSS or a kernel disk quota. Root should retain its process admission/monitor. Progress is flushed at batch/date boundaries. Only completed immutable cache manifests are reusable; interrupted partial outputs remain unpublished and require a fresh directory.
+
+## Proposed exact bounded commands, not executed
+
+Root selects available memory/slot and pins the reviewed source before running. All new outputs are outside `C:/atx` and exclusive:
+
+```powershell
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-3/atx-engine/tools/prepare_recent_research.py project --source C:/Users/natha/Downloads/TickerHistory3.parquet --out C:/atx-wt/recent-research-cache-v1 --start 2018-06-01 --end 2025-01-01 --memory-mib 768 --disk-mib 12288 --max-seconds 600
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-3/atx-engine/tools/prepare_recent_research.py role --cache C:/atx-wt/recent-research-cache-v1 --out C:/atx-wt/recent-dev-smoke-v1 --start 2018-06-01 --score-start 2020-01-01 --end 2020-04-01 --top-n 3000 --max-union 8000 --memory-mib 768 --max-output-mib 512 --max-seconds 180
+```
+
+After admission/coverage is inspected, the full development role scores2020-01-01..2023-01-01 with warmup2018-06-01. Validation scores2023-01-01..2025-01-01 with warmup2021-06-01. Build them in fresh directories with the same role command and appropriate end/score-start/start. No2025+ numerical output is produced. The original mixed-era Parquet projected columns are physically decoded before filtering; excluded rows never enter QA, selection, fitting or artifact output. The cache contains declared development/validation inputs only. Future prospective evaluation remains reserved.
+
+The separately owned strategy runner will consume these artifacts and the frozen24-expression price/volume library. No Sharpe, low-turnover, $1bn capacity, common-stock coverage, or performance acceptance follows from this adapter source work.
+
+## Bounded checks
+
+At `70dd7213`, `python -m unittest test_prepare_recent_research -v`:4/4 pass,2.718s, native exit0. Exact local log `C:/atx-wt/pool-3/build-equity/recent-research-python-tests.log`, SHA256 `fbf6475547dc3524bfa011c278af45308de71f4e9e5819aaf809210feae1e62c`. PowerShell wraps unittest stderr in a NativeCommandError display header; process exit and final unittest outcome are0/OK. Checks cover excluded-date QA, duplicate quarantine, empty-session preservation, field arithmetic, prior membership versus current absence, future-prefix invariance despite growing union, deadline guards, cache mutation, output budget and insufficient warmup. Two `StrategyResearchRole.*` C++ fixtures are source-only and pending root qualification.

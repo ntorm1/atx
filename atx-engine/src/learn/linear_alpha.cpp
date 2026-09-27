@@ -1,12 +1,15 @@
 #include "atx/engine/learn/linear_alpha.hpp"
 
 #include <cmath>    // std::sqrt, std::isfinite
+#include <limits>   // std::numeric_limits (trace NaN for uncovered rows)
 #include <optional> // std::nullopt (single-stream DSR variance)
+#include <utility>  // std::move
 #include <span>     // std::span
 #include <vector>   // std::vector
 
 #include <Eigen/Dense> // Eigen::Index, MatX/VecX
 
+#include "atx/core/macro.hpp"
 #include "atx/core/types.hpp" // f64, u16, u32, usize
 
 #include "atx/core/linalg/linalg.hpp"     // MatX, VecX
@@ -22,6 +25,50 @@
 #include "atx/engine/learn/train.hpp"          // date_label_spans, expand_date_folds, RowFold
 
 namespace atx::engine::learn {
+
+lin::VecX predict_at(const LearnedModel &m, const FeatureMatrix &fm,
+                                          atx::usize date) {
+  const atx::usize p = fm.n_features;
+  const atx::usize adim = m.augmented_dim();
+  const atx::usize k = m.aug.pca.has_value() ? static_cast<atx::usize>(m.aug.pca->k) : 0U;
+  std::vector<atx::f64> base(p, 0.0);
+  std::vector<atx::f64> latent(k, 0.0);
+  std::vector<atx::f64> aug(adim, 0.0);
+  std::vector<atx::f64> out;
+  for (atx::usize r = 0; r < fm.n_rows(); ++r) {
+    if (fm.row_date[r] != date || fm.row_valid[r] == 0) {
+      continue;
+    }
+    for (atx::usize f = 0; f < p; ++f) {
+      base[f] = fm.X[r * p + f];
+    }
+    const bool finite = build_augmented_row(m, std::span<const atx::f64>{base},
+                                            std::span<atx::f64>{latent}, std::span<atx::f64>{aug});
+    out.push_back(finite ? predict_blended(m, std::span<const atx::f64>{aug}) : 0.0);
+  }
+  lin::VecX v(static_cast<Eigen::Index>(out.size()));
+  for (atx::usize i = 0; i < out.size(); ++i) {
+    v(static_cast<Eigen::Index>(i)) = out[i];
+  }
+  return v;
+}
+
+atx::core::Result<DatasetLinearFit> fit_linear_dataset(const PanelDataset& dataset,
+    atx::usize begin, atx::usize end, atx::usize asof, atx::u64 max_bytes,
+    const LatentAugmentation& aug, const LinearAlphaCfg& cfg, LearnFitTrace* trace) {
+  if (cfg.cpcv.rule != eval::CpcvRule::DateV2)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "dataset linear fit requires explicit date-unit CPCV");
+  std::vector<atx::u16> endpoints;
+  for (auto horizon : dataset.config().holding_horizons)
+    endpoints.push_back(static_cast<atx::u16>(horizon + dataset.config().execution_delay));
+  if (cfg.horizons != endpoints)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "dataset linear fit horizon/endpoint identity mismatch");
+  if (aug.pca && aug.pca->fit_upto_date > asof)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "dataset linear fit cannot use a future-fitted PCA basis");
+  ATX_TRY(auto fm, read_dataset_features(dataset, begin, end, asof, max_bytes));
+  ATX_TRY(auto model, fit_linear_checked(fm, aug, cfg, trace));
+  return atx::core::Ok(DatasetLinearFit{std::move(model), fm.dataset_manifest_sha256, fm.dataset_recipe});
+}
 
 namespace detail {
 
@@ -148,14 +195,51 @@ std::vector<atx::f64> oof_ic_series(const FeatureMatrix &fm,
 
 } // namespace detail
 
+namespace {
+
+// The fold TRAINING artifact of one linear fold fit, flattened for LearnFitTrace:
+// fold standardization, fold augmentation, then the coefficient vector.
+[[nodiscard]] std::vector<atx::f64> linear_fold_artifact(const LearnedModel &fold_shell,
+                                                         const lin::VecX &coeff) {
+  std::vector<atx::f64> a;
+  a.insert(a.end(), fold_shell.feat_mean.begin(), fold_shell.feat_mean.end());
+  a.insert(a.end(), fold_shell.feat_sd.begin(), fold_shell.feat_sd.end());
+  detail::append_augmentation(fold_shell.aug, a);
+  for (Eigen::Index j = 0; j < coeff.size(); ++j) {
+    a.push_back(coeff(j));
+  }
+  return a;
+}
+
+} // namespace
+
 LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
                         const LinearAlphaCfg &cfg) {
+  return fit_linear(fm, aug, cfg, nullptr);
+}
+
+LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
+                        const LinearAlphaCfg &cfg, LearnFitTrace *trace) {
+  auto result = fit_linear_checked(fm, aug, cfg, trace);
+  ATX_CHECK(result.has_value());
+  return std::move(*result);
+}
+
+atx::core::Result<LearnedModel> fit_linear_checked(
+    const FeatureMatrix &fm, const LatentAugmentation &aug,
+    const LinearAlphaCfg &cfg, LearnFitTrace *trace) {
+  ATX_TRY_VOID(validate_date_cpcv_inputs(fm, cfg.horizons, cfg.cpcv));
   LearnedModel m;
+  std::vector<eval::CpcvMetadata> cpcv_metadata;
   m.kind = ModelKind::Linear;
   m.aug = aug;
   m.n_base_features = static_cast<atx::u32>(fm.n_features);
   m.horizons = cfg.horizons;
   m.trial_count = 0;
+  atx::usize n_fold_fits = 0; // successful fold fits (TrialCountRule input, L-08)
+  if (trace != nullptr) {
+    *trace = LearnFitTrace{}; // a reused trace starts empty
+  }
 
   // The deployed standardization is fit on ALL valid rows (the full trailing
   // window). This is the transform applied forward at predict time (M2).
@@ -180,14 +264,19 @@ LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
 
   for (atx::usize h = 0; h < cfg.horizons.size(); ++h) {
     // CPCV date-folds for this horizon's label span.
-    const std::vector<eval::LabelSpan> spans = date_label_spans(fm, cfg.horizons[h]);
-    const std::vector<eval::CpcvFold> dfolds =
-        eval::cpcv_folds(std::span<const eval::LabelSpan>{spans}, cfg.cpcv);
-    const Folds folds = expand_date_folds(dfolds, fm);
+    ATX_TRY(auto plan, learn_cpcv_plan(fm, cfg.horizons[h], cfg.cpcv));
+    ATX_TRY(auto folds, expand_date_folds_checked(plan.folds, fm, cfg.cpcv));
+    if (cfg.cpcv.rule == eval::CpcvRule::DateV2)
+      ATX_TRY_VOID(retain_cpcv_metadata(cpcv_metadata, std::move(plan.metadata), cfg.cpcv.max_working_bytes));
 
     // OOS prediction + label accumulation across folds (for the horizon IC).
     std::vector<atx::f64> oos_pred;
     std::vector<atx::f64> oos_label;
+    std::vector<atx::f64> oof_sum_h(fm.n_rows(), 0.0); // horizon-h OOF (MeanDateIcV2)
+    std::vector<atx::u32> oof_cnt_h(fm.n_rows(), 0U);
+    const atx::usize sel_label =
+        fold_selection_label(std::span<const atx::u16>{cfg.horizons}, h);
+    atx::usize fold_idx = 0;
     for (const RowFold &f : folds) {
       // Defect-1 firewall: fit a FOLD-LOCAL standardization on the TRAIN rows ONLY
       // and apply it forward to BOTH the train and the OOS test design of this fold,
@@ -197,21 +286,28 @@ LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
       LearnedModel fold_shell = m;
       detail::fit_standardization(fm, std::span<const atx::usize>{f.train_rows},
                                   fold_shell.feat_mean, fold_shell.feat_sd);
+      // L-03 firewall: the fold's augmentation (PCA basis + selected interactions) is
+      // refit on the fold's TRAIN rows only (FoldLocalV2), never copied from the
+      // caller's full-window fit that saw this fold's test rows.
+      fold_shell.aug = fold_augmentation(fm, aug, std::span<const atx::usize>{f.train_rows},
+                                         sel_label, cfg.protocol.fold_aug);
       lin::MatX Xtr;
       lin::VecX ytr;
       const atx::usize ntr = detail::build_design(
           fm, fold_shell, std::span<const atx::usize>{f.train_rows}, h, Xtr, ytr);
       if (ntr == 0U) {
+        ++fold_idx;
         continue; // no usable training rows in this fold
       }
       const lin::VecX coeff = detail::fit_coeff(Xtr, ytr, cfg);
-      ++m.trial_count; // one distinct fit -> one deflation trial (§0.3)
+      ++n_fold_fits;
       // Predict OOS on the test rows with the FOLD-LOCAL coeff + std (forward only).
       lin::MatX Xte;
       lin::VecX yte;
       std::vector<atx::usize> te_rows;
       const atx::usize nte = detail::build_design(
           fm, fold_shell, std::span<const atx::usize>{f.test_rows}, h, Xte, yte, &te_rows);
+      LearnFoldRecord rec;
       for (atx::usize i = 0; i < nte; ++i) {
         atx::f64 pred = 0.0;
         for (Eigen::Index j = 0; j < coeff.size(); ++j) {
@@ -219,15 +315,34 @@ LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
         }
         oos_pred.push_back(pred);
         oos_label.push_back(yte(static_cast<Eigen::Index>(i)));
+        oof_sum_h[te_rows[i]] += pred;
+        oof_cnt_h[te_rows[i]] += 1U;
         if (h == 0U) {
           // Accumulate the genuine OOF prediction for this row (Defect-2 series).
           oof_pred_sum[te_rows[i]] += pred;
           oof_pred_cnt[te_rows[i]] += 1U;
         }
+        if (trace != nullptr) {
+          rec.test_keys.push_back(te_rows[i]);
+          rec.test_pred.push_back(pred);
+        }
       }
+      if (trace != nullptr) {
+        rec.horizon_idx = h;
+        rec.fold_idx = fold_idx;
+        rec.artifact = linear_fold_artifact(fold_shell, coeff);
+        rec.fit_keys = f.train_rows;
+        trace->folds.push_back(std::move(rec));
+      }
+      ++fold_idx;
     }
-    oos_ic[h] = detail::pearson(std::span<const atx::f64>{oos_pred},
-                                std::span<const atx::f64>{oos_label});
+    oos_ic[h] = (cfg.protocol.blend_ic == HorizonBlendIc::PooledPearsonV1)
+                    ? detail::pearson(std::span<const atx::f64>{oos_pred},
+                                      std::span<const atx::f64>{oos_label})
+                    : detail::oof_mean_date_ic(std::span<const atx::usize>{fm.row_date},
+                                               std::span<const atx::f64>{fm.Y[h]},
+                                               std::span<const atx::f64>{oof_sum_h},
+                                               std::span<const atx::u32>{oof_cnt_h});
 
     // The DEPLOYED per-horizon coefficient: refit on the full trailing window with
     // m's full-window standardization (the forward-applied deployment transform).
@@ -248,6 +363,16 @@ LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
   m.oos_score_series =
       detail::oof_ic_series(fm, std::span<const atx::f64>{oof_pred_sum},
                             std::span<const atx::u32>{oof_pred_cnt});
+  m.trial_count = detail::protocol_trial_count(cfg.protocol.trials, n_fold_fits);
+  if (trace != nullptr) {
+    trace->oof_cnt = oof_pred_cnt;
+    trace->oof_pred.assign(fm.n_rows(), std::numeric_limits<atx::f64>::quiet_NaN());
+    for (atx::usize r = 0; r < fm.n_rows(); ++r) {
+      if (oof_pred_cnt[r] > 0U) {
+        trace->oof_pred[r] = oof_pred_sum[r] / static_cast<atx::f64>(oof_pred_cnt[r]);
+      }
+    }
+  }
 
   // §0.6 horizon blend: normalize(max(oos_IC_h, 0)). All non-positive -> uniform.
   atx::f64 sum = 0.0;
@@ -266,7 +391,8 @@ LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
       w = u;
     }
   }
-  return m;
+  m.cpcv_metadata = std::move(cpcv_metadata);
+  return atx::core::Ok(std::move(m));
 }
 
 atx::f64 oos_deflated_sharpe(const LearnedModel &m, const FeatureMatrix &fm) {

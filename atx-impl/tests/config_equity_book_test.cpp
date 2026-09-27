@@ -58,6 +58,7 @@ TEST_F(ConfigEquityBook, FrozenBaselineReferenceLeavesInheritanceOverridesUnset)
     EXPECT_EQ(parsed->subcommand, "equity-book");
     EXPECT_EQ(parsed->panel, "context.bin");
     EXPECT_EQ(parsed->equity_baseline_dir, "training baseline");
+    EXPECT_EQ(parsed->equity_allocation_rule, "sparse-relative-v2");
     EXPECT_EQ(parsed->out, "constrained-book");
     EXPECT_TRUE(parsed->equity_evaluation_start.empty());
     EXPECT_TRUE(parsed->equity_evaluation_end.empty());
@@ -65,6 +66,17 @@ TEST_F(ConfigEquityBook, FrozenBaselineReferenceLeavesInheritanceOverridesUnset)
     EXPECT_FALSE(parsed->set_flags.contains("report-aum"));
     EXPECT_FALSE(parsed->set_flags.contains("replay-trade-bps"));
     EXPECT_FALSE(parsed->set_flags.contains("replay-annual-borrow-bps"));
+}
+
+TEST_F(ConfigEquityBook, AllocationRuleRequiresAnExplicitKnownRecipe) {
+    const auto legacy = parse_book({"atx-impl", "equity-book", "--allocation-rule", "legacy-dense-absolute-v1"});
+    ASSERT_TRUE(legacy) << legacy.error().message();
+    EXPECT_EQ(legacy->equity_allocation_rule, "legacy-dense-absolute-v1");
+    EXPECT_TRUE(legacy->set_flags.contains("allocation-rule"));
+    const auto sparse = parse_book({"atx-impl", "equity-book", "--allocation-rule", "sparse-relative-v2"});
+    ASSERT_TRUE(sparse);
+    EXPECT_EQ(sparse->equity_allocation_rule, "sparse-relative-v2");
+    EXPECT_FALSE(parse_book({"atx-impl", "equity-book", "--allocation-rule", "silent-auto"}));
 }
 
 TEST_F(ConfigEquityBook, MissingBaselineDirectoryValueCannotConsumeAnotherFlag) {

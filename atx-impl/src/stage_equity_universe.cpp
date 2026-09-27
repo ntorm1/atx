@@ -9,8 +9,10 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <span>
@@ -79,6 +81,9 @@ static_assert(kTopN.size() <= data::kPitMaxTopNValues && kBandBp.size() <= data:
 constexpr std::string_view kSignalName = "adv63_median_dollar_volume";
 constexpr std::string_view kSignalDsl =
     "median_63(close*volume) over sessions <= rank date; valid>=57; raw close>1.0 on rank date";
+constexpr std::string_view kSignalDslV2 =
+    "common-stock-v2; median_63(close*volume)>=5000000; valid>=57; raw close>=5; "
+    "verified dated common-stock type; available_at<rank_session; no conflicting type";
 constexpr std::string_view kAlignment = "rank-at-t-effective-at-t-plus-1-session";
 constexpr std::string_view kCadence =
     "monthly: rank session = attached session whose UTC month differs from the next attached "
@@ -304,6 +309,8 @@ struct Profile {
     std::string ledger_path;
     std::string executable;
     atx::u64 max_working_bytes{};
+    data::PitUniverseRule rule{data::PitUniverseRule::LegacyV1};
+    std::string instrument_types;
 };
 
 // §5.2 / DR15-16 Q3: `;`-separated lists; an empty entry is rejected. A path that
@@ -328,7 +335,8 @@ Result<std::vector<std::string>> split_list(std::string_view text, std::string_v
 // §5.2: the frozen allow-list; no --top-n, --band, --rank-key, --cadence, --config.
 Result<Profile> resolve(const RunConfig &cfg) {
     const std::set<std::string> allowed{"segments-dirs", "preparation-manifests", "out",
-        "rank-start", "rank-end", "max-working-bytes", "trial-ledger", "quiet", "digest-only"};
+        "rank-start", "rank-end", "max-working-bytes", "trial-ledger", "quiet", "digest-only",
+        "universe-rule", "instrument-types"};
     for (const auto &flag : cfg.set_flags) {
         if (!allowed.contains(flag)) {
             return Err(ErrorCode::InvalidArgument, "equity universe: unsupported flag --" + flag);
@@ -359,6 +367,14 @@ Result<Profile> resolve(const RunConfig &cfg) {
                    "rank-end and a budget above the overhead reserve are required");
     }
     Profile profile;
+    if (cfg.equity_universe_rule != "legacy-v1" && cfg.equity_universe_rule != "common-stock-v2")
+        return Err(ErrorCode::InvalidArgument, "equity universe: invalid universe rule");
+    profile.rule = cfg.equity_universe_rule == "common-stock-v2" ?
+        data::PitUniverseRule::CommonStockV2 : data::PitUniverseRule::LegacyV1;
+    profile.instrument_types = cfg.equity_instrument_types;
+    if ((profile.rule == data::PitUniverseRule::CommonStockV2) != !profile.instrument_types.empty())
+        return Err(ErrorCode::InvalidArgument,
+                   "equity universe: V2 requires --instrument-types; legacy-v1 refuses type input");
     ATX_TRY(profile.segments_dirs, split_list(cfg.equity_segments_dirs, "segments-dirs"));
     ATX_TRY(profile.preparation_manifests,
             split_list(cfg.equity_preparation_manifests, "preparation-manifests"));
@@ -418,6 +434,10 @@ struct YearPreparation {
 };
 
 struct Inputs {
+    data::PitUniverseRule rule{data::PitUniverseRule::LegacyV1};
+    std::vector<data::PitInstrumentTypeEvidence> types;
+    std::string types_text;
+    std::string types_sha256;
     std::vector<SegmentDir> dirs;
     std::vector<SegmentFile> files; // global date order
     std::vector<atx::i64> keys;     // parallel to files
@@ -570,8 +590,78 @@ std::string dir_role(atx::i64 first_key, atx::i64 last_key) {
 }
 
 // §5.5 steps 2-3 (without the budget): enumerate, seal-check, bind, sort, select.
+bool type_sha_valid(std::string_view sha) {
+    return sha.size() == 64 && std::all_of(sha.begin(), sha.end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+}
+
+Result<atx::i64> type_integer(const Json& value) {
+    if (!value.is_number_integer() || (value.is_number_unsigned() &&
+        value.get<atx::u64>() > static_cast<atx::u64>(std::numeric_limits<atx::i64>::max())))
+        return Err(ErrorCode::InvalidArgument, "equity universe: type clock/ID must be a signed integer");
+    return Ok(value.get<atx::i64>());
+}
+
+Status bind_types(const Profile& profile, Inputs& inputs) {
+    inputs.rule = profile.rule;
+    if (profile.rule == data::PitUniverseRule::LegacyV1) return Ok();
+    ATX_TRY(inputs.types_text, read_file(profile.instrument_types, kManifestReadBytes));
+    ATX_TRY(inputs.types_sha256, atx::core::sha256_hex(inputs.types_text));
+    const auto doc = strict_json(inputs.types_text);
+    if (doc.at("schema") != "atx-instrument-types-v1" || doc.at("status") != "complete" ||
+        doc.at("sealed_end_exclusive") != "2020-01-01" ||
+        doc.at("clock_rule") != "verified-publication-strict-before-session" ||
+        doc.at("validity_rule") != "endpoints-known-at-source-clock" ||
+        !doc.at("sources").is_array() || doc.at("sources").size() > data::kPitMaxTypeRecords ||
+        !doc.at("rows").is_array() || doc.at("rows").size() > data::kPitMaxTypeRecords)
+        return Err(ErrorCode::InvalidArgument, "equity universe: unsupported/unsealed type projection");
+    std::set<std::string> sources;
+    for (const auto& source : doc.at("sources")) {
+        const auto id = source.at("id").get<std::string>();
+        if (id.empty() || !sources.insert(id).second ||
+            !type_sha_valid(source.at("sha256").get<std::string>()) ||
+            source.at("locator").get<std::string>().empty())
+            return Err(ErrorCode::InvalidArgument, "equity universe: invalid type source binding");
+    }
+    constexpr std::string_view names[] = {"unknown", "common-stock", "etf", "adr", "preferred",
+                                         "fund", "reit", "limited-partnership", "other"};
+    for (const auto& item : doc.at("rows")) {
+        data::PitInstrumentTypeEvidence row;
+        ATX_TRY(row.security_id, type_integer(item.at("security_id")));
+        ATX_TRY(row.valid_from, type_integer(item.at("valid_from_ns")));
+        ATX_TRY(row.valid_to, type_integer(item.at("valid_to_ns")));
+        ATX_TRY(row.source_published_at, type_integer(item.at("source_published_at_ns")));
+        ATX_TRY(row.available_at, type_integer(item.at("available_at_ns")));
+        const auto type = item.at("instrument_type").get<std::string>();
+        const auto found = std::find(std::begin(names), std::end(names), type);
+        if (found == std::end(names) || !sources.contains(item.at("source_id").get<std::string>()) ||
+            item.at("evidence_locator").get<std::string>().empty())
+            return Err(ErrorCode::InvalidArgument, "equity universe: type row lacks valid classification/provenance");
+        row.type = static_cast<data::PitInstrumentType>(found - std::begin(names));
+        const auto origin = item.at("source_kind").get<std::string>();
+        if (origin != "vendor" && origin != "sec")
+            return Err(ErrorCode::InvalidArgument, "equity universe: type source must be vendor or sec");
+        row.source = origin == "vendor" ? data::PitTypeSource::Vendor : data::PitTypeSource::Sec;
+        row.verified = true;
+        row.clock_verified = item.at("endpoints_known_at_source_clock") == true;
+        for (auto name : {"evidence_status", "availability_status", "vintage_status"}) {
+            const auto status = item.at(name).get<std::string>();
+            if (status != "verified" && status != "unverified")
+                return Err(ErrorCode::InvalidArgument, "equity universe: unknown type qualification status");
+            if (std::string_view(name) == "evidence_status") row.verified = status == "verified";
+            else row.clock_verified = row.clock_verified && status == "verified";
+        }
+        row.verified = row.verified && row.clock_verified;
+        row.source_row = static_cast<atx::u32>(inputs.types.size() + 1U);
+        inputs.types.push_back(row);
+    }
+    return Ok(); // builder create validates geometry/clocks before a ledger registration
+}
+
 Result<Inputs> enumerate_inputs(const Profile &profile) {
     Inputs inputs;
+    ATX_TRY_VOID(bind_types(profile, inputs));
     std::set<atx::i64> seen_keys;
     for (atx::usize d = 0; d < profile.segments_dirs.size(); ++d) {
         SegmentDir sd;
@@ -679,6 +769,12 @@ Status budget_preflight(const Inputs &inputs, atx::u64 max_working_bytes) {
     ATX_TRY_VOID(accumulate(Ok(2 * kStreamBufferBytes)));
     ATX_TRY_VOID(accumulate(Ok(kMembershipBinReserve)));
     ATX_TRY_VOID(accumulate(Ok(kOverheadReserve)));
+    if (inputs.rule == data::PitUniverseRule::CommonStockV2) {
+        ATX_TRY_VOID(accumulate(multiply(2 * sizeof(data::PitInstrumentTypeEvidence), inputs.types.size())));
+        ATX_TRY_VOID(accumulate(multiply(sizeof(data::PitExcludedRow), U)));
+        ATX_TRY_VOID(accumulate(Ok(static_cast<atx::u64>(inputs.types_text.size()))));
+        ATX_TRY_VOID(accumulate(Ok(kStreamBufferBytes)));
+    }
     if (total > max_working_bytes) {
         return Err(ErrorCode::OutOfRange,
                    "equity universe: memory estimate " + number(total) + " exceeds budget " +
@@ -696,6 +792,12 @@ data::PitUniverseConfig frozen_config(const Inputs &inputs) {
     cfg.band_count = kBandBp.size();
     cfg.max_rebalances = inputs.rank_keys.size();
     cfg.max_sessions = inputs.files.size();
+    cfg.rule = inputs.rule;
+    if (cfg.rule == data::PitUniverseRule::CommonStockV2) {
+        cfg.min_adv_usd = data::kPitV2MinAdvUsd;
+        cfg.min_raw_price_inclusive = data::kPitV2MinRawPriceInclusive;
+        std::copy(inputs.types_sha256.begin(), inputs.types_sha256.end(), cfg.instrument_types_sha256.begin());
+    }
     return cfg;
 }
 
@@ -703,7 +805,7 @@ data::PitUniverseConfig frozen_config(const Inputs &inputs) {
 Json config_json(const RunConfig &cfg, const Inputs &inputs) {
     Json cuts = Json::array();
     for (atx::usize c = 0; c < kCuts; ++c) cuts.push_back(cut_name(c));
-    return Json{{"rank_key", kSignalName}, {"rank_key_dsl", kSignalDsl},
+    Json recipe{{"rank_key", kSignalName}, {"rank_key_dsl", kSignalDsl},
                 {"adv_window", data::kPitAdvWindow},
                 {"min_valid_observations", data::kPitMinValidObservations},
                 {"min_raw_price_exclusive", data::kPitMinRawPriceExclusive},
@@ -734,6 +836,22 @@ Json config_json(const RunConfig &cfg, const Inputs &inputs) {
                 {"trial_count_declared", kTrialCountDeclared}, {"purpose", kPurpose},
                 {"live_orders_authorized", false},
                 {"investment_qualification", "unverified-no-promotion"}};
+    if (inputs.rule == data::PitUniverseRule::CommonStockV2) {
+        recipe.erase("min_raw_price_exclusive");
+        recipe["rank_key_dsl"] = kSignalDslV2;
+        recipe["universe_rule"] = "common-stock-v2";
+        recipe["min_raw_price_inclusive"] = data::kPitV2MinRawPriceInclusive;
+        recipe["min_adv_usd"] = data::kPitV2MinAdvUsd;
+        recipe["instrument_type_eligibility"] = "verified-common-stock-only";
+        recipe["instrument_types_sha256"] = inputs.types_sha256;
+        recipe["type_clock_rule"] = "verified-publication-strict-before-session";
+        recipe["type_validity_rule"] = "endpoints-known-at-source-clock";
+        recipe["excluded_type_policy"] = "ETF/ADR/preferred/fund/REIT/LP/other excluded; unknown/unverified/conflict excluded only under verified clocks; unknown-clock rows unavailable, never inferred common";
+        recipe["exclusion_reason_bits"] = Json{{"no_rank_bar", 1}, {"below_price", 2}, {"insufficient_history", 4},
+            {"below_adv", 8}, {"type_unknown", 16}, {"type_unverified", 32}, {"type_unavailable", 64},
+            {"type_conflict", 128}, {"not_common_stock", 256}};
+    }
+    return recipe;
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,9 +1146,12 @@ TrialLedgerEntry base_entry(const Profile &profile, const Inputs &inputs,
         entry.parents.push_back({sd.role, "", sd.ingestion_manifest_sha256});
     }
     entry.parents.push_back({"design-note", "", std::string(kDesignNoteSha256)});
-    const auto dsl_sha = atx::core::sha256_hex(kSignalDsl);
+    const auto dsl = profile.rule == data::PitUniverseRule::CommonStockV2 ? kSignalDslV2 : kSignalDsl;
+    if (profile.rule == data::PitUniverseRule::CommonStockV2)
+        entry.parents.push_back({"instrument-types-v1", "", inputs.types_sha256});
+    const auto dsl_sha = atx::core::sha256_hex(dsl);
     entry.recipe.signals.push_back(
-        {std::string(kSignalName), std::string(kSignalDsl), dsl_sha ? *dsl_sha : std::string()});
+        {std::string(kSignalName), std::string(dsl), dsl_sha ? *dsl_sha : std::string()});
     entry.recipe.restrictions.clear();
     for (atx::usize c = 0; c < kCuts; ++c) entry.recipe.restrictions.push_back(cut_name(c));
     entry.recipe.alignment = std::string(kAlignment);
@@ -1041,6 +1162,9 @@ TrialLedgerEntry base_entry(const Profile &profile, const Inputs &inputs,
                     static_cast<atx::i64>(inputs.rank_keys.size())};
     entry.producer_executable_sha256 = profile.executable.empty() ? "unknown" : profile.executable;
     entry.notes = std::string(kLedgerNotes);
+    if (profile.rule == data::PitUniverseRule::CommonStockV2)
+        entry.notes += " W1-D5 common-stock-v2 supersedes cp15 eligibility: inclusive $5 and $5m floors, "
+                       "strict verified dated type evidence. The old design note remains historical provenance only.";
     return entry;
 }
 
@@ -1059,7 +1183,7 @@ Result<StageResult> execute(const RunConfig &cfg, const Profile &profile, const 
                             Json &attempt, const fs::path &directory, bool &registered) {
     const auto started = std::chrono::steady_clock::now();
     Json files = Json::array();
-    ATX_TRY(auto builder, data::PitUniverseBuilder::create(frozen_config(inputs)));
+    ATX_TRY(auto builder, data::PitUniverseBuilder::create(frozen_config(inputs), inputs.types));
 
     // §5.6 — the pre-registration line goes in BEFORE any computation.
     ATX_TRY(auto trial_id, next_trial_id(profile.ledger_path));
@@ -1123,10 +1247,21 @@ Result<StageResult> execute(const RunConfig &cfg, const Profile &profile, const 
                         {"statement", "no segment at/after 2020-01-01 was mapped"}};
         ATX_TRY(auto seal_file, write_text(directory, "seal.json", seal.dump(2) + "\n"));
         files.push_back(std::move(seal_file));
+        if (inputs.rule == data::PitUniverseRule::CommonStockV2) {
+            ATX_TRY(auto types_file, write_text(directory, "instrument_types.json", inputs.types_text));
+            files.push_back(std::move(types_file));
+        }
 
         // §3.7 / §5.5 step 5: stream, one mapping alive, rows once effective.
         StreamedCsv membership(directory, "membership.csv");
         StreamedCsv churn(directory, "churn.csv");
+        std::unique_ptr<StreamedCsv> excluded;
+        std::map<std::pair<atx::i32, atx::u32>, atx::u64> exclusion_counts; // <=16 years *512 reason masks
+        if (inputs.rule == data::PitUniverseRule::CommonStockV2) {
+            excluded = std::make_unique<StreamedCsv>(directory, "excluded_instruments.csv");
+            ATX_TRY_VOID(excluded->open());
+            excluded->append("rank_session,effective_session,security_id,reason_bits,instrument_type,source_row,available_at_ns,raw_close,adv_usd,valid_observations,type_projection_sha256\n");
+        }
         ATX_TRY_VOID(membership.open());
         ATX_TRY_VOID(churn.open());
         membership.append(kMembershipHeader);
@@ -1153,6 +1288,14 @@ Result<StageResult> execute(const RunConfig &cfg, const Profile &profile, const 
                                "equity universe: effective session disagrees with the feed");
                 }
                 ATX_TRY_VOID(write_rebalance_rows(membership, churn, pending, file.key));
+                if (excluded) for (const auto& row : pending.excluded) {
+                    ++exclusion_counts[{data::pit_year_of(pending.rank_session_key), row.reasons}];
+                    excluded->append(date_text(pending.rank_session_key) + "," + date_text(file.key) + "," +
+                        number(row.security_id) + "," + number(row.reasons) + "," +
+                        number(static_cast<atx::u32>(row.type)) + "," + number(row.source_row) + "," +
+                        number(row.available_at) + "," + number(row.raw_close) + "," + number(row.adv_usd) + "," +
+                        number(row.valid_observations) + "," + inputs.types_sha256 + "\n");
+                }
                 pending_active = false;
             }
             if (next_rank < inputs.rank_keys.size() && inputs.rank_keys[next_rank] == file.key) {
@@ -1172,6 +1315,15 @@ Result<StageResult> execute(const RunConfig &cfg, const Profile &profile, const 
         files.push_back(std::move(membership_file));
         ATX_TRY(auto churn_file, churn.publish());
         files.push_back(std::move(churn_file));
+        if (excluded) {
+            ATX_TRY(auto excluded_file, excluded->publish());
+            files.push_back(std::move(excluded_file));
+            std::string text = "year,reason_bits,security_decisions\n";
+            for (const auto& [key, total] : exclusion_counts)
+                text += number(key.first) + "," + number(key.second) + "," + number(total) + "\n";
+            ATX_TRY(auto counts_file, write_text(directory, "exclusion_counts_by_year.csv", text));
+            files.push_back(std::move(counts_file));
+        }
 
         // §5.5 step 6: aggregates, then the small files, manifest last.
         std::vector<data::PitCoverageYear> coverage(data::kPitMaxYears);
@@ -1272,7 +1424,16 @@ Result<StageResult> execute(const RunConfig &cfg, const Profile &profile, const 
                 "No live trading and no broker action is performed or authorized."})},
             {"acceptance", "membership lists and counts only; not a forecast, not alpha"},
             {"files", files}};
-        ATX_TRY(auto universe_id, atx::core::sha256_hex(std::string(kDomain) + manifest.dump()));
+        if (inputs.rule == data::PitUniverseRule::CommonStockV2) {
+            manifest["schema"] = "atx-equity-universe-v2";
+            manifest["parents"].push_back(Json{{"role", "instrument-types-v1"}, {"sha256", inputs.types_sha256}});
+            manifest["membership_bin"]["version"] = 2;
+            manifest["qualifications"][1] = "Verified dated common stock only; unknown/unverified/conflicting type is excluded for trading. No historical type coverage acceptance has been measured.";
+            manifest["d5_acceptance"] = Json{{"historical_byte_parity_2013_2015", "unmeasured"},
+                {"membership_filter_identity", "unmeasured"}, {"rebuilt_2018_context", "not-built"}};
+        }
+        ATX_TRY(auto universe_id, atx::core::sha256_hex(
+            std::string(inputs.rule == data::PitUniverseRule::CommonStockV2 ? "atx-equity-universe-v2\n" : kDomain) + manifest.dump()));
         manifest["universe_id"] = universe_id;
         // Manifest FIRST, `.pending` last: a failure on the manifest write must leave a
         // directory that still advertises itself as incomplete.

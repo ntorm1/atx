@@ -7,6 +7,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/data/panel_store.hpp"
 
 namespace atx::impl {
 
@@ -42,6 +43,23 @@ struct PanelArtifact {
     std::string artifact_id;
     std::string payload_sha256;
 };
+
+struct PanelStoreWindow {
+    PanelArtifact artifact;
+    std::vector<atx::u8> tradable; // decision-date mask, independent of Panel presence
+    std::vector<atx::engine::data::PanelStoreField> fields;
+};
+
+// Explicit V2 adapter, bounded before full date x union allocation. The returned
+// Panel uses SOURCE PRESENCE, retaining TS warm-up. Callers MUST carry tradable
+// separately for cross-sectional/trading admission. `close` is loaded from the
+// original-f64 channel, so existing close-ratio consumers don't reconstruct it
+// from rounded f32 prices. Other f32 fields widen; exact return fields stay f64.
+// This materializer is for a selected window, not the large-union open-RSS gate.
+[[nodiscard]] atx::core::Result<PanelStoreWindow> read_panel_store_window(
+    const std::string& directory, atx::usize begin, atx::usize end,
+    atx::u64 max_materialized_bytes = 256ULL * 1024 * 1024,
+    std::string_view expected_manifest_sha256 = {});
 
 // Preserve the existing APNL v1 bytes and publish <path>.manifest.json last.
 // Payload, manifest, partial files, and the publication-lock directory must be

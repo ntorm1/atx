@@ -1,13 +1,18 @@
 #pragma once
 
 #include <array>
+#include <filesystem>
+#include <functional>
+#include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/data/point_in_time_universe.hpp"
 #include "panel_artifact.hpp"
 
 namespace atx::impl {
@@ -115,6 +120,88 @@ struct EquityBaselineWindow {
     atx::i64 end_exclusive_session_key{}; // Label filter; source coverage checked by caller.
 };
 
+// ---------------------------------------------------------------------------
+//  W0-I0b / D-12 — point-in-time membership for the equity views.
+//
+//  A context built with `panel --universe-membership` restricts its universe to the
+//  UNION of the membership cut over the whole panel window (plus the last rebalance
+//  before --universe-eval-start). That union is a within-window selection look-ahead:
+//  a name that joins in November is already admitted in January. Under AsOfV2 the
+//  views admit a cell only when the last rebalance whose effective session is on or
+//  before the cell's session lists the security (the membership.bin semantics the
+//  equity-universe stage publishes). ContextYearUnionV1 reproduces the pre-W0 mask
+//  exactly, for re-deriving frozen artifacts. Frozen integer values.
+//
+//  The as-of mask gates admission AND every DSL-internal cross-sectional op,
+//  including those inside a rolling feature's warmup window. The VM loads each
+//  column's observed history independently: a joiner's price-only time-series
+//  feature retains its public past prices. A cross-sectional feature is NaN while
+//  the name is not a member; rolling that feature observes the actual historical
+//  membership and cannot invent pre-entry normalized values.
+// ---------------------------------------------------------------------------
+enum class EquityMembershipRule : atx::u8 {
+    ContextYearUnionV1 = 1, // pre-W0: the context mask alone (year-union allow-list)
+    AsOfV2 = 2,             // default: the context mask AND as-of membership
+};
+
+// "context-year-union-v1" / "as-of-pit-membership-v2" (the published labels).
+[[nodiscard]] std::string_view equity_membership_rule_label(EquityMembershipRule rule) noexcept;
+// CLI spelling: "year-union-v1" | "as-of-v2". Err(InvalidArgument) otherwise.
+[[nodiscard]] atx::core::Result<EquityMembershipRule>
+parse_equity_membership_rule(std::string_view text);
+
+// One cut of a membership image, reduced to what an as-of lookup needs.
+struct EquityAsOfMembership {
+    std::vector<atx::i64> effective_session_keys;    // strictly ascending
+    std::vector<std::vector<atx::i64>> security_ids; // parallel; each strictly ascending
+    // True iff the last rebalance with effective_session_key <= session_key lists
+    // `security_id`. False before the first effective rebalance.
+    [[nodiscard]] bool member(atx::i64 session_key, atx::i64 security_id) const noexcept;
+};
+
+// Reduce `image` to cut `cut` (index = top_n_index * band_count + band_index).
+// Err(InvalidArgument) for an out-of-range cut, no rebalances, or two rebalances
+// sharing an effective session key.
+[[nodiscard]] atx::core::Result<EquityAsOfMembership>
+equity_asof_membership(const atx::engine::data::PitMembershipImage &image, atx::usize cut);
+
+// "<top_n>:<units>.<hh>" (e.g. "3000:0.00", the context recipe's universe_cut) ->
+// the cut index inside `image`. Err(InvalidArgument) when malformed or absent.
+[[nodiscard]] atx::core::Result<atx::usize>
+equity_membership_cut_index(const atx::engine::data::PitMembershipImage &image,
+                            std::string_view cut_text);
+
+struct LoadedEquityMembership {
+    EquityAsOfMembership asof;
+    std::string sha256;     // of the exact bytes decoded
+    atx::usize cut_index{};
+    atx::usize rebalances{};
+};
+
+// Read, hash and decode membership.bin at `path` and reduce it to `cut_text`.
+// Err(IoError) when unreadable or larger than 512 MiB; codec errors propagate.
+[[nodiscard]] atx::core::Result<LoadedEquityMembership>
+load_equity_membership(const std::string &path, std::string_view cut_text);
+
+// The stage-boundary rule shared by equity-baseline and equity-ic. A context whose
+// recipe declares a membership restriction (sha256 + cut) needs, under AsOfV2, the
+// very image it names (`membership_path`, hash-checked against `recipe_sha256`);
+// under ContextYearUnionV1 no image may be supplied. A context without a restriction
+// accepts no image either. Returns the loaded membership when one applies.
+[[nodiscard]] atx::core::Result<std::optional<LoadedEquityMembership>>
+resolve_equity_membership(bool context_has_membership, std::string_view recipe_sha256,
+                          std::string_view recipe_cut, EquityMembershipRule rule,
+                          const std::string &membership_path);
+
+// W0-I0b / I-17 — publication order shared by the equity stages. `write_manifest`
+// publishes the manifest; only after it succeeds is `<directory>/.pending` removed.
+// A failed write leaves `.pending` in place (the directory still advertises itself
+// as incomplete) and returns that error. Err(IoError) when `.pending` is absent or
+// cannot be removed.
+[[nodiscard]] atx::core::Status
+publish_manifest_then_release_pending(const std::filesystem::path &directory,
+                                      const std::function<atx::core::Status()> &write_manifest);
+
 struct EquityBaselineConfig {
     EquityBaselineWindow evaluation;
     EquityBaselineObservationBasis observation_basis{EquityBaselineObservationBasis::Unspecified};
@@ -125,6 +212,12 @@ struct EquityBaselineConfig {
     // (checkpoints 14-18 behaviour, bit-identical).
     atx::f64 min_dollar_adv{0.0};
     atx::usize dollar_adv_window{21};
+    // D-12. With AsOfV2 and a membership, a cell must also be an as-of member; the
+    // context's instrument ids must then be canonical integers. With no membership
+    // (a context whose universe is a daily screen, already as-of) the rules agree.
+    // ContextYearUnionV1 with a membership is refused (InvalidArgument).
+    EquityMembershipRule membership_rule{EquityMembershipRule::AsOfV2};
+    std::optional<EquityAsOfMembership> membership;
 };
 
 struct EquityBaselinePlan {
@@ -156,6 +249,9 @@ struct EquityBaselineEvaluation {
     atx::usize liquidity_floor_rejected_cells{}; // eligible AND ready, but ADV below the floor
     atx::usize ready_evaluation_cells{}; // Both signals finite, before eligibility.
     atx::usize admitted_evaluation_cells{};
+    // D-12: context-eligible cells refused because the security was not an as-of
+    // member on that session (0 under ContextYearUnionV1 or without a membership).
+    atx::usize membership_rejected_cells{};
 };
 
 // Validate identified axes/shape, source-basis declaration, exact window and
@@ -203,6 +299,9 @@ struct EquityFamilyEvaluation {
 // which must fit before the evaluation window; the admission gate is the baseline's
 // (universe eligibility AND both momentum signals ready), so every family is
 // measured on exactly the checkpoint-16 universe. Budget covers VM slots + signals.
+// Under AsOfV2 with membership, every cross-sectional opcode uses the as-of set
+// for its own feature date, including warmup dates. Raw time-series observations
+// are retained independently. ContextYearUnionV1 preserves the old VM behavior.
 [[nodiscard]] atx::core::Result<EquityFamilyEvaluation>
 evaluate_equity_families(const PanelArtifact &context, const EquityBaselineConfig &config,
                          const EquityBaselineEvaluation &baseline,

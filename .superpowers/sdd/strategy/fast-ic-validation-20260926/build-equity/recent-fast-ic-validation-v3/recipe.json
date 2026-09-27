@@ -1,0 +1,65 @@
+{
+  "active_horizons": 3,
+  "composition": "fixed-equal-family/equal-within;centered-tied-rank;missing-or-unoriented-neutral;no-redistribution",
+  "confidence_multiplier": 3.5,
+  "execution_delay": 1,
+  "frozen_train_recipe": {
+    "active_horizons": 3,
+    "composition": "fixed-equal-family/equal-within;centered-tied-rank;missing-or-unoriented-neutral;no-redistribution",
+    "confidence_multiplier": 3.5,
+    "execution_delay": 1,
+    "guard": "observed-adjacent-log1.5;adjusted-log-vs-raw+.10;no-missing-zero-fill",
+    "horizons": [
+      5,
+      21,
+      63
+    ],
+    "labels": "close[d+1+h]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity",
+    "library_sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+    "max_working_bytes": 1610612736,
+    "min_dates": 128,
+    "min_names": 2000,
+    "orientation": "TRAIN21h-nonzero-sample-rank-mean;undefined=0;screen-diagnostic-only;freeze-before-validation",
+    "planned_targets": "final-rank-neutral-gross1;cadence5;fraction.25;no-drift;offcycle-membership-exit-zero;deployment-included",
+    "practical_abs_ic": 0.002,
+    "require_endpoint_presence": true,
+    "role_manifest_sha256": {
+      "train": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+      "validation": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7"
+    },
+    "schema": "atx.dsl-fast-ic/v1",
+    "scope": "IC-and-planned-weight-change-only;no-costs-trades-NAV-Sharpe-or-holdout",
+    "screen_rule": "equivalence-v3",
+    "vm": "ResearchFast;full-historical-asof-member-mask",
+    "vm_workers": 4
+  },
+  "guard": "observed-adjacent-log1.5;adjusted-log-vs-raw+.10;no-missing-zero-fill",
+  "horizons": [
+    5,
+    21,
+    63
+  ],
+  "labels": "close[d+1+h]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity",
+  "library_sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+  "max_working_bytes": 1610612736,
+  "min_dates": 128,
+  "min_names": 2000,
+  "orientation": "TRAIN21h-nonzero-sample-rank-mean;undefined=0;screen-diagnostic-only;freeze-before-validation",
+  "orientations_artifact_sha256": "5106fdc13fc5347c9c2c670714c134a1978e6b7a0d2d2b5dd79bacb7dfb782d6",
+  "planned_targets": "final-rank-neutral-gross1;cadence5;fraction.25;no-drift;offcycle-membership-exit-zero;deployment-included",
+  "practical_abs_ic": 0.002,
+  "require_endpoint_presence": true,
+  "research_ic_workers": 4,
+  "role_manifest_sha256": {
+    "train": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+    "validation": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7"
+  },
+  "run_mode": "validation-only-frozen-TRAIN",
+  "saved_combined": "date-major-f64-with-explicit-support-v1",
+  "schema": "atx.dsl-fast-ic/v1",
+  "scope": "IC-and-planned-weight-change-only;no-costs-trades-NAV-Sharpe-or-holdout",
+  "screen_rule": "equivalence-v3",
+  "train_recipe_sha256": "f9b7ae1e29ed49609d81e9f8b3bf7fa69cfb40c79d7256555c41ff93d06e37ca",
+  "vm": "ResearchFast;full-historical-asof-member-mask",
+  "vm_workers": 4
+}

@@ -1,0 +1,65 @@
+{
+  "schema": "atx.curated-corporate-action-evidence/v1",
+  "artifact_kind": "curated-primary-source-facts-not-original-document-bytes",
+  "research_status": "reconstructed-publication-clock;historical-delivery-vintage-unverified",
+  "checked_utc_date": "2026-09-26",
+  "instrument_namespace": "spiderrock.securityID",
+  "instrument_id": 39621,
+  "historical_ticker": "MDCO",
+  "company": "The Medicines Company",
+  "security_class": "common stock",
+  "currency": "USD",
+  "cash_entitlement_per_share": 85.0,
+  "completion_date": "2020-01-06",
+  "completion_confirmed_by_utc": "2020-01-06T17:06:00Z",
+  "settlement_time": null,
+  "settlement_status": "cash receipt time not evidenced; recognize only a nonspendable signed entitlement",
+  "sources": [
+    {
+      "kind": "issuer-release-on-distribution-service",
+      "url": "https://www.globenewswire.com/en/news-release/2020/01/06/1966725/0/en/Novartis-successfully-completes-acquisition-of-The-Medicines-Company-adding-a-potentially-first-in-class-investigational-cholesterol-lowering-therapy-inclisiran.html",
+      "publisher": "Novartis International AG",
+      "displayed_publication_time": "2020-01-06 12:05 ET",
+      "publication_time_utc": "2020-01-06T17:05:00Z",
+      "supports": [
+        "merger completed",
+        "common shares converted to USD85 cash rights",
+        "Nasdaq trading ceased"
+      ],
+      "access_method": "web tool archival text extraction; direct HTTP capture timed out",
+      "publication_precision": "displayed minute; use following minute as conservative availability upper bound"
+    },
+    {
+      "kind": "exchange-corporate-action-alert",
+      "url": "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2019-296",
+      "publisher": "Nasdaq Trader",
+      "notice_id": "ECA2019-296",
+      "supports": [
+        "MDCO common stock, CUSIP584688105",
+        "last trading date2020-01-03",
+        "merger closed before2020-01-06 market open",
+        "USD85 per share"
+      ],
+      "publication_clock_warning": "Updated notice retains original2019-12-26 heading; do not backdate completion knowledge to that heading",
+      "access_method": "web tool archival text extraction"
+    }
+  ],
+  "price_identity_binding": {
+    "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+    "forensic_artifact_sha256": "dc0fd7742ae503acc736de7881e3404f63494f623d2aef36b9dbd0b70a944c3f",
+    "source_date": "2020-01-03",
+    "source_row_group": 151,
+    "source_row_in_group": 122307,
+    "raw_close": 84.9000015258789,
+    "raw_close_ieee754_f32_le_hex": "cdcca942",
+    "cumulative_return_factor": 1.0,
+    "adjusted_close": 84.9000015258789,
+    "identity_scope": "dated source securityID/historical-ticker record matched to named issuer/exchange event; no universal security-ID lifecycle claim"
+  },
+  "limitations": [
+    "Original2019/2020 delivery files were not retained by this capture.",
+    "The confirmed cash right is not evidence of the account's actual receipt date.",
+    "This one event does not establish complete terminal-event or common-stock universe coverage.",
+    "No return, signal or universe record is overwritten by this evidence artifact."
+  ]
+}

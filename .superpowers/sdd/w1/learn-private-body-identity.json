@@ -1,0 +1,34 @@
+{
+  "source_base": "17917fd634481c669398656ee00108e8f6322ddd",
+  "kind": "mechanical LF-normalized function body SHA256; not compiled parity or timing evidence",
+  "allowed_signature_changes": [
+    "remove inline on out-of-line definitions",
+    "keep nodiscard at declarations"
+  ],
+  "functions": [
+    {
+      "symbol": "resolve_raw_fields",
+      "header": "atx-engine/include/atx/engine/learn/feature_matrix.hpp",
+      "implementation": "atx-engine/src/learn/feature_matrix.cpp",
+      "body_sha256": "07f9739af6ca85c9f7dc5a86c61ba9efbed9b86a705077006cb52a0c72e2e040",
+      "body_lines": 9,
+      "body_equal": true
+    },
+    {
+      "symbol": "forward_return",
+      "header": "atx-engine/include/atx/engine/learn/feature_matrix.hpp",
+      "implementation": "atx-engine/src/learn/feature_matrix.cpp",
+      "body_sha256": "136f38453532e3ab37f3e5f3b4959098033aae848e3931743fa0f8443f919454",
+      "body_lines": 9,
+      "body_equal": true
+    },
+    {
+      "symbol": "predict_at",
+      "header": "atx-engine/include/atx/engine/learn/linear_alpha.hpp",
+      "implementation": "atx-engine/src/learn/linear_alpha.cpp",
+      "body_sha256": "927220a36adce04dd8213f20ef7cf8c759e8d9a7bd9d7760a9ceeb1cab37b6e7",
+      "body_lines": 25,
+      "body_equal": true
+    }
+  ]
+}

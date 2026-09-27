@@ -37,7 +37,7 @@
 //  Every per-node reduction (the histogram accumulation, the leaf value) walks
 //  rows in ascending index, so the float sums are order-fixed too.
 //
-// Header-only; fitting is a COLD path, so std::vector / Eigen allocation is fine.
+// Fitting is compiled in src/learn/gbt.cpp; the public header holds its contract.
 // Inference (gbt_forest_predict in learned_source.hpp) allocates nothing (M7).
 
 #include <span>   // std::span
@@ -46,6 +46,7 @@
 #include <Eigen/Dense> // Eigen::Index, MatX/VecX
 
 #include "atx/core/random.hpp" // atx::core::Xoshiro256pp
+#include "atx/core/error.hpp"
 #include "atx/core/types.hpp"  // f64, u32, u64, usize
 
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
@@ -86,7 +87,12 @@ namespace gbt_lin = atx::core::linalg;
 //                                 depth->=1 split clears it and fires. Together with
 //                                 kOofDispersionFloor this is the M3 noise gate.
 //  master_seed / cpcv / horizons: determinism root, CPCV fold config, horizons.
+//  protocol                     : the versioned CV-protocol rules (W0-L0): fold-local
+//                                 augmentation (L-03), trial counting and the
+//                                 horizon-blend IC (L-08); V1 values = legacy numbers.
 // ===========================================================================
+enum class GbtRule : atx::u8 { LegacyV1=1, ColumnBinsV2=2 };
+
 struct GbtCfg {
   atx::u32 n_trees{30};
   atx::u32 max_depth{2};
@@ -100,7 +106,28 @@ struct GbtCfg {
   atx::u64 master_seed{0};
   eval::CpcvConfig cpcv{};
   std::vector<atx::u16> horizons{1};
+  LearnProtocol protocol{};
+  GbtRule rule{GbtRule::LegacyV1}; // no silent change to existing fitted recipes
+  atx::u32 workers{1}; // V2: independent features, fixed ascending row reductions
+  bool demean_loss_by_date{true}; // V2 requires original ordered row-date IDs
+  atx::u64 max_working_bytes{1024ULL*1024*1024}; // V2 owned fit payload bound
 };
+
+// V2 fixed-right missing branch: bins 0..254 hold finite values, 255 is NaN.
+// Infinite features and nonfinite labels are refused. Existing deployed node
+// inference also routes NaN right, so old forest/node bytes remain readable.
+// Learned missing-direction optimization and inner-purged early stopping are
+// separate pending L2 work; no large-fit performance claim follows from this API.
+struct GbtFitDiagnostics {
+  GbtRule rule{GbtRule::LegacyV1};
+  atx::u64 bin_bytes{}, workspace_bound_bytes{}, histogram_rows{};
+  atx::u64 forest_fits{}, histogram_subtractions{}, histogram_rebuilds{};
+  atx::f64 split_gain_total{};
+  std::vector<atx::f64> gain_importance{}; // deployed augmented columns; normalized when gain>0
+};
+[[nodiscard]] atx::core::Result<GbtForest> fit_gbt_forest_checked(
+    const gbt_lin::MatX&, const gbt_lin::VecX&, const GbtCfg&, atx::u64 seed,
+    std::span<const atx::usize> row_dates={}, GbtFitDiagnostics* diagnostics=nullptr);
 
 // The OOF dispersion floor (in units of the OOF label std): a per-date prediction
 // cross-section whose std is below this fraction of the label dispersion carries
@@ -265,17 +292,22 @@ oof_ic_series_floored(const FeatureMatrix &fm, std::span<const atx::f64> oof_sum
 //  predict path: per horizon, walk the CPCV date-folds; on each fold fit
 //  TRAIN-only bin edges + a TRAIN-only forest (seeded subsample), predict
 //  OUT-OF-FOLD on the test rows (genuine OOS), accumulate the horizon-0 OOF
-//  predictions, bump trial_count per fit. The DEPLOYED per-horizon forest is a
-//  refit on the full trailing window. Horizon blend = normalize(max(oos_IC, 0)).
+//  predictions; trial_count follows cfg.protocol.trials (L-08). Under
+//  cfg.protocol.fold_aug == FoldLocalV2 (default) each fold refits the augmentation
+//  recipe on its train rows (L-03). The DEPLOYED per-horizon forest is a refit on
+//  the full trailing window. Horizon blend = normalize(max(oos_IC, 0)).
 //  The OOS skill series is assembled from the OOF predictions (the SAME helper
 //  fit_linear uses) so oos_deflated_sharpe is genuinely out-of-fold (M3).
 //
 //  Standardization stats are full-window (forward-applied — M2); the augmented
 //  row layout is the shared build_augmented_row, so train/eval cannot drift and
-//  the GBT trains/infers on the exact layout the linear model does.
+//  the GBT trains/infers on the exact layout the linear model does. The `trace`
+//  overload records every fold's OOS predictions + training artifact.
 // ===========================================================================
 [[nodiscard]] LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
                                    const GbtCfg &cfg);
+[[nodiscard]] LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
+                                   const GbtCfg &cfg, LearnFitTrace *trace);
 
 // ===========================================================================
 //  oos_ic — the mean per-date OUT-OF-FOLD information coefficient of a fitted
@@ -296,5 +328,28 @@ oof_ic_series_floored(const FeatureMatrix &fm, std::span<const atx::f64> oof_sum
   }
   return sum / static_cast<atx::f64>(series.size());
 }
+
+// Checked entrypoint for DateV2 configuration/geometry failures. Existing
+// value-returning overloads retain a fail-fast contract, never a full-data fallback.
+[[nodiscard]] atx::core::Result<LearnedModel>
+fit_gbt_checked(const FeatureMatrix& fm, const LatentAugmentation& aug,
+                 const GbtCfg& cfg, LearnFitTrace* trace = nullptr,
+                 GbtFitDiagnostics* diagnostics = nullptr);
+
+struct DatasetGbtFit {
+  LearnedModel model;
+  std::string dataset_manifest_sha256;
+  std::string dataset_window_recipe;
+  std::string algorithm_recipe; // includes canonical supplied augmentation SHA-256
+  GbtFitDiagnostics diagnostics;
+};
+// Explicit bounded selected-window materialization, not out-of-core fitting.
+// V2 + DateV2, exact delay+holding endpoints and nonfuture PCA are mandatory.
+// The returned identities must accompany model publication; legacy model-only
+// writers do not automatically persist the dataset/algorithm wrapper metadata.
+[[nodiscard]] atx::core::Result<DatasetGbtFit> fit_gbt_dataset(
+    const PanelDataset&, atx::usize begin_date, atx::usize end_date,
+    atx::usize asof_date, atx::u64 max_materialization_bytes,
+    const LatentAugmentation&, const GbtCfg&, LearnFitTrace* trace = nullptr);
 
 } // namespace atx::engine::learn

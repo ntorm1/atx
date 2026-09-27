@@ -6,7 +6,7 @@
 //  What this unit is
 // ===========================================================================
 //  The point-in-time (PIT), append-only journal that drives each alpha's library
-//  lifecycle as the S7 spine advances. An alpha walks a strict LINEAR spine:
+//  lifecycle as the S7 spine advances. An alpha walks a directed lifecycle graph:
 //
 //      Candidate -> Admitted -> Live -> Decaying -> {Live (recover) | Dead}
 //                                                    Dead -> Recycled
@@ -21,8 +21,8 @@
 // ===========================================================================
 //  Legal-transition table (the spine)
 // ===========================================================================
-//  legal(from,to) is a constexpr table with EXACTLY six legal adjacent edges:
-//    (Candidate,Admitted) (Admitted,Live) (Live,Decaying)
+//  legal(from,to) is a constexpr table with seven legal edges:
+//    (Candidate,Admitted) (Admitted,Live) (Admitted,Dead) (Live,Decaying)
 //    (Decaying,Live)      (Decaying,Dead) (Dead,Recycled)
 //  Everything else is illegal: forward-skips (e.g. Admitted->Decaying), all
 //  backward edges (e.g. Live->Candidate), and every self-transition. An illegal
@@ -47,6 +47,8 @@
 //  would need std::bit_cast, but periods are bounded so static_cast is correct
 //  and the comparison `as_of_period <= ?` stays monotonic.)
 
+#include <algorithm>
+#include <limits>
 #include <string>  // db path
 #include <utility> // std::move
 
@@ -77,8 +79,8 @@ enum class LifecycleState : atx::u8 {
   Recycled = 5,  // GC'd / slot reclaimed (the S7 baton terminal)
 };
 
-// True iff `to` is a legal successor of `from` on the strict linear spine.
-// The ONLY legal pairs are the six adjacent edges; forward-skips, backward
+// True iff `to` is a legal successor of `from` on the lifecycle graph.
+// The ONLY legal pairs are the seven edges; forward-skips, backward
 // edges, and self-transitions are all illegal. constexpr so it folds to a
 // jump-free comparison chain at the call site.
 [[nodiscard]] constexpr bool legal(LifecycleState from, LifecycleState to) noexcept {
@@ -86,7 +88,7 @@ enum class LifecycleState : atx::u8 {
   case LifecycleState::Candidate:
     return to == LifecycleState::Admitted;
   case LifecycleState::Admitted:
-    return to == LifecycleState::Live;
+    return to == LifecycleState::Live || to == LifecycleState::Dead;
   case LifecycleState::Live:
     return to == LifecycleState::Decaying;
   case LifecycleState::Decaying:
@@ -127,6 +129,18 @@ public:
   /// backward, or self), leaving the journal UNCHANGED. Err on a sqlite fault.
   [[nodiscard]] atx::core::Status transition(combine::AlphaId id, LifecycleState to,
                                              atx::u64 as_of_period) {
+    if (as_of_period > static_cast<atx::u64>(std::numeric_limits<atx::i64>::max()))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "LifecycleJournal::transition: period outside sqlite range");
+    ATX_TRY(auto *latest, db_.prepare_cached(
+        "SELECT as_of_period FROM journal WHERE alpha_id = ?1 "
+        "ORDER BY as_of_period DESC, seq DESC LIMIT 1"));
+    ATX_TRY_VOID(latest->bind(1, static_cast<atx::i64>(id.value)));
+    ATX_TRY(const auto latest_step, latest->step());
+    if (latest_step == atx::core::db::Statement::Step::Row &&
+        static_cast<atx::i64>(as_of_period) < latest->column_int(0))
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "LifecycleJournal::transition: backdated transition");
     ATX_TRY(const LifecycleState cur, current_state(id));
     if (!legal(cur, to)) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -159,7 +173,9 @@ public:
                                "WHERE alpha_id = ?1 AND as_of_period <= ?2 "
                                "ORDER BY as_of_period DESC, seq DESC LIMIT 1"));
     ATX_TRY_VOID(stmt->bind(1, static_cast<atx::i64>(id.value)));
-    ATX_TRY_VOID(stmt->bind(2, static_cast<atx::i64>(t)));
+    const atx::u64 bounded = std::min(t,
+        static_cast<atx::u64>(std::numeric_limits<atx::i64>::max()));
+    ATX_TRY_VOID(stmt->bind(2, static_cast<atx::i64>(bounded)));
     return read_state_or_candidate(*stmt);
   }
 

@@ -1,9 +1,10 @@
 #pragma once
 
 // Precompiled-header payload shared by the atx-engine-<group>-tests targets
-// (opt-in: ATX_USE_PCH; ON in the `ninja` and `dev` presets). The first
-// configured group builds this PCH; the rest REUSE_FROM it, so GoogleTest + Eigen
-// are parsed exactly once across the whole suite. See atx-engine/pch.hpp for the
+// (opt-in: ATX_USE_PCH; ON in the `ninja` and `dev` presets). The
+// configured consumers reuse a minimal stable carrier, so selecting a different
+// group order does not rebuild their PCH. Data has a separate compatible carrier
+// for its miniz include path. See atx-engine/pch.hpp for the
 // rationale. The `hygiene` preset keeps ATX_USE_PCH OFF so per-TU include hygiene
 // is still enforced there.
 

@@ -163,6 +163,11 @@ Panel synthetic_panel() {
 }
 
 // Quarterly filings with drifting fundamentals so deltas and SUE vary.
+// Operating cash flow carries a per-quarter term that is NOT proportional to the
+// scale `s`: accruals = (NI - CFO) / mean(assets, assets_lag1y) is a ratio in
+// which a common scale cancels, so with CFO = 12*s it was the same number every
+// quarter (to 1-2 ulp) and every ts_zscore(accruals, d) window was flat, which
+// the A-09 flat-window guard correctly scores as NaN (0/0).
 std::vector<fund::PitRecord> synthetic_records(usize instruments) {
   std::vector<fund::PitRecord> recs;
   for (usize i = 0; i < instruments; ++i) {
@@ -173,8 +178,9 @@ std::vector<fund::PitRecord> synthetic_records(usize instruments) {
       r.available_ns = r.period_end_ns + 20 * kDay;
       const f64 s = 1.0 + 0.1 * static_cast<f64>(i) + 0.03 * static_cast<f64>(q * (i % 4));
       const f64 sign = (i % 5 == 0) ? -1.0 : 1.0;
+      const f64 cfo = (12.0 + static_cast<f64>(q)) * s;
       r.values = {40.0 * s, 100.0 * s, 60.0 * s, 90.0 * s,     10.0 * s * sign, 200.0 * s,
-                  70.0 * s, 12.0 * s,  15.0 * s, 1.0e6 * s,  1.0e6,           0.5 * sign * s};
+                  70.0 * s, cfo,       15.0 * s, 1.0e6 * s,  1.0e6,           0.5 * sign * s};
       recs.push_back(r);
     }
   }
@@ -377,6 +383,44 @@ TEST(FundamentalZoo, FixtureParsesTypechecksAndEvaluates) {
     EXPECT_TRUE(std::any_of(v.begin(), v.end(), [](atx::f64 x) { return std::isfinite(x); }))
         << line.id << " produced no finite cell";
   }
+}
+
+// Pins the fixture itself (W0-FIXUP, A-09): a ratio-derived fundamental must vary over
+// time on the synthetic panel. If a common scale cancels out of every raw field again,
+// accruals becomes one number per instrument, every 252-session window is flat, the
+// A-09 guard returns ts_std == 0 and ts_zscore == NaN, and the zoo's time-series lines
+// would only "pass" on rounding noise. The relative-dispersion floor (1e-3) is far above
+// both ulp noise (<= 3.3e-15 on the degenerate fixture) and the guard tolerance (1e-10).
+TEST(FundamentalZoo, FixtureAccrualsVaryOverTime) {
+  const auto base = z::synthetic_panel();
+  std::vector<atx::i64> keys(base.dates());
+  for (atx::usize t = 0; t < keys.size(); ++t) keys[t] = static_cast<atx::i64>(t) * z::kDay;
+  std::string err;
+  const auto panel = z::extended(base, keys, z::synthetic_records(base.instruments()), err);
+  ASSERT_TRUE(panel.has_value()) << err;
+
+  const auto sd = z::evaluate("ts_std(accruals, 252)", *panel, err);
+  ASSERT_FALSE(sd.empty()) << err;
+  const auto mu = z::evaluate("ts_mean(accruals, 252)", *panel, err);
+  ASSERT_FALSE(mu.empty()) << err;
+  ASSERT_EQ(sd.size(), mu.size());
+  atx::usize finite_sd = 0;
+  atx::usize positive_sd = 0;
+  atx::f64 max_rel = 0.0;
+  for (atx::usize c = 0; c < sd.size(); ++c) {
+    if (!std::isfinite(sd[c])) continue;
+    ++finite_sd;
+    if (sd[c] > 0.0) ++positive_sd;
+    if (std::isfinite(mu[c]) && mu[c] != 0.0) max_rel = std::max(max_rel, sd[c] / std::abs(mu[c]));
+  }
+  EXPECT_GT(finite_sd, 0U) << "ts_std(accruals, 252) has no finite cell";
+  EXPECT_GT(positive_sd, 0U) << "every accruals window is flat (fixture degenerate)";
+  EXPECT_GT(max_rel, 1.0e-3) << "accruals dispersion is rounding noise, not variation";
+
+  const auto zs = z::evaluate("ts_zscore(accruals, 252)", *panel, err);
+  ASSERT_FALSE(zs.empty()) << err;
+  EXPECT_TRUE(std::any_of(zs.begin(), zs.end(), [](atx::f64 x) { return std::isfinite(x); }))
+      << "ts_zscore(accruals, 252) produced no finite cell";
 }
 
 TEST(FundamentalZoo, EpochDayMatchesKnownDates) {

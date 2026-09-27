@@ -16,14 +16,19 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include "atx/core/error.hpp"
+#include "atx/core/sha256.hpp"
 #include "atx/engine/data/orats_history.hpp"
+#include "atx/engine/eval/trial_epoch.hpp"
 #include "panel_artifact.hpp"
+#include "prereg.hpp"
 #include "stage_equity_baseline.hpp"
 #include "equity_baseline_views.hpp"
 #include "stage_equity_ic.hpp"
@@ -238,6 +243,10 @@ protected:
         cfg.equity_evaluation_start = kEvaluationStart;
         cfg.equity_evaluation_end = evaluation_end;
         cfg.equity_trial_ledger = ledger().string();
+        // W0-I0b / E-18: the production floor is 50 names per date; this six-name
+        // synthetic fixture opts into the old floor of 2 explicitly.
+        cfg.equity_ic_min_names_per_date = 2;
+        cfg.set_flags.insert("min-names-per-date");
         return cfg;
     }
 };
@@ -299,15 +308,17 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     EXPECT_TRUE(fs::exists(root / "ic1" / "manifest.json"));
     EXPECT_FALSE(fs::exists(root / "ic1" / ".pending"));
 
-    // (2 baseline + blend + families) signals x 2 variants x 2 restrictions x sum over H of (T - h).
+    // (2 baseline + blend + families) signals x 2 variants x 2 restrictions x sum over H of
+    // (T - h - delay). W0-I0b / E-09: the default execution delay is 1 session, so
+    // the forward return starts at the t+1 close and each horizon loses one date.
     const atx::usize signal_count =
         impl::kEquityBaselineDsl.size() + 1U + impl::kEquityFamilyDsl.size();
     const atx::usize blocks = signal_count * 2U * 2U;
     // Checkpoint 18 declares only the NEW family configurations per run.
     const int declared_per_run = static_cast<int>(
         (impl::kEquityFamilyDsl.size() - impl::kEquityFamilyRetainedCount) * 5U * 2U * 2U);
-    const atx::usize date_rows = blocks * ((kEvaluationDates - 1U) + (kEvaluationDates - 5U) +
-        (kEvaluationDates - 10U) + (kEvaluationDates - 21U) + (kEvaluationDates - 63U));
+    const atx::usize date_rows = blocks * ((kEvaluationDates - 2U) + (kEvaluationDates - 6U) +
+        (kEvaluationDates - 11U) + (kEvaluationDates - 22U) + (kEvaluationDates - 64U));
     EXPECT_EQ(line_count(contents(root / "ic1" / "ic.csv")), date_rows + 1U);
     EXPECT_EQ(line_count(contents(root / "ic1" / "coverage.csv")), date_rows + 1U);
     EXPECT_EQ(line_count(contents(root / "ic1" / "ic_decay.csv")), blocks * 5U + 1U);
@@ -325,14 +336,16 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     const auto summary = Json::parse(contents(root / "ic1" / "ic_summary.json"));
     EXPECT_EQ(summary.at("trial_count_declared"), declared_per_run);
     EXPECT_EQ(summary.at("checkpoint"), 22);
+    // W0-I0b / E-09: the label names the t+1 entry close the IC now measures from.
     EXPECT_EQ(summary.at("alignment"),
-              "signal-at-t-return-from-t-deployed-book-executes-at-t-plus-1");
+              "signal-at-t-return-from-entry-close-t-plus-1-deployed-book-executes-at-t-plus-1");
     EXPECT_NE(summary.at("sign_and_shape_statement").get<std::string>().find(
                   "sign-and-shape evidence only"), std::string::npos);
     EXPECT_EQ(summary.at("series").size(), blocks * 5U);
-    EXPECT_EQ(summary.at("common_sample_dates"), kEvaluationDates - 63U);
+    // W0-I0b / E-09: the common prefix is T - label_embargo(max(H), delay) = T - 64.
+    EXPECT_EQ(summary.at("common_sample_dates"), kEvaluationDates - 64U);
 
-    // §7.4 null encoding: h = 63 has n = 7 < 20, so its interval is unreportable
+    // §7.4 null encoding: h = 63 has n = 6 < 20, so its interval is unreportable
     // and BOTH serializers say so — JSON null, CSV "" — never 0 and never NaN.
     bool checked = false;
     for (const auto &row : summary.at("series")) {
@@ -344,18 +357,18 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
         EXPECT_EQ(full.at("ic_mean_ci").at("unreportable_reason"), 1);
         EXPECT_EQ(full.at("ic_mean_ci").at("unreportable_reason_text"),
                   "series-shorter-than-twenty");
-        // §3.13: the common block is the prefix [0, T - max(H)) = 7 dates for
-        // EVERY horizon, and every prefix date emits here, so the block reports
-        // its mean with no gap — while its interval stays null at n = 7 < 20.
+        // §3.13: the common block is the prefix [0, T - max(H) - delay) = 6 dates
+        // for EVERY horizon, and every prefix date emits here, so the block reports
+        // its mean with no gap — while its interval stays null at n = 6 < 20.
         const auto &common = row.at("common");
         EXPECT_TRUE(common.at("summary_reportable").get<bool>());
-        EXPECT_EQ(common.at("dates_emitted"), kEvaluationDates - 63U);
+        EXPECT_EQ(common.at("dates_emitted"), kEvaluationDates - 64U);
         EXPECT_EQ(common.at("common_prefix_gaps"), 0);
         EXPECT_FALSE(common.at("ic_mean").is_null());
         EXPECT_TRUE(common.at("ic_mean_ci").at("lo").is_null());
         EXPECT_EQ(common.at("ic_mean_ci").at("unreportable_reason"), 1);
         // §11.8 / §11.9 I-4: a CLOSED SPREAD GATE nulls the four spread moments.
-        // The spread series here is the same 7 dates, so its own gate is shut and
+        // The spread series here is the same 6 dates, so its own gate is shut and
         // a 0.0 spread mean over an unreportable series must never be published.
         EXPECT_FALSE(row.at("spread_reportable").get<bool>());
         EXPECT_NE(row.at("spread_unreportable_reason"), 0);
@@ -433,6 +446,9 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     EXPECT_EQ(request.at("required_mark_audit").at("required_mark_id_count"), 34);
     EXPECT_EQ(request.at("required_mark_audit").at("terminal_unevidenced_ids"),
               Json::array({146189}));
+    // W0-I0b fix pass 1: the computed R-A count (34 audited - 3 evidenced terminal - 2
+    // evidenced non-terminal) is published again, here and in the manifest.
+    EXPECT_EQ(request.at("required_mark_audit").at("unclassified_id_count"), 29);
     ASSERT_EQ(request.at("terminal_evidence").size(), 3U);
     EXPECT_EQ(request.at("terminal_evidence").at(1).at("security_id"), 35715);
     EXPECT_EQ(request.at("terminal_evidence").at(1).at("record_date"), "2013-10-28");
@@ -440,6 +456,7 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     const auto manifest = Json::parse(contents(root / "ic1" / "manifest.json"));
     EXPECT_EQ(manifest.at("status"), "complete");
     EXPECT_EQ(manifest.at("terminal_evidence").at("pcs_applied"), false);
+    EXPECT_EQ(manifest.at("terminal_evidence").at("unclassified_id_count"), 29);
     EXPECT_EQ(manifest.at("predictions_confirmed").at("modulo_fallbacks"), 0);
     EXPECT_NE(manifest.at("cost_model_provenance").get<std::string>().find(
                   "no call into replay.cpp borrow_charge"), std::string::npos);
@@ -527,11 +544,9 @@ TEST_F(StageEquityIc, RequiredMarkAuditFailuresRejectBeforePublishingAManifest) 
     ASSERT_NO_FATAL_FAILURE(build_baseline());
     const auto audit = data() / "equity_source_reconciliation_2013_20260919";
 
-    const auto missing = impl::run_equity_ic(ic_config("ic_missing"));
-    ASSERT_FALSE(missing);
-    EXPECT_EQ(missing.error().code(), ErrorCode::IoError);
-    EXPECT_FALSE(fs::exists(root / "ic_missing" / "manifest.json"));
-    EXPECT_TRUE(fs::exists(root / "ic_missing" / "failure.json"));
+    // W0-I0b / I-15: a MISSING audit is no longer a failure (the audit is
+    // optional; its absence is recorded — see ImplIcAsOfMembership_Stage). A
+    // PRESENT audit is still checked in full, before any ledger line:
 
     // 34 ids, but PCS replaced by a filler: the membership assertion must fire
     // rather than the cardinality one, because the partition rests on PCS.
@@ -556,4 +571,251 @@ TEST_F(StageEquityIc, RequiredMarkAuditFailuresRejectBeforePublishingAManifest) 
     // Nothing above appended a ledger line: the pre-registration happens only
     // after every input binding has succeeded.
     EXPECT_FALSE(fs::exists(ledger()));
+}
+
+
+TEST_F(StageEquityIc, RuntimePreregistrationConsumesSignsAndHeterogeneousHorizonsWithoutRebuild) {
+    ASSERT_NO_FATAL_FAILURE(build_baseline());
+    write_audit(audit_ids(), data() / "equity_source_reconciliation_2013_20260919");
+    Json declaration{{"schema", "atx-equity-ic-prereg-v1"}, {"epoch", "synthetic-runtime"},
+        {"checkpoint", 1001}, {"declared_n", 12},
+        {"forward_variants", {"DropMissingForward", "IncludeAuditedTerminalV1"}},
+        {"restrictions", {"full", "_ex34"}}, {"families", Json::array()}};
+    for (const auto &[name, sign, horizon] :
+         {std::tuple{"runtime_positive", 1, 21}, std::tuple{"runtime_negative", -1, 21},
+          std::tuple{"runtime_long", 1, 63}}) {
+        declaration["families"].push_back(Json{{"id", name}, {"name", name},
+            {"dsl", "close"}, {"sign", sign}, {"theme", "synthetic-direction"},
+            {"horizons", {horizon}}, {"lineage", {{"kind", "new"}}}});
+    }
+    const auto original = impl::parse_equity_ic_prereg(declaration.dump());
+    ASSERT_TRUE(original) << original.error().message();
+    // All-retained is legal declared-new N=0, but E2 has not verified the assertion.
+    // The stage must not divide by declared N or subtract these trials from its ledger.
+    for (atx::usize a = 0; a < original->families.size(); ++a) {
+        declaration["families"][a]["lineage"] = Json{{"kind", "retained"},
+            {"prereg_sha256", original->canonical_sha256},
+            {"configuration_sha256", original->families[a].configuration_sha256},
+            {"trial_id", "synthetic-prior-attempt"}};
+    }
+    declaration["declared_n"] = 0;
+    const auto file = root / "runtime-prereg.json";
+    const auto source = declaration.dump(2) + "\n";
+    { std::ofstream out(file, std::ios::binary); out << source; }
+    const auto sha = atx::core::sha256_hex(source);
+    ASSERT_TRUE(sha);
+    auto cfg = ic_config("runtime_ic");
+    cfg.equity_ic_prereg_file = file.string();
+    cfg.equity_ic_prereg_sha256 = *sha;
+    const auto result = impl::run_equity_ic(cfg);
+    ASSERT_TRUE(result) << result.error().message();
+    const auto manifest = Json::parse(contents(root / "runtime_ic" / "manifest.json"));
+    const auto &recipe = manifest.at("recipe");
+    EXPECT_EQ(recipe.at("profile"), "runtime-preregistered-cross-section-ic-v1");
+    EXPECT_EQ(recipe.at("signals").size(), 6U);
+    EXPECT_EQ(recipe.at("horizons"), Json::array({21, 63}));
+    EXPECT_EQ(recipe.at("bootstrap").at("block_lens"), Json::array({42, 126}));
+    EXPECT_EQ(recipe.at("preregistration").at("file_sha256"), *sha);
+    EXPECT_EQ(recipe.at("preregistration").at("declared_new_n"), 0);
+    EXPECT_EQ(recipe.at("preregistration").at("measured_n_charged_to_ledger"), 12);
+    const auto summary = Json::parse(contents(root / "runtime_ic" / "ic_summary.json"));
+    EXPECT_EQ(summary.at("series").size(), (3U * 2U + 3U) * 4U);
+    for (const auto &row : summary.at("series")) {
+        const auto name = row.at("signal").get<std::string>();
+        if (name == "runtime_long") EXPECT_EQ(row.at("horizon"), 63);
+        if (name == "runtime_positive" || name == "runtime_negative") {
+            EXPECT_EQ(row.at("horizon"), 21);
+            EXPECT_EQ(row.at("block_len"), 42);
+        }
+    }
+    // Per-date statistics remain available even when the short fixture cannot
+    // report a bootstrap interval. The multiplier must invert both IC metrics once.
+    std::vector<std::vector<std::string>> positives, negatives;
+    std::istringstream rows(contents(root / "runtime_ic" / "ic.csv"));
+    std::string line;
+    while (std::getline(rows, line)) {
+        auto fields = split_csv(line);
+        if (fields.size() < 9) continue;
+        if (fields[2] == "runtime_positive") positives.push_back(std::move(fields));
+        else if (fields[2] == "runtime_negative") negatives.push_back(std::move(fields));
+    }
+    ASSERT_FALSE(positives.empty());
+    ASSERT_EQ(positives.size(), negatives.size());
+    atx::usize compared = 0;
+    for (atx::usize r = 0; r < positives.size(); ++r) {
+        if (positives[r][7].empty()) continue;
+        ASSERT_FALSE(negatives[r][7].empty());
+        EXPECT_NEAR(std::stod(positives[r][7]), -std::stod(negatives[r][7]), 1e-12);
+        EXPECT_NEAR(std::stod(positives[r][8]), -std::stod(negatives[r][8]), 1e-12);
+        ++compared;
+    }
+    EXPECT_GT(compared, 0U);
+    EXPECT_EQ(line_count(contents(ledger())), 2U);
+    std::istringstream ledger_rows(contents(ledger()));
+    ASSERT_TRUE(static_cast<bool>(std::getline(ledger_rows, line)));
+    const auto pre = Json::parse(line);
+    EXPECT_EQ(pre.at("trial_count_declared"), 12);
+    EXPECT_EQ(pre.at("checkpoint"), 1001);
+    EXPECT_TRUE(pre.at("trial_id").get<std::string>().starts_with("prereg-"));
+    EXPECT_EQ(pre.at("recipe").at("horizons"), Json::array({21, 63}));
+}
+
+TEST_F(StageEquityIc, RuntimeFamilyVmFailureStillHasPreregistrationAndFailedTerminalReceipt) {
+    ASSERT_NO_FATAL_FAILURE(build_baseline());
+    write_audit(audit_ids(), data() / "equity_source_reconciliation_2013_20260919");
+    const Json declaration{{"schema", "atx-equity-ic-prereg-v1"}, {"epoch", "synthetic-failure"},
+        {"checkpoint", 1002}, {"declared_n", 4},
+        {"forward_variants", {"DropMissingForward", "IncludeAuditedTerminalV1"}},
+        {"restrictions", {"full", "_ex34"}},
+        {"families", Json::array({Json{{"id", "too_much_history"},
+            {"name", "too_much_history"}, {"dsl", "delay(close, 10000)"}, {"sign", 1},
+            {"theme", "synthetic-only"}, {"horizons", {21}}, {"lineage", {{"kind", "new"}}}}})}};
+    const auto source = declaration.dump();
+    const auto file = root / "failure-prereg.json";
+    { std::ofstream out(file, std::ios::binary); out << source; }
+    const auto sha = atx::core::sha256_hex(source);
+    ASSERT_TRUE(sha);
+    auto cfg = ic_config("runtime_failure");
+    cfg.equity_ic_prereg_file = file.string();
+    cfg.equity_ic_prereg_sha256 = *sha;
+    const auto result = impl::run_equity_ic(cfg);
+    ASSERT_FALSE(result);
+    EXPECT_NE(result.error().message().find("lookback"), std::string::npos);
+    std::istringstream rows(contents(ledger()));
+    std::string line;
+    ASSERT_TRUE(static_cast<bool>(std::getline(rows, line)));
+    const auto pre = Json::parse(line);
+    EXPECT_EQ(pre.at("status"), "pre-registered");
+    ASSERT_TRUE(static_cast<bool>(std::getline(rows, line)));
+    const auto failed = Json::parse(line);
+    EXPECT_EQ(failed.at("status"), "failed");
+    EXPECT_EQ(failed.at("trial_id"), pre.at("trial_id"));
+    EXPECT_EQ(pre.at("trial_count_declared"), 4);
+    EXPECT_TRUE(fs::exists(root / "runtime_failure" / ".pending"));
+    EXPECT_FALSE(fs::exists(root / "runtime_failure" / "manifest.json"));
+    const auto failure = contents(root / "runtime_failure" / "failure.json");
+    const auto failure_sha = atx::core::sha256_hex(failure);
+    ASSERT_TRUE(failure_sha);
+    EXPECT_EQ(failed.at("result").at("failure_sha256"), *failure_sha);
+}
+
+TEST_F(StageEquityIc, EpochCountsExactRetainedAliasAndBindsReservationManifestTerminalSeparately) {
+    ASSERT_NO_FATAL_FAILURE(build_baseline(40, "2013-05-14"));
+    Json declaration{{"schema", "atx-equity-ic-prereg-v1"}, {"epoch", "synthetic-E2"},
+        {"checkpoint", 1003}, {"declared_n", 4},
+        {"forward_variants", {"DropMissingForward", "IncludeAuditedTerminalV1"}},
+        {"restrictions", {"full", "_ex34"}},
+        {"families", Json::array({Json{{"id", "family"}, {"name", "original_alias"},
+            {"dsl", "close"}, {"sign", 1}, {"theme", "synthetic"},
+            {"horizons", {5}}, {"lineage", {{"kind", "new"}}}}})}};
+    const auto original = impl::parse_equity_ic_prereg(declaration.dump());
+    ASSERT_TRUE(original);
+    auto cfg = ic_config("epoch_first", "2013-05-14");
+    const auto prereg_file = root / "epoch-prereg.json";
+    const auto publish = [&]() {
+        const auto text = declaration.dump();
+        { std::ofstream out(prereg_file, std::ios::binary); out << text; }
+        const auto sha = atx::core::sha256_hex(text);
+        EXPECT_TRUE(sha);
+        if (sha) cfg.equity_ic_prereg_sha256 = *sha;
+    };
+    cfg.equity_ic_prereg_file = prereg_file.string();
+    cfg.equity_ic_trial_accounting_rule = "epoch-e2-v1";
+    cfg.equity_ic_epoch_catalog = (root / "epoch.bin").string();
+    cfg.equity_ic_epoch_anchor.assign(64, '0');
+    publish();
+    const auto first = impl::run_equity_ic(cfg);
+    ASSERT_TRUE(first) << first.error().message();
+    const auto manifest_text = contents(root / "epoch_first" / "manifest.json");
+    const auto manifest = Json::parse(manifest_text);
+    const auto receipt = Json::parse(contents(root / "epoch_first" / "epoch-reservation.json"));
+    const auto anchor = Json::parse(contents(root / "epoch_first" / "epoch-anchor.json"));
+    EXPECT_EQ(manifest.at("epoch_catalog"), receipt);
+    EXPECT_NE(receipt.at("reservation_head_sha256"), anchor.at("head_sha256"));
+    const auto manifest_sha = atx::core::sha256_hex(manifest_text);
+    ASSERT_TRUE(manifest_sha);
+    EXPECT_EQ(anchor.at("terminal_result_sha256"), *manifest_sha);
+    EXPECT_EQ(anchor.at("counts").at("known_unique_cells"), 4);
+    EXPECT_EQ(anchor.at("counts").at("completed"), 1);
+    EXPECT_FALSE(fs::exists(root / "epoch_first" / ".pending"));
+    declaration["checkpoint"] = 1004; // metadata-only checkpoint/aliases do not create numerical cells
+    declaration["families"][0]["id"] = "renamed_id";
+    declaration["families"][0]["name"] = "renamed_alias";
+    declaration["families"][0]["theme"] = "renamed_theme";
+    declaration["families"][0]["lineage"] = Json{{"kind", "retained"},
+        {"prereg_sha256", original->file_sha256},
+        {"configuration_sha256", original->families[0].configuration_sha256},
+        {"trial_id", receipt.at("trial_id")}};
+    declaration["declared_n"] = 0;
+    publish();
+    cfg.out = (root / "epoch_retained").string();
+    cfg.equity_ic_epoch_anchor = anchor.at("head_sha256").get<std::string>();
+    const auto retained = impl::run_equity_ic(cfg);
+    ASSERT_TRUE(retained) << retained.error().message();
+    const auto second = Json::parse(contents(root / "epoch_retained" / "epoch-anchor.json"));
+    EXPECT_EQ(second.at("counts").at("known_unique_cells"), 4);
+    EXPECT_EQ(second.at("counts").at("measured_declarations"), 8);
+    EXPECT_EQ(second.at("counts").at("verified_retained_cells"), 4);
+    EXPECT_EQ(second.at("counts").at("completed"), 2);
+    const auto second_manifest = Json::parse(contents(root / "epoch_retained" / "manifest.json"));
+    EXPECT_EQ(second_manifest.at("epoch_catalog").at("new_unique_cells"), 0);
+    // Changed numerical sign cannot borrow the old family's proof.
+    declaration["families"][0]["sign"] = -1;
+    publish();
+    cfg.out = (root / "epoch_bad_lineage").string();
+    cfg.equity_ic_epoch_anchor = second.at("head_sha256").get<std::string>();
+    const auto bytes = fs::file_size(cfg.equity_ic_epoch_catalog);
+    EXPECT_FALSE(impl::run_equity_ic(cfg));
+    EXPECT_EQ(fs::file_size(cfg.equity_ic_epoch_catalog), bytes);
+    EXPECT_FALSE(fs::exists(root / "epoch_bad_lineage" / "epoch-reservation.json"));
+}
+
+TEST_F(StageEquityIc, EpochReservationSurvivesLegacyPreAppendAndFamilyVmFailures) {
+    ASSERT_NO_FATAL_FAILURE(build_baseline());
+    const Json declaration{{"schema", "atx-equity-ic-prereg-v1"}, {"epoch", "synthetic-E2-failure"},
+        {"checkpoint", 1005}, {"declared_n", 4},
+        {"forward_variants", {"DropMissingForward", "IncludeAuditedTerminalV1"}},
+        {"restrictions", {"full", "_ex34"}},
+        {"families", Json::array({Json{{"id", "too_long"}, {"name", "too_long"},
+            {"dsl", "delay(close, 10000)"}, {"sign", 1}, {"theme", "synthetic"},
+            {"horizons", {5}}, {"lineage", {{"kind", "new"}}}}})}};
+    const auto text = declaration.dump();
+    const auto file = root / "failure-E2-prereg.json";
+    { std::ofstream out(file, std::ios::binary); out << text; }
+    const auto sha = atx::core::sha256_hex(text);
+    ASSERT_TRUE(sha);
+    std::string anchor(64, '0');
+    for (const bool pre_append_failure : {true, false}) {
+        const std::string out_name = pre_append_failure ? "e2_bad_ledger" : "e2_bad_vm";
+        auto cfg = ic_config(out_name);
+        cfg.equity_ic_prereg_file = file.string();
+        cfg.equity_ic_prereg_sha256 = *sha;
+        cfg.equity_ic_trial_accounting_rule = "epoch-e2-v1";
+        cfg.equity_ic_epoch_catalog = (root / "failure-epoch.bin").string();
+        cfg.equity_ic_epoch_anchor = anchor;
+        if (pre_append_failure) {
+            cfg.equity_trial_ledger = (root / "unanchored-ledger.jsonl").string();
+            std::ofstream broken(cfg.equity_trial_ledger, std::ios::binary);
+            broken << "invalid-unanchored-ledger\n";
+        }
+        const auto result = impl::run_equity_ic(cfg);
+        ASSERT_FALSE(result);
+        if (pre_append_failure) EXPECT_EQ(result.error().message().find("lookback"), std::string::npos);
+        if (!pre_append_failure) EXPECT_NE(result.error().message().find("lookback"), std::string::npos);
+        const auto receipt = Json::parse(contents(root / out_name / "epoch-anchor.json"));
+        const auto failure_sha = atx::core::sha256_hex(contents(root / out_name / "epoch-failure.json"));
+        ASSERT_TRUE(failure_sha);
+        EXPECT_EQ(receipt.at("terminal_result_sha256"), *failure_sha);
+        anchor = receipt.at("head_sha256").get<std::string>();
+        EXPECT_EQ(receipt.at("counts").at("known_unique_cells"), 4);
+        EXPECT_EQ(receipt.at("counts").at("incomplete"), 0);
+        EXPECT_EQ(receipt.at("counts").at("failed"), pre_append_failure ? 1 : 2);
+        EXPECT_TRUE(fs::exists(root / out_name / ".pending"));
+        EXPECT_FALSE(fs::exists(root / out_name / "manifest.json"));
+    }
+    auto catalog = atx::engine::eval::TrialEpochCatalog::open((root / "failure-epoch.bin").string(),
+        "synthetic-E2-failure", anchor);
+    ASSERT_TRUE(catalog) << catalog.error().message();
+    EXPECT_EQ(catalog->counts().attempts, 2U);
+    EXPECT_EQ(catalog->counts().declared_cells, 8U);
 }

@@ -57,11 +57,14 @@
 #include <algorithm> // std::clamp, std::max
 #include <cmath>     // std::log, std::exp, std::pow, std::sqrt
 #include <utility>   // std::move
+#include <span>
 #include <vector>    // std::vector
 
 #include <Eigen/Dense>
 
+#include "atx/engine/risk/estimator_policy.hpp"
 #include "atx/core/types.hpp" // f64, usize
+#include "atx/core/error.hpp"
 
 #include "atx/core/linalg/linalg.hpp"     // MatX, VecX (column-major Eigen)
 #include "atx/core/linalg/regression.hpp" // ols (structural ln-vol-on-exposures regression)
@@ -69,6 +72,52 @@
 #include "atx/engine/risk/exposures.hpp" // ExposureMatrix
 
 namespace atx::engine::risk {
+
+struct CleanRiskEstimatesV2 {
+  atx::core::linalg::MatX factor_covariance;
+  atx::core::linalg::VecX specific_variances;
+  RiskEstimatorDiagnostics diagnostics;
+};
+// Shared explicit V2 consumer boundary. Returns/residuals share the same actual
+// session clock. Prior VRA evidence is independent of retrospective fitting.
+[[nodiscard]] atx::core::Result<CleanRiskEstimatesV2> clean_risk_estimates_v2(
+    const atx::core::linalg::MatX& factor_returns,
+    const atx::core::linalg::MatX& residuals,
+    const atx::core::linalg::MatX& exposures,
+    std::span<const atx::f64> market_caps, std::span<const atx::usize> session_ages,
+    const RiskEstimatorPolicy& policy, const RiskVraEvidence* prior = nullptr);
+
+struct SpecificRiskConfigV2 {
+  atx::usize half_life{84};
+  atx::usize nw_lags{5};
+  atx::usize nw_half_life{252};
+  atx::usize min_observations{21};
+  atx::f64 bayesian_q{0.1};
+  atx::f64 variance_floor{1e-12};
+  atx::u64 max_working_bytes{268'435'456};
+};
+
+struct SpecificRiskV2 {
+  atx::core::linalg::VecX variances;
+  atx::core::linalg::VecX time_series_sigma;
+  atx::core::linalg::VecX structural_sigma;
+  atx::core::linalg::VecX shrinkage_weight;
+  std::vector<atx::usize> observations;
+  std::vector<atx::u8> structural_fallback;
+  std::vector<atx::u8> size_decile;
+  bool exposure_model_fitted{false};
+  atx::f64 exponentiation_correction{1.0}; // E0, estimated on reliable fit names
+};
+
+// Residuals are T x M newest-first, exposures M x P at the decision, and caps
+// are decision-time dollars. Missing residuals keep their date positions. With
+// q>0 every cap must be observed finite positive: no invented equal-cap deciles.
+// Missing exposure rows use a reported population structural prior. A universe
+// without any reliable observed specific risk refuses the estimate.
+[[nodiscard]] atx::core::Result<SpecificRiskV2> specific_risk_v2(
+    const atx::core::linalg::MatX& residuals, const atx::core::linalg::MatX& exposures,
+    std::span<const atx::f64> market_cap, std::span<const atx::usize> session_ages,
+    const SpecificRiskConfigV2& config = {});
 
 // Floor on a per-instrument specific VARIANCE so D_n > 0 even for an empty / constant
 // residual series (FactorModel::create re-floors at kSpecificVarFloor; this keeps the

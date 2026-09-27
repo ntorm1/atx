@@ -44,8 +44,14 @@
 //  * Std/var ddof: SAMPLE (ddof=1) for Ts std/var/zscore/skew/kurt and Cs zscore
 //    (documented; the VM must match). corr/cov use the population cross-moment
 //    form normalized so corr in [-1,1].
-//  * CsRank: ordinal percentile in [0,1] over the valid set, deterministic
-//    tie-break by ascending instrument index (NaNs last). NOT average rank.
+//  * CsRank / CsRankG / CsQuantile: AVERAGE-rank percentile in [0,1] over the
+//    valid set (W0-A0 / A-01) — tied values share the mean of their ordinal
+//    positions, so an all-tied row ranks 0.5 everywhere (matches ts_rank).
+//  * hump (W0-A0 / A-02): a NaN input emits NaN; a missing prior seeds from
+//    the first finite input; a prior idle for more than 5 NaN dates is dropped.
+//  * Flat windows (W0-A0 / A-09): see window_is_flat below.
+//  The oracle pins the DEFAULT vm.hpp KernelPolicy; the legacy_v1() rules are a
+//  VM-only digest-reproduction path.
 //  * CsNeutG/indneutralize/group_neutralize: implemented as per-group DEMEAN
 //    (the regression residual on pure group-dummy design equals demeaning), so
 //    CsDemeanG == CsNeutG here. RESIDUAL: a full WLS residualizer with extra
@@ -632,8 +638,8 @@ private:
 //  Cross-sectional kernels — per date-row over the valid set.
 // =========================================================================
 
-// Ordinal percentile rank in [0,1] over `valid` indices, tie-broken by ascending
-// instrument index (NaNs already excluded). Rank r (0-based) of n maps to
+// Average-rank percentile in [0,1] over `valid` indices (NaNs already excluded):
+// ties share the mean of their ordinal positions. Rank r (0-based) of n maps to
 // r/(n-1); a singleton set maps to 0.5 (centred — avoids a degenerate 0/0).
 void cs_rank(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
              std::span<atx::f64> out);
@@ -663,13 +669,13 @@ void cs_scale(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
 void cs_group_demean(std::span<const atx::f64> x, std::span<const atx::f64> g,
                      const std::vector<atx::usize> &valid, std::span<atx::f64> out);
 
-// CsRankG / CsZscoreG: rank (ordinal percentile) or sample-zscore WITHIN each
-// group of the valid set. `zscore` selects the variant.
+// CsRankG / CsZscoreG: rank (average-rank percentile) or sample-zscore WITHIN
+// each group of the valid set. `zscore` selects the variant.
 void cs_group(std::span<const atx::f64> x, std::span<const atx::f64> g,
               const std::vector<atx::usize> &valid, std::span<atx::f64> out, bool zscore);
 
 // CsQuantile (S3.3): discretize the valid set into `n` quantile buckets
-// (value = bucket/(n-1), ordinal rank as cs_rank); n < 2 -> NaN. Bit-identical
+// (value = bucket/(n-1), average rank as cs_rank); n < 2 -> NaN. Bit-identical
 // to cs_ops.hpp's cs_quantile_row.
 void cs_quantile(std::span<const atx::f64> x, const std::vector<atx::usize> &valid, atx::f64 n_real,
                  std::span<atx::f64> out);
@@ -723,6 +729,18 @@ void cs_group_scale(std::span<const atx::f64> x, std::span<const atx::f64> g,
   return s;
 }
 
+// W0-A0 (A-09) flat-window guard — the INDEPENDENT oracle restatement of
+// ts_ops.hpp's tsv_is_flat: a window of n values with mean `mean` and
+// Σ(v-mean)² == `ss` is flat iff sqrt(ss/n) <= kFlatRelTol·|mean|. Pinned
+// consequences: var/std 0; zscore/skew/kurt/corr/rsquare NaN; slope/resid 0;
+// a regression on a flat predictor NaN.
+inline constexpr atx::f64 kFlatRelTol = 1e-10;
+
+[[nodiscard]] inline bool window_is_flat(atx::f64 ss, atx::f64 mean, atx::usize n) noexcept {
+  return std::sqrt(ss / static_cast<atx::f64>(n)) <= kFlatRelTol * std::fabs(mean);
+}
+
+// Sample (ddof=1) variance; NaN if n<2; exactly 0.0 on a flat window (A-09).
 [[nodiscard]] inline atx::f64 sample_var(const std::vector<atx::f64> &w) noexcept {
   if (w.size() < 2) {
     return kNaN;
@@ -731,6 +749,9 @@ void cs_group_scale(std::span<const atx::f64> x, std::span<const atx::f64> g,
   atx::f64 ss = 0.0;
   for (const atx::f64 v : w) {
     ss += (v - m) * (v - m);
+  }
+  if (window_is_flat(ss, m, w.size())) {
+    return 0.0;
   }
   return ss / static_cast<atx::f64>(w.size() - 1);
 }

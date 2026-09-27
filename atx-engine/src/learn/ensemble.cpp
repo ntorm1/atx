@@ -178,6 +178,10 @@ StackingVerdict fit_stack(const FeatureMatrix &meta, const Hmm *regime, const St
   v.admitted = (v.oos_dsr_nonlinear > 0.0) && (v.oos_ic_nonlinear > v.oos_ic_linear);
   v.reason = v.admitted ? AdmitKind::Accept : AdmitKind::RejectFitness;
   v.verdict_hash = ensemble_detail::verdict_hash_of(v);
+  if (cfg.cpcv.rule != eval::CpcvRule::ObservationV1)
+    v.verdict_hash = static_cast<atx::u64>(atx::core::hash_combine(
+        static_cast<std::size_t>(v.verdict_hash), eval::cpcv_recipe_identity(cfg.cpcv)));
+
   return v;
 }
 
@@ -229,6 +233,12 @@ StackCandidate stack_to_candidate(const StackingVerdict & /*verdict*/, const Fea
   // streams -> distinct hash, so a fresh stack does not dedup against an empty
   // library). Order-fixed byte hash, no map / clock input (M1).
   std::vector<atx::f64> hbuf;
+  if (cfg.cpcv.rule != eval::CpcvRule::ObservationV1) {
+    const auto recipe = eval::cpcv_recipe_identity(cfg.cpcv);
+    hbuf.push_back(2.0);
+    hbuf.push_back(static_cast<atx::f64>(recipe >> 32U));
+    hbuf.push_back(static_cast<atx::f64>(recipe & 0xffffffffULL));
+  }
   hbuf.insert(hbuf.end(), out.pnl.begin(), out.pnl.end());
   hbuf.insert(hbuf.end(), out.pos_flat.begin(), out.pos_flat.end());
   // SAFETY: std::vector<f64> stores doubles contiguously; hbuf.data() points at

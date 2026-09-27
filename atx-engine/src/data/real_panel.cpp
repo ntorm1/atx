@@ -21,8 +21,10 @@
 #include "atx/engine/data/real_panel.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -44,6 +46,7 @@
 #include "atx/engine/data/corporate_actions.hpp"
 #include "atx/engine/data/dataset.hpp"
 #include "atx/engine/data/dataset_schema.hpp"
+#include "atx/engine/data/history_panel.hpp" // LevelBasis, history_field_level_basis
 #include "atx/engine/data/panel_digest.hpp"
 #include "atx/engine/data/universe.hpp"
 #include "atx/engine/regime/store.hpp"
@@ -264,7 +267,8 @@ struct AdjustedFields {
 };
 
 [[nodiscard]] AdjustedFields adjust_per_symbol(const Dataset &price, const AlignedView &aligned,
-                                               atx::usize caf_col, atx::usize div_col) {
+                                               atx::usize caf_col, atx::usize div_col,
+                                               TriGapRule gap_rule) {
   const atx::usize nd = price.num_dates();
   const atx::usize ni = price.num_instruments();
   const std::span<const atx::f64> raw = price.column(3); // close is column 3 (OHLCV order)
@@ -281,7 +285,7 @@ struct AdjustedFields {
       sym_caf[d] = aligned.aligned_columns[caf_col][flat];
       sym_div[d] = aligned.aligned_columns[div_col][flat];
     }
-    const AdjustedSeries adj = adjust_total_return(sym_close, sym_caf, sym_div);
+    const AdjustedSeries adj = adjust_total_return(sym_close, sym_caf, sym_div, gap_rule);
     for (atx::usize d = 0; d < nd; ++d) {
       const atx::usize flat = d * ni + i;
       out.total_return_index[flat] = adj.total_return_index[d];
@@ -326,7 +330,51 @@ void put_field(std::vector<std::string> &names, std::vector<std::vector<atx::f64
   data.push_back(std::move(col));
 }
 
+// D-03: the base-panel fields that are raw candle PRICES and so must be moved onto
+// close's TRI basis. volume / dollar_volume / adv{w} stay raw (liquidity levels).
+[[nodiscard]] bool is_candle_price_field(std::string_view name) noexcept {
+  return name == kFieldOpen || name == kFieldHigh || name == kFieldLow || name == "vwap";
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+//  restate_on_tri_basis — D-03 candle restatement (see real_panel.hpp).
+// ---------------------------------------------------------------------------
+std::vector<atx::f64> restate_on_tri_basis(std::span<const atx::f64> raw_price,
+                                           std::span<const atx::f64> total_return_index,
+                                           std::span<const atx::f64> raw_close) {
+  if (raw_price.size() != total_return_index.size() || raw_price.size() != raw_close.size()) {
+    return {};
+  }
+  std::vector<atx::f64> out(raw_price.size(), kNaN);
+  for (atx::usize k = 0; k < out.size(); ++k) {
+    const atx::f64 tri = total_return_index[k];
+    const atx::f64 raw = raw_close[k];
+    if (std::isfinite(tri) && tri > 0.0 && std::isfinite(raw) && raw > 0.0) {
+      out[k] = raw_price[k] * (tri / raw); // NaN raw price stays NaN
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+//  real_panel_field_level_basis — the D-01 metadata for a real-data field.
+// ---------------------------------------------------------------------------
+std::optional<LevelBasis> real_panel_field_level_basis(std::string_view name,
+                                                     RealPanelPriceBasis price_basis,
+                                                     alpha::VwapRule vwap_rule) noexcept {
+  if (name == "vwap") {
+    if (vwap_rule == alpha::VwapRule::RawDailyCloseV2) return LevelBasis::Raw;
+    if (vwap_rule != alpha::VwapRule::AdjustedTypicalV1) return std::nullopt;
+    return price_basis == RealPanelPriceBasis::MixedV1 ? LevelBasis::Raw
+                                                      : LevelBasis::AdjustedLevel;
+  }
+  if (price_basis == RealPanelPriceBasis::MixedV1 && is_candle_price_field(name)) {
+    return LevelBasis::Raw; // legacy: the candle stayed on the raw basis
+  }
+  return history_field_level_basis(name);
+}
 
 // ---------------------------------------------------------------------------
 //  finalize_panel_with_regime — testable seam: Panel::create + optional regime overlay.
@@ -366,13 +414,18 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
   ATX_TRY(auto price, build_price_dataset(cfg.databento_hive_root, cfg.window, canon));
   const atx::u16 adv_w = static_cast<atx::u16>(cfg.universe.adv_window);
   const std::vector<atx::u16> adv_windows = {adv_w};
-  ATX_TRY(auto base_panel, price_to_panel(price, adv_windows));
+  // This Dataset was assembled above from unadjusted Databento daily OHLCV.
+  ATX_TRY(auto base_panel, price_to_panel(price, adv_windows, cfg.vwap_rule,
+                                        alpha::ClosePriceBasis::Raw));
 
   // (4) align corp-actions onto the price axis; per-symbol total-return adjust.
-  ATX_TRY(auto aligned, align_onto(price, corp));
+  //     D-05: the dividend joins its own session only, the other columns carry a
+  //     staleness cap, and a price date past the master's coverage fails.
+  ATX_TRY(auto aligned, align_onto(price, corp, corp_action_align_options(cfg.corp_align)));
   // Canonical corp column order (corporate_actions.hpp): 0 cum_adj_factor,
   // 1 cash_dividend, 2 shares, 3 filed_date, 4 gics, 5 sic.
-  const AdjustedFields adj = adjust_per_symbol(price, aligned, /*caf*/ 0, /*div*/ 1);
+  const AdjustedFields adj =
+      adjust_per_symbol(price, aligned, /*caf*/ 0, /*div*/ 1, cfg.tri_gap_rule);
 
   // (5) universe screen over the augmented Panel + the axis-matched corp Dataset.
   ATX_TRY(auto corp_axis, corp_on_price_axis(price, aligned));
@@ -387,6 +440,9 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
   // Canonical close = total-return index (overrides the raw close base field).
   put_field(names, data, kFieldClose, adj.total_return_index);
   put_field(names, data, kFieldRawClose, adj.raw_close);
+  // D-03: the research candle must share close's basis. Under TriScaledV2 each
+  // open/high/low/vwap cell is scaled by that cell's TRI / raw_close.
+  const bool scale_candle = cfg.price_basis == RealPanelPriceBasis::TriScaledV2;
   // Carry every base/derived field EXCEPT the raw `close` (replaced by the TRI).
   for (atx::usize f = 0; f < base_panel.num_fields(); ++f) {
     const std::string_view fn = base_panel.field_name(static_cast<alpha::FieldId>(f));
@@ -394,7 +450,14 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
       continue; // raw close already retained as raw_close
     }
     const std::span<const atx::f64> col = base_panel.field_all(static_cast<alpha::FieldId>(f));
-    put_field(names, data, fn, std::vector<atx::f64>(col.begin(), col.end()));
+    if (scale_candle && is_candle_price_field(fn) &&
+        (fn != "vwap" || cfg.vwap_rule == alpha::VwapRule::AdjustedTypicalV1)) {
+      // Same axis and length as the TRI / raw_close (all nd*ni date-major).
+      put_field(names, data, fn,
+                restate_on_tri_basis(col, adj.total_return_index, adj.raw_close));
+    } else {
+      put_field(names, data, fn, std::vector<atx::f64>(col.begin(), col.end()));
+    }
   }
   // Universe fields: market_cap + sector (widened to f64). adv/dollar_volume already
   // present from price_to_panel; in_universe becomes the mask, not a field.
@@ -427,10 +490,25 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
   ATX_TRY_VOID(catalog.derive(std::string{kDatasetUniverse},
                               {std::string{kDatasetPrice}, std::string{kDatasetCorpActions}}));
 
+  // Level-basis tags parallel to the final field order (regime overlays included).
+  std::vector<LevelBasis> field_basis;
+  field_basis.reserve(panel.num_fields());
+  for (atx::usize f = 0; f < panel.num_fields(); ++f) {
+    const std::string_view fn = panel.field_name(static_cast<alpha::FieldId>(f));
+    const std::optional<LevelBasis> basis =
+        real_panel_field_level_basis(fn, cfg.price_basis, cfg.vwap_rule);
+    if (!basis.has_value()) {
+      return Err(ErrorCode::Internal, "build_real_panel: field '" + std::string{fn} +
+                                          "' has no level-basis tag");
+    }
+    field_basis.push_back(*basis);
+  }
+
   // Aggregate-init: alpha::Panel has no public default ctor, so build the result
   // in place (digest computed BEFORE the Panel is moved out).
   const atx::u64 digest = digest_panel(panel);
-  RealPanel result{std::move(panel), digest, catalog.names()}; // names ascending
+  RealPanel result{std::move(panel), digest, catalog.names(), // names ascending
+                   std::move(field_basis)};
   return Ok(std::move(result));
 }
 

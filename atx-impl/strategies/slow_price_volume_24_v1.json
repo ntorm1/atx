@@ -1,0 +1,301 @@
+{
+  "schema": "atx.dsl-strategy-library/v1",
+  "id": "slow_price_volume_24_v1",
+  "primary_variant": "weekly_partial25",
+  "fields": [
+    {
+      "name": "close",
+      "basis": "f64(raw source float32 close) * vendor cumulReturnFactor; adjusted total-return proxy"
+    },
+    {
+      "name": "raw_close",
+      "basis": "unadjusted source float32 close widened to f64; USD per share"
+    },
+    {
+      "name": "volume",
+      "basis": "unadjusted source share volume widened to f64"
+    }
+  ],
+  "families": [
+    {
+      "id": "momentum",
+      "description": "Intermediate price persistence with the most recent month excluded; two lookbacks share one family budget."
+    },
+    {
+      "id": "medium_reversal",
+      "description": "Contrarian intermediate returns with a five-session skip; smoothing reduces response to daily rank noise."
+    },
+    {
+      "id": "defensive_risk",
+      "description": "Low realized volatility and downside semivariance; risk preferences, not a claim of factor-neutral alpha."
+    },
+    {
+      "id": "liquidity_stress",
+      "description": "Recent dollar-volume expansion and unstable relative dollar liquidity; raw dollars avoid adjusted-price/share-volume mismatch."
+    },
+    {
+      "id": "price_volume_confirmation",
+      "description": "Slow return/flow co-movement and five-session return confirmation by relative raw-dollar volume."
+    },
+    {
+      "id": "trading_year_seasonality",
+      "description": "Lagged 252-session-year return-pattern proxies, not calendar-month or issuer-specific seasonality."
+    }
+  ],
+  "candidates": [
+    {
+      "id": "momentum_12_1_s21",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(delay(close, 21) / delay(close, 252) - 1), 21)",
+      "horizons": [
+        21,
+        63,
+        126
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "momentum_12_1_s63",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(delay(close, 21) / delay(close, 252) - 1), 63)",
+      "horizons": [
+        21,
+        63,
+        126
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "momentum_6_1_s21",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(delay(close, 21) / delay(close, 126) - 1), 21)",
+      "horizons": [
+        21,
+        63,
+        126
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "momentum_6_1_s63",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(delay(close, 21) / delay(close, 126) - 1), 63)",
+      "horizons": [
+        21,
+        63,
+        126
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "reversal_21_skip5_s21",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(-1 * rank(delay(close, 5) / delay(close, 21) - 1), 21)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "reversal_21_skip5_s63",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(-1 * rank(delay(close, 5) / delay(close, 21) - 1), 63)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "reversal_63_skip5_s21",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(-1 * rank(delay(close, 5) / delay(close, 63) - 1), 21)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "reversal_63_skip5_s63",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(-1 * rank(delay(close, 5) / delay(close, 63) - 1), 63)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "low_volatility_63_s63",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(-1 * rank(stddev((close / delay(close, 1) - 1), 63)), 63)",
+      "horizons": [
+        63,
+        126
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "low_volatility_63_s126",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(-1 * rank(stddev((close / delay(close, 1) - 1), 63)), 126)",
+      "horizons": [
+        63,
+        126
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "low_downside_126_s63",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(-1 * rank(ts_mean(min((close / delay(close, 1) - 1), 0) * min((close / delay(close, 1) - 1), 0), 126)), 63)",
+      "horizons": [
+        63,
+        126
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "low_downside_126_s126",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(-1 * rank(ts_mean(min((close / delay(close, 1) - 1), 0) * min((close / delay(close, 1) - 1), 0), 126)), 126)",
+      "horizons": [
+        63,
+        126
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "dollar_volume_shock_s21",
+      "family": "liquidity_stress",
+      "dsl": "decay_linear(-1 * rank(ts_mean((raw_close * volume), 21) / ts_mean((raw_close * volume), 126)), 21)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "dollar_volume_shock_s63",
+      "family": "liquidity_stress",
+      "dsl": "decay_linear(-1 * rank(ts_mean((raw_close * volume), 21) / ts_mean((raw_close * volume), 126)), 63)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "relative_liquidity_instability_s21",
+      "family": "liquidity_stress",
+      "dsl": "decay_linear(-1 * rank(stddev((raw_close * volume) / ts_mean((raw_close * volume), 63), 63)), 21)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "relative_liquidity_instability_s63",
+      "family": "liquidity_stress",
+      "dsl": "decay_linear(-1 * rank(stddev((raw_close * volume) / ts_mean((raw_close * volume), 63), 63)), 63)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "return_dollar_rank_correlation_s21",
+      "family": "price_volume_confirmation",
+      "dsl": "decay_linear(rank(correlation((close / delay(close, 1) - 1), rank((raw_close * volume)), 63)), 21)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "return_dollar_rank_correlation_s63",
+      "family": "price_volume_confirmation",
+      "dsl": "decay_linear(rank(correlation((close / delay(close, 1) - 1), rank((raw_close * volume)), 63)), 63)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "weekly_return_relative_flow_s21",
+      "family": "price_volume_confirmation",
+      "dsl": "decay_linear(rank(correlation(ts_sum((close / delay(close, 1) - 1), 5), (raw_close * volume) / ts_mean((raw_close * volume), 63), 63)), 21)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "weekly_return_relative_flow_s63",
+      "family": "price_volume_confirmation",
+      "dsl": "decay_linear(rank(correlation(ts_sum((close / delay(close, 1) - 1), 5), (raw_close * volume) / ts_mean((raw_close * volume), 63), 63)), 63)",
+      "horizons": [
+        21,
+        63
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "prior_year_forward_month_s21",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(delay(ts_sum((close / delay(close, 1) - 1), 21), 231)), 21)",
+      "horizons": [
+        21
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "prior_year_forward_month_s63",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(delay(ts_sum((close / delay(close, 1) - 1), 21), 231)), 63)",
+      "horizons": [
+        21
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "prior_year_forward_week_s21",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(delay(ts_sum((close / delay(close, 1) - 1), 5), 247)), 21)",
+      "horizons": [
+        21
+      ],
+      "sign_policy": "train-net"
+    },
+    {
+      "id": "prior_year_forward_week_s63",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(delay(ts_sum((close / delay(close, 1) - 1), 5), 247)), 63)",
+      "horizons": [
+        21
+      ],
+      "sign_policy": "train-net"
+    }
+  ],
+  "execution_variants": [
+    {
+      "id": "weekly_partial25",
+      "rebalance_sessions": 5,
+      "trade_fraction": 0.25,
+      "signal_smoothing_sessions": 0
+    },
+    {
+      "id": "weekly_full",
+      "rebalance_sessions": 5,
+      "trade_fraction": 1,
+      "signal_smoothing_sessions": 0
+    }
+  ]
+}

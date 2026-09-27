@@ -1,0 +1,1437 @@
+429cbe43 build: register causal price-exposure module and fixtures
+b9cf4023 feat(strategy): causal price-risk exposures and target neutralization [mega-alpha T3]
+atx-impl/CMakeLists.txt                          |   5 +-
+ atx-impl/src/strategy_price_exposures.cpp        | 430 +++++++++++++++++++++++
+ atx-impl/src/strategy_price_exposures.hpp        | 122 +++++++
+ atx-impl/tests/CMakeLists.txt                    |   3 +-
+ atx-impl/tests/strategy_price_exposures_test.cpp | 424 ++++++++++++++++++++++
+ 5 files changed, 981 insertions(+), 3 deletions(-)
+atx-impl/CMakeLists.txt                          |   5 +-
+ atx-impl/src/strategy_price_exposures.cpp        | 430 +++++++++++++++++++++++
+ atx-impl/src/strategy_price_exposures.hpp        | 122 +++++++
+ atx-impl/tests/CMakeLists.txt                    |   3 +-
+ atx-impl/tests/strategy_price_exposures_test.cpp | 424 ++++++++++++++++++++++
+ 5 files changed, 981 insertions(+), 3 deletions(-)
+
+diff --git a/atx-impl/CMakeLists.txt b/atx-impl/CMakeLists.txt
+index e1ee94a4..22f8de78 100644
+--- a/atx-impl/CMakeLists.txt
++++ b/atx-impl/CMakeLists.txt
+@@ -6,20 +6,21 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
+     src/dispatch.cpp
+     src/artifacts.cpp
+     src/serialize_panel.cpp
+     src/panel_artifact.cpp
+     src/panel_pipeline.cpp
+     src/stage_data_provenance.cpp
+     src/strategy_runner.cpp
+     src/strategy_ic_runner.cpp
+     src/strategy_ic_composition.cpp
+     src/strategy_target_replay.cpp
++    src/strategy_price_exposures.cpp
+     src/serialize_genome.cpp
+     src/stage_load.cpp
+     src/stage_regime.cpp
+     src/stage_panel.cpp
+     src/asof_field.cpp
+     # Incremental panel append: append == full-rebuild byte-identical (p7 S6-1)
+     src/append_history_panel.cpp
+     # FINRA short-interest augment core (p7 S2-1 / track-b B1; CLI deferred to S7)
+     src/stage_augment.cpp
+     src/stage_discover.cpp
+@@ -62,23 +63,23 @@ endif()
+ # portable exclusive fopen("wx"). Preserve that local environment: force-including
+ # the common PCH would parse the CRT before the source's suppression takes effect.
+ set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+ 
+ # Full recent-data IC runs need optimized VM/collection loops even in the warm
+ # iterative Debug tree. Keep the Debug CRT, assertions, FP and ISA settings;
+ # change only these private implementations, not the target or shared PCH.
+ # clang-cl /Ob0 leaves -fno-inline behind even after /O2 /Ob2; explicitly clear
+ # it with the public clang driver option. LLVM ignores the inherited /RTC1.
+ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+-    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp
++    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp
+         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+-    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp
++    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp
+         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+ endif()
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # engine_git_sha provenance bake (p7 S6-4).
+ # Resolve the engine's git commit at configure time and bake it into a
+ # private generated source consumed through build_provenance.hpp. Appends "-dirty"
+ # when the working tree has uncommitted changes; falls back to "unknown" if git
+ # is unavailable (CI / source tarball). This is provenance only — it never enters
+diff --git a/atx-impl/src/strategy_price_exposures.cpp b/atx-impl/src/strategy_price_exposures.cpp
+new file mode 100644
+index 00000000..528ee5ea
+--- /dev/null
++++ b/atx-impl/src/strategy_price_exposures.cpp
+@@ -0,0 +1,430 @@
++#include "strategy_price_exposures.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <limits>
++#include <new>
++#include <stdexcept>
++#include <utility>
++
++namespace atx::impl::strategy {
++namespace {
++namespace co = atx::core;
++constexpr usize kCols = kPriceExposureCount;
++constexpr usize kParams = kPriceExposureCount + 1; // intercept + exposures
++using Vec = std::array<f64, kParams>;
++using Mat = std::array<f64, kParams * kParams>;
++constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
++constexpr usize kMaxUsize = std::numeric_limits<usize>::max();
++constexpr usize kMaxWindow = 4096;
++constexpr usize kMaxReturnCells = usize{1} << 26; // 512 MiB of f64 return scratch
++// Same adjacent-interval guard and operation order as the target replay's rough
++// return (strategy_target_replay.cpp): an adjusted move beyond |log| 1.5, or one
++// the raw close does not corroborate within 0.10 log, is a data artifact.
++constexpr f64 kGuardAbsLog = 1.5, kGuardExcessLog = .10;
++// Floor on each Cholesky pivot of the unit-diagonal (Jacobi-equilibrated) normal
++// matrix, i.e. on 1 - R^2 of a column against its predecessors. It trips only on
++// numerically exact collinearity; real beta/vol/ADV correlations sit far above.
++constexpr f64 kMinPivot = 1e-8;
++// An exposure whose SD is below this fraction of its magnitude is constant up to
++// rounding; z-scoring it would promote rounding noise to a regressor.
++constexpr f64 kRelativeSdFloor = 1e-12;
++// A residual this small relative to the entry gross is rounding noise, not a
++// target: rescaling it to the entry gross would publish amplified noise.
++constexpr f64 kMinResidualFraction = 1e-9;
++
++[[nodiscard]] co::Status validate_config(const PriceExposureConfig& c) {
++  const bool windows = c.beta_window >= 2 && c.beta_window <= kMaxWindow &&
++                       c.vol_window >= 2 && c.vol_window <= kMaxWindow &&
++                       c.adv_window >= 1 && c.adv_window <= kMaxWindow &&
++                       c.min_return_pairs >= 2 && c.min_return_pairs <= c.beta_window;
++  if (!windows || c.min_names < kParams + 1 || !std::isfinite(c.clip_z) || !(c.clip_z > 0))
++    return co::Err(co::ErrorCode::InvalidArgument, "price exposures: invalid config");
++  return co::Ok();
++}
++template <class T> [[nodiscard]] co::Status grow(std::vector<T>& v, usize size) {
++  try {
++    if (v.size() < size) v.resize(size);
++  } catch (const std::bad_alloc&) {
++    return co::Err(co::ErrorCode::OutOfRange, "price exposures: scratch allocation failed");
++  } catch (const std::length_error&) {
++    return co::Err(co::ErrorCode::OutOfRange, "price exposures: scratch extent");
++  }
++  return co::Ok();
++}
++
++// ---------------------------------------------------------------- exposures
++[[nodiscard]] co::Status validate_input(const PriceExposureInput& in, usize d, usize block,
++                                        std::span<const f64> out, std::span<const u8> ok) {
++  if (!in.dates || !in.instruments || in.dates > kMaxUsize / in.instruments)
++    return co::Err(co::ErrorCode::InvalidArgument, "price exposures: dimensions");
++  if (in.instruments > kMaxReturnCells / block)
++    return co::Err(co::ErrorCode::OutOfRange, "price exposures: working size");
++  const usize cells = in.dates * in.instruments;
++  if (in.close.size() != cells || in.raw_close.size() != cells || in.volume.size() != cells ||
++      in.present.size() != cells || out.size() != in.instruments * kCols ||
++      ok.size() != in.instruments)
++    return co::Err(co::ErrorCode::InvalidArgument, "price exposures: span geometry");
++  if (d >= in.dates)
++    return co::Err(co::ErrorCode::InvalidArgument, "price exposures: decision outside panel");
++  return co::Ok();
++}
++// Interval t spans sessions (t-1, t]. The return block is the trailing
++// max(beta_window, vol_window) intervals ending at d, clipped at the panel start.
++struct Windows {
++  usize first{}, intervals{};     // block = intervals [first, first + intervals)
++  usize beta_rows{}, vol_rows{};  // trailing block rows each estimator reads
++  bool adv_full{};                // the whole ADV window lies inside the panel
++  usize first_session{};          // earliest session any estimator reads
++};
++[[nodiscard]] Windows windows_at(const PriceExposureConfig& cfg, usize d) {
++  const usize block = std::max(cfg.beta_window, cfg.vol_window);
++  Windows w;
++  w.first = d >= block ? d + 1 - block : 1;
++  w.intervals = d >= w.first ? d + 1 - w.first : 0;
++  w.beta_rows = std::min(cfg.beta_window, w.intervals);
++  w.vol_rows = std::min(cfg.vol_window, w.intervals);
++  w.adv_full = d + 1 >= cfg.adv_window;
++  w.first_session = w.intervals ? w.first - 1 : d;
++  if (w.adv_full) w.first_session = std::min(w.first_session, d + 1 - cfg.adv_window);
++  return w;
++}
++[[nodiscard]] co::Status check_presence(const PriceExposureInput& in, usize first_session,
++                                        usize d) {
++  for (usize k = first_session * in.instruments; k < (d + 1) * in.instruments; ++k)
++    if (in.present[k] > 1)
++      return co::Err(co::ErrorCode::InvalidArgument, "price exposures: presence byte");
++  return co::Ok();
++}
++[[nodiscard]] co::Status reserve_scratch(PriceExposureScratch& s, usize n, usize block) {
++  ATX_TRY_VOID(grow(s.returns, n * block));
++  ATX_TRY_VOID(grow(s.market, block));
++  ATX_TRY_VOID(grow(s.logs, 4 * n));
++  return grow(s.dollars, n);
++}
++// Log adjusted (first half) and raw (second half) close of one session; NaN
++// unless the row is present with finite positive close and raw_close.
++void load_logs(const PriceExposureInput& in, usize session, std::span<f64> logs) {
++  const usize n = in.instruments, base = session * n;
++  for (usize i = 0; i < n; ++i) {
++    const f64 close = in.close[base + i], raw = in.raw_close[base + i];
++    const bool priced = in.present[base + i] != 0 && std::isfinite(close) &&
++                        std::isfinite(raw) && close > 0 && raw > 0;
++    logs[i] = priced ? std::log(close) : kNaN;
++    logs[n + i] = priced ? std::log(raw) : kNaN;
++  }
++}
++// Valid interval returns (instrument-major, stride w.intervals; NaN if invalid)
++// and the equal-weight market return per interval. Each session is logged once.
++void fill_returns(const PriceExposureInput& in, const Windows& w, PriceExposureScratch& s) {
++  const usize n = in.instruments, rows = w.intervals;
++  if (!rows) return;
++  std::span<f64> prev(s.logs.data(), 2 * n), cur(s.logs.data() + 2 * n, 2 * n);
++  load_logs(in, w.first - 1, prev);
++  for (usize j = 0; j < rows; ++j) {
++    const usize b = (w.first + j) * n, a = b - n;
++    load_logs(in, w.first + j, cur);
++    f64 sum = 0;
++    usize count = 0;
++    for (usize i = 0; i < n; ++i) {
++      f64 r = kNaN;
++      if (!std::isnan(prev[i]) && !std::isnan(cur[i])) {
++        r = in.close[b + i] / in.close[a + i] - 1;
++        const f64 log_return = cur[i] - prev[i], raw_log_return = cur[n + i] - prev[n + i];
++        if (!std::isfinite(r) || std::abs(log_return) > kGuardAbsLog ||
++            std::abs(log_return) > std::abs(raw_log_return) + kGuardExcessLog)
++          r = kNaN;
++      }
++      s.returns[i * rows + j] = r;
++      if (!std::isnan(r)) {
++        sum += r;
++        ++count;
++      }
++    }
++    s.market[j] = count ? sum / static_cast<f64>(count) : kNaN;
++    std::swap(prev, cur);
++  }
++}
++// Dollar volume summed over sessions [first_session, d]; unusable sessions add 0.
++void sum_dollars(const PriceExposureInput& in, usize first_session, usize d,
++                 std::span<f64> sum) {
++  std::fill(sum.begin(), sum.end(), 0.0);
++  for (usize t = first_session; t < d + 1; ++t) {
++    const usize base = t * in.instruments;
++    for (usize i = 0; i < in.instruments; ++i) {
++      const f64 raw = in.raw_close[base + i], shares = in.volume[base + i];
++      const f64 dollars = raw * shares;
++      if (in.present[base + i] != 0 && std::isfinite(raw) && raw > 0 &&
++          std::isfinite(shares) && shares >= 0 && std::isfinite(dollars))
++        sum[i] += dollars;
++    }
++  }
++}
++// Two-pass sample cov(r, m)/var(m) over pairs with both sides valid.
++[[nodiscard]] f64 beta_of(std::span<const f64> r, std::span<const f64> m, usize min_pairs) {
++  usize n = 0;
++  f64 sum_r = 0, sum_m = 0;
++  for (usize j = 0; j < r.size(); ++j) {
++    if (std::isnan(r[j]) || std::isnan(m[j])) continue;
++    ++n;
++    sum_r += r[j];
++    sum_m += m[j];
++  }
++  if (n < min_pairs) return kNaN;
++  const f64 mean_r = sum_r / static_cast<f64>(n), mean_m = sum_m / static_cast<f64>(n);
++  f64 cov = 0, var = 0;
++  for (usize j = 0; j < r.size(); ++j) {
++    if (std::isnan(r[j]) || std::isnan(m[j])) continue;
++    const f64 dm = m[j] - mean_m;
++    cov += (r[j] - mean_r) * dm;
++    var += dm * dm;
++  }
++  return var > 0 ? cov / var : kNaN;
++}
++// Two-pass sample SD over valid returns; min_count >= 2.
++[[nodiscard]] f64 vol_of(std::span<const f64> r, usize min_count) {
++  usize n = 0;
++  f64 sum = 0;
++  for (const f64 x : r) {
++    if (std::isnan(x)) continue;
++    ++n;
++    sum += x;
++  }
++  if (n < min_count) return kNaN;
++  const f64 mean = sum / static_cast<f64>(n);
++  f64 squares = 0;
++  for (const f64 x : r)
++    if (!std::isnan(x)) squares += (x - mean) * (x - mean);
++  return std::sqrt(squares / static_cast<f64>(n - 1));
++}
++
++// ------------------------------------------------------------- neutralization
++[[nodiscard]] co::Status validate_neutralize(std::span<const f64> target,
++                                             std::span<const u8> member,
++                                             std::span<const f64> exposures,
++                                             std::span<const u8> ok) {
++  const usize n = target.size();
++  if (!n || member.size() != n || ok.size() != n || n > kMaxUsize / kCols ||
++      exposures.size() != n * kCols)
++    return co::Err(co::ErrorCode::InvalidArgument, "price neutralize: span geometry");
++  for (usize i = 0; i < n; ++i) {
++    if (member[i] > 1 || ok[i] > 1)
++      return co::Err(co::ErrorCode::InvalidArgument, "price neutralize: flag byte");
++    if (member[i] ? !std::isfinite(target[i]) : target[i] != 0)
++      return co::Err(co::ErrorCode::InvalidArgument,
++                     "price neutralize: members finite, nonmembers exactly zero");
++    for (usize k = 0; ok[i] && k < kCols; ++k)
++      if (!std::isfinite(exposures[i * kCols + k]))
++        return co::Err(co::ErrorCode::InvalidArgument,
++                       "price neutralize: ok row with non-finite exposure");
++  }
++  return co::Ok();
++}
++[[nodiscard]] co::Status reserve_scratch(NeutralizeScratch& s, usize n) {
++  ATX_TRY_VOID(grow(s.rows, n));
++  ATX_TRY_VOID(grow(s.z, n * kCols));
++  return grow(s.residual, n);
++}
++// Column k of z over rows: (x - mean) / sample SD, clipped to +-clip. False if
++// the column is constant up to rounding (or not finite).
++[[nodiscard]] bool standardize(std::span<const f64> exposures, std::span<const usize> rows,
++                               usize k, f64 clip, std::span<f64> z) {
++  f64 sum = 0, magnitude = 0;
++  for (const usize i : rows) {
++    const f64 x = exposures[i * kCols + k];
++    sum += x;
++    magnitude = std::max(magnitude, std::abs(x));
++  }
++  const f64 mean = sum / static_cast<f64>(rows.size());
++  f64 squares = 0;
++  for (const usize i : rows) {
++    const f64 dx = exposures[i * kCols + k] - mean;
++    squares += dx * dx;
++  }
++  const f64 sd = std::sqrt(squares / static_cast<f64>(rows.size() - 1));
++  if (!std::isfinite(sd) || !(sd > kRelativeSdFloor * magnitude)) return false;
++  for (usize r = 0; r < rows.size(); ++r)
++    z[r * kCols + k] = std::clamp((exposures[rows[r] * kCols + k] - mean) / sd, -clip, clip);
++  return true;
++}
++[[nodiscard]] Vec design_row(std::span<const f64> z, usize r) {
++  Vec x{};
++  x[0] = 1;
++  for (usize k = 0; k < kCols; ++k) x[k + 1] = z[r * kCols + k];
++  return x;
++}
++[[nodiscard]] Mat normal_matrix(std::span<const f64> z, usize rows) {
++  Mat a{};
++  for (usize r = 0; r < rows; ++r) {
++    const Vec x = design_row(z, r);
++    for (usize p = 0; p < kParams; ++p)
++      for (usize q = 0; q <= p; ++q) a[p * kParams + q] += x[p] * x[q];
++  }
++  for (usize p = 0; p < kParams; ++p)
++    for (usize q = p + 1; q < kParams; ++q) a[p * kParams + q] = a[q * kParams + p];
++  return a;
++}
++// X'y over the regressed rows.
++[[nodiscard]] Vec cross(std::span<const f64> z, std::span<const f64> y) {
++  Vec b{};
++  for (usize r = 0; r < y.size(); ++r) {
++    const Vec x = design_row(z, r);
++    for (usize p = 0; p < kParams; ++p) b[p] += x[p] * y[r];
++  }
++  return b;
++}
++void subtract_fit(std::span<const f64> z, const Vec& coef, std::span<f64> e) {
++  for (usize r = 0; r < e.size(); ++r) {
++    const Vec x = design_row(z, r);
++    f64 fit = 0;
++    for (usize p = 0; p < kParams; ++p) fit += x[p] * coef[p];
++    e[r] -= fit;
++  }
++}
++// Jacobi-equilibrated Cholesky: C = S A S with S = diag(A_kk^-1/2), C = L L'.
++// C has a unit diagonal, so the pivot floor is scale-free.
++struct Cholesky {
++  Mat l{};
++  Vec scale{};
++};
++[[nodiscard]] bool factor(const Mat& a, Cholesky& f) {
++  for (usize k = 0; k < kParams; ++k) {
++    const f64 diag = a[k * kParams + k];
++    if (!std::isfinite(diag) || !(diag > 0)) return false;
++    f.scale[k] = 1 / std::sqrt(diag);
++  }
++  for (usize j = 0; j < kParams; ++j) {
++    f64 pivot = a[j * kParams + j] * f.scale[j] * f.scale[j];
++    for (usize p = 0; p < j; ++p) pivot -= f.l[j * kParams + p] * f.l[j * kParams + p];
++    if (!(pivot > kMinPivot)) return false;
++    const f64 root = std::sqrt(pivot);
++    f.l[j * kParams + j] = root;
++    for (usize i = j + 1; i < kParams; ++i) {
++      f64 v = a[i * kParams + j] * f.scale[i] * f.scale[j];
++      for (usize p = 0; p < j; ++p) v -= f.l[i * kParams + p] * f.l[j * kParams + p];
++      f.l[i * kParams + j] = v / root;
++    }
++  }
++  return true;
++}
++// Solves A x = b as C (S^-1 x) = S b.
++[[nodiscard]] Vec solve(const Cholesky& f, const Vec& b) {
++  Vec y{};
++  for (usize i = 0; i < kParams; ++i) {
++    f64 v = b[i] * f.scale[i];
++    for (usize p = 0; p < i; ++p) v -= f.l[i * kParams + p] * y[p];
++    y[i] = v / f.l[i * kParams + i];
++  }
++  Vec x{};
++  for (usize i = kParams; i-- > 0;) {
++    f64 v = y[i];
++    for (usize p = i + 1; p < kParams; ++p) v -= f.l[p * kParams + i] * x[p];
++    x[i] = v / f.l[i * kParams + i];
++  }
++  for (usize k = 0; k < kParams; ++k) x[k] *= f.scale[k];
++  return x;
++}
++// OLS residual of target on [1, z] over the used rows into s.residual. Touches
++// only scratch and stats, so a refusal leaves the caller's target unmodified.
++[[nodiscard]] co::Status fit_residual(std::span<const f64> target,
++                                      std::span<const f64> exposures, f64 clip,
++                                      NeutralizeScratch& s, NeutralizeStats& stats) {
++  const usize n = stats.used;
++  const std::span<const usize> rows(s.rows.data(), n);
++  const std::span<f64> z(s.z.data(), n * kCols), e(s.residual.data(), n);
++  for (usize k = 0; k < kCols; ++k)
++    if (!standardize(exposures, rows, k, clip, z))
++      return co::Err(co::ErrorCode::Unavailable, "price neutralize: constant exposure");
++  Cholesky f;
++  if (!factor(normal_matrix(z, n), f))
++    return co::Err(co::ErrorCode::Unavailable, "price neutralize: ill-conditioned exposures");
++  for (usize r = 0; r < n; ++r) e[r] = target[rows[r]];
++  Vec coef = solve(f, cross(z, e));
++  subtract_fit(z, coef, e);
++  // One refinement step drives X'e from normal-equation error to rounding level.
++  const Vec delta = solve(f, cross(z, e));
++  subtract_fit(z, delta, e);
++  for (usize p = 0; p < kParams; ++p) coef[p] += delta[p];
++  f64 gross = 0;
++  for (const f64 v : e) gross += std::abs(v);
++  if (!std::isfinite(gross) || !(gross > kMinResidualFraction * stats.gross))
++    return co::Err(co::ErrorCode::Unavailable, "price neutralize: target spanned by exposures");
++  stats.residual_gross = gross;
++  stats.coefficients = coef;
++  return co::Ok();
++}
++} // namespace
++
++co::Status compute_price_exposures(const PriceExposureInput& in, const PriceExposureConfig& cfg,
++                                   usize d, PriceExposureScratch& scratch,
++                                   std::span<f64> out, std::span<u8> ok) {
++  ATX_TRY_VOID(validate_config(cfg));
++  const usize block = std::max(cfg.beta_window, cfg.vol_window);
++  ATX_TRY_VOID(validate_input(in, d, block, out, ok));
++  const Windows w = windows_at(cfg, d);
++  ATX_TRY_VOID(check_presence(in, w.first_session, d));
++  ATX_TRY_VOID(reserve_scratch(scratch, in.instruments, block));
++  fill_returns(in, w, scratch);
++  const std::span<f64> dollars(scratch.dollars.data(), in.instruments);
++  if (w.adv_full) sum_dollars(in, d + 1 - cfg.adv_window, d, dollars);
++  const usize vol_count = std::max<usize>(2, (cfg.vol_window + 1) / 2);
++  const std::span<const f64> market(scratch.market.data() + (w.intervals - w.beta_rows),
++                                    w.beta_rows);
++  for (usize i = 0; i < in.instruments; ++i) {
++    const std::span<const f64> r(scratch.returns.data() + i * w.intervals, w.intervals);
++    const f64 beta = beta_of(r.last(w.beta_rows), market, cfg.min_return_pairs);
++    const f64 vol = vol_of(r.last(w.vol_rows), vol_count);
++    const f64 mean_dollars = w.adv_full ? dollars[i] / static_cast<f64>(cfg.adv_window) : 0;
++    const f64 log_adv = mean_dollars > 0 ? std::log(mean_dollars) : kNaN;
++    out[i * kCols + kExposureBeta] = beta;
++    out[i * kCols + kExposureVol] = vol;
++    out[i * kCols + kExposureLogAdv] = log_adv;
++    ok[i] = static_cast<u8>(std::isfinite(beta) && std::isfinite(vol) && std::isfinite(log_adv));
++  }
++  return co::Ok();
++}
++
++co::Status neutralize_target(std::span<f64> target, std::span<const u8> member,
++                             std::span<const f64> exposures, std::span<const u8> ok,
++                             const PriceExposureConfig& cfg, NeutralizeScratch& scratch,
++                             NeutralizeStats& stats) {
++  stats = {};
++  ATX_TRY_VOID(validate_config(cfg));
++  ATX_TRY_VOID(validate_neutralize(target, member, exposures, ok));
++  ATX_TRY_VOID(reserve_scratch(scratch, target.size()));
++  for (usize i = 0; i < target.size(); ++i) {
++    if (!member[i]) continue;
++    stats.gross += std::abs(target[i]);
++    if (ok[i]) {
++      scratch.rows[stats.used++] = i;
++    } else {
++      ++stats.excluded;
++      stats.excluded_gross += std::abs(target[i]);
++    }
++  }
++  if (stats.used < cfg.min_names)
++    return co::Err(co::ErrorCode::Unavailable, "price neutralize: too few usable names");
++  if (stats.gross == 0) return co::Ok(); // flat stays flat: nothing to remove or rescale
++  ATX_TRY_VOID(fit_residual(target, exposures, cfg.clip_z, scratch, stats));
++  const f64 scale = stats.gross / stats.residual_gross;
++  for (usize i = 0; i < target.size(); ++i)
++    if (member[i] && !ok[i]) target[i] = 0;
++  for (usize r = 0; r < stats.used; ++r) target[scratch.rows[r]] = scratch.residual[r] * scale;
++  return co::Ok();
++}
++
++co::Status neutralize_price_risk(const PriceExposureInput& in, const PriceExposureConfig& cfg,
++                                 usize d, std::span<f64> target, std::span<const u8> member,
++                                 PriceRiskScratch& scratch, NeutralizeStats& stats) {
++  stats = {};
++  const usize n = in.instruments;
++  if (target.size() != n || member.size() != n || n > kMaxReturnCells)
++    return co::Err(co::ErrorCode::InvalidArgument, "price risk: target geometry");
++  ATX_TRY_VOID(grow(scratch.exposures, n * kCols));
++  ATX_TRY_VOID(grow(scratch.ok, n));
++  const std::span<f64> exposures(scratch.exposures.data(), n * kCols);
++  const std::span<u8> ok(scratch.ok.data(), n);
++  ATX_TRY_VOID(compute_price_exposures(in, cfg, d, scratch.exposure, exposures, ok));
++  return neutralize_target(target, member, exposures, ok, cfg, scratch.neutralize, stats);
++}
++} // namespace atx::impl::strategy
+diff --git a/atx-impl/src/strategy_price_exposures.hpp b/atx-impl/src/strategy_price_exposures.hpp
+new file mode 100644
+index 00000000..59089ac0
+--- /dev/null
++++ b/atx-impl/src/strategy_price_exposures.hpp
+@@ -0,0 +1,122 @@
++#pragma once
++
++#include <array>
++#include <span>
++#include <vector>
++#include "atx/core/error.hpp"
++#include "atx/core/types.hpp"
++
++// Causal ex-ante price-risk exposures (trailing market beta, volatility, log
++// dollar ADV) and neutralization of one decision's desired target against them.
++// Deterministic: fixed loop order, no threads, no hidden state between calls.
++namespace atx::impl::strategy {
++// Column order of every row-major instruments x kPriceExposureCount matrix.
++inline constexpr atx::usize kPriceExposureCount = 3;
++inline constexpr atx::usize kExposureBeta = 0, kExposureVol = 1, kExposureLogAdv = 2;
++
++struct PriceExposureConfig {
++  atx::usize beta_window{252}, vol_window{63}, adv_window{63}, min_return_pairs{126};
++  atx::usize min_names{50};
++  atx::f64 clip_z{5.0};
++};
++// All spans are borrowed for one synchronous call, date-major dates x instruments,
++// immutable. close is adjusted, raw_close unadjusted, volume raw shares, present
++// the physical vendor row flag (0/1; absent rows carry NaN prices). Decision d is
++// known after the close of session d.
++struct PriceExposureInput {
++  atx::usize dates{}, instruments{};
++  std::span<const atx::f64> close, raw_close, volume;
++  std::span<const atx::u8> present;
++};
++
++// Working storage owned by the caller and reused across calls. Its contents are
++// private to the implementation: default-construct once per replay and pass it to
++// every call. Buffers only grow (to the largest geometry seen), so repeated calls
++// on one panel geometry allocate nothing after the first.
++struct PriceExposureScratch {
++  std::vector<atx::f64> returns; // instrument-major valid interval returns, NaN if invalid
++  std::vector<atx::f64> market;  // equal-weight market return per interval
++  std::vector<atx::f64> logs;    // previous/current session log adjusted and raw closes
++  std::vector<atx::f64> dollars; // per-instrument dollar volume sum over the ADV window
++};
++struct NeutralizeScratch {
++  std::vector<atx::usize> rows;   // regressed row indices, ascending
++  std::vector<atx::f64> z;        // rows x kPriceExposureCount clipped z-scores
++  std::vector<atx::f64> residual; // rows
++};
++// compute_price_exposures + neutralize_target state for the one-call step below.
++struct PriceRiskScratch {
++  PriceExposureScratch exposure;
++  NeutralizeScratch neutralize;
++  std::vector<atx::f64> exposures; // instruments x kPriceExposureCount at the last decision
++  std::vector<atx::u8> ok;         // instruments at the last decision
++};
++struct NeutralizeStats {
++  atx::usize used{};     // member && ok rows regressed and rescaled
++  atx::usize excluded{}; // member && !ok rows forced to zero
++  atx::f64 gross{};          // sum |target| over members on entry; also the exit gross
++  atx::f64 excluded_gross{}; // share of that gross that sat on excluded rows
++  atx::f64 residual_gross{}; // sum |OLS residual| over used rows, before rescaling
++  // OLS coefficients on [1, z_beta, z_vol, z_log_adv] (clipped z-scores), after
++  // one refinement step. All zero for a flat target.
++  std::array<atx::f64, kPriceExposureCount + 1> coefficients{};
++};
++
++// Exposures known at decision d; every window ends at session d inclusive and no
++// session after d is read (nor validated). Interval t is (t-1, t]. Its adjusted
++// simple return is valid iff both endpoints are present with finite positive
++// close and raw_close, the return is finite, and the interval is not guarded:
++// |log adjusted ratio| > 1.5 or > |log raw ratio| + 0.10 (the target replay's
++// rough-return guard, identical operations).
++//  - market(t): equal-weight mean of valid returns across ALL instruments; NaN
++//    when none is valid.
++//  - beta: cov(r_i, market)/var(market) (sample, two-pass) over valid pairs in the
++//    last beta_window intervals; NaN below min_return_pairs pairs or var == 0.
++//  - vol: sample SD of valid r_i over the last vol_window intervals; NaN below
++//    max(2, ceil(vol_window / 2)) returns.
++//  - log_adv: log of the mean of raw_close * volume over the adv_window sessions
++//    ending at d. A session counts 0 unless present with finite positive raw_close,
++//    finite nonnegative volume and a finite product. NaN if the full window is not
++//    inside the panel (d + 1 < adv_window) or the mean is not positive.
++// Windows are clipped at the panel start; the pair minimums then gate beta/vol.
++// out: row-major instruments x kPriceExposureCount (beta, vol, log_adv), each
++// finite or NaN. ok[i] = 1 iff all three are finite, else 0.
++// Errors (out/ok unspecified): InvalidArgument for config (windows in [2, 4096],
++// adv_window in [1, 4096], 2 <= min_return_pairs <= beta_window, min_names >= 5,
++// finite clip_z > 0), span geometry, d >= dates or a presence byte > 1 in the
++// read sessions; OutOfRange if instruments x max(beta_window, vol_window) exceeds
++// 2^26 return cells or scratch allocation fails.
++// Cost: O((max(beta_window, vol_window) + adv_window) x instruments) per call.
++[[nodiscard]] atx::core::Status compute_price_exposures(
++    const PriceExposureInput&, const PriceExposureConfig&, atx::usize d,
++    PriceExposureScratch&, std::span<atx::f64> out, std::span<atx::u8> ok);
++
++// In-place cross-sectional neutralization of one decision's target. Rows used:
++// member && ok. Each exposure is z-scored over those rows (mean, sample SD) and
++// clipped to +-clip_z; the target is regressed by OLS on [1, z_beta, z_vol,
++// z_log_adv] (Jacobi-equilibrated Cholesky with a pivot floor, one iterative
++// refinement step) and replaced by the residual, rescaled so sum |target| over
++// the used rows equals the entry gross (sum |target| over all members).
++// member && !ok rows become 0; nonmembers are untouched and must already be 0.
++// A flat (zero-gross) target is returned unchanged.
++// Preconditions (else InvalidArgument): equal lengths, exposures row-major
++// target.size() x kPriceExposureCount, member/ok bytes 0/1, members finite,
++// nonmembers exactly 0, ok rows finite exposures.
++// Data refusals (Unavailable): fewer than min_names used rows, a constant
++// exposure column, an ill-conditioned normal matrix, or a residual that is a
++// negligible fraction of the gross. OutOfRange if scratch allocation fails.
++// Strong guarantee: on any error target is unmodified. stats is reset on entry;
++// on a refusal it still reports used/excluded/gross.
++[[nodiscard]] atx::core::Status neutralize_target(
++    std::span<atx::f64> target, std::span<const atx::u8> member,
++    std::span<const atx::f64> exposures, std::span<const atx::u8> ok,
++    const PriceExposureConfig&, NeutralizeScratch&, NeutralizeStats&);
++
++// One-call decision step: compute_price_exposures at d, then neutralize_target on
++// the target (instruments long) with that decision's member row. Same contracts
++// and errors as the two primitives; target is unmodified on any error.
++[[nodiscard]] atx::core::Status neutralize_price_risk(
++    const PriceExposureInput&, const PriceExposureConfig&, atx::usize d,
++    std::span<atx::f64> target, std::span<const atx::u8> member, PriceRiskScratch&,
++    NeutralizeStats&);
++} // namespace atx::impl::strategy
+diff --git a/atx-impl/tests/CMakeLists.txt b/atx-impl/tests/CMakeLists.txt
+index d3368464..74272ef4 100644
+--- a/atx-impl/tests/CMakeLists.txt
++++ b/atx-impl/tests/CMakeLists.txt
+@@ -93,12 +93,13 @@ atx_impl_test_target_environment(atx-impl-strategy-tests)
+ 
+ # Small postimplementation checks for the fast research path and its actual DSLs.
+ add_executable(atx-impl-strategy-ic-tests EXCLUDE_FROM_ALL
+     strategy_ic_composition_test.cpp
+     strategy_ic_runner_test.cpp
+     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_screen_test.cpp"
+     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_research_test.cpp")
+ atx_impl_test_target_environment(atx-impl-strategy-ic-tests)
+ 
+ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
+-    strategy_target_replay_test.cpp)
++    strategy_target_replay_test.cpp
++    strategy_price_exposures_test.cpp)
+ atx_impl_test_target_environment(atx-impl-strategy-target-tests)
+diff --git a/atx-impl/tests/strategy_price_exposures_test.cpp b/atx-impl/tests/strategy_price_exposures_test.cpp
+new file mode 100644
+index 00000000..a3e9f984
+--- /dev/null
++++ b/atx-impl/tests/strategy_price_exposures_test.cpp
+@@ -0,0 +1,424 @@
++#include <algorithm>
++#include <array>
++#include <bit>
++#include <cmath>
++#include <limits>
++#include <span>
++#include <string>
++#include <vector>
++#include <gtest/gtest.h>
++#include "../src/strategy_price_exposures.hpp"
++
++namespace {
++using namespace atx;
++namespace st = atx::impl::strategy;
++namespace co = atx::core;
++constexpr f64 missing = std::numeric_limits<f64>::quiet_NaN();
++constexpr usize kCols = st::kPriceExposureCount;
++
++struct Lcg {
++  u64 state{};
++  f64 uniform() { // [0, 1)
++    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
++    return static_cast<f64>(state >> 11) * 0x1.0p-53;
++  }
++};
++struct Panel {
++  usize dates{}, names{};
++  std::vector<f64> close, raw, volume;
++  std::vector<u8> present;
++  Panel(usize d, usize n) : dates(d), names(n), close(d * n, 100.0), raw(d * n, 100.0),
++      volume(d * n, 1000.0), present(d * n, 1) {}
++  usize at(usize t, usize i) const { return t * names + i; }
++  st::PriceExposureInput input() const { return {dates, names, close, raw, volume, present}; }
++};
++st::PriceExposureConfig small_config() {
++  st::PriceExposureConfig cfg;
++  cfg.beta_window = 40; cfg.vol_window = 20; cfg.adv_window = 10; cfg.min_return_pairs = 20;
++  cfg.min_names = 5;
++  return cfg;
++}
++// A common factor with per-name loadings plus idiosyncratic noise. Coprime strides
++// decorrelate the loading, noise-scale and dollar-volume ranks across names.
++Panel noisy_panel(usize dates, usize names, u64 seed) {
++  Panel p(dates, names);
++  Lcg rng{seed};
++  for (usize i = 0; i < names; ++i) p.close[p.at(0, i)] = 20.0 + static_cast<f64>(i);
++  for (usize t = 1; t < dates; ++t) {
++    const f64 common = 0.03 * (rng.uniform() - 0.5);
++    for (usize i = 0; i < names; ++i) {
++      const f64 loading = 0.4 + 0.15 * static_cast<f64>((i * 5) % names);
++      const f64 idio = 0.004 + 0.003 * static_cast<f64>((i * 7) % names);
++      p.close[p.at(t, i)] =
++          p.close[p.at(t - 1, i)] * (1 + loading * common + idio * (rng.uniform() - 0.5));
++    }
++  }
++  for (usize t = 0; t < dates; ++t)
++    for (usize i = 0; i < names; ++i) {
++      p.raw[p.at(t, i)] = p.close[p.at(t, i)];
++      p.volume[p.at(t, i)] =
++          1e4 * static_cast<f64>(1 + (i * 11) % names) * (0.5 + rng.uniform());
++    }
++  return p;
++}
++struct Exposures {
++  std::vector<f64> out;
++  std::vector<u8> ok;
++};
++Exposures exposures_at(const Panel& p, const st::PriceExposureConfig& cfg, usize d,
++                       st::PriceExposureScratch& scratch) {
++  Exposures e{std::vector<f64>(p.names * kCols), std::vector<u8>(p.names)};
++  const auto status = st::compute_price_exposures(p.input(), cfg, d, scratch, e.out, e.ok);
++  EXPECT_TRUE(status) << (status ? std::string{} : status.error().to_string());
++  return e;
++}
++void expect_bits(std::span<const f64> actual, std::span<const f64> expected) {
++  ASSERT_EQ(actual.size(), expected.size());
++  for (usize k = 0; k < actual.size(); ++k)
++    EXPECT_EQ(std::bit_cast<u64>(actual[k]), std::bit_cast<u64>(expected[k])) << k;
++}
++void expect_code(const co::Status& status, co::ErrorCode code) {
++  ASSERT_FALSE(status);
++  EXPECT_EQ(status.error().code(), code) << status.error().to_string();
++}
++
++// Desired-target shape: demeaned over members, gross 1, nonmembers exactly 0.
++void normalize(std::vector<f64>& target, const std::vector<u8>& member) {
++  f64 sum = 0, gross = 0;
++  usize count = 0;
++  for (usize i = 0; i < target.size(); ++i) {
++    if (!member[i]) target[i] = 0;
++    else { sum += target[i]; ++count; }
++  }
++  const f64 mean = sum / static_cast<f64>(count);
++  for (usize i = 0; i < target.size(); ++i)
++    if (member[i]) { target[i] -= mean; gross += std::abs(target[i]); }
++  for (usize i = 0; i < target.size(); ++i)
++    if (member[i]) target[i] /= gross;
++}
++struct Section {
++  std::vector<f64> target, exposures;
++  std::vector<u8> member, ok;
++  bool used(usize i) const { return member[i] && ok[i]; }
++};
++// Uniform exposures (|z| < sqrt(3), so no clip binds) and a target loading on beta.
++Section section(usize n, u64 seed) {
++  Section s{std::vector<f64>(n), std::vector<f64>(n * kCols), std::vector<u8>(n, 1),
++            std::vector<u8>(n, 1)};
++  Lcg rng{seed};
++  for (usize i = 0; i < n; ++i) {
++    s.exposures[i * kCols + st::kExposureBeta] = 0.3 + 1.2 * rng.uniform();
++    s.exposures[i * kCols + st::kExposureVol] = 0.01 + 0.03 * rng.uniform();
++    s.exposures[i * kCols + st::kExposureLogAdv] = 12.0 + 6.0 * rng.uniform();
++  }
++  for (usize i = 0; i < n; ++i)
++    s.target[i] = s.exposures[i * kCols + st::kExposureBeta] + (rng.uniform() - 0.5);
++  normalize(s.target, s.member);
++  return s;
++}
++// The regression design rebuilt from the contract: z over used rows, sample SD, clip.
++std::vector<f64> design_z(const Section& s, f64 clip) {
++  const usize n = s.target.size();
++  std::vector<f64> z(n * kCols, 0.0);
++  for (usize k = 0; k < kCols; ++k) {
++    f64 sum = 0, squares = 0;
++    usize count = 0;
++    for (usize i = 0; i < n; ++i)
++      if (s.used(i)) { sum += s.exposures[i * kCols + k]; ++count; }
++    const f64 mean = sum / static_cast<f64>(count);
++    for (usize i = 0; i < n; ++i)
++      if (s.used(i)) squares += std::pow(s.exposures[i * kCols + k] - mean, 2);
++    const f64 sd = std::sqrt(squares / static_cast<f64>(count - 1));
++    for (usize i = 0; i < n; ++i)
++      if (s.used(i))
++        z[i * kCols + k] = std::clamp((s.exposures[i * kCols + k] - mean) / sd, -clip, clip);
++  }
++  return z;
++}
++// [sum w, sum w z_beta, sum w z_vol, sum w z_log_adv] over used rows.
++std::array<f64, kCols + 1> moments(const std::vector<f64>& w, const Section& s,
++                                   const std::vector<f64>& z) {
++  std::array<f64, kCols + 1> m{};
++  for (usize i = 0; i < w.size(); ++i) {
++    if (!s.used(i)) continue;
++    m[0] += w[i];
++    for (usize k = 0; k < kCols; ++k) m[k + 1] += w[i] * z[i * kCols + k];
++  }
++  return m;
++}
++f64 sample_sd(const std::vector<f64>& xs) {
++  f64 sum = 0, squares = 0;
++  for (const f64 x : xs) sum += x;
++  const f64 mean = sum / static_cast<f64>(xs.size());
++  for (const f64 x : xs) squares += (x - mean) * (x - mean);
++  return std::sqrt(squares / static_cast<f64>(xs.size() - 1));
++}
++} // namespace
++
++TEST(StrategyPriceExposures, ExactMarketMultiplesRecoverBetaVolAndDollarVolume) {
++  // Returns are exact multiples k of an alternating +-2% factor. mean(k) == 1, so
++  // the equal-weight market IS the factor and beta_i == k_i.
++  const std::array<f64, 3> k{0.5, 1.0, 1.5};
++  const std::array<f64, 3> dollars{2.0e6, 3.5e7, 8.0e8};
++  Panel p(61, 3);
++  for (usize i = 0; i < p.names; ++i) {
++    p.close[p.at(0, i)] = 50.0 + 10.0 * static_cast<f64>(i);
++    for (usize t = 1; t < p.dates; ++t)
++      p.close[p.at(t, i)] = p.close[p.at(t - 1, i)] * (1 + k[i] * (t % 2 ? -0.02 : 0.02));
++    for (usize t = 0; t < p.dates; ++t) {
++      p.raw[p.at(t, i)] = 2.0 * p.close[p.at(t, i)];            // constant adjustment
++      p.volume[p.at(t, i)] = dollars[i] / p.raw[p.at(t, i)];    // constant dollar volume
++    }
++  }
++  st::PriceExposureScratch scratch;
++  const auto e = exposures_at(p, small_config(), 60, scratch);
++  for (usize i = 0; i < p.names; ++i) {
++    EXPECT_EQ(e.ok[i], 1) << i;
++    EXPECT_NEAR(e.out[i * kCols + st::kExposureBeta], k[i], 1e-11) << i;
++    // Last 20 intervals: ten each of +-0.02k -> mean 0, sample SD 0.02k sqrt(20/19).
++    EXPECT_NEAR(e.out[i * kCols + st::kExposureVol], 0.02 * k[i] * std::sqrt(20.0 / 19.0),
++                1e-13) << i;
++    EXPECT_NEAR(e.out[i * kCols + st::kExposureLogAdv], std::log(dollars[i]), 1e-12) << i;
++  }
++}
++
++TEST(StrategyPriceExposures, RewritingEverySessionAfterDecisionLeavesExposuresBitIdentical) {
++  Panel p = noisy_panel(80, 8, 11);
++  const auto cfg = small_config();
++  constexpr usize d = 55;
++  st::PriceExposureScratch scratch;
++  const auto before = exposures_at(p, cfg, d, scratch);
++  for (usize i = 0; i < p.names; ++i) EXPECT_EQ(before.ok[i], 1) << i;
++  for (usize t = d + 1; t < p.dates; ++t)
++    for (usize i = 0; i < p.names; ++i) {
++      const usize k = p.at(t, i);
++      p.close[k] = (t + i) % 3 ? 1e9 : missing;
++      p.raw[k] = -1;
++      p.volume[k] = 1e300;
++      p.present[k] = static_cast<u8>((t + i) % 2);
++    }
++  const auto after = exposures_at(p, cfg, d, scratch);
++  expect_bits(after.out, before.out);
++  EXPECT_EQ(after.ok, before.ok);
++  // Session d itself is inside every window.
++  p.close[p.at(d, 0)] *= 1.01;
++  p.raw[p.at(d, 0)] *= 1.01;
++  const auto moved = exposures_at(p, cfg, d, scratch);
++  for (usize k = 0; k < kCols; ++k)
++    EXPECT_NE(std::bit_cast<u64>(moved.out[k]), std::bit_cast<u64>(before.out[k])) << k;
++}
++
++TEST(StrategyPriceExposures, ScratchReuseAcrossClippedAndFullWindowsIsStateless) {
++  const Panel p = noisy_panel(70, 12, 5);
++  const auto cfg = small_config();
++  st::PriceExposureScratch reused;
++  for (const usize d : {usize{0}, usize{3}}) {
++    const auto early = exposures_at(p, cfg, d, reused); // windows clipped at panel start
++    for (const u8 flag : early.ok) EXPECT_EQ(flag, 0) << d;
++  }
++  const auto late = exposures_at(p, cfg, 60, reused);
++  const auto again = exposures_at(p, cfg, 45, reused);
++  st::PriceExposureScratch fresh;
++  const auto clean = exposures_at(p, cfg, 45, fresh);
++  expect_bits(again.out, clean.out);
++  EXPECT_EQ(again.ok, clean.ok);
++  EXPECT_EQ(std::count(late.ok.begin(), late.ok.end(), u8{1}), 12);
++}
++
++TEST(StrategyPriceExposures, GuardedAndAbsentIntervalsLeaveMarketAndLosePairs) {
++  // mean(k) == 1 with or without any single k == 1 name, so the market stays the
++  // factor f exactly when an excluded name's interval is (correctly) dropped.
++  const std::array<f64, 6> k{0.5, 1.5, 1.0, 1.0, 1.0, 1.0};
++  constexpr usize split = 3, crash = 4, gap = 5;               // names
++  constexpr usize split_t = 20, crash_t = 25, gap_s = 40;      // interval, interval, session
++  const auto f = [](usize t) { return 0.01 * (static_cast<f64>((t * 7) % 11) - 5.0) / 5.0; };
++  Panel p(50, 6);
++  for (usize i = 0; i < p.names; ++i) {
++    p.close[p.at(0, i)] = p.raw[p.at(0, i)] = 40.0 + 5.0 * static_cast<f64>(i);
++    for (usize t = 1; t < p.dates; ++t) {
++      const f64 g = 1 + k[i] * f(t);
++      // Adjusted-only doubling (raw disagrees by log 2 > 0.10) and a corroborated
++      // 5x move (|log| > 1.5): both guarded, one interval each.
++      const bool split_now = i == split && t == split_t, crash_now = i == crash && t == crash_t;
++      const f64 adj_jump = split_now ? 2.0 : crash_now ? 5.0 : 1.0;
++      const f64 raw_jump = crash_now ? 5.0 : 1.0;
++      p.close[p.at(t, i)] = p.close[p.at(t - 1, i)] * g * adj_jump;
++      p.raw[p.at(t, i)] = p.raw[p.at(t - 1, i)] * g * raw_jump;
++    }
++    for (usize t = 0; t < p.dates; ++t)
++      p.volume[p.at(t, i)] = 1e6 * static_cast<f64>(i + 1) / p.raw[p.at(t, i)];
++  }
++  const usize hole = p.at(gap_s, gap); // absent row: both adjacent intervals invalid
++  p.present[hole] = 0;
++  p.close[hole] = p.raw[hole] = p.volume[hole] = missing;
++  st::PriceExposureConfig cfg;
++  cfg.beta_window = 30; cfg.vol_window = 30; cfg.adv_window = 10; cfg.min_return_pairs = 29;
++  cfg.min_names = 5;
++  constexpr usize d = 45; // return intervals 16..45
++  st::PriceExposureScratch scratch;
++  const auto e = exposures_at(p, cfg, d, scratch);
++  const auto x = [&](usize i, usize col) { return e.out[i * kCols + col]; };
++  for (usize i = 0; i < gap; ++i) {
++    EXPECT_EQ(e.ok[i], 1) << i; // split and crash lose one pair each: 29 >= 29
++    EXPECT_NEAR(x(i, st::kExposureBeta), k[i], 1e-11) << i;
++  }
++  EXPECT_EQ(e.ok[gap], 0); // the gap loses two pairs: 28 < 29
++  EXPECT_TRUE(std::isnan(x(gap, st::kExposureBeta)));
++  const auto factor_sd = [&](usize skip_a, usize skip_b) {
++    std::vector<f64> xs;
++    for (usize t = d + 1 - cfg.vol_window; t <= d; ++t)
++      if (t != skip_a && t != skip_b) xs.push_back(f(t));
++    return sample_sd(xs);
++  };
++  EXPECT_NEAR(x(2, st::kExposureVol), factor_sd(0, 0), 1e-13);
++  EXPECT_NEAR(x(split, st::kExposureVol), factor_sd(split_t, split_t), 1e-13);
++  EXPECT_NEAR(x(crash, st::kExposureVol), factor_sd(crash_t, crash_t), 1e-13);
++  EXPECT_NEAR(x(gap, st::kExposureVol), factor_sd(gap_s, gap_s + 1), 1e-13);
++  // The absent session contributes zero dollars; the denominator stays adv_window.
++  EXPECT_NEAR(x(2, st::kExposureLogAdv), std::log(3e6), 1e-12);
++  EXPECT_NEAR(x(gap, st::kExposureLogAdv), std::log(0.9 * 6e6), 1e-12);
++}
++
++TEST(StrategyPriceExposures, RejectsBadConfigGeometryDecisionAndPresenceBytes) {
++  Panel p = noisy_panel(30, 8, 2);
++  const auto cfg = small_config();
++  st::PriceExposureScratch scratch;
++  std::vector<f64> out(p.names * kCols), short_out(p.names * kCols - 1);
++  std::vector<u8> ok(p.names);
++  const auto run = [&](const st::PriceExposureConfig& c, usize d, std::span<f64> o) {
++    return st::compute_price_exposures(p.input(), c, d, scratch, o, ok);
++  };
++  EXPECT_TRUE(run(cfg, 29, out));
++  expect_code(run(cfg, 30, out), co::ErrorCode::InvalidArgument);
++  expect_code(run(cfg, 29, short_out), co::ErrorCode::InvalidArgument);
++  auto bad = cfg; bad.min_return_pairs = bad.beta_window + 1;
++  expect_code(run(bad, 29, out), co::ErrorCode::InvalidArgument);
++  bad = cfg; bad.min_names = st::kPriceExposureCount + 1;
++  expect_code(run(bad, 29, out), co::ErrorCode::InvalidArgument);
++  bad = cfg; bad.clip_z = 0;
++  expect_code(run(bad, 29, out), co::ErrorCode::InvalidArgument);
++  bad = cfg; bad.vol_window = 1;
++  expect_code(run(bad, 29, out), co::ErrorCode::InvalidArgument);
++  // A malformed presence byte is refused only where it is read: never after d.
++  p.present[p.at(29, 3)] = 2;
++  EXPECT_TRUE(run(cfg, 28, out));
++  expect_code(run(cfg, 29, out), co::ErrorCode::InvalidArgument);
++}
++
++TEST(StrategyPriceNeutralize, ResidualIsOrthogonalGrossPreservingAndRespectsSupport) {
++  constexpr usize n = 90;
++  Section s = section(n, 3);
++  usize used = 0, excluded = 0;
++  for (usize i = 0; i < n; ++i) {
++    if (i % 13 == 0) {
++      s.member[i] = 0; // nonmember: must stay exactly 0
++    } else if (i % 11 == 5) {
++      s.ok[i] = 0; // member without exposures: forced to 0
++      for (usize k = 0; k < kCols; ++k) s.exposures[i * kCols + k] = missing;
++    }
++    used += s.used(i) ? 1U : 0U;
++    excluded += (s.member[i] && !s.ok[i]) ? 1U : 0U;
++  }
++  normalize(s.target, s.member);
++  st::PriceExposureConfig cfg;
++  cfg.min_names = 20;
++  st::NeutralizeScratch scratch;
++  st::NeutralizeStats stats;
++  auto w = s.target;
++  const auto status = st::neutralize_target(w, s.member, s.exposures, s.ok, cfg, scratch, stats);
++  ASSERT_TRUE(status) << status.error().to_string();
++  EXPECT_EQ(stats.used, used);
++  EXPECT_EQ(stats.excluded, excluded);
++  EXPECT_GT(excluded, usize{0});
++  EXPECT_NEAR(stats.gross, 1.0, 1e-12);
++  f64 gross = 0;
++  for (usize i = 0; i < n; ++i) {
++    if (!s.used(i)) {
++      EXPECT_EQ(w[i], 0.0) << i;
++    }
++    gross += std::abs(w[i]);
++  }
++  EXPECT_NEAR(gross, 1.0, 1e-12);
++  const auto z = design_z(s, cfg.clip_z);
++  const auto before = moments(s.target, s, z), after = moments(w, s, z);
++  EXPECT_GT(std::abs(before[1]), 1e-2); // the input really loaded on beta
++  for (usize k = 0; k < after.size(); ++k) EXPECT_LE(std::abs(after[k]), 1e-12) << k;
++  // Scratch reuse is stateless: a second call reproduces the result bit for bit.
++  auto again = s.target;
++  st::NeutralizeStats again_stats;
++  ASSERT_TRUE(st::neutralize_target(again, s.member, s.exposures, s.ok, cfg, scratch,
++                                    again_stats));
++  expect_bits(again, w);
++}
++
++TEST(StrategyPriceNeutralize, TooFewNamesOrDegenerateExposuresRefuseWithoutMutation) {
++  st::PriceExposureConfig cfg;
++  cfg.min_names = 10;
++  st::NeutralizeScratch scratch;
++  const auto refuses = [&](const Section& s, co::ErrorCode code) {
++    auto w = s.target;
++    st::NeutralizeStats stats;
++    expect_code(st::neutralize_target(w, s.member, s.exposures, s.ok, cfg, scratch, stats), code);
++    expect_bits(w, s.target);
++  };
++  Section few = section(12, 1); // 9 usable rows < min_names 10
++  few.ok[0] = few.ok[1] = few.ok[2] = 0;
++  refuses(few, co::ErrorCode::Unavailable);
++  Section collinear = section(40, 2); // vol an exact affine image of beta
++  for (usize i = 0; i < 40; ++i)
++    collinear.exposures[i * kCols + st::kExposureVol] =
++        2 * collinear.exposures[i * kCols + st::kExposureBeta] + 3;
++  refuses(collinear, co::ErrorCode::Unavailable);
++  Section constant = section(40, 4);
++  for (usize i = 0; i < 40; ++i) constant.exposures[i * kCols + st::kExposureLogAdv] = 15.25;
++  refuses(constant, co::ErrorCode::Unavailable);
++  Section spanned = section(40, 6); // target exactly in the exposure span: no residual
++  for (usize i = 0; i < 40; ++i)
++    spanned.target[i] = spanned.exposures[i * kCols + st::kExposureBeta];
++  normalize(spanned.target, spanned.member);
++  refuses(spanned, co::ErrorCode::Unavailable);
++  Section dirty = section(40, 8); // nonmember carrying weight
++  dirty.member[3] = 0;
++  refuses(dirty, co::ErrorCode::InvalidArgument);
++  Section short_ok = section(40, 9);
++  short_ok.ok.pop_back();
++  refuses(short_ok, co::ErrorCode::InvalidArgument);
++}
++
++TEST(StrategyPriceNeutralize, OneCallStepMatchesPrimitivesAndFlatTargetStaysFlat) {
++  const Panel p = noisy_panel(70, 12, 21);
++  const auto cfg = small_config();
++  constexpr usize d = 60;
++  std::vector<u8> member(p.names, 1);
++  member[4] = 0;
++  std::vector<f64> target(p.names);
++  Lcg rng{9};
++  for (auto& v : target) v = rng.uniform() - 0.5;
++  normalize(target, member);
++  st::PriceExposureScratch exposure_scratch;
++  std::vector<f64> exposures(p.names * kCols);
++  std::vector<u8> ok(p.names);
++  ASSERT_TRUE(st::compute_price_exposures(p.input(), cfg, d, exposure_scratch, exposures, ok));
++  auto expected = target;
++  st::NeutralizeScratch neutralize_scratch;
++  st::NeutralizeStats expected_stats;
++  ASSERT_TRUE(st::neutralize_target(expected, member, exposures, ok, cfg, neutralize_scratch,
++                                    expected_stats));
++  EXPECT_EQ(expected_stats.used, usize{11});
++  st::PriceRiskScratch scratch;
++  for (int pass = 0; pass < 2; ++pass) { // second pass reuses grown scratch
++    auto w = target;
++    st::NeutralizeStats stats;
++    ASSERT_TRUE(st::neutralize_price_risk(p.input(), cfg, d, w, member, scratch, stats));
++    expect_bits(w, expected);
++    EXPECT_EQ(stats.used, expected_stats.used);
++    EXPECT_EQ(std::bit_cast<u64>(stats.residual_gross),
++              std::bit_cast<u64>(expected_stats.residual_gross));
++  }
++  std::vector<f64> flat(p.names, 0.0);
++  st::NeutralizeStats flat_stats;
++  ASSERT_TRUE(st::neutralize_price_risk(p.input(), cfg, d, flat, member, scratch, flat_stats));
++  for (const f64 v : flat) EXPECT_EQ(v, 0.0);
++  EXPECT_EQ(flat_stats.gross, 0.0);
++  EXPECT_EQ(flat_stats.used, usize{11});
++}
+
+--- Changes ---
+
+atx-impl/CMakeLists.txt
+  @@ -6,20 +6,21 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
+  +    src/strategy_price_exposures.cpp
+       src/serialize_genome.cpp
+       src/stage_load.cpp
+       src/stage_regime.cpp
+       src/stage_panel.cpp
+       src/asof_field.cpp
+       # Incremental panel append: append == full-rebuild byte-identical (p7 S6-1)
+       src/append_history_panel.cpp
+       # FINRA short-interest augment core (p7 S2-1 / track-b B1; CLI deferred to S7)
+       src/stage_augment.cpp
+       src/stage_discover.cpp
+  @@ -62,23 +63,23 @@ endif()
+  -    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp
+  +    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp
+           APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+  -    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp
+  +    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp
+           PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+   endif()
+   
+   
+   # ---------------------------------------------------------------------------
+   # engine_git_sha provenance bake (p7 S6-4).
+   # Resolve the engine's git commit at configure time and bake it into a
+   # private generated source consumed through build_provenance.hpp. Appends "-dirty"
+   # when the working tree has uncommitted changes; falls back to "unknown" if git
+   # is unavailable (CI / source tarball). This is provenance only — it never enters
+  +3 -2
+
+atx-impl/src/strategy_price_exposures.cpp
+  @@ -0,0 +1,430 @@
+  +#include "strategy_price_exposures.hpp"
+  +
+  +#include <algorithm>
+  +#include <cmath>
+  +#include <limits>
+  +#include <new>
+  +#include <stdexcept>
+  +#include <utility>
+  +
+  +namespace atx::impl::strategy {
+  +namespace {
+  +namespace co = atx::core;
+  +constexpr usize kCols = kPriceExposureCount;
+  +constexpr usize kParams = kPriceExposureCount + 1; // intercept + exposures
+  +using Vec = std::array<f64, kParams>;
+  +using Mat = std::array<f64, kParams * kParams>;
+  +constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
+  +constexpr usize kMaxUsize = std::numeric_limits<usize>::max();
+  +constexpr usize kMaxWindow = 4096;
+  +constexpr usize kMaxReturnCells = usize{1} << 26; // 512 MiB of f64 return scratch
+  +// Same adjacent-interval guard and operation order as the target replay's rough
+  +// return (strategy_target_replay.cpp): an adjusted move beyond |log| 1.5, or one
+  +// the raw close does not corroborate within 0.10 log, is a data artifact.
+  +constexpr f64 kGuardAbsLog = 1.5, kGuardExcessLog = .10;
+  +// Floor on each Cholesky pivot of the unit-diagonal (Jacobi-equilibrated) normal
+  +// matrix, i.e. on 1 - R^2 of a column against its predecessors. It trips only on
+  +// numerically exact collinearity; real beta/vol/ADV correlations sit far above.
+  +constexpr f64 kMinPivot = 1e-8;
+  +// An exposure whose SD is below this fraction of its magnitude is constant up to
+  +// rounding; z-scoring it would promote rounding noise to a regressor.
+  +constexpr f64 kRelativeSdFloor = 1e-12;
+  +// A residual this small relative to the entry gross is rounding noise, not a
+  +// target: rescaling it to the entry gross would publish amplified noise.
+  +constexpr f64 kMinResidualFraction = 1e-9;
+  +
+  +[[nodiscard]] co::Status validate_config(const PriceExposureConfig& c) {
+  +  const bool windows = c.beta_window >= 2 && c.beta_window <= kMaxWindow &&
+  +                       c.vol_window >= 2 && c.vol_window <= kMaxWindow &&
+  +                       c.adv_window >= 1 && c.adv_window <= kMaxWindow &&
+  +                       c.min_return_pairs >= 2 && c.min_return_pairs <= c.beta_window;
+  +  if (!windows || c.min_names < kParams + 1 || !std::isfinite(c.clip_z) || !(c.clip_z > 0))
+  +    return co::Err(co::ErrorCode::InvalidArgument, "price exposures: invalid config");
+  +  return co::Ok();
+  +}
+  +template <class T> [[nodiscard]] co::Status grow(std::vector<T>& v, usize size) {
+  +  try {
+  +    if (v.size() < size) v.resize(size);
+  +  } catch (const std::bad_alloc&) {
+  +    return co::Err(co::ErrorCode::OutOfRange, "price exposures: scratch allocation failed");
+  +  } catch (const std::length_error&) {
+  +    return co::Err(co::ErrorCode::OutOfRange, "price exposures: scratch extent");
+  +  }
+  +  return co::Ok();
+  +}
+  +
+  +// ---------------------------------------------------------------- exposures
+  +[[nodiscard]] co::Status validate_input(const PriceExposureInput& in, usize d, usize block,
+  +                                        std::span<const f64> out, std::span<const u8> ok) {
+  +  if (!in.dates || !in.instruments || in.dates > kMaxUsize / in.instruments)
+  +    return co::Err(co::ErrorCode::InvalidArgument, "price exposures: dimensions");
+  +  if (in.instruments > kMaxReturnCells / block)
+  +    return co::Err(co::ErrorCode::OutOfRange, "price exposures: working size");
+  +  const usize cells = in.dates * in.instruments;
+  +  if (in.close.size() != cells || in.raw_close.size() != cells || in.volume.size() != cells ||
+  +      in.present.size() != cells || out.size() != in.instruments * kCols ||
+  +      ok.size() != in.instruments)
+  +    return co::Err(co::ErrorCode::InvalidArgument, "price exposures: span geometry");
+  +  if (d >= in.dates)
+  +    return co::Err(co::ErrorCode::InvalidArgument, "price exposures: decision outside panel");
+  +  return co::Ok();
+  +}
+  +// Interval t spans sessions (t-1, t]. The return block is the trailing
+  +// max(beta_window, vol_window) intervals ending at d, clipped at the panel start.
+  +struct Windows {
+  +  usize first{}, intervals{};     // block = intervals [first, first + intervals)
+  +  usize beta_rows{}, vol_rows{};  // trailing block rows each estimator reads
+  +  bool adv_full{};                // the whole ADV window lies inside the panel
+  +  usize first_session{};          // earliest session any estimator reads
+  +};
+  +[[nodiscard]] Windows windows_at(const PriceExposureConfig& cfg, usize d) {
+  +  const usize block = std::max(cfg.beta_window, cfg.vol_window);
+  +  Windows w;
+  +  w.first = d >= block ? d + 1 - block : 1;
+  +  w.intervals = d >= w.first ? d + 1 - w.first : 0;
+  +  w.beta_rows = std::min(cfg.beta_window, w.intervals);
+  +  w.vol_rows = std::min(cfg.vol_window, w.intervals);
+  +  w.adv_full = d + 1 >= cfg.adv_window;
+  +  w.first_session = w.intervals ? w.first - 1 : d;
+  +  if (w.adv_full) w.first_session = std::min(w.first_session, d + 1 - cfg.adv_window);
+  +  return w;
+  +}
+  +[[nodiscard]] co::Status check_presence(const PriceExposureInput& in, usize first_session,
+  +                                        usize d) {
+  +  for (usize k = first_session * in.instruments; k < (d + 1) * in.instruments; ++k)
+  +    if (in.present[k] > 1)
+  +      return co::Err(co::ErrorCode::InvalidArgument, "price exposures: presence byte");
+  +  return co::Ok();
+  +}
+  +[[nodiscard]] co::Status reserve_scratch(PriceExposureScratch& s, usize n, usize block) {
+  +  ATX_TRY_VOID(grow(s.returns, n * block));
+  ... (330 lines truncated)
+  +430 -0
+
+atx-impl/src/strategy_price_exposures.hpp
+  @@ -0,0 +1,122 @@
+  +#pragma once
+  +
+  +#include <array>
+  +#include <span>
+  +#include <vector>
+  +#include "atx/core/error.hpp"
+  +#include "atx/core/types.hpp"
+  +
+  +// Causal ex-ante price-risk exposures (trailing market beta, volatility, log
+  +// dollar ADV) and neutralization of one decision's desired target against them.
+  +// Deterministic: fixed loop order, no threads, no hidden state between calls.
+  +namespace atx::impl::strategy {
+  +// Column order of every row-major instruments x kPriceExposureCount matrix.
+  +inline constexpr atx::usize kPriceExposureCount = 3;
+  +inline constexpr atx::usize kExposureBeta = 0, kExposureVol = 1, kExposureLogAdv = 2;
+  +
+  +struct PriceExposureConfig {
+  +  atx::usize beta_window{252}, vol_window{63}, adv_window{63}, min_return_pairs{126};
+  +  atx::usize min_names{50};
+  +  atx::f64 clip_z{5.0};
+  +};
+  +// All spans are borrowed for one synchronous call, date-major dates x instruments,
+  +// immutable. close is adjusted, raw_close unadjusted, volume raw shares, present
+  +// the physical vendor row flag (0/1; absent rows carry NaN prices). Decision d is
+  +// known after the close of session d.
+  +struct PriceExposureInput {
+  +  atx::usize dates{}, instruments{};
+  +  std::span<const atx::f64> close, raw_close, volume;
+  +  std::span<const atx::u8> present;
+  +};
+  +
+  +// Working storage owned by the caller and reused across calls. Its contents are
+  +// private to the implementation: default-construct once per replay and pass it to
+  +// every call. Buffers only grow (to the largest geometry seen), so repeated calls
+  +// on one panel geometry allocate nothing after the first.
+  +struct PriceExposureScratch {
+  +  std::vector<atx::f64> returns; // instrument-major valid interval returns, NaN if invalid
+  +  std::vector<atx::f64> market;  // equal-weight market return per interval
+  +  std::vector<atx::f64> logs;    // previous/current session log adjusted and raw closes
+  +  std::vector<atx::f64> dollars; // per-instrument dollar volume sum over the ADV window
+  +};
+  +struct NeutralizeScratch {
+  +  std::vector<atx::usize> rows;   // regressed row indices, ascending
+  +  std::vector<atx::f64> z;        // rows x kPriceExposureCount clipped z-scores
+  +  std::vector<atx::f64> residual; // rows
+  +};
+  +// compute_price_exposures + neutralize_target state for the one-call step below.
+  +struct PriceRiskScratch {
+  +  PriceExposureScratch exposure;
+  +  NeutralizeScratch neutralize;
+  +  std::vector<atx::f64> exposures; // instruments x kPriceExposureCount at the last decision
+  +  std::vector<atx::u8> ok;         // instruments at the last decision
+  +};
+  +struct NeutralizeStats {
+  +  atx::usize used{};     // member && ok rows regressed and rescaled
+  +  atx::usize excluded{}; // member && !ok rows forced to zero
+  +  atx::f64 gross{};          // sum |target| over members on entry; also the exit gross
+  +  atx::f64 excluded_gross{}; // share of that gross that sat on excluded rows
+  +  atx::f64 residual_gross{}; // sum |OLS residual| over used rows, before rescaling
+  +  // OLS coefficients on [1, z_beta, z_vol, z_log_adv] (clipped z-scores), after
+  +  // one refinement step. All zero for a flat target.
+  +  std::array<atx::f64, kPriceExposureCount + 1> coefficients{};
+  +};
+  +
+  +// Exposures known at decision d; every window ends at session d inclusive and no
+  +// session after d is read (nor validated). Interval t is (t-1, t]. Its adjusted
+  +// simple return is valid iff both endpoints are present with finite positive
+  +// close and raw_close, the return is finite, and the interval is not guarded:
+  +// |log adjusted ratio| > 1.5 or > |log raw ratio| + 0.10 (the target replay's
+  +// rough-return guard, identical operations).
+  +//  - market(t): equal-weight mean of valid returns across ALL instruments; NaN
+  +//    when none is valid.
+  +//  - beta: cov(r_i, market)/var(market) (sample, two-pass) over valid pairs in the
+  +//    last beta_window intervals; NaN below min_return_pairs pairs or var == 0.
+  +//  - vol: sample SD of valid r_i over the last vol_window intervals; NaN below
+  +//    max(2, ceil(vol_window / 2)) returns.
+  +//  - log_adv: log of the mean of raw_close * volume over the adv_window sessions
+  +//    ending at d. A session counts 0 unless present with finite positive raw_close,
+  +//    finite nonnegative volume and a finite product. NaN if the full window is not
+  +//    inside the panel (d + 1 < adv_window) or the mean is not positive.
+  +// Windows are clipped at the panel start; the pair minimums then gate beta/vol.
+  +// out: row-major instruments x kPriceExposureCount (beta, vol, log_adv), each
+  +// finite or NaN. ok[i] = 1 iff all three are finite, else 0.
+  +// Errors (out/ok unspecified): InvalidArgument for config (windows in [2, 4096],
+  +// adv_window in [1, 4096], 2 <= min_return_pairs <= beta_window, min_names >= 5,
+  +// finite clip_z > 0), span geometry, d >= dates or a presence byte > 1 in the
+  +// read sessions; OutOfRange if instruments x max(beta_window, vol_window) exceeds
+  +// 2^26 return cells or scratch allocation fails.
+  +// Cost: O((max(beta_window, vol_window) + adv_window) x instruments) per call.
+  +[[nodiscard]] atx::core::Status compute_price_exposures(
+  +    const PriceExposureInput&, const PriceExposureConfig&, atx::usize d,
+  +    PriceExposureScratch&, std::span<atx::f64> out, std::span<atx::u8> ok);
+  +
+  +// In-place cross-sectional neutralization of one decision's target. Rows used:
+  +// member && ok. Each exposure is z-scored over those rows (mean, sample SD) and
+  +// clipped to +-clip_z; the target is regressed by OLS on [1, z_beta, z_vol,
+  +// z_log_adv] (Jacobi-equilibrated Cholesky with a pivot floor, one iterative
+  +// refinement step) and replaced by the residual, rescaled so sum |target| over
+  +// the used rows equals the entry gross (sum |target| over all members).
+  +// member && !ok rows become 0; nonmembers are untouched and must already be 0.
+  ... (22 lines truncated)
+  +122 -0
+
+atx-impl/tests/CMakeLists.txt
+  @@ -93,12 +93,13 @@ atx_impl_test_target_environment(atx-impl-strategy-tests)
+  -    strategy_target_replay_test.cpp)
+  +    strategy_target_replay_test.cpp
+  +    strategy_price_exposures_test.cpp)
+   atx_impl_test_target_environment(atx-impl-strategy-target-tests)
+  +2 -1
+
+atx-impl/tests/strategy_price_exposures_test.cpp
+  @@ -0,0 +1,424 @@
+  +#include <algorithm>
+  +#include <array>
+  +#include <bit>
+  +#include <cmath>
+  +#include <limits>
+  +#include <span>
+  +#include <string>
+  +#include <vector>
+  +#include <gtest/gtest.h>
+  +#include "../src/strategy_price_exposures.hpp"
+  +
+  +namespace {
+  +using namespace atx;
+  +namespace st = atx::impl::strategy;
+  +namespace co = atx::core;
+  +constexpr f64 missing = std::numeric_limits<f64>::quiet_NaN();
+  +constexpr usize kCols = st::kPriceExposureCount;
+  +
+  +struct Lcg {
+  +  u64 state{};
+  +  f64 uniform() { // [0, 1)
+  +    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+  +    return static_cast<f64>(state >> 11) * 0x1.0p-53;
+  +  }
+  +};
+  +struct Panel {
+  +  usize dates{}, names{};
+  +  std::vector<f64> close, raw, volume;
+  +  std::vector<u8> present;
+  +  Panel(usize d, usize n) : dates(d), names(n), close(d * n, 100.0), raw(d * n, 100.0),
+  +      volume(d * n, 1000.0), present(d * n, 1) {}
+  +  usize at(usize t, usize i) const { return t * names + i; }
+  +  st::PriceExposureInput input() const { return {dates, names, close, raw, volume, present}; }
+  +};
+  +st::PriceExposureConfig small_config() {
+  +  st::PriceExposureConfig cfg;
+  +  cfg.beta_window = 40; cfg.vol_window = 20; cfg.adv_window = 10; cfg.min_return_pairs = 20;
+  +  cfg.min_names = 5;
+  +  return cfg;
+  +}
+  +// A common factor with per-name loadings plus idiosyncratic noise. Coprime strides
+  +// decorrelate the loading, noise-scale and dollar-volume ranks across names.
+  +Panel noisy_panel(usize dates, usize names, u64 seed) {
+  +  Panel p(dates, names);
+  +  Lcg rng{seed};
+  +  for (usize i = 0; i < names; ++i) p.close[p.at(0, i)] = 20.0 + static_cast<f64>(i);
+  +  for (usize t = 1; t < dates; ++t) {
+  +    const f64 common = 0.03 * (rng.uniform() - 0.5);
+  +    for (usize i = 0; i < names; ++i) {
+  +      const f64 loading = 0.4 + 0.15 * static_cast<f64>((i * 5) % names);
+  +      const f64 idio = 0.004 + 0.003 * static_cast<f64>((i * 7) % names);
+  +      p.close[p.at(t, i)] =
+  +          p.close[p.at(t - 1, i)] * (1 + loading * common + idio * (rng.uniform() - 0.5));
+  +    }
+  +  }
+  +  for (usize t = 0; t < dates; ++t)
+  +    for (usize i = 0; i < names; ++i) {
+  +      p.raw[p.at(t, i)] = p.close[p.at(t, i)];
+  +      p.volume[p.at(t, i)] =
+  +          1e4 * static_cast<f64>(1 + (i * 11) % names) * (0.5 + rng.uniform());
+  +    }
+  +  return p;
+  +}
+  +struct Exposures {
+  +  std::vector<f64> out;
+  +  std::vector<u8> ok;
+  +};
+  +Exposures exposures_at(const Panel& p, const st::PriceExposureConfig& cfg, usize d,
+  +                       st::PriceExposureScratch& scratch) {
+  +  Exposures e{std::vector<f64>(p.names * kCols), std::vector<u8>(p.names)};
+  +  const auto status = st::compute_price_exposures(p.input(), cfg, d, scratch, e.out, e.ok);
+  +  EXPECT_TRUE(status) << (status ? std::string{} : status.error().to_string());
+  +  return e;
+  +}
+  +void expect_bits(std::span<const f64> actual, std::span<const f64> expected) {
+  +  ASSERT_EQ(actual.size(), expected.size());
+  +  for (usize k = 0; k < actual.size(); ++k)
+  +    EXPECT_EQ(std::bit_cast<u64>(actual[k]), std::bit_cast<u64>(expected[k])) << k;
+  +}
+  +void expect_code(const co::Status& status, co::ErrorCode code) {
+  +  ASSERT_FALSE(status);
+  +  EXPECT_EQ(status.error().code(), code) << status.error().to_string();
+  +}
+  +
+  +// Desired-target shape: demeaned over members, gross 1, nonmembers exactly 0.
+  +void normalize(std::vector<f64>& target, const std::vector<u8>& member) {
+  +  f64 sum = 0, gross = 0;
+  +  usize count = 0;
+  +  for (usize i = 0; i < target.size(); ++i) {
+  +    if (!member[i]) target[i] = 0;
+  +    else { sum += target[i]; ++count; }
+  +  }
+  +  const f64 mean = sum / static_cast<f64>(count);
+  +  for (usize i = 0; i < target.size(); ++i)
+  +    if (member[i]) { target[i] -= mean; gross += std::abs(target[i]); }
+  +  for (usize i = 0; i < target.size(); ++i)
+  +    if (member[i]) target[i] /= gross;
+  +}
+  +struct Section {
+  +  std::vector<f64> target, exposures;
+  ... (324 lines truncated)
+  +424 -0
+[full diff: rtk git diff --no-compact]

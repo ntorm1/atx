@@ -20,6 +20,15 @@ import sys
 import zipfile
 
 POLICY_VERSION = "tickerhistory-qa-v1"
+QA_V2_POLICY_VERSION = "tickerhistory-qa-v2"
+# Recovered cp15-idgap-investigation.md, SHA256 fd4adfba...0a8c9c.
+# Canonical full allowlist is ASCII dates + LF, including a final LF.
+QA_V2_DATES = tuple(dt.date.fromisoformat(s) for s in (
+    "2016-01-15", "2016-02-12", "2016-03-24", "2016-05-27", "2016-07-01",
+    "2016-09-02", "2016-11-23", "2016-12-23", "2016-12-30", "2017-01-13",
+    "2017-02-17", "2017-04-13", "2017-05-26", "2017-07-03", "2017-09-01",
+    "2017-11-22", "2017-12-22", "2018-01-12", "2018-02-16"))
+QA_V2_DATES_SHA256 = "0589dc9ae5c96e68d183820f4733ade7df94245d805e285e43e1bdf29c0fef60"
 MAX_LINE_BYTES = 1 << 20
 MAX_DATE_BYTES = 128 << 20
 I64_MAX = (1 << 63) - 1
@@ -141,11 +150,21 @@ def write_json(path: Path, value) -> None:
 
 
 def prepare(source: Path, output_dir: Path, start: dt.date, end: dt.date,
-            qa_v2_dates: tuple[dt.date, ...] = ()) -> dict:
+            qa_v2_dates: tuple[dt.date, ...] = (), *, qa_rule: str | None = None) -> dict:
     source = source.resolve(strict=True)
     output_dir = output_dir.resolve()
     if start > end:
         raise ValueError("start-date must be at or before end-date")
+    rule = qa_rule or ("qa-v2" if qa_v2_dates else "legacy-v1")
+    if rule not in ("qa-v2", "legacy-v1") or (rule == "legacy-v1" and qa_v2_dates):
+        raise ValueError("invalid QA rule/date combination")
+    if rule == "qa-v2":
+        if end >= dt.date(2020, 1, 1):
+            raise ValueError("qa-v2 requires a pre-2020 window")
+        expected_dates = tuple(d for d in QA_V2_DATES if start <= d <= end)
+        if qa_v2_dates and tuple(sorted(qa_v2_dates)) != expected_dates:
+            raise ValueError("qa-v2 dates must equal the pinned allowlist inside the window")
+        qa_v2_dates = expected_dates
     if len(set(qa_v2_dates)) != len(qa_v2_dates) or any(not start <= d <= end for d in qa_v2_dates):
         raise ValueError("qa-v2 dates must be unique and inside the window")
     qa_v2_keys = {d.isoformat().encode() for d in qa_v2_dates}
@@ -312,13 +331,18 @@ def prepare(source: Path, output_dir: Path, start: dt.date, end: dt.date,
                        "Input quality checkpoint only; no investment performance or tradability claim"],
             "bounds": {"max_line_bytes": MAX_LINE_BYTES, "max_source_bytes_per_date": MAX_DATE_BYTES},
         }
-        if qa_v2_keys:
-            # policy_version stays tickerhistory-qa-v1 (the native load provenance gate);
-            # qa_version records the superset policy. Only rescued rows differ from source.
+        if rule == "qa-v2":
+            manifest["policy_version"] = QA_V2_POLICY_VERSION
             manifest["qa_version"] = "v2"
+            manifest["qa_v2_allowlist_sha256"] = QA_V2_DATES_SHA256
+            manifest["qa_v2_blanked_fields"] = list(QA_V2_BLANKED)
+            manifest["qa_v2_rescuable_reasons"] = QA_V2_RESCUABLE
             manifest["qa_v2_dates"] = sorted(qa_v2_daily)
             manifest["qa_v2_daily_counts"] = qa_v2_daily
             manifest["accepted"]["rows_modified_qa_v2"] = stats["qa_v2_rescued_rows"]
+            manifest["accepted"]["rows_preserved_byte_for_byte"] = stats["qa_v2_rescued_rows"] == 0
+            manifest["accepted"]["unmodified_rows"] = stats["accepted_rows"] - stats["qa_v2_rescued_rows"]
+            manifest["accepted"]["unmodified_rows_preserved_byte_for_byte"] = True
             manifest["policy"].append("QA-v2: on qa_v2_dates only, rows whose sole rejection reason is "
                                       "ohlc_order_violation are accepted with open/high/low blanked; "
                                       "all other rows are preserved byte-for-byte")
@@ -345,11 +369,13 @@ def main() -> int:
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--start-date", required=True, type=dt.date.fromisoformat)
     parser.add_argument("--end-date", required=True, type=dt.date.fromisoformat)
+    parser.add_argument("--qa-rule", choices=("qa-v2", "legacy-v1"), default="qa-v2")
     parser.add_argument("--qa-v2-dates", default="",
-                        help="Comma-separated YYYY-MM-DD corrupted-OHLC sessions (default: QA-v1 only)")
+                        help="Optional exact pinned allowlist inside the window; qa-v2 derives it by default")
     args = parser.parse_args()
     qa_v2_dates = tuple(dt.date.fromisoformat(d) for d in args.qa_v2_dates.split(",") if d)
-    manifest = prepare(args.source, args.out_dir, args.start_date, args.end_date, qa_v2_dates)
+    manifest = prepare(args.source, args.out_dir, args.start_date, args.end_date, qa_v2_dates,
+                       qa_rule=args.qa_rule)
     print(json.dumps({"manifest": str(args.out_dir / "manifest.json"),
                       "counts": manifest["counts"], "accepted": manifest["accepted"]}))
     return 0

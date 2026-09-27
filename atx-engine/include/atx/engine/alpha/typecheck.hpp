@@ -116,6 +116,24 @@ namespace detail {
          op == OpCode::CsScaleG || op == OpCode::CsResidualize;
 }
 
+// ----- scalar-literal operand slots (W0-A0 / A-03) -------------------------
+
+// The ops whose 2nd operand (arg `b`) is a SCALAR parameter the VM reads as a
+// broadcast from cell [0]: scale's L1 target, winsorize's std multiplier,
+// quantile's bucket count and hump's threshold. Feeding a panel there would
+// silently use the panel's (date 0, instrument 0) cell, so analyze() requires a
+// finite Literal in that slot and subtree_crossover only splices Literals in.
+[[nodiscard]] inline bool has_scalar_literal_slot(OpCode op) noexcept {
+  return op == OpCode::CsScale || op == OpCode::CsWinsorize || op == OpCode::CsQuantile ||
+         op == OpCode::Hump;
+}
+
+// Ok iff `e` has no scalar-literal slot, the slot is absent, or it holds a
+// finite Literal (for CsQuantile additionally one whose truncation fits in an
+// `int`, the kernels' bucket-count type); Err(InvalidArgument) otherwise. Precondition: `e.kind ==
+// Call` and `e.op != nullptr`.
+[[nodiscard]] atx::core::Status validate_scalar_literal_operand(const Ast &ast, const Expr &e);
+
 // ----- field classification ---------------------------------------------
 
 // A field is a Group classifier iff its name carries the `IndClass.` prefix

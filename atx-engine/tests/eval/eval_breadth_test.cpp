@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 
 #include "atx/core/linalg/linalg.hpp" // MatX
 #include "atx/engine/eval/breadth.hpp"
@@ -86,6 +87,44 @@ TEST(Breadth, SingleNameIsOne) {
   MatX cov(1, 1);
   cov(0, 0) = 3.3;
   EXPECT_NEAR(effective_breadth(cov), 1.0, 1e-12);
+}
+
+TEST(Breadth, TraceIdentityMatchesIndependentEigenRuleOnFullAndDeficientRank) {
+  for (const Eigen::Index observations : {7, 37}) {
+    MatX observations_by_name(observations, 19);
+    for (Eigen::Index t = 0; t < observations; ++t)
+      for (Eigen::Index a = 0; a < 19; ++a)
+        observations_by_name(t, a) = std::sin(static_cast<double>((t + 1) * (a + 3))) +
+                                    0.1 * static_cast<double>(a % 3);
+    const MatX cov = observations_by_name.transpose() * observations_by_name;
+    const auto reference = effective_breadth(cov, BreadthRule::LegacyClippedEigenV1);
+    const auto fast = breadth_decomposition(cov, 0.02);
+    EXPECT_EQ(fast.rule, BreadthRule::PsdTraceV2);
+    EXPECT_NEAR(fast.effective_n, reference, 1e-10);
+  }
+}
+
+TEST(Breadth, TraceIdentityIsScaleInvariantAtFiniteExtremes) {
+  MatX cov = MatX::Identity(7, 7);
+  cov(0, 1) = cov(1, 0) = 0.5;
+  const auto reference = effective_breadth(cov, BreadthRule::LegacyClippedEigenV1);
+  for (const double scale : {1e-280, 1.0, 1e280}) {
+    const MatX scaled = scale * cov;
+    EXPECT_NEAR(effective_breadth(scaled), reference, 1e-10);
+  }
+  MatX indefinite = MatX::Zero(2, 2);
+  indefinite(0, 0) = -1.0; indefinite(1, 1) = 2.0;
+  EXPECT_DOUBLE_EQ(effective_breadth(indefinite, BreadthRule::LegacyClippedEigenV1), 1.0);
+}
+
+TEST(Breadth, TraceRuleRejectsMalformedCovarianceBeforeReduction) {
+  EXPECT_EQ(effective_breadth(MatX::Zero(0, 0)), 0.0);
+  EXPECT_EQ(effective_breadth(MatX::Zero(2, 3)), 0.0);
+  MatX cov = MatX::Identity(2, 2);
+  cov(0, 1) = 0.25;
+  EXPECT_EQ(effective_breadth(cov), 0.0);
+  cov(0, 1) = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(effective_breadth(cov), 0.0);
 }
 
 } // namespace atxtest_eval_breadth_test

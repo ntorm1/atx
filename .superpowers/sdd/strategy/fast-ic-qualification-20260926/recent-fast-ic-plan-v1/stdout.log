@@ -1,0 +1,19 @@
+{
+  "candidates": 48,
+  "library_sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+  "max_compiled_slots": 7,
+  "mode": "metadata-only-no-payload",
+  "required_lookback": 314,
+  "roles": [
+    {
+      "manifest_sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+      "required_bytes": 1487603721,
+      "role": "train"
+    },
+    {
+      "manifest_sha256": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7",
+      "required_bytes": 1030839264,
+      "role": "validation"
+    }
+  ]
+}

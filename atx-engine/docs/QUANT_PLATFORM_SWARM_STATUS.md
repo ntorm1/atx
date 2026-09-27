@@ -53,11 +53,14 @@ concurrent lanes) and are noisy; they were not re-measured on a quiet machine.
 ## Real-data results (honest; nothing ≥ 2020-01-01 read)
 
 **Lane 9 mining** (`C:\atx\data\equity_mine_l9_guard_20260923`, supersedes the unguarded run): train 2013-16,
-validation 2017-18, holdout 2019 read once. 378 seeds → 2,243 candidates → 2,065 scored trials, N_eff 5.71,
+validation 2017-18, reused 2019 development window (three prior reads). 378 seeds → 2,243 candidates → 2,065 scored trials, legacy N_eff 5.71,
 de-correlated family of 52. **0 alphas admitted** (BY p = 1). Train winners (net SR 1.0-1.5) were mostly
 size/liquidity proxies and collapsed on validation (mean net SR ≈ -0.3). The pre-registered equal-weight family
-blend was not admitted on validation (net SR ~0.6, p ~0.2); its 2019 holdout (descriptive only) was net SR ~1.8,
-low turnover. Conclusion: price/volume-only search overfits; breadth + combination is where signal appears.
+blend was not admitted on validation (net SR -1.218738, one-sided p 0.950334); its reused 2019
+development result (descriptive only) was net SR 1.729687. These are the recorded guard-run
+`gate_report.json` values, corrected under I-24 on 2026-09-25. The prior +0.6 validation claim
+was incorrect. All 2013-2019 results are development evidence under ruling R-1; none establishes
+out-of-sample performance or a tradeable alpha. W0/G0 remeasurement remains pending.
 
 **Lane 10 fundamental zoo** (`C:\atx\data\equity_fund_zoo_ic_l10v2_20260923`, 60 expressions, 120 declared
 trials, 2013-2018, 2019 never loaded): pooled h=21 rank IC top-1000 / top-3000 — gross profitability

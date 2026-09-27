@@ -1,0 +1,11 @@
+# Integrated R3 / L1 source audit
+
+Source approval for root `53109ab3` within this bounded integration review. No new blocker. No configure, build, test or numerical run was performed; runtime qualification is a separate gate.
+
+The companion `r3-l1-integrated-source-receipt.json` records exact Git blob identities. All eight R3 import files match the independently reviewed final owner snapshot `6be7f67f` byte for byte. All seven L1 public/source/test files match reviewed `3d199892` byte for byte, including the presence-mask repair, early horizon admission and future-PCA refusal. This retains the public L1 contract, caller-asserted plain-Panel source identity limitation, D6 precision limitation, explicit maturity bounds and five synthetic fixtures; no empirical/RSS qualification follows from source equality.
+
+The root's `qp_solver.hpp/.cpp` private implementation boundary is unchanged across the R3 import. `ConstrainedQpSolver` still exposes its configuration and out-of-line wrappers. `qp_factor_admm.hpp` retains declarations, forward declarations and the two preserved helper declarations; its bodies remain in `qp_factor_admm.cpp`. The final `cost_terms.cpp` directly includes both `qp_factor_admm.hpp` and `admm_schedule.hpp`, so it no longer relies on the public QP header to expose private factor code. The factor CPP directly includes cost types and its concrete factor/constraint/ADMM dependencies. No algorithm was re-reviewed or rewritten as part of this audit.
+
+Legacy augmented cost-solver behavior/defaults remain explicit and unchanged. The new executable per-name surface route explicitly selects FactorProxV2, as reviewed in `review-r3-factor-cost-source.md`; importing the API does not migrate an application stage or prove an executable alpha.
+
+Production registration is present exactly once for `src/learn/panel_dataset.cpp`, alongside existing `feature_matrix.cpp` and `linear_alpha.cpp`; existing risk registration contains `qp_solver.cpp`, `qp_factor_admm.cpp` and `cost_terms.cpp`. `atx-engine/tests/CMakeLists.txt` explicitly lists `learn_panel_dataset_test.cpp` in the focused W1 eval target and `risk_cost_factor_v2_test.cpp` in the focused W1 risk target. Root owns their upcoming combined compiled gate.

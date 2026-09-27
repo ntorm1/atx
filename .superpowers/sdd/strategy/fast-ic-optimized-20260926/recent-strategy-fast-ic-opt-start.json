@@ -1,0 +1,10 @@
+{
+    "Source":  "0f618a45b3bd256eddd3a96f64893746063818d9",
+    "Jobs":  3,
+    "FreeMiB":  3189,
+    "CommitHeadroomMiB":  4760,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests"
+                ]
+}

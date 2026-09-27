@@ -23,6 +23,7 @@
 // Decaying). It is rewritten here to a legal Admitted→Live later transition,
 // which still proves the PIT no-retroactive-relabel property.
 
+#include <limits>
 #include <filesystem> // per-test temp directory
 #include <string>
 
@@ -105,6 +106,20 @@ TEST(LibraryLifecycle, PersistsAcrossReopen) { // append-only durable
   }
   LifecycleJournal r(dir);
   EXPECT_EQ(r.state_as_of(AlphaId{0}, 999), LifecycleState::Admitted);
+}
+
+
+TEST(LibraryLifecycle, AdmittedCanRetireAndBackdatingCannotRewriteHistory) {
+  LifecycleJournal j(tmpdir());
+  ASSERT_TRUE(j.transition(AlphaId{0}, LifecycleState::Admitted, 100).has_value());
+  EXPECT_FALSE(j.transition(AlphaId{0}, LifecycleState::Dead, 90).has_value());
+  EXPECT_EQ(j.state_as_of(AlphaId{0}, 95), LifecycleState::Candidate);
+  ASSERT_TRUE(j.transition(AlphaId{0}, LifecycleState::Dead, 110).has_value());
+  EXPECT_EQ(j.state_as_of(AlphaId{0}, 105), LifecycleState::Admitted);
+  EXPECT_EQ(j.state_as_of(AlphaId{0}, 110), LifecycleState::Dead);
+  EXPECT_FALSE(j.transition(AlphaId{0}, LifecycleState::Recycled,
+                            std::numeric_limits<atx::u64>::max()).has_value());
+  EXPECT_EQ(j.state_as_of(AlphaId{0}, std::numeric_limits<atx::u64>::max()), LifecycleState::Dead);
 }
 
 

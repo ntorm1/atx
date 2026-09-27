@@ -1,0 +1,139 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 35 tests from 4 test suites.
+[----------] Global test environment set-up.
+[----------] 5 tests from StrategyIcComposition
+[ RUN      ] StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask
+[       OK ] StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask (702 ms)
+[ RUN      ] StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting
+[       OK ] StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting (0 ms)
+[ RUN      ] StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions
+[       OK ] StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions (0 ms)
+[ RUN      ] StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix
+[       OK ] StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix (0 ms)
+[ RUN      ] StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses
+[       OK ] StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses (0 ms)
+[----------] 5 tests from StrategyIcComposition (703 ms total)
+
+[----------] 9 tests from StrategyIcRunner
+[ RUN      ] StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns
+[       OK ] StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns (187 ms)
+[ RUN      ] StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload
+[       OK ] StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload (76 ms)
+[ RUN      ] StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean
+[       OK ] StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean (148 ms)
+[ RUN      ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets
+[       OK ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets (244 ms)
+[ RUN      ] StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload
+[       OK ] StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload (71 ms)
+[ RUN      ] StrategyIcRunner.FrozenTrainValidationMatchesUninterruptedWithoutTrainPayload
+[       OK ] StrategyIcRunner.FrozenTrainValidationMatchesUninterruptedWithoutTrainPayload (216 ms)
+[ RUN      ] StrategyIcRunner.FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload
+[       OK ] StrategyIcRunner.FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload (203 ms)
+[ RUN      ] StrategyIcRunner.SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenRequested
+[       OK ] StrategyIcRunner.SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenRequested (226 ms)
+[ RUN      ] StrategyIcRunner.AscendingVmArenaDemandMatchesRetainedMaximumArena
+[       OK ] StrategyIcRunner.AscendingVmArenaDemandMatchesRetainedMaximumArena (318 ms)
+[----------] 9 tests from StrategyIcRunner (1694 ms total)
+
+[----------] 16 tests from IcScreen
+[ RUN      ] IcScreen.EquivalenceV3PoweredEstimatesProtectDeclaredEffectsAcrossEveryMetric
+[       OK ] IcScreen.EquivalenceV3PoweredEstimatesProtectDeclaredEffectsAcrossEveryMetric (0 ms)
+[ RUN      ] IcScreen.EquivalenceV3RemovesOnlyV2DirectionalVetoAndKeepsQuarterHeuristic
+[       OK ] IcScreen.EquivalenceV3RemovesOnlyV2DirectionalVetoAndKeepsQuarterHeuristic (0 ms)
+[ RUN      ] IcScreen.DisabledHasNoDenseCacheAndNeverScreensSignal
+[       OK ] IcScreen.DisabledHasNoDenseCacheAndNeverScreensSignal (0 ms)
+[ RUN      ] IcScreen.SimdMatchesIndependentPairwiseOracleWithTiesMissingAndTails
+[       OK ] IcScreen.SimdMatchesIndependentPairwiseOracleWithTiesMissingAndTails (5 ms)
+[ RUN      ] IcScreen.SharedDateRanksHandleEqualCountDifferentNamesAndScratchReuse
+[       OK ] IcScreen.SharedDateRanksHandleEqualCountDifferentNamesAndScratchReuse (8 ms)
+[ RUN      ] IcScreen.DelayedMatureLabelsUseDecisionMembershipAndReturnGuardOnly
+[       OK ] IcScreen.DelayedMatureLabelsUseDecisionMembershipAndReturnGuardOnly (0 ms)
+[ RUN      ] IcScreen.InvalidShapesModesBudgetsAndScratchBindingReturnErrors
+[       OK ] IcScreen.InvalidShapesModesBudgetsAndScratchBindingReturnErrors (0 ms)
+[ RUN      ] IcScreen.PreparedCacheRequiresMatchingResolvedGeometryAndRecipe
+[       OK ] IcScreen.PreparedCacheRequiresMatchingResolvedGeometryAndRecipe (0 ms)
+[ RUN      ] IcScreen.ShortSparseAndConstantCandidatesPassThrough
+[       OK ] IcScreen.ShortSparseAndConstantCandidatesPassThrough (0 ms)
+[ RUN      ] IcScreen.PairCoverageUsesOriginalDecisionEligibleNames
+[       OK ] IcScreen.PairCoverageUsesOriginalDecisionEligibleNames (0 ms)
+[ RUN      ] IcScreen.AlternatingNullIsRejectedWithoutAFullBacktest
+[       OK ] IcScreen.AlternatingNullIsRejectedWithoutAFullBacktest (4 ms)
+[ RUN      ] IcScreen.RetainsWeakInverseLongHorizonAndRegimeCohorts
+[       OK ] IcScreen.RetainsWeakInverseLongHorizonAndRegimeCohorts (74 ms)
+[ RUN      ] IcScreen.EquivalenceV3ActualScreenUsesSmallDeclaredMarginAndRetainsBoundarySignals
+[       OK ] IcScreen.EquivalenceV3ActualScreenUsesSmallDeclaredMarginAndRetainsBoundarySignals (41 ms)
+[ RUN      ] IcScreen.StrictMonotoneTransformPreservesRankPathAndDecision
+[       OK ] IcScreen.StrictMonotoneTransformPreservesRankPathAndDecision (3 ms)
+[ RUN      ] IcScreen.BoundedNoisyDistinctHorizonQualificationReportsActualCohorts
+ic-screen-cohort,synthetic-only,not-general-recall,dates=512,names=96,floor=0.02,confidence=3.5
+ic-screen-cohort,null,h=126,effect=0,seed=701,reject=0,mean=0.00191919,hac_se=0.00514299,bound=0.0199197
+ic-screen-cohort,null,h=126,effect=0,seed=702,reject=0,mean=-0.00384749,hac_se=0.00496484,bound=0.0212244
+ic-screen-cohort,null,h=126,effect=0,seed=703,reject=0,mean=-0.00214498,hac_se=0.00519015,bound=0.0203105
+ic-screen-cohort,null,h=126,effect=0,seed=704,reject=0,mean=-0.000557327,hac_se=0.0055167,bound=0.0198658
+ic-screen-cohort,null,h=126,effect=0,seed=705,reject=0,mean=0.000374259,hac_se=0.00494436,bound=0.0176795
+ic-screen-cohort,null,h=126,effect=0,seed=706,reject=0,mean=0.00456621,hac_se=0.00535158,bound=0.0232967
+ic-screen-cohort,weak,h=5,effect=0.002,seed=810,reject=0,mean=0.014828,hac_se=0.00460647,bound=0.0309507
+ic-screen-cohort,weak,h=5,effect=0.005,seed=820,reject=0,mean=0.0121191,hac_se=0.00447624,bound=0.0277859
+ic-screen-cohort,inverse,h=5,effect=-0.005,seed=820,reject=0,mean=-0.0121191,hac_se=0.00447624,bound=0.0277859
+ic-screen-cohort,regime,h=5,effect=0,seed=830,reject=0,mean=0.000606153,hac_se=0.00582561,bound=0.0209958
+ic-screen-cohort,weak,h=21,effect=0.002,seed=811,reject=0,mean=-0.00346341,hac_se=0.00490254,bound=0.0206223
+ic-screen-cohort,weak,h=21,effect=0.005,seed=821,reject=0,mean=0.00860928,hac_se=0.00477127,bound=0.0253087
+ic-screen-cohort,inverse,h=21,effect=-0.005,seed=821,reject=0,mean=-0.00860928,hac_se=0.00477127,bound=0.0253087
+ic-screen-cohort,regime,h=21,effect=0,seed=831,reject=0,mean=-0.00115735,hac_se=0.00969599,bound=0.0350933
+ic-screen-cohort,weak,h=63,effect=0.002,seed=812,reject=0,mean=0.00721514,hac_se=0.00474762,bound=0.0238318
+ic-screen-cohort,weak,h=63,effect=0.005,seed=822,reject=0,mean=0.00525044,hac_se=0.00559064,bound=0.0248177
+ic-screen-cohort,inverse,h=63,effect=-0.005,seed=822,reject=0,mean=-0.00525044,hac_se=0.00559064,bound=0.0248177
+ic-screen-cohort,regime,h=63,effect=0,seed=832,reject=0,mean=-0.000153397,hac_se=0.0130074,bound=0.0456793
+ic-screen-cohort,weak,h=126,effect=0.002,seed=813,reject=0,mean=0.00689476,hac_se=0.00534923,bound=0.0256171
+ic-screen-cohort,weak,h=126,effect=0.005,seed=823,reject=0,mean=0.0013157,hac_se=0.00527863,bound=0.0197909
+ic-screen-cohort,inverse,h=126,effect=-0.005,seed=823,reject=0,mean=-0.0013157,hac_se=0.00527863,bound=0.0197909
+ic-screen-cohort,regime,h=126,effect=0,seed=833,reject=0,mean=-0.00318327,hac_se=0.0152172,bound=0.0564433
+ic-screen-cohort,positive,h=126,effect=0.01,seed=840,reject=0,mean=0.00195161,hac_se=0.00558137,bound=0.0214864
+ic-screen-cohort,positive,h=126,effect=0.02,seed=841,reject=0,mean=0.0206056,hac_se=0.00511616,bound=0.0385122
+ic-screen-cohort,totals,null_rejected=0/6,effect_retained=18/18
+[       OK ] IcScreen.BoundedNoisyDistinctHorizonQualificationReportsActualCohorts (484 ms)
+[ RUN      ] IcScreen.WiderNoisyCohortReportsRejectionAndWeakSignalRetention
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=701,reject=0,mean=-0.0010463,hac_se=0.00210824
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=702,reject=0,mean=0.00253007,hac_se=0.00231782
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=703,reject=0,mean=0.00406921,hac_se=0.0022434
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=704,reject=0,mean=-0.00187277,hac_se=0.00216682
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=705,reject=0,mean=-0.00119696,hac_se=0.00226809
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=706,reject=0,mean=0.0008332,hac_se=0.00231983
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=707,reject=0,mean=0.0030767,hac_se=0.00227316
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=708,reject=0,mean=0.0041939,hac_se=0.00234417
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=709,reject=0,mean=0.00273501,hac_se=0.00235341
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=710,reject=0,mean=0.00319623,hac_se=0.0022865
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=711,reject=0,mean=0.00223926,hac_se=0.00243348
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=712,reject=0,mean=0.00359897,hac_se=0.00224588
+ic-screen-wide,dates=512,names=512,h=5,effect=0.002,seed=810,reject=0,mean=0.00489888,hac_se=0.00206554
+ic-screen-wide,dates=512,names=512,h=5,effect=0.005,seed=820,reject=0,mean=0.00710932,hac_se=0.00197035
+ic-screen-wide,dates=512,names=512,h=5,effect=-0.005,seed=850,reject=0,mean=-0.00799899,hac_se=0.00200046
+ic-screen-wide,dates=512,names=512,h=21,effect=0.002,seed=811,reject=0,mean=0.00398664,hac_se=0.00217852
+ic-screen-wide,dates=512,names=512,h=21,effect=0.005,seed=821,reject=0,mean=0.00391064,hac_se=0.00189344
+ic-screen-wide,dates=512,names=512,h=21,effect=-0.005,seed=851,reject=0,mean=-0.00455267,hac_se=0.00274143
+ic-screen-wide,dates=512,names=512,h=63,effect=0.002,seed=812,reject=0,mean=0.00272085,hac_se=0.00201285
+ic-screen-wide,dates=512,names=512,h=63,effect=0.005,seed=822,reject=0,mean=0.00570783,hac_se=0.00217439
+ic-screen-wide,dates=512,names=512,h=63,effect=-0.005,seed=852,reject=0,mean=-0.00842921,hac_se=0.0022507
+ic-screen-wide,dates=512,names=512,h=126,effect=0.002,seed=813,reject=0,mean=0.00190962,hac_se=0.00225536
+ic-screen-wide,dates=512,names=512,h=126,effect=0.005,seed=823,reject=0,mean=0.00359041,hac_se=0.00232686
+ic-screen-wide,dates=512,names=512,h=126,effect=-0.005,seed=853,reject=0,mean=-0.00914023,hac_se=0.00235215
+ic-screen-wide,totals,null_rejected=0/12,weak_retained=12/12,synthetic-only
+[       OK ] IcScreen.WiderNoisyCohortReportsRejectionAndWeakSignalRetention (2031 ms)
+[----------] 16 tests from IcScreen (2655 ms total)
+
+[----------] 5 tests from ResearchIc
+[ RUN      ] ResearchIc.LegacyFourHorizonSeriesRemainBitIdentical
+[       OK ] ResearchIc.LegacyFourHorizonSeriesRemainBitIdentical (1 ms)
+[ RUN      ] ResearchIc.EndpointPresenceAndCandidatePairsAreCountedWithoutFutureMembership
+[       OK ] ResearchIc.EndpointPresenceAndCandidatePairsAreCountedWithoutFutureMembership (0 ms)
+[ RUN      ] ResearchIc.ShortLongHorizonIsUnavailableAndNeverRejected
+[       OK ] ResearchIc.ShortLongHorizonIsUnavailableAndNeverRejected (0 ms)
+[ RUN      ] ResearchIc.DateParallelTwoAndFourWorkersPreserveEverySeriesAndHacBit
+[       OK ] ResearchIc.DateParallelTwoAndFourWorkersPreserveEverySeriesAndHacBit (83 ms)
+[ RUN      ] ResearchIc.ParallelAdmissionRefusesUnboundedWorkersMismatchedPoolAndAggregateBudget
+[       OK ] ResearchIc.ParallelAdmissionRefusesUnboundedWorkersMismatchedPoolAndAggregateBudget (1 ms)
+[----------] 5 tests from ResearchIc (86 ms total)
+
+[----------] Global test environment tear-down
+[==========] 35 tests from 4 test suites ran. (5141 ms total)
+[  PASSED  ] 35 tests.

@@ -70,6 +70,51 @@ inline constexpr atx::usize kPitMaxYears = 16;
 inline constexpr atx::i64 kPitSessionKeyEndExclusive = 1'577'836'800'000'000'000;
 inline constexpr atx::i64 kPitNanosPerDay = 86'400'000'000'000;
 
+enum class PitUniverseRule : atx::u32 { LegacyV1 = 1, CommonStockV2 = 2 };
+enum class PitInstrumentType : atx::u32 {
+  Unknown = 0, CommonStock = 1, Etf = 2, Adr = 3, Preferred = 4,
+  Fund = 5, Reit = 6, LimitedPartnership = 7, Other = 8
+};
+enum class PitTypeSource : atx::u32 { Vendor = 1, Sec = 2 };
+inline constexpr atx::usize kPitMaxTypeRecords = 65536;
+inline constexpr atx::f64 kPitV2MinRawPriceInclusive = 5.0;
+inline constexpr atx::f64 kPitV2MinAdvUsd = 5'000'000.0;
+
+// Immutable, sealed projection of original dated type evidence. Both validity
+// endpoints must be part of the payload known under these source clocks; a later
+// inferred closure cannot shorten an older row retroactively. Hash/proof locators
+// live in the bound projection; source_row is its original 1-based row number.
+struct PitInstrumentTypeEvidence {
+  atx::i64 security_id{};
+  atx::i64 valid_from{};
+  atx::i64 valid_to{}; // exclusive, <= development seal
+  atx::i64 source_published_at{};
+  atx::i64 available_at{};
+  PitInstrumentType type{PitInstrumentType::Unknown};
+  PitTypeSource source{PitTypeSource::Vendor};
+  bool verified{false}; // classification evidence qualified; also requires clock_verified
+  atx::u32 source_row{};
+  // Publication, payload vintage and both validity endpoints are established.
+  // Unknown-clock records may not affect a dated decision, even as an exclusion.
+  bool clock_verified{false};
+};
+
+enum PitExclusion : atx::u32 {
+  PitNoRankBar = 1U, PitBelowPrice = 2U, PitInsufficientHistory = 4U, PitBelowAdv = 8U,
+  PitTypeUnknown = 16U, PitTypeUnverified = 32U, PitTypeUnavailable = 64U,
+  PitTypeConflict = 128U, PitNotCommonStock = 256U
+};
+struct PitExcludedRow {
+  atx::i64 security_id{};
+  atx::u32 reasons{}; // joint reason bit mask, not just first failure
+  PitInstrumentType type{PitInstrumentType::Unknown};
+  atx::u32 source_row{};
+  atx::i64 available_at{};
+  atx::f64 raw_close{};
+  atx::f64 adv_usd{};
+  atx::u32 valid_observations{};
+};
+
 static_assert(kPitMaxTopNValues * kPitMaxBandValues == kPitMaxCuts,
               "every (top_n, band) pair must fit the cut bound");
 static_assert(kPitSessionKeyEndExclusive == 18'262 * kPitNanosPerDay,
@@ -92,6 +137,9 @@ struct PitUniverseConfig {
   atx::usize max_rebalances{kPitMaxRebalances};
   atx::usize max_sessions{kPitMaxSessions};
   atx::i64 session_key_end_exclusive{kPitSessionKeyEndExclusive};
+  PitUniverseRule rule{PitUniverseRule::LegacyV1}; // library compatibility; stage defaults V2
+  atx::f64 min_raw_price_inclusive{kPitV2MinRawPriceInclusive};
+  std::array<char, 64> instrument_types_sha256{}; // canonical lowercase projection SHA-256
 };
 
 enum class PitMemberStatus : atx::u8 { Add = 0, Keep = 1 };
@@ -143,6 +191,7 @@ struct PitRebalanceView {
   std::span<const PitChurn> churn;
   std::span<const atx::u32> gics_missing_members;     // per cut
   std::span<const atx::u64> valid_observations_total; // per cut, sum of valid_count (DR15-4)
+  std::span<const PitExcludedRow> excluded; // V2 only; same lifetime as ranked
 };
 
 // §4.3 one calendar year of observed sessions. Per-cut arrays are indexed by cut.
@@ -223,7 +272,8 @@ public:
   // §3.1, §3.2. Validates the config against every kPitMax*, checks every buffer
   // product with overflow helpers, performs ALL allocation. Err(InvalidArgument |
   // OutOfRange), never partial.
-  [[nodiscard]] static atx::core::Result<PitUniverseBuilder> create(const PitUniverseConfig &cfg);
+  [[nodiscard]] static atx::core::Result<PitUniverseBuilder> create(
+      const PitUniverseConfig &cfg, std::span<const PitInstrumentTypeEvidence> types = {});
 
   ~PitUniverseBuilder();
   PitUniverseBuilder(PitUniverseBuilder &&) noexcept;
@@ -303,9 +353,14 @@ private:
 //    u32 R | per r: i64 rank_key, i64 effective_key (> 0; encode refuses 0 with
 //    Internal), per cut: u32 n_c, n_c x i64 security_id ascending, n_c x u32 rank |
 //    u64 fnv1a64 trailer over every preceding byte.
+//  V2: magic ATXPITU2/version=2; immediately after the old exclusive-floor field,
+//  append u32 rule=2, f64 inclusive price, f64 ADV floor and 64 ASCII SHA-256 bytes
+//  binding the dated type projection. The following cuts/rows/trailer are unchanged.
+//  The exclusive-floor slot is retained for framing and is inactive under V2.
 // ---------------------------------------------------------------------------
 inline constexpr std::string_view kPitMembershipMagic = "ATXPITU1";
 inline constexpr atx::u32 kPitMembershipVersion = 1;
+inline constexpr std::string_view kPitMembershipV2Magic = "ATXPITU2";
 
 struct PitMembershipCut {
   std::vector<atx::i64> security_ids; // ascending
@@ -324,10 +379,14 @@ struct PitMembershipImage {
   std::vector<atx::u32> band_bp;
   std::vector<PitMembershipRebalance> rebalances;
   atx::u64 fnv1a64; // the trailer as read back
+  PitUniverseRule rule{PitUniverseRule::LegacyV1};
+  atx::f64 min_raw_price_inclusive{}; // V2 only; V1 exclusive field remains unchanged
+  atx::f64 min_adv_usd{}; // V1 wire never recorded this floor
+  std::array<char, 64> instrument_types_sha256{};
 };
 
 [[nodiscard]] atx::core::Result<std::string> encode_membership_bin(const PitUniverseBuilder &b);
-// Refuses a short buffer, bad magic or bad version (InvalidArgument) and a trailer
+// Explicit V1/V2 dispatch. Refuses a short buffer, bad magic or bad version (InvalidArgument) and a trailer
 // mismatch (Internal); an effective key of 0 is InvalidArgument.
 [[nodiscard]] atx::core::Result<PitMembershipImage> decode_membership_bin(std::string_view bytes);
 // The trailer convention (serialize_panel.hpp): FNV-1a-64, offset

@@ -5,6 +5,8 @@
 
 #include <algorithm> // std::max, std::min
 #include <cmath>     // std::abs, std::isfinite, std::pow, std::sqrt
+#include <limits>
+#include <string>
 #include <utility>   // std::move
 #include <vector>    // std::vector
 
@@ -12,6 +14,8 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/combine/signal_cube.hpp"
+#include "atx/engine/eval/hac.hpp" // W0-E0a: HAC t-statistics (E-03)
 
 namespace atx::engine::combine {
 
@@ -23,7 +27,7 @@ using atx::core::linalg::VecX;
 namespace {
 
 // Complete-case rows of a row-major (rows × k) matrix → Eigen MatX.
-[[nodiscard]] MatX complete_rows(const std::vector<f64> &flat, usize rows, usize k) {
+[[nodiscard]] MatX complete_rows(std::span<const f64> flat, usize rows, usize k) {
   std::vector<usize> keep;
   keep.reserve(rows);
   for (usize r = 0U; r < rows; ++r) {
@@ -44,19 +48,34 @@ namespace {
   return out;
 }
 
-// Per-column t-stat mean/(sd/√T) (sample sd); NaN when T < 2 or sd == 0.
-[[nodiscard]] std::vector<f64> column_tstats(const MatX &x) {
+[[nodiscard]] atx::core::Status validate_inference(SignalInferenceConfig cfg) {
+  using eval::hac::TStatRule;
+  if (cfg.label_horizon == 0U ||
+      (cfg.tstat_rule != TStatRule::IidV1 && cfg.tstat_rule != TStatRule::NeweyWestAutoV2 &&
+       cfg.tstat_rule != TStatRule::HorizonAwareV3) ||
+      (cfg.return_treatment != IcReturnTreatment::RawV1 &&
+       cfg.return_treatment != IcReturnTreatment::WinsorizedV2)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "signal combiner: invalid inference rule or label horizon");
+  }
+  return atx::core::Ok();
+}
+
+// Per-column t-stat under the caller's versioned inference; NaN when the rule
+// leaves it undefined (T < 2, or a zero (long-run) variance).
+[[nodiscard]] std::vector<f64> column_tstats(const MatX &x, SignalInferenceConfig cfg) {
   const Eigen::Index t = x.rows();
   std::vector<f64> out(static_cast<usize>(x.cols()), kSignalNaN);
   if (t < 2) {
     return out;
   }
   for (Eigen::Index c = 0; c < x.cols(); ++c) {
-    const f64 mean = x.col(c).mean();
-    const f64 ss = (x.col(c).array() - mean).square().sum();
-    const f64 sd = std::sqrt(ss / static_cast<f64>(t - 1));
-    if (sd > 0.0) {
-      out[static_cast<usize>(c)] = mean / (sd / std::sqrt(static_cast<f64>(t)));
+    // MatX is column-major, so a column is one contiguous run of `t` values.
+    const std::span<const f64> col{x.col(c).data(), static_cast<usize>(t)};
+    const eval::hac::MeanInference mi =
+        eval::hac::mean_tstat(col, cfg.tstat_rule, cfg.label_horizon);
+    if (mi.defined != 0U) {
+      out[static_cast<usize>(c)] = mi.t;
     }
   }
   return out;
@@ -115,6 +134,103 @@ void normalize_gross(std::vector<f64> &w) noexcept {
   }
 }
 
+namespace {
+[[nodiscard]] atx::core::Status validate_ic_view(const SignalIcView& s, FitWindow w,
+                                                usize min_rows, bool check_buffer) {
+  using atx::core::Err;
+  using atx::core::ErrorCode;
+  const auto& cfg = s.config;
+  if (s.n_dates == 0U || s.n_alphas == 0U || s.stored_window.end <= s.stored_window.begin ||
+      s.stored_window.end > s.n_dates ||
+      s.stored_window.size() > std::numeric_limits<usize>::max() / s.n_alphas ||
+      (check_buffer && s.values.size() != s.stored_window.size() * s.n_alphas)) {
+    return Err(ErrorCode::InvalidArgument, "IC cache: invalid geometry or storage");
+  }
+  if (cfg.label_horizon == 0U ||
+      cfg.execution_delay > std::numeric_limits<usize>::max() - cfg.label_horizon ||
+      cfg.maturity_end == 0U || cfg.maturity_end > s.n_dates ||
+      (cfg.return_treatment != IcReturnTreatment::RawV1 &&
+       cfg.return_treatment != IcReturnTreatment::WinsorizedV2) ||
+      !std::isfinite(cfg.winsor) || cfg.winsor <= 0.0 ||
+      (cfg.precision != SignalIcPrecision::ExactF64V1 && cfg.precision != SignalIcPrecision::Float32V1)) {
+    return Err(ErrorCode::InvalidArgument, "IC cache: invalid label recipe");
+  }
+  const usize lag = cfg.execution_delay + cfg.label_horizon;
+  const usize mature_end = cfg.maturity_end > lag ? cfg.maturity_end - lag : 0U;
+  if (s.stored_window.end > mature_end || w.begin < s.stored_window.begin ||
+      w.end > s.stored_window.end || w.end <= w.begin || w.size() < min_rows) {
+    return Err(ErrorCode::OutOfRange, "IC cache: requested or stored window crosses label maturity");
+  }
+  return atx::core::Ok();
+}
+
+[[nodiscard]] atx::core::Status validate_ic_inference(const SignalIcView& s,
+                                                     SignalInferenceConfig inference) {
+  ATX_TRY_VOID(validate_inference(inference));
+  if (inference.label_horizon != s.config.label_horizon ||
+      inference.return_treatment != s.config.return_treatment ||
+      (inference.return_treatment == IcReturnTreatment::WinsorizedV2 && s.config.winsor != 3.0)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "IC cache: combiner horizon/return treatment differs from cached recipe");
+  }
+  return atx::core::Ok();
+}
+
+[[nodiscard]] std::span<const f64> ic_window(const SignalIcView& s, FitWindow w) noexcept {
+  return s.values.subspan((w.begin - s.stored_window.begin) * s.n_alphas, w.size() * s.n_alphas);
+}
+} // namespace
+
+atx::core::Status validate_window(const SignalIcView& s, FitWindow w, usize min_rows) {
+  return validate_ic_view(s, w, min_rows, true);
+}
+
+atx::core::Result<SignalIcCache> SignalIcCache::from_store(
+    const SignalStore& s, FitWindow w, SignalIcCacheConfig cfg, atx::u64 max_bytes) {
+  if (cfg.maturity_end == 0U) cfg.maturity_end = s.n_dates();
+  const SignalIcView shape{{}, s.n_dates(), s.n_alphas(), w, cfg};
+  ATX_TRY_VOID(validate_ic_view(shape, w, 1U, false));
+  if (cfg.precision != SignalIcPrecision::ExactF64V1 ||
+      w.size() * s.n_alphas() > max_bytes / sizeof(f64) ||
+      (cfg.return_treatment == IcReturnTreatment::WinsorizedV2 &&
+       s.n_instruments() > (max_bytes - w.size() * s.n_alphas() * sizeof(f64)) / sizeof(f64))) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "IC cache: exact store snapshot exceeds budget or requests lossy encoding");
+  }
+  SignalIcCache result;
+  result.n_dates_ = s.n_dates(); result.n_alphas_ = s.n_alphas();
+  result.window_ = w; result.config_ = cfg;
+  result.values_ = ic_matrix(s, w, cfg.return_treatment, cfg.winsor);
+  return atx::core::Ok(std::move(result));
+}
+
+atx::core::Result<SignalIcCache> SignalIcCache::from_cube(
+    const SignalCube& cube, FitWindow w, usize horizon_index, bool allow_float32) {
+  const auto& cfg = cube.config();
+  if (horizon_index >= cfg.horizons.size() ||
+      (!allow_float32 && cfg.stat_precision != CubeStatPrecision::ExactF64V1)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "IC cache: unknown horizon or float32 statistics require explicit opt-in");
+  }
+  SignalIcCache result;
+  result.n_dates_ = cfg.dates; result.n_alphas_ = cfg.alphas; result.window_ = w;
+  result.config_ = {cfg.horizons[horizon_index], cfg.execution_delay,
+      cfg.maturity_end == 0U ? cfg.dates : cfg.maturity_end,
+      cfg.return_treatment == CubeReturnTreatment::RawV1 ? IcReturnTreatment::RawV1
+                                                        : IcReturnTreatment::WinsorizedV2,
+      cfg.winsor, cfg.stat_precision == CubeStatPrecision::ExactF64V1
+          ? SignalIcPrecision::ExactF64V1 : SignalIcPrecision::Float32V1};
+  const SignalIcView shape{{}, cfg.dates, cfg.alphas, w, result.config_};
+  ATX_TRY_VOID(validate_ic_view(shape, w, 1U, false));
+  if (w.size() * cfg.alphas > cfg.max_working_bytes / sizeof(f64)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "IC cache: cube window exceeds budget");
+  }
+  result.values_.resize(w.size() * cfg.alphas);
+  ATX_TRY_VOID(cube.read_stat_matrix(w.begin, w.end, CubeStat::PearsonIc, horizon_index, result.values_));
+  result.manifest_sha256_ = std::string(cube.manifest_sha256());
+  return atx::core::Ok(std::move(result));
+}
+
 atx::core::Status validate_window(const SignalStore &s, FitWindow w, usize min_rows) {
   if (s.n_alphas() == 0U) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "signal combiner: empty store");
@@ -133,7 +249,9 @@ atx::core::Status validate_window(const SignalStore &s, FitWindow w, usize min_r
 // ---------------------------------------------------------------------------
 //  Grinold-Kahn
 // ---------------------------------------------------------------------------
-atx::core::Result<CombineWeights> grinold_kahn_weights(const MatX &ic, CovTarget target) {
+atx::core::Result<CombineWeights> grinold_kahn_weights(const MatX &ic, CovTarget target,
+                                                     SignalInferenceConfig inference) {
+  ATX_TRY_VOID(validate_inference(inference));
   const usize k = static_cast<usize>(ic.cols());
   std::vector<f64> flat(static_cast<usize>(ic.rows()) * k);
   for (Eigen::Index r = 0; r < ic.rows(); ++r) {
@@ -163,29 +281,41 @@ atx::core::Result<CombineWeights> grinold_kahn_weights(const MatX &ic, CovTarget
   CombineWeights out;
   out.w.assign(sol.data(), sol.data() + sol.size());
   normalize_gross(out.w);
-  out.tstat = column_tstats(x);
+  out.tstat = column_tstats(x, inference);
   return atx::core::Ok(std::move(out));
 }
 
 atx::core::Result<CombineWeights> GrinoldKahnCombiner::fit(const SignalStore &s, FitWindow w) const {
   ATX_TRY_VOID(validate_window(s, w, 2U));
+  ATX_TRY_VOID(validate_inference(inference));
   const usize k = s.n_alphas();
-  const std::vector<f64> flat = ic_matrix(s, w);
+  const std::vector<f64> flat = ic_matrix(s, w, inference.return_treatment);
   const MatX ic = complete_rows(flat, w.size(), k);
-  ATX_TRY(CombineWeights out, grinold_kahn_weights(ic, target));
+  ATX_TRY(CombineWeights out, grinold_kahn_weights(ic, target, inference));
   out.fit_begin = w.begin;
   out.fit_end = w.end;
+  return atx::core::Ok(std::move(out));
+}
+
+atx::core::Result<CombineWeights> GrinoldKahnCombiner::fit(const SignalIcView& s, FitWindow w) const {
+  ATX_TRY_VOID(validate_window(s, w, 2U));
+  ATX_TRY_VOID(validate_ic_inference(s, inference));
+  const MatX ic = complete_rows(ic_window(s, w), w.size(), s.n_alphas);
+  ATX_TRY(CombineWeights out, grinold_kahn_weights(ic, target, inference));
+  out.fit_begin = w.begin; out.fit_end = w.end;
   return atx::core::Ok(std::move(out));
 }
 
 // ---------------------------------------------------------------------------
 //  ICIR-EWMA
 // ---------------------------------------------------------------------------
-atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, FitWindow w) const {
-  ATX_TRY_VOID(validate_window(s, w, 2U));
-  const usize k = s.n_alphas();
+namespace {
+[[nodiscard]] atx::core::Result<CombineWeights> icir_from_rows(
+    std::span<const f64> ic, usize k, FitWindow w, const IcirEwmaCombiner& combiner) {
   const usize rows = w.size();
-  const std::vector<f64> ic = ic_matrix(s, w);
+  const f64 half_life = combiner.half_life;
+  const f64 tstat_haircut = combiner.tstat_haircut;
+  const SignalInferenceConfig inference = combiner.inference;
   const f64 decay = (half_life > 0.0) ? std::pow(0.5, 1.0 / half_life) : 1.0;
   // Row weights: newest row (rows-1) has weight 1; row r has decay^(rows-1-r).
   std::vector<f64> rw(rows);
@@ -197,16 +327,25 @@ atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, Fi
   CombineWeights out;
   out.w.assign(k, 0.0);
   out.tstat.assign(k, kSignalNaN);
+  // The finite (IC, weight) pairs of one alpha, compacted for the HAC correction.
+  std::vector<f64> xs;
+  std::vector<f64> ws;
+  xs.reserve(rows);
+  ws.reserve(rows);
   for (usize a = 0U; a < k; ++a) {
     f64 sw = 0.0;
     f64 sw2 = 0.0;
     f64 swx = 0.0;
+    xs.clear();
+    ws.clear();
     for (usize r = 0U; r < rows; ++r) {
       const f64 x = ic[r * k + a];
       if (std::isfinite(x)) {
         sw += rw[r];
         sw2 += rw[r] * rw[r];
         swx += rw[r] * x;
+        xs.push_back(x);
+        ws.push_back(rw[r]);
       }
     }
     if (!(sw > 0.0)) {
@@ -224,11 +363,21 @@ atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, Fi
     if (n_eff < 2.0 - 1e-12 || mean == 0.0) {
       continue;
     }
+    if (inference.tstat_rule == eval::hac::TStatRule::HorizonAwareV3 &&
+        inference.label_horizon > 1U && inference.label_horizon >= xs.size()) {
+      continue; // Too few observations to estimate overlapping-label uncertainty.
+    }
     // A zero-dispersion IC series (a perfectly stable edge) is floored rather than
     // dropped, so it dominates the normalized blend instead of vanishing.
     const f64 sd = std::sqrt(std::max(swv / sw, 1e-24));
     const f64 icir = mean / sd;
-    const f64 t = icir * std::sqrt(n_eff);
+    // E-03: the IID t is icir * sqrt(n_eff); the HAC t divides the effective count by
+    // the weighted long-run variance inflation (exactly 1.0 under TStatRule::IidV1, so
+    // the pre-W0 t is reproduced bit for bit there). Rows with a NaN IC are skipped,
+    // so lags run over consecutive FINITE rows.
+    const f64 vif = eval::hac::ewma_variance_inflation(
+        xs, ws, mean, inference.tstat_rule, inference.label_horizon);
+    const f64 t = icir * std::sqrt(n_eff / vif);
     out.tstat[a] = t;
     const f64 shrink = (tstat_haircut > 0.0) ? std::max(0.0, 1.0 - tstat_haircut / std::abs(t)) : 1.0;
     out.w[a] = icir * shrink;
@@ -238,12 +387,28 @@ atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, Fi
   out.fit_end = w.end;
   return atx::core::Ok(std::move(out));
 }
+} // namespace
+
+atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, FitWindow w) const {
+  ATX_TRY_VOID(validate_window(s, w, 2U));
+  ATX_TRY_VOID(validate_inference(inference));
+  const usize k = s.n_alphas();
+  const std::vector<f64> ic = ic_matrix(s, w, inference.return_treatment);
+  return icir_from_rows(ic, k, w, *this);
+}
+
+atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalIcView& s, FitWindow w) const {
+  ATX_TRY_VOID(validate_window(s, w, 2U));
+  ATX_TRY_VOID(validate_ic_inference(s, inference));
+  return icir_from_rows(ic_window(s, w), s.n_alphas, w, *this);
+}
 
 // ---------------------------------------------------------------------------
 //  Fama-MacBeth ridge
 // ---------------------------------------------------------------------------
 atx::core::Result<CombineWeights> FamaMacBethRidge::fit(const SignalStore &s, FitWindow w) const {
   ATX_TRY_VOID(validate_window(s, w, 1U));
+  ATX_TRY_VOID(validate_inference(inference));
   if (lambda < 0.0) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "FamaMacBethRidge: lambda < 0");
   }
@@ -297,7 +462,7 @@ atx::core::Result<CombineWeights> FamaMacBethRidge::fit(const SignalStore &s, Fi
   CombineWeights out;
   const VecX mean = bm.colwise().mean().transpose();
   out.w.assign(mean.data(), mean.data() + mean.size());
-  out.tstat = column_tstats(bm);
+  out.tstat = column_tstats(bm, inference);
   out.fit_begin = w.begin;
   out.fit_end = w.end;
   return atx::core::Ok(std::move(out));
@@ -442,6 +607,7 @@ atx::core::Result<std::vector<f64>> kakushadze_weights(const MatX &r, std::span<
 }
 
 atx::core::Result<CombineWeights> KakushadzeRegression::fit(const SignalStore &s, FitWindow w) const {
+  ATX_TRY_VOID(validate_inference(inference));
   ATX_TRY_VOID(validate_window(s, w, 3U));
   const usize k = s.n_alphas();
   if (!clusters.empty() && clusters.size() != k) {
@@ -462,7 +628,7 @@ atx::core::Result<CombineWeights> KakushadzeRegression::fit(const SignalStore &s
                                                    ridge_rel, n_factors));
   CombineWeights out;
   out.w = std::move(wv);
-  out.tstat = column_tstats(r);
+  out.tstat = column_tstats(r, inference);
   out.fit_begin = w.begin;
   out.fit_end = w.end;
   return atx::core::Ok(std::move(out));

@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <locale>    // std::locale::classic (S6 fix: pin config_json formatting locale)
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -39,22 +40,19 @@
 #include "atx/engine/store/pipeline_progress.hpp" // store::PipelineRecorder, PipelineRunRow, ResumableRun, split_population
 
 #include "artifacts.hpp"
+#include "build_provenance.hpp"
 #include "config.hpp"
+#include "dead_alpha_wire.hpp"  // split-range ledger (W0-I0a, I-01)
 #include "research_sim.hpp"
 #include "serialize_genome.hpp"
+#include "stage_combine.hpp"    // run_discover_window (W0-I0a nested splits)
 #include "serialize_panel.hpp"
 #include "panel_pipeline.hpp"
 #include "stage_discover_detail.hpp"             // atx::impl::detail::apply_capacity_screen (Fix 1: testable)
 #include "store_progress_sink.hpp"               // StoreProgressSink, compute_discover_fingerprint, fp_hex, now_unix
 
-// engine_git_sha (S6-4): baked at configure time by atx-impl/CMakeLists.txt.
-// Fallback for any TU compiled without the compile definition (e.g. a build that
-// lacks the bake step) so the provenance string is always a defined value.
-#ifndef ATX_ENGINE_GIT_SHA
-#define ATX_ENGINE_GIT_SHA "unknown"
-#endif
-
 namespace atx::impl {
+namespace eval = atx::engine::eval;
 
 namespace exec = atx::engine::exec;
 
@@ -166,9 +164,48 @@ namespace {
 
     os << '{';
     // Provenance-format version so a reader can branch on schema evolution.
-    kv_i("v", 1);
+    kv_i("v", cfg.cpcv_rule != atx::engine::eval::CpcvRule::ObservationV1 ? 4 :
+        cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1 ? 3 :
+        (cfg.ic_screen.rule == atx::engine::factory::IcScreenRule::DisabledV1 ? 1 : 2));
     // Panel + seed/search environment.
     kv_s("panel", cfg.panel);
+    if (cfg.cpcv_rule != atx::engine::eval::CpcvRule::ObservationV1) {
+        kv_s("cpcv_rule", std::string(atx::engine::eval::cpcv_rule_name(cfg.cpcv_rule)));
+        kv_i("cpcv_embargo_dates", static_cast<long long>(cfg.cpcv_embargo_dates));
+        kv_i("cpcv_max_working_bytes", static_cast<long long>(cfg.cpcv_max_working_bytes));
+        kv_i("cpcv_n_groups", 6); kv_i("cpcv_n_test_groups", 2);
+    }
+
+    // An omitted rule in old schema1/2 means LegacyGatherV1. Preserve that exact
+    // representation for explicit V1; schema3 always names the new recipe.
+    if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1)
+        kv_s("pbo_rule", std::string(atx::engine::eval::pbo_rule_name(cfg.pbo_rule)));
+    if (cfg.ic_screen.rule != atx::engine::factory::IcScreenRule::DisabledV1) {
+        const auto& screen = cfg.ic_screen;
+        kv_s("ic_screen_rule", std::string(
+            atx::engine::factory::ic_screen_rule_name(screen.rule)));
+        std::string horizons;
+        for (const auto horizon : screen.horizons) {
+            if (!horizons.empty()) horizons += ',';
+            horizons += std::to_string(horizon);
+        }
+        kv_s("ic_screen_horizons", horizons);
+        kv_i("ic_screen_delay", static_cast<long long>(screen.execution_delay));
+        kv_i("ic_screen_window_begin", static_cast<long long>(screen.window_begin));
+        kv_i("ic_screen_window_end", static_cast<long long>(screen.window_end));
+        kv_i("ic_screen_maturity_end", static_cast<long long>(screen.maturity_end));
+        kv_i("ic_screen_min_names", static_cast<long long>(screen.min_names));
+        kv_i("ic_screen_min_dates", static_cast<long long>(screen.min_dates));
+        kv_i("ic_screen_max_cache_bytes", static_cast<long long>(screen.max_cache_bytes));
+        kv_d("ic_screen_practical_abs_ic", screen.practical_abs_ic);
+        kv_d("ic_screen_confidence_multiplier", screen.confidence_multiplier);
+    }
+    if (cfg.min_adv_usd > 0.0 || cfg.min_price > 0.0) {
+        kv_s("vwap_rule", std::string(atx::engine::alpha::vwap_rule_name(cfg.vwap_rule)));
+        kv_d("min_price", cfg.min_price);
+        kv_d("min_adv_usd", cfg.min_adv_usd);
+        kv_i("adv_window", cfg.adv_window);
+    }
     kv_i("seed", static_cast<long long>(cfg.seed));
     kv_i("population", cfg.population);
     kv_i("generations", cfg.generations);
@@ -239,7 +276,8 @@ namespace {
 atx::core::Result<atx::engine::alpha::Panel>
 atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
                                          atx::f64 min_price, atx::f64 min_adv,
-                                         long adv_window) {
+                                         long adv_window,
+                                         atx::engine::alpha::VwapRule vwap_rule) {
     namespace alpha = atx::engine::alpha;
     namespace df    = atx::engine::alpha::datafields;
     using EC        = atx::core::ErrorCode;
@@ -293,9 +331,8 @@ atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
     }
     const atx::u16 win = static_cast<atx::u16>(adv_window);
 
-    // with_datafields derives vwap when absent, requiring high/low. We only need
-    // adv{W} for the screen, so if vwap/high/low are ALL absent, pre-supply a NaN
-    // vwap column to short-circuit the derivation (NaN vwap has no effect on adv).
+    // Legacy reproduction permits a NaN VWAP stub when candle inputs are absent.
+    // V2 requires an explicit raw_close and derives its raw daily-close proxy.
     {
         bool has_vwap = false, has_high = false, has_low = false;
         for (const std::string& n : field_names) {
@@ -303,7 +340,8 @@ atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
             if (n == "high")  has_high = true;
             if (n == "low")   has_low  = true;
         }
-        if (!has_vwap && (!has_high || !has_low)) {
+        if (vwap_rule == alpha::VwapRule::AdjustedTypicalV1 &&
+            !has_vwap && (!has_high || !has_low)) {
             field_names.emplace_back("vwap");
             field_data.emplace_back(D * I,
                                     std::numeric_limits<atx::f64>::quiet_NaN());
@@ -313,7 +351,7 @@ atx::impl::detail::apply_capacity_screen(const atx::engine::alpha::Panel& panel,
     const std::array<atx::u16, 1> adv_wins = {win};
     ATX_TRY(auto aug,
             df::with_datafields(D, I, field_names, field_data, orig_univ,
-                                std::span<const atx::u16>{adv_wins}));
+                                std::span<const atx::u16>{adv_wins}, vwap_rule));
 
     // Resolve field ids in the augmented panel.
     ATX_TRY(const auto close_id, aug.field_id("close"));
@@ -506,6 +544,99 @@ atx::impl::detail::build_robust_holdout_panel(const atx::engine::alpha::Panel& p
 // ---------------------------------------------------------------------------
 namespace {
 
+// ---------------------------------------------------------------------------
+// W0-I0a (I-01) — the discover window's train/holdout geometry, mirroring
+// factory::Factory::mine_into_oos's own carve (factory.cpp): with OOS off the whole
+// window [0, T) is both searched and admitted on (the library then stores [0, T));
+// otherwise the train (visible) region ends `embargo_len` dates before the holdout.
+// ---------------------------------------------------------------------------
+struct DiscoverGeometry {
+    atx::usize train_end = 0;     // train (search/selection) window [0, train_end)
+    atx::usize holdout_begin = 0; // admission window [holdout_begin, holdout_end)
+    atx::usize holdout_end = 0;   //   == the library's period axis
+};
+
+[[nodiscard]] DiscoverGeometry discover_geometry(const RunConfig& cfg, atx::f64 eff_oos_fraction,
+                                                 atx::usize T) {
+    namespace eval = atx::engine::eval;
+    DiscoverGeometry g;
+    if (!(eff_oos_fraction > 0.0)) {
+        g.train_end = T;
+        g.holdout_begin = 0;
+        g.holdout_end = T;
+        return g;
+    }
+    const atx::usize embargo_len =
+        (cfg.oos_embargo > 0.0)
+            ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
+            : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
+    const auto w = static_cast<atx::usize>(static_cast<atx::f64>(T) * eff_oos_fraction);
+    const auto n_windows = static_cast<atx::usize>(std::max<long>(cfg.oos_windows, 0));
+    const auto window = static_cast<atx::usize>(std::max<long>(cfg.oos_window, 0));
+    if (n_windows == 0U || window >= n_windows || n_windows * w > T) {
+        g.holdout_begin = T - w;
+    } else {
+        g.holdout_begin = T - (n_windows - window) * w;
+    }
+    g.holdout_end = g.holdout_begin + w;
+    g.train_end = (g.holdout_begin > embargo_len) ? g.holdout_begin - embargo_len : 0U;
+    return g;
+}
+
+// Check this discover window against the library's split-range ledger, then record the
+// train and holdout ranges it is about to use (recorded BEFORE mining: evaluating
+// candidates on the holdout spends it whether or not anything is admitted).
+//   * refuse when the window [0, T) shares a date with a recorded final test (a
+//     combine/report test must never be searched or admitted on);
+//   * refuse when a recorded holdout of the SAME length sits at a different place (the
+//     library's period axis would silently mix two date ranges; a different length is
+//     already refused by Library::try_admit's geometry guard).
+[[nodiscard]] atx::core::Status guard_and_record_discover_ranges(
+    const std::string& lib_dir, const DiscoverGeometry& g, atx::usize T, atx::usize full_dates,
+    std::span<const atx::i64> session_keys)
+{
+    ATX_TRY(const SplitRange window,
+            make_split_range(SplitRole::DiscoverTrain, 0, T, full_dates, session_keys));
+    ATX_TRY(const SplitRange holdout, make_split_range(SplitRole::DiscoverHoldout, g.holdout_begin,
+                                                       g.holdout_end, full_dates, session_keys));
+    ATX_TRY(const auto ranges, read_split_ranges(lib_dir));
+    for (const SplitRange& r : ranges) {
+        if (r.role == SplitRole::FinalTest) {
+            ATX_TRY(const bool overlap, split_ranges_overlap(window, r));
+            if (overlap) {
+                return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                    "discover: the panel window [0," + std::to_string(T) +
+                    ") overlaps the final test [" + std::to_string(r.begin) + "," +
+                    std::to_string(r.end) + ") recorded in library " + lib_dir +
+                    " -- a final test must never be searched or admitted on");
+            }
+        } else if (r.role == SplitRole::DiscoverHoldout && r.end - r.begin == g.holdout_end -
+                   g.holdout_begin) {
+            ATX_TRY(const bool overlap, split_ranges_overlap(holdout, r)); // Err: other axis
+            const bool same = overlap && (holdout.session_keyed
+                                              ? (r.begin_key == holdout.begin_key &&
+                                                 r.last_key == holdout.last_key)
+                                              : (r.begin == holdout.begin && r.end == holdout.end));
+            if (!same) {
+                return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                    "discover: this run's admission holdout [" +
+                    std::to_string(g.holdout_begin) + "," + std::to_string(g.holdout_end) +
+                    ") differs from the holdout [" + std::to_string(r.begin) + "," +
+                    std::to_string(r.end) + ") the library's period axis is fixed to");
+            }
+        }
+    }
+    if (g.holdout_begin > 0U) {
+        // The recorded train range runs to the holdout begin: it covers the search window
+        // [0, train_end) AND the embargo gap, so no later final test can sit in the gap.
+        ATX_TRY(const SplitRange train, make_split_range(SplitRole::DiscoverTrain, 0,
+                                                         g.holdout_begin, full_dates,
+                                                         session_keys));
+        ATX_TRY_VOID(append_split_range(lib_dir, train));
+    }
+    return append_split_range(lib_dir, holdout);
+}
+
 atx::core::Result<StageResult> run_discover_gated(
     const RunConfig& cfg,
     const atx::engine::alpha::Panel& panel,
@@ -517,7 +648,9 @@ atx::core::Result<StageResult> run_discover_gated(
     const atx::engine::alpha::Panel* weak_panel, // W4a: §0.8 weak sub-universe (nullptr = off)
     const std::vector<std::string>& numeric_excluded_fields, // R1: typed-fields exclusion list
     const std::vector<std::string>& extra_group_fields,
-    const std::string& source_artifact_id)
+    const std::string& source_artifact_id,
+    std::span<const atx::i64> session_keys, // W0-I0a: the FULL panel's key axis (may be empty)
+    atx::usize full_dates)                   // W0-I0a: the FULL panel's date count
 {
     namespace fs      = std::filesystem;
     namespace combine = atx::engine::combine;
@@ -597,6 +730,7 @@ atx::core::Result<StageResult> run_discover_gated(
     fcfg.min_dsr                   = cfg.min_dsr;
     fcfg.min_split_sharpe          = cfg.min_split_sharpe;       // W4a split-sample stability floor (off by default)
     fcfg.max_pbo                   = cfg.max_pbo;                 // W4b run-level CSCV-PBO batch gate (off by default = 1.0)
+    fcfg.pbo_rule                  = cfg.pbo_rule;
     fcfg.blocking_pbo               = cfg.blocking_pbo;           // S5-2: escalate an advisory PBO breach to a fail-closed run (off by default)
     fcfg.robustness_battery         = cfg.robustness_battery;    // p8 final-wave Item 3: eval::RobustnessBattery noise-control at admission (off by default)
     fcfg.robustness_sub_universe        = cfg.robustness_sub_universe;        // S5-3: sub_universe check (off by default)
@@ -646,6 +780,13 @@ atx::core::Result<StageResult> run_discover_gated(
                 sealed_r.error().message() + ")");
         }
     }
+
+    // W0-I0a (I-01): the library's split-range ledger. Refuse a window that overlaps a
+    // recorded final test or re-anchors the library's holdout, then record this run's
+    // train/holdout ranges (on the FULL panel's axis: `panel` may be a prefix).
+    const DiscoverGeometry geometry = discover_geometry(cfg, eff_oos_fraction, panel.dates());
+    ATX_TRY_VOID(guard_and_record_discover_ranges(lib_dir, geometry, panel.dates(), full_dates,
+                                                  session_keys));
 
     // Mine -> deflate -> gate -> admit into the persistent library.
     factory::Factory fac{lib, panel, sim, policy};
@@ -713,7 +854,7 @@ atx::core::Result<StageResult> run_discover_gated(
             // no timestamps) + the build-time engine git SHA. Both are run-DB metadata
             // only — they never enter panel.bin or the discover search digest (S6-5).
             row.config_json       = build_config_json(cfg);
-            row.engine_git_sha    = ATX_ENGINE_GIT_SHA;
+            row.engine_git_sha    = build_engine_git_sha();
             row.created_at        = now_unix();
             ATX_TRY(auto r, store::PipelineRecorder::begin(sdb->db(), row));
             rec.emplace(std::move(r));
@@ -733,6 +874,20 @@ atx::core::Result<StageResult> run_discover_gated(
         return atx::core::Err(rep_r.error());
     }
     const factory::FactoryReport rep = std::move(*rep_r);
+    if (rep.cpcv_invalid || rep.cpcv_resume_mismatch) {
+        const std::string message = rep.cpcv_invalid
+            ? "discover: invalid CPCV date plan or working-byte budget"
+            : "discover: checkpoint CPCV recipe differs from this run";
+        if (rec) { (void)rec->mark_failed(now_unix(), message); }
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, message);
+    }
+    if (rep.ic_screen_cache_mismatch || rep.ic_screen_resume_mismatch) {
+        const std::string message = rep.ic_screen_cache_mismatch
+            ? "discover: IC cache configuration differs from this run"
+            : "discover: checkpoint IC screening configuration differs from this run";
+        if (rec) { (void)rec->mark_failed(now_unix(), message); }
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, message);
+    }
     if (rec) { (void)rec->complete(now_unix()); }
 
     {
@@ -802,6 +957,34 @@ atx::core::Result<StageResult> run_discover_gated(
                 "discover (gated): cannot write manifest: " + manifest_path);
         }
         mf << "gated=1\n";
+        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1 ||
+            cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
+            cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
+            mf << "config_json=" << build_config_json(cfg) << '\n';
+        }
+        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
+            const auto& meta = rep.cpcv_metadata;
+            mf << "cpcv_rule=" << eval::cpcv_rule_name(cfg.cpcv_rule) << '\n';
+            mf << "cpcv_recipe_identity=" << to_hex16(meta.recipe_identity) << '\n';
+            mf << "cpcv_embargo_dates=" << cfg.cpcv_embargo_dates << '\n';
+            mf << "cpcv_max_working_bytes=" << cfg.cpcv_max_working_bytes << '\n';
+            mf << "cpcv_fold_count=" << meta.fold_count << '\n';
+            mf << "cpcv_path_count=" << meta.paths.size() << '\n';
+            for (atx::usize p = 0; p < meta.paths.size(); ++p) {
+                mf << "cpcv_path_" << p << '=';
+                for (atx::usize g = 0; g < meta.paths[p].size(); ++g) {
+                    if (g != 0U) mf << ',';
+                    mf << meta.paths[p][g];
+                }
+                mf << '\n';
+            }
+        }
+        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+            mf << "ic_screen_evaluations=" << rep.ic_screen_evaluations << '\n';
+            mf << "ic_screen_rejected=" << rep.ic_rejected << '\n';
+            mf << "ic_screen_unavailable=" << rep.ic_screen_unavailable << '\n';
+            mf << "ic_prepass_vm_evaluations=" << rep.ic_prepass_vm_evaluations << '\n';
+        }
         mf << "source_artifact_id="
            << (source_artifact_id.empty() ? "unknown" : source_artifact_id) << '\n';
         mf << "seed="            << cfg.seed             << '\n';
@@ -830,6 +1013,7 @@ atx::core::Result<StageResult> run_discover_gated(
                 mf << "capacity_min_price="   << cfg.min_price
                    << " capacity_min_adv="    << cfg.min_adv_usd
                    << " capacity_adv_window=" << cfg.adv_window
+                   << " vwap_rule=" << atx::engine::alpha::vwap_rule_name(cfg.vwap_rule)
                    << " capacity_names_per_day=" << detail::mean_names_per_day(panel)
                    << '\n';
             }
@@ -862,6 +1046,14 @@ atx::core::Result<StageResult> run_discover_gated(
                << " pbo_n_splits="    << rep.pbo_n_splits
                << " max_pbo="         << cfg.max_pbo
                << '\n';
+        }
+        if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
+            mf << "pbo_rule=" << atx::engine::eval::pbo_rule_name(rep.pbo_rule) << '\n';
+            if (std::isfinite(rep.pbo)) {
+                mf << "pbo_cached_evaluations=" << rep.pbo_cached_evaluations << '\n';
+                mf << "pbo_reference_evaluations=" << rep.pbo_reference_evaluations << '\n';
+                mf << "pbo_ambiguous_comparisons=" << rep.pbo_ambiguous_comparisons << '\n';
+            }
         }
         mf << "panel="           << cfg.panel            << '\n';
         for (atx::u64 a = 0; a < n; ++a) {
@@ -935,6 +1127,26 @@ atx::core::Result<StageResult> run_discover_gated(
         {"population",      std::to_string(sc.population)},
         {"generations",     std::to_string(sc.generations)},
     };
+    if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
+        sr.kvs.emplace_back("cpcv_rule", std::string(eval::cpcv_rule_name(cfg.cpcv_rule)));
+        sr.kvs.emplace_back("cpcv_recipe_identity", to_hex16(rep.cpcv_metadata.recipe_identity));
+        sr.kvs.emplace_back("cpcv_fold_count", std::to_string(rep.cpcv_metadata.fold_count));
+        sr.kvs.emplace_back("cpcv_path_count", std::to_string(rep.cpcv_metadata.paths.size()));
+    }
+    if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+        sr.kvs.emplace_back("ic_screen_evaluations", std::to_string(rep.ic_screen_evaluations));
+        sr.kvs.emplace_back("ic_screen_rejected", std::to_string(rep.ic_rejected));
+        sr.kvs.emplace_back("ic_screen_unavailable", std::to_string(rep.ic_screen_unavailable));
+        sr.kvs.emplace_back("ic_prepass_vm_evaluations", std::to_string(rep.ic_prepass_vm_evaluations));
+    }
+    if (cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
+        sr.kvs.emplace_back("pbo_rule", std::string(atx::engine::eval::pbo_rule_name(rep.pbo_rule)));
+        if (std::isfinite(rep.pbo)) {
+            sr.kvs.emplace_back("pbo_cached_evaluations", std::to_string(rep.pbo_cached_evaluations));
+            sr.kvs.emplace_back("pbo_reference_evaluations", std::to_string(rep.pbo_reference_evaluations));
+            sr.kvs.emplace_back("pbo_ambiguous_comparisons", std::to_string(rep.pbo_ambiguous_comparisons));
+        }
+    }
     // R3b: add oos_pbo kv ONLY when OOS is active (eff_oos_fraction > 0) so the
     // non-accumulation path's kvs are byte-identical to the pre-R3 baseline.
     if (eff_oos_fraction > 0.0) {
@@ -952,6 +1164,11 @@ atx::core::Result<StageResult> run_discover_gated(
 // run_discover
 // ---------------------------------------------------------------------------
 atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
+{
+    return run_discover_window(cfg, 0U);
+}
+
+atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::usize discover_end)
 {
     namespace alpha   = atx::engine::alpha;
     namespace combine = atx::engine::combine;
@@ -971,6 +1188,26 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     // 2. Load the research panel.
     ATX_TRY(auto panel_input, read_pipeline_panel(cfg.panel, cfg.allow_unidentified_panels));
     auto& panel = panel_input.panel;
+    const atx::usize full_dates = panel.dates();
+    const std::span<const atx::i64> session_keys =
+        panel_input.identity ? std::span<const atx::i64>{panel_input.identity->session_keys}
+                             : std::span<const atx::i64>{};
+
+    // 2-. W0-I0a (I-01): a nested split restricts discover to the prefix [0, discover_end)
+    // BEFORE anything reads the panel -- the search, the admission lockbox, the capacity
+    // screen and the robustness panels all see only dates the combine fit and the final
+    // test come after. discover_end == 0 keeps the whole panel (byte-identical).
+    if (discover_end > 0U) {
+        if (discover_end < 2U || discover_end > full_dates) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                "discover: window end " + std::to_string(discover_end) + " must lie in [2, " +
+                std::to_string(full_dates) + "]");
+        }
+        if (discover_end < full_dates) {
+            ATX_TRY(auto prefix, atx::engine::eval::detail::slice_panel(panel, 0U, discover_end));
+            panel = std::move(prefix);
+        }
+    }
 
     // 2a. W2 capacity screen (opt-in): build a derived Panel whose universe_ is
     // original_universe ∧ (close>min_price) ∧ (adv{W}>=min_adv). NaN propagation
@@ -982,7 +1219,7 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     if (capacity_on) {
         ATX_TRY(auto screened,
                 detail::apply_capacity_screen(panel, cfg.min_price, cfg.min_adv_usd,
-                                              cfg.adv_window));
+                                              cfg.adv_window, cfg.vwap_rule));
         panel = std::move(screened);
     }
 
@@ -1041,6 +1278,13 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
 
     // 5. Build SearchConfig.
     factory::SearchConfig sc;
+    sc.fitness.cpcv.rule = cfg.cpcv_rule;
+    sc.fitness.cpcv.embargo_dates = cfg.cpcv_embargo_dates;
+    sc.fitness.cpcv.max_working_bytes = cfg.cpcv_max_working_bytes;
+
+    // Zero window bounds resolve on the actual train subpanel inside SearchDriver,
+    // including Factory's later OOS split. Future validation labels cannot enter it.
+    sc.ic_screen = cfg.ic_screen;
     sc.master_seed  = cfg.seed;
     sc.population   = cfg.population  > 0
                         ? static_cast<atx::usize>(cfg.population)  : 200;
@@ -1117,9 +1361,13 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     //     (a durable alpha database) and are also written as .dsl for `combine`.
     if (cfg.gated) {
         ATX_TRY(auto result, run_discover_gated(cfg, panel, lib, policy, sim, sc, fields, weak_panel,
-            numeric_excluded_fields, extra_group_fields, panel_input.artifact_id));
+            numeric_excluded_fields, extra_group_fields, panel_input.artifact_id, session_keys,
+            full_dates));
         result.kvs.emplace_back("source_artifact_id",
             panel_input.identity ? panel_input.artifact_id : "unknown");
+        if (discover_end > 0U) {
+            result.kvs.emplace_back("discover_end", std::to_string(panel.dates()));
+        }
         return atx::core::Ok(std::move(result));
     }
 
@@ -1131,6 +1379,18 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     factory::SearchDriver driver{lib, panel, policy, sim, cfg.seed_exprs, fields, weak_panel,
                                  numeric_excluded_fields, extra_group_fields};
     factory::SearchResult res = driver.run(sc, pool);
+    if (res.cpcv_invalid || res.cpcv_resume_mismatch) {
+        const std::string message = res.cpcv_invalid
+            ? "discover: invalid CPCV date plan or working-byte budget"
+            : "discover: checkpoint CPCV recipe differs from this run";
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument, message);
+    }
+    if (res.ic_screen_cache_mismatch || res.ic_screen_resume_mismatch) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            res.ic_screen_cache_mismatch
+                ? "discover: IC cache configuration differs from this run"
+                : "discover: checkpoint IC screening configuration differs from this run");
+    }
 
     // 7. Check admission.
     const auto& admitted = res.admitted_candidates;
@@ -1178,6 +1438,34 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
         mf << "seed="          << cfg.seed             << '\n';
         mf << "count="         << n                    << '\n';
         mf << "search_digest=" << to_hex16(res.digest) << '\n';
+        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1 ||
+            cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
+            cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
+            mf << "config_json=" << build_config_json(cfg) << '\n';
+        }
+        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
+            const auto& meta = res.cpcv_metadata;
+            mf << "cpcv_rule=" << eval::cpcv_rule_name(cfg.cpcv_rule) << '\n';
+            mf << "cpcv_recipe_identity=" << to_hex16(meta.recipe_identity) << '\n';
+            mf << "cpcv_embargo_dates=" << cfg.cpcv_embargo_dates << '\n';
+            mf << "cpcv_max_working_bytes=" << cfg.cpcv_max_working_bytes << '\n';
+            mf << "cpcv_fold_count=" << meta.fold_count << '\n';
+            mf << "cpcv_path_count=" << meta.paths.size() << '\n';
+            for (atx::usize p = 0; p < meta.paths.size(); ++p) {
+                mf << "cpcv_path_" << p << '=';
+                for (atx::usize g = 0; g < meta.paths[p].size(); ++g) {
+                    if (g != 0U) mf << ',';
+                    mf << meta.paths[p][g];
+                }
+                mf << '\n';
+            }
+        }
+        if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+            mf << "ic_screen_evaluations=" << res.ic_screen_evaluations << '\n';
+            mf << "ic_screen_rejected=" << res.ic_rejected_hashes.size() << '\n';
+            mf << "ic_screen_unavailable=" << res.ic_screen_unavailable << '\n';
+            mf << "ic_prepass_vm_evaluations=" << res.ic_prepass_vm_evaluations << '\n';
+        }
         mf << "panel="         << cfg.panel            << '\n';
         mf << "source_artifact_id="
            << (panel_input.identity ? panel_input.artifact_id : "unknown") << '\n';
@@ -1205,6 +1493,21 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
         {"population",    std::to_string(sc.population)},
         {"generations",   std::to_string(sc.generations)},
     };
+    if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
+        sr.kvs.emplace_back("cpcv_rule", std::string(eval::cpcv_rule_name(cfg.cpcv_rule)));
+        sr.kvs.emplace_back("cpcv_recipe_identity", to_hex16(res.cpcv_metadata.recipe_identity));
+        sr.kvs.emplace_back("cpcv_fold_count", std::to_string(res.cpcv_metadata.fold_count));
+        sr.kvs.emplace_back("cpcv_path_count", std::to_string(res.cpcv_metadata.paths.size()));
+    }
+    if (cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1) {
+        sr.kvs.emplace_back("ic_screen_evaluations", std::to_string(res.ic_screen_evaluations));
+        sr.kvs.emplace_back("ic_screen_rejected", std::to_string(res.ic_rejected_hashes.size()));
+        sr.kvs.emplace_back("ic_screen_unavailable", std::to_string(res.ic_screen_unavailable));
+        sr.kvs.emplace_back("ic_prepass_vm_evaluations", std::to_string(res.ic_prepass_vm_evaluations));
+    }
+    if (discover_end > 0U) {
+        sr.kvs.emplace_back("discover_end", std::to_string(panel.dates()));
+    }
     return atx::core::Ok(std::move(sr));
 }
 

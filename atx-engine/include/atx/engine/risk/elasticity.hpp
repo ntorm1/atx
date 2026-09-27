@@ -226,7 +226,7 @@ namespace detail {
                                                  ElasticBudget::Kind kind) {
   const atx::usize m = hard.n_w;
   const bool has_gross = C.gross_l1_budget >= 0.0;
-  const atx::usize gross_block_start = k + static_cast<atx::usize>(C.A.rows());
+  const atx::usize gross_block_start = k + C.row_count();
   if (kind == ElasticBudget::Kind::Gross) {
     return gross_block_start + 3U * m; // the Σ s_i ≤ L row
   }
@@ -301,6 +301,7 @@ namespace detail {
   out.n_w = hard.n_w;
   out.n_y = hard.n_y;
   out.n_aux = hard.n_aux + n_slack; // slack columns ride the aux block (no quadratic on them)
+  out.max_factor_bytes = hard.max_factor_bytes;
 
   // ---- P: same nonzeros as hard, resized to n_new (slack cols have 0 P; build_kkt adds σ).
   {
@@ -514,6 +515,7 @@ solve_elastic(const QpProblem &p, const ConstrainedQpSolver &solver) {
 
   // Build the hard augmented form (same assembly the solver used) + the relaxed form.
   const atx::usize k = p.V.n_factors();
+  ATX_TRY_VOID(p.C.validate_augmented_workspace(p.V.n_instruments(), k));
   const AugmentedQp hard = build_augmented(p.V, p.risk_aversion, p.q, p.C);
   const AugmentedQp relaxed = detail::build_relaxed(hard, p.C, k);
 

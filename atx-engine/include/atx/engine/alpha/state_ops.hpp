@@ -30,9 +30,15 @@
 //    * trade_when: out = NaN if exit_true; elif trigger_true -> alpha[t];
 //      else -> prior. A NaN trigger/exit is mask_true==false (neither enters nor
 //      exits) -> holds the prior. The exit branch is checked FIRST.
-//    * hump: out = x[t] if |x[t] - prior| > threshold (STRICT >); else prior.
-//      The first date is x[0] unconditionally. A NaN difference is never > thr,
-//      so a NaN x[t] holds the prior (does NOT poison the carried state).
+//    * hump (W0-A0 / A-02, HumpNaN::SeedCapV2, the default): a NaN x[t] emits
+//      NaN; a finite x[t] with no live prior (warm-up, or state dropped by the
+//      staleness cap) SEEDS the state with x[t]; otherwise out = x[t] if
+//      |x[t] - prior| > threshold (STRICT >) else prior. The carried prior
+//      survives at most kHumpMaxStaleDates consecutive NaN dates, then is
+//      dropped so a re-entering name re-seeds instead of resurrecting a stale
+//      value. HumpNaN::StickyV1 is the pre-W0 rule (first date x[0]
+//      unconditionally, a NaN x[t] holds the prior forever, a NaN prior stays
+//      NaN forever) kept only to re-derive old digests.
 //
 // Header-only; every free function is `inline`. Leaf math is `noexcept`.
 
@@ -72,12 +78,58 @@ inline constexpr atx::f64 kStateNaN = std::numeric_limits<atx::f64>::quiet_NaN()
   return first ? kStateNaN : prior;
 }
 
-// hump single-cell recurrence at date t for one instrument.
+// ---------------------------------------------------------------------------
+// hump — HumpNaN policy + state (W0-A0 / A-02)
+// ---------------------------------------------------------------------------
+
+// Versioned NaN policy of the hump recurrence. SeedCapV2 is the default; the
+// legacy StickyV1 rule reproduces pre-W0 digests (see the header contract).
+enum class HumpNaN : atx::u8 {
+  SeedCapV2 = 0, // default: NaN x -> NaN; NaN prior seeds; stale prior capped
+  StickyV1 = 1,  // legacy: NaN x holds the prior; a NaN prior never recovers
+};
+
+// The number of consecutive NaN dates the carried prior survives. A short data
+// gap (a halt, a two-day hole) keeps the suppression state; a longer absence
+// (universe exit) drops it so re-entry seeds from the fresh value.
+inline constexpr atx::u32 kHumpMaxStaleDates = 5;
+
+// Per-instrument carried hump state (SeedCapV2). `prior` NaN == no live state.
+struct HumpState {
+  atx::f64 prior{kStateNaN};
+  atx::u32 stale{0}; // consecutive NaN dates since the last finite input
+};
+
+// hump single-cell recurrence at date t for one instrument (SeedCapV2).
+//   `s` holds the prior output (NaN when unseeded or dropped) and the NaN-run
+//   length; `x` is the input cell at date t; `threshold` is the suppression band.
+// A NaN x emits NaN and ages the state (dropping it past kHumpMaxStaleDates);
+// a finite x seeds a missing prior, else passes x iff |x - prior| > threshold
+// (STRICT >) and holds the prior otherwise.
+// SAFETY: reads only the carried state `s` (dates < t) and the date-t input `x`.
+[[nodiscard]] inline atx::f64 hump_step(HumpState &s, atx::f64 x, atx::f64 threshold) noexcept {
+  if (state_is_nan(x)) {
+    if (s.stale < kHumpMaxStaleDates) {
+      ++s.stale;
+    } else {
+      s.prior = kStateNaN; // stale beyond the cap: drop, so re-entry re-seeds
+    }
+    return kStateNaN;
+  }
+  s.stale = 0;
+  if (state_is_nan(s.prior) || std::fabs(x - s.prior) > threshold) {
+    s.prior = x; // seed (no live prior) or a move beyond the band
+  }
+  return s.prior;
+}
+
+// hump legacy recurrence (HumpNaN::StickyV1 — the pre-W0 rule, kept verbatim
+// for digest re-derivation only).
 //   `prior` == out[t-1] (ignored when `first`); `x` is the input cell at date t;
 //   `threshold` is the scalar suppression band.
 // SAFETY: reads only `prior` (state[t-1]) and the date-t input `x`.
-[[nodiscard]] inline atx::f64 hump_step(atx::f64 prior, atx::f64 x, atx::f64 threshold,
-                                        bool first) noexcept {
+[[nodiscard]] inline atx::f64 hump_step_v1(atx::f64 prior, atx::f64 x, atx::f64 threshold,
+                                           bool first) noexcept {
   if (first) {
     return x; // out[0] == x[0] unconditionally
   }

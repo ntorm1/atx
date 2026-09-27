@@ -1,0 +1,52 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "470eb1b6c16bc67317d1fca702f3b1dadb9af094",
+  "started_utc": "2026-09-27T00:34:51.687733+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+    "--combined",
+    "build-equity/recent-fast-ic-validation-v3/validation_combined.json",
+    "--combined-sha256",
+    "7407d7e7b72548e5577fdf94e2f52d238f9ff751a8ebc5640987130c1390d8e1",
+    "--output",
+    "build-equity/recent-validation-targets-v1-monthly-budget-v2",
+    "--rule",
+    "monthly-budget-v2",
+    "--cadence",
+    "5",
+    "--trade-fraction",
+    ".25",
+    "--monthly-budget",
+    ".30",
+    "--max-bytes",
+    "536870912",
+    "--role",
+    "build-equity/recent-fast-validation-2023-2024-v1/manifest.json",
+    "--role-sha256",
+    "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7",
+    "--one-way-bps",
+    "6",
+    "--annual-borrow-bps",
+    "300"
+  ],
+  "executable_sha256": "45b162b1a04bd669b506d8701be19bca08827c1c9cfa1365019d57425249b8fd",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-validation-v3\\validation_combined.json",
+      "sha256": "7407d7e7b72548e5577fdf94e2f52d238f9ff751a8ebc5640987130c1390d8e1"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-validation-2023-2024-v1\\manifest.json",
+      "sha256": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 4482818048,
+  "outcome": "launch-failed",
+  "exit_code": null
+}

@@ -102,6 +102,7 @@
 #include "atx/engine/risk/horizon.hpp"     // SignalHorizon, HorizonForecast (HorizonSource / gp_aim)
 #include "atx/engine/risk/multi_period.hpp" // RebalanceSchedule, book::CostInputs (run() signature)
 #include "atx/engine/risk/qp_solver.hpp"    // QpConfig (MultiHorizonConfig::qp member)
+#include "atx/engine/risk/admm_schedule.hpp" // AdmmSchedule (MultiHorizonConfig::mpc_schedule)
 // S8.8a: the method BODIES live in src/risk/multi_horizon.cpp; the heavy dispatch
 // includes (factor_model, garleanu_pedersen, optimizer) are pulled there, not here.
 
@@ -129,6 +130,21 @@ struct MultiHorizonConfig {
   bool stacked_mpc = false;     // false: horizon-average aim; true: geometric horizon blend
   atx::usize prox_max_iters = 64;   // PortfolioOptimizer max_iters for the minimal dispatch
   bool capacity_bound_gross = true; // capacity-clip the gross on the dispatch path (mirror S7)
+
+  // Lane 6 — TRUE multi-period MPC (mpc_stack.hpp). When set, every period solves the
+  // stacked QP jointly over w_1..w_H (H = cfg.horizon ∈ [1, kMpcMaxHorizon = 3]) with
+  // α_h = the trajectory row h−1 (NaN ⇒ 0), γ = 2·risk_aversion (the solver's P = 2λV),
+  // Λ = diag(mpc_impact_diag) as the quadratic trade cost and ρ = mpc_discount, and trades
+  // the FIRST move w_1 (receding horizon). Unconstrained, that first move is exactly the
+  // H-step Gârleanu-Pedersen policy (gp_riccati, cfg.horizon = H; pinned by RiskMpcStack).
+  // Requirements (typed Err otherwise, never a silent drop): stacked_mpc false, trade_rate
+  // 1 (the MPC's Λ already sets the partial trade), cost.kappa 0 (the trade cost IS Λ),
+  // mpc_impact_diag of length M with entries > 0, and a constraint set of linear rows +
+  // the gross budget (turnover budgets / cones are rejected by solve_mpc_stack).
+  bool true_mpc = false;
+  std::vector<atx::f64> mpc_impact_diag{}; // Λ diagonal (length M, > 0)
+  atx::f64 mpc_discount = 0.0;             // ρ ∈ [0, 1)
+  AdmmSchedule mpc_schedule{};             // schedule for the stacked solve (early exit etc.)
 };
 
 // ===========================================================================
@@ -193,6 +209,11 @@ private:
   [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
   solve_stacked_mpc(const HorizonForecast &traj, const FactorModel &V,
                     std::span<const atx::f64> w_prev, const book::CostInputs &cost) const;
+
+  // Lane 6 true stacked MPC (cfg.true_mpc): the first move w_1 of solve_mpc_stack.
+  [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
+  solve_true_mpc(const HorizonForecast &traj, const FactorModel &V,
+                 std::span<const atx::f64> w_prev, const book::CostInputs &cost) const;
 
   // blend_toward / l1_diff — REPLICATED VERBATIM from multi_period.hpp (the boundary-pin
   // arithmetic; blend_toward special-cases rate==1.0 to preserve a signed −0.0 target).

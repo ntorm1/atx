@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace atx::engine::book {
 namespace {
@@ -19,6 +20,33 @@ constexpr atx::f64 kMaxImpactExponent = 2.0;
 bool finite_nonnegative(atx::f64 value) noexcept { return std::isfinite(value) && value >= 0.0; }
 
 } // namespace
+
+SurfaceReplayCost::SurfaceReplayCost(atx::engine::cost::CostSurface surface,
+    atx::usize execution_period, atx::i64 execution_time_ns) noexcept
+    : surface_{std::move(surface)}, period_{execution_period}, execution_time_ns_{execution_time_ns} {}
+
+Result<SurfaceReplayCost> SurfaceReplayCost::create(atx::engine::cost::CostSurface surface,
+    atx::usize execution_period, atx::i64 execution_time_ns) {
+  if (surface.instruments() == 0U || execution_time_ns < surface.decision_time_ns())
+    return Err(ErrorCode::InvalidArgument, "surface replay: invalid surface or execution precedes decision");
+  return Ok(SurfaceReplayCost{std::move(surface), execution_period, execution_time_ns});
+}
+
+TradeCost SurfaceReplayCost::cost(atx::usize instrument, atx::usize period,
+    atx::f64 trade_dollars, const LiquidityRow& /*liquidity*/) const noexcept {
+  if (period != period_) return {};
+  const auto quote = surface_.quote_dollars(instrument, surface_.decision_time_ns(), trade_dollars,
+                                           atx::engine::cost::CostFillRule::ParticipationCapped);
+  return quote.priced() ? TradeCost{quote.filled_dollars, quote.total_dollars} : TradeCost{};
+}
+
+atx::f64 SurfaceReplayCost::unrationed_cost(atx::usize instrument, atx::usize period,
+    atx::f64 trade_dollars, const LiquidityRow& /*liquidity*/) const noexcept {
+  if (period != period_) return std::numeric_limits<atx::f64>::quiet_NaN();
+  const auto quote = surface_.quote_dollars(instrument, surface_.decision_time_ns(), trade_dollars,
+                                           atx::engine::cost::CostFillRule::FullRequest);
+  return quote.priced() ? quote.total_dollars : std::numeric_limits<atx::f64>::quiet_NaN();
+}
 
 FlatBpsCost::FlatBpsCost(atx::f64 bps) noexcept : bps_{bps}, rate_{bps * kBpsToFraction} {}
 

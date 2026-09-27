@@ -1,6 +1,7 @@
 #include "atx/tsdb/segment_reader.hpp"
 
 #include <algorithm>   // std::upper_bound
+#include <limits>
 #include <optional>    // std::optional, std::nullopt
 #include <span>        // std::span
 #include <string.h>    // ::strnlen (POSIX/MSVC extension; not in <cstring>)
@@ -60,7 +61,11 @@ namespace {
 } // namespace
 
 atx::core::Result<SegmentReader> SegmentReader::attach(const std::string &path) {
-  ATX_TRY(Mapping m, Mapping::map_file_ro(path));
+  return attach(path, (std::numeric_limits<atx::usize>::max)());
+}
+
+atx::core::Result<SegmentReader> SegmentReader::attach(const std::string &path, atx::u64 max_bytes) {
+  ATX_TRY(Mapping m, Mapping::map_file_ro(path, 0, max_bytes));
   if (auto err = validate(m)) {
     return Err(std::move(*err));
   }

@@ -60,6 +60,9 @@ make_fm(usize n_features, const std::vector<usize> &row_dates,
     }
   }
   fm.Y.assign(1U, y0);
+  // W0-L0 (L-02): Y[0] is a one-date forward label. select_interactions now reads only
+  // MATURED labels (row_date + 1 <= t - embargo) and refuses unannotated matrices.
+  fm.label_horizons.assign(1U, static_cast<u16>(1));
   return fm;
 }
 
@@ -217,7 +220,11 @@ TEST(Latent, Interactions_RanksByIC_NotIndex) {
 TEST(Latent, Interactions_TailNaNLabel_StillRanks) {
   const FeatureMatrix fm = make_tail_nan_fixture();
   const usize t = fm.n_dates - 1U; // embargo 0 < horizon -> the NaN tail rows are in-window
-  const auto p = atx::engine::learn::select_interactions(fm, t, /*embargo=*/0U, /*m=*/2U);
+  // W0-L0: under the default MaturedV2 rule the unmatured tail is excluded by maturity
+  // before the NaN filter runs, so the legacy FiniteLabelV1 rule is used here to keep
+  // the non-finite-label filter itself load-bearing (it is shared by both rules).
+  const auto p = atx::engine::learn::select_interactions(
+      fm, t, /*embargo=*/0U, /*m=*/2U, atx::engine::learn::LabelMaturityRule::FiniteLabelV1);
 
   ASSERT_EQ(p.size(), 1U);
   EXPECT_EQ(p[0].first, 2U);  // finite-row IC-leaders, not the {0,1} the tail would inflate

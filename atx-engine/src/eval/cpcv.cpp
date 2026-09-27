@@ -78,6 +78,7 @@ purged_embargoed_train(std::span<const LabelSpan> spans, std::span<const atx::us
 // ===========================================================================
 std::vector<CpcvFold> cpcv_folds(std::span<const LabelSpan> spans,
                                  const CpcvConfig &cfg) {
+  ATX_CHECK(cfg.rule == CpcvRule::ObservationV1); // use cpcv_plan for DateV2
   const atx::usize n = spans.size();
   const atx::usize k_groups = cfg.n_groups;
   const atx::usize k_test = cfg.n_test_groups;

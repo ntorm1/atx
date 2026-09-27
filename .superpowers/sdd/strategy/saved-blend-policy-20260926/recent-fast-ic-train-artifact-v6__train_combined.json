@@ -1,0 +1,47 @@
+{
+  "actual_trades_or_returns": false,
+  "axes_semantics": "exact-ordered-role-sessions-and-instrument-IDs;no-static-broadcast",
+  "dates": 1155,
+  "files": {
+    "train_combined.f64": {
+      "bytes": 51993480,
+      "sha256": "7826b5aeb5078e270ee6ab9afa5703aab75723c22d6abedaf66a3ca4d7478664"
+    },
+    "train_combined_finite.u8": {
+      "bytes": 6499185,
+      "sha256": "3120a7e3fcc3e7230856ac97160473f8709a4bf077f44bf9fcea91499534a725"
+    },
+    "train_combined_ids.u64": {
+      "bytes": 45016,
+      "sha256": "102e89c649f614c37d4026bdd302bcd20afc2ed8371ba420b9ceb6abe0a0741c"
+    },
+    "train_combined_member.u8": {
+      "bytes": 6499185,
+      "sha256": "3120a7e3fcc3e7230856ac97160473f8709a4bf077f44bf9fcea91499534a725"
+    },
+    "train_combined_sessions.i64": {
+      "bytes": 9240,
+      "sha256": "89af53404744b48e2344785ee4f0be8337d7a2ea7c4a0984e1c964bae3862830"
+    }
+  },
+  "finite_cells": 3219612,
+  "finite_semantics": "one-iff-saved-f64-is-finite;nonmembers-NaN;zero-is-valid-neutral-signal",
+  "instruments": 5627,
+  "layout": "date-major-little-endian",
+  "library_sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+  "member_cells": 3219612,
+  "member_semantics": "decision-member-and-source-present-and-finite-positive-close;independent-of-component-coverage",
+  "orientation_candidates_sha256": "4a3e8004ec15b104e045d06ee255447e5db7df8f1b1f6430668ebab0cbea9081",
+  "orientations_artifact_sha256": null,
+  "role": "train",
+  "role_manifest_sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+  "role_window_required": true,
+  "run_recipe_sha256": "fb9e426316abd3070d41af54f796f39bffad55f98c0b7136ad1539ed2e13ae77",
+  "schema": "atx.dsl-combined-signal/v1",
+  "score_begin": 399,
+  "score_end": 1155,
+  "signal_semantics": "exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator",
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "status": "complete",
+  "train_manifest_sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493"
+}

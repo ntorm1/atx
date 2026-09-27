@@ -56,8 +56,11 @@
 #include <string_view>
 #include <vector>
 
+#include <cstdint>
+
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/data/align.hpp" // AlignOptions (corp_action_align_options)
 #include "atx/engine/data/dataset.hpp"
 #include "atx/engine/data/dataset_schema.hpp"
 
@@ -110,6 +113,57 @@ inline constexpr atx::i64 kNoDate = atx::i64{-1};       // shares_filed_date abs
 inline constexpr atx::i32 kNoSectorCode = atx::i32{-1}; // sector code absent
 
 // =========================================================================
+//  PIT shares rule (W0-D0, D-06 rebase + tie part)
+// =========================================================================
+//
+// A filing's share count is stated on the share basis of the row that carries it.
+// A split between that row and date d changes the count (a 2:1 split doubles it),
+// so the value visible at d must be REBASED by the cum_adj_factor ratio:
+//
+//     shares_d = shares_row · cum_adj_factor(d) / cum_adj_factor(row)
+//
+// (cum_adj_factor steps UP by the split ratio on the ex-date — the raw price falls
+// by the same ratio — so the count scales with the factor.) Several rows can carry
+// the SAME filed_date (the vendor repeats one filing across dates, restated on each
+// row's basis); only rows dated <= d may resolve date d.
+//
+//   AsFiledV1        — legacy: greatest filed_date <= d over ALL rows (a tie can
+//                      resolve to a row dated after d), no rebase.
+//   RebasedRowDatedV2 — greatest filed_date <= d among rows dated <= d, ties to the
+//                      latest such row; the count is rebased from that row's basis to
+//                      d's basis. When the two factors differ and either is not a
+//                      finite positive number the count is NaN (unknown basis, never
+//                      a guessed one). Default.
+enum class SharesPitRule : std::uint8_t {
+  AsFiledV1 = 1,
+  RebasedRowDatedV2 = 2,
+};
+
+// =========================================================================
+//  Aligning the corporate-action Dataset onto a price axis (W0-D0, D-05)
+// =========================================================================
+//
+//   AsOfForwardFillV1  — legacy align_onto: every column forward-filled without
+//                        limit (a dividend is counted on every following session
+//                        the master has no row for; a factor freezes past the
+//                        master's last row).
+//   EventOnceCappedV2  — cash_dividend is an EVENT column (joins its own session
+//                        only, kAlignEventSession); every other column may be at most
+//                        kCorpMaxStaleSessions canonical sessions stale; and a price
+//                        date past the master's last date fails (require_coverage).
+//                        Default.
+enum class CorpAlignRule : std::uint8_t {
+  AsOfForwardFillV1 = 1,
+  EventOnceCappedV2 = 2,
+};
+
+inline constexpr atx::usize kCorpMaxStaleSessions = 5; // one trading week of master holes
+
+// Align options for the canonical 6-column corporate-action Dataset under `rule`.
+[[nodiscard]] AlignOptions
+corp_action_align_options(CorpAlignRule rule = CorpAlignRule::EventOnceCappedV2);
+
+// =========================================================================
 //  Schema + loaders
 // =========================================================================
 
@@ -136,8 +190,11 @@ inline constexpr atx::i32 kNoSectorCode = atx::i32{-1}; // sector code absent
 // Returns Err(InvalidArgument) on: a missing/extra schema column, any non-USD
 // dividend_currency, or a malformed parquet (missing required column, ragged).
 // Returns Err(IoError)/Err(ParseError) on a parquet read failure.
+//
+// `shares_rule` selects the PIT shares resolution (default RebasedRowDatedV2).
 [[nodiscard]] atx::core::Result<Dataset>
-load_security_master(std::string_view master_parquet_path, const DatasetSchema &schema);
+load_security_master(std::string_view master_parquet_path, const DatasetSchema &schema,
+                     SharesPitRule shares_rule = SharesPitRule::RebasedRowDatedV2);
 
 // Load the canonical by-symbol partitions (factors / dividends / shares /
 // sectors under `root_dir`) for the requested symbols, producing the SAME
@@ -156,7 +213,8 @@ load_security_master(std::string_view master_parquet_path, const DatasetSchema &
 [[nodiscard]] atx::core::Result<Dataset>
 load_security_master_partitioned(std::string_view root_dir,
                                  std::span<const std::string> symbols,
-                                 const DatasetSchema &schema);
+                                 const DatasetSchema &schema,
+                                 SharesPitRule shares_rule = SharesPitRule::RebasedRowDatedV2);
 
 // Extract one symbol's parallel CorpActionColumns from a corporate-action
 // Dataset built by the loaders above. `inst` must be one of the Dataset's

@@ -22,6 +22,7 @@
 
 #include "config.hpp"
 #include "serialize_panel.hpp"
+#include "dead_alpha_wire.hpp" // W0-I0a split-range ledger
 #include "stages.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
@@ -103,7 +104,8 @@ static atx::core::Result<std::string> make_pair_combo(const fs::path& out, usize
 // (the one stage_optimize.cpp's wire performs) sees every admit on disk --
 // a live in-process instance's un-flushed memtable is invisible to a
 // second Library::open of the same directory.
-void seed_crowded_library(const fs::path& dir, usize n_dead, usize m, usize center) {
+void seed_crowded_library(const fs::path& dir, usize n_dead, usize m, usize center,
+                          usize panel_dates) {
   std::error_code ec;
   fs::remove_all(dir, ec);
   fs::create_directories(dir);
@@ -127,10 +129,21 @@ void seed_crowded_library(const fs::path& dir, usize n_dead, usize m, usize cent
     ASSERT_EQ(v.kind, lib::AdmitKind::Accept);
     ids.push_back(v.id);
   }
+  // W0-I0a (I-06): the wire now reads alphas that are Dead/Decaying AS OF EACH STEP
+  // (the old "every admitted alpha" pool was the LIVE set, read from the end of the
+  // sample). So the fixture retires its alphas at library period 1 and records the
+  // library's period axis (its holdout [0, kT) on the panel's date axis) in the
+  // split-range ledger -- the two facts the per-step dead set is derived from.
+  for (const lib::AlphaId id : ids) {
+    ASSERT_TRUE(library.mark(id, lib::LifecycleState::Live, 1U).has_value());
+    ASSERT_TRUE(library.mark(id, lib::LifecycleState::Decaying, 1U).has_value());
+    ASSERT_TRUE(library.mark(id, lib::LifecycleState::Dead, 1U).has_value());
+  }
   ASSERT_TRUE(library.flush_all().has_value());
-  // NOTE: no LifecycleState::Dead transition here -- see the S1 ledger's
-  // "admitted pool" policy note; the wire treats every admitted (non-
-  // Candidate, non-Recycled) alpha as the crowding-defense population.
+  auto holdout = atx::impl::make_split_range(atx::impl::SplitRole::DiscoverHoldout, 0U, kT,
+                                             panel_dates, {});
+  ASSERT_TRUE(holdout.has_value());
+  ASSERT_TRUE(atx::impl::append_split_range(dir.string(), *holdout).has_value());
 }
 
 // Create an EMPTY on-disk library (opens + flushes, ZERO admits) so a later
@@ -169,7 +182,7 @@ TEST_F(AtxImplOptimizeDeadAlphaWire, FailOpen_FlagOffByteIdentical) {
   const fs::path combo_path = tmp_dir_ / "combo.bin";
   ASSERT_TRUE(make_trend_research(research_path, M, D).has_value());
   ASSERT_TRUE(make_pair_combo(combo_path, M, D).has_value());
-  seed_crowded_library(tmp_dir_ / "lib", 2U, M, 3U);
+  seed_crowded_library(tmp_dir_ / "lib", 2U, M, 3U, D);
 
   atx::impl::RunConfig cfg;
   cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
@@ -289,7 +302,7 @@ TEST_F(AtxImplOptimizeDeadAlphaWire, CrowdedPoolDelevers) {
   const fs::path combo_path = tmp_dir_ / "combo3.bin";
   ASSERT_TRUE(make_trend_research(research_path, M, D).has_value());
   ASSERT_TRUE(make_pair_combo(combo_path, M, D).has_value()); // long-first-half/short-second-half
-  seed_crowded_library(tmp_dir_ / "lib3", /*n_dead=*/3U, M, center);
+  seed_crowded_library(tmp_dir_ / "lib3", /*n_dead=*/3U, M, center, D);
 
   atx::impl::RunConfig cfg;
   cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.

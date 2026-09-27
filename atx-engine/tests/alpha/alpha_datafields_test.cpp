@@ -2,16 +2,18 @@
 //
 // Datafields are PANEL INPUTS, not opcodes: with_datafields() derives them once
 // at construction so a formula loads `adv20` like `close`. This suite proves:
-//   * dollar_volume = close·volume and vwap = (high+low+close)/3 (typical proxy),
+//   * raw dollar volume and daily-close proxy, with explicit legacy reproduction,
 //   * adv{d} equals ts_mean(dollar_volume, d) BIT-FOR-BIT through the engine
 //     (the conformance that lets a formula reference adv{d} as a column),
 //   * the PIT/universe discipline (out-of-universe -> NaN, never imputed),
-//   * a supplied `vwap` column overrides the proxy, and adv name parsing.
+//   * V2 replaces stale supplied VWAP; V1 retains it, and adv name parsing.
 //
 // Naming: Subject_Condition_ExpectedResult.
 
 #include <cmath>
+#include <bit>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -39,6 +41,8 @@ using atx::engine::alpha::Panel;
 using atx::engine::alpha::parse_expr;
 using atx::engine::alpha::Program;
 namespace df = atx::engine::alpha::datafields;
+using atx::engine::alpha::VwapRule;
+using atx::engine::alpha::ClosePriceBasis;
 
 [[nodiscard]] const Library &shared_lib() {
   static const Library lib;
@@ -93,7 +97,8 @@ namespace df = atx::engine::alpha::datafields;
                           std::vector<std::uint8_t> universe, std::vector<atx::u16> adv) {
   std::vector<std::string> names = {"close", "volume", "high", "low"};
   auto p = df::with_datafields(dates, instruments, std::move(names), std::move(cols),
-                               std::move(universe), adv);
+                               std::move(universe), adv, VwapRule::RawDailyCloseV2,
+                               ClosePriceBasis::Raw);
   EXPECT_TRUE(p.has_value()) << (p ? "" : p.error().message());
   return p.value_or(Panel::create(0, 0, {}, {}, {}).value());
 }
@@ -138,15 +143,13 @@ TEST(Datafields, DollarVolumeAndVwap_HandComputed) {
     const auto fi = static_cast<atx::f64>(i);
     const atx::f64 close = 10.0 + fi;
     const atx::f64 volume = 100.0 + 2.0 * fi;
-    const atx::f64 high = 12.0 + fi;
-    const atx::f64 low = 8.0 + fi;
     EXPECT_DOUBLE_EQ(dvol[i], close * volume) << "cell " << i;
-    EXPECT_DOUBLE_EQ(vwap[i], (high + low + close) / 3.0) << "cell " << i;
+    EXPECT_DOUBLE_EQ(vwap[i], close) << "cell " << i;
   }
 }
 
 // A caller-supplied `vwap` column is kept verbatim (no proxy override).
-TEST(Datafields, SuppliedVwap_OverridesProxy) {
+TEST(Datafields, LegacySuppliedVwap_OverridesProxy) {
   const atx::usize dates = 2;
   const atx::usize instruments = 2;
   const atx::usize cells = dates * instruments;
@@ -157,7 +160,8 @@ TEST(Datafields, SuppliedVwap_OverridesProxy) {
   }
   cols.push_back(true_vwap);
   std::vector<std::string> names = {"close", "volume", "high", "low", "vwap"};
-  auto p = df::with_datafields(dates, instruments, std::move(names), std::move(cols), {}, {});
+  auto p = df::with_datafields(dates, instruments, std::move(names), std::move(cols), {}, {},
+                               VwapRule::AdjustedTypicalV1);
   ASSERT_TRUE(p.has_value()) << (p ? "" : p.error().message());
   const std::vector<atx::f64> vwap = column(p.value(), "vwap");
   for (atx::usize i = 0; i < cells; ++i) {
@@ -222,5 +226,74 @@ TEST(Datafields, MissingVolume_IsError) {
   EXPECT_FALSE(p.has_value());
 }
 
+
+TEST(DatafieldsVwapV2, RawPriceBitsReplaceStaleProxyAndInvalidCellsStayMissing) {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  const auto inf = std::numeric_limits<double>::infinity();
+  const auto huge = std::numeric_limits<double>::max();
+  const auto tiny = std::numeric_limits<double>::min();
+  const std::vector<double> raw{13.125, huge, tiny, 0.0, -1.0, nan, inf,
+                                12.0, 12.0, 12.0, 12.0, 12.0, 12.0};
+  const std::vector<double> vol{7.0, huge, tiny, 1.0, 1.0, 1.0, 1.0,
+                                0.0, -1.0, nan, inf, 1.0, 1.0};
+  std::vector<std::uint8_t> mask(raw.size(), 1);
+  mask[11] = 0;
+  const auto p = df::with_datafields(1, raw.size(), {"close", "volume", "raw_close", "vwap"},
+      {std::vector<double>(raw.size(), 99.0), vol, raw, std::vector<double>(raw.size(), 999.0)},
+      mask, {});
+  ASSERT_TRUE(p) << p.error().message();
+  const auto vw = column(*p, "vwap");
+  for (const atx::usize k : {atx::usize{0}, atx::usize{1}, atx::usize{2}, atx::usize{12}}) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(vw[k]), std::bit_cast<std::uint64_t>(raw[k]));
+  }
+  for (atx::usize k = 3; k <= 11; ++k) EXPECT_TRUE(std::isnan(vw[k])) << k;
+  EXPECT_EQ(p->field_name(atx::usize{3}), "vwap"); // replaced in place, not appended twice
+  EXPECT_EQ(p->num_fields(), 5U);
+}
+
+TEST(DatafieldsVwapV2, UnknownCloseBasisFailsAndExplicitRawOrLegacyIsAvailable) {
+  const std::vector<std::string> names{"close", "volume", "high", "low"};
+  const std::vector<std::vector<double>> cols{{12.0}, {4.0}, {21.0}, {6.0}};
+  EXPECT_FALSE(df::with_datafields(1, 1, names, cols, {}, {}));
+  const auto raw = df::with_datafields(1, 1, names, cols, {}, {},
+      VwapRule::RawDailyCloseV2, ClosePriceBasis::Raw);
+  const auto legacy = df::with_datafields(1, 1, names, cols, {}, {},
+      VwapRule::AdjustedTypicalV1);
+  ASSERT_TRUE(raw && legacy);
+  EXPECT_DOUBLE_EQ(column(*raw, "vwap")[0], 12.0);
+  EXPECT_DOUBLE_EQ(column(*legacy, "vwap")[0], (21.0 + 6.0 + 12.0) / 3.0);
+  EXPECT_FALSE(df::with_datafields(1, 1, names, cols, {}, {}, static_cast<VwapRule>(0)));
+  EXPECT_FALSE(df::with_datafields(1, 1, names, cols, {}, {}, VwapRule::RawDailyCloseV2,
+                                  static_cast<ClosePriceBasis>(9)));
+}
+
+TEST(DatafieldsVwapV2, RejectsRaggedRawPriceAndGeometryBeforeReading) {
+  const std::vector<std::string> names{"close", "volume", "raw_close"};
+  EXPECT_FALSE(df::with_datafields(1, 2, names, {{1, 2}, {3, 4}, {1}}, {}, {}));
+  EXPECT_FALSE(df::with_datafields(1, 2, names, {{1, 2}, {3, 4}}, {}, {}));
+  EXPECT_FALSE(df::with_datafields(1, 2, names, {{1, 2}, {3, 4}, {1, 2}}, {1}, {}));
+  EXPECT_FALSE(df::with_datafields(std::numeric_limits<atx::usize>::max(), 2,
+                                   names, {{}, {}, {}}, {}, {}));
+}
+
+TEST(DatafieldsVwapV2, InstrumentSpecificFutureFactorRevisionCannotMoveVwapRank) {
+  const std::vector<std::string> names{"close", "high", "low", "raw_close", "volume"};
+  const std::vector<double> raw{10.0, 20.0, 30.0, 11.0, 21.0, 31.0};
+  const std::vector<double> vol(6, 100.0);
+  const std::vector<std::vector<double>> before{raw, raw, raw, raw, vol};
+  auto after = before;
+  for (atx::usize f = 0; f < 3; ++f) {
+    after[f][1] *= 0.25; after[f][4] *= 0.25; // later action on instrument 1 only
+  }
+  const auto a = df::with_datafields(2, 3, names, before, {}, {});
+  const auto b = df::with_datafields(2, 3, names, after, {}, {});
+  const auto old_a = df::with_datafields(2, 3, names, before, {}, {}, VwapRule::AdjustedTypicalV1);
+  const auto old_b = df::with_datafields(2, 3, names, after, {}, {}, VwapRule::AdjustedTypicalV1);
+  ASSERT_TRUE(a && b && old_a && old_b);
+  EXPECT_EQ(column(*a, "vwap"), raw);
+  EXPECT_EQ(column(*b, "vwap"), raw);
+  EXPECT_EQ(vm_values("rank(vwap)", *a), vm_values("rank(vwap)", *b));
+  EXPECT_NE(vm_values("rank(vwap)", *old_a), vm_values("rank(vwap)", *old_b));
+}
 
 }  // namespace atxtest_alpha_datafields_test

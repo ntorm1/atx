@@ -63,6 +63,7 @@
 // loop; the cold compile path may allocate, documented).
 
 #include <array>         // std::array (per-genome multi-objective vector, S4.1)
+#include <limits>
 #include <memory>        // std::unique_ptr (per-worker Engine vector, Tier 4)
 #include <span>          // std::span
 #include <string>        // std::string (seed-expression source input)
@@ -91,6 +92,7 @@
 #include "atx/engine/factory/fitness.hpp"    // factory::pool_aware_fitness, kMaxObjectives
 #include "atx/engine/factory/generate.hpp"   // factory::generate_genome, GenConfig (S3.5 wire)
 #include "atx/engine/factory/genome.hpp"     // factory::Genome
+#include "atx/engine/factory/ic_screen.hpp" // conservative forward-return IC prefilter
 #include "atx/engine/factory/mutation.hpp"   // factory::op_swap/field_swap/jitter_const
 #include "atx/engine/factory/op_catalog.hpp" // factory::OpCatalog
 #include "atx/engine/factory/pareto.hpp"     // factory::ObjMatrix, NSGA-II primitives (S4.1)
@@ -306,6 +308,10 @@ struct SearchConfig {
   // digested. Low rungs score the pool-independent fitness (empty pool): the
   // run's pool PnL is full-length and cannot be correlated on a strided panel.
   FidelityCfg fidelity{};
+  // When both screens are active, IC runs before the low-fidelity backtests.
+  // Its prepass retains decisions/digests only; survivors may evaluate the VM
+  // again after the race. IC alone reuses the normal pass's SignalSet directly.
+  IcScreenConfig ic_screen{};
   // Behavioral archive eviction: Fifo (legacy ring of recent elites) or
   // FarthestPoint (max-min-distance set of elite behaviours, behavior.hpp).
   ArchiveEviction archive_eviction{ArchiveEviction::Fifo};
@@ -314,6 +320,13 @@ struct SearchConfig {
 // =========================================================================
 //  SearchResult — the §4.7 return value (fields the verbatim tests read).
 // =========================================================================
+enum class ResidualScoreStatus : atx::u8 { Available, InsufficientEvidence, EvaluationFailed };
+struct ResidualCandidateScore {
+  atx::u64 canon_hash{};
+  ResidualScoreStatus status{ResidualScoreStatus::EvaluationFailed};
+  atx::f64 score{-std::numeric_limits<atx::f64>::infinity()};
+  ObjectiveIcResult diagnostics{};
+};
 struct SearchResult {
   atx::u64 digest{0};                         // F1/F2 byte-identical run fingerprint
   atx::usize trial_count{0};                  // distinct candidates scored (canon.size())
@@ -330,6 +343,27 @@ struct SearchResult {
   atx::usize fingerprint_hits{0};  // representatives whose score was reused by fingerprint
   atx::usize fidelity_evals{0};    // low-rung evaluations (each one a trial)
   atx::usize fidelity_rejected{0}; // candidates rejected before the full-fidelity pass
+  // Complete, sorted identities, including restored cache entries. Rejections
+  // remain in all_scored/canon/trial_count but cannot be rescored for admission.
+  std::vector<atx::u64> ic_rejected_hashes;
+  // Work actually performed by this invocation (not persisted cumulative counts).
+  atx::usize ic_screen_evaluations{0};
+  atx::usize ic_screen_unavailable{0}; // preparation/scratch/runtime errors; fail open
+  atx::usize ic_prepass_vm_evaluations{0}; // both-on path, no population signal cache
+  bool cpcv_invalid{false}; // invalid checked plan: no evaluation/admission
+  bool cpcv_resume_mismatch{false};
+  eval::CpcvMetadata cpcv_metadata; // populated only for active DateV2
+  bool ic_screen_resume_mismatch{false}; // incompatible/missing active checkpoint identity
+  bool ic_screen_cache_mismatch{false}; // injected recipe/geometry differs from this run
+  bool execution_invalid{false}; // explicit V2 request refused before search
+  std::string execution_error{};
+  std::string execution_context_sha256{};
+  bool residual_invalid{false};
+  std::string residual_error{}, residual_context_sha256{};
+  // One record per distinct attempted candidate, including failed evaluation.
+  // These are training ICs, not P&L, Sharpe or durable registry records.
+  std::vector<ResidualCandidateScore> residual_scores;
+  std::vector<atx::u64> residual_unavailable_hashes;
 };
 
 namespace detail {
@@ -446,9 +480,17 @@ public:
   // resume->population instead of init_population. With BOTH nullptr (the default)
   // run() is the byte-identical legacy path — the only added work is two
   // null-pointer checks (F1/F2 off-path invariant, tested by OffPathByteIdentical).
+  // `prepared_ic_screen` optionally borrows a cache prepared for this exact panel
+  // and active config, including caller-specific training membership/return guards.
+  // It must outlive run(); DisabledV1 ignores it. Otherwise run prepares its own.
+  // Active injected-cache resume is rejected: the checkpoint does not persist
+  // identity for the caller-owned membership/return guards. Driver-owned caches
+  // retain resume support; a matching recipe alone cannot certify injected labels.
   [[nodiscard]] SearchResult run(const SearchConfig &cfg, const combine::AlphaStore &pool,
                                  SearchProgressSink *sink = nullptr,
-                                 const SearchResumeState *resume = nullptr);
+                                 const SearchResumeState *resume = nullptr,
+                                 const IcScreenCache *prepared_ic_screen = nullptr,
+                                 const ExecutionObjectiveContext *execution_context = nullptr);
 
 private:
   // ----- (1) init_population -------------------------------------------------
@@ -475,7 +517,10 @@ private:
                       const combine::AlphaStore &pool, CanonSet &canon,
                       std::unordered_map<atx::u64, CachedScore> &fitness_cache,
                       parallel::DetPool &det_pool,
-                      std::vector<std::unique_ptr<alpha::Engine>> &engines, SearchResult &res);
+                      std::vector<std::unique_ptr<alpha::Engine>> &engines, SearchResult &res,
+                      const IcScreenCache *ic_cache,
+                      std::span<IcScreenScratch> ic_scratch,
+                      std::span<ObjectiveIcScratch> residual_scratch);
 
   // ----- (3b) behavioral_novelty_pass (S4.2) ---------------------------------
   // Compute the population-relative BEHAVIORAL novelty for every Scored and write

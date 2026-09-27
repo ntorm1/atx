@@ -1,0 +1,677 @@
+{
+  "report_commit": "26378979bd792c12faa7ad63e8918a8ea4adb56e",
+  "audited_at_utc": "2026-09-26T21:15:12.679313+00:00",
+  "bindings": [
+    {
+      "path": "build-equity/w2-residual-consumer-qualification-index.json",
+      "sha256": "0725bb3643ef3cb66b2fe4c58ad63bdc38fa3bc3cd5584c19564c61d4a9cbb16",
+      "actual": "0725bb3643ef3cb66b2fe4c58ad63bdc38fa3bc3cd5584c19564c61d4a9cbb16",
+      "matches": true
+    },
+    {
+      "path": "build-equity/bin/atx-engine-ic-screen-tests.exe",
+      "sha256": "18d06ad8317afddae241a696f35aacc6e19940b2f958437e0e3a7ea77ad34de4",
+      "actual": "18d06ad8317afddae241a696f35aacc6e19940b2f958437e0e3a7ea77ad34de4",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-engine-qualified.xml",
+      "sha256": "7f90f41a9c674393c4a5489bccf6c08ee8c9c0e3ebd29724f494615d2a8fb99a",
+      "actual": "7f90f41a9c674393c4a5489bccf6c08ee8c9c0e3ebd29724f494615d2a8fb99a",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-engine-qualified.log",
+      "sha256": "dbf9d6ae95bde74c4db2bdc6b7193fde23c3bbf9eb232018fd8de48ea0db1bf2",
+      "actual": "dbf9d6ae95bde74c4db2bdc6b7193fde23c3bbf9eb232018fd8de48ea0db1bf2",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-engine-qualified-receipt.json",
+      "sha256": "4656462507861a115435d21880af604690dd9221b2ddeb8f7444b214339be7ac",
+      "actual": "4656462507861a115435d21880af604690dd9221b2ddeb8f7444b214339be7ac",
+      "matches": true
+    },
+    {
+      "path": "build-equity/bin/atx-impl-ic-screen-tests.exe",
+      "sha256": "f02eac1f7d1c0f45a1221d406f42906444a9280f0de050342629bdfec5813599",
+      "actual": "f02eac1f7d1c0f45a1221d406f42906444a9280f0de050342629bdfec5813599",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-mine-qualified.xml",
+      "sha256": "0f36cc3c29621b44aad73554e4698a9365e1990522b76356f1aee19da0cc50a5",
+      "actual": "0f36cc3c29621b44aad73554e4698a9365e1990522b76356f1aee19da0cc50a5",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-mine-qualified.log",
+      "sha256": "99b3ad453645739373fd4c15d038adf70d36a9564225024d824777c7c076ef0d",
+      "actual": "99b3ad453645739373fd4c15d038adf70d36a9564225024d824777c7c076ef0d",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-mine-qualified-receipt.json",
+      "sha256": "9c87963eac2886aa9a867808fddb6f9793000bbf8cfe6367cdf1c3ac9e6522a4",
+      "actual": "9c87963eac2886aa9a867808fddb6f9793000bbf8cfe6367cdf1c3ac9e6522a4",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-start.json",
+      "sha256": "cc214c385fcb855f1153ef1044f231e79c166c01d43dc9e72801c48c83c30cea",
+      "actual": "cc214c385fcb855f1153ef1044f231e79c166c01d43dc9e72801c48c83c30cea",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-build-receipt.json",
+      "sha256": "b1e055e14280c2c6ebfa5e4f3cd0adca745a157836432566d4f8cbd41f22d908",
+      "actual": "b1e055e14280c2c6ebfa5e4f3cd0adca745a157836432566d4f8cbd41f22d908",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-build.log",
+      "sha256": "3e0f4951dbff5aa920eb020b8fb42bac36dfb0afa71370ef57e3da9548901e67",
+      "actual": "3e0f4951dbff5aa920eb020b8fb42bac36dfb0afa71370ef57e3da9548901e67",
+      "matches": true
+    },
+    {
+      "path": "build-equity/w2-residual-consumer-cache-summary.txt",
+      "sha256": "ed95e266a53dce6a9d7310f35255c7bdb9f69389b123a8f4f413433052f4c153",
+      "actual": "ed95e266a53dce6a9d7310f35255c7bdb9f69389b123a8f4f413433052f4c153",
+      "matches": true
+    }
+  ],
+  "cohorts": [
+    {
+      "label": "engine",
+      "receipt": {
+        "Source": "0bfac41e2e07f56327254d116fe07fbf352da293",
+        "Target": "atx-engine-ic-screen-tests",
+        "Filter": "FactoryResidualObjective.*:FactoryResidualConsumer.*:ExecutionFitnessV2.*:FactoryFidelity.*:FactoryIcScreenIntegration.*:SearchProgress.*",
+        "BinarySha256": "18d06ad8317afddae241a696f35aacc6e19940b2f958437e0e3a7ea77ad34de4",
+        "ExitCode": 0,
+        "WallSeconds": 17.3417624
+      },
+      "cases": [
+        {
+          "name": "FactoryResidualObjective.SqrtCapProjectionRemovesProxyAndPreservesSmallRealResidual",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryResidualObjective.NearCollinearExactProxyCannotRankCancellationDust",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryResidualObjective.WarmupMissingAndRankDeficiencyAreUnavailableNotZeroScores",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryResidualObjective.CausalMaturityAndExplicitPricePresenceSurviveFutureMutation",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryResidualObjective.CalendarHacMatchesIndependentLagSumAndPersistenceSkipsGaps",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryResidualObjective.RefusesUnboundAxesSourceClocksScratchAndWorkingBudget",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryResidualConsumer.ActualFitnessRanksResidualAndInverseWithoutInventingPnl",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryResidualConsumer.ActualSearchRetainsUnavailableTrialsAndWorkerInvariantScores",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryResidualConsumer.RefusesRawScreenWrongBindingResumeAndLegacyAdmission",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "ExecutionFitnessV2.ReusesSignalAndMatchesMatureNetMomentsWithoutZeroPadding",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "ExecutionFitnessV2.SearchInjectsContextAndIsWorkerInvariant",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "ExecutionFitnessV2.RefusesUnpriceableExecutionInsteadOfZeroFitness",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "ExecutionFitnessV2.RefusesMissingMismatchFidelityUnboundPoolAndWorkerBudget",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "ExecutionFitnessV2.ExplicitLegacyIgnoresExecutionContextAndInactiveKnobs",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.PromoteCountHonoursEtaAndFloor",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.RacePromotesBestAndCountsEveryEvalAsATrial",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.NaNIsRejectionAndTiesBreakByCanonHash",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.RaceIsWorkerCountInvariant",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.StridedPanelSubsamplesFieldsAndUniverse",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.DisabledIsByteIdenticalToDefault",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.EnabledIsDeterministicAcrossWorkerCounts",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.TrialCountIncludesRungRejections",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.NonEmptyPoolDoesNotMisalignLowRungs",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.RejectedRanksBelowNegativeRawInScalarMode",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.RejectedStaysOffFrontZeroWithParsimony",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.BorrowedFingerprintScoresAreNotEmitted",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.MultiObjectiveParsimonyRunIsDeterministic",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryFidelity.OutputDedupIsInertUnderZScoreTransform",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryIcScreenIntegration.DisabledIgnoresAllKnobsAndPreservesSearch",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryIcScreenIntegration.InsufficientEvidenceKeepsSinglePassAndWorkerIdentity",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryIcScreenIntegration.RejectedOriginIsNeverRankedOrEmittedAsFull",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryIcScreenIntegration.InjectedCacheMustMatchAndCannotResumeWithoutSupportIdentity",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryIcScreenIntegration.RejectsBeforeEitherBacktestPathAndPreservesTrials",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "FactoryIcScreenIntegration.FactoryKeepsTrialLedgerButExcludesRejectedAdmission",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.PopulationRoundTrip",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.SinkCalledPerGeneration",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.OffPathByteIdentical",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.ResumeProducesIdenticalSearch",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.ResumeIdenticalUnderMultiObjectiveDefaults",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.MultiObjectiveNoSinkDeterminism",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.AccumulatedStateRoundTrip",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.IcRejectionCodecKeepsExplicitOriginAndLegacyRecords",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.ResumedIcRejectIdentitySurvivesWithoutRescoring",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.IcResumeRejectsChangedRulesBoundsAndLegacyIdentity",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "SearchProgress.DateCpcvResumeRejectsChangedBudgetGeometryAndLegacyState",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        }
+      ],
+      "native_time": "17.241",
+      "names_match": true
+    },
+    {
+      "label": "mine",
+      "receipt": {
+        "Source": "0bfac41e2e07f56327254d116fe07fbf352da293",
+        "Target": "atx-impl-ic-screen-tests",
+        "Filter": "EquityMineExecution.*:EquityMinePipeline.*:EquityMineScore.*",
+        "BinarySha256": "f02eac1f7d1c0f45a1221d406f42906444a9280f0de050342629bdfec5813599",
+        "ExitCode": 0,
+        "WallSeconds": 19.0689126
+      },
+      "cases": [
+        {
+          "name": "EquityMineScore.RankLongShortDelayOnePnlAndCost",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMineScore.MembershipExcludesNamesFromTheBook",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMineScore.MissingRealizedReturnContributesZeroNotExclusion",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMineScore.TooFewNamesIsFlat",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMineScore.FlipNegatesGrossKeepsCost",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMineScore.RejectsShapeMismatch",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMineExecution.V2UsesMatureKernelValuesAndRejectsIncompatibleSupport",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMineExecution.ActualMineRolesRescoreSignAndBindMatureTrialIdentity",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.PlantedAlphaIsRecoveredAndAdmitted",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.NullPanelAdmitsAlmostNothingAfterFdr",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.SearchAddsRegisteredTrialsAndStillRecoversPlant",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.RomanoWolfGateIsAtLeastAsStrictAsBothSubsets",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.HoldoutScoresAdmittedAndBlend",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.BlendOfOneAlphaEqualsItsOwnBook",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.RejectsRegistryLengthMismatch",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.IcScreenSeedsCountWithoutBacktestsAndKeepPositiveControl",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.IcScreenUsesTrainingCutoffAndRejectIdentityBindsRecipe",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.IcScreenPropagatesSearchRejectToEquivalentSeed",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        },
+        {
+          "name": "EquityMinePipeline.IcScreenFailsOpenWithMissingSupportOrCacheBudget",
+          "status": "run",
+          "result": "completed",
+          "failures": 0,
+          "errors": 0,
+          "skips": 0
+        }
+      ],
+      "native_time": "18.969",
+      "names_match": true
+    }
+  ],
+  "distinct_passes": 64,
+  "new_case_definitions": [
+    "FactoryResidualConsumer.ActualFitnessRanksResidualAndInverseWithoutInventingPnl",
+    "FactoryResidualConsumer.ActualSearchRetainsUnavailableTrialsAndWorkerInvariantScores",
+    "FactoryResidualConsumer.RefusesRawScreenWrongBindingResumeAndLegacyAdmission"
+  ],
+  "build_actions": [
+    "[1/28] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\fitness.cpp.obj",
+    "[2/28] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\factory.cpp.obj",
+    "[3/28] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\pool_view.cpp.obj",
+    "[4/28] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\research_driver.cpp.obj",
+    "[5/28] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\search_driver.cpp.obj",
+    "[6/28] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\parallel\\workload_mine.cpp.obj",
+    "[7/28] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\factory\\objective_ic.cpp.obj",
+    "[8/28] Building CXX object atx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\dispatch.cpp.obj",
+    "[9/28] Building CXX object atx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\stage_sweep.cpp.obj",
+    "[10/28] Building CXX object atx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\stage_discover.cpp.obj",
+    "[11/28] Building CXX object atx-impl\\CMakeFiles\\atx-impl-core.dir\\generated\\build_provenance.cpp.obj",
+    "[12/28] Building CXX object atx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\store_progress_sink.cpp.obj",
+    "[13/28] Linking CXX static library lib\\atx-engine.lib",
+    "[14/28] Building CXX object atx-engine\\tests\\CMakeFiles\\atx-engine-ic-screen-tests.dir\\factory\\factory_objective_ic_test.cpp.obj",
+    "[15/28] Building CXX object atx-impl\\CMakeFiles\\atx-impl-core.dir\\src\\stage_equity_mine.cpp.obj",
+    "[16/28] Building CXX object atx-engine\\tests\\CMakeFiles\\atx-engine-ic-screen-tests.dir\\factory\\execution_fitness_test.cpp.obj",
+    "[17/28] Building CXX object atx-engine\\tests\\CMakeFiles\\atx-engine-ic-screen-tests.dir\\factory\\factory_fidelity_test.cpp.obj",
+    "[18/28] Linking CXX static library lib\\atx-impl-core.lib",
+    "[19/28] Building CXX object atx-engine\\tests\\CMakeFiles\\atx-engine-ic-screen-tests.dir\\factory\\search_progress_test.cpp.obj",
+    "[20/28] Building CXX object atx-impl\\tests\\CMakeFiles\\atx-impl-ic-screen-tests.dir\\ic_screen_config_test.cpp.obj",
+    "[21/28] Building CXX object atx-impl\\tests\\CMakeFiles\\atx-impl-ic-screen-tests.dir\\stage_equity_mine_core_test.cpp.obj",
+    "[22/28] Building CXX object atx-impl\\tests\\CMakeFiles\\atx-impl-ic-screen-tests.dir\\stage_equity_mine_pipeline_test.cpp.obj",
+    "[23/28] Building CXX object atx-impl\\tests\\CMakeFiles\\atx-impl-ic-screen-tests.dir\\store_discover_test.cpp.obj",
+    "[24/28] Building CXX object atx-impl\\tests\\CMakeFiles\\atx-impl-ic-screen-tests.dir\\stage_equity_mine_cli_test.cpp.obj",
+    "[25/28] Linking CXX executable bin\\atx-engine-ic-screen-tests.exe",
+    "[26/28] Building CXX object atx-impl\\tests\\CMakeFiles\\atx-impl-ic-screen-tests.dir\\discover_test.cpp.obj",
+    "[27/28] Linking CXX executable bin\\atx-impl-ic-screen-tests.exe"
+  ],
+  "build_action_counts": {
+    "cpp": 23,
+    "links": 4,
+    "pch_or_deps": []
+  },
+  "build_errors": [],
+  "build_receipt": {
+    "Source": "0bfac41e2e07f56327254d116fe07fbf352da293",
+    "ConfiguredProvenance": "08240b13f3355c29f84a42af04acbda5f3747ce2",
+    "Jobs": 2,
+    "ExitCode": 0,
+    "WallSeconds": 151.97695199999998
+  },
+  "cache_summary": "Cacheable calls:  23 / 23 (100.0%)\r\n  Hits:            0 / 23 ( 0.00%)\r\n    Direct:        0\r\n    Preprocessed:  0\r\n  Misses:         23 / 23 (100.0%)\r\nLocal storage:\r\n  Hits:            0 / 23 ( 0.00%)\r\n  Misses:         23 / 23 (100.0%)\r\n"
+}

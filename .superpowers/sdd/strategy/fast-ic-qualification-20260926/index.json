@@ -1,0 +1,194 @@
+[
+  {
+    "source": "build-equity/recent-strategy-fast-ic-start.json",
+    "file": "recent-strategy-fast-ic-start.json",
+    "bytes": 274,
+    "sha256": "333a38b4ea90ef8b3bc2f61f24faf6d4d3da4f672dba0c9313bc71577e92c13d"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-build-receipt.json",
+    "file": "recent-strategy-fast-ic-build-receipt.json",
+    "bytes": 210,
+    "sha256": "67ada505289712057cf4eb898896dfbcf87044abaaa933d57d5e7185ec0db06c"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-build.log",
+    "file": "recent-strategy-fast-ic-build.log",
+    "bytes": 15518,
+    "sha256": "ff50b8facfd6e62f1dde4d1be8c966c63224f0b383bb0c148881dc9850ace46d"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-cache-summary.txt",
+    "file": "recent-strategy-fast-ic-cache-summary.txt",
+    "bytes": 458,
+    "sha256": "db45fa6eccc0b217903371e03e91050d47d1cfa0d9bfb1ebf65c9614dd0c8b98"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-qualification/receipt.json",
+    "file": "recent-strategy-fast-ic-qualification/receipt.json",
+    "bytes": 1594,
+    "sha256": "52f3060613ece908461d798863c4be8bc2e366217eb881171e7e759182804ec1"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-qualification/results.xml",
+    "file": "recent-strategy-fast-ic-qualification/results.xml",
+    "bytes": 3439,
+    "sha256": "e715346c71a64d320110965a3b98648416ea699a1eee1f0a7201e215608a4d5d"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-qualification/start.json",
+    "file": "recent-strategy-fast-ic-qualification/start.json",
+    "bytes": 1082,
+    "sha256": "3e4741896cb3a8b0746ab72cd45952b51340520515cd77008cf25d26cdedc732"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-qualification/stderr.log",
+    "file": "recent-strategy-fast-ic-qualification/stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-strategy-fast-ic-qualification/stdout.log",
+    "file": "recent-strategy-fast-ic-qualification/stdout.log",
+    "bytes": 2567,
+    "sha256": "1b10278bb2750facce9d88dcb044b4fc7d96985b28674367f7a06e40eb14ded8"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-plan-v1/receipt.json",
+    "file": "recent-fast-ic-plan-v1/receipt.json",
+    "bytes": 2339,
+    "sha256": "f4b21d0604d799fb69aa7ac6fc963d7b7ae71cdc24eb3dc1f374234790fc6b5b"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-plan-v1/start.json",
+    "file": "recent-fast-ic-plan-v1/start.json",
+    "bytes": 1826,
+    "sha256": "d795143394a9b0722ac29fe33fd3394c09497642eea8ce6921a6d21af3aad1fa"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-plan-v1/stderr.log",
+    "file": "recent-fast-ic-plan-v1/stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-plan-v1/stdout.log",
+    "file": "recent-fast-ic-plan-v1/stdout.log",
+    "bytes": 573,
+    "sha256": "3ba4d6a29a4fab9e7471bc86378944c8e97bc85ab2399e86bb58469dd9095062"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1-run/operator-stop.json",
+    "file": "recent-fast-ic-v1-run/operator-stop.json",
+    "bytes": 296,
+    "sha256": "b71ea9b469bd478d1760ff871ee38d7758f1b6fb84da0c91b700a00406e808ea"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1-run/receipt.json",
+    "file": "recent-fast-ic-v1-run/receipt.json",
+    "bytes": 2589,
+    "sha256": "e3fc70d9dc49170453cfde9beae04165d3fe6ea682dde20929b1d678e4d8f987"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1-run/start.json",
+    "file": "recent-fast-ic-v1-run/start.json",
+    "bytes": 2061,
+    "sha256": "4711b7e83e922be3436ccff6963815d38e097015b4aa0662efd72124ddbbe09a"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1-run/stderr.log",
+    "file": "recent-fast-ic-v1-run/stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1-run/stdout.log",
+    "file": "recent-fast-ic-v1-run/stdout.log",
+    "bytes": 1389,
+    "sha256": "7367a65515884ddb479a10eb906b7e4bf72c7ec34128c8875383fda3c4dfc4b6"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1/recipe.json",
+    "file": "recent-fast-ic-v1/recipe.json",
+    "bytes": 1304,
+    "sha256": "545ace23ce1f8d65e71ba72d905c8ac165b85403d3845f964d1248ef93f4baeb"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1/summary.json",
+    "file": "recent-fast-ic-v1/summary.json",
+    "bytes": 192,
+    "sha256": "a1e2d7cb652fc034588fdafc359a3238518f4738395fd134e806e96f2be49ef1"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1/train_candidates.jsonl",
+    "file": "recent-fast-ic-v1/train_candidates.jsonl",
+    "bytes": 30741,
+    "sha256": "611db79e3ce708da13b9de57b2a002e16f46b586b0b060fae7fd89c718a0d4f9"
+  },
+  {
+    "source": "build-equity/recent-fast-ic-v1/train_daily_ic.csv",
+    "file": "recent-fast-ic-v1/train_daily_ic.csv",
+    "bytes": 2228224,
+    "sha256": "3c64498686d838e791ff32466e3465ec84192acc915caac5e1912a4aae12b192"
+  },
+  {
+    "source": "build-equity/recent-fast-train-2020-2022-v1-run/receipt.json",
+    "file": "recent-fast-train-2020-2022-v1-run/receipt.json",
+    "bytes": 1969,
+    "sha256": "0edeff9b2fc006d31edf02a77fa93334ee904eab9364c5c59b726d1c969d2d60"
+  },
+  {
+    "source": "build-equity/recent-fast-train-2020-2022-v1-run/start.json",
+    "file": "recent-fast-train-2020-2022-v1-run/start.json",
+    "bytes": 1454,
+    "sha256": "17be430d9f284e4f8a8d66bb9d8bc5c791e65480cf28198d853edac42b9d6090"
+  },
+  {
+    "source": "build-equity/recent-fast-train-2020-2022-v1-run/stderr.log",
+    "file": "recent-fast-train-2020-2022-v1-run/stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-fast-train-2020-2022-v1-run/stdout.log",
+    "file": "recent-fast-train-2020-2022-v1-run/stdout.log",
+    "bytes": 1414,
+    "sha256": "44b09c236a3add49b6978242aeee455f42f36d2b71da304e65561ce6e8dccc8b"
+  },
+  {
+    "source": "build-equity/recent-fast-validation-2023-2024-v1-run/receipt.json",
+    "file": "recent-fast-validation-2023-2024-v1-run/receipt.json",
+    "bytes": 1970,
+    "sha256": "b5133112c02f9ed70c9c45aee42a65a09fb64263e264a0997fd8ebe72a227f6c"
+  },
+  {
+    "source": "build-equity/recent-fast-validation-2023-2024-v1-run/start.json",
+    "file": "recent-fast-validation-2023-2024-v1-run/start.json",
+    "bytes": 1459,
+    "sha256": "2e74f03a8000a1b374dc5a9e26df91757d76098b87f89b37edf95d220e1cc98e"
+  },
+  {
+    "source": "build-equity/recent-fast-validation-2023-2024-v1-run/stderr.log",
+    "file": "recent-fast-validation-2023-2024-v1-run/stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "build-equity/recent-fast-validation-2023-2024-v1-run/stdout.log",
+    "file": "recent-fast-validation-2023-2024-v1-run/stdout.log",
+    "bytes": 1141,
+    "sha256": "fa37e2467b2e864dd05628ecf5e5ff42096900cebfaa7cfdef3501be59884b7c"
+  },
+  {
+    "source": "build-equity/recent-fast-train-2020-2022-v1/manifest.json",
+    "file": "recent-fast-train-2020-2022-v1/manifest.json",
+    "bytes": 9789,
+    "sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493"
+  },
+  {
+    "source": "build-equity/recent-fast-validation-2023-2024-v1/manifest.json",
+    "file": "recent-fast-validation-2023-2024-v1/manifest.json",
+    "bytes": 7247,
+    "sha256": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7"
+  }
+]

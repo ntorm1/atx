@@ -1,7 +1,9 @@
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <span>
 #include <string>
@@ -48,6 +50,126 @@ void write_day(const fs::path &dir, const char *name, atx::i64 dn,
   ASSERT_TRUE(atx::tsdb::build_from_long(cols, (dir / name).string(), 0).has_value());
 }
 } // namespace
+
+class DataHistoryPanelFixedUnion : public ::testing::Test {
+protected:
+  fs::path root;
+  void SetUp() override {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (int i = 0; i < 32; ++i) {
+      const auto candidate = fs::temp_directory_path() / ("atx-fixed-history-" + std::to_string(stamp) + "-" + std::to_string(i));
+      std::error_code ec;
+      if (fs::create_directory(candidate, ec)) { root = candidate; return; }
+    }
+    FAIL() << "cannot exclusively reserve synthetic history fixture";
+  }
+  void TearDown() override { if (!root.empty()) { std::error_code ec; fs::remove_all(root, ec); } }
+};
+
+TEST_F(DataHistoryPanelFixedUnion, KeepsAbsentAndFutureColumnsWithOriginalF64History) {
+  const auto start = day_nanos(15707); // synthetic 2013-01-02
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "a.seg", start, {"20", "10"}, {20, 10.00000002}, {1, 1}, {1e8, 1e8}));
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "b.seg", start + day_nanos(1), {"10"}, {11.00000002}, {1}, {1e8}));
+  EXPECT_FALSE(atx::tsdb::SegmentReader::attach((root / "a.seg").string(), 1));
+  EXPECT_TRUE(atx::tsdb::SegmentReader::attach((root / "a.seg").string(), fs::file_size(root / "a.seg")));
+  HistoryDataConfig cfg; cfg.seg_dir = root.string(); cfg.window = {start, start + day_nanos(2)};
+  cfg.fixed_axis_ids = {10, 20, 30};
+  auto fixed = build_history_panel(cfg); ASSERT_TRUE(fixed) << fixed.error().message();
+  EXPECT_EQ(fixed->instrument_ids, (std::vector<std::string>{"10", "20", "30"}));
+  EXPECT_EQ(fixed->original_instrument_indices, (std::vector<atx::usize>{0, 1, 2}));
+  EXPECT_TRUE(fixed->panel.in_universe(0, 0)); EXPECT_FALSE(fixed->panel.in_universe(1, 1));
+  EXPECT_FALSE(fixed->panel.in_universe(0, 2)); EXPECT_FALSE(fixed->panel.in_universe(1, 2));
+  auto close = fixed->panel.field_id("close"); ASSERT_TRUE(close);
+  EXPECT_EQ(std::bit_cast<atx::u64>(fixed->panel.field_cross_section(*close, 1)[0]), std::bit_cast<atx::u64>(11.00000002));
+  EXPECT_TRUE(std::isnan(fixed->panel.field_cross_section(*close, 1)[1]));
+  cfg.max_working_bytes = 1; EXPECT_FALSE(build_history_panel(cfg));
+  cfg.max_working_bytes = 2ULL * 1024 * 1024 * 1024; cfg.compact_to_universe = true;
+  EXPECT_FALSE(build_history_panel(cfg));
+}
+
+TEST_F(DataHistoryPanelFixedUnion, CapturedIndexRejectsReplacedAxisAndContentBeforeCopy) {
+  const auto start = day_nanos(15707);
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "a.seg", start, {"10"}, {10}, {1}, {1e8}));
+  const auto index = capture_history_sources(root.string(), {start, start + day_nanos(3)});
+  ASSERT_TRUE(index) << index.error().message();
+  HistoryDataConfig cfg; cfg.seg_dir = root.string(); cfg.window = {start, start + day_nanos(3)};
+  cfg.fixed_axis_ids = {10, 20}; cfg.source_index = *index;
+  const auto extent = fs::file_size(root / "a.seg");
+  // A valid, equal-sized replacement now has an in-window date beyond the
+  // captured axis. It used to lower_bound to end and index outside the buffer.
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "a.seg", start + day_nanos(1), {"10"}, {10}, {1}, {1e8}));
+  EXPECT_EQ(fs::file_size(root / "a.seg"), extent);
+  const auto changed_axis = build_history_panel(cfg);
+  ASSERT_FALSE(changed_axis);
+  EXPECT_NE(changed_axis.error().message().find("time axis changed"), std::string::npos);
+  EXPECT_FALSE((*index)->verify_paths());
+  // Restoring the original axis does not authorize changed source prices.
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "a.seg", start, {"10"}, {99}, {1}, {1e8}));
+  const auto changed_content = build_history_panel(cfg);
+  ASSERT_FALSE(changed_content);
+  EXPECT_NE(changed_content.error().message().find("content changed"), std::string::npos);
+}
+
+TEST_F(DataHistoryPanelFixedUnion, CachedChunksSkipDisjointPayloadAndFinalMetadataDetectsNewRelevance) {
+  const auto start = day_nanos(15707);
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "a.seg", start, {"10"}, {10}, {1}, {1e8}));
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "b.seg", start + day_nanos(10), {"10"}, {11}, {1}, {1e8}));
+  const auto index = capture_history_sources(root.string(), {start, start + day_nanos(11)});
+  ASSERT_TRUE(index) << index.error().message();
+  // Corrupt only the later source's seal. A first-date chunk must not attach it.
+  {
+    std::fstream file(root / "b.seg", std::ios::binary | std::ios::in | std::ios::out);
+    ASSERT_TRUE(file);
+    file.seekp(-static_cast<std::streamoff>(sizeof(atx::tsdb::SegmentFooter)), std::ios::end);
+    file.put('\0');
+    ASSERT_TRUE(file);
+  }
+  HistoryDataConfig cfg; cfg.seg_dir = root.string(); cfg.window = {start, start + day_nanos(1)};
+  cfg.fixed_axis_ids = {10}; cfg.source_index = *index;
+  const auto first = build_history_panel(cfg);
+  ASSERT_TRUE(first) << first.error().message();
+  EXPECT_EQ(first->source_segment_paths, (std::vector<std::string>{(root / "a.seg").string()}));
+  cfg.window = {start + day_nanos(10), start + day_nanos(11)};
+  EXPECT_FALSE(build_history_panel(cfg)); // actually consuming that file validates its CRC/seal
+  // A fresh narrow capture reads only disjoint metadata, so the damaged payload
+  // does not prevent unrelated assembly. Publication still notices a moved axis.
+  const auto narrow = capture_history_sources(root.string(), {start, start + day_nanos(1)});
+  ASSERT_TRUE(narrow) << narrow.error().message();
+  ASSERT_EQ((*narrow)->files().size(), 2U);
+  EXPECT_TRUE((*narrow)->files()[1].sha256.empty());
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "b.seg", start, {"20"}, {11}, {1}, {1e8}));
+  EXPECT_FALSE((*narrow)->verify_paths());
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "b.seg", start + day_nanos(10), {"10"}, {11}, {1}, {1e8}));
+  ASSERT_TRUE((*narrow)->verify_paths());
+  ASSERT_NO_FATAL_FAILURE(write_day(root, "c.seg", start, {"20"}, {12}, {1}, {1e8}));
+  EXPECT_FALSE((*narrow)->verify_paths());
+}
+
+TEST_F(DataHistoryPanelFixedUnion, NamedFutureOrMixedSourceRefusedBeforeAnyAttachment) {
+  const auto start = day_nanos(15707);
+  // Neither entry is a segment: name preflight must win before even parsing the
+  // lexically earlier malformed file, proving no CRC/mapping occurred first.
+  { std::ofstream file(root / "a.seg", std::ios::binary); file << "not a segment"; }
+  const auto bad = root / "prices-2012-2024.seg";
+  { std::ofstream file(bad, std::ios::binary); file << "not a segment"; }
+  const auto result = capture_history_sources(root.string(), {start, start + day_nanos(1)});
+  ASSERT_FALSE(result);
+  EXPECT_NE(result.error().message().find("before mapping"), std::string::npos);
+}
+
+TEST_F(DataHistoryPanelFixedUnion, UniverseSizeAndBuildDateNamesDoNotAssertPayloadEra) {
+  const auto start = day_nanos(15707);
+  const auto source = root / "t3000" / "build-20260925";
+  ASSERT_TRUE(fs::create_directories(source));
+  ASSERT_NO_FATAL_FAILURE(write_day(source, "a.seg", start, {"10"}, {10}, {1}, {1e8}));
+  const auto result = capture_history_sources(source.string(), {start, start + day_nanos(1)});
+  ASSERT_TRUE(result) << result.error().message();
+  EXPECT_EQ((*result)->sessions(), (std::vector<atx::i64>{start}));
+  { std::ofstream file(source / "2020-01-02.seg", std::ios::binary); file << "never attach"; }
+  const auto forbidden = capture_history_sources(source.string(), {start, start + day_nanos(1)});
+  ASSERT_FALSE(forbidden);
+  EXPECT_NE(forbidden.error().message().find("before mapping"), std::string::npos);
+}
 
 TEST(DataHistoryPanel, DeterministicDigestAndCanonicalFields) {
   const fs::path dir = fs::temp_directory_path() / "atx_hist_panel";

@@ -51,8 +51,20 @@
 #include "atx/core/linalg/linalg.hpp"          // MatX
 #include "atx/engine/combine/cov_targets.hpp"  // CovTarget
 #include "atx/engine/combine/signal_store.hpp" // SignalStore, FitWindow
+#include "atx/engine/eval/hac.hpp"
 
 namespace atx::engine::combine {
+
+// Label horizon is measured in dates of the supplied IC/return stream. Callers with
+// overlapping labels must declare it; one means daily non-overlapping observations.
+// IidV1 plus RawV1 restores the pre-W0 inference and return treatment.
+struct SignalInferenceConfig {
+  eval::hac::TStatRule tstat_rule = eval::hac::TStatRule::HorizonAwareV3;
+  atx::usize label_horizon = 1U;
+  // IC construction only (GK/EWMA). FMB/Kakushadze consume return regressions;
+  // the store-free GK kernel receives an already constructed IC matrix.
+  IcReturnTreatment return_treatment = IcReturnTreatment::WinsorizedV2;
+};
 
 enum class SignalCombineMethod : atx::u8 {
   IcirEwma,
@@ -85,14 +97,17 @@ void normalize_gross(std::vector<atx::f64> &w) noexcept;
 // Shared window validation: >= 1 alpha, window inside n_dates, >= min_rows rows.
 [[nodiscard]] atx::core::Status validate_window(const SignalStore &s, FitWindow w,
                                                 atx::usize min_rows);
+[[nodiscard]] atx::core::Status validate_window(const SignalIcView&, FitWindow,
+                                                atx::usize min_rows);
 
 // --- core kernels (store-free, individually testable) ------------------------
 
 // Grinold-Kahn on an IC matrix (T×K; rows with any NaN are dropped): w = Ω⁻¹ E[IC],
 // Ω = estimate_covariance(ic, target), with a 1e-10·tr(Ω)/K ridge retry if Ω is not
-// SPD; Σ|w| = 1. tstat = mean/(sd/√T). Err when fewer than 2 complete rows remain.
+// SPD; Σ|w| = 1. tstat follows inference. Err for invalid inference or < 2 complete rows.
 [[nodiscard]] atx::core::Result<CombineWeights>
-grinold_kahn_weights(const atx::core::linalg::MatX &ic, CovTarget target);
+grinold_kahn_weights(const atx::core::linalg::MatX &ic, CovTarget target,
+                    SignalInferenceConfig inference = {});
 
 // Kakushadze-Yu weights from alpha returns R (M×N, finite) and expected returns E
 // (length N). `clusters` empty → the paper's algorithm; else clusters[a] is alpha a's
@@ -119,16 +134,27 @@ kakushadze_weights(const atx::core::linalg::MatX &r, std::span<const atx::f64> e
 struct IcirEwmaCombiner {
   atx::f64 half_life = 126.0;   // dates; <= 0 → equal weights over the window
   atx::f64 tstat_haircut = 2.0; // shrink factor max(0, 1 − haircut/|t|); 0 disables
+  SignalInferenceConfig inference{};
   [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalStore &s, FitWindow w) const;
+  [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalIcView&, FitWindow) const;
+  [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalIcCache& s, FitWindow w) const {
+    return fit(s.view(), w);
+  }
 };
 
 struct GrinoldKahnCombiner {
   CovTarget target = CovTarget::LwIdentity;
+  SignalInferenceConfig inference{};
   [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalStore &s, FitWindow w) const;
+  [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalIcView&, FitWindow) const;
+  [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalIcCache& s, FitWindow w) const {
+    return fit(s.view(), w);
+  }
 };
 
 struct FamaMacBethRidge {
   atx::f64 lambda = 0.0; // per-observation ridge penalty (λ·n_t on the K×K diagonal)
+  SignalInferenceConfig inference{};
   [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalStore &s, FitWindow w) const;
 };
 
@@ -137,6 +163,7 @@ struct KakushadzeRegression {
   atx::f64 ridge_rel = 1e-8;       // regression regime (N_active − G > M−1) only
   atx::usize n_factors = 0U;       // factor regime (N_active − G <= M−1): 0 → MP-edge auto
   std::vector<atx::u32> clusters; // optional cluster dummies (size n_alphas, or empty)
+  SignalInferenceConfig inference{};
   [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalStore &s, FitWindow w) const;
 };
 

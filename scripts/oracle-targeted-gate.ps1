@@ -208,7 +208,7 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
         RequiredExecutables = @($testExe, $benchExe)
         ExpectedTestIds = @($script:OracleBenchTestIds)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-tests', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', '-Jobs', '2', 'build', 'atx-vol-tests', 'atx-vol-oracle-bench')
         Arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^OracleBench.*$', '--no-tests=error')
       }
     }
@@ -226,7 +226,7 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
         RequiredExecutables = @($conventionTestExe)
         ExpectedTestIds = @($script:OracleConventionTestIds)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-oracle-convention-tests', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', '-Jobs', '2', 'build', 'atx-vol-oracle-convention-tests')
         Arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^OracleConvention\.', '--no-tests=error')
       }
     }
@@ -248,7 +248,7 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
         Kind = 'oracle_convention'; Program = $relBenchExe; OutputPath = $out
         RequiredExecutables = @($relBenchExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', '-Jobs', '2', 'build', 'atx-vol-oracle-bench')
         Arguments = @('--convention-sweep', '--smoke', $smokeCohort, '--tune', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--git-sha', $Identity.Sha)
       }
     }
@@ -277,7 +277,7 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
         Kind = 'oracle_speed'; Program = $relBenchExe; OutputPath = $out
         ExpectedFloorPath = ''; RequiredExecutables = @($relBenchExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', '-Jobs', '2', 'build', 'atx-vol-oracle-bench')
         Arguments = @('--cohort', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--iter', '0', '--git-sha', $Identity.Sha)
       }
     }
@@ -287,7 +287,7 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
         Kind = 'oracle_speed'; Program = $relBenchExe; OutputPath = $out
         ExpectedFloorPath = $floorPath; RequiredExecutables = @($relBenchExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', '-Jobs', '2', 'build', 'atx-vol-oracle-bench')
         Arguments = @('--cohort', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--iter', '0', '--git-sha', $Identity.Sha)
       }
     }
@@ -302,7 +302,7 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
         Kind = 'ctest'; Program = 'powershell'; OutputPath = ''
         RequiredExecutables = @($testExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-tests', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', '-Jobs', '2', 'build', 'atx-vol-tests')
         Arguments = @('-NoProfile', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^mode_b_targeted_tests$', '--no-tests=error')
       }
     }
@@ -334,7 +334,7 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
         Kind = 'oracle_aggregate'; Program = $relBenchExe; OutputPath = ''
         RequiredExecutables = @($relBenchExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', '-Jobs', '2', 'build', 'atx-vol-oracle-bench')
         Arguments = @('--cohort', 'smoke,tune', '--mode', 'B', '--aggregate-only')
       }
     }

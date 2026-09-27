@@ -166,6 +166,12 @@ struct ResearchReport {
   // (so the ON-path fingerprint is S4.5's own â€” the boundary pin keeps the gate OFF).
   atx::usize robust_screened{0};
   atx::usize robust_passed{0};
+  // Explicit active recipe; id=0 while gate is OFF. V2 binds this identity in
+  // digest even if no candidate survives. V1 keeps its previous digest path.
+  eval::RegimeSliceRule robustness_regime_rule{eval::RegimeSliceRule::ExpandingPastV2};
+  atx::usize robustness_vol_window{0};
+  atx::usize robustness_min_history{0};
+  atx::u64 robustness_recipe_id{0};
   // M1/sweep: the OOS-per-alpha metrics from the LAST mine_into run. Populated
   // whenever the last run produced oos_metrics; empty when OOS is off. Used by
   // stage_sweep to write IS/OOS columns to _manifest.txt in discover format.

@@ -114,6 +114,29 @@ f64 direct_dsr(const std::vector<f64> &series, usize N) {
 
 constexpr usize kT = 24; // OOS-series length (>= n_splits, even-divisible)
 
+TEST(LearnNnGate, PboNumericalRuleIsForwardedAndReturned) {
+  const std::vector<LearnedModel> candidates{
+      shell(skilled_series(kT, 101, 0.30), 2),
+      shell(skilled_series(kT, 202, 0.28), 3),
+      shell(skilled_series(kT, 303, 0.32), 4)};
+  std::vector<f64> matrix;
+  for (const auto& candidate : candidates)
+    matrix.insert(matrix.end(), candidate.oos_score_series.begin(), candidate.oos_score_series.end());
+  NnGateCfg config;
+  EXPECT_EQ(config.pbo_rule, eval::PboRule::CachedMomentsV2);
+  for (const auto rule : {eval::PboRule::LegacyGatherV1, eval::PboRule::CachedMomentsV2}) {
+    config.pbo_rule = rule;
+    const auto result = gate_nn_sweep(candidates, config);
+    const auto expected = eval::pbo_cscv_checked(matrix, candidates.size(), config.n_splits, rule);
+    ASSERT_TRUE(result.has_value()); ASSERT_TRUE(expected.has_value());
+    EXPECT_EQ(result->pbo_rule, rule);
+    EXPECT_EQ(result->pbo, expected->pbo);
+    EXPECT_EQ(result->n_trials, 9U);
+  }
+  config.pbo_rule = static_cast<eval::PboRule>(99);
+  EXPECT_FALSE(gate_nn_sweep(candidates, config).has_value());
+}
+
 // =====================================================================
 //  Planted-signal admit — a sweep of clearly-skilled candidates clears BOTH
 //  bars and the deflation N is the WHOLE sweep.

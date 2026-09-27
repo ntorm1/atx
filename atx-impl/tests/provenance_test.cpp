@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -138,12 +139,22 @@ std::string json_value_of(const std::string& json, const std::string& key) {
 struct Provenance {
     std::string config_json;
     std::string engine_git_sha;
+    std::string manifest;
 };
 
-Provenance run_and_read(const std::string& tag) {
+Provenance run_and_read(const std::string& tag, bool capacity = false,
+    atx::engine::eval::PboRule pbo_rule = atx::engine::eval::PboRule::CachedMomentsV2,
+    atx::engine::eval::CpcvRule cpcv_rule = atx::engine::eval::CpcvRule::ObservationV1) {
     Provenance out;
     auto panel = make_panel();
     if (!panel.has_value()) return out;
+    if (capacity) {
+        const auto close_span = panel->field_all(panel->field_id("close").value());
+        const std::vector<f64> close(close_span.begin(), close_span.end());
+        panel = Panel::create(panel->dates(), panel->instruments(),
+            {"close", "raw_close", "volume"},
+            {close, close, std::vector<f64>(close.size(), 1e6)}, {}).value();
+    }
     const std::string panel_path = write_panel_tmp(*panel, tag);
     const std::string alpha_out = (fs::temp_directory_path() / ("atx_prov_out_" + tag)).string();
     const std::string db_path =
@@ -153,6 +164,17 @@ Provenance run_and_read(const std::string& tag) {
     fs::remove(db_path, ec0);
 
     auto cfg = gated_cfg(panel_path, alpha_out);
+    cfg.pbo_rule = pbo_rule;
+    cfg.cpcv_rule = cpcv_rule;
+    if (cpcv_rule == atx::engine::eval::CpcvRule::DateV2) {
+        cfg.cpcv_embargo_dates = 2; cfg.cpcv_max_working_bytes = 1048576;
+        cfg.population = 2; cfg.generations = 1;
+    }
+    if (capacity) {
+        cfg.min_price = 1.25;
+        cfg.min_adv_usd = 1e6;
+        cfg.adv_window = 3;
+    }
     cfg.run_db = db_path;
     auto r = atx::impl::run_discover(cfg);
     EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().message());
@@ -165,11 +187,37 @@ Provenance run_and_read(const std::string& tag) {
         out.engine_git_sha = read_run_text(db, "engine_git_sha");
     }
 
+    if (cpcv_rule == atx::engine::eval::CpcvRule::DateV2) {
+        std::ifstream input(fs::path(alpha_out) / "_manifest.txt");
+        std::ostringstream text; text << input.rdbuf(); out.manifest = text.str();
+    }
     std::error_code ec;
     fs::remove(panel_path, ec);
     fs::remove_all(alpha_out, ec);
     fs::remove(db_path, ec);
     return out;
+}
+
+TEST(AtxImplProvenance, ActiveCapacityRecipeIsPersisted) {
+    const auto active = run_and_read("capacity_vwap_v2", true);
+    EXPECT_EQ(json_value_of(active.config_json, "vwap_rule"), "raw-daily-close-v2");
+    EXPECT_EQ(json_value_of(active.config_json, "min_price"), "1.25");
+    EXPECT_EQ(json_value_of(active.config_json, "min_adv_usd"), "1000000");
+    EXPECT_EQ(json_value_of(active.config_json, "adv_window"), "3");
+    const auto off = run_and_read("capacity_disabled");
+    for (const auto *key : {"vwap_rule", "min_price", "min_adv_usd", "adv_window"}) {
+        EXPECT_TRUE(json_value_of(off.config_json, key).empty());
+    }
+}
+
+TEST(AtxImplProvenance, PboRuleIsPersistedAndExplicitV1KeepsLegacySchema) {
+    const auto cached = run_and_read("pbo_recipe_v2");
+    EXPECT_EQ(json_value_of(cached.config_json, "v"), "3");
+    EXPECT_EQ(json_value_of(cached.config_json, "pbo_rule"), "cached-moments-v2");
+    const auto legacy = run_and_read("pbo_recipe_v1", false,
+        atx::engine::eval::PboRule::LegacyGatherV1);
+    EXPECT_EQ(json_value_of(legacy.config_json, "v"), "2"); // IC screen remains active
+    EXPECT_TRUE(json_value_of(legacy.config_json, "pbo_rule").empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -283,3 +331,20 @@ TEST(AtxImplProvenance, EngineGitShaFormat) {
 }
 
 } // namespace atxtest_provenance
+
+namespace atxtest_provenance {
+TEST(AtxImplProvenance, DateCpcvPersistsActiveRecipeAndActualPathMetadata) {
+    const auto date=run_and_read("date_cpcv_v2",false,
+        atx::engine::eval::PboRule::LegacyGatherV1,atx::engine::eval::CpcvRule::DateV2);
+    EXPECT_EQ(json_value_of(date.config_json,"v"),"4");
+    EXPECT_EQ(json_value_of(date.config_json,"cpcv_rule"),"date-v2");
+    EXPECT_EQ(json_value_of(date.config_json,"cpcv_embargo_dates"),"2");
+    EXPECT_EQ(json_value_of(date.config_json,"cpcv_max_working_bytes"),"1048576");
+    EXPECT_NE(date.manifest.find("cpcv_fold_count=15"),std::string::npos);
+    EXPECT_NE(date.manifest.find("cpcv_path_count=5"),std::string::npos);
+    EXPECT_NE(date.manifest.find("cpcv_path_4="),std::string::npos);
+    const auto legacy=run_and_read("date_cpcv_legacy",false,
+        atx::engine::eval::PboRule::LegacyGatherV1);
+    EXPECT_TRUE(json_value_of(legacy.config_json,"cpcv_rule").empty());
+}
+}

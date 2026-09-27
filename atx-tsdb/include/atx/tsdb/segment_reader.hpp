@@ -5,6 +5,7 @@
 // before exposing one byte; a bad file returns Err, never UB. Owns the Mapping.
 
 #include <optional>
+#include <cstddef>
 #include <span>
 #include <string>
 #include <string_view>
@@ -24,11 +25,21 @@ public:
   /// short file; Err(IoError) if it cannot be mapped (propagated from Mapping);
   /// Err(Internal) on integrity-crc mismatch.
   [[nodiscard]] static atx::core::Result<SegmentReader> attach(const std::string &path);
+  // Captured-handle extent is admitted before mapping; the legacy overload is
+  // unchanged. Intended for bounded out-of-core assembly, not a path-size hint.
+  [[nodiscard]] static atx::core::Result<SegmentReader> attach(
+      const std::string &path, atx::u64 max_bytes);
 
   [[nodiscard]] atx::u64 time_count() const noexcept { return header().time_count; }
   [[nodiscard]] atx::u32 instrument_count() const noexcept { return header().instrument_count; }
   [[nodiscard]] atx::u32 field_count() const noexcept { return header().field_count; }
   [[nodiscard]] atx::u64 content_hash() const noexcept { return header().content_hash; }
+  // Read-only captured file identity; the span borrows this reader's mapping.
+  // Callers must not retain it after moving/destroying the reader.
+  [[nodiscard]] std::span<const std::byte> mapped_bytes() const noexcept {
+    return std::as_bytes(std::span{map_.base(), map_.size()});
+  }
+  [[nodiscard]] atx::usize mapped_size() const noexcept { return map_.size(); }
 
   /// The ascending unix-nanos time axis (T entries).
   [[nodiscard]] std::span<const atx::i64> times() const noexcept {

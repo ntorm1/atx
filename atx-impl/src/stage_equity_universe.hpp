@@ -17,6 +17,14 @@ namespace atx::impl {
 // survivorship lower bound (§4). It fits nothing, forecasts nothing and claims no
 // alpha (§1.3): the output is membership lists and counts.
 //
+// W1-D5: default --universe-rule common-stock-v2 requires --instrument-types,
+// a sealed atx-instrument-types-v1 JSON projection with original source hashes,
+// verified publication/vintage clocks, and validity endpoints known under those
+// clocks. Availability is strictly before the rank session; unknown/unverified/
+// conflicting type cannot trade. Inclusive raw price $5 / median ADV $5m floors,
+// excluded_instruments.csv, copied type projection, and ATXPITU2 membership are
+// bound in an atx-equity-universe-v2 manifest. Explicit legacy-v1 retains cp15.
+//
 // The ledger line it appends (§5.6) has purpose "point-in-time-universe-construction"
 // and trial_count_declared 0 — accepted only because that purpose is on the
 // trial_ledger.hpp non-trial allow-list (§5.7, R15-3).

@@ -1,0 +1,22 @@
+{
+  "annual_borrow_bps": 300.0,
+  "cadence": 5,
+  "calendar_basis": "decision-session-month",
+  "combined_sha256": "7407d7e7b72548e5577fdf94e2f52d238f9ff751a8ebc5640987130c1390d8e1",
+  "cost_basis": "target-change-no-drift;short-target/252;not-fills",
+  "deployment_included": true,
+  "entry_delay": 1,
+  "forced_exits": "immediate;charged-before-discretionary;may-breach",
+  "max_working_bytes": 536870912,
+  "missing_return": "complete-day-undefined;observed-component-and-missing-exposures",
+  "monthly_budget": 0.3,
+  "one_way_bps": 6.0,
+  "return_guard": "observed-adjacent-log1.5;adjusted-log-vs-raw+.10;no-missing-zero-fill",
+  "return_horizon": 1,
+  "role_sha256": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7",
+  "rough_returns": true,
+  "rule": "monthly-target-budget-v2",
+  "schema": "atx.dsl-target-replay/v1",
+  "target": "tied-rank;neutral-desired-gross1;partial-no-drift-no-renormalization",
+  "trade_fraction": 0.25
+}

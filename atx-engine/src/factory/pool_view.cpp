@@ -9,6 +9,12 @@ pool_aware_fitness(const Genome &cand, const PoolView &view, const alpha::Panel 
                    const WeightPolicy &policy, const exec::ExecutionSimulator &sim,
                    const FitnessCfg &cfg, const alpha::Panel *weak_panel,
                    alpha::Engine *engine, const alpha::SignalSet *signals) {
+  if (cfg.objective_rule != FitnessObjectiveRule::LegacyV1)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "residual fitness: PoolView has no residual IC recipe");
+  if (cfg.execution.rule == ExecutionObjectiveRule::DelayedSurfaceV2)
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "execution fitness: PoolView has no bound calendar/execution recipe");
   // Steps 1, 3, 5 (pool-INDEPENDENT) — shared with the legacy overload.
   ATX_TRY(const detail::FitnessCore core,
           detail::fitness_core(cand, panel, policy, sim, cfg, weak_panel, engine, signals));

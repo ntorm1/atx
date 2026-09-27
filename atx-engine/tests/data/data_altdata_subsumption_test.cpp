@@ -467,7 +467,9 @@ TEST(DataAltdataSubsumption, NewsSentimentGatesViaTradeWhen) {
   // Build price Panel and merge sentiment feature.
   // ------------------------------------------------------------------
   const std::vector<atx::u16> adv_windows{};
-  auto panel_res = price_to_panel(price, std::span<const atx::u16>{adv_windows});
+  auto panel_res = price_to_panel(price, std::span<const atx::u16>{adv_windows},
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(panel_res.has_value()) << panel_res.error().message();
   const Panel panel_in = std::move(panel_res).value();
 
@@ -573,7 +575,9 @@ TEST(DataAltdataSubsumption, AnalystFeatureFeedsFeatureMatrix) {
   // Build price Panel and merge analyst feature.
   // ------------------------------------------------------------------
   const std::vector<atx::u16> adv_windows{};
-  auto panel_res = price_to_panel(price, std::span<const atx::u16>{adv_windows});
+  auto panel_res = price_to_panel(price, std::span<const atx::u16>{adv_windows},
+      atx::engine::alpha::VwapRule::RawDailyCloseV2,
+      atx::engine::alpha::ClosePriceBasis::Raw);
   ASSERT_TRUE(panel_res.has_value()) << panel_res.error().message();
   const Panel panel_in = std::move(panel_res).value();
 

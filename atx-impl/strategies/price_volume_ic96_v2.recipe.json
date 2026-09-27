@@ -1,0 +1,1424 @@
+{
+  "schema": "atx.dsl-ic-experiment/v1",
+  "id": "price_volume_ic96_v2_initial",
+  "library": {
+    "path": "price_volume_ic96_v2.json",
+    "sha256": "fd1e359b316842eeb04551f91135e2f1fb5e13bdc8e888d0450ddac509fe1389"
+  },
+  "generation": {
+    "rule": "frozen-v1-48-plus-eight-by-three-by-two-v2",
+    "revision": "fix-round-2",
+    "candidates": 96,
+    "families": 16,
+    "templates_per_family": 3,
+    "smoothing_sessions": [
+      21,
+      63
+    ],
+    "wrapper": "decay_linear(rank(base), s)",
+    "smoothing_exemptions": [],
+    "smoothing_rationale": "no family exempted: rank tames heavy-tailed bases (Amihud ratios, volume ratios, skew, volatility ratios) and two decay variants keep the v1 3x2 family budget; already-slow 126-252 session bases only spend lookback, checked <= 314",
+    "seed": null,
+    "max_prior_bars": 314,
+    "complete_observations": 315,
+    "frozen_v1": {
+      "generator": "generate_slow_ic_48.py",
+      "library": "slow_price_volume_ic48_v1.json",
+      "library_sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+      "recipe": "slow_price_volume_ic48_v1.recipe.json",
+      "recipe_sha256": "3b6707f7a46e392391281a9f84585e6c6b1a1b5567cd9ff2656931b72481130b",
+      "candidates": 48,
+      "families": 8,
+      "copy": "ids, families, family descriptions and DSL bytes identical; dsl_sha256 unchanged"
+    },
+    "new": {
+      "candidates": 48,
+      "families": 8,
+      "templates": 24
+    }
+  },
+  "revisions": [
+    {
+      "round": 1,
+      "finding": "I1",
+      "change": "abnormal_volume uses split-adjusted (raw_close * volume) / close instead of raw share volume"
+    },
+    {
+      "round": 1,
+      "finding": "I2",
+      "change": "vec_avg(ret) replaced by the upstream mkt_ret field (previous-session members, broadcast to all present names)"
+    },
+    {
+      "round": 1,
+      "finding": "I3",
+      "change": "residual_momentum is standardized residual Sharpe at 6-1, 9-1 and 12-1 (resmom_6_1/resmom_9_1 dropped)"
+    },
+    {
+      "round": 1,
+      "finding": "I4a",
+      "change": "illiquidity: amihud_21/63/126 levels replaced by amihud_shock_21_252, roll_autocorr_126, signed_volume_reversal_126"
+    },
+    {
+      "round": 1,
+      "finding": "I4b",
+      "change": "ivol_21/ivol_126 replaced by ivol_change_21_252 and ivol_change_63_qoq; max_ret_21 replaced by scaled_max_21"
+    },
+    {
+      "round": 1,
+      "finding": "M1",
+      "change": "fp_beta volatility ratio uses 252 sessions (fp_beta_250_63 renamed fp_beta_250_252)"
+    },
+    {
+      "round": 1,
+      "finding": "M2",
+      "change": "market_corr_63 replaced by corr_asymmetry_126 (down minus up correlation)"
+    },
+    {
+      "round": 1,
+      "finding": "M7",
+      "change": "residual sd uses signedpower(abs(1 - rho^2), 0.5), keeping the alpha sign if rho rounds past 1"
+    },
+    {
+      "round": 2,
+      "finding": "N1",
+      "change": "expected_overlap records resid_sharpe_6_1 vs v1 risk_scaled_6_1 (prior rank corr ~0.85-0.9); note only, no DSL change"
+    },
+    {
+      "round": 2,
+      "finding": "N2",
+      "change": "expected_overlap records ivol_change_21_252 vs v1 vol_expansion_21_126 (prior |rank corr| ~0.8-0.85) and v2 vol_term_63_252 (~0.7); note only, no DSL change"
+    },
+    {
+      "round": 2,
+      "finding": "N3",
+      "change": "idio_var uses ts_var * abs(1 - rho^2), so ivol_change numerators and denominators cannot flip sign if rho rounds past 1 (M7 pattern)"
+    }
+  ],
+  "expected_overlap": {
+    "rule": "pre-measurement prior rank correlations from review arithmetic; not measured, not a selection input; the admission screen culls empirical duplicates",
+    "pairs": [
+      {
+        "template": "resid_sharpe_6_1",
+        "reference": "risk_scaled_6_1",
+        "reference_origin": "frozen_v1",
+        "prior_abs_rank_corr": "0.85-0.9",
+        "basis": "same [t-125, t-21] formation window; numerators differ by beta*M (sd ~0.05 vs R ~0.25-0.30); denominators differ by residualization (log-sd ~0.1-0.15 vs ~0.45 for the vol level) and 105 vs 126 sessions",
+        "finding": "N1"
+      },
+      {
+        "template": "ivol_change_21_252",
+        "reference": "vol_expansion_21_126",
+        "reference_origin": "frozen_v1",
+        "prior_abs_rank_corr": "0.8-0.85",
+        "basis": "log(ivar21/ivar252) = log(var21/var252) + log(1-R2_21) - log(1-R2_252) shares the noisy 21-session variance numerator with -(sd21/sd126); the sign is absorbed by the TRAIN orientation",
+        "finding": "N2"
+      },
+      {
+        "template": "ivol_change_21_252",
+        "reference": "vol_term_63_252",
+        "reference_origin": "new_v2",
+        "prior_abs_rank_corr": "0.7",
+        "basis": "both are short-over-long variance ratios ending at t with a 252-session denominator",
+        "finding": "N2"
+      }
+    ]
+  },
+  "family_fixing": {
+    "fixed_before_measurement": true,
+    "measurement_consulted": false,
+    "template_reselection": "structural, from code review, before any TRAIN measurement",
+    "statement": "The eight new families were fixed from published economic priors before any v2 measurement. Fix round 1 re-selected templates structurally from an independent code review (split handling, market-return coverage, overlap with v1 momentum/low-risk/size tilts), and fix round 2 hardened the ivol_change variance shares and recorded expected overlaps from a re-review, still before any TRAIN measurement; no IC, return, turnover or correlation output was consulted to choose or tune them. TRAIN fits only per-candidate signs; validation is not used for selection."
+  },
+  "family_priors": [
+    {
+      "family": "momentum",
+      "origin": "frozen_v1",
+      "prior": "Intermediate return persistence, with the most recent month excluded."
+    },
+    {
+      "family": "trend_quality",
+      "origin": "frozen_v1",
+      "prior": "Path efficiency, return-sign consistency and risk-scaled persistence; related variants share one family budget."
+    },
+    {
+      "family": "medium_reversal",
+      "origin": "frozen_v1",
+      "prior": "Smoothed contrarian intermediate returns and distance from a trailing mean."
+    },
+    {
+      "family": "defensive_risk",
+      "origin": "frozen_v1",
+      "prior": "Low volatility, downside variability and volatility expansion; factor preferences, not neutralized alpha."
+    },
+    {
+      "family": "liquidity_state",
+      "origin": "frozen_v1",
+      "prior": "Raw-dollar liquidity level, expansion and instability; no adjusted-price/share-volume dollar proxy."
+    },
+    {
+      "family": "flow_confirmation",
+      "origin": "frozen_v1",
+      "prior": "Return/flow co-movement and signed dollar-flow balance, using actual shares times raw close."
+    },
+    {
+      "family": "price_location",
+      "origin": "frozen_v1",
+      "prior": "Adjusted-close position within its own trailing range and slow moving-average structure; no candle fields."
+    },
+    {
+      "family": "trading_year_seasonality",
+      "origin": "frozen_v1",
+      "prior": "252-session-year proxies only; not calendar seasonality or a claim of independent effects."
+    },
+    {
+      "family": "residual_momentum",
+      "origin": "new_v2",
+      "prior": "Blitz, Huij and Martens (2011, J. Empirical Finance) standardized residual momentum; Grundy and Martin (2001, RFS) factor-adjusted momentum."
+    },
+    {
+      "family": "market_beta",
+      "origin": "new_v2",
+      "prior": "Frazzini and Pedersen (2014, JFE) betting against beta; Bollerslev, Li, Patton and Quaedvlieg (2022, JFE) realized semibetas."
+    },
+    {
+      "family": "idiosyncratic_risk",
+      "origin": "new_v2",
+      "prior": "Ang, Hodrick, Xing and Zhang (2006, JF) idiosyncratic volatility; Fu (2009, JFE) expected vs unexpected idiosyncratic volatility; Durnev, Morck, Yeung and Zarowin (2003, JAR)."
+    },
+    {
+      "family": "lottery_demand",
+      "origin": "new_v2",
+      "prior": "Bali, Cakici and Whitelaw (2011, JFE) MAX; Amaya, Christoffersen, Jacobs and Vasquez (2015, JFE) realized skewness."
+    },
+    {
+      "family": "abnormal_volume",
+      "origin": "new_v2",
+      "prior": "Gervais, Kaniel and Mingelgrin (2001, JF) high-volume return premium; Barber and Odean (2008, RFS) attention."
+    },
+    {
+      "family": "illiquidity",
+      "origin": "new_v2",
+      "prior": "Amihud (2002, J. Financial Markets) unexpected illiquidity; Roll (1984, JF) implied spread; Pastor and Stambaugh (2003, JPE) volume-induced reversal."
+    },
+    {
+      "family": "comovement",
+      "origin": "new_v2",
+      "prior": "Ang and Chen (2002, JFE) asymmetric correlations; Hou and Moskowitz (2005, RFS) price delay; Barberis, Shleifer and Wurgler (2005, JFE)."
+    },
+    {
+      "family": "volatility_dynamics",
+      "origin": "new_v2",
+      "prior": "Baltussen, van Bekkum and van der Grient (2018, JFQA) vol-of-vol; Adrian and Rosenberg (2008, JF) short/long volatility components."
+    }
+  ],
+  "templates": [
+    {
+      "family": "residual_momentum",
+      "template": "resid_sharpe_6_1",
+      "base_dsl": "delay(((ts_sum(((close / delay(close, 1)) - 1), 105) - (ts_regression(((close / delay(close, 1)) - 1), mkt_ret, 105) * ts_sum(mkt_ret, 105))) / (stddev(((close / delay(close, 1)) - 1), 105) * signedpower(abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 105) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 105)))), 0.5))), 21)",
+      "base_prior_bars": 126
+    },
+    {
+      "family": "residual_momentum",
+      "template": "resid_sharpe_9_1",
+      "base_dsl": "delay(((ts_sum(((close / delay(close, 1)) - 1), 168) - (ts_regression(((close / delay(close, 1)) - 1), mkt_ret, 168) * ts_sum(mkt_ret, 168))) / (stddev(((close / delay(close, 1)) - 1), 168) * signedpower(abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 168) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 168)))), 0.5))), 21)",
+      "base_prior_bars": 189
+    },
+    {
+      "family": "residual_momentum",
+      "template": "resid_sharpe_12_1",
+      "base_dsl": "delay(((ts_sum(((close / delay(close, 1)) - 1), 231) - (ts_regression(((close / delay(close, 1)) - 1), mkt_ret, 231) * ts_sum(mkt_ret, 231))) / (stddev(((close / delay(close, 1)) - 1), 231) * signedpower(abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 231)))), 0.5))), 21)",
+      "base_prior_bars": 252
+    },
+    {
+      "family": "market_beta",
+      "template": "beta_126",
+      "base_dsl": "ts_regression(((close / delay(close, 1)) - 1), mkt_ret, 126)",
+      "base_prior_bars": 126
+    },
+    {
+      "family": "market_beta",
+      "template": "fp_beta_250_252",
+      "base_dsl": "((correlation(ts_sum(((close / delay(close, 1)) - 1), 3), ts_sum(mkt_ret, 3), 250) * stddev(((close / delay(close, 1)) - 1), 252)) / stddev(mkt_ret, 252))",
+      "base_prior_bars": 252
+    },
+    {
+      "family": "market_beta",
+      "template": "neg_semibeta_189",
+      "base_dsl": "(ts_sum((min(((close / delay(close, 1)) - 1), 0) * min(mkt_ret, 0)), 189) / ts_sum((mkt_ret * mkt_ret), 189))",
+      "base_prior_bars": 189
+    },
+    {
+      "family": "idiosyncratic_risk",
+      "template": "ivol_change_21_252",
+      "base_dsl": "((ts_var(((close / delay(close, 1)) - 1), 21) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 21) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 21))))) / (ts_var(((close / delay(close, 1)) - 1), 252) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 252) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 252))))))",
+      "base_prior_bars": 252
+    },
+    {
+      "family": "idiosyncratic_risk",
+      "template": "ivol_change_63_qoq",
+      "base_dsl": "((ts_var(((close / delay(close, 1)) - 1), 63) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63))))) / delay((ts_var(((close / delay(close, 1)) - 1), 63) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63))))), 63))",
+      "base_prior_bars": 126
+    },
+    {
+      "family": "idiosyncratic_risk",
+      "template": "idio_share_252",
+      "base_dsl": "(1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 252) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 252)))",
+      "base_prior_bars": 252
+    },
+    {
+      "family": "lottery_demand",
+      "template": "scaled_max_21",
+      "base_dsl": "(ts_max(((close / delay(close, 1)) - 1), 21) / stddev(((close / delay(close, 1)) - 1), 21))",
+      "base_prior_bars": 21
+    },
+    {
+      "family": "lottery_demand",
+      "template": "scaled_max_63",
+      "base_dsl": "(ts_max(((close / delay(close, 1)) - 1), 63) / stddev(((close / delay(close, 1)) - 1), 63))",
+      "base_prior_bars": 63
+    },
+    {
+      "family": "lottery_demand",
+      "template": "skew_126",
+      "base_dsl": "ts_skew(((close / delay(close, 1)) - 1), 126)",
+      "base_prior_bars": 126
+    },
+    {
+      "family": "abnormal_volume",
+      "template": "volume_shock_5_63",
+      "base_dsl": "(ts_mean(((raw_close * volume) / close), 5) / ts_mean(((raw_close * volume) / close), 63))",
+      "base_prior_bars": 62
+    },
+    {
+      "family": "abnormal_volume",
+      "template": "volume_spike_21_126",
+      "base_dsl": "(ts_max(((raw_close * volume) / close), 21) / ts_mean(((raw_close * volume) / close), 126))",
+      "base_prior_bars": 125
+    },
+    {
+      "family": "abnormal_volume",
+      "template": "volume_trend_63_252",
+      "base_dsl": "(ts_mean(((raw_close * volume) / close), 63) / ts_mean(((raw_close * volume) / close), 252))",
+      "base_prior_bars": 251
+    },
+    {
+      "family": "illiquidity",
+      "template": "amihud_shock_21_252",
+      "base_dsl": "(ts_mean((abs(((close / delay(close, 1)) - 1)) / (raw_close * volume)), 21) / ts_mean((abs(((close / delay(close, 1)) - 1)) / (raw_close * volume)), 252))",
+      "base_prior_bars": 252
+    },
+    {
+      "family": "illiquidity",
+      "template": "roll_autocorr_126",
+      "base_dsl": "correlation(((close / delay(close, 1)) - 1), delay(((close / delay(close, 1)) - 1), 1), 126)",
+      "base_prior_bars": 127
+    },
+    {
+      "family": "illiquidity",
+      "template": "signed_volume_reversal_126",
+      "base_dsl": "correlation((((close / delay(close, 1)) - 1) - mkt_ret), delay((sign((((close / delay(close, 1)) - 1) - mkt_ret)) * ((raw_close * volume) / ts_mean((raw_close * volume), 63))), 1), 126)",
+      "base_prior_bars": 188
+    },
+    {
+      "family": "comovement",
+      "template": "corr_asymmetry_126",
+      "base_dsl": "(correlation(min(((close / delay(close, 1)) - 1), 0), min(mkt_ret, 0), 126) - correlation(max(((close / delay(close, 1)) - 1), 0), max(mkt_ret, 0), 126))",
+      "base_prior_bars": 126
+    },
+    {
+      "family": "comovement",
+      "template": "weekly_market_corr_126",
+      "base_dsl": "correlation(ts_sum(((close / delay(close, 1)) - 1), 5), ts_sum(mkt_ret, 5), 126)",
+      "base_prior_bars": 130
+    },
+    {
+      "family": "comovement",
+      "template": "lagged_market_corr_240",
+      "base_dsl": "correlation(ts_sum(((close / delay(close, 1)) - 1), 5), delay(ts_sum(mkt_ret, 5), 5), 240)",
+      "base_prior_bars": 249
+    },
+    {
+      "family": "volatility_dynamics",
+      "template": "vol_of_vol_21_126",
+      "base_dsl": "(stddev(stddev(((close / delay(close, 1)) - 1), 21), 126) / ts_mean(stddev(((close / delay(close, 1)) - 1), 21), 126))",
+      "base_prior_bars": 146
+    },
+    {
+      "family": "volatility_dynamics",
+      "template": "vol_term_63_252",
+      "base_dsl": "(stddev(((close / delay(close, 1)) - 1), 63) / stddev(((close / delay(close, 1)) - 1), 252))",
+      "base_prior_bars": 252
+    },
+    {
+      "family": "volatility_dynamics",
+      "template": "variance_ratio_5_240",
+      "base_dsl": "(ts_var(ts_sum(((close / delay(close, 1)) - 1), 5), 240) / (5 * ts_var(((close / delay(close, 1)) - 1), 240)))",
+      "base_prior_bars": 244
+    }
+  ],
+  "lineage": [
+    {
+      "id": "mom_12_1_s21",
+      "family": "momentum",
+      "template": "mom_12_1",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "bea9d3e43db899da570013b67b18ac8095d1322bd0d5d3899216390266e0d625",
+      "native_prior_bars": 272,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mom_12_1_s63",
+      "family": "momentum",
+      "template": "mom_12_1",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "10ea7681d2a50271c08b5641fb763d311050bea0aeee74c1e7198490c5084e6f",
+      "native_prior_bars": 314,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mom_9_1_s21",
+      "family": "momentum",
+      "template": "mom_9_1",
+      "smoothing_sessions": 21,
+      "prior_bars": 209,
+      "dsl_sha256": "7a4c4c3867ce80fdf32d76cad27d52913c20e1daae028a2473ef46054275d2c2",
+      "native_prior_bars": 209,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mom_9_1_s63",
+      "family": "momentum",
+      "template": "mom_9_1",
+      "smoothing_sessions": 63,
+      "prior_bars": 251,
+      "dsl_sha256": "1b353311b16cddffd9e743445f392ebe1b953cca326fa1c3061ecabfc2bbd882",
+      "native_prior_bars": 251,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mom_6_1_s21",
+      "family": "momentum",
+      "template": "mom_6_1",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "79409e0730a7a31c75b7e3e650a723ee261c5cfb70f7211cc9b40aea4a8b834a",
+      "native_prior_bars": 146,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mom_6_1_s63",
+      "family": "momentum",
+      "template": "mom_6_1",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "ce5a304ec344a524eec8a9fa7cb98e27a7b28410bf471020ecc7614f39193227",
+      "native_prior_bars": 188,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "efficiency_63_s21",
+      "family": "trend_quality",
+      "template": "efficiency_63",
+      "smoothing_sessions": 21,
+      "prior_bars": 83,
+      "dsl_sha256": "b7ff2054867c05259f22468d1f6f13a09b099132a9f60eecb48c80c495e08a28",
+      "native_prior_bars": 83,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "efficiency_63_s63",
+      "family": "trend_quality",
+      "template": "efficiency_63",
+      "smoothing_sessions": 63,
+      "prior_bars": 125,
+      "dsl_sha256": "8aa247c984088cfebd6b141a8a46082e7cd33b778a2cab40ead123f99fce463d",
+      "native_prior_bars": 125,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "sign_consistency_126_s21",
+      "family": "trend_quality",
+      "template": "sign_consistency_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "ea91573ec700b776aca2cc4c5b2fc4d6ab4b2862fa5696b23b652913ae700609",
+      "native_prior_bars": 146,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "sign_consistency_126_s63",
+      "family": "trend_quality",
+      "template": "sign_consistency_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "7f2e4ffcb888da848e598f7d62cc6e318fd04256a504541069faf090b5ddf914",
+      "native_prior_bars": 188,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "risk_scaled_6_1_s21",
+      "family": "trend_quality",
+      "template": "risk_scaled_6_1",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "a5ba0706ec7b0b65e765095003a6a33ee74b7ce08bdef9934c21131b91bc21bb",
+      "native_prior_bars": 146,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "risk_scaled_6_1_s63",
+      "family": "trend_quality",
+      "template": "risk_scaled_6_1",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "ff1d254113e370edd4b4e94a3b4207e8af151986ddf95da9da4686b7d39567cc",
+      "native_prior_bars": 188,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "reversal_21_skip5_s21",
+      "family": "medium_reversal",
+      "template": "reversal_21_skip5",
+      "smoothing_sessions": 21,
+      "prior_bars": 41,
+      "dsl_sha256": "5f6831a7ec5925d2065917c76d62ea459d1107c6095d742d0fc31ab5cd5f3bbb",
+      "native_prior_bars": 41,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "reversal_21_skip5_s63",
+      "family": "medium_reversal",
+      "template": "reversal_21_skip5",
+      "smoothing_sessions": 63,
+      "prior_bars": 83,
+      "dsl_sha256": "0ace69dbe556cfe6d1d2e6e0e9f99edbb6f295283a46adc6f5b0e6cc5cf0bf39",
+      "native_prior_bars": 83,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "reversal_63_skip5_s21",
+      "family": "medium_reversal",
+      "template": "reversal_63_skip5",
+      "smoothing_sessions": 21,
+      "prior_bars": 83,
+      "dsl_sha256": "3b81444ccf09cb3f514c426a724db3dd839be0298e6d6528cc19900253eec458",
+      "native_prior_bars": 83,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "reversal_63_skip5_s63",
+      "family": "medium_reversal",
+      "template": "reversal_63_skip5",
+      "smoothing_sessions": 63,
+      "prior_bars": 125,
+      "dsl_sha256": "173483cd3651e13579dbf9dd3ed3158d3d086e776874f85078d7c02d6f5d8f5e",
+      "native_prior_bars": 125,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mean_distance_63_s21",
+      "family": "medium_reversal",
+      "template": "mean_distance_63",
+      "smoothing_sessions": 21,
+      "prior_bars": 82,
+      "dsl_sha256": "d3af08a4fecdda8a05a14ccdcc41fd617d93a43a5b45ccdb92f4d193b0e281ee",
+      "native_prior_bars": 82,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mean_distance_63_s63",
+      "family": "medium_reversal",
+      "template": "mean_distance_63",
+      "smoothing_sessions": 63,
+      "prior_bars": 124,
+      "dsl_sha256": "f2471fd6ded1749235b9555369e5a96d5447f7c20f09008fd0b95c1f70925ba3",
+      "native_prior_bars": 124,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "low_vol_63_s21",
+      "family": "defensive_risk",
+      "template": "low_vol_63",
+      "smoothing_sessions": 21,
+      "prior_bars": 83,
+      "dsl_sha256": "d4ee4258790e86f94a4521afd65f67e0e10a8550903ba3a1bae306dd386d6eeb",
+      "native_prior_bars": 83,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "low_vol_63_s63",
+      "family": "defensive_risk",
+      "template": "low_vol_63",
+      "smoothing_sessions": 63,
+      "prior_bars": 125,
+      "dsl_sha256": "8ca4affea6bcfbc865695ef7152b7c4e99b8b34527320b302af40ba7d0d46bb7",
+      "native_prior_bars": 125,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "low_downside_126_s21",
+      "family": "defensive_risk",
+      "template": "low_downside_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "87988e266fc39bf0456a24d48fc43544a021c15c7f218b49164f308a45d737f0",
+      "native_prior_bars": 146,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "low_downside_126_s63",
+      "family": "defensive_risk",
+      "template": "low_downside_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "47abac10f3f1fd1898cc9bbac690fe5cce54df9f8cdf212093d7e7c5bfb7da8c",
+      "native_prior_bars": 188,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "vol_expansion_21_126_s21",
+      "family": "defensive_risk",
+      "template": "vol_expansion_21_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "3125473c1d953ec78f4d870dc0b79aa31ae146b12b803f194bf9c503e7f02816",
+      "native_prior_bars": 146,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "vol_expansion_21_126_s63",
+      "family": "defensive_risk",
+      "template": "vol_expansion_21_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "c5df8ba1eef94a72d4d46aec448760a745bea868535cc4a4ee0f43f1754452fd",
+      "native_prior_bars": 188,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "dollar_liquidity_63_s21",
+      "family": "liquidity_state",
+      "template": "dollar_liquidity_63",
+      "smoothing_sessions": 21,
+      "prior_bars": 82,
+      "dsl_sha256": "3eb26fbe3a044ce37e2cc708ce19fd0c5d9602083bf80217ee92bdde728700cb",
+      "native_prior_bars": 82,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "dollar_liquidity_63_s63",
+      "family": "liquidity_state",
+      "template": "dollar_liquidity_63",
+      "smoothing_sessions": 63,
+      "prior_bars": 124,
+      "dsl_sha256": "15e9bc5bb6b2501ae92291f0b9f0c4314ac58bb4aaffe3742ae92fe915a42f2e",
+      "native_prior_bars": 124,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "dollar_expansion_21_126_s21",
+      "family": "liquidity_state",
+      "template": "dollar_expansion_21_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 145,
+      "dsl_sha256": "5d190a98e80bb083a62a3c25f7e10baf02e6e8a97386664683fff6b4fc44980a",
+      "native_prior_bars": 145,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "dollar_expansion_21_126_s63",
+      "family": "liquidity_state",
+      "template": "dollar_expansion_21_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 187,
+      "dsl_sha256": "15124acc685e5f467c51bc46138252e8ed118ddf09d12b75bbf42e00ced86330",
+      "native_prior_bars": 187,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "dollar_instability_63_s21",
+      "family": "liquidity_state",
+      "template": "dollar_instability_63",
+      "smoothing_sessions": 21,
+      "prior_bars": 144,
+      "dsl_sha256": "3598eee864e9f58d9036baa42ea6d7a3ebe14a3422bdd4171f26e9524e55eb31",
+      "native_prior_bars": 144,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "dollar_instability_63_s63",
+      "family": "liquidity_state",
+      "template": "dollar_instability_63",
+      "smoothing_sessions": 63,
+      "prior_bars": 186,
+      "dsl_sha256": "1bef15bfe424786e9f8f6ee7d012c88e9df09e81b5604507c52aa93c229a9e65",
+      "native_prior_bars": 186,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "return_dollar_rank_corr63_s21",
+      "family": "flow_confirmation",
+      "template": "return_dollar_rank_corr63",
+      "smoothing_sessions": 21,
+      "prior_bars": 83,
+      "dsl_sha256": "5c6958eb6fc4dcd62dc125aba2028acd40365c6fb2932e144103b555111cedd1",
+      "native_prior_bars": 83,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "return_dollar_rank_corr63_s63",
+      "family": "flow_confirmation",
+      "template": "return_dollar_rank_corr63",
+      "smoothing_sessions": 63,
+      "prior_bars": 125,
+      "dsl_sha256": "70f22cb29060b524439a2a2decc884383c44d1d4fe1422ea42084b147791eceb",
+      "native_prior_bars": 125,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "weekly_return_relative_flow63_s21",
+      "family": "flow_confirmation",
+      "template": "weekly_return_relative_flow63",
+      "smoothing_sessions": 21,
+      "prior_bars": 144,
+      "dsl_sha256": "67c7642a066eb42c164afbcdaf36f6b7ce4b0953860177648a4dca6ef5f2aefa",
+      "native_prior_bars": 144,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "weekly_return_relative_flow63_s63",
+      "family": "flow_confirmation",
+      "template": "weekly_return_relative_flow63",
+      "smoothing_sessions": 63,
+      "prior_bars": 186,
+      "dsl_sha256": "96b23f85486622b4acc80e4c71870ea7da870dd7847ed6a171daf88482bc764f",
+      "native_prior_bars": 186,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "signed_dollar_balance63_s21",
+      "family": "flow_confirmation",
+      "template": "signed_dollar_balance63",
+      "smoothing_sessions": 21,
+      "prior_bars": 83,
+      "dsl_sha256": "78b28f48f5148c4ed3b519b66fd7cd192461b086885865d424863f4195924427",
+      "native_prior_bars": 83,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "signed_dollar_balance63_s63",
+      "family": "flow_confirmation",
+      "template": "signed_dollar_balance63",
+      "smoothing_sessions": 63,
+      "prior_bars": 125,
+      "dsl_sha256": "276056435aa555543ddba4c74a4f633eaa13c9f8c353254cd3b2c53dbb00426f",
+      "native_prior_bars": 125,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "near_high_126_s21",
+      "family": "price_location",
+      "template": "near_high_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 145,
+      "dsl_sha256": "b87e2b0ee698aa2c20864328ee0819bdeed175b47303fe5a104c349da77eb533",
+      "native_prior_bars": 145,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "near_high_126_s63",
+      "family": "price_location",
+      "template": "near_high_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 187,
+      "dsl_sha256": "4274377641ce92f3fde08f2df5a6c868edbc21d6338fef7942c286db6f932513",
+      "native_prior_bars": 187,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "range_position_252_s21",
+      "family": "price_location",
+      "template": "range_position_252",
+      "smoothing_sessions": 21,
+      "prior_bars": 271,
+      "dsl_sha256": "ed7cee4d1bb67ab96e7a42abdfe9c18239139cc89d92587fbeced3028c9670b4",
+      "native_prior_bars": 271,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "range_position_252_s63",
+      "family": "price_location",
+      "template": "range_position_252",
+      "smoothing_sessions": 63,
+      "prior_bars": 313,
+      "dsl_sha256": "9dade32e02e78b4dad5919dbc4bcf120aea03f40a555e95e87a26f4d14e85783",
+      "native_prior_bars": 313,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mean_structure_21_126_s21",
+      "family": "price_location",
+      "template": "mean_structure_21_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 145,
+      "dsl_sha256": "ccebcc4afc32edd1b142dcbb21cc983f0b4814c428014e7a58750400a3cc4a3c",
+      "native_prior_bars": 145,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "mean_structure_21_126_s63",
+      "family": "price_location",
+      "template": "mean_structure_21_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 187,
+      "dsl_sha256": "1c745de29b023b3494e108a898f234fa8a559167b20430f2a3f943547536d1f6",
+      "native_prior_bars": 187,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "year_forward_month_s21",
+      "family": "trading_year_seasonality",
+      "template": "year_forward_month",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "e6c9361ce3fe5ae888c4b47d6a361b269ce3b06ac49019f11f8982f19e87dcc1",
+      "native_prior_bars": 272,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "year_forward_month_s63",
+      "family": "trading_year_seasonality",
+      "template": "year_forward_month",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "56af629cfe78ca33af06222c4926d9947431b70bd5c1a32e86d92e586f2ed0c0",
+      "native_prior_bars": 314,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "year_forward_week_s21",
+      "family": "trading_year_seasonality",
+      "template": "year_forward_week",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "8e8742df478da417d290e59e110eae7cd569206eac0f0b2815e780b60b1cc1a8",
+      "native_prior_bars": 272,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "year_forward_week_s63",
+      "family": "trading_year_seasonality",
+      "template": "year_forward_week",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "c6482054dc2bbe4c13e6895173487a408bc489e15f689559fb201fe98ad5f8a9",
+      "native_prior_bars": 314,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "year_forward_quarter_s21",
+      "family": "trading_year_seasonality",
+      "template": "year_forward_quarter",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "5226eb4e06db36dd75d72230c54267b3a92ea210fcd1e41a2e3541a75bd62370",
+      "native_prior_bars": 272,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "year_forward_quarter_s63",
+      "family": "trading_year_seasonality",
+      "template": "year_forward_quarter",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "be46b35d00edeb40e3aeb6ef4ce2bad4393b384f02b20f92753bc28eb99303b1",
+      "native_prior_bars": 314,
+      "origin": "frozen_v1"
+    },
+    {
+      "id": "resid_sharpe_6_1_s21",
+      "family": "residual_momentum",
+      "template": "resid_sharpe_6_1",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "ee312fbb76bbff3713945907c39e1b24e5d05e060cacb2bec3827793f8f523f7",
+      "native_prior_bars": 146,
+      "origin": "new_v2"
+    },
+    {
+      "id": "resid_sharpe_6_1_s63",
+      "family": "residual_momentum",
+      "template": "resid_sharpe_6_1",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "b29b4a12ee98ff1311171ac09185cd7c2179cfda40552d6778d4c5edeb900b00",
+      "native_prior_bars": 188,
+      "origin": "new_v2"
+    },
+    {
+      "id": "resid_sharpe_9_1_s21",
+      "family": "residual_momentum",
+      "template": "resid_sharpe_9_1",
+      "smoothing_sessions": 21,
+      "prior_bars": 209,
+      "dsl_sha256": "db63b113c5439d46aa65f5e9c8c5c6078039de29f52e9d12af8e1afd5f8599bf",
+      "native_prior_bars": 209,
+      "origin": "new_v2"
+    },
+    {
+      "id": "resid_sharpe_9_1_s63",
+      "family": "residual_momentum",
+      "template": "resid_sharpe_9_1",
+      "smoothing_sessions": 63,
+      "prior_bars": 251,
+      "dsl_sha256": "7a96f6ed36500ed0e62cd2378be39c5d4aed19cd21a66f3b8cf73ca08ac23468",
+      "native_prior_bars": 251,
+      "origin": "new_v2"
+    },
+    {
+      "id": "resid_sharpe_12_1_s21",
+      "family": "residual_momentum",
+      "template": "resid_sharpe_12_1",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "b934090f1aa71cf28159b470fb2bbc23557357f3e3b298aeaba38dae8b76a4fd",
+      "native_prior_bars": 272,
+      "origin": "new_v2"
+    },
+    {
+      "id": "resid_sharpe_12_1_s63",
+      "family": "residual_momentum",
+      "template": "resid_sharpe_12_1",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "86dac02215ca823440aa7c3c5863c8072878679f0dcef92ae95ca712d60422b3",
+      "native_prior_bars": 314,
+      "origin": "new_v2"
+    },
+    {
+      "id": "beta_126_s21",
+      "family": "market_beta",
+      "template": "beta_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "a450e38bdf267c4a65dca7accc8403fd7357c0a37695445e927893a3b8ff0539",
+      "native_prior_bars": 146,
+      "origin": "new_v2"
+    },
+    {
+      "id": "beta_126_s63",
+      "family": "market_beta",
+      "template": "beta_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "482623e6a866792982160abc71e437d8c7e22a2e753daa1d8c3f7325fd9cb63b",
+      "native_prior_bars": 188,
+      "origin": "new_v2"
+    },
+    {
+      "id": "fp_beta_250_252_s21",
+      "family": "market_beta",
+      "template": "fp_beta_250_252",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "f0d9da32e12b52ce164f1779acf5008e78408019d00efd6c69f5d108e4cfd792",
+      "native_prior_bars": 272,
+      "origin": "new_v2"
+    },
+    {
+      "id": "fp_beta_250_252_s63",
+      "family": "market_beta",
+      "template": "fp_beta_250_252",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "4deea0f244e2b2662d76386c90c28a4900ae75e967980c118c67f91f558a207e",
+      "native_prior_bars": 314,
+      "origin": "new_v2"
+    },
+    {
+      "id": "neg_semibeta_189_s21",
+      "family": "market_beta",
+      "template": "neg_semibeta_189",
+      "smoothing_sessions": 21,
+      "prior_bars": 209,
+      "dsl_sha256": "5799a5b23dc9afe070cfa43b8f0bdfa7cbc74d9c7b5544dea0d05a175ff409ce",
+      "native_prior_bars": 209,
+      "origin": "new_v2"
+    },
+    {
+      "id": "neg_semibeta_189_s63",
+      "family": "market_beta",
+      "template": "neg_semibeta_189",
+      "smoothing_sessions": 63,
+      "prior_bars": 251,
+      "dsl_sha256": "0ecb778a852fcd1e03e369c9c74fd1e95761c0c8097571567cf02277bc83cf69",
+      "native_prior_bars": 251,
+      "origin": "new_v2"
+    },
+    {
+      "id": "ivol_change_21_252_s21",
+      "family": "idiosyncratic_risk",
+      "template": "ivol_change_21_252",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "ccc3bc37b3b7aaddc626e1738fc31c5daa25c1add186a6b4109f0ee3e5a52e88",
+      "native_prior_bars": 272,
+      "origin": "new_v2"
+    },
+    {
+      "id": "ivol_change_21_252_s63",
+      "family": "idiosyncratic_risk",
+      "template": "ivol_change_21_252",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "73b730f3459e6c158c722c7cfcccb44d4a9fd64c2e34d42c3a3b89f283b7e01a",
+      "native_prior_bars": 314,
+      "origin": "new_v2"
+    },
+    {
+      "id": "ivol_change_63_qoq_s21",
+      "family": "idiosyncratic_risk",
+      "template": "ivol_change_63_qoq",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "48d44bd9b9fd36ca5f90190bca77488a62e11dee5fa546e0013bfc9385111523",
+      "native_prior_bars": 146,
+      "origin": "new_v2"
+    },
+    {
+      "id": "ivol_change_63_qoq_s63",
+      "family": "idiosyncratic_risk",
+      "template": "ivol_change_63_qoq",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "72d814391fc6a5524f5979dd72a909fa3df375602cfc38a00e172ca5e6822454",
+      "native_prior_bars": 188,
+      "origin": "new_v2"
+    },
+    {
+      "id": "idio_share_252_s21",
+      "family": "idiosyncratic_risk",
+      "template": "idio_share_252",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "b957f2d58b78c7fd43d9a8963aba1b237abc890fd984daa3b4bbe3ade8b165e5",
+      "native_prior_bars": 272,
+      "origin": "new_v2"
+    },
+    {
+      "id": "idio_share_252_s63",
+      "family": "idiosyncratic_risk",
+      "template": "idio_share_252",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "e4c7fb3616852a0178080e37e62cbe4f8dc7e74f7082e88f8a5ab751913f0e95",
+      "native_prior_bars": 314,
+      "origin": "new_v2"
+    },
+    {
+      "id": "scaled_max_21_s21",
+      "family": "lottery_demand",
+      "template": "scaled_max_21",
+      "smoothing_sessions": 21,
+      "prior_bars": 41,
+      "dsl_sha256": "f59e27b649545c7c57a51be68b536bc60ed1ee3a1c700c5870f2568301f9ecad",
+      "native_prior_bars": 41,
+      "origin": "new_v2"
+    },
+    {
+      "id": "scaled_max_21_s63",
+      "family": "lottery_demand",
+      "template": "scaled_max_21",
+      "smoothing_sessions": 63,
+      "prior_bars": 83,
+      "dsl_sha256": "58a5182a6e67d3c9ba5724299244e351769a9704fef6a4ef6251bc3c259a4952",
+      "native_prior_bars": 83,
+      "origin": "new_v2"
+    },
+    {
+      "id": "scaled_max_63_s21",
+      "family": "lottery_demand",
+      "template": "scaled_max_63",
+      "smoothing_sessions": 21,
+      "prior_bars": 83,
+      "dsl_sha256": "b919eb34125af634739cbef972656fec98f4fedb1483ff9d30e5a09e67596a4c",
+      "native_prior_bars": 83,
+      "origin": "new_v2"
+    },
+    {
+      "id": "scaled_max_63_s63",
+      "family": "lottery_demand",
+      "template": "scaled_max_63",
+      "smoothing_sessions": 63,
+      "prior_bars": 125,
+      "dsl_sha256": "44a62a394ae465f5a34629c28e799ab0f429bae801b659812cb55d5d35c4ec39",
+      "native_prior_bars": 125,
+      "origin": "new_v2"
+    },
+    {
+      "id": "skew_126_s21",
+      "family": "lottery_demand",
+      "template": "skew_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "9c935b9ee3af630c3cc55dcd6cd6a04a36ef335406cecea36ecd5b69bc36d8e8",
+      "native_prior_bars": 146,
+      "origin": "new_v2"
+    },
+    {
+      "id": "skew_126_s63",
+      "family": "lottery_demand",
+      "template": "skew_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "73efb3646109287e8728cb7796067b7115142c4ea125f63be3918d122018c7cd",
+      "native_prior_bars": 188,
+      "origin": "new_v2"
+    },
+    {
+      "id": "volume_shock_5_63_s21",
+      "family": "abnormal_volume",
+      "template": "volume_shock_5_63",
+      "smoothing_sessions": 21,
+      "prior_bars": 82,
+      "dsl_sha256": "b8deedf2023d06972b3c6574278c08e5e6491c15e6917558c447ae653170d8f7",
+      "native_prior_bars": 82,
+      "origin": "new_v2"
+    },
+    {
+      "id": "volume_shock_5_63_s63",
+      "family": "abnormal_volume",
+      "template": "volume_shock_5_63",
+      "smoothing_sessions": 63,
+      "prior_bars": 124,
+      "dsl_sha256": "815ee1fd7b86de59ff8e024cdaa1344d348410a3f51bbcb3a2f715faa13d6930",
+      "native_prior_bars": 124,
+      "origin": "new_v2"
+    },
+    {
+      "id": "volume_spike_21_126_s21",
+      "family": "abnormal_volume",
+      "template": "volume_spike_21_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 145,
+      "dsl_sha256": "b3bb48cc8e243d5d42b2b2cf4c034e72361a12b128d3b282062b62a0bbac59c3",
+      "native_prior_bars": 145,
+      "origin": "new_v2"
+    },
+    {
+      "id": "volume_spike_21_126_s63",
+      "family": "abnormal_volume",
+      "template": "volume_spike_21_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 187,
+      "dsl_sha256": "4e42f8d820d1563e855e514004c98efa9e11a3de5ddf42ff968f88a4f864a675",
+      "native_prior_bars": 187,
+      "origin": "new_v2"
+    },
+    {
+      "id": "volume_trend_63_252_s21",
+      "family": "abnormal_volume",
+      "template": "volume_trend_63_252",
+      "smoothing_sessions": 21,
+      "prior_bars": 271,
+      "dsl_sha256": "389b4d6b0c9b77757597281f35554ae0222c5a456efa59898f6a4daf3c750017",
+      "native_prior_bars": 271,
+      "origin": "new_v2"
+    },
+    {
+      "id": "volume_trend_63_252_s63",
+      "family": "abnormal_volume",
+      "template": "volume_trend_63_252",
+      "smoothing_sessions": 63,
+      "prior_bars": 313,
+      "dsl_sha256": "4b5072f1b43c3580af99af64179aba4868d080498ba038f04901aa487ca74d37",
+      "native_prior_bars": 313,
+      "origin": "new_v2"
+    },
+    {
+      "id": "amihud_shock_21_252_s21",
+      "family": "illiquidity",
+      "template": "amihud_shock_21_252",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "0a6a64998e74ef2798ba66fb40144210c30fc2293d220c3152cd8306b9586e7c",
+      "native_prior_bars": 272,
+      "origin": "new_v2"
+    },
+    {
+      "id": "amihud_shock_21_252_s63",
+      "family": "illiquidity",
+      "template": "amihud_shock_21_252",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "894062620d5dc6d55afefc514bff5bbb56e6d85ac515a22056760a5c81fdc962",
+      "native_prior_bars": 314,
+      "origin": "new_v2"
+    },
+    {
+      "id": "roll_autocorr_126_s21",
+      "family": "illiquidity",
+      "template": "roll_autocorr_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 147,
+      "dsl_sha256": "16786e80b5e4b5a6aa86ab5c5f20b1fe2d50c2ab57afd308a59c9746836c92f9",
+      "native_prior_bars": 147,
+      "origin": "new_v2"
+    },
+    {
+      "id": "roll_autocorr_126_s63",
+      "family": "illiquidity",
+      "template": "roll_autocorr_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 189,
+      "dsl_sha256": "64ed3183a901a482cda03befab7e2e1f87a8c7ba6bfa64b7f937162a86d34e72",
+      "native_prior_bars": 189,
+      "origin": "new_v2"
+    },
+    {
+      "id": "signed_volume_reversal_126_s21",
+      "family": "illiquidity",
+      "template": "signed_volume_reversal_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 208,
+      "dsl_sha256": "aef3eceaa5a029769c5da445cebfc5237b3556dad3d3907ac674140e5bbc1b9b",
+      "native_prior_bars": 208,
+      "origin": "new_v2"
+    },
+    {
+      "id": "signed_volume_reversal_126_s63",
+      "family": "illiquidity",
+      "template": "signed_volume_reversal_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 250,
+      "dsl_sha256": "08d54ee7d4bd93f1ae6acb4bdf4a76e41469be0744a7dfbb39a278d4cb480040",
+      "native_prior_bars": 250,
+      "origin": "new_v2"
+    },
+    {
+      "id": "corr_asymmetry_126_s21",
+      "family": "comovement",
+      "template": "corr_asymmetry_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 146,
+      "dsl_sha256": "14eadd4a5962f76682c1c6705112f39b99e7273630dbb516f45345f529e0f677",
+      "native_prior_bars": 146,
+      "origin": "new_v2"
+    },
+    {
+      "id": "corr_asymmetry_126_s63",
+      "family": "comovement",
+      "template": "corr_asymmetry_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 188,
+      "dsl_sha256": "f6aed1aa54adf89b9e9519a27d95e4b2acbd8883459ab43e7b4e2b0e22652692",
+      "native_prior_bars": 188,
+      "origin": "new_v2"
+    },
+    {
+      "id": "weekly_market_corr_126_s21",
+      "family": "comovement",
+      "template": "weekly_market_corr_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 150,
+      "dsl_sha256": "f0f1275c36cc966acb3e16ba9ea3c24fc07f5638f99cb7a7c6832fa37f8e4950",
+      "native_prior_bars": 150,
+      "origin": "new_v2"
+    },
+    {
+      "id": "weekly_market_corr_126_s63",
+      "family": "comovement",
+      "template": "weekly_market_corr_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 192,
+      "dsl_sha256": "3fb9e9209dbcc7eb922ceff9ddc3f3db56a5aa65c3535fdbbe157c2fe72040ca",
+      "native_prior_bars": 192,
+      "origin": "new_v2"
+    },
+    {
+      "id": "lagged_market_corr_240_s21",
+      "family": "comovement",
+      "template": "lagged_market_corr_240",
+      "smoothing_sessions": 21,
+      "prior_bars": 269,
+      "dsl_sha256": "58be4e45d3c94bef0702e48fd273b262bbf05a84d47f996d515106711a70fa4c",
+      "native_prior_bars": 268,
+      "origin": "new_v2"
+    },
+    {
+      "id": "lagged_market_corr_240_s63",
+      "family": "comovement",
+      "template": "lagged_market_corr_240",
+      "smoothing_sessions": 63,
+      "prior_bars": 311,
+      "dsl_sha256": "4b34e3e22c4ddb4481f953c4627f8a5374d730b1003a76c8ffbd9c994d6b458e",
+      "native_prior_bars": 310,
+      "origin": "new_v2"
+    },
+    {
+      "id": "vol_of_vol_21_126_s21",
+      "family": "volatility_dynamics",
+      "template": "vol_of_vol_21_126",
+      "smoothing_sessions": 21,
+      "prior_bars": 166,
+      "dsl_sha256": "8339abc4dd4f9a555dbe5bdf92165432a6b424b5cbfeb7070e16e89efc0d35e0",
+      "native_prior_bars": 166,
+      "origin": "new_v2"
+    },
+    {
+      "id": "vol_of_vol_21_126_s63",
+      "family": "volatility_dynamics",
+      "template": "vol_of_vol_21_126",
+      "smoothing_sessions": 63,
+      "prior_bars": 208,
+      "dsl_sha256": "0c3a36db5394e4d2e9db91def6f9989e6f5de24faf34827cc510e271559ae45b",
+      "native_prior_bars": 208,
+      "origin": "new_v2"
+    },
+    {
+      "id": "vol_term_63_252_s21",
+      "family": "volatility_dynamics",
+      "template": "vol_term_63_252",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "dsl_sha256": "2f25fad7367d2d82ef38081bced67d49230c788452e627354bc56e2b82409346",
+      "native_prior_bars": 272,
+      "origin": "new_v2"
+    },
+    {
+      "id": "vol_term_63_252_s63",
+      "family": "volatility_dynamics",
+      "template": "vol_term_63_252",
+      "smoothing_sessions": 63,
+      "prior_bars": 314,
+      "dsl_sha256": "b9b3478f3f84626d3846da1f8d0a83eaee1ea59fcbcf8209069b7b9c69e81958",
+      "native_prior_bars": 314,
+      "origin": "new_v2"
+    },
+    {
+      "id": "variance_ratio_5_240_s21",
+      "family": "volatility_dynamics",
+      "template": "variance_ratio_5_240",
+      "smoothing_sessions": 21,
+      "prior_bars": 264,
+      "dsl_sha256": "018237e62dfa83f766fb94be07658c74382c779ba2c03b124ff9a56730e2b350",
+      "native_prior_bars": 264,
+      "origin": "new_v2"
+    },
+    {
+      "id": "variance_ratio_5_240_s63",
+      "family": "volatility_dynamics",
+      "template": "variance_ratio_5_240",
+      "smoothing_sessions": 63,
+      "prior_bars": 306,
+      "dsl_sha256": "25e22ee7bf5dcf145090a7193aff8c2e27c3823615b330bc1ec1b61634f39e06",
+      "native_prior_bars": 306,
+      "origin": "new_v2"
+    }
+  ],
+  "data": {
+    "fields": [
+      {
+        "name": "close",
+        "basis": "f64(source float32 raw close) * vendor cumulReturnFactor; adjusted total-return proxy"
+      },
+      {
+        "name": "raw_close",
+        "basis": "unadjusted source float32 close widened to f64; USD/share"
+      },
+      {
+        "name": "volume",
+        "basis": "unadjusted source share volume widened to f64"
+      },
+      {
+        "name": "mkt_ret",
+        "basis": "equal-weight mean adjusted close-to-close return (close[d] / close[d-1] - 1) over the previous session's (d-1) as-of members, broadcast to every name present at d; produced upstream, not by the DSL"
+      }
+    ],
+    "raw_dollar_liquidity": "raw_close * volume",
+    "horizons": [
+      5,
+      21,
+      63
+    ],
+    "execution_delay": 1,
+    "decision_support": "as-of member AND present AND finite positive current close",
+    "vm_support": "full historical as-of membership; temporal raw history retained",
+    "forward_support": "strict source presence and positive finite endpoints; pair counts and missing fractions reported",
+    "daily_return": "ret = (close / delay(close, 1)) - 1",
+    "market_return": "mkt_ret panel field: equal-weight mean adjusted close-to-close return (close[d] / close[d-1] - 1) over the previous session's (d-1) as-of members, broadcast to every name present at d; produced upstream, not by the DSL",
+    "split_adjusted_volume": "(raw_close * volume) / close = volume / cumulative factor",
+    "prior_bar_accounting": "prior_bars charges mkt_ret one prior bar (d-1..d), the same as ret; native_prior_bars follows the native typecheck, which charges fields 0"
+  },
+  "orientation": {
+    "rule": "train-rank-ic21",
+    "role": "train",
+    "zero_or_undefined": "sign0; KEEP; neutral fixed contribution",
+    "freeze_before_validation": true,
+    "inverse": "multiply centered rank by frozen sign",
+    "selection": "none"
+  },
+  "composition": {
+    "rule": "fixed-family-centered-tied-rank-v1",
+    "family_weight": "1/16",
+    "within_family_weight": "1/6",
+    "template_budget": "1/3 of family (two variants each)",
+    "candidate_weight": "1/96",
+    "missing_contribution": 0,
+    "renormalize_missing": false,
+    "learned_weights": false,
+    "diversity": "structural economic-family/template budgets; no statistical independence claim",
+    "storage": "one D*N blend plus one incoming candidate; orient then accumulate before discarding candidate (one VM pass)",
+    "combined_ic_horizons": [
+      5,
+      21,
+      63
+    ]
+  },
+  "planned_turnover": {
+    "rule": "rank-target-cadence5-partial25-no-drift-v1",
+    "cadence_sessions": 5,
+    "trade_fraction": 0.25,
+    "cadence_anchor": "role.score_begin",
+    "desired_transform": "centered tied rank; dollar-neutral; gross1; no winsorization",
+    "membership_exit": "force planned zero immediately; do not renormalize remaining names",
+    "report": [
+      "daily sum(abs(target_change))",
+      "initial deployment included and separately disclosed",
+      "planned gross/net",
+      "candidate contribution coverage"
+    ],
+    "interpretation": "planned weight change only; no execution, price drift, fees, borrow, liquidity caps, Sharpe or capacity claim"
+  },
+  "trials": {
+    "generated_candidates": 96,
+    "reused_v1_candidates": 48,
+    "new_candidates": 48,
+    "orientation_fits": 96,
+    "inverse_additional_vm_evaluations": 0,
+    "family_or_template_selection": false,
+    "families_fixed_before_measurement": true,
+    "pre_measurement_template_revisions": 2,
+    "combined_recipes": 1,
+    "validation_selection": false,
+    "reruns": "retain attempts; v1 attempts remain prior trials of the reused 48",
+    "horizons_and_smoothers_are_independent_trials": false
+  },
+  "static_validation": {
+    "rule": "python re-parse: canonical round-trip, registry arity, declared fields, positive integer windows, lookback recomputed per typecheck, dag slot bound",
+    "max_prior_bars": 314,
+    "max_native_prior_bars": 314,
+    "max_dag_nodes": 26,
+    "max_estimated_peak_slots": 8,
+    "slot_estimate": "post-order interning and refcount retirement; native --plan-only authoritative"
+  },
+  "qualification": {
+    "native_parse_vm": "pending root --plan-only compile check with mkt_ret field support",
+    "empirical": "unmeasured at source freeze",
+    "low_turnover": "smoothing intent; planned proxy measured, actual turnover unqualified",
+    "prior_phase": "slow_price_volume_ic48_v1 files, generator and receipts are unchanged"
+  }
+}

@@ -22,6 +22,7 @@
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/exec/execution_sim.hpp"
 #include "atx/engine/factory/fidelity.hpp"
+#include "atx/engine/factory/factory.hpp"
 #include "atx/engine/factory/search_driver.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
@@ -470,6 +471,223 @@ TEST(FactoryFidelity, OutputDedupIsInertUnderZScoreTransform) {
   EXPECT_EQ(r_on.fingerprint_hits, 0U);
   EXPECT_EQ(r_on.digest, r_off.digest);
   EXPECT_EQ(r_on.best_fitness_per_gen, r_off.best_fitness_per_gen);
+}
+
+TEST(FactoryIcScreenIntegration, DisabledIgnoresAllKnobsAndPreservesSearch) {
+  DriverFixture fx;
+  const AlphaStore pool;
+  SearchConfig cfg = cfg_of(47, 1);
+  cfg.generations = 2;
+  const SearchResult baseline = fx.driver().run(cfg, pool);
+  cfg.ic_screen.horizons = {0U, 0U, 0U, 0U};
+  cfg.ic_screen.window_end = std::numeric_limits<usize>::max();
+  cfg.ic_screen.max_cache_bytes = 0;
+  const SearchResult disabled = fx.driver().run(cfg, pool);
+  EXPECT_EQ(disabled.digest, baseline.digest);
+  EXPECT_EQ(disabled.trial_count, baseline.trial_count);
+  EXPECT_EQ(disabled.best_fitness_per_gen, baseline.best_fitness_per_gen);
+  EXPECT_TRUE(disabled.ic_rejected_hashes.empty());
+  EXPECT_EQ(disabled.ic_screen_evaluations, 0U);
+  EXPECT_EQ(disabled.ic_screen_unavailable, 0U);
+  EXPECT_EQ(disabled.ic_prepass_vm_evaluations, 0U);
+}
+
+TEST(FactoryIcScreenIntegration, InsufficientEvidenceKeepsSinglePassAndWorkerIdentity) {
+  DriverFixture fx;
+  const AlphaStore pool;
+  SearchConfig cfg = cfg_of(49, 1);
+  cfg.generations = 2;
+  const SearchResult baseline = fx.driver().run(cfg, pool);
+  cfg.ic_screen.rule = atx::engine::factory::IcScreenRule::ConservativeV2;
+  // 160 dates/12 names cannot establish the default 126-session, 20-name screen.
+  const SearchResult screened = fx.driver().run(cfg, pool);
+  cfg.n_workers = 4;
+  const SearchResult parallel = fx.driver().run(cfg, pool);
+  EXPECT_EQ(screened.digest, baseline.digest);
+  EXPECT_EQ(screened.best_fitness_per_gen, baseline.best_fitness_per_gen);
+  EXPECT_EQ(screened.trial_count, baseline.trial_count);
+  EXPECT_GT(screened.ic_screen_evaluations, 0U);
+  EXPECT_EQ(screened.ic_screen_unavailable, 0U);
+  EXPECT_EQ(screened.ic_prepass_vm_evaluations, 0U);
+  EXPECT_TRUE(screened.ic_rejected_hashes.empty());
+  EXPECT_EQ(parallel.digest, screened.digest);
+  EXPECT_EQ(parallel.best_fitness_per_gen, screened.best_fitness_per_gen);
+  EXPECT_EQ(parallel.ic_screen_evaluations, screened.ic_screen_evaluations);
+}
+
+TEST(FactoryIcScreenIntegration, RejectedOriginIsNeverRankedOrEmittedAsFull) {
+  DriverFixture fx;
+  const SearchDriver driver = fx.driver();
+  const auto genomes = L3ScoreTestAccess::genomes(driver, {"rank(close)", "rank(rev)"});
+  ASSERT_EQ(genomes.size(), 2U);
+  CachedScore full;
+  full.raw = -1.0;
+  full.objectives[0] = -1.0;
+  full.objectives[kObjParsimony] = -5.0;
+  full.n_objectives = static_cast<atx::u8>(kObjParsimony + 1U);
+  std::vector<Scored> scored;
+  scored.push_back(scored_of(genomes[0], atx::engine::factory::ic_rejected_score()));
+  scored.push_back(scored_of(genomes[1], full));
+  SearchConfig cfg = cfg_of(1, 1);
+  cfg.objective_mode = ObjectiveMode::MultiObjective;
+  cfg.enable_parsimony = true;
+  L3ScoreTestAccess::rank(scored, cfg);
+  EXPECT_GT(scored[0].rank, scored[1].rank);
+  SearchResult result;
+  L3ScoreTestAccess::finalize(driver, scored, result);
+  ASSERT_EQ(result.admitted_candidates.size(), 1U);
+  EXPECT_EQ(result.admitted_candidates.front().canon_hash, genomes[1].canon_hash);
+}
+
+TEST(FactoryIcScreenIntegration, InjectedCacheMustMatchAndCannotResumeWithoutSupportIdentity) {
+  using atx::engine::factory::IcScreenCache;
+  using atx::engine::factory::IcScreenRule;
+  using atx::engine::factory::SearchResumeState;
+  using atx::engine::factory::prepare_ic_screen;
+  DriverFixture fx;
+  const AlphaStore pool;
+  SearchConfig cfg = cfg_of(59, 1);
+  cfg.generations = 1;
+  cfg.ic_screen.rule = IcScreenRule::ConservativeV2;
+  auto cache_cfg = cfg.ic_screen;
+  cache_cfg.window_end = fx.panel.dates();
+  cache_cfg.maturity_end = fx.panel.dates();
+  auto cache = prepare_ic_screen(fx.panel, cache_cfg);
+  ASSERT_TRUE(cache);
+  const SearchResult owned = fx.driver().run(cfg, pool);
+  const SearchResult injected = fx.driver().run(cfg, pool, nullptr, nullptr, &*cache);
+  EXPECT_FALSE(injected.ic_screen_cache_mismatch);
+  EXPECT_FALSE(injected.ic_screen_resume_mismatch);
+  EXPECT_EQ(injected.digest, owned.digest);
+  EXPECT_EQ(injected.trial_count, owned.trial_count);
+  EXPECT_EQ(injected.ic_screen_evaluations, owned.ic_screen_evaluations);
+  const auto rejects = [&](const SearchConfig &recipe, const IcScreenCache &candidate) {
+    const SearchResult result = fx.driver().run(recipe, pool, nullptr, nullptr, &candidate);
+    EXPECT_TRUE(result.ic_screen_cache_mismatch);
+    EXPECT_FALSE(result.ic_screen_resume_mismatch);
+    EXPECT_EQ(result.candidates_generated, 0U);
+    EXPECT_EQ(result.trial_count, 0U);
+    EXPECT_EQ(result.fidelity_evals, 0U);
+    EXPECT_EQ(result.ic_screen_evaluations, 0U);
+    EXPECT_TRUE(result.all_scored.empty());
+    EXPECT_TRUE(result.admitted_candidates.empty());
+  };
+  SearchConfig changed = cfg;
+  changed.ic_screen.window_end = fx.panel.dates() / 2U;
+  changed.fidelity.enabled = true; // reject before even the first fidelity rung
+  rejects(changed, *cache);
+  changed = cfg;
+  changed.ic_screen.horizons[0] = 4U;
+  rejects(changed, *cache);
+  auto disabled = prepare_ic_screen(fx.panel, {});
+  ASSERT_TRUE(disabled);
+  rejects(cfg, *disabled);
+  rejects(cfg, IcScreenCache{});
+
+  SearchResumeState resume;
+  const SearchResult resumed = fx.driver().run(cfg, pool, nullptr, &resume, &*cache);
+  EXPECT_TRUE(resumed.ic_screen_resume_mismatch);
+  EXPECT_FALSE(resumed.ic_screen_cache_mismatch);
+  EXPECT_EQ(resumed.candidates_generated, 0U);
+  EXPECT_EQ(resumed.trial_count, 0U);
+  EXPECT_EQ(resumed.ic_screen_evaluations, 0U);
+
+  cfg.ic_screen.rule = IcScreenRule::DisabledV1;
+  const IcScreenCache unprepared;
+  const SearchResult legacy = fx.driver().run(cfg, pool);
+  const SearchResult ignored = fx.driver().run(cfg, pool, nullptr, nullptr, &unprepared);
+  EXPECT_FALSE(ignored.ic_screen_cache_mismatch);
+  EXPECT_FALSE(ignored.ic_screen_resume_mismatch);
+  EXPECT_EQ(ignored.digest, legacy.digest);
+}
+
+// A deliberately alternating weak correlation, not a fitted noise threshold:
+// cyclic rank shift 7 has rho=-27/1023, and reversing every other date cancels
+// its temporal mean while retaining nonzero inference variance.
+[[nodiscard]] Panel alternating_null_panel() {
+  constexpr usize dates = 384;
+  constexpr usize names = 32;
+  std::vector<f64> close(dates * names);
+  std::vector<f64> noise(dates * names);
+  for (usize t = 0; t < dates; ++t) {
+    for (usize i = 0; i < names; ++i) {
+      close[t * names + i] = std::exp(0.0001 * static_cast<f64>(t) *
+                                      (static_cast<f64>(i) - 15.5));
+      const f64 x = static_cast<f64>((i + 7U) % names) - 15.5;
+      noise[t * names + i] = t % 2U == 0U ? x : -x;
+    }
+  }
+  auto panel = Panel::create(dates, names, {"close", "noise"},
+                            {std::move(close), std::move(noise)}, {});
+  EXPECT_TRUE(panel);
+  return std::move(panel.value());
+}
+
+[[nodiscard]] std::vector<std::string> null_seeds() {
+  return {"noise", "noise * 2", "noise + 1", "-1 * noise", "rank(noise)", "noise / 2"};
+}
+
+TEST(FactoryIcScreenIntegration, RejectsBeforeEitherBacktestPathAndPreservesTrials) {
+  const Library lib;
+  const Panel panel = alternating_null_panel();
+  const WeightPolicy policy;
+  const ExecutionSimulator sim = frictionless();
+  const AlphaStore pool;
+  SearchConfig cfg;
+  cfg.population = 6;
+  cfg.generations = 1;
+  cfg.n_workers = 1;
+  cfg.ic_screen.rule = atx::engine::factory::IcScreenRule::ConservativeV2;
+  const auto run = [&](const SearchConfig &config) {
+    SearchDriver driver{lib, panel, policy, sim, null_seeds(), {"close", "noise"}};
+    return driver.run(config, pool);
+  };
+  const SearchResult once = run(cfg);
+  ASSERT_EQ(once.ic_rejected_hashes.size(), 6U);
+  EXPECT_EQ(once.trial_count, 6U);
+  EXPECT_EQ(once.all_scored.size(), 6U);
+  EXPECT_TRUE(once.admitted_candidates.empty());
+  EXPECT_EQ(once.ic_screen_evaluations, 6U);
+  EXPECT_EQ(once.ic_prepass_vm_evaluations, 0U);
+  cfg.fidelity.enabled = true;
+  const SearchResult both = run(cfg);
+  cfg.n_workers = 4;
+  const SearchResult parallel = run(cfg);
+  EXPECT_EQ(both.ic_rejected_hashes, once.ic_rejected_hashes);
+  EXPECT_EQ(both.digest, once.digest);
+  EXPECT_EQ(both.trial_count, 6U);
+  EXPECT_EQ(both.all_scored.size(), 6U);
+  EXPECT_EQ(both.ic_screen_evaluations, 6U);
+  EXPECT_EQ(both.ic_prepass_vm_evaluations, 6U);
+  EXPECT_EQ(both.fidelity_evals, 0U); // IC rejects never enter even the lowest rung
+  EXPECT_EQ(parallel.digest, both.digest);
+  EXPECT_EQ(parallel.ic_rejected_hashes, both.ic_rejected_hashes);
+  EXPECT_EQ(parallel.ic_screen_evaluations, both.ic_screen_evaluations);
+  EXPECT_TRUE(parallel.admitted_candidates.empty());
+}
+
+TEST(FactoryIcScreenIntegration, FactoryKeepsTrialLedgerButExcludesRejectedAdmission) {
+  const Library lib;
+  const Panel panel = alternating_null_panel();
+  const WeightPolicy policy;
+  const ExecutionSimulator sim = frictionless();
+  atx::engine::factory::Factory factory{lib, panel, sim, policy};
+  atx::engine::factory::FactoryConfig cfg;
+  cfg.search.population = 6;
+  cfg.search.generations = 1;
+  cfg.search.n_workers = 1;
+  cfg.search.ic_screen.rule = atx::engine::factory::IcScreenRule::ConservativeV2;
+  cfg.seed_exprs = null_seeds();
+  cfg.panel_fields = {"close", "noise"};
+  AlphaStore pool;
+  const atx::engine::combine::AlphaGate gate;
+  const auto report = factory.mine(cfg, pool, gate);
+  EXPECT_EQ(report.trials, 6U);
+  EXPECT_EQ(report.evaluated, 6U);
+  EXPECT_EQ(report.scored_canon_hashes.size(), 6U);
+  EXPECT_EQ(report.ic_rejected, 6U);
+  EXPECT_EQ(report.ic_screen_evaluations, 6U);
+  EXPECT_EQ(report.admitted, 0U);
 }
 
 } // namespace atx_test_l3_search_fidelity

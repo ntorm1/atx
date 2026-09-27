@@ -80,6 +80,14 @@ add_library(atx-core ${ATX_LIB_TYPE}
     src/external/databento.cpp
     src/external/databento_pull.cpp
 )
+# Pinned research payloads (role panels, saved blends, candidate caches) are
+# SHA-256 verified on every load; the Debug build hashed them at ~20 MB/s.
+# Optimize only this private TU in the iterative Debug tree (same pattern as
+# atx-impl's hot research CPPs); CRT, assertions and the shared PCH unchanged.
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/sha256.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/sha256.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()
 add_library(atx::core ALIAS atx-core)
 
 target_include_directories(atx-core

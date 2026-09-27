@@ -69,6 +69,11 @@ reserve_pipeline_output(const std::string& path, bool identified) {
 atx::core::Result<PipelinePanel>
 read_pipeline_panel(const std::string& path, bool allow_unidentified) {
     std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "panel store V2 requires explicit bounded window and separate tradable-mask consumer");
+    }
+    if (ec) return Err(ErrorCode::IoError, "panel: cannot inspect input path");
     const bool present = std::filesystem::exists(path + ".manifest.json", ec);
     if (ec) {
         return Err(ErrorCode::IoError, "panel: cannot inspect identity manifest: " + ec.message());
@@ -80,6 +85,13 @@ read_pipeline_panel(const std::string& path, bool allow_unidentified) {
     }
     ATX_TRY(auto panel, read_panel(path));
     return Ok(PipelinePanel{std::move(panel), std::nullopt, {}});
+}
+
+atx::core::Result<PipelinePanel> read_pipeline_store_window(const std::string& directory,
+    atx::usize begin, atx::usize end, atx::u64 budget, std::string_view expected) {
+    ATX_TRY(auto window, read_panel_store_window(directory, begin, end, budget, expected));
+    return Ok(PipelinePanel{std::move(window.artifact.panel), std::move(window.artifact.identity),
+        std::move(window.artifact.artifact_id), std::move(window.tradable), std::move(window.fields)});
 }
 
 atx::core::Status require_pipeline_parent(const PipelinePanel& child,
@@ -137,6 +149,9 @@ atx::core::Result<atx::u64>
 write_pipeline_panel(const atx::engine::alpha::Panel& panel, const std::string& path,
                      const PipelinePanel& research, std::span<const atx::usize> selected_rows,
                      std::string recipe, std::vector<PanelParent> other_parents) {
+    if (!research.tradable.empty())
+        return Err(ErrorCode::InvalidArgument,
+                   "V2 research requires explicit separate-mask publication; legacy writer cannot drop tradability");
     if (!research.identity) {
         std::error_code ec;
         const bool has_manifest = std::filesystem::exists(path + ".manifest.json", ec);

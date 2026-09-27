@@ -132,9 +132,11 @@ Result<IngestionInput> validate_preparation(const std::string &path,
     ATX_TRY(auto manifest_digest, atx::core::sha256_file(path));
     ATX_TRY(auto doc, read_json(path));
     try {
+        const auto policy = doc.at("policy_version").get<std::string>();
+        const bool qa2 = policy == "tickerhistory-qa-v2";
         if (doc.at("status") != "complete" ||
-            doc.at("policy_version") != "tickerhistory-qa-v1" ||
-            doc.at("accepted").at("rows_preserved_byte_for_byte") != true ||
+            (policy != "tickerhistory-qa-v1" && !qa2) ||
+            (!qa2 && doc.at("accepted").at("rows_preserved_byte_for_byte") != true) ||
             doc.at("source").at("crc_verified") != true) {
             return Err(ErrorCode::InvalidArgument, "provenance: incomplete/unsupported preparation");
         }
@@ -163,12 +165,52 @@ Result<IngestionInput> validate_preparation(const std::string &path,
             rejected != selected - accepted || !start || !end || *start > *end) {
             return Err(ErrorCode::InvalidArgument, "provenance: invalid preparation counts/window");
         }
+        if (qa2) {
+            constexpr std::string_view dates[] = {
+                "2016-01-15", "2016-02-12", "2016-03-24", "2016-05-27", "2016-07-01",
+                "2016-09-02", "2016-11-23", "2016-12-23", "2016-12-30", "2017-01-13",
+                "2017-02-17", "2017-04-13", "2017-05-26", "2017-07-03", "2017-09-01",
+                "2017-11-22", "2017-12-22", "2018-01-12", "2018-02-16"};
+            Json expected = Json::array();
+            for (auto date : dates) {
+                const auto key = atx::engine::data::detail::date_to_nanos(date);
+                if (*start <= *key && *key <= *end) expected.push_back(date);
+            }
+            ATX_TRY(auto changed, count(doc.at("accepted").at("rows_modified_qa_v2")));
+            ATX_TRY(auto unchanged, count(doc.at("accepted").at("unmodified_rows")));
+            ATX_TRY(auto rescued, count(counts.value("qa_v2_rescued_rows", Json(0))));
+            if (*end >= 1'577'836'800'000'000'000LL || changed > accepted || unchanged != accepted - changed ||
+                rescued != changed || doc.at("qa_version") != "v2" ||
+                doc.at("accepted").at("rows_preserved_byte_for_byte") != Json(changed == 0) ||
+                doc.at("accepted").at("unmodified_rows_preserved_byte_for_byte") != true ||
+                doc.at("qa_v2_allowlist_sha256") != "0589dc9ae5c96e68d183820f4733ade7df94245d805e285e43e1bdf29c0fef60" ||
+                doc.at("qa_v2_blanked_fields") != Json::array({"open", "high", "low"}) ||
+                doc.at("qa_v2_rescuable_reasons") != Json::array({"ohlc_order_violation"}) ||
+                doc.at("qa_v2_dates") != expected ||
+                !doc.at("qa_v2_daily_counts").is_object() || doc.at("qa_v2_daily_counts").size() != expected.size())
+                return Err(ErrorCode::InvalidArgument, "provenance: invalid QA-v2 policy/counts/allowlist");
+            atx::u64 total_rescued = 0, total_accepted = 0, total_unchanged = 0;
+            for (const auto& date : expected) {
+                const auto& daily = doc.at("qa_v2_daily_counts").at(date.get<std::string>());
+                ATX_TRY(auto old_rows, count(daily.at("accepted_v1")));
+                ATX_TRY(auto new_rows, count(daily.at("accepted_v2_rescued")));
+                ATX_TRY(auto all_rows, count(daily.at("accepted")));
+                if (new_rows > changed - total_rescued || all_rows > accepted - total_accepted ||
+                    old_rows > unchanged - total_unchanged || new_rows > all_rows || old_rows != all_rows - new_rows)
+                    return Err(ErrorCode::InvalidArgument, "provenance: inconsistent QA-v2 daily counts");
+                total_rescued += new_rows;
+                total_accepted += all_rows;
+                total_unchanged += old_rows;
+            }
+            if (total_rescued != changed)
+                return Err(ErrorCode::InvalidArgument, "provenance: QA-v2 rescue total mismatch");
+        }
         ATX_TRY(auto after, atx::core::sha256_file(path));
         if (after != manifest_digest) {
             return Err(ErrorCode::IoError, "provenance: preparation changed while reading");
         }
         return Ok(IngestionInput{input, std::move(manifest_digest), original_sha,
-                                  "tickerhistory-qa-v1", accepted});
+                                  policy, accepted});
     } catch (const Json::exception &error) {
         return Err(ErrorCode::ParseError, "provenance: preparation schema: " +
                                               std::string(error.what()));
@@ -368,13 +410,15 @@ Result<PanelSourceProvenance> validate_panel_sources(
             const auto original_sha = prep.at("original_source_sha256").get<std::string>();
             if (!valid_sha(prep_sha) || !valid_sha(original_sha) ||
                 prep.at("accepted_sha256") != input.sha256 ||
-                prep.at("policy_version") != "tickerhistory-qa-v1") {
+                (prep.at("policy_version") != "tickerhistory-qa-v1" &&
+                 prep.at("policy_version") != "tickerhistory-qa-v2")) {
                 return Err(ErrorCode::ParseError, "panel: invalid preparation receipt binding");
             }
             if (!preparation_manifest.empty()) {
                 ATX_TRY(auto explicit_prep, validate_preparation(preparation_manifest, input));
                 if (explicit_prep.preparation_sha256 != prep_sha ||
-                    explicit_prep.original_source_sha256 != original_sha) {
+                    explicit_prep.original_source_sha256 != original_sha ||
+                    explicit_prep.preparation_policy != prep.at("policy_version").get<std::string>()) {
                     return Err(ErrorCode::InvalidArgument, "panel: preparation manifest mismatch");
                 }
             }

@@ -64,6 +64,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/random.hpp" // Xoshiro256pp — the frozen bootstrap stream (§3.10)
 #include "atx/core/types.hpp"
+#include "atx/engine/eval/hac.hpp" // W0-E0a: HAC t-statistics and Politis-White block length
 
 #if !defined(__SIZEOF_INT128__)
 #include <intrin.h> // _umul128 — the non-__int128 half of detail::umul_64_to_128
@@ -86,14 +87,24 @@ namespace atx::engine::eval {
 //  maximum at entry"; without these two that sentence was false for `dates` and
 //  `instruments`, and `plan_cross_section_ic`'s `.assign()` calls could throw
 //  `std::bad_alloc` on a span-consistent but enormous input, in a unit whose
-//  contract is that no path throws. 4,096 clears Stage 1 (189 x 1,661) and
-//  Stage 2 (~1,950 x ~1,661) with room to spare.
+//  contract is that no path throws.
+//
+//  W0-E0a / E-08: the old 4,096 caps rejected the 2013-2019 t3000 union (6,624 ids).
+//  The two extents are now SANITY bounds only (65,536 dates is 260 years of sessions;
+//  262,144 instruments is 40x any listed universe) and the binding limit is a RUNTIME
+//  byte budget: `preflight_cross_section_ic` computes the working set (scratch plus the
+//  result series) with overflow-checked arithmetic and rejects anything above
+//  `CrossSectionIcConfig::max_working_bytes` before a single `.assign()` runs.
 // ---------------------------------------------------------------------------
 inline constexpr atx::usize kMaxIcHorizons = 8;
 inline constexpr atx::usize kMaxIcQuantiles = 32;
 inline constexpr atx::usize kMaxBootstrapDraws = 100'000;
-inline constexpr atx::usize kMaxIcDates = 4096;
-inline constexpr atx::usize kMaxIcInstruments = 4096;
+inline constexpr atx::usize kMaxIcDates = 65'536;
+inline constexpr atx::usize kMaxIcInstruments = 262'144;
+// Largest accepted `execution_delay` (sessions between the signal close and the entry).
+inline constexpr atx::usize kMaxIcExecutionDelay = 64;
+// Default runtime budget for the engine-owned working set (scratch + result): 1 GiB.
+inline constexpr atx::u64 kDefaultIcWorkingBytes = atx::u64{1} << 30U;
 
 // ---------------------------------------------------------------------------
 //  Rejectable admission enums.
@@ -118,6 +129,39 @@ enum class SealPolicy : atx::u8 {
   Unknown = 0,    // rejects
   RejectSealedV1, // any observation at or after the sealed boundary is an error
   MaskSealedV1,   // report the first sealed index; the CALLER truncates
+};
+
+// ---------------------------------------------------------------------------
+//  BlockLenRule — the circular-block-bootstrap block length at horizon h (W0-E0a, E-02).
+//
+//  An h-day forward return overlaps its neighbours by h - 1 days, so the IC series is at
+//  least MA(h-1). A block shorter than that dependence range under-states the variance of
+//  the mean: at h = 21 the V1 block of 11 made intervals about 35% too narrow.
+//
+//  Frozen integer values (serialized by callers). `HalfHorizonV1` reproduces every stream
+//  published before W0 bit for bit (with `execution_delay = 0`).
+// ---------------------------------------------------------------------------
+enum class BlockLenRule : atx::u8 {
+  Unknown = 0,        // rejects
+  HalfHorizonV1 = 1,  // L = max(floor, ceil(h / 2))      — the pre-W0 rule (E-02)
+  TwoHorizonV2 = 2,   // L = max(floor, 2 h)              — default
+  PolitisWhiteV2 = 3, // L = max(floor, 2 h, ceil(b_CB)), b_CB the Politis-White automatic
+                      //     circular block length of the horizon's full-sample IC series
+};
+
+// ---------------------------------------------------------------------------
+//  IcHacRule — the kernel and lag of the HAC t-statistic published beside the naive one
+//  (W0-E0a, E-03). Frozen integer values.
+//
+//  HansenHodrickV1: uniform kernel at L = max(h - 1, floor(4 (n/100)^(2/9))). Exactly
+//                   unbiased for the MA(h-1) overlap; a sample S <= 0 falls back to
+//                   Bartlett at the same lag (flagged).
+//  NeweyWestV1:     Bartlett kernel at L = max(h - 1, Newey-West 1994 automatic lag).
+// ---------------------------------------------------------------------------
+enum class IcHacRule : atx::u8 {
+  Unknown = 0, // rejects
+  HansenHodrickV1 = 1,
+  NeweyWestV1 = 2,
 };
 
 // Frozen integer values: the bootstrap stream key XORs `statistic_id` into bits
@@ -145,7 +189,7 @@ struct CrossSectionIcConfig {
   atx::usize quantiles{10};          // 2 <= Q <= kMaxIcQuantiles
   atx::usize min_names_per_date{2};  // >= 2 (matches linear_alpha.cpp:141 `pv.size() >= 2U`)
   atx::usize bootstrap_draws{2000};  // 0 => every interval unreportable; <= kMaxBootstrapDraws
-  atx::usize block_len_floor{5};     // >= 1;  L_h = max(floor, (h + 1) / 2)
+  atx::usize block_len_floor{5};     // >= 1; the floor term of every BlockLenRule
   atx::u64 bootstrap_seed{0};
   atx::u64 stream_signal_index{0};   // stream key input (§3.10); 0 when unused
   atx::u64 stream_variant_id{0};     // 0 = DropMissingForward, 1 = IncludeAuditedTerminalV1
@@ -161,6 +205,45 @@ struct CrossSectionIcConfig {
                                      // The frozen Stage-1 value is T - max(H) = 126.
   ForwardReturnVariant forward_variant{ForwardReturnVariant::Unknown};
   IcTieHandling ties{IcTieHandling::Unknown};
+  // --- W0-E0a -----------------------------------------------------------------
+  // E-02: the bootstrap block rule. HalfHorizonV1 reproduces the pre-W0 streams.
+  BlockLenRule block_len_rule{BlockLenRule::TwoHorizonV2};
+  // E-09: sessions between the signal close at row t and the entry close. The forward
+  // return at horizon h runs from row t + execution_delay to row t + execution_delay + h,
+  // so a book that trades at the next close (delay 1, the default) is evaluated on the
+  // return it can actually earn; the label embargo becomes h + execution_delay
+  // (`label_embargo`). 0 reproduces the pre-W0 signal-close convention. <= kMaxIcExecutionDelay.
+  atx::usize execution_delay{1};
+  // E-03: the HAC t-statistic published beside `naive_t`.
+  IcHacRule hac_rule{IcHacRule::HansenHodrickV1};
+  // E-08: runtime budget for the engine-owned working set (scratch + result vectors),
+  // checked by `preflight_cross_section_ic` before any sizing. Must be > 0.
+  atx::u64 max_working_bytes{kDefaultIcWorkingBytes};
+};
+
+// ---------------------------------------------------------------------------
+//  label_embargo — the number of rows after a signal row whose data the label at
+//  horizon h consumes: h + execution_delay (E-09). A walk-forward / lockbox consumer must
+//  embargo at least this many rows between a fit window's last signal row and the first
+//  evaluated row.
+// ---------------------------------------------------------------------------
+[[nodiscard]] constexpr atx::usize label_embargo(atx::usize horizon,
+                                                 atx::usize execution_delay) noexcept {
+  return horizon + execution_delay;
+}
+
+// ---------------------------------------------------------------------------
+//  IcSizing — the result of the E-08 preflight. All byte counts are exact for the
+//  vectors the engine sizes; `input_bytes` is the caller-owned span footprint (four f64
+//  and four u8 per cell plus one i64 per date; `aux` excluded) so a stage can budget the
+//  panel it is about to materialize.
+// ---------------------------------------------------------------------------
+struct IcSizing {
+  atx::usize cells{};
+  atx::u64 input_bytes{};
+  atx::u64 scratch_bytes{};
+  atx::u64 result_bytes{};
+  atx::u64 working_bytes{}; // scratch_bytes + result_bytes, compared to max_working_bytes
 };
 
 // ---------------------------------------------------------------------------
@@ -173,6 +256,12 @@ struct CrossSectionIcConfig {
 //
 //  BORROWED: the caller keeps every span alive and unchanged for the call; no
 //  span is modified by this unit.
+//
+//  EXECUTION DELAY (E-09). `signal`, `mask` and `excluded_audited` are read at the signal
+//  row t. `price` is read at the ENTRY row e = t + execution_delay and at e + h, and the
+//  terminal triple (`terminal`, `terminal_evidenced`, `terminal_value`) is read at the
+//  entry row e, because it describes the forward window (e, e + h]. With
+//  execution_delay == 0 every read is at t, exactly as before W0.
 // ---------------------------------------------------------------------------
 struct CrossSectionIcInput {
   atx::usize dates{};
@@ -247,6 +336,34 @@ struct BootstrapInterval {
   atx::u8 unreportable_reason{};
 };
 
+// ---------------------------------------------------------------------------
+//  HacInterval — the HAC inference of one mean (W0-E0a, E-03), published beside the
+//  naive t and the bootstrap interval. `lo`/`hi` are the normal 95% interval
+//  point -/+ 1.959963984540054 * se.
+//
+//  `reportable == 0` means se/t/lo/hi are 0.0 and MUST serialize as null / "". Reason
+//  codes reuse the frozen five-code table where the condition is the same:
+//    1 n < 20;  2 common-prefix gap (common block only);  3 n / (lag + 1) < 10 (the lag
+//    analogue of "series too short for the block length"); and one HAC-only code,
+//    5 "zero or non-finite long-run variance". LOWEST NONZERO code wins.
+// ---------------------------------------------------------------------------
+struct HacInterval {
+  atx::f64 point{};
+  atx::f64 se{};
+  atx::f64 t{};
+  atx::f64 lo{};
+  atx::f64 hi{};
+  atx::usize n{};
+  atx::usize lag{};
+  hac::Kernel kernel{hac::Kernel::Unknown}; // the kernel actually used
+  atx::u8 fell_back{};                      // 1 -> uniform S <= 0, Bartlett used instead
+  atx::u8 reportable{};
+  atx::u8 unreportable_reason{};
+};
+
+// The two-sided 95% standard-normal quantile used by HacInterval.
+inline constexpr atx::f64 kHacZ975 = 1.959963984540054;
+
 struct QuantileBucketStat {
   atx::usize quantile{};
   atx::usize n_dates{};
@@ -303,11 +420,18 @@ struct IcSampleStats {
   // Only 1 and 2 are reachable on a summary block: 3 and 4 are properties of an
   // interval, not of a point estimate.
   atx::u8 unreportable_reason{};
+  // W0-E0a / E-03: HAC inference for the two IC means under `cfg.hac_rule`. These, not
+  // `naive_t`, are the significance figures of an overlapping-horizon IC series.
+  HacInterval ic_mean_hac;
+  HacInterval rank_ic_mean_hac;
 };
 
 struct IcHorizonSummary {
   atx::usize horizon{};
-  atx::usize block_len{};
+  atx::usize block_len{};           // L_h under cfg.block_len_rule
+  atx::usize execution_delay{};     // cfg.execution_delay, echoed (E-09)
+  atx::usize embargo{};             // label_embargo(horizon, execution_delay)
+  BlockLenRule block_len_rule{BlockLenRule::Unknown}; // echoed (E-02)
   atx::usize dates_below_min_names{};
   atx::usize dates_below_quantile_count{};
   IcSampleStats full;   // all emitted dates
@@ -477,9 +601,39 @@ namespace detail {
 //  In the header rather than the .cpp per parent ruling RR-3: T3's bootstrap and
 //  T7a's oracle both need it, and a frozen value deserves a direct test.
 // ---------------------------------------------------------------------------
+//
+//  W0-E0a: this is `BlockLenRule::HalfHorizonV1`, kept verbatim so the frozen streams
+//  re-derive. New work goes through `block_len_for_rule`.
 [[nodiscard]] constexpr atx::usize block_len(atx::usize horizon, atx::usize floor_len) noexcept {
   const atx::usize half = (horizon + 1U) / 2U;
   return (floor_len > half) ? floor_len : half;
+}
+
+// ---------------------------------------------------------------------------
+//  block_len_for_rule — L_h under a BlockLenRule, before any data-driven term.
+//
+//    HalfHorizonV1   max(floor, ceil(h / 2))   == block_len(h, floor)
+//    TwoHorizonV2    max(floor, 2 h)
+//    PolitisWhiteV2  max(floor, 2 h)  — the LOWER BOUND; compute raises it to
+//                                       ceil(b_CB) of the horizon's IC series when larger
+//    Unknown         0 (validation rejects it before any caller can see this)
+//
+//  `2 h` cannot wrap: h < dates <= kMaxIcDates is validated first.
+// ---------------------------------------------------------------------------
+[[nodiscard]] constexpr atx::usize block_len_for_rule(BlockLenRule rule, atx::usize horizon,
+                                                      atx::usize floor_len) noexcept {
+  switch (rule) {
+  case BlockLenRule::HalfHorizonV1:
+    return block_len(horizon, floor_len);
+  case BlockLenRule::TwoHorizonV2:
+  case BlockLenRule::PolitisWhiteV2: {
+    const atx::usize twice = 2U * horizon;
+    return (floor_len > twice) ? floor_len : twice;
+  }
+  case BlockLenRule::Unknown:
+    break;
+  }
+  return 0U;
 }
 
 // ---------------------------------------------------------------------------
@@ -663,15 +817,53 @@ constexpr void umul_64_to_128(atx::u64 a, atx::u64 b, atx::u64 &hi, atx::u64 &lo
 //  session keys, a `stream_*` field above 255 — §3.10's key gives each field one
 //  byte, so a wider value would alias its neighbour and merge two streams,
 //  bootstrap_draws == 0 while a horizon would otherwise be reportable),
-//  OutOfRange (mis-sized span, horizon at or past `dates`, bootstrap_draws above
-//  kMaxBootstrapDraws, and — ruling RR-1 — `dates` above kMaxIcDates or
-//  `instruments` above kMaxIcInstruments, both checked BEFORE any sizing so no
-//  `.assign()` can reach a throwing size; the dates*instruments overflow guard
-//  is kept behind them because it is the branch that makes `cells` well-defined
-//  for the span-shape checks and it survives any later raise of the two maxima).
+//  OutOfRange (mis-sized span, horizon + execution_delay at or past `dates`,
+//  bootstrap_draws above kMaxBootstrapDraws, and — ruling RR-1 / E-08, via
+//  `preflight_cross_section_ic` — `dates` above kMaxIcDates, `instruments` above
+//  kMaxIcInstruments, an overflowing dates*instruments, or a working set above
+//  `cfg.max_working_bytes`, all checked BEFORE any sizing so no `.assign()` can
+//  reach a throwing size). InvalidArgument also covers an unknown BlockLenRule or
+//  IcHacRule, execution_delay above kMaxIcExecutionDelay and a zero byte budget.
 // ===========================================================================
 [[nodiscard]] atx::core::Result<CrossSectionIcScratch>
 plan_cross_section_ic(const CrossSectionIcInput &in, const CrossSectionIcConfig &cfg);
+
+// ===========================================================================
+//  preflight_cross_section_ic — the E-08 runtime sizing check, callable BEFORE the
+//  caller materializes a panel of `dates` x `instruments`.
+//
+//  Checks, in order: both extents non-zero and within the sanity bounds kMaxIcDates /
+//  kMaxIcInstruments; dates * instruments does not overflow; the horizon count and
+//  bootstrap draws are within their maxima (kMaxIcHorizons, kMaxBootstrapDraws);
+//  `max_working_bytes > 0`; and the exact working set (every scratch vector plus every
+//  result vector the compute sizes) fits `cfg.max_working_bytes`. All byte arithmetic is
+//  overflow-checked. The other §6.2 checks run in `plan_cross_section_ic`.
+//
+//  Errors: InvalidArgument (zero extent, more than kMaxIcHorizons horizons, or zero
+//  budget), OutOfRange (an extent above its bound, an overflowing product,
+//  bootstrap_draws above kMaxBootstrapDraws, or a working set above the budget — the
+//  message carries both numbers).
+// ===========================================================================
+[[nodiscard]] atx::core::Result<IcSizing>
+preflight_cross_section_ic(atx::usize dates, atx::usize instruments,
+                           const CrossSectionIcConfig &cfg);
+
+// ===========================================================================
+//  bootstrap_mean_interval — §3.10's circular-block percentile interval for the MEAN of
+//  an arbitrary series, drawn by the exact resampler `compute_cross_section_ic` uses
+//  (same Lemire draw, same truncation to n, same nearest-rank percentiles). The stream
+//  is `Xoshiro256pp{splitmix64_next(stream_key)}`, as in §3.10.
+//
+//  Exposed so an inference property (e.g. the E-02 coverage of a block rule on a
+//  simulated MA(h-1) IC series) can be measured on the production resampler without a
+//  synthetic panel. `draw_stats` is caller scratch of at least `draws` elements.
+//
+//  The reason code follows §3.10 (code 2 is never set here). Errors: InvalidArgument
+//  when `draw_stats.size() < draws` or draws > kMaxBootstrapDraws.
+// ===========================================================================
+[[nodiscard]] atx::core::Result<BootstrapInterval>
+bootstrap_mean_interval(std::span<const atx::f64> series, atx::usize block_len,
+                        atx::usize draws, atx::u64 stream_key, std::span<atx::f64> draw_stats);
 
 // ===========================================================================
 //  compute_cross_section_ic — the evaluation itself.

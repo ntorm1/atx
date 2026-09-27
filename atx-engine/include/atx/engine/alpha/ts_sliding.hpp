@@ -42,8 +42,8 @@
 //  this path returns NaN — the documented, more-correct divergence.
 //
 //  These kernels are NOT bit-identical to the batch two-pass recompute, so they
-//  ship only under EvalMode::ResearchFast (ts_ops.hpp routes the unary ones;
-//  the pair ops are exported for the VM owner to wire — see sweep_comoment).
+//  ship only under EvalMode::ResearchFast. VM and streaming share unary and
+//  pair lanes; AuditExact retains its independent per-window arithmetic.
 //
 //  NaN / inf POLICY — identical outputs to the batch kernels:
 //    * warm-up (t+1 < d) or any NaN in the window -> NaN.
@@ -57,6 +57,7 @@
 // Header-only; every function is `inline`.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <span>
@@ -151,6 +152,11 @@ struct CoMoment {
   }
   [[nodiscard]] atx::f64 cxy(atx::f64 inv) const noexcept { return sxy - sx * sy * inv; }
   [[nodiscard]] atx::f64 inv_n() const noexcept { return 1.0 / static_cast<atx::f64>(n); }
+  [[nodiscard]] bool finite() const noexcept {
+    return std::isfinite(sx) && std::isfinite(sy) && std::isfinite(sxx) &&
+           std::isfinite(syy) && std::isfinite(sxy) && std::isfinite(pxx) && std::isfinite(pyy) &&
+           std::isfinite(sx * sx) && std::isfinite(sy * sy) && std::isfinite(sx * sy);
+  }
   // True when either centred second moment is below kDriftRatio of the PEAK raw
   // shifted sum since the last reset (see kDriftRatio). Comparing against the
   // peak rather than the current sum also catches an outlier LEAVING the window:
@@ -210,7 +216,8 @@ struct CoMoment {
 inline constexpr atx::usize kDirectMaxWindow = 4;
 
 template <class Win>
-[[nodiscard]] inline atx::f64 direct_pair(OpCode op, atx::usize d, const Win &win) noexcept {
+[[nodiscard]] inline atx::f64 direct_pair(OpCode op, atx::usize d, const Win &win,
+                                         bool relative_flat = false) noexcept {
   if (d < 2) {
     return kSlNaN;
   }
@@ -233,6 +240,10 @@ template <class Win>
     saa += (a - ma) * (a - ma);
     sbb += (b - mb) * (b - mb);
   }
+  const bool flat_x = std::sqrt(saa / nf) <= 1e-10 * std::fabs(ma);
+  const bool flat_y = std::sqrt(sbb / nf) <= 1e-10 * std::fabs(mb);
+  if (relative_flat && ((op == OpCode::TsCorr && (flat_x || flat_y)) ||
+                        (op == OpCode::TsRegression && flat_y))) return kSlNaN;
   switch (op) {
   case OpCode::TsCorr: {
     const atx::f64 denom = std::sqrt(saa * sbb);
@@ -257,7 +268,8 @@ struct CoMomentLane {
 
   template <class Win>
   [[nodiscard]] atx::f64 step(OpCode op, atx::f64 xe, atx::f64 ye, bool has_leave, atx::f64 xl,
-                              atx::f64 yl, bool full, atx::usize d, const Win &win) noexcept {
+                              atx::f64 yl, bool full, atx::usize d, const Win &win,
+                              bool relative_flat = false) noexcept {
     if (std::isfinite(xe) && std::isfinite(ye)) {
       m.push(xe, ye);
     } else {
@@ -274,15 +286,34 @@ struct CoMomentLane {
       return kSlNaN;
     }
     if (d <= kDirectMaxWindow) {
-      return direct_pair(op, d, win);
+      return direct_pair(op, d, win, relative_flat);
     }
-    if (++age >= reseed_period(d) || m.drifted()) {
+    if (++age >= reseed_period(d) || !m.finite() || m.drifted()) {
       age = 0;
       m.reset(xe, ye);
       for (atx::usize i = 0; i < d; ++i) {
         const auto [wx, wy] = win(i);
         m.push(wx, wy);
       }
+    }
+    // A finite observation can overflow shifted squares/products. Once it
+    // leaves, reseeding must recover immediately (NaN drift comparisons cannot
+    // trigger it). If this window itself still overflows, preserve the direct
+    // formula's NaN/inf classification instead of carrying corrupted moments.
+    if (!m.finite()) return direct_pair(op, d, win, relative_flat);
+    // W0 RelativeV2 flatness is part of the production pair contract. Keep the
+    // standalone lane's legacy default for existing callers, while the VM and
+    // streaming explicitly select the corrected policy. No window pre-scan.
+    if (relative_flat) {
+      const atx::f64 inv = m.inv_n();
+      const bool flat_x = std::sqrt(m.cxx(inv) * inv) <= 1e-10 * std::fabs(m.cx + m.sx * inv);
+      const bool flat_y = std::sqrt(m.cyy(inv) * inv) <= 1e-10 * std::fabs(m.cy + m.sy * inv);
+      if ((op == OpCode::TsCorr && (flat_x || flat_y)) ||
+          (op == OpCode::TsRegression && flat_y)) return kSlNaN;
+      // AuditExact covariance has no relative-flat zeroing policy. Preserve its
+      // chronological result in this exceptional region, including large-level
+      // rounding residuals, rather than silently changing that oracle contract.
+      if (op == OpCode::TsCov && (flat_x || flat_y)) return direct_pair(op, d, win);
     }
     switch (op) {
     case OpCode::TsCorr:
@@ -296,6 +327,125 @@ struct CoMomentLane {
     }
   }
 };
+
+// Finite-window exponential decay. Coefficients are shared by all instruments
+// of one instruction; prepare is cold/grow-only, never called in the cell loop.
+// Positive factors above one are supported by the DSL but amplify recurrence
+// error, so retain the chronological direct formula in that region.
+struct ExpDecayCoefficients {
+  atx::usize window{0};
+  atx::f64 factor{0.0};
+  atx::f64 leave_weight{0.0};
+  atx::f64 weight_sum{0.0};
+  atx::f64 direct_weight_sum{0.0};
+  bool recurrent{false};
+  std::vector<atx::f64> weights;
+
+  void prepare(atx::usize d, atx::f64 f) {
+    if (window == d && factor == f && weights.size() >= d) return;
+    window = d;
+    factor = f;
+    if (weights.size() < d) weights.resize(d);
+    direct_weight_sum = 0.0;
+    for (atx::usize i = 0; i < d; ++i) {
+      weights[i] = std::pow(f, static_cast<atx::f64>(d - 1 - i));
+      direct_weight_sum += weights[i];
+    }
+    recurrent = d != 0 && f > 0.0 && f <= 1.0;
+    leave_weight = recurrent ? std::pow(f, static_cast<atx::f64>(d)) : 0.0;
+    if (f == 1.0) weight_sum = static_cast<atx::f64>(d);
+    else if (recurrent) {
+      const atx::f64 log_factor = std::log(f);
+      weight_sum = std::expm1(static_cast<atx::f64>(d) * log_factor) / std::expm1(log_factor);
+    } else weight_sum = direct_weight_sum;
+    recurrent = recurrent && std::isfinite(weight_sum) && weight_sum > 0.0;
+  }
+
+  template <class Win>
+  [[nodiscard]] atx::f64 weighted_sum(const Win &win) const noexcept {
+    atx::f64 sum = 0.0;
+    for (atx::usize i = 0; i < window; ++i) sum += weights[i] * win(i);
+    return sum;
+  }
+};
+
+// S[t] = f*S[t-1] + x[t] - f^d*x[t-d]. Warmup starts at zero at the
+// actual first observation (no leave term yet), then seeds the first complete
+// clean window from its finite weighted sum. Running counters replace the
+// old O(d) NaN pre-scan and trigger exact recovery after a gap leaves.
+struct ExpDecayLane {
+  atx::f64 sum{0.0};
+  atx::f64 peak{0.0};
+  atx::usize nan{0};
+  atx::usize inf{0};
+  atx::usize age{0};
+  bool needs_seed{true};
+
+  void count(atx::f64 value, bool leaving) noexcept {
+    if (std::isnan(value)) {
+      if (leaving) --nan; else ++nan;
+    } else if (std::isinf(value)) {
+      if (leaving) --inf; else ++inf;
+    }
+  }
+
+  template <class Win>
+  [[nodiscard]] atx::f64 step(atx::f64 entering, bool has_leave, atx::f64 leaving,
+                              bool full, const ExpDecayCoefficients &coeff,
+                              const Win &win) noexcept {
+    count(entering, false);
+    if (has_leave) count(leaving, true);
+    if (coeff.recurrent) {
+      sum = coeff.factor * sum + (std::isfinite(entering) ? entering : 0.0);
+      if (has_leave) sum -= coeff.leave_weight * (std::isfinite(leaving) ? leaving : 0.0);
+    }
+    if (!full || nan != 0) {
+      needs_seed = true;
+      return kSlNaN;
+    }
+    if (!coeff.recurrent || inf != 0) {
+      // Includes 0*infinity for underflowed weights, matching the old formula.
+      needs_seed = true;
+      return coeff.direct_weight_sum == 0.0 ? kSlNaN
+          : coeff.weighted_sum(win) / coeff.direct_weight_sum;
+    }
+    ++age;
+    if (needs_seed || age >= reseed_period(coeff.window) || !std::isfinite(sum) ||
+        std::abs(sum) < kDriftRatio * peak) {
+      sum = coeff.weighted_sum(win);
+      peak = std::abs(sum);
+      age = 0;
+      needs_seed = false;
+    } else {
+      peak = std::max(peak, std::abs(sum));
+    }
+    return sum / coeff.weight_sum;
+  }
+};
+
+// Ordinary clean bounded inputs are O(1) per cell amortized (one O(d) reseed
+// per 2d dates). Nonfinite/overflow/strong-cancellation windows and f>1 retain
+// an explicit O(d) fallback. No unsupported worst-case O(1) claim.
+inline void sweep_exp_decay(std::span<const atx::f64> x, std::span<atx::f64> out,
+                            atx::usize dates, atx::usize instruments,
+                            const ExpDecayCoefficients &coeff,
+                            atx::usize begin, atx::usize end) noexcept {
+  constexpr atx::usize tile_size = 64;
+  ATX_ASSERT(begin <= end && end <= instruments && end - begin <= tile_size);
+  std::array<ExpDecayLane, tile_size> lanes{};
+  const atx::usize d = coeff.window;
+  for (atx::usize t = 0; t < dates; ++t) {
+    const bool has_leave = t >= d;
+    const bool full = d != 0 && t + 1 >= d;
+    for (atx::usize j = begin; j < end; ++j) {
+      const auto win = [&x, t, d, instruments, j](atx::usize i) noexcept {
+        return x[(t + 1 - d + i) * instruments + j];
+      };
+      out[t * instruments + j] = lanes[j - begin].step(x[t * instruments + j], has_leave,
+          has_leave ? x[(t - d) * instruments + j] : 0.0, full, coeff, win);
+    }
+  }
+}
 
 // ===========================================================================
 //  LinDecay — linear-decay weighted mean (weights 1..d oldest..newest, /Σw).
@@ -551,7 +701,6 @@ inline void sweep_unary(OpCode op, std::span<const atx::f64> x, std::span<atx::f
                         atx::usize dates, atx::usize instruments, atx::usize d, atx::usize j0,
                         atx::usize j1) {
   ATX_ASSERT(is_unary_sliding_op(op) && j0 <= j1 && j1 <= instruments);
-  const atx::usize lanes = j1 - j0;
   if (d == 0) {
     for (atx::usize t = 0; t < dates; ++t) {
       for (atx::usize j = j0; j < j1; ++j) {
@@ -561,36 +710,35 @@ inline void sweep_unary(OpCode op, std::span<const atx::f64> x, std::span<atx::f
     return;
   }
   const bool decay = is_decay_op(op);
-  // A single column (the per-column VM entry) keeps its lane on the stack, so the
-  // column sweep allocates nothing; a multi-column sweep allocates once per call.
-  LinDecayLane one_dl;
-  TimeRegLane one_tl;
-  std::vector<LinDecayLane> many_dl(decay && lanes > 1 ? lanes : 0);
-  std::vector<TimeRegLane> many_tl(!decay && lanes > 1 ? lanes : 0);
-  LinDecayLane *dl = lanes > 1 ? many_dl.data() : &one_dl;
-  TimeRegLane *tl = lanes > 1 ? many_tl.data() : &one_tl;
-  for (atx::usize t = 0; t < dates; ++t) {
-    const bool has_leave = t >= d;
-    const bool full = t + 1 >= d;
-    const atx::f64 *row = x.data() + t * instruments;
-    const atx::f64 *lrow = has_leave ? x.data() + (t - d) * instruments : row;
-    atx::f64 *orow = out.data() + t * instruments;
-    for (atx::usize j = j0; j < j1; ++j) {
-      // SAFETY: the window view is only read on a re-centre, i.e. when full
-      // (t+1 >= d), so (t+1-d+i) is a valid date for i < d.
-      const auto win = [&x, t, d, instruments, j](atx::usize i) noexcept {
-        return x[(t + 1 - d + i) * instruments + j];
-      };
-      orow[j] = decay ? dl[j - j0].step(row[j], has_leave, lrow[j], full, d, win)
-                      : tl[j - j0].step(op, row[j], has_leave, lrow[j], full, d, win);
+  constexpr atx::usize tile_size = 64;
+  for (atx::usize begin = j0; begin < j1;) {
+    const atx::usize end = begin + std::min(tile_size, j1 - begin);
+    std::array<LinDecayLane, tile_size> dl{};
+    std::array<TimeRegLane, tile_size> tl{};
+    for (atx::usize t = 0; t < dates; ++t) {
+      const bool has_leave = t >= d;
+      const bool full = t + 1 >= d;
+      const atx::f64 *row = x.data() + t * instruments;
+      const atx::f64 *lrow = has_leave ? x.data() + (t - d) * instruments : row;
+      atx::f64 *orow = out.data() + t * instruments;
+      for (atx::usize j = begin; j < end; ++j) {
+        // Only reseeding reads win, once the complete causal window exists.
+        const auto win = [&x, t, d, instruments, j](atx::usize i) noexcept {
+          return x[(t + 1 - d + i) * instruments + j];
+        };
+        orow[j] = decay ? dl[j - begin].step(row[j], has_leave, lrow[j], full, d, win)
+                        : tl[j - begin].step(op, row[j], has_leave, lrow[j], full, d, win);
+      }
     }
+    begin = end;
   }
 }
 
 // Pair ops (corr / cov / regression). Same layout contract as sweep_unary.
 inline void sweep_comoment(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> y,
                            std::span<atx::f64> out, atx::usize dates, atx::usize instruments,
-                           atx::usize d, atx::usize j0, atx::usize j1) {
+                           atx::usize d, atx::usize j0, atx::usize j1,
+                           bool relative_flat = false) {
   ATX_ASSERT(is_comoment_op(op) && j0 <= j1 && j1 <= instruments);
   if (d == 0) {
     for (atx::usize t = 0; t < dates; ++t) {
@@ -600,22 +748,25 @@ inline void sweep_comoment(OpCode op, std::span<const atx::f64> x, std::span<con
     }
     return;
   }
-  CoMomentLane one;
-  std::vector<CoMomentLane> many(j1 - j0 > 1 ? j1 - j0 : 0);
-  CoMomentLane *lanes = j1 - j0 > 1 ? many.data() : &one;
-  for (atx::usize t = 0; t < dates; ++t) {
-    const bool has_leave = t >= d;
-    const bool full = t + 1 >= d;
-    const atx::usize r = t * instruments;
-    const atx::usize lr = has_leave ? (t - d) * instruments : r;
-    for (atx::usize j = j0; j < j1; ++j) {
-      const auto win = [&x, &y, t, d, instruments, j](atx::usize i) noexcept {
-        const atx::usize k = (t + 1 - d + i) * instruments + j;
-        return std::pair<atx::f64, atx::f64>{x[k], y[k]};
-      };
-      out[r + j] = lanes[j - j0].step(op, x[r + j], y[r + j], has_leave, x[lr + j], y[lr + j],
-                                      full, d, win);
+  constexpr atx::usize tile_size = 64;
+  for (atx::usize begin = j0; begin < j1;) {
+    const atx::usize end = begin + std::min(tile_size, j1 - begin);
+    std::array<CoMomentLane, tile_size> lanes{};
+    for (atx::usize t = 0; t < dates; ++t) {
+      const bool has_leave = t >= d;
+      const bool full = t + 1 >= d;
+      const atx::usize r = t * instruments;
+      const atx::usize lr = has_leave ? (t - d) * instruments : r;
+      for (atx::usize j = begin; j < end; ++j) {
+        const auto win = [&x, &y, t, d, instruments, j](atx::usize i) noexcept {
+          const atx::usize k = (t + 1 - d + i) * instruments + j;
+          return std::pair<atx::f64, atx::f64>{x[k], y[k]};
+        };
+        out[r + j] = lanes[j - begin].step(op, x[r + j], y[r + j], has_leave,
+                                           x[lr + j], y[lr + j], full, d, win, relative_flat);
+      }
     }
+    begin = end;
   }
 }
 

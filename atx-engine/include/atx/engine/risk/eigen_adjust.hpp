@@ -77,6 +77,20 @@
 
 namespace atx::engine::risk {
 
+struct EigenAdjustmentV2 {
+  atx::core::linalg::MatX covariance;
+  atx::f64 effective_observations{};
+  atx::usize simulated_observations{};
+};
+
+// Explicit effective-history recipe. The Monte Carlo draw length is the nearest
+// integer to the observed Kish effective count, never a function of K. Require
+// enough effective observations for a nonsingular simulated sample covariance.
+[[nodiscard]] atx::core::Result<EigenAdjustmentV2> eigen_adjust_v2(
+    const atx::core::linalg::MatX& covariance, atx::f64 effective_observations,
+    atx::usize simulations = 64, atx::f64 amplification = 1.4, atx::u64 seed = 7,
+    atx::u64 max_working_bytes = 268'435'456);
+
 // Simulated inner-history length per eigenfactor: T = kSimObsPerFactor·K (floored at
 // kMinSimObs). A DETERMINISTIC function of K only — the apply path never sees the fit
 // window, so we scale T with the factor count K so the simulated covariance is always
@@ -126,7 +140,8 @@ namespace detail {
 [[nodiscard]] inline atx::core::linalg::VecX accumulate_vol_bias(const atx::core::linalg::MatX &u,
                                                                  const atx::core::linalg::VecX &d,
                                                                  atx::usize sims, atx::usize t,
-                                                                 atx::core::Xoshiro256pp &rng) {
+                                                                 atx::core::Xoshiro256pp &rng,
+                                                                 atx::usize* invalid_samples = nullptr) {
   const Eigen::Index k = d.size();
   const Eigen::Index tt = static_cast<Eigen::Index>(t);
   atx::core::linalg::VecX acc = atx::core::linalg::VecX::Zero(k);
@@ -147,6 +162,7 @@ namespace detail {
                                         static_cast<atx::f64>(t);
     const auto sample = atx::core::linalg::symmetric_eig(f_m);
     if (!sample) {
+      if (invalid_samples != nullptr) ++*invalid_samples;
       acc.array() += 1.0; // neutral (no bias) on the never-expected decompose failure
       continue;
     }
@@ -161,6 +177,8 @@ namespace detail {
       // conditioned F; floor the numerator at 0 so √(·) never yields NaN (which would
       // propagate into v(k) and silently corrupt F̂). Denominator guard kept below.
       const atx::f64 num = (true_var > 0.0) ? true_var : 0.0;
+      if (invalid_samples != nullptr &&
+          (!std::isfinite(true_var) || !std::isfinite(samp_var) || samp_var <= 0.0)) ++*invalid_samples;
       acc[kk] += (samp_var > 0.0) ? std::sqrt(num / samp_var) : 1.0;
     }
   }
