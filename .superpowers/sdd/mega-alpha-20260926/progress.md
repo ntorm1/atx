@@ -1,5 +1,25 @@
 # Active task: recent-data DSL ensemble
 
+## POST-MORTEM v3 (owner goal 2026-09-27 pm: verify math, diagnose, continue to objective)
+- pool-2 integration ff'd to local main d63a7058 (merge of e587684b + main 9d8925ea); lanes branch from it.
+- MATH (root, book-level): NAV headline stats reproduce from daily CSVs (VAL net -1.271 / gross +.161; TRAIN
+  1.807/2.741); chain pre[t+1]/pre[t]-1 == net[t+1] max err 1.1e-16; net = gross - tc - borrow - long_fin
+  (resid 1.8e-5 = long financing). Costs stable TRAIN tc 1.97%/yr vs VAL 1.67%/yr; gross 6.99%/yr -> .23%/yr.
+- SELECTION PERSISTENCE (TRAIN-only, admission.csv): oriented FIT(2020-21) SR vs HOLD(2022) SR across 121
+  candidates Spearman .040 (p .66), Pearson .077; HOLD sign kept 55.4% (null 50%). Oriented FIT SR mean .61
+  -> HOLD .14. Screen admitted 23 = mostly coin-flip survivors; MV weights then fit on 2020-22 incl. HOLD.
+- REGIME (book-level): TRAIN in-sample gross SR by half 2020H1 6.38 / H2 3.85 / 2021H1 .42 / H2 1.12 /
+  2022H1 2.18 / H2 4.67; net 2021 negative both halves IN-SAMPLE. VAL halves gross -.07/-.39/+1.88/-.64.
+  Book = crisis/bear-regime composite (2020, 2022); bull years (2021, 2023-24) fail.
+- HURDLE: book vol ~1.5-2.5%/yr at GMV/NAV .77; cost+fin ~2.2%/yr -> break-even gross SR ~1.3-1.5; each
+  1%/day turnover costs ~.24 SR (c~18 bps/unit, vol/GMV ~1.9%). Net SR 1 needs gross >= ~1 + .24*tau%.
+- Ruling: validation 2023-24 analysed BOOK-LEVEL ONLY (no per-candidate VAL stats) so trial #2 selection
+  stays uncontaminated by per-alpha VAL information — cost if wrong: coarser attribution.
+- Dispatched (Opus): t16-postmortem (pool-3 feat/mega-alpha-postmortem-20260927: walk-forward, null sim,
+  construction alternatives, paper-book check; root runs), t17-pit-audit (read-only PIT/leak audit),
+  t18-fundamentals (read-only fundamentals/industry/CIK inventory + v4 design). pool-8 branch
+  feat/mega-alpha-v4-fields-20260927 reserved for v4 fields.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
