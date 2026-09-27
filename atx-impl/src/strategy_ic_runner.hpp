@@ -20,12 +20,20 @@ struct IcRunnerConfig {
   std::string candidate_cache_directory;
   // Optional pinned per-candidate composition weights replacing equal weights.
   std::string composition_weights_path, composition_weights_sha256;
+  // Optional pinned point-in-time field directories (atx.research-role-fields/v1,
+  // SHA256 of DIR/manifest.json), each bound to its role's manifest and axes.
+  // Only extra fields some candidate's DSL references are loaded. Absent: the
+  // recipe, cache keys and every output are byte-identical to runs without them.
+  std::string train_fields_directory, train_fields_sha256;
+  std::string validation_fields_directory, validation_fields_sha256;
 };
 // IC-only research; no book, surfaces, fees, Sharpe, stock events or holdout.
 // TRAIN21h sample rank-IC fits signs; validation uses frozen signs; screening remains diagnostic for the fixed blend.
 // One role, one label cache and one evaluated DSL signal are retained at a time.
 // A pinned orientations artifact plus its adjacent canonical-hash-bound recipe.json
 // enables validation-only execution; TRAIN metadata is checked but its payload is not loaded.
+// A library declares close/raw_close/volume plus any extra fields; every declared
+// extra must be present in each scored role's pinned fields manifest.
 [[nodiscard]] atx::core::Status run_ic(const IcRunnerConfig&,std::ostream& progress);
 [[nodiscard]] int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err);
 } // namespace atx::impl::strategy

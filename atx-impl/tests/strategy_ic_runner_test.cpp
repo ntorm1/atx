@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <span>
 #include <string>
@@ -747,5 +748,395 @@ TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndPinnedWeight
   }
   EXPECT_EQ(read_json(dir.path/"cold"/"recipe.json").at("composition_weights_sha256"),weights_pin);
   EXPECT_EQ(file_sha(dir.path/"cold"/"validation_combined.json"),file_sha(dir.path/"warm"/"validation_combined.json"));
+}
+// ---- Pinned extra point-in-time fields (T7) ----
+// Synthetic field values, date-major like the producer: NaN where not visible.
+f64 si_value(usize d,usize i,f64 scale) {
+  return d<63?std::numeric_limits<f64>::quiet_NaN()
+             :static_cast<f64>((i+1)*(i+1))*1e6*(1+.001*static_cast<f64>(d))*scale;
+}
+f64 market_value(usize d) {
+  return d==0?std::numeric_limits<f64>::quiet_NaN():.001*std::sin(static_cast<f64>(d));
+}
+std::vector<f64> field_column(const std::string& name,f64 scale) {
+  std::vector<f64> out(D*N);
+  for (usize d=0;d<D;++d) for (usize i=0;i<N;++i)
+    out[d*N+i]=name=="mkt_ret"?market_value(d):(name=="iv_atm_21d"?.3+.01*static_cast<f64>(i):si_value(d,i,scale));
+  return out;
+}
+// A producer-shaped atx.research-role-fields/v1 directory bound to one role's own
+// manifest and axes (prepare_research_fields.py key names).
+bool fields_dir(const std::filesystem::path& dir,const std::string& role_manifest,const std::string& role_sha,
+                const std::vector<std::string>& names,std::string& sha,f64 scale=1) {
+  if (!std::filesystem::create_directories(dir)) return false;
+  const auto role_json=read_json(role_manifest); const auto& receipts=role_json.at("files");
+  Json files=Json::object(),entries=Json::array();
+  for (const auto& name:names) {
+    const auto file=name+".f64";
+    if (!payload(dir,files,file.c_str(),field_column(name,scale))) return false;
+    entries.push_back({{"name",name},{"file",file},{"dtype","<f8"},{"layout","date-major"},{"shape",{D,N}},
+        {"units","synthetic"},{"clock","synthetic"},{"sha256",files.at(file).at("sha256")}});
+  }
+  return json_file(dir/"manifest.json",{{"schema","atx.research-role-fields/v1"},{"status","complete"},
+      {"role",{{"manifest_sha256",role_sha},{"sessions_sha256",receipts.at("sessions.i64").at("sha256")},
+               {"ids_sha256",receipts.at("ids.u64").at("sha256")},
+               {"member_sha256",receipts.at("member.u8").at("sha256")},{"dates",D},{"instruments",N}}},
+      {"instrument_namespace","spiderrock.securityID"},{"fields",entries},{"files",files}},sha);
+}
+// Pins one fields directory per role under dir/<tag>-{train,validation}.
+bool pin_fields(const Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg,const std::string& tag,
+                const std::vector<std::string>& names,f64 scale=1) {
+  cfg.train_fields_directory=(dir.path/(tag+"-train")).string();
+  cfg.validation_fields_directory=(dir.path/(tag+"-validation")).string();
+  return fields_dir(cfg.train_fields_directory,cfg.train_manifest,cfg.train_sha256,names,cfg.train_fields_sha256,scale) &&
+      fields_dir(cfg.validation_fields_directory,cfg.validation_manifest,cfg.validation_sha256,names,
+                 cfg.validation_fields_sha256,scale);
+}
+void clear_fields(atx::impl::strategy::IcRunnerConfig& cfg) {
+  cfg.train_fields_directory.clear(); cfg.train_fields_sha256.clear();
+  cfg.validation_fields_directory.clear(); cfg.validation_fields_sha256.clear();
+}
+// Declares `declared` beside the price fields and adds `candidates` in one new family.
+bool field_library(atx::impl::strategy::IcRunnerConfig& cfg,const std::vector<std::string>& declared,
+                   const std::vector<std::pair<std::string,std::string>>& candidates) {
+  auto lib=read_json(cfg.library_path);
+  for (const auto& name:declared) lib["fields"].push_back({{"name",name},{"basis","synthetic upstream field"}});
+  if (!candidates.empty()) lib["families"].push_back({{"id","field_family"}});
+  for (const auto& [id,dsl]:candidates)
+    lib["candidates"].push_back({{"id",id},{"family","field_family"},{"dsl",dsl},
+        {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  return json_file(cfg.library_path,lib,cfg.library_sha256);
+}
+bool same_value(f64 a,f64 b) { return (std::isnan(a) && std::isnan(b)) || a==b; }
+TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares","mkt_ret"},
+      {{"si_ratio","si_shares / volume"},{"market_shift","volume + mkt_ret"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares","mkt_ret"}));
+  cfg.save_combined=true; cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
+  EXPECT_NE(run.log.find("IC fields-loaded role=train fields=mkt_ret,si_shares"),std::string::npos);
+  EXPECT_NE(run.log.find("IC fields-loaded role=validation fields=mkt_ret,si_shares"),std::string::npos);
+  // Raw VM signals (the cache stores them verbatim) against scalar oracles.
+  for (const auto& [pin,role_pin]:{std::pair{cfg.train_fields_sha256,cfg.train_sha256},
+                                   std::pair{cfg.validation_fields_sha256,cfg.validation_sha256}}) {
+    const auto base=dir.path/"c"/pin;
+    std::vector<f64> ratio(D*N),shift(D*N);
+    ASSERT_TRUE(read_payload(base/"si_ratio.f64",ratio)); ASSERT_TRUE(read_payload(base/"market_shift.f64",shift));
+    for (usize d=0;d<D;++d) for (usize i=0;i<N;++i) {
+      const auto volume=1e8*static_cast<f64>(i+1);
+      ASSERT_TRUE(same_value(ratio[d*N+i],si_value(d,i,1)/volume)) << d << ' ' << i;
+      ASSERT_TRUE(same_value(shift[d*N+i],volume+market_value(d))) << d << ' ' << i;
+    }
+    const auto sidecar=read_json(base/"si_ratio.json");
+    EXPECT_EQ(sidecar.at("fields_manifest_sha256"),pin); EXPECT_EQ(sidecar.at("role_manifest_sha256"),role_pin);
+    EXPECT_EQ(sidecar.at("research_fields"),Json::array({"si_shares"}));
+    EXPECT_EQ(read_json(base/"market_shift.json").at("research_fields"),Json::array({"mkt_ret"}));
+    // Base-only candidates keep the role directory and carry no fields key.
+    EXPECT_FALSE(read_json(dir.path/"c"/role_pin/"volume_level.json").contains("fields_manifest_sha256"));
+    EXPECT_FALSE(std::filesystem::exists(dir.path/"c"/role_pin/"si_ratio.json"));
+  }
+  const auto summary=read_json(dir.path/"output"/"summary.json");
+  const auto recipe=read_json(dir.path/"output"/"recipe.json");
+  EXPECT_EQ(recipe.at("research_fields").at("loaded"),Json::array({"mkt_ret","si_shares"}));
+  EXPECT_EQ(recipe.at("research_fields").at("schema"),"atx.research-role-fields/v1");
+  EXPECT_EQ(recipe.at("research_fields").at("manifest_sha256"),
+            Json({{"train",cfg.train_fields_sha256},{"validation",cfg.validation_fields_sha256}}));
+  EXPECT_EQ(summary.at("research_fields"),recipe.at("research_fields"));
+  for (usize r=0;r<2;++r) {
+    const auto& role_result=summary.at("roles").at(r); const bool train=r==0;
+    const auto& pin=train?cfg.train_fields_sha256:cfg.validation_fields_sha256;
+    const auto& fields=role_result.at("research_fields");
+    EXPECT_EQ(fields.at("manifest_sha256"),pin); EXPECT_EQ(fields.at("loaded"),Json::array({"mkt_ret","si_shares"}));
+    EXPECT_EQ(fields.at("loaded_bytes"),2*D*N*sizeof(f64));
+    EXPECT_GE(role_result.at("stage_seconds").at("fields_load").get<f64>(),0);
+    const auto name=role_result.at("role").get<std::string>();
+    EXPECT_EQ(read_json(dir.path/"output"/(name+"_combined.json")).at("research_fields_manifest_sha256"),pin);
+    // Every candidate increases in i on TRAIN (sign +1); the four equal weights
+    // then blend to the same centered rank as each component.
+    for (const auto& row:read_json(dir.path/"output"/"orientations.json").at("candidates")) EXPECT_EQ(row.at("sign"),1);
+    std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(dir.path/"output"/(name+"_combined.f64"),signal));
+    for (usize d=63;d<D;++d) for (usize i=0;i<N;++i)
+      ASSERT_DOUBLE_EQ(signal[d*N+i],static_cast<f64>(i)/static_cast<f64>(N-1)-.5) << name << d << i;
+  }
+}
+TEST(StrategyIcRunner, UnreferencedFieldsAreNeverOpenedOrAdmitted) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Declared but unreferenced iv_atm_21d must exist in the manifest; mkt_ret is not declared.
+  ASSERT_TRUE(field_library(cfg,{"si_shares","iv_atm_21d"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares","iv_atm_21d","mkt_ret"}));
+  for (const auto& fields_path:{cfg.train_fields_directory,cfg.validation_fields_directory})
+    for (const auto* unused:{"iv_atm_21d.f64","mkt_ret.f64"})
+      ASSERT_TRUE(std::filesystem::remove(std::filesystem::path(fields_path)/unused));
+  const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
+  const auto summary=read_json(dir.path/"output"/"summary.json");
+  for (const auto& role_result:summary.at("roles")) {
+    EXPECT_EQ(role_result.at("research_fields").at("loaded"),Json::array({"si_shares"}));
+    EXPECT_EQ(role_result.at("research_fields").at("files").size(),1U);
+    EXPECT_EQ(role_result.at("research_fields").at("loaded_bytes"),D*N*sizeof(f64));
+  }
+  // Admission: one referenced field adds exactly 8B/cell plus the 1B/cell DSL-panel
+  // presence mask. The comparison library has the same shape over `volume`.
+  const auto required=[&](atx::impl::strategy::IcRunnerConfig plan_cfg) {
+    plan_cfg.plan_only=true; std::ostringstream plan;
+    const auto status=atx::impl::strategy::run_ic(plan_cfg,plan);
+    EXPECT_TRUE(status) << status.error().to_string();
+    return status?Json::parse(plan.str()).at("roles").at(0).at("required_bytes").get<u64>():u64{};
+  };
+  auto base_cfg=cfg; clear_fields(base_cfg);
+  auto lib=read_json(cfg.library_path);
+  lib["fields"]=Json::array({{{"name","close"}},{{"name","raw_close"}},{{"name","volume"}}});
+  // Same compiled shape (two distinct loads and a divide), so slots are equal.
+  lib["candidates"][2]["dsl"]="raw_close / volume";
+  base_cfg.library_path=(dir.path/"base_library.json").string();
+  ASSERT_TRUE(json_file(base_cfg.library_path,lib,base_cfg.library_sha256));
+  EXPECT_EQ(required(cfg),required(base_cfg)+D*N*(8+1));
+  // Pinned fields that no candidate references admit and load nothing.
+  auto pinned_base=base_cfg; pinned_base.train_fields_directory=cfg.train_fields_directory;
+  pinned_base.train_fields_sha256=cfg.train_fields_sha256;
+  pinned_base.validation_fields_directory=cfg.validation_fields_directory;
+  pinned_base.validation_fields_sha256=cfg.validation_fields_sha256;
+  EXPECT_EQ(required(pinned_base),required(base_cfg));
+}
+TEST(StrategyIcRunner, FieldBindingRefusalsPrecedeRolePayloadAndOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  const auto good=cfg; const auto good_library=read_json(cfg.library_path);
+  // Role payloads are absent: a refusal after any role payload read would differ.
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto train_fields=std::filesystem::path(cfg.train_fields_directory);
+  const auto expect_refusal=[&](atx::impl::strategy::IcRunnerConfig attempt_cfg,const std::string& reason) {
+    for (const bool plan_only:{true,false}) {
+      attempt_cfg.plan_only=plan_only; std::ostringstream attempt;
+      const auto status=atx::impl::strategy::run_ic(attempt_cfg,attempt);
+      ASSERT_FALSE(status) << reason;
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << reason << " -> " << status.error().to_string();
+      EXPECT_TRUE(attempt.str().empty()) << reason; EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  };
+  const auto with_library=[&](const Json& lib) {
+    auto next=good; next.library_path=(dir.path/"variant_library.json").string();
+    EXPECT_TRUE(json_file(next.library_path,lib,next.library_sha256)); return next;
+  };
+  // Declared field absent from the pinned manifest; undeclared DSL field.
+  auto declared=good_library; declared["fields"].push_back({{"name","short_ratio"}});
+  declared["candidates"].push_back({{"id","short_level"},{"family","field_family"},{"dsl","short_ratio"},
+      {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  expect_refusal(with_library(declared),
+      "library field 'short_ratio' is neither a role price field nor in the pinned train fields manifest");
+  auto undeclared=good_library; undeclared["candidates"][2]["dsl"]="si_dtc / volume";
+  expect_refusal(with_library(undeclared),"undeclared DSL field: si_dtc");
+  auto dotted=good_library; dotted["fields"].push_back({{"name","IndClass.sector"}});
+  expect_refusal(with_library(dotted),"declared field contract: IndClass.sector");
+  // No manifest for a scored role, or an unpaired option.
+  auto missing=good; clear_fields(missing);
+  expect_refusal(missing,"library field 'si_shares' is not a role price field and no --train-fields manifest is pinned");
+  auto no_validation=good; no_validation.validation_fields_directory.clear(); no_validation.validation_fields_sha256.clear();
+  expect_refusal(no_validation,"no --validation-fields manifest is pinned");
+  auto unpaired=good; unpaired.train_fields_sha256.clear();
+  expect_refusal(unpaired,"bounded config");
+  // Wrong role binding: the validation manifest pinned as TRAIN's.
+  auto swapped=good; swapped.train_fields_directory=good.validation_fields_directory;
+  swapped.train_fields_sha256=good.validation_fields_sha256;
+  expect_refusal(swapped,"train fields manifest role binding differs");
+  auto wrong_pin=good; wrong_pin.train_fields_sha256=std::string(64,'0');
+  expect_refusal(wrong_pin,"external metadata pin differs");
+  // Consistently re-pinned manifests that lie about axes or entries.
+  const auto manifest=read_json(train_fields/"manifest.json");
+  const auto repinned=[&](const Json& lie) {
+    auto next=good; EXPECT_TRUE(json_file(train_fields/"manifest.json",lie,next.train_fields_sha256)); return next;
+  };
+  auto sessions=manifest; sessions["role"]["sessions_sha256"]=std::string(64,'0');
+  expect_refusal(repinned(sessions),"train fields manifest role binding differs");
+  auto shape=manifest; shape["fields"][0]["shape"]=Json::array({D,N+1});
+  expect_refusal(repinned(shape),"train fields manifest entry: si_shares");
+  auto schema=manifest; schema["schema"]="atx.research-role-fields/v0";
+  expect_refusal(repinned(schema),"train fields manifest schema");
+  std::string unused; ASSERT_TRUE(json_file(train_fields/"manifest.json",manifest,unused));
+  ASSERT_EQ(unused,good.train_fields_sha256);
+  // A truncated referenced payload is an extent refusal even in plan-only mode.
+  const auto payload_path=train_fields/"si_shares.f64"; const auto original=file_bytes(payload_path);
+  auto truncated=original; truncated.resize(truncated.size()-sizeof(f64));
+  ASSERT_TRUE(write_bytes(payload_path,truncated));
+  expect_refusal(good,"research field payload extent: si_shares.f64");
+  // A same-size tampered payload passes metadata-only planning, then refuses on
+  // its streamed hash before the (deleted) role payload is ever opened.
+  auto flipped=original; flipped[8*N*100]=static_cast<char>(flipped[8*N*100]^1);
+  ASSERT_TRUE(write_bytes(payload_path,flipped));
+  auto plan_cfg=good; plan_cfg.plan_only=true; std::ostringstream plan;
+  auto status=atx::impl::strategy::run_ic(plan_cfg,plan); ASSERT_TRUE(status) << status.error().to_string();
+  auto run_cfg=good; const auto attempt=run_named(dir,run_cfg,"tampered");
+  EXPECT_FALSE(attempt.ok);
+  EXPECT_NE(attempt.error.find("research field payload SHA256 mismatch: si_shares.f64"),std::string::npos) << attempt.error;
+  EXPECT_EQ(read_json(dir.path/"tampered"/"summary.json").at("status"),"failed");
+  EXPECT_EQ(file_bytes(payload_path),flipped);
+}
+TEST(StrategyIcRunner, AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  const auto plain=run_named(dir,cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  // The canonical recipe key set is exactly the pre-fields one.
+  const auto recipe=read_json(dir.path/"plain"/"recipe.json");
+  std::set<std::string> keys; for (auto it=recipe.begin();it!=recipe.end();++it) keys.insert(it.key());
+  EXPECT_EQ(keys,(std::set<std::string>{"schema","library_sha256","horizons","active_horizons",
+      "require_endpoint_presence","execution_delay","min_names","min_dates","screen_rule","practical_abs_ic",
+      "confidence_multiplier","max_working_bytes","vm","labels","guard","orientation","composition",
+      "planned_targets","scope","saved_combined","role_manifest_sha256"}));
+  const auto summary=read_json(dir.path/"plain"/"summary.json");
+  EXPECT_FALSE(summary.contains("research_fields"));
+  for (const auto& role_result:summary.at("roles")) {
+    EXPECT_FALSE(role_result.contains("research_fields"));
+    EXPECT_FALSE(role_result.at("stage_seconds").contains("fields_load"));
+    const auto name=role_result.at("role").get<std::string>();
+    EXPECT_FALSE(read_json(dir.path/"plain"/(name+"_combined.json")).contains("research_fields_manifest_sha256"));
+  }
+  EXPECT_EQ(plain.log.find("IC fields-loaded"),std::string::npos);
+  auto plan_cfg=cfg; plan_cfg.plan_only=true; std::ostringstream plan;
+  ASSERT_TRUE(atx::impl::strategy::run_ic(plan_cfg,plan)); EXPECT_FALSE(Json::parse(plan.str()).contains("research_fields"));
+  // Pinned but unreferenced fields: identical numerics; only the pin records differ.
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  const auto pinned=run_named(dir,cfg,"pinned"); ASSERT_TRUE(pinned.ok) << pinned.error;
+  for (const auto& file:exact_outputs()) {
+    if (file=="recipe.json" || file=="orientations.json" || file.ends_with("_combined.json")) continue;
+    EXPECT_EQ(file_sha(dir.path/"pinned"/file),file_sha(dir.path/"plain"/file)) << file;
+  }
+  EXPECT_EQ(read_json(dir.path/"pinned"/"orientations.json").at("candidates"),
+            read_json(dir.path/"plain"/"orientations.json").at("candidates"));
+  auto pinned_recipe=read_json(dir.path/"pinned"/"recipe.json");
+  EXPECT_EQ(pinned_recipe.at("research_fields").at("loaded"),Json::array());
+  pinned_recipe.erase("research_fields"); EXPECT_EQ(pinned_recipe,recipe);
+  const auto a=read_json(dir.path/"plain"/"summary.json"),b=read_json(dir.path/"pinned"/"summary.json");
+  for (usize r=0;r<2;++r) {
+    auto y=b.at("roles").at(r); EXPECT_EQ(y.at("research_fields").at("loaded"),Json::array());
+    y.erase("research_fields");
+    EXPECT_EQ(stable_role(y,false),stable_role(a.at("roles").at(r),false)) << r;
+  }
+}
+TEST(StrategyIcRunner, CandidateCacheKeyCoversFieldsManifestOnlyForFieldCandidates) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  // Entries written by a base-only run, before any fields existed.
+  const auto base=run_named(dir,cfg,"base"); ASSERT_TRUE(base.ok) << base.error;
+  const auto base_sidecar=dir.path/"c"/cfg.train_sha256/"volume_level.json";
+  const auto base_sidecar_sha=file_sha(base_sidecar);
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"a",{"si_shares"}));
+  const auto first_pins=std::pair{cfg.train_fields_sha256,cfg.validation_fields_sha256};
+  const auto a=run_named(dir,cfg,"a"); ASSERT_TRUE(a.ok) << a.error;
+  for (const auto* line:{"IC cache-hit volume_level role=train","IC cache-hit volume_rank role=validation",
+                         "IC cache-miss si_ratio role=train","IC cache-miss si_ratio role=validation"})
+    EXPECT_NE(a.log.find(line),std::string::npos) << line;
+  const auto a_entry=dir.path/"c"/cfg.train_fields_sha256/"si_ratio.f64"; const auto a_sha=file_sha(a_entry);
+  ASSERT_FALSE(a_sha.empty());
+  const auto warm=run_named(dir,cfg,"a_warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  EXPECT_NE(warm.log.find("IC cache-hit si_ratio role=train"),std::string::npos);
+  EXPECT_EQ(warm.log.find("IC VM-"),std::string::npos);
+  // A different fields payload: a clean miss into its own directory, never a hit
+  // on the stale entry; base-only candidates still hit their unchanged entries.
+  ASSERT_TRUE(pin_fields(dir,cfg,"b",{"si_shares"},2));
+  ASSERT_NE(cfg.train_fields_sha256,first_pins.first);
+  const auto b=run_named(dir,cfg,"b"); ASSERT_TRUE(b.ok) << b.error;
+  for (const auto* line:{"IC cache-hit volume_level role=train","IC cache-hit volume_rank role=train",
+                         "IC cache-miss si_ratio role=train","IC cache-miss si_ratio role=validation"})
+    EXPECT_NE(b.log.find(line),std::string::npos) << line;
+  EXPECT_EQ(file_sha(a_entry),a_sha);
+  EXPECT_TRUE(std::filesystem::exists(dir.path/"c"/cfg.train_fields_sha256/"si_ratio.json"));
+  EXPECT_EQ(file_sha(base_sidecar),base_sidecar_sha);
+  const auto summary=read_json(dir.path/"b"/"summary.json");
+  for (const auto& role_result:summary.at("roles")) {
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),2);
+    EXPECT_EQ(role_result.at("candidate_cache").at("misses"),1);
+  }
+  // A field entry copied under another manifest's directory is refused, not served.
+  const auto foreign=dir.path/"c"/cfg.train_fields_sha256;
+  ASSERT_TRUE(std::filesystem::remove(foreign/"si_ratio.json"));
+  ASSERT_TRUE(std::filesystem::remove(foreign/"si_ratio.f64"));
+  ASSERT_TRUE(std::filesystem::copy_file(dir.path/"c"/first_pins.first/"si_ratio.json",foreign/"si_ratio.json"));
+  ASSERT_TRUE(std::filesystem::copy_file(a_entry,foreign/"si_ratio.f64"));
+  const auto refused=run_named(dir,cfg,"foreign");
+  EXPECT_FALSE(refused.ok);
+  EXPECT_NE(refused.error.find("candidate cache entry mismatch: si_ratio"),std::string::npos) << refused.error;
+}
+TEST(StrategyIcRunner, LibraryDeclaringMktRetRunsOnlyWhenFieldsSupplyIt) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"mkt_ret"},{{"market_shift","volume + mkt_ret"}}));
+  const auto refuse=[&](const std::string& reason) {
+    auto attempt=cfg; attempt.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(attempt,log); ASSERT_FALSE(status);
+    EXPECT_NE(status.error().to_string().find(reason),std::string::npos) << status.error().to_string();
+  };
+  refuse("library field 'mkt_ret' is not a role price field and no --train-fields manifest is pinned");
+  ASSERT_TRUE(pin_fields(dir,cfg,"si_only",{"si_shares"}));
+  refuse("library field 'mkt_ret' is neither a role price field nor in the pinned train fields manifest");
+  ASSERT_TRUE(pin_fields(dir,cfg,"market",{"mkt_ret","si_shares"}));
+  const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
+  for (const auto& role_result:read_json(dir.path/"output"/"summary.json").at("roles"))
+    EXPECT_EQ(role_result.at("research_fields").at("loaded"),Json::array({"mkt_ret"}));
+}
+TEST(StrategyIcRunner, RealV2LibraryDeclaringMktRetPlansOnlyWithPinnedFields) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  const auto source=std::filesystem::path{ATX_IMPL_TESTS_DIR}.parent_path()/"strategies"/"price_volume_ic96_v2.json";
+  const auto bytes=file_bytes(source); ASSERT_FALSE(bytes.empty()) << source;
+  const std::string text(bytes.begin(),bytes.end()); const auto library=Json::parse(text);
+  std::set<std::string> declared;
+  for (const auto& field:library.at("fields")) declared.insert(field.at("name").get<std::string>());
+  ASSERT_EQ(declared,(std::set<std::string>{"close","raw_close","volume","mkt_ret"}));
+  cfg.library_path=source.string(); auto digest=core::sha256_hex(text); ASSERT_TRUE(digest); cfg.library_sha256=*digest;
+  // Metadata-only: widen the warmup so the library's longest lookback fits, then
+  // bind fields to the re-pinned roles. No payload is read in plan-only mode.
+  for (const auto& path:{cfg.train_manifest,cfg.validation_manifest}) {
+    auto j=read_json(path); j["score_begin"]=450;
+    j["score_start_ns"]=j.at("score_end_ns").get<i64>()-30*day;
+    std::string pin; ASSERT_TRUE(json_file(path,j,pin));
+    if (path==cfg.train_manifest) cfg.train_sha256=pin; else cfg.validation_sha256=pin;
+  }
+  cfg.plan_only=true;
+  std::ostringstream unpinned; auto status=atx::impl::strategy::run_ic(cfg,unpinned); ASSERT_FALSE(status);
+  EXPECT_NE(status.error().to_string().find("library field 'mkt_ret' is not a role price field"),std::string::npos)
+      << status.error().to_string();
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"mkt_ret"}));
+  std::ostringstream plan; status=atx::impl::strategy::run_ic(cfg,plan);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto result=Json::parse(plan.str());
+  EXPECT_EQ(result.at("candidates"),library.at("candidates").size());
+  EXPECT_EQ(result.at("research_fields").at("loaded"),Json::array({"mkt_ret"}));
+  EXPECT_EQ(result.at("research_fields").at("roles").size(),2U);
+}
+TEST(StrategyIcRunner, FrozenTrainResumeBindsResearchFieldPins) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  cfg.save_combined=true;
+  const auto source=run_named(dir,cfg,"source"); ASSERT_TRUE(source.ok) << source.error;
+  auto other=cfg; ASSERT_TRUE(pin_fields(dir,other,"g",{"si_shares"},2));
+  cfg.orientations_path=(dir.path/"source"/"orientations.json").string();
+  cfg.orientations_sha256=file_sha(cfg.orientations_path);
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  // TRAIN's fields are not needed (its payload is never opened); validation's are.
+  auto resumed_cfg=cfg; resumed_cfg.train_fields_directory.clear(); resumed_cfg.train_fields_sha256.clear();
+  const auto resumed=run_named(dir,resumed_cfg,"resumed"); ASSERT_TRUE(resumed.ok) << resumed.error;
+  EXPECT_EQ(resumed.log.find("IC loading train"),std::string::npos);
+  for (const auto* file:{"validation_combined.f64","validation_planned_targets.csv","validation_daily_ic.csv"})
+    EXPECT_EQ(file_sha(dir.path/"resumed"/file),file_sha(dir.path/"source"/file)) << file;
+  EXPECT_EQ(read_json(dir.path/"resumed"/"recipe.json").at("frozen_train_recipe").at("research_fields"),
+            read_json(dir.path/"source"/"recipe.json").at("research_fields"));
+  const auto refuse=[&](atx::impl::strategy::IcRunnerConfig attempt_cfg,const std::string& name,const std::string& reason) {
+    const auto attempt=run_named(dir,attempt_cfg,name);
+    EXPECT_FALSE(attempt.ok) << name;
+    EXPECT_NE(attempt.error.find(reason),std::string::npos) << name << ": " << attempt.error;
+    EXPECT_FALSE(std::filesystem::exists(dir.path/name)) << name;
+  };
+  auto moved=resumed_cfg; moved.validation_fields_directory=other.validation_fields_directory;
+  moved.validation_fields_sha256=other.validation_fields_sha256;
+  refuse(moved,"moved","frozen TRAIN method/statistical settings/role pins differ");
+  auto train_moved=cfg; train_moved.train_fields_directory=other.train_fields_directory;
+  train_moved.train_fields_sha256=other.train_fields_sha256;
+  refuse(train_moved,"train_moved","frozen TRAIN research fields pin differs");
+  auto no_validation=resumed_cfg; no_validation.validation_fields_directory.clear();
+  no_validation.validation_fields_sha256.clear();
+  refuse(no_validation,"no_validation","no --validation-fields manifest is pinned");
 }
 } // namespace

@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <limits>
 #include <locale>
+#include <map>
 #include <memory>
 #include <new>
 #include <optional>
@@ -45,10 +46,24 @@ constexpr const char* vm_eval_mode="ResearchFast;full-historical-asof-member-mas
 constexpr const char* cache_schema="atx.dsl-candidate-signal/v1";
 constexpr const char* cache_layout="date-major-little-endian-f64;non-finite-stored-as-quiet-NaN";
 constexpr const char* weights_schema="atx.dsl-composition-weights/v1";
+constexpr const char* fields_schema="atx.research-role-fields/v1";
+constexpr const char* fields_semantics="extra-date-major-f64-columns-resolved-by-name;NaN-where-not-visible;"
+    "role-presence-mask;decision-member-mask-unchanged";
+constexpr std::array<std::string_view,3> base_fields{"close","raw_close","volume"};
 constexpr usize io_chunk=1U<<20;
-struct Candidate { std::string id,family,dsl_sha; al::Program program; };
-struct Library { std::string id; std::vector<Candidate> candidates; usize max_slots{},lookback{}; };
-struct Role { std::string path,sha,name; Json metadata; u64 bytes{}; };
+// extra_fields: the sorted non-base fields this compiled program loads.
+struct Candidate { std::string id,family,dsl_sha; al::Program program; std::vector<std::string> extra_fields; };
+// declared_extra: every declared non-base field; extra_fields: the sorted union
+// the compiled programs reference -- the only extra columns ever loaded.
+struct Library {
+  std::string id; std::vector<Candidate> candidates; usize max_slots{},lookback{};
+  std::vector<std::string> declared_extra,extra_fields;
+};
+struct FieldFile { std::string name; std::filesystem::path path; std::string sha; u64 bytes{}; };
+// A role's pinned fields manifest (empty sha: none pinned) and the referenced
+// subset to load, each with its manifest-pinned SHA256 and exact extent.
+struct RoleFields { std::string directory,sha; std::vector<FieldFile> load; };
+struct Role { std::string path,sha,name; Json metadata; u64 bytes{}; RoleFields fields; };
 struct Budget {
   u64 limit{},used{};
   bool add(u64 n,u64 width) { if (width && n>(limit-used)/width) return false; used+=n*width; return true; }
@@ -57,6 +72,14 @@ bool hash_valid(std::string_view value) {
   return value.size()==64 && std::all_of(value.begin(),value.end(),[](char c) {
     return (c>='0' && c<='9') || (c>='a' && c<='f');
   });
+}
+bool base_field(std::string_view name) {
+  return std::find(base_fields.begin(),base_fields.end(),name)!=base_fields.end();
+}
+// Plain DSL identifier: no dots or separators, so `<name>.f64` is a safe basename.
+bool field_identifier(std::string_view s) {
+  return !s.empty() && s.size()<=64 && ((s.front()>='a' && s.front()<='z') || s.front()=='_') &&
+      std::all_of(s.begin(),s.end(),[](char c) { return (c>='a' && c<='z') || (c>='0' && c<='9') || c=='_'; });
 }
 co::Result<std::string> metadata_text(const std::string& path) {
   std::ifstream in(path,std::ios::binary|std::ios::ate);
@@ -104,6 +127,48 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true) {
   }
   return recipe;
 }
+// Recorded as recipe["research_fields"] exactly when a fields manifest is pinned
+// (absent: recipe bytes unchanged). `loaded` is library-derived, identical per role.
+Json fields_recipe(Json pins,const Library& lib) {
+  return Json{{"schema",fields_schema},{"manifest_sha256",std::move(pins)},{"loaded",lib.extra_fields},
+      {"semantics",fields_semantics}};
+}
+Json fields_pins(const IcRunnerConfig& cfg) {
+  Json pins=Json::object();
+  if (!cfg.train_fields_sha256.empty()) pins["train"]=cfg.train_fields_sha256;
+  if (!cfg.validation_fields_sha256.empty()) pins["validation"]=cfg.validation_fields_sha256;
+  return pins;
+}
+bool fields_pinned(const IcRunnerConfig& cfg) {
+  return !cfg.train_fields_sha256.empty() || !cfg.validation_fields_sha256.empty();
+}
+// A frozen TRAIN recipe records its pinned fields exactly as run_ic writes them.
+// TRAIN's pin is taken from the source (its payload is never opened here) and, if
+// re-supplied, must match; a validation pin must equal this run's, like role pins.
+co::Status expect_frozen_fields(const IcRunnerConfig& cfg,const Library& lib,const Json& recipe,Json& expected) {
+  if (!recipe.contains("research_fields")) {
+    // A library declaring extras cannot have been scored on TRAIN without a pin.
+    if (!lib.declared_extra.empty() || !cfg.train_fields_sha256.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN research fields pin differs");
+    return co::Ok();
+  }
+  const auto& source=recipe.at("research_fields");
+  if (!source.is_object() || !source.contains("manifest_sha256") || !source.at("manifest_sha256").is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN research fields record");
+  const auto& source_pins=source.at("manifest_sha256");
+  Json pins=Json::object();
+  if (source_pins.contains("train")) {
+    const auto& train=source_pins.at("train");
+    if (!train.is_string() || !hash_valid(train.get<std::string>()))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN research fields record");
+    pins["train"]=train;
+  }
+  if (!cfg.train_fields_sha256.empty() && (!pins.contains("train") || pins.at("train")!=cfg.train_fields_sha256))
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN research fields pin differs");
+  if (source_pins.contains("validation")) pins["validation"]=cfg.validation_fields_sha256;
+  expected["research_fields"]=fields_recipe(std::move(pins),lib);
+  return co::Ok();
+}
 struct FrozenTrain { Json artifact,recipe; std::vector<int> signs; std::string recipe_sha; };
 co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train) {
   ATX_TRY(auto artifact,pinned_json(cfg.orientations_path,cfg.orientations_sha256));
@@ -141,6 +206,7 @@ co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& li
   expected["role_manifest_sha256"]["train"]=cfg.train_sha256;
   if (recipe.at("role_manifest_sha256").contains("validation"))
     expected["role_manifest_sha256"]["validation"]=cfg.validation_sha256;
+  ATX_TRY_VOID(expect_frozen_fields(cfg,lib,recipe,expected));
   if (recipe!=expected)
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN method/statistical settings/role pins differ");
   const auto& rows=artifact.at("candidates");
@@ -257,6 +323,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
       {"files",std::move(files)},{"actual_trades_or_returns",false}};
   // Key absent (not null) without weights: the default manifest bytes are unchanged.
   if (pinned) manifest["composition_weights_sha256"]=cfg.composition_weights_sha256;
+  // Likewise absent unless a fields manifest is pinned for this role.
+  if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
   const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
   ATX_TRY(auto pin,co::sha256_file((dir/name).string()));
   return co::Ok(Json{{"manifest",name},{"manifest_sha256",pin},{"orientation_candidates_sha256",orientation_sha}});
@@ -271,10 +339,18 @@ co::Result<Library> library(const IcRunnerConfig& cfg) {
   if (j.at("schema")!="atx.dsl-ic-library/v1")
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: library schema");
   Library out; out.id=j.at("id").get<std::string>();
-  std::set<std::string> fields,families,ids,expressions,used_families;
-  for (const auto& field:j.at("fields")) fields.insert(field.at("name").get<std::string>());
-  if (fields!=std::set<std::string>{"close","raw_close","volume"})
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: declared field contract");
+  std::set<std::string> fields,families,ids,expressions,used_families,referenced;
+  // The role's three price/volume fields plus any plain-identifier extras; each
+  // extra must be present in every scored role's pinned fields manifest.
+  for (const auto& field:j.at("fields")) {
+    const auto name=field.at("name").get<std::string>();
+    if (!field_identifier(name) || !fields.insert(name).second)
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: declared field contract: "+name);
+    if (!base_field(name)) out.declared_extra.push_back(name);
+  }
+  for (const auto base:base_fields) if (!fields.contains(std::string(base)))
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: declared field contract: missing "+std::string(base));
+  std::sort(out.declared_extra.begin(),out.declared_extra.end());
   for (const auto& family:j.at("families"))
     if (!families.insert(family.at("id").get<std::string>()).second)
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: duplicate family");
@@ -297,13 +373,21 @@ co::Result<Library> library(const IcRunnerConfig& cfg) {
     ATX_TRY(c.program,al::compile(ast,analysis)); ATX_TRY(c.dsl_sha,co::sha256_hex(dsl));
     if (c.program.roots.size()!=1 || c.program.num_slots>64)
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: one bounded DSL root required");
-    for (const auto& field:c.program.fields) if (!fields.contains(field))
-      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: undeclared DSL field");
+    // The compiled field dictionary is exactly what the VM resolves by name.
+    for (const auto& field:c.program.fields) {
+      if (!fields.contains(field))
+        return co::Err(co::ErrorCode::InvalidArgument,"IC runner: undeclared DSL field: "+field);
+      if (!base_field(field)) c.extra_fields.push_back(field);
+    }
+    std::sort(c.extra_fields.begin(),c.extra_fields.end());
+    c.extra_fields.erase(std::unique(c.extra_fields.begin(),c.extra_fields.end()),c.extra_fields.end());
+    referenced.insert(c.extra_fields.begin(),c.extra_fields.end());
     out.max_slots=std::max(out.max_slots,static_cast<usize>(c.program.num_slots));
     out.lookback=std::max(out.lookback,static_cast<usize>(c.program.required_lookback));
     used_families.insert(c.family); out.candidates.push_back(std::move(c));
   }
   if (families!=used_families) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: empty declared family");
+  out.extra_fields.assign(referenced.begin(),referenced.end());
   return co::Ok(std::move(out));
 }
 co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string path,
@@ -329,6 +413,11 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
   if (!b.add(1,32ULL<<20) || !b.add(cells,72+8*lib.max_slots) || !b.add(composition,1) ||
       !b.add(d,512) || !b.add(n,512))
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined role/VM/composition memory budget");
+  // Referenced extra fields only: 8B/cell each, plus the1B/cell owned presence
+  // mask of the borrowed DSL panel (base columns are borrowed, never copied).
+  // Nothing is added without extras, so default admission is unchanged.
+  if (!lib.extra_fields.empty() && !b.add(cells,8*static_cast<u64>(lib.extra_fields.size())+1))
+    return co::Err(co::ErrorCode::Unavailable,"IC runner: research field memory budget");
   for (u64 h:{5ULL,21ULL,63ULL}) {
     const auto mature=score_dates>h+1?score_dates-h-1:0;
     if (!b.add(mature*n,16) || !b.add(mature,32))
@@ -345,7 +434,65 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
   if (enforce_budget && b.used>cfg.max_working_bytes)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: required_bytes="+std::to_string(b.used)+
         " max_compiled_slots="+std::to_string(lib.max_slots)+" exceeds configured memory budget before payload load");
-  return co::Ok(Role{std::move(path),std::move(pin),std::move(name),std::move(j),b.used});
+  return co::Ok(Role{std::move(path),std::move(pin),std::move(name),std::move(j),b.used,RoleFields{}});
+}
+// Binds a pinned fields manifest to an admitted role before any payload: schema,
+// role manifest pin, sessions/ids receipts and shape. Every declared extra must be
+// present; referenced extras are selected for load and, for a scored role, their
+// extents stat'ed. A declared extra with no pinned manifest refuses for a scored
+// role; an unscored (frozen-TRAIN) role needs none.
+co::Status bind_fields(const Library& lib,Role& role,const std::string& directory,const std::string& pin,
+                       bool scored) {
+  const auto option="--"+role.name+"-fields";
+  if (directory.empty()) {
+    if (scored && !lib.declared_extra.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: library field '"+lib.declared_extra.front()+
+          "' is not a role price field and no "+option+" manifest is pinned");
+    return co::Ok();
+  }
+  const auto dir=std::filesystem::path(directory);
+  ATX_TRY(auto j,pinned_json((dir/"manifest.json").string(),pin));
+  const auto d=role.metadata.at("dates").get<u64>(),n=role.metadata.at("instruments").get<u64>();
+  const auto& receipts=role.metadata.at("files");
+  if (!j.is_object() || j.value("schema",std::string{})!=fields_schema ||
+      j.value("status",std::string{})!="complete" || !j.contains("role") || !j.at("role").is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest schema");
+  const auto& bound=j.at("role");
+  if (bound.value("manifest_sha256",std::string{})!=role.sha ||
+      receipts.at("sessions.i64").at("sha256")!=bound.value("sessions_sha256",std::string{}) ||
+      receipts.at("ids.u64").at("sha256")!=bound.value("ids_sha256",std::string{}) ||
+      !bound.contains("dates") || bound.at("dates")!=d || !bound.contains("instruments") ||
+      bound.at("instruments")!=n)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+
+        " fields manifest role binding differs from the pinned role manifest/axes");
+  const auto& rows=j.at("fields"); const auto& files=j.at("files");
+  if (!rows.is_array() || rows.empty() || rows.size()>64 || !files.is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest field list");
+  const auto bytes=d*n*sizeof(f64);
+  std::map<std::string,FieldFile> available;
+  for (const auto& row:rows) {
+    const auto name=row.at("name").get<std::string>(),file=row.at("file").get<std::string>();
+    const auto sha=row.at("sha256").get<std::string>();
+    if (!field_identifier(name) || base_field(name) || file!=name+".f64" || row.at("dtype")!="<f8" ||
+        row.at("layout")!="date-major" || row.at("shape")!=Json::array({d,n}) || !hash_valid(sha) ||
+        !files.contains(file) || files.at(file).at("sha256")!=sha || files.at(file).at("bytes")!=bytes ||
+        !available.emplace(name,FieldFile{name,dir/file,sha,bytes}).second)
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest entry: "+name);
+  }
+  for (const auto& name:lib.declared_extra) if (!available.contains(name))
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: library field '"+name+
+        "' is neither a role price field nor in the pinned "+role.name+" fields manifest");
+  RoleFields bound_fields{directory,pin,{}};
+  for (const auto& name:lib.extra_fields) {
+    const auto& field=available.at(name);
+    std::error_code ec; const auto size=std::filesystem::file_size(field.path,ec);
+    if (scored && (ec || size!=field.bytes))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field payload extent: "+
+          field.path.filename().string());
+    bound_fields.load.push_back(field);
+  }
+  role.fields=std::move(bound_fields);
+  return co::Ok();
 }
 // Duplicate object keys would silently keep the last weight; refuse them instead.
 // Malformed text and numeric overflow (e.g. 1e999) are parse refusals here.
@@ -395,7 +542,24 @@ co::Result<std::vector<f64>> composition_weights(const IcRunnerConfig& cfg,const
 // Identity is (DSL sha, role manifest sha, geometry) plus a streamed payload
 // SHA256. Library, role name, source and engine identity are recorded only, so a
 // grown library reuses unchanged candidates. A changed VM needs a fresh DIR.
-struct CacheKey { std::filesystem::path dir; std::string role_sha; u64 dates{},instruments{}; };
+// A candidate whose DSL reads any extra field lives in DIR/<fields-manifest-sha256>/
+// instead (that manifest pins exactly one role manifest) and its sidecar must name
+// that manifest, so a changed field payload is a clean miss, never a stale hit.
+// Base-only candidates keep the role directory and byte-identical sidecars.
+struct CacheKey { std::filesystem::path dir; std::string role_sha; u64 dates{},instruments{}; std::string fields_sha; };
+CacheKey cache_key(const IcRunnerConfig& cfg,const Role& role,const Candidate& c) {
+  const bool fields=!c.extra_fields.empty();
+  return CacheKey{std::filesystem::path(cfg.candidate_cache_directory)/(fields?role.fields.sha:role.sha),role.sha,
+      role.metadata.at("dates").get<u64>(),role.metadata.at("instruments").get<u64>(),
+      fields?role.fields.sha:std::string{}};
+}
+// Every referenced extra field is bound for a scored role (bind_fields refuses
+// otherwise); re-asserted before any key or panel is derived from it.
+co::Status fields_bound(const Library& lib,const Role& role) {
+  if (!lib.extra_fields.empty() && (role.fields.sha.empty() || role.fields.load.size()!=lib.extra_fields.size()))
+    return co::Err(co::ErrorCode::Internal,"IC runner: research fields not bound for role "+role.name);
+  return co::Ok();
+}
 std::string hex(const std::array<std::byte,32>& bytes) {
   constexpr char digits[]="0123456789abcdef"; std::string out(64,'0');
   for (usize i=0;i<bytes.size();++i) {
@@ -431,11 +595,14 @@ co::Result<std::string> cached_payload_sha(const Json& j,const CacheKey& key,con
     return j.contains(k) && j.at(k).is_number_unsigned()?j.at(k).get<u64>():~u64{0};
   };
   auto sha=text("payload_sha256");
+  // A base entry never names a fields manifest; a field entry names exactly ours.
+  const bool fields_match=key.fields_sha.empty()?!j.contains("fields_manifest_sha256")
+                                                :text("fields_manifest_sha256")==key.fields_sha;
   if (!j.is_object() || text("schema")!=cache_schema || text("candidate_id")!=c.id ||
       text("dsl_sha256")!=c.dsl_sha || text("role_manifest_sha256")!=key.role_sha ||
       text("eval_mode")!=vm_eval_mode || text("layout")!=cache_layout || count("dates")!=key.dates ||
       count("instruments")!=key.instruments || count("bytes")!=key.dates*key.instruments*sizeof(f64) ||
-      !hash_valid(sha))
+      !fields_match || !hash_valid(sha))
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache entry mismatch: "+c.id);
   return co::Ok(std::move(sha));
 }
@@ -452,28 +619,34 @@ co::Result<std::optional<std::string>> cache_lookup(const CacheKey& key,const Ca
   ATX_TRY(auto sha,cached_payload_sha(j,key,c));
   return co::Ok(std::optional<std::string>(std::move(sha)));
 }
-// Reuses `out` (one candidate payload at a time); hashes each chunk as it lands.
-co::Status cache_load(const std::filesystem::path& path,const std::string& expected,usize cells,
-                      std::vector<f64>& out) {
-  const auto bytes=static_cast<u64>(cells)*sizeof(f64); const auto name=path.filename().string();
+// Reads a pinned date-major f64 payload into `out` (reused; no second copy),
+// hashing each chunk as it lands. `what` names the payload kind in refusals.
+co::Status load_pinned_f64(const std::filesystem::path& path,const std::string& expected,usize cells,
+                           std::vector<f64>& out,std::string_view what) {
+  const auto bytes=static_cast<u64>(cells)*sizeof(f64);
+  const auto label=std::string("IC runner: ")+std::string(what); const auto name=path.filename().string();
   std::ifstream in(path,std::ios::binary|std::ios::ate);
   if (!in || in.tellg()<0 || static_cast<u64>(in.tellg())!=bytes)
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache payload extent: "+name);
+    return co::Err(co::ErrorCode::InvalidArgument,label+" extent: "+name);
   in.seekg(0); out.resize(cells);
   const auto destination=std::as_writable_bytes(std::span(out)); co::Sha256 digest;
   for (usize offset=0;offset<destination.size();) {
     const auto chunk=destination.subspan(offset,std::min(io_chunk,destination.size()-offset));
     // SAFETY: char accesses the object representation of trivially copyable f64 storage.
     in.read(reinterpret_cast<char*>(chunk.data()),static_cast<std::streamsize>(chunk.size()));
-    if (!in) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache payload truncated: "+name);
+    if (!in) return co::Err(co::ErrorCode::IoError,label+" truncated: "+name);
     ATX_TRY_VOID(digest.update(chunk)); offset+=chunk.size();
   }
   if (in.peek()!=std::char_traits<char>::eof())
-    return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache payload changed extent: "+name);
+    return co::Err(co::ErrorCode::IoError,label+" changed extent: "+name);
   ATX_TRY(auto actual,digest.finalize());
   if (hex(actual)!=expected)
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache payload SHA256 mismatch: "+name);
+    return co::Err(co::ErrorCode::InvalidArgument,label+" SHA256 mismatch: "+name);
   return co::Ok();
+}
+co::Status cache_load(const std::filesystem::path& path,const std::string& expected,usize cells,
+                      std::vector<f64>& out) {
+  return load_pinned_f64(path,expected,cells,out,"candidate cache payload");
 }
 // Unique per attempt so a concurrent or killed writer never shares a partial.
 struct PartialFile {
@@ -548,13 +721,17 @@ co::Status cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role&
     return co::Err(co::ErrorCode::Internal,"IC runner: candidate cache geometry");
   for (auto& v:signal) if (!std::isfinite(v)) v=quiet_nan;
   ATX_TRY(auto sha,cache_store_payload(key.dir/(c.id+".f64"),std::as_bytes(signal)));
-  const Json sidecar{{"schema",cache_schema},{"candidate_id",c.id},{"family",c.family},
+  Json sidecar{{"schema",cache_schema},{"candidate_id",c.id},{"family",c.family},
       {"dsl_sha256",c.dsl_sha},{"library_sha256",cfg.library_sha256},
       {"role_manifest_sha256",key.role_sha},{"role",spec.name},{"source_sha256",role.source_sha256},
       {"dates",key.dates},{"instruments",key.instruments},{"bytes",signal.size()*sizeof(f64)},
       {"layout",cache_layout},{"payload",c.id+".f64"},{"payload_sha256",sha},
       {"semantics","raw-unoriented-pre-composition-single-VM-root"},{"eval_mode",vm_eval_mode},
       {"vm_workers",cfg.workers},{"engine_git_sha",std::string(build_engine_git_sha())}};
+  // Base entries: no new keys, so their sidecar bytes are exactly as before.
+  if (!key.fields_sha.empty()) {
+    sidecar["fields_manifest_sha256"]=key.fields_sha; sidecar["research_fields"]=c.extra_fields;
+  }
   const auto text=sidecar.dump(2)+"\n";
   const auto final=key.dir/(c.id+".json");
   const PartialFile partial(final);
@@ -572,10 +749,10 @@ co::Status cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role&
 // Metadata-only readiness for --plan-only: sidecars are identity-checked and
 // payload extents stat'ed; payload hashes are verified only when loaded.
 co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const Role& role) {
-  const CacheKey key{std::filesystem::path(cfg.candidate_cache_directory)/role.sha,role.sha,
-      role.metadata.at("dates").get<u64>(),role.metadata.at("instruments").get<u64>()};
+  ATX_TRY_VOID(fields_bound(lib,role));
   usize ready=0;
   for (const auto& c:lib.candidates) {
+    const auto key=cache_key(cfg,role,c);
     ATX_TRY(auto sha,cache_lookup(key,c));
     if (!sha) continue;
     std::error_code ec; const auto size=std::filesystem::file_size(key.dir/(c.id+".f64"),ec);
@@ -583,10 +760,45 @@ co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const R
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache payload extent: "+c.id);
     ++ready;
   }
-  return co::Ok(Json{{"role",role.name},{"directory",key.dir.string()},{"ready_entries",ready},
-      {"candidates",lib.candidates.size()}});
+  Json plan{{"role",role.name},{"directory",(std::filesystem::path(cfg.candidate_cache_directory)/role.sha).string()},
+      {"ready_entries",ready},{"candidates",lib.candidates.size()}};
+  if (!lib.extra_fields.empty())
+    plan["fields_directory"]=(std::filesystem::path(cfg.candidate_cache_directory)/role.fields.sha).string();
+  return co::Ok(std::move(plan));
 }
 void release(std::vector<f64>& buffer) noexcept { std::vector<f64>().swap(buffer); }
+// Pinned extra columns, in bound (sorted-name) order: exact extent, streamed
+// SHA256, and the producer's NaN-or-finite value contract.
+co::Result<std::vector<std::vector<f64>>> load_fields(const Role& spec) {
+  std::vector<std::vector<f64>> columns(spec.fields.load.size());
+  const auto cells=static_cast<usize>(spec.metadata.at("dates").get<u64>()*spec.metadata.at("instruments").get<u64>());
+  for (usize k=0;k<columns.size();++k) {
+    const auto& field=spec.fields.load[k];
+    ATX_TRY_VOID(load_pinned_f64(field.path,field.sha,cells,columns[k],"research field payload"));
+    if (std::any_of(columns[k].begin(),columns[k].end(),[](f64 v) { return std::isinf(v); }))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field value is infinite: "+field.name);
+  }
+  return co::Ok(std::move(columns));
+}
+// The DSL panel: the role's base columns and the loaded extras, all BORROWED (no
+// copy of any column), resolved by name. Only the 1B/cell presence mask is owned,
+// copied from the role panel, so LoadField NaNs extras exactly where it NaNs the
+// base fields. Must not outlive `base` or `extras`.
+co::Result<al::Panel> dsl_panel(const al::Panel& base,const std::vector<FieldFile>& fields,
+                                const std::vector<std::vector<f64>>& extras) {
+  const auto d=base.dates(),n=base.instruments();
+  std::vector<std::string> names; std::vector<std::span<const f64>> columns;
+  names.reserve(base.num_fields()+fields.size()); columns.reserve(base.num_fields()+fields.size());
+  for (usize f=0;f<base.num_fields();++f) {
+    names.push_back(base.field_name(f)); columns.push_back(base.field_all(static_cast<al::FieldId>(f)));
+  }
+  for (usize k=0;k<fields.size();++k) {
+    names.push_back(fields[k].name); columns.emplace_back(extras[k]);
+  }
+  std::vector<u8> presence(d*n);
+  for (usize t=0;t<d;++t) for (usize i=0;i<n;++i) presence[t*n+i]=static_cast<u8>(base.in_universe(t,i));
+  return al::Panel::create_borrowed(d,n,std::move(names),std::move(columns),std::move(presence));
+}
 co::Result<std::vector<u32>> guard_for(const engine::data::StrategyRoleData& role) {
   const auto& p=role.panel; const auto d=p.dates(),n=p.instruments();
   ATX_TRY(auto close_id,p.field_id("close")); ATX_TRY(auto raw_id,p.field_id("raw_close"));
@@ -649,9 +861,11 @@ void series(std::ofstream& out,std::string_view id,const engine::data::StrategyR
 struct SignalTiming { f64 vm{},cache_load{},cache_write{}; bool hit{}; };
 // Leaves the candidate's raw (unoriented) signal in `buffer`: a verified cache
 // hit, or a VM evaluation that is then committed to the cache when enabled.
+// `panel` is the role panel, or the borrowed DSL panel when extra fields are
+// loaded; every Engine borrows it, so it must outlive `vm`. Null cache = off.
 co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& spec,
-    const engine::data::StrategyRoleData& role,const Candidate& candidate,
-    const std::optional<CacheKey>& signal_cache,engine::parallel::DetPool* pool,
+    const engine::data::StrategyRoleData& role,const al::Panel& panel,const Candidate& candidate,
+    const CacheKey* signal_cache,engine::parallel::DetPool* pool,
     std::unique_ptr<al::Engine>& vm,std::vector<f64>& buffer,std::ostream& progress) {
   using steady=std::chrono::steady_clock;
   const auto since=[](steady::time_point from) { return std::chrono::duration<f64>(steady::now()-from).count(); };
@@ -679,7 +893,7 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
     // full-panel arena BEFORE Engine::evaluate allocates a larger one;
     // Engine's own ensure_pool otherwise retains both during construction.
     vm.reset();
-    vm=std::make_unique<al::Engine>(role.panel);
+    vm=std::make_unique<al::Engine>(panel);
     vm->set_eval_mode(al::EvalMode::ResearchFast);
     if (pool) { vm->set_cs_pool(pool); vm->set_ts_pool(pool); }
     ATX_TRY_VOID(vm->set_cross_section_mask(role.decision_member));
@@ -705,10 +919,29 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const std::string& orientation_pin,std::ostream& progress) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
+  ATX_TRY_VOID(fields_bound(lib,spec));
+  // Referenced extra fields load first, so a tampered field payload refuses
+  // before the role payload is opened. None referenced: nothing is read.
+  ATX_TRY(auto extras,load_fields(spec));
+  const auto fields_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
+  if (!extras.empty()) {
+    progress<<"IC fields-loaded role="<<spec.name<<" fields=";
+    for (usize k=0;k<spec.fields.load.size();++k) progress<<(k?",":"")<<spec.fields.load[k].name;
+    progress<<" seconds="<<fields_seconds<<'\n'<<std::flush;
+  }
+  const auto role_started=std::chrono::steady_clock::now();
   ATX_TRY(auto role,engine::data::read_strategy_role(spec.path,cfg.max_working_bytes));
-  const auto load_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
+  const auto load_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-role_started).count();
   if (role.manifest_sha256!=spec.sha)
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: role manifest changed after admission");
+  // Declared after `role` and `extras` and before `vm`: borrows the former and
+  // is borrowed by the latter. Absent extras, the VM reads role.panel exactly as before.
+  std::optional<al::Panel> field_panel;
+  if (!extras.empty()) {
+    ATX_TRY(auto panel,dsl_panel(role.panel,spec.fields.load,extras));
+    field_panel.emplace(std::move(panel));
+  }
+  const al::Panel& vm_panel=field_panel?*field_panel:role.panel;
   ATX_TRY(auto guard,guard_for(role));
   auto ic=ex::equivalence_ic_screen_config();
   ic.horizons={5,21,63,0}; ic.min_names=cfg.min_names; ic.min_dates=cfg.min_dates;
@@ -736,13 +969,17 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   IcCompositionConfig cc; cc.dates=role.panel.dates(); cc.instruments=role.panel.instruments();
   cc.decision_begin=role.score_begin; cc.decision_end=role.score_end; cc.max_working_bytes=cfg.max_working_bytes;
   ATX_TRY(auto composition,IcComposition::create(cc,candidates,effective,weights));
-  std::optional<CacheKey> signal_cache;
+  // One key per candidate (empty = cache off): its role or fields directory.
+  std::vector<CacheKey> cache_keys;
   if (!cfg.candidate_cache_directory.empty()) {
-    signal_cache=CacheKey{std::filesystem::path(cfg.candidate_cache_directory)/spec.sha,spec.sha,
-        role.panel.dates(),role.panel.instruments()};
-    std::error_code ec; std::filesystem::create_directories(signal_cache->dir,ec);
-    if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache directory: "+ec.message());
+    cache_keys.reserve(lib.candidates.size());
+    for (const auto& c:lib.candidates) {
+      cache_keys.push_back(cache_key(cfg,spec,c));
+      std::error_code ec; std::filesystem::create_directories(cache_keys.back().dir,ec);
+      if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache directory: "+ec.message());
+    }
   }
+  const bool signal_cache=!cache_keys.empty();
   std::vector<f64> signal_buffer; usize cache_hits=0;
   f64 total_cache_load_seconds=0,total_cache_write_seconds=0;
   const auto dir=std::filesystem::path(cfg.output_directory);
@@ -763,8 +1000,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto candidate_started=std::chrono::steady_clock::now();
     progress<<"IC eval-start "<<spec.name<<' '<<(k+1)<<'/'<<lib.candidates.size()<<' '<<candidate.id
             <<" slots="<<candidate.program.num_slots<<'\n'<<std::flush;
-    ATX_TRY(auto acquired,candidate_signal(cfg,spec,role,candidate,signal_cache,pool.get(),vm,
-        signal_buffer,progress));
+    ATX_TRY(auto acquired,candidate_signal(cfg,spec,role,vm_panel,candidate,
+        signal_cache?&cache_keys[k]:nullptr,pool.get(),vm,signal_buffer,progress));
     const std::span<const f64> signal(signal_buffer);
     const auto vm_seconds=acquired.vm; total_vm_seconds+=vm_seconds;
     total_cache_load_seconds+=acquired.cache_load; total_cache_write_seconds+=acquired.cache_write;
@@ -814,7 +1051,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   }
   // Composition owns its accumulated blend; it does not borrow VM slots or any
   // discarded candidate output. Combined IC/save need only the shared pool.
+  // The extra columns are dropped too: the VM that borrowed them is gone.
   vm.reset(); release(signal_buffer);
+  field_panel.reset(); std::vector<std::vector<f64>>().swap(extras);
   const auto finish_started=std::chrono::steady_clock::now();
   ATX_TRY(auto combined,composition.finish());
   total_composition_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-finish_started).count();
@@ -857,8 +1096,24 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   if (signal_cache) {
     result["stage_seconds"]["cache_load"]=total_cache_load_seconds;
     result["stage_seconds"]["cache_write"]=total_cache_write_seconds;
-    result["candidate_cache"]={{"directory",signal_cache->dir.string()},{"hits",cache_hits},
-        {"misses",lib.candidates.size()-cache_hits},{"vm_evaluations",lib.candidates.size()-cache_hits}};
+    result["candidate_cache"]={
+        {"directory",(std::filesystem::path(cfg.candidate_cache_directory)/spec.sha).string()},
+        {"hits",cache_hits},{"misses",lib.candidates.size()-cache_hits},
+        {"vm_evaluations",lib.candidates.size()-cache_hits}};
+    if (!lib.extra_fields.empty())
+      result["candidate_cache"]["fields_directory"]=
+          (std::filesystem::path(cfg.candidate_cache_directory)/spec.fields.sha).string();
+  }
+  // Present exactly when a fields manifest is pinned for this role.
+  if (!spec.fields.sha.empty()) {
+    Json loaded=Json::array(),files=Json::object();
+    for (const auto& field:spec.fields.load) {
+      loaded.push_back(field.name); files[field.name]={{"bytes",field.bytes},{"sha256",field.sha}};
+    }
+    result["research_fields"]={{"manifest_sha256",spec.fields.sha},{"directory",spec.fields.directory},
+        {"loaded",std::move(loaded)},{"files",std::move(files)},{"loaded_bytes",
+            static_cast<u64>(spec.fields.load.size())*role.panel.dates()*role.panel.instruments()*sizeof(f64)}};
+    result["stage_seconds"]["fields_load"]=fields_seconds;
   }
   return co::Ok(std::move(result));
 }
@@ -871,6 +1126,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         cfg.validation_manifest.empty()!=cfg.validation_sha256.empty() ||
         cfg.orientations_path.empty()!=cfg.orientations_sha256.empty() ||
         cfg.composition_weights_path.empty()!=cfg.composition_weights_sha256.empty() ||
+        cfg.train_fields_directory.empty()!=cfg.train_fields_sha256.empty() ||
+        cfg.validation_fields_directory.empty()!=cfg.validation_fields_sha256.empty() ||
+        (!cfg.validation_fields_directory.empty() && cfg.validation_manifest.empty()) ||
         (validation_only && cfg.validation_manifest.empty()))
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: bounded config");
     ATX_TRY(auto lib,library(cfg));
@@ -878,9 +1136,13 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     ATX_TRY(const auto weights,composition_weights(cfg,lib));
     ATX_TRY_VOID(cache_preflight(cfg,lib));
     std::vector<Role> roles;
-    ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",!validation_only)); roles.push_back(std::move(train));
+    // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none.
+    ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",!validation_only));
+    ATX_TRY_VOID(bind_fields(lib,train,cfg.train_fields_directory,cfg.train_fields_sha256,!validation_only));
+    roles.push_back(std::move(train));
     if (!cfg.validation_manifest.empty()) {
       ATX_TRY(auto val,admit(cfg,lib,cfg.validation_manifest,cfg.validation_sha256,"validation"));
+      ATX_TRY_VOID(bind_fields(lib,val,cfg.validation_fields_directory,cfg.validation_fields_sha256,true));
       if (roles.front().metadata.at("score_end_ns").get<i64>()>val.metadata.at("score_start_ns").get<i64>())
         return co::Err(co::ErrorCode::InvalidArgument,"IC runner: overlapping/nonchronological roles");
       roles.push_back(std::move(val));
@@ -902,6 +1164,16 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         plan["orientations_artifact_sha256"]=cfg.orientations_sha256;
       }
       if (!cfg.composition_weights_sha256.empty()) plan["composition_weights_sha256"]=cfg.composition_weights_sha256;
+      if (fields_pinned(cfg)) {
+        Json bound=Json::array();
+        for (const auto& role:roles) if (!role.fields.sha.empty()) {
+          Json loaded=Json::array();
+          for (const auto& field:role.fields.load) loaded.push_back(field.name);
+          bound.push_back({{"role",role.name},{"manifest_sha256",role.fields.sha},
+              {"directory",role.fields.directory},{"loaded",std::move(loaded)}});
+        }
+        plan["research_fields"]={{"loaded",lib.extra_fields},{"declared",lib.declared_extra},{"roles",std::move(bound)}};
+      }
       if (!cfg.candidate_cache_directory.empty()) {
         plan["candidate_cache"]=Json::array();
         for (const auto& role:roles) {
@@ -912,6 +1184,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     auto recipe=method_recipe(cfg);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
+    if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
       recipe["role_manifest_sha256"]["train"]=cfg.train_sha256;
       recipe["run_mode"]="validation-only-frozen-TRAIN";
@@ -928,6 +1201,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     Json report{{"status","running"},{"recipe_sha256",recipe_sha},{"roles",Json::array()},
         {"train_candidates_planned",validation_only?usize{0}:lib.candidates.size()},{"full_book_evaluations",0}};
     if (!cfg.composition_weights_sha256.empty()) report["composition_weights_sha256"]=cfg.composition_weights_sha256;
+    if (recipe.contains("research_fields")) report["research_fields"]=recipe.at("research_fields");
     std::vector<int> signs; Json orientations=Json::array();
     if (validation_only) {
       signs=std::move(recovered.signs);
@@ -978,7 +1252,9 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
                "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA] "
-               "[--candidate-cache DIR] [--composition-weights JSON --composition-weights-sha256 SHA]\n";
+               "[--candidate-cache DIR] [--composition-weights JSON --composition-weights-sha256 SHA] "
+               "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA]\n"
+               "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");
@@ -1000,6 +1276,10 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--candidate-cache") cfg.candidate_cache_directory=value;
       else if (key=="--composition-weights") cfg.composition_weights_path=value;
       else if (key=="--composition-weights-sha256") cfg.composition_weights_sha256=value;
+      else if (key=="--train-fields") cfg.train_fields_directory=value;
+      else if (key=="--train-fields-sha256") cfg.train_fields_sha256=value;
+      else if (key=="--validation-fields") cfg.validation_fields_directory=value;
+      else if (key=="--validation-fields-sha256") cfg.validation_fields_sha256=value;
       else if (key=="--max-memory-mib") { const auto n=integer(); if (n>16384) throw std::invalid_argument("memory limit"); cfg.max_working_bytes=n<<20; }
       else if (key=="--min-names") cfg.min_names=static_cast<usize>(integer());
       else if (key=="--min-dates") cfg.min_dates=static_cast<usize>(integer());
