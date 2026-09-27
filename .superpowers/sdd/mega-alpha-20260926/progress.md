@@ -1,5 +1,25 @@
 # Active task: recent-data DSL ensemble
 
+## v6 Phase A complete -> pre-registered -> Phase C dispatched (2026-09-27 ~18:55)
+Phase A (read-only, Opus 5.5): v6-code-review-signal.md (0 Crit / 5 Imp: I1 39.4% of member cells unlinked = ETF/SPAC/ADR
+ranked on price signals only; I2 low_risk projected out by price-risk-v1, all four members negative TRAIN t; I3 21-session
+blackout from decay(rank); I4 coverage skews theme mass; I5 double smoothing), v6-code-review-exec.md (F1 fixed-dollar orders
+trade back 17-18% of executed $ as drift; F2 nonmember exits at rate 1 = 19-22% of planned turnover at 1.8x cost/$;
+F3 financing is 30% of drag, not cuttable; F4 locate block after neutralisation pushes mean net to +.0148; F5 L calibrated
+on ramp-deflated mean; C3/C4 runtime/RAM near limits), v6-literature.md (542 lines, cited; stacked levers +0.12..+0.30 est.).
+Convergent lever set pre-registered in v4-prereg.md "## v6 revision" (commit e0dfb8c7) BEFORE any v6 TRAIN read.
+- Ruling: Phase C runs four implementers in parallel in disjoint pools with declared file ownership (C1 pool-10 NAV
+  order/exit/locate + nav_summ + v6_train.sh; C2 pool-11 price_exposures + nav field plumbing/reserve; W pool-4
+  fit_composition_weights + prepare_recent_research; L pool-5 generate_fund_ic_v6) -- why: the lanes touch different files
+  except nav_replay.cpp where ownership is split by function; the root cherry-picks and resolves -- cost if wrong: one
+  merge-conflict fix round.
+- Ruling: acceptance of every v6 step is the SIGN of the paired dSR vs its parent matching the pre-registered prior, not
+  its magnitude -- why: SE(SR) over 3 years ~.63 makes headline comparisons meaningless (lit review §0) -- cost if wrong:
+  a step that helps by luck is kept; DSR N accounting still applies to the final cell.
+- Ruling: lit lever R (name-level borrow fees) is already represented by swap-fin-v1's GC/warm/special tiers; no S2 change
+  -- cost if wrong: modeled net SR overstated for hard-to-borrow shorts; disclosed in the final report.
+Briefs: task-V6C1-brief.md, task-V6C2-brief.md, task-V6W-brief.md, task-V6L-brief.md. Base e0dfb8c7. Next build tag v6-0.
+
 ## v6 GOAL 2 START — owner /goal (2026-09-27, ~18:10): deep code review + literature review -> build to net SR >= 1.0
 Owner goal text (paraphrase): sub-agent code review of the pipeline and its stress/critical points; web literature review of
 the alpha families; combine both; build atx-engine/atx-impl so a set of high-quality sub-alphas, optimally combined into one
