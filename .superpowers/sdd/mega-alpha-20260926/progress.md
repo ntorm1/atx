@@ -1,5 +1,19 @@
 # Active task: recent-data DSL ensemble
 
+## V6-L review APPROVED; V6-C1 implemented; cherry-picks; build v6-0 (2026-09-27 ~19:50)
+task-V6L-review.md: APPROVED, 0 Crit / 0 Imp / 7 Minor (optional). Roster-order and tier-source rules ratified (see V6-L
+rulings above). res_mom_12_1 counts as a RE-TRIAL of the v4.2 candidate in Appendix A. Root actions after the u pass:
+--plan-only step 0 first; assert cbop coverage >= v5.1 cfoa coverage. Cherry-picked into pool-2: 9d302e4c (library v6).
+V6-C1 (pool-10 5b162cbe, 5e1c7f6d; DONE_WITH_CONCERNS: desk-checked only, may not compile under /W4 /WX; 13 GoogleTests
+unrun; test_nav_summ 20/20). Cherry-picked into pool-2 as ee574c4f, 709beb69 BEFORE review. review-V6C1.diff packaged.
+- Ruling: build tag v6-0 on C1 now, in parallel with the C1 review -- why: "may not compile" is only testable by the root
+  build, and the review cannot compile; a fix wave (if any) builds v6-1 -- cost if wrong: one extra build tag.
+- Ruling: EXIT_RATE < 1 requires dust > 0, so the pre-registered dust re-tune set on the best cell becomes {.05, .2}
+  instead of {0, .2} -- why: the snap-to-zero needs a band; a dust-0 cell with exit rate is refused by the binary -- cost
+  if wrong: none (same trial count).
+- Ruling: locate-in-aim applies to every scenario book (shared construction) -- why: construction is one book; scenarios
+  price it -- cost if wrong: flat-300 book loses a few special-tier shorts it could have held; disclosed.
+
 ## V6-C2 implemented (pool-11 720a0066) -- DONE_WITH_CONCERNS -- review dispatched (2026-09-27 ~19:35)
 price-risk-ind-v1 (FF12 FWL demeaning on top of price-risk-v1; NaN ids = one residual group; small groups pooled into one
 fallback group), price-risk-ind-v2 (vol126 / ladv252), grp_ff12 via load_fields (+49.6 MiB), NAV reserve at real geometry
