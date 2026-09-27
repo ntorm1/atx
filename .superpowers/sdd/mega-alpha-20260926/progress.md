@@ -212,6 +212,14 @@
   composition .37-.45) in Debug > 180 s. T15 (runner perf: scoped /O2 on hot TUs per 6d85ac2a, IC-result
   cache if needed, bit-identical) dispatched t15-perf on pool-9 feat/mega-alpha-runner-perf-20260927.
   Ruling: efficiency fix, not a longer cap (owner rule) — cost if wrong: one build iteration.
+- T6 fix r3: pool-8 e0ae0e18 -> root be3deb3f (shares_out units rules a/b). 22/22 OK; blob f5e38b97.
+  FIELDS v3 (bounded): TRAIN role v2 -> recent-fast-train-2020-2022-v2-fields-v3 manifest
+  9577d80ae09f433f0d946829ce2634f2b1226fa69868cd5d5651f52bf19f3349 (32.5s/642MiB; shares_out cov .9895,
+  si_ratio to_nan 2353, both-rules 4819); VALIDATION role v1 -> ...-fields-v3 manifest
+  699ee8d28cc7fe81b8d07f4562b8338b8c67ac849594313135b602feff465774 (38.7s/561MiB). All non-shares_out
+  field payloads byte-identical to v2. Field candidates (51) recompute under the new fields manifest sha.
+  Ruling: shares_out NaN'd by rules -> warm tier in T10 (no special fallback) — cost if wrong: heavily
+  shorted ETPs under-charged; bounded by engine-tiers stress. Re-review dispatched.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
