@@ -244,3 +244,42 @@ TEST(StrategyTargetReplay, RoughReturnsRespectDeclaredWindowEvenWithFuturePayloa
     EXPECT_EQ(before->days[d].turnover, after->days[d].turnover);
   }
 }
+
+TEST(StrategyTargetReplay, OptionalPinnedPriceRolePreservesMissingExposureAndRequiresExactBinding) {
+  Directory dir; Fixture f(5, 2);
+  for (usize d = 0; d < f.d; ++d) { f.signal[2 * d] = -1; f.signal[2 * d + 1] = 1; }
+  f.close.assign(10, 100); f.raw = f.close; f.present.assign(10, 1);
+  // Missing future endpoint is absent in both saved decision support and source
+  // prices; it must not alter the already chosen first decision's short holding.
+  f.member[4] = 0; f.signal[4] = missing;
+  f.present[4] = 0; f.close[4] = missing; f.raw[4] = missing;
+  auto cfg = artifact(dir.path, f);
+  Json files;
+  files["sessions.i64"] = write_payload(dir.path / "sessions.i64", f.sessions);
+  files["ids.u64"] = write_payload(dir.path / "ids.u64", f.ids);
+  files["close.f64"] = write_payload(dir.path / "close.f64", f.close);
+  files["raw_close.f64"] = write_payload(dir.path / "raw_close.f64", f.raw);
+  files["present.u8"] = write_payload(dir.path / "present.u8", f.present);
+  files["member.u8"] = write_payload(dir.path / "member.u8", f.member);
+  Json role{{"schema", "atx.recent-research-role/v1"}, {"status", "complete"},
+      {"source_sha256", std::string(64, 'a')}, {"instrument_namespace", "spiderrock.securityID"},
+      {"close_basis", "f64(raw-f32-close)*f64-cumulReturnFactor"},
+      {"clock_recipe", "modeled-session+22h-mark+23h-decision-v1"},
+      {"common_stock_verified", false}, {"historical_vintage_verified", false},
+      {"dates", f.d}, {"instruments", f.n}, {"score_begin", 0}, {"score_end", f.d},
+      {"files", std::move(files)}};
+  cfg.role_path = (dir.path / "role.json").string(); cfg.role_sha256 = write_json(cfg.role_path, role);
+  std::ifstream saved(cfg.combined_path); Json manifest; saved >> manifest; saved.close();
+  manifest["role_manifest_sha256"] = cfg.role_sha256;
+  cfg.combined_sha256 = write_json(cfg.combined_path, manifest);
+  std::ostringstream progress; ASSERT_TRUE(st::run_target_replay(cfg, progress));
+  std::ifstream report(dir.path / "out" / "summary.json"); Json summary; report >> summary;
+  EXPECT_GT(summary.at("incomplete_return_days").get<usize>(), 0U);
+  EXPECT_GT(summary.at("summed_missing_gross_exposure").get<f64>(), 0);
+  EXPECT_TRUE(summary.at("net_sharpe").is_null());
+  role["source_sha256"] = std::string(64, 'b');
+  cfg.role_sha256 = write_json(cfg.role_path, role);
+  cfg.output_directory = (dir.path / "wrong_role").string();
+  EXPECT_FALSE(st::run_target_replay(cfg, progress));
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "wrong_role"));
+}
