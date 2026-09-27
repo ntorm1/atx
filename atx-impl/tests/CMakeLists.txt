@@ -98,3 +98,7 @@ add_executable(atx-impl-strategy-ic-tests EXCLUDE_FROM_ALL
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_screen_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/factory/ic_research_test.cpp")
 atx_impl_test_target_environment(atx-impl-strategy-ic-tests)
+
+add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
+    strategy_target_replay_test.cpp)
+atx_impl_test_target_environment(atx-impl-strategy-target-tests)

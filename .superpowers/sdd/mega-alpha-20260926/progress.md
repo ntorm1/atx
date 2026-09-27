@@ -1,5 +1,30 @@
 # Active task: recent-data DSL ensemble
 
+## Current: frozen validation complete; saved-blend portfolio iteration
+
+Root imported target replay through8c7dc6a0. Root CMake registration and fixed
+baseline-versus-30%-monthly-budget recipe are being committed. Pool4 is fixing
+runner VM slot growth: candidate11 grows5->7 slots while old5 stay allocated,
+adding248MiB transient TRAIN RAM. Release old VM before growing, retain masks,
+shared workers and exact arithmetic. Pool5 reviews; root alone builds/data.
+
+At a9b8814c: focused build82.169s Jobs2; all34 native checks10.484s.
+Validation-only v3 completes48+blend110.5s, peak660586496B; no TRAIN refit.
+Combined rank IC5/21/63=.0180335655/.0356902802/.0596669293;
+planned mean monthly turnover.3443560. No Sharpe or capacity qualification.
+Saved validation manifest build-equity/recent-fast-ic-validation-v3/validation_combined.json
+SHA7407d7e7b72548e5577fdf94e2f52d238f9ff751a8ebc5640987130c1390d8e1.
+All55098 comparable old daily IC values exact; one old unterminated row excluded.
+Pool3 archives compact v3 build/native/actual/audit receipts plus v4 RAM stop.
+
+v4 TRAIN export stopped at41.578s system-memory-limit, peak1101864960B,
+10complete/start11; no TRAIN artifact. All processes ended. Preserve evidence.
+Do not blindly retry. Once lifetime fix is qualified, one bounded TRAIN export
+must reproduce original v2 signs/metrics and save the blend. Then exactly two
+saved-blend TRAIN target runs (baseline and fixed.30 monthly budget) and frozen
+validation construction. Cost scenario6bps one-way/300bps borrow is hypothetical.
+Do not expand corporate-action catalog; no2025+ evaluation or validation tuning.
+
 ## Latest: completed TRAIN, resume validation next
 
 Root HEAD before this checkpoint `0230d799`. No active build/process. New

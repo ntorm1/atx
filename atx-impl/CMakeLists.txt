@@ -12,6 +12,7 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_runner.cpp
     src/strategy_ic_runner.cpp
     src/strategy_ic_composition.cpp
+    src/strategy_target_replay.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
@@ -68,9 +69,9 @@ set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEAD
 # clang-cl /Ob0 leaves -fno-inline behind even after /O2 /Ob2; explicitly clear
 # it with the public clang driver option. LLVM ignores the inherited /RTC1.
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp
+    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
-    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp
+    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
@@ -127,6 +128,10 @@ target_link_libraries(atx-equity-strategy PRIVATE atx-impl-core atx_warnings)
 # Research options live in private sources, outside the pipeline config headers.
 add_executable(atx-equity-strategy-ic EXCLUDE_FROM_ALL tools/equity_strategy_ic.cpp)
 target_link_libraries(atx-equity-strategy-ic PRIVATE atx-impl-core atx_warnings)
+
+# Reuse a saved composition for portfolio iteration without reevaluating DSLs.
+add_executable(atx-equity-strategy-targets EXCLUDE_FROM_ALL tools/equity_strategy_targets.cpp)
+target_link_libraries(atx-equity-strategy-targets PRIVATE atx-impl-core atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)

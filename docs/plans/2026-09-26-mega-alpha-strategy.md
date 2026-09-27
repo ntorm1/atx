@@ -74,6 +74,31 @@ Validation uses the frozen TRAIN signs. Count 48 candidate evaluations and one
 combined evaluation per completed role, retaining any partial attempts separately.
 The former strict-book attempts remain three attempted and zero completed.
 
+### Saved-blend portfolio construction registration
+
+The fixed 48-alpha TRAIN and frozen-sign validation IC study is implemented.
+Next evaluate two predefined target policies on the exact saved TRAIN blend:
+baseline-target-v1 and monthly-target-budget-v2, both cadence 5 and trade
+fraction 0.25. The second policy charges initial deployment and forced exits
+against a 0.30 calendar-month L1 target-change budget; it limits discretionary
+changes and discloses unavoidable forced-exit breaches. This is one fixed
+construction comparison, not a parameter search. The same budget policy is
+frozen for subsequent validation regardless of the TRAIN comparison result.
+
+First require bit-exact baseline parity with the original daily planned
+targets. Report turnover alongside gross, net, concentration and held-name
+counts, because reduced exposure is not a free improvement. No DSL rerun,
+candidate reselection, validation refitting or 2025+ evaluation is needed.
+
+For both policies use the same pinned role and one explicitly hypothetical
+cost scenario: 6 basis points per one-way target change and 300 basis points
+annual short borrow. These are declared research assumptions, not estimated
+$1bn execution, market impact or capacity costs. Rough one-session returns
+use delayed entry d+1 and endpoint d+2. Missing held returns leave the full
+day undefined and disclose signed missing exposure; compare observed support
+and complete-date intersections without claiming a self-financing NAV or
+full-period net Sharpe. No corporate-action registration is required here.
+
 ## Historical cash-claim rehearsal registration
 
 The first two real attempts stopped on MDCO's missing 2020-01-06 mark; zero
