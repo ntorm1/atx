@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -47,7 +48,9 @@ bool json_file(const std::filesystem::path& path, const Json& j, std::string& sh
   std::ofstream out(path, std::ios::binary); out << text; out.close();
   auto digest = core::sha256_hex(text); if (!out || !digest) return false; sha = *digest; return true;
 }
-bool role(const std::filesystem::path& dir, i64 first_day, std::string& sha, f64 direction=1) {
+// `holes`: cells (d*N+i) where the role is not present (its price fields NaN).
+bool role(const std::filesystem::path& dir, i64 first_day, std::string& sha, f64 direction=1,
+          const std::vector<usize>& holes={}) {
   if (!std::filesystem::create_directory(dir)) return false;
   std::vector<i64> sessions(D); std::vector<u8> member(D * N, 0), present(D * N, 1);
   std::vector<f64> price(D * N), volume(D * N);
@@ -59,6 +62,9 @@ bool role(const std::filesystem::path& dir, i64 first_day, std::string& sha, f64
       volume[d*N+i]=1e8*static_cast<f64>(i+1);
       member[d * N + i] = static_cast<u8>(d >= 63);
     }
+  }
+  for (const auto k : holes) {
+    present[k] = 0; price[k] = std::numeric_limits<f64>::quiet_NaN(); volume[k] = price[k];
   }
   Json files;
   if (!payload(dir, files, "sessions.i64", sessions) || !payload(dir, files, "ids.u64", std::vector<u64>{10,20,30,40,50,60,70,80}) ||
@@ -859,13 +865,26 @@ bool field_library(atx::impl::strategy::IcRunnerConfig& cfg,const std::vector<st
 bool same_value(f64 a,f64 b) { return (std::isnan(a) && std::isnan(b)) || a==b; }
 TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Review M3: base candidates cached by a base-only run, in their own cache.
+  auto plain_cfg=cfg; plain_cfg.candidate_cache_directory=(dir.path/"p").string();
+  const auto plain=run_named(dir,plain_cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  const auto plain_root=cache_root(dir.path/"plain"/"summary.json");
   ASSERT_TRUE(field_library(cfg,{"si_shares","mkt_ret"},
       {{"si_ratio","si_shares / volume"},{"market_shift","volume + mkt_ret"}}));
   ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares","mkt_ret"}));
   cfg.save_combined=true; cfg.candidate_cache_directory=(dir.path/"c").string();
   const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
-  EXPECT_NE(run.log.find("IC fields-loaded role=train fields=mkt_ret,si_shares"),std::string::npos);
-  EXPECT_NE(run.log.find("IC fields-loaded role=validation fields=mkt_ret,si_shares"),std::string::npos);
+  // Each candidate reads one extra: one column resident at a time, each loaded once.
+  for (const std::string role_name:{"train","validation"}) {
+    EXPECT_NE(run.log.find("IC fields-verified role="+role_name+" fields=mkt_ret,si_shares resident_capacity=1 "
+                           "planned_loads=2"),std::string::npos) << role_name;
+    const auto load_si=run.log.find("IC field-load role="+role_name+" field=si_shares candidate=si_ratio");
+    const auto drop_si=run.log.find("IC field-release role="+role_name+" field=si_shares");
+    const auto load_market=run.log.find("IC field-load role="+role_name+" field=mkt_ret candidate=market_shift");
+    ASSERT_NE(load_market,std::string::npos) << role_name;
+    EXPECT_LT(load_si,drop_si) << role_name; EXPECT_LT(drop_si,load_market) << role_name;
+  }
+  EXPECT_EQ(run.log.find("IC fields-loaded"),std::string::npos);
   // Raw VM signals (the cache stores them verbatim) against scalar oracles.
   const auto root=cache_root(dir.path/"output"/"summary.json");
   for (const auto& [pin,role_pin]:{std::pair{cfg.train_fields_sha256,cfg.train_sha256},
@@ -885,6 +904,11 @@ TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
     // Base-only candidates keep the role directory and carry no fields key.
     EXPECT_FALSE(read_json(root/role_pin/"volume_level.json").contains("fields_manifest_sha256"));
     EXPECT_FALSE(std::filesystem::exists(root/role_pin/"si_ratio.json"));
+    // ...and the bytes a fields run publishes there equal a base-only run's.
+    for (const auto* id:{"volume_level.f64","volume_rank.f64"}) {
+      const auto expected=file_sha(plain_root/role_pin/id); ASSERT_FALSE(expected.empty()) << id;
+      EXPECT_EQ(file_sha(root/role_pin/id),expected) << id;
+    }
   }
   const auto summary=read_json(dir.path/"output"/"summary.json");
   const auto recipe=read_json(dir.path/"output"/"recipe.json");
@@ -899,7 +923,10 @@ TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
     const auto& fields=role_result.at("research_fields");
     EXPECT_EQ(fields.at("manifest_sha256"),pin); EXPECT_EQ(fields.at("loaded"),Json::array({"mkt_ret","si_shares"}));
     EXPECT_EQ(fields.at("loaded_bytes"),2*D*N*sizeof(f64));
+    EXPECT_EQ(fields.at("resident_capacity"),1); EXPECT_EQ(fields.at("planned_loads"),2);
+    EXPECT_EQ(fields.at("field_loads"),2); EXPECT_EQ(fields.at("peak_resident_fields"),1);
     EXPECT_GE(role_result.at("stage_seconds").at("fields_load").get<f64>(),0);
+    EXPECT_GE(role_result.at("stage_seconds").at("fields_verify").get<f64>(),0);
     const auto name=role_result.at("role").get<std::string>();
     EXPECT_EQ(read_json(dir.path/"output"/(name+"_combined.json")).at("research_fields_manifest_sha256"),pin);
     // Every candidate increases in i on TRAIN (sign +1); the four equal weights
@@ -1339,5 +1366,231 @@ TEST(StrategyIcRunner, CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers) {
       EXPECT_EQ(read_json(a/pin/(id+".json")).at("payload_sha256"),read_json(b/pin/(id+".json")).at("payload_sha256"));
       EXPECT_EQ(read_json(b/pin/(id+".json")).at("vm_workers"),2);
     }
+}
+// ---- T7 fix round 2 ----
+// Each `lines` entry must occur in `log`, in this order.
+void expect_in_order(const std::string& log,const std::vector<std::string>& lines) {
+  usize from=0;
+  for (const auto& line:lines) {
+    const auto at=log.find(line,from);
+    ASSERT_NE(at,std::string::npos) << "missing or out of order: " << line;
+    from=at+line.size();
+  }
+}
+// Review I1: an extra column is resident only between the candidates that read it
+// (Belady over library order), evicted and reloaded when that lowers the peak; the
+// raw signals, the blend and every output are unchanged by the schedule.
+TEST(StrategyIcRunner, ExtraFieldsResideOnlyWhileReferencedAndReloadExactly) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  const std::pair<std::string,std::string> base_mid{"base_mid","rank(raw_close / volume)"};
+  // Base-only reference for base_mid, which the fields run evaluates while si_shares
+  // is resident, i.e. on the borrowed DSL panel (review M3).
+  auto plain_cfg=cfg; plain_cfg.library_path=(dir.path/"plain_library.json").string();
+  ASSERT_TRUE(std::filesystem::copy_file(cfg.library_path,plain_cfg.library_path));
+  ASSERT_TRUE(field_library(plain_cfg,{},{base_mid}));
+  plain_cfg.candidate_cache_directory=(dir.path/"p").string();
+  const auto plain=run_named(dir,plain_cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  ASSERT_TRUE(field_library(cfg,{"si_shares","mkt_ret","iv_atm_21d"},
+      {{"si_market","si_shares + mkt_ret"},{"iv_level","iv_atm_21d"},base_mid,
+       {"si_ratio","si_shares / volume"},{"market_shift","volume + mkt_ret"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares","mkt_ret","iv_atm_21d"}));
+  cfg.save_combined=true;
+  // Hand schedule (extras iv_atm_21d, mkt_ret, si_shares; candidates volume_level,
+  // volume_rank, si_market{mkt,si}, iv_level{iv}, base_mid{}, si_ratio{si},
+  // market_shift{mkt}): capacity 2; loads mkt+si, iv evicting mkt (next use
+  // farthest), then mkt again = 4 loads, never more than 2 resident.
+  auto plan_cfg=cfg; plan_cfg.plan_only=true; std::ostringstream plan;
+  const auto planned=atx::impl::strategy::run_ic(plan_cfg,plan); ASSERT_TRUE(planned) << planned.error().to_string();
+  const auto plan_json=Json::parse(plan.str()).at("research_fields");
+  EXPECT_EQ(plan_json.at("resident_capacity"),2); EXPECT_EQ(plan_json.at("planned_loads"),4);
+  const auto uncached=run_named(dir,cfg,"uncached"); ASSERT_TRUE(uncached.ok) << uncached.error;
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  // Releases are logged when candidate k starts (after its eval-start line).
+  for (const auto* run:{&uncached,&cold})
+    for (const std::string r:{"train","validation"})
+      expect_in_order(run->log,{
+          "IC fields-verified role="+r+" fields=iv_atm_21d,mkt_ret,si_shares resident_capacity=2 planned_loads=4",
+          "IC eval-start "+r+" 3/7 si_market",
+          "IC field-load role="+r+" field=mkt_ret candidate=si_market",
+          "IC field-load role="+r+" field=si_shares candidate=si_market",
+          "IC eval-start "+r+" 4/7 iv_level",
+          "IC field-release role="+r+" field=mkt_ret\n",
+          "IC field-load role="+r+" field=iv_atm_21d candidate=iv_level",
+          "IC eval-start "+r+" 5/7 base_mid",
+          "IC field-release role="+r+" field=iv_atm_21d\n",
+          "IC eval-start "+r+" 6/7 si_ratio",
+          "IC eval-start "+r+" 7/7 market_shift",
+          "IC field-release role="+r+" field=si_shares\n",
+          "IC field-load role="+r+" field=mkt_ret candidate=market_shift"});
+  const auto root=cache_root(dir.path/"cold"/"summary.json");
+  const auto plain_root=cache_root(dir.path/"plain"/"summary.json");
+  for (const auto& [pin,role_pin]:{std::pair{cfg.train_fields_sha256,cfg.train_sha256},
+                                   std::pair{cfg.validation_fields_sha256,cfg.validation_sha256}}) {
+    std::vector<f64> si_market(D*N),iv_level(D*N),si_ratio(D*N),market_shift(D*N);
+    ASSERT_TRUE(read_payload(root/pin/"si_market.f64",si_market));
+    ASSERT_TRUE(read_payload(root/pin/"iv_level.f64",iv_level));
+    ASSERT_TRUE(read_payload(root/pin/"si_ratio.f64",si_ratio));
+    ASSERT_TRUE(read_payload(root/pin/"market_shift.f64",market_shift));
+    for (usize d=0;d<D;++d) for (usize i=0;i<N;++i) {
+      const auto k=d*N+i; const auto volume=1e8*static_cast<f64>(i+1);
+      ASSERT_TRUE(same_value(si_market[k],si_value(d,i,1)+market_value(d))) << d << ' ' << i;
+      ASSERT_TRUE(same_value(iv_level[k],.3+.01*static_cast<f64>(i))) << d << ' ' << i;
+      ASSERT_TRUE(same_value(si_ratio[k],si_value(d,i,1)/volume)) << d << ' ' << i;
+      ASSERT_TRUE(same_value(market_shift[k],volume+market_value(d))) << d << ' ' << i;
+    }
+    // A base candidate evaluated on the DSL panel publishes the base-only bytes.
+    const auto expected=file_sha(plain_root/role_pin/"base_mid.f64"); ASSERT_FALSE(expected.empty());
+    EXPECT_EQ(file_sha(root/role_pin/"base_mid.f64"),expected);
+    EXPECT_FALSE(read_json(root/role_pin/"base_mid.json").contains("fields_manifest_sha256"));
+  }
+  // Warm: every signal is a hit, so no column is ever loaded.
+  const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  EXPECT_EQ(warm.log.find("IC field-load"),std::string::npos);
+  EXPECT_EQ(warm.log.find("IC VM-"),std::string::npos);
+  for (const std::string name:{"uncached","cold","warm"}) {
+    const auto summary=read_json(dir.path/name/"summary.json");
+    for (const auto& role_result:summary.at("roles")) {
+      const auto& fields=role_result.at("research_fields");
+      const bool hits=name=="warm";
+      EXPECT_EQ(fields.at("resident_capacity"),2) << name;
+      EXPECT_EQ(fields.at("field_loads"),hits?0:4) << name;
+      EXPECT_EQ(fields.at("peak_resident_fields"),hits?0:2) << name;
+      EXPECT_EQ(fields.at("loaded_bytes"),(hits?0:4)*D*N*sizeof(f64)) << name;
+    }
+    if (name=="uncached") continue;
+    for (const auto& file:exact_outputs())
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/"uncached"/file)) << name << ' ' << file;
+  }
+}
+// Review M2: LoadField NaNs an extra wherever the role is not present, even where
+// the field file holds a finite value.
+TEST(StrategyIcRunner, ExtraFieldsAreMaskedByRolePresence) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  const std::vector<usize> holes{100*N+2,400*N+5};
+  ASSERT_GT(std::filesystem::remove_all(dir.path/"train"),0U);
+  ASSERT_TRUE(role(dir.path/"train",17683,cfg.train_sha256,1,holes));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_level","si_shares"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  std::vector<f64> file(D*N);
+  ASSERT_TRUE(read_payload(std::filesystem::path(cfg.train_fields_directory)/"si_shares.f64",file));
+  for (const auto k:holes) ASSERT_TRUE(std::isfinite(file[k])) << k;
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
+  const auto root=cache_root(dir.path/"output"/"summary.json");
+  std::vector<f64> level(D*N); ASSERT_TRUE(read_payload(root/cfg.train_fields_sha256/"si_level.f64",level));
+  for (usize k=0;k<D*N;++k) {
+    const bool hole=std::find(holes.begin(),holes.end(),k)!=holes.end();
+    ASSERT_TRUE(same_value(level[k],hole?std::numeric_limits<f64>::quiet_NaN():file[k])) << k;
+  }
+}
+// Review M5: a declared field must mean the same thing in both roles' manifests;
+// role-specific keys (coverage, counts) may differ.
+TEST(StrategyIcRunner, FieldDefinitionsMustMatchAcrossRoles) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  const auto path=std::filesystem::path(cfg.validation_fields_directory)/"manifest.json";
+  const auto manifest=read_json(path);
+  const auto plan_status=[&](const Json& edited) {
+    auto attempt=cfg; attempt.plan_only=true;
+    EXPECT_TRUE(json_file(path,edited,attempt.validation_fields_sha256));
+    std::ostringstream log; return atx::impl::strategy::run_ic(attempt,log);
+  };
+  for (const auto* key:{"units","clock"}) {
+    auto changed=manifest; changed["fields"][0][key]="synthetic-v2";
+    const auto status=plan_status(changed); ASSERT_FALSE(status) << key;
+    EXPECT_NE(status.error().to_string().find("research field 'si_shares' definition differs between the train "
+                                              "and validation fields manifests"),std::string::npos)
+        << key << ": " << status.error().to_string();
+  }
+  auto bounds=manifest; bounds["fields"][0]["plausibility"]={{"min",0},{"max",1e12},{"rule","synthetic"}};
+  EXPECT_FALSE(plan_status(bounds));
+  auto coverage=manifest; coverage["fields"][0]["coverage"]=.5; coverage["fields"][0]["nonfinite_count"]=7;
+  const auto accepted=plan_status(coverage); EXPECT_TRUE(accepted) << accepted.error().to_string();
+}
+// Coordinator 2026-09-27: the option names a directory; a manifest file path
+// refuses by name instead of as a missing DIR/manifest.json.
+TEST(StrategyIcRunner, FieldsOptionMustNameTheDirectory) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  cfg.plan_only=true;
+  auto file=cfg; file.train_fields_directory=(std::filesystem::path(cfg.train_fields_directory)/"manifest.json").string();
+  std::ostringstream log; const auto status=atx::impl::strategy::run_ic(file,log); ASSERT_FALSE(status);
+  EXPECT_NE(status.error().to_string().find("--train-fields must name the fields directory"),std::string::npos)
+      << status.error().to_string();
+  std::ostringstream ok_log; const auto ok=atx::impl::strategy::run_ic(cfg,ok_log); EXPECT_TRUE(ok) << ok.error().to_string();
+}
+// T1 review M2/M6: a present but unusable sidecar refuses before the role payload
+// loads; the cache path and candidate ids are checked before anything else.
+TEST(StrategyIcRunner, CandidateCachePreflightRefusesBeforeRolePayload) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto root=cache_root(dir.path/"cold"/"summary.json");
+  // The LAST candidate's sidecar is corrupt: refused before any candidate runs.
+  const auto sidecar=root/cfg.train_sha256/"volume_rank.json"; const auto original=file_bytes(sidecar);
+  ASSERT_TRUE(write_bytes(sidecar,std::vector<char>{'{'}));
+  const auto corrupt=run_named(dir,cfg,"corrupt"); EXPECT_FALSE(corrupt.ok);
+  EXPECT_NE(corrupt.error.find("candidate cache sidecar JSON: volume_rank"),std::string::npos) << corrupt.error;
+  EXPECT_NE(corrupt.log.find("IC loading train"),std::string::npos);
+  EXPECT_EQ(corrupt.log.find("IC eval-start"),std::string::npos);
+  EXPECT_EQ(file_bytes(sidecar),std::vector<char>{'{'});
+  ASSERT_TRUE(write_bytes(sidecar,original));
+  // A payload of the wrong extent is refused up front too, by the same name as on load.
+  const auto payload_path=root/cfg.train_sha256/"volume_rank.f64"; const auto bytes=file_bytes(payload_path);
+  ASSERT_TRUE(write_bytes(payload_path,std::vector<char>(bytes.begin(),bytes.end()-8)));
+  const auto short_run=run_named(dir,cfg,"short"); EXPECT_FALSE(short_run.ok);
+  EXPECT_NE(short_run.error.find("candidate cache payload extent: volume_rank.f64"),std::string::npos) << short_run.error;
+  EXPECT_EQ(short_run.log.find("IC eval-start"),std::string::npos);
+  ASSERT_TRUE(write_bytes(payload_path,bytes));
+  const auto restored=run_named(dir,cfg,"restored"); ASSERT_TRUE(restored.ok) << restored.error;
+  EXPECT_NE(restored.log.find("IC cache-preflight role=train ready=2/2"),std::string::npos);
+  // cache_preflight: a file where the cache directory belongs; a device-name id.
+  const auto refuse=[&](atx::impl::strategy::IcRunnerConfig attempt,const std::string& name,const std::string& reason) {
+    const auto run=run_named(dir,attempt,name); EXPECT_FALSE(run.ok) << name;
+    EXPECT_NE(run.error.find(reason),std::string::npos) << name << ": " << run.error;
+    EXPECT_FALSE(std::filesystem::exists(dir.path/name)) << name;
+  };
+  auto as_file=cfg; as_file.candidate_cache_directory=(dir.path/"cache_file").string();
+  ASSERT_TRUE(write_bytes(as_file.candidate_cache_directory,std::vector<char>{'x'}));
+  refuse(as_file,"as_file","candidate cache path must be a directory");
+  auto device=cfg; auto lib=read_json(cfg.library_path);
+  lib["candidates"].push_back({{"id","con"},{"family","fixed_volume"},{"dsl","rank(raw_close)"},
+      {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  device.library_path=(dir.path/"device_library.json").string();
+  ASSERT_TRUE(json_file(device.library_path,lib,device.library_sha256));
+  refuse(device,"device","candidate id unsafe as cache file name: con");
+}
+// Review I2: the candidate cache is keyed by dsl_vm_semantics_version, so any edit
+// to the engine sources that evaluate a DSL signal must be a conscious decision.
+TEST(StrategyIcRunner, VmSourcesPinnedToSemanticsVersion) {
+  const auto id=atx::impl::strategy::ic_cache_vm_identity();
+  EXPECT_EQ(id.identity.rfind("dslvm"+std::to_string(id.semantics_version)+"_",0),0U) << id.identity;
+  const auto repo=std::filesystem::path{ATX_IMPL_TESTS_DIR}.parent_path().parent_path();
+  const std::set<std::string> listed(id.sources.begin(),id.sources.end());
+  ASSERT_EQ(listed.size(),id.sources.size());
+  std::string material;
+  for (const auto& rel:id.sources) {
+    const auto raw=file_bytes(repo/rel); ASSERT_FALSE(raw.empty()) << rel;
+    std::string text; text.reserve(raw.size());
+    for (usize k=0;k<raw.size();++k) if (!(raw[k]=='\r' && k+1<raw.size() && raw[k+1]=='\n')) text.push_back(raw[k]);
+    material+=rel+'\n'+std::to_string(text.size())+'\n'+text;
+    // Closure: every atx/engine header a listed file includes is itself listed.
+    std::istringstream lines(text);
+    for (std::string line;std::getline(lines,line);) {
+      const auto at=line.find("#include \"atx/engine/");
+      if (at==std::string::npos) continue;
+      const auto begin=at+10,end=line.find('"',begin);
+      ASSERT_NE(end,std::string::npos) << rel << ": " << line;
+      const auto header="atx-engine/include/"+line.substr(begin,end-begin);
+      EXPECT_TRUE(listed.count(header)) << rel << " includes unlisted " << header
+          << " (add it to dsl_vm_sources). VM sources changed: bump dsl_vm_semantics_version and update the pinned hash";
+    }
+  }
+  const auto digest=core::sha256_hex(material); ASSERT_TRUE(digest);
+  EXPECT_EQ(*digest,id.sources_sha256)
+      << "VM sources changed: bump dsl_vm_semantics_version and update the pinned hash";
 }
 } // namespace

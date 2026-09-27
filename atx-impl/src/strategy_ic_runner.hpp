@@ -1,6 +1,7 @@
 #pragma once
 #include <iosfwd>
 #include <string>
+#include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 namespace atx::impl::strategy {
@@ -15,8 +16,11 @@ struct IcRunnerConfig {
   atx::usize workers{1}; // 1 is the existing serial baseline; explicit2..4 share one VM pool
   bool save_combined{false}; // exact blend+support artifact, no reevaluation or portfolio simulation
   bool plan_only{false}; // pinned metadata/DSL compilation only; no role payloads
-  // Optional reusable raw DSL signals under DIR/<role-manifest-sha256>/; never
-  // part of the recipe because a verified hit reproduces the VM bytes exactly.
+  // Optional reusable raw DSL signals under DIR[/<vm-identity>]/<sha>/, where
+  // <sha> is the role manifest SHA256 for a candidate reading only close/raw_close/
+  // volume and the role's fields manifest SHA256 for one reading extra fields; the
+  // <vm-identity> level is omitted only for the legacy identity dslvm1_clang18.1.
+  // Never part of the recipe because a verified hit reproduces the VM bytes exactly.
   std::string candidate_cache_directory;
   // Optional pinned per-candidate composition weights replacing equal weights.
   std::string composition_weights_path, composition_weights_sha256;
@@ -35,5 +39,14 @@ struct IcRunnerConfig {
 // A library declares close/raw_close/volume plus any extra fields; every declared
 // extra must be present in each scored role's pinned fields manifest.
 [[nodiscard]] atx::core::Status run_ic(const IcRunnerConfig&,std::ostream& progress);
+// The candidate cache's VM identity and the engine sources pinned against its
+// semantics version (paths repo-relative, hashed in this order; see the runner).
+struct IcCacheVmIdentity {
+  int semantics_version{};
+  std::string identity;
+  std::vector<std::string> sources;
+  std::string sources_sha256;
+};
+[[nodiscard]] IcCacheVmIdentity ic_cache_vm_identity();
 [[nodiscard]] int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err);
 } // namespace atx::impl::strategy
