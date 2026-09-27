@@ -19,6 +19,25 @@ UNIT_DISCREPANCIES = {1106: ("quantity", "monetary"),
                       1203: ("quantity", "monetary"),
                       1301: ("ratio", "monetary")}
 
+# Reviewed C-107..109 authority is part of this exported source, not a hidden
+# dependency on the controller's untracked workspace. Hashes identify retained
+# audit evidence; the definitions and observed-version restriction are explicit.
+LOCAL_AUTHORITY = {
+    "design_sha256": "f4d6021fcc3fa21a5861e6523f10dbd3d0a933fcb7438dc81377cdaa3e9c61e1",
+    "audit_output_sha256": {
+        "session8-taxonomy.out": "76c9f43be9d9d20789ac92fbca6d2fc9c6c72300428ffb518133e97998d0e340",
+        "session8-taxonomy-remaining.out": "46c680245ed44bf8d4c526175b43b9a44fe0e29aab34a2216dba537c45a968a0"},
+    "DLCCH": {"ruling": "C-108", "concept": "ProceedsFromRepaymentsOfShortTermDebt",
+        "datatype": "monetary", "iord": "D", "crdr": "D", "positive": "net cash borrowing",
+        "definition": "The net cash inflow or outflow for borrowing having initial term of repayment within one year or the normal operating cycle, if longer.",
+        "observed_taxonomy_years": [2008, 2009, *range(2011, 2027)],
+        "first_retained_tag_sha256": "dfa05386d29d6be49df1c2bc80af28231ffedf63b8f84fbf9bc67a9ead871b96"},
+    "TXDITC": {"ruling": "C-109", "seed_item_id": 1211,
+        "chain": ["DeferredIncomeTaxLiabilitiesNet", "DeferredTaxLiabilitiesNoncurrent"],
+        "datatype": "monetary", "iord": "I",
+        "limitation": "seeded deferred-tax-liability analog; noncurrent fallback; no separate investment-credit addition"},
+}
+
 
 @dataclass(frozen=True)
 class ItemChain:
@@ -153,8 +172,7 @@ def load_mapping() -> dict[str, Any]:
                                 if v.unsupported_reason},
                 "local_recipe_authority": {"ruling": "C-107", "durable_STD_ids": "absent",
                     "DLCCH": "C-108: positive net short-term cash borrowing, verified FSDS taxonomy versions only",
-                    "design_sha256": file_sha256(Path(__file__).resolve().parents[4] /
-                                                 "docs/superpowers/plans/2026-09-25-tier1-v2-s2-fundamentals.md"),
+                    "design_sha256": LOCAL_AUTHORITY["design_sha256"],
                     "TXPD": "IncomeTaxesPaidNet -> IncomeTaxesPaid (FSDS-only where CF allowlist lacks tags)",
                     "OIADP_and_EBIT_BEST": "operating_income -> ebit__1017 -> pretax_income+interest_expense_total",
                     "BE": "C-109: SEQ+TXDITC-PSTK, ordinary absent supported TXDITC/PSTK only may be zero; explicit invalid/NULL retained",
@@ -164,9 +182,7 @@ def load_mapping() -> dict[str, Any]:
                                 "TXDITC is seeded deferred-tax-liability analog; fallback is noncurrent, not a newly verified complete Compustat stock",
                                 "DEI cover-page shares cannot prove fiscal balance dates",
                                 "XRD missing-zero convention requires explicit then-visible evidence"]}
-    evidence_root = Path(__file__).resolve().parents[4] / ".superpowers/sdd/tier1-v2/receipts"
-    metadata["local_tag_authority"] = {name: file_sha256(evidence_root / name) for name in
-                                       ("session8-taxonomy.out", "session8-taxonomy-remaining.out")}
+    metadata["local_tag_authority"] = LOCAL_AUTHORITY
     # Normalize dates/tuples before serializing and hashing the portable plan.
     import json
     metadata = json.loads(json.dumps(metadata, default=str))

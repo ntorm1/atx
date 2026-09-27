@@ -226,7 +226,10 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
                        "reason": row["source_status"], "year": row["period_end"].year if row["period_end"] else 0}
         expected = {"monetary": "USD", "quantity": "shares", "per_share": "USD/shares"}.get(row["unit_type"])
         end = row["period_end"]
-        if row["source_status"] != "candidate":
+        rejected_stock = (row["item_id"] is not None and row["period_kind"] == "instant"
+                          and row["available_at"] is not None and row["source_status"] in
+                          {"unsupported_duration", "missing_tag_context", "abstract_tag", "conflicting_sub"})
+        if row["source_status"] != "candidate" and not rejected_stock:
             mapping_dispositions.append(disposition)
             continue
         if row["item_id"] is None:
@@ -238,7 +241,8 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
             disposition["reason"] = "unverified_taxonomy_version"
             mapping_dispositions.append(disposition)
             continue
-        forced_status = "unit_mismatch" if expected is None or row["unit"] != expected else None
+        forced_status = (row["source_status"] if rejected_stock else
+                         "unit_mismatch" if expected is None or row["unit"] != expected else None)
         if (str(end) < row["alias_valid_from"] or
                 row["alias_valid_to"] and str(end) >= row["alias_valid_to"] or
                 str(end) < row["rule_valid_from"] or
@@ -249,8 +253,19 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
         period = _period(row, by_end, by_slot)
         if period is None:
             disposition["reason"] = "period_ambiguous"
-            mapping_dispositions.append(disposition)
-            continue
+            point = by_end.get(end)
+            if row["period_kind"] != "instant" or point is None or row["available_at"] is None:
+                mapping_dispositions.append(disposition)
+                continue
+            # The filing is visible and its stock endpoint is known. Preserve
+            # the rejected observation as a NULL revision instead of presenting
+            # it to downstream BE as ordinary non-reporting.
+            period = {"period_start": None, "period_end": end, "freq": "instant",
+                      "fiscal_year": point["fy"], "fiscal_qtr": point["q"],
+                      "available_at": max(row["available_at"], point["clock"]),
+                      "invalid_at": point["invalid_at"], "period_basis": "rejected_stock_context",
+                      "dependencies": sorted(set(row["dependencies"]+[point["input"]]))}
+            forced_status = forced_status or "period_ambiguous"
         row.update(period, owner_id=owner, item=str(row["item_id"]), unit=expected)
         raw_value = _decimal(row["value_exact"]) if forced_status is None else None
         row["forced_status"] = forced_status
@@ -542,11 +557,15 @@ def _ttm_choice(current):
 
 def _book_equity(current):
     stockholders, common, preferred, assets, liabilities, tax = current
+    if common is not None and common["status"] == "missing_input":
+        common = None  # An uncomputable derived CEQ is absence, not an observed NULL.
     convention = []
     if stockholders is not None:
         equity = _decimal(stockholders["value_exact"])
         if equity is None:
             return None, "invalid_operand"
+    elif common is not None and common["value_exact"] is None:
+        return None, "invalid_operand"
     elif common is not None and preferred is not None:
         equity, status = _arithmetic([common, preferred], [1, 1])
         if equity is None:
@@ -607,7 +626,8 @@ def iter_owner_candidates(files: Sequence[Path | str], mapping: dict, *, root: P
              a.alias_valid_from,a.alias_valid_to,a.rule_valid_from,a.rule_valid_to,a.sign_rule,a.scale_rule,a.taxonomy_versions
           FROM raw r LEFT JOIN item_aliases a
             ON r.taxonomy=a.taxonomy AND r.concept=a.concept
-           AND a.basis=CASE WHEN r.qtrs=0 THEN 'instant' WHEN r.qtrs=4 THEN 'annual' ELSE 'quarterly' END
+           AND (a.basis=CASE WHEN r.qtrs=0 THEN 'instant' WHEN r.qtrs=4 THEN 'annual' ELSE 'quarterly' END
+                OR a.basis='instant' AND a.period_kind='instant')
           ORDER BY r.cik NULLS FIRST,r.available_at,r.candidate_id,a.item_id"""
         sentinel = object()
         current, owner_rows = sentinel, []
@@ -749,6 +769,26 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
         # selected value, using persisted candidate lineage and pinned aliases.
         import pyarrow as pa
         con.register("aliases", pa.Table.from_pylist(plan["mapping"]["aliases"]))
+        checks["unclocked_BE_components"] = con.execute("""SELECT count(DISTINCT r.candidate_id)
+             FROM raw r JOIN aliases a ON r.taxonomy=a.taxonomy AND r.concept=a.concept
+             WHERE a.item_id IN (1211,1214,1220,1221) AND r.source_status='missing_clock'
+               AND r.period_end>=a.valid_from::DATE AND (a.valid_to IS NULL OR r.period_end<a.valid_to::DATE)""").fetchone()[0]
+        checks["unresolved_BE_rejections"] = con.execute("""SELECT count(DISTINCT r.candidate_id)
+          FROM raw r JOIN d USING(candidate_id)
+          JOIN aliases a ON r.taxonomy=a.taxonomy AND r.concept=a.concept
+          WHERE a.item_id IN (1211,1214,1220,1221) AND a.basis='instant' AND r.cik IS NOT NULL
+            AND (r.period_end IS NULL OR (r.period_end>=a.valid_from::DATE
+                 AND (a.valid_to IS NULL OR r.period_end<a.valid_to::DATE)))
+            AND (r.source_status IN ('missing_clock','missing_period','missing_sub','conflicting_sub',
+                                      'missing_tag_context','abstract_tag','unsupported_duration')
+                 OR EXISTS(SELECT 1 FROM json_each(d.mapping_outcomes) outcome
+                      WHERE json_extract_string(outcome.value,'$.reason')='period_ambiguous'
+                        AND try_cast(json_extract_string(outcome.value,'$.item_id') AS INTEGER)=a.item_id))
+            AND NOT EXISTS(SELECT 1 FROM l JOIN v USING(vintage_id)
+                  WHERE l.input_candidate_or_vintage_id=r.candidate_id AND try_cast(v.item AS INTEGER)=a.item_id
+                    AND v.value IS NULL AND v.event_stage='source')""").fetchone()[0]
+        excluded_unowned = con.execute("""SELECT source_status,count(DISTINCT candidate_id)
+            FROM raw WHERE cik IS NULL GROUP BY source_status ORDER BY source_status""").fetchall()
         numeric = con.execute("""WITH comparisons AS (
           SELECT v.vintage_id,v.value,
              r.value*a.multiplier*
@@ -778,6 +818,7 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
               "bucket": receipt["bucket"], "checks": checks, "failures": failures,
               "structural_ok": not failures, "accepted": False,
               "source_scope_complete": plan["scope_complete"], "disposition_reasons": reasons,
+              "unowned_source_quarantines": dict(excluded_unowned),
               "public_statuses": counts, "complete_sha256": file_sha256(output / "complete.json"),
               "remaining_acceptance": ["10000-cell mapping/numeric oracle", "A=L+E >=99%",
                   "50 issuer fiscal cases", "50 owners x12 raw-PIT oracle", "2013..2023 exhaustive formation lineage",

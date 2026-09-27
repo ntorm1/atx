@@ -224,12 +224,14 @@ def _candidate_query(pins: dict[str, Any], source: str, slice_id: str | int, *,
                WHEN n.qtrs NOT BETWEEN 0 AND 4 THEN 'unsupported_duration'
                ELSE 'candidate' END source_status
           FROM (SELECT * FROM {parquet_relation([entry['path']])}
-                WHERE cast('0x'||substr(sha256(adsh),1,8) AS UBIGINT)%{parts}={part}) n
+                WHERE cast('0x'||substr(sha256(replace(coalesce(adsh,''),'-','')),1,8) AS UBIGINT)%{parts}={part}) n
           LEFT JOIN {parquet_relation([filing_index['path']])} s ON n.adsh=s.adsh
           LEFT JOIN (SELECT tag,version,bool_or(abstract) abstract,bool_or(custom) custom
                      FROM {parquet_relation([tag['path']])} GROUP BY tag,version) t
             ON n.tag=t.tag AND n.version=t.version"""
     # SUB conflicts have multiple provenance contexts, each quarantined; no winner is selected.
+    source_partition = (f"coalesce(try_cast(cik AS BIGINT),0)%{parts}" if source == "cf" else
+                        f"cast('0x'||substr(sha256(coalesce(accession,'')),1,8) AS UBIGINT)%{parts}")
     query = f"""WITH raw AS ({raw}), identified AS (SELECT *,
       sha256(to_json(struct_pack(cik:=cik,accession:=accession,taxonomy:=taxonomy,concept:=concept,
         taxonomy_version:=taxonomy_version,unit:=unit,period_start:=period_start,period_end:=period_end,
@@ -238,6 +240,7 @@ def _candidate_query(pins: dict[str, Any], source: str, slice_id: str | int, *,
         source_sha256:=source_sha256,available_at:=available_at))) candidate_id
       FROM raw)
       SELECT *,{sql_text(source)} source_kind,{sql_text(str(slice_id))} source_slice,
+        ({source_partition})::INTEGER source_partition,
         coalesce(try_cast(cik AS BIGINT)%{int(buckets)},0)::INTEGER bucket
       FROM identified ORDER BY bucket,cik,available_at,candidate_id"""
     return query, entries
@@ -287,24 +290,21 @@ def normalize_source(pins: dict[str, Any], source: str, slice_id: str | int, *,
     import os
     import time
     import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
     output.mkdir(parents=True, exist_ok=True)
     receipt = output / "complete.json"
-    identity = canonical_sha256({"source_code": file_sha256(Path(__file__)), "pins": pins,
-                                 "source": source, "slice": slice_id, "buckets": buckets,
-                                 "part": part, "parts": parts,
-                                 "filing_index": filing_index})
+    source_part = part
+    identity = source_identity(pins, source, slice_id, filing_index=filing_index,
+                               buckets=buckets, part=source_part, parts=parts)
     if receipt.exists():
-        prior = json.loads(receipt.read_text())
-        if prior["identity"] != identity:
-            raise FundamentalSourceError("completed source slice has different code/input identity")
-        for entry in prior["files"]:
-            check_file(entry)
+        prior = validate_source_receipt(receipt, pins, source, slice_id, filing_index=filing_index,
+                                        buckets=buckets, part=source_part, parts=parts)
         return {**prior, "resumed": True}
     start = time.perf_counter()
     counts, outputs = collections.Counter(), []
-    writer, current_bucket, rows, part = None, None, 0, 0
+    writer, current_bucket, rows, file_part = None, None, 0, 0
     target = pending = None
 
     def close_writer():
@@ -319,7 +319,10 @@ def normalize_source(pins: dict[str, Any], source: str, slice_id: str | int, *,
 
     try:
         for batch in iter_candidates(pins, source, slice_id, filing_index=filing_index,
-                                     buckets=buckets, root=root, part=part, parts=parts):
+                                     buckets=buckets, root=root, part=source_part, parts=parts):
+            observed = pc.min_max(batch.column("source_partition")).as_py()
+            if observed["min"] != source_part or observed["max"] != source_part:
+                raise FundamentalSourceError("worker emitted a different requested source partition")
             counts.update(batch.column("source_status").to_pylist())
             bucket_values = batch.column("bucket").to_pylist()
             offset = 0
@@ -330,9 +333,9 @@ def normalize_source(pins: dict[str, Any], source: str, slice_id: str | int, *,
                     end += 1
                 if writer is None or current_bucket != bucket or rows >= 500_000:
                     close_writer()
-                    part = part + 1 if current_bucket == bucket else 0
+                    file_part = file_part + 1 if current_bucket == bucket else 0
                     current_bucket, rows = bucket, 0
-                    target = output / f"b{bucket:03d}-{part:03d}.parquet"
+                    target = output / f"b{bucket:03d}-{file_part:03d}.parquet"
                     pending = target.with_suffix(".pending")
                     writer = pq.ParquetWriter(pending, batch.schema, compression="zstd",
                                              use_dictionary=True, write_statistics=True)
@@ -344,10 +347,64 @@ def normalize_source(pins: dict[str, Any], source: str, slice_id: str | int, *,
     finally:
         if writer is not None:
             writer.close()
-    result = {"schema": "fundamental_source_slice_v1", "identity": identity,
+    source_entry = next(f for f in pins["files"] if f["source"] == source and str(f["slice"]) == str(slice_id)
+                        and f["table"] == ("num" if source == "fsds" else "facts"))
+    result = {"schema": "fundamental_source_slice_v2", "identity": identity,
               "source": source, "slice": slice_id, "buckets": buckets, "files": outputs,
-              "part": part, "parts": parts,
+              "part": source_part, "parts": parts,
+              "source_code_sha256": file_sha256(Path(__file__)),
+              "source_file_sha256": source_entry["sha256"], "source_rows": source_entry["rows"],
               "rows": sum(f["rows"] for f in outputs), "source_status": dict(counts),
               "seconds": round(time.perf_counter()-start, 3)}
     atomic_json(receipt, result)
     return result
+
+
+def source_identity(pins, source, slice_id, *, filing_index, buckets, part, parts):
+    """Exact immutable source-slice contract, shared by runner and plan validation."""
+    return canonical_sha256({"source_code": file_sha256(Path(__file__)), "pins": pins,
+                             "source": source, "slice": int(slice_id) if source == "cf" else str(slice_id),
+                             "buckets": buckets, "part": part, "parts": parts,
+                             "filing_index": filing_index})
+
+
+def validate_source_receipt(path, pins, source, slice_id, *, filing_index, buckets, part, parts):
+    """Reject stale, mixed, swapped, duplicate or incomplete normalization receipts."""
+    import pyarrow.parquet as pq
+    record = json.loads(Path(path).read_text())
+    expected = source_identity(pins, source, slice_id, filing_index=filing_index,
+                               buckets=buckets, part=part, parts=parts)
+    contract = (record.get("schema"), record.get("identity"), record.get("source"), str(record.get("slice")),
+                record.get("buckets"), record.get("part"), record.get("parts"))
+    if contract != ("fundamental_source_slice_v2", expected, source, str(slice_id), buckets, part, parts):
+        raise FundamentalSourceError(f"source receipt identity/partition mismatch: {path}")
+    source_entry = next(f for f in pins["files"] if f["source"] == source and str(f["slice"]) == str(slice_id)
+                        and f["table"] == ("num" if source == "fsds" else "facts"))
+    if record.get("source_file_sha256") != source_entry["sha256"] or record.get("source_rows") != source_entry["rows"]:
+        raise FundamentalSourceError("source receipt denominator/input mismatch")
+    total, seen = 0, set()
+    for entry in record["files"]:
+        consumed = check_file(entry)
+        if consumed.resolve() in seen or not 0 <= entry["bucket"] < buckets:
+            raise FundamentalSourceError("duplicate normalized file or invalid owner bucket")
+        seen.add(consumed.resolve())
+        parquet = pq.ParquetFile(consumed)
+        rows = parquet.metadata.num_rows
+        if rows != entry["rows"]:
+            raise FundamentalSourceError("normalized file row count differs from receipt")
+        for group_number in range(parquet.metadata.num_row_groups):
+            group = parquet.metadata.row_group(group_number)
+            for column, expected_value in (("source_partition", part), ("source_kind", source),
+                                            ("source_slice", str(slice_id)), ("bucket", entry["bucket"])):
+                if column not in parquet.schema_arrow.names:
+                    raise FundamentalSourceError("normalized Parquet lacks source partition evidence")
+                statistics = group.column(parquet.schema_arrow.get_field_index(column)).statistics
+                if (statistics is None or statistics.null_count or statistics.min != expected_value
+                        or statistics.max != expected_value):
+                    raise FundamentalSourceError(f"normalized Parquet {column} differs from receipt contract")
+        total += rows
+    if total != record["rows"] or sum(record["source_status"].values()) != total:
+        raise FundamentalSourceError("source disposition/file row denominator mismatch")
+    if parts == 1 and total != source_entry["rows"]:
+        raise FundamentalSourceError("unsplit normalized rows do not equal pinned raw source")
+    return record

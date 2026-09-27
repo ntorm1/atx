@@ -1,7 +1,7 @@
 """Focused PIT boundaries for the shared Parquet accounting engine."""
 import datetime as dt
 
-from atx_db.research.item_vintages import build_owner, corroborate
+from atx_db.research.item_vintages import build_owner, corroborate, _book_equity
 
 
 def fact(identifier, *, end, start=None, qtrs=1, quarter="Q1", clock="2020-05-01", value="50", source="cf"):
@@ -72,3 +72,28 @@ def test_cf_acceptance_borrowing_requires_exact_fact_and_unique_duration_start()
     ambiguous = {**cf2, "candidate_id": "c3", "period_start": dt.date(2020, 1, 2)}
     corroborate([fsds2, cf2, ambiguous])
     assert cf2["available_at"] == dt.datetime(2020, 5, 2, 22)
+
+
+def test_book_equity_rejected_stock_period_is_not_ordinary_absence():
+    stock = fact("stock", end="2020-03-31", qtrs=0, value="100")
+    stock.update(item_id=1221, concept="StockholdersEquity", period_kind="instant")
+    tax = fact("tax", end="2020-03-31", qtrs=0, clock="2020-06-01", value="5")
+    tax.update(item_id=1211, concept="DeferredIncomeTaxLiabilitiesNet", period_kind="instant")
+    rejected = {**tax, "candidate_id": "taxbad", "accession": "taxbad", "qtrs": 1,
+                "available_at": dt.datetime(2020, 7, 1), "filed_date": dt.date(2020, 7, 1)}
+    mapping = {"rules": [{"item_id": -100004, "basis": "instant", "rule_id": "BE",
+                          "source_item_ids": [1221, 1220, 1214, 1101, 1201, 1211],
+                          "input_kinds": ["item"]*6, "combination_rule": "book_equity_jkp"}],
+               "chains": {"BE": {"item_ids": [-100004], "magnitude": False, "additive": True}}}
+    vintages, _ = build_owner([stock, tax, rejected], mapping)
+    actual = [r for r in vintages if r["is_public"] and r["item"] == "BE"]
+    assert [(r["available_at"].month, r["value"]) for r in actual] == [(5, 100), (6, 105), (7, None)]
+    assert "TXDITC_ordinary_absence_zero" in actual[0]["missing_value_basis"]
+    assert actual[-1]["status"] == "invalid_operand"
+
+
+def test_book_equity_explicit_common_null_blocks_assets_liabilities_fallback():
+    value = lambda number, status="valid": {"value_exact": number, "status": status}
+    common = value(None, "invalid_value")
+    result = _book_equity([None, common, None, value("150"), value("50"), None])
+    assert result == (None, "invalid_operand")
