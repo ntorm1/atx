@@ -67,6 +67,29 @@
   top-level `train_manifest_sha256`; runner (T7 lane) applies pinned signs over IC orientation and verifies
   the SHA — cost if wrong: blend orientation differs from runner IC sign for conflicting candidates (listed
   as sign_conflicts).
+- NAV RECON (nav-recon; root ran studies/nav_recon.py bounded 8.3s/420MiB, run mega-nav-recon-v1-run):
+  numpy mirror == C++ NAV S1/S2 to 1e-15 (NAV code correct; timing d->d+1->d+2 same as target replay and
+  studies). Cause: DATA — TRAIN role close.f64 factor break on 2021-01-04 (105 big + 1073 small factor
+  jumps with raw flat; 61 held names adj x10..x80 / x1/4..x1/10); guarded P&L -26.1% = 62% of gross var.
+  Ex that day S1 gross SR +0.31 (mu 3.7%, vol 11.8%); guard=raw S2 +0.32; by year S1(guard raw) 2020
+  -0.13 / 2021 +0.81 / 2022 +0.54. S2-S1 gap = 1% ADV cap leaving phantom shorts open (net lev -0.34).
+  Ruling: repair the role data (task T12, new role versions, all caches/fields regenerated) and KEEP the
+  declared NAV guard policy (book adjusted) — raw-on-guarded would book fake losses on genuine splits;
+  cost if wrong: one more full TRAIN cold pass (~400 s in chunks).
+- T9 review: spec PASS, Approved, 0C/0I/6m. Task T9: complete (17da002a, review clean). T9 minors
+  (deferred): 98s/48 cands (perf -> T11 incremental); train_manifest_sha256 key (-> T11); others in
+  task-T9-review.md.
+- T8: pool-7 51b01e61/a20002f5 -> root d5471776 (v2' lib fd1e359b..., 4 dsl_sha changed: ivol_change_*)
+  / d3016d0b (v3 pv_fields_ic121_v3 5d164ea1..., 121 = 96 v2' + 25 new). --check OK both; pytest 25/25.
+  v3 refs no non-PIT field. Review dispatched (t8-review). Ruling: literature prior signs are documentation
+  only (screen orients on 2020-21); si_change grid 10/21/42 accepted — cost if wrong: none for selection.
+  Admission trials pending: 121 candidates.
+- T6 fix r1: pool-8 a0d9deeb -> root c099cade (IV [0.02,5] -> NaN counted; point_in_time flags; is_common,
+  mktcap_lagged, size_grp opt-in non-PIT). unittest OK. Re-review dispatched (t6-rereview).
+  Ruling: swap-fin-v1 market-cap predictor = shares_out x raw_close only (mktcap_lagged availability
+  pattern not PIT); declared before any swap-fin NAV result — cost if wrong: tier misclass for names with
+  stale shares_out (bounded by stresses).
+- T12 (role factor-break repair + QA scan) dispatched t12-role pool-8 feat/mega-alpha-role-repair-20260927.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
