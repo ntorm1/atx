@@ -2080,3 +2080,515 @@ TEST(NavV5, PerNameRate_RecipeSummaryAndCli) {
                            "spelling", "inverted", "zero_rra"})
     EXPECT_FALSE(std::filesystem::exists(dir.path / name)) << name;
 }
+
+// ---- v6 prereg C1-C3 and review F8: order basis, exit rate, locate-in-aim, cache ----
+namespace {
+st::TargetReplayConfig v6_aim(f64 theta, f64 dust, f64 exit_rate = 1) {
+  auto c = aim_partial_nav(theta, dust, 1);
+  c.exit_rate = exit_rate;
+  return c;
+}
+std::string file_bytes(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+std::vector<std::string> file_names(const std::filesystem::path& dir) {
+  std::vector<std::string> out;
+  for (const auto& entry : std::filesystem::directory_iterator(dir))
+    out.push_back(entry.path().filename().string());
+  std::sort(out.begin(), out.end());
+  return out;
+}
+// Two published run directories hold the same files, byte for byte.
+void expect_same_files(const std::filesystem::path& a, const std::filesystem::path& b) {
+  const auto names = file_names(a);
+  ASSERT_FALSE(names.empty()) << a;
+  ASSERT_EQ(names, file_names(b)) << a << " vs " << b;
+  for (const auto& name : names)
+    EXPECT_TRUE(file_bytes(a / name) == file_bytes(b / name)) << name;
+}
+std::vector<std::string> nav_args(const Artifact& a, const std::filesystem::path& output,
+                                  const std::vector<std::string>& extra) {
+  std::vector<std::string> all{"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
+                               a.cfg.combined_sha256, "--role", a.cfg.role_path,
+                               "--role-sha256", a.cfg.role_sha256, "--output", output.string()};
+  all.insert(all.end(), extra.begin(), extra.end());
+  return all;
+}
+std::vector<std::string> joined(std::vector<std::string> a, const std::vector<std::string>& b) {
+  a.insert(a.end(), b.begin(), b.end());
+  return a;
+}
+// The v5 reference CLI flags of the T36 fixed-rate pin (d53f0c09).
+const std::vector<std::string> v5_flags{"--rule", "aim-partial-v5", "--cadence", "1",
+                                        "--trade-fraction", ".5", "--dust-multiple", ".1",
+                                        "--aim-leverage", "1.5"};
+} // namespace
+
+// (a) The v6 defaults are the v5 path: passing --order-basis target --exit-rate 1
+// publishes every file byte for byte as the same run without them, under baseline-v1
+// and under the v5 flags, and those recipes are the pre-change bytes NavV5 pins
+// (baseline 73cb45f1, v5 fixed d53f0c09); NavExecutionOptions{} through the six-argument
+// overload is the plain run byte for byte; no v6 key appears.
+TEST(NavV6, OrderBasisTargetAndExitRateOneAreBitIdentical) {
+  const auto p = publication_panel();
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  std::ostringstream out, err, progress;
+  const std::vector<std::string> defaults{"--order-basis", "target", "--exit-rate", "1"};
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "base", {}), out, err), 0) << err.str();
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "base6", defaults), out, err), 0) << err.str();
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "v5", v5_flags), out, err), 0) << err.str();
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "v56", joined(v5_flags, defaults)), out, err), 0)
+      << err.str();
+  expect_same_files(dir.path / "base", dir.path / "base6");
+  expect_same_files(dir.path / "v5", dir.path / "v56");
+  EXPECT_EQ(co::sha256_file((dir.path / "base" / "recipe.json").string()).value(),
+            "73cb45f1182f659b1b66bf5adc17bc0539a95c987d191c10c00f846c6c8017c0");
+  EXPECT_EQ(co::sha256_file((dir.path / "v5" / "recipe.json").string()).value(),
+            "d53f0c09018244862e8974579e8a87184310778786b08545041c605f725fc71a");
+  auto api = a.cfg; api.output_directory = (dir.path / "api").string();
+  const auto ran = st::run_nav_replay(api, st::NavTurnoverLimits{}, st::NavFieldsPin{},
+                                      st::NavRateOptions{}, st::NavExecutionOptions{}, progress);
+  ASSERT_TRUE(ran) << ran.error().to_string();
+  expect_same_files(dir.path / "base", dir.path / "api");
+  const auto recipe = read_json(dir.path / "v5" / "recipe.json");
+  for (const auto* key : {"order_basis", "order_basis_rule", "locate_in_aim",
+                          "locate_in_aim_rule", "exit_rate", "exit_rule"})
+    EXPECT_FALSE(recipe.contains(key)) << key;
+  const auto summary = read_json(dir.path / "v5" / "summary.json");
+  EXPECT_FALSE(summary.contains("order_basis"));
+  EXPECT_FALSE(summary.contains("locate_in_aim"));
+  for (const auto& s : summary.at("scenarios"))
+    EXPECT_FALSE(s.at("construction").at("v5").contains("exit_rate"));
+}
+
+// Review F8: the shared execution liquidity cache at a FIXED rate is bit-identical. Every
+// lockstep book (capped S2/S3 working orders, write-offs, forced exits) under baseline,
+// the v5 reference rule, the exit rate and both order bases equals the uncached book in
+// every compared field; the pinned CLI with --liquidity-cache publishes every file byte
+// for byte (the financing matrix included).
+TEST(NavV6, LiquidityCacheAtFixedRateIsBitIdentical) {
+  const auto in = SyntheticRole::default_role();
+  const auto scenarios = st::fixed_nav_scenarios();
+  st::TargetReplayConfig baseline; baseline.cadence = 1; baseline.trade_fraction = .5;
+  for (const auto& rule : {baseline, v6_aim(0.05, 0.1), v6_aim(0.05, 0.1, 0.1)}) {
+    for (const auto basis : {st::NavOrderBasis::Target, st::NavOrderBasis::Delta}) {
+      auto off = v5_config(0.05, 0.1, 1e7);
+      off.target = rule; off.order_basis = basis;
+      auto on = off; on.liquidity_cache = true;
+      const auto a = st::replay_nav_scenarios(in.view(), off, scenarios);
+      const auto b = st::replay_nav_scenarios(in.view(), on, scenarios);
+      ASSERT_TRUE(a) << a.error().to_string();
+      ASSERT_TRUE(b) << b.error().to_string();
+      ASSERT_EQ(a->size(), b->size());
+      usize capped = 0;
+      for (usize k = 0; k < a->size(); ++k) {
+        const auto& x = (*a)[k]; const auto& y = (*b)[k];
+        expect_same_result(x, y);
+        EXPECT_EQ(bits(x.max_return_identity_error), bits(y.max_return_identity_error)) << k;
+        EXPECT_EQ(bits(x.max_cash_book_error), bits(y.max_cash_book_error)) << k;
+        for (usize d = 0; d < x.days.size(); ++d) {
+          const auto& u = x.days[d]; const auto& v = y.days[d];
+          EXPECT_EQ(bits(u.net_return), bits(v.net_return)) << k << ' ' << d;
+          EXPECT_EQ(bits(u.linear_cost_dollars), bits(v.linear_cost_dollars)) << k << ' ' << d;
+          EXPECT_EQ(bits(u.unrationed_cost_dollars), bits(v.unrationed_cost_dollars)) << d;
+          EXPECT_EQ(u.blocked_liquidity, v.blocked_liquidity) << k << ' ' << d;
+          EXPECT_EQ(u.fallback_vol_fills, v.fallback_vol_fills) << k << ' ' << d;
+          if (k == st::nav_primary_scenario_index) capped += u.capped_fills;
+        }
+      }
+      EXPECT_GT(capped, 0U); // S2 working residuals exercised
+    }
+  }
+  const auto p = publication_panel();
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5);
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+  const auto fields = joined(v5_flags, {"--fields", pin.manifest_path, "--fields-sha256",
+                                        pin.manifest_sha256});
+  std::ostringstream out, err;
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "plain", fields), out, err), 0) << err.str();
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "cached", joined(fields, {"--liquidity-cache"})),
+                     out, err), 0) << err.str();
+  expect_same_files(dir.path / "plain", dir.path / "cached");
+  EXPECT_EQ(file_names(dir.path / "plain").size(), 12U); // recipe, summary, 5 books x 2 CSVs
+}
+
+// (b) Without drift the delta basis IS the target basis, bit for bit: constant prices
+// (absent names reprint at the same price), thin names capped by S2/S3 (residuals worked
+// across sessions and kept on non-rebalance decisions), forced and absent exits, S3
+// write-offs and the financing matrix with the locate rule (special names), under
+// baseline (cadence 1 and 3) and v5 (theta 1; theta .05 with the exit rate). Only drift
+// separates the bases, so this pins every delta code path to the target arithmetic.
+TEST(NavV6, DeltaWithoutDriftIsTargetBitForBit) {
+  Panel p(40, 8); p.begin = 3;
+  Lcg g{17};
+  for (usize t = 0; t < p.d; ++t)
+    for (usize i = 0; i < p.n; ++i) {
+      const auto c = p.k(t, i);
+      p.signal[c] = g.next() - 0.5;
+      p.volume[c] = i < 3 ? 2e3 : 1e6; // names 0-2 are thin: the 1% ADV cap binds
+      const f64 u = g.next();
+      if (t > 0 && u < 0.05) p.absent(t, i); else if (u < 0.10) p.nonmember(t, i);
+    }
+  const auto f = random_fields(p, 23);
+  st::TargetReplayConfig daily; daily.cadence = 1; daily.trade_fraction = 1;
+  st::TargetReplayConfig slow; slow.cadence = 3; slow.trade_fraction = .5;
+  const auto matrix = st::nav_scenario_matrix(true);
+  usize capped = 0, blocked = 0, written_off = 0;
+  f64 forced = 0;
+  for (const auto& rule : {daily, slow, v6_aim(1, 0), v6_aim(0.05, 0.1, 0.05)}) {
+    auto target = config(matrix[0], 1e6, rule);
+    target.liquidity_window = 5; target.min_vol_pairs = 3;
+    auto delta = target; delta.order_basis = st::NavOrderBasis::Delta;
+    const auto a = st::replay_nav_scenarios(with_fields(p, f), target, matrix);
+    const auto b = st::replay_nav_scenarios(with_fields(p, f), delta, matrix);
+    ASSERT_TRUE(a) << a.error().to_string();
+    ASSERT_TRUE(b) << b.error().to_string();
+    ASSERT_EQ(a->size(), b->size());
+    for (usize k = 0; k < a->size(); ++k) {
+      const auto& x = (*a)[k]; const auto& y = (*b)[k];
+      expect_same_result(x, y);
+      EXPECT_EQ(bits(x.max_cash_book_error), bits(y.max_cash_book_error)) << k;
+      for (usize d = 0; d < x.days.size(); ++d) {
+        const auto& u = x.days[d]; const auto& v = y.days[d];
+        expect_same_financing(u, v);
+        EXPECT_EQ(bits(u.net_return), bits(v.net_return)) << k << ' ' << d;
+        EXPECT_EQ(bits(u.planned_forced), bits(v.planned_forced)) << k << ' ' << d;
+        EXPECT_EQ(bits(u.planned_net), bits(v.planned_net)) << k << ' ' << d;
+        capped += u.capped_fills; blocked += u.blocked_short_names; forced += u.planned_forced;
+      }
+      written_off += x.written_off.count;
+    }
+  }
+  EXPECT_GT(capped, 0U);
+  EXPECT_GT(blocked, 0U);
+  EXPECT_GT(written_off, 0U);
+  EXPECT_GT(forced, 0);
+}
+
+// (b) theta 1 with drift, hand-computed at NAV 1000 without costs. Both bases plan the
+// aim (gross 1, net 0) at every decision. A (the short) moves 100, 100, 120, 132, 132, 132
+// and B stays at 100. Decision 2 cuts A from -600 to -450 and B from 500 to 450 (NAV 900);
+// A rises 10% before the fill: the target book buys 210 of A (the drift traded back)
+// and holds -450 / 450; the delta book buys the 150 decided and holds -510 / 450 (the
+// -60 drift rides). After the drift-free session 4 both hold -420 / 420 at NAV 840.
+TEST(NavV6, DeltaThetaOnePlansTheAimAndRidesOneDayOfDrift) {
+  Panel p(6, 2); p.by_name({1, 2});
+  const f64 a[] = {100, 100, 120, 132, 132, 132};
+  for (usize t = 0; t < p.d; ++t) p.price(t, 0, a[t]);
+  const auto target = config(flat(0, 0), 1000, v6_aim(1, 0));
+  auto delta = target; delta.order_basis = st::NavOrderBasis::Delta;
+  const auto rt = st::replay_nav(p.nav(), target);
+  const auto rd = st::replay_nav(p.nav(), delta);
+  ASSERT_TRUE(rt) << rt.error().to_string();
+  ASSERT_TRUE(rd) << rd.error().to_string();
+  const auto& t = rt->days; const auto& d = rd->days;
+  ASSERT_EQ(t.size(), 6U); ASSERT_EQ(d.size(), 6U);
+  for (usize k = 0; k < t.size(); ++k) {
+    EXPECT_EQ(bits(t[k].pretrade_nav), bits(d[k].pretrade_nav)) << k; // same marks, no costs
+    if (!t[k].decision) continue;
+    EXPECT_NEAR(t[k].planned_gross, 1.0, 1e-12) << k;
+    EXPECT_NEAR(d[k].planned_gross, 1.0, 1e-12) << k;
+    EXPECT_NEAR(t[k].planned_net, 0.0, 1e-12) << k;
+    EXPECT_NEAR(d[k].planned_net, 0.0, 1e-12) << k;
+  }
+  EXPECT_NEAR(t[3].pretrade_nav, 840, 1e-9);
+  for (const auto* days : {&t, &d}) {
+    EXPECT_NEAR((*days)[1].traded_dollars, 1000, 1e-9); // deployment: nothing drifted yet
+    EXPECT_NEAR((*days)[2].traded_dollars, 0, 1e-9);    // decision 1 is on the aim
+    EXPECT_NEAR((*days)[2].short_dollars, 600, 1e-9);
+    EXPECT_NEAR((*days)[2].long_dollars, 500, 1e-9);
+    EXPECT_NEAR((*days)[4].short_dollars, 420, 1e-9); // back on the target
+    EXPECT_NEAR((*days)[4].long_dollars, 420, 1e-9);
+  }
+  EXPECT_NEAR(t[3].traded_dollars, 210 + 50, 1e-9);
+  EXPECT_NEAR(t[3].short_dollars, 450, 1e-9);
+  EXPECT_NEAR(t[3].long_dollars, 450, 1e-9);
+  EXPECT_NEAR(d[3].traded_dollars, 150 + 50, 1e-9);
+  EXPECT_NEAR(d[3].short_dollars, 510, 1e-9);
+  EXPECT_NEAR(d[3].long_dollars, 450, 1e-9);
+  EXPECT_NEAR(t[4].traded_dollars, 30 + 30, 1e-9);
+  EXPECT_NEAR(d[4].traded_dollars, 90 + 30, 1e-9);
+}
+
+// (b) A capped residual under delta keeps its decision-dollar delta. B (thin, the long,
+// target 5000 at NAV 1e4) deploys over three S2 sessions at 1% of ADV (2000, 2000, then
+// the rest; ADV 2e5, 2e5, 2.05e5) while its price rises 10% twice (sessions 7 and 8). The
+// target book fills 2000, 2000, 380 and ends exactly on 5000; the delta book fills 2000,
+// 2000, 1000 (the 5000 decided) and ends on 5000 plus its fills' drift, 4620 - 4000.
+// Non-rebalance decisions (cadence 1000) keep both working orders.
+TEST(NavV6, DeltaCappedResidualKeepsItsDecisionDollarDelta) {
+  Panel p(11, 2); p.begin = 5; p.by_name({1, 2});
+  for (usize t = 0; t < p.d; ++t) {
+    p.volume[p.k(t, 0)] = 1e8; p.volume[p.k(t, 1)] = 2e3;
+    p.price(t, 1, t <= 6 ? 100.0 : t == 7 ? 110.0 : 121.0);
+  }
+  const auto target = config(st::fixed_nav_scenarios()[st::nav_primary_scenario_index], 1e4,
+                             hold_after_deployment());
+  auto delta = target; delta.order_basis = st::NavOrderBasis::Delta;
+  const auto rt = st::replay_nav(p.nav(), target);
+  const auto rd = st::replay_nav(p.nav(), delta);
+  ASSERT_TRUE(rt) << rt.error().to_string();
+  ASSERT_TRUE(rd) << rd.error().to_string();
+  const auto& t = rt->days; const auto& d = rd->days; // row k is session 5 + k
+  for (const auto* days : {&t, &d}) {
+    const auto& r = *days;
+    EXPECT_NEAR(r[1].traded_dollars, 5000 + 2000, 1e-6); // A complete, B capped
+    EXPECT_EQ(r[1].capped_fills, 1U);
+    EXPECT_NEAR(r[2].traded_dollars, 2000, 1e-6);
+    EXPECT_EQ(r[2].capped_fills, 1U);
+    EXPECT_EQ(r[3].fills, 1U);
+    EXPECT_EQ(r[3].capped_fills, 0U);
+    EXPECT_EQ(r[4].fills, 0U); // both orders complete
+    EXPECT_NEAR(r[4].short_dollars, 5000, 1e-6);
+  }
+  EXPECT_NEAR(t[3].traded_dollars, 5000 - (2000 * 1.21 + 2000 * 1.1), 1e-6);
+  EXPECT_NEAR(t[3].long_dollars, 5000, 1e-6);
+  EXPECT_NEAR(d[3].traded_dollars, 1000, 1e-6);
+  EXPECT_NEAR(d[3].long_dollars, 5000 + (4620 - 4000), 1e-6);
+  EXPECT_NEAR(d[1].traded_dollars - 5000 + d[2].traded_dollars + d[3].traded_dollars, 5000,
+              1e-6); // B's fills sum to the decided delta
+}
+
+// Under the locate rule a special-tier name's orders stay target orders. Name 0 (special,
+// long) is cut from +1/3 to +1/6 of NAV at decision 2 and its price falls 60% before the
+// fill. A delta order would sell the decided 1/6 x NAV through zero and open a short of
+// .6 x 1/3 - 1/6 of NAV (the unguarded book: special but without the locate rule); the
+// guarded book's target order ends long on its target. Everything else is the same.
+TEST(NavV6, DeltaSpecialTierOrdersStayTargetUnderTheLocateRule) {
+  Panel p(6, 5);
+  for (usize t = 0; t < p.d; ++t) {
+    const f64 row[] = {t < 2 ? 5.0 : 3.5, 1, 2, 3, 4};
+    for (usize i = 0; i < p.n; ++i) p.signal[p.k(t, i)] = row[i];
+    p.price(t, 0, t < 3 ? 100.0 : 40.0);
+  }
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5); // cap 1e8 / 4e7, SI .5: special
+  auto guarded = flat(0, 0); guarded.financing = swap_fin();
+  auto unguarded = guarded;
+  unguarded.financing.id = "swap-no-block"; unguarded.financing.block_special_shorts = false;
+  auto cfg = config(guarded, 1e6, v6_aim(1, 0)); cfg.order_basis = st::NavOrderBasis::Delta;
+  const auto g = st::replay_nav(with_fields(p, f), cfg);
+  cfg.scenario = unguarded;
+  const auto u = st::replay_nav(with_fields(p, f), cfg);
+  ASSERT_TRUE(g) << g.error().to_string();
+  ASSERT_TRUE(u) << u.error().to_string();
+  EXPECT_EQ(g->days[0].member_tiers, (std::array<usize, 3>{4, 0, 1}));
+  for (usize k = 0; k < 3; ++k) { // identical books before the fill of decision 2
+    EXPECT_EQ(bits(g->days[k].short_dollars), bits(u->days[k].short_dollars)) << k;
+    EXPECT_EQ(bits(g->days[k].long_dollars), bits(u->days[k].long_dollars)) << k;
+    EXPECT_EQ(g->days[k].blocked_short_names, 0U) << k; // a long cut: nothing to block
+  }
+  const f64 nav2 = g->days[2].posttrade_nav;
+  const f64 opened = 0.6 * 1e6 / 3.0 - nav2 / 6.0; // drift minus the decided sale
+  EXPECT_GT(opened, 30000);
+  EXPECT_NEAR(u->days[3].short_dollars - g->days[3].short_dollars, opened, 1.0);
+  EXPECT_NEAR(g->days[3].long_dollars - u->days[3].long_dollars, nav2 / 6.0, 1.0);
+}
+
+// (c) The exit rate in the NAV book: exit_rate 1 is the default book bit for bit; at .05
+// (theta 1, dust .1, constant prices, no costs) name 5 (present; leaves membership at
+// decision 3) decays 5% per decision until |next| <= .1 / N_d sets it to 0, its planned
+// forced turnover exactly that decay; name 4, absent at decision 3 only, exits at once.
+// Six centered ranks have gross 1.8: name 5's aim is .5 / 1.8, name 4's .3 / 1.8.
+TEST(NavV6, ExitRateDecaysPresentNonmemberInTheNavBook) {
+  Panel p(70, 6); p.by_name({1, 2, 3, 4, 5, 6});
+  for (usize t = 3; t < p.d; ++t) p.nonmember(t, 5);
+  p.absent(3, 4);
+  const auto immediate = config(flat(0, 0), 1e6, v6_aim(1, 0.1));
+  auto one = immediate; one.target.exit_rate = 1;
+  auto slow = immediate; slow.target.exit_rate = 0.05;
+  const auto ri = st::replay_nav(p.nav(), immediate);
+  const auto r1 = st::replay_nav(p.nav(), one);
+  const auto rs = st::replay_nav(p.nav(), slow);
+  ASSERT_TRUE(ri) << ri.error().to_string();
+  ASSERT_TRUE(r1) << r1.error().to_string();
+  ASSERT_TRUE(rs) << rs.error().to_string();
+  expect_same_result(*ri, *r1);
+  EXPECT_NEAR(ri->days[3].planned_forced, (0.5 + 0.3) / 1.8, 1e-12);
+  EXPECT_EQ(ri->days[4].planned_forced, 0);
+  const auto& d = rs->days;
+  f64 prev = 0.5 / 1.8;
+  usize snapped = 0;
+  for (usize t = 3; t + 2 < p.d; ++t) {
+    const f64 band = 0.1 / (t == 3 ? 4.0 : 5.0); // N_d: name 4 is back from decision 4
+    f64 next = prev * (1 - 0.05);
+    if (std::abs(next) <= band) next = 0;
+    EXPECT_NEAR(d[t].planned_forced, prev - next + (t == 3 ? 0.3 / 1.8 : 0.0), 1e-12) << t;
+    if (next == 0 && prev != 0) {
+      snapped = t;
+      EXPECT_EQ(d[t].planned_held_names + 1, d[t - 1].planned_held_names) << t;
+    }
+    prev = next;
+  }
+  EXPECT_EQ(snapped, 54U); // .5 / 1.8 x .95^k <= .02 first at k = 52
+  for (usize t = 0; t < 3; ++t) expect_same_day(ri->days[t], d[t]);
+}
+
+// (d) Locate-in-aim against the post-block path. Name 6 (mid-range exposures) is special
+// at every decision and always ranks lowest, so its desired weight is the largest short.
+// The post-block book cannot short it after neutralization and runs net long by about
+// that weight; zeroing the aim before neutralization lets the regression re-balance net,
+// so the mean |net| leverage is smaller and the safety-net block refuses fewer dollars.
+// Every decision zeroes exactly that aim; without the borrow fields or a neutralizing
+// construction locate-in-aim is refused.
+TEST(NavV6, LocateInAimLeavesLessNetThanThePostBlock) {
+  auto p = noisy_panel(70, 12, 21);
+  constexpr usize special = 6;
+  for (usize t = 0; t < p.d; ++t) p.signal[p.k(t, special)] = -10;
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, special, 1e6, 5e5); // small cap, SI .5
+  auto rule = construction_daily(); rule.band_multiple = 0;
+  auto s = flat(0, 0); s.financing = swap_fin();
+  const auto post = config(s, 1e6, rule);
+  auto aim = post; aim.locate_in_aim = true;
+  const auto a = st::replay_nav(with_fields(p, f), post);
+  const auto b = st::replay_nav(with_fields(p, f), aim);
+  ASSERT_TRUE(a) << a.error().to_string();
+  ASSERT_TRUE(b) << b.error().to_string();
+  f64 net_post = 0, net_aim = 0, blocked_post = 0, blocked_aim = 0;
+  usize rows = 0, decisions = 0;
+  for (usize t = 0; t < p.d; ++t) {
+    const auto& x = a->days[t]; const auto& y = b->days[t];
+    blocked_post += x.blocked_short_dollars; blocked_aim += y.blocked_short_dollars;
+    EXPECT_EQ(x.construction.locate_zeroed, 0U) << t;
+    if (y.decision) {
+      EXPECT_EQ(y.construction.locate_zeroed, 1U) << t;
+      ++decisions;
+    }
+    if (t < 22) continue; // neutralized from decision 20, deployed at session 21
+    net_post += std::abs(x.net_leverage); net_aim += std::abs(y.net_leverage); ++rows;
+  }
+  ASSERT_GT(rows, 0U);
+  EXPECT_EQ(decisions, p.d - 2);
+  EXPECT_GT(net_post / static_cast<f64>(rows), 0.05); // the post block leaves a net long
+  EXPECT_LT(net_aim, 0.5 * net_post);
+  EXPECT_LT(blocked_aim, blocked_post);
+  auto no_fields = aim; no_fields.scenario = flat(0, 0);
+  const auto unfielded = st::replay_nav(p.nav(), no_fields);
+  ASSERT_FALSE(unfielded);
+  EXPECT_EQ(unfielded.error().code(), co::ErrorCode::InvalidArgument);
+  auto no_neutral = aim; no_neutral.target.neutralize = st::TargetNeutralize::None;
+  const auto unneutral = st::replay_nav(with_fields(p, f), no_neutral);
+  ASSERT_FALSE(unneutral);
+  EXPECT_EQ(unneutral.error().code(), co::ErrorCode::InvalidArgument);
+}
+
+// Recipe/summary keys of the v6 options (only when non-default) and CLI refusals, all
+// before any output: delta adds order_basis + order_basis_rule (every other recipe value
+// unchanged) and summary order_basis; the exit rate adds exit_rate + exit_rule and
+// construction.v5.exit_rate; locate-in-aim adds locate_in_aim + locate_in_aim_rule and
+// summary locate_in_aim.zeroed_special_short_aims (cadence 1: seven decisions, name 0
+// the special lowest-ranked member at six of them; it is absent at session 4).
+TEST(NavV6, RecipeSummaryKeysAndCliRefusals) {
+  const auto p = publication_panel();
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5); // name 0 (the short) special
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+  const std::vector<std::string> fields{"--fields", pin.manifest_path, "--fields-sha256",
+                                        pin.manifest_sha256};
+  std::ostringstream out, err;
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "base", {}), out, err), 0) << err.str();
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "delta", {"--order-basis", "delta"}), out, err), 0)
+      << err.str();
+  const auto base = read_json(dir.path / "base" / "recipe.json");
+  const auto delta = read_json(dir.path / "delta" / "recipe.json");
+  auto keys = sorted_keys(base);
+  keys.emplace_back("order_basis"); keys.emplace_back("order_basis_rule");
+  std::sort(keys.begin(), keys.end());
+  EXPECT_EQ(sorted_keys(delta), keys);
+  EXPECT_EQ(delta.at("order_basis"), "delta");
+  EXPECT_TRUE(delta.at("order_basis_rule").is_string());
+  for (const auto& item : base.items()) EXPECT_EQ(delta.at(item.key()), item.value()) << item.key();
+  const auto delta_summary = read_json(dir.path / "delta" / "summary.json");
+  EXPECT_EQ(delta_summary.at("order_basis"), "delta");
+  EXPECT_EQ(delta_summary.at("recipe_sha256"), co::sha256_hex(delta.dump()).value());
+  EXPECT_FALSE(read_json(dir.path / "base" / "summary.json").contains("order_basis"));
+
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "exit", joined(v5_flags, {"--exit-rate", ".05"})),
+                     out, err), 0) << err.str();
+  const auto exits = read_json(dir.path / "exit" / "recipe.json");
+  EXPECT_EQ(exits.at("exit_rate"), 0.05);
+  EXPECT_TRUE(exits.at("exit_rule").is_string());
+  EXPECT_FALSE(exits.contains("forced_exits")); // the target replay's own key
+  for (const auto& s : read_json(dir.path / "exit" / "summary.json").at("scenarios"))
+    EXPECT_EQ(s.at("construction").at("v5").at("exit_rate"), 0.05);
+
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "locate",
+                              joined(fields, {"--neutralize", "price-risk-v1", "--cadence", "1",
+                                              "--locate-in-aim"})), out, err), 0) << err.str();
+  const auto locate = read_json(dir.path / "locate" / "recipe.json");
+  EXPECT_EQ(locate.at("locate_in_aim"), true);
+  EXPECT_TRUE(locate.at("locate_in_aim_rule").is_string());
+  const auto locate_summary = read_json(dir.path / "locate" / "summary.json");
+  EXPECT_EQ(locate_summary.at("locate_in_aim").at("zeroed_special_short_aims"), 6);
+
+  const std::vector<std::pair<std::string, std::vector<std::string>>> refused{
+      {"r1", {"--neutralize", "price-risk-v1", "--locate-in-aim"}}, // no borrow fields
+      {"r2", joined(fields, {"--locate-in-aim"})},                  // no neutralization
+      {"r4", {"--exit-rate", ".05"}},                               // baseline-v1
+      {"r5", {"--rule", "aim-partial-v5", "--exit-rate", ".05"}},   // no dust band
+      {"r6", joined(v5_flags, {"--exit-rate", "0"})},
+      {"r7", joined(v5_flags, {"--exit-rate", "1.5"})}};
+  for (const auto& [name, extra] : refused)
+    EXPECT_EQ(dispatch(nav_args(a, dir.path / name, extra), out, err), 1) << name;
+  const std::vector<std::pair<std::string, std::vector<std::string>>> usage{
+      {"u1", {"--order-basis", "drift"}},
+      {"u2", {"--liquidity-cache", "--liquidity-cache"}},
+      {"u3", joined(v5_flags, {"--exit-rate", "fast"})}};
+  for (const auto& [name, extra] : usage)
+    EXPECT_EQ(dispatch(nav_args(a, dir.path / name, extra), out, err), 2) << name;
+  for (const auto* name : {"r1", "r2", "r4", "r5", "r6", "r7", "u1", "u2", "u3"})
+    EXPECT_FALSE(std::filesystem::exists(dir.path / name)) << name;
+}
+
+// The target replay's own CLI (targets verb) carries the exit rate: --exit-rate 1 is the
+// plain run byte for byte; .05 records exit_rate, exit_rule and the decaying forced_exits
+// spelling in the recipe and construction.v5.exit_rate in the summary, and spreads the
+// exit of name 2 (a present nonmember from decision 5) beyond the window, so its forced
+// turnover is smaller; without --role (no presence) it is refused before any output.
+TEST(NavV6, TargetsVerbCarriesTheExitRate) {
+  auto p = publication_panel();
+  for (usize t = 5; t < p.d; ++t) p.nonmember(t, 2);
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  std::ostringstream out, err;
+  const auto targets = [&](const std::string& output, bool role,
+                           const std::vector<std::string>& extra) {
+    std::vector<std::string> all{"targets", "--combined", a.cfg.combined_path,
+                                 "--combined-sha256", a.cfg.combined_sha256, "--output",
+                                 (dir.path / output).string(), "--rule", "aim-partial-v5",
+                                 "--cadence", "1", "--trade-fraction", ".5", "--dust-multiple",
+                                 ".1"};
+    if (role) {
+      for (const auto& arg : {std::string("--role"), a.cfg.role_path,
+                              std::string("--role-sha256"), a.cfg.role_sha256})
+        all.push_back(arg);
+    }
+    all.insert(all.end(), extra.begin(), extra.end());
+    std::vector<char*> argv;
+    for (auto& arg : all) argv.push_back(arg.data());
+    return st::dispatch_target_replay(static_cast<int>(argv.size()), argv.data(), out, err);
+  };
+  ASSERT_EQ(targets("plain", true, {}), 0) << err.str();
+  ASSERT_EQ(targets("one", true, {"--exit-rate", "1"}), 0) << err.str();
+  ASSERT_EQ(targets("slow", true, {"--exit-rate", ".05"}), 0) << err.str();
+  expect_same_files(dir.path / "plain", dir.path / "one");
+  const auto plain = read_json(dir.path / "plain" / "recipe.json");
+  const auto slow = read_json(dir.path / "slow" / "recipe.json");
+  EXPECT_EQ(plain.at("forced_exits"), "immediate;charged-before-discretionary;may-breach");
+  EXPECT_FALSE(plain.contains("exit_rate"));
+  EXPECT_EQ(slow.at("forced_exits"), "decay-at-exit-rate;snap-inside-dust-band;absent-immediate");
+  EXPECT_EQ(slow.at("exit_rate"), 0.05);
+  EXPECT_TRUE(slow.at("exit_rule").is_string());
+  const auto plain_summary = read_json(dir.path / "plain" / "summary.json");
+  const auto slow_summary = read_json(dir.path / "slow" / "summary.json");
+  EXPECT_FALSE(plain_summary.at("construction").at("v5").contains("exit_rate"));
+  EXPECT_EQ(slow_summary.at("construction").at("v5").at("exit_rate"), 0.05);
+  EXPECT_LT(slow_summary.at("forced_turnover").get<f64>(),
+            plain_summary.at("forced_turnover").get<f64>());
+  EXPECT_EQ(targets("norole", false, {"--exit-rate", ".05"}), 1);
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "norole"));
+}

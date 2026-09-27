@@ -123,6 +123,18 @@ inline constexpr atx::f64 nav_rate_min = 0.01, nav_rate_max = 0.15;
 [[nodiscard]] atx::f64 per_name_rate_v1(atx::f64 rra, atx::f64 lambda, atx::f64 nav,
                                         atx::f64 daily_vol, atx::f64 adv_dollars,
                                         atx::f64 rate_min, atx::f64 rate_max) noexcept;
+// What a working order fixes (v6 prereg C1).
+// Target (default): the decision-NAV dollar target planned x NAVpost; EXECUTE requests
+//   target - held, so one-day price drift between decision and fill is traded back.
+// Delta: a nonzero plan's order is the decision-NAV dollar delta
+//   (planned - current) x NAVpost = planned x NAVpost - held_d; EXECUTE requests that
+//   delta minus the dollars already filled on it, so the drift rides and the next DECIDE
+//   re-plans from the drifted holding at theta. A complete fill lands on the target plus
+//   the drift since the decision; a capped residual keeps its remaining delta (never
+//   drift-adjusted) until filled, replaced by a decision that changes the name's plan, or
+//   cancelled. A zero plan (every exit) and, under the locate rule, an order on a
+//   special-tier name stay target orders. Without drift Delta is Target bit for bit.
+enum class NavOrderBasis : atx::u8 { Target = 0, Delta = 1 };
 struct NavReplayConfig {
   TargetReplayConfig target{}; // one_way_bps and annual_borrow_bps must be zero
   NavScenario scenario{};
@@ -135,6 +147,24 @@ struct NavReplayConfig {
   NavRateRule rate{NavRateRule::Fixed};
   atx::f64 rate_rra{nav_rate_rra}, rate_min{nav_rate_min}, rate_max{nav_rate_max};
   atx::f64 rate_lambda{nav_rate_lambda};
+  NavOrderBasis order_basis{NavOrderBasis::Target};
+  // Locate-in-aim (v6 prereg C3): at each rebalance decision a member in the special borrow
+  // tier of that decision gets no negative desired weight BEFORE the neutralization
+  // (detail::form_desired no_short), shared by every book; each book's post-rule
+  // locate block stays as a safety net. Requires the borrow fields and a neutralizing
+  // construction (target.neutralize != None).
+  bool locate_in_aim{};
+  // Execution liquidity from the shared per-session cache also at a fixed rate (v6 review F8):
+  // each execution session forms every working order's window once for all books
+  // instead of once per book. The same arithmetic, so every output is bit-identical
+  // (asserted by the tests); only work and 24 bytes per name of admission change.
+  bool liquidity_cache{};
+};
+// The v6 execution options of a run_nav_replay call (copied into its NavReplayConfig;
+// CLI --order-basis target|delta, --locate-in-aim, --liquidity-cache).
+struct NavExecutionOptions {
+  NavOrderBasis order_basis{NavOrderBasis::Target};
+  bool locate_in_aim{}, liquidity_cache{};
 };
 // The trading rate of a run_nav_replay call (copied into its NavReplayConfig; CLI
 // --rate fixed|per-name-v1, --rate-rra, --rate-lambda, --rate-min, --rate-max).
@@ -380,10 +410,23 @@ struct NavFieldsPin {
                                                const NavFieldsPin& fields,
                                                const NavRateOptions& rate,
                                                std::ostream& progress);
+// With the v6 execution options: Delta adds order_basis / order_basis_rule to the recipe
+// and order_basis to the summary; locate-in-aim adds locate_in_aim / locate_in_aim_rule
+// to the recipe and locate_in_aim {zeroed_special_short_aims} to the summary; the
+// liquidity cache adds nothing (every output byte is unchanged). NavExecutionOptions{}
+// is exactly the five-argument overload.
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               const NavFieldsPin& fields,
+                                               const NavRateOptions& rate,
+                                               const NavExecutionOptions& execution,
+                                               std::ostream& progress);
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
 // --fields PATH/manifest.json --fields-sha256 SHA enables the financing matrix.
 // --rate fixed|per-name-v1 is refused (usage error) unless --rule aim-partial-v5, and
 // --rate-rra/--rate-lambda/--rate-min/--rate-max unless --rate per-name-v1.
+// v6: --order-basis target|delta, --exit-rate R (TargetReplayConfig::exit_rate), and
+// the valueless flags --locate-in-aim and --liquidity-cache.
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
 } // namespace atx::impl::strategy

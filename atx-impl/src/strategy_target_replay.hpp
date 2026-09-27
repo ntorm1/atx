@@ -46,6 +46,13 @@ struct TargetReplayConfig {
   // and monthly_budget is ignored; aim_leverage in [1, 2], dust_multiple in [0, 0.5].
   // Every other rule requires aim_leverage 1 and dust_multiple 0 and is unchanged.
   atx::f64 aim_leverage{1.0}, dust_multiple{};
+  // Nonmember exit rate (v6 prereg C2), in (0, 1]. 1 (default): every nonmember exits to 0 at
+  // once, the rule above bit for bit. r < 1 (aim-partial-v5 with dust_multiple > 0 and
+  // prices only): at every decision a nonmember PRESENT at d moves
+  //   next_i = current_i * (1 - r),
+  // set to 0 when |next_i| <= dust_multiple / N_d (N_d = members at d; every name when
+  // N_d = 0), so an exit completes; a nonmember absent at d still exits to 0 at once.
+  atx::f64 exit_rate{1.0};
 };
 // All spans are borrowed for this synchronous call, date-major, immutable.
 // Prices are optional ALL together. Presence is source presence, independent of
@@ -72,6 +79,9 @@ struct ConstructionDay {
   atx::usize neutralize_used{}, neutralize_excluded{}, banded_names{};
   atx::f64 neutralize_excluded_share{}; // excluded-row gross / entry gross
   atx::f64 neutralize_amplification{};  // entry gross / residual gross; NaN if undefined
+  // NAV locate-in-aim (v6 prereg C3): members whose negative desired weight was set to 0
+  // before neutralization because they may not be shorted. 0 otherwise; no CSV column.
+  atx::usize locate_zeroed{};
 };
 struct TargetReplayDay {
   atx::usize decision{}, entry{}, endpoint{}; // dates sentinel if beyond input

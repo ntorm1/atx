@@ -59,6 +59,8 @@ bool neutralizing(const TargetReplayConfig& cfg) {
 bool aim_partial(const TargetReplayConfig& cfg) {
   return cfg.rule == TargetReplayRule::AimPartialV5;
 }
+// v6 prereg C2: nonmembers decay at exit_rate instead of exiting at once (1 = off).
+bool decaying_exit(const TargetReplayConfig& cfg) { return cfg.exit_rate != 1.0; }
 // Rate of the aim-partial-v5 move in the target replay: one fixed theta
 // (trade_fraction) for every name. The per-name rate (T36, rate per-name-v1) needs a
 // NAV and liquidity, so it is the NAV replay's own option: it fills the update_weights
@@ -104,6 +106,13 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
   if (!aim_partial(cfg) && (cfg.aim_leverage != 1.0 || cfg.dust_multiple != 0))
     return co::Err(co::ErrorCode::InvalidArgument,
                    "target replay: aim_leverage/dust_multiple are aim-partial-v5 only");
+  // exit_rate in (0, 1] (NaN refused); below 1 the decaying exit snaps inside the dust
+  // band, so it needs aim-partial-v5 with dust_multiple > 0 (else an exit never ends).
+  if (!(cfg.exit_rate > 0 && cfg.exit_rate <= 1) ||
+      (decaying_exit(cfg) && (!aim_partial(cfg) || !(cfg.dust_multiple > 0))))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: exit_rate must be in (0, 1]; below 1 it needs "
+                   "aim-partial-v5 with dust_multiple > 0");
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
@@ -189,6 +198,10 @@ usize members_at(const TargetReplayInput& in, usize d) {
 // current + theta * (aim - current), so the plan is bit-identical (also when fused,
 // as 1.0 * gap is exact). Deliberately no theta == 1 shortcut to `next = aim`: it
 // would round differently from baseline (amended ruling R-a).
+// exit_rate r < 1 (v6 prereg C2): a nonmember present at d moves current * (1 - r) at every
+// decision and snaps to 0 inside the exit band dust_multiple / N_d (+inf when N_d = 0);
+// an absent nonmember keeps the immediate exit. r == 1 never reaches that branch, so
+// the default exit is the `next = 0` above bit for bit.
 void aim_partial_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
                          bool rebalance, const std::vector<f64>& desired,
                          std::vector<f64>& current, std::span<const f64> per_name_rate,
@@ -200,6 +213,14 @@ void aim_partial_weights(const TargetReplayInput& in, const TargetReplayConfig& 
     const usize members = members_at(in, d);
     if (members) dust = cfg.dust_multiple / static_cast<f64>(members);
   }
+  const bool decaying = decaying_exit(cfg);
+  f64 exit_band = 0;
+  if (decaying) { // validate_config: dust_multiple > 0; update_weights: presence given
+    const usize members = members_at(in, d);
+    exit_band = members ? cfg.dust_multiple / static_cast<f64>(members)
+                        : std::numeric_limits<f64>::infinity();
+  }
+  const f64 keep = 1.0 - cfg.exit_rate;
   // update_weights refused any other span (check_rates): empty, or one rate per name.
   assert(per_name_rate.empty() || per_name_rate.size() == in.instruments);
   const bool per_name = !per_name_rate.empty();
@@ -219,6 +240,9 @@ void aim_partial_weights(const TargetReplayInput& in, const TargetReplayConfig& 
       const f64 theta = per_name ? per_name_rate[i] : cfg.trade_fraction;
       rate_sum += theta; ++rated;
       next = dusted ? current[i] : current[i] + theta * gap;
+    } else if (decaying && in.present[offset + i]) {
+      next = current[i] * keep;
+      if (std::abs(next) <= exit_band) next = 0;
     }
     const f64 trade = std::abs(next - current[i]);
     out.turnover += trade;
@@ -253,6 +277,11 @@ co::Status check_rates(const TargetReplayInput& in, const TargetReplayConfig& cf
                                         std::vector<f64>& current, TargetReplayDay& out,
                                         std::span<const f64> per_name_rate = {}) {
   ATX_TRY_VOID(check_rates(in, cfg, per_name_rate));
+  // A decaying exit holds only nonmembers PRESENT at d: presence is required (checked
+  // here, not at admission, because the saved blend is admitted before its prices load).
+  if (decaying_exit(cfg) && in.present.size() != in.dates * in.instruments)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: exit_rate below 1 needs prices (presence; --role)");
   if (aim_partial(cfg)) {
     aim_partial_weights(in, cfg, d, rebalance, desired, current, per_name_rate, out);
     return co::Ok();
@@ -301,12 +330,22 @@ co::Status check_rates(const TargetReplayInput& in, const TargetReplayConfig& cf
 // refusal (Unavailable), amplification entry/residual gross above the cap, or an
 // excluded-row gross share above the cap skips the rebalance. Contract and
 // allocation errors are not data refusals and abort the replay.
+// Locate-in-aim (NAV, v6 prereg C3): before the post-processing, a member that may not be
+// shorted (no_short) keeps no negative desired weight, so the neutralization's
+// intercept and beta columns re-balance the book around the zeroed shorts.
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                               usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
-                              PriceRiskScratch& scratch, ConstructionDay& out) {
+                              PriceRiskScratch& scratch, ConstructionDay& out,
+                              std::span<const u8> no_short = {}) {
   const usize n = in.instruments, offset = d * n;
+  if (!no_short.empty() && no_short.size() != n)
+    return co::Err(co::ErrorCode::InvalidArgument, "target replay: no-short mask geometry");
   const auto member = in.member.subspan(offset, n);
   desired_target(in.signal.subspan(offset, n), member, row, desired);
+  for (usize i = 0; i < no_short.size(); ++i) {
+    if (!member[i] || !no_short[i] || !(desired[i] < 0)) continue;
+    desired[i] = 0; ++out.locate_zeroed;
+  }
   if (!neutralizing(cfg)) return co::Ok(true);
   const PriceExposureInput prices{in.dates, n, in.close, in.raw_close, in.volume, in.present};
   NeutralizeStats stats;
@@ -630,6 +669,12 @@ f64 quantile(std::span<const f64> sorted, f64 q) {
   return sorted[lo] + (h - static_cast<f64>(lo)) * (sorted[hi] - sorted[lo]);
 }
 Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
+constexpr const char* exit_rule_declaration =
+    "exit_rate r < 1 (v6 prereg C2): at every decision a nonmember present at d moves next = "
+    "current * (1 - r) and is set to 0 when |next| <= dust_multiple / N_d (N_d = members at "
+    "d; every name when N_d = 0); a nonmember absent at d exits to 0 at once (stale carry "
+    "and write-off unchanged); the moves count as forced turnover; r = 1 is the immediate "
+    "exit";
 Json construction_recipe(const TargetReplayConfig& c) {
   Json j = Json::object();
   if (neutralizing(c)) {
@@ -667,6 +712,10 @@ Json construction_recipe(const TargetReplayConfig& c) {
         "counted in banded_names; non-rebalance decisions keep member weights; nonmembers "
         "exit to 0; theta = trade_fraction (rate fixed); monthly_budget unused";
   }
+  if (decaying_exit(c)) { // aim-partial-v5 only (validate_config); absent by default
+    j["exit_rate"] = c.exit_rate;
+    j["exit_rule"] = exit_rule_declaration;
+  }
   return j;
 }
 // construction.v5 (see detail::aim_partial_summary_json).
@@ -682,10 +731,12 @@ Json aim_partial_summary(const TargetReplayConfig& c,
   const auto mean = [](f64 sum, usize count) {
     return count ? Json(sum / static_cast<f64>(count)) : Json(nullptr);
   };
-  return Json{{"theta", c.trade_fraction}, {"dust_multiple", c.dust_multiple},
+  auto j = Json{{"theta", c.trade_fraction}, {"dust_multiple", c.dust_multiple},
       {"aim_leverage", c.aim_leverage}, {"rate", aim_rate(c)}, {"decisions", decisions.size()},
       {"mean_gross", mean(gross, decisions.size())}, {"mean_net", mean(net, decisions.size())},
       {"mean_held_share", mean(share, shared)}};
+  if (decaying_exit(c)) j["exit_rate"] = c.exit_rate;
+  return j;
 }
 Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
   usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
@@ -765,6 +816,8 @@ Json recipe(const TargetReplayRunConfig& cfg) {
       {"cost_basis", "target-change-no-drift;short-target/252;not-fills"},
       {"max_working_bytes", cfg.target.max_working_bytes}};
   if (construction_on(cfg.target)) j.update(construction_recipe(cfg.target));
+  if (decaying_exit(cfg.target))
+    j["forced_exits"] = "decay-at-exit-rate;snap-inside-dust-band;absent-immediate";
   return j;
 }
 co::Status write_json(const std::filesystem::path& path, const Json& j) {
@@ -910,6 +963,7 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
                "[--monthly-budget .30] [--role PATH --role-sha256 SHA] "
                "[--neutralize none|price-risk-v1 (needs --role)] [--band-multiple 0] "
                "[--dust-multiple 0 --aim-leverage 1 (aim-partial-v5 only)] "
+               "[--exit-rate 1 (below 1: aim-partial-v5, dust > 0, --role)] "
                "[--one-way-bps 0 --annual-borrow-bps 0] [--max-bytes 536870912]\n";
         return 0;
       }
@@ -942,6 +996,7 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
       else if (key == "--band-multiple") cfg.target.band_multiple = real();
       else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
       else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
+      else if (key == "--exit-rate") cfg.target.exit_rate = real();
       else if (key == "--neutralize") {
         if (!parse_neutralize(value, cfg.target.neutralize))
           throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
@@ -1013,8 +1068,9 @@ usize members_at(const TargetReplayInput& in, usize d) {
 }
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
                               std::vector<std::pair<f64, usize>>& row, std::vector<f64>& desired,
-                              PriceRiskScratch& scratch, ConstructionDay& out) {
-  return ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, scratch, out);
+                              PriceRiskScratch& scratch, ConstructionDay& out,
+                              std::span<const u8> no_short) {
+  return ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, scratch, out, no_short);
 }
 bool construction_active(const TargetReplayConfig& cfg) { return construction_on(cfg); }
 std::string construction_rule_id(const TargetReplayConfig& cfg) { return rule_id(cfg); }

@@ -52,8 +52,11 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // then the members' mean rate), else trade_fraction. A non-empty span must hold
 // exactly in.instruments rates in [0, 1] (NaN refused) under aim-partial-v5; any
 // other non-empty span is refused with InvalidArgument before anything moves (never a
-// silent fixed-theta fallback). `current` is updated in place to the plan and `out`
-// accumulates the planned turnover/exposure fields (and out.construction.banded_names).
+// silent fixed-theta fallback). exit_rate < 1 (aim-partial-v5): present nonmembers
+// decay instead of exiting (TargetReplayConfig::exit_rate); it needs in.present at full
+// geometry, else InvalidArgument before anything moves. `current` is updated in place
+// to the plan and `out` accumulates the planned turnover/exposure fields (and
+// out.construction.banded_names).
 [[nodiscard]] atx::core::Status update_weights(
     const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d, bool rebalance,
     atx::f64 spent, const std::vector<atx::f64>& desired, std::vector<atx::f64>& current,
@@ -66,10 +69,14 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // reading only sessions <= d). Returns false when the guard skips the rebalance
 // (data refusal or cap breach); contract and allocation errors are returned as
 // errors. `out` receives the neutralization record (banded_names is untouched).
+// no_short (NAV locate-in-aim, v6 prereg C3): empty (the default: unchanged), or one byte per
+// name; a member with no_short[i] != 0 and a negative tied-rank weight is set to 0
+// BEFORE the post-processing, so price-risk-v1 re-balances net and beta around it
+// (counted in out.locate_zeroed). A span of any other length is InvalidArgument.
 [[nodiscard]] atx::core::Result<bool> form_desired(
     const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d,
     std::vector<std::pair<atx::f64, atx::usize>>& row, std::vector<atx::f64>& desired,
-    PriceRiskScratch& scratch, ConstructionDay& out);
+    PriceRiskScratch& scratch, ConstructionDay& out, std::span<const atx::u8> no_short = {});
 // True iff any construction option is non-default or the rule is aim-partial-v5:
 // only then do recipes, CSVs and summaries carry construction keys/columns (the
 // default path emits none).
@@ -93,7 +100,8 @@ struct AimPartialDecision {
 // aim_leverage, rate ("fixed"; the NAV's per-name-v1 overrides it and adds
 // rate_stats) and, over the decisions, mean_gross,
 // mean_net and mean_held_share (held_names / N_d over decisions with members);
-// a mean over no decisions is null. Empty unless rule == AimPartialV5.
+// a mean over no decisions is null; exit_rate only when it is not 1. Empty unless
+// rule == AimPartialV5.
 [[nodiscard]] std::string aim_partial_summary_json(
     const TargetReplayConfig& cfg, std::span<const AimPartialDecision> decisions);
 // Working bytes of the construction scratch for `instruments` names (0 unless

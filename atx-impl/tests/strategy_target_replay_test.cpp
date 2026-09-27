@@ -909,3 +909,128 @@ TEST(TargetReplayV5, PerNameRateSpanIsChecked) {
   EXPECT_TRUE(st::detail::update_weights(in, v5, 0, true, 0, desired, bound_weights, bound_day,
                                          bounds));
 }
+
+// ---- v6 prereg C2: the nonmember exit rate ----
+namespace {
+st::TargetReplayConfig decaying(f64 theta, f64 dust, f64 exit_rate) {
+  auto c = aim_partial(theta, dust);
+  c.exit_rate = exit_rate;
+  return c;
+}
+// Role(70, 20) with prices: name 0 always ranks top (a constant aim) and leaves
+// membership while still present from decision 3 on; name 1 is absent (no price, not a
+// member) at decision 3 only.
+Role exit_role() {
+  Role r(70, 20, 9);
+  for (usize t = 0; t < r.d; ++t) r.signal[t * r.n] = 10.0;
+  for (usize t = 3; t < r.d; ++t) r.nonmember(t, 0);
+  const usize k = 3 * r.n + 1;
+  r.present[k] = 0; r.member[k] = 0; r.signal[k] = missing;
+  r.close[k] = missing; r.raw[k] = missing; r.volume[k] = missing;
+  return r;
+}
+usize members_of(const Role& r, usize t) {
+  usize count = 0;
+  for (usize i = 0; i < r.n; ++i) count += r.member[t * r.n + i] ? 1U : 0U;
+  return count;
+}
+} // namespace
+
+// Exit rate .05 at theta 1, dust .1: name 0 (constant top aim, .5 / (100 / 19)) leaves
+// membership while present at decision 3 and then moves current * (1 - .05) per decision,
+// bit for bit, until |next| <= .1 / N_d sets it to exactly 0 (where it stays); name 1,
+// absent at decision 3, exits at once. Forced turnover is exactly those moves.
+TEST(TargetReplayV6, ExitRateDecaysPresentNonmemberAndSnapsInsideTheDustBand) {
+  const auto r = exit_role();
+  const auto in = r.input();
+  const auto cfg = decaying(1, 0.1, 0.05);
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(r.n), w(r.n, 0.0);
+  usize snapped = 0;
+  for (usize d = 0; d < r.d; ++d) {
+    st::detail::desired_target(std::span<const f64>(r.signal).subspan(d * r.n, r.n),
+                               std::span<const u8>(r.member).subspan(d * r.n, r.n), row,
+                               desired);
+    const f64 prev0 = w[0], prev1 = w[1];
+    st::TargetReplayDay day;
+    const auto ok = st::detail::update_weights(in, cfg, d, true, 0, desired, w, day);
+    ASSERT_TRUE(ok) << ok.error().to_string();
+    if (d < 3) {
+      EXPECT_NEAR(w[0], 0.5 / (100.0 / 19.0), 1e-15) << d; // at its constant top aim
+      EXPECT_EQ(day.forced_turnover, 0) << d;
+      continue;
+    }
+    const f64 band = 0.1 / static_cast<f64>(members_of(r, d));
+    f64 expected = prev0 * (1 - 0.05);
+    if (std::abs(expected) <= band) expected = 0;
+    EXPECT_EQ(bits(w[0]), bits(expected)) << d;
+    f64 forced = std::abs(expected - prev0); // name order: name 0, then name 1
+    if (d == 3) {
+      EXPECT_EQ(w[1], 0); // absent: the immediate exit
+      forced += std::abs(prev1);
+    }
+    EXPECT_EQ(bits(day.forced_turnover), bits(forced)) << d;
+    if (w[0] == 0 && prev0 != 0) snapped = d;
+  }
+  // .095 x .95^k <= .1 / 19 first at k = 57: decision 59.
+  EXPECT_EQ(snapped, 59U);
+  EXPECT_EQ(w[0], 0);
+  EXPECT_EQ(members_of(r, 3), 18U);
+  EXPECT_EQ(members_of(r, 4), 19U);
+}
+
+// exit_rate 1 is the immediate exit bit for bit (every day field and total), and the
+// decaying exit trades the same total forced turnover (the moves telescope to the
+// weight) spread over decisions: less at the exit decision, some after it.
+TEST(TargetReplayV6, ExitRateOneIsTheImmediateExitAndDecaySpreadsTheSameTotal) {
+  const auto r = exit_role();
+  const auto base = aim_partial(0.25, 0.1);
+  const auto a = st::replay_targets(r.input(), base);
+  const auto b = st::replay_targets(r.input(), decaying(0.25, 0.1, 1));
+  const auto slow = st::replay_targets(r.input(), decaying(0.25, 0.1, 0.05));
+  ASSERT_TRUE(a) << a.error().to_string();
+  ASSERT_TRUE(b) << b.error().to_string();
+  ASSERT_TRUE(slow) << slow.error().to_string();
+  ASSERT_EQ(a->days.size(), b->days.size());
+  for (usize d = 0; d < a->days.size(); ++d) expect_same_target_day(a->days[d], b->days[d], d);
+  EXPECT_EQ(bits(a->total_turnover), bits(b->total_turnover));
+  EXPECT_EQ(bits(a->forced_turnover), bits(b->forced_turnover));
+  EXPECT_GT(a->days[3].forced_turnover, 0);
+  EXPECT_EQ(a->days[4].forced_turnover, 0); // gone at once
+  EXPECT_LT(slow->days[3].forced_turnover, a->days[3].forced_turnover);
+  EXPECT_GT(slow->days[4].forced_turnover, 0); // still decaying
+  for (usize d = 0; d < 3; ++d) expect_same_target_day(a->days[d], slow->days[d], d);
+  EXPECT_NEAR(slow->forced_turnover, a->forced_turnover, 1e-12);
+}
+
+// Refusals: exit_rate in (0, 1] (NaN refused); below 1 only under aim-partial-v5 with a
+// dust band; without prices (no presence) the replay is refused and the seam moves nothing.
+TEST(TargetReplayV6, ExitRateRefusals) {
+  const auto r = exit_role();
+  const auto runs = [&](const st::TargetReplayConfig& c) {
+    return static_cast<bool>(st::replay_targets(r.input(), c));
+  };
+  EXPECT_TRUE(runs(decaying(0.25, 0.1, 0.05)));
+  EXPECT_TRUE(runs(decaying(0.25, 0.1, 1)));
+  EXPECT_TRUE(runs(decaying(0.25, 0, 1))); // the immediate exit needs no band
+  for (const f64 bad : {0.0, -0.1, 1.01, missing})
+    EXPECT_FALSE(runs(decaying(0.25, 0.1, bad))) << bad;
+  EXPECT_FALSE(runs(decaying(0.25, 0, 0.05))); // no band: an exit would never end
+  st::TargetReplayConfig baseline; baseline.cadence = 1; baseline.exit_rate = 0.05;
+  EXPECT_FALSE(runs(baseline));
+  const auto f = random_fixture(5, 6, 3); // no prices
+  const auto refused = st::replay_targets(f.input(), decaying(0.25, 0.1, 0.05));
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(f.n), w(f.n, 0.25);
+  st::detail::desired_target(std::span<const f64>(f.signal).subspan(0, f.n),
+                             std::span<const u8>(f.member).subspan(0, f.n), row, desired);
+  st::TargetReplayDay day;
+  const auto status =
+      st::detail::update_weights(f.input(), decaying(0.25, 0.1, 0.05), 0, true, 0, desired, w, day);
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().code(), co::ErrorCode::InvalidArgument);
+  EXPECT_EQ(day.turnover, 0);
+  for (const f64 x : w) EXPECT_EQ(x, 0.25);
+}
