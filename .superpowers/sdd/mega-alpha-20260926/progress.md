@@ -1,5 +1,22 @@
 # Active task: recent-data DSL ensemble
 
+## FREEZE v4.1-daily-2026-09-27 — VALIDATION TRIAL #2 (declared before any validation run of this configuration)
+- Ruling (gate override): the TRAIN gate (>=1.0) was a root resource rule to conserve validation, not a validity
+  condition; v4.1 selection used no 2023-24 information, so its validation result is an honest OOS read. The owner
+  objective names "fresh TRAIN freeze of fundamentals/industry via CIK -> validation trial #2" as the next step.
+  Cost if wrong: validation spent on a config with TRAIN net .687 (expected VAL < 1); later trials carry the disclosure.
+- library fund_industry_ic_v4 daa9663e (37); TRAIN role v2 210fff96; TRAIN fields-v6 32565c32; VAL role v1 0c757c41;
+  VAL fields-v6 c034ecf3 (same producer blob, events-v2 74ed9a50, bridge r4-v1 ddf97164); orientations
+  mega-v4-train-u-1 11cfd3e4; admission v4-prior-v1 880a0a6a; weights ew-theme-v1 9a9c949a (31 admitted, pinned +1).
+- construction: nav baseline-v1 cadence 1 trade-fraction .25 band 2/N neutralize price-risk-v1, limits .20/.30,
+  --max-bytes 1 GiB; runner --min-names 1000. Primary S2 modeled-1bn-stale5-v1 x swap-fin-v1; stresses as v3.
+- binaries: atx-equity-strategy-ic.exe 647c71a7 (source 4ce2ec4e+); atx-equity-strategy-targets.exe 4642dd37.
+- TRAIN (in-sample for construction only): S2 x swap-fin net .687, gross .815, tau .0136/.0401.
+- Trial disclosure since v3 run #1 (TRAIN only): libraries v4 (37) + v4.2 (40); compositions 2 (v4, v4.2);
+  construction 1 + 5 (v4.1 grid) + 2 (v4.2); construction study 5 paper books (T26); post-mortem analyses (T16).
+  Validation: run #1 (v3) seen at book level only; this is run #2.
+- Script studies/v4_validation_once.sh (single run).
+
 ## POST-MORTEM v3 (owner goal 2026-09-27 pm: verify math, diagnose, continue to objective)
 - pool-2 integration ff'd to local main d63a7058 (merge of e587684b + main 9d8925ea); lanes branch from it.
 - MATH (root, book-level): NAV headline stats reproduce from daily CSVs (VAL net -1.271 / gross +.161; TRAIN
