@@ -116,16 +116,16 @@ FINRA_SHARES = [  # (security_id, available_at, value)
 FINRA_DTC = [(101, "2024-09-25", "1.5"), (202, "2024-10-01", "2.25")]
 
 
-def write_finra(root):
+def write_finra(root, shares_rows=FINRA_SHARES, dtc_rows=FINRA_DTC):
     (root / "asof").mkdir(parents=True)
-    dates = sorted({r[1] for r in FINRA_SHARES + FINRA_DTC} | {"2021-06-09"})
+    dates = sorted({r[1] for r in shares_rows + dtc_rows} | {"2021-06-09"})
     lines = ["settlement_date,due_date,dissemination_date,source,third_column_label,in_download,source_url"]
     lines.append("2021-05-28,2021-06-02,2021-06-09,official,Publication Date,True,x")
     lines += [f"{(dt.date.fromisoformat(d) - dt.timedelta(days=9)).isoformat()},x,{d},official,Publication Date,True,x"
               for d in dates if d != "2021-06-09"]
     (root / "dissemination_schedule.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
     outputs = {}
-    for name, rows in (("si_shares", FINRA_SHARES), ("si_dtc", FINRA_DTC)):
+    for name, rows in (("si_shares", shares_rows), ("si_dtc", dtc_rows)):
         path = root / "asof" / f"{name}.csv"
         path.write_bytes(("security_id,available_at,value\n" + "".join(f"{a},{b},{c}\n" for a, b, c in rows)).encode())
         outputs[name] = {"sha256": sha(path)}
@@ -209,7 +209,8 @@ def write_role(root, source_sha, sessions=SESSIONS):
     blobs = {"sessions.i64": np.array([day(d) * DAY_NS for d in sessions], dtype="<i8").tobytes(),
              "ids.u64": np.array(IDS, dtype="<u8").tobytes(), "member.u8": member.tobytes(),
              "close.f64": close.astype("<f8").tobytes(), "raw_close.f64": raw.astype("<f8").tobytes(),
-             "present.u8": present.tobytes()}
+             "present.u8": present.tobytes(),
+             "volume.f64": np.where(present != 0, 1e4, np.nan).astype("<f8").tobytes()}  # ~1%/day of shares_out
     files = {}
     for name, blob in blobs.items():
         (root / name).write_bytes(blob)
@@ -573,6 +574,9 @@ class ResearchFields(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "close.f64 bytes do not match"):
                 fx.run("role-bad", fields=["mkt_ret"])
             self.assertFalse((fx.base / "role-bad" / "manifest.json").exists())
+            with self.assertRaisesRegex(ValueError, "close.f64 bytes do not match"):  # the units-rule stream too
+                fx.run("role-bad-shares", fields=["si_shares", "shares_out"])
+            self.assertFalse((fx.base / "role-bad-shares" / "manifest.json").exists())
             csv_path = fx.finra / "asof" / "si_dtc.csv"
             csv_path.write_bytes(csv_path.read_bytes() + b"303,2024-10-02,1\n")
             with self.assertRaisesRegex(ValueError, "receipt"):
@@ -622,11 +626,18 @@ FB_GAP_1056 = (dt.date(2020, 12, 24), dt.date(2021, 1, 5))  # 1056 has no rows: 
 FB_GAP_END = dt.date(2021, 1, 6)
 FB_NULL_RAW_1059 = dt.date(2021, 2, 10)  # a row with a factor but no close: not an observation
 FB_NO_ROW_1058 = dt.date(2021, 2, 3)     # a repaired line without a session row: NaN, not a restated cell
-FB_IDS = list(range(1001, 1065))
+FB_CONSOL_1065 = dt.date(2021, 3, 22)  # genuine 1:10 consolidation; 15%/day turnover in both share bases
+FB_SPIKE_1068 = dt.date(2021, 2, 1)    # 1068 trades 5x its share count a day from here on
+FB_IDS = list(range(1001, 1069))
 FB_TH_DAYS = weekdays(dt.date(2019, 5, 1), dt.date(2021, 6, 30))
 FB_SESSIONS = weekdays(dt.date(2020, 9, 1), dt.date(2021, 6, 30))
 FB_POST_SESSIONS = weekdays(dt.date(2021, 5, 3), dt.date(2021, 6, 30))  # a validation-like role after the break
-FB_EVENTS = {1054: [(FB_SPLIT_1054, 4.0)], 1055: [(FB_BREAK, 2.0)], 1057: [(FB_BREAK, 1.05)], 1060: [(FB_SPLIT_1060, 2.0)]}
+FB_EVENTS = {1054: [(FB_SPLIT_1054, 4.0)], 1055: [(FB_BREAK, 2.0)], 1057: [(FB_BREAK, 1.05)], 1060: [(FB_SPLIT_1060, 2.0)],
+             1065: [(FB_CONSOL_1065, 0.1)]}
+# si_shares rows (available_at = dissemination date): 1067 at 1.6x then exactly 1.5x its 1e6 shares; 1066 (already
+# caught by turnover) at 6.7x; 1059 at 1%.
+FB_FINRA = [(1059, "2021-02-01", "10000"), (1066, "2021-02-01", "1000000"),
+            (1067, "2021-02-01", "1600000"), (1067, "2021-03-01", "1500000")]
 FB_REPAIRED_IDS = set(range(1001, 1053)) | {1053, 1054, 1058, 1063, 1064}
 FB_HOLE_1064 = (dt.date(2020, 12, 31), dt.date(2021, 1, 5))  # 7-day step ending 2021-01-06: repaired
 
@@ -666,8 +677,26 @@ def fb_line(sid, d):
         if FB_HOLE_1064[0] <= d <= FB_HOLE_1064[1]:
             return None
         return 20.0, 1.0 if old else 0.97, 1000
+    if sid == 1065:                      # 1:10 consolidation, factor chained by the vendor, raw followed
+        post = d >= FB_CONSOL_1065
+        return (20.0 if post else 2.0), (1.0 if post else 10.0), (1000 if post else 10_000)
+    if sid == 1066:                      # a count ~1000x too small inside the domain: 1.5e5 shares
+        return 20.0, 1.0, 150
+    if sid in (1067, 1068):
+        return 20.0, 1.0, 1000
     # 1063: later 4:1 split (factor x1/4 at the break); no share count after 2020-11-30 (stale lag rows)
     return 20.0, 1.0 if old else 0.25, (1000 if d < dt.date(2020, 12, 1) else None)
+
+
+def fb_volume(sid, d):
+    """Raw daily share volume (each day's own share units)."""
+    if sid == 1065:
+        return 1.5e5 if d >= FB_CONSOL_1065 else 1.5e6  # 15% of 1e6 new / 1e7 old shares
+    if sid == 1066:
+        return 5e5                                        # 3.3x its (too small) share count every day
+    if sid == 1068:
+        return 5e6 if d >= FB_SPIKE_1068 else 1e4
+    return 1e4
 
 
 def write_fb_tickerhistory(path):
@@ -676,7 +705,7 @@ def write_fb_tickerhistory(path):
         for sid in FB_IDS:
             row = fb_line(sid, d)
             if row is not None:
-                for k, v in zip(cols, (d, sid, row[0], 1e5, row[2], row[1])):
+                for k, v in zip(cols, (d, sid, row[0], fb_volume(sid, d), row[2], row[1])):
                     cols[k].append(v)
     order = np.random.default_rng(11).permutation(len(cols["securityID"]))  # dates mixed in every group
     types = {"tradingDate": pa.date32(), "securityID": pa.int64(), "close": pa.float32(), "volume": pa.float64(),
@@ -685,14 +714,25 @@ def write_fb_tickerhistory(path):
 
 
 def write_axes_role(root, ids, sessions, source_sha, repair_sessions):
-    """A role with the axes and member only (all the tool reads for vendor fields), optionally repaired.
+    """A role cut from the fixture's vendor rows (close = raw x factor, raw-share volume), optionally repaired.
     1062 (above the shares domain) is not a member on the first three sessions."""
     root.mkdir(parents=True)
     member = np.ones((len(sessions), len(ids)), dtype="u1")
     member[:3, ids.index(1062)] = 0
+    raw = np.full((len(sessions), len(ids)), np.nan)
+    close, volume = raw.copy(), raw.copy()
+    for t, d in enumerate(sessions):
+        for i, sid in enumerate(ids):
+            row = fb_line(sid, d)
+            if row is not None and row[0] is not None:
+                raw[t, i] = float(np.float32(row[0]))
+                close[t, i] = raw[t, i] * row[1]
+                volume[t, i] = fb_volume(sid, d)
     blobs = {"sessions.i64": np.array([day(d) * DAY_NS for d in sessions], dtype="<i8").tobytes(),
              "ids.u64": np.array(ids, dtype="<u8").tobytes(),
-             "member.u8": member.tobytes()}
+             "member.u8": member.tobytes(), "present.u8": np.isfinite(raw).astype("u1").tobytes(),
+             "close.f64": close.astype("<f8").tobytes(), "raw_close.f64": raw.astype("<f8").tobytes(),
+             "volume.f64": volume.astype("<f8").tobytes()}
     files = {}
     for name, blob in blobs.items():
         (root / name).write_bytes(blob)
@@ -711,12 +751,31 @@ def fb_lag_rows(sid):
             and x[2] is not None and 0 < x[2] <= 100_000_000]
 
 
+def fb_si(sid, s):
+    """si_shares visible at session s: latest row with available_at < s, at most 45 days old."""
+    rows = sorted((dt.date.fromisoformat(a), float(v)) for i, a, v in FB_FINRA if i == sid)
+    seen = [(a, v) for a, v in rows if a < s]
+    return seen[-1][1] if seen and (s - seen[-1][0]).days <= 45 else math.nan
+
+
+def fb_median_volume(sessions, t, sid):
+    """Median raw volume of the name's present days among the 21 role sessions ending at t, each restated to
+    session t's share basis by the vendor factor ratio; None with fewer than 11 present days."""
+    import statistics
+    here = fb_line(sid, sessions[t])
+    days = [d for d in sessions[max(0, t - 20):t + 1] if (x := fb_line(sid, d)) is not None and x[0] is not None]
+    if here is None or here[0] is None or len(days) < 11:
+        return None
+    return statistics.median(fb_volume(sid, d) * here[1] / fb_line(sid, d)[1] for d in days)
+
+
 def fb_expected(sessions):
-    """Independent oracle: lag observation's shares x GENUINE actions in (lag, session] x 1000.
-    Returns the matrix and the (restated, gap-ambiguous) cell counts."""
+    """Independent oracle: lag observation's shares x GENUINE actions in (lag, session] x 1000, then the domain
+    and the two units rules. Returns the matrix, the (restated, gap-ambiguous) cell counts and the rule counts."""
     import bisect
     out = np.full((len(sessions), len(FB_IDS)), np.nan)
     restated = ambiguous = 0
+    rules = {"turnover": 0, "si": 0, "also_si": 0, "not_evaluable": 0}
     for i, sid in enumerate(FB_IDS):
         rows = fb_lag_rows(sid)
         for t, s in enumerate(sessions):
@@ -734,9 +793,19 @@ def fb_expected(sessions):
                 continue
             if not 1e5 <= val <= 5e10:
                 continue
+            median = fb_median_volume(sessions, t, sid)
+            si_high = fb_si(sid, s) / val > 1.5
+            rules["not_evaluable"] += median is None
+            if median is not None and median > val:
+                rules["turnover"] += 1
+                rules["also_si"] += si_high
+                continue
+            if si_high:
+                rules["si"] += 1
+                continue
             out[t, i] = val
             restated += int(sid in FB_REPAIRED_IDS and L < FB_BREAK <= s)
-    return out, restated, ambiguous
+    return out, restated, ambiguous, rules
 
 
 class FactorBreakShares(unittest.TestCase):
@@ -749,12 +818,16 @@ class FactorBreakShares(unittest.TestCase):
         cls.th = cls.base / "th.parquet"
         write_fb_tickerhistory(cls.th)
         th_sha = sha(cls.th)
+        cls.finra = cls.base / "finra"
+        write_finra(cls.finra, FB_FINRA, [])
         short = [d for d in FB_SESSIONS if d <= dt.date(2021, 1, 5)]
+        prespike = [d for d in FB_SESSIONS if d <= FB_SPIKE_1068 + dt.timedelta(days=9)]  # 8 spike sessions in
         cls.roles = {name: (sessions, write_axes_role(cls.base / f"role-{name}", FB_IDS, sessions, th_sha, repair))
                      for name, sessions, repair in (("fb", FB_SESSIONS, ["2021-01-04"]), ("post", FB_POST_SESSIONS, None),
                                                     ("short", short, ["2021-01-04"]), ("unrepaired", FB_SESSIONS, None),
                                                     ("wrong", FB_SESSIONS, ["2021-01-05"]),
-                                                    ("starts", [d for d in FB_SESSIONS if d >= FB_BREAK], None))}
+                                                    ("starts", [d for d in FB_SESSIONS if d >= FB_BREAK], None),
+                                                    ("prespike", prespike, ["2021-01-04"]))}
         cls.manifest = cls.run_role("fb")
 
     @classmethod
@@ -762,10 +835,10 @@ class FactorBreakShares(unittest.TestCase):
         cls.temp.cleanup()
 
     @classmethod
-    def run_role(cls, name):
+    def run_role(cls, name, fields=("si_shares", "shares_out")):
         with contextlib.redirect_stdout(io.StringIO()):
-            return tool.run(cls.base / f"role-{name}", cls.roles[name][1], cls.base / f"out-{name}", ["shares_out"],
-                            finra=cls.base / "no-finra", tickerhistory=cls.th, lake=cls.base / "no-lake")
+            return tool.run(cls.base / f"role-{name}", cls.roles[name][1], cls.base / f"out-{name}", list(fields),
+                            finra=cls.finra, tickerhistory=cls.th, lake=cls.base / "no-lake")
 
     def shares(self, name):
         return np.fromfile(self.base / f"out-{name}" / "shares_out.f64", dtype="<f8").reshape(
@@ -773,7 +846,7 @@ class FactorBreakShares(unittest.TestCase):
 
     def test_restated_correctly_across_the_unchained_factor(self):
         got = self.shares("fb")
-        expected, restated, ambiguous = fb_expected(FB_SESSIONS)
+        expected, restated, ambiguous, rules = fb_expected(FB_SESSIONS)
         np.testing.assert_allclose(got, expected, rtol=1e-12, atol=0, equal_nan=True)
         col, t = FB_IDS.index, FB_SESSIONS.index
         s = t(dt.date(2021, 2, 1))                         # lag row 2020-11-03 is before the break
@@ -800,15 +873,63 @@ class FactorBreakShares(unittest.TestCase):
         self.assertGreater(ambiguous, 0)
         plaus = fb["plausibility"]
         n = len(FB_SESSIONS)
-        self.assertEqual((plaus["below_min"], plaus["above_max"], plaus["implausible_to_nan"]), (n, n, 2 * n))
-        self.assertEqual(plaus["implausible_to_nan_member"], 2 * n - 3)
+        units = rules["turnover"] + rules["si"]
+        self.assertEqual((plaus["below_min"], plaus["above_max"], plaus["implausible_to_nan"]), (n, n, 2 * n + units))
+        self.assertEqual(plaus["implausible_to_nan_member"], 2 * n - 3 + units)  # every units-rule cell is a member
         self.assertEqual((plaus["member_below_min"], plaus["member_above_max"]), (n, n - 3))
         self.assertTrue(fb["point_in_time"])
+        self.assertEqual(fb["depends_on"], ["si_shares"])
+
+    def test_units_rules_turnover_and_short_interest(self):
+        got = self.shares("fb")
+        _, _, _, rules = fb_expected(FB_SESSIONS)
+        col, t = FB_IDS.index, FB_SESSIONS.index
+        mis = got[:, col(1066)]                      # 1.5e5 shares trading 5e5 a day
+        self.assertTrue(np.all(mis[:10] == 1.5e5))   # fewer than 11 window sessions: not evaluable, kept
+        self.assertTrue(np.all(np.isnan(mis[10:])))
+        spike = got[:, col(1068)]                    # 5x its shares a day from FB_SPIKE_1068
+        first = t(FB_SPIKE_1068)
+        self.assertTrue(np.all(spike[:first + 10] == 1e6))  # a spike day alone, or a minority of the window: kept
+        self.assertTrue(np.all(np.isnan(spike[first + 10:])))  # the 11th spike session makes the median 5e6
+        si = got[:, col(1067)]
+        for s in FB_SESSIONS:
+            ratio = fb_si(1067, s) / 1e6
+            self.assertEqual(np.isnan(si[t(s)]), ratio > 1.5, s)  # 1.6 -> NaN; exactly 1.5 -> kept
+        self.assertTrue(np.all(si[[t(s) for s in FB_SESSIONS if fb_si(1067, s) == 1.5e6]] == 1e6))
+        cons = got[:, col(1065)]                     # consolidation: 15%/day in either share basis
+        self.assertTrue(np.all(np.isfinite(cons)))  # raw volume unconverted would read 1.5x (1.5e6 vs 1e6) after it
+        self.assertTrue(np.all(np.isfinite(got[:, col(1059)][[t(s) for s in FB_SESSIONS if s != FB_NULL_RAW_1059]])))
+        block = next(f for f in self.manifest["fields"] if f["name"] == "shares_out")["plausibility"]
+        self.assertEqual((block["turnover"]["to_nan"], block["turnover"]["to_nan_member"]),
+                         (rules["turnover"], rules["turnover"]))
+        self.assertEqual(block["turnover"]["also_above_si_ratio"], rules["also_si"])
+        self.assertEqual(block["turnover"]["not_evaluable_cells"], rules["not_evaluable"])
+        self.assertEqual((block["si_ratio"]["to_nan"], block["si_ratio"]["to_nan_member"]), (rules["si"], rules["si"]))
+        self.assertEqual((block["turnover"]["window_sessions"], block["turnover"]["min_present_sessions"],
+                          block["turnover"]["max_median_volume_over_shares_out"],
+                          block["si_ratio"]["max_si_shares_over_shares_out"]), (21, 11, 1.0, 1.5))
+        self.assertGreater(rules["also_si"], 0)
+        self.assertEqual([Path(x["path"]).name for x in block["turnover"]["inputs"]],
+                         ["volume.f64", "close.f64", "raw_close.f64", "present.u8"])
+        # si_shares itself is never touched by the units rules.
+        si_field = np.fromfile(self.base / "out-fb" / "si_shares.f64", dtype="<f8").reshape(len(FB_SESSIONS), len(FB_IDS))
+        self.assertEqual(si_field[t(dt.date(2021, 2, 2)), col(1067)], 1.6e6)
+
+    def test_units_rules_point_in_time(self):
+        # A role ending 8 spike sessions in: the later spike (and later rows) change no earlier cell.
+        self.run_role("prespike")
+        pre = self.shares("prespike")
+        np.testing.assert_array_equal(pre, self.shares("fb")[:len(pre)])
+        self.assertTrue(np.all(pre[:, FB_IDS.index(1068)] == 1e6))
+
+    def test_shares_out_requires_si_shares(self):
+        with self.assertRaisesRegex(ValueError, "shares_out requires si_shares"):
+            self.run_role("fb", fields=("shares_out",))  # refused before the (existing) output is touched
 
     def test_break_before_the_role_corrects_stale_lag_rows(self):
         m = self.run_role("post")
         got = self.shares("post")
-        expected, restated, _ = fb_expected(FB_POST_SESSIONS)
+        expected, restated, _, _ = fb_expected(FB_POST_SESSIONS)
         np.testing.assert_allclose(got, expected, rtol=1e-12, atol=0, equal_nan=True)
         self.assertTrue(np.allclose(got[:, FB_IDS.index(1063)], 1e6, rtol=1e-12))  # lag 2020-11-30: x1/4 undone
         block = next(f for f in m["fields"] if f["name"] == "shares_out")["factor_break"]

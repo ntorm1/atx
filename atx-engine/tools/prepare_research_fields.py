@@ -77,6 +77,22 @@ IV_DOMAIN_RULE = ("vendor value v kept iff float32(0.02) <= v <= float32(5.0) (f
 # Declared by the root controller for T10 (swap-fin-v1 borrow tiers) and applied here (T6 fix round 2):
 # restated shares outstanding outside this range are implausible, both bounds inclusive.
 SHARES_OUT_DOMAIN = (1e5, 5e10)
+# Root ruling (T6 fix round 3, declared before any v3 measurement or T10 freeze): vendor share counts ~1000x too
+# small also sit inside the domain. A shares_out cell is invalid when (a) the median of the name's daily share
+# volume over the trailing 21 role sessions ending at the session, restated to the session's share basis, exceeds
+# 1.0 x shares_out, or (b) si_shares visible at the session exceeds 1.5 x shares_out.
+SHARES_TURNOVER_WINDOW = 21
+SHARES_TURNOVER_MIN_OBS = 11     # the median needs a majority of the window present (declared with the rule)
+SHARES_TURNOVER_MAX = 1.0
+SHARES_SI_RATIO_MAX = 1.5
+SHARES_UNITS_RULE = (
+    "applied after the factor-break correction, the C-81 rule and the [1e5, 5e10] domain, in this order: "
+    "(a) turnover: u_d = volume_d / f_d over the name's present role sessions d in the 21 role sessions ending at t "
+    "(role volume.f64 is raw-share-volume, each day's own share units; f = close/raw is the role's chained factor, "
+    "so u is one share basis and median(u) x f_t is the median daily volume in session t's share basis); with at "
+    "least 11 present days, median x f_t > 1.0 x shares_out -> NaN. (b) short interest: si_shares visible at t (the "
+    "same run's si_shares field: strict available_at < session, 45-day staleness) / shares_out > 1.5 -> NaN. Only "
+    "shares_out is set to NaN. Every input is dated <= t. Root ruling, T6 fix round 3")
 # Rule factor-break-v1, ported from atx-impl/tools/repair_role_factor_breaks.py (T12) with the same
 # parameters and classification: the TickerHistory3 2026-09-20 cumulReturnFactor is not chained across
 # 2021-01-04 (atx-db VA1 / ruling C-35), so a factor ratio spanning that session carries a step that no
@@ -171,10 +187,10 @@ FIELDS = {
                     "vendor calendar vintage unproven"]},
     "shares_out": {
         "group": "th", "column": "shares", "source_columns": ["shares", "cumulReturnFactor", "close", "volume"],
-        "point_in_time": True, "domain": SHARES_OUT_DOMAIN,
+        "point_in_time": True, "domain": SHARES_OUT_DOMAIN, "requires": ["si_shares"],
         "units": "shares outstanding (vendor thousands x 1000), restated to the session's share basis",
         "clock": "A8-vendor-shares-lag90-restated-v2: last vendor observation of the line dated <= date(session)-90 calendar days with 0 < shares <= 1e8 (A9 thousands ceiling), times 1000 x cumulReturnFactor(session observation)/cumulReturnFactor(lag observation), divided by k of every factor-break-v1 repaired step (p,t,k) with lag < t <= session (k is known at t); observation = the role's present contract (unique key, finite positive close and factor, finite volume >= 0)",
-        "staleness": "lag observation older than date(session)-90-400 days -> NaN; no same-date vendor observation -> NaN; a restatement spanning a factor-break-v1 kept_gap step (a step across more than 10 days over a mass session: artifact and genuine actions cannot be separated) -> NaN, counted; a line is withheld (NaN) from the date of its first vendor row above the A9 ceiling onward (point-in-time form of ruling C-81: the spine withholds the whole line, which would use rows after the session); a restated value outside the declared domain [1e5, 5e10] -> NaN, counted in plausibility",
+        "staleness": "lag observation older than date(session)-90-400 days -> NaN; no same-date vendor observation -> NaN; a restatement spanning a factor-break-v1 kept_gap step (a step across more than 10 days over a mass session: artifact and genuine actions cannot be separated) -> NaN, counted; a line is withheld (NaN) from the date of its first vendor row above the A9 ceiling onward (point-in-time form of ruling C-81: the spine withholds the whole line, which would use rows after the session); a restated value outside the declared domain [1e5, 5e10] -> NaN, counted in plausibility; then a cell whose trailing 21-session median daily volume (session share basis) exceeds 1.0 x shares_out, or whose visible si_shares exceeds 1.5 x shares_out, -> NaN (vendor units defect), counted per rule in plausibility",
         "caveats": ["A8: vendor share runs start at the filing cover date, so same-date vendor shares would leak ~2 weeks; the 90-day modeled lag follows the research spine",
                     "restatement uses the vendor cumulReturnFactor ratio with the factor-break-v1 re-anchoring steps divided out (the vendor factor is not chained across 2021-01-04; see factor_break); genuine splits, consolidations and distributions stay in the ratio, so dividends move it by a few tenths of a percent",
                     "a genuine split that the vendor factor does not show (a raw move with no factor step) is not restated, as before",
@@ -424,6 +440,58 @@ class FieldWriter:
                 "member_finite_min": self.vmin if self.vcount else None,
                 "member_finite_max": self.vmax if self.vcount else None,
                 "member_finite_mean": (self.vsum / self.vcount) if self.vcount else None}
+
+
+class RoleRows:
+    """Date-major role payload rows read in session order, hashed as read and verified against the role manifest."""
+
+    DTYPES = {"close.f64": "<f8", "raw_close.f64": "<f8", "volume.f64": "<f8", "present.u8": "u1"}
+
+    def __init__(self, role: Role, names):
+        self.role, self.names, self.handles, self.hashes = role, list(names), {}, {}
+        for name in self.names:
+            entry = role.manifest["files"].get(name)
+            if entry is None or entry["bytes"] != role.n_dates * role.n * np.dtype(self.DTYPES[name]).itemsize:
+                raise ValueError(f"role {name} is missing or its size disagrees with the role shape")
+        try:
+            for name in self.names:
+                self.handles[name], self.hashes[name] = (role.dir / name).open("rb"), hashlib.sha256()
+        except BaseException:
+            self.close()
+            raise
+
+    def row(self, name: str) -> np.ndarray:
+        size = self.role.n * np.dtype(self.DTYPES[name]).itemsize
+        blob = self.handles[name].read(size)
+        if len(blob) != size:
+            raise ValueError(f"role {name} is truncated")
+        self.hashes[name].update(blob)
+        return np.frombuffer(blob, dtype=self.DTYPES[name])
+
+    def verify(self) -> list:
+        """After the last row: the files end there and their bytes equal the role manifest's."""
+        sources = []
+        for name in self.names:
+            if self.handles[name].read(1):
+                raise ValueError(f"role {name} is longer than the role shape")
+            entry = self.role.manifest["files"][name]
+            if self.hashes[name].hexdigest() != entry["sha256"]:
+                raise ValueError(f"role {name} bytes do not match the role manifest")
+            sources.append({"path": str((self.role.dir / name).resolve()), "bytes": entry["bytes"], "sha256": entry["sha256"]})
+        return sources
+
+    def close(self):
+        for h in self.handles.values():
+            h.close()
+
+
+def column_median(window: np.ndarray):
+    """Per-column median of the finite values of a (rows x lines) window and their count (NaN when none)."""
+    count = np.count_nonzero(np.isfinite(window), axis=0)
+    ordered = np.sort(window, axis=0)  # NaN sorts last
+    lo = np.take_along_axis(ordered, np.maximum((count - 1) // 2, 0)[None, :], axis=0)[0]
+    hi = np.take_along_axis(ordered, np.maximum(count // 2, 0)[None, :], axis=0)[0]
+    return np.where(count > 0, (lo + hi) / 2, np.nan), count
 
 
 def digest_and_quantiles(path: Path, role: Role, count: int, budget: Budget):
@@ -817,47 +885,88 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
         gj, gt = fb["j"][gap], fb["t_day"][gap]
         lo, hi = SHARES_OUT_DOMAIN
         c = {"below_min": 0, "above_max": 0, "member_below_min": 0, "member_above_max": 0,
-             "restated": 0, "restated_member": 0, "gap": 0, "gap_member": 0}
-        for t in range(nd):
-            day = int(role.days[t])
-            lag = day - SHARES_LAG_DAYS
-            while p < n_ext and ext_days[p] <= lag:
-                last_valid[np.isfinite(q[p])] = p
-                p += 1
-            src = np.maximum(last_valid, 0)
-            fresh = (last_valid >= 0) & (ext_days[src] >= lag - SHARES_MAX_AGE_DAYS)
-            lag_day = ext_days[src]
-            # factor-break-v1: divide out every repaired step (p, t, k) with lag < t <= session; a kept_gap
-            # step in that window leaves the ratio ambiguous. Both are known at t <= the session.
-            corr = np.ones(n)
-            hit = fresh[rj] & (lag_day[rj] < rt) & (rt <= day)
-            np.multiply.at(corr, rj[hit], rk[hit])
-            ambiguous = np.zeros(n, dtype=bool)
-            ambiguous[gj[fresh[gj] & (lag_day[gj] < gt) & (gt <= day)]] = True
-            with np.errstate(invalid="ignore"):
-                row = np.where(fresh, q[src, cols] * crf[pre + t] * SHARES_UNIT / corr, np.nan)
-            member = role.member[t] != 0
-            amb = ambiguous & np.isfinite(row)
-            c["gap"] += int(np.count_nonzero(amb))
-            c["gap_member"] += int(np.count_nonzero(amb & member))
-            row[ambiguous] = np.nan
-            # C-81, point in time: withheld once an above-ceiling row dated <= the session is known.
-            withheld = first_above <= day
-            row[withheld] = np.nan
-            withheld_cells += int(np.count_nonzero(withheld))
-            finite = np.isfinite(row)
-            low, high = finite & (row < lo), finite & (row > hi)
-            c["below_min"] += int(np.count_nonzero(low))
-            c["above_max"] += int(np.count_nonzero(high))
-            c["member_below_min"] += int(np.count_nonzero(low & member))
-            c["member_above_max"] += int(np.count_nonzero(high & member))
-            row[low | high] = np.nan
-            restated = np.isfinite(row) & (corr != 1.0)
-            c["restated"] += int(np.count_nonzero(restated))
-            c["restated_member"] += int(np.count_nonzero(restated & member))
-            w.write(row)
-            if t % 256 == 0:
-                budget.check("shares_out-write")
+             "restated": 0, "restated_member": 0, "gap": 0, "gap_member": 0,
+             "turnover": 0, "turnover_member": 0, "turnover_not_evaluable": 0, "turnover_also_si": 0,
+             "si": 0, "si_member": 0}
+        # Units rules (a) and (b) read the role's volume/close/raw/present rows and the si_shares field this
+        # run already published, both in session order: row t uses rows <= t only.
+        si_path = output / "si_shares.f64"
+        if si_path.stat().st_size != nd * n * 8:
+            raise ValueError("shares_out: this run's si_shares.f64 has the wrong size")
+        window = np.full((SHARES_TURNOVER_WINDOW, n), np.nan)  # u = volume / f, NaN where not present
+        stream = RoleRows(role, ("volume.f64", "close.f64", "raw_close.f64", "present.u8"))
+        try:
+            with si_path.open("rb") as si_file:
+                for t in range(nd):
+                    day = int(role.days[t])
+                    lag = day - SHARES_LAG_DAYS
+                    while p < n_ext and ext_days[p] <= lag:
+                        last_valid[np.isfinite(q[p])] = p
+                        p += 1
+                    src = np.maximum(last_valid, 0)
+                    fresh = (last_valid >= 0) & (ext_days[src] >= lag - SHARES_MAX_AGE_DAYS)
+                    lag_day = ext_days[src]
+                    # factor-break-v1: divide out every repaired step (p, t, k) with lag < t <= session; a
+                    # kept_gap step in that window leaves the ratio ambiguous. Both are known at t <= the session.
+                    corr = np.ones(n)
+                    hit = fresh[rj] & (lag_day[rj] < rt) & (rt <= day)
+                    np.multiply.at(corr, rj[hit], rk[hit])
+                    ambiguous = np.zeros(n, dtype=bool)
+                    ambiguous[gj[fresh[gj] & (lag_day[gj] < gt) & (gt <= day)]] = True
+                    with np.errstate(invalid="ignore"):
+                        row = np.where(fresh, q[src, cols] * crf[pre + t] * SHARES_UNIT / corr, np.nan)
+                    member = role.member[t] != 0
+                    amb = ambiguous & np.isfinite(row)
+                    c["gap"] += int(np.count_nonzero(amb))
+                    c["gap_member"] += int(np.count_nonzero(amb & member))
+                    row[ambiguous] = np.nan
+                    # C-81, point in time: withheld once an above-ceiling row dated <= the session is known.
+                    withheld = first_above <= day
+                    row[withheld] = np.nan
+                    withheld_cells += int(np.count_nonzero(withheld))
+                    finite = np.isfinite(row)
+                    low, high = finite & (row < lo), finite & (row > hi)
+                    c["below_min"] += int(np.count_nonzero(low))
+                    c["above_max"] += int(np.count_nonzero(high))
+                    c["member_below_min"] += int(np.count_nonzero(low & member))
+                    c["member_above_max"] += int(np.count_nonzero(high & member))
+                    row[low | high] = np.nan
+                    # (a) turnover: trailing 21-session median daily volume in session t's share basis.
+                    volume, close = stream.row("volume.f64"), stream.row("close.f64")
+                    raw_close, present = stream.row("raw_close.f64"), stream.row("present.u8") != 0
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        f = np.where(present & (close > 0) & (raw_close > 0), close / raw_close, np.nan)
+                        window[t % SHARES_TURNOVER_WINDOW] = np.where(
+                            np.isfinite(f) & (f > 0) & np.isfinite(volume) & (volume >= 0), volume / f, np.nan)
+                    median, seen = column_median(window)
+                    median_volume = median * f
+                    finite = np.isfinite(row)
+                    evaluable = (seen >= SHARES_TURNOVER_MIN_OBS) & np.isfinite(median_volume)
+                    c["turnover_not_evaluable"] += int(np.count_nonzero(finite & ~evaluable))
+                    turnover = finite & evaluable & (median_volume > SHARES_TURNOVER_MAX * row)
+                    # (b) short interest visible at t (this run's si_shares row t) above 1.5 x shares_out.
+                    blob = si_file.read(n * 8)
+                    if len(blob) != n * 8:
+                        raise ValueError("shares_out: this run's si_shares.f64 is truncated")
+                    si = np.frombuffer(blob, dtype="<f8")
+                    with np.errstate(invalid="ignore"):
+                        si_high = finite & np.isfinite(si) & (si / row > SHARES_SI_RATIO_MAX)
+                    c["turnover"] += int(np.count_nonzero(turnover))
+                    c["turnover_member"] += int(np.count_nonzero(turnover & member))
+                    c["turnover_also_si"] += int(np.count_nonzero(turnover & si_high))
+                    si_only = si_high & ~turnover
+                    c["si"] += int(np.count_nonzero(si_only))
+                    c["si_member"] += int(np.count_nonzero(si_only & member))
+                    row[turnover | si_high] = np.nan
+                    restated = np.isfinite(row) & (corr != 1.0)
+                    c["restated"] += int(np.count_nonzero(restated))
+                    c["restated_member"] += int(np.count_nonzero(restated & member))
+                    w.write(row)
+                    if t % 256 == 0:
+                        budget.check("shares_out-write")
+            role_inputs = stream.verify()
+        finally:
+            stream.close()
         w.close()
         results["shares_out"] = w
         st["shares_cells_withheld_c81"] = withheld_cells
@@ -867,10 +976,23 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
                 "min": lo, "max": hi, "inclusive": True, "units": "shares",
                 "rule": "restated value v kept iff 1e5 <= v <= 5e10 (float64); any other finite value -> NaN, never clamped. "
                         "Counts are role cells after the C-81 and factor-break rules. Range declared by the root controller "
-                        "for T10 (swap-fin-v1 borrow tiers) and applied in T6 fix round 2",
-                "implausible_to_nan": c["below_min"] + c["above_max"],
-                "implausible_to_nan_member": c["member_below_min"] + c["member_above_max"],
-                **{k: c[k] for k in ("below_min", "above_max", "member_below_min", "member_above_max")}},
+                        "for T10 (swap-fin-v1 borrow tiers) and applied in T6 fix round 2. Then the units rules "
+                        "(turnover, si_ratio; T6 fix round 3). implausible_to_nan counts every rule",
+                "implausible_to_nan": c["below_min"] + c["above_max"] + c["turnover"] + c["si"],
+                "implausible_to_nan_member": (c["member_below_min"] + c["member_above_max"]
+                                              + c["turnover_member"] + c["si_member"]),
+                **{k: c[k] for k in ("below_min", "above_max", "member_below_min", "member_above_max")},
+                "units_rule": SHARES_UNITS_RULE,
+                "turnover": {"window_sessions": SHARES_TURNOVER_WINDOW, "min_present_sessions": SHARES_TURNOVER_MIN_OBS,
+                             "max_median_volume_over_shares_out": SHARES_TURNOVER_MAX,
+                             "volume_basis": "role volume.f64 (raw-share-volume) restated to the session's share basis by the role close/raw factor ratio",
+                             "to_nan": c["turnover"], "to_nan_member": c["turnover_member"],
+                             "also_above_si_ratio": c["turnover_also_si"],
+                             "not_evaluable_cells": c["turnover_not_evaluable"], "inputs": role_inputs},
+                "si_ratio": {"max_si_shares_over_shares_out": SHARES_SI_RATIO_MAX,
+                             "si_shares": "this run's si_shares field (visible at the session: strict available_at < session, 45-day staleness)",
+                             "to_nan": c["si"], "to_nan_member": c["si_member"],
+                             "counting": "cells not already set to NaN by the turnover rule"}},
             "factor_break": {
                 "rule": FB_RULE, "ported_from": "atx-impl/tools/repair_role_factor_breaks.py (T12): same parameters and step classification",
                 "statement": FB_STATEMENT, "parameters": FB_PARAMETERS,
@@ -1111,6 +1233,10 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
     if not fields or len(set(fields)) != len(fields) or any(f not in FIELDS for f in fields):
         raise ValueError(f"--fields must be distinct names from {', '.join(FIELDS)}")
     selected = [f for f in FIELDS if f in fields]  # registry order: stable manifests
+    for f in selected:
+        missing = [x for x in FIELDS[f].get("requires", []) if x not in selected]
+        if missing:
+            raise ValueError(f"--fields: {f} requires {', '.join(missing)} in the same run (its units rule reads it)")
     budget = Budget(max_rss_mib, max_seconds)
     role = Role(role_dir, role_sha256)
     budget.report("role-admitted", dates=role.n_dates, instruments=role.n)
@@ -1163,6 +1289,8 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
                  "non_pit_aspects": spec.get("non_pit_aspects", [])}
         if not spec["point_in_time"]:
             entry["point_in_time_reason"] = spec["point_in_time_reason"]
+        if "requires" in spec:
+            entry["depends_on"] = spec["requires"]
         if "definition" in spec:
             entry["definition"] = spec["definition"]
         if name in field_stats:
