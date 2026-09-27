@@ -1,5 +1,66 @@
 # Active task: recent-data DSL ensemble
 
+## T30 review — Approved — Task T30: complete
+task-T30-review.md: spec PASS, rulings R-a..R-f applied; 0C/0I/6m; desk-check found no compile errors. ⚠️ compile/SHA pins/D2 -> T37
+(if a hand-derived SHA pin fails, confirm against the d4ec515d binary; never re-pin from post-change output); ⚠️ mean-gross
+definition -> ruled above (exposure gross_leverage mean over all sessions).
+- Minors: (1) v5 does not force cadence 1 (default 5) -> v5_train.sh must pass --cadence 1 (checked: it does); (2) release builds
+  silently fall back to fixed theta on a wrong-size rate span -> T36 must validate the span (carried into T36 dispatch); (3) extras
+  recipe key aim_partial, construction.v5.decisions, construction.v5 also in target-replay summary (v5-only; deferred); (4) "recipe
+  minus rule name" not asserted directly; (5) NavReplayDay +16 B; (6) dust entry check only at L = 1. Deferred to T41.
+- Cherry-picked into pool-2: 34d021dd, 98277c45. Task T30: complete (commits d4ec515d..98277c45 in pool-3, review clean).
+- Dispatching T36 (pool-3, on 98277c45).
+- Ruling: root pre-builds T30 alone as tag v5-0 (targets atx-equity-strategy-targets, atx-impl-strategy-target-tests) while T36/T31
+  review run, to surface compile errors one lane-cycle earlier; T37's v5-1 build stays the qualifying build — cost if wrong: one
+  extra target-scoped ccache-warm build (minutes).
+
+
+## T31 ew-theme-aim-v1 — handed in, review dispatched — 2026-09-27
+pool-4 e863cd65/90926148 (base d4ec515d): AIM_RULE_ID, standardized_ranks / rank_autocorrelation / aim_gain / ew_theme_aim_weights,
+provenance.aim (theta, lags, rho, gain, gain_half, coverage_effective_theme_weight), work-record caching, --max-seconds (pre-existing,
+exit 3 + partial:true), studies/v5_train.sh (fit/w/nav; COMP/COMBINED/THETA/DUST/RATE/LEV), nav_summ.py --weights/--reference
+(netting ratio, paired dSR, Memmel SE, block-21 bootstrap 2000) + test_nav_summ.py. pytest 69/69 (55 + 14) and 6/6.
+- Ruling (amends D3/§11 #6 and T38 step 1): the weights file embeds SCRIPT_SHA256 and SHA-derived context/admission digests, so
+  literal SHA equality with 9a9c949a is impossible for ANY edited fitter; the byte-stability criterion is "ew-theme-v1 output identical
+  to the pre-T31 fitter (blob fd644cba) after masking the SHA-derived fields" (fixture) and, on real data, v5_train.sh's EW-REFIT
+  IDENTICAL check against 9a9c949a / admission 880a0a6a (weights, admitted set, provenance minus SHA fields) — cost if wrong: a byte
+  drift hidden inside the masked fields (bounded: the fields are digests of the fitter text itself).
+- Ruling: AR(1) closed-form fixture asserts exact equality on the full 0..126 lag grid and a 1e-3 bound on the AIM_LAGS-interpolated
+  grid (brief's 1e-9 on interpolated lags was unattainable) — cost if wrong: none.
+- Ruling: members with < 50 rankable names on every day get the floor gain .05 (letter of R4'); does not occur on real data — cost: none.
+review-T31.diff packaged; t31-review (Opus) dispatched.
+
+
+## T34b review — Approved — Task T34b: complete
+task-T34b-review.md: spec PASS, 0C/0I/4m. Named risk checked: v5 verifies frozen v4 against pinned SHAs as v4.2 does; no safety
+assertion dropped beyond ruled relaxation. ⚠️1 (--plan-only not run) -> resolved by root at T39. ⚠️2: profitability_quality family
+description text changed (metadata; nothing reads it; runner reads id only).
+- Ruling: "37 v4 rows byte-identical" covers candidate rows + fields, not the family description metadata; the description change
+  stands (v4.2 precedent, disclosed) — cost if wrong: none (unread metadata).
+- Minors deferred to T41: slot-limit attribution comment; recipe trial counts copied from v4 (1/1) vs "composition +2"; description
+  change unrequested; test polish (tamper test library-only, magic number, overstated comment).
+- Cherry-picked into pool-2: 6bfd9858, 6f71951e. Task T34b: complete (commits c8192c46..6f71951e in pool-8, review clean).
+
+
+## T30 aim-partial-v5 — handed in, review dispatched — 2026-09-27
+pool-3 34d021dd/98277c45 (base d4ec515d): TargetReplayRule::AimPartialV5, dust band, aim leverage, per_name_rate span seam, CLI
+--rule aim-partial-v5 --dust-multiple --aim-leverage, recipe/summary v5 keys (v5 only), fixtures TargetReplayV5.* (6) + NavV5.* (4),
+unbuilt. Four recipe SHA-256s hand-derived (t30-sha/ emulation reproduced 25 committed outputs). NavReplayDay gains
+planned_held_names/decision_members (no CSV change). Root targets atx-impl-strategy-target-tests, atx-equity-strategy-targets;
+filter TargetReplayV5.*:NavV5*; regression StrategyTargetReplay.*:StrategyNavReplay.*; no CMake change.
+- Ruling: D1/R5'/R6' "mean gross leverage" = mean of the daily exposure gross_leverage column over ALL sessions of the run (same
+  definition as the T28 audit and the §0 table; deployment ramp included, as it was for v4.1); construction.v5.mean_gross (planned
+  gross over decision rows) is diagnostic only — cost if wrong: a ~2-3% ramp haircut on the reference cell's gross at theta .05.
+review-T30.diff packaged; t30-review (Opus) dispatched. T36 waits for the verdict (same pool).
+
+
+## T34b library v5.1 — handed in, review dispatched — 2026-09-27
+pool-8 6bfd9858/6f71951e (base c8192c46): generate_fund_ic_v5.py + fund_industry_ic_v5.json sha 9e5ea08c... (38 = 37 v4 byte-identical
++ opex_at, 4 extras / 4 slots; lib max 7 slots / 5 extras) + recipe a26670b0... + test_generate_fund_ic_v5.py 10/10 (56 with v4/v4.2).
+Concerns noted: opex_at may be redundancy-dropped vs gpa (|rho| <= .90); cache may miss all 38 (~86 s) if VM identity moved.
+review-T34b.diff packaged; t34b-review (Opus) dispatched.
+
+
 ## T33a delisting feasibility — NO-GO — 2026-09-27
 delisting-feasibility.md (DuckDB read-only 384 MB / 2 threads, no lock, no writes). TRAIN: 585 member lines end in 2020-22;
 56 are line continuations (new securityID), 529 true terminations: mna 292 / performance 25 / unknown-with-CIK 9 / unknown-no-CIK
