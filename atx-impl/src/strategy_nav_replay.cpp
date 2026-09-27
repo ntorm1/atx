@@ -319,6 +319,9 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
       x.decision_end - x.decision_begin < 3)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "nav replay: prices+volume required and at least three window sessions");
+  if (neutralize_by_industry(cfg.target.neutralize) && x.industry.size() != cells)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: the industry ids need the grp_ff12 field (--fields)");
   for (usize k = 0; k < cells; ++k) {
     const bool bad = x.present[k]
         ? (!std::isfinite(x.close[k]) || x.close[k] <= 0 || !std::isfinite(x.raw_close[k]) ||
@@ -1506,20 +1509,6 @@ co::Status write_events(const std::filesystem::path& path, const NavReplayResult
   file.close();
   return file ? co::Ok() : co::Status(co::Err(co::ErrorCode::IoError, "nav replay: events close"));
 }
-// Conservative bound on everything the NAV path holds beside the loaded input:
-// all scenario results (days + events at cap), every lockstep book's per-name
-// state, the shared construction (with its price-risk scratch when neutralizing),
-// the shared borrow tiers, the per-name rate cache and publication.
-// books <= max_scenarios.
-u64 nav_reserve_bytes(u64 max_events, const TargetReplayConfig& target, u64 books, bool tiers,
-                      bool per_name_rate) {
-  return publication_slack_bytes + books * fixed_workspace_bytes +
-         u64{max_names} * (books * per_name_bytes + shared_name_bytes +
-                           (tiers ? tier_name_bytes : 0) +
-                           (per_name_rate ? rate_name_bytes : 0)) +
-         detail::construction_scratch_bytes(target, max_names) +
-         books * (u64{max_dates} * sizeof(NavReplayDay) + max_events * sizeof(NavEvent));
-}
 bool hash_valid(std::string_view s) {
   return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -1587,11 +1576,25 @@ co::Result<Json> used_field(const Json& manifest, const std::string& name, u64 d
 }
 struct LoadedFields {
   std::vector<f64> shares_out, si_shares;
+  std::vector<f64> industry; // industry_group_field; the industry ids only
   Json binding; // recipe record; null when no fields
 };
+// One used field (used_field checks, payload SHA) and its recipe record in `used`.
+co::Result<std::vector<f64>> load_field(const Json& manifest, const std::filesystem::path& base,
+                                        const std::string& name, u64 dates, u64 names,
+                                        Json& used) {
+  ATX_TRY(const auto entry, used_field(manifest, name, dates, names));
+  const auto sha = entry.at("sha256").get<std::string>();
+  ATX_TRY(auto values, read_field(base / (name + ".f64"), dates * names, sha));
+  used[name] = Json{{"sha256", sha}, {"point_in_time", true},
+      {"clock", entry.contains("clock") ? entry.at("clock") : Json(nullptr)},
+      {"staleness", entry.contains("staleness") ? entry.at("staleness") : Json(nullptr)}};
+  return co::Ok(std::move(values));
+}
 // Pins the atx.research-role-fields/v1 manifest, then its role to the pinned --role
 // (manifest, sessions, ids, member SHA against the role manifest's own receipts),
-// then loads shares_out and si_shares within `budget` bytes. Nothing is written.
+// then loads shares_out and si_shares (and, for the industry ids, grp_ff12) within
+// `budget` bytes. Nothing is written.
 co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplayRunConfig& cfg,
                                      u64 budget) {
   ATX_TRY(auto m, pinned_document(pin.manifest_path, pin.manifest_sha256,
@@ -1611,20 +1614,20 @@ co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplay
   if (!dates || dates > max_dates || !names || names > max_names)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: fields role geometry");
   const u64 cells = dates * names;
-  if (cells > budget / (financing_field_names.size() * sizeof(f64)))
+  const bool industry = neutralize_by_industry(cfg.target.neutralize);
+  const u64 count = financing_field_names.size() + (industry ? 1U : 0U);
+  if (cells > budget / (count * sizeof(f64)))
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: fields workspace budget");
   LoadedFields out;
   Json used = Json::object();
   const auto base = std::filesystem::path(pin.manifest_path).parent_path();
   for (const char* field : financing_field_names) {
     const std::string name = field;
-    ATX_TRY(const auto entry, used_field(m, name, dates, names));
-    const auto sha = entry.at("sha256").get<std::string>();
-    ATX_TRY(auto values, read_field(base / (name + ".f64"), cells, sha));
+    ATX_TRY(auto values, load_field(m, base, name, dates, names, used));
     (name == "shares_out" ? out.shares_out : out.si_shares) = std::move(values);
-    used[name] = Json{{"sha256", sha}, {"point_in_time", true},
-        {"clock", entry.contains("clock") ? entry.at("clock") : Json(nullptr)},
-        {"staleness", entry.contains("staleness") ? entry.at("staleness") : Json(nullptr)}};
+  }
+  if (industry) {
+    ATX_TRY(out.industry, load_field(m, base, industry_group_field, dates, names, used));
   }
   out.binding = Json{{"schema", fields_schema},
       {"manifest_sha256", pin.manifest_sha256}, {"role_manifest_sha256", cfg.role_sha256},
@@ -1632,6 +1635,20 @@ co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplay
       {"fields_not_used", "mktcap_lagged (presence not point in time): market cap = "
                           "shares_out x raw_close only"}};
   return co::Ok(std::move(out));
+}
+// The run geometry, from the pinned role manifest alone (no payload is read): the
+// loader later requires the blend's dates, instruments and score window to equal it.
+struct RoleGeometry {
+  usize names{}, sessions{}; // instruments; score_end - score_begin
+};
+co::Result<RoleGeometry> role_geometry(const TargetReplayRunConfig& cfg) {
+  ATX_TRY(auto role, pinned_document(cfg.role_path, cfg.role_sha256, max_role_manifest_bytes,
+                                     "role manifest"));
+  const auto dates = role.at("dates").get<u64>(), names = role.at("instruments").get<u64>();
+  const auto begin = role.at("score_begin").get<u64>(), end = role.at("score_end").get<u64>();
+  if (!dates || dates > max_dates || !names || names > max_names || begin >= end || end > dates)
+    return co::Err(co::ErrorCode::InvalidArgument, "nav replay: role geometry");
+  return co::Ok(RoleGeometry{static_cast<usize>(names), static_cast<usize>(end - begin)});
 }
 } // namespace
 
@@ -1687,6 +1704,21 @@ std::vector<NavScenario> nav_scenario_matrix(bool tiered) {
     books.push_back(std::move(s));
   }
   return books;
+}
+
+// Conservative bound on everything the NAV path holds beside the loaded input, at the
+// run's own geometry (v6 C4; the charge was at max_names x max_dates before): all
+// scenario results (days + events at cap), every lockstep book's per-name state, the
+// shared construction (with its price-risk scratch when neutralizing), the shared
+// borrow tiers, the per-name rate cache and publication. books <= max_scenarios.
+u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool tiered,
+                                usize names, usize sessions) {
+  const bool per_name_rate = base.rate == NavRateRule::PerNameV1;
+  return publication_slack_bytes + u64{books} * fixed_workspace_bytes +
+         u64{names} * (u64{books} * per_name_bytes + shared_name_bytes +
+                       (tiered ? tier_name_bytes : 0) + (per_name_rate ? rate_name_bytes : 0)) +
+         detail::construction_scratch_bytes(base.target, names) +
+         u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent));
 }
 
 co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
@@ -2009,6 +2041,9 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav replay: --fields and --fields-sha256 go together");
     const bool tiered = !fields.manifest_path.empty();
+    if (neutralize_by_industry(cfg.target.neutralize) && !tiered)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav replay: the industry ids need --fields (grp_ff12)");
     const auto scenarios = nav_scenario_matrix(tiered);
     NavReplayConfig base; base.target = cfg.target;
     base.rate = rate.rate; base.rate_rra = rate.rate_rra; base.rate_lambda = rate.rate_lambda;
@@ -2017,8 +2052,10 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     base.liquidity_cache = execution.liquidity_cache;
     // Admission: the fields and then the loader are charged against what remains
     // after the NAV workspace reserve, so input + all scenario results fit one budget.
-    const u64 reserve = nav_reserve_bytes(base.max_events, cfg.target, scenarios.size(), tiered,
-                                          liquidity_cached(base));
+    // The reserve is charged at the pinned role's own geometry (manifest only).
+    ATX_TRY(const auto geometry, role_geometry(cfg));
+    const u64 reserve = nav_workspace_reserve_bytes(base, scenarios.size(), tiered,
+                                                    geometry.names, geometry.sessions);
     if (cfg.target.max_working_bytes <= reserve)
       return co::Err(co::ErrorCode::OutOfRange, "nav replay: budget below NAV workspace reserve");
     u64 remaining = cfg.target.max_working_bytes - reserve;
@@ -2026,13 +2063,18 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     if (tiered) {
       // Pinned and role-checked before the blend is loaded or anything is written.
       ATX_TRY(loaded, load_fields(fields, cfg, remaining));
-      remaining -= (loaded.shares_out.size() + loaded.si_shares.size()) * sizeof(f64);
+      remaining -= (loaded.shares_out.size() + loaded.si_shares.size() + loaded.industry.size()) *
+                   sizeof(f64);
     }
     auto load = cfg; load.target.max_working_bytes = remaining;
     ATX_TRY(auto blend, detail::load_saved_blend(load, true));
-    if (tiered && loaded.shares_out.size() != blend.signal.size())
+    // The reserve's geometry is the loaded one (same pinned role manifest).
+    if (blend.names != geometry.names || blend.end - blend.begin != geometry.sessions ||
+        (tiered && loaded.shares_out.size() != blend.signal.size()))
       return co::Err(co::ErrorCode::InvalidArgument, "nav replay: fields/blend geometry");
-    const NavReplayInput input{blend.view(), blend.volume,
+    auto view = blend.view();
+    view.industry = loaded.industry; // empty unless an industry id
+    const NavReplayInput input{view, blend.volume,
                                NavFinancingFields{loaded.shares_out, loaded.si_shares}};
     // All scenarios in lockstep: the desired target (and its price exposures) and
     // the borrow tiers are formed once per decision for every scenario book.
@@ -2070,7 +2112,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "--output NEWDIR [--rule baseline-v1|monthly-budget-v2|aim-partial-v5] "
                "[--cadence 5] [--trade-fraction .25 (aim-partial-v5: theta)] "
                "[--monthly-budget .30] "
-               "[--neutralize none|price-risk-v1] [--band-multiple 0] "
+               "[--neutralize none|price-risk-v1|price-risk-ind-v1|price-risk-ind-v2 "
+               "(ind: FF12 demeaning, needs --fields; ind-v2: vol 126 / log-ADV 252 windows)] "
+               "[--band-multiple 0] "
                "[--dust-multiple 0 --aim-leverage 1 (aim-partial-v5 only)] "
                "[--rate fixed|per-name-v1 (aim-partial-v5 only) --rate-rra 10 "
                "--rate-lambda .2 --rate-min .01 --rate-max .15 (per-name-v1 only)] "
@@ -2132,8 +2176,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--daily-turnover-mean-max") limits.daily_mean_max = real();
       else if (key == "--daily-turnover-p95-max") limits.daily_p95_max = real();
       else if (key == "--neutralize") {
-        if (!detail::parse_neutralize(value, cfg.target.neutralize))
-          throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
+        if (!detail::parse_neutralize(value, cfg.target))
+          throw std::invalid_argument(
+              "unknown --neutralize (none|price-risk-v1|price-risk-ind-v1|price-risk-ind-v2)");
       } else if (key == "--rate") {
         if (value == "fixed") rate.rate = NavRateRule::Fixed;
         else if (value == "per-name-v1") rate.rate = NavRateRule::PerNameV1;

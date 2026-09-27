@@ -54,7 +54,17 @@ u32 calendar_month(i64 session) {
          static_cast<u32>(static_cast<unsigned>(date.month()));
 }
 bool neutralizing(const TargetReplayConfig& cfg) {
-  return cfg.neutralize == TargetNeutralize::PriceRiskV1;
+  return cfg.neutralize == TargetNeutralize::PriceRiskV1 || neutralize_by_industry(cfg.neutralize);
+}
+// Stable spelling of a neutralization id (recipe, rule id, summary, CLI).
+const char* neutralize_name(TargetNeutralize id) {
+  switch (id) {
+  case TargetNeutralize::None: return "none";
+  case TargetNeutralize::PriceRiskV1: return "price-risk-v1";
+  case TargetNeutralize::PriceRiskIndV1: return "price-risk-ind-v1";
+  case TargetNeutralize::PriceRiskIndV2: return "price-risk-ind-v2";
+  }
+  return "unknown";
 }
 bool aim_partial(const TargetReplayConfig& cfg) {
   return cfg.rule == TargetReplayRule::AimPartialV5;
@@ -93,6 +103,12 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
         !(cfg.neutralize_max_amplification > 0) ||
         !(cfg.neutralize_max_excluded_share >= 0 && cfg.neutralize_max_excluded_share <= 1))))
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: invalid construction recipe");
+  // The id alone names the windows of price-risk-ind-v2, so no other pair can ride on it.
+  if (cfg.neutralize == TargetNeutralize::PriceRiskIndV2 &&
+      (cfg.price_risk.vol_window != price_risk_ind_v2_vol_window ||
+       cfg.price_risk.adv_window != price_risk_ind_v2_adv_window))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: price-risk-ind-v2 needs vol_window 126 and adv_window 252");
   // aim-partial-v5 (theta = trade_fraction, already in (0, 1] above): no no-trade band
   // (the dust band replaces it), dust_multiple in [0, 0.5], aim_leverage in [1, 2].
   // The negated ranges also refuse NaN. Its parameters are refused under every other
@@ -116,13 +132,16 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
-// session logs, dollar sums, exposures/ok and regression rows (rounded up), plus
-// the per-interval market. Zero unless neutralizing (and for an invalid price-risk
-// recipe, which validate_config refuses on its own; windows are then <= 4096).
+// session logs, dollar sums, exposures/ok and regression rows (rounded up; with the
+// industry ids' group slot per row, 113 of the 128 bytes), plus the per-interval
+// market and, for the industry ids, the group slot table. Zero unless neutralizing
+// (and for an invalid price-risk recipe, which validate_config refuses on its own;
+// windows are then <= 4096).
 u64 price_risk_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
   if (!neutralizing(cfg) || !price_risk_valid(cfg.price_risk)) return 0;
   const u64 block = std::max(cfg.price_risk.beta_window, cfg.price_risk.vol_window);
-  return u64{instruments} * (block * sizeof(f64) + 128) + block * sizeof(f64);
+  const u64 groups = neutralize_by_industry(cfg.neutralize) ? kGroupTableBytes : 0;
+  return u64{instruments} * (block * sizeof(f64) + 128) + block * sizeof(f64) + groups;
 }
 co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
   ATX_TRY_VOID(validate_config(cfg));
@@ -140,7 +159,8 @@ co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig&
       in.session_keys.size() != in.dates || in.instrument_ids.size() != in.instruments ||
       (prices && (in.close.size() != cells || in.raw_close.size() != cells ||
                   in.present.size() != cells)) ||
-      (!in.volume.empty() && in.volume.size() != cells))
+      (!in.volume.empty() && in.volume.size() != cells) ||
+      (!in.industry.empty() && in.industry.size() != cells))
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: span geometry");
   if (in.session_keys.front() <= 0 || in.session_keys.back() >= 4'102'444'800'000'000'000LL ||
       std::adjacent_find(in.session_keys.begin(), in.session_keys.end(),
@@ -325,7 +345,8 @@ co::Status check_rates(const TargetReplayInput& in, const TargetReplayConfig& cf
   out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
   return co::Ok();
 }
-// Rebalance decision d: the tied-rank desired target, then price-risk-v1. The
+// Rebalance decision d: the tied-rank desired target, then price-risk-v1 (or, for the
+// industry ids, its within-groups twin on the decision's industry row). The
 // exposures are computed once here per decision (target-independent; the NAV
 // replay calls this once per decision for all its scenario books). Guard: a data
 // refusal (Unavailable), amplification entry/residual gross above the cap, or an
@@ -349,11 +370,19 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
   }
   if (!neutralizing(cfg)) return co::Ok(true);
   const PriceExposureInput prices{in.dates, n, in.close, in.raw_close, in.volume, in.present};
+  const bool industry = neutralize_by_industry(cfg.neutralize);
+  if (industry && in.industry.size() != in.dates * n)
+    return co::Err(co::ErrorCode::InvalidArgument, "target replay: industry ids need the field");
   NeutralizeStats stats;
-  const auto status = neutralize_price_risk(prices, cfg.price_risk, d, desired, member, scratch,
-                                            stats);
+  const auto status = industry
+      ? neutralize_price_risk_within_groups(prices, cfg.price_risk, d, desired, member,
+                                            in.industry.subspan(offset, n), scratch, stats)
+      : neutralize_price_risk(prices, cfg.price_risk, d, desired, member, scratch, stats);
   if (!status && status.error().code() != co::ErrorCode::Unavailable) return co::Err(status.error());
   out.neutralize_used = stats.used; out.neutralize_excluded = stats.excluded;
+  out.neutralize_groups = stats.groups;
+  out.neutralize_unknown_group_names = stats.unknown_group_names;
+  out.neutralize_fallback_names = stats.fallback_names;
   out.neutralize_excluded_share = stats.gross > 0 ? stats.excluded_gross / stats.gross : 0.0;
   out.neutralize_amplification =
       status && stats.residual_gross > 0 ? stats.gross / stats.residual_gross : nan;
@@ -412,6 +441,9 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
     if (neutralizing(cfg) && (in.close.empty() || in.volume.size() != in.dates * in.instruments))
       return co::Err(co::ErrorCode::InvalidArgument,
                      "target replay: price-risk neutralization requires prices and volume");
+    if (neutralize_by_industry(cfg.neutralize) && in.industry.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: industry neutralization requires the industry field");
     std::vector<f64> current(in.instruments), desired(in.instruments);
     std::vector<Ranked> row; row.reserve(in.instruments);
     PriceRiskScratch price; // grows only when neutralizing
@@ -647,7 +679,7 @@ std::string decimal(f64 x) { // shortest round-trip spelling
 }
 std::string rule_id(const TargetReplayConfig& c) {
   std::string id = rule_name(c.rule);
-  if (neutralizing(c)) id += "+neutral-price-risk-v1";
+  if (neutralizing(c)) id += std::string("+neutral-") + neutralize_name(c.neutralize);
   if (c.band_multiple > 0) id += "+band-" + decimal(c.band_multiple);
   return id;
 }
@@ -685,16 +717,31 @@ Json construction_recipe(const TargetReplayConfig& c) {
   Json j = Json::object();
   if (neutralizing(c)) {
     const auto& p = c.price_risk;
-    j["neutralize"] = "price-risk-v1";
-    j["desired_target_postprocess"] = "price-risk-v1";
+    const bool industry = neutralize_by_industry(c.neutralize);
+    j["neutralize"] = neutralize_name(c.neutralize);
+    j["desired_target_postprocess"] = neutralize_name(c.neutralize);
     j["price_risk"] = Json{{"beta_window", p.beta_window}, {"vol_window", p.vol_window},
         {"adv_window", p.adv_window}, {"min_return_pairs", p.min_return_pairs},
         {"min_names", p.min_names}, {"clip_z", p.clip_z},
         {"exposures", "trailing beta vs equal-weight market, sample vol, log mean raw dollar "
                       "volume; windows end at the decision session (strategy_price_exposures)"},
-        {"method", "OLS residual of the tied-rank target on [1, z_beta, z_vol, z_log_adv] "
-                   "(clipped z over member&ok rows), rescaled to the entry gross; "
-                   "member&!ok rows to zero; exposures computed once per decision"}};
+        {"method", industry
+             ? "OLS residual of the tied-rank target on [industry group indicators, z_beta, "
+               "z_vol, z_log_adv] by Frisch-Waugh-Lovell (clipped z over member&ok rows, then "
+               "target and z demeaned within group, then OLS on [1, demeaned z]), rescaled "
+               "to the entry gross; member&!ok rows to zero; exposures computed once per "
+               "decision"
+             : "OLS residual of the tied-rank target on [1, z_beta, z_vol, z_log_adv] "
+               "(clipped z over member&ok rows), rescaled to the entry gross; "
+               "member&!ok rows to zero; exposures computed once per decision"}};
+    if (industry)
+      j["industry"] = Json{{"field", industry_group_field}, {"min_group_names", kMinGroupNames},
+          {"max_group_id", kMaxGroupId},
+          {"unknown", "a NaN id: all such names form one residual group"},
+          {"fallback", "a group (the residual one included) with fewer than min_group_names "
+                       "member&ok names has no own level: it loads on the common intercept, "
+                       "i.e. all such names are demeaned together as one pooled group"},
+          {"clock", "the decision session's row of the pinned point-in-time field"}};
     j["neutralize_guard"] = Json{{"max_amplification", c.neutralize_max_amplification},
         {"max_excluded_gross_share", c.neutralize_max_excluded_share},
         {"amplification", "entry gross / residual gross before rescale"},
@@ -745,6 +792,27 @@ Json aim_partial_summary(const TargetReplayConfig& c,
   if (decaying_exit(c)) j["exit_rate"] = c.exit_rate;
   return j;
 }
+// Industry ids, over the applied decisions: demeaning groups (the pooled fallback
+// counts as one), unknown-id names and fallback-pooled names (min / median / max;
+// null without an applied decision).
+Json industry_summary(std::span<const ConstructionDay> decisions) {
+  std::vector<f64> groups, unknown, fallback;
+  for (const auto& d : decisions) {
+    if (d.neutralize != NeutralizeOutcome::Applied) continue;
+    groups.push_back(static_cast<f64>(d.neutralize_groups));
+    unknown.push_back(static_cast<f64>(d.neutralize_unknown_group_names));
+    fallback.push_back(static_cast<f64>(d.neutralize_fallback_names));
+  }
+  const auto spread = [](std::vector<f64>& v) {
+    std::sort(v.begin(), v.end());
+    return Json{{"min", v.empty() ? Json(nullptr) : Json(v.front())},
+                {"median", finite_or_null(quantile(v, .5))},
+                {"max", v.empty() ? Json(nullptr) : Json(v.back())}};
+  };
+  return Json{{"field", industry_group_field}, {"applied_decisions", groups.size()},
+              {"groups", spread(groups)}, {"unknown_group_names", spread(unknown)},
+              {"fallback_names", spread(fallback)}};
+}
 Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
   usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
   usize too_few = 0, excluded = 0, refused = 0, amplified = 0;
@@ -777,7 +845,7 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
       amplification.empty() ? Json(nullptr) : Json(amplification.back());
   Json skips{{"too-few-names", too_few}, {"excluded-share", excluded}, {"refused", refused},
              {"amplification", amplified}};
-  Json body{{"rule_id", rule_id(c)}, {"neutralize", neutralizing(c) ? "price-risk-v1" : "none"},
+  Json body{{"rule_id", rule_id(c)}, {"neutralize", neutralize_name(c.neutralize)},
       {"band_multiple", c.band_multiple}, {"decisions", decisions.size()},
       {"cadence_rebalance_decisions", cadence_days}, {"rebalanced_decisions", rebalanced},
       {"neutralize_attempted_decisions", attempted}, {"neutralize_applied_decisions", applied},
@@ -791,12 +859,24 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
       {"banded_names_total", banded},
       {"mean_banded_names_per_rebalance",
        rebalanced ? static_cast<f64>(banded) / static_cast<f64>(rebalanced) : 0.0}};
+  if (neutralize_by_industry(c.neutralize))
+    body["neutralize_industry"] = industry_summary(decisions);
   return Json{{"construction", std::move(body)}};
 }
-bool parse_neutralize(std::string_view value, TargetNeutralize& out) {
-  if (value == "none") out = TargetNeutralize::None;
-  else if (value == "price-risk-v1") out = TargetNeutralize::PriceRiskV1;
+// The id's CLI spelling; price-risk-ind-v2 also sets its declared vol/log-ADV windows
+// (the only price_risk fields any CLI sets). false (cfg untouched) otherwise.
+bool parse_neutralize(std::string_view value, TargetReplayConfig& cfg) {
+  TargetNeutralize id = TargetNeutralize::None;
+  if (value == "none") id = TargetNeutralize::None;
+  else if (value == "price-risk-v1") id = TargetNeutralize::PriceRiskV1;
+  else if (value == "price-risk-ind-v1") id = TargetNeutralize::PriceRiskIndV1;
+  else if (value == "price-risk-ind-v2") id = TargetNeutralize::PriceRiskIndV2;
   else return false;
+  cfg.neutralize = id;
+  if (id == TargetNeutralize::PriceRiskIndV2) {
+    cfg.price_risk.vol_window = price_risk_ind_v2_vol_window;
+    cfg.price_risk.adv_window = price_risk_ind_v2_adv_window;
+  }
   return true;
 }
 constexpr const char* construction_columns =
@@ -918,6 +998,10 @@ co::Status run_target_replay(const TargetReplayRunConfig& cfg, std::ostream& pro
     if (neutralizing(cfg.target) && cfg.role_path.empty())
       return co::Err(co::ErrorCode::InvalidArgument,
                      "target replay: --neutralize price-risk-v1 requires --role");
+    // The target replay loads no role fields; the NAV replay's --fields carries them.
+    if (neutralize_by_industry(cfg.target.neutralize))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: the industry ids need the grp_ff12 field (nav --fields)");
     // Neutralization reads the role's volume (log ADV); otherwise nothing changes.
     const bool with_volume = neutralizing(cfg.target);
     SavedBlend blend; ATX_TRY_VOID(admit_saved(cfg, blend, with_volume));
@@ -1005,7 +1089,7 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
       else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
       else if (key == "--exit-rate") cfg.target.exit_rate = real();
       else if (key == "--neutralize") {
-        if (!parse_neutralize(value, cfg.target.neutralize))
+        if (!parse_neutralize(value, cfg.target))
           throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
       } else if (key == "--rule") {
         if (value == "baseline-v1") cfg.target.rule = TargetReplayRule::BaselineTargetV1;
@@ -1099,8 +1183,8 @@ const char* construction_csv_columns() { return construction_columns; }
 void write_construction_csv(std::ostream& out, const ConstructionDay& day) {
   write_construction(out, day);
 }
-bool parse_neutralize(std::string_view value, TargetNeutralize& out) {
-  return ::atx::impl::strategy::parse_neutralize(value, out);
+bool parse_neutralize(std::string_view value, TargetReplayConfig& cfg) {
+  return ::atx::impl::strategy::parse_neutralize(value, cfg);
 }
 const char* neutralize_outcome_label(NeutralizeOutcome outcome) { return outcome_label(outcome); }
 f64 sorted_quantile(std::span<const f64> sorted, f64 q) { return quantile(sorted, q); }

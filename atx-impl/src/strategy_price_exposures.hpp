@@ -13,6 +13,15 @@ namespace atx::impl::strategy {
 // Column order of every row-major instruments x kPriceExposureCount matrix.
 inline constexpr atx::usize kPriceExposureCount = 3;
 inline constexpr atx::usize kExposureBeta = 0, kExposureVol = 1, kExposureLogAdv = 2;
+// Within-groups neutralization (industry ids): a group id is an integer in
+// [0, kMaxGroupId] stored as f64 (Fama-French 12/49 numbers, SIC2), NaN = unknown.
+// A group with fewer than kMinGroupNames regressed rows has no level of its own.
+inline constexpr atx::usize kMinGroupNames = 5, kMaxGroupId = 9999;
+// Group slots: one per id, the unknown (NaN) group, the pooled fallback group.
+inline constexpr atx::usize kGroupSlots = kMaxGroupId + 3;
+// The slot table's bytes: per slot a row count and kPriceExposureCount + 1 sums.
+inline constexpr atx::usize kGroupTableBytes =
+    kGroupSlots * (sizeof(atx::usize) + (kPriceExposureCount + 1) * sizeof(atx::f64));
 
 struct PriceExposureConfig {
   atx::usize beta_window{252}, vol_window{63}, adv_window{63}, min_return_pairs{126};
@@ -43,6 +52,10 @@ struct NeutralizeScratch {
   std::vector<atx::usize> rows;   // regressed row indices, ascending
   std::vector<atx::f64> z;        // rows x kPriceExposureCount clipped z-scores
   std::vector<atx::f64> residual; // rows
+  // Within groups only (grown on first use): each regressed row's group slot, and per
+  // slot the row count and the sums of the target and of every z column.
+  std::vector<atx::usize> slot, slot_count;
+  std::vector<atx::f64> slot_sum;
 };
 // compute_price_exposures + neutralize_target state for the one-call step below.
 struct PriceRiskScratch {
@@ -60,6 +73,10 @@ struct NeutralizeStats {
   // OLS coefficients on [1, z_beta, z_vol, z_log_adv] (clipped z-scores), after
   // one refinement step. All zero for a flat target.
   std::array<atx::f64, kPriceExposureCount + 1> coefficients{};
+  // Within groups only (0 otherwise), over the used rows: demeaning groups (the pooled
+  // fallback counts as one), rows with an unknown (NaN) id, and rows pooled into the
+  // fallback because their group had fewer than kMinGroupNames used rows.
+  atx::usize groups{}, unknown_group_names{}, fallback_names{};
 };
 
 // Exposures known at decision d; every window ends at session d inclusive and no
@@ -119,4 +136,39 @@ struct NeutralizeStats {
     const PriceExposureInput&, const PriceExposureConfig&, atx::usize d,
     std::span<atx::f64> target, std::span<const atx::u8> member, PriceRiskScratch&,
     NeutralizeStats&);
+
+// neutralize_target plus within-group demeaning (price-risk-ind-v1/-v2): the OLS
+// residual of the target on [group indicators, z_beta, z_vol, z_log_adv]. Exact order:
+//  1. used rows = member && ok, entry gross, too-few-names refusal: as neutralize_target;
+//  2. each exposure z-scored over the used rows and clipped: as neutralize_target;
+//  3. group slot of each used row: its id; every NaN id forms ONE unknown group; every
+//     group (the unknown one included) with fewer than kMinGroupNames used rows is
+//     pooled into one fallback group: it has no level of its own and loads only on the
+//     common intercept, which (FWL, every other group absorbed by its own indicator)
+//     is its names demeaned together;
+//  4. the target and every z column demeaned within slot (means over the used rows,
+//     summed in ascending row order); a z column the slots span (within-slot sum of
+//     squares <= 1e-8 x its sum of squares, the pivot floor) refuses Unavailable;
+//  5. the demeaned target regressed on [1, demeaned z] by neutralize_target's OLS (the
+//     intercept coefficient is 0 up to rounding: every demeaned column sums to 0) and
+//     replaced by the residual;
+//  6. rescaled to the entry gross; member && !ok rows to 0; nonmembers untouched.
+// By Frisch-Waugh-Lovell the result is orthogonal to every slot indicator (within-slot
+// sums 0) and to the clipped z. group: one id per instrument (target.size()), read only
+// on the used rows. Same preconditions, refusals and strong guarantee as
+// neutralize_target, plus InvalidArgument for a group span of another length or a
+// finite id on a used row that is not an integer in [0, kMaxGroupId].
+[[nodiscard]] atx::core::Status neutralize_target_within_groups(
+    std::span<atx::f64> target, std::span<const atx::u8> member,
+    std::span<const atx::f64> exposures, std::span<const atx::u8> ok,
+    std::span<const atx::f64> group, const PriceExposureConfig&, NeutralizeScratch&,
+    NeutralizeStats&);
+
+// One-call decision step of the industry ids: compute_price_exposures at d, then
+// neutralize_target_within_groups with that decision's member row and group row (both
+// instruments long). Target unmodified on any error.
+[[nodiscard]] atx::core::Status neutralize_price_risk_within_groups(
+    const PriceExposureInput&, const PriceExposureConfig&, atx::usize d,
+    std::span<atx::f64> target, std::span<const atx::u8> member,
+    std::span<const atx::f64> group, PriceRiskScratch&, NeutralizeStats&);
 } // namespace atx::impl::strategy

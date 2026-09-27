@@ -182,6 +182,7 @@ struct NavFinancingFields {
 // Borrowed for the synchronous call. Prices and volume are required; members must
 // be present. Present cells: close/raw finite > 0, volume finite >= 0. volume is
 // authoritative (it also feeds price-risk neutralization); target.volume is ignored.
+// target.industry (grp_ff12 ids) is required by, and only read by, the industry ids.
 // A TieredSwapV1 scenario requires the financing fields; with them every book also
 // reports its short dollars by tier.
 struct NavReplayInput {
@@ -385,9 +386,22 @@ struct NavSummary {
 // manifest.json path and its SHA-256. Both empty: no tiers (legacy flat-300-v0).
 // The manifest's role pins (manifest, sessions, ids, member SHA) must equal the
 // pinned --role, and shares_out and si_shares must be declared point_in_time true.
+// The industry neutralization ids also load industry_group_field (grp_ff12) from
+// it, under the same checks; they require the fields.
 struct NavFieldsPin {
   std::string manifest_path, manifest_sha256;
 };
+
+// Workspace a pinned run reserves before it loads any payload (v6 C4): publication
+// slack, every book's fixed workspace, per-name state, days and events (at the
+// max_events cap), the shared construction (with its neutralization scratch), the
+// borrow tiers (tiered) and the per-name rate cache, at the ACTUAL geometry: `names`
+// instruments and `sessions` = score_end - score_begin rows per book, read from the
+// pinned role manifest. run_nav_replay refuses (OutOfRange) when max_working_bytes
+// <= this reserve and charges the fields and the saved-blend loader against the rest.
+[[nodiscard]] atx::u64 nav_workspace_reserve_bytes(const NavReplayConfig& base,
+                                                   atx::usize books, bool tiered,
+                                                   atx::usize names, atx::usize sessions);
 // Pinned saved blend + role (with volume); every scenario of nav_scenario_matrix,
 // run in lockstep; exclusive output directory: recipe.json, daily_<S>.csv,
 // events_<S>.csv, summary.json LAST (S: the trading id, or "<trading>+<financing>"

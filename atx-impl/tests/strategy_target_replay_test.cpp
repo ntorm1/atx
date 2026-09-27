@@ -1034,3 +1034,136 @@ TEST(TargetReplayV6, ExitRateRefusals) {
   EXPECT_EQ(day.turnover, 0);
   for (const f64 x : w) EXPECT_EQ(x, 0.25);
 }
+
+// ---- v6 C2: industry neutralization ids ----
+namespace {
+// grp_ff12 of a Role on every row: names 0-5 id 4 (6 names), 6-9 id 7 (4 names, pooled
+// into the fallback) and 10-11 unknown (2 names, pooled too).
+std::vector<f64> role_industry(const Role& role) {
+  std::vector<f64> ids(role.d * role.n);
+  for (usize t = 0; t < role.d; ++t)
+    for (usize i = 0; i < role.n; ++i)
+      ids[t * role.n + i] = i < 6 ? 4.0 : i < 10 ? 7.0 : missing;
+  return ids;
+}
+st::TargetReplayConfig industry_daily(st::TargetNeutralize id) {
+  auto c = neutral_daily(); c.neutralize = id; return c;
+}
+} // namespace
+
+// The CLI ids: ind-v2 carries its declared windows (vol 126, log ADV 252; beta stays
+// 252) and refuses any other pair; ind-v1 keeps price_risk as it is; an unknown id
+// leaves the config untouched; a short industry span is refused.
+TEST(TargetReplayV6, IndustryIdsParseWithTheirWindowsAndRefuseOtherPairs) {
+  st::TargetReplayConfig v2;
+  ASSERT_TRUE(st::detail::parse_neutralize("price-risk-ind-v2", v2));
+  EXPECT_EQ(v2.neutralize, st::TargetNeutralize::PriceRiskIndV2);
+  EXPECT_EQ(v2.price_risk.vol_window, 126U);
+  EXPECT_EQ(v2.price_risk.adv_window, 252U);
+  EXPECT_EQ(v2.price_risk.beta_window, 252U);
+  st::TargetReplayConfig v1;
+  ASSERT_TRUE(st::detail::parse_neutralize("price-risk-ind-v1", v1));
+  EXPECT_EQ(v1.neutralize, st::TargetNeutralize::PriceRiskIndV1);
+  EXPECT_EQ(v1.price_risk.vol_window, 63U);
+  EXPECT_EQ(v1.price_risk.adv_window, 63U);
+  ASSERT_TRUE(st::detail::parse_neutralize("price-risk-v1", v1));
+  EXPECT_EQ(v1.neutralize, st::TargetNeutralize::PriceRiskV1);
+  EXPECT_FALSE(st::detail::parse_neutralize("price-risk-ind-v3", v1));
+  EXPECT_EQ(v1.neutralize, st::TargetNeutralize::PriceRiskV1);
+  EXPECT_TRUE(st::neutralize_by_industry(st::TargetNeutralize::PriceRiskIndV1));
+  EXPECT_TRUE(st::neutralize_by_industry(st::TargetNeutralize::PriceRiskIndV2));
+  EXPECT_FALSE(st::neutralize_by_industry(st::TargetNeutralize::PriceRiskV1));
+  EXPECT_FALSE(st::neutralize_by_industry(st::TargetNeutralize::None));
+  const Role role(30, 12, 3);
+  const auto industry = role_industry(role);
+  auto in = role.input();
+  in.industry = industry;
+  const auto wrong = industry_daily(st::TargetNeutralize::PriceRiskIndV2); // windows 40/20/10
+  const auto refused = st::replay_targets(in, wrong);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  auto right = wrong;
+  right.price_risk.vol_window = st::price_risk_ind_v2_vol_window;
+  right.price_risk.adv_window = st::price_risk_ind_v2_adv_window;
+  const auto early = st::replay_targets(in, right); // no full log-ADV window yet: all skipped
+  ASSERT_TRUE(early) << early.error().to_string();
+  EXPECT_EQ(count_outcome(*early, st::NeutralizeOutcome::SkippedTooFewNames), role.d);
+  const std::vector<f64> short_industry(industry.begin(), industry.end() - 1);
+  in.industry = short_industry;
+  EXPECT_FALSE(st::replay_targets(in, industry_daily(st::TargetNeutralize::PriceRiskIndV1)));
+}
+
+// ind-v1 at a decision is the within-groups primitive on that decision's industry row,
+// bit for bit, with its group record; every applied decision leaves both demeaning
+// groups flat and (at fraction 1) a gross-1, net-0 plan; the replay and the shared
+// construction refuse the id without the field; the pinned target replay (no fields)
+// refuses it before output.
+TEST(TargetReplayV6, IndustryConstructionIsTheWithinGroupsPrimitive) {
+  const Role role(70, 12, 21);
+  const auto cfg = industry_daily(st::TargetNeutralize::PriceRiskIndV1);
+  constexpr usize d = 60;
+  const auto industry = role_industry(role);
+  auto in = role.input();
+  in.industry = industry;
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> expected(role.n);
+  st::detail::desired_target(std::span<const f64>(role.signal).subspan(d * role.n, role.n),
+                             std::span<const u8>(role.member).subspan(d * role.n, role.n), row,
+                             expected);
+  const std::vector<u8> members(role.n, 1);
+  st::PriceRiskScratch primitive;
+  st::NeutralizeStats stats;
+  const auto direct = st::neutralize_price_risk_within_groups(
+      role.prices(), cfg.price_risk, d, expected, members,
+      std::span<const f64>(industry).subspan(d * role.n, role.n), primitive, stats);
+  ASSERT_TRUE(direct) << direct.error().to_string();
+  EXPECT_EQ(stats.groups, 2U);
+  EXPECT_EQ(stats.fallback_names, 6U);
+  EXPECT_EQ(stats.unknown_group_names, 2U);
+  std::vector<f64> desired(role.n);
+  st::PriceRiskScratch scratch;
+  st::ConstructionDay record;
+  const auto rebalance = st::detail::form_desired(in, cfg, d, row, desired, scratch, record);
+  ASSERT_TRUE(rebalance) << rebalance.error().to_string();
+  EXPECT_TRUE(*rebalance);
+  for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(desired[i]), bits(expected[i])) << i;
+  EXPECT_EQ(record.neutralize, st::NeutralizeOutcome::Applied);
+  EXPECT_EQ(record.neutralize_used, 12U);
+  EXPECT_EQ(record.neutralize_groups, 2U);
+  EXPECT_EQ(record.neutralize_fallback_names, 6U);
+  EXPECT_EQ(record.neutralize_unknown_group_names, 2U);
+  EXPECT_EQ(bits(record.neutralize_amplification), bits(stats.gross / stats.residual_gross));
+  f64 own = 0, pooled = 0, gross = 0;
+  for (usize i = 0; i < role.n; ++i) {
+    (i < 6 ? own : pooled) += desired[i];
+    gross += std::abs(desired[i]);
+  }
+  EXPECT_LE(std::abs(own), 1e-12);
+  EXPECT_LE(std::abs(pooled), 1e-12);
+  EXPECT_NEAR(gross, 1.0, 1e-12);
+  auto replay = st::replay_targets(in, cfg);
+  ASSERT_TRUE(replay) << replay.error().to_string();
+  usize applied = 0;
+  for (const auto& day : replay->days) {
+    if (day.construction.neutralize != st::NeutralizeOutcome::Applied) continue;
+    ++applied;
+    EXPECT_NEAR(day.gross, 1.0, 1e-12) << day.decision;
+    EXPECT_NEAR(day.net, 0.0, 1e-12) << day.decision;
+  }
+  EXPECT_GT(applied, 0U);
+  const auto without = st::replay_targets(role.input(), cfg);
+  ASSERT_FALSE(without);
+  EXPECT_EQ(without.error().code(), co::ErrorCode::InvalidArgument);
+  const auto shared = st::detail::form_desired(role.input(), cfg, d, row, desired, scratch, record);
+  ASSERT_FALSE(shared);
+  EXPECT_EQ(shared.error().code(), co::ErrorCode::InvalidArgument);
+  Fixture f(6, 3);
+  for (usize t = 0; t < f.d; ++t)
+    for (usize i = 0; i < f.n; ++i) f.signal[t * f.n + i] = static_cast<f64>((i + t) % 3);
+  Directory dir; auto run = artifact(dir.path, f); run.target = cfg;
+  std::ostringstream progress;
+  const auto pinned = st::run_target_replay(run, progress);
+  ASSERT_FALSE(pinned);
+  EXPECT_EQ(pinned.error().code(), co::ErrorCode::InvalidArgument);
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "out"));
+}

@@ -66,9 +66,11 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // The construction of rebalance decision d, shared by the target and NAV replays:
 // the tied-rank desired target, then the configured post-processing (price-risk-v1:
 // neutralize_price_risk with exposures computed once for d from the role prices,
-// reading only sessions <= d). Returns false when the guard skips the rebalance
-// (data refusal or cap breach); contract and allocation errors are returned as
-// errors. `out` receives the neutralization record (banded_names is untouched).
+// reading only sessions <= d; the industry ids: neutralize_price_risk_within_groups on
+// row d of in.industry, InvalidArgument without it). Returns false when the guard
+// skips the rebalance (data refusal or cap breach); contract and allocation errors are
+// returned as errors. `out` receives the neutralization record (banded_names is
+// untouched).
 // no_short (NAV locate-in-aim, v6 prereg C3): empty (the default: unchanged), or one byte per
 // name; a member with no_short[i] != 0 and a negative tied-rank weight is set to 0
 // BEFORE the post-processing, so price-risk-v1 re-balances net and beta around it
@@ -81,7 +83,8 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // only then do recipes, CSVs and summaries carry construction keys/columns (the
 // default path emits none).
 [[nodiscard]] bool construction_active(const TargetReplayConfig& cfg);
-// "<rule>[+neutral-price-risk-v1][+band-<X>]" (X: shortest round-trip decimal).
+// "<rule>[+neutral-<id>][+band-<X>]" (id: price-risk-v1 | price-risk-ind-v1 |
+// price-risk-ind-v2; X: shortest round-trip decimal).
 [[nodiscard]] std::string construction_rule_id(const TargetReplayConfig& cfg);
 // Construction recipe keys as a JSON object text; empty when not active.
 [[nodiscard]] std::string construction_recipe_json(const TargetReplayConfig& cfg);
@@ -112,8 +115,10 @@ struct AimPartialDecision {
 // (appended by both replays only when construction_active).
 [[nodiscard]] const char* construction_csv_columns();
 void write_construction_csv(std::ostream& out, const ConstructionDay& day);
-// CLI spelling: "none" | "price-risk-v1"; false (out untouched) otherwise.
-[[nodiscard]] bool parse_neutralize(std::string_view value, TargetNeutralize& out);
+// CLI spelling: "none" | "price-risk-v1" | "price-risk-ind-v1" | "price-risk-ind-v2"
+// sets cfg.neutralize (ind-v2 also its declared vol 126 / log-ADV 252 windows in
+// cfg.price_risk); false (cfg untouched) otherwise.
+[[nodiscard]] bool parse_neutralize(std::string_view value, TargetReplayConfig& cfg);
 // Stable CSV spelling of a neutralization outcome.
 [[nodiscard]] const char* neutralize_outcome_label(NeutralizeOutcome outcome);
 // Linear interpolation at (n-1)q over ascending finite values (numpy default);

@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include "atx/core/sha256.hpp"
 #include "../src/strategy_price_exposures.hpp"
 
 namespace {
@@ -421,4 +422,245 @@ TEST(StrategyPriceNeutralize, OneCallStepMatchesPrimitivesAndFlatTargetStaysFlat
   for (const f64 v : flat) EXPECT_EQ(v, 0.0);
   EXPECT_EQ(flat_stats.gross, 0.0);
   EXPECT_EQ(flat_stats.used, usize{11});
+}
+
+// ---- v6 C2: industry (within-groups) neutralization ----
+namespace {
+// section(n, seed) whose target also loads on its groups: shift[i] is added to the
+// desired-target shape before it is renormalized (demeaned, gross 1).
+Section loaded_section(usize n, u64 seed, const std::vector<f64>& shift) {
+  Section s = section(n, seed);
+  for (usize i = 0; i < n; ++i) s.target[i] += shift[i];
+  normalize(s.target, s.member);
+  return s;
+}
+// Sum of w over the used rows whose id is `id` (NaN: the unknown ids).
+f64 group_sum(const std::vector<f64>& w, const Section& s, const std::vector<f64>& ids, f64 id) {
+  f64 sum = 0;
+  for (usize i = 0; i < w.size(); ++i) {
+    const bool same = std::isnan(id) ? std::isnan(ids[i]) : ids[i] == id;
+    if (s.used(i) && same) sum += w[i];
+  }
+  return sum;
+}
+f64 gross_of(const std::vector<f64>& w) {
+  f64 gross = 0;
+  for (const f64 v : w) gross += std::abs(v);
+  return gross;
+}
+} // namespace
+
+// (a) price-risk-v1 bytes are unchanged by the within-groups work. The fixture is
+// ResidualIsOrthogonalGrossPreservingAndRespectsSupport's. The pinned values come from
+// the base-commit (04e9d5bc) operation order evaluated by an exact IEEE-754 binary64
+// replica (the dev preset compiles no FMA contraction): the SHA-256 of the 90 output
+// f64 (little endian), the residual gross and the four coefficients, bit for bit.
+TEST(StrategyPriceNeutralizeV6, PriceRiskV1BytesArePinnedOnTheExistingFixture) {
+  constexpr usize n = 90;
+  Section s = section(n, 3);
+  for (usize i = 0; i < n; ++i) {
+    if (i % 13 == 0) {
+      s.member[i] = 0;
+    } else if (i % 11 == 5) {
+      s.ok[i] = 0;
+      for (usize k = 0; k < kCols; ++k) s.exposures[i * kCols + k] = missing;
+    }
+  }
+  normalize(s.target, s.member);
+  st::PriceExposureConfig cfg;
+  cfg.min_names = 20;
+  st::NeutralizeScratch scratch;
+  st::NeutralizeStats stats;
+  auto w = s.target;
+  const auto status = st::neutralize_target(w, s.member, s.exposures, s.ok, cfg, scratch, stats);
+  ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_EQ(stats.used, usize{75});
+  EXPECT_EQ(co::sha256_hex(std::as_bytes(std::span<const f64>(w))).value(),
+            "0145d9a452ecb8b032d3a9106a6cd3f04aae089d16ddc7e5c265ff1810dfdfc0");
+  EXPECT_EQ(std::bit_cast<u64>(stats.residual_gross), 0x3fe4d6ca304e881fULL);
+  const std::array<u64, kCols + 1> coefficients{0xbf452eb685e46372ULL, 0x3f86487261046f59ULL,
+                                                0xbf4a1223e357f171ULL, 0xbf3b108c2c5ecb75ULL};
+  for (usize k = 0; k < coefficients.size(); ++k)
+    EXPECT_EQ(std::bit_cast<u64>(stats.coefficients[k]), coefficients[k]) << k;
+  EXPECT_EQ(std::bit_cast<u64>(w[1]), 0x3f9769edb54fe169ULL);
+  EXPECT_EQ(std::bit_cast<u64>(w[89]), 0xbf9082ec91c7fcb6ULL);
+  EXPECT_EQ(stats.groups, usize{0}); // the within-groups fields stay zero on this path
+  EXPECT_EQ(stats.fallback_names, usize{0});
+}
+
+// (b) Two groups of 30: the neutralized target's within-group sums (hence means) are 0,
+// its gross is the entry gross 1, and it stays orthogonal to the clipped z design; the
+// group bet the input carried is gone and the result is not price-risk-v1's.
+TEST(StrategyPriceNeutralizeV6, WithinGroupsZeroesGroupMeansKeepsGrossAndExposure) {
+  constexpr usize n = 60;
+  std::vector<f64> ids(n), shift(n, 0.0);
+  for (usize i = 0; i < n; ++i) {
+    ids[i] = i % 2 ? 3.0 : 7.0;
+    if (ids[i] == 7.0) shift[i] = 0.01;
+  }
+  const Section s = loaded_section(n, 31, shift);
+  st::PriceExposureConfig cfg;
+  cfg.min_names = 20;
+  st::NeutralizeScratch scratch;
+  st::NeutralizeStats stats;
+  auto w = s.target;
+  const auto status =
+      st::neutralize_target_within_groups(w, s.member, s.exposures, s.ok, ids, cfg, scratch, stats);
+  ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_EQ(stats.used, n);
+  EXPECT_EQ(stats.groups, usize{2});
+  EXPECT_EQ(stats.unknown_group_names, usize{0});
+  EXPECT_EQ(stats.fallback_names, usize{0});
+  EXPECT_NEAR(stats.gross, 1.0, 1e-12);
+  EXPECT_GT(std::abs(group_sum(s.target, s, ids, 7.0)), 0.1); // the input's group bet
+  EXPECT_LE(std::abs(group_sum(w, s, ids, 7.0)), 1e-12);
+  EXPECT_LE(std::abs(group_sum(w, s, ids, 3.0)), 1e-12);
+  EXPECT_NEAR(gross_of(w), 1.0, 1e-12);
+  const auto z = design_z(s, cfg.clip_z);
+  const auto after = moments(w, s, z);
+  for (usize k = 0; k < after.size(); ++k) EXPECT_LE(std::abs(after[k]), 1e-12) << k;
+  auto v1 = s.target;
+  st::NeutralizeStats v1_stats;
+  ASSERT_TRUE(st::neutralize_target(v1, s.member, s.exposures, s.ok, cfg, scratch, v1_stats));
+  f64 largest = 0;
+  for (usize i = 0; i < n; ++i) largest = std::max(largest, std::abs(w[i] - v1[i]));
+  EXPECT_GT(largest, 1e-3);
+  // Scratch reuse (after a v1 call) is stateless.
+  auto again = s.target;
+  st::NeutralizeStats again_stats;
+  ASSERT_TRUE(st::neutralize_target_within_groups(again, s.member, s.exposures, s.ok, ids, cfg,
+                                                  scratch, again_stats));
+  expect_bits(again, w);
+}
+
+// (c) Groups of 20, 20, 3 and 2 names plus 15 unknown (NaN) ids, interleaved. The 3- and
+// 2-name groups fall back: pooled, they are demeaned together (their joint sum is 0, the
+// 3-name group's own sum is not), and relabelling them as one 5-name group and the NaN
+// names as a real id reproduces the result bit for bit.
+TEST(StrategyPriceNeutralizeV6, SmallGroupsPoolIntoOneFallbackAndUnknownIdsAreOneGroup) {
+  constexpr usize n = 60;
+  std::vector<f64> block(n);
+  for (usize i = 0; i < n; ++i)
+    block[i] = i < 20 ? 1.0 : i < 40 ? 2.0 : i < 43 ? 5.0 : i < 45 ? 9.0 : missing;
+  std::vector<f64> ids(n), shift(n, 0.0);
+  for (usize i = 0; i < n; ++i) {
+    ids[i] = block[(i * 7) % n];
+    shift[i] = ids[i] == 5.0 ? 0.02 : ids[i] == 2.0 ? -0.005 : 0.0;
+  }
+  const Section s = loaded_section(n, 32, shift);
+  st::PriceExposureConfig cfg;
+  cfg.min_names = 20;
+  st::NeutralizeScratch scratch;
+  st::NeutralizeStats stats;
+  auto w = s.target;
+  const auto status =
+      st::neutralize_target_within_groups(w, s.member, s.exposures, s.ok, ids, cfg, scratch, stats);
+  ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_EQ(stats.used, n);
+  EXPECT_EQ(stats.unknown_group_names, usize{15});
+  EXPECT_EQ(stats.fallback_names, usize{5});
+  EXPECT_EQ(stats.groups, usize{4}); // 1, 2, unknown, pooled fallback
+  for (const f64 id : {1.0, 2.0, missing})
+    EXPECT_LE(std::abs(group_sum(w, s, ids, id)), 1e-12) << id;
+  EXPECT_LE(std::abs(group_sum(w, s, ids, 5.0) + group_sum(w, s, ids, 9.0)), 1e-12);
+  EXPECT_GT(std::abs(group_sum(w, s, ids, 5.0)), 1e-3); // no level of its own
+  EXPECT_NEAR(gross_of(w), 1.0, 1e-12);
+  std::vector<f64> relabelled(ids);
+  for (auto& id : relabelled) id = std::isnan(id) ? 42.0 : (id == 5.0 || id == 9.0) ? 11.0 : id;
+  auto same = s.target;
+  st::NeutralizeStats same_stats;
+  ASSERT_TRUE(st::neutralize_target_within_groups(same, s.member, s.exposures, s.ok, relabelled,
+                                                  cfg, scratch, same_stats));
+  expect_bits(same, w);
+  EXPECT_EQ(same_stats.groups, usize{4});
+  EXPECT_EQ(same_stats.unknown_group_names, usize{0});
+  EXPECT_EQ(same_stats.fallback_names, usize{0});
+}
+
+// Contract: ids are integers in [0, kMaxGroupId] where read (used rows only), the group
+// span has the target's length (an empty span never falls back to price-risk-v1), and an
+// exposure constant within every group is refused as spanned; the target is unmodified.
+TEST(StrategyPriceNeutralizeV6, WithinGroupsRefusesBadIdsGeometryAndSpannedExposure) {
+  constexpr usize n = 40;
+  Section s = section(n, 9);
+  std::vector<f64> ids(n);
+  for (usize i = 0; i < n; ++i) ids[i] = i % 2 ? 1.0 : 2.0;
+  st::PriceExposureConfig cfg;
+  cfg.min_names = 10;
+  st::NeutralizeScratch scratch;
+  const auto run = [&](const Section& x, std::span<const f64> group) {
+    auto w = x.target;
+    st::NeutralizeStats stats;
+    const auto status =
+        st::neutralize_target_within_groups(w, x.member, x.exposures, x.ok, group, cfg, scratch,
+                                            stats);
+    if (!status) expect_bits(w, x.target);
+    return status;
+  };
+  EXPECT_TRUE(run(s, ids));
+  for (const f64 bad : {3.5, -1.0, static_cast<f64>(st::kMaxGroupId) + 1,
+                        std::numeric_limits<f64>::infinity()}) {
+    auto wrong = ids;
+    wrong[7] = bad;
+    expect_code(run(s, wrong), co::ErrorCode::InvalidArgument);
+  }
+  // Unread rows: a nonmember (target 0) and a member without exposures.
+  Section skip = s;
+  skip.member[3] = 0;
+  skip.ok[8] = 0;
+  normalize(skip.target, skip.member);
+  auto unread = ids;
+  unread[3] = 3.5;
+  unread[8] = -7.0;
+  EXPECT_TRUE(run(skip, unread));
+  expect_code(run(s, std::span<const f64>(ids).first(n - 1)), co::ErrorCode::InvalidArgument);
+  expect_code(run(s, {}), co::ErrorCode::InvalidArgument);
+  Section between = s; // log ADV differs across the two groups only
+  for (usize i = 0; i < n; ++i) between.exposures[i * kCols + st::kExposureLogAdv] = 12.0 + ids[i];
+  expect_code(run(between, ids), co::ErrorCode::Unavailable);
+}
+
+// The one-call step is compute_price_exposures + neutralize_target_within_groups bit for
+// bit; a nonmember's id is never read.
+TEST(StrategyPriceNeutralizeV6, WithinGroupsOneCallStepMatchesPrimitives) {
+  const Panel p = noisy_panel(70, 12, 21);
+  const auto cfg = small_config();
+  constexpr usize d = 60;
+  std::vector<u8> member(p.names, 1);
+  member[4] = 0;
+  std::vector<f64> ids(p.names);
+  for (usize i = 0; i < p.names; ++i) ids[i] = i < 6 ? 2.0 : 5.0;
+  ids[4] = 0.5; // nonmember: unread
+  std::vector<f64> target(p.names);
+  Lcg rng{9};
+  for (auto& v : target) v = rng.uniform() - 0.5;
+  normalize(target, member);
+  st::PriceExposureScratch exposure_scratch;
+  std::vector<f64> exposures(p.names * kCols);
+  std::vector<u8> ok(p.names);
+  ASSERT_TRUE(st::compute_price_exposures(p.input(), cfg, d, exposure_scratch, exposures, ok));
+  auto expected = target;
+  st::NeutralizeScratch neutralize_scratch;
+  st::NeutralizeStats expected_stats;
+  const auto status = st::neutralize_target_within_groups(
+      expected, member, exposures, ok, ids, cfg, neutralize_scratch, expected_stats);
+  ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_EQ(expected_stats.used, usize{11});
+  EXPECT_EQ(expected_stats.groups, usize{2});
+  st::PriceRiskScratch scratch;
+  for (int pass = 0; pass < 2; ++pass) {
+    auto w = target;
+    st::NeutralizeStats stats;
+    ASSERT_TRUE(st::neutralize_price_risk_within_groups(p.input(), cfg, d, w, member, ids,
+                                                        scratch, stats));
+    expect_bits(w, expected);
+    EXPECT_EQ(std::bit_cast<u64>(stats.residual_gross),
+              std::bit_cast<u64>(expected_stats.residual_gross));
+  }
+  auto w = target;
+  st::NeutralizeStats stats;
+  expect_code(st::neutralize_price_risk_within_groups(p.input(), cfg, d, w, member, {}, scratch,
+                                                      stats),
+              co::ErrorCode::InvalidArgument);
+  expect_bits(w, target);
 }

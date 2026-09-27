@@ -13,7 +13,19 @@ enum class TargetReplayRule : atx::u8 {
   BaselineTargetV1 = 1, MonthlyTargetBudgetV2 = 2, AimPartialV5 = 3
 };
 // Post-processing of each rebalance decision's desired target.
-enum class TargetNeutralize : atx::u8 { None = 0, PriceRiskV1 = 1 };
+enum class TargetNeutralize : atx::u8 {
+  None = 0, PriceRiskV1 = 1, PriceRiskIndV1 = 2, PriceRiskIndV2 = 3
+};
+// The industry ids (v6 C5) demean within industry groups and need
+// TargetReplayInput::industry: the pinned role field named industry_group_field.
+[[nodiscard]] constexpr bool neutralize_by_industry(TargetNeutralize id) noexcept {
+  return id == TargetNeutralize::PriceRiskIndV1 || id == TargetNeutralize::PriceRiskIndV2;
+}
+inline constexpr const char* industry_group_field = "grp_ff12";
+// price-risk-ind-v2 exposure windows (v6 C5, review F7): slower vol and log ADV; the
+// beta window is price-risk-v1's (252).
+inline constexpr atx::usize price_risk_ind_v2_vol_window = 126;
+inline constexpr atx::usize price_risk_ind_v2_adv_window = 252;
 struct TargetReplayConfig {
   TargetReplayRule rule{TargetReplayRule::BaselineTargetV1};
   atx::usize cadence{5};
@@ -28,6 +40,10 @@ struct TargetReplayConfig {
   // neutralize_max_amplification, or an excluded-row gross share above
   // neutralize_max_excluded_share SKIPS that rebalance: current weights are kept
   // and forced exits still apply. Requires prices and volume.
+  // price-risk-ind-v1: the same regressors plus within-industry demeaning
+  // (neutralize_price_risk_within_groups on TargetReplayInput::industry; same guard).
+  // price-risk-ind-v2: ind-v1 whose price_risk must carry vol_window 126 and
+  // adv_window 252 (the CLI id sets them; any other windows are refused).
   TargetNeutralize neutralize{TargetNeutralize::None};
   PriceExposureConfig price_risk{};
   atx::f64 neutralize_max_amplification{5.0}, neutralize_max_excluded_share{0.5};
@@ -69,6 +85,9 @@ struct TargetReplayInput {
   std::span<const atx::f64> close, raw_close;
   std::span<const atx::u8> present;
   std::span<const atx::f64> volume{};
+  // Industry group id per cell (the industry ids only; empty otherwise): an integer
+  // in [0, kMaxGroupId] as f64, NaN = unknown (one residual group). Same geometry.
+  std::span<const atx::f64> industry{};
 };
 // Per-decision construction record (neutralization outcome and band activity).
 enum class NeutralizeOutcome : atx::u8 {
@@ -81,6 +100,9 @@ struct ConstructionDay {
   atx::usize neutralize_used{}, neutralize_excluded{}, banded_names{};
   atx::f64 neutralize_excluded_share{}; // excluded-row gross / entry gross
   atx::f64 neutralize_amplification{};  // entry gross / residual gross; NaN if undefined
+  // Industry ids only (NeutralizeStats; summary JSON, never CSV columns).
+  atx::usize neutralize_groups{}, neutralize_unknown_group_names{};
+  atx::usize neutralize_fallback_names{};
   // NAV locate-in-aim (v6 prereg C3): members whose negative desired weight was set to 0
   // before neutralization because they may not be shorted. 0 otherwise; no CSV column.
   atx::usize locate_zeroed{};

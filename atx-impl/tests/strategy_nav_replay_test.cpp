@@ -2614,3 +2614,180 @@ TEST(NavV6, TargetsVerbCarriesTheExitRate) {
   EXPECT_EQ(targets("norole", false, {"--exit-rate", ".05"}), 1);
   EXPECT_FALSE(std::filesystem::exists(dir.path / "norole"));
 }
+
+// ---- v6 C2: workspace reserve at the run geometry, industry neutralization ----
+namespace {
+constexpr u64 mib = 1ULL << 20;
+// grp_ff12 of noisy-panel names on every row: 0-5 id 4 (6 names), 6-9 id 7 (4 names,
+// pooled into the fallback) and 10-11 unknown (2 names, pooled too).
+std::vector<f64> panel_industry(const Panel& p) {
+  std::vector<f64> ids(p.d * p.n);
+  for (usize t = 0; t < p.d; ++t)
+    for (usize i = 0; i < p.n; ++i) ids[p.k(t, i)] = i < 6 ? 4.0 : i < 10 ? 7.0 : missing;
+  return ids;
+}
+// write_fields' edit: adds the grp_ff12 payload and its manifest entry (point in time
+// unless `pit` is false) next to shares_out and si_shares.
+auto add_industry(const std::filesystem::path& dir, const Panel& p,
+                  const std::vector<f64>& ids, bool pit = true) {
+  return [root = dir / "fields", dates = p.d, names = p.n, values = ids, pit](Json& m) {
+    const auto receipt = write_payload(root / "grp_ff12.f64", values);
+    m["files"]["grp_ff12.f64"] = receipt;
+    m["fields"].push_back({{"name", "grp_ff12"}, {"file", "grp_ff12.f64"}, {"dtype", "<f8"},
+        {"layout", "date-major"}, {"shape", Json::array({dates, names})},
+        {"sha256", receipt.at("sha256")}, {"point_in_time", pit},
+        {"non_pit_aspects", Json::array()}, {"clock", "fixture-grp_ff12"}});
+  };
+}
+st::TargetReplayConfig industry_daily() {
+  auto c = construction_daily(); c.neutralize = st::TargetNeutralize::PriceRiskIndV1; return c;
+}
+} // namespace
+
+// (d) C4: the pinned run reserves its workspace at the role's own geometry (names x
+// sessions x books) instead of max_names x max_dates. A budget the fixed reserve left
+// short of the loader's 64 MiB metadata charge now runs; a budget at the geometry
+// reserve, or one byte-short of reserve + metadata + blend, is refused before output.
+TEST(NavV6, WorkspaceReserveIsChargedAtTheRunGeometry) {
+  const auto p = publication_panel(); // 9 sessions x 3 names, score window [0, 9)
+  const st::NavReplayConfig base{};   // the pinned run's defaults (fixed rate, event cap)
+  const usize books = st::nav_scenario_matrix(false).size();
+  const auto reserve = [&](usize names, usize sessions, bool tiered = false) {
+    return st::nav_workspace_reserve_bytes(base, books, tiered, names, sessions);
+  };
+  const u64 actual = reserve(p.n, p.d), fixed = reserve(20000, 4096);
+  EXPECT_EQ(reserve(p.n, p.d + 1) - actual, books * sizeof(st::NavReplayDay));
+  EXPECT_LT(actual, reserve(p.n + 1, p.d));
+  EXPECT_LT(actual, reserve(p.n, p.d, true));
+  EXPECT_GE(fixed - actual, books * (4096 - p.d) * sizeof(st::NavReplayDay));
+  // Premise: under the fixed reserve this budget left less than the 64 MiB metadata
+  // charge the loader makes first, so that path refused it.
+  const u64 budget = actual + 65 * mib;
+  ASSERT_LT(budget, fixed + 64 * mib);
+  std::ostringstream progress;
+  {
+    Directory dir; auto a = write_artifact(dir.path, p); a.cfg.target.max_working_bytes = budget;
+    const auto ok = st::run_nav_replay(a.cfg, progress);
+    ASSERT_TRUE(ok) << ok.error().to_string();
+    EXPECT_EQ(read_json(dir.path / "out" / "recipe.json").at("max_working_bytes"), budget);
+  }
+  for (const u64 short_budget : {actual, actual + 64 * mib}) {
+    Directory dir; auto a = write_artifact(dir.path, p);
+    a.cfg.target.max_working_bytes = short_budget;
+    const auto refused = st::run_nav_replay(a.cfg, progress);
+    ASSERT_FALSE(refused) << short_budget;
+    EXPECT_EQ(refused.error().code(), co::ErrorCode::OutOfRange) << short_budget;
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "out")) << short_budget;
+  }
+}
+
+// price-risk-ind-v1 end to end: the NAV forms exactly the target replay's industry
+// construction (outcomes, amplification, group record) in every lockstep book; the
+// pinned run loads grp_ff12 from --fields and publishes the id, the industry recipe and
+// the group diagnostics; without the field (or with it not point in time) it is refused
+// before output, and price-risk-v1 on the same fields never loads it.
+TEST(NavV6, IndustryNeutralizeRunsWithTheFieldAndIsRefusedWithout) {
+  const auto p = noisy_panel(70, 12, 21);
+  const auto ids = panel_industry(p);
+  const auto target = industry_daily();
+  auto in = p.nav();
+  in.target.industry = ids;
+  const auto cfg = config(flat(6, 300), 1e6, target);
+  auto r = st::replay_nav(in, cfg);
+  ASSERT_TRUE(r) << r.error().to_string();
+  auto planned_in = p.target();
+  planned_in.industry = ids;
+  auto planned = st::replay_targets(planned_in, target);
+  ASSERT_TRUE(planned) << planned.error().to_string();
+  usize applied = 0;
+  for (usize t = 0; t + 2 < p.d; ++t) {
+    const auto& c = r->days[t].construction;
+    expect_same_construction(c, planned->days[t].construction, t);
+    if (c.neutralize != st::NeutralizeOutcome::Applied) continue;
+    ++applied;
+    EXPECT_EQ(c.neutralize_groups, 2U) << t;
+    EXPECT_EQ(c.neutralize_fallback_names, 6U) << t;
+    EXPECT_EQ(c.neutralize_unknown_group_names, 2U) << t;
+  }
+  EXPECT_GT(applied, 0U);
+  const auto scenarios = st::fixed_nav_scenarios();
+  auto together = st::replay_nav_scenarios(in, cfg, scenarios);
+  ASSERT_TRUE(together) << together.error().to_string();
+  for (usize k = 0; k < scenarios.size(); ++k) {
+    auto single = cfg; single.scenario = scenarios[k];
+    auto alone = st::replay_nav(in, single); ASSERT_TRUE(alone);
+    expect_same_result((*together)[k], *alone);
+  }
+  const auto no_field = st::replay_nav(p.nav(), cfg);
+  ASSERT_FALSE(no_field);
+  EXPECT_EQ(no_field.error().code(), co::ErrorCode::InvalidArgument);
+
+  std::ostringstream progress;
+  const Fields f(p);
+  {
+    Directory dir; auto a = write_artifact(dir.path, p); a.cfg.target = target;
+    const auto pin = write_fields(dir.path, a, p, f, add_industry(dir.path, p, ids));
+    const auto ok = st::run_nav_replay(a.cfg, st::NavTurnoverLimits{}, pin, progress);
+    ASSERT_TRUE(ok) << ok.error().to_string();
+    const auto out = dir.path / "out";
+    const std::string id = "baseline-target-v1+neutral-price-risk-ind-v1+band-0.5";
+    const auto recipe = read_json(out / "recipe.json");
+    EXPECT_EQ(recipe.at("rule"), id);
+    EXPECT_EQ(recipe.at("neutralize"), "price-risk-ind-v1");
+    EXPECT_EQ(recipe.at("desired_target_postprocess"), "price-risk-ind-v1");
+    EXPECT_EQ(recipe.at("industry").at("field"), "grp_ff12");
+    EXPECT_EQ(recipe.at("industry").at("min_group_names"), 5);
+    EXPECT_EQ(recipe.at("price_risk").at("vol_window"), 20);
+    const auto& used = recipe.at("financing_fields").at("fields_used");
+    EXPECT_EQ(used.at("grp_ff12").at("clock"), "fixture-grp_ff12");
+    EXPECT_TRUE(used.contains("shares_out"));
+    const auto summary = read_json(out / "summary.json");
+    EXPECT_EQ(summary.at("rule"), id);
+    for (const auto& s : summary.at("scenarios")) {
+      const auto name = s.at("scenario").get<std::string>();
+      const auto& c = s.at("construction");
+      EXPECT_EQ(c.at("neutralize"), "price-risk-ind-v1") << name;
+      const auto& industry = c.at("neutralize_industry");
+      EXPECT_EQ(industry.at("applied_decisions"), applied) << name;
+      EXPECT_EQ(industry.at("groups").at("median"), 2.0) << name;
+      EXPECT_EQ(industry.at("fallback_names").at("max"), 6.0) << name;
+      EXPECT_EQ(industry.at("unknown_group_names").at("min"), 2.0) << name;
+      EXPECT_EQ(first_line(out / ("daily_" + name + ".csv")),
+                std::string(t2_daily_header) + ",pretrade_gross_dollars,one_way_turnover_gmv" +
+                    construction_columns + financing_columns) << name;
+    }
+  }
+  { // price-risk-v1 on the same fields: grp_ff12 is not loaded, the recipe carries no industry
+    Directory dir; auto a = write_artifact(dir.path, p); a.cfg.target = construction_daily();
+    const auto pin = write_fields(dir.path, a, p, f, add_industry(dir.path, p, ids));
+    ASSERT_TRUE(st::run_nav_replay(a.cfg, st::NavTurnoverLimits{}, pin, progress));
+    const auto recipe = read_json(dir.path / "out" / "recipe.json");
+    EXPECT_FALSE(recipe.at("financing_fields").at("fields_used").contains("grp_ff12"));
+    EXPECT_FALSE(recipe.contains("industry"));
+    EXPECT_FALSE(read_json(dir.path / "out" / "summary.json").at("scenarios")[0]
+                     .at("construction").contains("neutralize_industry"));
+  }
+  const auto refused = [&](bool fields, auto edit) {
+    Directory dir; auto a = write_artifact(dir.path, p); a.cfg.target = target;
+    st::NavFieldsPin pin;
+    if (fields) pin = write_fields(dir.path, a, p, f, edit(dir.path));
+    const bool ran = static_cast<bool>(st::run_nav_replay(a.cfg, {}, pin, progress));
+    return !ran && !std::filesystem::exists(dir.path / "out");
+  };
+  const auto none = [](const std::filesystem::path&) { return [](Json&) {}; };
+  EXPECT_TRUE(refused(false, none)); // no --fields
+  EXPECT_TRUE(refused(true, none));  // the fields lack grp_ff12
+  EXPECT_TRUE(refused(true, [&](const std::filesystem::path& dir) {
+    return add_industry(dir, p, ids, false); // declared not point in time
+  }));
+  EXPECT_FALSE(refused(true, [&](const std::filesystem::path& dir) {
+    return add_industry(dir, p, ids); // control
+  }));
+  std::ostringstream o, e;
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  EXPECT_EQ(dispatch({"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
+                      a.cfg.combined_sha256, "--role", a.cfg.role_path, "--role-sha256",
+                      a.cfg.role_sha256, "--output", (dir.path / "never").string(),
+                      "--neutralize", "price-risk-ind-v1"}, o, e), 1); // needs --fields
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "never"));
+}
