@@ -97,6 +97,16 @@
   [1e5, 5e10] as missing (-> warm tier); fields-v2 reruns use --fields si_shares,si_dtc,iv_atm_21d,
   iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret (all PIT; no mktcap_lagged/size_grp) and bind the
   REPAIRED roles (after T12) — cost if wrong: tier misclass on bad share counts, bounded by stresses.
+- T7 + T1 fix r1: pool-4 aa5f06dd/2353bac8/4e018e58/d4992a32 -> root 060f440c/a9ef7175/ac0d1309/e238c94c
+  (ac91e600 = v2 cherry-pick, skipped). Build mega-t7-a 171.2s Jobs4 52 TUs/4 links (vm.hpp comment
+  recompiles). IC tests 50/54: 4 new fixtures throw json type_error.304 "cannot use at() with number"
+  -> T7 fix round 1 sent to t7-fields. Old -fields-v1 dirs refused (no PIT flags) by design.
+- T8 review: spec PASS, Approved, 0C/0I/5m. Task T8: complete (d5471776/d3016d0b, review clean).
+  T8 minors deferred (task-T8-review.md).
+- T4: pool-5 6a38fe39 -> root ef089af8 (neutralize price-risk-v1, --band-multiple, lockstep NAV scenarios,
+  pretrade_gross_dollars + one_way_turnover_gmv, daily_turnover_gmv stats, ceiling flags). Build mega-t4-a
+  19.1s Jobs4 5 TUs/3 links; target tests 32/32. Review dispatched (t4-review). T10 sent to t2-nav.
+  T4 concern: exposures recomputed from scratch per decision, ~20-30 s per replay pass at N=5600.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
