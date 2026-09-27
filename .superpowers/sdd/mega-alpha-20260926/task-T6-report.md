@@ -198,3 +198,175 @@ Each output directory must not already exist. Run them one at a time.
 6. **The full FINRA CSVs were not verified by me** (sha and dissemination-date checks cover only the 2 MB prefix), because of the read limits. Both are enforced at run time and the FINRA phase runs first, so a mismatch fails within seconds.
 7. **`code_sha256` in the manifest hashes the executed file's bytes.** A CRLF checkout changes it.
 8. **`mkt_ret` includes ETFs,** because it uses the role's ADV top-N membership.
+
+## Fix round 1
+
+2026-09-27. Owner: t6-fix (fresh implementer). Worktree `C:/atx-wt/pool-8`, branch
+`feat/mega-alpha-fields-fix1-20260927` at root `71cbec8f`. **Commit `a0d9deeb`** (not pushed), which
+touches the same two files only:
+
+- `atx-engine/tools/prepare_research_fields.py`: sha256 `1b474d73f80c21fa9f3d122ee62ca85ef0aa3bddd3a984c67b744bbae508a03c` (LF), git blob `482da7bb16b8ec7a5e77e5b4c9bc657e1ad291df`
+- `atx-engine/tools/test_prepare_research_fields.py`: sha256 `9f982c6f17df5ed33c13e4a64f93a51cfbb30533765d7331f5b0c28226e480cc`
+
+I built nothing and ran nothing on real data. The only real-data reads were the two role `manifest.json`
+files, which I hashed. Their pins have not changed.
+
+### Important 1: IV plausibility domain (fixed)
+
+- **The domain is declared in code.** `IV_DOMAIN = (0.02, 5.0)` is annualized decimal with both bounds
+  inclusive. It is attached to each `iv_atm_*` spec as `"domain"`, and a comment records the root
+  ruling and that it was declared before any IV measurement.
+- **The comparison is in float32**, the vendor's own precision, so a stored 0.02 counts as in-domain.
+- **Out-of-domain values become NaN; nothing is clamped or rescaled.** The fixture checks that
+  in-domain cells equal the vendor float32 value exactly. Previously the "null, non-finite or <= 0 ->
+  NaN" rule did this job. Now null or NaN stays NaN, and every other value outside the domain,
+  including <= 0 and +-inf, becomes NaN and is counted.
+- **The vendor value is kept raw until the write**, and the domain is applied per role cell after
+  duplicate-key quarantine. Each IV field entry gets a new `plausibility` object:
+  `{min: 0.02, max: 5.0, inclusive: true, units, rule, implausible_to_nan, implausible_to_nan_member,
+  below_min, above_max, member_below_min, member_above_max}`. `below_min` includes <= 0 and -inf;
+  `above_max` includes +inf.
+- **The old key is unchanged.** `source_checks.tickerhistory.iv_nonpositive_or_nonfinite` keeps its
+  meaning: a row-level count across all tenors, taken before quarantine.
+- **Coverage now shows the tails.** The review asked for this: every field's `coverage` gains
+  `member_finite_quantiles` `{p0.1, p1, p50, p99, p99.9}`. They are computed from the published bytes
+  in the same read that computes the file sha256, and cross-checked against the writer's
+  finite-member count. For IV the min/max/mean are now post-domain, so the mean is usable again.
+
+### Important 2: is_common not point in time (fixed, and extended to the spine fields; decision below)
+
+- **Every field entry has a flag.** Each entry now carries `point_in_time` (bool) and
+  `non_pit_aspects` (a list drawn from `values` / `presence`). When the flag is false it also carries
+  `point_in_time_reason`.
+- **New top-level keys:**
+  - `point_in_time_definition`: true only when both the cell values and which cells are NaN use only
+    information available by the decision. Revision vintage is reported separately and does not set
+    the flag.
+  - `non_point_in_time_fields`: the list of false fields.
+  - `visibility_mark`: every finite cell is known by the session 22:00 UTC mark, before the 23:00
+    decision. This answers the review's `available_at_ns` note for T10.
+- **`is_common`** is now `point_in_time: false`, `non_pit_aspects: ["values"]`. Its reason: it is
+  classified from the 2026 directory snapshot plus whole-history earnings evidence, so it encodes
+  survival.
+- **DECISION: `mktcap_lagged` and `size_grp` are also flagged `point_in_time: false`, with
+  `non_pit_aspects: ["presence"]`.**
+  - Their values are PIT: a strict formation clock and A8-lagged shares.
+  - Which lines have a value is not. It is the spine universe (`spine.py` `classify_lines`
+    :810-853, `stage_spine` :964-973): an eligible type taken from the 2026-09-18 directory snapshot,
+    admitted from `first_earn_date = min(trade_date) FILTER (WHERE nEarnCnt_504d > 0)` (:878).
+    `nEarnCnt_*` counts FUTURE events (T6 evidence), so a line enters up to 504 sessions before its
+    first actual earnings, and lines that die before ever reporting are never present.
+  - NaN versus finite therefore leaks survival. It also nearly reproduces `is_common`: the review
+    measured member coverage 0.751 vs 0.753. Flagging only `is_common` would have left the same
+    information reachable through `isnan(mktcap_lagged)`.
+- **Default field list.** `DEFAULT_FIELDS` is now the PIT fields only: si_shares, si_dtc,
+  iv_atm_21d/63d/126d, earn_recent, shares_out, mkt_ret.
+  - `is_common`, `mktcap_lagged` and `size_grp` are opt-in: they are produced only when named in
+    `--fields`.
+  - The rerun commands below name `mktcap_lagged,size_grp` explicitly, because T10 loads
+    `mktcap_lagged`. `is_common` is left out.
+  - **Root ruling needed:** whether T7 or T10 may consume the two presence-non-PIT fields, and how.
+    - T10 falls back to `shares_out*raw_close` when `mktcap_lagged` is missing. Using that for every
+      name removes the leak at the cost of the spine's formation-date value.
+    - For T8, the brief already prefers `shares_out*raw_close`, which is PIT.
+  - If root prefers the old default set, it can list the fields explicitly. The flags stay honest
+    either way.
+- **`shares_out` is flagged PIT** after the Minor 4 fix below. `mkt_ret`, `si_*`, `iv_*` and
+  `earn_recent` are PIT on their clocks; their vintage caveats are unchanged.
+
+### Minors
+
+| # | Status | Change / reason |
+|---|---|---|
+| M1 FINRA republication not machine-maskable | **Fixed (structured).** Optional masking flag not added | FINRA entries get `vintage_safe_from` (the first `available_at` of original-vintage rows; real schedule gives `2021-06-10`). `coverage.vintage_risk` gains `last_session_with_republished_visible_cell` and `first_session_vintage_safe`, which give a ready selection-window start. Masking flag not added: choosing the SI selection window is controller policy, and the structured keys let the fitter mask by session without another payload |
+| M2 NaN meaning of `mktcap_lagged` | **Fixed** | `staleness` for `mktcap_lagged` and `size_grp` now says NaN mostly means outside the spine universe (not "large", not a data gap, about 25-27% of member cells), and names the `shares_out x raw_close` fallback. Also covered by the PIT flag above |
+| M3 `shares_out` restatement has no artifact guard (C-79) | **Not fixed** | A plausibility bound on restated shares or on the factor ratio is a new policy threshold. Root should declare it before measurement, as it did for IV, rather than have me pick it after seeing the 20-share / 3.1e10 extremes. The new `member_finite_quantiles` now show those tails in the manifest |
+| M4 C-81 withholding uses rows after the session | **Fixed** | A line is withheld from the date of its first above-ceiling vendor row onward (`first_above <= date(session)`; that row is known at its 22:00 mark), not over its whole history. This deviates from the spine's whole-line C-81, which is stated in `staleness`. `shares_lines_withheld_c81` keeps its meaning; `shares_cells_withheld_c81` is new. Real effect: 1 VAL line, 0 TRAIN lines (per the review) |
+| M5 no bound on spine formation age | **Fixed** | Refuses before writing when any session's latest formation is more than 35 days old; consecutive month-end sessions are at most about 33-34 days apart. Records `source_checks.lake.spine_max_formation_age_days`, and also refuses a lake with no formation at all |
+| M6 `code_sha256` depends on line endings | **Fixed (additive)** | `code_sha256` keeps its raw-bytes meaning. Adds `code_sha256_lf` (LF-normalised) and `code_git_blob_sha1`. The latter equals `git hash-object` and `git rev-parse HEAD:<path>` (`482da7bb...`, checked) |
+
+### Compatibility (`atx.research-role-fields/v1` kept)
+
+- **Nothing removed or renamed.** The schema string, `status`, `role.*` pins, `fields[].{name,file,dtype,layout,shape,sha256,...}` and `files[file].{bytes,sha256}` are unchanged, so the T7 and T10 loaders are unaffected.
+- **Additive keys:**
+  - `fields[].point_in_time`, `non_pit_aspects`, `point_in_time_reason`
+  - `fields[].plausibility` (IV fields)
+  - `fields[].vintage_safe_from` (FINRA fields)
+  - `coverage.member_finite_quantiles`
+  - `coverage.vintage_risk.{last_session_with_republished_visible_cell, first_session_vintage_safe}`
+  - `source_checks.tickerhistory.shares_cells_withheld_c81`
+  - `source_checks.lake.spine_max_formation_age_days`
+  - top level: `point_in_time_definition`, `non_point_in_time_fields`, `visibility_mark`, `code_sha256_lf`, `code_git_blob_sha1`
+- **Behaviour changes, deliberate:**
+  - The default `--fields` is PIT only.
+  - IV cells outside [0.02, 5.0] are NaN.
+  - `shares_out` C-81 is applied point in time.
+  - A new refusal fires on a stale spine formation.
+  - Every field sha changes for the IV fields and for any role whose `shares_out` had a mid-window C-81 line. All shas change anyway because `-fields-v2` is a fresh run.
+- **For T7:** refuse `point_in_time == false` fields for DSL panels unless root explicitly allows them. A library that references `is_common` will fail at load against the v2 payload, because the field is absent. That is intended.
+
+### Tests
+
+Command, run from `C:/atx-wt/pool-8`:
+`& 'C:/Program Files/Python312/python.exe' -m unittest discover -s atx-engine/tools -p test_prepare_research_fields.py -v`
+
+- **Result:** `Ran 14 tests in 2.437s`, `OK`, exit 0. Nine tests existed before; five are new.
+- **Log:** scratchpad `t6fix/t6-fix1-tests.log`, sha256 `f105d62e4f648964d1f75c0f0080381cf9b8722e714071b568e851d4e4484703`.
+
+New or extended coverage:
+
+- **`test_iv_declared_domain_to_nan_and_counted`**
+  - Fixture cells in each tenor: 1e16, 0.0199, float32 0.02 (kept), 5.0 (kept), 5.05/5.1, +inf, negative, and a non-member 9.0.
+  - Checks exact NaN/keep per cell and that kept cells are unclamped.
+  - Checks per-field below/above/member counts (21d 3/3, 63d 1/4, 126d 1/4), post-domain min/max, and ordered quantiles.
+- **`test_point_in_time_flags_and_default_fields`**
+  - Flags, reasons and aspects for all 11 fields; `non_point_in_time_fields`.
+  - The default run publishes exactly the 8 PIT files, byte-identical to the full run.
+- **`test_finra_vintage_structured`**
+  - `vintage_safe_from` on the real-shaped schedule.
+  - A 2024-10-09 cutoff injected into `finra_field`: last republished session 2024-11-15, first safe session 2024-11-18, and a hand-counted `finite_member_cells`.
+- **`test_stale_spine_formation_refused`:** a lake ending at the October formation fails at session 2024-12-06 (36 days) and publishes no manifest.
+- **`test_code_identity_is_line_ending_independent`:** a CRLF copy gives the same `code_sha256_lf` / git blob and a different raw sha; the git blob id is checked against the formula.
+- **Extended tests:**
+  - `shares_out`: 303 gets an above-ceiling row on 2024-12-02. It is finite through 11-29 and NaN from 12-02; lines withheld = 2, cells = 66 + 22.
+  - Quantiles are checked to equal `np.quantile` of the published finite member cells for every field.
+  - `iv_nonpositive_or_nonfinite` = 7.
+  - The CLI run with `is_common` flags it false.
+
+**Mutation sweep** (scratchpad `t6fix/mutate.py`): 13 of 13 killed.
+
+- IV domain: compared in f64 instead of f32; clamped instead of NaN; exclusive upper bound; domain removed; member count taken over all cells.
+- C-81: whole-line; strict `<`.
+- PIT flags: default = all fields; `is_common` flagged PIT.
+- Vintage: last-republished tracking removed.
+- Spine: age bound 40.
+- Quantiles: computed without the member mask.
+- Code pin: LF normalisation removed.
+
+### Real-data runtime and RAM (estimate; not run)
+
+- **Runtime:** unchanged except one read-back per field for the quantiles. That is the same read that already computed the sha, plus `np.quantile` on at most 6.5M values, so about 5 s more per role in total.
+- **Peak RSS:** unchanged at about 450 MiB. The read-back adds at most about 52 MB for TRAIN, and it runs after the TickerHistory matrices are freed. It is admitted through `--max-rss-mib`.
+
+### Root rerun commands (not executed; output directories must not exist; run one at a time)
+
+```powershell
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-8/atx-engine/tools/prepare_research_fields.py --role C:/atx-wt/pool-2/build-equity/recent-fast-train-2020-2022-v1 --role-sha256 3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493 --output C:/atx-wt/pool-2/build-equity/recent-fast-train-2020-2022-v1-fields-v2 --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mktcap_lagged,size_grp,mkt_ret --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --lake C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23 --max-rss-mib 700 --max-seconds 1800
+
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-8/atx-engine/tools/prepare_research_fields.py --role C:/atx-wt/pool-2/build-equity/recent-fast-validation-2023-2024-v1 --role-sha256 0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7 --output C:/atx-wt/pool-2/build-equity/recent-fast-validation-2023-2024-v1-fields-v2 --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mktcap_lagged,size_grp,mkt_ret --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --lake C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23 --max-rss-mib 700 --max-seconds 1800
+```
+
+- **Role shas.** Both role manifest shas were re-hashed today and are unchanged. The shape matches the v1 runs, plus an explicit `--fields`, which is the ten v1 fields minus `is_common`.
+- **Code pin.** If root runs its cherry-picked copy instead of the pool-8 path, `code_git_blob_sha1` must be `482da7bb16b8ec7a5e77e5b4c9bc657e1ad291df` whatever the line endings.
+- **Descriptive checks for root after the run:**
+  - `fields[iv_*].plausibility.implausible_to_nan_member` per tenor and role. From v1, expect VAL `iv_atm_126d` above_max >= 1 (the 1.19e16 cell) and the 69.3 cells in 21d/63d in both roles.
+  - `non_point_in_time_fields == ["mktcap_lagged","size_grp"]`.
+  - `source_checks.tickerhistory.shares_cells_withheld_c81`.
+  - `source_checks.lake.spine_max_formation_age_days` <= 35.
+
+### Concerns (fix round 1)
+
+1. **Decision for root: `mktcap_lagged` and `size_grp` are flagged non-PIT because their presence is non-PIT.** This goes beyond the literal ruling, which only named `is_common`. The consumers are T10's market-cap predictor and any T8 size family, and each needs an explicit allow-or-refuse ruling.
+2. **The IV domain removes only out-of-domain garbage.** In-domain vendor errors, and the unproven earnings-calendar vintage behind the IV cleaning, remain.
+3. **M3 is still open:** the `shares_out` restatement has no artifact guard. It needs a declared bound.
+4. **Pre-2021-06 FINRA republication is only reported, not masked.** It covers roughly the first 18 months of the TRAIN score window. `first_session_vintage_safe` gives the masking start if root wants SI selected on 2021-06 onward only.

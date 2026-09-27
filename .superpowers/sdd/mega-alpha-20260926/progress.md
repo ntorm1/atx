@@ -56,6 +56,17 @@
   clean). T2 minors (deferred): no K=5 write-off fixture (only K=1); guard branch untriggered by fixtures;
   budget-refusal fixture misses 36 B/cell volume budget; legacy 30%/mo flags unlabeled (T4 req 6);
   daily long/short dollars are post-trade (T4 adds pre-trade GMV). Others in task-T2-review.md.
+- T9: pool-3 403e56fe -> root 17da002a (fit_composition_weights.py + 16 fixtures, 16/16 OK 3.1s). Review
+  dispatched (t9-review). REAL TRAIN v1 fit mega-weights-v1: 98.9s, peak 523 MiB, 48 fitted, 30 nonzero,
+  refused decisions 0, tau_flagged [], weighted_standalone_turnover (sum w tau) 0.0708/day, weights sha
+  cdfe0dc2e95b57ee52c303432ea2401788d121cb53977c0512743bf2208ce7fd. Composition trial count +1 (v1 MV fit).
+  Ruling: run limits stay 180s/1536MiB (agent proposed 300/2048); fitter made incremental (per-candidate
+  cache + --max-seconds soft stop) in the T11 lane — cost if wrong: one more tool revision.
+- T11 sent to t9-weights (pool-3).
+  Ruling: sign conflict screen-vs-runner -> weights JSON carries `signs` (screen sign, 2020-21 FIT mean) and
+  top-level `train_manifest_sha256`; runner (T7 lane) applies pinned signs over IC orientation and verifies
+  the SHA — cost if wrong: blend orientation differs from runner IC sign for conflicting candidates (listed
+  as sign_conflicts).
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
