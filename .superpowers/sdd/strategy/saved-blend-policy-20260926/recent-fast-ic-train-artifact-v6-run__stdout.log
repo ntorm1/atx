@@ -1,0 +1,147 @@
+IC loading train admitted_bytes=1182250321
+IC eval-start train 1/48 mom_12_1_s21 slots=5
+IC VM-arena previous_slots=0 requested_slots=5 release_before_growth=true
+IC VM-complete mom_12_1_s21 seconds=0.673941
+IC train 1/48 mom_12_1_s21 seconds=1.62729 vm=0.673941 ic=0.644918 composition=0.268677 sign=1 reason=possible-alpha
+IC eval-start train 2/48 mom_12_1_s63 slots=4
+IC VM-complete mom_12_1_s63 seconds=0.449071
+IC train 2/48 mom_12_1_s63 seconds=1.29145 vm=0.449071 ic=0.55329 composition=0.245854 sign=1 reason=insufficient-evidence
+IC eval-start train 3/48 mom_9_1_s21 slots=5
+IC VM-complete mom_9_1_s21 seconds=0.480266
+IC train 3/48 mom_9_1_s21 seconds=1.54303 vm=0.480266 ic=0.677374 composition=0.339437 sign=1 reason=possible-alpha
+IC eval-start train 4/48 mom_9_1_s63 slots=4
+IC VM-complete mom_9_1_s63 seconds=0.518286
+IC train 4/48 mom_9_1_s63 seconds=1.37085 vm=0.518286 ic=0.535676 composition=0.272317 sign=1 reason=insufficient-evidence
+IC eval-start train 5/48 mom_6_1_s21 slots=5
+IC VM-complete mom_6_1_s21 seconds=0.483266
+IC train 5/48 mom_6_1_s21 seconds=1.46439 vm=0.483266 ic=0.638106 composition=0.301756 sign=1 reason=possible-alpha
+IC eval-start train 6/48 mom_6_1_s63 slots=4
+IC VM-complete mom_6_1_s63 seconds=0.484795
+IC train 6/48 mom_6_1_s63 seconds=1.43584 vm=0.484795 ic=0.621931 composition=0.283169 sign=1 reason=insufficient-evidence
+IC eval-start train 7/48 efficiency_63_s21 slots=4
+IC VM-complete efficiency_63_s21 seconds=0.60197
+IC train 7/48 efficiency_63_s21 seconds=2.06319 vm=0.60197 ic=0.873212 composition=0.495215 sign=1 reason=possible-alpha
+IC eval-start train 8/48 efficiency_63_s63 slots=4
+IC VM-complete efficiency_63_s63 seconds=0.898073
+IC train 8/48 efficiency_63_s63 seconds=2.39221 vm=0.898073 ic=0.94604 composition=0.461313 sign=1 reason=possible-alpha
+IC eval-start train 9/48 sign_consistency_126_s21 slots=4
+IC VM-complete sign_consistency_126_s21 seconds=0.668336
+IC train 9/48 sign_consistency_126_s21 seconds=2.00885 vm=0.668336 ic=0.878211 composition=0.398296 sign=1 reason=possible-alpha
+IC eval-start train 10/48 sign_consistency_126_s63 slots=4
+IC VM-complete sign_consistency_126_s63 seconds=0.549226
+IC train 10/48 sign_consistency_126_s63 seconds=1.52532 vm=0.549226 ic=0.60864 composition=0.323977 sign=1 reason=insufficient-evidence
+IC eval-start train 11/48 risk_scaled_6_1_s21 slots=7
+IC VM-arena previous_slots=5 requested_slots=7 release_before_growth=true
+IC VM-complete risk_scaled_6_1_s21 seconds=0.892387
+IC train 11/48 risk_scaled_6_1_s21 seconds=2.09359 vm=0.892387 ic=0.70583 composition=0.444829 sign=1 reason=possible-alpha
+IC eval-start train 12/48 risk_scaled_6_1_s63 slots=6
+IC VM-complete risk_scaled_6_1_s63 seconds=0.748549
+IC train 12/48 risk_scaled_6_1_s63 seconds=1.8206 vm=0.748549 ic=0.67648 composition=0.339305 sign=1 reason=insufficient-evidence
+IC eval-start train 13/48 reversal_21_skip5_s21 slots=6
+IC VM-complete reversal_21_skip5_s21 seconds=0.643954
+IC train 13/48 reversal_21_skip5_s21 seconds=1.89184 vm=0.643954 ic=0.81844 composition=0.372819 sign=1 reason=possible-alpha
+IC eval-start train 14/48 reversal_21_skip5_s63 slots=6
+IC VM-complete reversal_21_skip5_s63 seconds=0.58204
+IC train 14/48 reversal_21_skip5_s63 seconds=1.52062 vm=0.58204 ic=0.600268 composition=0.299929 sign=-1 reason=possible-alpha
+IC eval-start train 15/48 reversal_63_skip5_s21 slots=6
+IC VM-complete reversal_63_skip5_s21 seconds=0.517436
+IC train 15/48 reversal_63_skip5_s21 seconds=1.57253 vm=0.517436 ic=0.674517 composition=0.339323 sign=-1 reason=possible-alpha
+IC eval-start train 16/48 reversal_63_skip5_s63 slots=6
+IC VM-complete reversal_63_skip5_s63 seconds=0.537234
+IC train 16/48 reversal_63_skip5_s63 seconds=1.54776 vm=0.537234 ic=0.660126 composition=0.308434 sign=-1 reason=possible-alpha
+IC eval-start train 17/48 mean_distance_63_s21 slots=5
+IC VM-complete mean_distance_63_s21 seconds=0.504703
+IC train 17/48 mean_distance_63_s21 seconds=1.52427 vm=0.504703 ic=0.638494 composition=0.333032 sign=1 reason=possible-alpha
+IC eval-start train 18/48 mean_distance_63_s63 slots=6
+IC VM-complete mean_distance_63_s63 seconds=0.635603
+IC train 18/48 mean_distance_63_s63 seconds=2.00903 vm=0.635603 ic=0.889472 composition=0.394883 sign=-1 reason=possible-alpha
+IC eval-start train 19/48 low_vol_63_s21 slots=5
+IC VM-complete low_vol_63_s21 seconds=0.80508
+IC train 19/48 low_vol_63_s21 seconds=1.84241 vm=0.80508 ic=0.665717 composition=0.331413 sign=1 reason=possible-alpha
+IC eval-start train 20/48 low_vol_63_s63 slots=5
+IC VM-complete low_vol_63_s63 seconds=0.702641
+IC train 20/48 low_vol_63_s63 seconds=1.55373 vm=0.702641 ic=0.548153 composition=0.264989 sign=1 reason=possible-alpha
+IC eval-start train 21/48 low_downside_126_s21 slots=5
+IC VM-complete low_downside_126_s21 seconds=0.549664
+IC train 21/48 low_downside_126_s21 seconds=1.43851 vm=0.549664 ic=0.588534 composition=0.26379 sign=1 reason=possible-alpha
+IC eval-start train 22/48 low_downside_126_s63 slots=5
+IC VM-complete low_downside_126_s63 seconds=0.503157
+IC train 22/48 low_downside_126_s63 seconds=1.37619 vm=0.503157 ic=0.543661 composition=0.291761 sign=1 reason=insufficient-evidence
+IC eval-start train 23/48 vol_expansion_21_126_s21 slots=6
+IC VM-complete vol_expansion_21_126_s21 seconds=0.920487
+IC train 23/48 vol_expansion_21_126_s21 seconds=2.00969 vm=0.920487 ic=0.694051 composition=0.353961 sign=1 reason=possible-alpha
+IC eval-start train 24/48 vol_expansion_21_126_s63 slots=5
+IC VM-complete vol_expansion_21_126_s63 seconds=0.82701
+IC train 24/48 vol_expansion_21_126_s63 seconds=1.62655 vm=0.82701 ic=0.502127 composition=0.259285 sign=1 reason=insufficient-evidence
+IC eval-start train 25/48 dollar_liquidity_63_s21 slots=3
+IC VM-complete dollar_liquidity_63_s21 seconds=0.597844
+IC train 25/48 dollar_liquidity_63_s21 seconds=1.6724 vm=0.597844 ic=0.676741 composition=0.350158 sign=1 reason=possible-alpha
+IC eval-start train 26/48 dollar_liquidity_63_s63 slots=3
+IC VM-complete dollar_liquidity_63_s63 seconds=0.566715
+IC train 26/48 dollar_liquidity_63_s63 seconds=2.03728 vm=0.566715 ic=0.904857 composition=0.496182 sign=1 reason=possible-alpha
+IC eval-start train 27/48 dollar_expansion_21_126_s21 slots=6
+IC VM-complete dollar_expansion_21_126_s21 seconds=0.656381
+IC train 27/48 dollar_expansion_21_126_s21 seconds=1.62707 vm=0.656381 ic=0.640853 composition=0.290036 sign=-1 reason=possible-alpha
+IC eval-start train 28/48 dollar_expansion_21_126_s63 slots=5
+IC VM-complete dollar_expansion_21_126_s63 seconds=0.515019
+IC train 28/48 dollar_expansion_21_126_s63 seconds=1.29975 vm=0.515019 ic=0.499074 composition=0.248973 sign=-1 reason=insufficient-evidence
+IC eval-start train 29/48 dollar_instability_63_s21 slots=5
+IC VM-complete dollar_instability_63_s21 seconds=0.617626
+IC train 29/48 dollar_instability_63_s21 seconds=1.50185 vm=0.617626 ic=0.556286 composition=0.282782 sign=1 reason=possible-alpha
+IC eval-start train 30/48 dollar_instability_63_s63 slots=5
+IC VM-complete dollar_instability_63_s63 seconds=0.613943
+IC train 30/48 dollar_instability_63_s63 seconds=1.4027 vm=0.613943 ic=0.497545 composition=0.257965 sign=1 reason=insufficient-evidence
+IC eval-start train 31/48 return_dollar_rank_corr63_s21 slots=4
+IC VM-complete return_dollar_rank_corr63_s21 seconds=0.898144
+IC train 31/48 return_dollar_rank_corr63_s21 seconds=1.79963 vm=0.898144 ic=0.605529 composition=0.254271 sign=-1 reason=insufficient-evidence
+IC eval-start train 32/48 return_dollar_rank_corr63_s63 slots=4
+IC VM-complete return_dollar_rank_corr63_s63 seconds=0.890623
+IC train 32/48 return_dollar_rank_corr63_s63 seconds=1.57346 vm=0.890623 ic=0.385525 composition=0.266268 sign=-1 reason=insufficient-evidence
+IC eval-start train 33/48 weekly_return_relative_flow63_s21 slots=5
+IC VM-complete weekly_return_relative_flow63_s21 seconds=0.567766
+IC train 33/48 weekly_return_relative_flow63_s21 seconds=1.47706 vm=0.567766 ic=0.569133 composition=0.299465 sign=-1 reason=possible-alpha
+IC eval-start train 34/48 weekly_return_relative_flow63_s63 slots=5
+IC VM-complete weekly_return_relative_flow63_s63 seconds=0.574397
+IC train 34/48 weekly_return_relative_flow63_s63 seconds=1.49403 vm=0.574397 ic=0.541398 composition=0.330745 sign=-1 reason=insufficient-evidence
+IC eval-start train 35/48 signed_dollar_balance63_s21 slots=4
+IC VM-complete signed_dollar_balance63_s21 seconds=0.703334
+IC train 35/48 signed_dollar_balance63_s21 seconds=1.83419 vm=0.703334 ic=0.665984 composition=0.370024 sign=-1 reason=possible-alpha
+IC eval-start train 36/48 signed_dollar_balance63_s63 slots=4
+IC VM-complete signed_dollar_balance63_s63 seconds=0.902687
+IC train 36/48 signed_dollar_balance63_s63 seconds=2.22191 vm=0.902687 ic=0.819975 composition=0.428059 sign=1 reason=possible-alpha
+IC eval-start train 37/48 near_high_126_s21 slots=3
+IC VM-complete near_high_126_s21 seconds=0.735417
+IC train 37/48 near_high_126_s21 seconds=1.67805 vm=0.735417 ic=0.607982 composition=0.293238 sign=1 reason=possible-alpha
+IC eval-start train 38/48 near_high_126_s63 slots=3
+IC VM-complete near_high_126_s63 seconds=0.621638
+IC train 38/48 near_high_126_s63 seconds=1.40652 vm=0.621638 ic=0.497666 composition=0.249627 sign=1 reason=insufficient-evidence
+IC eval-start train 39/48 range_position_252_s21 slots=5
+IC VM-complete range_position_252_s21 seconds=0.758049
+IC train 39/48 range_position_252_s21 seconds=1.5618 vm=0.758049 ic=0.534972 composition=0.22922 sign=1 reason=possible-alpha
+IC eval-start train 40/48 range_position_252_s63 slots=5
+IC VM-complete range_position_252_s63 seconds=0.795056
+IC train 40/48 range_position_252_s63 seconds=1.45442 vm=0.795056 ic=0.378875 composition=0.247065 sign=1 reason=insufficient-evidence
+IC eval-start train 41/48 mean_structure_21_126_s21 slots=5
+IC VM-complete mean_structure_21_126_s21 seconds=0.59842
+IC train 41/48 mean_structure_21_126_s21 seconds=1.51067 vm=0.59842 ic=0.599842 composition=0.274019 sign=1 reason=possible-alpha
+IC eval-start train 42/48 mean_structure_21_126_s63 slots=4
+IC VM-complete mean_structure_21_126_s63 seconds=0.482757
+IC train 42/48 mean_structure_21_126_s63 seconds=1.45591 vm=0.482757 ic=0.651466 composition=0.284009 sign=1 reason=insufficient-evidence
+IC eval-start train 43/48 year_forward_month_s21 slots=4
+IC VM-complete year_forward_month_s21 seconds=0.405097
+IC train 43/48 year_forward_month_s21 seconds=1.23335 vm=0.405097 ic=0.542111 composition=0.247367 sign=1 reason=possible-alpha
+IC eval-start train 44/48 year_forward_month_s63 slots=4
+IC VM-complete year_forward_month_s63 seconds=0.411915
+IC train 44/48 year_forward_month_s63 seconds=1.36049 vm=0.411915 ic=0.53355 composition=0.351408 sign=1 reason=insufficient-evidence
+IC eval-start train 45/48 year_forward_week_s21 slots=4
+IC VM-complete year_forward_week_s21 seconds=0.60278
+IC train 45/48 year_forward_week_s21 seconds=1.84071 vm=0.60278 ic=0.904429 composition=0.285666 sign=1 reason=possible-alpha
+IC eval-start train 46/48 year_forward_week_s63 slots=4
+IC VM-complete year_forward_week_s63 seconds=0.475198
+IC train 46/48 year_forward_week_s63 seconds=1.31797 vm=0.475198 ic=0.546835 composition=0.238045 sign=-1 reason=insufficient-evidence
+IC eval-start train 47/48 year_forward_quarter_s21 slots=4
+IC VM-complete year_forward_quarter_s21 seconds=0.466174
+IC train 47/48 year_forward_quarter_s21 seconds=1.38396 vm=0.466174 ic=0.634266 composition=0.244839 sign=1 reason=possible-alpha
+IC eval-start train 48/48 year_forward_quarter_s63 slots=4
+IC VM-complete year_forward_quarter_s63 seconds=0.380052
+IC train 48/48 year_forward_quarter_s63 seconds=0.989554 vm=0.380052 ic=0.374443 composition=0.205753 sign=1 reason=insufficient-evidence

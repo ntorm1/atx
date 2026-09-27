@@ -1,0 +1,34 @@
+IC loading train admitted_bytes=1182250321
+IC eval-start train 1/48 mom_12_1_s21 slots=5
+IC VM-arena previous_slots=0 requested_slots=5 release_before_growth=true
+IC VM-complete mom_12_1_s21 seconds=0.537547
+IC train 1/48 mom_12_1_s21 seconds=1.61187 vm=0.537547 ic=0.664999 composition=0.34659 sign=1 reason=possible-alpha
+IC eval-start train 2/48 mom_12_1_s63 slots=4
+IC VM-complete mom_12_1_s63 seconds=0.545792
+IC train 2/48 mom_12_1_s63 seconds=1.44795 vm=0.545792 ic=0.586351 composition=0.268246 sign=1 reason=insufficient-evidence
+IC eval-start train 3/48 mom_9_1_s21 slots=5
+IC VM-complete mom_9_1_s21 seconds=0.5213
+IC train 3/48 mom_9_1_s21 seconds=1.47263 vm=0.5213 ic=0.625993 composition=0.282772 sign=1 reason=possible-alpha
+IC eval-start train 4/48 mom_9_1_s63 slots=4
+IC VM-complete mom_9_1_s63 seconds=0.468631
+IC train 4/48 mom_9_1_s63 seconds=1.19455 vm=0.468631 ic=0.466258 composition=0.226386 sign=1 reason=insufficient-evidence
+IC eval-start train 5/48 mom_6_1_s21 slots=5
+IC VM-complete mom_6_1_s21 seconds=0.518202
+IC train 5/48 mom_6_1_s21 seconds=1.39453 vm=0.518202 ic=0.562496 composition=0.279411 sign=1 reason=possible-alpha
+IC eval-start train 6/48 mom_6_1_s63 slots=4
+IC VM-complete mom_6_1_s63 seconds=0.47045
+IC train 6/48 mom_6_1_s63 seconds=1.27684 vm=0.47045 ic=0.490474 composition=0.270763 sign=1 reason=insufficient-evidence
+IC eval-start train 7/48 efficiency_63_s21 slots=4
+IC VM-complete efficiency_63_s21 seconds=0.586686
+IC train 7/48 efficiency_63_s21 seconds=1.70312 vm=0.586686 ic=0.703437 composition=0.359229 sign=1 reason=possible-alpha
+IC eval-start train 8/48 efficiency_63_s63 slots=4
+IC VM-complete efficiency_63_s63 seconds=0.704741
+IC train 8/48 efficiency_63_s63 seconds=1.59317 vm=0.704741 ic=0.581374 composition=0.270539 sign=1 reason=possible-alpha
+IC eval-start train 9/48 sign_consistency_126_s21 slots=4
+IC VM-complete sign_consistency_126_s21 seconds=0.485855
+IC train 9/48 sign_consistency_126_s21 seconds=1.6439 vm=0.485855 ic=0.73413 composition=0.37217 sign=1 reason=possible-alpha
+IC eval-start train 10/48 sign_consistency_126_s63 slots=4
+IC VM-complete sign_consistency_126_s63 seconds=0.590106
+IC train 10/48 sign_consistency_126_s63 seconds=1.59652 vm=0.590106 ic=0.60362 composition=0.350486 sign=1 reason=insufficient-evidence
+IC eval-start train 11/48 risk_scaled_6_1_s21 slots=7
+IC VM-arena previous_slots=5 requested_slots=7 release_before_growth=true

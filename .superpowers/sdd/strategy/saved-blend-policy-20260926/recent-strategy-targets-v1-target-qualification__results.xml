@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="7" failures="0" disabled="0" errors="0" time="0.198" timestamp="2026-09-26T20:27:09.989" name="AllTests">
+  <testsuite name="StrategyTargetReplay" tests="7" failures="0" disabled="0" skipped="0" errors="0" time="0.198" timestamp="2026-09-26T20:27:09.989">
+    <testcase name="BaselineBitMatchesExistingCompositionIncludingTiesAndExits" file="..\atx-impl\tests\strategy_target_replay_test.cpp" line="103" status="run" result="completed" time="0." timestamp="2026-09-26T20:27:09.989" classname="StrategyTargetReplay" />
+    <testcase name="MonthBudgetChargesDeploymentForcedExitAndResetsWithoutFutureKnowledge" file="..\atx-impl\tests\strategy_target_replay_test.cpp" line="132" status="run" result="completed" time="0." timestamp="2026-09-26T20:27:09.990" classname="StrategyTargetReplay" />
+    <testcase name="DelayedRoughReturnsExposeAbsentBackingAndGuardedLongShortRisk" file="..\atx-impl\tests\strategy_target_replay_test.cpp" line="160" status="run" result="completed" time="0." timestamp="2026-09-26T20:27:09.990" classname="StrategyTargetReplay" />
+    <testcase name="PinnedArtifactRunsWithoutPricesAndRefusesTamperingBeforePublication" file="..\atx-impl\tests\strategy_target_replay_test.cpp" line="189" status="run" result="completed" time="0.065" timestamp="2026-09-26T20:27:09.990" classname="StrategyTargetReplay" />
+    <testcase name="AdmissionAndFlatSignalDoNotInventExposure" file="..\atx-impl\tests\strategy_target_replay_test.cpp" line="210" status="run" result="completed" time="0.03" timestamp="2026-09-26T20:27:10.056" classname="StrategyTargetReplay" />
+    <testcase name="RoughReturnsRespectDeclaredWindowEvenWithFuturePayload" file="..\atx-impl\tests\strategy_target_replay_test.cpp" line="226" status="run" result="completed" time="0." timestamp="2026-09-26T20:27:10.086" classname="StrategyTargetReplay" />
+    <testcase name="OptionalPinnedPriceRolePreservesMissingExposureAndRequiresExactBinding" file="..\atx-impl\tests\strategy_target_replay_test.cpp" line="248" status="run" result="completed" time="0.101" timestamp="2026-09-26T20:27:10.086" classname="StrategyTargetReplay" />
+  </testsuite>
+</testsuites>

@@ -1,0 +1,49 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "bfb6b859e1819b241cc9064908c37b04827eeac1",
+  "started_utc": "2026-09-27T00:29:07.122663+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+    "--library",
+    "atx-impl/strategies/slow_price_volume_ic48_v1.json",
+    "--library-sha256",
+    "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+    "--train",
+    "build-equity/recent-fast-train-2020-2022-v1/manifest.json",
+    "--train-sha256",
+    "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+    "--output",
+    "build-equity/recent-fast-ic-train-artifact-v5",
+    "--max-memory-mib",
+    "1536",
+    "--min-names",
+    "2000",
+    "--workers",
+    "4",
+    "--save-combined"
+  ],
+  "executable_sha256": "036078905d7b38a438024242421876116552f48d04a925a74f6dd35262d5f4f9",
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\strategies\\slow_price_volume_ic48_v1.json",
+      "sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-train-2020-2022-v1\\manifest.json",
+      "sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\recent-fast-ic-v2\\orientations.json",
+      "sha256": "5106fdc13fc5347c9c2c670714c134a1978e6b7a0d2d2b5dd79bacb7dfb782d6"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 768
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 2051788800,
+  "outcome": "launch-failed",
+  "exit_code": null
+}

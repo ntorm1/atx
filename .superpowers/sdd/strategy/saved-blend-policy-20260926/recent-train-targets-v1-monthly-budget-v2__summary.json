@@ -1,0 +1,404 @@
+{
+  "capacity_qualified": false,
+  "combined_sha256": "51740eff34bc3a74f42ea028b45282117c92c8f32ed029de31cd6500471363dc",
+  "complete_days_gross_sum_not_total_period_return": 0.1247909179284126,
+  "complete_days_net_sum_not_total_period_return": 0.1097411082080241,
+  "complete_return_days": 253,
+  "daily_csv_sha256": "2372b55c1347ad4836e6337e58c26d0e69c47a2da30ab0a6cade591a2facd129",
+  "deployment_date_index": 399,
+  "deployment_turnover": 0.25000000000000044,
+  "discretionary_turnover": 9.980839746217232,
+  "forced_turnover": 1.0558318489474032,
+  "incomplete_return_days": 501,
+  "limitations": "planned weights without drift; decision-month turnover includes deployment; rough delayed observed returns only, incomplete days unavailable; no corporate-action accounting, fills, funding, realized fees, capacity, NAV or realistic Sharpe",
+  "mature_return_days": 754,
+  "max_abs_name_weight": 0.0007115226113113572,
+  "max_abs_net": 0.057753639321624854,
+  "max_monthly_turnover": 0.36690446129777443,
+  "mean_gross": 0.8472382248442614,
+  "mean_monthly_turnover": 0.3065742109767956,
+  "modeled_borrow_cost_all_decisions": 0.03728149232098471,
+  "modeled_trade_cost_all_decisions": 0.006622002957098786,
+  "monthly_reconciled_total": 11.036671595164641,
+  "months": [
+    {
+      "budget_excess": 0.003663387539541263,
+      "deployment": 0.25000000000000044,
+      "discretionary": 0.2990095969759287,
+      "forced": 0.004653790563612426,
+      "month": 202001,
+      "observed_decision_sessions": 21,
+      "turnover": 0.30366338753954125
+    },
+    {
+      "budget_excess": 0.007579044764488507,
+      "deployment": 0.0,
+      "discretionary": 0.2962811728756115,
+      "forced": 0.011297871888877048,
+      "month": 202002,
+      "observed_decision_sessions": 19,
+      "turnover": 0.3075790447644885
+    },
+    {
+      "budget_excess": 0.036448147527715635,
+      "deployment": 0.0,
+      "discretionary": 0.2642522390326657,
+      "forced": 0.07219590849504985,
+      "month": 202003,
+      "observed_decision_sessions": 22,
+      "turnover": 0.3364481475277156
+    },
+    {
+      "budget_excess": 0.005518499252121445,
+      "deployment": 0.0,
+      "discretionary": 0.2871458417786905,
+      "forced": 0.018372657473430993,
+      "month": 202004,
+      "observed_decision_sessions": 21,
+      "turnover": 0.30551849925212143
+    },
+    {
+      "budget_excess": 0.007991229316079596,
+      "deployment": 0.0,
+      "discretionary": 0.2914312597839168,
+      "forced": 0.016559969532162756,
+      "month": 202005,
+      "observed_decision_sessions": 20,
+      "turnover": 0.3079912293160796
+    },
+    {
+      "budget_excess": 0.06690446129777444,
+      "deployment": 0.0,
+      "discretionary": 0.2791080283254865,
+      "forced": 0.08779643297228787,
+      "month": 202006,
+      "observed_decision_sessions": 22,
+      "turnover": 0.36690446129777443
+    },
+    {
+      "budget_excess": 0.004793356896393319,
+      "deployment": 0.0,
+      "discretionary": 0.2846125107732791,
+      "forced": 0.02018084612311416,
+      "month": 202007,
+      "observed_decision_sessions": 22,
+      "turnover": 0.3047933568963933
+    },
+    {
+      "budget_excess": 0.0008374664061346904,
+      "deployment": 0.0,
+      "discretionary": 0.281383493600989,
+      "forced": 0.019453972805145638,
+      "month": 202008,
+      "observed_decision_sessions": 21,
+      "turnover": 0.3008374664061347
+    },
+    {
+      "budget_excess": 0.00796829803959248,
+      "deployment": 0.0,
+      "discretionary": 0.26376498456883657,
+      "forced": 0.044203313470755914,
+      "month": 202009,
+      "observed_decision_sessions": 21,
+      "turnover": 0.30796829803959247
+    },
+    {
+      "budget_excess": 0.008815179622995994,
+      "deployment": 0.0,
+      "discretionary": 0.2773589585858315,
+      "forced": 0.031456221037164445,
+      "month": 202010,
+      "observed_decision_sessions": 22,
+      "turnover": 0.308815179622996
+    },
+    {
+      "budget_excess": 5.551115123125783e-17,
+      "deployment": 0.0,
+      "discretionary": 0.2770808898038757,
+      "forced": 0.02291911019612449,
+      "month": 202011,
+      "observed_decision_sessions": 20,
+      "turnover": 0.30000000000000004
+    },
+    {
+      "budget_excess": 0.003395757226203666,
+      "deployment": 0.0,
+      "discretionary": 0.2742337295612419,
+      "forced": 0.029162027664961683,
+      "month": 202012,
+      "observed_decision_sessions": 22,
+      "turnover": 0.30339575722620366
+    },
+    {
+      "budget_excess": 0.0022810177562885836,
+      "deployment": 0.0,
+      "discretionary": 0.2693605112904988,
+      "forced": 0.03292050646578984,
+      "month": 202101,
+      "observed_decision_sessions": 19,
+      "turnover": 0.3022810177562886
+    },
+    {
+      "budget_excess": 0.007614195537627544,
+      "deployment": 0.0,
+      "discretionary": 0.26930175622183355,
+      "forced": 0.038312439315793874,
+      "month": 202102,
+      "observed_decision_sessions": 19,
+      "turnover": 0.30761419553762753
+    },
+    {
+      "budget_excess": 0.00710570824476503,
+      "deployment": 0.0,
+      "discretionary": 0.27588207755528055,
+      "forced": 0.0312236306894843,
+      "month": 202103,
+      "observed_decision_sessions": 23,
+      "turnover": 0.307105708244765
+    },
+    {
+      "budget_excess": 0.014513376302944636,
+      "deployment": 0.0,
+      "discretionary": 0.2920122772407257,
+      "forced": 0.0225010990622188,
+      "month": 202104,
+      "observed_decision_sessions": 21,
+      "turnover": 0.3145133763029446
+    },
+    {
+      "budget_excess": 0.009227200860884743,
+      "deployment": 0.0,
+      "discretionary": 0.28232442405528874,
+      "forced": 0.026902776805596273,
+      "month": 202105,
+      "observed_decision_sessions": 20,
+      "turnover": 0.30922720086088473
+    },
+    {
+      "budget_excess": 0.01208987174331766,
+      "deployment": 0.0,
+      "discretionary": 0.28673772035496864,
+      "forced": 0.025352151388348967,
+      "month": 202106,
+      "observed_decision_sessions": 22,
+      "turnover": 0.31208987174331765
+    },
+    {
+      "budget_excess": 0.008090558176319818,
+      "deployment": 0.0,
+      "discretionary": 0.2828170984768681,
+      "forced": 0.02527345969945169,
+      "month": 202107,
+      "observed_decision_sessions": 21,
+      "turnover": 0.3080905581763198
+    },
+    {
+      "budget_excess": 0.010115269739041255,
+      "deployment": 0.0,
+      "discretionary": 0.2835399778855834,
+      "forced": 0.026575291853457927,
+      "month": 202108,
+      "observed_decision_sessions": 22,
+      "turnover": 0.31011526973904124
+    },
+    {
+      "budget_excess": 0.007294253169490061,
+      "deployment": 0.0,
+      "discretionary": 0.2826098697600704,
+      "forced": 0.024684383409419915,
+      "month": 202109,
+      "observed_decision_sessions": 21,
+      "turnover": 0.30729425316949005
+    },
+    {
+      "budget_excess": 0.001923094013555282,
+      "deployment": 0.0,
+      "discretionary": 0.27881112865909136,
+      "forced": 0.023111965354463995,
+      "month": 202110,
+      "observed_decision_sessions": 21,
+      "turnover": 0.30192309401355527
+    },
+    {
+      "budget_excess": 0.003907981342949063,
+      "deployment": 0.0,
+      "discretionary": 0.27395000832266353,
+      "forced": 0.02995797302028551,
+      "month": 202111,
+      "observed_decision_sessions": 21,
+      "turnover": 0.30390798134294905
+    },
+    {
+      "budget_excess": 0.0049213440257130925,
+      "deployment": 0.0,
+      "discretionary": 0.2664937889926982,
+      "forced": 0.03842755503301494,
+      "month": 202112,
+      "observed_decision_sessions": 22,
+      "turnover": 0.3049213440257131
+    },
+    {
+      "budget_excess": 0.0069125970217872035,
+      "deployment": 0.0,
+      "discretionary": 0.2732104249091246,
+      "forced": 0.03370217211266257,
+      "month": 202201,
+      "observed_decision_sessions": 20,
+      "turnover": 0.3069125970217872
+    },
+    {
+      "budget_excess": 0.007090559816210762,
+      "deployment": 0.0,
+      "discretionary": 0.2795581418200288,
+      "forced": 0.027532417996181887,
+      "month": 202202,
+      "observed_decision_sessions": 19,
+      "turnover": 0.30709055981621075
+    },
+    {
+      "budget_excess": 0.006156856921805565,
+      "deployment": 0.0,
+      "discretionary": 0.26194103953815445,
+      "forced": 0.044215817383651136,
+      "month": 202203,
+      "observed_decision_sessions": 23,
+      "turnover": 0.30615685692180555
+    },
+    {
+      "budget_excess": 0.001249311001002007,
+      "deployment": 0.0,
+      "discretionary": 0.2773739854249332,
+      "forced": 0.02387532557606887,
+      "month": 202204,
+      "observed_decision_sessions": 20,
+      "turnover": 0.301249311001002
+    },
+    {
+      "budget_excess": 0.002167709985269606,
+      "deployment": 0.0,
+      "discretionary": 0.267680820709575,
+      "forced": 0.03448688927569466,
+      "month": 202205,
+      "observed_decision_sessions": 21,
+      "turnover": 0.3021677099852696
+    },
+    {
+      "budget_excess": 0.0,
+      "deployment": 0.0,
+      "discretionary": 0.2655421699564705,
+      "forced": 0.024148980572144974,
+      "month": 202206,
+      "observed_decision_sessions": 21,
+      "turnover": 0.28969115052861527
+    },
+    {
+      "budget_excess": 0.0,
+      "deployment": 0.0,
+      "discretionary": 0.2608796970439246,
+      "forced": 0.023978973155259986,
+      "month": 202207,
+      "observed_decision_sessions": 20,
+      "turnover": 0.2848586701991844
+    },
+    {
+      "budget_excess": 0.005829814947335421,
+      "deployment": 0.0,
+      "discretionary": 0.28114824251776777,
+      "forced": 0.024681572429567807,
+      "month": 202208,
+      "observed_decision_sessions": 23,
+      "turnover": 0.3058298149473354
+    },
+    {
+      "budget_excess": 0.0024036983194881123,
+      "deployment": 0.0,
+      "discretionary": 0.278860575350004,
+      "forced": 0.02354312296948419,
+      "month": 202209,
+      "observed_decision_sessions": 21,
+      "turnover": 0.3024036983194881
+    },
+    {
+      "budget_excess": 0.001089368536950408,
+      "deployment": 0.0,
+      "discretionary": 0.2787071307196952,
+      "forced": 0.022382237817255072,
+      "month": 202210,
+      "observed_decision_sessions": 21,
+      "turnover": 0.3010893685369504
+    },
+    {
+      "budget_excess": 0.0,
+      "deployment": 0.0,
+      "discretionary": 0.2578975951411297,
+      "forced": 0.023151324898510954,
+      "month": 202211,
+      "observed_decision_sessions": 21,
+      "turnover": 0.28104892003964077
+    },
+    {
+      "budget_excess": 0.005174239045415141,
+      "deployment": 0.0,
+      "discretionary": 0.278536578604508,
+      "forced": 0.02663766044090714,
+      "month": 202212,
+      "observed_decision_sessions": 21,
+      "turnover": 0.30517423904541513
+    }
+  ],
+  "net_sharpe": null,
+  "observed_component_sum_not_portfolio_return": 0.09647425554860371,
+  "recipe_sha256": "d752f91bcdba65ea20aac0b5ff15c4382b58b0ad38ef0b163e78f5c536b23f1e",
+  "schema": "atx.dsl-target-replay-summary/v1",
+  "self_financing_nav": false,
+  "source_bindings": {
+    "actual_trades_or_returns": false,
+    "axes_semantics": "exact-ordered-role-sessions-and-instrument-IDs;no-static-broadcast",
+    "dates": 1155,
+    "files": {
+      "train_combined.f64": {
+        "bytes": 51993480,
+        "sha256": "7826b5aeb5078e270ee6ab9afa5703aab75723c22d6abedaf66a3ca4d7478664"
+      },
+      "train_combined_finite.u8": {
+        "bytes": 6499185,
+        "sha256": "3120a7e3fcc3e7230856ac97160473f8709a4bf077f44bf9fcea91499534a725"
+      },
+      "train_combined_ids.u64": {
+        "bytes": 45016,
+        "sha256": "102e89c649f614c37d4026bdd302bcd20afc2ed8371ba420b9ceb6abe0a0741c"
+      },
+      "train_combined_member.u8": {
+        "bytes": 6499185,
+        "sha256": "3120a7e3fcc3e7230856ac97160473f8709a4bf077f44bf9fcea91499534a725"
+      },
+      "train_combined_sessions.i64": {
+        "bytes": 9240,
+        "sha256": "89af53404744b48e2344785ee4f0be8337d7a2ea7c4a0984e1c964bae3862830"
+      }
+    },
+    "finite_cells": 3219612,
+    "finite_semantics": "one-iff-saved-f64-is-finite;nonmembers-NaN;zero-is-valid-neutral-signal",
+    "instruments": 5627,
+    "layout": "date-major-little-endian",
+    "library_sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+    "member_cells": 3219612,
+    "member_semantics": "decision-member-and-source-present-and-finite-positive-close;independent-of-component-coverage",
+    "orientation_candidates_sha256": "4a3e8004ec15b104e045d06ee255447e5db7df8f1b1f6430668ebab0cbea9081",
+    "orientations_artifact_sha256": null,
+    "role": "train",
+    "role_manifest_sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493",
+    "role_window_required": true,
+    "run_recipe_sha256": "fb9e426316abd3070d41af54f796f39bffad55f98c0b7136ad1539ed2e13ae77",
+    "schema": "atx.dsl-combined-signal/v1",
+    "score_begin": 399,
+    "score_end": 1155,
+    "signal_semantics": "exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator",
+    "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+    "status": "complete",
+    "train_manifest_sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493"
+  },
+  "status": "complete",
+  "summed_missing_gross_exposure": 0.4164445691531226,
+  "total_turnover": 11.036671595164652
+}

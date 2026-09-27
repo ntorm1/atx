@@ -1,0 +1,23 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 7 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 7 tests from StrategyTargetReplay
+[ RUN      ] StrategyTargetReplay.BaselineBitMatchesExistingCompositionIncludingTiesAndExits
+[       OK ] StrategyTargetReplay.BaselineBitMatchesExistingCompositionIncludingTiesAndExits (0 ms)
+[ RUN      ] StrategyTargetReplay.MonthBudgetChargesDeploymentForcedExitAndResetsWithoutFutureKnowledge
+[       OK ] StrategyTargetReplay.MonthBudgetChargesDeploymentForcedExitAndResetsWithoutFutureKnowledge (0 ms)
+[ RUN      ] StrategyTargetReplay.DelayedRoughReturnsExposeAbsentBackingAndGuardedLongShortRisk
+[       OK ] StrategyTargetReplay.DelayedRoughReturnsExposeAbsentBackingAndGuardedLongShortRisk (0 ms)
+[ RUN      ] StrategyTargetReplay.PinnedArtifactRunsWithoutPricesAndRefusesTamperingBeforePublication
+[       OK ] StrategyTargetReplay.PinnedArtifactRunsWithoutPricesAndRefusesTamperingBeforePublication (65 ms)
+[ RUN      ] StrategyTargetReplay.AdmissionAndFlatSignalDoNotInventExposure
+[       OK ] StrategyTargetReplay.AdmissionAndFlatSignalDoNotInventExposure (30 ms)
+[ RUN      ] StrategyTargetReplay.RoughReturnsRespectDeclaredWindowEvenWithFuturePayload
+[       OK ] StrategyTargetReplay.RoughReturnsRespectDeclaredWindowEvenWithFuturePayload (0 ms)
+[ RUN      ] StrategyTargetReplay.OptionalPinnedPriceRolePreservesMissingExposureAndRequiresExactBinding
+[       OK ] StrategyTargetReplay.OptionalPinnedPriceRolePreservesMissingExposureAndRequiresExactBinding (101 ms)
+[----------] 7 tests from StrategyTargetReplay (198 ms total)
+
+[----------] Global test environment tear-down
+[==========] 7 tests from 1 test suite ran. (198 ms total)
+[  PASSED  ] 7 tests.
