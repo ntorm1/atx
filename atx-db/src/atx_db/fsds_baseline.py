@@ -2304,18 +2304,56 @@ def _table_files(staging_dir: Path, table: str) -> str:
 
 
 def _num_orphan_accessions(con: duckdb.DuckDBPyConnection, staging_dir: Path) -> list[dict[str, Any]]:
-    """NUM accessions with no SUB row in any staged quarter, with their NUM and PRE row counts."""
+    """Count global NUM orphans using bounded, source-quarter passes.
 
-    sub, num, pre = (_sql_text(_table_files(staging_dir, t)) for t in ("sub", "num", "pre"))
-    rows = con.execute(
-        f"WITH subs AS (SELECT DISTINCT adsh FROM read_parquet({sub})), "
-        f"orphan AS (SELECT n.adsh, n.quarter, count(*) AS num_rows FROM read_parquet({num}) n "
-        f"ANTI JOIN subs s ON n.adsh = s.adsh GROUP BY ALL), "
-        f"pre_rows AS (SELECT p.adsh, count(*) AS pre_rows FROM read_parquet({pre}) p "
-        f"SEMI JOIN orphan o ON p.adsh = o.adsh GROUP BY ALL) "
-        f"SELECT o.adsh, o.quarter, o.num_rows, coalesce(r.pre_rows, 0) FROM orphan o "
-        f"LEFT JOIN pre_rows r ON r.adsh = o.adsh ORDER BY o.quarter, o.adsh"
-    ).fetchall()
+    Materialize each NUM/PRE file's accession counts before joining: a CTE alone
+    lets the optimizer move the join below aggregation and hash all-history facts.
+    SUB membership is global, as are PRE totals for an orphan accession. The final
+    aggregation also preserves the result if a quarter has several Parquet files.
+    These are audit scratch tables only; staged files and their receipts are unchanged.
+    """
+
+    files = {table: sorted((Path(staging_dir) / table).glob("*.parquet")) for table in ("sub", "num", "pre")}
+    for table, paths in files.items():
+        if not paths:
+            raise ValueError(f"No staged {table} Parquet files for the NUM orphan audit")
+    scratch = ("x4_orphan_subs", "x4_orphan_num", "x4_orphan_pre", "x4_orphan_file")
+    try:
+        con.execute("CREATE TEMP TABLE x4_orphan_subs (adsh VARCHAR)")
+        con.execute("CREATE TEMP TABLE x4_orphan_num (adsh VARCHAR, quarter VARCHAR, num_rows BIGINT)")
+        con.execute("CREATE TEMP TABLE x4_orphan_pre (adsh VARCHAR, pre_rows BIGINT)")
+        for path in files["sub"]:
+            con.execute(f"INSERT INTO x4_orphan_subs SELECT adsh FROM read_parquet({_sql_text(path.as_posix())})")
+        for path in files["num"]:
+            con.execute(
+                "CREATE OR REPLACE TEMP TABLE x4_orphan_file AS "
+                f"SELECT adsh, quarter, count(*) AS num_rows FROM read_parquet({_sql_text(path.as_posix())}) "
+                "GROUP BY adsh, quarter"
+            )
+            con.execute(
+                "INSERT INTO x4_orphan_num SELECT n.* FROM x4_orphan_file n "
+                "ANTI JOIN x4_orphan_subs s ON n.adsh = s.adsh"
+            )
+        if con.execute("SELECT count(*) FROM x4_orphan_num").fetchone()[0]:
+            for path in files["pre"]:
+                con.execute(
+                    "CREATE OR REPLACE TEMP TABLE x4_orphan_file AS "
+                    f"SELECT adsh, count(*) AS pre_rows FROM read_parquet({_sql_text(path.as_posix())}) "
+                    "GROUP BY adsh"
+                )
+                con.execute(
+                    "INSERT INTO x4_orphan_pre SELECT p.* FROM x4_orphan_file p "
+                    "SEMI JOIN x4_orphan_num n ON p.adsh = n.adsh"
+                )
+        rows = con.execute(
+            "WITH orphan AS (SELECT adsh, quarter, sum(num_rows) AS num_rows FROM x4_orphan_num GROUP BY ALL), "
+            "pre_rows AS (SELECT adsh, sum(pre_rows) AS pre_rows FROM x4_orphan_pre GROUP BY adsh) "
+            "SELECT o.adsh, o.quarter, o.num_rows, coalesce(p.pre_rows, 0) FROM orphan o "
+            "LEFT JOIN pre_rows p ON o.adsh = p.adsh ORDER BY o.quarter, o.adsh"
+        ).fetchall()
+    finally:
+        for table in reversed(scratch):
+            con.execute(f"DROP TABLE IF EXISTS {table}")
     return [{"adsh": adsh, "quarter": quarter, "num_rows": int(num_rows), "pre_rows": int(pre_rows),
              "status": NUM_ORPHAN_STATUS_UNRECOVERABLE} for adsh, quarter, num_rows, pre_rows in rows]
 
