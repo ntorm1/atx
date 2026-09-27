@@ -1,5 +1,19 @@
 # Active task: recent-data DSL ensemble
 
+## V6-C1 review FIX REQUIRED (test-only); fix round 1 dispatched; V6-C grid (5 cells) started on the v6l parent (2026-09-27 ~21:45)
+task-V6C1-review.md: spec PASS; default path traced unchanged (matches the D2 real-data identity); the failing test is a TEST
+bug (strategy_nav_replay_test.cpp:2517 iterates .at("scenarios") of a destroyed temporary -> UB); production code needs no
+change. Minor M1-M7 (M1 disclosure: under locate-in-aim a zeroed special-tier name can end long after neutralisation; gross
+rescales to the zeroed gross). Fix round 1 (resume implementer): test UB, M5 (v6_train.sh ref-missing exit, pipefail), M3 keys.
+- Ruling: the 5 remaining grid cells run NOW on the v6-0 binary -- why: the review traced the default path and the new
+  paths; the only defect is in a test; the binary is the one that produced the byte-identical D2 cell -- cost if wrong: 5
+  cells re-run and counted in DSR N.
+- Ruling: the grid runs through studies/v6l_train.sh (controller added ORDER_BASIS/EXIT_RATE/LOCATE_AIM/LCACHE/THETA/DUST/
+  LEV/NEUT knobs; raw NAV flags from the C1 brief) rather than v6_train.sh (pinned to library v5.1) -- cost if wrong: a
+  naming divergence between the two scripts' output dirs; both are recorded here.
+Grid: PARENT mega-nav-v6l-ew-t.05-d.1-fixed; cells (ORDER_BASIS, EXIT_RATE) in {(target,.05), (target,.1), (delta,1),
+(delta,.05), (delta,.1)}; DSR N 15..19; each paired vs the parent; acceptance = sign of dSR(net) matches "+" prior.
+
 ## V6-W review FIX REQUIRED (0 Crit / 3 Imp / 10 Minor) -- fix round 1 dispatched (resume implementer) (2026-09-27 ~21:20)
 task-V6W-review.md: spec PASS (rules (a)-(d) literal; PIT classifier; ew-theme-v1/aim bytes unchanged; C++ mass conserved,
 deterministic). I1 old IC binary silently accepts a v6 weights file -> schema v2 gate; I2 numpy-2 uint8 wrap in a test;

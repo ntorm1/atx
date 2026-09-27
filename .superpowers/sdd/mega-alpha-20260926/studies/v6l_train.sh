@@ -70,16 +70,36 @@ do_w() {
   done
   echo "weighted pass did not finish in 3 passes"; return 4
 }
+# Construction knobs (V6-C grid, ledger ruling ~21:15: parent = the v6l ew cell). Defaults reproduce the parent cell name.
+#   ORDER_BASIS=target|delta (C1)  EXIT_RATE=1|.05|.1 (C2; < 1 needs DUST > 0)  LOCATE_AIM=0|1 (C3)  LCACHE=1|0 (F8)
+#   THETA=.05 DUST=.1 LEV=1 NEUT=price-risk-v1 (C5: price-risk-ind-v1 / -v2 once built)  DSR_N=<N> REFN=<paired reference dir>
+ORDER_BASIS=${ORDER_BASIS:-target}; EXIT_RATE=${EXIT_RATE:-1}; LOCATE_AIM=${LOCATE_AIM:-0}; LCACHE=${LCACHE:-1}
+THETA=${THETA:-.05}; DUST=${DUST:-.1}; LEV=${LEV:-1}; NEUT=${NEUT:-price-risk-v1}; DSR_N=${DSR_N:-14}
+SUF=""
+[ "$THETA$DUST" != ".05.1" ] && N=build-equity/mega-nav-v6l-$TAG-t$THETA-d$DUST-fixed
+[ "$ORDER_BASIS" != target ] && SUF="$SUF-ob$ORDER_BASIS"
+[ "$EXIT_RATE" != 1 ] && SUF="$SUF-x$EXIT_RATE"
+[ "$LOCATE_AIM" = 1 ] && SUF="$SUF-loc"
+[ "$NEUT" != price-risk-v1 ] && SUF="$SUF-n${NEUT#price-risk-}"
+[ "$LEV" != 1 ] && SUF="$SUF-L$LEV"
+N="$N$SUF"
+REFN=${REFN:-build-equity/mega-nav-v6l-ew-t.05-d.1-fixed}
+XF=""
+[ "$ORDER_BASIS" != target ] && XF="$XF --order-basis $ORDER_BASIS"
+[ "$EXIT_RATE" != 1 ] && XF="$XF --exit-rate $EXIT_RATE"
+[ "$LOCATE_AIM" = 1 ] && XF="$XF --locate-in-aim"
+[ "$LCACHE" = 1 ] && XF="$XF --liquidity-cache"
 do_nav() {
   i=$(cat $WT.final); C=$WT-$i/train_combined.json; CS=$(sha $C)
   [ -d $N ] && { echo "nav output exists: $N"; exit 5; }
-  echo "== nav $N"
+  echo "== nav $N (flags:$XF)"
   "$PY" $BR --output $N-run --bind $NAV --bind $C --bind $FD/manifest.json -- $NAV nav --combined $C --combined-sha256 $CS \
     --role $R2 --role-sha256 $R2S --fields $FD/manifest.json --fields-sha256 $FS --output $N --rule aim-partial-v5 \
-    --cadence 1 --trade-fraction .05 --dust-multiple .1 --aim-leverage 1 --daily-turnover-mean-max .20 \
-    --daily-turnover-p95-max .30 --neutralize price-risk-v1 --max-bytes 1073741824 | grep -E '"exit_code"|"status"' | head -2
+    --cadence 1 --trade-fraction $THETA --dust-multiple $DUST --aim-leverage $LEV --daily-turnover-mean-max .20 \
+    --daily-turnover-p95-max .30 --neutralize $NEUT --max-bytes 1073741824 $XF | grep -E '"exit_code"|"status"' | head -2
   [ -f $N/summary.json ] || { echo "nav failed"; exit 6; }
-  "$PY" $STUDIES/nav_summ.py --weights $W/composition_weights.json --reference $REF --dsr-n 14 $N
+  [ -d "$REFN" ] && [ "$REFN" != "$N" ] && REF=$REFN
+  "$PY" $STUDIES/nav_summ.py --weights $W/composition_weights.json --reference $REF --dsr-n $DSR_N $N
 }
 case "$phase" in
   fit) do_fit ;;
