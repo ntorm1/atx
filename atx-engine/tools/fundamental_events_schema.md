@@ -14,7 +14,8 @@ bridge (`rehearsal_identity=true`); a CIK outside that list never appears.
 ```
 <out>/
   run.json                    written by `prepare`: input pins, CIK-list SHA, parameters, code hashes
-  clock.parquet               accession clock table (in-scope CIKs; FSDS SUB 2009q2..2024q4 only)
+  cik_scope.txt               pinned normalized copy of the CIK scope (one integer per line)
+  clock.parquet               accession clock table (all SUB filers; FSDS SUB 2009q2..2024q4 only)
   sic_events.parquet          SIC event table (section 4)
   prepare.receipt.json
   events/batch-NNNN.parquet   per CF-R batch event rows (same schema as section 3)
@@ -59,7 +60,7 @@ when `date(d) - period_end > staleness_days`.
 | `clock_basis` | string | `fsds_accepted_utc` or `cf_fc1` (FC1 fallback, labelled) |
 | `filed` | date32 | SEC filing date |
 | `form` | string | form of this accession |
-| `report_period` | date32 | this accession's own report period (FSDS `period` snapped to its nearest core fact end within 10 d; else its latest core fact end) |
+| `report_period` | date32, nullable | this accession's own report period (FSDS `period` snapped to its nearest core fact end within 10 d; else its latest core fact end); null when it carries no core fact (core = total assets, stockholders' equity, net income, revenue, operating cash flow) |
 | `period_end` | date32 | anchor A: max `report_period` over all accessions applied so far (monotone per CIK); every item is for the fiscal period ending at A |
 | `fiscal_year` | int32, nullable | DEI fiscal year of the accession that set the anchor (FSDS `fy`, else CF `fiscal_year`) |
 | `fiscal_period` | string, nullable | DEI fiscal period (`FY`, `Q1`..`Q4`) of that accession |
