@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-v1`` / ``v4-prior-v2`` and weight fits ``mv-shrink-0.9-nonneg-v1`` / ``ew-theme-v1`` / ``ew-theme-aim-v1``.
+"""TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-v1`` / ``v4-prior-v2`` and weight fits ``mv-shrink-0.9-nonneg-v1`` / ``ew-theme-v1`` / ``ew-theme-aim-v1`` / ``ew-theme-v6``.
 
 Writes into a new output directory (published atomically, never overwritten):
   composition_weights.json  ``atx.dsl-composition-weights/v1``, read by ``atx-equity-strategy-ic
@@ -89,6 +89,23 @@ second moments of the TRAIN signal only (no means, no covariances, no returns).
                sum_k w_k c_k(d), c_k(d) = live names / used names) land in ``provenance.aim``; nothing in them
                feeds back into the weights. ``ew-theme-v1`` output bytes are unchanged (no aim keys).
 
+v6 (``--composition ew-theme-v6`` with the same prior orientation/screens; v4-prereg.md "## v6 revision" item V6-W,
+declared before any v6 TRAIN read; the rule text is binding): the admitted non-degenerate members of the screen, then
+  (a) theme low_risk is dropped (its members take weight 0);
+  (b) options_implied is merged into short_interest (one theme, members equal within it);
+  (c) fast-sleeve shrink: a member whose standalone daily TRAIN tau_k >= 0.08 (the admission table's value,
+      ``admission.json`` key ``candidates[].tau`` of the ``status: admitted`` row) keeps 1/3 of its within-theme weight
+      1/n_theme; the freed mass is reallocated pro rata to the theme's other (slow) members. A theme whose members are
+      all fast has no other member: the mass returns pro rata to the same members, i.e. their weights are unchanged;
+  (d) w_k = within_k / T over the T resulting themes with >= 1 member (equal theme weights). Coverage redistribution
+      (a member missing for a name on a day keeps its mass inside the theme, spread over the members present for that
+      name and day) cannot be written as fixed per-candidate weights: the weights file carries a top-level
+      ``theme_redistribution`` block {rule: within-theme-v1, composition: ew-theme-v6, themes: {id: theme}} that the IC
+      runner (strategy_ic_composition.cpp) applies per name and day: blend_i = sum_theme W_theme * sum_{k present}
+      w_k s_k r_k,i / sum_{k present} w_k, W_theme = sum of the theme's weights; a theme with no present member adds
+      nothing. ``provenance.v6`` records the rule, threshold, shrunk / dropped / merged members and the input SHAs.
+  Only ``ew-theme-v6`` writes these keys: ``ew-theme-v1`` and ``ew-theme-aim-v1`` bytes are unchanged.
+
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
 Records are keyed by (TRAIN role manifest SHA, semantics tag, cache payload SHA, fields manifest SHA
@@ -135,8 +152,17 @@ AIM_THETA = 0.05                                          # R4': fixed, equals t
 AIM_LAGS = list(range(0, 22)) + list(range(28, 127, 7))  # exact lags; others linearly interpolated
 AIM_GAIN_MIN, AIM_MAX_LAG = 0.05, 126
 AIM_MIN_NAMES = 50                                        # live names per decision (ranks) and per lag pair
-PRIOR_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_RULE_ID)
-COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID, EW_THEME_RULE_ID, AIM_RULE_ID)
+# v6 revision V6-W (declared before any v6 TRAIN read): ew-theme-v1 members, (a) drop low_risk, (b) merge
+# options_implied into short_interest, (c) fast-sleeve shrink x 1/3 at standalone tau >= .08 (mass stays in the theme),
+# (d) equal theme weights with within-theme coverage redistribution applied by the IC runner per name and day.
+V6_RULE_ID = "ew-theme-v6"
+V6_DROPPED_THEMES = ("low_risk",)
+V6_MERGED_THEMES = {"options_implied": "short_interest"}
+V6_FAST_TAU = 0.08          # standalone daily TRAIN tau_k >= this marks a fast sleeve (admission.json candidates[].tau)
+V6_FAST_FACTOR = 1.0 / 3.0  # a fast member's within-theme weight multiplier
+V6_REDISTRIBUTION = "within-theme-v1"
+PRIOR_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID)
+COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID, EW_THEME_RULE_ID, AIM_RULE_ID, V6_RULE_ID)
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
@@ -1249,6 +1275,56 @@ def ew_theme_aim_weights(themes: list[str], gains: list[float]) -> tuple[np.ndar
     return weights, table
 
 
+def ew_theme_v6_weights(ids: list[str], themes: list[str], taus: list[float]) -> tuple[np.ndarray, dict, dict]:
+    """ew-theme-v6 (v6 revision V6-W) over the members that take part (admitted, non-degenerate), in input order.
+
+    (b) theme' = options_implied -> short_interest, else the prior theme; (a) a low_risk member gets weight 0.
+    (c) within theme', b = 1/n; a member with tau_k >= V6_FAST_TAU keeps b/3 and the freed mass goes pro rata (by b)
+        to the theme's slow members; with no slow member it returns to the same members (weights stay b).
+    (d) w_k = within_k / T, T = themes' with >= 1 kept member. Returns (weights, theme table, detail)."""
+    require(len(ids) == len(themes) == len(taus), "fit: ew-theme-v6 inputs differ in length")
+    require(all(math.isfinite(t) for t in taus), "fit: ew-theme-v6 needs a finite standalone tau per member")
+    mapped = [V6_MERGED_THEMES.get(t, t) for t in themes]
+    kept = [k for k, t in enumerate(mapped) if t not in V6_DROPPED_THEMES]
+    present = sorted({mapped[k] for k in kept})
+    weights = np.zeros(len(ids))
+    table: dict = {}
+    for theme in present:
+        members = [k for k in kept if mapped[k] == theme]
+        base = 1.0 / len(members)
+        fast = [k for k in members if taus[k] >= V6_FAST_TAU]
+        slow = [k for k in members if not taus[k] >= V6_FAST_TAU]
+        within = {k: base for k in members}
+        if fast and slow:
+            freed = 0.0
+            for k in fast:
+                within[k] = base * V6_FAST_FACTOR
+                freed += base - within[k]
+            slow_mass = base * len(slow)
+            for k in slow:
+                within[k] = base + freed * base / slow_mass  # pro rata by the pre-shrink weight
+        for k in members:
+            weights[k] = within[k] / len(present)
+        table[theme] = {
+            "members": [ids[k] for k in members], "admitted_count": len(members),
+            "source_themes": sorted({themes[k] for k in members}), "theme_weight": 1.0 / len(present),
+            "base_within_weight": base, "fast_members": [ids[k] for k in fast],
+            "shrink": "applied" if fast and slow else ("none-all-fast" if fast else "none"),
+            "within_theme_weights": {ids[k]: within[k] for k in members},
+            "member_weights": {ids[k]: float(weights[k]) for k in members}}
+    detail = {
+        "dropped_members": [ids[k] for k in range(len(ids)) if mapped[k] in V6_DROPPED_THEMES],
+        "merged_members": {ids[k]: mapped[k] for k in range(len(ids)) if themes[k] in V6_MERGED_THEMES},
+        "shrunk_members": [ids[k] for t in present for k in kept if mapped[k] == t
+                           and table[t]["shrink"] == "applied" and taus[k] >= V6_FAST_TAU],
+        "fast_not_shrunk_all_fast_theme": [ids[k] for t in present for k in kept if mapped[k] == t
+                                           and table[t]["shrink"] == "none-all-fast"],
+        "fast_in_dropped_theme": [ids[k] for k in range(len(ids))
+                                  if mapped[k] in V6_DROPPED_THEMES and taus[k] >= V6_FAST_TAU],
+        "member_tau": {ids[k]: taus[k] for k in range(len(ids))}}
+    return weights, table, detail
+
+
 ADMISSION_STATUSES = ("admitted", "reject_insufficient", "reject_turnover", "reject_unstable", "reject_redundant")
 CSV_COLUMNS = ("id", "family", "status", "failed_checks", "redundant_with", "redundant_rho", "admission_rank",
                "s_k", "runner_sign", "sign_agrees", "tau", "fit_days", "fit_mean", "fit_sharpe", "hold_days",
@@ -1387,7 +1463,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     prior = args.screen in PRIOR_SCREENS
     require(prior == (orientation == "prior"), "--orientation prior and --screen v4-prior-v1/v2 go together")
     require(prior == (args.composition in PRIOR_COMPOSITIONS),
-            "--composition ew-theme-v1|ew-theme-aim-v1 and --screen v4-prior-v1/v2 go together")
+            "--composition ew-theme-v1|ew-theme-aim-v1|ew-theme-v6 and --screen v4-prior-v1/v2 go together")
     require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
@@ -1579,10 +1655,13 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
 
     ``ew-theme-aim-v1`` (v5 R4') scales the same member set by the aim gains in ``aims``; the admission
     table is identical and the ew-theme-v1 document carries no aim key (its bytes are unchanged).
+    ``ew-theme-v6`` (v6 V6-W) re-weights the same member set by ``ew_theme_v6_weights`` and adds the top-level
+    ``theme_redistribution`` block and ``provenance.v6``; the admission table is again identical.
     """
     ids = [c["id"] for c in library]
     screen = args.screen
     aim = args.composition == AIM_RULE_ID
+    v6 = args.composition == V6_RULE_ID  # only ew-theme-v6 writes theme_redistribution / provenance.v6
     require(aim == (aims is not None), "fit: aim records exist exactly for --composition ew-theme-aim-v1")
     v2 = screen == PRIOR_SCREEN_V2_ID  # v4-prior-v1 emits exactly its pre-v4.2 bytes (no cost keys)
     statuses = V42_STATUSES if v2 else V4_STATUSES
@@ -1679,6 +1758,25 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                             "covariance estimation")
         fit_series = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
                       "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
+    elif v6:
+        # (c) reads the standalone tau of each member's admission row: admission.json candidates[].tau (status admitted).
+        weights, theme_table, v6_detail = ew_theme_v6_weights([ids[k] for k in active], [themes[k] for k in active],
+                                                              [rows[k]["tau"] for k in active])
+        composition_text = ("ew-theme-v6: theme'=options_implied->short_interest, low_risk dropped (weight 0); within "
+                            "theme' b=1/n, a member with admission tau_k>=0.08 keeps b/3 and the freed mass goes pro rata "
+                            "(by b) to the theme's slow members (none slow: weights stay b); w_k=within_k/T, T=themes' "
+                            "with >=1 member; missing members' mass stays in the theme per name and day "
+                            "(theme_redistribution within-theme-v1, applied by the IC runner); no mean or covariance "
+                            "estimation")
+        fit_series = ("none (prior-fixed theme weights; TRAIN standalone tau only flags fast sleeves); diagnostic uses "
+                      "s_k*f over ALL TRAIN scored decisions, flat decisions 0, without the per-name within-theme "
+                      "redistribution")
+        if not float(np.sum(weights)) > 0:  # every member sat in a dropped theme: admission table only
+            publish_directory(out, files)
+            summary.update(status="published-without-weights", reason="fit: ew-theme-v6 leaves no member outside the "
+                           "dropped themes", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
+                           seconds=round(time.perf_counter() - started, 2))
+            return EXIT_NO_WEIGHTS, summary
     else:
         weights, theme_table = ew_theme_weights([themes[k] for k in active])
         composition_text = ("w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
@@ -1686,8 +1784,14 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         fit_series = "none (equal theme weights); diagnostic uses s_k*f over ALL TRAIN scored decisions, flat decisions 0"
     for k, w in zip(active, weights):
         weight_rows[k]["weight"] = float(w)
-    for theme, entry in theme_table.items():
-        entry["admitted"] = [ids[k] for k in active if themes[k] == theme]
+    if v6:  # theme' tables carry their own member lists (merged themes); dropped members are marked
+        for k, row in enumerate(weight_rows):
+            row["theme_v6"] = V6_MERGED_THEMES.get(themes[k], themes[k])
+            if k in active and row["theme_v6"] in V6_DROPPED_THEMES:
+                row["status"] = "fitted-theme-dropped-v6"
+    else:
+        for theme, entry in theme_table.items():
+            entry["admitted"] = [ids[k] for k in active if themes[k] == theme]
     matrix = np.vstack([prior_signs[k] * zero_filled[k] for k in active])
     weighted_tau = float(sum(row["weight"] * row["tau"] for row in weight_rows))
     conflicts = [row["id"] for row in weight_rows if row["weight"] > 0 and row["runner_sign"] != row["sign"]]
@@ -1731,6 +1835,12 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     if aim:  # ew-theme-v1 bytes carry no aim key
         document["provenance"]["aim"] = aim_provenance(ids, themes, aims, active, weights,  # type: ignore[arg-type]
                                                        decision_sessions)
+    if v6:  # ew-theme-v1 / ew-theme-aim-v1 bytes carry neither key
+        document["theme_redistribution"] = {
+            "rule": V6_REDISTRIBUTION, "composition": V6_RULE_ID,
+            "themes": {row["id"]: row["theme_v6"] for row in weight_rows if row["weight"] > 0}}
+        document["provenance"]["v6"] = v6_provenance(v6_detail, theme_table, admission_sha, args, inputs,
+                                                     priors["recipe_sha256"])
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)
     require(len(files[OUTPUT_WEIGHTS]) <= METADATA_LIMIT, "output: weights JSON exceeds the runner's 1 MiB bound")
     publish_directory(out, files)
@@ -1744,7 +1854,48 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         gains = [aims[k]["gain"] for k in active]  # type: ignore[index]
         summary.update(aim_gain_min=min(gains), aim_gain_max=max(gains),
                        aim_theme_weights={t: e["aim_theme_weight"] for t, e in sorted(theme_table.items())})
+    if v6:
+        summary.update(shrunk_members=v6_detail["shrunk_members"], dropped_members=v6_detail["dropped_members"],
+                       theme_redistribution=V6_REDISTRIBUTION)
     return EXIT_OK, summary
+
+
+def v6_provenance(detail: dict, theme_table: dict, admission_sha: str, args, inputs: dict, recipe_sha: str | None) -> dict:
+    """``provenance.v6``: the V6-W rule, its constants, what (a)-(c) did to which member, (d)'s runner-side
+    redistribution and every input SHA the weights depend on."""
+    return {
+        "rule": V6_RULE_ID,
+        "preregistration": "v4-prereg.md '## v6 revision' item V6-W (declared 2026-09-27 before any v6 TRAIN read)",
+        "dropped_themes": list(V6_DROPPED_THEMES), "merged_themes": dict(V6_MERGED_THEMES),
+        "dropped_members": detail["dropped_members"], "merged_members": detail["merged_members"],
+        "fast_tau_threshold": V6_FAST_TAU, "fast_tau_test": "tau_k >= fast_tau_threshold",
+        "fast_factor": V6_FAST_FACTOR,
+        "fast_tau_source": ("admission.json key candidates[].tau of the status=admitted row (this run's admission "
+                            "table, admission_sha256 below): standalone daily one-way TRAIN turnover "
+                            "mean_d sum_i|q(d)_i-q(d-1)_i| over consecutive scored TRAIN decisions"),
+        "shrunk_members": detail["shrunk_members"],
+        "shrunk_tau": {i: detail["member_tau"][i] for i in detail["shrunk_members"]},
+        "fast_not_shrunk_all_fast_theme": detail["fast_not_shrunk_all_fast_theme"],
+        "fast_in_dropped_theme": detail["fast_in_dropped_theme"],
+        "member_tau": detail["member_tau"],
+        "within_theme_rule": ("b=1/n_theme'; fast (tau>=threshold): b*fast_factor; freed=sum_fast(b-b*fast_factor) "
+                              "added to each slow member pro rata by b; a theme' with no slow member keeps b"),
+        "theme_rule": "w_k=within_k/T, T=themes' with >=1 member (equal theme weights)",
+        "themes": sorted(theme_table),
+        "coverage_redistribution": {
+            "rule": V6_REDISTRIBUTION, "block": "theme_redistribution (top level)",
+            "applied_by": "atx-equity-strategy-ic (strategy_ic_composition.cpp) per name and decision day",
+            "formula": ("blend_i=sum_theme W_theme*sum_{k in theme, present at i} w_k*s_k*r_k,i/sum_{k present} w_k; "
+                        "W_theme=sum_{k in theme} w_k; present=member with a finite signal on a day ranking >= 2 "
+                        "names; a theme with no present member adds nothing")},
+        "inputs": {"library_sha256": args.library_sha256, "train_manifest_sha256": args.train_sha256,
+                   "recipe_sha256": recipe_sha, "orientations_sha256": args.orientations_sha256,
+                   "orientations_recipe_sha256": inputs["orientations_recipe_sha256"],
+                   "runner_summary_sha256": args.runner_summary_sha256, "admission_sha256": admission_sha,
+                   "role_source_sha256": inputs["role_source_sha256"],
+                   "fields_manifest_sha256": inputs["fields_manifest_sha256"], "vm_identity": inputs["vm_identity"],
+                   "script_sha256": inputs["script_sha256"], "context_sha256": inputs["context_sha256"]},
+    }
 
 
 def aim_provenance(ids: list[str], themes: list[str], aims: list[dict], active: list[int], weights: np.ndarray,
@@ -1802,7 +1953,9 @@ def parse_args(argv):
     p.add_argument("--composition", default=RULE_ID, choices=COMPOSITIONS,
                    help="weight fit: mv-shrink-0.9-nonneg-v1 (default) or its netcost variant "
                         "(mu_k minus 0.0018 * tau_k); the screen and signs are unchanged; ew-theme-v1 for v4; "
-                        "ew-theme-aim-v1 for v5 (R4': ew-theme scaled by the TRAIN rank-autocorrelation aim gain)")
+                        "ew-theme-aim-v1 for v5 (R4': ew-theme scaled by the TRAIN rank-autocorrelation aim gain); "
+                        "ew-theme-v6 for v6 V6-W (drop low_risk, options_implied into short_interest, fast-sleeve "
+                        "x1/3 at tau >= .08, equal themes, within-theme coverage redistribution in the IC runner)")
     p.add_argument("--orientation", default="train", choices=ORIENTATIONS,
                    help="train (default: runner/screen signs) or prior (v4: s_k=+1 embedded in the DSL)")
     p.add_argument("--recipe", type=Path, default=None,

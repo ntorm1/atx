@@ -1607,7 +1607,7 @@ class AimGainRules(unittest.TestCase):
         self.assertEqual(fcw.AIM_RULE_ID, "ew-theme-aim-v1")
         self.assertEqual((fcw.AIM_THETA, fcw.AIM_GAIN_MIN, fcw.AIM_MAX_LAG, fcw.AIM_MIN_NAMES), (0.05, 0.05, 126, 50))
         self.assertEqual(fcw.AIM_LAGS, list(range(22)) + [28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 98, 105, 112, 119, 126])
-        self.assertEqual(fcw.PRIOR_COMPOSITIONS, ("ew-theme-v1", "ew-theme-aim-v1"))
+        self.assertEqual(fcw.PRIOR_COMPOSITIONS, ("ew-theme-v1", "ew-theme-aim-v1", "ew-theme-v6"))  # + v6 V6-W
         self.assertIn("ew-theme-aim-v1", fcw.COMPOSITIONS)
 
     def test_aim_gain_ar1_matches_closed_form(self):
@@ -1966,6 +1966,336 @@ class V1BytesUnchangedByAim(unittest.TestCase):
                 for name in got["new"][0]:
                     self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {name}")
                 self.assertEqual(got["new"][1], got["old"][1], screen)  # no aim-* directory on the v1 path
+
+
+# ------------------------------------------------ V6-W: ew-theme-v6 (v6 revision; within-theme redistribution)
+V6_ARGS = dict(screen="v4-prior-v1", orientation="prior", composition="ew-theme-v6")
+
+
+def ref_v6_weights(ids, themes, taus, fast_tau=0.08):
+    """Independent loop port of the V6-W rule text: (a) drop low_risk, (b) options_implied -> short_interest,
+    (c) tau >= fast_tau keeps 1/3 of 1/n and the freed mass goes to the slow members pro rata (none slow: unchanged),
+    (d) 1/T per resulting theme."""
+    theme = {i: ("short_interest" if t == "options_implied" else t) for i, t in zip(ids, themes)}
+    tau = dict(zip(ids, taus))
+    kept = [i for i in ids if theme[i] != "low_risk"]
+    groups = {}
+    for i in kept:
+        groups.setdefault(theme[i], []).append(i)
+    out = {i: 0.0 for i in ids}
+    for t, members in groups.items():
+        n = len(members)
+        fast = [i for i in members if tau[i] >= fast_tau]
+        slow = [i for i in members if i not in fast]
+        for i in members:
+            if not slow or not fast:
+                within = 1.0 / n
+            elif i in fast:
+                within = (1.0 / n) / 3.0
+            else:
+                within = 1.0 / n + (len(fast) * (1.0 / n) * (2.0 / 3.0)) / len(slow)
+            out[i] = within / len(groups)
+    return out
+
+
+def ref_within_theme_blend(ranks, weights, signs, themes):
+    """Loop port of the IC runner's within-theme-v1 blend for one name: ranks[k] is None when k is not present."""
+    mass, num, den = {}, {}, {}
+    for r, w, s, t in zip(ranks, weights, signs, themes):
+        if not w > 0:
+            continue
+        mass[t] = mass.get(t, 0.0) + w
+        if r is not None and s != 0:
+            num[t] = num.get(t, 0.0) + s * w * r
+            den[t] = den.get(t, 0.0) + w
+    return sum(mass[t] * num[t] / den[t] for t in num if den[t] > 0)
+
+
+def runner_themes(text: bytes, ids: list[str], weights: list[float]):
+    """Python port of the strategy_ic_runner.cpp composition_themes() added for V6-W (None: block absent)."""
+    import re
+    j = json.loads(text)
+    if "theme_redistribution" not in j:
+        return None
+    block = j["theme_redistribution"]
+    assert isinstance(block, dict) and block.get("rule") == "within-theme-v1"
+    assert block.get("composition") == "ew-theme-v6" and isinstance(block.get("themes"), dict)
+    rows = block["themes"]
+    assert set(rows) <= set(ids), "theme for unknown candidate"
+    assert all(isinstance(v, str) and re.fullmatch(r"[a-z0-9_]{1,64}", v) for v in rows.values())
+    names, index = [], []
+    for cid, w in zip(ids, weights):
+        if not w > 0:
+            index.append(0)
+            continue
+        assert cid in rows, f"theme missing for weighted candidate {cid}"
+        if rows[cid] not in names:
+            names.append(rows[cid])
+        index.append(names.index(rows[cid]))
+    assert 1 <= len(names) <= 32
+    return index, names
+
+
+class V6WeightRules(unittest.TestCase):
+    def test_declared_constants(self):
+        self.assertEqual(fcw.V6_RULE_ID, "ew-theme-v6")
+        self.assertEqual((fcw.V6_FAST_TAU, fcw.V6_FAST_FACTOR), (0.08, 1.0 / 3.0))
+        self.assertEqual((fcw.V6_DROPPED_THEMES, fcw.V6_MERGED_THEMES), (("low_risk",), {"options_implied": "short_interest"}))
+        self.assertEqual(fcw.V6_REDISTRIBUTION, "within-theme-v1")
+        self.assertIn("ew-theme-v6", fcw.COMPOSITIONS)
+        self.assertIn("ew-theme-v6", fcw.PRIOR_COMPOSITIONS)
+
+    def test_v51_shaped_hand_case(self):
+        # the v5.1 member structure with synthetic taus: 9 prior themes -> 7; short_interest takes iv (merged), two of its
+        # four members are fast; reversal_seasonality is all fast; low_risk (one fast member) is dropped
+        rows = [("v1", "value", .02), ("v2", "value", .02), ("p1", "profitability_quality", .015),
+                ("p2", "profitability_quality", .03), ("p3", "profitability_quality", .02), ("i1", "investment_issuance", .02),
+                ("e1", "earnings_momentum", .03), ("e2", "earnings_momentum", .03), ("m1", "price_momentum", .04),
+                ("lb", "low_risk", .05), ("lm", "low_risk", .089), ("sr", "short_interest", .03),
+                ("dt", "short_interest", .04), ("sc", "short_interest", .092), ("rv", "reversal_seasonality", .18),
+                ("ss", "reversal_seasonality", .094), ("iv", "options_implied", .09)]
+        ids, themes, taus = (list(x) for x in zip(*rows))
+        w, table, detail = fcw.ew_theme_v6_weights(ids, themes, taus)
+        got = dict(zip(ids, w))
+        want = ref_v6_weights(ids, themes, taus)
+        for i in ids:
+            self.assertAlmostEqual(got[i], want[i], places=15, msg=i)
+        self.assertAlmostEqual(float(w.sum()), 1.0, places=15)                           # weights sum
+        self.assertEqual(sorted(table), ["earnings_momentum", "investment_issuance", "price_momentum",
+                                         "profitability_quality", "reversal_seasonality", "short_interest", "value"])
+        for t, entry in table.items():                                                     # (d) theme mass 1/7
+            self.assertAlmostEqual(sum(got[i] for i in entry["members"]), 1 / 7, places=15, msg=t)
+            self.assertEqual(entry["theme_weight"], 1 / 7)
+        self.assertEqual((got["lb"], got["lm"]), (0.0, 0.0))                               # (a)
+        self.assertEqual(table["short_interest"]["members"], ["sr", "dt", "sc", "iv"])        # (b)
+        self.assertEqual(table["short_interest"]["source_themes"], ["options_implied", "short_interest"])
+        # (c) 1/4 -> 1/12 for sc and iv; the freed 1/3 splits over sr and dt: 1/4 + 1/6 = 5/12 each
+        si = table["short_interest"]["within_theme_weights"]
+        self.assertAlmostEqual(si["sc"], 1 / 12, places=16)
+        self.assertAlmostEqual(si["iv"], 1 / 12, places=16)
+        self.assertAlmostEqual(si["sr"], 5 / 12, places=15)
+        self.assertAlmostEqual(si["dt"], 5 / 12, places=15)
+        self.assertAlmostEqual(got["sc"], 1 / 84, places=16)
+        self.assertEqual(table["reversal_seasonality"]["shrink"], "none-all-fast")          # no slow member: unchanged
+        self.assertEqual((got["rv"], got["ss"]), (1 / 14, 1 / 14))
+        self.assertEqual(detail["shrunk_members"], ["sc", "iv"])
+        self.assertEqual(detail["fast_not_shrunk_all_fast_theme"], ["rv", "ss"])
+        self.assertEqual(detail["fast_in_dropped_theme"], ["lm"])
+        self.assertEqual(detail["dropped_members"], ["lb", "lm"])
+        self.assertEqual(detail["merged_members"], {"iv": "short_interest"})
+
+    def test_threshold_boundary_and_pro_rata(self):
+        at, below = 0.08, float(np.nextafter(0.08, 0))
+        w, table, detail = fcw.ew_theme_v6_weights(["a", "b", "c"], ["value"] * 3, [at, below, 0.01])
+        # n = 3, a is fast (tau == .08 counts): 1/9; the freed 2/9 goes pro rata to b and c: 1/3 + 1/9 = 4/9 each
+        np.testing.assert_allclose(w, [1 / 9, 4 / 9, 4 / 9], rtol=0, atol=1e-15)
+        self.assertEqual(detail["shrunk_members"], ["a"])
+        self.assertEqual(table["value"]["fast_members"], ["a"])
+        # a lone fast member (and an all-fast theme) keeps its full within-theme weight
+        w, table, _ = fcw.ew_theme_v6_weights(["x", "y"], ["value", "short_interest"], [0.5, 0.01])
+        np.testing.assert_array_equal(w, [0.5, 0.5])
+        self.assertEqual(table["value"]["shrink"], "none-all-fast")
+
+    def test_all_dropped_and_refusals(self):
+        w, table, detail = fcw.ew_theme_v6_weights(["a", "b"], ["low_risk", "low_risk"], [0.01, 0.2])
+        np.testing.assert_array_equal(w, [0.0, 0.0])
+        self.assertEqual((table, detail["dropped_members"]), ({}, ["a", "b"]))
+        with self.assertRaises(fcw.FitError):
+            fcw.ew_theme_v6_weights(["a"], ["value"], [NAN])
+        with self.assertRaises(fcw.FitError):
+            fcw.ew_theme_v6_weights(["a"], ["value"], [0.1, 0.2])
+
+    def test_within_theme_blend_reference_hand_case(self):
+        # the same numbers as the C++ test StrategyIcComposition.WithinThemeRedistributionKeepsMissingMassInTheme:
+        # a1 ranks [-.5,-1/6,1/6,.5], a2 finite on names 2,3 only (ranks .5, -.5), b1 ranks [.5,1/6,-1/6,-.5];
+        # weights .25/.25/.5, themes a, a, b -> [0, 0, 1/12, -1/4]
+        a1, a2, b1 = [-.5, -1 / 6, 1 / 6, .5], [None, None, .5, -.5], [.5, 1 / 6, -1 / 6, -.5]
+        got = [ref_within_theme_blend([a1[i], a2[i], b1[i]], [.25, .25, .5], [1, 1, 1], ["a", "a", "b"]) for i in range(4)]
+        np.testing.assert_allclose(got, [0.0, 0.0, 1 / 12, -0.25], rtol=0, atol=1e-15)
+        # with every member present the redistribution equals the fixed-denominator blend
+        full = ref_within_theme_blend([.3, -.1, .2], [.25, .25, .5], [1, 1, 1], ["a", "a", "b"])
+        self.assertAlmostEqual(full, .25 * .3 - .25 * .1 + .5 * .2, places=15)
+
+
+def v6_world():
+    """aim_world re-themed so ew-theme-v6 has something to drop, merge and shrink among admitted members."""
+    panel, signals, ids, extra = aim_world()
+    extra = dict(extra)
+    extra["medium"] = dict(extra["medium"], theme="options_implied")   # admitted -> merged into short_interest
+    extra["medium_half"] = dict(extra["medium_half"], theme="low_risk")  # admitted -> dropped
+    return panel, signals, ids, extra
+
+
+class V6EndToEnd(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        panel, signals, ids, extra = v6_world()
+        cls.ids = ids
+        cls.fx = Fixture(cls.root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                         candidate_extra=extra)
+        cls.v1_code, _ = fcw.fit(cls.fx.args(cls.root / "v1", **V4_ARGS))
+        cls.v1_bytes = {p.name: p.read_bytes() for p in (cls.root / "v1").iterdir()}
+        adm = json.loads(cls.v1_bytes[fcw.OUTPUT_ADMISSION])
+        tau = {c["id"]: c["tau"] for c in adm["candidates"]}
+        # threshold between the two short_interest' members, so exactly the faster one shrinks (tau >= threshold)
+        cls.threshold = max(tau["flip"], tau["medium"])
+        with unittest.mock.patch.object(fcw, "V6_FAST_TAU", cls.threshold):
+            cls.code, cls.summary = fcw.fit(cls.fx.args(cls.root / "v6", **V6_ARGS))
+        cls.bytes = {p.name: p.read_bytes() for p in (cls.root / "v6").iterdir()}
+        cls.doc = json.loads(cls.bytes[fcw.OUTPUT_WEIGHTS])
+        cls.adm = json.loads(cls.bytes[fcw.OUTPUT_ADMISSION])
+        cls.v1 = json.loads(cls.v1_bytes[fcw.OUTPUT_WEIGHTS])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_weights_follow_the_rule_on_the_admission_taus(self):
+        self.assertEqual((self.code, self.v1_code), (fcw.EXIT_OK, fcw.EXIT_OK))
+        self.assertEqual(self.bytes[fcw.OUTPUT_ADMISSION], self.v1_bytes[fcw.OUTPUT_ADMISSION])  # screen unchanged
+        w = self.doc["weights"]
+        rows = {c["id"]: c for c in self.adm["candidates"]}
+        members = [i for i in self.ids if self.v1["weights"][i] > 0]                            # v1 member set
+        self.assertEqual(sorted(members), sorted(["slow_a_clone", "slow_a_twin", "flip", "medium", "medium_half"]))
+        want = ref_v6_weights(members, [rows[i]["theme"] for i in members], [rows[i]["tau"] for i in members],
+                              self.threshold)
+        for i in self.ids:
+            self.assertAlmostEqual(w[i], want.get(i, 0.0), places=15, msg=i)
+        self.assertAlmostEqual(sum(w.values()), 1.0, places=15)
+        self.assertEqual(w["medium_half"], 0.0)                                               # (a) low_risk dropped
+        prov = self.doc["provenance"]
+        self.assertEqual(prov["themes_present"], ["short_interest", "value"])                   # (b) + (d): T = 2
+        for t, entry in prov["themes"].items():
+            self.assertAlmostEqual(sum(w[i] for i in entry["members"]), 0.5, places=15, msg=t)
+        self.assertEqual(sorted(prov["themes"]["short_interest"]["members"]), ["flip", "medium"])
+        fast = "flip" if rows["flip"]["tau"] >= self.threshold else "medium"
+        slow = "medium" if fast == "flip" else "flip"
+        if rows[slow]["tau"] < self.threshold:                                                  # (c) 1/6 vs 5/6 of 1/2
+            self.assertAlmostEqual(w[fast], 0.5 / 6, places=15)
+            self.assertAlmostEqual(w[slow], 0.5 * 5 / 6, places=15)
+            self.assertIn(fast, prov["v6"]["shrunk_members"])
+        rows_w = {r["id"]: r for r in prov["candidates"]}
+        self.assertEqual(rows_w["medium_half"]["status"], "fitted-theme-dropped-v6")
+        self.assertEqual((rows_w["medium"]["theme"], rows_w["medium"]["theme_v6"]), ("options_implied", "short_interest"))
+        self.assertAlmostEqual(prov["weighted_standalone_turnover"], sum(w[i] * rows_w[i]["tau"] for i in self.ids),
+                               places=14)
+        self.assertEqual(self.doc["signs"], self.v1["signs"])
+        self.assertEqual(self.bytes[fcw.OUTPUT_WEIGHTS], fcw.canonical_bytes(self.doc))
+
+    def test_redistribution_block_is_runner_readable(self):
+        block = self.doc["theme_redistribution"]
+        w = self.doc["weights"]
+        self.assertEqual((block["rule"], block["composition"]), ("within-theme-v1", "ew-theme-v6"))
+        self.assertEqual(block["themes"], {i: ("short_interest" if i in ("flip", "medium") else "value")
+                                           for i in self.ids if w[i] > 0})
+        weights = runner_accepts(self.bytes[fcw.OUTPUT_WEIGHTS], self.fx.library_sha, self.ids, self.fx.train_sha)
+        index, names = runner_themes(self.bytes[fcw.OUTPUT_WEIGHTS], self.ids, weights)
+        self.assertEqual(sorted(names), ["short_interest", "value"])
+        self.assertEqual(len({index[k] for k, x in enumerate(weights) if x > 0}), 2)
+        self.assertIsNone(runner_themes(self.v1_bytes[fcw.OUTPUT_WEIGHTS], self.ids, weights))  # v1: no block
+
+    def test_provenance_block(self):
+        v6 = self.doc["provenance"]["v6"]
+        self.assertEqual(v6["rule"], "ew-theme-v6")
+        self.assertEqual((v6["fast_tau_threshold"], v6["fast_tau_test"], v6["fast_factor"]),
+                         (self.threshold, "tau_k >= fast_tau_threshold", 1.0 / 3.0))
+        self.assertIn("admission.json key candidates[].tau", v6["fast_tau_source"])
+        self.assertEqual((v6["dropped_themes"], v6["merged_themes"]), (["low_risk"], {"options_implied": "short_interest"}))
+        self.assertEqual((v6["dropped_members"], v6["merged_members"]), (["medium_half"], {"medium": "short_interest"}))
+        rows = {c["id"]: c for c in self.adm["candidates"]}
+        self.assertEqual(v6["shrunk_tau"], {i: rows[i]["tau"] for i in v6["shrunk_members"]})
+        self.assertEqual(v6["coverage_redistribution"]["rule"], "within-theme-v1")
+        inputs = v6["inputs"]
+        self.assertEqual(inputs["admission_sha256"], sha(self.bytes[fcw.OUTPUT_ADMISSION]))
+        self.assertEqual((inputs["library_sha256"], inputs["train_manifest_sha256"]),
+                         (self.fx.library_sha, self.fx.train_sha))
+        self.assertEqual((inputs["orientations_sha256"], inputs["runner_summary_sha256"]),
+                         (self.fx.orientations_sha, self.fx.summary_sha))
+        self.assertEqual(inputs["script_sha256"], sha(Path(fcw.__file__).read_bytes()))
+        self.assertEqual(self.summary["theme_redistribution"], "within-theme-v1")
+        self.assertEqual(self.summary["dropped_members"], ["medium_half"])
+
+    def test_v1_and_aim_documents_carry_no_v6_keys(self):
+        self.assertNotIn("theme_redistribution", self.v1)
+        self.assertNotIn("v6", self.v1["provenance"])
+        self.assertTrue(all("theme_v6" not in r for r in self.v1["provenance"]["candidates"]))
+        aim_out = self.root / "aim"
+        code, _ = fcw.fit(self.fx.args(aim_out, **AIM_ARGS))
+        aim = json.loads((aim_out / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual(code, fcw.EXIT_OK)
+        self.assertNotIn("theme_redistribution", aim)
+        self.assertNotIn("v6", aim["provenance"])
+
+    def test_combination_refusals_and_all_dropped(self):
+        out = self.root / "refused"
+        for override in (dict(screen="none", orientation="train", composition="ew-theme-v6"),
+                         dict(screen="v4-prior-v1", orientation="train", composition="ew-theme-v6")):
+            with self.assertRaises(fcw.FitError) as caught:
+                fcw.fit(self.fx.args(out, **override))
+            self.assertIn("go together", str(caught.exception))
+            self.assertFalse(out.exists())
+        panel, signals, ids, extra = v6_world()
+        keep = [ids.index("medium_half")]
+        fx = Fixture(self.root / "only_low_risk", panel, [signals[k] for k in keep], [1], ids=["medium_half"],
+                     families=["fam"], candidate_extra=extra)
+        dropped = self.root / "only_low_risk_out"
+        code, summary = fcw.fit(fx.args(dropped, **V6_ARGS))
+        self.assertEqual((code, summary["status"]), (fcw.EXIT_NO_WEIGHTS, "published-without-weights"))
+        self.assertEqual(sorted(p.name for p in dropped.iterdir()), sorted([fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV]))
+
+
+class V1BytesUnchangedByV6(unittest.TestCase):
+    """V6-W edit: ew-theme-v1 (v4-prior-v1 and v4-prior-v2) and ew-theme-aim-v1 emit exactly the bytes of the fitter at
+    the V6-W base (04e9d5bc) except the embedded script SHA and the SHAs derived from it (context digest, admission
+    SHA), with identical work-cache paths. Same byte_stability contract as V1BytesUnchangedByAim."""
+
+    BASE_BLOB = "bb11a677205a6e6c5ce573acdffc349e497ef7a9"  # fit_composition_weights.py at 04e9d5bc (T31 81e9977d)
+
+    def test_v1_and_aim_bytes_unchanged(self):
+        import importlib.util
+        import subprocess
+        try:
+            old = subprocess.run(["git", "cat-file", "-p", self.BASE_BLOB], capture_output=True, check=True,
+                                 cwd=Path(__file__).resolve().parent).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git history with the V6-W base fitter blob is unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old").mkdir()
+            (root / "old" / "fit_composition_weights_v6_base.py").write_bytes(old)
+            spec = importlib.util.spec_from_file_location("fcw_v6_base", root / "old" / "fit_composition_weights_v6_base.py")
+            base = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(base)
+            self.assertEqual((base.SEMANTICS_TAG, base.AIM_TAG), (fcw.SEMANTICS_TAG, fcw.AIM_TAG))
+            panel, signals, ids, extra = v6_world()
+            fx = Fixture(root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                         candidate_extra=extra)
+            for screen, composition in (("v4-prior-v1", "ew-theme-v1"), ("v4-prior-v2", "ew-theme-v1"),
+                                        ("v4-prior-v1", "ew-theme-aim-v1")):
+                got = {}
+                for tag, module in (("new", fcw), ("old", base)):
+                    out, work = root / f"{screen}-{composition}-{tag}", root / f"work-{screen}-{composition}-{tag}"
+                    with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249):
+                        code, _ = module.fit(module.parse_args(fx.argv(out, screen, [
+                            "--orientation", "prior", "--composition", composition, "--work-dir", str(work)])))
+                    self.assertEqual(code, 0, (screen, composition))
+                    adm = (out / fcw.OUTPUT_ADMISSION).read_bytes()
+                    derived = {module.SCRIPT_SHA256: b"<script>", json.loads(adm)["inputs"]["context_sha256"]: b"<context>",
+                               sha(adm): b"<admission>"}
+                    files = {}
+                    for p in out.iterdir():
+                        data = p.read_bytes()
+                        for value, token in derived.items():
+                            data = data.replace(value.encode(), token)
+                        files[p.name] = data
+                    keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
+                    got[tag] = (files, keys)
+                self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), (screen, composition))
+                for name in got["new"][0]:
+                    self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {composition} {name}")
+                self.assertEqual(got["new"][1], got["old"][1], (screen, composition))
 
 
 if __name__ == "__main__":
