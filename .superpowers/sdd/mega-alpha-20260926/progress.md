@@ -1,5 +1,10 @@
 # Active task: recent-data DSL ensemble
 
+## PAUSED 2026-09-27 at owner request — handoff 3
+docs/plans/2026-09-27-mega-alpha-parent-handoff-3.md (done / in progress / next steps / current net SR and alphas /
+fresh-parent goal prompt). No active agents or processes. Best OOS: validation #2 v4.1 net +0.641.
+
+
 ## VALIDATION RUN #2 — FREEZE v4.1-daily-2026-09-27 — RESULT: net +0.641 (objective >= 1 NOT met; no OOS decay)
 Script studies/v4_validation_once.sh @214b383a. Runner mega-v4-VAL-1: 47 s / 696 MiB, 37 cold; combined c50829be...
 NAV mega-nav-v4-VAL-b2-f.25 (14 s / 243 MiB), 2023-2024, $1bn, daily c1, f.25, band 2, neut price-risk-v1:
