@@ -276,11 +276,16 @@ int dispatch(std::vector<std::string> args, std::ostream& out, std::ostream& err
 
 // Design fixture 1: zero cost/borrow/drift at NAV 1 -> the NAV path's planned side is
 // the target replay bit-for-bit, and each decision's plan is exactly the next fill.
+// Name 2 is held under both rules when it leaves membership (a present nonmember) at
+// decision 7, so a forced exit is planned and filled. Name 1, used before, has an
+// exact-zero d0 target (middle tie group) and v2 spends January's budget at d0, so
+// under v2 it was never held and its exit was empty (forced turnover exactly 0).
 TEST(StrategyNavReplay, ConstantPricesNoCostReproducesTargetReplayPlanned) {
   Panel p(27, 7);
+  constexpr usize exit_name = 2, exit_day = 7;
   for (usize t = 0; t < p.d; ++t) for (usize i = 0; i < p.n; ++i) {
     p.signal[p.k(t, i)] = static_cast<f64>((i + t / 3) % 4);
-    if ((i == 1 && t >= 7) || (i == 6 && t < 8)) p.nonmember(t, i);
+    if ((i == exit_name && t >= exit_day) || (i == 6 && t < 8)) p.nonmember(t, i);
   }
   st::TargetReplayConfig v2; v2.rule = st::TargetReplayRule::MonthlyTargetBudgetV2;
   v2.cadence = 1; v2.trade_fraction = .5; v2.monthly_budget = .30;
@@ -306,7 +311,20 @@ TEST(StrategyNavReplay, ConstantPricesNoCostReproducesTargetReplayPlanned) {
       EXPECT_EQ(day.pretrade_nav, 1.0); EXPECT_EQ(day.posttrade_nav, 1.0);
       EXPECT_EQ(day.net_return, 0.0);
     }
+    // The forced exit is the whole plan at decision 7 (baseline: not a cadence day;
+    // v2: January budget already spent, exit taken anyway and reported as excess),
+    // and it is the only fill at session 8, counted in executed one-way turnover.
     EXPECT_GT(planned->forced_turnover, 0);
+    EXPECT_EQ(bits(planned->days[exit_day].forced_turnover), bits(planned->forced_turnover));
+    const auto& decided = nav->days[exit_day]; const auto& filled = nav->days[exit_day + 1];
+    EXPECT_GT(decided.planned_forced, 0);
+    EXPECT_EQ(bits(decided.planned_forced), bits(decided.planned_turnover));
+    EXPECT_EQ(bits(filled.one_way_turnover), bits(decided.planned_forced));
+    EXPECT_EQ(filled.fills, 1U);
+    EXPECT_EQ(filled.held_names + 1, decided.held_names);
+    if (rule.rule == st::TargetReplayRule::MonthlyTargetBudgetV2) {
+      EXPECT_GT(decided.budget_excess, 0);
+    }
   }
 }
 
@@ -371,10 +389,12 @@ TEST(StrategyNavReplay, InteriorGapCarriesStaleThenRealizesCumulativeReturn) {
     EXPECT_NEAR(d[t].stale_long_dollars, 500, 1e-9) << t;
   }
   EXPECT_EQ(d[3].blocked_absent, 0U); // the exit order is placed at decision 3
+  EXPECT_EQ(d[3].planned_forced, 0.5); // absent => nonmember => forced exit of 500/1000
   EXPECT_EQ(d[4].blocked_absent, 1U);
   EXPECT_NEAR(d[5].mark_pnl_dollars, 100, 1e-9);
   EXPECT_NEAR(d[5].net_return, 0.1, 1e-14);
   EXPECT_NEAR(d[5].traded_dollars, 600, 1e-9); // exit at the reprint close
+  EXPECT_NEAR(d[5].one_way_turnover, 600.0 / 1100.0, 1e-15); // forced exit counts
   EXPECT_EQ(d[5].stale_names, 0U); EXPECT_EQ(d[5].long_dollars, 0);
   const auto* gap = find_event(*r, st::NavEventKind::GapResolved, 101);
   ASSERT_NE(gap, nullptr);
