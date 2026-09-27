@@ -1,5 +1,33 @@
 # Active task: recent-data DSL ensemble
 
+## T29 v5 pre-registration and rulings (2026-09-27) — prereg section '## v5 revision' R1'-R7' appended to v4-prereg.md
+T28 evidence (construction-audit-v4.md, commit 44e6c28a): TRAIN b1f1 gross .813 net +.025 held 2,717 banded .954 tau .0347; b1f.25 .687/+.027/2,720/.931/.0267;
+b2f1 .364/+.016/1,366/.994/.0205; b2f.25 (frozen v4.1) .256/+.041/1,369/.994/.0136; VAL b2f.25 .235/+.038/1,237/.994/.0133 (mean GMV $238m).
+v3 VAL (trial #1, b1 f1) was a 76%-gross book (gross .763, net +.001). Entry rate at b2 bounded 0.15-1.1%/day of unheld names.
+- Ruling: the T28 re-read of the two existing VAL NAV CSVs (book-level leverage diagnostics, nothing selected) is a disclosure re-read, not validation trial #3 — cost if wrong: one extra disclosed VAL read.
+- Ruling: banded share denominator = members (neutralize_used + neutralize_excluded), not neutralize_used (ratio > 1 at b2 otherwise) — cost if wrong: none (shares differ < .01).
+- Rulings R-1..R-7 (plan §9, verbatim, declared before any v5 TRAIN read):
+  - **Ruling R-1 (disclosure):** validation trial #2 (+0.641) was produced by a book with mean gross leverage 0.24 and net +0.04; it is recorded as-is
+    but is not a $1bn-deployment result. — The band `band_multiple/N_d` ≥ the position scale blocked entry. — cost if wrong: none (disclosure only).
+  - **Ruling R-2 (construction):** v5 replaces band+fraction with GP partial adjustment toward a gross-1 aim (θ) plus a dust band ≤ 0.1/N_d;
+    the `band_multiple` path stays for reproduction only and is refused under v5. — Handoff lever 1 grid {band 1,2} would re-test a frozen book. —
+    cost if wrong: one wasted C++ lane (~1 day).
+  - **Ruling R-3 (composition):** aim gain g_k = θ Σ_j (1−θ)^j ρ̄_k(j) on measured TRAIN rank-autocorrelation (lags 0..21, then 28..126 step 7,
+    linear interpolation), global normalization, θ = 0.05 fixed (= reference construction θ). The τ-mapped form is **not** run (saves a trial family). —
+    cost if wrong: aim weights mis-scaled for jump signals; bounded by g ∈ (0, 1].
+  - **Ruling R-4 (gate):** TRAIN acceptance is paired ΔSR(net) vs the reference cell (C_ew, θ .05, dust .1) with Memmel SE and a DSR at N = 10,
+    plus mechanics (gross ∈ [0.9, 1.05], |net| ≤ 0.02, τ limits). The owner's absolute "TRAIN net ≥ 1.0" rule governs only whether a freeze is proposed. —
+    cost if wrong: a freeze proposed on a lucky cell; the owner still rules.
+  - **Ruling R-5 (breadth):** no 10th theme in v5; v5.1 may add `opex_at` to `profitability_quality` only; industry momentum 1m, BAC, CHS are not built. —
+    cost if wrong: forgone breadth, revisitable under U2.
+  - **Ruling R-6 (delisting):** η by kind (M&A 0; performance/unknown −0.30/−0.55/−0.35) replaces η = 0 in S1/S2 **only after** T33a shows ≥ 80% of TRAIN
+    member terminations are classifiable; S3 keeps K = 1 adverse. — cost if wrong: a biased write-off haircut; the stress run bounds it.
+  - **Ruling R-7 (trial budget):** v5 TRAIN = 1 new composition + 10 construction cells (+1 delisting re-run, +v5.1 family if built). Anything else is a new
+    disclosed revision in `v4-prereg.md` before it runs.
+- Task T28: complete (explorer, read-only; no review needed — acceptance = numbers within ±0.01 of §0: met, max gap .005).
+- prereg commit SHA: 56e5b148 (docs(mega-alpha): v5 pre-registration and rulings (T29); prereg file + plan + briefs committed before any v5 TRAIN read). Task T29: complete.
+
+
 ## v5 sprint start (2026-09-27) — controller: Claude Fable 5.1 (SDD); plan docs/plans/2026-09-27-mega-alpha-v5-dag-plan.md (= spec)
 Base: pool-2 HEAD 41fb5e39 (branch feat/aes-codex-integration-20260925). No process running. Pools: 2 root; 3 (T30->T36),
 4 (T31), 5 (T33b->T32), 8 (T34b), 9 (T35 if needed) reset via `git checkout -B <branch> <pool-2 HEAD>` (leases alive under
