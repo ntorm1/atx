@@ -14,6 +14,7 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_ic_composition.cpp
     src/strategy_target_replay.cpp
     src/strategy_price_exposures.cpp
+    src/strategy_nav_replay.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
@@ -70,9 +71,9 @@ set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEAD
 # clang-cl /Ob0 leaves -fno-inline behind even after /O2 /Ob2; explicitly clear
 # it with the public clang driver option. LLVM ignores the inherited /RTC1.
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp
+    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
-    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp
+    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
