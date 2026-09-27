@@ -1,5 +1,15 @@
 # Active task: recent-data DSL ensemble
 
+## RESUMED 2026-09-27 16:21 — controller: Claude Opus 5.5 (SDD), goal prompt from the interim handoff §7
+Pool inspection: pool-3 clean, T36 committed 7c89bbd2 (code) + 0fd7f435 (report) on 98277c45 -> review-T36.diff packaged
+(base 98277c45, head 0fd7f435, report excluded from the diff), t36-review (Opus 5.5) dispatched. pool-8 clean, T34c committed
+b2c957ff (v51_train.sh, 287 lines) but NO report and no brief file (dispatch lost at the pause).
+- Ruling: task-T34c-brief.md reconstructed by the controller from the "T39 step 2a" ruling + plan T39 step 2 (committed script
+  predates it); a fresh Opus 5.5 implementer (t34c-v51-script-2, pool-8) verifies b2c957ff against it, fixes gaps in follow-up
+  commits and writes task-T34c-report.md; then scoped review as usual -- cost if wrong: the brief misstates an original
+  requirement the lost dispatch carried; bounded (the script is DRY-checked and reviewed before T39 runs it).
+
+
 ## PAUSED 2026-09-27 at owner request — interim handoff
 docs/plans/2026-09-27-mega-alpha-v5-interim-handoff.md (state, live children, exact next steps T36 review -> T37 -> T38 grid ->
 T39 v5.1 -> T40 -> T41 -> T42, rulings, goal prompt). Live children at pause: t36-rate (pool-3, T36, tree dirty, no report yet),
