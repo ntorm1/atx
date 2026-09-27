@@ -100,6 +100,10 @@ Variants (:data:`VARIANTS`)
     residual of ``rank_normal`` on ln(verified market cap) per formation
     (:func:`atx_db.factors.cross_section.neutralize`), then z-scored. Not produced for
     size-class features (a residual on their own size is identically zero).
+``beta_neutral`` (tier-1 v2 node 4.1; computed at evaluation, never stored)
+    the same rule with the market beta ``beta_ew_252d`` as the covariate
+    (:func:`beta_neutralize`); reported by the evaluation next to the variant it
+    residualizes, outside every testing family.
 
 A price-line feature's neutral variants need the covariate of the unlinked lines
 too; they have no owner (no industry, no verified size), so where they are more
@@ -1671,6 +1675,74 @@ def standardize_frame(frame: pd.DataFrame, *, feature_id: str, orientation: int,
     return result_frame, stats
 
 
+#: Tier-1 v2 node 4.1: the beta-neutral variant's covariate (the catalog's EW-market beta over 252 sessions).
+BETA_NEUTRAL_COVARIATE = "beta_ew_252d"
+BETA_NEUTRAL = "beta_neutral"
+
+
+def beta_neutralize(group: np.ndarray, values: np.ndarray, beta: np.ndarray, n_groups: int, *,
+                    min_names: int = StandardizationPolicy.min_names,
+                    min_coverage: float = StandardizationPolicy.neutral_min_coverage,
+                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Beta-neutral variant (node 4.1): per formation, the residual of ``values`` on ``[1, beta]``, z-scored.
+
+    The ``size_neutral`` rule with the market beta (:data:`BETA_NEUTRAL_COVARIATE`, raw, unoriented) as the
+    covariate: within each group (formation) the OLS residual of the value on an intercept and beta
+    (:func:`atx_db.factors.cross_section.neutralize` with one covariate), then the per-formation sample
+    z-score (ddof 1, :func:`atx_db.factors.cross_section.zscore`), vectorized over all formations. A
+    formation whose names with a finite beta are fewer than ``min_names`` or cover less than
+    ``min_coverage`` of its valued names is ``thin_covariate_coverage``: every value there is NaN (never a
+    silently selected subset). A formation whose beta is constant has a zero slope (the residual is the
+    centered value). ``values`` NaN rows stay NaN.
+
+    Returns the neutral values (aligned with the inputs), and per group the names with a finite value and
+    beta and their share of the valued names (NaN without values).
+    """
+    raw_group = np.asarray(group)
+    if (raw_group.ndim != 1 or not np.isfinite(raw_group).all()
+            or not np.equal(raw_group, np.floor(raw_group)).all()):
+        raise ValueError("beta-neutral groups must be a one-dimensional integer array")
+    group = raw_group.astype(np.int64)
+    values = np.asarray(values, dtype=float)
+    beta = np.asarray(beta, dtype=float)
+    if (values.shape != group.shape or beta.shape != group.shape or n_groups < 1
+            or (group < 0).any() or (group >= n_groups).any()
+            or min_names < 2 or not 0 <= min_coverage <= 1):
+        raise ValueError("invalid beta-neutral arrays, group range or coverage policy")
+    out = np.full(len(values), np.nan)
+    valued = np.isfinite(values)
+    both = valued & np.isfinite(beta)
+    names = np.bincount(group[valued], minlength=n_groups)[:n_groups].astype(float)
+    covered = np.bincount(group[both], minlength=n_groups)[:n_groups].astype(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        share = np.where(names > 0, covered / np.where(names > 0, names, 1.0), np.nan)
+    ok_group = (covered >= min_names) & (share >= min_coverage)
+    rows = both & ok_group[group]
+    if not rows.any():
+        return out, covered.astype(np.int64), share
+    g, y, x = group[rows], values[rows], beta[rows]
+    n = np.bincount(g, minlength=n_groups)[:n_groups].astype(float)
+    safe = np.where(n > 0, n, 1.0)
+    y_c = y - (np.bincount(g, weights=y, minlength=n_groups)[:n_groups] / safe)[g]
+    x_c = x - (np.bincount(g, weights=x, minlength=n_groups)[:n_groups] / safe)[g]
+    sxx = np.bincount(g, weights=x_c * x_c, minlength=n_groups)[:n_groups]
+    sxy = np.bincount(g, weights=x_c * y_c, minlength=n_groups)[:n_groups]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        slope = np.where(sxx > 0, sxy / np.where(sxx > 0, sxx, 1.0), 0.0)
+    residual = y_c - slope[g] * x_c
+    ss = np.bincount(g, weights=residual * residual, minlength=n_groups)[:n_groups]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sd = np.sqrt(ss / np.where(n > 1, n - 1.0, np.nan))
+    source_ss = np.bincount(g, weights=y_c * y_c, minlength=n_groups)[:n_groups]
+    # A feature identical to beta has only numerical solve noise, not a tradable residual.
+    unit = np.isfinite(sd) & (ss > np.finfo(float).eps * source_ss)
+    keep = unit[g]
+    standardized = np.full(len(residual), np.nan)
+    standardized[keep] = residual[keep] / sd[g][keep]
+    out[np.flatnonzero(rows)] = standardized
+    return out, covered.astype(np.int64), share
+
+
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
@@ -3062,6 +3134,8 @@ def prune_feature_versions(store: ResearchStore, *, versions: Sequence[str] | No
 
 
 __all__ = [
+    "BETA_NEUTRAL",
+    "BETA_NEUTRAL_COVARIATE",
     "CONDITIONING_LINKED_ONLY",
     "DATE_DEGENERATE",
     "DATE_EMPTY",
@@ -3111,6 +3185,7 @@ __all__ = [
     "FeatureVersionResult",
     "FeatureVersionValidation",
     "StandardizationPolicy",
+    "beta_neutralize",
     "build_feature_version",
     "ensure_feature_schema",
     "prune_feature_versions",
