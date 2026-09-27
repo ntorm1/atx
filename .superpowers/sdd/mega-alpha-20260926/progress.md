@@ -1,5 +1,24 @@
 # Active task: recent-data DSL ensemble
 
+## T38 steps 4-5 — L re-run (+2 construction) and 10-cell nav_summ (DSR N = 10) — 2026-09-27
+T34c cherry-picked into pool-2 (6c77b4e9, e80b313d, 773da185) before these runs.
+L = 1.279 (receipts mega-nav-v5-{ew,aim}-t.05-d.1-fixed-L1.279-run, completed 40 s / 338 MiB each):
+| ew t.05 d.1 fixed L1.279 | +.712 | 1.167 | 1.40 | gl 1.003 | abs net .015 | tau .0438/.0609 | held .984 | NR .845 | dSR -.030 (.013) [-.054,-.007] |
+| aim t.05 d.1 fixed L1.279 | +.607 | 1.022 | 1.18 | gl 1.073 | abs net .016 | tau .0371/.0569 | held .984 | NR .872 | dSR -.135 (.112) [-.356,+.097] |
+Leverage scales vol with mu, and S2 costs grow with $ traded, so net SR falls slightly (ew -.030, significant: rho 1.000).
+Step 5: nav_summ --weights W_ew 9a9c949a --weights W_aim 54f823c1 --reference REF --dsr-n 10 over the 10 grid cells ->
+build-equity/mega-nav-v5-grid-summ-n10.{txt,json}. V[SR_n] (cross-cell, per session) 3.157e-05 -> SR0 .00885/session (.140 ann).
+DSR (N = 10): ew REF .843, t.03 .822, t.08 .818, d0 .836, per-name .753; aim t.05 .788, t.03 .800, t.08 .766, d0 .788,
+per-name .699. No cell reaches DSR .95; no cell has TRAIN net >= 1.0.
+- Ruling (declared before T39 runs): v5.1 NAV = the R5' reference cell only (ew-theme-v1 composition fitted on library v5.1,
+  theta .05, dust .1, fixed, L 1) = construction +1, as the prereg ("reference cell only") and the goal prompt state; both
+  fits run (composition +2); the w pass runs for ew only (the aim v5.1 combined has no pre-registered NAV cell) -- cost if
+  wrong: an aim-on-v5.1 read is forgone; it can be added later as a disclosed +1.
+- Ruling: T40 DSR uses N = 13 (10 grid + 2 L + 1 v5.1) with V[SR_n] across those 13 cells (plan T40 "12/13 if extra cells
+  ran"); the N = 10 table above is the step-5 deliverable -- cost if wrong: DSR slightly optimistic/pessimistic; no gate
+  depends on it (freeze needs net >= 1.0).
+
+
 ## v5 TRAIN grid (T38 step 3) — 10/10 receipts completed — 2026-09-27 — construction trials +10
 NAV exe fb2d3e94 (v5-1); all runs via v5_train.sh nav, 28-45 s, 338-339 MiB each; receipts build-equity/mega-nav-v5-<C>-<cell>-run.
 Primary modeled-1bn-stale5-v1+swap-fin-v1 (S2), TRAIN 2020-2022, $1bn, cadence 1, aim-partial-v5, neutral price-risk-v1.
