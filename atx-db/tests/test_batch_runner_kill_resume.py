@@ -215,12 +215,9 @@ def test_bars_unit_correction_kill_resume_matches_clean_run(tmp_path: Path) -> N
     from atx_db.connection import DuckDBStore
 
     seed_db = tmp_path / "kr_seed.duckdb"
-    store = DuckDBStore(seed_db, memory_limit="256MB", threads=1)
-    try:
+    with DuckDBStore(seed_db, memory_limit="256MB", threads=1) as store:
         store.initialize()
         store.con.execute("CHECKPOINT")
-    finally:
-        store.close()
     counts, sample = _seed(seed_db, tmp_path)
     assert all(counts[run] == values["unique_key_rows"] for run, values in sample.items())
     assert 1_500_000 <= counts[LOAD_RUN] <= 2_600_000, counts
