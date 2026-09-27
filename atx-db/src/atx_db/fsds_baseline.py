@@ -35,7 +35,8 @@ Pipeline (bounded; nothing here opens the governed warehouse by itself):
 
 FSDS ``ddate``/``period`` are rounded to the nearest month end; the comparison aligns them to the
 warehouse's exact ``period_end`` (nearest within 15 days) before scoring. FSDS ``accepted`` is the
-EDGAR acceptance timestamp as published (not a warehouse PIT clock); it only orders FSDS vintages.
+EDGAR acceptance timestamp as published -- America/New_York wall time without a zone (not a warehouse
+PIT clock); in the P12 subset DB it only orders FSDS vintages.
 
 Full history (node X.4; user gate U3 granted, rulings C-42 / C-76; lifts the RX10 eight-zip cap):
 
@@ -44,11 +45,16 @@ Full history (node X.4; user gate U3 granted, rulings C-42 / C-76; lifts the RX1
    (retained zips are re-hashed and reused), through ``sec_http`` with at most two attempts per
    request, so this job alone can never trip the host SEC block (5 consecutive episodes).
 7. :func:`stage_fsds_history` -- streams each quarter's ``sub/num/tag/pre`` out of its zip into
-   ``data/staging/fsds/<table>/<quarter>.parquet`` (DuckDB 256MB / 1 thread, no warehouse), every
-   source column kept with strict typed casts (``accepted`` TIMESTAMP, custom tags, segments);
-   resumable per quarter, the staging manifest being the commit record.
-   :func:`verify_fsds_staging` re-hashes the files and proves one file (and one quarter value) per
-   quarter and table, with row counts equal to the manifest.
+   ``data/staging/fsds-v2/<table>/<quarter>.parquet`` (DuckDB 256MB / 1 thread, no warehouse), every
+   source column kept with strict typed casts (custom tags, segments, coreg all kept); resumable per
+   quarter, the staging manifest being the commit record. Stager v2 (X.4 fix round 1): FSDS
+   ``accepted`` is EDGAR's America/New_York wall clock published without a zone, so it is staged as
+   ``accepted_et_naive`` (as published) plus ``accepted_utc`` (TIMESTAMPTZ, DST-aware conversion) --
+   see :data:`ACCEPTED_CLOCK`; ``num.value`` is exact ``DECIMAL(28,4)`` (:data:`VALUE_TYPE`). Each file
+   carries Parquet key/value metadata (stager version, quarter, zip sha256, clock/value notes).
+   :func:`verify_fsds_staging` proves completeness against the SEC index, re-hashes the files, proves
+   one file (and one quarter value) per quarter and table with row counts equal to the manifest, the
+   schema and metadata of every file, and the recorded DST and NUM-orphan findings.
 
 Run ``python -m atx_db.fsds_baseline history-fetch | stage | verify`` (see :func:`main`).
 """
@@ -65,7 +71,8 @@ import shutil
 import time
 import uuid
 import zipfile
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -81,7 +88,6 @@ from .sec_http import (
     APPROVED_SEC_USER_AGENT,
     SecBlockedError,
     SecRateLimiter,
-    _exclusive_file_lock,
     default_sec_limiter,
     read_bounded_response,
     sec_session,
@@ -351,6 +357,53 @@ def _write_manifest(cache_dir: Path, manifest: Mapping[str, Any]) -> None:
     _write_json_atomic(cache_dir / MANIFEST_NAME, manifest)
 
 
+@contextmanager
+def _single_writer_lock(path: Path, *, timeout_s: float) -> Iterator[None]:
+    """Hold an OS byte-range lock on ``path``; the OS releases it if the holder dies.
+
+    Local to this module (X.4 review M3): the fetch and stage locks must not depend on ``sec_http`` internals.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    deadline = time.monotonic() + timeout_s
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                os.lseek(fd, 0, os.SEEK_SET)
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"could not lock {path} within {timeout_s:.1f}s") from None
+                    time.sleep(0.1)
+            try:
+                yield
+            finally:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"could not lock {path} within {timeout_s:.1f}s") from None
+                    time.sleep(0.1)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def cached_fsds_archives(cache_dir: Path | None = None, quarters: Iterable[str] | None = None) -> list[FsdsArchive]:
     """Return manifest-recorded zips (hash-verified) without any network access."""
 
@@ -369,6 +422,20 @@ def cached_fsds_archives(cache_dir: Path | None = None, quarters: Iterable[str] 
             raise RuntimeError(f"{path} sha256 {digest} != recorded {entry['sha256']}")
         out.append(FsdsArchive(quarter, path, digest, size, entry["url"], False))
     return out
+
+
+def _receipt_sidecar(zip_path: Path) -> Path:
+    """``.<quarter>.zip.receipt.json``: a download's receipt, written before the zip is moved into place."""
+
+    return zip_path.with_name(f".{zip_path.name}.receipt.json")
+
+
+def _read_receipt_sidecar(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def fetch_fsds_quarters(
@@ -405,15 +472,22 @@ def fetch_fsds_quarters(
         path = cache_dir / f"{quarter}.zip"
         url = FSDS_URL_TEMPLATE.format(quarter=quarter)
         entry = recorded.get(quarter)
+        sidecar = _receipt_sidecar(path)
         if path.is_file():
             digest, size = _sha256_file(path)
             if entry is None:
-                entry = {"quarter": quarter, "url": url, "sha256": digest, "bytes": size,
-                         "fetched_at_utc": None, "note": "adopted pre-existing file; not downloaded"}
+                pending = _read_receipt_sidecar(sidecar)
+                if pending is not None and pending.get("sha256") == digest and pending.get("bytes") == size:
+                    # Killed between the zip's replace and the manifest write: the receipt survived beside it.
+                    entry = {**pending, "note": "receipt recovered from its pre-replace sidecar"}
+                else:
+                    entry = {"quarter": quarter, "url": url, "sha256": digest, "bytes": size,
+                             "fetched_at_utc": None, "note": "adopted pre-existing file; not downloaded"}
                 recorded[quarter] = entry
                 _write_manifest(cache_dir, manifest)
             elif entry["sha256"] != digest:
                 raise RuntimeError(f"{path} sha256 {digest} != recorded {entry['sha256']}; refusing to re-download")
+            sidecar.unlink(missing_ok=True)
             results.append(FsdsArchive(quarter, path, digest, size, url, False))
             if progress is not None:
                 progress({"quarter": quarter, "fetch": "reused", "sha256": digest, "bytes": size})
@@ -449,23 +523,28 @@ def fetch_fsds_quarters(
             missing = {"sub.txt", "num.txt", "tag.txt"} - set(members)
             if missing:
                 raise RuntimeError(f"{url} lacks FSDS members {sorted(missing)}")
+            receipt = {
+                "quarter": quarter,
+                "url": url,
+                "sha256": digest.hexdigest(),
+                "bytes": size,
+                "requested_at_utc": requested_at,
+                "fetched_at_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+                "elapsed_s": round(time.monotonic() - started, 3),
+                "user_agent": SEC_USER_AGENT,
+                "http_status": status,
+                "last_modified": last_modified,
+                "members": members,
+            }
+            # The receipt is durable before the zip appears (X.4 review M6): a kill between the replace and the
+            # manifest write leaves the sidecar, and the next run adopts the zip with its full receipt.
+            _write_json_atomic(sidecar, receipt)
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
-        recorded[quarter] = {
-            "quarter": quarter,
-            "url": url,
-            "sha256": digest.hexdigest(),
-            "bytes": size,
-            "requested_at_utc": requested_at,
-            "fetched_at_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "user_agent": SEC_USER_AGENT,
-            "http_status": status,
-            "last_modified": last_modified,
-            "members": members,
-        }
+        recorded[quarter] = receipt
         _write_manifest(cache_dir, manifest)
+        sidecar.unlink(missing_ok=True)
         if progress is not None:
             progress({"quarter": quarter, "fetch": "downloaded", "sha256": digest.hexdigest(), "bytes": size,
                       "elapsed_s": recorded[quarter]["elapsed_s"]})
@@ -1700,21 +1779,43 @@ FSDS_HISTORY_FIRST_QUARTER = "2009q2"
 FSDS_HISTORY_MAX_ATTEMPTS = 2
 FSDS_INDEX_MAX_BYTES = 8 * 1024 * 1024
 FETCH_LOCK_NAME = ".fsds-fetch.lock"
-STAGING_DIRNAME = "fsds"
+#: One staging directory per stager version, never re-staged in place over another version: v1
+#: (``x4_fsds_stage_v1``: naive ``accepted``, DOUBLE ``value``) stays in ``data/staging/fsds`` until reclaimed.
+STAGING_DIRNAME = "fsds-v2"
 STAGING_MANIFEST_NAME = "fsds-staging-manifest.json"
+STAGING_MANIFEST_SCHEMA = "x4_fsds_staging_manifest_v2"
 STAGING_LOCK_NAME = ".fsds-stage.lock"
 STAGING_WORK_DIRNAME = ".work"
-STAGER_VERSION = "x4_fsds_stage_v1"
+#: v2 (X.4 fix round 1): ``accepted`` -> ``accepted_et_naive`` + ``accepted_utc``; ``value`` DECIMAL(28,4) exact;
+#: Parquet key/value metadata; source order no longer forced (``preserve_insertion_order`` false, 1 thread).
+STAGER_VERSION = "x4_fsds_stage_v2"
 STAGE_MEMORY_LIMIT = "256MB"
 STAGE_THREADS = 1
 STAGE_ROW_GROUP_SIZE = 122_880
 FSDS_TABLES: tuple[str, ...] = ("sub", "num", "tag", "pre")
+#: FSDS ``accepted`` is EDGAR's acceptance wall clock in America/New_York, published without a zone (measured over
+#: 433,717 submissions: acceptances after 17:30 roll ``filed`` to the next day -- EDGAR's 17:30 ET cutoff).
+FSDS_ACCEPTED_ZONE = "America/New_York"
+ACCEPTED_CLOCK = (
+    "sub.accepted_utc (TIMESTAMP WITH TIME ZONE; Parquet isAdjustedToUTC=true) is the PIT acceptance instant: FSDS "
+    "'accepted' read as America/New_York wall time and converted DST-aware (DuckDB ICU timezone()) to UTC. "
+    "sub.accepted_et_naive (TIMESTAMP, no zone) is FSDS 'accepted' exactly as published: EDGAR's America/New_York "
+    "wall clock; never compare it with a UTC clock. Nonexistent/ambiguous local times are counted per quarter "
+    "(accepted_dst in the staging manifest)."
+)
+VALUE_TYPE = (
+    "num.value = DECIMAL(28,4), exact: the FSDS NUMERIC(28,4) text (at most 24 integer and 4 fraction digits); "
+    "any other text fails the quarter, nothing is rounded"
+)
+#: Plain decimal text with at most 24 integer and 4 fraction digits: exactly representable as DECIMAL(28,4).
+_DECIMAL_28_4_TEXT = r"-?([0-9]{1,24}(\.[0-9]{0,4})?|\.[0-9]{1,4})"
+NUM_ORPHAN_STATUS_UNRECOVERABLE = "unrecoverable from FSDS: no SUB row in any staged quarter (as published by SEC)"
 
 # Canonical columns per table in the FSDS readme order. A source column not listed is kept as VARCHAR after them
 # (``extra_columns`` in the manifest); a listed column absent from a quarter is a typed NULL (``missing_columns``).
 # Kinds: None = VARCHAR as published (empty -> NULL, never trimmed); cik = 10-digit zero-padded text; date =
-# yyyymmdd; the rest are strict casts, so a malformed value fails the quarter instead of becoming NULL.
-# ``accepted`` is the EDGAR acceptance datetime exactly as FSDS publishes it (no timezone conversion).
+# yyyymmdd; accepted = two columns (see ACCEPTED_CLOCK); decimal = exact DECIMAL(28,4); the rest are strict casts,
+# so a malformed value fails the quarter instead of becoming NULL.
 _STAGE_SCHEMA: dict[str, tuple[tuple[str, str | None], ...]] = {
     "sub": (
         ("adsh", None), ("cik", "cik"), ("name", None), ("sic", None), ("countryba", None), ("stprba", None),
@@ -1722,12 +1823,12 @@ _STAGE_SCHEMA: dict[str, tuple[tuple[str, str | None], ...]] = {
         ("stprma", None), ("cityma", None), ("zipma", None), ("mas1", None), ("mas2", None), ("countryinc", None),
         ("stprinc", None), ("ein", None), ("former", None), ("changed", "date"), ("afs", None), ("wksi", "bool"),
         ("fye", None), ("form", None), ("period", "date"), ("fy", "int"), ("fp", None), ("filed", "date"),
-        ("accepted", "timestamp"), ("prevrpt", "bool"), ("detail", "bool"), ("instance", None), ("nciks", "int"),
+        ("accepted", "accepted"), ("prevrpt", "bool"), ("detail", "bool"), ("instance", None), ("nciks", "int"),
         ("aciks", None),
     ),
     "num": (
         ("adsh", None), ("tag", None), ("version", None), ("ddate", "date"), ("qtrs", "int"), ("uom", None),
-        ("segments", None), ("coreg", None), ("value", "double"), ("footnote", None),
+        ("segments", None), ("coreg", None), ("value", "decimal"), ("footnote", None),
     ),
     "tag": (
         ("tag", None), ("version", None), ("custom", "bool"), ("abstract", "bool"), ("datatype", None),
@@ -1745,10 +1846,28 @@ _STAGE_REQUIRED: dict[str, frozenset[str]] = {
     "pre": frozenset({"adsh", "report", "line", "tag", "version"}),
 }
 _KIND_SQL: dict[str | None, str] = {
-    None: "VARCHAR", "cik": "VARCHAR", "date": "DATE", "timestamp": "TIMESTAMP", "int": "INTEGER",
-    "double": "DOUBLE", "bool": "BOOLEAN",
+    None: "VARCHAR", "cik": "VARCHAR", "date": "DATE", "int": "INTEGER", "decimal": "DECIMAL(28,4)",
+    "bool": "BOOLEAN", "timestamp": "TIMESTAMP",
+}
+#: Parquet key/value metadata per table (DuckDB ``KV_METADATA``), beside the stager version, table, quarter and zip
+#: sha256 that every file carries.
+_TABLE_KV_METADATA: dict[str, dict[str, str]] = {
+    "sub": {"atx_accepted_zone": FSDS_ACCEPTED_ZONE, "atx_accepted_clock": ACCEPTED_CLOCK},
+    "num": {"atx_value_type": VALUE_TYPE},
 }
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _staged_columns(table: str) -> list[tuple[str, str]]:
+    """(name, DuckDB type) of every staged column of ``table``, ``quarter`` first: the manifest's output schema."""
+
+    out = [("quarter", "VARCHAR")]
+    for name, kind in _STAGE_SCHEMA[table]:
+        if kind == "accepted":
+            out += [(f"{name}_et_naive", "TIMESTAMP"), (f"{name}_utc", "TIMESTAMP WITH TIME ZONE")]
+        else:
+            out.append((name, _KIND_SQL[kind]))
+    return out
 
 
 def _quarter_key(quarter: str) -> tuple[int, int]:
@@ -1838,7 +1957,7 @@ def fetch_fsds_history(
     cache_dir = Path(cache_dir or default_cache_dir())
     cache_dir.mkdir(parents=True, exist_ok=True)
     first = _validate_quarter(first)
-    with _exclusive_file_lock(cache_dir / FETCH_LOCK_NAME, timeout_s=1.0):
+    with _single_writer_lock(cache_dir / FETCH_LOCK_NAME, timeout_s=1.0):
         stale_parts = sorted(p.name for p in cache_dir.glob(".*.zip.*.part"))
         for name in stale_parts:
             (cache_dir / name).unlink(missing_ok=True)
@@ -1880,7 +1999,7 @@ def default_staging_dir() -> Path:
 def _read_staging_manifest(staging_dir: Path) -> dict[str, Any]:
     path = Path(staging_dir) / STAGING_MANIFEST_NAME
     if not path.is_file():
-        return {"schema": "x4_fsds_staging_manifest_v1", "quarters": {}}
+        return {"schema": STAGING_MANIFEST_SCHEMA, "quarters": {}}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -1917,7 +2036,13 @@ def _extract_counting(archive: zipfile.ZipFile, member: str, target: Path) -> tu
     return size, lines
 
 
-def _stage_expr(name: str, kind: str | None, present: bool) -> str:
+def _sql_text(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _stage_scalar(name: str, kind: str | None, present: bool) -> str:
+    """The typed SQL expression of one source column (a typed NULL when the quarter lacks it)."""
+
     sql_type = _KIND_SQL[kind]
     if not present:
         return f"CAST(NULL AS {sql_type})"
@@ -1929,10 +2054,57 @@ def _stage_expr(name: str, kind: str | None, present: bool) -> str:
         return f"lpad(CAST(CAST({value} AS BIGINT) AS VARCHAR), 10, '0')"
     if kind == "date":
         return f"CAST(strptime({value}, '%Y%m%d') AS DATE)"
+    if kind == "decimal":
+        # A plain CAST to DECIMAL would round a fifth fraction digit away; only exactly representable text passes.
+        # Text of <= 14 characters has <= 14 integer digits, so it fits DECIMAL(18,4) (int64) and widens exactly;
+        # DuckDB's VARCHAR -> DECIMAL(28,4) (int128) parse is ~7x slower (measured on 2013q1 num, 3.16M rows).
+        return (
+            f"CASE WHEN {value} IS NULL THEN NULL "
+            f"WHEN NOT regexp_full_match({value}, {_sql_text(_DECIMAL_28_4_TEXT)}) "
+            f"THEN error('FSDS {name} is not exact {sql_type} text: ' || {value}) "
+            f"WHEN length({value}) <= 14 THEN CAST(CAST({value} AS DECIMAL(18,4)) AS {sql_type}) "
+            f"ELSE CAST({value} AS {sql_type}) END"
+        )
     return f"CAST({value} AS {sql_type})"
 
 
-def _stage_table(con: duckdb.DuckDBPyConnection, quarter: str, table: str, source_path: Path, target: Path) -> dict[str, Any]:
+def _stage_columns(name: str, kind: str | None, present: bool) -> list[tuple[str, str]]:
+    """(SQL expression, staged column name) pairs for one source column; see :func:`_staged_columns`."""
+
+    if kind == "accepted":
+        naive = _stage_scalar(name, "timestamp", present)
+        return [(naive, f"{name}_et_naive"), (f"timezone({_sql_text(FSDS_ACCEPTED_ZONE)}, {naive})", f"{name}_utc")]
+    return [(_stage_scalar(name, kind, present), name)]
+
+
+def _accepted_dst_findings(con: duckdb.DuckDBPyConnection, sub_files: str) -> dict[str, Any]:
+    """Acceptance wall times that do not name exactly one instant in America/New_York.
+
+    ``nonexistent``: the wall time falls in a spring-forward gap (converting ``accepted_utc`` back does not give the
+    published wall time). ``ambiguous``: the wall time falls in a fall-back overlap (the instant one hour earlier or
+    later shows the same wall time); ICU picked one of the two. EDGAR accepts from 06:00 ET, so both are expected 0.
+    """
+
+    zone = _sql_text(FSDS_ACCEPTED_ZONE)
+    gap = f"timezone({zone}, accepted_utc) <> accepted_et_naive"
+    overlap = (
+        f"(timezone({zone}, accepted_utc + INTERVAL 1 HOUR) = accepted_et_naive "
+        f"OR timezone({zone}, accepted_utc - INTERVAL 1 HOUR) = accepted_et_naive)"
+    )
+    nonexistent, ambiguous, null_rows, flagged = con.execute(
+        f"SELECT count(*) FILTER (WHERE {gap}), count(*) FILTER (WHERE {overlap}), "
+        f"count(*) FILTER (WHERE accepted_utc IS NULL), "
+        f"coalesce(list(adsh ORDER BY adsh) FILTER (WHERE {gap} OR {overlap}), []) "
+        f"FROM read_parquet({_sql_text(sub_files)})"
+    ).fetchone()
+    return {"nonexistent": int(nonexistent), "ambiguous": int(ambiguous), "accepted_null_rows": int(null_rows),
+            "adsh": list(flagged)}
+
+
+def _stage_table(
+    con: duckdb.DuckDBPyConnection, quarter: str, table: str, source_path: Path, target: Path,
+    kv_metadata: Mapping[str, str],
+) -> dict[str, Any]:
     source, header = _tsv_source(source_path)
     if len(set(header)) != len(header) or not all(_IDENTIFIER.match(name) for name in header):
         raise ValueError(f"{quarter} {table}.txt has an unexpected header {header!r}")
@@ -1943,15 +2115,20 @@ def _stage_table(con: duckdb.DuckDBPyConnection, quarter: str, table: str, sourc
     known = {name for name, _ in schema}
     extra = [name for name in header if name not in known]
     parts = [f"'{_validate_quarter(quarter)}' AS quarter"]
-    parts += [f'{_stage_expr(name, kind, name in header)} AS "{name}"' for name, kind in schema]
+    for name, kind in schema:
+        parts += [f'{expr} AS "{alias}"' for expr, alias in _stage_columns(name, kind, name in header)]
     parts += [f"nullif(\"{name}\", '') AS \"{name}\"" for name in extra]
     literal = target.resolve().as_posix().replace("'", "''")
+    kv = {**kv_metadata, "atx_table": table, **_TABLE_KV_METADATA.get(table, {})}
+    if not all(_IDENTIFIER.match(key) for key in kv):
+        raise ValueError(f"Parquet metadata keys must be identifiers: {sorted(kv)}")
+    kv_sql = ", ".join(f"{key}: {_sql_text(value)}" for key, value in kv.items())
     rows = con.execute(
         f"COPY (SELECT {', '.join(parts)} FROM {source}) TO '{literal}' "
-        f"(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE {STAGE_ROW_GROUP_SIZE})"
+        f"(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE {STAGE_ROW_GROUP_SIZE}, KV_METADATA {{{kv_sql}}})"
     ).fetchone()[0]
     digest, size = _sha256_file(target)
-    return {
+    info: dict[str, Any] = {
         "rows": int(rows),
         "parquet_bytes": size,
         "parquet_sha256": digest,
@@ -1959,6 +2136,9 @@ def _stage_table(con: duckdb.DuckDBPyConnection, quarter: str, table: str, sourc
         "extra_columns": extra,
         "missing_columns": [name for name, _ in schema if name not in header],
     }
+    if table == "sub":
+        info["accepted_dst"] = _accepted_dst_findings(con, target.resolve().as_posix())
+    return info
 
 
 def _stage_quarter(
@@ -1977,9 +2157,12 @@ def _stage_quarter(
     try:
         config = bounded_config(STAGE_MEMORY_LIMIT, STAGE_THREADS, temp_directory=work / "duckdb_tmp",
                                 max_temp_directory_size="8GB")
-        con = duckdb.connect(":memory:", config=config)
+        con = duckdb.connect(":memory:", config=config)  # preserve_insertion_order false (doctrine), 1 thread
+        kv_metadata = {"atx_stager_version": STAGER_VERSION, "atx_quarter": quarter, "atx_zip_sha256": digest}
         try:
-            con.execute("SET preserve_insertion_order=true")  # rows keep the source file order
+            # accepted_utc is a TIMESTAMPTZ built with an explicit zone; the session zone only fixes the
+            # INTERVAL arithmetic of the DST findings (absolute hours in UTC).
+            con.execute("SET TimeZone='UTC'")
             with zipfile.ZipFile(zip_path) as zipped:
                 names = set(zipped.namelist())
                 for table in FSDS_TABLES:
@@ -1988,7 +2171,7 @@ def _stage_quarter(
                         raise RuntimeError(f"{zip_path} lacks {member}; members={sorted(names)}")
                     source_path = work / member
                     source_bytes, source_lines = _extract_counting(zipped, member, source_path)
-                    info = _stage_table(con, quarter, table, source_path, work / f"{table}.parquet")
+                    info = _stage_table(con, quarter, table, source_path, work / f"{table}.parquet", kv_metadata)
                     source_path.unlink()
                     info.update(
                         path=f"{table}/{quarter}.parquet",
@@ -2031,6 +2214,8 @@ def stage_fsds_history(
     quarter is (re)staged in ``.work/<quarter>-<id>`` and its files replace ``<table>/<quarter>.parquet`` before the
     manifest entry is written. A killed run leaves at most a work directory (removed at the next start) and replaced
     files of a quarter without an entry (re-staged at the next start); a quarter is never staged into two files.
+    A directory holding another stager version's quarters is refused (each version stages into its own directory).
+    The run ends with a cross-quarter pass recording the NUM accessions that have no SUB row in any quarter.
     """
 
     cache_dir = Path(cache_dir or default_cache_dir())
@@ -2045,13 +2230,27 @@ def stage_fsds_history(
     started = time.monotonic()
     staged: list[str] = []
     reused: list[str] = []
-    with _exclusive_file_lock(staging_dir / STAGING_LOCK_NAME, timeout_s=1.0):
+    with _single_writer_lock(staging_dir / STAGING_LOCK_NAME, timeout_s=1.0):
         work_root = staging_dir / STAGING_WORK_DIRNAME
         stale_work = sorted(p.name for p in work_root.iterdir()) if work_root.is_dir() else []
         if work_root.exists():
             shutil.rmtree(work_root)
         manifest = _read_staging_manifest(staging_dir)
         entries: dict[str, Any] = manifest.setdefault("quarters", {})
+        foreign = sorted({str(e.get("stager_version")) for e in entries.values()} - {STAGER_VERSION})
+        if foreign:
+            raise ValueError(
+                f"{staging_dir} holds quarters staged by {foreign}; stage {STAGER_VERSION} into its own directory "
+                f"(default {default_staging_dir()}), never in place over another version that readers may use"
+            )
+        manifest.update(
+            schema=STAGING_MANIFEST_SCHEMA,
+            stager_version=STAGER_VERSION,
+            accepted_zone=FSDS_ACCEPTED_ZONE,
+            accepted_clock=ACCEPTED_CLOCK,
+            value_type=VALUE_TYPE,
+            output_schema={table: [list(column) for column in _staged_columns(table)] for table in FSDS_TABLES},
+        )
         for quarter in wanted:
             if _staged_intact(entries.get(quarter), archives[quarter]["sha256"], staging_dir):
                 reused.append(quarter)
@@ -2060,52 +2259,180 @@ def stage_fsds_history(
                 continue
             entry = _stage_quarter(quarter, cache_dir, archives[quarter], staging_dir, work_root)
             entries[quarter] = entry
-            manifest["stager_version"] = STAGER_VERSION
             _write_json_atomic(staging_dir / STAGING_MANIFEST_NAME, manifest)
             staged.append(quarter)
             if progress is not None:
                 progress({"quarter": quarter, "stage": "staged", "elapsed_s": entry["elapsed_s"],
                           "rows": {t: entry["tables"][t]["rows"] for t in FSDS_TABLES},
-                          "parquet_bytes": sum(entry["tables"][t]["parquet_bytes"] for t in FSDS_TABLES)})
+                          "parquet_bytes": sum(entry["tables"][t]["parquet_bytes"] for t in FSDS_TABLES),
+                          "accepted_dst": entry["tables"]["sub"]["accepted_dst"]})
+        # Cross-quarter pass over everything staged: NUM accessions without a SUB row in ANY quarter (X.4 review
+        # M2). Staged unfiltered; recorded here so a consumer's inner join to sub drops them visibly, not silently.
+        orphan_started = time.monotonic()
+        con = _staging_reader(work_root / f"orphans-{uuid.uuid4().hex[:8]}")
+        try:
+            orphans = _num_orphan_accessions(con, staging_dir) if entries else []
+        finally:
+            con.close()
+        manifest["num_orphan_accessions"] = orphans
+        manifest["num_orphan_facts"] = sum(o["num_rows"] for o in orphans)
+        _write_json_atomic(staging_dir / STAGING_MANIFEST_NAME, manifest)
         shutil.rmtree(work_root, ignore_errors=True)
     return {
         "staging_dir": str(staging_dir),
+        "stager_version": STAGER_VERSION,
         "quarters_requested": len(wanted),
         "staged_now": staged,
         "reused": reused,
         "stale_work_dirs_removed": stale_work,
+        "num_orphan_accessions": orphans,
+        "orphan_pass_s": round(time.monotonic() - orphan_started, 3),
         "elapsed_s": round(time.monotonic() - started, 3),
     }
+
+
+def _staging_reader(spill: Path) -> duckdb.DuckDBPyConnection:
+    """A bounded (256MB, 1 thread) in-memory DuckDB with a private spill dir, session zone UTC."""
+
+    con = duckdb.connect(":memory:", config=bounded_config(STAGE_MEMORY_LIMIT, STAGE_THREADS, temp_directory=spill))
+    con.execute("SET TimeZone='UTC'")
+    return con
+
+
+def _table_files(staging_dir: Path, table: str) -> str:
+    return (Path(staging_dir) / table).resolve().as_posix() + "/*.parquet"
+
+
+def _num_orphan_accessions(con: duckdb.DuckDBPyConnection, staging_dir: Path) -> list[dict[str, Any]]:
+    """NUM accessions with no SUB row in any staged quarter, with their NUM and PRE row counts."""
+
+    sub, num, pre = (_sql_text(_table_files(staging_dir, t)) for t in ("sub", "num", "pre"))
+    rows = con.execute(
+        f"WITH subs AS (SELECT DISTINCT adsh FROM read_parquet({sub})), "
+        f"orphan AS (SELECT n.adsh, n.quarter, count(*) AS num_rows FROM read_parquet({num}) n "
+        f"ANTI JOIN subs s ON n.adsh = s.adsh GROUP BY ALL), "
+        f"pre_rows AS (SELECT p.adsh, count(*) AS pre_rows FROM read_parquet({pre}) p "
+        f"SEMI JOIN orphan o ON p.adsh = o.adsh GROUP BY ALL) "
+        f"SELECT o.adsh, o.quarter, o.num_rows, coalesce(r.pre_rows, 0) FROM orphan o "
+        f"LEFT JOIN pre_rows r ON r.adsh = o.adsh ORDER BY o.quarter, o.adsh"
+    ).fetchall()
+    return [{"adsh": adsh, "quarter": quarter, "num_rows": int(num_rows), "pre_rows": int(pre_rows),
+             "status": NUM_ORPHAN_STATUS_UNRECOVERABLE} for adsh, quarter, num_rows, pre_rows in rows]
+
+
+def _verify_completeness(fetch_manifest: Mapping[str, Any], entries: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Every quarter the SEC index lists from :data:`FSDS_HISTORY_FIRST_QUARTER` on is fetched and staged by this
+    stager version, and every staged table parsed each source line into one row with the full column set."""
+
+    archives: dict[str, Any] = fetch_manifest.get("archives", {})
+    listed: list[str] = list(fetch_manifest.get("index", {}).get("quarters_listed", []))
+    first = _quarter_key(FSDS_HISTORY_FIRST_QUARTER)
+    expected = [q for q in listed if _quarter_key(q) >= first]
+    problems: list[str] = []
+    if not expected:
+        problems.append("fetch manifest has no SEC index listing: completeness is unproven")
+    not_fetched = [q for q in expected if q not in archives]
+    not_staged = [q for q in expected if q not in entries]
+    problems += [f"{q}: listed by the SEC index but not fetched" for q in not_fetched]
+    problems += [f"{q}: listed by the SEC index but not staged" for q in not_staged]
+    for quarter, entry in sorted(entries.items(), key=lambda item: _quarter_key(item[0])):
+        if entry.get("stager_version") != STAGER_VERSION:
+            problems.append(f"{quarter}: stager {entry.get('stager_version')} != {STAGER_VERSION}")
+        for table in FSDS_TABLES:
+            info = entry.get("tables", {}).get(table, {})
+            if info.get("line_rows_delta") != 0:
+                problems.append(f"{table} {quarter}: line_rows_delta {info.get('line_rows_delta')} != 0")
+            if info.get("extra_columns") or info.get("missing_columns"):
+                problems.append(f"{table} {quarter}: extra {info.get('extra_columns')} / missing "
+                                f"{info.get('missing_columns')} source columns")
+    return {
+        "index_quarters_listed": len(listed),
+        "index_page_file": fetch_manifest.get("index", {}).get("page_file"),
+        "expected_from": FSDS_HISTORY_FIRST_QUARTER,
+        "expected": len(expected),
+        "not_fetched": not_fetched,
+        "not_staged": not_staged,
+        "staged_not_listed": sorted(set(entries) - set(listed), key=_quarter_key),
+    }, problems
+
+
+def _verify_file_contract(
+    con: duckdb.DuckDBPyConnection, staging_dir: Path, table: str, files: Sequence[Path], entries: Mapping[str, Any],
+) -> list[str]:
+    """Every file of ``table`` has the staged schema and this stager's key/value metadata for its quarter."""
+
+    problems: list[str] = []
+    expected_schema = _staged_columns(table)
+    expected_kv = {"atx_stager_version": STAGER_VERSION, "atx_table": table, **_TABLE_KV_METADATA.get(table, {})}
+    kv_by_file: dict[str, dict[str, str]] = {}
+    for file_name, key, value in con.execute(
+        f"SELECT file_name, decode(key), decode(value) FROM parquet_kv_metadata({_sql_text(_table_files(staging_dir, table))})"
+    ).fetchall():
+        kv_by_file.setdefault(Path(str(file_name)).stem, {})[str(key)] = str(value)
+    for path in files:
+        quarter = path.stem
+        schema = [(str(row[0]), str(row[1])) for row in con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet({_sql_text(path.resolve().as_posix())})"
+        ).fetchall()]
+        if schema != expected_schema:
+            problems.append(f"{table} {quarter}: schema {schema} != staged schema {expected_schema}")
+        kv = kv_by_file.get(quarter, {})
+        want = {**expected_kv, "atx_quarter": quarter,
+                "atx_zip_sha256": str(entries.get(quarter, {}).get("zip_sha256"))}
+        wrong = sorted(key for key, value in want.items() if kv.get(key) != value)
+        if wrong:
+            problems.append(f"{table} {quarter}: Parquet key/value metadata missing or wrong: {wrong}")
+    return problems
 
 
 def verify_fsds_staging(
     staging_dir: Path | None = None, cache_dir: Path | None = None, *, rehash: bool = True,
 ) -> dict[str, Any]:
-    """Prove the staged history: per table, one file and one ``quarter`` value per quarter, rows equal to the
-    manifest, no file without a manifest entry; every entry's zip sha256 equals the fetch manifest's; with
-    ``rehash`` every Parquet file's sha256 equals its entry. Takes the staging lock (never beside a stager).
+    """Prove the staged history.
+
+    * Completeness: every quarter the saved SEC index lists from 2009q2 on is fetched and staged by this stager
+      version, with line/row delta 0 and no extra or missing source columns (:func:`_verify_completeness`).
+    * Per table: one file and one ``quarter`` value per quarter, rows equal to the manifest, no file without a
+      manifest entry, the staged schema and key/value metadata in every file; with ``rehash`` every Parquet sha256
+      equals its entry; every entry's zip sha256 equals the fetch manifest's.
+    * Recomputed from the files: the DST findings of ``accepted`` equal the manifest's per-quarter counts and the
+      cross-quarter NUM orphan accessions equal the manifest's list.
+
+    Takes the staging lock (never beside a stager).
     """
 
     cache_dir = Path(cache_dir or default_cache_dir())
     staging_dir = Path(staging_dir or default_staging_dir())
-    archives: dict[str, Any] = _read_manifest(cache_dir).get("archives", {})
+    fetch_manifest = _read_manifest(cache_dir)
+    archives: dict[str, Any] = fetch_manifest.get("archives", {})
     problems: list[str] = []
     out_tables: dict[str, Any] = {}
-    with _exclusive_file_lock(staging_dir / STAGING_LOCK_NAME, timeout_s=1.0):
-        entries: dict[str, Any] = _read_staging_manifest(staging_dir).get("quarters", {})
+    with _single_writer_lock(staging_dir / STAGING_LOCK_NAME, timeout_s=1.0):
+        manifest = _read_staging_manifest(staging_dir)
+        entries: dict[str, Any] = manifest.get("quarters", {})
+        completeness, completeness_problems = _verify_completeness(fetch_manifest, entries)
+        problems += completeness_problems
+        for key, want in (("stager_version", STAGER_VERSION), ("accepted_clock", ACCEPTED_CLOCK),
+                          ("accepted_zone", FSDS_ACCEPTED_ZONE), ("value_type", VALUE_TYPE)):
+            if manifest.get(key) != want:
+                problems.append(f"staging manifest {key} {manifest.get(key)!r} != {want!r}")
         spill = staging_dir / STAGING_WORK_DIRNAME / f"verify-{uuid.uuid4().hex[:8]}"
-        con = duckdb.connect(":memory:", config=bounded_config(STAGE_MEMORY_LIMIT, STAGE_THREADS, temp_directory=spill))
+        con = _staging_reader(spill)
+        dst: dict[str, Any] = {}
+        num_orphans: list[dict[str, Any]] = []
         try:
             for table in FSDS_TABLES:
                 files = sorted((staging_dir / table).glob("*.parquet"))
                 orphans = [f.stem for f in files if f.stem not in entries]
+                if files:
+                    problems += _verify_file_contract(con, staging_dir, table, files, entries)
                 rows_by_quarter: dict[str, int] = {}
                 files_by_quarter: dict[str, set[str]] = {}
                 wrong_file = 0
                 if files:
-                    pattern = (staging_dir / table).resolve().as_posix().replace("'", "''") + "/*.parquet"
+                    pattern = _sql_text(_table_files(staging_dir, table))
                     for quarter, filename, count in con.execute(
-                        f"SELECT quarter, filename, count(*) FROM read_parquet('{pattern}', filename=true) GROUP BY ALL"
+                        f"SELECT quarter, filename, count(*) FROM read_parquet({pattern}, filename=true) GROUP BY ALL"
                     ).fetchall():
                         stem = Path(str(filename)).stem
                         rows_by_quarter[quarter] = rows_by_quarter.get(quarter, 0) + int(count)
@@ -2134,6 +2461,18 @@ def verify_fsds_staging(
                     "orphan_files": orphans,
                     "quarter_file_mismatches": wrong_file,
                 }
+            if entries and out_tables["sub"]["files"]:
+                dst = _accepted_dst_findings(con, _table_files(staging_dir, "sub"))
+                recorded = {key: sum(int(e["tables"]["sub"].get("accepted_dst", {}).get(key, -1)) for e in entries.values())
+                            for key in ("nonexistent", "ambiguous", "accepted_null_rows")}
+                for key, value in recorded.items():
+                    if dst[key] != value:
+                        problems.append(f"sub accepted_dst {key}: recomputed {dst[key]} != manifest {value}")
+            if entries and all(out_tables[t]["files"] for t in ("sub", "num", "pre")):
+                num_orphans = _num_orphan_accessions(con, staging_dir)
+                if num_orphans != manifest.get("num_orphan_accessions"):
+                    problems.append(f"num orphan accessions recomputed {num_orphans} != manifest "
+                                    f"{manifest.get('num_orphan_accessions')}")
         finally:
             con.close()
             shutil.rmtree(spill, ignore_errors=True)
@@ -2142,10 +2481,15 @@ def verify_fsds_staging(
                 problems.append(f"{quarter}: staged from zip {entry.get('zip_sha256')} != fetch manifest")
     return {
         "staging_dir": str(staging_dir),
+        "stager_version": manifest.get("stager_version"),
         "quarters": sorted(entries, key=_quarter_key),
         "quarter_count": len(entries),
+        "completeness": completeness,
         "rehashed": rehash,
         "tables": out_tables,
+        "accepted_dst": dst,
+        "num_orphan_accessions": num_orphans,
+        "num_orphan_facts": sum(o["num_rows"] for o in num_orphans),
         "problems": problems,
         "ok": not problems,
     }
@@ -2162,7 +2506,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="python -m atx_db.fsds_baseline", description=main.__doc__)
     parser.add_argument("--cache-dir", default=None, help="zips + manifest (default data/cache/P12-fsds)")
-    parser.add_argument("--staging-dir", default=None, help="Parquet staging root (default data/staging/fsds)")
+    parser.add_argument("--staging-dir", default=None, help=f"Parquet staging root (default data/staging/{STAGING_DIRNAME})")
     parser.add_argument("--out", default=None, help="also write the summary JSON to this path")
     commands = parser.add_subparsers(dest="command", required=True)
     fetch = commands.add_parser("history-fetch", help="SEC index page + every listed quarter from --first on")
