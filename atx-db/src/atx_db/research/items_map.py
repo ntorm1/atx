@@ -38,6 +38,26 @@ LOCAL_AUTHORITY = {
         "limitation": "seeded deferred-tax-liability analog; noncurrent fallback; no separate investment-credit addition"},
 }
 
+# C-114: every retained quarter's readme was checked, not merely the first one.
+# The portable contract pins that bounded metadata audit and each entry variant.
+FSDS_ENDPOINT_AUTHORITY = {
+    "ruling": "C-114", "encoding": "unique_nearest_adjacent_month_end_v1",
+    "proposal_sha256": "cebc511d37e05cccf2a8704f89fcb5984ecacb3f336ddf6c1657c0151c2cbc89",
+    "manifest_sha256": "2cad6134efd312d7ad9ca84bbc274fdf360e10e581b38aa88a29f1040bebc628",
+    "metadata_audit_sha256": "31a581418e4d26c20eb5834e5acabee6e79d057a65f81bb9983a4ea50eba968e",
+    "ddate_definition": "the end date for the data value, rounded to the nearest month end",
+    "period_definition": "balance sheet date, rounded to nearest month-end",
+    "quarter_readme_sha256": {
+        f"{2009+(q+1)//4}q{(q+1)%4+1}": (
+            "b3913445c6b971c4c42d44d17358a577e64a6ccbbcc4c8f7fa8e3bba5809508a" if q >= 67 else
+            "ba97b9844671c1aaeff4b2a000d306a1645063631d183ea1145bb312dd0c5bfa" if q == 59 else
+            "25e0a9e16de0b6cabdb3a07b85ab2dbf2263c9f3e4800d62ad9430728322eb5d")
+        for q in range(69)},
+    "audit_scope": "retained ZIP readme entries and metadata; no whole-archive rehash or new fetch",
+    "clock": "max(FSDS accepted, CF original conservative effective clock)",
+    "fiscal_labels": "reported FY/FP unchanged; contradictions remain conflicts",
+}
+
 
 @dataclass(frozen=True)
 class ItemChain:
@@ -217,6 +237,7 @@ def load_mapping() -> dict[str, Any]:
                                 "DEI cover-page shares cannot prove fiscal balance dates",
                                 "XRD missing-zero convention requires explicit then-visible evidence"]}
     metadata["local_tag_authority"] = LOCAL_AUTHORITY
+    metadata["fsds_endpoint_authority"] = FSDS_ENDPOINT_AUTHORITY
     # Normalize dates/tuples before serializing and hashing the portable plan.
     import json
     metadata = json.loads(json.dumps(metadata, default=str))

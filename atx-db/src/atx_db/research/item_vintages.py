@@ -16,14 +16,16 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .fundamental_sources import canonical_sha256, file_sha256, parquet_relation
 
-ENGINE_VERSION = "item_vintages_v3"
+ENGINE_VERSION = "item_vintages_v4"
 MAPPING_OUTCOMES_VERSION = "outer_identity_v1"
 PERIOD_POLICY = {"quarter_days": [70, 112], "half_year_days": [150, 215],
                  "nine_month_days": [240, 310], "year_days": [350, 380],
                  "quarter_anchor_age_days": 200, "annual_anchor_age_days": 400,
                  "fiscal_slots": "reported_fy_times_4_plus_reported_quarter",
                  "missing": "null", "weighted_shares": "nonadditive_direct_only",
-                 "conflict": "semantic_before_provenance", "snapshot_date": "2026-09-20"}
+                 "conflict": "semantic_before_provenance", "snapshot_date": "2026-09-20",
+                 "encoded_endpoint": "C114_unique_joint_exact_fact_conservative_clock_v1",
+                 "encoded_authority": "mapping.fsds_endpoint_authority"}
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -69,7 +71,7 @@ def _fact_key(row: dict[str, Any]) -> tuple:
     return tuple(row[k] for k in ("accession", "taxonomy", "concept", "unit", "period_end", "qtrs")) + (_decimal(row["value_exact"]),)
 
 
-def corroborate(rows: list[dict[str, Any]]) -> None:
+def corroborate(rows: list[dict[str, Any]], *, endpoint_authority: dict | None = None) -> None:
     """Borrow clocks only for a unique exact fact/duration, never just an accession.
 
     FSDS encodes duration as qtrs. A unique same-value CF start in that duration
@@ -80,6 +82,10 @@ def corroborate(rows: list[dict[str, Any]]) -> None:
         row["dependencies"] = [row["candidate_id"]]
         if row["available_at"] is not None:
             row["available_at"] = _clock(row["available_at"])
+        row["original_effective_at"] = row["available_at"]
+        row["raw_period_end"] = row["period_end"]
+        row["raw_filing_period"] = row["filing_period"]
+        row["endpoint_encoding"] = "fsds_precision_unproved" if row["source_kind"] == "fsds" else "cf_exact"
         if row["source_status"] == "candidate" and _decimal(row["value_exact"]) is not None:
             groups[_fact_key(row)].append(row)
     for group in groups.values():
@@ -99,6 +105,126 @@ def corroborate(rows: list[dict[str, Any]]) -> None:
             row["available_at"] = next(iter(clocks))
             row["clock_basis"] = "fsds_same_fact_corroborated"
             row["period_basis"] = "same_fact_cf_start" if start else "instant"
+            row["endpoint_encoding"] = "exact_same_fact"
+    if endpoint_authority is not None:
+        _recover_encoded_endpoints(rows, endpoint_authority)
+
+
+def _adjacent_month_ends(day: dt.date) -> tuple[dt.date, dt.date]:
+    previous = day.replace(day=1)-dt.timedelta(days=1)
+    following = (day.replace(day=28)+dt.timedelta(days=4)).replace(day=1)-dt.timedelta(days=1)
+    return previous, following
+
+
+def _encoded_month_end(day: dt.date) -> dt.date | None:
+    """Invert only the documented encoding; a midpoint has no unique image."""
+    previous, following = _adjacent_month_ends(day)
+    left, right = (day-previous).days, (following-day).days
+    return None if left == right else previous if left < right else following
+
+
+def _encoded_fact_eligible(row: dict) -> bool:
+    expected = {"monetary": "USD", "quantity": "shares", "per_share": "USD/shares"}.get(row["unit_type"])
+    if (row["source_status"] != "candidate" or row["taxonomy"] != "us-gaap" or
+            row["unit"] != expected or row["original_effective_at"] is None or
+            row["period_end"] is None or _decimal(row["value_exact"]) is None):
+        return False
+    if row["qtrs"] == 0:
+        return row["period_kind"] == "instant" and row["period_start"] is None
+    if row["qtrs"] not in {1, 2, 3, 4} or row["period_kind"] != "duration":
+        return False
+    if row["source_kind"] == "fsds":
+        return True  # NUM has no start; the unique CF interval supplies it.
+    start = row["period_start"]
+    low, high = {1: (70, 112), 2: (150, 215), 3: (240, 310), 4: (350, 380)}[row["qtrs"]]
+    return start is not None and low <= (row["period_end"]-start).days+1 <= high
+
+
+def _recover_encoded_endpoints(rows: list[dict], authority: dict) -> None:
+    """Recover exact periods only from a unique, then-visible joint context.
+
+    Raw candidates/IDs are never rewritten on disk. These copies keep the raw
+    endpoint and original clock alongside the derived economic endpoint.
+    """
+    if authority.get("encoding") != "unique_nearest_adjacent_month_end_v1":
+        raise ValueError("unsupported FSDS endpoint encoding authority")
+    approved = authority["quarter_readme_sha256"]
+    groups = collections.defaultdict(list)
+    filing_clocks = collections.defaultdict(set)
+    for row in rows:
+        if row["source_kind"] == "fsds":
+            filing_clocks[row["accession"]].add(row["original_effective_at"])
+    for row in rows:
+        if row["source_kind"] == "fsds" and (row.get("source_slice") not in approved or
+                row.get("archive_sha256") != authority["manifest_sha256"]):
+            row["endpoint_encoding"] = "unverified_encoding_authority"
+            continue
+        if _encoded_fact_eligible(row):
+            key = tuple(row[k] for k in ("cik", "accession", "taxonomy", "concept", "unit", "qtrs", "period_kind"))
+            groups[(*key, _decimal(row["value_exact"]))].append(row)
+        elif row["source_kind"] == "fsds" and row["endpoint_encoding"] != "exact_same_fact":
+            row["endpoint_encoding"] = ("encoding_invalid_numeric" if _decimal(row["value_exact"]) is None
+                                         else "encoding_ineligible_context")
+    contexts = collections.defaultdict(list)
+    for group in groups.values():
+        fsds = [r for r in group if r["source_kind"] == "fsds"]
+        cf = [r for r in group if r["source_kind"] == "cf"]
+        by_raw_end = collections.defaultdict(list)
+        for row in fsds:
+            by_raw_end[row["raw_period_end"]].append(row)
+        for raw_end, left in by_raw_end.items():
+            right = [r for r in cf if _encoded_month_end(r["raw_period_end"]) == raw_end]
+            if not right or not any(r["raw_period_end"] != raw_end for r in right):
+                for row in left:
+                    if row["endpoint_encoding"] != "exact_same_fact":
+                        row["endpoint_encoding"] = ("encoding_midpoint_tie" if any(
+                            _encoded_month_end(r["raw_period_end"]) is None and
+                            raw_end in _adjacent_month_ends(r["raw_period_end"]) for r in cf)
+                            else "no_joint_encoded_counterpart")
+                continue
+            periods = {(r["period_start"], r["raw_period_end"]) for r in right}
+            clocks = {r["original_effective_at"] for r in left}
+            if len(periods) != 1 or len(clocks) != 1 or len(filing_clocks[left[0]["accession"]]) != 1:
+                for row in left:
+                    row["endpoint_encoding"] = "ambiguous_joint_context"
+                continue
+            start, end = next(iter(periods))
+            clock = max(r["original_effective_at"] for r in left+right)
+            inputs = sorted({r["candidate_id"] for r in left+right})
+            for row in left+right:
+                row.update(period_start=start, period_end=end, available_at=clock,
+                           dependencies=sorted(set(row["dependencies"]) | set(inputs)),
+                           clock_basis="C114_joint_original_max", period_basis="C114_joint_exact_interval",
+                           endpoint_encoding="joint_exact_fact", encoded_context_at=clock)
+            for row in left:
+                if row["raw_period_end"] == row["raw_filing_period"]:
+                    contexts[row["accession"]].append((end, clock, inputs))
+    for row in rows:
+        candidates = contexts.get(row["accession"], [])
+        if (row["source_kind"] != "fsds" or row.get("source_slice") not in approved or not candidates or
+                row.get("archive_sha256") != authority["manifest_sha256"]):
+            continue
+        endpoints = {end for end, _, _ in candidates}
+        if len(endpoints) != 1:
+            row["filing_context_status"] = "ambiguous_joint_context"
+            continue
+        # The earliest unique proof is enough; equal-clock proofs all contribute.
+        clock = min(clock for _, clock, _ in candidates)
+        inputs = sorted({i for _, when, ids in candidates if when == clock for i in ids})
+        end = next(iter(endpoints))
+        if _encoded_month_end(end) != row["raw_filing_period"]:
+            continue
+        row.update(filing_period=end, filing_context_at=clock, filing_context_dependencies=inputs,
+                   filing_context_status="joint_context_proved")
+        if row["raw_period_end"] == row["raw_filing_period"] and row["available_at"] is not None:
+            # This also preserves a current explicit NULL/rejected stock at its
+            # proved endpoint; it cannot masquerade as ordinary absence.
+            row.update(period_end=end, available_at=max(row["available_at"], clock),
+                       dependencies=sorted(set(row["dependencies"]) | set(inputs)),
+                       encoded_context_at=max(row.get("encoded_context_at", clock), clock))
+            if row["endpoint_encoding"] != "joint_exact_fact":
+                row.update(endpoint_encoding="joint_filing_context", clock_basis="C114_joint_filing_context",
+                           period_basis="C114_joint_filing_endpoint")
 
 
 def _invalidate(point: dict, clock: dt.datetime, inputs: Sequence[str]) -> None:
@@ -128,17 +254,19 @@ def _grid(rows: list[dict[str, Any]]) -> tuple[dict, dict]:
             continue
         if row["period_end"] != end and row["source_kind"] != "fsds":
             continue
-        key, point = (end, int(fy), q), (row["available_at"], row["candidate_id"])
+        clock = max(row["available_at"], row.get("filing_context_at", row["available_at"]))
+        inputs = sorted(set(row["dependencies"]+row.get("filing_context_dependencies", [])))
+        key, point = (end, int(fy), q), (clock, row["candidate_id"], inputs)
         if key not in claims[end] or point < claims[end][key]:
             claims[end][key] = point
     by_end, by_slot = {}, collections.defaultdict(list)
     for end, records in claims.items():
-        ordered = sorted((clock, candidate, fy, q) for (_, fy, q), (clock, candidate) in records.items())
-        clock, candidate, fy, q = ordered[0]
+        ordered = sorted((clock, candidate, fy, q, inputs) for (_, fy, q), (clock, candidate, inputs) in records.items())
+        clock, candidate, fy, q, inputs = ordered[0]
         point = {"end": end, "fy": fy, "q": q, "clock": clock, "input": candidate,
-                 "invalid_at": None, "invalid_inputs": []}
+                 "inputs": inputs, "invalid_at": None, "invalid_inputs": []}
         if len(ordered) > 1:
-            _invalidate(point, ordered[1][0], [ordered[0][1], ordered[1][1]])
+            _invalidate(point, ordered[1][0], ordered[0][4]+ordered[1][4])
         by_end[end] = point
         by_slot[fy*4+q].append(point)
     for points in by_slot.values():
@@ -146,7 +274,7 @@ def _grid(rows: list[dict[str, Any]]) -> tuple[dict, dict]:
             ordered = sorted(points, key=lambda p: (p["clock"], p["end"]))
             conflict = ordered[1]["clock"]
             for point in points:
-                _invalidate(point, conflict, [ordered[0]["input"], ordered[1]["input"]])
+                _invalidate(point, conflict, ordered[0]["inputs"]+ordered[1]["inputs"])
     return by_end, by_slot
 
 
@@ -159,11 +287,12 @@ def _period(row: dict[str, Any], by_end: dict, by_slot: dict) -> dict[str, Any] 
     invalid = point["invalid_at"]
     invalid_inputs = list(point["invalid_inputs"])
     start, basis = row["period_start"], row.get("period_basis", "cf_reported_start")
-    dependencies = row["dependencies"] + [point["input"]]
+    dependencies = row["dependencies"] + point["inputs"]
     if qtrs == 0:
         if row["period_kind"] != "instant" or row["taxonomy"] == "dei":
             return None
-        start, freq, basis = None, "instant", "filing_fiscal_endpoint"
+        start, freq = None, "instant"
+        basis = row.get("period_basis", "filing_fiscal_endpoint")
     else:
         if row["period_kind"] != "duration" or qtrs not in {1, 2, 3, 4}:
             return None
@@ -178,7 +307,7 @@ def _period(row: dict[str, Any], by_end: dict, by_slot: dict) -> dict[str, Any] 
             previous = predecessors[0]
             start = previous["end"] + dt.timedelta(days=1)
             available = max(available, previous["clock"])
-            dependencies.append(previous["input"])
+            dependencies.extend(previous["inputs"])
             if previous["invalid_at"] is not None:
                 if invalid is None or previous["invalid_at"] < invalid:
                     invalid, invalid_inputs = previous["invalid_at"], list(previous["invalid_inputs"])
@@ -258,7 +387,7 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
     if not rows:
         return [], []
     owner = rows[0]["cik"]
-    corroborate(rows)
+    corroborate(rows, endpoint_authority=mapping.get("fsds_endpoint_authority"))
     for row in rows:
         row["candidate_effective_at"] = row["available_at"]
         row["candidate_clock_basis"] = row["clock_basis"]
@@ -266,7 +395,7 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
     groups, mapping_dispositions = collections.defaultdict(list), []
     for row in rows:
         disposition = {"candidate_id": row["candidate_id"], "cik": owner, "item_id": row["item_id"],
-                       "reason": row["source_status"], "year": row["period_end"].year if row["period_end"] else 0}
+                       "reason": row["source_status"], "year": row["raw_period_end"].year if row["raw_period_end"] else 0}
         expected = {"monetary": "USD", "quantity": "shares", "per_share": "USD/shares"}.get(row["unit_type"])
         end = row["period_end"]
         rejected_stock = (row["item_id"] is not None and row["period_kind"] == "instant"
@@ -308,7 +437,7 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
                       "available_at": max(row["available_at"], point["clock"]),
                       "invalid_at": point["invalid_at"], "period_basis": "rejected_stock_context",
                       "invalid_dependencies": list(point["invalid_inputs"]),
-                      "dependencies": sorted(set(row["dependencies"]+[point["input"]]))}
+                      "dependencies": sorted(set(row["dependencies"]+point["inputs"]))}
             forced_status = forced_status or "period_ambiguous"
         row.update(period, owner_id=owner, item=str(row["item_id"]), unit=expected)
         raw_value = _decimal(row["value_exact"]) if forced_status is None else None
@@ -542,7 +671,7 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
         reason = ("semantic_conflict" if candidate_id in conflicting else "used" if candidate_id in used
                   else "superseded_alias" if "mapped_candidate" in reasons else "+".join(reasons))
         source = raw[candidate_id]
-        year = source["period_end"].year if source["period_end"] else 0
+        year = source["raw_period_end"].year if source["raw_period_end"] else 0
         dispositions.append({"candidate_id": candidate_id, "cik": owner, "reason": reason,
                              "mapping_outcomes": encode_mapping_outcomes(choices, candidate_id=candidate_id,
                                                                          cik=owner, year=year),
@@ -550,6 +679,12 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
                              "source_occurrences": source.get("source_occurrences", 1),
                              "effective_at": source["candidate_effective_at"],
                              "clock_basis": source["candidate_clock_basis"],
+                             "raw_period_end": source["raw_period_end"],
+                             "economic_period_end": source["period_end"],
+                             "original_effective_at": source["original_effective_at"],
+                             "encoded_context_at": source.get("encoded_context_at"),
+                             "endpoint_encoding": source["endpoint_encoding"],
+                             "filing_context_status": source.get("filing_context_status"),
                              "year": year})
     return sorted(unique.values(), key=lambda r: (r["year"], r["item"], r["freq"], r["period_end"], r["available_at"], r["vintage_id"])), dispositions
 
@@ -657,6 +792,10 @@ def schemas():
                              ("mapping_outcomes", text), ("source_occurrences", pa.int64()), ("year", pa.int32())])
     disposition = disposition.append(pa.field("effective_at", pa.timestamp("us"))).append(pa.field("clock_basis", text))
     disposition = disposition.append(pa.field("mapping_outcomes_version", text))
+    for name, kind in (("raw_period_end", pa.date32()), ("economic_period_end", pa.date32()),
+                       ("original_effective_at", pa.timestamp("us")), ("encoded_context_at", pa.timestamp("us")),
+                       ("endpoint_encoding", text), ("filing_context_status", text)):
+        disposition = disposition.append(pa.field(name, kind))
     return {"item_vintages": vintage, "item_lineage": lineage, "item_dispositions": disposition}
 
 
@@ -1142,6 +1281,8 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
             "disposition_occurrences": "SELECT coalesce(sum(source_occurrences),0) FROM d",
             "duplicate_dispositions": "SELECT count(*)-count(DISTINCT candidate_id) FROM d",
             "invalid_disposition_representation": f"SELECT count(*) FROM d WHERE mapping_outcomes_version IS DISTINCT FROM '{MAPPING_OUTCOMES_VERSION}'",
+            "raw_endpoint_provenance_mismatch": "SELECT count(DISTINCT d.candidate_id) FROM d JOIN raw USING(candidate_id) WHERE d.raw_period_end IS DISTINCT FROM raw.period_end OR d.original_effective_at IS DISTINCT FROM raw.available_at",
+            "encoded_endpoint_early_clock": "SELECT count(*) FROM d WHERE endpoint_encoding IN ('joint_exact_fact','joint_filing_context') AND (effective_at IS NULL OR encoded_context_at IS NULL OR effective_at<encoded_context_at OR effective_at<original_effective_at)",
             "unaccounted_candidates": "SELECT count(*) FROM (SELECT DISTINCT candidate_id FROM raw EXCEPT SELECT candidate_id FROM d)",
             "unknown_dispositions": "SELECT count(*) FROM (SELECT candidate_id FROM d EXCEPT SELECT candidate_id FROM raw)",
             "duplicate_vintages": "SELECT count(*)-count(DISTINCT vintage_id) FROM v",
@@ -1199,6 +1340,12 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
           SELECT count(*),count(*) FILTER(WHERE agrees) FROM scored""").fetchone()
         checks["direct_numeric_cells"], checks["direct_numeric_agree"] = numeric
         reasons = dict(con.execute("SELECT reason,count(*) FROM d GROUP BY reason ORDER BY reason").fetchall())
+        encodings = dict(con.execute("SELECT endpoint_encoding,count(*) FROM d GROUP BY endpoint_encoding ORDER BY endpoint_encoding").fetchall())
+        endpoint_counts = con.execute("""SELECT count(*) FILTER(WHERE raw_period_end IS DISTINCT FROM economic_period_end),
+             count(*) FILTER(WHERE endpoint_encoding IN ('joint_exact_fact','joint_filing_context') AND effective_at>original_effective_at),
+             max(CASE WHEN endpoint_encoding IN ('joint_exact_fact','joint_filing_context')
+                 THEN date_diff('microsecond',original_effective_at,effective_at) END) FROM d""").fetchone()
+        context_counts = dict(con.execute("SELECT filing_context_status,count(*) FROM d WHERE filing_context_status IS NOT NULL GROUP BY filing_context_status").fetchall())
         counts = dict(con.execute("SELECT status,count(*) FROM v WHERE is_public GROUP BY status ORDER BY status").fetchall())
     finally:
         con.close()
@@ -1213,6 +1360,9 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
               "bucket": receipt["bucket"], "checks": checks, "failures": failures,
               "structural_ok": not failures, "accepted": False,
               "source_scope_complete": plan["scope_complete"], "disposition_reasons": reasons,
+              "endpoint_encoding": {"dispositions": encodings, "filing_contexts": context_counts,
+                  "recovered_raw_endpoints": endpoint_counts[0], "delayed_candidates": endpoint_counts[1],
+                  "max_delay_microseconds": endpoint_counts[2]},
               "unowned_source_quarantines": dict(excluded_unowned),
               "public_statuses": counts, "complete_sha256": file_sha256(output / "complete.json"),
               "remaining_acceptance": ["10000-cell mapping/numeric oracle", "A=L+E >=99%",

@@ -115,6 +115,10 @@ def main() -> None:
         from atx_db.research.item_vintages import PERIOD_POLICY, MAPPING_OUTCOMES_VERSION
         mapping = load_mapping()
         expected = [("fsds", f"{2009+(q+1)//4}q{(q+1)%4+1}") for q in range(69)]
+        authority = mapping["fsds_endpoint_authority"]
+        if (authority["manifest_sha256"] != pins["fsds_sha256"] or
+                set(authority["quarter_readme_sha256"]) != {quarter for _, quarter in expected}):
+            raise ValueError("C114 endpoint authority differs from the pinned FSDS scope")
         expected += [("cf", str(n)) for n in range(85)]
         receipts, missing = [], []
         index = json.loads((args.work / "filings.json").read_text())

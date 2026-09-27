@@ -3,6 +3,7 @@ import datetime as dt
 import pytest
 
 from atx_db.research.item_vintages import build_owner, corroborate, _book_equity
+from atx_db.research.items_map import FSDS_ENDPOINT_AUTHORITY
 
 
 def fact(identifier, *, end, start=None, qtrs=1, quarter="Q1", clock="2020-05-01", value="50", source="cf"):
@@ -127,3 +128,101 @@ def test_fiscal_trigger_lineage_excludes_later_tied_contradiction(source_clock):
     assert "q1_conflict" in conflicted[0]["inputs"]
     assert all("q2_conflict" not in v["inputs"] for v in vintages if v["available_at"] < dt.datetime(2020, 12, 1))
     assert all(clocks[i] <= v["available_at"] for v in vintages for i in v["inputs"])
+
+
+def encoded_pair(fsds_clock="2020-05-05", cf_clock="2020-05-06"):
+    fsds = fact("rounded", end="2020-04-30", source="fsds", clock=fsds_clock)
+    cf = fact("precise", end="2020-05-03", start="2020-02-03", clock=cf_clock)
+    fsds["source_slice"] = "2020q2"
+    fsds["archive_sha256"] = FSDS_ENDPOINT_AUTHORITY["manifest_sha256"]
+    fsds["accession"] = cf["accession"] = "joint"
+    return fsds, cf
+
+
+@pytest.mark.parametrize("fsds_clock,cf_clock", [("2020-05-05", "2020-05-06"), ("2020-05-07", "2020-05-06")])
+def test_encoded_endpoint_uses_joint_original_clock_and_both_inputs(fsds_clock, cf_clock):
+    rows = list(encoded_pair(fsds_clock, cf_clock))
+    originals = {r["candidate_id"]: (r["period_end"], r["available_at"], r["reported_fy"], r["reported_fp"]) for r in rows}
+    vintages, dispositions = build_owner(rows, {**MAPPING, "fsds_endpoint_authority": FSDS_ENDPOINT_AUTHORITY})
+    clock = max(dt.datetime.fromisoformat(fsds_clock), dt.datetime.fromisoformat(cf_clock))
+    actual = [v for v in vintages if v["is_public"] and v["item"] == "SALE" and v["freq"] == "q"]
+    assert len(actual) == 1 and actual[0]["period_end"] == dt.date(2020, 5, 3)
+    assert actual[0]["value"] == 50 and actual[0]["available_at"] == clock
+    source = [v for v in vintages if v["event_stage"] == "source"]
+    assert source and all(set(v["inputs"]) == {"rounded", "precise"} for v in source)
+    assert all(d["original_effective_at"] == originals[d["candidate_id"]][1] and
+               d["raw_period_end"] == originals[d["candidate_id"]][0] and d["effective_at"] == clock for d in dispositions)
+    assert all((r["reported_fy"], r["reported_fp"]) == originals[r["candidate_id"]][2:] for r in rows)
+
+
+@pytest.mark.parametrize("case", ["two_starts", "two_ends", "midpoint", "missing", "null", "unit", "unknown_quarter"])
+def test_encoded_endpoint_ambiguities_and_absences_refuse_recovery(case):
+    fsds, cf = encoded_pair()
+    rows = [fsds, cf]
+    expected = "ambiguous_joint_context"
+    if case == "two_starts":
+        rows.append({**cf, "candidate_id": "other_start", "period_start": dt.date(2020, 2, 2)})
+    elif case == "two_ends":
+        rows.append({**cf, "candidate_id": "other_end", "period_end": dt.date(2020, 5, 2)})
+    elif case == "midpoint":
+        fsds["period_end"] = fsds["filing_period"] = dt.date(2020, 3, 31)
+        cf.update(period_end=dt.date(2020, 4, 15), period_start=dt.date(2020, 1, 15))
+        expected = "encoding_midpoint_tie"
+    elif case == "missing":
+        rows.remove(cf)
+        expected = "no_joint_encoded_counterpart"
+    elif case == "null":
+        fsds["value_exact"] = None
+        expected = "encoding_invalid_numeric"
+    elif case == "unit":
+        fsds["unit"] = "EUR"
+        expected = "encoding_ineligible_context"
+    elif case == "unknown_quarter":
+        fsds["source_slice"] = "2027q1"
+        expected = "unverified_encoding_authority"
+    original = fsds["period_end"], fsds["available_at"]
+    corroborate(rows, endpoint_authority=FSDS_ENDPOINT_AUTHORITY)
+    assert (fsds["period_end"], fsds["available_at"]) == original
+    assert fsds["endpoint_encoding"] == expected
+
+
+def test_encoded_policy_keeps_calendar_exact_borrowing_and_raw_fiscal_conflicts():
+    fsds, cf = encoded_pair()
+    fsds["period_end"] = fsds["filing_period"] = cf["period_end"] = cf["filing_period"] = dt.date(2020, 3, 31)
+    cf["period_start"] = dt.date(2020, 1, 1)
+    corroborate([fsds, cf], endpoint_authority=FSDS_ENDPOINT_AUTHORITY)
+    assert cf["available_at"] == dt.datetime(2020, 5, 5)
+    assert cf["endpoint_encoding"] == "exact_same_fact"
+    fsds, cf = encoded_pair()
+    cf["reported_fy"] = 2021  # Precision does not authorize changing either label.
+    vintages, _ = build_owner([fsds, cf], {**MAPPING, "fsds_endpoint_authority": FSDS_ENDPOINT_AUTHORITY})
+    assert fsds["reported_fy"] == 2020 and cf["reported_fy"] == 2021
+    assert all(v["value"] is None for v in vintages if v["is_public"])
+    assert any(v["status"] == "fiscal_grid_conflict" for v in vintages)
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+def test_encoded_filing_context_preserves_latest_null_and_rejected_stock(rejected):
+    fsds, cf = encoded_pair("2020-05-07", "2020-05-08")
+    for row in (fsds, cf):
+        row.update(qtrs=0, period_start=None, period_kind="instant", concept="StockholdersEquity", item_id=1221, value_exact="100")
+    prior = fact("prior_tax", end="2020-05-03", qtrs=0, value="5", clock="2020-05-04")
+    prior.update(period_kind="instant", item_id=1211, concept="DeferredIncomeTaxLiabilitiesNet")
+    prior_equity = {**prior, "candidate_id": "prior_equity", "item_id": 1221,
+                    "concept": "StockholdersEquity", "value_exact": "100"}
+    latest = {**fsds, "candidate_id": "latest_tax", "item_id": 1211, "concept": prior["concept"],
+              "value_exact": "6" if rejected else None, "available_at": dt.datetime(2020, 5, 7),
+              "filed_date": dt.date(2020, 5, 7), "source_status": "unsupported_duration" if rejected else "candidate"}
+    mapping = {"fsds_endpoint_authority": FSDS_ENDPOINT_AUTHORITY,
+        "rules": [{"item_id": -100004, "basis": "instant", "rule_id": "BE", "source_item_ids": [1221, 1220, 1214, 1101, 1201, 1211],
+                   "input_kinds": ["item"]*6, "combination_rule": "book_equity_jkp"}],
+        "chains": {"BE": {"item_ids": [-100004], "magnitude": False, "additive": True}}}
+    vintages, dispositions = build_owner([fsds, cf, prior, prior_equity, latest], mapping)
+    actual = sorted([v for v in vintages if v["is_public"] and v["item"] == "BE"], key=lambda v:v["available_at"])
+    assert actual[-2]["value"] == 105 and actual[-1]["value"] is None
+    assert actual[-1]["available_at"] == dt.datetime(2020, 5, 8)
+    assert actual[-1]["status"] == "invalid_operand"
+    disposition = next(d for d in dispositions if d["candidate_id"] == "latest_tax")
+    assert disposition["endpoint_encoding"] == "joint_filing_context"
+    assert disposition["raw_period_end"] == dt.date(2020, 4, 30)
+    assert disposition["economic_period_end"] == dt.date(2020, 5, 3)

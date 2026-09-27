@@ -101,3 +101,19 @@ or code pin refuses execution; partial releases remain readable through v2 proof
 No interface in this module grants permission to register another wave, inspect
 returns, use reconstructed identity as verified history, or open the sealed
 holdout.
+
+C-114 recovery of FSDS rounded endpoints is part of the v4 item engine and its
+fresh plan/map digest. The exported mapping pins the retained 69-quarter manifest,
+the metadata audit and each readme variant documenting nearest-month-end encoding.
+Recovery requires a unique exact CF interval with the same issuer, accession,
+concept, actual unit, period class and finite staged Decimal value. Adjacent
+month-end midpoint ties, multiple intervals and conflicting acceptance contexts
+refuse recovery. Unknown source quarters/manifests cannot use this authority.
+The new category uses the later original FSDS/CF effective clock; existing exact
+endpoint acceptance borrowing is unchanged. A jointly proved current filing
+endpoint can support other current facts, including explicit NULL/rejected stocks,
+only at that context's proof clock with all context candidates in lineage.
+Raw endpoints and original clocks remain in dispositions and source IDs remain
+unchanged. Reported FY/FP disagreements still invalidate fiscal slots. Bucket
+audits count recovered endpoints, clock delays and every encoding disposition;
+these diagnostics do not waive the fiscal, numeric or accounting acceptance gates.
