@@ -283,9 +283,11 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
       static_cast<usize>(n),lib.candidates.size()));
   Budget b{std::numeric_limits<u64>::max(),0};
   // One role26, guard4, effective+VM masks2, returned signal8, VM scratch32;
-  // twice maximum compiled slot payload bounds grow-before-release. No surfaces,
+  // One maximum compiled slot payload: the runner destroys an undersized Engine
+  // before creating its replacement. Output SignalSet has its own8B/cell above.
+  // The fresh Engine's initial1x1 pool is covered by the fixed slack. No surfaces,
   // execution context, per-candidate retained signals, or book position arrays.
-  if (!b.add(1,32ULL<<20) || !b.add(cells,72+16*lib.max_slots) || !b.add(composition,1) ||
+  if (!b.add(1,32ULL<<20) || !b.add(cells,72+8*lib.max_slots) || !b.add(composition,1) ||
       !b.add(d,512) || !b.add(n,512))
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined role/VM/composition memory budget");
   for (u64 h:{5ULL,21ULL,63ULL}) {
@@ -389,9 +391,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   // evaluation is driven by THIS main thread; Cs and Ts jobs never nest.
   std::unique_ptr<engine::parallel::DetPool> pool;
   if (cfg.workers>1) pool=std::make_unique<engine::parallel::DetPool>(cfg.workers);
-  al::Engine vm(role.panel); vm.set_eval_mode(al::EvalMode::ResearchFast);
-  if (pool) { vm.set_cs_pool(pool.get()); vm.set_ts_pool(pool.get()); }
-  ATX_TRY_VOID(vm.set_cross_section_mask(role.decision_member));
+  std::unique_ptr<al::Engine> vm;
   ATX_TRY(auto close_id,role.panel.field_id("close")); const auto close=role.panel.field_all(close_id);
   std::vector<u8> effective=role.decision_member;
   for (usize d=0;d<role.panel.dates();++d) for (usize i=0;i<role.panel.instruments();++i) {
@@ -421,9 +421,22 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto candidate_started=std::chrono::steady_clock::now();
     progress<<"IC eval-start "<<spec.name<<' '<<(k+1)<<'/'<<lib.candidates.size()<<' '<<candidate.id
             <<" slots="<<candidate.program.num_slots<<'\n'<<std::flush;
-    vm.reset();
     const auto vm_started=std::chrono::steady_clock::now();
-    ATX_TRY(auto evaluated,vm.evaluate(candidate.program));
+    if (!vm || candidate.program.num_slots>vm->pool_capacity()) {
+      const auto previous_slots=vm?vm->pool_capacity():0;
+      // The preceding iteration's SignalSet/spans are already destroyed. Free
+      // the old full-panel arena BEFORE Engine::evaluate allocates a larger one;
+      // Engine's own ensure_pool otherwise retains both during construction.
+      vm.reset();
+      vm=std::make_unique<al::Engine>(role.panel);
+      vm->set_eval_mode(al::EvalMode::ResearchFast);
+      if (pool) { vm->set_cs_pool(pool.get()); vm->set_ts_pool(pool.get()); }
+      ATX_TRY_VOID(vm->set_cross_section_mask(role.decision_member));
+      progress<<"IC VM-arena previous_slots="<<previous_slots
+              <<" requested_slots="<<candidate.program.num_slots<<" release_before_growth=true\n"<<std::flush;
+    }
+    vm->reset();
+    ATX_TRY(auto evaluated,vm->evaluate(candidate.program));
     const auto vm_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-vm_started).count();
     total_vm_seconds+=vm_seconds;
     progress<<"IC VM-complete "<<candidate.id<<" seconds="<<vm_seconds<<'\n'<<std::flush;
@@ -465,6 +478,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
             <<" seconds="<<candidate_seconds<<" vm="<<vm_seconds<<" ic="<<ic_seconds
             <<" composition="<<composition_seconds<<" sign="<<sign<<" reason="<<ex::ic_screen_reason_name(scored.screen.reason)<<'\n'<<std::flush;
   }
+  // Composition owns its accumulated blend; it does not borrow VM slots or any
+  // discarded candidate output. Combined IC/save need only the shared pool.
+  vm.reset();
   const auto finish_started=std::chrono::steady_clock::now();
   ATX_TRY(auto combined,composition.finish());
   total_composition_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-finish_started).count();
