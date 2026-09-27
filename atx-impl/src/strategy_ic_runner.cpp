@@ -105,7 +105,8 @@ struct Library {
   std::string id; std::vector<Candidate> candidates; usize max_slots{},lookback{};
   std::vector<std::string> declared_extra,extra_fields;
 };
-struct FieldFile { std::string name; std::filesystem::path path; std::string sha; u64 bytes{}; };
+// non_pit_aspects: the producer's list, comma-joined; empty iff point in time.
+struct FieldFile { std::string name; std::filesystem::path path; std::string sha; u64 bytes{}; std::string non_pit_aspects; };
 // A role's pinned fields manifest (empty sha: none pinned) and the referenced
 // subset to load, each with its manifest-pinned SHA256 and exact extent.
 struct RoleFields { std::string directory,sha; std::vector<FieldFile> load; };
@@ -497,6 +498,25 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
         " max_compiled_slots="+std::to_string(lib.max_slots)+" exceeds configured memory budget before payload load");
   return co::Ok(Role{std::move(path),std::move(pin),std::move(name),std::move(j),b.used,RoleFields{}});
 }
+// The producer flags every field entry with point_in_time (bool) and
+// non_pit_aspects (strings, empty iff point in time). An entry without both, or
+// with a contradictory pair, refuses the whole manifest: absence cannot be shown
+// safe (pre-flag manifests listed look-ahead fields unmarked). Returns the aspects
+// comma-joined, empty for a point-in-time field.
+co::Result<std::string> non_pit_aspects(const Json& row,const std::string& where) {
+  if (!row.contains("point_in_time") || !row.at("point_in_time").is_boolean() ||
+      !row.contains("non_pit_aspects") || !row.at("non_pit_aspects").is_array())
+    return co::Err(co::ErrorCode::InvalidArgument,where+" lacks point_in_time/non_pit_aspects flags");
+  std::string aspects;
+  for (const auto& aspect:row.at("non_pit_aspects")) {
+    if (!aspect.is_string() || aspect.get<std::string>().empty())
+      return co::Err(co::ErrorCode::InvalidArgument,where+" has a malformed non_pit_aspects entry");
+    aspects+=(aspects.empty()?"":",")+aspect.get<std::string>();
+  }
+  if (row.at("point_in_time").get<bool>()==!aspects.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,where+" point_in_time contradicts non_pit_aspects");
+  return co::Ok(std::move(aspects));
+}
 // Binds a pinned fields manifest to an admitted role before any payload: schema,
 // role manifest pin, sessions/ids receipts and shape. Every declared extra must be
 // present; referenced extras are selected for load and, for a scored role, their
@@ -534,15 +554,25 @@ co::Status bind_fields(const Library& lib,Role& role,const std::string& director
   for (const auto& row:rows) {
     const auto name=row.at("name").get<std::string>(),file=row.at("file").get<std::string>();
     const auto sha=row.at("sha256").get<std::string>();
+    ATX_TRY(auto aspects,non_pit_aspects(row,"IC runner: "+role.name+" fields manifest entry "+name));
     if (!field_identifier(name) || base_field(name) || file!=name+".f64" || row.at("dtype")!="<f8" ||
         row.at("layout")!="date-major" || row.at("shape")!=Json::array({d,n}) || !hash_valid(sha) ||
         !files.contains(file) || files.at(file).at("sha256")!=sha || files.at(file).at("bytes")!=bytes ||
-        !available.emplace(name,FieldFile{name,dir/file,sha,bytes}).second)
+        !available.emplace(name,FieldFile{name,dir/file,sha,bytes,std::move(aspects)}).second)
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest entry: "+name);
   }
-  for (const auto& name:lib.declared_extra) if (!available.contains(name))
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: library field '"+name+
-        "' is neither a role price field nor in the pinned "+role.name+" fields manifest");
+  for (const auto& name:lib.declared_extra) {
+    const auto it=available.find(name);
+    if (it==available.end())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: library field '"+name+
+          "' is neither a role price field nor in the pinned "+role.name+" fields manifest");
+    // Look-ahead guard with no override: a non-point-in-time field is never
+    // declared, so never loaded (referenced fields are a subset of declared).
+    if (!it->second.non_pit_aspects.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: library field '"+name+
+          "' is not point-in-time in the pinned "+role.name+" fields manifest (non_pit_aspects: "+
+          it->second.non_pit_aspects+"); refusing look-ahead");
+  }
   RoleFields bound_fields{directory,pin,{}};
   for (const auto& name:lib.extra_fields) {
     const auto& field=available.at(name);

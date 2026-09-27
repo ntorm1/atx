@@ -820,8 +820,11 @@ bool fields_dir(const std::filesystem::path& dir,const std::string& role_manifes
   for (const auto& name:names) {
     const auto file=name+".f64";
     if (!payload(dir,files,file.c_str(),field_column(name,scale))) return false;
+    // The producer's flags: these three are look-ahead (T6 fix c099cade).
+    const bool pit=name!="is_common" && name!="mktcap_lagged" && name!="size_grp";
     entries.push_back({{"name",name},{"file",file},{"dtype","<f8"},{"layout","date-major"},{"shape",{D,N}},
-        {"units","synthetic"},{"clock","synthetic"},{"sha256",files.at(file).at("sha256")}});
+        {"units","synthetic"},{"clock","synthetic"},{"sha256",files.at(file).at("sha256")},
+        {"point_in_time",pit},{"non_pit_aspects",pit?Json::array():Json::array({name=="is_common"?"values":"presence"})}});
   }
   return json_file(dir/"manifest.json",{{"schema","atx.research-role-fields/v1"},{"status","complete"},
       {"role",{{"manifest_sha256",role_sha},{"sessions_sha256",receipts.at("sessions.i64").at("sha256")},
@@ -1186,6 +1189,49 @@ TEST(StrategyIcRunner, FrozenTrainResumeBindsResearchFieldPins) {
   auto no_validation=resumed_cfg; no_validation.validation_fields_directory.clear();
   no_validation.validation_fields_sha256.clear();
   refuse(no_validation,"no_validation","no --validation-fields manifest is pinned");
+}
+TEST(StrategyIcRunner, NonPointInTimeFieldsAndUnflaggedManifestsAreRefused) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares","is_common","mktcap_lagged"}));
+  // Look-ahead entries in the manifest are harmless while no library declares them.
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  const auto good=cfg; const auto good_library=read_json(cfg.library_path);
+  auto plan=good; plan.plan_only=true; std::ostringstream plan_log;
+  auto status=atx::impl::strategy::run_ic(plan,plan_log); ASSERT_TRUE(status) << status.error().to_string();
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  const auto refuse=[&](atx::impl::strategy::IcRunnerConfig attempt_cfg,const std::string& reason) {
+    for (const bool plan_only:{true,false}) {
+      attempt_cfg.plan_only=plan_only; std::ostringstream log;
+      const auto result=atx::impl::strategy::run_ic(attempt_cfg,log);
+      ASSERT_FALSE(result) << reason;
+      EXPECT_NE(result.error().to_string().find(reason),std::string::npos) << result.error().to_string();
+      EXPECT_TRUE(log.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  };
+  const auto with_library=[&](Json lib) {
+    auto next=good; next.library_path=(dir.path/"variant_library.json").string();
+    EXPECT_TRUE(json_file(next.library_path,lib,next.library_sha256)); return next;
+  };
+  // Referenced (loaded) or merely declared, a non-PIT field refuses; no override.
+  auto used=good_library; used["fields"].push_back({{"name","is_common"}});
+  used["candidates"][2]["dsl"]="is_common * volume";
+  refuse(with_library(used),"library field 'is_common' is not point-in-time in the pinned train fields manifest "
+                            "(non_pit_aspects: values); refusing look-ahead");
+  auto declared=good_library; declared["fields"].push_back({{"name","mktcap_lagged"}});
+  refuse(with_library(declared),"library field 'mktcap_lagged' is not point-in-time");
+  // A pre-flag manifest (old -fields-v1 layout) or a contradictory pair refuses
+  // the whole manifest, even for a field no candidate uses.
+  const auto manifest_path=std::filesystem::path(good.train_fields_directory)/"manifest.json";
+  const auto manifest=read_json(manifest_path);
+  const auto repinned=[&](const Json& lie) {
+    auto next=good; EXPECT_TRUE(json_file(manifest_path,lie,next.train_fields_sha256)); return next;
+  };
+  auto unflagged=manifest;
+  for (auto& entry:unflagged["fields"]) { entry.erase("point_in_time"); entry.erase("non_pit_aspects"); }
+  refuse(repinned(unflagged),"train fields manifest entry si_shares lacks point_in_time/non_pit_aspects flags");
+  auto contradictory=manifest;
+  for (auto& entry:contradictory["fields"]) if (entry.at("name")=="is_common") entry["point_in_time"]=true;
+  refuse(repinned(contradictory),"train fields manifest entry is_common point_in_time contradicts non_pit_aspects");
 }
 // ---- T1 fix round 1: pinned signs, VM identity, worker parity ----
 TEST(StrategyIcRunner, PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContribution) {
