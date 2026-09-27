@@ -9,6 +9,11 @@
 // MUST reproduce `evaluate_reference` BIT-FOR-BIT for every element-wise /
 // logical / select program (the differential test enforces this).
 //
+// CACHE IDENTITY: the IC runner's candidate signal cache keys stored VM outputs
+// by `dsl_vm_semantics_version` (atx-impl/src/strategy_ic_runner.cpp). Bump it
+// with ANY change here, in the Cs/Ts kernels, or in parse/compile that can alter
+// one evaluated bit; otherwise a reused cache serves pre-change signals.
+//
 // ===========================================================================
 //  EVAL MODEL — FULL-BUFFER COLUMNAR, batch-per-opcode (NOT a date-loop-outer)
 // ===========================================================================
