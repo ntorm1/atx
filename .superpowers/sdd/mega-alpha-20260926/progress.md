@@ -1,5 +1,23 @@
 # Active task: recent-data DSL ensemble
 
+## V6-C2 review APPROVED (conditional); library v6 u pass: cache mismatch -> fresh cache (2026-09-27 ~20:45)
+task-V6C2-review.md: APPROVED, 0 Critical, 3 Important gates for the root/merge: I1 golden (a) must be checked at base
+04e9d5bc with two test lines dropped, then the v5 REF price-risk-v1 cell SHA-compared against base outputs; I2 REAL semantic
+merge point with C1: nav_workspace_reserve_bytes must use liquidity_cached(base) or --liquidity-cache runs are
+under-reserved; I3 locate-in-aim + ind-v1 re-creates negative aims on zeroed special-tier names (-(group mean)).
+Five textual conflicts vs C1 listed in the review (reserve block, ConstructionDay fields, form_desired doc comment, two test
+tails). Fallback pooling of <5-name groups ratified (FWL-consistent, deterministic).
+- Ruling: C3 (locate-in-aim) and C5 (industry neutralisation) are evaluated as separate cells; a cell combining them
+  requires the re-zero-after-demean fix first (added to the C2 rebase brief as optional) -- cost if wrong: one extra cell.
+- Ruling: C2 rebase waits for the C1 review verdict and fix wave; then one child rebases C2 in pool-11 resolving the five
+  conflicts and I2 -- cost if wrong: idle pool time.
+u pass (library v6, plan-only OK: required_bytes 1449071914, same as v5.1): runs mega-v6l-train-u-run1..3 FAILED with
+"IC runner: candidate cache entry mismatch: bm" -- the shared cache build-equity/mega-candidate-cache is keyed by candidate id
+and 31 v6 members keep their v5.1 ids with a changed DSL.
+- Ruling: library v6 uses its own cache build-equity/mega-candidate-cache-v6 (outputs mega-v6l-train-u2-*) -- why: no code
+  change, the runner's refusal is correct behaviour, only ind_mom_12_1 / within_ind_mom would have hit -- cost if wrong:
+  ~1 extra bounded pass of recomputation. Failed runs are not trials (no statistic produced).
+
 ## Build v6-0 OK; D2 default-cell byte check PASSED; 1 new gtest fails (2026-09-27 ~20:20)
 mega-v6-0-receipt.json (untracked; build-equity is gitignored): source ad31e817, exit 0, 47.8 s, 5 TUs, 3 links; NAV exe
 212d9e22. GoogleTest: 67/68 pass; FAIL NavV6.RecipeSummaryKeysAndCliRefusals ("[json.exception.type_error.304] cannot use
