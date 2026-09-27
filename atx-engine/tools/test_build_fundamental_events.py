@@ -180,6 +180,30 @@ def test_zero_fill_rules_and_presence():
     assert math.isnan(item(no_cf, "dvc_ttm")) and item(no_cf, "debt") == 0 and no_cf[-3] == "debt"
 
 
+def test_balance_items_fallbacks_and_quarter_lags():
+    facts = [
+        # anchor 2021-06-30: equity via NCI total minus minority, minus preferred; liabilities via at - NCI total
+        fact("total_assets", None, "2021-06-30", 1000), fact("equity_incl_minority", None, "2021-06-30", 300),
+        fact("minority_int_bs", None, "2021-06-30", 20), fact("pref_stock", None, "2021-06-30", 30),
+        fact("cash", None, "2021-06-30", 40), fact("st_investments", None, "2021-06-30", 10),
+        fact("st_debt", None, "2021-06-30", 5), fact("lt_debt", None, "2021-06-30", 100),
+        fact("stockholders_equity", None, "2021-03-31", 240),   # be_lag1q
+        fact("stockholders_equity", None, "2020-03-31", 200),   # be_lag1q_lag4
+        fact("stockholders_equity", None, "2020-06-30", 210),
+        fact("total_assets", None, "2020-06-30", 900), fact("total_liabilities", None, "2020-06-30", 690),
+        fact("cash_and_st_investments", None, "2020-06-30", 60),
+        fact("net_income", "2021-04-01", "2021-06-30", 12), fact("net_income", "2020-04-01", "2020-06-30", 9),
+        fact("income_tax", "2021-01-01", "2021-06-30", 7), fact("income_tax", "2021-01-01", "2021-03-31", 3),
+    ]
+    row = bfe.process_cik(8, [acc("q", "2021-08-01T21:00:00", "10-Q", facts, period="2021-06-30")], {})[0]
+    assert item(row, "be") == 300 - 20 - 30
+    assert item(row, "lt") == 1000 - 300 and item(row, "che") == 50 and item(row, "debt") == 105
+    assert item(row, "noa") == 1000 - 50 - 700 + 105 and item(row, "noa_lag4") == 900 - 60 - 690 + 0
+    assert item(row, "be_lag1q") == 240 and item(row, "be_lag1q_lag4") == 200
+    assert (item(row, "ni_q"), item(row, "ni_q_lag4"), item(row, "txt_q")) == (12, 9, 4)
+    assert math.isnan(item(row, "txt_q_lag4")) and row[-3] == "noa_lag4"
+
+
 def fscore_state():
     facts = []
     for year, at, ni, cfo, ltd, ca, cl, sale, gp, sstk in (
