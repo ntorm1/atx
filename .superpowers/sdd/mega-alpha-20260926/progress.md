@@ -1,5 +1,14 @@
 # Active task: recent-data DSL ensemble
 
+## T39 step 2a — v5.1 library --plan-only ADMITTED — 2026-09-27 (no TRAIN statistic read)
+Receipt mega-v51-plan-run (exit 0): library fund_industry_ic_v5.json 9e5ea08c..., candidates 38, max_compiled_slots 7,
+resident_capacity 5, required_lookback 272, train required_bytes 1,449,071,914 (= T34a prediction exactly; 1,381.9 MiB, 154 MiB
+headroom under 1,536), candidate cache ready_entries 37 (opex_at cold), vm dslvm1_clang18.1. T35 NOT needed.
+- Ruling: v5.1 needs its own pipeline script (v5_train.sh pins L=v4 and has no u phase): `studies/v51_train.sh` = v5_train.sh +
+  the v4_train.sh u phase, L=fund_industry_ic_v5.json, output prefixes mega-v51-*; written by the t34b implementer in pool-8
+  (STUDIES token free since T31 landed), scoped-reviewed — cost if wrong: one small script lane; the root runs it at T39.
+
+
 ## T38 step 2 — weighted TRAIN IC pass with W_aim — 2026-09-27 (no new trial; combined signal for the grid)
 Receipt mega-v5w-train-aim-run1: exit 0, 30 s, 505 MiB, 1 pass (IC binary 647c71a7 unchanged). C_aim =
 build-equity/mega-v5w-train-aim-1/train_combined.json sha 00439b98...; C_ew = build-equity/mega-v4w-train-1 24a6cc76... (existing).
