@@ -132,6 +132,17 @@
   T20 re-review). Proceeding: fit -> weighted -> NAV (TRAIN; the v4 TRAIN read). T25 audit still in flight — any
   data fix it forces is correctness-driven and will be disclosed.
 
+- v4 TRAIN (prereg config; fit 40 s/506 MiB: 31 admitted / 6 redundant / 0 veto; weights ew-theme-v1; weighted pass
+  34 s; combined 24a6cc76...; NAV mega-nav-v4-train-b1 32 s/338 MiB): S2 x swap-fin NET SR +0.431, gross +1.100,
+  HAC .79, mu 1.45%/yr, vol 3.37%, MDD 2.8%, years 2020 +0.3% / 2021 +2.4% / 2022 +1.6%; tau_gmv .0348/.0473 (limits
+  met); tc 5.37% (3y) vs S1 1.64%; S1 net .754; S3 -.513; flat-300 .127; engine-tiers .336. Sum w tau .0519 -> NR .67.
+  GATE (>= 1.0) FAILS -> validation NOT run. Redundancy per rule: bm/ep/ebit_ev/sp -> cfp (rho .91-.94); issuance_xbrl/
+  vendor -> net_payout (.91/.96). Fast themes reversal_seasonality + options_implied = 22% weight, 49% of sum w tau.
+  Diagnosis: honest gross ~1.1 (balanced across years) but S2 impact at $1bn (1.8%/yr, ~26 bps/unit) eats ~.6 SR.
+- PRE-REGISTERED REVISION FAMILY v4.1 (construction only, same combined 24a6cc76, declared before running): NAV grid
+  trade-fraction {1,.5,.25} x band {1,2}/N (6 construction trials; b1f1 = the v4 run above). Pick max TRAIN S2 x
+  swap-fin net SR within daily limits; gate unchanged (>= 1.0). Disclosed as a revision after a failed gate.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
