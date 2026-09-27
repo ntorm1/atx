@@ -19,8 +19,9 @@ Evaluation (R3b/R4) tests these hypotheses; it never chooses a sign from data.
 Research metadata (CB2) on every row: ``population`` (:data:`POPULATIONS`: the firms
 the hypothesis is defined on, against which coverage is measured), ``evidence_class``
 (:data:`EVIDENCE_CLASSES`, derived: ``replication`` for a published anomaly or analogue
-with a pre-registered sign, ``discovery`` otherwise), ``publication_year`` (a year the
-reference cites, the anomaly's first publication, for published rows only), ``jkp_theme``
+with a pre-registered sign, ``discovery`` otherwise), ``publication_year`` (the earliest year
+the reference cites, or the later cited year :data:`PUBLICATION_YEAR_OVERRIDES` names: the
+anomaly's first publication, for published rows only), ``jkp_theme``
 (:data:`JKP_THEMES` or ``none``) and ``wave`` (:data:`WAVES`: the pre-registration wave
 that evaluates the row). One hypothesis is never tested twice: a second construction of
 a cataloged hypothesis is ``blocked_duplicate_hypothesis`` and names its primary in
@@ -81,6 +82,7 @@ __all__ = [
     "JKP_THEMES",
     "JKP_THEME_NONE",
     "POPULATIONS",
+    "PUBLICATION_YEAR_OVERRIDES",
     "WAVES",
     "AnomalyCatalogEntry",
     "AnomalyCatalogError",
@@ -263,6 +265,9 @@ CAVEAT_CODES: Mapping[str, str] = {
                     "never clipped, and counted per formation",
     "duplicate_hypothesis": "a second construction of a cataloged hypothesis (DUPLICATE_HYPOTHESES names the primary "
                             "row); cataloged for diagnostics, never tested beside the primary",
+    "vendor_zero_volume_absent": "the retained vendor bar file carries no zero-volume bars outside about 2016-2019, "
+                                 "so a zero-trading share is zero for every line in most months and cannot measure "
+                                 "what it claims (ruling C-82: not registered in w1 until a volume source has them)",
 }
 #: A sign-flipping ratio names the operand to test; a non-monotone relation names
 #: the subgroup the feature store carries separately.
@@ -444,6 +449,16 @@ def _split(value: str | None) -> tuple[str, ...]:
 
 
 _YEAR = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+#: A published row's ``publication_year`` is the earliest year its reference cites, except for the
+#: rows named here (1.12 review m8: an explicit list, so no row can pick a later cited year
+#: silently). Each names a later cited year because the earliest cited work is the construction
+#: (the Altman 1968 / Ohlson 1980 scoring papers), not the anomaly's first publication (the
+#: distress anomaly, Dichev 1998).
+PUBLICATION_YEAR_OVERRIDES: Mapping[str, int] = {
+    "altman_z": 1998,
+    "altman_z_book": 1998,
+    "ohlson_o": 1998,
+}
 
 
 def reference_publication_year(reference: str) -> int | None:
@@ -983,15 +998,21 @@ def _metadata_errors(entry: AnomalyCatalogEntry) -> list[str]:
         problems.append(f"evidence_class {entry.evidence_class!r} but a {entry.prior_evidence} row with "
                         f"{_SIGN_LABELS.get(entry.expected_sign, entry.expected_sign)} sign is {derived!r}")
     if entry.prior_evidence in _PUBLISHED_EVIDENCE:
-        # Any year the reference cites (node 0.10 review minor): the anomaly's first publication is not
-        # always the earliest cited work (Altman Z 1968 / Ohlson O 1980 are the scoring papers; the
-        # distress anomaly is Dichev 1998), so the row names it among the cited years.
+        # The earliest cited year, unless PUBLICATION_YEAR_OVERRIDES names the row (node 0.10 review minor:
+        # the anomaly's first publication is not always the earliest cited work; 1.12 review m8: only an
+        # explicit override may name a later cited year).
         cited = reference_cited_years(entry.reference)
+        override = PUBLICATION_YEAR_OVERRIDES.get(entry.feature_id)
         if not cited:
             problems.append("a published row's reference must cite a publication year")
         elif entry.publication_year not in cited:
             problems.append(f"publication_year {entry.publication_year} is not a year the reference cites "
                             f"({sorted(cited)})")
+        elif override is None and entry.publication_year != min(cited):
+            problems.append(f"publication_year {entry.publication_year} is not the earliest cited year "
+                            f"{min(cited)} and PUBLICATION_YEAR_OVERRIDES does not name the row")
+        elif override is not None and entry.publication_year != override:
+            problems.append(f"publication_year {entry.publication_year} differs from the override {override}")
     elif entry.publication_year is not None:
         problems.append(f"publication_year must be empty for a {entry.prior_evidence} row")
     if entry.jkp_theme not in (*JKP_THEMES, JKP_THEME_NONE):
@@ -1427,8 +1448,10 @@ def _render_metadata(rows: Sequence[AnomalyCatalogEntry]) -> list[str]:
         "`population` names the firms a hypothesis is defined on (coverage is measured against it); "
         "`evidence_class` is derived: `replication` for a published anomaly or analogue with a "
         "pre-registered sign, `discovery` for an economic conjecture or a two-sided hypothesis; "
-        "`publication_year` is the year the reference cites for the anomaly's first publication, by default "
-        "the earliest cited year (published rows only); "
+        "`publication_year` is the year the reference cites for the anomaly's first publication: the "
+        "earliest cited year, except for the rows an explicit override list names (a later cited year; "
+        + ", ".join(f"`{fid}` {year}" for fid, year in sorted(PUBLICATION_YEAR_OVERRIDES.items()))
+        + ") (published rows only); "
         "`jkp_theme` is the Jensen-Kelly-Pedersen (2023) theme cluster of the JKP characteristic "
         "measuring the same construct, else the theme the construct belongs to, else `none`; "
         "`wave` is the pre-registration wave whose frozen catalog digest evaluates the row.",

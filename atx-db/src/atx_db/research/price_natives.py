@@ -25,6 +25,14 @@ Conventions
       a native says log.
     * The value clock is the formation session's bar clock (22:00 UTC on the session), at or
       before the month end's decision clock.
+    * Vendor artifacts (ruling C-79, :mod:`atx_db.research.spine` ``va_suspect``): a native whose
+      window holds a vendor artifact break (a factor step on the artifact session, a close-flat
+      factor step, or a sentinel close: the bars' ``va_brk_in``, the months' ``brk_n``, the weeks'
+      sums; for the point
+      natives a sentinel formation bar or a share count restated across a break) is NULL with
+      status ``vendor_artifact_suspect`` (:data:`VA_BREAK_INPUTS`), counted, never filled. The
+      feature store has no reason code of that name (node 1.9's append-only vocabulary), so the
+      store row carries ``missing_input`` (an invalid input row) and the store meta the count.
 """
 
 from __future__ import annotations
@@ -134,6 +142,31 @@ NATIVES: tuple[Native, ...] = (
 )
 NATIVE_BY_ID: Mapping[str, Native] = {native.feature_id: native for native in NATIVES}
 
+#: Ruling C-79: the break counts (window aggregates) and point flags whose positive value makes a
+#: native ``vendor_artifact_suspect``. ``bk_a_b`` = breaks in the line months k = a..b (a ratio
+#: of the last bars of months b+1 and a spans exactly those); ``brk_N`` = breaks at the last N
+#: sessions' bars (a bar's break sits between it and the previous bar); ``w_brk`` = breaks in the
+#: weeks whose returns enter the regression; ``va_price`` / ``va_shares`` = the spine flags.
+VA_STATUS = "vendor_artifact_suspect"
+VA_STORE_REASON = "missing_input"
+_D21, _D126, _D252 = ("brk_21",), ("brk_126",), ("brk_252",)
+VA_BREAK_INPUTS: Mapping[str, tuple[str, ...]] = {
+    "ret_12_1": ("bk_1_11",), "ret_6_1": ("bk_1_5",), "ret_9_1": ("bk_1_8",), "ret_12_7": ("bk_6_11",),
+    "ret_36_13": ("bk_12_35",), "ret_60_13": ("bk_12_59",), "chmom": ("bk_1_11",), "frog_in_pan": ("bk_1_11",),
+    "seas_1_1an": ("bk_11_11",), "seas_2_5an": ("bk_23_23", "bk_35_35", "bk_47_47", "bk_59_59"),
+    "ret_1_0": ("bk_0_0",), "rvol_21d": _D21, "rvol_252d": _D252, "rmax5_21d": _D21, "rmax1_21d": _D21,
+    "rskew_252d": _D252, "beta_ew_252d": _D252, "ivol_ew_252d": _D252, "ivol_ew_21d": _D21,
+    "beta_dimson_252d": _D252, "beta_down_252d": _D252, "coskew_252d": _D252,
+    "beta_bab_1260d": ("bk_0_60", "brk_252"), "zero_trade_21d": _D21, "zero_trade_252d": _D252,
+    "turnover_126d": ("brk_126", "va_shares"), "turnover_252d": ("brk_252", "va_shares"),
+    "std_turn_126d": ("brk_126", "va_shares"), "std_dvol_126d": _D126, "ami_126d": _D126, "ami_252d": _D252,
+    "bidask_cs_21d": _D21, "bidask_ar_21d": _D21, "prc_log": ("va_price",), "prc_highprc_252d": _D252,
+    "me_line_log": ("va_price", "va_shares"), "dolvol_126d": _D126, "price_delay_52w": ("w_brk",),
+}
+if set(VA_BREAK_INPUTS) != set(NATIVE_BY_ID):
+    raise RuntimeError(f"VA_BREAK_INPUTS must cover every native: {set(NATIVE_BY_ID) ^ set(VA_BREAK_INPUTS)}")
+_BREAK_RANGES = sorted({key for keys in VA_BREAK_INPUTS.values() for key in keys if key.startswith("bk_")})
+
 
 def panel_native_specs() -> dict[str, dict[str, Any]]:
     """The ``research.panel.NATIVE_FEATURES`` registration of every price wave native (catalog validation)."""
@@ -195,6 +228,10 @@ def _daily_sql(fsno_lo: int, fsno_hi: int) -> str:
         f"sum(r * m) FILTER (WHERE {both} AND m < 0) AS d_sxy",
         f"count(*) FILTER (WHERE {dim}) AS k_n", f"sum(r) FILTER (WHERE {dim}) AS k_y",
         f"sum(r * r) FILTER (WHERE {dim}) AS k_yy",
+        # Vendor artifact breaks inside each window (C-79; a bar's break lies between it and its previous bar).
+        "coalesce(sum(va_brk_in) FILTER (WHERE g < 21), 0) AS brk_21",
+        "coalesce(sum(va_brk_in) FILTER (WHERE g < 126), 0) AS brk_126",
+        "coalesce(sum(va_brk_in), 0) AS brk_252",
     ]
     names = ("m_prev", "m", "m_next")
     for i, a in enumerate(names):
@@ -242,11 +279,14 @@ def _month_sql() -> str:
               "coalesce(sum(n_neg) FILTER (WHERE k BETWEEN 1 AND 11), 0) AS neg_1_11"]
     parts += [f"sum({c}) FILTER (WHERE k BETWEEN 0 AND 59) AS b_{c}" for c in ("n3", "s3_x", "s3_m", "s3_xm",
                                                                                 "s3_xx", "s3_mm")]
+    for key in _BREAK_RANGES:
+        low, high = (int(x) for x in key.removeprefix("bk_").split("_"))
+        parts.append(f"coalesce(sum(brk_n) FILTER (WHERE k BETWEEN {low} AND {high}), 0) AS {key}")
     return ",\n               ".join(parts)
 
 
 def _week_sql() -> str:
-    parts = ["count(*) AS w_n", "sum(y) AS w_y", "sum(y * y) AS w_yy"]
+    parts = ["count(*) AS w_n", "sum(y) AS w_y", "sum(y * y) AS w_yy", "coalesce(sum(wb), 0) AS w_brk"]
     for i in range(5):
         parts.append(f"sum(x{i}) AS w_x{i}")
         parts.append(f"sum(y * x{i}) AS w_xy{i}")
@@ -322,15 +362,17 @@ def stage_natives(work: Path, year: int, buckets: int, groups: int = 4) -> dict[
             con.execute(f"""
                 CREATE OR REPLACE TABLE u AS
                 SELECT eom, line_id, formation_date, fsno, has_session_bar, price, adj AS adj_f, fac_f, fac_lag,
-                       shares_lag_raw, shares_lagged, me_line, year(eom) * 12 + month(eom) AS mi
+                       shares_lag_raw, shares_lagged, me_line, year(eom) * 12 + month(eom) AS mi,
+                       va_suspect_price, va_suspect_shares
                 FROM read_parquet({base}) WHERE eom >= DATE '{_spine.FIRST_EOM}' AND {bucket_sql}
             """)
             con.execute(f"""
                 CREATE OR REPLACE TABLE d AS
-                SELECT line_id, sno, close, adj, high, low, volume, r, lr, fac, m, m_prev, m_next,
+                SELECT line_id, sno, close, adj, high, low, volume, r, lr, fac, m, m_prev, m_next, va_brk_in,
                        {_pairs_sql()}
                 FROM (
                   SELECT b.line_id, b.sno, b.close, b.adj, b.high, b.low, b.volume, b.r, b.lr, b.adj / b.close AS fac,
+                         b.va_brk_in,
                          k.m, k.m_prev, k.m_next,
                          lag(b.sno) OVER w AS p_sno, lag(b.high) OVER w AS p_high, lag(b.low) OVER w AS p_low,
                          lag(b.close) OVER w AS p_close, lag(b.adj / b.close) OVER w AS p_fac
@@ -351,7 +393,7 @@ def stage_natives(work: Path, year: int, buckets: int, groups: int = 4) -> dict[
                 SELECT eom, line_id,
                {_month_sql()}
                 FROM (SELECT u.eom, u.line_id, u.mi - l.lmi AS k, l.adj_last, l.n_obs, l.n_ret, l.n_pos, l.n_neg,
-                             l.n3, l.s3_x, l.s3_m, l.s3_xm, l.s3_xx, l.s3_mm
+                             l.n3, l.s3_x, l.s3_m, l.s3_xm, l.s3_xx, l.s3_mm, l.brk_n
                       FROM u JOIN (SELECT *, year(eom) * 12 + month(eom) AS lmi
                                    FROM read_parquet({line_months})) l
                         ON l.line_id = u.line_id AND l.lmi BETWEEN u.mi - 60 AND u.mi
@@ -360,9 +402,9 @@ def stage_natives(work: Path, year: int, buckets: int, groups: int = 4) -> dict[
             """).fetchnumpy()
             week = con.execute(f"""
                 WITH lw AS (
-                  SELECT line_id, week, adj_w,
+                  SELECT line_id, week, adj_w, wb,
                          CASE WHEN lag(week) OVER w = week - 7 THEN adj_w / lag(adj_w) OVER w - 1.0 END AS y
-                  FROM (SELECT b.line_id, x.week, arg_max(b.adj, b.sno) AS adj_w
+                  FROM (SELECT b.line_id, x.week, arg_max(b.adj, b.sno) AS adj_w, sum(b.va_brk_in) AS wb
                         FROM read_parquet({_spine.parquet_list(files)}) b JOIN _px_sessions x ON x.sno = b.sno
                         WHERE b.sno BETWEEN {lo - 400} AND {hi}
                         GROUP BY b.line_id, x.week)
@@ -524,8 +566,11 @@ def _compute(universe: Mapping[str, Any], daily: Mapping[str, Any], month: Mappi
 
     n = len(universe["line_id"])
     a = {**_align(universe, daily), **_align(universe, month), **_align(universe, week)}
-    for key in ("n_obs_21", "n_obs_252", "k_n", "w_n", "c_n", "c21_n", "d_n", "obs_1_11", "b_n3"):
+    for key in ("n_obs_21", "n_obs_252", "k_n", "w_n", "c_n", "c21_n", "d_n", "obs_1_11", "b_n3", "brk_21",
+                "brk_126", "brk_252", "w_brk", *_BREAK_RANGES):
         a.setdefault(key, np.full(n, np.nan))
+    a["va_price"] = np.nan_to_num(_col(universe, "va_suspect_price"), nan=0.0)
+    a["va_shares"] = np.nan_to_num(_col(universe, "va_suspect_shares"), nan=0.0)
     has_bar = np.asarray(universe["has_session_bar"], dtype=bool)
     price, adj_f = _col(universe, "price"), _col(universe, "adj_f")
     # Turnover: day t's volume restated to the lag date's share basis (fac_lag / fac_t in SQL) over the raw
@@ -621,9 +666,13 @@ def _compute(universe: Mapping[str, Any], daily: Mapping[str, Any], month: Mappi
             status[np.isfinite(value) & (value <= 0)] = "nonpositive_value"
         status[count < native.min_obs] = "insufficient_obs"
         status[miss] = "missing_input"
+        suspect = np.zeros(n, dtype=bool)
+        for key in VA_BREAK_INPUTS[fid]:
+            suspect |= np.nan_to_num(a[key], nan=0.0) > 0
+        status[suspect] = VA_STATUS
         status[~has_bar] = "no_session_bar"
-        value = np.where(np.isin(status, ("insufficient_obs", "missing_input", "no_session_bar", "nonfinite_value")),
-                         np.nan, value)
+        value = np.where(np.isin(status, ("insufficient_obs", "missing_input", "no_session_bar", "nonfinite_value",
+                                          VA_STATUS)), np.nan, value)
         columns[fid] = pa.array(value, type=pa.float64(), from_pandas=True)
         columns[fid + "__s"] = pa.array(status.astype(str), type=pa.string())
         columns[fid + "__n"] = pa.array(count.astype(np.int32), type=pa.int32())
@@ -669,19 +718,28 @@ def build_store(work: Path, feature_ids: Sequence[str], root: Path, th3: Path) -
                 frame = pd.DataFrame({
                     "eom": pd.to_datetime(table.column("eom").to_pandas()),
                     "line_id": table.column("line_id").to_pandas(), "owner_id": None,
-                    "raw": table.column(fid).to_pandas(), "status": table.column(fid + "__s").to_pandas(),
+                    "raw": table.column(fid).to_pandas(),
+                    # C-79: the store's vocabulary (1.9) has no vendor_artifact_suspect code; its row is an
+                    # invalid input row (missing_input), counted in the meta below.
+                    "status": table.column(fid + "__s").to_pandas().replace(VA_STATUS, VA_STORE_REASON),
                     "available_at": pd.to_datetime(table.column("formation_date").to_pandas())
                     + pd.Timedelta(hours=fs.DECISION_HOUR)})
                 yield frame
 
+        suspect_rows = sum(int(_spine.read_json(p.with_suffix(".json"))["stats"]["status_counts"]
+                               .get(fid, {}).get(VA_STATUS, 0)) for p in files)
         path = fs.build_feature(store, STORE_BASIS, fid, sha, chunks(), expected_sign=int(entry.expected_sign),
                                 log_base=entry.preferred_transform == "log_winsor_z", policy=policy,
                                 meta={"wave": WAVE, "native": NATIVES_VERSION, "definition": NATIVE_BY_ID[fid].expression,
                                       "min_obs": NATIVE_BY_ID[fid].min_obs, "inputs": digests,
-                                      "universe_basis": _spine.UNIVERSE_BASIS})
+                                      "universe_basis": _spine.UNIVERSE_BASIS,
+                                      "vendor_artifact_suspect_rows": suspect_rows,
+                                      "vendor_artifact_suspect_store_reason": VA_STORE_REASON,
+                                      "vendor_artifact_rule": "ruling C-79 (research.spine va_suspect)"})
         meta = store.read_meta(STORE_BASIS, fid, sha)
         entries.append({"basis": STORE_BASIS, "feature_id": fid, "feature_sha": sha, "path": path.as_posix(),
                         "rows": meta["rows"], "value_rows": meta["value_rows"], "reasons": meta["reasons"],
+                        "vendor_artifact_suspect_rows": suspect_rows,
                         "bytes": meta["bytes"], "seconds": round(time.perf_counter() - started, 2)})
     store.close()
     return {"entries": entries}
@@ -694,6 +752,9 @@ __all__ = [
     "PRODUCER",
     "REQUIRES_STORE",
     "STORE_BASIS",
+    "VA_BREAK_INPUTS",
+    "VA_STATUS",
+    "VA_STORE_REASON",
     "WAVE",
     "Native",
     "build_store",

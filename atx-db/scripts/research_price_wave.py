@@ -291,30 +291,47 @@ def _stage_lake(args: argparse.Namespace, work: Path) -> None:
         return
     base = spine.parquet_list(spine.base_files(work))
     lines = spine.sql_text((work / "lines.parquet").as_posix())
-    # type_basis and vendor_earnings_evidence let a consumer evaluate the symmetric sub-universe (lines with
-    # vendor earnings evidence, alive or delisted alike): the directory admits living lines by name, while a
-    # delisted line needs earnings evidence, so the micro-cap tail without evidence is survivor-tilted.
+    holdout = f"DATE '{spine.HOLDOUT_START}'"
+    # 1.12 review m5: the holdout seal is physical in the lake: no return of a period on or after the holdout
+    # start is exported (ret_1m of eom >= it; the EW market's sessions on or after it). Covariates stay.
+    # vendor_artifact_suspect (ruling C-79; the column 1.13's runner reads): the row's own spine values (price,
+    # shares_lagged / me_line, ret_1m or dollar_volume_21d) were withheld because they would span a flagged
+    # vendor bar. A native whose window spans one is NULL in the feature store (reason missing_input).
     datasets = {
         "spine_monthly": f"""
-            SELECT s.eom, s.line_id, s.price, s.shares_lagged, s.me_line, s.ret_1m, s.dollar_volume_21d,
+            SELECT s.eom, s.line_id, s.price, s.shares_lagged, s.me_line,
+                   CASE WHEN s.eom < {holdout} THEN s.ret_1m END AS ret_1m, s.dollar_volume_21d,
                    s.n_sessions_21d, s.universe_basis, s.size_grp, s.formation_date, s.has_session_bar,
-                   s.security_type, s.me_basis, s.shares_lag_date, s.size_basis, l.type_basis,
-                   coalesce(l.max_earn_504d, 0) > 0 AS vendor_earnings_evidence, year(s.eom) AS year
+                   s.security_type, s.me_basis, s.shares_lag_date, s.size_basis, l.type_basis, l.first_earn_date,
+                   s.va_suspect_price OR s.va_suspect_shares OR s.va_suspect_ret_1m OR s.va_suspect_liq
+                     AS vendor_artifact_suspect,
+                   s.va_suspect_price, s.va_suspect_shares, s.va_suspect_ret_1m, s.va_suspect_liq, year(s.eom) AS year
             FROM read_parquet({base}) s JOIN read_parquet({lines}) l USING (line_id)
             WHERE s.eom >= DATE '{spine.FIRST_EOM}' ORDER BY s.eom, s.line_id""",
         "market_ew_daily": f"""
             SELECT session, sno, prev_eom, m, lm, m_unclipped, names, clipped, extreme, r_min, r_max, market_basis,
                    year
-            FROM read_parquet('{(work / 'market.parquet').as_posix()}') ORDER BY sno""",
+            FROM read_parquet('{(work / 'market.parquet').as_posix()}') WHERE session < {holdout} ORDER BY sno""",
         "line_types": f"""
             SELECT line_id, first_date, last_date, bars, current_symbol, last_symbol, security_type, type_basis,
-                   directory_name, eligible, 0 AS year
+                   directory_name, first_earn_date, eligible, 0 AS year
             FROM read_parquet('{(work / 'lines.parquet').as_posix()}') ORDER BY line_id""",
     }
     path = lake.export_lake_snapshot(None, snapshot, datasets, root=args.root, source_meta={
         "retained_file": args.th3.as_posix(), "retained_sha256": spine.th3_sha256(args.th3),
         "spine_version": spine.SPINE_VERSION, "code_digest": spine.spine_code_digest(), "work_run": args.run,
-        "universe_basis": spine.UNIVERSE_BASIS, "me_basis": spine.ME_BASIS, "size_basis": spine.SIZE_BASIS})
+        "universe_basis": spine.UNIVERSE_BASIS, "me_basis": spine.ME_BASIS, "size_basis": spine.SIZE_BASIS,
+        "holdout_withheld": f"spine_monthly.ret_1m of eom >= {spine.HOLDOUT_START} and market_ew_daily sessions >= "
+                            f"{spine.HOLDOUT_START} are not exported (1.12 review m5). Known limit: the w1_price "
+                            "natives in the feature store at formations >= 2024-01 carry holdout-period prices "
+                            "(ret_1_0 of F+1 ~ the h1 label of F); read them only once the holdout is opened.",
+        "vendor_artifact_rule": "ruling C-79: research.spine va_suspect (factor step >= x"
+                                f"{spine.VA_FACTOR_STEP_MIN:g} on {spine.VA_ARTIFACT_SESSION}; factor step >= x"
+                                f"{spine.VA_FLAT_FACTOR_STEP_MIN:g} with the raw close within "
+                                f"+-{spine.VA_FLAT_CLOSE_BAND:.0%} on any session; sentinel close >= "
+                                f"{spine.VA_SENTINEL_CLOSE_MIN:g} and > x{spine.VA_SENTINEL_RATIO:g} its nearest "
+                                "prior close below that floor; no future close; unanchored high closes are "
+                                "counted as ambiguous, not inferred corrupt)"})
     manifest = lake.lake_manifest(snapshot, args.root)
     stats = {"snapshot": snapshot, "path": path.as_posix(), "snapshot_sha256": manifest["snapshot_sha256"],
              "datasets": {n: {"rows": d["rows"], "dataset_sha256": d["dataset_sha256"], "files": len(d["files"])}
@@ -333,6 +350,13 @@ def _stage_coverage(args: argparse.Namespace, work: Path) -> None:
     try:
         for path in sorted((work / "store").glob("group-*.json")):
             for entry in spine.read_json(path)["stats"]["entries"]:
+                fid = entry["feature_id"]
+                first_required = {"ret_36_13": 2015, "ret_60_13": 2017,
+                                  "beta_bab_1260d": 2017, "seas_2_5an": 2017}.get(fid, 2014)
+                monthly = con.execute(f"""
+                    SELECT eom, count(*) FILTER (WHERE reason = 0) AS v, count(*) AS u
+                    FROM read_parquet('{entry['path']}') GROUP BY eom ORDER BY eom
+                """).fetchall()
                 rows = con.execute(f"""
                     SELECT year(eom), count(DISTINCT eom), min(v), median(v), max(v), min(u),
                            count(*) FILTER (WHERE v >= 4500)
@@ -340,12 +364,31 @@ def _stage_coverage(args: argparse.Namespace, work: Path) -> None:
                           FROM read_parquet('{entry['path']}') GROUP BY eom)
                     GROUP BY 1 ORDER BY 1
                 """).fetchall()
-                features[entry["feature_id"]] = {"feature_sha": entry["feature_sha"], "reasons": entry["reasons"],
+                features[fid] = {"feature_sha": entry["feature_sha"], "reasons": entry["reasons"],
+                                                 "threshold": 4500, "first_required_year": first_required,
+                                                 "monthly": [{"eom": str(eom), "valid_rows": int(v),
+                                                              "universe_rows": int(u),
+                                                              "coverage_status": "MET" if v >= 4500 else "NOT MET",
+                                                              "acceptance_in_scope": first_required <= eom.year <= 2025}
+                                                             for eom, v, u in monthly],
                                                  "years": {str(y): {"months": int(m), "min": int(lo),
                                                                     "median": float(md), "max": int(hi),
                                                                     "universe_min": int(um),
-                                                                    "months_ge_4500": int(ge)}
+                                                                    "months_ge_4500": int(ge),
+                                                                    "coverage_status": "MET" if lo >= 4500 else "NOT MET",
+                                                                    "acceptance_in_scope": first_required <= y <= 2025}
                                                            for y, m, lo, md, hi, um, ge in rows}}
+                if fid in ("zero_trade_21d", "zero_trade_252d"):
+                    zero = con.execute(f"""
+                        SELECT eom, count(*) FILTER (WHERE reason = 0) AS n,
+                               count(*) FILTER (WHERE reason = 0 AND raw <> 0) AS nonzero
+                        FROM read_parquet('{entry['path']}')
+                        WHERE eom < DATE '{spine.HOLDOUT_START}' GROUP BY eom ORDER BY eom
+                    """).fetchall()
+                    features[fid]["unsupported"] = {
+                        "reason": "vendor_zero_volume_absent", "registered_in_w1": False,
+                        "monthly": [{"eom": str(eom), "valid_rows": int(n), "nonzero_rows": int(nz),
+                                     "all_zero": n > 0 and nz == 0} for eom, n, nz in zero]}
         universe = con.execute(f"""
             SELECT year(eom), count(DISTINCT eom), min(n), median(n), max(n), min(sb), median(sb)
             FROM (SELECT eom, count(*) AS n, count(*) FILTER (WHERE has_session_bar) AS sb
@@ -353,6 +396,26 @@ def _stage_coverage(args: argparse.Namespace, work: Path) -> None:
                   WHERE eom >= DATE '{spine.FIRST_EOM}' GROUP BY eom)
             GROUP BY 1 ORDER BY 1
         """).fetchall()
+        # 1.12 review m2 / m7: formations where the vendor file is thin at the formation session (under 97 % of
+        # the spine lines have a bar there) and formations without any size (me_line) value: data limits.
+        thin = con.execute(f"""
+            SELECT eom, formation_date, count(*), count(*) FILTER (WHERE has_session_bar), count(me_line)
+            FROM read_parquet({spine.parquet_list(spine.base_files(work))})
+            WHERE eom >= DATE '{spine.FIRST_EOM}' GROUP BY 1, 2
+            HAVING count(*) FILTER (WHERE has_session_bar) < 0.97 * count(*) OR count(me_line) = 0 ORDER BY 1
+        """).fetchall()
+        limits = []
+        for eom, formation, rows, bars, me in thin:
+            around = con.execute(f"""
+                SELECT trade_date, count(*) FROM read_parquet({spine.parquet_list(spine.bars_files(work))})
+                WHERE trade_date BETWEEN ? - INTERVAL 10 DAY AND ? + INTERVAL 10 DAY GROUP BY 1 ORDER BY 1
+            """, [formation, formation]).fetchall()
+            others = sorted(int(n) for day, n in around if day != formation)
+            limits.append({"eom": str(eom), "formation_date": str(formation), "spine_rows": int(rows),
+                           "session_bar_rows": int(bars), "no_session_bar": int(rows) - int(bars),
+                           "me_line_rows": int(me),
+                           "file_bars_on_formation_session": next((int(n) for d, n in around if d == formation), 0),
+                           "file_bars_neighbour_median": others[len(others) // 2] if others else None})
     finally:
         con.close()
         spine.drop_scratch(work, "coverage")
@@ -369,9 +432,37 @@ def _stage_coverage(args: argparse.Namespace, work: Path) -> None:
                     side = json.loads(path.read_text(encoding="utf-8"))
                     labels.setdefault(str(h), {})[str(year)] = {"rows": side["rows"], "reasons": side["reasons"]}
         matrix.close()
+    # Ruling C-79 counts: flagged bars (every bucket), spine flags, natives withheld.
+    keys = ("factor_step_bars", "factor_step_close_flat_bars", "sentinel_bars", "break_bars_returns_nulled",
+            "unanchored_high_close_bars", "unanchored_high_close_lines")
+    va: dict[str, Any] = {key: 0 for key in keys}
+    va["bars"] = []
+    for path in sorted((work / "bars").glob("bucket=*.json")):
+        item = spine.read_json(path)["stats"]["vendor_artifact_suspect"]
+        va["rule"] = item["rule"]
+        for key in keys:
+            va[key] += int(item[key])
+        va["bars"] += item["bars"]
+    va["lines"] = len({b["line_id"] for b in va["bars"]})
+    va["bars_by_kind_and_session"] = {}
+    for bar in va["bars"]:
+        kind = bar["kind"] + (" 2021-01-04" if bar["trade_date"] == str(spine.VA_ARTIFACT_SESSION) else " other")
+        va["bars_by_kind_and_session"][kind] = va["bars_by_kind_and_session"].get(kind, 0) + 1
+    spine_flags: dict[str, int] = {}
+    for path in sorted((work / "base").glob("year=*.json")):
+        for month in spine.read_json(path)["stats"]["months"]:
+            for key in ("va_suspect_price", "va_suspect_shares", "va_suspect_ret_1m", "va_suspect_liq"):
+                spine_flags[key] = spine_flags.get(key, 0) + int(month.get(key, 0))
+    natives_va: dict[str, int] = {}
+    for path in sorted((work / "natives").glob("year=*.json")):
+        for fid, counts in spine.read_json(path)["stats"]["status_counts"].items():
+            natives_va[fid] = natives_va.get(fid, 0) + int(counts.get(price_natives.VA_STATUS, 0))
+    va["spine_rows_withheld"] = spine_flags
+    va["native_rows_vendor_artifact_suspect"] = natives_va
     stats = {"features": features, "universe": [
         {"year": int(y), "months": int(m), "min": int(lo), "median": float(md), "max": int(hi),
          "session_bar_min": int(sbl), "session_bar_median": float(sbm)} for y, m, lo, md, hi, sbl, sbm in universe],
+        "data_limits": limits, "vendor_artifacts": va,
         "labels": {"label_sha": label_sha, "by_horizon_year": labels}, "natives": len(price_natives.NATIVES)}
     spine.finish_receipt(work / "coverage.json", price_natives.natives_code_digest(), {}, [], stats, started)
 

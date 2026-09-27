@@ -18,12 +18,16 @@ Bars (``stage_bars``, one job per line bucket ``securityID % K``)
     * Row validity: a non-empty symbol, a positive finite close, a non-negative volume, and
       ``adjusted_close = close x cumulReturnFactor`` when finite and positive
       (``ticker_history_bulk._RAW_CTE``). Deviation from the bulk publisher, which also drops a
-      row whose OHLC range is inconsistent: on ~20 sessions (mostly the day before an exchange
-      holiday, 2016-01 .. 2018-02, and 2025-05-20) the vendor's ``open`` is the prior close and
-      its high/low exclude it, on up to half of the lines. Their closes are valid, and dropping
-      them would manufacture missing sessions (a broken return chain, an empty formation or
-      label session). Such a row is kept with ``ohlc_ok = false`` and NULL ``open/high/low``
-      (only the spread natives read the range; they skip the pair); counted in the receipt.
+      row whose OHLC range is inconsistent: such a row is kept with ``ohlc_ok = false`` and NULL
+      ``open/high/low`` (only the spread natives read the range; they skip the pair); counted in
+      the receipt. In the retained file (272,374 rows; 1.12 review m1) 71 % of them have only
+      the open outside [low, high], 17.5 % a missing or zero open/high/low and 11.4 % the close
+      outside the range (median excess 0.2 %). About 96k sit on 21 sessions (mostly the day
+      before an exchange holiday, 2016-01 .. 2018-02, and 2025-05-20, where the vendor's open is
+      the prior close on up to half of the lines); the rest are spread over 3,621 sessions.
+      Dropping them would manufacture missing sessions (a broken return chain, an empty
+      formation or label session). The bulk publisher drops them, so final labels (3.8) would
+      miss sessions these provisional labels keep: the alignment is routed to 3.2/3.8.
     * Duplicate vendor keys (1.9 C2): one whole row per ``(line, session)`` by the
       publisher's total order (``_vendor_artifact.bar_pick_order_sql(with_shares=True)``,
       then volume: node 0.13's I4 pick, the same terms as ``market_daily``), then high, low,
@@ -38,15 +42,46 @@ Bars (``stage_bars``, one job per line bucket ``securityID % K``)
     * VA1 v2 (``_vendor_artifact.repaired_bars_sql`` with the same-bar share veto) over the
       line's whole history: ``adj = adjusted_close x va_multiplier``. Rows without a valid
       adjusted close are dropped (counted).
+    * Vendor artifact flag (ruling C-79; VA1 v2 repairs factor *decreases* only). ``va_suspect``
+      labels a bar ``factor_step_artifact_session`` when, on :data:`VA_ARTIFACT_SESSION`, its
+      repaired factor ``adj / close`` is at least :data:`VA_FACTOR_STEP_MIN` times the line's
+      previous bar's (the ruling's rule, whatever the close did); ``factor_step_close_flat``
+      when, on any session, the factor is at least :data:`VA_FLAT_FACTOR_STEP_MIN` times the
+      previous bar's (at most :data:`VA_FLAT_MAX_GAP_SESSIONS` sessions back) while the raw close
+      stays within +-:data:`VA_FLAT_CLOSE_BAND` of the previous close (unlike the inverse raw-close
+      move expected from a split alone; the adjusted return is then >= +50 % while the raw move
+      is bounded by 25 %). This is an input-quality exclusion, not a verified correction: an
+      offsetting genuine price move around a corporate action can also satisfy it. It reads
+      only the current and preceding bars, never a later return. ``sentinel_close`` applies when
+      its close is at least
+      :data:`VA_SENTINEL_CLOSE_MIN` and more than :data:`VA_SENTINEL_RATIO` times the line's
+      nearest *prior* close below that floor (a run retains the same prior anchor). No subsequent
+      close is consulted. High closes without such a prior anchor are explicitly labeled
+      ``va_sentinel_unanchored`` and counted as ambiguous, not inferred to be corrupt: this
+      includes genuinely high-priced lines whose whole retained history is above the floor.
+      The close-flat rule extends
+      the ruling's x50 rule (sized in the fix round: on 2021-01-04, 73 more bars with a factor
+      step of x2 .. x50 and a flat close, adjusted returns +200 % .. +3,800 %; 27 bars on other
+      sessions, two of them x100). ``va_brk_in`` counts the
+      breaks a bar introduces (1 at a flagged bar, +1 at the bar after a sentinel) and ``va_brk``
+      is their running sum per line: a price ratio between two bars is clean only when both
+      carry the same ``va_brk``. Downstream (never filled, always counted): ``r``/``lr`` are NULL
+      at a bar with ``va_brk_in > 0``; a label whose entry and exit bars differ in ``va_brk`` is
+      ``invalid``; a native whose window holds a break is NULL with status
+      ``vendor_artifact_suspect``; spine columns that would span one are NULL with a
+      ``va_suspect_*`` flag. The warehouse-level VA1 extension to increase-side artifacts on any
+      session is CARRY 3.2 (``_vendor_artifact`` is node 0.13's and is not edited here).
     * ``r`` / ``lr``: the simple / log return between two *consecutive* rule sessions both
       observed by the line (a return across a gap is not daily and is NULL).
 
-Lines (``stage_lines``): first/last session, current and historical symbols, and the line's
-security type (``universe_basis='name_pattern_reconstructed'``, see :func:`classify_lines`).
+Lines (``stage_lines``): first/last session, current and historical symbols, the first bar with
+vendor earnings evidence, and the line's security type (see :func:`classify_lines`).
 
 Spine (``stage_spine``, one job per year; ``spine_monthly``): one row per (calendar month end
 ``eom``, line) for every line of an eligible type (:data:`ELIGIBLE_SECURITY_TYPES`) with at
-least one observed bar in the month. The formation session is the month's last rule session
+least one observed bar in the month and vendor earnings evidence dated at or before the
+formation session (ruling C-78: one point-in-time rule for listed and delisted lines; see
+:func:`classify_lines`). The formation session is the month's last rule session
 (``calendar.expected_month_end_session``), known at its 22:00 UTC. Columns: ``price`` (close
 at the formation session; NULL when the line has no bar on it), ``shares_lagged`` (A8
 domestic modeled lag, ``me_basis='vendor_shares_lag90'``: the vendor count of the line's last
@@ -58,7 +93,11 @@ formation month's return, repaired adjusted close), ``dollar_volume_21d`` and
 ``n_sessions_21d`` (observed sessions among the last 21), ``size_grp`` (JKP size groups on
 the Fama-French NYSE ME breakpoints of the month: mega >= p80, large >= p50, small >= p20,
 micro below; the JKP nano split needs the NYSE p1, which French does not publish, so micro
-includes nano: ``size_basis``).
+includes nano: ``size_basis``). ``me_line`` and ``size_grp`` are NULL at the formations
+2012-04 .. 2012-06: their share lag date falls before the file's first bar (1.12 review m7).
+``va_suspect_price`` / ``_shares`` / ``_ret_1m`` / ``_liq`` flag the rows whose price (a
+sentinel formation bar), lagged share count (restated across a break), ``ret_1m`` or 21-session
+dollar volume (a sentinel in the window) were withheld (NULL) under ruling C-79.
 
 EW market (``stage_market``): the P3 sealed convention (``research.events``): per session, the
 equal-weighted mean of the daily bar returns (VA1 v2 repaired adjusted close) of the lines in
@@ -104,7 +143,9 @@ LAST_EOM = dt.date(2026, 8, 31)
 BASE_FIRST_EOM = dt.date(2012, 3, 31)
 LINE_PREFIX = "TBLTICKERHISTORY-"
 VENDOR_SOURCE = "TickerHistory3.parquet"
-UNIVERSE_BASIS = "name_pattern_reconstructed"
+#: Ruling C-78: a line enters at formation F only on vendor earnings evidence dated at or before
+#: F's session, listed and delisted alike; the directory only excludes listed non-commons.
+UNIVERSE_BASIS = "pit_vendor_earnings_evidence_name_pattern_exclusion"
 ME_BASIS = "vendor_shares_lag90"
 #: A8 domestic modeled lag: a vendor share run is read 90 calendar days after its bar.
 SHARES_LAG_DAYS = 90
@@ -123,6 +164,21 @@ MARKET_BASIS = "equal_weight_prior_formation_spine_lines_bar_returns_winsorized_
 #: A session whose unclipped mean differs from the winsorized one by more than this is listed
 #: in the market receipt (a vendor-bar data finding; never a real market move).
 MARKET_GAP_REPORT = 0.01
+#: Ruling C-79 (research-layer vendor artifact flag): the artifact session, the factor step that
+#: flags a bar on it, and the sentinel-close rule (a close at least the floor and more than the
+#: ratio times the line's nearest prior close below the floor; never a future close).
+VA_ARTIFACT_SESSION = dt.date(2021, 1, 4)
+VA_FACTOR_STEP_MIN = 50.0
+#: The close-flat factor step (any session): a factor at least this many times the previous bar's
+#: (at most VA_FLAT_MAX_GAP_SESSIONS back) with the raw close within +-VA_FLAT_CLOSE_BAND of it.
+VA_FLAT_FACTOR_STEP_MIN = 2.0
+VA_FLAT_CLOSE_BAND = 0.25
+VA_FLAT_MAX_GAP_SESSIONS = 5
+VA_SENTINEL_CLOSE_MIN = 1000.0
+VA_SENTINEL_RATIO = 100.0
+VA_FACTOR_STEP = "factor_step_artifact_session"
+VA_FACTOR_FLAT = "factor_step_close_flat"
+VA_SENTINEL = "sentinel_close"
 DEFAULT_BUCKETS = 16
 
 _SAFE = re.compile(r"^[A-Za-z0-9_.:/\\ -]+$")
@@ -457,26 +513,63 @@ def stage_bars(th3: Path, work: Path, bucket: int, buckets: int) -> dict[str, An
         """).fetchone()
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp")
+        floor, ratio, step = float(VA_SENTINEL_CLOSE_MIN), float(VA_SENTINEL_RATIO), float(VA_FACTOR_STEP_MIN)
+        flat_step, band, gap = float(VA_FLAT_FACTOR_STEP_MIN), float(VA_FLAT_CLOSE_BAND), int(VA_FLAT_MAX_GAP_SESSIONS)
+        line_order = "PARTITION BY line_id ORDER BY sno"
         con.execute(f"""
             COPY (
               SELECT line_id, trade_date, sno, symbol, current_symbol, close, adj, open, high, low, volume, shares,
-                     earn_504d, va_step, key_rows, ohlc_ok,
-                     CASE WHEN prev_sno = sno - 1 THEN adj / prev_adj - 1.0 END AS r,
-                     CASE WHEN prev_sno = sno - 1 THEN ln(adj / prev_adj) END AS lr
+                     earn_504d, va_step, key_rows, ohlc_ok, va_suspect, va_brk_in,
+                     close >= {floor} AND p_ok IS NULL AS va_sentinel_unanchored,
+                     CAST(sum(va_brk_in) OVER ({line_order} ROWS UNBOUNDED PRECEDING) AS INTEGER) AS va_brk,
+                     CASE WHEN prev_sno = sno - 1 AND va_brk_in = 0 THEN adj / prev_adj - 1.0 END AS r,
+                     CASE WHEN prev_sno = sno - 1 AND va_brk_in = 0 THEN ln(adj / prev_adj) END AS lr
               FROM (
-                SELECT *, lag(sno) OVER w AS prev_sno, lag(adj) OVER w AS prev_adj
-                FROM (SELECT line_id, trade_date, sno, symbol, current_symbol, close,
-                             adjusted_close * va_multiplier AS adj, CASE WHEN ohlc_ok THEN open END AS open,
-                             CASE WHEN ohlc_ok THEN high END AS high, CASE WHEN ohlc_ok THEN low END AS low, volume,
-                             shares_outstanding AS shares, earn_504d, va_ln_k <> 0 AS va_step, key_rows, ohlc_ok
-                      FROM rep WHERE adjusted_close > 0 AND isfinite(adjusted_close * va_multiplier)
-                                     AND adjusted_close * va_multiplier > 0)
-                WINDOW w AS (PARTITION BY line_id ORDER BY sno))
+                SELECT *, CAST(CAST(va_suspect IS NOT NULL AS INTEGER)
+                               + CAST(coalesce(lag(va_suspect) OVER ({line_order}) = '{VA_SENTINEL}', false) AS INTEGER)
+                               AS TINYINT) AS va_brk_in
+                FROM (
+                  SELECT *,
+                         CASE WHEN trade_date = DATE '{VA_ARTIFACT_SESSION}' AND prev_fac > 0
+                                   AND adj / close >= {step} * prev_fac THEN '{VA_FACTOR_STEP}'
+                              WHEN prev_fac > 0 AND prev_close > 0 AND sno - prev_sno <= {gap}
+                                   AND adj / close >= {flat_step} * prev_fac
+                                   AND close BETWEEN {1.0 - band} * prev_close AND {1.0 + band} * prev_close
+                                   THEN '{VA_FACTOR_FLAT}'
+                              WHEN close >= {floor} AND p_ok IS NOT NULL
+                                   AND close > {ratio} * p_ok THEN '{VA_SENTINEL}'
+                         END AS va_suspect
+                  FROM (
+                    SELECT *, lag(sno) OVER ({line_order}) AS prev_sno, lag(adj) OVER ({line_order}) AS prev_adj,
+                           lag(adj / close) OVER ({line_order}) AS prev_fac,
+                           lag(close) OVER ({line_order}) AS prev_close,
+                           last_value(CASE WHEN close < {floor} THEN close END IGNORE NULLS)
+                             OVER ({line_order} ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p_ok
+                    FROM (SELECT line_id, trade_date, sno, symbol, current_symbol, close,
+                                 adjusted_close * va_multiplier AS adj, CASE WHEN ohlc_ok THEN open END AS open,
+                                 CASE WHEN ohlc_ok THEN high END AS high, CASE WHEN ohlc_ok THEN low END AS low,
+                                 volume, shares_outstanding AS shares, earn_504d, va_ln_k <> 0 AS va_step, key_rows,
+                                 ohlc_ok
+                          FROM rep WHERE adjusted_close > 0 AND isfinite(adjusted_close * va_multiplier)
+                                         AND adjusted_close * va_multiplier > 0))))
               ORDER BY trade_date, line_id
             ) TO {sql_text(tmp.as_posix())} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
         """)
-        written = con.execute(f"SELECT count(*), count(r), min(trade_date), max(trade_date) "
+        written = con.execute(f"SELECT count(*), count(r), min(trade_date), max(trade_date), "
+                              f"count(*) FILTER (WHERE va_suspect = '{VA_FACTOR_STEP}'), "
+                              f"count(*) FILTER (WHERE va_suspect = '{VA_SENTINEL}'), "
+                              f"count(*) FILTER (WHERE va_brk_in > 0), "
+                              f"count(DISTINCT line_id) FILTER (WHERE va_suspect IS NOT NULL), "
+                              f"count(*) FILTER (WHERE va_suspect = '{VA_FACTOR_FLAT}'), "
+                              f"count(*) FILTER (WHERE va_sentinel_unanchored), "
+                              f"count(DISTINCT line_id) FILTER (WHERE va_sentinel_unanchored) "
                               f"FROM read_parquet({sql_text(tmp.as_posix())})").fetchone()
+        suspects = con.execute(f"""
+            SELECT line_id, trade_date, va_suspect, close, adj / close / prev_fac, prev_close
+            FROM (SELECT *, lag(adj / close) OVER ({line_order}) AS prev_fac, lag(close) OVER ({line_order}) AS prev_close
+                  FROM read_parquet({sql_text(tmp.as_posix())}))
+            WHERE va_suspect IS NOT NULL ORDER BY line_id, trade_date
+        """).fetchall()
     finally:
         con.close()
         drop_scratch(work, name)
@@ -489,7 +582,21 @@ def stage_bars(th3: Path, work: Path, bucket: int, buckets: int) -> dict[str, An
              "picked_rows": int(dup[2]), "invalid_adjusted_rows": int(dup[3]),
              "va_steps": int(steps[0]), "va_lines": int(steps[1]), "va_steps_2021_01_04": int(steps[2]),
              "rows": int(written[0]), "daily_returns": int(written[1]), "first": str(written[2]),
-             "last": str(written[3])}
+             "last": str(written[3]),
+             "vendor_artifact_suspect": {
+                 "rule": {"artifact_session": str(VA_ARTIFACT_SESSION), "factor_step_min": VA_FACTOR_STEP_MIN,
+                          "flat_factor_step_min": VA_FLAT_FACTOR_STEP_MIN, "flat_close_band": VA_FLAT_CLOSE_BAND,
+                          "flat_max_gap_sessions": VA_FLAT_MAX_GAP_SESSIONS,
+                          "sentinel_close_min": VA_SENTINEL_CLOSE_MIN, "sentinel_ratio": VA_SENTINEL_RATIO,
+                          "sentinel_anchor": "nearest_prior_close_below_floor; no future close",
+                          "unanchored_high_close": "ambiguous, counted; no corruption inferred"},
+                 "factor_step_bars": int(written[4]), "factor_step_close_flat_bars": int(written[8]),
+                 "sentinel_bars": int(written[5]),
+                 "break_bars_returns_nulled": int(written[6]), "lines": int(written[7]),
+                 "unanchored_high_close_bars": int(written[9]), "unanchored_high_close_lines": int(written[10]),
+                 "bars": [{"line_id": lid, "trade_date": str(day), "kind": kind, "close": close,
+                           "factor_step": None if k is None else round(float(k), 3), "prev_close": pc}
+                          for lid, day, kind, close, k, pc in suspects]}}
     if written[0] + int(dup[3]) != int(dup[2]):
         raise RuntimeError(f"bucket {bucket}: {written[0]} written + {dup[3]} invalid-adjusted != {dup[2]} picked")
     return finish_receipt(receipt, code, inputs, [out], stats, started)
@@ -703,7 +810,7 @@ LISTED_AT_SNAPSHOT_DAYS = 14
 
 def classify_lines(lines: Sequence[Mapping[str, Any]], directory: Mapping[str, Mapping[str, Any]],
                    file_last: dt.date) -> list[dict[str, Any]]:
-    """The security type of each line (``universe_basis='name_pattern_reconstructed'``).
+    """The security type of each line (``universe_basis`` :data:`UNIVERSE_BASIS`).
 
     The vendor file carries no security names, so the A2 classifier
     (``universe_us_listed.classify_security_type``) reads the only retained name source: the
@@ -712,14 +819,20 @@ def classify_lines(lines: Sequence[Mapping[str, Any]], directory: Mapping[str, M
     * ``directory_name``: a line still trading at the snapshot (last bar within
       :data:`LISTED_AT_SNAPSHOT_DAYS` of the file's last session) whose current vendor symbol
       the directory lists: A2 on the directory's security name with its ETF and test-issue
-      flags (the reconstructed universe's backcast through the latest symbol).
+      flags. The directory only *excludes* here (a listed ETF, fund, preferred, unit ... is
+      never eligible); a listed common is typed ``common`` but still needs evidence at F.
     * ``vendor_earnings_events``: any other line (delisted, renamed away, or not in the
       directory). A symbol's current directory entry may name a later holder of a reused
       symbol, so it is not read. The line is ``common_unverified`` when the vendor ever
       attached an earnings event to it (``nEarnCnt_504d > 0``: an operating company; funds,
-      ETFs, ETNs and trusts never report earnings), else ``unknown`` (excluded). This keeps
-      the delisted tail in the universe (no survivor-only universe) at the cost of admitting
-      delisted ADRs, REITs and LPs, which the directory rule would exclude.
+      ETFs, ETNs and trusts never report earnings), else ``unknown`` (never eligible).
+
+    Ruling C-78 (1.12 review I1): eligibility at a formation F is point in time and the same for
+    listed and delisted lines: an eligible type *and* ``first_earn_date`` (the line's first bar
+    with ``nEarnCnt_504d > 0``) on or before F's session (:func:`stage_spine`). No line enters on
+    its survival to the snapshot or on evidence first seen after F. Asymmetry left, stated: a
+    delisted ADR, REIT or LP with earnings evidence is admitted (no name source says what it
+    was), while its listed twin is excluded by its directory name.
     """
     from ..universe_us_listed import classify_security_type
 
@@ -734,7 +847,7 @@ def classify_lines(lines: Sequence[Mapping[str, Any]], directory: Mapping[str, M
             out.append({**line, "security_type": kind, "type_basis": "directory_name",
                         "directory_name": entry["name"], "directory_file": entry["file"]})
             continue
-        earnings = (line.get("max_earn_504d") or 0) > 0
+        earnings = line.get("first_earn_date") is not None
         out.append({**line, "security_type": "common_unverified" if earnings else "unknown",
                     "type_basis": "vendor_earnings_events", "directory_name": None, "directory_file": None})
     return out
@@ -773,7 +886,8 @@ def stage_lines(work: Path) -> dict[str, Any]:
         drop_scratch(work, "lines")
     typed = classify_lines(lines, read_directory(), max(line["last_date"] for line in lines))
     for line in typed:
-        line["eligible"] = line["security_type"] in ELIGIBLE_SECURITY_TYPES
+        # Eligible at some formation: an eligible type with evidence; stage_spine applies the date (C-78).
+        line["eligible"] = line["security_type"] in ELIGIBLE_SECURITY_TYPES and line["first_earn_date"] is not None
     columns = {name: [line[name] for line in typed] for name in (*names, "security_type", "type_basis",
                                                                  "directory_name", "directory_file", "eligible")}
     table = pa.table(columns)
@@ -784,9 +898,15 @@ def stage_lines(work: Path) -> dict[str, Any]:
     for line in typed:
         bucket = counts.setdefault(line["type_basis"], {})
         bucket[line["security_type"]] = bucket.get(line["security_type"], 0) + 1
+    no_evidence: dict[str, int] = {}
+    for line in typed:
+        if line["security_type"] in ELIGIBLE_SECURITY_TYPES and line["first_earn_date"] is None:
+            no_evidence[line["type_basis"]] = no_evidence.get(line["type_basis"], 0) + 1
     stats = {"lines": len(typed), "eligible": sum(1 for line in typed if line["eligible"]),
              "types_by_basis": counts, "universe_basis": UNIVERSE_BASIS,
-             "eligible_types": list(ELIGIBLE_SECURITY_TYPES)}
+             "eligible_types": list(ELIGIBLE_SECURITY_TYPES),
+             "eligible_type_without_evidence_by_basis": no_evidence,
+             "rule": "eligible at formation F: an eligible type and first_earn_date <= F's session (ruling C-78)"}
     return finish_receipt(receipt, code, inputs, [out], stats, started)
 
 
@@ -837,72 +957,85 @@ def stage_spine(work: Path, year: int, breakpoints: Sequence[str]) -> dict[str, 
         low = min(f[1] for f in forms).replace(day=1) - dt.timedelta(days=SHARES_LAG_DAYS + SHARES_MAX_AGE_DAYS + 40)
         high = max(f[1] for f in forms)
         con.execute(f"""
-            CREATE TABLE b AS SELECT line_id, trade_date, sno, close, adj, volume, shares
+            CREATE TABLE b AS SELECT line_id, trade_date, sno, close, adj, volume, shares, va_suspect, va_brk
             FROM read_parquet({parquet_list(bars_files(work))})
             WHERE trade_date BETWEEN ? AND ?
         """, [low, high])
-        con.execute(f"CREATE TABLE lines AS SELECT line_id, security_type FROM read_parquet("
+        con.execute(f"CREATE TABLE lines AS SELECT line_id, security_type, first_earn_date FROM read_parquet("
                     f"{sql_text((work / 'lines.parquet').as_posix())}) WHERE eligible")
-        # Alive in the month: an observed bar between the month's first session and its formation session.
+        # Alive in the month: an observed bar between the month's first session and its formation session;
+        # eligible at F only on vendor earnings evidence dated at or before F's session (ruling C-78).
         con.execute("""
             CREATE TABLE u AS
             SELECT f.eom, f.formation_date, f.fsno, f.lag_date, b.line_id, l.security_type,
                    max(b.trade_date) AS last_obs_date, count(*) AS n_obs_month
             FROM b JOIN _px_forms f ON b.sno BETWEEN f.first_sno AND f.fsno
-            JOIN lines l ON l.line_id = b.line_id
+            JOIN lines l ON l.line_id = b.line_id AND l.first_earn_date <= f.formation_date
             GROUP BY ALL
         """)
-        con.execute("""
+        # A sentinel formation bar (ruling C-79) has a bar but no usable price.
+        con.execute(f"""
             CREATE TABLE s AS
-            SELECT u.*, fb.close AS price, fb.adj, fb.adj / fb.close AS fac_f
+            SELECT u.*, fb.line_id IS NOT NULL AS has_bar, coalesce(fb.va_suspect = '{VA_SENTINEL}', false) AS va_price,
+                   CASE WHEN NOT coalesce(fb.va_suspect = '{VA_SENTINEL}', false) THEN fb.close END AS price,
+                   fb.adj, fb.adj / fb.close AS fac_f, fb.va_brk AS brk_f
             FROM u LEFT JOIN b fb ON fb.line_id = u.line_id AND fb.sno = u.fsno
         """)
         con.execute("""
             CREATE TABLE prev AS
-            SELECT f.eom, b.line_id, arg_max(b.adj, b.sno) AS prev_adj
+            SELECT f.eom, b.line_id, arg_max(b.adj, b.sno) AS prev_adj, arg_max(b.va_brk, b.sno) AS prev_brk
             FROM b JOIN _px_forms f ON b.sno BETWEEN f.prev_first_sno AND f.prev_fsno
             SEMI JOIN lines l ON l.line_id = b.line_id
             GROUP BY ALL
         """)
-        con.execute("""
+        con.execute(f"""
             CREATE TABLE liq AS
-            SELECT f.eom, b.line_id, count(*) AS n_sessions_21d, avg(b.close * b.volume) AS dollar_volume_21d
+            SELECT f.eom, b.line_id, count(*) AS n_sessions_21d, avg(b.close * b.volume) AS dollar_volume_21d,
+                   count(*) FILTER (WHERE b.va_suspect = '{VA_SENTINEL}') AS liq_sentinels
             FROM b JOIN _px_forms f ON b.sno BETWEEN f.fsno - 20 AND f.fsno
             SEMI JOIN lines l ON l.line_id = b.line_id
             GROUP BY ALL
         """)
         # A8 lag: the line's last share count dated at or before the lag date, restated to the
-        # formation session's basis by the ratio of the repaired vendor factors.
+        # formation session's basis by the ratio of the repaired vendor factors (never across a
+        # vendor artifact break: C-79).
         con.execute("""
             CREATE TABLE sh AS
             SELECT s.eom, s.line_id, v.shares AS shares_lag_raw, v.trade_date AS shares_lag_date,
-                   v.adj / v.close AS fac_lag
-            FROM (SELECT eom, line_id, lag_date FROM s WHERE price IS NOT NULL) s
-            ASOF JOIN (SELECT line_id, trade_date, shares, adj, close FROM b WHERE shares > 0) v
+                   v.adj / v.close AS fac_lag, v.va_brk AS brk_lag
+            FROM (SELECT eom, line_id, lag_date FROM s WHERE has_bar) s
+            ASOF JOIN (SELECT line_id, trade_date, shares, adj, close, va_brk FROM b WHERE shares > 0) v
               ON v.line_id = s.line_id AND v.trade_date <= s.lag_date
         """)
         bp = parquet_list(breakpoints)
+        fresh = (f"shares_lag_date >= lag_date - INTERVAL {SHARES_MAX_AGE_DAYS} DAY AND fac_lag > 0 AND fac_f > 0")
         rows = con.execute(f"""
             COPY (
               SELECT s.eom, s.line_id, s.formation_date, s.fsno, s.security_type,
-                     '{UNIVERSE_BASIS}' AS universe_basis, s.price IS NOT NULL AS has_session_bar,
+                     '{UNIVERSE_BASIS}' AS universe_basis, s.has_bar AS has_session_bar,
                      s.price, s.adj, s.fac_f, s.last_obs_date, s.n_obs_month,
                      sh.shares_lag_raw, sh.shares_lag_date, sh.fac_lag, x.shares_lagged,
                      s.price * x.shares_lagged AS me_line, '{ME_BASIS}' AS me_basis,
-                     CASE WHEN s.adj > 0 AND p.prev_adj > 0 THEN s.adj / p.prev_adj - 1.0 END AS ret_1m,
-                     liq.dollar_volume_21d, coalesce(liq.n_sessions_21d, 0) AS n_sessions_21d,
+                     CASE WHEN s.adj > 0 AND p.prev_adj > 0 AND s.brk_f = p.prev_brk
+                          THEN s.adj / p.prev_adj - 1.0 END AS ret_1m,
+                     CASE WHEN coalesce(liq.liq_sentinels, 0) = 0 THEN liq.dollar_volume_21d END AS dollar_volume_21d,
+                     coalesce(liq.n_sessions_21d, 0) AS n_sessions_21d,
                      CASE WHEN s.price * x.shares_lagged IS NULL OR k.me_p20_musd IS NULL THEN NULL
                           WHEN s.price * x.shares_lagged / 1e6 >= k.me_p80_musd THEN 'mega'
                           WHEN s.price * x.shares_lagged / 1e6 >= k.me_p50_musd THEN 'large'
                           WHEN s.price * x.shares_lagged / 1e6 >= k.me_p20_musd THEN 'small'
                           ELSE 'micro' END AS size_grp,
-                     '{SIZE_BASIS}' AS size_basis, year(s.eom) AS year
+                     '{SIZE_BASIS}' AS size_basis, s.brk_f,
+                     s.va_price AS va_suspect_price, coalesce(x.va_shares, false) AS va_suspect_shares,
+                     coalesce(s.adj > 0 AND p.prev_adj > 0 AND s.brk_f <> p.prev_brk, false) AS va_suspect_ret_1m,
+                     coalesce(liq.liq_sentinels, 0) > 0 AS va_suspect_liq,
+                     year(s.eom) AS year
               FROM s
               LEFT JOIN sh ON sh.eom = s.eom AND sh.line_id = s.line_id
               LEFT JOIN (SELECT eom, line_id,
-                                CASE WHEN shares_lag_date >= lag_date - INTERVAL {SHARES_MAX_AGE_DAYS} DAY
-                                          AND fac_lag > 0 AND fac_f > 0
-                                     THEN shares_lag_raw * fac_f / fac_lag END AS shares_lagged
+                                CASE WHEN {fresh} AND brk_lag = brk_f THEN shares_lag_raw * fac_f / fac_lag
+                                     END AS shares_lagged,
+                                coalesce({fresh} AND brk_lag <> brk_f, false) AS va_shares
                          FROM s JOIN sh USING (eom, line_id)) x ON x.eom = s.eom AND x.line_id = s.line_id
               LEFT JOIN prev p ON p.eom = s.eom AND p.line_id = s.line_id
               LEFT JOIN liq ON liq.eom = s.eom AND liq.line_id = s.line_id
@@ -913,7 +1046,9 @@ def stage_spine(work: Path, year: int, breakpoints: Sequence[str]) -> dict[str, 
         tmp = out.with_name("." + out.name + ".tmp")
         stats = con.execute(f"""
             SELECT eom, count(*), count(*) FILTER (WHERE has_session_bar), count(me_line), count(ret_1m),
-                   count(size_grp), count(*) FILTER (WHERE size_grp IN ('mega', 'large'))
+                   count(size_grp), count(*) FILTER (WHERE size_grp IN ('mega', 'large')),
+                   count(*) FILTER (WHERE va_suspect_price), count(*) FILTER (WHERE va_suspect_shares),
+                   count(*) FILTER (WHERE va_suspect_ret_1m), count(*) FILTER (WHERE va_suspect_liq)
             FROM read_parquet({sql_text(tmp.as_posix())}) GROUP BY 1 ORDER BY 1
         """).fetchall()
     finally:
@@ -921,7 +1056,9 @@ def stage_spine(work: Path, year: int, breakpoints: Sequence[str]) -> dict[str, 
         drop_scratch(work, name)
     os.replace(tmp, out)
     months = [{"eom": str(e), "rows": int(n), "session_bar": int(sb), "me_line": int(me), "ret_1m": int(r),
-               "size_grp": int(sg), "large_or_mega": int(lm)} for e, n, sb, me, r, sg, lm in stats]
+               "size_grp": int(sg), "large_or_mega": int(lm), "va_suspect_price": int(vp),
+               "va_suspect_shares": int(vs), "va_suspect_ret_1m": int(vr), "va_suspect_liq": int(vl)}
+              for e, n, sb, me, r, sg, lm, vp, vs, vr, vl in stats]
     return finish_receipt(receipt, code, inputs, [out], {"rows": int(rows[0]), "months": months}, started)
 
 
@@ -1022,7 +1159,10 @@ def stage_market(work: Path) -> dict[str, Any]:
 
 def stage_line_month(work: Path, year: int) -> dict[str, Any]:
     """``line_month/year=Y.parquet``: per (line, month) the last observed adjusted close, observed
-    sessions and daily-return counts, and the overlapping 3-session log-return sums (line x EW market)."""
+    sessions and daily-return counts, the overlapping 3-session log-return sums (line x EW market),
+    and ``brk_n``, the vendor artifact breaks introduced in the month (ruling C-79: a ratio between
+    the last bars of two months is clean when no month after the earlier one up to the later one
+    has a break; a 3-session log return never spans one)."""
     started = time.perf_counter()
     out = work / "line_month" / f"year={year}.parquet"
     receipt = out.with_suffix(".json")
@@ -1044,13 +1184,15 @@ def stage_line_month(work: Path, year: int) -> dict[str, Any]:
         con.execute(f"""
             COPY (
               WITH b AS (
-                SELECT line_id, trade_date, sno, adj, r,
-                       CASE WHEN lag(sno, 3) OVER w = sno - 3 THEN ln(adj / lag(adj, 3) OVER w) END AS x3
+                SELECT line_id, trade_date, sno, adj, r, va_brk_in,
+                       CASE WHEN lag(sno, 3) OVER w = sno - 3 AND lag(va_brk, 3) OVER w = va_brk
+                            THEN ln(adj / lag(adj, 3) OVER w) END AS x3
                 FROM read_parquet({parquet_list(bars_files(work))})
                 WHERE trade_date BETWEEN DATE '{year}-01-01' - INTERVAL 14 DAY AND DATE '{year}-12-31'
                 WINDOW w AS (PARTITION BY line_id ORDER BY sno))
               SELECT b.line_id, last_day(b.trade_date) AS eom, max(b.sno) AS last_sno,
-                     arg_max(b.adj, b.sno) AS adj_last, count(*) AS n_obs, count(b.r) AS n_ret,
+                     arg_max(b.adj, b.sno) AS adj_last, CAST(sum(b.va_brk_in) AS INTEGER) AS brk_n,
+                     count(*) AS n_obs, count(b.r) AS n_ret,
                      count(*) FILTER (WHERE b.r > 0) AS n_pos, count(*) FILTER (WHERE b.r < 0) AS n_neg,
                      count(*) FILTER (WHERE b.x3 IS NOT NULL AND k.m3 IS NOT NULL) AS n3,
                      sum(b.x3) FILTER (WHERE k.m3 IS NOT NULL) AS s3_x,
@@ -1129,9 +1271,17 @@ def label_spec(work: Path, th3: Path, horizons: Sequence[int] = LABEL_HORIZONS) 
         "return_rule": "adj(exit) / adj(entry) - 1 on the VA1 v2 repaired adjusted close; ret_exc not computed (NULL)",
         "terminal_rule": "a line whose last bar before the holdout start is dated before the exit session stopped "
                          "trading inside the window: ret NULL, reason terminal_pending (counted, never imputed)",
+        "invalid_rule": "ruling C-79: a window whose entry and exit bars differ in va_brk (a vendor_artifact_suspect "
+                        f"bar lies between them: a factor step >= x{VA_FACTOR_STEP_MIN:g} on {VA_ARTIFACT_SESSION}, a "
+                        f"factor step >= x{VA_FLAT_FACTOR_STEP_MIN:g} with the raw close within "
+                        f"+-{VA_FLAT_CLOSE_BAND:.0%} on any session, or a sentinel close >= "
+                        f"{VA_SENTINEL_CLOSE_MIN:g} and > x{VA_SENTINEL_RATIO:g} its nearest prior close below that "
+                        "floor; high closes with no prior anchor are counted as ambiguous, not inferred corrupt) is "
+                        "invalid: ret NULL, counted, never filled",
         "read_window_rule": f"no bar dated on or after {policy['holdout_start']} is read; a window whose exit "
                             "session is on or after it is not_matured with no return",
-        "universe": "the spine rows (every eligible line alive in the formation month)",
+        "universe": "the spine rows (every eligible line alive in the formation month with vendor earnings evidence "
+                    "dated at or before the formation session, ruling C-78)",
     }
 
 
@@ -1139,7 +1289,10 @@ def _label_rows_sql(h: int, year: int, sealed_from: dt.date) -> str:
     """One (h, year) of label rows from ``lu``/``lw``/``lp``/``ll`` (first match wins):
 
     * ``not_matured``: the exit session is on or after ``sealed_from`` (outside the read window);
-    * ``valid``: entry and exit sessions both carry a positive price: ``adj(exit)/adj(entry) - 1``;
+    * ``valid``: entry and exit sessions both carry a positive price and the same vendor artifact
+      break count ``va_brk``: ``adj(exit)/adj(entry) - 1``;
+    * ``invalid``: both carry a price but a vendor_artifact_suspect break lies between them
+      (ruling C-79): NULL, counted, never filled;
     * ``terminal_pending``: the line's last bar before ``sealed_from`` is dated before the exit
       session (it stopped trading inside the window, or before entry): NULL, counted, never imputed;
     * ``missing_entry_bar`` / ``missing_exit_bar``: the line trades on past the window but has no
@@ -1150,10 +1303,12 @@ def _label_rows_sql(h: int, year: int, sealed_from: dt.date) -> str:
     sealed = f"DATE '{sealed_from.isoformat()}'"
     return f"""
         SELECT u.eom, u.line_id, u.owner_id, w.entry_date, w.exit_date,
-               CASE WHEN w.exit_date < {sealed} AND pe.adj > 0 AND px.adj > 0 THEN px.adj / pe.adj - 1.0 END AS ret,
+               CASE WHEN w.exit_date < {sealed} AND pe.adj > 0 AND px.adj > 0 AND pe.va_brk = px.va_brk
+                    THEN px.adj / pe.adj - 1.0 END AS ret,
                CAST(NULL AS DOUBLE) AS ret_exc, {sql_text(LABEL_BASIS)} AS basis,
                CAST(CASE WHEN w.exit_date >= {sealed} THEN {reason['not_matured']}
-                         WHEN pe.adj > 0 AND px.adj > 0 THEN {reason['valid']}
+                         WHEN pe.adj > 0 AND px.adj > 0 AND pe.va_brk = px.va_brk THEN {reason['valid']}
+                         WHEN pe.adj > 0 AND px.adj > 0 THEN {reason['invalid']}
                          WHEN l.last_date IS NULL OR l.last_date < w.exit_date THEN {reason['terminal_pending']}
                          WHEN pe.adj IS NULL OR NOT pe.adj > 0 THEN {reason['missing_entry_bar']}
                          ELSE {reason['missing_exit_bar']} END AS TINYINT) AS reason
@@ -1193,7 +1348,7 @@ def stage_labels(work: Path, year: int, label_sha: str, root: Path) -> dict[str,
         """)
         dates = sorted({d for w in windows for d in (w[3], w[4]) if d < HOLDOUT_START})
         con.execute(f"""
-            CREATE TABLE lp AS SELECT line_id, trade_date, adj
+            CREATE TABLE lp AS SELECT line_id, trade_date, adj, va_brk
             FROM read_parquet({parquet_list(bars_files(work))})
             WHERE trade_date < DATE '{HOLDOUT_START}' AND trade_date IN (SELECT unnest(?::DATE[]))
               AND line_id IN (SELECT line_id FROM lu)
@@ -1217,4 +1372,3 @@ def stage_labels(work: Path, year: int, label_sha: str, root: Path) -> dict[str,
         matrix.close()
         drop_scratch(work, name)
     return finish_receipt(receipt, code, inputs, [], stats, started)
-
