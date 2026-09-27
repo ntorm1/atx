@@ -113,6 +113,18 @@
 - T11 review: spec PASS, Needs fixes, 0C/1I/7m. I1 fitter reads only cache/<train-sha>/ but runner writes
   field candidates (51/121 in v3) to ROOT/<fields-sha>/ and non-dev builds to DIR/<vm_identity>/.
   T11 fix round 1 sent (I1 + M1 fitter-script sha in per-candidate key).
+- T4 review: spec PASS, Approved, 0C/0I/8m. Task T4: complete (ef089af8, review clean). Minors in task-T4-review.md.
+- T12: pool-8 f822dd42 -> root 99421a5f (repair_role_factor_breaks.py, rule factor-break-v1; 10/10 OK).
+  Root cause: TickerHistory3 cumulative factor not chained across 2021-01-04 (atx-db VA1/C-35; VA1 fixes
+  decreases only); prepare_recent_research.py:171 builds close = raw x vendor factor unchecked.
+  Scans (bounded): TRAIN MASS 2021-01-04 (1185 jump cells), max non-mass 44; VALIDATION CLEAN (max 47,
+  quarter-end dividend clusters). Ruling: keep validation role v1 (no new SHA) — cost if wrong: a sub-50
+  break in validation stays unrepaired (none seen >47; those are dividends).
+  TRAIN REPAIR -> build-equity/recent-fast-train-2020-2022-v2 manifest
+  210fff9687aa6b16e74c65104d77a916d708dca6986e77b06bac27556c48d1de; 1,324,464 close cells rescaled;
+  max |ln ret err| 2.33e-15; 2.45 s / 312 MiB. Review dispatched (t12-review).
+  T12 concern -> T6 fix round 2 (shares_out restated with unchained factor, ~62 sessions post-break; plus
+  shares_out [1e5,5e10] NaN) sent to t6-fix. All TRAIN artifacts must be regenerated on role v2.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
