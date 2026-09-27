@@ -543,5 +543,101 @@ TEST(AlphaCs_Scale, ZeroL1Norm_StaysZeroNoInf) {
   expect_vm_matches_oracle("scale(close, 5)", panel);
 }
 
+// ===========================================================================
+//  T22 — `grp_`-prefixed group fields (research-role groupings; no dot).
+// ===========================================================================
+
+constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
+
+// A Panel with caller-chosen field names; every cell in-universe.
+[[nodiscard]] Panel make_named_panel(atx::usize dates, atx::usize instruments,
+                                     std::vector<std::string> names,
+                                     std::vector<std::vector<atx::f64>> cols) {
+  auto p = Panel::create(dates, instruments, std::move(names), std::move(cols), {});
+  EXPECT_TRUE(p.has_value()) << (p ? "" : p.error().message());
+  return p.value_or(Panel::create(0, 0, {}, {}, {}).value());
+}
+
+// One date, 6 names. grp_a = {1,1,2,2,2,NaN}: name 5 is unlabeled and carries an
+// outlier (1000) that would drag group 2's statistics if it were counted. grp_b =
+// {7,7,7,8,8,8} partitions the same row differently (a second grouping).
+//   grp_a group 1 {10,20}: mean 15, sample sd sqrt(50); group 2 {30,40,50}: mean 40, sd 10.
+TEST(AlphaCs_GrpField, NaNLabelExcludedFromGroupStatistics) {
+  const atx::usize instruments = 6;
+  const std::vector<atx::f64> price{10.0, 20.0, 30.0, 40.0, 50.0, 1000.0};
+  const Panel panel = make_named_panel(1, instruments, {"close", "grp_a", "grp_b"},
+                                       {price,
+                                        {1.0, 1.0, 2.0, 2.0, 2.0, kNaN},
+                                        {7.0, 7.0, 7.0, 8.0, 8.0, 8.0}});
+
+  const std::vector<atx::f64> gm = vm_values("group_mean(close, grp_a)", panel);
+  const std::vector<atx::f64> gn = vm_values("group_neutralize(close, grp_a)", panel);
+  const std::vector<atx::f64> gr = vm_values("group_rank(close, grp_a)", panel);
+  const std::vector<atx::f64> gz = vm_values("group_zscore(close, grp_a)", panel);
+  ASSERT_EQ(gm.size(), instruments);
+  ASSERT_EQ(gn.size(), instruments);
+  ASSERT_EQ(gr.size(), instruments);
+  ASSERT_EQ(gz.size(), instruments);
+  const atx::f64 sd1 = std::sqrt(50.0);
+  const std::vector<atx::f64> mean{15.0, 15.0, 40.0, 40.0, 40.0};
+  const std::vector<atx::f64> rank{0.0, 1.0, 0.0, 0.5, 1.0};
+  const std::vector<atx::f64> z{-5.0 / sd1, 5.0 / sd1, -1.0, 0.0, 1.0};
+  for (atx::usize i = 0; i < mean.size(); ++i) {
+    EXPECT_DOUBLE_EQ(gm[i], mean[i]) << i;
+    EXPECT_DOUBLE_EQ(gn[i], price[i] - mean[i]) << i;
+    EXPECT_DOUBLE_EQ(gr[i], rank[i]) << i;
+    EXPECT_DOUBLE_EQ(gz[i], z[i]) << i;
+  }
+  // The unlabeled name has no group: every group output is NaN there.
+  EXPECT_TRUE(std::isnan(gm[5]));
+  EXPECT_TRUE(std::isnan(gn[5]));
+  EXPECT_TRUE(std::isnan(gr[5]));
+  EXPECT_TRUE(std::isnan(gz[5]));
+
+  // grp_b is its own classifier: group 8 {40,50,1000} does include name 5.
+  const std::vector<atx::f64> gb = vm_values("group_mean(close, grp_b)", panel);
+  ASSERT_EQ(gb.size(), instruments);
+  EXPECT_DOUBLE_EQ(gb[0], 20.0);
+  EXPECT_DOUBLE_EQ(gb[5], (40.0 + 50.0 + 1000.0) / 3.0);
+
+  const std::vector<std::string_view> exprs = {
+      "group_mean(close, grp_a)",   "group_neutralize(close, grp_a)",
+      "group_rank(close, grp_a)",   "group_zscore(close, grp_a)",
+      "group_mean(close, grp_b)",   "group_neutralize(group_neutralize(close, grp_a), grp_b)",
+  };
+  for (const std::string_view e : exprs) {
+    expect_vm_matches_oracle(e, panel);
+  }
+}
+
+// Seeded-random multi-date panel with two grp_ groupings, each with unlabeled
+// (NaN) cells that move by date: every group op matches the oracle bit-for-bit.
+TEST(AlphaCs_GrpField, TwoGroupingsWithNaNLabels_RandomPanel_MatchesOracle) {
+  const atx::usize dates = 9;
+  const atx::usize instruments = 11;
+  const atx::usize cells = dates * instruments;
+  auto cols = random_cols(cells, 0x6A7F1E1DULL, /*num_sectors=*/4);
+  std::vector<atx::f64> grp_b(cells);
+  for (atx::usize k = 0; k < cells; ++k) {
+    if (k % 7 == 3) {
+      cols[5][k] = kNaN; // grp_a unlabeled
+    }
+    grp_b[k] = (k % 5 == 0) ? kNaN : static_cast<atx::f64>(k % 3);
+  }
+  cols.push_back(std::move(grp_b));
+  const Panel panel = make_named_panel(
+      dates, instruments, {"close", "open", "high", "low", "volume", "grp_a", "grp_b"},
+      std::move(cols));
+
+  const std::vector<std::string_view> exprs = {
+      "group_rank(close, grp_a)",  "group_neutralize(close, grp_a)",
+      "group_mean(close, grp_a)",  "group_zscore(close, grp_a)",
+      "group_rank(volume, grp_b)", "group_zscore(open, grp_b)",
+      "group_neutralize(group_neutralize(close, grp_a), grp_b)",
+  };
+  for (const std::string_view e : exprs) {
+    expect_vm_matches_oracle(e, panel);
+  }
+}
 
 }  // namespace atxtest_alpha_cs_test

@@ -428,4 +428,62 @@ TEST(AlphaTypecheck_DTypeGuard, ZscoreOfClose_Ok) {
   EXPECT_EQ(t.dtype, DType::F64);
 }
 
+// ---- T22: `grp_`-prefixed research group fields ---------------------------
+// The IC runner's field names admit no dot, so a pinned research fields manifest
+// supplies several groupings (grp_ff12, grp_ff49, ...) under the `grp_` prefix.
+
+TEST(AlphaTypecheck_GrpField, IsGroupField_SectorIndClassOrGrpPrefix) {
+  using atx::engine::alpha::detail::is_group_field;
+  for (const std::string_view name :
+       {"grp_a", "grp_ff12", "grp_ff49", "grp_sic2", "sector", "IndClass.sector"}) {
+    EXPECT_TRUE(is_group_field(name)) << name;
+  }
+  // A bare prefix names no grouping; near-miss spellings stay numeric.
+  for (const std::string_view name :
+       {"grp_", "grp", "grpa", "Grp_a", "xgrp_a", "group_a", "sectors", "IndClass.", ""}) {
+    EXPECT_FALSE(is_group_field(name)) << name;
+  }
+}
+
+TEST(AlphaTypecheck_GrpField, GrpFieldLeaf_IsGroup) {
+  EXPECT_EQ(analyze_root("grp_a").dtype, DType::Group);
+  EXPECT_EQ(analyze_root("grp_ff49").dtype, DType::Group);
+  EXPECT_EQ(analyze_root("grp_").dtype, DType::F64);
+}
+
+// Every group-aware op binds a grp_ field in its classifier (2nd-argument) role.
+TEST(AlphaTypecheck_GrpField, EveryGroupOpBindsGrpClassifier_Ok) {
+  for (const std::string_view src :
+       {"group_rank(close, grp_a)", "group_neutralize(close, grp_a)", "group_mean(close, grp_a)",
+        "group_zscore(close, grp_a)", "indneutralize(close, grp_a)", "group_count(close, grp_a)",
+        "group_scale(close, grp_a)", "cs_residualize(close, grp_a)"}) {
+    const TypeInfo t = analyze_root(src);
+    EXPECT_EQ(t.shape, Shape::CrossSection) << src;
+    EXPECT_EQ(t.dtype, DType::F64) << src;
+  }
+}
+
+// Several groupings compose in one program; the library-v4 industry-momentum
+// sketch keeps its 252-bar causality rail through the group aggregate.
+TEST(AlphaTypecheck_GrpField, TwoGroupingsInOneProgram_Ok) {
+  const TypeInfo nested = analyze_root("group_rank(group_neutralize(close, grp_ff12), grp_ff49)");
+  EXPECT_EQ(nested.shape, Shape::CrossSection);
+  EXPECT_EQ(nested.dtype, DType::F64);
+  const TypeInfo mom =
+      analyze_root("rank(group_mean(delay(close, 21) / delay(close, 252) - 1, grp_ff49))");
+  EXPECT_EQ(mom.dtype, DType::F64);
+  EXPECT_EQ(mom.lookback, 252U);
+}
+
+// A grp_ classifier is not a number (refused as a Cs/Ts primary or in
+// arithmetic), and a non-classifier is refused in the classifier role.
+TEST(AlphaTypecheck_GrpField, GrpFieldInNumericRole_IsError) {
+  for (const std::string_view src :
+       {"rank(grp_a)", "zscore(grp_ff49)", "ts_mean(grp_a, 5)", "grp_a + 1",
+        "group_rank(grp_a, grp_b)", "group_rank(close, grpa)", "group_rank(close, grp_)"}) {
+    SCOPED_TRACE(src);
+    expect_analyze_error(src);
+  }
+}
+
 }  // namespace atxtest_alpha_typecheck_test

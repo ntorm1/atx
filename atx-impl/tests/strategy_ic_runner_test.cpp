@@ -834,10 +834,19 @@ f64 si_value(usize d,usize i,f64 scale) {
 f64 market_value(usize d) {
   return d==0?std::numeric_limits<f64>::quiet_NaN():.001*std::sin(static_cast<f64>(d));
 }
+// T22 group label `grp_a`: names 0-2 in group 1 and 3-6 in group 2, except name 0
+// alone in group 5 every third date; name 7 is never labeled and name 6 is
+// unlabeled on odd dates (NaN: no group).
+f64 group_label(usize d,usize i) {
+  if (i==7 || (i==6 && d%2==1)) return std::numeric_limits<f64>::quiet_NaN();
+  if (i==0 && d%3==0) return 5.0;
+  return i<3?1.0:2.0;
+}
 std::vector<f64> field_column(const std::string& name,f64 scale) {
   std::vector<f64> out(D*N);
   for (usize d=0;d<D;++d) for (usize i=0;i<N;++i)
-    out[d*N+i]=name=="mkt_ret"?market_value(d):(name=="iv_atm_21d"?.3+.01*static_cast<f64>(i):si_value(d,i,scale));
+    out[d*N+i]=name=="grp_a"?group_label(d,i):(name=="mkt_ret"?market_value(d):
+        (name=="iv_atm_21d"?.3+.01*static_cast<f64>(i):si_value(d,i,scale)));
   return out;
 }
 // A producer-shaped atx.research-role-fields/v1 directory bound to one role's own
@@ -1076,6 +1085,74 @@ TEST(StrategyIcRunner, FieldBindingRefusalsPrecedeRolePayloadAndOutput) {
   EXPECT_NE(attempt.error.find("research field payload SHA256 mismatch: si_shares.f64"),std::string::npos) << attempt.error;
   EXPECT_EQ(read_json(dir.path/"tampered"/"summary.json").at("status"),"failed");
   EXPECT_EQ(file_bytes(payload_path),flipped);
+}
+// ---- T22: `grp_`-prefixed research fields are DSL group classifiers ----
+enum class GroupOp { Rank, Neutralize, Mean, Zscore };
+// Scalar oracle for one raw VM cell of `op(volume, grp_a)`. From date 63 every name
+// is a decision member with finite volume, so all are valid; a name's group is the
+// valid names sharing its finite label, in ascending index. A NaN label has no
+// group: that cell stays NaN and its volume enters no group statistic.
+f64 group_expected(GroupOp op,usize d,usize i) {
+  constexpr f64 missing=std::numeric_limits<f64>::quiet_NaN();
+  const auto volume=[](usize j) { return 1e8*static_cast<f64>(j+1); };
+  const f64 label=group_label(d,i);
+  if (d<63 || std::isnan(label)) return missing;
+  std::vector<usize> members;
+  for (usize j=0;j<N;++j) if (group_label(d,j)==label) members.push_back(j);
+  f64 sum=0; for (const auto j:members) sum+=volume(j);
+  const auto count=static_cast<f64>(members.size()); const f64 mean=sum/count;
+  switch (op) {
+  case GroupOp::Rank: { // volume rises with the index: the rank is the position in the group
+    const auto at=static_cast<f64>(std::find(members.begin(),members.end(),i)-members.begin());
+    return members.size()==1?.5:at/(count-1);
+  }
+  case GroupOp::Neutralize: return volume(i)-mean;
+  case GroupOp::Mean: return mean;
+  case GroupOp::Zscore: {
+    if (members.size()<2) return missing;
+    f64 squares=0; for (const auto j:members) squares+=(volume(j)-mean)*(volume(j)-mean);
+    return (volume(i)-mean)/std::sqrt(squares/(count-1));
+  }
+  }
+  return missing;
+}
+bool near_value(f64 a,f64 b) {
+  return (std::isnan(a) && std::isnan(b)) || std::abs(a-b)<=1e-12*std::max(1.0,std::abs(b));
+}
+TEST(StrategyIcRunner, GrpFieldsBindAsGroupClassifiersAndExcludeNaNLabels) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  const std::vector<std::pair<std::string,GroupOp>> ops{{"grp_rank",GroupOp::Rank},
+      {"grp_neutralize",GroupOp::Neutralize},{"grp_mean",GroupOp::Mean},{"grp_zscore",GroupOp::Zscore}};
+  ASSERT_TRUE(field_library(cfg,{"grp_a"},{{"grp_rank","group_rank(volume, grp_a)"},
+      {"grp_neutralize","group_neutralize(volume, grp_a)"},{"grp_mean","group_mean(volume, grp_a)"},
+      {"grp_zscore","group_zscore(volume, grp_a)"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"grp_a"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
+  // One resident column serves all four group candidates.
+  for (const std::string role_name:{"train","validation"})
+    EXPECT_NE(run.log.find("IC fields-verified role="+role_name+" fields=grp_a resident_capacity=1 "
+                           "planned_loads=1"),std::string::npos) << role_name;
+  // Raw VM signals (the cache stores them verbatim) against the scalar oracle.
+  const auto root=cache_root(dir.path/"output"/"summary.json");
+  for (const auto& pin:{cfg.train_fields_sha256,cfg.validation_fields_sha256}) {
+    for (const auto& [id,op]:ops) {
+      std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(root/pin/(id+".f64"),signal)) << id;
+      for (usize d=0;d<D;++d) for (usize i=0;i<N;++i)
+        ASSERT_TRUE(near_value(signal[d*N+i],group_expected(op,d,i)))
+            << id << ' ' << d << ' ' << i << ": " << signal[d*N+i] << " vs " << group_expected(op,d,i);
+      EXPECT_EQ(read_json(root/pin/(id+".json")).at("research_fields"),Json::array({"grp_a"})) << id;
+    }
+  }
+  // Used as a number, a grp_ field is refused when the library compiles.
+  auto numeric=cfg; auto lib=read_json(cfg.library_path);
+  lib["candidates"][2]["dsl"]="rank(grp_a)";
+  numeric.library_path=(dir.path/"numeric_library.json").string();
+  ASSERT_TRUE(json_file(numeric.library_path,lib,numeric.library_sha256));
+  numeric.plan_only=true; std::ostringstream plan;
+  const auto refused=atx::impl::strategy::run_ic(numeric,plan); ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("got a Group classifier"),std::string::npos)
+      << refused.error().to_string();
 }
 TEST(StrategyIcRunner, AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
