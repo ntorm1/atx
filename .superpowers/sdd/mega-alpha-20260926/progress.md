@@ -85,6 +85,10 @@
   (rows already PIT; T18 "available_at < d 22:00" would drop first days) — cost if wrong: none material (6,770/6,780
   rows available_at == start mark). Review dispatched (t19-t23-review).
 
+- T22 review: spec PASS, Approved 0C/0I/3m (tolerance 1e-12 vs exact; duplicated panel helper; NaN-label tests
+  cover 4 of 8 ops — reviewer verified all 8 by reading). VM bump not needed (confirmed). Root confirmed no existing
+  manifest/library has a grp_* field (only library v4). Task T22: complete (76479562/4ce2ec4e).
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
