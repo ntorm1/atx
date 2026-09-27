@@ -20,6 +20,42 @@
   greedy |rho|<=0.70 by FIT Sharpe; >=250 finite FIT days). Ruling: admission screen lives in the T9
   fitter (same f_k/tau_k data) — cost if wrong: one extra tool revision.
   Note: "FIT Sharpe > 0" is tautological under FIT-mean orientation; the binding test is the 2022 sign.
+- T2 fix r1: pool-5 ca4fa80c -> root f6df5fe8 (fixture-only: v2 spent Jan budget day 0, name 1 never
+  held -> forced turnover 0; fixture now exits held name 2). Build mega-t2-fix1 9.43s Jobs4 1 TU/1 link;
+  target tests 25/25 0.59s. T2 review dispatched (t2-review, package review-T2.diff). T4 sent to t2-nav.
+  Ruling: GMV turnover stats + ceiling flags use EXECUTED fills (planned forced turnover double-counts
+  blocked absent exits) — cost if wrong: none (executed is the declared metric).
+- T5 fix r1 scoped re-review: 7 addressed (I1-I4, M1, M2, M7), M3-M6 open non-blocking; new 0C/0I/6
+  minor. Task T5: complete (2c92d658..f2d5fb97 -> root 6b4a21fe, library SHA b871743e). T5 minors
+  (deferred): M3/M4 optional, M5 root, M6 info; N4 Amihud zero-volume blanking 252 vs 126; N5 docs; N6
+  report lacks fix section. Ruling: N1/N2 (record corr notes) + N3 (abs guard in ivol_change denominators)
+  fixed pre-measurement as "v2 fix round 2" first commit of T8 lane — cost if wrong: none, v2 unmeasured.
+  Re-review also found: runner rejects any library field outside {close,raw_close,volume}
+  (strategy_ic_runner.cpp:275-277) -> added to T7.
+- T8 dispatched (t8-libv3) pool-7 branch feat/mega-alpha-library-v3-20260927 @6b4a21fe.
+- T1 review (redo): spec FAIL 1C/1I/8m. C: cache key lacks engine/VM semantics identity (engine_git_sha
+  recorded :557, never compared). I: pinned weights not tied to TRAIN (frozen_train :127-137).
+  Ruling: T1 fix r1 routed to t7-fields lane (same file + same cache-key code as T7) — cost if wrong: T1
+  fix waits for T7.
+- T6 review: spec FAIL 0C/2I/6m. I1 IV no plausibility bound; I2 is_common not PIT, default-on.
+  Ruling (declared before IV measurement): iv_atm_* outside [0.02, 5.0] -> NaN, counted; is_common
+  opt-in + manifest point_in_time flag. Fresh implementer t6-fix pool-8 feat/mega-alpha-fields-fix1-20260927
+  @71cbec8f. Fields must be regenerated (-fields-v2) for TRAIN and validation after.
+- NAV TRAIN SMOKE (evaluator test, item 2): mega-nav-train-v6-c1 (run2; run1 failed: --role needs
+  manifest.json path), exe @f6df5fe8, v6 blend 51740eff, baseline-v1 c1 f1, legacy flat-300 borrow.
+  19.59s, peak 229 MiB, accounting max err 1.3e-13. Results (TRAIN, v6 = old equal-family blend, NOT
+  neutralized, NOT MV):
+    S1 linear: gross SR -0.27, net -0.38, HAC t -0.68, vol 19.2%, MDD 38.8%, trade cost 1.97%, borrow 4.49%
+    S2 1bn (primary): gross -0.09, net -0.25, HAC t -0.47, vol 20.2%, MDD 37.4%, impact $21.3M
+    S3 adverse: gross -0.29, net -0.45, HAC t -0.84
+    executed tau ~4.0%/day mean, p95 ~6.1% (approx from daily CSV; T4 adds exact GMV column);
+    held ~2979 names; participation p95 <= 0.18%; 415 write-offs; guard raw-minus-adj sensitivity $247M.
+  DISCREPANCY: target-proxy said gross +0.36 and numpy prototype vol 10.4% for same blend; NAV vol ~2x.
+  nav-recon investigator dispatched (writes studies/nav_recon.py; root runs it). Not a validation trial.
+- T2 review: spec PASS, quality Approved, 0C/0I/8m. Task T2: complete (c4ba9c80/97e6b392/f6df5fe8, review
+  clean). T2 minors (deferred): no K=5 write-off fixture (only K=1); guard branch untriggered by fixtures;
+  budget-refusal fixture misses 36 B/cell volume budget; legacy 30%/mo flags unlabeled (T4 req 6);
+  daily long/short dollars are post-trade (T4 adds pre-trade GMV). Others in task-T2-review.md.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
