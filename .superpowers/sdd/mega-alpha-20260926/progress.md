@@ -1,5 +1,31 @@
 # Active task: recent-data DSL ensemble
 
+## RESUMED 2026-09-26 ~20:15 ET (new parent, owner goal prompt authorizes)
+
+Owner mid-run note: do not let RAM limits slow progress; if blocked, improve
+efficiency/incremental progress to cut resource use.
+
+- Import: pool4 8527a839 -> 050c0efc (VM arena release), 23f1541b -> bfb6b859 (fixture).
+- Pool3 archive: 58c21bb0 (46/46 files verified, index 352ca7b7) -> 470eb1b6.
+- Build helper recent-strategy-targets-v1: source=configured bfb6b859, Jobs2 (free2198),
+  36.62s, 6 CPPs/5 links, no PCH/deps. IC tests 35/35 5.141s; target tests 7/7 0.198s.
+- TRAIN export v5: guard system-memory-limit at cand 11 (peak894.6MB, others'+agents' RAM).
+  Ruling: guard min-free 768->512 MiB for real runs (RSS1536/180s kept) - owner note; cost if
+  wrong: host paging, no correctness impact.
+- TRAIN export v6 COMPLETE 94.70s wall, peak898.7MB, exe 03607890...; stages vm30.0 ic30.7
+  comp15.1 load9.4 save4.4. Orientation array canon 4a3e8004 == v2; planned targets & daily IC
+  CSV byte-identical to v2; candidate diffs timing-only. Blend manifest 51740eff...
+- TRAIN replay (6bps/300bps): baseline turnover mean35.32%/max80.08%, gross.901; budget-v2
+  mean30.66%/max36.69% (forced-exit breaches), gross.847. Only 253/754 mature days complete
+  (missing names up to232/day). All-days observed-component gross SR .36 (base)/.33 (budget);
+  complete-day subset SR ~1.2 is BIASED - not claimable.
+- VALIDATION frozen replay: base mean34.44%/max70.60%, gross.906; budget mean30.24%/max31.31%,
+  gross.853; 180/500 complete days; obs-component gross SR .34/.38, ~1.9%/yr, vol ~5%.
+  Borrow scenario ~1.25%/yr dominates -> net ~0. Objective NOT met.
+- Next: NAV backtest with declared missing-price policy (design agent), audit script review
+  (agent), then construction (risk neutralization) + alpha expansion toward SR>=1.
+
+
 ## PAUSED at owner request — next-parent handoff
 
 Owner requested stopping and a detailed handoff/goal prompt. Goal status is
