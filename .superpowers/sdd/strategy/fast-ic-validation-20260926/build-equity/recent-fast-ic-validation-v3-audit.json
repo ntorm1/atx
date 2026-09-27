@@ -1,0 +1,101 @@
+{
+  "status": "verified",
+  "train_evaluations": 0,
+  "validation_candidates": 48,
+  "unchanged_train_signs": 48,
+  "paired_old_candidates": 13,
+  "truncated_old_csv_rows_excluded": 1,
+  "compared_daily_values": 55098,
+  "numeric_differences": 0,
+  "paired_stage_seconds": {
+    "vm": {
+      "before": 6.9811134,
+      "after": 8.8411318
+    },
+    "ic": {
+      "before": 24.3943719,
+      "after": 8.6204387
+    },
+    "composition": {
+      "before": 4.1657415,
+      "after": 4.7224899
+    }
+  },
+  "combined_rank_ic": [
+    {
+      "horizon": 5,
+      "calendar_dates": 496,
+      "inference_defined": true,
+      "mean": 0.018033565459307746,
+      "oriented_mean": 0.018033565459307746,
+      "required_hac_lag": 10,
+      "segment_safeguard": "heuristic-not-regime-recall-guarantee",
+      "standard_error": 0.01566902744171605,
+      "upper_abs_ic": 0.07287516150531392,
+      "valid_dates": 496
+    },
+    {
+      "horizon": 21,
+      "calendar_dates": 480,
+      "inference_defined": true,
+      "mean": 0.035690280179471075,
+      "oriented_mean": 0.035690280179471075,
+      "required_hac_lag": 42,
+      "segment_safeguard": "heuristic-not-regime-recall-guarantee",
+      "standard_error": 0.027300949553404476,
+      "upper_abs_ic": 0.13124360361638673,
+      "valid_dates": 480
+    },
+    {
+      "horizon": 63,
+      "calendar_dates": 438,
+      "inference_defined": true,
+      "mean": 0.05966692932690373,
+      "oriented_mean": 0.05966692932690373,
+      "required_hac_lag": 126,
+      "segment_safeguard": "heuristic-not-regime-recall-guarantee",
+      "standard_error": 0.017772073033932835,
+      "upper_abs_ic": 0.12186918494566865,
+      "valid_dates": 438
+    }
+  ],
+  "planned_target_proxy": {
+    "monthly_turnover": {
+      "2023-01": 0.7059914180587967,
+      "2023-02": 0.343330446695203,
+      "2023-03": 0.4332341578399988,
+      "2023-04": 0.3376116050542336,
+      "2023-05": 0.33447629400547285,
+      "2023-06": 0.33165112526407264,
+      "2023-07": 0.35189881601377115,
+      "2023-08": 0.395503465859102,
+      "2023-09": 0.3287067812601677,
+      "2023-10": 0.29542294405213415,
+      "2023-11": 0.2886859821321267,
+      "2023-12": 0.3096733157617283,
+      "2024-01": 0.389594104528902,
+      "2024-02": 0.2690942956130691,
+      "2024-03": 0.2746224120933459,
+      "2024-04": 0.2802650493368092,
+      "2024-05": 0.30845969342746254,
+      "2024-06": 0.29372703579287945,
+      "2024-07": 0.3646578112893155,
+      "2024-08": 0.3137312256277378,
+      "2024-09": 0.32721514888334835,
+      "2024-10": 0.363767336748854,
+      "2024-11": 0.31035562827824503,
+      "2024-12": 0.31286878602774465
+    },
+    "mean_monthly_turnover": 0.34435603665185505,
+    "maximum_monthly_turnover": 0.7059914180587967,
+    "mean_gross": 0.9063655689650796,
+    "maximum_absolute_net": 0.01907727935532225,
+    "mean_contribution_fraction": 0.9322992180665434,
+    "minimum_names": 2994,
+    "maximum_names": 3000,
+    "initial_deployment_included": true,
+    "interpretation": "planned sum(abs(weight change)); no drift, executed fills, costs or capacity"
+  },
+  "combined_manifest_sha256": "7407d7e7b72548e5577fdf94e2f52d238f9ff751a8ebc5640987130c1390d8e1",
+  "verified_combined_payload_bytes": 45631048
+}

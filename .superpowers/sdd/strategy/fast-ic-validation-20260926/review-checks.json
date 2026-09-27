@@ -1,0 +1,87 @@
+{
+  "schema": "atx.fast-ic-evidence-review/v1",
+  "reviewed_utc": "2026-09-27T00:15:53.475199+00:00",
+  "source_sha": "a9b8814c5797599dd73fd448f5c5d63d88149dc6",
+  "archived_file_count": 44,
+  "native_unique_tests": 34,
+  "native_xml_seconds": "10.484",
+  "native_names": [
+    "StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask",
+    "StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting",
+    "StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions",
+    "StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix",
+    "StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses",
+    "StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns",
+    "StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload",
+    "StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean",
+    "StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets",
+    "StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload",
+    "StrategyIcRunner.FrozenTrainValidationMatchesUninterruptedWithoutTrainPayload",
+    "StrategyIcRunner.FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload",
+    "StrategyIcRunner.SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenRequested",
+    "IcScreen.EquivalenceV3PoweredEstimatesProtectDeclaredEffectsAcrossEveryMetric",
+    "IcScreen.EquivalenceV3RemovesOnlyV2DirectionalVetoAndKeepsQuarterHeuristic",
+    "IcScreen.DisabledHasNoDenseCacheAndNeverScreensSignal",
+    "IcScreen.SimdMatchesIndependentPairwiseOracleWithTiesMissingAndTails",
+    "IcScreen.SharedDateRanksHandleEqualCountDifferentNamesAndScratchReuse",
+    "IcScreen.DelayedMatureLabelsUseDecisionMembershipAndReturnGuardOnly",
+    "IcScreen.InvalidShapesModesBudgetsAndScratchBindingReturnErrors",
+    "IcScreen.PreparedCacheRequiresMatchingResolvedGeometryAndRecipe",
+    "IcScreen.ShortSparseAndConstantCandidatesPassThrough",
+    "IcScreen.PairCoverageUsesOriginalDecisionEligibleNames",
+    "IcScreen.AlternatingNullIsRejectedWithoutAFullBacktest",
+    "IcScreen.RetainsWeakInverseLongHorizonAndRegimeCohorts",
+    "IcScreen.EquivalenceV3ActualScreenUsesSmallDeclaredMarginAndRetainsBoundarySignals",
+    "IcScreen.StrictMonotoneTransformPreservesRankPathAndDecision",
+    "IcScreen.BoundedNoisyDistinctHorizonQualificationReportsActualCohorts",
+    "IcScreen.WiderNoisyCohortReportsRejectionAndWeakSignalRetention",
+    "ResearchIc.LegacyFourHorizonSeriesRemainBitIdentical",
+    "ResearchIc.EndpointPresenceAndCandidatePairsAreCountedWithoutFutureMembership",
+    "ResearchIc.ShortLongHorizonIsUnavailableAndNeverRejected",
+    "ResearchIc.DateParallelTwoAndFourWorkersPreserveEverySeriesAndHacBit",
+    "ResearchIc.ParallelAdmissionRefusesUnboundedWorkersMismatchedPoolAndAggregateBudget"
+  ],
+  "build_compile_actions": 7,
+  "build_link_actions": 4,
+  "validation_candidates": 48,
+  "unchanged_frozen_signs": 48,
+  "validation_train_evaluations": 0,
+  "parity_authority": "archived root final audit; no independent numerical rerun",
+  "compared_daily_numeric_fields": 55098,
+  "numeric_differences": 0,
+  "incomplete_old_csv_rows_excluded": 1,
+  "original_audit_failure_preserved": true,
+  "original_audit_script_historical_binding": [
+    {
+      "origin": "C:\\atx-wt\\pool-2\\build-equity\\audit-fast-ic-validation-v3.py",
+      "run": "recent-fast-ic-validation-v3-audit-run",
+      "historical_sha256": "07ed7696251b6f2f13b6dcb46dce16ec8abe6005cb26d584fd81683908b2a3ee",
+      "current_archived_sha256": "5c4e80b0a881b6256ae66eb9feef6fce0c8411f9cce20143fcbbc8aa9dc7d2c3",
+      "reason": "initial failed audit script was subsequently corrected; old receipt preserved"
+    }
+  ],
+  "binaries": [
+    {
+      "origin": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+      "current_sha256": "8833a852edec05d7ecaca0d92a5bbe48095c8c76340fa7f0fa169542a3b726d0",
+      "recorded_sha256": "8833a852edec05d7ecaca0d92a5bbe48095c8c76340fa7f0fa169542a3b726d0",
+      "matches": true
+    },
+    {
+      "origin": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+      "current_sha256": "26e5c25938c4ae0d1ff48610fe5295dca362b9784fe17fb37820ae0a48325447",
+      "recorded_sha256": "26e5c25938c4ae0d1ff48610fe5295dca362b9784fe17fb37820ae0a48325447",
+      "matches": true
+    }
+  ],
+  "train_v4_completed_candidates": 10,
+  "train_v4_started_candidate": 11,
+  "train_v4_outcome": "system-memory-limit",
+  "train_v4_summary_is_stale_running": true,
+  "train_v4_absent_artifacts": [
+    "orientations.json",
+    "train_combined.json",
+    "train_combined.f64"
+  ],
+  "no_dense_payload_copies": true
+}

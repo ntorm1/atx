@@ -1,0 +1,47 @@
+{
+  "actual_trades_or_returns": false,
+  "axes_semantics": "exact-ordered-role-sessions-and-instrument-IDs;no-static-broadcast",
+  "dates": 903,
+  "files": {
+    "validation_combined.f64": {
+      "bytes": 36466752,
+      "sha256": "614d59f3e7bd15a2c5372bf23f7ab498c45bbf3f15856744259b9947e6ce645d"
+    },
+    "validation_combined_finite.u8": {
+      "bytes": 4558344,
+      "sha256": "8b12b93d752016f14618704e9439f4c6f3b3de3e4f0987de5d8ebeadb5885d7d"
+    },
+    "validation_combined_ids.u64": {
+      "bytes": 40384,
+      "sha256": "9b1ba628d1bb71ac969d9fbd6735e986f3617fcd3d84259d8e2a5b51f8a13eb1"
+    },
+    "validation_combined_member.u8": {
+      "bytes": 4558344,
+      "sha256": "8b12b93d752016f14618704e9439f4c6f3b3de3e4f0987de5d8ebeadb5885d7d"
+    },
+    "validation_combined_sessions.i64": {
+      "bytes": 7224,
+      "sha256": "92013075f09e90f2ac982b5579980b1ef0d66f5015a1d737c9c59a0a1e3523d4"
+    }
+  },
+  "finite_cells": 2519482,
+  "finite_semantics": "one-iff-saved-f64-is-finite;nonmembers-NaN;zero-is-valid-neutral-signal",
+  "instruments": 5048,
+  "layout": "date-major-little-endian",
+  "library_sha256": "1ec75242f0328a459ac114256f99f534eb0b8ec2e642794d3f4ad846779a09ff",
+  "member_cells": 2519482,
+  "member_semantics": "decision-member-and-source-present-and-finite-positive-close;independent-of-component-coverage",
+  "orientation_candidates_sha256": "4a3e8004ec15b104e045d06ee255447e5db7df8f1b1f6430668ebab0cbea9081",
+  "orientations_artifact_sha256": "5106fdc13fc5347c9c2c670714c134a1978e6b7a0d2d2b5dd79bacb7dfb782d6",
+  "role": "validation",
+  "role_manifest_sha256": "0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7",
+  "role_window_required": true,
+  "run_recipe_sha256": "7aeea9a6b9aeadba568093a13ce0f6747bd561b1326ce5ede6bb85d4ba1efb94",
+  "schema": "atx.dsl-combined-signal/v1",
+  "score_begin": 401,
+  "score_end": 903,
+  "signal_semantics": "exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator",
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "status": "complete",
+  "train_manifest_sha256": "3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493"
+}

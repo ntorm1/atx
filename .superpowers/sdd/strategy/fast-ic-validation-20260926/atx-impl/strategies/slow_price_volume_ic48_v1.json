@@ -1,0 +1,582 @@
+{
+  "schema": "atx.dsl-ic-library/v1",
+  "id": "slow_price_volume_ic48_v1",
+  "fields": [
+    {
+      "name": "close",
+      "basis": "f64(source float32 raw close) * vendor cumulReturnFactor; adjusted total-return proxy"
+    },
+    {
+      "name": "raw_close",
+      "basis": "unadjusted source float32 close widened to f64; USD/share"
+    },
+    {
+      "name": "volume",
+      "basis": "unadjusted source share volume widened to f64"
+    }
+  ],
+  "families": [
+    {
+      "id": "momentum",
+      "description": "Intermediate return persistence, with the most recent month excluded."
+    },
+    {
+      "id": "trend_quality",
+      "description": "Path efficiency, return-sign consistency and risk-scaled persistence; related variants share one family budget."
+    },
+    {
+      "id": "medium_reversal",
+      "description": "Smoothed contrarian intermediate returns and distance from a trailing mean."
+    },
+    {
+      "id": "defensive_risk",
+      "description": "Low volatility, downside variability and volatility expansion; factor preferences, not neutralized alpha."
+    },
+    {
+      "id": "liquidity_state",
+      "description": "Raw-dollar liquidity level, expansion and instability; no adjusted-price/share-volume dollar proxy."
+    },
+    {
+      "id": "flow_confirmation",
+      "description": "Return/flow co-movement and signed dollar-flow balance, using actual shares times raw close."
+    },
+    {
+      "id": "price_location",
+      "description": "Adjusted-close position within its own trailing range and slow moving-average structure; no candle fields."
+    },
+    {
+      "id": "trading_year_seasonality",
+      "description": "252-session-year proxies only; not calendar seasonality or a claim of independent effects."
+    }
+  ],
+  "candidates": [
+    {
+      "id": "mom_12_1_s21",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(((delay(close, 21) / delay(close, 252)) - 1)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mom_12_1_s63",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(((delay(close, 21) / delay(close, 252)) - 1)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mom_9_1_s21",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(((delay(close, 21) / delay(close, 189)) - 1)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mom_9_1_s63",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(((delay(close, 21) / delay(close, 189)) - 1)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mom_6_1_s21",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(((delay(close, 21) / delay(close, 126)) - 1)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mom_6_1_s63",
+      "family": "momentum",
+      "dsl": "decay_linear(rank(((delay(close, 21) / delay(close, 126)) - 1)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "efficiency_63_s21",
+      "family": "trend_quality",
+      "dsl": "decay_linear(rank((ts_sum(((close / delay(close, 1)) - 1), 63) / ts_sum(abs(((close / delay(close, 1)) - 1)), 63))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "efficiency_63_s63",
+      "family": "trend_quality",
+      "dsl": "decay_linear(rank((ts_sum(((close / delay(close, 1)) - 1), 63) / ts_sum(abs(((close / delay(close, 1)) - 1)), 63))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "sign_consistency_126_s21",
+      "family": "trend_quality",
+      "dsl": "decay_linear(rank(ts_mean(sign(((close / delay(close, 1)) - 1)), 126)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "sign_consistency_126_s63",
+      "family": "trend_quality",
+      "dsl": "decay_linear(rank(ts_mean(sign(((close / delay(close, 1)) - 1)), 126)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "risk_scaled_6_1_s21",
+      "family": "trend_quality",
+      "dsl": "decay_linear(rank((((delay(close, 21) / delay(close, 126)) - 1) / stddev(((close / delay(close, 1)) - 1), 126))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "risk_scaled_6_1_s63",
+      "family": "trend_quality",
+      "dsl": "decay_linear(rank((((delay(close, 21) / delay(close, 126)) - 1) / stddev(((close / delay(close, 1)) - 1), 126))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "reversal_21_skip5_s21",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(rank((-1 * ((delay(close, 5) / delay(close, 21)) - 1))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "reversal_21_skip5_s63",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(rank((-1 * ((delay(close, 5) / delay(close, 21)) - 1))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "reversal_63_skip5_s21",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(rank((-1 * ((delay(close, 5) / delay(close, 63)) - 1))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "reversal_63_skip5_s63",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(rank((-1 * ((delay(close, 5) / delay(close, 63)) - 1))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mean_distance_63_s21",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(rank((-1 * ((close / ts_mean(close, 63)) - 1))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mean_distance_63_s63",
+      "family": "medium_reversal",
+      "dsl": "decay_linear(rank((-1 * ((close / ts_mean(close, 63)) - 1))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "low_vol_63_s21",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(rank((-1 * stddev(((close / delay(close, 1)) - 1), 63))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "low_vol_63_s63",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(rank((-1 * stddev(((close / delay(close, 1)) - 1), 63))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "low_downside_126_s21",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(rank((-1 * ts_mean((min(((close / delay(close, 1)) - 1), 0) * min(((close / delay(close, 1)) - 1), 0)), 126))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "low_downside_126_s63",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(rank((-1 * ts_mean((min(((close / delay(close, 1)) - 1), 0) * min(((close / delay(close, 1)) - 1), 0)), 126))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "vol_expansion_21_126_s21",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(rank((-1 * (stddev(((close / delay(close, 1)) - 1), 21) / stddev(((close / delay(close, 1)) - 1), 126)))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "vol_expansion_21_126_s63",
+      "family": "defensive_risk",
+      "dsl": "decay_linear(rank((-1 * (stddev(((close / delay(close, 1)) - 1), 21) / stddev(((close / delay(close, 1)) - 1), 126)))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "dollar_liquidity_63_s21",
+      "family": "liquidity_state",
+      "dsl": "decay_linear(rank(ts_mean((raw_close * volume), 63)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "dollar_liquidity_63_s63",
+      "family": "liquidity_state",
+      "dsl": "decay_linear(rank(ts_mean((raw_close * volume), 63)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "dollar_expansion_21_126_s21",
+      "family": "liquidity_state",
+      "dsl": "decay_linear(rank((-1 * (ts_mean((raw_close * volume), 21) / ts_mean((raw_close * volume), 126)))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "dollar_expansion_21_126_s63",
+      "family": "liquidity_state",
+      "dsl": "decay_linear(rank((-1 * (ts_mean((raw_close * volume), 21) / ts_mean((raw_close * volume), 126)))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "dollar_instability_63_s21",
+      "family": "liquidity_state",
+      "dsl": "decay_linear(rank((-1 * stddev(((raw_close * volume) / ts_mean((raw_close * volume), 63)), 63))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "dollar_instability_63_s63",
+      "family": "liquidity_state",
+      "dsl": "decay_linear(rank((-1 * stddev(((raw_close * volume) / ts_mean((raw_close * volume), 63)), 63))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "return_dollar_rank_corr63_s21",
+      "family": "flow_confirmation",
+      "dsl": "decay_linear(rank(correlation(((close / delay(close, 1)) - 1), rank((raw_close * volume)), 63)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "return_dollar_rank_corr63_s63",
+      "family": "flow_confirmation",
+      "dsl": "decay_linear(rank(correlation(((close / delay(close, 1)) - 1), rank((raw_close * volume)), 63)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "weekly_return_relative_flow63_s21",
+      "family": "flow_confirmation",
+      "dsl": "decay_linear(rank(correlation(ts_sum(((close / delay(close, 1)) - 1), 5), ((raw_close * volume) / ts_mean((raw_close * volume), 63)), 63)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "weekly_return_relative_flow63_s63",
+      "family": "flow_confirmation",
+      "dsl": "decay_linear(rank(correlation(ts_sum(((close / delay(close, 1)) - 1), 5), ((raw_close * volume) / ts_mean((raw_close * volume), 63)), 63)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "signed_dollar_balance63_s21",
+      "family": "flow_confirmation",
+      "dsl": "decay_linear(rank((ts_sum((sign(((close / delay(close, 1)) - 1)) * (raw_close * volume)), 63) / ts_sum((raw_close * volume), 63))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "signed_dollar_balance63_s63",
+      "family": "flow_confirmation",
+      "dsl": "decay_linear(rank((ts_sum((sign(((close / delay(close, 1)) - 1)) * (raw_close * volume)), 63) / ts_sum((raw_close * volume), 63))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "near_high_126_s21",
+      "family": "price_location",
+      "dsl": "decay_linear(rank((close / ts_max(close, 126))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "near_high_126_s63",
+      "family": "price_location",
+      "dsl": "decay_linear(rank((close / ts_max(close, 126))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "range_position_252_s21",
+      "family": "price_location",
+      "dsl": "decay_linear(rank(((close - ts_min(close, 252)) / (ts_max(close, 252) - ts_min(close, 252)))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "range_position_252_s63",
+      "family": "price_location",
+      "dsl": "decay_linear(rank(((close - ts_min(close, 252)) / (ts_max(close, 252) - ts_min(close, 252)))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mean_structure_21_126_s21",
+      "family": "price_location",
+      "dsl": "decay_linear(rank((ts_mean(close, 21) / ts_mean(close, 126))), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "mean_structure_21_126_s63",
+      "family": "price_location",
+      "dsl": "decay_linear(rank((ts_mean(close, 21) / ts_mean(close, 126))), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "year_forward_month_s21",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(delay(ts_sum(((close / delay(close, 1)) - 1), 21), 231)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "year_forward_month_s63",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(delay(ts_sum(((close / delay(close, 1)) - 1), 21), 231)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "year_forward_week_s21",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(delay(ts_sum(((close / delay(close, 1)) - 1), 5), 247)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "year_forward_week_s63",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(delay(ts_sum(((close / delay(close, 1)) - 1), 5), 247)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "year_forward_quarter_s21",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(((delay(close, 189) / delay(close, 252)) - 1)), 21)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    },
+    {
+      "id": "year_forward_quarter_s63",
+      "family": "trading_year_seasonality",
+      "dsl": "decay_linear(rank(((delay(close, 189) / delay(close, 252)) - 1)), 63)",
+      "horizons": [
+        5,
+        21,
+        63
+      ],
+      "sign_policy": "train-rank-ic21"
+    }
+  ]
+}
