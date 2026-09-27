@@ -62,6 +62,41 @@ least its cap + 1.0 GiB; host-wide slot files keep the sum of our running caps a
 commit or 0.25 GiB free physical memory sustained 30 s; a stopped slice resumes from its ledger. Do not raise a
 cap, run uncapped, or terminate other workloads to force a backfill; re-engineer a job that cannot be admitted.
 
+## Ledgered batch slices and stale-run recovery
+
+`.superpowers/sdd/tier1-parity/claude-ctl/autolaunch-archive21.ps1` is **retired**. Keep it as
+historical evidence; do not execute it. Size-based FIFO guard admission and the batch ledger
+replace its whole-process restart loop.
+
+Use a fresh committed export for OPS work. A typical writer command, with the Python path,
+export path and database replaced explicitly, is:
+
+```powershell
+$env:OPENBLAS_NUM_THREADS='1'
+python run_memory_guarded.py --job-gb 0.2 --allow-nested-guards --wait-minutes 30 -- python run_slices.py --db <copy.duckdb> --stage bars_unit_correction --run-key <key> --job-gb 0.8 --heavy --duckdb-memory 384MB --threads 1 --until-complete --finalize
+```
+
+Each worker is a fresh guarded process. A batch's output and `build_batches` row commit in
+one transaction. Checkpoints/reconnects default to every four batches; slices default to eight
+batches or ten minutes. A run freezes its source/dependency digest, caller spec, DuckDB version
+and plan; source changes require the original code or an explicit new run. Completed batches
+are skipped. Exit 137 or admission timeout 78 can resume the same ledger; disk, parent-job and
+invalid nesting refusals end the orchestrator for reconciliation. Receipts retain admission,
+native peaks, cap hits, output and errors. Keep at least 35 GiB free and at most one full copy.
+
+The bars correction calls the existing A9 inventory rule. Known thousands are scaled across
+whole line/load-run histories; suspect share units stay NULL, and ambiguous runs refuse.
+Sixteen initial whole-line buckets expand only to keep each batch at most 2M rows. Publication
+checks original and staged content fingerprints, counts, unique keys and correction lineage,
+then swaps bars and their correction ledger together. This command does not authorize
+production execution before the corresponding review/drill gates.
+
+After confirming the owned writer has stopped, run `recover_stale_run.py --db <copy.duckdb>`
+under a 0.6 GiB guard. Recovery uses 256 MB/one thread from connect, refuses possible live writer
+receipts or a file lock, preserves open batch runs, marks stale activation/dataset runs failed,
+verifies schema and leaves no WAL. `--sweep-spill` is optional and only considers dead-process
+directories for that exact database path; it never sweeps other databases' directories.
+
 ## Activation from scratch
 
 `atx-db activate` runs the warehouse build ladder from an empty directory. It is
