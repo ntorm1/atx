@@ -151,6 +151,23 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _write_evidence(path: Path, payload: Any) -> None:
+    """Keep the exact previous receipt/summary bytes before publishing the latest attempt."""
+    if path.is_file():
+        previous = path.read_bytes()
+        digest = hashlib.sha256(previous).hexdigest()
+        history = path.parent / "history" / f"{path.stem}-{digest}.json"
+        history.parent.mkdir(parents=True, exist_ok=True)
+        if history.exists():
+            if history.read_bytes() != previous:
+                raise ValueError(f"evidence history differs from its digest: {history}")
+        else:
+            tmp = history.with_name(f".{history.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+            tmp.write_bytes(previous)
+            os.replace(tmp, history)
+    _write_json(path, payload)
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False, default=str)
 
@@ -949,6 +966,39 @@ def _clear_family(cells: Any) -> Any:
     return out
 
 
+def _cached_basis(cache: Any, key: tuple[str, str, str], parts: Mapping[str, Any],
+                  feature_id: str) -> dict[str, Any]:
+    """Recover the writer-validated evaluated basis only from an intact, exact current cache key.
+
+    EvalCache.write checks that key_parts.basis equals the evaluator's basis. Its sidecar thus
+    preserves the four basis fields needed by grading even when an earlier job receipt is absent.
+    Extra evaluator diagnostics are not inferred; previous full receipts remain in history.
+    """
+    from atx_db.research.eval_cache import EVAL_CACHE_VERSION
+    from atx_db.research.research_lake import sha256_file
+
+    side = cache.read_meta(*key)
+    if side.get("cache_version") != EVAL_CACHE_VERSION or any(
+        side.get(name) != value for name, value in zip(
+            ("feature_sha", "label_sha", "eval_spec_sha"), key, strict=True)
+    ) or side.get("meta", {}).get("feature_id") != feature_id:
+        raise ValueError(f"{feature_id}: cached identity does not match the requested key")
+    cached = side.get("key_parts")
+    if not isinstance(cached, Mapping) or _sha_text(_canonical(cached)) != key[2]:
+        raise ValueError(f"{feature_id}: cached key parts do not hash to the requested key")
+    if _canonical(cached) != _canonical(parts):
+        raise ValueError(f"{feature_id}: cached basis/spec differs from the current live basis/spec")
+    required = {"cells", "slices", "series", "quantiles", "decay", "feature_inputs"}
+    files = side.get("files") or {}
+    if not required.issubset(files):
+        raise ValueError(f"{feature_id}: incomplete cached tables")
+    for name, info in files.items():
+        path = cache.path(*key, table=name)
+        if not path.is_file() or path.stat().st_size != info.get("bytes") or sha256_file(path) != info.get("sha256"):
+            raise ValueError(f"{feature_id}: cached {name} bytes differ from their sidecar")
+    return dict(cached["basis"])
+
+
 def _stage_eval(args: argparse.Namespace) -> None:
     """One feature group: build the basis once, key it (``basis_key`` on live frames), evaluate, cache per feature."""
     from atx_db.research import eval_cache as ec
@@ -1021,6 +1071,10 @@ def _stage_eval(args: argparse.Namespace) -> None:
     eval_sha = ec.compute_eval_spec_sha(payload, basis=basis, label_window=window)
     cache = ec.EvalCache(Path(args.out))
     todo = [f for f in features if not cache.has(manifest[f]["feature_sha"], label_sha, eval_sha)]
+    cached_basis = None
+    for feature_id in sorted(set(features) - set(todo)):
+        cached_basis = _cached_basis(cache, (manifest[feature_id]["feature_sha"], label_sha, eval_sha),
+                                     parts, feature_id)
     receipt: dict[str, Any] = {"features": features, "done_before": sorted(set(features) - set(todo)),
                                "eval_spec_sha": eval_sha, "label_sha": label_sha, "basis_key": basis,
                                "context": context_stats, "rebalance_accounting": rebalance_stats,
@@ -1034,6 +1088,7 @@ def _stage_eval(args: argparse.Namespace) -> None:
         trace.mark("evaluated", features=len(todo), seconds_eval=round(time.perf_counter() - started, 1))
         evaluated = tables.bases[BASIS]
         receipt["bases"] = tables.bases
+        receipt["bases_source"] = "evaluated"
         receipt["family_partial"] = tables.family
         for feature_id in todo:
             def part(frame: Any, fid: str = feature_id) -> Any:
@@ -1049,13 +1104,16 @@ def _stage_eval(args: argparse.Namespace) -> None:
         _write_json(work / "attrition.json", tables.attrition.to_dict("records"))
         del tables
     else:
-        receipt["bases"] = None
+        if cached_basis is None:
+            raise ValueError("no evaluated or validated cached basis")
+        receipt["bases"] = {BASIS: cached_basis}
+        receipt["bases_source"] = "validated_cache_key_parts"
     store.close()
     cache.close()
     trace.mark("done")
     receipt["memory"] = trace.marks
     receipt["peak_gb"] = max((m.get("peak_gb") or 0.0) for m in trace.marks)
-    _write_json(work / "jobs" / f"eval-{features[0]}.json", receipt)
+    _write_evidence(work / "jobs" / f"eval-{features[0]}.json", receipt)
 
 
 def _stage_grade(args: argparse.Namespace, prep: Mapping[str, Any] | None = None) -> None:
@@ -1084,8 +1142,8 @@ def _stage_grade(args: argparse.Namespace, prep: Mapping[str, Any] | None = None
     run_bases = next((r["bases"] for r in receipts if r.get("bases")), None)
     if run_bases is None:
         raise SystemExit("no job receipt carries the evaluated basis manifest")
-    if run_bases[BASIS]["prepared_digests"] != bases[0]["prepared_digests"]:
-        raise SystemExit("the evaluated prepared digests differ from the key")
+    if {key: run_bases[BASIS].get(key) for key in ec.BASIS_KEY_FIELDS} != bases[0]:
+        raise SystemExit("the evaluated basis differs from the key")
     label_sha = prep["inputs"]["label_sha"]
     cache = ec.EvalCache(Path(args.out))
     frames: dict[str, list[Any]] = {name: [] for name in ("cells", "slices", "series", "quantiles", "decay")}
@@ -1349,8 +1407,13 @@ def _jobs(args: argparse.Namespace, stage: str, argvs: list[list[str]], summary:
     for attempt in range(1, 6):
         receipts: list[dict[str, Any]] = []
         started = time.perf_counter()
+        def preserve_receipt(index: int, code: int, receipt: dict[str, Any]) -> None:
+            digest = _sha_text(_canonical(receipt))
+            _write_json(_work(args) / "guard_receipts" / stage / f"{digest}.json", receipt)
+
         codes = run_jobs([full[i] for i in pending], max_workers=args.workers, job_gb=args.job_gb,
-                         wait_minutes=args.wait_minutes, receipts=receipts, log_dir=log_dir / f"attempt-{attempt}")
+                         wait_minutes=args.wait_minutes, receipts=receipts, log_dir=log_dir / f"attempt-{attempt}",
+                         on_finish=preserve_receipt)
         for index, code, receipt in zip(pending, codes, receipts, strict=True):
             results[index] = {"argv": argvs[index], "exit": code, "peak_gb": receipt.get("peak_job_memory_gb"),
                               "cap_hit": receipt.get("cap_hit"), "seconds": receipt.get("seconds"),
@@ -1367,7 +1430,7 @@ def _jobs(args: argparse.Namespace, stage: str, argvs: list[list[str]], summary:
     peaks = [r["peak_gb"] for r in results.values() if r["peak_gb"] is not None]
     summary["stages"][stage] = {"jobs": len(full), "failed": len(failed), "peak_gb_max": max(peaks, default=None),
                                 "results": [results[i] for i in sorted(results)]}
-    _write_json(_work(args) / "summary.json", summary)
+    _write_evidence(_work(args) / "summary.json", summary)
     if failed:
         raise SystemExit(f"stage {stage}: {len(failed)} jobs failed: {list(failed.values())[:3]} (logs {log_dir})")
 
@@ -1403,7 +1466,7 @@ def _run(args: argparse.Namespace) -> int:
         else:
             raise SystemExit(f"unknown stage {stage!r}")
     summary["finished_at"] = _now()
-    _write_json(path, summary)
+    _write_evidence(path, summary)
     for name, item in summary["stages"].items():
         print(f"{name}: jobs {item.get('jobs')} failed {item.get('failed')} peak {item.get('peak_gb_max')} GiB")
     return 0
