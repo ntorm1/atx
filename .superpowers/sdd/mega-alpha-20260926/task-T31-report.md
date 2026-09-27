@@ -230,3 +230,54 @@ LEV=<same>                       THETA=.05 DUST=.1 RATE=fixed COMBINED=aim bash 
 ```
 Expected invocations: fit 1 (+1 re-fit check), w 1, NAV 10 (+2 conditional). The NAV flags come from T30/T36 and could
 not be exercised here; they are emitted exactly as R-e specifies.
+
+## Fix round 1
+
+Scope: review `task-T31-review.md` Important 1 (R6' "DSR at N = 10 (skew/kurtosis from daily net)" had no producer).
+The ⚠️ items are root checks at T38. The controller ratified the `-L$LEV` suffix, the coverage-effective definition, the
+extra `provenance.aim` keys and the CSV-recomputed `mean_gross_leverage`. The Minors were not assigned and are unchanged.
+
+**What changed (`studies/nav_summ.py`):**
+- Standard library + numpy only:
+  - `norm_cdf` via `math.erfc`.
+  - `norm_ppf` by bisection on `norm_cdf` (matches `statistics.NormalDist.inv_cdf` to ~1e-15 in the range used).
+  - `net_moments` gives the per-session SR (ddof 1), skewness and non-excess kurtosis (population moments) of the daily
+    nets on the return rows.
+  - `expected_max_sr(V, N)` computes SR0 = sqrt(V)[(1-γ)Φ⁻¹(1-1/N) + γΦ⁻¹(1-1/(Ne))], γ = 0.5772156649.
+  - `deflated_sharpe(SR, T, γ3, γ4, SR0)` computes Φ[(SR-SR0)√(T-1)/√(1-γ3·SR+(γ4-1)SR²/4)]. It returns None if the
+    denominator is <= 0.
+  - `dsr_rows(moments, N)` takes V[SR_n] as the sample variance (ddof 1) of the per-session SRs of **all NAV dirs on the
+    command line**. With a single dir it falls back to the Lo (2002) (1 + SR²/2)/T, and `variance_source` says so.
+- `main` now analyses every dir first, since V spans the dirs, and then prints. The new flag is `--dsr-n N` (default 10,
+  must be >= 2).
+- Each dir's printout gets a `deflated SR (N=…)` line: DSR, SR and SR0 (per session and annualised), skew, kurtosis, T,
+  V[SR_n] and its source. It sits right after the `paired vs` (dSR) line. The `--json` output carries it under
+  `"deflated"` (plus `"net_moments"`) alongside `"paired"`.
+- For T38 Step 5, pass all 10 grid cells (the ew reference included) as positional dirs. The `nav_summ.py` line in
+  "Root command lines" above already does that, so V[SR_n] comes from the 10 cells and N = 10. The per-cell
+  `v5_train.sh nav` call passes one dir, so it prints the Lo-fallback DSR, labelled as such.
+
+**New fixtures (`studies/test_nav_summ.py`, +6):**
+- `test_normal_helpers_match_the_standard_library`
+- `test_net_moments_hand_case`: [0,0,0,1] gives SR 0.5, skew 2/√3, kurtosis 7/3.
+- `test_deflated_sharpe_hand_case_n10_t754`: N = 10, T = 754, SR = 0.08/session, γ3 = -0.3, γ4 = 5, V = 4e-4. It
+  checks against a longhand `statistics.NormalDist` computation to 1e-12, and against the pinned values
+  SR0 = 0.03149196602689943 and DSR = 0.9051249340733833 to 1e-6.
+- `test_deflated_sharpe_gaussian_case` has three parts:
+  - exact γ3 = 0, γ4 = 3 gives the denominator √(1+SR²/2);
+  - simulated Gaussian nets (200k) give skew ≈ 0 and kurtosis ≈ 3, and the denominator is within 1e-3;
+  - the plan-4.E null expected max annual SR over 3 years is 0.69 / 0.91 / 1.10 for N = 5 / 10 / 20, reproduced to
+    ±0.005.
+- `test_dsr_rows_cross_cell_and_single_cell_fallback`
+- `test_main_reports_dsr_for_every_cell`: 3 dirs plus `--reference`. It checks the cross-cell V, that the JSON
+  `deflated` matches the longhand, and a single dir with `--dsr-n 5` (Lo fallback, labelled).
+
+**Command and output:**
+```
+$ "C:/Program Files/Python312/python.exe" -m pytest -p no:cacheprovider .superpowers/sdd/mega-alpha-20260926/studies/test_nav_summ.py atx-impl/tools/test_fit_composition_weights.py -q
+........................................................................ [ 88%]
+.........                                                                [100%]
+81 passed in 19.96s
+```
+The 81 tests are 12 nav_summ (6 existing + 6 new) and 69 fitter (unchanged). The fitter and `v5_train.sh` are untouched
+in this round.

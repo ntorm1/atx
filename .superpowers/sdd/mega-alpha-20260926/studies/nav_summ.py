@@ -3,7 +3,7 @@ stats, the netting ratio and the paired dSR(net) against a reference cell.
 
 Usage:
   nav_summ.py NAV_DIR [NAV_DIR ...] [--weights W ...] [--reference REF_NAV_DIR] [--scenario NAME]
-              [--draws 2000] [--block 21] [--seed 20260927] [--json OUT.json]
+              [--draws 2000] [--block 21] [--seed 20260927] [--dsr-n 10] [--json OUT.json]
 
 Per NAV dir, for the primary scenario (or --scenario), from its daily CSV (columns as strategy_nav_replay.cpp
 writes them; rows and definitions mirror its summary):
@@ -24,6 +24,13 @@ writes them; rows and definitions mirror its summary):
                  Ledoit-Wolf (2008) studentized circular block bootstrap 95% CI and p-value (R6'): delta-method SE of
                  dSR (population moments) with a Bartlett HAC (lag = block - 1) on the sample and the block
                  estimator Psi* = sum_blocks S_j S_j' / T on each resample, symmetric |t*| quantile.
+  DSR            (R6', plan-s4 4.E; Bailey & Lopez de Prado 2014) for every NAV dir passed:
+                 DSR = Phi[(SR - SR0) sqrt(T - 1) / sqrt(1 - g3 SR + (g4 - 1) SR^2 / 4)], SR the per-session net Sharpe
+                 (ddof 1), T the return rows, g3 skewness and g4 (non-excess) kurtosis of the daily nets (population
+                 moments); SR0 = sqrt(V[SR_n]) [(1 - gamma) PhiInv(1 - 1/N) + gamma PhiInv(1 - 1/(N e))],
+                 gamma = 0.5772156649, N = --dsr-n (default 10). V[SR_n] = sample variance (ddof 1) of the per-session
+                 SRs of the NAV dirs on the command line; with a single dir, the Lo (2002) sampling variance
+                 (1 + SR^2 / 2) / T of that dir (flagged in the output). Phi via math.erfc, PhiInv by bisection on it.
 """
 from __future__ import annotations
 
@@ -39,6 +46,8 @@ import numpy as np
 
 ANNUAL = 252
 DEFAULT_DRAWS, DEFAULT_BLOCK, DEFAULT_SEED = 2000, 21, 20260927
+DEFAULT_DSR_N = 10  # R6': N = 10 construction cells
+EULER_GAMMA = 0.5772156649015329
 
 
 def fmt(v, spec: str) -> str:
@@ -241,6 +250,78 @@ def paired_stats(a: np.ndarray, b: np.ndarray, draws: int = DEFAULT_DRAWS, block
             "lw": lw, "draws": draws, "block": block, "seed": seed}
 
 
+def norm_cdf(x: float) -> float:
+    return 0.5 * math.erfc(-x / math.sqrt(2.0))
+
+
+def norm_ppf(p: float) -> float:
+    """Standard normal quantile by bisection on ``norm_cdf`` (to double precision; no scipy)."""
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"norm_ppf: p must be in (0, 1), got {p}")
+    lo, hi = -40.0, 40.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if norm_cdf(mid) < p:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo <= 1e-15 * max(1.0, abs(mid)):
+            break
+    return 0.5 * (lo + hi)
+
+
+def net_moments(x: np.ndarray) -> dict:
+    """Per-session Sharpe (ddof 1), skewness and non-excess kurtosis (population moments) of the daily nets."""
+    x = np.asarray(x, dtype=np.float64)
+    t = int(x.size)
+    e = x - x.mean() if t else x
+    m2 = float((e ** 2).mean()) if t else 0.0
+    sd = float(x.std(ddof=1)) if t > 1 else 0.0
+    return {"sessions": t, "sr_daily": float(x.mean()) / sd if sd > 0 else None,
+            "skew": float((e ** 3).mean()) / m2 ** 1.5 if m2 > 0 else None,
+            "kurtosis": float((e ** 4).mean()) / m2 ** 2 if m2 > 0 else None}
+
+
+def expected_max_sr(variance: float, n: int) -> float:
+    """SR0 = sqrt(V[SR_n]) [(1 - gamma) PhiInv(1 - 1/N) + gamma PhiInv(1 - 1/(N e))] (same units as V's SRs)."""
+    return math.sqrt(variance) * ((1.0 - EULER_GAMMA) * norm_ppf(1.0 - 1.0 / n) +
+                                  EULER_GAMMA * norm_ppf(1.0 - 1.0 / (n * math.e)))
+
+
+def deflated_sharpe(sr: float, t: int, skew: float, kurtosis: float, sr0: float) -> float | None:
+    """DSR = Phi[(SR - SR0) sqrt(T - 1) / sqrt(1 - g3 SR + (g4 - 1) SR^2 / 4)] with per-session SR and SR0."""
+    denom = 1.0 - skew * sr + (kurtosis - 1.0) * sr * sr / 4.0
+    if not (denom > 0 and t > 1):
+        return None
+    return norm_cdf((sr - sr0) * math.sqrt(t - 1) / math.sqrt(denom))
+
+
+def dsr_rows(moments: list[dict], n: int) -> list[dict]:
+    """DSR per NAV dir; V[SR_n] from the dirs' per-session SRs (ddof 1), or Lo (2002) with a single dir."""
+    if n < 2:
+        raise ValueError("DSR needs N >= 2")
+    srs = [m["sr_daily"] for m in moments if m["sr_daily"] is not None]
+    cross = len(moments) >= 2 and len(srs) >= 2
+    v_cross = float(np.var(srs, ddof=1)) if cross else None
+    out = []
+    for m in moments:
+        sr, t = m["sr_daily"], m["sessions"]
+        row = {"n": n, "sessions": t, "sr_daily": sr, "skew": m["skew"], "kurtosis": m["kurtosis"],
+               "sr_annual": sr * math.sqrt(ANNUAL) if sr is not None else None}
+        if sr is None or m["skew"] is None or t < 2:
+            out.append(dict(row, dsr=None, sr0_daily=None, sr0_annual=None, variance_sr=None,
+                            variance_source="undefined (constant or too short net series)"))
+            continue
+        if cross:
+            variance, source = v_cross, f"cross-cell sample variance of {len(srs)} per-session SRs"
+        else:
+            variance, source = (1.0 + sr * sr / 2.0) / t, "Lo (2002) sampling variance (1 + SR^2/2)/T: single cell"
+        sr0 = expected_max_sr(variance, n)
+        out.append(dict(row, dsr=deflated_sharpe(sr, t, m["skew"], m["kurtosis"], sr0), sr0_daily=sr0,
+                        sr0_annual=sr0 * math.sqrt(ANNUAL), variance_sr=variance, variance_source=source))
+    return out
+
+
 def align(cell: dict, reference: dict) -> tuple[np.ndarray, np.ndarray]:
     common = sorted(set(cell) & set(reference))
     return np.array([cell[s] for s in common]), np.array([reference[s] for s in common])
@@ -297,8 +378,10 @@ def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> dict:
             out.update(netting_ratio=netting_ratio(tau_book, w["weighted_standalone_turnover"]),
                        weighted_standalone_turnover=w["weighted_standalone_turnover"], tau_book=tau_book,
                        weights_sha256=w["sha256"])
+    nets = net_series(daily)
+    out["net_moments"] = net_moments(np.array(list(nets.values()), dtype=np.float64))
     if ref_nets is not None:
-        a, b = align(net_series(daily), ref_nets)
+        a, b = align(nets, ref_nets)
         out["paired"] = paired_stats(a, b, args.draws, args.block, args.seed)
     return out
 
@@ -327,6 +410,12 @@ def print_analysis(r: dict, reference: str | None) -> None:
               f"CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized 95% "
               f"[{fmt(lw['ci95'][0], '+.3f')}, {fmt(lw['ci95'][1], '+.3f')}] p {fmt(lw['p_value'], '.3f')} "
               f"(dSR_pop {lw['dsr_population']:+.3f}; {p['draws']} draws, block {p['block']}, seed {p['seed']})")
+    q = r.get("deflated")
+    if q:
+        print(f"   deflated SR (N={q['n']}): DSR {fmt(q['dsr'], '.4f')} | SR {fmt(q['sr_daily'], '+.5f')}/session "
+              f"({fmt(q['sr_annual'], '+.3f')} ann) vs SR0 {fmt(q['sr0_daily'], '.5f')}/session "
+              f"({fmt(q['sr0_annual'], '.3f')} ann) | skew {fmt(q['skew'], '+.3f')} kurtosis {fmt(q['kurtosis'], '.3f')} | "
+              f"T {q['sessions']} | V[SR_n] {fmt(q['variance_sr'], '.3e')} ({q['variance_source']})")
 
 
 def main(argv=None) -> int:
@@ -338,19 +427,24 @@ def main(argv=None) -> int:
     ap.add_argument("--draws", type=int, default=DEFAULT_DRAWS)
     ap.add_argument("--block", type=int, default=DEFAULT_BLOCK)
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    ap.add_argument("--dsr-n", type=int, default=DEFAULT_DSR_N,
+                    help="trials N of the deflated Sharpe ratio (R6': 10; >= 2); V[SR_n] comes from the dirs given")
     ap.add_argument("--json", default=None, help="also write the per-dir results as JSON")
     args = ap.parse_args(argv)
+    if args.dsr_n < 2:
+        ap.error("--dsr-n must be >= 2")
     weights = load_weights(args.weights)
     ref_nets = None
     if args.reference:
         ref_summary = load_summary(Path(args.reference))
         ref_nets = net_series(load_daily(Path(args.reference), scenario_of(ref_summary, args.scenario)["scenario"]))
-    results = []
-    for d in args.dirs:
+    # every dir first: V[SR_n] of the deflated Sharpe ratio spans all the NAV dirs on the command line
+    results = [analyse(Path(d), args, weights, ref_nets) for d in args.dirs]
+    for r, q in zip(results, dsr_rows([r["net_moments"] for r in results], args.dsr_n)):
+        r["deflated"] = q
+    for d, r in zip(args.dirs, results):
         print_scenarios(load_summary(Path(d)))
-        r = analyse(Path(d), args, weights, ref_nets)
         print_analysis(r, args.reference)
-        results.append(r)
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0

@@ -203,3 +203,108 @@ def test_main_end_to_end(tmp_path, capsys):
     # a single unmatched weights file is still used, flagged
     NS.main([str(ref), "--weights", str(tmp_path / "w.json")])
     assert "UNMATCHED" in capsys.readouterr().out
+
+
+# ------------------------------------------------ fix round 1: deflated Sharpe ratio (R6', plan-s4 4.E)
+def longhand_dsr(sr, t, skew, kurt, variance, n):
+    """The 4.E formulas written out with the standard library's NormalDist (independent of nav_summ's PhiInv)."""
+    from statistics import NormalDist
+    nd = NormalDist()
+    gamma = 0.5772156649
+    sr0 = math.sqrt(variance) * ((1 - gamma) * nd.inv_cdf(1 - 1 / n) + gamma * nd.inv_cdf(1 - 1 / (n * math.e)))
+    z = (sr - sr0) * math.sqrt(t - 1) / math.sqrt(1 - skew * sr + (kurt - 1) * sr ** 2 / 4)
+    return sr0, nd.cdf(z)
+
+
+def test_normal_helpers_match_the_standard_library():
+    from statistics import NormalDist
+    nd = NormalDist()
+    for p in (1e-6, 0.025, 0.5, 0.8, 0.9, 0.975, 1 - 1 / (10 * math.e), 1 - 1 / (20 * math.e)):
+        assert NS.norm_ppf(p) == pytest.approx(nd.inv_cdf(p), abs=1e-12)
+    for x in (-5.0, -1.3, 0.0, 0.7, 3.2):
+        assert NS.norm_cdf(x) == pytest.approx(nd.cdf(x), abs=1e-15)
+    with pytest.raises(ValueError):
+        NS.norm_ppf(1.0)
+
+
+def test_net_moments_hand_case():
+    m = NS.net_moments(np.array([0.0, 0.0, 0.0, 1.0]))
+    # mean .25, sample sd .5 -> SR .5; population m2 3/16, m3 3/32, m4 21/256 -> skew 2/sqrt(3), kurtosis 7/3
+    assert m["sessions"] == 4 and m["sr_daily"] == pytest.approx(0.5, abs=1e-15)
+    assert m["skew"] == pytest.approx(2 / math.sqrt(3), abs=1e-14)
+    assert m["kurtosis"] == pytest.approx(7 / 3, abs=1e-14)
+    assert NS.net_moments(np.full(5, 0.01))["sr_daily"] is None
+
+
+def test_deflated_sharpe_hand_case_n10_t754():
+    n, t, sr, skew, kurt, variance = 10, 754, 0.08, -0.3, 5.0, 0.0004   # per-session SR .08 (~1.27 annual)
+    sr0_ref, dsr_ref = longhand_dsr(sr, t, skew, kurt, variance, n)
+    sr0 = NS.expected_max_sr(variance, n)
+    assert sr0 == pytest.approx(sr0_ref, abs=1e-12)
+    assert NS.deflated_sharpe(sr, t, skew, kurt, sr0) == pytest.approx(dsr_ref, abs=1e-12)
+    # pinned values (computed once with the longhand above): SR0 = 0.0314919660..., DSR = 0.9051249340...
+    assert sr0 == pytest.approx(0.03149196602689943, abs=1e-6)
+    assert NS.deflated_sharpe(sr, t, skew, kurt, sr0) == pytest.approx(0.9051249340733833, abs=1e-6)
+    # a denominator <= 0 (extreme positive skew) has no DSR
+    assert NS.deflated_sharpe(0.5, t, 10.0, 3.0, 0.0) is None
+
+
+def test_deflated_sharpe_gaussian_case():
+    # exact Gaussian moments: the denominator is sqrt(1 + SR^2 / 2)
+    sr, t, sr0 = 0.06, 754, 0.03
+    want = NS.norm_cdf((sr - sr0) * math.sqrt(t - 1) / math.sqrt(1 + sr * sr / 2))
+    assert NS.deflated_sharpe(sr, t, 0.0, 3.0, sr0) == pytest.approx(want, abs=1e-15)
+    # simulated Gaussian nets: sample skew ~ 0, kurtosis ~ 3, denominator ~ sqrt(1 + SR^2 / 2)
+    x = 0.0005 + 0.01 * np.random.default_rng(12).normal(size=200_000)
+    m = NS.net_moments(x)
+    assert abs(m["skew"]) < 0.03 and abs(m["kurtosis"] - 3) < 0.06
+    s = m["sr_daily"]
+    denom = math.sqrt(1 - m["skew"] * s + (m["kurtosis"] - 1) * s * s / 4)
+    assert denom == pytest.approx(math.sqrt(1 + s * s / 2), rel=1e-3)
+    # plan-s4 4.E: expected max annual SR under the null over 3 years (Lo variance at SR 0, T = 756)
+    for n, want_annual in ((5, 0.69), (10, 0.91), (20, 1.10)):
+        assert NS.expected_max_sr(1 / 756, n) * math.sqrt(252) == pytest.approx(want_annual, abs=0.005)
+
+
+def test_dsr_rows_cross_cell_and_single_cell_fallback():
+    cells = [{"sessions": 754, "sr_daily": s, "skew": -0.2, "kurtosis": 4.0} for s in (0.02, 0.05, 0.08)]
+    rows = NS.dsr_rows(cells, 10)
+    v = float(np.var([0.02, 0.05, 0.08], ddof=1))
+    for row, cell in zip(rows, cells):
+        sr0_ref, dsr_ref = longhand_dsr(cell["sr_daily"], 754, -0.2, 4.0, v, 10)
+        assert row["variance_sr"] == pytest.approx(v, abs=1e-18) and "cross-cell" in row["variance_source"]
+        assert row["sr0_daily"] == pytest.approx(sr0_ref, abs=1e-12)
+        assert row["dsr"] == pytest.approx(dsr_ref, abs=1e-12)
+        assert row["sr0_annual"] == pytest.approx(sr0_ref * math.sqrt(252), abs=1e-12) and row["n"] == 10
+    assert rows[0]["dsr"] < rows[1]["dsr"] < rows[2]["dsr"]
+    single = NS.dsr_rows(cells[1:2], 10)[0]
+    assert "Lo (2002)" in single["variance_source"]
+    assert single["variance_sr"] == pytest.approx((1 + 0.05 ** 2 / 2) / 754, abs=1e-18)
+    undefined = NS.dsr_rows([cells[0], {"sessions": 5, "sr_daily": None, "skew": None, "kurtosis": None}], 10)
+    assert undefined[1]["dsr"] is None and "Lo (2002)" in undefined[0]["variance_source"]  # one defined SR only
+    with pytest.raises(ValueError):
+        NS.dsr_rows(cells, 1)
+
+
+def test_main_reports_dsr_for_every_cell(tmp_path, capsys):
+    rng = np.random.default_rng(21)
+    dirs = []
+    for k, mu in enumerate((0.0002, 0.0005, 0.0009)):
+        nets = list(mu + 0.01 * rng.normal(size=300))
+        dirs.append(str(write_nav(tmp_path / f"c{k}", nets, summary_tau=0.05)))
+    out = tmp_path / "res.json"
+    assert NS.main(dirs + ["--reference", dirs[0], "--draws", "100", "--json", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert text.count("deflated SR (N=10): DSR") == 3 and "cross-cell sample variance of 3 per-session SRs" in text
+    res = json.loads(out.read_text())
+    moments = [NS.net_moments(np.array(list(NS.net_series(NS.load_daily(Path(d), SCEN)).values()))) for d in dirs]
+    v = float(np.var([m["sr_daily"] for m in moments], ddof=1))
+    for r, m in zip(res, moments):
+        q = r["deflated"]
+        assert set(q) >= {"dsr", "sr0_daily", "sr0_annual", "skew", "kurtosis", "n", "variance_sr", "sessions"}
+        assert q["sessions"] == 300 and q["variance_sr"] == pytest.approx(v, rel=1e-12)
+        assert q["dsr"] == pytest.approx(longhand_dsr(m["sr_daily"], 300, m["skew"], m["kurtosis"], v, 10)[1], abs=1e-12)
+        assert "paired" in r                                   # dSR vs the reference alongside
+    NS.main([dirs[2], "--dsr-n", "5"])
+    single = capsys.readouterr().out
+    assert "deflated SR (N=5)" in single and "Lo (2002) sampling variance" in single
