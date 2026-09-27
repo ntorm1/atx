@@ -59,6 +59,15 @@
 - Dispatched (Opus): t19-t23 (pool-4 v4-identity: T19 then T23), t20-fundevents (pool-8), t21-fields5 (pool-3),
   t22-grp (pool-5), t24-libv4 (pool-7); t17 packaging checks C1-C8 (pool-9 t17-checks). All branches @90ce38e0.
 
+- T17 checks: pool-9 beb83ce5 -> root (studies/t17_checks.py). Root ran mega-t17-checks (3 bounded runs, <=12 s,
+  <=344 MiB): C1 SI revisions CLEARED; C2 SI vintage (TRAIN) CLEARED (si_change_10 1.26 -> 1.05 republished ->
+  vintage-safe; SI drop -.04 vs controls .59); C3 FINRA as-of alignment CLEARED (200/200); C4 survivorship CLEARED
+  (vanish TRAIN 4.07% vs VAL 3.48%/yr); C5 write-off exposure CONFIRMED material but symmetric (TRAIN 5.2-6.5%,
+  VAL 4.8-6.0% of mean GMV; no delisting returns = modelling caveat for v4 too); C6 union-market proxy
+  INCONCLUSIVE (corr .99, +2.2 vs +1.1 bp/day); C7 SI clock CLEARED (6-8 bd); C8 IV/earn timing INCONCLUSIVE but
+  symmetric (incidence ratio 1.00). => no TRAIN-specific leak; decay = selection + regime + cost (T16).
+- Untracked studies/.mypy_cache (IDE churn in every pool).
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
