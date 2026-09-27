@@ -3,13 +3,13 @@
   "id": "fund_industry_ic_v4_initial",
   "library": {
     "path": "fund_industry_ic_v4.json",
-    "sha256": "2e341cf7e07cb7a8ac5162144aa14638adc6bc35eb42abf27521a39976f7883f"
+    "sha256": "af5159c84a6408a57e31b309c4ee232316c33f3ae91656afdbe230ccd83f4553"
   },
   "preregistration": ".superpowers/sdd/mega-alpha-20260926/v4-prereg.md section R1 (declared 2026-09-27)",
   "generation": {
     "rule": "prior-signed-themed-v4",
-    "revision": "initial",
-    "candidates": 40,
+    "revision": "fix-round-1",
+    "candidates": 39,
     "families": 9,
     "family_is_theme": true,
     "one_variant_per_hypothesis": true,
@@ -26,7 +26,7 @@
       "sha256_lf": "f4f1cb5838d86c4e30b4698d4e37c90469b2eb5cfb32b2bf622e126455afff4f",
       "used": "tokenize, Expr/binary/call/window/pair builders, peak_slots"
     },
-    "generator_sha256": "c9a722464fc0e80ed562f0d5c1797a28acd10ade6dd30d5065abac27cadc1250"
+    "generator_sha256": "bc41d56390593d8527fe119859e2f9148a2a2b8ea1fc43854539a139e5c03076"
   },
   "orientation": {
     "rule": "prior sign embedded in the DSL: base = raw_prior_direction * raw quantity, so a higher value is the predicted long side and every candidate has prior_sign +1",
@@ -53,7 +53,7 @@
       "C+": 6
     },
     "tier_rank_meaning": "1 = strongest prior; admission redundancy order is (tier_rank, roster_order) (prereg R3)",
-    "tier_basis": "T18 report section 6 tiers; members T18 did not grade take the tier-1 alpha-priors doc (docs/superpowers/handoffs/2026-09-26-tier1-v2-alpha-priors.md, literature only) rows: momentum row 3 (A; plain 12-1 B+ for the Daniel-Moskowitz crash caveat, 52-week high A-), EAR row 6 (B+), short interest and DTC row 7 (B+; the SI change has no cross-sectional anchor: B-), low risk row 11 (B-), seasonality row 12 (C+), options (IV-RV spread B on its published direction; ATM IV change C+ for the blended call/put direction)"
+    "tier_basis": "T18 report section 6 tiers; members T18 did not grade take the tier-1 alpha-priors doc (docs/superpowers/handoffs/2026-09-26-tier1-v2-alpha-priors.md, literature only) rows: momentum row 3 (A; plain 12-1 B+ for the Daniel-Moskowitz crash caveat, 52-week high A-), EAR row 6 (B+), short interest and DTC row 7 (B+; the SI change has no cross-sectional anchor: B-), low risk row 11 (B-), seasonality row 12 (C+), options (IV-RV spread B on its published direction)"
   },
   "themes": [
     {
@@ -161,10 +161,9 @@
     {
       "theme": "options_implied",
       "index": 9,
-      "description": "Implied-minus-realized volatility spread and one-month change in ATM implied volatility.",
+      "description": "Implied-minus-realized volatility spread; high implied volatility relative to realized volatility predicts higher returns.",
       "members": [
-        "iv_rv_spread",
-        "iv_change"
+        "iv_rv_spread"
       ],
       "expected_turnover": "moderate: daily IV and 21-session realized volatility with s21 decay"
     }
@@ -219,10 +218,30 @@
     },
     "source": "T18 section 6 DSL sketches (group field per member kept as sketched)"
   },
+  "revisions": [
+    {
+      "round": 1,
+      "ruling": "drop iv_change",
+      "change": "iv_change removed; options_implied keeps iv_rv_spread only (39 candidates)",
+      "reason": "blended ATM implied volatility mixes the call-IV (+) and put-IV (-) effects of An, Ang, Bali and Cakici (2014), so there is no unambiguous prior"
+    },
+    {
+      "round": 1,
+      "ruling": "canonical droe",
+      "change": "droe = ni_q / be_lag1q - ni_q_lag4 / be_lag1q_lag4 (Hou, Mo, Xue and Zhang 2021); new declared field be_lag1q_lag4, which T21 emits",
+      "reason": "replaces the fix-round-0 proxy (ni_q - ni_q_lag4) / be_lag1q"
+    },
+    {
+      "round": 1,
+      "ruling": "T22 landed",
+      "change": "the registry cross-check reports grp_ group typing as checked when the engine tree carries T22 (static check of typecheck.hpp is_group_field); --engine-root selects the tree",
+      "reason": "no library byte depends on it"
+    }
+  ],
   "family_fixing": {
     "fixed_before_measurement": true,
     "measurement_consulted": false,
-    "statement": "Roster, themes, member ids and signs are prereg R1 (declared 2026-09-27 before any v4 TRAIN read). Each member takes the canonical definition of its cited paper (window, scaling, exclusion rule) and the s21 default; the implementer read no v3 TRAIN performance output (admission tables, daily IC, summary IC statistics, v3 DSL catalogue) and no validation data. Field names come from the T18 section 6 proposal and the fields-v4 manifest field list (names and units only). Disclosed (prereg R1): v3 per-candidate TRAIN statistics were seen by the controller for price/volume families; the PV, SI, IV and EAR definitions here follow the literature, not v3 results."
+    "statement": "Roster, themes, member ids and signs are prereg R1 (declared 2026-09-27 before any v4 TRAIN read), with the fix-round-1 controller rulings (iv_change dropped, canonical droe), also before any v4 TRAIN read. Each member takes the canonical definition of its cited paper (window, scaling, exclusion rule) and the s21 default; the implementer read no v3 TRAIN performance output (admission tables, daily IC, summary IC statistics, v3 DSL catalogue) and no validation data. Field names come from the T18 section 6 proposal and the fields-v4 manifest field list (names and units only). Disclosed (prereg R1): v3 per-candidate TRAIN statistics were seen by the controller for price/volume families; the PV, SI, IV and EAR definitions here follow the literature, not v3 results."
   },
   "templates": [
     {
@@ -492,12 +511,12 @@
     {
       "id": "droe",
       "theme": "earnings_momentum",
-      "formula": "(ni_q - ni_q_lag4) / be_lag1q",
-      "base_dsl": "(((ni_q - ni_q_lag4) / be_lag1q) + (0 * log(be_lag1q)))",
+      "formula": "ni_q / be_lag1q - ni_q_lag4 / be_lag1q_lag4 (ROE_q - ROE_{q-4})",
+      "base_dsl": "((((ni_q / be_lag1q) - (ni_q_lag4 / be_lag1q_lag4)) + (0 * log(be_lag1q))) + (0 * log(be_lag1q_lag4)))",
       "base_prior_bars": 0,
       "raw_prior_direction": 1,
-      "domain": "non-positive opening book equity -> NaN",
-      "deviation": "ROE_q - ROE_{q-4} needs the lag-4 opening equity (not in the T21 field list): the year-over-year earnings change is scaled by the current opening equity",
+      "domain": "non-positive opening book equity in either quarter -> NaN",
+      "deviation": null,
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
@@ -690,18 +709,6 @@
       "raw_prior_direction": 1,
       "domain": "v3 IV guard",
       "deviation": "implied minus realized (the negative of the paper's realized-minus-implied spread)",
-      "smoothing_sessions": 21,
-      "smoothing_reason": null
-    },
-    {
-      "id": "iv_change",
-      "theme": "options_implied",
-      "formula": "iv_atm_21d - iv_atm_21d[t-21]",
-      "base_dsl": "(ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - delay(ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5), 21))",
-      "base_prior_bars": 25,
-      "raw_prior_direction": 1,
-      "domain": "v3 IV guard",
-      "deviation": "ATM (call/put blended) implied volatility: the paper's call-IV increase -> higher returns direction is used; put-IV increases predict lower returns, so the blend is a weaker, disclosed extrapolation",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     }
@@ -1196,9 +1203,10 @@
       "smoothing_sessions": 21,
       "prior_bars": 20,
       "native_prior_bars": 20,
-      "dsl_sha256": "06c3524918996e1bdc54f939acb6ec0cf1969919ea776fcf157c007cc2d21667",
+      "dsl_sha256": "8b2d69fa7c661cb734da2dc2b4c599100b35a8c09895b3bc7882778e2ef46cab",
       "fields": [
         "be_lag1q",
+        "be_lag1q_lag4",
         "ni_q",
         "ni_q_lag4"
       ]
@@ -1519,25 +1527,6 @@
         "close",
         "iv_atm_21d"
       ]
-    },
-    {
-      "id": "iv_change",
-      "family": "options_implied",
-      "roster_order": 40,
-      "theme": "options_implied",
-      "tier": "C+",
-      "tier_rank": 6,
-      "prior_sign": 1,
-      "citation": "An, Ang, Bali and Cakici (2014, JF) joint cross section of stocks and options: one-month implied volatility innovations",
-      "raw_prior_direction": 1,
-      "ranking": "cross_section",
-      "smoothing_sessions": 21,
-      "prior_bars": 45,
-      "native_prior_bars": 45,
-      "dsl_sha256": "7915dae55df17018fac63667f06cb759e4b582ccb16af94c22b0f8ed0313a9e2",
-      "fields": [
-        "iv_atm_21d"
-      ]
     }
   ],
   "data": {
@@ -1631,6 +1620,10 @@
         "basis": "book equity at the end of the quarter before the latest quarter (opening equity), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
+        "name": "be_lag1q_lag4",
+        "basis": "opening book equity of the same fiscal quarter one year earlier (be_lag1q shifted four quarters), USD; added in fix round 1; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
         "name": "cfo_ttm",
         "basis": "net cash from operating activities, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
@@ -1719,6 +1712,7 @@
       "ni_q": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
       "ni_q_lag4": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
       "be_lag1q": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
+      "be_lag1q_lag4": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
       "cfo_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
       "capx_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
       "xrd_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
@@ -1759,6 +1753,7 @@
       "ni_q": "fields_v5",
       "ni_q_lag4": "fields_v5",
       "be_lag1q": "fields_v5",
+      "be_lag1q_lag4": "fields_v5",
       "cfo_ttm": "fields_v5",
       "capx_ttm": "fields_v5",
       "xrd_ttm": "fields_v5",
@@ -1782,7 +1777,7 @@
     ],
     "requires": {
       "fields_v5": "T21 fields-v5 manifest with every declared name (runner refuses a declared extra absent from the manifest)",
-      "t22": "grp_* typed as Group by typecheck is_group_field (T22) before any native compile"
+      "t22": "grp_* typed as Group by typecheck is_group_field (T22; landed at root)"
     },
     "causality": "row d of a signal uses fields known by the session-d close mark and is scored against returns after d; fundamentals add the declared 1-session lag; si_* are strictly before date(d); shares_out lags 90 days",
     "daily_return": "ret = (close / delay(close, 1)) - 1; excess = ret - mkt_ret",
@@ -1802,7 +1797,7 @@
   },
   "admission": {
     "policy": "v4-prior-v1 (T23; prereg R3)",
-    "trials": 40
+    "trials": 39
   },
   "composition": {
     "policy": "ew-theme-v1 (T23; prereg R4)",
@@ -1810,8 +1805,8 @@
     "runner_default": "equal family weight = equal theme weight (family is theme)"
   },
   "trials": {
-    "generated_candidates": 40,
-    "admission_trials": 40,
+    "generated_candidates": 39,
+    "admission_trials": 39,
     "orientation_fits": 0,
     "composition_recipes": 1,
     "construction_recipes": 1,
@@ -1826,7 +1821,7 @@
     "max_dag_nodes": 34,
     "max_estimated_peak_slots": 9,
     "extra_field_capacity": 8,
-    "declared_extra_fields": 35,
+    "declared_extra_fields": 36,
     "extra_field_users": {
       "at": [
         "gpa",
@@ -1852,6 +1847,9 @@
       ],
       "be_lag1q": [
         "roe_q",
+        "droe"
+      ],
+      "be_lag1q_lag4": [
         "droe"
       ],
       "capx_ttm": [
@@ -1914,8 +1912,7 @@
         "ind_adj_rev_5"
       ],
       "iv_atm_21d": [
-        "iv_rv_spread",
-        "iv_change"
+        "iv_rv_spread"
       ],
       "lt": [
         "qmj_lite"
@@ -2002,7 +1999,7 @@
     "slot_estimate": "post-order interning and refcount retirement; native --plan-only authoritative"
   },
   "qualification": {
-    "native_parse_vm": "pending: root --plan-only compile against fields-v5 after T22 and T21",
+    "native_parse_vm": "pending: root --plan-only compile against fields-v5 (needs T21 and T22)",
     "empirical": "unmeasured at source freeze",
     "low_turnover": "smoothing intent; tau_k measured at admission (<= 0.70)",
     "prior_phase": "v1, v2 and v3 files and generators are unchanged by v4"

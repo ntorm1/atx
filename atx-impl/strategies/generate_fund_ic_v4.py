@@ -1,4 +1,4 @@
-"""Deterministic 40-candidate research library v4: prior-signed, themed; no prices, fitting or random search.
+"""Deterministic 39-candidate research library v4: prior-signed, themed; no prices, fitting or random search.
 
 Library v4 (T24) implements the v4 pre-registration section R1: nine themes, one canonical
 variant per published hypothesis, the literature sign embedded in the DSL (a higher value is
@@ -11,11 +11,16 @@ statistics, v3 DSL catalogue) was read to choose any definition, window or smoot
 
 The static validator is the v2/v3 validator lineage: the tokenizer, expression builders and
 the DAG slot estimate are imported from the pinned v2 generator, and the v3 parse is extended
-with the native dtype rule (typecheck.cpp): a group field (grp_* after T22) is a Group
+with the native dtype rule (typecheck.cpp): a group field (grp_*, typed Group by T22) is a Group
 classifier that may appear only as the second argument of a group operator. It re-parses every
 DSL string (canonical round-trip, registry arity, declared fields, dtype, positive integer
 windows, prior-bar lookback, DAG slot bound). The native DSL compiler remains authoritative:
-group operators on grp_* compile only after T22 (is_group_field accepts the grp_ prefix).
+group operators on grp_* compile only with T22 (is_group_field accepts the grp_ prefix); the
+registry cross-check reads the engine sources of this tree (or --engine-root) and reports it.
+
+Fix round 1 (controller rulings declared before any v4 TRAIN read): iv_change is dropped (blended
+ATM IV mixes the opposite-signed call-IV and put-IV effects, so there is no unambiguous prior);
+droe takes the canonical form with the new field be_lag1q_lag4.
 
 Run with --check to verify the committed exact JSON bytes.
 """
@@ -78,7 +83,8 @@ THEMES = [  # (theme id, description), prereg R1 order
     ('short_interest', 'FINRA short interest ratio, days to cover and one-month change in short interest; heavy '
                        'or rising shorting predicts lower returns.'),
     ('reversal_seasonality', 'Industry-adjusted short-term reversal and same-calendar-month seasonality.'),
-    ('options_implied', 'Implied-minus-realized volatility spread and one-month change in ATM implied volatility.'),
+    ('options_implied', 'Implied-minus-realized volatility spread; high implied volatility relative to realized '
+                        'volatility predicts higher returns.'),
 ]
 THEME_IDS = [t for t, _ in THEMES]
 WITHIN_INDUSTRY_THEMES = ('value', 'profitability_quality', 'investment_issuance')
@@ -145,6 +151,8 @@ FIELDS = [
     _fund('ni_q', 'net income, latest discrete fiscal quarter, USD'),
     _fund('ni_q_lag4', 'net income, the same fiscal quarter one year earlier, USD'),
     _fund('be_lag1q', 'book equity at the end of the quarter before the latest quarter (opening equity), USD'),
+    _fund('be_lag1q_lag4', 'opening book equity of the same fiscal quarter one year earlier (be_lag1q shifted four '
+                           'quarters), USD; added in fix round 1'),
     _fund('cfo_ttm', 'net cash from operating activities, trailing twelve months, USD'),
     _fund('capx_ttm', 'capital expenditure (payments for PP&E), trailing twelve months, USD'),
     _fund('xrd_ttm', 'research and development expense, trailing twelve months, USD; NaN when not reported'),
@@ -203,8 +211,8 @@ GROUP_OPS = {'CsRankG', 'CsNeutG', 'CsMeanG'}  # typecheck needs_group_arg: 2nd 
 
 
 def is_group_field(name: str) -> bool:
-    """typecheck.hpp is_group_field after T22: 'sector', the IndClass. prefix, or the grp_ prefix."""
-    return name == 'sector' or name.startswith('IndClass.') or name.startswith('grp_')
+    """typecheck.hpp is_group_field after T22: 'sector', or the IndClass. / grp_ prefix with a non-empty suffix."""
+    return name == 'sector' or any(len(name) > len(p) and name.startswith(p) for p in ('IndClass.', 'grp_'))
 
 
 # ---- static validator --------------------------------------------------------
@@ -322,8 +330,8 @@ def validate(dsl: str, expected_lookback: int) -> dict:
                 fields=fields, extra_fields=[f for f in fields if f not in BASE_FIELDS])
 
 
-def registry_crosscheck() -> str:
-    engine = HERE.parent.parent / 'atx-engine'
+def registry_crosscheck(engine_root: Path | None = None) -> str:
+    engine = (HERE.parent.parent if engine_root is None else Path(engine_root)) / 'atx-engine'
     paths = [engine / 'src/alpha/registry.cpp', engine / 'src/alpha/typecheck.cpp',
              engine / 'include/atx/engine/alpha/typecheck.hpp']
     if not all(p.is_file() for p in paths):
@@ -347,18 +355,19 @@ def registry_crosscheck() -> str:
             raise SystemExit(f'lookback class differs for {name}')
         if (opcode in GROUP_OPS) != (opcode in group):
             raise SystemExit(f'group-argument class differs for {name}')
-    return f'registry cross-check ok ({len(REGISTRY)} operators vs registry.cpp/typecheck); {group_field_status()}'
+    return f'registry cross-check ok ({len(REGISTRY)} operators vs registry.cpp/typecheck); {group_field_status(header)}'
 
 
-def group_field_status() -> str:
-    """Whether the engine in this tree already types grp_* as Group (T22); the library needs it natively."""
-    header = HERE.parent.parent / 'atx-engine/include/atx/engine/alpha/typecheck.hpp'
-    if not header.is_file():
-        return 'grp_ group typing unknown (engine sources absent)'
-    match = re.search(r'is_group_field\(std::string_view name\) noexcept \{(.*?)\n\}', header.read_text(encoding='utf-8'), re.S)
+def group_field_status(header: str) -> str:
+    """Static check of typecheck.hpp is_group_field: does it type grp_<suffix> as a Group classifier (T22)?"""
+    match = re.search(r'is_group_field\(std::string_view name\) noexcept \{(.*?)\n\}', header, re.S)
     if match is None:
         raise SystemExit('typecheck.hpp is_group_field not found')
-    return ('grp_ group typing present in typecheck.hpp' if '"grp_"' in match[1]
+    body = match[1]
+    prefix = re.search(r'constexpr std::string_view (\w+) = "grp_";', body)
+    checked = prefix is not None and re.search(
+        rf'name\.size\(\) > {prefix[1]}\.size\(\) && name\.starts_with\({prefix[1]}\)', body) is not None
+    return ('grp_ group typing checked: typecheck.hpp is_group_field accepts grp_<suffix> (T22)' if checked
             else 'grp_ group typing PENDING T22 (native compile of group operators on grp_* needs it)')
 
 
@@ -502,11 +511,11 @@ def specs() -> list[Spec]:
              '(2022, CFR)', 'sue (producer, seasonal random walk)', 1, '',
              'filing clock (10-Q/10-K acceptance + 1 session), not the announcement date'),
         Spec('droe', 'earnings_momentum', 'B',
-             positive(div(sub(F['ni_q'], F['ni_q_lag4']), F['be_lag1q']), F['be_lag1q']), X,
+             positive(sub(div(F['ni_q'], F['be_lag1q']), div(F['ni_q_lag4'], F['be_lag1q_lag4'])),
+                      F['be_lag1q'], F['be_lag1q_lag4']), X,
              'Hou, Mo, Xue and Zhang (2021, RF) change in ROE; Balakrishnan, Bartov and Faurel (2010, JAE)',
-             '(ni_q - ni_q_lag4) / be_lag1q', 1, 'non-positive opening book equity -> NaN',
-             'ROE_q - ROE_{q-4} needs the lag-4 opening equity (not in the T21 field list): the year-over-year '
-             'earnings change is scaled by the current opening equity'),
+             'ni_q / be_lag1q - ni_q_lag4 / be_lag1q_lag4 (ROE_q - ROE_{q-4})', 1,
+             'non-positive opening book equity in either quarter -> NaN'),
         Spec('chtax', 'earnings_momentum', 'B', div(sub(F['txt_q'], F['txt_q_lag4']), F['at_lag4']), X,
              'Thomas and Zhang (2011, JAR) tax expense surprises', '(txt_q - txt_q_lag4) / at_lag4', 1),
         Spec('ear', 'earnings_momentum', 'B+',
@@ -578,11 +587,6 @@ def specs() -> list[Spec]:
              'Bali and Hovakimian (2009, MS) volatility spreads: realized minus implied volatility predicts lower '
              'returns', 'iv_atm_21d - sd(ret, 21) * sqrt(252)', 1, 'v3 IV guard',
              'implied minus realized (the negative of the paper\'s realized-minus-implied spread)'),
-        Spec('iv_change', 'options_implied', 'C+', sub(ivg, window('delay', ivg, 21)), X,
-             'An, Ang, Bali and Cakici (2014, JF) joint cross section of stocks and options: one-month implied '
-             'volatility innovations', 'iv_atm_21d - iv_atm_21d[t-21]', 1, 'v3 IV guard',
-             'ATM (call/put blended) implied volatility: the paper\'s call-IV increase -> higher returns direction is '
-             'used; put-IV increases predict lower returns, so the blend is a weaker, disclosed extrapolation'),
     ]
 
 
@@ -592,6 +596,20 @@ def expression(spec: Spec):
     ranked = (g.call('group_rank', spec.base, g.Expr(WITHIN_INDUSTRY)) if spec.ranking.startswith('within_industry')
               else g.call('rank', spec.base))
     return ranked if spec.smoothing == 1 else g.window('decay_linear', ranked, spec.smoothing)
+
+
+# Fix round 1: controller rulings, declared before any v4 TRAIN read.
+REVISIONS = [
+    dict(round=1, ruling='drop iv_change', change='iv_change removed; options_implied keeps iv_rv_spread only (39 '
+         'candidates)', reason='blended ATM implied volatility mixes the call-IV (+) and put-IV (-) effects of An, Ang, '
+         'Bali and Cakici (2014), so there is no unambiguous prior'),
+    dict(round=1, ruling='canonical droe', change='droe = ni_q / be_lag1q - ni_q_lag4 / be_lag1q_lag4 (Hou, Mo, Xue and '
+         'Zhang 2021); new declared field be_lag1q_lag4, which T21 emits', reason='replaces the fix-round-0 proxy '
+         '(ni_q - ni_q_lag4) / be_lag1q'),
+    dict(round=1, ruling='T22 landed', change='the registry cross-check reports grp_ group typing as checked when the '
+         'engine tree carries T22 (static check of typecheck.hpp is_group_field); --engine-root selects the tree',
+         reason='no library byte depends on it'),
+]
 
 
 EXPECTED_TURNOVER = {
@@ -637,7 +655,7 @@ def documents() -> dict[str, bytes]:
                               smoothing_sessions=spec.smoothing, smoothing_reason=spec.smoothing_reason or None))
     ids = [c['id'] for c in candidates]
     total = len(candidates)
-    assert total == 40 and len(set(ids)) == total and len({c['dsl'] for c in candidates}) == total
+    assert total == 39 and len(set(ids)) == total and len({c['dsl'] for c in candidates}) == total
     assert all(re.fullmatch(r'[a-z0-9_]{1,64}', s) for s in ids + THEME_IDS)
     assert all(theme_members.values()) and len(THEME_IDS) <= MAX_FAMILIES
     referenced = set().union(*(set(s['fields']) for s in static))
@@ -651,7 +669,8 @@ def documents() -> dict[str, bytes]:
     library_bytes = encode(library)
     capacity = max(len(s['extra_fields']) for s in static)
     field_users = {f: [c['id'] for c, s in zip(candidates, static) if f in s['fields']] for f in extras}
-    hygiene = ('Roster, themes, member ids and signs are prereg R1 (declared 2026-09-27 before any v4 TRAIN read). Each '
+    hygiene = ('Roster, themes, member ids and signs are prereg R1 (declared 2026-09-27 before any v4 TRAIN read), with '
+               'the fix-round-1 controller rulings (iv_change dropped, canonical droe), also before any v4 TRAIN read. Each '
                'member takes the canonical definition of its cited paper (window, scaling, exclusion rule) and the s21 '
                'default; the implementer read no v3 TRAIN performance output (admission tables, daily IC, summary IC '
                'statistics, v3 DSL catalogue) and no validation data. Field names come from the T18 section 6 '
@@ -661,7 +680,7 @@ def documents() -> dict[str, bytes]:
     recipe = dict(schema='atx.dsl-ic-experiment/v1', id=f'{LIBRARY_ID}_initial',
         library=dict(path=LIBRARY, sha256=hashlib.sha256(library_bytes).hexdigest()),
         preregistration=PREREG,
-        generation=dict(rule='prior-signed-themed-v4', revision='initial', candidates=total, families=len(THEME_IDS),
+        generation=dict(rule='prior-signed-themed-v4', revision='fix-round-1', candidates=total, families=len(THEME_IDS),
                         family_is_theme=True, one_variant_per_hypothesis=True,
                         wrapper=f'decay_linear(R(base), {SMOOTHING}); R = group_rank(., {WITHIN_INDUSTRY}) for themes '
                                 '1-3, rank(.) otherwise; ear is R(base) (smoothing exemption)',
@@ -684,8 +703,7 @@ def documents() -> dict[str, bytes]:
                                '(docs/superpowers/handoffs/2026-09-26-tier1-v2-alpha-priors.md, literature only) rows: momentum row 3 (A; plain 12-1 B+ for the Daniel-Moskowitz crash caveat, 52-week '
                                'high A-), EAR row 6 (B+), short interest and DTC row 7 (B+; the SI change has no '
                                'cross-sectional anchor: B-), low risk row 11 (B-), seasonality row 12 (C+), options '
-                               '(IV-RV spread B on its published direction; ATM IV change C+ for the blended call/put '
-                               'direction)'),
+                               '(IV-RV spread B on its published direction)'),
         themes=[dict(theme=t, index=k + 1, description=d, members=theme_members[t], expected_turnover=EXPECTED_TURNOVER[t])
                 for k, (t, d) in enumerate(THEMES)],
         within_industry=dict(group_field=WITHIN_INDUSTRY, operator='group_rank', themes=list(WITHIN_INDUSTRY_THEMES),
@@ -702,6 +720,7 @@ def documents() -> dict[str, bytes]:
             group_fields={FINE_INDUSTRY: ['ind_mom_12_1', 'within_ind_mom', 'ind_adj_rev_5'],
                           WITHIN_INDUSTRY: ['lowvol_ind']},
             source='T18 section 6 DSL sketches (group field per member kept as sketched)'),
+        revisions=REVISIONS,
         family_fixing=dict(fixed_before_measurement=True, measurement_consulted=False, statement=hygiene),
         templates=templates,
         lineage=lineage,
@@ -711,7 +730,7 @@ def documents() -> dict[str, bytes]:
                   group_fields=[f.name for f in FIELDS if f.group],
                   requires=dict(fields_v5='T21 fields-v5 manifest with every declared name (runner refuses a declared '
                                           'extra absent from the manifest)',
-                                t22='grp_* typed as Group by typecheck is_group_field (T22) before any native compile'),
+                                t22='grp_* typed as Group by typecheck is_group_field (T22; landed at root)'),
                   causality='row d of a signal uses fields known by the session-d close mark and is scored against '
                             'returns after d; fundamentals add the declared 1-session lag; si_* are strictly before '
                             'date(d); shares_out lags 90 days',
@@ -742,7 +761,7 @@ def documents() -> dict[str, bytes]:
                                extra_field_users=field_users,
                                slot_estimate='post-order interning and refcount retirement; native --plan-only '
                                              'authoritative'),
-        qualification=dict(native_parse_vm='pending: root --plan-only compile against fields-v5 after T22 and T21',
+        qualification=dict(native_parse_vm='pending: root --plan-only compile against fields-v5 (needs T21 and T22)',
                            empirical='unmeasured at source freeze',
                            low_turnover='smoothing intent; tau_k measured at admission (<= 0.70)',
                            prior_phase='v1, v2 and v3 files and generators are unchanged by v4'))
@@ -752,6 +771,8 @@ def documents() -> dict[str, bytes]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--engine-root', type=Path, default=None,
+                        help='repository root whose atx-engine sources the registry cross-check reads (default: this tree)')
     args = parser.parse_args()
     docs = documents()
     for name, expected in docs.items():
@@ -769,7 +790,7 @@ def main() -> None:
           f"extra-field capacity {sv['extra_field_capacity']} of {sv['declared_extra_fields']} declared")
     for theme in recipe['themes']:
         print(f"  {theme['index']} {theme['theme']}: {', '.join(theme['members'])}")
-    print(registry_crosscheck())
+    print(registry_crosscheck(args.engine_root))
 
 
 if __name__ == '__main__':

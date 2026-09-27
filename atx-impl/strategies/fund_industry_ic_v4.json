@@ -91,6 +91,10 @@
       "basis": "book equity at the end of the quarter before the latest quarter (opening equity), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
+      "name": "be_lag1q_lag4",
+      "basis": "opening book equity of the same fiscal quarter one year earlier (be_lag1q shifted four quarters), USD; added in fix round 1; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+    },
+    {
       "name": "cfo_ttm",
       "basis": "net cash from operating activities, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
@@ -190,7 +194,7 @@
     },
     {
       "id": "options_implied",
-      "description": "Implied-minus-realized volatility spread and one-month change in ATM implied volatility."
+      "description": "Implied-minus-realized volatility spread; high implied volatility relative to realized volatility predicts higher returns."
     }
   ],
   "candidates": [
@@ -549,7 +553,7 @@
     {
       "id": "droe",
       "family": "earnings_momentum",
-      "dsl": "decay_linear(rank((((ni_q - ni_q_lag4) / be_lag1q) + (0 * log(be_lag1q)))), 21)",
+      "dsl": "decay_linear(rank(((((ni_q / be_lag1q) - (ni_q_lag4 / be_lag1q_lag4)) + (0 * log(be_lag1q))) + (0 * log(be_lag1q_lag4)))), 21)",
       "horizons": [
         5,
         21,
@@ -817,22 +821,6 @@
       "tier_rank": 4,
       "prior_sign": 1,
       "citation": "Bali and Hovakimian (2009, MS) volatility spreads: realized minus implied volatility predicts lower returns"
-    },
-    {
-      "id": "iv_change",
-      "family": "options_implied",
-      "dsl": "decay_linear(rank((ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - delay(ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5), 21))), 21)",
-      "horizons": [
-        5,
-        21,
-        63
-      ],
-      "sign_policy": "train-rank-ic21",
-      "theme": "options_implied",
-      "tier": "C+",
-      "tier_rank": 6,
-      "prior_sign": 1,
-      "citation": "An, Ang, Bali and Cakici (2014, JF) joint cross section of stocks and options: one-month implied volatility innovations"
     }
   ]
 }

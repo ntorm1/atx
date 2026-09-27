@@ -38,7 +38,8 @@ def _load(name: str, file: str):
 
 gen = _load('_generate_fund_ic_v4_under_test', 'generate_fund_ic_v4.py')
 
-# Prereg R1 (v4-prereg.md), transcribed independently of the generator.
+# Prereg R1 (v4-prereg.md), transcribed independently of the generator, with the fix-round-1
+# ruling (iv_change dropped: no unambiguous prior for blended ATM IV).
 PREREG_ROSTER = {
     'value': ['bm', 'ep', 'cfp', 'fcfp', 'ebit_ev', 'net_payout', 'sp', 'rd_me'],
     'profitability_quality': ['gpa', 'opbe', 'cfoa', 'roe_q', 'roa', 'accruals', 'fscore', 'qmj_lite'],
@@ -48,7 +49,7 @@ PREREG_ROSTER = {
     'low_risk': ['low_beta', 'low_ivol', 'low_max', 'lowvol_ind'],
     'short_interest': ['si_ratio', 'dtc', 'si_change'],
     'reversal_seasonality': ['ind_adj_rev_5', 'seasonality_same_month'],
-    'options_implied': ['iv_rv_spread', 'iv_change'],
+    'options_implied': ['iv_rv_spread'],
 }
 THEMES_1_3 = ('value', 'profitability_quality', 'investment_issuance')
 
@@ -71,13 +72,15 @@ def test_documents_are_deterministic_and_committed(docs):
 def test_roster_matches_prereg_r1(docs):
     _, library, recipe = docs
     expected = [cid for members in PREREG_ROSTER.values() for cid in members]
-    assert [c['id'] for c in library['candidates']] == expected and len(expected) == 40
+    assert [c['id'] for c in library['candidates']] == expected and len(expected) == 39
     assert [f['id'] for f in library['families']] == list(PREREG_ROSTER) == gen.THEME_IDS
     for c in library['candidates']:
         assert c['id'] in PREREG_ROSTER[c['family']] and c['theme'] == c['family']
     assert {t['theme']: t['members'] for t in recipe['themes']} == PREREG_ROSTER
-    assert [r['roster_order'] for r in recipe['lineage']] == list(range(1, 41))
-    assert recipe['trials']['admission_trials'] == 40 and recipe['trials']['variants_per_hypothesis'] == 1
+    assert [r['roster_order'] for r in recipe['lineage']] == list(range(1, 40))
+    assert recipe['trials']['admission_trials'] == 39 and recipe['trials']['variants_per_hypothesis'] == 1
+    assert 'iv_change' not in {c['id'] for c in library['candidates']}
+    assert recipe['generation']['revision'] == 'fix-round-1' and {r['round'] for r in recipe['revisions']} == {1}
 
 
 def test_labels_for_the_fitter_in_library_and_recipe(docs):
@@ -179,13 +182,36 @@ def test_v3_validator_agrees_on_the_shared_grammar(docs):
             assert (ours[3], ours[4], ours[5]) == (theirs[2], theirs[3], theirs[4]), c['id']
             assert gen.grammar().peak_slots(tree) == gen.grammar().peak_slots(theirs[0])
             shared += 1
-    assert shared == 12  # ear, mom_12_1, high_52w, the three plain low-risk, the three SI and seasonality, two IV
+    assert shared == 11  # ear, mom_12_1, high_52w, the three plain low-risk, the three SI, seasonality, iv_rv_spread
 
 
 def test_registry_crosscheck_and_group_typing_status():
     status = gen.registry_crosscheck()
     assert status.startswith('registry cross-check ok') or status.startswith('registry cross-check skipped')
-    assert 'grp_ group typing' in status
+    assert 'grp_ group typing' in status or 'skipped' in status
+
+
+PRE_T22 = """[[nodiscard]] inline bool is_group_field(std::string_view name) noexcept {
+  constexpr std::string_view kPrefix = "IndClass.";
+  if (name == "sector") return true;              // gics-derived classifier column
+  return name.size() > kPrefix.size() && name.substr(0, kPrefix.size()) == kPrefix;
+}
+"""
+T22 = """[[nodiscard]] inline bool is_group_field(std::string_view name) noexcept {
+  constexpr std::string_view kIndClassPrefix = "IndClass.";
+  constexpr std::string_view kGrpPrefix = "grp_";
+  if (name == "sector") return true; // gics-derived classifier column
+  return (name.size() > kIndClassPrefix.size() && name.starts_with(kIndClassPrefix)) ||
+         (name.size() > kGrpPrefix.size() && name.starts_with(kGrpPrefix));
+}
+"""
+
+
+def test_group_typing_static_check_recognizes_t22():
+    assert gen.group_field_status(T22).startswith('grp_ group typing checked')
+    assert 'PENDING T22' in gen.group_field_status(PRE_T22)
+    assert 'PENDING T22' in gen.group_field_status(T22.replace('"grp_"', '"grp"'))
+    assert gen.is_group_field('grp_ff12') and not gen.is_group_field('grp_') and not gen.is_group_field('ff12')
 
 
 def test_generator_reads_no_v3_performance_output():
@@ -333,6 +359,7 @@ def synthetic_panel(seed: int = 7) -> dict[str, np.ndarray]:
                  che=_steps(rng, 1e7, 5e8), debt=_steps(rng, 0.0, 2e9), sale_ttm=_steps(rng, 5e8, 8e9),
                  gp_ttm=_steps(rng, 1e8, 3e9), oi_ttm=_steps(rng, -2e8, 1e9), ni_ttm=_steps(rng, -3e8, 8e8),
                  ni_q=_steps(rng, -1e8, 2e8), ni_q_lag4=_steps(rng, -1e8, 2e8), be_lag1q=_steps(rng, -1e8, 3e9),
+                 be_lag1q_lag4=_steps(rng, -1e8, 3e9),
                  cfo_ttm=_steps(rng, -1e8, 1e9), capx_ttm=_steps(rng, 0.0, 5e8), xrd_ttm=_steps(rng, -1e8, 4e8),
                  dvc_ttm=_steps(rng, 0.0, 2e8), prstkc_ttm=_steps(rng, 0.0, 3e8), sstk_ttm=_steps(rng, 0.0, 2e8),
                  txt_q=_steps(rng, -2e7, 8e7), txt_q_lag4=_steps(rng, -2e7, 8e7), shrs_q=_steps(rng, 1e8, 2e8),
@@ -396,9 +423,11 @@ def test_embedded_prior_signs(docs):
         'issuance_vendor': -np.log(p['shares_out'][t] / p['shares_out'][t - 252]),
         'mom_12_1': c[t - 21] / c[t - 252] - 1, 'high_52w': c[t] / c[t - 251:t + 1].max(axis=0),
         'seasonality_same_month': c[t - 231] / c[t - 252] - 1, 'low_max': -ret[t - 20:t + 1].max(axis=0),
-        'ind_adj_rev_5': -r5_adj, 'iv_rv_spread': ivg[t] - rv, 'iv_change': ivg[t] - ivg[t - 21],
+        'ind_adj_rev_5': -r5_adj, 'iv_rv_spread': ivg[t] - rv,
         'chtax': (p['txt_q'][t] - p['txt_q_lag4'][t]) / p['at_lag4'][t],
         'net_payout': (p['dvc_ttm'][t] + p['prstkc_ttm'][t] - p['sstk_ttm'][t]) / p['me_company'][t],
+        'droe': np.where((p['be_lag1q'][t] > 0) & (p['be_lag1q_lag4'][t] > 0),
+                         p['ni_q'][t] / p['be_lag1q'][t] - p['ni_q_lag4'][t] / p['be_lag1q_lag4'][t], np.nan),
     }
     for cid, want in expected.items():
         assert np.allclose(_base(recipe, cid, p)[t], want, rtol=1e-9, atol=1e-12, equal_nan=True), cid
@@ -425,11 +454,12 @@ def test_domain_guards_exclude_non_positive_denominators(docs):
         p[name][t, 3], p[name][t, 5] = -1.0e6, 0.0
     p['che'][t, 7] = p['me_company'][t, 7] + p['debt'][t, 7] + 1.0e6  # net cash above ME + debt: EV < 0
     p['oi_ttm'][t, 7] = abs(p['oi_ttm'][t, 7]) + 1.0
+    p['be_lag1q'][t, 8], p['be_lag1q_lag4'][t, 8] = 1.0e9, -1.0e6  # only the year-earlier opening equity fails
     ev = p['me_company'][t] + p['debt'][t] - p['che'][t]
     rules = {
         'bm': p['be'][t] > 0, 'ep': p['ni_ttm'][t] > 0, 'cfp': p['cfo_ttm'][t] > 0, 'sp': p['sale_ttm'][t] > 0,
         'rd_me': p['xrd_ttm'][t] > 0, 'opbe': p['be'][t] > 0, 'roe_q': p['be_lag1q'][t] > 0,
-        'droe': p['be_lag1q'][t] > 0, 'ebit_ev': (p['oi_ttm'][t] > 0) & (ev > 0),
+        'droe': (p['be_lag1q'][t] > 0) & (p['be_lag1q_lag4'][t] > 0), 'ebit_ev': (p['oi_ttm'][t] > 0) & (ev > 0),
     }
     for cid, keep in rules.items():
         assert not keep.all() or cid == 'sp', cid  # the fixture exercises the exclusion (sales are always positive)
