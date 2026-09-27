@@ -245,6 +245,14 @@
   NaN 4,545; si NaN 1,173; shares_out cov .9920); VALIDATION -> recent-fast-validation-2023-2024-v1-fields-v4
   manifest 2691dcc55e60918a71563ff9eb9e3c009e1d60f54fc52041cbcb62840eea9073 (26.2s). Other fields identical to
   v3. THESE ARE THE FROZEN-CANDIDATE FIELDS unless a re-review finds a defect. Re-review (sonnet) dispatched.
+  T6 fix r4 re-review: 3/3 addressed, 0 new C/I. Task T6: complete (fix rounds 4/5; final producer 7347153a).
+- T14 fix r1: pool-4 43cc33f3 -> root 914fd6f9 (strict M1; weighted TRAIN sources refused). Build 30.9s; IC 62/62.
+  Re-review: 4/4 addressed, 0 new C/I. Task T14: complete (22eae712, fix 914fd6f9).
+  VALIDATION FLOW (binding): unweighted TRAIN-only run (orientations O) -> fitter -> weights W (provenance O)
+  -> ledger W sha -> ONE validation-only runner run with O + W -> NAV on the validation-only combined output.
+- v3 TRAIN (library 5d164ea1, role v2, fields v4 389e7fb4, binary >=914fd6f9): mega-v3f4-warm-run1 time-limit
+  106/121 (36 miss); run2 COMPLETE 176s; run3 COMPLETE 160s / 509 MiB, 121/121 cache hits.
+  => mega-v3f4-warm-3 is the unweighted TRAIN artifact for the v3 screen/fit.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
