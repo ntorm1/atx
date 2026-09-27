@@ -10,9 +10,12 @@ Writes into a new output directory (published atomically, never overwritten):
   admission.json / .csv     ``atx.dsl-admission/v1`` decision table (only with ``--screen v3-admit-v1``).
 
 Inputs are pinned by SHA-256: the library, the TRAIN role manifest, the runner's TRAIN
-``orientations.json``, and the runner's candidate signal cache
-``DIR/<train-manifest-sha256>/<id>.{json,f64}``. Nothing after 2022-12-31 is read: the role must
-end by 2023-01-01T00:00Z, and every cache sidecar must name the ``train`` role.
+``orientations.json`` and ``summary.json`` of that same TRAIN-only IC run. The summary gives the
+candidate cache layout: ``roles[train].candidate_cache.directory`` (ROOT/<train manifest sha>, base
+candidates), ``.fields_directory`` (ROOT/<fields manifest sha>, candidates reading extra research
+fields) and ``.vm_identity``. Sidecars are checked as the runner's ``cached_payload_sha`` does.
+Nothing after 2022-12-31 is read: the role must end by 2023-01-01T00:00Z, every cache sidecar must
+name the ``train`` role, and the summary must describe a TRAIN-only run.
 
 Per scored decision d in [score_begin, score_end - 2), candidate k:
   1. Exposures at d as ``strategy_price_exposures.cpp`` (price-risk-v1) defines them:
@@ -44,7 +47,9 @@ runner-oriented candidate (``--screen none``, the T9 rule), take part. Everyone 
 
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
-Records are keyed by (TRAIN role manifest SHA, semantics tag, cache payload SHA). ``--max-seconds``
+Records are keyed by (TRAIN role manifest SHA, semantics tag, cache payload SHA, fields manifest SHA
+for field candidates) and bound to the VM identity, the context digest and this script's SHA-256, so
+any edit of this file recomputes everything. ``--max-seconds``
 and ``--max-new-candidates`` stop cleanly between candidates with exit code 3 and publish nothing; a
 rerun computes only what is missing. Outputs are byte-identical whichever path produced them.
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
@@ -96,6 +101,13 @@ HOLD_BEGIN_NS = 1_640_995_200_000_000_000  # 2022-01-01T00:00Z
 TRAIN_END_NS = 1_672_531_200_000_000_000  # 2023-01-01T00:00Z, exclusive: TRAIN is 2020-2022
 DAY_NS = 86_400_000_000_000
 METADATA_LIMIT = 1 << 20  # runner's metadata_text() bound; the weights file must fit too
+SUMMARY_LIMIT = 16 << 20  # a runner summary.json grows with the library; bounded-runner bind cap
+# strategy_ic_runner.cpp cache_root/legacy_entry: this identity keeps DIR/<sha>/ and accepts keyless
+# sidecars recorded by exactly these engine builds; every other identity lives in DIR/<identity>/.
+LEGACY_VM_IDENTITY = "dslvm1_clang18.1"
+LEGACY_ENGINE_SHAS = ("429cbe43d275a49ad3cae89dfa8aa591846a2e4f", "6d85ac2a8b7aca6f28cea0e651cdcfc55d77aa29")
+# Any edit to this file changes this SHA; cached contexts/records bound to another one are recomputed.
+SCRIPT_SHA256 = hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
 TAU_LIMIT, RHO_LIMIT = 0.70, 0.70
 MIN_FIT_DAYS, MIN_COMMON_DAYS = 250, 250
 ANNUALIZATION = 252
@@ -245,31 +257,101 @@ class RoleManifest:
                 "turnover_transitions": self.end - self.begin - 1}
 
 
-def candidate_payload_sha(cache_dir: Path, cand: dict, role: RoleManifest) -> str:
-    """Validated sidecar of one runner cache entry; returns its payload SHA-256 (identity key)."""
-    cid = cand["id"]
-    sidecar = cache_dir / f"{cid}.json"
-    require(sidecar.is_file(), f"candidate cache: missing entry {cid} (run the IC runner with --candidate-cache)")
-    data = sidecar.read_bytes()
-    require(0 < len(data) <= METADATA_LIMIT, f"candidate cache: sidecar extent {cid}")
-    j = unique_json(data, f"candidate cache {cid}")
-    sha = j.get("payload_sha256")
-    require(j.get("schema") == CACHE_SCHEMA and j.get("candidate_id") == cid and
-            j.get("dsl_sha256") == cand["dsl_sha256"] and j.get("role_manifest_sha256") == role.sha and
-            j.get("eval_mode") == VM_EVAL_MODE and j.get("layout") == CACHE_LAYOUT and
-            j.get("dates") == role.dates and j.get("instruments") == role.instruments and
-            j.get("bytes") == role.dates * role.instruments * 8 and j.get("payload") == f"{cid}.f64" and
-            is_hash(sha), f"candidate cache: entry mismatch {cid}")
-    require(j.get("role") == "train", f"candidate cache: entry {cid} is not a TRAIN-role signal")
-    return sha
+class CacheLayout:
+    """The TRAIN IC run's candidate cache layout, taken from its pinned ``summary.json``.
+
+    ``roles[train].candidate_cache``: ``directory`` = ROOT/<train manifest sha>,
+    ``fields_directory`` = ROOT/<fields manifest sha> (only when the library reads extra fields),
+    ``vm_identity`` (absent in pre-identity summaries = the legacy identity). ROOT is the runner's
+    ``--candidate-cache`` DIR for the legacy identity, else DIR/<identity>. Relative directories
+    resolve against the working directory, which is the runner's cwd under the bounded runner.
+    """
+
+    def __init__(self, path: Path, pin: str, role: "RoleManifest", orientations_sha: str, orientation_recipe: str):
+        require(is_hash(pin), "runner summary: external lowercase SHA-256 required")
+        data = Path(path).read_bytes()
+        require(0 < len(data) <= SUMMARY_LIMIT, "runner summary: missing or over 16 MiB")
+        require(hashlib.sha256(data).hexdigest() == pin, "runner summary: SHA-256 pin differs")
+        j = unique_json(data, "runner summary")
+        require(j.get("status") == "complete", "runner summary: run not complete")
+        require(j.get("orientations_artifact_sha256") == orientations_sha and
+                j.get("recipe_sha256") == orientation_recipe,
+                "runner summary: not the run that wrote the pinned orientations")
+        roles = j.get("roles")
+        # TRAIN-only runs only: a summary holding validation results is never read.
+        require(isinstance(roles, list) and len(roles) == 1 and isinstance(roles[0], dict) and
+                roles[0].get("role") == "train", "runner summary: must be a TRAIN-only IC run (roles == [train])")
+        train = roles[0]
+        require(train.get("manifest_sha256") == role.sha, "runner summary: TRAIN manifest differs")
+        cache = train.get("candidate_cache")
+        require(isinstance(cache, dict) and isinstance(cache.get("directory"), str),
+                "runner summary: the TRAIN run did not use --candidate-cache")
+        identity = cache.get("vm_identity", LEGACY_VM_IDENTITY)
+        require(isinstance(identity, str) and bool(identity), "runner summary: vm_identity")
+        self.vm_identity = identity
+        self.directory = Path(cache["directory"])
+        require(self.directory.name == role.sha, "runner summary: cache directory is not ROOT/<train manifest sha>")
+        root = self.directory.parent
+        require(identity == LEGACY_VM_IDENTITY or root.name == identity,
+                "runner summary: cache directory is not DIR/<vm identity>/<sha> for a non-legacy identity")
+        fields = train.get("research_fields")
+        self.fields_sha = fields.get("manifest_sha256") if isinstance(fields, dict) else None
+        require(self.fields_sha is None or is_hash(self.fields_sha), "runner summary: research_fields manifest SHA")
+        self.fields_directory = None
+        if "fields_directory" in cache:
+            require(isinstance(cache["fields_directory"], str) and self.fields_sha is not None,
+                    "runner summary: fields_directory without a pinned research fields manifest")
+            self.fields_directory = Path(cache["fields_directory"])
+            require(self.fields_directory.name == self.fields_sha and self.fields_directory.parent == root,
+                    "runner summary: fields_directory is not ROOT/<fields manifest sha>")
+
+    def resolve(self, cand: dict, role: "RoleManifest") -> dict:
+        """The one cache entry of this candidate, validated as cached_payload_sha() does.
+
+        An entry is the candidate's when its sidecar names this id and DSL SHA; a same-id entry of
+        another DSL (an older library) is ignored. Exactly one entry must be the candidate's.
+        """
+        cid = cand["id"]
+        found = []
+        for directory, fields_sha in ((self.directory, None), (self.fields_directory, self.fields_sha)):
+            if directory is None or not (directory / f"{cid}.json").is_file():
+                continue
+            data = (directory / f"{cid}.json").read_bytes()
+            require(0 < len(data) <= METADATA_LIMIT, f"candidate cache: sidecar extent {cid}")
+            j = unique_json(data, f"candidate cache {cid}")
+            if j.get("candidate_id") == cid and j.get("dsl_sha256") == cand["dsl_sha256"]:
+                found.append((directory, fields_sha, j))
+        require(bool(found), f"candidate cache: missing entry {cid} (run the TRAIN IC runner with --candidate-cache)")
+        require(len(found) == 1, f"candidate cache: {cid} has entries in both the base and the fields directory")
+        directory, fields_sha, j = found[0]
+        sha = j.get("payload_sha256")
+        if fields_sha is None:
+            fields_match = "fields_manifest_sha256" not in j
+        else:
+            fields_match = j.get("fields_manifest_sha256") == fields_sha
+        if "vm_identity" in j:
+            vm_match = j.get("vm_identity") == self.vm_identity
+        else:  # keyless sidecars: base entries recorded by the verified legacy builds only
+            vm_match = (self.vm_identity == LEGACY_VM_IDENTITY and fields_sha is None and
+                        j.get("engine_git_sha") in LEGACY_ENGINE_SHAS)
+        require(j.get("schema") == CACHE_SCHEMA and j.get("role_manifest_sha256") == role.sha and
+                j.get("eval_mode") == VM_EVAL_MODE and j.get("layout") == CACHE_LAYOUT and
+                j.get("dates") == role.dates and j.get("instruments") == role.instruments and
+                j.get("bytes") == role.dates * role.instruments * 8 and j.get("payload") == f"{cid}.f64" and
+                is_hash(sha), f"candidate cache: entry mismatch {cid}")
+        require(fields_match, f"candidate cache: fields manifest mismatch {cid}")
+        require(vm_match, f"candidate cache: VM identity mismatch {cid}")
+        require(j.get("role") == "train", f"candidate cache: entry {cid} is not a TRAIN-role signal")
+        return {"id": cid, "directory": directory, "payload_sha256": sha, "fields_manifest_sha256": fields_sha}
 
 
-def load_candidate_signal(cache_dir: Path, cid: str, sha: str, role: RoleManifest) -> np.ndarray:
+def load_candidate_signal(entry: dict, role: "RoleManifest") -> np.ndarray:
     """The verified raw (unoriented) VM signal, date-major (dates, instruments)."""
-    size = role.dates * role.instruments * 8
-    payload = (cache_dir / f"{cid}.f64").read_bytes()
+    cid, size = entry["id"], role.dates * role.instruments * 8
+    payload = (entry["directory"] / f"{cid}.f64").read_bytes()
     require(len(payload) == size, f"candidate cache: payload extent {cid}")
-    require(hashlib.sha256(payload).hexdigest() == sha, f"candidate cache: payload SHA-256 mismatch {cid}")
+    require(hashlib.sha256(payload).hexdigest() == entry["payload_sha256"],
+            f"candidate cache: payload SHA-256 mismatch {cid}")
     return np.frombuffer(payload, dtype="<f8").reshape(role.dates, role.instruments)
 
 
@@ -314,8 +396,7 @@ class PricePanel:
         first = d + 1 - block if d >= block else 1
         intervals = d + 1 - first if d >= first else 0
         beta_rows, vol_rows = min(BETA_WINDOW, intervals), min(VOL_WINDOW, intervals)
-        m = len(cols)
-        out = np.full((m, 3), np.nan)
+        out = np.full((len(cols), 3), np.nan)
         with np.errstate(all="ignore"):
             if beta_rows:
                 # Two-pass over valid (return, market) pairs, as beta_of().
@@ -326,15 +407,15 @@ class PricePanel:
                     invalid |= np.isnan(mk)[:, None]
                 n = r.shape[0] - np.count_nonzero(invalid, axis=0)
                 safe = np.maximum(n, 1)
-                m = np.broadcast_to(mk[:, None], r.shape).copy()
+                mkt = np.broadcast_to(mk[:, None], r.shape).copy()
                 r[invalid] = 0.0
-                m[invalid] = 0.0
+                mkt[invalid] = 0.0
                 r -= r.sum(axis=0) / safe
-                m -= m.sum(axis=0) / safe
+                mkt -= mkt.sum(axis=0) / safe
                 r[invalid] = 0.0
-                m[invalid] = 0.0
-                cov = np.einsum("ij,ij->j", r, m)
-                var = np.einsum("ij,ij->j", m, m)
+                mkt[invalid] = 0.0
+                cov = np.einsum("ij,ij->j", r, mkt)
+                var = np.einsum("ij,ij->j", mkt, mkt)
                 out[:, 0] = np.where((n >= MIN_RETURN_PAIRS) & (var > 0), cov / np.where(var > 0, var, 1.0), np.nan)
             if vol_rows:
                 # Two-pass sample SD over valid returns, as vol_of().
@@ -446,6 +527,7 @@ class Context:
         self.basis, self.forward, self.used_rows = arrays["basis"], arrays["forward"], arrays["used_rows"]
         if meta is None:
             meta = {"schema": CONTEXT_SCHEMA, "semantics": CONTEXT_SEMANTICS, "role_manifest_sha256": role_sha,
+                    "script_sha256": SCRIPT_SHA256,
                     "decision_begin": begin, "decision_end_exclusive": end, "refused": refused,
                     "arrays": {name: {"dtype": dtype, "shape": list(arrays[name].shape),
                                       "sha256": hashlib.sha256(self._bytes(name, dtype)).hexdigest()}
@@ -502,18 +584,26 @@ class Context:
         return ctx
 
     def save(self, directory: Path) -> None:
-        """Atomic replace of the context directory (arrays first, metadata last)."""
+        """Replace the context directory: build aside, move the old one aside, rename, delete the old.
+
+        A kill at any point leaves either a complete context, no context (rebuilt next run), or a
+        stray ``.partial-*``/``.old-*`` sibling that is never read.
+        """
         directory = Path(directory)
         partial = directory.with_name(directory.name + f".partial-{os.getpid()}")
-        if partial.exists():
-            shutil.rmtree(partial)
+        old = directory.with_name(directory.name + f".old-{os.getpid()}")
+        for stray in (partial, old):
+            if stray.exists():
+                shutil.rmtree(stray)
         partial.mkdir(parents=True)
         for name, dtype in self.ARRAYS:
             write_synced(partial / f"{name}.bin", self._bytes(name, dtype))
         write_synced(partial / "context.json", canonical_bytes(self.meta))
         if directory.exists():
-            shutil.rmtree(directory)
+            os.rename(directory, old)
         os.rename(partial, directory)
+        if old.exists():
+            shutil.rmtree(old, ignore_errors=True)
 
     @classmethod
     def load(cls, directory: Path, role: RoleManifest) -> "Context | None":
@@ -522,7 +612,7 @@ class Context:
         try:
             meta = json.loads((directory / "context.json").read_bytes())
             if (meta.get("schema") != CONTEXT_SCHEMA or meta.get("semantics") != CONTEXT_SEMANTICS or
-                    meta.get("role_manifest_sha256") != role.sha or meta.get("decision_begin") != role.begin or
+                    meta.get("script_sha256") != SCRIPT_SHA256 or meta.get("role_manifest_sha256") != role.sha or meta.get("decision_begin") != role.begin or
                     meta.get("decision_end_exclusive") != role.end or not isinstance(meta.get("refused"), list)):
                 return None
             arrays = {}
@@ -574,20 +664,21 @@ def seal(body: dict) -> dict:
     return out
 
 
-def factor_record(context: Context, signal: np.ndarray, payload_sha: str, cand: dict) -> dict:
+def factor_record(context: Context, signal: np.ndarray, entry: dict, cand: dict, vm_identity: str) -> dict:
     """The candidate's unsigned factor series (None on flat days), tau and live count."""
     q, live = context.book(signal, 1)
     f = context.factor_returns(q)
     return seal({
         "schema": FACTOR_SCHEMA, "context_semantics": CONTEXT_SEMANTICS, "factor_semantics": FACTOR_SEMANTICS,
-        "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
-        "cache_payload_sha256": payload_sha, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
+        "script_sha256": SCRIPT_SHA256, "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
+        "cache_payload_sha256": entry["payload_sha256"], "fields_manifest_sha256": entry["fields_manifest_sha256"],
+        "vm_identity": vm_identity, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
         "decisions": int(len(f)), "f_unsigned": [float(x) if ok else None for x, ok in zip(f, live)],
         "tau": standalone_turnover(q), "live_decisions": int(live.sum()),
         "context_refused": context.refused, "context_used_rows_unrefused": context.used_rows_summary()})
 
 
-def record_valid(j, payload_sha: str, role: RoleManifest) -> bool:
+def record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
     try:
         if not isinstance(j, dict):
             return False
@@ -595,8 +686,11 @@ def record_valid(j, payload_sha: str, role: RoleManifest) -> bool:
         f = j.get("f_unsigned")
         return (j.get("content_sha256") == hashlib.sha256(canonical_compact(body)).hexdigest() and
                 j.get("schema") == FACTOR_SCHEMA and j.get("context_semantics") == CONTEXT_SEMANTICS and
-                j.get("factor_semantics") == FACTOR_SEMANTICS and j.get("role_manifest_sha256") == role.sha and
-                j.get("cache_payload_sha256") == payload_sha and is_hash(j.get("context_sha256")) and
+                j.get("factor_semantics") == FACTOR_SEMANTICS and j.get("script_sha256") == SCRIPT_SHA256 and
+                j.get("role_manifest_sha256") == role.sha and
+                j.get("cache_payload_sha256") == entry["payload_sha256"] and
+                j.get("fields_manifest_sha256") == entry["fields_manifest_sha256"] and
+                j.get("vm_identity") == vm_identity and is_hash(j.get("context_sha256")) and
                 j.get("decisions") == role.end - role.begin and isinstance(f, list) and len(f) == role.end - role.begin
                 and all(v is None or type(v) is float for v in f) and type(j.get("tau")) is float and
                 type(j.get("live_decisions")) is int)
@@ -607,23 +701,25 @@ def record_valid(j, payload_sha: str, role: RoleManifest) -> bool:
 class WorkStore:
     """Persistent incremental state: ``<work>/<train-sha>/<semantics-tag>/{context,factors}``."""
 
-    def __init__(self, root: Path, role: RoleManifest):
-        self.role = role
+    def __init__(self, root: Path, role: RoleManifest, vm_identity: str):
+        self.role, self.vm_identity = role, vm_identity
         self.base = Path(root) / role.sha / SEMANTICS_TAG
         self.factors = self.base / "factors"
         self.context_dir = self.base / "context"
 
-    def get(self, payload_sha: str) -> dict | None:
-        path = self.factors / f"{payload_sha}.json"
+    def _path(self, payload_sha: str, fields_sha: str | None) -> Path:
+        return self.factors / (f"{payload_sha}.json" if fields_sha is None else f"{payload_sha}.f-{fields_sha}.json")
+
+    def get(self, entry: dict) -> dict | None:
         try:
-            j = json.loads(path.read_bytes())
+            j = json.loads(self._path(entry["payload_sha256"], entry["fields_manifest_sha256"]).read_bytes())
         except (OSError, ValueError):
             return None
-        return j if record_valid(j, payload_sha, self.role) else None
+        return j if record_valid(j, entry, self.role, self.vm_identity) else None
 
     def put(self, record: dict) -> None:
         self.factors.mkdir(parents=True, exist_ok=True)
-        path = self.factors / f"{record['cache_payload_sha256']}.json"
+        path = self._path(record["cache_payload_sha256"], record["fields_manifest_sha256"])
         partial = path.with_name(path.name + f".partial-{os.getpid()}")
         write_synced(partial, canonical_compact(record))
         os.replace(partial, path)
@@ -713,7 +809,8 @@ def screen_v3(factors: np.ndarray, taus: list[float], ids: list[str], fit_mask: 
                      "fit_sharpe": fit_sharpe, "hold_days": int(hold.sum()), "hold_mean": hold_mean,
                      "hold_sharpe": hold_sharpe, "failed_checks": failed,
                      "status": "reject_" + failed[0] if failed else None, "redundant_with": None,
-                     "admission_rank": None, "low_overlap_with": []})
+                     "redundant_rho": None, "admission_rank": None, "low_overlap_with": [],
+                     "undefined_rho_with": []})
     survivors = sorted((k for k, r in enumerate(rows) if r["status"] is None),
                        key=lambda k: (-rows[k]["fit_sharpe"], k))
     admitted: list[int] = []
@@ -721,8 +818,11 @@ def screen_v3(factors: np.ndarray, taus: list[float], ids: list[str], fit_mask: 
         worst = None
         for j in admitted:
             rho, n = pair_correlation(factors[k], factors[j], fit_mask)
-            if rho is None or n < MIN_COMMON_DAYS:
+            if n < MIN_COMMON_DAYS:
                 rows[k]["low_overlap_with"].append(ids[j])  # treated as uncorrelated, noted
+                continue
+            if rho is None:
+                rows[k]["undefined_rho_with"].append(ids[j])  # zero variance on common days: uncorrelated
                 continue
             if abs(rho) > RHO_LIMIT and (worst is None or abs(rho) > worst[0]):
                 worst = (abs(rho), j)
@@ -731,6 +831,7 @@ def screen_v3(factors: np.ndarray, taus: list[float], ids: list[str], fit_mask: 
             rows[k]["status"], rows[k]["admission_rank"] = "admitted", len(admitted)
         else:
             rows[k]["status"], rows[k]["redundant_with"] = "reject_redundant", ids[worst[1]]
+            rows[k]["redundant_rho"] = worst[0]
     for k, row in enumerate(rows):
         best = None
         for j in admitted:
@@ -745,9 +846,10 @@ def screen_v3(factors: np.ndarray, taus: list[float], ids: list[str], fit_mask: 
 
 
 ADMISSION_STATUSES = ("admitted", "reject_insufficient", "reject_turnover", "reject_unstable", "reject_redundant")
-CSV_COLUMNS = ("id", "family", "status", "failed_checks", "redundant_with", "admission_rank", "s_k", "runner_sign",
-               "sign_agrees", "tau", "fit_days", "fit_mean", "fit_sharpe", "hold_days", "hold_mean", "hold_sharpe",
-               "max_abs_rho", "max_abs_rho_with", "low_overlap_with", "cache_payload_sha256")
+CSV_COLUMNS = ("id", "family", "status", "failed_checks", "redundant_with", "redundant_rho", "admission_rank",
+               "s_k", "runner_sign", "sign_agrees", "tau", "fit_days", "fit_mean", "fit_sharpe", "hold_days",
+               "hold_mean", "hold_sharpe", "max_abs_rho", "max_abs_rho_with", "low_overlap_with",
+               "undefined_rho_with", "cache_entry", "cache_payload_sha256")
 
 
 def admission_csv(candidates: list[dict]) -> bytes:
@@ -771,12 +873,16 @@ def admission_csv(candidates: list[dict]) -> bytes:
 
 
 # ---------------------------------------------------------------------- output
+def pending_path(out: Path) -> Path:
+    return Path(out).with_name("." + Path(out).name + ".pending")
+
+
 def publish_directory(out: Path, files: dict[str, bytes]) -> None:
     """Exclusive, all-or-nothing publication: a reader sees no directory or every file complete."""
     out = Path(out)
     require(not out.exists(), f"output exists; refusing overwrite: {out}")
     out.parent.mkdir(parents=True, exist_ok=True)
-    pending = out.with_name("." + out.name + ".pending")
+    pending = pending_path(out)
     try:
         pending.mkdir()
     except FileExistsError as exc:
@@ -801,11 +907,11 @@ class Incomplete(Exception):
         self.summary = summary
 
 
-def ensure_records(args, role: RoleManifest, library: list[dict], shas: list[str], cache_dir: Path,
+def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[dict], vm_identity: str,
                    started: float, log) -> tuple[list[dict], int, int]:
     """Every candidate's factor record under one context: (records, computed now, reused)."""
-    store = WorkStore(args.work_dir, role) if args.work_dir else None
-    records: list[dict | None] = [store.get(s) if store else None for s in shas]
+    store = WorkStore(args.work_dir, role, vm_identity) if args.work_dir else None
+    records: list[dict | None] = [store.get(e) if store else None for e in entries]
     digests = {r["context_sha256"] for r in records if r is not None}
     if all(r is not None for r in records) and len(digests) == 1:
         return records, 0, len(records)  # type: ignore[return-value]
@@ -825,8 +931,8 @@ def ensure_records(args, role: RoleManifest, library: list[dict], shas: list[str
         if args.max_seconds is not None and time.perf_counter() - started + slowest > args.max_seconds:
             break
         tick = time.perf_counter()
-        signal = load_candidate_signal(cache_dir, library[k]["id"], shas[k], role)
-        records[k] = factor_record(context, signal, shas[k], library[k])
+        signal = load_candidate_signal(entries[k], role)
+        records[k] = factor_record(context, signal, entries[k], library[k], vm_identity)
         del signal
         if store:
             store.put(records[k])  # type: ignore[arg-type]
@@ -857,11 +963,14 @@ def fit(args, log=None) -> tuple[int, dict]:
                                                          args.library_sha256, args.train_sha256)
     out = Path(args.output)
     require(not out.exists(), f"output exists; refusing overwrite: {out}")
-    cache_dir = Path(args.candidate_cache) / args.train_sha256
-    require(cache_dir.is_dir(), f"candidate cache: no directory for the TRAIN role: {cache_dir}")
+    require(not pending_path(out).exists(), f"stale or concurrent partial output; inspect and remove: "
+                                            f"{pending_path(out)}")
     role = RoleManifest(args.train, args.train_sha256)
-    shas = [candidate_payload_sha(cache_dir, c, role) for c in library]
-    records, computed, reused = ensure_records(args, role, library, shas, cache_dir, started, log)
+    layout = CacheLayout(args.runner_summary, args.runner_summary_sha256, role, args.orientations_sha256,
+                         orientation_recipe)
+    entries = [layout.resolve(c, role) for c in library]
+    shas = [e["payload_sha256"] for e in entries]
+    records, computed, reused = ensure_records(args, role, library, entries, layout.vm_identity, started, log)
 
     ids = [c["id"] for c in library]
     factors = np.array([[np.nan if v is None else v for v in r["f_unsigned"]] for r in records], dtype=np.float64)
@@ -870,11 +979,13 @@ def fit(args, log=None) -> tuple[int, dict]:
     decision_sessions = role.sessions[role.begin:role.end]
     fit_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < HOLD_BEGIN_NS)
     hold_mask = (decision_sessions >= HOLD_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
-    script_sha = hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+    script_sha = SCRIPT_SHA256
     inputs = {"library_sha256": args.library_sha256, "train_manifest_sha256": args.train_sha256,
               "role_source_sha256": role.source_sha256, "orientations_sha256": args.orientations_sha256,
-              "orientations_recipe_sha256": orientation_recipe, "script_sha256": script_sha,
-              "semantics_tag": SEMANTICS_TAG, "context_sha256": context_sha}
+              "orientations_recipe_sha256": orientation_recipe, "runner_summary_sha256": args.runner_summary_sha256,
+              "vm_identity": layout.vm_identity, "fields_manifest_sha256": layout.fields_sha,
+              "script_sha256": script_sha, "semantics_tag": SEMANTICS_TAG, "context_sha256": context_sha}
+    cache_entry = ["base" if e["fields_manifest_sha256"] is None else "fields" for e in entries]
     window = role.window()
     files: dict[str, bytes] = {}
     admission_sha = None
@@ -886,6 +997,8 @@ def fit(args, log=None) -> tuple[int, dict]:
         for k, (cand, row) in enumerate(zip(library, rows)):
             candidates.append({"id": cand["id"], "family": cand["family"], "status": row["status"],
                                "failed_checks": row["failed_checks"], "redundant_with": row["redundant_with"],
+                               "redundant_rho": row["redundant_rho"], "undefined_rho_with": row["undefined_rho_with"],
+                               "cache_entry": cache_entry[k],
                                "admission_rank": row["admission_rank"], "s_k": row["s_k"],
                                "runner_sign": runner_signs[k], "sign_agrees": runner_signs[k] == row["s_k"],
                                "tau": row["tau"], "tau_over_limit": row["tau"] > TAU_LIMIT,
@@ -927,6 +1040,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     for k, cand in enumerate(library):
         row = {"id": cand["id"], "family": cand["family"], "sign": signs[k], "runner_sign": runner_signs[k],
                "status": status_of[k], "dsl_sha256": cand["dsl_sha256"], "cache_payload_sha256": shas[k],
+               "cache_entry": cache_entry[k],
                "tau": taus[k], "tau_over_limit": taus[k] > TAU_LIMIT,
                "flat_decisions": int(np.isnan(factors[k]).sum()), "weight": 0.0, "mv_solution": None,
                "clipped": False}
@@ -983,7 +1097,9 @@ def fit(args, log=None) -> tuple[int, dict]:
             "weighted_standalone_turnover": weighted_tau,
             "library_sha256": args.library_sha256, "role_manifest_sha256": args.train_sha256,
             "role_source_sha256": role.source_sha256, "orientations_sha256": args.orientations_sha256,
-            "orientations_recipe_sha256": orientation_recipe, "script_sha256": script_sha,
+            "orientations_recipe_sha256": orientation_recipe, "runner_summary_sha256": args.runner_summary_sha256,
+            "vm_identity": layout.vm_identity, "fields_manifest_sha256": layout.fields_sha,
+            "script_sha256": script_sha,
             "semantics_tag": SEMANTICS_TAG, "context_sha256": context_sha, "window": window,
             "neutralization_refused_decisions": records[0]["context_refused"],
             "used_rows_unrefused": records[0]["context_used_rows_unrefused"],
@@ -1011,7 +1127,9 @@ def parse_args(argv):
     p.add_argument("--train-sha256", required=True)
     p.add_argument("--orientations", type=Path, required=True, help="TRAIN orientations.json from the IC runner")
     p.add_argument("--orientations-sha256", required=True)
-    p.add_argument("--candidate-cache", type=Path, required=True, help="runner --candidate-cache DIR")
+    p.add_argument("--runner-summary", type=Path, required=True,
+                   help="summary.json of the TRAIN-only IC run that wrote --orientations (candidate cache layout)")
+    p.add_argument("--runner-summary-sha256", required=True)
     p.add_argument("--screen", required=True, choices=SCREENS,
                    help="v3-admit-v1 (admission screen + fit on admitted) or none (T9: runner signs, all oriented)")
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")

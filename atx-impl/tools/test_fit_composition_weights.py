@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 import numpy as np
 
@@ -217,10 +218,15 @@ def sha(data: bytes) -> str:
 
 
 class Fixture:
-    """Role dir + library + orientations + runner-format candidate cache on disk."""
+    """Role dir + library + orientations + the runner's landed candidate cache layout + TRAIN summary.json.
+
+    Cache ROOT = cache/ for the legacy VM identity, else cache/<identity>/ (strategy_ic_runner.cpp
+    cache_root). Base candidates live in ROOT/<train sha>/, ``field_ids`` in ROOT/<fields sha>/.
+    """
 
     def __init__(self, root: Path, panel=None, signals=None, signs=SIGNS, sidecar_role="train",
-                 end_ns=None, ids=IDS, families=FAMILIES):
+                 end_ns=None, ids=IDS, families=FAMILIES, vm_identity=fcw.LEGACY_VM_IDENTITY, field_ids=(),
+                 fields_sha="ef" * 32, keyless_legacy=False, sidecar_patch=None):
         self.root, self.ids = root, list(ids)
         self.p = panel if panel is not None else synthetic_panel()
         self.signals = signals if signals is not None else synthetic_signals(self.p)
@@ -250,33 +256,60 @@ class Fixture:
         self.library = root / "library.json"
         self.library.write_bytes(json.dumps(library).encode())
         self.library_sha = sha(self.library.read_bytes())
-        dsl_sha = [sha(c["dsl"].encode()) for c in library["candidates"]]
-        orientations = {"schema": fcw.ORIENTATIONS_SCHEMA, "recipe_sha256": "cd" * 32,
+        self.dsl_sha = [sha(c["dsl"].encode()) for c in library["candidates"]]
+        recipe_sha = "cd" * 32
+        orientations = {"schema": fcw.ORIENTATIONS_SCHEMA, "recipe_sha256": recipe_sha,
                         "library_sha256": self.library_sha, "train_manifest_sha256": self.train_sha,
                         "candidates": [{"id": i, "family": f, "dsl_sha256": s, "sign": g}
-                                       for i, f, s, g in zip(ids, families, dsl_sha, signs)]}
+                                       for i, f, s, g in zip(ids, families, self.dsl_sha, signs)]}
         (root / "train").mkdir()
         self.orientations = root / "train" / "orientations.json"
         self.orientations.write_bytes((json.dumps(orientations, indent=2) + "\n").encode())
         self.orientations_sha = sha(self.orientations.read_bytes())
         self.cache = root / "cache"
-        entry = self.cache / self.train_sha
-        entry.mkdir(parents=True)
-        for cid, s, dsha in zip(ids, self.signals, dsl_sha):
+        self.cache_root = self.cache if vm_identity == fcw.LEGACY_VM_IDENTITY else self.cache / vm_identity
+        self.vm_identity, self.fields_sha, self.field_ids = vm_identity, fields_sha, set(field_ids)
+        for cid, s, dsha in zip(ids, self.signals, self.dsl_sha):
+            entry = self.entry_dir(cid)
+            entry.mkdir(parents=True, exist_ok=True)
             data = np.ascontiguousarray(s.astype("<f8")).tobytes()
             (entry / f"{cid}.f64").write_bytes(data)
             sidecar = {"schema": fcw.CACHE_SCHEMA, "candidate_id": cid, "dsl_sha256": dsha,
                        "role_manifest_sha256": self.train_sha, "role": sidecar_role,
                        "eval_mode": fcw.VM_EVAL_MODE, "layout": fcw.CACHE_LAYOUT, "dates": d, "instruments": n,
-                       "bytes": len(data), "payload": f"{cid}.f64", "payload_sha256": sha(data)}
+                       "bytes": len(data), "payload": f"{cid}.f64", "payload_sha256": sha(data),
+                       "engine_git_sha": fcw.LEGACY_ENGINE_SHAS[0], "vm_identity": vm_identity}
+            if keyless_legacy:
+                del sidecar["vm_identity"]
+            if cid in self.field_ids:
+                sidecar["fields_manifest_sha256"] = fields_sha
+            sidecar.update((sidecar_patch or {}).get(cid, {}))
             (entry / f"{cid}.json").write_bytes(json.dumps(sidecar, indent=2).encode())
+        cache_summary = {"directory": str(self.cache_root / self.train_sha), "vm_identity": vm_identity,
+                         "hits": 0, "misses": len(ids)}
+        train_role = {"role": "train", "manifest_sha256": self.train_sha, "candidate_cache": cache_summary}
+        if self.field_ids:
+            cache_summary["fields_directory"] = str(self.cache_root / fields_sha)
+            train_role["research_fields"] = {"manifest_sha256": fields_sha}
+        self.summary_doc = {"status": "complete", "recipe_sha256": recipe_sha, "roles": [train_role],
+                            "orientations_artifact_sha256": self.orientations_sha}
+        self.write_summary()
         self.signs = list(signs)
+
+    def entry_dir(self, cid: str) -> Path:
+        return self.cache_root / (self.fields_sha if cid in self.field_ids else self.train_sha)
+
+    def write_summary(self, doc=None) -> None:
+        self.summary = self.root / "train" / "summary.json"
+        self.summary.write_bytes(json.dumps(doc if doc is not None else self.summary_doc, indent=2).encode())
+        self.summary_sha = sha(self.summary.read_bytes())
 
     def argv(self, output: Path, screen="none", extra=()) -> list[str]:
         return ["--library", str(self.library), "--library-sha256", self.library_sha,
                 "--train", str(self.manifest), "--train-sha256", self.train_sha,
                 "--orientations", str(self.orientations), "--orientations-sha256", self.orientations_sha,
-                "--candidate-cache", str(self.cache), "--screen", screen, "--output", str(output), *extra]
+                "--runner-summary", str(self.summary), "--runner-summary-sha256", self.summary_sha,
+                "--screen", screen, "--output", str(output), *extra]
 
     def args(self, output: Path, screen="none", **override) -> argparse.Namespace:
         args = fcw.parse_args(self.argv(output, screen))
@@ -285,8 +318,8 @@ class Fixture:
         return args
 
 
-def runner_accepts(text: bytes, library_sha: str, ids: list[str]) -> list[float]:
-    """Python port of strategy_ic_runner.cpp composition_weights() acceptance rules."""
+def runner_accepts(text: bytes, library_sha: str, ids: list[str], train_sha: str) -> list[float]:
+    """Python port of the landed strategy_ic_runner.cpp composition_weights() + composition_signs()."""
     assert 0 < len(text) <= 1 << 20
 
     def pairs(items):
@@ -303,6 +336,11 @@ def runner_accepts(text: bytes, library_sha: str, ids: list[str]) -> list[float]
         w = j["weights"][cid]
         assert isinstance(w, (int, float)) and not isinstance(w, bool) and math.isfinite(w) and w >= 0
         out.append(float(w))
+    assert j.get("train_manifest_sha256") == train_sha, "TRAIN binding"
+    if "signs" in j:
+        assert isinstance(j["signs"], dict) and set(j["signs"]) <= set(ids), "sign for unknown candidate"
+        assert all(type(v) is int and v in (1, -1) for v in j["signs"].values()), "sign must be +1/-1"
+        assert all(cid in j["signs"] for cid, w in zip(ids, out) if w > 0), "weighted candidate without sign"
     return out
 
 
@@ -466,7 +504,7 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("unoriented", prov["tau_flagged"])
 
     def test_schema_provenance_and_runner_acceptance(self):
-        got = runner_accepts(self.text, self.fx.library_sha, IDS)
+        got = runner_accepts(self.text, self.fx.library_sha, IDS, self.fx.train_sha)
         self.assertEqual(len(got), len(IDS))
         self.assertEqual(sorted(self.doc["weights"]), sorted(IDS))
         prov = self.doc["provenance"]
@@ -536,13 +574,13 @@ class Refusals(unittest.TestCase):
         fx = Fixture(self.root / "pins", self.p, self.signals)
         self.refuse(fx, "pin differs", library_sha256="0" * 64)
         self.refuse(fx, "pin differs", orientations_sha256="1" * 64)
-        payload = fx.cache / fx.train_sha / "alpha_a.f64"
+        payload = fx.entry_dir("alpha_a") / "alpha_a.f64"
         data = bytearray(payload.read_bytes())
         data[8] ^= 1
         payload.write_bytes(bytes(data))
         self.refuse(fx, "payload SHA-256 mismatch")
         payload.unlink()
-        (fx.cache / fx.train_sha / "alpha_a.json").unlink()
+        (fx.entry_dir("alpha_a") / "alpha_a.json").unlink()
         self.refuse(fx, "missing entry alpha_a")
 
     def test_role_payload_tampering_refused(self):
@@ -651,7 +689,8 @@ class Admission(unittest.TestCase):
         cls.root = Path(cls.tmp.name)
         panel, signals, ids = screen_world()
         cls.ids = ids
-        cls.fx = Fixture(cls.root / "fx", panel, signals, SCREEN_RUNNER_SIGNS, ids=ids, families=["fam"] * len(ids))
+        cls.fx = Fixture(cls.root / "fx", panel, signals, SCREEN_RUNNER_SIGNS, ids=ids, families=["fam"] * len(ids),
+                         vm_identity="dslvm1_clang18.1_fma", field_ids={"slow_b", "flip"})
         cls.out = cls.root / "fresh"
         cls.code, cls.summary = fcw.fit(cls.fx.args(cls.out, "v3-admit-v1"))
         cls.bytes = {p.name: p.read_bytes() for p in cls.out.iterdir()}
@@ -687,6 +726,10 @@ class Admission(unittest.TestCase):
         self.assertGreater(rows["fast_a"]["tau"], 0.7)
         self.assertLess(rows["slow_a"]["tau"], 0.7)
         self.assertEqual(rows["insufficient"]["fit_days"], 100)
+        self.assertEqual({i: rows[i]["cache_entry"] for i in ("slow_a", "slow_b", "flip")},
+                         {"slow_a": "base", "slow_b": "fields", "flip": "fields"})
+        self.assertEqual(self.adm["inputs"]["vm_identity"], "dslvm1_clang18.1_fma")
+        self.assertEqual(self.adm["inputs"]["fields_manifest_sha256"], self.fx.fields_sha)
         self.assertEqual(sorted(self.adm["admitted"]), ["slow_a", "slow_b"])
         self.assertEqual(self.adm["sign_conflicts"], ["slow_b"])
         self.assertEqual(self.adm["counts"], {"admitted": 2, "reject_insufficient": 1, "reject_turnover": 1,
@@ -703,7 +746,7 @@ class Admission(unittest.TestCase):
         taus = {c["id"]: c["tau"] for c in self.adm["candidates"]}
         self.assertAlmostEqual(self.doc["provenance"]["weighted_standalone_turnover"],
                                sum(w[i] * taus[i] for i in self.ids), places=14)
-        runner_accepts(self.bytes[fcw.OUTPUT_WEIGHTS], self.fx.library_sha, self.ids)
+        runner_accepts(self.bytes[fcw.OUTPUT_WEIGHTS], self.fx.library_sha, self.ids, self.fx.train_sha)
 
     def test_admission_files_schema_and_csv(self):
         self.assertEqual(self.adm["schema"], "atx.dsl-admission/v1")
@@ -716,6 +759,7 @@ class Admission(unittest.TestCase):
         self.assertEqual(len(lines), 1 + len(self.ids))
         twin = dict(zip(fcw.CSV_COLUMNS, lines[1 + self.ids.index("slow_a_twin")].split(",")))
         self.assertEqual((twin["status"], twin["redundant_with"]), ("reject_redundant", "slow_a"))
+        self.assertEqual(float(twin["redundant_rho"]), self.adm["candidates"][self.ids.index("slow_a_twin")]["redundant_rho"])
         self.assertEqual(self.bytes[fcw.OUTPUT_ADMISSION], fcw.canonical_bytes(self.adm))
 
     def test_incremental_paths_are_byte_identical(self):
@@ -779,6 +823,203 @@ class Admission(unittest.TestCase):
         self.assertEqual(fcw.main(fx.argv(out, "v3-admit-v1")), fcw.EXIT_NO_WEIGHTS)
         self.assertEqual(sorted(p.name for p in out.iterdir()), sorted([fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV]))
         self.assertEqual(json.loads((out / fcw.OUTPUT_ADMISSION).read_bytes())["admitted"], [])
+
+
+
+# ------------------------------------------------- fix round 1: cache layout + boundaries
+NON_DEV_IDENTITY = "dslvm1_clang18.1_fma"
+
+
+class CacheLayoutResolution(unittest.TestCase):
+    """The runner's landed layout: ROOT = DIR[/identity], base under R, field candidates under F."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.p = synthetic_panel(dates=200, score_begin=150)
+        self.signals = synthetic_signals(self.p)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fixture(self, name, **kw):
+        return Fixture(self.root / name, self.p, self.signals, **kw)
+
+    def refuse(self, fx, fragment, **override):
+        out = self.root / "refused"
+        with self.assertRaises(fcw.FitError) as caught:
+            fcw.fit(fx.args(out, **override))
+        self.assertIn(fragment, str(caught.exception))
+        self.assertFalse(out.exists())
+
+    def test_field_candidates_resolve_under_a_non_dev_identity_root(self):
+        fx = self.fixture("ok", vm_identity=NON_DEV_IDENTITY, field_ids={"alpha_b", "tie_heavy"})
+        self.assertTrue((fx.cache / NON_DEV_IDENTITY / fx.fields_sha / "alpha_b.json").is_file())
+        self.assertTrue((fx.cache / NON_DEV_IDENTITY / fx.train_sha / "alpha_a.json").is_file())
+        code, _ = fcw.fit(fx.args(self.root / "ok_out"))
+        doc = json.loads((self.root / "ok_out" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        rows = {r["id"]: r for r in doc["provenance"]["candidates"]}
+        self.assertEqual((rows["alpha_b"]["cache_entry"], rows["tie_heavy"]["cache_entry"],
+                          rows["alpha_a"]["cache_entry"]), ("fields", "fields", "base"))
+        self.assertEqual(doc["provenance"]["vm_identity"], NON_DEV_IDENTITY)
+        self.assertEqual(doc["provenance"]["fields_manifest_sha256"], fx.fields_sha)
+        self.assertEqual(doc["provenance"]["runner_summary_sha256"], fx.summary_sha)
+        runner_accepts((self.root / "ok_out" / fcw.OUTPUT_WEIGHTS).read_bytes(), fx.library_sha, IDS, fx.train_sha)
+        # the layout is transport only: the legacy flat layout gives the same weights
+        flat = self.fixture("flat")
+        fcw.fit(flat.args(self.root / "flat_out"))
+        self.assertEqual(json.loads((self.root / "flat_out" / fcw.OUTPUT_WEIGHTS).read_bytes())["weights"],
+                         doc["weights"])
+
+    def test_fields_manifest_mismatches_refused(self):
+        fx = self.fixture("wrong_f", field_ids={"alpha_b"}, sidecar_patch={"alpha_b": {"fields_manifest_sha256": "0" * 64}})
+        self.refuse(fx, "fields manifest mismatch alpha_b")
+        fx = self.fixture("base_names_f", field_ids={"alpha_b"},
+                          sidecar_patch={"alpha_a": {"fields_manifest_sha256": "ef" * 32}})
+        self.refuse(fx, "fields manifest mismatch alpha_a")
+
+    def test_vm_identity_rules(self):
+        fx = self.fixture("foreign", vm_identity=NON_DEV_IDENTITY,
+                          sidecar_patch={"alpha_a": {"vm_identity": fcw.LEGACY_VM_IDENTITY}})
+        self.refuse(fx, "VM identity mismatch alpha_a")
+        # keyless (pre-identity) sidecars: legacy identity + verified legacy engine builds only (the v1 cache)
+        fcw.fit(self.fixture("keyless_ok", keyless_legacy=True).args(self.root / "keyless_out"))
+        self.refuse(self.fixture("keyless_new_id", vm_identity=NON_DEV_IDENTITY, keyless_legacy=True),
+                    "VM identity mismatch")
+        self.refuse(self.fixture("keyless_engine", keyless_legacy=True,
+                                 sidecar_patch={"alpha_a": {"engine_git_sha": "f" * 40}}), "VM identity mismatch alpha_a")
+
+    def test_other_dsl_entries_ignored_and_duplicates_refused(self):
+        fx = self.fixture("grown", field_ids={"alpha_b"})
+        base = fx.cache_root / fx.train_sha
+        stale = json.loads((fx.entry_dir("alpha_b") / "alpha_b.json").read_bytes())
+        stale.pop("fields_manifest_sha256")
+        (base / "alpha_b.json").write_bytes(json.dumps(dict(stale, dsl_sha256="12" * 32)).encode())
+        code, _ = fcw.fit(fx.args(self.root / "grown_out"))  # older library's same-id entry is ignored
+        self.assertEqual(code, fcw.EXIT_OK)
+        (base / "alpha_b.json").write_bytes(json.dumps(stale).encode())
+        self.refuse(fx, "entries in both the base and the fields directory")
+
+    def test_summary_binding_refusals(self):
+        fx = self.fixture("summary", vm_identity=NON_DEV_IDENTITY, field_ids={"alpha_b"})
+        self.refuse(fx, "runner summary: SHA-256 pin differs", runner_summary_sha256="0" * 64)
+        good = json.loads(json.dumps(fx.summary_doc))
+        cases = [
+            (dict(good, status="running"), "run not complete"),
+            (dict(good, orientations_artifact_sha256="1" * 64), "not the run that wrote the pinned orientations"),
+            (dict(good, roles=good["roles"] + [{"role": "validation"}]), "TRAIN-only IC run"),
+            (dict(good, roles=[dict(good["roles"][0], candidate_cache=None)]), "did not use --candidate-cache"),
+            (dict(good, roles=[dict(good["roles"][0], candidate_cache=dict(
+                good["roles"][0]["candidate_cache"], vm_identity="dslvm9_other"))]), "DIR/<vm identity>"),
+            (dict(good, roles=[dict(good["roles"][0], candidate_cache=dict(
+                good["roles"][0]["candidate_cache"], fields_directory=str(fx.cache_root / ("0" * 64))))]),
+             "fields_directory is not ROOT/<fields manifest sha>"),
+        ]
+        for doc, fragment in cases:
+            fx.write_summary(doc)
+            self.refuse(fx, fragment)
+        fx.write_summary()
+
+    def test_orientation_identity_and_stale_pending_refused(self):
+        fx = self.fixture("orient")
+        doc = json.loads(fx.orientations.read_bytes())
+        doc["candidates"][0]["family"] = "other"
+        fx.orientations.write_bytes(json.dumps(doc).encode())
+        self.refuse(fx, "orientations: candidate identity alpha_a", orientations_sha256=sha(fx.orientations.read_bytes()))
+        fx = self.fixture("pending")
+        out = self.root / "pending_out"
+        fcw.pending_path(out).mkdir()
+        with self.assertRaises(fcw.FitError) as caught:
+            fcw.fit(fx.args(out, work_dir=self.root / "pending_work"))
+        self.assertIn("stale or concurrent partial output", str(caught.exception))
+        self.assertFalse((self.root / "pending_work").exists())  # refused before any compute
+
+
+class Boundaries(unittest.TestCase):
+    def test_screen_boundaries(self):
+        rng = np.random.default_rng(5)
+        t = 600
+        fit, hold = np.arange(t) < 400, np.arange(t) >= 400
+        noise = lambda: rng.normal(0, 1, t)  # noqa: E731
+        base = noise()
+        a = 0.3 + base
+        a[300:400] = NAN  # 300 FIT days
+        b = 0.1 + base + 0.01 * noise()
+        b[:50] = NAN  # 350 FIT days; 250 in common with a -> correlated
+        c = 0.1 + base + 0.01 * noise()
+        c[:51] = NAN  # 349 FIT days; 249 in common with a -> uncorrelated by rule
+        d = 0.3 + noise()
+        d[250:400] = NAN  # exactly 250 FIT days -> sufficient
+        e = 0.3 + noise()
+        e[hold] = NAN  # no live HOLD day -> unstable
+        f = 0.3 + noise()  # tau exactly at the limit -> passes
+        rows = fcw.screen_v3(np.vstack([a, b, c, d, e, f]), [0.1, 0.1, 0.1, 0.1, 0.1, 0.70], list("abcdef"), fit, hold)
+        by = dict(zip("abcdef", rows))
+        self.assertEqual((by["b"]["status"], by["b"]["redundant_with"]), ("reject_redundant", "a"))
+        self.assertGreater(by["b"]["redundant_rho"], 0.99)
+        self.assertEqual(by["c"]["status"], "admitted")
+        self.assertIn("a", by["c"]["low_overlap_with"])  # 249 common FIT days with a (and fewer with d)
+        self.assertEqual((by["d"]["fit_days"], by["d"]["status"]), (250, "admitted"))
+        self.assertEqual((by["e"]["hold_days"], by["e"]["status"], by["e"]["failed_checks"]),
+                         (0, "reject_unstable", ["unstable"]))
+        self.assertEqual((by["f"]["failed_checks"], by["f"]["status"]), ([], "admitted"))
+
+    def test_rho_exactly_at_limit_is_not_redundant(self):
+        rng = np.random.default_rng(6)
+        t = 600
+        fit, hold = np.arange(t) < 400, np.arange(t) >= 400
+        a = 0.3 + rng.normal(0, 1, t)
+        b = -0.1 + 0.8 * a + 0.6 * rng.normal(0, 1, t)  # lower FIT Sharpe than a, rho ~ .8
+        rho, _ = fcw.pair_correlation(a, b, fit)
+        with unittest.mock.patch.object(fcw, "RHO_LIMIT", abs(rho)):
+            rows = fcw.screen_v3(np.vstack([a, b]), [0.1, 0.1], ["a", "b"], fit, hold)
+        self.assertEqual(rows[1]["status"], "admitted")
+        with unittest.mock.patch.object(fcw, "RHO_LIMIT", float(np.nextafter(abs(rho), 0))):
+            rows = fcw.screen_v3(np.vstack([a, b]), [0.1, 0.1], ["a", "b"], fit, hold)
+        self.assertEqual((rows[1]["status"], rows[1]["redundant_rho"]), ("reject_redundant", abs(rho)))
+
+
+class CacheInvalidation(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        p = synthetic_panel(dates=200, score_begin=150)
+        self.fx = Fixture(self.root / "fx", p, synthetic_signals(p), field_ids={"alpha_b"})
+        self.work = self.root / "work"
+        code, summary = fcw.fit(self.fx.args(self.root / "first", work_dir=self.work))
+        self.assertEqual(summary["computed_this_run"], len(IDS))
+        self.weights = json.loads((self.root / "first" / fcw.OUTPUT_WEIGHTS).read_bytes())["weights"]
+        self.store = self.work / self.fx.train_sha / fcw.SEMANTICS_TAG
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rerun(self, name):
+        code, summary = fcw.fit(self.fx.args(self.root / name, work_dir=self.work))
+        self.assertEqual(json.loads((self.root / name / fcw.OUTPUT_WEIGHTS).read_bytes())["weights"], self.weights)
+        return summary
+
+    def test_field_record_is_keyed_by_the_fields_manifest(self):
+        names = sorted(x.name for x in (self.store / "factors").glob("*.json"))
+        self.assertEqual(sum(f".f-{self.fx.fields_sha}." in n for n in names), 1)
+        self.assertEqual(self.rerun("again")["computed_this_run"], 0)
+
+    def test_any_script_change_recomputes_everything(self):
+        with unittest.mock.patch.object(fcw, "SCRIPT_SHA256", "0" * 64):
+            self.assertEqual(self.rerun("edited")["computed_this_run"], len(IDS))
+
+    def test_semantics_tag_change_misses_the_cache(self):
+        with unittest.mock.patch.object(fcw, "SEMANTICS_TAG", "0" * 16):
+            self.assertEqual(self.rerun("new_tag")["computed_this_run"], len(IDS))
+
+    def test_record_bound_to_another_context_is_recomputed(self):
+        records = sorted((self.store / "factors").glob("*.json"))
+        j = json.loads(records[0].read_bytes())
+        body = {k: v for k, v in j.items() if k != "content_sha256"}
+        body["context_sha256"] = "ab" * 32  # a valid, sealed record of another context
+        records[0].write_bytes(fcw.canonical_compact(fcw.seal(body)))
+        records[1].unlink()  # forces the stored context to load
+        self.assertEqual(self.rerun("rebound")["computed_this_run"], 2)
 
 
 if __name__ == "__main__":
