@@ -220,6 +220,12 @@
   field payloads byte-identical to v2. Field candidates (51) recompute under the new fields manifest sha.
   Ruling: shares_out NaN'd by rules -> warm tier in T10 (no special fallback) — cost if wrong: heavily
   shorted ETPs under-charged; bounded by engine-tiers stress. Re-review dispatched.
+- v3 warm-up under fields v3 (mega-v3f3-warm-run1/2, time-limit both): run2 reached 113/121, 97 hits/16 miss.
+- T14: pool-4 f38e79ad -> root 22eae712 (validation weights bound to frozen TRAIN orientations/fields;
+  field definitions recorded in TRAIN orientations.json). Build mega-t14-a 43.1s; IC tests 62/62. Review
+  dispatched. Ruling (provisional, pending review): weighted frozen TRAIN runs bind via their recipe's
+  weights pin ("frozen-TRAIN-recipe-pins-these-weights") — cost if wrong: a looser check on one path.
+  NOTE: final TRAIN artifact must be produced by the >=22eae712 binary so validation checks definitions.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
