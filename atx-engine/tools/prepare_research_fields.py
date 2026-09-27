@@ -290,19 +290,21 @@ FUND_CLOCK = (
     "fund-events-lagged-v1: the linked CIK's latest events row with clock < date(session t-L) 22:00 UTC, L = {lag} declared "
     "lag session(s) on the role calendar (--fund-lag-sessions): usable from the first session whose 22:00 UTC mark follows "
     "the clock, plus L sessions; sessions t < L -> NaN; clock = events accepted_utc (FSDS SUB accepted_utc of the "
-    "filing, else FC1 = filed 00:00 UTC + 46 h, clock_basis cf_fc1); latest row = max accepted_utc, tie by accession. "
+    "filing, else FC1 = filed 00:00 UTC + 46 h, clock_basis cf_fc1); consumer selection rule of atx.fundamental-events/v1 "
+    "(row-level, latest-clock-wins): for a CIK and mark, take the latest visible row (max accepted_utc, tie by accession). "
     + LINK_RULE)
 FUND_STALENESS = (
-    "age = date(session) - period_end of the visible events row, calendar days; age > staleness_days of that row -> NaN "
-    "(200, or 400 for an annual-only filer: no 10-Q/10-QT in the prior 400 days; only 200 and 400 are admitted); no "
-    "visible row or null period_end -> NaN; the whole row is used: a visible NaN item stays NaN (no skip-back to an "
-    "older row); latest-clock-wins restatements: a restated value enters at the restating filing's clock and is never "
-    "backdated")
+    "atx.fundamental-events/v1 rule: every item is that row's value (NaN stays NaN; do not fall back to an older row per "
+    "item, so paired items always share one anchor); the whole row is stale, and every item NaN, when date(d) - "
+    "period_end > staleness_days, where staleness_days = 200 if the CIK has a 10-Q/10-QT (or /A) accession with clock in "
+    "(clock - 400 d, clock], else 400 (annual-only filer); only 200 and 400 are admitted; no visible row or null "
+    "period_end -> NaN; restatements are latest-clock-wins: a restated value enters at the restating filing's clock and "
+    "is never backdated")
 FUND_CAVEATS = [
     "values modeled/unaccepted (not F.1-accepted): bounded v4 events producer over the CompanyFacts CF-R snapshot "
     "2026-09-20 (us-gaap + dei only: IFRS filers and most ADRs have no values) and FSDS SUB acceptance clocks",
     "identity from the pinned identity bridge (r4 rehearsal links, rehearsal_identity recorded in source_checks; "
-    "scope_complete=false: about 80% of common member cells are linked)",
+    "scope_complete=false: about 60% of role member cells are linked, TRAIN and VAL alike)",
     "FC1 fallback clock (filed + 46 h) where FSDS SUB lacks the accession: counted per field (fc1_finite_member_cells)",
     "item definitions (concept chains, TTM and discrete-quarter derivation, zero-fill rules for debt, dvc_ttm, "
     "prstkc_ttm, sstk_ttm) belong to the events producer (atx-engine/tools/fundamental_events_schema.md, "
@@ -367,7 +369,9 @@ FUND_ITEMS = (
     ("shrs_q_lag4", "shares", "the same share concept ending four fiscal quarters earlier (pair NaN on a scale error)"),
     ("noa", "USD", "net operating assets at the latest period end: at - che - lt + debt"),
     ("noa_lag4", "USD", "net operating assets four fiscal quarters earlier"),
-    ("sue", "unitless", "standardized unexpected earnings (seasonal random walk, 8 quarters, first-reported EPS)"),
+    ("sue", "unitless", "seasonal-random-walk SUE of the quarter ending at the latest period end on first-reported "
+                        "quarterly net income (not EPS): (NI_q - NI_q-4) / sd of the previous <= 8 seasonal differences, "
+                        ">= 4 required, sd > 0"),
     ("fscore", "count 0-9", "Piotroski F-score, all nine terms required"),
 )
 ISSUER_FIELDS = {}
