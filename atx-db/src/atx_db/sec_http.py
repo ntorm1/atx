@@ -37,6 +37,7 @@ import gzip
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -173,7 +174,8 @@ def _exclusive_file_lock(path: Path, *, timeout_s: float = _LOCK_TIMEOUT_SECONDS
     """Hold an OS byte-range lock on ``path``; the OS releases it if the holder dies."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    # A scanner briefly holding the lock file is retried (C-85); only a persistent failure propagates.
+    fd = _retry_sharing(lambda: os.open(path, os.O_RDWR | os.O_CREAT, 0o644))
     try:
         if os.name == "nt":
             import msvcrt
@@ -251,6 +253,8 @@ class SecRateLimiter:
         self.state_path = self.lock_path.with_name(f"{self.lock_path.stem}.state")
         self.blocked_path = self.lock_path.with_name(f"{self.lock_path.stem}.blocked")
         self._thread_lock = threading.Lock()
+        #: ATX_SEC_RATE_LOG writes that failed after the sharing retries (C-85): counted, never fatal.
+        self.rate_log_failures = 0
 
     def acquire(self, label: str | None = None) -> float:
         """Wait for this process's next SEC request slot and return the grant time (epoch seconds).
@@ -392,6 +396,7 @@ class SecRateLimiter:
             "consecutive_block_episodes": None if state is None else state.blocks,
             "abort_after": self.abort_after,
             "tripped": self._tripped_detail(),
+            "rate_log_failures": self.rate_log_failures,
         }
 
     def _state_error(self, unreadable_s: float) -> SecLimiterStateError:
@@ -427,8 +432,8 @@ class SecRateLimiter:
             "clear_with": CLEAR_BLOCK_COMMAND,
         }
         temporary = self.blocked_path.with_name(f"{self.blocked_path.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, self.blocked_path)
+        _retry_sharing(lambda: temporary.write_text(json.dumps(marker, sort_keys=True), encoding="utf-8"))
+        _retry_sharing(lambda: os.replace(temporary, self.blocked_path))
         self._log({"t": now, "pid": os.getpid(), "event": "trip", "blocks": state.blocks, "status": status})
 
     def _read_state(self) -> _LimiterState | None:
@@ -471,21 +476,40 @@ class SecRateLimiter:
             "blocks": state.blocks, "block_at": state.block_at,
         })
         temporary = self.state_path.with_name(f"{self.state_path.name}.{os.getpid()}.tmp")
-        temporary.write_text(text, encoding="ascii")
+        _retry_sharing(lambda: temporary.write_text(text, encoding="ascii"))  # C-85: bounded, then fatal
         for _ in range(50):
             try:
                 os.replace(temporary, self.state_path)
                 return
             except PermissionError:  # a scanner briefly holding the target (Windows)
                 time.sleep(_LOCK_POLL_SECONDS)
-        os.replace(temporary, self.state_path)
+        _retry_sharing(lambda: os.replace(temporary, self.state_path))
 
-    @staticmethod
-    def _log(event: dict[str, Any]) -> None:
+    def _log(self, event: dict[str, Any]) -> None:
+        """Append one ``ATX_SEC_RATE_LOG`` line (a diagnostic audit, C-85): never fatal.
+
+        A sharing violation is retried with bounded backoff; a write that still fails is counted in
+        ``rate_log_failures`` and reported on stderr (first failure, then every 100th), and the caller goes on:
+        a grant or block decision is already in the shared state before its log line is written.
+        """
+
         log_path = os.environ.get(SEC_RATE_LOG_ENV)
-        if log_path:
+        if not log_path:
+            return
+        line = json.dumps(event) + "\n"
+
+        def write() -> None:
             with open(log_path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(event) + "\n")
+                handle.write(line)
+
+        try:
+            _retry_sharing(write)
+        except OSError as exc:
+            self.rate_log_failures += 1
+            if self.rate_log_failures == 1 or self.rate_log_failures % 100 == 0:
+                sys.stderr.write(json.dumps({"warning": "sec_rate_log_write_failed", "failures": self.rate_log_failures,
+                                             "error": f"{type(exc).__name__}: {exc}"[:300]}) + "\n")
+                sys.stderr.flush()
 
 
 _DEFAULT_LIMITER: SecRateLimiter | None = None
@@ -730,6 +754,7 @@ class FetchLedgerStore:
         self._units_done: set[bytes] = set()
         self.units_done_lines = 0
         self.units_done_corrupt_lines = 0
+        self.units_done_other_selector = 0
 
     @staticmethod
     def _key(url: str) -> bytes:
@@ -762,11 +787,15 @@ class FetchLedgerStore:
         self._loaded = True
         return self
 
-    def load_units_done(self) -> FetchLedgerStore:
-        """(Re)read the units-done sidecar (C-80 m1); a line torn by a kill is counted and ignored."""
+    def load_units_done(self, *, selector: str | None = None) -> FetchLedgerStore:
+        """(Re)read the units-done sidecar (C-80 m1); a line torn by a kill is counted and ignored.
+
+        With ``selector``, a line recorded under a different ``selector`` does not count as done (counted in
+        ``units_done_other_selector``), so a changed selection rule re-evaluates those units.
+        """
 
         self._units_done = set()
-        self.units_done_lines = self.units_done_corrupt_lines = 0
+        self.units_done_lines = self.units_done_corrupt_lines = self.units_done_other_selector = 0
         if self.units_done_path.is_file():
             with self.units_done_path.open("rb") as handle:
                 for raw in handle:
@@ -774,9 +803,15 @@ class FetchLedgerStore:
                         continue
                     self.units_done_lines += 1
                     try:
-                        self._units_done.add(self._key(str(json.loads(raw)["unit"])))
+                        payload = json.loads(raw)
+                        key = self._key(str(payload["unit"]))
                     except (ValueError, KeyError, TypeError):
                         self.units_done_corrupt_lines += 1
+                        continue
+                    if selector is not None and payload.get("selector") != selector:
+                        self.units_done_other_selector += 1
+                        continue
+                    self._units_done.add(key)
         return self
 
     def unit_done(self, unit: str) -> bool:

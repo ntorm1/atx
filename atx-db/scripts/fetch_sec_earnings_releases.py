@@ -13,6 +13,13 @@ resumes where it stopped. Load afterwards with
 Run each worker under the memory guard (ruling C-58): ``run_memory_guarded.py --job-gb 0.5
 --wait-minutes 30 -- python scripts/fetch_sec_earnings_releases.py --workers 3 ...``.
 
+``--recheck-done`` (the repair pass before the Step 2 load, ruling C-85 r1) also walks filings the
+units-done sidecar marks done: their stored index and exhibit objects are presence-checked, read
+and SHA-verified, and a missing or corrupt one is refetched. A normal run skips them by lookup.
+
+The ``ATX_SEC_RATE_LOG`` grant log is diagnostic: a write that fails after bounded sharing retries
+is counted (``rate_log_failures`` in the done/aborted line) and never stops the worker (C-85).
+
 Exit codes: 0 done; 3 SEC blocked the host (403/429 on every retry, see ``sec_http``), or the
 host was already tripped at start: nothing more is requested until an operator runs
 ``python -m atx_db.sec_http --clear-block``. A worker that cannot reach the host-wide limiter
@@ -64,6 +71,8 @@ def main() -> int:
     parser.add_argument("--progress-every", type=int, default=10)
     parser.add_argument("--workers", type=int, default=1, choices=range(1, MAX_FETCH_WORKERS + 1),
                         help="Fetch threads sharing the host-wide limiter and the ledger (ruling C-72).")
+    parser.add_argument("--recheck-done", action="store_true",
+                        help="Also verify (and repair) the stored objects of filings already marked done (C-85 r1).")
     args = parser.parse_args()
 
     shard, shards = args.shard
@@ -76,7 +85,8 @@ def main() -> int:
         print(json.dumps({"aborted": "sec_blocked_at_start", "pid": os.getpid(), "error": str(exc)}), flush=True)
         return EXIT_SEC_BLOCKED
     print(json.dumps({"start": {"pid": os.getpid(), "shard": f"{shard}/{shards}", "workers": args.workers,
-                                "limiter": limiter_state}}, sort_keys=True), flush=True)
+                                "recheck_done": args.recheck_done, "limiter": limiter_state}}, sort_keys=True),
+          flush=True)
     candidates = (
         candidate
         for position, candidate in enumerate(earnings_release_candidates_from_submissions_archive(
@@ -105,13 +115,16 @@ def main() -> int:
             progress=progress,
             progress_every=args.progress_every,
             workers=args.workers,
+            recheck_done=args.recheck_done,
         )
     except SecBlockedError as exc:
         print(json.dumps({"aborted": "sec_blocked", "pid": os.getpid(), "shard": f"{shard}/{shards}",
                           "last_progress": counts, "error": str(exc),
+                          "rate_log_failures": limiter.rate_log_failures,
                           "elapsed_s": round(time.monotonic() - started, 1)}, sort_keys=True), flush=True)
         return EXIT_SEC_BLOCKED
     print(json.dumps({"done": counts, "pid": os.getpid(), "shard": f"{shard}/{shards}",
+                      "rate_log_failures": limiter.rate_log_failures,
                       "elapsed_s": round(time.monotonic() - started, 1)}, sort_keys=True), flush=True)
     return 0
 

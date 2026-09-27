@@ -582,7 +582,7 @@ def _ex99_exhibits(index_html: str, directory_url: str) -> tuple[tuple[str, str,
         if ".." in name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:htm|html|txt)", name, re.IGNORECASE):
             continue
         seq = row[0][0].strip()
-        exhibits.append((name, row[3][0].strip(), int(seq) if seq.isdigit() else 1_000_000))
+        exhibits.append((name, row[3][0].strip(), int(seq) if seq.isascii() and seq.isdecimal() else 1_000_000))
     return tuple(exhibits)
 
 
@@ -1251,12 +1251,56 @@ def earnings_release_candidates_from_submissions_archive(
     ``(cik, accession)`` order. History members are required: a referenced member missing
     from the archive raises instead of silently narrowing the candidate set, and so does an
     explicitly requested CIK that the archive does not hold.
+
+    Memory (ruling C-85): each member is parsed, folded into the CIK's per-accession best and
+    dropped before the next one is read, so the transient is one member, not a CIK's whole
+    bundle (tens of MB of JSON for the largest filers). A history member whose raw bytes do not
+    contain ``2.02`` cannot hold an Item 2.02 row and is not parsed at all.
     """
 
     from ._submissions_archive import SubmissionsArchive
     from .sec_submissions import _normalized_cik, _parse_acceptance, _parse_date
 
     item_202 = re.compile(r"(^|[^0-9])2\.02([^0-9]|$)")
+
+    def fold(best: dict[str, tuple[tuple[Any, ...], EarningsReleaseCandidate]], block: dict[str, Any],
+             source_url: str, cik: str) -> None:
+        forms = block.get("form") or []
+        for index, form in enumerate(forms):
+            if str(form or "").strip().upper() != "8-K":
+                continue
+            row = {
+                key: _submissions_column(block, key, index)
+                for key in ("items", "reportDate", "acceptanceDateTime", "filingDate",
+                            "accessionNumber", "primaryDocument")
+            }
+            if not item_202.search(str(row["items"] or "").strip()):
+                continue
+            report_date = _parse_date(row["reportDate"])
+            if history_start is not None and (report_date is None or report_date < history_start):
+                continue
+            if history_end is not None and (report_date is None or report_date > history_end):
+                continue
+            raw_acceptance = row["acceptanceDateTime"]
+            acceptance = _parse_acceptance(raw_acceptance)
+            filing_date = _parse_date(row["filingDate"])
+            candidate = EarningsReleaseCandidate(
+                cik=cik,
+                accession_number=str(row["accessionNumber"] or "").strip(),
+                filing_date=filing_date,
+                report_date=report_date,
+                acceptance_datetime=None if acceptance is None else acceptance.to_pydatetime(),
+                acceptance_datetime_raw=None if raw_acceptance is None else str(raw_acceptance).strip(),
+                primary_document=_clean_string(row["primaryDocument"]),
+                source_url=source_url,
+                run_id=run_id,
+            )
+            rank = (acceptance is not None, acceptance or pd.Timestamp.min,
+                    filing_date is not None, filing_date or dt.date.min)
+            held = best.get(candidate.accession_number)
+            if held is None or rank > held[0]:
+                best[candidate.accession_number] = (rank, candidate)
+
     with SubmissionsArchive(Path(zip_path)) as archive:
         members: Iterable[str]
         if ciks:
@@ -1271,53 +1315,24 @@ def earnings_release_candidates_from_submissions_archive(
             if member not in archive:
                 continue
             cik = member[3:13]
+            best: dict[str, tuple[tuple[Any, ...], EarningsReleaseCandidate]] = {}
             payload = json.loads(archive.read(member))
             filings = payload.get("filings", {}) or {}
-            blocks = [(filings.get("recent") or {}, f"{zip_path}!{member}")]
-            for item in filings.get("files", []) or []:
-                name = item.get("name")
-                if not name:
-                    continue
+            history = [item.get("name") for item in filings.get("files", []) or [] if item.get("name")]
+            recent = filings.get("recent") or {}
+            del payload, filings  # only the recent block and the history names are still needed
+            fold(best, recent, f"{zip_path}!{member}", cik)
+            del recent
+            for name in history:
                 if name not in archive:
                     raise ValueError(f"submissions archive lacks history member {name} referenced by {member}")
-                blocks.append((json.loads(archive.read(name)), f"{zip_path}!{name}"))
-            best: dict[str, tuple[tuple[Any, ...], EarningsReleaseCandidate]] = {}
-            for block, source_url in blocks:
-                forms = block.get("form") or []
-                for index, form in enumerate(forms):
-                    if str(form or "").strip().upper() != "8-K":
-                        continue
-                    row = {
-                        key: _submissions_column(block, key, index)
-                        for key in ("items", "reportDate", "acceptanceDateTime", "filingDate",
-                                    "accessionNumber", "primaryDocument")
-                    }
-                    if not item_202.search(str(row["items"] or "").strip()):
-                        continue
-                    report_date = _parse_date(row["reportDate"])
-                    if history_start is not None and (report_date is None or report_date < history_start):
-                        continue
-                    if history_end is not None and (report_date is None or report_date > history_end):
-                        continue
-                    raw_acceptance = row["acceptanceDateTime"]
-                    acceptance = _parse_acceptance(raw_acceptance)
-                    filing_date = _parse_date(row["filingDate"])
-                    candidate = EarningsReleaseCandidate(
-                        cik=cik,
-                        accession_number=str(row["accessionNumber"] or "").strip(),
-                        filing_date=filing_date,
-                        report_date=report_date,
-                        acceptance_datetime=None if acceptance is None else acceptance.to_pydatetime(),
-                        acceptance_datetime_raw=None if raw_acceptance is None else str(raw_acceptance).strip(),
-                        primary_document=_clean_string(row["primaryDocument"]),
-                        source_url=source_url,
-                        run_id=run_id,
-                    )
-                    rank = (acceptance is not None, acceptance or pd.Timestamp.min,
-                            filing_date is not None, filing_date or dt.date.min)
-                    held = best.get(candidate.accession_number)
-                    if held is None or rank > held[0]:
-                        best[candidate.accession_number] = (rank, candidate)
+                raw = archive.read(name)
+                if b"2.02" not in raw:
+                    continue  # no row of this member can match item 2.02: skip the parse
+                block = json.loads(raw)
+                del raw
+                fold(best, block, f"{zip_path}!{name}", cik)
+                del block
             for accession in sorted(best):
                 yield best[accession][1]
 
@@ -1342,6 +1357,7 @@ def fetch_sec_earnings_release_documents(
     progress: Callable[[dict[str, int]], None] | None = None,
     progress_every: int = 0,
     workers: int = 1,
+    recheck_done: bool = False,
 ) -> dict[str, int]:
     """Fetch half of the Item 2.02 split: filing index plus its press-release EX-99, into a fetch store.
 
@@ -1356,7 +1372,12 @@ def fetch_sec_earnings_release_documents(
     and skipped exhibits); a relaunch skips it by lookup instead of re-reading and re-parsing its
     index (C-80 m1). A candidate processed before that sidecar existed is re-evaluated once, which
     is also the catch-up that fetches the chosen exhibit of an earlier multi-EX-99 filing. Stale
-    object temp files are swept at start (C-80 m4).
+    object temp files are swept at start (C-80 m4). A units-done line recorded under another
+    selector does not count as done.
+
+    ``recheck_done`` (off by default; the n4 repair pass before Step 2, C-85 r1) walks done filings
+    too: their index and exhibit objects are checked for presence, read and SHA-verified, and a
+    missing or corrupt one is refetched (quarantined first); no second units-done line is written.
 
     ``workers`` (1..:data:`MAX_FETCH_WORKERS`, ruling C-72) threads fetch candidates at once. They share
     the one host-wide limiter (the 5 req/s host cap is unchanged: requests are latency-bound, not
@@ -1369,15 +1390,17 @@ def fetch_sec_earnings_release_documents(
         raise ValueError(f"workers must be in 1..{MAX_FETCH_WORKERS}")
     store = FetchLedgerStore(fetch_dir)
     temp_swept = store.sweep_stale_temp_files()
-    store.load().load_units_done()
+    store.load().load_units_done(selector=EX99_SELECTOR)
     counts = {
-        "candidates": 0, "no_clock": 0, "unit_done": 0, "index_fetched": 0, "index_ledgered": 0,
-        "index_failed": 0, "index_unparsed": 0, "index_object_repaired": 0, "ex99_none": 0, "ex99_multi": 0,
-        "document_fetched": 0, "document_ledgered": 0, "document_failed": 0,
+        "candidates": 0, "no_clock": 0, "unit_done": 0, "unit_rechecked": 0, "index_fetched": 0,
+        "index_ledgered": 0, "index_failed": 0, "index_unparsed": 0, "index_object_repaired": 0,
+        "ex99_none": 0, "ex99_multi": 0, "document_fetched": 0, "document_ledgered": 0, "document_failed": 0,
+        "document_object_repaired": 0,
         "ledger_duplicate_ok_urls_at_start": store.duplicate_ok_urls,
         "ledger_corrupt_lines_at_start": store.corrupt_lines,
         "units_done_at_start": store.units_done_lines,
         "units_done_corrupt_lines_at_start": store.units_done_corrupt_lines,
+        "units_done_other_selector_at_start": store.units_done_other_selector,
         "temp_files_swept_at_start": temp_swept,
     }
 
@@ -1389,7 +1412,7 @@ def fetch_sec_earnings_release_documents(
         else:
             _fetch_candidate_documents(
                 store, candidate, local, limiter=limiter, timeout=request_timeout,
-                max_index_bytes=max_index_bytes, max_document_bytes=max_document_bytes,
+                max_index_bytes=max_index_bytes, max_document_bytes=max_document_bytes, recheck=recheck_done,
             )
         return local
 
@@ -1432,18 +1455,28 @@ def _fetch_candidate_documents(
     timeout: float,
     max_index_bytes: int,
     max_document_bytes: int,
+    recheck: bool = False,
 ) -> None:
     index_url, directory_url = _archive_urls(candidate.cik, candidate.accession_number)
-    if store.unit_done(index_url):
+    already_done = store.unit_done(index_url)
+    if already_done and not recheck:
         counts["unit_done"] += 1
         return
-    unit = {"cik": candidate.cik, "accession": candidate.accession_number, "selector": EX99_SELECTOR}
+    if already_done:
+        counts["unit_rechecked"] += 1
+
+    def mark(detail: dict[str, Any]) -> None:
+        if not already_done:  # a recheck repairs objects; it never writes a second units-done line
+            store.mark_unit_done(index_url, {
+                "cik": candidate.cik, "accession": candidate.accession_number, "selector": EX99_SELECTOR, **detail,
+            })
+
     record, fetched = store.ensure(index_url, limiter=limiter, timeout=timeout, maximum=max_index_bytes)
     counts["index_fetched" if fetched else "index_ledgered"] += 1
     if not record.ok:
         counts["index_failed"] += 1
         if record.terminal:  # a final 4xx: nothing more will be requested for this filing
-            store.mark_unit_done(index_url, {**unit, "outcome": f"index_status_{record.status}"})
+            mark({"outcome": f"index_status_{record.status}"})
         return
     try:
         index_bytes = store.read(record)
@@ -1462,24 +1495,33 @@ def _fetch_candidate_documents(
         exhibits = _ex99_exhibits(index_bytes.decode("utf-8", errors="replace"), directory_url)
     except Exception:
         counts["index_unparsed"] += 1  # the loader records the same parse failure from the same bytes
-        store.mark_unit_done(index_url, {**unit, "outcome": "index_unparsed"})
+        mark({"outcome": "index_unparsed"})
         return
     chosen, skipped = _press_release_exhibit(exhibits)
     if chosen is None:
         counts["ex99_none"] += 1
-        store.mark_unit_done(index_url, {**unit, "outcome": "ex99_none"})
+        mark({"outcome": "ex99_none"})
         return
     if skipped:
         counts["ex99_multi"] += 1
     document_url = f"{directory_url}/{chosen[0]}"
     record, fetched = store.ensure(document_url, limiter=limiter, timeout=timeout, maximum=max_document_bytes)
+    if recheck and record.ok and not fetched:
+        try:
+            store.read(record)  # SHA-verify the stored exhibit (read() quarantines a corrupt one)
+        except ValueError as exc:
+            if str(exc) != FETCH_OBJECT_SHA_MISMATCH:
+                raise
+            counts["document_object_repaired"] += 1
+            record, fetched = store.ensure(
+                document_url, limiter=limiter, timeout=timeout, maximum=max_document_bytes)
     counts["document_fetched" if fetched else "document_ledgered"] += 1
     if not record.ok:
         counts["document_failed"] += 1
         if not record.terminal:
             return  # 0/403/429/5xx: retried on the next run, so the filing is not done
-    store.mark_unit_done(index_url, {
-        **unit, "outcome": "document_ok" if record.ok else (
+    mark({
+        "outcome": "document_ok" if record.ok else (
             f"document_status_{record.status}" + (f":{record.error}" if record.error else "")),
         "exhibit": chosen[0], "exhibit_type": chosen[1], "document_sha256": record.sha256,
         "skipped": [{"name": name, "type": exhibit_type} for name, exhibit_type in skipped],
