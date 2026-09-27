@@ -240,3 +240,60 @@ TEST(StrategyIcComposition, PooledAddMatchesSerialBitsForEveryWorkerCount) {
     }
   }
 }
+
+// V6-W (fitter ew-theme-v6, rule within-theme-v1): per name and date a member missing
+// for that name keeps its mass inside its theme, a theme with no present member adds
+// nothing, a fully present date equals the fixed-denominator blend, nonmembers stay
+// NaN, the pooled path equals the serial bits and bad theme inputs refuse. The same
+// hand numbers are the fitter test's ref_within_theme_blend case.
+TEST(StrategyIcComposition, WithinThemeRedistributionKeepsMissingMassInTheme) {
+  const std::vector<st::IcCompositionCandidate> candidates{{"a1", "a"}, {"a2", "a"}, {"b1", "b"}};
+  st::IcCompositionConfig cfg; cfg.dates = 2; cfg.instruments = 4; cfg.decision_end = 2;
+  std::vector<u8> member(8, 1); member[7] = 0;
+  constexpr f64 missing = std::numeric_limits<f64>::quiet_NaN();
+  // date 0: a2 finite on names 2, 3 only, b1 missing on name 0; date 1: all present (name 3 not a member)
+  const std::vector<f64> a1{1, 2, 3, 4, 1, 2, 3, 4}, a2{missing, missing, 2, 1, 4, 1, 3, 2},
+      b1{missing, 3, 2, 1, 2, 4, 1, 3};
+  const std::vector<f64> pinned{.25, .25, .5};
+  const std::vector<usize> themes{0, 0, 1};
+  const auto compose = [&](std::span<const usize> t, atx::engine::parallel::DetPool* pool)
+      -> std::optional<st::IcCompositionResult> {
+    auto c = st::IcComposition::create(cfg, candidates, member, pinned, t);
+    if (!c || !c->add(0, a1, 1, pool) || !c->add(1, a2, 1, pool) || !c->add(2, b1, 1, pool)) return std::nullopt;
+    auto out = c->finish();
+    if (!out) return std::nullopt;
+    return std::move(*out);
+  };
+  const auto themed = compose(themes, nullptr), fixed = compose({}, nullptr);
+  ASSERT_TRUE(themed); ASSERT_TRUE(fixed);
+  // date 0: a1 ranks -.5,-1/6,1/6,.5; a2 (names 2,3) .5,-.5; b1 (names 1..3) .5,0,-.5; W_a = W_b = .5
+  EXPECT_NEAR(themed->signal[0], -.25, 1e-15);      // theme a = a1 alone; theme b absent adds nothing
+  EXPECT_NEAR(themed->signal[1], 1.0 / 6, 1e-15);
+  EXPECT_NEAR(themed->signal[2], 1.0 / 6, 1e-15);
+  EXPECT_NEAR(themed->signal[3], -.25, 1e-15);
+  EXPECT_NEAR(fixed->signal[0], -.125, 1e-15);      // fixed denominator: missing members add zero
+  EXPECT_NEAR(fixed->signal[1], 5.0 / 24, 1e-15);
+  for (usize i = 4; i < 7; ++i) EXPECT_NEAR(themed->signal[i], fixed->signal[i], 1e-15);
+  EXPECT_TRUE(std::isnan(themed->signal[7])); EXPECT_TRUE(std::isnan(fixed->signal[7]));
+  EXPECT_DOUBLE_EQ(themed->contribution_fraction[0], fixed->contribution_fraction[0]); // report-only coverage
+  for (const usize workers : {usize{2}, usize{3}}) {
+    SCOPED_TRACE(workers);
+    atx::engine::parallel::DetPool pool(workers);
+    const auto pooled = compose(themes, &pool); ASSERT_TRUE(pooled);
+    for (usize i = 0; i < 8; ++i)
+      EXPECT_EQ(std::bit_cast<u64>(pooled->signal[i]), std::bit_cast<u64>(themed->signal[i]));
+    EXPECT_EQ(std::bit_cast<u64>(pooled->total_planned_turnover), std::bit_cast<u64>(themed->total_planned_turnover));
+  }
+  // refusals: themes without pinned weights, a size mismatch, a weighted index >= 32, no weighted candidate
+  const std::vector<f64> zeros{0, 0, 0}, sparse{.5, 0, .5};
+  const std::vector<usize> short_themes{0, 0}, far{0, 32, 1}, ignored{0, 99, 1};
+  EXPECT_FALSE(st::IcComposition::create(cfg, candidates, member, {}, themes));
+  EXPECT_FALSE(st::IcComposition::create(cfg, candidates, member, pinned, short_themes));
+  EXPECT_FALSE(st::IcComposition::create(cfg, candidates, member, pinned, far));
+  EXPECT_FALSE(st::IcComposition::create(cfg, candidates, member, zeros, themes));
+  EXPECT_TRUE(st::IcComposition::create(cfg, candidates, member, sparse, ignored)); // zero weight: index ignored
+  // working-bytes envelope: 16 B per cell per theme, none for the default path
+  const auto base = st::ic_composition_working_bytes(2, 4, 3), two = st::ic_composition_working_bytes(2, 4, 3, 2);
+  ASSERT_TRUE(base); ASSERT_TRUE(two); EXPECT_EQ(*two - *base, 2U * 8U * 16U);
+  EXPECT_FALSE(st::ic_composition_working_bytes(2, 4, 3, 33));
+}
