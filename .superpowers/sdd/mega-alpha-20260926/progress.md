@@ -1,5 +1,11 @@
 # Active task: recent-data DSL ensemble
 
+## PAUSED 2026-09-27 at owner request — interim handoff
+docs/plans/2026-09-27-mega-alpha-v5-interim-handoff.md (state, live children, exact next steps T36 review -> T37 -> T38 grid ->
+T39 v5.1 -> T40 -> T41 -> T42, rulings, goal prompt). Live children at pause: t36-rate (pool-3, T36, tree dirty, no report yet),
+t34c-v51-script (pool-8, v51_train.sh, just dispatched). No root build or real-data process running. No validation run.
+
+
 ## T39 step 2a — v5.1 library --plan-only ADMITTED — 2026-09-27 (no TRAIN statistic read)
 Receipt mega-v51-plan-run (exit 0): library fund_industry_ic_v5.json 9e5ea08c..., candidates 38, max_compiled_slots 7,
 resident_capacity 5, required_lookback 272, train required_bytes 1,449,071,914 (= T34a prediction exactly; 1,381.9 MiB, 154 MiB
