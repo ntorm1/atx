@@ -20,6 +20,35 @@
   t18-fundamentals (read-only fundamentals/industry/CIK inventory + v4 design). pool-8 branch
   feat/mega-alpha-v4-fields-20260927 reserved for v4 fields.
 
+- T15 re-review (t15-review-2): spec PASS, Approved 0C/0I/8m (M1 FP-flags identity read from runner TU not
+  ic_screen.cpp; M2 bump comment; M6 no cross-worker-count IC-entry test). 8th artifact = summary.json (timings,
+  expected diff); ids/sessions also SAME. Task T15: complete (63b34d72/74a03a82). Minors deferred.
+- T16: pool-3 d18fd3ca -> root b032504b (studies/postmortem_v3.py + 9 synthetic tests). Root ran bounded
+  postmortem-v3-1 (27 s/96 MiB; E train 4 s/381 MiB; E val 11 s/315 MiB). RESULTS:
+  A reproduce bitwise (weights |dw| 0, admitted set equal). In-sample F SR 3.07; P&L share 2020 55% / 2021 11% / 2022 34%.
+  D NULL (demeaned f_k, block-21 bootstrap, frozen protocol, 200 reps): in-sample SR null median 2.24, p95 2.97,
+    observed 3.07 = 95.5th pct; admitted 23 (null 22); Spearman .04 (null p05..p95 -.35..+.34). => ~73% of the
+    in-sample SR is manufactured by selection on noise.
+  B WALK-FORWARD (TRAIN only) OOS SR: fit20-21->22 +.81; fit20->21 -.43; fit21->22 +1.09; fit21-22->20 -1.48;
+    with HOLD test +1.08 / -1.70. Mean ~0 (factor units, gross, before ~1.3 SR cost hurdle).
+  C alternatives (B1 OOS / fit2020->2021-22 OOS): EW-all FIT signs .52/.22; EW admitted .97/-.13; inv-vol .71/-.17;
+    MV frozen .81/.00; family-EW .44/.12. No rule robust; library declares no prior signs (all TRAIN-estimated).
+  E MATH: paper neutral book TRAIN SR 3.00 corr NAV gross .94; VAL paper .31-.38 corr NAV gross .93-.95 (NAV .16
+    after caps); lag1/2/3 flat (no microstructure/leak dependence); VAL used pinned signs+weights exactly (121/121).
+- T17 (read-only PIT audit): 29 inputs OK 22 / LEAK 0 / RISK 5 / UNKNOWN 2. Risks: SI pre-2021-06 settlements are
+  FINRA re-publication (52% TRAIN decisions; VAL none); survivorship of vendor dead lines unknown; no delisting
+  returns (write-off at last price); SI as-of producer not hash-pinned; IV earnings-adjustment vintage unknown.
+  12/23 weighted alphas (60% weight) trade opposite their own TRAIN IC21 sign. TRAIN role repaired with
+  factor-break-v1 (not v2). Checks C1-C8 being packaged as studies/t17_checks.py (pool-9).
+- DIAGNOSIS (root): math correct; failure = (1) data-mined signs+MV weights on 3y with no persistence (null explains
+  most of IS SR), (2) regime concentration (2020/2022 crisis years), (3) cost hurdle ~1.3 gross SR at tau 3.7%/day
+  and vol/GMV ~1.9%, (4) no pre-validation honest gate (walk-forward predicted ~0). Not a leak.
+- T18 (read-only fundamentals inventory): 6 READY / 8 PLANNED; 0 fundamentals fields on role axis. READY: CF-R
+  CompanyFacts staging (53.75M facts, all occurrences), FSDS v2 SUB accepted_utc (99.9%) + SIC per filing; identity
+  r4 rehearsal PIT links ~80% common (~1,750-1,800 names/day); ~1,550-1,650 fundamentals names/day expected.
+  Plan T19 identity snapshot (S), T20 fundamental events producer (L), T21 fields-v5 (M-L), T22 grp_ group fields
+  (S, C++), T23 prior orientation (S-M), T24 library v4 (M), T25 audit (M).
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
