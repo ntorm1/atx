@@ -1,5 +1,6 @@
 """Focused PIT boundaries for the shared Parquet accounting engine."""
 import datetime as dt
+import pytest
 
 from atx_db.research.item_vintages import build_owner, corroborate, _book_equity
 
@@ -97,3 +98,32 @@ def test_book_equity_explicit_common_null_blocks_assets_liabilities_fallback():
     common = value(None, "invalid_value")
     result = _book_equity([None, common, None, value("150"), value("50"), None])
     assert result == (None, "invalid_operand")
+
+
+@pytest.mark.parametrize("source_clock", ["2020-07-15", "2020-11-15"])
+def test_fiscal_trigger_lineage_excludes_later_tied_contradiction(source_clock):
+    # Same economic quarter/tie clock, but only the inferred-start fact depends
+    # on a predecessor whose contradiction becomes visible before the end-point's.
+    q1 = fact("q1_context", end="2020-03-31", qtrs=0, source="fsds", clock="2020-05-01")
+    q2 = fact("q2_context", end="2020-06-30", qtrs=0, quarter="Q2", source="fsds", clock="2020-07-01")
+    q1_bad = {**q1, "candidate_id": "q1_conflict", "accession": "q1_conflict", "reported_fy": 2021,
+              "available_at": dt.datetime(2020, 11, 1), "filed_date": dt.date(2020, 11, 1)}
+    q2_bad = {**q2, "candidate_id": "q2_conflict", "accession": "q2_conflict", "reported_fy": 2021,
+              "available_at": dt.datetime(2020, 12, 1), "filed_date": dt.date(2020, 12, 1)}
+    contexts = [q1, q2, q1_bad, q2_bad]
+    for row in contexts:
+        row["item_id"] = None
+    direct = fact("direct", end="2020-06-30", start="2020-04-01", quarter="Q2", clock=source_clock)
+    inferred = fact("inferred", end="2020-06-30", quarter="Q2", source="fsds", clock=source_clock, value=None)
+    direct["accession"] = inferred["accession"] = "same_filing"
+    rows = contexts+[direct, inferred]
+    clocks = {r["candidate_id"]: r["available_at"] for r in rows}
+    vintages, _ = build_owner(rows, MAPPING)
+    clocks.update({v["vintage_id"]: v["available_at"] for v in vintages})
+    source_events = [v for v in vintages if v["event_stage"] == "source" and v["freq"] == "q"]
+    expected_clock = max(dt.datetime.fromisoformat(source_clock), dt.datetime(2020, 11, 1))
+    conflicted = [v for v in source_events if v["available_at"] == expected_clock]
+    assert len(conflicted) == 1 and conflicted[0]["status"] == "fiscal_grid_conflict"
+    assert "q1_conflict" in conflicted[0]["inputs"]
+    assert all("q2_conflict" not in v["inputs"] for v in vintages if v["available_at"] < dt.datetime(2020, 12, 1))
+    assert all(clocks[i] <= v["available_at"] for v in vintages for i in v["inputs"])

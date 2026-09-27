@@ -101,6 +101,14 @@ def corroborate(rows: list[dict[str, Any]]) -> None:
             row["period_basis"] = "same_fact_cf_start" if start else "instant"
 
 
+def _invalidate(point: dict, clock: dt.datetime, inputs: Sequence[str]) -> None:
+    """Retain the earliest contradiction and its then-visible causal evidence."""
+    if point["invalid_at"] is None or clock < point["invalid_at"]:
+        point["invalid_at"], point["invalid_inputs"] = clock, sorted(set(inputs))
+    elif clock == point["invalid_at"]:
+        point["invalid_inputs"] = sorted(set(point["invalid_inputs"]) | set(inputs))
+
+
 def _grid(rows: list[dict[str, Any]]) -> tuple[dict, dict]:
     # Current reported period for CF is the largest duration endpoint in the same
     # filing. Cover-page stocks are excluded. FSDS supplies its explicit SUB period.
@@ -128,7 +136,9 @@ def _grid(rows: list[dict[str, Any]]) -> tuple[dict, dict]:
         ordered = sorted((clock, candidate, fy, q) for (_, fy, q), (clock, candidate) in records.items())
         clock, candidate, fy, q = ordered[0]
         point = {"end": end, "fy": fy, "q": q, "clock": clock, "input": candidate,
-                 "invalid_at": ordered[1][0] if len(ordered) > 1 else None}
+                 "invalid_at": None, "invalid_inputs": []}
+        if len(ordered) > 1:
+            _invalidate(point, ordered[1][0], [ordered[0][1], ordered[1][1]])
         by_end[end] = point
         by_slot[fy*4+q].append(point)
     for points in by_slot.values():
@@ -136,7 +146,7 @@ def _grid(rows: list[dict[str, Any]]) -> tuple[dict, dict]:
             ordered = sorted(points, key=lambda p: (p["clock"], p["end"]))
             conflict = ordered[1]["clock"]
             for point in points:
-                point["invalid_at"] = min(point["invalid_at"] or conflict, conflict)
+                _invalidate(point, conflict, [ordered[0]["input"], ordered[1]["input"]])
     return by_end, by_slot
 
 
@@ -147,6 +157,7 @@ def _period(row: dict[str, Any], by_end: dict, by_slot: dict) -> dict[str, Any] 
         return None
     available = max(row["available_at"], point["clock"])
     invalid = point["invalid_at"]
+    invalid_inputs = list(point["invalid_inputs"])
     start, basis = row["period_start"], row.get("period_basis", "cf_reported_start")
     dependencies = row["dependencies"] + [point["input"]]
     if qtrs == 0:
@@ -169,7 +180,10 @@ def _period(row: dict[str, Any], by_end: dict, by_slot: dict) -> dict[str, Any] 
             available = max(available, previous["clock"])
             dependencies.append(previous["input"])
             if previous["invalid_at"] is not None:
-                invalid = min(invalid or previous["invalid_at"], previous["invalid_at"])
+                if invalid is None or previous["invalid_at"] < invalid:
+                    invalid, invalid_inputs = previous["invalid_at"], list(previous["invalid_inputs"])
+                elif previous["invalid_at"] == invalid:
+                    invalid_inputs = sorted(set(invalid_inputs) | set(previous["invalid_inputs"]))
             basis = "fiscal_grid_inferred"
         days = (end-start).days+1
         low, high = {1: (70, 112), 2: (150, 215), 3: (240, 310), 4: (350, 380)}[qtrs]
@@ -180,6 +194,7 @@ def _period(row: dict[str, Any], by_end: dict, by_slot: dict) -> dict[str, Any] 
     return {"period_start": start, "period_end": end, "freq": freq,
             "fiscal_year": point["fy"], "fiscal_qtr": point["q"],
             "available_at": available, "invalid_at": invalid, "period_basis": basis,
+            "invalid_dependencies": invalid_inputs,
             "dependencies": sorted(set(dependencies))}
 
 
@@ -292,6 +307,7 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
                       "fiscal_year": point["fy"], "fiscal_qtr": point["q"],
                       "available_at": max(row["available_at"], point["clock"]),
                       "invalid_at": point["invalid_at"], "period_basis": "rejected_stock_context",
+                      "invalid_dependencies": list(point["invalid_inputs"]),
                       "dependencies": sorted(set(row["dependencies"]+[point["input"]]))}
             forced_status = forced_status or "period_ambiguous"
         row.update(period, owner_id=owner, item=str(row["item_id"]), unit=expected)
@@ -322,16 +338,21 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
             status = "semantic_conflict" if len(values) > 1 else "valid" if next(iter(values)) is not None else "invalid_value"
             if len(values) == 1 and next(iter(values)) is None:
                 status = representative.get("forced_status") or status
-            invalid = representative["invalid_at"]
+            invalid = min((r["invalid_at"] for r in tied if r["invalid_at"] is not None), default=None)
             if invalid is not None and invalid <= clock:
                 status = "fiscal_grid_conflict"
             value = next(iter(values)) if status == "valid" else None
             inputs = list(itertools.chain.from_iterable(r["dependencies"] for r in tied))
+            if invalid is not None and invalid <= clock:
+                inputs += list(itertools.chain.from_iterable(r["invalid_dependencies"] for r in tied
+                               if r["invalid_at"] is not None and r["invalid_at"] <= clock))
             output.append(_event(representative, clock=clock, value=value, status=status,
                                  inputs=inputs, rule=representative["rule_id"], event_stage="source"))
             if invalid is not None and invalid > clock:
+                invalid_inputs = list(itertools.chain.from_iterable(r["invalid_dependencies"] for r in tied
+                                      if r["invalid_at"] is not None and r["invalid_at"] <= invalid))
                 output.append(_event(representative, clock=invalid, value=None, status="fiscal_grid_conflict",
-                                     inputs=inputs, rule="fiscal_grid_invalidation", event_stage="source"))
+                                     inputs=inputs+invalid_inputs, rule="fiscal_grid_invalidation", event_stage="source"))
         # Grid invalidation and a filing revision can occur at one clock. Neither
         # a hash nor list order may select the surviving economic observation.
         raw_series[key] = _coalesce_events(output, "raw:clock_reconcile")
@@ -1132,6 +1153,7 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
             "orphan_parents": "SELECT count(*) FROM l LEFT JOIN v USING(vintage_id) WHERE v.vintage_id IS NULL",
             "orphan_dependencies": "SELECT count(*) FROM l LEFT JOIN v dep ON l.input_candidate_or_vintage_id=dep.vintage_id LEFT JOIN d ON l.input_candidate_or_vintage_id=d.candidate_id WHERE dep.vintage_id IS NULL AND d.candidate_id IS NULL",
             "future_dependencies": "SELECT count(*) FROM l JOIN v parent ON l.vintage_id=parent.vintage_id LEFT JOIN v dep ON l.input_candidate_or_vintage_id=dep.vintage_id LEFT JOIN d ON l.input_candidate_or_vintage_id=d.candidate_id WHERE coalesce(dep.available_at,d.effective_at)>parent.available_at",
+            "missing_fiscal_invalidation_trigger": "SELECT count(*) FROM (SELECT parent.vintage_id,parent.available_at,max(coalesce(dep.available_at,d.effective_at)) latest_input FROM l JOIN v parent ON l.vintage_id=parent.vintage_id LEFT JOIN v dep ON l.input_candidate_or_vintage_id=dep.vintage_id LEFT JOIN d ON l.input_candidate_or_vintage_id=d.candidate_id WHERE parent.rule_id='fiscal_grid_invalidation' GROUP BY parent.vintage_id,parent.available_at) WHERE latest_input IS DISTINCT FROM available_at",
             "empty_lineage": "SELECT count(*) FROM v LEFT JOIN l USING(vintage_id) WHERE l.vintage_id IS NULL",
             "overlap_or_gap": "SELECT count(*) FROM (SELECT *,lead(available_at) OVER(PARTITION BY owner_id,item,freq,period_start,period_end,fiscal_year,fiscal_qtr ORDER BY available_at) next_at FROM v WHERE is_public) WHERE valid_until IS DISTINCT FROM next_at",
             "nonadditive_derived": "SELECT count(*) FROM v WHERE item IN ('WAB','WAD','EPSPI','EPSFI','CSHO') AND (freq='ttm' OR rule_id='quarter:ytd_difference')",
