@@ -268,7 +268,8 @@ SOURCE = "atx-db identity reconstruction v1"
 #: v2 (tier1-v2 0.6): the v1 code gave run-dependent content for the same inputs (non-total
 #: window/arg_max order over repeated vendor-days; a float ``sum`` at the rival floor), so the
 #: deterministic logic is a new method -- a revision id never names two contents.
-METHOD = "ri1_share_fingerprint_v2"
+#: v3 (tier1-v2 3.3): terminal evidence waits for the next XNYS session, including holidays.
+METHOD = "ri1_share_fingerprint_v3_xnys"
 EVIDENCE_STATUS = "reconstructed"
 AVAILABILITY_STATUS = "modeled"
 IDENTITY_BASIS = "reconstructed_identity_unverified"
@@ -1401,11 +1402,10 @@ def _share_span(items: Iterable[EvidenceItem]) -> tuple[dt.date, dt.date] | None
 
 
 def _next_session(day: dt.date) -> dt.date:
-    """The next weekday (no holiday calendar: a holiday only makes the clock one session early)."""
-    following = day + _ONE_DAY
-    while following.weekday() >= 5:
-        following += _ONE_DAY
-    return following
+    """The next XNYS session, including scheduled and extraordinary closures."""
+    from .calendar import next_session
+
+    return next_session(day)
 
 
 def _passes(items: Sequence[EvidenceItem], params: ReconstructionParams) -> bool:
