@@ -163,6 +163,17 @@
   only); eap s1 smoothing accepted (event timing); DISCLOSED: res_mom_12_1 DSL == v2/v3 resid_sharpe_12_1_s21 (its v3
   family-level TRAIN stats were seen by root). v4.2 u pass 30 s/964 MiB (37 hits, 3 misses). Task T27: complete.
 
+- v4.2 TRAIN (fit 30 s: 27 admitted / 7 redundant / 6 reject_turnover_cost [low_max .089, si_change .091,
+  ind_adj_rev_5 .181, seasonality .094, iv_rv_spread .090, eap .200]; mom_12_1 redundant; combined a5cf1c49...):
+  S2 x swap-fin NET b2f.25 +.449 (gross .598, vol 2.1%, tau .010) / b1f.25 +.164 (gross .496). S1 b2f.25 .631.
+  GATE FAILS. Cost screen removed fast members that carried gross alpha. STOP per prereg; report to owner.
+- STATUS: best honest TRAIN config = v4.1 (v4 library, b2 f.25) net .687. Validation trial #2 NOT spent (2023-24
+  touched only by v3 run #1). Recommendations to owner: (1) pre-2020 history for selection/estimation (3y TRAIN is
+  the binding limit); (2) data with real OOS edge not yet available (analyst estimates/revisions, options skew,
+  8-K earnings dates); (3) the $1bn S2 impact + swap financing hurdle (~.3-.6 SR) — consider target at smaller NAV or
+  S1-like execution; (4) turnover-aware per-theme trading speeds (Garleanu-Pedersen aim portfolio) as a construction
+  project. Integration branch ahead of local main (v4 work since d63a7058) — not merged (owner action).
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
