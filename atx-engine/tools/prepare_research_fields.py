@@ -13,7 +13,9 @@ Sources (all read-only; exact bytes hashed, pinned against their producers' rece
   is the end-of-day mark known at d 22:00 UTC, i.e. the same clock as the role's close. Same-date
   only, no fill. ``shares_out`` instead follows the house A8 rule (vendor share runs start at the
   filing cover date): the share count of the line's last row dated <= date(session) - 90 days,
-  restated through cumulReturnFactor to the session's share basis.
+  restated through cumulReturnFactor to the session's share basis with every factor-break-v1
+  re-anchoring step divided out (the vendor factor is not chained across 2021-01-04), and NaN
+  outside the declared domain ``SHARES_OUT_DOMAIN``.
 * research-lake spine_monthly: value of the latest monthly formation session STRICTLY before
   date(session); line_types: static (non point-in-time) line classification.
 * the role payload itself (``mkt_ret``): equal-weight mean of guarded adjusted close-to-close
@@ -72,6 +74,33 @@ IV_DOMAIN_RULE = ("vendor value v kept iff float32(0.02) <= v <= float32(5.0) (f
                   "precision, so a stored 0.02 is in domain); any other non-null value -> NaN, never clamped. below_min "
                   "includes <= 0 and -inf, above_max includes +inf. Counts are role cells after duplicate-key quarantine. "
                   "Domain declared by the root controller 2026-09-27 before any IV measurement")
+# Declared by the root controller for T10 (swap-fin-v1 borrow tiers) and applied here (T6 fix round 2):
+# restated shares outstanding outside this range are implausible, both bounds inclusive.
+SHARES_OUT_DOMAIN = (1e5, 5e10)
+# Rule factor-break-v1, ported from atx-impl/tools/repair_role_factor_breaks.py (T12) with the same
+# parameters and classification: the TickerHistory3 2026-09-20 cumulReturnFactor is not chained across
+# 2021-01-04 (atx-db VA1 / ruling C-35), so a factor ratio spanning that session carries a step that no
+# corporate action made. shares_out divides every repaired step out of its restatement ratio.
+FB_RULE = "factor-break-v1"
+FB_CELL_STEP = 0.01
+FB_CELL_EXCESS = 0.01
+FB_MASS_MIN_CELLS = 50
+FB_NOISE = 1e-9
+FB_SPLIT_RATIO = 1.25
+FB_MAX_GAP_DAYS = 10
+FB_REPAIRED, FB_KEPT_GAP, FB_KEPT_FOLLOW, FB_KEPT_DIST = 1, 2, 3, 4
+FB_ACTIONS = {FB_REPAIRED: "repaired", FB_KEPT_GAP: "kept_gap", FB_KEPT_FOLLOW: "kept_split_follow",
+              FB_KEPT_DIST: "kept_distribution"}
+FB_PARAMETERS = {"cell_step_ln": FB_CELL_STEP, "cell_excess_ln": FB_CELL_EXCESS, "mass_min_cells": FB_MASS_MIN_CELLS,
+                 "noise_ln": FB_NOISE, "split_ratio": FB_SPLIT_RATIO, "max_gap_calendar_days": FB_MAX_GAP_DAYS}
+FB_STATEMENT = (
+    "observation = a vendor row of a role id on the extended calendar with a unique (date, id) key, finite positive "
+    "close (raw), finite volume >= 0 and finite positive cumulReturnFactor f (the role's present contract). step = "
+    "consecutive observations p<t of a line <= max_gap_calendar_days apart; s=ln(f_t/f_p), r=ln(raw_t/raw_p), a=r+s. "
+    "jump cell: step ending at t with |s|>cell_step_ln and |a|>|r|+cell_excess_ln; mass session: >= mass_min_cells "
+    "jump cells. On a mass session b every step with p<b<=t and |s|>noise_ln is kept_gap (gap > max_gap_calendar_days), "
+    "kept_split_follow (s<0 and r>=max(|s|/2, ln split_ratio), or s>0 and -r>=max(s/2, ln split_ratio)), "
+    "kept_distribution (0<s<ln split_ratio), else repaired with k=f_t/f_p. Every decision reads rows <= t only.")
 SPINE_MAX_FORMATION_AGE_DAYS = 35  # consecutive month-end sessions are <= 34 days apart
 QUANTILES = (("p0.1", 0.001), ("p1", 0.01), ("p50", 0.5), ("p99", 0.99), ("p99.9", 0.999))
 POINT_IN_TIME_DEFINITION = (
@@ -94,7 +123,7 @@ DEFAULT_TICKERHISTORY = Path("C:/Users/natha/Downloads/TickerHistory3.parquet")
 DEFAULT_LAKE = Path("C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23")
 
 TH_TYPES = {"tradingDate": pa.date32(), "securityID": pa.int64(), "shares": pa.int64(),
-            "earnFlag": pa.string(), "cumulReturnFactor": pa.float64(),
+            "earnFlag": pa.string(), "cumulReturnFactor": pa.float64(), "close": pa.float32(), "volume": pa.float64(),
             "atmCenI_21d": pa.float32(), "atmCenI_63d": pa.float32(), "atmCenI_126d": pa.float32()}
 TH_CLOCK = "vendor-eod-row-date==session-date;known-at-session+22h-mark;same-date-only-v1"
 
@@ -141,12 +170,14 @@ FIELDS = {
                     "earnFlag 0 is the price-reaction session (median |return| 3.9% vs 1.2% baseline in samples), so the event is public by its close",
                     "vendor calendar vintage unproven"]},
     "shares_out": {
-        "group": "th", "column": "shares", "source_columns": ["shares", "cumulReturnFactor"], "point_in_time": True,
+        "group": "th", "column": "shares", "source_columns": ["shares", "cumulReturnFactor", "close", "volume"],
+        "point_in_time": True, "domain": SHARES_OUT_DOMAIN,
         "units": "shares outstanding (vendor thousands x 1000), restated to the session's share basis",
-        "clock": "A8-vendor-shares-lag90-restated-v1: last vendor row of the line dated <= date(session)-90 calendar days with 0 < shares <= 1e8 (A9 thousands ceiling) and cumulReturnFactor > 0, times 1000 x cumulReturnFactor(session row)/cumulReturnFactor(lag row)",
-        "staleness": "lag row older than date(session)-90-400 days -> NaN; no same-date vendor row (or its factor <= 0) -> NaN; a line is withheld (NaN) from the date of its first vendor row above the A9 ceiling onward (point-in-time form of ruling C-81: the spine withholds the whole line, which would use rows after the session)",
+        "clock": "A8-vendor-shares-lag90-restated-v2: last vendor observation of the line dated <= date(session)-90 calendar days with 0 < shares <= 1e8 (A9 thousands ceiling), times 1000 x cumulReturnFactor(session observation)/cumulReturnFactor(lag observation), divided by k of every factor-break-v1 repaired step (p,t,k) with lag < t <= session (k is known at t); observation = the role's present contract (unique key, finite positive close and factor, finite volume >= 0)",
+        "staleness": "lag observation older than date(session)-90-400 days -> NaN; no same-date vendor observation -> NaN; a restatement spanning a factor-break-v1 kept_gap step (a step across more than 10 days over a mass session: artifact and genuine actions cannot be separated) -> NaN, counted; a line is withheld (NaN) from the date of its first vendor row above the A9 ceiling onward (point-in-time form of ruling C-81: the spine withholds the whole line, which would use rows after the session); a restated value outside the declared domain [1e5, 5e10] -> NaN, counted in plausibility",
         "caveats": ["A8: vendor share runs start at the filing cover date, so same-date vendor shares would leak ~2 weeks; the 90-day modeled lag follows the research spine",
-                    "restatement uses the raw vendor cumulReturnFactor ratio (not the VA1-repaired factor; vendor artifact breaks are not detected); dividends move it by a few tenths of a percent",
+                    "restatement uses the vendor cumulReturnFactor ratio with the factor-break-v1 re-anchoring steps divided out (the vendor factor is not chained across 2021-01-04; see factor_break); genuine splits, consolidations and distributions stay in the ratio, so dividends move it by a few tenths of a percent",
+                    "a genuine split that the vendor factor does not show (a raw move with no factor step) is not restated, as before",
                     "one price line's count, not the issuer total across share classes; an ADR line counts ADS"]},
     "mktcap_lagged": {
         "group": "lake", "column": "me_line", "source_columns": ["me_line", "formation_date", "line_id"],
@@ -556,6 +587,67 @@ def finra_field(name: str, finra: Path, role: Role, output: Path, schedule, budg
 # TickerHistory3 vendor rows
 # ---------------------------------------------------------------------------
 
+def factor_breaks(crf: np.ndarray, raw: np.ndarray, days: np.ndarray, budget: Budget) -> dict:
+    """Rule factor-break-v1 (``FB_STATEMENT``) over vendor observations on one date axis.
+
+    ``crf`` (f64) and ``raw`` (f32) are rows x lines, NaN where the row is not an observation. Returns
+    the jump-cell count per row, the mass rows, per-mass-row class counts, and every crossing step with
+    |s| > noise as arrays (line, step-end day t, k, action). A step crossing several mass rows is listed
+    once, under the first (its class depends only on (p, t)). Each decision reads rows <= t only."""
+    n_rows, n = crf.shape
+    jump = np.zeros(n_rows, dtype=np.int64)
+    last = np.full(n, -1, dtype=np.int64)
+    lf, lr = np.full(n, np.nan), np.full(n, np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for e in range(n_rows):
+            f = crf[e]
+            pt = np.isfinite(f)
+            if pt.any():
+                rw = raw[e].astype(np.float64)
+                step = pt & (last >= 0) & ((days[e] - days[np.maximum(last, 0)]) <= FB_MAX_GAP_DAYS)
+                s = np.log(f) - np.log(lf)
+                r = np.log(rw) - np.log(lr)
+                jump[e] = np.count_nonzero(step & (np.abs(s) > FB_CELL_STEP) & (np.abs(r + s) > np.abs(r) + FB_CELL_EXCESS))
+                last[pt] = e
+                lf[pt], lr[pt] = f[pt], rw[pt]
+            if e % 256 == 0:
+                budget.check("factor-break-scan")
+    mass = [int(b) for b in np.flatnonzero(jump >= FB_MASS_MIN_CELLS)]
+    obs = np.isfinite(crf)
+    split = math.log(FB_SPLIT_RATIO)
+    parts, sessions, seen = [], [], np.empty(0, dtype=np.int64)
+    for b in mass:
+        before, after = obs[:b], obs[b:]
+        j = np.flatnonzero(before.any(axis=0) & after.any(axis=0))
+        p = (b - 1) - np.argmax(before[::-1], axis=0)[j]
+        t = b + np.argmax(after, axis=0)[j]
+        fp, ft = crf[p, j], crf[t, j]
+        rp, rt = raw[p, j].astype(np.float64), raw[t, j].astype(np.float64)
+        s = np.log(ft) - np.log(fp)
+        r = np.log(rt) - np.log(rp)
+        half = np.abs(s) / 2
+        follow = ((s < 0) & (r >= np.maximum(half, split))) | ((s > 0) & (-r >= np.maximum(half, split)))
+        action = np.where(np.abs(s) <= FB_NOISE, 0,
+                 np.where((days[t] - days[p]) > FB_MAX_GAP_DAYS, FB_KEPT_GAP,
+                 np.where(follow, FB_KEPT_FOLLOW,
+                 np.where((s > 0) & (s < split), FB_KEPT_DIST, FB_REPAIRED))))
+        key = j.astype(np.int64) * n_rows + t
+        keep = (action != 0) & ~np.isin(key, seen)
+        seen = np.concatenate((seen, key[keep]))
+        parts.append((j[keep], days[t[keep]], ft[keep] / fp[keep], action[keep]))
+        sessions.append({"row": b, "jump_cells": int(jump[b]), "crossing_steps": int(np.count_nonzero(keep)),
+                         **{name: int(np.count_nonzero(action[keep] == code)) for code, name in FB_ACTIONS.items()}})
+        budget.check("factor-break-steps")
+    del obs
+    cat = lambda i, dtype: (np.concatenate([x[i] for x in parts]).astype(dtype) if parts else np.empty(0, dtype))
+    quiet = np.where(jump < FB_MASS_MIN_CELLS, jump, 0)
+    top = int(np.argmax(quiet)) if len(quiet) else 0
+    return {"jump": jump, "mass": mass, "sessions": sessions,
+            "j": cat(0, np.int64), "t_day": cat(1, np.int64), "k": cat(2, np.float64), "action": cat(3, np.int64),
+            "max_non_mass": int(quiet[top]) if len(quiet) else 0,
+            "max_non_mass_row": top if len(quiet) and quiet[top] > 0 else None}
+
+
 def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budget):
     iv_names = [n for n in names if FIELDS[n]["column"].startswith("atmCenI_")]
     want_earn, want_shares = "earn_recent" in names, "shares_out" in names
@@ -563,7 +655,7 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
     pf = pq.ParquetFile(th, memory_map=False)
     columns = ["tradingDate", "securityID"] + [FIELDS[n]["column"] for n in iv_names]
     columns += ["earnFlag"] if want_earn else []
-    columns += ["shares", "cumulReturnFactor"] if want_shares else []
+    columns += ["shares", "cumulReturnFactor", "close", "volume"] if want_shares else []
     schema = pf.schema_arrow
     for c in columns:
         if schema.field(c).type != TH_TYPES[c]:
@@ -582,13 +674,15 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
     ext_days = np.concatenate((np.arange(first - pre, first, dtype=np.int64), role.days))
     n_ext = len(ext_days)
     planned = n_ext * n * 2 + nd * n * (4 * len(iv_names) + (1 if want_earn else 0))
-    planned += (n_ext * n * 8 + nd * n * 8) if want_shares else 0
+    planned += n_ext * n * (8 + 8 + 4 + 1) if want_shares else 0  # q, crf, raw, factor-break observation mask
     budget.admit(planned + (64 << 20), "tickerhistory-matrices")
     counts = np.zeros((n_ext, n), dtype=np.uint16)
     iv = {k: np.full((nd, n), np.nan, dtype=np.float32) for k in iv_names}
     earn = np.full((nd, n), -1, dtype=np.int8) if want_earn else None
-    q = np.full((n_ext, n), np.nan) if want_shares else None       # shares / cumulReturnFactor (file basis)
-    crf = np.full((nd, n), np.nan) if want_shares else None        # cumulReturnFactor at the session
+    # shares/cumulReturnFactor (file basis), and the observation's factor and raw close (NaN: no observation)
+    q = np.full((n_ext, n), np.nan) if want_shares else None
+    crf = np.full((n_ext, n), np.nan) if want_shares else None
+    raw = np.full((n_ext, n), np.nan, dtype=np.float32) if want_shares else None
     never = np.iinfo(np.int64).max
     first_above = np.full(n, never, dtype=np.int64)  # date of the line's first row above the A9 ceiling
     st = {"rows_scanned": 0, "rows_on_or_after_2025_skipped": 0, "rows_selected": 0, "rows_off_role_calendar": 0,
@@ -639,10 +733,15 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
             above = shares > THOUSANDS_ROW_CEILING
             st["shares_rows_above_a9_ceiling"] += int(np.count_nonzero(above))
             np.minimum.at(first_above, j[above], ext_days[e[above]])
-            good_factor = np.isfinite(factor) & (factor > 0)
+            close = sub.column("close").to_numpy(zero_copy_only=False).astype(np.float32)
+            volume = sub.column("volume").to_numpy(zero_copy_only=False).astype(np.float64)
+            # An observation meets the role's present contract (prepare_recent_research.py projection).
+            obs = (np.isfinite(factor) & (factor > 0) & np.isfinite(close) & (close > 0)
+                   & np.isfinite(volume) & (volume >= 0))
             with np.errstate(divide="ignore", invalid="ignore"):
-                q[e, j] = np.where((shares > 0) & ~above & good_factor, shares / factor, np.nan)
-            crf[t, jr] = np.where(good_factor, factor, np.nan)[role_rows]
+                q[e, j] = np.where((shares > 0) & ~above & obs, shares / factor, np.nan)
+            crf[e, j] = np.where(obs, factor, np.nan)
+            raw[e, j] = np.where(obs, close, np.float32(np.nan))
         if b % 64 == 0:
             budget.report("th-batch", batch=b, rows_scanned=st["rows_scanned"], rows_selected=st["rows_selected"])
     if identity(th) != captured:
@@ -655,11 +754,25 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
         iv[k][dup_role] = np.nan
     if want_earn:
         earn[dup_role] = -1
+    fb = None
     if want_shares:
         q[dup] = np.nan
-        crf[dup_role] = np.nan
+        crf[dup] = np.nan
+        raw[dup] = np.nan
         st["shares_lines_withheld_c81"] = int(np.count_nonzero(first_above != never))
     del counts, dup, dup_role
+    if want_shares:
+        fb = factor_breaks(crf, raw, ext_days, budget)
+        del raw
+        # The role's close must carry the same repair: a mass session strictly inside the role (a return
+        # across it is in the role) must be exactly the set the role's factor-break-v1 repair block lists.
+        inside = sorted(date_of(ext_days[b]) for b in fb["mass"] if first < int(ext_days[b]) <= last)
+        listed = sorted(str(x.get("session")) for x in (role.manifest.get("repair") or {}).get("mass_sessions", []))
+        if inside != listed:
+            raise ValueError(f"{FB_RULE}: mass sessions inside the role {inside} differ from the role manifest repair "
+                             f"block {listed} (bind the factor-break-v1 repaired role)")
+        budget.report("factor-break", mass_sessions=[date_of(ext_days[b]) for b in fb["mass"]],
+                      crossing_steps=int(len(fb["j"])))
     source = [{"path": str(th.resolve()), "bytes": captured[2], "sha256": digest,
                "row_groups": pf.metadata.num_row_groups, "rows": pf.metadata.num_rows}]
     results, extras = {}, {}
@@ -699,24 +812,78 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
         cols = np.arange(n)
         p = 0
         withheld_cells = 0
+        rep, gap = fb["action"] == FB_REPAIRED, fb["action"] == FB_KEPT_GAP
+        rj, rt, rk = fb["j"][rep], fb["t_day"][rep], fb["k"][rep]
+        gj, gt = fb["j"][gap], fb["t_day"][gap]
+        lo, hi = SHARES_OUT_DOMAIN
+        c = {"below_min": 0, "above_max": 0, "member_below_min": 0, "member_above_max": 0,
+             "restated": 0, "restated_member": 0, "gap": 0, "gap_member": 0}
         for t in range(nd):
-            lag = int(role.days[t]) - SHARES_LAG_DAYS
+            day = int(role.days[t])
+            lag = day - SHARES_LAG_DAYS
             while p < n_ext and ext_days[p] <= lag:
                 last_valid[np.isfinite(q[p])] = p
                 p += 1
             src = np.maximum(last_valid, 0)
             fresh = (last_valid >= 0) & (ext_days[src] >= lag - SHARES_MAX_AGE_DAYS)
-            row = np.where(fresh, q[src, cols] * crf[t] * SHARES_UNIT, np.nan)
+            lag_day = ext_days[src]
+            # factor-break-v1: divide out every repaired step (p, t, k) with lag < t <= session; a kept_gap
+            # step in that window leaves the ratio ambiguous. Both are known at t <= the session.
+            corr = np.ones(n)
+            hit = fresh[rj] & (lag_day[rj] < rt) & (rt <= day)
+            np.multiply.at(corr, rj[hit], rk[hit])
+            ambiguous = np.zeros(n, dtype=bool)
+            ambiguous[gj[fresh[gj] & (lag_day[gj] < gt) & (gt <= day)]] = True
+            with np.errstate(invalid="ignore"):
+                row = np.where(fresh, q[src, cols] * crf[pre + t] * SHARES_UNIT / corr, np.nan)
+            member = role.member[t] != 0
+            amb = ambiguous & np.isfinite(row)
+            c["gap"] += int(np.count_nonzero(amb))
+            c["gap_member"] += int(np.count_nonzero(amb & member))
+            row[ambiguous] = np.nan
             # C-81, point in time: withheld once an above-ceiling row dated <= the session is known.
-            withheld = first_above <= int(role.days[t])
+            withheld = first_above <= day
             row[withheld] = np.nan
             withheld_cells += int(np.count_nonzero(withheld))
+            finite = np.isfinite(row)
+            low, high = finite & (row < lo), finite & (row > hi)
+            c["below_min"] += int(np.count_nonzero(low))
+            c["above_max"] += int(np.count_nonzero(high))
+            c["member_below_min"] += int(np.count_nonzero(low & member))
+            c["member_above_max"] += int(np.count_nonzero(high & member))
+            row[low | high] = np.nan
+            restated = np.isfinite(row) & (corr != 1.0)
+            c["restated"] += int(np.count_nonzero(restated))
+            c["restated_member"] += int(np.count_nonzero(restated & member))
             w.write(row)
             if t % 256 == 0:
                 budget.check("shares_out-write")
         w.close()
         results["shares_out"] = w
         st["shares_cells_withheld_c81"] = withheld_cells
+        quiet = fb["max_non_mass_row"]
+        extras["shares_out"] = {
+            "plausibility": {
+                "min": lo, "max": hi, "inclusive": True, "units": "shares",
+                "rule": "restated value v kept iff 1e5 <= v <= 5e10 (float64); any other finite value -> NaN, never clamped. "
+                        "Counts are role cells after the C-81 and factor-break rules. Range declared by the root controller "
+                        "for T10 (swap-fin-v1 borrow tiers) and applied in T6 fix round 2",
+                "implausible_to_nan": c["below_min"] + c["above_max"],
+                "implausible_to_nan_member": c["member_below_min"] + c["member_above_max"],
+                **{k: c[k] for k in ("below_min", "above_max", "member_below_min", "member_above_max")}},
+            "factor_break": {
+                "rule": FB_RULE, "ported_from": "atx-impl/tools/repair_role_factor_breaks.py (T12): same parameters and step classification",
+                "statement": FB_STATEMENT, "parameters": FB_PARAMETERS,
+                "use": "restatement ratio cumulReturnFactor(session)/cumulReturnFactor(lag) divided by k of every repaired step "
+                       "with lag < t <= session; a kept_gap step in that window -> NaN",
+                "mass_sessions": [{"session": date_of(ext_days[x["row"]]),
+                                   "inside_role": bool(first < int(ext_days[x["row"]]) <= last),
+                                   **{k: v for k, v in x.items() if k != "row"}} for x in fb["sessions"]],
+                "role_repair_mass_sessions": listed,
+                "max_non_mass_jump_cells": fb["max_non_mass"],
+                "max_non_mass_session": date_of(ext_days[quiet]) if quiet is not None else None,
+                "restated_cells": c["restated"], "restated_member_cells": c["restated_member"],
+                "gap_ambiguous_to_nan_cells": c["gap"], "gap_ambiguous_to_nan_member_cells": c["gap_member"]}}
     return results, source, st, digest, extras
 
 

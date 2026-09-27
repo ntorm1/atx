@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -46,7 +47,7 @@ def iv21(i, t):
 
 
 def write_tickerhistory(path):
-    rows = {k: [] for k in ("tradingDate", "securityID", "close", "shares", "earnFlag", "cumulReturnFactor",
+    rows = {k: [] for k in ("tradingDate", "securityID", "close", "volume", "shares", "earnFlag", "cumulReturnFactor",
                             "atmCenI_21d", "atmCenI_63d", "atmCenI_126d")}
     session_index = {d: t for t, d in enumerate(SESSIONS)}
     start, stop = dt.date(2023, 4, 3), dt.date(2025, 1, 31)  # includes 2025 rows that must be skipped
@@ -79,7 +80,7 @@ def write_tickerhistory(path):
                 v = np.float32(0.0)
             if (t, sid) in IV_OVERRIDES:
                 v = np.float32(IV_OVERRIDES[(t, sid)])
-            for k, x in (("tradingDate", d), ("securityID", sid), ("close", 10.0), ("shares", shares),
+            for k, x in (("tradingDate", d), ("securityID", sid), ("close", 10.0), ("volume", 1e6), ("shares", shares),
                          ("earnFlag", flag), ("cumulReturnFactor", crf), ("atmCenI_21d", v),
                          ("atmCenI_63d", None if v is None else np.float32(v + np.float32(0.05))),
                          ("atmCenI_126d", None if v is None else np.float32(v + np.float32(0.1)))):
@@ -88,7 +89,7 @@ def write_tickerhistory(path):
     t, sid = DUP
     extra = [(SESSIONS[t], sid, 0.9), (dt.date(2024, 10, 5), 101, 0.7)]
     for d, sid, v in extra:
-        for k, x in (("tradingDate", d), ("securityID", sid), ("close", 10.0), ("shares", 2000),
+        for k, x in (("tradingDate", d), ("securityID", sid), ("close", 10.0), ("volume", 1e6), ("shares", 2000),
                      ("earnFlag", "N"), ("cumulReturnFactor", 1.0), ("atmCenI_21d", np.float32(v)),
                      ("atmCenI_63d", np.float32(v)), ("atmCenI_126d", np.float32(v))):
             rows[k].append(x)
@@ -97,6 +98,7 @@ def write_tickerhistory(path):
         "tradingDate": pa.array([rows["tradingDate"][i] for i in order], pa.date32()),
         "securityID": pa.array([rows["securityID"][i] for i in order], pa.int64()),
         "close": pa.array([rows["close"][i] for i in order], pa.float32()),
+        "volume": pa.array([rows["volume"][i] for i in order], pa.float64()),
         "shares": pa.array([rows["shares"][i] for i in order], pa.int64()),
         "earnFlag": pa.array([rows["earnFlag"][i] for i in order], pa.string()),
         "cumulReturnFactor": pa.array([rows["cumulReturnFactor"][i] for i in order], pa.float64()),
@@ -342,7 +344,13 @@ class ResearchFields(unittest.TestCase):
             self.assertEqual(list(q), ["p0.1", "p1", "p50", "p99", "p99.9"])
             self.assertTrue(cov["member_finite_min"] <= q["p0.1"] <= q["p50"] <= q["p99.9"] <= cov["member_finite_max"])
         for name, entry in entries.items():
-            self.assertEqual("plausibility" in entry, name in tenors)
+            self.assertEqual("plausibility" in entry, name in tenors or name == "shares_out")
+        plaus = entries["shares_out"]["plausibility"]  # every main-fixture count is inside [1e5, 5e10]
+        self.assertEqual((plaus["min"], plaus["max"], plaus["implausible_to_nan"]), (1e5, 5e10, 0))
+        fb = entries["shares_out"]["factor_break"]  # five names cannot make a mass session
+        self.assertEqual((fb["mass_sessions"], fb["role_repair_mass_sessions"], fb["restated_cells"]), ([], [], 0))
+        # 303's 2:1 factor step on a flat raw close is one jump cell: the margin statistic.
+        self.assertEqual((fb["max_non_mass_jump_cells"], fb["max_non_mass_session"]), (1, SPLIT_303.isoformat()))
 
     def test_shares_out_lag90_restated_and_withheld(self):
         so = self.fx.field("fields", "shares_out")
@@ -594,6 +602,240 @@ class ResearchFields(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.fx.base / "cli").iterdir()),
                          ["is_common.f64", "manifest.json", "si_shares.f64"])
         np.testing.assert_array_equal(self.fx.field("cli", "si_shares"), self.fx.field("fields", "si_shares"))
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Unchained vendor factor across a boundary (TickerHistory3 2021-01-04, factor-break-v1) and shares_out.
+# Before FB_BREAK every line's factor is anchored at the block's own end (1.0 unless a genuine action inside
+# the block moved it); from FB_BREAK on it carries every later action too, so the factor steps by the product
+# of the line's LATER actions while the raw close does not move.
+# ---------------------------------------------------------------------------------------------------------
+
+def weekdays(a, b):
+    return [d for d in (a + dt.timedelta(days=i) for i in range((b - a).days + 1)) if d.weekday() < 5]
+
+
+FB_BREAK = dt.date(2021, 1, 4)
+FB_SPLIT_1054 = dt.date(2021, 3, 1)   # genuine 4:1 forward split of 1054 (its later action seen at the break)
+FB_SPLIT_1060 = dt.date(2021, 3, 15)  # genuine 2:1 split of 1060 on a normal day
+FB_GAP_1056 = (dt.date(2020, 12, 24), dt.date(2021, 1, 5))  # 1056 has no rows: its step spans 14 days
+FB_GAP_END = dt.date(2021, 1, 6)
+FB_NULL_RAW_1059 = dt.date(2021, 2, 10)  # a row with a factor but no close: not an observation
+FB_NO_ROW_1058 = dt.date(2021, 2, 3)     # a repaired line without a session row: NaN, not a restated cell
+FB_IDS = list(range(1001, 1065))
+FB_TH_DAYS = weekdays(dt.date(2019, 5, 1), dt.date(2021, 6, 30))
+FB_SESSIONS = weekdays(dt.date(2020, 9, 1), dt.date(2021, 6, 30))
+FB_POST_SESSIONS = weekdays(dt.date(2021, 5, 3), dt.date(2021, 6, 30))  # a validation-like role after the break
+FB_EVENTS = {1054: [(FB_SPLIT_1054, 4.0)], 1055: [(FB_BREAK, 2.0)], 1057: [(FB_BREAK, 1.05)], 1060: [(FB_SPLIT_1060, 2.0)]}
+FB_REPAIRED_IDS = set(range(1001, 1053)) | {1053, 1054, 1058, 1063, 1064}
+FB_HOLE_1064 = (dt.date(2020, 12, 31), dt.date(2021, 1, 5))  # 7-day step ending 2021-01-06: repaired
+
+
+def fb_line(sid, d):
+    """(raw close or None, cumulReturnFactor, vendor shares in thousands or None), or None for no row."""
+    old = d < FB_BREAK
+    if sid <= 1052:                      # dividend payer: later dividends lower the new block by 3%
+        return 20.0, 1.0 if old else 0.97, 1000
+    if sid == 1053:                      # later 1:10 consolidation: factor x10, raw flat
+        return 20.0, 1.0 if old else 10.0, 1000
+    if sid == 1054:                      # later 4:1 split: factor x1/4 at the break, genuine split on FB_SPLIT_1054
+        split = d >= FB_SPLIT_1054
+        return (10.0 if split else 40.0), (1.0 if old or split else 0.25), (4000 if split else 1000)
+    if sid == 1055:                      # genuine 2:1 split ON the break, shown by the factor, raw followed
+        return (40.0 if old else 20.0), (0.5 if old else 1.0), (1000 if old else 2000)
+    if sid == 1056:                      # dividend payer with a 14-day hole across the break: kept_gap
+        if FB_GAP_1056[0] <= d <= FB_GAP_1056[1]:
+            return None
+        return 20.0, 1.0 if old else 0.97, 1000
+    if sid == 1057:                      # same-day 5% distribution on the break: kept_distribution
+        return 20.0, 1.0 if old else 1.05, 1000
+    if sid == 1058:                      # dividend payer whose raw rose 3% on the break: not a jump cell, repaired
+        if d == FB_NO_ROW_1058:
+            return None
+        return (20.0 if old else 20.6), (1.0 if old else 0.97), 1000
+    if sid == 1059:                      # control
+        return (None if d == FB_NULL_RAW_1059 else 20.0), 1.0, 1000
+    if sid == 1060:
+        split = d >= FB_SPLIT_1060
+        return (20.0 if split else 40.0), (1.0 if split else 0.5), (2000 if split else 1000)
+    if sid == 1061:                      # 5e4 shares: below the declared domain
+        return 20.0, 1.0, 50
+    if sid == 1062:                      # 6e10 shares: above the declared domain (still under the A9 ceiling)
+        return 20.0, 1.0, 60_000_000
+    if sid == 1064:                      # dividend payer whose crossing step ends after the break (2021-01-06)
+        if FB_HOLE_1064[0] <= d <= FB_HOLE_1064[1]:
+            return None
+        return 20.0, 1.0 if old else 0.97, 1000
+    # 1063: later 4:1 split (factor x1/4 at the break); no share count after 2020-11-30 (stale lag rows)
+    return 20.0, 1.0 if old else 0.25, (1000 if d < dt.date(2020, 12, 1) else None)
+
+
+def write_fb_tickerhistory(path):
+    cols = {k: [] for k in ("tradingDate", "securityID", "close", "volume", "shares", "cumulReturnFactor")}
+    for d in FB_TH_DAYS:
+        for sid in FB_IDS:
+            row = fb_line(sid, d)
+            if row is not None:
+                for k, v in zip(cols, (d, sid, row[0], 1e5, row[2], row[1])):
+                    cols[k].append(v)
+    order = np.random.default_rng(11).permutation(len(cols["securityID"]))  # dates mixed in every group
+    types = {"tradingDate": pa.date32(), "securityID": pa.int64(), "close": pa.float32(), "volume": pa.float64(),
+             "shares": pa.int64(), "cumulReturnFactor": pa.float64()}
+    pq.write_table(pa.table({k: pa.array([cols[k][i] for i in order], types[k]) for k in cols}), path, row_group_size=4000)
+
+
+def write_axes_role(root, ids, sessions, source_sha, repair_sessions):
+    """A role with the axes and member only (all the tool reads for vendor fields), optionally repaired.
+    1062 (above the shares domain) is not a member on the first three sessions."""
+    root.mkdir(parents=True)
+    member = np.ones((len(sessions), len(ids)), dtype="u1")
+    member[:3, ids.index(1062)] = 0
+    blobs = {"sessions.i64": np.array([day(d) * DAY_NS for d in sessions], dtype="<i8").tobytes(),
+             "ids.u64": np.array(ids, dtype="<u8").tobytes(),
+             "member.u8": member.tobytes()}
+    files = {}
+    for name, blob in blobs.items():
+        (root / name).write_bytes(blob)
+        files[name] = {"bytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
+    manifest = {"schema": "atx.recent-research-role/v1", "status": "complete", "dates": len(sessions),
+                "instruments": len(ids), "instrument_namespace": "spiderrock.securityID", "score_begin": 0,
+                "score_end": len(sessions), "source_sha256": source_sha, "files": files}
+    if repair_sessions is not None:
+        manifest["repair"] = {"rule": "factor-break-v1", "mass_sessions": [{"session": s} for s in repair_sessions]}
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return sha(root / "manifest.json")
+
+
+def fb_lag_rows(sid):
+    return [d for d in FB_TH_DAYS if (x := fb_line(sid, d)) is not None and x[0] is not None
+            and x[2] is not None and 0 < x[2] <= 100_000_000]
+
+
+def fb_expected(sessions):
+    """Independent oracle: lag observation's shares x GENUINE actions in (lag, session] x 1000.
+    Returns the matrix and the (restated, gap-ambiguous) cell counts."""
+    import bisect
+    out = np.full((len(sessions), len(FB_IDS)), np.nan)
+    restated = ambiguous = 0
+    for i, sid in enumerate(FB_IDS):
+        rows = fb_lag_rows(sid)
+        for t, s in enumerate(sessions):
+            here = fb_line(sid, s)
+            if here is None or here[0] is None:
+                continue
+            lag = s - dt.timedelta(days=90)
+            k = bisect.bisect_right(rows, lag) - 1
+            if k < 0 or rows[k] < lag - dt.timedelta(days=400):
+                continue
+            L = rows[k]
+            val = fb_line(sid, L)[2] * 1000.0 * math.prod(r for e, r in FB_EVENTS.get(sid, []) if L < e <= s)
+            if sid == 1056 and L < FB_GAP_END <= s:
+                ambiguous += 1
+                continue
+            if not 1e5 <= val <= 5e10:
+                continue
+            out[t, i] = val
+            restated += int(sid in FB_REPAIRED_IDS and L < FB_BREAK <= s)
+    return out, restated, ambiguous
+
+
+class FactorBreakShares(unittest.TestCase):
+    """shares_out across an unchained vendor factor: correct on every session, point in time."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.base = Path(cls.temp.name)
+        cls.th = cls.base / "th.parquet"
+        write_fb_tickerhistory(cls.th)
+        th_sha = sha(cls.th)
+        short = [d for d in FB_SESSIONS if d <= dt.date(2021, 1, 5)]
+        cls.roles = {name: (sessions, write_axes_role(cls.base / f"role-{name}", FB_IDS, sessions, th_sha, repair))
+                     for name, sessions, repair in (("fb", FB_SESSIONS, ["2021-01-04"]), ("post", FB_POST_SESSIONS, None),
+                                                    ("short", short, ["2021-01-04"]), ("unrepaired", FB_SESSIONS, None),
+                                                    ("wrong", FB_SESSIONS, ["2021-01-05"]),
+                                                    ("starts", [d for d in FB_SESSIONS if d >= FB_BREAK], None))}
+        cls.manifest = cls.run_role("fb")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    @classmethod
+    def run_role(cls, name):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return tool.run(cls.base / f"role-{name}", cls.roles[name][1], cls.base / f"out-{name}", ["shares_out"],
+                            finra=cls.base / "no-finra", tickerhistory=cls.th, lake=cls.base / "no-lake")
+
+    def shares(self, name):
+        return np.fromfile(self.base / f"out-{name}" / "shares_out.f64", dtype="<f8").reshape(
+            len(self.roles[name][0]), len(FB_IDS))
+
+    def test_restated_correctly_across_the_unchained_factor(self):
+        got = self.shares("fb")
+        expected, restated, ambiguous = fb_expected(FB_SESSIONS)
+        np.testing.assert_allclose(got, expected, rtol=1e-12, atol=0, equal_nan=True)
+        col, t = FB_IDS.index, FB_SESSIONS.index
+        s = t(dt.date(2021, 2, 1))                         # lag row 2020-11-03 is before the break
+        self.assertAlmostEqual(got[s, col(1053)] / 1e6, 1.0, places=12)  # the raw factor ratio says x10
+        self.assertAlmostEqual(got[s, col(1054)] / 1e6, 1.0, places=12)  # ... and x1/4
+        self.assertAlmostEqual(got[t(dt.date(2021, 3, 1)), col(1054)] / 4e6, 1.0, places=12)  # genuine split kept
+        self.assertAlmostEqual(got[s, col(1001)] / 1e6, 1.0, places=12)  # ... and 0.97 for a dividend payer
+        self.assertAlmostEqual(got[s, col(1055)] / 2e6, 1.0, places=12)  # split on the break shown by the factor
+        self.assertAlmostEqual(got[t(FB_BREAK), col(1054)] / 1e6, 1.0, places=12)  # corrected on the step's own day
+        self.assertTrue(np.isnan(got[t(FB_NULL_RAW_1059), col(1059)]))  # no observation on the session
+        self.assertAlmostEqual(got[t(dt.date(2021, 4, 6)), col(1064)] / 1e6, 1.0, places=12)  # lag row IS the step end
+        self.assertTrue(np.all(np.isnan(got[:, col(1061)])) and np.all(np.isnan(got[:, col(1062)])))
+        fb = next(f for f in self.manifest["fields"] if f["name"] == "shares_out")
+        block = fb["factor_break"]
+        self.assertEqual(block["mass_sessions"], [{"session": "2021-01-04", "inside_role": True, "jump_cells": 56,
+                                                   "crossing_steps": 60, "repaired": 57, "kept_gap": 1,
+                                                   "kept_split_follow": 1, "kept_distribution": 1}])
+        self.assertEqual(block["role_repair_mass_sessions"], ["2021-01-04"])
+        self.assertEqual((block["max_non_mass_jump_cells"], block["max_non_mass_session"]), (1, "2021-01-06"))  # 1064
+        self.assertEqual(block["parameters"], tool.FB_PARAMETERS)
+        self.assertEqual((block["restated_cells"], block["gap_ambiguous_to_nan_cells"]), (restated, ambiguous))
+        self.assertEqual(block["restated_member_cells"], restated)  # every fixture cell is a member
+        self.assertGreater(restated, 0)
+        self.assertGreater(ambiguous, 0)
+        plaus = fb["plausibility"]
+        n = len(FB_SESSIONS)
+        self.assertEqual((plaus["below_min"], plaus["above_max"], plaus["implausible_to_nan"]), (n, n, 2 * n))
+        self.assertEqual(plaus["implausible_to_nan_member"], 2 * n - 3)
+        self.assertEqual((plaus["member_below_min"], plaus["member_above_max"]), (n, n - 3))
+        self.assertTrue(fb["point_in_time"])
+
+    def test_break_before_the_role_corrects_stale_lag_rows(self):
+        m = self.run_role("post")
+        got = self.shares("post")
+        expected, restated, _ = fb_expected(FB_POST_SESSIONS)
+        np.testing.assert_allclose(got, expected, rtol=1e-12, atol=0, equal_nan=True)
+        self.assertTrue(np.allclose(got[:, FB_IDS.index(1063)], 1e6, rtol=1e-12))  # lag 2020-11-30: x1/4 undone
+        block = next(f for f in m["fields"] if f["name"] == "shares_out")["factor_break"]
+        self.assertEqual([(x["session"], x["inside_role"]) for x in block["mass_sessions"]], [("2021-01-04", False)])
+        self.assertEqual(block["role_repair_mass_sessions"], [])
+        self.assertEqual(block["restated_cells"], restated)
+        self.assertEqual(restated, len(FB_POST_SESSIONS))  # only 1063's stale lag row precedes the break
+
+    def test_point_in_time_later_rows_change_no_earlier_cell(self):
+        self.run_role("short")  # ends 2021-01-05: 1056's post-hole row (2021-01-06) is not yet known
+        short = self.shares("short")
+        np.testing.assert_array_equal(short, self.shares("fb")[:len(short)])
+
+    def test_break_on_the_first_session_needs_no_role_repair(self):
+        # No return across the role's first session is in the role, so an unrepaired role starting on the break
+        # is consistent; shares_out still divides the step out of lag rows before it.
+        m = self.run_role("starts")
+        sessions = self.roles["starts"][0]
+        np.testing.assert_allclose(self.shares("starts"), fb_expected(sessions)[0], rtol=1e-12, atol=0, equal_nan=True)
+        block = next(f for f in m["fields"] if f["name"] == "shares_out")["factor_break"]
+        self.assertEqual([(x["session"], x["inside_role"]) for x in block["mass_sessions"]], [("2021-01-04", False)])
+
+    def test_role_repair_block_must_match_detected_breaks(self):
+        for name in ("unrepaired", "wrong"):
+            with self.assertRaisesRegex(ValueError, r"factor-break-v1: mass sessions inside the role \['2021-01-04'\]"):
+                self.run_role(name)
+            self.assertFalse((self.base / f"out-{name}" / "manifest.json").exists())
 
 
 if __name__ == "__main__":
