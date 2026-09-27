@@ -89,6 +89,24 @@
   cover 4 of 8 ops — reviewer verified all 8 by reading). VM bump not needed (confirmed). Root confirmed no existing
   manifest/library has a grp_* field (only library v4). Task T22: complete (76479562/4ce2ec4e).
 
+- T20: pool-8 77771dd2/9de89dd0/dd8877ae -> root. pytest 17/17. REAL fundamental-events-v1 (prepare 8 s/484 MiB;
+  events 4 chunks 17-24 s/<=646 MiB; finalize 2 s): 172,777 rows, manifest 519ecc1a..., SIC 235,945 rows / 6,543 CIKs,
+  sub accepted null 0. SUE from first-reported quarterly NI (EPS split-contaminated); debt single-concept (understates).
+- T21: pool-3 e9392d80/e31db6c6/d04c5dc7/ab3e7364 -> root. pytest 36/36. REAL fields-v5 (bridge ddf97164.., events
+  519ecc1a.., --fund-lag-sessions 1): TRAIN recent-fast-train-2020-2022-v2-fields-v5 manifest 4e02b7db... (37 s/637
+  MiB), VAL ...-v1-fields-v5 (33 s/564 MiB). 40 fields; legacy 8 byte-identical to v4 both roles;
+  rows_used_available_after_start_mark 0 both. Member coverage TRAIN/VAL: be .589/.574, cfo_ttm .568/.568, sue
+  .568/.558, me_company .604/.593, grp_ff12 .604/.591, gp_ttm .365/.355, fscore .315/.319, xrd .221/.212 (symmetric).
+- T19/T23 review: both spec PASS, Approved 0C/0I/6m each. T19 caveat: r4 marks link END before knowable (stops links
+  early, never mislinks). T23: real fit must pass LF library sha af5159c8. Tasks T19, T23: complete.
+- T24 review: spec FAIL 1 (I1 issuance_vendor counts splits as issuance: use shares_out*raw_close/close), 6 minors
+  (ear 63-session window == mean announcement gap -> fix). 
+- v4 plan-only (TRAIN, fields-v5, min-names 1000): 1.76 GB @4w / 1.73 @2w / 1.70 @1w > 1.5 GB cap; driver mgmt_sy
+  (8 extras) + qmj_lite (7). Without them 1.449 GB @4w (fits). Ruling (before any v4 TRAIN read): DROP mgmt_sy and
+  qmj_lite — components already members of their themes (theme-EW already combines them); cost: lose rank-sum
+  composite forms. Ruling: --min-names 1000 for v4 (fundamentals cover ~1,650 names/day; gates IC-date stats only).
+  T24 fix round 2 sent (I1, ear window, drop composites, issuance_xbrl split check).
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
