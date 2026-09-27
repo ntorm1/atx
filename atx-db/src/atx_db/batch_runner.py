@@ -74,7 +74,10 @@ __all__ = [
 ]
 
 #: Stages whose module registers itself on import (``get_stage`` imports it on first use).
-_KNOWN_STAGE_MODULES: dict[str, str] = {"bars_unit_correction": "atx_db.bars_unit_correction"}
+_KNOWN_STAGE_MODULES: dict[str, str] = {
+    "bars_unit_correction": "atx_db.bars_unit_correction",
+    "companyfacts_rebuild": "atx_db.companyfacts_rebuild",
+}
 _RUN_STATUSES = ("open", "published", "abandoned")
 
 

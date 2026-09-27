@@ -173,7 +173,7 @@ def single_slice(args: argparse.Namespace) -> int:
         elif args.phase == "finalize":
             result.update(receipt=br.finalize_run(args.db, args.stage, args.run_key,
                                                   memory_limit=args.duckdb_memory, threads=args.threads),
-                          finalized=True, remaining=0, stopped="complete")
+                          finalized=True, remaining=0, stopped="complete", run_status="published")
     except Exception as exc:
         result.update(error=repr(exc)[:4000], traceback=traceback.format_exc()[-6000:])
         code = EXIT_SLICE_ERROR

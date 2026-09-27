@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import logging
 import os
@@ -318,6 +319,9 @@ class ActivationOptions:
     companyfacts_limit: int | None = None
     companyfacts_progress_every: int = 25
     companyfacts_resume_from_run_id: str | None = None
+    companyfacts_mode: str = "staged"
+    companyfacts_staging_dir: Path = Path("data/staging/companyfacts/ee099c7394a357f1")
+    companyfacts_receipts_dir: Path = Path("C:/atx/.superpowers/sdd/tier1-v2/receipts")
     submissions_batch_size: int = 50
     submissions_resume_from_run_id: str | None = None
     earnings_release_cache_dir: Path | None = None
@@ -341,6 +345,8 @@ class ActivationOptions:
     run_id: str = "warehouse-activate"
 
     def __post_init__(self) -> None:
+        if self.companyfacts_mode not in ("staged", "legacy"):
+            raise ValueError("companyfacts_mode must be staged or legacy")
         if min(self.threads, self.reconciliation_shards, self.submissions_batch_size,
                self.earnings_release_candidate_batch_size, self.earnings_release_max_index_bytes,
                self.earnings_release_max_document_bytes) < 1 or self.earnings_release_request_timeout <= 0:
@@ -946,8 +952,92 @@ def stage_earnings_release_facts(store: DuckDBStore, options: ActivationOptions)
     return stage_result
 
 
+def _companyfacts_parent_guard() -> dict[str, object]:
+    """Inspect this caller's configuration once; child admission remains FIFO guarded."""
+    job = os.environ.get("ATX_GUARD_JOB")
+    if not job:
+        raise ValueError("staged CompanyFacts requires a non-HEAVY parent guard with --allow-nested-guards")
+    default_slots = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "atx-memory-guard" / "slots"
+    slots = Path(os.environ.get("ATX_GUARD_SLOT_DIR") or default_slots)
+    for path in slots.glob("slot-*.json"):
+        try:
+            slot = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if slot.get("job_name") != job or slot.get("state") != "running":
+            continue
+        if slot.get("heavy"):
+            raise ValueError("staged CompanyFacts cannot delegate while its caller holds HEAVY; "
+                             "run a non-HEAVY activation parent or the direct run_slices orchestrator")
+        parent_cap = int(slot["cap_bytes"])
+        if parent_cap > 1024**3:
+            raise ValueError("staged CompanyFacts activation parent exceeds the 1 GiB standing cap")
+        receipt = json.loads(Path(slot["receipt"]).read_text(encoding="utf-8"))
+        if not receipt.get("allow_nested_guards"):
+            raise ValueError("staged CompanyFacts parent needs --allow-nested-guards for fresh guarded slices")
+        return {"job": job, "parent_cap_bytes": parent_cap, "child_cap_gb": 0.8,
+                "aggregate_slot_budget_gb": 2.0, "receipt": slot["receipt"]}
+    raise ValueError("staged CompanyFacts cannot find its caller's live guard configuration")
+
+
+def _stage_companyfacts_staged(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .companyfacts_rebuild import ARCHIVE_SHA, STAGE_NAME
+
+    if (options.companyfacts_limit is not None or options.skip_loaded_companyfacts is True
+            or options.companyfacts_resume_from_run_id is not None):
+        raise ValueError("staged CompanyFacts uses the complete pinned archive and build ledger; "
+                         "legacy member limits, skip policy and resume UUID are not applicable")
+    guard = _companyfacts_parent_guard()
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_slices.py"
+    if not script.is_file():
+        raise FileNotFoundError(f"staged CompanyFacts requires the reviewed source export with {script}")
+    run_key = ARCHIVE_SHA[:16]
+    root = options.companyfacts_staging_dir.resolve()
+    requested = {"staging_dir": str(root), "as_of_date": (options.as_of_date or dt.date(2026, 9, 27)).isoformat()}
+    receipts = options.companyfacts_receipts_dir.resolve()
+    receipts.mkdir(parents=True, exist_ok=True)
+    spec_file = receipts / f"{STAGE_NAME}-{run_key}.activation-spec.json"
+    if spec_file.exists() and json.loads(spec_file.read_text(encoding="utf-8")) != requested:
+        raise ValueError("staged CompanyFacts activation spec differs from the retained resume spec")
+    temporary = spec_file.with_name(spec_file.name + f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(requested, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, spec_file)
+    module_spec = importlib.util.spec_from_file_location("_atx_companyfacts_slices", script)
+    if module_spec is None or module_spec.loader is None:
+        raise RuntimeError("cannot load the reviewed slice orchestrator")
+    runner = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(runner)
+    # The parent releases its writer connection before fresh .8 GiB HEAVY jobs.
+    # Its retained cap and every other job still count toward the 2 GiB FIFO budget.
+    store.close()
+    try:
+        code = runner.main(["--db", str(options.db_path.resolve()), "--stage", STAGE_NAME,
+                            "--run-key", run_key, "--spec-json", str(spec_file), "--job-gb", "0.8", "--heavy",
+                            "--max-batches", "1", "--max-minutes", "1", "--max-slices", "2000",
+                            "--until-complete", "--finalize", "--duckdb-memory", "384MB", "--threads", "1",
+                            "--receipts-dir", str(receipts)])
+    except SystemExit as exc:
+        raise ActivationStageError("staged CompanyFacts orchestrator refused delegation",
+                                   StageResult(0, {"error": str(exc), "guard": guard,
+                                                   "receipts_dir": str(receipts), "run_key": run_key})) from exc
+    finally:
+        store.reopen()
+    if code != 0:
+        raise ActivationStageError("staged CompanyFacts slice failed", StageResult(0, {"exit_code": code,
+                                   "guard": guard, "receipts_dir": str(receipts), "run_key": run_key}))
+    row = store.con.execute("SELECT status,note FROM build_runs WHERE stage=? AND run_key=?",
+                            [STAGE_NAME, run_key]).fetchone()
+    if not row or row[0] != "published":
+        raise ActivationStageError("staged CompanyFacts did not publish", StageResult(0, {"run_key": run_key}))
+    detail = json.loads(row[1])
+    detail.update(guard=guard, receipts_dir=str(receipts))
+    return StageResult(int(detail["totals"]["rows"]), detail)
+
+
 def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> StageResult:
-    """Load the selected local CIK corpus; archive mode replaces every selected CIK."""
+    """Publish the complete pinned archive; legacy per-member loading is an explicit test seam."""
+    if options.companyfacts_mode == "staged":
+        return _stage_companyfacts_staged(store, options)
     from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 
     if not options.companyfacts_zip.is_file():
@@ -1710,6 +1800,12 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--shards", type=int, default=16)
     parser.add_argument("--companyfacts-limit", type=int, default=None)
+    parser.add_argument("--companyfacts-mode", choices=("staged", "legacy"), default="staged",
+                        help="staged uses bounded full-archive slices; legacy is retained for loader tests.")
+    parser.add_argument("--companyfacts-staging-dir", type=Path,
+                        default=Path("data/staging/companyfacts/ee099c7394a357f1"))
+    parser.add_argument("--companyfacts-receipts-dir", type=Path,
+                        default=Path("C:/atx/.superpowers/sdd/tier1-v2/receipts"))
     parser.add_argument("--companyfacts-resume-from-run-id", default=None,
                         help="Verify and resume completed members of a failed or source-incomplete companyfacts dataset UUID.")
     parser.add_argument("--submissions-batch-size", type=int, default=50)
@@ -1727,7 +1823,7 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--submissions-resume-from-run-id", default=None,
                         help="Verify and resume the full archive prefix of a failed submissions dataset UUID.")
     parser.add_argument("--companyfacts-symbol-source", choices=("sec_company_tickers", "archive_members"),
-                        default="sec_company_tickers", help="archive_members discovers all exact local CIK members offline.")
+                        default="sec_company_tickers", help="Legacy mode only: archive_members discovers local CIK members offline.")
     companyfacts_policy = parser.add_mutually_exclusive_group()
     companyfacts_policy.add_argument("--companyfacts-append-missing", dest="skip_loaded_companyfacts",
                                     action="store_true", default=None,
@@ -1774,6 +1870,9 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         threads=args.threads,
         reconciliation_shards=args.shards,
         companyfacts_limit=args.companyfacts_limit,
+        companyfacts_mode=args.companyfacts_mode,
+        companyfacts_staging_dir=args.companyfacts_staging_dir,
+        companyfacts_receipts_dir=args.companyfacts_receipts_dir,
         companyfacts_resume_from_run_id=args.companyfacts_resume_from_run_id,
         submissions_batch_size=args.submissions_batch_size,
         submissions_resume_from_run_id=args.submissions_resume_from_run_id,

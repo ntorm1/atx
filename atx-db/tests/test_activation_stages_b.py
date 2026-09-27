@@ -111,6 +111,7 @@ def _seed_company_ticker(store) -> None:
 
 def _options(tmp_path: Path, downloader=None) -> ActivationOptions:
     return ActivationOptions(
+        companyfacts_mode="legacy",
         db_path=tmp_path / "warehouse.duckdb",
         as_of_date=dt.date(2024, 1, 4),
         staging_dir=tmp_path / "staging",

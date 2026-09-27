@@ -25,7 +25,7 @@ _PRIOR = "758f7d5c-73ae-4b66-a8c9-f1996afa163a"
 
 
 def test_activation_forwards_resume_uuid_and_explicit_user_agent(tmp_path, monkeypatch):
-    options = ActivationOptions(cache_dir=tmp_path, companyfacts_symbol_source="archive_members",
+    options = ActivationOptions(companyfacts_mode="legacy", cache_dir=tmp_path, companyfacts_symbol_source="archive_members",
                                 sec_user_agent=_UA, companyfacts_resume_from_run_id=_PRIOR)
     options.companyfacts_zip.write_bytes(b"fixture stub")
     captured = []
@@ -42,7 +42,7 @@ def test_activation_forwards_resume_uuid_and_explicit_user_agent(tmp_path, monke
 
 
 def test_offline_activation_records_only_explicit_dummy_user_agent(tmp_store, tmp_path, monkeypatch):
-    options = ActivationOptions(cache_dir=tmp_path, companyfacts_symbol_source="archive_members",
+    options = ActivationOptions(companyfacts_mode="legacy", cache_dir=tmp_path, companyfacts_symbol_source="archive_members",
                                 as_of_date=dt.date(2026, 9, 20), sec_user_agent=_UA)
     with zipfile.ZipFile(options.companyfacts_zip, "w") as archive:
         archive.writestr("CIK0000759828.json", json.dumps({"entityName": "Fixture fund", "facts": {"cef": {}}}))
@@ -56,7 +56,7 @@ def test_offline_activation_records_only_explicit_dummy_user_agent(tmp_store, tm
 def test_companyfacts_resume_cli_round_trip():
     parser = argparse.ArgumentParser()
     add_activation_arguments(parser)
-    args = parser.parse_args(["--companyfacts-symbol-source", "archive_members",
+    args = parser.parse_args(["--companyfacts-mode", "legacy", "--companyfacts-symbol-source", "archive_members",
                               "--companyfacts-resume-from-run-id", _PRIOR,
                               "--sec-user-agent", _UA, "--only", "companyfacts_load"])
     options = activation_options_from_args(args)
@@ -65,7 +65,7 @@ def test_companyfacts_resume_cli_round_trip():
 
 
 def test_source_incomplete_activation_resumes_its_newest_dataset_uuid(tmp_store, tmp_path, monkeypatch):
-    options = ActivationOptions(cache_dir=tmp_path, companyfacts_symbol_source="archive_members",
+    options = ActivationOptions(companyfacts_mode="legacy", cache_dir=tmp_path, companyfacts_symbol_source="archive_members",
                                 as_of_date=dt.date(2026, 9, 20), sec_user_agent=_UA)
     with zipfile.ZipFile(options.companyfacts_zip, "w") as archive:
         archive.writestr("CIK0000000001.json", json.dumps({"cik": 1, "facts": {"us-gaap": {"Assets": {
@@ -95,9 +95,58 @@ def test_source_incomplete_activation_resumes_its_newest_dataset_uuid(tmp_store,
     ({}, ("sec_bulk_download", "companyfacts_load")),
 ])
 def test_unsafe_resume_plan_rejected_even_for_dry_run(tmp_path, change, stages):
-    options = ActivationOptions(db_path=tmp_path / "must-not-be-created.duckdb", dry_run=True,
+    options = ActivationOptions(companyfacts_mode="legacy", db_path=tmp_path / "must-not-be-created.duckdb", dry_run=True,
                                 companyfacts_symbol_source="archive_members", sec_user_agent=_UA,
                                 companyfacts_resume_from_run_id=_PRIOR)
     with pytest.raises(ValueError, match="companyfacts resume"):
         run_activation(replace(options, **change), stages=stages)
     assert not options.db_path.exists()
+
+
+def test_staged_companyfacts_is_default_and_refuses_partial_scope(tmp_path):
+    options = ActivationOptions(companyfacts_limit=1, db_path=tmp_path / "absent.duckdb")
+    assert options.companyfacts_mode == "staged"
+    with pytest.raises(ValueError, match="complete pinned archive"):
+        stage_companyfacts_load(None, options)
+    assert not options.db_path.exists()
+
+
+def test_staged_companyfacts_rejects_heavy_caller_before_delegating(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+
+    from atx_db.activation import _companyfacts_parent_guard
+
+    # Only inspect a fabricated configuration; no guard is started or bypassed.
+    slot = tmp_path / "slot.json"
+    slot.write_text(json.dumps({"job_name": os.environ["ATX_GUARD_JOB"], "state": "running", "heavy": True}))
+    monkeypatch.setattr(Path, "glob", lambda _self, _pattern: iter([slot]))
+    with pytest.raises(ValueError, match="caller holds HEAVY"):
+        _companyfacts_parent_guard()
+
+
+def test_staged_companyfacts_closes_store_around_orchestration(tmp_path, monkeypatch):
+    from atx_db import activation
+
+    captured = []
+    store = SimpleNamespace(closed=False)
+    store.close = lambda: setattr(store, "closed", True)
+    store.reopen = lambda: setattr(store, "closed", False)
+    receipt = {"totals": {"rows": 123}, "mode": "staged_rebuild"}
+    store.con = SimpleNamespace(execute=lambda *_: SimpleNamespace(fetchone=lambda: ("published", json.dumps(receipt))))
+
+    def run(argv):
+        assert store.closed
+        captured.extend(argv)
+        return 0
+
+    monkeypatch.setattr(activation, "_companyfacts_parent_guard", lambda: {"parent_cap_bytes": 644243456})
+    monkeypatch.setattr(activation.importlib.util, "spec_from_file_location",
+                        lambda *_: SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module: None)))
+    monkeypatch.setattr(activation.importlib.util, "module_from_spec", lambda _spec: SimpleNamespace(main=run))
+    options = ActivationOptions(db_path=tmp_path / "fixture.duckdb", companyfacts_receipts_dir=tmp_path / "receipts")
+    result = stage_companyfacts_load(store, options)
+    assert result.rows == 123 and not store.closed
+    assert captured[captured.index("--job-gb") + 1] == "0.8"
+    assert captured[captured.index("--max-batches") + 1] == "1"
+    assert "--heavy" in captured and "--finalize" in captured
