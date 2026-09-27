@@ -177,6 +177,18 @@
   v1 bands 0/.5/1). Final TRAIN selection = {netcost-v1, plain-v1} x band {0,.5,1,2}/N (8 construction/
   composition trials) by S2 net Sharpe (swap-fin-v1) subject to daily limits. Task T13 (fitter option) to
   t9-weights. Ruling cost if wrong: one extra composition trial family on TRAIN, validation untouched.
+- T13: pool-3 3d5d5296 -> root d38e7929 (--composition ...-netcost-v1, c=.0018). 35/35. Review (sonnet).
+- T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
+  engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
+  fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
+  NAV needs --max-bytes 1073741824 with fields (5 books; default 512 MiB refused).
+- NAV v1-MV neut band .5 + fields v2 (mega-nav-v1mv-c1-n-b0.5-fin2, 30s/338MiB; TRAIN in-sample; this
+  is the same construction trial as band .5 above, financing re-scored):
+    S2 x swap-fin-v1 (PRIMARY): net .833 gross 1.629 HAC 1.45 vol 4.06% MDD 6.8% tau_gmv .0562/.0738
+      tc .081 fin .0098 (3y); blocked short name-decisions 37,312; tiers member-decisions gc 1.659M /
+      warm .461M / special .125M; missing predictor 14,080; mean |net lev| .021 (max .051).
+    S1 x swap-fin: net 1.309; S3 x swap-fin: net .031; S2 x flat-300-v0: .572 (== legacy);
+    S2 x engine-tiers-v1: .746.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
