@@ -95,3 +95,41 @@ R1'' Library v5.1 = frozen v4 (37, daa9663e) + ONE candidate `opex_at`, theme pr
     Deviation disclosed: fields-v6 has no opex_ttm; sale_ttm - oi_ttm = COGS + SG&A + D&A + other operating items (paper: COGS + SG&A).
     No producer change; data pins unchanged. Admission v4-prior-v1 unchanged (38 candidates). Composition: ew-theme-v1 and
     ew-theme-aim-v1 re-fit on the 38 (+2 composition trials). Construction: reference cell only (+1). Gate as R6'.
+
+## v6 revision (declared 2026-09-27 ~18:50 after Phase A reviews; disclosed; BEFORE any v6 TRAIN read)
+Sources: v6-code-review-signal.md, v6-code-review-exec.md, v6-literature.md (all read-only; no TRAIN run). Parent: v5 cell
+`v5-ew-t.05-d.1-fixed` (REF, S2 net .742) and its deployed twin L1.279 (net .712). TRAIN 2020-2022 only; no 2023+ read.
+Every step below is accepted only on a paired dSR vs its parent whose SIGN matches the prior stated here; magnitude is not a
+selection criterion. Every TRAIN result carries the Appendix A block. DSR N accumulates on the 13 v5 cells.
+
+V6-C Construction (C++; existing library v5.1 and weights W_ew51; zero new data). Prior: each lowers executed turnover
+and cost/$ with gross SR ~unchanged, so net rises.
+  C1 `--order-basis delta` (orders = decision-NAV delta, drift rides; default `target` keeps v5 bytes). Prior +.
+  C2 `--exit-rate r` for nonmembers (next = cur*(1-r), snap to 0 inside dust band); r in {theta, 2*theta}. Prior +.
+  C3 locate-in-aim: zero special-tier short aims BEFORE neutralisation. Prior: |mean net| falls; SR ~0.
+  C4 L calibrated on post-ramp rows (rows after the first 63 sessions), reported by nav_summ; gate stays all-rows mean
+     gross in [.90,1.05]. Prior: fewer L re-derivations.
+  C5 industry neutralisation `price-risk-ind-v1` = price-risk-v1 regressors + within-FF12 demeaning (Frisch-Waugh),
+     `price-risk-ind-v2` = ind-v1 with vol126 / ladv252 windows. Prior: vol down, gross SR up or flat; ind_mom_12_1 bet lost.
+  Grid budget: <= 12 cells: {C1 on/off} x {C2 off, theta, 2theta} at theta .05 dust .1 (6), best of those at theta .03 (1),
+  dust re-tune {0, .2} on the best (2), C5 v1 and v2 on the best (2), one spare. L re-derivation on the final cell (1).
+V6-U Universe (u pass): members restricted to PIT-linked operating common stock (drop ETF/ETN/SPAC/ADR without issuer
+  link). Prior: gross SR up (39.4% of member cells now ranked on price signals only); cost/$ ambiguous. Budget: 1 u pass,
+  1 composition, 1 construction cell.
+V6-W Composition `ew-theme-v6` (fit_composition_weights.py), applied to library v5.1 first: (a) drop theme low_risk
+  (all four members negative TRAIN HAC t AND projected out by price-risk-v1; selection-bias caveat disclosed), (b) merge
+  options_implied into short_interest as one theme, (c) fast-sleeve shrink: members with standalone tau >= .08 get weight
+  x 1/3 within theme, mass reallocated within theme, (d) theme weights equal across the resulting 7 themes with coverage
+  redistribution (member missing -> theme mass stays in theme). Prior +. Budget: 2 compositions (v5.1 lib, v6 lib) + 2 cells.
+V6-L Library v6 (generate_fund_ic_v6.py; one variant per hypothesis, prior-signed, admission v4-prior-v1 on TRAIN):
+  replace/add: residual momentum, cash-based operating profitability, composite value (incl. intangible-adjusted), 5-year
+  composite issuance / net external financing, multi-lag (Heston-Sadka) seasonality, betting-against-correlation and scaled
+  MAX (replace low_beta/low_ivol/low_max), long-window FINRA shorting flow, EAR-centred earnings momentum; smoothing moved
+  after the rank (R(decay) -> decay(R) fixed: rank first only where the 21-session blackout binds) or removed for fast
+  sleeves. Budget: admission trials = roster size (<= 48); 1 composition; 1 cell.
+V6-F Final: best construction x V6-U x V6-W x V6-L in one cell, L re-derived (C4). Freeze proposed only if S2 net >= 1.0
+  with R6' mechanics (all-rows gross in [.90,1.05], |mean net| <= .02, tau mean <= .20 / p95 <= .30) AND the cell's
+  cross-cell DSR >= .95 with N = 13 + all v6 cells. Validation trial #3 still requires U1.
+Not done (pre-declared exclusions): IC/HAC/MV-fitted weights on TRAIN; ML stacking; valuation timing; book-level vol
+  targeting; cash-PB financing scenario as a route to 1.0; any cost-model relaxation. Borrow realism: swap-fin-v1 already
+  tiers GC/warm/special (30/100/500 bps); kept as S2.
