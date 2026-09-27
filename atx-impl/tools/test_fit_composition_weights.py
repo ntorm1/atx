@@ -220,8 +220,8 @@ class Fixture:
     """Role dir + library + orientations + runner-format candidate cache on disk."""
 
     def __init__(self, root: Path, panel=None, signals=None, signs=SIGNS, sidecar_role="train",
-                 end_ns=None):
-        self.root = root
+                 end_ns=None, ids=IDS, families=FAMILIES):
+        self.root, self.ids = root, list(ids)
         self.p = panel if panel is not None else synthetic_panel()
         self.signals = signals if signals is not None else synthetic_signals(self.p)
         p = self.p
@@ -246,7 +246,7 @@ class Fixture:
         self.train_sha = sha(self.manifest.read_bytes())
         library = {"schema": fcw.LIBRARY_SCHEMA, "id": "synthetic",
                    "candidates": [{"id": i, "family": f, "dsl": f"rank(close) * {k}", "horizons": [5, 21, 63],
-                                   "sign_policy": "train-rank-ic21"} for k, (i, f) in enumerate(zip(IDS, FAMILIES))]}
+                                   "sign_policy": "train-rank-ic21"} for k, (i, f) in enumerate(zip(ids, families))]}
         self.library = root / "library.json"
         self.library.write_bytes(json.dumps(library).encode())
         self.library_sha = sha(self.library.read_bytes())
@@ -254,7 +254,7 @@ class Fixture:
         orientations = {"schema": fcw.ORIENTATIONS_SCHEMA, "recipe_sha256": "cd" * 32,
                         "library_sha256": self.library_sha, "train_manifest_sha256": self.train_sha,
                         "candidates": [{"id": i, "family": f, "dsl_sha256": s, "sign": g}
-                                       for i, f, s, g in zip(IDS, FAMILIES, dsl_sha, signs)]}
+                                       for i, f, s, g in zip(ids, families, dsl_sha, signs)]}
         (root / "train").mkdir()
         self.orientations = root / "train" / "orientations.json"
         self.orientations.write_bytes((json.dumps(orientations, indent=2) + "\n").encode())
@@ -262,7 +262,7 @@ class Fixture:
         self.cache = root / "cache"
         entry = self.cache / self.train_sha
         entry.mkdir(parents=True)
-        for cid, s, dsha in zip(IDS, self.signals, dsl_sha):
+        for cid, s, dsha in zip(ids, self.signals, dsl_sha):
             data = np.ascontiguousarray(s.astype("<f8")).tobytes()
             (entry / f"{cid}.f64").write_bytes(data)
             sidecar = {"schema": fcw.CACHE_SCHEMA, "candidate_id": cid, "dsl_sha256": dsha,
@@ -272,12 +272,14 @@ class Fixture:
             (entry / f"{cid}.json").write_bytes(json.dumps(sidecar, indent=2).encode())
         self.signs = list(signs)
 
-    def args(self, output: Path, **override) -> argparse.Namespace:
-        argv = ["--library", str(self.library), "--library-sha256", self.library_sha,
+    def argv(self, output: Path, screen="none", extra=()) -> list[str]:
+        return ["--library", str(self.library), "--library-sha256", self.library_sha,
                 "--train", str(self.manifest), "--train-sha256", self.train_sha,
                 "--orientations", str(self.orientations), "--orientations-sha256", self.orientations_sha,
-                "--candidate-cache", str(self.cache), "--output", str(output)]
-        args = fcw.parse_args(argv)
+                "--candidate-cache", str(self.cache), "--screen", screen, "--output", str(output), *extra]
+
+    def args(self, output: Path, screen="none", **override) -> argparse.Namespace:
+        args = fcw.parse_args(self.argv(output, screen))
         for k, v in override.items():
             setattr(args, k, v)
         return args
@@ -378,15 +380,16 @@ class Exposures(unittest.TestCase):
         signals = synthetic_signals(p)
         with tempfile.TemporaryDirectory() as tmp:
             role = Fixture(Path(tmp), p, signals)
-            loaded = fcw.Role(role.manifest, role.train_sha)
-        panel = fcw.PricePanel(loaded.close, loaded.raw_close, loaded.volume, loaded.present)
-        ctx = fcw.Context(loaded, panel)
+            manifest = fcw.RoleManifest(role.manifest, role.train_sha)
+            loaded = manifest.payload()
+            ctx = fcw.Context.build(manifest)
+        panel = fcw.PricePanel(loaded["close"], loaded["raw_close"], loaded["volume"], loaded["present"])
         self.assertEqual([x["decision_index"] for x in ctx.refused], [p["score_begin"] + 10])
         self.assertEqual(ctx.refused[0]["reason"], "too-few-usable-names")
-        q, flat = ctx.book(signals[0], 1)
+        q, live = ctx.book(signals[0], 1)
         qn, _ = ctx.book(signals[0], -1)
         np.testing.assert_array_equal(qn, -q)
-        self.assertEqual(flat, 1)
+        self.assertEqual(int((~live).sum()), 1)
         member = (p["member"] == 1) & (p["present"] == 1)
         for t in range(q.shape[0]):
             d = ctx.begin + t
@@ -409,9 +412,9 @@ class EndToEnd(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.root = Path(cls.tmp.name)
         cls.fx = Fixture(cls.root / "fx")
-        cls.out = cls.root / "out" / "weights.json"
-        cls.summary = fcw.fit(cls.fx.args(cls.out))
-        cls.text = cls.out.read_bytes()
+        cls.out = cls.root / "out" / "t9"
+        cls.code, cls.summary = fcw.fit(cls.fx.args(cls.out))
+        cls.text = (cls.out / fcw.OUTPUT_WEIGHTS).read_bytes()
         cls.doc = json.loads(cls.text)
         cls.ref_weights, cls.ref_taus, cls.ref_factors = reference_fit(cls.fx.p, cls.fx.signals, SIGNS)
 
@@ -479,19 +482,27 @@ class EndToEnd(unittest.TestCase):
         rows = self.rows()
         for i, s in zip(IDS, self.fx.signals):
             self.assertEqual(rows[i]["cache_payload_sha256"], sha(np.ascontiguousarray(s.astype("<f8")).tobytes()))
-        self.assertEqual(self.summary["sha256"], sha(self.text))
+        self.assertEqual(self.code, fcw.EXIT_OK)
+        self.assertEqual(self.summary["weights_sha256"], sha(self.text))
         self.assertEqual(self.text, fcw.canonical_bytes(self.doc))  # canonical bytes
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), [fcw.OUTPUT_WEIGHTS])  # no screen files
+        self.assertEqual(self.doc["train_manifest_sha256"], self.fx.train_sha)
+        self.assertEqual(self.doc["provenance"]["role_manifest_sha256"], self.fx.train_sha)
+        # signs: runner signs (T9 rule), every nonzero sign listed, so every positive weight has one
+        self.assertEqual(self.doc["signs"], {i: s for i, s in zip(IDS, SIGNS) if s != 0})
+        self.assertTrue(all(i in self.doc["signs"] for i in IDS if self.doc["weights"][i] > 0))
+        self.assertEqual(self.doc["provenance"]["screen"], "none")
 
     def test_deterministic_bytes_and_exclusive_output(self):
-        again = self.root / "out" / "again.json"
+        again = self.root / "out" / "again"
         fcw.fit(self.fx.args(again))
-        self.assertEqual(again.read_bytes(), self.text)
+        self.assertEqual((again / fcw.OUTPUT_WEIGHTS).read_bytes(), self.text)
         with self.assertRaises(fcw.FitError):
             fcw.fit(self.fx.args(self.out))
-        self.assertEqual(self.out.read_bytes(), self.text)
+        self.assertEqual((self.out / fcw.OUTPUT_WEIGHTS).read_bytes(), self.text)
         with self.assertRaises(fcw.FitError):
-            fcw.publish_exclusive(self.out, b"{}")
-        self.assertEqual(self.out.read_bytes(), self.text)
+            fcw.publish_directory(self.out, {"x.json": b"{}"})
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), [fcw.OUTPUT_WEIGHTS])
         self.assertFalse(any(x.name.endswith(".pending") for x in self.out.parent.iterdir()))
 
 
@@ -506,7 +517,7 @@ class Refusals(unittest.TestCase):
         self.tmp.cleanup()
 
     def refuse(self, fx, fragment, **override):
-        out = self.root / "refused.json"
+        out = self.root / "refused"
         with self.assertRaises(fcw.FitError) as caught:
             fcw.fit(fx.args(out, **override))
         self.assertIn(fragment, str(caught.exception))
@@ -541,6 +552,233 @@ class Refusals(unittest.TestCase):
         data[16] ^= 1
         close.write_bytes(bytes(data))
         self.refuse(fx, "payload SHA close.f64")
+
+
+
+# ------------------------------------------------------------- T11: v3-admit-v1
+def screen_world(seed=21, names=60, score_begin=150):
+    """2020-05-01 .. 2022-04-02 calendar sessions; FIT and HOLD both populated; persistent alphas."""
+    rng = np.random.default_rng(seed)
+    day0 = np.datetime64("2020-05-01", "D")
+    dates = int((np.datetime64("2022-03-31", "D") - day0).astype(int)) + 3  # last decision 2022-03-31
+
+    def ar(phi=0.97):
+        z = np.empty((dates, names))
+        z[0] = rng.normal(size=names)
+        for t in range(1, dates):
+            z[t] = phi * z[t - 1] + math.sqrt(1 - phi * phi) * rng.normal(size=names)
+        return z
+
+    z1, z2, u, v, w = ar(), ar(), ar(), ar(), ar()
+    ret = rng.uniform(0.5, 1.5, names)[None, :] * rng.normal(0.0003, 0.01, dates)[:, None]
+    ret = ret + rng.normal(0, 0.015, (dates, names))
+    ret[1:] += 0.004 * (z1[:-1] + z2[:-1])  # r(d+2) loads on z(d+1) ~ .97 z(d)
+    close = 40.0 * np.exp(np.cumsum(np.log1p(ret), axis=0))
+    present = np.ones((dates, names), dtype=np.uint8)
+    member = present.copy()
+    member[:63] = 0
+    sessions = day0.astype("datetime64[ns]").astype(np.int64) + DAY * np.arange(dates, dtype=np.int64)
+    panel = {"close": close, "raw": close.copy(), "volume": rng.lognormal(12, 1, (dates, names)),
+             "present": present, "member": member, "sessions": sessions,
+             "ids": np.arange(101, 101 + names, dtype=np.uint64), "score_begin": score_begin, "rng": rng}
+    hold = (sessions >= fcw.HOLD_BEGIN_NS)[:, None]
+    insufficient = np.full((dates, names), NAN)
+    insufficient[score_begin:score_begin + 100] = z2[score_begin:score_begin + 100]
+    signals = {"slow_a": z1 + 0.1 * u, "slow_a_twin": z1 + 0.6 * v, "slow_b": -(z2 + 0.1 * w),
+               "fast_a": z1 + rng.normal(0, 3, (dates, names)), "flip": np.where(hold, -z1, z1),
+               "insufficient": insufficient}
+    ids = list(signals)
+    live = member == 1
+    return panel, [np.where(live, signals[i], NAN) for i in ids], ids
+
+
+SCREEN_RUNNER_SIGNS = [1, 1, 1, 1, 1, 1]  # slow_b's runner sign (+1) disagrees with its screen sign (-1)
+
+
+class ScreenRules(unittest.TestCase):
+    """screen_v3 on hand-built factor rows: 400 FIT then 200 HOLD decisions."""
+
+    def test_every_rule_and_precedence(self):
+        rng = np.random.default_rng(0)
+        t = 600
+        fit, hold = np.arange(t) < 400, np.arange(t) >= 400
+        noise = lambda: rng.normal(0, 1, t)  # noqa: E731
+        base = noise()
+        a = 0.3 + base
+        a[:100] = NAN  # 300 live FIT days
+        b = 0.2 + base + 0.3 * noise()  # ~ A with a lower FIT Sharpe -> redundant with A
+        c = 0.25 + noise()
+        d = np.where(fit, 0.3 + noise(), -0.3 + noise())  # FIT good, HOLD bad
+        e = 0.3 + noise()
+        e[200:400] = NAN  # 200 live FIT days
+        f = 0.3 + noise()  # good but high turnover
+        g = np.where(np.arange(t) < 260, 0.3 + base, 0.3 + noise())
+        g[260:400] = NAN  # 260 FIT days; only 160 in common with A -> uncorrelated by rule
+        h = -(0.3 + noise())  # negative orientation
+        i = e.copy()  # insufficient AND high turnover -> insufficient wins, both listed
+        rows = fcw.screen_v3(np.vstack([a, b, c, d, e, f, g, h, i]),
+                             [0.1, 0.1, 0.1, 0.1, 0.1, 0.9, 0.1, 0.1, 0.9], list("abcdefghi"), fit, hold)
+        by = dict(zip("abcdefghi", rows))
+        self.assertEqual({k: r["status"] for k, r in by.items()},
+                         {"a": "admitted", "b": "reject_redundant", "c": "admitted", "d": "reject_unstable",
+                          "e": "reject_insufficient", "f": "reject_turnover", "g": "admitted", "h": "admitted",
+                          "i": "reject_insufficient"})
+        self.assertEqual(by["b"]["redundant_with"], "a")
+        self.assertGreater(by["b"]["max_abs_rho"], 0.7)
+        self.assertEqual(by["b"]["max_abs_rho_with"], "a")
+        self.assertEqual(by["i"]["failed_checks"], ["insufficient", "turnover"])
+        self.assertEqual(by["f"]["failed_checks"], ["turnover"])
+        self.assertEqual(by["h"]["s_k"], -1)
+        self.assertGreater(by["h"]["fit_sharpe"], 0)
+        self.assertEqual((by["a"]["fit_days"], by["e"]["fit_days"], by["g"]["fit_days"]), (300, 200, 260))
+        # whichever of a/g is processed second notes the other as a low-overlap pair
+        notes = sorted(by["a"]["low_overlap_with"] + by["g"]["low_overlap_with"])
+        self.assertIn(notes, (["a"], ["g"]))
+        admitted = sorted((r["admission_rank"], k) for k, r in by.items() if r["status"] == "admitted")
+        sharpe = [by[k]["fit_sharpe"] for _, k in admitted]
+        self.assertEqual(sharpe, sorted(sharpe, reverse=True))  # admission follows descending FIT Sharpe
+        mean = np.nanmean(a[fit])
+        sd = np.nanstd(a[fit], ddof=1)
+        self.assertAlmostEqual(by["a"]["fit_sharpe"], mean / sd * math.sqrt(252), places=12)
+        self.assertAlmostEqual(by["d"]["hold_mean"], float(d[hold].mean()), places=15)
+        self.assertLess(by["d"]["hold_mean"], 0)
+
+
+class Admission(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        panel, signals, ids = screen_world()
+        cls.ids = ids
+        cls.fx = Fixture(cls.root / "fx", panel, signals, SCREEN_RUNNER_SIGNS, ids=ids, families=["fam"] * len(ids))
+        cls.out = cls.root / "fresh"
+        cls.code, cls.summary = fcw.fit(cls.fx.args(cls.out, "v3-admit-v1"))
+        cls.bytes = {p.name: p.read_bytes() for p in cls.out.iterdir()}
+        cls.adm = json.loads(cls.bytes[fcw.OUTPUT_ADMISSION])
+        cls.doc = json.loads(cls.bytes[fcw.OUTPUT_WEIGHTS])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def run_fit(self, out, **override):
+        return fcw.fit(self.fx.args(out, "v3-admit-v1", **override))
+
+    def assert_same(self, out):
+        got = {p.name: p.read_bytes() for p in Path(out).iterdir()}
+        self.assertEqual(sorted(got), sorted(self.bytes))
+        for name in got:
+            self.assertEqual(got[name], self.bytes[name], name)
+
+    def test_one_candidate_per_class_and_weights_only_for_admitted(self):
+        self.assertEqual(self.code, fcw.EXIT_OK)
+        rows = {c["id"]: c for c in self.adm["candidates"]}
+        self.assertEqual({i: rows[i]["status"] for i in self.ids},
+                         {"slow_a": "admitted", "slow_a_twin": "reject_redundant", "slow_b": "admitted",
+                          "fast_a": "reject_turnover", "flip": "reject_unstable",
+                          "insufficient": "reject_insufficient"})
+        self.assertEqual(rows["slow_a_twin"]["redundant_with"], "slow_a")
+        self.assertGreater(rows["slow_a"]["fit_sharpe"], rows["slow_a_twin"]["fit_sharpe"])
+        self.assertGreater(rows["slow_a_twin"]["max_abs_rho"], 0.7)
+        self.assertEqual(rows["slow_b"]["s_k"], -1)
+        self.assertLess(rows["flip"]["hold_mean"], 0)
+        self.assertGreater(rows["flip"]["fit_sharpe"], 0)
+        self.assertGreater(rows["fast_a"]["tau"], 0.7)
+        self.assertLess(rows["slow_a"]["tau"], 0.7)
+        self.assertEqual(rows["insufficient"]["fit_days"], 100)
+        self.assertEqual(sorted(self.adm["admitted"]), ["slow_a", "slow_b"])
+        self.assertEqual(self.adm["sign_conflicts"], ["slow_b"])
+        self.assertEqual(self.adm["counts"], {"admitted": 2, "reject_insufficient": 1, "reject_turnover": 1,
+                                              "reject_unstable": 1, "reject_redundant": 1})
+        w = self.doc["weights"]
+        self.assertEqual({i for i in self.ids if w[i] > 0}, {"slow_a", "slow_b"})
+        self.assertAlmostEqual(sum(w.values()), 1.0, places=12)
+        self.assertEqual(self.doc["signs"], {i: rows[i]["s_k"] for i in self.ids})  # screen signs, all nonzero
+        self.assertEqual(self.doc["signs"]["slow_b"], -1)
+        self.assertEqual(self.doc["provenance"]["sign_conflicts_weighted"], ["slow_b"])
+        self.assertEqual(self.doc["train_manifest_sha256"], self.fx.train_sha)
+        self.assertEqual(self.doc["provenance"]["role_manifest_sha256"], self.fx.train_sha)
+        self.assertEqual(self.doc["provenance"]["admission_sha256"], sha(self.bytes[fcw.OUTPUT_ADMISSION]))
+        taus = {c["id"]: c["tau"] for c in self.adm["candidates"]}
+        self.assertAlmostEqual(self.doc["provenance"]["weighted_standalone_turnover"],
+                               sum(w[i] * taus[i] for i in self.ids), places=14)
+        runner_accepts(self.bytes[fcw.OUTPUT_WEIGHTS], self.fx.library_sha, self.ids)
+
+    def test_admission_files_schema_and_csv(self):
+        self.assertEqual(self.adm["schema"], "atx.dsl-admission/v1")
+        self.assertEqual(self.adm["screen"], "v3-admit-v1")
+        self.assertEqual(self.adm["inputs"]["train_manifest_sha256"], self.fx.train_sha)
+        self.assertEqual(self.adm["inputs"]["orientations_sha256"], self.fx.orientations_sha)
+        self.assertEqual([c["id"] for c in self.adm["candidates"]], self.ids)
+        lines = self.bytes[fcw.OUTPUT_ADMISSION_CSV].decode().splitlines()
+        self.assertEqual(lines[0].split(","), list(fcw.CSV_COLUMNS))
+        self.assertEqual(len(lines), 1 + len(self.ids))
+        twin = dict(zip(fcw.CSV_COLUMNS, lines[1 + self.ids.index("slow_a_twin")].split(",")))
+        self.assertEqual((twin["status"], twin["redundant_with"]), ("reject_redundant", "slow_a"))
+        self.assertEqual(self.bytes[fcw.OUTPUT_ADMISSION], fcw.canonical_bytes(self.adm))
+
+    def test_incremental_paths_are_byte_identical(self):
+        work = self.root / "work"
+        # 1) two new candidates, then a clean stop: exit 3, nothing published, work persisted
+        stopped = self.root / "never"
+        argv = self.fx.argv(stopped, "v3-admit-v1", ["--work-dir", str(work), "--max-new-candidates", "2"])
+        self.assertEqual(fcw.main(argv), fcw.EXIT_INCOMPLETE)
+        self.assertFalse(stopped.exists())
+        store = work / self.fx.train_sha / fcw.SEMANTICS_TAG
+        self.assertEqual(len(list((store / "factors").glob("*.json"))), 2)
+        self.assertTrue((store / "context" / "context.json").is_file())
+        # 2) a soft time budget already spent: stops before the next candidate, context reused
+        with self.assertRaises(fcw.Incomplete) as caught:
+            self.run_fit(stopped, work_dir=work, max_seconds=1e-9)
+        self.assertEqual((caught.exception.summary["computed_this_run"], caught.exception.summary["reused"]), (0, 2))
+        self.assertFalse(stopped.exists())
+        # 3) resume to completion: only the four missing candidates are computed
+        code, summary = self.run_fit(self.root / "resumed", work_dir=work)
+        self.assertEqual((code, summary["computed_this_run"], summary["reused"]), (fcw.EXIT_OK, 4, 2))
+        self.assert_same(self.root / "resumed")
+        # 4) everything cached: nothing computed
+        code, summary = self.run_fit(self.root / "cached", work_dir=work)
+        self.assertEqual((summary["computed_this_run"], summary["reused"]), (0, 6))
+        self.assert_same(self.root / "cached")
+        # 5) a tampered record fails its SHA check and is recomputed
+        record = sorted((store / "factors").glob("*.json"))[0]
+        j = json.loads(record.read_bytes())
+        j["f_unsigned"][5] = 0.123
+        record.write_bytes(json.dumps(j).encode())
+        code, summary = self.run_fit(self.root / "retampered", work_dir=work)
+        self.assertEqual(summary["computed_this_run"], 1)
+        self.assert_same(self.root / "retampered")
+        # 6) a corrupt context is rebuilt (bit-identical) when a candidate must be recomputed
+        before = (store / "context" / "context.json").read_bytes()
+        basis = store / "context" / "basis.bin"
+        data = bytearray(basis.read_bytes())
+        data[100] ^= 1
+        basis.write_bytes(bytes(data))
+        record.unlink()
+        code, summary = self.run_fit(self.root / "rebuilt", work_dir=work)
+        self.assertEqual(summary["computed_this_run"], 1)
+        self.assertEqual((store / "context" / "context.json").read_bytes(), before)
+        self.assert_same(self.root / "rebuilt")
+        # 7) with every record cached the role price payload is never read
+        close = self.fx.manifest.parent / "close.f64"
+        close.rename(close.with_name("close.away"))
+        try:
+            code, summary = self.run_fit(self.root / "no_payload", work_dir=work)
+        finally:
+            close.with_name("close.away").rename(close)
+        self.assertEqual(code, fcw.EXIT_OK)
+        self.assert_same(self.root / "no_payload")
+
+    def test_nothing_admitted_publishes_table_only(self):
+        keep = [3, 4, 5]  # fast_a, flip, insufficient: every one rejected
+        panel, signals, ids = screen_world()
+        fx = Fixture(self.root / "rejects", panel, [signals[k] for k in keep], [1] * len(keep),
+                     ids=[ids[k] for k in keep], families=["fam"] * len(keep))
+        out = self.root / "rejects_out"
+        self.assertEqual(fcw.main(fx.argv(out, "v3-admit-v1")), fcw.EXIT_NO_WEIGHTS)
+        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted([fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV]))
+        self.assertEqual(json.loads((out / fcw.OUTPUT_ADMISSION).read_bytes())["admitted"], [])
 
 
 if __name__ == "__main__":
