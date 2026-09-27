@@ -770,28 +770,28 @@ TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWe
   EXPECT_NE(warm.log.find("IC cache-hit volume_level role=validation"),std::string::npos);
   EXPECT_EQ(warm.log.find("IC VM-"),std::string::npos);
   EXPECT_FALSE(std::filesystem::exists(cache_root(dir.path/"cold"/"summary.json")/cfg.train_sha256));
-  // A blend frozen WITH weights resumes with exactly that file.
-  resume_from(cfg,"weighted_source"); cfg.candidate_cache_directory.clear();
-  const auto same=run_named(dir,cfg,"same"); ASSERT_TRUE(same.ok) << same.error;
-  for (const auto* run:{&cold,&warm,&same}) EXPECT_EQ(run->log.find("IC loading train"),std::string::npos);
-  for (const std::string name:{"cold","warm","same"}) {
+  for (const auto* run:{&cold,&warm}) EXPECT_EQ(run->log.find("IC loading train"),std::string::npos);
+  // The shipped flow (unweighted O + weights fit on O) reproduces the weighted
+  // TRAIN run's validation bytes exactly, which is why a weighted frozen source
+  // is never needed for validation (T14 strict ruling).
+  for (const std::string name:{"cold","warm"}) {
     for (const auto* file:{"validation_combined.f64","validation_combined_finite.u8",
-                           "validation_planned_targets.csv","validation_daily_ic.csv"}) {
-      const auto expected=file_sha(dir.path/"source"/file); ASSERT_FALSE(expected.empty()) << file;
-      EXPECT_EQ(file_sha(dir.path/name/file),expected) << name << ' ' << file;
-    }
+                           "validation_planned_targets.csv","validation_daily_ic.csv"})
+      for (const std::string reference:{"source","weighted_source"}) {
+        const auto expected=file_sha(dir.path/reference/file); ASSERT_FALSE(expected.empty()) << file;
+        EXPECT_EQ(file_sha(dir.path/name/file),expected) << name << ' ' << reference << ' ' << file;
+      }
     const auto recipe=read_json(dir.path/name/"recipe.json");
     EXPECT_EQ(recipe.at("composition_weights_sha256"),weights_pin) << name;
     EXPECT_EQ(read_json(dir.path/name/"validation_combined.json").at("composition_weights_sha256"),weights_pin);
-    EXPECT_EQ(recipe.at("frozen_train_recipe"),
-              read_json(dir.path/(name=="same"?"weighted_source":"source")/"recipe.json")) << name;
+    EXPECT_EQ(recipe.at("frozen_train_recipe"),read_json(dir.path/"source"/"recipe.json")) << name;
   }
   EXPECT_EQ(file_sha(dir.path/"cold"/"validation_combined.json"),file_sha(dir.path/"warm"/"validation_combined.json"));
-  // T14 M1: how the weights were bound to the frozen TRAIN run is recorded.
+  // T14 M1: how the weights were bound to TRAIN is recorded, for both run modes.
   EXPECT_EQ(read_json(dir.path/"cold"/"summary.json").at("composition_weights").at("binding"),
             "provenance-orientations-equal-frozen-TRAIN-orientations-artifact");
-  EXPECT_EQ(read_json(dir.path/"same"/"summary.json").at("composition_weights").at("binding"),
-            "frozen-TRAIN-recipe-pins-these-weights");
+  EXPECT_EQ(read_json(dir.path/"weighted_source"/"summary.json").at("composition_weights").at("binding"),
+            "train-manifest-sha256;TRAIN-scored-in-this-run");
   // Selection hygiene refusals, all before any payload or output.
   const auto refuse=[&](atx::impl::strategy::IcRunnerConfig attempt_cfg,const std::string& name,
                         const std::string& reason) {
@@ -800,10 +800,17 @@ TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWe
     EXPECT_NE(attempt.error.find(reason),std::string::npos) << name << ": " << attempt.error;
     EXPECT_FALSE(std::filesystem::exists(dir.path/name)) << name;
   };
-  auto without=cfg; without.composition_weights_path.clear(); without.composition_weights_sha256.clear();
-  refuse(without,"without","validation must pin exactly the same --composition-weights");
-  auto other=cfg; ASSERT_TRUE(pin_weights(dir,other,{{"volume_level",.25},{"volume_rank",.75}},Json(),"other.json"));
-  refuse(other,"other","validation must pin exactly the same --composition-weights");
+  // A weighted frozen TRAIN run is never a validation source: with its own weights,
+  // with none, or with others.
+  const std::string weighted_source="frozen TRAIN artifact is a weighted run; validate from the unweighted TRAIN "
+                                    "run whose orientations the weights were fit on";
+  auto same=cfg; resume_from(same,"weighted_source"); same.candidate_cache_directory.clear();
+  refuse(same,"same",weighted_source);
+  auto without=same; without.composition_weights_path.clear(); without.composition_weights_sha256.clear();
+  refuse(without,"without",weighted_source);
+  auto other=same; ASSERT_TRUE(pin_weights(dir,other,{{"volume_level",.25},{"volume_rank",.75}},Json(),"other.json",
+      {{"orientations_sha256",source_orientations}}));
+  refuse(other,"other",weighted_source);
   auto foreign=cfg; resume_from(foreign,"source");
   foreign.composition_weights_path=(dir.path/"foreign.json").string();
   ASSERT_TRUE(json_file(foreign.composition_weights_path,{{"schema","atx.dsl-composition-weights/v1"},
@@ -1610,10 +1617,25 @@ TEST(StrategyIcRunner, VmSourcesPinnedToSemanticsVersion) {
 TEST(StrategyIcRunner, ValidationWeightsMustNameTheFrozenTrainOrientations) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   const auto source=run_named(dir,cfg,"source"); ASSERT_TRUE(source.ok) << source.error;
+  const Json weights{{"volume_level",.75},{"volume_rank",.25}};
+  // The bypass the strict ruling closes: a fit naming foreign orientations, first
+  // scored in a weighted TRAIN-only run, then validated against that artifact.
+  auto laundered=cfg; laundered.validation_manifest.clear(); laundered.validation_sha256.clear();
+  ASSERT_TRUE(pin_weights(dir,laundered,weights,Json(),"laundered.json",{{"orientations_sha256",std::string(64,'0')}}));
+  const auto weighted_train=run_named(dir,laundered,"weighted_train"); ASSERT_TRUE(weighted_train.ok) << weighted_train.error;
   ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  laundered.validation_manifest=cfg.validation_manifest; laundered.validation_sha256=cfg.validation_sha256;
+  laundered.orientations_path=(dir.path/"weighted_train"/"orientations.json").string();
+  laundered.orientations_sha256=file_sha(laundered.orientations_path);
+  for (const bool plan_only:{true,false}) {
+    laundered.plan_only=plan_only; const auto run=run_named(dir,laundered,"laundered");
+    EXPECT_FALSE(run.ok);
+    EXPECT_NE(run.error.find("frozen TRAIN artifact is a weighted run; validate from the unweighted TRAIN run "
+                             "whose orientations the weights were fit on"),std::string::npos) << run.error;
+    EXPECT_FALSE(std::filesystem::exists(dir.path/"laundered"));
+  }
   cfg.orientations_path=(dir.path/"source"/"orientations.json").string();
   cfg.orientations_sha256=file_sha(cfg.orientations_path);
-  const Json weights{{"volume_level",.75},{"volume_rank",.25}};
   const auto refuse=[&](const Json& provenance,const std::string& name,const std::string& reason) {
     auto attempt=cfg; ASSERT_TRUE(pin_weights(dir,attempt,weights,Json(),name+".json",provenance));
     for (const bool plan_only:{true,false}) {
@@ -1717,6 +1739,16 @@ TEST(StrategyIcRunner, ValidationOnlyChecksFieldDefinitionsAgainstFrozenTrain) {
   auto lying=resume; lying.orientations_path=(legacy_dir/"orientations.json").string();
   ASSERT_TRUE(json_file(lying.orientations_path,lying_artifact,lying.orientations_sha256));
   refuse(lying,"lying","frozen TRAIN artifact research field record differs from its recipe pin");
+  // A record without an object of definitions, or missing a declared field.
+  const auto repinned_record=[&](const Json& definitions,const std::string& name,const std::string& reason) {
+    auto edited=artifact; edited["research_fields"]["definitions"]=definitions;
+    auto attempt=resume; attempt.orientations_path=(legacy_dir/"orientations.json").string();
+    ASSERT_TRUE(json_file(attempt.orientations_path,edited,attempt.orientations_sha256));
+    refuse(attempt,name,reason);
+  };
+  repinned_record(Json::array(),"definitions_array","frozen TRAIN artifact research field record differs from its recipe pin");
+  repinned_record(Json::object(),"definitions_missing",
+                  "research field 'si_shares' definition differs between the frozen TRAIN artifact");
   // M1 with fields: the weights' provenance must name TRAIN's fields pin.
   const Json weights{{"volume_level",.25},{"volume_rank",.25},{"si_ratio",.5}};
   auto weighted=resume; ASSERT_TRUE(pin_weights(dir,weighted,weights,Json(),"fields_weights.json",
