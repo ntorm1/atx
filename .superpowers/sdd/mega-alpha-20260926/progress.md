@@ -1,5 +1,31 @@
 # Active task: recent-data DSL ensemble
 
+## T40 gate (R6') — objective NOT met on TRAIN; no freeze; no validation — Task T40: complete — 2026-09-27
+task-T40-report.md (+ t40-table.md; build-equity/mega-nav-v5-t40-summ-n13.{txt,json}, nav_summ over 13 cells, --dsr-n 13).
+Mechanics 1/13 pass: ew t.05 d.1 fixed L1.279 (gross 1.002 all rows, |net| .015, tau .044/.061) -> D1 met via L re-run.
+aim L1.279 gross 1.072 > 1.05 FAIL; every L = 1 cell under-deploys (.71-.88). Paired dSR vs REF (LW studentized, 2000 draws):
+none significantly positive; best v5.1 +.017 (SE .011, p .137); ew L1.279 -.030 (p .018); per-name ew -.195 (p .053), aim -.293
+(p .032); aim trails ew in all 5 pairs. DSR N = 13 (V[SR_n] 3.083e-05/session, SR0 .150 ann): max .846, REF .839, L .827.
+Max TRAIN net +.759 (v5.1 ew L 1) < 1.0 -> no freeze proposal. S3 negative in 13/13 cells. D7 MET (26 receipts, TRAIN-only
+manifests). D1-D5, D7 met (D5 = NO-GO settled); D6 at T42.
+Trial accounting (TRAIN 2020-2022 only):
+  v3 era: admission 48 + 121; composition 4 + 7; construction 14.
+  since run #1: libraries v4 (37), v4.2 (40), v5.1 (38); compositions v4, v4.2, ew-theme-aim-v1, v5.1 x2;
+  construction v4 1 + v4.1 grid 5 + v4.2 2 + v5 grid 10 + 2 L re-run + 1 v5.1; studies T26 5 paper books, T16, T28 audit.
+  validation: #1 (v3, book level), #2 (v4.1, 24%-gross book). Per-candidate VAL statistics: never read.
+  DSR inputs: N = 13, V[SR_n] = 3.083e-05, skew = -1.279, kurtosis = 14.532.
+
+
+## T39 step 2b — v5.1 u / fit x2 / w (ew) / NAV reference — 2026-09-27 — admission 38, composition +2, construction +1
+u pass mega-v51-train-u-1 (1 pass, 27 s, 914 MiB, cache hits 37 miss 1): orientations 49fcfdbc, summary 857cebc0.
+Fit ew-theme-v1 (mega-weights-v51-ew, W_ew51 198375f9, admission 4f06bd18): admitted 32/38 (+opex_at vs v4 880a0a6a; opex_at
+tau .014, HAC t 3.20, max|rho| .522 with roe_q, weight .0139); weighted_standalone_turnover .0518.
+Fit ew-theme-aim-v1 (mega-weights-v51-aim, W_aim51 89b146f8): gains [.358, .985] all in [.05, 1]; wst .0424.
+w pass ew (mega-v51w-train-ew-1, 26 s, 504 MiB): C_ew51 1a0119a6. NAV mega-nav-v51-ew-t.05-d.1-fixed (40 s, 338 MiB):
+S2 net +.759, gross 1.193, HAC 1.49, gross_lev .781 (all rows), tau .0434/.0603, NR .838; dSR vs REF +.017 (Memmel SE .011,
+t 1.54, CBB [-.005, +.038]) -> not significant. T39 step 1 (delisting) not run (T33a NO-GO).
+
+
 ## T38 steps 4-5 — L re-run (+2 construction) and 10-cell nav_summ (DSR N = 10) — 2026-09-27
 T34c cherry-picked into pool-2 (6c77b4e9, e80b313d, 773da185) before these runs.
 L = 1.279 (receipts mega-nav-v5-{ew,aim}-t.05-d.1-fixed-L1.279-run, completed 40 s / 338 MiB each):
