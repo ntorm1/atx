@@ -1,5 +1,14 @@
 # Active task: recent-data DSL ensemble
 
+## VALIDATION RUN #2 — FREEZE v4.1-daily-2026-09-27 — RESULT: net +0.641 (objective >= 1 NOT met; no OOS decay)
+Script studies/v4_validation_once.sh @214b383a. Runner mega-v4-VAL-1: 47 s / 696 MiB, 37 cold; combined c50829be...
+NAV mega-nav-v4-VAL-b2-f.25 (14 s / 243 MiB), 2023-2024, $1bn, daily c1, f.25, band 2, neut price-risk-v1:
+  PRIMARY S2 x swap-fin-v1: NET SR +0.641, gross +0.802, HAC t .95, mu 1.56%/yr, vol 2.43%, MDD 2.3%,
+    years 2023 +1.7% / 2024 +1.4%; tau_gmv mean .0134 / p95 .0272 (limits MET); tc .53% (2y).
+  S1 x swap-fin .706; S3 .072; S2 x flat-300 .583; S2 x engine-tiers .607. Netting ratio (TRAIN b2f.25) .0136/.0519=.26.
+TRAIN in-sample same config: net .687 / gross .815 -> OOS ~= TRAIN (v3: 1.81 -> -1.27). Prior-signed, mean-free
+construction generalises; the shortfall is alpha strength (gross ~.8) vs the $1bn S2 cost hurdle.
+
 ## FREEZE v4.1-daily-2026-09-27 — VALIDATION TRIAL #2 (declared before any validation run of this configuration)
 - Ruling (gate override): the TRAIN gate (>=1.0) was a root resource rule to conserve validation, not a validity
   condition; v4.1 selection used no 2023-24 information, so its validation result is an honest OOS read. The owner
