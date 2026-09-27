@@ -126,6 +126,12 @@
   lock): 172,777 rows, manifest 74ed9a50...; fields-v6 TRAIN 32565c32.. (42 s/637 MiB) / VAL c034ecf3.. (30 s/564 MiB),
   coverage unchanged vs v5. v4_train.sh FD -> fields-v6. Scoped re-review dispatched (t20-rereview).
 
+- T20 re-review 1: I1, m2-m5 ADDRESSED; m1 (concept rank beats recency; 42,175 keys counted) open by design, caveat;
+  new minors N1-N3. Task T20: complete (77771dd2/9de89dd0/dd8877ae + fix 6fa90efa). Task T21: complete.
+- v4 unweighted TRAIN pass mega-v4-train-u-1: 86 s / 1012 MiB, 37 cold misses, exit 0 (IC numbers not read before
+  T20 re-review). Proceeding: fit -> weighted -> NAV (TRAIN; the v4 TRAIN read). T25 audit still in flight — any
+  data fix it forces is correctness-driven and will be disclosed.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
