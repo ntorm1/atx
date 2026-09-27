@@ -1,5 +1,18 @@
 # Active task: recent-data DSL ensemble
 
+## V6-W implemented (pool-4 2d37de31, a0566920, a54f20b5, 34006519) -- DONE_WITH_CONCERNS -- reviews C1/C2/W running; build v6-0 running (2026-09-27 ~20:00)
+ew-theme-v6 rules (a)-(c) in the fitter (tau from admission.json candidates[].tau); rule (d) as C++ within-theme-v1
+redistribution in the IC runner, active only when the weights block is present (env example's w-phase check refuses an old
+binary); role --universe linked-operating-v1 (PIT, manifest records id + dropped share/day; class_status common + non-operating
+SIC set); v6_w.env.example with exact restrict/fields/u/fit/w commands. Tests 80 + 11 OK; ew-theme-v1/aim-v1 bytes unchanged
+except embedded script SHAs. Literal rule (c) leaves reversal_seasonality unshrunk (both members fast): fast mass .287 -> .167.
+- Ruling: the bounded runner's RSS cap stays 1536 MiB for every phase; the fitter's own --max-memory-mib 2304 is an admit
+  estimate (reported RSS ~1.2 GiB) and may be passed as such -- why: the RAM rule forbids longer caps, not larger internal
+  estimates; if real RSS exceeds 1536 the runner kills it and an efficiency fix follows -- cost if wrong: one killed w run.
+- Ruling: reversal_seasonality unshrunk under literal (c) stands -- why: the prereg text is binding and was declared before
+  any read; changing it now would be a post-hoc rule edit -- cost if wrong: that theme's weight rises 1/9 -> 1/7.
+- Ruling: V6-U needs a fields rebuild for the restricted role (root, disclosed data step, not a trial).
+
 ## V6-L review APPROVED; V6-C1 implemented; cherry-picks; build v6-0 (2026-09-27 ~19:50)
 task-V6L-review.md: APPROVED, 0 Crit / 0 Imp / 7 Minor (optional). Roster-order and tier-source rules ratified (see V6-L
 rulings above). res_mom_12_1 counts as a RE-TRIAL of the v4.2 candidate in Appendix A. Root actions after the u pass:
