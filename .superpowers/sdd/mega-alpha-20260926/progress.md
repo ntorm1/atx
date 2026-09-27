@@ -22,6 +22,21 @@ efficiency/incremental progress to cut resource use.
 - VALIDATION frozen replay: base mean34.44%/max70.60%, gross.906; budget mean30.24%/max31.31%,
   gross.853; 180/500 complete days; obs-component gross SR .34/.38, ~1.9%/yr, vol ~5%.
   Borrow scenario ~1.25%/yr dominates -> net ~0. Objective NOT met.
+- Evidence commit 5c9cbaed: saved-blend-policy archive (60 files) + report + DAG row. Audit script
+  d8e5fb27 PASS: 2268 exact baseline f64 values.
+- TRAIN numpy prototype (diagnostic only; C++ remains the evaluator): neutralizing desired target vs
+  trailing beta252/vol63/logADV63 lifts gross ratio .36->.55, vol 10.4%->7.5%, beta -.16->-.03, but
+  turnover 35->40%/mo. Cadence/fraction/EWMA variants all ~.5; borrow 300->50bps ~+.16. BINDING
+  CONSTRAINT = ALPHA QUALITY, not construction.
+- Sprint v2 dispatched 2026-09-26 ~21:50 (opus, no TDD, root builds):
+  T1 pool-4 feat/mega-alpha-runner-cache-20260926: candidate signal cache + pinned composition weights.
+  T2 pool-5 feat/mega-alpha-nav-20260926: NAV replay per nav-backtest-design.md (S1 linear, S2 $1bn
+    sqrt-impact PRIMARY, S3 adverse K=1; stale-carry K=5).
+  T3 pool-3 feat/mega-alpha-exposures-20260926: price exposures + neutralize_target (new files).
+  Data inventory (read-only Explore) running for fundamentals/short interest/13F/industry.
+  Ruling: implementer tasks branch fresh from root 5c9cbaed in pools 3/4/5 (old branches kept) -
+  trivial cherry-picks; cost if wrong: none.
+  Ruling: 300bps borrow and K=5 kept as registered/designed; no cost grid.
 - Next: NAV backtest with declared missing-price policy (design agent), audit script review
   (agent), then construction (risk neutralization) + alpha expansion toward SR>=1.
 
