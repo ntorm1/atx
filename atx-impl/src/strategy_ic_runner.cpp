@@ -51,6 +51,52 @@ constexpr const char* fields_semantics="extra-date-major-f64-columns-resolved-by
     "role-presence-mask;decision-member-mask-unchanged";
 constexpr std::array<std::string_view,3> base_fields{"close","raw_close","volume"};
 constexpr usize io_chunk=1U<<20;
+// ---- Candidate-cache VM identity -------------------------------------------
+// BUMP dsl_vm_semantics_version with any change that can alter one evaluated bit
+// of a DSL signal: parse/analyze/compile (atx-engine alpha parser/typecheck/dag/
+// bytecode/fusion), the VM or its kernels (alpha/vm.hpp, cs_ops, ts_ops, ts_*,
+// state_ops), or the member-mask/eval-mode contract used here. The value keys the
+// cache directory, so a bump is a clean miss + recompute, never a stale hit.
+constexpr int dsl_vm_semantics_version=1;
+// FP-relevant build flavor of this TU, which instantiates the header-only VM:
+// compiler major.minor and FMA/AVX2/fast-math. Patch-level compiler updates are
+// assumed not to change strict-FP results. clang-cl defines both __clang__ and
+// _MSC_VER; the clang branch wins.
+#define ATX_IC_STRINGIZE2(x) #x
+#define ATX_IC_STRINGIZE(x) ATX_IC_STRINGIZE2(x)
+#if defined(__clang__)
+constexpr std::string_view vm_compiler=
+    "clang" ATX_IC_STRINGIZE(__clang_major__) "." ATX_IC_STRINGIZE(__clang_minor__);
+#elif defined(_MSC_VER)
+constexpr std::string_view vm_compiler="msvc" ATX_IC_STRINGIZE(_MSC_VER);
+#else
+constexpr std::string_view vm_compiler{}; // unknown: --candidate-cache refuses
+#endif
+#undef ATX_IC_STRINGIZE
+#undef ATX_IC_STRINGIZE2
+constexpr std::string_view vm_fp_flavor=""
+#if defined(__FMA__)
+    "_fma"
+#endif
+#if defined(__AVX2__)
+    "_avx2"
+#endif
+#if defined(__FAST_MATH__)
+    "_fastmath"
+#endif
+    ;
+// Entries written before this identity existed sit directly under DIR/<sha>/ with
+// no vm_identity key. They came from engine builds 429cbe43/6d85ac2a (clang-cl
+// 18.1.8, dev preset, no /arch) and no alpha, parallel or core source changed
+// between those commits and this key, so exactly this identity keeps that layout
+// and accepts keyless sidecars recorded by exactly those builds. Every other
+// identity lives under DIR/<identity>/ and must match its sidecar.
+constexpr std::string_view legacy_vm_identity="dslvm1_clang18.1";
+constexpr std::array<std::string_view,2> legacy_engine_shas{
+    "429cbe43d275a49ad3cae89dfa8aa591846a2e4f","6d85ac2a8b7aca6f28cea0e651cdcfc55d77aa29"};
+std::string vm_identity() {
+  return "dslvm"+std::to_string(dsl_vm_semantics_version)+"_"+std::string(vm_compiler)+std::string(vm_fp_flavor);
+}
 // extra_fields: the sorted non-base fields this compiled program loads.
 struct Candidate { std::string id,family,dsl_sha; al::Program program; std::vector<std::string> extra_fields; };
 // declared_extra: every declared non-base field; extra_fields: the sorted union
@@ -102,7 +148,7 @@ co::Result<Json> pinned_json(const std::string& path,const std::string& pin) {
   ATX_TRY(auto text,pinned_text(path,pin));
   return co::Ok(Json::parse(text));
 }
-Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true) {
+Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true,bool pinned_signs=false) {
   Json recipe{{"schema","atx.dsl-fast-ic/v1"},{"library_sha256",cfg.library_sha256},
       {"horizons",{5,21,63}},{"active_horizons",3},{"require_endpoint_presence",true},
       {"execution_delay",1},{"min_names",cfg.min_names},{"min_dates",cfg.min_dates},
@@ -121,8 +167,13 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic=true) {
   // the method statement and the canonical hash. The candidate cache is not a
   // method input: a verified hit is the exact VM output it replaces.
   if (!cfg.composition_weights_sha256.empty()) {
-    recipe["composition"]="pinned-candidate-weights;TRAIN-orientation-signs;centered-tied-rank;"
-        "missing-or-unoriented-neutral;no-redistribution";
+    // Signs pinned in the (TRAIN-bound, hashed) weights file replace the IC
+    // orientation in the blend; IC diagnostics keep the TRAIN orientation.
+    recipe["composition"]=pinned_signs
+        ?"pinned-candidate-weights;pinned-candidate-signs;centered-tied-rank;"
+         "missing-or-unoriented-neutral;no-redistribution"
+        :"pinned-candidate-weights;TRAIN-orientation-signs;centered-tied-rank;"
+         "missing-or-unoriented-neutral;no-redistribution";
     recipe["composition_weights_sha256"]=cfg.composition_weights_sha256;
   }
   return recipe;
@@ -170,7 +221,9 @@ co::Status expect_frozen_fields(const IcRunnerConfig& cfg,const Library& lib,con
   return co::Ok();
 }
 struct FrozenTrain { Json artifact,recipe; std::vector<int> signs; std::string recipe_sha; };
-co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train) {
+// `pinned_signs`: this run's weights file (if any) carries signs.
+co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train,
+                                     bool pinned_signs) {
   ATX_TRY(auto artifact,pinned_json(cfg.orientations_path,cfg.orientations_sha256));
   if (artifact.at("schema")!="atx.dsl-ic-orientations/v1" ||
       artifact.at("library_sha256")!=cfg.library_sha256 || artifact.at("train_manifest_sha256")!=cfg.train_sha256)
@@ -193,16 +246,21 @@ co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& li
   if (source_weighted && (!recipe.at("composition_weights_sha256").is_string() ||
       !hash_valid(recipe.at("composition_weights_sha256").get<std::string>())))
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN composition weights pin");
+  // A blend frozen WITH pinned weights is validated only with exactly those
+  // weights (never none, never others). An unweighted frozen source admits
+  // weights bound to this TRAIN manifest (checked in composition_weights).
+  if (source_weighted && recipe.at("composition_weights_sha256")!=cfg.composition_weights_sha256)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN blend used pinned composition "
+        "weights; validation must pin exactly the same --composition-weights");
   auto source_cfg=cfg; source_cfg.max_working_bytes=static_cast<u64>(source_bytes);
   source_cfg.workers=static_cast<usize>(source_workers);
   source_cfg.save_combined=recipe.contains("saved_combined");
-  // Signs never depend on composition weights, so the frozen source may have
-  // used different (or no) pinned weights; its recipe still must match exactly.
   source_cfg.composition_weights_sha256=
       source_weighted?recipe.at("composition_weights_sha256").get<std::string>():std::string{};
   // Earlier completed TRAIN artifacts used parallel VM but serial IC. Absence
   // means precisely that original execution path, not unknown numerical policy.
-  auto expected=method_recipe(source_cfg,recipe.contains("research_ic_workers"));
+  // A weighted source used this very file, so its signs mode is this run's.
+  auto expected=method_recipe(source_cfg,recipe.contains("research_ic_workers"),source_weighted && pinned_signs);
   expected["role_manifest_sha256"]["train"]=cfg.train_sha256;
   if (recipe.at("role_manifest_sha256").contains("validation"))
     expected["role_manifest_sha256"]["validation"]=cfg.validation_sha256;
@@ -268,7 +326,7 @@ co::Result<Json> save_bytes(const std::filesystem::path& path,std::span<const st
 }
 co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
-    const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin) {
+    const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,bool pinned_signs) {
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
   const auto cells=role.panel.dates()*role.panel.instruments();
@@ -323,6 +381,9 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
       {"files",std::move(files)},{"actual_trades_or_returns",false}};
   // Key absent (not null) without weights: the default manifest bytes are unchanged.
   if (pinned) manifest["composition_weights_sha256"]=cfg.composition_weights_sha256;
+  // Signs from that same pinned file; signal_semantics is unchanged so replay
+  // consumers still admit the blend, and this key states which signs were used.
+  if (pinned_signs) manifest["composition_signs"]="pinned-candidate-signs";
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
   const auto name=prefix+".json"; ATX_TRY_VOID(write_json(dir/name,manifest));
@@ -509,11 +570,45 @@ co::Result<Json> unique_key_json(const std::string& text) {
   if (duplicate) return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights duplicate key");
   return co::Ok(std::move(j));
 }
-// Empty result = default equal family/within-family weights. Runs before any
-// role payload load (including under --plan-only); every refusal is loud.
-co::Result<std::vector<f64>> composition_weights(const IcRunnerConfig& cfg,const Library& lib) {
-  std::vector<f64> weights;
-  if (cfg.composition_weights_path.empty()) return co::Ok(std::move(weights));
+// Pinned per-candidate weights in library order (empty = default equal family/
+// within-family weights) and, when the file carries `signs`, the blend sign per
+// candidate (+1/-1; 0 only for an unsigned zero-weight candidate). Empty signs =
+// the runner's TRAIN IC orientation.
+struct PinnedWeights { std::vector<f64> values; std::vector<int> signs; };
+// Optional `signs`: id -> integer +1/-1, known ids only; every candidate with a
+// positive weight must carry one (the weights were fit on so-oriented returns).
+co::Result<std::vector<int>> composition_signs(const Json& j,const Library& lib,std::span<const f64> weights) {
+  std::vector<int> signs;
+  if (!j.contains("signs")) return co::Ok(std::move(signs));
+  const auto& rows=j.at("signs");
+  if (!rows.is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition signs must be an object");
+  std::set<std::string> ids;
+  for (const auto& c:lib.candidates) ids.insert(c.id);
+  for (auto it=rows.begin();it!=rows.end();++it) {
+    if (!ids.contains(it.key()))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition sign for unknown candidate: "+it.key());
+    if (!it->is_number_integer() || (it->get<i64>()!=1 && it->get<i64>()!=-1))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition sign must be +1 or -1: "+it.key());
+  }
+  signs.reserve(lib.candidates.size());
+  for (usize k=0;k<lib.candidates.size();++k) {
+    const auto it=rows.find(lib.candidates[k].id);
+    if (it==rows.end() && weights[k]>0)
+      return co::Err(co::ErrorCode::InvalidArgument,
+          "IC runner: composition sign missing for weighted candidate: "+lib.candidates[k].id);
+    signs.push_back(it==rows.end()?0:static_cast<int>(it->get<i64>()));
+  }
+  return co::Ok(std::move(signs));
+}
+// Runs before any role payload load (including under --plan-only); every refusal
+// is loud. Selection hygiene: the file must name the TRAIN role manifest it was
+// fitted on (top-level train_manifest_sha256 == --train-sha256; in validation-only
+// mode --train-sha256 is also the frozen TRAIN artifact's). Unknown keys are allowed.
+co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Library& lib) {
+  PinnedWeights pinned;
+  if (cfg.composition_weights_path.empty()) return co::Ok(std::move(pinned));
+  auto& weights=pinned.values;
   ATX_TRY(auto text,pinned_text(cfg.composition_weights_path,cfg.composition_weights_sha256));
   ATX_TRY(auto j,unique_key_json(text));
   if (!j.is_object() || !j.contains("schema") || j.at("schema")!=weights_schema ||
@@ -536,22 +631,45 @@ co::Result<std::vector<f64>> composition_weights(const IcRunnerConfig& cfg,const
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weight must be finite and >= 0: "+c.id);
     weights.push_back(w);
   }
-  return co::Ok(std::move(weights));
+  if (!j.contains("train_manifest_sha256") || !j.at("train_manifest_sha256").is_string() ||
+      j.at("train_manifest_sha256")!=cfg.train_sha256)
+    return co::Err(co::ErrorCode::InvalidArgument,
+        "IC runner: composition weights TRAIN binding: train_manifest_sha256 must equal --train-sha256");
+  ATX_TRY(pinned.signs,composition_signs(j,lib,weights));
+  return co::Ok(std::move(pinned));
 }
-// ---- Candidate signal cache: DIR/<role-manifest-sha256>/<id>.{f64,json} ----
-// Identity is (DSL sha, role manifest sha, geometry) plus a streamed payload
-// SHA256. Library, role name, source and engine identity are recorded only, so a
-// grown library reuses unchanged candidates. A changed VM needs a fresh DIR.
-// A candidate whose DSL reads any extra field lives in DIR/<fields-manifest-sha256>/
+// ---- Candidate signal cache: ROOT/<role-manifest-sha256>/<id>.{f64,json} ----
+// ROOT is DIR/<vm identity>/ (DIR itself for the legacy identity), so a VM or
+// build-flavor change is a clean miss; the sidecar's vm_identity must match too.
+// Within ROOT the identity is (DSL sha, role manifest sha, geometry) plus a
+// streamed payload SHA256. Library, role name, source and engine sha are recorded
+// only, so a grown library reuses unchanged candidates. vm_workers is recorded,
+// not matched: DetPool column/row parallelism is bit-identical to the serial VM
+// (vm.hpp S3-3 contract), pinned on raw payload bytes by the worker-parity fixture.
+// A candidate whose DSL reads any extra field lives in ROOT/<fields-manifest-sha256>/
 // instead (that manifest pins exactly one role manifest) and its sidecar must name
 // that manifest, so a changed field payload is a clean miss, never a stale hit.
-// Base-only candidates keep the role directory and byte-identical sidecars.
-struct CacheKey { std::filesystem::path dir; std::string role_sha; u64 dates{},instruments{}; std::string fields_sha; };
+struct CacheKey {
+  std::filesystem::path dir; std::string role_sha; u64 dates{},instruments{}; std::string fields_sha,vm_identity;
+};
+std::filesystem::path cache_root(const IcRunnerConfig& cfg) {
+  const auto root=std::filesystem::path(cfg.candidate_cache_directory); const auto identity=vm_identity();
+  return identity==legacy_vm_identity?root:root/identity;
+}
 CacheKey cache_key(const IcRunnerConfig& cfg,const Role& role,const Candidate& c) {
   const bool fields=!c.extra_fields.empty();
-  return CacheKey{std::filesystem::path(cfg.candidate_cache_directory)/(fields?role.fields.sha:role.sha),role.sha,
+  return CacheKey{cache_root(cfg)/(fields?role.fields.sha:role.sha),role.sha,
       role.metadata.at("dates").get<u64>(),role.metadata.at("instruments").get<u64>(),
-      fields?role.fields.sha:std::string{}};
+      fields?role.fields.sha:std::string{},vm_identity()};
+}
+// Keyless sidecars predate vm_identity: only base entries recorded by the
+// verified legacy builds, read under the legacy identity, are accepted.
+bool legacy_entry(const Json& j,const CacheKey& key) {
+  if (key.vm_identity!=legacy_vm_identity || !key.fields_sha.empty() || !j.contains("engine_git_sha") ||
+      !j.at("engine_git_sha").is_string())
+    return false;
+  const auto engine=j.at("engine_git_sha").get<std::string>();
+  return std::find(legacy_engine_shas.begin(),legacy_engine_shas.end(),engine)!=legacy_engine_shas.end();
 }
 // Every referenced extra field is bound for a scored role (bind_fields refuses
 // otherwise); re-asserted before any key or panel is derived from it.
@@ -577,6 +695,8 @@ co::Status cache_preflight(const IcRunnerConfig& cfg,const Library& lib) {
   if (cfg.candidate_cache_directory.empty()) return co::Ok();
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: candidate cache requires little-endian host");
+  if constexpr (vm_compiler.empty())
+    return co::Err(co::ErrorCode::Unavailable,"IC runner: candidate cache requires a known VM build identity");
   for (const auto& c:lib.candidates) if (device_name(c.id))
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate id unsafe as cache file name: "+c.id);
   std::error_code ec; const auto root=std::filesystem::path(cfg.candidate_cache_directory);
@@ -598,11 +718,13 @@ co::Result<std::string> cached_payload_sha(const Json& j,const CacheKey& key,con
   // A base entry never names a fields manifest; a field entry names exactly ours.
   const bool fields_match=key.fields_sha.empty()?!j.contains("fields_manifest_sha256")
                                                 :text("fields_manifest_sha256")==key.fields_sha;
+  // Foreign bytes in this identity's directory are refused, never served.
+  const bool vm_match=j.contains("vm_identity")?text("vm_identity")==key.vm_identity:legacy_entry(j,key);
   if (!j.is_object() || text("schema")!=cache_schema || text("candidate_id")!=c.id ||
       text("dsl_sha256")!=c.dsl_sha || text("role_manifest_sha256")!=key.role_sha ||
       text("eval_mode")!=vm_eval_mode || text("layout")!=cache_layout || count("dates")!=key.dates ||
       count("instruments")!=key.instruments || count("bytes")!=key.dates*key.instruments*sizeof(f64) ||
-      !fields_match || !hash_valid(sha))
+      !fields_match || !vm_match || !hash_valid(sha))
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache entry mismatch: "+c.id);
   return co::Ok(std::move(sha));
 }
@@ -682,6 +804,7 @@ co::Result<std::string> write_partial(const PartialFile& partial,std::span<const
   if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache partial output");
   for (usize offset=0;offset<bytes.size();) {
     const auto chunk=bytes.subspan(offset,std::min(io_chunk,bytes.size()-offset));
+    // SAFETY: char reads the object representation of the caller's byte span.
     out.write(reinterpret_cast<const char*>(chunk.data()),static_cast<std::streamsize>(chunk.size()));
     if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache partial write");
     ATX_TRY_VOID(digest.update(chunk)); offset+=chunk.size();
@@ -727,8 +850,9 @@ co::Status cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role&
       {"dates",key.dates},{"instruments",key.instruments},{"bytes",signal.size()*sizeof(f64)},
       {"layout",cache_layout},{"payload",c.id+".f64"},{"payload_sha256",sha},
       {"semantics","raw-unoriented-pre-composition-single-VM-root"},{"eval_mode",vm_eval_mode},
-      {"vm_workers",cfg.workers},{"engine_git_sha",std::string(build_engine_git_sha())}};
-  // Base entries: no new keys, so their sidecar bytes are exactly as before.
+      {"vm_workers",cfg.workers},{"engine_git_sha",std::string(build_engine_git_sha())},
+      {"vm_identity",key.vm_identity}};
+  // Only field entries name a fields manifest; base entries never do.
   if (!key.fields_sha.empty()) {
     sidecar["fields_manifest_sha256"]=key.fields_sha; sidecar["research_fields"]=c.extra_fields;
   }
@@ -760,10 +884,9 @@ co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const R
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache payload extent: "+c.id);
     ++ready;
   }
-  Json plan{{"role",role.name},{"directory",(std::filesystem::path(cfg.candidate_cache_directory)/role.sha).string()},
-      {"ready_entries",ready},{"candidates",lib.candidates.size()}};
-  if (!lib.extra_fields.empty())
-    plan["fields_directory"]=(std::filesystem::path(cfg.candidate_cache_directory)/role.fields.sha).string();
+  Json plan{{"role",role.name},{"directory",(cache_root(cfg)/role.sha).string()},
+      {"ready_entries",ready},{"candidates",lib.candidates.size()},{"vm_identity",vm_identity()}};
+  if (!lib.extra_fields.empty()) plan["fields_directory"]=(cache_root(cfg)/role.fields.sha).string();
   return co::Ok(std::move(plan));
 }
 void release(std::vector<f64>& buffer) noexcept { std::vector<f64>().swap(buffer); }
@@ -914,9 +1037,10 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
   }
   return co::Ok(out);
 }
+// `blend_signs`: pinned per-candidate blend signs (empty = the TRAIN IC orientation).
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
-    std::span<const f64> weights,std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,
-    const std::string& orientation_pin,std::ostream& progress) {
+    std::span<const f64> weights,std::span<const int> blend_signs,std::vector<int>& signs,Json& frozen,
+    const std::string& recipe_sha,const std::string& orientation_pin,std::ostream& progress) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
@@ -1023,8 +1147,10 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           {"ic",result_json(scored,sign)}});
     }
     const auto sign=signs[k];
+    // Pinned signs orient the blend only; every IC diagnostic keeps `sign`.
+    const int blend_sign=blend_signs.empty()?sign:blend_signs[k];
     const auto composition_started=std::chrono::steady_clock::now();
-    ATX_TRY_VOID(composition.add(k,signal,sign));
+    ATX_TRY_VOID(composition.add(k,signal,blend_sign));
     const auto composition_seconds=std::chrono::duration<f64>(
         std::chrono::steady_clock::now()-composition_started).count();
     total_composition_seconds+=composition_seconds;
@@ -1032,6 +1158,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     auto summary=result_json(scored,sign);
     summary["id"]=candidate.id; summary["family"]=candidate.family;
     summary["frozen_train_sign"]=sign; summary["status"]="complete";
+    // Present only with pinned weights: the applied blend weight/sign (NR input).
+    if (!weights.empty()) summary["composition_weight"]=weights[k];
+    if (!blend_signs.empty()) summary["composition_sign"]=blend_sign;
     const auto candidate_seconds=std::chrono::duration<f64>(
         std::chrono::steady_clock::now()-candidate_started).count();
     summary["wall_seconds"]=candidate_seconds;
@@ -1074,7 +1203,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   Json saved; f64 save_seconds=0;
   if (cfg.save_combined) {
     const auto save_started=std::chrono::steady_clock::now();
-    ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined.signal,effective,frozen,recipe_sha,orientation_pin));
+    ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined.signal,effective,frozen,recipe_sha,orientation_pin,
+        !blend_signs.empty()));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
@@ -1097,12 +1227,11 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     result["stage_seconds"]["cache_load"]=total_cache_load_seconds;
     result["stage_seconds"]["cache_write"]=total_cache_write_seconds;
     result["candidate_cache"]={
-        {"directory",(std::filesystem::path(cfg.candidate_cache_directory)/spec.sha).string()},
+        {"directory",(cache_root(cfg)/spec.sha).string()},{"vm_identity",vm_identity()},
         {"hits",cache_hits},{"misses",lib.candidates.size()-cache_hits},
         {"vm_evaluations",lib.candidates.size()-cache_hits}};
     if (!lib.extra_fields.empty())
-      result["candidate_cache"]["fields_directory"]=
-          (std::filesystem::path(cfg.candidate_cache_directory)/spec.fields.sha).string();
+      result["candidate_cache"]["fields_directory"]=(cache_root(cfg)/spec.fields.sha).string();
   }
   // Present exactly when a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) {
@@ -1133,7 +1262,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: bounded config");
     ATX_TRY(auto lib,library(cfg));
     // Both new options are fully validated here, before any role payload.
-    ATX_TRY(const auto weights,composition_weights(cfg,lib));
+    ATX_TRY(const auto pinned,composition_weights(cfg,lib));
+    const bool pinned_signs=!pinned.signs.empty();
     ATX_TRY_VOID(cache_preflight(cfg,lib));
     std::vector<Role> roles;
     // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none.
@@ -1149,7 +1279,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     FrozenTrain recovered;
     if (validation_only) {
-      ATX_TRY(recovered,frozen_train(cfg,lib,roles.front()));
+      ATX_TRY(recovered,frozen_train(cfg,lib,roles.front(),pinned_signs));
       roles.erase(roles.begin()); // TRAIN metadata checked, payload never opened.
     }
     if (cfg.plan_only) {
@@ -1164,6 +1294,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         plan["orientations_artifact_sha256"]=cfg.orientations_sha256;
       }
       if (!cfg.composition_weights_sha256.empty()) plan["composition_weights_sha256"]=cfg.composition_weights_sha256;
+      if (pinned_signs) plan["composition_signs"]="pinned-candidate-signs";
       if (fields_pinned(cfg)) {
         Json bound=Json::array();
         for (const auto& role:roles) if (!role.fields.sha.empty()) {
@@ -1182,7 +1313,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       }
       progress<<plan.dump(2)<<'\n'; return co::Ok();
     }
-    auto recipe=method_recipe(cfg);
+    auto recipe=method_recipe(cfg,true,pinned_signs);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
@@ -1201,6 +1332,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     Json report{{"status","running"},{"recipe_sha256",recipe_sha},{"roles",Json::array()},
         {"train_candidates_planned",validation_only?usize{0}:lib.candidates.size()},{"full_book_evaluations",0}};
     if (!cfg.composition_weights_sha256.empty()) report["composition_weights_sha256"]=cfg.composition_weights_sha256;
+    if (pinned_signs) report["composition_signs"]="pinned-candidate-signs";
     if (recipe.contains("research_fields")) report["research_fields"]=recipe.at("research_fields");
     std::vector<int> signs; Json orientations=Json::array();
     if (validation_only) {
@@ -1216,7 +1348,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
-      auto scored=score_role(cfg,lib,role,weights,signs,orientations,recipe_sha,
+      auto scored=score_role(cfg,lib,role,pinned.values,pinned.signs,signs,orientations,recipe_sha,
           report.value("orientations_artifact_sha256",std::string{}),progress);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
@@ -1254,7 +1386,11 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA] "
                "[--candidate-cache DIR] [--composition-weights JSON --composition-weights-sha256 SHA] "
                "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA]\n"
-               "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n";
+               "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n"
+               "  --candidate-cache: entries under DIR[/<vm-identity>]/<role-or-fields-sha>/; publication does not fsync;\n"
+               "    killed writes leave inert .partial files (safe to delete); a foreign/corrupt entry refuses loudly.\n"
+               "  --composition-weights: must carry train_manifest_sha256 (== --train-sha256); optional signs {id: +1|-1}\n"
+               "    replace the IC orientation in the blend; a blend frozen with weights resumes only with the same file.\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");

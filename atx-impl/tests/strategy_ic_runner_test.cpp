@@ -426,16 +426,31 @@ Json stable_role(Json result,bool keep_artifact=true) {
   if (!keep_artifact) result.erase("combined_artifact");
   for (auto& candidate:result.at("candidates")) {
     candidate.erase("wall_seconds"); candidate.erase("stage_seconds"); candidate.erase("signal_cache");
+    candidate.erase("composition_weight"); candidate.erase("composition_sign");
   }
   return result;
 }
-bool pin_weights(const Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg,const Json& weights) {
-  cfg.composition_weights_path=(dir.path/"weights.json").string();
-  return json_file(cfg.composition_weights_path,{{"schema","atx.dsl-composition-weights/v1"},
-      {"library_sha256",cfg.library_sha256},{"weights",weights}},cfg.composition_weights_sha256);
+// TRAIN-bound weights file (train_manifest_sha256 == --train-sha256); optional signs.
+bool pin_weights(const Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg,const Json& weights,
+                 const Json& signs=Json(),const std::string& name="weights.json") {
+  cfg.composition_weights_path=(dir.path/name).string();
+  Json file{{"schema","atx.dsl-composition-weights/v1"},{"library_sha256",cfg.library_sha256},
+      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights}};
+  if (!signs.is_null()) file["signs"]=signs;
+  return json_file(cfg.composition_weights_path,file,cfg.composition_weights_sha256);
+}
+// The VM-identity-scoped cache root a run used (DIR itself for the legacy identity).
+std::filesystem::path cache_root(const std::filesystem::path& summary) {
+  return std::filesystem::path(read_json(summary).at("roles").at(0).at("candidate_cache").at("directory")
+      .get<std::string>()).parent_path();
 }
 std::string weights_text(const std::string& schema,const std::string& library,const std::string& weights) {
   return "{\"schema\":\""+schema+"\",\"library_sha256\":\""+library+"\",\"weights\":"+weights+"}";
+}
+// Valid equal weights bound to `train`, plus raw `extra` members (e.g. signs).
+std::string bound_text(const std::string& library,const std::string& train,const std::string& extra) {
+  return "{\"schema\":\"atx.dsl-composition-weights/v1\",\"library_sha256\":\""+library+
+      "\",\"train_manifest_sha256\":\""+train+"\",\"weights\":{\"volume_level\":0.5,\"volume_rank\":0.5}"+extra+"}";
 }
 // IC series, planned targets, fitted orientations and the saved exact blend,
 // its support masks and its manifest: everything pinned as bit-identical.
@@ -484,8 +499,9 @@ TEST(StrategyIcRunner, CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExac
     }
   }
   // Each committed entry: identity, raw geometry, canonical NaN and streamed hash.
+  const auto root=cache_root(dir.path/"cold"/"summary.json");
   for (const auto& pin:{cfg.train_sha256,cfg.validation_sha256}) {
-    const auto base=dir.path/"c"/pin; usize files=0;
+    const auto base=root/pin; usize files=0;
     for (const auto& entry:std::filesystem::directory_iterator(base)) {
       ++files; EXPECT_NE(entry.path().extension().string(),".partial");
     }
@@ -514,7 +530,8 @@ TEST(StrategyIcRunner, CandidateCacheResumesStoppedRunAndAdoptsOnlyIdenticalOrph
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   cfg.save_combined=true; cfg.candidate_cache_directory=(dir.path/"c").string();
   const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
-  const auto train_dir=dir.path/"c"/cfg.train_sha256,validation_dir=dir.path/"c"/cfg.validation_sha256;
+  const auto root=cache_root(dir.path/"cold"/"summary.json");
+  const auto train_dir=root/cfg.train_sha256,validation_dir=root/cfg.validation_sha256;
   // A guard stop after TRAIN candidate 1 of 2 leaves only its committed entry.
   ASSERT_TRUE(std::filesystem::remove(train_dir/"volume_rank.json"));
   ASSERT_TRUE(std::filesystem::remove(train_dir/"volume_rank.f64"));
@@ -547,7 +564,8 @@ TEST(StrategyIcRunner, CandidateCacheRefusesTamperedOrForeignEntriesWithoutOverw
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   cfg.candidate_cache_directory=(dir.path/"c").string();
   const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
-  const auto train_dir=dir.path/"c"/cfg.train_sha256,validation_dir=dir.path/"c"/cfg.validation_sha256;
+  const auto root=cache_root(dir.path/"cold"/"summary.json");
+  const auto train_dir=root/cfg.train_sha256,validation_dir=root/cfg.validation_sha256;
   const auto expect_refusal=[&](const std::string& name,const std::string& reason) {
     const auto attempt=run_named(dir,cfg,name);
     EXPECT_FALSE(attempt.ok) << name;
@@ -683,7 +701,21 @@ TEST(StrategyIcRunner, InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput) 
       {weights_text(schema,std::string(64,'0'),R"({"volume_level":0.5,"volume_rank":0.5})"),"schema/library identity"},
       {weights_text("atx.dsl-composition-weights/v0",lib,R"({"volume_level":0.5,"volume_rank":0.5})"),
        "schema/library identity"},
-      {weights_text(schema,lib,"[0.5,0.5]"),"schema/library identity"}};
+      {weights_text(schema,lib,"[0.5,0.5]"),"schema/library identity"},
+      // TRAIN binding and optional pinned signs (T1 fix round 1).
+      {weights_text(schema,lib,R"({"volume_level":0.5,"volume_rank":0.5})"),
+       "TRAIN binding: train_manifest_sha256 must equal --train-sha256"},
+      {bound_text(lib,std::string(64,'0'),""),"TRAIN binding"},
+      {bound_text(lib,cfg.train_sha256,R"(,"signs":[1,1])"),"composition signs must be an object"},
+      {bound_text(lib,cfg.train_sha256,R"(,"signs":{"other":1})"),"composition sign for unknown candidate: other"},
+      {bound_text(lib,cfg.train_sha256,R"(,"signs":{"volume_level":0,"volume_rank":1})"),
+       "composition sign must be +1 or -1: volume_level"},
+      {bound_text(lib,cfg.train_sha256,R"(,"signs":{"volume_level":1.0,"volume_rank":1})"),
+       "composition sign must be +1 or -1: volume_level"},
+      {bound_text(lib,cfg.train_sha256,R"(,"signs":{"volume_level":"1","volume_rank":1})"),
+       "composition sign must be +1 or -1: volume_level"},
+      {bound_text(lib,cfg.train_sha256,R"(,"signs":{"volume_level":1})"),
+       "composition sign missing for weighted candidate: volume_rank"}};
   const auto path=dir.path/"weights.json";
   for (const bool plan_only:{true,false}) {
     cfg.plan_only=plan_only;
@@ -707,7 +739,7 @@ TEST(StrategyIcRunner, InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput) 
   ASSERT_FALSE(status); EXPECT_NE(status.error().to_string().find("bounded config"),std::string::npos);
   EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
 }
-TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndPinnedWeights) {
+TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWeights) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   cfg.save_combined=true;
   const auto source=run_named(dir,cfg,"source"); ASSERT_TRUE(source.ok) << source.error;
@@ -716,38 +748,52 @@ TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndPinnedWeight
   const auto weights_pin=cfg.composition_weights_sha256;
   const auto weighted=run_named(dir,cfg,"weighted_source"); ASSERT_TRUE(weighted.ok) << weighted.error;
   ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
-  const auto resume_from=[&](const std::string& source_name) {
-    cfg.orientations_path=(dir.path/source_name/"orientations.json").string();
-    cfg.orientations_sha256=file_sha(cfg.orientations_path);
+  const auto resume_from=[&](atx::impl::strategy::IcRunnerConfig& target,const std::string& source_name) {
+    target.orientations_path=(dir.path/source_name/"orientations.json").string();
+    target.orientations_sha256=file_sha(target.orientations_path);
   };
-  // Unweighted frozen source + pinned weights + candidate cache: cold, then warm.
-  resume_from("source"); cfg.candidate_cache_directory=(dir.path/"c").string();
+  // Unweighted frozen source + TRAIN-bound weights + candidate cache: cold, then warm.
+  resume_from(cfg,"source"); cfg.candidate_cache_directory=(dir.path/"c").string();
   const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
   const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
   EXPECT_NE(warm.log.find("IC cache-hit volume_level role=validation"),std::string::npos);
   EXPECT_EQ(warm.log.find("IC VM-"),std::string::npos);
-  EXPECT_FALSE(std::filesystem::exists(dir.path/"c"/cfg.train_sha256)); // TRAIN never scored.
-  // Weighted frozen source resumed with default weights and no cache.
-  resume_from("weighted_source"); cfg.candidate_cache_directory.clear();
-  cfg.composition_weights_path.clear(); cfg.composition_weights_sha256.clear();
-  const auto unweighted=run_named(dir,cfg,"unweighted"); ASSERT_TRUE(unweighted.ok) << unweighted.error;
-  for (const auto* run:{&cold,&warm,&unweighted}) EXPECT_EQ(run->log.find("IC loading train"),std::string::npos);
-  for (const std::string name:{"cold","warm","unweighted"}) {
+  EXPECT_FALSE(std::filesystem::exists(cache_root(dir.path/"cold"/"summary.json")/cfg.train_sha256));
+  // A blend frozen WITH weights resumes with exactly that file.
+  resume_from(cfg,"weighted_source"); cfg.candidate_cache_directory.clear();
+  const auto same=run_named(dir,cfg,"same"); ASSERT_TRUE(same.ok) << same.error;
+  for (const auto* run:{&cold,&warm,&same}) EXPECT_EQ(run->log.find("IC loading train"),std::string::npos);
+  for (const std::string name:{"cold","warm","same"}) {
     for (const auto* file:{"validation_combined.f64","validation_combined_finite.u8",
                            "validation_planned_targets.csv","validation_daily_ic.csv"}) {
       const auto expected=file_sha(dir.path/"source"/file); ASSERT_FALSE(expected.empty()) << file;
       EXPECT_EQ(file_sha(dir.path/name/file),expected) << name << ' ' << file;
     }
-    const bool pinned=name!="unweighted";
     const auto recipe=read_json(dir.path/name/"recipe.json");
-    EXPECT_EQ(recipe.contains("composition_weights_sha256"),pinned) << name;
-    const auto manifest=read_json(dir.path/name/"validation_combined.json");
-    EXPECT_EQ(manifest.contains("composition_weights_sha256"),pinned) << name;
-    EXPECT_EQ(recipe.at("frozen_train_recipe"),read_json(dir.path/(pinned?"source":"weighted_source")/"recipe.json"))
-        << name;
+    EXPECT_EQ(recipe.at("composition_weights_sha256"),weights_pin) << name;
+    EXPECT_EQ(read_json(dir.path/name/"validation_combined.json").at("composition_weights_sha256"),weights_pin);
+    EXPECT_EQ(recipe.at("frozen_train_recipe"),
+              read_json(dir.path/(name=="same"?"weighted_source":"source")/"recipe.json")) << name;
   }
-  EXPECT_EQ(read_json(dir.path/"cold"/"recipe.json").at("composition_weights_sha256"),weights_pin);
   EXPECT_EQ(file_sha(dir.path/"cold"/"validation_combined.json"),file_sha(dir.path/"warm"/"validation_combined.json"));
+  // Selection hygiene refusals, all before any payload or output.
+  const auto refuse=[&](atx::impl::strategy::IcRunnerConfig attempt_cfg,const std::string& name,
+                        const std::string& reason) {
+    const auto attempt=run_named(dir,attempt_cfg,name);
+    EXPECT_FALSE(attempt.ok) << name;
+    EXPECT_NE(attempt.error.find(reason),std::string::npos) << name << ": " << attempt.error;
+    EXPECT_FALSE(std::filesystem::exists(dir.path/name)) << name;
+  };
+  auto without=cfg; without.composition_weights_path.clear(); without.composition_weights_sha256.clear();
+  refuse(without,"without","validation must pin exactly the same --composition-weights");
+  auto other=cfg; ASSERT_TRUE(pin_weights(dir,other,{{"volume_level",.25},{"volume_rank",.75}},Json(),"other.json"));
+  refuse(other,"other","validation must pin exactly the same --composition-weights");
+  auto foreign=cfg; resume_from(foreign,"source");
+  foreign.composition_weights_path=(dir.path/"foreign.json").string();
+  ASSERT_TRUE(json_file(foreign.composition_weights_path,{{"schema","atx.dsl-composition-weights/v1"},
+      {"library_sha256",cfg.library_sha256},{"train_manifest_sha256",std::string(64,'0')},
+      {"weights",{{"volume_level",.5},{"volume_rank",.5}}}},foreign.composition_weights_sha256));
+  refuse(foreign,"foreign","composition weights TRAIN binding");
 }
 // ---- Pinned extra point-in-time fields (T7) ----
 // Synthetic field values, date-major like the producer: NaN where not visible.
@@ -818,9 +864,10 @@ TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
   EXPECT_NE(run.log.find("IC fields-loaded role=train fields=mkt_ret,si_shares"),std::string::npos);
   EXPECT_NE(run.log.find("IC fields-loaded role=validation fields=mkt_ret,si_shares"),std::string::npos);
   // Raw VM signals (the cache stores them verbatim) against scalar oracles.
+  const auto root=cache_root(dir.path/"output"/"summary.json");
   for (const auto& [pin,role_pin]:{std::pair{cfg.train_fields_sha256,cfg.train_sha256},
                                    std::pair{cfg.validation_fields_sha256,cfg.validation_sha256}}) {
-    const auto base=dir.path/"c"/pin;
+    const auto base=root/pin;
     std::vector<f64> ratio(D*N),shift(D*N);
     ASSERT_TRUE(read_payload(base/"si_ratio.f64",ratio)); ASSERT_TRUE(read_payload(base/"market_shift.f64",shift));
     for (usize d=0;d<D;++d) for (usize i=0;i<N;++i) {
@@ -833,8 +880,8 @@ TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
     EXPECT_EQ(sidecar.at("research_fields"),Json::array({"si_shares"}));
     EXPECT_EQ(read_json(base/"market_shift.json").at("research_fields"),Json::array({"mkt_ret"}));
     // Base-only candidates keep the role directory and carry no fields key.
-    EXPECT_FALSE(read_json(dir.path/"c"/role_pin/"volume_level.json").contains("fields_manifest_sha256"));
-    EXPECT_FALSE(std::filesystem::exists(dir.path/"c"/role_pin/"si_ratio.json"));
+    EXPECT_FALSE(read_json(root/role_pin/"volume_level.json").contains("fields_manifest_sha256"));
+    EXPECT_FALSE(std::filesystem::exists(root/role_pin/"si_ratio.json"));
   }
   const auto summary=read_json(dir.path/"output"/"summary.json");
   const auto recipe=read_json(dir.path/"output"/"recipe.json");
@@ -1020,7 +1067,8 @@ TEST(StrategyIcRunner, CandidateCacheKeyCoversFieldsManifestOnlyForFieldCandidat
   cfg.candidate_cache_directory=(dir.path/"c").string();
   // Entries written by a base-only run, before any fields existed.
   const auto base=run_named(dir,cfg,"base"); ASSERT_TRUE(base.ok) << base.error;
-  const auto base_sidecar=dir.path/"c"/cfg.train_sha256/"volume_level.json";
+  const auto root=cache_root(dir.path/"base"/"summary.json");
+  const auto base_sidecar=root/cfg.train_sha256/"volume_level.json";
   const auto base_sidecar_sha=file_sha(base_sidecar);
   ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
   ASSERT_TRUE(pin_fields(dir,cfg,"a",{"si_shares"}));
@@ -1029,7 +1077,7 @@ TEST(StrategyIcRunner, CandidateCacheKeyCoversFieldsManifestOnlyForFieldCandidat
   for (const auto* line:{"IC cache-hit volume_level role=train","IC cache-hit volume_rank role=validation",
                          "IC cache-miss si_ratio role=train","IC cache-miss si_ratio role=validation"})
     EXPECT_NE(a.log.find(line),std::string::npos) << line;
-  const auto a_entry=dir.path/"c"/cfg.train_fields_sha256/"si_ratio.f64"; const auto a_sha=file_sha(a_entry);
+  const auto a_entry=root/cfg.train_fields_sha256/"si_ratio.f64"; const auto a_sha=file_sha(a_entry);
   ASSERT_FALSE(a_sha.empty());
   const auto warm=run_named(dir,cfg,"a_warm"); ASSERT_TRUE(warm.ok) << warm.error;
   EXPECT_NE(warm.log.find("IC cache-hit si_ratio role=train"),std::string::npos);
@@ -1043,7 +1091,7 @@ TEST(StrategyIcRunner, CandidateCacheKeyCoversFieldsManifestOnlyForFieldCandidat
                          "IC cache-miss si_ratio role=train","IC cache-miss si_ratio role=validation"})
     EXPECT_NE(b.log.find(line),std::string::npos) << line;
   EXPECT_EQ(file_sha(a_entry),a_sha);
-  EXPECT_TRUE(std::filesystem::exists(dir.path/"c"/cfg.train_fields_sha256/"si_ratio.json"));
+  EXPECT_TRUE(std::filesystem::exists(root/cfg.train_fields_sha256/"si_ratio.json"));
   EXPECT_EQ(file_sha(base_sidecar),base_sidecar_sha);
   const auto summary=read_json(dir.path/"b"/"summary.json");
   for (const auto& role_result:summary.at("roles")) {
@@ -1051,10 +1099,10 @@ TEST(StrategyIcRunner, CandidateCacheKeyCoversFieldsManifestOnlyForFieldCandidat
     EXPECT_EQ(role_result.at("candidate_cache").at("misses"),1);
   }
   // A field entry copied under another manifest's directory is refused, not served.
-  const auto foreign=dir.path/"c"/cfg.train_fields_sha256;
+  const auto foreign=root/cfg.train_fields_sha256;
   ASSERT_TRUE(std::filesystem::remove(foreign/"si_ratio.json"));
   ASSERT_TRUE(std::filesystem::remove(foreign/"si_ratio.f64"));
-  ASSERT_TRUE(std::filesystem::copy_file(dir.path/"c"/first_pins.first/"si_ratio.json",foreign/"si_ratio.json"));
+  ASSERT_TRUE(std::filesystem::copy_file(root/first_pins.first/"si_ratio.json",foreign/"si_ratio.json"));
   ASSERT_TRUE(std::filesystem::copy_file(a_entry,foreign/"si_ratio.f64"));
   const auto refused=run_named(dir,cfg,"foreign");
   EXPECT_FALSE(refused.ok);
@@ -1138,5 +1186,107 @@ TEST(StrategyIcRunner, FrozenTrainResumeBindsResearchFieldPins) {
   auto no_validation=resumed_cfg; no_validation.validation_fields_directory.clear();
   no_validation.validation_fields_sha256.clear();
   refuse(no_validation,"no_validation","no --validation-fields manifest is pinned");
+}
+// ---- T1 fix round 1: pinned signs, VM identity, worker parity ----
+TEST(StrategyIcRunner, PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContribution) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",2.0},{"volume_rank",0.0}},Json(),"unsigned.json"));
+  const auto unsigned_run=run_named(dir,cfg,"unsigned"); ASSERT_TRUE(unsigned_run.ok) << unsigned_run.error;
+  // TRAIN IC orients volume_level +1; the pinned sign is -1. volume_rank has
+  // weight 0 and no sign, which is admitted.
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",2.0},{"volume_rank",0.0}},{{"volume_level",-1}},"signed.json"));
+  const auto signed_run=run_named(dir,cfg,"signed"); ASSERT_TRUE(signed_run.ok) << signed_run.error;
+  const auto recipe=read_json(dir.path/"signed"/"recipe.json");
+  EXPECT_EQ(recipe.at("composition"),"pinned-candidate-weights;pinned-candidate-signs;centered-tied-rank;"
+                                     "missing-or-unoriented-neutral;no-redistribution");
+  EXPECT_NE(read_json(dir.path/"unsigned"/"recipe.json").at("composition"),recipe.at("composition"));
+  const auto summary=read_json(dir.path/"signed"/"summary.json");
+  EXPECT_EQ(summary.at("composition_signs"),"pinned-candidate-signs");
+  EXPECT_FALSE(read_json(dir.path/"unsigned"/"summary.json").contains("composition_signs"));
+  // The TRAIN orientation artifact is untouched: it still records the IC sign.
+  for (const auto& row:read_json(dir.path/"signed"/"orientations.json").at("candidates")) EXPECT_EQ(row.at("sign"),1);
+  for (usize r=0;r<2;++r) {
+    const auto& role_result=summary.at("roles").at(r); const auto name=role_result.at("role").get<std::string>();
+    const auto& level=role_result.at("candidates").at(0); const auto& rank=role_result.at("candidates").at(1);
+    EXPECT_EQ(level.at("frozen_train_sign"),1); EXPECT_EQ(level.at("composition_sign"),-1);
+    EXPECT_EQ(level.at("composition_weight"),2.0);
+    EXPECT_EQ(rank.at("composition_sign"),0); EXPECT_EQ(rank.at("composition_weight"),0.0);
+    EXPECT_EQ(read_json(dir.path/"signed"/(name+"_combined.json")).at("composition_signs"),"pinned-candidate-signs");
+    // Per-candidate IC diagnostics keep the TRAIN orientation (only the blend flips).
+    EXPECT_EQ(stable_role(role_result).at("candidates"),
+              stable_role(read_json(dir.path/"unsigned"/"summary.json").at("roles").at(r)).at("candidates"));
+    std::vector<f64> flipped(D*N),reference(D*N);
+    ASSERT_TRUE(read_payload(dir.path/"signed"/(name+"_combined.f64"),flipped));
+    ASSERT_TRUE(read_payload(dir.path/"unsigned"/(name+"_combined.f64"),reference));
+    for (usize d=63;d<D;++d) for (usize i=0;i<N;++i) {
+      const auto k=d*N+i;
+      ASSERT_DOUBLE_EQ(reference[k],2*(static_cast<f64>(i)/static_cast<f64>(N-1)-.5)) << name << d << i;
+      ASSERT_EQ(flipped[k],-reference[k]) << name << d << i;
+    }
+  }
+  // A pinned sign equal to the IC orientation reproduces the unsigned blend bytes.
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",2.0},{"volume_rank",0.0}},{{"volume_level",1}},"same.json"));
+  const auto same=run_named(dir,cfg,"same"); ASSERT_TRUE(same.ok) << same.error;
+  for (const std::string role_name:{"train","validation"})
+    EXPECT_EQ(file_sha(dir.path/"same"/(role_name+"_combined.f64")),
+              file_sha(dir.path/"unsigned"/(role_name+"_combined.f64"))) << role_name;
+}
+TEST(StrategyIcRunner, CandidateCacheIsScopedByVmIdentityAndRefusesForeignSidecars) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto root=cache_root(dir.path/"cold"/"summary.json");
+  const auto sidecar_path=root/cfg.train_sha256/"volume_level.json"; const auto sidecar=read_json(sidecar_path);
+  const auto identity=sidecar.at("vm_identity").get<std::string>();
+  EXPECT_TRUE(identity.starts_with("dslvm1_")) << identity;
+  EXPECT_EQ(read_json(dir.path/"cold"/"summary.json").at("roles").at(0).at("candidate_cache").at("vm_identity"),identity);
+  // Only the verified legacy identity keeps DIR itself as its root.
+  const bool legacy=identity=="dslvm1_clang18.1";
+  EXPECT_EQ(root.string(),(legacy?dir.path/"c":dir.path/"c"/identity).string());
+  // Entries under any other identity's root are never read: a clean miss.
+  auto other_cfg=cfg; other_cfg.candidate_cache_directory=(dir.path/"c2").string();
+  for (const auto& pin:{cfg.train_sha256,cfg.validation_sha256}) {
+    for (const auto& elsewhere:{dir.path/"c2"/"dslvm999_other"/pin,dir.path/"c2"/"dslvm1_other_flavor"/pin}) {
+      ASSERT_TRUE(std::filesystem::create_directories(elsewhere));
+      std::filesystem::copy(root/pin,elsewhere);
+    }
+  }
+  const auto other=run_named(dir,other_cfg,"other"); ASSERT_TRUE(other.ok) << other.error;
+  EXPECT_EQ(other.log.find("IC cache-hit"),std::string::npos);
+  for (const auto& role_result:read_json(dir.path/"other"/"summary.json").at("roles"))
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),0);
+  // In our own root, a sidecar recording another identity is refused, never served.
+  const auto attempt=[&](const Json& edited,const std::string& name) {
+    std::string unused; EXPECT_TRUE(json_file(sidecar_path,edited,unused));
+    return run_named(dir,cfg,name);
+  };
+  auto foreign=sidecar; foreign["vm_identity"]="dslvm999_other";
+  auto run=attempt(foreign,"foreign");
+  EXPECT_FALSE(run.ok); EXPECT_NE(run.error.find("candidate cache entry mismatch: volume_level"),std::string::npos);
+  // A keyless (pre-identity) sidecar is accepted only as a verified legacy entry.
+  auto keyless=sidecar; keyless.erase("vm_identity"); keyless["engine_git_sha"]="0123456789abcdef";
+  run=attempt(keyless,"keyless_unknown_engine");
+  EXPECT_FALSE(run.ok); EXPECT_NE(run.error.find("candidate cache entry mismatch: volume_level"),std::string::npos);
+  keyless["engine_git_sha"]="429cbe43d275a49ad3cae89dfa8aa591846a2e4f";
+  run=attempt(keyless,"keyless_legacy_engine");
+  EXPECT_EQ(run.ok,legacy) << run.error;
+  if (legacy) EXPECT_NE(run.log.find("IC cache-hit volume_level role=train"),std::string::npos);
+}
+TEST(StrategyIcRunner, CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"serial").string();
+  const auto serial=run_named(dir,cfg,"serial_run"); ASSERT_TRUE(serial.ok) << serial.error;
+  cfg.workers=2; cfg.candidate_cache_directory=(dir.path/"parallel").string();
+  const auto parallel=run_named(dir,cfg,"parallel_run"); ASSERT_TRUE(parallel.ok) << parallel.error;
+  // vm_workers is recorded, not matched, because raw VM bytes do not depend on it.
+  const auto a=cache_root(dir.path/"serial_run"/"summary.json"),b=cache_root(dir.path/"parallel_run"/"summary.json");
+  for (const auto& pin:{cfg.train_sha256,cfg.validation_sha256})
+    for (const std::string id:{"volume_level","volume_rank"}) {
+      const auto expected=file_sha(a/pin/(id+".f64")); ASSERT_FALSE(expected.empty()) << id;
+      EXPECT_EQ(file_sha(b/pin/(id+".f64")),expected) << id;
+      EXPECT_EQ(read_json(a/pin/(id+".json")).at("payload_sha256"),read_json(b/pin/(id+".json")).at("payload_sha256"));
+      EXPECT_EQ(read_json(b/pin/(id+".json")).at("vm_workers"),2);
+    }
 }
 } // namespace
