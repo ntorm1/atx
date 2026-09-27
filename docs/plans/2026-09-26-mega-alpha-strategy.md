@@ -191,9 +191,14 @@ this accounting correction or its bounded source audit.
 - Target return metric: annualized net Sharpe >= 1, using 252 sessions/year,
   after declared trading costs and borrow. Report gross/net, uncertainty,
   drawdown, annual performance, and sensitivity to costs.
-- Working low-turnover target: one-way turnover <= 30% per month. Record the
-  precise gross/NAV denominator and calendar aggregation. The owner confirmed
-  **$1 billion NAV** for the cost and capacity model.
+- ~~Working low-turnover target: one-way turnover <= 30% per month.~~
+  **Superseded by owner ruling 2026-09-27** (handoff 2 §2/§2a): daily
+  rebalancing (cadence 1) is required. The combined book's mean daily one-way
+  turnover must be <= 20% of GMV and its p95 <= 30% of GMV (sum|fills| /
+  pre-trade long+short $, deployment excluded). Individual alphas may reach
+  <= 70% of GMV per day, and the netting ratio is reported. Monthly turnover is
+  reporting only. The owner confirmed **$1 billion NAV** for the cost and
+  capacity model.
 - First candidates use only evidenced fields available on the selected data:
   slow momentum, intermediate reversal, seasonality, low-risk, and liquidity
   families. Fundamental/industry families enter when their dated data is usable.

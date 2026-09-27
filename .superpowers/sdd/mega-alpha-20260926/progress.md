@@ -1,5 +1,27 @@
 # Active task: recent-data DSL ensemble
 
+## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
+
+PB portfolio swap: long pays bench+s_L, short receives bench-s_S-fee; dollar-neutral -> bench cancels;
+replay cash-0%/no-rebate = excess-return accounting (structure OK). Flat 300bps wrong both ways: GC ~30bps
+holds ~83% of US SI (S3 2022-23; D'Avolio 17bps/91%), specials avg 4.3% w/ fat tail and carry anomaly
+short legs (Muravyev-Pearson-Pollet JF 2025); long spread missing; /365 vs ACT/360. Declared primary
+swap-fin-v1: long 40, short 20 + engine tier fee (GC 30/warm 100/special 500 bps; flags mcap<$1bn,
+px<$5, SI/shares_out>10%, age<365d; missing -> warm), ACT/360, no new/increased special shorts.
+Stresses flat-300-v0 (legacy, bit-identical) and engine-tiers-v1 (27.5/300/2750). New task T10 (after
+T4, same owner/files). TRAIN-study net .56 used flat 300 - not comparable. No NAV result seen yet.
+
+## OWNER RULING 2026-09-27 — daily cadence; turnover target redefined (handoff 2 §2/§2a revised)
+
+Shipped construction is daily (cadence 1). 30%/calendar-month turnover RETIRED (reporting only; not a
+constraint/flag). Combined book: mean daily one-way turnover <= 20% GMV, p95 <= 30% GMV (sum|fills| /
+pre-trade long+short $, deployment excluded). Individual alphas <= 70% GMV/day standalone; netting ratio
+tau_book/sum w_k tau_k reported on TRAIN. Basis: WorldQuant 4,000-alpha study (median ~30%/day, range
+5-149%), BRAIN 1-70% window, practitioner 30%/day ceiling; EMN mutual funds ~1-2%/day = where 30%/mo sat.
+Cancelled: validation NAV on v3 blend / monthly-budget-v2 / cadence>1. Daily construction set: band
+{0,.5,1,2}/N at fraction 1 (4 trials). T4 brief (+GMV daily stats, ceiling flags) and T9 brief (+tau_k,
+sum w tau) revised. Deliverable = frozen daily mega-alpha, one validation NAV run.
+
 ## PAUSED 2026-09-26 at owner request — handoff 2
 
 Authoritative: docs/plans/2026-09-26-mega-alpha-parent-handoff-2.md; goal prompt

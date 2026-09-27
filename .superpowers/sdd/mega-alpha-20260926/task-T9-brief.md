@@ -49,3 +49,15 @@ preregistered rule below by a 2020-21 fit / 2022 holdout comparison inside TRAIN
 ## Report
 `C:/atx-wt/pool-2/.superpowers/sdd/mega-alpha-20260926/task-T9-report.md` incl. the exact root command
 line. Return only: status, commit SHA, one-line summary, concerns.
+
+## Addendum 2026-09-27 (owner turnover ruling; handoff §2a)
+The shipped book is rebalanced daily. Individual alphas may turn over up to 70% of GMV/day standalone,
+on the assumption that combining nets trades; the combined book must stay <= 20%/day mean, <= 30%/day
+p95. T9 supplies the per-alpha side of that check (TRAIN only, same data it already streams):
+- per candidate k: standalone daily turnover `tau_k = mean_d sum_i |q_k(d)_i - q_k(d-1)_i|` over TRAIN
+  scored decisions, with q_k from step 3 (neutralized, sum|q| = 1; ignore price drift). Write it to the
+  per-candidate provenance next to mean/sd/Sharpe, and flag `tau_k > 0.70` (flag only; admission is
+  root's decision);
+- blend level: `weighted_standalone_turnover = sum_k w_k tau_k` with the final normalized weights. Root
+  divides the NAV replay's daily-full book turnover by this to get the netting ratio.
+Fixture: tau_k hand-checked on the synthetic case.
