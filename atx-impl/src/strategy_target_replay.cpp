@@ -155,7 +155,7 @@ void rough_return(const TargetReplayInput& in, const TargetReplayConfig& cfg,
   out.complete_gross_return = nan; out.complete_net_return = nan;
   out.modeled_trade_cost = out.turnover * cfg.one_way_bps / 10000;
   out.modeled_borrow_cost = out.short_weight * cfg.annual_borrow_bps / (10000 * 252);
-  if (in.close.empty() || out.endpoint >= in.dates) return;
+  if (in.close.empty() || out.endpoint >= in.decision_end) return;
   out.return_mature = true;
   for (usize i = 0; i < in.instruments; ++i) {
     const f64 w = weights[i]; if (w == 0) continue;

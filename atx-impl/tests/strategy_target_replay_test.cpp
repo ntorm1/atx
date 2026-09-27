@@ -7,7 +7,10 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <span>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -218,4 +221,26 @@ TEST(StrategyTargetReplay, AdmissionAndFlatSignalDoNotInventExposure) {
   std::ostringstream progress; auto refused = st::run_target_replay(run, progress);
   ASSERT_FALSE(refused); EXPECT_EQ(refused.error().code(), co::ErrorCode::OutOfRange);
   EXPECT_FALSE(std::filesystem::exists(dir.path / "out")); // admitted before payload I/O
+}
+
+TEST(StrategyTargetReplay, RoughReturnsRespectDeclaredWindowEvenWithFuturePayload) {
+  Fixture f(7, 2);
+  for (usize d = 0; d < f.d; ++d) { f.signal[2 * d] = -1; f.signal[2 * d + 1] = 1; }
+  f.close.assign(14, 100); f.raw = f.close; f.present.assign(14, 1);
+  auto input = f.input(); input.decision_end = 4;
+  auto before = st::replay_targets(input, {}); ASSERT_TRUE(before);
+  ASSERT_EQ(before->days.size(), 4U);
+  EXPECT_TRUE(before->days[0].return_mature); EXPECT_TRUE(before->days[1].return_mature);
+  EXPECT_FALSE(before->days[2].return_mature); EXPECT_FALSE(before->days[3].return_mature);
+  for (usize k = 8; k < f.close.size(); ++k) {
+    f.close[k] = 1000 + static_cast<f64>(k); f.raw[k] = 1; f.present[k] = 0;
+  }
+  input = f.input(); input.decision_end = 4;
+  auto after = st::replay_targets(input, {}); ASSERT_TRUE(after);
+  for (usize d = 0; d < 4; ++d) {
+    EXPECT_EQ(before->days[d].return_mature, after->days[d].return_mature);
+    EXPECT_EQ(before->days[d].return_complete, after->days[d].return_complete);
+    EXPECT_EQ(before->days[d].observed_return_component, after->days[d].observed_return_component);
+    EXPECT_EQ(before->days[d].turnover, after->days[d].turnover);
+  }
 }
