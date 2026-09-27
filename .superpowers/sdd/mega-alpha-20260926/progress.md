@@ -1,5 +1,14 @@
 # Active task: recent-data DSL ensemble
 
+## V6-C2 implemented (pool-11 720a0066) -- DONE_WITH_CONCERNS -- review dispatched (2026-09-27 ~19:35)
+price-risk-ind-v1 (FF12 FWL demeaning on top of price-risk-v1; NaN ids = one residual group; small groups pooled into one
+fallback group), price-risk-ind-v2 (vol126 / ladv252), grp_ff12 via load_fields (+49.6 MiB), NAV reserve at real geometry
+(190.6 -> 136.7 MB). Skipped with designs: mkt_ret beta variant, F9 ring buffer. 9 tests written, not run. Test (a) golden
+from a Python replica of the base arithmetic (root must confirm with the base binary). ~40% of members lack an FF12 id.
+Expected textual conflicts with V6-C1 in form_desired, config structs, NAV help/parse, run_nav_replay, test tails.
+- Ruling: merge order C1 first, then a child rebases C2 onto pool-2 HEAD in pool-11 -- why: C1 owns the order path,
+  the larger and more invasive change; C2's conflicts are textual -- cost if wrong: one extra rebase round.
+
 ## V6-L implemented (pool-5 9d302e4c) -- DONE_WITH_CONCERNS -- review dispatched (2026-09-27 ~19:20)
 Library v6: 38 candidates; +value_composite, +res_mom_12_1; cfoa->cbop, low_beta->bac, low_max->smax; -low_ivol, -lowvol_ind;
 27 members R(decay(x)); 4 fast sleeves lose the 21-session decay. JSON sha256 5ee66d13...; recipe 36c08452. Needs-new-field:
