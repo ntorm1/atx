@@ -152,6 +152,9 @@
 - T12 review: spec PASS, Needs fixes 0C/1I/5m: 50-cell threshold margin thin (44/47 legit). TRAIN v2 role
   usable. T12 fix r1 (factor-break-v2 detector) on NEW worktree pool-9 (lease mega-alpha-t12-20260927,
   configure failed on atx-vol install target — source-only lane) because pool-8 is busy with T6 fix 2.
+- T11 re-review: 7 addressed (I1, M1-M6), M7 optional open; 0 new C/I; 4 minors (CRLF script sha, numpy
+  version unbound, stray context dirs, stale report commands). Task T11: complete (cd2ec619, fix 1507a2d8;
+  fix round 1/5). Fitter must run from C:/atx-wt/pool-2 (relative cache paths).
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 

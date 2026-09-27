@@ -370,3 +370,196 @@ New or extended coverage:
 2. **The IV domain removes only out-of-domain garbage.** In-domain vendor errors, and the unproven earnings-calendar vintage behind the IV cleaning, remain.
 3. **M3 is still open:** the `shares_out` restatement has no artifact guard. It needs a declared bound.
 4. **Pre-2021-06 FINRA republication is only reported, not masked.** It covers roughly the first 18 months of the TRAIN score window. `first_session_vintage_safe` gives the masking start if root wants SI selected on 2021-06 onward only.
+
+## Fix round 2
+
+2026-09-27. Owner: t6-fix. Worktree `C:/atx-wt/pool-8`, new branch `feat/mega-alpha-fields-fix2-20260927`
+cut from root `e885687b` (T12's `f822dd42` branch left untouched). **Commit `03a8f746`** (not pushed), which
+touches the same two files only:
+
+- `atx-engine/tools/prepare_research_fields.py`: sha256 `7c77fc46929d4e1e92e00fa8c08ea1d4f3e30bcc10115d44ee5caa24764a0af2` (LF), git blob `a17f83c62c13a0017444ef3b4b74bac79ddc6024`
+- `atx-engine/tools/test_prepare_research_fields.py`: sha256 `d849a86ce2774da1cb9672bcf38ee1b9a3c9334673713ed320915c9c241aa841`
+
+Nothing built and no field computed on real data. Real-data reads:
+
+- TickerHistory3 footer schema only.
+- The two role manifests.
+- Binding checks of the TRAIN v2 and validation v1 roles (manifest, sessions, ids and member sha checks through the producer's `Role`).
+
+### Finding (T12 §6.1) and the fix
+
+`shares_out` restated the 90-day-lagged vendor share count by `cumulReturnFactor(session)/cumulReturnFactor(lag)`.
+That factor is not chained across 2021-01-04: bars before that date omit the corporate actions dated on or after
+it (atx-db VA1 / C-35).
+
+- **The error.** For every session whose lag row precedes the break, the ratio carried the re-anchoring step:
+  - later consolidations: x10..x80
+  - later forward splits: x1/4..x1/10
+  - dividend payers: 1-10%
+- **Where it hit.** About 62 TRAIN sessions, plus any validation cell whose lag row is stale back to before 2021-01-04.
+
+**Chosen fix: apply factor-break-v1 consistently.** It is ported into the producer with T12's constants and step
+classification, and recorded in the manifest as `factor_break.parameters` / `statement`.
+
+- **Observations.** The rule runs on the vendor observations of the role's ids over the producer's extended
+  calendar, [first session - 490 d, last session]. An observation is the role's present contract:
+  - unique (date, id) key
+  - finite positive `close` and `cumulReturnFactor`
+  - finite `volume` >= 0
+- **Mass sessions.** A mass session has >= 50 jump cells. Every crossing step on it is classified exactly as T12
+  does: `repaired`, `kept_gap`, `kept_split_follow` or `kept_distribution`.
+- **Restatement.** shares_out(s) = shares(L) x 1000 x crf(s)/crf(L) / prod{k of repaired steps (p, t, k) with L < t <= s}.
+  - Cells without a repaired step are bit-identical to before (division by 1.0).
+  - Genuine splits and distributions stay in the ratio.
+- **Point in time.** The correction starts at the step's end t, where k is first known, not at the mass session b.
+  - Mass detection at b and classification of (p, t) read rows <= t only.
+  - A test shows that a role truncated at 2021-01-05 gives byte-identical cells to the full role on the common
+    sessions, even though a gap step ending 2021-01-06 exists in the full run.
+- **Gap steps.** A restatement window that spans a `kept_gap` step (a hole of more than 10 days across a mass
+  session, where artifact and genuine action cannot be separated) becomes NaN, counted.
+- **Lag row and session row must both be observations.** No row can then sit between a step's p and t, which
+  keeps the correction exact.
+- **Binding gate (fail closed).** Mass sessions strictly inside the role (first < b <= last, i.e. a return across
+  b is in the role) must equal the role manifest's `repair.mass_sessions`.
+  - TRAIN v2 lists `2021-01-04`; validation v1 lists none.
+  - Binding the unrepaired TRAIN v1 role, or a role whose repair lists another date, is refused before
+    publication, and the error message prints both lists.
+
+**Alternatives rejected:**
+
+1. **Reading the repaired role's `repair_cells.csv`** (T12's suggestion). It covers only in-role steps. It cannot
+   fix pre-role lag rows: validation's stale lags, or TRAIN's first sessions. It would also couple the producer
+   to a sidecar format.
+2. **A "split-only" chain** (restate only steps where the raw close followed). It ignores the broken chain, but
+   it would drop steps the vendor dates off the price (VA1 cites ARCM x5 dated one session later). It would also
+   change every restatement, not just the broken window.
+3. **`returnFactor`.** Its behaviour across 2021-01-04 cannot be verified without reading real data, which this
+   lane forbids.
+
+**M3 (open review minor), in the form root declared for T10:** `shares_out` outside [1e5, 5e10] (float64,
+inclusive) becomes NaN and is never clamped.
+
+- It is applied after the C-81 and factor-break rules.
+- It is counted in a `plausibility` block with the same keys as IV: `min`, `max`, `inclusive`, `units`, `rule`,
+  `implausible_to_nan`, `implausible_to_nan_member`, `below_min`, `above_max`, `member_below_min`,
+  `member_above_max`.
+- As T12 noted, this range alone would not catch a x10 error. The factor-break fix does.
+
+### TRAIN v2 binding (confirmed)
+
+`Role(recent-fast-train-2020-2022-v2, 210fff96…)` accepts it:
+
+- 1155 x 5627, 2018-06-01..2022-12-30
+- `source_sha256` `0ed96b2696f1…`, the same vendor file
+- `repair.mass_sessions` = `["2021-01-04"]`
+
+Validation v1 (`0c757c41…`) is accepted too (903 x 5048, 2021-06-01..2024-12-31, no repair block). The role-derived
+`mkt_ret` is computed from the bound role's `close.f64`, so on TRAIN v2 it uses the repaired closes.
+
+### Manifest (schema unchanged, additive)
+
+- **`fields[shares_out].factor_break`**:
+  - `rule`, `ported_from`, `statement`, `parameters`, `use`
+  - `mass_sessions[]` with `{session, inside_role, jump_cells, crossing_steps, repaired, kept_gap, kept_split_follow, kept_distribution}`
+  - `role_repair_mass_sessions`
+  - `max_non_mass_jump_cells` / `max_non_mass_session` (the margin to 50)
+  - `restated_cells` / `restated_member_cells`
+  - `gap_ambiguous_to_nan_cells` / `gap_ambiguous_to_nan_member_cells`
+- **`fields[shares_out].plausibility`**: as above.
+- **Changed values:**
+  - `shares_out` `source_columns` now also list `close` and `volume`.
+  - The `clock` is `A8-vendor-shares-lag90-restated-v2`.
+  - `staleness` and `caveats` are rewritten.
+- **Nothing removed or renamed.**
+
+### Tests
+
+Command, run from `C:/atx-wt/pool-8`:
+`& 'C:/Program Files/Python312/python.exe' -m unittest discover -s atx-engine/tools -p test_prepare_research_fields.py -v`
+
+- **Result:** `Ran 19 tests in 2.507s`, `OK`, exit 0. Fourteen tests were already there; five new ones form class `FactorBreakShares`.
+- **Log:** scratchpad `t6fix/t6-fix2-tests.log`, sha256 `621bc54635196f52c7c387d46c8a386ae5a307d54aed41926364a95a2b19f1af`.
+
+**New fixture** (64 names, weekdays 2019-05..2021-06, unchained factor at 2021-01-04):
+
+| Lines | What they model |
+|---|---|
+| 52 | dividend payers, factor step -3% |
+| 1 | later consolidation, x10 |
+| 1 | later 4:1 split: x1/4 at the break, genuine split 2021-03-01 |
+| 1 | 2:1 split on the break, shown by the factor and raw followed (`kept_split_follow`) |
+| 1 | 14-day hole across the break (`kept_gap`) |
+| 1 | 5% same-day distribution (`kept_distribution`) |
+| 1 | opposite-sign dividend: repaired but not a jump cell |
+| 1 | repaired step ending 2021-01-06 |
+| 1 | control with a null-close row |
+| 1 | genuine split on a normal day |
+| 2 | out-of-domain lines (5e4 and 6e10 shares) |
+| 1 | stale lag rows before the break |
+
+New tests:
+
+- **`test_restated_correctly_across_the_unchained_factor`**
+  - Every cell equals an independent oracle (lag shares x genuine actions in (lag, s] x 1000; rtol 1e-12).
+  - Explicit cells: the x10 and x1/4 lines equal 1e6 on 2021-02-01; the correction applies on the step's own day; the lag row equal to the step end is not corrected.
+  - The `factor_break` block: 2021-01-04 with 56 jump cells, 60 steps = 57 repaired + 1 of each kept class; margin 1 on 2021-01-06.
+  - Restated and gap counts equal the oracle.
+  - The shares plausibility counts, including non-member cells.
+- **`test_break_before_the_role_corrects_stale_lag_rows`:** a validation-like role starting 2021-05-03. The break is detected pre-role (`inside_role` false) and the stale-lag line is corrected.
+- **`test_break_on_the_first_session_needs_no_role_repair`:** an unrepaired role starting on the break is accepted and corrected.
+- **`test_point_in_time_later_rows_change_no_earlier_cell`:** the truncation test described above.
+- **`test_role_repair_block_must_match_detected_breaks`:** unrepaired or wrong repair blocks are refused and no manifest is published.
+- **Existing tests:** the main fixture gained a `volume` column. Its `shares_out` values are unchanged, and it checks an empty `factor_break` and a zero-count plausibility block.
+
+**Mutation sweeps:** 18 of 18 fix-2 mutations killed, plus 3 disambiguated fix-1/fix-2 mutations killed; the fix-1 sweep still kills its patterns. The fix-2 mutations were:
+
+- correction removed or inverted
+- `t < day`, and `lag <= t` for both the repaired and the gap window
+- gap not NaN; every class repaired
+- split-follow veto removed; distribution keep removed
+- mass threshold 57; jump count ignoring the gap limit
+- gate removed; gate including the first session
+- observation ignoring close
+- domain removed; domain upper bound 1e11
+- restated count taken before the domain
+- C-81 whole-line
+
+**Full-scale synthetic** (scratchpad; TRAIN shape 1196 x 5627; 8.7M vendor rows, 282 MB parquet; 1200-line break; 3 IV + earn + shares_out):
+
+- **7.3 s wall, peak working set 441 MiB.** The prior all-field measurement was 405 MiB.
+- The TickerHistory phase now also holds the extended-calendar factor (f64) and raw close (f32): about +60 MB for TRAIN.
+- It runs under `--max-rss-mib 700`.
+
+### Root commands (not executed; output directories do not exist yet; run one at a time)
+
+```powershell
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-8/atx-engine/tools/prepare_research_fields.py --role C:/atx-wt/pool-2/build-equity/recent-fast-train-2020-2022-v2 --role-sha256 210fff9687aa6b16e74c65104d77a916d708dca6986e77b06bac27556c48d1de --output C:/atx-wt/pool-2/build-equity/recent-fast-train-2020-2022-v2-fields-v2 --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --lake C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23 --max-rss-mib 700 --max-seconds 1800
+
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-8/atx-engine/tools/prepare_research_fields.py --role C:/atx-wt/pool-2/build-equity/recent-fast-validation-2023-2024-v1 --role-sha256 0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7 --output C:/atx-wt/pool-2/build-equity/recent-fast-validation-2023-2024-v1-fields-v2 --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --lake C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23 --max-rss-mib 700 --max-seconds 1800
+```
+
+- **Code pin.** If root runs a cherry-picked copy, the manifest `code_git_blob_sha1` must be `a17f83c62c13a0017444ef3b4b74bac79ddc6024`.
+- **Output names.** The fix-1 `...-v1-fields-v2` TRAIN name is superseded by `...-v2-fields-v2` (repaired role). Validation keeps `...-v1-fields-v2`.
+
+**What to read after the runs** (descriptive, no outcomes):
+
+- **TRAIN `fields[shares_out].factor_break`:**
+  - `mass_sessions` should be exactly `2021-01-04` with `inside_role: true`.
+  - Its counts should reproduce T12's role block: jump 1185, crossing 2123, repaired 2114, kept_split_follow 2, kept_distribution 7, kept_gap 0. The populations are defined identically, so a difference means they diverge; worth a look, not a refusal.
+  - `restated_cells` should be about 62 sessions x the affected names.
+  - `gap_ambiguous_to_nan_cells` should be 0.
+  - `max_non_mass_jump_cells` should be below 50; T12 saw 44 on 2022-12-29.
+- **Validation:**
+  - `mass_sessions` should be `2021-01-04` with `inside_role: false`, detected pre-role from the validation ids' vendor rows.
+  - `restated_cells` covers the stale-lag cells only.
+  - No mass session inside the role.
+- **Both roles:** `fields[shares_out].plausibility` counts.
+
+### Concerns (fix round 2)
+
+1. **Hard refusal on mismatch.** The gate refuses when the producer's mass sessions inside the role differ from the role's repair block. The margin on TRAIN is 44 vs 50 (2022-12-29), and the populations are identical by construction, so a spurious refusal is unlikely. If it happens, the message names both lists, and it is a real data-definition disagreement to resolve before using TRAIN sizes.
+2. **Validation correction depends on detecting the break pre-role.** The validation stale-lag correction needs at least 50 jump cells among the validation ids at 2021-01-04. If fewer are present, the break is not detected and those cells stay uncorrected. Read `mass_sessions` in the validation manifest.
+3. **Residuals as in T12:**
+   - Artifact components inside `kept_split_follow` or `kept_distribution` steps on the break remain.
+   - A genuine split that the vendor factor never shows is not restated, as before.
+   - The dividend steps inside the ratio (a few tenths of a percent) remain.
