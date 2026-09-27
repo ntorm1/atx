@@ -25,7 +25,7 @@ def run_retained_jobs(jobs, log_parent: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(__doc__)
-    parser.add_argument("command", choices=["prepare", "normalize", "normalize-all", "plan", "build", "audit", "publish"])
+    parser.add_argument("command", choices=["prepare", "normalize", "normalize-all", "plan", "build", "audit", "publish", "relocate"])
     parser.add_argument("--pins", type=Path, required=True)
     parser.add_argument("--root", type=Path, default=Path("data/research"))
     parser.add_argument("--work", type=Path, required=True)
@@ -35,6 +35,8 @@ def main() -> None:
     parser.add_argument("--bucket", type=int)
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--diagnostic", action="store_true")
+    parser.add_argument("--storage-only", action="store_true",
+                        help="verify one already completed/relocated bucket; never compute, audit, or publish anew")
     parser.add_argument("--limit-sources", type=int)
     parser.add_argument("--part", type=int, default=0)
     parser.add_argument("--parts", type=int, default=1)
@@ -42,6 +44,8 @@ def main() -> None:
     parser.add_argument("--reuse-filings", type=Path)
     parser.add_argument("--reuse-filings-sha256")
     args = parser.parse_args()
+    if args.storage_only and (args.command not in {"build", "audit", "publish"} or args.bucket is None):
+        parser.error("--storage-only requires build/audit/publish and one explicit --bucket")
     pins = json.loads(args.pins.read_text(encoding="utf-8"))
     # Reuse the accepted source audit. Manifest drift is checked immediately; every
     # worker independently verifies each file it actually consumes.
@@ -150,14 +154,21 @@ def main() -> None:
         print(json.dumps({"plan": target.as_posix(), "build_id": plan["build_id"],
                           "sources": len(receipts), "scope_complete": plan["scope_complete"],
                           "mapping_sha256": mapping["sha256"]}))
-    elif args.command in {"build", "audit", "publish"}:
-        from atx_db.research.item_vintages import build_bucket, audit_bucket, publish_bucket, publish_index
+    elif args.command in {"build", "audit", "publish", "relocate"}:
+        from atx_db.research.item_vintages import (
+            build_bucket, audit_bucket, publish_bucket, publish_index, prepare_bucket_relocation,
+            verify_bucket_storage, validate_original_plan,
+        )
         if args.plan is None:
             parser.error("build requires explicit --plan")
         plan = json.loads(args.plan.read_text())
-        for path, expected_sha in plan["code"].items():
-            if file_sha256(path) != expected_sha:
-                raise ValueError("build code differs from immutable plan; create a new plan")
+        if args.command != "relocate" and not args.storage_only:
+            for path, expected_sha in plan["code"].items():
+                if file_sha256(path) != expected_sha:
+                    raise ValueError("build code differs from immutable plan; create a new plan")
+        # Relocation performs no item computation. It preserves the original
+        # computational plan and separately pins/verifies its storage code and
+        # semantic equality to already sealed outputs. It never removes files.
         if file_sha256(args.pins) != plan["source_pins_sha256"]:
             raise ValueError("source pin file drift")
         for receipt in plan["source_receipts"]:
@@ -176,13 +187,20 @@ def main() -> None:
         else:
             if not 0 <= args.bucket < plan["buckets"]:
                 raise ValueError("bucket outside plan")
-            files = [check_file(f) for receipt in plan["source_receipts"] for f in receipt["files"] if f["bucket"] == args.bucket]
             output = args.plan.parent / f"b{args.bucket:03d}"
-            if args.command == "build":
+            validate_original_plan(plan, output=output, root=args.root)
+            files = [] if args.storage_only or args.command == "relocate" else [
+                check_file(f) for receipt in plan["source_receipts"] for f in receipt["files"] if f["bucket"] == args.bucket]
+            if args.storage_only:
+                result = verify_bucket_storage(plan, output=output, root=args.root)
+                result["requested_command"] = args.command
+            elif args.command == "build":
                 result = build_bucket(files, plan["mapping"], root=args.root, output=output,
                                       build_sha256=plan["build_sha256"], bucket=args.bucket)
             elif args.command == "audit":
                 result = audit_bucket(files, plan, output=output, root=args.root)
+            elif args.command == "relocate":
+                result = prepare_bucket_relocation(plan, output=output, root=args.root)
             else:
                 result = publish_bucket(files, plan, output=output, root=args.root)
                 if args.diagnostic:

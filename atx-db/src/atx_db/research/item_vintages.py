@@ -645,6 +645,237 @@ def iter_owner_candidates(files: Sequence[Path | str], mapping: dict, *, root: P
         con.close()
 
 
+def validate_original_plan(plan: dict, *, output: Path, root: Path) -> dict:
+    """Bind storage operations to the actual immutable computational plan."""
+    path = output.parent / "plan.json"
+    original = json.loads(path.read_text())
+    payload = {k: v for k, v in original.items() if k not in {"build_sha256", "build_id"}}
+    digest = canonical_sha256(payload)
+    if (original != plan or original["build_sha256"] != digest or
+            original["build_id"] != "fund-"+digest[:20]):
+        raise ValueError("original computational plan content/identity differs")
+    if (output.parent.resolve() != (Path(original["work"]) / original["build_id"]).resolve() or
+            root.resolve() != Path(original["root"]).resolve()):
+        raise ValueError("storage operation is outside original plan locations")
+    return {"path": path.resolve().as_posix(), "sha256": file_sha256(path),
+            "payload_sha256": canonical_sha256(original)}
+
+
+def bucket_materializations(output: Path, *, root: Path, prefer_sealed: bool = False) -> list[dict]:
+    """Resolve pinned originals or a separately verified immutable relocation.
+
+    ``prefer_sealed`` measures the destination reader without removing originals.
+    A present corrupt original always fails, including in this diagnostic mode.
+    """
+    from .fundamental_sources import check_file
+    from .research_lake import verify_lake_snapshot
+    complete_path = output / "complete.json"
+    complete = json.loads(complete_path.read_text())
+    missing = []
+    for entry in complete["files"]:
+        if Path(entry["path"]).exists():
+            check_file(entry)
+        else:
+            missing.append(entry)
+    if not missing and not prefer_sealed:
+        return complete["files"]
+    path = output / "storage-relocation-v2.json"
+    if not path.is_file():
+        raise ValueError("missing item intermediates without verified relocation receipt")
+    proof = json.loads(path.read_text())
+    digest = proof.pop("receipt_sha256", None)
+    if digest != canonical_sha256(proof) or proof.get("schema") != "fundamental_item_relocation_v2":
+        raise ValueError("invalid item relocation receipt")
+    plan = json.loads((output.parent / "plan.json").read_text())
+    if proof["original_plan"] != validate_original_plan(plan, output=output, root=root):
+        raise ValueError("relocation original computational plan drift")
+    if (proof["build_sha256"] != complete["build_sha256"] or
+            proof["mapping_sha256"] != complete["mapping_sha256"] or
+            proof["original_files"] != complete["files"] or
+            proof["build_sha256"] != plan["build_sha256"] or
+            proof["mapping_sha256"] != plan["mapping"]["sha256"] or
+            proof["bucket"] != complete["bucket"] or output.name != f"b{complete['bucket']:03d}"):
+        raise ValueError("relocation does not bind original bucket contents")
+    if set(proof["original_receipts"]) != {"complete.json", "audit.json", "published.json"}:
+        raise ValueError("relocation original receipt scope is incomplete")
+    for name, expected_sha in proof["original_receipts"].items():
+        if file_sha256(output / name) != expected_sha:
+            raise ValueError("relocation original receipt drift")
+    published = json.loads((output / "published.json").read_text())
+    if proof["snapshots"] != published["slices"]:
+        raise ValueError("relocation snapshot scope differs from original publication")
+    expected_targets = []
+    for snapshot in proof["snapshots"]:
+        if file_sha256(snapshot["manifest_path"]) != snapshot["manifest_sha256"]:
+            raise ValueError("relocated lake manifest drift")
+        if not verify_lake_snapshot(snapshot["snapshot_id"], root=root)["ok"]:
+            raise ValueError("relocated lake snapshot verification failed")
+        manifest_path = Path(snapshot["manifest_path"])
+        manifest = json.loads(manifest_path.read_text())
+        for dataset, description in manifest["datasets"].items():
+            expected_targets.extend({**entry, "path": (manifest_path.parent / entry["path"]).resolve().as_posix(),
+                                      "dataset": dataset, "year": snapshot["year"]}
+                                     for entry in description["files"])
+    if expected_targets != proof["destination_files"]:
+        raise ValueError("relocation destination files differ from sealed manifests")
+    for entry in proof["destination_files"]:
+        check_file(entry)
+    # Select one representation per dataset/year. Never concatenate equivalent
+    # original and sealed files, which would duplicate all rows.
+    groups = collections.defaultdict(list)
+    for entry in complete["files"]:
+        groups[entry["dataset"], entry["year"]].append(entry)
+    comparisons = {(r["dataset"], r["year"]): r for r in proof["comparisons"]}
+    if len(comparisons) != len(proof["comparisons"]) or set(comparisons) != set(groups):
+        raise ValueError("relocation semantic proof scope differs")
+    for key, entries in groups.items():
+        comparison = comparisons[key]
+        if (comparison["rows"] != sum(e["rows"] for e in entries) or
+                comparison["missing_rows"] != 0 or comparison["extra_rows"] != 0):
+            raise ValueError("relocation semantic comparison was not successful")
+    resolved = []
+    for key, entries in groups.items():
+        if not prefer_sealed and all(Path(e["path"]).is_file() for e in entries):
+            resolved.extend(entries)
+        else:
+            targets = [e for e in proof["destination_files"] if (e["dataset"], e["year"]) == key]
+            if not targets or sum(e["rows"] for e in targets) != sum(e["rows"] for e in entries):
+                raise ValueError("relocation dataset/year row denominator mismatch")
+            resolved.extend(targets)
+    return resolved
+
+
+def prepare_bucket_relocation(plan: dict, *, output: Path, root: Path) -> dict:
+    """Prove sealed/original equality and pin a no-delete storage transition.
+
+    The computational plan stays frozen. This independent storage operation pins
+    its own implementation and never changes computational acceptance or removes
+    files. Actual release is deliberately not implemented here.
+    """
+    import shutil
+    import time
+    from .fundamental_sources import atomic_json, check_file
+    from .research_lake import connect_bounded, snapshot_path, verify_lake_snapshot
+    original_plan = validate_original_plan(plan, output=output, root=root)
+    target = output / "storage-relocation-v2.json"
+    if target.is_file():
+        bucket_materializations(output, root=root, prefer_sealed=True)
+        return json.loads(target.read_text())
+    originals = {name: json.loads((output / name).read_text()) for name in
+                 ("complete.json", "audit.json", "published.json")}
+    complete, audit, published = (originals[n] for n in ("complete.json", "audit.json", "published.json"))
+    pins = {name: file_sha256(output / name) for name in originals}
+    if (any(record["build_sha256"] != plan["build_sha256"] for record in originals.values()) or
+            complete["mapping_sha256"] != plan["mapping"]["sha256"] or not audit["structural_ok"] or
+            audit["failures"] or audit["complete_sha256"] != pins["complete.json"] or
+            published["audit_sha256"] != pins["audit.json"]):
+        raise ValueError("only explicitly audited published bucket contents can relocate")
+    by_group = collections.defaultdict(list)
+    for entry in complete["files"]:
+        source = check_file(entry).resolve()
+        if source.parent != output.resolve() or source.suffix != ".parquet" or Path(entry["path"]).is_symlink():
+            raise ValueError("item intermediate is outside its exact owned bucket directory")
+        by_group[entry["dataset"], entry["year"]].append(entry)
+    destinations, snapshots = [], []
+    for snapshot in published["slices"]:
+        if file_sha256(snapshot["manifest_path"]) != snapshot["manifest_sha256"]:
+            raise ValueError("published manifest drift before relocation")
+        verified = verify_lake_snapshot(snapshot["snapshot_id"], root=root)
+        if not verified["ok"]:
+            raise ValueError("published snapshot failed relocation verification")
+        manifest = json.loads(Path(snapshot["manifest_path"]).read_text())
+        meta = manifest["source_meta"]
+        if (meta["build_sha256"] != plan["build_sha256"] or
+                meta["mapping_sha256"] != plan["mapping"]["sha256"] or
+                meta["bucket_complete_sha256"] != pins["complete.json"] or
+                meta["audit_sha256"] != pins["audit.json"] or meta["bucket"] != complete["bucket"] or
+                meta["year"] != snapshot["year"]):
+            raise ValueError("published content belongs to a different bucket/audit")
+        location = snapshot_path(snapshot["snapshot_id"], root)
+        if Path(snapshot["manifest_path"]).resolve().parent != location.resolve():
+            raise ValueError("published manifest is outside its declared snapshot")
+        for dataset, description in manifest["datasets"].items():
+            for entry in description["files"]:
+                path = (location / entry["path"]).resolve()
+                if not path.is_relative_to(location.resolve()):
+                    raise ValueError("relocation destination escaped sealed snapshot")
+                destinations.append({**entry, "path": path.as_posix(), "dataset": dataset,
+                                     "year": snapshot["year"]})
+        snapshots.append(snapshot)
+    destination_groups = {(e["dataset"], e["year"]) for e in destinations}
+    if destination_groups != set(by_group):
+        raise ValueError("relocation destination dataset/year scope differs")
+    comparisons = []
+    for (dataset, year), entries in sorted(by_group.items()):
+        targets = [e for e in destinations if e["dataset"] == dataset and e["year"] == year]
+        rows = sum(e["rows"] for e in entries)
+        if rows > 2_000_000:
+            raise ValueError("relocation slice exceeds two-million-row bound; subdivide first")
+        if rows != sum(e["rows"] for e in targets):
+            raise ValueError("relocation row denominator differs")
+        # EXCEPT ALL may spill. Reserve both file-copy and decompressed-row scale
+        # in addition to the standing floor, before each bounded comparison.
+        transient = max(4*sum(e["bytes"] for e in entries), rows*256) + 128*1024**2
+        if shutil.disk_usage(output).free < 35*1024**3 + transient:
+            raise ValueError("insufficient disk headroom for bounded relocation comparison")
+        con = connect_bounded(None, root=root, memory_limit="256MB", threads=1)
+        start = time.perf_counter()
+        try:
+            source = parquet_relation([check_file(e) for e in entries])
+            destination = parquet_relation([check_file(e) for e in targets])
+            columns = con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
+            other = {row[0]: row[1] for row in con.execute(f"DESCRIBE SELECT * FROM {destination}").fetchall()}
+            if set(other) != {row[0] for row in columns}:
+                raise ValueError("relocation column scope differs")
+            select = []
+            for name, kind, *_ in columns:
+                if kind != other[name] and not (name == "year" and {kind, other[name]} <= {"INTEGER", "BIGINT"}):
+                    raise ValueError("relocation column type differs beyond hive-year representation")
+                quoted = '"'+name.replace('"', '""')+'"'
+                select.append(f"CAST({quoted} AS BIGINT) AS {quoted}" if name == "year" else quoted)
+            projection = ",".join(select)
+            left, right = (f"SELECT {projection} FROM {relation}" for relation in (source, destination))
+            missing = con.execute(f"SELECT count(*) FROM ({left} EXCEPT ALL {right})").fetchone()[0]
+            extra = con.execute(f"SELECT count(*) FROM ({right} EXCEPT ALL {left})").fetchone()[0]
+            if missing or extra:
+                raise ValueError(f"relocation content differs: missing={missing}, extra={extra}")
+            comparisons.append({"dataset": dataset, "year": year, "rows": rows,
+                                "missing_rows": missing, "extra_rows": extra,
+                                "seconds": round(time.perf_counter()-start, 3)})
+        finally:
+            con.close()
+    proof = {"schema": "fundamental_item_relocation_v2", "build_sha256": plan["build_sha256"],
+             "mapping_sha256": plan["mapping"]["sha256"], "bucket": complete["bucket"],
+             "original_plan": original_plan,
+             "storage_code_sha256": file_sha256(__file__), "original_receipts": pins,
+             "original_files": complete["files"], "destination_files": destinations,
+             "snapshots": snapshots, "comparisons": comparisons, "originals_removed": False,
+             "acceptance_changed": False}
+    proof["receipt_sha256"] = canonical_sha256(proof)
+    atomic_json(target, proof)
+    bucket_materializations(output, root=root, prefer_sealed=True)
+    return proof
+
+
+def verify_bucket_storage(plan: dict, *, output: Path, root: Path) -> dict:
+    """Verify a completed bucket without rerunning its historical computation.
+
+    This explicit storage-only route can run under changed code. It requires a
+    v2 equality proof and never writes an audit, content, or publication index.
+    """
+    original_plan = validate_original_plan(plan, output=output, root=root)
+    entries = bucket_materializations(output, root=root, prefer_sealed=True)
+    path = output / "storage-relocation-v2.json"
+    proof = json.loads(path.read_text())
+    return {"schema": "fundamental_completed_storage_verification_v1",
+            "build_sha256": plan["build_sha256"], "bucket": proof["bucket"],
+            "original_plan": original_plan, "original_receipts": proof["original_receipts"],
+            "relocation_sha256": file_sha256(path), "verifier_code_sha256": file_sha256(__file__),
+            "sealed_files": len(entries), "sealed_rows": sum(e["rows"] for e in entries),
+            "computation_repeated": False, "audit_recomputed": False,
+            "published_new_content": False, "acceptance_changed": False}
+
+
 def build_bucket(files: Sequence[Path | str], mapping: dict, *, root: Path, output: Path,
                  build_sha256: str, bucket: int) -> dict:
     """One complete owner bucket, flushed by fiscal year. No whole-history materialization."""
@@ -659,8 +890,7 @@ def build_bucket(files: Sequence[Path | str], mapping: dict, *, root: Path, outp
         prior = json.loads(receipt.read_text())
         if prior["build_sha256"] != build_sha256:
             raise ValueError("item bucket build/code drift")
-        for entry in prior["files"]:
-            check_file(entry)
+        bucket_materializations(output, root=root)
         return {**prior, "resumed": True}
     start = time.perf_counter()
     writers, paths, counts, inventory = {}, {}, collections.Counter(), collections.Counter()
@@ -735,7 +965,7 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
     if receipt["build_sha256"] != plan["build_sha256"]:
         raise ValueError("audit build drift")
     grouped = collections.defaultdict(list)
-    for entry in receipt["files"]:
+    for entry in bucket_materializations(output, root=root):
         grouped[entry["dataset"]].append(check_file(entry))
     con = connect_bounded(None, root=root, memory_limit="256MB", threads=1)
     checks = {}
@@ -842,12 +1072,13 @@ def publish_bucket(files, plan, *, output: Path, root: Path) -> dict:
     if (not audit["structural_ok"] or audit["build_sha256"] != plan["build_sha256"] or
             audit["complete_sha256"] != file_sha256(output / "complete.json")):
         raise ValueError("item audit is stale or failed")
-    by_year = collections.defaultdict(dict)
-    for entry in receipt["files"]:
+    by_year = collections.defaultdict(lambda: collections.defaultdict(list))
+    for entry in bucket_materializations(output, root=root):
         path = check_file(entry)
-        by_year[entry["year"]][entry["dataset"]] = f"SELECT * FROM {parquet_relation([path])}"
+        by_year[entry["year"]][entry["dataset"]].append(path)
     slices = []
-    for year, datasets in sorted(by_year.items()):
+    for year, paths in sorted(by_year.items()):
+        datasets = {name: f"SELECT * FROM {parquet_relation(files)}" for name, files in paths.items()}
         # Raw candidates are retained in their source files and explicitly indexed
         # in the top manifest; each terminal disposition carries their exact IDs.
         snapshot_id = f"{plan['build_id']}-b{receipt['bucket']:03d}-y{year:04d}"

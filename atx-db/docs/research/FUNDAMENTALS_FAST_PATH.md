@@ -11,8 +11,8 @@ fundamental coverage claim, or fundamental grade exists yet. Partial diagnostic
 builds are unpublishable as accepted research inputs.
 
 `research_fundamentals.py` exposes `prepare`, `normalize`, `normalize-all`, `plan`,
-`build`, `audit`, and `publish`. Pass `--pins`, `--work`, and `--root` explicitly.
-`build`, `audit`, and `publish` also require `--plan`; `--bucket` selects a bounded
+`build`, `audit`, `publish`, and `relocate`. Pass `--pins`, `--work`, and `--root` explicitly.
+These last four commands also require `--plan`; `--bucket` selects a bounded
 worker. Without a bucket those commands run separate guarded workers.
 
 Every invocation runs under `run_memory_guarded.py`. Workers use 0.6 GiB,
@@ -65,6 +65,24 @@ build_manifest)` refuses unaccepted builds unless `allow_diagnostic=True` is
 explicitly requested. Its `items_asof` API uses fiscal-quarter slot lags, XNYS
 month-end decision cutoffs, dense owner rows and 200/400-day origin age policies.
 The explicit-store `items_asof(..., store=store)` entry point is shared with 2.9.
+
+`relocate` prepares a verified storage receipt and removes no files. It requires
+an existing successful audit and sealed lake outputs, then proves complete
+dataset/year value-multiset equality with bounded bidirectional comparisons.
+The v2 receipt preserves the original plan file and canonical payload hashes,
+complete/audit/published hashes, and separately pins the storage implementation.
+Plan identity is checked before any receipt reuse. A historical computation keeps its original
+code/map plan; relocation does not recompute values or change acceptance.
+Bucket resume and audit readers use original pinned files when present and may
+resolve absent originals only through this verified sealed destination chain.
+A corrupt present original cannot silently fall through. The diagnostic
+`bucket_materializations(..., prefer_sealed=True)` path measures destination
+reads without removing originals. Intermediate release is not implemented.
+Normal computational commands retain strict code pins. When code has changed,
+`build|audit|publish --storage-only --bucket N` explicitly verifies an already
+completed bucket and its v2 sealed storage proof. This route returns the original
+receipt pins; it cannot compute items, rerun an audit, publish new content or
+rewrite an index. Missing or failing original audits cannot use this route.
 
 No interface in this module grants permission to register another wave, inspect
 returns, use reconstructed identity as verified history, or open the sealed
