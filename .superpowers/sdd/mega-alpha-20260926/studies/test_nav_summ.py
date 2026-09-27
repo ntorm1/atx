@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import json
 import math
+import re
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +24,10 @@ import nav_summ as NS  # noqa: E402
 SCEN = "modeled-1bn-stale5-v1+swap-fin-v1"
 COLUMNS = ("session_index", "session_ns", "executed", "return_observation", "net_return", "gross_return",
            "trade_cost_return", "traded_dollars", "trade_cost_dollars", "pretrade_gross_dollars", "gross_leverage",
-           "net_leverage", "held_names", "one_way_turnover_gmv", "neutralize")
+           "net_leverage", "held_names", "one_way_turnover_gmv", "neutralize", "pretrade_nav")
+PRE_T41_BLOB = "5c414e38e45979c8cad616522550dfedb4d46452"  # nav_summ.py at faf5943f (T31 fix 1, c8358931)
+NEW_KEYS = {"mean_gross_leverage_all_rows", "mean_net_leverage_all_rows", "csv_rows", "leverage_gate_basis",
+            "nav_summ_run"}
 DAY = 86_400_000_000_000
 T0 = 1_577_923_200_000_000_000
 
@@ -35,7 +41,8 @@ def eps_pair(t):
 
 
 def write_nav(d: Path, nets, *, weights_sha="0" * 64, tau=None, gross=None, net=None, pretrade=None,
-              cost_return=None, traded=None, cost_dollars=None, v5=None, summary_tau=None, net_sharpe=0.5) -> Path:
+              cost_return=None, traded=None, cost_dollars=None, v5=None, summary_tau=None, net_sharpe=0.5,
+              executed=None, pretrade_nav=None) -> Path:
     """Row 0: nothing; row 1: deployment (first fill, not a return row); rows 2..: return rows carrying ``nets``."""
     t = len(nets) + 2
     d.mkdir(parents=True)
@@ -46,13 +53,15 @@ def write_nav(d: Path, nets, *, weights_sha="0" * 64, tau=None, gross=None, net=
     cost_return = np.zeros(t) if cost_return is None else np.asarray(cost_return, dtype=float)
     traded = np.r_[0.0, 5e8, np.full(t - 2, 1e7)] if traded is None else np.asarray(traded, dtype=float)
     cost_dollars = np.r_[0.0, 1e5, np.full(t - 2, 2e3)] if cost_dollars is None else np.asarray(cost_dollars, dtype=float)
+    executed = [int(k >= 1) for k in range(t)] if executed is None else list(executed)
+    pretrade_nav = np.full(t, 1e9) if pretrade_nav is None else np.asarray(pretrade_nav, dtype=float)
     with (d / f"daily_{SCEN}.csv").open("w", newline="", encoding="utf-8") as stream:
         w = csv.writer(stream)
         w.writerow(COLUMNS)
         for k in range(t):
-            w.writerow([399 + k, T0 + k * DAY, int(k >= 1), int(k >= 2), nets[k - 2] if k >= 2 else 0, 0,
+            w.writerow([399 + k, T0 + k * DAY, executed[k], int(k >= 2), nets[k - 2] if k >= 2 else 0, 0,
                         cost_return[k], traded[k], cost_dollars[k], pretrade[k], gross[k], net[k], 100 + k,
-                        "nan" if not math.isfinite(tau[k]) else tau[k], "applied"])
+                        "nan" if not math.isfinite(tau[k]) else tau[k], "applied", pretrade_nav[k]])
     scen = {"scenario": SCEN, "primary": True, "net_sharpe": net_sharpe, "gross_sharpe": None, "hac_t": 1.0,
             "ann_mean": 0.01, "ann_vol": 0.02, "max_drawdown": 0.01, "costs": {}, "calendar_year_returns": [],
             "construction": {"v5": v5} if v5 is not None else {"band_multiple": 0.0}}
@@ -164,7 +173,13 @@ def test_construction_stats_and_netting_ratio_by_hand(tmp_path):
     assert s["mean_net_leverage"] == pytest.approx(np.mean(net[1:7]), abs=1e-15)
     assert s["mean_abs_net_leverage"] == pytest.approx(np.mean(np.abs(net[1:7])), abs=1e-15)
     assert s["held_share"] == 0.95 and s["return_rows"] == 6
-    assert s["cost_per_gmv_turnover"] == pytest.approx(sum(cost[2:]) / kept.sum(), rel=1e-12)
+    # T41 M1: the ruled D1/R6' gate statistic is the mean over every CSV row (rows 0 and 1 included)
+    assert s["csv_rows"] == 8 and s["leverage_gate_basis"].startswith("all_rows")
+    assert s["mean_gross_leverage_all_rows"] == pytest.approx(np.mean(gross), abs=1e-15)
+    assert s["mean_net_leverage_all_rows"] == pytest.approx(np.mean(net), abs=1e-15)
+    # T41 M2: cost over the tau sessions only (rows 2, 3, 5, 6, 7 at the default 2e3 $ / 1e9 NAV; the deployment
+    # row 1's 1e5 $ is excluded like its tau); trade_cost_return is no longer read
+    assert s["cost_per_gmv_turnover"] == pytest.approx(5 * 2e3 / 1e9 / kept.sum(), rel=1e-12)
     assert s["cost_bps_traded"] == pytest.approx(1e4 * (1e5 + 6 * 2e3) / (5e8 + 6 * 1e7), rel=1e-12)
     assert NS.netting_ratio(0.21, 0.07) == pytest.approx(3.0, rel=1e-12)
     assert NS.netting_ratio(0.21, 0.0) is None and NS.netting_ratio(None, 0.07) is None
@@ -308,3 +323,182 @@ def test_main_reports_dsr_for_every_cell(tmp_path, capsys):
     NS.main([dirs[2], "--dsr-n", "5"])
     single = capsys.readouterr().out
     assert "deflated SR (N=5)" in single and "Lo (2002) sampling variance" in single
+
+
+# ------------------------------------------------ T41 fix wave: M1 all-rows leverage, M2 cost basis, M5, M7
+def lagged_cost_return(cost_dollars, nav):
+    """MARK books session s's fill cost into row s + 1: trade_cost_return[s + 1] = cost$_s / NAVpre_s (row 0: 0)."""
+    return [0.0] + [c / v for c, v in zip(cost_dollars[:-1], nav[:-1])]
+
+
+def test_cost_per_gmv_turnover_excludes_the_deployment_cost_like_tau(tmp_path):
+    # C++-shaped rows: row 0 before the first execution, row 1 the deployment, row 4 executed at zero pre-trade
+    # gross (not a tau session), row 7 the last row (never executed: execution needs t + 2 <= end)
+    nets = [0.001, -0.002, 0.003, 0.0, 0.001, 0.002]
+    executed = [0, 1, 1, 1, 1, 1, 1, 0]
+    tau = [np.nan, np.nan, 0.1, 0.2, np.nan, 0.4, 0.05, 0.0]
+    pretrade = [0, 0, 1e9, 1e9, 0, 1e9, 1e9, 1e9]
+    cost_dollars = [0.0, 1e5, 3e3, 1e3, 7e3, 2e3, 4e3, 0.0]
+    nav = [1e9, 1e9, 1.1e9, 0.9e9, 1.2e9, 1.05e9, 0.95e9, 1e9]
+    cost_return = lagged_cost_return(cost_dollars, nav)
+    d = write_nav(tmp_path / "nav", nets, executed=executed, tau=tau, pretrade=pretrade, cost_dollars=cost_dollars,
+                  pretrade_nav=nav, cost_return=cost_return)
+    daily = NS.load_daily(d, SCEN)
+    s = NS.construction_stats(daily, NS.scenario_of(NS.load_summary(d)))
+    sessions = [2, 3, 5, 6]
+    tau_sum = sum(tau[k] for k in sessions)
+    assert NS.deployment_row(daily) == 1 and s["tau_gmv_sessions"] == 4
+    want = sum(cost_dollars[k] / nav[k] for k in sessions) / tau_sum
+    assert s["cost_per_gmv_turnover"] == pytest.approx(want, rel=1e-15)
+    # the same sessions read through the lagged trade_cost_return column give the same number
+    assert s["cost_per_gmv_turnover"] == pytest.approx(sum(cost_return[k + 1] for k in sessions) / tau_sum, rel=1e-15)
+    # the pre-fix numerator (every return row) carried the deployment's and the zero-gross row's costs; the
+    # deployment row's own trade_cost_return is 0, so dropping row 1 from that sum would have changed nothing
+    old = sum(cost_return[2:]) / tau_sum
+    assert cost_return[1] == 0.0
+    assert (old - s["cost_per_gmv_turnover"]) * tau_sum == pytest.approx(1e5 / 1e9 + 7e3 / 1.2e9, rel=1e-12)
+    # cost_bps_traded is unchanged (every executed session)
+    traded = [0.0, 5e8] + [1e7] * 6
+    assert s["cost_bps_traded"] == pytest.approx(1e4 * sum(cost_dollars[1:7]) / sum(traded[1:7]), rel=1e-12)
+
+
+def test_all_rows_leverage_in_text_and_json(tmp_path, capsys):
+    nets = list(0.0004 + 0.01 * np.random.default_rng(41).normal(size=40))
+    t = len(nets) + 2
+    gross = np.r_[0.0, 0.3, np.linspace(0.9, 1.1, t - 2)]
+    net = np.r_[0.0, 0.05, np.linspace(-0.02, 0.04, t - 2)]
+    d = write_nav(tmp_path / "c", nets, gross=gross, net=net, summary_tau=0.05)
+    out = tmp_path / "res.json"
+    assert NS.main([str(d), "--dsr-n", "2", "--json", str(out)]) == 0
+    text = capsys.readouterr().out
+    r = json.loads(out.read_text())[0]
+    assert r["csv_rows"] == t
+    assert r["mean_gross_leverage_all_rows"] == pytest.approx(gross.mean(), abs=1e-15)
+    assert r["mean_net_leverage_all_rows"] == pytest.approx(net.mean(), abs=1e-15)
+    assert r["mean_gross_leverage"] == pytest.approx(gross[1:t - 1].mean(), abs=1e-15)  # return rows: previous close
+    assert r["mean_gross_leverage"] != pytest.approx(r["mean_gross_leverage_all_rows"], abs=1e-6)
+    assert "mean_gross_leverage_all_rows" in r["leverage_gate_basis"] and "R6'" in r["leverage_gate_basis"]
+    assert (f"   leverage over all {t} CSV rows [R6' mechanics gate]: gross_lev_all_rows {gross.mean():.4f} "
+            f"net_lev_all_rows {net.mean():+.4f} (construction gross_lev/net_lev: previous close over return rows)"
+            in text.splitlines())
+
+
+def test_same_series():
+    a = {1: 0.1, 2: float("nan"), 3: -0.2}
+    assert NS.same_series(a, dict(a)) and NS.same_series({}, {})
+    assert not NS.same_series(a, {1: 0.1, 2: float("nan"), 3: -0.2000001})
+    assert not NS.same_series(a, {1: 0.1, 2: float("nan")})
+    assert not NS.same_series(a, {1: 0.1, 3: -0.2, 2: float("nan")})     # other session order
+    assert not NS.same_series(a, {1: 0.1, 2: float("nan"), 4: -0.2})     # other sessions
+
+
+def test_listing_warnings_go_to_stderr_and_never_refuse(tmp_path, capsys):
+    rng = np.random.default_rng(31)
+    a = list(0.0004 + 0.01 * rng.normal(size=200))
+    b = list(0.0002 + 0.01 * rng.normal(size=200))
+    d1, d2 = write_nav(tmp_path / "a", a), write_nav(tmp_path / "b", b)
+    d3 = write_nav(tmp_path / "a-check", a)                   # a byte-identical check cell
+    out = tmp_path / "res.json"
+    assert NS.main([str(d1), str(d2), str(d3), "--dsr-n", "3", "--draws", "50", "--json", str(out)]) == 0
+    cap = capsys.readouterr()
+    dup = f"identical daily net series: {d1} and {d3} (a duplicate cell shrinks V[SR_n])"
+    assert cap.err.splitlines() == [f"nav_summ: WARNING {dup}"]         # 3 defined SRs == N: no count warning
+    assert "WARNING" not in cap.out
+    res = json.loads(out.read_text())
+    assert len(res) == 3 and all(r["deflated"]["dsr"] is not None for r in res)  # warned, not refused
+    assert all(r["nav_summ_run"]["warnings"] == [dup] for r in res)
+    # N differs from the number of dirs with a defined SR (default N = 10)
+    assert NS.main([str(d1), str(d2)]) == 0
+    err = capsys.readouterr().err
+    assert "nav_summ: WARNING 2 listed dir(s) have a defined SR but --dsr-n is 10" in err and "identical" not in err
+    # a constant net series has no SR and does not count
+    flat = write_nav(tmp_path / "flat", [0.001] * 50)
+    assert NS.main([str(d1), str(d2), str(flat), "--dsr-n", "3"]) == 0
+    assert "2 listed dir(s) have a defined SR but --dsr-n is 3" in capsys.readouterr().err
+    # a clean listing warns nothing
+    assert NS.main([str(d1), str(d2), "--dsr-n", "2"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_json_records_argv_script_sha_and_git_head(tmp_path, capsys, monkeypatch):
+    d = write_nav(tmp_path / "c", list(0.0003 + 0.01 * np.random.default_rng(5).normal(size=60)))
+    out = tmp_path / "res.json"
+    argv = [str(d), "--dsr-n", "2", "--json", str(out)]
+    assert NS.main(argv) == 0
+    run = json.loads(out.read_text())[0]["nav_summ_run"]
+    assert run["argv"] == argv
+    assert Path(run["script"]) == Path(NS.__file__).resolve()
+    assert run["script_sha256"] == hashlib.sha256(Path(NS.__file__).read_bytes()).hexdigest()
+    assert run["git_head"] is None or re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", run["git_head"])
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setattr(NS.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, sha + "\n", ""))
+    assert NS.git_head(tmp_path) == sha
+    monkeypatch.setattr(NS.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 128, "", "fatal"))
+    assert NS.git_head(tmp_path) is None                                 # not a repository
+    monkeypatch.setattr(NS.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "HEAD\n", ""))
+    assert NS.git_head(tmp_path) is None                                 # not a SHA
+
+    def missing(*a, **k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(NS.subprocess, "run", missing)
+    assert NS.git_head(tmp_path) is None
+    assert NS.main(argv) == 0                                            # best effort: null, never a failure
+    assert json.loads(out.read_text())[0]["nav_summ_run"]["git_head"] is None
+
+
+def test_existing_fields_and_text_unchanged_against_the_pre_t41_blob(tmp_path, capsys):
+    """Every pre-T41 JSON field and text line is byte-identical for the same inputs, except cost_per_gmv_turnover
+    (T41 M2); the only additions are the all-rows leverage keys and line (M1) and nav_summ_run (M7)."""
+    try:
+        old = subprocess.run(["git", "cat-file", "-p", PRE_T41_BLOB], capture_output=True, check=True,
+                             cwd=Path(NS.__file__).resolve().parent).stdout
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("git history with the pre-T41 nav_summ blob is unavailable")
+    (tmp_path / "old").mkdir()
+    path = tmp_path / "old" / "nav_summ_pre_t41.py"
+    path.write_bytes(old)
+    spec = importlib.util.spec_from_file_location("nav_summ_pre_t41", path)
+    pre = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pre)
+    rng = np.random.default_rng(17)
+    t = 300
+    e = rng.normal(size=t)
+    w_sha = write_weights(tmp_path / "w.json", 0.06)
+    nav = 1e9 * np.cumprod(np.r_[1.0, 1.0 + 0.001 * rng.normal(size=t + 1)])
+    cost_dollars = np.r_[0.0, 2e5, 1e3 + 3e3 * rng.random(t - 1), 0.0]
+    executed = [0] + [1] * t + [0]
+    dirs = []
+    for k, (mu, rho) in enumerate(((0.0003, 0.0), (0.0005, 0.9), (0.0007, 0.8))):
+        nets = mu + 0.01 * (rho * e + math.sqrt(1 - rho * rho) * rng.normal(size=t))
+        gross = np.r_[0.0, 0.2, 0.9 + 0.2 * rng.random(t)]
+        net = np.r_[0.0, 0.01, 0.02 * rng.normal(size=t)]
+        tau = np.r_[np.nan, np.nan, 0.05 + 0.1 * rng.random(t - 1), 0.0]
+        dirs.append(str(write_nav(tmp_path / f"c{k}", list(nets), weights_sha=w_sha if k else "f" * 64,
+                                  gross=gross, net=net, tau=tau, summary_tau=float(np.nanmean(tau[2:-1])),
+                                  executed=executed, cost_dollars=cost_dollars, pretrade_nav=nav,
+                                  cost_return=lagged_cost_return(list(cost_dollars), list(nav)),
+                                  v5={"mean_held_share": 0.9})))
+    texts, rows = {}, {}
+    for tag, module in (("new", NS), ("old", pre)):
+        out = tmp_path / f"{tag}.json"
+        assert module.main(dirs + ["--weights", str(tmp_path / "w.json"), "--reference", dirs[0], "--draws", "200",
+                                   "--dsr-n", "3", "--json", str(out)]) == 0
+        texts[tag] = capsys.readouterr().out.splitlines()
+        rows[tag] = json.loads(out.read_text())
+    assert len(rows["new"]) == len(rows["old"]) == 3
+    for new, old_row in zip(rows["new"], rows["old"]):
+        assert set(new) - set(old_row) == NEW_KEYS and set(old_row) <= set(new)
+        for key in old_row:
+            if key != "cost_per_gmv_turnover":
+                assert json.dumps(new[key], sort_keys=True) == json.dumps(old_row[key], sort_keys=True), key
+        assert new["cost_per_gmv_turnover"] < old_row["cost_per_gmv_turnover"]   # the 2e5 $ deployment is out
+    kept = [line for line in texts["new"] if not line.startswith("   leverage over all ")]
+    assert len(texts["new"]) - len(kept) == 3 and len(kept) == len(texts["old"])
+    cost = re.compile(r"cost/GMV-tau \S+")
+    for new_line, old_line in zip(kept, texts["old"]):
+        if "cost/GMV-tau" in old_line:
+            # the M2 value may round alike at 5 decimals; the JSON check above pins that it moved
+            assert cost.sub("cost/GMV-tau <M2>", new_line) == cost.sub("cost/GMV-tau <M2>", old_line)
+        else:
+            assert new_line == old_line

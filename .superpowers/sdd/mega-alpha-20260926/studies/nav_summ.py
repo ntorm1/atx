@@ -11,8 +11,13 @@ writes them; rows and definitions mirror its summary):
                  summary's mean_gross_leverage), held_share (summary construction.v5.mean_held_share, T30; "na"
                  without it) and mean held names; tau_t = one_way_turnover_gmv over executed sessions with positive
                  pre-trade gross, the deployment session (first executed session with a fill) excluded: mean, p95
-                 (numpy linear); cost per unit GMV turnover = sum trade_cost_return (return rows) / sum tau_t;
+                 (numpy linear); cost per unit GMV turnover = sum over the same tau_t sessions s of
+                 trade_cost_dollars_s / pretrade_nav_s (exactly the trade_cost_return MARK books into row s + 1, so
+                 the deployment session's cost is excluded as it is from the denominator) / sum tau_t;
                  cost_bps_traded = 1e4 * sum trade_cost_dollars / sum traded_dollars (executed sessions).
+  leverage gate  mean_gross_leverage_all_rows / mean_net_leverage_all_rows = mean of gross_leverage / net_leverage
+                 over EVERY row of the daily CSV: the ruled D1/R6' definition the R6' mechanics gate uses (the
+                 return-row means above are kept for continuity and equal the summary's mean_gross_leverage).
   netting ratio  NR = tau mean / weighted_standalone_turnover of the weights file whose SHA-256 equals the NAV
                  summary's composition_weights_sha256 (--weights may repeat; a single unmatched file is used
                  with a warning). NR = tau_book / sum_k w_k tau_k (lane contract), reported on TRAIN.
@@ -31,6 +36,11 @@ writes them; rows and definitions mirror its summary):
                  gamma = 0.5772156649, N = --dsr-n (default 10). V[SR_n] = sample variance (ddof 1) of the per-session
                  SRs of the NAV dirs on the command line; with a single dir, the Lo (2002) sampling variance
                  (1 + SR^2 / 2) / T of that dir (flagged in the output). Phi via math.erfc, PhiInv by bisection on it.
+                 Warns on stderr (never refuses) when the number of dirs with a defined SR differs from N, and when
+                 two listed dirs have identical daily net series (both silently change V[SR_n], hence SR0).
+  provenance     --json: every row carries nav_summ_run = {argv, script, script_sha256 (of this file), git_head
+                 (git rev-parse HEAD of this file's checkout; null without git), warnings}. The top level stays the
+                 per-dir list so existing consumers and field-by-field diffs are unchanged.
 """
 from __future__ import annotations
 
@@ -39,6 +49,8 @@ import csv
 import hashlib
 import json
 import math
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -48,6 +60,9 @@ ANNUAL = 252
 DEFAULT_DRAWS, DEFAULT_BLOCK, DEFAULT_SEED = 2000, 21, 20260927
 DEFAULT_DSR_N = 10  # R6': N = 10 construction cells
 EULER_GAMMA = 0.5772156649015329
+LEVERAGE_GATE_BASIS = ("all_rows: the R6' mechanics gate (ruled D1/R6') reads mean_gross_leverage_all_rows / "
+                       "mean_net_leverage_all_rows; mean_gross_leverage / mean_net_leverage are return-row means "
+                       "(previous close), kept for continuity")
 
 
 def fmt(v, spec: str) -> str:
@@ -122,34 +137,49 @@ def deployment_row(daily: dict) -> int | None:
     return int(fills[0]) if fills.size else None
 
 
-def turnover_gmv(daily: dict) -> np.ndarray:
-    """Daily one-way GMV turnover over executed sessions with positive pre-trade gross, deployment excluded."""
+def turnover_rows(daily: dict) -> np.ndarray:
+    """The tau_t sessions: executed with positive pre-trade gross, the deployment session excluded (bool mask)."""
     keep = (daily["executed"] == 1) & (daily["pretrade_gross_dollars"] > 0)
     dep = deployment_row(daily)
     if dep is not None:
         keep[dep] = False
-    return daily["one_way_turnover_gmv"][keep]
+    return keep
+
+
+def turnover_gmv(daily: dict) -> np.ndarray:
+    """Daily one-way GMV turnover over executed sessions with positive pre-trade gross, deployment excluded."""
+    return daily["one_way_turnover_gmv"][turnover_rows(daily)]
 
 
 def construction_stats(daily: dict, scenario: dict) -> dict:
     ret = return_mask(daily)
     prev = np.flatnonzero(ret) - 1  # exposure that earned a return row: the previous session's closing book
-    tau = turnover_gmv(daily)
+    keep = turnover_rows(daily)
+    tau = daily["one_way_turnover_gmv"][keep]
     executed = daily["executed"] == 1
     v5 = (scenario.get("construction") or {}).get("v5") or {}
     traded = float(daily["traded_dollars"][executed].sum())
     tau_sum = float(tau.sum())
+    # Session s's fill cost in NAV-return units, over the tau_t sessions only: trade_cost_dollars_s / pretrade_nav_s
+    # is bit-for-bit the trade_cost_return MARK books into row s + 1 (the fill costs of t-1 land in r_t), so the
+    # numerator excludes the deployment session exactly as the denominator does (T31 Minor 3, T41 M2).
+    cost_tau = float((daily["trade_cost_dollars"][keep] / daily["pretrade_nav"][keep]).sum())
+    rows = int(daily["gross_leverage"].size)
     any_prev = prev.size > 0
     return {
         "mean_gross_leverage": float(daily["gross_leverage"][prev].mean()) if any_prev else None,
         "mean_net_leverage": float(daily["net_leverage"][prev].mean()) if any_prev else None,
         "mean_abs_net_leverage": float(np.abs(daily["net_leverage"][prev]).mean()) if any_prev else None,
+        "mean_gross_leverage_all_rows": float(daily["gross_leverage"].mean()) if rows else None,
+        "mean_net_leverage_all_rows": float(daily["net_leverage"].mean()) if rows else None,
+        "csv_rows": rows,
+        "leverage_gate_basis": LEVERAGE_GATE_BASIS,
         "mean_held_names": float(daily["held_names"][prev].mean()) if any_prev else None,
         "held_share": v5.get("mean_held_share"),
         "tau_gmv_mean": float(tau.mean()) if tau.size else None,
         "tau_gmv_p95": float(np.quantile(tau, 0.95)) if tau.size else None,
         "tau_gmv_sessions": int(tau.size),
-        "cost_per_gmv_turnover": (float(daily["trade_cost_return"][ret].sum()) / tau_sum) if tau_sum > 0 else None,
+        "cost_per_gmv_turnover": cost_tau / tau_sum if tau_sum > 0 else None,
         "cost_bps_traded": (1e4 * float(daily["trade_cost_dollars"][executed].sum()) / traded) if traded > 0 else None,
         "return_rows": int(ret.sum()),
     }
@@ -358,8 +388,50 @@ def netting_ratio(tau_mean: float | None, weighted_standalone_turnover: float) -
     return tau_mean / weighted_standalone_turnover
 
 
+# ------------------------------------------------------------------ listing checks and provenance (T41 M5, M7)
+def same_series(a: dict, b: dict) -> bool:
+    """Two net series (session_ns -> net) with the same sessions in the same order and equal values (NaN == NaN)."""
+    if list(a) != list(b):
+        return False
+    va = np.fromiter(a.values(), dtype=np.float64, count=len(a))
+    vb = np.fromiter(b.values(), dtype=np.float64, count=len(b))
+    return bool(np.array_equal(va, vb, equal_nan=True))
+
+
+def listing_warnings(dirs: list[str], results: list[dict], nets: list[dict], n: int) -> list[str]:
+    """Warnings (never refusals) for a listing that silently moves V[SR_n] away from the declared N trials."""
+    out = []
+    defined = sum(1 for r in results if r["net_moments"]["sr_daily"] is not None)
+    if defined != n:
+        out.append(f"{defined} listed dir(s) have a defined SR but --dsr-n is {n}: V[SR_n] (hence SR0 and every "
+                   "DSR) comes from the listed dirs, not from N")
+    for i in range(len(nets)):
+        for j in range(i + 1, len(nets)):
+            if same_series(nets[i], nets[j]):
+                out.append(f"identical daily net series: {dirs[i]} and {dirs[j]} (a duplicate cell shrinks V[SR_n])")
+    return out
+
+
+def git_head(where: Path) -> str | None:
+    """``git rev-parse HEAD`` of the checkout holding ``where``; None when git or the repository is unavailable."""
+    try:
+        done = subprocess.run(["git", "rev-parse", "HEAD"], cwd=where, capture_output=True, text=True, timeout=30,
+                              check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    head = done.stdout.strip()
+    return head if done.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", head) else None
+
+
+def run_provenance(argv: list[str], warnings: list[str]) -> dict:
+    script = Path(__file__).resolve()
+    return {"argv": list(argv), "script": str(script), "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+            "git_head": git_head(script.parent), "warnings": list(warnings)}
+
+
 # ------------------------------------------------------------------ driver
-def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> dict:
+def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> tuple[dict, dict]:
+    """The dir's result row and its net series (session_ns -> net return over the return rows)."""
     summary = load_summary(d)
     scen = scenario_of(summary, args.scenario)
     daily = load_daily(d, scen["scenario"])
@@ -383,7 +455,7 @@ def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> dict:
     if ref_nets is not None:
         a, b = align(nets, ref_nets)
         out["paired"] = paired_stats(a, b, args.draws, args.block, args.seed)
-    return out
+    return out, nets
 
 
 def print_analysis(r: dict, reference: str | None) -> None:
@@ -393,6 +465,10 @@ def print_analysis(r: dict, reference: str | None) -> None:
           f"held_names {fmt(r['mean_held_names'], '.1f')} tau_gmv mean {fmt(r['tau_gmv_mean'], '.4f')} "
           f"p95 {fmt(r['tau_gmv_p95'], '.4f')} ({r['tau_gmv_sessions']} sessions) "
           f"cost/GMV-tau {fmt(r['cost_per_gmv_turnover'], '.5f')} cost_bps_traded {fmt(r['cost_bps_traded'], '.2f')}")
+    print(f"   leverage over all {r['csv_rows']} CSV rows [R6' mechanics gate]: "
+          f"gross_lev_all_rows {fmt(r['mean_gross_leverage_all_rows'], '.4f')} "
+          f"net_lev_all_rows {fmt(r['mean_net_leverage_all_rows'], '+.4f')} "
+          "(construction gross_lev/net_lev: previous close over return rows)")
     if "warning_tau" in r:
         print(f"   WARNING {r['warning_tau']}")
     if "weights_match" in r:
@@ -430,6 +506,7 @@ def main(argv=None) -> int:
     ap.add_argument("--dsr-n", type=int, default=DEFAULT_DSR_N,
                     help="trials N of the deflated Sharpe ratio (R6': 10; >= 2); V[SR_n] comes from the dirs given")
     ap.add_argument("--json", default=None, help="also write the per-dir results as JSON")
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
     if args.dsr_n < 2:
         ap.error("--dsr-n must be >= 2")
@@ -439,13 +516,20 @@ def main(argv=None) -> int:
         ref_summary = load_summary(Path(args.reference))
         ref_nets = net_series(load_daily(Path(args.reference), scenario_of(ref_summary, args.scenario)["scenario"]))
     # every dir first: V[SR_n] of the deflated Sharpe ratio spans all the NAV dirs on the command line
-    results = [analyse(Path(d), args, weights, ref_nets) for d in args.dirs]
+    analysed = [analyse(Path(d), args, weights, ref_nets) for d in args.dirs]
+    results = [r for r, _ in analysed]
     for r, q in zip(results, dsr_rows([r["net_moments"] for r in results], args.dsr_n)):
         r["deflated"] = q
+    warnings = listing_warnings(args.dirs, results, [nets for _, nets in analysed], args.dsr_n)
+    for w in warnings:
+        print(f"nav_summ: WARNING {w}", file=sys.stderr)
     for d, r in zip(args.dirs, results):
         print_scenarios(load_summary(Path(d)))
         print_analysis(r, args.reference)
     if args.json:
+        run = run_provenance(argv, warnings)
+        for r in results:
+            r["nav_summ_run"] = run
         Path(args.json).write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
