@@ -348,6 +348,14 @@ class LabelMatrix:
                                    "an incomplete set is never read")
         return json.loads(target.read_text(encoding="utf-8"))
 
+    def seal_record(self, label_sha: str) -> dict[str, Any]:
+        """Read the completed set's seal metadata without opening any label/return file.
+
+        This checks that the completion record exists. File integrity is still checked by the
+        label reader, not by this metadata-only API. Each call returns a fresh dictionary.
+        """
+        return self._complete_record(label_sha)
+
     def _complete_files(self, label_sha: str, horizons: Sequence[int],
                         years: Sequence[int] | None = None) -> list[str]:
         """The completed set's files at ``horizons`` (optionally some years), checked on disk (bytes, sha256)."""

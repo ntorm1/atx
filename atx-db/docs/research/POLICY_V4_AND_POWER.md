@@ -83,7 +83,8 @@ v3 (`research_qualification_policy.json`, `r4-qualification-v3`) stays the legac
   * By default it seals the holdout: the engine drops every label whose window ends on or after 2024-01-01,
     or whose end is unknown, before computing anything.
   * The grade refuses holdout-period statistics (an unsealed run, or frames that carry them) unless the
-    registry recorded the wave's one opening for exactly the run's label set (`evaluation.label_set_sha256`).
+    registry recorded the wave's one opening for exactly the run's label-matrix spec sha
+    (`EvaluationSpec.label_sha256`, checked against the basis reader's `label_read` metadata).
     So `final_labels=True` is checked, not trusted.
 * **EWC oversize flag (ruling C-50, reported only).** Every graded row carries `persistence_1m` (the feature's
   1-month rank autocorrelation) and `ewc_oversize_risk`. The flag is true at or above 0.945, the rank

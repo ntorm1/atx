@@ -23,6 +23,37 @@ measures, on month-end formations:
 
 Results and a sealed, reproducible run manifest live in the research store (RX6).
 
+Node 4.1 reported economics
+--------------------------
+Schema 3 appends diagnostics while retaining every original cell/series field and qualification rule.
+JKP terciles/deciles rank all names using non-microcap signal breakpoints (verified ME >= NYSE p20);
+EW, VW and capped-VW (NYSE p80) each require five valid weighted names per leg. Missing NYSE evidence
+has no substituted breakpoint. Raw economics can be provided in context or loaded, one feature at a
+time, from the explicit auxiliary inventory; absent inputs remain NULL with their basis/coverage.
+
+Trading diagnostics form unit-notional long and short sleeves on formation weights. Turnover is half
+the L1 change from drifted holdings, summed over the legs; h-month sleeves compare formation m to m-h.
+The prior label's end must equal the rebalance formation; a fixed-session window ending before/after
+that formation cannot supply exact drift, and turnover/cost are unavailable for that row.
+Costs charge the FULL L1 change times stock half-spread (AR, then CS), including exits. Break-even bps
+are mean gross / mean summed one-sided turnover, on matched formations. Flat-bp diagnostics use that
+same one-sided convention; the legacy flat-bp columns remain unchanged. Capacity is aggregate daily
+dollars at 1% ADV, requiring complete ADV within each decile, not a claim of feasible book AUM.
+
+Additional FM controls use raw log ME, log BE/ME, momentum, profitability and investment; a focal
+control is explicitly omitted, any missing remaining role makes the whole regression unavailable.
+K-month slopes are trailing averages with all K observations present; the NW lag rule stays the
+brief's max(h-1, floor(4*(T/100)^(2/9))). Signal-age IC always uses the one-month target label, not an
+overlapping cumulative label. Publication splits omit the publication year (the date is unknown).
+MDE is a labeled normal approximation at two-sided alpha .05/power .8. EB uses a zero-centered
+normal prior and a cross-replication method-of-moments variance, fitted after pooling the full run.
+
+Factor models and P3 announcement-session contributions must be explicitly supplied. External
+calendar-month factor files are labeled proxies for 21-session labels; their significance is not
+claimable. Beta-neutral return statistics are OFF unless the caller supplies the matching wave's
+registration, made before any label read, containing each exact source-variant/horizon configuration.
+They must never be enabled inside w1's frozen 432-cell grid simply by calling them reported metrics.
+
 Ranked universe
 ---------------
 Every statistic ranks one universe per formation: the eligible R2a cohort rows with
@@ -106,8 +137,8 @@ Inference policy (controller ruling on the R3a review)
   a split the primary sample is every formation and the run carries a blocker. A
   subperiod that overlaps the holdout is truncated to its selection formations (its
   ``formations`` count says how many remain; it may be empty).
-* Reproducibility scope: the code digest covers this module, ``stats.py`` and
-  ``labels.py``; panel/store/catalog inputs are covered by their manifests. Byte
+* Reproducibility scope: the code digest covers this module, ``stats.py``, ``labels.py``,
+  ``features.py`` and ``factor_returns.py``; panel/store/catalog inputs are covered by their manifests. Byte
   identity relies on batched LAPACK solves, so ``verify`` belongs on the same host/BLAS.
 
 Policy v4 additions (tier-1 v2 node 1.10; off unless the spec enables them)
@@ -156,7 +187,7 @@ Point-in-time guards
   (the session after the decision date) and its window ends where the label calendar
   says; anything else raises :class:`LookaheadError`. Labels are the R3a monthly
   source selected by revision, then validated by the FQ2 validity fragment at the
-  evaluation observation cutoff (``calculation_version`` forward_return_publication_v2).
+  evaluation observation cutoff (``calculation_version`` forward_return_publication_v3).
 * A feature value whose ``available_at`` is after its formation cutoff raises
   :class:`LookaheadError`.
 
@@ -244,7 +275,7 @@ from .panel import CALENDAR_FORMED, OWNER_LINK_FAILURES, validate_research_panel
 from .store import ResearchStore
 
 EVALUATION_VERSION = "research-monthly-evaluation-v2"
-EVALUATION_SCHEMA_VERSION = 2
+EVALUATION_SCHEMA_VERSION = 3
 FEATURE_CONTRACT = "r2b-research-feature-store-v1"
 #: R2b query versions whose tables this adapter reads (a new R2b version needs review here);
 #: v2 is R2b fix round 1 (identity-free price-line features also rank unlinked lines).
@@ -316,12 +347,67 @@ STATUS_ONLY = (NOT_PRODUCED, EXCLUDED_BY_SUBSET, BASIS_UNTESTABLE)
 #: Label-window alignments that are normal operation, not a blocker.
 BENIGN_ALIGNMENTS = frozenset({"aligned", "entry_after_label_cutoff"})
 
+# Tier-1 v2 node 4.1: reported-only metrics (module docstring). None of them gates or enters a family.
+#: JKP portfolios: terciles and deciles on non-microcap breakpoints (market cap at or above the NYSE 20th
+#: percentile), equal, value and capped-value (cap winsorized at the NYSE 80th percentile) weights.
+JKP_QUANTILES: tuple[int, ...] = (3, 10)
+JKP_WEIGHTINGS: tuple[str, ...] = ("ew", "vw", "cvw")
+JKP_NONMICRO_PERCENTILE, JKP_CAP_PERCENTILE = 20, 80
+#: A JKP long-short needs at least this many names (with a valid label and a weight) in each leg.
+JKP_MIN_LEG_NAMES = 5
+#: Optional ``BasisInputs.context`` columns of the cost / capacity / beta-neutral metrics: full bid-ask
+#: spread estimates as a fraction of price (Abdi-Ranaldo, the catalog's ``bidask_ar_21d``; Corwin-Schultz
+#: ``bidask_cs_21d``, the fallback), average daily dollar volume (``dolvol_126d``) and the market beta
+#: (``beta_ew_252d``). Absent columns make their metrics NULL with a labeled basis.
+CONTEXT_SPREAD_AR, CONTEXT_SPREAD_CS = "spread_ar", "spread_cs"
+CONTEXT_ADV, CONTEXT_BETA = "adv_usd", "beta"
+AUX_CONTEXT_COLUMNS: tuple[str, ...] = (CONTEXT_SPREAD_AR, CONTEXT_SPREAD_CS, CONTEXT_ADV, CONTEXT_BETA)
+HALF_SPREAD_NONE, HALF_SPREAD_AR, HALF_SPREAD_CS = 0, 1, 2
+#: Capacity: the dollars a decile can trade per day at this fraction of each name's average daily volume.
+CAPACITY_ADV_FRACTION = 0.01
+#: Buy/hold-spread variant: enter the top (bottom) decile, hold while at or above decile 8 (at or below 3).
+BUY_HOLD_ENTER, BUY_HOLD_STAY = 10, 8
+#: Flag a long-short whose mean one-sided turnover per leg exceeds this share per month.
+TURNOVER_FLAG_MONTHLY = 0.5
+#: IC decay by signal age: IC_k = corr(x_{t-k}, r_{t+1}), k = 0 .. 11 (one-month labels).
+SIGNAL_AGES: tuple[int, ...] = tuple(range(12))
+#: Fama-MacBeth control set (JKP / HXZ convention): role -> candidate catalog features (the first one the basis
+#: carries as a control serves); ``log_me`` is the engine's log verified market cap. Additional controls
+#: use raw, unoriented values (BE/ME is logged); the legacy spec controls remain unchanged. A missing role
+#: is recorded per cell (``fmj_controls_missing``), never silently dropped.
+FM_JKP_CONTROLS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("log_me", ()),
+    ("log_bm", ("book_to_market", "be_me")),
+    ("ret_12_1", ("ret_12_1", "momentum_12_1")),
+    ("gp_at", ("gross_profitability", "gp_at")),
+    ("at_gr1", ("asset_growth", "at_gr1")),
+)
+#: Long-shorts spanned by the factor models and costed: the all-name EW decile L/S and the JKP capped-VW decile L/S.
+SPAN_PORTFOLIOS: tuple[str, ...] = ("ew10", "cvw10")
+#: The span models, in the column order of the cells (factor_returns.SPAN_MODELS keys).
+SPAN_MODEL_NAMES: tuple[str, ...] = ("capm_atx", "ff6_atx", "capm_french", "ff6_french", "q5")
+PUBLICATION_SLICE_KIND = "publication"
+#: Earnings-announcement-day decomposition input (optional ``BasisInputs.event_returns``): per (formation,
+#: security, horizon) the part of the label return earned on P3 announcement sessions [-1, +1].
+EVENT_RETURN_COLUMNS = ("month_index", "security", "horizon_months", "ea_return")
+#: OSAP (Chen-Zimmermann) SignalDoc acronym of a catalog feature whose construct matches closely enough for
+#: the replication table (atx t vs the original paper's t); anything else is left out of the table.
+OSAP_ACRONYMS: dict[str, str] = {
+    "ret_12_1": "Mom12m", "ret_6_1": "Mom6m", "ret_12_7": "IntMom", "ret_36_13": "LRreversal",
+    "seas_1_1an": "MomSeasonShort", "seas_2_5an": "MomSeason", "ret_1_0": "STreversal", "rvol_21d": "RealizedVol",
+    "rmax1_21d": "MaxRet", "ivol_ew_21d": "IdioVol3F", "coskew_252d": "CoskewACX", "beta_bab_1260d": "BetaFP",
+    "zero_trade_21d": "zerotrade1M", "zero_trade_252d": "zerotrade12M", "std_turn_126d": "std_turn",
+    "std_dvol_126d": "VolSD", "ami_252d": "Illiquidity", "prc_log": "Price", "prc_highprc_252d": "High52",
+    "me_line_log": "Size", "dolvol_126d": "DolVol", "price_delay_52w": "PriceDelayRsq",
+}
+
 LABEL_VALID, LABEL_INVALID, LABEL_UNSUPPORTED, LABEL_MISSING = 0, 1, 2, 3
 TERMINAL_NONE, TERMINAL_OBSERVED, TERMINAL_POLICY = 0, 1, 2
 
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
-_CODE_FILES = (Path(__file__), Path(stats.__file__), Path(__file__).with_name("labels.py"))
+_CODE_FILES = (Path(__file__), Path(stats.__file__), *(Path(__file__).with_name(name) for name in
+               ("labels.py", "features.py", "factor_returns.py")))
 _NAN = float("nan")
 
 
@@ -706,6 +792,10 @@ class FeatureData:
     hypothesis_family: str | None = None
     #: CB2 catalog ``population`` (coverage denominator under ``EvaluationSpec.population_coverage``).
     population: str | None = None
+    #: Catalog ``evidence_class`` and ``publication_year`` (node 4.1: EB shrinkage of replications and the
+    #: pre/post publication split; reported only).
+    evidence_class: str | None = None
+    publication_year: int | None = None
 
 
 @dataclass(frozen=True)
@@ -720,6 +810,9 @@ class CatalogFeature:
     hypothesis_family: str | None = None
     #: CB2 ``population`` (not part of the family digest; read only under population coverage).
     population: str | None = None
+    #: CB2 ``evidence_class`` / ``publication_year`` (not part of the family digest; reported metrics only).
+    evidence_class: str | None = None
+    publication_year: int | None = None
 
 
 def expected_variants(anomaly_class: str) -> tuple[str, ...]:
@@ -746,8 +839,20 @@ def catalog_features(entries: Iterable[Any] | None = None) -> tuple[CatalogFeatu
         features.append(CatalogFeature(entry.feature_id, int(entry.expected_sign), entry.anomaly_class,
                                        expected_variants(entry.anomaly_class),
                                        getattr(entry, "hypothesis_family", None),
-                                       getattr(entry, "population", None) or None))
+                                       getattr(entry, "population", None) or None,
+                                       getattr(entry, "evidence_class", None) or None,
+                                       _optional_year(getattr(entry, "publication_year", None))))
     return tuple(sorted(features, key=lambda item: item.feature_id))
+
+
+def _optional_year(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        year = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return year if 1800 <= year <= 2100 else None
 
 
 def _catalog_map(catalog: Iterable[CatalogFeature] | None) -> dict[str, CatalogFeature] | None:
@@ -817,6 +922,12 @@ class BasisInputs:
       venue. Valid primary rows are ranked; unlinked members only for values flagged
       ``unlinked_line``.
     * ``controls``: ``month_index``, ``security``, ``control``, ``value``.
+
+    Node 4.1 (reported-only metrics; every input optional, its metrics NULL with a labeled basis when absent):
+    ``calendar`` may carry ``nyse_me_p80`` (the capped-VW winsorization point; ``nyse_me_p20`` is the JKP
+    non-microcap breakpoint); ``context`` may carry :data:`AUX_CONTEXT_COLUMNS`; ``factors`` maps a
+    :data:`SPAN_MODEL_NAMES` model to its monthly factor rows (``month_index`` plus the model's columns,
+    ``factor_returns.SPAN_ROW_RULE``); ``event_returns`` holds :data:`EVENT_RETURN_COLUMNS`.
     """
 
     basis: str
@@ -833,6 +944,18 @@ class BasisInputs:
     digests: Mapping[str, Any] = field(default_factory=dict)
     #: Drop the label/context/control frames once indexed (store-built inputs own them).
     release_frames: bool = False
+    #: Node 4.1 span models (``factor_returns.benchmark_span_factors`` / ``atx_span_factors``).
+    factors: Mapping[str, pd.DataFrame] = field(default_factory=dict)
+    #: Node 4.1 earnings-announcement-day returns (P3 sessions); None = unavailable.
+    event_returns: pd.DataFrame | None = None
+    #: OSAP acronym -> original-paper t; explicit snapshot adapter, never an implicit network read.
+    original_paper_t: Mapping[str, float] = field(default_factory=dict)
+    #: Optional full loader inventory for economics; does not add any evaluated/trial cells.
+    reported_variants_by_feature: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: Explicit WaveRegistration returned BEFORE reading labels. Only registered
+    #: (feature, '<source_variant>_beta_neutral', h) configurations enable beta-return statistics.
+    #: Default None: disabled for w1's frozen 432 cells (C-82).
+    beta_neutral_registration: Any | None = None
 
 
 def empty_basis(basis: str, *, status: str = BASIS_UNTESTABLE, meta: Mapping[str, Any] | None = None,
@@ -1122,6 +1245,27 @@ class _Prepared:
     investable_basis: list[str] | None = None      # per formation: nyse_breakpoints / nyse_pit / none
     population_flags: dict[str, np.ndarray] = field(default_factory=dict)  # per context row
     supplied_breakpoints: bool = False
+    #: Node 4.1 inputs (reported-only metrics). Per formation: the JKP non-microcap breakpoint (NYSE p20)
+    #: and the capped-VW winsorization point (NYSE p80), NaN where no basis exists, and their basis.
+    jkp_p20: np.ndarray | None = None
+    jkp_p80: np.ndarray | None = None
+    jkp_p20_basis: list[str] = field(default_factory=list)
+    jkp_p80_basis: list[str] = field(default_factory=list)
+    #: Per context row (NaN / 0 where absent): half-spread (AR, else CS), its source, ADV dollars, beta.
+    context_half_spread: np.ndarray | None = None
+    context_spread_source: np.ndarray | None = None
+    context_adv: np.ndarray | None = None
+    context_beta: np.ndarray | None = None
+    aux_present: frozenset[str] = frozenset()
+    #: Span model -> (factor names, months x k rows incl. the risk-free column of an excess market).
+    factor_models: dict[str, tuple[tuple[str, ...], np.ndarray]] = field(default_factory=dict)
+    factor_windows: dict[str, str] = field(default_factory=dict)
+    #: Horizon -> (sorted keys, announcement-window returns).
+    event_keys: dict[int, np.ndarray] = field(default_factory=dict)
+    event_values: dict[int, np.ndarray] = field(default_factory=dict)
+    jkp_controls: dict[str, np.ndarray] = field(default_factory=dict)
+    original_paper_t: dict[str, float] = field(default_factory=dict)
+    beta_neutral_cells: frozenset[tuple[str, str, int]] = frozenset()
 
 
 def _ints(values: np.ndarray, name: str) -> np.ndarray:
@@ -1352,7 +1496,9 @@ def _prepare(inputs: BasisInputs, spec: EvaluationSpec) -> _Prepared:
         matured[h], expected_end[h] = mature, ends
         digests[f"labels_{h}m_sha256"] = _array_digest(keys, returns, status, terminal, mature, ends)
 
-    del horizon_view
+    del horizon_view, labels
+    if inputs.release_frames:
+        inputs.labels = pd.DataFrame()
     context = inputs.context
     if len(context):
         ctx_keys, order = _keyed(context, months, span, "context")
@@ -1413,15 +1559,116 @@ def _prepare(inputs: BasisInputs, spec: EvaluationSpec) -> _Prepared:
         digests[f"control_{name}_sha256"] = _array_digest(keys, values)
 
     samples = {h: _samples(formed, formation, expected_end[h], spec) for h in spec.horizons_months}
-    if inputs.release_frames:
-        inputs.labels = inputs.context = inputs.controls = pd.DataFrame()
-    return _Prepared(inputs.basis, months, span, month_start, formation, cutoff, formed, eligible,
+    prepared = _Prepared(inputs.basis, months, span, month_start, formation, cutoff, formed, eligible,
                      label_keys, label_return, label_status, label_terminal, matured, expected_end,
                      ctx_keys, cap, sized.buckets, member, universe, unlinked, venue_pit & nyse_pit,
                      sized.venue_basis, sized.venue_pit_share, sized.nyse_pit_names, universe_names, unlinked_names,
                      segment, control_keys, control_values, samples, digests,
                      context_investable=investable, investable_basis=investable_basis,
                      population_flags=population_flags, supplied_breakpoints=supplied is not None)
+    context = pd.DataFrame()  # release the frame captured by flag(), which is no longer called
+    del controls
+    _prepare_reported(prepared, inputs, calendar, spec)
+    if inputs.release_frames:
+        inputs.labels = inputs.context = inputs.controls = pd.DataFrame()
+        inputs.event_returns = None
+    return prepared
+
+
+def _prepare_reported(prep: _Prepared, inputs: BasisInputs, calendar: pd.DataFrame,
+                      spec: EvaluationSpec) -> None:
+    """Index optional economics separately: these inputs never change the legacy/gating arrays."""
+    from .factor_returns import SPAN_MODELS, WINDOW_EXACT
+
+    registration = inputs.beta_neutral_registration
+    if registration is not None:
+        from .trial_registry import WaveRegistration
+
+        if (not isinstance(registration, WaveRegistration)
+                or registration.registration_id != spec.wave_registration_id
+                or spec.created_at is None or spec.created_at < registration.registered_at):
+            raise EvaluationInputError("beta-neutral returns require a matching preregistered wave/spec before labels")
+        prep.beta_neutral_cells = frozenset(registration.cells)
+        prep.digests["beta_neutral_registration_sha256"] = registration.registration_id
+    context = inputs.context
+    order = _keyed(context, prep.months, prep.span, "context")[1] if len(context) else np.zeros(0, int)
+    aux = {}
+    candidates = {CONTEXT_SPREAD_AR: ("bidask_ar_21d",), CONTEXT_SPREAD_CS: ("bidask_cs_21d",),
+                  CONTEXT_ADV: ("dolvol_126d",), CONTEXT_BETA: ("beta_ew_252d",),
+                  "log_bm": ("book_to_market", "be_me"), "ret_12_1": ("ret_12_1", "momentum_12_1"),
+                  "gp_at": ("gp_at", "gross_profitability"), "at_gr1": ("at_gr1", "asset_growth")}
+    for role, names in candidates.items():
+        values = np.full(len(prep.context_keys), _NAN)
+        if role in context:
+            values = pd.to_numeric(context[role], errors="coerce").to_numpy(float)[order]
+        else:
+            for name in names:
+                inventory = inputs.reported_variants_by_feature or inputs.variants_by_feature
+                if "signed_raw" not in inventory.get(name, ()):
+                    continue
+                feature = inputs.load_feature(name)
+                arrays = _variant_arrays(prep, feature, "signed_raw")
+                keys = arrays.month * prep.span + arrays.security
+                raw = arrays.value / (feature.expected_sign or 1)
+                if role == "log_bm":
+                    raw = np.log(np.where(raw > 0, raw, np.nan))
+                values = _take(raw, _lookup(keys, prep.context_keys), _NAN)
+                del feature, arrays, keys, raw
+                break
+        aux[role] = values
+        prep.digests[f"reported_{role}_sha256"] = _array_digest(values)
+    ar, cs = aux[CONTEXT_SPREAD_AR], aux[CONTEXT_SPREAD_CS]
+    ar_ok, cs_ok = np.isfinite(ar) & (ar >= 0), np.isfinite(cs) & (cs >= 0)
+    prep.context_half_spread = np.where(ar_ok, ar / 2, np.where(cs_ok, cs / 2, np.nan))
+    prep.context_spread_source = np.where(ar_ok, HALF_SPREAD_AR, np.where(cs_ok, HALF_SPREAD_CS, HALF_SPREAD_NONE))
+    prep.context_adv, prep.context_beta = aux[CONTEXT_ADV], aux[CONTEXT_BETA]
+    prep.aux_present = frozenset(name for name, values in aux.items() if np.isfinite(values).any())
+    prep.jkp_controls = {name: aux[name] for name in ("log_bm", "ret_12_1", "gp_at", "at_gr1")}
+    del context
+    if inputs.release_frames:
+        inputs.context = pd.DataFrame()
+    group = prep.context_keys // prep.span
+    for percentile in (20, 80):
+        supplied = _supplied_breakpoints(calendar, (percentile,))
+        values = np.full(prep.months, _NAN) if supplied is None else supplied[0].copy()
+        basis = ["nyse_breakpoints" if np.isfinite(v) and v > 0 else "unavailable" for v in values]
+        eligible = prep.context_universe & prep.context_nyse & np.isfinite(prep.context_cap) & (prep.context_cap > 0)
+        for m in range(prep.months):
+            if basis[m] != "unavailable":
+                continue
+            cap = prep.context_cap[eligible & (group == m)]
+            values[m] = np.percentile(cap, percentile) if len(cap) >= spec.nyse_min_names else _NAN
+            if np.isfinite(values[m]):
+                basis[m] = "nyse_pit"
+        setattr(prep, f"jkp_p{percentile}", values)
+        setattr(prep, f"jkp_p{percentile}_basis", basis)
+        prep.digests[f"jkp_p{percentile}_sha256"] = _array_digest(values)
+    for model, frame in sorted(inputs.factors.items()):
+        if model not in SPAN_MODELS or not set(SPAN_MODELS[model]) <= set(frame):
+            raise EvaluationInputError(f"invalid reported factor model {model}")
+        index = _int_column(frame, "month_index")
+        if len(set(index)) != len(index) or (index < 0).any() or (index >= prep.months).any():
+            raise EvaluationInputError(f"factor model {model}: bad/duplicate month_index")
+        names = tuple(str(c) for c in frame if c != "month_index")
+        values = np.full((prep.months, len(names)), _NAN)
+        values[index] = frame[list(names)].apply(pd.to_numeric, errors="coerce").to_numpy(float)
+        prep.factor_models[model] = names, values
+        prep.factor_windows[model] = str(frame.attrs.get("monthly_window_basis", WINDOW_EXACT))
+        prep.digests[f"span_{model}_sha256"] = _sha(_array_digest(values) + _canonical(names)
+                                                   + prep.factor_windows[model])
+    if inputs.event_returns is not None:
+        events = inputs.event_returns
+        if not set(EVENT_RETURN_COLUMNS) <= set(events):
+            raise EvaluationInputError("event_returns lacks its documented columns")
+        for h in spec.horizons_months:
+            part = events[events.horizon_months == h]
+            keys, ordering = _keyed(part, prep.months, prep.span, "event_returns")
+            values = pd.to_numeric(part.ea_return, errors="coerce").to_numpy(float)[ordering]
+            keep = prep.matured[h][keys // prep.span]
+            prep.event_keys[h], prep.event_values[h] = keys[keep], values[keep]
+            prep.digests[f"events_{h}_sha256"] = _array_digest(keys[keep], values[keep])
+    prep.original_paper_t = {str(k): float(v) for k, v in inputs.original_paper_t.items() if np.isfinite(v)}
+    prep.digests["original_paper_t_sha256"] = _sha(_canonical(prep.original_paper_t))
 
 
 def _supplied_breakpoints(calendar: pd.DataFrame, percentiles: Sequence[int]) -> tuple[np.ndarray, ...] | None:
@@ -1667,6 +1914,309 @@ def _fama_macbeth(month: np.ndarray, y: np.ndarray, columns: Mapping[str, np.nda
     return slopes[:, 0] if slopes.shape[1] else np.full(months, _NAN)
 
 
+def _reported_inference(prefix: str, values: np.ndarray, mask: np.ndarray, h: int) -> dict[str, Any]:
+    inf = _infer(values, mask, h)
+    return {f"{prefix}_mean": _num(inf.mean), f"{prefix}_nw_t": _num(inf.nw_t),
+            f"{prefix}_n": inf.n_obs}
+
+
+def _weighted_fm(month: np.ndarray, y: np.ndarray, regressors: Sequence[np.ndarray], weight: np.ndarray,
+                 months: int, min_obs: int) -> np.ndarray:
+    """WLS per formation with positive ME weights; standardized design avoids size-unit conditioning."""
+    out = np.full(months, _NAN)
+    counts = np.bincount(month, minlength=months)
+    starts = _starts(counts)
+    for m in np.flatnonzero(counts >= min_obs):
+        rows = slice(starts[m], starts[m] + counts[m])
+        design = np.column_stack([column[rows] for column in regressors])
+        w, response = weight[rows], y[rows]
+        ok = np.isfinite(w) & (w > 0) & np.isfinite(response) & np.isfinite(design).all(axis=1)
+        if ok.sum() < max(min_obs, design.shape[1] + 3):
+            continue
+        design, response, w = design[ok], response[ok], w[ok]
+        w = w / w.sum()
+        centered = design - np.sum(w[:, None] * design, axis=0)
+        scales = np.sqrt(np.sum(w[:, None] * centered ** 2, axis=0))
+        if (scales <= 1e-12).any():
+            continue
+        root = np.sqrt(w)
+        fit, _, rank, _ = np.linalg.lstsq(centered / scales * root[:, None],
+                                          (response - np.dot(w, response)) * root, rcond=1e-12)
+        if rank == design.shape[1]:
+            out[m] = fit[0] / scales[0]
+    return out
+
+
+def _hold_spread_legs(month: np.ndarray, security: np.ndarray, quantile: np.ndarray, months: int
+                      ) -> np.ndarray:
+    """Formation-only hysteresis; a missing name exits. Long enters 10/stays >=8, short enters 1/stays <=3."""
+    out = np.zeros(len(month), np.int8)
+    counts = np.bincount(month, minlength=months)
+    starts = _starts(counts)
+    prior: dict[int, int] = {}
+    for m in range(months):
+        now = {}
+        for i in range(int(starts[m]), int(starts[m] + counts[m])):
+            q, s = int(quantile[i]), int(security[i])
+            side = 1 if q == 10 or (prior.get(s) == 1 and q >= 8) else \
+                -1 if q == 1 or (prior.get(s) == -1 and 0 < q <= 3) else 0
+            out[i] = side
+            if side:
+                now[s] = side
+        prior = now
+    return out
+
+
+def _portfolio_path(prep: _Prepared, month: np.ndarray, security: np.ndarray, legs: np.ndarray,
+                     weight: np.ndarray, h: int, use: np.ndarray, returns: np.ndarray) -> dict[str, np.ndarray]:
+    """Long/short sleeve diagnostics with formation weights, h-period drift and complete trading costs.
+
+    Each leg has unit notional. Turnover is half the L1 weight change; execution cost uses the full L1
+    change times each stock's half-spread, including exits. No initial build is counted. A missing prior
+    return or current trading spread makes that formation unavailable, rather than zero. Each h-month
+    formation is compared with m-h (a staggered h-month sleeve), avoiding double-counted overlapping P&L.
+    """
+    result = {name: np.full(prep.months, _NAN) for name in ("gross", "turnover", "cost", "net", "ea")}
+    counts = np.bincount(month, minlength=prep.months)
+    starts = _starts(counts)
+    holdings: list[dict[int, dict[int, float]]] = []
+    event = _take(prep.event_values.get(h, np.zeros(0)),
+                  _lookup(prep.event_keys.get(h, np.zeros(0, np.int64)), month * prep.span + security), _NAN)
+    for m in range(prep.months):
+        rows = np.arange(starts[m], starts[m] + counts[m], dtype=int)
+        sides, gross, ea = {}, [], []
+        for side in (1, -1):
+            selected = rows[(legs[rows] == side) & np.isfinite(weight[rows]) & (weight[rows] > 0)]
+            total_weight = float(weight[selected].sum())
+            sides[side] = ({int(security[i]): float(weight[i] / total_weight) for i in selected}
+                           if len(selected) >= JKP_MIN_LEG_NAMES else {})
+            valid = selected[use[selected]]
+            gross.append(float(np.average(returns[valid], weights=weight[valid]))
+                         if len(valid) >= JKP_MIN_LEG_NAMES else _NAN)
+            ea.append(float(np.average(event[valid], weights=weight[valid]))
+                      if len(valid) >= JKP_MIN_LEG_NAMES and np.isfinite(event[valid]).all() else _NAN)
+        holdings.append(sides)
+        result["gross"][m], result["ea"][m] = gross[0] - gross[1], ea[0] - ea[1]
+        if (m < h or not all(sides.values()) or not all(holdings[m - h].values())
+                or prep.expected_end[h][m - h] != prep.formation[m]):
+            continue
+        turn, cost, complete_drift, complete_cost = 0.0, 0.0, True, True
+        for side in (1, -1):
+            old = holdings[m - h][side]
+            ids = np.array(sorted(old), dtype=np.int64)
+            index = _lookup(prep.label_keys[h], (m - h) * prep.span + ids)
+            old_return = _take(prep.label_return[h], index, _NAN)
+            valid = (_take(prep.label_status[h], index, LABEL_MISSING) == LABEL_VALID)
+            if not (prep.matured[h][m - h] and valid.all() and np.isfinite(old_return).all()
+                    and (old_return >= -1).all()):
+                complete_drift = False
+                break
+            drift = np.array([old[int(s)] for s in ids]) * (1 + old_return)
+            if drift.sum() <= 0:
+                complete_drift = False
+                break
+            before = dict(zip(ids.tolist(), (drift / drift.sum()).tolist(), strict=True))
+            union = np.array(sorted(set(before) | set(sides[side])), np.int64)
+            trades = np.array([abs(sides[side].get(int(s), 0.0) - before.get(int(s), 0.0)) for s in union])
+            active = trades > 1e-12
+            spreads = _take(prep.context_half_spread, _lookup(prep.context_keys, m * prep.span + union), _NAN)
+            turn += float(trades.sum()) / 2
+            if not np.isfinite(spreads[active]).all():
+                complete_cost = False
+            else:
+                cost += float(np.dot(trades[active], spreads[active]))
+        if complete_drift:
+            result["turnover"][m] = turn
+            if complete_cost:
+                result["cost"][m] = cost
+                result["net"][m] = result["gross"][m] - cost
+    return result
+
+
+def _reported_metrics(prep: _Prepared, spec: EvaluationSpec, feature: FeatureData, variant: str,
+                       arrays: _Arrays, h: int, use: np.ndarray, returns: np.ndarray,
+                       legacy_ic: np.ndarray, out: dict[str, list[Any]]) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+    """Node 4.1 diagnostics. No returned value is used by the testing-family or qualification path."""
+    from .factor_returns import span_cell
+    from .features import beta_neutralize
+
+    month, security, value = arrays.month, arrays.security, arrays.value
+    months, mask = prep.months, prep.samples[h].primary
+    keys = month * prep.span + security
+    ctx = _lookup(prep.context_keys, keys)
+    cap = _take(prep.context_cap, ctx, _NAN)
+    capped = np.minimum(cap, prep.jkp_p80[month])
+    reference = np.isfinite(cap) & (cap > 0) & (cap >= prep.jkp_p20[month])
+    reported: dict[str, Any] = {"evidence_class": feature.evidence_class, "publication_year": feature.publication_year,
+                               "reported_metrics_version": "tier1-v2-4.1-v1",
+                               "jkp_breakpoint_basis": _method_counts(prep.jkp_p20_basis, mask),
+                               "jkp_cap_basis": _method_counts(prep.jkp_p80_basis, mask),
+                               "cost_basis": ("rebalance_aligned_label_drift_ar_else_cs_half_spread"
+                                              if np.isfinite(prep.context_half_spread).any() else "unavailable"),
+                               "capacity_basis": ("sum_1pct_ADV_complete_decile"
+                                                  if CONTEXT_ADV in prep.aux_present else "unavailable"),
+                               "ea_basis": "p3_session_window_m1_p1" if h in prep.event_keys else "unavailable",
+                               "beta_neutral_basis": "not_preregistered"}
+    series: dict[str, np.ndarray] = {}
+    buckets = {}
+    for q in JKP_QUANTILES:
+        bucket = breakpoint_quantiles(month, value, reference, months, q, spec.nyse_min_names)
+        buckets[q] = bucket
+        for weighting, w in (("ew", np.ones(len(value))), ("vw", cap), ("cvw", capped)):
+            valid = use & np.isfinite(w) & (w > 0)
+            _, means, names = _bucket_means(month[valid], bucket[valid], returns[valid], months, q, w[valid])
+            means[names < JKP_MIN_LEG_NAMES] = _NAN
+            name = f"jkp_{weighting}{q}"
+            series[name] = means[:, -1] - means[:, 0]
+            reported.update(_reported_inference(name, series[name], mask, h))
+            _quantile_rows(out["quantiles"], prep, feature, variant, h, mask,
+                           ((f"jkp_{weighting}", q, means, names),))
+    all_deciles = grouped_quantiles(month, value, security, months, 10, 1)
+    equal_weight = np.broadcast_to(np.array(1.0), value.shape)
+    portfolios = {"ew10": (np.where(all_deciles == 10, 1, np.where(all_deciles == 1, -1, 0)).astype(np.int8), equal_weight),
+                  "cvw10": (np.where(buckets[10] == 10, 1, np.where(buckets[10] == 1, -1, 0)).astype(np.int8), capped),
+                  "buy_hold": (_hold_spread_legs(month, security, all_deciles, months), equal_weight)}
+    for name, (legs, weight) in portfolios.items():
+        path = _portfolio_path(prep, month, security, legs, weight, h, use, returns)
+        for metric in ("gross", "turnover", "cost", "net"):
+            field = f"trade_{name}_{metric}"
+            series[field] = path[metric]
+            reported.update(_reported_inference(field, path[metric], mask, h))
+        matched = mask & np.isfinite(path["gross"]) & np.isfinite(path["turnover"])
+        mean_turn = _nanmean(path["turnover"][matched])
+        mean_gross = _nanmean(path["gross"][matched])
+        reported[f"trade_{name}_break_even_bps"] = (10_000 * mean_gross / mean_turn
+                                                     if mean_turn is not None and mean_turn > 0 else None)
+        reported[f"trade_{name}_break_even_basis"] = "gross_per_summed_one_sided_leg_turnover"
+        for bp in COST_BPS:
+            reported[f"trade_{name}_net{bp}_mean"] = _nanmean((path["gross"] - bp / 10000 * path["turnover"])[mask])
+        if h == 1:
+            reported[f"trade_{name}_high_turnover"] = mean_turn / 2 > TURNOVER_FLAG_MONTHLY if mean_turn is not None else None
+        paired = mask & np.isfinite(path["ea"]) & np.isfinite(path["gross"])
+        denom = _nanmean(path["gross"][paired])
+        reported[f"trade_{name}_ea_share"] = _nanmean(path["ea"][paired]) / denom if denom else None
+        reported[f"trade_{name}_ea_n"] = int(paired.sum())
+        if name in SPAN_PORTFOLIOS:
+            for model in SPAN_MODEL_NAMES:
+                prefix = f"span_{name}_{model}"
+                reported[f"{prefix}_basis"] = "unavailable"
+                if model in prep.factor_models:
+                    names, values = prep.factor_models[model]
+                    span = span_cell(np.where(mask, path["gross"], np.nan),
+                                     {n: values[:, i] for i, n in enumerate(names)}, horizon_periods=h, model=model,
+                                     monthly_window_basis=prep.factor_windows[model])
+                    reported.update({f"{prefix}_{k}": v for k, v in span.items()})
+                    reported[f"{prefix}_basis"] = "supplied_model"
+    del portfolios, path, legs, weight, all_deciles
+    adv = _take(prep.context_adv, ctx, _NAN)
+    for q in range(1, 11):
+        selected = buckets[10] == q
+        count = np.bincount(month[selected], minlength=months)
+        valid = selected & np.isfinite(adv) & (adv > 0)
+        covered = np.bincount(month[valid], minlength=months)
+        capacity = np.bincount(month[valid], weights=adv[valid] * CAPACITY_ADV_FRACTION, minlength=months)
+        capacity = np.where((count >= JKP_MIN_LEG_NAMES) & (covered == count), capacity, np.nan)
+        reported[f"capacity_decile{q}_usd"] = _nanmean(capacity[mask])
+    # A wide per-feature panel must not retain portfolio temporaries alongside full FM regressors.
+    del adv, buckets, bucket, capped, reference, w, valid, selected
+    # Full JKP/HXZ controls: a focal control is explicitly omitted to prevent self-regression.
+    controls = {"log_me": np.log(np.where(cap > 0, cap, np.nan)),
+                **{k: _take(v, ctx, _NAN) for k, v in prep.jkp_controls.items()}}
+    self_roles = {role for role, candidates in FM_JKP_CONTROLS if feature.feature_id in candidates}
+    if feature.feature_id in SIZE_FEATURES:
+        self_roles.add("log_me")
+    for role in self_roles:
+        controls.pop(role, None)
+    missing = [name for name, values in controls.items() if not np.isfinite(values).any()]
+    reported["fmj_controls_missing"] = ",".join(missing) or None
+    reported["fmj_controls"] = ",".join(controls)
+    reported["fmj_self_controls_omitted"] = ",".join(sorted(self_roles)) or None
+    regressors = [] if missing else [value[use], *(v[use] for v in controls.values())]
+    for weighting in ("ols", "wls"):
+        slopes = np.full(months, _NAN)
+        if not missing:
+            slopes = _weighted_fm(month[use], returns[use], regressors,
+                                  cap[use] if weighting == "wls" else np.ones(int(use.sum())), months, spec.fm_min_obs)
+        series[f"fmj_{weighting}"] = slopes
+        reported.update(_reported_inference(f"fmj_{weighting}", slopes, mask, h))
+        for k in (3, 6, 12):
+            # HXZ trailing K-month slope averages. Mask BEFORE smoothing to prevent split/holdout leakage.
+            averaged = pd.Series(np.where(mask, slopes, np.nan)).rolling(k, min_periods=k).mean().to_numpy()
+            reported.update(_reported_inference(f"fmj_{weighting}_k{k}", averaged, mask, h))
+    if (feature.feature_id, f"{variant}_beta_neutral", h) in prep.beta_neutral_cells:
+        beta = _take(prep.context_beta, ctx, _NAN)
+        neutral, _, _ = beta_neutralize(month, value, beta, months, min_names=spec.min_names)
+        valid = use & np.isfinite(neutral)
+        neutral_ic, neutral_n = grouped_rank_correlation(month[valid], neutral[valid], returns[valid], months)
+        neutral_ic[neutral_n < spec.min_names] = _NAN
+        neutral_bucket = grouped_quantiles(month[np.isfinite(neutral)], neutral[np.isfinite(neutral)],
+                                           security[np.isfinite(neutral)], months, 10, spec.min_names)
+        neutral_use = use[np.isfinite(neutral)]
+        neutral_ew, _, neutral_count = _bucket_means(month[valid], neutral_bucket[neutral_use],
+                                                    returns[valid], months, 10)
+        neutral_ew[neutral_count < JKP_MIN_LEG_NAMES] = _NAN
+        neutral_ls = neutral_ew[:, -1] - neutral_ew[:, 0]
+        reported.update(_reported_inference("beta_neutral_ic", neutral_ic, mask, h))
+        reported.update(_reported_inference("beta_neutral_ls", neutral_ls, mask, h))
+        reported["beta_neutral_basis"] = "preregistered_ols_beta_ew_252d" if CONTEXT_BETA in prep.aux_present else "unavailable"
+        series["beta_neutral_ic"] = neutral_ic
+    if feature.publication_year is not None:
+        # Only the year is known: exclude that entire year rather than invent a publication date.
+        year = pd.DatetimeIndex(prep.formation).year.to_numpy()
+        for name, selected in (("pre", year < feature.publication_year), ("post", year > feature.publication_year)):
+            selected &= mask
+            reported.update(_reported_inference(f"publication_{name}_ic", legacy_ic, selected, h))
+            out["slices"].append(_slice_row(prep, feature, variant, h, PUBLICATION_SLICE_KIND, name,
+                                             _infer(legacy_ic, selected, h), _infer(series["trade_ew10_gross"], selected, h),
+                                             "trade_ew10", int((selected & np.isfinite(legacy_ic)).sum()),
+                                             0, 0, None, None, None, None))
+    inf = _infer(legacy_ic, mask, h)
+    reported["ic_nw_se"] = _num(inf.nw_standard_error)
+    reported["ic_mde_80pct"] = _num((1.959963984540054 + 0.8416212335729143) * inf.nw_standard_error)
+    reported["ic_mde_basis"] = "normal_approx_two_sided_alpha05_power80_NW_SE_reported_only"
+    acronym = OSAP_ACRONYMS.get(feature.feature_id)
+    reported["osap_acronym"] = acronym
+    reported["osap_original_t"] = prep.original_paper_t.get(acronym)
+    reported["osap_atx_t"] = _num(_infer(series["trade_ew10_gross"], mask, h).nw_t)
+    reported["osap_basis"] = "original_paper_vs_atx_NW_nonidentical_samples" if acronym in prep.original_paper_t else "unavailable"
+    return reported, series
+
+
+def _signal_age_metrics(prep: _Prepared, spec: EvaluationSpec, feature: FeatureData, variant: str,
+                         arrays: _Arrays, out: dict[str, list[Any]]) -> dict[str, Any]:
+    """Always one-month future labels, indexed by target formation; never h-month cumulative IC."""
+    reported: dict[str, Any] = {"ic_half_life_months": None, "ic_half_life_basis": "one_month_labels_unavailable"}
+    if 1 not in prep.label_keys:
+        return reported
+    month, keys = arrays.month, arrays.month * prep.span + arrays.security
+    curve = []
+    for age in SIGNAL_AGES:
+        target = month + age
+        chosen = target < prep.months
+        target = target[chosen]
+        index = _lookup(prep.label_keys[1], keys[chosen] + age * prep.span)
+        y = _take(prep.label_return[1], index, _NAN)
+        valid = (prep.matured[1][target] & (_take(prep.label_status[1], index, LABEL_MISSING) == LABEL_VALID)
+                 & np.isfinite(y))
+        ic, n = grouped_rank_correlation(target[valid], arrays.value[chosen][valid], y[valid], prep.months)
+        ic[n < spec.min_names] = _NAN
+        inf = _infer(ic, prep.samples[1].primary, 1)
+        curve.append(inf.mean)
+        reported[f"ic_age{age}_mean"] = _num(inf.mean)
+        out["decay"].append(_decay_row(prep, feature, variant, "signal_age", age, inf,
+                                       inf.mean / curve[0] if curve[0] else _NAN))
+    reported["ic_half_life_basis"] = "not_estimable"
+    if np.isfinite(curve[0]) and curve[0] != 0:
+        normalized = np.array(curve) / curve[0]
+        reported["ic_half_life_basis"] = "right_censored_after_11_months"
+        for k in range(1, len(normalized)):
+            if np.isfinite(normalized[k - 1:k + 1]).all() and normalized[k - 1] > .5 >= normalized[k]:
+                reported["ic_half_life_months"] = k - 1 + (normalized[k - 1] - .5) / (normalized[k - 1] - normalized[k])
+                reported["ic_half_life_basis"] = "first_half_crossing_linear_interpolation"
+                break
+    return reported
+
+
 def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureData, variant: str,
                       arrays: _Arrays, meta: Mapping[str, Any], unlinked_scope: bool = False
                       ) -> dict[str, list[dict[str, Any]]]:
@@ -1723,6 +2273,7 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
     positive_cap = np.isfinite(cap) & (cap > 0)
     log_cap[positive_cap] = np.log(cap[positive_cap])
     use_size_control = feature.feature_id not in SIZE_FEATURES
+    age_metrics = _signal_age_metrics(prep, spec, feature, variant, arrays, out)
 
     cumulative: list[tuple[int, stats.MeanInference]] = []
     for h in spec.horizons_months:
@@ -1876,6 +2427,11 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
         row["mono_ew10"], row["mono_vw10"], row["mono_ew5"], row["mono_vw5"] = _quantile_rows(
             out["quantiles"], prep, feature, variant, h, in_sample,
             (("ew", 10, ew10, count10), ("vw", 10, vw10, count10), ("ew", 5, ew5, count5), ("vw", 5, vw5, count5)))
+        reported, reported_series = _reported_metrics(prep, spec, feature, variant, arrays, h, use, returns, ic, out)
+        row.update(reported)
+        row.update(age_metrics)
+        if h != 1 and out["cells"] and out["cells"][0]["horizon_months"] == 1:
+            row.update({name: value for name, value in out["cells"][0].items() if name.endswith("_high_turnover")})
         out["cells"].append(row)
         out["decay"].append(_decay_row(prep, feature, variant, "availability_lag1", h, lag_inf,
                                        lag_inf.mean / ic_inf.mean if ic_inf.mean else _NAN))
@@ -1897,7 +2453,8 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
             "ls_vw5": spreads["vw5"][chosen_months], "ls_nyse_ew10": spreads["nyse_ew10"][chosen_months],
             "ls_nyse_vw10": spreads["nyse_vw10"][chosen_months], "fm_slope": fm[chosen_months],
             "fmc_slope": fmc[chosen_months], "net25_ew10": net[25][chosen_months],
-            "ic_lag1": lag_ic[chosen_months]}))
+            "ic_lag1": lag_ic[chosen_months],
+            **{name: values[chosen_months] for name, values in reported_series.items()}}))
         # Slices: frozen split segments and subperiods.
         for (kind, name), mask in samples.masks.items():
             slice_mask = mask & usable
@@ -2147,7 +2704,9 @@ def _evaluate_feature(prep: _Prepared, inputs: BasisInputs, spec: EvaluationSpec
                                        f"catalog ({entry.expected_sign})")
         feature = replace(feature, anomaly_class=feature.anomaly_class or entry.anomaly_class,
                           hypothesis_family=feature.hypothesis_family or entry.hypothesis_family,
-                          population=feature.population or entry.population)
+                          population=feature.population or entry.population,
+                          evidence_class=feature.evidence_class or entry.evidence_class,
+                          publication_year=feature.publication_year or entry.publication_year)
     variants = [v for v in inputs.variants_by_feature.get(feature_id, ())
                 if spec.variants is None or v in spec.variants]
     out: dict[str, list[Any]] = {"cells": [], "slices": [], "quantiles": [], "decay": [], "series": []}
@@ -2296,6 +2855,20 @@ def _finish_family(con: duckdb.DuckDBPyConnection, run_id: str, spec: Evaluation
             """, [run_id])
         finally:
             con.unregister("_ev_family")
+    # Shrinkage is a cross-feature report, fitted after every feature is written; never in FAMILY_COLUMNS.
+    eb_cells = con.execute("""SELECT basis, feature_id, variant, horizon_months, status, evidence_class,
+                             ic_mean, ic_nw_se FROM research_eval_cells WHERE run_id=?""", [run_id]).df()
+    eb = empirical_bayes_ic(eb_cells)
+    with transaction():
+        con.register("_ev_eb", _typed(eb, [(name, kind) for name, kind in CELL_COLUMNS if name in eb]))
+        try:
+            con.execute("""UPDATE research_eval_cells AS c
+                SET ic_eb_mean=e.ic_eb_mean, ic_eb_weight=e.ic_eb_weight, ic_eb_tau2=e.ic_eb_tau2,
+                    ic_eb_n=e.ic_eb_n, ic_eb_basis=e.ic_eb_basis FROM _ev_eb e
+                WHERE c.run_id=? AND c.basis=e.basis AND c.feature_id=e.feature_id
+                  AND c.variant=e.variant AND c.horizon_months=e.horizon_months""", [run_id])
+        finally:
+            con.unregister("_ev_eb")
     missing = sum(item["not_produced"] for item in counts.values())
     summary.update({
         "catalog_sha256": _catalog_sha(catalog),
@@ -2311,6 +2884,40 @@ def _finish_family(con: duckdb.DuckDBPyConnection, run_id: str, spec: Evaluation
                             and set(BASES) <= set(info)),
     })
     return summary
+
+
+def empirical_bayes_ic(cells: pd.DataFrame) -> pd.DataFrame:
+    """Reported normal-normal IC shrinkage toward zero across replications within basis/variant/horizon.
+
+    JKP-style empirical Bayes method of moments: tau²=max(mean(IC²-SE²),0), posterior weight
+    tau²/(tau²+SE²). Uses every estimable replication (no significance selection), at least 3 distinct
+    features, and NW sampling variances. Variants/horizons are never pooled as independent observations.
+    Run reducers must call this on the full wave; per-feature workers correctly report unavailable.
+    """
+    cells = cells.reset_index(drop=True)
+    keys = ["basis", "feature_id", "variant", "horizon_months"]
+    out = cells[keys].copy()
+    for column in ("ic_eb_mean", "ic_eb_weight", "ic_eb_tau2"):
+        out[column] = np.nan
+    out["ic_eb_n"], out["ic_eb_basis"] = 0, "insufficient_replication_pool"
+    if not {"evidence_class", "ic_mean", "ic_nw_se"} <= set(cells):
+        return out
+    means = pd.to_numeric(cells.ic_mean, errors="coerce").to_numpy(float)
+    se = pd.to_numeric(cells.ic_nw_se, errors="coerce").to_numpy(float)
+    valid = (cells.evidence_class.eq("replication").to_numpy() & np.isfinite(means) & np.isfinite(se) & (se > 0))
+    out.loc[~cells.evidence_class.eq("replication"), "ic_eb_basis"] = "not_replication"
+    for _, group in cells.reset_index(drop=True).groupby(["basis", "variant", "horizon_months"], sort=True):
+        index = group.index.to_numpy()[valid[group.index.to_numpy()]]
+        out.loc[index, "ic_eb_n"] = len(index)
+        if len(index) < 3 or cells.iloc[index].feature_id.nunique() != len(index):
+            continue
+        tau2 = max(float(np.mean(means[index] ** 2 - se[index] ** 2)), 0.0)
+        weight = tau2 / (tau2 + se[index] ** 2)
+        out.loc[index, "ic_eb_mean"] = weight * means[index]
+        out.loc[index, "ic_eb_weight"] = weight
+        out.loc[index, "ic_eb_tau2"] = tau2
+        out.loc[index, "ic_eb_basis"] = "normal_normal_zero_prior_moment_NW_variance"
+    return out
 
 
 def _basis_attrition(prep: _Prepared, spec: EvaluationSpec) -> list[dict[str, Any]]:
@@ -2473,6 +3080,31 @@ def compute_family(cells: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
 
 _D, _I, _B, _V = "DOUBLE", "INTEGER", "BOOLEAN", "VARCHAR"
 _IDENTITY = (("basis", _V), ("feature_id", _V), ("variant", _V), ("horizon_months", _I))
+REPORTED_SERIES_NAMES = (
+    *(f"jkp_{w}{q}" for q in JKP_QUANTILES for w in JKP_WEIGHTINGS),
+    *(f"trade_{p}_{m}" for p in (*SPAN_PORTFOLIOS, "buy_hold") for m in ("gross", "turnover", "cost", "net")),
+    "fmj_ols", "fmj_wls", "beta_neutral_ic",
+)
+REPORTED_CELL_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("reported_metrics_version", _V), ("evidence_class", _V), ("publication_year", _I),
+    *((name, _V) for name in ("jkp_breakpoint_basis", "jkp_cap_basis", "cost_basis", "capacity_basis", "ea_basis",
+                              "beta_neutral_basis", "fmj_controls", "fmj_controls_missing", "fmj_self_controls_omitted")),
+    *((f"{prefix}_{suffix}", kind) for prefix in (*REPORTED_SERIES_NAMES, "beta_neutral_ls",
+        *(f"fmj_{w}_k{k}" for w in ("ols", "wls") for k in (3, 6, 12)),
+        "publication_pre_ic", "publication_post_ic") for suffix, kind in (("mean", _D), ("nw_t", _D), ("n", _I))),
+    *((f"trade_{p}_{suffix}", kind) for p in (*SPAN_PORTFOLIOS, "buy_hold") for suffix, kind in
+      (("break_even_bps", _D), ("break_even_basis", _V), ("net10_mean", _D), ("net25_mean", _D), ("net50_mean", _D),
+       ("high_turnover", _B), ("ea_share", _D), ("ea_n", _I))),
+    *((f"span_{p}_{model}_{suffix}", kind) for p in SPAN_PORTFOLIOS for model in SPAN_MODEL_NAMES
+      for suffix, kind in (("alpha", _D), ("alpha_nw_t", _D), ("alpha_robust_p", _D), ("r2", _D), ("n", _I),
+                           ("window_basis", _V), ("claimable", _B), ("basis", _V))),
+    *((f"capacity_decile{q}_usd", _D) for q in range(1, 11)),
+    *((f"ic_age{k}_mean", _D) for k in SIGNAL_AGES),
+    ("ic_half_life_months", _D), ("ic_half_life_basis", _V), ("ic_nw_se", _D),
+    ("ic_mde_80pct", _D), ("ic_mde_basis", _V),
+    ("osap_acronym", _V), ("osap_original_t", _D), ("osap_atx_t", _D), ("osap_basis", _V),
+    ("ic_eb_mean", _D), ("ic_eb_weight", _D), ("ic_eb_tau2", _D), ("ic_eb_n", _I), ("ic_eb_basis", _V),
+)
 CELL_COLUMNS: tuple[tuple[str, str], ...] = (
     *_IDENTITY, ("horizon_sessions", _I), ("status", _V), ("status_reason", _V), ("sample", _V),
     ("anomaly_class", _V), ("hypothesis_family", _V),
@@ -2513,6 +3145,7 @@ CELL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("dsr", _D),
     ("dsr_z", _D), ("dsr_benchmark", _D), ("dsr_n_trials", _I), ("dsr_effective_n", _I),
     ("dsr_sharpe_variance", _D), ("family_best", _B),
+    *REPORTED_CELL_COLUMNS,
 )
 SLICE_COLUMNS: tuple[tuple[str, str], ...] = (
     *_IDENTITY, ("slice_kind", _V), ("slice_name", _V), ("formations", _I), ("purged", _I), ("embargoed", _I),
@@ -2529,6 +3162,7 @@ SERIES_COLUMNS: tuple[tuple[str, str], ...] = (
     ("ls_vw10", _D),
     ("ls_ew5", _D), ("ls_vw5", _D), ("ls_nyse_ew10", _D), ("ls_nyse_vw10", _D), ("fm_slope", _D), ("fmc_slope", _D),
     ("net25_ew10", _D), ("ic_lag1", _D),
+    *((name, _D) for name in REPORTED_SERIES_NAMES),
 )
 QUANTILE_COLUMNS: tuple[tuple[str, str], ...] = (
     *_IDENTITY, ("weighting", _V), ("n_quantiles", _I), ("quantile", _I), ("mean_return", _D),
@@ -2575,11 +3209,11 @@ _RUN_DDL = """
         finished_at TIMESTAMP,
         family_complete BOOLEAN
     )"""
-_SCHEMA_VERSIONS = {1: "monthly_evaluation", 2: "catalog_family_universe_series"}
+_SCHEMA_VERSIONS = {1: "monthly_evaluation", 2: "catalog_family_universe_series", 3: "reported_economics"}
 
 
 def ensure_evaluation_schema(con: duckdb.DuckDBPyConnection) -> None:
-    """Create or upgrade the ``research_eval_*`` tables to schema version 2.
+    """Create or upgrade the ``research_eval_*`` tables to schema version 3.
 
     Version 2 adds the catalog-anchored family flag, status reasons, the ranked-universe
     and point-in-time venue columns, PSR and ``research_eval_series``; a version-1 store
@@ -2587,6 +3221,7 @@ def ensure_evaluation_schema(con: duckdb.DuckDBPyConnection) -> None:
     new columns (writers name their columns, so the physical order does not matter).
     Kept inside this module until the research-store owner registers it as a store
     migration; the version table refuses a newer, unknown schema.
+    Version 3 adds reported-only economics; every pre-existing column and gating rule is retained.
     """
     con.execute("""
         CREATE TABLE IF NOT EXISTS research_eval_schema (
@@ -3742,6 +4377,7 @@ __all__ = [
     "breakpoint_quantiles",
     "catalog_features",
     "compute_family",
+    "empirical_bayes_ic",
     "empty_basis",
     "ensure_evaluation_schema",
     "evaluate_bases",

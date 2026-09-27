@@ -274,8 +274,8 @@ def _final_label_set(label_sha: str, labels_root: Path | str | None, policy_id: 
     where = f"label set {label_sha[:12]} under {matrix.root.as_posix()}"
     try:
         spec = matrix.spec(label_sha)
-        # Read-only: the seal record LabelMatrix.complete wrote (LabelMatrix exposes no public reader).
-        complete = matrix._complete_record(label_sha)
+        # Read-only metadata: no label or return file is opened.
+        complete = matrix.seal_record(label_sha)
     except LabelMatrixError as error:
         raise RegistryError(f"{where}: {error} (the holdout opens only on a created, complete label-matrix "
                             "set)") from error

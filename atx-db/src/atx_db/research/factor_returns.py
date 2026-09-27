@@ -45,6 +45,10 @@ in the research store (RX6, never the warehouse):
   ``horizon_periods = h``; without them it compounds the monthly rows over h consecutive
   formations (:func:`compound_factor_windows`, labeled ``compounded_21_session_windows``,
   no significance claim at h >= 6: ``significance_claimable``).
+* :func:`span_cell` (tier-1 v2 node 4.1): the spanning alpha, its Newey-West t and R^2 of every R3b
+  evaluation cell's long-short against each :data:`SPAN_MODELS` model the caller supplies as
+  ``BasisInputs.factors`` (atx P4 CAPM / FF5 + UMD analogs via :func:`atx_span_factors`; French FF5 + UMD
+  and HXZ q5 benchmark files via :func:`benchmark_span_factors`). Reported, never gating.
 
 Breakpoints and venue (the R3b rule, reused)
 --------------------------------------------
@@ -1972,6 +1976,208 @@ def span_test_against_run(store: ResearchStore, run_id: str, ls_returns: pd.Seri
 
 
 # ---------------------------------------------------------------------------
+# Spanning of every evaluation cell (tier-1 v2 node 4.1; reported, never gating)
+# ---------------------------------------------------------------------------
+
+#: Factor models every R3b cell's long-short is spanned against (``BasisInputs.factors`` keys) and the factor
+#: columns each needs: the atx P4 CAPM and FF5 + UMD analogs, and the external French FF5 + UMD and HXZ q5
+#: benchmark files (X.3). A model the caller did not supply is reported as NULL, never approximated.
+SPAN_MODELS: dict[str, tuple[str, ...]] = {
+    "capm_atx": ("mkt_rf",),
+    "ff6_atx": ("mkt_rf", "smb", "hml", "rmw", "cma", "umd"),
+    "capm_french": ("mkt_rf",),
+    "ff6_french": ("mkt_rf", "smb", "hml", "rmw", "cma", "umd"),
+    "q5": ("r_mkt", "r_me", "r_ia", "r_roe", "r_eg"),
+}
+#: Market excess-return columns and their risk-free column: over h months the excess return compounds as
+#: ``prod(1 + excess + rf) - prod(1 + rf)`` when the model frame carries the risk-free column.
+SPAN_EXCESS_MARKETS: dict[str, str] = {"mkt_rf": "rf", "r_mkt": "r_f"}
+#: ``BasisInputs.factors`` row convention: the row of formation ``month_index`` m holds each factor's return over
+#: the calendar month after m's month end (the window of m's one-month label).
+SPAN_ROW_RULE = "row m = next monthly factor return after formation m; external calendar months proxy 21-session labels"
+WINDOW_FORMATION_COMPOUNDED = "compounded_monthly_formation_rows"
+WINDOW_BENCHMARK_MONTH = "external_calendar_month_proxy_for_21_session_labels"
+_BENCH_FRENCH = "bench_french_ff5_umd_monthly"
+_BENCH_Q5 = "bench_q5"
+
+
+def compound_formation_rows(values: np.ndarray, horizon_periods: int, rf: np.ndarray | None = None) -> np.ndarray:
+    """Per formation row m: the factor return over the h monthly rows ``m .. m+h-1`` (NaN unless all present).
+
+    ``prod(1 + f) - 1``; with ``rf`` (a market *excess* column's risk-free rate) ``prod(1 + f + rf) -
+    prod(1 + rf)``. ``h = 1`` returns the rows unchanged.
+    """
+    h = int(horizon_periods)
+    if h != horizon_periods or h < 1:
+        raise FactorInputError("horizon_periods must be a positive integer")
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 1 or (rf is not None and np.asarray(rf).shape != values.shape):
+        raise FactorInputError("formation factors and risk-free rows must be aligned one-dimensional arrays")
+    if h == 1:
+        return values.copy()
+    months = len(values)
+    out = np.full(months, _NAN)
+    total = values if rf is None else values + np.asarray(rf, dtype=float)
+    for m in range(months - h + 1):
+        window = total[m:m + h]
+        if not np.isfinite(window).all():
+            continue
+        gross = float(np.prod(1.0 + window))
+        if rf is None:
+            out[m] = gross - 1.0
+        else:
+            free = np.asarray(rf, dtype=float)[m:m + h]
+            out[m] = gross - float(np.prod(1.0 + free)) if np.isfinite(free).all() else _NAN
+    return out
+
+
+def span_cell(ls_returns: np.ndarray, factors: Mapping[str, np.ndarray], *, horizon_periods: int,
+              model: str, monthly_window_basis: str = WINDOW_EXACT) -> dict[str, Any]:
+    """Spanning regression of one R3b cell's per-formation long-short on one factor model (node 4.1).
+
+    ``ls_returns``: the cell's h-month long-short per formation (NaN outside its tested sample);
+    ``factors``: the model's monthly factor columns per formation row (:data:`SPAN_ROW_RULE`), plus the
+    risk-free column of an excess market column when available. For ``h > 1`` the factor rows are
+    compounded over the h formations of each label window (:func:`compound_formation_rows`,
+    ``window_basis='compounded_monthly_formation_rows'``, no significance claim at ``h >= 6`` as for
+    :data:`WINDOW_COMPOUNDED`). Returns alpha, its Newey-West t (lags ``max(h-1, floor(4 (T/100)^(2/9)))``),
+    its EWC robust p, R^2 and the periods used; external calendar-month factors are explicitly a proxy
+    for 21-session labels (``monthly_window_basis``), never a claimable exact-window test. NULLs when
+    the regression is not estimable (too few
+    complete periods, a collinear design).
+    """
+    if model not in SPAN_MODELS:
+        raise FactorInputError(f"unknown span model {model!r}; known {sorted(SPAN_MODELS)}")
+    if monthly_window_basis not in (WINDOW_EXACT, WINDOW_BENCHMARK_MONTH):
+        raise FactorInputError(f"unknown monthly span window basis {monthly_window_basis!r}")
+    h = int(horizon_periods)
+    if h != horizon_periods or h < 1:
+        raise FactorInputError("horizon_periods must be a positive integer")
+    names = SPAN_MODELS[model]
+    missing = [name for name in names if name not in factors]
+    if missing:
+        raise FactorInputError(f"span model {model} lacks factor columns {missing}")
+    if any(np.asarray(factors[name]).shape != np.asarray(ls_returns).shape for name in names):
+        raise FactorInputError("span factors must align with the long-short formation grid")
+    columns = {}
+    for name in names:
+        rf = factors.get(SPAN_EXCESS_MARKETS[name]) if name in SPAN_EXCESS_MARKETS else None
+        columns[name] = compound_formation_rows(np.asarray(factors[name], dtype=float), h, rf)
+    basis = monthly_window_basis if h == 1 else WINDOW_FORMATION_COMPOUNDED
+    if h > 1 and monthly_window_basis == WINDOW_BENCHMARK_MONTH:
+        basis = f"{WINDOW_BENCHMARK_MONTH};{WINDOW_FORMATION_COMPOUNDED}"
+    result: dict[str, Any] = {"alpha": None, "alpha_nw_t": None, "alpha_robust_p": None, "r2": None, "n": 0,
+                              "window_basis": basis,
+                              "claimable": monthly_window_basis != WINDOW_BENCHMARK_MONTH
+                              and h <= COMPOUNDED_CLAIM_MAX_MONTHS}
+    y = pd.Series(np.asarray(ls_returns, dtype=float))
+    frame = pd.DataFrame(columns, index=y.index)
+    try:
+        test = span_test(y, frame, horizon_periods=h, factor_window_basis=WINDOW_CALLER)
+    except FactorInputError:
+        return result
+    inference = test.alpha_inference
+    result.update({"alpha": _finite(test.alpha), "alpha_nw_t": _finite(inference.nw_t),
+                   "alpha_robust_p": _finite(inference.robust_p_value), "r2": _finite(test.r2), "n": test.n_obs})
+    return result
+
+
+def _finite(value: Any) -> float | None:
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _month_after(day: dt.date) -> tuple[int, int]:
+    return (day.year + 1, 1) if day.month == 12 else (day.year, day.month + 1)
+
+
+def _formation_rows(calendar: pd.DataFrame, monthly: Mapping[tuple[int, int], Mapping[str, float]],
+                    names: Sequence[str]) -> pd.DataFrame:
+    """One row per calendar formation: the factor returns of the calendar month after its month end."""
+    rows = []
+    for index, start in zip(calendar["month_index"], pd.to_datetime(calendar["month_start"]), strict=True):
+        values = monthly.get(_month_after(start.date()), {})
+        rows.append({"month_index": int(index), **{name: values.get(name, _NAN) for name in names}})
+    return pd.DataFrame(rows, columns=["month_index", *names])
+
+
+def benchmark_span_factors(calendar: pd.DataFrame, bench_snapshot: str, *,
+                           root: Path | str | None = None) -> dict[str, pd.DataFrame]:
+    """The external span models of ``BasisInputs.factors`` from a benchmark lake snapshot (X.3 files).
+
+    ``capm_french`` / ``ff6_french`` from the French FF5 + UMD monthly file (with ``rf``) and ``q5`` from
+    the HXZ q5 file (``r_mkt`` is the market *excess* return, with ``r_f``), both in decimals, one row per
+    calendar formation (:data:`SPAN_ROW_RULE`; ``calendar`` is the R3b ``BasisInputs.calendar``). A dataset
+    missing from the snapshot leaves its models out (reported NULL by the engine).
+    """
+    from . import research_lake as lake
+
+    out: dict[str, pd.DataFrame] = {}
+    con = lake.connect_bounded(None, root=root, memory_limit="64MB", threads=1)
+    try:
+        for dataset, models in ((_BENCH_FRENCH, ("capm_french", "ff6_french")), (_BENCH_Q5, ("q5",))):
+            try:
+                files = lake.lake_files(bench_snapshot, dataset, root=root)
+            except (lake.LakeError, FileNotFoundError):
+                continue
+            wanted = ("mkt_rf", "smb", "hml", "rmw", "cma", "umd", "rf") if dataset == _BENCH_FRENCH else \
+                ("r_mkt", "r_me", "r_ia", "r_roe", "r_eg", "r_f")
+            listing = "[" + ", ".join(lake.sql_text(path) for path in files) + "]"
+            records = con.execute(f"SELECT month_end, {', '.join(wanted)} FROM read_parquet({listing})").fetchall()
+            monthly = {(row[0].year, row[0].month): {name: (_NAN if value is None else float(value))
+                                                     for name, value in zip(wanted, row[1:], strict=True)}
+                       for row in records}
+            frame = _formation_rows(calendar, monthly, wanted)
+            for model in models:
+                extra = [SPAN_EXCESS_MARKETS[n] for n in SPAN_MODELS[model] if n in SPAN_EXCESS_MARKETS]
+                out[model] = frame[["month_index", *SPAN_MODELS[model], *extra]].copy()
+                out[model].attrs["monthly_window_basis"] = WINDOW_BENCHMARK_MONTH
+    finally:
+        con.close()
+    return out
+
+
+def atx_span_factors(store: ResearchStore, run_id: str, calendar: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """The atx P4 span models (``capm_atx``, ``ff6_atx``) of ``BasisInputs.factors`` from a complete factor run.
+
+    Monthly P4 rows are dated at their formation (``period_date``), so row m is the factor run's row of
+    formation m (matched on the formation date of ``calendar``). ``mkt_rf`` compounds with the run's ``rf``.
+    """
+    monthly = load_factor_returns(store, run_id)
+    names = [name for name in (*SPAN_MODELS["ff6_atx"], "rf") if name in monthly.columns]
+    by_date = {ts.date(): row for ts, row in monthly.iterrows()}
+    rows = []
+    for index, formed in zip(calendar["month_index"], pd.to_datetime(calendar["formation_date"]), strict=True):
+        row = by_date.get(formed.date()) if pd.notna(formed) else None
+        rows.append({"month_index": int(index),
+                     **{name: (_NAN if row is None else float(row[name])) for name in names}})
+    frame = pd.DataFrame(rows, columns=["month_index", *names])
+    out: dict[str, pd.DataFrame] = {}
+    for model in ("capm_atx", "ff6_atx"):
+        if all(name in names for name in SPAN_MODELS[model]):
+            extra = ["rf"] if "rf" in names else []
+            out[model] = frame[["month_index", *SPAN_MODELS[model], *extra]].copy()
+    return out
+
+
+def benchmark_original_paper_t(bench_snapshot: str, *, root: Path | str | None = None) -> dict[str, float]:
+    """Original-paper t statistics from the pinned X.3 OSAP SignalDoc snapshot (no network access)."""
+    from . import research_lake as lake
+
+    try:
+        files = lake.lake_files(bench_snapshot, "bench_osap_signaldoc", root=root)
+    except (lake.LakeError, FileNotFoundError):
+        return {}
+    con = lake.connect_bounded(None, root=root, memory_limit="64MB", threads=1)
+    try:
+        listing = "[" + ", ".join(lake.sql_text(path) for path in files) + "]"
+        rows = con.execute(f"SELECT acronym, t_stat FROM read_parquet({listing})").fetchall()
+        return {str(name): float(value) for name, value in rows if value is not None and math.isfinite(float(value))}
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # CLI: python -m atx_db.research.factor_returns {fetch-rf,build}
 # ---------------------------------------------------------------------------
 
@@ -2021,9 +2227,13 @@ __all__ = [
     "RF_DTB3",
     "RF_NONE",
     "SORTS",
+    "SPAN_EXCESS_MARKETS",
+    "SPAN_MODELS",
+    "SPAN_ROW_RULE",
     "STYLE_FACTORS",
     "WINDOW_COMPOUNDED",
     "WINDOW_EXACT",
+    "WINDOW_FORMATION_COMPOUNDED",
     "FactorInputError",
     "FactorLookaheadError",
     "FactorRunResult",
@@ -2031,8 +2241,12 @@ __all__ = [
     "RiskFreeSeries",
     "SpanTestResult",
     "assign_groups",
+    "atx_span_factors",
+    "benchmark_original_paper_t",
+    "benchmark_span_factors",
     "build_factor_returns",
     "compound_factor_windows",
+    "compound_formation_rows",
     "default_rf_path",
     "ensure_factor_schema",
     "fetch_fred_dtb3",
@@ -2043,6 +2257,7 @@ __all__ = [
     "parse_fred_series",
     "reference_names",
     "results_digest",
+    "span_cell",
     "span_test",
     "span_test_against_run",
     "validate_factor_spec",
