@@ -1,5 +1,27 @@
 # Active task: recent-data DSL ensemble
 
+## T41 whole-branch review — ready to merge after 1 Important — 2026-09-27
+task-T41-review.md (Opus 5.5; packages review-v5-only.diff 41fb5e39..ce04d7d5 primary, review-v5-branch.diff d63a7058..ce04d7d5
+minus untracked .mypy_cache deletion hunks and SHA-pinned generated library/recipe JSON). 0C / 1I / 7 new minors; named risks
+(a)-(g) PASS (baseline bytes identical across v4, v5-0, v5-1 binaries; 24 v5/v5.1 receipts TRAIN-only; ADV in dollars, no NaN;
+gains re-derive exactly; SHA chain intact; nothing of T33b/T32 landed; gate statistics recompute exactly). T40 verdict stands.
+Deferred-minor triage (30): 1 must-fix (T36 m1 = I1), 1 already resolved, 28 acceptable.
+I1: strategy_nav_replay.cpp:602 cache-coverage invariant debug-assert only -> release fallback to liquidity_row(c, t, i).
+M1 all-rows gross (gate definition) has no committed producer; M2 T40 table lacks cost/GMV-tau (basis mixes deployment row)
+and signed mean net; M3 DSR .84 uses cross-cell V[SR_n] of 13 near-duplicates (SR0 .150) vs plan §4.E Lo-variance null
+(DSR .18-.35, REF .342); M4 NR mixes construction (theta .05) with netting; M5 V[SR_n] silently depends on the dirs listed;
+M6 per-name books differ by scenario (rate at each book's nav_pre); M7 nav_summ JSON lacks argv / script SHA / HEAD.
+- Ruling: ONE final fix dispatch (Opus 5.5, pool-3 reset to pool-2 HEAD, branch feat/mega-alpha-v5-t41fix-20260927) carries I1
+  plus the nav_summ.py minors that make the T40/T42 numbers tool-produced: M1 (emit all-rows gross and signed net, label the
+  gate definition), M2 (cost/GMV-tau with the deployment row excluded from the numerator as from the denominator), M5 (warn,
+  not refuse, on defined-SR count != N and on identical net series), M7 (argv, sha256 of nav_summ.py, git HEAD in --json).
+  M3, M4, M6 are controller disclosures in a T40 addendum and handoff 4. No fitter / generator / library edits (SHA-pinned).
+  Root after the fix: build tag v5-2 (targets atx-equity-strategy-targets, atx-impl-strategy-target-tests), filter
+  TargetReplayV5.*:NavV5*:*BitIdentical* + full exe, one D2 check, pytest, re-run nav_summ over the 13 cells; no new trial --
+  cost if wrong: a nav_summ edit perturbs a ledgered number; guarded by diffing the unchanged JSON fields against
+  mega-nav-v5-t40-summ-n13.json.
+
+
 ## T40 gate (R6') — objective NOT met on TRAIN; no freeze; no validation — Task T40: complete — 2026-09-27
 task-T40-report.md (+ t40-table.md; build-equity/mega-nav-v5-t40-summ-n13.{txt,json}, nav_summ over 13 cells, --dsr-n 13).
 Mechanics 1/13 pass: ew t.05 d.1 fixed L1.279 (gross 1.002 all rows, |net| .015, tau .044/.061) -> D1 met via L re-run.
