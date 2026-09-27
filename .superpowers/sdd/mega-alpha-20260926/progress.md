@@ -37,6 +37,15 @@ efficiency/incremental progress to cut resource use.
   Ruling: implementer tasks branch fresh from root 5c9cbaed in pools 3/4/5 (old branches kept) -
   trivial cherry-picks; cost if wrong: none.
   Ruling: 300bps borrow and K=5 kept as registered/designed; no cost grid.
+- Inventory (read-only): FINRA SI as-of (C:/atx/data/finra_short_interest/asof, securityID-native,
+  ~100% members, strict available_at<session) = fastest new source; TickerHistory3 ATM IV/HV +
+  earnFlag native; spine_monthly me_line/security_type native via TBLTICKERHISTORY-<id>; CIK-mapped
+  fundamentals/SIC only ~65% + export seal 2020 -> next tier. GICS empty. 13F/analyst absent.
+  Ruling: role extra-fields path (Python producer + runner load of referenced fields only) rather than
+  new price projection; cost if wrong: one more producer iteration.
+  T5 pool-7 feat/mega-alpha-library-v2-20260926: library v2 = v1 48 + 48 price/volume (8 families).
+  T6 pool-8 feat/mega-alpha-fields-20260926: prepare_research_fields.py (SI, IV/HV, earn, size).
+  Planned: T4 wire neutralization into target/NAV; T7 runner --extra-fields; T8 library v3 (SI/IV).
 - Next: NAV backtest with declared missing-price policy (design agent), audit script review
   (agent), then construction (risk neutralization) + alpha expansion toward SR>=1.
 
