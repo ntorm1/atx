@@ -1,5 +1,32 @@
 # Active task: recent-data DSL ensemble
 
+## v5 sprint start (2026-09-27) — controller: Claude Fable 5.1 (SDD); plan docs/plans/2026-09-27-mega-alpha-v5-dag-plan.md (= spec)
+Base: pool-2 HEAD 41fb5e39 (branch feat/aes-codex-integration-20260925). No process running. Pools: 2 root; 3 (T30->T36),
+4 (T31), 5 (T33b->T32), 8 (T34b), 9 (T35 if needed) reset via `git checkout -B <branch> <pool-2 HEAD>` (leases alive under
+older run ids, reused as the plan directs); 10/11 free; 1 and 6 never touched. Briefs: task-TN-brief.md (plan task text
+verbatim), plan-s3-constraints.md (§3 verbatim), plan-s4-research.md (§4), plan-s11-review-focus.md (§11).
+- Ruling: this ledger (newest-first, plan §5.6) is the SDD ledger; the skill's default `.superpowers/sdd/<plan>/progress.md`
+  layout is not used — the plan mandates this directory — cost if wrong: none (single ledger, git-tracked with -f).
+- Ruling: T28 explorer writes its files in pool-2 but does NOT commit; root commits T28+T29 together (root-only commits in
+  pool-2 keep the clean-tree guard predictable) — cost if wrong: none.
+- Preflight conflict scan (plan text vs plan text; spec = plan):
+  | pair / task | produces vs consumes | finding | ruling |
+  | T30 -> T36 (NAVRULE+NAVSIM, pool-3 sequential) | update_weights(..., per_name_rate span) | consistent | — |
+  | T30/T36 vs T32 (NAVSIM, pool-3 vs pool-5) | both edit strategy_nav_replay.cpp | cherry-pick conflict risk | Ruling: T32 branches from pool-2 HEAD only AFTER T30+T36 are cherry-picked into pool-2; if T33b finishes earlier, T32 waits — cost if wrong: T32 delay, never a hand-resolved conflict. |
+  | T30 CLI <-> T31 v5_train.sh | --rule aim-partial-v5 --trade-fraction --dust-multiple --aim-leverage; --rate per-name-v1 --rate-rra --rate-min --rate-max | consistent | — |
+  | T31 nav dir names <-> T38 loop | mega-nav-v5-$C-t$THETA-d$DUST-$RATE == mega-nav-v5-$C-$1-$2-$3 | consistent | — |
+  | T30 fixture ThetaOne_MatchesBaseline (EXPECT_DOUBLE_EQ, §11 #1 "bit-for-bit") | next = cur + 1*(aim-cur) is not bit-equal to aim in fp | plan defect | Ruling: when theta_i == 1 the rule writes next = aim directly (identical math, exact bits) — cost if wrong: none. |
+  | T30 fixture DustDoesNotBlockEntry `EXPECT_NEAR(gross, 0.05, 1e-12)` | ~5% of members (|desired| <= .1/N) are dusted on step 1, so gross < theta*1 by ~1e-4; desired gross may also != 1 after neutralization | plan defect (tolerance) | Ruling: assert gross within [0.9*theta, theta] of the un-dusted theta*gross(desired) instead; held_names >= 90% stays the load-bearing check — cost if wrong: a looser fixture. |
+  | T36 fixture fields (rate_stats.min, share_at_min_count) vs T36 Interfaces (mean,p05,p50,p95,share_at_min,share_at_max) | field names disagree | plan defect (naming) | Ruling: rate_stats = {n, mean, min, max, p05, p50, p95, at_min_count, at_max_count, share_at_min, share_at_max}; summary JSON emits all — cost if wrong: none. |
+  | T31 step 1 gating | require(prior == (composition in PRIOR_COMPOSITIONS)) | consistent with FIT:1170 | — |
+  | T31 fixture test_ew_theme_v1_bytes_unchanged | reuses run_fitter/v4_fixture/BYTE_STABILITY_V1_SHA256 | exist per plan; implementer verifies names | — |
+  | T29 R5' <-> T30 | cadence 1, non-members forced 0, dust/N_d, L | consistent | — |
+  | T38 reference cell | ew t.05 d.1 fixed | == R5' REFERENCE | — |
+  | T37 tag v5-1 | mega-build refuses reused tags | verify unused before build | — |
+  | D1 (>= 90% members non-zero) vs dust .1/N | ~5% of members stay at 0 from dust; entry otherwise unblocked | consistent | — |
+  Scan otherwise clean. Rulings R-1..R-7 (plan §9) are recorded verbatim in the T29 section below once T28 lands.
+
+
 ## STAT-ARB CLUSTER STUDY (owner ask, separate research family; prereg statarb-prereg.md @367e1101) — RESULT: NEGATIVE
 TRAIN 2020-22 only (validation sealed). studies/statarb_cluster_study.py + statarb_run.sh (bounded; all stages <= 48 s,
 <= 1266 MiB) + statarb_report.py; outputs build-equity/statarb-cluster-v1/ (analyze.json, model.json,

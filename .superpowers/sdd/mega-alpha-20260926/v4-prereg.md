@@ -61,3 +61,29 @@ Evidence so far (TRAIN): v4 prereg net .431; v4.1 construction grid best .687 (b
   in addition to v4-prior-v1; themes left empty drop out of the 1/themes weights.
 - R5' construction: band 2, fraction .25 (v4.1 selection) — plus band 1 fraction .25 reported (2 trials).
 - R6 gate unchanged (TRAIN S2 x swap-fin net >= 1.0). If it fails: stop iterating, report to the owner.
+
+## v5 revision (declared 2026-09-27 after the construction audit T28; disclosed; before ANY v5 TRAIN read)
+
+Evidence: T28 — v4.1 (band 2/N, fraction .25) held mean gross 0.26 TRAIN / 0.24 VAL; band ≥ position scale blocked entry.
+Design rule: the literature carries the selection; TRAIN measures second moments (autocorrelation, turnover, liquidity) only.
+
+R1' Library: unchanged, fund_industry_ic_v4 daa9663e (37). No new candidates in v5. (v5.1, if built, adds opex_at to profitability_quality: separate disclosed family.)
+R2' Data: unchanged (bridge r4-v1 ddf97164, events-v2 74ed9a50, fields-v6 32565c32 TRAIN). Nothing >= 2023-01-01 is read.
+R3' Admission: unchanged, v4-prior-v1 880a0a6a (31 admitted).
+R4' Composition ew-theme-aim-v1: g_k = theta * sum_{j=0..126} (1-theta)^j * rho_k(j), theta = 0.05, rho_k(j) = mean over TRAIN
+    decisions d of the cross-sectional correlation of per-day standardized ranks at d and d-j over names live on both days
+    (lags 0..21 exact; 28,35,...,126 exact; others linear-interpolated), clipped g in [0.05, 1].
+    w_k = (g_k / (T * n_theme(k))) / sum_m (g_m / (T * n_theme(m))) over admitted non-degenerate members. No means, no covariances.
+    Reference composition for pairing: ew-theme-v1 9a9c949a (unchanged bytes).
+R5' Construction aim-partial-v5: every decision (cadence 1): next_i = cur_i + theta_i (L * desired_i - cur_i) unless
+    |L*desired_i - cur_i| <= dust / N_d; desired = tied-rank, price-risk-v1 neutralized, gross 1; non-members forced to 0.
+    Grid (10 cells, 2 combined signals x 5): for C in {C_ew, C_aim}: (theta .03, dust .1), (theta .05, dust .1) [REFERENCE when C=C_ew],
+    (theta .08, dust .1), (theta .05, dust 0), (rate per-name-v1 RRA 10 clip [.01,.15], dust .1). L = 1. If the reference cell's mean gross
+    < 0.90, ONE extra cell per C with L = 1 / mean_gross(reference) (deterministic, disclosed).
+    Limits: daily tau mean <= .20, p95 <= .30. Primary S2 modeled-1bn-stale5-v1 x swap-fin-v1; stresses S1, S3, flat-300, engine-tiers.
+R6' Gate (TRAIN): mechanics — mean gross in [0.90, 1.05], |mean net| <= 0.02, tau limits met. Statistics — paired dSR(net) of each cell vs
+    the reference cell with Memmel SE and a Ledoit-Wolf studentized bootstrap (2000 draws, block 21), DSR at N = 10 (skew/kurtosis from daily net).
+    A freeze for validation is proposed ONLY if a cell's TRAIN net SR >= 1.0 (owner rule) or the owner says so; otherwise report.
+    On failure: do NOT run validation; report; any revision is a new disclosed section here.
+R7' Trial accounting: admission 37 (unchanged); composition +1 (ew-theme-aim-v1); construction +10 (+2 if L re-run; +1 delisting re-run);
+    validation: none (trials #1, #2 disclosed; #3 needs U1).
