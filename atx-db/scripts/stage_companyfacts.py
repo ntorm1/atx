@@ -250,11 +250,52 @@ _POINT_FROM_PARQUET = ("source, security_id, CAST(NULL AS VARCHAR) AS symbol, co
                        "accession_number, value, available_at")
 
 
+def _expected_value_exact(raw: bytes, concepts: set[str]) -> Any:
+    """The ``value_exact`` multiset the rule implies, derived without the stage's parser hooks.
+
+    Re-parses the member keeping every number's literal text, applies the loader's row filters
+    (us-gaap/dei, allowlist, end and filed present, end <= filed) and the rule's definition
+    directly: an integer literal whose float64 differs from it, or a fraction/exponent literal
+    that is not the shortest round-trip rendering of its float64. Keyed per fact row.
+    """
+    import math
+    from collections import Counter
+    from decimal import Decimal
+
+    def lossy(kind: str, text: str) -> bool:
+        if kind == "int":
+            return float(int(text)) != int(text)
+        return not (math.isfinite(float(text)) and Decimal(repr(float(text))) == Decimal(text))
+
+    payload = json.loads(raw, parse_int=lambda s: ("int", s), parse_float=lambda s: ("frac", s))
+    expected: Counter[tuple[Any, ...]] = Counter()
+    for taxonomy, taxonomy_facts in payload["facts"].items():
+        if taxonomy not in ("us-gaap", "dei"):
+            continue
+        for concept, concept_payload in taxonomy_facts.items():
+            if concept not in concepts:
+                continue
+            for unit, items in concept_payload["units"].items():
+                for item in items:
+                    end, filed = item.get("end"), item.get("filed")
+                    if not end or not filed or dt.date.fromisoformat(end) > dt.date.fromisoformat(filed):
+                        continue
+                    val = item.get("val")
+                    literal = val[1] if isinstance(val, tuple) and lossy(*val) else None
+                    expected[(taxonomy, concept, unit, item.get("accn"), end, filed, literal)] += 1
+    return expected
+
+
 def cmd_verify_sample(args: argparse.Namespace) -> int:
-    """Legacy ``normalize_companyfacts`` (+ the loader's DuckDB insert) vs the Parquet rows, per member."""
+    """Legacy ``normalize_companyfacts`` (+ the loader's DuckDB insert) vs the Parquet rows, per member.
+
+    Also checks ``value_exact`` (not a legacy column) per checked member against
+    :func:`_expected_value_exact`, and archive-wide that every ``value_exact`` rounds to ``value``.
+    """
     import hashlib
     import tempfile
     import zipfile
+    from collections import Counter
 
     import duckdb
     import pyarrow.parquet as pq
@@ -285,6 +326,11 @@ def cmd_verify_sample(args: argparse.Namespace) -> int:
                     key=lambda m: (m["uncompressed_bytes"], m["member"]))
     n = args.sample
     sample = [loaded[round(i * (len(loaded) - 1) / (n - 1))] for i in range(n)] if n > 1 else loaded[-1:]
+    include = {f"{int(c):010d}" for c in args.include.split(",") if c.strip()} if args.include else set()
+    sampled = {m["member"] for m in sample}
+    forced = [m for m in members if m["cik"] in include and m["member"] not in sampled]
+    if len(forced) + sum(1 for m in sample if m["cik"] in include) != len(include):
+        raise SystemExit(f"--include names CIKs without an archive member: {sorted(include)}")
     others: list[dict[str, Any]] = []
     for kind, reason in (("empty", "unsupported_or_empty_taxonomy"), ("empty", "allowlist_empty"),
                          ("empty", "no_valid_fact_rows"), ("unavailable", cf.PLACEHOLDER_REASON)):
@@ -296,13 +342,15 @@ def cmd_verify_sample(args: argparse.Namespace) -> int:
     con.execute(f"CREATE TABLE legacy_facts {_FACT_DDL}")
     con.execute(f"CREATE TABLE legacy_points {_POINT_DDL}")
     checks: list[dict[str, Any]] = []
+    selection = ["sample"] * len(sample) + ["include"] * len(forced) + ["other"] * len(others)
     with zipfile.ZipFile(plan["archive"]["path"]) as archive:
-        for m in sample + others:
+        for m, selected_by in zip(sample + forced + others, selection, strict=True):
             cik, member = m["cik"], m["member"]
             raw = archive.read(member)
             parquet = str(args.out / f"batch-{batch_of[member]:04d}.parquet")
-            check: dict[str, Any] = {"member": member, "disposition": m["disposition"], "reason": m["reason"],
-                                     "uncompressed_bytes": m["uncompressed_bytes"], "rows": m["rows"]}
+            check: dict[str, Any] = {"member": member, "selected_by": selected_by, "disposition": m["disposition"],
+                                     "reason": m["reason"], "uncompressed_bytes": m["uncompressed_bytes"],
+                                     "rows": m["rows"]}
             if raw == b"{}":
                 check["legacy"] = "placeholder"
                 check["ok"] = m["disposition"] == "unavailable"
@@ -321,7 +369,7 @@ def cmd_verify_sample(args: argparse.Namespace) -> int:
                 check["ok"] = m["disposition"] == "error" and m["reason"].startswith(type(exc).__name__)
                 checks.append(check)
                 continue
-            del raw, payload
+            del payload
             if facts.empty:
                 check["legacy"] = "empty"
                 check["ok"] = m["disposition"] == "empty" and m["rows"] == 0
@@ -356,11 +404,39 @@ def cmd_verify_sample(args: argparse.Namespace) -> int:
                          legacy_minus_parquet=fact_row[2], parquet_minus_legacy=fact_row[3],
                          legacy_points=point_row[0], points_legacy_minus_parquet=point_row[1],
                          points_parquet_minus_legacy=point_row[2])
+            expected = _expected_value_exact(raw, concepts)
+            del raw
+            staged_exact: Counter[tuple[Any, ...]] = Counter(con.execute(
+                "SELECT taxonomy, concept, unit, accession_number, CAST(period_end AS VARCHAR), "
+                "CAST(filed_date AS VARCHAR), value_exact FROM staged").fetchall())
+            exact_mismatch = sum((expected - staged_exact).values()) + sum((staged_exact - expected).values())
+            check.update(value_exact_rows=sum(n for key, n in staged_exact.items() if key[-1] is not None),
+                         value_exact_expected=sum(n for key, n in expected.items() if key[-1] is not None),
+                         value_exact_mismatch=exact_mismatch)
+            del expected, staged_exact
             check["ok"] = (m["disposition"] == "loaded" and fact_row[0] == fact_row[1] == m["rows"] == point_row[0]
-                           and fact_row[2] == fact_row[3] == point_row[1] == point_row[2] == 0)
+                           and fact_row[2] == fact_row[3] == point_row[1] == point_row[2] == 0
+                           and exact_mismatch == 0)
             checks.append(check)
     types = dict(con.execute("SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet(?))",
                              [str(args.out / "batch-0000.parquet")]).fetchall())
+    batch_glob = str(args.out / "batch-*.parquet")
+    exact_row = con.execute("""SELECT count(*), count(DISTINCT cik),
+            count(*) FILTER (WHERE regexp_full_match(value_exact, '-?[0-9]+')),
+            count(*) FILTER (WHERE TRY_CAST(value_exact AS DOUBLE) IS DISTINCT FROM value)
+        FROM read_parquet(?) WHERE value_exact IS NOT NULL""", [batch_glob]).fetchone()
+    assert exact_row is not None
+    exact_examples = con.execute("""SELECT cik, taxonomy, concept, unit, accession_number,
+            CAST(period_end AS VARCHAR) AS period_end, value, value_exact,
+            CAST(TRY_CAST(value AS HUGEINT) - TRY_CAST(value_exact AS HUGEINT) AS VARCHAR) AS int_error
+        FROM read_parquet(?) WHERE value_exact IS NOT NULL
+        ORDER BY cik, taxonomy, concept, unit, accession_number, period_end, value_exact LIMIT 40""",
+                                 [batch_glob]).fetchall()
+    value_exact = {"rows": exact_row[0], "ciks": exact_row[1], "integer_literals": exact_row[2],
+                   "fraction_literals": exact_row[0] - exact_row[2], "not_rounding_to_value": exact_row[3],
+                   "examples": [dict(zip(("cik", "taxonomy", "concept", "unit", "accession_number", "period_end",
+                                          "value", "value_exact", "int_error"), row, strict=True))
+                                for row in exact_examples]}
     con.close()
     shutil.rmtree(tmp, ignore_errors=True)
     prefix = [m for m in members if int(m["cik"]) <= OPS_A_PREFIX_LAST_CIK]
@@ -374,11 +450,12 @@ def cmd_verify_sample(args: argparse.Namespace) -> int:
     prefix_ok = all(prefix_counts.get(k) == v for k, v in OPS_A_PREFIX.items())
     result = {
         "utc": _utc(), "seconds": round(time.perf_counter() - started, 1), "constants": constants,
-        "parquet_types": types, "sampled_loaded": len(sample), "other_dispositions": len(others),
-        "all_ok": all(c["ok"] for c in checks) and all(v for k, v in constants.items()
-                                                       if k != "plan_allowlist_equals_DEFAULT_CONCEPTS"),
+        "parquet_types": types, "sampled_loaded": len(sample), "included": len(forced),
+        "other_dispositions": len(others),
+        "all_ok": all(c["ok"] for c in checks) and value_exact["not_rounding_to_value"] == 0
+        and all(v for k, v in constants.items() if k != "plan_allowlist_equals_DEFAULT_CONCEPTS"),
         "ops_a_prefix": {"expected": OPS_A_PREFIX, "observed": prefix_counts, "ok": prefix_ok},
-        "checks": checks,
+        "value_exact": value_exact, "checks": checks,
     }
     text = json.dumps(result, indent=1, default=str)
     if args.result is not None:
@@ -435,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
     verify = sub.add_parser("verify-sample")
     verify.add_argument("--out", type=Path, required=True)
     verify.add_argument("--sample", type=int, default=20)
+    verify.add_argument("--include", help="CIKs to check besides the sample, e.g. 1065088,320193")
     verify.add_argument("--result", type=Path)
     verify.set_defaults(func=cmd_verify_sample)
 
