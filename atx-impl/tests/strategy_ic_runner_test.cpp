@@ -342,4 +342,51 @@ TEST(StrategyIcRunner, SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenReque
     for (usize i=0;i<N;++i) EXPECT_EQ(ids[i],10*(i+1));
   }
 }
+TEST(StrategyIcRunner, AscendingVmArenaDemandMatchesRetainedMaximumArena) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  auto lib=read_json(cfg.library_path);
+  lib["candidates"].push_back({{"id","volume_compound"},{"family","fixed_volume"},
+      {"dsl","rank((volume + raw_close) * (volume - raw_close))"},
+      {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  ASSERT_TRUE(json_file(cfg.library_path,lib,cfg.library_sha256));
+  cfg.save_combined=true;
+  std::ostringstream ascending_progress; auto status=atx::impl::strategy::run_ic(cfg,ascending_progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  // The same expressions with the largest arena first provide the retained
+  // maximum-capacity reference. All three have identical cross-sectional ranks
+  // in this fixture, so their fixed1/3 blend also preserves accumulation bits.
+  lib["candidates"]=Json::array({lib["candidates"][2],lib["candidates"][0],lib["candidates"][1]});
+  ASSERT_TRUE(json_file(cfg.library_path,lib,cfg.library_sha256));
+  cfg.output_directory=(dir.path/"maximum_first").string();
+  std::ostringstream maximum_progress; status=atx::impl::strategy::run_ic(cfg,maximum_progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const auto arena_count=[](const std::string& text) {
+    usize count=0,pos=0;
+    while ((pos=text.find("IC VM-arena",pos))!=std::string::npos) { ++count; ++pos; }
+    return count;
+  };
+  EXPECT_GT(arena_count(ascending_progress.str()),2U); // At least one actual growth per role.
+  EXPECT_EQ(arena_count(maximum_progress.str()),2U); // One fresh maximum arena per role.
+  const auto a=read_json(dir.path/"output"/"summary.json");
+  const auto b=read_json(dir.path/"maximum_first"/"summary.json");
+  for (usize r=0;r<2;++r) {
+    const auto& x=a.at("roles").at(r); const auto& y=b.at("roles").at(r);
+    EXPECT_EQ(x.at("combined_ic"),y.at("combined_ic"));
+    EXPECT_EQ(x.at("planned_target_proxy"),y.at("planned_target_proxy"));
+    Json xm=Json::object(),ym=Json::object();
+    for (auto row:x.at("candidates")) {
+      row.erase("wall_seconds"); row.erase("stage_seconds"); xm[row.at("id").get<std::string>()]=row;
+    }
+    for (auto row:y.at("candidates")) {
+      row.erase("wall_seconds"); row.erase("stage_seconds"); ym[row.at("id").get<std::string>()]=row;
+    }
+    EXPECT_EQ(xm,ym);
+    const auto role=x.at("role").get<std::string>();
+    for (const auto& name:{role+"_combined.f64",role+"_planned_targets.csv"}) {
+      auto first=core::sha256_file((dir.path/"output"/name).string()); ASSERT_TRUE(first);
+      auto second=core::sha256_file((dir.path/"maximum_first"/name).string()); ASSERT_TRUE(second);
+      EXPECT_EQ(*first,*second);
+    }
+  }
+}
 } // namespace
