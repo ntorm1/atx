@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-v1`` and weight fits ``mv-shrink-0.9-nonneg-v1`` / ``ew-theme-v1``.
+"""TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-v1`` / ``v4-prior-v2`` and weight fits ``mv-shrink-0.9-nonneg-v1`` / ``ew-theme-v1``.
 
 Writes into a new output directory (published atomically, never overwritten):
   composition_weights.json  ``atx.dsl-composition-weights/v1``, read by ``atx-equity-strategy-ic
@@ -66,6 +66,12 @@ declared in the v4 pre-registration R3/R4 before any v4 TRAIN read). Every candi
                zero-variance series is degenerate: weight 0, not a member). The weights file pins
                signs (+1 for every prior-signed candidate) so the runner uses them.
 
+v4.2 (``--screen v4-prior-v2``, same orientation, composition and inputs; v4.2 pre-registration R3',
+declared after the v4 gate and before any v4.2 TRAIN read): v4-prior-v1 plus a structural cost-consistency
+check, standalone TRAIN tau_k > 0.08 -> reject_turnover_cost. Check order: no_prior, insufficient,
+turnover (0.70), turnover_cost (0.08), veto; first failure wins. A theme left without an admitted member
+drops out of the 1/themes weights (as in ew-theme-v1). ``v4-prior-v1`` output is unchanged.
+
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
 Records are keyed by (TRAIN role manifest SHA, semantics tag, cache payload SHA, fields manifest SHA
@@ -107,7 +113,10 @@ SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
 PRIOR_SCREEN_ID = "v4-prior-v1"
-SCREENS = ("none", SCREEN_ID, PRIOR_SCREEN_ID)
+# v4.2 pre-registration R3': v4-prior-v1 plus reject tau_k > 0.08 (cost consistency at $1bn; structural).
+PRIOR_SCREEN_V2_ID = "v4-prior-v2"
+PRIOR_SCREENS = (PRIOR_SCREEN_ID, PRIOR_SCREEN_V2_ID)
+SCREENS = ("none", SCREEN_ID, PRIOR_SCREEN_ID, PRIOR_SCREEN_V2_ID)
 ORIENTATIONS = ("train", "prior")
 V4_TAU_LIMIT, V4_RHO_LIMIT, V4_MIN_TRAIN_DAYS, V4_VETO_T, NW_LAG = 0.70, 0.90, 250, -2.0, 5
 V4_THEMES = ("value", "profitability_quality", "investment_issuance", "earnings_momentum", "price_momentum",
@@ -115,6 +124,9 @@ V4_THEMES = ("value", "profitability_quality", "investment_issuance", "earnings_
 TIER_GRADES = ("A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D")  # strongest first
 V4_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_veto",
                "reject_redundant")
+V42_COST_TAU_LIMIT = 0.08
+V42_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_turnover_cost",
+                "reject_veto", "reject_redundant")
 WEIGHTS_SCHEMA = "atx.dsl-composition-weights/v1"
 ADMISSION_SCHEMA = "atx.dsl-admission/v1"
 LIBRARY_SCHEMA = "atx.dsl-ic-library/v1"
@@ -967,8 +979,10 @@ def newey_west_t(x: np.ndarray, lag: int = NW_LAG) -> float | None:
 
 
 def screen_v4(factors: np.ndarray, taus: list[float], ids: list[str], train_mask: np.ndarray,
-              tier_rank: list[int], prior_signs: list[int]) -> list[dict]:
-    """v4-prior-v1 decisions for factor rows oriented by the DSL (s_k = +1; NaN = flat day)."""
+              tier_rank: list[int], prior_signs: list[int], cost_tau_limit: float | None = None) -> list[dict]:
+    """v4-prior-v1 decisions for factor rows oriented by the DSL (s_k = +1; NaN = flat day).
+
+    ``cost_tau_limit`` (v4-prior-v2) adds the turnover_cost check after turnover; None is v4-prior-v1."""
     rows = []
     for k, f in enumerate(factors):
         live = np.isfinite(f) & train_mask
@@ -982,6 +996,8 @@ def screen_v4(factors: np.ndarray, taus: list[float], ids: list[str], train_mask
             failed.append("insufficient")
         if taus[k] > V4_TAU_LIMIT:
             failed.append("turnover")
+        if cost_tau_limit is not None and taus[k] > cost_tau_limit:
+            failed.append("turnover_cost")
         if t_hac is not None and t_hac < V4_VETO_T:
             failed.append("veto")
         rows.append({"s_k": prior_signs[k], "tau": taus[k], "train_days": int(live.sum()), "train_mean": mean,
@@ -1149,11 +1165,11 @@ def fit(args, log=None) -> tuple[int, dict]:
     orientation = getattr(args, "orientation", "train")
     recipe_path, recipe_sha = getattr(args, "recipe", None), getattr(args, "recipe_sha256", None)
     require(orientation in ORIENTATIONS, f"--orientation must be one of {ORIENTATIONS}")
-    prior = args.screen == PRIOR_SCREEN_ID
-    require(prior == (orientation == "prior"), "--orientation prior and --screen v4-prior-v1 go together")
+    prior = args.screen in PRIOR_SCREENS
+    require(prior == (orientation == "prior"), "--orientation prior and --screen v4-prior-v1/v2 go together")
     require(prior == (args.composition == EW_THEME_RULE_ID),
-            "--composition ew-theme-v1 and --screen v4-prior-v1 go together (pre-registered v4 recipe)")
-    require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1")
+            "--composition ew-theme-v1 and --screen v4-prior-v1/v2 go together (pre-registered v4 recipe)")
+    require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
     require(args.work_dir is not None or (args.max_seconds is None and args.max_new_candidates is None),
@@ -1339,12 +1355,16 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
               taus: list[float], shas: list[str], cache_entry: list[str], records: list[dict], inputs: dict,
               window: dict, decision_sessions: np.ndarray, computed: int, reused: int, out: Path,
               started: float) -> tuple[int, dict]:
-    """v4-prior-v1 admission + ew-theme-v1 weights (pre-registration R3/R4). Nothing is estimated but tau."""
+    """v4-prior-v1/v2 admission + ew-theme-v1 weights (pre-registration R3/R4, v4.2 R3'). Nothing is estimated but tau."""
     ids = [c["id"] for c in library]
+    screen = args.screen
+    v2 = screen == PRIOR_SCREEN_V2_ID  # v4-prior-v1 emits exactly its pre-v4.2 bytes (no cost keys)
+    statuses = V42_STATUSES if v2 else V4_STATUSES
     themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
     train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
     inputs = dict(inputs, recipe_sha256=priors["recipe_sha256"], prior_metadata_source=priors["source"])
-    rows = screen_v4(factors, taus, ids, train_mask, priors["tier_rank"], prior_signs)
+    rows = screen_v4(factors, taus, ids, train_mask, priors["tier_rank"], prior_signs,
+                     cost_tau_limit=V42_COST_TAU_LIMIT if v2 else None)
     candidates = []
     for k, (cand, row) in enumerate(zip(library, rows)):
         candidates.append({"id": cand["id"], "family": cand["family"], "theme": themes[k], "tier": tiers[k],
@@ -1357,13 +1377,15 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                            "train_mean": row["train_mean"], "train_sharpe": row["train_sharpe"], "hac_t": row["hac_t"],
                            "max_abs_rho": row["max_abs_rho"], "max_abs_rho_with": row["max_abs_rho_with"],
                            "low_overlap_with": row["low_overlap_with"], "cache_payload_sha256": shas[k]})
+        if v2:
+            candidates[-1]["tau_over_cost_limit"] = row["tau"] > V42_COST_TAU_LIMIT
     admitted_order = sorted((k for k, r in enumerate(rows) if r["status"] == "admitted"),
                             key=lambda k: rows[k]["admission_rank"])
     hac = {"estimator": "newey-west", "kernel": "bartlett", "lag": NW_LAG, "autocovariance_divisor": "n",
            "demeaned": True, "t": "mean/sqrt(LRV/n)", "series": "f_k over live TRAIN decisions (s_k=+1)",
            "undefined": "n<2, constant series or LRV<=0 -> no veto"}
     admission = {
-        "schema": ADMISSION_SCHEMA, "screen": PRIOR_SCREEN_ID,
+        "schema": ADMISSION_SCHEMA, "screen": screen,
         "rules": {"orientation": "s_k=prior_sign=+1 (sign embedded in the DSL); no sign estimation or flip; "
                                  "prior_sign 0 -> reject_no_prior; runner sign reported not used",
                   "train_window_ns": [FIT_BEGIN_NS, TRAIN_END_NS],
@@ -1375,13 +1397,18 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                                 "rho_limit vs an admitted candidate -> reject_redundant (largest |rho|); "
                                 "< min_common_days or undefined rho -> uncorrelated, noted",
                   "tier_order": priors["tier_order"], "sharpe_annualization": ANNUALIZATION,
-                  "status_precedence": list(V4_STATUSES[1:]),
+                  "status_precedence": list(statuses[1:]),
                   "context": CONTEXT_SEMANTICS, "factor": FACTOR_SEMANTICS},
         "inputs": inputs, "window": window,
-        "counts": {s: sum(1 for r in rows if r["status"] == s) for s in V4_STATUSES},
+        "counts": {s: sum(1 for r in rows if r["status"] == s) for s in statuses},
         "admitted": [ids[k] for k in admitted_order],
         "sign_conflicts": [c["id"] for c in candidates if not c["sign_agrees"]],
         "candidates": candidates}
+    if v2:
+        admission["rules"].update(
+            cost_tau_limit=V42_COST_TAU_LIMIT,
+            cost_screen="standalone TRAIN tau_k > cost_tau_limit -> reject_turnover_cost (v4.2 R3': cost consistency "
+                        "at $1bn; structural, not performance); checked after turnover, before veto")
     files = {OUTPUT_ADMISSION: canonical_bytes(admission),
              OUTPUT_ADMISSION_CSV: admission_csv(candidates, V4_CSV_COLUMNS)}
     admission_sha = hashlib.sha256(files[OUTPUT_ADMISSION]).hexdigest()
@@ -1404,7 +1431,7 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                 row["status"] = "degenerate-zero-variance"
         weight_rows.append(row)
     active = [k for k in admitted_order if weight_rows[k]["status"] == "fitted"]
-    summary = {"status": "complete", "output": str(out), "screen": PRIOR_SCREEN_ID, "composition": EW_THEME_RULE_ID,
+    summary = {"status": "complete", "output": str(out), "screen": screen, "composition": EW_THEME_RULE_ID,
                "orientation": "prior", "candidates": len(library), "computed_this_run": computed, "reused": reused,
                "refused_decisions": len(records[0]["context_refused"]), "admitted": len(admitted_order),
                "counts": admission["counts"], "sign_conflicts": admission["sign_conflicts"],
@@ -1435,8 +1462,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                            "no mean or covariance estimation",
             "themes": theme_table, "themes_present": sorted(theme_table),
             "themes_declared": sorted(set(themes)), "themes_preregistered": list(V4_THEMES),
-            "screen": PRIOR_SCREEN_ID, "orientation": "prior", "admission_sha256": admission_sha,
-            "signs": "v4-prior-v1: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
+            "screen": screen, "orientation": "prior", "admission_sha256": admission_sha,
+            "signs": f"{screen}: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
             "prior_metadata_source": priors["source"], "recipe_sha256": priors["recipe_sha256"],
             "fit_series": "none (equal theme weights); diagnostic uses s_k*f over ALL TRAIN scored decisions, "
                           "flat decisions 0",
@@ -1458,6 +1485,10 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             "candidates": weight_rows,
         },
     }
+    if v2:
+        document["provenance"].update(
+            cost_tau_limit=V42_COST_TAU_LIMIT,
+            cost_rejected=[row["id"] for row in weight_rows if row["status"] == "reject_turnover_cost"])
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)
     require(len(files[OUTPUT_WEIGHTS]) <= METADATA_LIMIT, "output: weights JSON exceeds the runner's 1 MiB bound")
     publish_directory(out, files)
@@ -1483,7 +1514,8 @@ def parse_args(argv):
     p.add_argument("--runner-summary-sha256", required=True)
     p.add_argument("--screen", required=True, choices=SCREENS,
                    help="v3-admit-v1 (admission screen + fit on admitted), none (T9: runner signs, all oriented) "
-                        "or v4-prior-v1 (prior signs; with --orientation prior --composition ew-theme-v1)")
+                        "or v4-prior-v1 (prior signs; with --orientation prior --composition ew-theme-v1) or "
+                        "v4-prior-v2 (v4-prior-v1 plus reject tau_k > 0.08, v4.2 R3')")
     p.add_argument("--composition", default=RULE_ID, choices=COMPOSITIONS,
                    help="weight fit: mv-shrink-0.9-nonneg-v1 (default) or its netcost variant "
                         "(mu_k minus 0.0018 * tau_k); the screen and signs are unchanged; ew-theme-v1 for v4")

@@ -1357,6 +1357,162 @@ class PriorEndToEnd(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in out.iterdir()), sorted([fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV]))
 
 
+# ------------------------------------------------ T27: v4-prior-v2 (v4.2 R3' cost-consistency screen)
+V42_ARGS = dict(screen="v4-prior-v2", orientation="prior", composition="ew-theme-v1")
+
+
+class CostScreenRules(unittest.TestCase):
+    def test_declared_limit_and_status_order(self):
+        self.assertEqual(fcw.V42_COST_TAU_LIMIT, 0.08)
+        self.assertEqual(fcw.V42_STATUSES, ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover",
+                                            "reject_turnover_cost", "reject_veto", "reject_redundant"))
+        self.assertIn("v4-prior-v2", fcw.SCREENS)
+
+    def test_cost_check_thresholds_and_precedence(self):
+        rng = np.random.default_rng(3)
+        t = 600
+        train = np.ones(t, dtype=bool)
+        noise = lambda: rng.normal(0, 1, t)  # noqa: E731
+        good = [0.2 + noise() for _ in range(4)]
+        veto = -0.3 + noise()
+        ids = ["at_limit", "over", "slow", "fast", "over_and_veto"]
+        taus = [0.08, float(np.nextafter(0.08, 1)), 0.02, 0.71, 0.5]
+        factors = np.vstack(good + [veto])
+        v2 = fcw.screen_v4(factors, taus, ids, train, [4] * 5, [1] * 5, cost_tau_limit=fcw.V42_COST_TAU_LIMIT)
+        by = dict(zip(ids, v2))
+        self.assertEqual({i: r["status"] for i, r in by.items()},
+                         {"at_limit": "admitted", "over": "reject_turnover_cost", "slow": "admitted",
+                          "fast": "reject_turnover", "over_and_veto": "reject_turnover_cost"})
+        self.assertEqual(by["fast"]["failed_checks"], ["turnover", "turnover_cost"])       # 0.70 check first
+        self.assertEqual(by["over_and_veto"]["failed_checks"], ["turnover_cost", "veto"])  # before the veto
+        v1 = fcw.screen_v4(factors, taus, ids, train, [4] * 5, [1] * 5)  # default: v4-prior-v1, no cost check
+        self.assertEqual([r["status"] for r in v1],
+                         ["admitted", "admitted", "admitted", "reject_turnover", "reject_veto"])
+        self.assertEqual(v1, fcw.screen_v4(factors, taus, ids, train, [4] * 5, [1] * 5, cost_tau_limit=None))
+
+
+class CostScreenEndToEnd(unittest.TestCase):
+    """v4-prior-v2 over the v4 world. Every synthetic tau is ~0.25, so the declared 0.08 would reject all;
+    the limit is patched between the members' taus to exercise the mechanics (the declared value is tested above)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        panel, signals, ids, extra = v4_world()
+        cls.ids = ids
+        cls.fx = Fixture(cls.root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                         candidate_extra=extra)
+        with unittest.mock.patch.object(fcw, "V42_COST_TAU_LIMIT", 0.249):
+            cls.code, cls.summary = fcw.fit(cls.fx.args(cls.root / "v42", **V42_ARGS))
+        cls.adm = json.loads((cls.root / "v42" / fcw.OUTPUT_ADMISSION).read_bytes())
+        cls.doc = json.loads((cls.root / "v42" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        fcw.fit(cls.fx.args(cls.root / "v41", **V4_ARGS))
+        cls.adm_v1 = json.loads((cls.root / "v41" / fcw.OUTPUT_ADMISSION).read_bytes())
+        cls.doc_v1 = json.loads((cls.root / "v41" / fcw.OUTPUT_WEIGHTS).read_bytes())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_statuses_counts_and_rules(self):
+        self.assertEqual(self.code, fcw.EXIT_OK)
+        rows = {c["id"]: c for c in self.adm["candidates"]}
+        taus = {i: rows[i]["tau"] for i in self.ids}
+        self.assertLess(taus["slow_a_twin"], 0.249)
+        self.assertLess(taus["slow_a"], 0.249)
+        self.assertGreater(taus["flip"], 0.249)
+        self.assertGreater(taus["slow_a_clone"], 0.249)
+        self.assertEqual({i: rows[i]["status"] for i in self.ids},
+                         {"slow_a": "admitted", "slow_a_twin": "admitted", "slow_b": "reject_veto",
+                          "fast_a": "reject_turnover", "flip": "reject_turnover_cost",
+                          "insufficient": "reject_no_prior", "slow_a_clone": "reject_turnover_cost"})
+        self.assertEqual(rows["fast_a"]["failed_checks"], ["turnover", "turnover_cost"])
+        self.assertEqual({i: rows[i]["tau_over_cost_limit"] for i in self.ids},
+                         {i: taus[i] > 0.249 for i in self.ids})
+        self.assertEqual(self.adm["screen"], "v4-prior-v2")
+        self.assertEqual(self.adm["counts"], {"admitted": 2, "reject_no_prior": 1, "reject_insufficient": 0,
+                                              "reject_turnover": 1, "reject_turnover_cost": 2, "reject_veto": 1,
+                                              "reject_redundant": 0})
+        self.assertEqual(self.adm["rules"]["cost_tau_limit"], 0.249)
+        self.assertEqual(self.adm["rules"]["status_precedence"], list(fcw.V42_STATUSES[1:]))
+        # the redundancy pass only sees cost survivors: slow_a is no longer redundant with the rejected clone
+        v1_rows = {c["id"]: c for c in self.adm_v1["candidates"]}
+        self.assertEqual((v1_rows["slow_a"]["status"], v1_rows["slow_a"]["redundant_with"]),
+                         ("reject_redundant", "slow_a_clone"))
+
+    def test_empty_theme_drops_out_of_the_weights(self):
+        w = self.doc["weights"]
+        self.assertEqual({i: w[i] for i in self.ids if w[i] > 0}, {"slow_a": 0.5, "slow_a_twin": 0.5})
+        prov = self.doc["provenance"]
+        self.assertEqual(prov["themes_present"], ["value"])  # short_interest lost flip: 1/themes renormalises
+        self.assertEqual((prov["screen"], prov["cost_tau_limit"], prov["cost_rejected"]),
+                         ("v4-prior-v2", 0.249, ["flip", "slow_a_clone"]))
+        self.assertTrue(prov["signs"].startswith("v4-prior-v2: "))
+        self.assertEqual(self.doc["signs"], {i: 1 for i in self.ids if i != "insufficient"})
+        got = runner_accepts((self.root / "v42" / fcw.OUTPUT_WEIGHTS).read_bytes(), self.fx.library_sha, self.ids,
+                             self.fx.train_sha)
+        self.assertEqual(got, [w[i] for i in self.ids])
+
+    def test_v1_output_carries_no_cost_keys(self):
+        self.assertNotIn("cost_tau_limit", self.adm_v1["rules"])
+        self.assertNotIn("cost_tau_limit", self.doc_v1["provenance"])
+        self.assertTrue(all("tau_over_cost_limit" not in c for c in self.adm_v1["candidates"]))
+        self.assertEqual(self.adm_v1["screen"], "v4-prior-v1")
+
+    def test_combination_refusals(self):
+        out = self.root / "refused"
+        for override in (dict(V42_ARGS, orientation="train"), dict(V42_ARGS, composition=fcw.RULE_ID)):
+            with self.assertRaises(fcw.FitError) as caught:
+                fcw.fit(self.fx.args(out, **override))
+            self.assertIn("go together", str(caught.exception))
+            self.assertFalse(out.exists())
+
+
+class PriorV1BytesUnchanged(unittest.TestCase):
+    """T27 edit: v4-prior-v1 emits the pre-T27 bytes except the embedded script SHA (git-history fitter)."""
+
+    PRE_T27_BLOB = "8d201df65d5ce255c82ed070832b4efd7e487093"  # fitter at c5058edf (T23 v4-prior-v1)
+
+    def test_v4_prior_v1_outputs_and_cache_keys_match_pre_t27_fitter(self):
+        import importlib.util
+        import subprocess
+        try:
+            old = subprocess.run(["git", "cat-file", "-p", self.PRE_T27_BLOB], capture_output=True, check=True,
+                                 cwd=Path(__file__).resolve().parent).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git history with the pre-T27 fitter blob is unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old").mkdir()
+            (root / "old" / "fit_composition_weights_pre_t27.py").write_bytes(old)
+            spec = importlib.util.spec_from_file_location("fcw_pre_t27", root / "old" / "fit_composition_weights_pre_t27.py")
+            pre = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pre)
+            panel, signals, ids, extra = v4_world()
+            fx = Fixture(root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                         candidate_extra=extra)
+            got = {}
+            for tag, module in (("new", fcw), ("old", pre)):
+                out, work = root / f"v4-{tag}", root / f"work-{tag}"
+                code, _ = module.fit(module.parse_args(fx.argv(out, "v4-prior-v1", [
+                    "--orientation", "prior", "--composition", "ew-theme-v1", "--work-dir", str(work)])))
+                self.assertEqual(code, 0)
+                adm = (out / fcw.OUTPUT_ADMISSION).read_bytes()
+                derived = {module.SCRIPT_SHA256: b"<script>", json.loads(adm)["inputs"]["context_sha256"]: b"<context>",
+                           sha(adm): b"<admission>"}
+                files = {}
+                for p in out.iterdir():
+                    data = p.read_bytes()
+                    for value, token in derived.items():
+                        data = data.replace(value.encode(), token)
+                    files[p.name] = data
+                keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
+                got[tag] = (files, keys)
+            self.assertEqual(got["new"][0], got["old"][0])
+            self.assertEqual(got["new"][1], got["old"][1])
+
+
 class DefaultBytesUnchanged(unittest.TestCase):
     """T23 edit: default paths emit the pre-T23 bytes except the embedded script SHA (git-history fitter)."""
 
