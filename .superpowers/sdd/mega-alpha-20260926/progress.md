@@ -1,5 +1,11 @@
 # Active task: recent-data DSL ensemble
 
+## T38 step 2 — weighted TRAIN IC pass with W_aim — 2026-09-27 (no new trial; combined signal for the grid)
+Receipt mega-v5w-train-aim-run1: exit 0, 30 s, 505 MiB, 1 pass (IC binary 647c71a7 unchanged). C_aim =
+build-equity/mega-v5w-train-aim-1/train_combined.json sha 00439b98...; C_ew = build-equity/mega-v4w-train-1 24a6cc76... (existing).
+NAV grid (step 3) waits for T36 -> v5-1 build (T37).
+
+
 ## v5 TRAIN read #1 — aim fit ew-theme-aim-v1 (T38 step 1) — 2026-09-27 — composition trial +1
 Receipts mega-weights-v5-aim-run1 (1 pass, exit 0) and mega-weights-v5-ew-refit-run1 (exit 0, computed 0). Fitter f172d362.
 W_aim build-equity/mega-weights-v5-aim/composition_weights.json sha 54f823c1...; admission b41ba653... (31 admitted, same set as
