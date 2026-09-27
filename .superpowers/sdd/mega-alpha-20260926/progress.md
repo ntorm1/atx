@@ -1,5 +1,18 @@
 # Active task: recent-data DSL ensemble
 
+## T33a delisting feasibility — NO-GO — 2026-09-27
+delisting-feasibility.md (DuckDB read-only 384 MB / 2 threads, no lock, no writes). TRAIN: 585 member lines end in 2020-22;
+56 are line continuations (new securityID), 529 true terminations: mna 292 / performance 25 / unknown-with-CIK 9 / unknown-no-CIK
+203 (rule R). Classifiable 59.9% of true terminations (69.0% of the 414 actually held and written off) < 80% gate; 97.2% of the
+326 with a CIK. VAL counts only (35/152/29/13/94), no returns read. exchange_listings 45,820 rows, no venue -> eta -.35 would apply.
+No OTC continuation source (tickerhistory = optionable listed only). No-CIK lines = ETFs/ETNs, SPACs, ADRs, preferreds, warrants.
+- Ruling (R-6 applied): delisting lane PARKED — T33b and T32 are not built; eta = 0 in S1/S2 stays primary with S3 (K = 1 adverse)
+  as the stress; D5 = "feasibility settled: NO-GO"; T39 step 1 does not run; owner gate U3 gains the concrete ask (bridge CIK
+  coverage for the 203 no-CIK lines, or a sealed submissions export + ticker-continuity input) — cost if wrong: write-offs at
+  last price remain a modelling caveat (T17 C5: material but symmetric, 5-6.5% of GMV/yr).
+- Task T33a: complete (explorer). pool-5 stays untouched.
+
+
 ## T34a breadth check — GO (proxy) — 2026-09-27
 breadth-check-v5.md: fields-v6 has no opex_ttm/xsga_ttm/cogs_ttm; has at, sale_ttm, oi_ttm, gp_ttm. Real opex item = new metric +
 producer item + events-v3/fields-v7 rebuild + cold cache -> NO-GO for v5.1. Proxy opex = sale_ttm - oi_ttm: 4 extras / ~4 slots,
