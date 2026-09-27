@@ -1,5 +1,15 @@
 # Active task: recent-data DSL ensemble
 
+## Build v6-0 OK; D2 default-cell byte check PASSED; 1 new gtest fails (2026-09-27 ~20:20)
+mega-v6-0-receipt.json (untracked; build-equity is gitignored): source ad31e817, exit 0, 47.8 s, 5 TUs, 3 links; NAV exe
+212d9e22. GoogleTest: 67/68 pass; FAIL NavV6.RecipeSummaryKeysAndCliRefusals ("[json.exception.type_error.304] cannot use
+at() with number") -> C1 fix wave together with the review findings. D2: `COMBINED=ew bash v6_train.sh nav` (defaults =
+parent flags, LCACHE=1) -> build-equity/mega-nav-v6-ew-t.05-d.1-fixed-obtarget-x1: every file byte-identical to
+mega-nav-v51-ew-t.05-d.1-fixed (52 s, 339 MiB). Default path unchanged and F8 cache bit-identical on real TRAIN data.
+Not a new trial (identical book). nav_summ: S2 net +0.759, gross_lev_all_rows .7812, post_ramp .7999.
+- Ruling: the remaining 5 pre-registered C1 grid cells wait for the C1 review verdict -- why: a semantic defect in delta /
+  exit-rate found by review would force re-runs that still count in DSR N -- cost if wrong: ~20 min of wall clock.
+
 ## V6-W implemented (pool-4 2d37de31, a0566920, a54f20b5, 34006519) -- DONE_WITH_CONCERNS -- reviews C1/C2/W running; build v6-0 running (2026-09-27 ~20:00)
 ew-theme-v6 rules (a)-(c) in the fitter (tau from admission.json candidates[].tau); rule (d) as C++ within-theme-v1
 redistribution in the IC runner, active only when the weights block is present (env example's w-phase check refuses an old
