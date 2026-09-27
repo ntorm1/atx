@@ -33,8 +33,9 @@ corrects the stored rows as a ledgered batch stage (``batch_runner``; run by OPS
   ``CHECKPOINT``s and asserts no WAL. ``equity_daily_bars`` carries no index (M5); a live index
   makes ``prepare`` refuse (DuckDB cannot rename an indexed table).
 
-Runs already recorded as corrected in the live ledger are skipped (a thousands run's median reads
-as units once corrected), so the stage never scales a run twice; with nothing left to correct it
+Runs already recorded as decided in the live ledger are skipped (a thousands run's median reads
+as units once corrected); prior unit-aware decisions are preserved, not ledgered again. The
+stage never scales a run twice; with nothing left to correct it
 refuses to plan. The live bars must not be written while a run is open (finalize refuses when
 they changed); abandon the run (``run_slices.py --abandon``) and open a new run_key instead.
 """
@@ -68,7 +69,7 @@ MAX_BATCH_ROWS = 2_000_000
 BARS, BARS_NEXT = "equity_daily_bars", "equity_daily_bars__next"
 LEDGER, LEDGER_NEXT = "equity_bar_unit_corrections", "equity_bar_unit_corrections__next"
 THOUSANDS_MULTIPLIER = 1000
-_CORRECTED_BASES = ("thousands", "shares_unit_suspect")
+_CORRECTED_BASES = ("thousands", "shares_unit_suspect", "units")
 
 
 def _canonical(value: object) -> str:
@@ -104,9 +105,9 @@ def _indexes(conn: duckdb.DuckDBPyConnection, table: str) -> list[str]:
 
 
 def _already_corrected_runs(conn: duckdb.DuckDBPyConnection) -> set[str | None]:
-    """Load runs the live ledger records as corrected (the ledger's evidence names the run)."""
+    """Load runs the live ledger records as decided (the ledger's evidence names the run)."""
     rows = conn.execute(
-        f"SELECT DISTINCT json_extract_string(evidence, '$.run_id') FROM {LEDGER} WHERE unit_basis IN (?, ?)",
+        f"SELECT DISTINCT json_extract_string(evidence, '$.run_id') FROM {LEDGER} WHERE unit_basis IN (?, ?, ?)",
         list(_CORRECTED_BASES),
     ).fetchall()
     return {row[0] for row in rows}

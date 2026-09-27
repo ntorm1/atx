@@ -141,6 +141,17 @@ def _seed(db: Path, tmp: Path) -> tuple[dict[str, int], dict[str, dict[str, Any]
             INSERT INTO activation_stage_runs (stage, run_id, status, started_at, finished_at, "rows", params_json,
                                                error)
             VALUES ('submissions_load', 'kr-activation', 'running', {stamp}, NULL, NULL, '{{}}', NULL)""")
+        # Preserve a real prior unit-aware decision, so publication exercises a nonempty live
+        # ledger and a later correction run does not duplicate already decided unit rows.
+        prior_lines = _count(con, "SELECT count(DISTINCT security_id) FROM equity_daily_bars "
+                            "WHERE run_id = ? AND shares_outstanding IS NOT NULL", [UNITS_RUN])
+        assert prior_lines <= 2_000_000
+        con.execute(f"""
+            INSERT INTO equity_bar_unit_corrections
+            SELECT security_id, min(trade_date), max(trade_date), 'units', 1.0, ?, {stamp}
+            FROM equity_daily_bars WHERE run_id = ? AND shares_outstanding IS NOT NULL GROUP BY security_id
+            """, [json.dumps({"rule": "A9", "stage_run_key": "kr-prior-units", "run_id": UNITS_RUN}), UNITS_RUN])
+        sample[UNITS_RUN]["prior_ledger_rows"] = prior_lines
         counts = dict(con.execute(
             "SELECT run_id, count(*) FROM equity_daily_bars GROUP BY 1").fetchall())
         con.execute("CHECKPOINT")
@@ -296,6 +307,7 @@ def test_bars_unit_correction_kill_resume_matches_clean_run(tmp_path: Path) -> N
     assert final["finalized"] and final["receipt"]["duplicate_keys"] == 0
     assert final["receipt"]["max_transaction_rows"] <= 2_000_000
     assert final["receipt"]["prepare_transaction_rows"] <= 2_000_000
+    assert final["receipt"]["already_corrected_runs"] == [UNITS_RUN]
     for db in (clean_db, killed_db):
         assert not Path(str(db) + ".wal").exists()
 
