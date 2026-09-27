@@ -341,6 +341,8 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
                     return _book_equity(current[1:])
                 if current[0] is not None:
                     return _decimal(current[0]["value_exact"]), current[0]["status"]
+                if rule.get("composition_refusal"):
+                    return None, rule["composition_refusal"]
                 # Seed zero-fill is not sufficient historical evidence of absence.
                 return _arithmetic(current[1:], signs)
 
@@ -349,9 +351,8 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
         return canonical.get(key, [])
 
     for identity in identities:
-        for chain in mapping["chains"].values():
-            for item_id in chain["item_ids"]:
-                canonical_item(item_id, identity)
+        for item_id in sorted({r["item_id"] for r in mapping["rules"]}):
+            canonical_item(item_id, identity)
     mnemonic = {}
     intermediates = []
     for name, chain in mapping["chains"].items():

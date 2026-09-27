@@ -28,6 +28,14 @@ explicit controller authority, period policy, source manifests, normalized-sourc
 completion receipts, and code hashes. Plan/code drift requires a new plan and build
 ID. Prior plans and receipts remain retained evidence.
 
+The C-111 internal closure includes existing active, statement-backed standard-GAAP
+canonical items while the public `COMPUSTAT_ANALOG` mnemonic roster stays fixed.
+Each added item retains its seeded rule and authority digest. Conflicting seed
+versus statement units or period types are refused and disclosed; no additional
+unit override is inferred. An added composition whose missing-input policy lacks
+compatible historical evidence is explicitly refused rather than zero-filled.
+Broad source mapping coverage counts unmapped cells as well as supported items.
+
 FSDS uses `accepted_utc`. CF-only observations use the later of raw availability
 and filing date plus 46 hours. Borrowing FSDS acceptance requires exact accession,
 taxonomy, concept, unit, endpoint, duration class and numeric value, plus a unique

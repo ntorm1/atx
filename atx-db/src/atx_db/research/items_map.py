@@ -13,7 +13,7 @@ from typing import Any
 
 from .fundamental_sources import canonical_sha256, file_sha256
 
-MAP_VERSION = "fundamental_items_v1"
+MAP_VERSION = "fundamental_items_v2"
 SEEDS = Path(__file__).resolve().parents[1] / "seeds"
 UNIT_DISCREPANCIES = {1106: ("quantity", "monetary"),
                       1203: ("quantity", "monetary"),
@@ -94,13 +94,24 @@ def load_mapping() -> dict[str, Any]:
         if extra <= needed:
             break
         needed |= extra
+    original_needed = set(needed)
     validity = {(r.item_id, r.alias_scheme, r.alias_code): (r.valid_from, r.valid_to)
                 for r in seed if r.alias_code}
     statement = {}
     for row in sorted(statements, key=lambda r: r.industry_template != "ALL"):
         if row.is_active and row.item_id is not None:
             statement.setdefault((row.item_id, row.taxonomy, row.concept), row)
-    output, aliases = [], []
+    # C-111 admits existing standard-GAAP statement-backed canonical items to
+    # the internal closure. Public mnemonic/feature definitions stay separate.
+    needed |= {r.item_id for r in active.values() if r.basis in {"instant", "annual", "quarterly", "ttm"}
+               and any(a.alias_scheme == "us-gaap" and (r.item_id, a.alias_scheme, a.alias_code) in statement
+                       for a in r.source_aliases)}
+    while True:
+        extra = {i for r in active.values() if r.item_id in needed for i in r.source_item_ids}
+        if extra <= needed:
+            break
+        needed |= extra
+    output, aliases, refused_aliases, added_authority = [], [], [], []
     for (item_id, basis), rule in sorted(active.items()):
         if item_id not in needed or basis not in {"instant", "annual", "quarterly", "ttm"}:
             continue
@@ -108,6 +119,15 @@ def load_mapping() -> dict[str, Any]:
         unit = UNIT_DISCREPANCIES.get(item_id, (None, raw.unit_type))[1]
         entry = {**asdict(rule), "period_kind": raw.data_type, "unit_type": unit,
                  "seed_unit_type": raw.unit_type, "input_kinds": rule_input_kinds(rule)}
+        if item_id not in original_needed:
+            # Existing seed zero-fill modes cannot acquire a new historical
+            # absence meaning silently. Such compositions are disclosed and
+            # refused until their policy has compatible PIT evidence.
+            entry["composition_refusal"] = ("historical_missing_policy_not_adjudicated"
+                if rule.source_item_ids and rule.missing_policy != "skip" else None)
+            added_authority.append({"item_id": item_id, "rule_id": rule.rule_id,
+                                    "basis": basis, "seed_rule": asdict(rule),
+                                    "seed_item": asdict(raw), "rule_sha256": canonical_sha256(asdict(rule))})
         output.append(entry)
         for alias in rule.source_aliases:
             key = item_id, alias.alias_scheme, alias.alias_code
@@ -117,6 +137,15 @@ def load_mapping() -> dict[str, Any]:
                 continue
             if item_id in UNIT_DISCREPANCIES and srow.unit_type != unit:
                 raise ValueError(f"unit authority disagreement for {key}")
+            # Statement-map "shares" is the explicit share quantity context;
+            # this is vocabulary compatibility, not a monetary/unit override.
+            statement_unit = "quantity" if srow.unit_type == "shares" else srow.unit_type
+            if statement_unit != unit or srow.period_type != raw.data_type:
+                refused_aliases.append({"item_id": item_id, "rule_id": rule.rule_id,
+                    "taxonomy": alias.alias_scheme, "concept": alias.alias_code,
+                    "reason": "seed_statement_context_disagreement", "seed_unit": unit,
+                    "seed_period": raw.data_type, "statement_context": asdict(srow)})
+                continue
             start, end = validity.get(key, (None, None))
             aliases.append({"item_id": item_id, "basis": basis, "canonical_code": rule.canonical_code,
                             "taxonomy": alias.alias_scheme, "concept": alias.alias_code,
@@ -126,6 +155,7 @@ def load_mapping() -> dict[str, Any]:
                             "sign_rule": rule.sign_rule, "scale_rule": rule.scale_rule,
                             "rule_valid_from": str(rule.valid_from or dt.date(1900, 1, 1)),
                             "rule_valid_to": str(rule.valid_to) if rule.valid_to else None})
+            aliases[-1]["statement_context_sha256"] = canonical_sha256(asdict(srow))
     # C-107 authorizes only these exact already-approved definitions as local
     # recipes. Negative identifiers explicitly cannot masquerade as durable STD IDs.
     for basis in ("annual", "quarterly", "ttm"):
@@ -161,6 +191,10 @@ def load_mapping() -> dict[str, Any]:
                    "period_kind": "instant", "unit_type": "monetary", "seed_unit_type": None})
     metadata = {"version": MAP_VERSION, "chains": {k: asdict(v) for k, v in COMPUSTAT_ANALOG.items()},
                 "rules": output, "aliases": aliases,
+                "canonical_closure": {"ruling": "C-111", "original_item_ids": sorted(original_needed),
+                    "added_item_ids": sorted(needed-original_needed), "added_seed_authority": added_authority,
+                    "refused_aliases": refused_aliases,
+                    "public_mnemonics_unchanged": True},
                 "seed_hashes": {name: file_sha256(SEEDS / name) for name in
                                 ("fundamental_items.csv", "statement_map.csv", "standardization_rules.csv")},
                 "unit_authority": "C-105_statement_map_context_and_approved_F1_definitions",
