@@ -155,6 +155,19 @@
 - T11 re-review: 7 addressed (I1, M1-M6), M7 optional open; 0 new C/I; 4 minors (CRLF script sha, numpy
   version unbound, stray context dirs, stale report commands). Task T11: complete (cd2ec619, fix 1507a2d8;
   fix round 1/5). Fitter must run from C:/atx-wt/pool-2 (relative cache paths).
+- T6 fix r2: pool-8 03a8f746 -> root b723d487 (shares_out corrected across unchained factor via
+  factor-break-v1 steps from their end date; shares_out [1e5,5e10] -> NaN; role-binding check vs repair
+  block). 19/19 OK; producer blob a17f83c6.
+- T12 fix r1: pool-9 5093dd5c -> root 0e94be59 (factor-break-v2 unexplained-step detector, --rule v1|v2,
+  v1 byte-identical). 16/16 OK. v2 scans: VALIDATION CLEAN (max 1 unexplained/session, thr ~44);
+  TRAIN(v1 role) MASS-v2 only 2021-01-04 (2114 vs thr 48). Validation role v1 disposition confirmed.
+- FIELDS v2 (bounded): TRAIN role v2 -> recent-fast-train-2020-2022-v2-fields-v2 manifest
+  76c07277642ffa233c81a3835f43ab2eeee56e840f4aff67507981533f66bf75 (29.5s/635MiB; score cov si .9993,
+  iv .936, earn .9997, shares_out .9934, mkt_ret .9997; repaired 2114 matches T12). VALIDATION role v1 ->
+  recent-fast-validation-2023-2024-v1-fields-v2 manifest
+  cfaaf825790e07405c55a59eeb9072bcdb20287d18a8e25b9e64fde31fb30c15 (25.2s/563MiB; mass 2021-01-04 outside
+  role corrected, 2006). Descriptive coverage only for validation.
+- Combined scoped re-review dispatched (t6-t12-rereview). v3 TRAIN runner waits on T7 fix 2 (memory).
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
