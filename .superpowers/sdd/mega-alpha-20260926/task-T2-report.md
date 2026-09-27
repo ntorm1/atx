@@ -158,3 +158,45 @@ The 7 existing `StrategyTargetReplay` fixtures and `strategy_target_replay_test.
   - `std::make_unique<const bk::FlatBpsCost>(std::move(...))`.
 - The exact-fill rule (`held = order` on a complete fill) is what makes fixture 1 bit-exact. The cash book absorbs a sub-ulp difference, which is covered by the 1e-9 reconciliation.
 - The runtime of the validation loop (all cells, per scenario, including cells beyond decision_end which never affect results) is O(D·N) × 3. This is negligible next to the SHA-verified load.
+
+## Fix round 1
+
+Worktree `C:/atx-wt/pool-5`, branch `feat/mega-alpha-nav-t4-20260927`, base `9003f273`.
+Commit: `ca4fa80c` test(strategy): exercise a held forced exit in NAV fixture 1 [mega T2 fix 1].
+This is a test-only change (`atx-impl/tests/strategy_nav_replay_test.cpp`, +21/-1). No production or CMake change.
+
+### Root cause: the fixture, not the code
+The failing assertion `EXPECT_GT(planned->forced_turnover, 0)` checks the **target replay** (`replay_targets`, unchanged code), not the NAV path. It failed only in the `monthly-budget-v2` iteration. The baseline iteration gives 0.0277…, which is greater than 0.
+
+In that fixture, name 1 leaves membership at decision 7, but under v2 it is never held:
+- At d0 its signal (1) falls in the middle tie group of six members. That group's rank is (2+3)/10 − 0.5 = 0 exactly, and the demeaning mean is also exactly 0, so its target is exactly 0.0.
+- v2 (budget .30, fraction .5) spends the whole January budget at d0: the d0 turnover is exactly 0.3. So `applied_fraction` is exactly 0 for d1..d21, and name 1 is still 0 at d7.
+- Its "exit" is therefore |0 − 0| = 0, and the forced turnover is exactly 0.
+
+I checked this with a bit-faithful Python re-run of `desired_target`/`update_weights` (IEEE doubles, same operation order): v2 forced total = 0.0, baseline = 0.027777777777777773.
+
+The NAV code does count forced exits. `plan_decision` places a zero-dollar order for every nonmember with nonzero holdings. `execute_orders` adds |fill| to `traded`, and `one_way_turnover = traded / NAVpre`. Monthly turnover sums `one_way_turnover` (and the turnover_definition text says forced exits are included). The old baseline iteration already exercised a held forced exit (name 1 held 0.0278 at d7), and every bit-equality check (planned_forced, traded$ at d+1) passed.
+
+### Change
+- Fixture 1 now exits **name 2** at t ≥ 7. Name 2 is held under both rules: baseline 0.10460069444444445 and v2 0.05625000000000001 at d7.
+  - `v2` month/budget, the NAV/target bit-equality loop and the constant-NAV checks are unchanged.
+- New assertions per rule:
+  - `planned->forced_turnover > 0`, and it equals day 7's forced turnover bit-for-bit.
+  - NAV `days[7].planned_forced > 0`, and it equals `planned_turnover` bit-for-bit. This is because d7 is not a cadence day under baseline, and v2 has already spent its budget.
+  - `days[8].one_way_turnover` equals `days[7].planned_forced` bit-for-bit, and `days[8].fills == 1`. So the forced exit is filled and counted in executed turnover.
+  - `days[8].held_names + 1 == days[7].held_names`: 6 to 5 under baseline, 4 to 3 under v2.
+  - v2 only: `days[7].budget_excess > 0` (about 0.05625). The exit is never deferred for the budget.
+- Fixture 3 (`InteriorGapCarriesStaleThenRealizesCumulativeReturn`) now also confirms the absent-name forced-exit path:
+  - `d[3].planned_forced == 0.5`: the absent name becomes a nonmember and its exit is planned at its stale 500/1000.
+  - `d[5].one_way_turnover ≈ 600/1100` (1e-15): the blocked exit fills at the reprint and counts in turnover.
+
+### Expected outcome
+All 25 tests in the two suites should pass: `StrategyNavReplay` (10) and `StrategyTargetReplay` plus the price-exposure cases, which are unchanged. The tolerances are unchanged, and every new exact comparison is covered by the desk-check above.
+- Root build targets: `atx-equity-strategy-targets,atx-impl-strategy-target-tests`.
+- Filter: `--gtest_filter=StrategyNavReplay.*:StrategyTargetReplay.*` (or `-Ctest -R "StrategyNavReplay|StrategyTargetReplay"`).
+- Minimum re-run: `--gtest_filter=StrategyNavReplay.ConstantPricesNoCostReproducesTargetReplayPlanned:StrategyNavReplay.InteriorGapCarriesStaleThenRealizesCumulativeReturn`.
+
+### Concerns
+None for this fix.
+
+A note for T4, which I have not started: the NAV's *planned* forced turnover re-counts a blocked exit on every decision while the name stays absent (fixture 3 plans 0.5 at both d3 and d4). Executed turnover counts it once. Planned turnover is reconciliation-only, but GMV-basis stats in T4 must use executed fills.

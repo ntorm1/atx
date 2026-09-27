@@ -1,5 +1,26 @@
 # Active task: recent-data DSL ensemble
 
+## RESUMED 2026-09-27 (parent 3; owner goal prompt authorizes; SDD on Opus children)
+
+- Docs commits 44666f09 (owner ruling revisions) + 9003f273 (T10 brief). Shared contracts:
+  lane-contract.md, reviewer-contract.md, re-review-contract.md (children read these; no builds).
+- Worktrees aligned to root 9003f273: pool-3 (T9) + pool-4 (T7) ff'd; pool-5 new branch
+  feat/mega-alpha-nav-t4-20260927 (T2 fix -> T4 -> T10 lane). Ruling: parallel lanes in disjoint
+  worktrees now, not after T2 (only root builds are serialized) — cost if wrong: rebase churn.
+- Dispatched: t2-nav (T2 fix r1), t7-fields (T7), t9-weights (T9), t5-rereview (T5 fix r1 scoped
+  re-review), t1-review (T1 redo), t6-review (T6).
+- T6 VALIDATION fields: bounded run mega-fields-validation-v1-run exit 0, peak 452 MiB (tree 473.6MB),
+  manifest a0905b0c63bf0574cf0601b0861d3a43c1a8a6a5895516c975e3dbdb29e80f0a, producer 892bd33f.
+  Coverage (member, 2021-24): si 99.9%, iv 95.0%, earn 99.98%, shares_out 99.7%, mktcap/size_grp
+  72.9%, mkt_ret 99.9%. Descriptive coverage only; no outcome data viewed. HAZARD: iv_atm_126d member
+  max 1.19e16, IV max ~69 (garbage/units) -> v3 IV families must guard/rank (T8 brief).
+- Declared BEFORE measurement: task-T8-brief.md (library v3 = fixed v2 + ~24-32 SI/DTC/dSI/IV level/
+  IV slope/IV change/IV-RV/earnings-drift/size candidates, priors cited) and task-T11-brief.md
+  (admission screen v3-admit-v1: orient on 2020-21 mean; tau_k<=0.70; HOLD-2022 oriented mean>0;
+  greedy |rho|<=0.70 by FIT Sharpe; >=250 finite FIT days). Ruling: admission screen lives in the T9
+  fitter (same f_k/tau_k data) — cost if wrong: one extra tool revision.
+  Note: "FIT Sharpe > 0" is tautological under FIT-mean orientation; the binding test is the 2022 sign.
+
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
 PB portfolio swap: long pays bench+s_L, short receives bench-s_S-fee; dollar-neutral -> bench cancels;
