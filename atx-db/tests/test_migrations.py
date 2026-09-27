@@ -1005,11 +1005,12 @@ def _unkeyed_bulk_violations(con) -> list[tuple[str, str]]:
     )
 
 
-def test_migration_0329_is_the_registered_head_and_0327_0329_are_recorded_with_their_checksums(tmp_store):
-    """Pin: 0329 is the last registered migration; a fresh bootstrap records 0327, 0328 and 0329."""
+def test_migration_0331_is_the_registered_head_and_0327_0329_keep_their_checksums(tmp_store):
+    """Identity extends the schema without changing the three prior migration pins."""
     from atx_db.migrations import MIGRATIONS, _migration_source_checksum
 
-    pre_run5, post_b0, head = MIGRATIONS[-3:]
+    pre_run5, post_b0, head, identity = MIGRATIONS[-4:]
+    assert (identity.version, identity.name) == (331, "permanent_identity_history")
     assert (pre_run5.version, pre_run5.name) == (327, "pre_run5_identity_bundle")
     assert (post_b0.version, post_b0.name) == (328, "post_b0_bundle")
     assert (head.version, head.name) == (329, "build_ledger_bulk_keys")
@@ -1030,6 +1031,48 @@ def test_migration_0329_is_the_registered_head_and_0327_0329_are_recorded_with_t
     assert {"build_runs", "build_batches", "equity_bar_unit_corrections"} <= tables
     assert _est_actual_primary_key(tmp_store.con) == _EST_ACTUAL_0327_KEY
     assert _unkeyed_bulk_violations(tmp_store.con) == []
+
+
+def test_migration_0331_replaces_old_public_view_and_preserves_catalog_rows(tmp_store):
+    """Real-shaped old catalog rows and two dated class lines survive the upgrade."""
+    import datetime as dt
+
+    from atx_db import identity_links as identity
+    from atx_db.api.catalog import SECURITY_MASTER_SCHEMA
+    from atx_db.migration_admin import verify_schema
+    from atx_db.migrations import bodies_0331
+
+    con = tmp_store.con
+    other_catalog = con.execute("SELECT * FROM table_catalog WHERE table_name='securities'").fetchall()
+    other_fields = con.execute("SELECT * FROM field_catalog WHERE table_name='securities' ORDER BY field_name").fetchall()
+    con.execute("DROP VIEW v_security_master_public")
+    for table in identity.TABLE_COLUMNS:
+        con.execute(f"DROP TABLE {table}")
+    con.execute("CREATE VIEW v_security_master_public AS SELECT security_id FROM securities")
+    con.execute("BEGIN")
+    bodies_0331._permanent_identity_history(con)
+    con.execute("COMMIT")
+    con.execute("CHECKPOINT")
+    assert verify_schema(con) == ()
+    assert con.execute("SELECT * FROM table_catalog WHERE table_name='securities'").fetchall() == other_catalog
+    assert con.execute("SELECT * FROM field_catalog WHERE table_name='securities' ORDER BY field_name").fetchall() == other_fields
+    assert {name: values[0] for name,values in bodies_0331._identity_tables_v1().items()} == identity.TABLE_COLUMNS
+    assert {name: values[1] for name,values in bodies_0331._identity_tables_v1().items()} == identity.TABLE_KEYS
+    assert con.execute("SELECT count(*) FROM duckdb_constraints() WHERE table_name IN ('table_catalog','field_catalog') AND constraint_type='PRIMARY KEY'").fetchone() == (2,)
+    created = dt.datetime(2026,9,20)
+    identity._insert_rows(con, "security_permanent_ids", [
+        (1,"TBLTICKERHISTORY-1",dt.date(2012,4,2),dt.date(2020,2,3),created),
+        (2,"TBLTICKERHISTORY-2",dt.date(2012,4,2),dt.date(2026,9,18),created)])
+    identity._insert_rows(con, "security_names_history", [
+        (1,"OLD",None,None,dt.date(2012,4,2),dt.date(2020,2,3),"vendor",dt.datetime(2012,4,2,22)),
+        (1,None,"LATER NAME",None,dt.date(2012,4,2),None,"snapshot",created)])
+    con.execute("CREATE TEMP TABLE migration_identity_events AS SELECT * FROM v_security_master_public")
+    identity.create_security_master_public_view(con)
+    assert con.execute("SELECT * FROM v_security_master_public EXCEPT ALL SELECT * FROM migration_identity_events").fetchall() == []
+    assert con.execute("SELECT * FROM migration_identity_events EXCEPT ALL SELECT * FROM v_security_master_public").fetchall() == []
+    columns = {row[0] for row in con.execute("DESCRIBE v_security_master_public").fetchall()}
+    assert {field.source_column for field in SECURITY_MASTER_SCHEMA.fields} <= columns
+    assert con.execute("SELECT name FROM (" + identity.security_master_asof_sql("TIMESTAMP '2019-12-31 22:00'") + ") WHERE perm_security_id=1").fetchone() == (None,)
 
 
 @pytest.mark.slow
@@ -1060,7 +1103,7 @@ def test_migrations_0327_0329_upgrade_a_0326_warehouse(tmp_path):
         assert _est_actual_primary_key(con) == _EST_ACTUAL_0327_KEY[:5]
         assert _unkeyed_bulk_violations(con) != []  # the 0326 bulk tables still carry their sha256 keys
 
-        assert apply_pending_migrations(con) == [327, 328, 329]
+        assert apply_pending_migrations(con) == [327, 328, 329, 331]
         verify_migration_checksums(con)
         assert verify_schema(con) == ()
         assert _est_actual_primary_key(con) == _EST_ACTUAL_0327_KEY

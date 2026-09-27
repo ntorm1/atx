@@ -77,6 +77,7 @@ from ._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from .api.catalog import EXTENDED_DATASET_CODE, RecordSchema, _record_schema_sha256, get_schema
 from .connection import DuckDBStore
 from .corporate_actions import corporate_actions_asof_sql
+from .identity_links import security_master_asof_sql
 from .delisting import DEFAULT_FORWARD_RETURN_SS_SOURCE, delisting_policy_bias_exposure
 from .item_coverage import (
     DEFAULT_SOURCE as ITEM_COVERAGE_SOURCE,
@@ -296,7 +297,9 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
         "security-master",
         stage="security_master",
         required=True,
-        evidence_basis="current_source_snapshot",
+        evidence_basis="clocked_identity_history_reconstructed_v1",
+        eligibility_cap="reconstructed_identity_not_verified_vintage",
+        asof_sql=security_master_asof_sql,
     ),
     ReleaseDataset(
         "universe",

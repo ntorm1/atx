@@ -181,6 +181,7 @@ __all__ = [
     "IDENTITY_ROW_COLUMNS",
     "MARKET_DAILY_SOURCE_NAME",
     "MARKET_DAILY_STRICT_SOURCE_NAME",
+    "MARKET_DAILY_HIGH_ONLY_SOURCE_NAME",
     "OWNER_BRIDGE_CHECK_NAME",
     "SHARES_AVAILABILITY_BASIS",
     "SHARES_SOURCES_VENDOR",
@@ -211,6 +212,7 @@ MARKET_DAILY_SOURCE_NAME = "atx-db daily market panel v1"
 #: owner bridge, so a strict variant can never overwrite or be mistaken for the
 #: reconstructed panel.
 MARKET_DAILY_STRICT_SOURCE_NAME = "atx-db daily market panel v1 strict identity"
+MARKET_DAILY_HIGH_ONLY_SOURCE_NAME = "atx-db daily market panel v1 reconstructed high only"
 
 #: VA1: the published ``adj_close`` (and ``log_return`` and every daily metric chained on
 #: them) is the ``vendor_artifact_repaired`` series of :mod:`atx_db._vendor_artifact`; the
@@ -404,8 +406,16 @@ class MarketDailyOptions:
     run_id: str | None = None
     #: Price-line -> accounting-owner bridge mode (see ``market_owner_bridge``).
     owner_mode: str = OWNER_MODE_RECONSTRUCTED
+    reconstruction_tiers: tuple[str, ...] = ("high", "medium")
 
     def __post_init__(self) -> None:
+        if self.reconstruction_tiers not in (("high", "medium"), ("high",)):
+            raise ValueError("reconstruction_tiers must be ('high', 'medium') or ('high',)")
+        high_only = self.reconstruction_tiers == ("high",)
+        if high_only and (self.owner_mode != OWNER_MODE_RECONSTRUCTED or self.source != MARKET_DAILY_HIGH_ONLY_SOURCE_NAME):
+            raise ValueError(f"high-only reconstruction requires source {MARKET_DAILY_HIGH_ONLY_SOURCE_NAME!r}")
+        if not high_only and self.source == MARKET_DAILY_HIGH_ONLY_SOURCE_NAME:
+            raise ValueError("the high-only source requires reconstruction_tiers=('high',)")
         if self.owner_mode not in OWNER_MODES:
             raise ValueError(f"owner_mode must be one of {OWNER_MODES}, got {self.owner_mode!r}")
         # Each identity basis writes its own labeled source; neither may
@@ -1436,6 +1446,7 @@ def _refresh_market_daily(
         item_codes=item_codes,
         metric_codes=metric_codes,
         derived_source=options.derived_source,
+        reconstruction_tiers=options.reconstruction_tiers,
     )
     # A scoped refresh of one class line computes (and rewrites) its whole
     # issuer group: the multi-class cap sums over every bridged class line.

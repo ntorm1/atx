@@ -502,6 +502,21 @@ class ReconstructedLinkEvidence:
     rejection_reason: str | None = None
     observed_at: dt.datetime | None = None
 
+    def tier_at(self, frame_clock: dt.datetime) -> str | None:
+        """Tier supported at this instant; later corroboration cannot leak back."""
+        if frame_clock.tzinfo is not None:
+            frame_clock = frame_clock.astimezone(dt.UTC).replace(tzinfo=None)
+        if self.available_at is None or self.available_at > frame_clock:
+            return None
+        eligible = [(since, tier) for tier, since in self.tier_history if since <= frame_clock]
+        if not eligible:
+            return None
+        latest = max(since for since, _tier in eligible)
+        tiers = {tier for since, tier in eligible if since == latest}
+        if len(tiers) != 1:
+            raise ValueError(f"conflicting tiers at {latest}: {self.evidence_id}")
+        return tiers.pop()
+
 
 @dataclass(frozen=True)
 class OwnerLinkEvidence:

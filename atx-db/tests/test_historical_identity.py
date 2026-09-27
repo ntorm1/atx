@@ -36,7 +36,7 @@ def _registered_0327() -> bool:
 
 
 def _connect(path) -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect(str(path), config={"memory_limit": "512MB", "threads": 1})
+    con = duckdb.connect(str(path), config={"memory_limit": "256MB", "threads": 1})
     con.execute("SET TimeZone='UTC'")
     return con
 
@@ -384,7 +384,7 @@ def test_warehouse_constraints_reject_invalid_verified_evidence(tmp_store, overr
 
 
 def test_acceptance_sql_b_has_teeth_on_an_unconstrained_copy():
-    con = duckdb.connect()
+    con = duckdb.connect(config={"memory_limit": "256MB", "threads": 1})
     columns = ", ".join(f"{name} {kind}" for name, kind in hi.EVIDENCE_COLUMNS)
     con.execute(f"CREATE TABLE security_identity_evidence ({columns})")
     _insert(con, "security_identity_evidence", [
@@ -549,7 +549,7 @@ def test_ticker_reuse_is_allowed_only_without_overlap():
     first = _snapshot_row(evidence_id="abc-1", security_id="PX-1", evidence_status="reconstructed",
                           valid_from=dt.date(2010, 1, 4), valid_to=dt.date(2015, 1, 2))
     second = dict(first, evidence_id="abc-2", security_id="PX-2", valid_from=dt.date(2015, 1, 2), valid_to=None)
-    con = duckdb.connect()
+    con = duckdb.connect(config={"memory_limit": "256MB", "threads": 1})
     columns = ", ".join(f"{name} {kind}" for name, kind in hi.EVIDENCE_COLUMNS)
     con.execute(f"CREATE TABLE security_identity_evidence ({columns})")
     _insert(con, "security_identity_evidence", [first, second])
@@ -1039,7 +1039,7 @@ def test_ticker_history_suspect_lines_within_the_c81_bound_pass_as_whole_lines(t
             run_id, shares_outstanding, market_cap_usd)
         SELECT ?, 'S' || (i % 2000), 'S' || (i % 2000), DATE '2025-01-02' + CAST(i // 2000 AS INTEGER),
                10.0, 10.0, 'run', 20000, 200000.0
-        FROM range(40000) t(i)
+        FROM range(100000) t(i)
         """,
         [th],
     )
@@ -1063,9 +1063,74 @@ def test_ticker_history_suspect_lines_within_the_c81_bound_pass_as_whole_lines(t
     for index in range(5):
         _bar(con, source=th, run_id="run", security=f"MIXED{index}", shares=5_000_000_000)
     [run] = b0327.ticker_history_unit_inventory(con)
+    # Isolate the line-count guard: seven above-ceiling rows still fit the 0.01% row bound.
+    assert run["rows_above_thousands_ceiling"] == 7
+    assert run["rows_above_thousands_ceiling"] <= run["rows_in_run"] * 0.0001
     assert run["action"] == "abort" and "mixed units" in run["reason"]
     with pytest.raises(RuntimeError, match="mixed units"):
         _in_transaction(con, b0327._ticker_history_unit_gate)
+
+
+def test_dated_document_continuity_preserves_earlier_business_segment(tmp_path):
+    from atx_db import identity_links as links
+    from atx_db.identity_reconstruction import VendorLine
+
+    source = tmp_path / "filing.htm"
+    source.write_text("Own issuer ABC common stock fixture.")
+    review = {"vendor_id": 1, "cik": "0000000002", "symbol": "ABC", "filing_date": "2012-02-01",
+        "accepted_raw": "2012-02-01T15:00:00Z", "document_path": str(source),
+        "document_sha256": links.file_sha256(source), "fetched_at": "2026-09-27T14:00:00Z",
+        "review_status": "confirmed", "scope": "own_issuer_exact_symbol_class", "class_status": "common",
+        "class_title": "Common stock", "review_basis": "Own issuer, exact symbol, common class fixture"}
+    later = {**review, "filing_date": "2012-02-14", "accepted_raw": "2012-02-14T15:00:00Z",
+             "class_status": "unknown", "class_title": None}
+    reviews = tmp_path / "reviews.json"
+    reviews.write_text(json.dumps({"version": "identity_dated_document_review_v1", "assertions": [review, later]}))
+    vendor = VendorLine(1, "TBLTICKERHISTORY-1", dt.date(2012, 1, 2), dt.date(2012, 12, 31), 200, "ABC",
+        symbols=(("ABC", dt.date(2012, 1, 2), dt.date(2012, 3, 30)),
+                 ("XYZ", dt.date(2012, 4, 2), dt.date(2012, 12, 31))))
+    events = list(links._reviewed_document_events(reviews, [vendor], dt.datetime(2026, 9, 20, 22)))
+    assert events[0][1]["available_at"] == dt.datetime(2012, 2, 2, 22)
+    assert events[0][0][9] == dt.datetime(2026, 9, 27, 14)  # Fetch is a separate observation clock.
+    versions = links._company_versions([event[1] for event in events], dt.datetime(2026, 9, 27))
+
+    def classes(day, clock):
+        return [row[12] for row in versions if row[3] <= day <= (row[4] or dt.date.max)
+                and row[8] <= clock and (row[11] is None or clock < row[11])]
+
+    assert classes(dt.date(2012, 2, 2), dt.datetime(2012, 2, 15, 22)) == ["common"]
+    assert classes(dt.date(2012, 2, 15), dt.datetime(2012, 2, 14, 22)) == ["common"]
+    assert classes(dt.date(2012, 2, 15), dt.datetime(2012, 2, 15, 22)) == ["unknown"]
+    assert classes(dt.date(2012, 4, 2), dt.datetime(2012, 4, 2, 22)) == []
+    raw = ("raw", 1, 9, "0000000009", dt.date(2012, 1, 2), dt.date(2012, 12, 31),
+           dt.datetime(2012, 1, 10, 22), None, '["raw"]', "possible")
+    retained, resolutions = links._resolve_raw_membership(raw, [event[2] for event in events])
+
+    def unresolved(day, clock):
+        return any(row[4] <= day <= (row[5] or dt.date.max) and row[6] <= clock
+                   and (row[7] is None or clock < row[7]) for row in retained)
+
+    assert unresolved(dt.date(2012, 1, 31), dt.datetime(2012, 2, 2, 22))
+    assert unresolved(dt.date(2012, 2, 2), dt.datetime(2012, 2, 2, 21, 59))
+    assert not unresolved(dt.date(2012, 2, 2), dt.datetime(2012, 2, 2, 22))
+    assert unresolved(dt.date(2012, 2, 15), dt.datetime(2012, 2, 15, 22))
+    assert unresolved(dt.date(2012, 4, 2), dt.datetime(2012, 4, 2, 22))
+    assert all(json.loads(row[5])["reason"] == "dated_issuer_contradiction" for row in resolutions)
+    source.write_text("Changed primary bytes")
+    with pytest.raises(ValueError, match="primary document changed"):
+        list(links._reviewed_document_events(reviews, [vendor], dt.datetime(2026, 9, 20, 22)))
+
+
+@pytest.mark.parametrize("changed", [{"class_status": "unknown"}, {"link_end": "2013-01-01"}, {"tier": "low"}])
+def test_dated_document_duplicate_provenance_never_resolves_semantic_conflict(changed):
+    from atx_db import identity_links as links
+
+    candidate = {"assertion_id": "point", "available_at": "2012-02-02T22:00:00",
+                 "class_status": "common", "link_end": "2012-12-31", "tier": "medium", "evidence_ids": '["a"]'}
+    combined = links._merge_candidate_evidence(candidate, {**candidate, "evidence_ids": '["b"]'})
+    assert json.loads(combined["evidence_ids"]) == ["a", "b"]
+    with pytest.raises(ValueError, match="conflicting identity assertion"):
+        links._merge_candidate_evidence(candidate, {**candidate, **changed, "evidence_ids": '["b"]'})
 
 
 # --------------------------------------------------------------------------- helpers

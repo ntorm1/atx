@@ -153,6 +153,7 @@ from .bodies_0326 import MIGRATIONS as _MIGRATIONS_0326
 from .bodies_0327 import MIGRATIONS as _MIGRATIONS_0327
 from .bodies_0328 import MIGRATIONS as _MIGRATIONS_0328
 from .bodies_0329 import MIGRATIONS as _MIGRATIONS_0329
+from .bodies_0331 import MIGRATIONS as _MIGRATIONS_0331
 
 MIGRATIONS = [
     *_MIGRATIONS_0001_0137,
@@ -313,6 +314,7 @@ MIGRATIONS = [
     # ledger, bulk sha256 primary keys dropped, adj_close_basis. B0 applies 0327-0329 together
     # while the bulk tables are empty (0329 refuses a table above 2M rows).
     *_MIGRATIONS_0329,
+    *_MIGRATIONS_0331,
 ]
 
 

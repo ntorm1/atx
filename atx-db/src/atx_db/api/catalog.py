@@ -758,26 +758,32 @@ MARKET_DAILY_SCHEMA = RecordSchema(
 SECURITY_MASTER_SCHEMA = RecordSchema(
     dataset="ATX.US.FUNDAMENTALS",
     code="security-master",
-    version="1.0.0",
+    version="2.0.0",
     title="US equity security master",
     description=(
-        "Current-state security spine with its open CIK, LEI and FIGI identifiers. "
+        "Clocked permanent-line history with dated company links, symbols and names. "
+        "Reconstructed evidence is labeled; fields without dated evidence stay null. "
         "CUSIP is internal-only by policy and is never part of this contract."
     ),
     source_table="v_security_master_public",
     time_column="as_of_date",
-    natural_key=("security_id",),
-    supports_vintages=False,
+    natural_key=("security_id", "as_of_date"),
+    supports_vintages=True,
     fields=(
         FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("perm_security_id", "perm_security_id", "int64", "Permanent vendor-line identity; never recycled.", nullable=False),
+        FieldSpec("perm_company_id", "perm_company_id", "int64", "Permanent SEC company identity when supported."),
         FieldSpec("entity_id", "entity_id", "string", "Issuing entity key; 'CIK-<cik>' for SEC filers."),
         FieldSpec("issuer_id", "issuer_id", "string", "Issuer grouping key."),
-        FieldSpec("primary_symbol", "primary_symbol", "string", "Current primary ticker."),
-        FieldSpec("name", "name", "string", "Security name."),
-        FieldSpec("asset_class", "asset_class", "string", "ATX asset class.", nullable=False),
-        FieldSpec("country", "country", "string", "Country of listing.", nullable=False),
-        FieldSpec("currency", "currency", "string", "Trading currency.", nullable=False),
-        FieldSpec("active", "active", "boolean", "Whether the listing is currently active.", nullable=False),
+        FieldSpec("primary_symbol", "primary_symbol", "string", "Dated ticker known at this event."),
+        FieldSpec("name", "name", "string", "Dated issuer name known at this event."),
+        FieldSpec("venue", "venue", "string", "Dated venue, null without evidence."),
+        FieldSpec("asset_class", "asset_class", "string", "Dated asset class, null without evidence."),
+        FieldSpec("country", "country", "string", "Dated listing country, null without evidence."),
+        FieldSpec("currency", "currency", "string", "Dated trading currency, null without evidence."),
+        FieldSpec("active", "active", "boolean", "Within reconstructed first/last vendor trade dates.", nullable=False),
+        FieldSpec("link_basis", "link_basis", "string", "Then-supported identity basis; ambiguous stays unlinked."),
+        FieldSpec("tier", "tier", "string", "Reconstruction tier in force at this event."),
         FieldSpec("cik", "cik", "string", "SEC Central Index Key.", filterable=True),
         FieldSpec("lei", "lei", "string", "Legal Entity Identifier (GLEIF).", filterable=True),
         FieldSpec("figi", "figi", "string", "Financial Instrument Global Identifier (OpenFIGI).", filterable=True),

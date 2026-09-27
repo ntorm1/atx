@@ -24,8 +24,10 @@
 
 Every table is rebuilt by create/copy/swap (the live catalog DDL minus the key, a row-count
 proof, drop, rename): DuckDB 1.5.5 cannot replay a WAL ``ALTER`` of a ``DEFAULT now()`` table.
-A table above :data:`MAX_REBUILD_ROWS` makes 0329 raise before anything is written (M2: the
-migration is one transaction; production holds these tables empty, 0.1 / 1.2 receipts). No
+A table above :data:`MAX_REBUILD_ROWS` makes 0329 raise before anything is written. This is
+a per-table limit, not an aggregate transaction bound: the migration is one transaction
+and several allowed tables could exceed 2M copied rows together. Production holds these
+tables empty (0.1 / 1.2 receipts); a populated rehearsal must separately bound the sum. No
 table created here has a ``DEFAULT now()`` column, a PRIMARY KEY or an index. The schema
 contract pin is re-persisted by swap.
 """

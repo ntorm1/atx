@@ -1,9 +1,10 @@
 """B0 gate for migration 0327: read-only TickerHistory share-unit inventory (A9 I1).
 
 Opens the warehouse READ-ONLY and reports, per TickerHistory ``run_id``, the unit evidence
-and the action migration 0327 would take: ``scale_x1000``, ``none``, ``abort`` (0327 would
-raise and roll back; a manual unit ruling is needed) or ``already_ledgered``. B0 records the
-JSON in ``run5-readiness.json`` and applies 0327 only when no run is ``abort``.
+and the action migration 0327 would take: ``scale_x1000``, ``none`` or ``abort``.
+Runs proven corrected by a published bars_unit_correction ledger are explicitly
+``already_corrected``; their original loader metadata no longer describes stored units.
+The raw inventory and whole-line suspect counts remain in the report.
 
     OPENBLAS_NUM_THREADS=1 .venv/Scripts/python.exe scripts/ticker_history_unit_inventory.py \
         --db-path <warehouse.duckdb> --output <readiness-fragment.json>
@@ -24,11 +25,34 @@ import duckdb
 from atx_db.migrations.bodies_0327 import ticker_history_unit_inventory
 
 
+def inventory_with_corrections(con):
+    """Keep raw evidence while avoiding a false mixed-unit abort after publication."""
+    runs = ticker_history_unit_inventory(con)
+    tables = {row[0] for row in con.execute("SELECT table_name FROM duckdb_tables() WHERE schema_name='main'").fetchall()}
+    corrected = set()
+    if {"equity_bar_unit_corrections", "build_runs"} <= tables:
+        corrected = {row[0] for row in con.execute("""
+            SELECT DISTINCT json_extract_string(c.evidence, '$.run_id')
+            FROM equity_bar_unit_corrections c JOIN build_runs b
+              ON b.stage = 'bars_unit_correction'
+             AND b.run_key = json_extract_string(c.evidence, '$.stage_run_key')
+             AND b.status = 'published'
+            WHERE c.unit_basis IN ('thousands', 'shares_unit_suspect')
+        """).fetchall()}
+    for run in runs:
+        if run["run_id"] in corrected:
+            run["raw_inventory_action"] = run["action"]
+            run["raw_inventory_reason"] = run["reason"]
+            run["action"] = "already_corrected"
+            run["reason"] = "published bars_unit_correction ledger; raw loader-unit inference no longer applies"
+    return runs
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db-path", required=True, type=Path)
     parser.add_argument("--output", type=Path, help="write the JSON here as well (must not exist)")
-    parser.add_argument("--memory-limit", default="512MB")
+    parser.add_argument("--memory-limit", default="256MB")
     parser.add_argument("--threads", type=int, default=1)
     args = parser.parse_args()
     if args.output is not None and args.output.exists():
@@ -42,7 +66,7 @@ def main() -> int:
         version = con.execute(
             "SELECT max(CAST(version AS INTEGER)) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
         ).fetchone()
-        runs = ticker_history_unit_inventory(con)
+        runs = inventory_with_corrections(con)
     finally:
         con.close()
     report = {
@@ -55,7 +79,11 @@ def main() -> int:
         "elapsed_seconds": round(time.perf_counter() - started, 1),
         "would_abort": any(run["action"] == "abort" for run in runs),
         "actions": {action: sum(run["action"] == action for run in runs)
-                    for action in ("scale_x1000", "none", "abort", "already_ledgered")},
+                    for action in ("scale_x1000", "none", "abort", "already_corrected")},
+        "pending_suspect_line_count": sum(run["shares_unit_suspect_line_count"] for run in runs
+                                          if run["action"] != "already_corrected"),
+        "pending_suspect_rows": sum(run["shares_unit_suspect_rows"] for run in runs
+                                    if run["action"] != "already_corrected"),
         "runs": runs,
     }
     text = json.dumps(report, indent=2, default=str)

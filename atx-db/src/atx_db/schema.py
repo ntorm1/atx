@@ -1949,6 +1949,10 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         con.execute(statement)
 
     create_security_master_current_view(con)
+    from .identity_links import create_identity_tables, create_security_master_public_view
+
+    create_identity_tables(con)
+    create_security_master_public_view(con)
     con.execute(
         """
         CREATE OR REPLACE VIEW v_equity_daily_returns AS
