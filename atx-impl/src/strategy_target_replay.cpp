@@ -1,4 +1,5 @@
 #include "strategy_target_replay.hpp"
+#include "strategy_target_replay_detail.hpp"
 
 #include <algorithm>
 #include <array>
@@ -226,7 +227,7 @@ namespace {
 struct SavedBlend {
   Json manifest;
   usize dates{}, names{}, begin{}, end{};
-  std::vector<f64> signal, close, raw;
+  std::vector<f64> signal, close, raw, volume; // volume only when requested (NAV replay)
   std::vector<u8> member, present;
   std::vector<i64> sessions;
   std::vector<u64> ids;
@@ -282,14 +283,31 @@ template<class T> co::Status payload(const std::filesystem::path& base, const Js
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: payload SHA: " + name);
   return co::Ok();
 }
-co::Status admit_saved(const TargetReplayRunConfig& cfg, SavedBlend& out) {
+// Two saved-blend compositions are admitted: the fixed equal-family/equal-within
+// blend, and a blend built with externally pinned per-candidate weights (IC runner
+// --composition-weights). The IC runner writes composition_weights_sha256 exactly
+// for the pinned variant (absent, not null, otherwise); it stays in the manifest,
+// which every summary publishes as source_bindings.
+bool admitted_signal_semantics(const Json& j) {
+  const auto& semantics = j.at("signal_semantics");
+  if (!semantics.is_string()) return false;
+  const bool pinned = semantics == "exact-pre-target-composition;pinned-candidate-weights;"
+                                   "missing-or-unoriented-neutral-fixed-denominator";
+  if (!pinned)
+    return semantics == "exact-pre-target-composition;equal-family/equal-within;"
+                        "missing-or-unoriented-neutral-fixed-denominator" &&
+           !j.contains("composition_weights_sha256");
+  const auto& weights = j.at("composition_weights_sha256");
+  return weights.is_string() && hash_valid(weights.get<std::string>());
+}
+co::Status admit_saved(const TargetReplayRunConfig& cfg, SavedBlend& out,
+                       bool with_volume = false) {
   ATX_TRY(out.manifest, pinned_json(cfg.combined_path, cfg.combined_sha256));
   const auto& j = out.manifest;
   const auto d = j.at("dates").get<u64>(), n = j.at("instruments").get<u64>();
   if (j.at("schema") != "atx.dsl-combined-signal/v1" || j.at("status") != "complete" ||
       j.at("layout") != "date-major-little-endian" || j.at("role_window_required") != true ||
-      j.at("actual_trades_or_returns") != false ||
-      j.at("signal_semantics") != "exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator" ||
+      j.at("actual_trades_or_returns") != false || !admitted_signal_semantics(j) ||
       j.at("member_semantics") != "decision-member-and-source-present-and-finite-positive-close;independent-of-component-coverage" ||
       j.at("finite_semantics") != "one-iff-saved-f64-is-finite;nonmembers-NaN;zero-is-valid-neutral-signal" ||
       !d || d > max_dates || !n || n > max_names)
@@ -308,8 +326,10 @@ co::Status admit_saved(const TargetReplayRunConfig& cfg, SavedBlend& out) {
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: saved score window");
   Budget budget{cfg.target.max_working_bytes}; const auto cells = d * n;
   // Includes metadata parse/output overlap, finite-mask validation, optional
-  // close/raw/presence and temporary role membership/axis verification vectors.
-  if (!budget.add(1, metadata_bytes) || !budget.add(cells, cfg.role_path.empty() ? 10 : 28) ||
+  // close/raw/presence and temporary role membership/axis verification vectors,
+  // plus the optional f64 volume payload (8 B/cell) only when volume is requested.
+  const u64 cell_bytes = cfg.role_path.empty() ? 10 : (with_volume ? 36 : 28);
+  if (!budget.add(1, metadata_bytes) || !budget.add(cells, cell_bytes) ||
       !budget.add(d, 2 * sizeof(i64) + sizeof(TargetReplayDay)) ||
       !budget.add(n, 2 * sizeof(u64) + sizeof(Ranked) + 2 * sizeof(f64)))
     return co::Err(co::ErrorCode::OutOfRange, "target replay: aggregate input/workspace budget");
@@ -334,9 +354,15 @@ co::Status admit_saved(const TargetReplayRunConfig& cfg, SavedBlend& out) {
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: support count mismatch");
   return validate_input(out.view(), cfg.target);
 }
-co::Status load_prices(const TargetReplayRunConfig& cfg, SavedBlend& out) {
+co::Status load_prices(const TargetReplayRunConfig& cfg, SavedBlend& out,
+                       bool with_volume = false) {
   if (cfg.role_path.empty()) return co::Ok();
   ATX_TRY(auto j, pinned_json(cfg.role_path, cfg.role_sha256));
+  // Same contract as engine::data::read_strategy_role (strategy_data.cpp): raw
+  // share volume, present => finite and >= 0, absent => NaN. Checked only when
+  // requested so the target-replay recipe and its fixtures stay unchanged.
+  if (with_volume && j.at("volume_basis") != "raw-share-volume")
+    return co::Err(co::ErrorCode::InvalidArgument, "target replay: price-role volume basis");
   if (cfg.role_sha256 != out.manifest.at("role_manifest_sha256").get<std::string>() ||
       j.at("schema") != "atx.recent-research-role/v1" || j.at("status") != "complete" ||
       j.at("source_sha256") != out.manifest.at("source_sha256") ||
@@ -366,6 +392,13 @@ co::Status load_prices(const TargetReplayRunConfig& cfg, SavedBlend& out) {
         out.member[k] != static_cast<u8>(member[k] && out.present[k] &&
                                         std::isfinite(out.close[k]) && out.close[k] > 0))
       return co::Err(co::ErrorCode::InvalidArgument, "target replay: price-role presence/support");
+  }
+  if (!with_volume) return co::Ok();
+  ATX_TRY_VOID(payload(base, files, "volume.f64", out.volume, cells));
+  for (usize k = 0; k < cells; ++k) {
+    if (out.present[k] ? (!std::isfinite(out.volume[k]) || out.volume[k] < 0)
+                       : !std::isnan(out.volume[k]))
+      return co::Err(co::ErrorCode::InvalidArgument, "target replay: price-role volume contract");
   }
   return co::Ok();
 }
@@ -537,4 +570,55 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
     return 0;
   } catch (const std::exception& e) { err << "target replay: " << e.what() << '\n'; return 2; }
 }
+
+// Private shared seams for the NAV replay (strategy_target_replay_detail.hpp).
+// Thin forwarding wrappers over the file-local implementations above: no code
+// motion and no arithmetic change, so replay_targets and its fixtures are
+// unaffected. Qualified `::atx::impl::strategy::` calls reach the unnamed-namespace
+// functions (a plain call would find these same-named wrappers first).
+namespace detail {
+TargetReplayInput LoadedSavedBlend::view() const {
+  return {dates, names, begin, end, signal, member, sessions, ids, close, raw, present};
+}
+co::Result<LoadedSavedBlend> load_saved_blend(const TargetReplayRunConfig& cfg, bool with_volume) {
+  try {
+    ATX_TRY_VOID(validate_config(cfg.target));
+    if constexpr (std::endian::native != std::endian::little)
+      return co::Err(co::ErrorCode::Unavailable, "target replay: little-endian host required");
+    if (!std::numeric_limits<f64>::is_iec559 || cfg.role_path.empty() != cfg.role_sha256.empty() ||
+        (with_volume && cfg.role_path.empty()))
+      return co::Err(co::ErrorCode::InvalidArgument, "target replay: role/volume load contract");
+    if (cfg.target.max_working_bytes < metadata_bytes)
+      return co::Err(co::ErrorCode::OutOfRange, "target replay: aggregate input/workspace budget");
+    SavedBlend blend;
+    ATX_TRY_VOID(admit_saved(cfg, blend, with_volume));
+    ATX_TRY_VOID(load_prices(cfg, blend, with_volume));
+    LoadedSavedBlend out;
+    out.dates = blend.dates; out.names = blend.names; out.begin = blend.begin; out.end = blend.end;
+    out.signal = std::move(blend.signal); out.close = std::move(blend.close);
+    out.raw = std::move(blend.raw); out.volume = std::move(blend.volume);
+    out.member = std::move(blend.member); out.present = std::move(blend.present);
+    out.sessions = std::move(blend.sessions); out.ids = std::move(blend.ids);
+    out.manifest_json = blend.manifest.dump();
+    return co::Ok(std::move(out));
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "target replay: allocation failed");
+  } catch (const std::exception& e) {
+    return co::Err(co::ErrorCode::InvalidArgument, std::string("target replay: ") + e.what());
+  }
+}
+co::Status validate_replay_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
+  return validate_input(in, cfg);
+}
+void desired_target(std::span<const f64> signal, std::span<const u8> member,
+                    std::vector<std::pair<f64, usize>>& row, std::vector<f64>& target) {
+  ::atx::impl::strategy::desired_target(signal, member, row, target);
+}
+void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
+                    bool rebalance, f64 spent, const std::vector<f64>& desired,
+                    std::vector<f64>& current, TargetReplayDay& out) {
+  ::atx::impl::strategy::update_weights(in, cfg, d, rebalance, spent, desired, current, out);
+}
+u32 calendar_month(i64 session_ns) { return ::atx::impl::strategy::calendar_month(session_ns); }
+} // namespace detail
 } // namespace atx::impl::strategy
