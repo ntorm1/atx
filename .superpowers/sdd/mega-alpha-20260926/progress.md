@@ -1,5 +1,12 @@
 # Active task: recent-data DSL ensemble
 
+## D2 byte-stability on real data (T30 binary, pre-T37) — PASS — 2026-09-27
+Bounded run mega-nav-v5-baseline-check-run (exit 0, 22.4 s; exe b6b21d88 from v5-0): frozen v4.1 TRAIN cell (combined 24a6cc76,
+role 210fff96, fields-v6 32565c32, baseline-v1 c1 f.25 band 2 price-risk-v1) -> recipe.json af058239 and
+daily_modeled-1bn-stale5-v1+swap-fin-v1.csv 3f846525 BOTH identical to build-equity/mega-nav-v4-train-b2-f.25. Not a trial
+(reproduction of an existing cell). T37 repeats the check with the v5-1 binary after T36.
+
+
 ## v5-0 pre-build (T30 only) — PASS — 2026-09-27
 mega-v5-0-receipt.json: source 7d1c82c0, Jobs 4, 20.7 s, 5 TUs, 3 links, exit 0. atx-impl-strategy-target-tests.exe
 --gtest_filter=TargetReplayV5.*:NavV5* -> 10/10 PASSED (hand-derived recipe SHA pins held). Full exe: 49/49 PASSED (6 suites).
