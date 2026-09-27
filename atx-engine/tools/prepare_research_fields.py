@@ -20,6 +20,15 @@ Sources (all read-only; exact bytes hashed, pinned against their producers' rece
   date(session); line_types: static (non point-in-time) line classification.
 * the role payload itself (``mkt_ret``): equal-weight mean of guarded adjusted close-to-close
   returns of the prior session's decision members, broadcast to every present cell of the session.
+* issuer-level fields (opt-in, ``ISSUER_FIELDS``; library v4): a pinned identity bridge (T19,
+  ``prepare_identity_bridge.py``: dated securityID -> CIK links, P/J, available_at) and a pinned
+  fundamental events artifact (T20, ``build_fundamental_events.py``: one snapshot row per filing event
+  and a SIC event table). Line i at session d links to a CIK through a link whose interval contains d
+  and whose available_at < d 22:00 UTC. Fundamental items and industry groups (``grp_sic2``,
+  ``grp_ff12``, ``grp_ff49``) read the CIK's latest row with clock < the mark of session d-L, L =
+  ``--fund-lag-sessions`` (declared 1), with 200/400/550-day staleness, on primary (P) lines only;
+  ``me_company`` sums shares_out x raw_close over every role line (P and J) of the issuer. The input
+  schemas are read through a small adapter (``BRIDGE_ADAPTER``, ``EVENTS_ADAPTER``).
 
 Every manifest field entry carries a machine-readable ``point_in_time`` flag (see
 ``POINT_IN_TIME_DEFINITION``); a false flag names its reason and the non-PIT aspect (values or
@@ -37,6 +46,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import fnmatch
 import hashlib
 import io
 import json
@@ -244,6 +254,140 @@ EXCLUDED_SOURCE_COLUMNS = [
     {"columns": "earnFlag == -1", "reason": "presumes a known future event date; mapped to 0 (same as N)"},
     {"columns": "same-date vendor shares", "reason": "A8: vendor runs start at the filing cover date; replaced by the 90-day lag (shares_out)"},
 ]
+
+# ---------------------------------------------------------------------------
+# Issuer-level fields (library v4, T21): fundamentals, company market equity, industry groups.
+# Kept in their own registry: FIELDS, DEFAULT_FIELDS and every legacy output byte are unchanged
+# when none of these is requested. All are point in time and opt-in (they need pinned inputs).
+# Rulings: v4-prereg.md R2 (declared 2026-09-27 before any v4 TRAIN read) and T18 report section 7.
+# ---------------------------------------------------------------------------
+
+FUND_LAG_SESSIONS_DECLARED = 1   # v4-prereg R2: +1 declared lag session (--fund-lag-sessions 1)
+FUND_STALE_DAYS = 200            # quarterly / instant rows
+FUND_STALE_DAYS_ANNUAL = 400     # annual-only rows
+GRP_STALE_DAYS = 550
+MARK_NS = 22 * 3_600_000_000_000  # the role close mark: session date 22:00 UTC
+SEAL_NS = (SEAL - EPOCH).days * DAY_NS
+OPEN_END_DAY = np.iinfo(np.int64).max
+NULL_PERIOD_DAY = -(1 << 40)     # a null period_end is never fresh
+SIC_RANGE = (100, 9999)          # atx_db.reference_classifications SIC_MIN / SIC_MAX
+# French's Fama-French 12 numbering (Siccodes12): 1 NoDur .. 12 Other.
+FF12_NUMBERS = {"NoDur": 1, "Durbl": 2, "Manuf": 3, "Enrgy": 4, "Chems": 5, "BusEq": 6, "Telcm": 7, "Utils": 8,
+                "Shops": 9, "Hlth": 10, "Money": 11, "Other": 12}
+SIC_MAPPING_VERSIONS = {"ff12": "french_siccodes12_v2", "ff49": "french_siccodes49_v1"}
+
+LINK_RULE = (
+    "line -> CIK: the pinned identity-bridge link of the line whose [start, end_incl] contains date(session t) and whose "
+    "available_at < date(session t) 22:00 UTC; the value is published on primary (P) lines only (secondary J lines, "
+    "unlinked lines and lines with two qualifying links to different CIKs -> NaN)")
+FUND_CLOCK = (
+    "fund-events-lagged-v1: the linked CIK's latest events row with clock < date(session t-L) 22:00 UTC, L = {lag} declared "
+    "lag session(s) on the role calendar (--fund-lag-sessions): usable from the first session whose 22:00 UTC mark follows "
+    "the clock, plus L sessions; sessions t < L -> NaN; clock = FSDS SUB accepted_utc of the filing, else FC1 (filed "
+    "00:00 UTC + 46 h, labelled); rows sharing one CIK and clock: the later events-file row wins. " + LINK_RULE)
+FUND_STALENESS = (
+    "age = date(session) - period_end of the visible events row, calendar days; age > 200 -> NaN (> 400 when the row is "
+    "annual-only); no visible row or null period_end -> NaN; a visible NaN item stays NaN (no skip-back to an older row); "
+    "latest-clock-wins restatements: a restated value enters at the restating filing's clock and is never backdated")
+FUND_CAVEATS = [
+    "values modeled/unaccepted (not F.1-accepted): bounded v4 events producer over the CompanyFacts CF-R snapshot "
+    "2026-09-20 (us-gaap + dei only: IFRS filers and most ADRs have no values) and FSDS SUB acceptance clocks",
+    "identity from the pinned identity bridge (r4 rehearsal links, rehearsal_identity recorded in source_checks; "
+    "scope_complete=false: about 80% of common member cells are linked)",
+    "FC1 fallback clock (filed + 46 h) where FSDS SUB lacks the accession: counted per field (fc1_finite_member_cells)",
+    "item definitions (concept chains, TTM and discrete-quarter derivation) belong to the events producer "
+    "(atx-engine/tools/fundamental_events_schema.md); the events manifest SHA-256 is pinned in sources",
+]
+ME_CLOCK = (
+    "role-close-mark: sum over every role line with a qualifying P or J identity-bridge link to the CIK at session t of "
+    "shares_out[t] x raw_close[t] (this run's shares_out field; role raw_close.f64 of present lines); published on the "
+    "CIK's primary lines. " + LINK_RULE)
+ME_STALENESS = (
+    "no fill: NaN when any role line linked to the CIK at session t has a non-finite or non-positive shares_out x "
+    "raw_close (absent, unpriced, or shares_out NaN); NaN on unlinked, secondary (J) and ambiguous lines")
+ME_CAVEATS = [
+    "issuer market equity is line-summed vendor ME (shares_out: 90-day lagged vendor shares restated to the session "
+    "basis), not DEI entity shares",
+    "share classes outside the role (not in its ADV universe) or without a qualifying link are missing: multi-class "
+    "issuers can be understated",
+    "identity from the pinned identity bridge (r4 rehearsal links, rehearsal_identity recorded in source_checks)",
+]
+GRP_CLOCK = (
+    "fund-events-lagged-v1 applied to the SIC events table: the linked CIK's latest SIC row (FSDS SUB sic as of the "
+    "filing) with clock < date(session t-L) 22:00 UTC, L = {lag}; sessions t < L -> NaN; a row whose sic is null or "
+    "outside [100, 9999] carries no SIC and is skipped (counted). " + LINK_RULE)
+GRP_STALENESS = (
+    "age = date(session) - UTC date of the visible SIC row's clock, calendar days; age > 550 -> NaN; no visible SIC row -> "
+    "NaN; NaN is an unknown label (the VM keeps NaN labels out of every group)")
+GRP_CAVEATS = [
+    "SIC as of each filing (FSDS SUB), not the SEC's current snapshot: about 11% of CIKs changed SIC in 2015-2024",
+    "mapping from atx_db.reference_classifications (French Siccodes12 v2 / Siccodes49 v1); module code identity and a "
+    "digest of the full SIC -> code tables are in source_checks.issuer.sic_mapping",
+    "identity from the pinned identity bridge (r4 rehearsal links, rehearsal_identity recorded in source_checks)",
+]
+# (field/item name, units, what the events producer's item holds). Items are the T18 section 6 proposal plus
+# be_lag1q_lag4 (the lag-4 opening equity that dROE needs).
+FUND_ITEMS = (
+    ("be", "USD", "book equity at the latest period end"),
+    ("at", "USD", "total assets at the latest period end"),
+    ("at_lag4", "USD", "total assets four fiscal quarters before the latest period end"),
+    ("lt", "USD", "total liabilities at the latest period end"),
+    ("che", "USD", "cash and short-term investments at the latest period end"),
+    ("debt", "USD", "total debt at the latest period end"),
+    ("sale_ttm", "USD", "revenue, trailing twelve months"),
+    ("gp_ttm", "USD", "gross profit, trailing twelve months"),
+    ("oi_ttm", "USD", "operating income, trailing twelve months"),
+    ("ni_ttm", "USD", "net income, trailing twelve months"),
+    ("ni_q", "USD", "net income, latest discrete fiscal quarter"),
+    ("ni_q_lag4", "USD", "net income, the same fiscal quarter one year earlier"),
+    ("be_lag1q", "USD", "book equity one quarter before the latest period end (opening equity of the quarter)"),
+    ("be_lag1q_lag4", "USD", "opening book equity of the same fiscal quarter one year earlier"),
+    ("cfo_ttm", "USD", "net cash from operating activities, trailing twelve months"),
+    ("capx_ttm", "USD", "capital expenditures, trailing twelve months"),
+    ("xrd_ttm", "USD", "research and development expense, trailing twelve months"),
+    ("dvc_ttm", "USD", "common dividends paid, trailing twelve months"),
+    ("prstkc_ttm", "USD", "repurchases of common stock, trailing twelve months"),
+    ("sstk_ttm", "USD", "proceeds from issuance of common stock, trailing twelve months"),
+    ("txt_q", "USD", "income tax expense, latest discrete fiscal quarter"),
+    ("txt_q_lag4", "USD", "income tax expense, the same fiscal quarter one year earlier"),
+    ("shrs_q", "shares", "common shares outstanding at the latest period end"),
+    ("shrs_q_lag4", "shares", "common shares outstanding four fiscal quarters earlier"),
+    ("noa", "USD", "net operating assets at the latest period end"),
+    ("noa_lag4", "USD", "net operating assets four fiscal quarters earlier"),
+    ("sue", "unitless", "standardized unexpected earnings (seasonal random walk, 8 quarters, first-reported EPS)"),
+    ("fscore", "count 0-9", "Piotroski F-score, all nine terms required"),
+)
+ISSUER_FIELDS = {}
+for _name, _units, _what in FUND_ITEMS:
+    ISSUER_FIELDS[_name] = {
+        "group": "issuer", "kind": "fund", "item": _name, "point_in_time": True, "lagged": True,
+        "source_columns": [_name, "cik", "clock", "period_end", "annual_only"],
+        "units": _units, "clock": FUND_CLOCK, "staleness": FUND_STALENESS, "caveats": FUND_CAVEATS,
+        "definition": f"{_what}: item `{_name}` of the pinned fundamental events artifact, value of the linked CIK's "
+                      f"latest visible events row (see clock and staleness)"}
+ISSUER_FIELDS["me_company"] = {
+    "group": "issuer", "kind": "me", "point_in_time": True, "lagged": False, "requires": ["shares_out"],
+    "source_columns": ["shares_out", "raw_close.f64", "present.u8", "identity-bridge links"],
+    "units": "USD: issuer market equity, sum of shares_out x raw_close over the issuer's role lines",
+    "clock": ME_CLOCK, "staleness": ME_STALENESS, "caveats": ME_CAVEATS,
+    "definition": "me_company[t, i] = sum over role lines j linked (P or J) at t to the CIK of primary line i of "
+                  "shares_out[t, j] x raw_close[t, j]; NaN when any term is not finite and positive"}
+for _name, _code, _units in (
+        ("grp_sic2", "sic2", "categorical code: SIC major group floor(sic / 100), 1-99, stored as f64"),
+        ("grp_ff12", "ff12", "categorical code: Fama-French 12-industry number (1 NoDur, 2 Durbl, 3 Manuf, 4 Enrgy, "
+                             "5 Chems, 6 BusEq, 7 Telcm, 8 Utils, 9 Shops, 10 Hlth, 11 Money, 12 Other), stored as f64"),
+        ("grp_ff49", "ff49", "categorical code: Fama-French 49-industry number 1-49, stored as f64; a SIC listed under "
+                             "no FF49 industry -> NaN (never 49 Other)")):
+    ISSUER_FIELDS[_name] = {
+        "group": "issuer", "kind": "grp", "code": _code, "point_in_time": True, "lagged": True,
+        "source_columns": ["sic", "cik", "clock"], "units": _units, "clock": GRP_CLOCK, "staleness": GRP_STALENESS,
+        "caveats": GRP_CAVEATS,
+        "definition": f"{_code} of the linked CIK's latest visible valid SIC row: sic2 = floor(sic / 100); ff12 / ff49 = "
+                      f"atx_db.reference_classifications fama_french_12_for_sic / fama_french_49_for_sic "
+                      f"({SIC_MAPPING_VERSIONS['ff12']} / {SIC_MAPPING_VERSIONS['ff49']}) as French's industry number"}
+del _name, _units, _what, _code
+# Every producible field: the legacy registry first (its order is the manifest order), then the issuer fields.
+ALL_FIELDS = {**FIELDS, **ISSUER_FIELDS}
 
 
 def canonical(value) -> str:
@@ -1241,27 +1385,495 @@ def market_return_field(role: Role, output: Path, budget: Budget):
 
 
 # ---------------------------------------------------------------------------
+# Issuer-level fields: input adapter (T19 bridge, T20 events), links, per-session joins
+# ---------------------------------------------------------------------------
+
+# Adapter: which manifest-listed parquet files and columns carry each input. Written against the T18 section 7
+# declarations while T19/T20 were being written; candidates are tried in order and the chosen column is recorded
+# in source_checks. Files are every manifest-listed ".parquet" path whose basename matches the pattern.
+BRIDGE_ADAPTER = {
+    "files": ("*link*.parquet",), "exclude": (),
+    "columns": {"sr_id": ("sr_id", "security_id", "perm_security_id"), "cik": ("cik",),
+                "start": ("start", "link_start"), "end_incl": ("end_incl", "link_end"),
+                "available_at": ("available_at",), "primary": ("primary", "link_primary"),
+                "basis": ("basis", "link_basis")},
+    "optional": ("basis",),
+}
+EVENTS_ADAPTER = {
+    "files": ("*event*.parquet",), "exclude": ("*sic*",),
+    "columns": {"cik": ("cik",), "clock": ("available_at", "clock_utc", "clock", "accepted_utc"),
+                "period_end": ("period_end", "report_period"), "annual_only": ("annual_only",),
+                "clock_basis": ("clock_basis", "clock_source")},
+    "optional": ("annual_only", "clock_basis"),
+}
+SIC_ADAPTER = {
+    "files": ("*sic*.parquet",), "exclude": (),
+    "columns": {"cik": ("cik",), "clock": ("available_at", "clock_utc", "clock", "accepted_utc"), "sic": ("sic",)},
+    "optional": (),
+}
+BRIDGE_KINDS = {"P": True, "J": False}          # primary flag; any other value (N, ...) is dropped and counted
+BRIDGE_EXCLUDED_BASES = ("current_ticker_verified",)  # T18: starts at the 2026 snapshot, never backfills history
+
+
+def pinned_manifest(directory: Path, expected_sha256: str, what: str):
+    blob = (directory / "manifest.json").read_bytes()
+    digest = sha_bytes(blob)
+    if digest != str(expected_sha256).lower():
+        raise ValueError(f"{what} manifest SHA-256 does not match --{what}-sha256")
+    m = json.loads(blob)
+    if m.get("status") != "complete":
+        raise ValueError(f"{what} manifest status is not complete (unpublished artifact)")
+    return m, {"path": str((directory / "manifest.json").resolve()), "bytes": len(blob), "sha256": digest,
+               "schema": m.get("schema")}
+
+
+def listed_files(manifest: dict, what: str) -> dict:
+    files = manifest.get("files")
+    if isinstance(files, dict):
+        return {str(k): v for k, v in files.items()}
+    if isinstance(files, list):
+        return {str(f.get("path") or f.get("name")): f for f in files}
+    raise ValueError(f"{what} manifest lists no files")
+
+
+def read_listed(directory: Path, manifest: dict, adapter: dict, what: str, budget: Budget):
+    """Every manifest-listed parquet file the adapter selects, hash-verified from the exact bytes parsed, concatenated
+    in path order, with the adapter's columns picked from the candidates (first present wins)."""
+    listed = listed_files(manifest, what)
+    names = sorted(rel for rel in listed if rel.endswith(".parquet")
+                   and any(fnmatch.fnmatch(Path(rel).name, p) for p in adapter["files"])
+                   and not any(fnmatch.fnmatch(Path(rel).name, p) for p in adapter["exclude"]))
+    if not names:
+        raise ValueError(f"{what}: no manifest-listed parquet file matches {list(adapter['files'])}")
+    tables, sources, picked = [], [], None
+    for rel in names:
+        entry = listed[rel]
+        blob = (directory / rel).read_bytes()
+        digest = sha_bytes(blob)
+        if len(blob) != int(entry.get("bytes", -1)) or digest != entry.get("sha256"):
+            raise ValueError(f"{what}: {rel} does not match its manifest entry")
+        schema = pq.read_schema(pa.BufferReader(blob))
+        if picked is None:
+            picked = {}
+            for role, candidates in adapter["columns"].items():
+                hit = next((c for c in candidates if c in schema.names), None)
+                if hit is None and role not in adapter["optional"]:
+                    raise ValueError(f"{what}: no column for {role} (tried {list(candidates)})")
+                picked[role] = hit
+        extra = adapter.get("extra", ())
+        missing = [c for c in extra if c not in schema.names]
+        if missing:
+            raise ValueError(f"{what}: {rel} lacks requested column(s) {missing}")
+        wanted = [c for c in picked.values() if c is not None] + [c for c in extra if c not in picked.values()]
+        if any(c not in schema.names for c in wanted):
+            raise ValueError(f"{what}: {rel} has a different schema from {names[0]}")
+        tables.append(pq.read_table(pa.BufferReader(blob), columns=wanted))
+        sources.append({"path": str((directory / rel).resolve()), "bytes": len(blob), "sha256": digest})
+        del blob
+        budget.check(f"{what}-read")
+    try:
+        table = pa.concat_tables(tables)
+    except pa.ArrowInvalid as exc:
+        raise ValueError(f"{what}: listed parquet files disagree on the schema ({exc})") from None
+    return table, sources, picked
+
+
+def column_of(table, name: str):
+    col = table.column(name)
+    return col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col
+
+
+def as_instants_ns(col, what: str) -> np.ndarray:
+    """A timestamp column (any unit; tz-aware is a UTC instant, naive is declared UTC) as i64 ns since the epoch."""
+    if not pa.types.is_timestamp(col.type):
+        raise ValueError(f"{what} is {col.type}, expected a timestamp (UTC instant)")
+    if col.null_count:
+        raise ValueError(f"{what} has null values")
+    return pc.cast(pc.cast(col, pa.timestamp("ns", tz=col.type.tz)), pa.int64()).to_numpy(zero_copy_only=False)
+
+
+def as_days(col, what: str, null_day=None) -> np.ndarray:
+    if pa.types.is_date64(col.type):
+        col = pc.cast(col, pa.date32())
+    if not pa.types.is_date32(col.type):
+        raise ValueError(f"{what} is {col.type}, expected a date")
+    if col.null_count and null_day is None:
+        raise ValueError(f"{what} has null values")
+    days = pc.fill_null(pc.cast(col, pa.int32()), 0).to_numpy(zero_copy_only=False).astype(np.int64)
+    if col.null_count:
+        days = np.where(col.is_null().to_numpy(zero_copy_only=False), null_day, days)
+    return days
+
+
+def as_integer_ids(col, what: str, prefix: str = "") -> np.ndarray:
+    """Positive i64 ids from an integer column or a digit string column (optionally prefixed)."""
+    if col.null_count:
+        raise ValueError(f"{what} has null values")
+    if pa.types.is_integer(col.type):
+        ids = pc.cast(col, pa.int64()).to_numpy(zero_copy_only=False)
+    elif pa.types.is_string(col.type) or pa.types.is_large_string(col.type):
+        if prefix:
+            col = pc.if_else(pc.starts_with(col, prefix), pc.utf8_slice_codeunits(col, len(prefix)), col)
+        if not pc.all(pc.match_substring_regex(col, r"^[0-9]+$")).as_py():
+            raise ValueError(f"{what} is not an integer id")
+        ids = pc.cast(col, pa.int64()).to_numpy(zero_copy_only=False)
+    else:
+        raise ValueError(f"{what} is {col.type}, expected an integer id")
+    if np.any(ids <= 0):
+        raise ValueError(f"{what} is not a positive id")
+    return ids.astype(np.int64)
+
+
+def as_f64(col, what: str) -> np.ndarray:
+    if (pa.types.is_string(col.type) or pa.types.is_large_string(col.type)) and what.endswith(" sic"):
+        digits = pc.fill_null(pc.match_substring_regex(col, r"^[0-9]{1,4}$"), False)
+        col = pc.if_else(digits, col, pa.scalar(None, col.type))  # non-digit SIC text -> null (invalid, skipped)
+        return pc.fill_null(pc.cast(col, pa.float64()), np.nan).to_numpy(zero_copy_only=False).astype(np.float64)
+    if not (pa.types.is_floating(col.type) or pa.types.is_integer(col.type) or pa.types.is_decimal(col.type)):
+        raise ValueError(f"{what} is {col.type}, expected a number")
+    return pc.fill_null(pc.cast(col, pa.float64()), np.nan).to_numpy(zero_copy_only=False).astype(np.float64)
+
+
+def load_bridge(directory: Path, expected_sha256: str, role: Role, budget: Budget):
+    """T19 identity bridge -> link rows on the role axis (column, dense CIK, start/end day, available_at ns, P flag)."""
+    m, man_src = pinned_manifest(directory, expected_sha256, "identity-bridge")
+    if not isinstance(m.get("rehearsal_identity"), bool):
+        raise ValueError("identity-bridge manifest carries no boolean rehearsal_identity flag")
+    table, sources, picked = read_listed(directory, m, BRIDGE_ADAPTER, "identity-bridge", budget)
+    sid = as_integer_ids(column_of(table, picked["sr_id"]), "identity-bridge sr_id", LINE_PREFIX)
+    cik = as_integer_ids(column_of(table, picked["cik"]), "identity-bridge cik")
+    start = as_days(column_of(table, picked["start"]), "identity-bridge start")
+    end = as_days(column_of(table, picked["end_incl"]), "identity-bridge end_incl", null_day=OPEN_END_DAY)
+    avail = as_instants_ns(column_of(table, picked["available_at"]), "identity-bridge available_at")
+    kind = column_of(table, picked["primary"])
+    if pa.types.is_boolean(kind.type):
+        if kind.null_count:
+            raise ValueError("identity-bridge primary has null values")
+        is_p = kind.to_numpy(zero_copy_only=False).astype(bool)
+        known = np.ones(len(is_p), dtype=bool)
+    else:
+        text = pc.fill_null(pc.cast(kind, pa.string()), "")
+        is_p = pc.equal(text, "P").to_numpy(zero_copy_only=False)
+        known = pc.is_in(text, value_set=pa.array(list(BRIDGE_KINDS))).to_numpy(zero_copy_only=False)
+    excluded = np.zeros(len(sid), dtype=bool)
+    if picked["basis"] is not None:
+        basis = pc.fill_null(pc.cast(column_of(table, picked["basis"]), pa.string()), "")
+        excluded = pc.is_in(basis, value_set=pa.array(list(BRIDGE_EXCLUDED_BASES))).to_numpy(zero_copy_only=False)
+    if np.any(start > end):
+        raise ValueError("identity-bridge link with start after end_incl")
+    sealed = avail >= SEAL_NS
+    pos, on = role.columns_of(sid)
+    keep = known & ~excluded & ~sealed & on
+    st = {"rehearsal_identity": m["rehearsal_identity"], "scope_complete": m.get("scope_complete"),
+          "schema": m.get("schema"), "columns": picked, "rows_total": int(len(sid)),
+          "rows_dropped_kind_not_p_or_j": int(np.count_nonzero(~known)),
+          "rows_dropped_excluded_basis": int(np.count_nonzero(known & excluded)),
+          "rows_available_on_or_after_2025_dropped": int(np.count_nonzero(known & ~excluded & sealed)),
+          "rows_ignored_off_axis": int(np.count_nonzero(known & ~excluded & ~sealed & ~on)),
+          "rows_used": int(np.count_nonzero(keep)), "rows_used_primary": int(np.count_nonzero(keep & is_p))}
+    links = {"col": pos[keep].astype(np.int64), "cik": cik[keep], "start": start[keep], "end": end[keep],
+             "avail": avail[keep], "primary": is_p[keep]}
+    return links, [man_src] + sources, st
+
+
+def resolve_links(links: dict, role: Role, marks: np.ndarray, budget: Budget):
+    """Session x line matrix of the dense CIK index (-1 unlinked, -2 ambiguous) and a primary flag.
+
+    A link qualifies at session t when start <= date(t) <= end_incl and available_at < mark(t). Two qualifying links
+    of one line to different CIKs make the cell ambiguous; P and J links to the same CIK make it primary."""
+    ciks = np.unique(links["cik"])
+    cidx = np.searchsorted(ciks, links["cik"]).astype(np.int32)
+    link = np.full((role.n_dates, role.n), -1, dtype=np.int32)
+    primary = np.zeros((role.n_dates, role.n), dtype=bool)
+    t_lo = np.maximum(np.searchsorted(role.days, links["start"], side="left"),
+                      np.searchsorted(marks, links["avail"], side="right"))
+    t_hi = np.searchsorted(role.days, links["end"], side="right")
+    never = 0
+    for k in np.lexsort((links["avail"], links["start"], links["col"])):
+        a, b, j, c = int(t_lo[k]), int(t_hi[k]), int(links["col"][k]), cidx[k]
+        if a >= b:
+            never += 1
+            continue
+        seg = link[a:b, j]
+        free, same = seg == -1, seg == c
+        seg[~free & ~same] = -2
+        seg[free] = c
+        if links["primary"][k]:
+            primary[a:b, j] |= free | same
+    budget.check("issuer-links")
+    st = {"linked_ciks": int(len(ciks)), "rows_never_qualifying_on_role": never,
+          "ambiguous_cells": int(np.count_nonzero(link == -2))}
+    return ciks, link, primary, st
+
+
+def load_events(directory: Path, manifest: dict, adapter: dict, items, ciks: np.ndarray, what: str, budget: Budget):
+    """Rows of linked CIKs, sealed rows dropped, stably sorted by clock (file order breaks ties)."""
+    adapter = {**adapter, "extra": tuple(items)}
+    table, sources, picked = read_listed(directory, manifest, adapter, what, budget)
+    cik = as_integer_ids(column_of(table, picked["cik"]), f"{what} cik")
+    clock = as_instants_ns(column_of(table, picked["clock"]), f"{what} clock")
+    sealed = clock >= SEAL_NS
+    pos = np.minimum(np.searchsorted(ciks, cik), max(len(ciks) - 1, 0))
+    linked = (ciks[pos] == cik) if len(ciks) else np.zeros(len(cik), dtype=bool)
+    keep = ~sealed & linked
+    order = np.flatnonzero(keep)[np.argsort(clock[keep], kind="stable")]
+    ev = {"clock": clock[order], "cidx": pos[order].astype(np.int64), "picked": picked}
+    st = {"schema": manifest.get("schema"), "columns": picked, "rows_total": int(len(cik)),
+          "rows_available_on_or_after_2025_dropped": int(np.count_nonzero(sealed)),
+          "rows_ignored_unlinked_cik": int(np.count_nonzero(~sealed & ~linked)), "rows_used": int(len(order))}
+    key = np.lexsort((ev["clock"], ev["cidx"]))
+    same = (np.diff(ev["cidx"][key]) == 0) & (np.diff(ev["clock"][key]) == 0)
+    st["rows_sharing_cik_and_clock"] = int(np.count_nonzero(same))
+    if "period_end" in picked:
+        pe = as_days(column_of(table, picked["period_end"]), f"{what} period_end", null_day=NULL_PERIOD_DAY)[order]
+        ev["period_end"] = pe
+        st["rows_null_period_end"] = int(np.count_nonzero(pe == NULL_PERIOD_DAY))
+    if "annual_only" in picked:
+        if picked["annual_only"] is None:
+            ev["annual"] = np.zeros(len(order), dtype=bool)
+        else:
+            col = column_of(table, picked["annual_only"])
+            if not pa.types.is_boolean(col.type):
+                raise ValueError(f"{what} annual_only is {col.type}, expected bool")
+            st["rows_null_annual_only_as_false"] = int(col.null_count)
+            ev["annual"] = pc.fill_null(col, False).to_numpy(zero_copy_only=False).astype(bool)[order]
+    if "clock_basis" in picked:
+        if picked["clock_basis"] is None:
+            ev["fc1"] = np.zeros(len(order), dtype=bool)
+        else:
+            text = pc.utf8_lower(pc.fill_null(pc.cast(column_of(table, picked["clock_basis"]), pa.string()), ""))
+            ev["fc1"] = pc.match_substring(text, "fc1").to_numpy(zero_copy_only=False).astype(bool)[order]
+        st["rows_used_fc1_clock"] = int(np.count_nonzero(ev["fc1"]))
+    if "sic" in picked:
+        sic = as_f64(column_of(table, picked["sic"]), f"{what} sic")[order]
+        valid = np.isfinite(sic) & (sic == np.floor(sic)) & (sic >= SIC_RANGE[0]) & (sic <= SIC_RANGE[1])
+        st["rows_used_invalid_sic_skipped"] = int(np.count_nonzero(~valid))
+        for k in ("clock", "cidx"):
+            ev[k] = ev[k][valid]
+        ev["sic"] = sic[valid].astype(np.int64)
+        st["rows_used"] = int(np.count_nonzero(valid))
+    ev["values"] = {x: as_f64(column_of(table, x), f"{what} {x}")[order] for x in items}
+    del table
+    budget.check(f"{what}-events")
+    return ev, sources, st
+
+
+def sic_mapping():
+    """SIC -> (FF12 number, FF49 number) tables for SIC 0..9999 from the pinned atx-db helpers."""
+    import sys
+    src = Path(__file__).resolve().parents[2] / "atx-db" / "src"
+    if "atx_db" not in sys.modules and str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    from atx_db import reference_classifications as rc  # noqa: PLC0415 - only when group fields are requested
+    versions = {"ff12": rc.FF12_MAPPING_VERSION, "ff49": rc.FF49_MAPPING_VERSION}
+    if versions != SIC_MAPPING_VERSIONS:
+        raise ValueError(f"SIC mapping versions {versions} differ from the declared {SIC_MAPPING_VERSIONS}")
+    ff49_numbers = {code: number for number, code, *_ in rc.FF49_INDUSTRIES}
+    ff12, ff49 = np.full(SIC_RANGE[1] + 1, np.nan), np.full(SIC_RANGE[1] + 1, np.nan)
+    for sic in range(SIC_RANGE[0], SIC_RANGE[1] + 1):
+        ff12[sic] = FF12_NUMBERS[rc.fama_french_12_for_sic(sic)]
+        code = rc.fama_french_49_for_sic(sic)
+        ff49[sic] = ff49_numbers[code] if code is not None else np.nan
+    table = np.stack([ff12, ff49]).astype("<f8")
+    provenance = {"module_path": str(Path(rc.__file__).resolve()), **code_identity(Path(rc.__file__)),
+                  "versions": versions, "ff12_numbering": FF12_NUMBERS,
+                  "table_sha256": sha_bytes(table.tobytes()),
+                  "table_rule": "sha256 of the <f8 bytes of [ff12[0..9999], ff49[0..9999]] (NaN outside [100, 9999] or unlisted)"}
+    return ff12, ff49, provenance
+
+
+def advance(ev: dict, latest: np.ndarray, p: int, mark: int) -> int:
+    """Move the clock-ordered pointer to every row with clock < mark; latest[c] = the last such row of CIK c."""
+    p2 = int(np.searchsorted(ev["clock"], mark, side="left"))
+    if p2 > p:
+        np.maximum.at(latest, ev["cidx"][p:p2], np.arange(p, p2, dtype=np.int64))
+    return p2
+
+
+def issuer_fields(names, role: Role, output: Path, budget: Budget, *, bridge: Path, bridge_sha256: str,
+                  events: Path | None, events_sha256: str | None, lag: int):
+    nd, n = role.n_dates, role.n
+    fund_names = [x for x in names if ISSUER_FIELDS[x]["kind"] == "fund"]
+    grp_names = [x for x in names if ISSUER_FIELDS[x]["kind"] == "grp"]
+    want_me = "me_company" in names
+    budget.admit(nd * n * 5 + (64 << 20), "issuer-link-matrix")
+    links, bridge_sources, bridge_st = load_bridge(bridge, bridge_sha256, role, budget)
+    marks = role.days * DAY_NS + MARK_NS
+    ciks, link, primary, link_st = resolve_links(links, role, marks, budget)
+    del links
+    st = {"fund_lag_sessions": lag, "identity_bridge": {**bridge_st, **link_st}}
+    fund = sic = None
+    sources = {x: list(bridge_sources) for x in names}
+    extras = {}
+    if fund_names or grp_names:
+        m, man_src = pinned_manifest(events, events_sha256, "fund-events")
+        st["fund_events_manifest"] = {"schema": m.get("schema"), "sha256": man_src["sha256"]}
+    if fund_names:
+        items = [ISSUER_FIELDS[x]["item"] for x in fund_names]
+        fund, src, st["fund_events"] = load_events(events, m, EVENTS_ADAPTER, items, ciks, "fund-events", budget)
+        for x in fund_names:
+            sources[x] += [man_src] + src
+    if grp_names:
+        sic, src, st["sic_events"] = load_events(events, m, SIC_ADAPTER, [], ciks, "sic-events", budget)
+        ff12, ff49, st["sic_mapping"] = sic_mapping()
+        codes = {"sic2": None, "ff12": ff12, "ff49": ff49}
+        for x in grp_names:
+            sources[x] += [man_src] + src
+    budget.report("issuer-inputs", linked_ciks=len(ciks), fund_rows=len(fund["clock"]) if fund else 0,
+                  sic_rows=len(sic["clock"]) if sic else 0)
+    link_counts = {"member_cells": 0, "unlinked": 0, "ambiguous": 0, "secondary": 0, "primary": 0}
+    reasons = {x: {"no_visible_row": 0, "stale": 0, "visible_nan": 0, "fc1_finite_member_cells": 0} for x in fund_names}
+    reasons.update({x: {"no_visible_row": 0, "stale": 0, "unmapped": 0} for x in grp_names})
+    if want_me:
+        reasons["me_company"] = {"own_line_nan": 0, "other_linked_line_nan": 0, "multi_line_finite": 0}
+    fund_latest = np.full(len(ciks), -1, dtype=np.int64)
+    sic_latest = np.full(len(ciks), -1, dtype=np.int64)
+    fp = sp = 0
+    writers, stream, so_file = {}, None, None
+    try:
+        for x in names:
+            writers[x] = FieldWriter(output, x, role)
+        if want_me:
+            so_path = output / "shares_out.f64"
+            if so_path.stat().st_size != nd * n * 8:
+                raise ValueError("me_company: this run's shares_out.f64 has the wrong size")
+            stream = RoleRows(role, ("raw_close.f64", "present.u8"))
+            so_file = so_path.open("rb")
+        for t in range(nd):
+            day = int(role.days[t])
+            member = role.member[t] != 0
+            lk = link[t]
+            safe = np.maximum(lk, 0)
+            pline = (lk >= 0) & primary[t]
+            link_counts["member_cells"] += int(np.count_nonzero(member))
+            link_counts["unlinked"] += int(np.count_nonzero(member & (lk == -1)))
+            link_counts["ambiguous"] += int(np.count_nonzero(member & (lk == -2)))
+            link_counts["secondary"] += int(np.count_nonzero(member & (lk >= 0) & ~pline))
+            link_counts["primary"] += int(np.count_nonzero(member & pline))
+            if t >= lag:
+                mark = int(marks[t - lag])
+                if fund is not None:
+                    fp = advance(fund, fund_latest, fp, mark)
+                if sic is not None:
+                    sp = advance(sic, sic_latest, sp, mark)
+            if fund_names:
+                e = np.where(pline, fund_latest[safe], -1)
+                has = e >= 0
+                es = np.maximum(e, 0)
+                if len(fund["clock"]):
+                    age = day - fund["period_end"][es]
+                    limit = np.where(fund["annual"][es], FUND_STALE_DAYS_ANNUAL, FUND_STALE_DAYS)
+                    fresh = has & (age <= limit)
+                    fc1 = fund["fc1"][es]
+                else:
+                    fresh = fc1 = np.zeros(n, dtype=bool)
+                for x in fund_names:
+                    v = fund["values"][ISSUER_FIELDS[x]["item"]]
+                    row = np.where(fresh, v[es], np.nan) if len(v) else np.full(n, np.nan)
+                    writers[x].write(row)
+                    r = reasons[x]
+                    finite = np.isfinite(row)
+                    r["no_visible_row"] += int(np.count_nonzero(member & pline & ~has))
+                    r["stale"] += int(np.count_nonzero(member & has & ~fresh))
+                    r["visible_nan"] += int(np.count_nonzero(member & fresh & ~finite))
+                    r["fc1_finite_member_cells"] += int(np.count_nonzero(member & finite & fc1))
+            if grp_names:
+                s = np.where(pline, sic_latest[safe], -1)
+                has = s >= 0
+                ss = np.maximum(s, 0)
+                if len(sic["clock"]):
+                    fresh = has & ((day - sic["clock"][ss] // DAY_NS) <= GRP_STALE_DAYS)
+                    code = sic["sic"][ss]
+                else:
+                    fresh, code = np.zeros(n, dtype=bool), np.zeros(n, dtype=np.int64)
+                for x in grp_names:
+                    kind = ISSUER_FIELDS[x]["code"]
+                    value = (code // 100).astype(np.float64) if kind == "sic2" else codes[kind][code]
+                    row = np.where(fresh, value, np.nan)
+                    writers[x].write(row)
+                    r = reasons[x]
+                    r["no_visible_row"] += int(np.count_nonzero(member & pline & ~has))
+                    r["stale"] += int(np.count_nonzero(member & has & ~fresh))
+                    r["unmapped"] += int(np.count_nonzero(member & fresh & np.isnan(row)))
+            if want_me:
+                raw, present = stream.row("raw_close.f64"), stream.row("present.u8") != 0
+                blob = so_file.read(n * 8)
+                if len(blob) != n * 8:
+                    raise ValueError("me_company: this run's shares_out.f64 is truncated")
+                so = np.frombuffer(blob, dtype="<f8")
+                with np.errstate(invalid="ignore", over="ignore"):
+                    line_me = np.where(present, so * raw, np.nan)
+                ok = np.isfinite(line_me) & (line_me > 0)
+                linked = lk >= 0
+                idx = lk[linked]
+                total = np.bincount(idx, weights=np.where(ok, line_me, 0.0)[linked], minlength=len(ciks))
+                bad = np.bincount(idx, weights=(~ok)[linked].astype(np.float64), minlength=len(ciks))
+                lines = np.bincount(idx, minlength=len(ciks))
+                company = np.where(bad == 0, total, np.nan)
+                row = np.where(pline, company[safe] if len(ciks) else np.nan, np.nan)
+                writers["me_company"].write(row)
+                r = reasons["me_company"]
+                r["own_line_nan"] += int(np.count_nonzero(member & pline & ~ok))
+                r["other_linked_line_nan"] += int(np.count_nonzero(member & pline & ok & ~np.isfinite(row)))
+                r["multi_line_finite"] += int(np.count_nonzero(member & np.isfinite(row) & (lines[safe] > 1)))
+            if t % 256 == 0:
+                budget.check("issuer-write")
+        if want_me:
+            if so_file.read(1):
+                raise ValueError("me_company: this run's shares_out.f64 is longer than the role shape")
+            role_inputs = stream.verify()
+            sources["me_company"] += role_inputs
+    except BaseException:
+        for w in writers.values():
+            w.f.close()  # refused: partial files stay unpublished (no manifest), handles released
+        raise
+    finally:
+        if stream is not None:
+            stream.close()
+        if so_file is not None:
+            so_file.close()
+    for w in writers.values():
+        w.close()
+    st["link_member_cells"] = link_counts
+    for x in names:
+        extras[x] = {"nan_reasons_member_cells": reasons[x]}
+        if ISSUER_FIELDS[x]["lagged"]:
+            extras[x]["fund_lag_sessions"] = lag
+    return writers, sources, st, extras
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
 def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *, max_rss_mib=700,
         max_seconds=1800.0, finra: Path = DEFAULT_FINRA, tickerhistory: Path = DEFAULT_TICKERHISTORY,
-        lake: Path = DEFAULT_LAKE):
+        lake: Path = DEFAULT_LAKE, identity_bridge: Path | None = None, identity_bridge_sha256: str | None = None,
+        fund_events: Path | None = None, fund_events_sha256: str | None = None,
+        fund_lag_sessions: int = FUND_LAG_SESSIONS_DECLARED):
     fields = list(fields)
-    if not fields or len(set(fields)) != len(fields) or any(f not in FIELDS for f in fields):
-        raise ValueError(f"--fields must be distinct names from {', '.join(FIELDS)}")
-    selected = [f for f in FIELDS if f in fields]  # registry order: stable manifests
+    if not fields or len(set(fields)) != len(fields) or any(f not in ALL_FIELDS for f in fields):
+        raise ValueError(f"--fields must be distinct names from {', '.join(ALL_FIELDS)}")
+    selected = [f for f in ALL_FIELDS if f in fields]  # registry order: stable manifests
     for f in selected:
-        missing = [x for x in FIELDS[f].get("requires", []) if x not in selected]
+        missing = [x for x in ALL_FIELDS[f].get("requires", []) if x not in selected]
         if missing:
             raise ValueError(f"--fields: {f} requires {', '.join(missing)} in the same run (its units rule reads it)")
+    issuer = [f for f in selected if f in ISSUER_FIELDS]
+    if issuer:
+        if identity_bridge is None or not identity_bridge_sha256:
+            raise ValueError("--fields: issuer fields need --identity-bridge and --identity-bridge-sha256")
+        if any(ISSUER_FIELDS[f]["kind"] != "me" for f in issuer) and (fund_events is None or not fund_events_sha256):
+            raise ValueError("--fields: fundamental and group fields need --fund-events and --fund-events-sha256")
+        if isinstance(fund_lag_sessions, bool) or not isinstance(fund_lag_sessions, int) or not 0 <= fund_lag_sessions <= 5:
+            raise ValueError("--fund-lag-sessions must be an integer in [0, 5] (declared: 1)")
     budget = Budget(max_rss_mib, max_seconds)
     role = Role(role_dir, role_sha256)
     budget.report("role-admitted", dates=role.n_dates, instruments=role.n)
     output.mkdir(parents=False, exist_ok=False)  # exclusive; never reuse or replace
     outcome = {}
     source_checks = {}
-    groups = {g: [f for f in selected if FIELDS[f]["group"] == g] for g in ("role", "finra", "th", "lake")}
+    groups = {g: [f for f in selected if ALL_FIELDS[f]["group"] == g] for g in ("role", "finra", "th", "lake", "issuer")}
     field_stats, field_extras = {}, {}
     if groups["role"]:
         w, src, stats = market_return_field(role, output, budget)
@@ -1289,6 +1901,15 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         for name, w in writers.items():
             outcome[name] = (w, src, w.coverage())
         budget.report("lake-complete")
+    if groups["issuer"]:  # after th: me_company reads this run's published shares_out.f64
+        writers, src, stats, extras = issuer_fields(
+            groups["issuer"], role, output, budget, bridge=identity_bridge, bridge_sha256=identity_bridge_sha256,
+            events=fund_events, events_sha256=fund_events_sha256, lag=fund_lag_sessions)
+        source_checks["issuer"] = stats
+        field_extras.update(extras)
+        for name, w in writers.items():
+            outcome[name] = (w, src[name], w.coverage())
+        budget.report("issuer-complete")
     files, entries = {}, []
     for name in selected:
         w, src, cov = outcome[name]
@@ -1298,9 +1919,10 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         digest, quantiles = digest_and_quantiles(w.path, role, w.vcount, budget)
         files[w.path.name] = {"bytes": size, "sha256": digest}
         cov["member_finite_quantiles"] = quantiles
-        spec = FIELDS[name]
+        spec = ALL_FIELDS[name]
+        clock = spec["clock"].format(lag=fund_lag_sessions) if spec.get("lagged") else spec["clock"]
         entry = {"name": name, "file": w.path.name, "dtype": "<f8", "layout": "date-major",
-                 "shape": [role.n_dates, role.n], "units": spec["units"], "clock": spec["clock"],
+                 "shape": [role.n_dates, role.n], "units": spec["units"], "clock": clock,
                  "staleness": spec["staleness"], "source_columns": spec["source_columns"],
                  "sources": src, "caveats": spec["caveats"], "coverage": cov,
                  "sha256": files[w.path.name]["sha256"], "point_in_time": spec["point_in_time"],
@@ -1351,16 +1973,26 @@ def main(argv=None):
     p.add_argument("--role-sha256", required=True, help="SHA-256 of the role's manifest.json")
     p.add_argument("--output", required=True, type=Path, help="new exclusive output directory")
     p.add_argument("--fields", default=",".join(DEFAULT_FIELDS),
-                   help="comma-separated subset of: " + ",".join(FIELDS) + " (default: the point-in-time fields "
-                        + ",".join(DEFAULT_FIELDS) + "; non-point-in-time fields are produced only when named)")
+                   help="comma-separated subset of: " + ",".join(ALL_FIELDS) + " (default: the point-in-time fields "
+                        + ",".join(DEFAULT_FIELDS) + "; non-point-in-time fields and the issuer fields "
+                        + ",".join(ISSUER_FIELDS) + " are produced only when named)")
     p.add_argument("--max-rss-mib", type=int, default=700)
     p.add_argument("--max-seconds", type=float, default=1800.0)
     p.add_argument("--finra", type=Path, default=DEFAULT_FINRA, help="FINRA short-interest root (asof/, dissemination_schedule.csv)")
     p.add_argument("--tickerhistory", type=Path, default=DEFAULT_TICKERHISTORY)
     p.add_argument("--lake", type=Path, default=DEFAULT_LAKE, help="research lake snapshot directory")
+    p.add_argument("--identity-bridge", type=Path, help="published identity-bridge directory (issuer fields)")
+    p.add_argument("--identity-bridge-sha256", help="SHA-256 of the identity bridge's manifest.json")
+    p.add_argument("--fund-events", type=Path, help="published fundamental events directory (fundamental and group fields)")
+    p.add_argument("--fund-events-sha256", help="SHA-256 of the fundamental events' manifest.json")
+    p.add_argument("--fund-lag-sessions", type=int, default=FUND_LAG_SESSIONS_DECLARED,
+                   help="declared extra lag (role sessions) after the first session whose close follows a filing clock "
+                        f"(default {FUND_LAG_SESSIONS_DECLARED}, v4-prereg R2)")
     a = p.parse_args(argv)
     run(a.role, a.role_sha256, a.output, [x.strip() for x in a.fields.split(",") if x.strip()],
-        max_rss_mib=a.max_rss_mib, max_seconds=a.max_seconds, finra=a.finra, tickerhistory=a.tickerhistory, lake=a.lake)
+        max_rss_mib=a.max_rss_mib, max_seconds=a.max_seconds, finra=a.finra, tickerhistory=a.tickerhistory, lake=a.lake,
+        identity_bridge=a.identity_bridge, identity_bridge_sha256=a.identity_bridge_sha256,
+        fund_events=a.fund_events, fund_events_sha256=a.fund_events_sha256, fund_lag_sessions=a.fund_lag_sessions)
 
 
 if __name__ == "__main__":
