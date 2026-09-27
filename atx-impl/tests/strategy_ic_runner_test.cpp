@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <limits>
 #include <sstream>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -388,5 +392,360 @@ TEST(StrategyIcRunner, AscendingVmArenaDemandMatchesRetainedMaximumArena) {
       EXPECT_EQ(*first,*second);
     }
   }
+}
+// ---- Candidate signal cache and pinned composition weights (T1) ----
+std::string file_sha(const std::filesystem::path& path) {
+  auto sha=core::sha256_file(path.string()); return sha?*sha:std::string{};
+}
+std::vector<char> file_bytes(const std::filesystem::path& path) {
+  std::ifstream in(path,std::ios::binary);
+  return std::vector<char>((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());
+}
+bool write_bytes(const std::filesystem::path& path,const std::vector<char>& bytes) {
+  std::ofstream out(path,std::ios::binary|std::ios::trunc);
+  out.write(bytes.data(),static_cast<std::streamsize>(bytes.size())); out.close();
+  return static_cast<bool>(out);
+}
+bool text_file(const std::filesystem::path& path,const std::string& text,std::string& sha) {
+  std::ofstream out(path,std::ios::binary|std::ios::trunc); out<<text; out.close();
+  auto digest=core::sha256_hex(text); if (!out || !digest) return false; sha=*digest; return true;
+}
+struct Run { bool ok{}; std::string error,log; };
+Run run_named(const Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg,const std::string& name) {
+  cfg.output_directory=(dir.path/name).string(); std::ostringstream progress;
+  const auto status=atx::impl::strategy::run_ic(cfg,progress);
+  return {static_cast<bool>(status),status?std::string{}:status.error().to_string(),progress.str()};
+}
+// Drops wall-clock, resource and cache bookkeeping only; every IC, sign, coverage
+// and planned-target diagnostic stays in the comparison.
+Json stable_role(Json result,bool keep_artifact=true) {
+  for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes",
+                        "ic_scratch_bytes","candidate_cache"})
+    result.erase(key);
+  if (!keep_artifact) result.erase("combined_artifact");
+  for (auto& candidate:result.at("candidates")) {
+    candidate.erase("wall_seconds"); candidate.erase("stage_seconds"); candidate.erase("signal_cache");
+  }
+  return result;
+}
+bool pin_weights(const Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg,const Json& weights) {
+  cfg.composition_weights_path=(dir.path/"weights.json").string();
+  return json_file(cfg.composition_weights_path,{{"schema","atx.dsl-composition-weights/v1"},
+      {"library_sha256",cfg.library_sha256},{"weights",weights}},cfg.composition_weights_sha256);
+}
+std::string weights_text(const std::string& schema,const std::string& library,const std::string& weights) {
+  return "{\"schema\":\""+schema+"\",\"library_sha256\":\""+library+"\",\"weights\":"+weights+"}";
+}
+// IC series, planned targets, fitted orientations and the saved exact blend,
+// its support masks and its manifest: everything pinned as bit-identical.
+std::vector<std::string> exact_outputs() {
+  std::vector<std::string> out{"recipe.json","orientations.json"};
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_daily_ic.csv","_planned_targets.csv","_combined.f64",
+                             "_combined_member.u8","_combined_finite.u8","_combined.json"})
+      out.push_back(role_name+suffix);
+  return out;
+}
+TEST(StrategyIcRunner, CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExactly) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  const auto plain=run_named(dir,cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  EXPECT_EQ(cold.log.find("IC cache-hit"),std::string::npos);
+  EXPECT_NE(cold.log.find("IC cache-write volume_level role=train"),std::string::npos);
+  for (const std::string id:{"volume_level","volume_rank"})
+    for (const std::string role_name:{"train","validation"})
+      EXPECT_NE(warm.log.find("IC cache-hit "+id+" role="+role_name),std::string::npos) << id << role_name;
+  // A fully warm run neither constructs nor runs the VM.
+  EXPECT_EQ(warm.log.find("IC VM-"),std::string::npos);
+  const auto reference=read_json(dir.path/"plain"/"summary.json");
+  EXPECT_FALSE(reference.at("roles").at(0).contains("candidate_cache"));
+  for (const std::string name:{"cold","warm"}) {
+    const bool is_warm=name=="warm";
+    const auto summary=read_json(dir.path/name/"summary.json");
+    EXPECT_EQ(summary.at("recipe_sha256"),reference.at("recipe_sha256")) << name;
+    EXPECT_EQ(summary.at("orientations_artifact_sha256"),reference.at("orientations_artifact_sha256")) << name;
+    ASSERT_EQ(summary.at("roles").size(),2U);
+    for (usize r=0;r<2;++r) {
+      const auto& result=summary.at("roles").at(r);
+      EXPECT_EQ(result.at("candidate_cache").at("hits"),is_warm?2:0) << name;
+      EXPECT_EQ(result.at("candidate_cache").at("misses"),is_warm?0:2) << name;
+      EXPECT_GE(result.at("stage_seconds").at("cache_load").get<f64>(),0);
+      EXPECT_GE(result.at("stage_seconds").at("cache_write").get<f64>(),0);
+      for (const auto& row:result.at("candidates")) EXPECT_EQ(row.at("signal_cache"),is_warm?"hit":"miss");
+      EXPECT_EQ(stable_role(result),stable_role(reference.at("roles").at(r))) << name << r;
+    }
+    for (const auto& file:exact_outputs()) {
+      const auto expected=file_sha(dir.path/"plain"/file); ASSERT_FALSE(expected.empty()) << file;
+      EXPECT_EQ(file_sha(dir.path/name/file),expected) << name << ' ' << file;
+    }
+  }
+  // Each committed entry: identity, raw geometry, canonical NaN and streamed hash.
+  for (const auto& pin:{cfg.train_sha256,cfg.validation_sha256}) {
+    const auto base=dir.path/"c"/pin; usize files=0;
+    for (const auto& entry:std::filesystem::directory_iterator(base)) {
+      ++files; EXPECT_NE(entry.path().extension().string(),".partial");
+    }
+    EXPECT_EQ(files,4U);
+    for (const std::string id:{"volume_level","volume_rank"}) {
+      const auto sidecar=read_json(base/(id+".json"));
+      EXPECT_EQ(sidecar.at("schema"),"atx.dsl-candidate-signal/v1");
+      EXPECT_EQ(sidecar.at("candidate_id"),id); EXPECT_EQ(sidecar.at("role_manifest_sha256"),pin);
+      EXPECT_EQ(sidecar.at("library_sha256"),cfg.library_sha256);
+      EXPECT_EQ(sidecar.at("dates"),D); EXPECT_EQ(sidecar.at("instruments"),N);
+      EXPECT_EQ(sidecar.at("bytes"),D*N*sizeof(f64));
+      auto dsl=core::sha256_hex(id=="volume_level"?"volume":"rank(volume)"); ASSERT_TRUE(dsl);
+      EXPECT_EQ(sidecar.at("dsl_sha256"),*dsl);
+      EXPECT_EQ(sidecar.at("payload_sha256"),file_sha(base/(id+".f64")));
+      std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(base/(id+".f64"),signal));
+      usize finite=0;
+      for (const auto v:signal) {
+        if (std::isfinite(v)) { ++finite; continue; }
+        EXPECT_EQ(std::bit_cast<u64>(v),std::bit_cast<u64>(std::numeric_limits<f64>::quiet_NaN()));
+      }
+      EXPECT_GE(finite,(D-63)*N);
+    }
+  }
+}
+TEST(StrategyIcRunner, CandidateCacheResumesStoppedRunAndAdoptsOnlyIdenticalOrphans) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true; cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto train_dir=dir.path/"c"/cfg.train_sha256,validation_dir=dir.path/"c"/cfg.validation_sha256;
+  // A guard stop after TRAIN candidate 1 of 2 leaves only its committed entry.
+  ASSERT_TRUE(std::filesystem::remove(train_dir/"volume_rank.json"));
+  ASSERT_TRUE(std::filesystem::remove(train_dir/"volume_rank.f64"));
+  // A stop between the payload and sidecar commits leaves an orphan payload.
+  ASSERT_TRUE(std::filesystem::remove(validation_dir/"volume_level.json"));
+  const auto orphan=validation_dir/"volume_level.f64"; const auto orphan_sha=file_sha(orphan);
+  const auto orphan_time=std::filesystem::last_write_time(orphan);
+  cfg.plan_only=true; std::ostringstream plan_log;
+  auto status=atx::impl::strategy::run_ic(cfg,plan_log); ASSERT_TRUE(status) << status.error().to_string();
+  const auto plan=Json::parse(plan_log.str());
+  ASSERT_EQ(plan.at("candidate_cache").size(),2U);
+  for (const auto& role_plan:plan.at("candidate_cache")) EXPECT_EQ(role_plan.at("ready_entries"),1);
+  cfg.plan_only=false;
+  const auto resumed=run_named(dir,cfg,"resumed"); ASSERT_TRUE(resumed.ok) << resumed.error;
+  for (const auto* line:{"IC cache-hit volume_level role=train","IC cache-miss volume_rank role=train",
+                         "IC cache-miss volume_level role=validation","IC cache-hit volume_rank role=validation"})
+    EXPECT_NE(resumed.log.find(line),std::string::npos) << line;
+  EXPECT_EQ(file_sha(orphan),orphan_sha);
+  EXPECT_TRUE(std::filesystem::last_write_time(orphan)==orphan_time); // Adopted, not rewritten.
+  EXPECT_TRUE(std::filesystem::exists(validation_dir/"volume_level.json"));
+  EXPECT_TRUE(std::filesystem::exists(train_dir/"volume_rank.f64"));
+  const auto summary=read_json(dir.path/"resumed"/"summary.json");
+  for (const auto& result:summary.at("roles")) EXPECT_EQ(result.at("candidate_cache").at("hits"),1);
+  for (const auto& file:exact_outputs()) {
+    const auto expected=file_sha(dir.path/"cold"/file); ASSERT_FALSE(expected.empty()) << file;
+    EXPECT_EQ(file_sha(dir.path/"resumed"/file),expected) << file;
+  }
+}
+TEST(StrategyIcRunner, CandidateCacheRefusesTamperedOrForeignEntriesWithoutOverwrite) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto train_dir=dir.path/"c"/cfg.train_sha256,validation_dir=dir.path/"c"/cfg.validation_sha256;
+  const auto expect_refusal=[&](const std::string& name,const std::string& reason) {
+    const auto attempt=run_named(dir,cfg,name);
+    EXPECT_FALSE(attempt.ok) << name;
+    EXPECT_NE(attempt.error.find(reason),std::string::npos) << name << ": " << attempt.error;
+    EXPECT_EQ(read_json(dir.path/name/"summary.json").at("status"),"failed") << name;
+  };
+  // One flipped payload bit: the streamed load hash refuses it and leaves it in place.
+  const auto payload_path=train_dir/"volume_level.f64"; const auto original=file_bytes(payload_path);
+  ASSERT_EQ(original.size(),D*N*sizeof(f64));
+  auto tampered=original; const usize at=8*N*200;
+  tampered[at]=static_cast<char>(tampered[at]^1); ASSERT_TRUE(write_bytes(payload_path,tampered));
+  expect_refusal("tampered","candidate cache payload SHA256 mismatch: volume_level.f64");
+  EXPECT_EQ(file_bytes(payload_path),tampered);
+  tampered.resize(tampered.size()-sizeof(f64)); ASSERT_TRUE(write_bytes(payload_path,tampered));
+  expect_refusal("truncated","candidate cache payload extent: volume_level.f64");
+  ASSERT_TRUE(write_bytes(payload_path,original));
+  // A sidecar naming another DSL is foreign: a loud refusal, not a recompute.
+  const auto sidecar_path=train_dir/"volume_rank.json"; const auto sidecar=read_json(sidecar_path);
+  auto foreign=sidecar; foreign["dsl_sha256"]=std::string(64,'0'); std::string unused;
+  ASSERT_TRUE(json_file(sidecar_path,foreign,unused));
+  expect_refusal("foreign","candidate cache entry mismatch: volume_rank");
+  EXPECT_EQ(read_json(sidecar_path),foreign);
+  ASSERT_TRUE(json_file(sidecar_path,sidecar,unused));
+  // An uncommitted payload whose bytes differ from the fresh evaluation is never replaced.
+  const auto orphan=validation_dir/"volume_level.f64";
+  ASSERT_TRUE(std::filesystem::remove(validation_dir/"volume_level.json"));
+  auto different=file_bytes(orphan); const usize cell=8*N*300;
+  different[cell]=static_cast<char>(different[cell]^1); ASSERT_TRUE(write_bytes(orphan,different));
+  expect_refusal("orphan","refusing overwrite: volume_level.f64");
+  EXPECT_EQ(file_bytes(orphan),different);
+  EXPECT_FALSE(std::filesystem::exists(validation_dir/"volume_level.json"));
+}
+bool two_family_library(atx::impl::strategy::IcRunnerConfig& cfg) {
+  auto lib=read_json(cfg.library_path);
+  lib["families"].push_back({{"id","fixed_price"}});
+  lib["candidates"].push_back({{"id","volume_compound"},{"family","fixed_volume"},
+      {"dsl","rank((volume + raw_close) * (volume - raw_close))"},
+      {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  lib["candidates"].push_back({{"id","price_level"},{"family","fixed_price"},{"dsl","close"},
+      {"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  return json_file(cfg.library_path,lib,cfg.library_sha256);
+}
+TEST(StrategyIcRunner, PinnedDefaultCompositionWeightsReproduceDefaultBlendBytes) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Families of three and one: default weights 1/6 (inexact in binary) and 1/2.
+  ASSERT_TRUE(two_family_library(cfg)); cfg.save_combined=true;
+  const auto reference=run_named(dir,cfg,"default"); ASSERT_TRUE(reference.ok) << reference.error;
+  const f64 volume=1.0/(2.0*3.0),price=1.0/(2.0*1.0);
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",volume},{"volume_rank",volume},
+      {"volume_compound",volume},{"price_level",price}}));
+  const auto pinned=run_named(dir,cfg,"pinned"); ASSERT_TRUE(pinned.ok) << pinned.error;
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8",
+                             "_planned_targets.csv","_daily_ic.csv"}) {
+      const auto file=role_name+suffix; const auto expected=file_sha(dir.path/"default"/file);
+      ASSERT_FALSE(expected.empty()) << file;
+      EXPECT_EQ(file_sha(dir.path/"pinned"/file),expected) << file;
+    }
+  const auto a=read_json(dir.path/"default"/"summary.json"),b=read_json(dir.path/"pinned"/"summary.json");
+  for (usize r=0;r<2;++r)
+    EXPECT_EQ(stable_role(b.at("roles").at(r),false),stable_role(a.at("roles").at(r),false)) << r;
+  EXPECT_EQ(read_json(dir.path/"pinned"/"orientations.json").at("candidates"),
+            read_json(dir.path/"default"/"orientations.json").at("candidates"));
+  // Absent weights leave every canonical record as before; pinned weights are recorded.
+  EXPECT_NE(b.at("recipe_sha256"),a.at("recipe_sha256"));
+  EXPECT_FALSE(a.contains("composition_weights_sha256"));
+  EXPECT_EQ(b.at("composition_weights_sha256"),cfg.composition_weights_sha256);
+  const auto default_recipe=read_json(dir.path/"default"/"recipe.json");
+  auto pinned_recipe=read_json(dir.path/"pinned"/"recipe.json");
+  EXPECT_FALSE(default_recipe.contains("composition_weights_sha256"));
+  EXPECT_EQ(default_recipe.at("composition"),
+      "fixed-equal-family/equal-within;centered-tied-rank;missing-or-unoriented-neutral;no-redistribution");
+  EXPECT_EQ(pinned_recipe.at("composition_weights_sha256"),cfg.composition_weights_sha256);
+  EXPECT_NE(pinned_recipe.at("composition"),default_recipe.at("composition"));
+  pinned_recipe.erase("composition_weights_sha256"); pinned_recipe["composition"]=default_recipe.at("composition");
+  EXPECT_EQ(pinned_recipe,default_recipe);
+  for (const std::string role_name:{"train","validation"}) {
+    const auto base=read_json(dir.path/"default"/(role_name+"_combined.json"));
+    const auto manifest=read_json(dir.path/"pinned"/(role_name+"_combined.json"));
+    EXPECT_FALSE(base.contains("composition_weights_sha256"));
+    EXPECT_EQ(base.at("signal_semantics"),
+        "exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator");
+    EXPECT_EQ(manifest.at("composition_weights_sha256"),cfg.composition_weights_sha256);
+    EXPECT_EQ(manifest.at("signal_semantics"),
+        "exact-pre-target-composition;pinned-candidate-weights;missing-or-unoriented-neutral-fixed-denominator");
+    EXPECT_EQ(manifest.at("run_recipe_sha256"),b.at("recipe_sha256"));
+  }
+}
+TEST(StrategyIcRunner, UnequalPinnedWeightsChangeBlendAndRecipeWhileZeroWeightStaysScored) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  const auto reference=run_named(dir,cfg,"default"); ASSERT_TRUE(reference.ok) << reference.error;
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",2.0},{"volume_rank",0.0}}));
+  const auto weighted=run_named(dir,cfg,"weighted"); ASSERT_TRUE(weighted.ok) << weighted.error;
+  const auto a=read_json(dir.path/"default"/"summary.json"),b=read_json(dir.path/"weighted"/"summary.json");
+  EXPECT_NE(b.at("recipe_sha256"),a.at("recipe_sha256"));
+  EXPECT_EQ(read_json(dir.path/"weighted"/"recipe.json").at("composition_weights_sha256"),
+            cfg.composition_weights_sha256);
+  for (usize r=0;r<2;++r) {
+    // Zero weight: still evaluated for IC, so per-candidate diagnostics are unchanged.
+    const auto x=stable_role(a.at("roles").at(r)),y=stable_role(b.at("roles").at(r));
+    EXPECT_EQ(y.at("candidates"),x.at("candidates"));
+    EXPECT_EQ(y.at("candidate_evaluations"),2);
+    const auto name=y.at("role").get<std::string>();
+    for (const auto* suffix:{"_combined.f64","_planned_targets.csv"})
+      EXPECT_NE(file_sha(dir.path/"weighted"/(name+suffix)),file_sha(dir.path/"default"/(name+suffix)))
+          << name << suffix;
+    EXPECT_EQ(read_json(dir.path/"weighted"/(name+"_combined.json")).at("composition_weights_sha256"),
+              cfg.composition_weights_sha256);
+    std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(dir.path/"weighted"/(name+"_combined.f64"),signal));
+    // Weight two on one monotone candidate; the zero-weight one contributes nothing.
+    for (usize d=63;d<D;++d) for (usize i=0;i<N;++i)
+      ASSERT_DOUBLE_EQ(signal[d*N+i],2*(static_cast<f64>(i)/static_cast<f64>(N-1)-.5)) << name << d << i;
+  }
+}
+TEST(StrategyIcRunner, InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Payloads are absent: every refusal below must precede any role payload read.
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",.25},{"volume_rank",.75}}));
+  cfg.plan_only=true; std::ostringstream plan_log;
+  auto status=atx::impl::strategy::run_ic(cfg,plan_log); ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_EQ(Json::parse(plan_log.str()).at("composition_weights_sha256"),cfg.composition_weights_sha256);
+  const std::string schema="atx.dsl-composition-weights/v1",lib=cfg.library_sha256;
+  const std::vector<std::pair<std::string,std::string>> cases{
+      {weights_text(schema,lib,R"({"volume_level":0.5,"volume_rank":0.5,"other":0.1})"),"unknown candidate: other"},
+      {weights_text(schema,lib,R"({"volume_level":0.5})"),"composition weight missing: volume_rank"},
+      {weights_text(schema,lib,R"({"volume_level":0.5,"volume_rank":-0.5})"),"finite and >= 0: volume_rank"},
+      {weights_text(schema,lib,R"({"volume_level":0.5,"volume_rank":"0.5"})"),"finite and >= 0: volume_rank"},
+      {weights_text(schema,lib,R"({"volume_level":0.5,"volume_rank":1e999})"),"composition weights JSON parse"},
+      {weights_text(schema,lib,R"({"volume_level":0.5,"volume_rank":0.5,"volume_rank":0.25})"),"duplicate key"},
+      {weights_text(schema,std::string(64,'0'),R"({"volume_level":0.5,"volume_rank":0.5})"),"schema/library identity"},
+      {weights_text("atx.dsl-composition-weights/v0",lib,R"({"volume_level":0.5,"volume_rank":0.5})"),
+       "schema/library identity"},
+      {weights_text(schema,lib,"[0.5,0.5]"),"schema/library identity"}};
+  const auto path=dir.path/"weights.json";
+  for (const bool plan_only:{true,false}) {
+    cfg.plan_only=plan_only;
+    for (const auto& [text,reason]:cases) {
+      ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+      std::ostringstream attempt; status=atx::impl::strategy::run_ic(cfg,attempt);
+      ASSERT_FALSE(status) << text;
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << text << " -> " << status.error().to_string();
+      EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+  // Hash mismatch and an unpaired option refuse the same way.
+  cfg.plan_only=false;
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",.5},{"volume_rank",.5}}));
+  cfg.composition_weights_sha256=std::string(64,'f');
+  std::ostringstream mismatch; status=atx::impl::strategy::run_ic(cfg,mismatch);
+  ASSERT_FALSE(status); EXPECT_NE(status.error().to_string().find("pin differs"),std::string::npos);
+  cfg.composition_weights_sha256.clear();
+  std::ostringstream unpaired; status=atx::impl::strategy::run_ic(cfg,unpaired);
+  ASSERT_FALSE(status); EXPECT_NE(status.error().to_string().find("bounded config"),std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+}
+TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndPinnedWeights) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  const auto source=run_named(dir,cfg,"source"); ASSERT_TRUE(source.ok) << source.error;
+  // The default values pinned: a weighted TRAIN source whose recipe records the pin.
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",.5},{"volume_rank",.5}}));
+  const auto weights_pin=cfg.composition_weights_sha256;
+  const auto weighted=run_named(dir,cfg,"weighted_source"); ASSERT_TRUE(weighted.ok) << weighted.error;
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  const auto resume_from=[&](const std::string& source_name) {
+    cfg.orientations_path=(dir.path/source_name/"orientations.json").string();
+    cfg.orientations_sha256=file_sha(cfg.orientations_path);
+  };
+  // Unweighted frozen source + pinned weights + candidate cache: cold, then warm.
+  resume_from("source"); cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  EXPECT_NE(warm.log.find("IC cache-hit volume_level role=validation"),std::string::npos);
+  EXPECT_EQ(warm.log.find("IC VM-"),std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"c"/cfg.train_sha256)); // TRAIN never scored.
+  // Weighted frozen source resumed with default weights and no cache.
+  resume_from("weighted_source"); cfg.candidate_cache_directory.clear();
+  cfg.composition_weights_path.clear(); cfg.composition_weights_sha256.clear();
+  const auto unweighted=run_named(dir,cfg,"unweighted"); ASSERT_TRUE(unweighted.ok) << unweighted.error;
+  for (const auto* run:{&cold,&warm,&unweighted}) EXPECT_EQ(run->log.find("IC loading train"),std::string::npos);
+  for (const std::string name:{"cold","warm","unweighted"}) {
+    for (const auto* file:{"validation_combined.f64","validation_combined_finite.u8",
+                           "validation_planned_targets.csv","validation_daily_ic.csv"}) {
+      const auto expected=file_sha(dir.path/"source"/file); ASSERT_FALSE(expected.empty()) << file;
+      EXPECT_EQ(file_sha(dir.path/name/file),expected) << name << ' ' << file;
+    }
+    const bool pinned=name!="unweighted";
+    const auto recipe=read_json(dir.path/name/"recipe.json");
+    EXPECT_EQ(recipe.contains("composition_weights_sha256"),pinned) << name;
+    const auto manifest=read_json(dir.path/name/"validation_combined.json");
+    EXPECT_EQ(manifest.contains("composition_weights_sha256"),pinned) << name;
+    EXPECT_EQ(recipe.at("frozen_train_recipe"),read_json(dir.path/(pinned?"source":"weighted_source")/"recipe.json"))
+        << name;
+  }
+  EXPECT_EQ(read_json(dir.path/"cold"/"recipe.json").at("composition_weights_sha256"),weights_pin);
+  EXPECT_EQ(file_sha(dir.path/"cold"/"validation_combined.json"),file_sha(dir.path/"warm"/"validation_combined.json"));
 }
 } // namespace
