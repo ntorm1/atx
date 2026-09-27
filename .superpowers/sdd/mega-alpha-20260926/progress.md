@@ -1,5 +1,13 @@
 # Active task: recent-data DSL ensemble
 
+## V6-W review FIX REQUIRED (0 Crit / 3 Imp / 10 Minor) -- fix round 1 dispatched (resume implementer) (2026-09-27 ~21:20)
+task-V6W-review.md: spec PASS (rules (a)-(d) literal; PIT classifier; ew-theme-v1/aim bytes unchanged; C++ mass conserved,
+deterministic). I1 old IC binary silently accepts a v6 weights file -> schema v2 gate; I2 numpy-2 uint8 wrap in a test;
+I3 no C++ tests for the new runner parsing/refusals; m1 env example contradicts the 1536 MiB cap. Memory: real peak ~1.2 GiB
+< 1536 (the 2304 is an admit estimate) -- consistent with the earlier ruling.
+- Ruling: royalty trusts SIC 6792/6795 join the non-operating exclusion set; REITs stay (literal prereg) -- why:
+  pass-through vehicles carry no operating fundamentals -- cost if wrong: a handful of names excluded from the universe.
+
 ## V6-L RESULT: library v6 x ew-theme-v1 x v5 construction -> S2 net +0.915 (parent +0.759) -- ACCEPTED (2026-09-27 ~21:15)
 Cell build-equity/mega-nav-v6l-ew-t.05-d.1-fixed (fit pass 1, weighted pass 1, nav 1 -- all first bounded pass; weights
 b900602d). S2: net +0.915, gross SR 1.313, HAC t 1.68, mu 3.39%, vol 3.71%, MDD .033, years 2020 +.024 / 2021 +.028 /
