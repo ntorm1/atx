@@ -178,6 +178,17 @@
   composition trials) by S2 net Sharpe (swap-fin-v1) subject to daily limits. Task T13 (fitter option) to
   t9-weights. Ruling cost if wrong: one extra composition trial family on TRAIN, validation untouched.
 - T13: pool-3 3d5d5296 -> root d38e7929 (--composition ...-netcost-v1, c=.0018). 35/35. Review (sonnet).
+  T13 review: spec PASS, Approved, 0C/0I/3m. Task T13: complete (d38e7929, review clean).
+- T6 fix r2 re-review: 2/2 addressed, 0 new C/I; minors N1 (producer v1 50-cell detector copy; val 47)
+  N2 (role check compares session names only) deferred. TRAIN: 130,018 cells restated in 62 sessions
+  2021-01-04..2021-04-01, rest bit-identical. FINDING: ~105 lines shares_out ~1000x too small (median vol
+  108x shares); 1,381 in-range member cells trade >10x shares/day; SI/shares_out >1 in 6,851 cells.
+  Ruling (declared before v3 measurement / T10 freeze): shares_out INVALID -> NaN when trailing-21-session
+  median volume > 1.0 x shares_out (PIT) or si_shares/shares_out > 1.5 — T6 fix round 3 sent to t6-fix.
+  Cost if wrong: some real micro-caps lose size/SI-ratio (-> warm tier), bounded by stresses.
+  Consequence: the v1-MV swap-fin TRAIN read above used fields-v2 (pre-guard) tiers; re-score after v3 fields.
+- T12 fix r1 re-review: 6/6 addressed, 0 new C/I; minor: v1 byte-identity test skips without 99421a5f.
+  Task T12: complete (99421a5f, fix 0e94be59). TRAIN v2 manifest reproducible only with blob 4f5502a2.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
