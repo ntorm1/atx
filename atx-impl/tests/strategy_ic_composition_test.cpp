@@ -6,7 +6,9 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,6 +22,7 @@
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/vm.hpp"
+#include "atx/engine/parallel/det_pool.hpp"
 #include "../src/strategy_ic_composition.hpp"
 
 namespace {
@@ -179,4 +182,61 @@ TEST(StrategyIcComposition, AdmissionPrecedesAllocationAndIncompleteInputRefuses
   member[0] = 2; EXPECT_FALSE(st::IcComposition::create(cfg, candidates, member));
   const std::vector<st::IcCompositionCandidate> duplicate{{"a", "one"}, {"a", "two"}};
   member[0] = 1; EXPECT_FALSE(st::IcComposition::create(cfg, duplicate, member));
+}
+
+// T15: a pooled add splits dates into bands with one ranked row per worker; the
+// blend, coverage and planned-target proxy equal the serial path bit for bit for
+// every worker count, with ties, NaN/inf, signed zeros, nonmembers, a neutral sign
+// and a pinned zero weight.
+TEST(StrategyIcComposition, PooledAddMatchesSerialBitsForEveryWorkerCount) {
+  const std::vector<st::IcCompositionCandidate> candidates{
+      {"a1", "a"}, {"a2", "a"}, {"b1", "b"}, {"b2", "b"}};
+  constexpr usize days = 37, width = 11;
+  st::IcCompositionConfig cfg; cfg.dates = days; cfg.instruments = width;
+  cfg.decision_begin = 5; cfg.decision_end = days;
+  std::vector<u8> member(days * width, 1);
+  std::vector<std::vector<f64>> signals(candidates.size(), std::vector<f64>(days * width));
+  for (usize d = 0; d < days; ++d) for (usize i = 0; i < width; ++i) {
+    const auto at = d * width + i; const auto t = static_cast<f64>(d), n = static_cast<f64>(i);
+    if ((d + 2 * i) % 7 == 0) member[at] = 0;
+    signals[0][at] = std::sin(.3 * t + 1.7 * n);                        // distinct values
+    signals[1][at] = static_cast<f64>((d * 3 + i) % 4);                 // heavy ties
+    signals[2][at] = (d + i) % 5 == 0 ? std::numeric_limits<f64>::quiet_NaN()
+        : i % 3 == 0 ? (i % 2 == 1 ? -0.0 : 0.0) : static_cast<f64>(i % 3); // NaN, +/-0 ties
+    signals[3][at] = d < 3 ? std::numeric_limits<f64>::infinity() : -n * t; // non-finite prefix
+  }
+  const auto compose = [&](const std::vector<int>& signs, std::span<const f64> weights,
+                           atx::engine::parallel::DetPool* pool) -> std::optional<st::IcCompositionResult> {
+    auto c = st::IcComposition::create(cfg, candidates, member, weights);
+    if (!c) return std::nullopt;
+    for (usize k = 0; k < candidates.size(); ++k)
+      if (!c->add(k, signals[k], signs[k], pool)) return std::nullopt;
+    auto out = c->finish();
+    if (!out) return std::nullopt;
+    return std::move(*out);
+  };
+  const auto same_bits = [](const std::vector<f64>& a, const std::vector<f64>& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](f64 x, f64 y) {
+      return std::bit_cast<u64>(x) == std::bit_cast<u64>(y);
+    });
+  };
+  const std::vector<f64> pinned{.5, 0.0, .25, .25};
+  for (const auto& [signs, weights] : {std::pair{std::vector<int>{1, -1, 1, -1}, std::vector<f64>{}},
+                                       std::pair{std::vector<int>{0, 1, -1, 1}, pinned}}) {
+    const auto serial = compose(signs, weights, nullptr); ASSERT_TRUE(serial);
+    for (const usize workers : {usize{2}, usize{3}, usize{4}}) {
+      SCOPED_TRACE(workers);
+      atx::engine::parallel::DetPool pool(workers);
+      const auto pooled = compose(signs, weights, &pool); ASSERT_TRUE(pooled);
+      EXPECT_TRUE(same_bits(pooled->signal, serial->signal));
+      EXPECT_TRUE(same_bits(pooled->contribution_fraction, serial->contribution_fraction));
+      EXPECT_TRUE(same_bits(pooled->planned_turnover, serial->planned_turnover));
+      EXPECT_TRUE(same_bits(pooled->planned_gross, serial->planned_gross));
+      EXPECT_TRUE(same_bits(pooled->planned_net, serial->planned_net));
+      EXPECT_EQ(pooled->eligible_names, serial->eligible_names);
+      EXPECT_EQ(std::bit_cast<u64>(pooled->total_planned_turnover),
+                std::bit_cast<u64>(serial->total_planned_turnover));
+      EXPECT_EQ(pooled->deployment_date, serial->deployment_date);
+    }
+  }
 }

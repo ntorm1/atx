@@ -6,6 +6,7 @@
 #include <new>
 #include <stdexcept>
 #include <utility>
+#include "atx/engine/parallel/det_pool.hpp"
 
 namespace atx::impl::strategy {
 namespace {
@@ -57,6 +58,7 @@ struct IcComposition::Impl {
   std::vector<f64> weights;
   std::vector<u8> member;
   std::vector<Ranked> row;
+  std::vector<std::vector<Ranked>> worker_rows; // pooled add only; one per pool worker
   std::vector<f64> current, target;
   IcCompositionResult result;
   usize next{};
@@ -126,7 +128,8 @@ co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
   }
 }
 
-co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign) {
+co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign,
+                              engine::parallel::DetPool* pool) {
   if (!impl_ || impl_->finished || index != impl_->next || index >= impl_->candidates.size() ||
       sign < -1 || sign > 1)
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: candidate order/finished state");
@@ -135,18 +138,52 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: signal shape mismatch");
   // Default weights are strictly positive, so the weight test alters only pinned
   // zeros: skipping adds of +/-0 leaves every accumulator bit unchanged.
-  if (sign != 0 && p.weights[index] != 0) for (usize d = 0; d < p.cfg.dates; ++d) {
-    p.row.clear(); const auto offset = d * p.cfg.instruments;
-    for (usize i = 0; i < p.cfg.instruments; ++i)
-      if (p.member[offset + i] && std::isfinite(signal[offset + i]))
-        p.row.emplace_back(signal[offset + i], i);
-    if (p.row.size() < 2) continue;
-    sort_ranks(p.row);
-    each_centered_rank(p.row, [&](usize i, f64 r) {
-      p.result.signal[offset + i] += static_cast<f64>(sign) * p.weights[index] * r;
-    });
-    p.result.contribution_fraction[d] += p.weights[index] * static_cast<f64>(p.row.size());
+  if (sign == 0 || p.weights[index] == 0) { ++p.next; return co::Ok(); }
+  const f64 weight = p.weights[index];
+  // Dates [begin, end) touch only their own blend rows and coverage slots; `row`
+  // has capacity for every name, so ranking never allocates.
+  const auto rank_dates = [&](usize begin, usize end, std::vector<Ranked>& row) {
+    for (usize d = begin; d < end; ++d) {
+      row.clear(); const auto offset = d * p.cfg.instruments;
+      for (usize i = 0; i < p.cfg.instruments; ++i)
+        if (p.member[offset + i] && std::isfinite(signal[offset + i]))
+          row.emplace_back(signal[offset + i], i);
+      if (row.size() < 2) continue;
+      sort_ranks(row);
+      each_centered_rank(row, [&](usize i, f64 r) {
+        p.result.signal[offset + i] += static_cast<f64>(sign) * weight * r;
+      });
+      p.result.contribution_fraction[d] += weight * static_cast<f64>(row.size());
+    }
+  };
+  if (pool == nullptr || pool->n_workers() < 2 || p.cfg.dates < 2) {
+    rank_dates(0, p.cfg.dates, p.row);
+    ++p.next; return co::Ok();
   }
+  const usize workers = pool->n_workers();
+  if (p.worker_rows.size() != workers) {
+    try {
+      p.worker_rows.assign(workers, {});
+      for (auto& row : p.worker_rows) row.reserve(p.cfg.instruments);
+    } catch (const std::bad_alloc&) {
+      p.worker_rows.clear();
+      return co::Err(co::ErrorCode::OutOfRange, "IC composition: worker row allocation failed");
+    } catch (const std::length_error&) {
+      p.worker_rows.clear();
+      return co::Err(co::ErrorCode::OutOfRange, "IC composition: worker row extent exceeded");
+    }
+  }
+  // Same band split as the research IC rows: quotient/remainder, no count*band.
+  const usize count = p.cfg.dates, bands = std::min(count, workers * 4U);
+  // SAFETY (data races): bands partition [0, dates), so each blend cell and each
+  // contribution_fraction[d] has exactly one writer; worker w alone uses
+  // worker_rows[w]; weights, membership and the borrowed signal are read-only.
+  // parallel_for's barrier orders every write before this call returns.
+  pool->parallel_for(bands, [&](usize band, usize worker) {
+    const usize begin = count / bands * band + count % bands * band / bands;
+    const usize end = count / bands * (band + 1U) + count % bands * (band + 1U) / bands;
+    rank_dates(begin, end, p.worker_rows[worker]);
+  });
   ++p.next; return co::Ok();
 }
 

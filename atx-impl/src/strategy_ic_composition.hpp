@@ -7,6 +7,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
+namespace atx::engine::parallel { class DetPool; }
 namespace atx::impl::strategy {
 struct IcCompositionCandidate {
   std::string id, family;
@@ -51,9 +52,16 @@ class IcComposition {
       const IcCompositionConfig&, std::span<const IcCompositionCandidate>,
       std::span<const atx::u8> decision_member,
       std::span<const atx::f64> pinned_weights = {}); // empty: equal family/within
+  // Optional `pool` (borrowed; alive for the call, never invoked from inside one
+  // of its jobs): dates split into contiguous bands, each ranked in a per-worker
+  // row. Every blend cell and per-date coverage sum is written by exactly one
+  // band with the serial expression, and candidates still arrive in library
+  // order, so the result bits equal the serial path by construction. Worker rows
+  // (16 B/name each) are allocated on the first pooled add.
   [[nodiscard]] atx::core::Status add(atx::usize candidate_index,
                                     std::span<const atx::f64> signal,
-                                    int frozen_sign); // -1/+1; 0 neutral, never redistributed
+                                    int frozen_sign, // -1/+1; 0 neutral, never redistributed
+                                    atx::engine::parallel::DetPool* pool = nullptr);
   // Planned target proxy only: tied ranks, dollar-neutral desired gross1, no
   // winsorization. Cadence is anchored to decision_begin; interpolate .25 by
   // default from prior planned weights, with no price drift. Membership exits
