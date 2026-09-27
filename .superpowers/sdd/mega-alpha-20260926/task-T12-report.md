@@ -371,3 +371,137 @@ PY .superpowers/sdd/mega-alpha-20260926/studies/nav_recon.py --role build-equity
 - The benchmark files are in my scratchpad and are not committed.
 - Suggested ledger or owner note: the TickerHistory3 2026-09-20 factor re-anchoring on 2021-01-04 has increases
   (later consolidations) that VA1 v2 does not repair. This is atx-db scope.
+
+## Fix round 1 (review `task-T12-review.md`: 0 Critical, 1 Important, 5 Minor)
+
+**Status: DONE.**
+
+- Commit `5093dd5c` on `feat/mega-alpha-role-repair-fix1-20260927`, in pool-9, based on root `e885687b`.
+- Files: `atx-impl/tools/repair_role_factor_breaks.py` and `atx-impl/tools/test_repair_role_factor_breaks.py`.
+- Python only: no build and no CMake changes.
+- Tests: 16/16 synthetic fixtures pass in 2.4 s. The run used no real data.
+
+### Important 1: rule `factor-break-v2` (v1 kept unchanged)
+
+`--rule {v1,v2}` selects the rule. The default stays **v1**.
+
+**v1 reproduces the committed tool exactly.** On a two-session fixture, `test_v1_reproduces_the_committed_tool` runs
+`git show 99421a5f:…/repair_role_factor_breaks.py` against the current code. Every payload and `repair_cells.csv` are
+byte-identical. The manifest is identical except `repair.tool`, which records the code itself. v1's statement,
+parameters, manifest keys, detector and gate are untouched. So TRAIN role v2 (`210fff96…`) stays reproducible and keeps
+its honest v1 provenance.
+
+**v2 detector.** An *unexplained step* is a step ending at t (gap ≤ 10 days) that is either:
+
+- a factor decrease (s < −1e-9) whose raw close did not follow, or
+- a split-like increase (s ≥ ln 1.25) whose raw close did not follow.
+
+This is exactly the classifier's `repaired` predicate, implemented as the shared functions `raw_followed` and
+`unexplained`.
+
+Session t is **MASS** when unexplained(t) ≥ 20 **and** unexplained(t) ≥ ⌈1% × steps(t)⌉. Classification and repair
+are unchanged, so on the main fixture v1 and v2 produce byte-identical `close.f64` and cell lists.
+
+**v2 post-repair gate.**
+
+- No unexplained step may remain on a repaired session.
+- No v2 mass session may remain anywhere.
+- This replaces the jump-count gate for v2 only. It holds by construction: a repaired step's post-repair |s| is about
+  1e-15.
+
+**Threshold derivation.** It uses the structural baseline only. No count from TRAIN or validation was used, and the
+44 and 47 figures were not inputs.
+
+- **Why the legitimate baseline is structurally about 0.** With f = adjusted/raw, every distribution raises f on its
+  ex-date: cash or stock dividend, forward split, spin-off, rights. In each case the raw close falls and the adjusted
+  close is continuous. Only a consolidation lowers f, and then the raw close rises by the same ratio on the same bar,
+  which the follow test explains. A legitimate unexplained step therefore needs a vendor error, such as a split factor
+  dated one session off its price move (VA1's ARCM x5 example) or a reversed distribution. These are independent
+  single-name events, far below one per session.
+- **Floor of 20.** Assume a generous rate of one isolated error per session. A Poisson count reaches 20 with
+  probability below 1e-18 per session, and below 1e-14 over a 4096-session role. So isolated errors never trip the
+  floor, even in small universes where 1% of steps is only a few names.
+- **Share of 1%.** A re-anchoring moves f for every name with any corporate action between the two anchors. Dividend
+  payers alone are a large share of listed names, so even anchors one quarter apart move tens of percent of the cross
+  section. The 1% share keeps the rule independent of universe size and still flags a re-anchoring about 20x smaller
+  than that.
+- **A dividend cluster can never trip v2.** A cluster of genuine ex-dates, of any size, contains no unexplained step.
+
+**Scan output now reports both rules per session.**
+
+- New columns: `unexpl` (the v2 count) and `thr` (the v2 threshold), next to v1's `jump`.
+- Flags: `MASS-v1`, `MASS-v2`, `year-start`.
+- Rows shown: both rules' mass sessions, the top-N sessions by jump and by unexplained count, year starts, and sessions
+  with any big step.
+- Summary lines:
+  - v1: jump-cell sessions, median, and the largest count outside a v1 mass session.
+  - v2: sessions with unexplained steps, the total and maximum outside a v2 mass session, and the threshold there.
+- Classification is printed for the union of both rules' mass sessions.
+- One verdict line per rule: `verdict factor-break-v1: …` and `verdict factor-break-v2: …`. The old single `verdict:`
+  line is replaced.
+- `--csv` gains `unexplained`, `v2_threshold`, `mass_v1` and `mass_v2`. The old `mass` column is now `mass_v1`.
+
+**v2 manifest block.** v1 blocks keep exactly their original keys. v2 blocks add:
+
+- `rule: factor-break-v2`, plus its own rule statement and `parameters`
+- per mass session: `unexplained_steps`, `unexplained_threshold` and `post_repair_unexplained_steps`
+- `detector_unexplained_steps_by_session`
+
+**Docstring and report.** The v1 margin claim is corrected. The earlier "≥ 2x above a pessimistic legitimate peak"
+(report §2.1, tool docstring) was wrong: real legitimate peaks are 44 (TRAIN 2022-12-29) and 47 (validation), so v1
+has about 6% headroom. v1 is now documented as kept only to reproduce roles already built with it.
+
+**Validation disposition** is unchanged and stands by construction: the validation window starts 2021-06-01, after
+the only known break. It is not re-decided from numbers seen on validation. Root's v2 rescan is a data-quality check
+only.
+
+### Minors
+
+| # | Resolution |
+|---|---|
+| M1 | **Documented** in the docstring. The kept_distribution premise has a limit: a later consolidation combined with later dividends or forward splits can net to k in (1, 1.25), which would be kept, leaving the break. TRAIN is empirically clean (repaired increases k ≥ 1.95, kept k ≤ 1.030). Row **35139** (k 1.030, raw +0.58%) is named in the docstring for a vendor `returnFactor` check. |
+| M2 | **Listed, not fixable** with close/raw alone. A same-day dividend combined with an artifact is repaired as a whole. The exact route is a rebuild from `returnFactor`. No fixture was added, because the tool cannot separate the two cases. |
+| M3 | **Fixed** in the docstring. CELL_STEP is now described as "below any split or stock distribution of 6:5 (ln 1.2) or more". 1.25 is VA1's floor. A 6:5 forward split on a mass session is kept. A 5:6 consolidation there (raw +20%, below 25%) would be repaired; this is a declared, rare limit. |
+| M4 | **Fixed.** `TypeError` and `AttributeError` are now refused with exit 2. Fixture: `test_malformed_manifest_is_refused_not_a_traceback`. |
+| M5 | **Listed.** `close_basis` stays verbatim, because the C++ loader and replay pin it. This is disclosed in `repair.close_basis_note` and bound by the role SHA. |
+
+### New fixtures (6; the 10 original fixtures still pass after updating their verdict and CSV assertions)
+
+| Fixture | What it checks |
+|---|---|
+| `test_dividend_cluster_is_not_a_v2_break` | A 60-name quarter-end cluster: 2% dividends on a +3% day, no artifact. v1 scans a false MASS and its repair is **refused** at the post-repair gate; this is the previously untested failure mode. v2 scans CLEAN with 0 unexplained steps, and a v2 repair exits 3 with nothing written. |
+| `test_small_unexplained_break_is_a_v2_mass` | A 30-name re-anchoring. v1 scans CLEAN (30 jump cells, under 50) and exits 3 on repair. v2 scans MASS, and `--rule v2` repairs exactly: close' = raw × k to 2e-15, other columns bit-identical. Manifest: unexplained 30, threshold 20, repaired 30, post-repair unexplained 0. |
+| `test_v2_threshold_is_a_share_of_steps` | The threshold is max(20, ⌈1% × steps⌉). |
+| `test_v1_and_v2_agree_on_the_main_scenario` | Payloads and cell lists are byte-identical across rules. The v1 manifest has no v2 keys. |
+| `test_v1_reproduces_the_committed_tool` | Byte-identity against `99421a5f`, as described above. |
+| `test_malformed_manifest_is_refused_not_a_traceback` | M4. |
+
+Existing fixture additions: the main scenario checks the `unexplained` column. The break session has 78 (the 79
+repaired steps minus the one gap-spanning step, which lands a session later), and the whole role has 79.
+
+**Budget** on the full-size synthetic role (1155 × 5627):
+
+| Mode | Wall time | Peak RSS |
+|---|---|---|
+| Scan | 1.2 s | 182 MiB |
+| Repair (`--rule v2`) | 3.2 s | 312 MiB |
+
+### Root commands
+
+Run from pool-2 after cherry-picking `5093dd5c`. `PY` is `"C:\Program Files\Python312\python.exe" -B`.
+
+```
+PY -m unittest discover -s atx-impl/tools -p test_repair_role_factor_breaks.py -v     # 16 tests
+# v2 rescan of the validation role (data-quality scan only; the scan always reports v1 and v2 side by side)
+PY atx-impl/tools/repair_role_factor_breaks.py --scan-only --rule v2 --role build-equity/recent-fast-validation-2023-2024-v1 --role-sha256 0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7
+# optional: TRAIN source role under v2 (expect MASS-v2 on 2021-01-04 with unexpl about 2114)
+PY atx-impl/tools/repair_role_factor_breaks.py --scan-only --rule v2 --role build-equity/recent-fast-train-2020-2022-v1 --role-sha256 3f53ee9aa1b674d3f5022cbb22d40e5c043e7add8c9422cd2456299ce3662493
+```
+
+**What to read in the output:**
+
+- the `verdict factor-break-v2` line;
+- `summary v2`: the unexplained steps outside mass sessions should be about 0-3 per session;
+- the validation rows for 2024-03-27 and the year starts.
+
+For any future role repair, pass `--rule v2`. `--rule v1` (the default) exists only to reproduce TRAIN role v2.
