@@ -1,5 +1,18 @@
 # Active task: recent-data DSL ensemble
 
+## T37 build v5-1 + tests — PASS — 2026-09-27
+T36 cherry-picked into pool-2: 07f91c44, f493158e (clean). Pre-build v5-0 reference byte-check (declared ruling below):
+mega-nav-v5-ref-v50-check-run completed, 40.2 s, 339 MiB, exe b6b21d88; recipe 5624e007, summary 038461be,
+daily S2 CSV 0b572a25 (no statistic read).
+mega-v5-1-receipt.json: source f493158e, DirtyEntries 0, Jobs 4, 19.6 s, 5 TUs, 4 links, exit 0. NAV exe
+atx-equity-strategy-targets fb2d3e94...; IC exe 647c71a7 (unchanged).
+Tests: atx-impl-strategy-target-tests --gtest_filter=TargetReplayV5.*:NavV5*:*BitIdentical* 18/18; full exe 55/55;
+atx-impl-strategy-ic-tests 67/67 (T36 emulated fixed recipe pin d53f0c09 held -> ⚠️2 closed).
+D2 byte-stability (v5-1 exe, frozen v4.1 TRAIN cell, mega-nav-v5-1-baseline-check-run completed 21.9 s, 339 MiB):
+recipe.json af058239 and daily_modeled-1bn-stale5-v1+swap-fin-v1.csv 3f846525 IDENTICAL to mega-nav-v4-train-b2-f.25. PASS.
+pytest test_fit_composition_weights + test_nav_summ: 81 passed. Task T37: complete. Next: T38 step 3 grid, reference cell first.
+
+
 ## T36 review — Approved (0C/0I/5m) — Task T36: complete
 task-T36-review.md: spec ✅ (11 rate_stats fields; span refused in every build type via check_rates at the top of
 update_weights; fixed path unchanged; liquidity read once per session). Desk-check: no compile blocker.
