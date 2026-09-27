@@ -19,9 +19,15 @@ lineage-verified CIKs (ruling R-3), so extraction reproduces the legacy archive 
 Per-member parsing uses the standard-library ``json`` (the loader's parser) into column lists that
 become PyArrow arrays; one member is resident at a time and at most one 131,072-row row group is
 buffered. The ``value`` coercion reproduces ``pd.to_numeric(errors='coerce')`` followed by the
-DuckDB pandas scan (NaN -> NULL) for JSON numbers and nulls; any other JSON type in a typed
-column (a string or boolean ``val``, a non-integer ``fy``, a non-string text field, an integer
-outside BIGINT) has no pandas-free equivalent and fails the member closed
+DuckDB pandas scan (NaN -> NULL) for JSON numbers and nulls: every JSON number becomes its
+correctly rounded float64, including integers outside BIGINT (the loader's object column ->
+``to_numeric`` float64 -> DOUBLE; measured on CIK 1065088's 31354367947000000000). Because a
+float64 cannot hold every JSON number, ``value_exact`` keeps the JSON literal whenever ``value``
+does not determine it (rule ``cf-extract-v2``): an integer whose float64 differs from it, or a
+fraction/exponent literal that is not the shortest round-trip rendering of its float64 (more than
+15 significant digits, or outside the float64 range); it is NULL otherwise. Any other JSON type in
+a typed column (a string or boolean ``val``, a non-integer ``fy``, a non-string text field, an
+integer beyond the float64 range) has no pandas-free equivalent and fails the member closed
 (``CompanyFactsParityError``) instead of guessing.
 
 Layout of ``<out_root>/<archive_sha16>/``:
@@ -50,10 +56,13 @@ import re
 import zipfile
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-RULE_VERSION = "cf-extract-v1"
+# v2: integers outside BIGINT load as their float64 (legacy parity) instead of failing the member,
+# and ``value_exact`` keeps every JSON number literal that ``value`` does not determine.
+RULE_VERSION = "cf-extract-v2"
 # Mirrors of the legacy loader's constants (fundamentals.py). The loader module imports pandas, so
 # they are restated here; scripts/stage_companyfacts.py verify-sample asserts they are equal.
 SOURCE_NAME = "SEC companyfacts"
@@ -77,14 +86,15 @@ MEMBERS_FILE = "members.parquet"
 # security_id come from identity resolution and run_id from the loading run (node 1.5);
 # ``security_id`` here is the loader's pre-resolution passthrough (``UNRESOLVED_..._PREFIX || cik``),
 # which unresolved facts keep. The fundamental_points projection reads the same columns
-# (metric = concept, as_of_date = filed_date, symbol = NULL for archive members).
+# (metric = concept, as_of_date = filed_date, symbol = NULL for archive members). ``value_exact``
+# is the one column beyond sec_company_facts: the JSON literal where the DOUBLE ``value`` loses it.
 FACT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("source", "string"), ("security_id", "string"), ("cik", "string"), ("taxonomy", "string"),
     ("concept", "string"), ("label", "string"), ("description", "string"), ("unit", "string"),
     ("period_start", "date32"), ("period_end", "date32"), ("filed_date", "date32"),
     ("fiscal_year", "int32"), ("fiscal_period", "string"), ("form", "string"),
     ("accession_number", "string"), ("frame", "string"), ("value", "float64"),
-    ("available_at", "timestamp_us"), ("source_url", "string"),
+    ("value_exact", "string"), ("available_at", "timestamp_us"), ("source_url", "string"),
 )
 MEMBER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cik", "string"), ("member", "string"), ("crc32", "int64"), ("compressed_bytes", "int64"),
@@ -94,7 +104,7 @@ MEMBER_COLUMNS: tuple[tuple[str, str], ...] = (
 DISPOSITIONS = ("loaded", "empty", "unavailable", "error")
 PLACEHOLDER_REASON = "empty_archive_placeholder"
 _INT32 = (-(2 ** 31), 2 ** 31 - 1)
-_INT64 = (-(2 ** 63), 2 ** 63 - 1)
+_FLOAT_EXACT_INT = 2 ** 53  # every integer of magnitude <= 2^53 is exactly a float64
 
 
 class CompanyFactsParityError(ValueError):
@@ -219,6 +229,10 @@ def write_companyfacts_plan(zip_path: Path, out_root: Path, *, concepts: Collect
             "member_pattern": COMPANYFACTS_MEMBER_PATTERN.pattern,
             "placeholder": "exact two-byte {} member -> unavailable(empty_archive_placeholder)",
             "available_at": "filed_date + 22h", "end_le_filed": True,
+            "value": "float64: the JSON number correctly rounded (the loader's DOUBLE); null/NaN -> NULL",
+            "value_exact": ("the JSON number literal when value does not determine it: an integer whose float64 "
+                            "differs from it, or a fraction/exponent literal that is not the shortest round-trip "
+                            "rendering of its float64; else NULL"),
             "source_url": SEC_COMPANY_FACTS_ZIP_URL + "#CIK{cik}.json",
             "passthrough_security_id": UNRESOLVED_COMPANYFACTS_CIK_PREFIX + "{cik}",
             "fact_columns": [list(column) for column in FACT_COLUMNS],
@@ -333,7 +347,7 @@ def _observed_payload_cik(payload: dict[str, Any]) -> int | None:
     """The payload's own CIK when it is a well-formed number (``members.parquet`` ``payload_cik``)."""
     raw_cik = payload.get("cik")
     if type(raw_cik) in (str, int) and re.fullmatch(r"[0-9]{1,10}", str(raw_cik)) is not None:
-        return int(raw_cik)
+        return int(str(raw_cik))
     return None
 
 
@@ -343,15 +357,53 @@ def _text(value: Any, field: str) -> str | None:
     raise CompanyFactsParityError(f"{field} is {type(value).__name__}, not a string or null")
 
 
-def _number(value: Any) -> float | None:
-    """``pd.to_numeric(errors='coerce')`` then the DuckDB pandas scan into DOUBLE, for JSON numbers/null."""
+class _LiteralFloat(float):
+    """A JSON fraction/exponent literal its float64 does not determine; ``text`` keeps the literal."""
+
+    __slots__ = ("text",)
+    text: str
+
+
+def _parse_float(text: str) -> float:
+    """``json`` ``parse_float``: the stdlib's own float (the loader's), tagged when it loses the literal.
+
+    A literal of at most 16 characters has at most 15 significant digits (it holds a ``.`` or an
+    exponent), so inside the normal float64 range ``repr`` of its float64 recovers it; anything
+    else is compared exactly. The float value is identical either way.
+    """
+    value = float(text)
+    if len(text) <= 16 and 1e-290 < abs(value) < 1e290:
+        return value
+    if math.isfinite(value) and Decimal(repr(value)) == Decimal(text):
+        return value
+    tagged = _LiteralFloat(text)
+    tagged.text = text
+    return tagged
+
+
+def _number(value: Any, row: int, exact: dict[int, str]) -> float | None:
+    """``pd.to_numeric(errors='coerce')`` then the DuckDB pandas scan into DOUBLE, for JSON numbers/null.
+
+    Every JSON number becomes its correctly rounded float64 -- pandas' object->float64 (also for
+    integers beyond BIGINT, which make the column ``object``) and DuckDB's BIGINT/UBIGINT->DOUBLE
+    agree on it. ``exact[row]`` receives the JSON literal when the float64 does not determine it.
+    """
     kind = type(value)
     if kind is float:
         return None if math.isnan(value) else value
     if kind is int:
-        if not _INT64[0] <= value <= _INT64[1]:
-            raise CompanyFactsParityError(f"val {value} is outside BIGINT")
-        return float(value)  # correctly rounded, as pandas' object->float64 and DuckDB's BIGINT->DOUBLE
+        if -_FLOAT_EXACT_INT <= value <= _FLOAT_EXACT_INT:
+            return float(value)
+        try:
+            as_float = float(value)
+        except OverflowError:
+            raise CompanyFactsParityError(f"val {value} is beyond the float64 range") from None
+        if as_float != value:  # int/float comparison is exact in Python
+            exact[row] = str(value)
+        return as_float
+    if kind is _LiteralFloat:
+        exact[row] = value.text
+        return float(value)
     if value is None:
         return None
     raise CompanyFactsParityError(f"val is {kind.__name__}, not a JSON number or null")
@@ -365,8 +417,11 @@ def _fiscal_year(value: Any) -> int | None:
     raise CompanyFactsParityError(f"fy {value!r} is not an INTEGER or null")
 
 
-def _member_columns(facts: dict[str, Any], concepts: frozenset[str]) -> dict[str, list[Any]]:
-    """The fact rows of ``normalize_companyfacts`` as column lists, in the loader's row order."""
+def _member_columns(facts: dict[str, Any], concepts: frozenset[str]) -> dict[str, Any]:
+    """The fact rows of ``normalize_companyfacts`` as column lists, in the loader's row order.
+
+    ``value_exact`` is ``None`` when no row needs it (the column is then all NULL), else a list.
+    """
     taxonomy_col: list[str] = []
     concept_col: list[str] = []
     label_col: list[str | None] = []
@@ -381,6 +436,7 @@ def _member_columns(facts: dict[str, Any], concepts: frozenset[str]) -> dict[str
     accn_col: list[str | None] = []
     frame_col: list[str | None] = []
     value_col: list[float | None] = []
+    exact: dict[int, str] = {}
     parsed: dict[str, dt.date] = {}
 
     def as_date(value: Any) -> dt.date | None:
@@ -425,7 +481,7 @@ def _member_columns(facts: dict[str, Any], concepts: frozenset[str]) -> dict[str
                     form_col.append(_text(item.get("form"), "form"))
                     accn_col.append(_text(item.get("accn"), "accn"))
                     frame_col.append(_text(item.get("frame"), "frame"))
-                    value_col.append(_number(item.get("val")))
+                    value_col.append(_number(item.get("val"), len(value_col), exact))
                 unit_rows_kept = len(end_col) - unit_start
                 if unit_rows_kept:
                     unit_col.extend([unit] * unit_rows_kept)
@@ -438,7 +494,8 @@ def _member_columns(facts: dict[str, Any], concepts: frozenset[str]) -> dict[str
     return {"taxonomy": taxonomy_col, "concept": concept_col, "label": label_col,
             "description": description_col, "unit": unit_col, "period_start": start_col,
             "period_end": end_col, "filed_date": filed_col, "fiscal_year": fy_col, "fiscal_period": fp_col,
-            "form": form_col, "accession_number": accn_col, "frame": frame_col, "value": value_col}
+            "form": form_col, "accession_number": accn_col, "frame": frame_col, "value": value_col,
+            "value_exact": [exact.get(row) for row in range(len(value_col))] if exact else None}
 
 
 def _empty_reason(facts: dict[str, Any], concepts: frozenset[str]) -> str:
@@ -470,7 +527,7 @@ def member_schema() -> Any:
     return pa.schema([(name, _arrow_type(kind)) for name, kind in MEMBER_COLUMNS])
 
 
-def _record_batch(columns: dict[str, list[Any]], cik: str, schema: Any) -> Any:
+def _record_batch(columns: dict[str, Any], cik: str, schema: Any) -> Any:
     import pyarrow as pa
     import pyarrow.compute as pc
 
@@ -489,6 +546,8 @@ def _record_batch(columns: dict[str, list[Any]], cik: str, schema: Any) -> Any:
             arrays.append(filed)
         elif field.name == "available_at":
             arrays.append(available_at)
+        elif field.name == "value_exact" and columns["value_exact"] is None:
+            arrays.append(pa.nulls(rows, field.type))
         else:
             arrays.append(pa.array(columns[field.name], field.type))
     return pa.RecordBatch.from_arrays(arrays, schema=schema)
@@ -570,7 +629,7 @@ def _extract_member(raw: bytes, cik: str, concepts: frozenset[str], schema: Any
         return {"disposition": "unavailable", "reason": PLACEHOLDER_REASON, "rows": 0, "payload_cik": None}, None
     record: dict[str, Any] = {"payload_cik": None}
     try:
-        payload: object = json.loads(raw)
+        payload: object = json.loads(raw, parse_float=_parse_float)
         if not isinstance(payload, dict):
             raise ValueError("companyfacts payload requires an object")
         facts = payload.get("facts")
@@ -584,8 +643,11 @@ def _extract_member(raw: bytes, cik: str, concepts: frozenset[str], schema: Any
             record.update(disposition="empty", reason=_empty_reason(facts, concepts), rows=0)
             return record, None
         batch = _record_batch(columns, cik, schema)
+        exact_rows = 0 if columns["value_exact"] is None else rows - columns["value_exact"].count(None)
         del columns, facts, payload
         record.update(disposition="loaded", reason=None, rows=rows)
+        if exact_rows:
+            record["value_exact_rows"] = exact_rows
         return record, batch
     except MemoryError:
         raise
@@ -606,7 +668,8 @@ def extract_companyfacts_batch(zip_path: Path, batch: CompanyFactsBatch, out_dir
     counts = row["counts"]
     return {"batch_id": batch.batch_id, "members": len(batch.members), "rows": row["rows"],
             "row_groups": row["row_groups"], "parquet_bytes": row["parquet_bytes"],
-            "uncompressed_bytes": batch.uncompressed_bytes, **{k: counts[k] for k in DISPOSITIONS}}
+            "uncompressed_bytes": batch.uncompressed_bytes, "value_exact_rows": row["value_exact_rows"],
+            **{k: counts[k] for k in DISPOSITIONS}}
 
 
 def _extract(zip_path: Path, batch: CompanyFactsBatch, out_dir: Path, plan: dict[str, Any]) -> dict[str, Any]:
@@ -647,7 +710,8 @@ def _extract(zip_path: Path, batch: CompanyFactsBatch, out_dir: Path, plan: dict
         "first_cik": batch.first_cik, "last_cik": batch.last_cik, "file": parquet.name,
         "rows": writer.rows, "row_groups": writer.row_groups, "parquet_bytes": parquet.stat().st_size,
         "parquet_sha256": _file_sha256(parquet), "uncompressed_bytes": batch.uncompressed_bytes,
-        "counts": counts, "members": members,
+        "counts": counts, "value_exact_rows": sum(m.get("value_exact_rows", 0) for m in members),
+        "members": members,
     }
     _write_json_atomic(row_path, row)
     return row
@@ -701,11 +765,13 @@ def assemble_companyfacts_stage(zip_path: Path, out_dir: Path, *, verify_archive
         "totals": {
             "batches": len(batches), "members": len(members), **counts, "reasons": reasons,
             "rows": sum(row["rows"] for row in rows if row is not None),
+            "value_exact_rows": sum(row["value_exact_rows"] for row in rows if row is not None),
             "parquet_bytes": sum(row["parquet_bytes"] for row in rows if row is not None),
             "uncompressed_bytes": sum(batch.uncompressed_bytes for batch in batches),
         },
         "batches": [{key: row[key] for key in ("batch_id", "file", "first_cik", "last_cik", "rows", "row_groups",
-                                               "parquet_bytes", "parquet_sha256", "uncompressed_bytes", "counts")}
+                                               "parquet_bytes", "parquet_sha256", "uncompressed_bytes", "counts",
+                                               "value_exact_rows")}
                     | {"members": len(row["members"])} for row in rows if row is not None],
         "members_file": {"file": MEMBERS_FILE, "rows": len(members), "sha256": _file_sha256(members_path)},
     }

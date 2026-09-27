@@ -35,12 +35,16 @@ def _loaded(cik: int, rows: int) -> dict:
     }}
 
 
+BIG_INT = 31354367947000000000  # CIK 1065088's > 2^64 val: its float64 is 31354367947000000512
+LONG_FLOAT = "0.12345678901234567891"  # 20 significant digits: repr(float) is 0.12345678901234568
+
 MEMBERS: dict[str, object] = {
-    # 7 fact rows kept: None val -> NULL, int -> DOUBLE; missing filed and end > filed are dropped.
+    # 9 fact rows kept: None val -> NULL, int -> DOUBLE; missing filed and end > filed are dropped.
     "CIK0000000001.json": {"cik": 1, "facts": {
         "us-gaap": {"Assets": {"label": "Assets", "description": None, "units": {"USD": [
             _fact(10), _fact(11.5, start="2020-01-01"), _fact(None), _fact(12, filed=None),
-            _fact(13, end="2021-03-01"), _fact(2**60, fy=None, frame="CY2020")]}},
+            _fact(13, end="2021-03-01"), _fact(2**60, fy=None, frame="CY2020"), _fact(BIG_INT),
+            _fact("__LONG_FLOAT__")]}},
             "Revenues": {"label": "Revenues", "units": {"USD": [_fact(7, end="2020-06-30")]}}},
         "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [_fact(3), _fact(4, end="2021-01-15")]}}},
     }},
@@ -55,7 +59,7 @@ MEMBERS: dict[str, object] = {
     "notes/readme.txt": b"ignored",
 }
 EXPECTED = {
-    "CIK0000000001.json": ("loaded", None, 7), "CIK0000000002.json": ("unavailable", "empty_archive_placeholder", 0),
+    "CIK0000000001.json": ("loaded", None, 9), "CIK0000000002.json": ("unavailable", "empty_archive_placeholder", 0),
     "CIK0000000003.json": ("empty", "unsupported_or_empty_taxonomy", 0),
     "CIK0000000004.json": ("empty", "allowlist_empty", 0), "CIK0000000005.json": ("empty", "no_valid_fact_rows", 0),
     "CIK0000000006.json": ("error", "ValueError: payload CIK does not match archive member CIK", 0),
@@ -70,7 +74,8 @@ def archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "companyfacts.zip"
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as handle:
         for name, body in MEMBERS.items():
-            handle.writestr(name, body if isinstance(body, bytes) else json.dumps(body))
+            handle.writestr(name, body if isinstance(body, bytes)
+                            else json.dumps(body).replace('"__LONG_FLOAT__"', LONG_FLOAT))
     return path
 
 
@@ -141,11 +146,16 @@ def test_kill_and_resume_reproduces_uninterrupted_run(archive: Path, tmp_path: P
     members = pq.read_table(killed / cf.MEMBERS_FILE).to_pylist()
     assert [m["member"] for m in members] == sorted(EXPECTED)  # each member exactly once, CIK order
     assert {m["member"]: (m["disposition"], m["reason"], m["rows"]) for m in members} == EXPECTED
-    assert manifest["totals"]["rows"] == 22 and manifest["archive"]["ignored_members"] == ["notes/readme.txt"]
+    assert manifest["totals"]["rows"] == 24 and manifest["archive"]["ignored_members"] == ["notes/readme.txt"]
+    assert manifest["totals"]["value_exact_rows"] == 2
     facts = [row for path in sorted(killed.glob("batch-*.parquet")) for row in pq.read_table(path).to_pylist()]
-    assert len(facts) == 22
+    assert len(facts) == 24
     first_member = [f for f in facts if f["cik"] == "0000000001"]
-    assert [f["value"] for f in first_member] == [10.0, 11.5, None, float(2**60), 7.0, 3.0, 4.0]
+    assert [f["value"] for f in first_member] == [10.0, 11.5, None, float(2**60), float(BIG_INT), float(LONG_FLOAT),
+                                                  7.0, 3.0, 4.0]
+    # value_exact: only where the float64 loses the JSON literal (2**60 is exactly a float64).
+    assert [f["value_exact"] for f in first_member] == [None, None, None, None, str(BIG_INT), LONG_FLOAT,
+                                                        None, None, None]
     assert {f["available_at"] for f in first_member} == {dt.datetime(2021, 2, 1, 22)}
     assert first_member[0]["security_id"] == "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001"
     assert first_member[0]["source_url"].endswith("companyfacts.zip#CIK0000000001.json")
