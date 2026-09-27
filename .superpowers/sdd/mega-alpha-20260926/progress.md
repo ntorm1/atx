@@ -1,5 +1,18 @@
 # Active task: recent-data DSL ensemble
 
+## PAUSED at owner request — next-parent handoff
+
+Owner requested stopping and a detailed handoff/goal prompt. Goal status is
+paused; all three agents acknowledged stop; no owned build/research job remains.
+Authoritative handoff: docs/plans/2026-09-26-mega-alpha-parent-handoff.md.
+Paste-ready prompt: docs/plans/2026-09-26-mega-alpha-next-parent-goal.md.
+Last implementation HEAD6df7cc88, root clean before documentation. Memory fix
+8527a839 and fixture23f1541b are committed in pool4, source-approved by pool5,
+but unimported/unbuilt. Target replay is integrated but unbuilt. Pool3 has the
+ignored unfinished compact v3/v4 evidence archive; exact paths/hash in handoff.
+No new build or numerical run after the v4 memory stop. Resume only on owner
+instruction; older future-tense checkpoints below are superseded by this stop.
+
 ## Current: frozen validation complete; saved-blend portfolio iteration
 
 Root imported target replay through8c7dc6a0. Root CMake registration and fixed
