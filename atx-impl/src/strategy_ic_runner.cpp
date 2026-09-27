@@ -279,7 +279,11 @@ co::Status expect_frozen_fields(const IcRunnerConfig& cfg,const Library& lib,con
   expected["research_fields"]=fields_recipe(std::move(pins),lib);
   return co::Ok();
 }
-struct FrozenTrain { Json artifact,recipe; std::vector<int> signs; std::string recipe_sha; };
+// weighted: the frozen TRAIN blend itself used pinned weights (exactly this run's);
+// train_fields_sha: its TRAIN fields manifest pin (empty: none).
+struct FrozenTrain {
+  Json artifact,recipe; std::vector<int> signs; std::string recipe_sha; bool weighted{}; std::string train_fields_sha;
+};
 // `pinned_signs`: this run's weights file (if any) carries signs.
 co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train,
                                      bool pinned_signs) {
@@ -359,7 +363,12 @@ co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& li
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN sign differs from recorded sample");
     signs.push_back(sign);
   }
-  return co::Ok(FrozenTrain{std::move(artifact),std::move(recipe),std::move(signs),recipe_sha});
+  // expect_frozen_fields validated the record's shape and hash above.
+  std::string train_fields_sha;
+  if (recipe.contains("research_fields") && recipe.at("research_fields").at("manifest_sha256").contains("train"))
+    train_fields_sha=recipe.at("research_fields").at("manifest_sha256").at("train").get<std::string>();
+  return co::Ok(FrozenTrain{std::move(artifact),std::move(recipe),std::move(signs),recipe_sha,source_weighted,
+                            std::move(train_fields_sha)});
 }
 co::Status write_json(const std::filesystem::path& path,const Json& j) {
   std::ofstream out(path,std::ios::binary); if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: JSON output");
@@ -735,7 +744,9 @@ co::Result<Json> unique_key_json(const std::string& text) {
 // within-family weights) and, when the file carries `signs`, the blend sign per
 // candidate (+1/-1; 0 only for an unsigned zero-weight candidate). Empty signs =
 // the runner's TRAIN IC orientation.
-struct PinnedWeights { std::vector<f64> values; std::vector<int> signs; };
+// `provenance`: the file's provenance object (null when absent), bound to a frozen
+// TRAIN artifact by frozen_weights_binding in validation-only mode.
+struct PinnedWeights { std::vector<f64> values; std::vector<int> signs; Json provenance; };
 // Optional `signs`: id -> integer +1/-1, known ids only; every candidate with a
 // positive weight must carry one (the weights were fit on so-oriented returns).
 co::Result<std::vector<int>> composition_signs(const Json& j,const Library& lib,std::span<const f64> weights) {
@@ -797,7 +808,71 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
     return co::Err(co::ErrorCode::InvalidArgument,
         "IC runner: composition weights TRAIN binding: train_manifest_sha256 must equal --train-sha256");
   ATX_TRY(pinned.signs,composition_signs(j,lib,weights));
+  if (j.contains("provenance")) pinned.provenance=j.at("provenance");
   return co::Ok(std::move(pinned));
+}
+// Review M1 (root ruling): weights applied against a frozen TRAIN artifact must name
+// the orientations they were fit on. The T11 fitter records them as
+// provenance.orientations_sha256 (the orientations.json file SHA it consumed) and
+// provenance.fields_manifest_sha256 (the TRAIN fields pin, or null).
+// - Unweighted frozen source: orientations_sha256 must equal --orientations-sha256,
+//   the artifact this run binds; otherwise any TRAIN-bound fit could be applied.
+// - Weighted frozen source: frozen_train already requires these exact weights bytes
+//   (provenance included) in the frozen TRAIN recipe. Their provenance names the
+//   UNWEIGHTED TRAIN orientations the fit consumed, which cannot equal the weighted
+//   run's own artifact (its recipe hash includes this weights pin), so the value
+//   must be present and well formed but is bound through the frozen recipe.
+// Either way fields_manifest_sha256 must equal the frozen TRAIN fields pin (absent
+// or null when TRAIN pinned none). Returns the summary record.
+co::Result<Json> frozen_weights_binding(const IcRunnerConfig& cfg,const PinnedWeights& pinned,
+                                        const FrozenTrain& frozen) {
+  const auto& p=pinned.provenance;
+  if (!p.is_object() || !p.contains("orientations_sha256") || !p.at("orientations_sha256").is_string() ||
+      !hash_valid(p.at("orientations_sha256").get<std::string>()))
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: validation-only composition weights need "
+        "provenance.orientations_sha256 naming the frozen TRAIN orientations they were fit on");
+  const auto orientations=p.at("orientations_sha256").get<std::string>();
+  if (!frozen.weighted && orientations!=cfg.orientations_sha256)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights provenance.orientations_sha256 "
+        "must equal the frozen TRAIN --orientations-sha256 (weights were fit on other orientations)");
+  const Json expected_fields=frozen.train_fields_sha.empty()?Json(nullptr):Json(frozen.train_fields_sha);
+  const Json recorded_fields=p.contains("fields_manifest_sha256")?p.at("fields_manifest_sha256"):Json(nullptr);
+  if (recorded_fields!=expected_fields)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights provenance.fields_manifest_sha256 "
+        "must equal the frozen TRAIN fields manifest pin (null when TRAIN pinned none)");
+  return co::Ok(Json{{"sha256",cfg.composition_weights_sha256},{"train_manifest_sha256",cfg.train_sha256},
+      {"signs",pinned.signs.empty()?"TRAIN-orientation-signs":"pinned-candidate-signs"},
+      {"provenance_orientations_sha256",orientations},{"provenance_fields_manifest_sha256",recorded_fields},
+      {"binding",frozen.weighted?"frozen-TRAIN-recipe-pins-these-weights"
+                                :"provenance-orientations-equal-frozen-TRAIN-orientations-artifact"}});
+}
+// Review N3: validation-only runs compare the validation fields manifest with the
+// frozen TRAIN definitions even without --train-fields. The TRAIN artifact records
+// them (orientations.json research_fields.definitions); an older artifact without
+// that record needs --train-fields, whose manifest same_field_definitions compared.
+// Returns how the check was satisfied (empty: no declared extras).
+co::Result<std::string> frozen_field_definitions(const Library& lib,const FrozenTrain& frozen,const Role& train,
+                                                 const Role& validation) {
+  if (lib.declared_extra.empty()) return co::Ok(std::string{});
+  const auto& artifact=frozen.artifact;
+  if (!artifact.contains("research_fields")) {
+    if (train.fields.sha.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN artifact records no research field "
+          "definitions; pass --train-fields/--train-fields-sha256 (the frozen TRAIN pin) so the validation "
+          "field definitions can be checked");
+    return co::Ok(std::string("train-fields-manifest"));
+  }
+  const auto& record=artifact.at("research_fields");
+  if (!record.is_object() || !record.contains("manifest_sha256") || record.at("manifest_sha256")!=frozen.train_fields_sha ||
+      !record.contains("definitions") || !record.at("definitions").is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN artifact research field record differs "
+        "from its recipe pin");
+  const auto& definitions=record.at("definitions");
+  for (const auto& name:lib.declared_extra)
+    if (!definitions.contains(name) || definitions.at(name)!=validation.fields.declared.at(name))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field '"+name+
+          "' definition differs between the frozen TRAIN artifact and the validation fields manifest");
+  return co::Ok(std::string("frozen-TRAIN-artifact"));
 }
 // ---- Candidate signal cache: ROOT/<role-manifest-sha256>/<id>.{f64,json} ----
 // ROOT is DIR/<vm identity>/ (DIR itself for the legacy identity), so a VM or
@@ -1530,10 +1605,20 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         return co::Err(co::ErrorCode::InvalidArgument,"IC runner: overlapping/nonchronological roles");
       roles.push_back(std::move(val));
     }
-    FrozenTrain recovered;
+    FrozenTrain recovered; std::string definitions_check;
+    // Summary record of the applied weights (null: none pinned).
+    Json weights_record;
     if (validation_only) {
       ATX_TRY(recovered,frozen_train(cfg,lib,roles.front(),pinned_signs));
+      if (!cfg.composition_weights_path.empty()) {
+        ATX_TRY(weights_record,frozen_weights_binding(cfg,pinned,recovered));
+      }
+      ATX_TRY(definitions_check,frozen_field_definitions(lib,recovered,roles.front(),roles.back()));
       roles.erase(roles.begin()); // TRAIN metadata checked, payload never opened.
+    } else if (!cfg.composition_weights_path.empty()) {
+      weights_record={{"sha256",cfg.composition_weights_sha256},{"train_manifest_sha256",cfg.train_sha256},
+          {"signs",pinned_signs?"pinned-candidate-signs":"TRAIN-orientation-signs"},
+          {"binding","train-manifest-sha256;TRAIN-scored-in-this-run"}};
     }
     if (cfg.plan_only) {
       Json plan{{"mode","metadata-only-no-payload"},{"candidates",lib.candidates.size()},
@@ -1548,6 +1633,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       }
       if (!cfg.composition_weights_sha256.empty()) plan["composition_weights_sha256"]=cfg.composition_weights_sha256;
       if (pinned_signs) plan["composition_signs"]="pinned-candidate-signs";
+      if (!weights_record.is_null()) plan["composition_weights"]=weights_record;
+      if (!definitions_check.empty()) plan["research_field_definitions_checked_against"]=definitions_check;
       if (fields_pinned(cfg)) {
         Json bound=Json::array();
         for (const auto& role:roles) if (!role.fields.sha.empty()) {
@@ -1588,6 +1675,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         {"train_candidates_planned",validation_only?usize{0}:lib.candidates.size()},{"full_book_evaluations",0}};
     if (!cfg.composition_weights_sha256.empty()) report["composition_weights_sha256"]=cfg.composition_weights_sha256;
     if (pinned_signs) report["composition_signs"]="pinned-candidate-signs";
+    if (!weights_record.is_null()) report["composition_weights"]=weights_record;
+    if (!definitions_check.empty()) report["research_field_definitions_checked_against"]=definitions_check;
     if (recipe.contains("research_fields")) report["research_fields"]=recipe.at("research_fields");
     std::vector<int> signs; Json orientations=Json::array();
     if (validation_only) {
@@ -1614,6 +1703,14 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         Json fitted{{"schema","atx.dsl-ic-orientations/v1"},{"recipe_sha256",recipe_sha},
             {"library_sha256",cfg.library_sha256},{"train_manifest_sha256",cfg.train_sha256},
             {"candidates",orientations}};
+        // Review N3: the TRAIN field definitions travel with the frozen artifact, so a
+        // validation-only run checks its manifest against them without --train-fields.
+        // Only with declared extras and a pinned TRAIN manifest (otherwise unchanged).
+        if (!lib.declared_extra.empty() && !role.fields.sha.empty()) {
+          Json definitions=Json::object();
+          for (const auto& name:lib.declared_extra) definitions[name]=role.fields.declared.at(name);
+          fitted["research_fields"]={{"manifest_sha256",role.fields.sha},{"definitions",std::move(definitions)}};
+        }
         ATX_TRY(auto sha,co::sha256_hex(fitted.dump())); report["orientation_recipe_sha256"]=sha;
         ATX_TRY_VOID(write_json(dir/"orientations.json",fitted));
         ATX_TRY(auto artifact_sha,co::sha256_file((dir/"orientations.json").string()));

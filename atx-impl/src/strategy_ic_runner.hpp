@@ -22,7 +22,10 @@ struct IcRunnerConfig {
   // <vm-identity> level is omitted only for the legacy identity dslvm1_clang18.1.
   // Never part of the recipe because a verified hit reproduces the VM bytes exactly.
   std::string candidate_cache_directory;
-  // Optional pinned per-candidate composition weights replacing equal weights.
+  // Optional pinned per-candidate composition weights replacing equal weights. Bound
+  // to TRAIN by train_manifest_sha256; against a frozen TRAIN artifact also by
+  // provenance.orientations_sha256 (== --orientations-sha256 for an unweighted
+  // frozen blend) and provenance.fields_manifest_sha256 (== TRAIN's fields pin).
   std::string composition_weights_path, composition_weights_sha256;
   // Optional pinned point-in-time field directories (atx.research-role-fields/v1,
   // SHA256 of DIR/manifest.json), each bound to its role's manifest and axes.

@@ -436,13 +436,15 @@ Json stable_role(Json result,bool keep_artifact=true) {
   }
   return result;
 }
-// TRAIN-bound weights file (train_manifest_sha256 == --train-sha256); optional signs.
+// TRAIN-bound weights file (train_manifest_sha256 == --train-sha256); optional signs
+// and fitter-style provenance (validation-only runs need its orientations_sha256).
 bool pin_weights(const Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg,const Json& weights,
-                 const Json& signs=Json(),const std::string& name="weights.json") {
+                 const Json& signs=Json(),const std::string& name="weights.json",const Json& provenance=Json()) {
   cfg.composition_weights_path=(dir.path/name).string();
   Json file{{"schema","atx.dsl-composition-weights/v1"},{"library_sha256",cfg.library_sha256},
       {"train_manifest_sha256",cfg.train_sha256},{"weights",weights}};
   if (!signs.is_null()) file["signs"]=signs;
+  if (!provenance.is_null()) file["provenance"]=provenance;
   return json_file(cfg.composition_weights_path,file,cfg.composition_weights_sha256);
 }
 // The VM-identity-scoped cache root a run used (DIR itself for the legacy identity).
@@ -750,7 +752,10 @@ TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWe
   cfg.save_combined=true;
   const auto source=run_named(dir,cfg,"source"); ASSERT_TRUE(source.ok) << source.error;
   // The default values pinned: a weighted TRAIN source whose recipe records the pin.
-  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",.5},{"volume_rank",.5}}));
+  // Fit (per provenance) on the unweighted source's orientations, like the T11 fitter.
+  const auto source_orientations=file_sha(dir.path/"source"/"orientations.json");
+  ASSERT_TRUE(pin_weights(dir,cfg,{{"volume_level",.5},{"volume_rank",.5}},Json(),"weights.json",
+      {{"orientations_sha256",source_orientations},{"fields_manifest_sha256",nullptr}}));
   const auto weights_pin=cfg.composition_weights_sha256;
   const auto weighted=run_named(dir,cfg,"weighted_source"); ASSERT_TRUE(weighted.ok) << weighted.error;
   ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
@@ -782,6 +787,11 @@ TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWe
               read_json(dir.path/(name=="same"?"weighted_source":"source")/"recipe.json")) << name;
   }
   EXPECT_EQ(file_sha(dir.path/"cold"/"validation_combined.json"),file_sha(dir.path/"warm"/"validation_combined.json"));
+  // T14 M1: how the weights were bound to the frozen TRAIN run is recorded.
+  EXPECT_EQ(read_json(dir.path/"cold"/"summary.json").at("composition_weights").at("binding"),
+            "provenance-orientations-equal-frozen-TRAIN-orientations-artifact");
+  EXPECT_EQ(read_json(dir.path/"same"/"summary.json").at("composition_weights").at("binding"),
+            "frozen-TRAIN-recipe-pins-these-weights");
   // Selection hygiene refusals, all before any payload or output.
   const auto refuse=[&](atx::impl::strategy::IcRunnerConfig attempt_cfg,const std::string& name,
                         const std::string& reason) {
@@ -1593,5 +1603,130 @@ TEST(StrategyIcRunner, VmSourcesPinnedToSemanticsVersion) {
   const auto digest=core::sha256_hex(material); ASSERT_TRUE(digest);
   EXPECT_EQ(*digest,id.sources_sha256)
       << "VM sources changed: bump dsl_vm_semantics_version and update the pinned hash";
+}
+// ---- T14: validation-only runs bind weights and field definitions to frozen TRAIN ----
+// Review M1 (root ruling): against an unweighted frozen TRAIN artifact, pinned weights
+// must name that artifact as the orientations they were fit on, and TRAIN's fields pin.
+TEST(StrategyIcRunner, ValidationWeightsMustNameTheFrozenTrainOrientations) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  const auto source=run_named(dir,cfg,"source"); ASSERT_TRUE(source.ok) << source.error;
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  cfg.orientations_path=(dir.path/"source"/"orientations.json").string();
+  cfg.orientations_sha256=file_sha(cfg.orientations_path);
+  const Json weights{{"volume_level",.75},{"volume_rank",.25}};
+  const auto refuse=[&](const Json& provenance,const std::string& name,const std::string& reason) {
+    auto attempt=cfg; ASSERT_TRUE(pin_weights(dir,attempt,weights,Json(),name+".json",provenance));
+    for (const bool plan_only:{true,false}) {
+      attempt.plan_only=plan_only; const auto run=run_named(dir,attempt,name);
+      EXPECT_FALSE(run.ok) << name;
+      EXPECT_NE(run.error.find(reason),std::string::npos) << name << ": " << run.error;
+      EXPECT_TRUE(run.log.empty()) << name; EXPECT_FALSE(std::filesystem::exists(dir.path/name)) << name;
+    }
+  };
+  const std::string unnamed="validation-only composition weights need provenance.orientations_sha256 naming "
+                            "the frozen TRAIN orientations they were fit on";
+  refuse(Json(),"absent",unnamed);
+  refuse(Json::array(),"not_object",unnamed);
+  refuse({{"orientations_sha256","abc"}},"malformed",unnamed);
+  refuse({{"orientations_sha256",std::string(64,'0')}},"other_fit",
+         "provenance.orientations_sha256 must equal the frozen TRAIN --orientations-sha256");
+  refuse({{"orientations_sha256",cfg.orientations_sha256},{"fields_manifest_sha256",std::string(64,'a')}},
+         "fields_named","provenance.fields_manifest_sha256 must equal the frozen TRAIN fields manifest pin");
+  // Bound to this artifact: plans and runs, and the summary records how.
+  auto good=cfg; ASSERT_TRUE(pin_weights(dir,good,weights,Json(),"good.json",
+      {{"orientations_sha256",cfg.orientations_sha256},{"fields_manifest_sha256",nullptr}}));
+  const Json expected{{"sha256",good.composition_weights_sha256},{"train_manifest_sha256",cfg.train_sha256},
+      {"signs","TRAIN-orientation-signs"},{"provenance_orientations_sha256",cfg.orientations_sha256},
+      {"provenance_fields_manifest_sha256",nullptr},
+      {"binding","provenance-orientations-equal-frozen-TRAIN-orientations-artifact"}};
+  auto plan_cfg=good; plan_cfg.plan_only=true; std::ostringstream plan;
+  const auto planned=atx::impl::strategy::run_ic(plan_cfg,plan); ASSERT_TRUE(planned) << planned.error().to_string();
+  EXPECT_EQ(Json::parse(plan.str()).at("composition_weights"),expected);
+  const auto run=run_named(dir,good,"good"); ASSERT_TRUE(run.ok) << run.error;
+  const auto summary=read_json(dir.path/"good"/"summary.json");
+  EXPECT_EQ(summary.at("composition_weights"),expected);
+  EXPECT_EQ(summary.at("composition_weights_sha256"),good.composition_weights_sha256);
+  EXPECT_FALSE(summary.contains("research_field_definitions_checked_against"));
+  // Pinned signs are recorded as such.
+  auto signed_cfg=cfg; ASSERT_TRUE(pin_weights(dir,signed_cfg,weights,{{"volume_level",1},{"volume_rank",-1}},
+      "signed.json",{{"orientations_sha256",cfg.orientations_sha256}}));
+  const auto signed_run=run_named(dir,signed_cfg,"signed"); ASSERT_TRUE(signed_run.ok) << signed_run.error;
+  const auto signed_record=read_json(dir.path/"signed"/"summary.json").at("composition_weights");
+  EXPECT_EQ(signed_record.at("signs"),"pinned-candidate-signs");
+  EXPECT_EQ(signed_record.at("provenance_fields_manifest_sha256"),nullptr);
+}
+// Review N3: without --train-fields, a validation-only run checks the validation
+// field definitions against those the frozen TRAIN artifact records.
+TEST(StrategyIcRunner, ValidationOnlyChecksFieldDefinitionsAgainstFrozenTrain) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  // A TRAIN-only source: its recipe pins no validation manifest, so the validation
+  // fields manifest is bound only at validation time.
+  auto train_only=cfg; train_only.validation_manifest.clear(); train_only.validation_sha256.clear();
+  train_only.validation_fields_directory.clear(); train_only.validation_fields_sha256.clear();
+  const auto source=run_named(dir,train_only,"source"); ASSERT_TRUE(source.ok) << source.error;
+  const auto artifact=read_json(dir.path/"source"/"orientations.json");
+  const auto train_manifest=read_json(std::filesystem::path(cfg.train_fields_directory)/"manifest.json");
+  EXPECT_EQ(artifact.at("research_fields").at("manifest_sha256"),cfg.train_fields_sha256);
+  EXPECT_EQ(artifact.at("research_fields").at("definitions").at("si_shares").at("units"),
+            train_manifest.at("fields").at(0).at("units"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  auto resume=cfg; resume.train_fields_directory.clear(); resume.train_fields_sha256.clear();
+  resume.orientations_path=(dir.path/"source"/"orientations.json").string();
+  resume.orientations_sha256=file_sha(resume.orientations_path);
+  const auto ok=run_named(dir,resume,"ok"); ASSERT_TRUE(ok.ok) << ok.error;
+  EXPECT_EQ(read_json(dir.path/"ok"/"summary.json").at("research_field_definitions_checked_against"),
+            "frozen-TRAIN-artifact");
+  const auto refuse=[&](atx::impl::strategy::IcRunnerConfig attempt,const std::string& name,const std::string& reason) {
+    for (const bool plan_only:{true,false}) {
+      attempt.plan_only=plan_only; const auto run=run_named(dir,attempt,name);
+      EXPECT_FALSE(run.ok) << name;
+      EXPECT_NE(run.error.find(reason),std::string::npos) << name << ": " << run.error;
+      EXPECT_FALSE(std::filesystem::exists(dir.path/name)) << name;
+    }
+  };
+  // A validation manifest whose definition differs is refused with no TRAIN fields
+  // option; with it, the live TRAIN manifest refuses first (M5).
+  const auto validation_path=std::filesystem::path(cfg.validation_fields_directory)/"manifest.json";
+  const auto validation_manifest=read_json(validation_path);
+  auto changed=validation_manifest; changed["fields"][0]["units"]="synthetic-v2";
+  auto mismatch=resume; ASSERT_TRUE(json_file(validation_path,changed,mismatch.validation_fields_sha256));
+  refuse(mismatch,"mismatch","research field 'si_shares' definition differs between the frozen TRAIN artifact "
+                             "and the validation fields manifest");
+  auto both=mismatch; both.train_fields_directory=cfg.train_fields_directory;
+  both.train_fields_sha256=cfg.train_fields_sha256;
+  refuse(both,"both","research field 'si_shares' definition differs between the train and validation fields manifests");
+  std::string restored; ASSERT_TRUE(json_file(validation_path,validation_manifest,restored));
+  ASSERT_EQ(restored,resume.validation_fields_sha256);
+  // An artifact without the record (written before T14) needs --train-fields; a
+  // record naming another TRAIN manifest than its recipe is refused.
+  const auto legacy_dir=dir.path/"legacy_source";
+  ASSERT_TRUE(std::filesystem::create_directory(legacy_dir));
+  ASSERT_TRUE(std::filesystem::copy_file(dir.path/"source"/"recipe.json",legacy_dir/"recipe.json"));
+  auto legacy=resume; legacy.orientations_path=(legacy_dir/"orientations.json").string();
+  auto legacy_artifact=artifact; legacy_artifact.erase("research_fields");
+  ASSERT_TRUE(json_file(legacy.orientations_path,legacy_artifact,legacy.orientations_sha256));
+  refuse(legacy,"legacy","frozen TRAIN artifact records no research field definitions; pass --train-fields");
+  auto legacy_bound=legacy; legacy_bound.train_fields_directory=cfg.train_fields_directory;
+  legacy_bound.train_fields_sha256=cfg.train_fields_sha256;
+  const auto bound=run_named(dir,legacy_bound,"legacy_bound"); ASSERT_TRUE(bound.ok) << bound.error;
+  EXPECT_EQ(read_json(dir.path/"legacy_bound"/"summary.json").at("research_field_definitions_checked_against"),
+            "train-fields-manifest");
+  auto lying_artifact=artifact; lying_artifact["research_fields"]["manifest_sha256"]=std::string(64,'0');
+  auto lying=resume; lying.orientations_path=(legacy_dir/"orientations.json").string();
+  ASSERT_TRUE(json_file(lying.orientations_path,lying_artifact,lying.orientations_sha256));
+  refuse(lying,"lying","frozen TRAIN artifact research field record differs from its recipe pin");
+  // M1 with fields: the weights' provenance must name TRAIN's fields pin.
+  const Json weights{{"volume_level",.25},{"volume_rank",.25},{"si_ratio",.5}};
+  auto weighted=resume; ASSERT_TRUE(pin_weights(dir,weighted,weights,Json(),"fields_weights.json",
+      {{"orientations_sha256",resume.orientations_sha256},{"fields_manifest_sha256",cfg.train_fields_sha256}}));
+  auto weighted_plan=weighted; weighted_plan.plan_only=true; std::ostringstream plan;
+  const auto planned=atx::impl::strategy::run_ic(weighted_plan,plan); ASSERT_TRUE(planned) << planned.error().to_string();
+  EXPECT_EQ(Json::parse(plan.str()).at("composition_weights").at("provenance_fields_manifest_sha256"),
+            cfg.train_fields_sha256);
+  auto unfielded=resume; ASSERT_TRUE(pin_weights(dir,unfielded,weights,Json(),"unfielded_weights.json",
+      {{"orientations_sha256",resume.orientations_sha256},{"fields_manifest_sha256",nullptr}}));
+  refuse(unfielded,"unfielded","provenance.fields_manifest_sha256 must equal the frozen TRAIN fields manifest pin");
 }
 } // namespace
