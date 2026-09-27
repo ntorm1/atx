@@ -112,7 +112,11 @@ Notation: A = `period_end`; `bal(X, T, tol)` = instant metric X at the balance d
 Canonical metrics are the `atx-db` statement map (`atx_db.statement_map_seed.default_statement_map_rows()`,
 industry template `ALL`, active, non-derived, us-gaap), imported read-only and pinned by code hash. Within one
 metric, the concepts are merged per (start, end) key by `concept_priority` (a better-ranked concept overrides;
-the same rank is overridden by a later clock). The seed's `value_multiplier` (a cash-flow presentation sign) is
+the same rank is overridden by a later clock), except that the taxonomy total is ranked ahead of the seed's
+component concepts (manifest `parameters.precedence_overrides`): `revenue` takes `Revenues` before ASC 606
+`RevenueFromContractWithCustomer*` (so `sale_ttm` and the `gp_ttm` fallback use total revenue; contract revenue
+remains the fallback), `cash` takes cash and cash equivalents before `Cash`, `st_debt` takes `DebtCurrent` before
+its components. The seed's `value_multiplier` (a cash-flow presentation sign) is
 not applied: payments (`capx`, `dvc`, `prstkc`) are positive as reported in XBRL.
 
 **Period arithmetic.** Durations of 80-100 d are quarters, 350-380 d fiscal years (covers 52/53-week years).

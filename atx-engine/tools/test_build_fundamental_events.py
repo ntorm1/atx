@@ -50,7 +50,14 @@ def sha(path) -> str:
 def test_concept_map_comes_from_the_atx_db_seed():
     cmap = bfe.load_concept_map()
     assert set(cmap.by_metric) == set(bfe.METRICS)
-    assert cmap.by_metric["revenue"][0][0] == "RevenueFromContractWithCustomerExcludingAssessedTax"
+    # total-over-component overrides (fix round 1); the remaining concepts keep the seed order
+    assert [c for c, _p in cmap.by_metric["revenue"][:3]] == [
+        "Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax"]
+    assert cmap.by_metric["cash"][0][0] == "CashAndCashEquivalentsAtCarryingValue"
+    assert cmap.by_metric["st_debt"][0][0] == "DebtCurrent"
+    assert cmap.by_metric["cogs"][0][0] == "CostOfGoodsAndServicesSold"
+    assert bfe.parameters()["precedence_overrides"]["revenue"] == ["Revenues"]
     assert cmap.by_metric["total_assets"] == [["Assets", 10]]
     mid, rank, unit = cmap.concept_to["WeightedAverageNumberOfDilutedSharesOutstanding"]
     assert (bfe.METRICS[mid], rank, unit) == ("shares_diluted_avg", 0, "shares")
@@ -204,6 +211,93 @@ def test_balance_items_fallbacks_and_quarter_lags():
     assert math.isnan(item(row, "txt_q_lag4")) and row[-3] == "noa_lag4"
 
 
+CMAP = bfe.load_concept_map()
+
+
+def cfact(concept, start, end, value):
+    """A fact carrying the real statement-map metric and rank of ``concept``."""
+    mid, rank, _unit = CMAP.concept_to[concept]
+    return (mid, rank, None if start is None else d(start), d(end), float(value))
+
+
+def test_mixed_revenue_filer_total_wins_and_gp_uses_it():
+    counts = {}
+    k20, k21 = [], []
+    for year, out, rev, rfc, cor in ((2020, k20, 1000, 800, 600), (2021, k21, 1200, 950, 700)):
+        s, e = f"{year}-01-01", f"{year}-12-31"
+        out += [cfact("RevenueFromContractWithCustomerExcludingAssessedTax", s, e, rfc),  # ASC 606 component
+                cfact("Revenues", s, e, rev),                                             # taxonomy total
+                cfact("CostOfRevenue", s, e, cor), cfact("Assets", None, e, 5000)]
+    rows = bfe.process_cik(11, [acc("k20", "2021-02-20T21:00:00", "10-K", k20, period="2020-12-31"),
+                                acc("k21", "2022-02-20T21:00:00", "10-K", k21, period="2021-12-31")], counts)
+    assert item(rows[1], "sale_ttm") == 1200 and item(rows[1], "gp_ttm") == 1200 - 700
+    assert counts["revenue_rfc_lt_revenues_keys"] == 2
+    assert counts["concept_disagreement_keys"] == {"revenue": 2}
+    # contract revenue stays the fallback when the total is not tagged
+    only = [cfact("RevenueFromContractWithCustomerExcludingAssessedTax", "2021-01-01", "2021-12-31", 950),
+            cfact("CostOfRevenue", "2021-01-01", "2021-12-31", 700), cfact("Assets", None, "2021-12-31", 5000)]
+    row = bfe.process_cik(12, [acc("k", "2022-02-20T21:00:00", "10-K", only, period="2021-12-31")], {})[0]
+    assert (item(row, "sale_ttm"), item(row, "gp_ttm")) == (950, 250)
+
+
+def test_total_tagged_later_wins_and_later_component_is_shadowed():
+    s, e = "2020-01-01", "2020-12-31"
+    first = acc("a", "2021-02-20T21:00:00", "10-K", [cfact("RevenueFromContractWithCustomerExcludingAssessedTax",
+                                                           s, e, 800), cfact("Assets", None, e, 10)], period=e)
+    total = acc("b", "2021-05-01T21:00:00", "10-K/A", [cfact("Revenues", s, e, 1000)], period=e)
+    comp = acc("c", "2021-06-01T21:00:00", "10-K/A", [cfact("RevenueFromContractWithCustomerExcludingAssessedTax",
+                                                          s, e, 810)], period=e)
+    counts = {}
+    rows = bfe.process_cik(13, [first, total, comp], counts)
+    assert [item(r, "sale_ttm") for r in rows] == [800, 1000, 1000]
+    assert counts["rank_shadowed_facts"] == 1 and counts["restated_facts"] == 0
+
+
+def test_report_period_falls_back_when_the_sub_period_does_not_snap():
+    counts = {}
+    facts = [fact("total_assets", None, "2021-06-19", 100), fact("total_assets", None, "2020-06-20", 90)]
+    a = acc("m", "2021-08-01T21:00:00", "10-Q", facts, period="2021-06-30")  # FSDS month-end period, 11 d away
+    assert bfe.report_period(a, counts) == d("2021-06-19") and counts["report_period_snap_fallback"] == 1
+    row = bfe.process_cik(14, [a], {})[0]
+    assert row[7] == d("2021-06-19") and item(row, "at") == 100 and item(row, "at_lag4") == 90
+    late = acc("x", "2021-08-01T21:00:00", "10-Q", [fact("total_assets", None, "2021-09-30", 1)], period="2021-06-30")
+    assert bfe.report_period(late) is None  # a core end after the filing date never sets the anchor
+
+
+def test_split_restated_comparative_keeps_the_share_pair_consistent():
+    q, lq = ("2021-10-01", "2021-12-31"), ("2020-10-01", "2020-12-31")
+    pre = acc("p", "2021-02-20T21:00:00", "10-K", [fact("shares_diluted_avg", *lq, 100.0),
+                                                   fact("total_assets", None, lq[1], 10)], period=lq[1])
+    # 4:1 split during 2021: the 2021 filing re-reports the prior-year quarter on the post-split basis
+    post = acc("n", "2022-02-20T21:00:00", "10-K", [fact("shares_diluted_avg", *q, 404.0),
+                                                    fact("shares_diluted_avg", *lq, 400.0),
+                                                    fact("total_assets", None, q[1], 11)], period=q[1])
+    counts = {}
+    row = bfe.process_cik(15, [pre, post], counts)[-1]
+    assert (item(row, "shrs_q"), item(row, "shrs_q_lag4")) == (404.0, 400.0)
+    assert counts["restated_facts"] == 1 and "share_pairs_unconfirmed" not in counts
+    # comparative not re-reported: the stale pre-split lag is kept (values unchanged) but counted
+    post_nc = acc("n", "2022-02-20T21:00:00", "10-K", [fact("shares_diluted_avg", *q, 404.0),
+                                                       fact("total_assets", None, q[1], 11)], period=q[1])
+    counts = {}
+    row = bfe.process_cik(15, [pre, post_nc], counts)[-1]
+    assert item(row, "shrs_q_lag4") == 100.0 and counts["share_pairs_unconfirmed"] == 1
+
+
+def test_sub_clock_cast_is_unit_safe(tmp_path):
+    rows = [{"adsh": "0000000001-21-000001", "cik": "0000000001", "sic": "3571", "form": "10-K",
+             "period": dt.date(2020, 12, 31), "fy": 2020, "fp": "FY", "filed": dt.date(2021, 2, 20),
+             "accepted_utc": dt.datetime(2021, 2, 20, 21, 30, tzinfo=UTC), "fye": "1231"}]
+    schema = pa.schema([f if f.name != "accepted_utc" else pa.field("accepted_utc", pa.timestamp("ns", tz="UTC"))
+                        for f in SUB_SCHEMA])
+    (tmp_path / "sub").mkdir()
+    path = tmp_path / "sub" / "2021q1.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
+    clock, _sic, _stats = bfe.build_clock_tables(tmp_path, [{"quarter": "2021q1", "file": "sub/2021q1.parquet",
+                                                              "sha256": sha(path)}], {1})
+    assert clock.column("accepted_us").to_pylist() == [us("2021-02-20T21:30:00")]
+
+
 def fscore_state():
     facts = []
     for year, at, ni, cfo, ltd, ca, cl, sale, gp, sstk in (
@@ -345,6 +439,10 @@ def sources(tmp_path):
              cf_row(1001, "Revenues", "2018-01-01", "2020-12-31", "2021-02-20", "10-K",
                     "0001001-21-000001", 2700)]                                                 # 3-year span
           + cf_annual(1002, 2020, "2021-03-01", "0001002-21-000001")            # not in SUB -> FC1
+          + [cf_row(1003, c, "2020-01-01", "2020-12-31", "2021-03-05", "10-K", "0001003-21-000001", v)
+             for c, v in (("RevenueFromContractWithCustomerExcludingAssessedTax", 700), ("Revenues", 900),
+                          ("CostOfRevenue", 500))]
+          + [cf_row(1003, "Assets", None, "2020-12-31", "2021-03-05", "10-K", "0001003-21-000001", 3000)]
           + cf_annual(1500, 2020, "2021-03-01", "0001500-21-000001"))           # out of scope
     b1 = (cf_annual(2001, 2023, "2024-02-15", "0002001-24-000001")              # FC1
           + cf_annual(2001, 2024, "2024-12-31", "0002001-24-000099")            # accepted at the seal
@@ -382,7 +480,7 @@ def sources(tmp_path):
     quarters["2025q1"] = {"tables": {"sub": {"path": "sub/2025q1.parquet", "parquet_sha256": sha(post)}}}
     (fsds / "fsds-staging-manifest.json").write_text(json.dumps({"quarters": quarters}))
     ciks = tmp_path / "ciks.txt"
-    ciks.write_text("# T19 scope\n1001\n0000001002\n2001\n")
+    ciks.write_text("# T19 scope\n1001\n0000001002\n1003\n2001\n")
     return {"cf": cf, "fsds": fsds, "ciks": ciks, "out": tmp_path / "out",
             "cf_sha": sha(cf / "manifest.json"), "fsds_sha": sha(fsds / "fsds-staging-manifest.json")}
 
@@ -419,20 +517,23 @@ def test_end_to_end_clock_seal_sic_resume_and_manifest_last(sources):
     rows = ev.to_pylist()
     assert [(r["cik"], r["accession"]) for r in rows] == [
         (1001, "0001001-20-000001"), (1001, "0001001-21-000001"), (1002, "0001002-21-000001"),
-        (2001, "0002001-24-000001")]
-    r0, r1, r2, r3 = rows
+        (1003, "0001003-21-000001"), (2001, "0002001-24-000001")]
+    r0, r1, r2, mixed, r3 = rows
+    assert (mixed["sale_ttm"], mixed["gp_ttm"]) == (900, 400)  # Revenues total; gp = total - cost of revenue
     assert r0["clock_basis"] == bfe.BASIS_FSDS and r0["accepted_utc"] == dt.datetime(2020, 2, 20, 21, 30, tzinfo=UTC)
     assert r2["clock_basis"] == bfe.BASIS_FC1 and r2["accepted_utc"] == dt.datetime(2021, 3, 2, 22, 0, tzinfo=UTC)
     assert r3["clock_basis"] == bfe.BASIS_FC1
     assert r1["at"] == pytest.approx(1100) and r1["at_lag4"] == 1000 and r1["ni_ttm"] == pytest.approx(55)
     assert r0["period_end"] == dt.date(2019, 12, 31) and r0["fiscal_year"] == 2019 and r0["fiscal_year_end"] == "1231"
     assert r0["n_facts"] == 4 and r0["staleness_days"] == 400
-    assert manifest["counts"]["rows"] == 4 and manifest["counts"]["rows_fc1"] == 2
+    assert manifest["counts"]["rows"] == 5 and manifest["counts"]["rows_fc1"] == 3
     totals = manifest["counts"]["batch_totals"]
     assert totals["accessions_sealed"] == 1
     assert (totals["unit_mismatch_dropped"], totals["nonfinite_dropped"], totals["duration_shape_dropped"]) == (1, 1, 1)
-    assert (s["out"] / "cik_scope.txt").read_text() == "1001\n1002\n2001\n"
-    assert manifest["inputs"]["cik_list"]["count"] == 3
+    assert totals["revenue_rfc_lt_revenues_keys"] == 1
+    assert manifest["parameters"]["precedence_overrides"]["revenue"] == ["Revenues"]
+    assert (s["out"] / "cik_scope.txt").read_text() == "1001\n1002\n1003\n2001\n"
+    assert manifest["inputs"]["cik_list"]["count"] == 4
 
     assert run("events", s, "--batches", "0-1") == 0  # both verified and skipped
     assert run("finalize", s) == 2                    # manifest is published once

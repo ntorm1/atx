@@ -11,7 +11,8 @@ Sources (read-only, pinned by SHA-256):
 * FSDS v2 SUB quarters 2009q2..2024q4 (``fsds-staging-manifest.json`` pins each file): the accession
   acceptance clock and the SIC code as of each filing. No later quarter is opened.
 * The CIK scope list (T19 identity bridge; text, CSV or parquet with a ``cik`` column).
-* Concept map: ``atx_db.statement_map_seed`` (canonical metric -> concepts by ``concept_priority``), imported
+* Concept map: ``atx_db.statement_map_seed`` (canonical metric -> concepts by ``concept_priority``, with the
+  total-over-component ``PRECEDENCE_OVERRIDES``), imported
   from this repository's ``atx-db/src`` and pinned by code hash; ``sue_from_quarters`` and
   ``plausible_share_pair`` are reused from ``export_fundamental_fields.py`` (also pinned).
 
@@ -38,6 +39,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -95,6 +97,18 @@ N_INSTANT = len(INSTANT_METRICS)
 UNIT_OF = {"monetary": "USD", "shares": "shares"}
 CORE_METRICS = frozenset(M[n] for n in ("total_assets", "stockholders_equity", "net_income", "revenue",
                                         "operating_cash_flow"))
+# Total-over-component precedence (T20 fix round 1). The seed ranks some components ahead of the taxonomy total:
+# ASC 606 contract revenue (excludes lease, interest, derivative and insurance revenue) ahead of `Revenues`, `Cash`
+# ahead of cash and cash equivalents, and current maturities of long-term debt ahead of total current debt. The
+# listed totals move to the front of their metric (in this order); every other concept keeps the seed order, so a
+# component remains the fallback when the total is not tagged for a period.
+PRECEDENCE_OVERRIDES = {
+    "revenue": ("Revenues",),
+    "cash": ("CashAndCashEquivalentsAtCarryingValue",),
+    "st_debt": ("DebtCurrent",),
+}
+RFC_CONCEPTS = ("RevenueFromContractWithCustomerExcludingAssessedTax",
+                "RevenueFromContractWithCustomerIncludingAssessedTax")
 
 ITEMS = (
     "be", "at", "at_lag4", "lt", "che", "debt", "sale_ttm", "gp_ttm", "oi_ttm", "ni_ttm", "ni_q", "ni_q_lag4",
@@ -282,7 +296,9 @@ class ConceptMap:
 def load_concept_map(rows=None) -> ConceptMap:
     """Resolve the 30 canonical metrics to us-gaap concepts in ``concept_priority`` order.
 
-    Ties in priority are broken by concept name so ranks are total and deterministic.
+    Ties in priority are broken by concept name so ranks are total and deterministic. ``PRECEDENCE_OVERRIDES``
+    then moves a metric's taxonomy total ahead of the seed's component concepts (all other concepts keep the seed
+    order), so a total and a component tagged for the same period never resolve to the component.
     """
     rows = sms.default_statement_map_rows() if rows is None else rows
     grouped: dict[str, list] = {name: [] for name in METRICS}
@@ -299,6 +315,12 @@ def load_concept_map(rows=None) -> ConceptMap:
         entries = sorted(set(grouped[name]))
         if not entries:
             raise UsageError(f"statement map has no concept for metric {name}")
+        promoted = PRECEDENCE_OVERRIDES.get(name, ())
+        missing = [c for c in promoted if c not in {e[1] for e in entries}]
+        if missing:
+            raise UsageError(f"precedence override for {name}: {missing} not in the statement map")
+        entries = ([e for c in promoted for e in entries if e[1] == c]
+                   + [e for e in entries if e[1] not in promoted])
         by_metric[name] = [[concept, priority] for priority, concept, _unit in entries]
         for rank, (_priority, concept, unit) in enumerate(entries):
             if concept in concept_to:
@@ -337,26 +359,38 @@ def _same_value(a: float, b: float) -> bool:
     return a == b or abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
 
 
+PUT_NONE, PUT_RESTATED, PUT_SHADOWED = 0, 1, 2
+
+
+def _merge(old, rank: int, value: float, seq: int):
+    """Merge rule for one metric key; ``old`` = (rank, value, seq) or None. Returns (new entry or None, code).
+
+    A better-ranked concept replaces; the same rank is replaced by the later accession (restated when the value
+    differs; an equal value re-confirms and advances ``seq``); a worse rank is ignored, and counted as shadowed
+    when an earlier accession's better-ranked value differs from it.
+    """
+    if old is None or rank < old[0]:
+        return (rank, value, seq), PUT_NONE
+    if rank == old[0]:
+        return (rank, value, seq), (PUT_NONE if _same_value(value, old[1]) else PUT_RESTATED)
+    return None, (PUT_SHADOWED if old[2] < seq and not _same_value(value, old[1]) else PUT_NONE)
+
+
 class InstantSeries:
     __slots__ = ("vals", "ends")
 
     def __init__(self):
-        self.vals: dict[int, tuple[int, float]] = {}
+        self.vals: dict[int, tuple[int, float, int]] = {}  # end -> (rank, value, writer seq)
         self.ends: list[int] = []
 
-    def put(self, end: int, rank: int, value: float) -> int:
+    def put(self, end: int, rank: int, value: float, seq: int = 0) -> int:
         old = self.vals.get(end)
-        if old is None:
-            self.vals[end] = (rank, value)
-            bisect.insort(self.ends, end)
-            return 0
-        if rank < old[0]:
-            self.vals[end] = (rank, value)
-            return 0
-        if rank == old[0] and not _same_value(value, old[1]):
-            self.vals[end] = (rank, value)
-            return 1
-        return 0
+        new, code = _merge(old, rank, value, seq)
+        if new is not None:
+            if old is None:
+                bisect.insort(self.ends, end)
+            self.vals[end] = new
+        return code
 
     def nearest(self, target: int, tol: int):
         found = _within(self.ends, target, tol)
@@ -371,17 +405,19 @@ class DurationSeries:
     __slots__ = ("vals", "by_end", "ends", "by_start", "starts")
 
     def __init__(self):
-        self.vals: dict[tuple[int, int], tuple[int, float]] = {}
+        self.vals: dict[tuple[int, int], tuple[int, float, int]] = {}  # (start, end) -> (rank, value, seq)
         self.by_end: dict[int, list[int]] = {}
         self.ends: list[int] = []
         self.by_start: dict[int, list[int]] = {}
         self.starts: list[int] = []
 
-    def put(self, start: int, end: int, rank: int, value: float) -> int:
+    def put(self, start: int, end: int, rank: int, value: float, seq: int = 0) -> int:
         key = (start, end)
         old = self.vals.get(key)
+        new, code = _merge(old, rank, value, seq)
+        if new is None:
+            return code
         if old is None:
-            self.vals[key] = (rank, value)
             if end not in self.by_end:
                 self.by_end[end] = []
                 bisect.insort(self.ends, end)
@@ -390,17 +426,14 @@ class DurationSeries:
                 self.by_start[start] = []
                 bisect.insort(self.starts, start)
             self.by_start[start].append(end)
-            return 0
-        if rank < old[0]:
-            self.vals[key] = (rank, value)
-            return 0
-        if rank == old[0] and not _same_value(value, old[1]):
-            self.vals[key] = (rank, value)
-            return 1
-        return 0
+        self.vals[key] = new
+        return code
 
     def value(self, start: int, end: int) -> float:
         return self.vals[(start, end)][1]
+
+    def seq(self, start: int, end: int) -> int:
+        return self.vals[(start, end)][2]
 
     def direct(self, target: int, tol: int, lo: int, hi: int, mid: int):
         """(start, end, value) of the fact ending nearest ``target`` whose duration is in [lo, hi]."""
@@ -502,15 +535,16 @@ class CikState:
     def dur(self, name: str) -> DurationSeries:
         return self.series[M[name]]
 
-    def apply(self, facts) -> int:
-        """Apply one accession's facts (metric, rank, start, end, value); return restated-fact count."""
-        restated = 0
+    def apply(self, facts, seq: int = 0) -> tuple[int, int]:
+        """Apply one accession's facts (metric, rank, start, end, value) as writer ``seq`` (increasing per
+        accession); return (restated facts, rank-shadowed facts)."""
+        codes = [0, 0, 0]
         for mid, rank, start, end, value in facts:
             if mid < N_INSTANT:
-                restated += self.series[mid].put(end, rank, value)
+                codes[self.series[mid].put(end, rank, value, seq)] += 1
             else:
-                restated += self.series[mid].put(start, end, rank, value)
-        return restated
+                codes[self.series[mid].put(start, end, rank, value, seq)] += 1
+        return codes[PUT_RESTATED], codes[PUT_SHADOWED]
 
     def record_first_quarters(self, ends) -> None:
         """First-reported discrete net-income quarters (SUE input), frozen when first derivable."""
@@ -620,8 +654,13 @@ def _gross_profit_ttm(st: CikState, sale, target: int, tol: int):
     return gp
 
 
-def _shares(st: CikState, anchor: int):
-    """(shrs_q, shrs_q_lag4, rejected) from the first weighted-average share concept present at the anchor."""
+def _shares(st: CikState, anchor: int, counts: dict | None = None):
+    """(shrs_q, shrs_q_lag4, rejected) from the first weighted-average share concept present at the anchor.
+
+    Diagnostic only (values unchanged): ``share_pairs_unconfirmed`` counts pairs whose lag value was last written by
+    an accession earlier than the one that wrote the current value, i.e. the comparative was not re-reported and
+    may predate a split restatement (T25 audits those against known splitters).
+    """
     for name in ("shares_diluted_avg", "shares_basic_avg"):
         series = st.dur(name)
         for lo, hi, mid in ((Q_MIN, Q_MAX, 91), (Y_MIN, Y_MAX, 365)):
@@ -634,6 +673,9 @@ def _shares(st: CikState, anchor: int):
                 return None, None, False
             if lag is not None and not eff.plausible_share_pair(cur_v, lag[2]):
                 return None, None, True
+            if (lag is not None and counts is not None
+                    and series.seq(lag[0], lag[1]) < series.seq(cur[0], cur[1])):
+                counts["share_pairs_unconfirmed"] = counts.get("share_pairs_unconfirmed", 0) + 1
             return cur_v, (lag[2] if lag is not None else None), False
     return None, None, False
 
@@ -717,7 +759,7 @@ def compute_items(st: CikState, anchor: int, counts: dict) -> tuple[list, str]:
     v["txt_q"] = None if q is None else q[2]
     q = tax.quarter(anchor - LAG4, TOL_LAG)
     v["txt_q_lag4"] = None if q is None else q[2]
-    v["shrs_q"], v["shrs_q_lag4"], rejected = _shares(st, anchor)
+    v["shrs_q"], v["shrs_q_lag4"], rejected = _shares(st, anchor, counts)
     if rejected:
         counts["share_pairs_rejected"] = counts.get("share_pairs_rejected", 0) + 1
     v["sue"] = _sue(st, anchor)
@@ -754,14 +796,46 @@ class Accession:
     facts: list = field(default_factory=list)  # (metric index, rank, start|None, end, value)
 
 
-def report_period(acc: Accession):
-    core_ends = sorted({f[3] for f in acc.facts if f[0] in CORE_METRICS})
+def report_period(acc: Accession, counts: dict | None = None):
+    """FSDS ``period`` snapped to the nearest core fact end within 10 d; else the latest core fact end (both bounded
+    by the filing date). FSDS rounds ``period`` to a month end, so mid-month fiscal periods take the fallback."""
+    core_ends = sorted({f[3] for f in acc.facts if f[0] in CORE_METRICS and f[3] <= acc.filed})
     if not core_ends:
         return None
     if acc.sub_period is not None:
         near = _within(core_ends, acc.sub_period, TOL_SNAP)
-        return near[0] if near else None
+        if near:
+            return near[0]
+        if counts is not None:
+            counts["report_period_snap_fallback"] = counts.get("report_period_snap_fallback", 0) + 1
     return core_ends[-1]
+
+
+@lru_cache(maxsize=1)
+def _revenue_ranks() -> tuple[int, frozenset]:
+    concept_to = load_concept_map().concept_to
+    return concept_to["Revenues"][1], frozenset(concept_to[c][1] for c in RFC_CONCEPTS)
+
+
+def _count_concept_disagreements(applied: list, counts: dict) -> None:
+    """Diagnostics: metric keys tagged by several concepts of one metric with different values in one accession,
+    and the revenue keys where an ASC 606 contract-revenue concept is below the `Revenues` total."""
+    by_key: dict = {}
+    for mid, rank, start, end, value in applied:
+        by_key.setdefault((mid, start, end), []).append((rank, value))
+    rev_mid = M["revenue"]
+    for (mid, _start, _end), entries in by_key.items():
+        if len(entries) < 2:
+            continue
+        best = min(entries)[1]
+        if any(not _same_value(v, best) for _r, v in entries):
+            per = counts.setdefault("concept_disagreement_keys", {})
+            per[METRICS[mid]] = per.get(METRICS[mid], 0) + 1
+        if mid == rev_mid:
+            total_rank, rfc_ranks = _revenue_ranks()
+            total = [v for r, v in entries if r == total_rank]
+            if total and any(r in rfc_ranks and v < total[0] and not _same_value(v, total[0]) for r, v in entries):
+                counts["revenue_rfc_lt_revenues_keys"] = counts.get("revenue_rfc_lt_revenues_keys", 0) + 1
 
 
 def process_cik(cik: int, accessions: list[Accession], counts: dict, emit_from_us: int = EMIT_FROM_US) -> list:
@@ -772,7 +846,7 @@ def process_cik(cik: int, accessions: list[Accession], counts: dict, emit_from_u
     anchor_fiscal: tuple[int | None, str | None, str | None] = (None, None, None)
     last_quarterly_us: int | None = None
     ni_mid = M["net_income"]
-    for acc in sorted(accessions, key=lambda a: (a.clock_us, a.adsh)):
+    for seq, acc in enumerate(sorted(accessions, key=lambda a: (a.clock_us, a.adsh)), start=1):
         if acc.clock_us >= SEAL_US:
             counts["accessions_sealed"] = counts.get("accessions_sealed", 0) + 1
             continue
@@ -784,10 +858,13 @@ def process_cik(cik: int, accessions: list[Accession], counts: dict, emit_from_u
                 counts["in_accession_conflicts"] = counts.get("in_accession_conflicts", 0) + 1
             deduped[key] = f[4]  # sorted by value: the largest conflicting value wins, deterministically
         applied = [(k[0], k[1], k[2], k[3], val) for k, val in deduped.items()]
-        restated = st.apply(applied)
+        _count_concept_disagreements(applied, counts)
+        restated, shadowed = st.apply(applied, seq)
         counts["restated_facts"] = counts.get("restated_facts", 0) + restated
+        if shadowed:
+            counts["rank_shadowed_facts"] = counts.get("rank_shadowed_facts", 0) + shadowed
         st.record_first_quarters(f[3] for f in applied if f[0] == ni_mid)
-        rp = report_period(acc)
+        rp = report_period(acc, counts)
         if rp is not None and (anchor is None or rp > anchor):
             anchor = rp
             anchor_fiscal = (acc.fy, acc.fp, acc.fye)
@@ -927,7 +1004,7 @@ def build_clock_tables(fsds_dir: Path, quarters: list, scope: set[int]) -> tuple
         fy = t.column("fy").to_pylist()
         fp = t.column("fp").to_pylist()
         filed = pc.cast(t.column("filed"), pa.int32()).to_pylist()
-        acc = pc.cast(t.column("accepted_utc"), pa.int64()).to_pylist()
+        acc = pc.cast(pc.cast(t.column("accepted_utc"), pa.timestamp("us", tz="UTC")), pa.int64()).to_pylist()
         fye = t.column("fye").to_pylist()
         for i in range(t.num_rows):
             if adsh[i] is None or cik[i] is None or filed[i] is None:
@@ -1296,6 +1373,7 @@ def parameters() -> dict:
         "staleness_days": {"quarterly": STALE_QUARTERLY, "annual_only": STALE_ANNUAL_ONLY,
                            "annual_only_rule": f"no 10-Q/10-QT(/A) accession within {ANNUAL_ONLY_LOOKBACK} d"},
         "zero_fill_items": list(ZERO_FILL_ITEMS),
+        "precedence_overrides": {k: list(v) for k, v in PRECEDENCE_OVERRIDES.items()},
         "share_pair_rule": eff.SHARE_PAIR_RULE,
     }
 
@@ -1306,7 +1384,15 @@ CAVEATS = [
     "CompanyFacts snapshot 2026-09-20 (archive ee099c73...): values as reported in each filing, us-gaap only; "
     "IFRS filers (ifrs-full) and non-USD units are absent",
     "clock = FSDS SUB accepted_utc by accession, else FC1 (filed + 46 h, clock_basis cf_fc1)",
-    "canonical metrics follow the atx-db statement map by concept priority; seed value_multiplier not applied",
+    "canonical metrics follow the atx-db statement map by concept priority, except the total-over-component "
+    "precedence overrides (revenue: Revenues before ASC 606 contract revenue; cash: cash and equivalents before "
+    "Cash; st_debt: DebtCurrent before its components); seed value_multiplier not applied",
+    "a later filing that tags a period under a worse-ranked concept of the same metric does not replace the "
+    "better-ranked value (counted as rank_shadowed_facts)",
+    "cogs takes one concept by seed priority: with no total tagged, CostOfGoodsSold is used alone (not summed with "
+    "CostOfServices), which can overstate gp_ttm for mixed goods/services filers",
+    "stock_issuance includes ProceedsFromStockOptionsExercised as a fallback (Compustat SSTK-like), so option "
+    "exercise proceeds count as issuance in sstk_ttm and the F-score EQ_OFFER signal",
     "sue uses first-reported quarterly net income on the filing clock (not the earnings-announcement clock)",
     "zero-fill rules: debt components (when total assets exist), dvc/prstkc/sstk (when cfo_ttm exists)",
 ]
