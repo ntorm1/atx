@@ -1,5 +1,16 @@
 # Active task: recent-data DSL ensemble
 
+## v6 START — owner goal "reach 1+ net sharpe" (2026-09-27, set after handoff 4)
+Controller: Claude Opus 5.5. Target: a TRAIN (2020-2022) cell with S2 (modeled-1bn-stale5-v1 x swap-fin-v1) net SR >= 1.0 at
+$1bn, cadence 1, with the R6' mechanics (gross in [.90, 1.05], |net| <= .02, tau limits) — then a freeze proposal. Validation
+trial #3 still needs U1 (the goal is not read as a U1 grant).
+- Ruling: v6 is a new disclosed revision; every v6 lever set is pre-registered in v4-prereg.md ("## v6 revision") before any
+  v6 TRAIN read; the mechanics gate keeps gross ~1 (a sub-1 gross book would re-create the R-1 24%-gross problem) -- cost if
+  wrong: a cheaper path to "net >= 1" via under-deployment is forgone deliberately.
+- Ruling: the v6-explore explorer's aggregation of existing TRAIN NAV outputs (cost / alpha by bucket) is a disclosed
+  diagnostic study (like T28), not a strategy trial -- cost if wrong: one extra disclosed TRAIN study.
+
+
 ## v5 SPRINT CLOSED ON TRAIN — Task T42: complete — 2026-09-27 — STOP (no validation; owner packet U1-U5 pending)
 Handoff 4: docs/plans/2026-09-27-mega-alpha-parent-handoff-4.md (TL;DR with R-1 disclosure, task table, v5 table, alphas and
 aim gains, Appendix A trial accounting, T41 result, owner packet U1-U5 with recommendations, session rulings, next goal
