@@ -1561,5 +1561,412 @@ class DefaultBytesUnchanged(unittest.TestCase):
                 self.assertEqual(got["new"][1], got["old"][1], name)  # identical work-cache paths (keys)
 
 
+# ------------------------------------------------ T31: ew-theme-aim-v1 (v5 R4' aim gains)
+AIM_ARGS = dict(screen="v4-prior-v1", orientation="prior", composition="ew-theme-aim-v1")
+
+
+def ref_standardized_ranks(values, live, min_names=50):
+    """Independent port: average (1-based) ranks per row as scipy.stats.rankdata, standardized with population SD."""
+    out = np.full(values.shape, NAN)
+    for t in range(values.shape[0]):
+        cols = [i for i in range(values.shape[1]) if live[t, i] and math.isfinite(values[t, i])]
+        if len(cols) < min_names:
+            continue
+        v = sorted((float(values[t, i]), i) for i in cols)
+        rank = {}
+        b = 0
+        while b < len(v):
+            e = b
+            while e + 1 < len(v) and v[e + 1][0] == v[b][0]:
+                e += 1
+            for k in range(b, e + 1):
+                rank[v[k][1]] = (b + e) / 2.0 + 1.0
+            b = e + 1
+        r = np.array([rank[i] for i in cols])
+        sd = r.std()
+        if sd > 0:
+            out[t, cols] = (r - r.mean()) / sd
+    return out
+
+
+def ref_rank_autocorrelation(z, lags, min_names=50):
+    """Loop port of R4': mean over days of sum(z_d * z_d-j) / n_both over names finite on both days."""
+    out = []
+    for j in lags:
+        per_day = []
+        for d in range(j, z.shape[0]):
+            both = [i for i in range(z.shape[1]) if math.isfinite(z[d, i]) and math.isfinite(z[d - j, i])]
+            if len(both) >= min_names:
+                per_day.append(sum(z[d, i] * z[d - j, i] for i in both) / len(both))
+        out.append(sum(per_day) / len(per_day) if per_day else NAN)
+    return np.array(out)
+
+
+class AimGainRules(unittest.TestCase):
+    def test_declared_constants(self):
+        self.assertEqual(fcw.AIM_RULE_ID, "ew-theme-aim-v1")
+        self.assertEqual((fcw.AIM_THETA, fcw.AIM_GAIN_MIN, fcw.AIM_MAX_LAG, fcw.AIM_MIN_NAMES), (0.05, 0.05, 126, 50))
+        self.assertEqual(fcw.AIM_LAGS, list(range(22)) + [28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 98, 105, 112, 119, 126])
+        self.assertEqual(fcw.PRIOR_COMPOSITIONS, ("ew-theme-v1", "ew-theme-aim-v1"))
+        self.assertIn("ew-theme-aim-v1", fcw.COMPOSITIONS)
+
+    def test_aim_gain_ar1_matches_closed_form(self):
+        phi, theta = 0.02, 0.05
+        closed = theta * sum((1 - theta) ** j * (1 - phi) ** j for j in range(fcw.AIM_MAX_LAG + 1))
+        # every lag exact: the truncated GP sum to rounding
+        exact = list(range(fcw.AIM_MAX_LAG + 1))
+        self.assertAlmostEqual(fcw.aim_gain(np.array([(1 - phi) ** j for j in exact]), exact, theta), closed, places=12)
+        # the declared lag grid: exact at the grid, linear in between. (1-phi)^j is convex, so the chords lie above
+        # the curve and g over-states the exact sum by a little (the brief's 1e-9 equality cannot hold here).
+        lags = fcw.AIM_LAGS
+        g = fcw.aim_gain(np.array([(1 - phi) ** j for j in lags]), lags, theta)
+        self.assertGreater(g, closed)
+        self.assertLess(g - closed, 1e-3)
+        # and the untruncated AR(1) closed form theta / (theta + phi (1 - theta)) (plan-s4 4.A) within the tail
+        self.assertLess(abs(g - theta / (theta + phi * (1 - theta))), 1e-3)
+        # GP calibration sanity (half-lives 2.4 / 206 days at theta = .05): a fast signal is cut, a slow one kept
+        for half_life, want in ((2.4, 0.05 / (0.05 + 0.95 * (1 - 0.5 ** (1 / 2.4)))), (206.0, 0.94)):
+            p = 1 - 0.5 ** (1 / half_life)
+            got = fcw.aim_gain(np.array([(1 - p) ** j for j in lags]), lags)
+            self.assertLess(abs(got - want), 3e-3, half_life)
+        # a perfectly persistent rank: 1 - (1-theta)^127 (< 1, no clip); no autocorrelation clips at the floor
+        self.assertAlmostEqual(fcw.aim_gain(np.ones(len(lags)), lags), 1 - 0.95 ** 127, places=14)
+        self.assertEqual(fcw.aim_gain(np.zeros(len(lags)), lags), fcw.AIM_GAIN_MIN)
+        self.assertLess(fcw.aim_gain(-np.ones(len(lags)), lags, clip=False), 0)
+        self.assertEqual(fcw.aim_gain(-np.ones(len(lags)), lags), fcw.AIM_GAIN_MIN)
+
+    def test_aim_gain_degenerate_and_gappy(self):
+        lags = fcw.AIM_LAGS
+        z = np.full((300, 200), np.nan)
+        z[:150] = fcw.standardized_ranks(np.random.default_rng(0).normal(size=(150, 200)), np.ones((150, 200), bool))
+        rho = fcw.rank_autocorrelation(z, lags)
+        self.assertTrue(np.isfinite(rho[0]) and abs(rho[0] - 1) < 1e-9)
+        self.assertTrue(np.isfinite(rho).all())  # every declared lag (<= 126) overlaps the 150 ranked days
+        g = fcw.aim_gain(rho, lags)
+        self.assertTrue(fcw.AIM_GAIN_MIN <= g <= 1.0)
+        # only 100 ranked days: lags >= 100 have no pair -> NaN -> counted 0; g still finite and in range
+        short = fcw.rank_autocorrelation(z[50:], lags)
+        self.assertEqual([j for j, r in zip(lags, short) if np.isnan(r)], [j for j in lags if j >= 100])
+        self.assertTrue(fcw.AIM_GAIN_MIN <= fcw.aim_gain(short, lags) <= 1.0)
+        # rankdata ties -> std 0 -> NaN -> degenerate (a constant candidate has no ranks at all)
+        const = np.ones((300, 200))
+        zc = fcw.standardized_ranks(const, np.ones((300, 200), bool))
+        self.assertTrue(np.isnan(zc).all())
+        rho_c = fcw.rank_autocorrelation(zc, lags)
+        self.assertTrue(np.isnan(rho_c).all())
+        self.assertEqual(fcw.aim_gain(rho_c, lags), fcw.AIM_GAIN_MIN)  # NaN lags -> 0 -> floor, never NaN
+        # flat for a stretch (all tied), then a persistent AR signal with an all-NaN hole: finite rho, g in range
+        rng = np.random.default_rng(5)
+        x = np.empty((400, 120))
+        x[0] = rng.normal(size=120)
+        for t in range(1, 400):
+            x[t] = 0.99 * x[t - 1] + math.sqrt(1 - 0.99 ** 2) * rng.normal(size=120)
+        x[:80] = 3.0              # flat stretch: every name tied
+        x[200:230] = np.nan       # all-NaN stretch
+        zs = fcw.standardized_ranks(x, np.ones(x.shape, bool))
+        self.assertTrue(np.isnan(zs[:80]).all() and np.isnan(zs[200:230]).all())
+        rho_s = fcw.rank_autocorrelation(zs, lags)
+        self.assertTrue(np.isfinite(rho_s).all())
+        g_s = fcw.aim_gain(rho_s, lags)
+        self.assertTrue(fcw.AIM_GAIN_MIN <= g_s <= 1.0)
+        self.assertGreater(g_s, 0.5)  # AR(.99) ranks: GP gain ~ .05 / (.05 + .01 * .95) ~ .84, sampling below
+
+    def test_standardized_ranks_match_rankdata_port(self):
+        rng = np.random.default_rng(9)
+        values = np.round(rng.normal(0, 2, (30, 70)))  # heavy ties
+        values[rng.random(values.shape) < 0.15] = NAN
+        live = rng.random(values.shape) < 0.95
+        live[3, :] = False
+        live[3, :49] = True       # 49 live cells at most: below min_names -> NaN row
+        values[7] = 1.0           # all tied -> NaN row
+        got = fcw.standardized_ranks(values, live)
+        want = ref_standardized_ranks(values, live)
+        np.testing.assert_array_equal(np.isnan(got), np.isnan(want))
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-12, equal_nan=True)
+        self.assertTrue(np.isnan(got[3]).all() and np.isnan(got[7]).all())
+        ok = np.isfinite(got).any(axis=1)
+        np.testing.assert_allclose(np.nanmean(got[ok], axis=1), 0.0, atol=1e-13)
+        np.testing.assert_allclose(np.nanmean(got[ok] ** 2, axis=1), 1.0, atol=1e-12)
+
+    def test_rank_autocorrelation_matches_loop_port(self):
+        rng = np.random.default_rng(4)
+        z = rng.normal(size=(60, 80))
+        z[rng.random(z.shape) < 0.2] = NAN
+        z[10] = NAN
+        lags = [0, 1, 2, 5, 21, 28, 59, 60, 70]
+        got = fcw.rank_autocorrelation(z, lags)
+        want = ref_rank_autocorrelation(z, lags)
+        np.testing.assert_array_equal(np.isnan(got), np.isnan(want))
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-13, equal_nan=True)
+        self.assertTrue(np.isnan(got[-2:]).all())  # lag >= days: no pair
+        # min_names applies to names finite on BOTH days
+        self.assertTrue(np.isnan(fcw.rank_autocorrelation(z, [1], min_names=80)).all())
+
+    def test_half_sample_profile_split(self):
+        rng = np.random.default_rng(6)
+        z = np.full((100, 60), NAN)
+        z[:50] = fcw.standardized_ranks(np.cumsum(rng.normal(size=(50, 60)), axis=0), np.ones((50, 60), bool))
+        z[50:] = fcw.standardized_ranks(rng.normal(size=(50, 60)), np.ones((50, 60), bool))  # no persistence
+        prof = fcw.aim_profile(z, np.ones(100, bool), [0, 1, 2])
+        self.assertEqual(prof["half_split_decision"], 50)
+        first, second = prof["rho_half"]
+        np.testing.assert_allclose(first, ref_rank_autocorrelation(z[:50], [0, 1, 2]), atol=1e-13)
+        np.testing.assert_allclose(second, ref_rank_autocorrelation(z[50:], [0, 1, 2]), atol=1e-13)
+        self.assertGreater(first[1], 0.8)
+        self.assertLess(abs(second[1]), 0.2)
+        self.assertGreater(prof["gain_half"][0], prof["gain_half"][1])
+        self.assertEqual(prof["rank_decisions"], 100)
+
+    def test_aim_weights_global_normalization(self):
+        w, t = fcw.ew_theme_aim_weights(["a", "a", "b"], [1.0, 1.0, 0.25])
+        self.assertTrue(abs(w.sum() - 1) < 1e-12 and t["a"]["aim_theme_weight"] > t["b"]["aim_theme_weight"])
+        # raw = [1/4, 1/4, 0.25/2] -> normalised globally, not within the theme
+        np.testing.assert_allclose(w, [0.4, 0.4, 0.2], rtol=0, atol=1e-15)
+        self.assertEqual(t["b"], {"admitted_count": 1, "nominal_theme_weight": 0.5, "aim_theme_weight": w[2]})
+        # equal gains reproduce ew-theme-v1
+        themes = ["value", "value", "low_risk", "value", "short_interest"]
+        ew, _ = fcw.ew_theme_weights(themes)
+        aim, _ = fcw.ew_theme_aim_weights(themes, [0.7] * 5)
+        np.testing.assert_allclose(aim, ew, rtol=0, atol=1e-15)
+        with self.assertRaises(fcw.FitError):
+            fcw.ew_theme_aim_weights(["a"], [float("nan")])
+
+
+def aim_world():
+    """v4_world plus a medium-speed AR(.85) member on half the names and a constant candidate."""
+    panel, signals, ids, extra = v4_world()
+    rng = np.random.default_rng(31)
+    dates, names = panel["close"].shape
+    x = np.empty((dates, names))
+    x[0] = rng.normal(size=names)
+    for t in range(1, dates):
+        x[t] = 0.85 * x[t - 1] + math.sqrt(1 - 0.85 ** 2) * rng.normal(size=names)
+    live = panel["member"] == 1
+    half = np.where(live, x, NAN)
+    half[:, 1::2] = NAN                       # finite on 30 of 60 names: coverage ~ 1/2 (and < 50 names ranked)
+    medium = np.where(live, x, NAN)           # the full-coverage version is the admitted member
+    const = np.where(live, 1.0, NAN)
+    signals = signals + [medium, half, const]
+    ids = ids + ["medium", "medium_half", "const"]
+    extra = dict(extra, medium={"theme": "reversal_seasonality", "tier": "B", "prior_sign": 1},
+                 medium_half={"theme": "reversal_seasonality", "tier": "C", "prior_sign": 1},
+                 const={"theme": "low_risk", "tier": "B", "prior_sign": 1})
+    return panel, signals, ids, extra
+
+
+class AimEndToEnd(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        panel, signals, ids, extra = aim_world()
+        cls.ids = ids
+        cls.fx = Fixture(cls.root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                         candidate_extra=extra)
+        cls.code, cls.summary = fcw.fit(cls.fx.args(cls.root / "aim", **AIM_ARGS))
+        cls.bytes = {p.name: p.read_bytes() for p in (cls.root / "aim").iterdir()}
+        cls.doc = json.loads(cls.bytes[fcw.OUTPUT_WEIGHTS])
+        cls.v1_code, _ = fcw.fit(cls.fx.args(cls.root / "v1", **V4_ARGS))
+        cls.v1_bytes = {p.name: p.read_bytes() for p in (cls.root / "v1").iterdir()}
+        cls.v1 = json.loads(cls.v1_bytes[fcw.OUTPUT_WEIGHTS])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_members_weights_and_gains(self):
+        self.assertEqual((self.code, self.v1_code), (fcw.EXIT_OK, fcw.EXIT_OK))
+        prov, w = self.doc["provenance"], self.doc["weights"]
+        self.assertEqual(prov["rule"], "ew-theme-aim-v1")
+        self.assertEqual(self.summary["composition"], "ew-theme-aim-v1")
+        # the screen never sees the composition: identical admission bytes, identical member set
+        self.assertEqual(self.bytes[fcw.OUTPUT_ADMISSION], self.v1_bytes[fcw.OUTPUT_ADMISSION])
+        members = sorted(i for i in self.ids if w[i] > 0)
+        self.assertEqual(members, sorted(i for i in self.ids if self.v1["weights"][i] > 0))
+        self.assertEqual(members, sorted(prov["aim"]["members"]))
+        self.assertIn("medium", members)
+        self.assertEqual(self.doc["signs"], self.v1["signs"])
+        # w_k = (g_k / (T n_theme)) / sum over members, T and n_theme exactly as ew-theme-v1
+        gains = prov["aim"]["gain"]
+        themes = {r["id"]: r["theme"] for r in prov["candidates"]}
+        n_theme = {t: sum(1 for i in members if themes[i] == t) for t in set(themes[i] for i in members)}
+        raw = {i: gains[i] / (len(n_theme) * n_theme[themes[i]]) for i in members}
+        for i in members:
+            self.assertAlmostEqual(w[i], raw[i] / sum(raw.values()), places=15)
+        self.assertAlmostEqual(sum(w.values()), 1.0, places=15)
+        self.assertTrue(all(fcw.AIM_GAIN_MIN <= g <= 1.0 for g in gains.values()))
+        # slow AR(.97) members keep more aim than the AR(.85) member: the GP ordering
+        self.assertGreater(min(gains["slow_a_clone"], gains["slow_a_twin"]), gains["medium"] + 0.2)
+        self.assertLess(gains["medium"], 0.4)
+        for theme, entry in prov["themes"].items():
+            self.assertEqual(set(entry), {"admitted_count", "nominal_theme_weight", "aim_theme_weight", "admitted"})
+            self.assertAlmostEqual(entry["aim_theme_weight"], sum(w[i] for i in entry["admitted"]), places=15)
+        self.assertAlmostEqual(prov["weighted_standalone_turnover"],
+                               sum(w[i] * r["tau"] for i, r in ((r["id"], r) for r in prov["candidates"])), places=14)
+        got = runner_accepts(self.bytes[fcw.OUTPUT_WEIGHTS], self.fx.library_sha, self.ids, self.fx.train_sha)
+        self.assertEqual(got, [w[i] for i in self.ids])
+        self.assertEqual(self.bytes[fcw.OUTPUT_WEIGHTS], fcw.canonical_bytes(self.doc))
+
+    def test_aim_block_report_only_fields(self):
+        aim = self.doc["provenance"]["aim"]
+        self.assertEqual((aim["theta"], aim["lags"], aim["max_lag"]), (0.05, fcw.AIM_LAGS, 126))
+        self.assertEqual(set(aim["rho"]), set(self.ids))
+        self.assertTrue(all(len(r) == len(fcw.AIM_LAGS) for r in aim["rho"].values()))
+        self.assertAlmostEqual(aim["rho"]["slow_a_clone"][0], 1.0, places=12)
+        # constant candidate: no ranks, rho all undefined, gain at the floor; the screen rejects it (no live day)
+        self.assertEqual(aim["rho"]["const"], [None] * len(fcw.AIM_LAGS))
+        self.assertEqual(aim["gain"]["const"], fcw.AIM_GAIN_MIN)
+        rows = {r["id"]: r for r in self.doc["provenance"]["candidates"]}
+        self.assertEqual((rows["const"]["status"], self.doc["weights"]["const"]), ("reject_insufficient", 0.0))
+        self.assertEqual(rows["medium"]["aim_gain"], aim["gain"]["medium"])
+        # half-sample gains: two finite values in [floor, 1] per candidate
+        for pair in aim["gain_half"].values():
+            self.assertEqual(len(pair), 2)
+            self.assertTrue(all(fcw.AIM_GAIN_MIN <= g <= 1.0 for g in pair))
+        # coverage: full-coverage members 1; the half-name candidate 1/2 and too few names (30 < 50) to rank.
+        # It is still an admitted member: R4' counts its undefined rho as 0, so it takes the floor gain (not weight 0).
+        w = self.doc["weights"]
+        self.assertAlmostEqual(aim["coverage_mean"]["slow_a_clone"], 1.0, places=15)
+        self.assertAlmostEqual(aim["coverage_mean"]["medium_half"], 0.5, places=15)
+        self.assertEqual(aim["rho"]["medium_half"], [None] * len(fcw.AIM_LAGS))
+        self.assertEqual((rows["medium_half"]["status"], aim["gain"]["medium_half"]), ("fitted", fcw.AIM_GAIN_MIN))
+        self.assertGreater(w["medium_half"], 0.0)
+        eff = aim["coverage_effective_theme_weight"]
+        themes = self.doc["provenance"]["themes"]
+        self.assertEqual(sorted(eff), self.doc["provenance"]["themes_present"])
+        self.assertAlmostEqual(sum(eff.values()), 1.0, places=12)
+        # coverage is constant per candidate here, so the per-decision ratio is the ratio of the means
+        cov = {i: aim["coverage_mean"][i] for i in aim["members"]}
+        total = sum(w[i] * cov[i] for i in cov)
+        for theme, x in eff.items():
+            self.assertAlmostEqual(x, sum(w[i] * cov[i] for i in themes[theme]["admitted"]) / total, places=12)
+        self.assertLess(eff["reversal_seasonality"], themes["reversal_seasonality"]["aim_theme_weight"])
+        self.assertGreater(eff["value"], themes["value"]["aim_theme_weight"])
+
+    def test_coverage_effective_weight_formula(self):
+        ids, themes = ["a", "b", "c"], ["x", "x", "y"]
+        aims = [{"coverage": [1.0, 1.0, 0.0, 1.0]}, {"coverage": [0.5, 1.0, 0.0, 0.0]}, {"coverage": [1.0, 0.0, 0.0, 1.0]}]
+        for a in aims:
+            a.update(rho=[None], gain=0.5, gain_unclipped=0.5, gain_half=[0.5, 0.5], half_split_decision=2)
+        sessions = fcw.FIT_BEGIN_NS + DAY * np.arange(4)
+        sessions[3] = fcw.TRAIN_END_NS  # outside TRAIN: not in the mean
+        got = fcw.aim_provenance(ids, themes, aims, [0, 1, 2], np.array([0.25, 0.25, 0.5]), sessions)
+        eff = got["coverage_effective_theme_weight"]
+        # d0: x .375 / (.375+.5); d1: x .5 / .5; d2: no weight live (skipped); d3: outside TRAIN
+        self.assertAlmostEqual(eff["x"], (0.375 / 0.875 + 1.0) / 2, places=15)
+        self.assertAlmostEqual(eff["y"], (0.5 / 0.875 + 0.0) / 2, places=15)
+
+    def test_ew_theme_v1_has_no_aim_keys(self):
+        prov = self.v1["provenance"]
+        self.assertNotIn("aim", prov)
+        self.assertTrue(all("aim_gain" not in r for r in prov["candidates"]))
+        self.assertEqual(prov["rule"], "ew-theme-v1")
+        self.assertTrue(all(set(e) == {"admitted_count", "theme_weight", "member_weight", "admitted"}
+                            for e in prov["themes"].values()))
+
+    def test_incremental_resume_and_shared_factor_records(self):
+        work = self.root / "work"
+        stopped = self.root / "never"
+        argv = self.fx.argv(stopped, "v4-prior-v1", ["--orientation", "prior", "--composition", "ew-theme-aim-v1",
+                                                     "--work-dir", str(work), "--max-new-candidates", "3"])
+        self.assertEqual(fcw.main(argv), fcw.EXIT_INCOMPLETE)
+        self.assertFalse(stopped.exists())
+        store = work / self.fx.train_sha / fcw.SEMANTICS_TAG
+        self.assertEqual(len(list((store / f"aim-{fcw.AIM_TAG}").glob("*.json"))), 3)
+        self.assertEqual(len(list((store / "factors").glob("*.json"))), 3)
+        with self.assertRaises(fcw.Incomplete) as caught:  # budget spent: partial marker, nothing published
+            fcw.fit(self.fx.args(stopped, **AIM_ARGS, work_dir=work, max_seconds=1e-9))
+        self.assertEqual((caught.exception.summary["partial"], caught.exception.summary["reused"]), (True, 3))
+        code, summary = fcw.fit(self.fx.args(self.root / "resumed", **AIM_ARGS, work_dir=work))
+        self.assertEqual((code, summary["computed_this_run"], summary["reused"]),
+                         (fcw.EXIT_OK, len(self.ids) - 3, 3))
+        for name, data in self.bytes.items():
+            self.assertEqual((self.root / "resumed" / name).read_bytes(), data, name)
+        # the ew-theme-v1 re-fit reuses every factor record and never reads or writes aim records
+        code, summary = fcw.fit(self.fx.args(self.root / "v1_cached", **V4_ARGS, work_dir=work))
+        self.assertEqual((code, summary["computed_this_run"]), (fcw.EXIT_OK, 0))
+        for name, data in self.v1_bytes.items():
+            self.assertEqual((self.root / "v1_cached" / name).read_bytes(), data, name)
+        # a tampered aim record fails its SHA check and only that candidate is recomputed
+        record = sorted((store / f"aim-{fcw.AIM_TAG}").glob("*.json"))[0]
+        j = json.loads(record.read_bytes())
+        j["gain"] = 0.999
+        record.write_bytes(json.dumps(j).encode())
+        code, summary = fcw.fit(self.fx.args(self.root / "retampered", **AIM_ARGS, work_dir=work))
+        self.assertEqual((code, summary["computed_this_run"]), (fcw.EXIT_OK, 1))
+        self.assertEqual((self.root / "retampered" / fcw.OUTPUT_WEIGHTS).read_bytes(), self.bytes[fcw.OUTPUT_WEIGHTS])
+        # a v1-only work dir never grows an aim directory
+        v1_work = self.root / "v1_work"
+        fcw.fit(self.fx.args(self.root / "v1_fresh", **V4_ARGS, work_dir=v1_work))
+        self.assertEqual([p.name for p in (v1_work / self.fx.train_sha / fcw.SEMANTICS_TAG).iterdir()
+                          if p.name.startswith("aim-")], [])
+
+    def test_combination_refusals(self):
+        out = self.root / "refused"
+        for override in (dict(screen="none", orientation="train", composition="ew-theme-aim-v1"),
+                         dict(screen="v3-admit-v1", orientation="train", composition="ew-theme-aim-v1"),
+                         dict(screen="v4-prior-v1", orientation="train", composition="ew-theme-aim-v1")):
+            with self.assertRaises(fcw.FitError) as caught:
+                fcw.fit(self.fx.args(out, **override))
+            self.assertIn("go together", str(caught.exception))
+            self.assertFalse(out.exists())
+        code, _ = fcw.fit(self.fx.args(self.root / "v42_aim", screen="v4-prior-v2", orientation="prior",
+                                       composition="ew-theme-aim-v1"))
+        self.assertIn(code, (fcw.EXIT_OK, fcw.EXIT_NO_WEIGHTS))  # the v4.2 screen composes with the aim rule too
+
+
+class V1BytesUnchangedByAim(unittest.TestCase):
+    """T31 edit: ew-theme-v1 (v4-prior-v1 and v4-prior-v2) emits the pre-T31 bytes except the embedded script SHA and
+    the SHAs derived from it (context digest, admission SHA), and uses the same work-cache paths (git-history fitter).
+
+    A literal SHA equality with a weights file written by an older fitter is impossible by construction: the file
+    embeds the fitter's own SHA-256. This is the byte_stability contract the existing T23/T27 tests use."""
+
+    PRE_T31_BLOB = "fd644cba31e0cd3c3aefb24e91e82e3980127725"  # fitter at d4ec515d (T27, a67dfa9f)
+
+    def test_ew_theme_v1_bytes_unchanged(self):
+        import importlib.util
+        import subprocess
+        try:
+            old = subprocess.run(["git", "cat-file", "-p", self.PRE_T31_BLOB], capture_output=True, check=True,
+                                 cwd=Path(__file__).resolve().parent).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git history with the pre-T31 fitter blob is unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old").mkdir()
+            (root / "old" / "fit_composition_weights_pre_t31.py").write_bytes(old)
+            spec = importlib.util.spec_from_file_location("fcw_pre_t31", root / "old" / "fit_composition_weights_pre_t31.py")
+            pre = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pre)
+            self.assertEqual(pre.SEMANTICS_TAG, fcw.SEMANTICS_TAG)
+            panel, signals, ids, extra = aim_world()
+            fx = Fixture(root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                         candidate_extra=extra)
+            for screen in ("v4-prior-v1", "v4-prior-v2"):
+                got = {}
+                for tag, module in (("new", fcw), ("old", pre)):
+                    out, work = root / f"{screen}-{tag}", root / f"work-{screen}-{tag}"
+                    with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249):
+                        code, _ = module.fit(module.parse_args(fx.argv(out, screen, [
+                            "--orientation", "prior", "--composition", "ew-theme-v1", "--work-dir", str(work)])))
+                    self.assertEqual(code, 0, screen)
+                    adm = (out / fcw.OUTPUT_ADMISSION).read_bytes()
+                    derived = {module.SCRIPT_SHA256: b"<script>", json.loads(adm)["inputs"]["context_sha256"]: b"<context>",
+                               sha(adm): b"<admission>"}
+                    files = {}
+                    for p in out.iterdir():
+                        data = p.read_bytes()
+                        for value, token in derived.items():
+                            data = data.replace(value.encode(), token)
+                        files[p.name] = data
+                    keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
+                    got[tag] = (files, keys)
+                self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), screen)
+                for name in got["new"][0]:
+                    self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {name}")
+                self.assertEqual(got["new"][1], got["old"][1], screen)  # no aim-* directory on the v1 path
+
+
 if __name__ == "__main__":
     unittest.main()

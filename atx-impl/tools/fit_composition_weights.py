@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-v1`` / ``v4-prior-v2`` and weight fits ``mv-shrink-0.9-nonneg-v1`` / ``ew-theme-v1``.
+"""TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-v1`` / ``v4-prior-v2`` and weight fits ``mv-shrink-0.9-nonneg-v1`` / ``ew-theme-v1`` / ``ew-theme-aim-v1``.
 
 Writes into a new output directory (published atomically, never overwritten):
   composition_weights.json  ``atx.dsl-composition-weights/v1``, read by ``atx-equity-strategy-ic
@@ -72,6 +72,23 @@ check, standalone TRAIN tau_k > 0.08 -> reject_turnover_cost. Check order: no_pr
 turnover (0.70), turnover_cost (0.08), veto; first failure wins. A theme left without an admitted member
 drops out of the 1/themes weights (as in ew-theme-v1). ``v4-prior-v1`` output is unchanged.
 
+v5 (``--composition ew-theme-aim-v1`` with the same prior orientation/screens; v5 pre-registration R4', declared
+before any v5 TRAIN read): ew-theme-v1 scaled by the Garleanu-Pedersen aim gain of each member, measured from
+second moments of the TRAIN signal only (no means, no covariances, no returns).
+  ranks        z_k(d) = per-decision centered tied ranks of signal_k over the context's used rows with a finite
+               signal (``live``), standardized to mean 0 / unit population SD; NaN on decisions with < 50 live
+               names or zero rank variance (all tied), and outside TRAIN.
+  rho_k(j)     mean over TRAIN decisions d of c_j(d) = sum_i z_k(d)_i z_k(d-j)_i / n_both(d) over the names
+               finite on both days (n_both >= 50), at exact lags 0..21 and 28, 35, ..., 126.
+  g_k          theta * sum_{j=0..126} (1-theta)^j rho_k(j), theta = 0.05, rho linearly interpolated between exact
+               lags, a NaN lag counts 0; clipped to [0.05, 1].
+  weights      w_k = (g_k / (T * n_theme(k))) / sum_m (g_m / (T * n_theme(m))) over admitted non-degenerate
+               members (normalised globally, not within a theme).
+  report only  per-candidate rho and g, half-sample gains (first / second half of the TRAIN decisions) and the
+               coverage-effective theme weight (mean over TRAIN decisions of sum_{k in theme} w_k c_k(d) /
+               sum_k w_k c_k(d), c_k(d) = live names / used names) land in ``provenance.aim``; nothing in them
+               feeds back into the weights. ``ew-theme-v1`` output bytes are unchanged (no aim keys).
+
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
 Records are keyed by (TRAIN role manifest SHA, semantics tag, cache payload SHA, fields manifest SHA
@@ -79,6 +96,10 @@ for field candidates) and bound to the VM identity, the context digest and this 
 any edit of this file recomputes everything. ``--max-seconds``
 and ``--max-new-candidates`` stop cleanly between candidates with exit code 3 and publish nothing; a
 rerun computes only what is missing. Outputs are byte-identical whichever path produced them.
+``ew-theme-aim-v1`` adds a per-candidate aim record (rho at the exact lags, g, half-sample gains, per-decision
+coverage) next to the factor record, bound the same way (script SHA-256, context digest, cache payload); the
+other compositions never read or write it. The exit-3 JSON on stdout (``status: incomplete``) is the
+partial-pass marker: rerun the same command to resume.
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -108,7 +129,14 @@ NETCOST_RULE_ID = "mv-shrink-0.9-nonneg-netcost-v1"
 NETCOST_C = 0.0018
 # v4 pre-registration R4: equal theme weights split equally over admitted members; nothing estimated.
 EW_THEME_RULE_ID = "ew-theme-v1"
-COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID, EW_THEME_RULE_ID)
+# v5 pre-registration R4': ew-theme weights scaled by the Garleanu-Pedersen aim gain from TRAIN rank autocorrelation.
+AIM_RULE_ID = "ew-theme-aim-v1"
+AIM_THETA = 0.05                                          # R4': fixed, equals the reference construction theta
+AIM_LAGS = list(range(0, 22)) + list(range(28, 127, 7))  # exact lags; others linearly interpolated
+AIM_GAIN_MIN, AIM_MAX_LAG = 0.05, 126
+AIM_MIN_NAMES = 50                                        # live names per decision (ranks) and per lag pair
+PRIOR_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_RULE_ID)
+COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID, EW_THEME_RULE_ID, AIM_RULE_ID)
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 # v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
@@ -143,6 +171,12 @@ CONTEXT_SEMANTICS = ("price-risk-v1;beta252-min126-all-instrument-market;vol63-m
 FACTOR_SEMANTICS = ("unsigned-centered-tied-rank;used-rows-finite-signal;ols-residual-2-pass;gross1;"
                     "residual>1e-9*entry;f=sum(q*fwd);flat=NaN;tau=mean-consecutive-no-drift;v1")
 SEMANTICS_TAG = hashlib.sha256(f"{CONTEXT_SEMANTICS}|{FACTOR_SEMANTICS}".encode()).hexdigest()[:16]
+AIM_SCHEMA = "atx.fit-candidate-aim/v1"
+AIM_SEMANTICS = ("z=centered-tied-rank-over-used&finite-signal;standardized-mean0-population-sd;min50;all-tied->NaN;"
+                 "TRAIN-decisions[2020-01-01,2023-01-01)-only;c_j(d)=sum(z_d*z_d-j)/n_both,n_both>=50;"
+                 "rho_j=mean_d-finite(c_j);lags0-21,28-126/7;interp-linear;NaN->0;g=theta*sum_0..126(1-theta)^j*rho;"
+                 "clip[0.05,1];halves=TRAIN-decision-split-floor(n/2):d<h|d-j>=h;coverage=live/used-rows;v1")
+AIM_TAG = hashlib.sha256(AIM_SEMANTICS.encode()).hexdigest()[:16]
 OUTPUT_WEIGHTS, OUTPUT_ADMISSION, OUTPUT_ADMISSION_CSV = (
     "composition_weights.json", "admission.json", "admission.csv")
 FIT_BEGIN_NS = 1_577_836_800_000_000_000  # 2020-01-01T00:00Z
@@ -791,6 +825,65 @@ def factor_record(context: Context, signal: np.ndarray, entry: dict, cand: dict,
         "context_refused": context.refused, "context_used_rows_unrefused": context.used_rows_summary()})
 
 
+def _floats_or_none(values) -> list:
+    return [float(x) if math.isfinite(x) else None for x in values]
+
+
+def aim_record(context: Context, signal: np.ndarray, entry: dict, cand: dict, vm_identity: str,
+               train_mask: np.ndarray) -> dict:
+    """The candidate's ew-theme-aim-v1 inputs (R4'): rho at the exact lags, g, half-sample gains, coverage.
+
+    ``train_mask`` flags the context decisions inside TRAIN; every other decision's ranks are NaN. Only
+    second moments of the TRAIN signal ranks are read (no returns, no means, no covariances).
+    """
+    slab = signal[context.begin:context.end][:, context.columns]
+    live = context.used & np.isfinite(slab)
+    used = context.used_rows
+    coverage = np.where(used > 0, live.sum(axis=1) / np.maximum(used, 1), 0.0)
+    z = standardized_ranks(slab, live)
+    del slab, live
+    z[~np.asarray(train_mask, dtype=bool)] = np.nan
+    profile = aim_profile(z, train_mask)
+    del z
+    return seal({
+        "schema": AIM_SCHEMA, "aim_semantics": AIM_SEMANTICS, "context_semantics": CONTEXT_SEMANTICS,
+        "script_sha256": SCRIPT_SHA256, "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
+        "cache_payload_sha256": entry["payload_sha256"], "fields_manifest_sha256": entry["fields_manifest_sha256"],
+        "vm_identity": vm_identity, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
+        "decisions": int(context.end - context.begin), "theta": AIM_THETA, "lags": list(AIM_LAGS),
+        "rho": _floats_or_none(profile["rho"]), "rho_half": [_floats_or_none(r) for r in profile["rho_half"]],
+        "gain": profile["gain"], "gain_unclipped": profile["gain_unclipped"], "gain_half": profile["gain_half"],
+        "rank_decisions": profile["rank_decisions"], "half_split_decision": profile["half_split_decision"],
+        "coverage": [float(x) for x in coverage]})
+
+
+def aim_record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
+    try:
+        if not isinstance(j, dict):
+            return False
+        body = {k: v for k, v in j.items() if k != "content_sha256"}
+        t = role.end - role.begin
+        rho, halves, cov, half = j.get("rho"), j.get("rho_half"), j.get("coverage"), j.get("gain_half")
+        opt = lambda xs: isinstance(xs, list) and len(xs) == len(AIM_LAGS) and all(  # noqa: E731
+            v is None or type(v) is float for v in xs)
+        return (j.get("content_sha256") == hashlib.sha256(canonical_compact(body)).hexdigest() and
+                j.get("schema") == AIM_SCHEMA and j.get("aim_semantics") == AIM_SEMANTICS and
+                j.get("context_semantics") == CONTEXT_SEMANTICS and j.get("script_sha256") == SCRIPT_SHA256 and
+                j.get("role_manifest_sha256") == role.sha and
+                j.get("cache_payload_sha256") == entry["payload_sha256"] and
+                j.get("fields_manifest_sha256") == entry["fields_manifest_sha256"] and
+                j.get("vm_identity") == vm_identity and is_hash(j.get("context_sha256")) and
+                j.get("decisions") == t and j.get("theta") == AIM_THETA and j.get("lags") == AIM_LAGS and
+                opt(rho) and isinstance(halves, list) and len(halves) == 2 and all(opt(h) for h in halves) and
+                type(j.get("gain")) is float and AIM_GAIN_MIN <= j["gain"] <= 1.0 and
+                type(j.get("gain_unclipped")) is float and isinstance(half, list) and len(half) == 2 and
+                all(type(g) is float for g in half) and type(j.get("rank_decisions")) is int and
+                type(j.get("half_split_decision")) is int and isinstance(cov, list) and len(cov) == t and
+                all(type(v) is float for v in cov))
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
     try:
         if not isinstance(j, dict):
@@ -819,9 +912,11 @@ class WorkStore:
         self.base = Path(root) / role.sha / SEMANTICS_TAG
         self.factors = self.base / "factors"
         self.context_dir = self.base / "context"
+        self.aims = self.base / f"aim-{AIM_TAG}"  # ew-theme-aim-v1 only; other compositions never touch it
 
-    def _path(self, payload_sha: str, fields_sha: str | None) -> Path:
-        return self.factors / (f"{payload_sha}.json" if fields_sha is None else f"{payload_sha}.f-{fields_sha}.json")
+    def _path(self, payload_sha: str, fields_sha: str | None, directory: Path | None = None) -> Path:
+        name = f"{payload_sha}.json" if fields_sha is None else f"{payload_sha}.f-{fields_sha}.json"
+        return (directory or self.factors) / name
 
     def get(self, entry: dict) -> dict | None:
         try:
@@ -830,12 +925,23 @@ class WorkStore:
             return None
         return j if record_valid(j, entry, self.role, self.vm_identity) else None
 
-    def put(self, record: dict) -> None:
-        self.factors.mkdir(parents=True, exist_ok=True)
-        path = self._path(record["cache_payload_sha256"], record["fields_manifest_sha256"])
+    def get_aim(self, entry: dict) -> dict | None:
+        try:
+            j = json.loads(self._path(entry["payload_sha256"], entry["fields_manifest_sha256"], self.aims).read_bytes())
+        except (OSError, ValueError):
+            return None
+        return j if aim_record_valid(j, entry, self.role, self.vm_identity) else None
+
+    def put(self, record: dict, directory: Path | None = None) -> None:
+        directory = directory or self.factors
+        directory.mkdir(parents=True, exist_ok=True)
+        path = self._path(record["cache_payload_sha256"], record["fields_manifest_sha256"], directory)
         partial = path.with_name(path.name + f".partial-{os.getpid()}")
         write_synced(partial, canonical_compact(record))
         os.replace(partial, path)
+
+    def put_aim(self, record: dict) -> None:
+        self.put(record, self.aims)
 
     def load_context(self) -> Context | None:
         return Context.load(self.context_dir, self.role)
@@ -847,6 +953,88 @@ class WorkStore:
 def standalone_turnover(q: np.ndarray) -> float:
     """Mean over consecutive decisions of sum_i |q(d)_i - q(d-1)_i|; deployment excluded."""
     return float(np.abs(np.diff(q, axis=0)).sum(axis=1).mean())
+
+
+# ------------------------------------------------------ v5 R4' aim gain (ew-theme-aim-v1)
+def standardized_ranks(signal: np.ndarray, live: np.ndarray, min_names: int = AIM_MIN_NAMES) -> np.ndarray:
+    """Per-day centered, unit-variance ranks over live names; NaN elsewhere.
+
+    Ranks are the fitter's tie-aware ``centered_tied_ranks`` (an affine map of average ranks, so the
+    standardized values equal those of ``scipy.stats.rankdata``); standardized to mean 0 and population SD 1
+    over the day's live names. A day with fewer than ``min_names`` live names or zero rank variance (every
+    live name tied, e.g. a constant signal) is all NaN.
+    """
+    live = np.asarray(live, dtype=bool) & np.isfinite(signal)
+    ranks = centered_tied_ranks(signal, live)
+    count = live.sum(axis=1)
+    safe = np.maximum(count, 1).astype(np.float64)
+    dev = np.where(live, ranks - (np.where(live, ranks, 0.0).sum(axis=1) / safe)[:, None], 0.0)
+    var = (dev * dev).sum(axis=1) / safe
+    ok = (count >= min_names) & (var > 0)
+    sd = np.sqrt(np.where(ok, var, 1.0))
+    return np.where(live & ok[:, None], dev / sd[:, None], np.nan)
+
+
+def lag_correlations(z: np.ndarray, lags: list[int], min_names: int = AIM_MIN_NAMES) -> np.ndarray:
+    """(len(lags), days): c_j(d) = sum_i z_d,i z_d-j,i / n_both(d) over names finite on both days.
+
+    NaN where d < j or n_both(d) < ``min_names``. NaN rows of ``z`` (days without ranks) have no finite name.
+    """
+    days = z.shape[0]
+    finite = np.isfinite(z)
+    zf = np.where(finite, z, 0.0)
+    ones = finite.astype(np.float64)
+    out = np.full((len(lags), days), np.nan)
+    for n, j in enumerate(lags):
+        if j >= days:
+            continue
+        a, b, fa, fb = (zf, zf, ones, ones) if j == 0 else (zf[j:], zf[:-j], ones[j:], ones[:-j])
+        num = np.einsum("ij,ij->i", a, b)
+        cnt = np.einsum("ij,ij->i", fa, fb)
+        ok = cnt >= min_names
+        out[n, j:] = np.where(ok, num / np.where(ok, cnt, 1.0), np.nan)
+    return out
+
+
+def _finite_row_means(c: np.ndarray) -> np.ndarray:
+    ok = np.isfinite(c)
+    cnt = ok.sum(axis=1)
+    total = np.where(ok, c, 0.0).sum(axis=1)
+    return np.where(cnt > 0, total / np.maximum(cnt, 1), np.nan)
+
+
+def rank_autocorrelation(z: np.ndarray, lags: list[int], min_names: int = AIM_MIN_NAMES) -> np.ndarray:
+    """rho_bar(j) for j in lags: mean over days of the cross-sectional correlation of z_d and z_{d-j} over names finite on both days."""
+    return _finite_row_means(lag_correlations(z, lags, min_names))
+
+
+def aim_gain(rho_at_lags: np.ndarray, lags: list[int], theta: float = AIM_THETA, max_lag: int = AIM_MAX_LAG,
+             clip: bool = True) -> float:
+    """g = theta * sum_{j=0..max_lag} (1-theta)^j rho(j), rho interpolated linearly between exact lags; NaN lags -> 0."""
+    rho = np.interp(np.arange(max_lag + 1), lags, np.nan_to_num(np.asarray(rho_at_lags, dtype=np.float64), nan=0.0))
+    g = theta * float(np.sum((1 - theta) ** np.arange(max_lag + 1) * rho))
+    return float(min(1.0, max(AIM_GAIN_MIN, g))) if clip else g
+
+
+def aim_profile(z: np.ndarray, train_mask: np.ndarray, lags: list[int] = AIM_LAGS) -> dict:
+    """rho and g over all TRAIN decisions, plus the two half-sample versions (report only).
+
+    Halves split the TRAIN decisions at h = first + floor(n / 2): a lag-j pair (d, d-j) belongs to the
+    first half when d < h and to the second when d - j >= h (pairs straddling h are in neither).
+    """
+    train = np.flatnonzero(np.asarray(train_mask, dtype=bool))
+    c = lag_correlations(z, lags)
+    rho = _finite_row_means(c)
+    h = int(train[0] + len(train) // 2) if train.size else 0
+    first = _finite_row_means(c[:, :h])
+    second = np.full(len(lags), np.nan)
+    for n, j in enumerate(lags):
+        if h + j < c.shape[1]:
+            second[n] = _finite_row_means(c[n:n + 1, h + j:])[0]
+    return {"rho": rho, "rho_half": [first, second], "gain": aim_gain(rho, lags),
+            "gain_unclipped": aim_gain(rho, lags, clip=False),
+            "gain_half": [aim_gain(first, lags), aim_gain(second, lags)],
+            "rank_decisions": int(np.isfinite(z).any(axis=1).sum()), "half_split_decision": h}
 
 
 def shrink_solution(mu: np.ndarray, cov: np.ndarray) -> np.ndarray:
@@ -1049,6 +1237,18 @@ def ew_theme_weights(themes: list[str]) -> tuple[np.ndarray, dict]:
     return weights, table
 
 
+def ew_theme_aim_weights(themes: list[str], gains: list[float]) -> tuple[np.ndarray, dict]:
+    """ew-theme-aim-v1 (R4'): w_k proportional to g_k / (themes present * members of the theme), normalised globally."""
+    present = sorted(set(themes))
+    counts = {t: themes.count(t) for t in present}
+    raw = np.array([g / (len(present) * counts[t]) for t, g in zip(themes, gains)])
+    require(bool(np.all(np.isfinite(raw))) and float(raw.sum()) > 0, "fit: aim gains must be finite with a positive sum")
+    weights = raw / raw.sum()
+    table = {t: {"admitted_count": counts[t], "nominal_theme_weight": 1.0 / len(present),
+                 "aim_theme_weight": float(sum(w for w, th in zip(weights, themes) if th == t))} for t in present}
+    return weights, table
+
+
 ADMISSION_STATUSES = ("admitted", "reject_insufficient", "reject_turnover", "reject_unstable", "reject_redundant")
 CSV_COLUMNS = ("id", "family", "status", "failed_checks", "redundant_with", "redundant_rho", "admission_rank",
                "s_k", "runner_sign", "sign_agrees", "tau", "fit_days", "fit_mean", "fit_sharpe", "hold_days",
@@ -1116,13 +1316,21 @@ class Incomplete(Exception):
 
 
 def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[dict], vm_identity: str,
-                   started: float, log) -> tuple[list[dict], int, int]:
-    """Every candidate's factor record under one context: (records, computed now, reused)."""
+                   started: float, log, aim: bool = False) -> tuple[list[dict], int, int, list[dict] | None]:
+    """Every candidate's factor record (and, with ``aim``, its aim record) under one context.
+
+    Returns (records, computed now, reused, aim records or None). Without ``aim`` this is exactly the
+    pre-v5 path: no aim record is read, computed or written.
+    """
     store = WorkStore(args.work_dir, role, vm_identity) if args.work_dir else None
     records: list[dict | None] = [store.get(e) if store else None for e in entries]
+    aims: list[dict | None] | None = ([store.get_aim(e) if store else None for e in entries] if aim else None)
     digests = {r["context_sha256"] for r in records if r is not None}
-    if all(r is not None for r in records) and len(digests) == 1:
-        return records, 0, len(records)  # type: ignore[return-value]
+    if aims is not None:
+        digests |= {a["context_sha256"] for a in aims if a is not None}
+    if (all(r is not None for r in records) and (aims is None or all(a is not None for a in aims)) and
+            len(digests) == 1):
+        return records, 0, len(records), aims  # type: ignore[return-value]
     context = store.load_context() if store else None
     if context is None:
         context = Context.build(role, log)
@@ -1130,8 +1338,14 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
             store.save_context(context)
     elif log:
         log(f"fit: context reused digest={context.digest[:12]} seconds={time.perf_counter() - started:.2f}")
-    todo = [k for k, r in enumerate(records) if r is None or r["context_sha256"] != context.digest]
+
+    def stale(r) -> bool:
+        return r is None or r["context_sha256"] != context.digest
+
+    todo = [k for k in range(len(records)) if stale(records[k]) or (aims is not None and stale(aims[k]))]
     reused = len(records) - len(todo)
+    decisions = role.sessions[role.begin:role.end]
+    train_mask = (decisions >= FIT_BEGIN_NS) & (decisions < TRAIN_END_NS)
     computed, slowest = 0, 0.0
     for k in todo:
         if args.max_new_candidates is not None and computed >= args.max_new_candidates:
@@ -1140,22 +1354,27 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
             break
         tick = time.perf_counter()
         signal = load_candidate_signal(entries[k], role)
-        records[k] = factor_record(context, signal, entries[k], library[k], vm_identity)
+        if stale(records[k]):
+            records[k] = factor_record(context, signal, entries[k], library[k], vm_identity)
+            if store:
+                store.put(records[k])  # type: ignore[arg-type]
+        if aims is not None and stale(aims[k]):
+            aims[k] = aim_record(context, signal, entries[k], library[k], vm_identity, train_mask)
+            if store:
+                store.put_aim(aims[k])  # type: ignore[arg-type]
         del signal
-        if store:
-            store.put(records[k])  # type: ignore[arg-type]
         computed += 1
         slowest = max(slowest, time.perf_counter() - tick)
         if log:
+            extra = "" if aims is None else f" g={aims[k]['gain']:.3f}"  # type: ignore[index]
             log(f"fit: {k + 1}/{len(library)} {library[k]['id']} tau={records[k]['tau']:.4f} "  # type: ignore[index]
-                f"live={records[k]['live_decisions']} seconds={time.perf_counter() - tick:.2f}")  # type: ignore[index]
-    remaining = [library[k]["id"] for k in todo if records[k] is None or
-                 records[k]["context_sha256"] != context.digest]  # type: ignore[index]
+                f"live={records[k]['live_decisions']}{extra} seconds={time.perf_counter() - tick:.2f}")  # type: ignore[index]
+    remaining = [library[k]["id"] for k in todo if stale(records[k]) or (aims is not None and stale(aims[k]))]
     if remaining:
-        raise Incomplete({"status": "incomplete", "computed_this_run": computed, "reused": reused,
+        raise Incomplete({"status": "incomplete", "partial": True, "computed_this_run": computed, "reused": reused,
                           "remaining": len(remaining), "next": remaining[0],
                           "seconds": round(time.perf_counter() - started, 2)})
-    return records, computed, reused  # type: ignore[return-value]
+    return records, computed, reused, aims  # type: ignore[return-value]
 
 
 def fit(args, log=None) -> tuple[int, dict]:
@@ -1167,8 +1386,8 @@ def fit(args, log=None) -> tuple[int, dict]:
     require(orientation in ORIENTATIONS, f"--orientation must be one of {ORIENTATIONS}")
     prior = args.screen in PRIOR_SCREENS
     require(prior == (orientation == "prior"), "--orientation prior and --screen v4-prior-v1/v2 go together")
-    require(prior == (args.composition == EW_THEME_RULE_ID),
-            "--composition ew-theme-v1 and --screen v4-prior-v1/v2 go together (pre-registered v4 recipe)")
+    require(prior == (args.composition in PRIOR_COMPOSITIONS),
+            "--composition ew-theme-v1|ew-theme-aim-v1 and --screen v4-prior-v1/v2 go together")
     require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
@@ -1190,7 +1409,8 @@ def fit(args, log=None) -> tuple[int, dict]:
                          orientation_recipe)
     entries = [layout.resolve(c, role) for c in library]
     shas = [e["payload_sha256"] for e in entries]
-    records, computed, reused = ensure_records(args, role, library, entries, layout.vm_identity, started, log)
+    records, computed, reused, aims = ensure_records(args, role, library, entries, layout.vm_identity, started, log,
+                                                     aim=args.composition == AIM_RULE_ID)
 
     ids = [c["id"] for c in library]
     factors = np.array([[np.nan if v is None else v for v in r["f_unsigned"]] for r in records], dtype=np.float64)
@@ -1209,7 +1429,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     window = role.window()
     if prior:
         return fit_prior(args, library, priors, runner_signs, factors, taus, shas, cache_entry, records, inputs,
-                         window, decision_sessions, computed, reused, out, started)
+                         window, decision_sessions, computed, reused, out, started, aims)
     files: dict[str, bytes] = {}
     admission_sha = None
     if args.screen == SCREEN_ID:
@@ -1354,10 +1574,16 @@ def fit(args, log=None) -> tuple[int, dict]:
 def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], factors: np.ndarray,
               taus: list[float], shas: list[str], cache_entry: list[str], records: list[dict], inputs: dict,
               window: dict, decision_sessions: np.ndarray, computed: int, reused: int, out: Path,
-              started: float) -> tuple[int, dict]:
-    """v4-prior-v1/v2 admission + ew-theme-v1 weights (pre-registration R3/R4, v4.2 R3'). Nothing is estimated but tau."""
+              started: float, aims: list[dict] | None = None) -> tuple[int, dict]:
+    """v4-prior-v1/v2 admission + ew-theme-v1 weights (pre-registration R3/R4, v4.2 R3'). Nothing is estimated but tau.
+
+    ``ew-theme-aim-v1`` (v5 R4') scales the same member set by the aim gains in ``aims``; the admission
+    table is identical and the ew-theme-v1 document carries no aim key (its bytes are unchanged).
+    """
     ids = [c["id"] for c in library]
     screen = args.screen
+    aim = args.composition == AIM_RULE_ID
+    require(aim == (aims is not None), "fit: aim records exist exactly for --composition ew-theme-aim-v1")
     v2 = screen == PRIOR_SCREEN_V2_ID  # v4-prior-v1 emits exactly its pre-v4.2 bytes (no cost keys)
     statuses = V42_STATUSES if v2 else V4_STATUSES
     themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
@@ -1429,9 +1655,11 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             row.update(factor_stats(sign * zero_filled[k]))
             if row["status"] == "fitted" and not row["factor_sd"] > 0:
                 row["status"] = "degenerate-zero-variance"
+        if aim:  # report the gain on every row; only fitted members use it
+            row["aim_gain"] = aims[k]["gain"]  # type: ignore[index]
         weight_rows.append(row)
     active = [k for k in admitted_order if weight_rows[k]["status"] == "fitted"]
-    summary = {"status": "complete", "output": str(out), "screen": screen, "composition": EW_THEME_RULE_ID,
+    summary = {"status": "complete", "output": str(out), "screen": screen, "composition": args.composition,
                "orientation": "prior", "candidates": len(library), "computed_this_run": computed, "reused": reused,
                "refused_decisions": len(records[0]["context_refused"]), "admitted": len(admitted_order),
                "counts": admission["counts"], "sign_conflicts": admission["sign_conflicts"],
@@ -1442,7 +1670,20 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                        "factor series", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                        seconds=round(time.perf_counter() - started, 2))
         return EXIT_NO_WEIGHTS, summary
-    weights, theme_table = ew_theme_weights([themes[k] for k in active])
+    if aim:
+        weights, theme_table = ew_theme_aim_weights([themes[k] for k in active],
+                                                    [aims[k]["gain"] for k in active])  # type: ignore[index]
+        composition_text = ("w_k=(g_k/(T*n_theme(k)))/sum_m(g_m/(T*n_theme(m))) over admitted non-degenerate k "
+                            "(normalised globally); g_k=theta*sum_{j=0..126}(1-theta)^j*rho_k(j) clipped to [0.05,1], "
+                            "rho_k from TRAIN rank autocorrelation; T=themes with >=1 such member; no mean or "
+                            "covariance estimation")
+        fit_series = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
+                      "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
+    else:
+        weights, theme_table = ew_theme_weights([themes[k] for k in active])
+        composition_text = ("w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
+                            "no mean or covariance estimation")
+        fit_series = "none (equal theme weights); diagnostic uses s_k*f over ALL TRAIN scored decisions, flat decisions 0"
     for k, w in zip(active, weights):
         weight_rows[k]["weight"] = float(w)
     for theme, entry in theme_table.items():
@@ -1457,16 +1698,14 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         "signs": {row["id"]: row["sign"] for row in weight_rows if row["sign"] != 0},
         "weights": {row["id"]: row["weight"] for row in weight_rows},
         "provenance": {
-            "rule": EW_THEME_RULE_ID,
-            "composition": "w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
-                           "no mean or covariance estimation",
+            "rule": args.composition,
+            "composition": composition_text,
             "themes": theme_table, "themes_present": sorted(theme_table),
             "themes_declared": sorted(set(themes)), "themes_preregistered": list(V4_THEMES),
             "screen": screen, "orientation": "prior", "admission_sha256": admission_sha,
             "signs": f"{screen}: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
             "prior_metadata_source": priors["source"], "recipe_sha256": priors["recipe_sha256"],
-            "fit_series": "none (equal theme weights); diagnostic uses s_k*f over ALL TRAIN scored decisions, "
-                          "flat decisions 0",
+            "fit_series": fit_series,
             "factor": FACTOR_SEMANTICS, "neutralization": CONTEXT_SEMANTICS,
             "turnover": "tau=mean_d(sum_i|q(d)_i-q(d-1)_i|);consecutive-scored-TRAIN-decisions;"
                         "deployment-excluded;no-price-drift",
@@ -1489,6 +1728,9 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         document["provenance"].update(
             cost_tau_limit=V42_COST_TAU_LIMIT,
             cost_rejected=[row["id"] for row in weight_rows if row["status"] == "reject_turnover_cost"])
+    if aim:  # ew-theme-v1 bytes carry no aim key
+        document["provenance"]["aim"] = aim_provenance(ids, themes, aims, active, weights,  # type: ignore[arg-type]
+                                                       decision_sessions)
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)
     require(len(files[OUTPUT_WEIGHTS]) <= METADATA_LIMIT, "output: weights JSON exceeds the runner's 1 MiB bound")
     publish_directory(out, files)
@@ -1498,7 +1740,48 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                    themes_present=sorted(theme_table), weighted_standalone_turnover=weighted_tau,
                    tau_flagged=document["provenance"]["tau_flagged"], sign_conflicts_weighted=conflicts,
                    seconds=round(time.perf_counter() - started, 2))
+    if aim:
+        gains = [aims[k]["gain"] for k in active]  # type: ignore[index]
+        summary.update(aim_gain_min=min(gains), aim_gain_max=max(gains),
+                       aim_theme_weights={t: e["aim_theme_weight"] for t, e in sorted(theme_table.items())})
     return EXIT_OK, summary
+
+
+def aim_provenance(ids: list[str], themes: list[str], aims: list[dict], active: list[int], weights: np.ndarray,
+                   decision_sessions: np.ndarray) -> dict:
+    """``provenance.aim``: the R4' constants and, report only, rho/g per candidate, half-sample gains and the
+    coverage-effective theme weight. Nothing here feeds back into the weights."""
+    train = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    coverage = np.array([aims[k]["coverage"] for k in active], dtype=np.float64)  # members x decisions
+    w = np.asarray(weights, dtype=np.float64)
+    total = w @ coverage
+    ok = train & (total > 0)
+    effective = {}
+    for theme in sorted({themes[k] for k in active}):
+        rows = [n for n, k in enumerate(active) if themes[k] == theme]
+        part = w[rows] @ coverage[rows]
+        effective[theme] = float(np.mean(part[ok] / total[ok])) if ok.any() else None
+    return {
+        "theta": AIM_THETA, "lags": list(AIM_LAGS), "max_lag": AIM_MAX_LAG, "gain_min": AIM_GAIN_MIN, "gain_max": 1.0,
+        "min_names": AIM_MIN_NAMES, "semantics": AIM_SEMANTICS,
+        "gain_formula": "g_k=theta*sum_{j=0..max_lag}(1-theta)^j*rho_k(j);rho linear-interpolated between exact "
+                        "lags;NaN lag->0;clip[gain_min,gain_max]",
+        "rho_definition": "rho_k(j)=mean over TRAIN decisions d of sum_i z_k(d)_i*z_k(d-j)_i/n_both(d) over names "
+                          "finite on both days (n_both>=min_names); z=per-decision standardized centered tied ranks "
+                          "over used rows with a finite signal",
+        "rho": {ids[k]: a["rho"] for k, a in enumerate(aims)},
+        "gain": {ids[k]: a["gain"] for k, a in enumerate(aims)},
+        "gain_unclipped": {ids[k]: a["gain_unclipped"] for k, a in enumerate(aims)},
+        "gain_half": {ids[k]: a["gain_half"] for k, a in enumerate(aims)},
+        "half_split_decision_index": aims[0]["half_split_decision"],
+        "gain_half_note": "report only (risk register): first/second half of the TRAIN decisions; never re-tuned",
+        "coverage_mean": {ids[k]: (float(np.mean(np.asarray(a["coverage"])[train])) if train.any() else None)
+                          for k, a in enumerate(aims)},
+        "coverage_effective_theme_weight": effective,
+        "coverage_definition": "mean over TRAIN decisions of sum_{k in theme} w_k*c_k(d)/sum_k w_k*c_k(d); "
+                               "c_k(d)=used rows with a finite signal_k / used rows; report only",
+        "members": [ids[k] for k in active],
+    }
 
 
 def parse_args(argv):
@@ -1518,7 +1801,8 @@ def parse_args(argv):
                         "v4-prior-v2 (v4-prior-v1 plus reject tau_k > 0.08, v4.2 R3')")
     p.add_argument("--composition", default=RULE_ID, choices=COMPOSITIONS,
                    help="weight fit: mv-shrink-0.9-nonneg-v1 (default) or its netcost variant "
-                        "(mu_k minus 0.0018 * tau_k); the screen and signs are unchanged; ew-theme-v1 for v4")
+                        "(mu_k minus 0.0018 * tau_k); the screen and signs are unchanged; ew-theme-v1 for v4; "
+                        "ew-theme-aim-v1 for v5 (R4': ew-theme scaled by the TRAIN rank-autocorrelation aim gain)")
     p.add_argument("--orientation", default="train", choices=ORIENTATIONS,
                    help="train (default: runner/screen signs) or prior (v4: s_k=+1 embedded in the DSL)")
     p.add_argument("--recipe", type=Path, default=None,
@@ -1526,9 +1810,11 @@ def parse_args(argv):
     p.add_argument("--recipe-sha256", default=None)
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     p.add_argument("--work-dir", type=Path, default=None,
-                   help="persistent incremental state (context + per-candidate factor records)")
+                   help="persistent incremental state (context + per-candidate factor records; aim records for "
+                        "ew-theme-aim-v1)")
     p.add_argument("--max-seconds", type=float, default=None,
-                   help="soft budget: stop cleanly before a candidate that would overrun it (exit 3)")
+                   help="soft budget: stop cleanly before a candidate that would overrun it (exit 3, stdout "
+                        "{status: incomplete, partial: true}; completed candidates persist, rerun resumes)")
     p.add_argument("--max-new-candidates", type=int, default=None,
                    help="compute at most N missing candidates this run (exit 3 if more remain)")
     return p.parse_args(argv)
