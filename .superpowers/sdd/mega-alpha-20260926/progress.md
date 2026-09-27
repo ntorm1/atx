@@ -67,6 +67,19 @@ efficiency/incremental progress to cut resource use.
   (avoids engine rebuild fan-out); cost if wrong: v2 waits on T6/T7.
 - T2 addendum: accept pinned-candidate-weights blend semantics. T7 dispatched pool-4
   feat/mega-alpha-runner-fields-20260926 @6d85ac2a.
+- TRAIN-only studies (scripts in studies/; diagnostic, not evaluator; validation untouched):
+  compose_study: 48 cached v1 signals, per-candidate neutralized (beta252/vol63/logADV63) daily factor
+  returns; signs+weights fit 2020-21, holdout 2022. Gross SR hold22: equal .72, inv-vol .84,
+  pos-sharpe .82, MV shrink.5 .62, MV shrink.9 1.23 (7 methods compared = 7 composition trials on the
+  2022 TRAIN holdout). Mean pairwise factor corr .18. Seasonality candidates unstable.
+  construct_study (MV.9 blend, neutralized target, 6bps+300bps): hold22 gross/net SR, turnover/mo:
+  daily full 1.19/.56/169%; c5 full 1.07/.49/131%; c5 f.25 .60/.13/56%; c1 f.10 .70/.19/77%;
+  c5 f.25 band(1/N) .69/.31/28%; c21 full .58/.10/78%. => alpha decays fast vs 30%/mo budget;
+  no-trade band >> partial adjustment; flat 300bps borrow costs ~.3 SR.
+  Ruling: next construction = neutralize + no-trade band (T4), composition = MV-shrink(.9) weights fit
+  on full TRAIN (pinned via T1), alpha priority = slower sources (SI, IV, then fundamentals); add an
+  SI-tiered borrow scenario (engine borrow_tiers GC 27.5bps/warm 300/special) next to flat 300bps.
+  Cost if wrong: some construction rework; no validation data spent.
 - Next: NAV backtest with declared missing-price policy (design agent), audit script review
   (agent), then construction (risk neutralization) + alpha expansion toward SR>=1.
 
