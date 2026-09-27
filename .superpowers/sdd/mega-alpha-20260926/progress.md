@@ -18,6 +18,9 @@ Interpretation: the TRAIN selection (screen + MV weights + band on the same 2020
 validation is now spent for this configuration. Per objective item 6, next lever = alpha quality (fundamentals/
 industry via CIK, new library version) with a fresh TRAIN freeze; any new frozen configuration = validation
 trial #2, disclosed. Per-alpha validation diagnostics must NOT inform the next selection.
+- T15 (post-validation import): pool-9 4553de7c/15f79758 -> root 63b34d72/74a03a82. Build 32.9s; IC tests 66/66;
+  bit-identity vs mega-v1-train-r2 (7 artifacts) SAME on IC-cold (77.4s) and IC-warm (35.5s, 48 ic hits). Review
+  dispatched (t15-review). Then integration merged into local main (owner request).
 
 ## RESUMED 2026-09-27 (parent 3; owner goal prompt authorizes; SDD on Opus children)
 
