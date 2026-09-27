@@ -36,9 +36,12 @@ constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr f64 inf = std::numeric_limits<f64>::infinity();
 constexpr i64 day_ns = 86'400'000'000'000LL;
 constexpr usize max_dates = 4096, max_names = 20000, scenario_count = 3;
+constexpr usize max_scenarios = 8; // books run in lockstep by replay_nav_scenarios
 constexpr u64 max_event_cap = 1ULL << 24;
-// 9 f64 + u32 + 2 u8 + one ranked pair per name (94 B), rounded up.
+// Per scenario book: 8 f64 + u32 + 2 u8 per name (70 B), rounded up.
 constexpr u64 per_name_bytes = 192;
+// Shared construction per name: one ranked pair + the desired weight.
+constexpr u64 shared_name_bytes = sizeof(std::pair<f64, usize>) + sizeof(f64);
 constexpr u64 fixed_workspace_bytes = 1ULL << 20;    // histogram, cost model, locals
 constexpr u64 publication_slack_bytes = 16ULL << 20; // JSON documents, stream buffers
 // Both identities are exact in real arithmetic; this bounds accumulated rounding.
@@ -50,6 +53,14 @@ constexpr const char* turnover_definition =
     "are excluded; *_ex_deployment_month drops the calendar month holding the first "
     "nonzero fill; planned turnover (decision month, drifted marked weights) is reported "
     "only for reconciliation";
+constexpr const char* daily_turnover_definition =
+    "daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade "
+    "gross (long$ + short$ after the mark at t, before trading; stale names at stale "
+    "marks) over EXECUTED fills only (forced exits included, planned turnover never; "
+    "write-offs are not fills); statistics over execution sessions with positive "
+    "pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles "
+    "interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings "
+    "are declared before results and a NaN statistic never meets them";
 
 struct Budget {
   u64 limit{}, used{};
@@ -93,17 +104,22 @@ private:
 
 struct NameState {
   explicit NameState(usize n)
-      : held(n), mark(n, nan), raw_mark(n, nan), order(n), current(n), planned(n), desired(n),
-        written_exposure(n), written_haircut(n), absent(n), active(n), written_off(n) {
-    row.reserve(n);
-  }
+      : held(n), mark(n, nan), raw_mark(n, nan), order(n), current(n), planned(n),
+        written_exposure(n), written_haircut(n), absent(n), active(n), written_off(n) {}
   // held: marked dollars; mark/raw_mark: last OBSERVED adjusted/raw close;
   // order: working target dollars (decision-NAV dollars) when active.
-  std::vector<f64> held, mark, raw_mark, order, current, planned, desired;
+  std::vector<f64> held, mark, raw_mark, order, current, planned;
   std::vector<f64> written_exposure, written_haircut;
   std::vector<u32> absent; // consecutive absent marks while held or written off
   std::vector<u8> active, written_off;
+};
+// Decision construction shared by every scenario book of one lockstep replay: the
+// desired target depends only on the signal, membership and role prices at d.
+struct Construction {
+  explicit Construction(usize n) : desired(n) { row.reserve(n); }
   std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired;
+  PriceRiskScratch price; // grows only when neutralizing
 };
 struct Ctx {
   const TargetReplayInput& x;
@@ -147,7 +163,8 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
                    "nav replay: invalid recipe (target-replay cost/borrow must be zero)");
   return co::Ok();
 }
-co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& cfg) {
+co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& cfg,
+                              usize books) {
   ATX_TRY_VOID(validate_nav_config(cfg));
   const auto& x = in.target;
   ATX_TRY_VOID(detail::validate_replay_input(x, cfg.target));
@@ -164,11 +181,15 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
     if (bad)
       return co::Err(co::ErrorCode::InvalidArgument, "nav replay: price/volume/presence contract");
   }
-  // Envelope EXCLUDES caller-owned input; events are charged at their cap.
+  // Envelope EXCLUDES caller-owned input; events are charged at their cap. Every
+  // lockstep book holds its state, days and events at once; the construction
+  // (desired target and, when neutralizing, the price-risk scratch) is shared.
   Budget budget{cfg.target.max_working_bytes};
-  if (!budget.add(1, fixed_workspace_bytes) || !budget.add(x.instruments, per_name_bytes) ||
-      !budget.add(x.decision_end - x.decision_begin, sizeof(NavReplayDay)) ||
-      !budget.add(cfg.max_events, sizeof(NavEvent)))
+  if (!budget.add(books, fixed_workspace_bytes) ||
+      !budget.add(x.instruments, books * per_name_bytes + shared_name_bytes) ||
+      !budget.add(x.decision_end - x.decision_begin, books * sizeof(NavReplayDay)) ||
+      !budget.add(cfg.max_events, books * sizeof(NavEvent)) ||
+      !budget.add(1, detail::construction_scratch_bytes(cfg.target, x.instruments)))
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: workspace budget");
   return co::Ok();
 }
@@ -383,28 +404,31 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, NavReplayDay& day) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: nonpositive NAV after costs");
   return co::Ok();
 }
-// STABLE EXTENSION POINT: the only place the NAV path forms its desired target.
-// A later neutralization step post-processes s.desired HERE, after the tied-rank
-// target and before partial/budget planning; it may read only session d (causal).
-void form_desired_target(const TargetReplayInput& x, usize d, NameState& s) {
-  const usize offset = d * x.instruments;
-  detail::desired_target(x.signal.subspan(offset, x.instruments),
-                         x.member.subspan(offset, x.instruments), s.row, s.desired);
+// STABLE EXTENSION POINT: the only place the NAV path forms its desired target,
+// once per rebalance decision for every scenario book. It is the target replay's
+// own construction: the tied-rank target, then the configured post-processing
+// (price-risk-v1 neutralization with exposures computed once for d and its skip
+// guard), before partial/band/budget planning. Reads only sessions <= d. Returns
+// false when the guard skips the rebalance (current weights kept, forced exits
+// still apply); `out` receives the decision's construction record.
+co::Result<bool> form_desired_target(const TargetReplayInput& x, const TargetReplayConfig& target,
+                                     usize d, Construction& shared, ConstructionDay& out) {
+  return detail::form_desired(x, target, d, shared.row, shared.desired, shared.price, out);
 }
 // DECIDE at d: current weights are marked dollars / post-trade NAV (stale names at
-// stale marks); the unchanged target rules plan the next weights; every changed
-// name gets a working order in decision-NAV dollars (zero exits included). On
-// rebalance days unchanged members, and on every day flat nonmembers, cancel.
-void plan_decision(const Ctx& c, Book& b, usize d, NavReplayDay& day) {
+// stale marks); the unchanged target rules plan the next weights toward the shared
+// desired target (`rebalance` is effective: cadence day and not skipped); every
+// changed name gets a working order in decision-NAV dollars (zero exits included).
+// On rebalance days unchanged members, and on every day flat nonmembers, cancel.
+void plan_decision(const Ctx& c, Book& b, const Construction& shared, usize d, bool rebalance,
+                   const ConstructionDay& construction, NavReplayDay& day) {
   const auto& x = c.x; auto& s = b.names; const usize n = x.instruments;
-  const bool rebalance = (d - x.decision_begin) % c.cfg.target.cadence == 0;
   if (day.calendar_month != b.month) { b.month = day.calendar_month; b.spent = 0; }
   for (usize i = 0; i < n; ++i) s.current[i] = s.held[i] / b.nav_post;
-  if (rebalance) form_desired_target(x, d, s);
   std::copy(s.current.begin(), s.current.end(), s.planned.begin());
   TargetReplayDay plan;
   plan.decision = d; plan.session = x.session_keys[d]; plan.calendar_month = day.calendar_month;
-  detail::update_weights(x, c.cfg.target, d, rebalance, b.spent, s.desired, s.planned, plan);
+  detail::update_weights(x, c.cfg.target, d, rebalance, b.spent, shared.desired, s.planned, plan);
   b.spent += plan.turnover;
   for (usize i = 0; i < n; ++i) {
     if (s.planned[i] != s.current[i]) {
@@ -420,6 +444,13 @@ void plan_decision(const Ctx& c, Book& b, usize d, NavReplayDay& day) {
   day.applied_fraction = plan.applied_fraction; day.month_planned = b.spent;
   if (c.cfg.target.rule == TargetReplayRule::MonthlyTargetBudgetV2)
     day.budget_excess = std::max(0.0, b.spent - c.cfg.target.monthly_budget);
+  day.construction = construction; // shared record; the band acts on this book's weights
+  day.construction.banded_names = plan.construction.banded_names;
+}
+f64 gross_dollars(const NameState& s) {
+  f64 gross = 0;
+  for (const f64 h : s.held) gross += std::abs(h);
+  return gross;
 }
 co::Status close_day(const Ctx& c, Book& b, NavReplayDay& day) {
   const auto& s = b.names; f64 longs = 0, shorts = 0;
@@ -454,35 +485,70 @@ co::Status report_unresolved(const Ctx& c, Book& b, usize t) {
   return co::Ok();
 }
 // Sessions [begin, end): MARK (t > begin) -> EXECUTE (begin < t <= end-2) ->
-// DECIDE (t < end-2). Row t reads data at rows <= t only.
-co::Result<NavReplayResult> run_book(const Ctx& c) {
-  const auto& x = c.x; const usize begin = x.decision_begin, end = x.decision_end;
-  auto book = std::make_unique<Book>(x.instruments);
-  auto& b = *book;
-  b.cash = b.nav_pre = b.nav_post = c.cfg.initial_nav;
-  auto& r = b.result; r.deployment_index = end; r.days.reserve(end - begin);
-  for (usize t = begin; t < end; ++t) {
-    NavReplayDay day;
-    day.session_index = t; day.session = x.session_keys[t];
-    day.calendar_month = detail::calendar_month(day.session);
-    day.return_observation = t >= begin + 2;
-    if (t > begin) ATX_TRY_VOID(mark_session(c, b, t, day));
-    day.pretrade_nav = b.nav_pre;
-    if (t > begin && t + 2 <= end) {
-      ATX_TRY_VOID(execute_orders(c, b, t, day));
-      if (r.deployment_index == end && day.traded_dollars > 0) r.deployment_index = t;
-    } else {
-      b.nav_post = b.nav_pre; b.pending_cost = 0;
-    }
-    if (t + 2 < end) plan_decision(c, b, t, day);
-    ATX_TRY_VOID(close_day(c, b, day));
-    if (t + 1 == end) ATX_TRY_VOID(report_unresolved(c, b, t));
-    r.days.push_back(day);
+// DECIDE (t < end-2). Row t reads data at rows <= t only. The scenario books run in
+// lockstep: each book performs exactly its own single-book sequence (mark, execute,
+// decide, close) on its own state; only the decision's desired target is formed
+// once and shared, so every book is bit-identical to a replay on its own.
+co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
+                                                   std::span<const Ctx> ctxs) {
+  const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
+  const auto& target = ctxs.front().cfg.target; // identical for every book
+  std::vector<std::unique_ptr<Book>> books;
+  books.reserve(count);
+  for (const auto& c : ctxs) {
+    auto& b = *books.emplace_back(std::make_unique<Book>(x.instruments));
+    b.cash = b.nav_pre = b.nav_post = c.cfg.initial_nav;
+    b.result.deployment_index = end; b.result.days.reserve(end - begin);
   }
-  r.participation_fills = b.participation.total();
-  r.participation_p95 = b.participation.upper_quantile(.95);
-  r.participation_max = b.participation.maximum();
-  return co::Ok(std::move(r));
+  Construction shared(x.instruments);
+  std::vector<NavReplayDay> days(count);
+  for (usize t = begin; t < end; ++t) {
+    for (usize k = 0; k < count; ++k) {
+      const auto& c = ctxs[k]; auto& b = *books[k]; auto& day = days[k];
+      auto& r = b.result;
+      day = NavReplayDay{};
+      day.session_index = t; day.session = x.session_keys[t];
+      day.calendar_month = detail::calendar_month(day.session);
+      day.return_observation = t >= begin + 2;
+      if (t > begin) ATX_TRY_VOID(mark_session(c, b, t, day));
+      day.pretrade_nav = b.nav_pre;
+      day.pretrade_gross_dollars = gross_dollars(b.names);
+      if (t > begin && t + 2 <= end) {
+        ATX_TRY_VOID(execute_orders(c, b, t, day));
+        if (r.deployment_index == end && day.traded_dollars > 0) r.deployment_index = t;
+        day.one_way_turnover_gmv = day.pretrade_gross_dollars > 0
+            ? day.traded_dollars / day.pretrade_gross_dollars : nan;
+      } else {
+        b.nav_post = b.nav_pre; b.pending_cost = 0;
+      }
+    }
+    if (t + 2 < end) {
+      ConstructionDay construction;
+      bool rebalance = (t - begin) % target.cadence == 0;
+      if (rebalance) {
+        ATX_TRY(rebalance, form_desired_target(x, target, t, shared, construction));
+      }
+      construction.rebalance = rebalance;
+      for (usize k = 0; k < count; ++k)
+        plan_decision(ctxs[k], *books[k], shared, t, rebalance, construction, days[k]);
+    }
+    for (usize k = 0; k < count; ++k) {
+      auto& b = *books[k];
+      ATX_TRY_VOID(close_day(ctxs[k], b, days[k]));
+      if (t + 1 == end) ATX_TRY_VOID(report_unresolved(ctxs[k], b, t));
+      b.result.days.push_back(days[k]);
+    }
+  }
+  std::vector<NavReplayResult> results;
+  results.reserve(count);
+  for (auto& book : books) {
+    auto& b = *book; auto& r = b.result;
+    r.participation_fills = b.participation.total();
+    r.participation_p95 = b.participation.upper_quantile(.95);
+    r.participation_max = b.participation.maximum();
+    results.push_back(std::move(r));
+  }
+  return co::Ok(std::move(results));
 }
 
 struct Moments {
@@ -545,10 +611,6 @@ Json bucket_json(const NavBucket& b) {
   return Json{{"count", b.count}, {"gross_exposure_dollars", b.gross_exposure},
               {"pnl_dollars", b.pnl}};
 }
-const char* rule_label(TargetReplayRule rule) {
-  return rule == TargetReplayRule::BaselineTargetV1 ? "baseline-target-v1"
-                                                    : "monthly-target-budget-v2";
-}
 constexpr const char* timing_declaration =
     "decide at session d after its mark (modeled +22h mark, +23h decision); fill at the close "
     "of d+1; first return row d+2; decisions [begin,end-2), executions <= end-2, return rows "
@@ -587,7 +649,11 @@ constexpr const char* limitations_declaration =
     "(missing histogram reported); cash earns 0% and shorts no rebate, so returns approximate "
     "excess returns; v2 budget planned by decision month while actual turnover is by execution "
     "month; working orders keep decision-NAV dollar targets; no terminal liquidation; the last "
-    "two scored decisions are dropped vs the target replay; not capacity qualified";
+    "two scored decisions are dropped vs the target replay; not capacity qualified; the "
+    "monthly turnover fields (months_le_0.30, meets_turnover_target_*) are LEGACY reporting "
+    "only (30%/month target retired 2026-09-27), the declared turnover limits are the daily "
+    "GMV mean/p95 ceilings (daily_turnover_gmv, meets_daily_turnover_*); a capped (S2/S3) "
+    "deployment that completes over several sessions counts its later sessions as turnover";
 
 Json scenario_recipe(const NavScenario& s, bool primary) {
   const Json participation = std::isfinite(s.max_participation) ? Json(s.max_participation)
@@ -604,13 +670,13 @@ Json scenario_recipe(const NavScenario& s, bool primary) {
       {"terminal_haircut_short", s.adverse_terminal ? nav_adverse_short_return : 0.0}};
 }
 Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
-                const std::vector<NavScenario>& scenarios) {
+                const std::vector<NavScenario>& scenarios, const NavTurnoverLimits& limits) {
   Json list = Json::array();
   for (usize k = 0; k < scenarios.size(); ++k)
     list.push_back(scenario_recipe(scenarios[k], k == nav_primary_scenario_index));
-  return Json{{"schema", "atx.dsl-nav-replay/v1"},
+  auto j = Json{{"schema", "atx.dsl-nav-replay/v1"},
       {"combined_sha256", cfg.combined_sha256}, {"role_sha256", cfg.role_sha256},
-      {"rule", rule_label(cfg.target.rule)}, {"cadence", cfg.target.cadence},
+      {"rule", detail::construction_rule_id(cfg.target)}, {"cadence", cfg.target.cadence},
       {"trade_fraction", cfg.target.trade_fraction},
       {"monthly_budget", cfg.target.monthly_budget},
       {"initial_nav", base.initial_nav}, {"liquidity_window", base.liquidity_window},
@@ -623,7 +689,16 @@ Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
       {"target", target_declaration}, {"turnover", turnover_definition},
       {"missing", missing_declaration}, {"guard", guard_declaration},
       {"liquidity", liquidity_declaration}, {"desired_target_postprocess", "none"},
-      {"cost_input_status", "declared-unfitted-scenario-no-locate"}};
+      {"cost_input_status", "declared-unfitted-scenario-no-locate"},
+      {"monthly_turnover_target_status", "legacy-reporting-only;retired-2026-09-27"},
+      {"daily_turnover_mean_max", limits.daily_mean_max},
+      {"daily_turnover_p95_max", limits.daily_p95_max},
+      {"daily_turnover_definition", daily_turnover_definition}};
+  // Construction keys only when non-default (overwrites desired_target_postprocess
+  // when neutralizing), so the default recipe carries no construction entries.
+  const auto construction = detail::construction_recipe_json(cfg.target);
+  if (!construction.empty()) j.update(Json::parse(construction));
+  return j;
 }
 Json months_json(const NavSummary& s) {
   Json months = Json::array();
@@ -729,6 +804,20 @@ Json scenario_summary(const NavScenario& sc, bool primary, const NavReplayResult
       {"events_csv_sha256", events_sha}};
   j.update(turnover_json(s));
   j.update(risk_json(r, s));
+  j["daily_turnover_gmv"] = Json{{"definition", daily_turnover_definition},
+      {"basis", "executed-fills;forced-exits-included;deployment-session-excluded"},
+      {"sessions", s.daily_turnover_sessions},
+      {"zero_gmv_sessions_excluded", s.daily_turnover_zero_gmv_sessions},
+      {"mean", finite_or_null(s.daily_turnover_mean)},
+      {"median", finite_or_null(s.daily_turnover_median)},
+      {"p95", finite_or_null(s.daily_turnover_p95)},
+      {"max", finite_or_null(s.daily_turnover_max)},
+      {"max_session_ns", s.daily_turnover_sessions ? Json(s.daily_turnover_max_session)
+                                                   : Json(nullptr)},
+      {"quantile", "linear interpolation at (n-1)q over sorted sessions (numpy default)"},
+      {"mean_max", s.daily_limits.daily_mean_max}, {"p95_max", s.daily_limits.daily_p95_max}};
+  j["meets_daily_turnover_mean"] = s.meets_daily_turnover_mean;
+  j["meets_daily_turnover_p95"] = s.meets_daily_turnover_p95;
   return j;
 }
 
@@ -738,7 +827,10 @@ co::Status write_json(const std::filesystem::path& path, const Json& j) {
   file << j.dump(2) << '\n'; file.close();
   return file ? co::Ok() : co::Status(co::Err(co::ErrorCode::IoError, "nav replay: JSON close"));
 }
-co::Status write_daily(const std::filesystem::path& path, const NavReplayResult& r) {
+// The pre-existing columns come first, unchanged; the GMV turnover columns are
+// appended, then the construction columns only when an option is non-default.
+co::Status write_daily(const std::filesystem::path& path, const NavReplayResult& r,
+                       bool construction) {
   std::ofstream file(path, std::ios::binary);
   if (!file) return co::Err(co::ErrorCode::IoError, "nav replay: daily output");
   file.imbue(std::locale::classic()); file << std::setprecision(17);
@@ -751,7 +843,10 @@ co::Status write_daily(const std::filesystem::path& path, const NavReplayResult&
           "planned_discretionary,applied_fraction,planned_gross,planned_net,month_planned,"
           "budget_excess,long_dollars,"
           "short_dollars,gross_leverage,net_leverage,held_names,stale_names,stale_long_dollars,"
-          "stale_short_dollars,guarded_intervals,cash_ratio\n";
+          "stale_short_dollars,guarded_intervals,cash_ratio,pretrade_gross_dollars,"
+          "one_way_turnover_gmv";
+  if (construction) file << detail::construction_csv_columns();
+  file << '\n';
   for (const auto& d : r.days) {
     file << d.session_index << ',' << d.session << ',' << d.calendar_month << ','
          << d.decision << ',' << d.rebalance << ',' << d.executed << ','
@@ -770,7 +865,10 @@ co::Status write_daily(const std::filesystem::path& path, const NavReplayResult&
          << d.budget_excess << ',' << d.long_dollars << ',' << d.short_dollars << ','
          << d.gross_leverage << ',' << d.net_leverage << ',' << d.held_names << ',' << d.stale_names
          << ',' << d.stale_long_dollars << ',' << d.stale_short_dollars << ','
-         << d.guarded_intervals << ',' << d.cash_ratio << '\n';
+         << d.guarded_intervals << ',' << d.cash_ratio << ',' << d.pretrade_gross_dollars << ',';
+    if (std::isnan(d.one_way_turnover_gmv)) file << "nan"; else file << d.one_way_turnover_gmv;
+    if (construction) detail::write_construction_csv(file, d.construction);
+    file << '\n';
   }
   file.close();
   return file ? co::Ok() : co::Status(co::Err(co::ErrorCode::IoError, "nav replay: daily close"));
@@ -806,10 +904,13 @@ co::Status write_events(const std::filesystem::path& path, const NavReplayResult
   return file ? co::Ok() : co::Status(co::Err(co::ErrorCode::IoError, "nav replay: events close"));
 }
 // Conservative bound on everything the NAV path holds beside the loaded input:
-// all scenario results (days + events at cap), per-name state and publication.
-u64 nav_reserve_bytes(u64 max_events) {
+// all scenario results (days + events at cap), every lockstep book's per-name
+// state, the shared construction (with its price-risk scratch when neutralizing)
+// and publication.
+u64 nav_reserve_bytes(u64 max_events, const TargetReplayConfig& target) {
   return publication_slack_bytes + scenario_count * fixed_workspace_bytes +
-         u64{max_names} * per_name_bytes +
+         u64{max_names} * (scenario_count * per_name_bytes + shared_name_bytes) +
+         detail::construction_scratch_bytes(target, max_names) +
          scenario_count * (u64{max_dates} * sizeof(NavReplayDay) + max_events * sizeof(NavEvent));
 }
 } // namespace
@@ -830,18 +931,37 @@ std::vector<NavScenario> fixed_nav_scenarios() {
   return {linear, modeled, adverse};
 }
 
-co::Result<NavReplayResult> replay_nav(const NavReplayInput& in, const NavReplayConfig& cfg) {
-  ATX_TRY_VOID(validate_nav_input(in, cfg));
+co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios) {
+  if (scenarios.empty() || scenarios.size() > max_scenarios)
+    return co::Err(co::ErrorCode::InvalidArgument, "nav replay: 1..8 scenarios per replay");
+  // The NAV volume is authoritative, also for price-risk neutralization.
+  TargetReplayInput x = in.target;
+  x.volume = in.volume;
+  const NavReplayInput input{x, in.volume};
   try {
-    ATX_TRY(auto model, make_cost_model(cfg.scenario));
-    const auto& s = cfg.scenario;
-    const bool sqrt_model = s.cost == NavCostRule::SqrtImpactV1;
-    const Ctx ctx{in.target, in.volume, cfg, *model,
-                  s.adverse_terminal ? nav_adverse_long_return : 0.0,
-                  s.adverse_terminal ? nav_adverse_short_return : 0.0,
-                  s.annual_borrow_bps * 1e-4,
-                  sqrt_model ? (s.half_spread_bps + s.commission_bps) * 1e-4 : 0.0, sqrt_model};
-    return run_book(ctx);
+    std::vector<NavReplayConfig> configs(scenarios.size(), base);
+    for (usize k = 0; k < scenarios.size(); ++k) {
+      configs[k].scenario = scenarios[k];
+      ATX_TRY_VOID(validate_nav_config(configs[k]));
+    }
+    ATX_TRY_VOID(validate_nav_input(input, configs.front(), scenarios.size()));
+    std::vector<std::unique_ptr<const bk::ReplayCostModel>> models;
+    std::vector<Ctx> ctxs;
+    models.reserve(scenarios.size()); ctxs.reserve(scenarios.size());
+    for (const auto& cfg : configs) {
+      ATX_TRY(auto model, make_cost_model(cfg.scenario));
+      models.push_back(std::move(model));
+      const auto& s = cfg.scenario;
+      const bool sqrt_model = s.cost == NavCostRule::SqrtImpactV1;
+      ctxs.push_back(Ctx{x, in.volume, cfg, *models.back(),
+                         s.adverse_terminal ? nav_adverse_long_return : 0.0,
+                         s.adverse_terminal ? nav_adverse_short_return : 0.0,
+                         s.annual_borrow_bps * 1e-4,
+                         sqrt_model ? (s.half_spread_bps + s.commission_bps) * 1e-4 : 0.0,
+                         sqrt_model});
+    }
+    return run_books(x, ctxs);
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: allocation failed");
   } catch (const std::length_error&) {
@@ -849,13 +969,25 @@ co::Result<NavReplayResult> replay_nav(const NavReplayInput& in, const NavReplay
   }
 }
 
-co::Result<NavSummary> summarize_nav(const NavReplayResult& result) {
+co::Result<NavReplayResult> replay_nav(const NavReplayInput& in, const NavReplayConfig& cfg) {
+  const std::span<const NavScenario> one(&cfg.scenario, 1);
+  ATX_TRY(auto results, replay_nav_scenarios(in, cfg, one));
+  return co::Ok(std::move(results.front()));
+}
+
+co::Result<NavSummary> summarize_nav(const NavReplayResult& result,
+                                     const NavTurnoverLimits& limits) {
   const auto& days = result.days;
   if (days.size() < 3)
     return co::Err(co::ErrorCode::InvalidArgument, "nav summary: fewer than three sessions");
+  if (!std::isfinite(limits.daily_mean_max) || !(limits.daily_mean_max > 0) ||
+      !std::isfinite(limits.daily_p95_max) || !(limits.daily_p95_max > 0))
+    return co::Err(co::ErrorCode::InvalidArgument, "nav summary: daily turnover ceilings");
   try {
-    NavSummary s; s.min_cash_ratio = inf;
+    NavSummary s; s.min_cash_ratio = inf; s.daily_limits = limits;
     Moments net, gross; std::vector<f64> series; series.reserve(days.size());
+    std::vector<f64> daily_gmv; daily_gmv.reserve(days.size());
+    s.daily_turnover_max_session = 0;
     std::map<u32, NavMonth> months;
     struct YearNav { usize observations{}; f64 first{}, last{}; };
     std::map<i32, YearNav> years;
@@ -872,6 +1004,17 @@ co::Result<NavSummary> summarize_nav(const NavReplayResult& result) {
         if (d.decision) {
           ++m.decision_sessions; m.planned_turnover += d.planned_turnover;
           s.total_planned_turnover += d.planned_turnover;
+        }
+      }
+      if (d.executed && d.session_index != result.deployment_index) {
+        if (d.pretrade_gross_dollars > 0) {
+          daily_gmv.push_back(d.one_way_turnover_gmv);
+          if (daily_gmv.size() == 1 || d.one_way_turnover_gmv > s.daily_turnover_max) {
+            s.daily_turnover_max = d.one_way_turnover_gmv;
+            s.daily_turnover_max_session = d.session;
+          }
+        } else {
+          ++s.daily_turnover_zero_gmv_sessions;
         }
       }
       accumulate_day(d, s);
@@ -913,6 +1056,18 @@ co::Result<NavSummary> summarize_nav(const NavReplayResult& result) {
     }
     summarize_months(months, deployment_month, s);
     s.meets_sharpe_target = s.net_sharpe >= nav_sharpe_target;
+    // Daily GMV turnover (executed fills only), deployment session excluded.
+    f64 gmv_sum = 0;
+    for (const f64 v : daily_gmv) gmv_sum += v;
+    std::sort(daily_gmv.begin(), daily_gmv.end());
+    s.daily_turnover_sessions = daily_gmv.size();
+    s.daily_turnover_mean = daily_gmv.empty() ? nan : gmv_sum / static_cast<f64>(daily_gmv.size());
+    s.daily_turnover_median = detail::sorted_quantile(daily_gmv, .5);
+    s.daily_turnover_p95 = detail::sorted_quantile(daily_gmv, .95);
+    if (daily_gmv.empty()) s.daily_turnover_max = nan;
+    // NaN compares false: an empty or undefined statistic never meets a ceiling.
+    s.meets_daily_turnover_mean = s.daily_turnover_mean <= limits.daily_mean_max;
+    s.meets_daily_turnover_p95 = s.daily_turnover_p95 <= limits.daily_p95_max;
     return co::Ok(std::move(s));
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav summary: allocation failed");
@@ -920,50 +1075,67 @@ co::Result<NavSummary> summarize_nav(const NavReplayResult& result) {
 }
 
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, std::ostream& progress) {
+  return run_nav_replay(cfg, NavTurnoverLimits{}, progress);
+}
+
+co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
+                          std::ostream& progress) {
   try {
     if (cfg.role_path.empty() || cfg.role_sha256.empty() || cfg.output_directory.empty())
       return co::Err(co::ErrorCode::InvalidArgument, "nav replay: pinned role and output required");
     if (cfg.target.one_way_bps != 0 || cfg.target.annual_borrow_bps != 0)
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav replay: costs and borrow are fixed scenarios, not flags");
+    if (!std::isfinite(limits.daily_mean_max) || !(limits.daily_mean_max > 0) ||
+        !std::isfinite(limits.daily_p95_max) || !(limits.daily_p95_max > 0))
+      return co::Err(co::ErrorCode::InvalidArgument, "nav replay: daily turnover ceilings");
     const auto scenarios = fixed_nav_scenarios();
     NavReplayConfig base; base.target = cfg.target;
     // Admission: the loader is charged against what remains after the NAV
     // workspace reserve, so input + all scenario results fit the one budget.
-    const u64 reserve = nav_reserve_bytes(base.max_events);
+    const u64 reserve = nav_reserve_bytes(base.max_events, cfg.target);
     if (cfg.target.max_working_bytes <= reserve)
       return co::Err(co::ErrorCode::OutOfRange, "nav replay: budget below NAV workspace reserve");
     auto load = cfg; load.target.max_working_bytes = cfg.target.max_working_bytes - reserve;
     ATX_TRY(auto blend, detail::load_saved_blend(load, true));
     const NavReplayInput input{blend.view(), blend.volume};
-    std::vector<NavReplayResult> results; results.reserve(scenarios.size());
+    // All scenarios in lockstep: the desired target (and its price exposures)
+    // is formed once per decision for every scenario book.
+    ATX_TRY(auto results, replay_nav_scenarios(input, base, scenarios));
     std::vector<NavSummary> summaries; summaries.reserve(scenarios.size());
-    for (const auto& scenario : scenarios) {
-      auto run = base; run.scenario = scenario;
-      ATX_TRY(auto result, replay_nav(input, run));
-      ATX_TRY(auto summary, summarize_nav(result));
-      results.push_back(std::move(result)); summaries.push_back(std::move(summary));
+    for (const auto& result : results) {
+      ATX_TRY(auto summary, summarize_nav(result, limits));
+      summaries.push_back(std::move(summary));
     }
     const auto dir = std::filesystem::path(cfg.output_directory);
     if (!std::filesystem::create_directory(dir))
       return co::Err(co::ErrorCode::AlreadyExists, "nav replay: output must not exist");
-    const auto method = nav_recipe(cfg, base, scenarios);
+    const auto method = nav_recipe(cfg, base, scenarios, limits);
     ATX_TRY(auto method_sha, co::sha256_hex(method.dump()));
     ATX_TRY_VOID(write_json(dir / "recipe.json", method));
+    const bool construction = detail::construction_active(cfg.target);
     Json list = Json::array();
     for (usize k = 0; k < scenarios.size(); ++k) {
       const auto daily = dir / ("daily_" + scenarios[k].id + ".csv");
       const auto events = dir / ("events_" + scenarios[k].id + ".csv");
-      ATX_TRY_VOID(write_daily(daily, results[k]));
+      ATX_TRY_VOID(write_daily(daily, results[k], construction));
       ATX_TRY_VOID(write_events(events, results[k]));
       ATX_TRY(auto daily_sha, co::sha256_file(daily.string()));
       ATX_TRY(auto events_sha, co::sha256_file(events.string()));
-      list.push_back(scenario_summary(scenarios[k], k == nav_primary_scenario_index, results[k],
-                                      summaries[k], daily_sha, events_sha));
+      auto entry = scenario_summary(scenarios[k], k == nav_primary_scenario_index, results[k],
+                                    summaries[k], daily_sha, events_sha);
+      if (construction) {
+        std::vector<ConstructionDay> decisions;
+        for (const auto& d : results[k].days)
+          if (d.decision) decisions.push_back(d.construction);
+        entry.update(Json::parse(detail::construction_summary_json(cfg.target, decisions)));
+      }
+      list.push_back(std::move(entry));
       progress << "nav replay " << scenarios[k].id << ": net Sharpe "
-               << std::setprecision(6) << summaries[k].net_sharpe << ", mean monthly turnover "
-               << summaries[k].mean_monthly_turnover << " (ex deployment "
-               << summaries[k].mean_monthly_turnover_ex_deployment << ")\n";
+               << std::setprecision(6) << summaries[k].net_sharpe << ", mean daily GMV turnover "
+               << summaries[k].daily_turnover_mean << " (p95 " << summaries[k].daily_turnover_p95
+               << "), mean monthly turnover " << summaries[k].mean_monthly_turnover
+               << " (ex deployment " << summaries[k].mean_monthly_turnover_ex_deployment << ")\n";
     }
     auto bindings = Json::parse(blend.manifest_json);
     // Equal-weight blends carry no weights key; pinned-weight blends bind their SHA.
@@ -972,7 +1144,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, std::ostream& progre
     const auto semantics = bindings.at("signal_semantics");
     Json summary{{"schema", "atx.dsl-nav-replay-summary/v1"}, {"status", "complete"},
         {"recipe_sha256", method_sha}, {"combined_sha256", cfg.combined_sha256},
-        {"role_sha256", cfg.role_sha256}, {"rule", rule_label(cfg.target.rule)},
+        {"role_sha256", cfg.role_sha256}, {"rule", detail::construction_rule_id(cfg.target)},
         {"primary_scenario", scenarios[nav_primary_scenario_index].id},
         {"signal_semantics", semantics}, {"composition_weights_sha256", weights},
         {"scenarios", std::move(list)}, {"source_bindings", std::move(bindings)},
@@ -987,13 +1159,16 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, std::ostream& progre
 
 int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& err) {
   try {
-    TargetReplayRunConfig cfg; std::set<std::string> seen;
+    TargetReplayRunConfig cfg; NavTurnoverLimits limits; std::set<std::string> seen;
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
       if (key == "--help") {
         out << "nav --combined PATH --combined-sha256 SHA --role PATH --role-sha256 SHA "
                "--output NEWDIR [--rule baseline-v1|monthly-budget-v2] [--cadence 5] "
-               "[--trade-fraction .25] [--monthly-budget .30] [--max-bytes 536870912]\n"
+               "[--trade-fraction .25] [--monthly-budget .30] "
+               "[--neutralize none|price-risk-v1] [--band-multiple 0] "
+               "[--daily-turnover-mean-max .20] [--daily-turnover-p95-max .30] "
+               "[--max-bytes 536870912]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n";
         return 0;
@@ -1027,7 +1202,13 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       } else if (key == "--trade-fraction") cfg.target.trade_fraction = real();
       else if (key == "--monthly-budget") cfg.target.monthly_budget = real();
       else if (key == "--max-bytes") cfg.target.max_working_bytes = integer();
-      else if (key == "--rule") {
+      else if (key == "--band-multiple") cfg.target.band_multiple = real();
+      else if (key == "--daily-turnover-mean-max") limits.daily_mean_max = real();
+      else if (key == "--daily-turnover-p95-max") limits.daily_p95_max = real();
+      else if (key == "--neutralize") {
+        if (!detail::parse_neutralize(value, cfg.target.neutralize))
+          throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
+      } else if (key == "--rule") {
         if (value == "baseline-v1") cfg.target.rule = TargetReplayRule::BaselineTargetV1;
         else if (value == "monthly-budget-v2")
           cfg.target.rule = TargetReplayRule::MonthlyTargetBudgetV2;
@@ -1036,7 +1217,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
     }
     if (cfg.role_path.empty() || cfg.role_sha256.empty())
       throw std::invalid_argument("--role and --role-sha256 are required in nav mode");
-    const auto status = run_nav_replay(cfg, out);
+    const auto status = run_nav_replay(cfg, limits, out);
     if (!status) { err << status.error().to_string() << '\n'; return 1; }
     return 0;
   } catch (const std::exception& e) { err << "nav replay: " << e.what() << '\n'; return 2; }

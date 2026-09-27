@@ -73,7 +73,7 @@ struct Panel {
   }
   void nonmember(usize t, usize i) { member[k(t, i)] = 0; signal[k(t, i)] = missing; }
   [[nodiscard]] st::TargetReplayInput target() const {
-    return {d, n, begin, end, signal, member, sessions, ids, close, raw, present};
+    return {d, n, begin, end, signal, member, sessions, ids, close, raw, present, volume};
   }
   [[nodiscard]] st::NavReplayInput nav() const { return {target(), volume}; }
 };
@@ -271,6 +271,87 @@ int dispatch(std::vector<std::string> args, std::ostream& out, std::ostream& err
   std::vector<char*> argv;
   for (auto& arg : args) argv.push_back(arg.data());
   return st::dispatch_nav_replay(static_cast<int>(argv.size()), argv.data(), out, err);
+}
+
+// ---- construction options and daily GMV turnover (T4) ----
+// The T2 daily CSV columns; T4 only appends after them.
+constexpr const char* t2_daily_header =
+    "session_index,session_ns,exec_month,decision,rebalance,executed,return_observation,"
+    "pretrade_nav,posttrade_nav,net_return,gross_return,writeoff_return,trade_cost_return,"
+    "borrow_return,mark_pnl_dollars,writeoff_dollars,borrow_dollars,traded_dollars,"
+    "one_way_turnover,trade_cost_dollars,linear_cost_dollars,impact_cost_dollars,"
+    "unrationed_cost_dollars,unrationed_unpriced,fills,capped_fills,unfilled_dollars,"
+    "blocked_absent,blocked_liquidity,fallback_vol_fills,planned_turnover,planned_forced,"
+    "planned_discretionary,applied_fraction,planned_gross,planned_net,month_planned,"
+    "budget_excess,long_dollars,"
+    "short_dollars,gross_leverage,net_leverage,held_names,stale_names,stale_long_dollars,"
+    "stale_short_dollars,guarded_intervals,cash_ratio";
+constexpr const char* construction_columns =
+    ",neutralize,neutralize_used,neutralize_excluded,neutralize_excluded_share,"
+    "neutralize_amplification,banded_names";
+std::string first_line(const std::filesystem::path& path) {
+  std::ifstream in(path); std::string line; std::getline(in, line); return line;
+}
+// The strategy_price_exposures_test noisy panel, bit for bit (common factor with
+// per-name loadings, noise scales and dollar volumes on coprime strides), on
+// weekday sessions; every name a present member with a random signal.
+Panel noisy_panel(usize dates, usize names, u64 seed) {
+  Panel p(dates, names);
+  Lcg rng{seed};
+  for (usize i = 0; i < names; ++i) p.close[p.k(0, i)] = 20.0 + static_cast<f64>(i);
+  for (usize t = 1; t < dates; ++t) {
+    const f64 common = 0.03 * (rng.next() - 0.5);
+    for (usize i = 0; i < names; ++i) {
+      const f64 loading = 0.4 + 0.15 * static_cast<f64>((i * 5) % names);
+      const f64 idio = 0.004 + 0.003 * static_cast<f64>((i * 7) % names);
+      p.close[p.k(t, i)] =
+          p.close[p.k(t - 1, i)] * (1 + loading * common + idio * (rng.next() - 0.5));
+    }
+  }
+  for (usize t = 0; t < dates; ++t)
+    for (usize i = 0; i < names; ++i) {
+      p.raw[p.k(t, i)] = p.close[p.k(t, i)];
+      p.volume[p.k(t, i)] =
+          1e4 * static_cast<f64>(1 + (i * 11) % names) * (0.5 + rng.next());
+    }
+  Lcg draws{seed + 1000};
+  for (auto& s : p.signal) s = draws.next() - 0.5;
+  return p;
+}
+// Daily full rebalance, price-risk-v1 on short windows (every name has exposures
+// from decision 20 on), band 0.5 x the average weight.
+st::TargetReplayConfig construction_daily() {
+  st::TargetReplayConfig c; c.cadence = 1; c.trade_fraction = 1;
+  c.neutralize = st::TargetNeutralize::PriceRiskV1;
+  c.price_risk.beta_window = 40; c.price_risk.vol_window = 20; c.price_risk.adv_window = 10;
+  c.price_risk.min_return_pairs = 20; c.price_risk.min_names = 5;
+  c.band_multiple = 0.5;
+  return c;
+}
+void expect_same_construction(const st::ConstructionDay& a, const st::ConstructionDay& b,
+                              usize t) {
+  EXPECT_EQ(a.rebalance, b.rebalance) << t;
+  EXPECT_EQ(a.neutralize, b.neutralize) << t;
+  EXPECT_EQ(a.neutralize_used, b.neutralize_used) << t;
+  EXPECT_EQ(a.neutralize_excluded, b.neutralize_excluded) << t;
+  EXPECT_EQ(bits(a.neutralize_excluded_share), bits(b.neutralize_excluded_share)) << t;
+  EXPECT_EQ(bits(a.neutralize_amplification), bits(b.neutralize_amplification)) << t;
+}
+// A lockstep book against the same scenario replayed on its own: bit-identical.
+void expect_same_result(const st::NavReplayResult& a, const st::NavReplayResult& b) {
+  ASSERT_EQ(a.days.size(), b.days.size());
+  for (usize t = 0; t < a.days.size(); ++t) {
+    const auto& x = a.days[t]; const auto& y = b.days[t];
+    expect_same_day(x, y);
+    expect_same_construction(x.construction, y.construction, t);
+    EXPECT_EQ(x.construction.banded_names, y.construction.banded_names) << t;
+    EXPECT_EQ(bits(x.pretrade_gross_dollars), bits(y.pretrade_gross_dollars)) << t;
+    EXPECT_EQ(bits(x.one_way_turnover_gmv), bits(y.one_way_turnover_gmv)) << t;
+  }
+  expect_same_events_before(a, b, std::numeric_limits<i64>::max());
+  EXPECT_EQ(a.deployment_index, b.deployment_index);
+  EXPECT_EQ(bits(a.participation_p95), bits(b.participation_p95));
+  EXPECT_EQ(bits(a.participation_max), bits(b.participation_max));
 }
 } // namespace
 
@@ -730,4 +811,202 @@ TEST(StrategyNavReplay, PinnedCandidateWeightsBlendIsAdmittedAndBound) {
     m["signal_semantics"] =
         "exact-pre-target-composition;other;missing-or-unoriented-neutral-fixed-denominator";
   }));
+}
+
+// T4 (a): with default construction every scenario book run in lockstep is bit-
+// identical to that scenario replayed alone, and the published outputs keep the T2
+// CSV columns first and unchanged (only the GMV turnover columns are appended) and
+// the T2 recipe without any construction key.
+TEST(StrategyNavReplay, DefaultConstructionKeepsT2OutputsAndLockstepMatchesSingleRuns) {
+  Panel p(40, 8); randomize_rows(p, 7, 0); p.begin = 5;
+  st::TargetReplayConfig v2; v2.rule = st::TargetReplayRule::MonthlyTargetBudgetV2;
+  v2.cadence = 1; v2.trade_fraction = .5; v2.monthly_budget = .30;
+  const auto scenarios = st::fixed_nav_scenarios();
+  for (const auto& rule : {st::TargetReplayConfig{}, v2}) {
+    auto base = config(scenarios[0], 1e6, rule);
+    base.liquidity_window = 5; base.min_vol_pairs = 3;
+    auto together = st::replay_nav_scenarios(p.nav(), base, scenarios);
+    ASSERT_TRUE(together) << together.error().to_string();
+    ASSERT_EQ(together->size(), scenarios.size());
+    for (usize k = 0; k < scenarios.size(); ++k) {
+      auto single = base; single.scenario = scenarios[k];
+      auto alone = st::replay_nav(p.nav(), single); ASSERT_TRUE(alone);
+      expect_same_result((*together)[k], *alone);
+      for (const auto& day : alone->days) {
+        EXPECT_EQ(day.construction.neutralize, st::NeutralizeOutcome::NotAttempted);
+        EXPECT_EQ(day.construction.banded_names, 0U);
+      }
+    }
+  }
+  Directory dir; auto a = write_artifact(dir.path, publication_panel());
+  std::ostringstream progress;
+  const auto ok = st::run_nav_replay(a.cfg, progress);
+  ASSERT_TRUE(ok) << ok.error().to_string();
+  const auto out = dir.path / "out";
+  const auto recipe = read_json(out / "recipe.json");
+  EXPECT_EQ(recipe.at("rule"), "baseline-target-v1");
+  EXPECT_EQ(recipe.at("desired_target_postprocess"), "none");
+  for (const auto* key : {"neutralize", "band_multiple", "price_risk", "neutralize_guard", "band"})
+    EXPECT_FALSE(recipe.contains(key)) << key;
+  EXPECT_EQ(recipe.at("daily_turnover_mean_max"), 0.20);
+  EXPECT_EQ(recipe.at("daily_turnover_p95_max"), 0.30);
+  const auto summary = read_json(out / "summary.json");
+  EXPECT_EQ(summary.at("rule"), "baseline-target-v1");
+  for (const auto& s : summary.at("scenarios")) {
+    const auto id = s.at("scenario").get<std::string>();
+    EXPECT_FALSE(s.contains("construction")) << id;
+    EXPECT_TRUE(s.at("daily_turnover_gmv").contains("p95")) << id;
+    EXPECT_TRUE(s.at("meets_daily_turnover_mean").is_boolean()) << id;
+    EXPECT_TRUE(s.at("meets_daily_turnover_p95").is_boolean()) << id;
+    EXPECT_TRUE(s.contains("months_le_0.30")) << id; // legacy field kept
+    EXPECT_EQ(first_line(out / ("daily_" + id + ".csv")),
+              std::string(t2_daily_header) + ",pretrade_gross_dollars,one_way_turnover_gmv")
+        << id;
+  }
+}
+
+// T4 (e): neutralize + band at cadence 1 end to end. The NAV path forms exactly
+// the target replay's construction at its extension point (same outcome, used
+// names and amplification at every decision); a skipped decision keeps weights; the
+// band acts; lockstep books match single runs; the pinned CLI path publishes the
+// composed rule id, the construction recipe keys, columns and diagnostics.
+TEST(StrategyNavReplay, NeutralizeAndBandRunEndToEndAtCadenceOne) {
+  const auto p = noisy_panel(70, 12, 21);
+  const auto cfg = config(flat(6, 300), 1e6, construction_daily());
+  auto r = st::replay_nav(p.nav(), cfg);
+  ASSERT_TRUE(r) << r.error().to_string();
+  auto planned = st::replay_targets(p.target(), cfg.target);
+  ASSERT_TRUE(planned) << planned.error().to_string();
+  usize applied = 0, banded = 0;
+  for (usize t = 0; t + 2 < p.d; ++t) {
+    const auto& day = r->days[t];
+    const auto& c = day.construction;
+    ASSERT_TRUE(day.decision) << t;
+    expect_same_construction(c, planned->days[t].construction, t);
+    EXPECT_EQ(day.rebalance, c.rebalance) << t;
+    EXPECT_EQ(c.rebalance, c.neutralize == st::NeutralizeOutcome::Applied) << t;
+    if (!c.rebalance) {
+      EXPECT_EQ(day.planned_discretionary, 0) << t; // skipped: members keep weights
+      EXPECT_EQ(c.banded_names, 0U) << t;
+    }
+    if (t < 20) {
+      EXPECT_EQ(c.neutralize, st::NeutralizeOutcome::SkippedTooFewNames) << t;
+      EXPECT_EQ(r->days[t + 1].traded_dollars, 0) << t;
+    }
+    applied += c.rebalance ? 1U : 0U;
+    banded += c.banded_names;
+  }
+  EXPECT_GT(applied, 0U);
+  EXPECT_GT(banded, 0U);
+  EXPECT_GE(r->deployment_index, 21U);
+  const auto scenarios = st::fixed_nav_scenarios();
+  auto together = st::replay_nav_scenarios(p.nav(), cfg, scenarios);
+  ASSERT_TRUE(together) << together.error().to_string();
+  for (usize k = 0; k < scenarios.size(); ++k) {
+    auto single = cfg; single.scenario = scenarios[k];
+    auto alone = st::replay_nav(p.nav(), single); ASSERT_TRUE(alone);
+    expect_same_result((*together)[k], *alone);
+  }
+  Directory dir; auto a = write_artifact(dir.path, p); a.cfg.target = cfg.target;
+  std::ostringstream progress;
+  const auto ok = st::run_nav_replay(a.cfg, progress);
+  ASSERT_TRUE(ok) << ok.error().to_string();
+  const auto out = dir.path / "out";
+  const std::string id = "baseline-target-v1+neutral-price-risk-v1+band-0.5";
+  const auto recipe = read_json(out / "recipe.json");
+  EXPECT_EQ(recipe.at("rule"), id);
+  EXPECT_EQ(recipe.at("neutralize"), "price-risk-v1");
+  EXPECT_EQ(recipe.at("desired_target_postprocess"), "price-risk-v1");
+  EXPECT_EQ(recipe.at("band_multiple"), 0.5);
+  EXPECT_EQ(recipe.at("price_risk").at("beta_window"), 40);
+  EXPECT_EQ(recipe.at("neutralize_guard").at("max_amplification"), 5.0);
+  EXPECT_EQ(recipe.at("neutralize_guard").at("max_excluded_gross_share"), 0.5);
+  const auto summary = read_json(out / "summary.json");
+  EXPECT_EQ(summary.at("rule"), id);
+  for (const auto& s : summary.at("scenarios")) {
+    const auto name = s.at("scenario").get<std::string>();
+    const auto& c = s.at("construction");
+    EXPECT_EQ(c.at("rule_id"), id) << name;
+    EXPECT_EQ(c.at("decisions"), p.d - 2) << name;
+    EXPECT_EQ(c.at("neutralize_attempted_decisions"), p.d - 2) << name;
+    EXPECT_EQ(c.at("neutralize_skipped_decisions").get<usize>() +
+                  c.at("neutralize_applied_decisions").get<usize>(), p.d - 2) << name;
+    EXPECT_GE(c.at("neutralize_skip_reasons").at("too-few-names").get<usize>(), 20U) << name;
+    EXPECT_EQ(c.at("neutralize_used_names_min"), 0) << name;
+    EXPECT_EQ(first_line(out / ("daily_" + name + ".csv")),
+              std::string(t2_daily_header) + ",pretrade_gross_dollars,one_way_turnover_gmv" +
+                  construction_columns) << name;
+  }
+  auto targets = a.cfg; targets.output_directory = (dir.path / "targets").string();
+  ASSERT_TRUE(st::run_target_replay(targets, progress)); // the role carries volume
+  EXPECT_EQ(read_json(dir.path / "targets" / "recipe.json").at("rule"), id);
+  EXPECT_TRUE(read_json(dir.path / "targets" / "summary.json").contains("construction"));
+  std::ostringstream o, e;
+  EXPECT_EQ(dispatch({"nav", "--neutralize", "bogus"}, o, e), 2);
+  EXPECT_EQ(dispatch({"nav", "--combined", "x", "--combined-sha256", "y", "--role", "r",
+                      "--role-sha256", "s", "--output", (dir.path / "never").string(),
+                      "--daily-turnover-mean-max", "0"}, o, e), 1);
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "never"));
+}
+
+// T4 (f): tau_t = traded / pre-trade GMV on execution sessions, hand-checked at
+// NAV 1000 with constant prices and no costs (GMV stays 1000): deployment (GMV 0)
+// excluded; mean/median/p95/max over {0, .5, 0, .5, 2}; the ceiling flags flip at
+// the declared thresholds. A forced exit is a fill and counts.
+TEST(StrategyNavReplay, DailyGmvTurnoverStatisticsAndCeilingsHandChecked) {
+  Panel p(8, 4);
+  const f64 a[] = {1, 2, 3, 4}, b[] = {2, 1, 3, 4}, c[] = {4, 3, 2, 1};
+  const f64* rows[] = {a, a, b, b, a, c, a, a};
+  for (usize t = 0; t < p.d; ++t)
+    for (usize i = 0; i < p.n; ++i) p.signal[p.k(t, i)] = rows[t][i];
+  st::TargetReplayConfig daily; daily.cadence = 1; daily.trade_fraction = 1;
+  auto r = st::replay_nav(p.nav(), config(flat(0, 0), 1000, daily)); ASSERT_TRUE(r);
+  const auto& d = r->days;
+  EXPECT_EQ(r->deployment_index, 1U);
+  EXPECT_EQ(d[1].pretrade_gross_dollars, 0);
+  EXPECT_TRUE(std::isnan(d[1].one_way_turnover_gmv)); // deployment: no pre-trade book
+  const f64 expected[] = {0, .5, 0, .5, 2.0};         // sessions 2..6: A A B B A C
+  for (usize t = 2; t <= 6; ++t) {
+    EXPECT_EQ(d[t].pretrade_gross_dollars, 1000) << t;
+    EXPECT_EQ(d[t].one_way_turnover_gmv, expected[t - 2]) << t;
+    EXPECT_EQ(d[t].one_way_turnover_gmv, d[t].traded_dollars / d[t].pretrade_gross_dollars) << t;
+  }
+  EXPECT_EQ(d[0].one_way_turnover_gmv, 0); // not execution sessions
+  EXPECT_EQ(d[7].one_way_turnover_gmv, 0);
+  auto s = st::summarize_nav(*r); ASSERT_TRUE(s);
+  EXPECT_EQ(s->daily_turnover_sessions, 5U);
+  EXPECT_EQ(s->daily_turnover_zero_gmv_sessions, 0U);
+  EXPECT_NEAR(s->daily_turnover_mean, 0.6, 1e-15);
+  EXPECT_EQ(s->daily_turnover_median, 0.5);
+  EXPECT_NEAR(s->daily_turnover_p95, 1.7, 1e-12); // .5 + .8 * (2 - .5) at (5 - 1) * .95
+  EXPECT_EQ(s->daily_turnover_max, 2.0);
+  EXPECT_EQ(s->daily_turnover_max_session, p.sessions[6]);
+  EXPECT_FALSE(s->meets_daily_turnover_mean); // default ceilings .20 / .30
+  EXPECT_FALSE(s->meets_daily_turnover_p95);
+  const auto flags = [&](f64 mean_max, f64 p95_max) {
+    const auto x = st::summarize_nav(*r, {mean_max, p95_max});
+    return x ? std::pair{x->meets_daily_turnover_mean, x->meets_daily_turnover_p95}
+             : std::pair{false, false};
+  };
+  EXPECT_EQ(flags(.6 + 1e-9, 1.7 + 1e-9), std::pair(true, true));
+  EXPECT_EQ(flags(.6 - 1e-9, 1.7 + 1e-9), std::pair(false, true));
+  EXPECT_EQ(flags(.6 + 1e-9, 1.7 - 1e-9), std::pair(true, false));
+  EXPECT_FALSE(st::summarize_nav(*r, {0.0, .3})); // a declared ceiling must be positive
+  // Forced exit: two names deployed at session 1; name 0 leaves membership (still
+  // priced) at decision 2 and is exited alone at session 3: 500 of a 1000 book.
+  Panel q(6, 2); q.by_name({1, 2});
+  for (usize t = 2; t < q.d; ++t) q.nonmember(t, 0);
+  auto exited = st::replay_nav(q.nav(), config(flat(0, 0), 1000, hold_after_deployment()));
+  ASSERT_TRUE(exited);
+  const auto& e = exited->days;
+  EXPECT_EQ(e[2].planned_forced, 0.5);
+  EXPECT_EQ(e[3].traded_dollars, 500);
+  EXPECT_EQ(e[3].one_way_turnover_gmv, 0.5);
+  EXPECT_EQ(e[4].pretrade_gross_dollars, 500);
+  auto es = st::summarize_nav(*exited); ASSERT_TRUE(es);
+  EXPECT_EQ(es->daily_turnover_sessions, 3U); // sessions 2, 3, 4
+  EXPECT_NEAR(es->daily_turnover_mean, 0.5 / 3, 1e-15);
+  EXPECT_NEAR(es->daily_turnover_p95, 0.45, 1e-15); // .9 of the way from 0 to .5
+  EXPECT_EQ(es->daily_turnover_max, 0.5);
+  EXPECT_EQ(es->daily_turnover_max_session, q.sessions[3]);
 }

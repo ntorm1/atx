@@ -52,6 +52,18 @@ u32 calendar_month(i64 session) {
   return static_cast<u32>(static_cast<int>(date.year())) * 100U +
          static_cast<u32>(static_cast<unsigned>(date.month()));
 }
+bool neutralizing(const TargetReplayConfig& cfg) {
+  return cfg.neutralize == TargetNeutralize::PriceRiskV1;
+}
+// The compute_price_exposures config contract documented in
+// strategy_price_exposures.hpp, checked up front so a bad recipe is refused once
+// instead of surfacing as an error at every decision.
+bool price_risk_valid(const PriceExposureConfig& c) {
+  return c.beta_window >= 2 && c.beta_window <= max_dates && c.vol_window >= 2 &&
+         c.vol_window <= max_dates && c.adv_window >= 1 && c.adv_window <= max_dates &&
+         c.min_return_pairs >= 2 && c.min_return_pairs <= c.beta_window && c.min_names >= 5 &&
+         std::isfinite(c.clip_z) && c.clip_z > 0;
+}
 co::Status validate_config(const TargetReplayConfig& cfg) {
   if ((cfg.rule != TargetReplayRule::BaselineTargetV1 &&
        cfg.rule != TargetReplayRule::MonthlyTargetBudgetV2) || !cfg.cadence ||
@@ -63,7 +75,23 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
       !std::isfinite(cfg.annual_borrow_bps) || cfg.annual_borrow_bps < 0 ||
       cfg.annual_borrow_bps > 100000)
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: invalid recipe");
+  if ((cfg.neutralize != TargetNeutralize::None && !neutralizing(cfg)) ||
+      !std::isfinite(cfg.band_multiple) || cfg.band_multiple < 0 ||
+      (neutralizing(cfg) &&
+       (!price_risk_valid(cfg.price_risk) || !std::isfinite(cfg.neutralize_max_amplification) ||
+        !(cfg.neutralize_max_amplification > 0) ||
+        !(cfg.neutralize_max_excluded_share >= 0 && cfg.neutralize_max_excluded_share <= 1))))
+    return co::Err(co::ErrorCode::InvalidArgument, "target replay: invalid construction recipe");
   return co::Ok();
+}
+// compute_price_exposures + neutralize_target scratch: per name the returns block,
+// session logs, dollar sums, exposures/ok and regression rows (rounded up), plus
+// the per-interval market. Zero unless neutralizing (and for an invalid price-risk
+// recipe, which validate_config refuses on its own; windows are then <= 4096).
+u64 price_risk_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
+  if (!neutralizing(cfg) || !price_risk_valid(cfg.price_risk)) return 0;
+  const u64 block = std::max(cfg.price_risk.beta_window, cfg.price_risk.vol_window);
+  return u64{instruments} * (block * sizeof(f64) + 128) + block * sizeof(f64);
 }
 co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
   ATX_TRY_VOID(validate_config(cfg));
@@ -73,13 +101,15 @@ co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig&
   const auto cells = in.dates * in.instruments;
   Budget budget{cfg.max_working_bytes};
   if (!budget.add(1, 65536) || !budget.add(in.instruments, sizeof(Ranked) + 2 * sizeof(f64)) ||
-      !budget.add(in.decision_end - in.decision_begin, sizeof(TargetReplayDay)))
+      !budget.add(in.decision_end - in.decision_begin, sizeof(TargetReplayDay)) ||
+      !budget.add(1, price_risk_scratch_bytes(cfg, in.instruments)))
     return co::Err(co::ErrorCode::OutOfRange, "target replay: workspace budget");
   const bool prices = !in.close.empty() || !in.raw_close.empty() || !in.present.empty();
   if (in.signal.size() != cells || in.member.size() != cells ||
       in.session_keys.size() != in.dates || in.instrument_ids.size() != in.instruments ||
       (prices && (in.close.size() != cells || in.raw_close.size() != cells ||
-                  in.present.size() != cells)))
+                  in.present.size() != cells)) ||
+      (!in.volume.empty() && in.volume.size() != cells))
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: span geometry");
   if (in.session_keys.front() <= 0 || in.session_keys.back() >= 4'102'444'800'000'000'000LL ||
       std::adjacent_find(in.session_keys.begin(), in.session_keys.end(),
@@ -126,10 +156,21 @@ void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, 
                     bool rebalance, f64 spent, const std::vector<f64>& desired,
                     std::vector<f64>& current, TargetReplayDay& out) {
   const auto offset = d * in.instruments;
+  // No-trade band on rebalance decisions: -1 (off) bands nothing, since every
+  // |desired - current| >= 0, so the default path is the unbanded arithmetic.
+  f64 band = -1;
+  if (rebalance && cfg.band_multiple > 0) {
+    usize members = 0;
+    for (usize i = 0; i < in.instruments; ++i) members += in.member[offset + i] ? 1U : 0U;
+    if (members) band = cfg.band_multiple / static_cast<f64>(members);
+  }
   f64 forced = 0, distance = 0;
   for (usize i = 0; i < in.instruments; ++i) {
     if (!in.member[offset + i]) forced += std::abs(current[i]);
-    else if (rebalance) distance += std::abs(desired[i] - current[i]);
+    else if (rebalance) {
+      const f64 gap = std::abs(desired[i] - current[i]);
+      if (gap <= band) ++out.construction.banded_names; else distance += gap;
+    }
   }
   f64 fraction = rebalance ? cfg.trade_fraction : 0;
   if (cfg.rule == TargetReplayRule::MonthlyTargetBudgetV2 && distance > 0)
@@ -138,7 +179,8 @@ void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, 
   f64 squared = 0;
   for (usize i = 0; i < in.instruments; ++i) {
     const bool live = in.member[offset + i] != 0;
-    const f64 next = !live ? 0 : rebalance
+    const bool banded = rebalance && live && std::abs(desired[i] - current[i]) <= band;
+    const f64 next = !live ? 0 : rebalance && !banded
       ? current[i] + fraction * (desired[i] - current[i]) : current[i];
     const f64 trade = std::abs(next - current[i]);
     out.turnover += trade;
@@ -150,6 +192,40 @@ void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, 
     out.held_names += next != 0 ? 1U : 0U; squared += next * next;
   }
   out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
+}
+// Rebalance decision d: the tied-rank desired target, then price-risk-v1. The
+// exposures are computed once here per decision (target-independent; the NAV
+// replay calls this once per decision for all its scenario books). Guard: a data
+// refusal (Unavailable), amplification entry/residual gross above the cap, or an
+// excluded-row gross share above the cap skips the rebalance. Contract and
+// allocation errors are not data refusals and abort the replay.
+co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
+                              usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
+                              PriceRiskScratch& scratch, ConstructionDay& out) {
+  const usize n = in.instruments, offset = d * n;
+  const auto member = in.member.subspan(offset, n);
+  desired_target(in.signal.subspan(offset, n), member, row, desired);
+  if (!neutralizing(cfg)) return co::Ok(true);
+  const PriceExposureInput prices{in.dates, n, in.close, in.raw_close, in.volume, in.present};
+  NeutralizeStats stats;
+  const auto status = neutralize_price_risk(prices, cfg.price_risk, d, desired, member, scratch,
+                                            stats);
+  if (!status && status.error().code() != co::ErrorCode::Unavailable) return co::Err(status.error());
+  out.neutralize_used = stats.used; out.neutralize_excluded = stats.excluded;
+  out.neutralize_excluded_share = stats.gross > 0 ? stats.excluded_gross / stats.gross : 0.0;
+  out.neutralize_amplification =
+      status && stats.residual_gross > 0 ? stats.gross / stats.residual_gross : nan;
+  auto outcome = NeutralizeOutcome::Applied;
+  if (!status && stats.used < cfg.price_risk.min_names)
+    outcome = NeutralizeOutcome::SkippedTooFewNames;
+  else if (out.neutralize_excluded_share > cfg.neutralize_max_excluded_share)
+    outcome = NeutralizeOutcome::SkippedExcludedShare;
+  else if (!status)
+    outcome = NeutralizeOutcome::SkippedRefused;
+  else if (out.neutralize_amplification > cfg.neutralize_max_amplification)
+    outcome = NeutralizeOutcome::SkippedAmplification; // NaN (flat target) never skips
+  out.neutralize = outcome;
+  return co::Ok(outcome == NeutralizeOutcome::Applied);
 }
 void rough_return(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                   std::span<const f64> weights, TargetReplayDay& out) {
@@ -191,18 +267,23 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
   try {
     TargetReplayResult result; result.deployment_date = in.dates;
     result.days.reserve(in.decision_end - in.decision_begin);
+    if (neutralizing(cfg) && (in.close.empty() || in.volume.size() != in.dates * in.instruments))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: price-risk neutralization requires prices and volume");
     std::vector<f64> current(in.instruments), desired(in.instruments);
     std::vector<Ranked> row; row.reserve(in.instruments);
+    PriceRiskScratch price; // grows only when neutralizing
     u32 month = 0; f64 spent = 0;
     for (usize d = in.decision_begin; d < in.decision_end; ++d) {
       TargetReplayDay day; day.decision = d; day.session = in.session_keys[d];
       day.entry = std::min(in.dates, d + 1); day.endpoint = std::min(in.dates, d + 2);
       day.calendar_month = calendar_month(day.session);
       if (day.calendar_month != month) { month = day.calendar_month; spent = 0; }
-      const bool rebalance = (d - in.decision_begin) % cfg.cadence == 0;
-      const auto offset = d * in.instruments;
-      if (rebalance) desired_target(in.signal.subspan(offset, in.instruments),
-          in.member.subspan(offset, in.instruments), row, desired);
+      bool rebalance = (d - in.decision_begin) % cfg.cadence == 0;
+      if (rebalance) {
+        ATX_TRY(rebalance, form_desired(in, cfg, d, row, desired, price, day.construction));
+      }
+      day.construction.rebalance = rebalance;
       update_weights(in, cfg, d, rebalance, spent, desired, current, day);
       spent += day.turnover; day.month_turnover = spent;
       if (cfg.rule == TargetReplayRule::MonthlyTargetBudgetV2)
@@ -232,7 +313,7 @@ struct SavedBlend {
   std::vector<i64> sessions;
   std::vector<u64> ids;
   TargetReplayInput view() const {
-    return {dates, names, begin, end, signal, member, sessions, ids, close, raw, present};
+    return {dates, names, begin, end, signal, member, sessions, ids, close, raw, present, volume};
   }
 };
 co::Result<Json> pinned_json(const std::string& path, const std::string& pin) {
@@ -405,8 +486,134 @@ co::Status load_prices(const TargetReplayRunConfig& cfg, SavedBlend& out,
 const char* rule_name(TargetReplayRule rule) {
   return rule == TargetReplayRule::BaselineTargetV1 ? "baseline-target-v1" : "monthly-target-budget-v2";
 }
+
+// ---- construction options (neutralization, no-trade band): recipe, rule id, CSV,
+// summary. Nothing here is emitted unless an option is non-default.
+bool construction_on(const TargetReplayConfig& c) { return neutralizing(c) || c.band_multiple > 0; }
+std::string decimal(f64 x) { // shortest round-trip spelling
+  std::array<char, 64> text{};
+  const auto written = std::to_chars(text.data(), text.data() + text.size(), x);
+  return std::string(text.data(), written.ptr);
+}
+std::string rule_id(const TargetReplayConfig& c) {
+  std::string id = rule_name(c.rule);
+  if (neutralizing(c)) id += "+neutral-price-risk-v1";
+  if (c.band_multiple > 0) id += "+band-" + decimal(c.band_multiple);
+  return id;
+}
+const char* outcome_label(NeutralizeOutcome outcome) {
+  switch (outcome) {
+  case NeutralizeOutcome::NotAttempted: return "not-attempted";
+  case NeutralizeOutcome::Applied: return "applied";
+  case NeutralizeOutcome::SkippedTooFewNames: return "skipped-too-few-names";
+  case NeutralizeOutcome::SkippedExcludedShare: return "skipped-excluded-share";
+  case NeutralizeOutcome::SkippedRefused: return "skipped-refused";
+  case NeutralizeOutcome::SkippedAmplification: return "skipped-amplification";
+  }
+  return "unknown";
+}
+f64 quantile(std::span<const f64> sorted, f64 q) {
+  if (sorted.empty()) return nan;
+  const f64 h = static_cast<f64>(sorted.size() - 1) * q;
+  const auto lo = static_cast<usize>(std::floor(h));
+  const usize hi = std::min(lo + 1, sorted.size() - 1);
+  return sorted[lo] + (h - static_cast<f64>(lo)) * (sorted[hi] - sorted[lo]);
+}
+Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
+Json construction_recipe(const TargetReplayConfig& c) {
+  Json j = Json::object();
+  if (neutralizing(c)) {
+    const auto& p = c.price_risk;
+    j["neutralize"] = "price-risk-v1";
+    j["desired_target_postprocess"] = "price-risk-v1";
+    j["price_risk"] = Json{{"beta_window", p.beta_window}, {"vol_window", p.vol_window},
+        {"adv_window", p.adv_window}, {"min_return_pairs", p.min_return_pairs},
+        {"min_names", p.min_names}, {"clip_z", p.clip_z},
+        {"exposures", "trailing beta vs equal-weight market, sample vol, log mean raw dollar "
+                      "volume; windows end at the decision session (strategy_price_exposures)"},
+        {"method", "OLS residual of the tied-rank target on [1, z_beta, z_vol, z_log_adv] "
+                   "(clipped z over member&ok rows), rescaled to the entry gross; "
+                   "member&!ok rows to zero; exposures computed once per decision"}};
+    j["neutralize_guard"] = Json{{"max_amplification", c.neutralize_max_amplification},
+        {"max_excluded_gross_share", c.neutralize_max_excluded_share},
+        {"amplification", "entry gross / residual gross before rescale"},
+        {"on_skip", "Unavailable data refusal or a cap breach skips the rebalance: current "
+                    "weights kept, forced exits still apply; contract errors abort"}};
+  }
+  if (c.band_multiple > 0) {
+    j["band_multiple"] = c.band_multiple;
+    j["band"] = "rebalance decision: a member with |desired - current| <= band_multiple / N_d "
+                "(N_d = members at d) keeps its current weight, others move by the rule's "
+                "fraction; banded names are excluded from the monthly-budget-v2 distance";
+  }
+  return j;
+}
+Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
+  usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
+  usize too_few = 0, excluded = 0, refused = 0, amplified = 0;
+  std::vector<f64> used, amplification; f64 excluded_max = 0;
+  for (const auto& d : decisions) {
+    const bool attempt = d.neutralize != NeutralizeOutcome::NotAttempted;
+    const bool skip = attempt && d.neutralize != NeutralizeOutcome::Applied;
+    cadence_days += (d.rebalance || skip) ? 1U : 0U;
+    rebalanced += d.rebalance ? 1U : 0U; banded += d.banded_names;
+    if (!attempt) continue;
+    ++attempted; used.push_back(static_cast<f64>(d.neutralize_used));
+    excluded_max = std::max(excluded_max, d.neutralize_excluded_share);
+    switch (d.neutralize) {
+    case NeutralizeOutcome::SkippedTooFewNames: ++too_few; break;
+    case NeutralizeOutcome::SkippedExcludedShare: ++excluded; break;
+    case NeutralizeOutcome::SkippedRefused: ++refused; break;
+    case NeutralizeOutcome::SkippedAmplification: ++amplified; break;
+    case NeutralizeOutcome::Applied:
+      ++applied;
+      if (std::isfinite(d.neutralize_amplification))
+        amplification.push_back(d.neutralize_amplification);
+      break;
+    case NeutralizeOutcome::NotAttempted: break;
+    }
+  }
+  std::sort(used.begin(), used.end());
+  std::sort(amplification.begin(), amplification.end());
+  const Json used_min = used.empty() ? Json(nullptr) : Json(static_cast<u64>(used.front()));
+  const Json amplification_max =
+      amplification.empty() ? Json(nullptr) : Json(amplification.back());
+  Json skips{{"too-few-names", too_few}, {"excluded-share", excluded}, {"refused", refused},
+             {"amplification", amplified}};
+  Json body{{"rule_id", rule_id(c)}, {"neutralize", neutralizing(c) ? "price-risk-v1" : "none"},
+      {"band_multiple", c.band_multiple}, {"decisions", decisions.size()},
+      {"cadence_rebalance_decisions", cadence_days}, {"rebalanced_decisions", rebalanced},
+      {"neutralize_attempted_decisions", attempted}, {"neutralize_applied_decisions", applied},
+      {"neutralize_skipped_decisions", too_few + excluded + refused + amplified},
+      {"neutralize_skip_reasons", std::move(skips)},
+      {"neutralize_used_names_min", used_min},
+      {"neutralize_used_names_median", finite_or_null(quantile(used, .5))},
+      {"neutralize_amplification_median", finite_or_null(quantile(amplification, .5))},
+      {"neutralize_amplification_max", amplification_max},
+      {"neutralize_max_excluded_share", excluded_max},
+      {"banded_names_total", banded},
+      {"mean_banded_names_per_rebalance",
+       rebalanced ? static_cast<f64>(banded) / static_cast<f64>(rebalanced) : 0.0}};
+  return Json{{"construction", std::move(body)}};
+}
+bool parse_neutralize(std::string_view value, TargetNeutralize& out) {
+  if (value == "none") out = TargetNeutralize::None;
+  else if (value == "price-risk-v1") out = TargetNeutralize::PriceRiskV1;
+  else return false;
+  return true;
+}
+constexpr const char* construction_columns =
+    ",neutralize,neutralize_used,neutralize_excluded,neutralize_excluded_share,"
+    "neutralize_amplification,banded_names";
+void write_construction(std::ostream& out, const ConstructionDay& c) {
+  out << ',' << outcome_label(c.neutralize) << ',' << c.neutralize_used << ','
+      << c.neutralize_excluded << ',' << c.neutralize_excluded_share << ',';
+  if (std::isnan(c.neutralize_amplification)) out << "nan"; else out << c.neutralize_amplification;
+  out << ',' << c.banded_names;
+}
+
 Json recipe(const TargetReplayRunConfig& cfg) {
-  return Json{{"schema", "atx.dsl-target-replay/v1"}, {"rule", rule_name(cfg.target.rule)},
+  auto j = Json{{"schema", "atx.dsl-target-replay/v1"}, {"rule", rule_id(cfg.target)},
       {"combined_sha256", cfg.combined_sha256}, {"role_sha256", cfg.role_sha256},
       {"cadence", cfg.target.cadence}, {"trade_fraction", cfg.target.trade_fraction},
       {"monthly_budget", cfg.target.monthly_budget}, {"calendar_basis", "decision-session-month"},
@@ -418,6 +625,8 @@ Json recipe(const TargetReplayRunConfig& cfg) {
       {"one_way_bps", cfg.target.one_way_bps}, {"annual_borrow_bps", cfg.target.annual_borrow_bps},
       {"cost_basis", "target-change-no-drift;short-target/252;not-fills"},
       {"max_working_bytes", cfg.target.max_working_bytes}};
+  if (construction_on(cfg.target)) j.update(construction_recipe(cfg.target));
+  return j;
 }
 co::Status write_json(const std::filesystem::path& path, const Json& j) {
   std::ofstream file(path, std::ios::binary);
@@ -425,14 +634,19 @@ co::Status write_json(const std::filesystem::path& path, const Json& j) {
   file << j.dump(2) << '\n'; file.close();
   return file ? co::Ok() : co::Status(co::Err(co::ErrorCode::IoError, "target replay: JSON close"));
 }
-co::Status write_days(const std::filesystem::path& path, const TargetReplayResult& result) {
+// Construction columns are appended only when an option is non-default, so the
+// default CSV is byte-identical to the replay without construction options.
+co::Status write_days(const std::filesystem::path& path, const TargetReplayResult& result,
+                      bool construction) {
   std::ofstream file(path, std::ios::binary);
   if (!file) return co::Err(co::ErrorCode::IoError, "target replay: daily output");
   file << "decision,session_ns,month,entry,endpoint,turnover,forced,discretionary,deployment,"
           "month_turnover,budget_excess,applied_fraction,gross,net,long_weight,short_weight,"
           "max_abs_weight,effective_names,held_names,return_mature,return_complete,"
           "observed_return_component,missing_long,missing_short,missing_gross,missing_names,"
-          "guarded_names,modeled_trade_cost,modeled_borrow_cost,complete_gross_return,complete_net_return\n";
+          "guarded_names,modeled_trade_cost,modeled_borrow_cost,complete_gross_return,complete_net_return";
+  if (construction) file << ",rebalance" << construction_columns;
+  file << '\n';
   file << std::setprecision(17);
   for (const auto& d : result.days) {
     file << d.decision << ',' << d.session << ',' << d.calendar_month << ',' << d.entry << ','
@@ -444,7 +658,12 @@ co::Status write_days(const std::filesystem::path& path, const TargetReplayResul
          << d.return_complete << ',' << d.observed_return_component << ',' << d.missing_long << ','
          << d.missing_short << ',' << d.missing_gross << ',' << d.missing_names << ','
          << d.guarded_names << ',' << d.modeled_trade_cost << ',' << d.modeled_borrow_cost << ','
-         << d.complete_gross_return << ',' << d.complete_net_return << '\n';
+         << d.complete_gross_return << ',' << d.complete_net_return;
+    if (construction) {
+      file << ',' << d.construction.rebalance;
+      write_construction(file, d.construction);
+    }
+    file << '\n';
   }
   file.close();
   return file ? co::Ok() : co::Status(co::Err(co::ErrorCode::IoError, "target replay: daily close"));
@@ -497,16 +716,28 @@ co::Status run_target_replay(const TargetReplayRunConfig& cfg, std::ostream& pro
         cfg.role_path.empty() != cfg.role_sha256.empty() ||
         cfg.target.max_working_bytes < metadata_bytes)
       return co::Err(co::ErrorCode::InvalidArgument, "target replay: output/role/budget contract");
-    SavedBlend blend; ATX_TRY_VOID(admit_saved(cfg, blend)); ATX_TRY_VOID(load_prices(cfg, blend));
+    if (neutralizing(cfg.target) && cfg.role_path.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: --neutralize price-risk-v1 requires --role");
+    // Neutralization reads the role's volume (log ADV); otherwise nothing changes.
+    const bool with_volume = neutralizing(cfg.target);
+    SavedBlend blend; ATX_TRY_VOID(admit_saved(cfg, blend, with_volume));
+    ATX_TRY_VOID(load_prices(cfg, blend, with_volume));
     ATX_TRY(auto result, replay_targets(blend.view(), cfg.target));
     const auto dir = std::filesystem::path(cfg.output_directory);
     if (!std::filesystem::create_directory(dir))
       return co::Err(co::ErrorCode::AlreadyExists, "target replay: output must not exist");
     const auto method = recipe(cfg); ATX_TRY(auto method_sha, co::sha256_hex(method.dump()));
     ATX_TRY_VOID(write_json(dir / "recipe.json", method));
-    ATX_TRY_VOID(write_days(dir / "daily.csv", result));
+    const bool construction = construction_on(cfg.target);
+    ATX_TRY_VOID(write_days(dir / "daily.csv", result, construction));
     ATX_TRY(auto daily_sha, co::sha256_file((dir / "daily.csv").string()));
     auto summary = summarize(result);
+    if (construction) {
+      std::vector<ConstructionDay> decisions; decisions.reserve(result.days.size());
+      for (const auto& d : result.days) decisions.push_back(d.construction);
+      summary.update(construction_summary(cfg.target, decisions));
+    }
     summary["schema"] = "atx.dsl-target-replay-summary/v1"; summary["status"] = "complete";
     summary["recipe_sha256"] = method_sha; summary["combined_sha256"] = cfg.combined_sha256;
     summary["source_bindings"] = blend.manifest; summary["daily_csv_sha256"] = daily_sha;
@@ -530,6 +761,7 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
         out << "--combined PATH --combined-sha256 SHA --output DIR "
                "[--rule baseline-v1|monthly-budget-v2] [--cadence 5] [--trade-fraction .25] "
                "[--monthly-budget .30] [--role PATH --role-sha256 SHA] "
+               "[--neutralize none|price-risk-v1 (needs --role)] [--band-multiple 0] "
                "[--one-way-bps 0 --annual-borrow-bps 0] [--max-bytes 536870912]\n";
         return 0;
       }
@@ -559,7 +791,11 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
       else if (key == "--one-way-bps") cfg.target.one_way_bps = real();
       else if (key == "--annual-borrow-bps") cfg.target.annual_borrow_bps = real();
       else if (key == "--max-bytes") cfg.target.max_working_bytes = integer();
-      else if (key == "--rule") {
+      else if (key == "--band-multiple") cfg.target.band_multiple = real();
+      else if (key == "--neutralize") {
+        if (!parse_neutralize(value, cfg.target.neutralize))
+          throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
+      } else if (key == "--rule") {
         if (value == "baseline-v1") cfg.target.rule = TargetReplayRule::BaselineTargetV1;
         else if (value == "monthly-budget-v2") cfg.target.rule = TargetReplayRule::MonthlyTargetBudgetV2;
         else throw std::invalid_argument("unknown target rule");
@@ -578,7 +814,7 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
 // functions (a plain call would find these same-named wrappers first).
 namespace detail {
 TargetReplayInput LoadedSavedBlend::view() const {
-  return {dates, names, begin, end, signal, member, sessions, ids, close, raw, present};
+  return {dates, names, begin, end, signal, member, sessions, ids, close, raw, present, volume};
 }
 co::Result<LoadedSavedBlend> load_saved_blend(const TargetReplayRunConfig& cfg, bool with_volume) {
   try {
@@ -619,6 +855,32 @@ void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, 
                     std::vector<f64>& current, TargetReplayDay& out) {
   ::atx::impl::strategy::update_weights(in, cfg, d, rebalance, spent, desired, current, out);
 }
+co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
+                              std::vector<std::pair<f64, usize>>& row, std::vector<f64>& desired,
+                              PriceRiskScratch& scratch, ConstructionDay& out) {
+  return ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, scratch, out);
+}
+bool construction_active(const TargetReplayConfig& cfg) { return construction_on(cfg); }
+std::string construction_rule_id(const TargetReplayConfig& cfg) { return rule_id(cfg); }
+std::string construction_recipe_json(const TargetReplayConfig& cfg) {
+  return construction_on(cfg) ? construction_recipe(cfg).dump() : std::string{};
+}
+std::string construction_summary_json(const TargetReplayConfig& cfg,
+                                      std::span<const ConstructionDay> decisions) {
+  return construction_on(cfg) ? construction_summary(cfg, decisions).dump() : std::string{};
+}
+u64 construction_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
+  return price_risk_scratch_bytes(cfg, instruments);
+}
+const char* construction_csv_columns() { return construction_columns; }
+void write_construction_csv(std::ostream& out, const ConstructionDay& day) {
+  write_construction(out, day);
+}
+bool parse_neutralize(std::string_view value, TargetNeutralize& out) {
+  return ::atx::impl::strategy::parse_neutralize(value, out);
+}
+const char* neutralize_outcome_label(NeutralizeOutcome outcome) { return outcome_label(outcome); }
+f64 sorted_quantile(std::span<const f64> sorted, f64 q) { return quantile(sorted, q); }
 u32 calendar_month(i64 session_ns) { return ::atx::impl::strategy::calendar_month(session_ns); }
 } // namespace detail
 } // namespace atx::impl::strategy

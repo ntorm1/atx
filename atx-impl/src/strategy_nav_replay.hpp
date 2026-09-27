@@ -24,6 +24,10 @@ namespace atx::impl::strategy {
 // sessions realizes the true cumulative return and then executes pending orders;
 // K consecutive absences write it off at last mark x (1 + haircut). A reprint after
 // a write-off is a diagnostic event only. No lookahead anywhere.
+//
+// Construction (TargetReplayConfig neutralize / band_multiple) is the target
+// replay's own, applied at the NAV path's single desired-target extension point;
+// with the defaults every pre-existing output value is unchanged.
 
 enum class NavCostRule : atx::u8 { FlatBpsV1 = 1, SqrtImpactV1 = 2 };
 
@@ -34,7 +38,17 @@ inline constexpr atx::f64 nav_adverse_long_return = -0.55;
 inline constexpr atx::f64 nav_adverse_short_return = 0.30;
 // Owner targets reported (never optimized against) in every summary.
 inline constexpr atx::f64 nav_sharpe_target = 1.0;
+// LEGACY (retired 2026-09-27): monthly turnover is reported for continuity only.
 inline constexpr atx::f64 nav_monthly_turnover_target = 0.30;
+// Declared daily one-way turnover ceilings in GMV units (owner ruling 2026-09-27):
+// tau_t = sum|fill$| / pre-trade (long$ + short$), deployment session excluded,
+// forced exits included. Recorded in every recipe; CLI-overridable.
+inline constexpr atx::f64 nav_daily_turnover_mean_max = 0.20;
+inline constexpr atx::f64 nav_daily_turnover_p95_max = 0.30;
+struct NavTurnoverLimits {
+  atx::f64 daily_mean_max{nav_daily_turnover_mean_max};
+  atx::f64 daily_p95_max{nav_daily_turnover_p95_max};
+};
 
 struct NavScenario {
   std::string id;
@@ -63,7 +77,8 @@ struct NavReplayConfig {
   atx::u64 max_events{262'144}; // explicit refusal beyond
 };
 // Borrowed for the synchronous call. Prices and volume are required; members must
-// be present. Present cells: close/raw finite > 0, volume finite >= 0.
+// be present. Present cells: close/raw finite > 0, volume finite >= 0. volume is
+// authoritative (it also feeds price-risk neutralization); target.volume is ignored.
 struct NavReplayInput {
   TargetReplayInput target;
   std::span<const atx::f64> volume;
@@ -73,6 +88,7 @@ struct NavReplayInput {
 // carries only the first decision. Return fields are relative to the previous
 // row's pre-trade NAV: net = gross - trade_cost - borrow, where trade cost is the
 // PREVIOUS session's fills (costs of fills at t land in the return of t+1).
+// rebalance is effective (a cadence decision not skipped by the neutralize guard).
 struct NavReplayDay {
   atx::usize session_index{};
   atx::i64 session{};
@@ -94,6 +110,11 @@ struct NavReplayDay {
   atx::f64 stale_long_dollars{}, stale_short_dollars{};
   atx::usize guarded_intervals{};
   atx::f64 cash_ratio{}; // cash / post-trade NAV at end of session
+  // GMV turnover: pre-trade gross = sum |held| after MARK, before EXECUTE (stale
+  // names at stale marks); one_way_turnover_gmv = traded / that gross on execution
+  // sessions (NaN when the pre-trade gross is 0, e.g. deployment), 0 otherwise.
+  atx::f64 pretrade_gross_dollars{}, one_way_turnover_gmv{};
+  ConstructionDay construction{}; // decision rows only
 };
 enum class NavEventKind : atx::u8 {
   GapResolved = 1, WriteOff = 2, Guarded = 3, ReappearedAfterWriteOff = 4, UnresolvedAtEnd = 5
@@ -123,6 +144,12 @@ struct NavReplayResult {
 };
 [[nodiscard]] atx::core::Result<NavReplayResult> replay_nav(const NavReplayInput& in,
                                                           const NavReplayConfig& cfg);
+// Several scenarios over one input in lockstep: each decision's desired target
+// (and, for price-risk-v1, its price exposures) is formed ONCE and shared by every
+// scenario book; the books are otherwise independent. results[k] is bit-identical
+// to replay_nav(in, base with scenario = scenarios[k]). 1 <= scenarios <= 8.
+[[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios);
 
 struct NavMonth {
   atx::u32 month{};
@@ -162,19 +189,34 @@ struct NavSummary {
   atx::f64 mean_held_names{}, mean_stale_names{}, max_stale_gross_fraction{};
   atx::usize max_stale_names{};
   atx::f64 min_cash_ratio{};
-  bool meets_sharpe_target{}, meets_turnover_target_mean{};
+  bool meets_sharpe_target{}, meets_turnover_target_mean{}; // monthly flags: LEGACY
   bool meets_turnover_target_mean_ex_deployment{};
   bool meets_turnover_target_all_months{}, meets_turnover_target_all_months_ex_deployment{};
+  // Daily one-way turnover in GMV units over execution sessions with a positive
+  // pre-trade gross, the deployment session excluded (forced exits included; every
+  // fill counts, planned turnover never does). Quantiles interpolate linearly at
+  // (n-1)q over the sorted sessions (numpy default); NaN when no session qualifies.
+  NavTurnoverLimits daily_limits{};
+  atx::usize daily_turnover_sessions{}, daily_turnover_zero_gmv_sessions{};
+  atx::f64 daily_turnover_mean{}, daily_turnover_median{}, daily_turnover_p95{};
+  atx::f64 daily_turnover_max{};
+  atx::i64 daily_turnover_max_session{};
+  bool meets_daily_turnover_mean{}, meets_daily_turnover_p95{}; // NaN never meets
 };
 // Return statistics over rows with return_observation; turnover by the calendar
 // month of the EXECUTION session (all months include deployment; *_ex_deployment
-// exclude the deployment month); planned turnover by decision month.
-[[nodiscard]] atx::core::Result<NavSummary> summarize_nav(const NavReplayResult& result);
+// exclude the deployment month); planned turnover by decision month; daily GMV
+// turnover against `limits`.
+[[nodiscard]] atx::core::Result<NavSummary> summarize_nav(const NavReplayResult& result,
+                                                          const NavTurnoverLimits& limits = {});
 
-// Pinned saved blend + role (with volume); all fixed scenarios; exclusive output
-// directory: recipe.json, daily_<S>.csv, events_<S>.csv, summary.json LAST.
-// All scenarios are computed before the directory is created.
+// Pinned saved blend + role (with volume); all fixed scenarios, run in lockstep;
+// exclusive output directory: recipe.json, daily_<S>.csv, events_<S>.csv,
+// summary.json LAST. All scenarios are computed before the directory is created.
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               std::ostream& progress);
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
                                                std::ostream& progress);
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,

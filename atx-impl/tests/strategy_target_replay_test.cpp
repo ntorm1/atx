@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -17,7 +18,9 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "../src/strategy_ic_composition.hpp"
+#include "../src/strategy_price_exposures.hpp"
 #include "../src/strategy_target_replay.hpp"
+#include "../src/strategy_target_replay_detail.hpp"
 
 namespace {
 using namespace atx;
@@ -97,6 +100,82 @@ st::TargetReplayRunConfig artifact(const std::filesystem::path& dir, const Fixtu
   cfg.combined_path = (dir / "train_combined.json").string();
   cfg.combined_sha256 = write_json(cfg.combined_path, manifest);
   cfg.output_directory = (dir / "out").string(); return cfg;
+}
+
+// ---- construction options (T4) ----
+constexpr const char* default_daily_header =
+    "decision,session_ns,month,entry,endpoint,turnover,forced,discretionary,deployment,"
+    "month_turnover,budget_excess,applied_fraction,gross,net,long_weight,short_weight,"
+    "max_abs_weight,effective_names,held_names,return_mature,return_complete,"
+    "observed_return_component,missing_long,missing_short,missing_gross,missing_names,"
+    "guarded_names,modeled_trade_cost,modeled_borrow_cost,complete_gross_return,complete_net_return";
+std::string first_line(const std::filesystem::path& path) {
+  std::ifstream in(path); std::string line; std::getline(in, line); return line;
+}
+Json read_json(const std::filesystem::path& path) {
+  std::ifstream in(path); Json j; in >> j; return j;
+}
+u64 bits(f64 x) { return std::bit_cast<u64>(x); }
+struct Lcg {
+  u64 state{};
+  f64 uniform() { // [0, 1)
+    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    return static_cast<f64>(state >> 11) * 0x1.0p-53;
+  }
+};
+// The strategy_price_exposures_test noisy panel, bit for bit (common factor with
+// per-name loadings, noise scales and dollar volumes on coprime strides), plus
+// random member signals and consecutive daily sessions.
+struct Role {
+  usize d{}, n{};
+  std::vector<f64> signal, close, raw, volume;
+  std::vector<u8> member, present;
+  std::vector<i64> sessions;
+  std::vector<u64> ids;
+  Role(usize dates, usize names, u64 seed)
+      : d(dates), n(names), signal(dates * names), close(dates * names), raw(dates * names),
+        volume(dates * names), member(dates * names, 1), present(dates * names, 1),
+        sessions(dates), ids(names) {
+    Lcg rng{seed};
+    for (usize i = 0; i < n; ++i) close[i] = 20.0 + static_cast<f64>(i);
+    for (usize t = 1; t < d; ++t) {
+      const f64 common = 0.03 * (rng.uniform() - 0.5);
+      for (usize i = 0; i < n; ++i) {
+        const f64 loading = 0.4 + 0.15 * static_cast<f64>((i * 5) % n);
+        const f64 idio = 0.004 + 0.003 * static_cast<f64>((i * 7) % n);
+        close[t * n + i] =
+            close[(t - 1) * n + i] * (1 + loading * common + idio * (rng.uniform() - 0.5));
+      }
+    }
+    for (usize t = 0; t < d; ++t)
+      for (usize i = 0; i < n; ++i) {
+        raw[t * n + i] = close[t * n + i];
+        volume[t * n + i] = 1e4 * static_cast<f64>(1 + (i * 11) % n) * (0.5 + rng.uniform());
+      }
+    Lcg draws{seed + 1000};
+    for (auto& s : signal) s = draws.uniform() - 0.5;
+    for (usize t = 0; t < d; ++t) sessions[t] = session(2020, 1, 1) + static_cast<i64>(t) * day_ns;
+    for (usize i = 0; i < n; ++i) ids[i] = 100 + i;
+  }
+  void nonmember(usize t, usize i) { member[t * n + i] = 0; signal[t * n + i] = missing; }
+  st::TargetReplayInput input() const {
+    return {d, n, 0, d, signal, member, sessions, ids, close, raw, present, volume};
+  }
+  st::PriceExposureInput prices() const { return {d, n, close, raw, volume, present}; }
+};
+// Every name has a full-window beta (20 pairs) from decision 20 on; before that no
+// name has exposures and the neutralization refuses with too few usable names.
+st::TargetReplayConfig neutral_daily() {
+  st::TargetReplayConfig c; c.cadence = 1; c.trade_fraction = 1;
+  c.neutralize = st::TargetNeutralize::PriceRiskV1;
+  c.price_risk.beta_window = 40; c.price_risk.vol_window = 20; c.price_risk.adv_window = 10;
+  c.price_risk.min_return_pairs = 20; c.price_risk.min_names = 5;
+  return c;
+}
+usize count_outcome(const st::TargetReplayResult& r, st::NeutralizeOutcome outcome) {
+  usize count = 0;
+  for (const auto& day : r.days) count += day.construction.neutralize == outcome ? 1U : 0U;
+  return count;
 }
 } // namespace
 
@@ -282,4 +361,221 @@ TEST(StrategyTargetReplay, OptionalPinnedPriceRolePreservesMissingExposureAndReq
   cfg.output_directory = (dir.path / "wrong_role").string();
   EXPECT_FALSE(st::run_target_replay(cfg, progress));
   EXPECT_FALSE(std::filesystem::exists(dir.path / "wrong_role"));
+}
+
+// T4 (b): at a rebalance decision the desired target is the tied-rank target
+// neutralized against that decision's own exposures (computed from the role at d):
+// ~0 intercept/beta/vol/log-ADV moments, gross preserved, the recorded
+// amplification is entry/residual gross, and the replay carries that record.
+TEST(StrategyTargetReplay, PriceRiskNeutralizedTargetHasZeroExposureAndRecordsAmplification) {
+  const Role role(70, 12, 21);
+  const auto cfg = neutral_daily();
+  constexpr usize d = 60;
+  const auto in = role.input();
+  // Independent construction from the tied rank and the T3 primitives.
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> ranked(role.n);
+  st::detail::desired_target(std::span<const f64>(role.signal).subspan(d * role.n, role.n),
+                             std::span<const u8>(role.member).subspan(d * role.n, role.n), row,
+                             ranked);
+  constexpr usize cols = st::kPriceExposureCount;
+  std::vector<f64> exposures(role.n * cols);
+  std::vector<u8> ok(role.n);
+  st::PriceExposureScratch exposure_scratch;
+  ASSERT_TRUE(st::compute_price_exposures(role.prices(), cfg.price_risk, d, exposure_scratch,
+                                          exposures, ok));
+  for (const u8 flag : ok) ASSERT_EQ(flag, 1);
+  auto expected = ranked;
+  const std::vector<u8> members(role.n, 1);
+  st::NeutralizeScratch neutralize_scratch;
+  st::NeutralizeStats stats;
+  ASSERT_TRUE(st::neutralize_target(expected, members, exposures, ok, cfg.price_risk,
+                                    neutralize_scratch, stats));
+  // The shared construction step both replays call.
+  std::vector<f64> desired(role.n);
+  st::PriceRiskScratch scratch;
+  st::ConstructionDay record;
+  const auto rebalance = st::detail::form_desired(in, cfg, d, row, desired, scratch, record);
+  ASSERT_TRUE(rebalance);
+  EXPECT_TRUE(*rebalance);
+  for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(desired[i]), bits(expected[i])) << i;
+  EXPECT_EQ(record.neutralize, st::NeutralizeOutcome::Applied);
+  EXPECT_EQ(record.neutralize_used, 12U);
+  EXPECT_EQ(record.neutralize_excluded, 0U);
+  EXPECT_EQ(record.neutralize_excluded_share, 0);
+  EXPECT_EQ(bits(record.neutralize_amplification), bits(stats.gross / stats.residual_gross));
+  EXPECT_GT(record.neutralize_amplification, 0);
+  EXPECT_LE(record.neutralize_amplification, cfg.neutralize_max_amplification);
+  // ~0 exposure on the clipped z design rebuilt from the T3 contract (mean and
+  // sample SD over the used rows, clip +-clip_z).
+  f64 gross = 0;
+  std::array<f64, cols + 1> moment{};
+  for (usize i = 0; i < role.n; ++i) { gross += std::abs(desired[i]); moment[0] += desired[i]; }
+  for (usize k = 0; k < cols; ++k) {
+    f64 sum = 0, squares = 0;
+    for (usize i = 0; i < role.n; ++i) sum += exposures[i * cols + k];
+    const f64 mean = sum / static_cast<f64>(role.n);
+    for (usize i = 0; i < role.n; ++i)
+      squares += (exposures[i * cols + k] - mean) * (exposures[i * cols + k] - mean);
+    const f64 sd = std::sqrt(squares / static_cast<f64>(role.n - 1));
+    for (usize i = 0; i < role.n; ++i)
+      moment[k + 1] += desired[i] * std::clamp((exposures[i * cols + k] - mean) / sd,
+                                               -cfg.price_risk.clip_z, cfg.price_risk.clip_z);
+  }
+  EXPECT_NEAR(gross, 1.0, 1e-12);
+  for (usize k = 0; k < moment.size(); ++k) EXPECT_LE(std::abs(moment[k]), 1e-12) << k;
+  // The replay records the same decision and trades to it in full (fraction 1).
+  auto replay = st::replay_targets(in, cfg);
+  ASSERT_TRUE(replay) << replay.error().to_string();
+  const auto& day = replay->days[d];
+  EXPECT_TRUE(day.construction.rebalance);
+  EXPECT_EQ(day.construction.neutralize, st::NeutralizeOutcome::Applied);
+  EXPECT_EQ(day.construction.neutralize_used, 12U);
+  EXPECT_EQ(bits(day.construction.neutralize_amplification),
+            bits(record.neutralize_amplification));
+  EXPECT_NEAR(day.gross, 1.0, 1e-12);
+  EXPECT_NEAR(day.net, 0.0, 1e-12);
+  // Before a full beta window no name has exposures: too few names, no trade.
+  for (usize t = 0; t < 20; ++t) {
+    EXPECT_EQ(replay->days[t].construction.neutralize,
+              st::NeutralizeOutcome::SkippedTooFewNames) << t;
+    EXPECT_EQ(replay->days[t].construction.neutralize_used, 0U) << t;
+    EXPECT_EQ(replay->days[t].gross, 0) << t;
+  }
+  EXPECT_EQ(count_outcome(*replay, st::NeutralizeOutcome::SkippedTooFewNames), 20U);
+}
+
+// T4 (c): a refused neutralization (here too few usable names while two held names
+// sit out of membership) skips the rebalance: every member keeps its weight, the
+// leavers are still exited, and the skip is counted by reason. An amplification
+// cap below every entry/residual ratio skips every otherwise-applied rebalance.
+TEST(StrategyTargetReplay, NeutralizeSkipKeepsWeightsAppliesForcedExitsAndCounts) {
+  Role role(70, 12, 21);
+  for (usize t = 40; t < 45; ++t) { role.nonmember(t, 0); role.nonmember(t, 1); }
+  auto cfg = neutral_daily();
+  cfg.price_risk.min_names = 11; // 10 members at decisions 40-44
+  auto r = st::replay_targets(role.input(), cfg);
+  ASSERT_TRUE(r) << r.error().to_string();
+  EXPECT_EQ(count_outcome(*r, st::NeutralizeOutcome::SkippedTooFewNames), 25U);
+  for (usize t = 0; t < 20; ++t) {
+    EXPECT_FALSE(r->days[t].construction.rebalance) << t;
+    EXPECT_EQ(r->days[t].turnover, 0) << t;
+    EXPECT_EQ(r->days[t].gross, 0) << t;
+  }
+  ASSERT_TRUE(r->days[39].construction.rebalance); // neutralized and traded
+  const auto& leave = r->days[40];
+  EXPECT_EQ(leave.construction.neutralize, st::NeutralizeOutcome::SkippedTooFewNames);
+  EXPECT_EQ(leave.construction.neutralize_used, 10U);
+  EXPECT_FALSE(leave.construction.rebalance);
+  EXPECT_GT(leave.forced_turnover, 0);        // the leavers are exited anyway
+  EXPECT_EQ(leave.discretionary_turnover, 0); // every member keeps its weight
+  EXPECT_EQ(leave.applied_fraction, 0);
+  EXPECT_NEAR(leave.gross, r->days[39].gross - leave.forced_turnover, 1e-12);
+  for (usize t = 41; t < 45; ++t) {
+    EXPECT_EQ(r->days[t].construction.neutralize, st::NeutralizeOutcome::SkippedTooFewNames);
+    EXPECT_EQ(r->days[t].turnover, 0) << t;
+    EXPECT_EQ(bits(r->days[t].gross), bits(leave.gross)) << t;
+  }
+  const Role plain(70, 12, 21);
+  auto capped = neutral_daily();
+  capped.neutralize_max_amplification = 1e-6;
+  auto none = st::replay_targets(plain.input(), capped);
+  ASSERT_TRUE(none) << none.error().to_string();
+  EXPECT_EQ(none->total_turnover, 0);
+  EXPECT_EQ(count_outcome(*none, st::NeutralizeOutcome::Applied), 0U);
+  EXPECT_GT(count_outcome(*none, st::NeutralizeOutcome::SkippedAmplification), 0U);
+  for (const auto& day : none->days) {
+    EXPECT_FALSE(day.construction.rebalance);
+    if (day.construction.neutralize == st::NeutralizeOutcome::SkippedAmplification) {
+      EXPECT_GT(day.construction.neutralize_amplification, capped.neutralize_max_amplification);
+    }
+  }
+}
+
+// T4 (d): the no-trade band keeps members whose move is within band_multiple/N_d
+// and moves the others by the rule's fraction; monthly-budget-v2 leaves banded
+// names out of its distance. Hand-computed on four names (band 0.6/4 = .15).
+TEST(StrategyTargetReplay, NoTradeBandKeepsSmallMovesAndLeavesThemOutOfTheBudgetDistance) {
+  Fixture f(3, 4);
+  const f64 a[] = {1, 2, 3, 4}, e[] = {1, 2, 4, 3};
+  for (usize i = 0; i < 4; ++i) {
+    f.signal[i] = a[i]; f.signal[4 + i] = e[i]; f.signal[8 + i] = e[i];
+  }
+  st::TargetReplayConfig base;
+  base.cadence = 1; base.trade_fraction = 1; base.band_multiple = 0.6;
+  auto r = st::replay_targets(f.input(), base); ASSERT_TRUE(r);
+  // desired [-.375 -.125 .125 .375] from flat: the two .125 moves stay banded at 0.
+  EXPECT_EQ(r->days[0].construction.banded_names, 2U);
+  EXPECT_EQ(r->days[0].turnover, 0.75); EXPECT_EQ(r->days[0].gross, 0.75);
+  EXPECT_EQ(r->days[0].net, 0);
+  // desired [-.375 -.125 .375 .125] from [-.375 0 0 .375]: gaps 0 and .125 are
+  // banded; .375 and .25 move in full.
+  EXPECT_TRUE(r->days[1].construction.rebalance);
+  EXPECT_EQ(r->days[1].construction.banded_names, 2U);
+  EXPECT_EQ(r->days[1].turnover, 0.625); EXPECT_EQ(r->days[1].gross, 0.875);
+  EXPECT_EQ(r->days[1].net, 0.125);
+  auto v2 = base; v2.rule = st::TargetReplayRule::MonthlyTargetBudgetV2; v2.monthly_budget = .5;
+  auto budget = st::replay_targets(f.input(), v2); ASSERT_TRUE(budget);
+  // distance .75 (banded names excluded): fraction .5/.75, the two tails move 2/3.
+  EXPECT_EQ(budget->days[0].construction.banded_names, 2U);
+  EXPECT_NEAR(budget->days[0].applied_fraction, 2.0 / 3.0, 1e-15);
+  EXPECT_NEAR(budget->days[0].turnover, .5, 1e-15);
+  EXPECT_NEAR(budget->days[0].gross, .5, 1e-15);
+  auto unbanded = v2; unbanded.band_multiple = 0;
+  auto plain = st::replay_targets(f.input(), unbanded); ASSERT_TRUE(plain);
+  EXPECT_EQ(plain->days[0].applied_fraction, .5); // distance 1 over all four names
+  EXPECT_EQ(plain->days[0].construction.banded_names, 0U);
+  st::TargetReplayConfig bad; bad.band_multiple = -1;
+  EXPECT_FALSE(st::replay_targets(f.input(), bad));
+}
+
+// T4 (a)/CLI: the default run keeps the pre-T4 recipe keys, rule and CSV columns
+// byte-for-byte; a non-default option suffixes the rule id and adds its recipe
+// keys, CSV columns and summary diagnostics; price-risk neutralization needs the
+// role, and an unknown --neutralize spelling is a usage error.
+TEST(StrategyTargetReplay, ConstructionOptionsAreRecordedOnlyWhenNonDefault) {
+  Fixture f(6, 3);
+  for (usize d = 0; d < f.d; ++d) for (usize i = 0; i < f.n; ++i)
+    f.signal[d * f.n + i] = static_cast<f64>((i + d) % 3);
+  std::ostringstream progress;
+  {
+    Directory dir; auto cfg = artifact(dir.path, f);
+    ASSERT_TRUE(st::run_target_replay(cfg, progress));
+    const auto recipe = read_json(dir.path / "out" / "recipe.json");
+    EXPECT_EQ(recipe.at("rule"), "baseline-target-v1");
+    for (const auto* key : {"neutralize", "band_multiple", "price_risk", "neutralize_guard",
+                            "band", "desired_target_postprocess"})
+      EXPECT_FALSE(recipe.contains(key)) << key;
+    EXPECT_EQ(first_line(dir.path / "out" / "daily.csv"), default_daily_header);
+    EXPECT_FALSE(read_json(dir.path / "out" / "summary.json").contains("construction"));
+  }
+  {
+    Directory dir; auto cfg = artifact(dir.path, f); cfg.target.band_multiple = 0.5;
+    ASSERT_TRUE(st::run_target_replay(cfg, progress));
+    const auto recipe = read_json(dir.path / "out" / "recipe.json");
+    EXPECT_EQ(recipe.at("rule"), "baseline-target-v1+band-0.5");
+    EXPECT_EQ(recipe.at("band_multiple"), 0.5);
+    EXPECT_FALSE(recipe.contains("neutralize"));
+    EXPECT_EQ(first_line(dir.path / "out" / "daily.csv"),
+              std::string(default_daily_header) +
+                  ",rebalance,neutralize,neutralize_used,neutralize_excluded,"
+                  "neutralize_excluded_share,neutralize_amplification,banded_names");
+    const auto construction = read_json(dir.path / "out" / "summary.json").at("construction");
+    EXPECT_EQ(construction.at("rule_id"), "baseline-target-v1+band-0.5");
+    EXPECT_EQ(construction.at("decisions"), 6);
+    EXPECT_EQ(construction.at("neutralize_attempted_decisions"), 0);
+    EXPECT_EQ(construction.at("neutralize_skipped_decisions"), 0);
+  }
+  {
+    Directory dir; auto cfg = artifact(dir.path, f);
+    cfg.target.neutralize = st::TargetNeutralize::PriceRiskV1;
+    const auto refused = st::run_target_replay(cfg, progress);
+    ASSERT_FALSE(refused); EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "out"));
+  }
+  std::ostringstream out, err;
+  std::vector<std::string> args{"targets", "--neutralize", "bogus"};
+  std::vector<char*> argv;
+  for (auto& arg : args) argv.push_back(arg.data());
+  EXPECT_EQ(st::dispatch_target_replay(static_cast<int>(argv.size()), argv.data(), out, err), 2);
 }
