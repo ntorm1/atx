@@ -1,5 +1,10 @@
 # Active task: recent-data DSL ensemble
 
+## v5-0 pre-build (T30 only) — PASS — 2026-09-27
+mega-v5-0-receipt.json: source 7d1c82c0, Jobs 4, 20.7 s, 5 TUs, 3 links, exit 0. atx-impl-strategy-target-tests.exe
+--gtest_filter=TargetReplayV5.*:NavV5* -> 10/10 PASSED (hand-derived recipe SHA pins held). Full exe: 49/49 PASSED (6 suites).
+
+
 ## T30 review — Approved — Task T30: complete
 task-T30-review.md: spec PASS, rulings R-a..R-f applied; 0C/0I/6m; desk-check found no compile errors. ⚠️ compile/SHA pins/D2 -> T37
 (if a hand-derived SHA pin fails, confirm against the d4ec515d binary; never re-pin from post-change output); ⚠️ mean-gross
