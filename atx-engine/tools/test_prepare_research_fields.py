@@ -626,18 +626,19 @@ FB_GAP_1056 = (dt.date(2020, 12, 24), dt.date(2021, 1, 5))  # 1056 has no rows: 
 FB_GAP_END = dt.date(2021, 1, 6)
 FB_NULL_RAW_1059 = dt.date(2021, 2, 10)  # a row with a factor but no close: not an observation
 FB_NO_ROW_1058 = dt.date(2021, 2, 3)     # a repaired line without a session row: NaN, not a restated cell
-FB_CONSOL_1065 = dt.date(2021, 3, 22)  # genuine 1:10 consolidation; 15%/day turnover in both share bases
+FB_CONSOL_1065 = dt.date(2021, 3, 22)  # genuine 1:10 consolidation; 50%/day turnover in both share bases
 FB_SPIKE_1068 = dt.date(2021, 2, 1)    # 1068 trades 5x its share count a day from here on
-FB_IDS = list(range(1001, 1069))
+FB_IDS = list(range(1001, 1070))
 FB_TH_DAYS = weekdays(dt.date(2019, 5, 1), dt.date(2021, 6, 30))
 FB_SESSIONS = weekdays(dt.date(2020, 9, 1), dt.date(2021, 6, 30))
 FB_POST_SESSIONS = weekdays(dt.date(2021, 5, 3), dt.date(2021, 6, 30))  # a validation-like role after the break
 FB_EVENTS = {1054: [(FB_SPLIT_1054, 4.0)], 1055: [(FB_BREAK, 2.0)], 1057: [(FB_BREAK, 1.05)], 1060: [(FB_SPLIT_1060, 2.0)],
              1065: [(FB_CONSOL_1065, 0.1)]}
-# si_shares rows (available_at = dissemination date): 1067 at 1.6x then exactly 1.5x its 1e6 shares; 1066 (already
-# caught by turnover) at 6.7x; 1059 at 1%.
+# si_shares rows (available_at = dissemination date): 1067 at 5.5x then exactly 5.0x its 1e6 shares; 1066 (already
+# caught by turnover) at 6.7x; 1059 at 1%; 1053 at 6x.
 FB_FINRA = [(1059, "2021-02-01", "10000"), (1066, "2021-02-01", "1000000"),
-            (1067, "2021-02-01", "1600000"), (1067, "2021-03-01", "1500000")]
+            (1067, "2021-02-01", "5500000"), (1067, "2021-03-01", "5000000"),
+            (1053, "2021-02-01", "6000000")]  # 1053: rule (b) inside its factor-break restated window
 FB_REPAIRED_IDS = set(range(1001, 1053)) | {1053, 1054, 1058, 1063, 1064}
 FB_HOLE_1064 = (dt.date(2020, 12, 31), dt.date(2021, 1, 5))  # 7-day step ending 2021-01-06: repaired
 
@@ -682,7 +683,7 @@ def fb_line(sid, d):
         return (20.0 if post else 2.0), (1.0 if post else 10.0), (1000 if post else 10_000)
     if sid == 1066:                      # a count ~1000x too small inside the domain: 1.5e5 shares
         return 20.0, 1.0, 150
-    if sid in (1067, 1068):
+    if sid in (1067, 1068, 1069):
         return 20.0, 1.0, 1000
     # 1063: later 4:1 split (factor x1/4 at the break); no share count after 2020-11-30 (stale lag rows)
     return 20.0, 1.0 if old else 0.25, (1000 if d < dt.date(2020, 12, 1) else None)
@@ -691,11 +692,13 @@ def fb_line(sid, d):
 def fb_volume(sid, d):
     """Raw daily share volume (each day's own share units)."""
     if sid == 1065:
-        return 1.5e5 if d >= FB_CONSOL_1065 else 1.5e6  # 15% of 1e6 new / 1e7 old shares
+        return 5e5 if d >= FB_CONSOL_1065 else 5e6      # 50%/day of 1e6 new / 1e7 old shares
     if sid == 1066:
         return 5e5                                        # 3.3x its (too small) share count every day
     if sid == 1068:
         return 5e6 if d >= FB_SPIKE_1068 else 1e4
+    if sid == 1069:
+        return 3e6                                        # exactly 3.0x its 1e6 shares: kept
     return 1e4
 
 
@@ -775,7 +778,7 @@ def fb_expected(sessions):
     import bisect
     out = np.full((len(sessions), len(FB_IDS)), np.nan)
     restated = ambiguous = 0
-    rules = {"turnover": 0, "si": 0, "also_si": 0, "not_evaluable": 0}
+    rules = {"turnover": 0, "si": 0, "also_si": 0, "not_evaluable": 0, "si_not_evaluable": 0, "published": 0}
     for i, sid in enumerate(FB_IDS):
         rows = fb_lag_rows(sid)
         for t, s in enumerate(sessions):
@@ -793,10 +796,14 @@ def fb_expected(sessions):
                 continue
             if not 1e5 <= val <= 5e10:
                 continue
+            was_restated = sid in FB_REPAIRED_IDS and L < FB_BREAK <= s
+            restated += was_restated                       # counted before the units rules
             median = fb_median_volume(sessions, t, sid)
-            si_high = fb_si(sid, s) / val > 1.5
+            si = fb_si(sid, s)
+            si_high = si / val > 5.0                       # root ruling, fix round 4 (was 1.5)
             rules["not_evaluable"] += median is None
-            if median is not None and median > val:
+            rules["si_not_evaluable"] += math.isnan(si)
+            if median is not None and median > 3.0 * val:  # root ruling, fix round 4 (was 1.0)
                 rules["turnover"] += 1
                 rules["also_si"] += si_high
                 continue
@@ -804,7 +811,7 @@ def fb_expected(sessions):
                 rules["si"] += 1
                 continue
             out[t, i] = val
-            restated += int(sid in FB_REPAIRED_IDS and L < FB_BREAK <= s)
+            rules["published"] += was_restated
     return out, restated, ambiguous, rules
 
 
@@ -869,6 +876,11 @@ class FactorBreakShares(unittest.TestCase):
         self.assertEqual(block["parameters"], tool.FB_PARAMETERS)
         self.assertEqual((block["restated_cells"], block["gap_ambiguous_to_nan_cells"]), (restated, ambiguous))
         self.assertEqual(block["restated_member_cells"], restated)  # every fixture cell is a member
+        # restated_cells is counted before the units rules; 1053 loses cells to rule (b) inside its window.
+        self.assertEqual((block["restated_published_cells"], block["restated_published_member_cells"]),
+                         (rules["published"], rules["published"]))
+        self.assertLess(rules["published"], restated)
+        self.assertTrue(np.isnan(got[t(dt.date(2021, 2, 2)), col(1053)]))  # restated, then SI 6x: NaN
         self.assertGreater(restated, 0)
         self.assertGreater(ambiguous, 0)
         plaus = fb["plausibility"]
@@ -894,10 +906,11 @@ class FactorBreakShares(unittest.TestCase):
         si = got[:, col(1067)]
         for s in FB_SESSIONS:
             ratio = fb_si(1067, s) / 1e6
-            self.assertEqual(np.isnan(si[t(s)]), ratio > 1.5, s)  # 1.6 -> NaN; exactly 1.5 -> kept
-        self.assertTrue(np.all(si[[t(s) for s in FB_SESSIONS if fb_si(1067, s) == 1.5e6]] == 1e6))
-        cons = got[:, col(1065)]                     # consolidation: 15%/day in either share basis
-        self.assertTrue(np.all(np.isfinite(cons)))  # raw volume unconverted would read 1.5x (1.5e6 vs 1e6) after it
+            self.assertEqual(np.isnan(si[t(s)]), ratio > 5.0, s)  # 5.5 -> NaN; exactly 5.0 -> kept
+        self.assertTrue(np.all(si[[t(s) for s in FB_SESSIONS if fb_si(1067, s) == 5e6]] == 1e6))
+        self.assertTrue(np.all(got[:, col(1069)] == 1e6))  # median volume exactly 3.0x shares_out: kept
+        cons = got[:, col(1065)]                     # consolidation: 50%/day in either share basis
+        self.assertTrue(np.all(np.isfinite(cons)))  # raw volume unconverted would read 5x (5e6 vs 1e6) after it
         self.assertTrue(np.all(np.isfinite(got[:, col(1059)][[t(s) for s in FB_SESSIONS if s != FB_NULL_RAW_1059]])))
         block = next(f for f in self.manifest["fields"] if f["name"] == "shares_out")["plausibility"]
         self.assertEqual((block["turnover"]["to_nan"], block["turnover"]["to_nan_member"]),
@@ -907,13 +920,15 @@ class FactorBreakShares(unittest.TestCase):
         self.assertEqual((block["si_ratio"]["to_nan"], block["si_ratio"]["to_nan_member"]), (rules["si"], rules["si"]))
         self.assertEqual((block["turnover"]["window_sessions"], block["turnover"]["min_present_sessions"],
                           block["turnover"]["max_median_volume_over_shares_out"],
-                          block["si_ratio"]["max_si_shares_over_shares_out"]), (21, 11, 1.0, 1.5))
+                          block["si_ratio"]["max_si_shares_over_shares_out"]), (21, 11, 3.0, 5.0))
+        self.assertEqual(block["si_ratio"]["not_evaluable_cells"], rules["si_not_evaluable"])
+        self.assertGreater(rules["si_not_evaluable"], 0)
         self.assertGreater(rules["also_si"], 0)
         self.assertEqual([Path(x["path"]).name for x in block["turnover"]["inputs"]],
                          ["volume.f64", "close.f64", "raw_close.f64", "present.u8"])
         # si_shares itself is never touched by the units rules.
         si_field = np.fromfile(self.base / "out-fb" / "si_shares.f64", dtype="<f8").reshape(len(FB_SESSIONS), len(FB_IDS))
-        self.assertEqual(si_field[t(dt.date(2021, 2, 2)), col(1067)], 1.6e6)
+        self.assertEqual(si_field[t(dt.date(2021, 2, 2)), col(1067)], 5.5e6)
 
     def test_units_rules_point_in_time(self):
         # A role ending 8 spike sessions in: the later spike (and later rows) change no earlier cell.

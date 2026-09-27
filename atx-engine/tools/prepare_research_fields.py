@@ -77,22 +77,25 @@ IV_DOMAIN_RULE = ("vendor value v kept iff float32(0.02) <= v <= float32(5.0) (f
 # Declared by the root controller for T10 (swap-fin-v1 borrow tiers) and applied here (T6 fix round 2):
 # restated shares outstanding outside this range are implausible, both bounds inclusive.
 SHARES_OUT_DOMAIN = (1e5, 5e10)
-# Root ruling (T6 fix round 3, declared before any v3 measurement or T10 freeze): vendor share counts ~1000x too
-# small also sit inside the domain. A shares_out cell is invalid when (a) the median of the name's daily share
-# volume over the trailing 21 role sessions ending at the session, restated to the session's share basis, exceeds
-# 1.0 x shares_out, or (b) si_shares visible at the session exceeds 1.5 x shares_out.
+# Root ruling (T6 fix round 3; thresholds amended in fix round 4, declared before any v3 screen or NAV scoring):
+# vendor share counts ~1000x too small also sit inside the domain. A shares_out cell is invalid when (a) the
+# median of the name's daily share volume over the trailing 21 role sessions ending at the session, restated to
+# the session's share basis, exceeds 3.0 x shares_out, or (b) si_shares visible at the session exceeds 5.0 x
+# shares_out. Fix round 3 declared 1.0 / 1.5, which also removed genuine leveraged, inverse and volatility ETPs
+# (1.1-2.8x shares traded a day) and high-short-interest ETFs such as XRT; 3.0 / 5.0 keep them.
 SHARES_TURNOVER_WINDOW = 21
 SHARES_TURNOVER_MIN_OBS = 11     # the median needs a majority of the window present (declared with the rule)
-SHARES_TURNOVER_MAX = 1.0
-SHARES_SI_RATIO_MAX = 1.5
+SHARES_TURNOVER_MAX = 3.0
+SHARES_SI_RATIO_MAX = 5.0
 SHARES_UNITS_RULE = (
     "applied after the factor-break correction, the C-81 rule and the [1e5, 5e10] domain, in this order: "
     "(a) turnover: u_d = volume_d / f_d over the name's present role sessions d in the 21 role sessions ending at t "
     "(role volume.f64 is raw-share-volume, each day's own share units; f = close/raw is the role's chained factor, "
     "so u is one share basis and median(u) x f_t is the median daily volume in session t's share basis); with at "
-    "least 11 present days, median x f_t > 1.0 x shares_out -> NaN. (b) short interest: si_shares visible at t (the "
-    "same run's si_shares field: strict available_at < session, 45-day staleness) / shares_out > 1.5 -> NaN. Only "
-    "shares_out is set to NaN. Every input is dated <= t. Root ruling, T6 fix round 3")
+    "least 11 present days, median x f_t > 3.0 x shares_out -> NaN. (b) short interest: si_shares visible at t (the "
+    "same run's si_shares field: strict available_at < session, 45-day staleness) / shares_out > 5.0 -> NaN. Only "
+    "shares_out is set to NaN. Every input is dated <= t. Root ruling, T6 fix round 3; thresholds 3.0 / 5.0 "
+    "amended by root in fix round 4 (were 1.0 / 1.5)")
 # Rule factor-break-v1, ported from atx-impl/tools/repair_role_factor_breaks.py (T12) with the same
 # parameters and classification: the TickerHistory3 2026-09-20 cumulReturnFactor is not chained across
 # 2021-01-04 (atx-db VA1 / ruling C-35), so a factor ratio spanning that session carries a step that no
@@ -190,7 +193,7 @@ FIELDS = {
         "point_in_time": True, "domain": SHARES_OUT_DOMAIN, "requires": ["si_shares"],
         "units": "shares outstanding (vendor thousands x 1000), restated to the session's share basis",
         "clock": "A8-vendor-shares-lag90-restated-v2: last vendor observation of the line dated <= date(session)-90 calendar days with 0 < shares <= 1e8 (A9 thousands ceiling), times 1000 x cumulReturnFactor(session observation)/cumulReturnFactor(lag observation), divided by k of every factor-break-v1 repaired step (p,t,k) with lag < t <= session (k is known at t); observation = the role's present contract (unique key, finite positive close and factor, finite volume >= 0)",
-        "staleness": "lag observation older than date(session)-90-400 days -> NaN; no same-date vendor observation -> NaN; a restatement spanning a factor-break-v1 kept_gap step (a step across more than 10 days over a mass session: artifact and genuine actions cannot be separated) -> NaN, counted; a line is withheld (NaN) from the date of its first vendor row above the A9 ceiling onward (point-in-time form of ruling C-81: the spine withholds the whole line, which would use rows after the session); a restated value outside the declared domain [1e5, 5e10] -> NaN, counted in plausibility; then a cell whose trailing 21-session median daily volume (session share basis) exceeds 1.0 x shares_out, or whose visible si_shares exceeds 1.5 x shares_out, -> NaN (vendor units defect), counted per rule in plausibility",
+        "staleness": "lag observation older than date(session)-90-400 days -> NaN; no same-date vendor observation -> NaN; a restatement spanning a factor-break-v1 kept_gap step (a step across more than 10 days over a mass session: artifact and genuine actions cannot be separated) -> NaN, counted; a line is withheld (NaN) from the date of its first vendor row above the A9 ceiling onward (point-in-time form of ruling C-81: the spine withholds the whole line, which would use rows after the session); a restated value outside the declared domain [1e5, 5e10] -> NaN, counted in plausibility; then a cell whose trailing 21-session median daily volume (session share basis) exceeds 3.0 x shares_out, or whose visible si_shares exceeds 5.0 x shares_out, -> NaN (vendor units defect), counted per rule in plausibility",
         "caveats": ["A8: vendor share runs start at the filing cover date, so same-date vendor shares would leak ~2 weeks; the 90-day modeled lag follows the research spine",
                     "restatement uses the vendor cumulReturnFactor ratio with the factor-break-v1 re-anchoring steps divided out (the vendor factor is not chained across 2021-01-04; see factor_break); genuine splits, consolidations and distributions stay in the ratio, so dividends move it by a few tenths of a percent",
                     "a genuine split that the vendor factor does not show (a raw move with no factor step) is not restated, as before",
@@ -886,8 +889,9 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
         lo, hi = SHARES_OUT_DOMAIN
         c = {"below_min": 0, "above_max": 0, "member_below_min": 0, "member_above_max": 0,
              "restated": 0, "restated_member": 0, "gap": 0, "gap_member": 0,
+             "published": 0, "published_member": 0,
              "turnover": 0, "turnover_member": 0, "turnover_not_evaluable": 0, "turnover_also_si": 0,
-             "si": 0, "si_member": 0}
+             "si": 0, "si_member": 0, "si_not_evaluable": 0}
         # Units rules (a) and (b) read the role's volume/close/raw/present rows and the si_shares field this
         # run already published, both in session order: row t uses rows <= t only.
         si_path = output / "si_shares.f64"
@@ -931,6 +935,10 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
                     c["member_below_min"] += int(np.count_nonzero(low & member))
                     c["member_above_max"] += int(np.count_nonzero(high & member))
                     row[low | high] = np.nan
+                    # Cells the factor-break correction restated (counted before the units rules: fields-v2 basis).
+                    restated = np.isfinite(row) & (corr != 1.0)
+                    c["restated"] += int(np.count_nonzero(restated))
+                    c["restated_member"] += int(np.count_nonzero(restated & member))
                     # (a) turnover: trailing 21-session median daily volume in session t's share basis.
                     volume, close = stream.row("volume.f64"), stream.row("close.f64")
                     raw_close, present = stream.row("raw_close.f64"), stream.row("present.u8") != 0
@@ -944,11 +952,12 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
                     evaluable = (seen >= SHARES_TURNOVER_MIN_OBS) & np.isfinite(median_volume)
                     c["turnover_not_evaluable"] += int(np.count_nonzero(finite & ~evaluable))
                     turnover = finite & evaluable & (median_volume > SHARES_TURNOVER_MAX * row)
-                    # (b) short interest visible at t (this run's si_shares row t) above 1.5 x shares_out.
+                    # (b) short interest visible at t (this run's si_shares row t) above 5.0 x shares_out.
                     blob = si_file.read(n * 8)
                     if len(blob) != n * 8:
                         raise ValueError("shares_out: this run's si_shares.f64 is truncated")
                     si = np.frombuffer(blob, dtype="<f8")
+                    c["si_not_evaluable"] += int(np.count_nonzero(finite & ~np.isfinite(si)))
                     with np.errstate(invalid="ignore"):
                         si_high = finite & np.isfinite(si) & (si / row > SHARES_SI_RATIO_MAX)
                     c["turnover"] += int(np.count_nonzero(turnover))
@@ -958,13 +967,16 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
                     c["si"] += int(np.count_nonzero(si_only))
                     c["si_member"] += int(np.count_nonzero(si_only & member))
                     row[turnover | si_high] = np.nan
-                    restated = np.isfinite(row) & (corr != 1.0)
-                    c["restated"] += int(np.count_nonzero(restated))
-                    c["restated_member"] += int(np.count_nonzero(restated & member))
+                    published = restated & np.isfinite(row)
+                    c["published"] += int(np.count_nonzero(published))
+                    c["published_member"] += int(np.count_nonzero(published & member))
                     w.write(row)
                     if t % 256 == 0:
                         budget.check("shares_out-write")
             role_inputs = stream.verify()
+        except BaseException:
+            w.f.close()  # refused: the partial file stays unpublished (no manifest), but its handle is released
+            raise
         finally:
             stream.close()
         w.close()
@@ -992,7 +1004,9 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
                 "si_ratio": {"max_si_shares_over_shares_out": SHARES_SI_RATIO_MAX,
                              "si_shares": "this run's si_shares field (visible at the session: strict available_at < session, 45-day staleness)",
                              "to_nan": c["si"], "to_nan_member": c["si_member"],
-                             "counting": "cells not already set to NaN by the turnover rule"}},
+                             "counting": "cells not already set to NaN by the turnover rule",
+                             "not_evaluable_cells": c["si_not_evaluable"],
+                             "not_evaluable_counting": "cells finite after the domain (the turnover rule's population) whose si_shares is NaN at the session (no visible FINRA row, or older than 45 days)"}},
             "factor_break": {
                 "rule": FB_RULE, "ported_from": "atx-impl/tools/repair_role_factor_breaks.py (T12): same parameters and step classification",
                 "statement": FB_STATEMENT, "parameters": FB_PARAMETERS,
@@ -1005,6 +1019,10 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
                 "max_non_mass_jump_cells": fb["max_non_mass"],
                 "max_non_mass_session": date_of(ext_days[quiet]) if quiet is not None else None,
                 "restated_cells": c["restated"], "restated_member_cells": c["restated_member"],
+                "restated_counting": "restated_cells: finite cells a repaired step was divided out of, counted after the gap, C-81 "
+                                     "and domain rules and BEFORE the units rules (the fields-v2 basis); restated_published_cells: "
+                                     "those still finite after the units rules",
+                "restated_published_cells": c["published"], "restated_published_member_cells": c["published_member"],
                 "gap_ambiguous_to_nan_cells": c["gap"], "gap_ambiguous_to_nan_member_cells": c["gap_member"]}}
     return results, source, st, digest, extras
 
