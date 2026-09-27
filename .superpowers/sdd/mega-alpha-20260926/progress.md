@@ -1,5 +1,13 @@
 # Active task: recent-data DSL ensemble
 
+## Library v6 u pass COMPLETE; coverage check passed; V6-L fit/w/nav chain started (2026-09-27 ~21:00)
+mega-v6l-train-u2-1: status complete, 38/38 in one bounded pass (own cache). Coverage (paired_signal_pairs /
+decision_eligible_pairs, horizon 5): cbop .570 >= v5.1 cfoa .546 (pow(NaN,0)=1 fill works); value_composite .557; res_mom /
+bac / smax .918 (v5.1 low_beta .885); seasonality .953. The R(decay) switch raised coverage as the signal review predicted.
+studies/v6l_train.sh (fit -> w -> nav for library v6; COMP=ew-theme-v1 now = the pre-registered V6-L composition and the
+paired reference for the later ew-theme-v6 run; nav cell = v5 reference construction; nav_summ --dsr-n 14 vs REF v51 ew).
+Trial accounting (V6-L): admission 38 (res_mom_12_1 = re-trial of the v4.2 candidate); composition 1; construction cell 1.
+
 ## V6-C2 review APPROVED (conditional); library v6 u pass: cache mismatch -> fresh cache (2026-09-27 ~20:45)
 task-V6C2-review.md: APPROVED, 0 Critical, 3 Important gates for the root/merge: I1 golden (a) must be checked at base
 04e9d5bc with two test lines dropped, then the v5 REF price-risk-v1 cell SHA-compared against base outputs; I2 REAL semantic
