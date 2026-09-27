@@ -52,6 +52,21 @@ efficiency/incremental progress to cut resource use.
   recipe 93cd52ab... --check ok; native --plan-only: 96 compile, max slots 8, lookback 314, TRAIN
   admitted 1,234,268,377 B. Concern: vec_avg member-masked -> mkt-based templates NaN unless member
   whole window (review checking). Review dispatched. TRAIN run waits for T1 cache (180s cap).
+- T3 review: APPROVE 0C/0I/8 minor. Task T3: complete (b9cf4023..429cbe43, review clean).
+  T3 minors (deferred): M1 rescale amplification up to 1e9x -> T4 must cap; M2 msg; M3 clip untested;
+  M4 refusal kind untested; M5 ADV present-missing-volume=0; M6 pivot floor; M7 compute exposures once
+  per decision in T4; M8 noexcept.
+- T1 09a18ec3/a7fd1c02 -> af8c38ee/445e828d. Build mega-t1-b 32.29s Jobs4 5 TUs/3 links; IC 42/42 9.68s.
+  First real cold-cache run TIME-LIMIT 180.27s: Debug SHA-256 ~20MB/s (cache write 2.5s/candidate).
+  Fix 6d85ac2a: scoped /O2 on atx-core sha256.cpp (build sha-o2 21.89s, 3 TUs/6 links, prov 6d85ac2a).
+  Rerun mega-v1-train-cache-b: COMPLETE 71.16s peak 790MB, 37 cache-hit + 11 cold, planned targets /
+  daily IC / blend bytes IDENTICAL to v6. load 9.4->1.43s, save 4.35->0.33s, write .24s, hit .35s.
+- T5 review: spec PASS, 4 Important (I1 raw-volume splits; I2 vec_avg member-mask blanks mkt templates;
+  I3 resmom ~ v1 mom; I4 illiquidity/ivol/max reload v1 tilts). Ruling: fix pre-measurement (fix round
+  1 sent); I2 via producer field mkt_ret (T6 addendum) + runner --*-fields (T7) instead of VM opcode
+  (avoids engine rebuild fan-out); cost if wrong: v2 waits on T6/T7.
+- T2 addendum: accept pinned-candidate-weights blend semantics. T7 dispatched pool-4
+  feat/mega-alpha-runner-fields-20260926 @6d85ac2a.
 - Next: NAV backtest with declared missing-price policy (design agent), audit script review
   (agent), then construction (risk neutralization) + alpha expansion toward SR>=1.
 
