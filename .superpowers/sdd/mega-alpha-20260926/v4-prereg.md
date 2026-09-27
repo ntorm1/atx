@@ -48,3 +48,16 @@ Design rule for v4: the literature carries the selection, TRAIN only vetoes and 
 - TRAIN S2 x swap-fin-v1 net SR >= 1.0 AND daily turnover limits met AND per-year TRAIN net SR reported.
   If the gate fails: do NOT run validation; report; any revision is a new disclosed trial family.
 ## R7 Trial accounting: admission trials = v4 roster size; composition 1; construction 1; validation #2.
+
+## v4.2 revision (declared 2026-09-27 after the v4 gate failed; disclosed; last revision before reporting to owner)
+Evidence so far (TRAIN): v4 prereg net .431; v4.1 construction grid best .687 (b2 f.25); T26 paper books: industry-neutral
+(FF12/FF49) and liquidity scaling do NOT raise gross SR (.80/.75/.70 vs .85). Lever left: breadth + cost consistency.
+- R1' additions (prior-signed, one canonical variant each; no v3/v4 per-candidate TRAIN performance consulted):
+  res_mom_12_1 -> price_momentum (Blitz-Huij-Martens 2011: 12-1 cumulative market-residual return / residual vol);
+  eap -> earnings_momentum (Frazzini-Lamont 2007; Barber-De George-Lehavy-Trueman 2013: long names whose expected next
+    announcement, last announcement + ~63 sessions, falls within the next 21 sessions);
+  low_share_turnover -> low_risk (Datar-Naik-Radcliffe 1998: low volume/shares_out, 126-session mean, long).
+- R3' cost-consistency screen (structural, not performance): reject tau_k > 0.08 at $1bn (standalone TRAIN turnover),
+  in addition to v4-prior-v1; themes left empty drop out of the 1/themes weights.
+- R5' construction: band 2, fraction .25 (v4.1 selection) — plus band 1 fraction .25 reported (2 trials).
+- R6 gate unchanged (TRAIN S2 x swap-fin net >= 1.0). If it fails: stop iterating, report to the owner.

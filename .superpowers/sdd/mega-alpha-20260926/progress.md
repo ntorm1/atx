@@ -152,6 +152,12 @@
   PASS / raw shares_out FLAG (unused), C5 PASS, C6 FLAG FF49 small groups (17% of groups <5, 1.2% members). Task T25:
   complete. Data path v4 accepted.
 
+- T26: pool-3 a5a46fda -> root (studies/v4_construct_study.py, 15 tests). Root run mega-v4-construct-study-1 (24 s/552
+  MiB), TRAIN paper books gross SR: P0 price-risk .852 (corr NAV .91) / P1 +FF12 .798 / P2 +FF49 .746 / P3 liquidity-
+  scaled .703 / P4 partial .25 .862 (tau x.75). Industry-neutral and liquidity scaling do NOT help. Task T26: complete.
+- v4.2 PRE-REGISTERED (v4-prereg.md "v4.2 revision"): +res_mom_12_1, +eap, +low_share_turnover (prior-signed); tau_k <=
+  0.08 cost-consistency screen; construction b2f.25 (+b1f.25 reported); gate 1.0; if it fails -> report to owner.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
