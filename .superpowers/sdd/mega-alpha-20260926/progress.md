@@ -143,6 +143,15 @@
   trade-fraction {1,.5,.25} x band {1,2}/N (6 construction trials; b1f1 = the v4 run above). Pick max TRAIN S2 x
   swap-fin net SR within daily limits; gate unchanged (>= 1.0). Disclosed as a revision after a failed gate.
 
+- v4.1 grid (TRAIN, S2 x swap-fin net / gross / tau mean): b1f1 .431/1.100/.035; b1f.5 .589/1.135/.029; b1f.25
+  .677/1.132/.027; b2f1 .643/.929/.021; b2f.5 .596/.779/.015; b2f.25 .687/.815/.014. Selected b2f.25 (.687) — GATE
+  FAILS. At low turnover S1 .79 vs S2 .69: cost no longer binding; slower tracking cuts gross (fast themes decay).
+- T25: pool-8 cddcf8f2 -> root (audit_fund_fields.py, 6 tests). On fields-v6/events-v2: C1 PASS (32 fields re-join
+  exact; common-member coverage be .771 at .775 cfo .759 ni .759 sale .714 shrs_q .697), C2 PASS 300/300 cells vs raw
+  CF + FSDS accepted_utc, C3 PASS (FC1 .03%, revised-vintage <.25%), C7 PASS; (on v5 inputs) C4 adj & shrs_q split-safe
+  PASS / raw shares_out FLAG (unused), C5 PASS, C6 FLAG FF49 small groups (17% of groups <5, 1.2% members). Task T25:
+  complete. Data path v4 accepted.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
