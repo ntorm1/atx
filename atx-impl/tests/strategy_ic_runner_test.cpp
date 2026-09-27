@@ -432,6 +432,7 @@ Json stable_role(Json result,bool keep_artifact=true) {
   if (!keep_artifact) result.erase("combined_artifact");
   for (auto& candidate:result.at("candidates")) {
     candidate.erase("wall_seconds"); candidate.erase("stage_seconds"); candidate.erase("signal_cache");
+    candidate.erase("ic_result_cache");
     candidate.erase("composition_weight"); candidate.erase("composition_sign");
   }
   return result;
@@ -499,6 +500,10 @@ TEST(StrategyIcRunner, CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExac
       EXPECT_GE(result.at("stage_seconds").at("cache_load").get<f64>(),0);
       EXPECT_GE(result.at("stage_seconds").at("cache_write").get<f64>(),0);
       for (const auto& row:result.at("candidates")) EXPECT_EQ(row.at("signal_cache"),is_warm?"hit":"miss");
+      // T15: a warm pass also serves every IC result from the IC-result cache.
+      EXPECT_EQ(result.at("candidate_cache").at("ic_results").at("hits"),is_warm?2:0) << name;
+      EXPECT_EQ(result.at("candidate_cache").at("ic_results").at("misses"),is_warm?0:2) << name;
+      for (const auto& row:result.at("candidates")) EXPECT_EQ(row.at("ic_result_cache"),is_warm?"hit":"miss");
       EXPECT_EQ(stable_role(result),stable_role(reference.at("roles").at(r))) << name << r;
     }
     for (const auto& file:exact_outputs()) {
@@ -507,13 +512,15 @@ TEST(StrategyIcRunner, CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExac
     }
   }
   // Each committed entry: identity, raw geometry, canonical NaN and streamed hash.
+  // Beside the four signal files sits exactly one IC-result subdirectory (T15).
   const auto root=cache_root(dir.path/"cold"/"summary.json");
   for (const auto& pin:{cfg.train_sha256,cfg.validation_sha256}) {
-    const auto base=root/pin; usize files=0;
+    const auto base=root/pin; usize files=0,subdirectories=0;
     for (const auto& entry:std::filesystem::directory_iterator(base)) {
+      if (entry.is_directory()) { ++subdirectories; continue; }
       ++files; EXPECT_NE(entry.path().extension().string(),".partial");
     }
-    EXPECT_EQ(files,4U);
+    EXPECT_EQ(files,4U); EXPECT_EQ(subdirectories,1U);
     for (const std::string id:{"volume_level","volume_rank"}) {
       const auto sidecar=read_json(base/(id+".json"));
       EXPECT_EQ(sidecar.at("schema"),"atx.dsl-candidate-signal/v1");
@@ -1581,11 +1588,11 @@ TEST(StrategyIcRunner, CandidateCachePreflightRefusesBeforeRolePayload) {
   ASSERT_TRUE(json_file(device.library_path,lib,device.library_sha256));
   refuse(device,"device","candidate id unsafe as cache file name: con");
 }
-// Review I2: the candidate cache is keyed by dsl_vm_semantics_version, so any edit
-// to the engine sources that evaluate a DSL signal must be a conscious decision.
-TEST(StrategyIcRunner, VmSourcesPinnedToSemanticsVersion) {
-  const auto id=atx::impl::strategy::ic_cache_vm_identity();
-  EXPECT_EQ(id.identity.rfind("dslvm"+std::to_string(id.semantics_version)+"_",0),0U) << id.identity;
+// Pinned-source tripwire shared by the signal (VM) and IC-result caches: the digest
+// of the listed sources, CRLF->LF normalized, and their atx/engine include closure.
+void expect_sources_pinned(const atx::impl::strategy::IcCacheVmIdentity& id,const std::string& prefix,
+                           const std::string& list,const std::string& remedy) {
+  EXPECT_EQ(id.identity.rfind(prefix+std::to_string(id.semantics_version)+"_",0),0U) << id.identity;
   const auto repo=std::filesystem::path{ATX_IMPL_TESTS_DIR}.parent_path().parent_path();
   const std::set<std::string> listed(id.sources.begin(),id.sources.end());
   ASSERT_EQ(listed.size(),id.sources.size());
@@ -1604,12 +1611,25 @@ TEST(StrategyIcRunner, VmSourcesPinnedToSemanticsVersion) {
       ASSERT_NE(end,std::string::npos) << rel << ": " << line;
       const auto header="atx-engine/include/"+line.substr(begin,end-begin);
       EXPECT_TRUE(listed.count(header)) << rel << " includes unlisted " << header
-          << " (add it to dsl_vm_sources). VM sources changed: bump dsl_vm_semantics_version and update the pinned hash";
+          << " (add it to " << list << "). " << remedy;
     }
   }
   const auto digest=core::sha256_hex(material); ASSERT_TRUE(digest);
-  EXPECT_EQ(*digest,id.sources_sha256)
-      << "VM sources changed: bump dsl_vm_semantics_version and update the pinned hash";
+  EXPECT_EQ(*digest,id.sources_sha256) << remedy;
+}
+// Review I2: the candidate cache is keyed by dsl_vm_semantics_version, so any edit
+// to the engine sources that evaluate a DSL signal must be a conscious decision.
+TEST(StrategyIcRunner, VmSourcesPinnedToSemanticsVersion) {
+  expect_sources_pinned(atx::impl::strategy::ic_cache_vm_identity(),"dslvm","dsl_vm_sources",
+      "VM sources changed: bump dsl_vm_semantics_version and update the pinned hash");
+}
+// T15: the IC-result cache is keyed by ic_result_semantics_version; an edit to the
+// engine IC scoring sources must likewise be a conscious bump-or-repin decision.
+TEST(StrategyIcRunner, IcSourcesPinnedToSemanticsVersion) {
+  const auto id=atx::impl::strategy::ic_result_cache_identity();
+  EXPECT_NE(id.identity.find("_simd"),std::string::npos) << id.identity;
+  expect_sources_pinned(id,"dslic","ic_result_sources",
+      "IC scoring sources changed: bump ic_result_semantics_version and update the pinned hash");
 }
 // ---- T14: validation-only runs bind weights and field definitions to frozen TRAIN ----
 // Review M1 (root ruling): against an unweighted frozen TRAIN artifact, pinned weights
@@ -1760,5 +1780,143 @@ TEST(StrategyIcRunner, ValidationOnlyChecksFieldDefinitionsAgainstFrozenTrain) {
   auto unfielded=resume; ASSERT_TRUE(pin_weights(dir,unfielded,weights,Json(),"unfielded_weights.json",
       {{"orientations_sha256",resume.orientations_sha256},{"fields_manifest_sha256",nullptr}}));
   refuse(unfielded,"unfielded","provenance.fields_manifest_sha256 must equal the frozen TRAIN fields manifest pin");
+}
+// ---- T15: IC-result cache and pooled composition ----
+// IC-result hits reproduce every IC diagnostic and output byte of an uncached run,
+// with pooled workers (parallel IC rows, pooled composition) and with windows too
+// short to score (undefined NaN estimates, empty daily series). Pooled composition
+// reproduces the serial blend, series and planned-target bytes.
+TEST(StrategyIcRunner, IcResultCacheHitsReproduceUncachedOutputsExactly) {
+  for (const bool short_window:{false,true}) {
+    SCOPED_TRACE(short_window?"short window":"full window");
+    Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+    if (short_window) {
+      for (const auto& path:{cfg.train_manifest,cfg.validation_manifest}) {
+        auto j=read_json(path); j["score_begin"]=470;
+        j["score_start_ns"]=j.at("score_end_ns").get<i64>()-10*day;
+        std::string pin; ASSERT_TRUE(json_file(path,j,pin));
+        if (path==cfg.train_manifest) cfg.train_sha256=pin; else cfg.validation_sha256=pin;
+      }
+    }
+    cfg.save_combined=!short_window;
+    std::vector<std::string> outputs{"recipe.json","orientations.json"};
+    for (const std::string role_name:{"train","validation"}) {
+      outputs.push_back(role_name+"_daily_ic.csv"); outputs.push_back(role_name+"_planned_targets.csv");
+      if (cfg.save_combined)
+        for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8","_combined.json"})
+          outputs.push_back(role_name+suffix);
+    }
+    const auto serial=run_named(dir,cfg,"serial"); ASSERT_TRUE(serial.ok) << serial.error;
+    cfg.workers=2;
+    const auto plain=run_named(dir,cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+    cfg.candidate_cache_directory=(dir.path/"c").string();
+    const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+    const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+    EXPECT_NE(cold.log.find(" ic_result=miss"),std::string::npos);
+    EXPECT_EQ(cold.log.find(" ic_result=hit"),std::string::npos);
+    EXPECT_NE(warm.log.find(" ic_result=hit"),std::string::npos);
+    EXPECT_EQ(warm.log.find(" ic_result=miss"),std::string::npos);
+    const auto reference=read_json(dir.path/"plain"/"summary.json");
+    for (const std::string name:{"cold","warm"}) {
+      const auto summary=read_json(dir.path/name/"summary.json");
+      ASSERT_EQ(summary.at("roles").size(),2U);
+      for (usize r=0;r<2;++r) {
+        const auto& result=summary.at("roles").at(r);
+        EXPECT_EQ(result.at("candidate_cache").at("ic_results").at("hits"),name=="warm"?2:0) << name;
+        EXPECT_EQ(stable_role(result),stable_role(reference.at("roles").at(r))) << name << r;
+      }
+      for (const auto& file:outputs) {
+        const auto expected=file_sha(dir.path/"plain"/file); ASSERT_FALSE(expected.empty()) << file;
+        EXPECT_EQ(file_sha(dir.path/name/file),expected) << name << ' ' << file;
+      }
+    }
+    // Only the recipe-bound JSON files record the worker count.
+    for (const auto& file:outputs) {
+      if (file.ends_with(".json")) continue;
+      EXPECT_EQ(file_sha(dir.path/"plain"/file),file_sha(dir.path/"serial"/file)) << file;
+    }
+  }
+}
+// A present IC-result entry is served only when intact and naming exactly this
+// candidate, signal bytes and scope key; anything else refuses loudly and is left in
+// place. A deleted entry is rescored byte-identically; another IC setting keys
+// another directory (a clean miss).
+TEST(StrategyIcRunner, IcResultCacheRefusesTamperedOrForeignEntriesAndKeysSettings) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto ic_results=read_json(dir.path/"cold"/"summary.json").at("roles").at(0)
+      .at("candidate_cache").at("ic_results");
+  const auto subdirectory=ic_results.at("subdirectory").get<std::string>();
+  EXPECT_EQ(subdirectory.rfind("ic1_",0),0U) << subdirectory;
+  EXPECT_EQ(subdirectory.size(),20U) << subdirectory;
+  EXPECT_EQ(ic_results.at("identity"),atx::impl::strategy::ic_result_cache_identity().identity);
+  EXPECT_EQ(ic_results.at("key").at("role_manifest_sha256"),cfg.train_sha256);
+  const auto root=cache_root(dir.path/"cold"/"summary.json");
+  const auto entry_path=root/cfg.train_sha256/subdirectory/"volume_level.json";
+  const auto original=file_bytes(entry_path); ASSERT_FALSE(original.empty());
+  const auto entry=read_json(entry_path);
+  EXPECT_EQ(entry.at("schema"),"atx.dsl-candidate-ic/v1");
+  EXPECT_EQ(entry.at("record").at("candidate_id"),"volume_level");
+  EXPECT_EQ(entry.at("record").at("signal_payload_sha256"),
+            read_json(root/cfg.train_sha256/"volume_level.json").at("payload_sha256"));
+  EXPECT_EQ(entry.at("record").at("key"),ic_results.at("key"));
+  const auto record_sha=[](const Json& j) {
+    auto sha=core::sha256_hex(j.at("record").dump()); return sha?*sha:std::string{};
+  };
+  EXPECT_EQ(entry.at("record_sha256"),record_sha(entry));
+  const auto expect_refusal=[&](const Json& edited,const std::string& name,const std::string& reason) {
+    std::string unused; ASSERT_TRUE(json_file(entry_path,edited,unused));
+    const auto attempt=run_named(dir,cfg,name);
+    EXPECT_FALSE(attempt.ok) << name;
+    EXPECT_NE(attempt.error.find(reason),std::string::npos) << name << ": " << attempt.error;
+    EXPECT_EQ(read_json(dir.path/name/"summary.json").at("status"),"failed") << name;
+    EXPECT_EQ(read_json(entry_path),edited) << name; // refused in place, never overwritten
+  };
+  // One altered series digit under the old record hash: integrity refusal.
+  auto altered=entry;
+  auto& digits=altered["record"]["result"]["rank_series"][1].get_ref<std::string&>();
+  ASSERT_FALSE(digits.empty()); digits.back()=digits.back()=='0'?'1':'0';
+  expect_refusal(altered,"altered","candidate IC cache entry integrity: volume_level");
+  // Self-consistent records naming other signal bytes or another key: mismatch.
+  auto foreign=entry; foreign["record"]["signal_payload_sha256"]=std::string(64,'0');
+  foreign["record_sha256"]=record_sha(foreign);
+  expect_refusal(foreign,"foreign","candidate IC cache entry mismatch: volume_level");
+  auto rekeyed=entry; rekeyed["record"]["key"]["min_names"]=4; rekeyed["record_sha256"]=record_sha(rekeyed);
+  expect_refusal(rekeyed,"rekeyed","candidate IC cache entry mismatch: volume_level");
+  // A self-consistent record with a wrong-length series: malformed.
+  auto truncated=entry; truncated["record"]["result"]["pearson_series"][0]=std::string(16,'0');
+  truncated["record_sha256"]=record_sha(truncated);
+  expect_refusal(truncated,"truncated","candidate IC cache entry malformed: volume_level");
+  ASSERT_TRUE(write_bytes(entry_path,std::vector<char>{'{'}));
+  const auto corrupt=run_named(dir,cfg,"corrupt"); EXPECT_FALSE(corrupt.ok);
+  EXPECT_NE(corrupt.error.find("candidate IC cache entry malformed: volume_level"),std::string::npos)
+      << corrupt.error;
+  // Restored: served again and untouched. Deleted: rescored and republished with
+  // the same bytes. Outputs never change.
+  ASSERT_TRUE(write_bytes(entry_path,original));
+  const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  EXPECT_EQ(warm.log.find(" ic_result=miss"),std::string::npos);
+  EXPECT_EQ(file_bytes(entry_path),original);
+  ASSERT_TRUE(std::filesystem::remove(entry_path));
+  const auto rescored=run_named(dir,cfg,"rescored"); ASSERT_TRUE(rescored.ok) << rescored.error;
+  EXPECT_NE(rescored.log.find(" cache=hit ic_result=miss"),std::string::npos);
+  EXPECT_EQ(file_bytes(entry_path),original);
+  for (const std::string name:{"warm","rescored"})
+    for (const auto* file:{"orientations.json","train_daily_ic.csv","validation_daily_ic.csv",
+                           "train_planned_targets.csv","validation_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/"cold"/file)) << name << ' ' << file;
+  // Another IC setting: its own directory, a clean miss that matches an uncached run.
+  auto other=cfg; other.min_dates=16;
+  const auto changed=run_named(dir,other,"changed"); ASSERT_TRUE(changed.ok) << changed.error;
+  const auto changed_results=read_json(dir.path/"changed"/"summary.json").at("roles").at(0)
+      .at("candidate_cache").at("ic_results");
+  EXPECT_NE(changed_results.at("subdirectory"),subdirectory);
+  EXPECT_EQ(changed_results.at("hits"),0);
+  EXPECT_EQ(changed_results.at("key").at("min_dates"),16);
+  other.candidate_cache_directory.clear();
+  const auto uncached=run_named(dir,other,"changed_uncached"); ASSERT_TRUE(uncached.ok) << uncached.error;
+  for (const auto* file:{"orientations.json","train_daily_ic.csv","validation_daily_ic.csv"})
+    EXPECT_EQ(file_sha(dir.path/"changed"/file),file_sha(dir.path/"changed_uncached"/file)) << file;
 }
 } // namespace

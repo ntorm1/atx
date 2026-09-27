@@ -21,6 +21,9 @@ struct IcRunnerConfig {
   // volume and the role's fields manifest SHA256 for one reading extra fields; the
   // <vm-identity> level is omitted only for the legacy identity dslvm1_clang18.1.
   // Never part of the recipe because a verified hit reproduces the VM bytes exactly.
+  // The same option also caches each candidate's IC result under its signal entry's
+  // directory (<sha>/ic<v>_<key16>/<id>.json), keyed on the signal payload SHA256,
+  // so a warm pass skips IC scoring; a verified hit reproduces the result exactly.
   std::string candidate_cache_directory;
   // Optional pinned per-candidate composition weights replacing equal weights. Bound
   // to TRAIN by train_manifest_sha256; against a frozen TRAIN artifact (which must be
@@ -51,5 +54,8 @@ struct IcCacheVmIdentity {
   std::string sources_sha256;
 };
 [[nodiscard]] IcCacheVmIdentity ic_cache_vm_identity();
+// Same shape for the IC-result cache: its semantics version, identity (compiler,
+// FP flavor, IC SIMD width) and the engine IC scoring sources pinned against it.
+[[nodiscard]] IcCacheVmIdentity ic_result_cache_identity();
 [[nodiscard]] int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err);
 } // namespace atx::impl::strategy
