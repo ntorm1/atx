@@ -36,6 +36,10 @@ struct IcCompositionResult {
 // Per-add sign permits TRAIN evaluate -> orient -> add -> discard in one VM
 // pass. Validation supplies those same frozen signs; this helper never fits.
 // No return labels or validation evidence enter this helper.
+// Optional pinned_weights (library order, finite, >= 0) replace the equal
+// family/within-family weights value-for-value: no normalization and the same
+// accumulation expression, so pinning the default values reproduces its bits.
+// A zero weight contributes nothing; nothing is ever redistributed.
 class IcComposition {
  public:
   ~IcComposition();
@@ -45,7 +49,8 @@ class IcComposition {
   IcComposition& operator=(const IcComposition&) = delete;
   [[nodiscard]] static atx::core::Result<IcComposition> create(
       const IcCompositionConfig&, std::span<const IcCompositionCandidate>,
-      std::span<const atx::u8> decision_member);
+      std::span<const atx::u8> decision_member,
+      std::span<const atx::f64> pinned_weights = {}); // empty: equal family/within
   [[nodiscard]] atx::core::Status add(atx::usize candidate_index,
                                     std::span<const atx::f64> signal,
                                     int frozen_sign); // -1/+1; 0 neutral, never redistributed

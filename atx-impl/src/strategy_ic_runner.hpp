@@ -15,6 +15,11 @@ struct IcRunnerConfig {
   atx::usize workers{1}; // 1 is the existing serial baseline; explicit2..4 share one VM pool
   bool save_combined{false}; // exact blend+support artifact, no reevaluation or portfolio simulation
   bool plan_only{false}; // pinned metadata/DSL compilation only; no role payloads
+  // Optional reusable raw DSL signals under DIR/<role-manifest-sha256>/; never
+  // part of the recipe because a verified hit reproduces the VM bytes exactly.
+  std::string candidate_cache_directory;
+  // Optional pinned per-candidate composition weights replacing equal weights.
+  std::string composition_weights_path, composition_weights_sha256;
 };
 // IC-only research; no book, surfaces, fees, Sharpe, stock events or holdout.
 // TRAIN21h sample rank-IC fits signs; validation uses frozen signs; screening remains diagnostic for the fixed blend.

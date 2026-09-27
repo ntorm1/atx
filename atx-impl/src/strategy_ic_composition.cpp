@@ -68,7 +68,8 @@ IcComposition::IcComposition(IcComposition&&) noexcept = default;
 IcComposition& IcComposition::operator=(IcComposition&&) noexcept = default;
 
 co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
-    std::span<const IcCompositionCandidate> candidates, std::span<const u8> member) {
+    std::span<const IcCompositionCandidate> candidates, std::span<const u8> member,
+    std::span<const f64> pinned) {
   ATX_TRY(auto bytes, ic_composition_working_bytes(cfg.dates, cfg.instruments, candidates.size()));
   if (bytes > cfg.max_working_bytes)
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working budget exceeded");
@@ -78,6 +79,9 @@ co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
       !std::isfinite(cfg.trade_fraction) || cfg.trade_fraction <= 0 || cfg.trade_fraction > 1 ||
       std::any_of(member.begin(), member.end(), [](u8 v) { return v > 1; }))
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: config/membership mismatch");
+  if (!pinned.empty() && (pinned.size() != candidates.size() ||
+      std::any_of(pinned.begin(), pinned.end(), [](f64 w) { return !std::isfinite(w) || w < 0; })))
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: pinned weights");
   usize families = 0;
   for (usize i = 0; i < candidates.size(); ++i) {
     const auto& c = candidates[i];
@@ -98,6 +102,8 @@ co::Result<IcComposition> IcComposition::create(const IcCompositionConfig& cfg,
     p->candidates.assign(candidates.begin(), candidates.end());
     p->member.assign(member.begin(), member.end()); p->weights.resize(candidates.size());
     for (usize i = 0; i < candidates.size(); ++i) {
+      // Pinned values are stored verbatim and read by the same add() expression.
+      if (!pinned.empty()) { p->weights[i] = pinned[i]; continue; }
       const auto n = std::count_if(candidates.begin(), candidates.end(), [&](const auto& c) {
         return c.family == candidates[i].family;
       });
@@ -127,7 +133,9 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
   auto& p = *impl_;
   if (signal.size() != p.result.signal.size() && !(sign == 0 && signal.empty()))
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: signal shape mismatch");
-  if (sign != 0) for (usize d = 0; d < p.cfg.dates; ++d) {
+  // Default weights are strictly positive, so the weight test alters only pinned
+  // zeros: skipping adds of +/-0 leaves every accumulator bit unchanged.
+  if (sign != 0 && p.weights[index] != 0) for (usize d = 0; d < p.cfg.dates; ++d) {
     p.row.clear(); const auto offset = d * p.cfg.instruments;
     for (usize i = 0; i < p.cfg.instruments; ++i)
       if (p.member[offset + i] && std::isfinite(signal[offset + i]))
