@@ -1,5 +1,18 @@
 # Active task: recent-data DSL ensemble
 
+## STAT-ARB CLUSTER STUDY (owner ask, separate research family; prereg statarb-prereg.md @367e1101) — RESULT: NEGATIVE
+TRAIN 2020-22 only (validation sealed). studies/statarb_cluster_study.py + statarb_run.sh (bounded; all stages <= 48 s,
+<= 1266 MiB) + statarb_report.py; outputs build-equity/statarb-cluster-v1/ (analyze.json, model.json,
+statarb-cluster-study.png). Clusters: rolling 252d PCA-15 embedding + balanced k-means, monthly; c30 = 96 groups x ~30,
+within-group resid corr .38 (c10 .42, c100 .33, FF49 .18, random .01), FF12 purity .57, month-to-month ARI .34.
+Univariate (138 tests, Bonferroni |t| 3.57): 0 significant. Strongest cluster signal c30_dev_1 vs r[d+1] IC -.0096
+t -2.9, gone at r[d+2] (+.0015): the residual reversal lives in the one session our clock cannot trade. FM beyond
+controls: dev/sscore/grp_dev |t| < 2 at K 10/30/100; marginal c30_grp_mom_12_1 +2.2/+2.7, c30_beta_g +2.4,
+c30_nbr_mkt_5 +2.6 (y5); controls dominate (vol63 -6, mom +3). Model FIT 2020-21 -> HOLD 2022: hgb_FULL IC y2 +.010
+(t 1.4), hgb_CTRL+FF49 +.008 (t 1.1), paired FULL-minus-no-cluster +.0025 (t .47); H1-H4 all fail. Best HOLD book
+(hgb ctrl, hl10) gross SR 1.10, BE 33 bps — one year, not significant; cluster features add nothing OOS.
+Not run (ideas): same-close / intraday execution, liquid top-1000 subset, Avellaneda-Lee threshold entry/exit rule.
+
 ## PAUSED 2026-09-27 at owner request — handoff 3
 docs/plans/2026-09-27-mega-alpha-parent-handoff-3.md (done / in progress / next steps / current net SR and alphas /
 fresh-parent goal prompt). No active agents or processes. Best OOS: validation #2 v4.1 net +0.641.
