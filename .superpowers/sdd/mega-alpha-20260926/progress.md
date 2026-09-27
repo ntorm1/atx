@@ -1,5 +1,22 @@
 # Active task: recent-data DSL ensemble
 
+## V6-L RESULT: library v6 x ew-theme-v1 x v5 construction -> S2 net +0.915 (parent +0.759) -- ACCEPTED (2026-09-27 ~21:15)
+Cell build-equity/mega-nav-v6l-ew-t.05-d.1-fixed (fit pass 1, weighted pass 1, nav 1 -- all first bounded pass; weights
+b900602d). S2: net +0.915, gross SR 1.313, HAC t 1.68, mu 3.39%, vol 3.71%, MDD .033, years 2020 +.024 / 2021 +.028 /
+2022 +.049; tau .0467 / p95 .0637; cost_bps_traded 12.56; gross_lev_all_rows .7534 (L 1), post_ramp .7721; net_lev +.0124.
+S1 +1.089; S3 +0.128 (first positive S3 of any cell); flat-300 +0.629; engine-tiers +0.836. Paired vs v51 ew parent:
+dSR(net) +0.156, rho .947, Memmel SE .189 (t .83), CBB 95% [-.180, +.523], LW p .40. Skew -0.955 (parent -1.27), kurt 9.7.
+Netting ratio .408 (standalone tau .1144 after the fast sleeves lost their decay; theta .05 does the smoothing).
+Acceptance rule (sign of paired dSR matches the pre-registered "+" prior): PASS. Magnitude is not a criterion (SE .19).
+Appendix A: TRAIN 2020-2022 only; admission 38 (v6 roster; res_mom_12_1 re-trial of v4.2), composition 1 (ew-theme-v1 on
+library v6), construction 1; cumulative v6 cells 1 (+ the D2 identical cell, not a trial); DSR N = 14 for this cell.
+- Ruling (declared BEFORE any construction-grid read): the pre-registered V6-C grid (6 cells) runs with PARENT =
+  mega-nav-v6l-ew-t.05-d.1-fixed (library v6, ew-theme-v1, weights b900602d) instead of the v5.1 parent -- why: the grid
+  isolates construction effects by pairing against its parent whichever library it uses, and stacking on v6 avoids
+  re-running the winner on a second library (saves cells) -- cost if wrong: construction deltas measured on the v6 book
+  only; the v5.1 obtarget-x1 cell already run stays the D2 identity check. Same 6-cell budget; v6_train.sh needs a LIB
+  knob (added in the C1 fix wave).
+
 ## Library v6 u pass COMPLETE; coverage check passed; V6-L fit/w/nav chain started (2026-09-27 ~21:00)
 mega-v6l-train-u2-1: status complete, 38/38 in one bounded pass (own cache). Coverage (paired_signal_pairs /
 decision_eligible_pairs, horizon 5): cbop .570 >= v5.1 cfoa .546 (pow(NaN,0)=1 fill works); value_composite .557; res_mom /
