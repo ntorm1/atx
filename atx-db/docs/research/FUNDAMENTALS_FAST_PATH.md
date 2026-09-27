@@ -41,6 +41,11 @@ and filing date plus 46 hours. Borrowing FSDS acceptance requires exact accessio
 taxonomy, concept, unit, endpoint, duration class and numeric value, plus a unique
 CF duration start. Candidate dispositions retain both terminal treatment and each
 mapping outcome; their occurrence counts reconcile to the raw input population.
+The `outer_identity_v1` mapping-outcome representation keeps nested item/reason
+fields and stores candidate/CIK/year once in their enclosing disposition row.
+Its version is pinned in plans, completion receipts and rows.
+`decode_mapping_outcomes` reconstructs full decisions and reads retained legacy
+JSON. This lossless storage change does not alter candidate or audit denominators.
 
 Periods are proven from visible filing endpoints. Duration facts remain separate
 quarter, YTD and FY series. Additive quarter differences and complete TTM sums

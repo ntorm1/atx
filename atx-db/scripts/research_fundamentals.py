@@ -112,7 +112,7 @@ def main() -> None:
             raise SystemExit(f"source workers incomplete: {results}")
     elif args.command == "plan":
         from atx_db.research.items_map import load_mapping
-        from atx_db.research.item_vintages import PERIOD_POLICY
+        from atx_db.research.item_vintages import PERIOD_POLICY, MAPPING_OUTCOMES_VERSION
         mapping = load_mapping()
         expected = [("fsds", f"{2009+(q+1)//4}q{(q+1)%4+1}") for q in range(69)]
         expected += [("cf", str(n)) for n in range(85)]
@@ -151,6 +151,7 @@ def main() -> None:
                 "source_pins_sha256": file_sha256(args.pins), "source_receipts": receipts,
                 "scope_complete": not missing, "missing_source_slices": missing,
                 "diagnostic": args.diagnostic, "buckets": args.buckets, "period_policy": PERIOD_POLICY,
+                "mapping_outcomes_version": MAPPING_OUTCOMES_VERSION,
                 "code": {p.as_posix(): file_sha256(p) for p in code_paths},
                 "root": args.root.resolve().as_posix(), "work": args.work.resolve().as_posix()}
         plan["build_sha256"] = canonical_sha256(plan)

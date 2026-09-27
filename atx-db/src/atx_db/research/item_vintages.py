@@ -16,7 +16,8 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .fundamental_sources import canonical_sha256, file_sha256, parquet_relation
 
-ENGINE_VERSION = "item_vintages_v2"
+ENGINE_VERSION = "item_vintages_v3"
+MAPPING_OUTCOMES_VERSION = "outer_identity_v1"
 PERIOD_POLICY = {"quarter_days": [70, 112], "half_year_days": [150, 215],
                  "nine_month_days": [240, 310], "year_days": [350, 380],
                  "quarter_anchor_age_days": 200, "annual_anchor_age_days": 400,
@@ -31,6 +32,33 @@ def _decimal(value: Any) -> Decimal | None:
         return number if number.is_finite() else None
     except (InvalidOperation, ValueError):
         return None
+
+
+def decode_mapping_outcomes(disposition: Mapping[str, Any]) -> list[dict]:
+    """Reconstruct full mapping decisions from either retained representation."""
+    version = disposition.get("mapping_outcomes_version")
+    outcomes = json.loads(disposition["mapping_outcomes"])
+    if version is None:
+        return outcomes  # Historical full-identity JSON remains readable.
+    if version != MAPPING_OUTCOMES_VERSION:
+        raise ValueError("unsupported disposition mapping-outcome representation")
+    identity = {name: disposition[name] for name in ("candidate_id", "cik", "year")}
+    if any(set(outcome) != {"item_id", "reason"} for outcome in outcomes):
+        raise ValueError("compact mapping outcome has unexpected fields")
+    return [{**identity, **outcome} for outcome in outcomes]
+
+
+def encode_mapping_outcomes(outcomes: Sequence[Mapping[str, Any]], *,
+                            candidate_id: str, cik: str | None, year: int) -> str:
+    """Drop repeated fields only after proving exact reconstruction for every row."""
+    identity = {"candidate_id": candidate_id, "cik": cik, "year": year}
+    for outcome in outcomes:
+        if (set(outcome) != {"candidate_id", "cik", "year", "item_id", "reason"} or
+                any(outcome[name] != value for name, value in identity.items())):
+            raise ValueError("mapping outcome cannot be reconstructed exactly from outer identity")
+    compact = [{name: outcome[name] for name in ("item_id", "reason")}
+               for outcome in sorted(outcomes, key=lambda r: (r["item_id"] or 0, r["reason"]))]
+    return json.dumps(compact, sort_keys=True, separators=(",", ":"))
 
 
 def _clock(value: dt.datetime) -> dt.datetime:
@@ -493,12 +521,15 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
         reason = ("semantic_conflict" if candidate_id in conflicting else "used" if candidate_id in used
                   else "superseded_alias" if "mapped_candidate" in reasons else "+".join(reasons))
         source = raw[candidate_id]
+        year = source["period_end"].year if source["period_end"] else 0
         dispositions.append({"candidate_id": candidate_id, "cik": owner, "reason": reason,
-                             "mapping_outcomes": json.dumps(sorted(choices, key=lambda r: (r["item_id"] or 0, r["reason"])), sort_keys=True),
+                             "mapping_outcomes": encode_mapping_outcomes(choices, candidate_id=candidate_id,
+                                                                         cik=owner, year=year),
+                             "mapping_outcomes_version": MAPPING_OUTCOMES_VERSION,
                              "source_occurrences": source.get("source_occurrences", 1),
                              "effective_at": source["candidate_effective_at"],
                              "clock_basis": source["candidate_clock_basis"],
-                             "year": source["period_end"].year if source["period_end"] else 0})
+                             "year": year})
     return sorted(unique.values(), key=lambda r: (r["year"], r["item"], r["freq"], r["period_end"], r["available_at"], r["vintage_id"])), dispositions
 
 
@@ -604,6 +635,7 @@ def schemas():
     disposition = pa.schema([("candidate_id", text), ("cik", text), ("reason", text),
                              ("mapping_outcomes", text), ("source_occurrences", pa.int64()), ("year", pa.int32())])
     disposition = disposition.append(pa.field("effective_at", pa.timestamp("us"))).append(pa.field("clock_basis", text))
+    disposition = disposition.append(pa.field("mapping_outcomes_version", text))
     return {"item_vintages": vintage, "item_lineage": lineage, "item_dispositions": disposition}
 
 
@@ -1048,6 +1080,7 @@ def build_bucket(files: Sequence[Path | str], mapping: dict, *, root: Path, outp
                 "sha256": file_sha256(path), "bytes": path.stat().st_size}
                for (dataset, year), path in sorted(paths.items())]
     result = {"schema": ENGINE_VERSION, "build_sha256": build_sha256, "mapping_sha256": mapping["sha256"],
+              "mapping_outcomes_version": MAPPING_OUTCOMES_VERSION,
               "bucket": bucket, "owners": owners, "max_owner_candidates": max_owner_rows,
               "owner_ids": sorted(set(owner_ids)),
               "max_owner_vintages": max_owner_vintages, "files": records,
@@ -1069,6 +1102,9 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
     receipt = json.loads((output / "complete.json").read_text())
     if receipt["build_sha256"] != plan["build_sha256"]:
         raise ValueError("audit build drift")
+    if (receipt.get("mapping_outcomes_version") != MAPPING_OUTCOMES_VERSION or
+            plan.get("mapping_outcomes_version") != MAPPING_OUTCOMES_VERSION):
+        raise ValueError("audit disposition representation differs from immutable plan")
     grouped = collections.defaultdict(list)
     for entry in bucket_materializations(output, root=root):
         grouped[entry["dataset"]].append(check_file(entry))
@@ -1084,6 +1120,7 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
             "dispositions": "SELECT count(*) FROM d",
             "disposition_occurrences": "SELECT coalesce(sum(source_occurrences),0) FROM d",
             "duplicate_dispositions": "SELECT count(*)-count(DISTINCT candidate_id) FROM d",
+            "invalid_disposition_representation": f"SELECT count(*) FROM d WHERE mapping_outcomes_version IS DISTINCT FROM '{MAPPING_OUTCOMES_VERSION}'",
             "unaccounted_candidates": "SELECT count(*) FROM (SELECT DISTINCT candidate_id FROM raw EXCEPT SELECT candidate_id FROM d)",
             "unknown_dispositions": "SELECT count(*) FROM (SELECT candidate_id FROM d EXCEPT SELECT candidate_id FROM raw)",
             "duplicate_vintages": "SELECT count(*)-count(DISTINCT vintage_id) FROM v",
