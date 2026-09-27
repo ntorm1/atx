@@ -1,5 +1,21 @@
 # Active task: recent-data DSL ensemble
 
+## v6 GOAL 2 START — owner /goal (2026-09-27, ~18:10): deep code review + literature review -> build to net SR >= 1.0
+Owner goal text (paraphrase): sub-agent code review of the pipeline and its stress/critical points; web literature review of
+the alpha families; combine both; build atx-engine/atx-impl so a set of high-quality sub-alphas, optimally combined into one
+mega alpha, produces daily portfolios at net Sharpe >= 1.0 after costs. Opus 5.5 children; controller preserves context.
+All v5 rules stay binding (pool-2 root only; TRAIN 2020-2022 only; 2023+ read = validation trial #3 needs U1; pre-register
+every lever set in v4-prereg.md "## v6 revision" before any v6 TRAIN read; 180 s / 1536 MiB; no pushes).
+Phase A (read-only, parallel, Opus 5.5): v6-review-signal -> v6-code-review-signal.md; v6-review-exec ->
+v6-code-review-exec.md; v6-lit (WebSearch) -> v6-literature.md. Phase B: controller synthesis -> v6 lever set pre-registered
+-> ranked DAG of C++/script tasks. Phase C: implement (children in own pools), root builds (tag v6-0...), root TRAIN runs,
+gate on S2 net >= 1.0 with R6' mechanics.
+- Ruling: Phase A reviewers may read every TRAIN artefact already produced (nav CSVs, summaries, admission JSON) as a
+  disclosed diagnostic; none may read 2023+ data or per-candidate VAL statistics -- cost if wrong: one extra disclosed study.
+- Ruling: "optimal combination" is read as trade-cost-aware combination fitted on TRAIN with pre-registered method and
+  shrinkage; no per-candidate weight search against TRAIN net SR without DSR accounting -- cost if wrong: an overfit book
+  that fails validation #3; mitigated by the Appendix A block on every result.
+
 ## v6 START — owner goal "reach 1+ net sharpe" (2026-09-27, set after handoff 4)
 Controller: Claude Opus 5.5. Target: a TRAIN (2020-2022) cell with S2 (modeled-1bn-stale5-v1 x swap-fin-v1) net SR >= 1.0 at
 $1bn, cadence 1, with the R6' mechanics (gross in [.90, 1.05], |net| <= .02, tau limits) — then a freeze proposal. Validation
