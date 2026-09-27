@@ -66,7 +66,11 @@ weights file's `provenance` object, which the T11 fitter already emits (`fit_com
   which is verified against the frozen pin and compared by M5. Otherwise: "frozen TRAIN artifact records no
   research field definitions; pass --train-fields/--train-fields-sha256 …".
   - **Action for root:** a v3 TRAIN artifact produced by the pre-T14 binary needs `--train-fields` in the
-    validation run. Alternatively, rerun TRAIN with this binary; with a warm cache that is cheap.
+    validation run.
+  - Rerunning TRAIN with this binary is the alternative, and cheap with a warm cache, but it changes the
+    artifact. It adds the record to the hashed `orientations.json`, so its SHA changes. Weights fit against the
+    old artifact then fail M1 and must be **refit** from the new TRAIN-only run's summary (corrected in fix
+    round 1).
 - **Recorded as** `summary.research_field_definitions_checked_against`, set to `frozen-TRAIN-artifact` or
   `train-fields-manifest`.
 
@@ -101,3 +105,53 @@ The tripwire `StrategyIcRunner.VmSourcesPinnedToSemanticsVersion` lives in `stra
 - **`ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWeights`** (updated). Its weights now carry
   fitter-style provenance naming the unweighted source's orientations. It asserts the two binding records:
   unweighted source means provenance equality; weighted source means the recipe pins the weights.
+
+## T14 fix round 1
+
+Branch `feat/mega-alpha-ic-validation-bind-fix1-20260927` in pool-4, one commit `43cc33f3` on root `5e36ed6b`. I
+did not build or run anything here (lane rule).
+- **Build:** `atx-impl-strategy-ic-tests` and `atx-equity-strategy-ic`.
+- **Filter:** `--gtest_filter=StrategyIcRunner.*`.
+- **CMake:** no change.
+
+### I1: strict M1 (root ruling)
+
+- **The weighted-source exemption is gone.**
+  - `frozen_weights_binding` now requires `provenance.orientations_sha256 == --orientations-sha256` for every
+    validation-only run with pinned weights.
+  - The fields pin check is unchanged.
+- **A weighted frozen TRAIN artifact is refused in `frozen_train`, with or without weights.** This is before any
+  payload, and also under `--plan-only`. Message: "frozen TRAIN artifact is a weighted run; validate from the
+  unweighted TRAIN run whose orientations the weights were fit on (the weights' provenance.orientations_sha256)".
+  - This replaces the old "validation must pin exactly the same --composition-weights" path, which now led nowhere.
+  - `FrozenTrain::weighted` and the `pinned_signs` parameter of `frozen_train` were removed.
+  - The `frozen-TRAIN-recipe-pins-these-weights` binding no longer exists.
+- **Shipped flow:** unweighted TRAIN run (orientations O) → T11 fitter → weights W (provenance names O) →
+  validation-only run with O + W.
+  - The fixture now asserts that O + W reproduces the weighted TRAIN run's validation bytes exactly
+    (`validation_combined.f64`, the finite mask, planned targets and daily IC), so no capability is lost.
+- **The laundering bypass is fixtured.** An all-zero-provenance fit is scored in a weighted TRAIN-only run, then
+  validated against that weighted artifact. It is refused in both plan-only and real mode.
+  - The all-zero `other_fit` case against the unweighted source still refuses.
+
+### Minors
+
+- **M3 (duplication).** One `weights_summary(cfg, pinned, binding)` helper now builds the `composition_weights`
+  record for both validation-only and joint runs.
+  - It includes `provenance_*`, null when absent.
+  - It derives the signs label from `pinned.signs` only.
+- **M1 (coverage).**
+  - The joint-run record `train-manifest-sha256;TRAIN-scored-in-this-run` is asserted on `weighted_source`.
+  - The weighted-source `same`, `without` and `other` legs are now refusals.
+  - The `frozen_field_definitions` refusals for non-object `definitions` and for a missing declared name are
+    fixtured.
+- **M2 (report).** The "rerun TRAIN" advice above now says the weights must be refit.
+  - Required order: final TRAIN-only run with a binary at or after T14 → fit W from that run's summary → ledger
+    W's SHA → the single validation-only run with that run's orientations + W.
+- **⚠️1 (outside scope, not changed).** A joint TRAIN+validation run with `--composition-weights` still applies
+  `train_manifest_sha256`-bound weights to validation without a provenance check. Its summary records
+  `binding: "train-manifest-sha256;TRAIN-scored-in-this-run"`.
+  - The deliverable's validation run must be validation-only.
+  - A NAV consumer can require `run_mode == "validation-only-frozen-TRAIN"` and
+    `composition_weights.binding == "provenance-orientations-equal-frozen-TRAIN-orientations-artifact"`.
+  - Refusing weights in joint runs would be a separate ruling.
