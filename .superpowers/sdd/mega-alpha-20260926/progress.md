@@ -46,6 +46,12 @@ efficiency/incremental progress to cut resource use.
   T5 pool-7 feat/mega-alpha-library-v2-20260926: library v2 = v1 48 + 48 price/volume (8 families).
   T6 pool-8 feat/mega-alpha-fields-20260926: prepare_research_fields.py (SI, IV/HV, earn, size).
   Planned: T4 wire neutralization into target/NAV; T7 runner --extra-fields; T8 library v3 (SI/IV).
+- T3 e4a869b7 -> b9cf4023; CMake 429cbe43. Build mega-t3-a 21.89s Jobs4, 3 TUs/2 links, provenance
+  429cbe43. atx-impl-strategy-target-tests 15/15 pass 0.145s (7 old + 8 new). Review dispatched.
+- T5 2c92d658 -> c47ffdaa: library v2 96 (v1 48 byte-identical + 8 new families). SHA 0c7f3059...;
+  recipe 93cd52ab... --check ok; native --plan-only: 96 compile, max slots 8, lookback 314, TRAIN
+  admitted 1,234,268,377 B. Concern: vec_avg member-masked -> mkt-based templates NaN unless member
+  whole window (review checking). Review dispatched. TRAIN run waits for T1 cache (180s cap).
 - Next: NAV backtest with declared missing-price policy (design agent), audit script review
   (agent), then construction (risk neutralization) + alpha expansion toward SR>=1.
 
