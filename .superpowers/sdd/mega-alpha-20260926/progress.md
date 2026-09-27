@@ -1,5 +1,26 @@
 # Active task: recent-data DSL ensemble
 
+## T36 review — Approved (0C/0I/5m) — Task T36: complete
+task-T36-review.md: spec ✅ (11 rate_stats fields; span refused in every build type via check_rates at the top of
+update_weights; fixed path unchanged; liquidity read once per session). Desk-check: no compile blocker.
+⚠️ (1) compile/run -> T37; (2) fixed v5 recipe pin d53f0c09 emulated -> T37 fixture run; (3) fixed-rate bytes T30 vs T36 on
+real data -> ruling below; (4) ruling "R-b" not in the ledger -> ratified below; (5) S2 capped>0 fixture data-dependent (minor).
+- Ruling (ratifies the lost T36 dispatch ruling R-b): NAV_d in the per-name rate = the pre-trade NAV of the decision session
+  (b.nav_pre), as implemented and disclosed in recipe/header text; declared before any per-name measurement -- cost if wrong:
+  none material (nav_pre vs nav_post differ by session-d trade costs, bps of NAV; rate scales NAV^-1/2).
+- Ruling (resolves ⚠️3, declared before the run): before the v5-1 build overwrites build-equity/bin, the root runs the R5'
+  reference cell (C_ew 24a6cc76, theta .05, dust .1, fixed, L 1; v5_train.sh nav flags verbatim) with the v5-0 exe b6b21d88
+  into build-equity/mega-nav-v5-ref-v50-check; after T37 the grid's reference cell (v5-1 exe) must be byte-identical in
+  recipe.json, summary.json and daily_modeled-1bn-stale5-v1+swap-fin-v1.csv; no statistic of the check run is read. Same
+  configuration as grid cell 1, so no extra trial -- cost if wrong: one extra 30 s bounded run.
+- Minors deferred to T41: (1) cache-coverage invariant only debug-asserted (nav.cpp:602; one-line NaN fallback to
+  liquidity_row); (2) NAV_d = nav_pre while the file's "decision-NAV dollars" is nav_post (ratified above); (3)
+  per_name_rate_declaration re-types T30's aim_partial text; (4) NavRateOptions duplicates NavReplayConfig's 5 rate fields;
+  (5) --rate-lambda CLI unexercised, per-name quantile serialization degenerate in the CLI fixture.
+- Task T36: complete (commits 98277c45..0fd7f435 in pool-3, review clean). Cherry-pick into pool-2 after the v5-0 check run.
+- T34c: t34c-v51-script-2 DONE (b2c957ff + fix d88638ce + report 8adfd75a); review-T34c.diff packaged; t34c-review dispatched.
+
+
 ## RESUMED 2026-09-27 16:21 — controller: Claude Opus 5.5 (SDD), goal prompt from the interim handoff §7
 Pool inspection: pool-3 clean, T36 committed 7c89bbd2 (code) + 0fd7f435 (report) on 98277c45 -> review-T36.diff packaged
 (base 98277c45, head 0fd7f435, report excluded from the diff), t36-review (Opus 5.5) dispatched. pool-8 clean, T34c committed
