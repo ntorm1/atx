@@ -107,6 +107,20 @@
   composite forms. Ruling: --min-names 1000 for v4 (fundamentals cover ~1,650 names/day; gates IC-date stats only).
   T24 fix round 2 sent (I1, ear window, drop composites, issuance_xbrl split check).
 
+- T24 fix r2: pool-7 604dc555 -> root (37 candidates; issuance_vendor split-safe Daniel-Titman adj; ear = latest
+  announcement 3-day CAR held <=126 sessions + s21; mgmt_sy/qmj_lite dropped; issuance_xbrl uncorrected (T20 lag-4
+  from latest filing reporting the period => split-consistent; T25 to verify AAPL 2020 / NVDA 2021)). pytest 36/36;
+  plan-only 1.449 GB. Library sha daa9663e. Scoped re-review dispatched (t24-rereview). v4_train.sh committed 656bbabf.
+- T20/T21 review: T20 spec PASS, Needs fixes 0C/1I/6m — I1 revenue concept priority prefers ASC 606 line over
+  `Revenues` total (sale_ttm/gp_ttm understated for mixed-revenue filers); no look-ahead path. T21 spec PASS,
+  Approved 0C/0I/3m (Task T21: complete pending T20 re-run). gp_ttm .365 structural (financials / no COGS line).
+  T20 fix round 1 -> pool-5 feat/mega-alpha-v4-fundevents-fix1-20260927 (pool-8 now T25). v4 TRAIN read HELD until
+  T20 fix + events/fields-v5 re-run + T24 re-review.
+
+- T24 re-review 1: spec PASS, Ready, all findings ADDRESSED; 3 new minors (issuance_vendor break-neutral only if
+  role factor-break steps match producer -> T25 check; seasonality text; ear keeps prior CAR if new CAR NaN).
+  Task T24: complete (3bb3fbf3/d7464792/604dc555; library daa9663e, 37 candidates). Checks relayed to T25.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
