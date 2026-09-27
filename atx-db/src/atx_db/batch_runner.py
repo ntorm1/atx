@@ -78,6 +78,7 @@ _KNOWN_STAGE_MODULES: dict[str, str] = {
     "bars_unit_correction": "atx_db.bars_unit_correction",
     "companyfacts_rebuild": "atx_db.companyfacts_rebuild",
     "identity_links_rebuild": "atx_db.identity_links_stage",
+    "submissions_rebuild": "atx_db.submissions_rebuild",
 }
 _RUN_STATUSES = ("open", "published", "abandoned")
 

@@ -1938,8 +1938,6 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_delisting_return_observations_vendor ON delisting_return_observations(provider, vendor_security_id_type, vendor_security_id, delist_date)",
         "CREATE INDEX IF NOT EXISTS idx_lake_export_files_run ON lake_export_files(export_run_id, object_name)",
         "CREATE INDEX IF NOT EXISTS idx_lake_export_files_object ON lake_export_files(object_name, exported_at)",
-        "CREATE INDEX IF NOT EXISTS idx_sec_submissions_security_date ON sec_submissions(security_id, filing_date)",
-        "CREATE INDEX IF NOT EXISTS idx_sec_submissions_accession ON sec_submissions(accession_number)",
         "CREATE INDEX IF NOT EXISTS idx_nasdaq_symbol_directory_symbol ON nasdaq_symbol_directory(symbol, as_of_date)",
         "CREATE INDEX IF NOT EXISTS idx_nasdaq_listing_events_symbol_date ON nasdaq_listing_events(symbol, effective_date)",
         "CREATE INDEX IF NOT EXISTS idx_nasdaq_listing_events_security_date ON nasdaq_listing_events(security_id, effective_date)",

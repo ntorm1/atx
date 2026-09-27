@@ -324,6 +324,9 @@ class ActivationOptions:
     companyfacts_receipts_dir: Path = Path("C:/atx/.superpowers/sdd/tier1-v2/receipts")
     submissions_batch_size: int = 50
     submissions_resume_from_run_id: str | None = None
+    submissions_mode: str = "staged"
+    submissions_staging_dir: Path = Path("data/staging/submissions/702fbcd8b4335bc64")
+    submissions_receipts_dir: Path = Path("C:/atx/.superpowers/sdd/tier1-v2/receipts")
     earnings_release_cache_dir: Path | None = None
     earnings_release_history_start: dt.date | None = None
     earnings_release_history_end: dt.date | None = None
@@ -347,6 +350,8 @@ class ActivationOptions:
     def __post_init__(self) -> None:
         if self.companyfacts_mode not in ("staged", "legacy"):
             raise ValueError("companyfacts_mode must be staged or legacy")
+        if self.submissions_mode not in ("staged", "legacy"):
+            raise ValueError("submissions_mode must be staged or legacy")
         if min(self.threads, self.reconciliation_shards, self.submissions_batch_size,
                self.earnings_release_candidate_batch_size, self.earnings_release_max_index_bytes,
                self.earnings_release_max_document_bytes) < 1 or self.earnings_release_request_timeout <= 0:
@@ -904,6 +909,8 @@ def stage_sec_bulk_download(store: DuckDBStore, options: ActivationOptions) -> S
 
 def stage_submissions_load(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Load SEC filing histories from the bulk submissions archive (offline)."""
+    if options.submissions_mode == "staged":
+        return _stage_submissions_staged(store, options)
     from .sec_submissions import SecSubmissionsBulkDataset, SecSubmissionsBulkOptions
 
     if not options.submissions_zip.is_file():
@@ -922,6 +929,59 @@ def stage_submissions_load(store: DuckDBStore, options: ActivationOptions) -> St
         raise ValueError("SEC submissions archive is missing referenced history; full stage is incomplete")
     return StageResult(rows=int(result.rows_loaded), detail={**result.details, "forms": "all",
                                                            "batch_size": options.submissions_batch_size})
+
+
+def _stage_submissions_staged(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .submissions_rebuild import STAGE_NAME
+    from .submissions_stage import ARCHIVE_SHA
+
+    if options.submissions_resume_from_run_id is not None:
+        raise ValueError("staged Submissions resumes from its build ledger, not a legacy dataset UUID")
+    # Same reviewed ACT admission contract; do not alter the frozen CF helper.
+    try:
+        guard = _companyfacts_parent_guard()
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("CompanyFacts", "Submissions")) from exc
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_slices.py"
+    if not script.is_file():
+        raise FileNotFoundError(script)
+    run_key = ARCHIVE_SHA[:16]
+    requested = {"staging_dir": str(options.submissions_staging_dir.resolve())}
+    receipts = options.submissions_receipts_dir.resolve()
+    receipts.mkdir(parents=True, exist_ok=True)
+    spec_file = receipts / f"{STAGE_NAME}-{run_key}.activation-spec.json"
+    if spec_file.exists() and json.loads(spec_file.read_text(encoding="utf-8")) != requested:
+        raise ValueError("staged Submissions activation spec differs from its frozen resume spec")
+    temporary = spec_file.with_name(spec_file.name + f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(requested, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, spec_file)
+    module_spec = importlib.util.spec_from_file_location("_atx_submissions_slices", script)
+    if module_spec is None or module_spec.loader is None:
+        raise RuntimeError("cannot import reviewed Submissions slice orchestrator")
+    runner = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(runner)
+    store.close()
+    try:
+        code = runner.main(["--db", str(options.db_path.resolve()), "--stage", STAGE_NAME,
+                            "--run-key", run_key, "--spec-json", str(spec_file), "--job-gb", "0.8", "--heavy",
+                            "--max-batches", "1", "--max-minutes", "1", "--max-slices", "3000",
+                            "--until-complete", "--finalize", "--duckdb-memory", "384MB", "--threads", "1",
+                            "--receipts-dir", str(receipts)])
+    except SystemExit as exc:
+        raise ActivationStageError("staged Submissions delegation refused",
+                                   StageResult(0, {"error": str(exc), "guard": guard, "run_key": run_key})) from exc
+    finally:
+        store.reopen()
+    if code != 0:
+        raise ActivationStageError("staged Submissions slice failed",
+                                   StageResult(0, {"exit_code": code, "guard": guard, "run_key": run_key}))
+    row = store.con.execute("SELECT status,note FROM build_runs WHERE stage=? AND run_key=?",
+                            [STAGE_NAME, run_key]).fetchone()
+    if not row or row[0] != "published":
+        raise ActivationStageError("staged Submissions did not publish", StageResult(0, {"run_key": run_key}))
+    detail = json.loads(row[1])
+    detail.update(guard=guard, receipts_dir=str(receipts))
+    return StageResult(int(detail["source_rows"]), detail)
 
 
 def stage_earnings_release_facts(store: DuckDBStore, options: ActivationOptions) -> StageResult:
@@ -1809,6 +1869,11 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--companyfacts-resume-from-run-id", default=None,
                         help="Verify and resume completed members of a failed or source-incomplete companyfacts dataset UUID.")
     parser.add_argument("--submissions-batch-size", type=int, default=50)
+    parser.add_argument("--submissions-mode", choices=("staged", "legacy"), default="staged")
+    parser.add_argument("--submissions-staging-dir", type=Path,
+                        default=Path("data/staging/submissions/702fbcd8b4335bc64"))
+    parser.add_argument("--submissions-receipts-dir", type=Path,
+                        default=Path("C:/atx/.superpowers/sdd/tier1-v2/receipts"))
     parser.add_argument("--earnings-release-cache-dir", type=Path)
     parser.add_argument("--earnings-release-history-start", type=dt.date.fromisoformat)
     parser.add_argument("--earnings-release-history-end", type=dt.date.fromisoformat)
@@ -1876,6 +1941,9 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         companyfacts_resume_from_run_id=args.companyfacts_resume_from_run_id,
         submissions_batch_size=args.submissions_batch_size,
         submissions_resume_from_run_id=args.submissions_resume_from_run_id,
+        submissions_mode=args.submissions_mode,
+        submissions_staging_dir=args.submissions_staging_dir,
+        submissions_receipts_dir=args.submissions_receipts_dir,
         earnings_release_cache_dir=args.earnings_release_cache_dir,
         earnings_release_history_start=args.earnings_release_history_start,
         earnings_release_history_end=args.earnings_release_history_end,

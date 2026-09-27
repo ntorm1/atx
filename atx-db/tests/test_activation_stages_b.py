@@ -112,6 +112,7 @@ def _seed_company_ticker(store) -> None:
 def _options(tmp_path: Path, downloader=None) -> ActivationOptions:
     return ActivationOptions(
         companyfacts_mode="legacy",
+        submissions_mode="legacy",
         db_path=tmp_path / "warehouse.duckdb",
         as_of_date=dt.date(2024, 1, 4),
         staging_dir=tmp_path / "staging",
@@ -206,6 +207,51 @@ def test_submissions_stage_is_idempotent(tmp_store, tmp_path, submissions_zip):
     stage_submissions_load(tmp_store, options)
     row = tmp_store.con.execute("SELECT count(*) FROM sec_submissions").fetchone()
     assert row is not None and row[0] == 1
+
+
+def test_staged_submissions_refuses_legacy_resume_before_opening_store(tmp_path):
+    options = ActivationOptions(**{**_options(tmp_path).as_dict(), "submissions_mode": "staged",
+                                   "submissions_resume_from_run_id": "old-loader-uuid"})
+    with pytest.raises(ValueError, match="build ledger"):
+        stage_submissions_load(None, options)
+
+
+def test_staged_submissions_requires_nested_guard(tmp_path, monkeypatch):
+    monkeypatch.delenv("ATX_GUARD_JOB", raising=False)
+    options = ActivationOptions(**{**_options(tmp_path).as_dict(), "submissions_mode": "staged"})
+    with pytest.raises(ValueError, match="Submissions.*non-HEAVY.*allow-nested-guards"):
+        stage_submissions_load(None, options)
+
+
+def test_staged_submissions_delegates_only_after_store_close(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from atx_db import activation, submissions_rebuild
+
+    state = {"closed": False, "reopened": False}
+    store = SimpleNamespace(
+        close=lambda: state.update(closed=True), reopen=lambda: state.update(reopened=True),
+        con=SimpleNamespace(execute=lambda *args: SimpleNamespace(
+            fetchone=lambda: ("published", json.dumps({"source_rows": 12})))),
+    )
+
+    def run(args):
+        assert state["closed"] and not state["reopened"]
+        assert args[args.index("--stage")+1] == submissions_rebuild.STAGE_NAME
+        for flag, value in (("--job-gb", "0.8"), ("--max-batches", "1"),
+                            ("--max-minutes", "1"), ("--duckdb-memory", "384MB"), ("--threads", "1")):
+            assert args[args.index(flag)+1] == value
+        assert "--heavy" in args and "--finalize" in args
+        return 0
+
+    monkeypatch.setattr(activation, "_companyfacts_parent_guard", lambda: {"verified_parent": True})
+    monkeypatch.setattr(activation.importlib.util, "spec_from_file_location",
+                        lambda *args: SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module: None)))
+    monkeypatch.setattr(activation.importlib.util, "module_from_spec", lambda spec: SimpleNamespace(main=run))
+    options = ActivationOptions(**{**_options(tmp_path).as_dict(), "submissions_mode": "staged",
+        "submissions_staging_dir": tmp_path / "submissions", "submissions_receipts_dir": tmp_path / "receipts"})
+    result = stage_submissions_load(store, options)
+    assert result.rows == 12 and state["reopened"]
 
 
 def test_companyfacts_stage_targets_all_sec_company_tickers_ciks(tmp_store, tmp_path, companyfacts_zip):
