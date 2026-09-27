@@ -253,6 +253,42 @@
 - v3 TRAIN (library 5d164ea1, role v2, fields v4 389e7fb4, binary >=914fd6f9): mega-v3f4-warm-run1 time-limit
   106/121 (36 miss); run2 COMPLETE 176s; run3 COMPLETE 160s / 509 MiB, 121/121 cache hits.
   => mega-v3f4-warm-3 is the unweighted TRAIN artifact for the v3 screen/fit.
+- v3 SCREEN (v3-admit-v1, TRAIN only; 121 ADMISSION TRIALS): 23 admitted, 54 reject_unstable, 44 reject_redundant,
+  0 turnover; admission 2f0c12b2. Weights: plain mv-shrink-0.9-nonneg-v1 db0a8b9a1b70d6ba81f7af6d1e1a7f8774f3a98ac6e1ecf2566a1610ce764aac
+  (23 nonzero, sum w tau .0676); netcost 7fbd257426664f486f43bb996d071478ec7f4107ff6bbb23244555cf1f37a723 (11 nonzero, .0385).
+  +2 composition trials. Weighted TRAIN runner: plain 123s/511MiB combined 98f13b95; netcost 126s combined f0b1dc70.
+- v3 TRAIN NAV GRID (8 construction trials; neut price-risk-v1, c1 f1; S2 x swap-fin-v1 net SR / HAC t / tau mean,p95):
+    plain   b0 1.409/2.21/.101,.125  b.5 1.611/2.48/.067,.097  b1 1.807/2.79/.047,.067  b2 1.105/1.91/.027,.048
+    netcost b0 1.570/2.57/.044,.062  b.5 1.710/2.79/.020,.031  b1 1.646/2.74/.014,.022  b2 1.396/2.33/.013,.033
+  All meet daily limits. Netting ratio (band 0, S2): plain .1007/.0676 = 1.49; netcost .0436/.0385 = 1.13.
+  SELECTED by preregistered rule (max S2 x swap-fin-v1 net SR within limits): PLAIN, BAND 1/N.
+  TRAIN (in-sample) selected: S1 net 2.364; S2 swap-fin 1.807 (gross 2.741, mu 4.61%/yr, vol 2.55%, MDD 3.6%,
+  years 2020 +10.1% / 2021 -0.7% / 2022 +4.8%); stresses S2 flat-300 1.396, S2 engine-tiers 1.702; S3 see summary.
+  Capacity: 83,670 of 129,346 fills capped at 1% ADV (65%), participation max .010, unfilled $20.5bn cumulative.
+  Financing (3y): long $5.14M, short $8.59M (gc 5.02 / warm 2.85 / special .72), short$ share gc .80 warm .19
+  special .011; blocked short name-decisions 22,229; missing-predictor member decisions 17,146.
+
+## FREEZE v3-daily-2026-09-27 (declared before any validation run of this configuration)
+- library pv_fields_ic121_v3 5d164ea115c633677dae59de975c24c4882ee05430d03a7e1bafa6bc591cb9f8
+- TRAIN role v2 210fff9687aa6b16e74c65104d77a916d708dca6986e77b06bac27556c48d1de; TRAIN fields v4
+  389e7fb4993ca577acca6b22101a76b9f86ec903340627f410293c73060b4bd8
+- VALIDATION role v1 0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7; validation fields v4
+  2691dcc55e60918a71563ff9eb9e3c009e1d60f54fc52041cbcb62840eea9073 (producer blob f083ef73, file sha 0d0eff53)
+- frozen unweighted TRAIN artifact build-equity/mega-v3f4-warm-3: orientations.json
+  33bc0f63e16869ee11716cc2e47c10b6be4638731ee74d667c7b37926d766c22, summary 9c14ad0056d17fc01d3f450458e7ad46d4666c07057bf9429ff93e3c20775c26
+- admission v3-admit-v1 2f0c12b2...; weights mv-shrink-0.9-nonneg-v1 db0a8b9a1b70d6ba81f7af6d1e1a7f8774f3a98ac6e1ecf2566a1610ce764aac
+  (signs pinned in file; fitter sha fbfd122b)
+- construction: nav --rule baseline-v1 --cadence 1 --trade-fraction 1 --neutralize price-risk-v1 --band-multiple 1
+  --daily-turnover-mean-max .20 --daily-turnover-p95-max .30 --max-bytes 1073741824, --fields validation v4
+- scenarios: primary S2 modeled-1bn-stale5-v1 x swap-fin-v1; stresses S2 x flat-300-v0, S2 x engine-tiers-v1;
+  S1/S3 x swap-fin reported
+- binaries: atx-equity-strategy-ic.exe 25939b78320baeb5a5fdca86fffb80066554dd9563058db0c50b2326f09f1ed1 (source 914fd6f9);
+  atx-equity-strategy-targets.exe 4642dd37f14fa3fd1d3946f9876a3c5ffccb5507a57c7f86b7b02f4cbab4d47a (source ad6d7682+)
+- T15 (runner perf) parked unimported until after this validation run (one binary across the freeze).
+- Trial counts to date (TRAIN only): admission 48 (v1) + 121 (v3); composition 4 (v1 T9 fit, v1r2 fit, v3 plain,
+  v3 netcost) + 7 earlier study methods; construction 2 (v1 plain/neut) + 4 (v1 band grid) + 8 (v3 grid).
+  Validation: prior disclosed use of 2023-24 target-proxy numbers for the v3 monthly blend (earlier session);
+  this is validation run #1 for any daily NAV configuration.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
