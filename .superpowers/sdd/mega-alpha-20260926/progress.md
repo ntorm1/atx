@@ -107,6 +107,12 @@
   pretrade_gross_dollars + one_way_turnover_gmv, daily_turnover_gmv stats, ceiling flags). Build mega-t4-a
   19.1s Jobs4 5 TUs/3 links; target tests 32/32. Review dispatched (t4-review). T10 sent to t2-nav.
   T4 concern: exposures recomputed from scratch per decision, ~20-30 s per replay pass at N=5600.
+- T7 fix r1: pool-4 c942afea -> root ccd05314 (test-only: range-for over destroyed JSON temporaries, UB).
+  Build mega-t7-fix1 16.6s; IC tests 54/54. T7 fix round 1/5 (4 addressed). T7+T1-fix review dispatched
+  (t7-review, package review-T7.diff).
+- T11 review: spec PASS, Needs fixes, 0C/1I/7m. I1 fitter reads only cache/<train-sha>/ but runner writes
+  field candidates (51/121 in v3) to ROOT/<fields-sha>/ and non-dev builds to DIR/<vm_identity>/.
+  T11 fix round 1 sent (I1 + M1 fitter-script sha in per-candidate key).
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 

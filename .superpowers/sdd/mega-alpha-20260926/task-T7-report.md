@@ -223,3 +223,83 @@ producer's keys, including the PIT flags.
    ≤ 336 there. Root should run `--plan-only` on the real roles first.
 5. **The recipe changes when fields are pinned but unused.** That follows the brief. If root prefers "only when
    loaded", it is a one-line change in `run_ic`/`expect_frozen_fields`.
+
+## Fix round 1
+
+Status: **DONE** (root cause found by reading the code; the fix is not compiled here). Commit `c942afea`
+test(ic-runner): stop iterating destroyed JSON temporaries [mega T7 fix 1]. It changes only
+`atx-impl/tests/strategy_ic_runner_test.cpp`. The runner itself is not affected.
+
+### Root cause
+
+Four new fixtures used a range-for over a member of a temporary:
+`for (const auto& x : read_json(path).at("key"))`.
+
+C++20 lowers this to `auto&& __range = read_json(path).at("key");`. That binds a reference *into* the
+`Json` returned by `read_json`. The temporary is destroyed at the end of that full-expression: no
+lifetime extension applies through a member-function call, and only C++23 P2718 fixes this. The loop
+then walks freed nlohmann storage. The first `row.at("sign")` / `role_result.at(...)` hits a node whose
+type tag now reads as a number, so it throws `type_error.304 "cannot use at() with number"`. This is
+undefined behaviour, so it could equally have crashed or passed.
+
+Exact throwing lines at `d4992a32` (identical in root's imports, since the test file was not otherwise
+changed):
+
+| Test | Line | Throwing statement |
+|---|---|---|
+| ExtraFieldsResolveByNameAndMatchHandComputedSignals | :907 | `for (row : read_json(output/orientations.json).at("candidates")) EXPECT_EQ(row.at("sign"),1)` |
+| LibraryDeclaringMktRetRunsOnlyWhenFieldsSupplyIt | :1127-1128 | `for (role_result : read_json(output/summary.json).at("roles")) … role_result.at("research_fields")` |
+| PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContribution | :1254 | `for (row : read_json(signed/orientations.json).at("candidates")) … row.at("sign")` |
+| CandidateCacheIsScopedByVmIdentityAndRefusesForeignSidecars | :1303-1304 | `for (role_result : read_json(other/summary.json).at("roles")) … role_result.at("candidate_cache")` |
+
+### Fix
+
+Each document is now parsed into a named local (`orientations`, `summary`, `other_summary`) and the
+loop iterates that local.
+
+Checked for any remaining instances:
+- No other range-for over a temporary remains in the test file.
+- No `auto&` binds to `read_json(...).at(...)`.
+- The runner has none of either.
+
+Function-argument uses such as `EXPECT_EQ(read_json(...).at(k), v)` and
+`stable_role(read_json(...).at(..))` are safe: the temporary lives until the end of the full-expression,
+and `stable_role` copies.
+
+### Cache path rule for the TRAIN weight fitter (T9/T11)
+
+Inputs:
+- `DIR`: the runner's `--candidate-cache`.
+- `R`: the TRAIN role manifest SHA-256 (`--train-sha256`).
+- `F`: the TRAIN fields manifest SHA-256 (`--train-fields-sha256`, the sha of `<fields dir>/manifest.json`).
+  It exists only when fields were pinned.
+- `I`: the runner build's VM identity.
+
+1. **Root.** `I` is `dslvm<version>_<compiler><fp-flavor>`, e.g. `dslvm1_clang18.1`. The run publishes it as
+   `summary.json roles[i].candidate_cache.vm_identity` (plan-only: `candidate_cache[i].vm_identity`), and every
+   new sidecar records it as `vm_identity`.
+   - `ROOT = DIR` if `I == "dslvm1_clang18.1"` (root's dev build).
+   - Otherwise `ROOT = DIR/<I>`.
+2. **Entry directory for candidate `id`.**
+   - If the candidate's compiled DSL reads any field other than `close`/`raw_close`/`volume` (a "field
+     candidate"; v2's `mkt_ret` users), the entry directory is `E = ROOT/<F>`.
+   - Otherwise `E = ROOT/<R>`.
+3. **Files.** `E/<id>.json` (sidecar, the commit record) and `E/<id>.f64` (date-major little-endian f64,
+   role dates × instruments).
+4. **Checks.** The sidecar must have:
+   - `role_manifest_sha256 == R`;
+   - `fields_manifest_sha256 == F` for a field candidate, and the key absent for a base candidate;
+   - `vm_identity == I` (a keyless sidecar is valid only under `I == dslvm1_clang18.1` and with
+     `engine_git_sha` ∈ {`429cbe43…`, `6d85ac2a…`});
+   - plus the existing schema, id, `dsl_sha256`, `eval_mode`, `layout` and geometry checks, and
+     `payload_sha256` == the sha of the `.f64`.
+
+**Recommended implementation, with no DSL parsing.** Read `ROOT/<R>` and `ROOT/<F>` straight from the
+TRAIN run's `summary.json`:
+- `roles[train].candidate_cache.directory` is `ROOT/<R>`.
+- `roles[train].candidate_cache.fields_directory` is `ROOT/<F>`. It is present only if the library
+  references extra fields.
+
+For each candidate, open `directory/<id>.json`, else `fields_directory/<id>.json`. Exactly one should
+exist. Where it was found must agree with the sidecar's `fields_manifest_sha256` presence (and value `F`).
+The sidecar's `research_fields` lists the extra fields that candidate read.
