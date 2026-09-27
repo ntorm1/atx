@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Detect and repair vendor factor re-anchoring breaks in a recent-research role (rule factor-break-v1).
+"""Detect and repair vendor factor re-anchoring breaks in a recent-research role (factor-break-v1/v2).
 
 ``--scan-only`` is the QA scan (per-session counts, mass sessions, what the repair would do); it
 writes nothing unless ``--csv`` names a new file. Without it the tool writes a NEW role directory
@@ -32,20 +32,52 @@ recorded in the output manifest). Logs throughout.
                        forward split and raises it only for a later consolidation (>= SPLIT_RATIO);
     repaired           every other step: all factor decreases and every split-like increase whose
                        raw close did not follow.
+  Premise limit (kept_distribution): a later consolidation COMBINED with later dividends or forward
+  splits can net the re-anchoring step to k in (1, SPLIT_RATIO); such a step is kept and its break
+  remains. On TRAIN the repaired increases have k >= 1.95 and the kept distributions k <= 1.030; the
+  one questionable kept row (id 35139, k 1.030 with raw +0.58%) needs the vendor returnFactor.
 * Repair: for a repaired step (p, t) of name j with k = f_t/f_p, close[0:t, j] *= k. The adjusted
   return across the step then equals the raw return (to rounding). Sessions >= t keep the vendor's
   current anchoring, so roles cut from the same source stay level-consistent after the break.
 
-Thresholds (first principles, not outcomes): CELL_STEP 1% is above any ordinary quarterly cash
-dividend (a 1% single payment is a >= 4%/yr yield) and far below any split (>= ln 1.2); a genuine
-action moves the raw close against the factor, so it is a jump cell only when the name's own move
-exceeds about half the step plus 0.5%. Legitimate jump cells are therefore bounded by the high-
-yield ex-dates of one session (tens at a quarter-end peak), while a re-anchoring hits every name
-with a later corporate action (hundreds to thousands): MASS_MIN_CELLS 50. NOISE 1e-9 is atx-db's
-FACTOR_NOISE (a constant factor gives |s| ~ 1e-16 here). SPLIT_RATIO 1.25 (the smallest common
-split, 5:4; VA1's ARTIFACT_SESSION_MIN_RISE) and the |s|/2 raw-follow rule are VA1 v2's artifact-
-session veto, mirrored for increases. MAX_GAP_DAYS 10 is VA1's COVERAGE_MAX_GAP_DAYS. BIG_STEP 0.10
-only reproduces nav_recon section E's big/small columns.
+v1 thresholds: CELL_STEP 1% is above any ordinary quarterly cash dividend (a 1% single payment is a
+>= 4%/yr yield) and below any split or stock distribution of 6:5 (ln 1.2) or more; a genuine action
+moves the raw close against the factor, so it is a jump cell only when the name's own move exceeds
+about half the step plus 0.5%. MASS_MIN_CELLS 50 was set for "tens at a quarter-end peak"; the real
+legitimate peaks are 44 (TRAIN 2022-12-29) and 47 (validation), so v1's legitimate-side margin is
+about 6%, not the 2x first claimed. v1 is kept unchanged only to reproduce roles built with it
+(TRAIN role v2); new roles use v2.
+NOISE 1e-9 is atx-db's FACTOR_NOISE (a constant factor gives |s| ~ 1e-16 here). SPLIT_RATIO 1.25
+(5:4; VA1's ARTIFACT_SESSION_MIN_RISE) and the |s|/2 raw-follow rule are VA1 v2's artifact-session
+veto, mirrored for increases; a 6:5 forward split on a mass session is kept (kept_distribution),
+while a 5:6 consolidation there (raw +20% < 25%) would be repaired, a declared (rare) limit.
+MAX_GAP_DAYS 10 is VA1's COVERAGE_MAX_GAP_DAYS. BIG_STEP 0.10 only reproduces nav_recon section E's
+big/small columns.
+
+Rule factor-break-v2 (fix round 1; declared before any v2 measurement). Steps, classification and
+repair are v1's; only the detector and the post-repair gate change.
+
+* Unexplained step: a step ending at t (<= MAX_GAP_DAYS) that no corporate action explains, i.e.
+  exactly the classification's `repaired` predicate: s < -NOISE, or s >= ln SPLIT_RATIO, and the raw
+  close did not follow (the kept_split_follow test fails).
+* Detector: session t is MASS when unexplained(t) >= UNEXPLAINED_MIN_STEPS and
+  unexplained(t) >= UNEXPLAINED_MIN_SHARE x steps(t).
+* Post-repair gate: no unexplained step remains on a repaired session and no session is MASS.
+
+Why the legitimate baseline is structurally ~0 (no count from either role was used). With f =
+adjusted/raw, every distribution raises f on its ex-date (cash dividend, stock dividend, forward
+split, spin-off, rights: the raw close falls, the adjusted close is continuous). Only a
+consolidation lowers f, and then the raw close rises by the same ratio on the same bar, which the
+follow test explains. A legitimate unexplained step therefore needs a vendor error: a split factor
+dated a session away from its price move (VA1's ARCM x5 one session early), or a reversed
+distribution. These are independent single-name events, far below one per session.
+UNEXPLAINED_MIN_STEPS 20: even at a generous one isolated error per session, a Poisson count
+reaches 20 with probability < 1e-18 per session (< 1e-14 over a 4096-session role), so isolated
+errors never trip it, including in small universes. UNEXPLAINED_MIN_SHARE 1%: a re-anchoring moves
+f for every name with any corporate action between the two anchors, and dividend payers alone are a
+large share of listed names, so even anchors one quarter apart move tens of percent of the cross-
+section. 1% makes the rule universe-size invariant and still flags a re-anchoring 20x smaller than
+that. A cluster of genuine ex-dates of any size is not unexplained, so it can never trip v2.
 
 Python 3.12 + numpy. Reads only the role directory. Peak memory ~ all payloads + one close copy.
 Exit codes: 0 done; 2 refused (nothing published); 3 no mass session and --allow-noop not given.
@@ -93,6 +125,23 @@ RULE_STATEMENT = (
     "mass session: >= mass_min_cells jump cells. On a mass session b every step with p<b<=t and |s|>noise_ln is "
     "kept_gap (gap > max_gap_calendar_days), kept_split_follow (s<0 and r>=max(|s|/2, ln split_ratio), or s>0 and "
     "-r>=max(s/2, ln split_ratio)), kept_distribution (0<s<ln split_ratio), else repaired: close[0:t, j] *= f_t/f_p.")
+# factor-break-v2 (fix round 1): v1's steps, classification and repair; unexplained-step detector and gate.
+RULE_V2 = "factor-break-v2"
+UNEXPLAINED_MIN_STEPS = 20
+UNEXPLAINED_MIN_SHARE = 0.01
+PARAMETERS_V2 = {"noise_ln": NOISE, "split_ratio": SPLIT_RATIO, "max_gap_calendar_days": MAX_GAP_DAYS,
+                 "unexplained_min_steps": UNEXPLAINED_MIN_STEPS, "unexplained_min_share_of_steps": UNEXPLAINED_MIN_SHARE,
+                 "cell_step_ln_scan_columns_only": CELL_STEP, "cell_excess_ln_scan_columns_only": CELL_EXCESS,
+                 "big_step_ln_scan_columns_only": BIG_STEP, "max_repaired_return_error_ln": MAX_RETURN_ERROR}
+RULE_STATEMENT_V2 = (
+    "step = consecutive present observations p<t of a name <= max_gap_calendar_days apart; s=ln(f_t/f_p), f=close/raw; "
+    "r=ln(raw_t/raw_p). follow: s<0 and r>=max(|s|/2, ln split_ratio), or s>0 and -r>=max(s/2, ln split_ratio). "
+    "unexplained step: step ending at t with (s<-noise_ln or s>=ln split_ratio) and not follow. mass session: "
+    "unexplained >= unexplained_min_steps and unexplained >= unexplained_min_share_of_steps x steps. On a mass session "
+    "b every step with p<b<=t and |s|>noise_ln is kept_gap (gap > max_gap_calendar_days), kept_split_follow (follow), "
+    "kept_distribution (0<s<ln split_ratio), else repaired: close[0:t, j] *= f_t/f_p. Post-repair gate: no unexplained "
+    "step on a repaired session and no mass session.")
+RULES = {"v1": (RULE, RULE_STATEMENT, PARAMETERS), "v2": (RULE_V2, RULE_STATEMENT_V2, PARAMETERS_V2)}
 
 
 class Refusal(Exception):
@@ -195,11 +244,23 @@ def load_role(role: Path, expected_sha256: str, names) -> dict:
 
 
 # ----------------------------------------------------------------------------- rule
+def raw_followed(s, r):
+    """The kept_split_follow test: a split-like step whose raw close moved against the factor."""
+    floor = np.maximum(np.abs(s) / 2, math.log(SPLIT_RATIO))
+    return ((s < 0) & (r >= floor)) | ((s > 0) & (-r >= floor))
+
+
+def unexplained(s, r):
+    """v2: a factor step no corporate action explains, which is the classification's `repaired` predicate."""
+    return ((s < -NOISE) | (s >= math.log(SPLIT_RATIO))) & ~raw_followed(s, r)
+
+
 def session_stats(close, raw, present, days) -> dict:
     """Per-session counts over steps ending at t (see module docstring). big/small are nav_recon
-    section E's columns (adjacent sessions only); f1_prev/f1 count factors exactly 1.0."""
+    section E's columns (adjacent sessions only); f1_prev/f1 count factors exactly 1.0; jump is the
+    v1 detector and unexpl the v2 detector."""
     D, N = close.shape
-    keys = ("present", "steps", "jump", "big", "small", "dec", "inc", "long_gap", "f1_prev", "f1")
+    keys = ("present", "steps", "jump", "big", "small", "dec", "inc", "long_gap", "f1_prev", "f1", "unexpl")
     out = {k: np.zeros(D, np.int64) for k in keys}
     last = np.full(N, -1, np.int64)
     lc, lr = np.full(N, np.nan), np.full(N, np.nan)
@@ -226,6 +287,7 @@ def session_stats(close, raw, present, days) -> dict:
             out["long_gap"][t] = np.count_nonzero(hp & ~step & (abs_s > NOISE))
             out["f1_prev"][t] = np.count_nonzero(step & (lc == lr))
             out["f1"][t] = np.count_nonzero(pt & (ct == rt))
+            out["unexpl"][t] = np.count_nonzero(step & unexplained(s, r))
             last[pt] = t
             lc[pt], lr[pt] = ct[pt], rt[pt]
     return out
@@ -244,8 +306,7 @@ def crossing_steps(close, raw, present, days, b: int) -> dict:
     k = (ct / rt) / (cp / rp)
     gap = days[t] - days[p]
     split = math.log(SPLIT_RATIO)
-    half = np.abs(s) / 2
-    follow = ((s < 0) & (r >= np.maximum(half, split))) | ((s > 0) & (-r >= np.maximum(half, split)))
+    follow = raw_followed(s, r)
     action = np.where(np.abs(s) <= NOISE, 0,
              np.where(gap > MAX_GAP_DAYS, KEPT_GAP,
              np.where(follow, KEPT_FOLLOW,
@@ -255,10 +316,21 @@ def crossing_steps(close, raw, present, days, b: int) -> dict:
             "k": k[keep], "gap": gap[keep], "action": action[keep]}
 
 
-def analyse(role: dict) -> dict:
+def unexplained_threshold(steps) -> np.ndarray:
+    """v2 per-session MASS threshold: at least UNEXPLAINED_MIN_STEPS and UNEXPLAINED_MIN_SHARE of steps."""
+    return np.maximum(UNEXPLAINED_MIN_STEPS, np.ceil(UNEXPLAINED_MIN_SHARE * np.asarray(steps)).astype(np.int64))
+
+
+def mass_sessions(stats: dict, rule: str) -> list[int]:
+    if rule == "v1":
+        return [int(b) for b in np.flatnonzero(stats["jump"] >= MASS_MIN_CELLS)]
+    return [int(b) for b in np.flatnonzero(stats["unexpl"] >= unexplained_threshold(stats["steps"]))]
+
+
+def analyse(role: dict, rule: str = "v1") -> dict:
     close, raw, present, days = role["close"], role["raw"], role["present"], role["days"]
     stats = session_stats(close, raw, present, days)
-    mass = [int(b) for b in np.flatnonzero(stats["jump"] >= MASS_MIN_CELLS)]
+    mass = mass_sessions(stats, rule)
     steps, seen = [], np.empty(0, np.int64)
     for b in mass:
         # A step that crosses several mass sessions is one step: listed (and repaired) once, under the
@@ -268,7 +340,8 @@ def analyse(role: dict) -> dict:
         fresh = ~np.isin(key, seen)
         steps.append({k: (v[fresh] if isinstance(v, np.ndarray) else v) for k, v in x.items()})
         seen = np.concatenate((seen, key[fresh]))
-    return {"stats": stats, "mass": mass, "steps": steps}
+    return {"stats": stats, "rule": rule, "mass": mass, "steps": steps,
+            "mass_by_rule": {r: mass_sessions(stats, r) for r in RULES}}
 
 
 def apply_repair(close, steps) -> np.ndarray:
@@ -283,8 +356,9 @@ def apply_repair(close, steps) -> np.ndarray:
     return new
 
 
-def verify_repair(role: dict, new: np.ndarray, steps) -> dict:
-    """Refuses unless the repair is exact, local, contract-preserving and leaves no mass session."""
+def verify_repair(role: dict, new: np.ndarray, steps, rule: str = "v1") -> dict:
+    """Refuses unless the repair is exact, local, contract-preserving and leaves no mass session
+    (v2: and no unexplained step on a repaired session)."""
     close, raw, present = role["close"], role["raw"], role["present"]
     if not np.all(np.isfinite(new[present]) & (new[present] > 0)) or not np.all(np.isnan(new[~present])):
         raise Refusal("repaired close breaks the present => finite positive / absent => NaN contract")
@@ -304,51 +378,71 @@ def verify_repair(role: dict, new: np.ndarray, steps) -> dict:
     if np.any(~same & ~allowed):
         raise Refusal("repair changed a cell outside the repaired names' pre-break history")
     post = session_stats(new, raw, present, role["days"])
-    if np.any(post["jump"] >= MASS_MIN_CELLS):
-        raise Refusal("a mass session remains after repair")
+    if rule == "v1":
+        if np.any(post["jump"] >= MASS_MIN_CELLS):
+            raise Refusal("a mass session remains after repair")
+    else:
+        left = {int(x["session"]): int(post["unexpl"][x["session"]]) for x in steps if post["unexpl"][x["session"]]}
+        if left:
+            raise Refusal(f"unexplained factor steps remain on repaired sessions after repair: {left}")
+        if mass_sessions(post, "v2"):
+            raise Refusal("a factor-break-v2 mass session remains after repair")
     return {"post": post, "worst": worst, "changed_cells": int(np.count_nonzero(~same))}
 
 
 # ----------------------------------------------------------------------------- report
 def print_scan(role: dict, res: dict, top: int) -> None:
     st, days, D = res["stats"], role["days"], role["D"]
-    mass = set(res["mass"])
-    print(f"{RULE} scan  role {role['dir'].resolve()}")
+    m1, m2 = set(res["mass_by_rule"]["v1"]), set(res["mass_by_rule"]["v2"])
+    thr = unexplained_threshold(st["steps"])
+    print(f"factor-break scan (repair rule {RULES[res['rule']][0]})  role {role['dir'].resolve()}")
     print(f"manifest_sha256 {role['manifest_sha256']}  dates {D}  instruments {role['N']}  "
           f"sessions {iso(days[0])}..{iso(days[-1])}")
-    print(f"detector: jump = step with |dlog f|>{CELL_STEP} & |dlog adj|>|dlog raw|+{CELL_EXCESS} "
+    print(f"v1 detector: jump = step with |dlog f|>{CELL_STEP} & |dlog adj|>|dlog raw|+{CELL_EXCESS} "
           f"(consecutive present obs <= {MAX_GAP_DAYS} days apart); MASS = jump >= {MASS_MIN_CELLS}")
+    print(f"v2 detector: unexpl = step with a factor decrease (< -{NOISE:g}) or split-like increase "
+          f"(>= ln {SPLIT_RATIO}) whose raw close did not follow; MASS = unexpl >= max({UNEXPLAINED_MIN_STEPS}, "
+          f"ceil({UNEXPLAINED_MIN_SHARE:g} x steps)) (thr column)")
     print("columns: big/small = nav_recon section E (adjacent sessions); dec/inc = factor steps beyond "
           f"{NOISE:g}; longgap = factor steps across > {MAX_GAP_DAYS} days; f1prev/f1 = share of steps whose "
           "prior-obs factor is exactly 1 / share of present names with factor exactly 1")
     years = (days.astype("datetime64[D]").astype("datetime64[Y]").astype(np.int64))
     year_start = {0} | {int(t) for t in np.flatnonzero(np.diff(years) != 0) + 1}
-    top_rows = {int(t) for t in np.argsort(-st["jump"], kind="stable")[:top] if st["jump"][t] > 0}
-    rows = sorted(mass | top_rows | year_start | {int(t) for t in np.flatnonzero(st["big"] > 0)})
+    top_rows = {int(t) for key in ("jump", "unexpl")
+                for t in np.argsort(-st[key], kind="stable")[:top] if st[key][t] > 0}
+    rows = sorted(m1 | m2 | top_rows | year_start | {int(t) for t in np.flatnonzero(st["big"] > 0)})
     print(f"{'session':10} {'present':>7} {'steps':>6} {'jump':>5} {'big':>4} {'small':>5} {'dec':>5} "
-          f"{'inc':>5} {'longgap':>7} {'f1prev':>6} {'f1':>5}  flag")
+          f"{'inc':>5} {'longgap':>7} {'f1prev':>6} {'f1':>5} {'unexpl':>6} {'thr':>4}  flag")
     for t in rows:
         f1p = st["f1_prev"][t] / st["steps"][t] if st["steps"][t] else float("nan")
         f1 = st["f1"][t] / st["present"][t] if st["present"][t] else float("nan")
-        flag = "MASS" if t in mass else ("year-start" if t in year_start else "")
+        flag = " ".join(x for x, on in (("MASS-v1", t in m1), ("MASS-v2", t in m2), ("year-start", t in year_start))
+                        if on)
         print(f"{iso(days[t]):10} {st['present'][t]:7d} {st['steps'][t]:6d} {st['jump'][t]:5d} {st['big'][t]:4d} "
               f"{st['small'][t]:5d} {st['dec'][t]:5d} {st['inc'][t]:5d} {st['long_gap'][t]:7d} {f1p:6.3f} "
-              f"{f1:5.3f}  {flag}")
-    other = np.array([st["jump"][t] if t not in mass else 0 for t in range(D)])
-    worst = int(np.argmax(other))
+              f"{f1:5.3f} {st['unexpl'][t]:6d} {thr[t]:4d}  {flag}")
     active = st["steps"] > 0
-    print(f"summary: sessions with >=1 jump cell {int(np.count_nonzero(st['jump']))} of {D}; median jump/session "
-          f"{np.median(st['jump'][active]) if active.any() else 0:.0f}; max outside mass sessions {int(other[worst])} "
+    other = np.array([st["jump"][t] if t not in m1 else 0 for t in range(D)])
+    worst = int(np.argmax(other))
+    print(f"summary v1: sessions with >=1 jump cell {int(np.count_nonzero(st['jump']))} of {D}; median jump/session "
+          f"{np.median(st['jump'][active]) if active.any() else 0:.0f}; max outside v1 mass sessions {int(other[worst])} "
           f"on {iso(days[worst])} (threshold {MASS_MIN_CELLS})")
+    other2 = np.array([st["unexpl"][t] if t not in m2 else 0 for t in range(D)])
+    worst2 = int(np.argmax(other2))
+    print(f"summary v2: sessions with >=1 unexplained step {int(np.count_nonzero(st['unexpl']))} of {D}; unexplained "
+          f"steps outside v2 mass sessions {int(other2.sum())}; max outside {int(other2[worst2])} on "
+          f"{iso(days[worst2])} (threshold there {int(thr[worst2])})")
     big = st["big"]
     print(f"summary: sessions with >=1 big {int(np.count_nonzero(big))}; big cells total {int(big.sum())}, "
           f"excluding the top session {int(big.sum() - big.max())}; longgap steps total {int(st['long_gap'].sum())}")
+    shown = {int(x["session"]) for x in res["steps"]}
     for x in res["steps"]:
         print_classification(role, x, top)
-    if res["mass"]:
-        print(f"verdict: MASS {len(res['mass'])} session(s): {', '.join(iso(days[b]) for b in res['mass'])}")
-    else:
-        print("verdict: CLEAN (no mass session)")
+    for b in sorted((m1 | m2) - shown):  # the other rule's mass sessions: what the repair would do there
+        print_classification(role, crossing_steps(role["close"], role["raw"], role["present"], days, b), top)
+    for name, m in (("v1", m1), ("v2", m2)):
+        print(f"verdict {RULES[name][0]}: " + (f"MASS {len(m)} session(s): {', '.join(iso(days[b]) for b in sorted(m))}"
+                                              if m else "CLEAN (no mass session)"))
 
 
 def print_classification(role: dict, x: dict, top: int) -> None:
@@ -384,12 +478,14 @@ def write_exclusive(path: Path, data: bytes) -> None:
 
 
 def scan_csv(path: Path, role: dict, res: dict) -> None:
-    st, mass = res["stats"], set(res["mass"])
+    st = res["stats"]
+    m1, m2 = set(res["mass_by_rule"]["v1"]), set(res["mass_by_rule"]["v2"])
+    thr = unexplained_threshold(st["steps"])
     keys = ("present", "steps", "jump", "big", "small", "dec", "inc", "long_gap", "f1_prev", "f1")
-    lines = ["session," + ",".join(keys) + ",mass"]
+    lines = ["session," + ",".join(keys) + ",unexplained,v2_threshold,mass_v1,mass_v2"]
     for t in range(role["D"]):
         lines.append(iso(role["days"][t]) + "," + ",".join(str(int(st[k][t])) for k in keys)
-                     + ("," + ("1" if t in mass else "0")))
+                     + f",{int(st['unexpl'][t])},{int(thr[t])},{int(t in m1)},{int(t in m2)}")
     write_exclusive(path, ("\n".join(lines) + "\n").encode("ascii"))
 
 
@@ -421,9 +517,10 @@ def publish_manifest(path: Path, value: dict) -> bytes:
 
 
 def repair(role: dict, res: dict, out: Path) -> tuple[str, dict]:
-    steps, days = res["steps"], role["days"]
+    steps, days, rule = res["steps"], role["days"], res["rule"]
+    rule_id, statement, parameters = RULES[rule]
     new = apply_repair(role["close"], steps)
-    check = verify_repair(role, new, steps)
+    check = verify_repair(role, new, steps, rule)
     new_close = new.astype("<f8", copy=False).tobytes()
     if not res["mass"] and new_close != role["blobs"]["close.f64"]:
         raise Refusal("no-op repair changed close bytes")
@@ -459,11 +556,16 @@ def repair(role: dict, res: dict, out: Path) -> tuple[str, dict]:
             "kept_split_follow": int(np.count_nonzero(a == KEPT_FOLLOW)),
             "kept_distribution": int(np.count_nonzero(a == KEPT_DIST)),
             "post_repair_jump_cells": int(check["post"]["jump"][b])})
+        if rule == "v2":  # v1 blocks keep exactly their original keys (TRAIN role v2 reproduction)
+            sessions[-1].update({
+                "unexplained_steps": int(res["stats"]["unexpl"][b]),
+                "unexplained_threshold": int(unexplained_threshold(res["stats"]["steps"][b:b + 1])[0]),
+                "post_repair_unexplained_steps": int(check["post"]["unexpl"][b])})
     repaired_names = np.unique(np.concatenate([x["j"][x["action"] == REPAIRED] for x in steps])) if steps else []
     manifest = json.loads(role["manifest_bytes"])
     manifest["files"] = files
     manifest["repair"] = {
-        "rule": RULE, "rule_statement": RULE_STATEMENT, "parameters": PARAMETERS, "noop": not res["mass"],
+        "rule": rule_id, "rule_statement": statement, "parameters": parameters, "noop": not res["mass"],
         "source_role": {"path": str(role["dir"].resolve()), "manifest_sha256": role["manifest_sha256"],
                         "close_sha256": source["close.f64"]["sha256"]},
         "tool": code_identity(),
@@ -479,6 +581,8 @@ def repair(role: dict, res: dict, out: Path) -> tuple[str, dict]:
         "cells": {"file": CELLS_FILE, "bytes": len(cells), "sha256": sha_bytes(cells),
                   "rows": cells.count(b"\n") - 1, "listed": "every crossing step with |s| > noise_ln (repaired and kept)"},
         "unchanged_files": [n for n in sorted(DTYPES) if n != "close.f64"]}
+    if rule == "v2":
+        manifest["repair"]["detector_unexplained_steps_by_session"] = [int(v) for v in res["stats"]["unexpl"]]
     content = publish_manifest(out / "manifest.json", manifest)
     return sha_bytes(content), check
 
@@ -494,6 +598,9 @@ def main(argv=None) -> int:
     p.add_argument("--expect-sessions", help="repair: comma-separated ISO mass sessions, or 'none'; refuse if "
                    "the detected set differs")
     p.add_argument("--allow-noop", action="store_true", help="repair: publish an unchanged copy when no mass session")
+    p.add_argument("--rule", choices=tuple(RULES), default="v1",
+                   help="repair rule (default v1 reproduces roles already built with it; v2 for new roles). The "
+                        "scan always reports both rules' statistics and verdicts")
     p.add_argument("--top", type=int, default=10)
     a = p.parse_args(argv)
     if a.scan_only == (a.out is not None):
@@ -507,7 +614,7 @@ def main(argv=None) -> int:
         if a.csv is not None and a.csv.exists():
             raise Refusal(f"--csv {a.csv} already exists (exclusive output)")
         role = load_role(a.role, a.role_sha256, SCAN_FILES if a.scan_only else tuple(DTYPES))
-        res = analyse(role)
+        res = analyse(role, a.rule)
         print_scan(role, res, a.top)
         if a.scan_only:
             if a.csv is not None:
@@ -524,11 +631,12 @@ def main(argv=None) -> int:
                 print("no mass session: nothing to repair; no output written (--allow-noop publishes a copy)")
                 return EXIT_CLEAN
             sha, check = repair(role, res, a.out)
-            print(f"repaired: changed close cells {check['changed_cells']}; max |ln return error| "
-                  f"{check['worst']:.3g}; post-repair max jump/session {int(check['post']['jump'].max())}")
+            print(f"repaired ({RULES[a.rule][0]}): changed close cells {check['changed_cells']}; max |ln return error| "
+                  f"{check['worst']:.3g}; post-repair max jump/session {int(check['post']['jump'].max())}; "
+                  f"post-repair max unexplained/session {int(check['post']['unexpl'].max())}")
             print(f"output {a.out.resolve()}")
             print(f"output manifest sha256 {sha}")
-    except (Refusal, OSError, KeyError, ValueError) as e:
+    except (Refusal, OSError, KeyError, ValueError, TypeError, AttributeError) as e:
         # Nothing is published without its manifest (publish-last); a partial --out is never a role.
         print(f"refused: {type(e).__name__}: {e}", file=sys.stderr)
         return EXIT_REFUSED

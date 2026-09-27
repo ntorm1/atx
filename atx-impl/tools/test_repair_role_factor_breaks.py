@@ -43,7 +43,7 @@ def sessions(start: str, count: int):
     return out
 
 
-def scenario(artifact=True, second=False, seed=7):
+def scenario(artifact=True, second=False, seed=7, cluster=None, partial=0):
     """raw (f32-widened), vendor factor, present; artifact factors k at B1 (and B2 when second)."""
     dates = sessions("2020-11-02", 80)
     D, N = len(dates), 100
@@ -61,6 +61,8 @@ def scenario(artifact=True, second=False, seed=7):
     ret[b, OPPOSING] = 0.03
     ret[b, [SPLIT_ON_B, REVERSE_ON_B, DIVIDEND_ON_B]] = 0.0
     ret[20, DIVIDEND_NORMAL] = 0.03  # makes the normal-day dividend a (legitimate) jump cell
+    if cluster is not None:  # a quarter-end ex-dividend cluster on an up day: names 0..59, 2% each, +3%
+        ret[cluster, :60] = 0.03
     k2 = np.ones(N)
     if second:  # a second re-anchoring on B2 for names 0..59, and one on name 90 (absent across both)
         k2[:60] = np.linspace(0.95, 0.985, 60)
@@ -70,6 +72,8 @@ def scenario(artifact=True, second=False, seed=7):
     factor = np.ones((D, N))
     if not artifact:
         k[:] = 1.0
+    if partial:  # a partial re-anchoring of the first `partial` names only
+        k[:partial] = np.linspace(0.95, 0.99, partial)
     factor[b:] *= k  # the vendor's pre-break block is anchored at 1 (f1prev = 1 on the break)
     factor[b2:] *= k2
     # genuine actions: raw moves against the factor, adjusted close continuous
@@ -83,6 +87,9 @@ def scenario(artifact=True, second=False, seed=7):
     factor[:10, SPLIT_NORMAL] *= 0.5
     raw[20:, DIVIDEND_NORMAL] *= 0.98
     factor[:20, DIVIDEND_NORMAL] *= 0.98
+    if cluster is not None:
+        raw[cluster:, :60] *= 0.98
+        factor[:cluster, :60] *= 0.98
     raw = raw.astype(np.float32).astype(np.float64)
     present = np.ones((D, N), dtype=bool)
     present[b, GAP_SHORT] = False
@@ -156,7 +163,8 @@ class RepairFixture(unittest.TestCase):
 
     def test_mass_break_repaired_exactly(self):
         out, text = self.repair("out", "--expect-sessions", "2021-01-04")
-        self.assertIn("verdict: MASS 1 session(s): 2021-01-04", text)
+        self.assertIn("verdict factor-break-v1: MASS 1 session(s): 2021-01-04", text)
+        self.assertIn("verdict factor-break-v2: MASS 1 session(s): 2021-01-04", text)
         old = load(self.role, "close.f64", self.shape)
         new = load(out, "close.f64", self.shape)
         raw, present, k, b = self.sc["raw"], self.sc["present"], self.sc["k"], self.sc["b"]
@@ -292,7 +300,12 @@ class RepairFixture(unittest.TestCase):
                 big += abs(dlf) > 0.10 and abs(al) > abs(rl) + 0.10
                 small += 0.01 < abs(dlf) <= 0.10 and abs(al) > abs(rl) + 0.01
             self.assertEqual((int(rows[t]["big"]), int(rows[t]["small"])), (big, small), rows[t]["session"])
-        self.assertEqual([r["session"] for r in rows if r["mass"] == "1"], ["2021-01-04"])
+        self.assertEqual([r["session"] for r in rows if r["mass_v1"] == "1"], ["2021-01-04"])
+        self.assertEqual([r["session"] for r in rows if r["mass_v2"] == "1"], ["2021-01-04"])
+        # every repaired step ending on the session is unexplained; the gap-spanning one ends a session later
+        self.assertEqual(int(rows[self.sc["b"]]["unexplained"]), len(REPAIRED) - 1)
+        self.assertEqual(int(rows[self.sc["b"] + 1]["unexplained"]), 1)
+        self.assertEqual(sum(int(r["unexplained"]) for r in rows), len(REPAIRED))
         f1p = int(rows[self.sc["b"]]["f1_prev"]) / int(rows[self.sc["b"]]["steps"])
         self.assertGreater(f1p, 0.9)  # the pre-break block is anchored at 1
         code, _, err = run("--role", self.role, "--role-sha256", self.sha, "--scan-only", "--csv", csv_path)
@@ -320,7 +333,8 @@ class CleanAndMultiSession(unittest.TestCase):
         sha = write_role(role, sc)
         code, text, _ = run("--role", role, "--role-sha256", sha, "--scan-only")
         self.assertEqual(code, 0)
-        self.assertIn("verdict: CLEAN", text)
+        self.assertIn("verdict factor-break-v1: CLEAN", text)
+        self.assertIn("verdict factor-break-v2: CLEAN", text)
         code, text, _ = run("--role", role, "--role-sha256", sha, "--out", self.base / "out")
         self.assertEqual(code, rr.EXIT_CLEAN)
         self.assertFalse((self.base / "out").exists())
@@ -350,6 +364,131 @@ class CleanAndMultiSession(unittest.TestCase):
             rows = [r for r in csv.DictReader(f) if r["column"] == "90"]
         self.assertEqual(len(rows), 1)  # one step across both sessions: listed once
         self.assertEqual(rows[0]["action"], "kept_gap")
+
+
+V1_COMMIT = "99421a5f"  # the tool that built TRAIN role v2 (factor-break-v1)
+
+
+class RuleV2(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def role(self, sc, name="role"):
+        path = self.base / name
+        return path, write_role(path, sc)
+
+    def test_dividend_cluster_is_not_a_v2_break(self):
+        """A normal quarter-end ex-dividend cluster of 60 names on an up day: v1 false MASS, v2 CLEAN."""
+        sc = scenario(artifact=False, cluster=35)
+        role, sha = self.role(sc)
+        day = sc["dates"][35].isoformat()
+        code, text, err = run("--role", role, "--role-sha256", sha, "--scan-only", "--csv", self.base / "s.csv")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"verdict factor-break-v1: MASS 1 session(s): {day}", text)
+        self.assertIn("verdict factor-break-v2: CLEAN", text)
+        with (self.base / "s.csv").open(newline="") as f:
+            rows = list(csv.DictReader(f))
+        self.assertGreaterEqual(int(rows[35]["jump"]), 60)
+        self.assertEqual(sum(int(r["unexplained"]) for r in rows), 0)
+        # v2: nothing to repair; v1: every cluster step is kept_distribution, so its post-repair gate refuses
+        code, _, _ = run("--role", role, "--role-sha256", sha, "--rule", "v2", "--out", self.base / "v2")
+        self.assertEqual(code, rr.EXIT_CLEAN)
+        self.assertFalse((self.base / "v2").exists())
+        code, _, err = run("--role", role, "--role-sha256", sha, "--rule", "v1", "--out", self.base / "v1")
+        self.assertEqual(code, rr.EXIT_REFUSED)
+        self.assertIn("a mass session remains after repair", err)
+        self.assertFalse((self.base / "v1").exists())
+
+    def test_small_unexplained_break_is_a_v2_mass(self):
+        """A 30-name re-anchoring (below v1's 50 jump cells) is a v2 MASS and is repaired exactly."""
+        sc = scenario(artifact=False, partial=30)
+        role, sha = self.role(sc)
+        code, text, err = run("--role", role, "--role-sha256", sha, "--scan-only")
+        self.assertEqual(code, 0, err)
+        self.assertIn("verdict factor-break-v1: CLEAN", text)
+        self.assertIn("verdict factor-break-v2: MASS 1 session(s): 2021-01-04", text)
+        code, _, _ = run("--role", role, "--role-sha256", sha, "--out", self.base / "v1")  # default v1
+        self.assertEqual(code, rr.EXIT_CLEAN)
+        out = self.base / "v2"
+        code, text, err = run("--role", role, "--role-sha256", sha, "--rule", "v2", "--out", out,
+                              "--expect-sessions", "2021-01-04")
+        self.assertEqual(code, 0, err + text)
+        shape = sc["present"].shape
+        old, new = load(role, "close.f64", shape), load(out, "close.f64", shape)
+        for j in range(30):
+            np.testing.assert_allclose(new[:, j] / sc["raw"][:, j], sc["k"][j], rtol=2e-15, atol=0)
+        self.assertEqual(new[:, 30:].tobytes(), old[:, 30:].tobytes())
+        rep = json.loads((out / "manifest.json").read_bytes())["repair"]
+        self.assertEqual(rep["rule"], "factor-break-v2")
+        self.assertEqual(rep["parameters"], rr.PARAMETERS_V2)
+        s = rep["mass_sessions"][0]
+        self.assertEqual((s["session"], s["unexplained_steps"], s["unexplained_threshold"], s["repaired"],
+                          s["post_repair_unexplained_steps"]), ("2021-01-04", 30, 20, 30, 0))
+        self.assertEqual(sum(rep["detector_unexplained_steps_by_session"]), 30)
+
+    def test_v2_threshold_is_a_share_of_steps(self):
+        steps = np.array([0, 100, 1999, 2000, 2001, 5000])
+        np.testing.assert_array_equal(rr.unexplained_threshold(steps), [20, 20, 20, 20, 21, 50])
+
+    def test_v1_and_v2_agree_on_the_main_scenario(self):
+        role, sha = self.role(scenario())
+        outs = {}
+        for rule in ("v1", "v2"):
+            outs[rule] = self.base / rule
+            code, _, err = run("--role", role, "--role-sha256", sha, "--rule", rule, "--out", outs[rule],
+                               "--expect-sessions", "2021-01-04")
+            self.assertEqual(code, 0, err)
+        for name in (*rr.DTYPES, rr.CELLS_FILE):
+            self.assertEqual((outs["v1"] / name).read_bytes(), (outs["v2"] / name).read_bytes(), name)
+        m1 = json.loads((outs["v1"] / "manifest.json").read_bytes())["repair"]
+        m2 = json.loads((outs["v2"] / "manifest.json").read_bytes())["repair"]
+        self.assertEqual((m1["rule"], m2["rule"]), ("factor-break-v1", "factor-break-v2"))
+        self.assertNotIn("detector_unexplained_steps_by_session", m1)
+        self.assertNotIn("unexplained_steps", m1["mass_sessions"][0])
+        self.assertEqual(m2["mass_sessions"][0]["unexplained_steps"], len(REPAIRED) - 1)
+
+    def test_v1_reproduces_the_committed_tool(self):
+        """--rule v1 (the default) writes the same bytes as the tool that built TRAIN role v2, except
+        the manifest's repair.tool identity (the code itself changed)."""
+        import importlib.util
+        import subprocess
+        root = Path(__file__).resolve().parents[2]
+        try:
+            code = subprocess.run(["git", "-C", str(root), "show", f"{V1_COMMIT}:atx-impl/tools/repair_role_factor_breaks.py"],
+                                  capture_output=True, check=True, timeout=60).stdout
+        except (OSError, subprocess.SubprocessError):
+            self.skipTest(f"git or commit {V1_COMMIT} unavailable")
+        path = self.base / "repair_role_factor_breaks_v1_committed.py"
+        path.write_bytes(code)
+        spec = importlib.util.spec_from_file_location("repair_role_factor_breaks_v1_committed", path)
+        old_tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(old_tool)
+        role, sha = self.role(scenario(second=True))
+        args = ["--role", str(role), "--role-sha256", sha, "--expect-sessions", "2021-01-04,2021-02-01"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(old_tool.main(args + ["--out", str(self.base / "old")]), 0)
+        code, _, err = run(*args, "--out", self.base / "new")
+        self.assertEqual(code, 0, err)
+        for name in (*rr.DTYPES, rr.CELLS_FILE):
+            self.assertEqual((self.base / "old" / name).read_bytes(), (self.base / "new" / name).read_bytes(), name)
+        old_m = json.loads((self.base / "old" / "manifest.json").read_bytes())
+        new_m = json.loads((self.base / "new" / "manifest.json").read_bytes())
+        self.assertNotEqual(old_m["repair"].pop("tool"), new_m["repair"].pop("tool"))
+        self.assertEqual(old_m, new_m)
+
+    def test_malformed_manifest_is_refused_not_a_traceback(self):
+        role, _ = self.role(scenario())
+        m = json.loads((role / "manifest.json").read_bytes())
+        m["dates"] = None
+        text = (json.dumps(m, sort_keys=True, indent=2) + "\n").encode()
+        (role / "manifest.json").write_bytes(text)
+        code, _, err = run("--role", role, "--role-sha256", hashlib.sha256(text).hexdigest(), "--scan-only")
+        self.assertEqual(code, rr.EXIT_REFUSED)
+        self.assertIn("TypeError", err)
 
 
 if __name__ == "__main__":
