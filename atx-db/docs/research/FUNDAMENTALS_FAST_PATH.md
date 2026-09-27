@@ -117,3 +117,11 @@ Raw endpoints and original clocks remain in dispositions and source IDs remain
 unchanged. Reported FY/FP disagreements still invalidate fiscal slots. Bucket
 audits count recovered endpoints, clock delays and every encoding disposition;
 these diagnostics do not waive the fiscal, numeric or accounting acceptance gates.
+
+For a guarded source resume, `normalize-all --batch-verified-resume` amortizes
+admission over explicit batches of at most16 completed source slices. Each worker
+calls the unchanged source validator for every identity, source pin, completion
+hash, output hash, row-group partition and row denominator. Per-slice verification
+proofs bind the immutable batch plan before the orchestrator skips any completed
+slice; the normalizer handles missing slices as before. Existence alone never
+authorizes reuse. The source module and accepted source audit remain unchanged.
