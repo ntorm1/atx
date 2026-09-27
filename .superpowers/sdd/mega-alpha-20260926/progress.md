@@ -1,5 +1,15 @@
 # Active task: recent-data DSL ensemble
 
+## PAUSED 2026-09-26 at owner request — handoff 2
+
+Authoritative: docs/plans/2026-09-26-mega-alpha-parent-handoff-2.md; goal prompt
+docs/plans/2026-09-26-mega-alpha-next-parent-goal-2.md. All child agents stopped (T2 fix round, T5 fix
+round, T7, T9, T1 review). T2 imported c4ba9c80/97e6b392: build 31.62s, 24/25 (fixture
+ConstantPricesNoCostReproducesTargetReplayPlanned forced_turnover==0 open). T6 imported c615ce36; TRAIN
+fields run 22.03s/604MB manifest 519fc9b2 (validation fields not run). T5 fix round 1 committed pool-7
+f2d5fb97, unreviewed/unimported. T7 (pool-4) and T9 (pool-3) stopped with no commits. No owned process.
+
+
 ## RESUMED 2026-09-26 ~20:15 ET (new parent, owner goal prompt authorizes)
 
 Owner mid-run note: do not let RAM limits slow progress; if blocked, improve
