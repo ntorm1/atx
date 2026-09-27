@@ -42,7 +42,8 @@ Screen v3-admit-v1 (declared by root before any v3 measurement). FIT is decision
                Then it is reject_redundant(j), naming the largest |rho|. A pair with < 250 common days
                (or undefined rho) counts as uncorrelated and is noted.
 Weights: mu and S over ALL TRAIN decisions of s_k f_k with flat days as 0; Sh = 0.1 S + 0.9 diag(S),
-w = solve(Sh, mu), w = max(w, 0), w /= sum(w). Only admitted candidates (screen mode), or every
+w = solve(Sh, mu), w = max(w, 0), w /= sum(w). ``--composition mv-shrink-0.9-nonneg-netcost-v1`` uses
+mu_k - 0.0018 * tau_k instead (net of 18 bps per unit turnover); nothing else changes. Only admitted candidates (screen mode), or every
 runner-oriented candidate (``--screen none``, the T9 rule), take part. Everyone else gets weight 0.
 
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
@@ -75,6 +76,11 @@ import time  # noqa: E402
 import numpy as np  # noqa: E402
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
+# Root preregistration (before any v3 measurement): the same fit with a net mean vector,
+# mu_k = mean_TRAIN(s_k f_k) - c * tau_k, c = 18 bps per unit of one-way GMV turnover (S2 on TRAIN v1).
+NETCOST_RULE_ID = "mv-shrink-0.9-nonneg-netcost-v1"
+NETCOST_C = 0.0018
+COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID)
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
 SCREENS = ("none", SCREEN_ID)
@@ -741,9 +747,15 @@ def shrink_solution(mu: np.ndarray, cov: np.ndarray) -> np.ndarray:
     return np.linalg.solve(shrunk, mu)
 
 
-def fit_weights(factors: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(normalized nonnegative weights, raw MV solution) for factor rows (candidates x decisions)."""
+def fit_weights(factors: np.ndarray, cost_drag: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(normalized nonnegative weights, raw MV solution) for factor rows (candidates x decisions).
+
+    ``cost_drag`` (per row, netcost variant only) is subtracted from the mean vector; the covariance,
+    shrinkage, clip and normalization are unchanged.
+    """
     mu = factors.mean(axis=1)
+    if cost_drag is not None:
+        mu = mu - cost_drag
     cov = np.atleast_2d(np.cov(factors, ddof=1))
     try:
         raw = shrink_solution(mu, cov)
@@ -953,6 +965,8 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
 def fit(args, log=None) -> tuple[int, dict]:
     started = time.perf_counter()
     require(args.screen in SCREENS, f"--screen must be one of {SCREENS}")
+    require(args.composition in COMPOSITIONS, f"--composition must be one of {COMPOSITIONS}")
+    netcost = args.composition == NETCOST_RULE_ID
     require(args.work_dir is not None or (args.max_seconds is None and args.max_new_candidates is None),
             "--max-seconds/--max-new-candidates need --work-dir (nothing would persist)")
     require(args.max_seconds is None or (math.isfinite(args.max_seconds) and args.max_seconds > 0),
@@ -1056,12 +1070,14 @@ def fit(args, log=None) -> tuple[int, dict]:
     try:
         require(active, "fit: no eligible candidate with a non-degenerate factor series")
         matrix = np.vstack([signs[k] * zero_filled[k] for k in active])
-        weights, raw = fit_weights(matrix)
+        drag = np.array([NETCOST_C * taus[k] for k in active]) if netcost else None
+        weights, raw = fit_weights(matrix, drag)
     except FitError as exc:
         if args.screen != SCREEN_ID:
             raise
         no_weights = str(exc)
-    summary = {"status": "complete", "output": str(out), "screen": args.screen, "candidates": len(library),
+    summary = {"status": "complete", "output": str(out), "screen": args.screen, "composition": args.composition,
+               "candidates": len(library),
                "computed_this_run": computed, "reused": reused,
                "refused_decisions": len(records[0]["context_refused"])}
     if args.screen == SCREEN_ID:
@@ -1075,6 +1091,8 @@ def fit(args, log=None) -> tuple[int, dict]:
         return EXIT_NO_WEIGHTS, summary
     for k, w, r in zip(active, weights, raw):
         weight_rows[k].update(weight=float(w), mv_solution=float(r), clipped=not r > 0)
+        if netcost:
+            weight_rows[k]["cost_drag"] = NETCOST_C * taus[k]
     weighted_tau = float(sum(row["weight"] * row["tau"] for row in weight_rows))
     conflicts = [row["id"] for row in weight_rows if row["weight"] > 0 and row["runner_sign"] != row["sign"]]
     document = {
@@ -1084,7 +1102,7 @@ def fit(args, log=None) -> tuple[int, dict]:
         "signs": {row["id"]: row["sign"] for row in weight_rows if row["sign"] != 0},
         "weights": {row["id"]: row["weight"] for row in weight_rows},
         "provenance": {
-            "rule": RULE_ID, "lambda": SHRINK_LAMBDA,
+            "rule": args.composition, "lambda": SHRINK_LAMBDA,
             "shrinkage": "Sh=0.1*S+0.9*diag(S);S=sample-covariance-ddof1;w=solve(Sh,mu);w=max(w,0);w/=sum(w)",
             "screen": args.screen, "admission_sha256": admission_sha,
             "signs": ("v3-admit-v1-FIT-mean-sign;apply-pinned-signs" if args.screen == SCREEN_ID
@@ -1108,6 +1126,11 @@ def fit(args, log=None) -> tuple[int, dict]:
             "candidates": weight_rows,
         },
     }
+    if netcost:  # the default composition's bytes carry no netcost keys
+        document["provenance"].update(
+            netcost_c=NETCOST_C,
+            netcost_mu="mu_k=mean_TRAIN(s_k*f_k)-c*tau_k;c per unit one-way GMV turnover/day;"
+                       "covariance/shrink/clip/normalization/screen/signs unchanged")
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)
     require(len(files[OUTPUT_WEIGHTS]) <= METADATA_LIMIT, "output: weights JSON exceeds the runner's 1 MiB bound")
     publish_directory(out, files)
@@ -1132,6 +1155,9 @@ def parse_args(argv):
     p.add_argument("--runner-summary-sha256", required=True)
     p.add_argument("--screen", required=True, choices=SCREENS,
                    help="v3-admit-v1 (admission screen + fit on admitted) or none (T9: runner signs, all oriented)")
+    p.add_argument("--composition", default=RULE_ID, choices=COMPOSITIONS,
+                   help="weight fit: mv-shrink-0.9-nonneg-v1 (default) or its netcost variant "
+                        "(mu_k minus 0.0018 * tau_k); the screen and signs are unchanged")
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     p.add_argument("--work-dir", type=Path, default=None,
                    help="persistent incremental state (context + per-candidate factor records)")

@@ -1022,5 +1022,55 @@ class CacheInvalidation(unittest.TestCase):
         self.assertEqual(self.rerun("rebound")["computed_this_run"], 2)
 
 
+
+# ------------------------------------------------ T13: mv-shrink-0.9-nonneg-netcost-v1
+class NetCost(unittest.TestCase):
+    def test_hand_case_cost_changes_the_weights(self):
+        # Orthogonal zero-mean patterns with equal scale: S is diagonal and equal, so Sh = S and w ~ mu.
+        e1, e2, e3 = np.array([1.0, -1, 1, -1]), np.array([1.0, 1, -1, -1]), np.array([1.0, -1, -1, 1])
+        factors = np.vstack([0.003 + 0.01 * e1, 0.002 + 0.01 * e2, 0.001 + 0.01 * e3])
+        taus = np.array([0.5, 1.5, 0.2])
+        gross, _ = fcw.fit_weights(factors)
+        np.testing.assert_allclose(gross, [0.5, 1 / 3, 1 / 6], rtol=0, atol=1e-12)
+        # net mu = [.003 - .0009, .002 - .0027, .001 - .00036] = [.0021, -.0007, .00064] -> clip the middle
+        net, raw = fcw.fit_weights(factors, fcw.NETCOST_C * taus)
+        np.testing.assert_allclose(net, [0.0021 / 0.00274, 0.0, 0.00064 / 0.00274], rtol=0, atol=1e-12)
+        self.assertLess(raw[1], 0)
+        self.assertEqual(fcw.NETCOST_C, 0.0018)
+
+    def test_netcost_changes_only_the_fit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel, signals, ids = screen_world()
+            fx = Fixture(root / "fx", panel, signals, SCREEN_RUNNER_SIGNS, ids=ids, families=["fam"] * len(ids))
+            work = root / "work"
+            fcw.fit(fx.args(root / "default", "v3-admit-v1", work_dir=work))
+            fcw.fit(fx.args(root / "explicit", "v3-admit-v1", work_dir=work, composition=fcw.RULE_ID))
+            code, summary = fcw.fit(fx.args(root / "net", "v3-admit-v1", work_dir=work,
+                                            composition=fcw.NETCOST_RULE_ID))
+            self.assertEqual((code, summary["computed_this_run"]), (fcw.EXIT_OK, 0))  # records are shared
+            read = lambda d, n: (root / d / n).read_bytes()  # noqa: E731
+            for name in (fcw.OUTPUT_WEIGHTS, fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV):
+                self.assertEqual(read("default", name), read("explicit", name))  # default == explicit default
+            for name in (fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV):
+                self.assertEqual(read("default", name), read("net", name))  # the screen never sees the cost
+            gross = json.loads(read("default", fcw.OUTPUT_WEIGHTS))
+            net = json.loads(read("net", fcw.OUTPUT_WEIGHTS))
+            self.assertEqual(gross["provenance"]["rule"], "mv-shrink-0.9-nonneg-v1")
+            self.assertNotIn("netcost_c", gross["provenance"])
+            self.assertFalse(any("cost_drag" in r for r in gross["provenance"]["candidates"]))
+            self.assertEqual((net["provenance"]["rule"], net["provenance"]["netcost_c"]),
+                             ("mv-shrink-0.9-nonneg-netcost-v1", 0.0018))
+            self.assertEqual(net["signs"], gross["signs"])
+            self.assertEqual({i for i, w in net["weights"].items() if w > 0} <= set(json.loads(
+                read("net", fcw.OUTPUT_ADMISSION))["admitted"]), True)
+            # the published net weights are the hand formula on the admitted oriented series
+            rows = {r["id"]: r for r in net["provenance"]["candidates"]}
+            admitted = [i for i in ids if rows[i]["status"] == "fitted"]
+            for i in admitted:
+                self.assertAlmostEqual(rows[i]["cost_drag"], 0.0018 * rows[i]["tau"], places=15)
+            self.assertNotEqual([net["weights"][i] for i in admitted], [gross["weights"][i] for i in admitted])
+
+
 if __name__ == "__main__":
     unittest.main()
