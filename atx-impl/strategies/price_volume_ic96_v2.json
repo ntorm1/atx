@@ -749,7 +749,7 @@
     {
       "id": "ivol_change_21_252_s21",
       "family": "idiosyncratic_risk",
-      "dsl": "decay_linear(rank(((ts_var(((close / delay(close, 1)) - 1), 21) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 21) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 21)))) / (ts_var(((close / delay(close, 1)) - 1), 252) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 252) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 252)))))), 21)",
+      "dsl": "decay_linear(rank(((ts_var(((close / delay(close, 1)) - 1), 21) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 21) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 21))))) / (ts_var(((close / delay(close, 1)) - 1), 252) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 252) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 252))))))), 21)",
       "horizons": [
         5,
         21,
@@ -760,7 +760,7 @@
     {
       "id": "ivol_change_21_252_s63",
       "family": "idiosyncratic_risk",
-      "dsl": "decay_linear(rank(((ts_var(((close / delay(close, 1)) - 1), 21) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 21) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 21)))) / (ts_var(((close / delay(close, 1)) - 1), 252) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 252) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 252)))))), 63)",
+      "dsl": "decay_linear(rank(((ts_var(((close / delay(close, 1)) - 1), 21) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 21) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 21))))) / (ts_var(((close / delay(close, 1)) - 1), 252) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 252) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 252))))))), 63)",
       "horizons": [
         5,
         21,
@@ -771,7 +771,7 @@
     {
       "id": "ivol_change_63_qoq_s21",
       "family": "idiosyncratic_risk",
-      "dsl": "decay_linear(rank(((ts_var(((close / delay(close, 1)) - 1), 63) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63)))) / delay((ts_var(((close / delay(close, 1)) - 1), 63) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63)))), 63))), 21)",
+      "dsl": "decay_linear(rank(((ts_var(((close / delay(close, 1)) - 1), 63) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63))))) / delay((ts_var(((close / delay(close, 1)) - 1), 63) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63))))), 63))), 21)",
       "horizons": [
         5,
         21,
@@ -782,7 +782,7 @@
     {
       "id": "ivol_change_63_qoq_s63",
       "family": "idiosyncratic_risk",
-      "dsl": "decay_linear(rank(((ts_var(((close / delay(close, 1)) - 1), 63) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63)))) / delay((ts_var(((close / delay(close, 1)) - 1), 63) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63)))), 63))), 63)",
+      "dsl": "decay_linear(rank(((ts_var(((close / delay(close, 1)) - 1), 63) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63))))) / delay((ts_var(((close / delay(close, 1)) - 1), 63) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63))))), 63))), 63)",
       "horizons": [
         5,
         21,

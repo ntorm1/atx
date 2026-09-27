@@ -3,11 +3,11 @@
   "id": "price_volume_ic96_v2_initial",
   "library": {
     "path": "price_volume_ic96_v2.json",
-    "sha256": "b871743e1903fc1f3de40d86a30870ea91d539db0662439f80f74a96d3d7e2ed"
+    "sha256": "fd1e359b316842eeb04551f91135e2f1fb5e13bdc8e888d0450ddac509fe1389"
   },
   "generation": {
     "rule": "frozen-v1-48-plus-eight-by-three-by-two-v2",
-    "revision": "fix-round-1",
+    "revision": "fix-round-2",
     "candidates": 96,
     "families": 16,
     "templates_per_family": 3,
@@ -39,43 +39,95 @@
   },
   "revisions": [
     {
+      "round": 1,
       "finding": "I1",
       "change": "abnormal_volume uses split-adjusted (raw_close * volume) / close instead of raw share volume"
     },
     {
+      "round": 1,
       "finding": "I2",
       "change": "vec_avg(ret) replaced by the upstream mkt_ret field (previous-session members, broadcast to all present names)"
     },
     {
+      "round": 1,
       "finding": "I3",
       "change": "residual_momentum is standardized residual Sharpe at 6-1, 9-1 and 12-1 (resmom_6_1/resmom_9_1 dropped)"
     },
     {
+      "round": 1,
       "finding": "I4a",
       "change": "illiquidity: amihud_21/63/126 levels replaced by amihud_shock_21_252, roll_autocorr_126, signed_volume_reversal_126"
     },
     {
+      "round": 1,
       "finding": "I4b",
       "change": "ivol_21/ivol_126 replaced by ivol_change_21_252 and ivol_change_63_qoq; max_ret_21 replaced by scaled_max_21"
     },
     {
+      "round": 1,
       "finding": "M1",
       "change": "fp_beta volatility ratio uses 252 sessions (fp_beta_250_63 renamed fp_beta_250_252)"
     },
     {
+      "round": 1,
       "finding": "M2",
       "change": "market_corr_63 replaced by corr_asymmetry_126 (down minus up correlation)"
     },
     {
+      "round": 1,
       "finding": "M7",
       "change": "residual sd uses signedpower(abs(1 - rho^2), 0.5), keeping the alpha sign if rho rounds past 1"
+    },
+    {
+      "round": 2,
+      "finding": "N1",
+      "change": "expected_overlap records resid_sharpe_6_1 vs v1 risk_scaled_6_1 (prior rank corr ~0.85-0.9); note only, no DSL change"
+    },
+    {
+      "round": 2,
+      "finding": "N2",
+      "change": "expected_overlap records ivol_change_21_252 vs v1 vol_expansion_21_126 (prior |rank corr| ~0.8-0.85) and v2 vol_term_63_252 (~0.7); note only, no DSL change"
+    },
+    {
+      "round": 2,
+      "finding": "N3",
+      "change": "idio_var uses ts_var * abs(1 - rho^2), so ivol_change numerators and denominators cannot flip sign if rho rounds past 1 (M7 pattern)"
     }
   ],
+  "expected_overlap": {
+    "rule": "pre-measurement prior rank correlations from review arithmetic; not measured, not a selection input; the admission screen culls empirical duplicates",
+    "pairs": [
+      {
+        "template": "resid_sharpe_6_1",
+        "reference": "risk_scaled_6_1",
+        "reference_origin": "frozen_v1",
+        "prior_abs_rank_corr": "0.85-0.9",
+        "basis": "same [t-125, t-21] formation window; numerators differ by beta*M (sd ~0.05 vs R ~0.25-0.30); denominators differ by residualization (log-sd ~0.1-0.15 vs ~0.45 for the vol level) and 105 vs 126 sessions",
+        "finding": "N1"
+      },
+      {
+        "template": "ivol_change_21_252",
+        "reference": "vol_expansion_21_126",
+        "reference_origin": "frozen_v1",
+        "prior_abs_rank_corr": "0.8-0.85",
+        "basis": "log(ivar21/ivar252) = log(var21/var252) + log(1-R2_21) - log(1-R2_252) shares the noisy 21-session variance numerator with -(sd21/sd126); the sign is absorbed by the TRAIN orientation",
+        "finding": "N2"
+      },
+      {
+        "template": "ivol_change_21_252",
+        "reference": "vol_term_63_252",
+        "reference_origin": "new_v2",
+        "prior_abs_rank_corr": "0.7",
+        "basis": "both are short-over-long variance ratios ending at t with a 252-session denominator",
+        "finding": "N2"
+      }
+    ]
+  },
   "family_fixing": {
     "fixed_before_measurement": true,
     "measurement_consulted": false,
     "template_reselection": "structural, from code review, before any TRAIN measurement",
-    "statement": "The eight new families were fixed from published economic priors before any v2 measurement. Fix round 1 re-selected templates structurally from an independent code review (split handling, market-return coverage, overlap with v1 momentum/low-risk/size tilts), still before any TRAIN measurement; no IC, return, turnover or correlation output was consulted to choose or tune them. TRAIN fits only per-candidate signs; validation is not used for selection."
+    "statement": "The eight new families were fixed from published economic priors before any v2 measurement. Fix round 1 re-selected templates structurally from an independent code review (split handling, market-return coverage, overlap with v1 momentum/low-risk/size tilts), and fix round 2 hardened the ivol_change variance shares and recorded expected overlaps from a re-review, still before any TRAIN measurement; no IC, return, turnover or correlation output was consulted to choose or tune them. TRAIN fits only per-candidate signs; validation is not used for selection."
   },
   "family_priors": [
     {
@@ -199,13 +251,13 @@
     {
       "family": "idiosyncratic_risk",
       "template": "ivol_change_21_252",
-      "base_dsl": "((ts_var(((close / delay(close, 1)) - 1), 21) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 21) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 21)))) / (ts_var(((close / delay(close, 1)) - 1), 252) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 252) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 252)))))",
+      "base_dsl": "((ts_var(((close / delay(close, 1)) - 1), 21) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 21) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 21))))) / (ts_var(((close / delay(close, 1)) - 1), 252) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 252) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 252))))))",
       "base_prior_bars": 252
     },
     {
       "family": "idiosyncratic_risk",
       "template": "ivol_change_63_qoq",
-      "base_dsl": "((ts_var(((close / delay(close, 1)) - 1), 63) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63)))) / delay((ts_var(((close / delay(close, 1)) - 1), 63) * (1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63)))), 63))",
+      "base_dsl": "((ts_var(((close / delay(close, 1)) - 1), 63) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63))))) / delay((ts_var(((close / delay(close, 1)) - 1), 63) * abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 63) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 63))))), 63))",
       "base_prior_bars": 126
     },
     {
@@ -912,7 +964,7 @@
       "template": "ivol_change_21_252",
       "smoothing_sessions": 21,
       "prior_bars": 272,
-      "dsl_sha256": "029486f9de8e824499c34494adcc8fd0772cc3ed8c5d28b698e6d69621228330",
+      "dsl_sha256": "ccc3bc37b3b7aaddc626e1738fc31c5daa25c1add186a6b4109f0ee3e5a52e88",
       "native_prior_bars": 272,
       "origin": "new_v2"
     },
@@ -922,7 +974,7 @@
       "template": "ivol_change_21_252",
       "smoothing_sessions": 63,
       "prior_bars": 314,
-      "dsl_sha256": "5ff92853be7732426df55f60b010ce008822c809a38a3a387cd028db62c26403",
+      "dsl_sha256": "73b730f3459e6c158c722c7cfcccb44d4a9fd64c2e34d42c3a3b89f283b7e01a",
       "native_prior_bars": 314,
       "origin": "new_v2"
     },
@@ -932,7 +984,7 @@
       "template": "ivol_change_63_qoq",
       "smoothing_sessions": 21,
       "prior_bars": 146,
-      "dsl_sha256": "17ad54bb4ed1cca271aed48970068480750311997a95187b6f1dbbd5c829b7ec",
+      "dsl_sha256": "48d44bd9b9fd36ca5f90190bca77488a62e11dee5fa546e0013bfc9385111523",
       "native_prior_bars": 146,
       "origin": "new_v2"
     },
@@ -942,7 +994,7 @@
       "template": "ivol_change_63_qoq",
       "smoothing_sessions": 63,
       "prior_bars": 188,
-      "dsl_sha256": "367a67a910e5b983454b3f5064d37db6729423b36281480e5a577682e04f5033",
+      "dsl_sha256": "72d814391fc6a5524f5979dd72a909fa3df375602cfc38a00e172ca5e6822454",
       "native_prior_bars": 188,
       "origin": "new_v2"
     },
@@ -1349,7 +1401,7 @@
     "inverse_additional_vm_evaluations": 0,
     "family_or_template_selection": false,
     "families_fixed_before_measurement": true,
-    "pre_measurement_template_revisions": 1,
+    "pre_measurement_template_revisions": 2,
     "combined_recipes": 1,
     "validation_selection": false,
     "reruns": "retain attempts; v1 attempts remain prior trials of the reused 48",

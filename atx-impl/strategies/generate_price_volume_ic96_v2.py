@@ -5,7 +5,8 @@ pinned by library SHA256, so ids, families, DSL bytes and dsl_sha256 values are
 unchanged and cached signals are reused. Candidates 49-96 add eight diversifying
 price/volume families (3 templates x 2 slow variants each) fixed from published
 priors before any measurement; fix round 1 re-selected templates structurally
-from review findings, still before any TRAIN measurement. Run with --check to
+from review findings and fix round 2 hardened the ivol_change variance shares and
+recorded expected overlaps, still before any TRAIN measurement. Run with --check to
 verify the committed exact JSON bytes. A static validator re-parses every DSL
 string (grammar round-trip, registry arity, declared fields, positive integer
 windows, prior-bar lookback, DAG slot bound); the native DSL compiler remains
@@ -82,7 +83,7 @@ def new_families() -> list[tuple[str, str, str, list[tuple[str, Expr]]]]:
     resid_sum = lambda n: binary(window('ts_sum', ret, n), '-', mul(pair('ts_regression', ret, mkt, n), window('ts_sum', mkt, n)))
     resid_sd = lambda n: mul(window('stddev', ret, n), call('signedpower', call('abs', unexplained(n)), half))
     resid_sharpe = lambda n: window('delay', ratio(resid_sum(n), resid_sd(n)), 21)
-    idio_var = lambda n: mul(window('ts_var', ret, n), unexplained(n))
+    idio_var = lambda n: mul(window('ts_var', ret, n), call('abs', unexplained(n)))
     return [
         ('residual_momentum',
          'Standardized market-model residual return (residual Sharpe) over 6-1, 9-1 and 12-1 windows; beta, alpha and residual sd fit on the formation window; one-month skip.',
@@ -139,16 +140,33 @@ def new_families() -> list[tuple[str, str, str, list[tuple[str, Expr]]]]:
     ]
 
 
-# Fix round 1 (review of 2c92d658), applied before any TRAIN measurement.
+# Fix round 1 (review of 2c92d658) and fix round 2 (re-review of f2d5fb97), both
+# applied before any TRAIN measurement.
 REVISIONS = [
-    dict(finding='I1', change='abnormal_volume uses split-adjusted (raw_close * volume) / close instead of raw share volume'),
-    dict(finding='I2', change='vec_avg(ret) replaced by the upstream mkt_ret field (previous-session members, broadcast to all present names)'),
-    dict(finding='I3', change='residual_momentum is standardized residual Sharpe at 6-1, 9-1 and 12-1 (resmom_6_1/resmom_9_1 dropped)'),
-    dict(finding='I4a', change='illiquidity: amihud_21/63/126 levels replaced by amihud_shock_21_252, roll_autocorr_126, signed_volume_reversal_126'),
-    dict(finding='I4b', change='ivol_21/ivol_126 replaced by ivol_change_21_252 and ivol_change_63_qoq; max_ret_21 replaced by scaled_max_21'),
-    dict(finding='M1', change='fp_beta volatility ratio uses 252 sessions (fp_beta_250_63 renamed fp_beta_250_252)'),
-    dict(finding='M2', change='market_corr_63 replaced by corr_asymmetry_126 (down minus up correlation)'),
-    dict(finding='M7', change='residual sd uses signedpower(abs(1 - rho^2), 0.5), keeping the alpha sign if rho rounds past 1'),
+    dict(round=1, finding='I1', change='abnormal_volume uses split-adjusted (raw_close * volume) / close instead of raw share volume'),
+    dict(round=1, finding='I2', change='vec_avg(ret) replaced by the upstream mkt_ret field (previous-session members, broadcast to all present names)'),
+    dict(round=1, finding='I3', change='residual_momentum is standardized residual Sharpe at 6-1, 9-1 and 12-1 (resmom_6_1/resmom_9_1 dropped)'),
+    dict(round=1, finding='I4a', change='illiquidity: amihud_21/63/126 levels replaced by amihud_shock_21_252, roll_autocorr_126, signed_volume_reversal_126'),
+    dict(round=1, finding='I4b', change='ivol_21/ivol_126 replaced by ivol_change_21_252 and ivol_change_63_qoq; max_ret_21 replaced by scaled_max_21'),
+    dict(round=1, finding='M1', change='fp_beta volatility ratio uses 252 sessions (fp_beta_250_63 renamed fp_beta_250_252)'),
+    dict(round=1, finding='M2', change='market_corr_63 replaced by corr_asymmetry_126 (down minus up correlation)'),
+    dict(round=1, finding='M7', change='residual sd uses signedpower(abs(1 - rho^2), 0.5), keeping the alpha sign if rho rounds past 1'),
+    dict(round=2, finding='N1', change='expected_overlap records resid_sharpe_6_1 vs v1 risk_scaled_6_1 (prior rank corr ~0.85-0.9); note only, no DSL change'),
+    dict(round=2, finding='N2', change='expected_overlap records ivol_change_21_252 vs v1 vol_expansion_21_126 (prior |rank corr| ~0.8-0.85) and v2 vol_term_63_252 (~0.7); note only, no DSL change'),
+    dict(round=2, finding='N3', change='idio_var uses ts_var * abs(1 - rho^2), so ivol_change numerators and denominators cannot flip sign if rho rounds past 1 (M7 pattern)'),
+]
+
+# Fix round 2 (N1, N2): priors from the re-review's arithmetic, recorded before any
+# TRAIN measurement. Notes only: they change no DSL, so they are not selection trials.
+EXPECTED_OVERLAP = [
+    dict(template='resid_sharpe_6_1', reference='risk_scaled_6_1', reference_origin='frozen_v1', prior_abs_rank_corr='0.85-0.9',
+         basis='same [t-125, t-21] formation window; numerators differ by beta*M (sd ~0.05 vs R ~0.25-0.30); denominators differ '
+               'by residualization (log-sd ~0.1-0.15 vs ~0.45 for the vol level) and 105 vs 126 sessions', finding='N1'),
+    dict(template='ivol_change_21_252', reference='vol_expansion_21_126', reference_origin='frozen_v1', prior_abs_rank_corr='0.8-0.85',
+         basis='log(ivar21/ivar252) = log(var21/var252) + log(1-R2_21) - log(1-R2_252) shares the noisy 21-session variance '
+               'numerator with -(sd21/sd126); the sign is absorbed by the TRAIN orientation', finding='N2'),
+    dict(template='ivol_change_21_252', reference='vol_term_63_252', reference_origin='new_v2', prior_abs_rank_corr='0.7',
+         basis='both are short-over-long variance ratios ending at t with a 252-session denominator', finding='N2'),
 ]
 
 
@@ -357,6 +375,8 @@ def documents() -> dict[str, bytes]:
     assert all(re.fullmatch(r'[a-z0-9_]{1,64}', s) for s in ids + [c['family'] for c in candidates])
     assert candidates[:48] == v1_library['candidates']
     assert not any('vec_avg' in c['dsl'] for c in candidates)
+    template_ids = {row['template'] for row in lineage}
+    assert all(o['template'] in template_ids and o['reference'] in template_ids for o in EXPECTED_OVERLAP)
     library = dict(schema='atx.dsl-ic-library/v1', id='price_volume_ic96_v2', fields=fields,
                    families=v1_library['families'] + [dict(id=f, description=d) for f, d, _, _ in families],
                    candidates=candidates)
@@ -364,12 +384,13 @@ def documents() -> dict[str, bytes]:
     library_bytes = encode(library)
     fixed = ('The eight new families were fixed from published economic priors before any v2 measurement. Fix round 1 '
              're-selected templates structurally from an independent code review (split handling, market-return '
-             'coverage, overlap with v1 momentum/low-risk/size tilts), still before any TRAIN measurement; no IC, return, '
+             'coverage, overlap with v1 momentum/low-risk/size tilts), and fix round 2 hardened the ivol_change variance '
+             'shares and recorded expected overlaps from a re-review, still before any TRAIN measurement; no IC, return, '
              'turnover or correlation output was consulted to choose or tune them. TRAIN fits only per-candidate signs; '
              'validation is not used for selection.')
     recipe = dict(schema='atx.dsl-ic-experiment/v1', id='price_volume_ic96_v2_initial',
         library=dict(path=LIBRARY, sha256=hashlib.sha256(library_bytes).hexdigest()),
-        generation=dict(rule='frozen-v1-48-plus-eight-by-three-by-two-v2', revision='fix-round-1',
+        generation=dict(rule='frozen-v1-48-plus-eight-by-three-by-two-v2', revision='fix-round-2',
                         candidates=96, families=16, templates_per_family=3,
                         smoothing_sessions=[21, 63], wrapper='decay_linear(rank(base), s)', smoothing_exemptions=[],
                         smoothing_rationale='no family exempted: rank tames heavy-tailed bases (Amihud ratios, volume ratios, '
@@ -381,6 +402,9 @@ def documents() -> dict[str, bytes]:
                                        copy='ids, families, family descriptions and DSL bytes identical; dsl_sha256 unchanged'),
                         new=dict(candidates=48, families=8, templates=24)),
         revisions=REVISIONS,
+        expected_overlap=dict(rule='pre-measurement prior rank correlations from review arithmetic; not measured, not a '
+                                   'selection input; the admission screen culls empirical duplicates',
+                              pairs=EXPECTED_OVERLAP),
         family_fixing=dict(fixed_before_measurement=True, measurement_consulted=False,
                            template_reselection='structural, from code review, before any TRAIN measurement', statement=fixed),
         family_priors=[dict(family=f, origin='frozen_v1', prior=d) for f, d in v1_families.items()] +
@@ -398,7 +422,7 @@ def documents() -> dict[str, bytes]:
         planned_turnover=v1_recipe['planned_turnover'],
         trials=dict(generated_candidates=96, reused_v1_candidates=48, new_candidates=48, orientation_fits=96,
                     inverse_additional_vm_evaluations=0, family_or_template_selection=False,
-                    families_fixed_before_measurement=True, pre_measurement_template_revisions=1,
+                    families_fixed_before_measurement=True, pre_measurement_template_revisions=2,
                     combined_recipes=1, validation_selection=False,
                     reruns='retain attempts; v1 attempts remain prior trials of the reused 48',
                     horizons_and_smoothers_are_independent_trials=False),
