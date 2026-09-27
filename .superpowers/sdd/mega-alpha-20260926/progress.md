@@ -49,6 +49,16 @@
   Plan T19 identity snapshot (S), T20 fundamental events producer (L), T21 fields-v5 (M-L), T22 grp_ group fields
   (S, C++), T23 prior orientation (S-M), T24 library v4 (M), T25 audit (M).
 
+- v4 PRE-REGISTERED (v4-prereg.md @90ce38e0, before any v4 TRAIN read): prior-signed themed library (9 themes),
+  within-FF12 ranking for accounting ratios, admission v4-prior-v1 (veto HAC t<-2, |rho|<=.90 by tier), composition
+  ew-theme-v1, fixed construction band 1, GATE TRAIN S2xswap-fin net >= 1.0 before validation trial #2.
+  Rulings: fundamentals +1 lag session after accepted_utc (conservative; cost: ~1 day staleness); identity = pinned
+  r4 rehearsal links (PIT, ~80% common; cost: lower coverage than static bridge); within-industry accounting ranks
+  (cost: lose between-industry value premium); TRAIN window unchanged 2020-22 (owner rule; 3y is the root
+  limitation — recommend owner consider pre-2020 history for selection).
+- Dispatched (Opus): t19-t23 (pool-4 v4-identity: T19 then T23), t20-fundevents (pool-8), t21-fields5 (pool-3),
+  t22-grp (pool-5), t24-libv4 (pool-7); t17 packaging checks C1-C8 (pool-9 t17-checks). All branches @90ce38e0.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
