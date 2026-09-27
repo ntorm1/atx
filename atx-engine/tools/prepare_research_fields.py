@@ -19,6 +19,12 @@ Sources (all read-only; exact bytes hashed, pinned against their producers' rece
 * the role payload itself (``mkt_ret``): equal-weight mean of guarded adjusted close-to-close
   returns of the prior session's decision members, broadcast to every present cell of the session.
 
+Every manifest field entry carries a machine-readable ``point_in_time`` flag (see
+``POINT_IN_TIME_DEFINITION``); a false flag names its reason and the non-PIT aspect (values or
+presence). The default field list is the point-in-time fields only; the others (``is_common``,
+``mktcap_lagged``, ``size_grp``) are produced only when named in ``--fields``. Implied volatility
+outside the declared domain ``IV_DOMAIN`` becomes NaN (never clamped) and is counted per field.
+
 Everything available on or after 2025-01-01 is excluded; the role itself must end before it.
 Row groups of the vendor file mix all dates: only needed columns are decoded, rows are filtered to
 the role ids/dates before any statistic. No warehouse access. Outputs are exclusive and
@@ -59,6 +65,29 @@ LINE_PREFIX = "TBLTICKERHISTORY-"
 ELIGIBLE_SECURITY_TYPES = ("common", "common_unverified")  # atx_db.research.spine
 SIZE_CODES = {"micro": 0.0, "small": 1.0, "large": 2.0, "mega": 3.0}
 EARN_CODES = {"N": 0, "-1": 0, "0": 1, "1": 1}  # -1 presumes a known future date: same as N
+# Declared by the root controller 2026-09-27 BEFORE any IV measurement (T6 fix round 1): the
+# plausible domain of annualized decimal ATM implied volatility, both bounds inclusive.
+IV_DOMAIN = (0.02, 5.0)
+IV_DOMAIN_RULE = ("vendor value v kept iff float32(0.02) <= v <= float32(5.0) (float32 comparison: the vendor's own "
+                  "precision, so a stored 0.02 is in domain); any other non-null value -> NaN, never clamped. below_min "
+                  "includes <= 0 and -inf, above_max includes +inf. Counts are role cells after duplicate-key quarantine. "
+                  "Domain declared by the root controller 2026-09-27 before any IV measurement")
+SPINE_MAX_FORMATION_AGE_DAYS = 35  # consecutive month-end sessions are <= 34 days apart
+QUANTILES = (("p0.1", 0.001), ("p1", 0.01), ("p50", 0.5), ("p99", 0.99), ("p99.9", 0.999))
+POINT_IN_TIME_DEFINITION = (
+    "point_in_time is true when both a field's cell values and which of its cells are NaN use only information "
+    "available by the session's decision (every finite cell of every field is known by the session-date 22:00 UTC "
+    "mark, before the 23:00 UTC decision). A false flag carries point_in_time_reason and non_pit_aspects "
+    "(values and/or presence). Revision vintage of the sources (FINRA republication, unproven vendor vintage) is "
+    "reported separately (historical_vintage_verified, vintage_safe_from, caveats) and does not set this flag. "
+    "Consumers that must avoid look-ahead refuse point_in_time false fields unless explicitly allowed.")
+SPINE_PRESENCE_NOT_PIT = (
+    "values are point in time (formation strictly before the session, A8 90-day lagged shares), but WHICH lines have "
+    "a value is the research spine universe: an eligible type taken from the 2026-09-18 Nasdaq Trader directory "
+    "snapshot (listed lines) or whole-history vendor earnings evidence (delisted lines), admitted from first_earn_date "
+    "= the first bar with nEarnCnt_504d > 0, a count of FUTURE earnings events up to 504 sessions ahead "
+    "(atx_db.research.spine classify_lines / stage_spine). NaN versus finite therefore leaks survival and "
+    "future-earnings information")
 
 DEFAULT_FINRA = Path("C:/atx/data/finra_short_interest")
 DEFAULT_TICKERHISTORY = Path("C:/Users/natha/Downloads/TickerHistory3.parquet")
@@ -71,37 +100,40 @@ TH_CLOCK = "vendor-eod-row-date==session-date;known-at-session+22h-mark;same-dat
 
 FIELDS = {
     "si_shares": {
-        "group": "finra", "source_file": "si_shares.csv", "source_columns": ["value"],
+        "group": "finra", "source_file": "si_shares.csv", "source_columns": ["value"], "point_in_time": True,
         "units": "shares short (FINRA consolidated currentShortPositionQuantity)",
         "clock": "finra-asof:latest-row-with-available_at<date(session)-strict;available_at=official-dissemination-date;replicates-atx-impl-build_asof_column",
         "staleness": "age=date(session)-available_at calendar days; age>45 -> NaN; before first visible row -> NaN; visible NaN stays NaN (no skip-back)",
         "caveats": ["settlements before 2021-06 come from FINRA's later consolidated republication, not the bytes the exchanges disseminated (vintage risk; see vintage_risk counts)",
                     "securityID mapping by ORATS ticker_tk on the last trading day <= settlement (producer mapping_report.json)"]},
     "si_dtc": {
-        "group": "finra", "source_file": "si_dtc.csv", "source_columns": ["value"],
+        "group": "finra", "source_file": "si_dtc.csv", "source_columns": ["value"], "point_in_time": True,
         "units": "days to cover (FINRA daysToCoverQuantity; FINRA floors the ratio at 1.00)",
         "clock": "finra-asof:latest-row-with-available_at<date(session)-strict;available_at=official-dissemination-date;replicates-atx-impl-build_asof_column",
         "staleness": "age=date(session)-available_at calendar days; age>45 -> NaN; before first visible row -> NaN; visible NaN stays NaN (no skip-back)",
         "caveats": ["FINRA reports days-to-cover floored at 1.00 (about 40% of producer rows equal 1); si_shares / volume is the unfloored alternative",
                     "settlements before 2021-06 come from FINRA's later consolidated republication (vintage risk)"]},
     "iv_atm_21d": {
-        "group": "th", "column": "atmCenI_21d", "source_columns": ["atmCenI_21d"],
+        "group": "th", "column": "atmCenI_21d", "source_columns": ["atmCenI_21d"], "point_in_time": True, "domain": IV_DOMAIN,
         "units": "annualized ATM implied volatility, decimal (0.30 = 30%), 21-session constant maturity",
-        "clock": TH_CLOCK, "staleness": "same-date vendor row only; null, non-finite or <= 0 -> NaN",
+        "clock": TH_CLOCK, "staleness": "same-date vendor row only; null or NaN -> NaN; outside the declared domain [0.02, 5.0] (incl. <= 0 and +-inf) -> NaN, counted in plausibility",
         "caveats": ["vendor clean IV: evidence suggests the earnings effect is removed using the vendor earnings calendar (nEarnCnt_*, forward-looking by construction); calendar vintage unproven",
-                    "often null (about half of all vendor rows; about 6.5% of high-volume rows in a sample)", "no vintage proof"]},
+                    "often null (about half of all vendor rows; about 6.5% of high-volume rows in a sample)", "no vintage proof",
+                    "vendor garbage rows exist (v1 member maxima 69.3 and 1.19e16): values outside the declared domain are NaN, in-domain vendor errors cannot be detected"]},
     "iv_atm_63d": {
-        "group": "th", "column": "atmCenI_63d", "source_columns": ["atmCenI_63d"],
+        "group": "th", "column": "atmCenI_63d", "source_columns": ["atmCenI_63d"], "point_in_time": True, "domain": IV_DOMAIN,
         "units": "annualized ATM implied volatility, decimal, 63-session constant maturity",
-        "clock": TH_CLOCK, "staleness": "same-date vendor row only; null, non-finite or <= 0 -> NaN",
-        "caveats": ["vendor clean IV (earnings-calendar adjusted; calendar vintage unproven)", "often null", "no vintage proof"]},
+        "clock": TH_CLOCK, "staleness": "same-date vendor row only; null or NaN -> NaN; outside the declared domain [0.02, 5.0] (incl. <= 0 and +-inf) -> NaN, counted in plausibility",
+        "caveats": ["vendor clean IV (earnings-calendar adjusted; calendar vintage unproven)", "often null", "no vintage proof",
+                    "values outside the declared domain are NaN; in-domain vendor errors cannot be detected"]},
     "iv_atm_126d": {
-        "group": "th", "column": "atmCenI_126d", "source_columns": ["atmCenI_126d"],
+        "group": "th", "column": "atmCenI_126d", "source_columns": ["atmCenI_126d"], "point_in_time": True, "domain": IV_DOMAIN,
         "units": "annualized ATM implied volatility, decimal, 126-session constant maturity",
-        "clock": TH_CLOCK, "staleness": "same-date vendor row only; null, non-finite or <= 0 -> NaN",
-        "caveats": ["vendor clean IV (earnings-calendar adjusted; calendar vintage unproven)", "often null", "no vintage proof"]},
+        "clock": TH_CLOCK, "staleness": "same-date vendor row only; null or NaN -> NaN; outside the declared domain [0.02, 5.0] (incl. <= 0 and +-inf) -> NaN, counted in plausibility",
+        "caveats": ["vendor clean IV (earnings-calendar adjusted; calendar vintage unproven)", "often null", "no vintage proof",
+                    "values outside the declared domain are NaN; in-domain vendor errors cannot be detected"]},
     "earn_recent": {
-        "group": "th", "column": "earnFlag", "source_columns": ["earnFlag"],
+        "group": "th", "column": "earnFlag", "source_columns": ["earnFlag"], "point_in_time": True,
         "units": "indicator: 1 when the session is the vendor earnings reaction day (earnFlag 0) or the day after (1); 0 for N and -1",
         "clock": TH_CLOCK,
         "staleness": "same-date vendor row only; null or unexpected earnFlag -> NaN",
@@ -109,35 +141,39 @@ FIELDS = {
                     "earnFlag 0 is the price-reaction session (median |return| 3.9% vs 1.2% baseline in samples), so the event is public by its close",
                     "vendor calendar vintage unproven"]},
     "shares_out": {
-        "group": "th", "column": "shares", "source_columns": ["shares", "cumulReturnFactor"],
+        "group": "th", "column": "shares", "source_columns": ["shares", "cumulReturnFactor"], "point_in_time": True,
         "units": "shares outstanding (vendor thousands x 1000), restated to the session's share basis",
         "clock": "A8-vendor-shares-lag90-restated-v1: last vendor row of the line dated <= date(session)-90 calendar days with 0 < shares <= 1e8 (A9 thousands ceiling) and cumulReturnFactor > 0, times 1000 x cumulReturnFactor(session row)/cumulReturnFactor(lag row)",
-        "staleness": "lag row older than date(session)-90-400 days -> NaN; no same-date vendor row (or its factor <= 0) -> NaN; a line with any row above the A9 ceiling in the scanned window is withheld entirely (ruling C-81)",
+        "staleness": "lag row older than date(session)-90-400 days -> NaN; no same-date vendor row (or its factor <= 0) -> NaN; a line is withheld (NaN) from the date of its first vendor row above the A9 ceiling onward (point-in-time form of ruling C-81: the spine withholds the whole line, which would use rows after the session)",
         "caveats": ["A8: vendor share runs start at the filing cover date, so same-date vendor shares would leak ~2 weeks; the 90-day modeled lag follows the research spine",
                     "restatement uses the raw vendor cumulReturnFactor ratio (not the VA1-repaired factor; vendor artifact breaks are not detected); dividends move it by a few tenths of a percent",
                     "one price line's count, not the issuer total across share classes; an ADR line counts ADS"]},
     "mktcap_lagged": {
         "group": "lake", "column": "me_line", "source_columns": ["me_line", "formation_date", "line_id"],
+        "point_in_time": False, "non_pit_aspects": ["presence"], "point_in_time_reason": SPINE_PRESENCE_NOT_PIT,
         "units": "USD: formation-session raw close x vendor shares lagged 90 days (spine me_line, me_basis vendor_shares_lag90)",
         "clock": "spine-formation<date(session)-strict-v1: the row of the latest monthly formation session strictly before date(session)",
-        "staleness": "one formation only: a line without a spine row (or with NULL me_line) at that formation -> NaN",
-        "caveats": ["spine universe gate uses vendor earnings evidence (nEarnCnt_504d > 0, which counts FUTURE events) and a 2026 directory snapshot",
+        "staleness": "one formation only: a line without a spine row (or with NULL me_line) at that formation -> NaN. NaN mostly means the line is OUTSIDE the spine universe at that formation (not an eligible common type, or no vendor earnings evidence yet by the spine's forward count), not 'large' and not a data gap (v1: about 25-27% of role member cells, matching the non-common share); consumers needing a size for every name fall back to shares_out x raw_close. A session whose latest formation is more than 35 days old is refused (partial lake)",
+        "caveats": ["spine universe gate uses vendor earnings evidence (nEarnCnt_504d > 0, which counts FUTURE events) and a 2026 directory snapshot: presence is not point in time (see point_in_time_reason)",
                     "one price line's value, not the issuer total"]},
     "size_grp": {
         "group": "lake", "column": "size_grp", "source_columns": ["size_grp", "formation_date", "line_id"],
+        "point_in_time": False, "non_pit_aspects": ["presence"], "point_in_time_reason": SPINE_PRESENCE_NOT_PIT,
         "units": "ordinal code micro=0, small=1, large=2, mega=3 (Fama-French NYSE ME breakpoints p20/p50/p80; micro includes nano)",
         "clock": "spine-formation<date(session)-strict-v1: the row of the latest monthly formation session strictly before date(session)",
-        "staleness": "one formation only: absent line or NULL size_grp -> NaN",
-        "caveats": ["same spine universe caveats as mktcap_lagged"]},
+        "staleness": "one formation only: absent line or NULL size_grp -> NaN; NaN mostly means outside the spine universe (as mktcap_lagged). A session whose latest formation is more than 35 days old is refused (partial lake)",
+        "caveats": ["same spine universe caveats as mktcap_lagged: presence is not point in time"]},
     "is_common": {
         "group": "lake", "column": "security_type", "source_columns": ["security_type", "line_id"],
+        "point_in_time": False, "non_pit_aspects": ["values"],
+        "point_in_time_reason": "static line classification from the 2026-09-18 Nasdaq Trader directory snapshot (lines listed then) and whole-history vendor earnings evidence (every other line): the value encodes survival to 2026 and future earnings (ETF/ADR/REIT/LP = survived; unknown = died without ever reporting earnings); look-ahead in both roles, validation included",
         "units": "indicator: 1 when line_types.security_type is common or common_unverified (the research universe's eligible types), 0 for every other type (ETF, ADR, fund, unknown, ...)",
         "clock": "static-line-classification;NOT-point-in-time",
         "staleness": "constant across sessions; NaN only when the line has no line_types row",
         "caveats": ["classification uses a 2026-09-18 Nasdaq Trader directory snapshot (listed lines) and whole-history vendor earnings evidence (delisted lines): information after 2025-01-01 by construction; use as a coarse ETF/fund filter, not as a PIT signal",
                     "ADR is typed 0"]},
     "mkt_ret": {
-        "group": "role", "source_columns": ["close.f64", "raw_close.f64", "present.u8", "member.u8"],
+        "group": "role", "source_columns": ["close.f64", "raw_close.f64", "present.u8", "member.u8"], "point_in_time": True,
         "units": "simple return, decimal: equal-weight mean of adjusted close-to-close returns (broadcast)",
         "definition": "row d >= 1: mean over instruments i with member[d-1,i]==1, present[d-1,i]==present[d,i]==1, finite positive close and raw_close at d-1 and d, and not guarded, of close[d,i]/close[d-1,i]-1; guarded (atx-impl strategy_target_replay.cpp rough_return) = non-finite r or |log adj ratio| > 1.5 or |log adj ratio| > |log raw ratio| + 0.10; the scalar fills every cell of row d with present[d,i]==1, NaN elsewhere; row 0 and sessions without contributors are NaN; sum is math.fsum (order independent)",
         "clock": "role-close-mark: row d uses role closes at sessions d-1 and d (known at the d 22:00 UTC mark, the close clock) and decision membership of d-1",
@@ -145,7 +181,8 @@ FIELDS = {
         "caveats": ["universe is the role's prior-63-session ADV top-N (ETFs included; common_stock_verified false): an ADV-universe equal-weight market, not a cap-weighted index",
                     "a broadcast field: identical across present names, so it avoids the runner's member-masked vec_avg blanking market templates for boundary names"]},
 }
-DEFAULT_FIELDS = tuple(FIELDS)
+# Non-point-in-time fields are opt-in: produced only when named in --fields.
+DEFAULT_FIELDS = tuple(k for k, spec in FIELDS.items() if spec["point_in_time"])
 
 EXCLUDED_SOURCE_COLUMNS = [
     {"columns": "atmCenH_* (proposed hv_<tenor>)",
@@ -183,6 +220,14 @@ def sha_file(path: Path, budget: "Budget | None" = None) -> str:
             if budget:
                 budget.check("hash")
     return h.hexdigest()
+
+
+def code_identity(path: Path) -> dict:
+    """The executed code's pins: raw bytes (checkout dependent), LF-normalised bytes, and git blob id."""
+    raw = path.read_bytes()
+    lf = raw.replace(b"\r\n", b"\n")
+    return {"code_sha256": sha_bytes(raw), "code_sha256_lf": sha_bytes(lf),
+            "code_git_blob_sha1": hashlib.sha1(b"blob %d\0" % len(lf) + lf).hexdigest()}
 
 
 def identity(path: Path):
@@ -350,6 +395,35 @@ class FieldWriter:
                 "member_finite_mean": (self.vsum / self.vcount) if self.vcount else None}
 
 
+def digest_and_quantiles(path: Path, role: Role, count: int, budget: Budget):
+    """One read of a published field: SHA-256 of its bytes and quantiles of its finite member cells."""
+    budget.admit(count * 8 + (16 << 20), f"{path.name}-quantiles")
+    values = np.empty(count, dtype=np.float64)
+    h, filled, row_bytes = hashlib.sha256(), 0, role.n * 8
+    with path.open("rb") as f:
+        for t in range(role.n_dates):
+            blob = f.read(row_bytes)
+            if len(blob) != row_bytes:
+                raise ValueError(f"{path.name} is truncated")
+            h.update(blob)
+            row = np.frombuffer(blob, dtype="<f8")
+            v = row[(role.member[t] != 0) & np.isfinite(row)]
+            if filled + len(v) > count:
+                raise ValueError(f"{path.name}: finite member cells disagree with the writer")
+            values[filled:filled + len(v)] = v
+            filled += len(v)
+            if t % 256 == 0:
+                budget.check(f"{path.name}-digest")
+        if f.read(1):
+            raise ValueError(f"{path.name} is longer than the role shape")
+    if filled != count:
+        raise ValueError(f"{path.name}: finite member cells disagree with the writer")
+    if not count:
+        return h.hexdigest(), None
+    q = np.quantile(values, [x for _, x in QUANTILES], overwrite_input=True)
+    return h.hexdigest(), {k: float(x) for (k, _), x in zip(QUANTILES, q)}
+
+
 # ---------------------------------------------------------------------------
 # FINRA short interest (as-of join replicating atx-impl asof_field.cpp)
 # ---------------------------------------------------------------------------
@@ -441,7 +515,7 @@ def finra_field(name: str, finra: Path, role: Role, output: Path, schedule, budg
     budget.report(f"{name}-parsed", rows=rows_total, matched=rows_matched, sealed=rows_sealed)
     writer = FieldWriter(output, name, role)
     columns = np.arange(role.n, dtype=np.int64)
-    vintage_cells = 0
+    vintage_cells, last_republished = 0, -1
     for t in range(role.n_dates):
         d = int(role.days[t])
         found = np.searchsorted(key, (columns << 32) | d, side="left") - 1  # last key < (col, d): strict
@@ -452,7 +526,10 @@ def finra_field(name: str, finra: Path, role: Role, output: Path, schedule, budg
         row = np.where(visible, values[safe], np.nan)
         writer.write(row)
         if vintage_cutoff is not None:
-            vintage_cells += int(np.count_nonzero(visible & np.isfinite(row) & (role.member[t] != 0) & (src_day <= vintage_cutoff)))
+            republished = visible & (src_day <= vintage_cutoff)
+            vintage_cells += int(np.count_nonzero(republished & np.isfinite(row) & (role.member[t] != 0)))
+            if republished.any():
+                last_republished = t
         if t % 256 == 0:
             budget.check(f"{name}-join")
     writer.close()
@@ -461,14 +538,18 @@ def finra_field(name: str, finra: Path, role: Role, output: Path, schedule, budg
     coverage = writer.coverage()
     coverage["vintage_risk"] = {
         "rule": f"visible row disseminated on or before {date_of(vintage_cutoff) if vintage_cutoff is not None else None} (settlement before {FINRA_REPUBLICATION_SETTLEMENT_BEFORE.isoformat()}): later FINRA republication",
-        "finite_member_cells": vintage_cells}
+        "finite_member_cells": vintage_cells,
+        # Any cell (member or not, NaN value or not) whose visible row is republished counts here.
+        "last_session_with_republished_visible_cell": date_of(role.days[last_republished]) if last_republished >= 0 else None,
+        "first_session_vintage_safe": (date_of(role.days[last_republished + 1]) if last_republished + 1 < role.n_dates else None)}
+    extra = {"vintage_safe_from": date_of(vintage_cutoff + 1) if vintage_cutoff is not None else None}
     sources = [{"path": str(path.resolve()), "bytes": captured[2], "sha256": digest},
                {"path": str((finra / "asof" / "manifest.json").resolve()), "bytes": len(receipt_bytes), "sha256": sha_bytes(receipt_bytes)},
                schedule_source]
     stats = {"rows_total": rows_total, "rows_available_on_or_after_2025_dropped": rows_sealed,
              "rows_matched_axis": rows_matched, "rows_ignored_unknown_id": rows_total - rows_sealed - rows_matched,
              "max_stale_days": FINRA_MAX_STALE_DAYS}
-    return writer, sources, coverage, stats
+    return writer, sources, coverage, stats, extra
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +589,8 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
     earn = np.full((nd, n), -1, dtype=np.int8) if want_earn else None
     q = np.full((n_ext, n), np.nan) if want_shares else None       # shares / cumulReturnFactor (file basis)
     crf = np.full((nd, n), np.nan) if want_shares else None        # cumulReturnFactor at the session
-    suspect = np.zeros(n, dtype=bool)
+    never = np.iinfo(np.int64).max
+    first_above = np.full(n, never, dtype=np.int64)  # date of the line's first row above the A9 ceiling
     st = {"rows_scanned": 0, "rows_on_or_after_2025_skipped": 0, "rows_selected": 0, "rows_off_role_calendar": 0,
           "earnflag_null": 0, "earnflag_unexpected": 0, "iv_nonpositive_or_nonfinite": 0,
           "shares_rows_above_a9_ceiling": 0}
@@ -538,7 +620,7 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
             v = sub.column(FIELDS[k]["column"]).to_numpy(zero_copy_only=False).astype(np.float32)[role_rows]
             bad = ~(np.isfinite(v) & (v > 0))
             st["iv_nonpositive_or_nonfinite"] += int(np.count_nonzero(bad & ~np.isnan(v)))
-            iv[k][t, jr] = np.where(bad, np.float32(np.nan), v)
+            iv[k][t, jr] = v  # raw vendor value (null -> NaN); the declared domain is applied per cell at write
         if want_earn:
             flag = sub.column("earnFlag").filter(pa.array(role_rows))
             code = np.full(len(flag), -1, dtype=np.int8)
@@ -556,7 +638,7 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
             factor = sub.column("cumulReturnFactor").to_numpy(zero_copy_only=False).astype(np.float64)
             above = shares > THOUSANDS_ROW_CEILING
             st["shares_rows_above_a9_ceiling"] += int(np.count_nonzero(above))
-            suspect[j[above]] = True
+            np.minimum.at(first_above, j[above], ext_days[e[above]])
             good_factor = np.isfinite(factor) & (factor > 0)
             with np.errstate(divide="ignore", invalid="ignore"):
                 q[e, j] = np.where((shares > 0) & ~above & good_factor, shares / factor, np.nan)
@@ -576,17 +658,32 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
     if want_shares:
         q[dup] = np.nan
         crf[dup_role] = np.nan
-        st["shares_lines_withheld_c81"] = int(np.count_nonzero(suspect))
+        st["shares_lines_withheld_c81"] = int(np.count_nonzero(first_above != never))
     del counts, dup, dup_role
     source = [{"path": str(th.resolve()), "bytes": captured[2], "sha256": digest,
                "row_groups": pf.metadata.num_row_groups, "rows": pf.metadata.num_rows}]
-    results = {}
+    results, extras = {}, {}
     for k in iv_names:
+        lo, hi = (np.float32(x) for x in FIELDS[k]["domain"])
+        c = {"below_min": 0, "above_max": 0, "member_below_min": 0, "member_above_max": 0}
         w = FieldWriter(output, k, role)
         for t in range(nd):
-            w.write(iv[k][t].astype(np.float64))
+            v = iv[k][t]
+            seen = ~np.isnan(v)
+            low, high = seen & ~(v >= lo), seen & (v > hi)  # float32 comparison; -inf low, +inf high
+            member = role.member[t] != 0
+            c["below_min"] += int(np.count_nonzero(low))
+            c["above_max"] += int(np.count_nonzero(high))
+            c["member_below_min"] += int(np.count_nonzero(low & member))
+            c["member_above_max"] += int(np.count_nonzero(high & member))
+            w.write(np.where(low | high, np.nan, v.astype(np.float64)))
         w.close()
         results[k] = w
+        extras[k] = {"plausibility": {
+            "min": FIELDS[k]["domain"][0], "max": FIELDS[k]["domain"][1], "inclusive": True,
+            "units": "annualized decimal", "rule": IV_DOMAIN_RULE,
+            "implausible_to_nan": c["below_min"] + c["above_max"],
+            "implausible_to_nan_member": c["member_below_min"] + c["member_above_max"], **c}}
         del iv[k]
         budget.check(f"{k}-write")
     if want_earn:
@@ -601,6 +698,7 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
         last_valid = np.full(n, -1, dtype=np.int64)
         cols = np.arange(n)
         p = 0
+        withheld_cells = 0
         for t in range(nd):
             lag = int(role.days[t]) - SHARES_LAG_DAYS
             while p < n_ext and ext_days[p] <= lag:
@@ -609,13 +707,17 @@ def tickerhistory_fields(names, th: Path, role: Role, output: Path, budget: Budg
             src = np.maximum(last_valid, 0)
             fresh = (last_valid >= 0) & (ext_days[src] >= lag - SHARES_MAX_AGE_DAYS)
             row = np.where(fresh, q[src, cols] * crf[t] * SHARES_UNIT, np.nan)
-            row[suspect] = np.nan
+            # C-81, point in time: withheld once an above-ceiling row dated <= the session is known.
+            withheld = first_above <= int(role.days[t])
+            row[withheld] = np.nan
+            withheld_cells += int(np.count_nonzero(withheld))
             w.write(row)
             if t % 256 == 0:
                 budget.check("shares_out-write")
         w.close()
         results["shares_out"] = w
-    return results, source, st, digest
+        st["shares_cells_withheld_c81"] = withheld_cells
+    return results, source, st, digest, extras
 
 
 # ---------------------------------------------------------------------------
@@ -696,7 +798,9 @@ def lake_fields(names, lake: Path, role: Role, output: Path, budget: Budget):
             f_sg.append(sg)
             budget.check(f"spine-{year}")
         fdays = np.array(sorted(formations), dtype=np.int64)
-        months = [(EPOCH + dt.timedelta(days=int(x))) for x in fdays]
+        if not len(fdays):
+            raise ValueError("the lake has no spine formation for the role's years")
+        months =[(EPOCH + dt.timedelta(days=int(x))) for x in fdays]
         if any((b.year * 12 + b.month) - (a.year * 12 + a.month) != 1 for a, b in zip(months, months[1:])):
             raise ValueError("spine formations are not month-contiguous (partial lake?)")
         day_all, col_all = np.concatenate(f_day), np.concatenate(f_col)
@@ -713,9 +817,16 @@ def lake_fields(names, lake: Path, role: Role, output: Path, budget: Budget):
         st["spine_first_formation"] = date_of(fdays[0]) if len(fdays) else None
         st["spine_last_formation"] = date_of(fdays[-1]) if len(fdays) else None
         st["spine_rows_on_axis"] = int(len(flat))
+        latest = np.searchsorted(fdays, role.days, side="left") - 1  # latest formation < session
+        age = np.where(latest >= 0, role.days - fdays[np.maximum(latest, 0)], 0)
+        if len(age) and int(age.max()) > SPINE_MAX_FORMATION_AGE_DAYS:
+            t_bad = int(np.argmax(age > SPINE_MAX_FORMATION_AGE_DAYS))
+            raise ValueError(f"stale spine formation: session {date_of(role.days[t_bad])} would use the formation of "
+                             f"{date_of(fdays[latest[t_bad]])} ({int(age[t_bad])} days > {SPINE_MAX_FORMATION_AGE_DAYS}; partial lake?)")
+        st["spine_max_formation_age_days"] = int(age.max()) if len(age) else None
         writers = {x: FieldWriter(output, x, role) for x in spine_names}
         for t in range(role.n_dates):
-            f = int(np.searchsorted(fdays, role.days[t], side="left")) - 1  # latest formation < session
+            f = int(latest[t])
             for x, w in writers.items():
                 src = me if x == "mktcap_lagged" else sgm
                 w.write(src[f] if f >= 0 else np.full(role.n, np.nan))
@@ -840,7 +951,7 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
     outcome = {}
     source_checks = {}
     groups = {g: [f for f in selected if FIELDS[f]["group"] == g] for g in ("role", "finra", "th", "lake")}
-    field_stats = {}
+    field_stats, field_extras = {}, {}
     if groups["role"]:
         w, src, stats = market_return_field(role, output, budget)
         outcome["mkt_ret"] = (w, src, w.coverage())
@@ -849,13 +960,15 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
     if groups["finra"]:
         schedule = read_schedule(finra)
         for name in groups["finra"]:
-            w, src, cov, stats = finra_field(name, finra, role, output, schedule, budget)
+            w, src, cov, stats, extra = finra_field(name, finra, role, output, schedule, budget)
             outcome[name] = (w, src, cov)
             source_checks[name] = stats
+            field_extras[name] = extra
             budget.report(f"{name}-complete", **{k: cov[k] for k in ("finite_member_frac",)})
     if groups["th"]:
-        writers, src, stats, _ = tickerhistory_fields(groups["th"], tickerhistory, role, output, budget)
+        writers, src, stats, _, extras = tickerhistory_fields(groups["th"], tickerhistory, role, output, budget)
         source_checks["tickerhistory"] = stats
+        field_extras.update(extras)
         for name, w in writers.items():
             outcome[name] = (w, src, w.coverage())
         budget.report("tickerhistory-complete", **stats)
@@ -868,19 +981,26 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
     files, entries = {}, []
     for name in selected:
         w, src, cov = outcome[name]
-        files[w.path.name] = {"bytes": w.path.stat().st_size, "sha256": sha_file(w.path, budget)}
-        if files[w.path.name]["bytes"] != role.n_dates * role.n * 8:
+        size = w.path.stat().st_size
+        if size != role.n_dates * role.n * 8:
             raise ValueError(f"{name}: output size mismatch")
+        digest, quantiles = digest_and_quantiles(w.path, role, w.vcount, budget)
+        files[w.path.name] = {"bytes": size, "sha256": digest}
+        cov["member_finite_quantiles"] = quantiles
         spec = FIELDS[name]
         entry = {"name": name, "file": w.path.name, "dtype": "<f8", "layout": "date-major",
                  "shape": [role.n_dates, role.n], "units": spec["units"], "clock": spec["clock"],
                  "staleness": spec["staleness"], "source_columns": spec["source_columns"],
                  "sources": src, "caveats": spec["caveats"], "coverage": cov,
-                 "sha256": files[w.path.name]["sha256"]}
+                 "sha256": files[w.path.name]["sha256"], "point_in_time": spec["point_in_time"],
+                 "non_pit_aspects": spec.get("non_pit_aspects", [])}
+        if not spec["point_in_time"]:
+            entry["point_in_time_reason"] = spec["point_in_time_reason"]
         if "definition" in spec:
             entry["definition"] = spec["definition"]
         if name in field_stats:
             entry["stats"] = field_stats[name]
+        entry.update(field_extras.get(name, {}))
         entries.append(entry)
     # Re-pin the role: the axes must not have changed underneath the run.
     Role(role_dir, role_sha256)
@@ -898,10 +1018,13 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
                  "rule": "every source row available on or after 2025-01-01 is dropped before use; role sessions asserted < 2025-01-01"},
         "cell_rule": "NaN where the field is not visible at the session decision or the source is absent",
         "coverage_basis": "member.u8 cells of the role (member cells with a finite value / member cells)",
+        "visibility_mark": "every finite cell of every field is known by the session-date 22:00 UTC mark (the role close clock), before the 23:00 UTC decision",
+        "point_in_time_definition": POINT_IN_TIME_DEFINITION,
+        "non_point_in_time_fields": [e["name"] for e in entries if not e["point_in_time"]],
         "fields": entries, "files": files,
         "excluded_source_columns": EXCLUDED_SOURCE_COLUMNS,
         "source_checks": source_checks,
-        "code_sha256": sha_file(Path(__file__)),
+        **code_identity(Path(__file__)),
         "historical_vintage_verified": False, "common_stock_verified": False,
     }
     publish(output / "manifest.json", manifest)
@@ -914,7 +1037,9 @@ def main(argv=None):
     p.add_argument("--role", required=True, type=Path, help="published recent-research role directory")
     p.add_argument("--role-sha256", required=True, help="SHA-256 of the role's manifest.json")
     p.add_argument("--output", required=True, type=Path, help="new exclusive output directory")
-    p.add_argument("--fields", default=",".join(DEFAULT_FIELDS), help="comma-separated subset of: " + ",".join(FIELDS))
+    p.add_argument("--fields", default=",".join(DEFAULT_FIELDS),
+                   help="comma-separated subset of: " + ",".join(FIELDS) + " (default: the point-in-time fields "
+                        + ",".join(DEFAULT_FIELDS) + "; non-point-in-time fields are produced only when named)")
     p.add_argument("--max-rss-mib", type=int, default=700)
     p.add_argument("--max-seconds", type=float, default=1800.0)
     p.add_argument("--finra", type=Path, default=DEFAULT_FINRA, help="FINRA short-interest root (asof/, dissemination_schedule.csv)")

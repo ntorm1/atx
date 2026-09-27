@@ -19,9 +19,18 @@ IDS = [101, 202, 303, 404, 505]
 SESSIONS = [d for d in (dt.date(2024, 10, 1) + dt.timedelta(days=i) for i in range(92)) if d.weekday() < 5]
 FORMATIONS = [dt.date(2024, 8, 30), dt.date(2024, 9, 30), dt.date(2024, 10, 31), dt.date(2024, 11, 29), dt.date(2024, 12, 31)]
 SPLIT_303 = dt.date(2024, 11, 1)
+C81_303 = dt.date(2024, 12, 2)  # an above-ceiling row inside the role: 303 withheld from here on only
 SHARES_202_CHANGE = dt.date(2024, 8, 15)
 LAST_SHARES_505 = dt.date(2023, 6, 15)
 DUP = (10, 202)
+# Declared IV domain [0.02, 5.0]: (t, sid) -> atmCenI_21d; 63d = v + 0.05 and 126d = v + 0.1 in float32.
+IV_OVERRIDES = {(13, 303): 1e16,           # garbage: above in every tenor
+                (14, 202): 0.0199,         # 21d below; 63d/126d in domain
+                (15, 202): 0.02,           # float32(0.02) is exactly on the lower bound: kept
+                (16, 101): 5.0,            # 21d on the upper bound: kept; 63d 5.05 / 126d 5.1 above
+                (17, 101): float("inf"),   # +inf: above in every tenor
+                (18, 404): -0.3,           # negative: below in every tenor
+                (60, 101): 9.0}            # above in every tenor, on a NON-member cell (member[60, 101] == 0)
 
 
 def sha(path):
@@ -50,6 +59,8 @@ def write_tickerhistory(path):
                 shares = 3000 if d >= SHARES_202_CHANGE else 2000
             if sid == 303:
                 shares, crf = (1000, 1.0) if d >= SPLIT_303 else (500, 0.5)
+                if d == C81_303:
+                    shares = 150_000_000
             if sid == 404 and d == dt.date(2024, 3, 1):
                 shares = 200_000_000  # above the A9 thousands ceiling: whole line withheld (C-81)
             if sid == 505:
@@ -66,6 +77,8 @@ def write_tickerhistory(path):
                 v = None
             if sid == 303 and t == 12:
                 v = np.float32(0.0)
+            if (t, sid) in IV_OVERRIDES:
+                v = np.float32(IV_OVERRIDES[(t, sid)])
             for k, x in (("tradingDate", d), ("securityID", sid), ("close", 10.0), ("shares", shares),
                          ("earnFlag", flag), ("cumulReturnFactor", crf), ("atmCenI_21d", v),
                          ("atmCenI_63d", None if v is None else np.float32(v + np.float32(0.05))),
@@ -117,10 +130,10 @@ def write_finra(root):
     (root / "asof" / "manifest.json").write_text(json.dumps({"outputs": outputs}), encoding="utf-8")
 
 
-def write_lake(root):
+def write_lake(root, formations=FORMATIONS):
     rows = {"eom": [], "line_id": [], "price": [], "me_line": [], "size_grp": [], "formation_date": []}
     groups = ["micro", "small", "large", "mega", "small"]
-    for k, f in enumerate(FORMATIONS):
+    for k, f in enumerate(formations):
         eom = (f.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
         for sid, me, sg in ((101, 1e9 * (k + 1), groups[k]), (202, 5e8, None if k == 2 else "large"),
                             (303, 2e8 + k, "micro"), (999, 1e7, "micro")):
@@ -208,14 +221,14 @@ def write_role(root, source_sha, sessions=SESSIONS):
 
 
 class Fixture:
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, formations=FORMATIONS):
         self.base = base
         self.th = base / "TickerHistory3.parquet"
         write_tickerhistory(self.th)
         self.finra = base / "finra"
         write_finra(self.finra)
         self.lake = base / "lake"
-        write_lake(self.lake)
+        write_lake(self.lake, formations)
         self.role = base / "role"
         self.role_sha = write_role(self.role, sha(self.th))
 
@@ -239,7 +252,7 @@ class ResearchFields(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
         cls.fx = Fixture(Path(cls.temp.name))
-        cls.manifest = cls.fx.run("fields")
+        cls.manifest = cls.fx.run("fields", fields=list(tool.FIELDS))  # every field, opt-in ones included
 
     @classmethod
     def tearDownClass(cls):
@@ -293,6 +306,43 @@ class ResearchFields(unittest.TestCase):
         self.assertEqual(checks["rows_off_role_calendar"], 1)
         self.assertEqual(checks["earnflag_unexpected"], 1)
         self.assertGreater(checks["rows_on_or_after_2025_skipped"], 0)
+        self.assertEqual(checks["iv_nonpositive_or_nonfinite"], 7)  # row level, all tenors: 0.0, 3x inf, 3x -0.3
+
+    def test_iv_declared_domain_to_nan_and_counted(self):
+        tenors = {"iv_atm_21d": 0.0, "iv_atm_63d": 0.05, "iv_atm_126d": 0.1}
+        entries = {f["name"]: f for f in self.manifest["fields"]}
+        expected_counts = {"iv_atm_21d": (3, 3), "iv_atm_63d": (1, 4), "iv_atm_126d": (1, 4)}
+        for name, add in tenors.items():
+            got = self.fx.field("fields", name)
+            for (t, sid), v21 in IV_OVERRIDES.items():
+                v = np.float32(np.float32(v21) + np.float32(add)) if add else np.float32(v21)
+                keep = bool(np.float32(0.02) <= v <= np.float32(5.0))
+                cell = got[t, IDS.index(sid)]
+                if keep:
+                    self.assertEqual(cell, float(v), (name, t, sid))  # never clamped or rescaled
+                else:
+                    self.assertTrue(np.isnan(cell), (name, t, sid))
+            if name == "iv_atm_21d":
+                self.assertTrue(np.isnan(got[12, IDS.index(303)]))            # 0.0: below
+                self.assertEqual(got[15, IDS.index(202)], float(np.float32(0.02)))  # inclusive lower bound
+                self.assertEqual(got[16, IDS.index(101)], 5.0)                # inclusive upper bound
+            else:
+                self.assertEqual(got[12, IDS.index(303)], float(np.float32(add)))  # 0.05 / 0.1: in domain
+            plaus = entries[name]["plausibility"]
+            below, above = expected_counts[name]
+            self.assertEqual((plaus["min"], plaus["max"], plaus["inclusive"]), (0.02, 5.0, True))
+            self.assertEqual((plaus["below_min"], plaus["above_max"]), (below, above), name)
+            self.assertEqual(plaus["implausible_to_nan"], below + above)
+            self.assertEqual(plaus["implausible_to_nan_member"], below + above - 1)  # (60, 101) is not a member
+            self.assertEqual((plaus["member_below_min"], plaus["member_above_max"]), (below, above - 1))
+            cov = entries[name]["coverage"]
+            self.assertGreaterEqual(cov["member_finite_min"], float(np.float32(0.02)))
+            self.assertLessEqual(cov["member_finite_max"], 5.0)
+            q = cov["member_finite_quantiles"]
+            self.assertEqual(list(q), ["p0.1", "p1", "p50", "p99", "p99.9"])
+            self.assertTrue(cov["member_finite_min"] <= q["p0.1"] <= q["p50"] <= q["p99.9"] <= cov["member_finite_max"])
+        for name, entry in entries.items():
+            self.assertEqual("plausibility" in entry, name in tenors)
 
     def test_shares_out_lag90_restated_and_withheld(self):
         so = self.fx.field("fields", "shares_out")
@@ -307,12 +357,17 @@ class ResearchFields(unittest.TestCase):
         c = IDS.index(303)
         self.assertEqual(so[t_of("2024-10-15"), c], 500_000)   # pre-split basis
         self.assertEqual(so[t_of("2024-11-04"), c], 1_000_000)  # lag row pre-split, restated 2:1
-        self.assertTrue(np.all(np.isnan(so[:, IDS.index(404)])))  # A9 ceiling -> line withheld (C-81)
+        self.assertEqual(so[t_of("2024-11-29"), c], 1_000_000)  # before its above-ceiling row: not withheld
+        for t, d in enumerate(SESSIONS):  # C-81 point in time: withheld from the offending row's date on
+            self.assertEqual(np.isnan(so[t, c]), d >= C81_303, d)
+        self.assertTrue(np.all(np.isnan(so[:, IDS.index(404)])))  # A9 row before the role -> withheld throughout
         e = IDS.index(505)
         edge = LAST_SHARES_505 + dt.timedelta(days=490)
         for t, d in enumerate(SESSIONS):
             self.assertEqual(np.isnan(so[t, e]), d > edge, d)
-        self.assertEqual(self.manifest["source_checks"]["tickerhistory"]["shares_lines_withheld_c81"], 1)
+        checks = self.manifest["source_checks"]["tickerhistory"]
+        self.assertEqual(checks["shares_lines_withheld_c81"], 2)
+        self.assertEqual(checks["shares_cells_withheld_c81"], len(SESSIONS) + sum(d >= C81_303 for d in SESSIONS))
 
     def test_spine_strict_formation_and_static_type(self):
         me = self.fx.field("fields", "mktcap_lagged")
@@ -334,6 +389,67 @@ class ResearchFields(unittest.TestCase):
         self.assertTrue(np.isnan(ic[0, IDS.index(404)]))
         self.assertEqual(ic[0, IDS.index(505)], 0.0)
         self.assertTrue(np.array_equal(ic, np.broadcast_to(ic[0], ic.shape), equal_nan=True))  # static
+        self.assertEqual(self.manifest["source_checks"]["lake"]["spine_max_formation_age_days"], 32)  # Dec 31 <- Nov 29
+
+    def test_stale_spine_formation_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fx = Fixture(Path(temp), formations=FORMATIONS[:3])  # lake ends with the October formation
+            with self.assertRaisesRegex(ValueError, r"stale spine formation: session 2024-12-06 .* 2024-10-31 \(36 days"):
+                fx.run("stale", fields=["size_grp"])
+            self.assertFalse((fx.base / "stale" / "manifest.json").exists())
+
+    def test_point_in_time_flags_and_default_fields(self):
+        opt_in = {"is_common", "mktcap_lagged", "size_grp"}
+        self.assertEqual(set(tool.FIELDS) - set(tool.DEFAULT_FIELDS), opt_in)
+        m = self.manifest
+        self.assertEqual(m["non_point_in_time_fields"], ["mktcap_lagged", "size_grp", "is_common"])
+        self.assertIn("point_in_time", m["point_in_time_definition"])
+        for e in m["fields"]:
+            self.assertIs(e["point_in_time"], e["name"] not in opt_in, e["name"])
+            if e["point_in_time"]:
+                self.assertEqual(e["non_pit_aspects"], [])
+                self.assertNotIn("point_in_time_reason", e)
+            else:
+                self.assertTrue(e["point_in_time_reason"])
+                self.assertEqual(e["non_pit_aspects"], ["values"] if e["name"] == "is_common" else ["presence"])
+        # The default run publishes the point-in-time fields only, byte-identical to the full run.
+        d = self.fx.run("fields-default")
+        self.assertEqual([e["name"] for e in d["fields"]], list(tool.DEFAULT_FIELDS))
+        self.assertEqual(d["non_point_in_time_fields"], [])
+        self.assertTrue(all(e["point_in_time"] for e in d["fields"]))
+        self.assertEqual(sorted(p.name for p in (self.fx.base / "fields-default").iterdir()),
+                         sorted([f"{n}.f64" for n in tool.DEFAULT_FIELDS] + ["manifest.json"]))
+        for name in tool.DEFAULT_FIELDS:
+            self.assertEqual(d["files"][f"{name}.f64"], m["files"][f"{name}.f64"], name)
+
+    def test_finra_vintage_structured(self):
+        for name in ("si_shares", "si_dtc"):
+            e = next(f for f in self.manifest["fields"] if f["name"] == name)
+            self.assertEqual(e["vintage_safe_from"], "2021-06-10")  # fixture schedule: 2021-06-09 cutoff
+            v = e["coverage"]["vintage_risk"]
+            self.assertEqual((v["finite_member_cells"], v["last_session_with_republished_visible_cell"]), (0, None))
+            self.assertEqual(v["first_session_vintage_safe"], SESSIONS[0].isoformat())
+        # A cutoff inside the role (2024-10-09): rows available on or before it are "republished".
+        with tempfile.TemporaryDirectory() as temp:
+            role = tool.Role(self.fx.role, self.fx.role_sha)
+            dissemination, _, source = tool.read_schedule(self.fx.finra)
+            with contextlib.redirect_stdout(io.StringIO()):
+                w, _, cov, _, extra = tool.finra_field("si_shares", self.fx.finra, role, Path(temp),
+                                                       (dissemination, day(dt.date(2024, 10, 9)), source), tool.Budget())
+            self.assertEqual(extra["vintage_safe_from"], "2024-10-10")
+            v = cov["vintage_risk"]
+            # 303's 2024-10-02 row stays visible through age 45 (2024-11-16, a Saturday).
+            self.assertEqual(v["last_session_with_republished_visible_cell"], "2024-11-15")
+            self.assertEqual(v["first_session_vintage_safe"], "2024-11-18")
+            si = np.fromfile(Path(temp) / "si_shares.f64", dtype="<f8").reshape(len(SESSIONS), len(IDS))
+            member = np.fromfile(self.fx.role / "member.u8", dtype="u1").reshape(len(SESSIONS), len(IDS)) != 0
+            # 101: rows 09-25 and 10-09 visible through 10-21; 202: 10-01 row through 10-15; 303: through 11-15.
+            expect = 0
+            for t, d in enumerate(SESSIONS):
+                for i, last in ((0, dt.date(2024, 10, 21)), (1, dt.date(2024, 10, 15)), (2, dt.date(2024, 11, 15))):
+                    expect += int(d <= last and member[t, i] and np.isfinite(si[t, i]))
+            self.assertEqual(v["finite_member_cells"], expect)
+            self.assertGreater(expect, 0)
 
     def test_mkt_ret_guarded_equal_weight_broadcast(self):
         close, raw, present = role_prices(len(SESSIONS))
@@ -381,10 +497,28 @@ class ResearchFields(unittest.TestCase):
         self.assertEqual(th["sources"][0]["sha256"], sha(self.fx.th))
         cov = next(f for f in m["fields"] if f["name"] == "shares_out")["coverage"]
         self.assertEqual(cov["member_cells"], len(SESSIONS) * len(IDS) - 4)
-        again = self.fx.run("fields-again")
+        member = np.fromfile(self.fx.role / "member.u8", dtype="u1").reshape(len(SESSIONS), len(IDS)) != 0
+        for e in m["fields"]:  # quantiles are of exactly the finite member cells of the published bytes
+            got = self.fx.field("fields", e["name"])
+            v = got[member & np.isfinite(got)]
+            q = e["coverage"]["member_finite_quantiles"]
+            self.assertEqual(list(q.values()), np.quantile(v, [0.001, 0.01, 0.5, 0.99, 0.999]).tolist(), e["name"])
+        again = self.fx.run("fields-again", fields=list(tool.FIELDS))
         self.assertEqual(again, m)
         for name in list(m["files"]) + ["manifest.json"]:
             self.assertEqual(sha(self.fx.base / "fields" / name), sha(self.fx.base / "fields-again" / name))
+
+    def test_code_identity_is_line_ending_independent(self):
+        m = self.manifest
+        lf = Path(tool.__file__).read_bytes().replace(b"\r\n", b"\n")
+        crlf = self.fx.base / "crlf_copy.py"
+        crlf.write_bytes(lf.replace(b"\n", b"\r\n"))
+        a, b = tool.code_identity(Path(tool.__file__)), tool.code_identity(crlf)
+        self.assertEqual(a, {k: m[k] for k in ("code_sha256", "code_sha256_lf", "code_git_blob_sha1")})
+        self.assertEqual(b["code_sha256"], sha(crlf))                  # the raw pin follows the checkout bytes
+        self.assertNotEqual(b["code_sha256"], b["code_sha256_lf"])
+        self.assertEqual((a["code_sha256_lf"], a["code_git_blob_sha1"]), (b["code_sha256_lf"], b["code_git_blob_sha1"]))
+        self.assertEqual(a["code_git_blob_sha1"], hashlib.sha1(b"blob %d\0" % len(lf) + lf).hexdigest())
 
     def test_exclusive_output_and_fail_closed_refusals(self):
         before = sha(self.fx.base / "fields" / "manifest.json")
@@ -455,6 +589,8 @@ class ResearchFields(unittest.TestCase):
                        "--max-rss-mib", "700"])
         m = json.loads((self.fx.base / "cli" / "manifest.json").read_bytes())
         self.assertEqual([f["name"] for f in m["fields"]], ["si_shares", "is_common"])
+        self.assertEqual([f["point_in_time"] for f in m["fields"]], [True, False])  # opt-in, flagged
+        self.assertEqual(m["non_point_in_time_fields"], ["is_common"])
         self.assertEqual(sorted(p.name for p in (self.fx.base / "cli").iterdir()),
                          ["is_common.f64", "manifest.json", "si_shares.f64"])
         np.testing.assert_array_equal(self.fx.field("cli", "si_shares"), self.fx.field("fields", "si_shares"))
