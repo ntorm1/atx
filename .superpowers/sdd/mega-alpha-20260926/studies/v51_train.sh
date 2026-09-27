@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
 # v5.1 TRAIN pipeline (v4-prereg.md "## v5.1 family" R1''): library v5.1 = frozen v4 (37, daa9663e) + opex_at = 38
 # candidates (9e5ea08c). Admission v4-prior-v1 unchanged; BOTH compositions re-fit on the 38 (+2 composition trials);
-# construction: the R5' reference cell only (+1). TRAIN only (role v2 210fff96, fields-v6 32565c32); nothing >= 2023 is read.
-# = v5_train.sh (T31) with L = v5.1, the v4_train.sh u phase, per-composition fit / w outputs and mega-*-v51-* dirs.
+# construction: the R5' reference cell only (+1 per composition run). TRAIN only (role v2 210fff96, fields-v6 32565c32);
+# nothing >= 2023 is read. = v5_train.sh (T31) with L = v5.1, the v4_train.sh u phase, per-composition fit / w outputs
+# and v51-tagged dirs (mega-v51-train-u, mega-weights-v51-*, mega-v51w-train-*, mega-nav-v51-*, mega-fit-work-v51).
 #
 #   bash v51_train.sh u                          -> unweighted TRAIN IC pass build-equity/mega-v51-train-u-<i> (<= 3 bounded
 #                                                   passes); records <prefix>.final + orientations / runner-summary pins
 #   COMP=ew-theme-v1     bash v51_train.sh fit   -> build-equity/mega-weights-v51-ew  (<= 3 bounded passes, resumable)
 #   COMP=ew-theme-aim-v1 bash v51_train.sh fit   -> build-equity/mega-weights-v51-aim (same work dir mega-fit-work-v51)
 #   COMBINED=ew|aim bash v51_train.sh w          -> weighted TRAIN IC pass build-equity/mega-v51w-train-$COMBINED-<i>
-#   COMBINED=ew|aim THETA=.05 DUST=.1 RATE=fixed [LEV=1] bash v51_train.sh nav
+#   COMBINED=ew|aim bash v51_train.sh nav        -> the reference cell (THETA=.05 DUST=.1 RATE=fixed LEV=1, the defaults):
+#                                                   build-equity/mega-nav-v51-$COMBINED-t.05-d.1-fixed
+#   EXTRA_CELL=1 COMBINED=.. THETA=.. DUST=.. RATE=fixed|per-name [LEV=..] bash v51_train.sh nav
 #                                                -> build-equity/mega-nav-v51-$COMBINED-t$THETA-d$DUST-$RATE[-L$LEV]
-#                                                   (a cell other than the reference construction needs EXTRA_CELL=1)
-#   DRY=1 ...  print every bounded-runner (and helper) command line instead of running it. Runs in this script's own
-#              checkout and writes nothing; a pinned file absent from that checkout is reported, not checked.
+#                                                   (any other cell is an undeclared trial: refused unless EXTRA_CELL=1)
+#   DRY=1 ...  print every bounded-runner (and helper) command line instead of running it; writes nothing. Runs in this
+#              script's own checkout (or DRY_ROOT=<checkout>, read-only; DRY only); a pinned file absent there is
+#              reported, not checked.
 # Phases chain through pins recorded next to their outputs (<prefix>.final, <prefix>.*.sha256), checked when read.
-# Every input is pinned by SHA-256 (here, and the tools refuse unpinned inputs). Any argument naming validation or
-# 2023 is refused (exit 2). Outputs are never overwritten. Never --band-multiple.
+# Every input is pinned by SHA-256 (here, and the tools refuse unpinned inputs). Any argument or env value naming
+# validation / VAL / 2023-2025 is refused (exit 2) before anything runs. Outputs are never overwritten. Never --band-multiple.
 set -u
 DRY=${DRY:-}
-if [ -n "$DRY" ]; then cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1; else cd C:/atx-wt/pool-2 || exit 1; fi
+if [ -n "$DRY" ]; then cd "${DRY_ROOT:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}" || exit 1
+elif [ -n "${DRY_ROOT:-}" ]; then echo "DRY_ROOT is honoured with DRY=1 only (real runs always use C:/atx-wt/pool-2)"; exit 2
+else cd C:/atx-wt/pool-2 || exit 1; fi
 export PATH="/c/atx-cache/vcpkg_installed/x64-windows/debug/bin:/c/atx-cache/vcpkg_installed/x64-windows/bin:$PATH"
 PY="C:/Program Files/Python312/python.exe"
 BR="scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512"
@@ -45,11 +51,15 @@ W_EW=build-equity/mega-weights-v51-ew
 W_AIM=build-equity/mega-weights-v51-aim
 WT=build-equity/mega-v51w-train        # weighted TRAIN IC pass prefix: $WT-$COMBINED-<i>/train_combined.json
 REF=build-equity/mega-nav-v5-ew-t.05-d.1-fixed   # v5 R5' reference cell (frozen v4 library): paired dSR baseline
-bad() {  # refuse (exit 2) any argument naming validation or 2023; 64-hex SHA values are not paths
-  local a
+bad() {  # refuse (exit 2) any value naming validation / VAL (a whole token, any case) / 2023-2024 (validation) or
+         # 2025 (reserved); 64-hex SHA values are not paths
+  local a l re='(^|[^a-z])val([^a-z]|$)'
   for a in "$@"; do
     [[ $a =~ ^[0-9a-f]{64}$ ]] && continue
-    case "${a,,}" in *validation*|*2023*) echo "REFUSED (TRAIN only): '$a' names validation or 2023"; exit 2 ;; esac
+    l=${a,,}
+    if [[ $l == *validation* || $l =~ $re || $l == *2023* || $l == *2024* || $l == *2025* ]]; then
+      echo "REFUSED (TRAIN only): '$a' names validation / VAL / 2023-2025"; exit 2
+    fi
   done
 }
 q() { local a s=""; for a in "$@"; do case "$a" in *" "*) s="$s \"$a\"" ;; *) s="$s $a" ;; esac; done; echo "${s# }"; }
@@ -84,12 +94,14 @@ fresh() {  # prefix i: 0 when pass i is unused; a pass left by an earlier invoca
   [ -e "$1-$2" ] && { echo "REFUSED: $1-$2 exists without its receipt dir $1-run$2"; exit 1; }
   return 0
 }
-bad "$PY" $BR $IC $NAV $STUDIES $L $LR $R2 $FD $A4 $W4 $CC $U $WORK $W_EW $W_AIM $WT $REF
+bad "$@" "$DRY" "${DRY_ROOT:-}" "${COMP:-}" "${COMBINED:-}" "${THETA:-}" "${DUST:-}" "${RATE:-}" "${LEV:-}" "${EXTRA_CELL:-}"
+bad "$PWD" "$PY" $BR $IC $NAV $STUDIES $L $LR $R2 $FD $A4 $W4 $CC $U $WORK $W_EW $W_AIM $WT $REF
 LS=$(sha256sum $L | cut -c1-64)                             # computed, then asserted == the v5.1 pin
 [ "$LS" = "$LS_PIN" ] || { echo "PIN MISMATCH $L: ${LS:-missing} != $LS_PIN (library v5.1)"; exit 1; }
 for f in "$LR $LRS" "$R2 $R2S" "$FD/manifest.json $FS"; do pin $f; done
 echo "library v5.1 $LS recipe $LRS train $R2S fields $FS${DRY:+ [DRY: nothing runs or is written]}"
-[ $# -gt 0 ] || { echo "usage: [DRY=1] [COMP=ew-theme-v1|ew-theme-aim-v1] [COMBINED=ew|aim THETA= DUST= RATE= LEV=] bash v51_train.sh u|fit|w|nav ..."; exit 2; }
+[ $# -gt 0 ] || { echo "usage: [DRY=1 [DRY_ROOT=]] [COMP=ew-theme-v1|ew-theme-aim-v1] [COMBINED=ew|aim] [EXTRA_CELL=1 THETA= DUST= RATE= LEV=] bash v51_train.sh u|fit|w|nav ..."; exit 2; }
+for ph in $*; do case "$ph" in u|fit|w|nav) ;; *) echo "unknown phase $ph (u | fit | w | nav); nothing run"; exit 2 ;; esac; done
 for phase in "$@"; do
  for ph in $phase; do
   if [ "$ph" = u ]; then
@@ -167,7 +179,7 @@ else:
     print(f"vs v4 admission 880a0a6a ({len(old)} admitted): added {sorted(new - old)} dropped {sorted(old - new)}")
 c = {r["id"]: r for r in adm["candidates"]}["opex_at"]
 print(f"opex_at: {c['status']} tau {f(c['tau'])} hac_t {f(c['hac_t'])} max|rho| {f(c['max_abs_rho'])} "
-      f"with {c['max_abs_rho_with']} redundant_with {c['redundant_with']} weight {d['weights']['opex_at']:.4f}")
+      f"with {c['max_abs_rho_with']} redundant_with {c['redundant_with']} weight {d['weights'].get('opex_at', 0.0):.4f}")
 if p["rule"] == "ew-theme-aim-v1":
     a = p["aim"]
     theme = {r["id"]: r["theme"] for r in p["candidates"]}
@@ -208,15 +220,15 @@ EOF
     SS=$(state $U.summary.sha256 "$(dsha $U-$iu/summary.json)") || exit 1
     pin $WF $WS; echo "W_$COMBINED (v5.1) $WF $WS"
     if [ -n "$DRY" ]; then
-      echo "DRY: $(q "$PY" - $WF $LS $RULE $OS $SS) <<provenance check (library v5.1, rule, this u pass)"
+      echo "DRY: $(q "$PY" - $WF $LS $RULE $OS $SS $R2S) <<provenance check (library v5.1, rule, this u pass, TRAIN role v2)"
     else
-      "$PY" - "$WF" "$LS" "$RULE" "$OS" "$SS" <<'EOF'
+      "$PY" - "$WF" "$LS" "$RULE" "$OS" "$SS" "$R2S" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1])); p = d["provenance"]
 got = {"library_sha256": d["library_sha256"], "rule": p["rule"], "orientations_sha256": p["orientations_sha256"],
-       "runner_summary_sha256": p["runner_summary_sha256"]}
-off = {k: (v, w) for (k, v), w in zip(got.items(), sys.argv[2:6]) if v != w}
-print("weights provenance: " + (f"MISMATCH {off}" if off else "library v5.1, rule and the recorded u pass all match"))
+       "runner_summary_sha256": p["runner_summary_sha256"], "train_manifest_sha256": d["train_manifest_sha256"]}
+off = {k: (v, w) for (k, v), w in zip(got.items(), sys.argv[2:7]) if v != w}
+print("weights provenance: " + (f"MISMATCH {off}" if off else "library v5.1, rule, the recorded u pass and TRAIN role v2 all match"))
 sys.exit(1 if off else 0)
 EOF
       [ $? = 0 ] || exit 1
@@ -239,16 +251,16 @@ EOF
     record $i $P.final; record $CS $P.combined.sha256            # C_$COMBINED pin for the nav phase
     echo "C_$COMBINED (v5.1) $P-$i/train_combined.json $CS"
   elif [ "$ph" = nav ]; then
-    : "${COMBINED:?COMBINED=ew|aim}" "${THETA:?THETA e.g. .05}" "${DUST:?DUST e.g. .1}" "${RATE:?RATE=fixed|per-name}"
-    LEV=${LEV:-1}
-    case "$COMBINED" in
+    case "${COMBINED:-}" in
       ew) W=$W_EW ;;
       aim) W=$W_AIM ;;
-      *) echo "nav: COMBINED must be ew or aim"; exit 2 ;;
+      *) echo "nav: set COMBINED=ew or COMBINED=aim"; exit 2 ;;
     esac
-    if [ "$THETA $DUST $RATE $LEV" != ".05 .1 fixed 1" ] && [ -z "${EXTRA_CELL:-}" ]; then
-      echo "nav: v5.1 pre-registers the reference construction only (THETA=.05 DUST=.1 RATE=fixed LEV=1; construction +1)."
-      echo "     Any other cell is an undeclared trial: declare it in v4-prereg.md first, then re-run with EXTRA_CELL=1."; exit 2
+    THETA=${THETA:-.05}; DUST=${DUST:-.1}; RATE=${RATE:-fixed}; LEV=${LEV:-1}   # default = the reference cell
+    if [ "$THETA $DUST $RATE $LEV" != ".05 .1 fixed 1" ] && [ "${EXTRA_CELL:-}" != 1 ]; then
+      echo "nav: v5.1 pre-registers the reference construction only (THETA=.05 DUST=.1 RATE=fixed LEV=1; construction +1"
+      echo "     per composition). THETA=$THETA DUST=$DUST RATE=$RATE LEV=$LEV is an undeclared trial: declare it in"
+      echo "     v4-prereg.md first, then re-run with EXTRA_CELL=1."; exit 2
     fi
     P=$WT-$COMBINED
     i=$(state $P.final 1) || exit 1
@@ -257,6 +269,23 @@ EOF
     WF=$W/composition_weights.json
     WS=$(state $W.weights.sha256 "$(dsha $WF)") || exit 1
     pin $C $CS; pin $WF $WS
+    # the combined must come from the recorded weights of this composition, library v5.1, TRAIN role v2, fields-v6
+    if [ -n "$DRY" ]; then
+      echo "DRY: $(q "$PY" - $C $WS $LS $R2S $FS) <<combined provenance check (W_$COMBINED, library v5.1, TRAIN, fields-v6)"
+    else
+      "$PY" - "$C" "$WS" "$LS" "$R2S" "$FS" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ws, ls, r2s, fs = sys.argv[2:6]
+want = {"composition_weights_sha256": ws, "library_sha256": ls, "role": "train", "role_manifest_sha256": r2s,
+        "train_manifest_sha256": r2s, "research_fields_manifest_sha256": fs, "status": "complete"}
+off = {k: (d.get(k), v) for k, v in want.items() if d.get(k) != v}
+print("combined provenance: " + (f"MISMATCH {off}" if off else
+      "recorded weights, library v5.1, TRAIN role v2, fields-v6, complete: all match"))
+sys.exit(1 if off else 0)
+EOF
+      [ $? = 0 ] || exit 1
+    fi
     case "$RATE" in
       fixed) RF="" ;;
       per-name) RF="--rate per-name-v1 --rate-rra 10 --rate-min .01 --rate-max .15" ;;
