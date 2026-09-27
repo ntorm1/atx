@@ -136,6 +136,22 @@
   => break repair confirmed (-26% day gone). Gap to net 1.0 = alpha quality + cost.
 - T11 fix r1: pool-3 f0c223e5 -> root 1507a2d8 (runner-summary-bound cache layout; script sha in key;
   M2-M6). 33/33 OK. Report text appended by root (subagent write blocked). Re-review dispatched.
+- v1 SCREEN on role v2 (v3-admit-v1, mega-weights-v1r2, 61s/482MiB): 48 candidates = 48 ADMISSION TRIALS:
+  8 admitted, 19 reject_unstable (2022 sign flip), 21 reject_redundant; sign_conflicts 13 (2 weighted);
+  sum w tau .0742/day; weights 9023511769f98052006560a4bcb45d7de772cffb08d9b891be2f875db454c803
+  (composition trial +1). Pinned runner mega-v1mv-train-r2 65s/503MiB, combined 57901bad.
+- NAV v1-MV neutralized c1 f1, band grid {0,.5,1,2}/N (4 construction trials, TRAIN in-sample, flat-300):
+    band 0  : S1 net 1.044 gross 1.738 | S2 net .510 gross 1.736 HAC .90 vol 4.3% tau .092/.116 tc .112 brw .045
+    band .5 : S1 net 1.092 gross 1.676 | S2 net .572 gross 1.661 HAC 1.00 vol 4.1% tau .057/.075 tc .089 brw .043
+    band 1  : S1 net .990 gross 1.525 | S2 net .511 gross 1.413 HAC .90 vol 3.6% tau .042/.056 tc .061 brw .036
+    band 2  : S1 net .658 gross 1.008 | S2 net .059 gross .567 vol 2.3% tau .026/.045
+  All meet daily turnover limits. S2 cost ~3-3.7%/yr dominates; flat-300 ~1.4%/yr. In-sample (screen +
+  weights fit on the same TRAIN) — optimistic. Not the freeze candidate (v1 library only).
+- T7 review: spec PASS, Needs fixes 0C/2I/8m: I1 fields resident for whole loop (~1580 MiB for v3 at 4
+  workers > cap); I2 VM semantics version hand-bumped, no guard test. T7 fix round 2 sent.
+- T12 review: spec PASS, Needs fixes 0C/1I/5m: 50-cell threshold margin thin (44/47 legit). TRAIN v2 role
+  usable. T12 fix r1 (factor-break-v2 detector) on NEW worktree pool-9 (lease mega-alpha-t12-20260927,
+  configure failed on atx-vol install target — source-only lane) because pool-8 is busy with T6 fix 2.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
