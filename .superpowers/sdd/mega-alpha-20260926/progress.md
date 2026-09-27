@@ -1,5 +1,24 @@
 # Active task: recent-data DSL ensemble
 
+## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
+
+Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
+mega-v3-VAL-1: 172 s / 673 MiB, 121 cold; combined ba69712156e20a2b04de58fc6958f86e7fa8a851ed844b566e2530aa2edf25af.
+NAV mega-nav-v3-VAL (27 s / 243 MiB), 2023-2024, $1bn, daily c1, neut price-risk-v1, band 1/N:
+  PRIMARY S2 x swap-fin-v1: NET SR -1.271, gross +0.161, HAC t -1.91, mu -1.84%/yr, vol 1.45%, MDD 4.5%,
+    years 2023 -2.4% / 2024 -1.3%; tau_gmv mean .0494 / p95 .0710 (limits .20/.30 MET), max .139;
+    capacity: 48,858 of 82,511 fills capped at 1% ADV (59%), unfilled $10.3bn cumulative;
+    financing $: long 3.04M, short 4.95M (gc 3.17 / warm 1.40 / special .38); short$ share gc .837 warm .154
+    special .010; blocked short name-decisions 12,350; missing-predictor member decisions 10,791.
+  S1 x swap-fin: net -0.653 (gross +.074); S3 x swap-fin: net -2.391; S2 x flat-300-v0: net -2.149;
+  S2 x engine-tiers-v1: net -1.406.
+  Netting ratio (TRAIN, band 0): 1.49.
+TRAIN in-sample for the same config: net 1.807 / gross 2.741 -> gross collapses OOS (2.74 -> 0.16).
+Interpretation: the TRAIN selection (screen + MV weights + band on the same 2020-22 data) did not generalize;
+validation is now spent for this configuration. Per objective item 6, next lever = alpha quality (fundamentals/
+industry via CIK, new library version) with a fresh TRAIN freeze; any new frozen configuration = validation
+trial #2, disclosed. Per-alpha validation diagnostics must NOT inform the next selection.
+
 ## RESUMED 2026-09-27 (parent 3; owner goal prompt authorizes; SDD on Opus children)
 
 - Docs commits 44666f09 (owner ruling revisions) + 9003f273 (T10 brief). Shared contracts:
