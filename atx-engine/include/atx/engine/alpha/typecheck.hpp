@@ -136,13 +136,18 @@ namespace detail {
 
 // ----- field classification ---------------------------------------------
 
-// A field is a Group classifier iff its name carries the `IndClass.` prefix
-// (IndClass.sector / .industry / .subindustry), OR if it is the bare canonical
-// gics-derived "sector" field (kHistFieldSector). All other fields are F64.
+// A field is a Group classifier iff it is the bare canonical gics-derived
+// "sector" field (kHistFieldSector), OR its name carries the `IndClass.` prefix
+// (IndClass.sector / .industry / .subindustry), OR the `grp_` prefix (research
+// role fields such as grp_ff12 / grp_ff49: the IC runner's field names admit no
+// dot, so this is how a pinned fields manifest supplies several groupings). A
+// bare prefix with no suffix is not a classifier. All other fields are F64.
 [[nodiscard]] inline bool is_group_field(std::string_view name) noexcept {
-  constexpr std::string_view kPrefix = "IndClass.";
-  if (name == "sector") return true;              // gics-derived classifier column
-  return name.size() > kPrefix.size() && name.substr(0, kPrefix.size()) == kPrefix;
+  constexpr std::string_view kIndClassPrefix = "IndClass.";
+  constexpr std::string_view kGrpPrefix = "grp_";
+  if (name == "sector") return true; // gics-derived classifier column
+  return (name.size() > kIndClassPrefix.size() && name.starts_with(kIndClassPrefix)) ||
+         (name.size() > kGrpPrefix.size() && name.starts_with(kGrpPrefix));
 }
 
 // ----- window-argument validation ----------------------------------------

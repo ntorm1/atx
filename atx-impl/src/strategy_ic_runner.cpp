@@ -98,7 +98,7 @@ constexpr std::array<std::string_view,29> dsl_vm_sources{
     "atx-engine/src/alpha/typecheck.cpp",
     "atx-engine/src/data/strategy_data.cpp"};
 constexpr std::string_view dsl_vm_sources_sha256=
-    "51bc0b2e08b27b1c025759e8c11755ef499df8ef9a723b33116e7164c770d67e";
+    "18693b1880103c7ff7ddf1b59fc35d42b0be3efba381a3fc85884e6ae900e340";
 // FP-relevant build flavor of this TU, which instantiates the header-only VM:
 // compiler major.minor and FMA/AVX2/fast-math. Patch-level compiler updates are
 // assumed not to change strict-FP results. clang-cl defines both __clang__ and
