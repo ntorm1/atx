@@ -563,3 +563,163 @@ New tests:
    - Artifact components inside `kept_split_follow` or `kept_distribution` steps on the break remain.
    - A genuine split that the vendor factor never shows is not restated, as before.
    - The dividend steps inside the ratio (a few tenths of a percent) remain.
+
+## Fix round 3
+
+2026-09-27. Owner: t6-fix. Worktree `C:/atx-wt/pool-8`, new branch `feat/mega-alpha-fields-fix3-20260927`
+cut from root `e756d2a9`. At that root the T6 files equal my fix-2 commit. **Commit `e0ae0e18`** (not pushed),
+which touches the same two files only:
+
+- `atx-engine/tools/prepare_research_fields.py`: sha256 `f0933e2fb3411490c4df9a1dae1355db70ff9f666ed78924d071b7db3695af24` (LF), git blob `f5e38b97b625f57129bcd93f2f0f2ca350282e7d`
+- `atx-engine/tools/test_prepare_research_fields.py`: sha256 `25551ebb860bae05c71fb848ec7d7441104dfc52b804903a3c790f7d698955ff`
+
+Nothing was built and nothing was run on real data. The only real-data reads were the two role manifests, for
+`volume_basis` and the file list.
+
+### Finding (re-review 2) and ruling implemented
+
+About 105 lines carry vendor share counts roughly 1000x too small. The [1e5, 5e10] domain catches only part of
+them. Root's ruling is implemented as declared, with no thresholds of mine.
+
+After the factor-break correction, the gap-ambiguity rule, C-81 and the domain, in that order, a `shares_out`
+cell becomes NaN (never clamped) and is counted per rule when:
+
+- **(a) turnover:** the trailing 21-session median of the name's daily volume, in the session's share basis,
+  exceeds 1.0 x `shares_out`.
+- **(b) short interest:** `si_shares` visible at the session exceeds 1.5 x `shares_out`.
+
+Only `shares_out` is set to NaN. A test checks that `si_shares` is untouched.
+
+### Decisions (the ruling left these open; please accept or overrule)
+
+1. **Volume basis (confirmed).** Both role manifests declare `volume_basis: "raw-share-volume"`, the vendor
+   `volume` column in each day's own share units (`prepare_recent_research.py` projection). `shares_out` is in the
+   session's share basis.
+   - Each window day is therefore restated with the role's own factor f = close/raw, which is the T12-repaired
+     chain on TRAIN v2: u_d = volume_d / f_d.
+   - The rule compares median(u) x f_t with `shares_out`, which is the same as median(volume_d x f_t / f_d).
+   - The factor also carries dividends. Their drift over 21 sessions is a few percent at most, which does not
+     matter at a 1.0x threshold.
+   - A test pins this with a genuine 1:10 consolidation at 15% daily turnover. The unconverted raw median would
+     read 1.5x and wrongly NaN the cell for about 10 sessions; the mutation sweep kills that variant.
+2. **Window definition.** The window is the 21 role sessions ending at t, t included, and uses the name's present
+   days only.
+   - The rule is evaluated only when at least 11 of those days are present (a majority).
+   - Otherwise the cell is kept and counted as `not_evaluable_cells`. This mainly affects each role's first 10
+     sessions, which are warm-up.
+   - Constant: `SHARES_TURNOVER_MIN_OBS = 11`.
+3. **Which `si_shares`.** Rule (b) uses this run's own published `si_shares` field: strict available_at < session,
+   45-day staleness.
+   - `shares_out` therefore now **requires `si_shares` in the same run**. `--fields shares_out` alone is refused
+     before anything is written, and the manifest entry records `depends_on: ["si_shares"]`.
+4. **Strict comparisons** in both rules: exactly 1.0x or exactly 1.5x is kept. A test pins SI = 1.5e6 against
+   `shares_out` = 1e6.
+5. **Counting.**
+   - (a) counts the cells it sets to NaN.
+   - (b) counts only cells (a) did not already take. The overlap is reported as `turnover.also_above_si_ratio`.
+   - `plausibility.implausible_to_nan` (and `_member`) now total **all** rules: domain + (a) + (b). This
+     **widens the meaning** of an existing key; the per-rule keys hold the old parts.
+6. **Point in time.** Row t uses role rows <= t and the `si_shares` row t, which is visible strictly before the
+   session.
+   - A role truncated 8 sessions into a volume spike is byte-identical to the full role on the common sessions.
+   - The spike name becomes NaN only from the 11th spike session onward.
+7. **Binding.** The role's `volume.f64`, `close.f64`, `raw_close.f64` and `present.u8` are streamed row by row.
+   - Each is hashed as it is read and must equal the role manifest; tampered bytes are refused with no manifest.
+   - They are listed in `plausibility.turnover.inputs`.
+
+### Manifest (schema unchanged; additive, except the widened total in decision 5)
+
+- **`fields[shares_out].plausibility`** gains:
+  - `units_rule`: the full statement
+  - `turnover`: `{window_sessions 21, min_present_sessions 11, max_median_volume_over_shares_out 1.0, volume_basis, to_nan, to_nan_member, also_above_si_ratio, not_evaluable_cells, inputs}`
+  - `si_ratio`: `{max_si_shares_over_shares_out 1.5, si_shares, to_nan, to_nan_member, counting}`
+- **`fields[shares_out].depends_on`** = `["si_shares"]`.
+- **Changed text:** `shares_out` `staleness`.
+
+### Tests
+
+Command, run from `C:/atx-wt/pool-8`:
+`& 'C:/Program Files/Python312/python.exe' -m unittest discover -s atx-engine/tools -p test_prepare_research_fields.py -v`
+
+- **Result:** `Ran 22 tests in 4.745s`, `OK`, exit 0. Nineteen tests were already there; three are new, and several existing ones are extended.
+- **Log:** scratchpad `t6fix/t6-fix3-tests.log`, sha256 `d6442add6dec54a07682122219e6a418cb39cf07b6648fca337a47fc178d9206`.
+
+Fixture additions to the unchained-factor fixture (now 68 names, with role volume/close/raw/present payloads and a FINRA set):
+
+| Line | Setup | Expected |
+|---|---|---|
+| 1065 | 1:10 consolidation, 15%/day turnover in both bases | always kept |
+| 1066 | 1.5e5 shares, inside the domain, trading 5e5 a day | NaN from the 11th session; not evaluable before |
+| 1067 | SI 1.6e6, then exactly 1.5e6, on 1e6 shares | NaN at 1.6x, kept at 1.5x, kept after the SI goes stale |
+| 1068 | trades 5x its shares a day from 2021-02-01 | kept until the 11th spike session |
+| 1059 | SI at 1% | untouched |
+| 1066 | also SI 6.7x | counted in `also_above_si_ratio`, not in `si_ratio.to_nan` |
+
+- **Oracle.** It now applies both rules independently (as-of SI; a per-cell median with an explicit basis
+  restatement). The full `shares_out` matrix and every per-rule count, member counts included, must match it.
+  The main fixture's `shares_out` values are unchanged: its role gained a `volume.f64` at about 1%/day.
+- **New tests:**
+  - `test_units_rules_turnover_and_short_interest`
+  - `test_units_rules_point_in_time`
+  - `test_shares_out_requires_si_shares`
+- **Extended:** the source-pin test now also refuses tampered role bytes through the `shares_out` stream.
+
+**Mutation sweep** (scratchpad `t6fix/mutate4.py`): 13 of 13 killed.
+
+- no basis conversion; minimum present days 1; window 11; turnover bound 10
+- window excluding t; SI `>=`
+- either rule turned off; SI count including turnover cells
+- stream verification skipped; `requires` check removed
+- units rules applied before the domain; not-evaluable count over all cells
+
+The fix-1 and fix-2 sweeps were re-run against the final code: all killed, with the one re-indented pattern re-run
+at its new indentation.
+
+**Full-scale synthetic** (scratchpad; TRAIN shape 1196 x 5627, 8.7M vendor rows, si_shares + 3 IV + earn + shares_out):
+
+- **11.2 s wall, peak working set 427 MiB.** Fix 2 took 7.3 s; the extra time is the rolling median and the role streams.
+- The rules add only a 21 x names window and single-row buffers, so the real TRAIN peak should stay close to the
+  re-review's 635 MiB, against `--max-rss-mib 700`.
+
+### Expected real counts
+
+I cannot compute these without real data; root runs it. Read them from `fields[shares_out].plausibility`:
+
+- `turnover.to_nan` / `to_nan_member`
+- `turnover.also_above_si_ratio`
+- `turnover.not_evaluable_cells`
+- `si_ratio.to_nan` / `to_nan_member`
+- `below_min` / `above_max`: should be unchanged from fields-v2 (TRAIN below_min 25,411)
+
+Re-review references on TRAIN fields-v2 (in-domain member cells):
+
+- 1,381 cells trade more than 10x their count daily. Rule (a) at 1.0x should take nearly all of them, apart from
+  any with fewer than 11 present days.
+- 6,851 cells have an SI ratio above 1, and 3,258 above 10. Rule (b) takes the part above 1.5 that (a) did not.
+
+### Root commands (not executed; output directories must not exist; run one at a time)
+
+```powershell
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-8/atx-engine/tools/prepare_research_fields.py --role C:/atx-wt/pool-2/build-equity/recent-fast-train-2020-2022-v2 --role-sha256 210fff9687aa6b16e74c65104d77a916d708dca6986e77b06bac27556c48d1de --output C:/atx-wt/pool-2/build-equity/recent-fast-train-2020-2022-v2-fields-v3 --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --lake C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23 --max-rss-mib 700 --max-seconds 1800
+
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-8/atx-engine/tools/prepare_research_fields.py --role C:/atx-wt/pool-2/build-equity/recent-fast-validation-2023-2024-v1 --role-sha256 0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7 --output C:/atx-wt/pool-2/build-equity/recent-fast-validation-2023-2024-v1-fields-v3 --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --lake C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23 --max-rss-mib 700 --max-seconds 1800
+```
+
+- The role pins and field list are unchanged from fields-v2; `si_shares` is already in the list.
+- If root runs a cherry-picked copy, the manifest `code_git_blob_sha1` must be `f5e38b97b625f57129bcd93f2f0f2ca350282e7d`.
+- Every field other than `shares_out` should be byte-identical to fields-v2, so its sha should match the v2 manifest. That is a cheap regression check.
+
+### Concerns (fix round 3)
+
+1. **Genuine exchange-traded-product exceptions fall to both rules.**
+   - Leveraged and volatility products can trade more than their shares outstanding in a day.
+   - Some ETFs have carried short interest far above 150% of shares outstanding; XRT in early 2021 is the known
+     case, reportedly several hundred percent.
+   - The role universe includes ETFs, so those cells become NaN. T10 then treats them as a missing predictor
+     (warm), which understates borrow cost for exactly the most heavily shorted ETFs.
+   - Root may want a declared fallback for units-rule NaN cells in T10, for example tiering those names from
+     `si_shares` against a known float instead.
+2. **Decisions 2 and 5 are mine and need root's acceptance:** the 11-of-21 present-day minimum, and widening
+   `implausible_to_nan` to total all rules.
+3. **Re-review-2 minors are still open,** outside this round's ruling: N1 (the ported detector is v1 with 3
+   cells of headroom on validation) and N2 (the binding gate checks session names only, not repaired counts).
