@@ -17,7 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 from ._submissions_archive import SubmissionsArchive, _one_info
-from .companyfacts_stage import _RowGroupWriter, _file_sha256, _write_json_atomic
+from .companyfacts_stage import _RowGroupWriter as _CompanyFactsRowGroupWriter, _file_sha256, _write_json_atomic
 
 RULE_VERSION = "submissions-extract-v1"
 ARCHIVE_SHA = "702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165"
@@ -47,6 +47,48 @@ CIK_COLUMNS = (
     ("reason", "string"), ("rows", "int64"), ("history_members", "int64"),
     ("missing_history_members", "int64"), ("duplicate_accessions", "int64"),
 )
+
+
+class _RowGroupWriter:
+    """Coalesce tiny CIK batches before the shared 131072-row Parquet buffer.
+
+    A Submissions batch can contain tens of thousands of one-row CIK/member
+    receipts. Bound the Arrow chunk objects as well as the number of rows;
+    the CompanyFacts helper's numeric row bound alone does not cover that shape.
+    This changes physical buffering only, preserving row order and values.
+    """
+    def __init__(self, path, arrow_schema):
+        self._writer = _CompanyFactsRowGroupWriter(path, arrow_schema)
+        self._schema = arrow_schema
+        self._pending = []
+        self._pending_rows = 0
+
+    @property
+    def rows(self):
+        return self._writer.rows
+
+    def add(self, batch):
+        if batch.num_rows:
+            self._pending.append(batch)
+            self._pending_rows += batch.num_rows
+            if self._pending_rows >= 4096 or len(self._pending) >= 64:
+                self._flush()
+
+    def _flush(self):
+        import pyarrow as pa
+        if self._pending:
+            table = pa.Table.from_batches(self._pending, schema=self._schema).combine_chunks()
+            self._pending, self._pending_rows = [], 0
+            for batch in table.to_batches(max_chunksize=4096):
+                self._writer.add(batch)
+
+    def close(self):
+        self._flush()
+        self._writer.close()
+
+    def abort(self):
+        self._pending, self._pending_rows = [], 0
+        self._writer.abort()
 
 
 def schema(columns=SOURCE_COLUMNS):
