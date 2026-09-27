@@ -1,5 +1,22 @@
 # Active task: recent-data DSL ensemble
 
+## V6-C GRID RESULT (5 cells, parent mega-nav-v6l-ew-t.05-d.1-fixed net +0.915) -- all ACCEPTED (2026-09-27 ~22:00)
+S2 net / dSR vs parent (Memmel SE) / tau mean / cost_bps / gross_all / net_all:
+  target x.05   +0.938 / +0.023 (.050) / .0454 / 12.14 / .7721 / +.0197
+  target x.1    +0.927 / +0.012 (.030) / .0460 / 12.16 / .7621 / +.0158
+  delta  x1     +0.934 / +0.019 (.095) / .0400 / 11.71 / .7573 / +.0154
+  delta  x.05   +0.959 / +0.044 (.125) / .0389 / 11.14 / .7748 / +.0223   <- BEST (gross SR 1.279, HAC t 1.73, yrs +.030/+.032/+.048)
+  delta  x.1    +0.951 / +0.036 (.114) / .0394 / 11.24 / .7655 / +.0186
+Every dSR sign matches the "+" prior -> C1 and C2 accepted; magnitudes are inside one SE (as expected on 3 years). Delta
+orders cut tau 17% and cost/$ 7% with gross SR down .03 (1.313 -> 1.279); slow exits raise gross_lev (held_share 1.03) and
+NET leverage: the best cell's +.0223 breaches the R6' |net| <= .02 gate -> C3 (locate-in-aim) is required, not optional.
+DSR N now 19 (Lo single-cell V[SR_n]). Appendix A: construction cells v6 = 6 (1 parent + 5 grid); admission/composition
+unchanged. Dirs: build-equity/mega-nav-v6l-ew-t.05-d.1-fixed{-x.05,-x.1,-obdelta,-obdelta-x.05,-obdelta-x.1}.
+- Ruling: conditional cells run now on the best (delta, x.05): C3 LOCATE_AIM=1; theta .03 (exit .05 kept: the best cell's
+  flag, declared here, not 2*theta); dust .05 and .2 -- 4 cells, DSR N 20..23 -- why: all pre-registered in the v6 revision
+  ("best of those at theta .03", "dust re-tune {0,.2}" amended to {.05,.2} by the earlier ruling, C3 spare) -- cost if
+  wrong: 4 trials.
+
 ## V6-C1 review FIX REQUIRED (test-only); fix round 1 dispatched; V6-C grid (5 cells) started on the v6l parent (2026-09-27 ~21:45)
 task-V6C1-review.md: spec PASS; default path traced unchanged (matches the D2 real-data identity); the failing test is a TEST
 bug (strategy_nav_replay_test.cpp:2517 iterates .at("scenarios") of a destroyed temporary -> UB); production code needs no
