@@ -303,3 +303,158 @@ TRAIN run's `summary.json`:
 For each candidate, open `directory/<id>.json`, else `fields_directory/<id>.json`. Exactly one should
 exist. Where it was found must agree with the sidecar's `fields_manifest_sha256` presence (and value `F`).
 The sidecar's `research_fields` lists the extra fields that candidate read.
+
+## Fix round 2
+
+Branch `feat/mega-alpha-runner-fields-fix2-20260927` in pool-4, commits `7c870053` (fix) and `2dfadb36` (test (d)
+tightened to the new progress lines) on root `e885687b`.
+Not built or run here (lane rule): root builds `atx-impl-strategy-ic-tests` (and `atx-equity-strategy-ic` for the
+binary), then runs `--gtest_filter=StrategyIcRunner.*` (ctest: `-R StrategyIcRunner`). No CMake change:
+`ATX_IMPL_TESTS_DIR` (`atx-impl/tests/CMakeLists.txt:21`) is already defined for both test targets, and the
+tripwire takes the repo root as its `parent_path().parent_path()`.
+
+### I1: per-candidate field residency
+
+- **Schedule (`FieldPlan`, built in `library()`).** Candidates must run in library order because
+  `IcComposition::add` accumulates in that order, so the schedule is fixed per library:
+  - `needs[k]` is candidate k's extras bitmask;
+  - `capacity` is the largest `popcount(needs[k])`;
+  - `planned[k]` is the resident set while k runs, chosen by Belady's MIN: a field with no later reader is
+    dropped, and a load at capacity evicts the resident field whose next read is farthest (lowest index on
+    ties).
+  - It is optimal for the number of loads at that capacity.
+- **Runtime (`FieldResidency`, declared after `role` and before `pool`/`vm`).**
+  - `enter(k)` releases whatever `planned[k]` excludes.
+  - On a cache miss only, `panel_for(k)` loads candidate k's missing fields, streaming the pinned SHA, and
+    (re)builds the borrowed DSL panel over the resident set; with none resident it returns `role.panel`.
+  - Any change to the resident set destroys the VM first, so a live Engine always borrows the current panel.
+  - The resident set is always a subset of `planned[k]`, so at most `capacity` columns are held. A warm (all
+    hit) run loads nothing.
+- **Fail-fast order is kept.** `verify_fields` streams the SHA of every referenced field before the role payload
+  opens, so a tampered field still refuses first. Loads hash the bytes again as they land.
+- **Admission.** Extras now cost `cells × (8·capacity + 1)` instead of `cells × (8·referenced + 1)`.
+- **v3 (`pv_fields_ic121_v3.json` 5d164ea1).**
+  - 8 extras referenced; candidates use 0 / 1 / 2 extras in 70 / 38 / 13 cases.
+  - capacity 2, 11 planned loads, peak 2 columns (instead of 8).
+  - Streaming 11 × 52 MB per role is seconds of I/O.
+- **Expected v3 `required_bytes` on real TRAIN** (1155 × 5627, 8 slots): root's recorded figures minus
+  cells × 48 = 311,960,880 B.
+
+  | Workers | Before (root, recorded) | After | Headroom to 1536 MiB |
+  |---|---|---|---|
+  | 4 | 1,656,728,202 B (1580.0 MiB) | **1,344,767,322 B (1282.5 MiB)** | 253.5 MiB |
+  | 2 | 1,627,427,722 B (1552.0 MiB) | **1,315,466,842 B (1254.5 MiB)** | 281.5 MiB |
+  | 1 | (1524.1 MiB) | 1,286,166,362 B (1226.6 MiB) | 309.4 MiB |
+
+  Each additional compiled VM slot adds about 49.6 MiB (9 slots at w4 is 1332.1 MiB; 10 slots is 1381.6 MiB).
+- **`--workers` is not the lever.** Two workers cost only 29,300,480 B (about 28 MiB), which is why w2 was
+  still refused. The eight resident columns (about 397 MiB) were the problem, so the fix is residency and v3
+  can run at w4.
+- **Records.**
+  - Role `research_fields` adds `resident_capacity`, `planned_loads`, `field_loads` and
+    `peak_resident_fields`.
+  - `loaded_bytes` is now `field_loads × cells × 8`, the bytes actually read, so it is 0 on a warm run.
+  - `stage_seconds` adds `fields_verify`; `fields_load` is the sum of load times.
+  - The plan-only `research_fields` adds `resident_capacity` and `planned_loads`.
+  - The recipe is unchanged.
+- **Progress lines.**
+  - `IC fields-loaded …` is replaced by `IC fields-verified role=R fields=… resident_capacity=C planned_loads=L`.
+  - New: `IC field-load role=R field=F candidate=ID`, `IC field-release role=R field=F` and
+    `IC cache-preflight role=R ready=H/N`.
+  - No tool in the tree parses the old line.
+- **Output bytes are unchanged.**
+  - The Engine resolves fields by name on every evaluate (`vm.hpp:1128`), and LoadField masks with the
+    borrowed panel's presence, which is copied from the role. So a subset panel yields the same bits.
+  - The blend order is untouched.
+  - Fixture `ExtraFieldsResideOnlyWhileReferencedAndReloadExactly`:
+    - hand schedule with a forced eviction and reload (mkt_ret loaded twice): 4 loads, peak 2;
+    - exact scalar oracles on every raw field signal;
+    - a base candidate evaluated while `si_shares` is resident matches base-only bytes;
+    - uncached, cold and warm runs are byte-identical on all `exact_outputs()`, and the warm run has 0 loads.
+
+### Real-data refusal at `--workers 1` (`metadata missing/over1MiB`)
+
+This is not a workers-specific path.
+- At w4 and w2, admission refuses first, at the end of `admit`. At w1, admission passes and the next step,
+  `bind_fields`, opens `<--train-fields>/manifest.json` through `metadata_text`, which refuses a missing or
+  over-1 MiB file.
+- Both real manifests are small: role 22.8 KB, fields 36.9 KB. `repair_cells.csv` is never read.
+- So the file it looked for did not exist. The only way that happens with a valid directory is
+  `--train-fields` naming the manifest FILE (`…-fields-v2/manifest.json`), which makes the runner open
+  `…/manifest.json/manifest.json`. The option takes the DIRECTORY; its `-sha256` pins `DIR/manifest.json`.
+- **Fixes.**
+  - `bind_fields` now refuses a non-directory by name: `--train-fields must name the fields directory (the one
+    holding manifest.json), not a file or missing path: <arg>`. Fixture: `FieldsOptionMustNameTheDirectory`.
+  - `metadata_text` refusals now carry the path and distinguish "missing or unreadable" from
+    "empty or over 1 MiB (N B)".
+- If root's command already passed the directory, the new message names the exact file that was missing.
+
+### I2: VM source tripwire
+
+- **Pin.** `dsl_vm_sources` (29 repo-relative paths, beside `dsl_vm_semantics_version`) plus
+  `dsl_vm_sources_sha256 = 51bc0b2e08b27b1c025759e8c11755ef499df8ef9a723b33116e7164c770d67e`.
+  - Paths: the runner TU's include closure under `atx/engine` minus `factory/` (IC scoring, not signal bits);
+    the TUs those headers declare (`src/alpha/{bytecode,dag,lexer,panel,parser,registry,subtree_cache,typecheck}.cpp`);
+    and the role reader `data/strategy_data.{hpp,cpp}`.
+  - Exposed through `ic_cache_vm_identity()` (hpp).
+- **Digest.** SHA-256 of the concatenation over paths in order of `path\n<len>\n<text>`, where the text is
+  CRLF→LF normalized.
+  - The same value is computed from git blobs and from the CRLF working tree.
+- **Test `StrategyIcRunner.VmSourcesPinnedToSemanticsVersion`.**
+  - On a mismatch it fails with "VM sources changed: bump dsl_vm_semantics_version and update the pinned
+    hash", and gtest prints the new digest to paste.
+  - It also fails if a listed file `#include`s an `atx/engine/...` header that is not listed, so the list
+    cannot fall behind the closure.
+- **Action.** If root's engine sources differ from `e885687b` at merge, the pinned hash must be re-derived
+  there. That is a decision, not a formality.
+- **Out of scope for the guard.** `atx-core` (types, error, hash) and the runner's own compile or eval-mode
+  code stay covered only by the version comment.
+
+### Minors
+
+Done:
+- **M2.** Presence masking: `ExtraFieldsAreMaskedByRolePresence`, with holes where present=0 but the field
+  file is finite.
+- **M3.** Base-only candidate bytes are equal in a fields run: test (a), plus `base_mid` on the DSL panel in the
+  residency fixture.
+- **M4.** The header cache-layout comment now reads `DIR[/<vm-identity>]/<role-or-fields-sha>/`.
+- **M5.** With both manifests pinned, each declared extra's definition must match:
+  - compared keys: `units`, `clock`, `staleness`, `source_columns`, `definition`, `point_in_time`,
+    `non_pit_aspects`, `plausibility{min,max,inclusive,rule}`;
+  - role-specific keys may differ;
+  - fixture: `FieldDefinitionsMustMatchAcrossRoles`.
+- **T1 M2.** Fail-fast sidecar preflight (`cache_plan`) runs before the role payload. The extent refusal names
+  `<id>.f64`, matching the load path.
+- **T1 M6.** `CandidateCachePreflightRefusesBeforeRolePayload` covers: a corrupt last sidecar refused before any
+  eval; a truncated payload refused up front; a cache path that is a file; a `con` candidate id.
+
+Not done:
+- **M1** (validation weights tied to the orientations SHA): the root-ruled contract; changing it needs root's
+  ruling.
+- **M6** (vm.hpp comment): already imported by root. Touching vm.hpp now would also move the new pin.
+- **M7** (report overstated lookup): correction only. `cached_payload_sha` matches `fields_manifest_sha256`,
+  not `research_fields`; this is harmless because `dsl_sha256` fixes the fields.
+- **T1 M3** (shared hex helper): it belongs in atx-core, outside this lane.
+- **T1 M5** (`ASSERT_DOUBLE_EQ` where exact): the remaining uses compare ranked blends where DOUBLE_EQ is the
+  intended tolerance. The new oracles use exact `same_value`.
+- **T1 M6, unit-level composition refusals:** `strategy_ic_composition` is T1's file and not touched here.
+
+### Fixture changes
+
+- (a) `ExtraFieldsResolveByNameAndMatchHandComputedSignals` now asserts:
+  - the `fields-verified` line;
+  - the load, release and load order;
+  - capacity 1, 2 loads, peak 1;
+  - `fields_verify`;
+  - base payload equality.
+- (d) asserts that no `fields-verified`, `field-load` or `field-release` line appears without fields.
+- New tests:
+  - `ExtraFieldsResideOnlyWhileReferencedAndReloadExactly`
+  - `ExtraFieldsAreMaskedByRolePresence`
+  - `FieldDefinitionsMustMatchAcrossRoles`
+  - `FieldsOptionMustNameTheDirectory`
+  - `CandidateCachePreflightRefusesBeforeRolePayload`
+  - `VmSourcesPinnedToSemanticsVersion`
+- Test helper `role()` gained an optional `holes` list.
+
+The cache path rule (Fix round 1) is unchanged.
