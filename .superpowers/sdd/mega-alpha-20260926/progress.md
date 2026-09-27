@@ -121,6 +121,11 @@
   role factor-break steps match producer -> T25 check; seasonality text; ear keeps prior CAR if new CAR NaN).
   Task T24: complete (3bb3fbf3/d7464792/604dc555; library daa9663e, 37 candidates). Checks relayed to T25.
 
+- T20 fix r1: pool-5 6fa90efa -> root (Revenues total wins over ASC 606 line; same total-first for cash/st_debt;
+  m2/m5 fixed, m1/m3 counters only). pytest events+fields 58/58. REAL fundamental-events-v2 (fresh --out; code-hash
+  lock): 172,777 rows, manifest 74ed9a50...; fields-v6 TRAIN 32565c32.. (42 s/637 MiB) / VAL c034ecf3.. (30 s/564 MiB),
+  coverage unchanged vs v5. v4_train.sh FD -> fields-v6. Scoped re-review dispatched (t20-rereview).
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)

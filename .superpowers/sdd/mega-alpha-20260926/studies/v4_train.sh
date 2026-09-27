@@ -12,7 +12,7 @@ L=atx-impl/strategies/fund_industry_ic_v4.json; LS=$(sha256sum $L | cut -c1-64)
 LR=atx-impl/strategies/fund_industry_ic_v4.recipe.json; LRS=$(sha256sum $LR | cut -c1-64)
 R2=build-equity/recent-fast-train-2020-2022-v2/manifest.json
 R2S=210fff9687aa6b16e74c65104d77a916d708dca6986e77b06bac27556c48d1de
-FD=build-equity/recent-fast-train-2020-2022-v2-fields-v5
+FD=build-equity/recent-fast-train-2020-2022-v2-fields-v6
 FS=$(sha256sum $FD/manifest.json | cut -c1-64)
 CC=build-equity/mega-candidate-cache
 U=build-equity/mega-v4-train-u     # unweighted TRAIN artifact prefix
