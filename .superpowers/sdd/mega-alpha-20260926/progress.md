@@ -1,5 +1,23 @@
 # Active task: recent-data DSL ensemble
 
+## v5 TRAIN read #1 — aim fit ew-theme-aim-v1 (T38 step 1) — 2026-09-27 — composition trial +1
+Receipts mega-weights-v5-aim-run1 (1 pass, exit 0) and mega-weights-v5-ew-refit-run1 (exit 0, computed 0). Fitter f172d362.
+W_aim build-equity/mega-weights-v5-aim/composition_weights.json sha 54f823c1...; admission b41ba653... (31 admitted, same set as
+v4.1; admission.json IDENTICAL modulo SHA fields). EW-REFIT ew-theme-v1: composition_weights.json IDENTICAL modulo
+script/context/admission SHA vs 9a9c949a (old script 69c18270 -> f172d362). D3 met.
+g_k (theta .05, lags 0..126): range [0.358, 0.985], all in [.05, 1]; half-sample |g_h1 - g_h2| max .05 (high_52w) -> stable.
+Slow themes: value .960-.978, profitability .907-.985, investment .936/.976, low_risk .854-.975, momentum .890-.926,
+short_interest si_ratio .972 / dtc .935 / si_change .449; earnings_momentum .753-.847; iv_rv_spread .565; reversal: seasonality
+.487, ind_adj_rev_5 .358. Sanity (not a gate): slow >= .8 MET; reversal <= .5 MET; IV .565 slightly above .5 (noted).
+Aim theme weights vs nominal 1/9: investment .131, value .132, profitability .131, low_risk .127, momentum .125, short_int .108,
+earnings .111, options .077, reversal .058. weighted_standalone_turnover .0425 (ew-theme-v1: .0519).
+Trial accounting (TRAIN 2020-2022 only):
+  v3 era: admission 48 + 121; composition 4 + 7; construction 14.
+  since run #1: libraries v4 (37), v4.2 (40), v5.1 (38, built, not yet read); compositions v4, v4.2, ew-theme-aim-v1 (this);
+  construction v4 1 + v4.1 grid 5 + v4.2 2 (+ v5 grid 10 pending); studies T26 5 paper books, T16, T28 audit.
+  validation: #1 (v3, book level), #2 (v4.1, 24%-gross book). Per-candidate VAL statistics: never read.
+
+
 ## T31 re-review 1 — ADDRESSED — Task T31: complete
 task-T31-rereview-1.md: DSR matches §4.E term by term; inverse normal 1e-12; fixture independent (recomputed, 7e-7); no new
 breakage; 2 minors (fallback label with mixed-defined dirs; one bad dir stops output for earlier dirs) deferred to T41.
