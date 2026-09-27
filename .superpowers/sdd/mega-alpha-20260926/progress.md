@@ -168,6 +168,15 @@
   cfaaf825790e07405c55a59eeb9072bcdb20287d18a8e25b9e64fde31fb30c15 (25.2s/563MiB; mass 2021-01-04 outside
   role corrected, 2006). Descriptive coverage only for validation.
 - Combined scoped re-review dispatched (t6-t12-rereview). v3 TRAIN runner waits on T7 fix 2 (memory).
+- v3 --plan-only (TRAIN role v2 + fields v2): required 1,656,728,202 B @4 workers, 1,627,427,722 @2 (cap
+  1,610,612,736) -> refused; @1 worker "metadata missing/over1MiB". Relayed to T7 fix 2.
+- NETTING (v1-MV, band 0): tau_book .0917 (S2) vs sum w tau .0742 -> NR 1.24 (no netting; book-level re-rank +
+  neutralization adds turnover). Report per blend.
+- PREREGISTERED (before any v3 measurement): composition variant mv-shrink-0.9-nonneg-netcost-v1 = mu_k -
+  c*tau_k, c = 18 bps/unit one-way GMV turnover (S2 cost per unit turnover measured 16.2/20.7/19.4 bps on
+  v1 bands 0/.5/1). Final TRAIN selection = {netcost-v1, plain-v1} x band {0,.5,1,2}/N (8 construction/
+  composition trials) by S2 net Sharpe (swap-fin-v1) subject to daily limits. Task T13 (fitter option) to
+  t9-weights. Ruling cost if wrong: one extra composition trial family on TRAIN, validation untouched.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
