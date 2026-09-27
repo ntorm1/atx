@@ -1,5 +1,27 @@
 # Active task: recent-data DSL ensemble
 
+## T34a breadth check — GO (proxy) — 2026-09-27
+breadth-check-v5.md: fields-v6 has no opex_ttm/xsga_ttm/cogs_ttm; has at, sale_ttm, oi_ttm, gp_ttm. Real opex item = new metric +
+producer item + events-v3/fields-v7 rebuild + cold cache -> NO-GO for v5.1. Proxy opex = sale_ttm - oi_ttm: 4 extras / ~4 slots,
+plan delta +512 B (1,449,071,914 B = 1,381.9 MiB, 154 MiB headroom), 37 hits / 1 miss expected. ind_lead_lag_w: documented, not built.
+- Ruling: v5.1 adds opex_at with the proxy DSL decay_linear(group_rank((((sale_ttm - oi_ttm) / at) + (0 * log(at))), grp_ff12), 21)
+  (prior +1, profitability_quality, tier B); deviation (includes D&A) pre-registered in v4-prereg.md '## v5.1 family' — cost if
+  wrong: one weak candidate in a 38-candidate optional family; the T39 reference-cell re-run is the only read.
+- Ruling: T34b relaxes the v4.2 generator's "additions are cross-section ranked" assertion for the within-industry theme
+  profitability_quality (assert group_rank within grp_ff12 instead) — cost if wrong: none (v4 themes 1-3 already rank within FF12).
+- Task T34a: complete (explorer). Dispatching T34b (pool-8 feat/mega-alpha-v5-lib51-20260927).
+
+
+## v5 P1 dispatch (2026-09-27) — base d4ec515d
+- Dispatched (Opus 5.5): t30-navrule (pool-3 feat/mega-alpha-v5-construction-20260927), t31-aimfit (pool-4
+  feat/mega-alpha-v5-aimfit-20260927), t33a-delist (explorer, read-only, writes delisting-feasibility.md in pool-2),
+  t34a-breadth (explorer, read-only, writes breadth-check-v5.md in pool-2). T36 waits on T30 review; T33b on T33a GO;
+  T34b on T34a GO; T32 on T33b AND on T30+T36 cherry-picked into pool-2 (preflight ruling).
+- Ruling (amends preflight R-a, on t30-navrule's objection): v5 keeps the uniform next = cur + theta*(L*desired - cur); with
+  theta 1, L 1, dust 0 this IS baseline-v1's exact IEEE sequence (baseline computes cur + f*(desired-cur), not next = desired),
+  so the ThetaOne fixture asserts bit_cast equality; no special case — cost if wrong: none (fixture proves it).
+
+
 ## T29 v5 pre-registration and rulings (2026-09-27) — prereg section '## v5 revision' R1'-R7' appended to v4-prereg.md
 T28 evidence (construction-audit-v4.md, commit 44e6c28a): TRAIN b1f1 gross .813 net +.025 held 2,717 banded .954 tau .0347; b1f.25 .687/+.027/2,720/.931/.0267;
 b2f1 .364/+.016/1,366/.994/.0205; b2f.25 (frozen v4.1) .256/+.041/1,369/.994/.0136; VAL b2f.25 .235/+.038/1,237/.994/.0133 (mean GMV $238m).

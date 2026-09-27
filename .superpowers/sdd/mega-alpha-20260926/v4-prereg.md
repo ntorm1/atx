@@ -87,3 +87,11 @@ R6' Gate (TRAIN): mechanics — mean gross in [0.90, 1.05], |mean net| <= 0.02, 
     On failure: do NOT run validation; report; any revision is a new disclosed section here.
 R7' Trial accounting: admission 37 (unchanged); composition +1 (ew-theme-aim-v1); construction +10 (+2 if L re-run; +1 delisting re-run);
     validation: none (trials #1, #2 disclosed; #3 needs U1).
+
+## v5.1 family (declared 2026-09-27 after T34a breadth check; disclosed; before any v5.1 TRAIN read; optional lane)
+R1'' Library v5.1 = frozen v4 (37, daa9663e) + ONE candidate `opex_at`, theme profitability_quality, tier B, prior_sign +1
+    (Novy-Marx 2011 operating leverage = operating costs / assets), DSL
+    decay_linear(group_rank((((sale_ttm - oi_ttm) / at) + (0 * log(at))), grp_ff12), 21).
+    Deviation disclosed: fields-v6 has no opex_ttm; sale_ttm - oi_ttm = COGS + SG&A + D&A + other operating items (paper: COGS + SG&A).
+    No producer change; data pins unchanged. Admission v4-prior-v1 unchanged (38 candidates). Composition: ew-theme-v1 and
+    ew-theme-aim-v1 re-fit on the 38 (+2 composition trials). Construction: reference cell only (+1). Gate as R6'.
