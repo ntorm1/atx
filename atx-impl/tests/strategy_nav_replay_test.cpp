@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <span>
@@ -1743,5 +1744,339 @@ TEST(NavV5, CliFlagsAndRefusals) {
                      err), 1);
   EXPECT_EQ(dispatch(args("unknown", {"--rule", "aim-partial"}), out, err), 2);
   for (const auto* name : {"band", "foreign", "dust", "unknown"})
+    EXPECT_FALSE(std::filesystem::exists(dir.path / name)) << name;
+}
+
+// ---- rate per-name-v1 (T36) ----
+namespace {
+// aim-partial-v5 at theta and dust (aim leverage 1) with a zero-cost flat scenario, the
+// given initial NAV and the replay's default liquidity window (63 sessions, 20 pairs).
+st::NavReplayConfig v5_config(f64 theta, f64 dust, f64 nav = 1e9) {
+  auto c = config(flat(0, 0), nav, aim_partial_nav(theta, dust, 1));
+  c.liquidity_window = 63; c.min_vol_pairs = 20;
+  return c;
+}
+// Synthetic roles of the per-name rate fixtures on Panel (the NAV fixtures' date-major
+// role builder); view() borrows the panel.
+struct SyntheticRole {
+  Panel p;
+  [[nodiscard]] st::NavReplayInput view() const { return p.nav(); }
+  // 66 sessions and one decision, d0 = 63, whose liquidity window is [0, 63). A (name
+  // 0) alternates 100/102 on zero volume for the whole window (sigma ~2%, ADV 0); B
+  // (name 1) is absent for the 63 sessions before d0 (no pairs: fallback, ADV 0); C
+  // (name 2) alternates 100/102 on 1.25e6 shares (sigma ~2%, ADV ~$126m): theta_C
+  // ~0.050 at NAV 1e9, inside [0.01, 0.15]. All three are members at d0.
+  static SyntheticRole three_names_one_zero_volume_one_absent_window() {
+    SyntheticRole r{Panel(66, 3)};
+    auto& panel = r.p;
+    for (usize t = 0; t < panel.d; ++t) {
+      const f64 level = t % 2 ? 102.0 : 100.0;
+      panel.price(t, 0, level); panel.price(t, 2, level);
+      panel.volume[panel.k(t, 0)] = 0; panel.volume[panel.k(t, 2)] = 1.25e6;
+    }
+    for (usize t = 0; t < 63; ++t) panel.absent(t, 1);
+    panel.by_name({1, 2, 3});
+    panel.begin = 63;
+    return r;
+  }
+  // The T30 lockstep role: random walks with absent and present-nonmember cells.
+  static SyntheticRole default_role() {
+    SyntheticRole r{Panel(40, 8)};
+    randomize_rows(r.p, 7, 0); r.p.begin = 5;
+    return r;
+  }
+};
+// C's window statistics computed directly (two-pass sample SD), as the rate reads them.
+f64 expected_rate_c(const Panel& p, f64 nav) {
+  f64 dollars = 0, sum = 0;
+  std::vector<f64> returns;
+  for (usize k = 0; k < 63; ++k) {
+    dollars += p.raw[p.k(k, 2)] * p.volume[p.k(k, 2)];
+    if (k == 0) continue;
+    returns.push_back(p.close[p.k(k, 2)] / p.close[p.k(k - 1, 2)] - 1);
+    sum += returns.back();
+  }
+  const f64 mean = sum / static_cast<f64>(returns.size());
+  f64 squares = 0;
+  for (const f64 r : returns) squares += (r - mean) * (r - mean);
+  const f64 sigma = std::sqrt(squares / static_cast<f64>(returns.size() - 1));
+  return st::per_name_rate_v1(st::nav_rate_rra, st::nav_rate_lambda, nav, sigma, dollars / 63.0,
+                              st::nav_rate_min, st::nav_rate_max);
+}
+} // namespace
+
+// Research brief 4.B check values, the clip bounds, and never NaN: every unusable input
+// (nonpositive, NaN or infinite liquidity, NAV, RRA or lambda) and an inf/inf quotient
+// take rate_min; the rate falls as 1/sqrt(NAV).
+TEST(NavV5, PerNameRate_Formula) {
+  EXPECT_NEAR(st::per_name_rate_v1(10, 0.2, 1e9, 0.015, 5e7, 0.01, 0.15), 0.0237, 2e-4);
+  EXPECT_NEAR(st::per_name_rate_v1(10, 0.2, 1e9, 0.015, 2e8, 0.01, 0.15), 0.0474, 2e-4);
+  EXPECT_NEAR(st::per_name_rate_v1(10, 0.2, 1e9, 0.015, 1e9, 0.01, 0.15), 0.106, 1e-3);
+  EXPECT_DOUBLE_EQ(st::per_name_rate_v1(10, 0.2, 1e9, 0.015, 1e6, 0.01, 0.15), 0.01);
+  EXPECT_DOUBLE_EQ(st::per_name_rate_v1(10, 0.2, 1e9, 0.05, 5e10, 0.01, 0.15), 0.15);
+  EXPECT_EQ(bits(st::per_name_rate_v1(10, 0.2, 1e9, 0.015, 5e7, 0.01, 0.15)),
+            bits(std::sqrt(10 * 0.015 * 0.015 * 5e7 / (0.2 * 1e9))));
+  EXPECT_NEAR(st::per_name_rate_v1(10, 0.2, 4e9, 0.015, 2e8, 0.01, 0.15),
+              0.5 * st::per_name_rate_v1(10, 0.2, 1e9, 0.015, 2e8, 0.01, 0.15), 1e-15);
+  EXPECT_EQ(st::per_name_rate_v1(10, 0.2, 1e9, 0.015, 5e7, 0.05, 0.05), 0.05);
+  const f64 inf = std::numeric_limits<f64>::infinity();
+  for (const f64 bad : {0.0, -1.0, missing, inf}) {
+    EXPECT_EQ(st::per_name_rate_v1(10, 0.2, 1e9, bad, 5e7, 0.01, 0.15), 0.01) << bad;
+    EXPECT_EQ(st::per_name_rate_v1(10, 0.2, 1e9, 0.015, bad, 0.01, 0.15), 0.01) << bad;
+    EXPECT_EQ(st::per_name_rate_v1(10, 0.2, bad, 0.015, 5e7, 0.01, 0.15), 0.01) << bad;
+    EXPECT_EQ(st::per_name_rate_v1(bad, 0.2, 1e9, 0.015, 5e7, 0.01, 0.15), 0.01) << bad;
+    EXPECT_EQ(st::per_name_rate_v1(10, bad, 1e9, 0.015, 5e7, 0.01, 0.15), 0.01) << bad;
+  }
+  EXPECT_EQ(st::per_name_rate_v1(1e300, 1e300, 1e300, 1e300, 1e300, 0.01, 0.15), 0.01); // inf/inf
+  EXPECT_EQ(st::per_name_rate_v1(1e300, 1, 1, 1e300, 1, 0.01, 0.15), 0.15);            // inf clips
+}
+
+// Review focus 3: names without liquidity (zero volume over the whole window; absent
+// for the whole window) trade at rate_min, count in at_min_count and never produce NaN;
+// the liquid name trades at its formula rate at the pre-trade NAV of the decision.
+TEST(NavV5, PerNameRate_NoLiquidity_UsesMin) {
+  const auto in = SyntheticRole::three_names_one_zero_volume_one_absent_window();
+  st::NavReplayConfig cfg = v5_config(/*theta*/ 0.05, /*dust*/ 0.1);
+  cfg.rate = st::NavRateRule::PerNameV1;
+  const auto r = st::replay_nav(in.view(), cfg);
+  ASSERT_TRUE(r) << r.error().to_string();
+  const auto& stats = r->construction.rate_stats;
+  const f64 theta_c = expected_rate_c(in.p, 1e9);
+  ASSERT_GT(theta_c, cfg.rate_min);
+  ASSERT_LT(theta_c, cfg.rate_max);
+  EXPECT_EQ(stats.n, 3U); // one decision x three members
+  EXPECT_DOUBLE_EQ(stats.min, cfg.rate_min);
+  EXPECT_EQ(stats.at_min_count, 2U); // A and B
+  EXPECT_EQ(stats.at_max_count, 0U);
+  EXPECT_DOUBLE_EQ(stats.share_at_min, 2.0 / 3.0);
+  EXPECT_EQ(stats.share_at_max, 0.0);
+  EXPECT_NEAR(stats.max, theta_c, 1e-12);
+  EXPECT_NEAR(stats.mean, (2 * cfg.rate_min + theta_c) / 3, 1e-12);
+  EXPECT_EQ(stats.p05, cfg.rate_min);
+  EXPECT_EQ(stats.p50, cfg.rate_min);
+  EXPECT_NEAR(stats.p95, stats.max, (cfg.rate_max - cfg.rate_min) / 4096);
+  EXPECT_LE(stats.p95, stats.max);
+  usize decisions = 0;
+  for (const auto& day : r->days) {
+    EXPECT_TRUE(std::isfinite(day.gross_leverage)) << day.session_index;
+    EXPECT_TRUE(std::isfinite(day.applied_fraction)) << day.session_index;
+    if (!day.decision) continue;
+    ++decisions;
+    // From flat: A (desired -1/2) moves at rate_min, B (desired 0) is dusted, C (+1/2)
+    // at theta_C; the reported fraction is the members' mean rate.
+    EXPECT_NEAR(day.planned_gross, 0.5 * cfg.rate_min + 0.5 * theta_c, 1e-12);
+    EXPECT_EQ(day.construction.banded_names, 1U);
+    EXPECT_DOUBLE_EQ(day.applied_fraction, stats.mean);
+  }
+  EXPECT_EQ(decisions, 1U);
+  // NAV_d scales the liquid name's rate by 1/sqrt(NAV); the others stay at rate_min.
+  auto larger = cfg; larger.initial_nav = 4e9;
+  const auto big = st::replay_nav(in.view(), larger);
+  ASSERT_TRUE(big) << big.error().to_string();
+  EXPECT_NEAR(big->construction.rate_stats.max, expected_rate_c(in.p, 4e9), 1e-12);
+  EXPECT_NEAR(big->construction.rate_stats.max, 0.5 * theta_c, 1e-12);
+  EXPECT_EQ(big->construction.rate_stats.at_min_count, 2U);
+}
+
+// Per-name rates clipped to one constant equal the fixed theta: every lockstep book of
+// the fixed scenarios (capped S2/S3 working orders, write-offs, forced exits) is the
+// fixed-rate book bit for bit (net return per day, and every compared field but
+// applied_fraction, which is then the members' mean rate). This also pins the shared
+// liquidity cache that per-name-v1 executes from to the per-book window arithmetic.
+TEST(NavV5, PerNameRate_FixedEqualsTradeFraction) {
+  const auto in = SyntheticRole::default_role();
+  const auto scenarios = st::fixed_nav_scenarios();
+  st::NavReplayConfig a = v5_config(0.05, 0.1, 1e7); a.rate = st::NavRateRule::Fixed;
+  st::NavReplayConfig b = a; b.rate = st::NavRateRule::PerNameV1;
+  b.rate_min = b.rate_max = 0.05; // per-name clipped to a constant == fixed
+  const auto ra = st::replay_nav_scenarios(in.view(), a, scenarios);
+  const auto rb = st::replay_nav_scenarios(in.view(), b, scenarios);
+  ASSERT_TRUE(ra) << ra.error().to_string();
+  ASSERT_TRUE(rb) << rb.error().to_string();
+  ASSERT_EQ(ra->size(), rb->size());
+  for (usize k = 0; k < ra->size(); ++k) {
+    const auto& x = (*ra)[k];
+    auto y = (*rb)[k];
+    ASSERT_EQ(x.days.size(), y.days.size());
+    usize samples = 0, capped = 0;
+    for (usize d = 0; d < x.days.size(); ++d) {
+      EXPECT_DOUBLE_EQ(x.days[d].net_return, y.days[d].net_return) << k << ' ' << d;
+      EXPECT_NEAR(y.days[d].applied_fraction, x.days[d].applied_fraction, 1e-15) << d;
+      y.days[d].applied_fraction = x.days[d].applied_fraction;
+      if (y.days[d].decision) samples += y.days[d].decision_members;
+      capped += y.days[d].capped_fills;
+    }
+    expect_same_result(x, y);
+    if (k == st::nav_primary_scenario_index) EXPECT_GT(capped, 0U); // S2 caps exercised
+    EXPECT_EQ(x.construction.rate_stats.n, 0U); // fixed: no rate statistics
+    const auto& s = y.construction.rate_stats;
+    EXPECT_GT(samples, 0U);
+    EXPECT_EQ(s.n, samples) << k; // one sample per member per decision
+    EXPECT_EQ(s.at_min_count, samples) << k;
+    EXPECT_EQ(s.at_max_count, samples) << k;
+    EXPECT_EQ(s.min, 0.05); EXPECT_EQ(s.max, 0.05);
+    EXPECT_EQ(s.p05, 0.05); EXPECT_EQ(s.p50, 0.05); EXPECT_EQ(s.p95, 0.05);
+    EXPECT_NEAR(s.mean, 0.05, 1e-15);
+    EXPECT_EQ(s.share_at_min, 1.0); EXPECT_EQ(s.share_at_max, 1.0);
+  }
+}
+
+// The rate's configuration contract: per-name-v1 only under aim-partial-v5, rra and
+// lambda in (0, 1e6], 0 < rate_min <= rate_max <= 1 (NaN refused), and a fixed rate
+// carries no rate parameters.
+TEST(NavV5, PerNameRate_ConfigRefusals) {
+  const auto in = SyntheticRole::default_role();
+  const auto refused = [&](const st::NavReplayConfig& c) {
+    const auto r = st::replay_nav(in.view(), c);
+    return !r && r.error().code() == co::ErrorCode::InvalidArgument;
+  };
+  auto good = v5_config(0.05, 0.1, 1e7); good.rate = st::NavRateRule::PerNameV1;
+  const auto ran = st::replay_nav(in.view(), good);
+  ASSERT_TRUE(ran) << ran.error().to_string();
+  auto edge = good; edge.rate_min = edge.rate_max = 1;
+  EXPECT_TRUE(st::replay_nav(in.view(), edge));
+  auto baseline = good; baseline.target = st::TargetReplayConfig{}; // baseline-v1
+  EXPECT_TRUE(refused(baseline));
+  const std::array<void (*)(st::NavReplayConfig&), 9> broken{
+      [](st::NavReplayConfig& c) { c.rate_min = 0; },
+      [](st::NavReplayConfig& c) { c.rate_min = 0.2; }, // above rate_max 0.15
+      [](st::NavReplayConfig& c) { c.rate_max = 1.5; },
+      [](st::NavReplayConfig& c) { c.rate_max = missing; },
+      [](st::NavReplayConfig& c) { c.rate_rra = 0; },
+      [](st::NavReplayConfig& c) { c.rate_rra = missing; },
+      [](st::NavReplayConfig& c) { c.rate_lambda = -0.2; },
+      [](st::NavReplayConfig& c) { c.rate_lambda = 2e6; },
+      [](st::NavReplayConfig& c) { c.rate = static_cast<st::NavRateRule>(7); }};
+  for (usize k = 0; k < broken.size(); ++k) {
+    auto c = good; broken[k](c);
+    EXPECT_TRUE(refused(c)) << k;
+  }
+  auto fixed = v5_config(0.05, 0.1, 1e7);
+  EXPECT_TRUE(st::replay_nav(in.view(), fixed)); // control: fixed at the defaults
+  fixed.rate_rra = 5;
+  EXPECT_TRUE(refused(fixed)); // a fixed rate takes no rate parameters
+  fixed = v5_config(0.05, 0.1, 1e7); fixed.rate_max = 0.2;
+  EXPECT_TRUE(refused(fixed));
+}
+
+// Recipe, summary and CLI of the rate (rulings R-c, R-d). A fixed-rate v5 run publishes
+// the T30 bytes: its recipe.json SHA-256 is the one hand-derived from the T30 writers
+// (98277c45) by t36-sha/v5_fixed_recipe_sha.py over the validated T30 emulation, and
+// its recipe and summary bytes are the same through the four-argument overload,
+// NavRateOptions{} and the CLI's --rate fixed. per-name-v1 adds rate_rra, rate_lambda,
+// rate_min and rate_max (rate "per-name-v1", aim_partial its own text) and
+// construction.v5.rate_stats; the CLI refuses the rate outside aim-partial-v5 and its
+// parameters outside per-name-v1 (usage, 2), and invalid values (1), before any output.
+TEST(NavV5, PerNameRate_RecipeSummaryAndCli) {
+  const auto p = publication_panel();
+  std::ostringstream progress, out, err;
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto bytes = [&](const std::string& run, const char* file) {
+    std::ifstream in(dir.path / run / file, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  };
+  const auto args = [&](const std::string& output, std::vector<std::string> extra) {
+    std::vector<std::string> all{"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
+                                 a.cfg.combined_sha256, "--role", a.cfg.role_path,
+                                 "--role-sha256", a.cfg.role_sha256, "--output",
+                                 (dir.path / output).string()};
+    for (auto& e : extra) all.push_back(std::move(e));
+    return all;
+  };
+  const std::vector<std::string> v5_flags{"--rule", "aim-partial-v5", "--cadence", "1",
+                                          "--trade-fraction", ".5", "--dust-multiple", ".1",
+                                          "--aim-leverage", "1.5"};
+  const auto with = [&](std::vector<std::string> extra) {
+    auto all = v5_flags;
+    for (auto& e : extra) all.push_back(std::move(e));
+    return all;
+  };
+  auto fixed = a.cfg; fixed.target = aim_partial_nav(0.5, 0.1, 1.5);
+  fixed.output_directory = (dir.path / "fixed4").string();
+  const auto ran = st::run_nav_replay(fixed, progress);
+  ASSERT_TRUE(ran) << ran.error().to_string();
+  EXPECT_EQ(co::sha256_file((dir.path / "fixed4" / "recipe.json").string()).value(),
+            "d53f0c09018244862e8974579e8a87184310778786b08545041c605f725fc71a");
+  fixed.output_directory = (dir.path / "fixed5").string();
+  ASSERT_TRUE(st::run_nav_replay(fixed, st::NavTurnoverLimits{}, st::NavFieldsPin{},
+                                 st::NavRateOptions{}, progress));
+  ASSERT_EQ(dispatch(args("fixedcli", with({"--rate", "fixed"})), out, err), 0) << err.str();
+  for (const auto* file : {"recipe.json", "summary.json"}) {
+    EXPECT_EQ(bytes("fixed5", file), bytes("fixed4", file)) << file;
+    EXPECT_EQ(bytes("fixedcli", file), bytes("fixed4", file)) << file;
+  }
+  const auto fixed_recipe = read_json(dir.path / "fixed4" / "recipe.json");
+  EXPECT_EQ(fixed_recipe.at("rate"), "fixed");
+  const auto fixed_summary = read_json(dir.path / "fixed4" / "summary.json");
+  for (const auto& s : fixed_summary.at("scenarios")) {
+    const auto& block = s.at("construction").at("v5");
+    EXPECT_EQ(block.at("rate"), "fixed");
+    EXPECT_FALSE(block.contains("rate_stats"));
+  }
+
+  st::NavRateOptions rate; rate.rate = st::NavRateRule::PerNameV1;
+  auto per_name = fixed; per_name.output_directory = (dir.path / "pername").string();
+  const auto per = st::run_nav_replay(per_name, st::NavTurnoverLimits{}, st::NavFieldsPin{},
+                                      rate, progress);
+  ASSERT_TRUE(per) << per.error().to_string();
+  const auto recipe = read_json(dir.path / "pername" / "recipe.json");
+  auto keys = sorted_keys(fixed_recipe);
+  for (const auto* key : {"rate_rra", "rate_lambda", "rate_min", "rate_max"})
+    keys.emplace_back(key);
+  std::sort(keys.begin(), keys.end());
+  EXPECT_EQ(sorted_keys(recipe), keys);
+  EXPECT_EQ(recipe.at("rule"), "aim-partial-v5");
+  EXPECT_EQ(recipe.at("rate"), "per-name-v1");
+  EXPECT_EQ(recipe.at("rate_rra"), 10.0);
+  EXPECT_EQ(recipe.at("rate_lambda"), 0.2);
+  EXPECT_EQ(recipe.at("rate_min"), 0.01);
+  EXPECT_EQ(recipe.at("rate_max"), 0.15);
+  EXPECT_NE(recipe.at("aim_partial"), fixed_recipe.at("aim_partial"));
+  for (const auto& item : fixed_recipe.items())
+    if (item.key() != "rate" && item.key() != "aim_partial")
+      EXPECT_EQ(recipe.at(item.key()), item.value()) << item.key();
+  const auto summary = read_json(dir.path / "pername" / "summary.json");
+  EXPECT_EQ(summary.at("recipe_sha256"), co::sha256_hex(recipe.dump()).value());
+  // 7 decisions x 3 members, name 0 absent at session 4. Nine sessions never reach 20
+  // return pairs: every sample is the fallback's rate_min.
+  const usize samples = 3 * (p.d - 2) - 1;
+  const std::vector<std::string> stat_keys{"at_max_count", "at_min_count", "max", "mean", "min",
+                                           "n", "p05", "p50", "p95", "share_at_max",
+                                           "share_at_min"};
+  for (const auto& s : summary.at("scenarios")) {
+    const auto id = s.at("scenario").get<std::string>();
+    EXPECT_EQ(first_line(dir.path / "pername" / ("daily_" + id + ".csv")),
+              first_line(dir.path / "fixed4" / ("daily_" + id + ".csv"))) << id;
+    const auto& block = s.at("construction").at("v5");
+    EXPECT_EQ(block.at("rate"), "per-name-v1") << id;
+    const auto& stats = block.at("rate_stats");
+    EXPECT_EQ(sorted_keys(stats), stat_keys) << id;
+    EXPECT_EQ(stats.at("n"), samples) << id;
+    EXPECT_EQ(stats.at("at_min_count"), samples) << id;
+    EXPECT_EQ(stats.at("at_max_count"), 0) << id;
+    for (const auto* key : {"min", "max", "p05", "p50", "p95"})
+      EXPECT_EQ(stats.at(key), 0.01) << id << ' ' << key;
+    EXPECT_NEAR(stats.at("mean").get<f64>(), 0.01, 1e-15) << id;
+    EXPECT_EQ(stats.at("share_at_min"), 1.0) << id;
+    EXPECT_EQ(stats.at("share_at_max"), 0.0) << id;
+  }
+  ASSERT_EQ(dispatch(args("pernamecli", with({"--rate", "per-name-v1", "--rate-rra", "10",
+                                              "--rate-min", ".01", "--rate-max", ".15"})),
+                     out, err), 0) << err.str();
+  for (const auto* file : {"recipe.json", "summary.json"})
+    EXPECT_EQ(bytes("pernamecli", file), bytes("pername", file)) << file;
+
+  EXPECT_EQ(dispatch(args("baseline_rate", {"--rate", "per-name-v1"}), out, err), 2);
+  EXPECT_EQ(dispatch(args("baseline_fixed", {"--rate", "fixed"}), out, err), 2);
+  EXPECT_EQ(dispatch(args("no_rate", with({"--rate-rra", "5"})), out, err), 2);
+  EXPECT_EQ(dispatch(args("fixed_param", with({"--rate", "fixed", "--rate-min", ".02"})), out,
+                     err), 2);
+  EXPECT_EQ(dispatch(args("spelling", with({"--rate", "per-name"})), out, err), 2);
+  EXPECT_EQ(dispatch(args("inverted", with({"--rate", "per-name-v1", "--rate-min", ".2",
+                                            "--rate-max", ".1"})), out, err), 1);
+  EXPECT_EQ(dispatch(args("zero_rra", with({"--rate", "per-name-v1", "--rate-rra", "0"})), out,
+                     err), 1);
+  for (const auto* name : {"baseline_rate", "baseline_fixed", "no_rate", "fixed_param",
+                           "spelling", "inverted", "zero_rra"})
     EXPECT_FALSE(std::filesystem::exists(dir.path / name)) << name;
 }

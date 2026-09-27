@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -47,6 +48,9 @@ constexpr u64 per_name_bytes = 192;
 constexpr u64 shared_name_bytes = sizeof(std::pair<f64, usize>) + sizeof(f64);
 // Shared borrow tiers per name (only with fields): tier, missing flag, first present row.
 constexpr u64 tier_name_bytes = 2 + sizeof(usize);
+// Shared per-name rate state per name (only with rate per-name-v1): the session's
+// liquidity cache (ADV, sigma) and one book's rates.
+constexpr u64 rate_name_bytes = 3 * sizeof(f64);
 // Borrow-tier clocks (role clock_recipe modeled-session+22h-mark+23h-decision-v1):
 // every field cell of row d is visible by the session-date 22:00 UTC mark.
 constexpr i64 fields_mark_ns = 22 * hour_ns, decision_clock_ns = 23 * hour_ns;
@@ -119,6 +123,56 @@ private:
   u64 total_{};
   f64 maximum_{};
 };
+// Streaming NavRateStats of one book's per-name rates, all in [lo, hi]: exact count,
+// sum, extremes and clip masses (== lo, == hi); interior values in `bins` equal bins
+// over [lo, hi]. Fixed size (inside fixed_workspace_bytes); nothing is stored per sample.
+class RateStatistics {
+public:
+  static constexpr usize bins = 4096;
+  void reset(f64 lo, f64 hi) { lo_ = lo; hi_ = hi; }
+  void add(f64 rate) {
+    assert(rate >= lo_ && rate <= hi_); // per_name_rate_v1 clips, never NaN
+    ++n_; sum_ += rate; min_ = std::min(min_, rate); max_ = std::max(max_, rate);
+    const bool low = rate <= lo_, high = rate >= hi_;
+    at_min_ += low ? 1U : 0U; at_max_ += high ? 1U : 0U;
+    if (low || high) return;
+    // lo < rate < hi, so the position is in (0, bins); rounding is clamped.
+    const f64 position = (rate - lo_) / (hi_ - lo_) * static_cast<f64>(bins);
+    const usize bin = position >= static_cast<f64>(bins - 1) ? bins - 1
+                                                              : static_cast<usize>(position);
+    ++counts_[bin];
+  }
+  [[nodiscard]] NavRateStats stats() const {
+    NavRateStats s;
+    s.n = n_; s.at_min_count = at_min_; s.at_max_count = at_max_;
+    const f64 count = static_cast<f64>(n_);
+    s.mean = n_ ? sum_ / count : nan;
+    s.min = n_ ? min_ : nan; s.max = n_ ? max_ : nan;
+    s.p05 = quantile(.05); s.p50 = quantile(.5); s.p95 = quantile(.95);
+    s.share_at_min = n_ ? static_cast<f64>(at_min_) / count : nan;
+    s.share_at_max = n_ ? static_cast<f64>(at_max_) / count : nan;
+    return s;
+  }
+private:
+  // Rank ceil(q n) in the order (lo mass, interior bins, hi mass): lo or hi exactly
+  // inside a mass (lo == hi puts every sample in the lo mass), else its bin's upper
+  // edge capped at the observed max.
+  [[nodiscard]] f64 quantile(f64 q) const {
+    if (!n_) return nan;
+    const usize rank = std::max<usize>(1, static_cast<usize>(std::ceil(q * static_cast<f64>(n_))));
+    if (rank <= at_min_) return lo_;
+    usize seen = at_min_;
+    const f64 width = (hi_ - lo_) / static_cast<f64>(bins);
+    for (usize b = 0; b < bins; ++b) {
+      seen += counts_[b];
+      if (seen >= rank) return std::min(max_, lo_ + static_cast<f64>(b + 1) * width);
+    }
+    return hi_;
+  }
+  std::array<usize, bins> counts_{};
+  f64 lo_{}, hi_{}, sum_{}, min_{inf}, max_{-inf};
+  usize n_{}, at_min_{}, at_max_{};
+};
 
 struct NameState {
   explicit NameState(usize n)
@@ -173,6 +227,7 @@ struct Book {
   f64 cash{}, nav_pre{}, nav_post{}, pending_cost{}, spent{};
   u32 month{};
   ParticipationHistogram participation;
+  RateStatistics rates; // rate per-name-v1 only
   NavReplayResult result;
 };
 
@@ -214,6 +269,22 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
       cfg.target.annual_borrow_bps != 0)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "nav replay: invalid recipe (target-replay cost/borrow must be zero)");
+  // Trading rate: per-name-v1 is aim-partial-v5 only; a fixed rate carries no rate
+  // parameters (each stays at its declared default). within() also refuses NaN.
+  const bool rate_ok = cfg.rate == NavRateRule::Fixed
+      ? cfg.rate_rra == nav_rate_rra && cfg.rate_lambda == nav_rate_lambda &&
+            cfg.rate_min == nav_rate_min && cfg.rate_max == nav_rate_max
+      : cfg.rate == NavRateRule::PerNameV1 &&
+            cfg.target.rule == TargetReplayRule::AimPartialV5 &&
+            within(cfg.rate_rra, 0, 1e6) && cfg.rate_rra > 0 &&
+            within(cfg.rate_lambda, 0, 1e6) && cfg.rate_lambda > 0 &&
+            within(cfg.rate_min, 0, 1) && cfg.rate_min > 0 &&
+            within(cfg.rate_max, cfg.rate_min, 1);
+  if (!rate_ok)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: rate per-name-v1 needs aim-partial-v5, rate_rra and "
+                   "rate_lambda in (0, 1e6] and 0 < rate_min <= rate_max <= 1; a fixed rate "
+                   "takes no rate parameters");
   return co::Ok();
 }
 co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& cfg,
@@ -247,6 +318,7 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
   if (!budget.add(books, fixed_workspace_bytes) ||
       !budget.add(x.instruments, books * per_name_bytes + shared_name_bytes) ||
       !budget.add(tiers ? x.instruments : 0, tier_name_bytes) ||
+      !budget.add(cfg.rate == NavRateRule::PerNameV1 ? x.instruments : 0, rate_name_bytes) ||
       !budget.add(x.decision_end - x.decision_begin, books * sizeof(NavReplayDay)) ||
       !budget.add(cfg.max_events, books * sizeof(NavEvent)) ||
       !budget.add(1, detail::construction_scratch_bytes(cfg.target, x.instruments)))
@@ -283,12 +355,17 @@ struct Liquidity {
   bk::LiquidityRow row{};
   bool fallback{};
 };
+// The book-independent part of a liquidity row: raw-dollar ADV and the sample SD,
+// NaN exactly when the window has too few pairs (the scenario's fallback applies).
+struct WindowLiquidity {
+  f64 adv{}, sigma{};
+};
 // Execution-time liquidity of name i for session t from [t-w, t) only: raw-dollar
 // ADV = sum of present raw_close*volume / w (absent or pre-history rows count as
 // zero; never rescaled) and the sample SD of adjusted simple returns over adjacent
 // present, unguarded pairs (k-1, k), k in [t-w, t), as strategy_runner.cpp does.
 // Fewer than min_vol_pairs pairs -> the scenario's declared fallback sigma.
-Liquidity liquidity_row(const Ctx& c, usize t, usize i) {
+WindowLiquidity window_liquidity(const Ctx& c, usize t, usize i) {
   const auto& x = c.x; const usize n = x.instruments, w = c.cfg.liquidity_window;
   const usize first = t > w ? t - w : 0;
   f64 dollars = 0, mean = 0, m2 = 0; usize pairs = 0;
@@ -303,13 +380,55 @@ Liquidity liquidity_row(const Ctx& c, usize t, usize i) {
     ++pairs; const f64 delta = r - mean;
     mean += delta / static_cast<f64>(pairs); m2 += delta * (r - mean);
   }
+  // Not a fallback: pairs >= min_vol_pairs >= 2 and m2 finite >= 0, so sigma is a
+  // finite number >= 0; NaN marks the fallback exactly.
+  const bool fallback = pairs < c.cfg.min_vol_pairs || !std::isfinite(m2) || m2 < 0;
+  return {dollars / static_cast<f64>(w),
+          fallback ? nan : std::sqrt(m2 / static_cast<f64>(pairs - 1))};
+}
+// The scenario's row over a window: its half spread, and its declared fallback sigma
+// when the window has too few pairs. The same values as computing it in one piece.
+Liquidity liquidity_row(const Ctx& c, const WindowLiquidity& window) {
   Liquidity out;
-  out.row.adv_dollars = dollars / static_cast<f64>(w);
+  out.row.adv_dollars = window.adv;
   out.row.half_spread_bps = c.cfg.scenario.half_spread_bps;
-  out.fallback = pairs < c.cfg.min_vol_pairs || !std::isfinite(m2) || m2 < 0;
-  out.row.daily_vol = out.fallback ? c.cfg.scenario.fallback_daily_vol
-                                   : std::sqrt(m2 / static_cast<f64>(pairs - 1));
+  out.fallback = std::isnan(window.sigma);
+  out.row.daily_vol = out.fallback ? c.cfg.scenario.fallback_daily_vol : window.sigma;
   return out;
+}
+Liquidity liquidity_row(const Ctx& c, usize t, usize i) {
+  return liquidity_row(c, window_liquidity(c, t, i));
+}
+// rate per-name-v1 only (empty otherwise): the book-independent liquidity of session
+// t, formed ONCE for every lockstep book, and one book's rates. Allocated once,
+// O(names), reused every session (no per-decision or per-sample storage). Execution
+// reads it instead of recomputing the window per book (the same arithmetic, so
+// bit-identical; each book still applies its own half spread and fallback sigma); the
+// decision's per-name rates read it too (liquidity_row's window at session d: [d-w, d)).
+struct LiquidityCache {
+  LiquidityCache(usize n, bool enabled)
+      : adv(enabled ? n : 0, nan), sigma(enabled ? n : 0, nan), rate(enabled ? n : 0, nan) {}
+  [[nodiscard]] bool on() const { return !adv.empty(); }
+  std::vector<f64> adv, sigma; // NaN: not formed at this session
+  std::vector<f64> rate;       // the planning book's per-name rates at decision d
+};
+// Session t's cache: every name present at t that is a member of the decision at t,
+// or holds a working order in some book at an execution session t. MARK only ever
+// cancels orders, so this covers every order execute_orders prices at t, and every
+// decision member (members are present). Other names are NaN.
+void fill_liquidity(const Ctx& c, const std::vector<std::unique_ptr<Book>>& books, usize t,
+                    bool execution, bool decision, LiquidityCache& cache) {
+  const auto& x = c.x; const usize n = x.instruments;
+  for (usize i = 0; i < n; ++i) {
+    const usize k = t * n + i;
+    bool need = x.present[k] && decision && x.member[k];
+    if (x.present[k] && execution && !need)
+      need = std::any_of(books.begin(), books.end(),
+                         [i](const std::unique_ptr<Book>& b) { return b->names.active[i] != 0; });
+    if (!need) { cache.adv[i] = nan; cache.sigma[i] = nan; continue; }
+    const auto window = window_liquidity(c, t, i);
+    cache.adv[i] = window.adv; cache.sigma[i] = window.sigma;
+  }
 }
 
 void add(NavBucket& bucket, f64 exposure, f64 pnl) {
@@ -471,7 +590,8 @@ co::Status mark_session(const Ctx& c, Book& b, const BorrowTiers& tiers, usize t
 }
 // EXECUTE working orders at close t. Absent names are blocked (order persists); an
 // unusable ADV fills nothing; a capped fill leaves the residual working.
-co::Status execute_orders(const Ctx& c, Book& b, usize t, NavReplayDay& day) {
+co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& cache,
+                          NavReplayDay& day) {
   const auto& x = c.x; auto& s = b.names; const usize n = x.instruments;
   f64 cost = 0, traded = 0;
   for (usize i = 0; i < n; ++i) {
@@ -479,7 +599,10 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, NavReplayDay& day) {
     if (!x.present[t * n + i]) { ++day.blocked_absent; continue; }
     const f64 requested = s.order[i] - s.held[i];
     if (requested == 0) { s.active[i] = 0; continue; }
-    const auto liquidity = liquidity_row(c, t, i);
+    assert(!cache.on() || !std::isnan(cache.adv[i])); // fill_liquidity formed it
+    const auto liquidity = cache.on()
+        ? liquidity_row(c, WindowLiquidity{cache.adv[i], cache.sigma[i]})
+        : liquidity_row(c, t, i);
     const auto priced = c.model.cost(i, t, requested, liquidity.row);
     const f64 full = c.model.unrationed_cost(i, t, requested, liquidity.row);
     if (std::isfinite(full)) day.unrationed_cost_dollars += full; else ++day.unrationed_unpriced;
@@ -593,6 +716,18 @@ void clamp_kept_order(NameState& s, usize i, NavReplayDay& day) {
   s.order[i] = floor;
   if (floor == s.held[i]) s.active[i] = 0;
 }
+// rate per-name-v1: this book's rate of every name at decision d into cache.rate,
+// per_name_rate_v1 at the book's pre-trade NAV on the session's cached liquidity
+// (rate_min for a nonmember, which the rule never moves), one sample per member.
+void per_name_rates(const Ctx& c, Book& b, usize d, LiquidityCache& cache) {
+  const auto& x = c.x; const auto& cfg = c.cfg; const usize n = x.instruments;
+  for (usize i = 0; i < n; ++i) {
+    if (!x.member[d * n + i]) { cache.rate[i] = cfg.rate_min; continue; }
+    const f64 theta = per_name_rate_v1(cfg.rate_rra, cfg.rate_lambda, b.nav_pre, cache.sigma[i],
+                                       cache.adv[i], cfg.rate_min, cfg.rate_max);
+    cache.rate[i] = theta; b.rates.add(theta);
+  }
+}
 // DECIDE at d: current weights are marked dollars / post-trade NAV (stale names at
 // stale marks); the unchanged target rules plan the next weights toward the shared
 // desired target (`rebalance` is effective: cadence day and not skipped), then the
@@ -600,16 +735,21 @@ void clamp_kept_order(NameState& s, usize i, NavReplayDay& day) {
 // dollars (zero exits included). On rebalance days unchanged members, and on every
 // day flat nonmembers, cancel. Planned turnover, gross/net and the v2 budget are
 // the rule's plan before the locate rule (blocked dollars are reported apart).
-void plan_decision(const Ctx& c, Book& b, const Construction& shared, const BorrowTiers& tiers,
-                   usize d, bool rebalance, const ConstructionDay& construction,
-                   NavReplayDay& day) {
+// With rate per-name-v1 the aim-partial-v5 move uses this book's per-name rates.
+co::Status plan_decision(const Ctx& c, Book& b, const Construction& shared,
+                         const BorrowTiers& tiers, LiquidityCache& cache, usize d,
+                         bool rebalance, const ConstructionDay& construction,
+                         NavReplayDay& day) {
   const auto& x = c.x; auto& s = b.names; const usize n = x.instruments;
   if (day.calendar_month != b.month) { b.month = day.calendar_month; b.spent = 0; }
   for (usize i = 0; i < n; ++i) s.current[i] = s.held[i] / b.nav_post;
   std::copy(s.current.begin(), s.current.end(), s.planned.begin());
   TargetReplayDay plan;
   plan.decision = d; plan.session = x.session_keys[d]; plan.calendar_month = day.calendar_month;
-  detail::update_weights(x, c.cfg.target, d, rebalance, b.spent, shared.desired, s.planned, plan);
+  std::span<const f64> rates;
+  if (cache.on()) { per_name_rates(c, b, d, cache); rates = cache.rate; }
+  ATX_TRY_VOID(detail::update_weights(x, c.cfg.target, d, rebalance, b.spent, shared.desired,
+                                      s.planned, plan, rates));
   b.spent += plan.turnover;
   const bool blocking = c.cfg.scenario.financing.block_special_shorts;
   if (blocking) block_special_plan(tiers, b, day);
@@ -632,6 +772,7 @@ void plan_decision(const Ctx& c, Book& b, const Construction& shared, const Borr
     day.budget_excess = std::max(0.0, b.spent - c.cfg.target.monthly_budget);
   day.construction = construction; // shared record; the band acts on this book's weights
   day.construction.banded_names = plan.construction.banded_names;
+  return co::Ok();
 }
 f64 gross_dollars(const NameState& s) {
   f64 gross = 0;
@@ -674,8 +815,8 @@ co::Status report_unresolved(const Ctx& c, Book& b, usize t) {
 // DECIDE (t < end-2). Row t reads data at rows <= t only. The scenario books run in
 // lockstep: each book performs exactly its own single-book sequence (mark, execute,
 // decide, close) on its own state; only the decision's desired target and borrow
-// tiers are formed once and shared, so every book is bit-identical to a replay on
-// its own.
+// tiers (and, with rate per-name-v1, the session's liquidity windows) are formed once
+// and shared, so every book is bit-identical to a replay on its own.
 co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    const NavFinancingFields& fields,
                                                    std::span<const Ctx> ctxs) {
@@ -687,12 +828,19 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
     auto& b = *books.emplace_back(std::make_unique<Book>(x.instruments));
     b.cash = b.nav_pre = b.nav_post = c.cfg.initial_nav;
     b.result.deployment_index = end; b.result.days.reserve(end - begin);
+    b.rates.reset(c.cfg.rate_min, c.cfg.rate_max);
   }
   Construction shared(x.instruments);
   // Tiers of the latest decision: MARK t reads those of decision t-1 (or earlier).
   BorrowTiers tiers(x.instruments, !fields.shares_out.empty());
+  // The rate (like the target) is identical for every book; only per-name-v1 caches.
+  const bool per_name = ctxs.front().cfg.rate == NavRateRule::PerNameV1;
+  LiquidityCache cache(x.instruments, per_name);
   std::vector<NavReplayDay> days(count);
   for (usize t = begin; t < end; ++t) {
+    const bool execution = t > begin && t + 2 <= end, decision = t + 2 < end;
+    if (cache.on() && (execution || decision))
+      fill_liquidity(ctxs.front(), books, t, execution, decision, cache);
     for (usize k = 0; k < count; ++k) {
       const auto& c = ctxs[k]; auto& b = *books[k]; auto& day = days[k];
       auto& r = b.result;
@@ -703,8 +851,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       if (t > begin) ATX_TRY_VOID(mark_session(c, b, tiers, t, day));
       day.pretrade_nav = b.nav_pre;
       day.pretrade_gross_dollars = gross_dollars(b.names);
-      if (t > begin && t + 2 <= end) {
-        ATX_TRY_VOID(execute_orders(c, b, t, day));
+      if (execution) {
+        ATX_TRY_VOID(execute_orders(c, b, t, cache, day));
         if (r.deployment_index == end && day.traded_dollars > 0) r.deployment_index = t;
         day.one_way_turnover_gmv = day.pretrade_gross_dollars > 0
             ? day.traded_dollars / day.pretrade_gross_dollars : nan;
@@ -712,7 +860,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
         b.nav_post = b.nav_pre; b.pending_cost = 0;
       }
     }
-    if (t + 2 < end) {
+    if (decision) {
       TierCensus census;
       if (tiers.active) ATX_TRY_VOID(classify_borrow(x, fields, t, tiers, census));
       ConstructionDay construction;
@@ -722,7 +870,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       }
       construction.rebalance = rebalance;
       for (usize k = 0; k < count; ++k) {
-        plan_decision(ctxs[k], *books[k], shared, tiers, t, rebalance, construction, days[k]);
+        ATX_TRY_VOID(plan_decision(ctxs[k], *books[k], shared, tiers, cache, t, rebalance,
+                                   construction, days[k]));
         days[k].member_tiers = census.members;
         days[k].member_missing_predictors = census.missing;
       }
@@ -741,6 +890,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
     r.participation_fills = b.participation.total();
     r.participation_p95 = b.participation.upper_quantile(.95);
     r.participation_max = b.participation.maximum();
+    if (per_name) r.construction.rate_stats = b.rates.stats();
     results.push_back(std::move(r));
   }
   return co::Ok(std::move(results));
@@ -905,6 +1055,18 @@ constexpr const char* limitations_declaration =
     "only (30%/month target retired 2026-09-27), the declared turnover limits are the daily "
     "GMV mean/p95 ceilings (daily_turnover_gmv, meets_daily_turnover_*); a capped (S2/S3) "
     "deployment that completes over several sessions counts its later sessions as turnover";
+constexpr const char* per_name_rate_declaration =
+    "rebalance decision: each member moves next = current + theta_i * (aim_leverage * desired "
+    "- current) unless |aim_leverage * desired - current| <= dust_multiple / N_d (N_d = "
+    "members at d; 0 = off), which keeps its weight and is counted in banded_names; "
+    "non-rebalance decisions keep member weights; nonmembers exit to 0; rate per-name-v1: "
+    "theta_i = clip(sqrt(rate_rra * sigma_i^2 * ADV_i / (rate_lambda * NAV_d)), rate_min, "
+    "rate_max), NAV_d the book's pre-trade NAV at d, sigma_i and ADV_i the name's liquidity "
+    "row of session d (window [d-w, d), the liquidity declaration); ADV <= 0, sigma <= 0 or "
+    "fewer than min_vol_pairs pairs -> rate_min; trade_fraction (theta) unused; "
+    "applied_fraction = the members' mean rate; monthly_budget unused; "
+    "construction.v5.rate_stats: one sample per member per decision, quantiles exact at the "
+    "clip bounds, else the upper edge of a 4096-bin histogram of [rate_min, rate_max]";
 
 // Output label of a book: the trading id alone without fields (the legacy names),
 // "<trading>+<financing>" in the financing matrix.
@@ -971,7 +1133,23 @@ Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
   // when neutralizing), so the default recipe carries no construction entries.
   const auto construction = detail::construction_recipe_json(cfg.target);
   if (!construction.empty()) j.update(Json::parse(construction));
+  // rate per-name-v1 (aim-partial-v5 only) replaces the fixed rate's keys; a fixed
+  // rate adds nothing, so its recipe is the T30 recipe byte for byte.
+  if (base.rate == NavRateRule::PerNameV1) {
+    j["rate"] = "per-name-v1";
+    j["rate_rra"] = base.rate_rra; j["rate_lambda"] = base.rate_lambda;
+    j["rate_min"] = base.rate_min; j["rate_max"] = base.rate_max;
+    j["aim_partial"] = per_name_rate_declaration;
+  }
   return j;
+}
+Json rate_stats_json(const NavRateStats& s) {
+  return Json{{"n", s.n}, {"mean", finite_or_null(s.mean)}, {"min", finite_or_null(s.min)},
+      {"max", finite_or_null(s.max)}, {"p05", finite_or_null(s.p05)},
+      {"p50", finite_or_null(s.p50)}, {"p95", finite_or_null(s.p95)},
+      {"at_min_count", s.at_min_count}, {"at_max_count", s.at_max_count},
+      {"share_at_min", finite_or_null(s.share_at_min)},
+      {"share_at_max", finite_or_null(s.share_at_max)}};
 }
 Json months_json(const NavSummary& s) {
   Json months = Json::array();
@@ -1227,11 +1405,14 @@ co::Status write_events(const std::filesystem::path& path, const NavReplayResult
 // Conservative bound on everything the NAV path holds beside the loaded input:
 // all scenario results (days + events at cap), every lockstep book's per-name
 // state, the shared construction (with its price-risk scratch when neutralizing),
-// the shared borrow tiers and publication. books <= max_scenarios.
-u64 nav_reserve_bytes(u64 max_events, const TargetReplayConfig& target, u64 books, bool tiers) {
+// the shared borrow tiers, the per-name rate cache and publication.
+// books <= max_scenarios.
+u64 nav_reserve_bytes(u64 max_events, const TargetReplayConfig& target, u64 books, bool tiers,
+                      bool per_name_rate) {
   return publication_slack_bytes + books * fixed_workspace_bytes +
          u64{max_names} * (books * per_name_bytes + shared_name_bytes +
-                           (tiers ? tier_name_bytes : 0)) +
+                           (tiers ? tier_name_bytes : 0) +
+                           (per_name_rate ? rate_name_bytes : 0)) +
          detail::construction_scratch_bytes(target, max_names) +
          books * (u64{max_dates} * sizeof(NavReplayDay) + max_events * sizeof(NavEvent));
 }
@@ -1377,6 +1558,18 @@ std::vector<NavScenario> fixed_nav_scenarios() {
   adverse.id = "modeled-1bn-terminal-adverse-v1"; adverse.stale_exit_sessions = 1;
   adverse.adverse_terminal = true;
   return {linear, modeled, adverse};
+}
+
+f64 per_name_rate_v1(f64 rra, f64 lambda, f64 nav, f64 daily_vol, f64 adv_dollars,
+                     f64 rate_min, f64 rate_max) noexcept {
+  const auto usable = [](f64 x) { return std::isfinite(x) && x > 0; };
+  if (!usable(rra) || !usable(lambda) || !usable(nav) || !usable(daily_vol) ||
+      !usable(adv_dollars))
+    return rate_min;
+  const f64 theta = std::sqrt(rra * daily_vol * daily_vol * adv_dollars / (lambda * nav));
+  // A NaN (inf / inf on overflow) fails the comparison and takes rate_min; +inf clips.
+  if (!(theta >= rate_min)) return rate_min;
+  return std::min(theta, rate_max);
 }
 
 std::vector<NavScenario> nav_scenario_matrix(bool tiered) {
@@ -1622,8 +1815,14 @@ co::Result<Json> publish_scenario(const NavRun& run, const std::filesystem::path
     for (const auto& d : result.days)
       if (d.decision) decisions.push_back(d.construction);
     entry.update(Json::parse(detail::construction_summary_json(run.cfg.target, decisions)));
-    if (run.cfg.target.rule == TargetReplayRule::AimPartialV5)
-      entry["construction"]["v5"] = aim_partial_json(run.cfg.target, result);
+    if (run.cfg.target.rule == TargetReplayRule::AimPartialV5) {
+      auto v5 = aim_partial_json(run.cfg.target, result);
+      if (run.base.rate == NavRateRule::PerNameV1) {
+        v5["rate"] = "per-name-v1";
+        v5["rate_stats"] = rate_stats_json(result.construction.rate_stats);
+      }
+      entry["construction"]["v5"] = std::move(v5);
+    }
   }
   progress << "nav replay " << label << ": net Sharpe " << std::setprecision(6)
            << summary.net_sharpe << ", mean daily GMV turnover " << summary.daily_turnover_mean
@@ -1669,6 +1868,12 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
 
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
                           const NavFieldsPin& fields, std::ostream& progress) {
+  return run_nav_replay(cfg, limits, fields, NavRateOptions{}, progress);
+}
+
+co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
+                          const NavFieldsPin& fields, const NavRateOptions& rate,
+                          std::ostream& progress) {
   try {
     if (cfg.role_path.empty() || cfg.role_sha256.empty() || cfg.output_directory.empty())
       return co::Err(co::ErrorCode::InvalidArgument, "nav replay: pinned role and output required");
@@ -1684,9 +1889,12 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     const bool tiered = !fields.manifest_path.empty();
     const auto scenarios = nav_scenario_matrix(tiered);
     NavReplayConfig base; base.target = cfg.target;
+    base.rate = rate.rate; base.rate_rra = rate.rate_rra; base.rate_lambda = rate.rate_lambda;
+    base.rate_min = rate.rate_min; base.rate_max = rate.rate_max;
     // Admission: the fields and then the loader are charged against what remains
     // after the NAV workspace reserve, so input + all scenario results fit one budget.
-    const u64 reserve = nav_reserve_bytes(base.max_events, cfg.target, scenarios.size(), tiered);
+    const u64 reserve = nav_reserve_bytes(base.max_events, cfg.target, scenarios.size(), tiered,
+                                          base.rate == NavRateRule::PerNameV1);
     if (cfg.target.max_working_bytes <= reserve)
       return co::Err(co::ErrorCode::OutOfRange, "nav replay: budget below NAV workspace reserve");
     u64 remaining = cfg.target.max_working_bytes - reserve;
@@ -1721,6 +1929,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
 int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& err) {
   try {
     TargetReplayRunConfig cfg; NavTurnoverLimits limits; NavFieldsPin fields;
+    NavRateOptions rate;
     std::set<std::string> seen;
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
@@ -1731,6 +1940,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--monthly-budget .30] "
                "[--neutralize none|price-risk-v1] [--band-multiple 0] "
                "[--dust-multiple 0 --aim-leverage 1 (aim-partial-v5 only)] "
+               "[--rate fixed|per-name-v1 (aim-partial-v5 only) --rate-rra 10 "
+               "--rate-lambda .2 --rate-min .01 --rate-max .15 (per-name-v1 only)] "
                "[--daily-turnover-mean-max .20] [--daily-turnover-p95-max .30] "
                "[--fields FIELDS/manifest.json --fields-sha256 SHA] [--max-bytes 536870912]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
@@ -1774,11 +1985,19 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--band-multiple") cfg.target.band_multiple = real();
       else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
       else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
+      else if (key == "--rate-rra") rate.rate_rra = real();
+      else if (key == "--rate-lambda") rate.rate_lambda = real();
+      else if (key == "--rate-min") rate.rate_min = real();
+      else if (key == "--rate-max") rate.rate_max = real();
       else if (key == "--daily-turnover-mean-max") limits.daily_mean_max = real();
       else if (key == "--daily-turnover-p95-max") limits.daily_p95_max = real();
       else if (key == "--neutralize") {
         if (!detail::parse_neutralize(value, cfg.target.neutralize))
           throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
+      } else if (key == "--rate") {
+        if (value == "fixed") rate.rate = NavRateRule::Fixed;
+        else if (value == "per-name-v1") rate.rate = NavRateRule::PerNameV1;
+        else throw std::invalid_argument("unknown --rate (fixed|per-name-v1)");
       } else if (key == "--rule") {
         if (value == "baseline-v1") cfg.target.rule = TargetReplayRule::BaselineTargetV1;
         else if (value == "monthly-budget-v2")
@@ -1791,7 +2010,13 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       throw std::invalid_argument("--role and --role-sha256 are required in nav mode");
     if (fields.manifest_path.empty() != fields.manifest_sha256.empty())
       throw std::invalid_argument("--fields and --fields-sha256 go together");
-    const auto status = run_nav_replay(cfg, limits, fields, out);
+    // The rate belongs to aim-partial-v5, its parameters to --rate per-name-v1.
+    if (seen.count("--rate") && cfg.target.rule != TargetReplayRule::AimPartialV5)
+      throw std::invalid_argument("--rate is aim-partial-v5 only");
+    for (const char* flag : {"--rate-rra", "--rate-lambda", "--rate-min", "--rate-max"})
+      if (seen.count(flag) && rate.rate != NavRateRule::PerNameV1)
+        throw std::invalid_argument(std::string(flag) + " needs --rate per-name-v1");
+    const auto status = run_nav_replay(cfg, limits, fields, rate, out);
     if (!status) { err << status.error().to_string() << '\n'; return 1; }
     return 0;
   } catch (const std::exception& e) { err << "nav replay: " << e.what() << '\n'; return 2; }

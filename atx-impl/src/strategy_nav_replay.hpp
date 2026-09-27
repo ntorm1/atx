@@ -31,7 +31,7 @@ namespace atx::impl::strategy {
 // Construction (TargetReplayConfig neutralize / band_multiple, and aim-partial-v5's
 // dust band and aim leverage) is the target replay's own, applied at the NAV path's
 // single desired-target extension point; with the defaults every pre-existing output
-// value is unchanged.
+// value is unchanged. aim-partial-v5 may trade at a per-name rate (NavRateRule).
 
 enum class NavCostRule : atx::u8 { FlatBpsV1 = 1, SqrtImpactV1 = 2 };
 
@@ -103,12 +103,45 @@ inline constexpr atx::usize nav_primary_scenario_index = 1;
 // Either way the primary is nav_primary_scenario_index (S2, swap-fin-v1 if tiered).
 [[nodiscard]] std::vector<NavScenario> nav_scenario_matrix(bool tiered);
 
+// Trading rate of the aim-partial-v5 move (T36, pre-registered rate per-name-v1).
+// Fixed: every member moves by the target's trade_fraction (theta). PerNameV1: member
+// i of decision d moves by per_name_rate_v1 at NAV = the book's pre-trade NAV at d and
+// sigma_i / ADV_i = its liquidity row of session d (window [d-w, d), the execution
+// liquidity definition); a name with ADV <= 0, sigma <= 0 or fewer than min_vol_pairs
+// return pairs (the fallback sigma) gets rate_min, never NaN.
+enum class NavRateRule : atx::u8 { Fixed = 0, PerNameV1 = 1 };
+// Declared per-name-v1 defaults (research brief 4.B): RRA 10, JKMP lambda 0.2 (0.1%
+// impact at 1% of ADV), clip [0.01, 0.15].
+inline constexpr atx::f64 nav_rate_rra = 10.0, nav_rate_lambda = 0.2;
+inline constexpr atx::f64 nav_rate_min = 0.01, nav_rate_max = 0.15;
+// theta = clip(sqrt(rra * daily_vol^2 * adv_dollars / (lambda * nav)), rate_min, rate_max):
+// Garleanu-Pedersen (2013) partial adjustment under quadratic cost with the JKMP impact
+// calibration Lambda = lambda / ADV and risk aversion RRA / NAV; daily_vol a daily SD,
+// adv_dollars raw dollars. rra, lambda, nav, daily_vol or adv_dollars not finite and
+// > 0 -> rate_min; a NaN quotient -> rate_min; never NaN. Precondition (validated with
+// the config): 0 < rate_min <= rate_max.
+[[nodiscard]] atx::f64 per_name_rate_v1(atx::f64 rra, atx::f64 lambda, atx::f64 nav,
+                                        atx::f64 daily_vol, atx::f64 adv_dollars,
+                                        atx::f64 rate_min, atx::f64 rate_max) noexcept;
 struct NavReplayConfig {
   TargetReplayConfig target{}; // one_way_bps and annual_borrow_bps must be zero
   NavScenario scenario{};
   atx::f64 initial_nav{1'000'000'000.0};
   atx::usize liquidity_window{63}, min_vol_pairs{20};
   atx::u64 max_events{262'144}; // explicit refusal beyond
+  // PerNameV1 requires target.rule aim-partial-v5, rate_rra and rate_lambda in (0, 1e6]
+  // and 0 < rate_min <= rate_max <= 1. Fixed requires every rate_* at its default, so a
+  // fixed-rate recipe cannot silently carry rate parameters.
+  NavRateRule rate{NavRateRule::Fixed};
+  atx::f64 rate_rra{nav_rate_rra}, rate_min{nav_rate_min}, rate_max{nav_rate_max};
+  atx::f64 rate_lambda{nav_rate_lambda};
+};
+// The trading rate of a run_nav_replay call (copied into its NavReplayConfig; CLI
+// --rate fixed|per-name-v1, --rate-rra, --rate-lambda, --rate-min, --rate-max).
+struct NavRateOptions {
+  NavRateRule rate{NavRateRule::Fixed};
+  atx::f64 rate_rra{nav_rate_rra}, rate_min{nav_rate_min}, rate_max{nav_rate_max};
+  atx::f64 rate_lambda{nav_rate_lambda};
 };
 // Point-in-time role fields (atx.research-role-fields/v1: date-major, role dates x
 // ids, NaN = not visible by the session's 22:00 UTC mark) behind the borrow tiers.
@@ -214,6 +247,21 @@ struct NavBucket {
   atx::usize count{};
   atx::f64 gross_exposure{}, pnl{};
 };
+// One book's per-name rates (PerNameV1) over the members of every decision row: one
+// sample per member per decision, at that book's own NAV. at_min_count / at_max_count
+// count samples equal to rate_min / rate_max (a sample counts in both when they are
+// equal; no-liquidity names are at_min); share_* = count / n. Quantiles at rank
+// ceil(q n): exactly rate_min / rate_max when the rank falls in those masses, else the
+// upper edge of its bin among 4096 equal bins of [rate_min, rate_max], capped at max
+// (error < (rate_max - rate_min) / 4096). Fixed rate: every field zero. PerNameV1 with
+// n == 0: mean, min, max, quantiles and shares NaN.
+struct NavRateStats {
+  atx::usize n{}, at_min_count{}, at_max_count{};
+  atx::f64 mean{}, min{}, max{}, p05{}, p50{}, p95{}, share_at_min{}, share_at_max{};
+};
+struct NavConstructionStats {
+  NavRateStats rate_stats{};
+};
 struct NavReplayResult {
   std::vector<NavReplayDay> days;
   std::vector<NavEvent> events;
@@ -223,6 +271,7 @@ struct NavReplayResult {
   atx::f64 participation_p95{}, participation_max{}; // p95: 0.01-decade histogram upper edge
   atx::f64 max_return_identity_error{}, max_cash_book_error{};
   atx::usize deployment_index{}; // decision_end sentinel when nothing ever filled
+  NavConstructionStats construction{}; // aim-partial-v5 per-name rate statistics
 };
 [[nodiscard]] atx::core::Result<NavReplayResult> replay_nav(const NavReplayInput& in,
                                                           const NavReplayConfig& cfg);
@@ -323,8 +372,18 @@ struct NavFieldsPin {
                                                const NavTurnoverLimits& limits,
                                                const NavFieldsPin& fields,
                                                std::ostream& progress);
+// With the trading rate: PerNameV1 adds rate = "per-name-v1", rate_rra, rate_lambda,
+// rate_min and rate_max to the recipe and construction.v5.rate_stats to every scenario
+// summary. NavRateOptions{} (Fixed) is exactly the four-argument overload.
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               const NavFieldsPin& fields,
+                                               const NavRateOptions& rate,
+                                               std::ostream& progress);
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
 // --fields PATH/manifest.json --fields-sha256 SHA enables the financing matrix.
+// --rate fixed|per-name-v1 is refused (usage error) unless --rule aim-partial-v5, and
+// --rate-rra/--rate-lambda/--rate-min/--rate-max unless --rate per-name-v1.
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
 } // namespace atx::impl::strategy

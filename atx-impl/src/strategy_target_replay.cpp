@@ -59,9 +59,10 @@ bool neutralizing(const TargetReplayConfig& cfg) {
 bool aim_partial(const TargetReplayConfig& cfg) {
   return cfg.rule == TargetReplayRule::AimPartialV5;
 }
-// Rate of the aim-partial-v5 move: one fixed theta (trade_fraction) for every name.
-// SEAM (T36): a per-name rate option adds its spelling here and fills the
-// update_weights per_name_rate span.
+// Rate of the aim-partial-v5 move in the target replay: one fixed theta
+// (trade_fraction) for every name. The per-name rate (T36, rate per-name-v1) needs a
+// NAV and liquidity, so it is the NAV replay's own option: it fills the update_weights
+// per_name_rate span and overrides this spelling in its recipe and summary.
 const char* aim_rate(const TargetReplayConfig&) { return "fixed"; }
 // The compute_price_exposures config contract documented in
 // strategy_price_exposures.hpp, checked up front so a bad recipe is refused once
@@ -199,12 +200,12 @@ void aim_partial_weights(const TargetReplayInput& in, const TargetReplayConfig& 
     const usize members = members_at(in, d);
     if (members) dust = cfg.dust_multiple / static_cast<f64>(members);
   }
-  // The caller supplies exactly one rate per name or none; a malformed span is never
-  // indexed (debug: assert; release: the fixed theta).
+  // update_weights refused any other span (check_rates): empty, or one rate per name.
   assert(per_name_rate.empty() || per_name_rate.size() == in.instruments);
-  const bool per_name = !per_name_rate.empty() && per_name_rate.size() == in.instruments;
+  const bool per_name = !per_name_rate.empty();
   out.applied_fraction = rebalance ? cfg.trade_fraction : 0;
-  f64 squared = 0;
+  f64 squared = 0, rate_sum = 0;
+  usize rated = 0;
   for (usize i = 0; i < in.instruments; ++i) {
     const bool live = in.member[offset + i] != 0;
     f64 next = 0;
@@ -216,6 +217,7 @@ void aim_partial_weights(const TargetReplayInput& in, const TargetReplayConfig& 
       const bool dusted = std::abs(gap) <= dust;
       if (dusted) ++out.construction.banded_names;
       const f64 theta = per_name ? per_name_rate[i] : cfg.trade_fraction;
+      rate_sum += theta; ++rated;
       next = dusted ? current[i] : current[i] + theta * gap;
     }
     const f64 trade = std::abs(next - current[i]);
@@ -228,16 +230,33 @@ void aim_partial_weights(const TargetReplayInput& in, const TargetReplayConfig& 
     out.held_names += next != 0 ? 1U : 0U; squared += next * next;
   }
   out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
+  // Per-name rates: the reported fraction is the members' mean rate (dusted included).
+  if (per_name && rebalance) out.applied_fraction = rated ? rate_sum / static_cast<f64>(rated) : 0;
 }
-void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
-                    bool rebalance, f64 spent, const std::vector<f64>& desired,
-                    std::vector<f64>& current, TargetReplayDay& out,
-                    std::span<const f64> per_name_rate = {}) {
+// A per-name rate span is aim-partial-v5 only and holds exactly one finite rate in
+// [0, 1] per name; any other non-empty span is refused before a weight moves, never
+// silently replaced by the fixed theta (T30 review Minor 2, T36 ruling R-c).
+co::Status check_rates(const TargetReplayInput& in, const TargetReplayConfig& cfg,
+                       std::span<const f64> per_name_rate) {
+  if (per_name_rate.empty()) return co::Ok();
+  if (!aim_partial(cfg) || per_name_rate.size() != in.instruments ||
+      !std::all_of(per_name_rate.begin(), per_name_rate.end(),
+                   [](f64 rate) { return rate >= 0 && rate <= 1; }))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: per-name rates need aim-partial-v5 and exactly one rate in "
+                   "[0, 1] per name");
+  return co::Ok();
+}
+[[nodiscard]] co::Status update_weights(const TargetReplayInput& in,
+                                        const TargetReplayConfig& cfg, usize d, bool rebalance,
+                                        f64 spent, const std::vector<f64>& desired,
+                                        std::vector<f64>& current, TargetReplayDay& out,
+                                        std::span<const f64> per_name_rate = {}) {
+  ATX_TRY_VOID(check_rates(in, cfg, per_name_rate));
   if (aim_partial(cfg)) {
     aim_partial_weights(in, cfg, d, rebalance, desired, current, per_name_rate, out);
-    return;
+    return co::Ok();
   }
-  assert(per_name_rate.empty()); // per-name rates are aim-partial-v5 only
   const auto offset = d * in.instruments;
   // No-trade band on rebalance decisions: -1 (off) bands nothing, since every
   // |desired - current| >= 0, so the default path is the unbanded arithmetic.
@@ -274,6 +293,7 @@ void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, 
     out.held_names += next != 0 ? 1U : 0U; squared += next * next;
   }
   out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
+  return co::Ok();
 }
 // Rebalance decision d: the tied-rank desired target, then price-risk-v1. The
 // exposures are computed once here per decision (target-independent; the NAV
@@ -366,7 +386,7 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
         ATX_TRY(rebalance, form_desired(in, cfg, d, row, desired, price, day.construction));
       }
       day.construction.rebalance = rebalance;
-      update_weights(in, cfg, d, rebalance, spent, desired, current, day);
+      ATX_TRY_VOID(update_weights(in, cfg, d, rebalance, spent, desired, current, day));
       spent += day.turnover; day.month_turnover = spent;
       if (cfg.rule == TargetReplayRule::MonthlyTargetBudgetV2)
         day.budget_excess = std::max(0.0, spent - cfg.monthly_budget);
@@ -981,12 +1001,12 @@ void desired_target(std::span<const f64> signal, std::span<const u8> member,
                     std::vector<std::pair<f64, usize>>& row, std::vector<f64>& target) {
   ::atx::impl::strategy::desired_target(signal, member, row, target);
 }
-void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
-                    bool rebalance, f64 spent, const std::vector<f64>& desired,
-                    std::vector<f64>& current, TargetReplayDay& out,
-                    std::span<const f64> per_name_rate) {
-  ::atx::impl::strategy::update_weights(in, cfg, d, rebalance, spent, desired, current, out,
-                                        per_name_rate);
+co::Status update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
+                          bool rebalance, f64 spent, const std::vector<f64>& desired,
+                          std::vector<f64>& current, TargetReplayDay& out,
+                          std::span<const f64> per_name_rate) {
+  return ::atx::impl::strategy::update_weights(in, cfg, d, rebalance, spent, desired, current,
+                                               out, per_name_rate);
 }
 usize members_at(const TargetReplayInput& in, usize d) {
   return ::atx::impl::strategy::members_at(in, d);

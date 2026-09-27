@@ -666,8 +666,8 @@ TEST(TargetReplayV5, AimPartialV5_ThetaOne_MatchesBaseline) {
                                std::span<const u8>(f.member).subspan(d * f.n, f.n), row,
                                desired);
     st::TargetReplayDay da, db;
-    st::detail::update_weights(in, base, d, true, 0, desired, wa, da);
-    st::detail::update_weights(in, v5, d, true, 0, desired, wb, db);
+    ASSERT_TRUE(st::detail::update_weights(in, base, d, true, 0, desired, wa, da));
+    ASSERT_TRUE(st::detail::update_weights(in, v5, d, true, 0, desired, wb, db));
     for (usize i = 0; i < f.n; ++i) EXPECT_EQ(bits(wa[i]), bits(wb[i])) << d << ' ' << i;
   }
 }
@@ -698,7 +698,7 @@ TEST(TargetReplayV5, AimPartialV5_DustDoesNotBlockEntry) {
   st::detail::desired_target(std::span<const f64>(f.signal).subspan(0, f.n),
                              std::span<const u8>(f.member).subspan(0, f.n), row, desired);
   st::TargetReplayDay day;
-  st::detail::update_weights(in, v5, 0, true, 0, desired, w, day);
+  ASSERT_TRUE(st::detail::update_weights(in, v5, 0, true, 0, desired, w, day));
   const f64 dust = 0.1 / static_cast<f64>(f.members_at(0));
   for (usize i = 0; i < f.n; ++i) {
     if (std::abs(desired[i]) > dust) {
@@ -847,4 +847,65 @@ TEST(TargetReplayV5, PinnedRunRecordsRecipeSummaryAndCli) {
   EXPECT_EQ(dispatch(unknown), 2);
   for (const auto* name : {"band", "foreign", "levered", "unknown"})
     EXPECT_FALSE(std::filesystem::exists(dir.path / name)) << name;
+}
+
+// T36 ruling R-c (T30 review Minor 2): a per-name rate span is used only under
+// aim-partial-v5 and only with exactly one rate in [0, 1] per name (nonmember entries
+// included); anything else is refused with InvalidArgument before a weight moves,
+// never silently traded at the fixed theta. With a good span each member moves by its
+// own rate and applied_fraction is the members' mean rate.
+TEST(TargetReplayV5, PerNameRateSpanIsChecked) {
+  auto f = random_fixture(3, 10, 41);
+  f.member[3] = 0; f.signal[3] = missing; // one nonmember at decision 0
+  const auto in = f.input();
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(f.n);
+  st::detail::desired_target(std::span<const f64>(f.signal).subspan(0, f.n),
+                             std::span<const u8>(f.member).subspan(0, f.n), row, desired);
+  const auto v5 = aim_partial(0.05, 0);
+  std::vector<f64> rates(f.n);
+  for (usize i = 0; i < f.n; ++i) rates[i] = 0.01 * static_cast<f64>(i + 1);
+  std::vector<f64> w(f.n, 0.0);
+  st::TargetReplayDay day;
+  const auto ok = st::detail::update_weights(in, v5, 0, true, 0, desired, w, day, rates);
+  ASSERT_TRUE(ok) << ok.error().to_string();
+  f64 sum = 0;
+  usize members = 0;
+  for (usize i = 0; i < f.n; ++i) {
+    if (!f.member[i]) { EXPECT_EQ(w[i], 0) << i; continue; }
+    EXPECT_EQ(bits(w[i]), bits(rates[i] * (1.0 * desired[i]))) << i; // from flat: theta_i * aim
+    sum += rates[i]; ++members;
+  }
+  EXPECT_EQ(members, f.n - 1);
+  EXPECT_EQ(bits(day.applied_fraction), bits(sum / static_cast<f64>(members)));
+  const auto refused = [&](const st::TargetReplayConfig& c, std::span<const f64> per_name) {
+    std::vector<f64> weights(f.n, 0.25);
+    st::TargetReplayDay record;
+    const auto status = st::detail::update_weights(in, c, 0, true, 0, desired, weights, record,
+                                                   per_name);
+    const bool untouched = record.turnover == 0 &&
+        std::all_of(weights.begin(), weights.end(), [](f64 x) { return x == 0.25; });
+    return !status && status.error().code() == co::ErrorCode::InvalidArgument && untouched;
+  };
+  const std::vector<f64> short_span(f.n - 1, 0.05), long_span(f.n + 1, 0.05);
+  EXPECT_TRUE(refused(v5, short_span));
+  EXPECT_TRUE(refused(v5, long_span));
+  st::TargetReplayConfig baseline; baseline.cadence = 1;
+  EXPECT_TRUE(refused(baseline, rates)); // per-name rates are aim-partial-v5 only
+  for (const f64 bad : {missing, -0.01, 1.01, std::numeric_limits<f64>::infinity()}) {
+    auto broken = rates; broken[5] = bad;
+    EXPECT_TRUE(refused(v5, broken)) << bad;
+  }
+  auto unused = rates; unused[3] = missing; // the nonmember's entry is checked too
+  EXPECT_TRUE(refused(v5, unused));
+  // Controls: an empty span is the fixed theta; the bounds 0 and 1 are admitted.
+  std::vector<f64> fixed_weights(f.n, 0.0);
+  st::TargetReplayDay fixed_day;
+  ASSERT_TRUE(st::detail::update_weights(in, v5, 0, true, 0, desired, fixed_weights, fixed_day));
+  EXPECT_EQ(fixed_day.applied_fraction, 0.05);
+  auto bounds = rates; bounds[0] = 0; bounds[1] = 1;
+  std::vector<f64> bound_weights(f.n, 0.0);
+  st::TargetReplayDay bound_day;
+  EXPECT_TRUE(st::detail::update_weights(in, v5, 0, true, 0, desired, bound_weights, bound_day,
+                                         bounds));
 }

@@ -48,14 +48,16 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // fraction on rebalance decisions, except members inside the no-trade band.
 // aim-partial-v5: members move by theta_i toward aim_leverage * desired unless
 // inside the dust band (counted in banded_names); theta_i = per_name_rate[i] when
-// the span is non-empty (then exactly in.instruments finite rates in [0, 1], checked
-// by the caller; T36), else trade_fraction. Every other rule ignores the span, which
-// must be empty. `current` is updated in place to the plan and `out` accumulates
-// the planned turnover/exposure fields (and out.construction.banded_names).
-void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d,
-                    bool rebalance, atx::f64 spent, const std::vector<atx::f64>& desired,
-                    std::vector<atx::f64>& current, TargetReplayDay& out,
-                    std::span<const atx::f64> per_name_rate = {});
+// the span is non-empty (the NAV's rate per-name-v1, T36; out.applied_fraction is
+// then the members' mean rate), else trade_fraction. A non-empty span must hold
+// exactly in.instruments rates in [0, 1] (NaN refused) under aim-partial-v5; any
+// other non-empty span is refused with InvalidArgument before anything moves (never a
+// silent fixed-theta fallback). `current` is updated in place to the plan and `out`
+// accumulates the planned turnover/exposure fields (and out.construction.banded_names).
+[[nodiscard]] atx::core::Status update_weights(
+    const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d, bool rebalance,
+    atx::f64 spent, const std::vector<atx::f64>& desired, std::vector<atx::f64>& current,
+    TargetReplayDay& out, std::span<const atx::f64> per_name_rate = {});
 // N_d: the members of decision d (in.member[d * instruments + i] != 0).
 [[nodiscard]] atx::usize members_at(const TargetReplayInput& in, atx::usize d);
 // The construction of rebalance decision d, shared by the target and NAV replays:
@@ -88,7 +90,8 @@ struct AimPartialDecision {
   atx::usize held_names{}, members{};
 };
 // The summary's construction.v5 object as JSON text: theta, dust_multiple,
-// aim_leverage, rate ("fixed" until T36) and, over the decisions, mean_gross,
+// aim_leverage, rate ("fixed"; the NAV's per-name-v1 overrides it and adds
+// rate_stats) and, over the decisions, mean_gross,
 // mean_net and mean_held_share (held_names / N_d over decisions with members);
 // a mean over no decisions is null. Empty unless rule == AimPartialV5.
 [[nodiscard]] std::string aim_partial_summary_json(
