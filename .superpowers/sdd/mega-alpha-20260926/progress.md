@@ -1,5 +1,15 @@
 # Active task: recent-data DSL ensemble
 
+## V6-L implemented (pool-5 9d302e4c) -- DONE_WITH_CONCERNS -- review dispatched (2026-09-27 ~19:20)
+Library v6: 38 candidates; +value_composite, +res_mom_12_1; cfoa->cbop, low_beta->bac, low_max->smax; -low_ivol, -lowvol_ind;
+27 members R(decay(x)); 4 fast sleeves lose the 21-session decay. JSON sha256 5ee66d13...; recipe 36c08452. Needs-new-field:
+Heston-Sadka lags 24/36, FINRA daily short volume, SG&A, 5-year issuance, XFIN, MAX5. Review package review-V6L.diff.
+- Ruling: extra-field cap stays at 5 (XFIN not added) -- why: the child's own estimate for cap 6 is ~1431 MiB against the
+  1536 MiB runner limit, and the RAM rule is efficiency fixes, not longer caps -- cost if wrong: one lost hypothesis (XFIN).
+- Ruling: additions placed before incumbents in roster order stands -- why: the redundancy pass then keeps the upgraded
+  definition when |rho| > .90, which is the pre-registered "replace" intent -- cost if wrong: an incumbent with better
+  TRAIN t is dropped; disclosed in Appendix A as a design choice, not a data-driven one.
+
 ## v6 Phase A complete -> pre-registered -> Phase C dispatched (2026-09-27 ~18:55)
 Phase A (read-only, Opus 5.5): v6-code-review-signal.md (0 Crit / 5 Imp: I1 39.4% of member cells unlinked = ETF/SPAC/ADR
 ranked on price signals only; I2 low_risk projected out by price-risk-v1, all four members negative TRAIN t; I3 21-session
