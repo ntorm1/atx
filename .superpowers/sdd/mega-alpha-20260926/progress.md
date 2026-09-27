@@ -226,6 +226,15 @@
   dispatched. Ruling (provisional, pending review): weighted frozen TRAIN runs bind via their recipe's
   weights pin ("frozen-TRAIN-recipe-pins-these-weights") — cost if wrong: a looser check on one path.
   NOTE: final TRAIN artifact must be produced by the >=22eae712 binary so validation checks definitions.
+- T6 fix r3 re-review: ADDRESSED (independent rebuild: 15,341 NaN cells, identical per rule), 0 new C/I; minors
+  N1 restated_cells now post-rules (130,018 -> 129,588), N2 no not-evaluable count for rule b. Implementer
+  decisions accepted (volume restated via close/raw factor; >=11/21 present days; implausible_to_nan totals;
+  shares_out depends on si_shares; strict comparisons). FINDING: 1.0x/1.5x NaN 6,925 genuine member cells in 105
+  lines (55 leveraged/inverse/vol ETPs, XRT, meme stocks) vs 3,778 defect cells in 72 lines; 5,183 genuine
+  cells would drop special -> warm and escape the locate block.
+  Ruling (supersedes 1.0/1.5; data-QA, TRAIN-only, no outcome data): thresholds 3.0x turnover / 5.0x SI
+  (TRAIN: 3,558/3,778 defect cells caught, 568 genuine). T6 fix round 4 sent. Fields v4 + field-candidate
+  recompute follow. Cost if wrong: ~220 defect cells stay (mis-sized names), bounded by stresses.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
