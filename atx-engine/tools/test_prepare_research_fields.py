@@ -991,16 +991,17 @@ def mark(d):
     return dt.datetime.combine(d, dt.time(22), tzinfo=UTC)
 
 
-LONG_AGO = at(2019, 1, 1)
+LONG_AGO = mark(dt.date(2015, 1, 1))  # T19 invariant: available_at <= start 22:00 UTC (here exactly at it)
 # (sr_id, cik, start, end_incl, available_at, primary, tier, basis)
 BRIDGE = [
     (101, 1001, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),
     (303, 1001, dt.date(2015, 1, 1), OPEN, LONG_AGO, "J", "high", "reconstructed_high"),       # second class of 1001
-    (202, 2002, dt.date(2015, 1, 1), dt.date(2024, 12, 2), mark(dt.date(2024, 10, 15)), "P", "medium",
-     "reconstructed_medium"),                                                                  # visible from 10-16
+    (202, 2002, dt.date(2024, 10, 15), dt.date(2024, 12, 2), mark(dt.date(2024, 10, 15)), "P", "medium",
+     "reconstructed_medium"),                                  # available exactly at its start mark: 10-15 included
     (404, 4004, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),
     (404, 4005, dt.date(2024, 11, 1), dt.date(2024, 11, 29), LONG_AGO, "P", "high", "reconstructed_high"),  # ambiguous
-    (505, 5005, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),
+    (505, 5005, dt.date(2015, 1, 1), OPEN, at(2024, 10, 20, 12), "P", "high",
+     "reconstructed_high"),                                    # violates the invariant: counted, gated to 10-21
     (999, 9009, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),       # off the role axis
     (505, 5006, dt.date(2015, 1, 1), OPEN, LONG_AGO, "N", "low", "reconstructed_medium"),      # N: dropped
     (202, 2003, dt.date(2024, 10, 1), OPEN, LONG_AGO, "P", "high", "current_ticker_verified"),  # excluded basis
@@ -1100,11 +1101,12 @@ def write_events(root, events=EVENTS, sic_events=SIC_EVENTS, drop_items=(), stal
                            values_label="modeled_unaccepted", rehearsal_identity=True, items=ITEM_NAMES)
 
 
-def oracle_link(sid, d, strict=True):
-    """(cik or None or 'amb', primary) of line sid at session d under the declared link rule."""
+def oracle_link(sid, d):
+    """(cik or None or 'amb', primary) of line sid at session d: the interval, plus the <= gate (binds only on rows
+    that violate available_at <= start mark)."""
     q = [(cik, kind) for s, cik, start, end, avail, kind, _, basis in BRIDGE
          if s == sid and kind in ("P", "J") and basis != "current_ticker_verified" and avail < at(2025, 1, 1)
-         and start <= d and (end is None or d <= end) and (avail < mark(d) if strict else avail <= mark(d))]
+         and start <= d and (end is None or d <= end) and avail <= mark(d)]
     ciks = {c for c, _ in q}
     if not ciks:
         return None, False
@@ -1124,11 +1126,11 @@ def oracle_latest(rows, cik, cutoff, accession):
     return best
 
 
-def oracle_fund(item, lag, strict=True):
+def oracle_fund(item, lag):
     out = np.full((len(SESSIONS), len(IDS)), np.nan)
     for t, d in enumerate(SESSIONS):
         for i, sid in enumerate(IDS):
-            cik, primary = oracle_link(sid, d, strict)
+            cik, primary = oracle_link(sid, d)
             if not primary or t < lag:
                 continue
             r = oracle_latest(EVENTS, cik, mark(SESSIONS[t - lag]), 7)
@@ -1235,8 +1237,10 @@ class IssuerFields(unittest.TestCase):
         self.assertTrue(np.isnan(be[t_of("2024-11-13"), a]))      # visible NaN in the latest row: no skip-back
         self.assertEqual(self.fx.field("issuer", "at")[t_of("2024-11-13"), a], 1300)
         self.assertTrue(np.all(np.isnan(be[:, c])))               # J line: issuer fields are primary-only
-        self.assertTrue(np.isnan(be[t_of("2024-10-15"), b]))      # link available_at == the 10-15 mark: not yet
-        self.assertEqual(be[t_of("2024-10-16"), b], 50)
+        self.assertTrue(np.isnan(be[t_of("2024-10-14"), b]))      # before the link's start
+        self.assertEqual(be[t_of("2024-10-15"), b], 50)           # available_at == start mark: first day kept
+        self.assertTrue(np.isnan(be[t_of("2024-10-18"), e]))      # invariant violation gated: not before ...
+        self.assertEqual(be[t_of("2024-10-21"), e], 55)           # ... the first mark >= available_at
         self.assertEqual(be[t_of("2024-11-01"), b], 50)           # age 200 (period end 2024-04-15): kept
         self.assertTrue(np.isnan(be[t_of("2024-11-04"), b]))      # age 203: stale
         self.assertEqual(be[t_of("2024-10-31"), d], 42)           # same CIK and clock: the later file row wins
@@ -1251,7 +1255,7 @@ class IssuerFields(unittest.TestCase):
         member = np.fromfile(self.fx.role / "member.u8", dtype="u1").reshape(len(SESSIONS), len(IDS)) != 0
         fc1 = np.zeros_like(member)
         fc1[t_of("2024-10-23"):t_of("2024-11-13"), a] = True      # 1001's FC1 restatement row is visible
-        fc1[:t_of("2024-11-05"), e] = True                        # 5005's FC1 row
+        fc1[t_of("2024-10-21"):t_of("2024-11-05"), e] = True      # 5005's FC1 row (linked from 10-21)
         fc1[0] = False
         self.assertEqual(r["fc1_finite_member_cells"], int(np.count_nonzero(fc1 & member & np.isfinite(be))))
 
@@ -1276,7 +1280,7 @@ class IssuerFields(unittest.TestCase):
         self.assertTrue(np.isnan(ff12[t_of("2024-11-04"), 1]))   # age 553: stale
         self.assertEqual(ff12[t_of("2024-10-31"), 3], 12)        # 9999: FF12 Other ...
         self.assertTrue(np.isnan(ff49[t_of("2024-10-31"), 3]))   # ... and no FF49 industry
-        self.assertEqual(self.fx.field("issuer", "grp_sic2")[5, 4], 28)  # 5005: the null-SIC row is skipped
+        self.assertEqual(self.fx.field("issuer", "grp_sic2")[t_of("2024-10-22"), 4], 28)  # null-SIC row skipped
         st = self.manifest["source_checks"]["issuer"]
         self.assertEqual(st["sic_events"]["rows_used_invalid_sic_skipped"], 2)
         self.assertEqual(st["sic_events"]["rows_available_on_or_after_2025_dropped"], 1)
@@ -1326,7 +1330,9 @@ class IssuerFields(unittest.TestCase):
                           b["rows_available_on_or_after_2025_dropped"], b["rows_ignored_off_axis"], b["rows_used"]),
                          (10, 1, 1, 1, 1, 6))
         self.assertEqual((b["rehearsal_identity"], b["scope_complete"]), (True, False))
-        self.assertIn("strict", b["available_at_rule"])
+        self.assertEqual((b["rows_used_available_after_start_mark"], b["rows_used_available_exactly_at_start_mark"]),
+                         (1, 4))
+        self.assertIn("start <= date(session) <= end_incl", b["link_rule"])
         self.assertEqual(b["ambiguous_cells"], sum(d.month == 11 for d in SESSIONS))
         ev = st["fund_events"]
         self.assertEqual((ev["rows_total"], ev["rows_available_on_or_after_2025_dropped"], ev["rows_ignored_unlinked_cik"],
@@ -1341,21 +1347,25 @@ class IssuerFields(unittest.TestCase):
         self.assertEqual({Path(s["path"]).name for s in self.entry("grp_ff12")["sources"]},
                          {"manifest.json", "links.parquet", "sic_events.parquet"})
 
-    def test_link_rule_non_strict_variant(self):
-        # The declared rule is strict (available_at < mark). With LINK_AVAILABLE_STRICT off (T19's own <= semantics),
-        # 202's link whose available_at is exactly the 2024-10-15 mark also qualifies on 2024-10-15.
-        saved = tool.LINK_AVAILABLE_STRICT
-        tool.LINK_AVAILABLE_STRICT = False
-        try:
-            self.produce("non-strict", ["be"])
-        finally:
-            tool.LINK_AVAILABLE_STRICT = saved
-        got = self.fx.field("non-strict", "be")
-        np.testing.assert_array_equal(got, oracle_fund("be", 1, strict=False))
-        self.assertEqual(got[t_of("2024-10-15"), 1], 50)
-        ref = self.fx.field("issuer", "be")
-        same = (got == ref) | (np.isnan(got) & np.isnan(ref))
-        self.assertEqual(np.argwhere(~same).tolist(), [[t_of("2024-10-15"), 1]])  # the only cell that differs
+    def test_link_rule_interval_only(self):
+        # Controller ruling: rows meeting T19's invariant match on start <= d <= end_incl only (no strict
+        # available_at < mark filter that would drop their first day). Checked on a bridge of compliant rows only.
+        base = self.fx.base / "interval-only"
+        compliant = [r for r in BRIDGE if not (r[0] == 505 and r[1] == 5005)]
+        sha_ = write_bridge(base, compliant)
+        m = self.produce("interval-only-out", ["be"], identity_bridge=base, identity_bridge_sha256=sha_)
+        got = self.fx.field("interval-only-out", "be")
+        for t, d in enumerate(SESSIONS):
+            for i, sid in enumerate(IDS):
+                rows = [r for r in compliant if r[0] == sid and r[5] in ("P", "J") and r[7] != "current_ticker_verified"
+                        and r[4] < at(2025, 1, 1) and r[2] <= d and (r[3] is None or d <= r[3])]
+                if not rows:
+                    self.assertTrue(np.isnan(got[t, i]), (d, sid))  # no interval contains d
+        np.testing.assert_array_equal(got[:, :4], self.fx.field("issuer", "be")[:, :4])
+        self.assertTrue(np.all(np.isnan(got[:, 4])))
+        b = m["source_checks"]["issuer"]["identity_bridge"]
+        self.assertEqual((b["rows_used_available_after_start_mark"], b["rows_used_available_exactly_at_start_mark"]),
+                         (0, 4))
 
     def test_point_in_time_later_rows_change_no_earlier_cell(self):
         late = mark(dt.date(2024, 12, 10)) - dt.timedelta(microseconds=1)

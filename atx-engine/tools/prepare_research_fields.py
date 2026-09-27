@@ -23,8 +23,9 @@ Sources (all read-only; exact bytes hashed, pinned against their producers' rece
 * issuer-level fields (opt-in, ``ISSUER_FIELDS``; library v4): a pinned identity bridge (T19,
   ``prepare_identity_bridge.py``: dated securityID -> CIK links, P/J, available_at) and a pinned
   fundamental events artifact (T20, ``build_fundamental_events.py``: one snapshot row per filing event
-  and a SIC event table). Line i at session d links to a CIK through a link whose interval contains d
-  and whose available_at < d 22:00 UTC. Fundamental items and industry groups (``grp_sic2``,
+  and a SIC event table). Line i at session d links to a CIK through a bridge row whose [start, end_incl]
+  contains d (bridge rows are already point in time: available_at <= start 22:00 UTC, asserted and
+  counted per row; a violating row is also gated by available_at <= d 22:00 UTC). Fundamental items and industry groups (``grp_sic2``,
   ``grp_ff12``, ``grp_ff49``) read the CIK's latest row with clock < the mark of session d-L, L =
   ``--fund-lag-sessions`` (declared 1), with 200/400/550-day staleness, on primary (P) lines only;
   ``me_company`` sums shares_out x raw_close over every role line (P and J) of the issuer. The input
@@ -263,10 +264,10 @@ EXCLUDED_SOURCE_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 FUND_LAG_SESSIONS_DECLARED = 1   # v4-prereg R2: +1 declared lag session (--fund-lag-sessions 1)
-# Link visibility (T18 section 7 rule quoted by the T21 brief): available_at < date(session) 22:00 UTC, strict.
-# T19's intervals already apply r4's available_at <= mark, so the strict rule only drops the first session of a
-# link version whose available_at is exactly that session's 22:00 mark (FC1 evidence = filed + 46 h lands there).
-LINK_AVAILABLE_STRICT = True
+# Link rule (controller ruling, T21): T19 rows are already point in time (r4 links_asof applied; every row has
+# available_at <= start 22:00 UTC), so a line matches on start <= date(session) <= end_incl only. The invariant is
+# asserted per row and violations are counted; a violating row is also gated by available_at <= date(session)
+# 22:00 UTC, which never binds on a row that meets the invariant.
 FUND_STALE_DAYS = 200            # rows of quarterly filers (events staleness_days)
 FUND_STALE_DAYS_ANNUAL = 400     # rows of annual-only filers
 GRP_STALE_DAYS = 550
@@ -281,10 +282,10 @@ FF12_NUMBERS = {"NoDur": 1, "Durbl": 2, "Manuf": 3, "Enrgy": 4, "Chems": 5, "Bus
 SIC_MAPPING_VERSIONS = {"ff12": "french_siccodes12_v2", "ff49": "french_siccodes49_v1"}
 
 LINK_RULE = (
-    "line -> CIK: the pinned identity-bridge link of the line whose [start, end_incl] contains date(session t) and whose "
-    f"available_at {'<' if LINK_AVAILABLE_STRICT else '<='} date(session t) 22:00 UTC; the value is published on primary "
-    "(P) lines only (secondary J lines, "
-    "unlinked lines and lines with two qualifying links to different CIKs -> NaN)")
+    "line -> CIK: the pinned identity-bridge row of the line whose [start, end_incl] contains date(session t) (bridge "
+    "rows are point in time: available_at <= start 22:00 UTC, asserted per row; a violating row, counted, is also gated "
+    "by available_at <= date(session t) 22:00 UTC); the value is published on primary (P) lines only (secondary J lines, "
+    "unlinked lines and lines with two qualifying rows for different CIKs -> NaN)")
 FUND_CLOCK = (
     "fund-events-lagged-v1: the linked CIK's latest events row with clock < date(session t-L) 22:00 UTC, L = {lag} declared "
     "lag session(s) on the role calendar (--fund-lag-sessions): usable from the first session whose 22:00 UTC mark follows "
@@ -1520,6 +1521,7 @@ def load_bridge(directory: Path, expected_sha256: str, role: Role, budget: Budge
     sealed = avail >= SEAL_NS
     pos, on = role.columns_of(sid)
     keep = known & ~excluded & ~sealed & on
+    late = keep & (avail > start * DAY_NS + MARK_NS)  # T19 invariant: available_at <= start 22:00 UTC
     st = {"rehearsal_identity": m["rehearsal_identity"], "rule": m.get("rule"),
           "scope_complete": (m.get("source") or {}).get("scope_complete"), "rows_total": int(len(sid)),
           "rows_dropped_kind_not_p_or_j": int(np.count_nonzero(~known)),
@@ -1527,8 +1529,10 @@ def load_bridge(directory: Path, expected_sha256: str, role: Role, budget: Budge
           "rows_available_on_or_after_2025_dropped": int(np.count_nonzero(known & ~excluded & sealed)),
           "rows_ignored_off_axis": int(np.count_nonzero(known & ~excluded & ~sealed & ~on)),
           "rows_used": int(np.count_nonzero(keep)), "rows_used_primary": int(np.count_nonzero(keep & is_p)),
-          "available_at_rule": "strict: available_at < date(session) 22:00 UTC" if LINK_AVAILABLE_STRICT
-          else "available_at <= date(session) 22:00 UTC"}
+          "rows_used_available_after_start_mark": int(np.count_nonzero(late)),
+          "rows_used_available_exactly_at_start_mark": int(np.count_nonzero(keep & (avail == start * DAY_NS + MARK_NS))),
+          "link_rule": "start <= date(session) <= end_incl; rows with available_at > start 22:00 UTC (invariant "
+                       "violations, counted) are also gated by available_at <= date(session) 22:00 UTC"}
     links = {"col": pos[keep].astype(np.int64), "cik": cik[keep], "start": start[keep], "end": end[keep],
              "avail": avail[keep], "primary": is_p[keep]}
     return links, [man_src] + sources, st
@@ -1537,15 +1541,16 @@ def load_bridge(directory: Path, expected_sha256: str, role: Role, budget: Budge
 def resolve_links(links: dict, role: Role, marks: np.ndarray, budget: Budget):
     """Session x line matrix of the dense CIK index (-1 unlinked, -2 ambiguous) and a primary flag.
 
-    A link qualifies at session t when start <= date(t) <= end_incl and available_at < mark(t) (<= when
-    LINK_AVAILABLE_STRICT is off). Two qualifying links of one line to different CIKs make the cell ambiguous
-    (T19 guarantees disjoint intervals per line; kept as a guard); P and J links to one CIK make it primary."""
+    A row qualifies at session t when start <= date(t) <= end_incl and available_at <= mark(t); the second
+    condition never binds on a row meeting T19's invariant (available_at <= start mark). Two qualifying rows of one
+    line for different CIKs make the cell ambiguous (T19 guarantees disjoint intervals per line; kept as a guard);
+    P and J rows for one CIK make it primary."""
     ciks = np.unique(links["cik"])
     cidx = np.searchsorted(ciks, links["cik"]).astype(np.int32)
     link = np.full((role.n_dates, role.n), -1, dtype=np.int32)
     primary = np.zeros((role.n_dates, role.n), dtype=bool)
     t_lo = np.maximum(np.searchsorted(role.days, links["start"], side="left"),
-                      np.searchsorted(marks, links["avail"], side="right" if LINK_AVAILABLE_STRICT else "left"))
+                      np.searchsorted(marks, links["avail"], side="left"))
     t_hi = np.searchsorted(role.days, links["end"], side="right")
     never = 0
     for k in np.lexsort((links["avail"], links["start"], links["col"])):
