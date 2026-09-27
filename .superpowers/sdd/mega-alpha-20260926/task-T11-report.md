@@ -151,3 +151,10 @@ This is a screen trial on v1, so ledger it as one if you run it.
 - `tau_flagged`, `refused_decisions`, `computed_this_run`, `reused`.
 
 **Runner input:** `--composition-weights build-equity/mega-weights-v3/composition_weights.json --composition-weights-sha256 <weights_sha256>`. For the weights to mean what they were fit on, the runner must apply `signs` (T7-lane change).
+
+## Fix round 1 (review task-T11-review.md) — appended by root (subagent was blocked from writing)
+
+Commit f0c223e5 (pool-3, on 4b983cbd); 33/33 OK, pyflakes clean.
+- I1 fixed: new pinned `--runner-summary PATH --runner-summary-sha256 SHA` (TRAIN-only runner summary; `--candidate-cache` removed). Summary binding: status complete; orientations_artifact_sha256 == --orientations-sha256; recipe sha matches orientations; roles == [train]; train manifest sha == --train-sha256. Layout from roles[train].candidate_cache: directory = ROOT/R, fields_directory = ROOT/F (F = research_fields.manifest_sha256), vm_identity (absent = legacy dslvm1_clang18.1; non-legacy requires ROOT basename == identity). Per candidate: directory/<id>.json then fields_directory/<id>.json; exactly one entry with matching id + DSL sha; sidecar checks mirror runner cached_payload_sha (schema/id/DSL, role sha, eval_mode, layout, geometry, payload sha, fields sha presence/equality, vm_identity; keyless legacy only with legacy identity + engine sha in {429cbe43, 6d85ac2a}). Work-cache field records named <payload>.f-<F>.json.
+- M1 fixed: SCRIPT_SHA256 (fitter file bytes) in every factor record + context digest.
+- M2-M6 and T9 M5 fixed (atomic context save; stale .pending refused early; runner_accepts ports landed parser incl. train_manifest_sha256 + signs; boundary fixtures; redundant_rho / undefined_rho_with / cache_entry columns). Not changed: M7 module split; T9 M4 literal 0.1/0.9.

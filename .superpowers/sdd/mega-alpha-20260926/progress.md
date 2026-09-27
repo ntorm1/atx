@@ -125,6 +125,17 @@
   max |ln ret err| 2.33e-15; 2.45 s / 312 MiB. Review dispatched (t12-review).
   T12 concern -> T6 fix round 2 (shares_out restated with unchained factor, ~62 sessions post-break; plus
   shares_out [1e5,5e10] NaN) sent to t6-fix. All TRAIN artifacts must be regenerated on role v2.
+- TRAIN role v2 runner: v1 48 cold, mega-v1-train-r2 122.4s / 858 MiB, combined 607f48c1, orientations
+  db9b8aa6. NAV (TRAIN, c1 f1, baseline-v1 old equal-family composition, flat-300 legacy borrow) — 2 TRAIN
+  construction diagnostics (trials):
+    plain  (mega-nav-v1r2-c1-plain): S1 net .134/gross .322; S2 net .072/gross .331 vol 11.6% MDD 18.0%;
+      S3 net -.260; tau_gmv mean .0436 p95 .0633.
+    neut   (mega-nav-v1r2-c1-neut, price-risk-v1, band 0): S1 net .298/gross .593; S2 net .147/gross .612
+      vol 7.8% MDD 9.4% HAC t .29; S3 net -.374/gross .080; tau_gmv mean .0506 p95 .0720 (limits met);
+      S2 summed trade cost .064 (~2.1%/yr), borrow .045 (~1.5%/yr). 33-54 s / 236 MiB.
+  => break repair confirmed (-26% day gone). Gap to net 1.0 = alpha quality + cost.
+- T11 fix r1: pool-3 f0c223e5 -> root 1507a2d8 (runner-summary-bound cache layout; script sha in key;
+  M2-M6). 33/33 OK. Report text appended by root (subagent write blocked). Re-review dispatched.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 
