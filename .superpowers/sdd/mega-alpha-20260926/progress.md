@@ -90,6 +90,13 @@
   pattern not PIT); declared before any swap-fin NAV result — cost if wrong: tier misclass for names with
   stale shares_out (bounded by stresses).
 - T12 (role factor-break repair + QA scan) dispatched t12-role pool-8 feat/mega-alpha-role-repair-20260927.
+- T11: pool-3 4b983cbd -> root cd2ec619 (v3-admit-v1 screen, resumable fit, signs + train_manifest_sha256,
+  exit codes 0/1/3/4). 21/21 OK 3.7s. Review dispatched (t11-review).
+- T6 re-review: 7/8 addressed (M3 open: shares_out restatement guard), 0 new C/I, minors N1-N3.
+  Task T6: complete (cf36d83c->c615ce36, fix a0d9deeb->c099cade). Ruling: T10 treats shares_out outside
+  [1e5, 5e10] as missing (-> warm tier); fields-v2 reruns use --fields si_shares,si_dtc,iv_atm_21d,
+  iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret (all PIT; no mktcap_lagged/size_grp) and bind the
+  REPAIRED roles (after T12) — cost if wrong: tier misclass on bad share counts, bounded by stresses.
 
 ## OWNER RULING 2026-09-27 (b) — financing: swap-fin-v1 replaces flat 300 bps (handoff 2 §2b)
 

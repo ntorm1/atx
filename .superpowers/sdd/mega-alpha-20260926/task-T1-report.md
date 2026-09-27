@@ -201,3 +201,131 @@ Fields: `candidate_id`, `family`, `dsl_sha256`, `library_sha256`, `role_manifest
    - validation-only runs may pin weights that differ from the frozen TRAIN run's (signs are
      weight-independent; both pins are recorded). If research governance wants weights frozen
      with TRAIN, that is one extra check in `frozen_train`.
+
+## T1 fix round 1
+
+Status: **DONE_WITH_CONCERNS** (not compiled; desk-checked). This round was done in the T7 lane on
+`C:/atx-wt/pool-4`, branch `feat/mega-alpha-runner-fields-20260926`, on top of T7's `aa5f06dd`.
+
+Commits:
+- `2353bac8` fix(ic-runner): VM-identity cache key, TRAIN-bound weights, pinned signs [mega T1 fix 1]
+  (`strategy_ic_runner.cpp` and its test).
+- `4e018e58` docs(alpha): point VM editors at the IC cache semantics version [mega T1 fix 1].
+  - Comment only, in `atx-engine/include/atx/engine/alpha/vm.hpp`.
+  - It is a separate commit because touching `vm.hpp` recompiles ~93 direct includers. Root may defer it.
+
+Build and test are the same as T7: `atx-impl-strategy-ic-tests` plus `atx-equity-strategy-ic`, then
+`-Ctest -R StrategyIcRunner`. There is no CMake change. Line numbers below are at `d4992a32`.
+
+### C1: engine/VM identity in the cache key (`strategy_ic_runner.cpp` :54-99, :685-704, :740-760)
+
+**The identity.** It is `dslvm<V>_<compiler><fp-flavor>`, for example `dslvm1_clang18.1`:
+- `V` is `dsl_vm_semantics_version` (:60, now 1). It is an explicit constant in the runner. The comment beside it
+  lists what forces a bump: parse/compile, VM kernels, and the Cs/Ts ops.
+- `compiler` is `__clang_major__.__clang_minor__` (or `_MSC_VER`) of this TU. This TU instantiates the header-only
+  VM.
+- `fp-flavor` is `_fma` / `_avx2` / `_fastmath` when those macros are defined. That separates `rel-avx2`
+  (`/arch:AVX2`) from dev/rel. Patch-level compiler updates are assumed not to change strict-FP results.
+
+**Where the version lives.** In the runner. The `vm.hpp` header comment (commit `4e018e58`) points VM editors at it.
+
+**Why not a source-tree hash.** A digest of the VM/DSL sources is feasible through the existing configure-time
+provenance (`file(SHA256)` + `CMAKE_CONFIGURE_DEPENDS`), but I did not prefer it:
+- it needs a CMake change that I cannot build;
+- it invalidates the cache on comment-only edits;
+- coverage of every header the VM really depends on would be hand-maintained and silently incomplete;
+- it would orphan the existing cache.
+
+**Layout.**
+- `ROOT = DIR/<identity>/`, so an identity change is a clean miss and recompute into a new directory.
+- New sidecars record `vm_identity`. On lookup it must match, otherwise the run refuses loudly: foreign bytes in our
+  own directory. `vm_identity` also appears in plan and summary.
+- An unknown compiler refuses `--candidate-cache`.
+
+**Legacy cache kept usable.** The identity `dslvm1_clang18.1` (clang-cl 18.1.8, dev preset, no `/arch`) keeps
+`ROOT = DIR`, the old layout. There it accepts *keyless* sidecars only if their recorded `engine_git_sha` is
+`429cbe43…` or `6d85ac2a…`. Evidence:
+- the 48 existing entries under `build-equity/mega-candidate-cache/` carry exactly those two engine SHAs (37 and 11);
+- `git diff` of `atx-engine/{include,src}/…/alpha`, `parallel` and `atx-core` from each SHA to HEAD is empty;
+- this host's clang-cl reports 18.1.8, and the dev preset sets no arch flags.
+
+Consequences:
+- T9's `DIR/<train_sha>/` lookup keeps working for dev builds.
+- Keyless entries from any other engine build, or read under any other identity, refuse.
+- Note: the pending role repair changes role SHAs, so the old entries will simply stop matching (a cold recompute,
+  ~60-90 s). No invalidation logic is involved.
+
+**M1.** `vm_workers` is still recorded but not matched. The key comment states the DetPool determinism dependency,
+and a new fixture pins raw payload bytes serial vs 2 workers.
+
+### I1 plus the root-ruled weights contract (`composition_weights` :638, `composition_signs` :610, `frozen_train` :226)
+
+**Weights file contract** (T9 must emit this). Schema `atx.dsl-composition-weights/v1` with:
+- `library_sha256`;
+- `weights`;
+- **top-level `train_manifest_sha256`**. It is required on every pinned-weight run and must equal `--train-sha256`.
+  In validation-only mode that value is also the frozen TRAIN artifact's `train_manifest_sha256`, which is already
+  enforced.
+- optional **`signs`**: an object of candidate id → integer `+1` or `-1`.
+  - Every candidate with weight > 0 must have a sign.
+  - Unknown ids, `0`, `1.0`, `"1"`, and a non-object value are refused.
+  - An unsigned zero-weight candidate gets 0.
+- Unknown top-level keys stay tolerated, so T9's `provenance` block is fine.
+
+**Pinned signs** replace the IC orientation **in the blend only** (`composition.add`). IC diagnostics, `daily_ic`,
+`frozen_train_sign` and orientations.json keep the TRAIN IC sign. When signs are pinned:
+- recipe `composition` becomes `pinned-candidate-weights;pinned-candidate-signs;…`, which changes the canonical hash;
+- summary and plan carry `composition_signs: "pinned-candidate-signs"`, and so does the saved combined manifest;
+- `signal_semantics` in the combined manifest is unchanged, so replay still admits the blend;
+- each candidate carries `composition_sign`.
+
+**Frozen blends.** A blend frozen WITH pinned weights resumes only with exactly the same weights pin. Running it
+without weights, or with other weights, refuses with `validation must pin exactly the same --composition-weights`.
+An unweighted frozen source admits any weights bound to the same TRAIN manifest.
+
+**M7.** Each candidate summary carries `composition_weight` when weights are pinned (an NR input).
+
+### Other review items
+
+- **M4**: `// SAFETY:` note added at `write_partial`'s `reinterpret_cast`.
+- **M8**: `--help` now documents the cache layout, fsync and partial files, and the weights contract.
+- **Not done**: M2 (fail-fast pre-scan), M3 (shared hex helper), M5 (exact equality: the composition's
+  centered-rank formula is not visible to the test oracle, so it stays at 4 ULP) and M6.
+
+### Fixtures (`strategy_ic_runner_test.cpp`)
+
+- `pin_weights` now writes `train_manifest_sha256` (plus optional signs and file name).
+- `stable_role` strips `composition_weight` and `composition_sign`.
+- Cache paths are resolved through `cache_root(summary)`, the identity-scoped root reported by the run.
+- `InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput` gains refusals (plan-only and real) for:
+  - missing TRAIN binding and wrong TRAIN binding;
+  - signs not an object;
+  - unknown signed id;
+  - sign 0, `1.0` and `"1"`;
+  - a missing sign for a weighted candidate.
+- `ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWeights` (rewritten):
+  - unweighted source + TRAIN-bound weights (cold, then warm);
+  - weighted source + the same weights: byte-identical to the source;
+  - refusals: weighted source without weights, with other weights, and weights bound to another TRAIN.
+- `PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContribution`:
+  - weights 2/0 and sign −1 give a blend exactly equal to −(unsigned blend) = −2r;
+  - per-candidate IC diagnostics are unchanged and orientations stay +1;
+  - the records above are present;
+  - a sign equal to the IC sign reproduces the unsigned blend bytes.
+- `CandidateCacheIsScopedByVmIdentityAndRefusesForeignSidecars`:
+  - the root is `DIR` iff the identity is `dslvm1_clang18.1`;
+  - entries under other identity directories are never read (clean miss);
+  - a sidecar with a foreign `vm_identity` refuses;
+  - keyless sidecars refuse unless they carry a legacy engine SHA under the legacy identity.
+- `CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers` (M1).
+
+### Concerns
+
+1. Not compiled. The `#if` block that builds the identity string (compiler macros) is the likeliest friction point.
+2. **T9 coordination.** T9 must write top-level `train_manifest_sha256`. Its current `provenance.role_manifest_sha256`
+   alone is not read.
+   - If T9 emits `signs`, every weighted candidate must be signed ±1.
+   - T9's cache lookup `DIR/<train_sha>/` holds only for the dev-build identity and base-only candidates. Otherwise
+     it needs `DIR/<identity>/…`, and field candidates are under `…/<fields-sha>/` (see the T7 report).
+3. Relying on a version bump is a process control: a VM change without a bump is still undetected. The comment in
+   `vm.hpp` and the one beside the constant are the mitigation.
