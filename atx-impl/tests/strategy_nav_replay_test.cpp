@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -18,6 +19,7 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/replay.hpp"
 #include "atx/engine/book/replay_cost.hpp"
+#include "atx/engine/cost/borrow_tiers.hpp"
 #include "../src/strategy_nav_replay.hpp"
 #include "../src/strategy_target_replay.hpp"
 
@@ -80,7 +82,8 @@ struct Panel {
 st::NavScenario flat(f64 bps, f64 borrow_bps, usize stale = 5) {
   st::NavScenario s;
   s.id = "test-flat"; s.cost = st::NavCostRule::FlatBpsV1; s.flat_bps = bps;
-  s.max_participation = uncapped; s.annual_borrow_bps = borrow_bps;
+  s.max_participation = uncapped;
+  s.financing.id = "test-flat-short"; s.financing.flat_short_bps = borrow_bps;
   s.stale_exit_sessions = stale;
   return s;
 }
@@ -352,6 +355,95 @@ void expect_same_result(const st::NavReplayResult& a, const st::NavReplayResult&
   EXPECT_EQ(a.deployment_index, b.deployment_index);
   EXPECT_EQ(bits(a.participation_p95), bits(b.participation_p95));
   EXPECT_EQ(bits(a.participation_max), bits(b.participation_max));
+}
+
+// ---- financing (T10) ----
+// Borrow fields on a panel's geometry: 1e8 shares out and 1e6 short everywhere, so
+// a name priced >= 10 has no flag (the fixture names are present from row 0, hence
+// seasoned): GC.
+struct Fields {
+  std::vector<f64> shares_out, si_shares;
+  explicit Fields(const Panel& p) : shares_out(p.d * p.n, 1e8), si_shares(p.d * p.n, 1e6) {}
+  void set(const Panel& p, usize t, usize i, f64 shares, f64 short_shares) {
+    shares_out[p.k(t, i)] = shares; si_shares[p.k(t, i)] = short_shares;
+  }
+  [[nodiscard]] st::NavFinancingFields view() const { return {shares_out, si_shares}; }
+};
+st::NavReplayInput with_fields(const Panel& p, const Fields& f) {
+  return {p.target(), p.volume, f.view()};
+}
+// Shares out 1e6..1e9, SI ratio 0..0.2, 5% missing short interest: mixed tiers.
+Fields random_fields(const Panel& p, u64 seed) {
+  Fields f(p); Lcg g{seed};
+  for (usize k = 0; k < f.shares_out.size(); ++k) {
+    f.shares_out[k] = std::pow(10.0, 6 + 3 * g.next());
+    f.si_shares[k] = f.shares_out[k] * 0.2 * g.next();
+    if (g.next() < 0.05) f.si_shares[k] = missing;
+  }
+  return f;
+}
+st::NavFinancing swap_fin() { return st::nav_financing_scenarios()[0]; }
+void expect_same_financing(const st::NavReplayDay& a, const st::NavReplayDay& b) {
+  const auto t = a.session_index;
+  EXPECT_EQ(bits(a.long_financing_dollars), bits(b.long_financing_dollars)) << t;
+  EXPECT_EQ(bits(a.long_financing_return), bits(b.long_financing_return)) << t;
+  for (usize k = 0; k < 3; ++k) {
+    EXPECT_EQ(bits(a.short_dollars_by_tier[k]), bits(b.short_dollars_by_tier[k])) << t;
+    EXPECT_EQ(bits(a.short_financing_by_tier[k]), bits(b.short_financing_by_tier[k])) << t;
+  }
+  EXPECT_EQ(a.missing_predictor_shorts, b.missing_predictor_shorts) << t;
+  EXPECT_EQ(a.blocked_short_names, b.blocked_short_names) << t;
+  EXPECT_EQ(bits(a.blocked_short_dollars), bits(b.blocked_short_dollars)) << t;
+  EXPECT_EQ(a.member_tiers, b.member_tiers) << t;
+  EXPECT_EQ(a.member_missing_predictors, b.member_missing_predictors) << t;
+}
+constexpr const char* financing_columns =
+    ",long_financing_dollars,long_financing_return,short_gc_dollars,short_warm_dollars,"
+    "short_special_dollars,short_financing_gc_dollars,short_financing_warm_dollars,"
+    "short_financing_special_dollars,missing_predictor_shorts,missing_predictor_short_dollars,"
+    "blocked_short_names,blocked_short_dollars,member_gc,member_warm,member_special,"
+    "member_missing_predictors";
+// The producer's atx.research-role-fields/v1 layout (c099cade): <name>.f64 payloads
+// and manifest.json pinned to the artifact's role; an unused non-point-in-time entry
+// rides along. `edit` may alter the manifest before it is pinned.
+template<class Edit>
+st::NavFieldsPin write_fields(const std::filesystem::path& dir, const Artifact& a, const Panel& p,
+                              const Fields& f, Edit edit) {
+  const auto root = dir / "fields";
+  if (!std::filesystem::create_directory(root))
+    throw std::runtime_error("fields fixture directory");
+  Json files, entries = Json::array();
+  const std::pair<const char*, const std::vector<f64>*> payloads[] = {
+      {"shares_out", &f.shares_out}, {"si_shares", &f.si_shares}};
+  for (const auto& [name, values] : payloads) {
+    const std::string file = std::string(name) + ".f64";
+    files[file] = write_payload(root / file, *values);
+    entries.push_back({{"name", name}, {"file", file}, {"dtype", "<f8"},
+        {"layout", "date-major"}, {"shape", Json::array({p.d, p.n})},
+        {"sha256", files[file].at("sha256")}, {"point_in_time", true},
+        {"non_pit_aspects", Json::array()}, {"clock", std::string("fixture-") + name}});
+  }
+  entries.push_back({{"name", "mktcap_lagged"}, {"file", "mktcap_lagged.f64"},
+      {"point_in_time", false}, {"point_in_time_reason", "fixture: presence not PIT"}});
+  const auto& receipts = a.role.at("files");
+  Json manifest{{"schema", "atx.research-role-fields/v1"}, {"status", "complete"},
+      {"role", {{"path", "fixture"}, {"manifest_sha256", a.cfg.role_sha256},
+                {"sessions_sha256", receipts.at("sessions.i64").at("sha256")},
+                {"ids_sha256", receipts.at("ids.u64").at("sha256")},
+                {"member_sha256", receipts.at("member.u8").at("sha256")},
+                {"dates", p.d}, {"instruments", p.n}}},
+      {"visibility_mark", "fixture: session-date 22:00 UTC"},
+      {"fields", std::move(entries)}, {"files", std::move(files)}};
+  edit(manifest);
+  st::NavFieldsPin pin;
+  pin.manifest_path = (root / "manifest.json").string();
+  pin.manifest_sha256 = write_json(pin.manifest_path, manifest);
+  return pin;
+}
+std::vector<std::string> lines(const std::filesystem::path& path) {
+  std::ifstream in(path); std::vector<std::string> out; std::string line;
+  while (std::getline(in, line)) out.push_back(line);
+  return out;
 }
 } // namespace
 
@@ -766,7 +858,10 @@ TEST(StrategyNavReplay, TerminalStressConstantsMatchBookReplay) {
   EXPECT_EQ(s[2].stale_exit_sessions, 1U); EXPECT_TRUE(s[2].adverse_terminal);
   EXPECT_EQ(s[2].max_participation, 0.01);
   for (const auto& scenario : s) {
-    EXPECT_EQ(scenario.annual_borrow_bps, 300) << scenario.id;
+    EXPECT_EQ(scenario.financing.id, "flat-300-v0") << scenario.id;
+    EXPECT_EQ(scenario.financing.rule, st::NavFinancingRule::FlatShortV0) << scenario.id;
+    EXPECT_EQ(scenario.financing.flat_short_bps, 300) << scenario.id;
+    EXPECT_EQ(scenario.financing.day_count, 365U) << scenario.id;
     EXPECT_EQ(scenario.fallback_daily_vol, 0.05) << scenario.id;
   }
 }
@@ -1009,4 +1104,436 @@ TEST(StrategyNavReplay, DailyGmvTurnoverStatisticsAndCeilingsHandChecked) {
   EXPECT_NEAR(es->daily_turnover_p95, 0.45, 1e-15); // .9 of the way from 0 to .5
   EXPECT_EQ(es->daily_turnover_max, 0.5);
   EXPECT_EQ(es->daily_turnover_max_session, q.sessions[3]);
+}
+
+// ---- T10: financing (swap-fin-v1 primary; flat-300-v0 and engine-tiers-v1 stresses) ----
+
+// T10 declared numbers: the financing specs, the matrix layout (primary S2 x
+// swap-fin-v1) and engine-tiers-v1 = the engine BorrowTierRecipe default fees.
+TEST(StrategyNavReplay, FinancingScenariosAndMatrixCarryTheDeclaredNumbers) {
+  const auto f = st::nav_financing_scenarios();
+  ASSERT_EQ(f.size(), 3U);
+  EXPECT_EQ(f[0].id, "swap-fin-v1"); EXPECT_EQ(f[0].rule, st::NavFinancingRule::TieredSwapV1);
+  EXPECT_EQ(f[0].flat_short_bps, 0); EXPECT_EQ(f[0].long_spread_bps, 40);
+  EXPECT_EQ(f[0].short_spread_bps, 20); EXPECT_EQ(f[0].gc_bps, 30);
+  EXPECT_EQ(f[0].warm_bps, 100); EXPECT_EQ(f[0].special_bps, 500);
+  EXPECT_EQ(f[0].day_count, 360U); EXPECT_TRUE(f[0].block_special_shorts);
+  EXPECT_EQ(f[1].id, "flat-300-v0"); EXPECT_EQ(f[1].rule, st::NavFinancingRule::FlatShortV0);
+  EXPECT_EQ(f[1].flat_short_bps, 300); EXPECT_EQ(f[1].long_spread_bps, 0);
+  EXPECT_EQ(f[1].day_count, 365U); EXPECT_FALSE(f[1].block_special_shorts);
+  const atx::engine::cost::BorrowTierRecipe engine{};
+  EXPECT_EQ(f[2].id, "engine-tiers-v1"); EXPECT_EQ(f[2].rule, st::NavFinancingRule::TieredSwapV1);
+  EXPECT_EQ(f[2].gc_bps, engine.gc_annual_fraction * 1e4);
+  EXPECT_EQ(f[2].warm_bps, engine.warm_annual_fraction * 1e4);
+  EXPECT_EQ(f[2].special_bps, engine.special_annual_fraction * 1e4);
+  EXPECT_EQ(f[2].long_spread_bps, 40); EXPECT_EQ(f[2].short_spread_bps, 20);
+  EXPECT_EQ(f[2].day_count, 360U); EXPECT_TRUE(f[2].block_special_shorts);
+  const auto legacy = st::nav_scenario_matrix(false);
+  const auto trading = st::fixed_nav_scenarios();
+  ASSERT_EQ(legacy.size(), 3U);
+  for (usize k = 0; k < 3; ++k) {
+    EXPECT_EQ(legacy[k].id, trading[k].id); EXPECT_EQ(legacy[k].financing.id, "flat-300-v0");
+  }
+  const auto m = st::nav_scenario_matrix(true);
+  ASSERT_EQ(m.size(), 5U);
+  const std::pair<std::string, std::string> expected[] = {
+      {trading[0].id, "swap-fin-v1"}, {trading[1].id, "swap-fin-v1"},
+      {trading[2].id, "swap-fin-v1"}, {trading[1].id, "flat-300-v0"},
+      {trading[1].id, "engine-tiers-v1"}};
+  for (usize k = 0; k < m.size(); ++k) {
+    EXPECT_EQ(m[k].id, expected[k].first) << k;
+    EXPECT_EQ(m[k].financing.id, expected[k].second) << k;
+  }
+  EXPECT_EQ(m[st::nav_primary_scenario_index].id, "modeled-1bn-stale5-v1");
+  EXPECT_EQ(m[st::nav_primary_scenario_index].financing.id, "swap-fin-v1");
+}
+
+// T10 (a): flat-300-v0 is the legacy accrual bit for bit. Inside the five-book
+// financing matrix (with borrow fields, tiers formed every decision) the S2 x
+// flat-300-v0 book equals the legacy S2 replay without fields, and every legacy
+// book is unchanged by the presence of fields (they only add tier diagnostics).
+TEST(StrategyNavReplay, FlatLegacyFinancingIsBitIdenticalInsideTheMatrix) {
+  Panel p(40, 8); randomize_rows(p, 7, 0); p.begin = 5;
+  const auto f = random_fields(p, 11);
+  st::TargetReplayConfig daily; daily.cadence = 1; daily.trade_fraction = .5;
+  const auto legacy = st::fixed_nav_scenarios();
+  const auto matrix = st::nav_scenario_matrix(true);
+  for (const auto& rule : {st::TargetReplayConfig{}, daily}) {
+    auto base = config(legacy[0], 1e6, rule);
+    base.liquidity_window = 5; base.min_vol_pairs = 3;
+    auto together = st::replay_nav_scenarios(with_fields(p, f), base, matrix);
+    ASSERT_TRUE(together) << together.error().to_string();
+    auto alone = base; alone.scenario = legacy[st::nav_primary_scenario_index];
+    auto s2 = st::replay_nav(p.nav(), alone);
+    ASSERT_TRUE(s2) << s2.error().to_string();
+    expect_same_result((*together)[3], *s2);
+    auto with = st::replay_nav_scenarios(with_fields(p, f), base, legacy);
+    auto without = st::replay_nav_scenarios(p.nav(), base, legacy);
+    ASSERT_TRUE(with); ASSERT_TRUE(without);
+    for (usize k = 0; k < legacy.size(); ++k) {
+      expect_same_result((*with)[k], (*without)[k]);
+      EXPECT_EQ(bits((*with)[k].max_return_identity_error),
+                bits((*without)[k].max_return_identity_error));
+      for (const auto& day : (*with)[k].days) {
+        EXPECT_EQ(day.long_financing_dollars, 0);
+        EXPECT_EQ(day.blocked_short_names, 0U);
+        const f64 by_tier = day.short_financing_by_tier[0] + day.short_financing_by_tier[1] +
+                            day.short_financing_by_tier[2];
+        EXPECT_NEAR(by_tier, day.borrow_dollars, 1e-9 * (1 + day.borrow_dollars));
+      }
+    }
+    // The tiered books do charge differently (the matrix is not a relabeling).
+    EXPECT_NE(bits((*together)[1].days.back().pretrade_nav),
+              bits((*together)[3].days.back().pretrade_nav));
+  }
+}
+
+// T10 (b): Thu/Fri/Mon/Tue, two names under swap-fin-v1 with 6 bps fills: the long
+// pays the 40 bps long spread and the GC short 20 + 30 bps, ACT/360 on calendar
+// days (three over the weekend), on pre-mark dollars; exact NAV path and identity.
+TEST(StrategyNavReplay, SwapFinancingTwoNameWeekendHandComputedAct360) {
+  Panel p(4, 2); p.by_name({1, 2});
+  const f64 a[] = {100, 100, 110, 99}, b[] = {50, 50, 55, 60.5};
+  for (usize t = 0; t < 4; ++t) { p.price(t, 0, a[t]); p.price(t, 1, b[t]); }
+  const Fields f(p); // caps 5e9 / 1e10, SI 1%, seasoned: GC
+  auto s = flat(6, 0); s.financing = swap_fin();
+  auto r = st::replay_nav(with_fields(p, f), config(s, 1000, hold_after_deployment()));
+  ASSERT_TRUE(r) << r.error().to_string();
+  const auto& d = r->days; ASSERT_EQ(d.size(), 4U);
+  EXPECT_EQ(p.sessions[2] - p.sessions[1], 3 * day_ns);
+  EXPECT_EQ(d[0].member_tiers, (std::array<usize, 3>{2, 0, 0}));
+  EXPECT_EQ(d[0].member_missing_predictors, 0U);
+  EXPECT_EQ(d[0].blocked_short_names, 0U);
+  EXPECT_NEAR(d[1].posttrade_nav, 999.4, 1e-9);
+  EXPECT_EQ(d[1].borrow_dollars, 0); EXPECT_EQ(d[1].long_financing_dollars, 0); // flat at mark
+  const f64 long_rate = 40 * 1e-4, short_rate = (20 + 30) * 1e-4;
+  const f64 long2 = 500 * (long_rate * 3.0 / 360.0), short2 = 500 * (short_rate * 3.0 / 360.0);
+  const f64 nav2 = 999.4 - short2 - long2;
+  EXPECT_NEAR(d[2].long_financing_dollars, long2, 1e-12);
+  EXPECT_NEAR(d[2].borrow_dollars, short2, 1e-12);
+  EXPECT_NEAR(d[2].short_dollars_by_tier[0], 500, 1e-9);
+  EXPECT_EQ(d[2].short_dollars_by_tier[1], 0); EXPECT_EQ(d[2].short_dollars_by_tier[2], 0);
+  EXPECT_NEAR(d[2].short_financing_by_tier[0], short2, 1e-12);
+  EXPECT_NEAR(d[2].mark_pnl_dollars, 0, 1e-9); // short -50, long +50
+  EXPECT_NEAR(d[2].pretrade_nav, nav2, 1e-9);
+  EXPECT_NEAR(d[2].net_return, nav2 / 1000 - 1, 1e-14);
+  EXPECT_NEAR(d[2].trade_cost_return, 0.6 / 1000, 1e-15);
+  EXPECT_NEAR(d[2].borrow_return, short2 / 1000, 1e-15);
+  EXPECT_NEAR(d[2].long_financing_return, long2 / 1000, 1e-15);
+  const f64 long3 = 550 * (long_rate * 1.0 / 360.0), short3 = 550 * (short_rate * 1.0 / 360.0);
+  const f64 nav3 = nav2 + 110 - short3 - long3; // short 550 -> 495 (+55), long 550 -> 605 (+55)
+  EXPECT_NEAR(d[3].long_financing_dollars, long3, 1e-12);
+  EXPECT_NEAR(d[3].borrow_dollars, short3, 1e-12);
+  EXPECT_NEAR(d[3].short_dollars_by_tier[0], 550, 1e-9);
+  EXPECT_NEAR(d[3].mark_pnl_dollars, 110, 1e-9);
+  EXPECT_NEAR(d[3].pretrade_nav, nav3, 1e-9);
+  EXPECT_NEAR(d[3].net_return, nav3 / nav2 - 1, 1e-14);
+  EXPECT_NEAR(d[3].cash_ratio, (999.4 - short2 - long2 - short3 - long3) / nav3, 1e-12);
+  // ACT/360 on calendar days: the weekend accrues three one-day charges per dollar.
+  EXPECT_NEAR(d[2].long_financing_dollars / 500, 3 * d[3].long_financing_dollars / 550, 1e-15);
+  for (usize t = 2; t < 4; ++t) {
+    EXPECT_NEAR(d[t].net_return, d[t].gross_return - d[t].trade_cost_return -
+                                     d[t].borrow_return - d[t].long_financing_return, 1e-15);
+  }
+  auto summary = st::summarize_nav(*r); ASSERT_TRUE(summary);
+  EXPECT_NEAR(summary->final_nav, nav3, 1e-9);
+  EXPECT_NEAR(summary->long_financing_dollars, long2 + long3, 1e-12);
+  EXPECT_NEAR(summary->borrow_dollars, short2 + short3, 1e-12);
+  EXPECT_NEAR(summary->short_financing_by_tier[0], short2 + short3, 1e-12);
+  EXPECT_NEAR(summary->summed_long_financing_return, long2 / 1000 + long3 / nav2, 1e-15);
+  EXPECT_EQ(summary->short_share_sessions, 2U);
+  EXPECT_EQ(summary->short_share_mean[0], 1.0); EXPECT_EQ(summary->short_share_p95[2], 0.0);
+  EXPECT_EQ(summary->missing_predictor_short_name_days, 0U);
+  EXPECT_LE(r->max_cash_book_error, 1e-13);
+  // The same book under flat-300-v0 pays 300 bps/365 on the short and nothing long.
+  auto legacy = st::replay_nav(with_fields(p, f), config(flat(6, 300), 1000,
+                                                         hold_after_deployment()));
+  ASSERT_TRUE(legacy);
+  EXPECT_NEAR(legacy->days[2].borrow_dollars, 500 * (300 * 1e-4 * 3.0 / 365.0), 1e-12);
+  EXPECT_EQ(legacy->days[2].long_financing_dollars, 0);
+}
+
+// T10 (c): tiers from the engine's flag count (0 GC, 1 warm, 2+ special) on
+// market cap = shares_out x raw_close, raw price, SI = si_shares / shares_out and
+// IPO age from the first present role session (present at row 0: seasoned), all
+// as of row d only; a missing or out-of-domain predictor is warm and flagged; the
+// replay's decision census counts members by tier.
+TEST(StrategyNavReplay, BorrowTierMappingFlagsAndMissingPredictorIsWarm) {
+  Panel p(8, 14);
+  constexpr usize d = 5;
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) {
+    f.set(p, t, 1, 5e6, 1e5);   // cap 5e8: small cap only (SI 0.02)
+    p.price(t, 2, 4.99); f.set(p, t, 2, 1e9, 1e6); // low price only (cap 4.99e9)
+    f.set(p, t, 3, 1e8, 1e7);   // SI exactly 0.10: high SI only
+    p.price(t, 5, 4.0);         // cap 4e8 and price 4: two flags
+    p.price(t, 6, 2.0); f.set(p, t, 6, 1e6, 5e5); // small, low, SI 0.5, young: four
+    f.set(p, t, 8, 9.9e4, 1e3); // shares_out below 1e5: missing
+    f.set(p, t, 9, 6e10, 1e6);  // shares_out above 5e10: missing
+    f.set(p, t, 11, 1e7, 1e5);  // cap exactly 1e9: not small (strict)
+    f.set(p, t, 12, 1e5, 1e3);  // shares_out exactly 1e5: valid; cap 1e7 small only
+    f.set(p, t, 13, 5e10, 1e6); // shares_out exactly 5e10: valid, GC
+  }
+  p.absent(0, 4); p.absent(0, 6); // first present at row 1: 6 calendar days old at d
+  f.si_shares[p.k(d, 7)] = missing; // missing at d only
+  p.absent(d, 10);                  // absent at d: no raw price
+  f.set(p, d - 1, 0, missing, missing); f.set(p, d + 1, 0, missing, missing); // row d only
+  auto tiers = st::nav_borrow_tiers(with_fields(p, f), d);
+  ASSERT_TRUE(tiers) << tiers.error().to_string();
+  const std::vector<u8> tier{1, 2, 2, 2, 2, 3, 3, 2, 2, 2, 2, 1, 2, 1};
+  const std::vector<u8> gap{0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0};
+  EXPECT_EQ(tiers->tier, tier);
+  EXPECT_EQ(tiers->missing, gap);
+  // Name 4 is young at d = 5 (Jan 3 -> Jan 9) but not before its first session.
+  auto early = st::nav_borrow_tiers(with_fields(p, f), 0);
+  ASSERT_TRUE(early);
+  EXPECT_EQ(early->tier[4], 2); EXPECT_EQ(early->missing[4], 1); // absent at row 0
+  EXPECT_EQ(early->tier[0], 1);
+  // The replay forms the same tiers at its decision and counts members (name 10 is
+  // absent, hence not a member, at d).
+  auto s = flat(0, 0); s.financing = swap_fin();
+  auto r = st::replay_nav(with_fields(p, f), config(s, 1e6));
+  ASSERT_TRUE(r) << r.error().to_string();
+  EXPECT_EQ(r->days[d].member_tiers, (std::array<usize, 3>{3, 8, 2}));
+  EXPECT_EQ(r->days[d].member_missing_predictors, 3U);
+  // Without fields: no tiers, and a tiered scenario is refused.
+  EXPECT_FALSE(st::nav_borrow_tiers(p.nav(), d));
+  const auto refused = st::replay_nav(p.nav(), config(s, 1e6));
+  ASSERT_FALSE(refused); EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  auto bad = s; bad.financing.flat_short_bps = 300; // a spec may not mix rules
+  EXPECT_FALSE(st::replay_nav(with_fields(p, f), config(bad, 1e6)));
+  bad = s; bad.financing.warm_bps = 600; // warm above special
+  EXPECT_FALSE(st::replay_nav(with_fields(p, f), config(bad, 1e6)));
+}
+
+// T10 (d): the locate rule. Name 0 is special throughout: its short is never
+// opened (blocked dollars counted every decision). Name 1 is a GC short that turns
+// special at decision 4: it may not grow (blocked), is charged special from the
+// next mark until it exits, and may be reduced to zero at decision 6. Without the
+// block the same book shorts both. Zero trading cost, constant prices.
+TEST(StrategyNavReplay, LocateBlockRefusesSpecialShortGrowthAllowsReduction) {
+  Panel p(12, 4);
+  Fields f(p);
+  const f64 early[] = {0, 1, 2, 3}, grow[] = {0, -1, 2, 3}, cut[] = {0, 2, 2, 3};
+  for (usize t = 0; t < p.d; ++t) {
+    const f64* row = t < 4 ? early : t < 6 ? grow : cut;
+    for (usize i = 0; i < p.n; ++i) p.signal[p.k(t, i)] = row[i];
+    f.set(p, t, 0, 1e6, 5e5);                // cap 1e8 + SI 0.5: special
+    if (t >= 4) f.set(p, t, 1, 1e6, 5e5);    // special from decision 4
+  }
+  st::TargetReplayConfig daily; daily.cadence = 1; daily.trade_fraction = 1;
+  auto s = flat(0, 0); s.financing = swap_fin();
+  auto r = st::replay_nav(with_fields(p, f), config(s, 1e6, daily));
+  ASSERT_TRUE(r) << r.error().to_string();
+  const auto& d = r->days;
+  EXPECT_EQ(d[0].member_tiers, (std::array<usize, 3>{3, 0, 1}));
+  EXPECT_EQ(d[0].blocked_short_names, 1U);
+  EXPECT_EQ(d[0].blocked_short_dollars, 375000); // desired -0.375 x 1e6, never opened
+  EXPECT_EQ(d[1].short_dollars, 125000);          // only the GC name 1 is short
+  EXPECT_EQ(d[1].long_dollars, 500000);
+  EXPECT_EQ(d[1].net_leverage, 0.375);            // the block un-neutralizes
+  EXPECT_EQ(d[1].blocked_short_names, 1U);
+  // Decision 4: name 1 is special and wants -0.375: held at its current short.
+  EXPECT_GT(d[4].short_dollars_by_tier[0], 0);    // marked at decision 3's GC tier
+  EXPECT_EQ(d[4].short_dollars_by_tier[2], 0);
+  const f64 nav4 = d[4].posttrade_nav, short4 = d[4].short_dollars;
+  const f64 cur4 = -short4 / nav4;
+  EXPECT_EQ(d[4].blocked_short_names, 2U);
+  EXPECT_NEAR(d[4].blocked_short_dollars, 0.125 * nav4 + (cur4 + 0.375) * nav4, 1e-6);
+  EXPECT_EQ(bits(d[5].short_dollars), bits(short4)); // cannot grow
+  EXPECT_EQ(bits(d[5].short_dollars_by_tier[2]), bits(short4)); // charged special
+  EXPECT_EQ(d[5].short_dollars_by_tier[0], 0);
+  EXPECT_NEAR(d[5].short_financing_by_tier[2], short4 * ((20 + 500) * 1e-4 * 1.0 / 360.0),
+              1e-9);
+  EXPECT_EQ(bits(d[6].short_dollars), bits(short4));
+  // Decision 6: name 1 wants 0 (a reduction passes); name 0 wants -0.5 (blocked).
+  EXPECT_EQ(d[6].blocked_short_names, 1U);
+  EXPECT_NEAR(d[6].blocked_short_dollars, 0.5 * d[6].posttrade_nav, 1e-6);
+  EXPECT_EQ(bits(d[7].short_dollars_by_tier[2]), bits(short4)); // special until it exits
+  EXPECT_EQ(d[7].short_dollars, 0);                              // exited at session 7
+  for (usize t = 8; t < p.d; ++t) {
+    EXPECT_EQ(d[t].short_dollars_by_tier[0] + d[t].short_dollars_by_tier[1] +
+              d[t].short_dollars_by_tier[2], 0) << t;
+  }
+  auto summary = st::summarize_nav(*r); ASSERT_TRUE(summary);
+  usize names = 0; f64 dollars = 0;
+  for (const auto& day : d) {
+    names += day.blocked_short_names; dollars += day.blocked_short_dollars;
+  }
+  EXPECT_EQ(summary->blocked_short_name_decisions, names);
+  EXPECT_NEAR(summary->blocked_short_dollars, dollars, 1e-6);
+  EXPECT_GT(summary->mean_net_leverage, 0.3);
+  // The same book without the locate rule shorts both names.
+  auto unblocked = s;
+  unblocked.financing.id = "swap-no-block"; unblocked.financing.block_special_shorts = false;
+  auto u = st::replay_nav(with_fields(p, f), config(unblocked, 1e6, daily));
+  ASSERT_TRUE(u) << u.error().to_string();
+  EXPECT_EQ(u->days[1].short_dollars, 500000);
+  EXPECT_GT(u->days[5].short_dollars, 3 * d[5].short_dollars);
+  for (const auto& day : u->days) EXPECT_EQ(day.blocked_short_names, 0U);
+}
+
+// T10 (e): tiers are as of the decision. Rewriting every field value from row m on
+// (every present name special) leaves rows < m bit-identical, and row m's MARK too
+// (it charges decision m-1's tiers); the tiers at d < m are unchanged and those at m
+// see the rewrite, which reaches the next mark's financing.
+TEST(StrategyNavReplay, BorrowTiersAreAsOfFieldRewritesAfterDoNotChangePast) {
+  Panel p(40, 8); randomize_rows(p, 7, 0); p.begin = 5;
+  const auto f = random_fields(p, 5);
+  constexpr usize m = 22;
+  auto g = f;
+  for (usize t = m; t < p.d; ++t)
+    for (usize i = 0; i < p.n; ++i) g.set(p, t, i, 1e6, 9e5);
+  st::TargetReplayConfig daily; daily.cadence = 1; daily.trade_fraction = .5;
+  auto cfg = config(st::nav_scenario_matrix(true)[st::nav_primary_scenario_index], 1e6, daily);
+  cfg.liquidity_window = 5; cfg.min_vol_pairs = 3;
+  auto before = st::replay_nav(with_fields(p, f), cfg);
+  auto after = st::replay_nav(with_fields(p, g), cfg);
+  ASSERT_TRUE(before) << before.error().to_string();
+  ASSERT_TRUE(after) << after.error().to_string();
+  for (usize t = p.begin; t < m; ++t) {
+    expect_same_day(before->days[t - p.begin], after->days[t - p.begin]);
+    expect_same_financing(before->days[t - p.begin], after->days[t - p.begin]);
+  }
+  expect_same_events_before(*before, *after, p.sessions[m]);
+  const auto& bm = before->days[m - p.begin]; const auto& am = after->days[m - p.begin];
+  EXPECT_EQ(bits(bm.pretrade_nav), bits(am.pretrade_nav));
+  EXPECT_EQ(bits(bm.borrow_dollars), bits(am.borrow_dollars));
+  EXPECT_EQ(bits(bm.long_financing_dollars), bits(am.long_financing_dollars));
+  for (usize k = 0; k < 3; ++k)
+    EXPECT_EQ(bits(bm.short_dollars_by_tier[k]), bits(am.short_dollars_by_tier[k])) << k;
+  for (usize t = 0; t < m; ++t) {
+    auto x = st::nav_borrow_tiers(with_fields(p, f), t);
+    auto y = st::nav_borrow_tiers(with_fields(p, g), t);
+    ASSERT_TRUE(x); ASSERT_TRUE(y);
+    EXPECT_EQ(x->tier, y->tier) << t; EXPECT_EQ(x->missing, y->missing) << t;
+  }
+  auto x = st::nav_borrow_tiers(with_fields(p, f), m);
+  auto y = st::nav_borrow_tiers(with_fields(p, g), m);
+  ASSERT_TRUE(x); ASSERT_TRUE(y);
+  EXPECT_NE(x->tier, y->tier);
+  for (usize i = 0; i < p.n; ++i)
+    if (p.present[p.k(m, i)]) EXPECT_EQ(y->tier[i], 3) << i;
+  EXPECT_EQ(am.member_tiers[2], am.member_tiers[0] + am.member_tiers[1] + am.member_tiers[2]);
+  EXPECT_NE(bits(before->days[m + 1 - p.begin].pretrade_nav),
+            bits(after->days[m + 1 - p.begin].pretrade_nav));
+}
+
+// T10 (f): the pinned CLI path with --fields. The fields manifest must pin the same
+// role (manifest, sessions, ids, member SHA) and declare the used fields point in
+// time, else the run is refused before any output. A pinned run publishes the five
+// books (primary S2 x swap-fin-v1), financing recipe keys and CSV columns, and its
+// S2 x flat-300-v0 outputs extend the legacy run's S2 outputs line for line.
+TEST(StrategyNavReplay, FieldsPinnedToRolePublishFinancingMatrixElseRefused) {
+  const auto p = publication_panel();
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5); // the short name is special
+  std::ostringstream progress;
+  {
+    Directory dir; auto a = write_artifact(dir.path, p);
+    const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+    auto legacy_cfg = a.cfg; legacy_cfg.output_directory = (dir.path / "legacy").string();
+    const auto legacy_ok = st::run_nav_replay(legacy_cfg, progress);
+    ASSERT_TRUE(legacy_ok) << legacy_ok.error().to_string();
+    const auto ok = st::run_nav_replay(a.cfg, st::NavTurnoverLimits{}, pin, progress);
+    ASSERT_TRUE(ok) << ok.error().to_string();
+    const auto out = dir.path / "out", old = dir.path / "legacy";
+    const auto summary = read_json(out / "summary.json");
+    const auto recipe = read_json(out / "recipe.json");
+    const auto legacy_summary = read_json(old / "summary.json");
+    EXPECT_EQ(summary.at("primary_scenario"), "modeled-1bn-stale5-v1+swap-fin-v1");
+    EXPECT_EQ(summary.at("primary_financing_available"), true);
+    EXPECT_EQ(summary.at("financing_fields").at("manifest_sha256"), pin.manifest_sha256);
+    EXPECT_EQ(summary.at("financing_fields").at("role_manifest_sha256"), a.cfg.role_sha256);
+    EXPECT_EQ(summary.at("financing_fields").at("fields_used").at("shares_out")
+                  .at("clock"), "fixture-shares_out");
+    EXPECT_EQ(recipe.at("financing_fields"), summary.at("financing_fields"));
+    EXPECT_EQ(recipe.at("primary_financing_available"), true);
+    EXPECT_TRUE(recipe.contains("borrow_tiers"));
+    EXPECT_EQ(summary.at("recipe_sha256"), co::sha256_hex(recipe.dump()).value());
+    EXPECT_EQ(legacy_summary.at("primary_financing_available"), false);
+    EXPECT_TRUE(legacy_summary.at("financing_fields").is_null());
+    EXPECT_EQ(legacy_summary.at("primary_scenario"), "modeled-1bn-stale5-v1");
+    const auto& scenarios = summary.at("scenarios");
+    const std::vector<std::string> labels{
+        "linear-6bps-stale5-v1+swap-fin-v1", "modeled-1bn-stale5-v1+swap-fin-v1",
+        "modeled-1bn-terminal-adverse-v1+swap-fin-v1", "modeled-1bn-stale5-v1+flat-300-v0",
+        "modeled-1bn-stale5-v1+engine-tiers-v1"};
+    ASSERT_EQ(scenarios.size(), labels.size());
+    for (usize k = 0; k < labels.size(); ++k) {
+      const auto& s = scenarios[k];
+      EXPECT_EQ(s.at("scenario"), labels[k]);
+      EXPECT_EQ(s.at("primary"), k == st::nav_primary_scenario_index) << k;
+      EXPECT_EQ(recipe.at("scenarios")[k].at("id"), labels[k]);
+      const auto daily = out / ("daily_" + labels[k] + ".csv");
+      const auto events = out / ("events_" + labels[k] + ".csv");
+      EXPECT_EQ(s.at("daily_csv_sha256"), co::sha256_file(daily.string()).value()) << k;
+      EXPECT_EQ(s.at("events_csv_sha256"), co::sha256_file(events.string()).value()) << k;
+      EXPECT_EQ(first_line(daily), std::string(t2_daily_header) +
+                    ",pretrade_gross_dollars,one_way_turnover_gmv" + financing_columns) << k;
+      EXPECT_EQ(s.at("financing").at("tiers_available"), true) << k;
+    }
+    const auto& primary = scenarios[st::nav_primary_scenario_index].at("financing");
+    EXPECT_GT(primary.at("blocked_short_dollars").get<f64>(), 0);
+    EXPECT_GT(primary.at("long_financing_dollars").get<f64>(), 0);
+    EXPECT_EQ(primary.at("spec").at("id"), "swap-fin-v1");
+    EXPECT_EQ(scenarios[3].at("financing").at("blocked_short_dollars"), 0.0);
+    // S2 x flat-300-v0 == the legacy S2 run: same events bytes, every daily line the
+    // legacy line plus appended financing columns, same statistics.
+    const auto& legacy_s2 = legacy_summary.at("scenarios")[st::nav_primary_scenario_index];
+    EXPECT_EQ(legacy_s2.at("scenario"), "modeled-1bn-stale5-v1");
+    EXPECT_EQ(scenarios[3].at("events_csv_sha256"), legacy_s2.at("events_csv_sha256"));
+    const auto new_lines = lines(out / ("daily_" + labels[3] + ".csv"));
+    const auto old_lines = lines(old / "daily_modeled-1bn-stale5-v1.csv");
+    ASSERT_EQ(new_lines.size(), old_lines.size());
+    for (usize k = 1; k < old_lines.size(); ++k) {
+      ASSERT_GT(new_lines[k].size(), old_lines[k].size()) << k;
+      EXPECT_EQ(new_lines[k].substr(0, old_lines[k].size() + 1), old_lines[k] + ",") << k;
+    }
+    for (const auto* key : {"net_sharpe", "final_nav", "total_net_return", "observations"})
+      EXPECT_EQ(scenarios[3].at(key), legacy_s2.at(key)) << key;
+    EXPECT_EQ(scenarios[3].at("costs").at("borrow_dollars"),
+              legacy_s2.at("costs").at("borrow_dollars"));
+    // The CLI verb carries the same pin.
+    std::ostringstream o, e;
+    EXPECT_EQ(dispatch({"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
+                        a.cfg.combined_sha256, "--role", a.cfg.role_path, "--role-sha256",
+                        a.cfg.role_sha256, "--output", (dir.path / "cli").string(), "--fields",
+                        pin.manifest_path, "--fields-sha256", pin.manifest_sha256}, o, e), 0)
+        << e.str();
+    EXPECT_EQ(read_json(dir.path / "cli" / "summary.json").at("primary_scenario"),
+              "modeled-1bn-stale5-v1+swap-fin-v1");
+    EXPECT_EQ(dispatch({"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
+                        a.cfg.combined_sha256, "--role", a.cfg.role_path, "--role-sha256",
+                        a.cfg.role_sha256, "--output", (dir.path / "never").string(),
+                        "--fields", pin.manifest_path}, o, e), 2); // no --fields-sha256
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "never"));
+  }
+  // Every refusal happens before the output directory exists.
+  const auto refused = [&](auto edit, auto mutate) {
+    Directory dir; auto a = write_artifact(dir.path, p);
+    auto pin = write_fields(dir.path, a, p, f, edit);
+    mutate(dir.path, pin);
+    const bool ran = static_cast<bool>(st::run_nav_replay(a.cfg, {}, pin, progress));
+    return !ran && !std::filesystem::exists(dir.path / "out");
+  };
+  const auto none = [](const std::filesystem::path&, st::NavFieldsPin&) {};
+  const std::string other(64, 'b');
+  EXPECT_TRUE(refused([&](Json& m) { m["role"]["manifest_sha256"] = other; }, none));
+  EXPECT_TRUE(refused([&](Json& m) { m["role"]["sessions_sha256"] = other; }, none));
+  EXPECT_TRUE(refused([&](Json& m) { m["role"]["ids_sha256"] = other; }, none));
+  EXPECT_TRUE(refused([&](Json& m) { m["role"]["member_sha256"] = other; }, none));
+  EXPECT_TRUE(refused([](Json& m) { m["fields"][0]["point_in_time"] = false; }, none));
+  EXPECT_TRUE(refused([](Json& m) { m["fields"][1].erase("point_in_time"); }, none));
+  EXPECT_TRUE(refused([](Json& m) { m["schema"] = "atx.research-role-fields/v0"; }, none));
+  EXPECT_TRUE(refused([](Json&) {}, [&](const std::filesystem::path&, st::NavFieldsPin& pin) {
+    pin.manifest_sha256 = other; // the external pin does not match the manifest
+  }));
+  EXPECT_TRUE(refused([](Json&) {}, [](const std::filesystem::path& dir, st::NavFieldsPin&) {
+    std::fstream payload(dir / "fields" / "shares_out.f64",
+                         std::ios::binary | std::ios::in | std::ios::out);
+    const char changed = 7; payload.write(&changed, 1); payload.close();
+  }));
+  // A control with neither edit nor mutation runs.
+  EXPECT_FALSE(refused([](Json&) {}, none));
 }
