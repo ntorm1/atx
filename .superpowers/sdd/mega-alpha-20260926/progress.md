@@ -1,5 +1,37 @@
 # Active task: recent-data DSL ensemble
 
+## v5 SPRINT CLOSED ON TRAIN — Task T42: complete — 2026-09-27 — STOP (no validation; owner packet U1-U5 pending)
+Handoff 4: docs/plans/2026-09-27-mega-alpha-parent-handoff-4.md (TL;DR with R-1 disclosure, task table, v5 table, alphas and
+aim gains, Appendix A trial accounting, T41 result, owner packet U1-U5 with recommendations, session rulings, next goal
+prompt). Result: aim-partial-v5 + L 1.279 deploys the $1bn book (gross 1.002) at S2 net +0.712; max TRAIN net +0.759 < 1.0
+-> no freeze, validation trial #3 unspent. Branch has no open Critical/Important finding; merge = owner gate U5.
+Trial accounting (TRAIN 2020-2022 only):
+  v3 era: admission 48 + 121; composition 4 + 7; construction 14.
+  since run #1: libraries v4 (37), v4.2 (40), v5.1 (38); compositions v4, v4.2, ew-theme-aim-v1, v5.1 x2;
+  construction v4 1 + v4.1 grid 5 + v4.2 2 + v5 grid 10 + 2 L re-run + 1 v5.1; studies T26 5 paper books, T16, T28 audit.
+  validation: #1 (v3, book level), #2 (v4.1, 24%-gross book). Per-candidate VAL statistics: never read.
+  DSR inputs: N = 13, V[SR_n] = 3.083e-05 (cross-cell; Lo null REF .342), skew = -1.279, kurtosis = 14.532.
+
+
+## T41 fix wave — re-review ALL ADDRESSED; root verified — Task T41: complete — 2026-09-27
+task-T41fix-rereview.md: I1, M1, M2, M5, M7 ADDRESSED; no new Critical/Important. Cherry-picked into pool-2: a1c4aec5,
+1b68ed90, 8c9432b0. mega-v5-2-receipt.json exit 0, 17.6 s, 1 TU; NAV exe 59b4e944. Target tests 18/18 filtered, 55/55 full.
+D2 (mega-nav-v5-2-baseline-check, 21.6 s, 338 MiB): af058239 / 3f846525 identical. Per-name byte check
+(mega-nav-v5-2-pername-check, same config as grid cell ew per-name, not a trial, 28.7 s, 339 MiB): recipe, summary, S2, S1, S3
+CSVs identical -> I1 changes no output. pytest 87 passed. nav_summ 13-cell re-run (mega-nav-v5-t40-summ-n13-v2.{txt,json}, no
+stderr warnings): only cost_per_gmv_turnover changed; +5 keys; all-rows gross equals the T40 ad hoc column to 4 dp -> no
+mechanics call flips. task-T40-report.md §6 addendum: tool numbers (D4 complete), DSR both benchmarks (Lo null N = 13: REF
+.342, L .324, v5.1 .353, aim per-name .183), NR caveat (T40 §3 phrase withdrawn), per-name scenario books.
+- Task T41: parked — per_name_rates (strategy_nav_replay.cpp:725-732) reads the liquidity cache with no release fallback —
+  Ruling: real, not load-bearing: the cache is filled for the decision members immediately before, check_rates rejects any
+  NaN/inf rate in every build (fail loud), and both per-name cells show finite rates / zero blocked_liquidity; parked lane T32
+  must add the same fallback there if it edits the cache path — cost if wrong: a future edit that breaks the invariant fails
+  loudly at check_rates (or degrades to rate_min) instead of silently.
+- Task T41: minor (deferred): nav_summ M5 count warning fires on every single-dir run (v5_train.sh / v51_train.sh per-cell
+  calls) with wording meant for multi-dir mode.
+- Final-review residuals: none load-bearing. Deferred minors open for the owner/next parent: 28 acceptable (T41 triage) + 2 above.
+
+
 ## T41 fix wave — handed in; scoped re-review dispatched — 2026-09-27
 t41-fix (Opus 5.5, pool-3 feat/mega-alpha-v5-t41fix-20260927, base faf5943f): 927343ac (I1 release fallback), 9a9bb5d3
 (nav_summ M1 all-rows gross/net + gate label, M2 cost/GMV-tau numerator = sum trade_cost_dollars/pretrade_nav over the tau

@@ -82,3 +82,41 @@ Trial accounting (TRAIN 2020-2022 only):
   validation: #1 (v3, book level), #2 (v4.1, 24%-gross book). Per-candidate VAL statistics: never read.
   DSR inputs: N = 13, V[SR_n] = 3.083e-05 per session (cross-cell), skew = -1.279, kurtosis = 14.532 (reference cell), T = 754.
 ```
+
+## 6. Addendum after the T41 whole-branch review (2026-09-27; no new trial, no verdict change)
+
+Tool-produced gate numbers (T41 M1/M2): `nav_summ.py` at the T41-fix commit now emits `mean_gross_leverage_all_rows`,
+`mean_net_leverage_all_rows` (the ruled R6' basis, labelled `leverage_gate_basis`) and a cost-per-GMV-τ whose numerator covers
+the same sessions as τ. Re-run over the same 13 dirs: `build-equity/mega-nav-v5-t40-summ-n13-v2.{txt,json}`. Every other field
+is identical to the T40 JSON; only `cost_per_gmv_turnover` changed (and 5 keys were added). The all-rows gross values equal the
+§1 "gross (all rows)" column to 4 dp, so all 13 mechanics calls stand.
+
+| cell | gross (all rows) | signed mean net (all rows) | cost per unit GMV τ |
+|---|---|---|---|
+| v5-ew-t.05-d.1-fixed (REF) | 0.7819 | +0.0106 | 0.00095 |
+| v5-ew-t.03-d.1-fixed | 0.7088 | +0.0065 | 0.00080 |
+| v5-ew-t.08-d.1-fixed | 0.8439 | +0.0140 | 0.00109 |
+| v5-ew-t.05-d0-fixed | 0.7814 | +0.0104 | 0.00095 |
+| v5-ew-t.05-d.1-per-name | 0.7391 | +0.0079 | 0.00098 |
+| v5-ew-t.05-d.1-fixed-L1.279 | 1.0020 | +0.0148 | 0.00128 |
+| v5-aim-t.05-d.1-fixed | 0.8363 | +0.0116 | 0.00105 |
+| v5-aim-t.03-d.1-fixed | 0.7748 | +0.0080 | 0.00089 |
+| v5-aim-t.08-d.1-fixed | 0.8841 | +0.0148 | 0.00119 |
+| v5-aim-t.05-d0-fixed | 0.8358 | +0.0112 | 0.00104 |
+| v5-aim-t.05-d.1-per-name | 0.7936 | +0.0078 | 0.00110 |
+| v5-aim-t.05-d.1-fixed-L1.279 | 1.0718 | +0.0160 | 0.00141 |
+| v51-ew-t.05-d.1-fixed | 0.7812 | +0.0107 | 0.00095 |
+
+With these two columns D4 is fully met.
+
+Disclosures (T41 M3, M4, M6):
+- **DSR benchmark (M3).** The §2 DSR (~.84) uses V[SR_n] across 13 near-duplicate cells (paired ρ .97-1.00), which gives
+  SR0 = .150 ann. Under the plan §4.E Lo sampling-variance null at N = 13 (SR0 .985 ann), the same cells score REF .342,
+  L1.279 .324, v5.1 .353 and aim per-name .183 (range .18-.35). Both DSRs deflate only this 13-cell construction search, not
+  the v3/v4/v4.2 family search. No decision depends on the DSR (the freeze rule needs net ≥ 1.0).
+- **Netting ratio (M4).** NR = τ_book / Σ w_k τ_k compares a θ .05 partial-adjustment book with full-rebalance (θ = 1)
+  standalone turnovers, so it mixes construction with netting. The §3 phrase "v5 trades nearly its full standalone turnover"
+  is withdrawn: NR .835 is not a pure netting measure, and v4.1's .26 came from a banded f.25 book.
+- **Per-name books differ by scenario (M6).** `per-name-v1` evaluates θ_i at each scenario book's own pre-trade NAV, so the
+  S1/S2/S3/flat/engine-tiers books of a per-name cell hold different portfolios (mean rate .0493-.0508). Stress deltas inside
+  per-name cells are therefore not construction-controlled. Fixed-rate books share one plan.
