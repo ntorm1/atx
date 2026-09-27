@@ -239,6 +239,12 @@
   strict — validation binds to the UNWEIGHTED TRAIN orientations the weights were fit on; weighted frozen
   source refused (supersedes provisional ruling). Fix round 1 sent. Review also: NAV consumer must use only
   validation-only combined outputs (joint TRAIN+VAL runs apply unprovenanced weights) — process rule adopted.
+- T6 fix r4: pool-8 dae6ac4c -> root 7347153a (thresholds 3.0/5.0; restated_cells pre-rules; si not_evaluable).
+  22/22 OK; blob f083ef73. FIELDS v4 (bounded): TRAIN -> recent-fast-train-2020-2022-v2-fields-v4 manifest
+  389e7fb4993ca577acca6b22101a76b9f86ec903340627f410293c73060b4bd8 (28.8s/634MiB; restated 130,018; turnover
+  NaN 4,545; si NaN 1,173; shares_out cov .9920); VALIDATION -> recent-fast-validation-2023-2024-v1-fields-v4
+  manifest 2691dcc55e60918a71563ff9eb9e3c009e1d60f54fc52041cbcb62840eea9073 (26.2s). Other fields identical to
+  v3. THESE ARE THE FROZEN-CANDIDATE FIELDS unless a re-review finds a defect. Re-review (sonnet) dispatched.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
