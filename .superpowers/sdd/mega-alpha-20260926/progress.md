@@ -235,6 +235,10 @@
   Ruling (supersedes 1.0/1.5; data-QA, TRAIN-only, no outcome data): thresholds 3.0x turnover / 5.0x SI
   (TRAIN: 3,558/3,778 defect cells caught, 568 genuine). T6 fix round 4 sent. Fields v4 + field-candidate
   recompute follow. Cost if wrong: ~220 defect cells stay (mis-sized names), bounded by stresses.
+- T14 review: spec FAIL 0C/1I/3m: weighted-source exemption (runner :835) only checks hash validity. Ruling:
+  strict — validation binds to the UNWEIGHTED TRAIN orientations the weights were fit on; weighted frozen
+  source refused (supersedes provisional ruling). Fix round 1 sent. Review also: NAV consumer must use only
+  validation-only combined outputs (joint TRAIN+VAL runs apply unprovenanced weights) — process rule adopted.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).

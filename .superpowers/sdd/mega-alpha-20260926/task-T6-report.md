@@ -723,3 +723,102 @@ Re-review references on TRAIN fields-v2 (in-domain member cells):
    `implausible_to_nan` to total all rules.
 3. **Re-review-2 minors are still open,** outside this round's ruling: N1 (the ported detector is v1 with 3
    cells of headroom on validation) and N2 (the binding gate checks session names only, not repaired counts).
+
+## Fix round 4
+
+2026-09-27. Owner: t6-fix. Worktree `C:/atx-wt/pool-8`, new branch `feat/mega-alpha-fields-fix4-20260927` cut from root
+`5e36ed6b`. At that root the T6 files equal my fix-3 commit. **Commit `dae6ac4c`** (not pushed), which touches the same
+two files only:
+
+- `atx-engine/tools/prepare_research_fields.py`: sha256 `457db98faafdffa8301546067c22e47ad008c98146c391934d865cc5f5944994` (LF), git blob `f083ef73a598f48679b68e292213168eb29ec08b`
+- `atx-engine/tools/test_prepare_research_fields.py`: sha256 `bb2a7181fd7a8ace8761e402858d48ee20fede66bd1c6125468893956600e8f8`
+
+Nothing was built and nothing was run on real data; this round had no real-data reads.
+
+### Changes
+
+1. **Root threshold ruling** (data-QA, declared before any v3 screen or NAV scoring):
+   - `SHARES_TURNOVER_MAX` goes from 1.0 to **3.0**: NaN when the trailing-21 median volume exceeds 3.0 x `shares_out`.
+   - `SHARES_SI_RATIO_MAX` goes from 1.5 to **5.0**: NaN when `si_shares / shares_out` exceeds 5.0.
+   - Both comparisons stay strict, so exactly 3.0 and exactly 5.0 are kept.
+   - The constants' comment, `SHARES_UNITS_RULE` (which records that the values were 1.0 / 1.5 in fix 3) and the
+     `staleness` text are updated.
+   - Nothing else in the rules changed: the window, the 11-day minimum, the basis restatement, the order of the
+     rules, and si_shares-visible-at-t.
+2. **N1: `factor_break.restated_cells` means the factor-break correction's count again.**
+   - It counts the finite cells a repaired step was divided out of, after the gap, C-81 and domain rules and
+     **before** the units rules. That is the fields-v2 basis, so TRAIN should reproduce **130,018** / member count
+     as in v2.
+   - New keys `restated_published_cells` / `restated_published_member_cells` hold the count still finite after the
+     units rules.
+   - A `restated_counting` key states both.
+3. **N2: new `si_ratio.not_evaluable_cells`.**
+   - It counts cells finite after the domain whose `si_shares` is NaN at the session (no visible FINRA row, or
+     older than 45 days).
+   - It uses the same population as `turnover.not_evaluable_cells`, and `not_evaluable_counting` states it.
+4. **Handle tidy-up (not requested).** When the role-stream check refuses a run, the partial `shares_out.f64` writer
+   handle is now closed. The refusal is still fail-closed with no manifest. Before this, Python warned about an
+   unclosed file (the `role-bad-shares` test); the suite now runs clean with `-W error::ResourceWarning`.
+
+Manifest: schema unchanged. The new keys are additive, and the threshold values in `turnover` / `si_ratio` change
+with the ruling.
+
+### Tests
+
+Command, run from `C:/atx-wt/pool-8`:
+`& 'C:/Program Files/Python312/python.exe' -m unittest discover -s atx-engine/tools -p test_prepare_research_fields.py -v`
+
+- **Result:** `Ran 22 tests in 2.916s`, `OK`, exit 0, also with `-W error::ResourceWarning`.
+- **Log:** scratchpad `t6fix/t6-fix4-tests.log`, sha256 `3d327eb4b3336e8408feefee4840c5e653fe34c79f3453bcca42ded379f29fde`.
+
+Fixture updates:
+
+| Line | Setup | Expected |
+|---|---|---|
+| 1067 | SI 5.5x, then exactly 5.0x its 1e6 shares | NaN at 5.5x, kept at 5.0x |
+| **1069 (new)** | trades exactly 3.0x its shares every day | kept everywhere |
+| 1066 | 3.33x turnover and 6.7x SI | still NaN, via turnover |
+| 1068 | 5x spike | NaN from the 11th spike session, as before |
+| 1065 | consolidation now at a genuine 50%/day | kept; unconverted raw volume would read 5x against the 3.0x bound, so the no-conversion mutation stays killed |
+| 1053 (new SI row 6x) | inside its factor-break restated window | `restated_published_cells` < `restated_cells` |
+
+- **Oracle.** It uses literal 3.0 / 5.0, independent of the tool's constants, and counts restated cells before and after the units rules and rule (b)'s not-evaluable cells. All of these are asserted against the manifest.
+- **Mutation sweep** (scratchpad `t6fix/mutate5.py`): 19 of 19 killed.
+  - thresholds 2.9, 3.4, 4.9 and 5.6; `>=` in either rule
+  - restated counted after the units rules; published count equal to restated
+  - rule (b) not-evaluable count over all cells, or turned off
+  - all fix-3 mutations re-run at the new thresholds
+- **Earlier sweeps:** fix-1, fix-2 and the disambiguated sweeps were re-run clean.
+
+### What root should see after the run
+
+This is compared with fields-v3. I cannot compute it here; the re-review's TRAIN calibration is the reference.
+
+- **`restated_cells`.** TRAIN `factor_break.restated_cells` should be 130,018 again, equal to fields-v2.
+  `restated_published_cells` should be at least 129,588, because fewer cells now fall to the units rules.
+- **Units-rule removals.** `plausibility.turnover.to_nan_member + si_ratio.to_nan_member` should fall well below
+  v3's (9,961 + 1,405).
+  - Re-review estimate at 3/5, member cells: about 3,558 of 3,778 defect-like cells still caught, and about 568 of
+    6,925 genuine-like cells caught.
+  - The leveraged and inverse ETPs, XRT and meme names should mostly be back.
+- **`si_ratio.not_evaluable_cells`** is new; expect it to be large, since SI is missing or stale for many names.
+- **Other fields.** Every field other than `shares_out` should have the same sha as in fields-v3 and fields-v2.
+
+### Root commands (not executed; output directories do not exist yet; run one at a time)
+
+```powershell
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-8/atx-engine/tools/prepare_research_fields.py --role C:/atx-wt/pool-2/build-equity/recent-fast-train-2020-2022-v2 --role-sha256 210fff9687aa6b16e74c65104d77a916d708dca6986e77b06bac27556c48d1de --output C:/atx-wt/pool-2/build-equity/recent-fast-train-2020-2022-v2-fields-v4 --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --lake C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23 --max-rss-mib 700 --max-seconds 1800
+
+& 'C:/Program Files/Python312/python.exe' C:/atx-wt/pool-8/atx-engine/tools/prepare_research_fields.py --role C:/atx-wt/pool-2/build-equity/recent-fast-validation-2023-2024-v1 --role-sha256 0c757c41a363659664c96359a2d2288e10f792e2b91ab38ca8bf5e064dfbbda7 --output C:/atx-wt/pool-2/build-equity/recent-fast-validation-2023-2024-v1-fields-v4 --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --lake C:/atx/atx-db/data/research/lake/price-wave-0ed96b2696f1-5b596288cf23 --max-rss-mib 700 --max-seconds 1800
+```
+
+If root runs a cherry-picked copy, the manifest `code_git_blob_sha1` must be `f083ef73a598f48679b68e292213168eb29ec08b`.
+
+### Concerns (fix round 4)
+
+1. **The 3.0 / 5.0 thresholds still NaN some genuine cells.** The re-review estimate is about 568 genuine-like TRAIN
+   member cells. T10 treats those as missing-predictor warm. Root has accepted that residual with this ruling.
+2. **TRAIN peak RSS is 642 of 700 MiB** (re-review). This round adds no memory, but the margin stays thin; a
+   refusal would be fail-closed.
+3. **Re-review-2 minors are still open:** the factor-break detector is v1 with 3 cells of headroom on validation,
+   and the binding gate checks session names only.
