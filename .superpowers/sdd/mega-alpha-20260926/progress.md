@@ -1,5 +1,32 @@
 # Active task: recent-data DSL ensemble
 
+## v5 TRAIN grid (T38 step 3) — 10/10 receipts completed — 2026-09-27 — construction trials +10
+NAV exe fb2d3e94 (v5-1); all runs via v5_train.sh nav, 28-45 s, 338-339 MiB each; receipts build-equity/mega-nav-v5-<C>-<cell>-run.
+Primary modeled-1bn-stale5-v1+swap-fin-v1 (S2), TRAIN 2020-2022, $1bn, cadence 1, aim-partial-v5, neutral price-risk-v1.
+gl = nav_summ construction gross_lev (753 sessions); dSR vs reference with Memmel SE and CBB-21 95% CI.
+| cell | net | gross | HAC t | gl | abs net | tau mean/p95 | held | NR | dSR (SE) [CBB] |
+| ew t.05 d.1 fixed (REF) | +.742 | 1.177 | 1.46 | .783 | .011 | .0433/.0602 | .983 | .835 | — |
+| ew t.03 d.1 fixed | +.692 | 1.053 | 1.35 | .710 | .008 | .0379/.0580 | .983 | .731 | -.050 (.080) [-.219,+.139] |
+| ew t.08 d.1 fixed | +.681 | 1.193 | 1.34 | .845 | .014 | .0490/.0618 | .983 | .944 | -.061 (.076) [-.238,+.096] |
+| ew t.05 d0 fixed | +.724 | 1.178 | 1.43 | .782 | .011 | .0464/.0640 | .986 | .894 | -.018 (.027) [-.066,+.040] |
+| ew t.05 d.1 per-name | +.546 | .990 | 1.06 | .740 | .009 | .0430/.0666 | .983 | .828 | -.195 (.096) [-.386,-.007] |
+| aim t.05 d.1 fixed | +.616 | 1.012 | 1.20 | .837 | .012 | .0364/.0552 | .983 | .856 | -.126 (.112) [-.346,+.110] |
+| aim t.03 d.1 fixed | +.643 | .983 | 1.24 | .776 | .009 | .0330/.0543 | .983 | .776 | -.099 (.141) [-.385,+.197] |
+| aim t.08 d.1 fixed | +.572 | 1.026 | 1.12 | .885 | .015 | .0401/.0549 | .983 | .943 | -.170 (.119) [-.392,+.075] |
+| aim t.05 d0 fixed | +.618 | 1.035 | 1.21 | .837 | .012 | .0401/.0599 | .986 | .942 | -.124 (.121) [-.357,+.114] |
+| aim t.05 d.1 per-name | +.449 | .864 | .87 | .795 | .009 | .0363/.0588 | .983 | .854 | -.293 (.131) [-.562,-.004] |
+⚠️3 (T36) CLOSED: the reference cell's recipe.json 5624e007, summary.json 038461be, S2 CSV 0b572a25 are byte-identical to the
+v5-0 check run (T30 exe) -> fixed-rate path unchanged by T36 on real data. Reference D1: mean daily gross_leverage over all 756
+CSV rows = 0.78191 (< 0.90) -> step 4 triggers.
+- Ruling: step 4 L = round(1/0.78191, 3) = 1.279 (CSV mean over all rows = the ruled definition; nav_summ's .7829 averages 753
+  sessions) for both C at theta .05 dust .1 fixed; +2 construction trials, disclosed -- cost if wrong: L off by .002, immaterial.
+T34c review: Approved, spec ✅, 0C/0I/5m (task-T34c-review.md). Minors to T41: (1-2) see review; (3) failed nav run still
+exits 0 (same as v5_train.sh; root reads receipts); (4) `record` can overwrite/write empty pin files; (5) 2026+ not refused,
+THETA/DUST/LEV not numeric-checked, dead else branch. ⚠️ shared fit work dir mega-fit-work-v51 across compositions (v5
+precedent; EW-REFIT stayed identical) and shared additive mega-candidate-cache: intended. Task T34c: complete (commits
+e620d3c1..8adfd75a in pool-8, review clean); cherry-pick into pool-2 before T39.
+
+
 ## T37 build v5-1 + tests — PASS — 2026-09-27
 T36 cherry-picked into pool-2: 07f91c44, f493158e (clean). Pre-build v5-0 reference byte-check (declared ruling below):
 mega-nav-v5-ref-v50-check-run completed, 40.2 s, 339 MiB, exe b6b21d88; recipe 5624e007, summary 038461be,
