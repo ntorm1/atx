@@ -20,7 +20,8 @@ Slow (``--run-slow``), needs the retained parquet, and runs only under the memor
 slice workers refuse to run unguarded):
 
     run_memory_guarded.py --job-gb 0.6 --wait-minutes 30 -- python -m pytest \\
-        tests/test_batch_runner_kill_resume.py -q -p no:cacheprovider -n 0 --run-slow
+        tests/test_batch_runner_kill_resume.py -q -p no:cacheprovider -n 0 --run-slow \\
+        -o tmp_path_retention_policy=all
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ def _connect(path: Path | str, tmp: Path, *, read_only: bool = False) -> duckdb.
     return con
 
 
-def _seed(db: Path, tmp: Path) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+def _seed(db: Path, tmp: Path) -> tuple[dict[str, int], dict[str, dict[str, Any]]]:
     """~2M real bars as the old parquet loader stored them, plus the kept/untouched controls and stale rows."""
     con = _connect(db, tmp)
     try:
@@ -88,28 +89,41 @@ def _seed(db: Path, tmp: Path) -> tuple[dict[str, int], dict[str, dict[str, int]
             QUALIFY count(*) OVER (PARTITION BY securityID, CAST(tradingDate AS DATE)) = 1
         """
         suspects = ", ".join(str(v) for v in SUSPECT_VENDOR_IDS)
-        sample: dict[str, dict[str, int]] = {}
+        sample: dict[str, dict[str, Any]] = {}
         for run, predicate in ((LOAD_RUN, f"(securityID % 16 = 3 OR securityID IN ({suspects}))"),
                                (UNITS_RUN, "securityID % 256 = 21")):
-            row = con.execute(f"""
-                SELECT count(*), count(*) FILTER (WHERE key_rows = 1), count(*) FILTER (WHERE key_rows > 1)
-                FROM (SELECT count(*) OVER (PARTITION BY securityID, CAST(tradingDate AS DATE)) AS key_rows
-                      FROM read_parquet(?)
-                      WHERE securityID > 0 AND tradingDate IS NOT NULL AND {predicate})
-            """, [str(TH3)]).fetchone()
-            assert row is not None
-            sample[run] = dict(zip(("selected_raw_rows", "unique_key_rows", "duplicate_key_rows_excluded"),
-                                   map(int, row), strict=True))
-        con.execute("INSERT INTO equity_daily_bars BY NAME "
-                    + bars.format(where=f"(securityID % 16 = 3 OR securityID IN ({suspects}))"), [LOAD_RUN, str(TH3)])
-        # A unit-aware loader run (params name shares_unit => stored units: kept), on other lines.
-        con.execute(f"""
-            INSERT INTO equity_daily_bars BY NAME
-            SELECT * REPLACE ('TH3U-' || vendor_security_id AS security_id,
-                              shares_outstanding * 1000 AS shares_outstanding,
-                              market_cap_usd * 1000 AS market_cap_usd)
-            FROM ({bars.format(where="securityID % 256 = 21")})""", [UNITS_RUN, str(TH3)])
+            partitions = 1
+            while True:
+                selected = con.execute(f"""
+                    SELECT hash(securityID) % {partitions}, count(*),
+                           count(*) FILTER (WHERE key_rows = 1), count(*) FILTER (WHERE key_rows > 1)
+                    FROM (SELECT securityID,
+                                 count(*) OVER (PARTITION BY securityID, CAST(tradingDate AS DATE)) AS key_rows
+                          FROM read_parquet(?)
+                          WHERE securityID > 0 AND tradingDate IS NOT NULL AND {predicate}) GROUP BY 1
+                """, [str(TH3)]).fetchall()
+                if max(int(row[2]) for row in selected) <= 2_000_000:
+                    break
+                partitions *= 2
+                assert partitions <= 65_536, "cannot bound the retained fixture by whole security"
+            sample[run] = {name: sum(int(row[index]) for row in selected) for index, name in enumerate(
+                ("selected_raw_rows", "unique_key_rows", "duplicate_key_rows_excluded"), 1)}
+            written = []
+            for bucket, _, expected, _ in sorted(selected):
+                sql = bars.format(where=f"({predicate}) AND hash(securityID) % {partitions} = {int(bucket)}")
+                if run == UNITS_RUN:  # unit-aware control: stored units, retained unchanged
+                    sql = f"""SELECT * REPLACE ('TH3U-' || vendor_security_id AS security_id,
+                               shares_outstanding * 1000 AS shares_outstanding,
+                               market_cap_usd * 1000 AS market_cap_usd) FROM ({sql})"""
+                row = con.execute("INSERT INTO equity_daily_bars BY NAME " + sql, [run, str(TH3)]).fetchone()
+                assert row and int(row[0]) == int(expected) <= 2_000_000
+                written.append(int(row[0]))
+                con.execute("CHECKPOINT")
+            sample[run]["transaction_rows"] = written
         # Another source on the same keys: never touched by the stage.
+        other_rows = _count(con, "SELECT count(*) FROM equity_daily_bars WHERE run_id = ? "
+                           "AND trade_date >= DATE '2026-06-01'", [LOAD_RUN])
+        assert other_rows <= 2_000_000
         con.execute(f"""
             INSERT INTO equity_daily_bars BY NAME
             SELECT * REPLACE ('{OTHER_SOURCE}' AS source, 'kr-other-run' AS run_id)
@@ -255,6 +269,8 @@ def test_bars_unit_correction_kill_resume_matches_clean_run(tmp_path: Path) -> N
                 pending_kill["mid_batch"] = event["batch_id"] == pending_kill["batch_id"]
                 kills.append(pending_kill)
                 pending_kill = None
+                if sum(1 for k in kills if k["mid_batch"]) >= KILLS:
+                    break  # let this confirming worker finish; do not kill a fourth time
             if begins == target:
                 delay = rng.uniform(0.1, 0.8) * typical
                 time.sleep(delay)
@@ -278,6 +294,8 @@ def test_bars_unit_correction_kill_resume_matches_clean_run(tmp_path: Path) -> N
     assert outcome["remaining"] == 0 and outcome["stopped"] == "complete"
     final, _ = _run_to_end(killed_db, "finalize", logs, "resume-finalize")
     assert final["finalized"] and final["receipt"]["duplicate_keys"] == 0
+    assert final["receipt"]["max_transaction_rows"] <= 2_000_000
+    assert final["receipt"]["prepare_transaction_rows"] <= 2_000_000
     for db in (clean_db, killed_db):
         assert not Path(str(db) + ".wal").exists()
 
@@ -363,6 +381,7 @@ def test_bars_unit_correction_kill_resume_matches_clean_run(tmp_path: Path) -> N
                 "bars_except_all": both_ways, "corrections_except_all": ledger_both_ways,
                 "duplicate_keys": 0, "wrong_values": wrong, "kills": kills,
                 "correction_bases": bases, "recovery": report, "work": str(tmp_path)}
+    evidence["publication_receipt"] = final["receipt"]
     (tmp_path / "measurement.json").write_text(json.dumps(evidence, indent=1) + "\n", encoding="utf-8")
     print(json.dumps(evidence), flush=True)
 

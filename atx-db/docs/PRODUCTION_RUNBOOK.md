@@ -86,8 +86,10 @@ native peaks, cap hits, output and errors. Keep at least 35 GiB free and at most
 
 The bars correction calls the existing A9 inventory rule. Known thousands are scaled across
 whole line/load-run histories; suspect share units stay NULL, and ambiguous runs refuse.
-Sixteen initial whole-line buckets expand only to keep each batch at most 2M rows. Publication
-checks original and staged content fingerprints, counts, unique keys and correction lineage,
+Sixteen initial whole-line buckets expand to keep each transaction at most 2M written rows,
+including bars, correction rows, temporary decisions/lines and the batch ledger. Prepare
+refuses an existing correction ledger whose copy plus run metadata exceeds 2M rows. Publication
+checks original/staged bars and correction-ledger fingerprints, counts, unique keys and lineage,
 then swaps bars and their correction ledger together. This command does not authorize
 production execution before the corresponding review/drill gates.
 

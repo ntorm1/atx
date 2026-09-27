@@ -15,8 +15,9 @@ corrects the stored rows as a ledgered batch stage (``batch_runner``; run by OPS
   ``shares_unit_suspect`` as a WHOLE line: its ``shares_outstanding`` and ``market_cap_usd`` are
   withheld (NULL), never rescaled by guess. Whole lines only (0.13 D10): no unit boundary is ever
   placed inside a line's load run, so none falls on a factor-step bar.
-* **Batches:** initially 16 whole-line hash buckets, doubled until every batch is at most 2M
-  rows (index M2). The exact bucket count is frozen in the plan.
+* **Batches:** initially 16 whole-line hash buckets, doubled until every transaction writes at
+  most 2M rows across bars, corrections, temp decisions/lines and the batch ledger (index M2).
+  The exact bucket count and output-row bound are frozen in the plan.
   ``build`` copies the bucket's bars of EVERY source into ``equity_daily_bars__next`` with
   ``shares_outstanding`` and ``market_cap_usd`` multiplied by 1000 on the thousands runs (NULL on
   suspect lines, unchanged elsewhere) and writes one ``equity_bar_unit_corrections__next`` row per
@@ -24,7 +25,7 @@ corrects the stored rows as a ledgered batch stage (``batch_runner``; run by OPS
   ``units`` x1 (kept), with the A9 evidence. A bucket whose live bars hold a duplicate
   ``(security_id, trade_date, source)`` key fails loud.
 * **Finalize:** per-bucket row counts and order-independent content fingerprints of live and
-  staging equal the frozen plan and committed outputs, the staging table has 0
+  staged bars AND correction ledgers equal the frozen plan and committed outputs; bars have 0
   duplicate keys, the scaled / withheld row counts equal the frozen A9 inventory exactly, the
   ledger key ``(security_id, run_start)`` is unique; then ONE short transaction swaps
   ``equity_daily_bars`` and ``equity_bar_unit_corrections`` with their shadows
@@ -175,15 +176,20 @@ def plan(conn: duckdb.DuckDBPyConnection, run_key: str) -> list[BatchSpec]:
         raise RuntimeError("bars_unit_correction has nothing to correct: no undecided vendor-thousands run "
                            f"(already corrected: {decisions['already_corrected_runs']})")
     buckets = BUCKETS
-    while max(_bucket_counts(conn, BARS, buckets).values(), default=0) > MAX_BATCH_ROWS:
+    written = _batch_write_counts(conn, decisions, buckets)
+    while max(written.values(), default=0) > MAX_BATCH_ROWS:
         buckets *= 2
         if buckets > 65_536:
             raise RuntimeError("a whole security line exceeds the batch bound; cannot split its unit decision")
+        written = _batch_write_counts(conn, decisions, buckets)
     source = _fingerprints(conn, BARS, buckets)
+    ledger = _fingerprints(conn, LEDGER, buckets)
     planned = []
     for bucket in range(buckets):
         payload = {"bucket": bucket, "buckets": buckets, "decisions": decisions,
-                   "source_fingerprint": source.get(bucket, [0, 0, 0])}
+                   "source_fingerprint": source.get(bucket, [0, 0, 0]),
+                   "ledger_fingerprint": ledger.get(bucket, [0, 0, 0]),
+                   "transaction_rows": written[bucket]}
         digest = hashlib.sha256(_canonical(payload).encode()).hexdigest()
         planned.append(BatchSpec(batch_id=bucket, lo=str(bucket), hi=str(bucket), input_sha256=digest,
                                  payload=payload))
@@ -191,6 +197,10 @@ def plan(conn: duckdb.DuckDBPyConnection, run_key: str) -> list[BatchSpec]:
 
 
 def prepare(conn: duckdb.DuckDBPyConnection, run_key: str) -> None:
+    # open_run inserts and updates its one build_runs row in this same transaction.
+    ledger_rows = int(conn.execute(f"SELECT count(*) FROM {LEDGER}").fetchone()[0])
+    if ledger_rows + 2 > MAX_BATCH_ROWS:
+        raise RuntimeError("existing correction ledger exceeds the prepare transaction bound; needs sliced copy")
     indexed = _indexes(conn, BARS)
     if indexed:
         raise RuntimeError(f"{BARS} carries index(es) {indexed}: a bulk table must not (M5) and an indexed "
@@ -234,6 +244,8 @@ def build(conn: duckdb.DuckDBPyConnection, spec: BatchSpec, run_key: str) -> Bat
     current = _fingerprints(conn, BARS, buckets, bucket).get(bucket, [0, 0, 0])
     if current != payload["source_fingerprint"]:
         raise RuntimeError(f"bucket {bucket}: live content differs from the frozen input")
+    if int(payload["transaction_rows"]) > MAX_BATCH_ROWS:
+        raise RuntimeError(f"bucket {bucket}: planned transaction exceeds the output-row bound")
     _load_decisions(conn, decisions, run_key)
     in_bucket = [buckets, bucket]
     rows_in, duplicate_keys = conn.execute(
@@ -295,6 +307,10 @@ def build(conn: duckdb.DuckDBPyConnection, spec: BatchSpec, run_key: str) -> Bat
         FROM _buc_lines GROUP BY run_id ORDER BY run_id NULLS FIRST
         """
     ).fetchall()
+    correction_rows = sum(int(row[4]) + int(row[5]) + int(row[6]) for row in stats)
+    transaction_rows = int(rows_in) + 2 * correction_rows + _decision_rows(decisions) + 1
+    if transaction_rows != int(payload["transaction_rows"]) or transaction_rows > MAX_BATCH_ROWS:
+        raise RuntimeError(f"bucket {bucket}: transaction output rows {transaction_rows} differ from plan/bound")
     columns = _columns(conn, BARS)
     corrected = {
         "shares_outstanding": "CASE WHEN s.security_id IS NOT NULL THEN NULL "
@@ -328,6 +344,8 @@ def build(conn: duckdb.DuckDBPyConnection, spec: BatchSpec, run_key: str) -> Bat
     note = {
         "bucket": bucket, "duplicate_keys": int(duplicate_keys),
         "output_fingerprint": _fingerprints(conn, BARS_NEXT, buckets, bucket).get(bucket, [0, 0, 0]),
+        "ledger_output_fingerprint": _fingerprints(conn, LEDGER_NEXT, buckets, bucket).get(bucket, [0, 0, 0]),
+        "transaction_rows": transaction_rows,
         "runs": [{"run_id": run_id, "scaled_rows": int(scaled), "withheld_rows": int(withheld),
                   "kept_rows": int(kept), "thousands_lines": int(t_lines), "suspect_lines": int(s_lines),
                   "units_lines": int(u_lines)}
@@ -340,6 +358,26 @@ def _bucket_counts(conn: duckdb.DuckDBPyConnection, table: str, buckets: int = B
     return {int(bucket): int(count) for bucket, count in conn.execute(
         f"SELECT hash(security_id) % {buckets}, count(*) FROM {table} GROUP BY 1"
     ).fetchall()}
+
+
+def _decision_rows(decisions: Mapping[str, Any]) -> int:
+    return sum(run["unit_basis"] is not None for run in decisions["runs"]) + len(decisions["suspect_lines"])
+
+
+def _batch_write_counts(conn: duckdb.DuckDBPyConnection, decisions: Mapping[str, Any],
+                        buckets: int) -> dict[int, int]:
+    """All written rows: bars, temp line table, correction ledger, temp decisions, batch ledger."""
+    runs = [run["run_id"] for run in decisions["runs"] if run["unit_basis"] is not None]
+    lines = dict(conn.execute(f"""
+        SELECT hash(security_id) % {buckets}, count(*) FROM (
+            SELECT security_id, run_id FROM {BARS}
+            WHERE source = ? AND shares_outstanding IS NOT NULL
+              AND (list_contains(?::VARCHAR[], run_id) OR (run_id IS NULL AND ?))
+            GROUP BY security_id, run_id) GROUP BY 1
+        """, [decisions["source"], [run for run in runs if run is not None], None in runs]).fetchall())
+    bars = _bucket_counts(conn, BARS, buckets)
+    overhead = _decision_rows(decisions) + 1
+    return {k: bars.get(k, 0) + 2 * int(lines.get(k, 0)) + overhead for k in range(buckets)}
 
 
 def _fingerprints(conn: duckdb.DuckDBPyConnection, table: str, buckets: int,
@@ -372,13 +410,19 @@ def finalize(conn: duckdb.DuckDBPyConnection, run_key: str) -> dict[str, object]
         failures.append(f"ledgered batches {[int(b[0]) for b in batches]} are not the {buckets} buckets")
     live_counts, next_counts = _bucket_counts(conn, BARS, buckets), _bucket_counts(conn, BARS_NEXT, buckets)
     live_fingerprints, next_fingerprints = _fingerprints(conn, BARS, buckets), _fingerprints(conn, BARS_NEXT, buckets)
+    ledger_fingerprints = _fingerprints(conn, LEDGER, buckets)
+    next_ledger_fingerprints = _fingerprints(conn, LEDGER_NEXT, buckets)
     for batch in plan_rows:
         bucket = int(batch["payload"]["bucket"])
         if live_fingerprints.get(bucket, [0, 0, 0]) != batch["payload"]["source_fingerprint"]:
             failures.append(f"bucket {bucket}: live input fingerprint changed")
+        if ledger_fingerprints.get(bucket, [0, 0, 0]) != batch["payload"]["ledger_fingerprint"]:
+            failures.append(f"bucket {bucket}: live correction ledger fingerprint changed")
     for batch_id, _, _, note in batches:
         if next_fingerprints.get(int(batch_id), [0, 0, 0]) != json.loads(note)["output_fingerprint"]:
             failures.append(f"bucket {batch_id}: staged output fingerprint changed")
+        if next_ledger_fingerprints.get(int(batch_id), [0, 0, 0]) != json.loads(note)["ledger_output_fingerprint"]:
+            failures.append(f"bucket {batch_id}: staged correction ledger fingerprint changed")
     for batch_id, rows_in, rows_out, _ in batches:
         bucket = int(batch_id)
         if live_counts.get(bucket, 0) != int(rows_in) or next_counts.get(bucket, 0) != int(rows_out):
@@ -447,6 +491,8 @@ def finalize(conn: duckdb.DuckDBPyConnection, run_key: str) -> dict[str, object]
     receipt: dict[str, object] = {
         "stage": STAGE_NAME, "run_key": run_key, "rows": next_rows, "live_rows_before": live_rows,
         "buckets": buckets, "max_batch_rows": max(live_counts.values(), default=0),
+        "max_transaction_rows": max(int(json.loads(b[3])["transaction_rows"]) for b in batches),
+        "prepare_transaction_rows": sum(values[0] for values in ledger_fingerprints.values()) + 2,
         "input_output_fingerprints_match": not any("fingerprint" in f for f in failures),
         "duplicate_keys": duplicate_keys, "ledger_key_duplicates": ledger_key_duplicates,
         "inventory_check": inventory_check, "ledger_rows_added": ledger_rows,
