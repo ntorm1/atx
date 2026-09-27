@@ -68,6 +68,14 @@
   symmetric (incidence ratio 1.00). => no TRAIN-specific leak; decay = selection + regime + cost (T16).
 - Untracked studies/.mypy_cache (IDE churn in every pool).
 
+- T22: pool-5 8b13d189/90f6b87f -> root 76479562/4ce2ec4e (grp_* group classifiers; tripwire re-pinned 18693b18;
+  VM semantics version NOT bumped — claim: dtype only gates compilation). Build mega-t22-a 268.7 s Jobs4 (122 TUs,
+  engine header); alpha 87/87, IC 67/67. Review dispatched (t22-review).
+- T24: pool-7 3bb3fbf3 (library v4 generator, 40 candidates, 9 themes, within-FF12 group_rank for themes 1-3,
+  tier_rank int for T23). Rulings (before any v4 TRAIN read): iv_change DROPPED (blended ATM IV mixes call(+)/put(-)
+  effects of An-Ang-Bali-Cakici 2014: no unambiguous prior; cost: one diversifier) -> 39 candidates; droe canonical
+  with be_lag1q_lag4 (T21 told to emit it). T24 fix round 1 sent.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
