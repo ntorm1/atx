@@ -200,6 +200,18 @@
 - T7 fix r2: pool-4 7c870053/2dfadb36 -> root b3322539/1c7827f0 (Belady field residency, capacity = max
   extras per candidate; admission cells*(8*capacity+1); VM source tripwire pinned 51bc0b2e over 29 files;
   --train-fields must be a DIRECTORY). Build mega-t7-fix2 33.1s; IC tests 60/60. Re-review dispatched.
+  T7 fix r2 re-review: I1, I2, workers-1 report, M2-M5, M7 addressed; M1 root ruling, M6 accepted, M8
+  partial; 0 new C/I; new minors N1 (tripwire target unlabeled), N2 (include-closure blind spots), N3
+  (field-def check skipped in validation-only mode without --train-fields). Task T7: complete (060f440c..
+  1c7827f0, fix rounds 2/5). Ruling M1: validation runs with pinned weights must match
+  weights.provenance.orientations_sha256 to the frozen TRAIN orientations; + N3 -> follow-up T14 (t7-fields),
+  must land before validation — cost if wrong: none (guard only).
+- v3 TRAIN runner (fields v2, role v2) 4 bounded passes mega-v3f2-train-r2-run1..4: all time-limit 180 s
+  (peak 968/970/510/509 MiB), reached 104/115/116/108 of 121. Cold misses all written (run3/4: 0 misses) —
+  signal cache complete for fields-v2 keys. BLOCKER: warm pass ~1.4-1.8 s/candidate (load .5-.65, IC .56-.68,
+  composition .37-.45) in Debug > 180 s. T15 (runner perf: scoped /O2 on hot TUs per 6d85ac2a, IC-result
+  cache if needed, bit-identical) dispatched t15-perf on pool-9 feat/mega-alpha-runner-perf-20260927.
+  Ruling: efficiency fix, not a longer cap (owner rule) — cost if wrong: one build iteration.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
