@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TRAIN-only admission screen ``v3-admit-v1`` and composition weight fitter ``mv-shrink-0.9-nonneg-v1``.
+"""TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-v1`` and weight fits ``mv-shrink-0.9-nonneg-v1`` / ``ew-theme-v1``.
 
 Writes into a new output directory (published atomically, never overwritten):
   composition_weights.json  ``atx.dsl-composition-weights/v1``, read by ``atx-equity-strategy-ic
@@ -46,6 +46,26 @@ w = solve(Sh, mu), w = max(w, 0), w /= sum(w). ``--composition mv-shrink-0.9-non
 mu_k - 0.0018 * tau_k instead (net of 18 bps per unit turnover); nothing else changes. Only admitted candidates (screen mode), or every
 runner-oriented candidate (``--screen none``, the T9 rule), take part. Everyone else gets weight 0.
 
+v4 (``--orientation prior --screen v4-prior-v1 --composition ew-theme-v1``, the three go together;
+declared in the v4 pre-registration R3/R4 before any v4 TRAIN read). Every candidate carries ``theme``,
+``tier`` and ``prior_sign`` (library candidate keys and/or the pinned ``--recipe`` per-candidate list
+``candidates``/``lineage``; both sources must agree). TRAIN is every decision session in
+[2020-01-01, 2023-01-01); statistics use live (finite) days.
+  orientation  s_k = prior_sign = +1 (the sign is embedded in the DSL: higher value = long); no sign is
+               estimated or flipped; prior_sign 0 -> reject_no_prior (weight 0); -1 is refused.
+  checks       insufficient (< 250 live TRAIN days), turnover (tau_k > 0.70), veto (Newey-West HAC t of
+               the mean of f_k over live TRAIN days < -2.0; Bartlett kernel, lag 5, autocovariances
+               divided by n, t = mean / sqrt(LRV / n); undefined t (constant, n < 2) -> no veto).
+               First failure wins.
+  redundancy   survivors in (tier, roster order) order: tier grades A+ < A < A- < B+ < B < B- < C+ < C <
+               C- < D (or integer tiers ascending); never by a TRAIN statistic. k is admitted unless
+               |corr(f_k, f_j)| > 0.90 over TRAIN days both live for an admitted j (< 250 common days
+               or undefined rho: uncorrelated, noted).
+  ew-theme-v1  w_k = 1 / (T * n_theme(k)) for admitted k, T = themes with >= 1 admitted member,
+               n_theme = admitted members of that theme; no mean or covariance estimation (an admitted
+               zero-variance series is degenerate: weight 0, not a member). The weights file pins
+               signs (+1 for every prior-signed candidate) so the runner uses them.
+
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
 Records are keyed by (TRAIN role manifest SHA, semantics tag, cache payload SHA, fields manifest SHA
@@ -80,10 +100,21 @@ RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # mu_k = mean_TRAIN(s_k f_k) - c * tau_k, c = 18 bps per unit of one-way GMV turnover (S2 on TRAIN v1).
 NETCOST_RULE_ID = "mv-shrink-0.9-nonneg-netcost-v1"
 NETCOST_C = 0.0018
-COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID)
+# v4 pre-registration R4: equal theme weights split equally over admitted members; nothing estimated.
+EW_THEME_RULE_ID = "ew-theme-v1"
+COMPOSITIONS = (RULE_ID, NETCOST_RULE_ID, EW_THEME_RULE_ID)
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
 SCREEN_ID = "v3-admit-v1"
-SCREENS = ("none", SCREEN_ID)
+# v4 pre-registration R3: prior-signed admission, TRAIN only vetoes and measures.
+PRIOR_SCREEN_ID = "v4-prior-v1"
+SCREENS = ("none", SCREEN_ID, PRIOR_SCREEN_ID)
+ORIENTATIONS = ("train", "prior")
+V4_TAU_LIMIT, V4_RHO_LIMIT, V4_MIN_TRAIN_DAYS, V4_VETO_T, NW_LAG = 0.70, 0.90, 250, -2.0, 5
+V4_THEMES = ("value", "profitability_quality", "investment_issuance", "earnings_momentum", "price_momentum",
+             "low_risk", "short_interest", "reversal_seasonality", "options_implied")
+TIER_GRADES = ("A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D")  # strongest first
+V4_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_veto",
+               "reject_redundant")
 WEIGHTS_SCHEMA = "atx.dsl-composition-weights/v1"
 ADMISSION_SCHEMA = "atx.dsl-admission/v1"
 LIBRARY_SCHEMA = "atx.dsl-ic-library/v1"
@@ -194,6 +225,70 @@ def load_orientations(path: Path, pin: str, library: list[dict], library_sha: st
         require(type(sign) is int and sign in (-1, 0, 1), f"orientations: sign {c['id']}")
         signs.append(sign)
     return signs, j["recipe_sha256"]
+
+
+PRIOR_KEYS = ("theme", "tier", "prior_sign")
+
+
+def _tier_token(value):
+    return value.strip().replace("\u2212", "-").replace("\u2013", "-") if isinstance(value, str) else value
+
+
+def load_priors(library_path: Path, library_sha: str, recipe_path: Path | None, recipe_sha: str | None,
+                library: list[dict]) -> dict:
+    """theme / tier / prior_sign per candidate from the pinned library and/or the pinned recipe.
+
+    A key may come from the library candidate object or the recipe's per-candidate list
+    (``candidates`` and/or ``lineage``, matched by id); where both carry it they must agree.
+    """
+    lib_doc = unique_json(pinned_bytes(library_path, library_sha, "library"), "library")
+    sources = [("library", {row.get("id"): row for row in lib_doc["candidates"]})]
+    if recipe_path is not None:
+        rec = unique_json(pinned_bytes(recipe_path, recipe_sha, "recipe"), "recipe")
+        ref = rec.get("library")
+        require(isinstance(ref, dict) and ref.get("sha256") == library_sha,
+                "recipe: library.sha256 differs from --library-sha256")
+        known = {c["id"] for c in library}
+        lists = [rec[key] for key in ("candidates", "lineage") if isinstance(rec.get(key), list)]
+        require(bool(lists), "recipe: no per-candidate list (candidates or lineage)")
+        for rows in lists:
+            by_id = {}
+            for row in rows:
+                require(isinstance(row, dict) and row.get("id") in known, "recipe: per-candidate row for an unknown id")
+                require(row["id"] not in by_id, f"recipe: duplicate per-candidate row {row['id']}")
+                by_id[row["id"]] = row
+            sources.append(("recipe", by_id))
+    themes, tiers, prior_signs, used = [], [], [], set()
+    for c in library:
+        vals = {}
+        for name, by_id in sources:
+            row = by_id.get(c["id"]) or {}
+            for key in PRIOR_KEYS:
+                if key in row:
+                    v = _tier_token(row[key]) if key == "tier" else row[key]
+                    require(key not in vals or (type(vals[key]) is type(v) and vals[key] == v),
+                            f"prior metadata: {key} of {c['id']} disagrees between sources")
+                    vals[key] = v
+                    used.add(name)
+        missing = [key for key in PRIOR_KEYS if key not in vals]
+        require(not missing, f"prior metadata: {c['id']} lacks {missing}")
+        require(isinstance(vals["theme"], str) and vals["theme"] in V4_THEMES,
+                f"prior metadata: theme of {c['id']} is not a pre-registered v4 theme {V4_THEMES}")
+        sign = vals["prior_sign"]
+        require(type(sign) is int and sign in (1, 0, -1), f"prior metadata: prior_sign of {c['id']}")
+        require(sign != -1, f"prior metadata: prior_sign -1 for {c['id']}; v4 embeds the prior sign in the DSL (+1)")
+        tier = vals["tier"]
+        require((isinstance(tier, str) and tier in TIER_GRADES) or (type(tier) is int and tier >= 0),
+                f"prior metadata: tier of {c['id']} must be one of {TIER_GRADES} or an integer >= 0")
+        themes.append(vals["theme"])
+        tiers.append(tier)
+        prior_signs.append(sign)
+    require(len({type(t) for t in tiers}) == 1, "prior metadata: tiers mix grades and integers")
+    rank = [TIER_GRADES.index(t) if isinstance(t, str) else t for t in tiers]
+    return {"themes": themes, "tiers": tiers, "tier_rank": rank, "prior_signs": prior_signs,
+            "source": "+".join(n for n in ("library", "recipe") if n in used), "recipe_sha256": recipe_sha
+            if recipe_path is not None else None,
+            "tier_order": list(TIER_GRADES) if isinstance(tiers[0], str) else "integer-ascending"}
 
 
 class RoleManifest:
@@ -857,14 +952,99 @@ def screen_v3(factors: np.ndarray, taus: list[float], ids: list[str], fit_mask: 
     return rows
 
 
+def newey_west_t(x: np.ndarray, lag: int = NW_LAG) -> float | None:
+    """t of the mean with a Newey-West (Bartlett, ``lag``) long-run variance; None when undefined."""
+    n = int(x.size)
+    if n < 2 or bool(np.all(x == x[0])):  # a constant series has no defined t (rounding would invent one)
+        return None
+    e = x - x.mean()
+    lrv = float(e @ e) / n
+    for ell in range(1, min(lag, n - 1) + 1):
+        lrv += 2.0 * (1.0 - ell / (lag + 1.0)) * float(e[ell:] @ e[:-ell]) / n
+    if not (math.isfinite(lrv) and lrv > 0):
+        return None
+    return float(x.mean()) / math.sqrt(lrv / n)
+
+
+def screen_v4(factors: np.ndarray, taus: list[float], ids: list[str], train_mask: np.ndarray,
+              tier_rank: list[int], prior_signs: list[int]) -> list[dict]:
+    """v4-prior-v1 decisions for factor rows oriented by the DSL (s_k = +1; NaN = flat day)."""
+    rows = []
+    for k, f in enumerate(factors):
+        live = np.isfinite(f) & train_mask
+        x = f[live]
+        mean, sharpe = _stats(x)
+        t_hac = newey_west_t(x)
+        failed = []
+        if prior_signs[k] == 0:
+            failed.append("no_prior")
+        if int(live.sum()) < V4_MIN_TRAIN_DAYS:
+            failed.append("insufficient")
+        if taus[k] > V4_TAU_LIMIT:
+            failed.append("turnover")
+        if t_hac is not None and t_hac < V4_VETO_T:
+            failed.append("veto")
+        rows.append({"s_k": prior_signs[k], "tau": taus[k], "train_days": int(live.sum()), "train_mean": mean,
+                     "train_sharpe": sharpe, "hac_t": t_hac, "failed_checks": failed,
+                     "status": "reject_" + failed[0] if failed else None, "redundant_with": None,
+                     "redundant_rho": None, "admission_rank": None, "low_overlap_with": [],
+                     "undefined_rho_with": []})
+    # Declared order: (tier, roster order); a TRAIN statistic never orders the greedy pass.
+    survivors = sorted((k for k, r in enumerate(rows) if r["status"] is None), key=lambda k: (tier_rank[k], k))
+    admitted: list[int] = []
+    for k in survivors:
+        worst = None
+        for j in admitted:
+            rho, n = pair_correlation(factors[k], factors[j], train_mask)
+            if n < MIN_COMMON_DAYS:
+                rows[k]["low_overlap_with"].append(ids[j])
+                continue
+            if rho is None:
+                rows[k]["undefined_rho_with"].append(ids[j])
+                continue
+            if abs(rho) > V4_RHO_LIMIT and (worst is None or abs(rho) > worst[0]):
+                worst = (abs(rho), j)
+        if worst is None:
+            admitted.append(k)
+            rows[k]["status"], rows[k]["admission_rank"] = "admitted", len(admitted)
+        else:
+            rows[k]["status"], rows[k]["redundant_with"] = "reject_redundant", ids[worst[1]]
+            rows[k]["redundant_rho"] = worst[0]
+    for k, row in enumerate(rows):
+        best = None
+        for j in admitted:
+            if j == k:
+                continue
+            rho, n = pair_correlation(factors[k], factors[j], train_mask)
+            if rho is not None and n >= MIN_COMMON_DAYS and (best is None or abs(rho) > best[0]):
+                best = (abs(rho), j)
+        row["max_abs_rho"] = best[0] if best else None
+        row["max_abs_rho_with"] = ids[best[1]] if best else None
+    return rows
+
+
+def ew_theme_weights(themes: list[str]) -> tuple[np.ndarray, dict]:
+    """ew-theme-v1 over the members that take part: 1 / (themes present * members of the theme)."""
+    present = sorted(set(themes))
+    counts = {t: themes.count(t) for t in present}
+    weights = np.array([1.0 / (len(present) * counts[t]) for t in themes])
+    table = {t: {"admitted_count": counts[t], "theme_weight": 1.0 / len(present),
+                 "member_weight": 1.0 / (len(present) * counts[t])} for t in present}
+    return weights, table
+
+
 ADMISSION_STATUSES = ("admitted", "reject_insufficient", "reject_turnover", "reject_unstable", "reject_redundant")
 CSV_COLUMNS = ("id", "family", "status", "failed_checks", "redundant_with", "redundant_rho", "admission_rank",
                "s_k", "runner_sign", "sign_agrees", "tau", "fit_days", "fit_mean", "fit_sharpe", "hold_days",
                "hold_mean", "hold_sharpe", "max_abs_rho", "max_abs_rho_with", "low_overlap_with",
                "undefined_rho_with", "cache_entry", "cache_payload_sha256")
+V4_CSV_COLUMNS = ("id", "family", "theme", "tier", "prior_sign", "status", "failed_checks", "redundant_with",
+                  "redundant_rho", "admission_rank", "s_k", "runner_sign", "sign_agrees", "tau", "train_days",
+                  "train_mean", "train_sharpe", "hac_t", "max_abs_rho", "max_abs_rho_with", "low_overlap_with",
+                  "undefined_rho_with", "cache_entry", "cache_payload_sha256")
 
 
-def admission_csv(candidates: list[dict]) -> bytes:
+def admission_csv(candidates: list[dict], columns: tuple[str, ...] = CSV_COLUMNS) -> bytes:
     def cell(v) -> str:
         if v is None:
             return ""
@@ -876,9 +1056,9 @@ def admission_csv(candidates: list[dict]) -> bytes:
             return repr(v)
         return str(v)
 
-    lines = [",".join(CSV_COLUMNS)]
+    lines = [",".join(columns)]
     for row in candidates:
-        cells = [cell(row[c]) for c in CSV_COLUMNS]
+        cells = [cell(row[c]) for c in columns]
         require(all("," not in x and "\n" not in x for x in cells), "admission CSV: unsafe cell")
         lines.append(",".join(cells))
     return ("\n".join(lines) + "\n").encode("utf-8")
@@ -966,6 +1146,15 @@ def fit(args, log=None) -> tuple[int, dict]:
     started = time.perf_counter()
     require(args.screen in SCREENS, f"--screen must be one of {SCREENS}")
     require(args.composition in COMPOSITIONS, f"--composition must be one of {COMPOSITIONS}")
+    orientation = getattr(args, "orientation", "train")
+    recipe_path, recipe_sha = getattr(args, "recipe", None), getattr(args, "recipe_sha256", None)
+    require(orientation in ORIENTATIONS, f"--orientation must be one of {ORIENTATIONS}")
+    prior = args.screen == PRIOR_SCREEN_ID
+    require(prior == (orientation == "prior"), "--orientation prior and --screen v4-prior-v1 go together")
+    require(prior == (args.composition == EW_THEME_RULE_ID),
+            "--composition ew-theme-v1 and --screen v4-prior-v1 go together (pre-registered v4 recipe)")
+    require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1")
+    require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
     require(args.work_dir is not None or (args.max_seconds is None and args.max_new_candidates is None),
             "--max-seconds/--max-new-candidates need --work-dir (nothing would persist)")
@@ -975,6 +1164,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     library = load_library(args.library, args.library_sha256)
     runner_signs, orientation_recipe = load_orientations(args.orientations, args.orientations_sha256, library,
                                                          args.library_sha256, args.train_sha256)
+    priors = load_priors(args.library, args.library_sha256, recipe_path, recipe_sha, library) if prior else None
     out = Path(args.output)
     require(not out.exists(), f"output exists; refusing overwrite: {out}")
     require(not pending_path(out).exists(), f"stale or concurrent partial output; inspect and remove: "
@@ -1001,6 +1191,9 @@ def fit(args, log=None) -> tuple[int, dict]:
               "script_sha256": script_sha, "semantics_tag": SEMANTICS_TAG, "context_sha256": context_sha}
     cache_entry = ["base" if e["fields_manifest_sha256"] is None else "fields" for e in entries]
     window = role.window()
+    if prior:
+        return fit_prior(args, library, priors, runner_signs, factors, taus, shas, cache_entry, records, inputs,
+                         window, decision_sessions, computed, reused, out, started)
     files: dict[str, bytes] = {}
     admission_sha = None
     if args.screen == SCREEN_ID:
@@ -1142,6 +1335,141 @@ def fit(args, log=None) -> tuple[int, dict]:
     return EXIT_OK, summary
 
 
+def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], factors: np.ndarray,
+              taus: list[float], shas: list[str], cache_entry: list[str], records: list[dict], inputs: dict,
+              window: dict, decision_sessions: np.ndarray, computed: int, reused: int, out: Path,
+              started: float) -> tuple[int, dict]:
+    """v4-prior-v1 admission + ew-theme-v1 weights (pre-registration R3/R4). Nothing is estimated but tau."""
+    ids = [c["id"] for c in library]
+    themes, tiers, prior_signs = priors["themes"], priors["tiers"], priors["prior_signs"]
+    train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
+    inputs = dict(inputs, recipe_sha256=priors["recipe_sha256"], prior_metadata_source=priors["source"])
+    rows = screen_v4(factors, taus, ids, train_mask, priors["tier_rank"], prior_signs)
+    candidates = []
+    for k, (cand, row) in enumerate(zip(library, rows)):
+        candidates.append({"id": cand["id"], "family": cand["family"], "theme": themes[k], "tier": tiers[k],
+                           "prior_sign": prior_signs[k], "status": row["status"], "failed_checks": row["failed_checks"],
+                           "redundant_with": row["redundant_with"], "redundant_rho": row["redundant_rho"],
+                           "undefined_rho_with": row["undefined_rho_with"], "cache_entry": cache_entry[k],
+                           "admission_rank": row["admission_rank"], "s_k": row["s_k"], "runner_sign": runner_signs[k],
+                           "sign_agrees": runner_signs[k] == row["s_k"], "tau": row["tau"],
+                           "tau_over_limit": row["tau"] > V4_TAU_LIMIT, "train_days": row["train_days"],
+                           "train_mean": row["train_mean"], "train_sharpe": row["train_sharpe"], "hac_t": row["hac_t"],
+                           "max_abs_rho": row["max_abs_rho"], "max_abs_rho_with": row["max_abs_rho_with"],
+                           "low_overlap_with": row["low_overlap_with"], "cache_payload_sha256": shas[k]})
+    admitted_order = sorted((k for k, r in enumerate(rows) if r["status"] == "admitted"),
+                            key=lambda k: rows[k]["admission_rank"])
+    hac = {"estimator": "newey-west", "kernel": "bartlett", "lag": NW_LAG, "autocovariance_divisor": "n",
+           "demeaned": True, "t": "mean/sqrt(LRV/n)", "series": "f_k over live TRAIN decisions (s_k=+1)",
+           "undefined": "n<2, constant series or LRV<=0 -> no veto"}
+    admission = {
+        "schema": ADMISSION_SCHEMA, "screen": PRIOR_SCREEN_ID,
+        "rules": {"orientation": "s_k=prior_sign=+1 (sign embedded in the DSL); no sign estimation or flip; "
+                                 "prior_sign 0 -> reject_no_prior; runner sign reported not used",
+                  "train_window_ns": [FIT_BEGIN_NS, TRAIN_END_NS],
+                  "window_basis": "decision session; statistics over live (non-flat) TRAIN decisions",
+                  "min_train_days": V4_MIN_TRAIN_DAYS, "tau_limit": V4_TAU_LIMIT, "veto_t": V4_VETO_T,
+                  "veto": "HAC t of mean f_k over live TRAIN decisions < veto_t -> reject_veto", "hac": hac,
+                  "rho_limit": V4_RHO_LIMIT, "min_common_days": MIN_COMMON_DAYS,
+                  "redundancy": "survivors by (tier, roster order); |pearson rho| over TRAIN days both live > "
+                                "rho_limit vs an admitted candidate -> reject_redundant (largest |rho|); "
+                                "< min_common_days or undefined rho -> uncorrelated, noted",
+                  "tier_order": priors["tier_order"], "sharpe_annualization": ANNUALIZATION,
+                  "status_precedence": list(V4_STATUSES[1:]),
+                  "context": CONTEXT_SEMANTICS, "factor": FACTOR_SEMANTICS},
+        "inputs": inputs, "window": window,
+        "counts": {s: sum(1 for r in rows if r["status"] == s) for s in V4_STATUSES},
+        "admitted": [ids[k] for k in admitted_order],
+        "sign_conflicts": [c["id"] for c in candidates if not c["sign_agrees"]],
+        "candidates": candidates}
+    files = {OUTPUT_ADMISSION: canonical_bytes(admission),
+             OUTPUT_ADMISSION_CSV: admission_csv(candidates, V4_CSV_COLUMNS)}
+    admission_sha = hashlib.sha256(files[OUTPUT_ADMISSION]).hexdigest()
+
+    zero_filled = np.where(np.isnan(factors), 0.0, factors)
+    weight_rows = []
+    for k, cand in enumerate(library):
+        sign = prior_signs[k]
+        row = {"id": cand["id"], "family": cand["family"], "theme": themes[k], "tier": tiers[k],
+               "prior_sign": sign, "sign": sign, "runner_sign": runner_signs[k],
+               "status": "fitted" if rows[k]["status"] == "admitted" else rows[k]["status"],
+               "dsl_sha256": cand["dsl_sha256"], "cache_payload_sha256": shas[k], "cache_entry": cache_entry[k],
+               "tau": taus[k], "tau_over_limit": taus[k] > V4_TAU_LIMIT,
+               "flat_decisions": int(np.isnan(factors[k]).sum()), "weight": 0.0}
+        if sign == 0:
+            row.update(factor_mean=None, factor_sd=None, factor_sharpe_annualized=None)
+        else:
+            row.update(factor_stats(sign * zero_filled[k]))
+            if row["status"] == "fitted" and not row["factor_sd"] > 0:
+                row["status"] = "degenerate-zero-variance"
+        weight_rows.append(row)
+    active = [k for k in admitted_order if weight_rows[k]["status"] == "fitted"]
+    summary = {"status": "complete", "output": str(out), "screen": PRIOR_SCREEN_ID, "composition": EW_THEME_RULE_ID,
+               "orientation": "prior", "candidates": len(library), "computed_this_run": computed, "reused": reused,
+               "refused_decisions": len(records[0]["context_refused"]), "admitted": len(admitted_order),
+               "counts": admission["counts"], "sign_conflicts": admission["sign_conflicts"],
+               "admission_sha256": admission_sha}
+    if not active:
+        publish_directory(out, files)
+        summary.update(status="published-without-weights", reason="fit: no admitted candidate with a non-degenerate "
+                       "factor series", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
+                       seconds=round(time.perf_counter() - started, 2))
+        return EXIT_NO_WEIGHTS, summary
+    weights, theme_table = ew_theme_weights([themes[k] for k in active])
+    for k, w in zip(active, weights):
+        weight_rows[k]["weight"] = float(w)
+    for theme, entry in theme_table.items():
+        entry["admitted"] = [ids[k] for k in active if themes[k] == theme]
+    matrix = np.vstack([prior_signs[k] * zero_filled[k] for k in active])
+    weighted_tau = float(sum(row["weight"] * row["tau"] for row in weight_rows))
+    conflicts = [row["id"] for row in weight_rows if row["weight"] > 0 and row["runner_sign"] != row["sign"]]
+    document = {
+        "schema": WEIGHTS_SCHEMA,
+        "library_sha256": args.library_sha256,
+        "train_manifest_sha256": args.train_sha256,
+        "signs": {row["id"]: row["sign"] for row in weight_rows if row["sign"] != 0},
+        "weights": {row["id"]: row["weight"] for row in weight_rows},
+        "provenance": {
+            "rule": EW_THEME_RULE_ID,
+            "composition": "w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
+                           "no mean or covariance estimation",
+            "themes": theme_table, "themes_present": sorted(theme_table),
+            "themes_declared": sorted(set(themes)), "themes_preregistered": list(V4_THEMES),
+            "screen": PRIOR_SCREEN_ID, "orientation": "prior", "admission_sha256": admission_sha,
+            "signs": "v4-prior-v1: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
+            "prior_metadata_source": priors["source"], "recipe_sha256": priors["recipe_sha256"],
+            "fit_series": "none (equal theme weights); diagnostic uses s_k*f over ALL TRAIN scored decisions, "
+                          "flat decisions 0",
+            "factor": FACTOR_SEMANTICS, "neutralization": CONTEXT_SEMANTICS,
+            "turnover": "tau=mean_d(sum_i|q(d)_i-q(d-1)_i|);consecutive-scored-TRAIN-decisions;"
+                        "deployment-excluded;no-price-drift",
+            "tau_limit": V4_TAU_LIMIT, "tau_flagged": [row["id"] for row in weight_rows if row["tau_over_limit"]],
+            "weighted_standalone_turnover": weighted_tau,
+            "library_sha256": args.library_sha256, "role_manifest_sha256": args.train_sha256,
+            "role_source_sha256": inputs["role_source_sha256"], "orientations_sha256": args.orientations_sha256,
+            "orientations_recipe_sha256": inputs["orientations_recipe_sha256"],
+            "runner_summary_sha256": args.runner_summary_sha256, "vm_identity": inputs["vm_identity"],
+            "fields_manifest_sha256": inputs["fields_manifest_sha256"], "script_sha256": inputs["script_sha256"],
+            "semantics_tag": SEMANTICS_TAG, "context_sha256": inputs["context_sha256"], "window": window,
+            "neutralization_refused_decisions": records[0]["context_refused"],
+            "used_rows_unrefused": records[0]["context_used_rows_unrefused"],
+            "fitted_candidates": len(active), "sign_conflicts_weighted": conflicts,
+            "blend_in_sample_TRAIN_diagnostic": factor_stats(weights @ matrix),
+            "candidates": weight_rows,
+        },
+    }
+    files[OUTPUT_WEIGHTS] = canonical_bytes(document)
+    require(len(files[OUTPUT_WEIGHTS]) <= METADATA_LIMIT, "output: weights JSON exceeds the runner's 1 MiB bound")
+    publish_directory(out, files)
+    summary.update(files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
+                   weights_sha256=hashlib.sha256(files[OUTPUT_WEIGHTS]).hexdigest(),
+                   nonzero_weights=sum(1 for row in weight_rows if row["weight"] > 0),
+                   themes_present=sorted(theme_table), weighted_standalone_turnover=weighted_tau,
+                   tau_flagged=document["provenance"]["tau_flagged"], sign_conflicts_weighted=conflicts,
+                   seconds=round(time.perf_counter() - started, 2))
+    return EXIT_OK, summary
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument("--library", type=Path, required=True)
@@ -1154,10 +1482,16 @@ def parse_args(argv):
                    help="summary.json of the TRAIN-only IC run that wrote --orientations (candidate cache layout)")
     p.add_argument("--runner-summary-sha256", required=True)
     p.add_argument("--screen", required=True, choices=SCREENS,
-                   help="v3-admit-v1 (admission screen + fit on admitted) or none (T9: runner signs, all oriented)")
+                   help="v3-admit-v1 (admission screen + fit on admitted), none (T9: runner signs, all oriented) "
+                        "or v4-prior-v1 (prior signs; with --orientation prior --composition ew-theme-v1)")
     p.add_argument("--composition", default=RULE_ID, choices=COMPOSITIONS,
                    help="weight fit: mv-shrink-0.9-nonneg-v1 (default) or its netcost variant "
-                        "(mu_k minus 0.0018 * tau_k); the screen and signs are unchanged")
+                        "(mu_k minus 0.0018 * tau_k); the screen and signs are unchanged; ew-theme-v1 for v4")
+    p.add_argument("--orientation", default="train", choices=ORIENTATIONS,
+                   help="train (default: runner/screen signs) or prior (v4: s_k=+1 embedded in the DSL)")
+    p.add_argument("--recipe", type=Path, default=None,
+                   help="v4: library recipe carrying theme/tier/prior_sign per candidate (candidates/lineage)")
+    p.add_argument("--recipe-sha256", default=None)
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     p.add_argument("--work-dir", type=Path, default=None,
                    help="persistent incremental state (context + per-candidate factor records)")

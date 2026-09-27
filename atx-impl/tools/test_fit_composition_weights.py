@@ -226,7 +226,7 @@ class Fixture:
 
     def __init__(self, root: Path, panel=None, signals=None, signs=SIGNS, sidecar_role="train",
                  end_ns=None, ids=IDS, families=FAMILIES, vm_identity=fcw.LEGACY_VM_IDENTITY, field_ids=(),
-                 fields_sha="ef" * 32, keyless_legacy=False, sidecar_patch=None):
+                 fields_sha="ef" * 32, keyless_legacy=False, sidecar_patch=None, candidate_extra=None):
         self.root, self.ids = root, list(ids)
         self.p = panel if panel is not None else synthetic_panel()
         self.signals = signals if signals is not None else synthetic_signals(self.p)
@@ -252,7 +252,8 @@ class Fixture:
         self.train_sha = sha(self.manifest.read_bytes())
         library = {"schema": fcw.LIBRARY_SCHEMA, "id": "synthetic",
                    "candidates": [{"id": i, "family": f, "dsl": f"rank(close) * {k}", "horizons": [5, 21, 63],
-                                   "sign_policy": "train-rank-ic21"} for k, (i, f) in enumerate(zip(ids, families))]}
+                                   "sign_policy": "train-rank-ic21", **(candidate_extra or {}).get(i, {})}
+                                  for k, (i, f) in enumerate(zip(ids, families))]}
         self.library = root / "library.json"
         self.library.write_bytes(json.dumps(library).encode())
         self.library_sha = sha(self.library.read_bytes())
@@ -1070,6 +1071,338 @@ class NetCost(unittest.TestCase):
             for i in admitted:
                 self.assertAlmostEqual(rows[i]["cost_drag"], 0.0018 * rows[i]["tau"], places=15)
             self.assertNotEqual([net["weights"][i] for i in admitted], [gross["weights"][i] for i in admitted])
+
+
+
+# ------------------------------------------------ T23: v4-prior-v1 + ew-theme-v1
+def ref_newey_west_t(x, lag):
+    """Independent loop port: Bartlett weights 1 - l/(L+1), autocovariances / n, t = mean / sqrt(LRV / n)."""
+    n = len(x)
+    m = sum(x) / n
+    gamma = [sum((x[t] - m) * (x[t - ell] - m) for t in range(ell, n)) / n for ell in range(lag + 1)]
+    lrv = gamma[0] + 2 * sum((1 - ell / (lag + 1)) * gamma[ell] for ell in range(1, lag + 1))
+    return m / math.sqrt(lrv / n)
+
+
+def v4_world():
+    """screen_world plus a near-clone of slow_a, with v4 theme/tier/prior_sign metadata."""
+    panel, signals, ids = screen_world()
+    rng = np.random.default_rng(77)
+    clone = signals[0] + 0.05 * rng.normal(size=signals[0].shape)
+    signals, ids = signals + [clone], ids + ["slow_a_clone"]
+    meta = {"slow_a": ("value", "B", 1), "slow_a_twin": ("value", "B+", 1), "slow_b": ("price_momentum", "A", 1),
+            "fast_a": ("low_risk", "A\u2212", 1), "flip": ("short_interest", "C+", 1),
+            "insufficient": ("options_implied", "B", 0), "slow_a_clone": ("value", "A", 1)}
+    extra = {i: {"theme": t, "tier": g, "prior_sign": s} for i, (t, g, s) in meta.items()}
+    return panel, signals, ids, extra
+
+
+def write_recipe(path: Path, library_sha: str, rows, key="lineage") -> str:
+    path.write_bytes(json.dumps({"schema": "atx.dsl-ic-recipe/v1", "library": {"path": "x.json", "sha256": library_sha},
+                                 key: rows}).encode())
+    return sha(path.read_bytes())
+
+
+V4_ARGS = dict(screen="v4-prior-v1", orientation="prior", composition="ew-theme-v1")
+
+
+class PriorScreenRules(unittest.TestCase):
+    def test_newey_west_matches_loop_port(self):
+        rng = np.random.default_rng(8)
+        x = np.cumsum(rng.normal(0.01, 1, 300)) * 0.01 + rng.normal(0.02, 1, 300)
+        for lag in (0, 1, 5):
+            self.assertAlmostEqual(fcw.newey_west_t(x, lag), ref_newey_west_t(list(x), lag), places=10)
+        m, sd_n = x.mean(), x.std(ddof=0)
+        self.assertAlmostEqual(fcw.newey_west_t(x, 0), m / (sd_n / math.sqrt(len(x))), places=10)
+        self.assertIsNone(fcw.newey_west_t(np.full(10, 0.3)))
+        self.assertIsNone(fcw.newey_west_t(np.array([1.0])))
+        self.assertEqual(fcw.NW_LAG, 5)
+
+    def test_every_rule_order_and_thresholds(self):
+        rng = np.random.default_rng(1)
+        t = 600
+        train = np.ones(t, dtype=bool)
+        noise = lambda: rng.normal(0, 1, t)  # noqa: E731
+        base = noise()
+        a = 0.2 + base                              # tier B, first in roster
+        b = 0.05 + base + 0.2 * noise()             # |rho(a,b)| > .9, lower Sharpe, better tier A -> b wins
+        c = 0.1 + 0.85 * base + 0.53 * noise()      # |rho| ~ .85 vs a/b: kept (limit .90, not .70)
+        d = -0.3 + noise()                          # clear contradiction of the prior -> veto
+        e = noise()
+        e = e - e.mean() - 0.03                     # mild contradiction (mean -.03, t ~ -.7 > -2): admitted
+        f = 0.2 + noise()
+        f[:351] = NAN                               # 249 live days -> insufficient
+        g = 0.2 + noise()                           # tau .71 -> turnover
+        h = 0.2 + noise()                           # tau exactly .70 -> passes
+        k = 0.2 + noise()                           # prior_sign 0 -> no_prior (and turnover), weight 0
+        ids = list("abcdefghk")
+        rows = fcw.screen_v4(np.vstack([a, b, c, d, e, f, g, h, k]), [0.1] * 6 + [0.71, 0.70, 0.9], ids, train,
+                             tier_rank=[4, 1, 4, 4, 4, 4, 4, 4, 4], prior_signs=[1] * 8 + [0])
+        by = dict(zip(ids, rows))
+        self.assertEqual({i: r["status"] for i, r in by.items()},
+                         {"a": "reject_redundant", "b": "admitted", "c": "admitted", "d": "reject_veto",
+                          "e": "admitted", "f": "reject_insufficient", "g": "reject_turnover", "h": "admitted",
+                          "k": "reject_no_prior"})
+        self.assertEqual(by["a"]["redundant_with"], "b")
+        self.assertGreater(by["a"]["train_sharpe"], by["b"]["train_sharpe"])  # Sharpe never orders the pass
+        self.assertGreater(by["a"]["redundant_rho"], 0.9)
+        self.assertLess(by["c"]["max_abs_rho"], 0.9)
+        self.assertGreater(by["c"]["max_abs_rho"], 0.7)
+        self.assertLess(by["d"]["hac_t"], -2.0)
+        self.assertLess(by["e"]["train_mean"], 0)
+        self.assertGreater(by["e"]["hac_t"], -2.0)
+        self.assertAlmostEqual(by["d"]["hac_t"], ref_newey_west_t(list(d), 5), places=10)
+        self.assertEqual(by["f"]["train_days"], 249)
+        self.assertEqual(by["k"]["failed_checks"], ["no_prior", "turnover"])
+        self.assertEqual((by["k"]["s_k"], by["a"]["s_k"]), (0, 1))
+        ranks = {i: r["admission_rank"] for i, r in by.items() if r["status"] == "admitted"}
+        self.assertEqual(ranks, {"b": 1, "c": 2, "e": 3, "h": 4})  # (tier, roster order)
+
+    def test_exactly_250_days_and_rho_at_limit(self):
+        rng = np.random.default_rng(2)
+        t = 400
+        train = np.ones(t, dtype=bool)
+        a = 0.2 + rng.normal(0, 1, t)
+        a[250:] = NAN
+        rows = fcw.screen_v4(np.vstack([a]), [0.1], ["a"], train, [0], [1])
+        self.assertEqual((rows[0]["train_days"], rows[0]["status"]), (250, "admitted"))
+        b = 0.3 + rng.normal(0, 1, t)
+        c = 0.3 * b + 0.2 * rng.normal(0, 1, t)
+        rho, _ = fcw.pair_correlation(b, c, train)
+        with unittest.mock.patch.object(fcw, "V4_RHO_LIMIT", abs(rho)):
+            self.assertEqual(fcw.screen_v4(np.vstack([b, c]), [0.1, 0.1], ["b", "c"], train, [0, 0], [1, 1])[1]["status"],
+                             "admitted")
+        with unittest.mock.patch.object(fcw, "V4_RHO_LIMIT", float(np.nextafter(abs(rho), 0))):
+            self.assertEqual(fcw.screen_v4(np.vstack([b, c]), [0.1, 0.1], ["b", "c"], train, [0, 0], [1, 1])[1]["status"],
+                             "reject_redundant")
+
+    def test_ew_theme_weights_hand_case(self):
+        w, table = fcw.ew_theme_weights(["value", "value", "low_risk", "value", "short_interest"])
+        np.testing.assert_allclose(w, [1 / 9, 1 / 9, 1 / 3, 1 / 9, 1 / 3], rtol=0, atol=1e-16)
+        self.assertAlmostEqual(float(w.sum()), 1.0, places=15)
+        self.assertEqual(table["value"], {"admitted_count": 3, "theme_weight": 1 / 3, "member_weight": 1 / 9})
+
+
+class PriorMetadata(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.lib = self.root / "lib.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def library(self, extra):
+        cands = [{"id": i, "family": "fam", "dsl": f"rank(close) * {k}", **extra.get(i, {})} for k, i in enumerate("ab")]
+        self.lib.write_bytes(json.dumps({"schema": fcw.LIBRARY_SCHEMA, "candidates": cands}).encode())
+        lib_sha = sha(self.lib.read_bytes())
+        return lib_sha, fcw.load_library(self.lib, lib_sha)
+
+    def load(self, extra, recipe_rows=None, key="lineage", recipe_lib_sha=None):
+        lib_sha, library = self.library(extra)
+        path, rsha = None, None
+        if recipe_rows is not None:
+            path = self.root / "recipe.json"
+            rsha = write_recipe(path, recipe_lib_sha or lib_sha, recipe_rows, key)
+        return fcw.load_priors(self.lib, lib_sha, path, rsha, library)
+
+    def refuse(self, fragment, *a, **kw):
+        with self.assertRaises(fcw.FitError) as caught:
+            self.load(*a, **kw)
+        self.assertIn(fragment, str(caught.exception))
+
+    def test_sources_merge_and_normalise(self):
+        full = {"a": {"theme": "value", "tier": "B\u2212", "prior_sign": 1},
+                "b": {"theme": "low_risk", "tier": "A", "prior_sign": 1}}
+        got = self.load(full)
+        self.assertEqual((got["themes"], got["tiers"], got["tier_rank"], got["source"]),
+                         (["value", "low_risk"], ["B-", "A"], [5, 1], "library"))
+        rows = [{"id": i, **v} for i, v in full.items()]
+        self.assertEqual(self.load({}, rows)["source"], "recipe")
+        self.assertEqual(self.load({}, rows, key="candidates")["tier_rank"], [5, 1])
+        mixed = self.load({"a": {"theme": "value"}, "b": full["b"]},
+                          [{"id": "a", "tier": "B-", "prior_sign": 1}, {"id": "b", "theme": "low_risk"}])
+        self.assertEqual((mixed["themes"], mixed["source"]), (["value", "low_risk"], "library+recipe"))
+        ints = self.load({"a": dict(full["a"], tier=2), "b": dict(full["b"], tier=1)})
+        self.assertEqual((ints["tier_rank"], ints["tier_order"]), ([2, 1], "integer-ascending"))
+
+    def test_refusals(self):
+        full = {"a": {"theme": "value", "tier": "B", "prior_sign": 1},
+                "b": {"theme": "low_risk", "tier": "A", "prior_sign": 1}}
+        self.refuse("disagrees between sources", full, [{"id": "a", "theme": "low_risk"}])
+        self.refuse("lacks ['tier']", {"a": {"theme": "value", "prior_sign": 1}, "b": full["b"]})
+        self.refuse("pre-registered v4 theme", {"a": dict(full["a"], theme="profitability"), "b": full["b"]})
+        self.refuse("prior_sign -1", {"a": dict(full["a"], prior_sign=-1), "b": full["b"]})
+        self.refuse("prior_sign of a", {"a": dict(full["a"], prior_sign=True), "b": full["b"]})
+        self.refuse("tier of a", {"a": dict(full["a"], tier="B (cost-bound)"), "b": full["b"]})
+        self.refuse("mix grades and integers", {"a": dict(full["a"], tier=1), "b": full["b"]})
+        self.refuse("library.sha256 differs", {}, [{"id": i, **v} for i, v in full.items()], recipe_lib_sha="0" * 64)
+        self.refuse("unknown id", full, [{"id": "zz", "theme": "value"}])
+        self.refuse("no per-candidate list", full, [], key="other")
+
+
+class PriorEndToEnd(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        panel, signals, ids, extra = v4_world()
+        cls.ids, cls.extra = ids, extra
+        cls.fx = Fixture(cls.root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                         candidate_extra=extra)
+        cls.out = cls.root / "v4"
+        cls.code, cls.summary = fcw.fit(cls.fx.args(cls.out, **V4_ARGS))
+        cls.bytes = {p.name: p.read_bytes() for p in cls.out.iterdir()}
+        cls.adm = json.loads(cls.bytes[fcw.OUTPUT_ADMISSION])
+        cls.doc = json.loads(cls.bytes[fcw.OUTPUT_WEIGHTS])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_admission_statuses_and_prior_signs(self):
+        self.assertEqual(self.code, fcw.EXIT_OK)
+        rows = {c["id"]: c for c in self.adm["candidates"]}
+        self.assertEqual({i: rows[i]["status"] for i in self.ids},
+                         {"slow_a": "reject_redundant", "slow_a_twin": "admitted", "slow_b": "reject_veto",
+                          "fast_a": "reject_turnover", "flip": "admitted", "insufficient": "reject_no_prior",
+                          "slow_a_clone": "admitted"})
+        self.assertEqual(rows["slow_a"]["redundant_with"], "slow_a_clone")  # tier A clone goes first
+        self.assertLess(rows["slow_b"]["hac_t"], -2.0)                     # prior contradicted: veto, no flip
+        self.assertEqual(rows["slow_b"]["s_k"], 1)
+        self.assertEqual(rows["insufficient"]["failed_checks"], ["no_prior", "insufficient"])
+        self.assertEqual(rows["fast_a"]["tier"], "A-")
+        self.assertEqual(self.adm["admitted"], ["slow_a_clone", "slow_a_twin", "flip"])
+        self.assertEqual(self.adm["counts"], {"admitted": 3, "reject_no_prior": 1, "reject_insufficient": 0,
+                                              "reject_turnover": 1, "reject_veto": 1, "reject_redundant": 1})
+        self.assertEqual(self.adm["rules"]["hac"]["lag"], 5)
+        self.assertEqual((self.adm["rules"]["rho_limit"], self.adm["rules"]["tau_limit"], self.adm["rules"]["veto_t"]),
+                         (0.9, 0.7, -2.0))
+        self.assertEqual(self.adm["inputs"]["prior_metadata_source"], "library")
+        lines = self.bytes[fcw.OUTPUT_ADMISSION_CSV].decode().splitlines()
+        self.assertEqual(lines[0].split(","), list(fcw.V4_CSV_COLUMNS))
+        self.assertEqual(len(lines), 1 + len(self.ids))
+
+    def test_ew_theme_weights_and_pinned_signs(self):
+        w = self.doc["weights"]
+        # themes present: value (clone, twin) and short_interest (flip) -> 1/2 per theme
+        self.assertEqual({i: w[i] for i in self.ids if w[i] > 0},
+                         {"slow_a_clone": 0.25, "slow_a_twin": 0.25, "flip": 0.5})
+        self.assertEqual(sum(w.values()), 1.0)
+        # every prior-signed candidate pins +1 (zero weights included); prior_sign 0 carries none
+        self.assertEqual(self.doc["signs"], {i: 1 for i in self.ids if i != "insufficient"})
+        got = runner_accepts(self.bytes[fcw.OUTPUT_WEIGHTS], self.fx.library_sha, self.ids, self.fx.train_sha)
+        self.assertEqual(got, [w[i] for i in self.ids])
+        prov = self.doc["provenance"]
+        self.assertEqual((prov["rule"], prov["screen"], prov["orientation"]), ("ew-theme-v1", "v4-prior-v1", "prior"))
+        self.assertEqual(prov["themes_present"], ["short_interest", "value"])
+        self.assertEqual(prov["themes"]["value"]["admitted"], ["slow_a_clone", "slow_a_twin"])
+        self.assertNotIn("lambda", prov)
+        self.assertEqual(prov["admission_sha256"], sha(self.bytes[fcw.OUTPUT_ADMISSION]))
+        self.assertEqual(prov["script_sha256"], sha(Path(fcw.__file__).read_bytes()))
+        rows = {r["id"]: r for r in prov["candidates"]}
+        self.assertAlmostEqual(prov["weighted_standalone_turnover"], sum(w[i] * rows[i]["tau"] for i in self.ids),
+                               places=14)
+        self.assertEqual(rows["slow_b"]["status"], "reject_veto")
+        self.assertEqual(rows["flip"]["status"], "fitted")
+        self.assertEqual(self.summary["themes_present"], ["short_interest", "value"])
+        self.assertEqual(self.bytes[fcw.OUTPUT_WEIGHTS], fcw.canonical_bytes(self.doc))
+
+    def test_recipe_source_gives_the_same_decisions_and_weights(self):
+        panel, signals, ids, extra = v4_world()
+        fx = Fixture(self.root / "fx_recipe", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids))
+        recipe = self.root / "recipe.json"
+        rsha = write_recipe(recipe, fx.library_sha, [{"id": i, "citation": "x", **v} for i, v in extra.items()])
+        out = self.root / "v4_recipe"
+        code, _ = fcw.fit(fx.args(out, **V4_ARGS, recipe=recipe, recipe_sha256=rsha))
+        self.assertEqual(code, fcw.EXIT_OK)
+        doc = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+        adm = json.loads((out / fcw.OUTPUT_ADMISSION).read_bytes())
+        self.assertEqual((doc["weights"], doc["signs"]), (self.doc["weights"], self.doc["signs"]))
+        self.assertEqual([c["status"] for c in adm["candidates"]], [c["status"] for c in self.adm["candidates"]])
+        self.assertEqual((adm["inputs"]["recipe_sha256"], doc["provenance"]["prior_metadata_source"]), (rsha, "recipe"))
+
+    def test_incremental_reuse_and_determinism(self):
+        work = self.root / "work"
+        fcw.fit(self.fx.args(self.root / "w1", **V4_ARGS, work_dir=work))
+        code, summary = fcw.fit(self.fx.args(self.root / "w2", **V4_ARGS, work_dir=work))
+        self.assertEqual((code, summary["computed_this_run"], summary["reused"]), (fcw.EXIT_OK, 0, len(self.ids)))
+        for d in ("w1", "w2"):
+            for name, data in self.bytes.items():
+                self.assertEqual((self.root / d / name).read_bytes(), data, name)
+
+    def test_combination_refusals(self):
+        out = self.root / "refused"
+        cases = [(dict(screen="v4-prior-v1", orientation="train", composition="ew-theme-v1"), "go together"),
+                 (dict(screen="v4-prior-v1", orientation="prior", composition=fcw.RULE_ID), "ew-theme-v1"),
+                 (dict(screen="v3-admit-v1", orientation="prior", composition=fcw.RULE_ID), "go together"),
+                 (dict(screen="none", orientation="train", composition="ew-theme-v1"), "ew-theme-v1"),
+                 (dict(screen="none", orientation="train", composition=fcw.RULE_ID, recipe=self.root / "r",
+                       recipe_sha256="0" * 64), "--recipe is read only")]
+        for override, fragment in cases:
+            with self.assertRaises(fcw.FitError) as caught:
+                fcw.fit(self.fx.args(out, **override))
+            self.assertIn(fragment, str(caught.exception))
+            self.assertFalse(out.exists())
+
+    def test_nothing_admitted_publishes_table_only(self):
+        panel, signals, ids, extra = v4_world()
+        keep = [ids.index(i) for i in ("slow_b", "fast_a", "insufficient")]
+        sub = [ids[k] for k in keep]
+        fx = Fixture(self.root / "none_admitted", panel, [signals[k] for k in keep], [1] * 3, ids=sub,
+                     families=["fam"] * 3, candidate_extra=extra)
+        out = self.root / "none_out"
+        self.assertEqual(fcw.main(fx.argv(out, "v4-prior-v1", ["--orientation", "prior", "--composition", "ew-theme-v1"])),
+                         fcw.EXIT_NO_WEIGHTS)
+        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted([fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV]))
+
+
+class DefaultBytesUnchanged(unittest.TestCase):
+    """T23 edit: default paths emit the pre-T23 bytes except the embedded script SHA (git-history fitter)."""
+
+    PRE_T23_BLOB = "fd227a861deb75d031890f4bdc4175b60d05a23a"  # fitter at d38e7929 (frozen v3 script)
+
+    def test_default_outputs_and_cache_keys_match_pre_t23_fitter(self):
+        import importlib.util
+        import subprocess
+        try:
+            old = subprocess.run(["git", "cat-file", "-p", self.PRE_T23_BLOB], capture_output=True, check=True,
+                                 cwd=Path(__file__).resolve().parent).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git history with the pre-T23 fitter blob is unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old").mkdir()
+            (root / "old" / "fit_composition_weights_pre_t23.py").write_bytes(old)
+            spec = importlib.util.spec_from_file_location("fcw_pre_t23", root / "old" / "fit_composition_weights_pre_t23.py")
+            pre = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pre)
+            self.assertEqual(pre.SEMANTICS_TAG, fcw.SEMANTICS_TAG)
+            panel, signals, ids = screen_world()
+            fx = Fixture(root / "fx", panel, signals, SCREEN_RUNNER_SIGNS, ids=ids, families=["fam"] * len(ids),
+                         field_ids={"slow_b"})
+            for name, screen, extra in (("none", "none", []), ("v3", "v3-admit-v1", []),
+                                        ("net", "v3-admit-v1", ["--composition", fcw.NETCOST_RULE_ID])):
+                got = {}
+                for tag, module in (("new", fcw), ("old", pre)):
+                    out, work = root / f"{name}-{tag}", root / f"work-{name}-{tag}"
+                    code, _ = module.fit(module.parse_args(fx.argv(out, screen, [*extra, "--work-dir", str(work)])))
+                    self.assertEqual(code, 0)
+                    doc = json.loads((out / (fcw.OUTPUT_WEIGHTS if screen == "none" else fcw.OUTPUT_ADMISSION)).read_bytes())
+                    context = (doc.get("provenance") or doc["inputs"])["context_sha256"]  # digest binds the script SHA
+                    derived = {module.SCRIPT_SHA256: b"<script>", context: b"<context>"}
+                    if (out / fcw.OUTPUT_ADMISSION).exists():  # the weights file pins the admission bytes' SHA
+                        derived[sha((out / fcw.OUTPUT_ADMISSION).read_bytes())] = b"<admission>"
+                    files = {}
+                    for p in out.iterdir():
+                        data = p.read_bytes()
+                        for value, token in derived.items():
+                            data = data.replace(value.encode(), token)
+                        files[p.name] = data
+                    keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
+                    got[tag] = (files, keys)
+                self.assertEqual(got["new"][0], got["old"][0], name)
+                self.assertEqual(got["new"][1], got["old"][1], name)  # identical work-cache paths (keys)
 
 
 if __name__ == "__main__":
