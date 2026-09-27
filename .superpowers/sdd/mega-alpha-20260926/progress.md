@@ -189,6 +189,17 @@
   Consequence: the v1-MV swap-fin TRAIN read above used fields-v2 (pre-guard) tiers; re-score after v3 fields.
 - T12 fix r1 re-review: 6/6 addressed, 0 new C/I; minor: v1 byte-identity test skips without 99421a5f.
   Task T12: complete (99421a5f, fix 0e94be59). TRAIN v2 manifest reproducible only with blob 4f5502a2.
+- T10 review: spec PASS, Approved, 0C/0I/5m. Task T10: complete (ad6d7682, review clean). Rulings on the
+  review's open items: (1) planned turnover / v2 budget recorded before the locate block = diagnostic only
+  (declared metric uses executed fills) — cost if wrong: none; (2) tier re-evaluated at every decision (spec
+  "as of each decision"); "special until exit" read as "locate block never forces an exit", not a sticky
+  tier — cost if wrong: slightly lower fees for names that leave special; (3) memory: 5-book run 338 MiB
+  with --max-bytes 1 GiB. T10 minors deferred: wording "special until exit"; clamp_kept_order unfixtured;
+  blocked_short_dollars mixes bases (sum of per-decision refusals); name absent at role row 0 = young IPO
+  for a year; 22h/23h visibility clock hard-coded.
+- T7 fix r2: pool-4 7c870053/2dfadb36 -> root b3322539/1c7827f0 (Belady field residency, capacity = max
+  extras per candidate; admission cells*(8*capacity+1); VM source tripwire pinned 51bc0b2e over 29 files;
+  --train-fields must be a DIRECTORY). Build mega-t7-fix2 33.1s; IC tests 60/60. Re-review dispatched.
 - T10: pool-5 9c279411 -> root ad6d7682 (financing specs; swap-fin-v1 primary, flat-300-v0 bit-identical,
   engine-tiers-v1; tiers once per decision; locate block; nav --fields/--fields-sha256; 5 books with
   fields). Build mega-t10-a 22.7s; target tests 39/39. Review dispatched (t10-review).
