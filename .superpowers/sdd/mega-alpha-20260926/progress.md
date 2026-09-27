@@ -158,6 +158,11 @@
 - v4.2 PRE-REGISTERED (v4-prereg.md "v4.2 revision"): +res_mom_12_1, +eap, +low_share_turnover (prior-signed); tau_k <=
   0.08 cost-consistency screen; construction b2f.25 (+b1f.25 reported); gate 1.0; if it fails -> report to owner.
 
+- T27: pool-7 c9ea35b0/1dde8135 -> root (library v4.2 fund_industry_ic_v42.json 22af107c, 40 cands; fitter screen
+  v4-prior-v2 tau<=.08). pytest 101/101. Review: spec PASS, Approved 0C/0I/4m; eap causal (past reaction markers
+  only); eap s1 smoothing accepted (event timing); DISCLOSED: res_mom_12_1 DSL == v2/v3 resid_sharpe_12_1_s21 (its v3
+  family-level TRAIN stats were seen by root). v4.2 u pass 30 s/964 MiB (37 hits, 3 misses). Task T27: complete.
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
