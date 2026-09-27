@@ -275,7 +275,7 @@ from .panel import CALENDAR_FORMED, OWNER_LINK_FAILURES, validate_research_panel
 from .store import ResearchStore
 
 EVALUATION_VERSION = "research-monthly-evaluation-v2"
-EVALUATION_SCHEMA_VERSION = 3
+EVALUATION_SCHEMA_VERSION = 4
 FEATURE_CONTRACT = "r2b-research-feature-store-v1"
 #: R2b query versions whose tables this adapter reads (a new R2b version needs review here);
 #: v2 is R2b fix round 1 (identity-free price-line features also rank unlinked lines).
@@ -390,6 +390,10 @@ PUBLICATION_SLICE_KIND = "publication"
 #: Earnings-announcement-day decomposition input (optional ``BasisInputs.event_returns``): per (formation,
 #: security, horizon) the part of the label return earned on P3 announcement sessions [-1, +1].
 EVENT_RETURN_COLUMNS = ("month_index", "security", "horizon_months", "ea_return")
+#: Ex-post accounting only: current rebalance month m, return from entry[m-h] through entry[m].
+#: The caller verifies the pinned source and registration before reading these returns; no feature uses them.
+REBALANCE_RETURN_COLUMNS = ("month_index", "security", "horizon_months", "previous_entry_date", "entry_date",
+                            "realized_return", "status")
 #: OSAP (Chen-Zimmermann) SignalDoc acronym of a catalog feature whose construct matches closely enough for
 #: the replication table (atx t vs the original paper's t); anything else is left out of the table.
 OSAP_ACRONYMS: dict[str, str] = {
@@ -928,6 +932,11 @@ class BasisInputs:
     non-microcap breakpoint); ``context`` may carry :data:`AUX_CONTEXT_COLUMNS`; ``factors`` maps a
     :data:`SPAN_MODEL_NAMES` model to its monthly factor rows (``month_index`` plus the model's columns,
     ``factor_returns.SPAN_ROW_RULE``); ``event_returns`` holds :data:`EVENT_RETURN_COLUMNS`.
+    ``rebalance_returns`` holds :data:`REBALANCE_RETURN_COLUMNS`, pinned by ``rebalance_returns_sha256``;
+    current month m must span entry[m-h] to entry[m]. These realized values are accounting inputs only.
+    Without them turnover/cost/net stay NULL with zero drift-priced coverage. Context AR/CS half-spreads
+    are formation-time estimates, not observed execution spreads. The reader must verify the source pin,
+    registration and holdout seal before loading either kind of realized return.
     """
 
     basis: str
@@ -956,6 +965,10 @@ class BasisInputs:
     #: (feature, '<source_variant>_beta_neutral', h) configurations enable beta-return statistics.
     #: Default None: disabled for w1's frozen 432 cells (C-82).
     beta_neutral_registration: Any | None = None
+    #: Separately pinned exact entry-to-entry realized returns for trading accounting. No label fallback.
+    #: Target weights and AR/CS spread estimates remain fixed at the current formation cutoff.
+    rebalance_returns: pd.DataFrame | None = None
+    rebalance_returns_sha256: str | None = None
 
 
 def empty_basis(basis: str, *, status: str = BASIS_UNTESTABLE, meta: Mapping[str, Any] | None = None,
@@ -1266,6 +1279,8 @@ class _Prepared:
     jkp_controls: dict[str, np.ndarray] = field(default_factory=dict)
     original_paper_t: dict[str, float] = field(default_factory=dict)
     beta_neutral_cells: frozenset[tuple[str, str, int]] = frozenset()
+    rebalance_keys: dict[int, np.ndarray] = field(default_factory=dict)
+    rebalance_values: dict[int, np.ndarray] = field(default_factory=dict)
 
 
 def _ints(values: np.ndarray, name: str) -> np.ndarray:
@@ -1572,6 +1587,7 @@ def _prepare(inputs: BasisInputs, spec: EvaluationSpec) -> _Prepared:
     if inputs.release_frames:
         inputs.labels = inputs.context = inputs.controls = pd.DataFrame()
         inputs.event_returns = None
+        inputs.rebalance_returns = None
     return prepared
 
 
@@ -1669,6 +1685,36 @@ def _prepare_reported(prep: _Prepared, inputs: BasisInputs, calendar: pd.DataFra
             prep.digests[f"events_{h}_sha256"] = _array_digest(keys[keep], values[keep])
     prep.original_paper_t = {str(k): float(v) for k, v in inputs.original_paper_t.items() if np.isfinite(v)}
     prep.digests["original_paper_t_sha256"] = _sha(_canonical(prep.original_paper_t))
+    if inputs.rebalance_returns is not None:
+        frame = inputs.rebalance_returns
+        pin = inputs.rebalance_returns_sha256
+        if not isinstance(pin, str) or not re.fullmatch(r"[a-f0-9]{64}", pin):
+            raise EvaluationInputError("rebalance_returns requires its independently verified source SHA256")
+        if not set(REBALANCE_RETURN_COLUMNS) <= set(frame):
+            raise EvaluationInputError("rebalance_returns lacks its documented columns")
+        entry = _days(calendar["entry_date"])
+        prep.digests["rebalance_source_sha256"] = pin
+        for h in spec.horizons_months:
+            part = frame[frame.horizon_months == h]
+            keys, ordering = _keyed(part, prep.months, prep.span, "rebalance_returns")
+            current = keys // prep.span
+            start, end = _days(part.previous_entry_date)[ordering], _days(part.entry_date)[ordering]
+            if (current < h).any() or (start != entry[current - h]).any() or (end != entry[current]).any():
+                raise EvaluationInputError("rebalance returns must span exactly old entry to current entry")
+            if (~prep.formed[current] | ~prep.formed[current - h]).any() or (start >= end).any():
+                raise EvaluationInputError("rebalance returns require two ordered formed entries")
+            keep = np.ones(len(keys), bool)
+            if spec.seal_holdout and spec.split is not None:
+                keep &= end < np.datetime64(spec.split.holdout_start)
+            # Drop sealed rows before numeric extraction/digest; the reader must also enforce the seal.
+            selected = ordering[keep]
+            values = pd.to_numeric(part.realized_return.iloc[selected], errors="coerce").to_numpy(float)
+            status = _ints(part.status.to_numpy()[selected], "rebalance status")
+            if not np.isin(status, (LABEL_VALID, LABEL_INVALID, LABEL_UNSUPPORTED)).all():
+                raise EvaluationInputError("rebalance return status codes must be 0/1/2")
+            values = np.where((status == LABEL_VALID) & np.isfinite(values) & (values >= -1), values, np.nan)
+            prep.rebalance_keys[h], prep.rebalance_values[h] = keys[keep], values
+            prep.digests[f"rebalance_{h}_sha256"] = _array_digest(keys[keep], start[keep], end[keep], values)
 
 
 def _supplied_breakpoints(calendar: pd.DataFrame, percentiles: Sequence[int]) -> tuple[np.ndarray, ...] | None:
@@ -1947,14 +1993,20 @@ def _weighted_fm(month: np.ndarray, y: np.ndarray, regressors: Sequence[np.ndarr
     return out
 
 
-def _hold_spread_legs(month: np.ndarray, security: np.ndarray, quantile: np.ndarray, months: int
+def _hold_spread_legs(month: np.ndarray, security: np.ndarray, quantile: np.ndarray, months: int, h: int = 1
                       ) -> np.ndarray:
-    """Formation-only hysteresis; a missing name exits. Long enters 10/stays >=8, short enters 1/stays <=3."""
+    """Independent h-month sleeves; a missing name exits at that sleeve's rebalance.
+
+    Long enters 10/stays >=8, short enters 1/stays <=3. Offset m%h inherits only the state from m-h.
+    """
+    if h < 1:
+        raise ValueError("sleeve horizon must be positive")
     out = np.zeros(len(month), np.int8)
     counts = np.bincount(month, minlength=months)
     starts = _starts(counts)
-    prior: dict[int, int] = {}
+    prior_by_offset: list[dict[int, int]] = [{} for _ in range(h)]
     for m in range(months):
+        prior = prior_by_offset[m % h]
         now = {}
         for i in range(int(starts[m]), int(starts[m] + counts[m])):
             q, s = int(quantile[i]), int(security[i])
@@ -1963,20 +2015,24 @@ def _hold_spread_legs(month: np.ndarray, security: np.ndarray, quantile: np.ndar
             out[i] = side
             if side:
                 now[s] = side
-        prior = now
+        prior_by_offset[m % h] = now
     return out
 
 
 def _portfolio_path(prep: _Prepared, month: np.ndarray, security: np.ndarray, legs: np.ndarray,
                      weight: np.ndarray, h: int, use: np.ndarray, returns: np.ndarray) -> dict[str, np.ndarray]:
-    """Long/short sleeve diagnostics with formation weights, h-period drift and complete trading costs.
+    """Fixed formation weights, exact entry-to-entry drift and estimated AR/CS trading costs.
 
     Each leg has unit notional. Turnover is half the L1 weight change; execution cost uses the full L1
     change times each stock's half-spread, including exits. No initial build is counted. A missing prior
-    return or current trading spread makes that formation unavailable, rather than zero. Each h-month
+    accounting return or formation spread makes that formation unavailable, rather than zero. Each h-month
     formation is compared with m-h (a staggered h-month sleeve), avoiding double-counted overlapping P&L.
+    Gross/EA require every held name's current label; no future-availability renormalization. A fixed-session
+    label is never substituted for the separately pinned realized entry-to-entry accounting return.
     """
     result = {name: np.full(prep.months, _NAN) for name in ("gross", "turnover", "cost", "net", "ea")}
+    result.update({name: np.zeros(prep.months, np.int64) for name in
+                   ("held", "priced", "drift_held", "drift_priced")})
     counts = np.bincount(month, minlength=prep.months)
     starts = _starts(counts)
     holdings: list[dict[int, dict[int, float]]] = []
@@ -1990,31 +2046,33 @@ def _portfolio_path(prep: _Prepared, month: np.ndarray, security: np.ndarray, le
             total_weight = float(weight[selected].sum())
             sides[side] = ({int(security[i]): float(weight[i] / total_weight) for i in selected}
                            if len(selected) >= JKP_MIN_LEG_NAMES else {})
-            valid = selected[use[selected]]
-            gross.append(float(np.average(returns[valid], weights=weight[valid]))
-                         if len(valid) >= JKP_MIN_LEG_NAMES else _NAN)
-            ea.append(float(np.average(event[valid], weights=weight[valid]))
-                      if len(valid) >= JKP_MIN_LEG_NAMES and np.isfinite(event[valid]).all() else _NAN)
+            held = selected if sides[side] else selected[:0]
+            valid = held[use[held] & np.isfinite(returns[held])]
+            result["held"][m] += len(held)
+            result["priced"][m] += len(valid)
+            complete = len(held) >= JKP_MIN_LEG_NAMES and len(valid) == len(held)
+            gross.append(float(np.average(returns[held], weights=weight[held])) if complete else _NAN)
+            ea.append(float(np.average(event[held], weights=weight[held]))
+                      if complete and np.isfinite(event[held]).all() else _NAN)
         holdings.append(sides)
         result["gross"][m], result["ea"][m] = gross[0] - gross[1], ea[0] - ea[1]
-        if (m < h or not all(sides.values()) or not all(holdings[m - h].values())
-                or prep.expected_end[h][m - h] != prep.formation[m]):
+        if m < h or not all(sides.values()) or not all(holdings[m - h].values()):
             continue
+        result["drift_held"][m] = sum(len(leg) for leg in holdings[m - h].values())
         turn, cost, complete_drift, complete_cost = 0.0, 0.0, True, True
         for side in (1, -1):
             old = holdings[m - h][side]
             ids = np.array(sorted(old), dtype=np.int64)
-            index = _lookup(prep.label_keys[h], (m - h) * prep.span + ids)
-            old_return = _take(prep.label_return[h], index, _NAN)
-            valid = (_take(prep.label_status[h], index, LABEL_MISSING) == LABEL_VALID)
-            if not (prep.matured[h][m - h] and valid.all() and np.isfinite(old_return).all()
-                    and (old_return >= -1).all()):
+            index = _lookup(prep.rebalance_keys.get(h, np.zeros(0, np.int64)), m * prep.span + ids)
+            old_return = _take(prep.rebalance_values.get(h, np.zeros(0)), index, _NAN)
+            result["drift_priced"][m] += int(np.isfinite(old_return).sum())
+            if not np.isfinite(old_return).all():
                 complete_drift = False
-                break
+                continue
             drift = np.array([old[int(s)] for s in ids]) * (1 + old_return)
             if drift.sum() <= 0:
                 complete_drift = False
-                break
+                continue
             before = dict(zip(ids.tolist(), (drift / drift.sum()).tolist(), strict=True))
             union = np.array(sorted(set(before) | set(sides[side])), np.int64)
             trades = np.array([abs(sides[side].get(int(s), 0.0) - before.get(int(s), 0.0)) for s in union])
@@ -2048,11 +2106,12 @@ def _reported_metrics(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
     capped = np.minimum(cap, prep.jkp_p80[month])
     reference = np.isfinite(cap) & (cap > 0) & (cap >= prep.jkp_p20[month])
     reported: dict[str, Any] = {"evidence_class": feature.evidence_class, "publication_year": feature.publication_year,
-                               "reported_metrics_version": "tier1-v2-4.1-v1",
+                               "reported_metrics_version": "tier1-v2-4.1-v2",
                                "jkp_breakpoint_basis": _method_counts(prep.jkp_p20_basis, mask),
                                "jkp_cap_basis": _method_counts(prep.jkp_p80_basis, mask),
-                               "cost_basis": ("rebalance_aligned_label_drift_ar_else_cs_half_spread"
-                                              if np.isfinite(prep.context_half_spread).any() else "unavailable"),
+                               "cost_basis": ("exact_entry_drift_ar_else_cs_decision_spread_estimate"
+                                              if h in prep.rebalance_keys and np.isfinite(prep.context_half_spread).any()
+                                              else "unavailable"),
                                "capacity_basis": ("sum_1pct_ADV_complete_decile"
                                                   if CONTEXT_ADV in prep.aux_present else "unavailable"),
                                "ea_basis": "p3_session_window_m1_p1" if h in prep.event_keys else "unavailable",
@@ -2075,13 +2134,17 @@ def _reported_metrics(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
     equal_weight = np.broadcast_to(np.array(1.0), value.shape)
     portfolios = {"ew10": (np.where(all_deciles == 10, 1, np.where(all_deciles == 1, -1, 0)).astype(np.int8), equal_weight),
                   "cvw10": (np.where(buckets[10] == 10, 1, np.where(buckets[10] == 1, -1, 0)).astype(np.int8), capped),
-                  "buy_hold": (_hold_spread_legs(month, security, all_deciles, months), equal_weight)}
+                  "buy_hold": (_hold_spread_legs(month, security, all_deciles, months, h), equal_weight)}
     for name, (legs, weight) in portfolios.items():
         path = _portfolio_path(prep, month, security, legs, weight, h, use, returns)
         for metric in ("gross", "turnover", "cost", "net"):
             field = f"trade_{name}_{metric}"
             series[field] = path[metric]
             reported.update(_reported_inference(field, path[metric], mask, h))
+        for metric in ("held", "priced", "drift_held", "drift_priced"):
+            field = f"trade_{name}_{metric}"
+            series[field] = path[metric]
+            reported[f"{field}_n"] = int(path[metric][mask].sum())
         matched = mask & np.isfinite(path["gross"]) & np.isfinite(path["turnover"])
         mean_turn = _nanmean(path["turnover"][matched])
         mean_gross = _nanmean(path["gross"][matched])
@@ -3085,6 +3148,8 @@ REPORTED_SERIES_NAMES = (
     *(f"trade_{p}_{m}" for p in (*SPAN_PORTFOLIOS, "buy_hold") for m in ("gross", "turnover", "cost", "net")),
     "fmj_ols", "fmj_wls", "beta_neutral_ic",
 )
+REPORTED_COUNT_NAMES = tuple(f"trade_{p}_{m}" for p in (*SPAN_PORTFOLIOS, "buy_hold")
+                             for m in ("held", "priced", "drift_held", "drift_priced"))
 REPORTED_CELL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("reported_metrics_version", _V), ("evidence_class", _V), ("publication_year", _I),
     *((name, _V) for name in ("jkp_breakpoint_basis", "jkp_cap_basis", "cost_basis", "capacity_basis", "ea_basis",
@@ -3104,6 +3169,7 @@ REPORTED_CELL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("ic_mde_80pct", _D), ("ic_mde_basis", _V),
     ("osap_acronym", _V), ("osap_original_t", _D), ("osap_atx_t", _D), ("osap_basis", _V),
     ("ic_eb_mean", _D), ("ic_eb_weight", _D), ("ic_eb_tau2", _D), ("ic_eb_n", _I), ("ic_eb_basis", _V),
+    *((f"{name}_n", "BIGINT") for name in REPORTED_COUNT_NAMES),
 )
 CELL_COLUMNS: tuple[tuple[str, str], ...] = (
     *_IDENTITY, ("horizon_sessions", _I), ("status", _V), ("status_reason", _V), ("sample", _V),
@@ -3163,6 +3229,7 @@ SERIES_COLUMNS: tuple[tuple[str, str], ...] = (
     ("ls_ew5", _D), ("ls_vw5", _D), ("ls_nyse_ew10", _D), ("ls_nyse_vw10", _D), ("fm_slope", _D), ("fmc_slope", _D),
     ("net25_ew10", _D), ("ic_lag1", _D),
     *((name, _D) for name in REPORTED_SERIES_NAMES),
+    *((name, _I) for name in REPORTED_COUNT_NAMES),
 )
 QUANTILE_COLUMNS: tuple[tuple[str, str], ...] = (
     *_IDENTITY, ("weighting", _V), ("n_quantiles", _I), ("quantile", _I), ("mean_return", _D),
@@ -3209,7 +3276,8 @@ _RUN_DDL = """
         finished_at TIMESTAMP,
         family_complete BOOLEAN
     )"""
-_SCHEMA_VERSIONS = {1: "monthly_evaluation", 2: "catalog_family_universe_series", 3: "reported_economics"}
+_SCHEMA_VERSIONS = {1: "monthly_evaluation", 2: "catalog_family_universe_series", 3: "reported_economics",
+                    4: "reported_fixed_book_coverage"}
 
 
 def ensure_evaluation_schema(con: duckdb.DuckDBPyConnection) -> None:
@@ -3222,6 +3290,7 @@ def ensure_evaluation_schema(con: duckdb.DuckDBPyConnection) -> None:
     Kept inside this module until the research-store owner registers it as a store
     migration; the version table refuses a newer, unknown schema.
     Version 3 adds reported-only economics; every pre-existing column and gating rule is retained.
+    Version 4 adds held/priced coverage for fixed-weight trading books and their realized drift inputs.
     """
     con.execute("""
         CREATE TABLE IF NOT EXISTS research_eval_schema (
