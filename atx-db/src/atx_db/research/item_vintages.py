@@ -876,6 +876,111 @@ def verify_bucket_storage(plan: dict, *, output: Path, root: Path) -> dict:
             "published_new_content": False, "acceptance_changed": False}
 
 
+def _release_scope(plan: dict, *, output: Path, root: Path) -> dict:
+    """Construct exact owned leaf-file targets after verifying sealed storage."""
+    import stat
+    verified = verify_bucket_storage(plan, output=output, root=root)
+    if output.is_symlink() or getattr(output.stat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise ValueError("release bucket is a reparse point")
+    proof_path = output / "storage-relocation-v2.json"
+    proof = json.loads(proof_path.read_text())
+    files = []
+    for entry in proof["original_files"]:
+        path = Path(entry["path"])
+        resolved = path.resolve()
+        if resolved.parent != output.resolve() or resolved.suffix != ".parquet":
+            raise ValueError("release target is outside exact owned bucket")
+        if path.exists() and (not path.is_file() or path.is_symlink() or
+                             getattr(path.stat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise ValueError("release target is not an ordinary leaf file")
+        files.append({**entry, "path": resolved.as_posix()})
+    if len({e["path"] for e in files}) != len(files):
+        raise ValueError("duplicate release targets")
+    return {"schema": "fundamental_intermediate_release_scope_v1",
+            "bucket_path": output.resolve().as_posix(), "build_sha256": plan["build_sha256"],
+            "original_plan": verified["original_plan"], "original_receipts": verified["original_receipts"],
+            "relocation_sha256": file_sha256(proof_path), "release_code_sha256": file_sha256(__file__),
+            "files": files, "bytes": sum(e["bytes"] for e in files),
+            "destination_files": proof["destination_files"], "snapshots": proof["snapshots"],
+            "acceptance_changed": False}
+
+
+def prepare_bucket_release(plan: dict, *, output: Path, root: Path) -> dict:
+    """Write a reviewable exact release scope; this operation removes nothing."""
+    from .fundamental_sources import atomic_json
+    scope = _release_scope(plan, output=output, root=root)
+    scope["scope_sha256"] = canonical_sha256(scope)
+    path = output / ("storage-release-scope-"+scope["scope_sha256"][:20]+".json")
+    if path.exists():
+        if json.loads(path.read_text()) != scope:
+            raise ValueError("immutable release scope differs")
+    else:
+        atomic_json(path, scope)
+    return {"release_manifest": path.resolve().as_posix(), "sha256": file_sha256(path),
+            "files": len(scope["files"]), "bytes": scope["bytes"], "files_removed": 0}
+
+
+def release_bucket_intermediates(plan: dict, *, output: Path, root: Path,
+                                release_manifest: Path, release_manifest_sha256: str,
+                                after_file=None) -> dict:
+    """Release only explicitly selected successful intermediates, one pinned file at a time.
+
+    A durable intent precedes each unlink. Resume resolves either representation;
+    the optional callback exposes a real process-interruption measurement point.
+    """
+    import stat
+    from .fundamental_sources import atomic_json, check_file
+    if file_sha256(release_manifest) != release_manifest_sha256:
+        raise ValueError("explicit release manifest pin differs")
+    scope = json.loads(release_manifest.read_text())
+    digest = scope.pop("scope_sha256", None)
+    expected = _release_scope(plan, output=output, root=root)
+    if digest != canonical_sha256(scope) or scope != expected:
+        raise ValueError("release manifest no longer matches exact verified scope")
+    progress_path = output / "storage-release-progress-v1.json"
+    progress = {"schema": "fundamental_intermediate_release_progress_v1",
+                "release_manifest_sha256": release_manifest_sha256, "scope_sha256": digest,
+                "removed": [], "intent": None, "complete": False}
+    if progress_path.exists():
+        prior = json.loads(progress_path.read_text())
+        if (prior["release_manifest_sha256"] != release_manifest_sha256 or prior["scope_sha256"] != digest or
+                len(set(prior["removed"])) != len(prior["removed"]) or
+                not set(prior["removed"]) <= {e["path"] for e in scope["files"]} or
+                prior["intent"] is not None and prior["intent"] not in {e["path"] for e in scope["files"]}):
+            raise ValueError("release progress belongs to another scope")
+        progress = prior
+    for entry in scope["files"]:
+        path = Path(entry["path"])
+        if path.exists():
+            if entry["path"] in progress["removed"]:
+                raise ValueError("released intermediate unexpectedly reappeared")
+            # Recheck both exact source bytes and the sealed replacement just
+            # before deletion. Never recurse, remove directories, or follow links.
+            check_file(entry)
+            if (path.resolve().parent != output.resolve() or path.is_symlink() or not path.is_file() or
+                    getattr(path.stat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise ValueError("release leaf-file ownership changed")
+            for target in scope["destination_files"]:
+                if (target["dataset"], target["year"]) == (entry["dataset"], entry["year"]):
+                    check_file(target)
+            progress["intent"] = entry["path"]
+            atomic_json(progress_path, progress)
+            path.unlink()
+        elif entry["path"] not in progress["removed"] and progress["intent"] != entry["path"]:
+            raise ValueError("unrecorded absent intermediate; no release attribution invented")
+        if entry["path"] not in progress["removed"]:
+            progress["removed"].append(entry["path"])
+        progress["intent"] = None
+        atomic_json(progress_path, progress)
+        if after_file is not None:
+            after_file(entry, progress)
+    verify_bucket_storage(plan, output=output, root=root)
+    progress["complete"] = True
+    progress["released_bytes"] = scope["bytes"]
+    atomic_json(progress_path, progress)
+    return progress
+
+
 def build_bucket(files: Sequence[Path | str], mapping: dict, *, root: Path, output: Path,
                  build_sha256: str, bucket: int) -> dict:
     """One complete owner bucket, flushed by fiscal year. No whole-history materialization."""

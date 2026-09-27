@@ -77,12 +77,21 @@ Bucket resume and audit readers use original pinned files when present and may
 resolve absent originals only through this verified sealed destination chain.
 A corrupt present original cannot silently fall through. The diagnostic
 `bucket_materializations(..., prefer_sealed=True)` path measures destination
-reads without removing originals. Intermediate release is not implemented.
+reads without removing originals.
 Normal computational commands retain strict code pins. When code has changed,
 `build|audit|publish --storage-only --bucket N` explicitly verifies an already
 completed bucket and its v2 sealed storage proof. This route returns the original
 receipt pins; it cannot compute items, rerun an audit, publish new content or
 rewrite an index. Missing or failing original audits cannot use this route.
+
+`prepare-release --bucket N` writes an immutable, reviewable manifest of exact
+resolved intermediate leaf files and verified destinations, removing nothing.
+After that scope is explicitly authorized, `release --bucket N` requires both
+`--release-manifest` and `--release-manifest-sha256`. It checks source and sealed
+replacement hashes before each unlink and durably records intent/progress for
+crash-safe resume. No recursive removal exists. Plans, proofs, original JSON
+receipts, source data and sealed outputs remain intact. A changed release scope
+or code pin refuses execution; partial releases remain readable through v2 proof.
 
 No interface in this module grants permission to register another wave, inspect
 returns, use reconstructed identity as verified history, or open the sealed

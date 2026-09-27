@@ -25,7 +25,7 @@ def run_retained_jobs(jobs, log_parent: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(__doc__)
-    parser.add_argument("command", choices=["prepare", "normalize", "normalize-all", "plan", "build", "audit", "publish", "relocate"])
+    parser.add_argument("command", choices=["prepare", "normalize", "normalize-all", "plan", "build", "audit", "publish", "relocate", "prepare-release", "release"])
     parser.add_argument("--pins", type=Path, required=True)
     parser.add_argument("--root", type=Path, default=Path("data/research"))
     parser.add_argument("--work", type=Path, required=True)
@@ -43,9 +43,15 @@ def main() -> None:
     parser.add_argument("--source-parts", type=int, default=8)
     parser.add_argument("--reuse-filings", type=Path)
     parser.add_argument("--reuse-filings-sha256")
+    parser.add_argument("--release-manifest", type=Path)
+    parser.add_argument("--release-manifest-sha256")
     args = parser.parse_args()
     if args.storage_only and (args.command not in {"build", "audit", "publish"} or args.bucket is None):
         parser.error("--storage-only requires build/audit/publish and one explicit --bucket")
+    if args.command in {"prepare-release", "release"} and args.bucket is None:
+        parser.error("release operations require one explicit --bucket")
+    if args.command == "release" and (args.release_manifest is None or not args.release_manifest_sha256):
+        parser.error("release requires an explicitly reviewed manifest and its SHA256")
     pins = json.loads(args.pins.read_text(encoding="utf-8"))
     # Reuse the accepted source audit. Manifest drift is checked immediately; every
     # worker independently verifies each file it actually consumes.
@@ -154,15 +160,17 @@ def main() -> None:
         print(json.dumps({"plan": target.as_posix(), "build_id": plan["build_id"],
                           "sources": len(receipts), "scope_complete": plan["scope_complete"],
                           "mapping_sha256": mapping["sha256"]}))
-    elif args.command in {"build", "audit", "publish", "relocate"}:
+    elif args.command in {"build", "audit", "publish", "relocate", "prepare-release", "release"}:
         from atx_db.research.item_vintages import (
             build_bucket, audit_bucket, publish_bucket, publish_index, prepare_bucket_relocation,
             verify_bucket_storage, validate_original_plan,
+            prepare_bucket_release, release_bucket_intermediates,
         )
         if args.plan is None:
             parser.error("build requires explicit --plan")
         plan = json.loads(args.plan.read_text())
-        if args.command != "relocate" and not args.storage_only:
+        storage_operation = args.command in {"relocate", "prepare-release", "release"} or args.storage_only
+        if not storage_operation:
             for path, expected_sha in plan["code"].items():
                 if file_sha256(path) != expected_sha:
                     raise ValueError("build code differs from immutable plan; create a new plan")
@@ -189,7 +197,7 @@ def main() -> None:
                 raise ValueError("bucket outside plan")
             output = args.plan.parent / f"b{args.bucket:03d}"
             validate_original_plan(plan, output=output, root=args.root)
-            files = [] if args.storage_only or args.command == "relocate" else [
+            files = [] if storage_operation else [
                 check_file(f) for receipt in plan["source_receipts"] for f in receipt["files"] if f["bucket"] == args.bucket]
             if args.storage_only:
                 result = verify_bucket_storage(plan, output=output, root=args.root)
@@ -201,6 +209,11 @@ def main() -> None:
                 result = audit_bucket(files, plan, output=output, root=args.root)
             elif args.command == "relocate":
                 result = prepare_bucket_relocation(plan, output=output, root=args.root)
+            elif args.command == "prepare-release":
+                result = prepare_bucket_release(plan, output=output, root=args.root)
+            elif args.command == "release":
+                result = release_bucket_intermediates(plan, output=output, root=args.root,
+                    release_manifest=args.release_manifest, release_manifest_sha256=args.release_manifest_sha256)
             else:
                 result = publish_bucket(files, plan, output=output, root=args.root)
                 if args.diagnostic:
