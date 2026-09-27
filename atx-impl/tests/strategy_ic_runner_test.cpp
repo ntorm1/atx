@@ -904,7 +904,9 @@ TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
     EXPECT_EQ(read_json(dir.path/"output"/(name+"_combined.json")).at("research_fields_manifest_sha256"),pin);
     // Every candidate increases in i on TRAIN (sign +1); the four equal weights
     // then blend to the same centered rank as each component.
-    for (const auto& row:read_json(dir.path/"output"/"orientations.json").at("candidates")) EXPECT_EQ(row.at("sign"),1);
+    // Named: a range-for over read_json(...).at(...) would iterate a destroyed temporary.
+    const auto orientations=read_json(dir.path/"output"/"orientations.json");
+    for (const auto& row:orientations.at("candidates")) EXPECT_EQ(row.at("sign"),1);
     std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(dir.path/"output"/(name+"_combined.f64"),signal));
     for (usize d=63;d<D;++d) for (usize i=0;i<N;++i)
       ASSERT_DOUBLE_EQ(signal[d*N+i],static_cast<f64>(i)/static_cast<f64>(N-1)-.5) << name << d << i;
@@ -1124,7 +1126,8 @@ TEST(StrategyIcRunner, LibraryDeclaringMktRetRunsOnlyWhenFieldsSupplyIt) {
   refuse("library field 'mkt_ret' is neither a role price field nor in the pinned train fields manifest");
   ASSERT_TRUE(pin_fields(dir,cfg,"market",{"mkt_ret","si_shares"}));
   const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
-  for (const auto& role_result:read_json(dir.path/"output"/"summary.json").at("roles"))
+  const auto summary=read_json(dir.path/"output"/"summary.json");
+  for (const auto& role_result:summary.at("roles"))
     EXPECT_EQ(role_result.at("research_fields").at("loaded"),Json::array({"mkt_ret"}));
 }
 TEST(StrategyIcRunner, RealV2LibraryDeclaringMktRetPlansOnlyWithPinnedFields) {
@@ -1251,7 +1254,8 @@ TEST(StrategyIcRunner, PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContri
   EXPECT_EQ(summary.at("composition_signs"),"pinned-candidate-signs");
   EXPECT_FALSE(read_json(dir.path/"unsigned"/"summary.json").contains("composition_signs"));
   // The TRAIN orientation artifact is untouched: it still records the IC sign.
-  for (const auto& row:read_json(dir.path/"signed"/"orientations.json").at("candidates")) EXPECT_EQ(row.at("sign"),1);
+  const auto orientations=read_json(dir.path/"signed"/"orientations.json");
+  for (const auto& row:orientations.at("candidates")) EXPECT_EQ(row.at("sign"),1);
   for (usize r=0;r<2;++r) {
     const auto& role_result=summary.at("roles").at(r); const auto name=role_result.at("role").get<std::string>();
     const auto& level=role_result.at("candidates").at(0); const auto& rank=role_result.at("candidates").at(1);
@@ -1300,7 +1304,8 @@ TEST(StrategyIcRunner, CandidateCacheIsScopedByVmIdentityAndRefusesForeignSideca
   }
   const auto other=run_named(dir,other_cfg,"other"); ASSERT_TRUE(other.ok) << other.error;
   EXPECT_EQ(other.log.find("IC cache-hit"),std::string::npos);
-  for (const auto& role_result:read_json(dir.path/"other"/"summary.json").at("roles"))
+  const auto other_summary=read_json(dir.path/"other"/"summary.json");
+  for (const auto& role_result:other_summary.at("roles"))
     EXPECT_EQ(role_result.at("candidate_cache").at("hits"),0);
   // In our own root, a sidecar recording another identity is refused, never served.
   const auto attempt=[&](const Json& edited,const std::string& name) {
