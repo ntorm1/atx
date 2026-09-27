@@ -76,6 +76,15 @@
   effects of An-Ang-Bali-Cakici 2014: no unambiguous prior; cost: one diversifier) -> 39 candidates; droe canonical
   with be_lag1q_lag4 (T21 told to emit it). T24 fix round 1 sent.
 
+- T24 fix r1: pool-7 3bb3fbf3/d7464792 -> root (39 candidates; themes == prereg names; all prior_sign 1; tiers
+  A 4 / A- 4 / B+ 9 / B 9 / B- 7 / C+ 6). pytest 32/32; --check registry + grp typing OK. Review dispatched (t24-review).
+- T19/T23: pool-4 83fbbf84/2d185266 -> root. pytest 66/66. Fitter SHA fbfd122b -> 69c18270 (work caches recompute;
+  v3 pins reproducible from d38e7929). REAL: identity-bridge-r4-v1 (2 s/142 MiB; source r4 manifest ac9bcda7..., 6,780
+  rows P 6,765/J 15); check (4 s/777 MiB): member-cell P-link coverage TRAIN ~.60, VAL .59 (2023 .596 / 2024 .588);
+  static-bridge agreement TRAIN 2108 agree/52 disagree, VAL 1979/20. Ruling: T21 matches start<=d<=end_incl only
+  (rows already PIT; T18 "available_at < d 22:00" would drop first days) — cost if wrong: none material (6,770/6,780
+  rows available_at == start mark). Review dispatched (t19-t23-review).
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)
