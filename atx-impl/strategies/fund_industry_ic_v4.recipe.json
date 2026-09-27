@@ -3,21 +3,19 @@
   "id": "fund_industry_ic_v4_initial",
   "library": {
     "path": "fund_industry_ic_v4.json",
-    "sha256": "af5159c84a6408a57e31b309c4ee232316c33f3ae91656afdbe230ccd83f4553"
+    "sha256": "daa9663e43119102fbb42aba3be9b57961cd34925920c50baee7f340f0e1eddf"
   },
   "preregistration": ".superpowers/sdd/mega-alpha-20260926/v4-prereg.md section R1 (declared 2026-09-27)",
   "generation": {
     "rule": "prior-signed-themed-v4",
-    "revision": "fix-round-1",
-    "candidates": 39,
+    "revision": "fix-round-2",
+    "candidates": 37,
     "families": 9,
     "family_is_theme": true,
     "one_variant_per_hypothesis": true,
-    "wrapper": "decay_linear(R(base), 21); R = group_rank(., grp_ff12) for themes 1-3, rank(.) otherwise; ear is R(base) (smoothing exemption)",
+    "wrapper": "decay_linear(R(base), 21); R = group_rank(., grp_ff12) for themes 1-3, rank(.) otherwise; no exemption",
     "smoothing_default": 21,
-    "smoothing_exemptions": {
-      "ear": "the base is NaN between event windows; a 21-session decay would blank a name for 20 sessions after each gap (v3 earnings_drift precedent)"
-    },
+    "smoothing_exemptions": {},
     "seed": null,
     "max_prior_bars": 314,
     "complete_observations": 315,
@@ -26,7 +24,7 @@
       "sha256_lf": "f4f1cb5838d86c4e30b4698d4e37c90469b2eb5cfb32b2bf622e126455afff4f",
       "used": "tokenize, Expr/binary/call/window/pair builders, peak_slots"
     },
-    "generator_sha256": "bc41d56390593d8527fe119859e2f9148a2a2b8ea1fc43854539a139e5c03076"
+    "generator_sha256": "ccd7ffaac6c4a1a0db25f3db62cb334d3b17bc226957cf1310481e51a862dec0"
   },
   "orientation": {
     "rule": "prior sign embedded in the DSL: base = raw_prior_direction * raw quantity, so a higher value is the predicted long side and every candidate has prior_sign +1",
@@ -75,7 +73,7 @@
     {
       "theme": "profitability_quality",
       "index": 2,
-      "description": "Profitability and quality (gross, operating, cash, ROE, ROA, low accruals, F-score, QMJ-lite), ranked within FF12 industry; high quality predicts higher returns.",
+      "description": "Profitability and quality (gross, operating, cash, ROE, ROA, low accruals, F-score), ranked within FF12 industry; high quality predicts higher returns.",
       "members": [
         "gpa",
         "opbe",
@@ -83,21 +81,19 @@
         "roe_q",
         "roa",
         "accruals",
-        "fscore",
-        "qmj_lite"
+        "fscore"
       ],
       "expected_turnover": "very low (< 0.02/day): accounting ranks step at filings; s21 decay"
     },
     {
       "theme": "investment_issuance",
       "index": 3,
-      "description": "Low asset growth, low net operating assets, low share issuance and the Stambaugh-Yuan MGMT composite, ranked within FF12 industry; low investment and issuance predict higher returns.",
+      "description": "Low asset growth, low net operating assets and low share issuance (XBRL and split-neutral vendor), ranked within FF12 industry; low investment and issuance predict higher returns.",
       "members": [
         "asset_growth",
         "noa",
         "issuance_xbrl",
-        "issuance_vendor",
-        "mgmt_sy"
+        "issuance_vendor"
       ],
       "expected_turnover": "very low (< 0.02/day): accounting and 252-session share ranks; s21 decay"
     },
@@ -192,14 +188,11 @@
       "roa",
       "accruals",
       "fscore",
-      "qmj_lite",
       "asset_growth",
       "noa",
       "issuance_xbrl",
-      "issuance_vendor",
-      "mgmt_sy"
+      "issuance_vendor"
     ],
-    "composites": "qmj_lite and mgmt_sy rank each component within industry, then the sum",
     "exceptions": [],
     "exceptions_statement": "sole exception list (prereg R1): empty; no theme 1-3 member of the v4 roster is explicitly industry-level",
     "nan_label": "a NaN industry label leaves the name out of the group (NaN signal)",
@@ -236,12 +229,42 @@
       "ruling": "T22 landed",
       "change": "the registry cross-check reports grp_ group typing as checked when the engine tree carries T22 (static check of typecheck.hpp is_group_field); --engine-root selects the tree",
       "reason": "no library byte depends on it"
+    },
+    {
+      "round": 2,
+      "ruling": "drop mgmt_sy and qmj_lite",
+      "change": "both composites removed (37 candidates)",
+      "reason": "redundancy: every component is already a member of the same theme, so the equal theme weights already combine them; memory: they alone push the IC runner plan to 1.70 GB, above the 1.5 GB cap (1.449 GB without them); decided before any TRAIN read"
+    },
+    {
+      "round": 2,
+      "ruling": "review I1",
+      "change": "issuance_vendor = -log(adj / adj[t-252]), adj = shares_out * raw_close / close",
+      "reason": "shares_out is restated to each session's own share basis, so the plain ratio counted every split and consolidation of the trailing year as issuance; the split-neutral form is Daniel-Titman composite issuance"
+    },
+    {
+      "round": 2,
+      "ruling": "review minor 1",
+      "change": "ear = ts_backfill(3-day CAR at r+1, 126) under the s21 default",
+      "reason": "the 63-session average equalled the mean inter-announcement gap (NaN on long gaps, two events averaged on short ones, 63-session NaN exposure); the carried most recent announcement is the Chan-Jegadeesh-Lakonishok definition, and the smoothing exemption (NaN gaps) no longer applies"
+    },
+    {
+      "round": 2,
+      "ruling": "issuance_xbrl split check",
+      "change": "no DSL change; field text and deviation state the T20 contract argument",
+      "reason": "shrs_q_lag4 is the anchor filing's split-restated comparative (facts keyed by period, later clock wins); a price-factor correction would double-correct; T25 verifies on splitters"
+    },
+    {
+      "round": 2,
+      "ruling": "review minors",
+      "change": "seasonality window re-centred under s21 (delay 224 / 245); SI split caveat restored; field texts match the T20 contract (shrs_q weighted-average diluted, sue on net income); asset denominators guarded; the validator raises ValueError at the end of input",
+      "reason": "review minors 2-6"
     }
   ],
   "family_fixing": {
     "fixed_before_measurement": true,
     "measurement_consulted": false,
-    "statement": "Roster, themes, member ids and signs are prereg R1 (declared 2026-09-27 before any v4 TRAIN read), with the fix-round-1 controller rulings (iv_change dropped, canonical droe), also before any v4 TRAIN read. Each member takes the canonical definition of its cited paper (window, scaling, exclusion rule) and the s21 default; the implementer read no v3 TRAIN performance output (admission tables, daily IC, summary IC statistics, v3 DSL catalogue) and no validation data. Field names come from the T18 section 6 proposal and the fields-v4 manifest field list (names and units only). Disclosed (prereg R1): v3 per-candidate TRAIN statistics were seen by the controller for price/volume families; the PV, SI, IV and EAR definitions here follow the literature, not v3 results."
+    "statement": "Roster, themes, member ids and signs are prereg R1 (declared 2026-09-27 before any v4 TRAIN read), with the fix-round-1 and fix-round-2 rulings (iv_change, mgmt_sy and qmj_lite dropped; canonical droe), also before any v4 TRAIN read. Each member takes the canonical definition of its cited paper (window, scaling, exclusion rule) and the s21 default; the implementer read no v3 TRAIN performance output (admission tables, daily IC, summary IC statistics, v3 DSL catalogue) and no validation data. Field names come from the T18 section 6 proposal and the fields-v4 manifest field list (names and units only). Disclosed (prereg R1): v3 per-candidate TRAIN statistics were seen by the controller for price/volume families; the PV, SI, IV and EAR definitions here follow the literature, not v3 results."
   },
   "templates": [
     {
@@ -300,7 +323,7 @@
       "base_prior_bars": 0,
       "raw_prior_direction": 1,
       "domain": "non-positive EBIT or enterprise value -> NaN (negative multiples excluded, Loughran-Wellman)",
-      "deviation": "EBIT (operating income) replaces EBITDA: no depreciation field; debt follows the T21 presence rule",
+      "deviation": "EBIT (operating income) replaces EBITDA: no depreciation field; debt follows the T20 zero-fill rule",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
@@ -344,10 +367,10 @@
       "id": "gpa",
       "theme": "profitability_quality",
       "formula": "gp_ttm / at",
-      "base_dsl": "(gp_ttm / at)",
+      "base_dsl": "((gp_ttm / at) + (0 * log(at)))",
       "base_prior_bars": 0,
       "raw_prior_direction": 1,
-      "domain": null,
+      "domain": "non-positive total assets -> NaN (house guard)",
       "deviation": null,
       "smoothing_sessions": 21,
       "smoothing_reason": null
@@ -368,10 +391,10 @@
       "id": "cfoa",
       "theme": "profitability_quality",
       "formula": "cfo_ttm / ((at + at_lag4) / 2)",
-      "base_dsl": "(cfo_ttm / ((at + at_lag4) / 2))",
+      "base_dsl": "((cfo_ttm / ((at + at_lag4) / 2)) + (0 * log(((at + at_lag4) / 2))))",
       "base_prior_bars": 0,
       "raw_prior_direction": 1,
-      "domain": null,
+      "domain": "non-positive average total assets -> NaN (house guard)",
       "deviation": "reported operating cash flow proxies cash-based operating profitability (no R&D add-back)",
       "smoothing_sessions": 21,
       "smoothing_reason": null
@@ -392,10 +415,10 @@
       "id": "roa",
       "theme": "profitability_quality",
       "formula": "ni_ttm / at",
-      "base_dsl": "(ni_ttm / at)",
+      "base_dsl": "((ni_ttm / at) + (0 * log(at)))",
       "base_prior_bars": 0,
       "raw_prior_direction": 1,
-      "domain": null,
+      "domain": "non-positive total assets -> NaN (house guard)",
       "deviation": "trailing-twelve-month earnings over current assets (no one-quarter-lagged assets field)",
       "smoothing_sessions": 21,
       "smoothing_reason": null
@@ -404,10 +427,10 @@
       "id": "accruals",
       "theme": "profitability_quality",
       "formula": "(ni_ttm - cfo_ttm) / ((at + at_lag4) / 2)",
-      "base_dsl": "(-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2)))",
+      "base_dsl": "((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))) + (0 * log(((at + at_lag4) / 2))))",
       "base_prior_bars": 0,
       "raw_prior_direction": -1,
-      "domain": null,
+      "domain": "non-positive average total assets -> NaN (house guard)",
       "deviation": null,
       "smoothing_sessions": 21,
       "smoothing_reason": null
@@ -415,7 +438,7 @@
     {
       "id": "fscore",
       "theme": "profitability_quality",
-      "formula": "fscore (producer, nine terms)",
+      "formula": "fscore (producer, nine signals)",
       "base_dsl": "fscore",
       "base_prior_bars": 0,
       "raw_prior_direction": 1,
@@ -425,25 +448,13 @@
       "smoothing_reason": null
     },
     {
-      "id": "qmj_lite",
-      "theme": "profitability_quality",
-      "formula": "within-industry rank sum of gpa, cfoa, -accruals and -(lt / at)",
-      "base_dsl": "(((group_rank((gp_ttm / at), grp_ff12) + group_rank((cfo_ttm / ((at + at_lag4) / 2)), grp_ff12)) + group_rank((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))), grp_ff12)) + group_rank((-1 * (lt / at)), grp_ff12))",
-      "base_prior_bars": 0,
-      "raw_prior_direction": 1,
-      "domain": null,
-      "deviation": "profitability and safety legs only (no growth or payout legs); every component required",
-      "smoothing_sessions": 21,
-      "smoothing_reason": null
-    },
-    {
       "id": "asset_growth",
       "theme": "investment_issuance",
       "formula": "at / at_lag4 - 1",
-      "base_dsl": "(-1 * ((at / at_lag4) - 1))",
+      "base_dsl": "((-1 * ((at / at_lag4) - 1)) + (0 * log(at_lag4)))",
       "base_prior_bars": 0,
       "raw_prior_direction": -1,
-      "domain": null,
+      "domain": "non-positive lagged total assets -> NaN (house guard)",
       "deviation": null,
       "smoothing_sessions": 21,
       "smoothing_reason": null
@@ -452,10 +463,10 @@
       "id": "noa",
       "theme": "investment_issuance",
       "formula": "noa / at_lag4",
-      "base_dsl": "(-1 * (noa / at_lag4))",
+      "base_dsl": "((-1 * (noa / at_lag4)) + (0 * log(at_lag4)))",
       "base_prior_bars": 0,
       "raw_prior_direction": -1,
-      "domain": null,
+      "domain": "non-positive lagged total assets -> NaN (house guard)",
       "deviation": null,
       "smoothing_sessions": 21,
       "smoothing_reason": null
@@ -468,43 +479,31 @@
       "base_prior_bars": 0,
       "raw_prior_direction": -1,
       "domain": "non-positive share ratio -> NaN (log)",
-      "deviation": "XBRL share counts: a split between the two filings reads as issuance unless the producer restates it",
+      "deviation": "weighted-average diluted (else basic) shares of the anchor quarter (else fiscal year), not period-end shares outstanding. Split consistency by the T20 contract: facts are keyed by (start, end) and a later clock overrides, so shrs_q_lag4 is the anchor filing's own prior-year comparative, which the filing presents (Reg S-X 10-01(c); ASC 260 EPS denominators for every period presented) restated retroactively for splits (ASC 260-10-55-12). No price-factor correction is applied: it would double-correct that restated pair. A filer that does not re-report the comparative leaves the pair split-contaminated; T25 checks known splitters (AAPL 2020-08, TSLA 2020-08 and 2022-08, NVDA 2021-07, AMZN 2022-06, GOOGL 2022-07)",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
     {
       "id": "issuance_vendor",
       "theme": "investment_issuance",
-      "formula": "log(shares_out / delay(shares_out, 252))",
-      "base_dsl": "(-1 * log((shares_out / delay(shares_out, 252))))",
+      "formula": "log(adj / adj[t-252]) with adj = shares_out * raw_close / close: log growth of line market equity minus the log total return",
+      "base_dsl": "(-1 * log((((shares_out * raw_close) / close) / delay(((shares_out * raw_close) / close), 252))))",
       "base_prior_bars": 252,
       "raw_prior_direction": -1,
-      "domain": "non-positive share ratio -> NaN (log)",
-      "deviation": null,
-      "smoothing_sessions": 21,
-      "smoothing_reason": null
-    },
-    {
-      "id": "mgmt_sy",
-      "theme": "investment_issuance",
-      "formula": "within-industry rank sum of -issuance, -accruals, -noa and -asset growth",
-      "base_dsl": "(((group_rank((-1 * log((shrs_q / shrs_q_lag4))), grp_ff12) + group_rank((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))), grp_ff12)) + group_rank((-1 * (noa / at_lag4)), grp_ff12)) + group_rank((-1 * ((at / at_lag4) - 1)), grp_ff12))",
-      "base_prior_bars": 0,
-      "raw_prior_direction": 1,
-      "domain": null,
-      "deviation": "four of the six MGMT anomalies (no composite equity issuance, no investment-to-assets); every component required",
+      "domain": "non-positive ratio -> NaN (log)",
+      "deviation": "shares_out and raw_close share the session basis, so splits and consolidations cancel; the dividend-adjusted close makes dividends count as payout (Daniel-Titman composite issuance, not the Pontiff-Woodgate share count); the vendor share count lags 90 days (A8)",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
     {
       "id": "sue",
       "theme": "earnings_momentum",
-      "formula": "sue (producer, seasonal random walk)",
+      "formula": "sue (producer: seasonal random walk on first-reported quarterly net income)",
       "base_dsl": "sue",
       "base_prior_bars": 0,
       "raw_prior_direction": 1,
       "domain": null,
-      "deviation": "filing clock (10-Q/10-K acceptance + 1 session), not the announcement date",
+      "deviation": "filing clock (10-Q/10-K acceptance + 1 session), not the announcement date; net income, not EPS",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
@@ -524,10 +523,10 @@
       "id": "chtax",
       "theme": "earnings_momentum",
       "formula": "(txt_q - txt_q_lag4) / at_lag4",
-      "base_dsl": "((txt_q - txt_q_lag4) / at_lag4)",
+      "base_dsl": "(((txt_q - txt_q_lag4) / at_lag4) + (0 * log(at_lag4)))",
       "base_prior_bars": 0,
       "raw_prior_direction": 1,
-      "domain": null,
+      "domain": "non-positive lagged total assets -> NaN (house guard)",
       "deviation": null,
       "smoothing_sessions": 21,
       "smoothing_reason": null
@@ -535,14 +534,14 @@
     {
       "id": "ear",
       "theme": "earnings_momentum",
-      "formula": "market-adjusted return over the 3 sessions [r-1, r+1] around the vendor reaction session r, recorded at r+1 and averaged over the events of the last 63 sessions (the most recent quarterly announcement)",
-      "base_dsl": "(ts_sum(((earn_recent * delay(earn_recent, 1)) * ts_sum((((close / delay(close, 1)) - 1) - mkt_ret), 3)), 63) / ts_sum((earn_recent * delay(earn_recent, 1)), 63))",
-      "base_prior_bars": 65,
+      "formula": "market-adjusted return over the 3 sessions [r-1, r+1] around the most recent vendor reaction session r, recorded at r+1 and carried until the next announcement, at most 126 sessions",
+      "base_dsl": "ts_backfill((ts_sum((((close / delay(close, 1)) - 1) - mkt_ret), 3) + (0 * log((earn_recent * delay(earn_recent, 1))))), 126)",
+      "base_prior_bars": 128,
       "raw_prior_direction": 1,
-      "domain": "NaN without an event in the 63-session window (0 / 0)",
-      "deviation": "equal-weight member market return (mkt_ret) as the benchmark",
-      "smoothing_sessions": 1,
-      "smoothing_reason": "the base is NaN between event windows; a 21-session decay would blank a name for 20 sessions after each gap (v3 earnings_drift precedent)"
+      "domain": "NaN on non-event sessions before the carry (0 * log(0)); NaN when no announcement in 126 sessions",
+      "deviation": "Chan-Jegadeesh-Lakonishok measure the abnormal return around the most recent quarterly announcement and hold six months, hence a six-month carry cap (one missed quarter keeps the name); the 3-day [-1, +1] window is the prereg choice (Brandt et al.; CJL, as recalled, use days -2..+1); equal-weight member market return (mkt_ret) as the benchmark",
+      "smoothing_sessions": 21,
+      "smoothing_reason": null
     },
     {
       "id": "mom_12_1",
@@ -648,7 +647,7 @@
       "base_prior_bars": 0,
       "raw_prior_direction": -1,
       "domain": null,
-      "deviation": null,
+      "deviation": "si_shares is on the FINRA settlement-date share basis and shares_out on the session basis: from a split until the next dissemination the ratio is off by the split factor (v3 caveat)",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
@@ -660,7 +659,7 @@
       "base_prior_bars": 0,
       "raw_prior_direction": -1,
       "domain": null,
-      "deviation": null,
+      "deviation": "FINRA computes days to cover on one basis (short interest over average daily volume): no split mismatch",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
@@ -672,7 +671,7 @@
       "base_prior_bars": 21,
       "raw_prior_direction": -1,
       "domain": null,
-      "deviation": "Rapach-Ringgenberg-Zhou is an aggregate time-series result; the cross-sectional change is the pre-registered extrapolation",
+      "deviation": "Rapach-Ringgenberg-Zhou is an aggregate time-series result; the cross-sectional change is the pre-registered extrapolation; si_shares is on the FINRA settlement-date share basis and shares_out on the session basis: from a split until the next dissemination the ratio is off by the split factor (v3 caveat), so a split gives a spike and an opposite-signed echo 21 sessions later",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
@@ -691,12 +690,12 @@
     {
       "id": "seasonality_same_month",
       "theme": "reversal_seasonality",
-      "formula": "close[t-231] / close[t-252] - 1 (the same 21 sessions one year earlier than the next 21)",
-      "base_dsl": "((delay(close, 231) / delay(close, 252)) - 1)",
-      "base_prior_bars": 252,
+      "formula": "close[t-224] / close[t-245] - 1: the 21-session window whose s21-decayed centre (t-241.2) matches the centre (t-241) of the same 21 sessions one year before the next 21",
+      "base_dsl": "((delay(close, 224) / delay(close, 245)) - 1)",
+      "base_prior_bars": 245,
       "raw_prior_direction": 1,
       "domain": null,
-      "deviation": "annual lag 12 only (lags 24+ exceed the 314-bar bound); the s21 decay moves the effective window centre about 6.7 sessions earlier",
+      "deviation": "annual lag 12 only (lags 24+ exceed the 314-bar bound); the window is shifted 7 sessions later than the undecayed [t-252, t-231] because the s21 linear decay moves the effective centre 6.7 sessions earlier (mean lag of weights 21..1 = 1540 / 231)",
       "smoothing_sessions": 21,
       "smoothing_reason": null
     },
@@ -901,7 +900,7 @@
       "smoothing_sessions": 21,
       "prior_bars": 20,
       "native_prior_bars": 20,
-      "dsl_sha256": "04ca4fb3cecf222e6308e07fdf85d31caed3c9ca2648925ac749d76e332e970f",
+      "dsl_sha256": "c62e0a67d77c56e80c8b80c11fa102054435fc97461a58a05f4a1e0aba494c5c",
       "fields": [
         "at",
         "gp_ttm",
@@ -943,7 +942,7 @@
       "smoothing_sessions": 21,
       "prior_bars": 20,
       "native_prior_bars": 20,
-      "dsl_sha256": "6e9a5988d7bf8abf1c6bfe96c5ef54133db46e1a053faa8e92684f8d9cd86e5b",
+      "dsl_sha256": "d4f59d63b44ee7104eb5c81ce9bf57dd09d50298d0d9afee91e1c15ef3a8b079",
       "fields": [
         "at",
         "at_lag4",
@@ -986,7 +985,7 @@
       "smoothing_sessions": 21,
       "prior_bars": 20,
       "native_prior_bars": 20,
-      "dsl_sha256": "5271bff48633d2c74cd4f4bbc07b78cdac223d9df1c2d3fd6f0fe36d63c1a3e3",
+      "dsl_sha256": "5ab5b3b7783438217376b072398a83983d9be874a6503bc86111f05c32e6c2df",
       "fields": [
         "at",
         "grp_ff12",
@@ -1007,7 +1006,7 @@
       "smoothing_sessions": 21,
       "prior_bars": 20,
       "native_prior_bars": 20,
-      "dsl_sha256": "3a7760ae71de9f04c8d0bca2bfe985100e21907b4c57c76e99f317ddd9f3a933",
+      "dsl_sha256": "31061261c9c2967592ab7ff697ac89b2aea1a239aebae14d1f01cf6d958f1174",
       "fields": [
         "at",
         "at_lag4",
@@ -1037,34 +1036,9 @@
       ]
     },
     {
-      "id": "qmj_lite",
-      "family": "profitability_quality",
-      "roster_order": 16,
-      "theme": "profitability_quality",
-      "tier": "B",
-      "tier_rank": 4,
-      "prior_sign": 1,
-      "citation": "Asness, Frazzini and Pedersen (2019, RAS) quality minus junk",
-      "raw_prior_direction": 1,
-      "ranking": "within_industry_grp_ff12",
-      "smoothing_sessions": 21,
-      "prior_bars": 20,
-      "native_prior_bars": 20,
-      "dsl_sha256": "5fdff4120a62d6e0e69701f8bda3715527208ed8a03cf5dbebf1c65f136a7ed3",
-      "fields": [
-        "at",
-        "at_lag4",
-        "cfo_ttm",
-        "gp_ttm",
-        "grp_ff12",
-        "lt",
-        "ni_ttm"
-      ]
-    },
-    {
       "id": "asset_growth",
       "family": "investment_issuance",
-      "roster_order": 17,
+      "roster_order": 16,
       "theme": "investment_issuance",
       "tier": "C+",
       "tier_rank": 6,
@@ -1075,7 +1049,7 @@
       "smoothing_sessions": 21,
       "prior_bars": 20,
       "native_prior_bars": 20,
-      "dsl_sha256": "865c8d7449ca3f45cbd3bba90eb121326c6cfb449aa1db0d2e9bc5ee957bde58",
+      "dsl_sha256": "84aa4e19424fca8ba606204454e4bebb5eaa63f29873c8589c5eea41c15940ca",
       "fields": [
         "at",
         "at_lag4",
@@ -1085,7 +1059,7 @@
     {
       "id": "noa",
       "family": "investment_issuance",
-      "roster_order": 18,
+      "roster_order": 17,
       "theme": "investment_issuance",
       "tier": "B",
       "tier_rank": 4,
@@ -1096,7 +1070,7 @@
       "smoothing_sessions": 21,
       "prior_bars": 20,
       "native_prior_bars": 20,
-      "dsl_sha256": "9aaf59525516d053d81a839779cea46743ba950910a2cdbd4f5844b39e94cfbf",
+      "dsl_sha256": "03d0af67d26f676708fc1682bee9e3e0b74893ff55a5a6109b0734fe650c6020",
       "fields": [
         "at_lag4",
         "grp_ff12",
@@ -1106,7 +1080,7 @@
     {
       "id": "issuance_xbrl",
       "family": "investment_issuance",
-      "roster_order": 19,
+      "roster_order": 18,
       "theme": "investment_issuance",
       "tier": "A",
       "tier_rank": 1,
@@ -1127,53 +1101,29 @@
     {
       "id": "issuance_vendor",
       "family": "investment_issuance",
-      "roster_order": 20,
+      "roster_order": 19,
       "theme": "investment_issuance",
       "tier": "A-",
       "tier_rank": 2,
       "prior_sign": 1,
-      "citation": "Pontiff and Woodgate (2008, JF) share issuance (vendor split-restated share count)",
+      "citation": "Daniel and Titman (2006, JF) composite equity issuance over one year; Pontiff and Woodgate (2008, JF)",
       "raw_prior_direction": -1,
       "ranking": "within_industry_grp_ff12",
       "smoothing_sessions": 21,
       "prior_bars": 272,
       "native_prior_bars": 272,
-      "dsl_sha256": "fa7624ed10acdca4a84854f81fcaeb49454a7195d0df0c2d3cb66b461cc069f3",
+      "dsl_sha256": "b450fc63d4ecfb3a1bb485f5c1817247f3371e89ee03696d7f32e3cd74db6a67",
       "fields": [
+        "close",
         "grp_ff12",
+        "raw_close",
         "shares_out"
-      ]
-    },
-    {
-      "id": "mgmt_sy",
-      "family": "investment_issuance",
-      "roster_order": 21,
-      "theme": "investment_issuance",
-      "tier": "B+",
-      "tier_rank": 3,
-      "prior_sign": 1,
-      "citation": "Stambaugh and Yuan (2017, RFS) mispricing factors, MGMT cluster",
-      "raw_prior_direction": 1,
-      "ranking": "within_industry_grp_ff12",
-      "smoothing_sessions": 21,
-      "prior_bars": 20,
-      "native_prior_bars": 20,
-      "dsl_sha256": "7164e441475c83dbae1e1e94c402b95df8fe78c7df4dca4f7aaa76f3595d0f5a",
-      "fields": [
-        "at",
-        "at_lag4",
-        "cfo_ttm",
-        "grp_ff12",
-        "ni_ttm",
-        "noa",
-        "shrs_q",
-        "shrs_q_lag4"
       ]
     },
     {
       "id": "sue",
       "family": "earnings_momentum",
-      "roster_order": 22,
+      "roster_order": 20,
       "theme": "earnings_momentum",
       "tier": "C+",
       "tier_rank": 6,
@@ -1192,7 +1142,7 @@
     {
       "id": "droe",
       "family": "earnings_momentum",
-      "roster_order": 23,
+      "roster_order": 21,
       "theme": "earnings_momentum",
       "tier": "B",
       "tier_rank": 4,
@@ -1214,7 +1164,7 @@
     {
       "id": "chtax",
       "family": "earnings_momentum",
-      "roster_order": 24,
+      "roster_order": 22,
       "theme": "earnings_momentum",
       "tier": "B",
       "tier_rank": 4,
@@ -1225,7 +1175,7 @@
       "smoothing_sessions": 21,
       "prior_bars": 20,
       "native_prior_bars": 20,
-      "dsl_sha256": "6afc2ef55dc4ab72ae725dc2ed089b2902c5286ea6eab0681b3fa8c5bf9146fd",
+      "dsl_sha256": "00625831f25668b54bddc0302a449d81a6b6b1e3882ec95fe9b5037fc1b4c53d",
       "fields": [
         "at_lag4",
         "txt_q",
@@ -1235,7 +1185,7 @@
     {
       "id": "ear",
       "family": "earnings_momentum",
-      "roster_order": 25,
+      "roster_order": 23,
       "theme": "earnings_momentum",
       "tier": "B+",
       "tier_rank": 3,
@@ -1243,10 +1193,10 @@
       "citation": "Chan, Jegadeesh and Lakonishok (1996, JF) earnings announcement return; Brandt, Kishore, Santa-Clara and Venkatachalam (2008, WP)",
       "raw_prior_direction": 1,
       "ranking": "cross_section",
-      "smoothing_sessions": 1,
-      "prior_bars": 65,
-      "native_prior_bars": 65,
-      "dsl_sha256": "65c9c5e73270d080cacc2904976e45e000dd8e6debb813329d2ba70bf8a79b62",
+      "smoothing_sessions": 21,
+      "prior_bars": 148,
+      "native_prior_bars": 148,
+      "dsl_sha256": "abf046821cdfd19f57eb4f8be975b9baf922a17e1fea5eb98c5b4ec9a2bce8cc",
       "fields": [
         "close",
         "earn_recent",
@@ -1256,7 +1206,7 @@
     {
       "id": "mom_12_1",
       "family": "price_momentum",
-      "roster_order": 26,
+      "roster_order": 24,
       "theme": "price_momentum",
       "tier": "B+",
       "tier_rank": 3,
@@ -1275,7 +1225,7 @@
     {
       "id": "ind_mom_12_1",
       "family": "price_momentum",
-      "roster_order": 27,
+      "roster_order": 25,
       "theme": "price_momentum",
       "tier": "B",
       "tier_rank": 4,
@@ -1295,7 +1245,7 @@
     {
       "id": "within_ind_mom",
       "family": "price_momentum",
-      "roster_order": 28,
+      "roster_order": 26,
       "theme": "price_momentum",
       "tier": "C+",
       "tier_rank": 6,
@@ -1315,7 +1265,7 @@
     {
       "id": "high_52w",
       "family": "price_momentum",
-      "roster_order": 29,
+      "roster_order": 27,
       "theme": "price_momentum",
       "tier": "A-",
       "tier_rank": 2,
@@ -1334,7 +1284,7 @@
     {
       "id": "low_beta",
       "family": "low_risk",
-      "roster_order": 30,
+      "roster_order": 28,
       "theme": "low_risk",
       "tier": "B-",
       "tier_rank": 5,
@@ -1354,7 +1304,7 @@
     {
       "id": "low_ivol",
       "family": "low_risk",
-      "roster_order": 31,
+      "roster_order": 29,
       "theme": "low_risk",
       "tier": "B-",
       "tier_rank": 5,
@@ -1374,7 +1324,7 @@
     {
       "id": "low_max",
       "family": "low_risk",
-      "roster_order": 32,
+      "roster_order": 30,
       "theme": "low_risk",
       "tier": "B-",
       "tier_rank": 5,
@@ -1393,7 +1343,7 @@
     {
       "id": "lowvol_ind",
       "family": "low_risk",
-      "roster_order": 33,
+      "roster_order": 31,
       "theme": "low_risk",
       "tier": "B-",
       "tier_rank": 5,
@@ -1413,7 +1363,7 @@
     {
       "id": "si_ratio",
       "family": "short_interest",
-      "roster_order": 34,
+      "roster_order": 32,
       "theme": "short_interest",
       "tier": "B+",
       "tier_rank": 3,
@@ -1433,7 +1383,7 @@
     {
       "id": "dtc",
       "family": "short_interest",
-      "roster_order": 35,
+      "roster_order": 33,
       "theme": "short_interest",
       "tier": "B+",
       "tier_rank": 3,
@@ -1452,7 +1402,7 @@
     {
       "id": "si_change",
       "family": "short_interest",
-      "roster_order": 36,
+      "roster_order": 34,
       "theme": "short_interest",
       "tier": "B-",
       "tier_rank": 5,
@@ -1472,7 +1422,7 @@
     {
       "id": "ind_adj_rev_5",
       "family": "reversal_seasonality",
-      "roster_order": 37,
+      "roster_order": 35,
       "theme": "reversal_seasonality",
       "tier": "B-",
       "tier_rank": 5,
@@ -1492,7 +1442,7 @@
     {
       "id": "seasonality_same_month",
       "family": "reversal_seasonality",
-      "roster_order": 38,
+      "roster_order": 36,
       "theme": "reversal_seasonality",
       "tier": "C+",
       "tier_rank": 6,
@@ -1501,9 +1451,9 @@
       "raw_prior_direction": 1,
       "ranking": "cross_section",
       "smoothing_sessions": 21,
-      "prior_bars": 272,
-      "native_prior_bars": 272,
-      "dsl_sha256": "df230a4fda50f4b7e23c3fa45d241ca11245e87ef96d72c40ad5798444f7e44d",
+      "prior_bars": 265,
+      "native_prior_bars": 265,
+      "dsl_sha256": "4c8c528e753178942b51b33719a0efca23e7439b0a5baa064e892a1ae292fba6",
       "fields": [
         "close"
       ]
@@ -1511,7 +1461,7 @@
     {
       "id": "iv_rv_spread",
       "family": "options_implied",
-      "roster_order": 39,
+      "roster_order": 37,
       "theme": "options_implied",
       "tier": "B",
       "tier_rank": 4,
@@ -1569,35 +1519,31 @@
       },
       {
         "name": "be",
-        "basis": "book equity: total stockholders equity (parent), latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "book equity at the anchor period_end A: stockholders equity (else equity including minority interest minus minority interest) minus preferred stock, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "at",
-        "basis": "total assets, latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "total assets at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "at_lag4",
-        "basis": "total assets four fiscal quarters before the latest filing period, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
-      },
-      {
-        "name": "lt",
-        "basis": "total liabilities, latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "total assets at the balance date nearest A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "che",
-        "basis": "cash and short-term investments, latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "cash and short-term investments at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "debt",
-        "basis": "total debt (short-term plus long-term, presence rule), latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "short-term plus long-term debt at A, each zero-filled (flagged) when absent while assets exist, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "sale_ttm",
-        "basis": "revenue, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "revenue, trailing twelve months ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "gp_ttm",
-        "basis": "gross profit (revenue minus cost of revenue), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "gross profit (else revenue minus cost of revenue), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "oi_ttm",
@@ -1605,23 +1551,23 @@
       },
       {
         "name": "ni_ttm",
-        "basis": "net income (income before extraordinary items), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "net income, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "ni_q",
-        "basis": "net income, latest discrete fiscal quarter, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "net income of the fiscal quarter ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "ni_q_lag4",
-        "basis": "net income, the same fiscal quarter one year earlier, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "net income of the fiscal quarter ending near A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "be_lag1q",
-        "basis": "book equity at the end of the quarter before the latest quarter (opening equity), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "book equity at the balance date nearest A - 91 d (opening equity of the quarter), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "be_lag1q_lag4",
-        "basis": "opening book equity of the same fiscal quarter one year earlier (be_lag1q shifted four quarters), USD; added in fix round 1; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "book equity at the balance date nearest A - 456 d (opening equity of the quarter one year earlier), USD; added in fix round 1; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "cfo_ttm",
@@ -1629,7 +1575,7 @@
       },
       {
         "name": "capx_ttm",
-        "basis": "capital expenditure (payments for PP&E), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "capital expenditure (payments for PP&E, positive), trailing twelve months, USD; NaN when not reported; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "xrd_ttm",
@@ -1637,43 +1583,43 @@
       },
       {
         "name": "dvc_ttm",
-        "basis": "common dividends paid, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "common dividends paid, trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "prstkc_ttm",
-        "basis": "purchases of common stock (buybacks), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "purchases of common stock (buybacks), trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "sstk_ttm",
-        "basis": "proceeds from issuance of common stock, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "proceeds from issuance of common stock, trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "txt_q",
-        "basis": "income tax expense, latest discrete fiscal quarter, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "income tax expense of the fiscal quarter ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "txt_q_lag4",
-        "basis": "income tax expense, the same fiscal quarter one year earlier, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "income tax expense of the fiscal quarter ending near A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "shrs_q",
-        "basis": "common shares outstanding (XBRL), latest filing, shares; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "weighted-average diluted shares (else basic) of the fiscal quarter ending at A (else the fiscal year ending at A), shares; as reported, split-restated by the reporting filing; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "shrs_q_lag4",
-        "basis": "common shares outstanding (XBRL) four fiscal quarters earlier, shares; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "the same concept and duration class ending near A - 365 d, as known at the row clock (latest filing reporting that period, so the anchor filing's split-restated comparative); the pair is NaN when abs(log10 ratio) >= 2 (XBRL scale error); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "noa",
-        "basis": "net operating assets (operating assets minus operating liabilities; Hirshleifer et al. 2004), USD, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "net operating assets at A: at - che - lt + debt (Hirshleifer, Hou, Teoh and Zhang 2004), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "sue",
-        "basis": "standardized unexpected earnings: seasonal random walk on first-reported quarterly EPS, scaled by the standard deviation of the last 8 surprises, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "standardized unexpected earnings of the quarter ending at A: seasonal random walk on first-reported quarterly net income, (NI_q - NI_q-4) / sd of the previous <= 8 seasonal differences (>= 4 required); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "fscore",
-        "basis": "Piotroski F-score, 0-9, all nine binary terms required, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+        "basis": "Piotroski (2000) F-score 0-9 at A, all nine signals required, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
       },
       {
         "name": "me_company",
@@ -1699,33 +1645,32 @@
       "iv_atm_21d": "vendor end-of-day row dated the session; known at the session close mark",
       "earn_recent": "vendor end-of-day row dated the session; the reaction session is public by its close",
       "shares_out": "A8: vendor share count dated <= date(session) - 90 calendar days, restated by the session factor",
-      "be": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "at": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "at_lag4": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "lt": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "che": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "debt": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "sale_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "gp_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "oi_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "ni_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "ni_q": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "ni_q_lag4": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "be_lag1q": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "be_lag1q_lag4": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "cfo_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "capx_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "xrd_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "dvc_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "prstkc_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "sstk_ttm": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "txt_q": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "txt_q_lag4": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "shrs_q": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "shrs_q_lag4": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "noa": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "sue": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
-      "fscore": "T21 fund group: latest T20 event value of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins (restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> NaN; no link or no event -> NaN; values modeled/unaccepted",
+      "be": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "at": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "at_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "che": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "debt": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "sale_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "gp_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "oi_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "ni_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "ni_q": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "ni_q_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "be_lag1q": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "be_lag1q_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "cfo_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "capx_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "xrd_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "dvc_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "prstkc_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "sstk_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "txt_q": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "txt_q_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "shrs_q": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "shrs_q_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "noa": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "sue": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "fscore": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
       "me_company": "T21: session close mark (shares_out keeps its A8 lag)",
       "grp_ff12": "T21: latest visible FSDS SUB SIC event, 550-day staleness -> NaN; NaN label excluded from group statistics",
       "grp_ff49": "T21: latest visible FSDS SUB SIC event, 550-day staleness -> NaN; NaN label excluded from group statistics"
@@ -1743,7 +1688,6 @@
       "be": "fields_v5",
       "at": "fields_v5",
       "at_lag4": "fields_v5",
-      "lt": "fields_v5",
       "che": "fields_v5",
       "debt": "fields_v5",
       "sale_ttm": "fields_v5",
@@ -1788,6 +1732,7 @@
     "unused_producer_fields": [
       "iv_atm_63d",
       "iv_atm_126d",
+      "lt",
       "noa_lag4",
       "grp_sic2",
       "mktcap_lagged",
@@ -1797,7 +1742,7 @@
   },
   "admission": {
     "policy": "v4-prior-v1 (T23; prereg R3)",
-    "trials": 39
+    "trials": 37
   },
   "composition": {
     "policy": "ew-theme-v1 (T23; prereg R4)",
@@ -1805,8 +1750,8 @@
     "runner_default": "equal family weight = equal theme weight (family is theme)"
   },
   "trials": {
-    "generated_candidates": 39,
-    "admission_trials": 39,
+    "generated_candidates": 37,
+    "admission_trials": 37,
     "orientation_fits": 0,
     "composition_recipes": 1,
     "construction_recipes": 1,
@@ -1818,27 +1763,23 @@
     "rule": "python re-parse (v2/v3 validator lineage + dtype rule): canonical round-trip, registry arity, declared fields, Group classifier only as a group operator's 2nd argument, positive integer windows, lookback recomputed per typecheck, dag slot bound",
     "max_prior_bars": 272,
     "max_native_prior_bars": 272,
-    "max_dag_nodes": 34,
-    "max_estimated_peak_slots": 9,
-    "extra_field_capacity": 8,
-    "declared_extra_fields": 36,
+    "max_dag_nodes": 23,
+    "max_estimated_peak_slots": 7,
+    "extra_field_capacity": 5,
+    "declared_extra_fields": 35,
     "extra_field_users": {
       "at": [
         "gpa",
         "cfoa",
         "roa",
         "accruals",
-        "qmj_lite",
-        "asset_growth",
-        "mgmt_sy"
+        "asset_growth"
       ],
       "at_lag4": [
         "cfoa",
         "accruals",
-        "qmj_lite",
         "asset_growth",
         "noa",
-        "mgmt_sy",
         "chtax"
       ],
       "be": [
@@ -1859,9 +1800,7 @@
         "cfp",
         "fcfp",
         "cfoa",
-        "accruals",
-        "qmj_lite",
-        "mgmt_sy"
+        "accruals"
       ],
       "che": [
         "ebit_ev"
@@ -1879,8 +1818,7 @@
         "fscore"
       ],
       "gp_ttm": [
-        "gpa",
-        "qmj_lite"
+        "gpa"
       ],
       "grp_ff12": [
         "bm",
@@ -1898,12 +1836,10 @@
         "roa",
         "accruals",
         "fscore",
-        "qmj_lite",
         "asset_growth",
         "noa",
         "issuance_xbrl",
         "issuance_vendor",
-        "mgmt_sy",
         "lowvol_ind"
       ],
       "grp_ff49": [
@@ -1913,9 +1849,6 @@
       ],
       "iv_atm_21d": [
         "iv_rv_spread"
-      ],
-      "lt": [
-        "qmj_lite"
       ],
       "me_company": [
         "bm",
@@ -1942,13 +1875,10 @@
       "ni_ttm": [
         "ep",
         "roa",
-        "accruals",
-        "qmj_lite",
-        "mgmt_sy"
+        "accruals"
       ],
       "noa": [
-        "noa",
-        "mgmt_sy"
+        "noa"
       ],
       "oi_ttm": [
         "ebit_ev",
@@ -1966,12 +1896,10 @@
         "si_change"
       ],
       "shrs_q": [
-        "issuance_xbrl",
-        "mgmt_sy"
+        "issuance_xbrl"
       ],
       "shrs_q_lag4": [
-        "issuance_xbrl",
-        "mgmt_sy"
+        "issuance_xbrl"
       ],
       "si_dtc": [
         "dtc"

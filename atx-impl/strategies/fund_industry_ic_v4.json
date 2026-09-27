@@ -40,35 +40,31 @@
     },
     {
       "name": "be",
-      "basis": "book equity: total stockholders equity (parent), latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "book equity at the anchor period_end A: stockholders equity (else equity including minority interest minus minority interest) minus preferred stock, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "at",
-      "basis": "total assets, latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "total assets at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "at_lag4",
-      "basis": "total assets four fiscal quarters before the latest filing period, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
-    },
-    {
-      "name": "lt",
-      "basis": "total liabilities, latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "total assets at the balance date nearest A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "che",
-      "basis": "cash and short-term investments, latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "cash and short-term investments at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "debt",
-      "basis": "total debt (short-term plus long-term, presence rule), latest filing, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "short-term plus long-term debt at A, each zero-filled (flagged) when absent while assets exist, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "sale_ttm",
-      "basis": "revenue, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "revenue, trailing twelve months ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "gp_ttm",
-      "basis": "gross profit (revenue minus cost of revenue), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "gross profit (else revenue minus cost of revenue), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "oi_ttm",
@@ -76,23 +72,23 @@
     },
     {
       "name": "ni_ttm",
-      "basis": "net income (income before extraordinary items), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "net income, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "ni_q",
-      "basis": "net income, latest discrete fiscal quarter, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "net income of the fiscal quarter ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "ni_q_lag4",
-      "basis": "net income, the same fiscal quarter one year earlier, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "net income of the fiscal quarter ending near A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "be_lag1q",
-      "basis": "book equity at the end of the quarter before the latest quarter (opening equity), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "book equity at the balance date nearest A - 91 d (opening equity of the quarter), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "be_lag1q_lag4",
-      "basis": "opening book equity of the same fiscal quarter one year earlier (be_lag1q shifted four quarters), USD; added in fix round 1; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "book equity at the balance date nearest A - 456 d (opening equity of the quarter one year earlier), USD; added in fix round 1; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "cfo_ttm",
@@ -100,7 +96,7 @@
     },
     {
       "name": "capx_ttm",
-      "basis": "capital expenditure (payments for PP&E), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "capital expenditure (payments for PP&E, positive), trailing twelve months, USD; NaN when not reported; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "xrd_ttm",
@@ -108,43 +104,43 @@
     },
     {
       "name": "dvc_ttm",
-      "basis": "common dividends paid, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "common dividends paid, trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "prstkc_ttm",
-      "basis": "purchases of common stock (buybacks), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "purchases of common stock (buybacks), trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "sstk_ttm",
-      "basis": "proceeds from issuance of common stock, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "proceeds from issuance of common stock, trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "txt_q",
-      "basis": "income tax expense, latest discrete fiscal quarter, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "income tax expense of the fiscal quarter ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "txt_q_lag4",
-      "basis": "income tax expense, the same fiscal quarter one year earlier, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "income tax expense of the fiscal quarter ending near A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "shrs_q",
-      "basis": "common shares outstanding (XBRL), latest filing, shares; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "weighted-average diluted shares (else basic) of the fiscal quarter ending at A (else the fiscal year ending at A), shares; as reported, split-restated by the reporting filing; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "shrs_q_lag4",
-      "basis": "common shares outstanding (XBRL) four fiscal quarters earlier, shares; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "the same concept and duration class ending near A - 365 d, as known at the row clock (latest filing reporting that period, so the anchor filing's split-restated comparative); the pair is NaN when abs(log10 ratio) >= 2 (XBRL scale error); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "noa",
-      "basis": "net operating assets (operating assets minus operating liabilities; Hirshleifer et al. 2004), USD, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "net operating assets at A: at - che - lt + debt (Hirshleifer, Hou, Teoh and Zhang 2004), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "sue",
-      "basis": "standardized unexpected earnings: seasonal random walk on first-reported quarterly EPS, scaled by the standard deviation of the last 8 surprises, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "standardized unexpected earnings of the quarter ending at A: seasonal random walk on first-reported quarterly net income, (NI_q - NI_q-4) / sd of the previous <= 8 seasonal differences (>= 4 required); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "fscore",
-      "basis": "Piotroski F-score, 0-9, all nine binary terms required, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      "basis": "Piotroski (2000) F-score 0-9 at A, all nine signals required, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
     },
     {
       "name": "me_company",
@@ -166,11 +162,11 @@
     },
     {
       "id": "profitability_quality",
-      "description": "Profitability and quality (gross, operating, cash, ROE, ROA, low accruals, F-score, QMJ-lite), ranked within FF12 industry; high quality predicts higher returns."
+      "description": "Profitability and quality (gross, operating, cash, ROE, ROA, low accruals, F-score), ranked within FF12 industry; high quality predicts higher returns."
     },
     {
       "id": "investment_issuance",
-      "description": "Low asset growth, low net operating assets, low share issuance and the Stambaugh-Yuan MGMT composite, ranked within FF12 industry; low investment and issuance predict higher returns."
+      "description": "Low asset growth, low net operating assets and low share issuance (XBRL and split-neutral vendor), ranked within FF12 industry; low investment and issuance predict higher returns."
     },
     {
       "id": "earnings_momentum",
@@ -329,7 +325,7 @@
     {
       "id": "gpa",
       "family": "profitability_quality",
-      "dsl": "decay_linear(group_rank((gp_ttm / at), grp_ff12), 21)",
+      "dsl": "decay_linear(group_rank(((gp_ttm / at) + (0 * log(at))), grp_ff12), 21)",
       "horizons": [
         5,
         21,
@@ -361,7 +357,7 @@
     {
       "id": "cfoa",
       "family": "profitability_quality",
-      "dsl": "decay_linear(group_rank((cfo_ttm / ((at + at_lag4) / 2)), grp_ff12), 21)",
+      "dsl": "decay_linear(group_rank(((cfo_ttm / ((at + at_lag4) / 2)) + (0 * log(((at + at_lag4) / 2)))), grp_ff12), 21)",
       "horizons": [
         5,
         21,
@@ -393,7 +389,7 @@
     {
       "id": "roa",
       "family": "profitability_quality",
-      "dsl": "decay_linear(group_rank((ni_ttm / at), grp_ff12), 21)",
+      "dsl": "decay_linear(group_rank(((ni_ttm / at) + (0 * log(at))), grp_ff12), 21)",
       "horizons": [
         5,
         21,
@@ -409,7 +405,7 @@
     {
       "id": "accruals",
       "family": "profitability_quality",
-      "dsl": "decay_linear(group_rank((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))), grp_ff12), 21)",
+      "dsl": "decay_linear(group_rank(((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))) + (0 * log(((at + at_lag4) / 2)))), grp_ff12), 21)",
       "horizons": [
         5,
         21,
@@ -439,25 +435,9 @@
       "citation": "Piotroski (2000, JAR) F-score"
     },
     {
-      "id": "qmj_lite",
-      "family": "profitability_quality",
-      "dsl": "decay_linear(group_rank((((group_rank((gp_ttm / at), grp_ff12) + group_rank((cfo_ttm / ((at + at_lag4) / 2)), grp_ff12)) + group_rank((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))), grp_ff12)) + group_rank((-1 * (lt / at)), grp_ff12)), grp_ff12), 21)",
-      "horizons": [
-        5,
-        21,
-        63
-      ],
-      "sign_policy": "train-rank-ic21",
-      "theme": "profitability_quality",
-      "tier": "B",
-      "tier_rank": 4,
-      "prior_sign": 1,
-      "citation": "Asness, Frazzini and Pedersen (2019, RAS) quality minus junk"
-    },
-    {
       "id": "asset_growth",
       "family": "investment_issuance",
-      "dsl": "decay_linear(group_rank((-1 * ((at / at_lag4) - 1)), grp_ff12), 21)",
+      "dsl": "decay_linear(group_rank(((-1 * ((at / at_lag4) - 1)) + (0 * log(at_lag4))), grp_ff12), 21)",
       "horizons": [
         5,
         21,
@@ -473,7 +453,7 @@
     {
       "id": "noa",
       "family": "investment_issuance",
-      "dsl": "decay_linear(group_rank((-1 * (noa / at_lag4)), grp_ff12), 21)",
+      "dsl": "decay_linear(group_rank(((-1 * (noa / at_lag4)) + (0 * log(at_lag4))), grp_ff12), 21)",
       "horizons": [
         5,
         21,
@@ -505,7 +485,7 @@
     {
       "id": "issuance_vendor",
       "family": "investment_issuance",
-      "dsl": "decay_linear(group_rank((-1 * log((shares_out / delay(shares_out, 252)))), grp_ff12), 21)",
+      "dsl": "decay_linear(group_rank((-1 * log((((shares_out * raw_close) / close) / delay(((shares_out * raw_close) / close), 252)))), grp_ff12), 21)",
       "horizons": [
         5,
         21,
@@ -516,23 +496,7 @@
       "tier": "A-",
       "tier_rank": 2,
       "prior_sign": 1,
-      "citation": "Pontiff and Woodgate (2008, JF) share issuance (vendor split-restated share count)"
-    },
-    {
-      "id": "mgmt_sy",
-      "family": "investment_issuance",
-      "dsl": "decay_linear(group_rank((((group_rank((-1 * log((shrs_q / shrs_q_lag4))), grp_ff12) + group_rank((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))), grp_ff12)) + group_rank((-1 * (noa / at_lag4)), grp_ff12)) + group_rank((-1 * ((at / at_lag4) - 1)), grp_ff12)), grp_ff12), 21)",
-      "horizons": [
-        5,
-        21,
-        63
-      ],
-      "sign_policy": "train-rank-ic21",
-      "theme": "investment_issuance",
-      "tier": "B+",
-      "tier_rank": 3,
-      "prior_sign": 1,
-      "citation": "Stambaugh and Yuan (2017, RFS) mispricing factors, MGMT cluster"
+      "citation": "Daniel and Titman (2006, JF) composite equity issuance over one year; Pontiff and Woodgate (2008, JF)"
     },
     {
       "id": "sue",
@@ -569,7 +533,7 @@
     {
       "id": "chtax",
       "family": "earnings_momentum",
-      "dsl": "decay_linear(rank(((txt_q - txt_q_lag4) / at_lag4)), 21)",
+      "dsl": "decay_linear(rank((((txt_q - txt_q_lag4) / at_lag4) + (0 * log(at_lag4)))), 21)",
       "horizons": [
         5,
         21,
@@ -585,7 +549,7 @@
     {
       "id": "ear",
       "family": "earnings_momentum",
-      "dsl": "rank((ts_sum(((earn_recent * delay(earn_recent, 1)) * ts_sum((((close / delay(close, 1)) - 1) - mkt_ret), 3)), 63) / ts_sum((earn_recent * delay(earn_recent, 1)), 63)))",
+      "dsl": "decay_linear(rank(ts_backfill((ts_sum((((close / delay(close, 1)) - 1) - mkt_ret), 3) + (0 * log((earn_recent * delay(earn_recent, 1))))), 126)), 21)",
       "horizons": [
         5,
         21,
@@ -793,7 +757,7 @@
     {
       "id": "seasonality_same_month",
       "family": "reversal_seasonality",
-      "dsl": "decay_linear(rank(((delay(close, 231) / delay(close, 252)) - 1)), 21)",
+      "dsl": "decay_linear(rank(((delay(close, 224) / delay(close, 245)) - 1)), 21)",
       "horizons": [
         5,
         21,

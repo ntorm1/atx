@@ -38,12 +38,13 @@ def _load(name: str, file: str):
 
 gen = _load('_generate_fund_ic_v4_under_test', 'generate_fund_ic_v4.py')
 
-# Prereg R1 (v4-prereg.md), transcribed independently of the generator, with the fix-round-1
-# ruling (iv_change dropped: no unambiguous prior for blended ATM IV).
+# Prereg R1 (v4-prereg.md), transcribed independently of the generator, with the controller rulings:
+# fix round 1 drops iv_change (no unambiguous prior for blended ATM IV); fix round 2 drops mgmt_sy and
+# qmj_lite (components already members of the same themes; IC-runner memory cap).
 PREREG_ROSTER = {
     'value': ['bm', 'ep', 'cfp', 'fcfp', 'ebit_ev', 'net_payout', 'sp', 'rd_me'],
-    'profitability_quality': ['gpa', 'opbe', 'cfoa', 'roe_q', 'roa', 'accruals', 'fscore', 'qmj_lite'],
-    'investment_issuance': ['asset_growth', 'noa', 'issuance_xbrl', 'issuance_vendor', 'mgmt_sy'],
+    'profitability_quality': ['gpa', 'opbe', 'cfoa', 'roe_q', 'roa', 'accruals', 'fscore'],
+    'investment_issuance': ['asset_growth', 'noa', 'issuance_xbrl', 'issuance_vendor'],
     'earnings_momentum': ['sue', 'droe', 'chtax', 'ear'],
     'price_momentum': ['mom_12_1', 'ind_mom_12_1', 'within_ind_mom', 'high_52w'],
     'low_risk': ['low_beta', 'low_ivol', 'low_max', 'lowvol_ind'],
@@ -72,15 +73,15 @@ def test_documents_are_deterministic_and_committed(docs):
 def test_roster_matches_prereg_r1(docs):
     _, library, recipe = docs
     expected = [cid for members in PREREG_ROSTER.values() for cid in members]
-    assert [c['id'] for c in library['candidates']] == expected and len(expected) == 39
+    assert [c['id'] for c in library['candidates']] == expected and len(expected) == 37
     assert [f['id'] for f in library['families']] == list(PREREG_ROSTER) == gen.THEME_IDS
     for c in library['candidates']:
         assert c['id'] in PREREG_ROSTER[c['family']] and c['theme'] == c['family']
     assert {t['theme']: t['members'] for t in recipe['themes']} == PREREG_ROSTER
-    assert [r['roster_order'] for r in recipe['lineage']] == list(range(1, 40))
-    assert recipe['trials']['admission_trials'] == 39 and recipe['trials']['variants_per_hypothesis'] == 1
-    assert 'iv_change' not in {c['id'] for c in library['candidates']}
-    assert recipe['generation']['revision'] == 'fix-round-1' and {r['round'] for r in recipe['revisions']} == {1}
+    assert [r['roster_order'] for r in recipe['lineage']] == list(range(1, 38))
+    assert recipe['trials']['admission_trials'] == 37 and recipe['trials']['variants_per_hypothesis'] == 1
+    assert not {'iv_change', 'mgmt_sy', 'qmj_lite'} & {c['id'] for c in library['candidates']}
+    assert recipe['generation']['revision'] == 'fix-round-2' and {r['round'] for r in recipe['revisions']} == {1, 2}
 
 
 def test_labels_for_the_fitter_in_library_and_recipe(docs):
@@ -108,18 +109,14 @@ def test_within_industry_rule_for_themes_1_to_3(docs):
             assert c['dsl'].startswith('decay_linear(group_rank(') and c['dsl'].endswith(', grp_ff12), 21)'), c['id']
         else:
             assert not c['dsl'].startswith('decay_linear(group_rank(') and not c['dsl'].startswith('group_rank('), c['id']
-    assert grouped == wi['members'] and len(grouped) == 21
+    assert grouped == wi['members'] and len(grouped) == 19
 
 
-def test_smoothing_default_and_exemptions(docs):
+def test_smoothing_default_without_exemptions(docs):
     _, library, recipe = docs
-    exempt = recipe['generation']['smoothing_exemptions']
-    assert list(exempt) == ['ear'] and exempt['ear']
+    assert recipe['generation']['smoothing_exemptions'] == {}  # fix round 2: ear carries its CAR, no NaN gaps
     for c, row in zip(library['candidates'], recipe['lineage'], strict=True):
-        if c['id'] in exempt:
-            assert row['smoothing_sessions'] == 1 and not c['dsl'].startswith('decay_linear(')
-        else:
-            assert row['smoothing_sessions'] == 21 and c['dsl'].startswith('decay_linear(') and c['dsl'].endswith(', 21)')
+        assert row['smoothing_sessions'] == 21 and c['dsl'].startswith('decay_linear(') and c['dsl'].endswith(', 21)')
 
 
 def test_candidates_parse_against_declared_fields(docs):
@@ -162,9 +159,12 @@ def test_candidates_parse_against_declared_fields(docs):
     'delay(be, -1)',                               # negative shift (future reference)
     'rank( be)',                                   # non-canonical text
     'rank(be) be',                                 # trailing tokens
+    'rank(be',                                     # unbalanced: end of input inside a call
+    'group_rank(be,',                              # end of input after a comma
+    'rank(be) $',                                  # lex error
 ])
 def test_validator_rejects_malformed_dsl(dsl):
-    with pytest.raises((ValueError, IndexError)):
+    with pytest.raises(ValueError):  # explicit rejection, never an IndexError from running off the tokens
         gen.parse(dsl)
 
 
@@ -415,14 +415,15 @@ def test_embedded_prior_signs(docs):
     si_ratio = p['si_shares'] / p['shares_out']
     r5 = c[t] / c[t - 5] - 1
     r5_adj = r5 - np.array([r5[p['grp_ff49'][t] == g].mean() for g in p['grp_ff49'][t]])
+    adj = p['shares_out'] * p['raw_close'] / c  # split-neutral share count (Daniel-Titman composite issuance)
     expected = {
         'si_ratio': -si_ratio[t], 'dtc': -p['si_dtc'][t], 'si_change': -(si_ratio[t] - si_ratio[t - 21]),
         'accruals': -(p['ni_ttm'][t] - p['cfo_ttm'][t]) / ((p['at'][t] + p['at_lag4'][t]) / 2),
         'asset_growth': -(p['at'][t] / p['at_lag4'][t] - 1), 'noa': -p['noa'][t] / p['at_lag4'][t],
         'issuance_xbrl': -np.log(p['shrs_q'][t] / p['shrs_q_lag4'][t]),
-        'issuance_vendor': -np.log(p['shares_out'][t] / p['shares_out'][t - 252]),
+        'issuance_vendor': -np.log(adj[t] / adj[t - 252]),
         'mom_12_1': c[t - 21] / c[t - 252] - 1, 'high_52w': c[t] / c[t - 251:t + 1].max(axis=0),
-        'seasonality_same_month': c[t - 231] / c[t - 252] - 1, 'low_max': -ret[t - 20:t + 1].max(axis=0),
+        'seasonality_same_month': c[t - 224] / c[t - 245] - 1, 'low_max': -ret[t - 20:t + 1].max(axis=0),
         'ind_adj_rev_5': -r5_adj, 'iv_rv_spread': ivg[t] - rv,
         'chtax': (p['txt_q'][t] - p['txt_q_lag4'][t]) / p['at_lag4'][t],
         'net_payout': (p['dvc_ttm'][t] + p['prstkc_ttm'][t] - p['sstk_ttm'][t]) / p['me_company'][t],
@@ -455,11 +456,16 @@ def test_domain_guards_exclude_non_positive_denominators(docs):
     p['che'][t, 7] = p['me_company'][t, 7] + p['debt'][t, 7] + 1.0e6  # net cash above ME + debt: EV < 0
     p['oi_ttm'][t, 7] = abs(p['oi_ttm'][t, 7]) + 1.0
     p['be_lag1q'][t, 8], p['be_lag1q_lag4'][t, 8] = 1.0e9, -1.0e6  # only the year-earlier opening equity fails
+    p['at'][t, 9], p['at_lag4'][t, 9] = 0.0, 1.0e9      # current assets zero: average assets stay positive
+    p['at'][t, 10], p['at_lag4'][t, 10] = 1.0e9, -2.0e9  # lagged assets negative: average assets negative too
     ev = p['me_company'][t] + p['debt'][t] - p['che'][t]
+    avg_at = (p['at'][t] + p['at_lag4'][t]) / 2
     rules = {
         'bm': p['be'][t] > 0, 'ep': p['ni_ttm'][t] > 0, 'cfp': p['cfo_ttm'][t] > 0, 'sp': p['sale_ttm'][t] > 0,
         'rd_me': p['xrd_ttm'][t] > 0, 'opbe': p['be'][t] > 0, 'roe_q': p['be_lag1q'][t] > 0,
         'droe': (p['be_lag1q'][t] > 0) & (p['be_lag1q_lag4'][t] > 0), 'ebit_ev': (p['oi_ttm'][t] > 0) & (ev > 0),
+        'gpa': p['at'][t] > 0, 'roa': p['at'][t] > 0, 'cfoa': avg_at > 0, 'accruals': avg_at > 0,
+        'asset_growth': p['at_lag4'][t] > 0, 'noa': p['at_lag4'][t] > 0, 'chtax': p['at_lag4'][t] > 0,
     }
     for cid, keep in rules.items():
         assert not keep.all() or cid == 'sp', cid  # the fixture exercises the exclusion (sales are always positive)
@@ -503,21 +509,43 @@ def test_industry_momentum_members(docs):
     assert np.isfinite(unlinked[:, 0]).all() and np.isnan(unlinked[:, 11]).all()  # NaN label -> NaN, others kept
 
 
-def test_earnings_announcement_return_is_the_mean_three_day_car_of_recent_events(docs):
+def test_earnings_announcement_return_carries_the_most_recent_three_day_car(docs):
     _, _, recipe = docs
     p = synthetic_panel()
+    earn = p['earn_recent']
+    earn[:, 1] = 0.0
+    earn[100:102, 1] = earn[250:252, 1] = 1.0  # a 149-session gap: longer than the 126-session carry
     c = p['close']
     ret = np.full(c.shape, np.nan)
     ret[1:] = c[1:] / c[:-1] - 1
     excess = ret - p['mkt_ret']
-    earn = p['earn_recent']
     base = _base(recipe, 'ear', p)
-    for t in range(66, DATES):
+    carry = gen.EAR_CARRY
+    for t in range(3, DATES):
         for j in range(NAMES):
-            ends = [s for s in range(t - 62, t + 1) if earn[s, j] == 1 and earn[s - 1, j] == 1]  # s = r + 1
-            if not ends:
+            ends = [s for s in range(max(t - carry + 1, 3), t + 1) if earn[s, j] == 1 and earn[s - 1, j] == 1]
+            if not ends:  # s = r + 1; none in [t - 125, t]
                 assert np.isnan(base[t, j]), (t, j)
             else:
-                want = np.mean([excess[s - 2:s + 1, j].sum() for s in ends])  # sessions r-1, r, r+1
+                want = excess[ends[-1] - 2:ends[-1] + 1, j].sum()  # the most recent event: sessions r-1, r, r+1
                 assert base[t, j] == pytest.approx(want, rel=1e-12, abs=1e-15), (t, j)
-    assert np.isnan(base[66:, 0]).all()  # the never-reporting name is excluded, not zero
+    assert np.isnan(base[:, 0]).all()  # the never-reporting name is excluded, not zero
+    assert np.isfinite(base[101:227, 1]).all() and np.isnan(base[227:251, 1]).all()  # carried 126 sessions, then NaN
+    assert np.isfinite(base[251:, 1]).all()
+
+
+def test_issuance_vendor_is_split_neutral(docs):
+    """Review I1: a split or consolidation (shares_out and raw_close restated to the session basis) is not issuance."""
+    _, _, recipe = docs
+    plain = synthetic_panel()
+    for factor in (4.0, 0.1):  # a 4:1 forward split and a 1:10 reverse split at session 200
+        split = {k: v.copy() for k, v in plain.items()}
+        split['shares_out'][200:] *= factor
+        split['raw_close'][200:] /= factor
+        a, b = _base(recipe, 'issuance_vendor', plain), _base(recipe, 'issuance_vendor', split)
+        assert np.allclose(a, b, rtol=1e-12, atol=1e-12, equal_nan=True) and np.isfinite(a[260:]).all(), factor
+    issued = {k: v.copy() for k, v in plain.items()}
+    issued['shares_out'][200:] *= 1.25  # a genuine 25% issuance (price unchanged) is low-issuance-negative
+    t = 300
+    delta = _base(recipe, 'issuance_vendor', issued)[t] - _base(recipe, 'issuance_vendor', plain)[t]
+    assert np.allclose(delta, -np.log(1.25))

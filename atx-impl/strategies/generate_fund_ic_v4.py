@@ -1,4 +1,4 @@
-"""Deterministic 39-candidate research library v4: prior-signed, themed; no prices, fitting or random search.
+"""Deterministic 37-candidate research library v4: prior-signed, themed; no prices, fitting or random search.
 
 Library v4 (T24) implements the v4 pre-registration section R1: nine themes, one canonical
 variant per published hypothesis, the literature sign embedded in the DSL (a higher value is
@@ -21,6 +21,10 @@ registry cross-check reads the engine sources of this tree (or --engine-root) an
 Fix round 1 (controller rulings declared before any v4 TRAIN read): iv_change is dropped (blended
 ATM IV mixes the opposite-signed call-IV and put-IV effects, so there is no unambiguous prior);
 droe takes the canonical form with the new field be_lag1q_lag4.
+Fix round 2 (review of fix round 1 plus controller ruling, before any v4 TRAIN read): mgmt_sy and
+qmj_lite are dropped (their components are members of the same themes, and they alone push the IC
+runner plan over its memory cap); issuance_vendor is split-neutral (Daniel-Titman composite
+issuance); ear carries the most recent announcement's CAR; seasonality is re-centred under s21.
 
 Run with --check to verify the committed exact JSON bytes.
 """
@@ -52,6 +56,7 @@ MAX_DSL_BYTES = 4096   # strategy_ic_runner rejects longer DSL text
 MAX_FAMILIES = 32      # strategy_ic_runner rejects more declared families
 MAX_EXTRA_FIELDS = 64  # strategy_ic_runner: a library may reference at most 64 extra fields
 SMOOTHING = 21         # prereg R1: s21 smoothing default
+EAR_CARRY = 126        # ear: carry the most recent announcement CAR at most six months (CJL 1996 holding period)
 WITHIN_INDUSTRY = 'grp_ff12'  # prereg R1: within-industry ranking of themes 1-3
 FINE_INDUSTRY = 'grp_ff49'    # industry-level price members (T18 section 6 sketches)
 BASE_FIELDS = ('close', 'raw_close', 'volume')  # mandatory runner declarations
@@ -70,10 +75,10 @@ TIER_RANK = {'A': 1, 'A-': 2, 'B+': 3, 'B': 4, 'B-': 5, 'C+': 6}
 THEMES = [  # (theme id, description), prereg R1 order
     ('value', 'Price-scaled fundamentals (book, earnings, cash flow, free cash flow, EBIT/EV, net payout, sales, R&D), '
               'ranked within FF12 industry; high value predicts higher returns.'),
-    ('profitability_quality', 'Profitability and quality (gross, operating, cash, ROE, ROA, low accruals, F-score, '
-                              'QMJ-lite), ranked within FF12 industry; high quality predicts higher returns.'),
-    ('investment_issuance', 'Low asset growth, low net operating assets, low share issuance and the Stambaugh-Yuan '
-                            'MGMT composite, ranked within FF12 industry; low investment and issuance predict higher returns.'),
+    ('profitability_quality', 'Profitability and quality (gross, operating, cash, ROE, ROA, low accruals, F-score), '
+                              'ranked within FF12 industry; high quality predicts higher returns.'),
+    ('investment_issuance', 'Low asset growth, low net operating assets and low share issuance (XBRL and split-neutral '
+                            'vendor), ranked within FF12 industry; low investment and issuance predict higher returns.'),
     ('earnings_momentum', 'Earnings news: SUE, change in ROE, change in tax expense and the 3-day earnings '
                           'announcement return; good news predicts continuation.'),
     ('price_momentum', '12-1 momentum, industry 12-1 momentum, within-industry momentum and nearness to the 52-week '
@@ -94,11 +99,12 @@ WITHIN_INDUSTRY_THEMES = ('value', 'profitability_quality', 'investment_issuance
 WITHIN_INDUSTRY_EXCEPTIONS: list[str] = []
 
 # ---- fields ----------------------------------------------------------------
-FUND_CLOCK = ('T21 fund group: latest T20 event value of the session line\'s T19 primary-linked CIK whose clock '
-              '(FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable '
-              'from the first such session plus 1 declared lag session (--fund-lag-sessions 1); latest clock wins '
-              '(restatements as known then); stale after 200 days (quarterly/instant) or 400 days (annual-only) -> '
-              'NaN; no link or no event -> NaN; values modeled/unaccepted')
+FUND_CLOCK = ('T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, '
+              'latest clock wins; restatements enter at the restating filing\'s clock) of the session line\'s T19 '
+              'primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the '
+              'session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares '
+              'its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days '
+              '(quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted')
 PLANNED = 'planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative'
 
 
@@ -138,36 +144,41 @@ FIELDS = [
                          '(A8 lag), restated to the session share basis'),
           'A8: vendor share count dated <= date(session) - 90 calendar days, restated by the session factor',
           'fields_v4'),
-    _fund('be', 'book equity: total stockholders equity (parent), latest filing, USD'),
-    _fund('at', 'total assets, latest filing, USD'),
-    _fund('at_lag4', 'total assets four fiscal quarters before the latest filing period, USD'),
-    _fund('lt', 'total liabilities, latest filing, USD'),
-    _fund('che', 'cash and short-term investments, latest filing, USD'),
-    _fund('debt', 'total debt (short-term plus long-term, presence rule), latest filing, USD'),
-    _fund('sale_ttm', 'revenue, trailing twelve months, USD'),
-    _fund('gp_ttm', 'gross profit (revenue minus cost of revenue), trailing twelve months, USD'),
+    _fund('be', 'book equity at the anchor period_end A: stockholders equity (else equity including minority interest '
+                'minus minority interest) minus preferred stock, USD'),
+    _fund('at', 'total assets at A, USD'),
+    _fund('at_lag4', 'total assets at the balance date nearest A - 365 d, USD'),
+    _fund('che', 'cash and short-term investments at A, USD'),
+    _fund('debt', 'short-term plus long-term debt at A, each zero-filled (flagged) when absent while assets exist, USD'),
+    _fund('sale_ttm', 'revenue, trailing twelve months ending at A, USD'),
+    _fund('gp_ttm', 'gross profit (else revenue minus cost of revenue), trailing twelve months, USD'),
     _fund('oi_ttm', 'operating income (EBIT), trailing twelve months, USD'),
-    _fund('ni_ttm', 'net income (income before extraordinary items), trailing twelve months, USD'),
-    _fund('ni_q', 'net income, latest discrete fiscal quarter, USD'),
-    _fund('ni_q_lag4', 'net income, the same fiscal quarter one year earlier, USD'),
-    _fund('be_lag1q', 'book equity at the end of the quarter before the latest quarter (opening equity), USD'),
-    _fund('be_lag1q_lag4', 'opening book equity of the same fiscal quarter one year earlier (be_lag1q shifted four '
-                           'quarters), USD; added in fix round 1'),
+    _fund('ni_ttm', 'net income, trailing twelve months, USD'),
+    _fund('ni_q', 'net income of the fiscal quarter ending at A, USD'),
+    _fund('ni_q_lag4', 'net income of the fiscal quarter ending near A - 365 d, USD'),
+    _fund('be_lag1q', 'book equity at the balance date nearest A - 91 d (opening equity of the quarter), USD'),
+    _fund('be_lag1q_lag4', 'book equity at the balance date nearest A - 456 d (opening equity of the quarter one year '
+                           'earlier), USD; added in fix round 1'),
     _fund('cfo_ttm', 'net cash from operating activities, trailing twelve months, USD'),
-    _fund('capx_ttm', 'capital expenditure (payments for PP&E), trailing twelve months, USD'),
+    _fund('capx_ttm', 'capital expenditure (payments for PP&E, positive), trailing twelve months, USD; NaN when not '
+                      'reported'),
     _fund('xrd_ttm', 'research and development expense, trailing twelve months, USD; NaN when not reported'),
-    _fund('dvc_ttm', 'common dividends paid, trailing twelve months, USD'),
-    _fund('prstkc_ttm', 'purchases of common stock (buybacks), trailing twelve months, USD'),
-    _fund('sstk_ttm', 'proceeds from issuance of common stock, trailing twelve months, USD'),
-    _fund('txt_q', 'income tax expense, latest discrete fiscal quarter, USD'),
-    _fund('txt_q_lag4', 'income tax expense, the same fiscal quarter one year earlier, USD'),
-    _fund('shrs_q', 'common shares outstanding (XBRL), latest filing, shares'),
-    _fund('shrs_q_lag4', 'common shares outstanding (XBRL) four fiscal quarters earlier, shares'),
-    _fund('noa', 'net operating assets (operating assets minus operating liabilities; Hirshleifer et al. 2004), USD, '
-                 'producer-computed'),
-    _fund('sue', 'standardized unexpected earnings: seasonal random walk on first-reported quarterly EPS, scaled by the '
-                 'standard deviation of the last 8 surprises, producer-computed'),
-    _fund('fscore', 'Piotroski F-score, 0-9, all nine binary terms required, producer-computed'),
+    _fund('dvc_ttm', 'common dividends paid, trailing twelve months, USD; zero-filled (flagged) when absent'),
+    _fund('prstkc_ttm', 'purchases of common stock (buybacks), trailing twelve months, USD; zero-filled (flagged) '
+                        'when absent'),
+    _fund('sstk_ttm', 'proceeds from issuance of common stock, trailing twelve months, USD; zero-filled (flagged) '
+                      'when absent'),
+    _fund('txt_q', 'income tax expense of the fiscal quarter ending at A, USD'),
+    _fund('txt_q_lag4', 'income tax expense of the fiscal quarter ending near A - 365 d, USD'),
+    _fund('shrs_q', 'weighted-average diluted shares (else basic) of the fiscal quarter ending at A (else the fiscal '
+                    'year ending at A), shares; as reported, split-restated by the reporting filing'),
+    _fund('shrs_q_lag4', 'the same concept and duration class ending near A - 365 d, as known at the row clock (latest '
+                         'filing reporting that period, so the anchor filing\'s split-restated comparative); the pair is '
+                         'NaN when abs(log10 ratio) >= 2 (XBRL scale error)'),
+    _fund('noa', 'net operating assets at A: at - che - lt + debt (Hirshleifer, Hou, Teoh and Zhang 2004), USD'),
+    _fund('sue', 'standardized unexpected earnings of the quarter ending at A: seasonal random walk on first-reported '
+                 'quarterly net income, (NI_q - NI_q-4) / sd of the previous <= 8 seasonal differences (>= 4 required)'),
+    _fund('fscore', 'Piotroski (2000) F-score 0-9 at A, all nine signals required, producer-computed'),
     Field('me_company', ('company market equity: sum over the issuer\'s role lines of shares_out x raw_close (NaN if '
                          f'any linked line is NaN), USD; {PLANNED}'),
           'T21: session close mark (shares_out keeps its A8 lag)', 'fields_v5'),
@@ -258,7 +269,7 @@ def parse(text: str, fields: dict[str, Field] | None = None):
         if i < len(tokens) and tokens[i] == '(':
             take('(')
             args = [primary()]
-            while tokens[i] == ',':
+            while i < len(tokens) and tokens[i] == ',':  # at the end, take(')') raises ValueError
                 take(',')
                 args.append(primary())
             take(')')
@@ -404,12 +415,12 @@ def specs() -> list[Spec]:
             x = add(x, mul(zero, call('log', d)))
         return x
 
-    within = lambda x: call('group_rank', x, F[WITHIN_INDUSTRY])
-    close, mkt, me = F['close'], F['mkt_ret'], F['me_company']
+    close, raw, mkt, me = F['close'], F['raw_close'], F['mkt_ret'], F['me_company']
     ret = sub(div(close, window('delay', close, 1)), one)  # v2 spelling, byte-identical
     excess = sub(ret, mkt)
     mom = sub(div(window('delay', close, 21), window('delay', close, 252)), one)
-    avg_at = div(add(F['at'], F['at_lag4']), two)
+    at, at_lag4 = F['at'], F['at_lag4']
+    avg_at = div(add(at, at_lag4), two)
     si_ratio = div(F['si_shares'], F['shares_out'])
     iv = F['iv_atm_21d']
     ivg = window('ts_backfill', add(iv, mul(zero, call('log', mul(sub(iv, Expr(IV_FLOOR)), sub(Expr(IV_CAP), iv))))),
@@ -417,17 +428,15 @@ def specs() -> list[Spec]:
     rho = lambda n: pair('correlation', ret, mkt, n)
     earn = F['earn_recent']
     event = mul(earn, window('delay', earn, 1))  # 1 on the session after the reaction session (both flagged)
-
-    # Shared component bases (members and composites use byte-identical subexpressions).
-    gpa = div(F['gp_ttm'], F['at'])
-    cfoa = div(F['cfo_ttm'], avg_at)
-    accruals = neg(div(sub(F['ni_ttm'], F['cfo_ttm']), avg_at))
-    asset_growth = neg(sub(div(F['at'], F['at_lag4']), one))
-    noa = neg(div(F['noa'], F['at_lag4']))
-    issuance_xbrl = neg(call('log', div(F['shrs_q'], F['shrs_q_lag4'])))
+    # Split-neutral vendor share count: line ME over adjusted close (shares_out and raw_close are both on the
+    # session's share basis, so a split cancels); its log change is Daniel-Titman composite issuance.
+    split_neutral_shares = div(mul(F['shares_out'], raw), close)
     ev = sub(add(me, F['debt']), F['che'])
     W, X = 'within_industry_grp_ff12', 'cross_section'
     positive_note = 'non-positive {} -> NaN (excluded), as in Hou, Xue and Zhang (2020)'
+    assets_note = 'non-positive {} -> NaN (house guard)'
+    si_split = ('si_shares is on the FINRA settlement-date share basis and shares_out on the session basis: from a '
+                'split until the next dissemination the ratio is off by the split factor (v3 caveat)')
 
     return [
         # ---- 1 value
@@ -448,7 +457,7 @@ def specs() -> list[Spec]:
              'Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps)',
              'oi_ttm / (me_company + debt - che)', 1,
              'non-positive EBIT or enterprise value -> NaN (negative multiples excluded, Loughran-Wellman)',
-             'EBIT (operating income) replaces EBITDA: no depreciation field; debt follows the T21 presence rule'),
+             'EBIT (operating income) replaces EBITDA: no depreciation field; debt follows the T20 zero-fill rule'),
         Spec('net_payout', 'value', 'A', div(sub(add(F['dvc_ttm'], F['prstkc_ttm']), F['sstk_ttm']), me), W,
              'Boudoukh, Michaely, Richardson and Roberts (2007, JF) net payout yield',
              '(dvc_ttm + prstkc_ttm - sstk_ttm) / me_company', 1, '', 'net issuers (negative yield) kept'),
@@ -459,75 +468,82 @@ def specs() -> list[Spec]:
              'Chan, Lakonishok and Sougiannis (2001, JF) R&D to market equity', 'xrd_ttm / me_company', 1,
              'zero or unreported R&D -> NaN (R&D-reporting firms only, as in Chan-Lakonishok-Sougiannis)'),
         # ---- 2 profitability_quality
-        Spec('gpa', 'profitability_quality', 'A', gpa, W,
+        Spec('gpa', 'profitability_quality', 'A', positive(div(F['gp_ttm'], at), at), W,
              'Novy-Marx (2013, JFE) gross profitability (works in large caps; replicated by Hou, Xue and Zhang 2020)',
-             'gp_ttm / at', 1),
+             'gp_ttm / at', 1, assets_note.format('total assets')),
         Spec('opbe', 'profitability_quality', 'A-', positive(div(F['oi_ttm'], F['be']), F['be']), W,
              'Fama and French (2015, JFE) operating profitability (RMW)', 'oi_ttm / be', 1,
              'non-positive book equity -> NaN', 'operating income stands in for revenue - COGS - SG&A - interest'),
-        Spec('cfoa', 'profitability_quality', 'A', cfoa, W,
+        Spec('cfoa', 'profitability_quality', 'A', positive(div(F['cfo_ttm'], avg_at), avg_at), W,
              'Ball, Gerakos, Linnainmaa and Nikolaev (2016, JFE) cash-based operating profitability',
-             'cfo_ttm / ((at + at_lag4) / 2)', 1, '',
+             'cfo_ttm / ((at + at_lag4) / 2)', 1, assets_note.format('average total assets'),
              'reported operating cash flow proxies cash-based operating profitability (no R&D add-back)'),
         Spec('roe_q', 'profitability_quality', 'A-', positive(div(F['ni_q'], F['be_lag1q']), F['be_lag1q']), W,
              'Hou, Xue and Zhang (2015, RFS) q-factor ROE', 'ni_q / be_lag1q', 1,
              'non-positive opening book equity -> NaN'),
-        Spec('roa', 'profitability_quality', 'B+', div(F['ni_ttm'], F['at']), W,
-             'Balakrishnan, Bartov and Faurel (2010, JAE); Chen, Novy-Marx and Zhang (2011, WP)', 'ni_ttm / at', 1, '',
+        Spec('roa', 'profitability_quality', 'B+', positive(div(F['ni_ttm'], at), at), W,
+             'Balakrishnan, Bartov and Faurel (2010, JAE); Chen, Novy-Marx and Zhang (2011, WP)', 'ni_ttm / at', 1,
+             assets_note.format('total assets'),
              'trailing-twelve-month earnings over current assets (no one-quarter-lagged assets field)'),
-        Spec('accruals', 'profitability_quality', 'C+', accruals, W,
+        Spec('accruals', 'profitability_quality', 'C+',
+             positive(neg(div(sub(F['ni_ttm'], F['cfo_ttm']), avg_at)), avg_at), W,
              'Sloan (1996, TAR); Hribar and Collins (2002, JAR) cash-flow-statement accruals; decay: Green, Hand and '
-             'Soliman (2011, MS)', '(ni_ttm - cfo_ttm) / ((at + at_lag4) / 2)', -1),
+             'Soliman (2011, MS)', '(ni_ttm - cfo_ttm) / ((at + at_lag4) / 2)', -1,
+             assets_note.format('average total assets')),
         Spec('fscore', 'profitability_quality', 'C+', F['fscore'], W,
-             'Piotroski (2000, JAR) F-score', 'fscore (producer, nine terms)', 1),
-        Spec('qmj_lite', 'profitability_quality', 'B',
-             add(add(add(within(gpa), within(cfoa)), within(accruals)), within(neg(div(F['lt'], F['at'])))), W,
-             'Asness, Frazzini and Pedersen (2019, RAS) quality minus junk',
-             'within-industry rank sum of gpa, cfoa, -accruals and -(lt / at)', 1, '',
-             'profitability and safety legs only (no growth or payout legs); every component required'),
+             'Piotroski (2000, JAR) F-score', 'fscore (producer, nine signals)', 1),
         # ---- 3 investment_issuance
-        Spec('asset_growth', 'investment_issuance', 'C+', asset_growth, W,
+        Spec('asset_growth', 'investment_issuance', 'C+', positive(neg(sub(div(at, at_lag4), one)), at_lag4), W,
              'Cooper, Gulen and Schill (2008, JF) asset growth (weak in big stocks: Fama and French 2008)',
-             'at / at_lag4 - 1', -1),
-        Spec('noa', 'investment_issuance', 'B', noa, W,
-             'Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets', 'noa / at_lag4', -1),
-        Spec('issuance_xbrl', 'investment_issuance', 'A', issuance_xbrl, W,
+             'at / at_lag4 - 1', -1, assets_note.format('lagged total assets')),
+        Spec('noa', 'investment_issuance', 'B', positive(neg(div(F['noa'], at_lag4)), at_lag4), W,
+             'Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets', 'noa / at_lag4', -1,
+             assets_note.format('lagged total assets')),
+        Spec('issuance_xbrl', 'investment_issuance', 'A', neg(call('log', div(F['shrs_q'], F['shrs_q_lag4']))), W,
              'Pontiff and Woodgate (2008, JF) share issuance; Daniel and Titman (2006, JF); present in big stocks '
              '(Fama and French 2008)', 'log(shrs_q / shrs_q_lag4)', -1, 'non-positive share ratio -> NaN (log)',
-             'XBRL share counts: a split between the two filings reads as issuance unless the producer restates it'),
+             'weighted-average diluted (else basic) shares of the anchor quarter (else fiscal year), not period-end '
+             'shares outstanding. Split consistency by the T20 contract: facts are keyed by (start, end) and a later '
+             'clock overrides, so shrs_q_lag4 is the anchor filing\'s own prior-year comparative, which the filing '
+             'presents (Reg S-X 10-01(c); ASC 260 EPS denominators for every period presented) restated '
+             'retroactively for splits (ASC 260-10-55-12). No price-factor correction is applied: it would '
+             'double-correct that restated pair. A filer that does not re-report the comparative leaves the pair '
+             'split-contaminated; T25 checks known splitters (AAPL 2020-08, TSLA 2020-08 and 2022-08, NVDA 2021-07, '
+             'AMZN 2022-06, GOOGL 2022-07)'),
         Spec('issuance_vendor', 'investment_issuance', 'A-',
-             neg(call('log', div(F['shares_out'], window('delay', F['shares_out'], 252)))), W,
-             'Pontiff and Woodgate (2008, JF) share issuance (vendor split-restated share count)',
-             'log(shares_out / delay(shares_out, 252))', -1, 'non-positive share ratio -> NaN (log)'),
-        Spec('mgmt_sy', 'investment_issuance', 'B+',
-             add(add(add(within(issuance_xbrl), within(accruals)), within(noa)), within(asset_growth)), W,
-             'Stambaugh and Yuan (2017, RFS) mispricing factors, MGMT cluster',
-             'within-industry rank sum of -issuance, -accruals, -noa and -asset growth', 1, '',
-             'four of the six MGMT anomalies (no composite equity issuance, no investment-to-assets); every '
-             'component required'),
+             neg(call('log', div(split_neutral_shares, window('delay', split_neutral_shares, 252)))), W,
+             'Daniel and Titman (2006, JF) composite equity issuance over one year; Pontiff and Woodgate (2008, JF)',
+             'log(adj / adj[t-252]) with adj = shares_out * raw_close / close: log growth of line market equity minus '
+             'the log total return', -1, 'non-positive ratio -> NaN (log)',
+             'shares_out and raw_close share the session basis, so splits and consolidations cancel; the dividend-'
+             'adjusted close makes dividends count as payout (Daniel-Titman composite issuance, not the '
+             'Pontiff-Woodgate share count); the vendor share count lags 90 days (A8)'),
         # ---- 4 earnings_momentum
         Spec('sue', 'earnings_momentum', 'C+', F['sue'], X,
              'Bernard and Thomas (1989, JAR); Livnat and Mendenhall (2006, JAR); filing-clock lag, decay: Martineau '
-             '(2022, CFR)', 'sue (producer, seasonal random walk)', 1, '',
-             'filing clock (10-Q/10-K acceptance + 1 session), not the announcement date'),
+             '(2022, CFR)', 'sue (producer: seasonal random walk on first-reported quarterly net income)', 1, '',
+             'filing clock (10-Q/10-K acceptance + 1 session), not the announcement date; net income, not EPS'),
         Spec('droe', 'earnings_momentum', 'B',
              positive(sub(div(F['ni_q'], F['be_lag1q']), div(F['ni_q_lag4'], F['be_lag1q_lag4'])),
                       F['be_lag1q'], F['be_lag1q_lag4']), X,
              'Hou, Mo, Xue and Zhang (2021, RF) change in ROE; Balakrishnan, Bartov and Faurel (2010, JAE)',
              'ni_q / be_lag1q - ni_q_lag4 / be_lag1q_lag4 (ROE_q - ROE_{q-4})', 1,
              'non-positive opening book equity in either quarter -> NaN'),
-        Spec('chtax', 'earnings_momentum', 'B', div(sub(F['txt_q'], F['txt_q_lag4']), F['at_lag4']), X,
-             'Thomas and Zhang (2011, JAR) tax expense surprises', '(txt_q - txt_q_lag4) / at_lag4', 1),
+        Spec('chtax', 'earnings_momentum', 'B', positive(div(sub(F['txt_q'], F['txt_q_lag4']), at_lag4), at_lag4), X,
+             'Thomas and Zhang (2011, JAR) tax expense surprises', '(txt_q - txt_q_lag4) / at_lag4', 1,
+             assets_note.format('lagged total assets')),
         Spec('ear', 'earnings_momentum', 'B+',
-             div(window('ts_sum', mul(event, window('ts_sum', excess, 3)), 63), window('ts_sum', event, 63)), X,
+             window('ts_backfill', positive(window('ts_sum', excess, 3), event), EAR_CARRY), X,
              'Chan, Jegadeesh and Lakonishok (1996, JF) earnings announcement return; Brandt, Kishore, Santa-Clara and '
              'Venkatachalam (2008, WP)',
-             'market-adjusted return over the 3 sessions [r-1, r+1] around the vendor reaction session r, recorded '
-             'at r+1 and averaged over the events of the last 63 sessions (the most recent quarterly announcement)', 1,
-             'NaN without an event in the 63-session window (0 / 0)',
-             'equal-weight member market return (mkt_ret) as the benchmark', 1,
-             'the base is NaN between event windows; a 21-session decay would blank a name for 20 sessions after '
-             'each gap (v3 earnings_drift precedent)'),
+             'market-adjusted return over the 3 sessions [r-1, r+1] around the most recent vendor reaction session r, '
+             f'recorded at r+1 and carried until the next announcement, at most {EAR_CARRY} sessions', 1,
+             'NaN on non-event sessions before the carry (0 * log(0)); NaN when no announcement in '
+             f'{EAR_CARRY} sessions',
+             'Chan-Jegadeesh-Lakonishok measure the abnormal return around the most recent quarterly announcement '
+             'and hold six months, hence a six-month carry cap (one missed quarter keeps the name); the 3-day '
+             '[-1, +1] window is the prereg choice (Brandt et al.; CJL, as recalled, use days -2..+1); equal-weight '
+             'member market return (mkt_ret) as the benchmark'),
         # ---- 5 price_momentum
         Spec('mom_12_1', 'price_momentum', 'B+', mom, X,
              'Jegadeesh and Titman (1993, JF); 12-1 as in Fama-French UMD; crash risk: Daniel and Moskowitz (2016, JFE)',
@@ -562,14 +578,16 @@ def specs() -> list[Spec]:
         # ---- 7 short_interest
         Spec('si_ratio', 'short_interest', 'B+', neg(si_ratio), X,
              'Asquith, Pathak and Ritter (2005, JFE); Boehmer, Huszar and Jordan (2010, JFE)', 'si_shares / shares_out',
-             -1),
+             -1, '', si_split),
         Spec('dtc', 'short_interest', 'B+', neg(F['si_dtc']), X,
-             'Hong, Li, Ni, Scheinkman and Yan (2015, WP) days to cover', 'si_dtc', -1),
+             'Hong, Li, Ni, Scheinkman and Yan (2015, WP) days to cover', 'si_dtc', -1, '',
+             'FINRA computes days to cover on one basis (short interest over average daily volume): no split mismatch'),
         Spec('si_change', 'short_interest', 'B-', neg(sub(si_ratio, window('delay', si_ratio, 21))), X,
              'Rapach, Ringgenberg and Zhou (2016, JFE) short interest predicts lower returns (direction)',
              'si_ratio - si_ratio[t-21] (one month, two FINRA cycles)', -1, '',
              'Rapach-Ringgenberg-Zhou is an aggregate time-series result; the cross-sectional change is the '
-             'pre-registered extrapolation'),
+             f'pre-registered extrapolation; {si_split}, so a split gives a spike and an opposite-signed echo 21 '
+             'sessions later'),
         # ---- 8 reversal_seasonality
         Spec('ind_adj_rev_5', 'reversal_seasonality', 'B-',
              neg(call('group_neutralize', sub(div(close, window('delay', close, 5)), one), F[FINE_INDUSTRY])), X,
@@ -577,11 +595,13 @@ def specs() -> list[Spec]:
              'close / close[t-5] - 1 minus its FF49 mean', -1, '',
              'weekly industry-adjusted return; the s21 decay spreads it over about a month (the papers use one month)'),
         Spec('seasonality_same_month', 'reversal_seasonality', 'C+',
-             sub(div(window('delay', close, 231), window('delay', close, 252)), one), X,
-             'Heston and Sadka (2008, JFE) seasonality', 'close[t-231] / close[t-252] - 1 (the same 21 sessions one '
-             'year earlier than the next 21)', 1, '',
-             'annual lag 12 only (lags 24+ exceed the 314-bar bound); the s21 decay moves the effective window '
-             'centre about 6.7 sessions earlier'),
+             sub(div(window('delay', close, 224), window('delay', close, 245)), one), X,
+             'Heston and Sadka (2008, JFE) seasonality',
+             'close[t-224] / close[t-245] - 1: the 21-session window whose s21-decayed centre (t-241.2) matches the '
+             'centre (t-241) of the same 21 sessions one year before the next 21', 1, '',
+             'annual lag 12 only (lags 24+ exceed the 314-bar bound); the window is shifted 7 sessions later than '
+             'the undecayed [t-252, t-231] because the s21 linear decay moves the effective centre 6.7 sessions '
+             'earlier (mean lag of weights 21..1 = 1540 / 231)'),
         # ---- 9 options_implied
         Spec('iv_rv_spread', 'options_implied', 'B', sub(ivg, mul(window('stddev', ret, 21), Expr(ANNUALIZE))), X,
              'Bali and Hovakimian (2009, MS) volatility spreads: realized minus implied volatility predicts lower '
@@ -598,7 +618,7 @@ def expression(spec: Spec):
     return ranked if spec.smoothing == 1 else g.window('decay_linear', ranked, spec.smoothing)
 
 
-# Fix round 1: controller rulings, declared before any v4 TRAIN read.
+# Fix rounds 1-2: controller rulings and review fixes, declared before any v4 TRAIN read.
 REVISIONS = [
     dict(round=1, ruling='drop iv_change', change='iv_change removed; options_implied keeps iv_rv_spread only (39 '
          'candidates)', reason='blended ATM implied volatility mixes the call-IV (+) and put-IV (-) effects of An, Ang, '
@@ -609,6 +629,25 @@ REVISIONS = [
     dict(round=1, ruling='T22 landed', change='the registry cross-check reports grp_ group typing as checked when the '
          'engine tree carries T22 (static check of typecheck.hpp is_group_field); --engine-root selects the tree',
          reason='no library byte depends on it'),
+    dict(round=2, ruling='drop mgmt_sy and qmj_lite', change='both composites removed (37 candidates)',
+         reason='redundancy: every component is already a member of the same theme, so the equal theme weights '
+                'already combine them; memory: they alone push the IC runner plan to 1.70 GB, above the 1.5 GB cap '
+                '(1.449 GB without them); decided before any TRAIN read'),
+    dict(round=2, ruling='review I1', change='issuance_vendor = -log(adj / adj[t-252]), adj = shares_out * raw_close / '
+         'close', reason='shares_out is restated to each session\'s own share basis, so the plain ratio counted every '
+         'split and consolidation of the trailing year as issuance; the split-neutral form is Daniel-Titman composite '
+         'issuance'),
+    dict(round=2, ruling='review minor 1', change=f'ear = ts_backfill(3-day CAR at r+1, {EAR_CARRY}) under the s21 '
+         'default', reason='the 63-session average equalled the mean inter-announcement gap (NaN on long gaps, two '
+         'events averaged on short ones, 63-session NaN exposure); the carried most recent announcement is the '
+         'Chan-Jegadeesh-Lakonishok definition, and the smoothing exemption (NaN gaps) no longer applies'),
+    dict(round=2, ruling='issuance_xbrl split check', change='no DSL change; field text and deviation state the '
+         'T20 contract argument', reason='shrs_q_lag4 is the anchor filing\'s split-restated comparative (facts keyed '
+         'by period, later clock wins); a price-factor correction would double-correct; T25 verifies on splitters'),
+    dict(round=2, ruling='review minors', change='seasonality window re-centred under s21 (delay 224 / 245); SI split '
+         'caveat restored; field texts match the T20 contract (shrs_q weighted-average diluted, sue on net income); '
+         'asset denominators guarded; the validator raises ValueError at the end of input',
+         reason='review minors 2-6'),
 ]
 
 
@@ -655,7 +694,7 @@ def documents() -> dict[str, bytes]:
                               smoothing_sessions=spec.smoothing, smoothing_reason=spec.smoothing_reason or None))
     ids = [c['id'] for c in candidates]
     total = len(candidates)
-    assert total == 39 and len(set(ids)) == total and len({c['dsl'] for c in candidates}) == total
+    assert total == 37 and len(set(ids)) == total and len({c['dsl'] for c in candidates}) == total
     assert all(re.fullmatch(r'[a-z0-9_]{1,64}', s) for s in ids + THEME_IDS)
     assert all(theme_members.values()) and len(THEME_IDS) <= MAX_FAMILIES
     referenced = set().union(*(set(s['fields']) for s in static))
@@ -670,7 +709,8 @@ def documents() -> dict[str, bytes]:
     capacity = max(len(s['extra_fields']) for s in static)
     field_users = {f: [c['id'] for c, s in zip(candidates, static) if f in s['fields']] for f in extras}
     hygiene = ('Roster, themes, member ids and signs are prereg R1 (declared 2026-09-27 before any v4 TRAIN read), with '
-               'the fix-round-1 controller rulings (iv_change dropped, canonical droe), also before any v4 TRAIN read. Each '
+               'the fix-round-1 and fix-round-2 rulings (iv_change, mgmt_sy and qmj_lite dropped; canonical droe), '
+               'also before any v4 TRAIN read. Each '
                'member takes the canonical definition of its cited paper (window, scaling, exclusion rule) and the s21 '
                'default; the implementer read no v3 TRAIN performance output (admission tables, daily IC, summary IC '
                'statistics, v3 DSL catalogue) and no validation data. Field names come from the T18 section 6 '
@@ -680,10 +720,10 @@ def documents() -> dict[str, bytes]:
     recipe = dict(schema='atx.dsl-ic-experiment/v1', id=f'{LIBRARY_ID}_initial',
         library=dict(path=LIBRARY, sha256=hashlib.sha256(library_bytes).hexdigest()),
         preregistration=PREREG,
-        generation=dict(rule='prior-signed-themed-v4', revision='fix-round-1', candidates=total, families=len(THEME_IDS),
+        generation=dict(rule='prior-signed-themed-v4', revision='fix-round-2', candidates=total, families=len(THEME_IDS),
                         family_is_theme=True, one_variant_per_hypothesis=True,
                         wrapper=f'decay_linear(R(base), {SMOOTHING}); R = group_rank(., {WITHIN_INDUSTRY}) for themes '
-                                '1-3, rank(.) otherwise; ear is R(base) (smoothing exemption)',
+                                '1-3, rank(.) otherwise; no exemption',
                         smoothing_default=SMOOTHING,
                         smoothing_exemptions={s.id: s.smoothing_reason for s in roster if s.smoothing != SMOOTHING},
                         seed=None, max_prior_bars=MAX_PRIOR_BARS, complete_observations=MAX_PRIOR_BARS + 1,
@@ -700,7 +740,8 @@ def documents() -> dict[str, bytes]:
                     tier_scale=TIER_RANK, tier_rank_meaning='1 = strongest prior; admission redundancy order is '
                                                             '(tier_rank, roster_order) (prereg R3)',
                     tier_basis='T18 report section 6 tiers; members T18 did not grade take the tier-1 alpha-priors doc '
-                               '(docs/superpowers/handoffs/2026-09-26-tier1-v2-alpha-priors.md, literature only) rows: momentum row 3 (A; plain 12-1 B+ for the Daniel-Moskowitz crash caveat, 52-week '
+                               '(docs/superpowers/handoffs/2026-09-26-tier1-v2-alpha-priors.md, literature only) rows: '
+                               'momentum row 3 (A; plain 12-1 B+ for the Daniel-Moskowitz crash caveat, 52-week '
                                'high A-), EAR row 6 (B+), short interest and DTC row 7 (B+; the SI change has no '
                                'cross-sectional anchor: B-), low risk row 11 (B-), seasonality row 12 (C+), options '
                                '(IV-RV spread B on its published direction)'),
@@ -708,7 +749,6 @@ def documents() -> dict[str, bytes]:
                 for k, (t, d) in enumerate(THEMES)],
         within_industry=dict(group_field=WITHIN_INDUSTRY, operator='group_rank', themes=list(WITHIN_INDUSTRY_THEMES),
                              members=[s.id for s in roster if s.ranking.startswith('within_industry')],
-                             composites='qmj_lite and mgmt_sy rank each component within industry, then the sum',
                              exceptions=WITHIN_INDUSTRY_EXCEPTIONS,
                              exceptions_statement='sole exception list (prereg R1): empty; no theme 1-3 member of the '
                                                   'v4 roster is explicitly industry-level',
@@ -740,7 +780,7 @@ def documents() -> dict[str, bytes]:
                   realized_vol=f'stddev(ret, 21) * {ANNUALIZE} (sqrt 252), annualized decimal like the IV field',
                   earnings_window='event = earn_recent * delay(earn_recent, 1) is 1 on r+1 (reaction r and r+1 '
                                   'flagged); ts_sum(excess, 3) at r+1 spans r-1..r+1',
-                  unused_producer_fields=['iv_atm_63d', 'iv_atm_126d', 'noa_lag4', 'grp_sic2', 'mktcap_lagged',
+                  unused_producer_fields=['iv_atm_63d', 'iv_atm_126d', 'lt', 'noa_lag4', 'grp_sic2', 'mktcap_lagged',
                                           'size_grp', 'is_common']),
         admission=dict(policy='v4-prior-v1 (T23; prereg R3)', trials=total),
         composition=dict(policy='ew-theme-v1 (T23; prereg R4)', theme_weight=f'1/{len(THEME_IDS)} per theme with >= 1 '
