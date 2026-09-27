@@ -9,7 +9,8 @@
 
 namespace atx::impl::strategy {
 // Self-financing marked-dollar NAV replay of one pinned saved blend under the
-// same target rules as replay_targets (baseline-v1 / monthly-budget-v2).
+// same target rules as replay_targets (baseline-v1 / monthly-budget-v2 /
+// aim-partial-v5).
 //
 // Timing: decide at session d (after its mark), fill at session d+1's close,
 // first return row d+2. Decisions [begin, end-2); executions <= end-2; return rows
@@ -27,9 +28,10 @@ namespace atx::impl::strategy {
 // K consecutive absences write it off at last mark x (1 + haircut). A reprint after
 // a write-off is a diagnostic event only. No lookahead anywhere.
 //
-// Construction (TargetReplayConfig neutralize / band_multiple) is the target
-// replay's own, applied at the NAV path's single desired-target extension point;
-// with the defaults every pre-existing output value is unchanged.
+// Construction (TargetReplayConfig neutralize / band_multiple, and aim-partial-v5's
+// dust band and aim leverage) is the target replay's own, applied at the NAV path's
+// single desired-target extension point; with the defaults every pre-existing output
+// value is unchanged.
 
 enum class NavCostRule : atx::u8 { FlatBpsV1 = 1, SqrtImpactV1 = 2 };
 
@@ -167,6 +169,9 @@ struct NavReplayDay {
   atx::usize fallback_vol_fills{}, unrationed_unpriced{};
   atx::f64 planned_turnover{}, planned_forced{}, planned_discretionary{}, applied_fraction{};
   atx::f64 planned_gross{}, planned_net{}; // planned weights after the decision
+  // Decision rows: nonzero planned weights and the decision's members N_d (feed the
+  // aim-partial-v5 construction.v5 summary; not CSV columns).
+  atx::usize planned_held_names{}, decision_members{};
   atx::f64 month_planned{}, budget_excess{}; // decision-month planned turnover (v2 budget)
   atx::f64 long_dollars{}, short_dollars{}, gross_leverage{}, net_leverage{};
   atx::usize held_names{}, stale_names{};

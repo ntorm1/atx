@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -55,6 +56,13 @@ u32 calendar_month(i64 session) {
 bool neutralizing(const TargetReplayConfig& cfg) {
   return cfg.neutralize == TargetNeutralize::PriceRiskV1;
 }
+bool aim_partial(const TargetReplayConfig& cfg) {
+  return cfg.rule == TargetReplayRule::AimPartialV5;
+}
+// Rate of the aim-partial-v5 move: one fixed theta (trade_fraction) for every name.
+// SEAM (T36): a per-name rate option adds its spelling here and fills the
+// update_weights per_name_rate span.
+const char* aim_rate(const TargetReplayConfig&) { return "fixed"; }
 // The compute_price_exposures config contract documented in
 // strategy_price_exposures.hpp, checked up front so a bad recipe is refused once
 // instead of surfacing as an error at every decision.
@@ -66,7 +74,7 @@ bool price_risk_valid(const PriceExposureConfig& c) {
 }
 co::Status validate_config(const TargetReplayConfig& cfg) {
   if ((cfg.rule != TargetReplayRule::BaselineTargetV1 &&
-       cfg.rule != TargetReplayRule::MonthlyTargetBudgetV2) || !cfg.cadence ||
+       cfg.rule != TargetReplayRule::MonthlyTargetBudgetV2 && !aim_partial(cfg)) || !cfg.cadence ||
       cfg.cadence > max_dates || !std::isfinite(cfg.trade_fraction) ||
       cfg.trade_fraction <= 0 || cfg.trade_fraction > 1 ||
       !std::isfinite(cfg.monthly_budget) || cfg.monthly_budget <= 0 ||
@@ -82,6 +90,19 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
         !(cfg.neutralize_max_amplification > 0) ||
         !(cfg.neutralize_max_excluded_share >= 0 && cfg.neutralize_max_excluded_share <= 1))))
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: invalid construction recipe");
+  // aim-partial-v5 (theta = trade_fraction, already in (0, 1] above): no no-trade band
+  // (the dust band replaces it), dust_multiple in [0, 0.5], aim_leverage in [1, 2].
+  // The negated ranges also refuse NaN. Its parameters are refused under every other
+  // rule, so a baseline or v2 recipe cannot silently carry them.
+  if (aim_partial(cfg) &&
+      (cfg.band_multiple != 0 || !(cfg.dust_multiple >= 0 && cfg.dust_multiple <= 0.5) ||
+       !(cfg.aim_leverage >= 1 && cfg.aim_leverage <= 2)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: aim-partial-v5 needs band_multiple 0, dust_multiple in "
+                   "[0, 0.5] and aim_leverage in [1, 2]");
+  if (!aim_partial(cfg) && (cfg.aim_leverage != 1.0 || cfg.dust_multiple != 0))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: aim_leverage/dust_multiple are aim-partial-v5 only");
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
@@ -152,16 +173,77 @@ void desired_target(std::span<const f64> signal, std::span<const u8> member,
   }
   if (gross > 0) for (const auto& value : row) target[value.second] /= gross;
 }
+usize members_at(const TargetReplayInput& in, usize d) {
+  const auto offset = d * in.instruments;
+  usize members = 0;
+  for (usize i = 0; i < in.instruments; ++i) members += in.member[offset + i] ? 1U : 0U;
+  return members;
+}
+// aim-partial-v5 (TargetReplayConfig): on a rebalance decision each member moves by
+// theta_i toward aim = aim_leverage * desired unless its gap is inside the dust band
+// dust_multiple / N_d (it then keeps its weight: a small gap, never a large entry);
+// otherwise members keep their weights. Nonmembers exit to 0 every decision.
+// With theta 1, aim_leverage 1 and dust 0 each operation is baseline-v1's (band 0,
+// fraction 1): aim = 1.0 * desired is exact and the move is the same expression
+// current + theta * (aim - current), so the plan is bit-identical (also when fused,
+// as 1.0 * gap is exact). Deliberately no theta == 1 shortcut to `next = aim`: it
+// would round differently from baseline (amended ruling R-a).
+void aim_partial_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
+                         bool rebalance, const std::vector<f64>& desired,
+                         std::vector<f64>& current, std::span<const f64> per_name_rate,
+                         TargetReplayDay& out) {
+  const auto offset = d * in.instruments;
+  // -1 (off) dusts nothing, since every |gap| >= 0.
+  f64 dust = -1;
+  if (rebalance && cfg.dust_multiple > 0) {
+    const usize members = members_at(in, d);
+    if (members) dust = cfg.dust_multiple / static_cast<f64>(members);
+  }
+  // The caller supplies exactly one rate per name or none; a malformed span is never
+  // indexed (debug: assert; release: the fixed theta).
+  assert(per_name_rate.empty() || per_name_rate.size() == in.instruments);
+  const bool per_name = !per_name_rate.empty() && per_name_rate.size() == in.instruments;
+  out.applied_fraction = rebalance ? cfg.trade_fraction : 0;
+  f64 squared = 0;
+  for (usize i = 0; i < in.instruments; ++i) {
+    const bool live = in.member[offset + i] != 0;
+    f64 next = 0;
+    if (live && !rebalance) {
+      next = current[i];
+    } else if (live) {
+      const f64 aim = cfg.aim_leverage * desired[i];
+      const f64 gap = aim - current[i];
+      const bool dusted = std::abs(gap) <= dust;
+      if (dusted) ++out.construction.banded_names;
+      const f64 theta = per_name ? per_name_rate[i] : cfg.trade_fraction;
+      next = dusted ? current[i] : current[i] + theta * gap;
+    }
+    const f64 trade = std::abs(next - current[i]);
+    out.turnover += trade;
+    if (!live) out.forced_turnover += trade; else out.discretionary_turnover += trade;
+    current[i] = next;
+    out.gross += std::abs(next); out.net += next;
+    out.long_weight += std::max(0.0, next); out.short_weight += std::max(0.0, -next);
+    out.max_abs_weight = std::max(out.max_abs_weight, std::abs(next));
+    out.held_names += next != 0 ? 1U : 0U; squared += next * next;
+  }
+  out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
+}
 void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
                     bool rebalance, f64 spent, const std::vector<f64>& desired,
-                    std::vector<f64>& current, TargetReplayDay& out) {
+                    std::vector<f64>& current, TargetReplayDay& out,
+                    std::span<const f64> per_name_rate = {}) {
+  if (aim_partial(cfg)) {
+    aim_partial_weights(in, cfg, d, rebalance, desired, current, per_name_rate, out);
+    return;
+  }
+  assert(per_name_rate.empty()); // per-name rates are aim-partial-v5 only
   const auto offset = d * in.instruments;
   // No-trade band on rebalance decisions: -1 (off) bands nothing, since every
   // |desired - current| >= 0, so the default path is the unbanded arithmetic.
   f64 band = -1;
   if (rebalance && cfg.band_multiple > 0) {
-    usize members = 0;
-    for (usize i = 0; i < in.instruments; ++i) members += in.member[offset + i] ? 1U : 0U;
+    const usize members = members_at(in, d);
     if (members) band = cfg.band_multiple / static_cast<f64>(members);
   }
   f64 forced = 0, distance = 0;
@@ -484,12 +566,20 @@ co::Status load_prices(const TargetReplayRunConfig& cfg, SavedBlend& out,
   return co::Ok();
 }
 const char* rule_name(TargetReplayRule rule) {
-  return rule == TargetReplayRule::BaselineTargetV1 ? "baseline-target-v1" : "monthly-target-budget-v2";
+  switch (rule) {
+  case TargetReplayRule::BaselineTargetV1: return "baseline-target-v1";
+  case TargetReplayRule::MonthlyTargetBudgetV2: return "monthly-target-budget-v2";
+  case TargetReplayRule::AimPartialV5: return "aim-partial-v5";
+  }
+  return "unknown";
 }
 
-// ---- construction options (neutralization, no-trade band): recipe, rule id, CSV,
-// summary. Nothing here is emitted unless an option is non-default.
-bool construction_on(const TargetReplayConfig& c) { return neutralizing(c) || c.band_multiple > 0; }
+// ---- construction options (neutralization, no-trade band, the aim-partial-v5 rule):
+// recipe, rule id, CSV, summary. Nothing here is emitted unless an option is
+// non-default or the rule is aim-partial-v5 (whose CSV banded_names is the dust count).
+bool construction_on(const TargetReplayConfig& c) {
+  return neutralizing(c) || c.band_multiple > 0 || aim_partial(c);
+}
 std::string decimal(f64 x) { // shortest round-trip spelling
   std::array<char, 64> text{};
   const auto written = std::to_chars(text.data(), text.data() + text.size(), x);
@@ -546,7 +636,36 @@ Json construction_recipe(const TargetReplayConfig& c) {
                 "(N_d = members at d) keeps its current weight, others move by the rule's "
                 "fraction; banded names are excluded from the monthly-budget-v2 distance";
   }
+  if (aim_partial(c)) {
+    j["theta"] = c.trade_fraction;
+    j["dust_multiple"] = c.dust_multiple;
+    j["aim_leverage"] = c.aim_leverage;
+    j["rate"] = aim_rate(c);
+    j["aim_partial"] = "rebalance decision: each member moves next = current + theta * "
+        "(aim_leverage * desired - current) unless |aim_leverage * desired - current| <= "
+        "dust_multiple / N_d (N_d = members at d; 0 = off), which keeps its weight and is "
+        "counted in banded_names; non-rebalance decisions keep member weights; nonmembers "
+        "exit to 0; theta = trade_fraction (rate fixed); monthly_budget unused";
+  }
   return j;
+}
+// construction.v5 (see detail::aim_partial_summary_json).
+Json aim_partial_summary(const TargetReplayConfig& c,
+                         std::span<const detail::AimPartialDecision> decisions) {
+  f64 gross = 0, net = 0, share = 0;
+  usize shared = 0;
+  for (const auto& d : decisions) {
+    gross += d.gross; net += d.net;
+    if (!d.members) continue;
+    share += static_cast<f64>(d.held_names) / static_cast<f64>(d.members); ++shared;
+  }
+  const auto mean = [](f64 sum, usize count) {
+    return count ? Json(sum / static_cast<f64>(count)) : Json(nullptr);
+  };
+  return Json{{"theta", c.trade_fraction}, {"dust_multiple", c.dust_multiple},
+      {"aim_leverage", c.aim_leverage}, {"rate", aim_rate(c)}, {"decisions", decisions.size()},
+      {"mean_gross", mean(gross, decisions.size())}, {"mean_net", mean(net, decisions.size())},
+      {"mean_held_share", mean(share, shared)}};
 }
 Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
   usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
@@ -737,6 +856,13 @@ co::Status run_target_replay(const TargetReplayRunConfig& cfg, std::ostream& pro
       std::vector<ConstructionDay> decisions; decisions.reserve(result.days.size());
       for (const auto& d : result.days) decisions.push_back(d.construction);
       summary.update(construction_summary(cfg.target, decisions));
+      if (aim_partial(cfg.target)) {
+        std::vector<detail::AimPartialDecision> aim; aim.reserve(result.days.size());
+        const auto view = blend.view();
+        for (const auto& d : result.days)
+          aim.push_back({d.gross, d.net, d.held_names, members_at(view, d.decision)});
+        summary["construction"]["v5"] = aim_partial_summary(cfg.target, aim);
+      }
     }
     summary["schema"] = "atx.dsl-target-replay-summary/v1"; summary["status"] = "complete";
     summary["recipe_sha256"] = method_sha; summary["combined_sha256"] = cfg.combined_sha256;
@@ -759,9 +885,11 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
       const std::string key = argv[i];
       if (key == "--help") {
         out << "--combined PATH --combined-sha256 SHA --output DIR "
-               "[--rule baseline-v1|monthly-budget-v2] [--cadence 5] [--trade-fraction .25] "
+               "[--rule baseline-v1|monthly-budget-v2|aim-partial-v5] [--cadence 5] "
+               "[--trade-fraction .25 (aim-partial-v5: theta)] "
                "[--monthly-budget .30] [--role PATH --role-sha256 SHA] "
                "[--neutralize none|price-risk-v1 (needs --role)] [--band-multiple 0] "
+               "[--dust-multiple 0 --aim-leverage 1 (aim-partial-v5 only)] "
                "[--one-way-bps 0 --annual-borrow-bps 0] [--max-bytes 536870912]\n";
         return 0;
       }
@@ -792,12 +920,15 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
       else if (key == "--annual-borrow-bps") cfg.target.annual_borrow_bps = real();
       else if (key == "--max-bytes") cfg.target.max_working_bytes = integer();
       else if (key == "--band-multiple") cfg.target.band_multiple = real();
+      else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
+      else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
       else if (key == "--neutralize") {
         if (!parse_neutralize(value, cfg.target.neutralize))
           throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
       } else if (key == "--rule") {
         if (value == "baseline-v1") cfg.target.rule = TargetReplayRule::BaselineTargetV1;
         else if (value == "monthly-budget-v2") cfg.target.rule = TargetReplayRule::MonthlyTargetBudgetV2;
+        else if (value == "aim-partial-v5") cfg.target.rule = TargetReplayRule::AimPartialV5;
         else throw std::invalid_argument("unknown target rule");
       } else throw std::invalid_argument("unknown flag: " + key);
     }
@@ -852,8 +983,13 @@ void desired_target(std::span<const f64> signal, std::span<const u8> member,
 }
 void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
                     bool rebalance, f64 spent, const std::vector<f64>& desired,
-                    std::vector<f64>& current, TargetReplayDay& out) {
-  ::atx::impl::strategy::update_weights(in, cfg, d, rebalance, spent, desired, current, out);
+                    std::vector<f64>& current, TargetReplayDay& out,
+                    std::span<const f64> per_name_rate) {
+  ::atx::impl::strategy::update_weights(in, cfg, d, rebalance, spent, desired, current, out,
+                                        per_name_rate);
+}
+usize members_at(const TargetReplayInput& in, usize d) {
+  return ::atx::impl::strategy::members_at(in, d);
 }
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
                               std::vector<std::pair<f64, usize>>& row, std::vector<f64>& desired,
@@ -868,6 +1004,10 @@ std::string construction_recipe_json(const TargetReplayConfig& cfg) {
 std::string construction_summary_json(const TargetReplayConfig& cfg,
                                       std::span<const ConstructionDay> decisions) {
   return construction_on(cfg) ? construction_summary(cfg, decisions).dump() : std::string{};
+}
+std::string aim_partial_summary_json(const TargetReplayConfig& cfg,
+                                     std::span<const AimPartialDecision> decisions) {
+  return aim_partial(cfg) ? aim_partial_summary(cfg, decisions).dump() : std::string{};
 }
 u64 construction_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
   return price_risk_scratch_bytes(cfg, instruments);

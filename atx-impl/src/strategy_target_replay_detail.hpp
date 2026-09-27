@@ -46,11 +46,18 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
                     std::vector<atx::f64>& target);
 // Forced exits to zero every decision; partial move by the (v2 budget-capped)
 // fraction on rebalance decisions, except members inside the no-trade band.
-// `current` is updated in place to the plan and `out` accumulates the planned
-// turnover/exposure fields (and out.construction.banded_names).
+// aim-partial-v5: members move by theta_i toward aim_leverage * desired unless
+// inside the dust band (counted in banded_names); theta_i = per_name_rate[i] when
+// the span is non-empty (then exactly in.instruments finite rates in [0, 1], checked
+// by the caller; T36), else trade_fraction. Every other rule ignores the span, which
+// must be empty. `current` is updated in place to the plan and `out` accumulates
+// the planned turnover/exposure fields (and out.construction.banded_names).
 void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d,
                     bool rebalance, atx::f64 spent, const std::vector<atx::f64>& desired,
-                    std::vector<atx::f64>& current, TargetReplayDay& out);
+                    std::vector<atx::f64>& current, TargetReplayDay& out,
+                    std::span<const atx::f64> per_name_rate = {});
+// N_d: the members of decision d (in.member[d * instruments + i] != 0).
+[[nodiscard]] atx::usize members_at(const TargetReplayInput& in, atx::usize d);
 // The construction of rebalance decision d, shared by the target and NAV replays:
 // the tied-rank desired target, then the configured post-processing (price-risk-v1:
 // neutralize_price_risk with exposures computed once for d from the role prices,
@@ -61,8 +68,9 @@ void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, 
     const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d,
     std::vector<std::pair<atx::f64, atx::usize>>& row, std::vector<atx::f64>& desired,
     PriceRiskScratch& scratch, ConstructionDay& out);
-// True iff any construction option is non-default: only then do recipes, CSVs and
-// summaries carry construction keys/columns (the default path emits none).
+// True iff any construction option is non-default or the rule is aim-partial-v5:
+// only then do recipes, CSVs and summaries carry construction keys/columns (the
+// default path emits none).
 [[nodiscard]] bool construction_active(const TargetReplayConfig& cfg);
 // "<rule>[+neutral-price-risk-v1][+band-<X>]" (X: shortest round-trip decimal).
 [[nodiscard]] std::string construction_rule_id(const TargetReplayConfig& cfg);
@@ -73,6 +81,18 @@ void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, 
 // not active.
 [[nodiscard]] std::string construction_summary_json(const TargetReplayConfig& cfg,
                                                     std::span<const ConstructionDay> decisions);
+// One aim-partial-v5 decision: the planned weights after the rule (gross, net and
+// nonzero names) and the decision's members N_d.
+struct AimPartialDecision {
+  atx::f64 gross{}, net{};
+  atx::usize held_names{}, members{};
+};
+// The summary's construction.v5 object as JSON text: theta, dust_multiple,
+// aim_leverage, rate ("fixed" until T36) and, over the decisions, mean_gross,
+// mean_net and mean_held_share (held_names / N_d over decisions with members);
+// a mean over no decisions is null. Empty unless rule == AimPartialV5.
+[[nodiscard]] std::string aim_partial_summary_json(
+    const TargetReplayConfig& cfg, std::span<const AimPartialDecision> decisions);
 // Working bytes of the construction scratch for `instruments` names (0 unless
 // neutralizing); charged by both replays' admission.
 [[nodiscard]] atx::u64 construction_scratch_bytes(const TargetReplayConfig& cfg,

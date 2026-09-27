@@ -1537,3 +1537,211 @@ TEST(StrategyNavReplay, FieldsPinnedToRolePublishFinancingMatrixElseRefused) {
   // A control with neither edit nor mutation runs.
   EXPECT_FALSE(refused([](Json&) {}, none));
 }
+
+// ---- aim-partial-v5 (T30) ----
+namespace {
+st::TargetReplayConfig aim_partial_nav(f64 theta, f64 dust, f64 leverage) {
+  st::TargetReplayConfig c;
+  c.rule = st::TargetReplayRule::AimPartialV5; c.cadence = 1;
+  c.trade_fraction = theta; c.dust_multiple = dust; c.aim_leverage = leverage;
+  return c;
+}
+// The untiered NAV recipe.json keys as the writer produced them before T30 (d4ec515d).
+constexpr std::array<const char*, 32> baseline_nav_recipe_keys{
+    "accounting", "cadence", "combined_sha256", "cost_input_status",
+    "daily_turnover_definition", "daily_turnover_mean_max", "daily_turnover_p95_max",
+    "desired_target_postprocess", "financing", "financing_fields", "guard", "initial_nav",
+    "liquidity", "liquidity_window", "max_events", "max_working_bytes", "min_vol_pairs",
+    "missing", "monthly_budget", "monthly_turnover_target", "monthly_turnover_target_status",
+    "primary_financing_available", "primary_scenario", "role_sha256", "rule", "scenarios",
+    "schema", "sharpe_target", "target", "timing", "trade_fraction", "turnover"};
+constexpr std::array<const char*, 5> v5_recipe_keys{"theta", "dust_multiple", "aim_leverage",
+                                                    "rate", "aim_partial"};
+std::vector<std::string> sorted_keys(const Json& object) {
+  std::vector<std::string> out;
+  for (const auto& item : object.items()) out.push_back(item.key());
+  std::sort(out.begin(), out.end());
+  return out;
+}
+} // namespace
+
+// Review focus 1 at the NAV level: every lockstep book of the fixed scenarios (the
+// capped S2/S3 working orders and write-offs included) under v5 theta 1, dust 0,
+// aim_leverage 1 is baseline-v1 fraction 1 bit for bit, at cadence 1 and 3.
+TEST(NavV5, ThetaOneMatchesBaselineBooks) {
+  Panel p(40, 8); randomize_rows(p, 7, 0); p.begin = 5;
+  const auto scenarios = st::fixed_nav_scenarios();
+  for (const usize cadence : {usize{1}, usize{3}}) {
+    st::TargetReplayConfig rule; rule.cadence = cadence; rule.trade_fraction = 1;
+    auto v5 = aim_partial_nav(1, 0, 1); v5.cadence = cadence;
+    auto base = config(scenarios[0], 1e6, rule);
+    base.liquidity_window = 5; base.min_vol_pairs = 3;
+    auto aim = base; aim.target = v5;
+    const auto a = st::replay_nav_scenarios(p.nav(), base, scenarios);
+    const auto b = st::replay_nav_scenarios(p.nav(), aim, scenarios);
+    ASSERT_TRUE(a) << a.error().to_string();
+    ASSERT_TRUE(b) << b.error().to_string();
+    ASSERT_EQ(a->size(), b->size());
+    for (usize k = 0; k < a->size(); ++k) {
+      const auto& x = (*a)[k]; const auto& y = (*b)[k];
+      expect_same_result(x, y);
+      EXPECT_EQ(bits(x.max_return_identity_error), bits(y.max_return_identity_error)) << k;
+      for (usize t = 0; t < x.days.size(); ++t) {
+        EXPECT_EQ(bits(x.days[t].planned_net), bits(y.days[t].planned_net)) << t;
+        EXPECT_EQ(bits(x.days[t].planned_forced), bits(y.days[t].planned_forced)) << t;
+        EXPECT_EQ(bits(x.days[t].net_return), bits(y.days[t].net_return)) << t;
+        EXPECT_EQ(x.days[t].planned_held_names, y.days[t].planned_held_names) << t;
+        EXPECT_EQ(x.days[t].decision_members, y.days[t].decision_members) << t;
+      }
+    }
+  }
+}
+
+// The book deploys: on a constant aim with no costs and constant prices the planned
+// gross at the j-th decision is L (1 - (1 - theta)^(j+1)) and the held book reaches
+// aim_leverage x gross 1, where baseline-v1 at the same fraction stops at gross 1.
+TEST(NavV5, DeploysTowardAimLeverage) {
+  Panel p(30, 6); p.by_name({1, 2, 3, 4, 5, 6});
+  const auto r = st::replay_nav(p.nav(), config(flat(0, 0), 1e6, aim_partial_nav(0.5, 0, 1.5)));
+  ASSERT_TRUE(r) << r.error().to_string();
+  usize decisions = 0;
+  for (const auto& day : r->days) {
+    if (!day.decision) continue;
+    const f64 expected = 1.5 * (1 - std::pow(0.5, static_cast<f64>(decisions + 1)));
+    EXPECT_NEAR(day.planned_gross, expected, 1e-9) << decisions;
+    EXPECT_NEAR(day.planned_net, 0, 1e-9) << decisions;
+    EXPECT_EQ(day.planned_held_names, 6U) << decisions;
+    EXPECT_EQ(day.decision_members, 6U) << decisions;
+    EXPECT_EQ(day.applied_fraction, 0.5) << decisions;
+    ++decisions;
+  }
+  EXPECT_EQ(decisions, p.d - 2);
+  EXPECT_NEAR(r->days.back().gross_leverage, 1.5, 1e-6);
+  st::TargetReplayConfig partial; partial.cadence = 1; partial.trade_fraction = 0.5;
+  const auto b = st::replay_nav(p.nav(), config(flat(0, 0), 1e6, partial));
+  ASSERT_TRUE(b) << b.error().to_string();
+  EXPECT_NEAR(b->days.back().gross_leverage, 1.0, 1e-6);
+}
+
+// Recipe/summary keys: v5 adds theta, dust_multiple, aim_leverage, rate (fixed) and
+// aim_partial to the recipe, the construction CSV columns (banded_names = the dust
+// count) and construction.v5 to every scenario summary; baseline carries none of
+// them. The baseline recipe.json bytes (NAV and target replay) and the fixture pins
+// are the pre-change bytes: SHA-256s hand-derived from the d4ec515d writers (an
+// nlohmann dump(2) emulation byte-exact on 25 committed replay outputs; T30 report).
+TEST(NavV5, RecipeAndSummaryKeys) {
+  const auto p = publication_panel();
+  std::ostringstream progress;
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  EXPECT_EQ(a.cfg.role_sha256, "17349e657c9ee076c252f46a0688463b416bf55bf2792ae4d2a00f4608e2acdc");
+  EXPECT_EQ(a.cfg.combined_sha256,
+            "295599523de7b52f5caf46764bb390b53863efe49a72126a52a1f53180b91d91");
+  auto baseline = a.cfg; baseline.output_directory = (dir.path / "baseline").string();
+  const auto ok = st::run_nav_replay(baseline, progress);
+  ASSERT_TRUE(ok) << ok.error().to_string();
+  const auto base_out = dir.path / "baseline";
+  EXPECT_EQ(co::sha256_file((base_out / "recipe.json").string()).value(),
+            "73cb45f1182f659b1b66bf5adc17bc0539a95c987d191c10c00f846c6c8017c0");
+  const auto base_recipe = read_json(base_out / "recipe.json");
+  std::vector<std::string> expected(baseline_nav_recipe_keys.begin(),
+                                    baseline_nav_recipe_keys.end());
+  std::sort(expected.begin(), expected.end());
+  EXPECT_EQ(sorted_keys(base_recipe), expected);
+  for (const auto* key : v5_recipe_keys) EXPECT_FALSE(base_recipe.contains(key)) << key;
+  EXPECT_EQ(base_recipe.at("rule"), "baseline-target-v1");
+  const auto base_summary = read_json(base_out / "summary.json");
+  EXPECT_EQ(base_summary.at("rule"), "baseline-target-v1");
+  for (const auto& s : base_summary.at("scenarios")) {
+    const auto id = s.at("scenario").get<std::string>();
+    EXPECT_FALSE(s.contains("construction")) << id;
+    EXPECT_EQ(first_line(base_out / ("daily_" + id + ".csv")),
+              std::string(t2_daily_header) + ",pretrade_gross_dollars,one_way_turnover_gmv")
+        << id;
+  }
+  auto targets = a.cfg; targets.output_directory = (dir.path / "targets").string();
+  ASSERT_TRUE(st::run_target_replay(targets, progress));
+  EXPECT_EQ(co::sha256_file((dir.path / "targets" / "recipe.json").string()).value(),
+            "ef16be1716d3d1fed90ad8af9aca3073b1c425e2fb163078ce0d13671f584bdf");
+
+  auto v5 = a.cfg; v5.output_directory = (dir.path / "v5").string();
+  v5.target = aim_partial_nav(0.5, 0.1, 1.5);
+  const auto ran = st::run_nav_replay(v5, progress);
+  ASSERT_TRUE(ran) << ran.error().to_string();
+  const auto out = dir.path / "v5";
+  const auto recipe = read_json(out / "recipe.json");
+  auto with_v5 = expected;
+  for (const auto* key : v5_recipe_keys) with_v5.emplace_back(key);
+  std::sort(with_v5.begin(), with_v5.end());
+  EXPECT_EQ(sorted_keys(recipe), with_v5);
+  EXPECT_EQ(recipe.at("rule"), "aim-partial-v5");
+  EXPECT_EQ(recipe.at("theta"), 0.5);
+  EXPECT_EQ(recipe.at("trade_fraction"), 0.5);
+  EXPECT_EQ(recipe.at("dust_multiple"), 0.1);
+  EXPECT_EQ(recipe.at("aim_leverage"), 1.5);
+  EXPECT_EQ(recipe.at("rate"), "fixed");
+  EXPECT_EQ(recipe.at("cadence"), 1);
+  const auto summary = read_json(out / "summary.json");
+  EXPECT_EQ(summary.at("rule"), "aim-partial-v5");
+  EXPECT_EQ(summary.at("recipe_sha256"), co::sha256_hex(recipe.dump()).value());
+  const auto& scenarios = summary.at("scenarios");
+  ASSERT_EQ(scenarios.size(), 3U);
+  for (const auto& s : scenarios) {
+    const auto id = s.at("scenario").get<std::string>();
+    EXPECT_EQ(first_line(out / ("daily_" + id + ".csv")),
+              std::string(t2_daily_header) + ",pretrade_gross_dollars,one_way_turnover_gmv" +
+                  construction_columns) << id;
+    const auto& construction = s.at("construction");
+    EXPECT_EQ(construction.at("rule_id"), "aim-partial-v5") << id;
+    EXPECT_GT(construction.at("banded_names_total").get<usize>(), 0U) << id; // dusted
+    const auto& block = construction.at("v5");
+    for (const auto* key : {"theta", "dust_multiple", "aim_leverage", "rate", "mean_gross",
+                            "mean_net", "mean_held_share"})
+      EXPECT_TRUE(block.contains(key)) << id << ' ' << key;
+    EXPECT_EQ(block.at("theta"), 0.5) << id;
+    EXPECT_EQ(block.at("dust_multiple"), 0.1) << id;
+    EXPECT_EQ(block.at("aim_leverage"), 1.5) << id;
+    EXPECT_EQ(block.at("rate"), "fixed") << id;
+    EXPECT_EQ(block.at("decisions"), p.d - 2) << id;
+    const f64 gross = block.at("mean_gross").get<f64>();
+    const f64 held = block.at("mean_held_share").get<f64>();
+    EXPECT_GT(gross, 0) << id;
+    EXPECT_LE(gross, 1.5) << id;
+    EXPECT_GT(held, 0.5) << id;
+    EXPECT_LE(held, 1.0) << id;
+    EXPECT_TRUE(block.at("mean_net").is_number()) << id;
+  }
+}
+
+// CLI: --rule aim-partial-v5 --trade-fraction (theta) --dust-multiple --aim-leverage;
+// a band under v5, v5 parameters under another rule or out of range are refused
+// before any output; an unknown rule spelling is a usage error.
+TEST(NavV5, CliFlagsAndRefusals) {
+  const auto p = publication_panel();
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto args = [&](const std::string& output, std::vector<std::string> extra) {
+    std::vector<std::string> all{"nav", "--combined", a.cfg.combined_path, "--combined-sha256",
+                                 a.cfg.combined_sha256, "--role", a.cfg.role_path,
+                                 "--role-sha256", a.cfg.role_sha256, "--output",
+                                 (dir.path / output).string()};
+    for (auto& e : extra) all.push_back(std::move(e));
+    return all;
+  };
+  std::ostringstream out, err;
+  EXPECT_EQ(dispatch(args("v5", {"--rule", "aim-partial-v5", "--cadence", "1",
+                                 "--trade-fraction", ".25", "--dust-multiple", ".05",
+                                 "--aim-leverage", "1.2"}), out, err), 0) << err.str();
+  const auto recipe = read_json(dir.path / "v5" / "recipe.json");
+  EXPECT_EQ(recipe.at("rule"), "aim-partial-v5");
+  EXPECT_EQ(recipe.at("theta"), 0.25);
+  EXPECT_EQ(recipe.at("dust_multiple"), 0.05);
+  EXPECT_EQ(recipe.at("aim_leverage"), 1.2);
+  EXPECT_EQ(read_json(dir.path / "v5" / "summary.json").at("rule"), "aim-partial-v5");
+  EXPECT_EQ(dispatch(args("band", {"--rule", "aim-partial-v5", "--band-multiple", "1"}), out,
+                     err), 1);
+  EXPECT_EQ(dispatch(args("foreign", {"--aim-leverage", "1.5"}), out, err), 1);
+  EXPECT_EQ(dispatch(args("dust", {"--rule", "aim-partial-v5", "--dust-multiple", ".6"}), out,
+                     err), 1);
+  EXPECT_EQ(dispatch(args("unknown", {"--rule", "aim-partial"}), out, err), 2);
+  for (const auto* name : {"band", "foreign", "dust", "unknown"})
+    EXPECT_FALSE(std::filesystem::exists(dir.path / name)) << name;
+}

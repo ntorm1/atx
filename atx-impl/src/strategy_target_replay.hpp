@@ -9,7 +9,9 @@
 #include "strategy_price_exposures.hpp"
 
 namespace atx::impl::strategy {
-enum class TargetReplayRule : atx::u8 { BaselineTargetV1 = 1, MonthlyTargetBudgetV2 = 2 };
+enum class TargetReplayRule : atx::u8 {
+  BaselineTargetV1 = 1, MonthlyTargetBudgetV2 = 2, AimPartialV5 = 3
+};
 // Post-processing of each rebalance decision's desired target.
 enum class TargetNeutralize : atx::u8 { None = 0, PriceRiskV1 = 1 };
 struct TargetReplayConfig {
@@ -34,6 +36,16 @@ struct TargetReplayConfig {
   // current weight; the others move by the rule's fraction. Banded names are
   // excluded from the monthly-budget-v2 distance.
   atx::f64 band_multiple{};
+  // aim-partial-v5 (pre-registered R5'): on every rebalance decision each member moves
+  //   next_i = current_i + theta_i * (aim_leverage * desired_i - current_i)
+  // unless |aim_leverage * desired_i - current_i| <= dust_multiple / N_d (dust band,
+  // 0 = off; a dusted member keeps its weight and is counted in banded_names).
+  // theta_i = trade_fraction, or the per-name rate span when one is supplied (T36).
+  // A non-rebalance decision (cadence > 1 or a skipped rebalance) trades only forced
+  // exits; nonmembers are always forced to 0. Under this rule band_multiple must be 0
+  // and monthly_budget is ignored; aim_leverage in [1, 2], dust_multiple in [0, 0.5].
+  // Every other rule requires aim_leverage 1 and dust_multiple 0 and is unchanged.
+  atx::f64 aim_leverage{1.0}, dust_multiple{};
 };
 // All spans are borrowed for this synchronous call, date-major, immutable.
 // Prices are optional ALL together. Presence is source presence, independent of

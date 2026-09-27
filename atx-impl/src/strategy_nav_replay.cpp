@@ -626,6 +626,7 @@ void plan_decision(const Ctx& c, Book& b, const Construction& shared, const Borr
   day.planned_turnover = plan.turnover; day.planned_forced = plan.forced_turnover;
   day.planned_discretionary = plan.discretionary_turnover;
   day.planned_gross = plan.gross; day.planned_net = plan.net;
+  day.planned_held_names = plan.held_names; day.decision_members = detail::members_at(x, d);
   day.applied_fraction = plan.applied_fraction; day.month_planned = b.spent;
   if (c.cfg.target.rule == TargetReplayRule::MonthlyTargetBudgetV2)
     day.budget_excess = std::max(0.0, b.spent - c.cfg.target.monthly_budget);
@@ -1591,6 +1592,16 @@ struct NavRun {
   const std::string& manifest_json; // the pinned combined manifest
   const Json& fields;               // borrow-field binding; null without --fields
 };
+// construction.v5 of one book over its decision rows: the rule's plan (pre locate
+// rule) gross, net and held share of the decision's members.
+Json aim_partial_json(const TargetReplayConfig& target, const NavReplayResult& result) {
+  std::vector<detail::AimPartialDecision> decisions;
+  for (const auto& d : result.days)
+    if (d.decision)
+      decisions.push_back({d.planned_gross, d.planned_net, d.planned_held_names,
+                           d.decision_members});
+  return Json::parse(detail::aim_partial_summary_json(target, decisions));
+}
 co::Result<Json> publish_scenario(const NavRun& run, const std::filesystem::path& dir, usize k,
                                   std::ostream& progress) {
   const bool tiered = !run.fields.is_null();
@@ -1611,6 +1622,8 @@ co::Result<Json> publish_scenario(const NavRun& run, const std::filesystem::path
     for (const auto& d : result.days)
       if (d.decision) decisions.push_back(d.construction);
     entry.update(Json::parse(detail::construction_summary_json(run.cfg.target, decisions)));
+    if (run.cfg.target.rule == TargetReplayRule::AimPartialV5)
+      entry["construction"]["v5"] = aim_partial_json(run.cfg.target, result);
   }
   progress << "nav replay " << label << ": net Sharpe " << std::setprecision(6)
            << summary.net_sharpe << ", mean daily GMV turnover " << summary.daily_turnover_mean
@@ -1713,9 +1726,11 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       const std::string key = argv[i];
       if (key == "--help") {
         out << "nav --combined PATH --combined-sha256 SHA --role PATH --role-sha256 SHA "
-               "--output NEWDIR [--rule baseline-v1|monthly-budget-v2] [--cadence 5] "
-               "[--trade-fraction .25] [--monthly-budget .30] "
+               "--output NEWDIR [--rule baseline-v1|monthly-budget-v2|aim-partial-v5] "
+               "[--cadence 5] [--trade-fraction .25 (aim-partial-v5: theta)] "
+               "[--monthly-budget .30] "
                "[--neutralize none|price-risk-v1] [--band-multiple 0] "
+               "[--dust-multiple 0 --aim-leverage 1 (aim-partial-v5 only)] "
                "[--daily-turnover-mean-max .20] [--daily-turnover-p95-max .30] "
                "[--fields FIELDS/manifest.json --fields-sha256 SHA] [--max-bytes 536870912]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
@@ -1757,6 +1772,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--monthly-budget") cfg.target.monthly_budget = real();
       else if (key == "--max-bytes") cfg.target.max_working_bytes = integer();
       else if (key == "--band-multiple") cfg.target.band_multiple = real();
+      else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
+      else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
       else if (key == "--daily-turnover-mean-max") limits.daily_mean_max = real();
       else if (key == "--daily-turnover-p95-max") limits.daily_p95_max = real();
       else if (key == "--neutralize") {
@@ -1766,6 +1783,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
         if (value == "baseline-v1") cfg.target.rule = TargetReplayRule::BaselineTargetV1;
         else if (value == "monthly-budget-v2")
           cfg.target.rule = TargetReplayRule::MonthlyTargetBudgetV2;
+        else if (value == "aim-partial-v5") cfg.target.rule = TargetReplayRule::AimPartialV5;
         else throw std::invalid_argument("unknown target rule");
       } else throw std::invalid_argument("unknown flag: " + key);
     }
