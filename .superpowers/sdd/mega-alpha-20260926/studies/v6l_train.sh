@@ -60,7 +60,7 @@ do_fit() {
 WMEM=1536; [ "$COMP" = ew-theme-v6 ] && WMEM=2304  # IC runner admit ESTIMATE for theme planes (real RSS ~1.2 GiB); runner RSS cap stays 1536
 do_w() {
   WS=$(sha $W/composition_weights.json)
-  for i in 1 2 3; do
+  for i in ${WPASS:-1 2 3}; do
     [ -f $WT-$i/train_combined.json ] && grep -q '"status": *"complete"' $WT-$i/summary.json 2>/dev/null && { echo "weighted pass exists: $WT-$i"; echo $i > $WT.final; return 0; }
     echo "== weighted pass $i"
     "$PY" $BR --output $WT-run$i --bind $IC --bind $R2 --bind $FD/manifest.json --bind $L --bind $W/composition_weights.json -- \

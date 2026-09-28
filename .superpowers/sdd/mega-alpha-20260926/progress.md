@@ -1,5 +1,21 @@
 # Active task: recent-data DSL ensemble
 
+## V6-C2 rebase landed; build v6-2 GREEN (81/81 target, 70/70 IC); ew-theme-v6 fit done; w pass + C5 cells queued (2026-09-27 ~23:25)
+C2 rebase (pool-11 12283c34, 1da82261 -> pool-2 82255021, e5e8eb26; clean): five conflicts resolved as reviewed; I2 reserve
+uses liquidity_cached(base); I1 golden (a) expressible at base; I3 hold_zero re-zeroes locate-held names after demeaning,
+before the OLS. W fix round 2 (fba18d60: test fixture never set composition_weights_path) verified by build: IC tests 70/70.
+mega-v6-2-receipt.json: exit 0, 27.7 s, 8 TUs; NAV exe f55537fc; target tests 81/81 (all NavV6/TargetReplayV6/
+StrategyPriceNeutralizeV6 pass). Task V6-W: complete (re-review round 1 ALL ADDRESSED; round 2 = root build+test).
+Task V6-C2: complete pending the root's real-data identity check of the price-risk-v1 default path (next cells).
+- Ruling: C2 concerns accepted as disclosures -- hold set may include special-tier names whose aim was already 0
+  (harmless); held names keep a small fit term so unblocked scenario books may short them slightly -- cost if wrong: a few
+  bps of special-tier short exposure in non-primary books.
+Fit ew-theme-v6 on library v6 (build-equity/mega-weights-v6l-ew6, schema v2, 38 weights, theme_redistribution present; low_risk
+0; options merged into short_interest; si_change / iv_rv_spread shrunk 1/3; reversal theme unshrunk at 1/7). Weighted pass
+runs 1-3 refused: admit estimate 2177 MB > 1536 flag -> WMEM 2304 (estimate only; runner RSS cap 1536) -> passes 4-6.
+Queued (sequential, TRAIN): nav ew6 x best construction (delta x.05 loc) paired vs the loc cell (DSR N 24); C5
+price-risk-ind-v1 and -v2 on the best construction with ew-theme-v1 weights (DSR N 25, 26).
+
 ## Build v6-1 OK (IC); 1 W gtest fails -> W fix round 2; ew-theme-v6 fit on library v6 started (2026-09-27 ~22:50)
 mega-v6-1-receipt.json: exit 0; IC exe b1c1ba07. atx-impl-strategy-ic-tests 69/70: FAIL
 StrategyIcRunner.ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput (:788-792: accept cases return
