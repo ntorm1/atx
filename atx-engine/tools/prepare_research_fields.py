@@ -46,6 +46,17 @@ Everything available on or after 2025-01-01 is excluded; the role itself must en
 Row groups of the vendor file mix all dates: only needed columns are decoded, rows are filtered to
 the role ids/dates before any statistic. No warehouse access. Outputs are exclusive and
 deterministic (no wall-clock value in any output byte).
+
+Field reuse (``--reuse PRIOR_FIELDS_DIR [--reuse-sha256 PIN] [--reuse-hardlink]``, platform v7 L2): a requested
+field is copied from a prior fields directory instead of recomputed iff (``REUSE_RULE``) the prior manifest is a
+complete manifest bound to this very role (manifest, sessions, ids and member SHA-256), the field's prior entry has
+the same field id and the same formula id (``formula_id``: SHA-256 of the spec-level definition -- units, clock with
+the declared lag, staleness, source columns, definition, point-in-time flags, declared domain -- plus the field's
+``FORMULA_REVISION``), the same inputs (every prior source path lies under this run's source argument for the field's
+group and still hashes to the recorded SHA-256; a source without a file SHA-256 is never reused) and every field it
+depends on is reused too. Copied payload bytes are hashed and must equal the prior manifest's pin. Reused entries are
+the prior entries verbatim plus ``reused_from``; the manifest gains a ``reuse`` block. Without ``--reuse`` nothing in
+the output changes.
 """
 from __future__ import annotations
 
@@ -477,6 +488,19 @@ SV_FIELDS = {
 # Every producible field: the legacy registry first (its order is the manifest order), then the issuer fields,
 # then the short-volume field.
 ALL_FIELDS = {**FIELDS, **ISSUER_FIELDS, **SV_FIELDS}
+
+# Field reuse (--reuse). A field's formula id pins its spec-level definition; bump its revision here whenever its
+# computation changes without its registry text changing (otherwise --reuse would copy a stale payload).
+FORMULA_REVISION: dict = {}
+FORMULA_DEFINITION_KEYS = ("units", "clock", "staleness", "source_columns", "definition", "point_in_time",
+                           "non_pit_aspects")
+REUSE_RULE = ("a field is copied from the prior fields directory iff: the prior manifest is complete and bound to this "
+              "role (manifest, sessions, ids, member SHA-256); same field id; same formula id (SHA-256 of canonical "
+              "{field, revision, units, clock (declared lag), staleness, source_columns, definition, point_in_time, "
+              "non_pit_aspects, domain}); same inputs (every prior source path lies under this run's source argument "
+              "for the field's group and re-hashes to its recorded SHA-256); every field it depends on is reused; "
+              "copied bytes re-hash to the prior pin")
+REUSE_SOURCE_CHECK_KEYS = {"th": "tickerhistory", "lake": "lake", "issuer": "issuer", "finra_sv": "finra_short_volume"}
 
 
 def canonical(value) -> str:
@@ -2273,7 +2297,8 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         max_seconds=1800.0, finra: Path = DEFAULT_FINRA, tickerhistory: Path = DEFAULT_TICKERHISTORY,
         lake: Path = DEFAULT_LAKE, identity_bridge: Path | None = None, identity_bridge_sha256: str | None = None,
         fund_events: Path | None = None, fund_events_sha256: str | None = None,
-        fund_lag_sessions: int = FUND_LAG_SESSIONS_DECLARED, finra_short_volume: Path | None = None):
+        fund_lag_sessions: int = FUND_LAG_SESSIONS_DECLARED, finra_short_volume: Path | None = None,
+        reuse: Path | None = None, reuse_sha256: str | None = None, reuse_hardlink: bool = False):
     fields = list(fields)
     if not fields or len(set(fields)) != len(fields) or any(f not in ALL_FIELDS for f in fields):
         raise ValueError(f"--fields must be distinct names from {', '.join(ALL_FIELDS)}")
@@ -2296,12 +2321,21 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
     role = Role(role_dir, role_sha256)
     budget.report("role-admitted", dates=role.n_dates, instruments=role.n)
     output.mkdir(parents=False, exist_ok=False)  # exclusive; never reuse or replace
+    reused, reuse_block, th_known = {}, None, None
+    if reuse is not None:
+        roots = {"role": [role_dir], "finra": [finra], "th": [tickerhistory], "lake": [lake],
+                 "issuer": [p for p in (identity_bridge, fund_events, role_dir) if p is not None],
+                 "finra_sv": [p for p in (finra_short_volume, tickerhistory) if p is not None]}
+        reused, reuse_block, th_known = reuse_fields(Path(reuse), reuse_sha256, role, selected, output, budget,
+                                                     roots=roots, lag=fund_lag_sessions, tickerhistory=tickerhistory,
+                                                     hardlink=reuse_hardlink)
     outcome = {}
-    source_checks = {}
-    groups = {g: [f for f in selected if ALL_FIELDS[f]["group"] == g]
+    source_checks = dict(reuse_block.pop("_source_checks")) if reuse_block else {}
+    groups = {g: [f for f in selected if ALL_FIELDS[f]["group"] == g and f not in reused]
               for g in ("role", "finra", "th", "lake", "issuer", "finra_sv")}
     field_stats, field_extras = {}, {}
-    th_known = None  # (file identity, SHA-256) of the TickerHistory hashed by the th group, reused by finra_sv
+    # th_known: (file identity, SHA-256) of the TickerHistory hashed by the th group (or by the reuse source check),
+    # reused by finra_sv
     if groups["role"]:
         w, src, stats = market_return_field(role, output, budget)
         outcome["mkt_ret"] = (w, src, w.coverage())
@@ -2347,6 +2381,11 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         budget.report("sv_ratio126-complete", finite_member_frac=outcome["sv_ratio126"][2]["finite_member_frac"])
     files, entries = {}, []
     for name in selected:
+        if name in reused:
+            entry, file_pin = reused[name]
+            files[entry["file"]] = file_pin
+            entries.append(entry)
+            continue
         w, src, cov = outcome[name]
         size = w.path.stat().st_size
         if size != role.n_dates * role.n * 8:
@@ -2397,9 +2436,205 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         **code_identity(Path(__file__)),
         "historical_vintage_verified": False, "common_stock_verified": False,
     }
+    revisions = {f: FORMULA_REVISION[f] for f in selected if FORMULA_REVISION.get(f, 1) != 1}
+    if revisions:  # absent while every field is at revision 1, so manifests stay byte-identical until a bump
+        manifest["formula_revisions"] = revisions
+    if reuse_block is not None:
+        manifest["reuse"] = reuse_block
     publish(output / "manifest.json", manifest)
     budget.report("fields-complete", fields=len(entries), peak_rss_mib=budget.peak >> 20)
     return manifest
+
+
+# ---------------------------------------------------------------------------
+# Field reuse (--reuse)
+# ---------------------------------------------------------------------------
+
+def spec_definition(name: str, lag: int) -> dict:
+    """The spec-level definition this code writes for ``name`` (the IC runner's field_definition keys + domain)."""
+    spec = ALL_FIELDS[name]
+    clock = spec["clock"].format(lag=lag) if spec.get("lagged") else spec["clock"]
+    return {"units": spec["units"], "clock": clock, "staleness": spec["staleness"],
+            "source_columns": spec["source_columns"], "definition": spec.get("definition"),
+            "point_in_time": spec["point_in_time"], "non_pit_aspects": spec.get("non_pit_aspects", []),
+            "domain": [float(x) for x in spec["domain"]] if "domain" in spec else None}
+
+
+def entry_definition(entry: dict) -> dict:
+    """The same definition as recorded by a manifest entry (domain from its plausibility block)."""
+    d = {k: entry.get(k) for k in FORMULA_DEFINITION_KEYS}
+    d["non_pit_aspects"] = entry.get("non_pit_aspects", [])
+    p = entry.get("plausibility")
+    d["domain"] = [float(p["min"]), float(p["max"])] if isinstance(p, dict) and "min" in p and "max" in p else None
+    return d
+
+
+def formula_id(name: str, definition: dict, revision: int | None = None) -> str:
+    rev = FORMULA_REVISION.get(name, 1) if revision is None else revision
+    return sha_bytes(canonical({"field": name, "revision": rev, "definition": definition}).encode("utf-8"))
+
+
+def _norm(path) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _under(path: str, root) -> bool:
+    r = _norm(root)
+    return path == r or path.startswith(r.rstrip("\\/") + os.sep)
+
+
+def inputs_sha256(entry: dict, role_sha256: str) -> str:
+    """SHA-256 of the field's inputs: the role pin, the declared lag and every (normalised path, SHA-256) source."""
+    srcs = sorted([_norm(x["path"]), x.get("sha256")] for x in entry.get("sources") or [])
+    return sha_bytes(canonical({"role_manifest_sha256": role_sha256, "fund_lag_sessions": entry.get("fund_lag_sessions"),
+                                "sources": srcs}).encode("utf-8"))
+
+
+def _copy_payload(src: Path, dst: Path, hardlink: bool, budget: Budget) -> tuple[str, int]:
+    """Copy (or hardlink) one payload exclusively, hashing the bytes that land in ``dst``."""
+    if hardlink:
+        try:
+            os.link(src, dst)
+            return sha_file(dst, budget), dst.stat().st_size
+        except OSError:
+            if dst.exists():
+                raise
+    h, size = hashlib.sha256(), 0
+    with src.open("rb") as fi, dst.open("xb") as fo:
+        while chunk := fi.read(8 << 20):
+            fo.write(chunk)
+            h.update(chunk)
+            size += len(chunk)
+            budget.check("reuse-copy")
+        fo.flush()
+        os.fsync(fo.fileno())
+    return h.hexdigest(), size
+
+
+def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected: list, output: Path, budget: Budget,
+                 *, roots: dict, lag: int, tickerhistory: Path, hardlink: bool = False):
+    """Decide (``REUSE_RULE``) and copy the reusable fields of a prior fields directory into ``output``.
+
+    Returns ({name: (entry, files pin)}, reuse block for the manifest, th_known or None)."""
+    blob = (prior_dir / "manifest.json").read_bytes()
+    prior_manifest_sha = sha_bytes(blob)
+    if prior_sha256 is not None and prior_manifest_sha != prior_sha256.lower():
+        raise ValueError("--reuse: prior fields manifest SHA-256 does not match --reuse-sha256")
+    prior = json.loads(blob)
+    if prior.get("schema") != SCHEMA or prior.get("status") != "complete":
+        raise ValueError("--reuse: prior directory is not a complete atx.research-role-fields/v1 manifest")
+    bound = prior.get("role") or {}
+    if (bound.get("manifest_sha256") != role.manifest_sha256 or bound.get("sessions_sha256") != role.sessions_sha256
+            or bound.get("ids_sha256") != role.ids_sha256
+            or bound.get("member_sha256") != role.manifest["files"]["member.u8"]["sha256"]):
+        raise ValueError("--reuse: prior fields manifest is bound to a different role (manifest/sessions/ids/member)")
+    entries = {e["name"]: e for e in prior.get("fields", [])}
+    prior_revisions = prior.get("formula_revisions") or {}   # absent: every field at revision 1 (all manifests so far)
+    shape = [role.n_dates, role.n]
+    hashed = {}      # normalised path -> SHA-256 (each distinct source hashed once)
+    th_known = None
+
+    def source_ok(name: str, entry: dict):
+        nonlocal th_known
+        srcs = entry.get("sources")
+        if not isinstance(srcs, list) or not srcs:
+            return "no recorded sources"
+        allowed = roots.get(ALL_FIELDS[name]["group"], [])
+        for x in srcs:
+            if not isinstance(x, dict) or "path" not in x or "sha256" not in x:
+                return "a source without a file SHA-256 (not reusable by rule)"
+            path = _norm(x["path"])
+            if not any(_under(path, r) for r in allowed):
+                return f"source {x['path']} is outside this run's inputs for group {ALL_FIELDS[name]['group']}"
+            if path not in hashed:
+                f = Path(x["path"])
+                if not f.is_file():
+                    return f"source {x['path']} is missing"
+                if "bytes" in x and f.stat().st_size != x["bytes"]:
+                    hashed[path] = None
+                else:
+                    before = identity(f)
+                    budget.report("reuse-source-hash", path=str(f), bytes=before[2])
+                    digest = sha_file(f, budget)
+                    if identity(f) != before:
+                        raise ValueError(f"--reuse: source {f} changed while hashing")
+                    hashed[path] = digest
+                    if _norm(tickerhistory) == path:
+                        th_known = (before, digest)
+            if hashed[path] != x["sha256"]:
+                return f"source {x['path']} changed (SHA-256 or size differs from the prior record)"
+        return None
+
+    reasons, candidates = {}, {}
+    for name in selected:
+        e = entries.get(name)
+        pin = (prior.get("files") or {}).get(f"{name}.f64")
+        if e is None or pin is None:
+            reasons[name] = "absent from the prior manifest"
+            continue
+        if (e.get("file") != f"{name}.f64" or e.get("dtype") != "<f8" or e.get("layout") != "date-major"
+                or e.get("shape") != shape or e.get("sha256") != pin.get("sha256")
+                or pin.get("bytes") != role.n_dates * role.n * 8):
+            reasons[name] = "prior entry layout/shape/pin differs"
+            continue
+        want = formula_id(name, spec_definition(name, lag))
+        got = formula_id(name, entry_definition(e), prior_revisions.get(name, 1))
+        if got != want:
+            reasons[name] = "formula id differs (definition or FORMULA_REVISION changed)"
+            continue
+        if ALL_FIELDS[name].get("lagged") and e.get("fund_lag_sessions") not in (None, lag):
+            reasons[name] = "declared fund lag differs"
+            continue
+        why = source_ok(name, e)
+        if why:
+            reasons[name] = why
+            continue
+        candidates[name] = (e, pin, want)
+    changed = True
+    while changed:  # a reused field's inputs include the fields it depends on: those must be reused too
+        changed = False
+        for name in list(candidates):
+            missing = [d for d in ALL_FIELDS[name].get("requires", []) if d not in candidates]
+            if missing:
+                reasons[name] = f"depends on {', '.join(missing)}, which is recomputed"
+                del candidates[name]
+                changed = True
+    reused = {}
+    for name in selected:
+        if name not in candidates:
+            continue
+        e, pin, fid = candidates[name]
+        digest, size = _copy_payload(prior_dir / f"{name}.f64", output / f"{name}.f64", hardlink, budget)
+        if digest != pin["sha256"] or size != pin["bytes"]:
+            raise ValueError(f"--reuse: prior payload {name}.f64 does not match its manifest pin (corrupt prior dir)")
+        entry = json.loads(canonical(e))
+        entry["reused_from"] = {"dir": str(prior_dir.resolve()), "manifest_sha256": prior_manifest_sha,
+                                "code_sha256_lf": prior.get("code_sha256_lf"), "formula_id": fid,
+                                "inputs_sha256": inputs_sha256(e, role.manifest_sha256), "payload_sha256": digest,
+                                "mode": "hardlink" if hardlink else "copy"}
+        reused[name] = (entry, {"bytes": size, "sha256": digest})
+    groups = {}
+    for name in selected:
+        groups.setdefault(ALL_FIELDS[name]["group"], []).append(name)
+    prior_checks = prior.get("source_checks") or {}
+    carried, partial = {}, {}
+    for g, names in groups.items():
+        key = REUSE_SOURCE_CHECK_KEYS.get(g)
+        if g == "finra":
+            carried.update({n: prior_checks[n] for n in names if n in reused and n in prior_checks})
+        elif key in prior_checks and all(n in reused for n in names):
+            carried[key] = prior_checks[key]
+        elif key in prior_checks and any(n in reused for n in names):
+            partial[key] = prior_checks[key]  # this run's group check covers only the recomputed fields
+    block = {"from": str(prior_dir.resolve()), "manifest_sha256": prior_manifest_sha,
+             "code_sha256_lf": prior.get("code_sha256_lf"), "rule": REUSE_RULE,
+             "mode": "hardlink" if hardlink else "copy",
+             "reused": [n for n in selected if n in reused], "computed": [n for n in selected if n not in reused],
+             "not_reused": {n: reasons[n] for n in selected if n in reasons},
+             "source_checks_from_prior": sorted(carried),
+             "prior_source_checks_of_partial_groups": partial, "_source_checks": carried}
+    budget.report("reuse-plan", reused=len(block["reused"]), computed=len(block["computed"]))
+    return reused, block, th_known
 
 
 def main(argv=None):
@@ -2425,12 +2660,16 @@ def main(argv=None):
                         f"(default {FUND_LAG_SESSIONS_DECLARED}, v4-prereg R2)")
     p.add_argument("--finra-short-volume", type=Path,
                    help="FINRA daily short sale volume directory (CNMSshvolYYYYMMDD.txt.gz + manifest.csv; sv_ratio126)")
+    p.add_argument("--reuse", type=Path, help="prior fields directory: copy unchanged fields instead of recomputing")
+    p.add_argument("--reuse-sha256", help="SHA-256 of the prior fields directory's manifest.json (checked when given)")
+    p.add_argument("--reuse-hardlink", action="store_true", help="hardlink reused payloads instead of copying them")
     a = p.parse_args(argv)
     run(a.role, a.role_sha256, a.output, [x.strip() for x in a.fields.split(",") if x.strip()],
         max_rss_mib=a.max_rss_mib, max_seconds=a.max_seconds, finra=a.finra, tickerhistory=a.tickerhistory, lake=a.lake,
         identity_bridge=a.identity_bridge, identity_bridge_sha256=a.identity_bridge_sha256,
         fund_events=a.fund_events, fund_events_sha256=a.fund_events_sha256, fund_lag_sessions=a.fund_lag_sessions,
-        finra_short_volume=a.finra_short_volume)
+        finra_short_volume=a.finra_short_volume, reuse=a.reuse, reuse_sha256=a.reuse_sha256,
+        reuse_hardlink=a.reuse_hardlink)
 
 
 if __name__ == "__main__":
