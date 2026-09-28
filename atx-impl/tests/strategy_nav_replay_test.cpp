@@ -2123,6 +2123,10 @@ std::vector<std::string> joined(std::vector<std::string> a, const std::vector<st
 const std::vector<std::string> v5_flags{"--rule", "aim-partial-v5", "--cadence", "1",
                                         "--trade-fraction", ".5", "--dust-multiple", ".1",
                                         "--aim-leverage", "1.5"};
+// The recipe's aim_partial text contains `text`.
+bool aim_text_has(const Json& recipe, const char* text) {
+  return recipe.at("aim_partial").get<std::string>().find(text) != std::string::npos;
+}
 } // namespace
 
 // (a) The v6 defaults are the v5 path: passing --order-basis target --exit-rate 1
@@ -2153,8 +2157,9 @@ TEST(NavV6, OrderBasisTargetAndExitRateOneAreBitIdentical) {
   expect_same_files(dir.path / "base", dir.path / "api");
   const auto recipe = read_json(dir.path / "v5" / "recipe.json");
   for (const auto* key : {"order_basis", "order_basis_rule", "locate_in_aim",
-                          "locate_in_aim_rule", "exit_rate", "exit_rule"})
+                          "locate_in_aim_rule", "exit_rate", "exit_rate_rule", "exit_rule"})
     EXPECT_FALSE(recipe.contains(key)) << key;
+  EXPECT_TRUE(aim_text_has(recipe, "nonmembers exit to 0"));
   const auto summary = read_json(dir.path / "v5" / "summary.json");
   EXPECT_FALSE(summary.contains("order_basis"));
   EXPECT_FALSE(summary.contains("locate_in_aim"));
@@ -2478,8 +2483,9 @@ TEST(NavV6, LocateInAimLeavesLessNetThanThePostBlock) {
 
 // Recipe/summary keys of the v6 options (only when non-default) and CLI refusals, all
 // before any output: delta adds order_basis + order_basis_rule (every other recipe value
-// unchanged) and summary order_basis; the exit rate adds exit_rate + exit_rule and
-// construction.v5.exit_rate; locate-in-aim adds locate_in_aim + locate_in_aim_rule and
+// unchanged) and summary order_basis; the exit rate adds exit_rate + exit_rate_rule and
+// construction.v5.exit_rate, and the fixed and per-name aim_partial texts then say
+// "nonmembers follow exit_rate_rule"; locate-in-aim adds locate_in_aim + locate_in_aim_rule and
 // summary locate_in_aim.zeroed_special_short_aims (cadence 1: seven decisions, name 0
 // the special lowest-ranked member at six of them; it is absent at session 4).
 TEST(NavV6, RecipeSummaryKeysAndCliRefusals) {
@@ -2512,10 +2518,23 @@ TEST(NavV6, RecipeSummaryKeysAndCliRefusals) {
                      out, err), 0) << err.str();
   const auto exits = read_json(dir.path / "exit" / "recipe.json");
   EXPECT_EQ(exits.at("exit_rate"), 0.05);
-  EXPECT_TRUE(exits.at("exit_rule").is_string());
+  EXPECT_TRUE(exits.at("exit_rate_rule").is_string());
+  EXPECT_FALSE(exits.contains("exit_rule"));
   EXPECT_FALSE(exits.contains("forced_exits")); // the target replay's own key
-  for (const auto& s : read_json(dir.path / "exit" / "summary.json").at("scenarios"))
+  EXPECT_TRUE(aim_text_has(exits, "nonmembers follow exit_rate_rule"));
+  EXPECT_FALSE(aim_text_has(exits, "nonmembers exit to 0"));
+  // Named: a range-for over .at() of a temporary dangles in C++20 (no P2718).
+  const auto exit_summary = read_json(dir.path / "exit" / "summary.json");
+  for (const auto& s : exit_summary.at("scenarios"))
     EXPECT_EQ(s.at("construction").at("v5").at("exit_rate"), 0.05);
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "exitpn",
+                              joined(v5_flags, {"--rate", "per-name-v1", "--exit-rate", ".05"})),
+                     out, err), 0) << err.str();
+  const auto exit_per_name = read_json(dir.path / "exitpn" / "recipe.json");
+  EXPECT_EQ(exit_per_name.at("exit_rate_rule"), exits.at("exit_rate_rule"));
+  EXPECT_TRUE(aim_text_has(exit_per_name, "; rate per-name-v1: theta_i = clip("));
+  EXPECT_TRUE(aim_text_has(exit_per_name, "keep member weights; nonmembers follow exit_rate_rule"));
+  EXPECT_FALSE(aim_text_has(exit_per_name, "nonmembers exit to 0"));
 
   ASSERT_EQ(dispatch(nav_args(a, dir.path / "locate",
                               joined(fields, {"--neutralize", "price-risk-v1", "--cadence", "1",
@@ -2546,7 +2565,7 @@ TEST(NavV6, RecipeSummaryKeysAndCliRefusals) {
 }
 
 // The target replay's own CLI (targets verb) carries the exit rate: --exit-rate 1 is the
-// plain run byte for byte; .05 records exit_rate, exit_rule and the decaying forced_exits
+// plain run byte for byte; .05 records exit_rate, exit_rate_rule and the decaying forced_exits
 // spelling in the recipe and construction.v5.exit_rate in the summary, and spreads the
 // exit of name 2 (a present nonmember from decision 5) beyond the window, so its forced
 // turnover is smaller; without --role (no presence) it is refused before any output.
@@ -2582,7 +2601,10 @@ TEST(NavV6, TargetsVerbCarriesTheExitRate) {
   EXPECT_FALSE(plain.contains("exit_rate"));
   EXPECT_EQ(slow.at("forced_exits"), "decay-at-exit-rate;snap-inside-dust-band;absent-immediate");
   EXPECT_EQ(slow.at("exit_rate"), 0.05);
-  EXPECT_TRUE(slow.at("exit_rule").is_string());
+  EXPECT_TRUE(slow.at("exit_rate_rule").is_string());
+  EXPECT_FALSE(slow.contains("exit_rule"));
+  EXPECT_TRUE(aim_text_has(plain, "nonmembers exit to 0"));
+  EXPECT_TRUE(aim_text_has(slow, "nonmembers follow exit_rate_rule"));
   const auto plain_summary = read_json(dir.path / "plain" / "summary.json");
   const auto slow_summary = read_json(dir.path / "slow" / "summary.json");
   EXPECT_FALSE(plain_summary.at("construction").at("v5").contains("exit_rate"));

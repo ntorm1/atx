@@ -121,4 +121,8 @@ void write_construction_csv(std::ostream& out, const ConstructionDay& day);
 [[nodiscard]] atx::f64 sorted_quantile(std::span<const atx::f64> sorted, atx::f64 q);
 // YYYYMM of a UTC-midnight session key.
 [[nodiscard]] atx::u32 calendar_month(atx::i64 session_ns);
+// The aim_partial declarations' nonmember clause (both replays' recipes):
+// "nonmembers exit to 0" at exit_rate 1 (the default text byte for byte), else
+// "nonmembers follow exit_rate_rule".
+[[nodiscard]] const char* nonmember_exit_clause(const TargetReplayConfig& cfg);
 } // namespace atx::impl::strategy::detail

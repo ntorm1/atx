@@ -42,7 +42,7 @@ struct TargetReplayConfig {
   // 0 = off; a dusted member keeps its weight and is counted in banded_names).
   // theta_i = trade_fraction, or the per-name rate span when one is supplied (T36).
   // A non-rebalance decision (cadence > 1 or a skipped rebalance) trades only forced
-  // exits; nonmembers are always forced to 0. Under this rule band_multiple must be 0
+  // exits; nonmembers are forced to 0 (exit_rate 1). Under this rule band_multiple must be 0
   // and monthly_budget is ignored; aim_leverage in [1, 2], dust_multiple in [0, 0.5].
   // Every other rule requires aim_leverage 1 and dust_multiple 0 and is unchanged.
   atx::f64 aim_leverage{1.0}, dust_multiple{};
@@ -52,6 +52,8 @@ struct TargetReplayConfig {
   //   next_i = current_i * (1 - r),
   // set to 0 when |next_i| <= dust_multiple / N_d (N_d = members at d; every name when
   // N_d = 0), so an exit completes; a nonmember absent at d still exits to 0 at once.
+  // Only r < 1 writes keys: recipe exit_rate + exit_rate_rule (aim_partial's nonmember
+  // clause then names exit_rate_rule) and summary construction.v5.exit_rate.
   atx::f64 exit_rate{1.0};
 };
 // All spans are borrowed for this synchronous call, date-major, immutable.

@@ -1124,11 +1124,15 @@ constexpr const char* limitations_declaration =
     "only (30%/month target retired 2026-09-27), the declared turnover limits are the daily "
     "GMV mean/p95 ceilings (daily_turnover_gmv, meets_daily_turnover_*); a capped (S2/S3) "
     "deployment that completes over several sessions counts its later sessions as turnover";
-constexpr const char* per_name_rate_declaration =
+// The per-name aim_partial text is head + detail::nonmember_exit_clause + tail ("nonmembers
+// exit to 0" at exit_rate 1: the declaration byte for byte as before the split).
+constexpr const char* per_name_rate_head =
     "rebalance decision: each member moves next = current + theta_i * (aim_leverage * desired "
     "- current) unless |aim_leverage * desired - current| <= dust_multiple / N_d (N_d = "
     "members at d; 0 = off), which keeps its weight and is counted in banded_names; "
-    "non-rebalance decisions keep member weights; nonmembers exit to 0; rate per-name-v1: "
+    "non-rebalance decisions keep member weights; ";
+constexpr const char* per_name_rate_tail =
+    "; rate per-name-v1: "
     "theta_i = clip(sqrt(rate_rra * sigma_i^2 * ADV_i / (rate_lambda * NAV_d)), rate_min, "
     "rate_max), NAV_d the book's pre-trade NAV at d, sigma_i and ADV_i the name's liquidity "
     "row of session d (window [d-w, d), the liquidity declaration); ADV <= 0, sigma <= 0 or "
@@ -1230,7 +1234,8 @@ Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
     j["rate"] = "per-name-v1";
     j["rate_rra"] = base.rate_rra; j["rate_lambda"] = base.rate_lambda;
     j["rate_min"] = base.rate_min; j["rate_max"] = base.rate_max;
-    j["aim_partial"] = per_name_rate_declaration;
+    j["aim_partial"] = std::string(per_name_rate_head) +
+                       detail::nonmember_exit_clause(cfg.target) + per_name_rate_tail;
   }
   // v6 execution options: keys only when non-default, so the default recipe is the v5
   // recipe byte for byte. The liquidity cache changes no output and records nothing.

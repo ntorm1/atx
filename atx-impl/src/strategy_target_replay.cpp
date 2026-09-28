@@ -192,7 +192,8 @@ usize members_at(const TargetReplayInput& in, usize d) {
 // aim-partial-v5 (TargetReplayConfig): on a rebalance decision each member moves by
 // theta_i toward aim = aim_leverage * desired unless its gap is inside the dust band
 // dust_multiple / N_d (it then keeps its weight: a small gap, never a large entry);
-// otherwise members keep their weights. Nonmembers exit to 0 every decision.
+// otherwise members keep their weights. Nonmembers exit to 0 every decision (exit_rate 1;
+// below 1 see the decaying exit below).
 // With theta 1, aim_leverage 1 and dust 0 each operation is baseline-v1's (band 0,
 // fraction 1): aim = 1.0 * desired is exact and the move is the same expression
 // current + theta * (aim - current), so the plan is bit-identical (also when fused,
@@ -669,12 +670,17 @@ f64 quantile(std::span<const f64> sorted, f64 q) {
   return sorted[lo] + (h - static_cast<f64>(lo)) * (sorted[hi] - sorted[lo]);
 }
 Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
-constexpr const char* exit_rule_declaration =
+constexpr const char* exit_rate_rule_declaration =
     "exit_rate r < 1 (v6 prereg C2): at every decision a nonmember present at d moves next = "
     "current * (1 - r) and is set to 0 when |next| <= dust_multiple / N_d (N_d = members at "
     "d; every name when N_d = 0); a nonmember absent at d exits to 0 at once (stale carry "
     "and write-off unchanged); the moves count as forced turnover; r = 1 is the immediate "
     "exit";
+// The aim_partial declarations' nonmember clause: the immediate exit (exit_rate 1: the
+// default text byte for byte) or, below 1, a pointer to exit_rate_rule.
+const char* nonmember_exit(const TargetReplayConfig& c) {
+  return decaying_exit(c) ? "nonmembers follow exit_rate_rule" : "nonmembers exit to 0";
+}
 Json construction_recipe(const TargetReplayConfig& c) {
   Json j = Json::object();
   if (neutralizing(c)) {
@@ -706,15 +712,16 @@ Json construction_recipe(const TargetReplayConfig& c) {
     j["dust_multiple"] = c.dust_multiple;
     j["aim_leverage"] = c.aim_leverage;
     j["rate"] = aim_rate(c);
-    j["aim_partial"] = "rebalance decision: each member moves next = current + theta * "
-        "(aim_leverage * desired - current) unless |aim_leverage * desired - current| <= "
-        "dust_multiple / N_d (N_d = members at d; 0 = off), which keeps its weight and is "
-        "counted in banded_names; non-rebalance decisions keep member weights; nonmembers "
-        "exit to 0; theta = trade_fraction (rate fixed); monthly_budget unused";
+    j["aim_partial"] = std::string("rebalance decision: each member moves next = current + "
+        "theta * (aim_leverage * desired - current) unless |aim_leverage * desired - "
+        "current| <= dust_multiple / N_d (N_d = members at d; 0 = off), which keeps its "
+        "weight and is counted in banded_names; non-rebalance decisions keep member "
+        "weights; ") + nonmember_exit(c) + "; theta = trade_fraction (rate fixed); "
+        "monthly_budget unused";
   }
   if (decaying_exit(c)) { // aim-partial-v5 only (validate_config); absent by default
     j["exit_rate"] = c.exit_rate;
-    j["exit_rule"] = exit_rule_declaration;
+    j["exit_rate_rule"] = exit_rate_rule_declaration;
   }
   return j;
 }
@@ -1098,5 +1105,6 @@ bool parse_neutralize(std::string_view value, TargetNeutralize& out) {
 const char* neutralize_outcome_label(NeutralizeOutcome outcome) { return outcome_label(outcome); }
 f64 sorted_quantile(std::span<const f64> sorted, f64 q) { return quantile(sorted, q); }
 u32 calendar_month(i64 session_ns) { return ::atx::impl::strategy::calendar_month(session_ns); }
+const char* nonmember_exit_clause(const TargetReplayConfig& cfg) { return nonmember_exit(cfg); }
 } // namespace detail
 } // namespace atx::impl::strategy
