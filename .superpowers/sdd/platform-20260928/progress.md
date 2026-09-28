@@ -17,6 +17,22 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 L1 merged (b5554999) -- real-data ACCEPTED, one gtest fix-up pending; L4 merged (6f7ee661) -- build green
+- Build mega-v7-l1 (core tests, IC tests, IC exe, target tests): exit 0, 95 TUs, 215.6 s. Sha256.* 7/7; StrategyIcRunner.*
+  44/45 (CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests: "candidate cache partial output" -> sent to L1);
+  StrategyLive.* 9/9 after the L3 test fix.
+- L1 real data (hard-linked v6u cache -> mega-candidate-cache-v7l1, --cache-legacy-fields lo1-fields-v6b): u pass 23.9 s /
+  856 MiB (was 76.1-104.9 s / 1,059 MiB), signal + IC cache 38 hit / 1 miss (sv_flow only), orientations.json,
+  train_daily_ic.csv, train_combined.json byte-identical to mega-v61-train-u-1, train_candidates identical after the four
+  timing/cache drops. w pass 19.3 s / 505 MiB (was 31.5 s), 39/39 hits, identical to mega-v61w-train-ew-1. --cache-report
+  works with --max-memory-mib 1536 (without it the admission check refuses; L1-F1 minor). Targets were u <= 20 / w <= 15 s;
+  measured under a concurrent 4-job build; accepted on identity + hit counts, timing re-measured on a quiet host later.
+- L4 rebased onto L3 (fb5920f0; conflicts in the two CMakeLists and strategy_nav_replay.cpp, hook 14+/4- lines at 10
+  seams inside L3's plan_weights). Build mega-v7-l4 (target tests, NAV exe, new atx-equity-strategy-risk): exit 0, 46.6 s,
+  9 TUs. 119/119 gtests (L4 suites + identity suites + StrategyLive). Risk verb on the real lo1 role refused:
+  "InvalidArgument: risk: role presence/membership masks" -> sent to L4 (must load the restriction masks as the replay does).
+  Stress/capacity run and the aim-partial-v6 identity cell in progress.
+
 ## 2026-09-28 L2 ACCEPTED; L3 merged (31f79c0e + fix 8f66bd25) and ACCEPTED; L1 follow-up in flight
 - L2 items (2)-(4): `run specs/v61.json --suffix r7` reproduced the v6.1 ladder with zero hand pins (u 104.9 s / 1059 MiB,
   fit 34.7 s, w 43.3 s, nav 40.5 s); all 10 daily/events CSVs byte-identical to the v6.1 cell (primary sha 1adf0e8f...).
