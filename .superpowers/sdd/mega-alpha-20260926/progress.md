@@ -1,5 +1,21 @@
 # Active task: recent-data DSL ensemble
 
+## v6 GOAL-2 SPRINT CLOSED ON TRAIN -- STOP (owner: "stop after score card is generated") (2026-09-28 ~01:20)
+Handoff 5: docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md (no freeze proposal; DSR .904 < .95; U1 decision to the owner;
+30 rulings; D1-D15 disclosures; next-goal prompt). Scorecard v6: docs/plans/2026-09-28-mega-alpha-scorecard-v6.md
+(generator studies/v6_scorecard.py). Docs-lane findings recorded:
+- v6-1 receipt DirtyEntries 1: a docs file (the W child's task-V6W-report.md fix-round section, committed 30483481 minutes
+  later), not source; the m1 A/B bounds the IC change on the unthemed path. Ruling: disclosed, no rebuild -- cost if wrong: none
+  for the accepted stack (schema-v1 weights, proven byte-identical).
+- Prereg V6-W said "applied to library v5.1 first"; after the grid-parent ruling the composition was tested on library v6 only
+  and rejected. Ruling: the v5.1 application is dropped, not deferred -- why: a rejected composition on the stronger library is
+  not re-tried on the weaker one; no trial spent -- cost if wrong: one untested cell.
+- 2020 contributes ~0 in both universe-restricted cells (TRAIN Sharpe rests on 2021-2022): disclosed in handoff §0.
+- n28 netting_ratio used the final weights for all cells: wrong for 26 of 28; not reported. m1 identity: 6 train_combined.*
+  files SAME (the ledger said five).
+Final state: pool-2 tree clean after this commit; pools 3/4/5/10/11 hold the lane branches (reusable); no agents running;
+validation trial #3 unspent; nothing >= 2023 read in v6.
+
 ## GATE READ-OUT: final cell S2 net +1.182, mechanics PASS, cross-cell DSR 0.904 < .95 -> NO FREEZE PROPOSAL; owner decision (2026-09-28 ~01:05)
 Cross-cell summary build-equity/mega-nav-v6-summ-n28.{txt,json} (13 v5 + 15 v6 cells, --dsr-n 28, reference v5 REF): final cell
 DSR = 0.9040 (SR0 0.385 ann; V[SR_n] 1.403e-04 cross-cell; skew -1.319, kurt 13.54, T 754). Lo-null single-cell DSR 0.499
