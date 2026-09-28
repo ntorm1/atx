@@ -93,6 +93,7 @@ struct Inputs {
   Json fields_used = Json::object();
   std::vector<std::string> unavailable;
   std::string cap_rule;
+  u64 member_cells{}, member_absent_cells{};
 };
 
 co::Status load_role(const std::string& path, const std::string& sha, u64 budget, Inputs& in) {
@@ -121,9 +122,26 @@ co::Status load_role(const std::string& path, const std::string& sha, u64 budget
       !std::is_sorted(in.ids.begin(), in.ids.end()) ||
       std::adjacent_find(in.ids.begin(), in.ids.end()) != in.ids.end())
     return co::Err(co::ErrorCode::InvalidArgument, "risk: role axes must strictly increase");
-  for (usize k = 0; k < c; ++k)
-    if (in.present[k] > 1 || in.member[k] > 1 || (in.member[k] && !in.present[k]))
-      return co::Err(co::ErrorCode::InvalidArgument, "risk: role presence/membership masks");
+  // The engine role contract (atx-engine strategy_data.cpp read_strategy_role, and the
+  // replay's load_prices): binary masks; a present cell has finite prices (close, raw > 0,
+  // volume >= 0), an absent one NaN. Membership is the decision membership (prior window,
+  // e.g. the linked-operating restriction of a -lo role) and is independent of presence: a
+  // member may be absent at a session. The model fits members present at t-1 and t
+  // (strategy_risk_model.cpp: eligibility = member && present && cap; returns need both ends).
+  for (usize k = 0; k < c; ++k) {
+    if (in.present[k] > 1 || in.member[k] > 1)
+      return co::Err(co::ErrorCode::InvalidArgument, "risk: role presence/membership masks not binary");
+    const std::array<f64, 3> prices{in.close[k], in.raw[k], in.volume[k]};
+    for (usize f = 0; f < prices.size(); ++f) {
+      const f64 x = prices[f];
+      if (in.present[k] ? (!std::isfinite(x) || (f == 2 ? x < 0 : x <= 0)) : !std::isnan(x))
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "risk: role price contract (present: finite, close/raw > 0, volume >= 0; "
+                       "absent: NaN)");
+    }
+    in.member_cells += in.member[k];
+    in.member_absent_cells += in.member[k] && !in.present[k] ? 1U : 0U;
+  }
   return co::Ok();
 }
 
@@ -584,6 +602,12 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
                                              {"rows", book.size()}}},
       {"geometry", {{"dates", in.dates}, {"instruments", in.names}, {"factors", factor_count},
                     {"styles", style_count}}},
+      {"role_masks", {{"member_cells", in.member_cells},
+                      {"member_absent_cells", in.member_absent_cells},
+                      {"rule", "binary present/member masks; membership independent of "
+                               "presence; the WLS and the standardization universe are members "
+                               "present with cap (returns need both ends present); present "
+                               "non-members get exposures and specific risk, never enter a fit"}}},
       {"cap_rule", in.cap_rule}, {"descriptors_used", std::move(descriptors_used)},
       {"unavailable", in.unavailable}, {"recipe", recipe_json(cfg)},
       {"bias_harness", {{"random_portfolios", a.random}, {"seed", a.seed},

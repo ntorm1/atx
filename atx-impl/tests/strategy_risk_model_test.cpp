@@ -2,14 +2,23 @@
 // estimator against atx-engine risk V2, the bias statistic, and the model end to end on a
 // planted factor panel. Synthetic inputs only.
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <numbers>
 #include <span>
+#include <sstream>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+#include "atx/core/sha256.hpp"
 #include "atx/core/linalg/linalg.hpp"
 #include "atx/engine/risk/cov_ewma.hpp"
 #include "../src/strategy_risk_model.hpp"
@@ -18,6 +27,7 @@ namespace {
 using namespace atx;
 namespace rk = atx::impl::strategy::risk;
 namespace co = atx::core;
+using Json = nlohmann::json;
 constexpr i64 day_ns = 86'400'000'000'000LL;
 constexpr f64 missing = std::numeric_limits<f64>::quiet_NaN();
 
@@ -385,5 +395,176 @@ TEST(RiskModel, NamesAndReturnGuard) {
   EXPECT_TRUE(std::isnan(rk::interval_return(p, 3, 0)));
   EXPECT_TRUE(std::isfinite(rk::interval_return(p, 3, 1)));
   EXPECT_TRUE(std::isnan(rk::interval_return(p, 0, 1)));
+}
+// ---- restricted roles: membership independent of presence -----------------------------------
+// The -lo roles restrict membership (linked-operating names) and a member may be absent at a
+// session. Every 4th name is a present non-member; three members are absent at three sessions
+// (prices NaN, as the role contract requires).
+constexpr std::array<usize, 3> absent_sessions{150, 151, 200};
+constexpr std::array<usize, 3> absent_names{0, 5, 10};
+void restrict_membership(Planted& p) {
+  for (usize t = 0; t < p.d; ++t)
+    for (usize i = 3; i < p.n; i += 4) p.member[t * p.n + i] = 0;
+  for (const usize t : absent_sessions)
+    for (const usize i : absent_names) {
+      const usize k = t * p.n + i;
+      p.present[k] = 0; p.close[k] = missing; p.raw[k] = missing; p.volume[k] = missing;
+    }
+}
+struct Rows final : rk::RiskSink {
+  std::vector<usize> regression_rows;
+  std::vector<u8> fitted, last_eligible;
+  std::vector<f64> last_specific;
+  usize dates{};
+  co::Status on_day(const rk::RiskDay& day) override {
+    regression_rows.push_back(day.regression_rows);
+    fitted.push_back(static_cast<u8>(day.fitted));
+    if (day.date + 1 == dates) {
+      last_eligible.assign(day.eligible.begin(), day.eligible.end());
+      last_specific.assign(day.specific_variance.begin(), day.specific_variance.end());
+    }
+    return co::Ok();
+  }
+};
+TEST(RiskModel, AbsentMembersAndNonMembersStayOutOfTheFit) {
+  Planted planted(300, 200, 53);
+  restrict_membership(planted);
+  const auto panel = planted.panel();
+  Rows rows; rows.dates = planted.d;
+  std::array<rk::RiskSink*, 1> sinks{&rows};
+  const auto status = rk::run_risk_model(panel, rk::RiskModelConfig{}, sinks);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const usize n = planted.n;
+  for (usize t = 1; t < planted.d; ++t) {
+    usize expected = 0; // members present at t-1 (with cap) and at t: a present return
+    for (usize i = 0; i < n; ++i)
+      expected += planted.member[(t - 1) * n + i] && planted.present[(t - 1) * n + i] &&
+                  planted.present[t * n + i] ? 1U : 0U;
+    EXPECT_EQ(rows.regression_rows[t], expected) << t;
+    EXPECT_TRUE(rows.fitted[t]) << t;
+  }
+  EXPECT_EQ(rows.regression_rows[150], 150U - 3U); // absent at t
+  EXPECT_EQ(rows.regression_rows[152], 150U - 3U); // absent at t - 1
+  EXPECT_EQ(rows.regression_rows[153], 150U);
+  for (usize i = 3; i < n; i += 4) {
+    EXPECT_FALSE(rows.last_eligible[i]) << i;
+    EXPECT_TRUE(std::isfinite(rows.last_specific[i])) << i; // held non-members stay priced
+  }
+}
+
+// The `risk` verb on a pinned synthetic restricted role + fields set.
+struct Directory {
+  std::filesystem::path path;
+  Directory() {
+    static std::atomic<u64> counter{0};
+    const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+    path = std::filesystem::temp_directory_path() /
+        ("atx_risk_" + std::to_string(tick) + "_" + std::to_string(counter.fetch_add(1)));
+    if (!std::filesystem::create_directory(path)) throw std::runtime_error("fixture directory");
+  }
+  ~Directory() { std::error_code ec; std::filesystem::remove_all(path, ec); }
+  Directory(const Directory&) = delete;
+  Directory& operator=(const Directory&) = delete;
+};
+template <class T>
+Json write_payload(const std::filesystem::path& file, const std::vector<T>& values) {
+  std::ofstream out(file, std::ios::binary);
+  const auto bytes = std::as_bytes(std::span(values));
+  // SAFETY: char writes the object representation of contiguous arithmetic fixture data.
+  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  out.close();
+  if (!out) throw std::runtime_error("fixture payload write");
+  return Json{{"bytes", bytes.size()}, {"sha256", co::sha256_file(file.string()).value()}};
+}
+std::string write_json(const std::filesystem::path& path, const Json& value) {
+  std::ofstream out(path, std::ios::binary);
+  out << value.dump(2) << '\n';
+  out.close();
+  if (!out) throw std::runtime_error("fixture JSON write");
+  return co::sha256_file(path.string()).value();
+}
+struct PinnedSet {
+  std::string role, role_sha, fields, fields_sha;
+};
+// Role (atx.recent-research-role/v1) and fields (atx.research-role-fields/v1: me_company,
+// grp_ff49, be) for `p` under `dir`.
+PinnedSet write_role_and_fields(const std::filesystem::path& dir, const Planted& p) {
+  const auto role_dir = dir / "role", fields_dir = dir / "fields";
+  std::filesystem::create_directories(role_dir);
+  std::filesystem::create_directories(fields_dir);
+  Json files = Json::object();
+  files["sessions.i64"] = write_payload(role_dir / "sessions.i64", p.sessions);
+  files["ids.u64"] = write_payload(role_dir / "ids.u64", p.ids);
+  files["close.f64"] = write_payload(role_dir / "close.f64", p.close);
+  files["raw_close.f64"] = write_payload(role_dir / "raw_close.f64", p.raw);
+  files["volume.f64"] = write_payload(role_dir / "volume.f64", p.volume);
+  files["present.u8"] = write_payload(role_dir / "present.u8", p.present);
+  files["member.u8"] = write_payload(role_dir / "member.u8", p.member);
+  const Json role{{"schema", "atx.recent-research-role/v1"}, {"status", "complete"},
+      {"volume_basis", "raw-share-volume"}, {"dates", p.d}, {"instruments", p.n}, {"files", files}};
+  PinnedSet out;
+  out.role = (role_dir / "manifest.json").string();
+  out.role_sha = write_json(role_dir / "manifest.json", role);
+  std::vector<f64> industry(p.industry.begin(), p.industry.end()), be(p.d * p.n);
+  for (usize k = 0; k < be.size(); ++k) be[k] = static_cast<f64>(p.value[k]) * p.cap[k];
+  Json field_list = Json::array(), field_files = Json::object();
+  const auto add = [&](const std::string& name, const std::vector<f64>& values) {
+    const auto receipt = write_payload(fields_dir / (name + ".f64"), values);
+    field_files[name + ".f64"] = receipt;
+    field_list.push_back(Json{{"name", name}, {"file", name + ".f64"}, {"dtype", "<f8"},
+        {"layout", "date-major"}, {"shape", Json::array({p.d, p.n})},
+        {"sha256", receipt.at("sha256")}, {"point_in_time", true}});
+  };
+  add("me_company", p.cap);
+  add("grp_ff49", industry);
+  add("be", be);
+  const Json fields{{"schema", "atx.research-role-fields/v1"}, {"status", "complete"},
+      {"role", {{"manifest_sha256", out.role_sha},
+                {"sessions_sha256", files.at("sessions.i64").at("sha256")},
+                {"ids_sha256", files.at("ids.u64").at("sha256")},
+                {"member_sha256", files.at("member.u8").at("sha256")}}},
+      {"fields", field_list}, {"files", field_files}};
+  out.fields = (fields_dir / "manifest.json").string();
+  out.fields_sha = write_json(fields_dir / "manifest.json", fields);
+  return out;
+}
+int run_verb(const PinnedSet& s, const std::filesystem::path& output, std::string& error) {
+  std::vector<std::string> args{"risk", "--role", s.role, "--role-sha256", s.role_sha,
+      "--fields", s.fields, "--fields-sha256", s.fields_sha, "--output", output.string(),
+      "--random-portfolios", "4"};
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  std::ostringstream out, err;
+  const int code = rk::dispatch_risk_model(static_cast<int>(argv.size()), argv.data(), out, err);
+  error = err.str();
+  return code;
+}
+TEST(RiskVerb, RestrictedRoleWithAbsentMembersRunsAndMalformedMasksAreRefused) {
+  Directory dir;
+  Planted planted(300, 200, 59);
+  restrict_membership(planted);
+  const auto pinned = write_role_and_fields(dir.path / "ok", planted);
+  std::string error;
+  ASSERT_EQ(run_verb(pinned, dir.path / "ok" / "out", error), 0) << error;
+  std::ifstream in(dir.path / "ok" / "out" / "manifest.json");
+  Json manifest;
+  in >> manifest;
+  EXPECT_EQ(manifest.at("status"), "complete");
+  usize members = 0;
+  for (const u8 m : planted.member) members += m;
+  EXPECT_EQ(manifest.at("role_masks").at("member_cells").get<usize>(), members);
+  EXPECT_EQ(manifest.at("role_masks").at("member_absent_cells").get<usize>(), 9U);
+  // A non-binary mask is refused.
+  Planted bad_mask = planted;
+  bad_mask.member[10 * bad_mask.n + 1] = 2;
+  const auto refused = write_role_and_fields(dir.path / "mask", bad_mask);
+  EXPECT_EQ(run_verb(refused, dir.path / "mask" / "out", error), 1);
+  EXPECT_NE(error.find("not binary"), std::string::npos) << error;
+  // An absent cell with a price breaks the role contract.
+  Planted bad_price = planted;
+  bad_price.present[20 * bad_price.n + 2] = 0;
+  const auto contract = write_role_and_fields(dir.path / "price", bad_price);
+  EXPECT_EQ(run_verb(contract, dir.path / "price" / "out", error), 1);
+  EXPECT_NE(error.find("price contract"), std::string::npos) << error;
 }
 } // namespace
