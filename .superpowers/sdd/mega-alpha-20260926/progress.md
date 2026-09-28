@@ -1,5 +1,20 @@
 # Active task: recent-data DSL ensemble
 
+## V6-F FINAL CELL: S2 net +1.182 at gross .971 -- R6' MECHANICS PASS, net >= 1.0 PASS; cross-cell DSR pending (2026-09-28 ~00:45)
+build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247 (library v6 5ee66d13 x ew-theme-v1 weights 490c3836 on the
+linked-operating-v1 role x aim-partial-v5 theta .05 dust .1 fixed rate, delta orders, exit rate .05, locate-in-aim, liquidity
+cache, price-risk-v1, L 1.247; NAV exe f55537fc, tag v6-2).
+S2 (modeled-1bn-stale5-v1 x swap-fin-v1): net +1.182, gross SR 1.547, HAC t 2.08, mu 5.41%, vol 4.57%, MDD .047, years 2020
++.001 / 2021 +.083 / 2022 +.082; tau mean .0375 / p95 .0476; cost_bps_traded 13.55; cost/GMV-tau .00121.
+Mechanics (all rows): gross_lev .9713 in [.90, 1.05] PASS; mean net +.0053 (|net| <= .02) PASS; tau PASS; post-ramp gross 1.0007.
+S1 +1.324; flat-300 +1.006; held_names 1852. Paired vs its L 1 parent: dSR -0.010 (SE .007; impact convexity at L 1.25:
+cost/$ 12.82 -> 13.55). Single-cell DSR (Lo null, N 28): .499 (SR0 1.184 ~ SR).
+Appendix A (TRAIN 2020-2022 only; no 2023+ read; per-candidate VAL statistics never read): v6 admission 38 + 38 (library v6 on
+role v2, then on the restricted role; res_mom_12_1 re-trial of v4.2); compositions 3 (ew-theme-v1 x2, ew-theme-v6); universe
+1; construction cells 15 (parent, 5 grid, 4 conditional, ew6, ind-v1, ind-v2, v6u, final) + 1 D2-identical (not a trial);
+cumulative DSR N = 13 (v5) + 15 (v6) = 28; validation trials spent: #1 (v3), #2 (v4.1); #3 unspent (needs U1).
+Next: cross-cell DSR over all 28 cells (nav_summ); whole-branch review verdict; freeze proposal + handoff 5.
+
 ## V6-U RESULT: linked-operating universe -> S2 net +1.192 at L 1 (parent +0.975) -- ACCEPTED; final cell declared (2026-09-28 ~00:30)
 Fields lo1-fields-v6b (40 fields = fields-v6 list; peak RSS 630 MiB; the env example's list lacked grp_ff49 -> first u attempt
 refused "library field 'grp_ff49' ... not in the pinned train fields manifest"; fields-v6 (39 fields) dir unused). u pass 5
