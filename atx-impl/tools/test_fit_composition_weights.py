@@ -217,16 +217,41 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+V2_SCHEMA = "atx.dsl-candidate-signal/v2"
+# Two extra fields, listed out of name order: the key and fp_<fk16> order them by name.
+FIELD_PAYLOADS = {"sv_ratio126": "34" * 32, "book_to_price": "56" * 32}
+
+
+def v2_field_lines(fields: dict) -> str:
+    return "".join(f"field={k}:{fields[k]}\n" for k in sorted(fields))
+
+
+def v2_signal_key(vm_identity: str, role_sha: str, dates: int, instruments: int, dsl_sha: str, fields: dict) -> str:
+    """strategy_ic_runner.cpp signal_key_text() written out literally (independent of fcw)."""
+    text = ("atx.dsl-candidate-signal-key/v2\n" f"vm_identity={vm_identity}\n"
+            "eval_mode=ResearchFast;full-historical-asof-member-mask\n"
+            "layout=date-major-little-endian-f64;non-finite-stored-as-quiet-NaN\n"
+            f"role_manifest_sha256={role_sha}\ndates={dates}\ninstruments={instruments}\n"
+            f"dsl_sha256={dsl_sha}\n" + v2_field_lines(fields))
+    return sha(text.encode())
+
+
 class Fixture:
     """Role dir + library + orientations + the runner's landed candidate cache layout + TRAIN summary.json.
 
     Cache ROOT = cache/ for the legacy VM identity, else cache/<identity>/ (strategy_ic_runner.cpp
-    cache_root). Base candidates live in ROOT/<train sha>/, ``field_ids`` in ROOT/<fields sha>/.
+    cache_root). ``layout``:
+      v1         v1 runner: ROOT/<train sha>/<id>.{f64,json}, ``field_ids`` in ROOT/<fields sha>/; no entries.
+      v2         v2 runner: ROOT/<train sha>/[fp_<fk16>/]<id>.<dsl16>.{f64,json} + candidate_cache.entries[].
+      v1-listed  v2 runner reading the v1 entries in place: v1 files + candidate_cache.entries[].
     """
 
     def __init__(self, root: Path, panel=None, signals=None, signs=SIGNS, sidecar_role="train",
                  end_ns=None, ids=IDS, families=FAMILIES, vm_identity=fcw.LEGACY_VM_IDENTITY, field_ids=(),
-                 fields_sha="ef" * 32, keyless_legacy=False, sidecar_patch=None, candidate_extra=None):
+                 fields_sha="ef" * 32, keyless_legacy=False, sidecar_patch=None, candidate_extra=None,
+                 layout="v1", field_payloads=FIELD_PAYLOADS):
+        assert layout in ("v1", "v2", "v1-listed")
+        self.layout, self.field_payloads = layout, dict(field_payloads)
         self.root, self.ids = root, list(ids)
         self.p = panel if panel is not None else synthetic_panel()
         self.signals = signals if signals is not None else synthetic_signals(self.p)
@@ -270,24 +295,34 @@ class Fixture:
         self.cache = root / "cache"
         self.cache_root = self.cache if vm_identity == fcw.LEGACY_VM_IDENTITY else self.cache / vm_identity
         self.vm_identity, self.fields_sha, self.field_ids = vm_identity, fields_sha, set(field_ids)
+        entries = []
         for cid, s, dsha in zip(ids, self.signals, self.dsl_sha):
             entry = self.entry_dir(cid)
             entry.mkdir(parents=True, exist_ok=True)
             data = np.ascontiguousarray(s.astype("<f8")).tobytes()
-            (entry / f"{cid}.f64").write_bytes(data)
+            self.payload_path(cid).write_bytes(data)
             sidecar = {"schema": fcw.CACHE_SCHEMA, "candidate_id": cid, "dsl_sha256": dsha,
                        "role_manifest_sha256": self.train_sha, "role": sidecar_role,
                        "eval_mode": fcw.VM_EVAL_MODE, "layout": fcw.CACHE_LAYOUT, "dates": d, "instruments": n,
-                       "bytes": len(data), "payload": f"{cid}.f64", "payload_sha256": sha(data),
+                       "bytes": len(data), "payload": self.payload_path(cid).name, "payload_sha256": sha(data),
                        "engine_git_sha": fcw.LEGACY_ENGINE_SHAS[0], "vm_identity": vm_identity}
+            fields = self.field_payloads if cid in self.field_ids else {}
+            key = v2_signal_key(vm_identity, self.train_sha, d, n, dsha, fields)
+            if layout == "v2":
+                sidecar.update(schema=V2_SCHEMA, field_payload_sha256=fields, signal_key_sha256=key)
             if keyless_legacy:
                 del sidecar["vm_identity"]
             if cid in self.field_ids:
                 sidecar["fields_manifest_sha256"] = fields_sha
             sidecar.update((sidecar_patch or {}).get(cid, {}))
-            (entry / f"{cid}.json").write_bytes(json.dumps(sidecar, indent=2).encode())
+            self.sidecar_path(cid).write_bytes(json.dumps(sidecar, indent=2).encode())
+            entries.append({"id": cid, "layout": "v2" if layout == "v2" else "v1",
+                            "sidecar": str(self.sidecar_path(cid)), "payload": str(self.payload_path(cid)),
+                            "payload_sha256": sha(data), "field_payload_sha256": fields, "signal_key_sha256": key})
         cache_summary = {"directory": str(self.cache_root / self.train_sha), "vm_identity": vm_identity,
                          "hits": 0, "misses": len(ids)}
+        if layout != "v1":
+            cache_summary.update(layout=V2_SCHEMA, legacy_hits=0, entries=entries)
         train_role = {"role": "train", "manifest_sha256": self.train_sha, "candidate_cache": cache_summary}
         if self.field_ids:
             cache_summary["fields_directory"] = str(self.cache_root / fields_sha)
@@ -298,7 +333,22 @@ class Fixture:
         self.signs = list(signs)
 
     def entry_dir(self, cid: str) -> Path:
-        return self.cache_root / (self.fields_sha if cid in self.field_ids else self.train_sha)
+        if self.layout != "v2":
+            return self.cache_root / (self.fields_sha if cid in self.field_ids else self.train_sha)
+        base = self.cache_root / self.train_sha
+        return base / f"fp_{sha(v2_field_lines(self.field_payloads).encode())[:16]}" if cid in self.field_ids else base
+
+    def stem(self, cid: str) -> str:
+        return f"{cid}.{self.dsl_sha[self.ids.index(cid)][:16]}" if self.layout == "v2" else cid
+
+    def payload_path(self, cid: str) -> Path:
+        return self.entry_dir(cid) / f"{self.stem(cid)}.f64"
+
+    def sidecar_path(self, cid: str) -> Path:
+        return self.entry_dir(cid) / f"{self.stem(cid)}.json"
+
+    def cache_summary(self, doc=None) -> dict:
+        return (doc if doc is not None else self.summary_doc)["roles"][0]["candidate_cache"]
 
     def write_summary(self, doc=None) -> None:
         self.summary = self.root / "train" / "summary.json"
@@ -937,6 +987,178 @@ class CacheLayoutResolution(unittest.TestCase):
             fcw.fit(fx.args(out, work_dir=self.root / "pending_work"))
         self.assertIn("stale or concurrent partial output", str(caught.exception))
         self.assertFalse((self.root / "pending_work").exists())  # refused before any compute
+
+
+class CacheLayoutV2(unittest.TestCase):
+    """A v2 runner summary's candidate_cache.entries[]: v2 content-keyed entries, v1 entries read in place."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.p = synthetic_panel(dates=200, score_begin=150)
+        self.signals = synthetic_signals(self.p)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fixture(self, name, layout="v2", **kw):
+        kw.setdefault("vm_identity", NON_DEV_IDENTITY)
+        kw.setdefault("field_ids", {"alpha_b", "tie_heavy"})
+        return Fixture(self.root / name, self.p, self.signals, layout=layout, **kw)
+
+    def refuse(self, fx, fragment, **override):
+        out = self.root / "refused"
+        with self.assertRaises(fcw.FitError) as caught:
+            fcw.fit(fx.args(out, **override))
+        self.assertIn(fragment, str(caught.exception))
+        self.assertFalse(out.exists())
+
+    def fit_files(self, fx, name, screen="none", **override):
+        out = self.root / name
+        code, summary = fcw.fit(fx.args(out, screen, **override))
+        self.assertEqual(code, fcw.EXIT_OK)
+        return {p.name: p.read_bytes() for p in out.iterdir()}, summary
+
+    def assert_same_bytes_but_summary_pin(self, files, summary_sha, ref_files, ref_summary_sha):
+        """Byte identity once the (necessarily different) runner summary pin, and with it the
+        admission.json SHA the weights file records, are swapped back."""
+        self.assertNotEqual(summary_sha, ref_summary_sha)
+        self.assertEqual(sorted(files), sorted(ref_files))
+        swaps = [(summary_sha, ref_summary_sha)]
+        if fcw.OUTPUT_ADMISSION in files:
+            swaps.append((sha(files[fcw.OUTPUT_ADMISSION]), sha(ref_files[fcw.OUTPUT_ADMISSION])))
+        for name, data in files.items():
+            for mine, ref in swaps:
+                data = data.replace(mine.encode(), ref.encode())
+            self.assertEqual(data, ref_files[name], name)
+
+    def test_v2_entries_live_at_content_keyed_paths(self):
+        fx = self.fixture("paths")
+        base = fx.cache / NON_DEV_IDENTITY / fx.train_sha
+        fk16 = sha(f"field=book_to_price:{'56' * 32}\nfield=sv_ratio126:{'34' * 32}\n".encode())[:16]
+        self.assertTrue((base / f"alpha_a.{fx.dsl_sha[0][:16]}.f64").is_file())
+        self.assertTrue((base / f"fp_{fk16}" / f"alpha_b.{fx.dsl_sha[1][:16]}.json").is_file())
+        self.assertFalse((base / "alpha_a.json").exists())
+        self.assertFalse((fx.cache / NON_DEV_IDENTITY / fx.fields_sha).exists())
+        role = fcw.RoleManifest(fx.manifest, fx.train_sha)
+        layout = fcw.CacheLayout(fx.summary, fx.summary_sha, role, fx.orientations_sha, "cd" * 32)
+        cands = fcw.load_library(fx.library, fx.library_sha)
+        got = {c["id"]: layout.resolve(c, role) for c in cands}
+        self.assertEqual(got["alpha_a"]["payload"], base / f"alpha_a.{fx.dsl_sha[0][:16]}.f64")
+        self.assertEqual((got["alpha_a"]["fields_manifest_sha256"], got["alpha_b"]["fields_manifest_sha256"]),
+                         (None, fx.fields_sha))  # a field candidate's work stays keyed by the pinned manifest
+        self.assertEqual(fcw.signal_key_sha256(NON_DEV_IDENTITY, role, fx.dsl_sha[1], FIELD_PAYLOADS),
+                         v2_signal_key(NON_DEV_IDENTITY, fx.train_sha, role.dates, role.instruments, fx.dsl_sha[1],
+                                       FIELD_PAYLOADS))
+
+    def test_every_layout_fits_the_same_bytes_and_shares_work_records(self):
+        work = self.root / "work"
+        ref = self.fixture("v1", "v1")
+        ref_files, summary = self.fit_files(ref, "v1_out", work_dir=work)
+        self.assertEqual(summary["computed_this_run"], len(IDS))
+        for layout in ("v2", "v1-listed"):
+            fx = self.fixture(layout, layout)
+            self.assertEqual(fx.train_sha, ref.train_sha)
+            files, summary = self.fit_files(fx, f"{layout}_out", work_dir=work)
+            self.assertEqual((summary["computed_this_run"], summary["reused"]), (0, len(IDS)), layout)
+            self.assert_same_bytes_but_summary_pin(files, fx.summary_sha, ref_files, ref.summary_sha)
+        doc = json.loads(files[fcw.OUTPUT_WEIGHTS])
+        rows = {r["id"]: r for r in doc["provenance"]["candidates"]}
+        self.assertEqual([rows[i]["cache_entry"] for i in ("alpha_a", "alpha_b", "tie_heavy")], ["base", "fields", "fields"])
+        runner_accepts(files[fcw.OUTPUT_WEIGHTS], fx.library_sha, IDS, fx.train_sha)
+
+    def test_admission_bytes_do_not_depend_on_the_cache_layout(self):
+        panel, signals, ids = screen_world()
+        got = {}
+        for layout in ("v1", "v2", "v1-listed"):
+            fx = Fixture(self.root / layout, panel, signals, SCREEN_RUNNER_SIGNS, ids=ids,
+                         families=["fam"] * len(ids), vm_identity=NON_DEV_IDENTITY, field_ids={"slow_b", "flip"},
+                         layout=layout)
+            got[layout] = (fx.summary_sha, self.fit_files(fx, f"{layout}_out", "v3-admit-v1")[0])
+        ref_sha, ref_files = got["v1"]
+        self.assertIn(fcw.OUTPUT_ADMISSION, ref_files)
+        self.assertEqual(len(json.loads(ref_files[fcw.OUTPUT_ADMISSION])["candidates"]), len(ids))
+        for layout in ("v2", "v1-listed"):
+            summary_sha, files = got[layout]
+            self.assertIn(summary_sha.encode(), files[fcw.OUTPUT_ADMISSION])  # the pin is the only difference
+            self.assert_same_bytes_but_summary_pin(files, summary_sha, ref_files, ref_sha)
+
+    def test_v1_field_entry_under_an_older_manifest_is_read_in_place(self):
+        fx = self.fixture("legacy", "v1-listed")
+        old = "0a" * 32
+        old_dir = fx.cache_root / old
+        old_dir.mkdir()
+        doc = json.loads(json.dumps(fx.summary_doc))
+        for e in fx.cache_summary(doc)["entries"]:
+            if e["field_payload_sha256"]:  # --cache-legacy-fields: the runner matched these field payloads
+                cid = e["id"]
+                side = dict(json.loads(fx.sidecar_path(cid).read_bytes()), fields_manifest_sha256=old)
+                (old_dir / f"{cid}.json").write_bytes(json.dumps(side).encode())
+                fx.payload_path(cid).replace(old_dir / f"{cid}.f64")
+                fx.sidecar_path(cid).unlink()
+                e.update(sidecar=str(old_dir / f"{cid}.json"), payload=str(old_dir / f"{cid}.f64"))
+        fx.write_summary(doc)
+        files, _ = self.fit_files(fx, "legacy_out")
+        rows = {r["id"]: r for r in json.loads(files[fcw.OUTPUT_WEIGHTS])["provenance"]["candidates"]}
+        self.assertEqual((rows["alpha_b"]["cache_entry"], rows["alpha_a"]["cache_entry"]), ("fields", "base"))
+        side = json.loads((old_dir / "alpha_b.json").read_bytes())
+        (old_dir / "alpha_b.json").write_bytes(json.dumps(dict(side, fields_manifest_sha256=fx.fields_sha)).encode())
+        self.refuse(fx, "fields manifest mismatch alpha_b")  # the sidecar must name its own directory's manifest
+
+    def test_summary_entry_refusals(self):
+        fx = self.fixture("summary")
+        good = json.loads(json.dumps(fx.summary_doc))
+
+        def edited(mutate):
+            doc = json.loads(json.dumps(good))
+            mutate(fx.cache_summary(doc))
+            return doc
+
+        def entry(k, **kw):
+            return edited(lambda c: c["entries"][k].update(kw))
+
+        elsewhere = fx.cache_root / "elsewhere"
+        cases = [
+            (edited(lambda c: c["entries"].pop(0)), "missing entry alpha_a"),
+            (edited(lambda c: c["entries"].append(dict(c["entries"][0]))), "duplicate candidate_cache entry alpha_a"),
+            (edited(lambda c: c.update(entries={})), "candidate_cache.entries must be a list"),
+            (entry(0, layout="v3"), "malformed candidate_cache entry"),
+            (entry(0, payload_sha256="A" * 64), "malformed candidate_cache entry"),
+            (entry(0, payload_sha256="0" * 64), "entry mismatch alpha_a"),
+            (entry(0, signal_key_sha256="0" * 64), "signal key mismatch alpha_a"),
+            (entry(0, layout="v1"), "entry path mismatch alpha_a"),  # a v1 stem is <id>
+            (entry(0, sidecar=str(elsewhere / f"{fx.stem('alpha_a')}.json")), "entry path mismatch alpha_a"),
+            (entry(0, payload=str(elsewhere / f"{fx.stem('alpha_a')}.f64")), "entry path mismatch alpha_a"),
+            (entry(1, field_payload_sha256={"sv_ratio126": "34" * 32}), "entry path mismatch alpha_b"),  # fk16
+            (entry(0, field_payload_sha256=dict(FIELD_PAYLOADS)), "entry path mismatch alpha_a"),
+        ]
+        unpinned = edited(lambda c: c.pop("fields_directory"))
+        del unpinned["roles"][0]["research_fields"]
+        cases.append((unpinned, "field entry alpha_b without a pinned research fields manifest"))
+        for doc, fragment in cases:
+            fx.write_summary(doc)
+            self.refuse(fx, fragment)
+        fx.write_summary()
+        fcw.fit(fx.args(self.root / "summary_ok"))
+
+    def test_sidecar_and_payload_refusals(self):
+        for name, kw, fragment in [
+            ("vm", {"sidecar_patch": {"alpha_a": {"vm_identity": fcw.LEGACY_VM_IDENTITY}}}, "VM identity mismatch alpha_a"),
+            ("key", {"sidecar_patch": {"alpha_b": {"field_payload_sha256": {"sv_ratio126": "34" * 32}}}},
+             "signal key mismatch alpha_b"),
+            ("schema", {"sidecar_patch": {"alpha_a": {"schema": fcw.CACHE_SCHEMA}}}, "signal key mismatch alpha_a"),
+            ("dsl", {"sidecar_patch": {"alpha_a": {"dsl_sha256": "12" * 32}}}, "records another candidate or DSL"),
+            ("geometry", {"sidecar_patch": {"alpha_a": {"dates": 199}}}, "entry mismatch alpha_a"),
+            ("role", {"sidecar_role": "validation"}, "is not a TRAIN-role signal"),
+        ]:
+            self.refuse(self.fixture(name, **kw), fragment)
+        fx = self.fixture("payload")
+        data = bytearray(fx.payload_path("alpha_a").read_bytes())
+        data[0] ^= 1
+        fx.payload_path("alpha_a").write_bytes(bytes(data))
+        self.refuse(fx, "payload SHA-256 mismatch alpha_a")
+        fx.sidecar_path("alpha_a").unlink()
+        self.refuse(fx, "missing entry alpha_a")
 
 
 class Boundaries(unittest.TestCase):

@@ -122,29 +122,99 @@ def an_ic_corr(ctx) -> dict:
     return res
 
 
+SIGNAL_SCHEMAS = ('atx.dsl-candidate-signal/v1', 'atx.dsl-candidate-signal/v2')
+_HEX64 = re.compile(r'[0-9a-f]{64}')
+
+
+def _signal_meta(ctx, sidecar: Path, role_sha) -> dict | None:
+    """A candidate-signal sidecar (v1 or v2) of the role, or None (unreadable, another schema or role)."""
+    m = ctx.reg.read_json(sidecar)
+    if (not isinstance(m, dict) or m.get('schema') not in SIGNAL_SCHEMAS or not isinstance(m.get('candidate_id'), str)
+            or not isinstance(m.get('payload'), str) or m.get('role_manifest_sha256') != role_sha):
+        return None
+    return m
+
+
+def _summary_signal_entries(ctx, ids, role_sha) -> dict:
+    """id -> (payload, meta) named by the TRAIN IC run's ``candidate_cache.entries[]`` (a v2 runner's summary.json:
+    the exact entry, v2 ``<id>.<dsl16>`` or a v1 entry read in place). Empty when absent or unusable."""
+    u = _acfg(ctx).get('u_pass')
+    s = ctx.reg.read_json(f'{u}/summary.json') if u else None
+    roles = s.get('roles') if isinstance(s, dict) else None
+    out = {}
+    for r in roles if isinstance(roles, list) else []:
+        cache = r.get('candidate_cache') if isinstance(r, dict) and r.get('manifest_sha256') == role_sha else None
+        entries = cache.get('entries') if isinstance(cache, dict) else None
+        for e in entries if isinstance(entries, list) else []:
+            if not (isinstance(e, dict) and e.get('id') in ids and isinstance(e.get('sidecar'), str)
+                    and isinstance(e.get('payload'), str)):
+                continue
+            # runner paths may carry Windows separators and are relative to its cwd (the report root)
+            sidecar, payload = (ctx.reg.path(e[k].replace('\\', '/')) for k in ('sidecar', 'payload'))
+            m = _signal_meta(ctx, sidecar, role_sha)
+            if (m is not None and m['candidate_id'] == e['id'] and m.get('payload_sha256') == e.get('payload_sha256')
+                    and payload.name == m['payload'] and payload.is_file()):
+                out[e['id']] = (payload, m)
+    return out
+
+
+def _signal_dirs(root: Path) -> list[Path]:
+    """Entry directories under a --candidate-cache DIR: [<vm identity>/]<sha>/ and their v2 fp_<fk16>/ children."""
+    def subdirs(d):
+        try:
+            return sorted(p for p in d.iterdir() if p.is_dir())
+        except OSError:
+            return []
+    tops = [d for d in subdirs(root) if _HEX64.fullmatch(d.name)]
+    tops += [d for v in subdirs(root) if not _HEX64.fullmatch(v.name) for d in subdirs(v) if _HEX64.fullmatch(d.name)]
+    return [x for d in tops for x in [d, *(f for f in subdirs(d) if f.name.startswith('fp_'))]]
+
+
+def _scanned_signal_entries(ctx, root: Path, ids, role_sha, lib_sha) -> tuple[dict, list]:
+    """id -> (payload, meta) by walking the cache DIR (v1 ``<id>.json``, v2 ``<id>.<dsl16>.json``). A v1 entry must be
+    recorded by the report's library (one path per id: another library's may be another DSL). A v2 entry is shared
+    across libraries by content key, so one recorded by the report's library wins, else a unique one is taken; an id
+    left with several (other DSLs / field payloads) is ambiguous and skipped rather than guessed."""
+    found = {}
+    for d in _signal_dirs(root):
+        for j in sorted(d.glob('*.json')):
+            m = _signal_meta(ctx, j, role_sha)
+            if m is None or m['candidate_id'] not in ids:
+                continue
+            if lib_sha and m['schema'] == SIGNAL_SCHEMAS[0] and m.get('library_sha256') != lib_sha:
+                continue
+            found.setdefault(m['candidate_id'], []).append((d / m['payload'], m))
+    metas, ambiguous = {}, []
+    for i, hits in found.items():
+        own = [h for h in hits if lib_sha and h[1].get('library_sha256') == lib_sha]
+        pick = own if own else hits
+        if len(pick) == 1:
+            metas[i] = pick[0]
+        else:
+            ambiguous.append(i)
+    return metas, sorted(ambiguous)
+
+
 def an_sig_corr(ctx) -> dict:
     ac = _acfg(ctx)
     root = ctx.reg.path(ac['candidate_cache'])
     lib_sha = ctx.metric(ctx.final, 'sum.source_bindings.library_sha256')
+    role_sha = ctx.metric(ctx.final, 'sum.role_sha256')
     role = ctx.reg.read_json(f"{ac['role']}/manifest.json")
     if role is None:
         raise FileNotFoundError('role manifest')
     nd, ni = int(role['dates']), int(role['instruments'])
-    metas = {}
-    for sub in sorted(p for p in root.iterdir() if p.is_dir()):
-        for j in sorted(sub.glob('*.json')):
-            m = ctx.reg.read_json(j)
-            if not isinstance(m, dict) or m.get('schema') != 'atx.dsl-candidate-signal/v1':
-                continue
-            if lib_sha and m.get('library_sha256') != lib_sha:
-                continue
-            if m.get('role_manifest_sha256') != ctx.metric(ctx.final, 'sum.role_sha256'):
-                continue
-            metas[m['candidate_id']] = (sub / m['payload'], m)
     ids, theme, _, admitted = _ids(ctx)
+    # v2 runner: the summary names each entry; else (v1 runner, or entries gone) walk the cache for the rest
+    metas, source, ambiguous = _summary_signal_entries(ctx, set(ids), role_sha), 'summary entries', []
+    if any(i not in metas for i in ids):
+        scanned, ambiguous = _scanned_signal_entries(ctx, root, set(ids) - set(metas), role_sha, lib_sha)
+        source = 'summary entries + cache scan' if metas else 'cache scan'
+        metas.update(scanned)
     missing = [i for i in ids if i not in metas]
     if missing:
-        raise FileNotFoundError(f'cache payloads missing for {missing[:5]}')
+        raise FileNotFoundError(f'cache payloads missing for {missing[:5]}'
+                                + (f' (ambiguous: {ambiguous[:5]})' if ambiguous else ''))
     mms = []
     for i in ids:
         p, m = metas[i]
@@ -163,6 +233,7 @@ def an_sig_corr(ctx) -> dict:
     res['admitted'] = A.offdiag_stats(res['r'][np.ix_(sub, sub)], admitted)
     res['groups'] = [theme[i] for i in ids]
     res['stride'] = stride
+    res['source'] = source
     return res
 
 
