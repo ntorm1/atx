@@ -44,6 +44,23 @@ writes them; rows and definitions mirror its summary):
   provenance     --json: every row carries nav_summ_run = {argv, script, script_sha256 (of this file), git_head
                  (git rev-parse HEAD of this file's checkout; null without git), warnings}. The top level stays the
                  per-dir list so existing consumers and field-by-field diffs are unchanged.
+
+Backtest integrity (platform v7 lane L2; statistics in backtest_integrity.py, pure numpy). Every option below only
+ADDS lines / JSON keys; without them the output is byte-identical to the v6.1 nav_summ (the numbers above never move):
+  --ledger PATH          append each listed dir to the atx.trial-ledger/v1 JSONL (R5.1) as one trial of --ledger-kind
+                         (admission|composition|construction|universe|data; default construction; --ledger-count per
+                         line, --ledger-note), with its pins, TRAIN window, daily CSV path + SHA-256 and S2 net SR.
+                         Idempotent on (kind, cell, series SHA-256); a series with a session >= 2023-01-01 is refused.
+  --ledger-n PATH        print the Appendix A block: trials by kind and window from that ledger (no dirs needed).
+  --effective-n SOURCE   effective-N DSR beside the cell-count DSR and the Lo null: ONC clusters (Lopez de Prado &
+                         Lewis 2019) of the trial series of SOURCE = "dirs" (the listed dirs) or a ledger PATH (its
+                         series lines), aligned on their common sessions; N_eff = clusters, V[SR_k] across the
+                         clusters' inverse-variance series (--onc-init restarts, --onc-seed).
+  --pbo [DIR ...]        CSCV PBO (Bailey et al. 2017) over the given cells (default: the listed dirs; >= 4 cells):
+                         --pbo-blocks (16) blocks on the common sessions, all C(16,8) = 12,870 splits unless
+                         --pbo-max-splits K (> 0) asks for a seeded subsample (then flagged); --pbo-json OUT.
+  --psr                  PSR and MinTRL (Bailey & Lopez de Prado 2012) of every listed dir against --psr-benchmarks
+                         (annualized SR*, default 0,0.5) at --psr-alpha (.05).
 """
 from __future__ import annotations
 
@@ -58,6 +75,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+import backtest_integrity as BI
 
 ANNUAL = 252
 DEFAULT_DRAWS, DEFAULT_BLOCK, DEFAULT_SEED = 2000, 21, 20260927
@@ -115,8 +134,12 @@ def print_scenarios(summary: dict) -> None:
 # ------------------------------------------------------------------ daily CSV
 def load_daily(d: Path, scenario: str) -> dict:
     """Columns of daily_<scenario>.csv: numeric columns as float arrays ("nan" -> NaN), others as lists."""
-    path = Path(d) / f"daily_{scenario}.csv"
-    with path.open(newline="", encoding="utf-8") as stream:
+    return load_daily_csv(Path(d) / f"daily_{scenario}.csv")
+
+
+def load_daily_csv(path: Path) -> dict:
+    """``load_daily`` of an explicit CSV path (the trial ledger records the path)."""
+    with Path(path).open(newline="", encoding="utf-8") as stream:
         rows = list(csv.reader(stream))
     header, body = rows[0], rows[1:]
     out: dict = {}
@@ -506,9 +529,123 @@ def print_analysis(r: dict, reference: str | None) -> None:
               f"T {q['sessions']} | V[SR_n] {fmt(q['variance_sr'], '.3e')} ({q['variance_source']})")
 
 
+def print_integrity(r: dict) -> None:
+    """The v7 integrity lines of one dir (only when their options were given; legacy output is untouched)."""
+    e = r.get("deflated_effective_n")
+    if e:
+        q = r.get("deflated") or {}
+        lo = r.get("deflated_lo_null") or {}
+        print(f"   effective-N DSR (ONC N_eff={e['n_eff']} of {e['n_trials']} trial series): DSR {fmt(e['dsr'], '.4f')} "
+              f"vs SR0 {fmt(e['sr0_daily'], '.5f')}/session ({fmt(e['sr0_annual'], '.3f')} ann) | V[SR_k] "
+              f"{fmt(e['variance_sr'], '.3e')} | beside: cell-count DSR (N={q.get('n')}) {fmt(q.get('dsr'), '.4f')}, "
+              f"Lo null (N={lo.get('n')}) DSR {fmt(lo.get('dsr'), '.4f')} (SR0 {fmt(lo.get('sr0_annual'), '.3f')} ann)")
+    p = r.get("psr")
+    if p:
+        for b in p["benchmarks"]:
+            print(f"   PSR vs SR* {b['sr_star_annual']:+.2f} ann: {fmt(b['psr'], '.4f')} | MinTRL at {1 - p['alpha']:.0%}: "
+                  f"{fmt(b['min_trl_sessions'], '.0f')} sessions ({fmt(b['min_trl_years'], '.2f')} y) | SR "
+                  f"{fmt(p['sr_annual'], '+.3f')} ann, skew {fmt(p['skew'], '+.3f')} kurtosis {fmt(p['kurtosis'], '.3f')}, "
+                  f"T {p['sessions']}")
+
+
+def print_pbo(res: dict, cells: list[str], common: list[int]) -> None:
+    q = res["logit_quantiles"]
+    how = "exhaustive" if res["exhaustive"] else f"SEEDED SUBSAMPLE (seed {res['seed']})"
+    span = (f"{BI.session_date(common[0]).isoformat()}..{BI.session_date(common[-1]).isoformat()}" if common else "none")
+    print(f"== CSCV PBO (Bailey-Borwein-Lopez de Prado-Zhu 2017) over {res['n_candidates']} cells: PBO {res['pbo']:.4f} | "
+          f"{res['splits']} of {res['splits_total']} splits ({how}) | {res['blocks']} blocks x {res['block_width']} "
+          f"sessions of {res['sessions']} common ({span}; {res['dropped_tail_sessions']} trailing dropped)")
+    print(f"   logit mean {res['logit_mean']:+.3f} p5 {q['p5']:+.3f} p25 {q['p25']:+.3f} p50 {q['p50']:+.3f} "
+          f"p75 {q['p75']:+.3f} p95 {q['p95']:+.3f} | IS winner SR {res['winner_is_sr_annual_mean']:+.3f} ann -> OOS "
+          f"{res['winner_oos_sr_annual_mean']:+.3f} ann, P[OOS SR < 0] {res['prob_winner_oos_loss']:.3f}, degradation "
+          f"slope {fmt(res['degradation_slope'], '+.3f')}")
+    print(f"   logit histogram edges {[round(e, 3) for e in res['logit_histogram']['edges']]} counts "
+          f"{res['logit_histogram']['counts']}")
+    for c, w in zip(cells, res["winner_counts"]):
+        print(f"   IS winner {w:6d}x  {c}")
+
+
+def print_effective(eff: dict, source: str) -> None:
+    print(f"== effective N (ONC, Lopez de Prado-Lewis 2019) from {source}: {eff['n_trials']} trial series, "
+          f"{eff['sessions']} common sessions, mean off-diagonal rho {eff['mean_offdiag_corr']:.3f} -> N_eff "
+          f"{eff['n_eff']} (n_init {eff['n_init']}, seed {eff['seed']}); V[SR_k] {fmt(eff['variance_sr'], '.3e')}")
+    for k, (cl, sr) in enumerate(zip(eff["clusters"], eff["cluster_sr_daily"])):
+        ann = sr * math.sqrt(ANNUAL) if sr is not None else None
+        print(f"   cluster {k}: {len(cl)} series, IVP SR {fmt(ann, '+.3f')} ann: {', '.join(cl)}")
+
+
+def integrity(args, argv, results, analysed) -> None:
+    """--ledger / --psr / --effective-n / --pbo / --ledger-n, after the legacy per-dir analysis."""
+    nets_by = {d: nets for d, (_, nets) in zip(args.dirs, analysed)}
+    if args.ledger:
+        run = {k: v for k, v in run_provenance(argv, []).items() if k in ("script_sha256", "git_head")}
+        recs = []
+        for d, r in zip(args.dirs, results):
+            daily = Path(d) / f"daily_{r['scenario']}.csv"
+            try:
+                recs.append(BI.ledger_record(args.ledger_kind, d, Path(d) / "summary.json", daily, r["scenario"],
+                                             nets_by[d], r["net_sharpe"], count=args.ledger_count,
+                                             note=args.ledger_note, run=run))
+            except ValueError as exc:
+                raise SystemExit(f"nav_summ: {exc}") from exc
+        added, skipped = BI.ledger_append(Path(args.ledger), recs)
+        added_ids = {a["trial_id"] for a in added}
+        for rec, r in zip(recs, results):
+            r["ledger"] = {"path": args.ledger, "trial_id": rec["trial_id"], "kind": rec["kind"],
+                           "appended": rec["trial_id"] in added_ids}
+        print(f"== ledger {args.ledger}: appended {len(added)}, skipped {len(skipped)} already ledgered "
+              f"(kind {args.ledger_kind})")
+    if args.psr:
+        for d, r in zip(args.dirs, results):
+            r["psr"] = BI.psr_report(np.array(list(nets_by[d].values()), dtype=np.float64), args.psr_benchmarks,
+                                     args.psr_alpha)
+    eff = None
+    if args.effective_n:
+        if args.effective_n == "dirs":
+            names, series = list(args.dirs), [nets_by[d] for d in args.dirs]
+        else:
+            records = BI.ledger_read(Path(args.effective_n))
+            names, series = BI.ledger_net_series(
+                records, lambda rec: net_series(load_daily_csv(Path(rec["series"]["path"]))))
+        _, mat = BI.align_many(series)
+        eff = BI.effective_trials(mat, names, n_init=args.onc_init, seed=args.onc_seed)
+        for r in results:
+            r["deflated_effective_n"] = dict(BI.effective_n_dsr(r["net_moments"], eff), clusters=eff["clusters"],
+                                             source=args.effective_n)
+            r["deflated_lo_null"] = BI.lo_null_dsr(r["net_moments"], args.dsr_n)
+    for d, r in zip(args.dirs, results):
+        if "deflated_effective_n" in r or "psr" in r:
+            print(f"== integrity {d}")
+            print_integrity(r)
+    if eff is not None:
+        print_effective(eff, args.effective_n)
+    if args.pbo is not None:
+        cells = list(args.pbo) or list(args.dirs)
+        if len(cells) < BI.PBO_MIN_CELLS:
+            raise SystemExit(f"nav_summ: --pbo needs a grid of >= {BI.PBO_MIN_CELLS} cells, got {len(cells)}")
+        series = [nets_by[c] if c in nets_by else
+                  net_series(load_daily(Path(c), scenario_of(load_summary(Path(c)), args.scenario)["scenario"]))
+                  for c in cells]
+        common, mat = BI.align_many(series)
+        res = BI.cscv_pbo(mat, blocks=args.pbo_blocks, max_splits=args.pbo_max_splits or None, seed=args.seed)
+        print_pbo(res, cells, common)
+        if args.pbo_json:
+            doc = dict(res, logits=res["logits"].tolist(), cells=cells,
+                       common_sessions=[BI.session_date(common[0]).isoformat(), BI.session_date(common[-1]).isoformat()],
+                       nav_summ_run=run_provenance(argv, []))
+            Path(args.pbo_json).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.ledger_n:
+        for line in BI.appendix_a(BI.ledger_read(Path(args.ledger_n)), args.ledger_n):
+            print(line)
+
+
+def float_list(text: str) -> list[float]:
+    return [float(x) for x in text.split(",") if x.strip()]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    ap.add_argument("dirs", nargs="+", help="NAV output directories (summary.json + daily_<scenario>.csv)")
+    ap.add_argument("dirs", nargs="*", help="NAV output directories (summary.json + daily_<scenario>.csv)")
     ap.add_argument("--weights", action="append", default=[], help="composition_weights.json (or its dir); repeatable")
     ap.add_argument("--reference", default=None, help="reference NAV dir for the paired dSR(net)")
     ap.add_argument("--scenario", default=None, help="scenario name (default: each summary's primary)")
@@ -518,10 +655,31 @@ def main(argv=None) -> int:
     ap.add_argument("--dsr-n", type=int, default=DEFAULT_DSR_N,
                     help="trials N of the deflated Sharpe ratio (R6': 10; >= 2); V[SR_n] comes from the dirs given")
     ap.add_argument("--json", default=None, help="also write the per-dir results as JSON")
+    ap.add_argument("--ledger", default=None, help="append the listed dirs to this atx.trial-ledger/v1 JSONL")
+    ap.add_argument("--ledger-kind", default="construction", choices=BI.LEDGER_KINDS)
+    ap.add_argument("--ledger-count", type=int, default=1, help="trials each appended line stands for (default 1)")
+    ap.add_argument("--ledger-note", default=None)
+    ap.add_argument("--ledger-n", default=None, help="print the Appendix A trial counts (kind x window) of a ledger")
+    ap.add_argument("--effective-n", default=None, help='effective-N DSR from "dirs" or a ledger path')
+    ap.add_argument("--onc-init", type=int, default=10, help="ONC k-means restarts (default 10)")
+    ap.add_argument("--onc-seed", type=int, default=DEFAULT_SEED)
+    ap.add_argument("--pbo", nargs="*", default=None, help="CSCV PBO over these cells (default: the listed dirs)")
+    ap.add_argument("--pbo-blocks", type=int, default=BI.PBO_BLOCKS)
+    ap.add_argument("--pbo-max-splits", type=int, default=0, help="0 = every split; K > 0 = seeded subsample (--seed)")
+    ap.add_argument("--pbo-json", default=None, help="write the PBO result (with every split logit) as JSON")
+    ap.add_argument("--psr", action="store_true", help="PSR and MinTRL of every listed dir")
+    ap.add_argument("--psr-benchmarks", type=float_list, default=[0.0, 0.5], help="annualized SR* list (0,0.5)")
+    ap.add_argument("--psr-alpha", type=float, default=0.05)
     argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
     if args.dsr_n < 2:
         ap.error("--dsr-n must be >= 2")
+    if not args.dirs and not args.ledger_n and not args.pbo:
+        ap.error("give NAV dirs (or --ledger-n LEDGER / --pbo CELL ...)")
+    if args.ledger_count < 1 or args.onc_init < 1 or not 0 < args.psr_alpha < 0.5:
+        ap.error("--ledger-count and --onc-init must be >= 1; --psr-alpha in (0, 0.5)")
+    if (args.ledger or args.psr or args.effective_n == "dirs") and not args.dirs:
+        ap.error("--ledger / --psr / --effective-n dirs need NAV dirs")
     weights = load_weights(args.weights)
     ref_nets = None
     if args.reference:
@@ -530,14 +688,17 @@ def main(argv=None) -> int:
     # every dir first: V[SR_n] of the deflated Sharpe ratio spans all the NAV dirs on the command line
     analysed = [analyse(Path(d), args, weights, ref_nets) for d in args.dirs]
     results = [r for r, _ in analysed]
-    for r, q in zip(results, dsr_rows([r["net_moments"] for r in results], args.dsr_n)):
-        r["deflated"] = q
-    warnings = listing_warnings(args.dirs, results, [nets for _, nets in analysed], args.dsr_n)
+    warnings = []
+    if results:
+        for r, q in zip(results, dsr_rows([r["net_moments"] for r in results], args.dsr_n)):
+            r["deflated"] = q
+        warnings = listing_warnings(args.dirs, results, [nets for _, nets in analysed], args.dsr_n)
     for w in warnings:
         print(f"nav_summ: WARNING {w}", file=sys.stderr)
     for d, r in zip(args.dirs, results):
         print_scenarios(load_summary(Path(d)))
         print_analysis(r, args.reference)
+    integrity(args, argv, results, analysed)
     if args.json:
         run = run_provenance(argv, warnings)
         for r in results:
