@@ -95,7 +95,7 @@ def dig(obj, path: str):
             except (ValueError, IndexError):
                 return None
         elif isinstance(cur, dict):
-            cur = cur.get(part)
+            cur = cur.get(part, cur.get(int(part)) if part.lstrip('-').isdigit() else None)
         else:
             return None
     return cur

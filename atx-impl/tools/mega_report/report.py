@@ -45,7 +45,7 @@ class Ctx:
 
     def __init__(self, cfg: dict, cfg_bytes: bytes, cfg_path: Path, root: Path, stamp: str):
         self.cfg, self.cfg_path, self.root, self.stamp = cfg, cfg_path, root, stamp
-        self.cfg_sha = hashlib.sha256(cfg_bytes).hexdigest()
+        self.cfg_sha = hashlib.sha256(cfg_bytes.replace(b'\r\n', b'\n')).hexdigest()  # checkout-eol independent
         self.reg = D.Registry(root)
         self.annual = cfg.get('sessions_per_year')
         self.dsr_n = cfg.get('dsr_n')
@@ -74,6 +74,49 @@ class Ctx:
         self.tab = 0
         self._lo: dict = {}
         self._par: dict = {}
+        self.analyses: dict = {}
+        self.unresolved: list = []
+        self._extra: dict = {}
+        self._full: dict = {}
+        self._recipe: dict = {}
+
+    # ---------------------------------------------------------------- v2 inputs (pitch)
+    def analysis(self, name: str):
+        from . import pitch
+        return pitch.analysis(self, name)
+
+    def extra_json(self, key: str):
+        if key not in self._extra:
+            p = ((self.cfg.get('inputs') or {}).get('extra_json') or {}).get(key)
+            self._extra[key] = self.reg.read_json(p) if p else None
+        return self._extra[key]
+
+    def nsumm_row(self, key: str, cell: str):
+        rows = self.extra_json(key)
+        prefix = self.cfg.get('cell_prefix', '')
+        for r in rows or []:
+            base = str(r.get('dir', '')).replace('\\', '/').rstrip('/').split('/')[-1]
+            if base == prefix + cell or base == cell:
+                return r
+        return None
+
+    def recipe(self, cell):
+        if cell.name not in self._recipe:
+            self._recipe[cell.name] = self.reg.read_json(f'{cell.rel_dir}/recipe.json')
+        return self._recipe[cell.name]
+
+    def full_daily(self, cell, scenario_id: str):
+        """All numeric columns of a daily CSV (the iteration-1 loader keeps a subset)."""
+        key = (cell.name, scenario_id)
+        if key not in self._full:
+            rel = f'{cell.rel_dir}/daily_{scenario_id}.csv'
+            text = self.reg.read_text(rel)
+            d = None
+            if text:
+                header = text.split('\n', 1)[0].strip().split(',')
+                d = D.parse_daily(text, rel, columns=tuple(header))
+            self._full[key] = d
+        return self._full[key]
 
     # ---------------------------------------------------------------- numbering
     def next_fig(self) -> int:
@@ -121,6 +164,14 @@ class Ctx:
             return D.dig(self.lo(cell), rest)
         if ns == 'parent':
             return D.dig(self.vs_parent(cell), rest)
+        if ns == 'rec':
+            return D.dig(self.recipe(cell), rest)
+        if ns.startswith('recsc:'):
+            sc = self.sc.get(ns.split(':', 1)[1])
+            for s in (self.recipe(cell) or {}).get('scenarios') or []:
+                if sc and s.get('id') == sc['id']:
+                    return D.dig(s, rest)
+            return None
         return None
 
     def years(self, cell, key=None) -> dict:
@@ -822,7 +873,7 @@ def _header(ctx: Ctx, cfg_path: Path) -> str:
                     {'key': 'status', 'label': 'Status', 'kind': 'text'}, {'key': 'bytes', 'label': 'Bytes', 'fmt': 'int'},
                     {'key': 'sha', 'label': 'SHA-256', 'kind': 'mono'}], frows, sortable=True, tid='t-files')
     n_read = sum(1 for m in man if m['status'] == 'read')
-    toc = ''.join(f'<a href="#{C.esc(s["id"])}"><span class="n">{i}</span>{C.esc(s["title"])}</a>'
+    toc = ''.join(f'<a href="#{C.esc(s["id"])}"><span class="n">{C.esc(s.get("num", i))}</span>{C.esc(s["title"])}</a>'
                   for i, s in enumerate(ctx.cfg.get('layout', []), 1))
     return (f'<header class="doc-head"><div class="row"><p class="eyebrow">{C.esc(ctx.cfg.get("kicker", ""))}</p>'
             f'<button type="button" id="theme-btn" class="theme-btn" hidden>Theme</button></div>'
@@ -841,28 +892,40 @@ def build(config_path, *, root: str | None = None, stamp: str | None = None) -> 
         root_p = (cfg_path.parent / root_p).resolve()
     stamp = stamp or dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     ctx = Ctx(cfg, raw, cfg_path, root_p, stamp)
+    v2 = str(cfg.get('schema', '')).endswith('/v2')
+    if v2:
+        from . import narrative as N
+        from . import pitch as P
     sections = []
     for i, sec in enumerate(cfg.get('layout', []), 1):
-        parts = []
+        parts = [N.section_intro(ctx, sec.get('id'))] if v2 else []
         for b in sec.get('blocks', []):
-            fn = BLOCKS.get(b)
+            spec = b if isinstance(b, dict) else {'type': b}
+            name = spec['type']
             try:
+                if v2 and name in P.BLOCKS:
+                    parts.append(P.BLOCKS[name](ctx, spec))
+                    continue
+                fn = BLOCKS.get(name)
                 if fn is None:
-                    raise KeyError(f'unknown block {b!r}')
-                if ctx.final is None and b not in ('t_cells', 'fig_scatter', 't_pins', 't_trials'):
+                    raise KeyError(f'unknown block {name!r}')
+                if ctx.final is None and name not in ('t_cells', 'fig_scatter', 't_pins', 't_trials'):
                     raise KeyError(f"final cell {cfg.get('final')!r} not among the configured cells")
                 parts.append(fn(ctx))
             except Exception as e:  # a block never stops the build; it renders its own n/a marker
-                parts.append(_na_block(b, e))
+                parts.append(_na_block(name, e))
                 if cfg.get('debug'):
                     traceback.print_exc()
-        sections.append(C.section(i, sec['title'], ''.join(parts), sec.get('id')))
+        sections.append(C.section(sec.get('num', i), sec['title'], ''.join(parts), sec.get('id')))
+    body = ''.join(sections)
+    if v2:
+        body = body.replace(P.FILES_MARKER, P.files_table(ctx))
     head = _header(ctx, cfg_path)
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
             f'<title>{C.esc(cfg.get("title", "Report"))}</title>'
             '<link rel="preconnect" href="https://fonts.googleapis.com">'
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-            f'<link rel="stylesheet" href="{C.esc(T.FONTS_HREF)}"><style>{T.css()}</style></head>'
-            f'<body><div class="page">{head}<main>{"".join(sections)}</main></div>'
+            f'<link rel="stylesheet" href="{C.esc(T.FONTS_HREF)}"><style>{T.css(v2)}</style></head>'
+            f'<body><div class="page">{head}<main>{body}</main></div>'
             f'<script>{T.SCRIPT}</script></body></html>\n')
