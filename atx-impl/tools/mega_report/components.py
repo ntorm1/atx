@@ -549,7 +549,7 @@ def waterfall(start: dict, steps: list[dict], end: dict, *, width: int = 1072, h
 
 def scatter(points: list[dict], *, x_label: str, y_label: str, x_fmt: str = '.3f', y_fmt: str = '.1f',
             size_label: str | None = None, size_fmt: str = '.2f', r_range=(3.5, 11.0), width: int = 1072,
-            height: int = 420, aria: str = 'scatter') -> str:
+            height: int = 420, aria: str = 'scatter', x_log: bool = False) -> str:
     """Labelled scatter with optional size encoding.
 
     ``points``: dicts ``x, y, size (value or None), color (token), hollow (bool), label (shown when set), title
@@ -557,6 +557,8 @@ def scatter(points: list[dict], *, x_label: str, y_label: str, x_fmt: str = '.3f
     the right margin shows the minimum, middle and maximum sizes with their values.
     """
     pts = [p for p in points if is_num(p.get('x')) and is_num(p.get('y'))]
+    if x_log:
+        pts = [dict(p, x=math.log10(p['x']), _x=p['x']) for p in pts if p['x'] > 0]
     if not pts:
         return empty_svg(width, height, aria)
     top, right, bottom, left = 26, 170, 40, 62
@@ -578,7 +580,14 @@ def scatter(points: list[dict], *, x_label: str, y_label: str, x_fmt: str = '.3f
     for t in ticks_in(yl, yh, 5):
         out.append(s_line(x0, sy(t), x1, sy(t), 'grid', 1))
         out.append(s_text(x0 - 8, sy(t), tick_label(t, y_fmt), 't-tick', 'end', dy='0.32em'))
-    for t in ticks_in(xl, xh, 6):
+    if x_log:
+        for k in range(math.floor(xl), math.ceil(xh) + 1):
+            for m in (1, 2, 5):
+                t = k + math.log10(m)
+                if xl - 1e-9 <= t <= xh + 1e-9:
+                    out.append(s_line(sx(t), y0, sx(t), y1, 'grid', 1))
+                    out.append(s_text(sx(t), y1 + 16, fmt(10 ** t, x_fmt), 't-tick', 'middle'))
+    for t in ([] if x_log else ticks_in(xl, xh, 6)):
         out.append(s_line(sx(t), y0, sx(t), y1, 'grid', 1))
         out.append(s_text(sx(t), y1 + 16, tick_label(t, x_fmt), 't-tick', 'middle'))
     out.append(s_line(x0, y1, x1, y1, 'axis', 1))
@@ -682,7 +691,7 @@ def diverging_bin(v: float, step: float) -> str:
 
 def heatmap(row_labels: list[str], col_labels: list[str], values: list[list], *, value_fmt: str = '+pct1',
             total: list | None = None, total_label: str = 'Year', step: float | None = None, width: int = 1072,
-            cell_h: int = 30, aria: str = 'heatmap') -> str:
+            cell_h: int = 30, aria: str = 'heatmap', label_w: int = 56) -> str:
     """Rows x columns of signed values on a 7-step diverging scale (neutral midpoint), each cell labelled.
 
     ``values[i][j]`` None -> an empty n/a cell. ``total`` adds a text-only column after a gap (its own scale is
@@ -693,7 +702,7 @@ def heatmap(row_labels: list[str], col_labels: list[str], values: list[list], *,
     if not flat:
         return empty_svg(width, 120, aria)
     step = step or nice_step(max(abs(v) for v in flat), 3)
-    lab_w, tot_w = 56, (86 if total is not None else 0)
+    lab_w, tot_w = label_w, (86 if total is not None else 0)
     gap = 14 if total is not None else 0
     top = 22
     nc = len(col_labels)
@@ -779,6 +788,368 @@ def box_plot(rows: list[dict], *, value_label: str, value_fmt: str = '.3f', labe
             out.append(s_circle(sx(st['mean']), yc, 3, 'bg', 'fg', 1.2))
             out.append(s_text(width - 8, yc, fmt(st['mean'], value_fmt), 't-val', 'end', dy='0.32em'))
     return svg(width, height, ''.join(out), aria)
+
+
+# ----------------------------------------------------------------------------------------------- v2 components
+def _rtext(x, y, s, cls, angle, anchor='end', title=None) -> str:
+    t = f'<title>{esc(title)}</title>' if title else ''
+    return (f'<text x="{_n(x)}" y="{_n(y)}" class="{cls}" text-anchor="{anchor}" '
+            f'transform="rotate({_n(angle)} {_n(x)} {_n(y)})">{t}{esc(s)}</text>')
+
+
+def _div_legend(x0: float, y: float, step: float, spec: str, lw: float = 96) -> list[str]:
+    out, edges = [], [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5]
+    for k, b in enumerate(DIV_CLASSES):
+        x = x0 + k * lw
+        out.append(s_rect(x + 1, y, lw - 2, 10, f'div-{b}', 'bg', 1))
+        if k == 0:
+            t = f'< {fmt(edges[0] * step, spec)}'
+        elif k == 6:
+            t = f'> {fmt(edges[5] * step, spec)}'
+        else:
+            t = f'{fmt(edges[k - 1] * step, spec)} to {fmt(edges[k] * step, spec)}'
+        out.append(s_text(x + lw / 2, y + 24, t, 't-tick', 'middle'))
+    return out
+
+
+def corr_matrix(labels: list[str], values: list[list], *, groups: list | None = None, step: float = 0.2,
+                show_values: bool | None = None, max_values: int = 45, label_w: int = 150, group_w: int = 150,
+                cell_max: float = 56.0, width: int = 1072, legend_fmt: str = '+.1f', aria: str = 'correlation matrix',
+                diag: bool = False) -> str:
+    """Symmetric matrix on the 7-step diverging scale (neutral within half a step of zero), labels in the given
+    order on both axes (column labels rotated). Values (x100, integer) are printed in the cells when n <= ``max_values``.
+    ``groups`` (one per label) draws separators and names each run of equal groups at the right."""
+    n = len(labels)
+    flat = [values[i][j] for i in range(n) for j in range(n) if i != j and is_num(values[i][j])]
+    if not n or not flat:
+        return empty_svg(width, 140, aria)
+    show = (n <= max_values) if show_values is None else show_values
+    gw = group_w if groups else 16
+    cs = min(cell_max, (width - label_w - gw) / n)
+    top = 12 + 6.0 * max(len(str(s)) for s in labels) * 0.82
+    x0, y0 = label_w, top
+    out = []
+    for i, lab in enumerate(labels):
+        yc = y0 + cs * (i + 0.5)
+        out.append(s_text(x0 - 8, yc, lab, 't-mono', 'end', dy='0.32em'))
+        xc = x0 + cs * (i + 0.5)
+        out.append(_rtext(xc + 3, y0 - 6, lab, 't-mono', -55, 'start'))
+    for i in range(n):
+        for j in range(n):
+            x, y = x0 + cs * j, y0 + cs * i
+            v = values[i][j]
+            if i == j and not (diag and is_num(v)):
+                out.append(s_rect(x + 0.5, y + 0.5, cs - 1, cs - 1, 'bg-2', 'bg', 1, title=f'{labels[i]}'))
+                continue
+            if not is_num(v):
+                out.append(s_rect(x + 0.5, y + 0.5, cs - 1, cs - 1, 'bg-2', 'bg', 1,
+                                  title=f'{labels[i]} x {labels[j]}: {NA_TEXT}'))
+                continue
+            b = diverging_bin(v, step)
+            out.append(s_rect(x + 0.5, y + 0.5, cs - 1, cs - 1, f'div-{b}', 'bg', 1,
+                              title=f'{labels[i]} x {labels[j]}: {fmt(v, "+.3f")}'))
+            if show:
+                out.append(s_text(x + cs / 2, y + cs / 2, fmt(round(v * 100), '.0f'), f't-hm t-cm t-hm-{b}', 'middle',
+                                  dy='0.32em'))
+    if groups:
+        runs, start = [], 0
+        for i in range(1, n + 1):
+            if i == n or groups[i] != groups[start]:
+                runs.append((start, i, groups[start]))
+                start = i
+        for a, b_, g in runs:
+            if a > 0:
+                out.append(s_line(x0, y0 + cs * a, x0 + cs * n, y0 + cs * a, 'fg-2', 1.2))
+                out.append(s_line(x0 + cs * a, y0, x0 + cs * a, y0 + cs * n, 'fg-2', 1.2))
+            out.append(s_line(x0 + cs * n + 6, y0 + cs * a + 2, x0 + cs * n + 6, y0 + cs * b_ - 2, 'fg-3', 1))
+            out.append(s_text(x0 + cs * n + 12, y0 + cs * (a + b_) / 2, str(g), 't-lbl-2', 'start', dy='0.32em'))
+    ly = y0 + cs * n + 18
+    out.extend(_div_legend(max(x0, width - 7 * 96), ly, step, legend_fmt))
+    return svg(width, int(ly + 34), ''.join(out), aria)
+
+
+def ic_panel(rows: list[dict], horizons: list, *, label_w: int = 170, row_h: int = 16, width: int = 1072,
+             value_fmt: str = '+.3f', panel_titles: list | None = None, aria: str = 'IC panel') -> str:
+    """Per-row mean with +-1 SE whiskers, one panel per horizon (own x scale, zero line), rows grouped.
+
+    ``rows``: dicts ``group, label, filled, color, values {h: (mean, se)}, title``.
+    """
+    good = [r for r in rows for h in horizons if is_num((r.get('values') or {}).get(h, (None, None))[0])]
+    if not rows or not good:
+        return empty_svg(width, 140, aria)
+    groups = []
+    for r in rows:
+        if not groups or groups[-1] != r.get('group'):
+            groups.append(r.get('group'))
+    head, grp_h, pad_b = 36, 20, 30
+    height = head + len(groups) * grp_h + len(rows) * row_h + pad_b
+    k = len(horizons)
+    gap = 22
+    pw = (width - label_w - gap * (k - 1)) / k
+    scales = []
+    for hi, h in enumerate(horizons):
+        lo_v, hi_v = [0.0], [0.0]
+        for r in rows:
+            m, se = (r.get('values') or {}).get(h, (None, None))
+            if is_num(m):
+                s = se if is_num(se) else 0.0
+                lo_v.append(m - s)
+                hi_v.append(m + s)
+        px0 = label_w + hi * (pw + gap)
+        scales.append((px0, Scale(*pad_domain(min(lo_v), max(hi_v), 0.05), px0 + 4, px0 + pw - 4), min(lo_v), max(hi_v)))
+    out = [s_text(0, 16, 'ID', 't-axis', 'start')]
+    y_first, y_last = head - 6, height - pad_b + 4
+    for hi, (px0, sx, dlo, dhi) in enumerate(scales):
+        title = (panel_titles or [f'h = {h}' for h in horizons])[hi]
+        out.append(s_text(px0, 16, title, 't-axis', 'start'))
+        for t in ticks_in(dlo, dhi, 4):
+            out.append(s_line(sx(t), y_first, sx(t), y_last, 'grid', 1))
+            out.append(s_text(sx(t), y_last + 14, tick_label(t, value_fmt), 't-tick', 'middle'))
+        out.append(s_line(sx(0), y_first, sx(0), y_last, 'axis', 1))
+    y = head
+    cur = object()
+    for r in rows:
+        if r.get('group') != cur:
+            cur = r.get('group')
+            out.append(s_line(0, y + 2, width, y + 2, 'rule-2', 1))
+            out.append(s_text(0, y + 14, cur or '', 't-grp', 'start'))
+            y += grp_h
+        yc = y + row_h / 2
+        out.append(s_text(0, yc, r['label'], 't-mono', 'start', dy='0.32em'))
+        for h, (px0, sx, _, _) in zip(horizons, scales):
+            m, se = (r.get('values') or {}).get(h, (None, None))
+            if not is_num(m):
+                out.append(s_text(px0 + 6, yc, NA_TEXT, 't-na', 'start', dy='0.32em'))
+                continue
+            if is_num(se):
+                out.append(s_line(sx(m - se), yc, sx(m + se), yc, r['color'], 1.2))
+            fill, stroke = (r['color'], 'bg') if r.get('filled') else ('bg', r['color'])
+            out.append(s_circle(sx(m), yc, 3.6, fill, stroke, 1.4,
+                                title=f"{r['label']} h={h}: mean {fmt(m, value_fmt)}, SE {fmt(se, '.3f') or NA_TEXT}"))
+        y += row_h
+    return svg(width, height, ''.join(out), aria)
+
+
+def _area_d(xs, ys, sx: Scale, sy: Scale, base: float = 0.0) -> str:
+    pts = [(sx(_to_ord(x)), sy(y)) for x, y in zip(xs, ys) if x is not None and is_num(y)]
+    if not pts:
+        return ''
+    d = f'M{_n(pts[0][0])},{_n(sy(base))} ' + ' '.join(f'L{_n(a)},{_n(b)}' for a, b in pts)
+    return d + f' L{_n(pts[-1][0])},{_n(sy(base))} Z'
+
+
+def exposure_chart(dates: list, long: list, short: list, net: list, *, width: int = 1072, height: int = 320,
+                   y_fmt: str = '.1f', y_label: str | None = None, aria: str = 'exposures') -> str:
+    """Long dollars (above zero) and short dollars (below zero) as areas, net as a line; all as a fraction of NAV."""
+    ys = [v for v in list(long) + [-s for s in short if is_num(s)] + list(net) if is_num(v)]
+    if not dates or not ys:
+        return empty_svg(width, height, aria)
+    top, right, bottom, left = 24, 110, 30, 58
+    x0, x1, y0, y1 = left, width - right, top, height - bottom
+    lo, hi = min(ys + [0.0]), max(ys + [0.0])
+    sx = Scale(dates[0].toordinal(), dates[-1].toordinal(), x0, x1)
+    sy = Scale(*pad_domain(lo, hi, 0.05), y1, y0)
+    out = []
+    for t in ticks_in(lo, hi, 6):
+        out.append(s_line(x0, sy(t), x1, sy(t), 'grid', 1))
+        out.append(s_text(x0 - 8, sy(t), tick_label(t, y_fmt), 't-tick', 'end', dy='0.32em'))
+    out.extend(_date_axis(sx, dates[0], dates[-1], y1, y0))
+    out.append(s_path(_area_d(dates, long, sx, sy), 's2', 1.0, fill='s2', op=0.28, title='long dollars / NAV'))
+    out.append(s_path(_area_d(dates, [-s if is_num(s) else None for s in short], sx, sy), 's3', 1.0, fill='s3', op=0.28,
+                      title='short dollars / NAV (drawn negative)'))
+    out.append(s_path(_path_d(dates, net, sx, sy), 'fg', 1.6, title='net dollars / NAV'))
+    out.append(s_line(x0, sy(0), x1, sy(0), 'axis', 1))
+    lastl = next((v for v in reversed(long) if is_num(v)), None)
+    lasts = next((v for v in reversed(short) if is_num(v)), None)
+    lastn = next((v for v in reversed(net) if is_num(v)), None)
+    for v, lab in ((lastl, 'long'), (-lasts if is_num(lasts) else None, 'short'), (lastn, 'net')):
+        if is_num(v):
+            out.append(s_text(x1 + 8, sy(v), f'{lab} {fmt(abs(v) if lab == "short" else v, "+.3f" if lab == "net" else ".3f")}',
+                              't-end', 'start', dy='0.32em'))
+    if y_label:
+        out.append(s_text(x0 - 8, 12, y_label, 't-axis', 'start'))
+    return svg(width, height, ''.join(out), aria)
+
+
+def fill_panel(dates: list, panels: list[dict], *, width: int = 1072, panel_h: int = 92, aria: str = 'fills') -> str:
+    """Vertically stacked small panels on one date axis; each ``{label, y, fmt, color, note}`` is a daily area
+    (values >= 0) with its own y scale; the label and the note (e.g. the TRAIN mean) sit at the top left."""
+    if not dates or not panels:
+        return empty_svg(width, 140, aria)
+    left, right = 58, 24
+    x0, x1 = left, width - right
+    sx = Scale(dates[0].toordinal(), dates[-1].toordinal(), x0, x1)
+    out, y = [], 6
+    for p in panels:
+        vals = [v for v in p['y'] if is_num(v)]
+        top, bot = y + 18, y + panel_h - 4
+        out.append(s_text(x0, y + 11, p['label'], 't-axis', 'start'))
+        if p.get('note'):
+            out.append(s_text(x1, y + 11, p['note'], 't-lbl-2', 'end'))
+        if not vals:
+            out.append(s_text(x0 + 6, (top + bot) / 2, NA_TEXT, 't-na', 'start', dy='0.32em'))
+            y += panel_h
+            continue
+        hi = max(vals) or 1.0
+        sy = Scale(0.0, hi * 1.05, bot, top)
+        for t in ticks_in(0.0, hi, 2):
+            out.append(s_line(x0, sy(t), x1, sy(t), 'grid', 1))
+            out.append(s_text(x0 - 8, sy(t), tick_label(t, p.get('fmt', '.0f')), 't-tick', 'end', dy='0.32em'))
+        out.append(s_path(_area_d(dates, p['y'], sx, sy), p.get('color', 's2'), 0.8, fill=p.get('color', 's2'), op=0.35,
+                          title=p['label']))
+        out.append(s_line(x0, bot, x1, bot, 'axis', 1))
+        y += panel_h
+    out.extend(_date_axis(sx, dates[0], dates[-1], y - 4, 6))
+    return svg(width, int(y + 22), ''.join(out), aria)
+
+
+def multiples(panels: list[dict], x_vals: list, *, cols: int = 3, width: int = 1072, panel_h: int = 150,
+              y_fmt: str = '+.2f', x_label: str = '', aria: str = 'small multiples', x_log: bool = True) -> str:
+    """Grid of small line charts on one shared y scale. ``panels``: ``{title, series: [{y (per x), color, width,
+    dash, label}]}``; numeric x (log scale by default), labelled at every x value."""
+    ys = [v for p in panels for s in p['series'] for v in s['y'] if is_num(v)]
+    if not panels or not ys:
+        return empty_svg(width, 140, aria)
+    lo, hi = min(ys + [0.0]), max(ys + [0.0])
+    gap = 26
+    pw = (width - gap * (cols - 1)) / cols
+    rows = math.ceil(len(panels) / cols)
+    tx = (lambda v: math.log10(v)) if x_log else (lambda v: float(v))
+    out = []
+    for k, p in enumerate(panels):
+        r, c = divmod(k, cols)
+        px0, py0 = c * (pw + gap), r * (panel_h + 26)
+        l, rgt, t, b = px0 + 44, px0 + pw - 58, py0 + 22, py0 + panel_h - 18
+        sx = Scale(tx(x_vals[0]), tx(x_vals[-1]), l, rgt)
+        sy = Scale(*pad_domain(lo, hi, 0.06), b, t)
+        out.append(s_text(px0, py0 + 12, p['title'], 't-grp', 'start'))
+        for tv in ticks_in(lo, hi, 3):
+            out.append(s_line(l, sy(tv), rgt, sy(tv), 'grid', 1))
+            out.append(s_text(l - 6, sy(tv), tick_label(tv, y_fmt), 't-tick', 'end', dy='0.32em'))
+        out.append(s_line(l, sy(0), rgt, sy(0), 'axis', 1))
+        for xv in x_vals:
+            out.append(s_text(sx(tx(xv)), b + 13, str(xv), 't-tick', 'middle'))
+        for s in sorted(p['series'], key=lambda s: s.get('width', 1.0)):
+            pts = [(sx(tx(xv)), sy(v)) for xv, v in zip(x_vals, s['y']) if is_num(v)]
+            if len(pts) >= 2:
+                d = 'M' + ' L'.join(f'{_n(a)},{_n(bb)}' for a, bb in pts)
+                out.append(s_path(d, s['color'], s.get('width', 1.0), dash=s.get('dash'), title=s.get('title')))
+            for a, bb in pts[-1:]:
+                if s.get('label'):
+                    out.append(s_circle(a, bb, 2.6, s['color'], 'bg', 1))
+                    out.append(s_text(a + 6, bb, s['label'], 't-val', 'start', dy='0.32em'))
+    height = rows * (panel_h + 26)
+    if x_label:
+        out.append(s_text(width, height - 4, x_label, 't-axis', 'end'))
+        height += 6
+    return svg(width, int(height), ''.join(out), aria)
+
+
+def xy_chart(series: list[dict], *, x_label: str, y_label: str, x_fmt: str = '.2f', y_fmt: str = '.1f',
+             width: int = 1072, height: int = 340, aria: str = 'xy chart') -> str:
+    """Numeric x/y: each series ``{name, points [(x, y, label)], color, dash, markers}`` drawn as a line through its
+    points with markers and point labels."""
+    pts = [(x, y) for s in series for x, y, *_ in s['points'] if is_num(x) and is_num(y)]
+    if not pts:
+        return empty_svg(width, height, aria)
+    top, right, bottom, left = 26, 190, 42, 62
+    x0, x1, y0, y1 = left, width - right, top, height - bottom
+    xl, xh = min(p[0] for p in pts), max(p[0] for p in pts)
+    yl, yh = min(p[1] for p in pts), max(p[1] for p in pts)
+    sx = Scale(*pad_domain(xl, xh, 0.08), x0, x1)
+    sy = Scale(*pad_domain(yl, yh, 0.12), y1, y0)
+    out = []
+    for t in ticks_in(*pad_domain(yl, yh, 0.1), 5):
+        out.append(s_line(x0, sy(t), x1, sy(t), 'grid', 1))
+        out.append(s_text(x0 - 8, sy(t), tick_label(t, y_fmt), 't-tick', 'end', dy='0.32em'))
+    for t in ticks_in(*pad_domain(xl, xh, 0.06), 6):
+        out.append(s_line(sx(t), y0, sx(t), y1, 'grid', 1))
+        out.append(s_text(sx(t), y1 + 16, tick_label(t, x_fmt), 't-tick', 'middle'))
+    out.append(s_line(x0, y1, x1, y1, 'axis', 1))
+    out.append(s_text(x1, y1 + 34, x_label, 't-axis', 'end'))
+    out.append(s_text(x0 - 8, 12, y_label, 't-axis', 'start'))
+    for s in series:
+        ps = [(x, y, rest[0] if rest else None) for x, y, *rest in s['points'] if is_num(x) and is_num(y)]
+        if len(ps) >= 2:
+            d = 'M' + ' L'.join(f'{_n(sx(x))},{_n(sy(y))}' for x, y, _ in ps)
+            out.append(s_path(d, s['color'], s.get('width', 1.6), dash=s.get('dash'), title=s['name']))
+        for x, y, lab in ps:
+            if s.get('markers', True):
+                out.append(s_circle(sx(x), sy(y), 4.2, s['color'], 'bg', 1.4, title=f"{s['name']}: {fmt(x, x_fmt)}, {fmt(y, y_fmt)}"))
+            if lab:
+                out.append(s_text(sx(x) + 8, sy(y) - 8, lab, 't-val', 'start'))
+        if ps and s.get('end_label'):
+            x, y, _ = ps[-1]
+            out.append(s_text(x1 + 12, sy(y), s['end_label'], 't-end', 'start', dy='0.32em'))
+    return svg(width, height, ''.join(out), aria)
+
+
+def flow_diagram(stages: list[dict], *, per_row: int = 4, width: int = 1072, box_h: int = 104,
+                 aria: str = 'pipeline') -> str:
+    """Boxes-and-arrows pipeline in a snake layout (row 1 left to right, row 2 right to left, ...). Each stage
+    ``{title, lines [str], kind}`` is a rect with a title and up to four detail lines; arrows are short straight
+    lines with a small triangular head."""
+    if not stages:
+        return empty_svg(width, 120, aria)
+    gap_x, gap_y = 40, 46
+    bw = (width - 2 - gap_x * (per_row - 1)) / per_row
+    rows = math.ceil(len(stages) / per_row)
+    pos = []
+    for k in range(len(stages)):
+        r, c = divmod(k, per_row)
+        if r % 2 == 1:
+            c = per_row - 1 - c
+        pos.append((1 + c * (bw + gap_x), 1 + r * (box_h + gap_y)))
+    out = []
+
+    def head(x, y, dx, dy):
+        n_ = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / n_, dy / n_
+        a = (x - 8 * ux + 4 * uy, y - 8 * uy - 4 * ux)
+        b = (x - 8 * ux - 4 * uy, y - 8 * uy + 4 * ux)
+        return s_path(f'M{_n(x)},{_n(y)} L{_n(a[0])},{_n(a[1])} L{_n(b[0])},{_n(b[1])} Z', 'fg-2', 1, fill='fg-2')
+
+    for k in range(len(stages) - 1):
+        (xa, ya), (xb, yb) = pos[k], pos[k + 1]
+        if abs(ya - yb) < 1:
+            if xb > xa:
+                sx_, ex_ = xa + bw, xb
+            else:
+                sx_, ex_ = xa, xb + bw
+            yy = ya + box_h / 2
+            out.append(s_line(sx_ + 2, yy, ex_ - 2, yy, 'fg-2', 1.3))
+            out.append(head(ex_ - 2, yy, ex_ - sx_, 0))
+        else:
+            xx = xa + bw / 2
+            out.append(s_line(xx, ya + box_h + 2, xx, yb - 2, 'fg-2', 1.3))
+            out.append(head(xx, yb - 2, 0, 1))
+    for (x, y), st in zip(pos, stages):
+        tok = 'accent' if st.get('kind') == 'key' else 'rule'
+        out.append(s_rect(x, y, bw, box_h, 'bg', tok, 1.4 if st.get('kind') == 'key' else 1))
+        out.append(s_text(x + 10, y + 18, st.get('title', ''), 't-flow-t', 'start'))
+        for i, ln in enumerate((st.get('lines') or [])[:5]):
+            out.append(s_text(x + 10, y + 36 + 14.5 * i, ln, 't-flow', 'start'))
+    height = rows * box_h + (rows - 1) * gap_y + 2
+    return svg(width, int(height), ''.join(out), aria)
+
+
+def glossary(entries: list[dict]) -> str:
+    """Two-column definition list: ``{term, definition (html-safe text), group}``; a group change adds a sub-head."""
+    parts, cur = [], object()
+    for e in entries:
+        if e.get('group') and e.get('group') != cur:
+            cur = e.get('group')
+            parts.append(f'<div class="gl-grp">{esc(cur)}</div>')
+        parts.append(f'<div class="gl-row"><dt>{esc(e["term"])}</dt><dd>{e["definition"]}</dd></div>')
+    return f'<dl class="glossary">{"".join(parts)}</dl>'
+
+
+def callout(title: str, items_html: list[str], *, kind: str = 'caveat', paragraphs_html: list[str] | None = None) -> str:
+    """A boxed caveat: title, optional paragraphs and a bullet list (items are already escaped HTML)."""
+    ps = ''.join(f'<p>{p}</p>' for p in (paragraphs_html or []))
+    lis = ''.join(f'<li>{it}</li>' for it in items_html)
+    ul = f'<ul>{lis}</ul>' if lis else ''
+    return f'<aside class="callout {esc(kind)}"><p class="callout-title">{esc(title)}</p>{ps}{ul}</aside>'
 
 
 # ----------------------------------------------------------------------------------------------- HTML blocks

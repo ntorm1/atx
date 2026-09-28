@@ -139,14 +139,44 @@ svg.chart .t-mono{font-family:var(--font-mono);font-size:11px;fill:var(--fg)}
 """
 
 
-def css() -> str:
-    """Complete stylesheet: light tokens on :root, dark tokens in both dark selectors, then the base rules."""
+V2_CSS = """
+.prose{margin:14px 0 0}
+.prose p,.prose li{font:15.5px/1.6 var(--font-serif);color:var(--fg);max-width:70ch}
+.prose p{margin:0 0 12px}
+.prose ol,.prose ul{margin:0 0 12px;padding-left:22px;max-width:70ch}
+.prose li{margin:0 0 4px}
+.prose code,.callout code,.glossary code,td code{font:12.5px/1.4 var(--font-mono);color:var(--fg)}
+.prose strong{font-weight:600}
+.check{margin:4px 0 8px;padding:10px 0 4px;border-top:1px solid var(--rule-2);max-width:70ch}
+.check ul{margin:6px 0 0;padding-left:20px}
+.check li{font:13.5px/1.5 var(--font-sans);color:var(--fg-2);margin:0 0 3px}
+h3.sub{font:600 17px/1.3 var(--font-serif);margin:34px 0 4px}
+.callout{margin:24px 0;padding:12px 16px 6px;border:1px solid var(--rule);border-left:3px solid var(--fail);max-width:78ch}
+.callout.note{border-left-color:var(--accent)}
+.callout-title{font:600 10.5px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.08em;color:var(--fg-2);margin:0 0 6px}
+.callout p,.callout li{font:14px/1.55 var(--font-sans);color:var(--fg);margin:0 0 6px}
+.callout ul{margin:0;padding-left:18px}
+.glossary{margin:18px 0 0;display:grid;grid-template-columns:minmax(150px,240px) 1fr;column-gap:22px;border-top:1px solid var(--rule)}
+.glossary .gl-row{display:contents}
+.glossary dt{font:500 12.5px/1.45 var(--font-mono);color:var(--fg);padding:7px 0;border-bottom:1px solid var(--rule-2);overflow-wrap:anywhere}
+.glossary dd{margin:0;font:13.5px/1.5 var(--font-sans);color:var(--fg-2);padding:7px 0;border-bottom:1px solid var(--rule-2);max-width:78ch}
+.glossary .gl-grp{grid-column:1/-1;font:600 10px/1.3 var(--font-sans);text-transform:uppercase;letter-spacing:.08em;color:var(--fg);background:var(--bg-2);padding:7px 8px;margin-top:10px}
+.t-cm{font-size:8px}
+.t-flow-t{font-size:12.5px;font-weight:600;fill:var(--fg)}
+.t-flow{font-size:11px;fill:var(--fg-2)}
+@media (max-width:640px){.glossary{grid-template-columns:1fr}.glossary dt{border-bottom:0;padding-bottom:0}}
+"""
+
+
+def css(v2: bool = False) -> str:
+    """Complete stylesheet: light tokens on :root, dark tokens in both dark selectors, then the base rules
+    (plus the prose / callout / glossary rules of config schema v2 when ``v2``)."""
     light = f':root{{{_block(LIGHT)}{_block(DERIVED)}color-scheme:light}}'
     dark_tokens = _block(DARK)
     dark = (f'@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{{dark_tokens}color-scheme:dark}}}}'
             f':root[data-theme="dark"]{{{dark_tokens}color-scheme:dark}}'
             f':root[data-theme="light"]{{color-scheme:light}}')
-    return light + dark + BASE_CSS
+    return light + dark + BASE_CSS + (V2_CSS if v2 else '')
 
 
 SCRIPT = r"""
