@@ -772,7 +772,9 @@ TEST(StrategyIcRunner, ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayload
   // Payloads are absent: every refusal below must precede any role payload read.
   ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
   ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
-  const auto path=dir.path/"weights.json";
+  // The runner pairs --composition-weights with its SHA (else "bounded config"):
+  // every case below rewrites this one path and re-pins its SHA.
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
   const std::string equal=R"({"volume_level":0.5,"volume_rank":0.5})";
   const std::string both=R"({"volume_level":"liquidity","volume_rank":"liquidity"})";
   const auto plan=[&](const std::string& text) {
