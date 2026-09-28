@@ -54,3 +54,18 @@ Rebased onto 31f79c0e with no conflicts: 9f92d22c sha, dcbf4a53 runner. New comm
   - `"C:/Program Files/Python312/python.exe" -m pytest atx-impl/tools/test_fit_composition_weights.py atx-impl/tools/test_mega_report_sig_corr.py -q`
   - The fit command line is unchanged; only the new summary SHA pin goes in.
 - **Note**: the report's FORBIDDEN guard (2023|2024|2025) also matches hex paths. A dsl16 or fk16 name hits it at about 0.06% per name, and 64-hex directories were already exposed at about 0.3%. Such a sidecar is refused, so sig_corr shows n/a rather than a wrong value.
+
+## Fix-up 2: gtest CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests
+- **Rebase**: onto 6f7ee661, which already carries the L1 merge b5554999. The new commit is 8954c610.
+- **Root cause**: Windows MAX_PATH (259 characters). The v1 in-place read path is fine, as the real v6.1 u pass (38/38 hits) shows.
+  - The test process runs inside the per-process scratch root from tests/support/process_scratch.cpp (`%TEMP%\atxv-XXXXXXXX\`). That puts the fixture directory at about 90 characters.
+  - The deepest v2 file is a field candidate's IC result: `ROOT/<64-hex role>/fp_<16>/ic1_<16>/<id>.<dsl16>.json`.
+  - `PartialFile` named its partial `.<final name>.<nonce>.partial`, which adds about 26 more characters.
+  - Under `c_copy`, the market_shift IC-result partial reached about 264 characters, so the ofstream failed to open ("partial output"). The final paths all still fit. The cold run under `c` sat at about 259, right at the edge.
+  - This is the path growth flagged in risk 4. The earlier budget counted the payload but not the IC-result partial.
+- **Fix**: partials are now named `.<16-hex nonce>.partial` (25 characters) beside the final file, so no partial is deeper than the file it publishes.
+  - Publication stays atomic and no-replace, and orphan accounting (`*.partial`) is unchanged.
+  - The partial-output check is kept; its message now includes the path.
+  - At the real root (56 characters), the deepest partial drops from 244 to 188 characters; the deepest final file is 218 characters for a 33-character id.
+- **New test** `StrategyIcRunner.CandidateCacheWritesFitWithinTheDeepestCommittedPath`. It pads the cache directory so the deepest committed file is exactly 255 characters, then requires cold and warm runs to succeed there with 4/4 signal hits, 4/4 IC hits, and no partial left behind. The old naming would fail at 260-281 characters. It skips if TEMP itself is too deep.
+- **Root runs**: `atx-impl-strategy-ic-tests --gtest_filter=StrategyIcRunner.*`. Expect 46/46, including the previously failing test, whose fixture is unchanged.
