@@ -259,10 +259,18 @@ co::Result<std::vector<BookWeight>> load_book(const std::string& path, const std
     const auto it = std::find(header.begin(), header.end(), name);
     return it == header.end() ? header.size() : static_cast<usize>(it - header.begin());
   };
-  const usize cs = column("session"), ci = column("instrument_id"), cw = column("weight");
+  // Plain (session, instrument_id, weight) or lane L3's holdings.csv (session_ns, held_weight:
+  // the weight held at the session's close, after its fills), read as is.
+  const auto either = [&](const char* a, const char* b) {
+    const usize k = column(a);
+    return k != header.size() ? k : column(b);
+  };
+  const usize cs = either("session", "session_ns"), ci = column("instrument_id"),
+              cw = either("weight", "held_weight");
   if (cs == header.size() || ci == header.size() || cw == header.size())
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "risk: book weights need columns session (UTC-midnight ns), instrument_id, weight");
+                   "risk: book weights need columns session|session_ns (UTC-midnight ns), "
+                   "instrument_id, weight|held_weight");
   std::vector<BookWeight> out;
   while (std::getline(file, line)) {
     if (line.empty() || line == "\r") continue;
@@ -609,8 +617,8 @@ int dispatch_risk_model(int argc, char** argv, std::ostream& out, std::ostream& 
       const std::string key = argv[i];
       if (key == "--help") {
         out << "risk --role PATH/manifest.json --role-sha256 SHA --fields PATH/manifest.json "
-               "--fields-sha256 SHA --output NEWDIR [--book-weights CSV (session,instrument_id,"
-               "weight) --book-weights-sha256 SHA] [--random-portfolios 64] [--seed 7] "
+               "--fields-sha256 SHA --output NEWDIR [--book-weights CSV (session|session_ns,"
+               "instrument_id,weight|held_weight; L3 holdings.csv as is) --book-weights-sha256 SHA] [--random-portfolios 64] [--seed 7] "
                "[--emit-exposures none|last|all] [--max-bytes 1400000000]\n";
         return 0;
       }

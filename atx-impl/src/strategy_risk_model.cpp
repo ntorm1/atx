@@ -724,6 +724,7 @@ BiasHarness::BiasHarness(const RiskPanel& panel, usize random_portfolios, u64 se
       ++unmatched_book_rows_;
       continue;
     }
+    if (w.weight == 0) continue; // flat rows (L3 holdings.csv lists every name with state)
     book_by_date_[static_cast<usize>(s - panel.sessions.begin())].emplace_back(
         static_cast<usize>(id - panel.ids.begin()), w.weight);
   }
