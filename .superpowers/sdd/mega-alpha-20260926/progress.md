@@ -1,5 +1,13 @@
 # Active task: recent-data DSL ensemble
 
+## Build v6-1 OK (IC); 1 W gtest fails -> W fix round 2; ew-theme-v6 fit on library v6 started (2026-09-27 ~22:50)
+mega-v6-1-receipt.json: exit 0; IC exe b1c1ba07. atx-impl-strategy-ic-tests 69/70: FAIL
+StrategyIcRunner.ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput (:788-792: accept cases return
+"InvalidArgument: IC runner: bounded config" instead of ""; refusal cases pass) -> fix round 2 (resume implementer; fixture
+vs code bug to be determined). The real w pass will independently show whether the v2 accept path works.
+Fit: COMP=ew-theme-v6 bash v6l_train.sh fit -> build-equity/mega-weights-v6l-ew6 (pre-registered V6-W composition on library
+v6; Appendix A composition +1).
+
 ## Task V6-C1: complete (re-review ALL ADDRESSED). V6-W fix round 1 landed and cherry-picked; build v6-1 (IC) running (2026-09-27 ~22:40)
 task-V6C1fix-rereview.md: ALL ADDRESSED, no new Critical/Important; default-path bytes traced identical at exit_rate 1;
 M1/M2/M4/M6/M7 open by design (disclosures). Pool-2 now has C1 + fix (144071a3, 64e5fe98).
