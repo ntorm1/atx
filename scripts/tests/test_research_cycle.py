@@ -381,3 +381,22 @@ def test_fields_check_failure_stop_after_dirty_tree_and_partial_outputs(tmp_path
     assert run(root3, sp3, suffix="r2", reuse_fields="fields-base", stop_after="u") == RC.EXIT_OK
     assert calls(root3)[0] == "fields --reuse --reuse-sha256" and calls(root3)[2] == "U-r2-run1"
     assert (root3 / "out" / "F-r2" / "manifest.json").exists() and (root3 / "out" / "U-r2-1").is_dir()
+
+
+def test_keep_fields_and_runner_override(tmp_path):
+    pins = json.loads((FIX / "v61_pins.json").read_text())
+    c = v61_cycle(tmp_path, suffix="r7", keep_fields=True, runner_overrides=RC.parse_runner_overrides(["max_rss_mib=64"]))
+    steps = {s.phase: s for s in c.steps()}
+    fdm = "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v7/manifest.json"
+    assert steps["fields"].state == "done" and steps["fields"].output == fdm.rsplit("/", 1)[0]
+    u = steps["u"].argv
+    assert steps["u"].output == "build-equity/mega-v61-train-u-r7-1" and steps["u"].state == "pending"
+    assert u[u.index("--train-fields-sha256") + 1] == pins[fdm]            # the kept fields pin, resolved
+    k = u.index("--")
+    assert u[u.index("--max-rss-mib") + 1] == "64" and u.index("--max-rss-mib") < k       # the runner cap only
+    assert u[u.index("--max-memory-mib") + 1] == "1536"
+    assert RC.load_spec(V61)["runner"]["max_rss_mib"] == 1536                # the spec itself is untouched
+    with pytest.raises(RC.CycleError):
+        RC.parse_runner_overrides(["workers=2"])
+    with pytest.raises(RC.CycleError, match="exclude"):
+        v61_cycle(tmp_path, keep_fields=True, reuse_fields="x")

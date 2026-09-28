@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """One research cycle driven by a spec file (platform v7 lane L2): replaces the hand-copied vNN_train.sh ladders.
 
-  research_cycle.py plan   SPEC [--root R] [--suffix S] [--attempt PHASE=N ...] [--reuse-fields DIR] [--ledger PATH]
-                                [--lines-only]
+  research_cycle.py plan   SPEC [--root R] [--suffix S [--keep-fields]] [--attempt PHASE=N ...] [--reuse-fields DIR]
+                                [--ledger PATH] [--runner-override KEY=VALUE ...] [--lines-only]
   research_cycle.py run    SPEC [same options] [--stop-after PHASE]
   research_cycle.py status SPEC [same options]
   research_cycle.py lock   SPEC [--root R] [--relock] [--write]
@@ -35,8 +35,11 @@ an output (a failed attempt stays on disk: rerun with ``--attempt PHASE=N+1`` or
 receipt and HARD-STOPS (exit 4) on a non-zero exit or any refusal (prelaunch-memory-refusal, rss/time/system-memory
 limit, runner error). The tree must be clean (the runner refuses otherwise). ``status`` shows each phase's state and
 receipt. ``--suffix S`` appends ``-S`` to every output name (fields, cache, U, fit work, W, WT, N) for an identity
-re-run; ``--reuse-fields DIR`` passes ``--reuse DIR --reuse-sha256 <pin>`` to the fields builder; ``--ledger PATH``
-passes ``--ledger PATH --ledger-kind <summ.ledger_kind>`` to nav_summ.
+re-run (``--keep-fields``: every name but the fields dir, which is then reused as it is); ``--reuse-fields DIR``
+passes ``--reuse DIR --reuse-sha256 <pin>`` to the fields builder; ``--ledger PATH`` passes ``--ledger PATH
+--ledger-kind <summ.ledger_kind>`` to nav_summ; ``--runner-override KEY=VALUE`` (seconds, max_rss_mib,
+min_free_mib) changes a bounded-runner cap for this invocation (visible in every line; e.g. max_rss_mib=64 forces
+an rss-limit refusal to check the hard stop).
 """
 from __future__ import annotations
 
@@ -138,6 +141,16 @@ def validate_spec(spec: dict) -> None:
         raise CycleError("spec static_check needs inputs.baseline_library", EXIT_USAGE)
 
 
+def parse_runner_overrides(items: list[str]) -> dict:
+    out = {}
+    for item in items or []:
+        key, _, value = item.partition("=")
+        if key not in ("seconds", "max_rss_mib", "min_free_mib") or not value.replace(".", "", 1).isdigit():
+            raise CycleError(f"--runner-override {item}: expected seconds|max_rss_mib|min_free_mib=NUMBER", EXIT_USAGE)
+        out[key] = int(value) if value.isdigit() else float(value)
+    return out
+
+
 def parse_attempts(items: list[str]) -> dict:
     out = {}
     for item in items or []:
@@ -208,8 +221,14 @@ class Step:
 
 class Cycle:
     def __init__(self, spec: dict, res: Resolver, *, suffix: str | None = None, attempts: dict | None = None,
-                 reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None):
-        self.spec, self.res, self.suffix = spec, res, suffix
+                 reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
+                 keep_fields: bool = False, runner_overrides: dict | None = None):
+        if keep_fields and reuse_fields:
+            raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
+        spec = json.loads(json.dumps(spec))
+        spec["runner"].update(runner_overrides or {})
+        self.spec, self.res, self.suffix, self.keep_fields = spec, res, suffix, keep_fields
+        self.runner_overrides = dict(runner_overrides or {})
         self.attempts = dict(attempts or {})
         self.reuse_fields, self.ledger, self.spec_path = reuse_fields, ledger, spec_path
         self.py = spec["python"]
@@ -311,7 +330,9 @@ class Cycle:
         s, out = self.spec, []
         role_m, role_sha = self.ipath("role"), self.pin("role")
         lib, lib_sha = self.ipath("library"), self.pin("library")
-        fd = self.out(s["fields"]["output"]) if "fields" in s else ""   # validate_spec: ic/check need fields
+        fd = ""                                  # validate_spec: ic and the static check need fields
+        if "fields" in s:
+            fd = s["fields"]["output"] if self.keep_fields else self.out(s["fields"]["output"])
         fdm = f"{fd}/manifest.json" if fd else ""
         if "fields" in s:
             out.append(self.fields_step(fd, fdm, role_sha))
@@ -526,7 +547,8 @@ def gate(cycle: Cycle, w_dir: str, log=print) -> None:
 def header(cycle: Cycle) -> list[str]:
     spec_sha = sha256_file(cycle.spec_path) if cycle.spec_path else None
     lines = [f"# research_cycle {cycle.spec['name']}: spec {cycle.spec_path} sha256 {spec_sha}; root {cycle.res.root}; "
-             f"suffix {cycle.suffix or 'none'}; attempts {cycle.attempts or 'auto'}"]
+             f"suffix {cycle.suffix or 'none'}{' (fields kept)' if cycle.keep_fields else ''}; attempts "
+             f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"]
     for key, (rel, sha, how) in cycle.pins.items():
         lines.append(f"# pin {key}: {rel} {sha} [{how}]")
     return lines
@@ -680,6 +702,8 @@ def main(argv=None) -> int:
     ap.add_argument("--attempt", action="append", default=[], help="PHASE=N (u, fit, w, nav)")
     ap.add_argument("--reuse-fields", default=None, help="prior fields dir for prepare_research_fields --reuse")
     ap.add_argument("--ledger", default=None, help="trial ledger passed to nav_summ --ledger")
+    ap.add_argument("--keep-fields", action="store_true", help="--suffix leaves the fields dir name unchanged")
+    ap.add_argument("--runner-override", action="append", default=[], help="seconds|max_rss_mib|min_free_mib=N")
     ap.add_argument("--lines-only", action="store_true", help="plan: the command lines only")
     ap.add_argument("--stop-after", choices=PHASES, default=None)
     ap.add_argument("--relock", action="store_true", help="lock: replace pins that differ from the files")
@@ -701,7 +725,8 @@ def main(argv=None) -> int:
         if a.suffix is not None and (not a.suffix or any(c in a.suffix for c in "/\\ ")):
             raise CycleError("--suffix must be a non-empty name without separators or spaces", EXIT_USAGE)
         cycle = Cycle(load_spec(spec_path), Resolver(a.root), suffix=a.suffix, attempts=parse_attempts(a.attempt),
-                      reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path)
+                      reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path, keep_fields=a.keep_fields,
+                      runner_overrides=parse_runner_overrides(a.runner_override))
         if a.verb == "plan":
             print("\n".join(plan_lines(cycle, a.lines_only)))
             return EXIT_OK
