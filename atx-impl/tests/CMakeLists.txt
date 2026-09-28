@@ -102,5 +102,6 @@ atx_impl_test_target_environment(atx-impl-strategy-ic-tests)
 add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     strategy_target_replay_test.cpp
     strategy_price_exposures_test.cpp
-    strategy_nav_replay_test.cpp)
+    strategy_nav_replay_test.cpp
+    strategy_live_test.cpp)
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
