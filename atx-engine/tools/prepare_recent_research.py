@@ -17,8 +17,10 @@ a base member stays a member at session t only if, with information published by
     evidence; units, warrants, rights, preferreds and unknown classes fail);
   * the linked CIK has a visible SIC row (FSDS SUB, accepted_utc < date(t-1) 22:00 UTC, age
     <= 550 days: exactly the grp_ff12 clock, so finite(grp_ff12) == linked-P & visible SIC)
-    whose code is not a pooled vehicle or blank check (6189 asset-backed, 6221 commodity pools,
-    6722 / 6726 investment companies and trusts, 6770 blank checks = SPACs).
+    whose code is not a pooled vehicle, blank check or royalty trust (6189 asset-backed, 6221
+    commodity pools, 6722 / 6726 investment companies and trusts, 6770 blank checks = SPACs,
+    6792 oil royalty traders and 6795 mineral royalty traders = royalty trusts, pass-through
+    vehicles). REITs (6798) are operating companies here and stay.
 Unlinked lines (ETFs, ETNs, most ADRs, unbridged names) fail the first test. Every payload but
 member.u8 is copied byte for byte; the manifest keeps the base keys (membership_recipe included,
 so role readers admit it) with score_member_counts recomputed and a ``universe`` block: the id,
@@ -54,8 +56,9 @@ UNIVERSES = (DEFAULT_UNIVERSE, LINKED_OPERATING_UNIVERSE)
 UNIVERSE_SIC_LAG_SESSIONS = 1     # the grp_* / fundamentals clock of fields-v6 (v4-prereg R2 --fund-lag-sessions 1)
 UNIVERSE_SIC_STALE_DAYS = 550     # prepare_research_fields.GRP_STALE_DAYS (asserted at run time)
 # Not operating companies: asset-backed (6189), commodity pools (6221), open-end funds (6722), unit investment
-# trusts / closed-end funds (6726), blank checks (6770 = SPACs).
-NON_OPERATING_SIC = (6189, 6221, 6722, 6726, 6770)
+# trusts / closed-end funds (6726), blank checks (6770 = SPACs), royalty trusts (6792 oil royalty traders, 6795
+# mineral royalty traders: pass-through vehicles; controller ruling, V6-W fix round 1). REITs (6798) stay.
+NON_OPERATING_SIC = (6189, 6221, 6722, 6726, 6770, 6792, 6795)
 UNIVERSE_CLASS = "common"
 UNIVERSE_REASONS = ("unlinked", "ambiguous", "secondary_line", "class_not_common", "no_visible_sic",
                     "non_operating_sic")
@@ -64,7 +67,7 @@ LINKED_OPERATING_RULE = (
     "primary (P) line (bridge row start <= date(t) <= end_incl, available_at <= date(t) 22:00 UTC; prepare_research_"
     "fields LINK_RULE) AND every qualifying bridge row has class_status 'common' AND the linked CIK's latest SIC row "
     "with accepted_utc < date(t-1) 22:00 UTC (lag 1 session) is <= 550 days old AND its SIC is not in "
-    "non_operating_sic; reasons are assigned in the order unlinked, ambiguous, secondary_line, class_not_common, "
+    "non_operating_sic (pooled vehicles, blank checks, royalty trusts; REITs stay); reasons are assigned in the order unlinked, ambiguous, secondary_line, class_not_common, "
     "no_visible_sic, non_operating_sic (first failing test)")
 UNIVERSE_PIT = (
     "every input is visible by the session's 22:00 UTC mark: bridge rows by available_at (T19: <= start 22:00), their "

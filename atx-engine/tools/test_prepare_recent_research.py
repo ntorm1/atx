@@ -237,7 +237,10 @@ class LinkedOperatingUniverse(unittest.TestCase):
         self.assertEqual(keep.tolist(), [False] * 6 + [True, False])
         self.assertEqual(tool.UNIVERSE_REASONS, ("unlinked", "ambiguous", "secondary_line", "class_not_common",
                                                  "no_visible_sic", "non_operating_sic"))
-        for sic in (6189, 6221, 6722, 6726, 6770):  # pooled vehicles and blank checks; REITs (6798) stay
+        # pooled vehicles, blank checks and royalty trusts (6792 / 6795, controller ruling V6-W fix round 1);
+        # REITs (6798) stay
+        self.assertEqual(tool.NON_OPERATING_SIC, (6189, 6221, 6722, 6726, 6770, 6792, 6795))
+        for sic in (6189, 6221, 6722, 6726, 6770, 6792, 6795):
             self.assertEqual(tool.classify_linked_operating([True], [0], [True], [False], [True], [sic])[1][0], 6)
         self.assertEqual(tool.classify_linked_operating([True], [0], [True], [False], [True], [6798])[1][0], 0)
         # first failing test wins: an unlinked line that also lacks SIC is 'unlinked'
@@ -263,26 +266,29 @@ class LinkedOperatingUniverse(unittest.TestCase):
         for key in ("membership_recipe", "common_stock_verified", "dates", "instruments", "score_begin",
                     "declared_output_bytes", "source_sha256", "clock_recipe"):
             self.assertEqual(m[key], base_m[key], key)
-        self.assertEqual(m["score_member_counts"], [int(x) for x in member.sum(axis=1)[m["score_begin"]:]])
+        self.assertEqual(m["score_member_counts"],
+                         [int(x) for x in member.astype(np.int64).sum(axis=1)[m["score_begin"]:]])
         u = m["universe"]
         self.assertEqual((u["id"], u["class_status_required"], u["sic_lag_sessions"], u["sic_stale_days"]),
                          ("linked-operating-v1", "common", 1, 550))
         self.assertEqual(u["base_role"]["manifest_sha256"], self.role_sha)
-        base_counts, kept_counts = base_member.sum(axis=1), member.sum(axis=1)
+        # member.u8 arrays are uint8: every count is taken in int64 (numpy 2 NEP 50 keeps uint8 scalar sums uint8).
+        wide_base, wide = base_member.astype(np.int64), member.astype(np.int64)
+        base_counts, kept_counts = wide_base.sum(axis=1), wide.sum(axis=1)
         self.assertEqual(u["base_member_counts"], base_counts.tolist())
         self.assertEqual(u["kept_member_counts"], kept_counts.tolist())
         self.assertEqual(u["dropped_member_share"], [round(1 - k / b, 6) if b else None
                                                     for b, k in zip(base_counts, kept_counts)])
         self.assertIsNone(u["dropped_member_share"][0])
-        self.assertEqual(sum(u["dropped_by_reason"].values()), int(base_member.sum() - member.sum()))
-        self.assertEqual(u["dropped_by_reason"]["secondary_line"], int(base_member[:, col[2]].sum()))
+        self.assertEqual(sum(u["dropped_by_reason"].values()), int(wide_base.sum() - wide.sum()))
+        self.assertEqual(u["dropped_by_reason"]["secondary_line"], int(wide_base[:, col[2]].sum()))
         stale = [(dt.date.fromisoformat(self.days[t]) - dt.date.fromisoformat(self.days[5])).days > 550
                  for t in range(base_member.shape[0])]  # 1004's only SIC row (d5) ages out: no_visible_sic
         self.assertTrue(any(stale))
         self.assertEqual(u["dropped_by_reason"]["non_operating_sic"],
-                         int(sum(base_member[t, col[4]] for t in range(len(stale)) if not stale[t])))
-        self.assertEqual(u["dropped_by_reason"]["unlinked"], int(base_member[:311, col[5]].sum()))
-        self.assertEqual(u["link_member_cells"]["member_cells"], int(base_member.sum()))
+                         int(wide_base[[t for t, s in enumerate(stale) if not s], col[4]].sum()))
+        self.assertEqual(u["dropped_by_reason"]["unlinked"], int(wide_base[:311, col[5]].sum()))
+        self.assertEqual(u["link_member_cells"]["member_cells"], int(wide_base.sum()))
         self.assertEqual(u["inputs"]["identity_bridge"]["class_status_rows"], {"common": 5, "unknown": 1})
         self.assertEqual(u["inputs"]["identity_bridge"]["checks"]["rows_used_available_after_start_mark"], 1)
         self.assertIsNone(u["fields_crosscheck"])
