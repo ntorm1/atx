@@ -19,15 +19,16 @@
 #        revision, chosen after the grid) needs EXTRA_CELL=1 and its choice recorded in the ledger first.
 #   REF (default build-equity/mega-nav-v51-$COMBINED-t.05-d.1-fixed, the v5.1 parent): the paired dSR baseline of
 #        nav_summ, and for the obtarget-x1 cell (the parent's own flags) a byte-identity check of every published
-#        file against it: a mismatch exits 3 (the v6 binary's default path or the cache changed bytes; REF_CHECK=0
-#        skips the check, e.g. when REF came from another binary on purpose).
+#        file against it: a mismatch exits 3 (the v6 binary's default path or the cache changed bytes). With
+#        REF_CHECK=1 (default) an absent REF also exits 3, before anything runs (fix round 1, review M5); REF_CHECK=0
+#        skips the identity check and admits an absent REF (nav_summ then runs unpaired), e.g. for another binary.
 #   DRY=1 ...  print every bounded-runner (and helper) command line instead of running it; writes nothing. Runs in this
 #              script's own checkout (or DRY_ROOT=<checkout>, read-only; DRY only); a pinned file absent there is
 #              reported, not checked.
 # Every input is pinned by SHA-256. Any argument or env value naming validation / VAL / 2023-2025 is refused (exit 2)
 # before anything runs. Outputs are never overwritten. Never --band-multiple. RAM/time bound as v51 (180 s, 1536 MiB,
-# --max-bytes 1 GiB); the liquidity cache only removes work.
-set -u
+# --max-bytes 1 GiB); the liquidity cache only removes work. pipefail: a failed nav_summ fails the script (exit 1).
+set -uo pipefail
 DRY=${DRY:-}
 if [ -n "$DRY" ]; then cd "${DRY_ROOT:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}" || exit 1
 elif [ -n "${DRY_ROOT:-}" ]; then echo "DRY_ROOT is honoured with DRY=1 only (real runs always use C:/atx-wt/pool-2)"; exit 2
@@ -103,6 +104,7 @@ case "$ORDER_BASIS" in target) OB="" ;; delta) OB="--order-basis delta" ;;
 if [ "$EXIT_RATE" = 1 ]; then XF=""; else XF="--exit-rate $EXIT_RATE"; fi
 case "$LOCATE_AIM" in 0) LF="" ;; 1) LF="--locate-in-aim" ;; *) echo "nav: LOCATE_AIM must be 0 or 1"; exit 2 ;; esac
 case "$LCACHE" in 0) CF="" ;; 1) CF="--liquidity-cache" ;; *) echo "nav: LCACHE must be 0 or 1"; exit 2 ;; esac
+case "$REF_CHECK" in 0|1) ;; *) echo "nav: REF_CHECK must be 0 or 1"; exit 2 ;; esac
 case "$RATE" in
   fixed) RF="" ;;
   per-name) RF="--rate per-name-v1 --rate-rra 10 --rate-min .01 --rate-max .15" ;;
@@ -147,6 +149,12 @@ N=build-equity/mega-nav-v6-$COMBINED-t$THETA-d$DUST-$RATE-ob$ORDER_BASIS-x$EXIT_
 [ "$LEV" = 1 ] || N=$N-L$LEV     # an extra-leverage cell keeps its own directory
 bad $N
 if [ -e "$N" ] || [ -e "$N-run" ]; then echo "nav: $N or $N-run exists; refusing"; exit 1; fi
+# REF is the obtarget-x1 cell's byte-identity parent and every cell's paired nav_summ baseline: with REF_CHECK=1 it
+# must exist before anything runs (review M5; exit 3). REF_CHECK=0: no identity check; unpaired if absent.
+if [ "$REF_CHECK" = 1 ] && [ ! -d "$REF" ]; then
+  if [ -n "$DRY" ]; then echo "DRY: REF $REF absent here (a real run exits 3 before running; REF_CHECK=0 skips)"
+  else echo "nav: REF $REF absent with REF_CHECK=1: nothing run (REF_CHECK=0 runs without the v5.1 parent)"; exit 3; fi
+fi
 echo "combined $C $CS -> $N (order basis $ORDER_BASIS, exit rate $EXIT_RATE, locate-in-aim $LOCATE_AIM, cache $LCACHE)"
 run $BR --output $N-run --bind $NAV --bind $C --bind $FD/manifest.json -- $NAV nav --combined $C --combined-sha256 $CS \
   --role $R2 --role-sha256 $R2S --fields $FD/manifest.json --fields-sha256 $FS --output $N --rule aim-partial-v5 \
@@ -174,13 +182,14 @@ if [ "$REF_CHECK" = 1 ] && [ "$ORDER_BASIS $EXIT_RATE $LOCATE_AIM $THETA $DUST $
     if [ $diffs = 1 ]; then echo "REF-IDENTITY MISMATCH: $N vs $REF (investigate before any v6 comparison)"; exit 3; fi
     echo "ref identity: every file of $N equals $REF byte for byte"
   else
-    echo "ref identity: $REF absent here; skipped"
+    echo "REF-IDENTITY: $REF absent (REF_CHECK=1)"; exit 3   # unreachable: refused before the run
   fi
 fi
 if [ -n "$DRY" ]; then
-  echo "DRY: $(q "$PY" $STUDIES/nav_summ.py --weights $WF --reference $REF $N) (no --reference when $REF is absent)"
-elif [ -d "$REF" ]; then
-  "$PY" $STUDIES/nav_summ.py --weights $WF --reference $REF $N 2>&1 | grep -v financing | cut -c1-400
+  echo "DRY: $(q "$PY" $STUDIES/nav_summ.py --weights $WF --reference $REF $N) (no --reference when REF_CHECK=0 and $REF is absent)"
 else
-  "$PY" $STUDIES/nav_summ.py --weights $WF $N 2>&1 | grep -v financing | cut -c1-400
+  if [ -d "$REF" ]; then REFA=(--reference "$REF"); else REFA=(); fi   # absent only under REF_CHECK=0
+  "$PY" $STUDIES/nav_summ.py --weights $WF ${REFA[@]+"${REFA[@]}"} $N 2>&1 | grep -v financing | cut -c1-400
+  s=${PIPESTATUS[0]}
+  [ "$s" = 0 ] || { echo "nav_summ: FAILED (exit $s) on $N"; exit 1; }
 fi
