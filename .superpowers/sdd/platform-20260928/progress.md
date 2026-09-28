@@ -17,6 +17,23 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 L2 ACCEPTED; L3 merged (31f79c0e + fix 8f66bd25) and ACCEPTED; L1 follow-up in flight
+- L2 items (2)-(4): `run specs/v61.json --suffix r7` reproduced the v6.1 ladder with zero hand pins (u 104.9 s / 1059 MiB,
+  fit 34.7 s, w 43.3 s, nav 40.5 s); all 10 daily/events CSVs byte-identical to the v6.1 cell (primary sha 1adf0e8f...).
+  `--reuse-fields` from lo1-fields-v6b: 40 reused, computed [sv_ratio126], files map == fields-v7 (41/41). Refusal:
+  max_rss_mib=64 -> "HARD-STOP [u]: ... outcome rss-limit, exit_code 15", driver exit 4. L2 ACCEPTED.
+- L3: build mega-v7-l3 (exit 0, 52.5 s, 6 TUs, no warnings-as-errors fixes needed). gtests 89/90; the one failure was a test
+  bug (two refusal outputs collided with the fixture's nav dir) fixed test-only in c1fa1e75 (merged 8f66bd25; re-run of the
+  9 StrategyLive tests pending the next test build). Real data: flag off -> v6.1 cell 11/11 files identical (33.6 s);
+  `--emit-holdings` -> 11/11 identical but 140.3 s wall and a 374 MB holdings.csv (finding L3-F1: needs a streaming/binary
+  writer or per-year shards before the 180 s cap bites; holdings.csv deleted after acceptance, holdings_days.csv kept).
+  decide at 2020-08-06 / 2021-08-04 / 2022-10-12 from the emitted holdings with --check-replay: exit 0, replay_parity
+  mismatches 0 at all three, 16-17 s each, health warn. L3 ACCEPTED on the pre-registered criteria.
+- Finding L3-F2 (for wave 2): transfer coefficient corr(alpha/sigma^2, w) = .089 / .185 / .262 (target) at the three dates;
+  P2 R2.5 flags TC < .5 as constraints (locate, ADV cap, neutrality, partial aim) eating alpha -> supports the SPO lane.
+- L1 (pool-10 HEAD 35861db6): SHA-NI + content-keyed cache v2 + --cache-report; flagged that fit_composition_weights.py
+  and mega_report/pitch.py read only v1 sidecars -> sent back to L1 to add v2 readers with tests before root builds.
+
 ## 2026-09-28 L2 merged (21663eed) -- acceptance in progress
 - L2 (pool-11, HEAD 6332d686, 104 tests): research_cycle.py (plan/lock/run/status, hard-stop on refused receipt),
   prepare_research_fields.py --reuse, studies/backtest_integrity.py + nav_summ.py (trial ledger, ONC effective-N DSR,
