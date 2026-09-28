@@ -329,7 +329,8 @@ def runner_accepts(text: bytes, library_sha: str, ids: list[str], train_sha: str
         return dict(items)
 
     j = json.loads(text, object_pairs_hook=pairs)
-    assert isinstance(j, dict) and j.get("schema") == "atx.dsl-composition-weights/v1"
+    assert isinstance(j, dict) and j.get("schema") in ("atx.dsl-composition-weights/v1",
+                                                       "atx.dsl-composition-weights/v2")
     assert j.get("library_sha256") == library_sha and isinstance(j.get("weights"), dict)
     assert set(j["weights"]) <= set(ids), "weight for unknown candidate"
     out = []
@@ -342,6 +343,8 @@ def runner_accepts(text: bytes, library_sha: str, ids: list[str], train_sha: str
         assert isinstance(j["signs"], dict) and set(j["signs"]) <= set(ids), "sign for unknown candidate"
         assert all(type(v) is int and v in (1, -1) for v in j["signs"].values()), "sign must be +1/-1"
         assert all(cid in j["signs"] for cid, w in zip(ids, out) if w > 0), "weighted candidate without sign"
+    # V6-W fix round 1 (I1): v2 iff a theme_redistribution block is present, v1 iff absent.
+    assert (j["schema"] == "atx.dsl-composition-weights/v2") == ("theme_redistribution" in j), "schema/block mismatch"
     return out
 
 
@@ -2216,6 +2219,24 @@ class V6EndToEnd(unittest.TestCase):
         self.assertEqual(inputs["script_sha256"], sha(Path(fcw.__file__).read_bytes()))
         self.assertEqual(self.summary["theme_redistribution"], "within-theme-v1")
         self.assertEqual(self.summary["dropped_members"], ["medium_half"])
+
+    def test_schema_v2_only_for_v6(self):
+        """Fix round 1 I1: ew-theme-v6 writes schema v2 (a runner predating the block refuses it); v1/aim stay v1."""
+        self.assertEqual(self.doc["schema"], "atx.dsl-composition-weights/v2")
+        self.assertEqual(fcw.WEIGHTS_SCHEMA_V2, "atx.dsl-composition-weights/v2")
+        self.assertEqual(self.v1["schema"], "atx.dsl-composition-weights/v1")
+        aim_out = self.root / "aim_schema"
+        code, _ = fcw.fit(self.fx.args(aim_out, **AIM_ARGS))
+        self.assertEqual(code, fcw.EXIT_OK)
+        self.assertEqual(json.loads((aim_out / fcw.OUTPUT_WEIGHTS).read_bytes())["schema"],
+                         "atx.dsl-composition-weights/v1")
+        # The runner port refuses either schema with the other's block state.
+        stripped = {k: v for k, v in self.doc.items() if k != "theme_redistribution"}
+        grafted = dict(self.v1, theme_redistribution=self.doc["theme_redistribution"])
+        for bad in (stripped, grafted, dict(self.doc, schema="atx.dsl-composition-weights/v3")):
+            with self.assertRaises(AssertionError):
+                runner_accepts(fcw.canonical_bytes(bad), self.fx.library_sha, self.ids, self.fx.train_sha)
+        runner_accepts(fcw.canonical_bytes(self.doc), self.fx.library_sha, self.ids, self.fx.train_sha)
 
     def test_v1_and_aim_documents_carry_no_v6_keys(self):
         self.assertNotIn("theme_redistribution", self.v1)

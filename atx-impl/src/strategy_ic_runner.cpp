@@ -46,6 +46,9 @@ constexpr const char* vm_eval_mode="ResearchFast;full-historical-asof-member-mas
 constexpr const char* cache_schema="atx.dsl-candidate-signal/v1";
 constexpr const char* cache_layout="date-major-little-endian-f64;non-finite-stored-as-quiet-NaN";
 constexpr const char* weights_schema="atx.dsl-composition-weights/v1";
+// ew-theme-v6 files (V6-W fix round 1 I1): v2 iff a theme_redistribution block is
+// present, v1 iff absent, so a binary predating within-theme-v1 refuses them loudly.
+constexpr const char* weights_schema_v2="atx.dsl-composition-weights/v2";
 // ew-theme-v6 (v4-prereg v6 revision V6-W): the only admitted theme_redistribution block.
 constexpr const char* theme_redistribution_rule="within-theme-v1";
 constexpr const char* theme_redistribution_composition="ew-theme-v6";
@@ -827,7 +830,8 @@ co::Result<std::vector<int>> composition_signs(const Json& j,const Library& lib,
 // theme}} with known ids, names [a-z0-9_]{1,64}, a theme for every positive-weight
 // candidate and 1..32 themes. Indices follow first appearance in library order; a
 // zero-weight candidate keeps 0 (ignored by the composition). Absent: pinned.themes
-// stays empty and nothing downstream changes.
+// stays empty and nothing downstream changes. The block requires schema v2 and v2
+// requires the block (checked by composition_weights).
 co::Status composition_themes(const Json& j,const Library& lib,PinnedWeights& pinned) {
   if (!j.contains("theme_redistribution")) return co::Ok();
   const auto& block=j.at("theme_redistribution");
@@ -878,7 +882,8 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   auto& weights=pinned.values;
   ATX_TRY(auto text,pinned_text(cfg.composition_weights_path,cfg.composition_weights_sha256));
   ATX_TRY(auto j,unique_key_json(text));
-  if (!j.is_object() || !j.contains("schema") || j.at("schema")!=weights_schema ||
+  if (!j.is_object() || !j.contains("schema") ||
+      (j.at("schema")!=weights_schema && j.at("schema")!=weights_schema_v2) ||
       !j.contains("library_sha256") || j.at("library_sha256")!=cfg.library_sha256 ||
       !j.contains("weights") || !j.at("weights").is_object())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights schema/library identity");
@@ -904,6 +909,13 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
         "IC runner: composition weights TRAIN binding: train_manifest_sha256 must equal --train-sha256");
   ATX_TRY(pinned.signs,composition_signs(j,lib,weights));
   ATX_TRY_VOID(composition_themes(j,lib,pinned));
+  const bool v2=j.at("schema")==weights_schema_v2;
+  if (v2 && pinned.themes.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+        "IC runner: composition weights schema atx.dsl-composition-weights/v2 requires a theme_redistribution block");
+  if (!v2 && !pinned.themes.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+        "IC runner: theme_redistribution requires composition weights schema atx.dsl-composition-weights/v2");
   if (j.contains("provenance")) pinned.provenance=j.at("provenance");
   return co::Ok(std::move(pinned));
 }
@@ -2128,7 +2140,8 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "  --composition-weights: must carry train_manifest_sha256 (== --train-sha256); optional signs {id: +1|-1}\n"
                "    replace the IC orientation in the blend; a blend frozen with weights resumes only with the same file.\n"
                "    optional theme_redistribution {rule: within-theme-v1, composition: ew-theme-v6, themes: {id: theme}}\n"
-               "    keeps a missing member's mass inside its theme per name and date.\n";
+               "    keeps a missing member's mass inside its theme per name and date; schema\n"
+               "    atx.dsl-composition-weights/v2 iff that block is present, v1 iff absent.\n";
         return 0;
       }
       if (++i>=argc) throw std::invalid_argument("missing option value");

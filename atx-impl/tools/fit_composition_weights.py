@@ -2,7 +2,8 @@
 """TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-v1`` / ``v4-prior-v2`` and weight fits ``mv-shrink-0.9-nonneg-v1`` / ``ew-theme-v1`` / ``ew-theme-aim-v1`` / ``ew-theme-v6``.
 
 Writes into a new output directory (published atomically, never overwritten):
-  composition_weights.json  ``atx.dsl-composition-weights/v1``, read by ``atx-equity-strategy-ic
+  composition_weights.json  ``atx.dsl-composition-weights/v1`` (``/v2`` for ``ew-theme-v6``, the only
+                            composition with a ``theme_redistribution`` block), read by ``atx-equity-strategy-ic
                             --composition-weights PATH --composition-weights-sha256 SHA``. It holds a
                             weight >= 0 for every library id, the top-level ``train_manifest_sha256``,
                             and ``signs`` (id -> 1 | -1 for every id whose applied sign is nonzero,
@@ -104,7 +105,8 @@ declared before any v6 TRAIN read; the rule text is binding): the admitted non-d
       runner (strategy_ic_composition.cpp) applies per name and day: blend_i = sum_theme W_theme * sum_{k present}
       w_k s_k r_k,i / sum_{k present} w_k, W_theme = sum of the theme's weights; a theme with no present member adds
       nothing. ``provenance.v6`` records the rule, threshold, shrunk / dropped / merged members and the input SHAs.
-  Only ``ew-theme-v6`` writes these keys: ``ew-theme-v1`` and ``ew-theme-aim-v1`` bytes are unchanged.
+      The file's schema is ``atx.dsl-composition-weights/v2`` (the runner accepts v2 iff the block is present).
+  Only ``ew-theme-v6`` writes these keys: ``ew-theme-v1`` and ``ew-theme-aim-v1`` bytes are unchanged (schema v1).
 
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
@@ -182,6 +184,9 @@ V42_COST_TAU_LIMIT = 0.08
 V42_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_turnover_cost",
                 "reject_veto", "reject_redundant")
 WEIGHTS_SCHEMA = "atx.dsl-composition-weights/v1"
+# ew-theme-v6 only: v2 carries the theme_redistribution block; the IC runner accepts v2 iff the
+# block is present and v1 iff absent, so a runner predating within-theme-v1 refuses v2 loudly.
+WEIGHTS_SCHEMA_V2 = "atx.dsl-composition-weights/v2"
 ADMISSION_SCHEMA = "atx.dsl-admission/v1"
 LIBRARY_SCHEMA = "atx.dsl-ic-library/v1"
 ORIENTATIONS_SCHEMA = "atx.dsl-ic-orientations/v1"
@@ -1835,7 +1840,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     if aim:  # ew-theme-v1 bytes carry no aim key
         document["provenance"]["aim"] = aim_provenance(ids, themes, aims, active, weights,  # type: ignore[arg-type]
                                                        decision_sessions)
-    if v6:  # ew-theme-v1 / ew-theme-aim-v1 bytes carry neither key
+    if v6:  # ew-theme-v1 / ew-theme-aim-v1 bytes carry neither key and stay schema v1
+        document["schema"] = WEIGHTS_SCHEMA_V2
         document["theme_redistribution"] = {
             "rule": V6_REDISTRIBUTION, "composition": V6_RULE_ID,
             "themes": {row["id"]: row["theme_v6"] for row in weight_rows if row["weight"] > 0}}

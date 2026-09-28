@@ -754,6 +754,169 @@ TEST(StrategyIcRunner, InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput) 
   ASSERT_FALSE(status); EXPECT_NE(status.error().to_string().find("bounded config"),std::string::npos);
   EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
 }
+// ---- ew-theme-v6 within-theme redistribution (V6-W; fix round 1 I1 / I3) ----
+// A TRAIN-bound weights file under `schema` with raw `weights` and raw `extra`
+// members (signs, a theme_redistribution block).
+std::string themed_text(const std::string& schema,const atx::impl::strategy::IcRunnerConfig& cfg,
+                        const std::string& weights,const std::string& extra) {
+  return "{\"schema\":\""+schema+"\",\"library_sha256\":\""+cfg.library_sha256+"\",\"train_manifest_sha256\":\""+
+      cfg.train_sha256+"\",\"weights\":"+weights+extra+"}";
+}
+std::string theme_block(const std::string& themes,const std::string& rule="within-theme-v1",
+                        const std::string& composition="ew-theme-v6") {
+  return ",\"theme_redistribution\":{\"rule\":\""+rule+"\",\"composition\":\""+composition+"\",\"themes\":"+themes+"}";
+}
+const std::string weights_v1="atx.dsl-composition-weights/v1",weights_v2="atx.dsl-composition-weights/v2";
+TEST(StrategyIcRunner, ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Payloads are absent: every refusal below must precede any role payload read.
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json";
+  const std::string equal=R"({"volume_level":0.5,"volume_rank":0.5})";
+  const std::string both=R"({"volume_level":"liquidity","volume_rank":"liquidity"})";
+  const auto plan=[&](const std::string& text) {
+    if (!text_file(path,text,cfg.composition_weights_sha256)) return std::string("unwritable");
+    cfg.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    if (!status) return status.error().to_string();
+    return Json::parse(log.str()).at("composition_weights_sha256")==cfg.composition_weights_sha256
+        ?std::string{}:std::string("plan lacks the weights pin");
+  };
+  // Admitted: v2 with the block (one theme, two themes, and a zero-weight candidate
+  // without a theme), v1 without it.
+  EXPECT_EQ(plan(themed_text(weights_v2,cfg,equal,theme_block(both))),"");
+  EXPECT_EQ(plan(themed_text(weights_v2,cfg,equal,theme_block(R"({"volume_level":"a","volume_rank":"b_2"})"))),"");
+  EXPECT_EQ(plan(themed_text(weights_v2,cfg,R"({"volume_level":1,"volume_rank":0})",
+                             theme_block(R"({"volume_level":"a"})"))),"");
+  EXPECT_EQ(plan(themed_text(weights_v1,cfg,equal,"")),"");
+  const std::string shape="theme_redistribution must be {rule: within-theme-v1, composition: ew-theme-v6, "
+                          "themes: {id: theme}}";
+  const std::string name="theme name must match [a-z0-9_]{1,64}: ";
+  const std::vector<std::pair<std::string,std::string>> cases{
+      // Schema gate: v2 iff the block is present, v1 iff absent. Any other schema
+      // fails the identity check, which is how a v1-only binary refuses a v2 file.
+      {themed_text(weights_v2,cfg,equal,""),
+       "composition weights schema atx.dsl-composition-weights/v2 requires a theme_redistribution block"},
+      {themed_text(weights_v1,cfg,equal,theme_block(both)),
+       "theme_redistribution requires composition weights schema atx.dsl-composition-weights/v2"},
+      {themed_text("atx.dsl-composition-weights/v3",cfg,equal,theme_block(both)),"schema/library identity"},
+      // Block shape: exactly {rule: within-theme-v1, composition: ew-theme-v6, themes: {...}}.
+      {themed_text(weights_v2,cfg,equal,R"(,"theme_redistribution":[1])"),shape},
+      {themed_text(weights_v2,cfg,equal,theme_block(both,"within-theme-v2")),shape},
+      {themed_text(weights_v2,cfg,equal,theme_block(both,"within-theme-v1","ew-theme-v1")),shape},
+      {themed_text(weights_v2,cfg,equal,
+                   R"(,"theme_redistribution":{"rule":"within-theme-v1","composition":"ew-theme-v6"})"),shape},
+      {themed_text(weights_v2,cfg,equal,theme_block(R"(["liquidity","liquidity"])")),shape},
+      // Rows: known ids, [a-z0-9_]{1,64} string names, a theme for every weighted id.
+      {themed_text(weights_v2,cfg,equal,theme_block(R"({"volume_level":"a","volume_rank":"a","other":"a"})")),
+       "theme for unknown candidate: other"},
+      {themed_text(weights_v2,cfg,equal,theme_block(R"({"volume_level":"Liquidity","volume_rank":"a"})")),
+       name+"volume_level"},
+      {themed_text(weights_v2,cfg,equal,theme_block(R"({"volume_level":"a-b","volume_rank":"a"})")),
+       name+"volume_level"},
+      {themed_text(weights_v2,cfg,equal,theme_block(R"({"volume_level":"","volume_rank":"a"})")),name+"volume_level"},
+      {themed_text(weights_v2,cfg,equal,theme_block(R"({"volume_level":1,"volume_rank":"a"})")),name+"volume_level"},
+      {themed_text(weights_v2,cfg,equal,
+                   theme_block(R"({"volume_level":"a","volume_rank":")"+std::string(65,'a')+R"("})")),
+       name+"volume_rank"},
+      {themed_text(weights_v2,cfg,equal,theme_block(R"({"volume_level":"a"})")),
+       "theme missing for weighted candidate: volume_rank"},
+      {themed_text(weights_v2,cfg,R"({"volume_level":0,"volume_rank":0})",theme_block("{}")),
+       "theme_redistribution needs 1..32 weighted themes"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [text,reason]:cases) {
+      ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+      cfg.plan_only=plan_only; std::ostringstream attempt;
+      const auto status=atx::impl::strategy::run_ic(cfg,attempt);
+      ASSERT_FALSE(status) << text;
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << text << " -> " << status.error().to_string();
+      EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+  // 32 weighted themes are admitted, 33 refused (33 weighted candidates).
+  auto lib=read_json(cfg.library_path);
+  for (usize k=1;k<=31;++k)
+    lib["candidates"].push_back({{"id","volume_lag_"+std::to_string(k)},{"family","fixed_volume"},
+        {"dsl","delay(volume, "+std::to_string(k)+")"},{"sign_policy","train-rank-ic21"},{"horizons",{5,21,63}}});
+  ASSERT_TRUE(json_file(cfg.library_path,lib,cfg.library_sha256));
+  Json weights=Json::object(),themes=Json::object();
+  for (const auto& row:lib.at("candidates")) {
+    const auto id=row.at("id").get<std::string>();
+    const auto theme="t"+std::to_string(themes.size());
+    weights[id]=1.0; themes[id]=theme;
+  }
+  ASSERT_EQ(themes.size(),33U);
+  EXPECT_NE(plan(themed_text(weights_v2,cfg,weights.dump(),theme_block(themes.dump())))
+                .find("theme_redistribution needs 1..32 weighted themes"),std::string::npos);
+  themes["volume_rank"]=themes.at("volume_level");
+  EXPECT_EQ(plan(themed_text(weights_v2,cfg,weights.dump(),theme_block(themes.dump()))),"");
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+}
+TEST(StrategyIcRunner, ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true;
+  // One weighted member (volume_rank has weight 0 and needs no theme): the same
+  // weights unthemed (v1), themed (v2) and themed with pinned signs (v2).
+  const std::string weights=R"({"volume_level":2.0,"volume_rank":0.0})";
+  const std::string block=theme_block(R"({"volume_level":"liquidity"})");
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("plain.json",themed_text(weights_v1,cfg,weights,"")));
+  const auto plain_pin=cfg.composition_weights_sha256;
+  const auto plain=run_named(dir,cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  ASSERT_TRUE(pin("themed.json",themed_text(weights_v2,cfg,weights,block)));
+  const auto themed_pin=cfg.composition_weights_sha256;
+  const auto themed=run_named(dir,cfg,"themed"); ASSERT_TRUE(themed.ok) << themed.error;
+  ASSERT_TRUE(pin("signed.json",themed_text(weights_v2,cfg,weights,R"(,"signs":{"volume_level":1})"+block)));
+  const auto signed_run=run_named(dir,cfg,"signed"); ASSERT_TRUE(signed_run.ok) << signed_run.error;
+  // 1. recipe.json: the themed method statement and composition_redistribution.
+  const std::string within="centered-tied-rank;missing-or-unoriented-mass-stays-in-theme;within-theme-v1;"
+                           "theme-without-present-member-neutral";
+  const auto plain_recipe=read_json(dir.path/"plain"/"recipe.json");
+  auto themed_recipe=read_json(dir.path/"themed"/"recipe.json");
+  const auto signed_recipe=read_json(dir.path/"signed"/"recipe.json");
+  EXPECT_EQ(themed_recipe.at("composition"),"pinned-candidate-weights;TRAIN-orientation-signs;"+within);
+  EXPECT_EQ(signed_recipe.at("composition"),"pinned-candidate-weights;pinned-candidate-signs;"+within);
+  EXPECT_EQ(themed_recipe.at("composition_redistribution"),"within-theme-v1");
+  EXPECT_EQ(signed_recipe.at("composition_redistribution"),"within-theme-v1");
+  EXPECT_EQ(themed_recipe.at("composition_weights_sha256"),themed_pin);
+  // Absent the block the pinned recipe is as before: no-redistribution, no new key;
+  // otherwise the two recipes are identical.
+  EXPECT_EQ(plain_recipe.at("composition"),"pinned-candidate-weights;TRAIN-orientation-signs;centered-tied-rank;"
+                                           "missing-or-unoriented-neutral;no-redistribution");
+  EXPECT_FALSE(plain_recipe.contains("composition_redistribution"));
+  EXPECT_EQ(plain_recipe.at("composition_weights_sha256"),plain_pin);
+  themed_recipe.erase("composition_redistribution");
+  themed_recipe["composition"]=plain_recipe.at("composition");
+  themed_recipe["composition_weights_sha256"]=plain_pin;
+  EXPECT_EQ(themed_recipe,plain_recipe);
+  // 2. summary.json composition_weights.redistribution.
+  EXPECT_FALSE(read_json(dir.path/"plain"/"summary.json").at("composition_weights").contains("redistribution"));
+  for (const std::string run:{"themed","signed"})
+    EXPECT_EQ(read_json(dir.path/run/"summary.json").at("composition_weights").at("redistribution"),
+              "within-theme-v1") << run;
+  // 3. <role>_combined.json composition_redistribution; signal_semantics unchanged
+  // (still one of the strings the NAV target replay admits).
+  for (const std::string role_name:{"train","validation"}) {
+    const auto base=read_json(dir.path/"plain"/(role_name+"_combined.json"));
+    EXPECT_FALSE(base.contains("composition_redistribution")) << role_name;
+    for (const std::string run:{"themed","signed"}) {
+      const auto manifest=read_json(dir.path/run/(role_name+"_combined.json"));
+      EXPECT_EQ(manifest.at("composition_redistribution"),"within-theme-v1") << run << ' ' << role_name;
+      EXPECT_EQ(manifest.at("signal_semantics"),base.at("signal_semantics")) << run << ' ' << role_name;
+      EXPECT_EQ(manifest.at("composition_weights_sha256"),
+                read_json(dir.path/run/"summary.json").at("composition_weights").at("sha256")) << run;
+    }
+    // The single weighted member is present from d=63: its theme's mass 2 lands on it.
+    std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(dir.path/"themed"/(role_name+"_combined.f64"),signal));
+    for (usize d=63;d<D;++d) for (usize i=0;i<N;++i)
+      ASSERT_DOUBLE_EQ(signal[d*N+i],2*(static_cast<f64>(i)/static_cast<f64>(N-1)-.5)) << role_name << d << i;
+  }
+}
 TEST(StrategyIcRunner, ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWeights) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   cfg.save_combined=true;
