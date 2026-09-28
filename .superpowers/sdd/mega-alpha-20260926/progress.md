@@ -1,5 +1,21 @@
 # Active task: recent-data DSL ensemble
 
+## V6-U RESULT: linked-operating universe -> S2 net +1.192 at L 1 (parent +0.975) -- ACCEPTED; final cell declared (2026-09-28 ~00:30)
+Fields lo1-fields-v6b (40 fields = fields-v6 list; peak RSS 630 MiB; the env example's list lacked grp_ff49 -> first u attempt
+refused "library field 'grp_ff49' ... not in the pinned train fields manifest"; fields-v6 (39 fields) dir unused). u pass 5
+complete (own cache), fit ew-theme-v1 pass 1, weighted pass 1, nav: build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc.
+S2: net +1.192, gross SR 1.542, HAC t 2.10, mu 4.38%, vol 3.67%, MDD .037, years 2020 +.001 / 2021 +.066 / 2022 +.066;
+tau .0374 / p95 .0474; cost_bps 12.82 (ETFs were cheap to trade); held_names 1842; gross_lev_all_rows .7784 (L 1),
+post_ramp .8019; net_lev +.0038. S3 +0.347. Paired vs the v6l loc cell: dSR +0.217, rho .923, Memmel SE .227 (t .95),
+CBB [-.287, +.775], LW p .44. Sign matches the "+" prior -> ACCEPTED. DSR N = 27. Appendix A: universe 1 (u pass = a
+re-admission of the 38 v6 candidates on the restricted role: admission trials +38), composition +1, construction +1.
+Failed/colliding runs (u-run1..4 refused on the field list, u-run1..4 dir collisions) produced no statistic: not trials.
+- Ruling (declared BEFORE the final read): V6-F final cell = the V6-U stack with L = 1/gross_lev_post_ramp = 1.247 (post-ramp
+  .8019), dust .1 -- why: prereg C4 (L on post-ramp rows); dust .2 x loc is NOT run: its unconditional gain was +0.007 on a
+  SE of .12, inside noise, and the conditional cell would spend a trial for nothing -- cost if wrong: <= .01 net SR left
+  on the table. Gate to read: all-rows gross in [.90, 1.05] (expected .971), |mean net| <= .02, tau mean <= .20 / p95 <= .30,
+  S2 net >= 1.0, then cross-cell DSR over all cells with N = 13 + v6 cells.
+
 ## V6-U started: restricted role built and gated; fields-v6 rebuild running; whole-branch review dispatched (2026-09-27 ~23:55)
 studies/v6u_train.sh (restrict -> gate -> fields -> u -> fit ew-theme-v1 -> w -> nav on the accepted construction; own
 candidate cache mega-candidate-cache-v6u; nav paired vs the loc cell; DSR N 27). Restricted role
