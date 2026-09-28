@@ -314,6 +314,55 @@ struct NavReplayResult {
 [[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
     const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios);
 
+// ---- per-name holdings of one book (--emit-holdings, v7 B3) ----
+// EXECUTE outcome of one name's working order at session t.
+enum class NavFillStatus : atx::u8 {
+  None = 0,             // no working order was priced at t
+  Complete = 1,         // filled in full
+  Capped = 2,           // participation-capped partial fill; the residual keeps working
+  BlockedAbsent = 3,    // absent at t: nothing filled, the order persists
+  BlockedLiquidity = 4, // unusable ADV at t: nothing filled, the order persists
+};
+// One name of the observed book at the end of session t (after MARK, EXECUTE, DECIDE).
+// A name is reported when any of held, the decision's plan (bitwise, so -0 counts), a
+// working order or an EXECUTE outcome is nonzero. held_* is what DECIDE at t read:
+// held_weight = held_dollars / post-trade NAV_t, the same expression as the plan's current
+// weight, so decide --asof t fed these dollars and that NAV reproduces target_weight.
+struct NavHolding {
+  atx::usize index{};               // instrument index in the role
+  atx::u64 instrument_id{};
+  bool member{}, stale{};            // member of session t; held and absent at t
+  atx::u8 tier{}, tier_missing{};    // BorrowTier of the latest decision (0: no tiers)
+  atx::f64 held_dollars{}, held_weight{};
+  NavFillStatus fill{NavFillStatus::None};
+  atx::f64 filled_dollars{}, fill_cost_dollars{}, unfilled_dollars{}; // EXECUTE at t
+  // DECIDE at t (NaN / false on the final, execution-only session):
+  atx::f64 desired{};       // shared desired target (effective rebalance; NaN otherwise)
+  atx::f64 rule_weight{};   // the target rule's plan, before the locate block
+  atx::f64 target_weight{}; // the book's planned weight (after the locate block)
+  bool order_placed{};      // target_weight != held_weight: DECIDE placed a new order
+  bool locate_blocked{};    // the locate block changed the rule's plan
+  bool order_working{};     // a working order is active after DECIDE
+  atx::f64 order_dollars{}; // its decision-NAV dollars (NaN when none)
+};
+// Receives the observed book once per decision or execution session t, after the book
+// closed t (`day` is that book's NavReplayDay row); `names` ascend by index. An error
+// aborts the replay.
+class NavHoldingsSink {
+public:
+  NavHoldingsSink() = default;
+  NavHoldingsSink(const NavHoldingsSink&) = delete;
+  NavHoldingsSink& operator=(const NavHoldingsSink&) = delete;
+  virtual ~NavHoldingsSink() = default;
+  [[nodiscard]] virtual atx::core::Status session(const NavReplayDay& day,
+                                                  std::span<const NavHolding> names) = 0;
+};
+// replay_nav_scenarios with book `observed` (< scenarios.size()) reported to `sink`.
+// Observation only: every result is bit-identical to the overload without a sink.
+[[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
+    NavHoldingsSink& sink, atx::usize observed);
+
 struct NavMonth {
   atx::u32 month{};
   atx::usize execution_sessions{}, traded_sessions{}, decision_sessions{};
@@ -400,10 +449,13 @@ struct NavFieldsPin {
 // base.liquidity_cache), at the ACTUAL geometry: `names` instruments and `sessions` =
 // score_end - score_begin rows per book, read from the pinned role manifest.
 // run_nav_replay refuses (OutOfRange) when max_working_bytes <= this reserve and
-// charges the fields and the saved-blend loader against the rest.
+// charges the fields and the saved-blend loader against the rest. `holdings`
+// (--emit-holdings) adds the observed book's per-name trace and row buffer; false is
+// the reserve without it, byte for byte.
 [[nodiscard]] atx::u64 nav_workspace_reserve_bytes(const NavReplayConfig& base,
                                                    atx::usize books, bool tiered,
-                                                   atx::usize names, atx::usize sessions);
+                                                   atx::usize names, atx::usize sessions,
+                                                   bool holdings = false);
 // Pinned saved blend + role (with volume); every scenario of nav_scenario_matrix,
 // run in lockstep; exclusive output directory: recipe.json, daily_<S>.csv,
 // events_<S>.csv, summary.json LAST (S: the trading id, or "<trading>+<financing>"
@@ -437,12 +489,29 @@ struct NavFieldsPin {
                                                const NavRateOptions& rate,
                                                const NavExecutionOptions& execution,
                                                std::ostream& progress);
+// --emit-holdings NEWDIR (v7 B3): the PRIMARY book's per-name rows (holdings.csv) and
+// per-session summary (holdings_days.csv) for every decision or execution session,
+// streamed while the replay runs, then manifest.json (atx.nav-holdings/v1: CSV SHAs,
+// the NAV recipe SHA) LAST, after the NAV directory is published; a directory without
+// manifest.json is incomplete. Both directories must not exist and must differ. The NAV
+// directory is byte-identical with or without it; NavEmitOptions{} (empty directory) is
+// exactly the six-argument overload.
+struct NavEmitOptions {
+  std::string holdings_directory;
+};
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               const NavFieldsPin& fields,
+                                               const NavRateOptions& rate,
+                                               const NavExecutionOptions& execution,
+                                               const NavEmitOptions& emit,
+                                               std::ostream& progress);
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
 // --fields PATH/manifest.json --fields-sha256 SHA enables the financing matrix.
 // --rate fixed|per-name-v1 is refused (usage error) unless --rule aim-partial-v5, and
 // --rate-rra/--rate-lambda/--rate-min/--rate-max unless --rate per-name-v1.
 // v6: --order-basis target|delta, --exit-rate R (TargetReplayConfig::exit_rate), and
-// the valueless flags --locate-in-aim and --liquidity-cache.
+// the valueless flags --locate-in-aim and --liquidity-cache. v7: --emit-holdings NEWDIR.
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
 } // namespace atx::impl::strategy

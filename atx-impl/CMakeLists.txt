@@ -15,6 +15,8 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_target_replay.cpp
     src/strategy_price_exposures.cpp
     src/strategy_nav_replay.cpp
+    # v7 daily decide path: deploy manifest, decide verb (the NAV replay's own DECIDE)
+    src/strategy_live.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
