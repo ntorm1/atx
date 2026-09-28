@@ -57,6 +57,7 @@ do_fit() {
   done
   echo "fit did not finish in 3 passes"; return 4
 }
+WMEM=1536; [ "$COMP" = ew-theme-v6 ] && WMEM=2304  # IC runner admit ESTIMATE for theme planes (real RSS ~1.2 GiB); runner RSS cap stays 1536
 do_w() {
   WS=$(sha $W/composition_weights.json)
   for i in 1 2 3; do
@@ -64,7 +65,7 @@ do_w() {
     echo "== weighted pass $i"
     "$PY" $BR --output $WT-run$i --bind $IC --bind $R2 --bind $FD/manifest.json --bind $L --bind $W/composition_weights.json -- \
       $IC --library $L --library-sha256 $LS --train $R2 --train-sha256 $R2S --train-fields $FD --train-fields-sha256 $FS \
-      --output $WT-$i --max-memory-mib 1536 --min-names 1000 --workers 4 --save-combined --candidate-cache $CC \
+      --output $WT-$i --max-memory-mib $WMEM --min-names 1000 --workers 4 --save-combined --candidate-cache $CC \
       --composition-weights $W/composition_weights.json --composition-weights-sha256 $WS | grep -E '"exit_code"|"status"' | head -2
     if [ -f $WT-$i/summary.json ] && grep -q '"status": *"complete"' $WT-$i/summary.json; then echo $i > $WT.final; return 0; fi
   done
