@@ -28,6 +28,7 @@
 #include "atx/engine/eval/hac.hpp"
 #include "strategy_nav_replay_detail.hpp"
 #include "strategy_target_replay_detail.hpp"
+#include "strategy_nav_v7.hpp" // platform-v7 L4 hook (one seam object)
 
 namespace atx::impl::strategy {
 namespace {
@@ -372,6 +373,8 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
   return co::Ok();
 }
 co::Result<std::unique_ptr<const bk::ReplayCostModel>> make_cost_model(const NavScenario& s) {
+  ATX_TRY(auto extension, v7::extension_cost_model(s)); // L4 hook: reserved cost-v2 ids
+  if (extension) return co::Ok(std::move(extension));
   std::unique_ptr<const bk::ReplayCostModel> model;
   switch (s.cost) {
   case NavCostRule::FlatBpsV1: {
@@ -831,8 +834,9 @@ co::Status plan_weights(const PlanInputs& p, f64 spent, std::span<const f64> rat
                         const std::vector<f64>& current, std::vector<f64>& planned, f64 nav_post,
                         std::span<f64> rule, TargetReplayDay& plan, NavReplayDay& day) {
   std::copy(current.begin(), current.end(), planned.begin());
-  ATX_TRY_VOID(detail::update_weights(p.x, p.cfg.target, p.d, p.rebalance, spent, p.desired,
-                                      planned, plan, rates));
+  // L4 hook: detail::update_weights unless the v7 extension (aim-partial-v6) is installed.
+  ATX_TRY_VOID(v7::plan(p.x, p.cfg, p.d, p.rebalance, spent, nav_post, p.desired, planned, plan,
+                        rates));
   if (!rule.empty()) std::copy(planned.begin(), planned.end(), rule.begin());
   if (p.cfg.scenario.financing.block_special_shorts)
     block_special_plan(p.tiers, p.no_locate, current, planned, nav_post, day);
@@ -1375,6 +1379,7 @@ Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
   if (base.locate_in_aim) {
     j["locate_in_aim"] = true; j["locate_in_aim_rule"] = locate_in_aim_declaration;
   }
+  v7::extend_recipe(j); // L4 hook: identity unless extended or a reserved cost-v2 id
   return j;
 }
 Json rate_stats_json(const NavRateStats& s) {
@@ -2189,6 +2194,7 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
     summary["locate_in_aim"] = Json{{"zeroed_special_short_aims", zeroed},
         {"basis", "member-decisions whose negative tied-rank aim was set to 0 (special tier)"}};
   }
+  v7::extend_summary(summary); // L4 hook: identity unless extended
   return write_json(dir / "summary.json", summary);
 }
 
@@ -2294,7 +2300,7 @@ co::Status publish_holdings(const NavRun& run, const HoldingsCsv& csv, std::ostr
   ATX_TRY(auto names_sha, co::sha256_file((dir / "holdings.csv").string()));
   ATX_TRY(auto days_sha, co::sha256_file((dir / "holdings_days.csv").string()));
   const auto book = scenario_label(run.scenarios[nav_primary_scenario_index], tiered);
-  const Json manifest{{"schema", "atx.nav-holdings/v1"}, {"status", "complete"},
+  Json manifest{{"schema", "atx.nav-holdings/v1"}, {"status", "complete"},
       {"book", book}, {"nav_recipe_sha256", method_sha},
       {"combined_sha256", run.cfg.combined_sha256}, {"role_sha256", run.cfg.role_sha256},
       {"rule", detail::construction_rule_id(run.cfg.target)},
@@ -2302,6 +2308,7 @@ co::Status publish_holdings(const NavRun& run, const HoldingsCsv& csv, std::ostr
       {"neutralize_skipped_rebalances", csv.skipped_rebalances},
       {"files", {{"holdings.csv", names_sha}, {"holdings_days.csv", days_sha}}},
       {"columns", holdings_declaration}};
+  v7::extend_holdings(manifest); // L4 hook: identity unless extended
   progress << "nav replay holdings " << book << ": " << csv.rows << " rows over "
            << csv.sessions << " sessions\n";
   if (csv.skipped_rebalances)
@@ -2348,7 +2355,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     if (neutralize_by_industry(cfg.target.neutralize) && !tiered)
       return co::Err(co::ErrorCode::InvalidArgument,
                      "nav replay: the industry ids need --fields (grp_ff12)");
-    const auto scenarios = nav_scenario_matrix(tiered);
+    const auto scenarios = v7::run_scenarios(nav_scenario_matrix(tiered)); // L4 hook
     NavReplayConfig base; base.target = cfg.target;
     base.rate = rate.rate; base.rate_rra = rate.rate_rra; base.rate_lambda = rate.rate_lambda;
     base.rate_min = rate.rate_min; base.rate_max = rate.rate_max;
@@ -2389,6 +2396,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
       ATX_TRY(auto summary, summarize_nav(result, limits));
       summaries.push_back(std::move(summary));
     }
+    v7::capture(scenarios, results, summaries); // L4 hook
     const NavRun run{cfg, limits, base, scenarios, results, summaries, blend.manifest_json,
                      loaded.binding};
     // Console provenance only: the cache changes no published byte, so no file records it.
@@ -2401,6 +2409,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
 }
 
 int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& err) {
+  if (v7::claims_nav_args(argc, argv)) return v7::dispatch_nav_v7(argc, argv, out, err); // L4
   try {
     TargetReplayRunConfig cfg; NavTurnoverLimits limits; NavFieldsPin fields;
     NavRateOptions rate; NavExecutionOptions execution; NavEmitOptions emit;
@@ -2435,6 +2444,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
                "(atx.research-role-fields/v1: shares_out, si_shares): S1/S2/S3 x swap-fin-v1 "
                "(PRIMARY S2), S2 x flat-300-v0, S2 x engine-tiers-v1.\n";
+        v7::append_help(out); // L4 hook
         return 0;
       }
       if (key == "--one-way-bps" || key == "--annual-borrow-bps")

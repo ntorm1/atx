@@ -1,0 +1,114 @@
+#pragma once
+
+// The platform-v7 (lane L4) extension of the NAV replay: ONE hook, installed per run by
+// ScopedNavExtension and consulted by strategy_nav_replay.cpp at its v7 seams (dispatch
+// entry and --help, scenario list, cost model, weight update (plan_weights, shared with the
+// decide path), result capture, recipe/summary/holdings manifest). With no
+// extension installed every seam is the identity, so default runs are byte-identical; the
+// reserved-id cost model (cost_v2::reserved_cost_model) is a pure function of the scenario
+// id and applies whenever such a scenario is replayed.
+//
+// CLI (the `nav` verb; any of these routes the run through dispatch_nav_v7):
+//   --cost-v2                 adds the S2-KO and S2-FIM stress books (S1/S2/S3 unchanged)
+//   --capacity-curve          second pass: S2 at NAV x {.5,1,2,4,8} into <output>/capacity,
+//                             then <output>/capacity_curve.csv
+//   --rule aim-partial-v6     the cost-aware construction rule (base: aim-partial-v5 flags)
+//     --cost-shrink-kappa K   (default 1)   --band-b B (default: --dust-multiple)
+//     --rate-clip LO,HI       (default .5,1.5)
+// --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
+// Every hooked run also writes <output>/v7_transfer_coefficient.csv (TC per rebalance
+// decision and book) and <output>/v7_extras.json (extras' SHA-256, capacity table) after
+// the replay's own summary.json.
+//
+// Threading: the installed extension is thread-local; a replay runs on one thread.
+
+#include <iosfwd>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+#include <nlohmann/json_fwd.hpp>
+#include "atx/core/error.hpp"
+#include "atx/core/types.hpp"
+#include "atx/engine/book/replay_cost.hpp"
+#include "strategy_cost_v2.hpp"
+#include "strategy_nav_replay.hpp"
+#include "strategy_target_replay.hpp"
+
+namespace atx::impl::strategy::v7 {
+
+struct NavV7Options {
+  bool stress{};   // --cost-v2
+  bool capacity{}; // --capacity-curve
+  bool aim_v6{};   // --rule aim-partial-v6
+  cost_v2::AimV6Params v6{};
+};
+enum class NavV7Pass : atx::u8 { Main = 0, Capacity = 1 };
+
+// One rebalance decision of one book (main pass only).
+struct TcRecord {
+  atx::i64 session{};
+  std::string book;           // "<trading id>+<financing id>"
+  atx::f64 tc{};              // transfer coefficient (cost_v2::transfer_coefficient)
+  atx::usize members{}, costed{}, banded{};
+  atx::f64 c_bar{}, c_ref{}, theta{}; // aim-partial-v6 only (NaN otherwise)
+};
+// One replayed book (captured after the run, before publication).
+struct BookRecord {
+  NavV7Pass pass{NavV7Pass::Main};
+  std::string book;
+  bool primary{};
+  atx::f64 multiple{};  // capacity multiple; NaN outside the capacity pass
+  atx::f64 initial_nav{}, traded_dollars{}, trade_cost_dollars{};
+  NavSummary summary{};
+  std::vector<atx::f64> net_returns; // return-observation rows, in order
+  atx::f64 participation_p95{}, participation_max{};
+};
+
+// RAII installation of the extension on this thread (restores the previous one).
+class ScopedNavExtension {
+public:
+  explicit ScopedNavExtension(const NavV7Options& options);
+  ~ScopedNavExtension();
+  ScopedNavExtension(const ScopedNavExtension&) = delete;
+  ScopedNavExtension& operator=(const ScopedNavExtension&) = delete;
+  ScopedNavExtension(ScopedNavExtension&&) = delete;
+  ScopedNavExtension& operator=(ScopedNavExtension&&) = delete;
+  // Starts a replay pass: clears the per-run state (decision liquidity cache, the books'
+  // reference-cost histories); records and captures accumulate across passes.
+  void begin_run(NavV7Pass pass);
+  [[nodiscard]] std::span<const TcRecord> tc_records() const noexcept;
+  [[nodiscard]] std::span<const BookRecord> books() const noexcept;
+  struct State;
+
+private:
+  std::unique_ptr<State> state_;
+  State* previous_{};
+};
+
+// ---- seams (strategy_nav_replay.cpp) ----
+[[nodiscard]] bool claims_nav_args(int argc, char** argv);
+[[nodiscard]] int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err);
+// Main pass: the matrix plus S2-KO/S2-FIM copies of its primary (--cost-v2); capacity pass:
+// the capacity books of its primary; no extension: the matrix.
+[[nodiscard]] std::vector<NavScenario> run_scenarios(std::vector<NavScenario> matrix);
+// cost_v2::reserved_cost_model (Ok(nullptr): the replay's own model applies).
+[[nodiscard]] atx::core::Result<std::unique_ptr<const atx::engine::book::ReplayCostModel>>
+extension_cost_model(const NavScenario& scenario);
+// The weight update of one book at decision d: detail::update_weights (the extension only
+// observes the transfer coefficient), or aim-partial-v6 on rebalance decisions.
+[[nodiscard]] atx::core::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg,
+                                     atx::usize d, bool rebalance, atx::f64 spent,
+                                     atx::f64 nav_post, const std::vector<atx::f64>& desired,
+                                     std::vector<atx::f64>& planned, TargetReplayDay& out,
+                                     std::span<const atx::f64> rates);
+void capture(std::span<const NavScenario> scenarios, std::span<const NavReplayResult> results,
+             std::span<const NavSummary> summaries);
+// Reserved-id cost labels always; v7 declarations and the v6 rule id with an extension.
+void extend_recipe(nlohmann::json& recipe);
+void extend_summary(nlohmann::json& summary);
+// --emit-holdings manifest: the v6 rule id and the v7 declarations with an extension.
+void extend_holdings(nlohmann::json& manifest);
+// The v7 lines of `nav --help` (always printed; the flags route through dispatch_nav_v7).
+void append_help(std::ostream& out);
+} // namespace atx::impl::strategy::v7
