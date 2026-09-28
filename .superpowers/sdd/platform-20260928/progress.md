@@ -17,6 +17,18 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 L4 real data: stress + capacity ACCEPTED (descriptive); aim-partial-v6 identity FAILED (fix requested)
+- `--cost-v2 --capacity-curve` on the v6.1 cell (v7-l4-nav-stress): exit 0, 80.4 s, 368 MiB; S1/S2/S3/flat-300/engine-tiers
+  10/10 files byte-identical to the v6.1 cell. New descriptive scenarios (TRAIN, no trial): S2-KO net SR 1.269, S2-FIM 1.347
+  vs S2 1.238, S1 1.380, S3 .359 -> S2 remains the conservative primary (P2 S4 expectation confirmed).
+- Capacity curve by replay (R4.2; x1 == S2 bit-for-bit): NAV multiple .5/1/2/4/8 -> net SR 1.273/1.239/1.183/1.053/.912;
+  gross SR 1.590/1.594/1.578/1.467/1.312; cost 11.5/13.5/16.0/18.2/19.9 bps per traded $; capped-fill share .12%/.51%/
+  3.3%/12.1%/26.6%. Read: net SR >= 1.0 holds to ~4x ($4bn at the $1bn base) with the 1% ADV cap binding from 2x.
+- aim-partial-v6 identity cell (kappa 0, clip [1,1]): S2 net 1.241 vs 1.238, all 10 files differ from row 0 (banded_names)
+  because the band is always cost-scaled with exponent 1/3 and no uniform option exists. Per v7-prereg.md no C1-C3 cell
+  runs until identity holds -> L4 asked to add --band-exponent (default 1/3; 0 = uniform). Also pending: the risk verb
+  mask fix.
+
 ## 2026-09-28 L1 merged (b5554999) -- real-data ACCEPTED, one gtest fix-up pending; L4 merged (6f7ee661) -- build green
 - Build mega-v7-l1 (core tests, IC tests, IC exe, target tests): exit 0, 95 TUs, 215.6 s. Sha256.* 7/7; StrategyIcRunner.*
   44/45 (CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests: "candidate cache partial output" -> sent to L1);
