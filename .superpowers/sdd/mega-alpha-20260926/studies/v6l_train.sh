@@ -83,7 +83,7 @@ SUF=""
 [ "$LOCATE_AIM" = 1 ] && SUF="$SUF-loc"
 [ "$NEUT" != price-risk-v1 ] && SUF="$SUF-n${NEUT#price-risk-}"
 [ "$LEV" != 1 ] && SUF="$SUF-L$LEV"
-N="$N$SUF"
+N="$N$SUF${NSUF:-}"   # NSUF: identity re-run suffix (never overwrite)
 REFN=${REFN:-build-equity/mega-nav-v6l-ew-t.05-d.1-fixed}
 XF=""
 [ "$ORDER_BASIS" != target ] && XF="$XF --order-basis $ORDER_BASIS"
