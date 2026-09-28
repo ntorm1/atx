@@ -12,6 +12,7 @@
 #include <sstream>
 #include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -427,7 +428,7 @@ Run run_named(const Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg,cons
 // and planned-target diagnostic stays in the comparison.
 Json stable_role(Json result,bool keep_artifact=true) {
   for (const auto* key:{"wall_seconds","stage_seconds","workers","admitted_working_bytes",
-                        "ic_scratch_bytes","candidate_cache"})
+                        "ic_scratch_bytes","candidate_cache","hash_seconds","verify_bytes"})
     result.erase(key);
   if (!keep_artifact) result.erase("combined_artifact");
   for (auto& candidate:result.at("candidates")) {
@@ -452,6 +453,47 @@ bool pin_weights(const Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg,c
 std::filesystem::path cache_root(const std::filesystem::path& summary) {
   return std::filesystem::path(read_json(summary).at("roles").at(0).at("candidate_cache").at("directory")
       .get<std::string>()).parent_path();
+}
+// The v2 (content-keyed) file stem of a candidate: <id>.<first 16 hex of SHA256(dsl)>.
+std::string v2_stem(const std::string& id,const std::string& dsl) {
+  auto sha=core::sha256_hex(dsl); return sha?id+"."+sha->substr(0,16):std::string{};
+}
+// The fixture library's base candidates.
+std::string level_stem() { return v2_stem("volume_level","volume"); }
+std::string rank_stem() { return v2_stem("volume_rank","rank(volume)"); }
+// The entry that served or stored `id` for `role_name` in a run, from its summary's
+// candidate_cache.entries (either layout).
+struct CacheEntryPaths { std::filesystem::path sidecar,payload; std::string layout; };
+CacheEntryPaths cache_entry(const std::filesystem::path& summary,const std::string& role_name,
+                            const std::string& id) {
+  const auto j=read_json(summary);
+  for (const auto& role_result:j.at("roles")) {
+    if (role_result.at("role")!=role_name) continue;
+    for (const auto& e:role_result.at("candidate_cache").at("entries"))
+      if (e.at("id")==id)
+        return {e.at("sidecar").get<std::string>(),e.at("payload").get<std::string>(),e.at("layout").get<std::string>()};
+  }
+  ADD_FAILURE() << "no cache entry for " << id << " in role " << role_name << " of " << summary;
+  return {};
+}
+// Rewrites a v2 entry as the v1 runner wrote it -- <v1_dir>/<id>.{f64,json},
+// schema v1, no content-key records -- and removes the v2 files. `fields_sha`
+// (field entries only) is the fields manifest the v1 layout keyed it under.
+bool to_v1(const CacheEntryPaths& v2,const std::filesystem::path& v1_dir,const std::string& id,
+           const std::string& fields_sha={}) {
+  auto sidecar=read_json(v2.sidecar);
+  const auto fields=sidecar.at("field_payload_sha256");
+  sidecar["schema"]="atx.dsl-candidate-signal/v1"; sidecar["payload"]=id+".f64";
+  for (const auto* key:{"field_payload_sha256","signal_key_sha256","fields_manifest_sha256"}) sidecar.erase(key);
+  if (!fields_sha.empty()) {
+    Json names=Json::array();
+    for (auto it=fields.begin();it!=fields.end();++it) names.push_back(it.key());
+    sidecar["fields_manifest_sha256"]=fields_sha; sidecar["research_fields"]=names;
+  }
+  std::error_code ec; std::filesystem::create_directories(v1_dir,ec); std::string unused;
+  return !ec && std::filesystem::copy_file(v2.payload,v1_dir/(id+".f64")) &&
+      json_file(v1_dir/(id+".json"),sidecar,unused) && std::filesystem::remove(v2.sidecar) &&
+      std::filesystem::remove(v2.payload);
 }
 std::string weights_text(const std::string& schema,const std::string& library,const std::string& weights) {
   return "{\"schema\":\""+schema+"\",\"library_sha256\":\""+library+"\",\"weights\":"+weights+"}";
@@ -522,16 +564,23 @@ TEST(StrategyIcRunner, CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExac
     }
     EXPECT_EQ(files,4U); EXPECT_EQ(subdirectories,1U);
     for (const std::string id:{"volume_level","volume_rank"}) {
-      const auto sidecar=read_json(base/(id+".json"));
-      EXPECT_EQ(sidecar.at("schema"),"atx.dsl-candidate-signal/v1");
+      // Base candidates: v2 entries <id>.<dsl16>.{f64,json} in the role directory.
+      const auto stem=id=="volume_level"?level_stem():rank_stem();
+      const auto sidecar=read_json(base/(stem+".json"));
+      EXPECT_EQ(sidecar.at("schema"),"atx.dsl-candidate-signal/v2");
       EXPECT_EQ(sidecar.at("candidate_id"),id); EXPECT_EQ(sidecar.at("role_manifest_sha256"),pin);
       EXPECT_EQ(sidecar.at("library_sha256"),cfg.library_sha256);
       EXPECT_EQ(sidecar.at("dates"),D); EXPECT_EQ(sidecar.at("instruments"),N);
       EXPECT_EQ(sidecar.at("bytes"),D*N*sizeof(f64));
+      EXPECT_EQ(sidecar.at("payload"),stem+".f64");
+      EXPECT_EQ(sidecar.at("field_payload_sha256"),Json::object());
+      EXPECT_FALSE(sidecar.contains("fields_manifest_sha256"));
       auto dsl=core::sha256_hex(id=="volume_level"?"volume":"rank(volume)"); ASSERT_TRUE(dsl);
       EXPECT_EQ(sidecar.at("dsl_sha256"),*dsl);
-      EXPECT_EQ(sidecar.at("payload_sha256"),file_sha(base/(id+".f64")));
-      std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(base/(id+".f64"),signal));
+      EXPECT_EQ(sidecar.at("payload_sha256"),file_sha(base/(stem+".f64")));
+      EXPECT_EQ(cache_entry(dir.path/"cold"/"summary.json",pin==cfg.train_sha256?"train":"validation",id)
+                    .sidecar.string(),(base/(stem+".json")).string());
+      std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(base/(stem+".f64"),signal));
       usize finite=0;
       for (const auto v:signal) {
         if (std::isfinite(v)) { ++finite; continue; }
@@ -548,11 +597,11 @@ TEST(StrategyIcRunner, CandidateCacheResumesStoppedRunAndAdoptsOnlyIdenticalOrph
   const auto root=cache_root(dir.path/"cold"/"summary.json");
   const auto train_dir=root/cfg.train_sha256,validation_dir=root/cfg.validation_sha256;
   // A guard stop after TRAIN candidate 1 of 2 leaves only its committed entry.
-  ASSERT_TRUE(std::filesystem::remove(train_dir/"volume_rank.json"));
-  ASSERT_TRUE(std::filesystem::remove(train_dir/"volume_rank.f64"));
+  ASSERT_TRUE(std::filesystem::remove(train_dir/(rank_stem()+".json")));
+  ASSERT_TRUE(std::filesystem::remove(train_dir/(rank_stem()+".f64")));
   // A stop between the payload and sidecar commits leaves an orphan payload.
-  ASSERT_TRUE(std::filesystem::remove(validation_dir/"volume_level.json"));
-  const auto orphan=validation_dir/"volume_level.f64"; const auto orphan_sha=file_sha(orphan);
+  ASSERT_TRUE(std::filesystem::remove(validation_dir/(level_stem()+".json")));
+  const auto orphan=validation_dir/(level_stem()+".f64"); const auto orphan_sha=file_sha(orphan);
   const auto orphan_time=std::filesystem::last_write_time(orphan);
   cfg.plan_only=true; std::ostringstream plan_log;
   auto status=atx::impl::strategy::run_ic(cfg,plan_log); ASSERT_TRUE(status) << status.error().to_string();
@@ -566,8 +615,8 @@ TEST(StrategyIcRunner, CandidateCacheResumesStoppedRunAndAdoptsOnlyIdenticalOrph
     EXPECT_NE(resumed.log.find(line),std::string::npos) << line;
   EXPECT_EQ(file_sha(orphan),orphan_sha);
   EXPECT_TRUE(std::filesystem::last_write_time(orphan)==orphan_time); // Adopted, not rewritten.
-  EXPECT_TRUE(std::filesystem::exists(validation_dir/"volume_level.json"));
-  EXPECT_TRUE(std::filesystem::exists(train_dir/"volume_rank.f64"));
+  EXPECT_TRUE(std::filesystem::exists(validation_dir/(level_stem()+".json")));
+  EXPECT_TRUE(std::filesystem::exists(train_dir/(rank_stem()+".f64")));
   const auto summary=read_json(dir.path/"resumed"/"summary.json");
   for (const auto& result:summary.at("roles")) EXPECT_EQ(result.at("candidate_cache").at("hits"),1);
   for (const auto& file:exact_outputs()) {
@@ -588,30 +637,31 @@ TEST(StrategyIcRunner, CandidateCacheRefusesTamperedOrForeignEntriesWithoutOverw
     EXPECT_EQ(read_json(dir.path/name/"summary.json").at("status"),"failed") << name;
   };
   // One flipped payload bit: the streamed load hash refuses it and leaves it in place.
-  const auto payload_path=train_dir/"volume_level.f64"; const auto original=file_bytes(payload_path);
+  const auto payload_path=train_dir/(level_stem()+".f64"); const auto original=file_bytes(payload_path);
   ASSERT_EQ(original.size(),D*N*sizeof(f64));
   auto tampered=original; const usize at=8*N*200;
   tampered[at]=static_cast<char>(tampered[at]^1); ASSERT_TRUE(write_bytes(payload_path,tampered));
-  expect_refusal("tampered","candidate cache payload SHA256 mismatch: volume_level.f64");
+  expect_refusal("tampered","candidate cache payload SHA256 mismatch: "+level_stem()+".f64");
   EXPECT_EQ(file_bytes(payload_path),tampered);
   tampered.resize(tampered.size()-sizeof(f64)); ASSERT_TRUE(write_bytes(payload_path,tampered));
-  expect_refusal("truncated","candidate cache payload extent: volume_level.f64");
+  expect_refusal("truncated","candidate cache payload extent: "+level_stem()+".f64");
   ASSERT_TRUE(write_bytes(payload_path,original));
-  // A sidecar naming another DSL is foreign: a loud refusal, not a recompute.
-  const auto sidecar_path=train_dir/"volume_rank.json"; const auto sidecar=read_json(sidecar_path);
+  // A v2 sidecar at this key's path naming another full DSL SHA256 (a 16-hex
+  // prefix collision) is foreign: a loud refusal, not a recompute.
+  const auto sidecar_path=train_dir/(rank_stem()+".json"); const auto sidecar=read_json(sidecar_path);
   auto foreign=sidecar; foreign["dsl_sha256"]=std::string(64,'0'); std::string unused;
   ASSERT_TRUE(json_file(sidecar_path,foreign,unused));
   expect_refusal("foreign","candidate cache entry mismatch: volume_rank");
   EXPECT_EQ(read_json(sidecar_path),foreign);
   ASSERT_TRUE(json_file(sidecar_path,sidecar,unused));
   // An uncommitted payload whose bytes differ from the fresh evaluation is never replaced.
-  const auto orphan=validation_dir/"volume_level.f64";
-  ASSERT_TRUE(std::filesystem::remove(validation_dir/"volume_level.json"));
+  const auto orphan=validation_dir/(level_stem()+".f64");
+  ASSERT_TRUE(std::filesystem::remove(validation_dir/(level_stem()+".json")));
   auto different=file_bytes(orphan); const usize cell=8*N*300;
   different[cell]=static_cast<char>(different[cell]^1); ASSERT_TRUE(write_bytes(orphan,different));
-  expect_refusal("orphan","refusing overwrite: volume_level.f64");
+  expect_refusal("orphan","refusing overwrite: "+level_stem()+".f64");
   EXPECT_EQ(file_bytes(orphan),different);
-  EXPECT_FALSE(std::filesystem::exists(validation_dir/"volume_level.json"));
+  EXPECT_FALSE(std::filesystem::exists(validation_dir/(level_stem()+".json")));
 }
 bool two_family_library(atx::impl::strategy::IcRunnerConfig& cfg) {
   auto lib=read_json(cfg.library_path);
@@ -1066,7 +1116,6 @@ TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
   // Review M3: base candidates cached by a base-only run, in their own cache.
   auto plain_cfg=cfg; plain_cfg.candidate_cache_directory=(dir.path/"p").string();
   const auto plain=run_named(dir,plain_cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
-  const auto plain_root=cache_root(dir.path/"plain"/"summary.json");
   ASSERT_TRUE(field_library(cfg,{"si_shares","mkt_ret"},
       {{"si_ratio","si_shares / volume"},{"market_shift","volume + mkt_ret"}}));
   ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares","mkt_ret"}));
@@ -1085,27 +1134,40 @@ TEST(StrategyIcRunner, ExtraFieldsResolveByNameAndMatchHandComputedSignals) {
   EXPECT_EQ(run.log.find("IC fields-loaded"),std::string::npos);
   // Raw VM signals (the cache stores them verbatim) against scalar oracles.
   const auto root=cache_root(dir.path/"output"/"summary.json");
-  for (const auto& [pin,role_pin]:{std::pair{cfg.train_fields_sha256,cfg.train_sha256},
-                                   std::pair{cfg.validation_fields_sha256,cfg.validation_sha256}}) {
-    const auto base=root/pin;
+  const auto output_summary=dir.path/"output"/"summary.json",plain_summary=dir.path/"plain"/"summary.json";
+  for (const auto& [role_name,pin,role_pin]:{
+           std::tuple{std::string("train"),cfg.train_fields_sha256,cfg.train_sha256},
+           std::tuple{std::string("validation"),cfg.validation_fields_sha256,cfg.validation_sha256}}) {
+    const auto ratio_entry=cache_entry(output_summary,role_name,"si_ratio");
+    const auto shift_entry=cache_entry(output_summary,role_name,"market_shift");
     std::vector<f64> ratio(D*N),shift(D*N);
-    ASSERT_TRUE(read_payload(base/"si_ratio.f64",ratio)); ASSERT_TRUE(read_payload(base/"market_shift.f64",shift));
+    ASSERT_TRUE(read_payload(ratio_entry.payload,ratio)); ASSERT_TRUE(read_payload(shift_entry.payload,shift));
     for (usize d=0;d<D;++d) for (usize i=0;i<N;++i) {
       const auto volume=1e8*static_cast<f64>(i+1);
       ASSERT_TRUE(same_value(ratio[d*N+i],si_value(d,i,1)/volume)) << d << ' ' << i;
       ASSERT_TRUE(same_value(shift[d*N+i],volume+market_value(d))) << d << ' ' << i;
     }
-    const auto sidecar=read_json(base/"si_ratio.json");
+    // Field candidates: v2 entries under <role sha>/fp_<fk16>/, keyed on the payload
+    // SHA256 of exactly the fields they read; the pinned manifest is provenance.
+    const auto fields_directory=std::filesystem::path(role_name=="train"?cfg.train_fields_directory
+                                                                         :cfg.validation_fields_directory);
+    const auto sidecar=read_json(ratio_entry.sidecar);
     EXPECT_EQ(sidecar.at("fields_manifest_sha256"),pin); EXPECT_EQ(sidecar.at("role_manifest_sha256"),role_pin);
-    EXPECT_EQ(sidecar.at("research_fields"),Json::array({"si_shares"}));
-    EXPECT_EQ(read_json(base/"market_shift.json").at("research_fields"),Json::array({"mkt_ret"}));
+    EXPECT_EQ(sidecar.at("field_payload_sha256"),Json({{"si_shares",file_sha(fields_directory/"si_shares.f64")}}));
+    EXPECT_EQ(read_json(shift_entry.sidecar).at("field_payload_sha256"),
+              Json({{"mkt_ret",file_sha(fields_directory/"mkt_ret.f64")}}));
+    EXPECT_EQ(ratio_entry.sidecar.parent_path().parent_path().string(),(root/role_pin).string());
+    EXPECT_TRUE(ratio_entry.sidecar.parent_path().filename().string().starts_with("fp_"));
+    EXPECT_NE(ratio_entry.sidecar.parent_path().string(),shift_entry.sidecar.parent_path().string());
     // Base-only candidates keep the role directory and carry no fields key.
-    EXPECT_FALSE(read_json(root/role_pin/"volume_level.json").contains("fields_manifest_sha256"));
-    EXPECT_FALSE(std::filesystem::exists(root/role_pin/"si_ratio.json"));
+    const auto level_entry=cache_entry(output_summary,role_name,"volume_level");
+    EXPECT_EQ(level_entry.sidecar.parent_path().string(),(root/role_pin).string());
+    EXPECT_FALSE(read_json(level_entry.sidecar).contains("fields_manifest_sha256"));
     // ...and the bytes a fields run publishes there equal a base-only run's.
-    for (const auto* id:{"volume_level.f64","volume_rank.f64"}) {
-      const auto expected=file_sha(plain_root/role_pin/id); ASSERT_FALSE(expected.empty()) << id;
-      EXPECT_EQ(file_sha(root/role_pin/id),expected) << id;
+    for (const std::string id:{"volume_level","volume_rank"}) {
+      const auto expected=file_sha(cache_entry(plain_summary,role_name,id).payload);
+      ASSERT_FALSE(expected.empty()) << id;
+      EXPECT_EQ(file_sha(cache_entry(output_summary,role_name,id).payload),expected) << id;
     }
   }
   const auto summary=read_json(dir.path/"output"/"summary.json");
@@ -1299,14 +1361,15 @@ TEST(StrategyIcRunner, GrpFieldsBindAsGroupClassifiersAndExcludeNaNLabels) {
     EXPECT_NE(run.log.find("IC fields-verified role="+role_name+" fields=grp_a resident_capacity=1 "
                            "planned_loads=1"),std::string::npos) << role_name;
   // Raw VM signals (the cache stores them verbatim) against the scalar oracle.
-  const auto root=cache_root(dir.path/"output"/"summary.json");
-  for (const auto& pin:{cfg.train_fields_sha256,cfg.validation_fields_sha256}) {
+  for (const std::string role_name:{"train","validation"}) {
     for (const auto& [id,op]:ops) {
-      std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(root/pin/(id+".f64"),signal)) << id;
+      const auto entry=cache_entry(dir.path/"output"/"summary.json",role_name,id);
+      std::vector<f64> signal(D*N); ASSERT_TRUE(read_payload(entry.payload,signal)) << id;
       for (usize d=0;d<D;++d) for (usize i=0;i<N;++i)
         ASSERT_TRUE(near_value(signal[d*N+i],group_expected(op,d,i)))
             << id << ' ' << d << ' ' << i << ": " << signal[d*N+i] << " vs " << group_expected(op,d,i);
-      EXPECT_EQ(read_json(root/pin/(id+".json")).at("research_fields"),Json::array({"grp_a"})) << id;
+      const auto recorded=read_json(entry.sidecar).at("field_payload_sha256");
+      EXPECT_EQ(recorded.size(),1U) << id; EXPECT_TRUE(recorded.contains("grp_a")) << id;
     }
   }
   // Used as a number, a grp_ field is refused when the library compiles.
@@ -1361,51 +1424,250 @@ TEST(StrategyIcRunner, AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged) {
     EXPECT_EQ(stable_role(y,false),stable_role(a.at("roles").at(r),false)) << r;
   }
 }
-TEST(StrategyIcRunner, CandidateCacheKeyCoversFieldsManifestOnlyForFieldCandidates) {
+// Platform v7 L1: a field candidate is keyed by the payload SHA256 of exactly the
+// fields its DSL reads, not by the fields manifest. A new manifest that only adds a
+// field misses nothing; one changed payload misses only the candidates reading it.
+TEST(StrategyIcRunner, CandidateCacheKeyChangesOnlyForCandidatesReadingAChangedFieldPayload) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   cfg.candidate_cache_directory=(dir.path/"c").string();
-  // Entries written by a base-only run, before any fields existed.
-  const auto base=run_named(dir,cfg,"base"); ASSERT_TRUE(base.ok) << base.error;
-  const auto root=cache_root(dir.path/"base"/"summary.json");
-  const auto base_sidecar=root/cfg.train_sha256/"volume_level.json";
-  const auto base_sidecar_sha=file_sha(base_sidecar);
-  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
-  ASSERT_TRUE(pin_fields(dir,cfg,"a",{"si_shares"}));
-  const auto first_pins=std::pair{cfg.train_fields_sha256,cfg.validation_fields_sha256};
-  const auto a=run_named(dir,cfg,"a"); ASSERT_TRUE(a.ok) << a.error;
-  for (const auto* line:{"IC cache-hit volume_level role=train","IC cache-hit volume_rank role=validation",
-                         "IC cache-miss si_ratio role=train","IC cache-miss si_ratio role=validation"})
-    EXPECT_NE(a.log.find(line),std::string::npos) << line;
-  const auto a_entry=root/cfg.train_fields_sha256/"si_ratio.f64"; const auto a_sha=file_sha(a_entry);
-  ASSERT_FALSE(a_sha.empty());
-  const auto warm=run_named(dir,cfg,"a_warm"); ASSERT_TRUE(warm.ok) << warm.error;
-  EXPECT_NE(warm.log.find("IC cache-hit si_ratio role=train"),std::string::npos);
-  EXPECT_EQ(warm.log.find("IC VM-"),std::string::npos);
-  // A different fields payload: a clean miss into its own directory, never a hit
-  // on the stale entry; base-only candidates still hit their unchanged entries.
-  ASSERT_TRUE(pin_fields(dir,cfg,"b",{"si_shares"},2));
-  ASSERT_NE(cfg.train_fields_sha256,first_pins.first);
-  const auto b=run_named(dir,cfg,"b"); ASSERT_TRUE(b.ok) << b.error;
-  for (const auto* line:{"IC cache-hit volume_level role=train","IC cache-hit volume_rank role=train",
-                         "IC cache-miss si_ratio role=train","IC cache-miss si_ratio role=validation"})
-    EXPECT_NE(b.log.find(line),std::string::npos) << line;
-  EXPECT_EQ(file_sha(a_entry),a_sha);
-  EXPECT_TRUE(std::filesystem::exists(root/cfg.train_fields_sha256/"si_ratio.json"));
-  EXPECT_EQ(file_sha(base_sidecar),base_sidecar_sha);
-  const auto summary=read_json(dir.path/"b"/"summary.json");
-  for (const auto& role_result:summary.at("roles")) {
-    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),2);
-    EXPECT_EQ(role_result.at("candidate_cache").at("misses"),1);
+  ASSERT_TRUE(field_library(cfg,{"si_shares","mkt_ret"},
+      {{"si_ratio","si_shares / volume"},{"market_shift","volume + mkt_ret"}}));
+  // Manifest a: si_shares (scale 1) and mkt_ret.
+  ASSERT_TRUE(pin_fields(dir,cfg,"a",{"si_shares","mkt_ret"}));
+  const auto a=run_named(dir,cfg,"run_a"); ASSERT_TRUE(a.ok) << a.error;
+  EXPECT_EQ(a.log.find("IC cache-hit"),std::string::npos);
+  const auto a_summary=dir.path/"run_a"/"summary.json";
+  // Manifest b: the same two payloads plus an unreferenced field -- another manifest
+  // SHA256, the same content keys: every candidate hits and no column is loaded.
+  ASSERT_TRUE(pin_fields(dir,cfg,"b",{"si_shares","mkt_ret","iv_atm_21d"}));
+  const auto b=run_named(dir,cfg,"run_b"); ASSERT_TRUE(b.ok) << b.error;
+  EXPECT_EQ(b.log.find("IC cache-miss"),std::string::npos);
+  EXPECT_EQ(b.log.find("IC field-load"),std::string::npos);
+  EXPECT_EQ(b.log.find("IC VM-"),std::string::npos);
+  for (const std::string role_name:{"train","validation"})
+    for (const std::string id:{"volume_level","volume_rank","si_ratio","market_shift"})
+      EXPECT_EQ(cache_entry(dir.path/"run_b"/"summary.json",role_name,id).sidecar.string(),
+                cache_entry(a_summary,role_name,id).sidecar.string()) << role_name << ' ' << id;
+  // Manifest c: si_shares rescaled (a new payload), mkt_ret unchanged. Only si_ratio
+  // reads it, so only si_ratio misses; it lands in its own fp_ directory and the
+  // stale entry is left untouched.
+  const auto stale=cache_entry(a_summary,"train","si_ratio"); const auto stale_sha=file_sha(stale.payload);
+  ASSERT_TRUE(pin_fields(dir,cfg,"c",{"si_shares","mkt_ret"},2));
+  const auto c=run_named(dir,cfg,"run_c"); ASSERT_TRUE(c.ok) << c.error;
+  for (const std::string role_name:{"train","validation"}) {
+    for (const auto* id:{"volume_level","volume_rank","market_shift"})
+      EXPECT_NE(c.log.find("IC cache-hit "+std::string(id)+" role="+role_name+" layout=v2"),std::string::npos)
+          << role_name << ' ' << id;
+    EXPECT_NE(c.log.find("IC cache-miss si_ratio role="+role_name),std::string::npos) << role_name;
+    EXPECT_EQ(c.log.find("IC field-load role="+role_name+" field=mkt_ret"),std::string::npos) << role_name;
   }
-  // A field entry copied under another manifest's directory is refused, not served.
-  const auto foreign=root/cfg.train_fields_sha256;
-  ASSERT_TRUE(std::filesystem::remove(foreign/"si_ratio.json"));
-  ASSERT_TRUE(std::filesystem::remove(foreign/"si_ratio.f64"));
-  ASSERT_TRUE(std::filesystem::copy_file(root/first_pins.first/"si_ratio.json",foreign/"si_ratio.json"));
-  ASSERT_TRUE(std::filesystem::copy_file(a_entry,foreign/"si_ratio.f64"));
+  const auto c_summary=dir.path/"run_c"/"summary.json";
+  const auto fresh=cache_entry(c_summary,"train","si_ratio");
+  EXPECT_NE(fresh.sidecar.parent_path().string(),stale.sidecar.parent_path().string());
+  EXPECT_EQ(fresh.sidecar.filename().string(),stale.sidecar.filename().string());
+  EXPECT_EQ(file_sha(stale.payload),stale_sha);
+  const auto c_roles=read_json(c_summary); // named: see ExtraFieldsResolveByName...
+  for (const auto& role_result:c_roles.at("roles")) {
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),3);
+    EXPECT_EQ(role_result.at("candidate_cache").at("misses"),1);
+    EXPECT_EQ(role_result.at("candidate_cache").at("vm_evaluations"),1);
+  }
+  // Content key, exactly as specified (strategy_ic_runner.cpp signal_key_text).
+  const auto summary=read_json(c_summary); const auto& train_cache=summary.at("roles").at(0).at("candidate_cache");
+  const auto sidecar=read_json(fresh.sidecar);
+  auto dsl=core::sha256_hex("si_shares / volume"); ASSERT_TRUE(dsl);
+  const auto si_sha=file_sha(std::filesystem::path(cfg.train_fields_directory)/"si_shares.f64");
+  const std::string key_text="atx.dsl-candidate-signal-key/v2\nvm_identity="+
+      train_cache.at("vm_identity").get<std::string>()+
+      "\neval_mode=ResearchFast;full-historical-asof-member-mask"
+      "\nlayout=date-major-little-endian-f64;non-finite-stored-as-quiet-NaN"
+      "\nrole_manifest_sha256="+cfg.train_sha256+"\ndates="+std::to_string(D)+"\ninstruments="+std::to_string(N)+
+      "\ndsl_sha256="+*dsl+"\nfield=si_shares:"+si_sha+"\n";
+  auto key=core::sha256_hex(key_text); ASSERT_TRUE(key);
+  EXPECT_EQ(sidecar.at("signal_key_sha256"),*key);
+  auto field_key=core::sha256_hex("field=si_shares:"+si_sha+"\n"); ASSERT_TRUE(field_key);
+  EXPECT_EQ(fresh.sidecar.parent_path().filename().string(),"fp_"+field_key->substr(0,16));
+  EXPECT_EQ(fresh.sidecar.filename().string(),"si_ratio."+dsl->substr(0,16)+".json");
+  EXPECT_EQ(sidecar.at("field_payload_sha256"),Json({{"si_shares",si_sha}}));
+  EXPECT_EQ(sidecar.at("fields_manifest_sha256"),cfg.train_fields_sha256);
+  // The summary names every candidate's entry with its key parts.
+  ASSERT_EQ(train_cache.at("entries").size(),4U);
+  for (const auto& entry:train_cache.at("entries"))
+    if (entry.at("id")=="si_ratio") {
+      EXPECT_EQ(entry.at("signal_key_sha256"),*key); EXPECT_EQ(entry.at("layout"),"v2");
+      EXPECT_EQ(entry.at("payload_sha256"),file_sha(fresh.payload));
+    }
+  // An entry copied into another key's directory is refused, never served.
+  ASSERT_TRUE(std::filesystem::remove(fresh.sidecar)); ASSERT_TRUE(std::filesystem::remove(fresh.payload));
+  ASSERT_TRUE(std::filesystem::copy_file(stale.sidecar,fresh.sidecar));
+  ASSERT_TRUE(std::filesystem::copy_file(stale.payload,fresh.payload));
   const auto refused=run_named(dir,cfg,"foreign");
   EXPECT_FALSE(refused.ok);
   EXPECT_NE(refused.error.find("candidate cache entry mismatch: si_ratio"),std::string::npos) << refused.error;
+}
+// A changed DSL under an existing id is a new entry, never a refusal: in v2 the
+// DSL SHA256 names the file, and a v1 entry recording another DSL is ignored.
+TEST(StrategyIcRunner, CandidateCacheChangedDslUnderSameIdIsANewEntry) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto first=run_named(dir,cfg,"first"); ASSERT_TRUE(first.ok) << first.error;
+  const auto old_rank=cache_entry(dir.path/"first"/"summary.json","train","volume_rank");
+  // The same id with another DSL: a miss and a second file beside the first.
+  auto lib=read_json(cfg.library_path); lib["candidates"][1]["dsl"]="rank(raw_close)";
+  ASSERT_TRUE(json_file(cfg.library_path,lib,cfg.library_sha256));
+  const auto second=run_named(dir,cfg,"second"); ASSERT_TRUE(second.ok) << second.error;
+  EXPECT_NE(second.log.find("IC cache-hit volume_level role=train"),std::string::npos);
+  EXPECT_NE(second.log.find("IC cache-miss volume_rank role=train"),std::string::npos);
+  const auto new_rank=cache_entry(dir.path/"second"/"summary.json","train","volume_rank");
+  EXPECT_EQ(new_rank.sidecar.filename().string(),v2_stem("volume_rank","rank(raw_close)")+".json");
+  EXPECT_TRUE(std::filesystem::exists(old_rank.sidecar));
+  // A v1 entry of the old DSL where the v1 layout keeps it: ignored, not refused.
+  ASSERT_TRUE(std::filesystem::remove(new_rank.sidecar)); ASSERT_TRUE(std::filesystem::remove(new_rank.payload));
+  ASSERT_TRUE(to_v1(old_rank,old_rank.sidecar.parent_path(),"volume_rank"));
+  const auto third=run_named(dir,cfg,"third"); ASSERT_TRUE(third.ok) << third.error;
+  EXPECT_NE(third.log.find("IC cache-miss volume_rank role=train"),std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(old_rank.sidecar.parent_path()/"volume_rank.json"));
+  for (const auto* file:{"orientations.json","train_daily_ic.csv","validation_daily_ic.csv"})
+    EXPECT_EQ(file_sha(dir.path/"third"/file),file_sha(dir.path/"second"/file)) << file;
+}
+// The v1 layout stays readable in place: a base entry under <role sha>/<id>.json,
+// and a field entry under <fields manifest sha>/<id>.json -- served when a known
+// manifest (the pinned one, or one named by --cache-legacy-fields) gives each field
+// the candidate reads the pinned payload SHA256. v1 hits reproduce the outputs.
+TEST(StrategyIcRunner, CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.save_combined=true; cfg.candidate_cache_directory=(dir.path/"c").string();
+  ASSERT_TRUE(field_library(cfg,{"si_shares","mkt_ret"},
+      {{"si_ratio","si_shares / volume"},{"market_shift","volume + mkt_ret"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"old",{"si_shares","mkt_ret"}));
+  const auto old_cfg=cfg;
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  // Rewrite every entry as the v1 runner laid it out (fields entries keyed by the
+  // "old" manifest), drop the IC results, and forget the v2 files.
+  const auto cold_summary=dir.path/"cold"/"summary.json"; const auto root=cache_root(cold_summary);
+  for (const auto& [role_name,role_pin,fields_pin]:{
+           std::tuple{std::string("train"),cfg.train_sha256,cfg.train_fields_sha256},
+           std::tuple{std::string("validation"),cfg.validation_sha256,cfg.validation_fields_sha256}}) {
+    for (const std::string id:{"volume_level","volume_rank"})
+      ASSERT_TRUE(to_v1(cache_entry(cold_summary,role_name,id),root/role_pin,id));
+    for (const std::string id:{"si_ratio","market_shift"})
+      ASSERT_TRUE(to_v1(cache_entry(cold_summary,role_name,id),root/fields_pin,id,fields_pin));
+  }
+  for (const auto& top:std::filesystem::directory_iterator(root))
+    for (const auto& sub:std::filesystem::directory_iterator(top.path()))
+      if (sub.is_directory()) std::filesystem::remove_all(sub.path());
+  // Under the pinned "old" manifest: the v1 key itself, so every entry hits in place.
+  const auto same=run_named(dir,cfg,"same"); ASSERT_TRUE(same.ok) << same.error;
+  EXPECT_EQ(same.log.find("IC cache-miss"),std::string::npos);
+  EXPECT_NE(same.log.find("IC cache-hit si_ratio role=train layout=v1"),std::string::npos);
+  EXPECT_NE(same.log.find("IC cache-preflight role=train ready=4/4 legacy=4"),std::string::npos);
+  // A newer manifest ("new": the same payloads plus one field). Without naming the
+  // old manifest, only the base entries are reachable; the field candidates miss.
+  ASSERT_TRUE(pin_fields(dir,cfg,"new",{"si_shares","mkt_ret","iv_atm_21d"}));
+  auto unnamed=cfg; unnamed.candidate_cache_directory=(dir.path/"c_copy").string();
+  std::filesystem::copy(dir.path/"c",dir.path/"c_copy",std::filesystem::copy_options::recursive);
+  const auto without=run_named(dir,unnamed,"without"); ASSERT_TRUE(without.ok) << without.error;
+  EXPECT_NE(without.log.find("IC cache-hit volume_level role=train layout=v1"),std::string::npos);
+  EXPECT_NE(without.log.find("IC cache-miss si_ratio role=train"),std::string::npos);
+  // Naming the old fields directories: all four hit in place, no VM, no column.
+  cfg.candidate_cache_legacy_fields={old_cfg.train_fields_directory,old_cfg.validation_fields_directory};
+  const auto named=run_named(dir,cfg,"named"); ASSERT_TRUE(named.ok) << named.error;
+  EXPECT_EQ(named.log.find("IC cache-miss"),std::string::npos);
+  EXPECT_EQ(named.log.find("IC VM-"),std::string::npos);
+  EXPECT_EQ(named.log.find("IC field-load"),std::string::npos);
+  const auto named_summary=read_json(dir.path/"named"/"summary.json");
+  for (const auto& role_result:named_summary.at("roles")) {
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),4);
+    EXPECT_EQ(role_result.at("candidate_cache").at("legacy_hits"),4);
+    EXPECT_EQ(role_result.at("research_fields").at("field_loads"),0);
+  }
+  EXPECT_EQ(cache_entry(dir.path/"named"/"summary.json","train","si_ratio").sidecar.string(),
+            (root/old_cfg.train_fields_sha256/"si_ratio.json").string());
+  // A manifest whose payload differs for a field the candidate reads never serves it.
+  auto rescaled=cfg; ASSERT_TRUE(pin_fields(dir,rescaled,"rescaled",{"si_shares","mkt_ret"},2));
+  rescaled.candidate_cache_legacy_fields=cfg.candidate_cache_legacy_fields;
+  const auto changed=run_named(dir,rescaled,"changed"); ASSERT_TRUE(changed.ok) << changed.error;
+  EXPECT_NE(changed.log.find("IC cache-miss si_ratio role=train"),std::string::npos);
+  EXPECT_NE(changed.log.find("IC cache-hit market_shift role=train layout=v1"),std::string::npos);
+  // v1 hits, v1 IC results and uncached runs agree byte for byte.
+  auto plain=cfg; plain.candidate_cache_directory.clear(); plain.candidate_cache_legacy_fields.clear();
+  const auto uncached=run_named(dir,plain,"uncached"); ASSERT_TRUE(uncached.ok) << uncached.error;
+  for (const std::string name:{"same","named"})
+    for (const auto& file:exact_outputs()) {
+      if (file=="recipe.json" || file=="orientations.json" || file.ends_with("_combined.json")) continue;
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/"uncached"/file)) << name << ' ' << file;
+    }
+  // Option hygiene: legacy manifests need the cache; a malformed one refuses up front.
+  auto orphan_option=plain; orphan_option.candidate_cache_legacy_fields={old_cfg.train_fields_directory};
+  const auto no_cache=run_named(dir,orphan_option,"no_cache"); EXPECT_FALSE(no_cache.ok);
+  EXPECT_NE(no_cache.error.find("bounded config"),std::string::npos) << no_cache.error;
+  auto bad=cfg; bad.candidate_cache_legacy_fields={(dir.path/"train").string()};
+  const auto refused=run_named(dir,bad,"bad"); EXPECT_FALSE(refused.ok);
+  EXPECT_NE(refused.error.find("--cache-legacy-fields"),std::string::npos) << refused.error;
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"bad"));
+}
+// --cache-report: metadata only, no output directory; hits and misses per role,
+// and every entry under ROOT that no candidate resolves to, with its bytes.
+TEST(StrategyIcRunner, CacheReportAccountsHitsMissesAndUnreferencedEntries) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto cold_summary=dir.path/"cold"/"summary.json";
+  const auto report_for=[&](atx::impl::strategy::IcRunnerConfig report_cfg) {
+    report_cfg.cache_report=true; report_cfg.output_directory.clear(); std::ostringstream out;
+    const auto status=atx::impl::strategy::run_ic(report_cfg,out);
+    EXPECT_TRUE(status) << status.error().to_string();
+    return status?Json::parse(out.str()):Json();
+  };
+  const auto entry_bytes=[&](const std::string& role_name,const std::string& id) {
+    const auto entry=cache_entry(cold_summary,role_name,id);
+    u64 total=std::filesystem::file_size(entry.sidecar)+std::filesystem::file_size(entry.payload);
+    for (const auto& sub:std::filesystem::directory_iterator(entry.sidecar.parent_path()))
+      if (sub.is_directory() && std::filesystem::exists(sub.path()/entry.sidecar.filename()))
+        total+=std::filesystem::file_size(sub.path()/entry.sidecar.filename());
+    return total;
+  };
+  // Everything the library needs is present: all hits, nothing unreferenced.
+  const auto full=report_for(cfg);
+  EXPECT_EQ(full.at("mode"),"cache-report");
+  ASSERT_EQ(full.at("roles").size(),2U);
+  for (const auto& role_report:full.at("roles")) {
+    const auto role_name=role_report.at("role").get<std::string>();
+    EXPECT_EQ(role_report.at("hits"),2); EXPECT_EQ(role_report.at("misses"),0);
+    EXPECT_EQ(role_report.at("hit_bytes"),entry_bytes(role_name,"volume_level")+entry_bytes(role_name,"volume_rank"));
+  }
+  EXPECT_EQ(full.at("unreferenced").at("entries"),0); EXPECT_EQ(full.at("unreferenced").at("bytes"),0);
+  EXPECT_EQ(full.at("orphans").at("files"),0);
+  // A library without volume_rank: its two entries are unreferenced, with bytes.
+  auto smaller=cfg; auto lib=read_json(cfg.library_path); lib["candidates"].erase(1);
+  smaller.library_path=(dir.path/"smaller_library.json").string();
+  ASSERT_TRUE(json_file(smaller.library_path,lib,smaller.library_sha256));
+  // ...and a library with a new DSL under volume_level: a miss.
+  auto changed=cfg; lib=read_json(cfg.library_path); lib["candidates"][0]["dsl"]="volume + raw_close";
+  changed.library_path=(dir.path/"changed_library.json").string();
+  ASSERT_TRUE(json_file(changed.library_path,lib,changed.library_sha256));
+  const auto partial=cache_root(cold_summary)/cfg.train_sha256/".stray.f64.0123456789abcdef.partial";
+  ASSERT_TRUE(write_bytes(partial,std::vector<char>(24,'x')));
+  const auto report=report_for(smaller);
+  u64 expected_bytes=0; usize expected_entries=0;
+  for (const std::string role_name:{"train","validation"}) { expected_bytes+=entry_bytes(role_name,"volume_rank"); ++expected_entries; }
+  EXPECT_EQ(report.at("unreferenced").at("entries"),expected_entries);
+  EXPECT_EQ(report.at("unreferenced").at("bytes"),expected_bytes);
+  for (const auto& row:report.at("unreferenced").at("list")) EXPECT_EQ(row.at("candidate_id"),"volume_rank");
+  EXPECT_EQ(report.at("orphans").at("files"),1); EXPECT_EQ(report.at("orphans").at("bytes"),24);
+  const auto miss=report_for(changed);
+  for (const auto& role_report:miss.at("roles")) {
+    EXPECT_EQ(role_report.at("hits"),1); EXPECT_EQ(role_report.at("misses"),1);
+    EXPECT_EQ(role_report.at("entries").at(0).at("status"),"miss");
+    EXPECT_EQ(role_report.at("entries").at(1).at("layout"),"v2");
+  }
+  EXPECT_EQ(miss.at("unreferenced").at("entries"),2);
+  // Metadata only: nothing written, no output directory; needs the cache.
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+  auto uncached=cfg; uncached.candidate_cache_directory.clear(); uncached.cache_report=true;
+  std::ostringstream ignored; EXPECT_FALSE(atx::impl::strategy::run_ic(uncached,ignored));
+  auto both=cfg; both.cache_report=true; both.plan_only=true;
+  EXPECT_FALSE(atx::impl::strategy::run_ic(both,ignored));
 }
 TEST(StrategyIcRunner, LibraryDeclaringMktRetRunsOnlyWhenFieldsSupplyIt) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
@@ -1581,7 +1843,7 @@ TEST(StrategyIcRunner, CandidateCacheIsScopedByVmIdentityAndRefusesForeignSideca
   cfg.candidate_cache_directory=(dir.path/"c").string();
   const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
   const auto root=cache_root(dir.path/"cold"/"summary.json");
-  const auto sidecar_path=root/cfg.train_sha256/"volume_level.json"; const auto sidecar=read_json(sidecar_path);
+  const auto sidecar_path=root/cfg.train_sha256/(level_stem()+".json"); const auto sidecar=read_json(sidecar_path);
   const auto identity=sidecar.at("vm_identity").get<std::string>();
   EXPECT_TRUE(identity.starts_with("dslvm1_")) << identity;
   EXPECT_EQ(read_json(dir.path/"cold"/"summary.json").at("roles").at(0).at("candidate_cache").at("vm_identity"),identity);
@@ -1609,14 +1871,26 @@ TEST(StrategyIcRunner, CandidateCacheIsScopedByVmIdentityAndRefusesForeignSideca
   auto foreign=sidecar; foreign["vm_identity"]="dslvm999_other";
   auto run=attempt(foreign,"foreign");
   EXPECT_FALSE(run.ok); EXPECT_NE(run.error.find("candidate cache entry mismatch: volume_level"),std::string::npos);
-  // A keyless (pre-identity) sidecar is accepted only as a verified legacy entry.
-  auto keyless=sidecar; keyless.erase("vm_identity"); keyless["engine_git_sha"]="0123456789abcdef";
-  run=attempt(keyless,"keyless_unknown_engine");
+  // A v2 sidecar always records its identity: a keyless one is refused.
+  auto keyless=sidecar; keyless.erase("vm_identity");
+  run=attempt(keyless,"keyless_v2");
   EXPECT_FALSE(run.ok); EXPECT_NE(run.error.find("candidate cache entry mismatch: volume_level"),std::string::npos);
-  keyless["engine_git_sha"]="429cbe43d275a49ad3cae89dfa8aa591846a2e4f";
-  run=attempt(keyless,"keyless_legacy_engine");
+  // A keyless (pre-identity) v1 sidecar is accepted only as a verified legacy entry.
+  { std::string unused; ASSERT_TRUE(json_file(sidecar_path,sidecar,unused)); }
+  ASSERT_TRUE(to_v1({sidecar_path,root/cfg.train_sha256/(level_stem()+".f64"),"v2"},root/cfg.train_sha256,
+                    "volume_level"));
+  const auto v1_path=root/cfg.train_sha256/"volume_level.json"; const auto v1=read_json(v1_path);
+  const auto attempt_v1=[&](const Json& edited,const std::string& name) {
+    std::string unused; EXPECT_TRUE(json_file(v1_path,edited,unused));
+    return run_named(dir,cfg,name);
+  };
+  auto keyless_v1=v1; keyless_v1.erase("vm_identity"); keyless_v1["engine_git_sha"]="0123456789abcdef";
+  run=attempt_v1(keyless_v1,"keyless_unknown_engine");
+  EXPECT_FALSE(run.ok); EXPECT_NE(run.error.find("candidate cache entry mismatch: volume_level"),std::string::npos);
+  keyless_v1["engine_git_sha"]="429cbe43d275a49ad3cae89dfa8aa591846a2e4f";
+  run=attempt_v1(keyless_v1,"keyless_legacy_engine");
   EXPECT_EQ(run.ok,legacy) << run.error;
-  if (legacy) EXPECT_NE(run.log.find("IC cache-hit volume_level role=train"),std::string::npos);
+  if (legacy) EXPECT_NE(run.log.find("IC cache-hit volume_level role=train layout=v1"),std::string::npos);
 }
 TEST(StrategyIcRunner, CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
@@ -1625,13 +1899,16 @@ TEST(StrategyIcRunner, CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers) {
   cfg.workers=2; cfg.candidate_cache_directory=(dir.path/"parallel").string();
   const auto parallel=run_named(dir,cfg,"parallel_run"); ASSERT_TRUE(parallel.ok) << parallel.error;
   // vm_workers is recorded, not matched, because raw VM bytes do not depend on it.
-  const auto a=cache_root(dir.path/"serial_run"/"summary.json"),b=cache_root(dir.path/"parallel_run"/"summary.json");
-  for (const auto& pin:{cfg.train_sha256,cfg.validation_sha256})
+  const auto a=dir.path/"serial_run"/"summary.json",b=dir.path/"parallel_run"/"summary.json";
+  for (const std::string role_name:{"train","validation"})
     for (const std::string id:{"volume_level","volume_rank"}) {
-      const auto expected=file_sha(a/pin/(id+".f64")); ASSERT_FALSE(expected.empty()) << id;
-      EXPECT_EQ(file_sha(b/pin/(id+".f64")),expected) << id;
-      EXPECT_EQ(read_json(a/pin/(id+".json")).at("payload_sha256"),read_json(b/pin/(id+".json")).at("payload_sha256"));
-      EXPECT_EQ(read_json(b/pin/(id+".json")).at("vm_workers"),2);
+      const auto x=cache_entry(a,role_name,id),y=cache_entry(b,role_name,id);
+      const auto expected=file_sha(x.payload); ASSERT_FALSE(expected.empty()) << id;
+      EXPECT_EQ(file_sha(y.payload),expected) << id;
+      EXPECT_EQ(read_json(x.sidecar).at("payload_sha256"),read_json(y.sidecar).at("payload_sha256"));
+      // Same key, so the same file name in both caches.
+      EXPECT_EQ(x.sidecar.filename().string(),y.sidecar.filename().string());
+      EXPECT_EQ(read_json(y.sidecar).at("vm_workers"),2);
     }
 }
 // ---- T7 fix round 2 ----
@@ -1690,15 +1967,25 @@ TEST(StrategyIcRunner, ExtraFieldsResideOnlyWhileReferencedAndReloadExactly) {
           "IC eval-start "+r+" 7/7 market_shift",
           "IC field-release role="+r+" field=si_shares\n",
           "IC field-load role="+r+" field=mkt_ret candidate=market_shift"});
-  const auto root=cache_root(dir.path/"cold"/"summary.json");
-  const auto plain_root=cache_root(dir.path/"plain"/"summary.json");
-  for (const auto& [pin,role_pin]:{std::pair{cfg.train_fields_sha256,cfg.train_sha256},
-                                   std::pair{cfg.validation_fields_sha256,cfg.validation_sha256}}) {
+  // Each field file is hashed once per process: the mkt_ret reload trusts its first
+  // verification (unchanged size and modification time).
+  for (const std::string r:{"train","validation"}) {
+    EXPECT_NE(uncached.log.find("IC field-load role="+r+" field=mkt_ret candidate=si_market"),std::string::npos);
+    const auto reload=uncached.log.find("IC field-load role="+r+" field=mkt_ret candidate=market_shift");
+    ASSERT_NE(reload,std::string::npos) << r;
+    const auto line=uncached.log.substr(reload,uncached.log.find('\n',reload)-reload);
+    EXPECT_NE(line.find(" hashed=0"),std::string::npos) << line;
+  }
+  const auto uncached_summary=read_json(dir.path/"uncached"/"summary.json");
+  for (const auto& role_result:uncached_summary.at("roles"))
+    EXPECT_EQ(role_result.at("verify_bytes"),3*D*N*sizeof(f64)) << role_result.at("role");
+  const auto cold_summary=dir.path/"cold"/"summary.json",plain_summary=dir.path/"plain"/"summary.json";
+  for (const std::string role_name:{"train","validation"}) {
     std::vector<f64> si_market(D*N),iv_level(D*N),si_ratio(D*N),market_shift(D*N);
-    ASSERT_TRUE(read_payload(root/pin/"si_market.f64",si_market));
-    ASSERT_TRUE(read_payload(root/pin/"iv_level.f64",iv_level));
-    ASSERT_TRUE(read_payload(root/pin/"si_ratio.f64",si_ratio));
-    ASSERT_TRUE(read_payload(root/pin/"market_shift.f64",market_shift));
+    ASSERT_TRUE(read_payload(cache_entry(cold_summary,role_name,"si_market").payload,si_market));
+    ASSERT_TRUE(read_payload(cache_entry(cold_summary,role_name,"iv_level").payload,iv_level));
+    ASSERT_TRUE(read_payload(cache_entry(cold_summary,role_name,"si_ratio").payload,si_ratio));
+    ASSERT_TRUE(read_payload(cache_entry(cold_summary,role_name,"market_shift").payload,market_shift));
     for (usize d=0;d<D;++d) for (usize i=0;i<N;++i) {
       const auto k=d*N+i; const auto volume=1e8*static_cast<f64>(i+1);
       ASSERT_TRUE(same_value(si_market[k],si_value(d,i,1)+market_value(d))) << d << ' ' << i;
@@ -1707,9 +1994,11 @@ TEST(StrategyIcRunner, ExtraFieldsResideOnlyWhileReferencedAndReloadExactly) {
       ASSERT_TRUE(same_value(market_shift[k],volume+market_value(d))) << d << ' ' << i;
     }
     // A base candidate evaluated on the DSL panel publishes the base-only bytes.
-    const auto expected=file_sha(plain_root/role_pin/"base_mid.f64"); ASSERT_FALSE(expected.empty());
-    EXPECT_EQ(file_sha(root/role_pin/"base_mid.f64"),expected);
-    EXPECT_FALSE(read_json(root/role_pin/"base_mid.json").contains("fields_manifest_sha256"));
+    const auto expected=file_sha(cache_entry(plain_summary,role_name,"base_mid").payload);
+    ASSERT_FALSE(expected.empty());
+    const auto base_mid=cache_entry(cold_summary,role_name,"base_mid");
+    EXPECT_EQ(file_sha(base_mid.payload),expected);
+    EXPECT_FALSE(read_json(base_mid.sidecar).contains("fields_manifest_sha256"));
   }
   // Warm: every signal is a hit, so no column is ever loaded.
   const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
@@ -1744,8 +2033,8 @@ TEST(StrategyIcRunner, ExtraFieldsAreMaskedByRolePresence) {
   for (const auto k:holes) ASSERT_TRUE(std::isfinite(file[k])) << k;
   cfg.candidate_cache_directory=(dir.path/"c").string();
   const auto run=run_named(dir,cfg,"output"); ASSERT_TRUE(run.ok) << run.error;
-  const auto root=cache_root(dir.path/"output"/"summary.json");
-  std::vector<f64> level(D*N); ASSERT_TRUE(read_payload(root/cfg.train_fields_sha256/"si_level.f64",level));
+  std::vector<f64> level(D*N);
+  ASSERT_TRUE(read_payload(cache_entry(dir.path/"output"/"summary.json","train","si_level").payload,level));
   for (usize k=0;k<D*N;++k) {
     const bool hole=std::find(holes.begin(),holes.end(),k)!=holes.end();
     ASSERT_TRUE(same_value(level[k],hole?std::numeric_limits<f64>::quiet_NaN():file[k])) << k;
@@ -1797,7 +2086,7 @@ TEST(StrategyIcRunner, CandidateCachePreflightRefusesBeforeRolePayload) {
   const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
   const auto root=cache_root(dir.path/"cold"/"summary.json");
   // The LAST candidate's sidecar is corrupt: refused before any candidate runs.
-  const auto sidecar=root/cfg.train_sha256/"volume_rank.json"; const auto original=file_bytes(sidecar);
+  const auto sidecar=root/cfg.train_sha256/(rank_stem()+".json"); const auto original=file_bytes(sidecar);
   ASSERT_TRUE(write_bytes(sidecar,std::vector<char>{'{'}));
   const auto corrupt=run_named(dir,cfg,"corrupt"); EXPECT_FALSE(corrupt.ok);
   EXPECT_NE(corrupt.error.find("candidate cache sidecar JSON: volume_rank"),std::string::npos) << corrupt.error;
@@ -1806,10 +2095,11 @@ TEST(StrategyIcRunner, CandidateCachePreflightRefusesBeforeRolePayload) {
   EXPECT_EQ(file_bytes(sidecar),std::vector<char>{'{'});
   ASSERT_TRUE(write_bytes(sidecar,original));
   // A payload of the wrong extent is refused up front too, by the same name as on load.
-  const auto payload_path=root/cfg.train_sha256/"volume_rank.f64"; const auto bytes=file_bytes(payload_path);
+  const auto payload_path=root/cfg.train_sha256/(rank_stem()+".f64"); const auto bytes=file_bytes(payload_path);
   ASSERT_TRUE(write_bytes(payload_path,std::vector<char>(bytes.begin(),bytes.end()-8)));
   const auto short_run=run_named(dir,cfg,"short"); EXPECT_FALSE(short_run.ok);
-  EXPECT_NE(short_run.error.find("candidate cache payload extent: volume_rank.f64"),std::string::npos) << short_run.error;
+  EXPECT_NE(short_run.error.find("candidate cache payload extent: "+rank_stem()+".f64"),std::string::npos)
+      << short_run.error;
   EXPECT_EQ(short_run.log.find("IC eval-start"),std::string::npos);
   ASSERT_TRUE(write_bytes(payload_path,bytes));
   const auto restored=run_named(dir,cfg,"restored"); ASSERT_TRUE(restored.ok) << restored.error;
@@ -2095,13 +2385,13 @@ TEST(StrategyIcRunner, IcResultCacheRefusesTamperedOrForeignEntriesAndKeysSettin
   EXPECT_EQ(ic_results.at("identity"),atx::impl::strategy::ic_result_cache_identity().identity);
   EXPECT_EQ(ic_results.at("key").at("role_manifest_sha256"),cfg.train_sha256);
   const auto root=cache_root(dir.path/"cold"/"summary.json");
-  const auto entry_path=root/cfg.train_sha256/subdirectory/"volume_level.json";
+  const auto entry_path=root/cfg.train_sha256/subdirectory/(level_stem()+".json");
   const auto original=file_bytes(entry_path); ASSERT_FALSE(original.empty());
   const auto entry=read_json(entry_path);
   EXPECT_EQ(entry.at("schema"),"atx.dsl-candidate-ic/v1");
   EXPECT_EQ(entry.at("record").at("candidate_id"),"volume_level");
   EXPECT_EQ(entry.at("record").at("signal_payload_sha256"),
-            read_json(root/cfg.train_sha256/"volume_level.json").at("payload_sha256"));
+            read_json(root/cfg.train_sha256/(level_stem()+".json")).at("payload_sha256"));
   EXPECT_EQ(entry.at("record").at("key"),ic_results.at("key"));
   const auto record_sha=[](const Json& j) {
     auto sha=core::sha256_hex(j.at("record").dump()); return sha?*sha:std::string{};

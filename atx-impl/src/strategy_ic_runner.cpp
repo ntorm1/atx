@@ -984,34 +984,105 @@ co::Result<std::string> frozen_field_definitions(const Library& lib,const Frozen
           "' definition differs between the frozen TRAIN artifact and the validation fields manifest");
   return co::Ok(std::string("frozen-TRAIN-artifact"));
 }
-// ---- Candidate signal cache: ROOT/<role-manifest-sha256>/<id>.{f64,json} ----
+// ---- Candidate signal cache -------------------------------------------------
 // ROOT is DIR/<vm identity>/ (DIR itself for the legacy identity), so a VM or
-// build-flavor change is a clean miss; the sidecar's vm_identity must match too.
-// Within ROOT the identity is (DSL sha, role manifest sha, geometry) plus a
-// streamed payload SHA256. Library, role name, source and engine sha are recorded
-// only, so a grown library reuses unchanged candidates. vm_workers is recorded,
-// not matched: DetPool column/row parallelism is bit-identical to the serial VM
-// (vm.hpp S3-3 contract), pinned on raw payload bytes by the worker-parity fixture.
-// A candidate whose DSL reads any extra field lives in ROOT/<fields-manifest-sha256>/
-// instead (that manifest pins exactly one role manifest) and its sidecar must name
-// that manifest, so a changed field payload is a clean miss, never a stale hit.
+// build-flavor change is a clean miss; a sidecar's vm_identity must match too.
+//
+// v2, content-keyed (atx.dsl-candidate-signal/v2, the only layout written). An
+// entry's key is SHA256(signal_key_text): the VM identity (semantics version,
+// compiler, FP flavor), eval mode, payload layout, role manifest SHA256 and
+// geometry, DSL SHA256, and one "field=<name>:<payload sha256>" line per extra
+// field the DSL reads, by name. Paths: ROOT/<role sha>/<id>.<dsl16>.{f64,json}
+// for a base candidate, ROOT/<role sha>/fp_<fk16>/<id>.<dsl16>.{f64,json} for a
+// field candidate (fk16: SHA256 of its field lines). The sidecar records every
+// key part and is matched on all of them, so a prefix collision refuses rather
+// than serves. One changed field payload therefore misses only the candidates
+// that read it; a new fields manifest with the same payloads misses nothing; a
+// changed DSL under an old id is a new entry. Orientation and IC labels never
+// touch a raw signal (the IC-result cache keys those).
+//
+// v1 (read in place, never written): ROOT/<role sha>/<id>.{f64,json} for a base
+// candidate, ROOT/<fields manifest sha>/<id>.{f64,json} for a field candidate.
+// A v1 field entry is a hit when a known manifest -- the pinned one, or one
+// named by --cache-legacy-fields -- gives every field the candidate reads the
+// payload SHA256 the pinned manifest gives it (the entry names that manifest,
+// whose own SHA256 authenticates it). A v1 entry of another DSL is ignored;
+// any other mismatch refuses loudly, as before.
+//
+// Library, role name, source, engine sha and the pinned fields manifest are
+// recorded only, so a grown library reuses unchanged candidates. vm_workers is
+// recorded, not matched: DetPool column/row parallelism is bit-identical to the
+// serial VM (vm.hpp S3-3 contract), pinned on raw payload bytes by the
+// worker-parity fixture.
+constexpr const char* cache_schema_v2="atx.dsl-candidate-signal/v2";
+constexpr const char* signal_key_schema="atx.dsl-candidate-signal-key/v2";
+// field name -> payload SHA256, ordered by name (the key's field order).
+using FieldShas=std::map<std::string,std::string>;
 struct CacheKey {
-  std::filesystem::path dir; std::string role_sha; u64 dates{},instruments{}; std::string fields_sha,vm_identity;
+  std::filesystem::path dir; std::string stem; // v2 location: dir/stem.{f64,json}
+  std::string role_sha; u64 dates{},instruments{}; std::string vm_identity;
+  FieldShas fields;                 // every extra field the DSL reads (empty: base)
+  std::string fields_manifest_sha;  // pinned manifest, provenance only (field candidates)
+  std::string signal_key;           // SHA256(signal_key_text)
 };
+// A committed entry serving a candidate: dir/stem.{f64,json}; legacy = v1 layout.
+struct CacheHit { std::filesystem::path dir; std::string stem,payload_sha; bool legacy{}; };
+// Fields manifests known to have keyed v1 field entries, by manifest SHA256.
+struct KnownManifest { std::string role_sha; FieldShas fields; };
+using KnownManifests=std::map<std::string,KnownManifest>;
+// SHA-256 time and verified bytes of one scored role (summary hash_seconds and
+// verify_bytes). Null meter: not accounted.
+struct HashMeter { f64 seconds{}; u64 verify_bytes{}; };
+co::Status metered_update(co::Sha256& digest,std::span<const std::byte> bytes,HashMeter* meter) {
+  if (!meter) return digest.update(bytes);
+  const auto started=std::chrono::steady_clock::now();
+  auto status=digest.update(bytes);
+  meter->seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
+  return status;
+}
 std::filesystem::path cache_root(const IcRunnerConfig& cfg) {
   const auto root=std::filesystem::path(cfg.candidate_cache_directory); const auto identity=vm_identity();
   return identity==legacy_vm_identity?root:root/identity;
 }
-CacheKey cache_key(const IcRunnerConfig& cfg,const Role& role,const Candidate& c) {
-  const bool fields=!c.extra_fields.empty();
-  return CacheKey{cache_root(cfg)/(fields?role.fields.sha:role.sha),role.sha,
-      role.metadata.at("dates").get<u64>(),role.metadata.at("instruments").get<u64>(),
-      fields?role.fields.sha:std::string{},vm_identity()};
+std::string field_lines(const FieldShas& fields) {
+  std::string out;
+  for (const auto& [name,sha]:fields) out+="field="+name+":"+sha+"\n";
+  return out;
+}
+// The exact bytes the signal key hashes (see the layout comment above).
+std::string signal_key_text(const CacheKey& key,const std::string& dsl_sha) {
+  return std::string(signal_key_schema)+"\nvm_identity="+key.vm_identity+"\neval_mode="+vm_eval_mode+
+      "\nlayout="+cache_layout+"\nrole_manifest_sha256="+key.role_sha+"\ndates="+std::to_string(key.dates)+
+      "\ninstruments="+std::to_string(key.instruments)+"\ndsl_sha256="+dsl_sha+"\n"+field_lines(key.fields);
+}
+Json fields_json(const FieldShas& fields) {
+  Json out=Json::object();
+  for (const auto& [name,sha]:fields) out[name]=sha;
+  return out;
+}
+co::Result<CacheKey> cache_key(const IcRunnerConfig& cfg,const Role& role,const Candidate& c) {
+  CacheKey key;
+  key.stem=c.id+"."+c.dsl_sha.substr(0,16); key.role_sha=role.sha;
+  key.dates=role.metadata.at("dates").get<u64>(); key.instruments=role.metadata.at("instruments").get<u64>();
+  key.vm_identity=vm_identity(); key.dir=cache_root(cfg)/role.sha;
+  for (const auto& name:c.extra_fields) {
+    const auto bound=std::find_if(role.fields.load.begin(),role.fields.load.end(),
+        [&](const FieldFile& field) { return field.name==name; });
+    if (bound==role.fields.load.end() || !hash_valid(bound->sha))
+      return co::Err(co::ErrorCode::Internal,"IC runner: cache key field not bound: "+name);
+    key.fields.emplace(name,bound->sha);
+  }
+  if (!key.fields.empty()) {
+    ATX_TRY(auto field_key,co::sha256_hex(field_lines(key.fields)));
+    key.dir/="fp_"+field_key.substr(0,16); key.fields_manifest_sha=role.fields.sha;
+  }
+  ATX_TRY(key.signal_key,co::sha256_hex(signal_key_text(key,c.dsl_sha)));
+  return co::Ok(std::move(key));
 }
 // Keyless sidecars predate vm_identity: only base entries recorded by the
 // verified legacy builds, read under the legacy identity, are accepted.
-bool legacy_entry(const Json& j,const CacheKey& key) {
-  if (key.vm_identity!=legacy_vm_identity || !key.fields_sha.empty() || !j.contains("engine_git_sha") ||
+bool legacy_entry(const Json& j,const std::string& identity,const std::string& fields_sha) {
+  if (identity!=legacy_vm_identity || !fields_sha.empty() || !j.contains("engine_git_sha") ||
       !j.at("engine_git_sha").is_string())
     return false;
   const auto engine=j.at("engine_git_sha").get<std::string>();
@@ -1051,46 +1122,140 @@ co::Status cache_preflight(const IcRunnerConfig& cfg,const Library& lib) {
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache path must be a directory");
   return co::Ok();
 }
-// A present sidecar must describe exactly this candidate on this role geometry;
-// anything else is a loud refusal, never a silent recompute over foreign bytes.
-co::Result<std::string> cached_payload_sha(const Json& j,const CacheKey& key,const Candidate& c) {
-  const auto text=[&](const char* k) {
-    return j.contains(k) && j.at(k).is_string()?j.at(k).get<std::string>():std::string{};
-  };
-  const auto count=[&](const char* k) {
-    return j.contains(k) && j.at(k).is_number_unsigned()?j.at(k).get<u64>():~u64{0};
-  };
-  auto sha=text("payload_sha256");
-  // A base entry never names a fields manifest; a field entry names exactly ours.
-  const bool fields_match=key.fields_sha.empty()?!j.contains("fields_manifest_sha256")
-                                                :text("fields_manifest_sha256")==key.fields_sha;
-  // Foreign bytes in this identity's directory are refused, never served.
-  const bool vm_match=j.contains("vm_identity")?text("vm_identity")==key.vm_identity:legacy_entry(j,key);
-  if (!j.is_object() || text("schema")!=cache_schema || text("candidate_id")!=c.id ||
-      text("dsl_sha256")!=c.dsl_sha || text("role_manifest_sha256")!=key.role_sha ||
-      text("eval_mode")!=vm_eval_mode || text("layout")!=cache_layout || count("dates")!=key.dates ||
-      count("instruments")!=key.instruments || count("bytes")!=key.dates*key.instruments*sizeof(f64) ||
-      !fields_match || !vm_match || !hash_valid(sha))
+// --cache-legacy-fields: each DIR/manifest.json, authenticated by its own SHA256
+// (the v1 sidecars it keyed name it), reduced to field -> payload SHA256.
+co::Result<KnownManifests> legacy_manifests(const IcRunnerConfig& cfg) {
+  KnownManifests out;
+  if (cfg.candidate_cache_legacy_fields.size()>64)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: at most 64 --cache-legacy-fields");
+  for (const auto& directory:cfg.candidate_cache_legacy_fields) {
+    const auto where="IC runner: --cache-legacy-fields "+directory;
+    ATX_TRY(auto text,metadata_text((std::filesystem::path(directory)/"manifest.json").string()));
+    ATX_TRY(auto sha,co::sha256_hex(text));
+    const auto j=Json::parse(text,nullptr,false);
+    if (j.is_discarded() || !j.is_object() || j.value("schema",std::string{})!=fields_schema ||
+        j.value("status",std::string{})!="complete" || !j.contains("role") || !j.at("role").is_object() ||
+        !j.contains("fields") || !j.at("fields").is_array() || !j.contains("files") || !j.at("files").is_object())
+      return co::Err(co::ErrorCode::InvalidArgument,where+": not a complete "+fields_schema+" manifest");
+    KnownManifest known{j.at("role").value("manifest_sha256",std::string{}),{}};
+    if (!hash_valid(known.role_sha))
+      return co::Err(co::ErrorCode::InvalidArgument,where+": role manifest binding");
+    const auto& files=j.at("files");
+    for (const auto& row:j.at("fields")) {
+      const auto name=row.is_object()?row.value("name",std::string{}):std::string{};
+      const auto file=name+".f64";
+      const auto payload=row.is_object()?row.value("sha256",std::string{}):std::string{};
+      if (!field_identifier(name) || row.value("file",std::string{})!=file || !hash_valid(payload) ||
+          !files.contains(file) || !files.at(file).is_object() ||
+          files.at(file).value("sha256",std::string{})!=payload || !known.fields.emplace(name,payload).second)
+        return co::Err(co::ErrorCode::InvalidArgument,where+": field entry "+name);
+    }
+    out.emplace(std::move(sha),std::move(known));
+  }
+  return co::Ok(std::move(out));
+}
+// This role's v1 field-entry manifests: the pinned one first (from its bound
+// payloads), then every known manifest bound to the same role manifest.
+std::vector<std::pair<std::string,FieldShas>> role_manifests(const Role& role,const KnownManifests& known) {
+  std::vector<std::pair<std::string,FieldShas>> out;
+  if (!role.fields.sha.empty()) {
+    FieldShas pinned;
+    for (const auto& field:role.fields.load) pinned.emplace(field.name,field.sha);
+    out.emplace_back(role.fields.sha,std::move(pinned));
+  }
+  for (const auto& [sha,manifest]:known)
+    if (manifest.role_sha==role.sha && sha!=role.fields.sha) out.emplace_back(sha,manifest.fields);
+  return out;
+}
+co::Result<std::optional<Json>> read_sidecar(const std::filesystem::path& path,const Candidate& c) {
+  std::error_code ec; const bool present=std::filesystem::exists(path,ec);
+  if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache probe: "+c.id);
+  if (!present) return co::Ok(std::optional<Json>{});
+  ATX_TRY(auto text,metadata_text(path.string()));
+  auto j=Json::parse(text,nullptr,false);
+  if (j.is_discarded())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache sidecar JSON: "+c.id);
+  return co::Ok(std::optional<Json>(std::move(j)));
+}
+std::string text_field(const Json& j,const char* key) {
+  return j.is_object() && j.contains(key) && j.at(key).is_string()?j.at(key).get<std::string>():std::string{};
+}
+u64 count_field(const Json& j,const char* key) {
+  return j.is_object() && j.contains(key) && j.at(key).is_number_unsigned()?j.at(key).get<u64>():~u64{0};
+}
+// Checks shared by both layouts: this candidate on this role geometry and eval mode.
+bool same_geometry(const Json& j,const CacheKey& key,const Candidate& c) {
+  return j.is_object() && text_field(j,"candidate_id")==c.id && text_field(j,"dsl_sha256")==c.dsl_sha &&
+      text_field(j,"role_manifest_sha256")==key.role_sha && text_field(j,"eval_mode")==vm_eval_mode &&
+      text_field(j,"layout")==cache_layout && count_field(j,"dates")==key.dates &&
+      count_field(j,"instruments")==key.instruments &&
+      count_field(j,"bytes")==key.dates*key.instruments*sizeof(f64);
+}
+// A present v2 sidecar at the key's path must record exactly this key.
+co::Result<std::string> v2_payload_sha(const Json& j,const CacheKey& key,const Candidate& c) {
+  auto sha=text_field(j,"payload_sha256");
+  if (!same_geometry(j,key,c) || text_field(j,"schema")!=cache_schema_v2 ||
+      text_field(j,"payload")!=key.stem+".f64" || text_field(j,"vm_identity")!=key.vm_identity ||
+      !j.contains("field_payload_sha256") || j.at("field_payload_sha256")!=fields_json(key.fields) ||
+      text_field(j,"signal_key_sha256")!=key.signal_key || !hash_valid(sha))
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache entry mismatch: "+c.id);
   return co::Ok(std::move(sha));
 }
-// nullopt: no sidecar (evaluate and write). Present-but-inconsistent: error.
-co::Result<std::optional<std::string>> cache_lookup(const CacheKey& key,const Candidate& c) {
-  const auto path=key.dir/(c.id+".json"); std::error_code ec;
-  const bool present=std::filesystem::exists(path,ec);
-  if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache probe: "+c.id);
-  if (!present) return co::Ok(std::optional<std::string>{});
-  ATX_TRY(auto text,metadata_text(path.string()));
-  const auto j=Json::parse(text,nullptr,false);
-  if (j.is_discarded())
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache sidecar JSON: "+c.id);
-  ATX_TRY(auto sha,cached_payload_sha(j,key,c));
+// A v1 sidecar at a probed path: nullopt when it records another DSL (a changed
+// candidate, ignored); otherwise it must describe this candidate under
+// `fields_sha` (empty: a base entry), as the v1 runner's lookup required.
+co::Result<std::optional<std::string>> v1_payload_sha(const Json& j,const CacheKey& key,const Candidate& c,
+                                                      const std::string& fields_sha) {
+  if (text_field(j,"candidate_id")==c.id && text_field(j,"dsl_sha256")!=c.dsl_sha)
+    return co::Ok(std::optional<std::string>{});
+  auto sha=text_field(j,"payload_sha256");
+  const bool fields_match=fields_sha.empty()?!j.contains("fields_manifest_sha256")
+      :(text_field(j,"fields_manifest_sha256")==fields_sha && j.contains("research_fields") &&
+        j.at("research_fields")==Json(c.extra_fields));
+  const bool vm_match=j.contains("vm_identity")?text_field(j,"vm_identity")==key.vm_identity
+                                               :legacy_entry(j,key.vm_identity,fields_sha);
+  if (!same_geometry(j,key,c) || text_field(j,"schema")!=cache_schema || !fields_match || !vm_match ||
+      !hash_valid(sha))
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache entry mismatch: "+c.id);
   return co::Ok(std::optional<std::string>(std::move(sha)));
 }
+co::Result<std::optional<CacheHit>> v1_probe(const std::filesystem::path& dir,const std::string& fields_sha,
+                                             const CacheKey& key,const Candidate& c) {
+  ATX_TRY(auto sidecar,read_sidecar(dir/(c.id+".json"),c));
+  if (!sidecar) return co::Ok(std::optional<CacheHit>{});
+  ATX_TRY(auto sha,v1_payload_sha(*sidecar,key,c,fields_sha));
+  if (!sha) return co::Ok(std::optional<CacheHit>{});
+  return co::Ok(std::optional<CacheHit>(CacheHit{dir,c.id,std::move(*sha),true}));
+}
+// nullopt: no entry (evaluate and write v2). Order: the v2 entry, then v1 in
+// place -- the base directory for a base candidate, else each of `manifests`
+// (pinned first) whose payload SHA256s agree with the key on every field read.
+co::Result<std::optional<CacheHit>> cache_lookup(const std::filesystem::path& root,const CacheKey& key,
+    const Candidate& c,const std::vector<std::pair<std::string,FieldShas>>& manifests) {
+  ATX_TRY(auto sidecar,read_sidecar(key.dir/(key.stem+".json"),c));
+  if (sidecar) {
+    ATX_TRY(auto sha,v2_payload_sha(*sidecar,key,c));
+    return co::Ok(std::optional<CacheHit>(CacheHit{key.dir,key.stem,std::move(sha),false}));
+  }
+  if (key.fields.empty()) return v1_probe(root/key.role_sha,{},key,c);
+  for (const auto& manifest:manifests) {
+    const auto& known=manifest.second;
+    const bool agrees=std::all_of(key.fields.begin(),key.fields.end(),[&known](const auto& field) {
+      const auto at=known.find(field.first);
+      return at!=known.end() && at->second==field.second;
+    });
+    if (!agrees) continue;
+    ATX_TRY(auto hit,v1_probe(root/manifest.first,manifest.first,key,c));
+    if (hit) return co::Ok(std::move(hit));
+  }
+  return co::Ok(std::optional<CacheHit>{});
+}
 // Reads a pinned date-major f64 payload into `out` (reused; no second copy),
-// hashing each chunk as it lands. `what` names the payload kind in refusals.
+// hashing each chunk as it lands unless `verify` is false (a reload the caller
+// has shown unchanged since this process verified it). `what` names the payload
+// kind in refusals.
 co::Status load_pinned_f64(const std::filesystem::path& path,const std::string& expected,usize cells,
-                           std::vector<f64>& out,std::string_view what) {
+                           std::vector<f64>& out,std::string_view what,HashMeter* meter,bool verify=true) {
   const auto bytes=static_cast<u64>(cells)*sizeof(f64);
   const auto label=std::string("IC runner: ")+std::string(what); const auto name=path.filename().string();
   std::ifstream in(path,std::ios::binary|std::ios::ate);
@@ -1103,18 +1268,20 @@ co::Status load_pinned_f64(const std::filesystem::path& path,const std::string& 
     // SAFETY: char accesses the object representation of trivially copyable f64 storage.
     in.read(reinterpret_cast<char*>(chunk.data()),static_cast<std::streamsize>(chunk.size()));
     if (!in) return co::Err(co::ErrorCode::IoError,label+" truncated: "+name);
-    ATX_TRY_VOID(digest.update(chunk)); offset+=chunk.size();
+    if (verify) ATX_TRY_VOID(metered_update(digest,chunk,meter));
+    offset+=chunk.size();
   }
   if (in.peek()!=std::char_traits<char>::eof())
     return co::Err(co::ErrorCode::IoError,label+" changed extent: "+name);
+  if (!verify) return co::Ok();
   ATX_TRY(auto actual,digest.finalize());
   if (hex(actual)!=expected)
     return co::Err(co::ErrorCode::InvalidArgument,label+" SHA256 mismatch: "+name);
+  if (meter) meter->verify_bytes+=bytes;
   return co::Ok();
 }
-co::Status cache_load(const std::filesystem::path& path,const std::string& expected,usize cells,
-                      std::vector<f64>& out) {
-  return load_pinned_f64(path,expected,cells,out,"candidate cache payload");
+co::Status cache_load(const CacheHit& hit,usize cells,std::vector<f64>& out,HashMeter& meter) {
+  return load_pinned_f64(hit.dir/(hit.stem+".f64"),hit.payload_sha,cells,out,"candidate cache payload",&meter);
 }
 // Unique per attempt so a concurrent or killed writer never shares a partial.
 struct PartialFile {
@@ -1145,7 +1312,8 @@ co::Result<bool> publish_new(const std::filesystem::path& partial,const std::fil
   return co::Err(co::ErrorCode::IoError,
       "IC runner: candidate cache publish "+final.filename().string()+": "+ec.message());
 }
-co::Result<std::string> write_partial(const PartialFile& partial,std::span<const std::byte> bytes) {
+co::Result<std::string> write_partial(const PartialFile& partial,std::span<const std::byte> bytes,
+                                      HashMeter* meter=nullptr) {
   std::ofstream out(partial.path,std::ios::binary); co::Sha256 digest;
   if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache partial output");
   for (usize offset=0;offset<bytes.size();) {
@@ -1153,7 +1321,7 @@ co::Result<std::string> write_partial(const PartialFile& partial,std::span<const
     // SAFETY: char reads the object representation of the caller's byte span.
     out.write(reinterpret_cast<const char*>(chunk.data()),static_cast<std::streamsize>(chunk.size()));
     if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache partial write");
-    ATX_TRY_VOID(digest.update(chunk)); offset+=chunk.size();
+    ATX_TRY_VOID(metered_update(digest,chunk,meter)); offset+=chunk.size();
   }
   out.close(); if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache partial close");
   ATX_TRY(auto sha,digest.finalize());
@@ -1162,13 +1330,13 @@ co::Result<std::string> write_partial(const PartialFile& partial,std::span<const
 // Never overwrites: an existing payload (a run stopped between the payload and
 // sidecar publications, or a concurrent writer) is adopted only if byte-identical.
 co::Result<std::string> cache_store_payload(const std::filesystem::path& final,
-                                            std::span<const std::byte> bytes) {
+                                            std::span<const std::byte> bytes,HashMeter& meter) {
   std::error_code ec; const bool present=std::filesystem::exists(final,ec);
   if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache probe: "+final.filename().string());
   std::string sha;
   if (!present) {
     const PartialFile partial(final);
-    ATX_TRY(sha,write_partial(partial,bytes));
+    ATX_TRY(sha,write_partial(partial,bytes,&meter));
     ATX_TRY(auto existed,publish_new(partial.path,final));
     if (!existed) return co::Ok(std::move(sha));
   } else {
@@ -1183,72 +1351,182 @@ co::Result<std::string> cache_store_payload(const std::filesystem::path& final,
 // Canonicalizes non-finite cells to quiet NaN IN PLACE, so this run consumes
 // exactly the bytes it stores (cold == warm by construction). Downstream IC rows
 // and composition admit a cell only via std::isfinite, so no-cache results are
-// unchanged. The sidecar is published last: it is the entry's commit record.
-// Returns the committed payload SHA256 (the IC-result cache keys on it).
-co::Result<std::string> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role& spec,
-    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal) {
+// unchanged. Writes the v2 entry; the sidecar is published last: it is the
+// entry's commit record. Returns the committed entry (its payload SHA256 keys
+// the IC-result cache).
+co::Result<CacheHit> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role& spec,
+    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,HashMeter& meter) {
   if (signal.size()!=key.dates*key.instruments)
     return co::Err(co::ErrorCode::Internal,"IC runner: candidate cache geometry");
   for (auto& v:signal) if (!std::isfinite(v)) v=quiet_nan;
-  ATX_TRY(auto sha,cache_store_payload(key.dir/(c.id+".f64"),std::as_bytes(signal)));
-  Json sidecar{{"schema",cache_schema},{"candidate_id",c.id},{"family",c.family},
+  std::error_code ec; std::filesystem::create_directories(key.dir,ec);
+  if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache directory: "+ec.message());
+  ATX_TRY(auto sha,cache_store_payload(key.dir/(key.stem+".f64"),std::as_bytes(signal),meter));
+  Json sidecar{{"schema",cache_schema_v2},{"candidate_id",c.id},{"family",c.family},
       {"dsl_sha256",c.dsl_sha},{"library_sha256",cfg.library_sha256},
       {"role_manifest_sha256",key.role_sha},{"role",spec.name},{"source_sha256",role.source_sha256},
       {"dates",key.dates},{"instruments",key.instruments},{"bytes",signal.size()*sizeof(f64)},
-      {"layout",cache_layout},{"payload",c.id+".f64"},{"payload_sha256",sha},
+      {"layout",cache_layout},{"payload",key.stem+".f64"},{"payload_sha256",sha},
       {"semantics","raw-unoriented-pre-composition-single-VM-root"},{"eval_mode",vm_eval_mode},
       {"vm_workers",cfg.workers},{"engine_git_sha",std::string(build_engine_git_sha())},
-      {"vm_identity",key.vm_identity}};
-  // Only field entries name a fields manifest; base entries never do.
-  if (!key.fields_sha.empty()) {
-    sidecar["fields_manifest_sha256"]=key.fields_sha; sidecar["research_fields"]=c.extra_fields;
-  }
+      {"vm_identity",key.vm_identity},{"field_payload_sha256",fields_json(key.fields)},
+      {"signal_key_sha256",key.signal_key}};
+  // Provenance only: the manifest this run pinned (never matched on lookup).
+  if (!key.fields_manifest_sha.empty()) sidecar["fields_manifest_sha256"]=key.fields_manifest_sha;
   const auto text=sidecar.dump(2)+"\n";
-  const auto final=key.dir/(c.id+".json");
+  const auto final=key.dir/(key.stem+".json");
   const PartialFile partial(final);
   ATX_TRY_VOID(write_partial(partial,std::as_bytes(std::span(text.data(),text.size()))));
   ATX_TRY(auto existed,publish_new(partial.path,final));
   if (existed) {
-    // A concurrent writer committed first: accept only the same identity and bytes.
-    ATX_TRY(auto committed,cache_lookup(key,c));
-    if (!committed || *committed!=sha)
+    // A concurrent writer committed first: accept only the same key and bytes.
+    ATX_TRY(auto committed,read_sidecar(final,c));
+    if (!committed) return co::Err(co::ErrorCode::Internal,"IC runner: candidate cache sidecar vanished: "+c.id);
+    ATX_TRY(auto committed_sha,v2_payload_sha(*committed,key,c));
+    if (committed_sha!=sha)
       return co::Err(co::ErrorCode::AlreadyExists,
           "IC runner: candidate cache sidecar raced with different bytes: "+c.id);
   }
-  return co::Ok(std::move(sha));
+  return co::Ok(CacheHit{key.dir,key.stem,std::move(sha),false});
 }
-// Metadata-only readiness for --plan-only: sidecars are identity-checked and
-// payload extents stat'ed; payload hashes are verified only when loaded.
-co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const Role& role) {
+// Every candidate's key and committed entry (nullopt: a miss), each entry
+// identity-checked and its payload extent stat'ed; payload hashes are verified
+// only when loaded. Metadata only: no role payload is opened.
+struct CacheResolution {
+  std::vector<CacheKey> keys; std::vector<std::optional<CacheHit>> hits; usize ready{},legacy{};
+};
+co::Result<CacheResolution> cache_resolve(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
+                                          const KnownManifests& known) {
   ATX_TRY_VOID(fields_bound(lib,role));
-  usize ready=0;
+  const auto manifests=role_manifests(role,known); const auto root=cache_root(cfg);
+  CacheResolution out;
   for (const auto& c:lib.candidates) {
-    const auto key=cache_key(cfg,role,c);
-    ATX_TRY(auto sha,cache_lookup(key,c));
-    if (!sha) continue;
-    std::error_code ec; const auto size=std::filesystem::file_size(key.dir/(c.id+".f64"),ec);
-    if (ec || size!=key.dates*key.instruments*sizeof(f64))
-      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache payload extent: "+c.id+".f64");
-    ++ready;
+    ATX_TRY(auto key,cache_key(cfg,role,c));
+    ATX_TRY(auto hit,cache_lookup(root,key,c,manifests));
+    if (hit) {
+      const auto payload=hit->dir/(hit->stem+".f64");
+      std::error_code ec; const auto size=std::filesystem::file_size(payload,ec);
+      if (ec || size!=key.dates*key.instruments*sizeof(f64))
+        return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache payload extent: "+
+            payload.filename().string());
+      ++out.ready; out.legacy+=hit->legacy?1U:0U;
+    }
+    out.keys.push_back(std::move(key)); out.hits.push_back(std::move(hit));
   }
-  Json plan{{"role",role.name},{"directory",(cache_root(cfg)/role.sha).string()},
-      {"ready_entries",ready},{"candidates",lib.candidates.size()},{"vm_identity",vm_identity()}};
+  return co::Ok(std::move(out));
+}
+// Metadata-only readiness for --plan-only.
+co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
+                            const KnownManifests& known) {
+  ATX_TRY(auto resolved,cache_resolve(cfg,lib,role,known));
+  Json plan{{"role",role.name},{"directory",(cache_root(cfg)/role.sha).string()},{"layout",cache_schema_v2},
+      {"ready_entries",resolved.ready},{"legacy_ready_entries",resolved.legacy},
+      {"candidates",lib.candidates.size()},{"vm_identity",vm_identity()}};
   if (!lib.extra_fields.empty()) plan["fields_directory"]=(cache_root(cfg)/role.fields.sha).string();
   return co::Ok(std::move(plan));
 }
+// ---- --cache-report ----------------------------------------------------------
+// Bounded, error-coded directory listing (the report never throws on a race).
+co::Result<std::vector<std::filesystem::directory_entry>> list_directory(const std::filesystem::path& dir) {
+  std::vector<std::filesystem::directory_entry> out; std::error_code ec;
+  std::filesystem::directory_iterator it(dir,ec);
+  for (;!ec && it!=std::filesystem::directory_iterator();it.increment(ec)) {
+    if (out.size()>=(usize{1}<<20)) return co::Err(co::ErrorCode::OutOfRange,"IC runner: cache report listing");
+    out.push_back(*it);
+  }
+  if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: cache report listing "+dir.string()+": "+ec.message());
+  return co::Ok(std::move(out));
+}
+u64 size_or_zero(const std::filesystem::path& path) {
+  std::error_code ec; const auto size=std::filesystem::file_size(path,ec);
+  return ec?0:static_cast<u64>(size);
+}
+// An entry's bytes: sidecar, payload and its IC results (<dir>/ic*/<stem>.json).
+co::Result<u64> entry_bytes(const std::filesystem::path& dir,const std::string& stem) {
+  u64 total=size_or_zero(dir/(stem+".json"))+size_or_zero(dir/(stem+".f64"));
+  ATX_TRY(auto listing,list_directory(dir));
+  for (const auto& sub:listing) {
+    std::error_code ec;
+    if (sub.is_directory(ec) && sub.path().filename().string().starts_with("ic"))
+      total+=size_or_zero(sub.path()/(stem+".json"));
+  }
+  return co::Ok(total);
+}
+std::string path_key(const std::filesystem::path& path) { return path.lexically_normal().string(); }
+struct CacheScan { u64 entries{},bytes{},orphan_files{},orphan_bytes{}; Json list=Json::array(); };
+// One entry directory: sidecars not in `referenced` are unreferenced entries;
+// partial files and payloads without a sidecar are orphans.
+co::Status scan_entries(const std::filesystem::path& dir,const std::set<std::string>& referenced,CacheScan& scan) {
+  ATX_TRY(auto listing,list_directory(dir));
+  for (const auto& file:listing) {
+    std::error_code ec;
+    if (!file.is_regular_file(ec)) continue;
+    const auto name=file.path().filename().string(); const auto extension=file.path().extension().string();
+    const auto stem=file.path().stem().string();
+    const bool partial=name.ends_with(".partial");
+    if (partial || (extension==".f64" && !std::filesystem::exists(dir/(stem+".json"),ec))) {
+      ++scan.orphan_files; scan.orphan_bytes+=size_or_zero(file.path()); continue;
+    }
+    if (extension!=".json" || referenced.contains(path_key(file.path()))) continue;
+    ATX_TRY(auto bytes,entry_bytes(dir,stem));
+    ++scan.entries; scan.bytes+=bytes;
+    scan.list.push_back({{"sidecar",file.path().string()},{"candidate_id",stem.substr(0,stem.find('.'))},
+        {"bytes",bytes}});
+  }
+  return co::Ok();
+}
+// Resolves every candidate of every scored role (as a run would) and lists what
+// else lies under ROOT: <64-hex>/ entry directories and their fp_* children.
+co::Result<Json> cache_report(const IcRunnerConfig& cfg,const Library& lib,const std::vector<Role>& roles,
+                              const KnownManifests& known) {
+  const auto root=cache_root(cfg);
+  Json report{{"mode","cache-report"},{"root",root.string()},{"vm_identity",vm_identity()},
+      {"layout",cache_schema_v2},{"roles",Json::array()}};
+  std::set<std::string> referenced;
+  for (const auto& role:roles) {
+    ATX_TRY(auto resolved,cache_resolve(cfg,lib,role,known));
+    Json rows=Json::array(); u64 hit_bytes=0;
+    for (usize k=0;k<lib.candidates.size();++k) {
+      const auto& hit=resolved.hits[k]; const auto& key=resolved.keys[k];
+      if (!hit) {
+        rows.push_back({{"id",lib.candidates[k].id},{"status","miss"},
+            {"sidecar",(key.dir/(key.stem+".json")).string()}});
+        continue;
+      }
+      const auto sidecar=hit->dir/(hit->stem+".json"); referenced.insert(path_key(sidecar));
+      ATX_TRY(auto bytes,entry_bytes(hit->dir,hit->stem)); hit_bytes+=bytes;
+      rows.push_back({{"id",lib.candidates[k].id},{"status","hit"},{"layout",hit->legacy?"v1":"v2"},
+          {"sidecar",sidecar.string()},{"bytes",bytes}});
+    }
+    report["roles"].push_back({{"role",role.name},{"manifest_sha256",role.sha},
+        {"candidates",lib.candidates.size()},{"hits",resolved.ready},{"legacy_hits",resolved.legacy},
+        {"misses",lib.candidates.size()-resolved.ready},{"hit_bytes",hit_bytes},{"entries",std::move(rows)}});
+  }
+  CacheScan scan; std::error_code ec;
+  if (std::filesystem::is_directory(root,ec)) {
+    ATX_TRY(auto top,list_directory(root));
+    for (const auto& dir:top) {
+      if (!dir.is_directory(ec) || !hash_valid(dir.path().filename().string())) continue;
+      ATX_TRY_VOID(scan_entries(dir.path(),referenced,scan));
+      ATX_TRY(auto children,list_directory(dir.path()));
+      for (const auto& child:children)
+        if (child.is_directory(ec) && child.path().filename().string().starts_with("fp_"))
+          ATX_TRY_VOID(scan_entries(child.path(),referenced,scan));
+    }
+  }
+  report["unreferenced"]={{"entries",scan.entries},{"bytes",scan.bytes},{"list",std::move(scan.list)}};
+  report["orphans"]={{"files",scan.orphan_files},{"bytes",scan.orphan_bytes}};
+  return co::Ok(std::move(report));
+}
 void release(std::vector<f64>& buffer) noexcept { std::vector<f64>().swap(buffer); }
-// Fail fast: every referenced field file is hashed (streamed, nothing retained)
-// before the role payload is opened, so a tampered field refuses first. Loads hash
-// the bytes again as they land, so the VM reads exactly what was pinned.
-co::Status verify_fields(const Role& spec) {
+// Every referenced field file is stat'ed before the role payload is opened, so a
+// truncated field refuses first (verify_fields hashes only what misses load).
+co::Status check_field_extents(const Role& spec) {
   for (const auto& field:spec.fields.load) {
-    const auto name=field.path.filename().string();
     std::error_code ec; const auto size=std::filesystem::file_size(field.path,ec);
     if (ec || size!=field.bytes)
-      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field payload extent: "+name);
-    ATX_TRY(auto sha,co::sha256_file(field.path.string()));
-    if (sha!=field.sha)
-      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field payload SHA256 mismatch: "+name);
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field payload extent: "+
+          field.path.filename().string());
   }
   return co::Ok();
 }
@@ -1271,16 +1549,77 @@ co::Result<al::Panel> dsl_panel(const al::Panel& base,std::vector<std::string> e
   for (usize t=0;t<d;++t) for (usize i=0;i<n;++i) presence[t*n+i]=static_cast<u8>(base.in_universe(t,i));
   return al::Panel::create_borrowed(d,n,std::move(names),std::move(columns),std::move(presence));
 }
+// Size and modification time of a file: a reload of a field payload this process
+// already verified skips the hash only while both are unchanged since then.
+struct FileStamp {
+  u64 size{}; std::filesystem::file_time_type modified{};
+  bool operator==(const FileStamp&) const=default;
+};
+std::optional<FileStamp> file_stamp(const std::filesystem::path& path) {
+  std::error_code ec; const auto size=std::filesystem::file_size(path,ec);
+  if (ec) return std::nullopt;
+  const auto modified=std::filesystem::last_write_time(path,ec);
+  if (ec) return std::nullopt;
+  return FileStamp{static_cast<u64>(size),modified};
+}
+// Streams a pinned payload through SHA-256 without retaining it (one 1 MiB
+// buffer); refuses a wrong extent and returns the lowercase hex digest.
+co::Result<std::string> hash_payload(const std::filesystem::path& path,u64 bytes,HashMeter& meter,
+                                     std::string_view what) {
+  const auto label=std::string("IC runner: ")+std::string(what); const auto name=path.filename().string();
+  std::ifstream in(path,std::ios::binary|std::ios::ate);
+  if (!in || in.tellg()<0 || static_cast<u64>(in.tellg())!=bytes)
+    return co::Err(co::ErrorCode::InvalidArgument,label+" extent: "+name);
+  in.seekg(0); std::vector<char> buffer(io_chunk); co::Sha256 digest;
+  for (u64 offset=0;offset<bytes;) {
+    const auto chunk=static_cast<usize>(std::min<u64>(io_chunk,bytes-offset));
+    in.read(buffer.data(),static_cast<std::streamsize>(chunk));
+    if (!in) return co::Err(co::ErrorCode::IoError,label+" truncated: "+name);
+    ATX_TRY_VOID(metered_update(digest,std::as_bytes(std::span(buffer.data(),chunk)),&meter));
+    offset+=chunk;
+  }
+  if (in.peek()!=std::char_traits<char>::eof())
+    return co::Err(co::ErrorCode::IoError,label+" changed extent: "+name);
+  ATX_TRY(auto actual,digest.finalize());
+  meter.verify_bytes+=bytes;
+  return co::Ok(hex(actual));
+}
+// Fail fast, hash once: every field in `needed` (bit f = Library::extra_fields[f],
+// the fields some cache miss will load) is hashed before the role payload opens,
+// so a tampered field refuses first. `verified[f]` records the file stamp it was
+// verified under (unchanged across the read), which its loads then trust.
+co::Status verify_fields(const Role& spec,u64 needed,HashMeter& meter,
+                         std::vector<std::optional<FileStamp>>& verified) {
+  for (usize f=0;f<spec.fields.load.size();++f) {
+    if (!((needed>>f)&1U)) continue;
+    const auto& field=spec.fields.load[f];
+    const auto before=file_stamp(field.path);
+    ATX_TRY(auto sha,hash_payload(field.path,field.bytes,meter,"research field payload"));
+    if (sha!=field.sha)
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field payload SHA256 mismatch: "+
+          field.path.filename().string());
+    const auto after=file_stamp(field.path);
+    if (before && after && *before==*after) verified[f]=after;
+  }
+  return co::Ok();
+}
 // Runtime side of FieldPlan for one scored role. The resident set never leaves
 // planned[k]: enter(k) drops what planned[k] excludes; panel_for(k) loads only the
 // fields candidate k reads, and only when k needs the VM (a cache miss), so a warm
 // run loads nothing. Any resident-set change destroys the VM first (it borrows
 // the panel, which borrows the columns), so a live VM always matches panel_for's
-// result. Borrows `lib` and `spec`; non-copyable because the panel aliases columns_.
+// result. Each field file is hashed once per process: a load whose file stamp
+// is unchanged since its verification (verify_fields, or an earlier load of this
+// residency) trusts it; any other load hashes as the bytes land. Borrows `lib`,
+// `spec` and `meter`; non-copyable because the panel aliases columns_.
 class FieldResidency {
 public:
-  FieldResidency(const Library& lib,const Role& spec,usize cells)
-      : lib_{lib},spec_{spec},cells_{cells},columns_(lib.extra_fields.size()) {}
+  FieldResidency(const Library& lib,const Role& spec,usize cells,HashMeter& meter,
+                 std::vector<std::optional<FileStamp>> verified)
+      : lib_{lib},spec_{spec},cells_{cells},meter_{meter},columns_(lib.extra_fields.size()),
+        verified_(std::move(verified)) {
+    verified_.resize(lib.extra_fields.size());
+  }
   FieldResidency(const FieldResidency&)=delete;
   FieldResidency& operator=(const FieldResidency&)=delete;
   FieldResidency(FieldResidency&&)=delete;
@@ -1293,8 +1632,9 @@ public:
   [[nodiscard]] usize peak() const noexcept { return peak_; }
   [[nodiscard]] f64 seconds() const noexcept { return seconds_; }
 private:
-  const Library& lib_; const Role& spec_; usize cells_;
+  const Library& lib_; const Role& spec_; usize cells_; HashMeter& meter_;
   std::vector<std::vector<f64>> columns_; // index = Library::extra_fields index; empty = not resident
+  std::vector<std::optional<FileStamp>> verified_; // stamp at the verified load; nullopt = never hashed
   u64 resident_{};
   std::optional<al::Panel> panel_;
   usize loads_{},peak_{}; f64 seconds_{};
@@ -1317,13 +1657,21 @@ co::Result<const al::Panel*> FieldResidency::panel_for(usize k,const al::Panel& 
     for (usize f=0;f<columns_.size();++f) {
       if (!((missing>>f)&1U)) continue;
       const auto& field=spec_.fields.load[f]; const auto started=std::chrono::steady_clock::now();
-      ATX_TRY_VOID(load_pinned_f64(field.path,field.sha,cells_,columns_[f],"research field payload"));
+      const auto before=file_stamp(field.path);
+      const bool trusted=before && verified_[f] && *verified_[f]==*before;
+      ATX_TRY_VOID(load_pinned_f64(field.path,field.sha,cells_,columns_[f],"research field payload",&meter_,
+          !trusted));
+      if (!trusted) {
+        // Recorded only if the file did not change while it was read and hashed.
+        const auto after=file_stamp(field.path);
+        verified_[f]=before && after && *before==*after?after:std::nullopt;
+      }
       if (std::any_of(columns_[f].begin(),columns_[f].end(),[](f64 v) { return std::isinf(v); }))
         return co::Err(co::ErrorCode::InvalidArgument,"IC runner: research field value is infinite: "+field.name);
       const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
       seconds_+=seconds; ++loads_; resident_|=u64{1}<<f;
       progress<<"IC field-load role="<<spec_.name<<" field="<<field.name<<" candidate="<<candidate
-              <<" seconds="<<seconds<<'\n'<<std::flush;
+              <<" seconds="<<seconds<<" hashed="<<(trusted?0:1)<<'\n'<<std::flush;
     }
     peak_=std::max(peak_,static_cast<usize>(std::popcount(resident_)));
   }
@@ -1452,9 +1800,12 @@ std::string series_hex(std::span<const f64> values) {
 }
 // Hashes the membership (6.5 MB) and guard (26 MB) spans once per scored role.
 co::Result<IcCacheScope> ic_cache_scope(const Role& spec,const engine::data::StrategyRoleData& role,
-    const ex::IcScreenConfig& ic,const ex::ResearchIcOptions& options,std::span<const u32> guard) {
+    const ex::IcScreenConfig& ic,const ex::ResearchIcOptions& options,std::span<const u32> guard,
+    HashMeter& meter) {
+  const auto hashing=std::chrono::steady_clock::now();
   ATX_TRY(auto member_sha,co::sha256_hex(std::as_bytes(std::span<const u8>(role.decision_member))));
   ATX_TRY(auto guard_sha,co::sha256_hex(std::as_bytes(guard)));
+  meter.seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-hashing).count();
   Json horizons=Json::array();
   for (const auto h:ic.horizons) horizons.push_back(h);
   Json key{{"semantics_version",static_cast<u64>(ic_result_semantics_version)},{"ic_identity",ic_identity()},
@@ -1644,34 +1995,31 @@ void series(std::ofstream& out,std::string_view id,const engine::data::StrategyR
     }
   }
 }
-// payload_sha: SHA256 of the exact signal bytes in `buffer` when the cache is on
-// (a verified hit's pin, or the payload just committed); empty when it is off.
-struct SignalTiming { f64 vm{},cache_load{},cache_write{}; bool hit{}; std::string payload_sha; };
+// entry: the cache entry now holding the exact signal bytes in `buffer` (the
+// verified hit, or the v2 entry just committed); nullopt when the cache is off.
+struct SignalTiming { f64 vm{},cache_load{},cache_write{}; bool hit{}; std::optional<CacheHit> entry; };
 // Leaves the candidate's raw (unoriented) signal in `buffer`: a verified cache
-// hit, or a VM evaluation that is then committed to the cache when enabled.
-// Only a miss asks `fields` for the panel (loading candidate k's extras if not
-// resident): the role panel, or the borrowed DSL panel over the resident extras.
-// Every Engine borrows it; `fields` destroys `vm` before changing it. Null cache = off.
+// hit (`hit`, resolved at preflight), or a VM evaluation that is then committed
+// to the cache when enabled. Only a miss asks `fields` for the panel (loading
+// candidate k's extras if not resident): the role panel, or the borrowed DSL
+// panel over the resident extras. Every Engine borrows it; `fields` destroys
+// `vm` before changing it. Null cache key = cache off.
 co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,FieldResidency& fields,usize k,const Candidate& candidate,
-    const CacheKey* signal_cache,engine::parallel::DetPool* pool,
-    std::unique_ptr<al::Engine>& vm,std::vector<f64>& buffer,std::ostream& progress) {
+    const CacheKey* signal_cache,const std::optional<CacheHit>& hit,engine::parallel::DetPool* pool,
+    std::unique_ptr<al::Engine>& vm,std::vector<f64>& buffer,HashMeter& meter,std::ostream& progress) {
   using steady=std::chrono::steady_clock;
   const auto since=[](steady::time_point from) { return std::chrono::duration<f64>(steady::now()-from).count(); };
   SignalTiming out;
-  if (signal_cache) {
+  if (signal_cache && hit) {
     const auto load_started=steady::now();
-    ATX_TRY(auto sha,cache_lookup(*signal_cache,candidate));
-    if (sha) {
-      ATX_TRY_VOID(cache_load(signal_cache->dir/(candidate.id+".f64"),*sha,
-          role.panel.dates()*role.panel.instruments(),buffer));
-      out.cache_load=since(load_started); out.hit=true; out.payload_sha=std::move(*sha);
-      progress<<"IC cache-hit "<<candidate.id<<" role="<<spec.name<<" seconds="<<out.cache_load<<'\n'<<std::flush;
-      return co::Ok(std::move(out));
-    }
-    out.cache_load=since(load_started);
-    progress<<"IC cache-miss "<<candidate.id<<" role="<<spec.name<<'\n'<<std::flush;
+    ATX_TRY_VOID(cache_load(*hit,role.panel.dates()*role.panel.instruments(),buffer,meter));
+    out.cache_load=since(load_started); out.hit=true; out.entry=*hit;
+    progress<<"IC cache-hit "<<candidate.id<<" role="<<spec.name<<" layout="<<(hit->legacy?"v1":"v2")
+            <<" seconds="<<out.cache_load<<'\n'<<std::flush;
+    return co::Ok(std::move(out));
   }
+  if (signal_cache) progress<<"IC cache-miss "<<candidate.id<<" role="<<spec.name<<'\n'<<std::flush;
   // At most one full-panel candidate signal exists: drop the previous one
   // before any VM arena growth or evaluation allocates.
   release(buffer);
@@ -1698,8 +2046,8 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
   buffer=std::move(evaluated.alphas.front().values);
   if (signal_cache) {
     const auto write_started=steady::now();
-    ATX_TRY(out.payload_sha,cache_store(*signal_cache,cfg,spec,role,candidate,buffer));
-    out.cache_write=since(write_started);
+    ATX_TRY(auto stored,cache_store(*signal_cache,cfg,spec,role,candidate,buffer,meter));
+    out.entry=std::move(stored); out.cache_write=since(write_started);
     progress<<"IC cache-write "<<candidate.id<<" role="<<spec.name<<" seconds="<<out.cache_write<<'\n'<<std::flush;
   }
   return co::Ok(std::move(out));
@@ -1707,29 +2055,39 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
 // `blend_signs`: pinned per-candidate blend signs (empty = the TRAIN IC orientation).
 // `themes`: pinned within-theme redistribution themes (empty = none; ew-theme-v6).
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
-    std::span<const f64> weights,std::span<const int> blend_signs,std::vector<int>& signs,Json& frozen,
-    const std::string& recipe_sha,const std::string& orientation_pin,std::ostream& progress,
-    std::span<const usize> themes={}) {
+    const KnownManifests& known,std::span<const f64> weights,std::span<const int> blend_signs,
+    std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,const std::string& orientation_pin,
+    std::ostream& progress,std::span<const usize> themes={}) {
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
-  // Referenced extra fields are hashed first, so a tampered field payload refuses
-  // before the role payload is opened. None referenced: nothing is read.
-  ATX_TRY_VOID(verify_fields(spec));
-  const auto verify_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
+  // Fail fast (T1 review M2): every candidate's entry is resolved once (v2, or v1
+  // read in place), identity-checked and its payload extent stat'ed before the
+  // role loads, so a foreign or truncated entry refuses now, not hours into the
+  // loop. Payload hashes are still verified on load.
+  CacheResolution cache;
+  if (!cfg.candidate_cache_directory.empty()) {
+    ATX_TRY(cache,cache_resolve(cfg,lib,spec,known));
+    progress<<"IC cache-preflight role="<<spec.name<<" ready="<<cache.ready<<'/'<<lib.candidates.size()
+            <<" legacy="<<cache.legacy<<'\n'<<std::flush;
+  }
+  // Referenced extra fields also fail fast: every extent is stat'ed, and the
+  // payloads some cache miss will load are hashed now, once (their loads trust
+  // that verification). A field only cache hits read is never opened; none
+  // referenced: nothing is read.
+  const auto verify_started=std::chrono::steady_clock::now();
+  ATX_TRY_VOID(check_field_extents(spec));
+  u64 needed=0;
+  for (usize k=0;k<lib.candidates.size();++k)
+    if (cache.hits.empty() || !cache.hits[k]) needed|=lib.field_plan.needs[k];
+  HashMeter meter; std::vector<std::optional<FileStamp>> verified(lib.extra_fields.size());
+  ATX_TRY_VOID(verify_fields(spec,needed,meter,verified));
+  const auto verify_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-verify_started).count();
   if (!spec.fields.load.empty()) {
     progress<<"IC fields-verified role="<<spec.name<<" fields=";
     for (usize k=0;k<spec.fields.load.size();++k) progress<<(k?",":"")<<spec.fields.load[k].name;
     progress<<" resident_capacity="<<lib.field_plan.capacity<<" planned_loads="<<lib.field_plan.loads
-            <<" seconds="<<verify_seconds<<'\n'<<std::flush;
-  }
-  // Fail fast (T1 review M2): every existing sidecar is identity-checked and its
-  // payload extent stat'ed before the role loads, so a foreign or truncated entry
-  // refuses now, not hours into the loop. Payload hashes are still verified on load.
-  if (!cfg.candidate_cache_directory.empty()) {
-    ATX_TRY(auto ready,cache_plan(cfg,lib,spec));
-    progress<<"IC cache-preflight role="<<spec.name<<" ready="<<ready.at("ready_entries").get<usize>()
-            <<'/'<<lib.candidates.size()<<'\n'<<std::flush;
+            <<" hashed="<<std::popcount(needed)<<" seconds="<<verify_seconds<<'\n'<<std::flush;
   }
   const auto role_started=std::chrono::steady_clock::now();
   ATX_TRY(auto role,engine::data::read_strategy_role(spec.path,cfg.max_working_bytes));
@@ -1738,7 +2096,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: role manifest changed after admission");
   // Declared after `role` and before `pool`/`vm`: borrows the former and is
   // borrowed by the latter. Absent extras, the VM reads role.panel exactly as before.
-  FieldResidency fields(lib,spec,role.panel.dates()*role.panel.instruments());
+  FieldResidency fields(lib,spec,role.panel.dates()*role.panel.instruments(),meter,std::move(verified));
   ATX_TRY(auto guard,guard_for(role));
   auto ic=ex::equivalence_ic_screen_config();
   ic.horizons={5,21,63,0}; ic.min_names=cfg.min_names; ic.min_dates=cfg.min_dates;
@@ -1746,10 +2104,10 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   ic.max_cache_bytes=cfg.max_working_bytes;
   const ex::ResearchIcOptions ic_options{3,true,cfg.workers};
   const auto label_started=std::chrono::steady_clock::now();
-  ATX_TRY(auto cache,ex::prepare_research_ic(role.panel,ic,ic_options,role.decision_member,guard,
+  ATX_TRY(auto labels,ex::prepare_research_ic(role.panel,ic,ic_options,role.decision_member,guard,
       ic_price_field));
-  ATX_TRY(auto scratch,ex::prepare_research_ic_scratch(cache));
-  if (cache.bytes()>cfg.max_working_bytes || scratch.bytes()>cfg.max_working_bytes-cache.bytes())
+  ATX_TRY(auto scratch,ex::prepare_research_ic_scratch(labels));
+  if (labels.bytes()>cfg.max_working_bytes || scratch.bytes()>cfg.max_working_bytes-labels.bytes())
     return co::Err(co::ErrorCode::Unavailable,"IC runner: actual IC cache/scratch exceeds admitted budget");
   const auto label_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-label_started).count();
   // Lifetime order matters: Engine borrows the pool and dies first. Candidate
@@ -1768,25 +2126,16 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   IcCompositionConfig cc; cc.dates=role.panel.dates(); cc.instruments=role.panel.instruments();
   cc.decision_begin=role.score_begin; cc.decision_end=role.score_end; cc.max_working_bytes=cfg.max_working_bytes;
   ATX_TRY(auto composition,IcComposition::create(cc,candidates,effective,weights,themes));
-  // One key per candidate (empty = cache off): its role or fields directory.
-  std::vector<CacheKey> cache_keys;
-  if (!cfg.candidate_cache_directory.empty()) {
-    cache_keys.reserve(lib.candidates.size());
-    for (const auto& c:lib.candidates) {
-      cache_keys.push_back(cache_key(cfg,spec,c));
-      std::error_code ec; std::filesystem::create_directories(cache_keys.back().dir,ec);
-      if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache directory: "+ec.message());
-    }
-  }
-  const bool signal_cache=!cache_keys.empty();
+  // One key per candidate (empty = cache off); directories are created on write.
+  const bool signal_cache=!cache.keys.empty();
   // IC-result cache: on exactly when the signal cache is (its entries key on the
   // signal payload SHA256); one scope per scored role, entries per candidate dir.
   std::optional<IcCacheScope> ic_scope; usize ic_hits=0;
   if (signal_cache) {
-    ATX_TRY(auto scope,ic_cache_scope(spec,role,ic,ic_options,guard));
+    ATX_TRY(auto scope,ic_cache_scope(spec,role,ic,ic_options,guard,meter));
     ic_scope.emplace(std::move(scope));
   }
-  std::vector<f64> signal_buffer; usize cache_hits=0;
+  std::vector<f64> signal_buffer; usize cache_hits=0,legacy_hits=0; Json cache_entries=Json::array();
   f64 total_cache_load_seconds=0,total_cache_write_seconds=0;
   const auto dir=std::filesystem::path(cfg.output_directory);
   std::ofstream daily(dir/(spec.name+"_daily_ic.csv"),std::ios::binary);
@@ -1808,32 +2157,42 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
             <<" slots="<<candidate.program.num_slots<<'\n'<<std::flush;
     fields.enter(k,vm,progress);
     ATX_TRY(auto acquired,candidate_signal(cfg,spec,role,fields,k,candidate,
-        signal_cache?&cache_keys[k]:nullptr,pool.get(),vm,signal_buffer,progress));
+        signal_cache?&cache.keys[k]:nullptr,signal_cache?cache.hits[k]:std::nullopt,pool.get(),vm,
+        signal_buffer,meter,progress));
     const std::span<const f64> signal(signal_buffer);
     const auto vm_seconds=acquired.vm; total_vm_seconds+=vm_seconds;
     total_cache_load_seconds+=acquired.cache_load; total_cache_write_seconds+=acquired.cache_write;
     cache_hits+=acquired.hit?1U:0U;
+    if (acquired.entry) {
+      const auto& entry=*acquired.entry; const auto& key=cache.keys[k];
+      legacy_hits+=entry.legacy?1U:0U;
+      cache_entries.push_back({{"id",candidate.id},{"layout",entry.legacy?"v1":"v2"},
+          {"sidecar",(entry.dir/(entry.stem+".json")).string()},{"payload",(entry.dir/(entry.stem+".f64")).string()},
+          {"payload_sha256",entry.payload_sha},{"field_payload_sha256",fields_json(key.fields)},
+          {"signal_key_sha256",key.signal_key}});
+    }
     const auto ic_started=std::chrono::steady_clock::now();
     // A verified IC-result hit replaces evaluate_research_ic; a miss scores and,
     // with the cache on, commits that result keyed on the exact signal bytes.
     std::optional<CachedIc> cached_ic; std::filesystem::path ic_entry;
     if (ic_scope) {
-      if (!hash_valid(acquired.payload_sha))
+      if (!acquired.entry || !hash_valid(acquired.entry->payload_sha))
         return co::Err(co::ErrorCode::Internal,
             "IC runner: signal payload SHA256 missing for IC-result cache");
-      ic_entry=cache_keys[k].dir/ic_scope->directory/(candidate.id+".json");
-      ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,acquired.payload_sha,scratch,
+      // Beside the signal entry that served or stored the bytes: v1 <id>.json, v2 <id>.<dsl16>.json.
+      ic_entry=acquired.entry->dir/ic_scope->directory/(acquired.entry->stem+".json");
+      ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scratch,
           ic_options.active_horizons));
     }
     ex::ResearchIcResult scored; IcSeries daily_series;
     if (cached_ic) {
       scored=cached_ic->result; daily_series=cached_series(*cached_ic); ++ic_hits;
     } else {
-      ATX_TRY(scored,ex::evaluate_research_ic(signal,cache,scratch,pool.get()));
+      ATX_TRY(scored,ex::evaluate_research_ic(signal,labels,scratch,pool.get()));
       daily_series=scratch_series(scratch);
       if (ic_scope) {
-        ATX_TRY_VOID(ic_cache_store(ic_entry,*ic_scope,candidate,acquired.payload_sha,scored,daily_series,
-            cfg.workers));
+        ATX_TRY_VOID(ic_cache_store(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scored,
+            daily_series,cfg.workers));
       }
     }
     const auto ic_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-ic_started).count();
@@ -1892,7 +2251,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   ATX_TRY(auto combined,composition.finish());
   total_composition_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-finish_started).count();
   const auto combined_ic_started=std::chrono::steady_clock::now();
-  ATX_TRY(auto combined_ic,ex::evaluate_research_ic(combined.signal,cache,scratch,pool.get()));
+  ATX_TRY(auto combined_ic,ex::evaluate_research_ic(combined.signal,labels,scratch,pool.get()));
   total_ic_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-combined_ic_started).count();
   series(daily,"__combined__",role,scratch_series(scratch),1);
   std::ofstream targets(dir/(spec.name+"_planned_targets.csv"),std::ios::binary);
@@ -1916,7 +2275,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   Json result{{"role",spec.name},{"manifest_sha256",spec.sha},{"source_sha256",role.source_sha256},
       {"dates",role.panel.dates()},{"instruments",role.panel.instruments()},
       {"score_begin",role.score_begin},{"score_end",role.score_end}, {"wall_seconds",seconds},
-      {"admitted_working_bytes",spec.bytes},{"ic_cache_bytes",cache.bytes()},{"ic_scratch_bytes",scratch.bytes()},
+      {"admitted_working_bytes",spec.bytes},{"ic_cache_bytes",labels.bytes()},{"ic_scratch_bytes",scratch.bytes()},
       {"workers",cfg.workers},{"stage_seconds",{{"load",load_seconds},{"label_preparation",label_seconds},
           {"vm",total_vm_seconds},{"ic",total_ic_seconds},{"composition",total_composition_seconds}}},
       {"candidate_evaluations",lib.candidates.size()},{"combined_evaluations",1},
@@ -1931,17 +2290,23 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   if (signal_cache) {
     result["stage_seconds"]["cache_load"]=total_cache_load_seconds;
     result["stage_seconds"]["cache_write"]=total_cache_write_seconds;
+    // `directory`/`fields_directory` are the v1 locations (kept for v1 readers);
+    // `entries` names each candidate's exact entry in either layout.
     result["candidate_cache"]={
         {"directory",(cache_root(cfg)/spec.sha).string()},{"vm_identity",vm_identity()},
-        {"hits",cache_hits},{"misses",lib.candidates.size()-cache_hits},
-        {"vm_evaluations",lib.candidates.size()-cache_hits}};
+        {"layout",cache_schema_v2},{"hits",cache_hits},{"legacy_hits",legacy_hits},
+        {"misses",lib.candidates.size()-cache_hits},{"vm_evaluations",lib.candidates.size()-cache_hits},
+        {"entries",std::move(cache_entries)}};
     if (!lib.extra_fields.empty())
       result["candidate_cache"]["fields_directory"]=(cache_root(cfg)/spec.fields.sha).string();
-    // Entries live in <each candidate's signal directory>/<subdirectory>/<id>.json.
+    // Entries live beside each signal entry: <entry dir>/<subdirectory>/<entry stem>.json.
     result["candidate_cache"]["ic_results"]={{"subdirectory",ic_scope->directory},
         {"identity",ic_identity()},{"key",ic_scope->key},{"hits",ic_hits},
         {"misses",lib.candidates.size()-ic_hits}};
   }
+  // SHA-256 spent by this role (field and cache payload verification, cache
+  // writes, IC-result scope) and the pinned payload bytes hashed to verify them.
+  result["hash_seconds"]=meter.seconds; result["verify_bytes"]=meter.verify_bytes;
   // Present exactly when a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) {
     Json loaded=Json::array(),files=Json::object();
@@ -1972,7 +2337,8 @@ IcCacheVmIdentity ic_result_cache_identity() {
 co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
   try {
     const bool validation_only=!cfg.orientations_path.empty();
-    if ((!cfg.plan_only && cfg.output_directory.empty()) || cfg.max_working_bytes<(32ULL<<20) || cfg.max_working_bytes>(16ULL<<30) ||
+    const bool metadata_only=cfg.plan_only || cfg.cache_report;
+    if ((!metadata_only && cfg.output_directory.empty()) || cfg.max_working_bytes<(32ULL<<20) || cfg.max_working_bytes>(16ULL<<30) ||
         cfg.min_names<3 || cfg.min_dates<8 || cfg.min_dates>4096 || cfg.workers<1 || cfg.workers>4 ||
         cfg.validation_manifest.empty()!=cfg.validation_sha256.empty() ||
         cfg.orientations_path.empty()!=cfg.orientations_sha256.empty() ||
@@ -1980,13 +2346,15 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         cfg.train_fields_directory.empty()!=cfg.train_fields_sha256.empty() ||
         cfg.validation_fields_directory.empty()!=cfg.validation_fields_sha256.empty() ||
         (!cfg.validation_fields_directory.empty() && cfg.validation_manifest.empty()) ||
-        (validation_only && cfg.validation_manifest.empty()))
+        (validation_only && cfg.validation_manifest.empty()) || (cfg.plan_only && cfg.cache_report) ||
+        (cfg.candidate_cache_directory.empty() && (cfg.cache_report || !cfg.candidate_cache_legacy_fields.empty())))
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: bounded config");
     ATX_TRY(auto lib,library(cfg));
     // Both new options are fully validated here, before any role payload.
     ATX_TRY(const auto pinned,composition_weights(cfg,lib));
     const bool pinned_signs=!pinned.signs.empty();
     ATX_TRY_VOID(cache_preflight(cfg,lib));
+    ATX_TRY(const auto known,legacy_manifests(cfg));
     std::vector<Role> roles;
     // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none.
     ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",!validation_only,
@@ -2014,6 +2382,10 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       roles.erase(roles.begin()); // TRAIN metadata checked, payload never opened.
     } else if (!cfg.composition_weights_path.empty()) {
       weights_record=weights_summary(cfg,pinned,"train-manifest-sha256;TRAIN-scored-in-this-run");
+    }
+    if (cfg.cache_report) {
+      ATX_TRY(auto listing,cache_report(cfg,lib,roles,known));
+      progress<<listing.dump(2)<<'\n'; return co::Ok();
     }
     if (cfg.plan_only) {
       Json plan{{"mode","metadata-only-no-payload"},{"candidates",lib.candidates.size()},
@@ -2045,7 +2417,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       if (!cfg.candidate_cache_directory.empty()) {
         plan["candidate_cache"]=Json::array();
         for (const auto& role:roles) {
-          ATX_TRY(auto entry,cache_plan(cfg,lib,role)); plan["candidate_cache"].push_back(std::move(entry));
+          ATX_TRY(auto entry,cache_plan(cfg,lib,role,known)); plan["candidate_cache"].push_back(std::move(entry));
         }
       }
       progress<<plan.dump(2)<<'\n'; return co::Ok();
@@ -2087,7 +2459,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
-      auto scored=score_role(cfg,lib,role,pinned.values,pinned.signs,signs,orientations,recipe_sha,
+      auto scored=score_role(cfg,lib,role,known,pinned.values,pinned.signs,signs,orientations,recipe_sha,
           report.value("orientations_artifact_sha256",std::string{}),progress,pinned.themes);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
@@ -2127,16 +2499,24 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
     for (int i=1;i<argc;++i) {
       const std::string key=argv[i];
       if (key=="--plan-only") { cfg.plan_only=true; continue; }
+      if (key=="--cache-report") { cfg.cache_report=true; continue; }
       if (key=="--save-combined") { cfg.save_combined=true; continue; }
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
                "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..4 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA] "
-               "[--candidate-cache DIR] [--composition-weights JSON --composition-weights-sha256 SHA] "
+               "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report]] "
+               "[--composition-weights JSON --composition-weights-sha256 SHA] "
                "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA]\n"
                "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n"
-               "  --candidate-cache: entries under DIR[/<vm-identity>]/<role-or-fields-sha>/; publication does not fsync;\n"
-               "    killed writes leave inert .partial files (safe to delete); a foreign/corrupt entry refuses loudly.\n"
-               "    It also caches IC results: <role-or-fields-sha>/ic<v>_<key>/<id>.json, keyed on signal bytes.\n"
+               "  --candidate-cache: content-keyed entries (v2) under DIR[/<vm-identity>]/<role-sha>/[fp_<fk16>/]\n"
+               "    <id>.<dsl16>.{f64,json}, keyed on the DSL and the payload SHA256 of each field it reads; v1 entries\n"
+               "    (<role-or-fields-sha>/<id>.{f64,json}) are read in place. Publication does not fsync; killed writes\n"
+               "    leave inert .partial files (safe to delete); a foreign/corrupt entry refuses loudly. It also caches\n"
+               "    IC results beside each entry: ic<v>_<key>/<stem>.json, keyed on signal bytes.\n"
+               "  --cache-legacy-fields DIR (repeatable): a fields directory whose manifest keyed v1 field entries;\n"
+               "    such an entry hits when every field its DSL reads has the pinned manifest's payload SHA256.\n"
+               "  --cache-report: metadata only; prints per-role hits/misses and the unreferenced cache entries with\n"
+               "    bytes (needs --candidate-cache; no --output).\n"
                "  --composition-weights: must carry train_manifest_sha256 (== --train-sha256); optional signs {id: +1|-1}\n"
                "    replace the IC orientation in the blend; a blend frozen with weights resumes only with the same file.\n"
                "    optional theme_redistribution {rule: within-theme-v1, composition: ew-theme-v6, themes: {id: theme}}\n"
@@ -2161,6 +2541,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--orientations-sha256") cfg.orientations_sha256=value;
       else if (key=="--output") cfg.output_directory=value;
       else if (key=="--candidate-cache") cfg.candidate_cache_directory=value;
+      else if (key=="--cache-legacy-fields") cfg.candidate_cache_legacy_fields.push_back(value);
       else if (key=="--composition-weights") cfg.composition_weights_path=value;
       else if (key=="--composition-weights-sha256") cfg.composition_weights_sha256=value;
       else if (key=="--train-fields") cfg.train_fields_directory=value;
