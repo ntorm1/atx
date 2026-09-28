@@ -17,6 +17,21 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 P2 landed; plan v7; lanes L1-L4 dispatched; A5 A/B
+- P2 literature-v7.md (451 lines). Top: integrity tooling (trial ledger, effective-N DSR, CSCV PBO) first; cost model v2
+  (KO/FIM) + replayed capacity curve; USE4-style risk model + bias harness; GP cost-aware optimiser (L, after risk + cost);
+  keep ew-theme-v1 (fitted weights lose 35-60% SR at T = 3 y). Do not build: fitted sleeve weights, stop-losses, finer grids.
+- plan-v7.md = synthesis (decisions D1-D10, lanes, contracts, trials). Briefs L1-L4 committed cdc9c2a8; implementers spawned
+  (Opus 5.5): L1 pool-10 IC cache/hash, L2 pool-11 research_cycle + --reuse + nav_summ integrity, L3 pool-4 decide path,
+  L4 pool-3 risk model + cost v2 + aim-partial-v6. Merge order L1 -> L2 -> L3 -> L4.
+- A5 result: build mega-v7-rel0 (equity-rel, exit 0, source 8cb735ab). v6.1 u pass with the Release IC exe on a fresh
+  cache (mega-v7rel-train-u-1, receipt source cdc9c2a8): orientations.json, train_daily_ic.csv, train_combined.json
+  byte-identical to mega-v61-train-u-1; train_candidates.jsonl identical after dropping timing/cache keys. IDENTITY PASS.
+  Wall 98.1 s vs 76.1 s Debug, peak RSS 1,058 vs 1,061 MiB -- measured while four agent lanes hammer the disk; timing
+  inconclusive, re-measure on a quiet host before adopting Release. Not adopted yet.
+- Ruling: v7-prereg.md declares aim-partial-v6 parameters and the 3-cell grid, S2-KO/S2-FIM as descriptive scenarios, and
+  effective-N DSR reporting from v7 on -- declared before any L4 measurement -- cost if wrong: 3 cells of N.
+
 ## 2026-09-28 sprint open
 - Ruling: research phase first (P1 code review of platform/pipeline/production gaps, P2 literature on combination,
   construction with costs, risk models, capacity, platform design, new families) -> synthesis plan -> 3-4 implementer lanes
