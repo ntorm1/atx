@@ -1,5 +1,20 @@
 # Active task: recent-data DSL ensemble
 
+## ew-theme-v6 REJECTED; C5 ind-v1 / ind-v2 REJECTED (sign rule) -- stack fixed on ew-theme-v1 x price-risk-v1 (2026-09-27 ~23:40)
+Parent for all three: mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc (net +0.975). S2 net / dSR (SE) / gross SR / vol / tau / 2020:
+  ew6 (W: drop low_risk, merge options->SI, fast x1/3)  +0.921 / -0.055 (.297) / 1.203 / 3.80% / .0293 / +.002  -> REJECTED
+  ind-v1 (FF12 FWL demeaning)                            +0.903 / -0.072 (.156) / 1.316 / 2.92% / .0394 / +.004  -> REJECTED
+  ind-v2 (ind-v1 + vol126 / ladv252)                     +0.927 / -0.048 (.176) / 1.332 / 2.96% / .0392 / +.003  -> REJECTED
+Reading: with library v6 the low_risk replacements (bac, smax) and the fast sleeves carry alpha the v5.1 members did not;
+industry neutralisation lowers vol but removes the 2020 industry alpha (2020 net falls from +.028 to +.003). Both ind ids
+keep |net| tiny (.003) and pass the default-path identity implicitly (their parent cell was produced by the v6-2 binary
+with price-risk-v1: identical statistics to the v6-0 cell -> D2 for C2 satisfied; recorded here).
+Weighted pass ew6 (run4): RSS peak 1257 MiB < 1536 cap, 35 s: the 2304 admit estimate was conservative as ruled.
+DSR N = 26 (10 construction + 1 ew6 + 2 C5 + 13 v5). Appendix A: compositions v6 = 2 (ew-theme-v1, ew-theme-v6 on library v6).
+Remaining pre-registered: V6-U universe (linked-operating-v1: role restrict -> fields rebuild -> u -> fit -> w -> nav on the
+best construction), V6-F final cell with L re-derived on post-ramp rows; dust .2 x loc declared conditional.
+Whole-branch adversarial review (T41-style) starts now in parallel: all C++ has landed (C1, C2, W, L).
+
 ## V6-C2 rebase landed; build v6-2 GREEN (81/81 target, 70/70 IC); ew-theme-v6 fit done; w pass + C5 cells queued (2026-09-27 ~23:25)
 C2 rebase (pool-11 12283c34, 1da82261 -> pool-2 82255021, e5e8eb26; clean): five conflicts resolved as reviewed; I2 reserve
 uses liquidity_cached(base); I1 golden (a) expressible at base; I3 hold_zero re-zeroes locate-held names after demeaning,
