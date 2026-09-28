@@ -1,5 +1,22 @@
 # Active task: recent-data DSL ensemble
 
+## GATE READ-OUT: final cell S2 net +1.182, mechanics PASS, cross-cell DSR 0.904 < .95 -> NO FREEZE PROPOSAL; owner decision (2026-09-28 ~01:05)
+Cross-cell summary build-equity/mega-nav-v6-summ-n28.{txt,json} (13 v5 + 15 v6 cells, --dsr-n 28, reference v5 REF): final cell
+DSR = 0.9040 (SR0 0.385 ann; V[SR_n] 1.403e-04 cross-cell; skew -1.319, kurt 13.54, T 754). Lo-null single-cell DSR 0.499
+(SR0 1.184 ~ SR). Paired vs v5 REF (+0.742): dSR +0.440, rho .904, Memmel SE .254 (t 1.73), CBB 95% [+.008, +.944] (excludes 0),
+LW p .082. Pre-registered V6-F freeze condition = S2 net >= 1.0 AND R6' mechanics AND cross-cell DSR >= .95: the first two PASS,
+the third FAILS (.904). Therefore no freeze is proposed; the handoff carries the cell as "goal reached on TRAIN, DSR gate not
+met", and the owner decides (U1) whether validation trial #3 is spent on it with DSR .904 disclosed.
+- Ruling: no further cells are run to move the DSR -- why: every added TRAIN cell raises N and can only lower it; the
+  pre-registered condition is binding -- cost if wrong: none (the alternative is p-hacking).
+Branch review I1 CLOSED: identity re-run of the loc cell on v6-2 (build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc-v62,
+exe f55537fc) vs the v6-0 cell (exe 212d9e22): all 10 CSVs (5 daily_*, 5 events_*) byte-identical (daily S2 493cc6c2..., etc.);
+summary.json / recipe.json differ only by the exit_rate_rule key rename and exe/recipe SHAs. Not a trial (identical book).
+Branch review m1 CLOSED: v6l ew weighted pass re-run on IC exe b1c1ba07 (mega-v6lw-train-ew-2) vs 647c71a7 (-1): all five
+train_combined.* files byte-identical -> the W runner change is a no-op for schema-v1 weights. Branch review verdict is
+therefore MERGE-READY (owner gate U5); the 9 minors are disclosures (D1-D15 in task-V6-branch-review.md).
+Docs lane (Opus) writing docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md and 2026-09-28-mega-alpha-scorecard-v6.md.
+
 ## V6-F FINAL CELL: S2 net +1.182 at gross .971 -- R6' MECHANICS PASS, net >= 1.0 PASS; cross-cell DSR pending (2026-09-28 ~00:45)
 build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247 (library v6 5ee66d13 x ew-theme-v1 weights 490c3836 on the
 linked-operating-v1 role x aim-partial-v5 theta .05 dust .1 fixed rate, delta orders, exit rate .05, locate-in-aim, liquidity
