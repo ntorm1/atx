@@ -276,3 +276,26 @@ Commits on `feat/mega-alpha-v6-w-20260927` (pool-4), on top of 34006519:
 **Not done:** no C++ build or run, per the no-build rule. The root must build `atx-impl` tests and run `StrategyIcRunner.ThemeRedistribution*` and `StrategyIcComposition.*`.
 
 Concern 2 above is resolved by I1. Concern 3 is superseded by m1: the RSS cap is not raised.
+
+## Fix round 2
+
+**Verdict: a fixture bug, not a code bug.** Commit cdeb4709 is on top of 3481cd95.
+
+**Cause.**
+- `ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput` wrote every case to `weights.json` and pinned `cfg.composition_weights_sha256`, but it never set `cfg.composition_weights_path`.
+- `run_ic`'s first check is `composition_weights_path.empty() != composition_weights_sha256.empty()`. That is the existing path/SHA pairing check, already covered by the "unpaired option" case of `InvalidCompositionWeightsRefuse...`.
+- So the check refused every run in that test as "IC runner: bounded config" before the weights parser ran.
+
+**Why this is not a code bug.**
+- The sibling test `ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned` sets both fields and passed at v6-1, so the v2 accept path works.
+- The real w pass passes both `--composition-weights` and `--composition-weights-sha256` (`v6_w.env.example`), so it is not affected.
+
+**Fix.** The test now sets `cfg.composition_weights_path` to `weights.json` once, next to where the SHA is pinned. The test's intent is unchanged: the schema gate and the refusals all come before any payload read or output.
+
+**Note on the round-2 failure report.** The same missing path affected every `run_ic` call in this test. It should also have failed:
+- the refusal `EXPECT_NE(...find(reason))` at the old line 833;
+- the 33/32-theme checks.
+
+At v6-2, check the whole test, not only lines 788-792.
+
+**Not done:** no build or run, per the rules.
