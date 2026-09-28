@@ -22,3 +22,13 @@ docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega
   construction with costs, risk models, capacity, platform design, new families) -> synthesis plan -> 3-4 implementer lanes
   -- owner asked for review + research before implementation -- cost if wrong: ~1 h of agent time before code moves.
 - Ruling: research agents read-only, write to this dir; no measurements in this phase -- nothing to bias.
+
+## 2026-09-28 P1 landed; root A5 started
+- P1 code-review-v7.md (395 lines) delivered. Headline: v6.1 ladder = 234 s compute inside a ~90 min cycle; SHA-256 is
+  30/76 s of u and 19/31 s of w; one new field invalidates 35/39 cache entries; research exes are Debug; no daily decide
+  path; risk model + QP + GP aim exist unused in atx-engine/risk. Lanes proposed: L1 IC cache keys + fast hash, L2
+  research-cycle driver + field reuse + fit store, L3 daily decide path (holdings emit, decide verb, deploy manifest),
+  L4 DSL ops. Root: A5 Release A/B, C3 canary, disk GC.
+- Ruling: A5 = build atx-equity-strategy-ic/targets under preset equity-rel (tag v7-rel0), then A/B the v6.1 u pass and
+  the final NAV cell for byte identity; adopt Release only if identical -- identity re-run of an existing book is not a
+  new trial (same book, same window) -- cost if wrong: one wasted build + two 180 s runs.
