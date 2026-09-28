@@ -1,5 +1,11 @@
 # Active task: recent-data DSL ensemble
 
+- Owner (2026-09-28 ~02:00): "Dont focus on memory usage, lets test the alphas quickly for now." Ruling: for v6.1 the child
+  drops streaming/memory work and minimal tests suffice; the root may raise the bounded runner's --max-rss-mib / --seconds
+  for v6.1 phases if a phase is refused on resources (recorded per run) -- why: owner override of the RAM rule for speed;
+  nothing else in the protocol changes (TRAIN only, pre-registration binding) -- cost if wrong: a heavier run on the shared
+  machine; C:/atx processes are never touched.
+
 ## v6.1 START: owner-directed FINRA shorting-flow sub-alpha (2026-09-28 ~01:50)
 Owner: "Implement a sub alpha from this [FINRA daily short volume] and see if it passes the tests and can be promoted into
 production". Source: C:/atx/atx-db/data/raw/finra_short_volume (2,045 CNMS daily files from 2018-08-01; read-only; the
