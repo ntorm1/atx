@@ -9,7 +9,8 @@
 
 namespace atx::impl::strategy {
 // Self-financing marked-dollar NAV replay of one pinned saved blend under the
-// same target rules as replay_targets (baseline-v1 / monthly-budget-v2).
+// same target rules as replay_targets (baseline-v1 / monthly-budget-v2 /
+// aim-partial-v5).
 //
 // Timing: decide at session d (after its mark), fill at session d+1's close,
 // first return row d+2. Decisions [begin, end-2); executions <= end-2; return rows
@@ -27,9 +28,10 @@ namespace atx::impl::strategy {
 // K consecutive absences write it off at last mark x (1 + haircut). A reprint after
 // a write-off is a diagnostic event only. No lookahead anywhere.
 //
-// Construction (TargetReplayConfig neutralize / band_multiple) is the target
-// replay's own, applied at the NAV path's single desired-target extension point;
-// with the defaults every pre-existing output value is unchanged.
+// Construction (TargetReplayConfig neutralize / band_multiple, and aim-partial-v5's
+// dust band and aim leverage) is the target replay's own, applied at the NAV path's
+// single desired-target extension point; with the defaults every pre-existing output
+// value is unchanged. aim-partial-v5 may trade at a per-name rate (NavRateRule).
 
 enum class NavCostRule : atx::u8 { FlatBpsV1 = 1, SqrtImpactV1 = 2 };
 
@@ -101,12 +103,76 @@ inline constexpr atx::usize nav_primary_scenario_index = 1;
 // Either way the primary is nav_primary_scenario_index (S2, swap-fin-v1 if tiered).
 [[nodiscard]] std::vector<NavScenario> nav_scenario_matrix(bool tiered);
 
+// Trading rate of the aim-partial-v5 move (T36, pre-registered rate per-name-v1).
+// Fixed: every member moves by the target's trade_fraction (theta). PerNameV1: member
+// i of decision d moves by per_name_rate_v1 at NAV = the book's pre-trade NAV at d and
+// sigma_i / ADV_i = its liquidity row of session d (window [d-w, d), the execution
+// liquidity definition); a name with ADV <= 0, sigma <= 0 or fewer than min_vol_pairs
+// return pairs (the fallback sigma) gets rate_min, never NaN.
+enum class NavRateRule : atx::u8 { Fixed = 0, PerNameV1 = 1 };
+// Declared per-name-v1 defaults (research brief 4.B): RRA 10, JKMP lambda 0.2 (0.1%
+// impact at 1% of ADV), clip [0.01, 0.15].
+inline constexpr atx::f64 nav_rate_rra = 10.0, nav_rate_lambda = 0.2;
+inline constexpr atx::f64 nav_rate_min = 0.01, nav_rate_max = 0.15;
+// theta = clip(sqrt(rra * daily_vol^2 * adv_dollars / (lambda * nav)), rate_min, rate_max):
+// Garleanu-Pedersen (2013) partial adjustment under quadratic cost with the JKMP impact
+// calibration Lambda = lambda / ADV and risk aversion RRA / NAV; daily_vol a daily SD,
+// adv_dollars raw dollars. rra, lambda, nav, daily_vol or adv_dollars not finite and
+// > 0 -> rate_min; a NaN quotient -> rate_min; never NaN. Precondition (validated with
+// the config): 0 < rate_min <= rate_max.
+[[nodiscard]] atx::f64 per_name_rate_v1(atx::f64 rra, atx::f64 lambda, atx::f64 nav,
+                                        atx::f64 daily_vol, atx::f64 adv_dollars,
+                                        atx::f64 rate_min, atx::f64 rate_max) noexcept;
+// What a working order fixes (v6 prereg C1).
+// Target (default): the decision-NAV dollar target planned x NAVpost; EXECUTE requests
+//   target - held, so one-day price drift between decision and fill is traded back.
+// Delta: a nonzero plan's order is the decision-NAV dollar delta
+//   (planned - current) x NAVpost = planned x NAVpost - held_d; EXECUTE requests that
+//   delta minus the dollars already filled on it, so the drift rides and the next DECIDE
+//   re-plans from the drifted holding at theta. A complete fill lands on the target plus
+//   the drift since the decision; a capped residual keeps its remaining delta (never
+//   drift-adjusted) until filled, replaced by a decision that changes the name's plan, or
+//   cancelled. A zero plan (every exit) and, under the locate rule, an order on a
+//   special-tier name stay target orders. Without drift Delta is Target bit for bit.
+enum class NavOrderBasis : atx::u8 { Target = 0, Delta = 1 };
 struct NavReplayConfig {
   TargetReplayConfig target{}; // one_way_bps and annual_borrow_bps must be zero
   NavScenario scenario{};
   atx::f64 initial_nav{1'000'000'000.0};
   atx::usize liquidity_window{63}, min_vol_pairs{20};
   atx::u64 max_events{262'144}; // explicit refusal beyond
+  // PerNameV1 requires target.rule aim-partial-v5, rate_rra and rate_lambda in (0, 1e6]
+  // and 0 < rate_min <= rate_max <= 1. Fixed requires every rate_* at its default, so a
+  // fixed-rate recipe cannot silently carry rate parameters.
+  NavRateRule rate{NavRateRule::Fixed};
+  atx::f64 rate_rra{nav_rate_rra}, rate_min{nav_rate_min}, rate_max{nav_rate_max};
+  atx::f64 rate_lambda{nav_rate_lambda};
+  NavOrderBasis order_basis{NavOrderBasis::Target};
+  // Locate-in-aim (v6 prereg C3): at each rebalance decision a member in the special borrow
+  // tier of that decision gets no negative desired weight BEFORE the neutralization
+  // (detail::form_desired no_short), shared by every book; each book's post-rule
+  // locate block stays as a safety net. Under the industry ids those aims are also held
+  // at 0 through the group demeaning (review I3). Requires the borrow fields and a
+  // neutralizing construction (target.neutralize != None).
+  bool locate_in_aim{};
+  // Execution liquidity from the shared per-session cache also at a fixed rate (v6 review F8):
+  // each execution session forms every working order's window once for all books
+  // instead of once per book. The same arithmetic, so every output is bit-identical
+  // (asserted by the tests); only work and 24 bytes per name of admission change.
+  bool liquidity_cache{};
+};
+// The v6 execution options of a run_nav_replay call (copied into its NavReplayConfig;
+// CLI --order-basis target|delta, --locate-in-aim, --liquidity-cache).
+struct NavExecutionOptions {
+  NavOrderBasis order_basis{NavOrderBasis::Target};
+  bool locate_in_aim{}, liquidity_cache{};
+};
+// The trading rate of a run_nav_replay call (copied into its NavReplayConfig; CLI
+// --rate fixed|per-name-v1, --rate-rra, --rate-lambda, --rate-min, --rate-max).
+struct NavRateOptions {
+  NavRateRule rate{NavRateRule::Fixed};
+  atx::f64 rate_rra{nav_rate_rra}, rate_min{nav_rate_min}, rate_max{nav_rate_max};
+  atx::f64 rate_lambda{nav_rate_lambda};
 };
 // Point-in-time role fields (atx.research-role-fields/v1: date-major, role dates x
 // ids, NaN = not visible by the session's 22:00 UTC mark) behind the borrow tiers.
@@ -117,6 +183,7 @@ struct NavFinancingFields {
 // Borrowed for the synchronous call. Prices and volume are required; members must
 // be present. Present cells: close/raw finite > 0, volume finite >= 0. volume is
 // authoritative (it also feeds price-risk neutralization); target.volume is ignored.
+// target.industry (grp_ff12 ids) is required by, and only read by, the industry ids.
 // A TieredSwapV1 scenario requires the financing fields; with them every book also
 // reports its short dollars by tier.
 struct NavReplayInput {
@@ -167,6 +234,9 @@ struct NavReplayDay {
   atx::usize fallback_vol_fills{}, unrationed_unpriced{};
   atx::f64 planned_turnover{}, planned_forced{}, planned_discretionary{}, applied_fraction{};
   atx::f64 planned_gross{}, planned_net{}; // planned weights after the decision
+  // Decision rows: nonzero planned weights and the decision's members N_d (feed the
+  // aim-partial-v5 construction.v5 summary; not CSV columns).
+  atx::usize planned_held_names{}, decision_members{};
   atx::f64 month_planned{}, budget_excess{}; // decision-month planned turnover (v2 budget)
   atx::f64 long_dollars{}, short_dollars{}, gross_leverage{}, net_leverage{};
   atx::usize held_names{}, stale_names{};
@@ -209,6 +279,21 @@ struct NavBucket {
   atx::usize count{};
   atx::f64 gross_exposure{}, pnl{};
 };
+// One book's per-name rates (PerNameV1) over the members of every decision row: one
+// sample per member per decision, at that book's own NAV. at_min_count / at_max_count
+// count samples equal to rate_min / rate_max (a sample counts in both when they are
+// equal; no-liquidity names are at_min); share_* = count / n. Quantiles at rank
+// ceil(q n): exactly rate_min / rate_max when the rank falls in those masses, else the
+// upper edge of its bin among 4096 equal bins of [rate_min, rate_max], capped at max
+// (error < (rate_max - rate_min) / 4096). Fixed rate: every field zero. PerNameV1 with
+// n == 0: mean, min, max, quantiles and shares NaN.
+struct NavRateStats {
+  atx::usize n{}, at_min_count{}, at_max_count{};
+  atx::f64 mean{}, min{}, max{}, p05{}, p50{}, p95{}, share_at_min{}, share_at_max{};
+};
+struct NavConstructionStats {
+  NavRateStats rate_stats{};
+};
 struct NavReplayResult {
   std::vector<NavReplayDay> days;
   std::vector<NavEvent> events;
@@ -218,6 +303,7 @@ struct NavReplayResult {
   atx::f64 participation_p95{}, participation_max{}; // p95: 0.01-decade histogram upper edge
   atx::f64 max_return_identity_error{}, max_cash_book_error{};
   atx::usize deployment_index{}; // decision_end sentinel when nothing ever filled
+  NavConstructionStats construction{}; // aim-partial-v5 per-name rate statistics
 };
 [[nodiscard]] atx::core::Result<NavReplayResult> replay_nav(const NavReplayInput& in,
                                                           const NavReplayConfig& cfg);
@@ -301,9 +387,23 @@ struct NavSummary {
 // manifest.json path and its SHA-256. Both empty: no tiers (legacy flat-300-v0).
 // The manifest's role pins (manifest, sessions, ids, member SHA) must equal the
 // pinned --role, and shares_out and si_shares must be declared point_in_time true.
+// The industry neutralization ids also load industry_group_field (grp_ff12) from
+// it, under the same checks; they require the fields.
 struct NavFieldsPin {
   std::string manifest_path, manifest_sha256;
 };
+
+// Workspace a pinned run reserves before it loads any payload (v6 C4): publication
+// slack, every book's fixed workspace, per-name state, days and events (at the
+// max_events cap), the shared construction (with its neutralization scratch), the
+// borrow tiers (tiered) and the shared liquidity cache (rate per-name-v1 or
+// base.liquidity_cache), at the ACTUAL geometry: `names` instruments and `sessions` =
+// score_end - score_begin rows per book, read from the pinned role manifest.
+// run_nav_replay refuses (OutOfRange) when max_working_bytes <= this reserve and
+// charges the fields and the saved-blend loader against the rest.
+[[nodiscard]] atx::u64 nav_workspace_reserve_bytes(const NavReplayConfig& base,
+                                                   atx::usize books, bool tiered,
+                                                   atx::usize names, atx::usize sessions);
 // Pinned saved blend + role (with volume); every scenario of nav_scenario_matrix,
 // run in lockstep; exclusive output directory: recipe.json, daily_<S>.csv,
 // events_<S>.csv, summary.json LAST (S: the trading id, or "<trading>+<financing>"
@@ -318,8 +418,31 @@ struct NavFieldsPin {
                                                const NavTurnoverLimits& limits,
                                                const NavFieldsPin& fields,
                                                std::ostream& progress);
+// With the trading rate: PerNameV1 adds rate = "per-name-v1", rate_rra, rate_lambda,
+// rate_min and rate_max to the recipe and construction.v5.rate_stats to every scenario
+// summary. NavRateOptions{} (Fixed) is exactly the four-argument overload.
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               const NavFieldsPin& fields,
+                                               const NavRateOptions& rate,
+                                               std::ostream& progress);
+// With the v6 execution options: Delta adds order_basis / order_basis_rule to the recipe
+// and order_basis to the summary; locate-in-aim adds locate_in_aim / locate_in_aim_rule
+// to the recipe and locate_in_aim {zeroed_special_short_aims} to the summary; the
+// liquidity cache adds nothing (every output byte is unchanged). NavExecutionOptions{}
+// is exactly the five-argument overload.
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               const NavFieldsPin& fields,
+                                               const NavRateOptions& rate,
+                                               const NavExecutionOptions& execution,
+                                               std::ostream& progress);
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
 // --fields PATH/manifest.json --fields-sha256 SHA enables the financing matrix.
+// --rate fixed|per-name-v1 is refused (usage error) unless --rule aim-partial-v5, and
+// --rate-rra/--rate-lambda/--rate-min/--rate-max unless --rate per-name-v1.
+// v6: --order-basis target|delta, --exit-rate R (TargetReplayConfig::exit_rate), and
+// the valueless flags --locate-in-aim and --liquidity-cache.
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
 } // namespace atx::impl::strategy

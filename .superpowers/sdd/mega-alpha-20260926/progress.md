@@ -1,5 +1,976 @@
 # Active task: recent-data DSL ensemble
 
+- Owner (2026-09-28 ~02:00): "Dont focus on memory usage, lets test the alphas quickly for now." Ruling: for v6.1 the child
+  drops streaming/memory work and minimal tests suffice; the root may raise the bounded runner's --max-rss-mib / --seconds
+  for v6.1 phases if a phase is refused on resources (recorded per run) -- why: owner override of the RAM rule for speed;
+  nothing else in the protocol changes (TRAIN only, pre-registration binding) -- cost if wrong: a heavier run on the shared
+  machine; C:/atx processes are never touched.
+
+## v6.1 START: owner-directed FINRA shorting-flow sub-alpha (2026-09-28 ~01:50)
+Owner: "Implement a sub alpha from this [FINRA daily short volume] and see if it passes the tests and can be promoted into
+production". Source: C:/atx/atx-db/data/raw/finra_short_volume (2,045 CNMS daily files from 2018-08-01; read-only; the
+alpha-panel build in C:/atx is unfinished and not used). Pre-registered in v4-prereg.md "## v6.1 sub-alpha" (commit
+17a12949) BEFORE any read: field sv_ratio126 (126-session short/total volume ratio, lag 1, min 63 days), candidate sv_flow
+(FF12-demeaned, prior -1, theme short_interest), promotion tests P1 admission / P2 paired dSR > 0 vs the v6 final cell at
+L fixed 1.247 / P3 mechanics + S2 net >= 1.0.
+- Ruling: this is a new disclosed trial set despite the earlier "no further cells to move the DSR" ruling -- why: the owner
+  directed it explicitly, and it tests a new pre-registered hypothesis, not a re-roll of existing cells; DSR is reported
+  with N = 29 and the .95 freeze gate is unchanged -- cost if wrong: DSR of the final cell can only fall.
+- Ruling: L stays 1.247 for the v6.1 cell (no re-derivation) -- why: one construction trial, not two; a gross drift out of
+  [.90, 1.05] fails P3 rather than earning a second cell -- cost if wrong: a marginal member may fail on leverage alone.
+Implementer (Opus) dispatched in pool-10: task-V61-brief.md. Report lane V6-R still running in pool-4.
+
+## v6 GOAL-2 SPRINT CLOSED ON TRAIN -- STOP (owner: "stop after score card is generated") (2026-09-28 ~01:20)
+Handoff 5: docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md (no freeze proposal; DSR .904 < .95; U1 decision to the owner;
+30 rulings; D1-D15 disclosures; next-goal prompt). Scorecard v6: docs/plans/2026-09-28-mega-alpha-scorecard-v6.md
+(generator studies/v6_scorecard.py). Docs-lane findings recorded:
+- v6-1 receipt DirtyEntries 1: a docs file (the W child's task-V6W-report.md fix-round section, committed 30483481 minutes
+  later), not source; the m1 A/B bounds the IC change on the unthemed path. Ruling: disclosed, no rebuild -- cost if wrong: none
+  for the accepted stack (schema-v1 weights, proven byte-identical).
+- Prereg V6-W said "applied to library v5.1 first"; after the grid-parent ruling the composition was tested on library v6 only
+  and rejected. Ruling: the v5.1 application is dropped, not deferred -- why: a rejected composition on the stronger library is
+  not re-tried on the weaker one; no trial spent -- cost if wrong: one untested cell.
+- 2020 contributes ~0 in both universe-restricted cells (TRAIN Sharpe rests on 2021-2022): disclosed in handoff §0.
+- n28 netting_ratio used the final weights for all cells: wrong for 26 of 28; not reported. m1 identity: 6 train_combined.*
+  files SAME (the ledger said five).
+Final state: pool-2 tree clean after this commit; pools 3/4/5/10/11 hold the lane branches (reusable); no agents running;
+validation trial #3 unspent; nothing >= 2023 read in v6.
+
+## GATE READ-OUT: final cell S2 net +1.182, mechanics PASS, cross-cell DSR 0.904 < .95 -> NO FREEZE PROPOSAL; owner decision (2026-09-28 ~01:05)
+Cross-cell summary build-equity/mega-nav-v6-summ-n28.{txt,json} (13 v5 + 15 v6 cells, --dsr-n 28, reference v5 REF): final cell
+DSR = 0.9040 (SR0 0.385 ann; V[SR_n] 1.403e-04 cross-cell; skew -1.319, kurt 13.54, T 754). Lo-null single-cell DSR 0.499
+(SR0 1.184 ~ SR). Paired vs v5 REF (+0.742): dSR +0.440, rho .904, Memmel SE .254 (t 1.73), CBB 95% [+.008, +.944] (excludes 0),
+LW p .082. Pre-registered V6-F freeze condition = S2 net >= 1.0 AND R6' mechanics AND cross-cell DSR >= .95: the first two PASS,
+the third FAILS (.904). Therefore no freeze is proposed; the handoff carries the cell as "goal reached on TRAIN, DSR gate not
+met", and the owner decides (U1) whether validation trial #3 is spent on it with DSR .904 disclosed.
+- Ruling: no further cells are run to move the DSR -- why: every added TRAIN cell raises N and can only lower it; the
+  pre-registered condition is binding -- cost if wrong: none (the alternative is p-hacking).
+Branch review I1 CLOSED: identity re-run of the loc cell on v6-2 (build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc-v62,
+exe f55537fc) vs the v6-0 cell (exe 212d9e22): all 10 CSVs (5 daily_*, 5 events_*) byte-identical (daily S2 493cc6c2..., etc.);
+summary.json / recipe.json differ only by the exit_rate_rule key rename and exe/recipe SHAs. Not a trial (identical book).
+Branch review m1 CLOSED: v6l ew weighted pass re-run on IC exe b1c1ba07 (mega-v6lw-train-ew-2) vs 647c71a7 (-1): all five
+train_combined.* files byte-identical -> the W runner change is a no-op for schema-v1 weights. Branch review verdict is
+therefore MERGE-READY (owner gate U5); the 9 minors are disclosures (D1-D15 in task-V6-branch-review.md).
+Docs lane (Opus) writing docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md and 2026-09-28-mega-alpha-scorecard-v6.md.
+
+## V6-F FINAL CELL: S2 net +1.182 at gross .971 -- R6' MECHANICS PASS, net >= 1.0 PASS; cross-cell DSR pending (2026-09-28 ~00:45)
+build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247 (library v6 5ee66d13 x ew-theme-v1 weights 490c3836 on the
+linked-operating-v1 role x aim-partial-v5 theta .05 dust .1 fixed rate, delta orders, exit rate .05, locate-in-aim, liquidity
+cache, price-risk-v1, L 1.247; NAV exe f55537fc, tag v6-2).
+S2 (modeled-1bn-stale5-v1 x swap-fin-v1): net +1.182, gross SR 1.547, HAC t 2.08, mu 5.41%, vol 4.57%, MDD .047, years 2020
++.001 / 2021 +.083 / 2022 +.082; tau mean .0375 / p95 .0476; cost_bps_traded 13.55; cost/GMV-tau .00121.
+Mechanics (all rows): gross_lev .9713 in [.90, 1.05] PASS; mean net +.0053 (|net| <= .02) PASS; tau PASS; post-ramp gross 1.0007.
+S1 +1.324; flat-300 +1.006; held_names 1852. Paired vs its L 1 parent: dSR -0.010 (SE .007; impact convexity at L 1.25:
+cost/$ 12.82 -> 13.55). Single-cell DSR (Lo null, N 28): .499 (SR0 1.184 ~ SR).
+Appendix A (TRAIN 2020-2022 only; no 2023+ read; per-candidate VAL statistics never read): v6 admission 38 + 38 (library v6 on
+role v2, then on the restricted role; res_mom_12_1 re-trial of v4.2); compositions 3 (ew-theme-v1 x2, ew-theme-v6); universe
+1; construction cells 15 (parent, 5 grid, 4 conditional, ew6, ind-v1, ind-v2, v6u, final) + 1 D2-identical (not a trial);
+cumulative DSR N = 13 (v5) + 15 (v6) = 28; validation trials spent: #1 (v3), #2 (v4.1); #3 unspent (needs U1).
+Next: cross-cell DSR over all 28 cells (nav_summ); whole-branch review verdict; freeze proposal + handoff 5.
+
+## V6-U RESULT: linked-operating universe -> S2 net +1.192 at L 1 (parent +0.975) -- ACCEPTED; final cell declared (2026-09-28 ~00:30)
+Fields lo1-fields-v6b (40 fields = fields-v6 list; peak RSS 630 MiB; the env example's list lacked grp_ff49 -> first u attempt
+refused "library field 'grp_ff49' ... not in the pinned train fields manifest"; fields-v6 (39 fields) dir unused). u pass 5
+complete (own cache), fit ew-theme-v1 pass 1, weighted pass 1, nav: build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc.
+S2: net +1.192, gross SR 1.542, HAC t 2.10, mu 4.38%, vol 3.67%, MDD .037, years 2020 +.001 / 2021 +.066 / 2022 +.066;
+tau .0374 / p95 .0474; cost_bps 12.82 (ETFs were cheap to trade); held_names 1842; gross_lev_all_rows .7784 (L 1),
+post_ramp .8019; net_lev +.0038. S3 +0.347. Paired vs the v6l loc cell: dSR +0.217, rho .923, Memmel SE .227 (t .95),
+CBB [-.287, +.775], LW p .44. Sign matches the "+" prior -> ACCEPTED. DSR N = 27. Appendix A: universe 1 (u pass = a
+re-admission of the 38 v6 candidates on the restricted role: admission trials +38), composition +1, construction +1.
+Failed/colliding runs (u-run1..4 refused on the field list, u-run1..4 dir collisions) produced no statistic: not trials.
+- Ruling (declared BEFORE the final read): V6-F final cell = the V6-U stack with L = 1/gross_lev_post_ramp = 1.247 (post-ramp
+  .8019), dust .1 -- why: prereg C4 (L on post-ramp rows); dust .2 x loc is NOT run: its unconditional gain was +0.007 on a
+  SE of .12, inside noise, and the conditional cell would spend a trial for nothing -- cost if wrong: <= .01 net SR left
+  on the table. Gate to read: all-rows gross in [.90, 1.05] (expected .971), |mean net| <= .02, tau mean <= .20 / p95 <= .30,
+  S2 net >= 1.0, then cross-cell DSR over all cells with N = 13 + v6 cells.
+
+## V6-U started: restricted role built and gated; fields-v6 rebuild running; whole-branch review dispatched (2026-09-27 ~23:55)
+studies/v6u_train.sh (restrict -> gate -> fields -> u -> fit ew-theme-v1 -> w -> nav on the accepted construction; own
+candidate cache mega-candidate-cache-v6u; nav paired vs the loc cell; DSR N 27). Restricted role
+build-equity/recent-fast-train-2020-2022-v2-lo1 (linked-operating-v1; bounded runner exit 0): min kept members in the
+score window 1675 (gate >= 1000 PASS); dropped member share .4031 (review I1 predicted .394); reasons: unlinked 899,105,
+non_operating_sic 5,343, secondary_line 3,068, no_visible_sic 34, class_not_common 0, ambiguous 0.
+Fields rebuild (prepare_research_fields.py, builder caps 700 MiB / 1800 s; not the bounded runner -- a data step, disclosed):
+mkt_ret becomes the equal-weight market of the restricted members (disclosed consequence).
+Whole-branch adversarial review dispatched (Opus): review-v6-branch.diff (23 files, +7308/-196) -> task-V6-branch-review.md.
+
+## ew-theme-v6 REJECTED; C5 ind-v1 / ind-v2 REJECTED (sign rule) -- stack fixed on ew-theme-v1 x price-risk-v1 (2026-09-27 ~23:40)
+Parent for all three: mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc (net +0.975). S2 net / dSR (SE) / gross SR / vol / tau / 2020:
+  ew6 (W: drop low_risk, merge options->SI, fast x1/3)  +0.921 / -0.055 (.297) / 1.203 / 3.80% / .0293 / +.002  -> REJECTED
+  ind-v1 (FF12 FWL demeaning)                            +0.903 / -0.072 (.156) / 1.316 / 2.92% / .0394 / +.004  -> REJECTED
+  ind-v2 (ind-v1 + vol126 / ladv252)                     +0.927 / -0.048 (.176) / 1.332 / 2.96% / .0392 / +.003  -> REJECTED
+Reading: with library v6 the low_risk replacements (bac, smax) and the fast sleeves carry alpha the v5.1 members did not;
+industry neutralisation lowers vol but removes the 2020 industry alpha (2020 net falls from +.028 to +.003). Both ind ids
+keep |net| tiny (.003) and pass the default-path identity implicitly (their parent cell was produced by the v6-2 binary
+with price-risk-v1: identical statistics to the v6-0 cell -> D2 for C2 satisfied; recorded here).
+Weighted pass ew6 (run4): RSS peak 1257 MiB < 1536 cap, 35 s: the 2304 admit estimate was conservative as ruled.
+DSR N = 26 (10 construction + 1 ew6 + 2 C5 + 13 v5). Appendix A: compositions v6 = 2 (ew-theme-v1, ew-theme-v6 on library v6).
+Remaining pre-registered: V6-U universe (linked-operating-v1: role restrict -> fields rebuild -> u -> fit -> w -> nav on the
+best construction), V6-F final cell with L re-derived on post-ramp rows; dust .2 x loc declared conditional.
+Whole-branch adversarial review (T41-style) starts now in parallel: all C++ has landed (C1, C2, W, L).
+
+## V6-C2 rebase landed; build v6-2 GREEN (81/81 target, 70/70 IC); ew-theme-v6 fit done; w pass + C5 cells queued (2026-09-27 ~23:25)
+C2 rebase (pool-11 12283c34, 1da82261 -> pool-2 82255021, e5e8eb26; clean): five conflicts resolved as reviewed; I2 reserve
+uses liquidity_cached(base); I1 golden (a) expressible at base; I3 hold_zero re-zeroes locate-held names after demeaning,
+before the OLS. W fix round 2 (fba18d60: test fixture never set composition_weights_path) verified by build: IC tests 70/70.
+mega-v6-2-receipt.json: exit 0, 27.7 s, 8 TUs; NAV exe f55537fc; target tests 81/81 (all NavV6/TargetReplayV6/
+StrategyPriceNeutralizeV6 pass). Task V6-W: complete (re-review round 1 ALL ADDRESSED; round 2 = root build+test).
+Task V6-C2: complete pending the root's real-data identity check of the price-risk-v1 default path (next cells).
+- Ruling: C2 concerns accepted as disclosures -- hold set may include special-tier names whose aim was already 0
+  (harmless); held names keep a small fit term so unblocked scenario books may short them slightly -- cost if wrong: a few
+  bps of special-tier short exposure in non-primary books.
+Fit ew-theme-v6 on library v6 (build-equity/mega-weights-v6l-ew6, schema v2, 38 weights, theme_redistribution present; low_risk
+0; options merged into short_interest; si_change / iv_rv_spread shrunk 1/3; reversal theme unshrunk at 1/7). Weighted pass
+runs 1-3 refused: admit estimate 2177 MB > 1536 flag -> WMEM 2304 (estimate only; runner RSS cap 1536) -> passes 4-6.
+Queued (sequential, TRAIN): nav ew6 x best construction (delta x.05 loc) paired vs the loc cell (DSR N 24); C5
+price-risk-ind-v1 and -v2 on the best construction with ew-theme-v1 weights (DSR N 25, 26).
+
+## Build v6-1 OK (IC); 1 W gtest fails -> W fix round 2; ew-theme-v6 fit on library v6 started (2026-09-27 ~22:50)
+mega-v6-1-receipt.json: exit 0; IC exe b1c1ba07. atx-impl-strategy-ic-tests 69/70: FAIL
+StrategyIcRunner.ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput (:788-792: accept cases return
+"InvalidArgument: IC runner: bounded config" instead of ""; refusal cases pass) -> fix round 2 (resume implementer; fixture
+vs code bug to be determined). The real w pass will independently show whether the v2 accept path works.
+Fit: COMP=ew-theme-v6 bash v6l_train.sh fit -> build-equity/mega-weights-v6l-ew6 (pre-registered V6-W composition on library
+v6; Appendix A composition +1).
+
+## Task V6-C1: complete (re-review ALL ADDRESSED). V6-W fix round 1 landed and cherry-picked; build v6-1 (IC) running (2026-09-27 ~22:40)
+task-V6C1fix-rereview.md: ALL ADDRESSED, no new Critical/Important; default-path bytes traced identical at exit_rate 1;
+M1/M2/M4/M6/M7 open by design (disclosures). Pool-2 now has C1 + fix (144071a3, 64e5fe98).
+V6-W fix round 1 (pool-4 c126ef26, c9bbfbbe, 3481cd95): schema atx.dsl-composition-weights/v2 for ew-theme-v6 only, runner
+gate v2<->block present, old binary refuses; SIC 6792/6795 excluded; numpy-2-safe counts; env example keeps the 1536 MiB cap.
+All 7 W commits cherry-picked into pool-2 (4d239a9d .. a48677cb, clean). pytest in pool-2: 92 passed (fitter + universe).
+Scoped re-review (Sonnet) dispatched -> task-V6Wfix-rereview.md. Build tag v6-1 = atx-equity-strategy-ic +
+atx-impl-strategy-ic-tests (W's C++); NAV C2 will be tag v6-2 after the rebase lands.
+- Ruling: two build tags (v6-1 IC now, v6-2 NAV later) instead of one -- why: the ew-theme-v6 fit on library v6 can run
+  while the C2 rebase is still in progress -- cost if wrong: one extra tag.
+
+## Conditional cells (on delta x.05): C3 locate-in-aim BEST +0.975; theta .03 rejected; dust .2 marginal (2026-09-27 ~22:15)
+S2 net / dSR vs v6l parent (SE) / tau / cost_bps / gross_all / net_all:
+  +loc (C3)        +0.975 / +0.060 (.101) / .0389 / 11.15 / .7611 / +.0040  <- gross SR 1.304, HAC t 1.77, vol 3.62%; gate |net| fixed
+  theta .03        +0.914 / -0.001 (.133) / .0306 / 10.38 / .7084 / +.0182  -> REJECTED (sign)
+  dust .05         +0.958 / +0.043 (.125) / .0391 / 11.08 / .7764 / +.0227  -> no gain vs dust .1 (+0.959)
+  dust .2          +0.966 / +0.051 (.124) / .0381 / 11.32 / .7696 / +.0213  -> +0.007 vs dust .1; sign +, accepted as a
+                                                                              candidate for the final stack (declared: the
+                                                                              final cell uses dust .2 only if loc x dust .2
+                                                                              is not worse than loc x dust .1; else dust .1)
+DSR N = 23. Appendix A: v6 construction cells 10 (1 parent + 5 grid + 4 conditional). Locate-in-aim raised gross SR
+(1.279 -> 1.304) and cut net leverage 5x with tau unchanged: the special-tier shorts were adding noise, not alpha.
+Best gate-compatible construction so far: aim-partial-v5, theta .05, dust .1, fixed rate, delta orders, exit rate .05,
+locate-in-aim, liquidity cache; at L 1 gross_lev .76 -> L re-derivation (post-ramp .7834 -> L ~1.276) is reserved for the
+final stacked cell (prereg V6-F). Expected net at L ~1.28: ~0.94-0.95 (v5 precedent -.03) -> W / C5 / U still needed.
+C1 fix round 1 (pool-10 2bcfe646, 335c955e) cherry-picked into pool-2; scoped re-review dispatched (Sonnet).
+- Ruling: the 10 cells above stand although the recipe key exit_rule was renamed exit_rate_rule by the fix -- why: daily
+  CSVs and every statistic are unaffected; only a JSON key name in cells with exit rate < 1 differs from what the v6-1
+  binary would write; the final cell is re-run on the final binary -- cost if wrong: none for the statistics.
+
+## V6-C GRID RESULT (5 cells, parent mega-nav-v6l-ew-t.05-d.1-fixed net +0.915) -- all ACCEPTED (2026-09-27 ~22:00)
+S2 net / dSR vs parent (Memmel SE) / tau mean / cost_bps / gross_all / net_all:
+  target x.05   +0.938 / +0.023 (.050) / .0454 / 12.14 / .7721 / +.0197
+  target x.1    +0.927 / +0.012 (.030) / .0460 / 12.16 / .7621 / +.0158
+  delta  x1     +0.934 / +0.019 (.095) / .0400 / 11.71 / .7573 / +.0154
+  delta  x.05   +0.959 / +0.044 (.125) / .0389 / 11.14 / .7748 / +.0223   <- BEST (gross SR 1.279, HAC t 1.73, yrs +.030/+.032/+.048)
+  delta  x.1    +0.951 / +0.036 (.114) / .0394 / 11.24 / .7655 / +.0186
+Every dSR sign matches the "+" prior -> C1 and C2 accepted; magnitudes are inside one SE (as expected on 3 years). Delta
+orders cut tau 17% and cost/$ 7% with gross SR down .03 (1.313 -> 1.279); slow exits raise gross_lev (held_share 1.03) and
+NET leverage: the best cell's +.0223 breaches the R6' |net| <= .02 gate -> C3 (locate-in-aim) is required, not optional.
+DSR N now 19 (Lo single-cell V[SR_n]). Appendix A: construction cells v6 = 6 (1 parent + 5 grid); admission/composition
+unchanged. Dirs: build-equity/mega-nav-v6l-ew-t.05-d.1-fixed{-x.05,-x.1,-obdelta,-obdelta-x.05,-obdelta-x.1}.
+- Ruling: conditional cells run now on the best (delta, x.05): C3 LOCATE_AIM=1; theta .03 (exit .05 kept: the best cell's
+  flag, declared here, not 2*theta); dust .05 and .2 -- 4 cells, DSR N 20..23 -- why: all pre-registered in the v6 revision
+  ("best of those at theta .03", "dust re-tune {0,.2}" amended to {.05,.2} by the earlier ruling, C3 spare) -- cost if
+  wrong: 4 trials.
+
+## V6-C1 review FIX REQUIRED (test-only); fix round 1 dispatched; V6-C grid (5 cells) started on the v6l parent (2026-09-27 ~21:45)
+task-V6C1-review.md: spec PASS; default path traced unchanged (matches the D2 real-data identity); the failing test is a TEST
+bug (strategy_nav_replay_test.cpp:2517 iterates .at("scenarios") of a destroyed temporary -> UB); production code needs no
+change. Minor M1-M7 (M1 disclosure: under locate-in-aim a zeroed special-tier name can end long after neutralisation; gross
+rescales to the zeroed gross). Fix round 1 (resume implementer): test UB, M5 (v6_train.sh ref-missing exit, pipefail), M3 keys.
+- Ruling: the 5 remaining grid cells run NOW on the v6-0 binary -- why: the review traced the default path and the new
+  paths; the only defect is in a test; the binary is the one that produced the byte-identical D2 cell -- cost if wrong: 5
+  cells re-run and counted in DSR N.
+- Ruling: the grid runs through studies/v6l_train.sh (controller added ORDER_BASIS/EXIT_RATE/LOCATE_AIM/LCACHE/THETA/DUST/
+  LEV/NEUT knobs; raw NAV flags from the C1 brief) rather than v6_train.sh (pinned to library v5.1) -- cost if wrong: a
+  naming divergence between the two scripts' output dirs; both are recorded here.
+Grid: PARENT mega-nav-v6l-ew-t.05-d.1-fixed; cells (ORDER_BASIS, EXIT_RATE) in {(target,.05), (target,.1), (delta,1),
+(delta,.05), (delta,.1)}; DSR N 15..19; each paired vs the parent; acceptance = sign of dSR(net) matches "+" prior.
+
+## V6-W review FIX REQUIRED (0 Crit / 3 Imp / 10 Minor) -- fix round 1 dispatched (resume implementer) (2026-09-27 ~21:20)
+task-V6W-review.md: spec PASS (rules (a)-(d) literal; PIT classifier; ew-theme-v1/aim bytes unchanged; C++ mass conserved,
+deterministic). I1 old IC binary silently accepts a v6 weights file -> schema v2 gate; I2 numpy-2 uint8 wrap in a test;
+I3 no C++ tests for the new runner parsing/refusals; m1 env example contradicts the 1536 MiB cap. Memory: real peak ~1.2 GiB
+< 1536 (the 2304 is an admit estimate) -- consistent with the earlier ruling.
+- Ruling: royalty trusts SIC 6792/6795 join the non-operating exclusion set; REITs stay (literal prereg) -- why:
+  pass-through vehicles carry no operating fundamentals -- cost if wrong: a handful of names excluded from the universe.
+
+## V6-L RESULT: library v6 x ew-theme-v1 x v5 construction -> S2 net +0.915 (parent +0.759) -- ACCEPTED (2026-09-27 ~21:15)
+Cell build-equity/mega-nav-v6l-ew-t.05-d.1-fixed (fit pass 1, weighted pass 1, nav 1 -- all first bounded pass; weights
+b900602d). S2: net +0.915, gross SR 1.313, HAC t 1.68, mu 3.39%, vol 3.71%, MDD .033, years 2020 +.024 / 2021 +.028 /
+2022 +.049; tau .0467 / p95 .0637; cost_bps_traded 12.56; gross_lev_all_rows .7534 (L 1), post_ramp .7721; net_lev +.0124.
+S1 +1.089; S3 +0.128 (first positive S3 of any cell); flat-300 +0.629; engine-tiers +0.836. Paired vs v51 ew parent:
+dSR(net) +0.156, rho .947, Memmel SE .189 (t .83), CBB 95% [-.180, +.523], LW p .40. Skew -0.955 (parent -1.27), kurt 9.7.
+Netting ratio .408 (standalone tau .1144 after the fast sleeves lost their decay; theta .05 does the smoothing).
+Acceptance rule (sign of paired dSR matches the pre-registered "+" prior): PASS. Magnitude is not a criterion (SE .19).
+Appendix A: TRAIN 2020-2022 only; admission 38 (v6 roster; res_mom_12_1 re-trial of v4.2), composition 1 (ew-theme-v1 on
+library v6), construction 1; cumulative v6 cells 1 (+ the D2 identical cell, not a trial); DSR N = 14 for this cell.
+- Ruling (declared BEFORE any construction-grid read): the pre-registered V6-C grid (6 cells) runs with PARENT =
+  mega-nav-v6l-ew-t.05-d.1-fixed (library v6, ew-theme-v1, weights b900602d) instead of the v5.1 parent -- why: the grid
+  isolates construction effects by pairing against its parent whichever library it uses, and stacking on v6 avoids
+  re-running the winner on a second library (saves cells) -- cost if wrong: construction deltas measured on the v6 book
+  only; the v5.1 obtarget-x1 cell already run stays the D2 identity check. Same 6-cell budget; v6_train.sh needs a LIB
+  knob (added in the C1 fix wave).
+
+## Library v6 u pass COMPLETE; coverage check passed; V6-L fit/w/nav chain started (2026-09-27 ~21:00)
+mega-v6l-train-u2-1: status complete, 38/38 in one bounded pass (own cache). Coverage (paired_signal_pairs /
+decision_eligible_pairs, horizon 5): cbop .570 >= v5.1 cfoa .546 (pow(NaN,0)=1 fill works); value_composite .557; res_mom /
+bac / smax .918 (v5.1 low_beta .885); seasonality .953. The R(decay) switch raised coverage as the signal review predicted.
+studies/v6l_train.sh (fit -> w -> nav for library v6; COMP=ew-theme-v1 now = the pre-registered V6-L composition and the
+paired reference for the later ew-theme-v6 run; nav cell = v5 reference construction; nav_summ --dsr-n 14 vs REF v51 ew).
+Trial accounting (V6-L): admission 38 (res_mom_12_1 = re-trial of the v4.2 candidate); composition 1; construction cell 1.
+
+## V6-C2 review APPROVED (conditional); library v6 u pass: cache mismatch -> fresh cache (2026-09-27 ~20:45)
+task-V6C2-review.md: APPROVED, 0 Critical, 3 Important gates for the root/merge: I1 golden (a) must be checked at base
+04e9d5bc with two test lines dropped, then the v5 REF price-risk-v1 cell SHA-compared against base outputs; I2 REAL semantic
+merge point with C1: nav_workspace_reserve_bytes must use liquidity_cached(base) or --liquidity-cache runs are
+under-reserved; I3 locate-in-aim + ind-v1 re-creates negative aims on zeroed special-tier names (-(group mean)).
+Five textual conflicts vs C1 listed in the review (reserve block, ConstructionDay fields, form_desired doc comment, two test
+tails). Fallback pooling of <5-name groups ratified (FWL-consistent, deterministic).
+- Ruling: C3 (locate-in-aim) and C5 (industry neutralisation) are evaluated as separate cells; a cell combining them
+  requires the re-zero-after-demean fix first (added to the C2 rebase brief as optional) -- cost if wrong: one extra cell.
+- Ruling: C2 rebase waits for the C1 review verdict and fix wave; then one child rebases C2 in pool-11 resolving the five
+  conflicts and I2 -- cost if wrong: idle pool time.
+u pass (library v6, plan-only OK: required_bytes 1449071914, same as v5.1): runs mega-v6l-train-u-run1..3 FAILED with
+"IC runner: candidate cache entry mismatch: bm" -- the shared cache build-equity/mega-candidate-cache is keyed by candidate id
+and 31 v6 members keep their v5.1 ids with a changed DSL.
+- Ruling: library v6 uses its own cache build-equity/mega-candidate-cache-v6 (outputs mega-v6l-train-u2-*) -- why: no code
+  change, the runner's refusal is correct behaviour, only ind_mom_12_1 / within_ind_mom would have hit -- cost if wrong:
+  ~1 extra bounded pass of recomputation. Failed runs are not trials (no statistic produced).
+
+## Build v6-0 OK; D2 default-cell byte check PASSED; 1 new gtest fails (2026-09-27 ~20:20)
+mega-v6-0-receipt.json (untracked; build-equity is gitignored): source ad31e817, exit 0, 47.8 s, 5 TUs, 3 links; NAV exe
+212d9e22. GoogleTest: 67/68 pass; FAIL NavV6.RecipeSummaryKeysAndCliRefusals ("[json.exception.type_error.304] cannot use
+at() with number") -> C1 fix wave together with the review findings. D2: `COMBINED=ew bash v6_train.sh nav` (defaults =
+parent flags, LCACHE=1) -> build-equity/mega-nav-v6-ew-t.05-d.1-fixed-obtarget-x1: every file byte-identical to
+mega-nav-v51-ew-t.05-d.1-fixed (52 s, 339 MiB). Default path unchanged and F8 cache bit-identical on real TRAIN data.
+Not a new trial (identical book). nav_summ: S2 net +0.759, gross_lev_all_rows .7812, post_ramp .7999.
+- Ruling: the remaining 5 pre-registered C1 grid cells wait for the C1 review verdict -- why: a semantic defect in delta /
+  exit-rate found by review would force re-runs that still count in DSR N -- cost if wrong: ~20 min of wall clock.
+
+## V6-W implemented (pool-4 2d37de31, a0566920, a54f20b5, 34006519) -- DONE_WITH_CONCERNS -- reviews C1/C2/W running; build v6-0 running (2026-09-27 ~20:00)
+ew-theme-v6 rules (a)-(c) in the fitter (tau from admission.json candidates[].tau); rule (d) as C++ within-theme-v1
+redistribution in the IC runner, active only when the weights block is present (env example's w-phase check refuses an old
+binary); role --universe linked-operating-v1 (PIT, manifest records id + dropped share/day; class_status common + non-operating
+SIC set); v6_w.env.example with exact restrict/fields/u/fit/w commands. Tests 80 + 11 OK; ew-theme-v1/aim-v1 bytes unchanged
+except embedded script SHAs. Literal rule (c) leaves reversal_seasonality unshrunk (both members fast): fast mass .287 -> .167.
+- Ruling: the bounded runner's RSS cap stays 1536 MiB for every phase; the fitter's own --max-memory-mib 2304 is an admit
+  estimate (reported RSS ~1.2 GiB) and may be passed as such -- why: the RAM rule forbids longer caps, not larger internal
+  estimates; if real RSS exceeds 1536 the runner kills it and an efficiency fix follows -- cost if wrong: one killed w run.
+- Ruling: reversal_seasonality unshrunk under literal (c) stands -- why: the prereg text is binding and was declared before
+  any read; changing it now would be a post-hoc rule edit -- cost if wrong: that theme's weight rises 1/9 -> 1/7.
+- Ruling: V6-U needs a fields rebuild for the restricted role (root, disclosed data step, not a trial).
+
+## V6-L review APPROVED; V6-C1 implemented; cherry-picks; build v6-0 (2026-09-27 ~19:50)
+task-V6L-review.md: APPROVED, 0 Crit / 0 Imp / 7 Minor (optional). Roster-order and tier-source rules ratified (see V6-L
+rulings above). res_mom_12_1 counts as a RE-TRIAL of the v4.2 candidate in Appendix A. Root actions after the u pass:
+--plan-only step 0 first; assert cbop coverage >= v5.1 cfoa coverage. Cherry-picked into pool-2: 9d302e4c (library v6).
+V6-C1 (pool-10 5b162cbe, 5e1c7f6d; DONE_WITH_CONCERNS: desk-checked only, may not compile under /W4 /WX; 13 GoogleTests
+unrun; test_nav_summ 20/20). Cherry-picked into pool-2 as ee574c4f, 709beb69 BEFORE review. review-V6C1.diff packaged.
+- Ruling: build tag v6-0 on C1 now, in parallel with the C1 review -- why: "may not compile" is only testable by the root
+  build, and the review cannot compile; a fix wave (if any) builds v6-1 -- cost if wrong: one extra build tag.
+- Ruling: EXIT_RATE < 1 requires dust > 0, so the pre-registered dust re-tune set on the best cell becomes {.05, .2}
+  instead of {0, .2} -- why: the snap-to-zero needs a band; a dust-0 cell with exit rate is refused by the binary -- cost
+  if wrong: none (same trial count).
+- Ruling: locate-in-aim applies to every scenario book (shared construction) -- why: construction is one book; scenarios
+  price it -- cost if wrong: flat-300 book loses a few special-tier shorts it could have held; disclosed.
+
+## V6-C2 implemented (pool-11 720a0066) -- DONE_WITH_CONCERNS -- review dispatched (2026-09-27 ~19:35)
+price-risk-ind-v1 (FF12 FWL demeaning on top of price-risk-v1; NaN ids = one residual group; small groups pooled into one
+fallback group), price-risk-ind-v2 (vol126 / ladv252), grp_ff12 via load_fields (+49.6 MiB), NAV reserve at real geometry
+(190.6 -> 136.7 MB). Skipped with designs: mkt_ret beta variant, F9 ring buffer. 9 tests written, not run. Test (a) golden
+from a Python replica of the base arithmetic (root must confirm with the base binary). ~40% of members lack an FF12 id.
+Expected textual conflicts with V6-C1 in form_desired, config structs, NAV help/parse, run_nav_replay, test tails.
+- Ruling: merge order C1 first, then a child rebases C2 onto pool-2 HEAD in pool-11 -- why: C1 owns the order path,
+  the larger and more invasive change; C2's conflicts are textual -- cost if wrong: one extra rebase round.
+
+## V6-L implemented (pool-5 9d302e4c) -- DONE_WITH_CONCERNS -- review dispatched (2026-09-27 ~19:20)
+Library v6: 38 candidates; +value_composite, +res_mom_12_1; cfoa->cbop, low_beta->bac, low_max->smax; -low_ivol, -lowvol_ind;
+27 members R(decay(x)); 4 fast sleeves lose the 21-session decay. JSON sha256 5ee66d13...; recipe 36c08452. Needs-new-field:
+Heston-Sadka lags 24/36, FINRA daily short volume, SG&A, 5-year issuance, XFIN, MAX5. Review package review-V6L.diff.
+- Ruling: extra-field cap stays at 5 (XFIN not added) -- why: the child's own estimate for cap 6 is ~1431 MiB against the
+  1536 MiB runner limit, and the RAM rule is efficiency fixes, not longer caps -- cost if wrong: one lost hypothesis (XFIN).
+- Ruling: additions placed before incumbents in roster order stands -- why: the redundancy pass then keeps the upgraded
+  definition when |rho| > .90, which is the pre-registered "replace" intent -- cost if wrong: an incumbent with better
+  TRAIN t is dropped; disclosed in Appendix A as a design choice, not a data-driven one.
+
+## v6 Phase A complete -> pre-registered -> Phase C dispatched (2026-09-27 ~18:55)
+Phase A (read-only, Opus 5.5): v6-code-review-signal.md (0 Crit / 5 Imp: I1 39.4% of member cells unlinked = ETF/SPAC/ADR
+ranked on price signals only; I2 low_risk projected out by price-risk-v1, all four members negative TRAIN t; I3 21-session
+blackout from decay(rank); I4 coverage skews theme mass; I5 double smoothing), v6-code-review-exec.md (F1 fixed-dollar orders
+trade back 17-18% of executed $ as drift; F2 nonmember exits at rate 1 = 19-22% of planned turnover at 1.8x cost/$;
+F3 financing is 30% of drag, not cuttable; F4 locate block after neutralisation pushes mean net to +.0148; F5 L calibrated
+on ramp-deflated mean; C3/C4 runtime/RAM near limits), v6-literature.md (542 lines, cited; stacked levers +0.12..+0.30 est.).
+Convergent lever set pre-registered in v4-prereg.md "## v6 revision" (commit e0dfb8c7) BEFORE any v6 TRAIN read.
+- Ruling: Phase C runs four implementers in parallel in disjoint pools with declared file ownership (C1 pool-10 NAV
+  order/exit/locate + nav_summ + v6_train.sh; C2 pool-11 price_exposures + nav field plumbing/reserve; W pool-4
+  fit_composition_weights + prepare_recent_research; L pool-5 generate_fund_ic_v6) -- why: the lanes touch different files
+  except nav_replay.cpp where ownership is split by function; the root cherry-picks and resolves -- cost if wrong: one
+  merge-conflict fix round.
+- Ruling: acceptance of every v6 step is the SIGN of the paired dSR vs its parent matching the pre-registered prior, not
+  its magnitude -- why: SE(SR) over 3 years ~.63 makes headline comparisons meaningless (lit review §0) -- cost if wrong:
+  a step that helps by luck is kept; DSR N accounting still applies to the final cell.
+- Ruling: lit lever R (name-level borrow fees) is already represented by swap-fin-v1's GC/warm/special tiers; no S2 change
+  -- cost if wrong: modeled net SR overstated for hard-to-borrow shorts; disclosed in the final report.
+Briefs: task-V6C1-brief.md, task-V6C2-brief.md, task-V6W-brief.md, task-V6L-brief.md. Base e0dfb8c7. Next build tag v6-0.
+
+## v6 GOAL 2 START — owner /goal (2026-09-27, ~18:10): deep code review + literature review -> build to net SR >= 1.0
+Owner goal text (paraphrase): sub-agent code review of the pipeline and its stress/critical points; web literature review of
+the alpha families; combine both; build atx-engine/atx-impl so a set of high-quality sub-alphas, optimally combined into one
+mega alpha, produces daily portfolios at net Sharpe >= 1.0 after costs. Opus 5.5 children; controller preserves context.
+All v5 rules stay binding (pool-2 root only; TRAIN 2020-2022 only; 2023+ read = validation trial #3 needs U1; pre-register
+every lever set in v4-prereg.md "## v6 revision" before any v6 TRAIN read; 180 s / 1536 MiB; no pushes).
+Phase A (read-only, parallel, Opus 5.5): v6-review-signal -> v6-code-review-signal.md; v6-review-exec ->
+v6-code-review-exec.md; v6-lit (WebSearch) -> v6-literature.md. Phase B: controller synthesis -> v6 lever set pre-registered
+-> ranked DAG of C++/script tasks. Phase C: implement (children in own pools), root builds (tag v6-0...), root TRAIN runs,
+gate on S2 net >= 1.0 with R6' mechanics.
+- Ruling: Phase A reviewers may read every TRAIN artefact already produced (nav CSVs, summaries, admission JSON) as a
+  disclosed diagnostic; none may read 2023+ data or per-candidate VAL statistics -- cost if wrong: one extra disclosed study.
+- Ruling: "optimal combination" is read as trade-cost-aware combination fitted on TRAIN with pre-registered method and
+  shrinkage; no per-candidate weight search against TRAIN net SR without DSR accounting -- cost if wrong: an overfit book
+  that fails validation #3; mitigated by the Appendix A block on every result.
+
+## v6 START — owner goal "reach 1+ net sharpe" (2026-09-27, set after handoff 4)
+Controller: Claude Opus 5.5. Target: a TRAIN (2020-2022) cell with S2 (modeled-1bn-stale5-v1 x swap-fin-v1) net SR >= 1.0 at
+$1bn, cadence 1, with the R6' mechanics (gross in [.90, 1.05], |net| <= .02, tau limits) — then a freeze proposal. Validation
+trial #3 still needs U1 (the goal is not read as a U1 grant).
+- Ruling: v6 is a new disclosed revision; every v6 lever set is pre-registered in v4-prereg.md ("## v6 revision") before any
+  v6 TRAIN read; the mechanics gate keeps gross ~1 (a sub-1 gross book would re-create the R-1 24%-gross problem) -- cost if
+  wrong: a cheaper path to "net >= 1" via under-deployment is forgone deliberately.
+- Ruling: the v6-explore explorer's aggregation of existing TRAIN NAV outputs (cost / alpha by bucket) is a disclosed
+  diagnostic study (like T28), not a strategy trial -- cost if wrong: one extra disclosed TRAIN study.
+
+
+## v5 SPRINT CLOSED ON TRAIN — Task T42: complete — 2026-09-27 — STOP (no validation; owner packet U1-U5 pending)
+Handoff 4: docs/plans/2026-09-27-mega-alpha-parent-handoff-4.md (TL;DR with R-1 disclosure, task table, v5 table, alphas and
+aim gains, Appendix A trial accounting, T41 result, owner packet U1-U5 with recommendations, session rulings, next goal
+prompt). Result: aim-partial-v5 + L 1.279 deploys the $1bn book (gross 1.002) at S2 net +0.712; max TRAIN net +0.759 < 1.0
+-> no freeze, validation trial #3 unspent. Branch has no open Critical/Important finding; merge = owner gate U5.
+Trial accounting (TRAIN 2020-2022 only):
+  v3 era: admission 48 + 121; composition 4 + 7; construction 14.
+  since run #1: libraries v4 (37), v4.2 (40), v5.1 (38); compositions v4, v4.2, ew-theme-aim-v1, v5.1 x2;
+  construction v4 1 + v4.1 grid 5 + v4.2 2 + v5 grid 10 + 2 L re-run + 1 v5.1; studies T26 5 paper books, T16, T28 audit.
+  validation: #1 (v3, book level), #2 (v4.1, 24%-gross book). Per-candidate VAL statistics: never read.
+  DSR inputs: N = 13, V[SR_n] = 3.083e-05 (cross-cell; Lo null REF .342), skew = -1.279, kurtosis = 14.532.
+
+
+## T41 fix wave — re-review ALL ADDRESSED; root verified — Task T41: complete — 2026-09-27
+task-T41fix-rereview.md: I1, M1, M2, M5, M7 ADDRESSED; no new Critical/Important. Cherry-picked into pool-2: a1c4aec5,
+1b68ed90, 8c9432b0. mega-v5-2-receipt.json exit 0, 17.6 s, 1 TU; NAV exe 59b4e944. Target tests 18/18 filtered, 55/55 full.
+D2 (mega-nav-v5-2-baseline-check, 21.6 s, 338 MiB): af058239 / 3f846525 identical. Per-name byte check
+(mega-nav-v5-2-pername-check, same config as grid cell ew per-name, not a trial, 28.7 s, 339 MiB): recipe, summary, S2, S1, S3
+CSVs identical -> I1 changes no output. pytest 87 passed. nav_summ 13-cell re-run (mega-nav-v5-t40-summ-n13-v2.{txt,json}, no
+stderr warnings): only cost_per_gmv_turnover changed; +5 keys; all-rows gross equals the T40 ad hoc column to 4 dp -> no
+mechanics call flips. task-T40-report.md §6 addendum: tool numbers (D4 complete), DSR both benchmarks (Lo null N = 13: REF
+.342, L .324, v5.1 .353, aim per-name .183), NR caveat (T40 §3 phrase withdrawn), per-name scenario books.
+- Task T41: parked — per_name_rates (strategy_nav_replay.cpp:725-732) reads the liquidity cache with no release fallback —
+  Ruling: real, not load-bearing: the cache is filled for the decision members immediately before, check_rates rejects any
+  NaN/inf rate in every build (fail loud), and both per-name cells show finite rates / zero blocked_liquidity; parked lane T32
+  must add the same fallback there if it edits the cache path — cost if wrong: a future edit that breaks the invariant fails
+  loudly at check_rates (or degrades to rate_min) instead of silently.
+- Task T41: minor (deferred): nav_summ M5 count warning fires on every single-dir run (v5_train.sh / v51_train.sh per-cell
+  calls) with wording meant for multi-dir mode.
+- Final-review residuals: none load-bearing. Deferred minors open for the owner/next parent: 28 acceptable (T41 triage) + 2 above.
+
+
+## T41 fix wave — handed in; scoped re-review dispatched — 2026-09-27
+t41-fix (Opus 5.5, pool-3 feat/mega-alpha-v5-t41fix-20260927, base faf5943f): 927343ac (I1 release fallback), 9a9bb5d3
+(nav_summ M1 all-rows gross/net + gate label, M2 cost/GMV-tau numerator = sum trade_cost_dollars/pretrade_nav over the tau
+sessions [deployment cost is booked on the next row, so dropping the row alone changed nothing], M5 warnings, M7 nav_summ_run
+provenance per row), 76c879f1 report. pytest 87 (nav_summ 18 incl. a pre-fix-vs-post-fix field-identity test; fitter 69).
+No GoogleTest for I1 (anonymous namespace; debug assert fires first). review-T41fix.diff packaged; t41-rereview dispatched.
+- Ruling: root cherry-picks and verifies (build v5-2, tests, D2, nav_summ 13-cell diff) while the re-review runs — compile
+  evidence is what the desk-check lacks (v5-0 precedent); a finding the re-review opens is adjudicated at the breaker (no
+  second fix wave) -- cost if wrong: one extra build tag.
+
+
+## T41 whole-branch review — ready to merge after 1 Important — 2026-09-27
+task-T41-review.md (Opus 5.5; packages review-v5-only.diff 41fb5e39..ce04d7d5 primary, review-v5-branch.diff d63a7058..ce04d7d5
+minus untracked .mypy_cache deletion hunks and SHA-pinned generated library/recipe JSON). 0C / 1I / 7 new minors; named risks
+(a)-(g) PASS (baseline bytes identical across v4, v5-0, v5-1 binaries; 24 v5/v5.1 receipts TRAIN-only; ADV in dollars, no NaN;
+gains re-derive exactly; SHA chain intact; nothing of T33b/T32 landed; gate statistics recompute exactly). T40 verdict stands.
+Deferred-minor triage (30): 1 must-fix (T36 m1 = I1), 1 already resolved, 28 acceptable.
+I1: strategy_nav_replay.cpp:602 cache-coverage invariant debug-assert only -> release fallback to liquidity_row(c, t, i).
+M1 all-rows gross (gate definition) has no committed producer; M2 T40 table lacks cost/GMV-tau (basis mixes deployment row)
+and signed mean net; M3 DSR .84 uses cross-cell V[SR_n] of 13 near-duplicates (SR0 .150) vs plan §4.E Lo-variance null
+(DSR .18-.35, REF .342); M4 NR mixes construction (theta .05) with netting; M5 V[SR_n] silently depends on the dirs listed;
+M6 per-name books differ by scenario (rate at each book's nav_pre); M7 nav_summ JSON lacks argv / script SHA / HEAD.
+- Ruling: ONE final fix dispatch (Opus 5.5, pool-3 reset to pool-2 HEAD, branch feat/mega-alpha-v5-t41fix-20260927) carries I1
+  plus the nav_summ.py minors that make the T40/T42 numbers tool-produced: M1 (emit all-rows gross and signed net, label the
+  gate definition), M2 (cost/GMV-tau with the deployment row excluded from the numerator as from the denominator), M5 (warn,
+  not refuse, on defined-SR count != N and on identical net series), M7 (argv, sha256 of nav_summ.py, git HEAD in --json).
+  M3, M4, M6 are controller disclosures in a T40 addendum and handoff 4. No fitter / generator / library edits (SHA-pinned).
+  Root after the fix: build tag v5-2 (targets atx-equity-strategy-targets, atx-impl-strategy-target-tests), filter
+  TargetReplayV5.*:NavV5*:*BitIdentical* + full exe, one D2 check, pytest, re-run nav_summ over the 13 cells; no new trial --
+  cost if wrong: a nav_summ edit perturbs a ledgered number; guarded by diffing the unchanged JSON fields against
+  mega-nav-v5-t40-summ-n13.json.
+
+
+## T40 gate (R6') — objective NOT met on TRAIN; no freeze; no validation — Task T40: complete — 2026-09-27
+task-T40-report.md (+ t40-table.md; build-equity/mega-nav-v5-t40-summ-n13.{txt,json}, nav_summ over 13 cells, --dsr-n 13).
+Mechanics 1/13 pass: ew t.05 d.1 fixed L1.279 (gross 1.002 all rows, |net| .015, tau .044/.061) -> D1 met via L re-run.
+aim L1.279 gross 1.072 > 1.05 FAIL; every L = 1 cell under-deploys (.71-.88). Paired dSR vs REF (LW studentized, 2000 draws):
+none significantly positive; best v5.1 +.017 (SE .011, p .137); ew L1.279 -.030 (p .018); per-name ew -.195 (p .053), aim -.293
+(p .032); aim trails ew in all 5 pairs. DSR N = 13 (V[SR_n] 3.083e-05/session, SR0 .150 ann): max .846, REF .839, L .827.
+Max TRAIN net +.759 (v5.1 ew L 1) < 1.0 -> no freeze proposal. S3 negative in 13/13 cells. D7 MET (26 receipts, TRAIN-only
+manifests). D1-D5, D7 met (D5 = NO-GO settled); D6 at T42.
+Trial accounting (TRAIN 2020-2022 only):
+  v3 era: admission 48 + 121; composition 4 + 7; construction 14.
+  since run #1: libraries v4 (37), v4.2 (40), v5.1 (38); compositions v4, v4.2, ew-theme-aim-v1, v5.1 x2;
+  construction v4 1 + v4.1 grid 5 + v4.2 2 + v5 grid 10 + 2 L re-run + 1 v5.1; studies T26 5 paper books, T16, T28 audit.
+  validation: #1 (v3, book level), #2 (v4.1, 24%-gross book). Per-candidate VAL statistics: never read.
+  DSR inputs: N = 13, V[SR_n] = 3.083e-05, skew = -1.279, kurtosis = 14.532.
+
+
+## T39 step 2b — v5.1 u / fit x2 / w (ew) / NAV reference — 2026-09-27 — admission 38, composition +2, construction +1
+u pass mega-v51-train-u-1 (1 pass, 27 s, 914 MiB, cache hits 37 miss 1): orientations 49fcfdbc, summary 857cebc0.
+Fit ew-theme-v1 (mega-weights-v51-ew, W_ew51 198375f9, admission 4f06bd18): admitted 32/38 (+opex_at vs v4 880a0a6a; opex_at
+tau .014, HAC t 3.20, max|rho| .522 with roe_q, weight .0139); weighted_standalone_turnover .0518.
+Fit ew-theme-aim-v1 (mega-weights-v51-aim, W_aim51 89b146f8): gains [.358, .985] all in [.05, 1]; wst .0424.
+w pass ew (mega-v51w-train-ew-1, 26 s, 504 MiB): C_ew51 1a0119a6. NAV mega-nav-v51-ew-t.05-d.1-fixed (40 s, 338 MiB):
+S2 net +.759, gross 1.193, HAC 1.49, gross_lev .781 (all rows), tau .0434/.0603, NR .838; dSR vs REF +.017 (Memmel SE .011,
+t 1.54, CBB [-.005, +.038]) -> not significant. T39 step 1 (delisting) not run (T33a NO-GO).
+
+
+## T38 steps 4-5 — L re-run (+2 construction) and 10-cell nav_summ (DSR N = 10) — 2026-09-27
+T34c cherry-picked into pool-2 (6c77b4e9, e80b313d, 773da185) before these runs.
+L = 1.279 (receipts mega-nav-v5-{ew,aim}-t.05-d.1-fixed-L1.279-run, completed 40 s / 338 MiB each):
+| ew t.05 d.1 fixed L1.279 | +.712 | 1.167 | 1.40 | gl 1.003 | abs net .015 | tau .0438/.0609 | held .984 | NR .845 | dSR -.030 (.013) [-.054,-.007] |
+| aim t.05 d.1 fixed L1.279 | +.607 | 1.022 | 1.18 | gl 1.073 | abs net .016 | tau .0371/.0569 | held .984 | NR .872 | dSR -.135 (.112) [-.356,+.097] |
+Leverage scales vol with mu, and S2 costs grow with $ traded, so net SR falls slightly (ew -.030, significant: rho 1.000).
+Step 5: nav_summ --weights W_ew 9a9c949a --weights W_aim 54f823c1 --reference REF --dsr-n 10 over the 10 grid cells ->
+build-equity/mega-nav-v5-grid-summ-n10.{txt,json}. V[SR_n] (cross-cell, per session) 3.157e-05 -> SR0 .00885/session (.140 ann).
+DSR (N = 10): ew REF .843, t.03 .822, t.08 .818, d0 .836, per-name .753; aim t.05 .788, t.03 .800, t.08 .766, d0 .788,
+per-name .699. No cell reaches DSR .95; no cell has TRAIN net >= 1.0.
+- Ruling (declared before T39 runs): v5.1 NAV = the R5' reference cell only (ew-theme-v1 composition fitted on library v5.1,
+  theta .05, dust .1, fixed, L 1) = construction +1, as the prereg ("reference cell only") and the goal prompt state; both
+  fits run (composition +2); the w pass runs for ew only (the aim v5.1 combined has no pre-registered NAV cell) -- cost if
+  wrong: an aim-on-v5.1 read is forgone; it can be added later as a disclosed +1.
+- Ruling: T40 DSR uses N = 13 (10 grid + 2 L + 1 v5.1) with V[SR_n] across those 13 cells (plan T40 "12/13 if extra cells
+  ran"); the N = 10 table above is the step-5 deliverable -- cost if wrong: DSR slightly optimistic/pessimistic; no gate
+  depends on it (freeze needs net >= 1.0).
+
+
+## v5 TRAIN grid (T38 step 3) — 10/10 receipts completed — 2026-09-27 — construction trials +10
+NAV exe fb2d3e94 (v5-1); all runs via v5_train.sh nav, 28-45 s, 338-339 MiB each; receipts build-equity/mega-nav-v5-<C>-<cell>-run.
+Primary modeled-1bn-stale5-v1+swap-fin-v1 (S2), TRAIN 2020-2022, $1bn, cadence 1, aim-partial-v5, neutral price-risk-v1.
+gl = nav_summ construction gross_lev (753 sessions); dSR vs reference with Memmel SE and CBB-21 95% CI.
+| cell | net | gross | HAC t | gl | abs net | tau mean/p95 | held | NR | dSR (SE) [CBB] |
+| ew t.05 d.1 fixed (REF) | +.742 | 1.177 | 1.46 | .783 | .011 | .0433/.0602 | .983 | .835 | — |
+| ew t.03 d.1 fixed | +.692 | 1.053 | 1.35 | .710 | .008 | .0379/.0580 | .983 | .731 | -.050 (.080) [-.219,+.139] |
+| ew t.08 d.1 fixed | +.681 | 1.193 | 1.34 | .845 | .014 | .0490/.0618 | .983 | .944 | -.061 (.076) [-.238,+.096] |
+| ew t.05 d0 fixed | +.724 | 1.178 | 1.43 | .782 | .011 | .0464/.0640 | .986 | .894 | -.018 (.027) [-.066,+.040] |
+| ew t.05 d.1 per-name | +.546 | .990 | 1.06 | .740 | .009 | .0430/.0666 | .983 | .828 | -.195 (.096) [-.386,-.007] |
+| aim t.05 d.1 fixed | +.616 | 1.012 | 1.20 | .837 | .012 | .0364/.0552 | .983 | .856 | -.126 (.112) [-.346,+.110] |
+| aim t.03 d.1 fixed | +.643 | .983 | 1.24 | .776 | .009 | .0330/.0543 | .983 | .776 | -.099 (.141) [-.385,+.197] |
+| aim t.08 d.1 fixed | +.572 | 1.026 | 1.12 | .885 | .015 | .0401/.0549 | .983 | .943 | -.170 (.119) [-.392,+.075] |
+| aim t.05 d0 fixed | +.618 | 1.035 | 1.21 | .837 | .012 | .0401/.0599 | .986 | .942 | -.124 (.121) [-.357,+.114] |
+| aim t.05 d.1 per-name | +.449 | .864 | .87 | .795 | .009 | .0363/.0588 | .983 | .854 | -.293 (.131) [-.562,-.004] |
+⚠️3 (T36) CLOSED: the reference cell's recipe.json 5624e007, summary.json 038461be, S2 CSV 0b572a25 are byte-identical to the
+v5-0 check run (T30 exe) -> fixed-rate path unchanged by T36 on real data. Reference D1: mean daily gross_leverage over all 756
+CSV rows = 0.78191 (< 0.90) -> step 4 triggers.
+- Ruling: step 4 L = round(1/0.78191, 3) = 1.279 (CSV mean over all rows = the ruled definition; nav_summ's .7829 averages 753
+  sessions) for both C at theta .05 dust .1 fixed; +2 construction trials, disclosed -- cost if wrong: L off by .002, immaterial.
+T34c review: Approved, spec ✅, 0C/0I/5m (task-T34c-review.md). Minors to T41: (1-2) see review; (3) failed nav run still
+exits 0 (same as v5_train.sh; root reads receipts); (4) `record` can overwrite/write empty pin files; (5) 2026+ not refused,
+THETA/DUST/LEV not numeric-checked, dead else branch. ⚠️ shared fit work dir mega-fit-work-v51 across compositions (v5
+precedent; EW-REFIT stayed identical) and shared additive mega-candidate-cache: intended. Task T34c: complete (commits
+e620d3c1..8adfd75a in pool-8, review clean); cherry-pick into pool-2 before T39.
+
+
+## T37 build v5-1 + tests — PASS — 2026-09-27
+T36 cherry-picked into pool-2: 07f91c44, f493158e (clean). Pre-build v5-0 reference byte-check (declared ruling below):
+mega-nav-v5-ref-v50-check-run completed, 40.2 s, 339 MiB, exe b6b21d88; recipe 5624e007, summary 038461be,
+daily S2 CSV 0b572a25 (no statistic read).
+mega-v5-1-receipt.json: source f493158e, DirtyEntries 0, Jobs 4, 19.6 s, 5 TUs, 4 links, exit 0. NAV exe
+atx-equity-strategy-targets fb2d3e94...; IC exe 647c71a7 (unchanged).
+Tests: atx-impl-strategy-target-tests --gtest_filter=TargetReplayV5.*:NavV5*:*BitIdentical* 18/18; full exe 55/55;
+atx-impl-strategy-ic-tests 67/67 (T36 emulated fixed recipe pin d53f0c09 held -> ⚠️2 closed).
+D2 byte-stability (v5-1 exe, frozen v4.1 TRAIN cell, mega-nav-v5-1-baseline-check-run completed 21.9 s, 339 MiB):
+recipe.json af058239 and daily_modeled-1bn-stale5-v1+swap-fin-v1.csv 3f846525 IDENTICAL to mega-nav-v4-train-b2-f.25. PASS.
+pytest test_fit_composition_weights + test_nav_summ: 81 passed. Task T37: complete. Next: T38 step 3 grid, reference cell first.
+
+
+## T36 review — Approved (0C/0I/5m) — Task T36: complete
+task-T36-review.md: spec ✅ (11 rate_stats fields; span refused in every build type via check_rates at the top of
+update_weights; fixed path unchanged; liquidity read once per session). Desk-check: no compile blocker.
+⚠️ (1) compile/run -> T37; (2) fixed v5 recipe pin d53f0c09 emulated -> T37 fixture run; (3) fixed-rate bytes T30 vs T36 on
+real data -> ruling below; (4) ruling "R-b" not in the ledger -> ratified below; (5) S2 capped>0 fixture data-dependent (minor).
+- Ruling (ratifies the lost T36 dispatch ruling R-b): NAV_d in the per-name rate = the pre-trade NAV of the decision session
+  (b.nav_pre), as implemented and disclosed in recipe/header text; declared before any per-name measurement -- cost if wrong:
+  none material (nav_pre vs nav_post differ by session-d trade costs, bps of NAV; rate scales NAV^-1/2).
+- Ruling (resolves ⚠️3, declared before the run): before the v5-1 build overwrites build-equity/bin, the root runs the R5'
+  reference cell (C_ew 24a6cc76, theta .05, dust .1, fixed, L 1; v5_train.sh nav flags verbatim) with the v5-0 exe b6b21d88
+  into build-equity/mega-nav-v5-ref-v50-check; after T37 the grid's reference cell (v5-1 exe) must be byte-identical in
+  recipe.json, summary.json and daily_modeled-1bn-stale5-v1+swap-fin-v1.csv; no statistic of the check run is read. Same
+  configuration as grid cell 1, so no extra trial -- cost if wrong: one extra 30 s bounded run.
+- Minors deferred to T41: (1) cache-coverage invariant only debug-asserted (nav.cpp:602; one-line NaN fallback to
+  liquidity_row); (2) NAV_d = nav_pre while the file's "decision-NAV dollars" is nav_post (ratified above); (3)
+  per_name_rate_declaration re-types T30's aim_partial text; (4) NavRateOptions duplicates NavReplayConfig's 5 rate fields;
+  (5) --rate-lambda CLI unexercised, per-name quantile serialization degenerate in the CLI fixture.
+- Task T36: complete (commits 98277c45..0fd7f435 in pool-3, review clean). Cherry-pick into pool-2 after the v5-0 check run.
+- T34c: t34c-v51-script-2 DONE (b2c957ff + fix d88638ce + report 8adfd75a); review-T34c.diff packaged; t34c-review dispatched.
+
+
+## RESUMED 2026-09-27 16:21 — controller: Claude Opus 5.5 (SDD), goal prompt from the interim handoff §7
+Pool inspection: pool-3 clean, T36 committed 7c89bbd2 (code) + 0fd7f435 (report) on 98277c45 -> review-T36.diff packaged
+(base 98277c45, head 0fd7f435, report excluded from the diff), t36-review (Opus 5.5) dispatched. pool-8 clean, T34c committed
+b2c957ff (v51_train.sh, 287 lines) but NO report and no brief file (dispatch lost at the pause).
+- Ruling: task-T34c-brief.md reconstructed by the controller from the "T39 step 2a" ruling + plan T39 step 2 (committed script
+  predates it); a fresh Opus 5.5 implementer (t34c-v51-script-2, pool-8) verifies b2c957ff against it, fixes gaps in follow-up
+  commits and writes task-T34c-report.md; then scoped review as usual -- cost if wrong: the brief misstates an original
+  requirement the lost dispatch carried; bounded (the script is DRY-checked and reviewed before T39 runs it).
+
+
+## PAUSED 2026-09-27 at owner request — interim handoff
+docs/plans/2026-09-27-mega-alpha-v5-interim-handoff.md (state, live children, exact next steps T36 review -> T37 -> T38 grid ->
+T39 v5.1 -> T40 -> T41 -> T42, rulings, goal prompt). Live children at pause: t36-rate (pool-3, T36, tree dirty, no report yet),
+t34c-v51-script (pool-8, v51_train.sh, just dispatched). No root build or real-data process running. No validation run.
+
+
+## T39 step 2a — v5.1 library --plan-only ADMITTED — 2026-09-27 (no TRAIN statistic read)
+Receipt mega-v51-plan-run (exit 0): library fund_industry_ic_v5.json 9e5ea08c..., candidates 38, max_compiled_slots 7,
+resident_capacity 5, required_lookback 272, train required_bytes 1,449,071,914 (= T34a prediction exactly; 1,381.9 MiB, 154 MiB
+headroom under 1,536), candidate cache ready_entries 37 (opex_at cold), vm dslvm1_clang18.1. T35 NOT needed.
+- Ruling: v5.1 needs its own pipeline script (v5_train.sh pins L=v4 and has no u phase): `studies/v51_train.sh` = v5_train.sh +
+  the v4_train.sh u phase, L=fund_industry_ic_v5.json, output prefixes mega-v51-*; written by the t34b implementer in pool-8
+  (STUDIES token free since T31 landed), scoped-reviewed — cost if wrong: one small script lane; the root runs it at T39.
+
+
+## T38 step 2 — weighted TRAIN IC pass with W_aim — 2026-09-27 (no new trial; combined signal for the grid)
+Receipt mega-v5w-train-aim-run1: exit 0, 30 s, 505 MiB, 1 pass (IC binary 647c71a7 unchanged). C_aim =
+build-equity/mega-v5w-train-aim-1/train_combined.json sha 00439b98...; C_ew = build-equity/mega-v4w-train-1 24a6cc76... (existing).
+NAV grid (step 3) waits for T36 -> v5-1 build (T37).
+
+
+## v5 TRAIN read #1 — aim fit ew-theme-aim-v1 (T38 step 1) — 2026-09-27 — composition trial +1
+Receipts mega-weights-v5-aim-run1 (1 pass, exit 0) and mega-weights-v5-ew-refit-run1 (exit 0, computed 0). Fitter f172d362.
+W_aim build-equity/mega-weights-v5-aim/composition_weights.json sha 54f823c1...; admission b41ba653... (31 admitted, same set as
+v4.1; admission.json IDENTICAL modulo SHA fields). EW-REFIT ew-theme-v1: composition_weights.json IDENTICAL modulo
+script/context/admission SHA vs 9a9c949a (old script 69c18270 -> f172d362). D3 met.
+g_k (theta .05, lags 0..126): range [0.358, 0.985], all in [.05, 1]; half-sample |g_h1 - g_h2| max .05 (high_52w) -> stable.
+Slow themes: value .960-.978, profitability .907-.985, investment .936/.976, low_risk .854-.975, momentum .890-.926,
+short_interest si_ratio .972 / dtc .935 / si_change .449; earnings_momentum .753-.847; iv_rv_spread .565; reversal: seasonality
+.487, ind_adj_rev_5 .358. Sanity (not a gate): slow >= .8 MET; reversal <= .5 MET; IV .565 slightly above .5 (noted).
+Aim theme weights vs nominal 1/9: investment .131, value .132, profitability .131, low_risk .127, momentum .125, short_int .108,
+earnings .111, options .077, reversal .058. weighted_standalone_turnover .0425 (ew-theme-v1: .0519).
+Trial accounting (TRAIN 2020-2022 only):
+  v3 era: admission 48 + 121; composition 4 + 7; construction 14.
+  since run #1: libraries v4 (37), v4.2 (40), v5.1 (38, built, not yet read); compositions v4, v4.2, ew-theme-aim-v1 (this);
+  construction v4 1 + v4.1 grid 5 + v4.2 2 (+ v5 grid 10 pending); studies T26 5 paper books, T16, T28 audit.
+  validation: #1 (v3, book level), #2 (v4.1, 24%-gross book). Per-candidate VAL statistics: never read.
+
+
+## T31 re-review 1 — ADDRESSED — Task T31: complete
+task-T31-rereview-1.md: DSR matches §4.E term by term; inverse normal 1e-12; fixture independent (recomputed, 7e-7); no new
+breakage; 2 minors (fallback label with mixed-defined dirs; one bad dir stops output for earlier dirs) deferred to T41.
+- Cherry-picked into pool-2: 81e9977d, 22c30c38, c8358931. Root pytest test_nav_summ + test_fit_composition_weights: 81 passed.
+- Task T31: fix round 1/5 (1 addressed, 0 open; commits 90926148..e33405da). Task T31: complete (d4ec515d..e33405da in pool-4).
+- Ruling: T38 steps 1-2 (aim fit; weighted IC pass with the unchanged IC binary 647c71a7) run BEFORE T37 — they need no v5 C++
+  build and the prereg (56e5b148) is committed; the NAV grid (step 3) waits for the v5-1 build — cost if wrong: none (same
+  inputs either way; receipts record order).
+
+
+## T31 review — spec ❌ (1 Important) — fix round 1 dispatched
+task-T31-review.md: 0C/1I/8m. Important 1: R6' DSR at N = 10 has no producer (nav_summ.py lacks it; T40 is controller-only).
+Named risks checked: ew-theme-v1 path cannot change bytes; masking covers exactly the 3 SHA-derived fields; Memmel SE correct;
+v5_train.sh binds TRAIN only. ⚠️ ratified: -L$LEV suffix; coverage-effective weight definition; extra provenance.aim keys.
+⚠️ root checks at T38: per-name flags + --cadence 1 with aim-partial-v5; mean_gross_leverage CSV vs summary; EW-REFIT vs 9a9c949a.
+- Ruling: DSR producer belongs in nav_summ.py multi-dir mode (V[SR_n] = variance of daily SR across the cells given; single-cell
+  fallback Lo-2002 (1+SR²/2)/T; N via --dsr-n default 10) — cost if wrong: none (T40 consumes it).
+- Task T31: fix round 1/5 (0 addressed, 1 open — DSR producer; resumed t31-aimfit).
+- T31 fix 1 landed: pool-4 e33405da (nav_summ DSR for every dir, --dsr-n 10, V[SR_n] across dirs / Lo fallback; 81 tests pass:
+  12 nav_summ incl. 6 new, 69 fitter). review-T31-fix1.diff packaged; t31-rereview-1 (Opus) dispatched.
+
+
+## D2 byte-stability on real data (T30 binary, pre-T37) — PASS — 2026-09-27
+Bounded run mega-nav-v5-baseline-check-run (exit 0, 22.4 s; exe b6b21d88 from v5-0): frozen v4.1 TRAIN cell (combined 24a6cc76,
+role 210fff96, fields-v6 32565c32, baseline-v1 c1 f.25 band 2 price-risk-v1) -> recipe.json af058239 and
+daily_modeled-1bn-stale5-v1+swap-fin-v1.csv 3f846525 BOTH identical to build-equity/mega-nav-v4-train-b2-f.25. Not a trial
+(reproduction of an existing cell). T37 repeats the check with the v5-1 binary after T36.
+
+
+## v5-0 pre-build (T30 only) — PASS — 2026-09-27
+mega-v5-0-receipt.json: source 7d1c82c0, Jobs 4, 20.7 s, 5 TUs, 3 links, exit 0. atx-impl-strategy-target-tests.exe
+--gtest_filter=TargetReplayV5.*:NavV5* -> 10/10 PASSED (hand-derived recipe SHA pins held). Full exe: 49/49 PASSED (6 suites).
+
+
+## T30 review — Approved — Task T30: complete
+task-T30-review.md: spec PASS, rulings R-a..R-f applied; 0C/0I/6m; desk-check found no compile errors. ⚠️ compile/SHA pins/D2 -> T37
+(if a hand-derived SHA pin fails, confirm against the d4ec515d binary; never re-pin from post-change output); ⚠️ mean-gross
+definition -> ruled above (exposure gross_leverage mean over all sessions).
+- Minors: (1) v5 does not force cadence 1 (default 5) -> v5_train.sh must pass --cadence 1 (checked: it does); (2) release builds
+  silently fall back to fixed theta on a wrong-size rate span -> T36 must validate the span (carried into T36 dispatch); (3) extras
+  recipe key aim_partial, construction.v5.decisions, construction.v5 also in target-replay summary (v5-only; deferred); (4) "recipe
+  minus rule name" not asserted directly; (5) NavReplayDay +16 B; (6) dust entry check only at L = 1. Deferred to T41.
+- Cherry-picked into pool-2: 34d021dd, 98277c45. Task T30: complete (commits d4ec515d..98277c45 in pool-3, review clean).
+- Dispatching T36 (pool-3, on 98277c45).
+- Ruling: root pre-builds T30 alone as tag v5-0 (targets atx-equity-strategy-targets, atx-impl-strategy-target-tests) while T36/T31
+  review run, to surface compile errors one lane-cycle earlier; T37's v5-1 build stays the qualifying build — cost if wrong: one
+  extra target-scoped ccache-warm build (minutes).
+
+
+## T31 ew-theme-aim-v1 — handed in, review dispatched — 2026-09-27
+pool-4 e863cd65/90926148 (base d4ec515d): AIM_RULE_ID, standardized_ranks / rank_autocorrelation / aim_gain / ew_theme_aim_weights,
+provenance.aim (theta, lags, rho, gain, gain_half, coverage_effective_theme_weight), work-record caching, --max-seconds (pre-existing,
+exit 3 + partial:true), studies/v5_train.sh (fit/w/nav; COMP/COMBINED/THETA/DUST/RATE/LEV), nav_summ.py --weights/--reference
+(netting ratio, paired dSR, Memmel SE, block-21 bootstrap 2000) + test_nav_summ.py. pytest 69/69 (55 + 14) and 6/6.
+- Ruling (amends D3/§11 #6 and T38 step 1): the weights file embeds SCRIPT_SHA256 and SHA-derived context/admission digests, so
+  literal SHA equality with 9a9c949a is impossible for ANY edited fitter; the byte-stability criterion is "ew-theme-v1 output identical
+  to the pre-T31 fitter (blob fd644cba) after masking the SHA-derived fields" (fixture) and, on real data, v5_train.sh's EW-REFIT
+  IDENTICAL check against 9a9c949a / admission 880a0a6a (weights, admitted set, provenance minus SHA fields) — cost if wrong: a byte
+  drift hidden inside the masked fields (bounded: the fields are digests of the fitter text itself).
+- Ruling: AR(1) closed-form fixture asserts exact equality on the full 0..126 lag grid and a 1e-3 bound on the AIM_LAGS-interpolated
+  grid (brief's 1e-9 on interpolated lags was unattainable) — cost if wrong: none.
+- Ruling: members with < 50 rankable names on every day get the floor gain .05 (letter of R4'); does not occur on real data — cost: none.
+review-T31.diff packaged; t31-review (Opus) dispatched.
+
+
+## T34b review — Approved — Task T34b: complete
+task-T34b-review.md: spec PASS, 0C/0I/4m. Named risk checked: v5 verifies frozen v4 against pinned SHAs as v4.2 does; no safety
+assertion dropped beyond ruled relaxation. ⚠️1 (--plan-only not run) -> resolved by root at T39. ⚠️2: profitability_quality family
+description text changed (metadata; nothing reads it; runner reads id only).
+- Ruling: "37 v4 rows byte-identical" covers candidate rows + fields, not the family description metadata; the description change
+  stands (v4.2 precedent, disclosed) — cost if wrong: none (unread metadata).
+- Minors deferred to T41: slot-limit attribution comment; recipe trial counts copied from v4 (1/1) vs "composition +2"; description
+  change unrequested; test polish (tamper test library-only, magic number, overstated comment).
+- Cherry-picked into pool-2: 6bfd9858, 6f71951e. Task T34b: complete (commits c8192c46..6f71951e in pool-8, review clean).
+
+
+## T30 aim-partial-v5 — handed in, review dispatched — 2026-09-27
+pool-3 34d021dd/98277c45 (base d4ec515d): TargetReplayRule::AimPartialV5, dust band, aim leverage, per_name_rate span seam, CLI
+--rule aim-partial-v5 --dust-multiple --aim-leverage, recipe/summary v5 keys (v5 only), fixtures TargetReplayV5.* (6) + NavV5.* (4),
+unbuilt. Four recipe SHA-256s hand-derived (t30-sha/ emulation reproduced 25 committed outputs). NavReplayDay gains
+planned_held_names/decision_members (no CSV change). Root targets atx-impl-strategy-target-tests, atx-equity-strategy-targets;
+filter TargetReplayV5.*:NavV5*; regression StrategyTargetReplay.*:StrategyNavReplay.*; no CMake change.
+- Ruling: D1/R5'/R6' "mean gross leverage" = mean of the daily exposure gross_leverage column over ALL sessions of the run (same
+  definition as the T28 audit and the §0 table; deployment ramp included, as it was for v4.1); construction.v5.mean_gross (planned
+  gross over decision rows) is diagnostic only — cost if wrong: a ~2-3% ramp haircut on the reference cell's gross at theta .05.
+review-T30.diff packaged; t30-review (Opus) dispatched. T36 waits for the verdict (same pool).
+
+
+## T34b library v5.1 — handed in, review dispatched — 2026-09-27
+pool-8 6bfd9858/6f71951e (base c8192c46): generate_fund_ic_v5.py + fund_industry_ic_v5.json sha 9e5ea08c... (38 = 37 v4 byte-identical
++ opex_at, 4 extras / 4 slots; lib max 7 slots / 5 extras) + recipe a26670b0... + test_generate_fund_ic_v5.py 10/10 (56 with v4/v4.2).
+Concerns noted: opex_at may be redundancy-dropped vs gpa (|rho| <= .90); cache may miss all 38 (~86 s) if VM identity moved.
+review-T34b.diff packaged; t34b-review (Opus) dispatched.
+
+
+## T33a delisting feasibility — NO-GO — 2026-09-27
+delisting-feasibility.md (DuckDB read-only 384 MB / 2 threads, no lock, no writes). TRAIN: 585 member lines end in 2020-22;
+56 are line continuations (new securityID), 529 true terminations: mna 292 / performance 25 / unknown-with-CIK 9 / unknown-no-CIK
+203 (rule R). Classifiable 59.9% of true terminations (69.0% of the 414 actually held and written off) < 80% gate; 97.2% of the
+326 with a CIK. VAL counts only (35/152/29/13/94), no returns read. exchange_listings 45,820 rows, no venue -> eta -.35 would apply.
+No OTC continuation source (tickerhistory = optionable listed only). No-CIK lines = ETFs/ETNs, SPACs, ADRs, preferreds, warrants.
+- Ruling (R-6 applied): delisting lane PARKED — T33b and T32 are not built; eta = 0 in S1/S2 stays primary with S3 (K = 1 adverse)
+  as the stress; D5 = "feasibility settled: NO-GO"; T39 step 1 does not run; owner gate U3 gains the concrete ask (bridge CIK
+  coverage for the 203 no-CIK lines, or a sealed submissions export + ticker-continuity input) — cost if wrong: write-offs at
+  last price remain a modelling caveat (T17 C5: material but symmetric, 5-6.5% of GMV/yr).
+- Task T33a: complete (explorer). pool-5 stays untouched.
+
+
+## T34a breadth check — GO (proxy) — 2026-09-27
+breadth-check-v5.md: fields-v6 has no opex_ttm/xsga_ttm/cogs_ttm; has at, sale_ttm, oi_ttm, gp_ttm. Real opex item = new metric +
+producer item + events-v3/fields-v7 rebuild + cold cache -> NO-GO for v5.1. Proxy opex = sale_ttm - oi_ttm: 4 extras / ~4 slots,
+plan delta +512 B (1,449,071,914 B = 1,381.9 MiB, 154 MiB headroom), 37 hits / 1 miss expected. ind_lead_lag_w: documented, not built.
+- Ruling: v5.1 adds opex_at with the proxy DSL decay_linear(group_rank((((sale_ttm - oi_ttm) / at) + (0 * log(at))), grp_ff12), 21)
+  (prior +1, profitability_quality, tier B); deviation (includes D&A) pre-registered in v4-prereg.md '## v5.1 family' — cost if
+  wrong: one weak candidate in a 38-candidate optional family; the T39 reference-cell re-run is the only read.
+- Ruling: T34b relaxes the v4.2 generator's "additions are cross-section ranked" assertion for the within-industry theme
+  profitability_quality (assert group_rank within grp_ff12 instead) — cost if wrong: none (v4 themes 1-3 already rank within FF12).
+- Task T34a: complete (explorer). Dispatching T34b (pool-8 feat/mega-alpha-v5-lib51-20260927).
+
+
+## v5 P1 dispatch (2026-09-27) — base d4ec515d
+- Dispatched (Opus 5.5): t30-navrule (pool-3 feat/mega-alpha-v5-construction-20260927), t31-aimfit (pool-4
+  feat/mega-alpha-v5-aimfit-20260927), t33a-delist (explorer, read-only, writes delisting-feasibility.md in pool-2),
+  t34a-breadth (explorer, read-only, writes breadth-check-v5.md in pool-2). T36 waits on T30 review; T33b on T33a GO;
+  T34b on T34a GO; T32 on T33b AND on T30+T36 cherry-picked into pool-2 (preflight ruling).
+- Ruling (amends preflight R-a, on t30-navrule's objection): v5 keeps the uniform next = cur + theta*(L*desired - cur); with
+  theta 1, L 1, dust 0 this IS baseline-v1's exact IEEE sequence (baseline computes cur + f*(desired-cur), not next = desired),
+  so the ThetaOne fixture asserts bit_cast equality; no special case — cost if wrong: none (fixture proves it).
+
+
+## T29 v5 pre-registration and rulings (2026-09-27) — prereg section '## v5 revision' R1'-R7' appended to v4-prereg.md
+T28 evidence (construction-audit-v4.md, commit 44e6c28a): TRAIN b1f1 gross .813 net +.025 held 2,717 banded .954 tau .0347; b1f.25 .687/+.027/2,720/.931/.0267;
+b2f1 .364/+.016/1,366/.994/.0205; b2f.25 (frozen v4.1) .256/+.041/1,369/.994/.0136; VAL b2f.25 .235/+.038/1,237/.994/.0133 (mean GMV $238m).
+v3 VAL (trial #1, b1 f1) was a 76%-gross book (gross .763, net +.001). Entry rate at b2 bounded 0.15-1.1%/day of unheld names.
+- Ruling: the T28 re-read of the two existing VAL NAV CSVs (book-level leverage diagnostics, nothing selected) is a disclosure re-read, not validation trial #3 — cost if wrong: one extra disclosed VAL read.
+- Ruling: banded share denominator = members (neutralize_used + neutralize_excluded), not neutralize_used (ratio > 1 at b2 otherwise) — cost if wrong: none (shares differ < .01).
+- Rulings R-1..R-7 (plan §9, verbatim, declared before any v5 TRAIN read):
+  - **Ruling R-1 (disclosure):** validation trial #2 (+0.641) was produced by a book with mean gross leverage 0.24 and net +0.04; it is recorded as-is
+    but is not a $1bn-deployment result. — The band `band_multiple/N_d` ≥ the position scale blocked entry. — cost if wrong: none (disclosure only).
+  - **Ruling R-2 (construction):** v5 replaces band+fraction with GP partial adjustment toward a gross-1 aim (θ) plus a dust band ≤ 0.1/N_d;
+    the `band_multiple` path stays for reproduction only and is refused under v5. — Handoff lever 1 grid {band 1,2} would re-test a frozen book. —
+    cost if wrong: one wasted C++ lane (~1 day).
+  - **Ruling R-3 (composition):** aim gain g_k = θ Σ_j (1−θ)^j ρ̄_k(j) on measured TRAIN rank-autocorrelation (lags 0..21, then 28..126 step 7,
+    linear interpolation), global normalization, θ = 0.05 fixed (= reference construction θ). The τ-mapped form is **not** run (saves a trial family). —
+    cost if wrong: aim weights mis-scaled for jump signals; bounded by g ∈ (0, 1].
+  - **Ruling R-4 (gate):** TRAIN acceptance is paired ΔSR(net) vs the reference cell (C_ew, θ .05, dust .1) with Memmel SE and a DSR at N = 10,
+    plus mechanics (gross ∈ [0.9, 1.05], |net| ≤ 0.02, τ limits). The owner's absolute "TRAIN net ≥ 1.0" rule governs only whether a freeze is proposed. —
+    cost if wrong: a freeze proposed on a lucky cell; the owner still rules.
+  - **Ruling R-5 (breadth):** no 10th theme in v5; v5.1 may add `opex_at` to `profitability_quality` only; industry momentum 1m, BAC, CHS are not built. —
+    cost if wrong: forgone breadth, revisitable under U2.
+  - **Ruling R-6 (delisting):** η by kind (M&A 0; performance/unknown −0.30/−0.55/−0.35) replaces η = 0 in S1/S2 **only after** T33a shows ≥ 80% of TRAIN
+    member terminations are classifiable; S3 keeps K = 1 adverse. — cost if wrong: a biased write-off haircut; the stress run bounds it.
+  - **Ruling R-7 (trial budget):** v5 TRAIN = 1 new composition + 10 construction cells (+1 delisting re-run, +v5.1 family if built). Anything else is a new
+    disclosed revision in `v4-prereg.md` before it runs.
+- Task T28: complete (explorer, read-only; no review needed — acceptance = numbers within ±0.01 of §0: met, max gap .005).
+- prereg commit SHA: 56e5b148 (docs(mega-alpha): v5 pre-registration and rulings (T29); prereg file + plan + briefs committed before any v5 TRAIN read). Task T29: complete.
+
+
+## v5 sprint start (2026-09-27) — controller: Claude Fable 5.1 (SDD); plan docs/plans/2026-09-27-mega-alpha-v5-dag-plan.md (= spec)
+Base: pool-2 HEAD 41fb5e39 (branch feat/aes-codex-integration-20260925). No process running. Pools: 2 root; 3 (T30->T36),
+4 (T31), 5 (T33b->T32), 8 (T34b), 9 (T35 if needed) reset via `git checkout -B <branch> <pool-2 HEAD>` (leases alive under
+older run ids, reused as the plan directs); 10/11 free; 1 and 6 never touched. Briefs: task-TN-brief.md (plan task text
+verbatim), plan-s3-constraints.md (§3 verbatim), plan-s4-research.md (§4), plan-s11-review-focus.md (§11).
+- Ruling: this ledger (newest-first, plan §5.6) is the SDD ledger; the skill's default `.superpowers/sdd/<plan>/progress.md`
+  layout is not used — the plan mandates this directory — cost if wrong: none (single ledger, git-tracked with -f).
+- Ruling: T28 explorer writes its files in pool-2 but does NOT commit; root commits T28+T29 together (root-only commits in
+  pool-2 keep the clean-tree guard predictable) — cost if wrong: none.
+- Preflight conflict scan (plan text vs plan text; spec = plan):
+  | pair / task | produces vs consumes | finding | ruling |
+  | T30 -> T36 (NAVRULE+NAVSIM, pool-3 sequential) | update_weights(..., per_name_rate span) | consistent | — |
+  | T30/T36 vs T32 (NAVSIM, pool-3 vs pool-5) | both edit strategy_nav_replay.cpp | cherry-pick conflict risk | Ruling: T32 branches from pool-2 HEAD only AFTER T30+T36 are cherry-picked into pool-2; if T33b finishes earlier, T32 waits — cost if wrong: T32 delay, never a hand-resolved conflict. |
+  | T30 CLI <-> T31 v5_train.sh | --rule aim-partial-v5 --trade-fraction --dust-multiple --aim-leverage; --rate per-name-v1 --rate-rra --rate-min --rate-max | consistent | — |
+  | T31 nav dir names <-> T38 loop | mega-nav-v5-$C-t$THETA-d$DUST-$RATE == mega-nav-v5-$C-$1-$2-$3 | consistent | — |
+  | T30 fixture ThetaOne_MatchesBaseline (EXPECT_DOUBLE_EQ, §11 #1 "bit-for-bit") | next = cur + 1*(aim-cur) is not bit-equal to aim in fp | plan defect | Ruling: when theta_i == 1 the rule writes next = aim directly (identical math, exact bits) — cost if wrong: none. |
+  | T30 fixture DustDoesNotBlockEntry `EXPECT_NEAR(gross, 0.05, 1e-12)` | ~5% of members (|desired| <= .1/N) are dusted on step 1, so gross < theta*1 by ~1e-4; desired gross may also != 1 after neutralization | plan defect (tolerance) | Ruling: assert gross within [0.9*theta, theta] of the un-dusted theta*gross(desired) instead; held_names >= 90% stays the load-bearing check — cost if wrong: a looser fixture. |
+  | T36 fixture fields (rate_stats.min, share_at_min_count) vs T36 Interfaces (mean,p05,p50,p95,share_at_min,share_at_max) | field names disagree | plan defect (naming) | Ruling: rate_stats = {n, mean, min, max, p05, p50, p95, at_min_count, at_max_count, share_at_min, share_at_max}; summary JSON emits all — cost if wrong: none. |
+  | T31 step 1 gating | require(prior == (composition in PRIOR_COMPOSITIONS)) | consistent with FIT:1170 | — |
+  | T31 fixture test_ew_theme_v1_bytes_unchanged | reuses run_fitter/v4_fixture/BYTE_STABILITY_V1_SHA256 | exist per plan; implementer verifies names | — |
+  | T29 R5' <-> T30 | cadence 1, non-members forced 0, dust/N_d, L | consistent | — |
+  | T38 reference cell | ew t.05 d.1 fixed | == R5' REFERENCE | — |
+  | T37 tag v5-1 | mega-build refuses reused tags | verify unused before build | — |
+  | D1 (>= 90% members non-zero) vs dust .1/N | ~5% of members stay at 0 from dust; entry otherwise unblocked | consistent | — |
+  Scan otherwise clean. Rulings R-1..R-7 (plan §9) are recorded verbatim in the T29 section below once T28 lands.
+
+
+## STAT-ARB CLUSTER STUDY (owner ask, separate research family; prereg statarb-prereg.md @367e1101) — RESULT: NEGATIVE
+TRAIN 2020-22 only (validation sealed). studies/statarb_cluster_study.py + statarb_run.sh (bounded; all stages <= 48 s,
+<= 1266 MiB) + statarb_report.py; outputs build-equity/statarb-cluster-v1/ (analyze.json, model.json,
+statarb-cluster-study.png). Clusters: rolling 252d PCA-15 embedding + balanced k-means, monthly; c30 = 96 groups x ~30,
+within-group resid corr .38 (c10 .42, c100 .33, FF49 .18, random .01), FF12 purity .57, month-to-month ARI .34.
+Univariate (138 tests, Bonferroni |t| 3.57): 0 significant. Strongest cluster signal c30_dev_1 vs r[d+1] IC -.0096
+t -2.9, gone at r[d+2] (+.0015): the residual reversal lives in the one session our clock cannot trade. FM beyond
+controls: dev/sscore/grp_dev |t| < 2 at K 10/30/100; marginal c30_grp_mom_12_1 +2.2/+2.7, c30_beta_g +2.4,
+c30_nbr_mkt_5 +2.6 (y5); controls dominate (vol63 -6, mom +3). Model FIT 2020-21 -> HOLD 2022: hgb_FULL IC y2 +.010
+(t 1.4), hgb_CTRL+FF49 +.008 (t 1.1), paired FULL-minus-no-cluster +.0025 (t .47); H1-H4 all fail. Best HOLD book
+(hgb ctrl, hl10) gross SR 1.10, BE 33 bps — one year, not significant; cluster features add nothing OOS.
+Not run (ideas): same-close / intraday execution, liquid top-1000 subset, Avellaneda-Lee threshold entry/exit rule.
+
+## PAUSED 2026-09-27 at owner request — handoff 3
+docs/plans/2026-09-27-mega-alpha-parent-handoff-3.md (done / in progress / next steps / current net SR and alphas /
+fresh-parent goal prompt). No active agents or processes. Best OOS: validation #2 v4.1 net +0.641.
+
+
+## VALIDATION RUN #2 — FREEZE v4.1-daily-2026-09-27 — RESULT: net +0.641 (objective >= 1 NOT met; no OOS decay)
+Script studies/v4_validation_once.sh @214b383a. Runner mega-v4-VAL-1: 47 s / 696 MiB, 37 cold; combined c50829be...
+NAV mega-nav-v4-VAL-b2-f.25 (14 s / 243 MiB), 2023-2024, $1bn, daily c1, f.25, band 2, neut price-risk-v1:
+  PRIMARY S2 x swap-fin-v1: NET SR +0.641, gross +0.802, HAC t .95, mu 1.56%/yr, vol 2.43%, MDD 2.3%,
+    years 2023 +1.7% / 2024 +1.4%; tau_gmv mean .0134 / p95 .0272 (limits MET); tc .53% (2y).
+  S1 x swap-fin .706; S3 .072; S2 x flat-300 .583; S2 x engine-tiers .607. Netting ratio (TRAIN b2f.25) .0136/.0519=.26.
+TRAIN in-sample same config: net .687 / gross .815 -> OOS ~= TRAIN (v3: 1.81 -> -1.27). Prior-signed, mean-free
+construction generalises; the shortfall is alpha strength (gross ~.8) vs the $1bn S2 cost hurdle.
+
+## FREEZE v4.1-daily-2026-09-27 — VALIDATION TRIAL #2 (declared before any validation run of this configuration)
+- Ruling (gate override): the TRAIN gate (>=1.0) was a root resource rule to conserve validation, not a validity
+  condition; v4.1 selection used no 2023-24 information, so its validation result is an honest OOS read. The owner
+  objective names "fresh TRAIN freeze of fundamentals/industry via CIK -> validation trial #2" as the next step.
+  Cost if wrong: validation spent on a config with TRAIN net .687 (expected VAL < 1); later trials carry the disclosure.
+- library fund_industry_ic_v4 daa9663e (37); TRAIN role v2 210fff96; TRAIN fields-v6 32565c32; VAL role v1 0c757c41;
+  VAL fields-v6 c034ecf3 (same producer blob, events-v2 74ed9a50, bridge r4-v1 ddf97164); orientations
+  mega-v4-train-u-1 11cfd3e4; admission v4-prior-v1 880a0a6a; weights ew-theme-v1 9a9c949a (31 admitted, pinned +1).
+- construction: nav baseline-v1 cadence 1 trade-fraction .25 band 2/N neutralize price-risk-v1, limits .20/.30,
+  --max-bytes 1 GiB; runner --min-names 1000. Primary S2 modeled-1bn-stale5-v1 x swap-fin-v1; stresses as v3.
+- binaries: atx-equity-strategy-ic.exe 647c71a7 (source 4ce2ec4e+); atx-equity-strategy-targets.exe 4642dd37.
+- TRAIN (in-sample for construction only): S2 x swap-fin net .687, gross .815, tau .0136/.0401.
+- Trial disclosure since v3 run #1 (TRAIN only): libraries v4 (37) + v4.2 (40); compositions 2 (v4, v4.2);
+  construction 1 + 5 (v4.1 grid) + 2 (v4.2); construction study 5 paper books (T26); post-mortem analyses (T16).
+  Validation: run #1 (v3) seen at book level only; this is run #2.
+- Script studies/v4_validation_once.sh (single run).
+
+## POST-MORTEM v3 (owner goal 2026-09-27 pm: verify math, diagnose, continue to objective)
+- pool-2 integration ff'd to local main d63a7058 (merge of e587684b + main 9d8925ea); lanes branch from it.
+- MATH (root, book-level): NAV headline stats reproduce from daily CSVs (VAL net -1.271 / gross +.161; TRAIN
+  1.807/2.741); chain pre[t+1]/pre[t]-1 == net[t+1] max err 1.1e-16; net = gross - tc - borrow - long_fin
+  (resid 1.8e-5 = long financing). Costs stable TRAIN tc 1.97%/yr vs VAL 1.67%/yr; gross 6.99%/yr -> .23%/yr.
+- SELECTION PERSISTENCE (TRAIN-only, admission.csv): oriented FIT(2020-21) SR vs HOLD(2022) SR across 121
+  candidates Spearman .040 (p .66), Pearson .077; HOLD sign kept 55.4% (null 50%). Oriented FIT SR mean .61
+  -> HOLD .14. Screen admitted 23 = mostly coin-flip survivors; MV weights then fit on 2020-22 incl. HOLD.
+- REGIME (book-level): TRAIN in-sample gross SR by half 2020H1 6.38 / H2 3.85 / 2021H1 .42 / H2 1.12 /
+  2022H1 2.18 / H2 4.67; net 2021 negative both halves IN-SAMPLE. VAL halves gross -.07/-.39/+1.88/-.64.
+  Book = crisis/bear-regime composite (2020, 2022); bull years (2021, 2023-24) fail.
+- HURDLE: book vol ~1.5-2.5%/yr at GMV/NAV .77; cost+fin ~2.2%/yr -> break-even gross SR ~1.3-1.5; each
+  1%/day turnover costs ~.24 SR (c~18 bps/unit, vol/GMV ~1.9%). Net SR 1 needs gross >= ~1 + .24*tau%.
+- Ruling: validation 2023-24 analysed BOOK-LEVEL ONLY (no per-candidate VAL stats) so trial #2 selection
+  stays uncontaminated by per-alpha VAL information — cost if wrong: coarser attribution.
+- Dispatched (Opus): t16-postmortem (pool-3 feat/mega-alpha-postmortem-20260927: walk-forward, null sim,
+  construction alternatives, paper-book check; root runs), t17-pit-audit (read-only PIT/leak audit),
+  t18-fundamentals (read-only fundamentals/industry/CIK inventory + v4 design). pool-8 branch
+  feat/mega-alpha-v4-fields-20260927 reserved for v4 fields.
+
+- T15 re-review (t15-review-2): spec PASS, Approved 0C/0I/8m (M1 FP-flags identity read from runner TU not
+  ic_screen.cpp; M2 bump comment; M6 no cross-worker-count IC-entry test). 8th artifact = summary.json (timings,
+  expected diff); ids/sessions also SAME. Task T15: complete (63b34d72/74a03a82). Minors deferred.
+- T16: pool-3 d18fd3ca -> root b032504b (studies/postmortem_v3.py + 9 synthetic tests). Root ran bounded
+  postmortem-v3-1 (27 s/96 MiB; E train 4 s/381 MiB; E val 11 s/315 MiB). RESULTS:
+  A reproduce bitwise (weights |dw| 0, admitted set equal). In-sample F SR 3.07; P&L share 2020 55% / 2021 11% / 2022 34%.
+  D NULL (demeaned f_k, block-21 bootstrap, frozen protocol, 200 reps): in-sample SR null median 2.24, p95 2.97,
+    observed 3.07 = 95.5th pct; admitted 23 (null 22); Spearman .04 (null p05..p95 -.35..+.34). => ~73% of the
+    in-sample SR is manufactured by selection on noise.
+  B WALK-FORWARD (TRAIN only) OOS SR: fit20-21->22 +.81; fit20->21 -.43; fit21->22 +1.09; fit21-22->20 -1.48;
+    with HOLD test +1.08 / -1.70. Mean ~0 (factor units, gross, before ~1.3 SR cost hurdle).
+  C alternatives (B1 OOS / fit2020->2021-22 OOS): EW-all FIT signs .52/.22; EW admitted .97/-.13; inv-vol .71/-.17;
+    MV frozen .81/.00; family-EW .44/.12. No rule robust; library declares no prior signs (all TRAIN-estimated).
+  E MATH: paper neutral book TRAIN SR 3.00 corr NAV gross .94; VAL paper .31-.38 corr NAV gross .93-.95 (NAV .16
+    after caps); lag1/2/3 flat (no microstructure/leak dependence); VAL used pinned signs+weights exactly (121/121).
+- T17 (read-only PIT audit): 29 inputs OK 22 / LEAK 0 / RISK 5 / UNKNOWN 2. Risks: SI pre-2021-06 settlements are
+  FINRA re-publication (52% TRAIN decisions; VAL none); survivorship of vendor dead lines unknown; no delisting
+  returns (write-off at last price); SI as-of producer not hash-pinned; IV earnings-adjustment vintage unknown.
+  12/23 weighted alphas (60% weight) trade opposite their own TRAIN IC21 sign. TRAIN role repaired with
+  factor-break-v1 (not v2). Checks C1-C8 being packaged as studies/t17_checks.py (pool-9).
+- DIAGNOSIS (root): math correct; failure = (1) data-mined signs+MV weights on 3y with no persistence (null explains
+  most of IS SR), (2) regime concentration (2020/2022 crisis years), (3) cost hurdle ~1.3 gross SR at tau 3.7%/day
+  and vol/GMV ~1.9%, (4) no pre-validation honest gate (walk-forward predicted ~0). Not a leak.
+- T18 (read-only fundamentals inventory): 6 READY / 8 PLANNED; 0 fundamentals fields on role axis. READY: CF-R
+  CompanyFacts staging (53.75M facts, all occurrences), FSDS v2 SUB accepted_utc (99.9%) + SIC per filing; identity
+  r4 rehearsal PIT links ~80% common (~1,750-1,800 names/day); ~1,550-1,650 fundamentals names/day expected.
+  Plan T19 identity snapshot (S), T20 fundamental events producer (L), T21 fields-v5 (M-L), T22 grp_ group fields
+  (S, C++), T23 prior orientation (S-M), T24 library v4 (M), T25 audit (M).
+
+- v4 PRE-REGISTERED (v4-prereg.md @90ce38e0, before any v4 TRAIN read): prior-signed themed library (9 themes),
+  within-FF12 ranking for accounting ratios, admission v4-prior-v1 (veto HAC t<-2, |rho|<=.90 by tier), composition
+  ew-theme-v1, fixed construction band 1, GATE TRAIN S2xswap-fin net >= 1.0 before validation trial #2.
+  Rulings: fundamentals +1 lag session after accepted_utc (conservative; cost: ~1 day staleness); identity = pinned
+  r4 rehearsal links (PIT, ~80% common; cost: lower coverage than static bridge); within-industry accounting ranks
+  (cost: lose between-industry value premium); TRAIN window unchanged 2020-22 (owner rule; 3y is the root
+  limitation — recommend owner consider pre-2020 history for selection).
+- Dispatched (Opus): t19-t23 (pool-4 v4-identity: T19 then T23), t20-fundevents (pool-8), t21-fields5 (pool-3),
+  t22-grp (pool-5), t24-libv4 (pool-7); t17 packaging checks C1-C8 (pool-9 t17-checks). All branches @90ce38e0.
+
+- T17 checks: pool-9 beb83ce5 -> root (studies/t17_checks.py). Root ran mega-t17-checks (3 bounded runs, <=12 s,
+  <=344 MiB): C1 SI revisions CLEARED; C2 SI vintage (TRAIN) CLEARED (si_change_10 1.26 -> 1.05 republished ->
+  vintage-safe; SI drop -.04 vs controls .59); C3 FINRA as-of alignment CLEARED (200/200); C4 survivorship CLEARED
+  (vanish TRAIN 4.07% vs VAL 3.48%/yr); C5 write-off exposure CONFIRMED material but symmetric (TRAIN 5.2-6.5%,
+  VAL 4.8-6.0% of mean GMV; no delisting returns = modelling caveat for v4 too); C6 union-market proxy
+  INCONCLUSIVE (corr .99, +2.2 vs +1.1 bp/day); C7 SI clock CLEARED (6-8 bd); C8 IV/earn timing INCONCLUSIVE but
+  symmetric (incidence ratio 1.00). => no TRAIN-specific leak; decay = selection + regime + cost (T16).
+- Untracked studies/.mypy_cache (IDE churn in every pool).
+
+- T22: pool-5 8b13d189/90f6b87f -> root 76479562/4ce2ec4e (grp_* group classifiers; tripwire re-pinned 18693b18;
+  VM semantics version NOT bumped — claim: dtype only gates compilation). Build mega-t22-a 268.7 s Jobs4 (122 TUs,
+  engine header); alpha 87/87, IC 67/67. Review dispatched (t22-review).
+- T24: pool-7 3bb3fbf3 (library v4 generator, 40 candidates, 9 themes, within-FF12 group_rank for themes 1-3,
+  tier_rank int for T23). Rulings (before any v4 TRAIN read): iv_change DROPPED (blended ATM IV mixes call(+)/put(-)
+  effects of An-Ang-Bali-Cakici 2014: no unambiguous prior; cost: one diversifier) -> 39 candidates; droe canonical
+  with be_lag1q_lag4 (T21 told to emit it). T24 fix round 1 sent.
+
+- T24 fix r1: pool-7 3bb3fbf3/d7464792 -> root (39 candidates; themes == prereg names; all prior_sign 1; tiers
+  A 4 / A- 4 / B+ 9 / B 9 / B- 7 / C+ 6). pytest 32/32; --check registry + grp typing OK. Review dispatched (t24-review).
+- T19/T23: pool-4 83fbbf84/2d185266 -> root. pytest 66/66. Fitter SHA fbfd122b -> 69c18270 (work caches recompute;
+  v3 pins reproducible from d38e7929). REAL: identity-bridge-r4-v1 (2 s/142 MiB; source r4 manifest ac9bcda7..., 6,780
+  rows P 6,765/J 15); check (4 s/777 MiB): member-cell P-link coverage TRAIN ~.60, VAL .59 (2023 .596 / 2024 .588);
+  static-bridge agreement TRAIN 2108 agree/52 disagree, VAL 1979/20. Ruling: T21 matches start<=d<=end_incl only
+  (rows already PIT; T18 "available_at < d 22:00" would drop first days) — cost if wrong: none material (6,770/6,780
+  rows available_at == start mark). Review dispatched (t19-t23-review).
+
+- T22 review: spec PASS, Approved 0C/0I/3m (tolerance 1e-12 vs exact; duplicated panel helper; NaN-label tests
+  cover 4 of 8 ops — reviewer verified all 8 by reading). VM bump not needed (confirmed). Root confirmed no existing
+  manifest/library has a grp_* field (only library v4). Task T22: complete (76479562/4ce2ec4e).
+
+- T20: pool-8 77771dd2/9de89dd0/dd8877ae -> root. pytest 17/17. REAL fundamental-events-v1 (prepare 8 s/484 MiB;
+  events 4 chunks 17-24 s/<=646 MiB; finalize 2 s): 172,777 rows, manifest 519ecc1a..., SIC 235,945 rows / 6,543 CIKs,
+  sub accepted null 0. SUE from first-reported quarterly NI (EPS split-contaminated); debt single-concept (understates).
+- T21: pool-3 e9392d80/e31db6c6/d04c5dc7/ab3e7364 -> root. pytest 36/36. REAL fields-v5 (bridge ddf97164.., events
+  519ecc1a.., --fund-lag-sessions 1): TRAIN recent-fast-train-2020-2022-v2-fields-v5 manifest 4e02b7db... (37 s/637
+  MiB), VAL ...-v1-fields-v5 (33 s/564 MiB). 40 fields; legacy 8 byte-identical to v4 both roles;
+  rows_used_available_after_start_mark 0 both. Member coverage TRAIN/VAL: be .589/.574, cfo_ttm .568/.568, sue
+  .568/.558, me_company .604/.593, grp_ff12 .604/.591, gp_ttm .365/.355, fscore .315/.319, xrd .221/.212 (symmetric).
+- T19/T23 review: both spec PASS, Approved 0C/0I/6m each. T19 caveat: r4 marks link END before knowable (stops links
+  early, never mislinks). T23: real fit must pass LF library sha af5159c8. Tasks T19, T23: complete.
+- T24 review: spec FAIL 1 (I1 issuance_vendor counts splits as issuance: use shares_out*raw_close/close), 6 minors
+  (ear 63-session window == mean announcement gap -> fix). 
+- v4 plan-only (TRAIN, fields-v5, min-names 1000): 1.76 GB @4w / 1.73 @2w / 1.70 @1w > 1.5 GB cap; driver mgmt_sy
+  (8 extras) + qmj_lite (7). Without them 1.449 GB @4w (fits). Ruling (before any v4 TRAIN read): DROP mgmt_sy and
+  qmj_lite — components already members of their themes (theme-EW already combines them); cost: lose rank-sum
+  composite forms. Ruling: --min-names 1000 for v4 (fundamentals cover ~1,650 names/day; gates IC-date stats only).
+  T24 fix round 2 sent (I1, ear window, drop composites, issuance_xbrl split check).
+
+- T24 fix r2: pool-7 604dc555 -> root (37 candidates; issuance_vendor split-safe Daniel-Titman adj; ear = latest
+  announcement 3-day CAR held <=126 sessions + s21; mgmt_sy/qmj_lite dropped; issuance_xbrl uncorrected (T20 lag-4
+  from latest filing reporting the period => split-consistent; T25 to verify AAPL 2020 / NVDA 2021)). pytest 36/36;
+  plan-only 1.449 GB. Library sha daa9663e. Scoped re-review dispatched (t24-rereview). v4_train.sh committed 656bbabf.
+- T20/T21 review: T20 spec PASS, Needs fixes 0C/1I/6m — I1 revenue concept priority prefers ASC 606 line over
+  `Revenues` total (sale_ttm/gp_ttm understated for mixed-revenue filers); no look-ahead path. T21 spec PASS,
+  Approved 0C/0I/3m (Task T21: complete pending T20 re-run). gp_ttm .365 structural (financials / no COGS line).
+  T20 fix round 1 -> pool-5 feat/mega-alpha-v4-fundevents-fix1-20260927 (pool-8 now T25). v4 TRAIN read HELD until
+  T20 fix + events/fields-v5 re-run + T24 re-review.
+
+- T24 re-review 1: spec PASS, Ready, all findings ADDRESSED; 3 new minors (issuance_vendor break-neutral only if
+  role factor-break steps match producer -> T25 check; seasonality text; ear keeps prior CAR if new CAR NaN).
+  Task T24: complete (3bb3fbf3/d7464792/604dc555; library daa9663e, 37 candidates). Checks relayed to T25.
+
+- T20 fix r1: pool-5 6fa90efa -> root (Revenues total wins over ASC 606 line; same total-first for cash/st_debt;
+  m2/m5 fixed, m1/m3 counters only). pytest events+fields 58/58. REAL fundamental-events-v2 (fresh --out; code-hash
+  lock): 172,777 rows, manifest 74ed9a50...; fields-v6 TRAIN 32565c32.. (42 s/637 MiB) / VAL c034ecf3.. (30 s/564 MiB),
+  coverage unchanged vs v5. v4_train.sh FD -> fields-v6. Scoped re-review dispatched (t20-rereview).
+
+- T20 re-review 1: I1, m2-m5 ADDRESSED; m1 (concept rank beats recency; 42,175 keys counted) open by design, caveat;
+  new minors N1-N3. Task T20: complete (77771dd2/9de89dd0/dd8877ae + fix 6fa90efa). Task T21: complete.
+- v4 unweighted TRAIN pass mega-v4-train-u-1: 86 s / 1012 MiB, 37 cold misses, exit 0 (IC numbers not read before
+  T20 re-review). Proceeding: fit -> weighted -> NAV (TRAIN; the v4 TRAIN read). T25 audit still in flight — any
+  data fix it forces is correctness-driven and will be disclosed.
+
+- v4 TRAIN (prereg config; fit 40 s/506 MiB: 31 admitted / 6 redundant / 0 veto; weights ew-theme-v1; weighted pass
+  34 s; combined 24a6cc76...; NAV mega-nav-v4-train-b1 32 s/338 MiB): S2 x swap-fin NET SR +0.431, gross +1.100,
+  HAC .79, mu 1.45%/yr, vol 3.37%, MDD 2.8%, years 2020 +0.3% / 2021 +2.4% / 2022 +1.6%; tau_gmv .0348/.0473 (limits
+  met); tc 5.37% (3y) vs S1 1.64%; S1 net .754; S3 -.513; flat-300 .127; engine-tiers .336. Sum w tau .0519 -> NR .67.
+  GATE (>= 1.0) FAILS -> validation NOT run. Redundancy per rule: bm/ep/ebit_ev/sp -> cfp (rho .91-.94); issuance_xbrl/
+  vendor -> net_payout (.91/.96). Fast themes reversal_seasonality + options_implied = 22% weight, 49% of sum w tau.
+  Diagnosis: honest gross ~1.1 (balanced across years) but S2 impact at $1bn (1.8%/yr, ~26 bps/unit) eats ~.6 SR.
+- PRE-REGISTERED REVISION FAMILY v4.1 (construction only, same combined 24a6cc76, declared before running): NAV grid
+  trade-fraction {1,.5,.25} x band {1,2}/N (6 construction trials; b1f1 = the v4 run above). Pick max TRAIN S2 x
+  swap-fin net SR within daily limits; gate unchanged (>= 1.0). Disclosed as a revision after a failed gate.
+
+- v4.1 grid (TRAIN, S2 x swap-fin net / gross / tau mean): b1f1 .431/1.100/.035; b1f.5 .589/1.135/.029; b1f.25
+  .677/1.132/.027; b2f1 .643/.929/.021; b2f.5 .596/.779/.015; b2f.25 .687/.815/.014. Selected b2f.25 (.687) — GATE
+  FAILS. At low turnover S1 .79 vs S2 .69: cost no longer binding; slower tracking cuts gross (fast themes decay).
+- T25: pool-8 cddcf8f2 -> root (audit_fund_fields.py, 6 tests). On fields-v6/events-v2: C1 PASS (32 fields re-join
+  exact; common-member coverage be .771 at .775 cfo .759 ni .759 sale .714 shrs_q .697), C2 PASS 300/300 cells vs raw
+  CF + FSDS accepted_utc, C3 PASS (FC1 .03%, revised-vintage <.25%), C7 PASS; (on v5 inputs) C4 adj & shrs_q split-safe
+  PASS / raw shares_out FLAG (unused), C5 PASS, C6 FLAG FF49 small groups (17% of groups <5, 1.2% members). Task T25:
+  complete. Data path v4 accepted.
+
+- T26: pool-3 a5a46fda -> root (studies/v4_construct_study.py, 15 tests). Root run mega-v4-construct-study-1 (24 s/552
+  MiB), TRAIN paper books gross SR: P0 price-risk .852 (corr NAV .91) / P1 +FF12 .798 / P2 +FF49 .746 / P3 liquidity-
+  scaled .703 / P4 partial .25 .862 (tau x.75). Industry-neutral and liquidity scaling do NOT help. Task T26: complete.
+- v4.2 PRE-REGISTERED (v4-prereg.md "v4.2 revision"): +res_mom_12_1, +eap, +low_share_turnover (prior-signed); tau_k <=
+  0.08 cost-consistency screen; construction b2f.25 (+b1f.25 reported); gate 1.0; if it fails -> report to owner.
+
+- T27: pool-7 c9ea35b0/1dde8135 -> root (library v4.2 fund_industry_ic_v42.json 22af107c, 40 cands; fitter screen
+  v4-prior-v2 tau<=.08). pytest 101/101. Review: spec PASS, Approved 0C/0I/4m; eap causal (past reaction markers
+  only); eap s1 smoothing accepted (event timing); DISCLOSED: res_mom_12_1 DSL == v2/v3 resid_sharpe_12_1_s21 (its v3
+  family-level TRAIN stats were seen by root). v4.2 u pass 30 s/964 MiB (37 hits, 3 misses). Task T27: complete.
+
+- v4.2 TRAIN (fit 30 s: 27 admitted / 7 redundant / 6 reject_turnover_cost [low_max .089, si_change .091,
+  ind_adj_rev_5 .181, seasonality .094, iv_rv_spread .090, eap .200]; mom_12_1 redundant; combined a5cf1c49...):
+  S2 x swap-fin NET b2f.25 +.449 (gross .598, vol 2.1%, tau .010) / b1f.25 +.164 (gross .496). S1 b2f.25 .631.
+  GATE FAILS. Cost screen removed fast members that carried gross alpha. STOP per prereg; report to owner.
+- STATUS: best honest TRAIN config = v4.1 (v4 library, b2 f.25) net .687. Validation trial #2 NOT spent (2023-24
+  touched only by v3 run #1). Recommendations to owner: (1) pre-2020 history for selection/estimation (3y TRAIN is
+  the binding limit); (2) data with real OOS edge not yet available (analyst estimates/revisions, options skew,
+  8-K earnings dates); (3) the $1bn S2 impact + swap financing hurdle (~.3-.6 SR) — consider target at smaller NAV or
+  S1-like execution; (4) turnover-aware per-theme trading speeds (Garleanu-Pedersen aim portfolio) as a construction
+  project. Integration branch ahead of local main (v4 work since d63a7058) — not merged (owner action).
+
 ## VALIDATION RUN #1 — FREEZE v3-daily-2026-09-27 — RESULT: FAIL (objective NOT met)
 
 Script studies/v3_validation_once.sh @ee843d10. Validation-only runner (run_mode validation-only-frozen-TRAIN)

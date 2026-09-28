@@ -974,5 +974,516 @@ class FactorBreakShares(unittest.TestCase):
             self.assertFalse((self.base / f"out-{name}" / "manifest.json").exists())
 
 
+# ---------------------------------------------------------------------------------------------------------
+# Issuer-level fields (T21): identity bridge (T19 rows) + fundamental events and SIC events (T20 snapshots).
+# The main fixture's role (2024-10-01 .. 2024-12-31, ids 101..505) with an independent pure-Python oracle.
+# ---------------------------------------------------------------------------------------------------------
+
+UTC = dt.timezone.utc
+OPEN = None
+
+
+def at(y, m, d, hh=0, mm=0, us=0):
+    return dt.datetime(y, m, d, hh, mm, tzinfo=UTC) + dt.timedelta(microseconds=us)
+
+
+def mark(d):
+    return dt.datetime.combine(d, dt.time(22), tzinfo=UTC)
+
+
+LONG_AGO = mark(dt.date(2015, 1, 1))  # T19 invariant: available_at <= start 22:00 UTC (here exactly at it)
+# (sr_id, cik, start, end_incl, available_at, primary, tier, basis)
+BRIDGE = [
+    (101, 1001, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),
+    (303, 1001, dt.date(2015, 1, 1), OPEN, LONG_AGO, "J", "high", "reconstructed_high"),       # second class of 1001
+    (202, 2002, dt.date(2024, 10, 15), dt.date(2024, 12, 2), mark(dt.date(2024, 10, 15)), "P", "medium",
+     "reconstructed_medium"),                                  # available exactly at its start mark: 10-15 included
+    (404, 4004, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),
+    (404, 4005, dt.date(2024, 11, 1), dt.date(2024, 11, 29), LONG_AGO, "P", "high", "reconstructed_high"),  # ambiguous
+    (505, 5005, dt.date(2015, 1, 1), OPEN, at(2024, 10, 20, 12), "P", "high",
+     "reconstructed_high"),                                    # violates the invariant: counted, gated to 10-21
+    (999, 9009, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),       # off the role axis
+    (505, 5006, dt.date(2015, 1, 1), OPEN, LONG_AGO, "N", "low", "reconstructed_medium"),      # N: dropped
+    (202, 2003, dt.date(2024, 10, 1), OPEN, LONG_AGO, "P", "high", "current_ticker_verified"),  # excluded basis
+    (101, 1009, dt.date(2015, 1, 1), OPEN, at(2025, 2, 1), "P", "high", "reconstructed_high"),  # sealed
+]
+# (cik, accepted_utc, clock_basis, period_end, staleness_days, be, at, accession)
+EVENTS = [
+    (1001, at(2024, 6, 1, 12), "fsds_accepted_utc", dt.date(2024, 3, 31), 200, 100.0, 1000.0, "0000001001-24-000001"),
+    (1001, mark(dt.date(2024, 10, 10)) - dt.timedelta(microseconds=1), "fsds_accepted_utc", dt.date(2024, 6, 30), 200,
+     110.0, 1100.0, "0000001001-24-000002"),
+    (1001, mark(dt.date(2024, 10, 21)), "cf_fc1", dt.date(2024, 6, 30), 200, 111.0, 1101.0,
+     "0000001001-24-000003"),                                                    # restated, clock exactly at a mark
+    (1001, at(2024, 11, 12, 21), "fsds_accepted_utc", dt.date(2024, 9, 30), 200, math.nan, 1300.0,
+     "0000001001-24-000004"),                                                    # visible NaN be
+    (1001, at(2025, 1, 5, 12), "fsds_accepted_utc", dt.date(2024, 12, 31), 200, 999.0, 9999.0,
+     "0000001001-25-000001"),                                                    # sealed
+    (2002, at(2024, 5, 10, 20), "fsds_accepted_utc", dt.date(2024, 4, 15), 200, 50.0, 500.0,
+     "0000002002-24-000001"),                                                    # stale after 2024-11-01
+    (4004, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 40.0, 400.0, "0000004004-24-000001"),
+    (4004, at(2024, 9, 3, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 42.0, 420.0,
+     "0000004004-24-000009"),                                                    # same CIK and clock: the larger
+    (4004, at(2024, 9, 3, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 41.0, 410.0,
+     "0000004004-24-000002"),                                                    # accession wins, not file order
+    (4005, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 45.0, 450.0, "0000004005-24-000001"),
+    (5005, at(2024, 1, 20, 20), "cf_fc1", dt.date(2023, 10, 1), 400, 55.0, 550.0,
+     "0000005005-24-000001"),                                                    # annual-only filer: 400 days
+    (7777, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 77.0, 770.0,
+     "0000007777-24-000001"),                                                    # unlinked CIK
+]
+# (cik, accepted_utc, sic, accession)
+SIC_EVENTS = [
+    (1001, at(2024, 1, 10, 15), 7372, "0000001001-24-000000"),
+    (1001, at(2024, 10, 24, 15), 3674, "0000001001-24-000005"),  # SIC change: visible from 10-25 (lag 1)
+    (1001, at(2025, 2, 1, 15), 1000, "0000001001-25-000002"),    # sealed
+    (2002, at(2023, 5, 1, 12), 6022, "0000002002-23-000001"),    # 550 days old on 2024-11-01
+    (4004, at(2024, 2, 1, 12), 9999, "0000004004-24-000000"),    # no FF49 industry
+    (5005, at(2024, 3, 1, 12), 2834, "0000005005-24-000002"),
+    (5005, at(2024, 6, 1, 12), None, "0000005005-24-000003"),    # carries no SIC: skipped (guard)
+    (4005, at(2024, 3, 1, 12), 0, "0000004005-24-000000"),       # invalid: skipped (guard)
+]
+ITEM_NAMES = [x[0] for x in tool.FUND_ITEMS]
+
+
+def item_value(item, row, be, at_):
+    if item == "be":
+        return be
+    if item == "at":
+        return at_
+    return float(1000 * ITEM_NAMES.index(item) + row)
+
+
+def write_published(root, schema, tables, **flags):
+    root.mkdir(parents=True)
+    files = {}
+    for name, table in tables.items():
+        pq.write_table(table, root / name)
+        files[name] = {"bytes": (root / name).stat().st_size, "sha256": sha(root / name), "rows": table.num_rows}
+    (root / "manifest.json").write_text(json.dumps({"schema": schema, "status": "complete", "files": files, **flags}),
+                                        encoding="utf-8")
+    return sha(root / "manifest.json")
+
+
+def naive(values):
+    return [x.replace(tzinfo=None) for x in values]
+
+
+def write_bridge(root, rows=BRIDGE, **flags):
+    """The T19 contract: links.parquet with a naive-UTC timestamp[us] available_at."""
+    flags.setdefault("rehearsal_identity", True)
+    flags.setdefault("source", {"scope_complete": False})
+    cols = list(zip(*rows))
+    table = pa.table({"sr_id": pa.array(cols[0], pa.int64()), "cik": pa.array(cols[1], pa.int64()),
+                      "start": pa.array(cols[2], pa.date32()), "end_incl": pa.array(cols[3], pa.date32()),
+                      "available_at": pa.array(naive(cols[4]), pa.timestamp("us")),
+                      "primary": pa.array(cols[5], pa.string()), "tier": pa.array(cols[6], pa.string()),
+                      "basis": pa.array(cols[7], pa.string())})
+    return write_published(root, "atx.identity-bridge/v1", {"links.parquet": table}, **flags)
+
+
+def write_events(root, events=EVENTS, sic_events=SIC_EVENTS, drop_items=(), staleness=None):
+    """The T20 contract: fundamental_events.parquet and sic_events.parquet (accepted_utc timestamp[us, UTC])."""
+    cols = list(zip(*events))
+    data = {"cik": pa.array(cols[0], pa.int64()), "accession": pa.array(cols[7], pa.string()),
+            "accepted_utc": pa.array(cols[1], pa.timestamp("us", tz="UTC")),
+            "clock_basis": pa.array(cols[2], pa.string()), "period_end": pa.array(cols[3], pa.date32()),
+            "staleness_days": pa.array(staleness or cols[4], pa.int32())}
+    for item in ITEM_NAMES:
+        if item not in drop_items:
+            data[item] = pa.array([item_value(item, r, e[5], e[6]) for r, e in enumerate(events)], pa.float64())
+    s = list(zip(*sic_events))
+    sic = pa.table({"cik": pa.array(s[0], pa.int64()), "accession": pa.array(s[3], pa.string()),
+                    "accepted_utc": pa.array(s[1], pa.timestamp("us", tz="UTC")),
+                    "clock_basis": pa.array(["fsds_accepted_utc"] * len(s[0]), pa.string()),
+                    "sic": pa.array(s[2], pa.int32())})
+    return write_published(root, "atx.fundamental-events/v1",
+                           {"fundamental_events.parquet": pa.table(data), "sic_events.parquet": sic},
+                           values_label="modeled_unaccepted", rehearsal_identity=True, items=ITEM_NAMES)
+
+
+def oracle_link(sid, d):
+    """(cik or None or 'amb', primary) of line sid at session d: the interval, plus the <= gate (binds only on rows
+    that violate available_at <= start mark)."""
+    q = [(cik, kind) for s, cik, start, end, avail, kind, _, basis in BRIDGE
+         if s == sid and kind in ("P", "J") and basis != "current_ticker_verified" and avail < at(2025, 1, 1)
+         and start <= d and (end is None or d <= end) and avail <= mark(d)]
+    ciks = {c for c, _ in q}
+    if not ciks:
+        return None, False
+    if len(ciks) > 1:
+        return "amb", False
+    c = ciks.pop()
+    return c, any(k == "P" for _, k in q)
+
+
+def oracle_latest(rows, cik, cutoff, accession):
+    """Index of the CIK's row with clock < cutoff (not sealed) and the largest (clock, accession)."""
+    best = None
+    for r, row in enumerate(rows):
+        if row[0] == cik and row[1] < cutoff and row[1] < at(2025, 1, 1):
+            if best is None or (row[1], row[accession]) > (rows[best][1], rows[best][accession]):
+                best = r
+    return best
+
+
+def oracle_fund(item, lag):
+    out = np.full((len(SESSIONS), len(IDS)), np.nan)
+    for t, d in enumerate(SESSIONS):
+        for i, sid in enumerate(IDS):
+            cik, primary = oracle_link(sid, d)
+            if not primary or t < lag:
+                continue
+            r = oracle_latest(EVENTS, cik, mark(SESSIONS[t - lag]), 7)
+            if r is None:
+                continue
+            _, _, _, pe, stale_days, be, at_, _ = EVENTS[r]
+            if (d - pe).days <= stale_days:
+                out[t, i] = item_value(item, r, be, at_)
+    return out
+
+
+FF = {7372: (73, 6, 36), 3674: (36, 6, 37), 6022: (60, 11, 45), 9999: (99, 12, math.nan), 2834: (28, 10, 13)}
+
+
+def oracle_grp(kind, lag):
+    valid = [row for row in SIC_EVENTS if row[2] is not None and 100 <= row[2] <= 9999]
+    out = np.full((len(SESSIONS), len(IDS)), np.nan)
+    for t, d in enumerate(SESSIONS):
+        for i, sid in enumerate(IDS):
+            cik, primary = oracle_link(sid, d)
+            if not primary or t < lag:
+                continue
+            r = oracle_latest(valid, cik, mark(SESSIONS[t - lag]), 3)
+            if r is not None and (d - valid[r][1].date()).days <= 550:
+                out[t, i] = FF[valid[r][2]][("sic2", "ff12", "ff49").index(kind)]
+    return out
+
+
+def oracle_me(shares_out, raw, present):
+    out = np.full((len(SESSIONS), len(IDS)), np.nan)
+    for t, d in enumerate(SESSIONS):
+        links = {sid: oracle_link(sid, d) for sid in IDS}
+        for i, sid in enumerate(IDS):
+            cik, primary = links[sid]
+            if not primary:
+                continue
+            terms = [shares_out[t, j] * raw[t, j] if present[t, j] else math.nan
+                     for j, s in enumerate(IDS) if links[s][0] == cik]
+            if all(math.isfinite(x) and x > 0 for x in terms):
+                out[t, i] = sum(terms)
+    return out
+
+
+ISSUER_RUN = list(tool.DEFAULT_FIELDS) + list(tool.ISSUER_FIELDS)
+
+
+class IssuerFields(unittest.TestCase):
+    """fund / me_company / grp fields: link rule, lagged filing clock, staleness, restatements, P-only, PIT."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.fx = Fixture(Path(cls.temp.name))
+        cls.bridge, cls.events = cls.fx.base / "bridge", cls.fx.base / "events"
+        cls.bridge_sha, cls.events_sha = write_bridge(cls.bridge), write_events(cls.events)
+        cls.legacy = cls.fx.run("legacy")                      # default fields only
+        cls.manifest = cls.produce("issuer", ISSUER_RUN)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    @classmethod
+    def produce(cls, out, fields, **kw):
+        kw.setdefault("identity_bridge", cls.bridge)
+        kw.setdefault("identity_bridge_sha256", cls.bridge_sha)
+        kw.setdefault("fund_events", cls.events)
+        kw.setdefault("fund_events_sha256", cls.events_sha)
+        return cls.fx.run(out, fields=list(fields), **kw)
+
+    def entry(self, name, manifest=None):
+        return next(f for f in (manifest or self.manifest)["fields"] if f["name"] == name)
+
+    def test_legacy_fields_byte_identical_and_defaults_unchanged(self):
+        self.assertEqual(tool.DEFAULT_FIELDS, ("si_shares", "si_dtc", "iv_atm_21d", "iv_atm_63d", "iv_atm_126d",
+                                               "earn_recent", "shares_out", "mkt_ret"))
+        self.assertFalse(set(tool.ISSUER_FIELDS) & set(tool.FIELDS))
+        self.assertEqual(len(tool.DEFAULT_FIELDS) + len(tool.ISSUER_FIELDS), 40)  # <= 64 runner fields
+        for name in tool.DEFAULT_FIELDS:
+            self.assertEqual(self.manifest["files"][f"{name}.f64"], self.legacy["files"][f"{name}.f64"], name)
+            self.assertEqual(self.entry(name), self.entry(name, self.legacy), name)
+        self.assertNotIn("issuer", self.legacy["source_checks"])
+        self.assertEqual([e["name"] for e in self.manifest["fields"]], ISSUER_RUN)  # legacy first, registry order
+        for e in self.manifest["fields"]:
+            if e["name"] in tool.ISSUER_FIELDS:
+                self.assertIs(e["point_in_time"], True)
+                self.assertEqual(e["non_pit_aspects"], [])
+                self.assertTrue(e["definition"])
+                self.assertNotIn("{lag}", e["clock"])
+        self.assertEqual(self.manifest["non_point_in_time_fields"], [])
+        self.assertEqual(self.entry("me_company")["depends_on"], ["shares_out"])
+
+    def test_fund_link_rule_lagged_clock_restatement_staleness(self):
+        for item in ("be", "at", "sue"):
+            np.testing.assert_array_equal(self.fx.field("issuer", item), oracle_fund(item, 1), item)
+        be = self.fx.field("issuer", "be")
+        a, b, c, d, e = range(5)
+        self.assertTrue(np.all(np.isnan(be[0])))                  # t < lag: nothing visible yet
+        self.assertEqual(be[1, a], 100)
+        self.assertEqual(be[t_of("2024-10-10"), a], 100)          # clock 1 us before the 10-10 mark: s0 = 10-10 ...
+        self.assertEqual(be[t_of("2024-10-11"), a], 110)          # ... + 1 declared lag session
+        self.assertEqual(be[t_of("2024-10-22"), a], 110)          # restatement clock == the 10-21 mark: s0 = 10-22
+        self.assertEqual(be[t_of("2024-10-23"), a], 111)          # restated value from s0 + 1, never backdated
+        self.assertTrue(np.isnan(be[t_of("2024-11-13"), a]))      # visible NaN in the latest row: no skip-back
+        self.assertEqual(self.fx.field("issuer", "at")[t_of("2024-11-13"), a], 1300)
+        self.assertTrue(np.all(np.isnan(be[:, c])))               # J line: issuer fields are primary-only
+        self.assertTrue(np.isnan(be[t_of("2024-10-14"), b]))      # before the link's start
+        self.assertEqual(be[t_of("2024-10-15"), b], 50)           # available_at == start mark: first day kept
+        self.assertTrue(np.isnan(be[t_of("2024-10-18"), e]))      # invariant violation gated: not before ...
+        self.assertEqual(be[t_of("2024-10-21"), e], 55)           # ... the first mark >= available_at
+        self.assertEqual(be[t_of("2024-11-01"), b], 50)           # age 200 (period end 2024-04-15): kept
+        self.assertTrue(np.isnan(be[t_of("2024-11-04"), b]))      # age 203: stale
+        self.assertEqual(be[t_of("2024-10-31"), d], 42)           # same CIK and clock: the later file row wins
+        self.assertTrue(np.all(np.isnan(be[[t for t, x in enumerate(SESSIONS) if x.month == 11], d])))  # ambiguous
+        self.assertEqual(be[t_of("2024-12-02"), d], 42)
+        self.assertEqual(be[t_of("2024-11-04"), e], 55)           # annual-only: age 400 kept
+        self.assertTrue(np.isnan(be[t_of("2024-11-05"), e]))      # age 401: stale
+        r = self.entry("be")["nan_reasons_member_cells"]
+        self.assertGreater(r["stale"], 0)
+        self.assertGreater(r["visible_nan"], 0)
+        self.assertGreater(r["no_visible_row"], 0)
+        member = np.fromfile(self.fx.role / "member.u8", dtype="u1").reshape(len(SESSIONS), len(IDS)) != 0
+        fc1 = np.zeros_like(member)
+        fc1[t_of("2024-10-23"):t_of("2024-11-13"), a] = True      # 1001's FC1 restatement row is visible
+        fc1[t_of("2024-10-21"):t_of("2024-11-05"), e] = True      # 5005's FC1 row (linked from 10-21)
+        fc1[0] = False
+        self.assertEqual(r["fc1_finite_member_cells"], int(np.count_nonzero(fc1 & member & np.isfinite(be))))
+
+    def test_lag_zero_shifts_by_one_session_and_is_declared_in_the_clock(self):
+        m = self.produce("lag0", ["be", "grp_ff49"], fund_lag_sessions=0)
+        be = self.fx.field("lag0", "be")
+        np.testing.assert_array_equal(be, oracle_fund("be", 0))
+        np.testing.assert_array_equal(self.fx.field("lag0", "grp_ff49"), oracle_grp("ff49", 0))
+        self.assertEqual(be[t_of("2024-10-10"), 0], 110)
+        self.assertEqual(be[t_of("2024-10-22"), 0], 111)
+        self.assertNotEqual(self.entry("be", m)["clock"], self.entry("be")["clock"])  # runner refuses mixed lags
+        self.assertIn("L = 1", self.entry("be")["clock"])
+        self.assertEqual(self.manifest["source_checks"]["issuer"]["fund_lag_sessions"], 1)
+
+    def test_group_fields_sic_change_staleness_and_unmapped(self):
+        for kind in ("sic2", "ff12", "ff49"):
+            np.testing.assert_array_equal(self.fx.field("issuer", f"grp_{kind}"), oracle_grp(kind, 1), kind)
+        ff49, ff12 = self.fx.field("issuer", "grp_ff49"), self.fx.field("issuer", "grp_ff12")
+        self.assertEqual(ff49[t_of("2024-10-24"), 0], 36)        # Softw (7372)
+        self.assertEqual(ff49[t_of("2024-10-25"), 0], 37)        # Chips (3674) from s0 + 1
+        self.assertEqual(ff12[t_of("2024-11-01"), 1], 11)        # Money: 6022 accepted 2023-05-01, age 550
+        self.assertTrue(np.isnan(ff12[t_of("2024-11-04"), 1]))   # age 553: stale
+        self.assertEqual(ff12[t_of("2024-10-31"), 3], 12)        # 9999: FF12 Other ...
+        self.assertTrue(np.isnan(ff49[t_of("2024-10-31"), 3]))   # ... and no FF49 industry
+        self.assertEqual(self.fx.field("issuer", "grp_sic2")[t_of("2024-10-22"), 4], 28)  # null-SIC row skipped
+        st = self.manifest["source_checks"]["issuer"]
+        self.assertEqual(st["sic_events"]["rows_used_invalid_sic_skipped"], 2)
+        self.assertEqual(st["sic_events"]["rows_available_on_or_after_2025_dropped"], 1)
+        self.assertGreater(self.entry("grp_ff49")["nan_reasons_member_cells"]["unmapped"], 0)
+        self.assertEqual(st["sic_mapping"]["versions"], tool.SIC_MAPPING_VERSIONS)
+
+    def test_sic_mapping_tables_match_the_atx_db_helpers(self):
+        ff12, ff49, prov = tool.sic_mapping()
+        from atx_db import reference_classifications as rc
+        for sic in range(0, 10000):
+            if sic < 100:
+                self.assertTrue(np.isnan(ff12[sic]) and np.isnan(ff49[sic]))
+                continue
+            self.assertEqual(ff12[sic], tool.FF12_NUMBERS[rc.fama_french_12_for_sic(sic)])
+            code = rc.fama_french_49_for_sic(sic)
+            if code is None:
+                self.assertTrue(np.isnan(ff49[sic]))
+            else:
+                self.assertEqual(rc.FF49_INDUSTRIES[int(ff49[sic]) - 1][1], code)
+        self.assertEqual(sorted(set(ff12[100:].tolist())), list(range(1, 13)))
+        self.assertEqual(sorted(set(ff49[np.isfinite(ff49)].tolist())), list(range(1, 50)))
+        self.assertEqual(prov["table_sha256"], hashlib.sha256(np.stack([ff12, ff49]).astype("<f8").tobytes()).hexdigest())
+
+    def test_me_company_line_summed_over_p_and_j_lines(self):
+        close, raw, present = role_prices(len(SESSIONS))
+        so = self.fx.field("issuer", "shares_out")
+        got = self.fx.field("issuer", "me_company")
+        np.testing.assert_allclose(got, oracle_me(so, raw, present), rtol=1e-15, atol=0, equal_nan=True)
+        t = t_of("2024-10-15")
+        self.assertAlmostEqual(got[t, 0], so[t, 0] * raw[t, 0] + so[t, 2] * raw[t, 2], delta=1e-6)
+        self.assertTrue(np.all(np.isnan(got[:, 2])))               # J line itself: NaN
+        after = [t for t, d in enumerate(SESSIONS) if d >= C81_303]
+        self.assertTrue(np.all(np.isnan(got[after, 0])))         # 303 (J) shares_out withheld -> 1001 NaN
+        self.assertTrue(np.all(np.isfinite(so[after, 0])))
+        self.assertTrue(np.isnan(got[40, 4]))                     # 505 absent on session 40
+        r = self.entry("me_company")["nan_reasons_member_cells"]
+        member = np.fromfile(self.fx.role / "member.u8", dtype="u1").reshape(len(SESSIONS), len(IDS)) != 0
+        self.assertEqual(r["other_linked_line_nan"], int(np.count_nonzero(member[after, 0])))  # 101 not a member at 60
+        self.assertGreater(r["multi_line_finite"], 0)
+        self.assertEqual([Path(s["path"]).name for s in self.entry("me_company")["sources"][-2:]],
+                         ["raw_close.f64", "present.u8"])
+
+    def test_link_and_event_accounting(self):
+        st = self.manifest["source_checks"]["issuer"]
+        b = st["identity_bridge"]
+        self.assertEqual((b["rows_total"], b["rows_dropped_kind_not_p_or_j"], b["rows_dropped_excluded_basis"],
+                          b["rows_available_on_or_after_2025_dropped"], b["rows_ignored_off_axis"], b["rows_used"]),
+                         (10, 1, 1, 1, 1, 6))
+        self.assertEqual((b["rehearsal_identity"], b["scope_complete"]), (True, False))
+        self.assertEqual((b["rows_used_available_after_start_mark"], b["rows_used_available_exactly_at_start_mark"]),
+                         (1, 4))
+        self.assertIn("start <= date(session) <= end_incl", b["link_rule"])
+        self.assertEqual(b["ambiguous_cells"], sum(d.month == 11 for d in SESSIONS))
+        ev = st["fund_events"]
+        self.assertEqual((ev["rows_total"], ev["rows_available_on_or_after_2025_dropped"], ev["rows_ignored_unlinked_cik"],
+                          ev["rows_sharing_cik_and_clock"], ev["rows_used_fc1_clock"], ev["rows_used_staleness_400"]),
+                         (12, 1, 1, 1, 2, 1))
+        self.assertEqual((ev["values_label"], ev["rehearsal_identity"]), ("modeled_unaccepted", True))
+        self.assertEqual(st["fund_events_manifest"]["items"], ITEM_NAMES)
+        lc = st["link_member_cells"]
+        self.assertEqual(lc["member_cells"], lc["unlinked"] + lc["ambiguous"] + lc["secondary"] + lc["primary"])
+        names = {Path(s["path"]).name for s in self.entry("be")["sources"]}
+        self.assertEqual(names, {"manifest.json", "links.parquet", "fundamental_events.parquet"})
+        self.assertEqual({Path(s["path"]).name for s in self.entry("grp_ff12")["sources"]},
+                         {"manifest.json", "links.parquet", "sic_events.parquet"})
+
+    def test_link_rule_interval_only(self):
+        # Controller ruling: rows meeting T19's invariant match on start <= d <= end_incl only (no strict
+        # available_at < mark filter that would drop their first day). Checked on a bridge of compliant rows only.
+        base = self.fx.base / "interval-only"
+        compliant = [r for r in BRIDGE if not (r[0] == 505 and r[1] == 5005)]
+        sha_ = write_bridge(base, compliant)
+        m = self.produce("interval-only-out", ["be"], identity_bridge=base, identity_bridge_sha256=sha_)
+        got = self.fx.field("interval-only-out", "be")
+        for t, d in enumerate(SESSIONS):
+            for i, sid in enumerate(IDS):
+                rows = [r for r in compliant if r[0] == sid and r[5] in ("P", "J") and r[7] != "current_ticker_verified"
+                        and r[4] < at(2025, 1, 1) and r[2] <= d and (r[3] is None or d <= r[3])]
+                if not rows:
+                    self.assertTrue(np.isnan(got[t, i]), (d, sid))  # no interval contains d
+        np.testing.assert_array_equal(got[:, :4], self.fx.field("issuer", "be")[:, :4])
+        self.assertTrue(np.all(np.isnan(got[:, 4])))
+        b = m["source_checks"]["issuer"]["identity_bridge"]
+        self.assertEqual((b["rows_used_available_after_start_mark"], b["rows_used_available_exactly_at_start_mark"]),
+                         (0, 4))
+
+    def test_point_in_time_later_rows_change_no_earlier_cell(self):
+        late = mark(dt.date(2024, 12, 10)) - dt.timedelta(microseconds=1)
+        extra = EVENTS + [(1001, late, "fsds_accepted_utc", dt.date(2024, 9, 30), 200, 123.0, 1234.0,
+                           "0000001001-24-000009")]
+        sic_extra = SIC_EVENTS + [(1001, late, 2834, "0000001001-24-000009")]
+        root = self.fx.base / "events-late"
+        sha_late = write_events(root, extra, sic_extra)
+        self.produce("late", ["be", "grp_ff49"], fund_events=root, fund_events_sha256=sha_late)
+        t = t_of("2024-12-11")
+        for name in ("be", "grp_ff49"):
+            before, after = self.fx.field("issuer", name), self.fx.field("late", name)
+            np.testing.assert_array_equal(after[:t], before[:t], name)
+            self.assertNotEqual(after[t, 0], before[t, 0], name)
+        self.assertEqual(self.fx.field("late", "be")[t, 0], 123.0)
+
+    def test_deterministic_rerun(self):
+        again = self.produce("issuer-again", ISSUER_RUN)
+        self.assertEqual(again, self.manifest)
+        for name in list(self.manifest["files"]) + ["manifest.json"]:
+            self.assertEqual(sha(self.fx.base / "issuer" / name), sha(self.fx.base / "issuer-again" / name))
+
+    def test_refusals_fail_closed(self):
+        cases = [
+            ("no-bridge", ["be"], {"identity_bridge": None}, "identity-bridge"),
+            ("no-events", ["be"], {"fund_events": None}, "fund-events"),
+            ("me-only", ["me_company"], {}, "requires shares_out"),
+            ("bad-lag", ["be"], {"fund_lag_sessions": 9}, "fund-lag-sessions"),
+            ("bad-bridge-sha", ["be"], {"identity_bridge_sha256": "0" * 64}, "identity-bridge manifest SHA-256"),
+            ("bad-events-sha", ["grp_ff12"], {"fund_events_sha256": "0" * 64}, "fund-events manifest SHA-256"),
+        ]
+        for out, fields, kw, pattern in cases:
+            with self.assertRaisesRegex(ValueError, pattern):
+                self.produce(out, fields, **kw)
+            self.assertFalse((self.fx.base / out / "manifest.json").exists(), out)
+        # me_company needs no events artifact.
+        m = self.produce("me-no-events", ["si_shares", "shares_out", "me_company"], fund_events=None)
+        self.assertEqual([e["name"] for e in m["fields"]], ["si_shares", "shares_out", "me_company"])
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            missing_sha = write_events(base / "missing", drop_items=("xrd_ttm",))
+            with self.assertRaisesRegex(ValueError, r"lacks requested column\(s\) \['xrd_ttm'\]"):
+                self.produce("missing-item", ["be", "xrd_ttm"], fund_events=base / "missing", fund_events_sha256=missing_sha)
+            self.produce("other-items", ["be"], fund_events=base / "missing", fund_events_sha256=missing_sha)  # not needed
+            flag_sha = write_bridge(base / "noflag", rehearsal_identity="yes")
+            with self.assertRaisesRegex(ValueError, "rehearsal_identity"):
+                self.produce("noflag", ["be"], identity_bridge=base / "noflag", identity_bridge_sha256=flag_sha)
+            odd_sha = write_events(base / "odd-staleness", staleness=[300] * len(EVENTS))
+            with self.assertRaisesRegex(ValueError, r"staleness_days outside the declared \[200, 400\]"):
+                self.produce("odd-staleness", ["be"], fund_events=base / "odd-staleness", fund_events_sha256=odd_sha)
+            schema_sha = write_published(base / "wrong-schema", "atx.identity-bridge/v0", {}, rehearsal_identity=True)
+            with self.assertRaisesRegex(ValueError, "not a complete atx.identity-bridge/v1 artifact"):
+                self.produce("wrong-schema", ["be"], identity_bridge=base / "wrong-schema",
+                             identity_bridge_sha256=schema_sha)
+            nocol_sha = write_published(base / "no-accession", "atx.fundamental-events/v1", {
+                "fundamental_events.parquet": pa.table({"cik": pa.array([1001], pa.int64())}),
+                "sic_events.parquet": pa.table({"cik": pa.array([1001], pa.int64())})})
+            with self.assertRaisesRegex(ValueError, r"lacks contract column\(s\)"):
+                self.produce("no-accession", ["grp_ff12"], fund_events=base / "no-accession", fund_events_sha256=nocol_sha)
+            bad_sha = write_events(base / "tampered")
+            path = base / "tampered" / "fundamental_events.parquet"
+            path.write_bytes(path.read_bytes() + b"\0")
+            with self.assertRaisesRegex(ValueError, "does not match its manifest entry"):
+                self.produce("tampered", ["be"], fund_events=base / "tampered", fund_events_sha256=bad_sha)
+            self.assertFalse((self.fx.base / "tampered" / "manifest.json").exists())
+
+    def test_clock_units_and_empty_inputs(self):
+        # tz-aware ns bridge clocks and naive ms event clocks read as the same UTC instants.
+        base = self.fx.base / "variants"
+        c = list(zip(*BRIDGE))
+        bridge_sha = write_published(base / "bridge", "atx.identity-bridge/v1", {"links.parquet": pa.table({
+            "sr_id": pa.array(c[0], pa.int64()), "cik": pa.array(c[1], pa.int64()),
+            "start": pa.array(c[2], pa.date32()), "end_incl": pa.array(c[3], pa.date32()),
+            "available_at": pa.array(c[4], pa.timestamp("ns", tz="UTC")), "primary": pa.array(c[5], pa.string()),
+            "basis": pa.array(c[7], pa.string())})}, rehearsal_identity=True)
+        events_sha = write_events(base / "events")
+        table = pq.read_table(base / "events" / "fundamental_events.parquet")
+        i = table.schema.get_field_index("accepted_utc")
+        table = table.set_column(i, "accepted_utc", pa.array(naive(list(zip(*EVENTS))[1]), pa.timestamp("us")))
+        pq.write_table(table, base / "events" / "fundamental_events.parquet")
+        m = json.loads((base / "events" / "manifest.json").read_bytes())
+        m["files"]["fundamental_events.parquet"].update(
+            bytes=(base / "events" / "fundamental_events.parquet").stat().st_size,
+            sha256=sha(base / "events" / "fundamental_events.parquet"))
+        (base / "events" / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+        events_sha = sha(base / "events" / "manifest.json")
+        self.produce("variants-out", ["be", "grp_sic2"], identity_bridge=base / "bridge",
+                     identity_bridge_sha256=bridge_sha, fund_events=base / "events", fund_events_sha256=events_sha)
+        for name in ("be", "grp_sic2"):
+            np.testing.assert_array_equal(self.fx.field("variants-out", name), self.fx.field("issuer", name), name)
+        # Events with no row for any linked CIK: every cell NaN, nothing refused.
+        lone_sha = write_events(base / "lone", [x for x in EVENTS if x[0] == 7777],
+                                [(7777, at(2024, 1, 1), 1000, "0000007777-24-000000")])
+        self.produce("lone-out", ["be", "grp_ff12"], fund_events=base / "lone", fund_events_sha256=lone_sha)
+        for name in ("be", "grp_ff12"):
+            self.assertTrue(np.all(np.isnan(self.fx.field("lone-out", name))), name)
+
+    def test_library_v4_field_names_are_producible(self):
+        # atx-impl/strategies/fund_industry_ic_v4.json (T24, pool-7 3bb3fbf3) declares these non-base fields.
+        declared = ["mkt_ret", "si_shares", "si_dtc", "iv_atm_21d", "earn_recent", "shares_out", "be", "at", "at_lag4",
+                    "lt", "che", "debt", "sale_ttm", "gp_ttm", "oi_ttm", "ni_ttm", "ni_q", "ni_q_lag4", "be_lag1q",
+                    "cfo_ttm", "capx_ttm", "xrd_ttm", "dvc_ttm", "prstkc_ttm", "sstk_ttm", "txt_q", "txt_q_lag4",
+                    "shrs_q", "shrs_q_lag4", "noa", "sue", "fscore", "me_company", "grp_ff12", "grp_ff49"]
+        self.assertEqual([x for x in declared if x not in tool.ALL_FIELDS], [])
+        self.assertIn("be_lag1q_lag4", tool.ISSUER_FIELDS)  # canonical dROE (controller note)
+
+    def test_cli_issuer_subset(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            tool.main(["--role", str(self.fx.role), "--role-sha256", self.fx.role_sha,
+                       "--output", str(self.fx.base / "cli-issuer"), "--fields", "grp_ff12,be",
+                       "--identity-bridge", str(self.bridge), "--identity-bridge-sha256", self.bridge_sha,
+                       "--fund-events", str(self.events), "--fund-events-sha256", self.events_sha,
+                       "--fund-lag-sessions", "1"])
+        m = json.loads((self.fx.base / "cli-issuer" / "manifest.json").read_bytes())
+        self.assertEqual([f["name"] for f in m["fields"]], ["be", "grp_ff12"])
+        for name in ("be", "grp_ff12"):
+            np.testing.assert_array_equal(self.fx.field("cli-issuer", name), self.fx.field("issuer", name))
+
+
 if __name__ == "__main__":
     unittest.main()

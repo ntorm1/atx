@@ -1,0 +1,2443 @@
+{
+  "schema": "atx.dsl-ic-experiment/v1",
+  "id": "fund_industry_ic_v6_initial",
+  "library": {
+    "path": "fund_industry_ic_v6.json",
+    "sha256": "5ee66d137c60527c4b00f948e8b15c04f2bddc789e988b660a4254a6df6e896a"
+  },
+  "preregistration": ".superpowers/sdd/mega-alpha-20260926/v4-prereg.md section \"## v6 revision\" item V6-L (declared 2026-09-27 after the Phase A reviews, before any v6 TRAIN read); task brief task-V6L-brief.md",
+  "generation": {
+    "rule": "v51-revised-v6l",
+    "revision": "initial",
+    "candidates": 38,
+    "families": 9,
+    "family_is_theme": true,
+    "one_variant_per_hypothesis": true,
+    "max_roster": 48,
+    "wrapper": "R(decay_linear(x, 21)) where x holds no Cs op; decay_linear(R(x), 21) kept where x holds a Cs op; R(x) for fast sleeves (tau >= 0.08); composite: mean_k R(decay_linear(x_k, 21)); R = group_rank(., grp_ff12) for themes 1-3, rank(.) otherwise",
+    "smoothing_policy": {
+      "blackout": "vm.hpp set_cross_section_mask: every Cs op emits NaN for non-members (strategy_ic_runner.cpp sets decision_member); ts_ops.hpp: min_periods = full window, any NaN -> NaN; so decay_linear(R(x), 21) is NaN for 21 sessions after any membership gap. Field loads keep observed history for non-members, so R(decay_linear(x, 21)) with a Cs-free x has one masked op, the last",
+      "fast_sleeves": {
+        "rule": "standalone TRAIN tau >= 0.08: decay removed (construction theta smooths)",
+        "source": "build-equity/mega-weights-v51-ew/admission.json",
+        "source_sha256": "4f06bd18537a3c2ff040d62a43708c8f6fd1144b7e94bc354237b9ae9f0bd37c",
+        "tau": {
+          "si_change": 0.0915,
+          "ind_adj_rev_5": 0.1808,
+          "seasonality_same_month": 0.0938,
+          "iv_rv_spread": 0.0898
+        }
+      },
+      "additions": "R(decay_linear(x, 21)) (s21 default, no measured tau)"
+    },
+    "max_prior_bars": 314,
+    "complete_observations": 315,
+    "grammar_helpers": {
+      "generator": "generate_price_volume_ic96_v2.py",
+      "sha256_lf": "f4f1cb5838d86c4e30b4698d4e37c90469b2eb5cfb32b2bf622e126455afff4f",
+      "used": "tokenize, Expr/binary/call/window/pair builders, peak_slots"
+    },
+    "parent_v51": {
+      "generator": "generate_fund_ic_v5.py",
+      "library": "fund_industry_ic_v5.json",
+      "library_sha256": "9e5ea08cb3c9a802f72e23dd069499b59294fba5708e0873d9dfc57f8a7458e0",
+      "recipe": "fund_industry_ic_v5.recipe.json",
+      "recipe_sha256": "a26670b0f7b6d1681a4ea8a4758da83841163ceaea8af5a4256ee718ad7c3aea",
+      "candidates": 38
+    },
+    "lineage_v42": "res_mom_12_1 = v4.2 res_mom_12_1 base (fund_industry_ic_v42.recipe.json 396a1d0d) with beta = rho sd_r / sd_m substituted (algebraically identical)",
+    "registry_rows": {
+      "power": [
+        2,
+        2,
+        "Pow"
+      ],
+      "ts_count_nans": [
+        2,
+        2,
+        "TsCountNans"
+      ]
+    },
+    "roster_edits": {
+      "insert_before": {
+        "bm": "value_composite",
+        "mom_12_1": "res_mom_12_1"
+      },
+      "replace": {
+        "cfoa": "cbop",
+        "low_beta": "bac",
+        "low_max": "smax"
+      },
+      "remove": {
+        "low_ivol": "replaced by bac and smax (prereg V6-L: replace low_beta / low_ivol / low_max)",
+        "lowvol_ind": "spanned by the price-risk-v1 vol63 regressor (see LOWVOL_IND_ARGUMENT)"
+      },
+      "rule": "a replacement takes the replaced member's slot; an addition the literature ranks as the preferred construction of a hypothesis cluster precedes the incumbent it upgrades (redundancy order (tier, roster order), prereg R3); no TRAIN statistic"
+    },
+    "generator_sha256": "c7ed8220348b66fb11b262049a67925b6e6a3cf92470d2b27b92161cf6c0d0fb",
+    "v5_generator_sha256": "5875e9bf89fc43acd25df04e3b1d721709e2686e06b452faf362f270cc846981"
+  },
+  "orientation": {
+    "rule": "prior sign embedded in the DSL: base = raw_prior_direction * raw quantity, so a higher value is the predicted long side and every candidate has prior_sign +1",
+    "prior_sign": 1,
+    "sign_policy_field": "train-rank-ic21 (runner contract only)",
+    "pinned_signs": "T23 fitter --orientation prior writes pinned +1 signs; no TRAIN sign flips",
+    "sign_estimation": false
+  },
+  "labels": {
+    "per_candidate": [
+      "theme",
+      "tier",
+      "tier_rank",
+      "prior_sign",
+      "citation"
+    ],
+    "where": "library candidate rows and recipe lineage rows (identical values)",
+    "tier_scale": {
+      "A": 1,
+      "A-": 2,
+      "B+": 3,
+      "B": 4,
+      "B-": 5,
+      "C+": 6
+    },
+    "tier_rank_meaning": "1 = strongest prior; admission redundancy order is (tier_rank, roster_order) (prereg R3)",
+    "tier_basis": "T18 report section 6 tiers; members T18 did not grade take the tier-1 alpha-priors doc (docs/superpowers/handoffs/2026-09-26-tier1-v2-alpha-priors.md, literature only) rows: momentum row 3 (A; plain 12-1 B+ for the Daniel-Moskowitz crash caveat, 52-week high A-), EAR row 6 (B+), short interest and DTC row 7 (B+; the SI change has no cross-sectional anchor: B-), low risk row 11 (B-), seasonality row 12 (C+), options (IV-RV spread B on its published direction)",
+    "prior_sign_sources": "lineage prior_sign_source: author-year of the raw direction",
+    "tier_basis_v6": "v6 additions take the v6-literature evidence grades: residual momentum B+, cash-based operating profitability A-, BAC / SMAX B+; the composite value takes cfp's B+"
+  },
+  "themes": [
+    {
+      "theme": "value",
+      "index": 1,
+      "description": "Price-scaled fundamentals (book, earnings, cash flow, free cash flow, EBIT/EV, net payout, sales, R&D) and a composite of the book, earnings and cash-flow yields, ranked within FF12 industry; high value predicts higher returns.",
+      "members": [
+        "value_composite",
+        "bm",
+        "ep",
+        "cfp",
+        "fcfp",
+        "ebit_ev",
+        "net_payout",
+        "sp",
+        "rd_me"
+      ],
+      "expected_turnover": "low (~0.02-0.05/day): price-scaled ratios move with price; fundamentals step at filings; s21 decay",
+      "expected_turnover_v6": {
+        "value_composite": "low (as cfp, ~0.02/day): price-scaled ratios, s21 decay inside the rank"
+      }
+    },
+    {
+      "theme": "profitability_quality",
+      "index": 2,
+      "description": "Profitability and quality (gross, operating, cash-based operating, ROE, ROA, low accruals, F-score) and operating leverage (operating costs to assets), ranked within FF12 industry; high quality and high operating leverage predict higher returns.",
+      "members": [
+        "gpa",
+        "opbe",
+        "cbop",
+        "roe_q",
+        "roa",
+        "accruals",
+        "fscore",
+        "opex_at"
+      ],
+      "expected_turnover": "very low (< 0.02/day): accounting ranks step at filings; s21 decay",
+      "expected_turnover_v6": {
+        "cbop": "very low (< 0.02/day, as gpa): accounting ranks step at filings; s21 decay"
+      }
+    },
+    {
+      "theme": "investment_issuance",
+      "index": 3,
+      "description": "Low asset growth, low net operating assets and low share issuance (XBRL and split-neutral vendor), ranked within FF12 industry; low investment and issuance predict higher returns.",
+      "members": [
+        "asset_growth",
+        "noa",
+        "issuance_xbrl",
+        "issuance_vendor"
+      ],
+      "expected_turnover": "very low (< 0.02/day): accounting and 252-session share ranks; s21 decay",
+      "expected_turnover_v6": null
+    },
+    {
+      "theme": "earnings_momentum",
+      "index": 4,
+      "description": "Earnings news: SUE, change in ROE, change in tax expense and the 3-day earnings announcement return; good news predicts continuation.",
+      "members": [
+        "sue",
+        "droe",
+        "chtax",
+        "ear"
+      ],
+      "expected_turnover": "low: SUE/dROE/ChTax step at filings; EAR steps at events (about 1/63 of names per session)",
+      "expected_turnover_v6": null
+    },
+    {
+      "theme": "price_momentum",
+      "index": 5,
+      "description": "12-1 momentum, 12-1 residual momentum, industry 12-1 momentum, within-industry momentum and nearness to the 52-week high; winners continue.",
+      "members": [
+        "res_mom_12_1",
+        "mom_12_1",
+        "ind_mom_12_1",
+        "within_ind_mom",
+        "high_52w"
+      ],
+      "expected_turnover": "low (~0.03/day): 12-1 and 52-week-high ranks with s21 decay",
+      "expected_turnover_v6": {
+        "res_mom_12_1": "low (~0.03/day): 231-session standardized residual return, s21 decay"
+      }
+    },
+    {
+      "theme": "low_risk",
+      "index": 6,
+      "description": "Betting against correlation (low correlation with the market) and low scaled MAX (largest daily return per unit of volatility); low risk predicts higher risk-adjusted returns.",
+      "members": [
+        "bac",
+        "smax"
+      ],
+      "expected_turnover": "low to moderate: 250-session correlation and 21-session MAX over 252-session volatility; s21 decay",
+      "expected_turnover_v6": {
+        "bac": "low (as low_beta, ~0.05/day or less): 250-session correlation, s21 decay",
+        "smax": "moderate (21-session MAX over 252-session volatility), s21 decay; measured at admission"
+      }
+    },
+    {
+      "theme": "short_interest",
+      "index": 7,
+      "description": "FINRA short interest ratio, days to cover and one-month change in short interest; heavy or rising shorting predicts lower returns.",
+      "members": [
+        "si_ratio",
+        "dtc",
+        "si_change"
+      ],
+      "expected_turnover": "very low for si_ratio / dtc (s21 decay); si_change unsmoothed (fast sleeve, theta smooths)",
+      "expected_turnover_v6": null
+    },
+    {
+      "theme": "reversal_seasonality",
+      "index": 8,
+      "description": "Industry-adjusted short-term reversal and same-calendar-month seasonality.",
+      "members": [
+        "ind_adj_rev_5",
+        "seasonality_same_month"
+      ],
+      "expected_turnover": "high (the fastest theme; cost-bound): weekly and one-month windows, unsmoothed (fast sleeves; construction theta smooths)",
+      "expected_turnover_v6": null
+    },
+    {
+      "theme": "options_implied",
+      "index": 9,
+      "description": "Implied-minus-realized volatility spread; high implied volatility relative to realized volatility predicts higher returns.",
+      "members": [
+        "iv_rv_spread"
+      ],
+      "expected_turnover": "high: daily IV and 21-session realized volatility, unsmoothed (fast sleeve; theta smooths)",
+      "expected_turnover_v6": null
+    }
+  ],
+  "within_industry": {
+    "group_field": "grp_ff12",
+    "operator": "group_rank",
+    "themes": [
+      "value",
+      "profitability_quality",
+      "investment_issuance"
+    ],
+    "members": [
+      "value_composite",
+      "bm",
+      "ep",
+      "cfp",
+      "fcfp",
+      "ebit_ev",
+      "net_payout",
+      "sp",
+      "rd_me",
+      "gpa",
+      "opbe",
+      "cbop",
+      "roe_q",
+      "roa",
+      "accruals",
+      "fscore",
+      "asset_growth",
+      "noa",
+      "issuance_xbrl",
+      "issuance_vendor",
+      "opex_at"
+    ],
+    "exceptions": [],
+    "exceptions_statement": "sole exception list (prereg R1): empty; no theme 1-3 member of the v4 roster is explicitly industry-level",
+    "nan_label": "a NaN industry label leaves the name out of the group (NaN signal)",
+    "reason": "prereg R1: v3 failed on regime concentration; industry-adjusted value and profitability are the stronger published forms (Novy-Marx 2013; Asness-Porter-Stevens 2000); cost if wrong: the between-industry value premium is lost"
+  },
+  "industry_level_price_members": {
+    "group_fields": {
+      "grp_ff49": [
+        "ind_mom_12_1",
+        "within_ind_mom",
+        "ind_adj_rev_5"
+      ]
+    },
+    "source": "T18 section 6 DSL sketches (group field per member kept as sketched)"
+  },
+  "v6_changes": [
+    {
+      "id": "value_composite",
+      "change": "added",
+      "detail": "composite value (brief: mean rank of bm, ep, cfp, ebit_ev)",
+      "v51_dsl_sha256": null
+    },
+    {
+      "id": "bm",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "9995f3fd0b58e1e9d6e3cd85a3162ebe5ecdbd632f9a6f73e822c38241a56cb2"
+    },
+    {
+      "id": "ep",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "43723819dc4ad72e4602f2730d75d144c5a3c2ae4d261da68adc0dce0c3f237b"
+    },
+    {
+      "id": "cfp",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "fa2087170da3bb25bba60801f7d7186362ae41fa608a3f2ce4140c5b540bd2b6"
+    },
+    {
+      "id": "fcfp",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "9b8aaf54b0875c35551999efd6e0ef3a2cb121430a739d05946dda35d2bdab3a"
+    },
+    {
+      "id": "ebit_ev",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "8f65d5d9ab9f442065b63db81bdef933a1c38169049a20134ded08fff92fc326"
+    },
+    {
+      "id": "net_payout",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "8e064a6469fa70054fe9c6574d0cb4bfd262c52160ff983b96139cb5a8190fbd"
+    },
+    {
+      "id": "sp",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "1b80a93ea9de31a11d2c6adf507b56672cc2c0853313636fdf4f9b657469ae44"
+    },
+    {
+      "id": "rd_me",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "29a23f174c13b35230bfc333a90399ecf8b933263d7f0823827507ccbf694522"
+    },
+    {
+      "id": "gpa",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "c62e0a67d77c56e80c8b80c11fa102054435fc97461a58a05f4a1e0aba494c5c"
+    },
+    {
+      "id": "opbe",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "e50080db467a13f0ac8a258e63dd1f9a7cc06d04d755f8e772e3d91dac92c20c"
+    },
+    {
+      "id": "cbop",
+      "change": "replaces cfoa",
+      "detail": "cash-based operating profitability replaces cfoa (cfo_ttm / average assets, which cited the same paper): one variant per hypothesis",
+      "v51_dsl_sha256": null
+    },
+    {
+      "id": "roe_q",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "c25d2cc5a85a6f3402501e78fb6dc020dda363bd069d671a41cce339b39c4c70"
+    },
+    {
+      "id": "roa",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "5ab5b3b7783438217376b072398a83983d9be874a6503bc86111f05c32e6c2df"
+    },
+    {
+      "id": "accruals",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "31061261c9c2967592ab7ff697ac89b2aea1a239aebae14d1f01cf6d958f1174"
+    },
+    {
+      "id": "fscore",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "162818f125ec788120962adf0c0f9dd99db4ee9a7f4be10081092dec52b0197a"
+    },
+    {
+      "id": "asset_growth",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "84aa4e19424fca8ba606204454e4bebb5eaa63f29873c8589c5eea41c15940ca"
+    },
+    {
+      "id": "noa",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "03d0af67d26f676708fc1682bee9e3e0b74893ff55a5a6109b0734fe650c6020"
+    },
+    {
+      "id": "issuance_xbrl",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "753450bd777fd2c610f775080930ca8ca20c7c5775a87aa54cdd08cb701c2436"
+    },
+    {
+      "id": "issuance_vendor",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "b450fc63d4ecfb3a1bb485f5c1817247f3371e89ee03696d7f32e3cd74db6a67"
+    },
+    {
+      "id": "sue",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "b4adce459e3181e17aa13c63f0522ddf999d7b9b1cbff8afd22c60c8849015a2"
+    },
+    {
+      "id": "droe",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "8b2d69fa7c661cb734da2dc2b4c599100b35a8c09895b3bc7882778e2ef46cab"
+    },
+    {
+      "id": "chtax",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "00625831f25668b54bddc0302a449d81a6b6b1e3882ec95fe9b5037fc1b4c53d"
+    },
+    {
+      "id": "ear",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "abf046821cdfd19f57eb4f8be975b9baf922a17e1fea5eb98c5b4ec9a2bce8cc"
+    },
+    {
+      "id": "res_mom_12_1",
+      "change": "added",
+      "detail": "residual momentum (brief: 12-1 momentum residual to the price-risk exposures expressible in the DSL)",
+      "v51_dsl_sha256": null
+    },
+    {
+      "id": "mom_12_1",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "bea9d3e43db899da570013b67b18ac8095d1322bd0d5d3899216390266e0d625"
+    },
+    {
+      "id": "ind_mom_12_1",
+      "change": "unchanged",
+      "detail": "x holds a member-masked Cs op, so the blackout binds under either order: left byte-identical",
+      "v51_dsl_sha256": "8260a5a0dc907297e96927429685617ad3385fec387f6faf05b4b8d0f85ee025"
+    },
+    {
+      "id": "within_ind_mom",
+      "change": "unchanged",
+      "detail": "x holds a member-masked Cs op, so the blackout binds under either order: left byte-identical",
+      "v51_dsl_sha256": "2eac2b0c6a0348a2e49f77873d4c50623bc643262159569298a982c3a6676c15"
+    },
+    {
+      "id": "high_52w",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "e7abff160fc91d095d7079667d080c11c6f0cb0e3540d64631383645699c5b9f"
+    },
+    {
+      "id": "bac",
+      "change": "replaces low_beta",
+      "detail": "betting against correlation replaces low_beta (prereg V6-L)",
+      "v51_dsl_sha256": null
+    },
+    {
+      "id": "smax",
+      "change": "replaces low_max",
+      "detail": "scaled MAX replaces low_max (prereg V6-L)",
+      "v51_dsl_sha256": null
+    },
+    {
+      "id": "si_ratio",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "5568e40c62b3a0388624be8cb24cb8e757850fd42d88ff6c990e816f0c6113f0"
+    },
+    {
+      "id": "dtc",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "f65d5ac92104fa20a31abf9c88464feaaa29a661cc3d2698f6854b8a5e03502f"
+    },
+    {
+      "id": "si_change",
+      "change": "smoothing",
+      "detail": "fast sleeve (tau 0.0915 >= 0.08): 21-session decay removed",
+      "v51_dsl_sha256": "909599103af52b044b34c2e76ee0f786bf951bf0c03953a1779644ab3c1dd371"
+    },
+    {
+      "id": "ind_adj_rev_5",
+      "change": "smoothing",
+      "detail": "fast sleeve (tau 0.1808 >= 0.08): 21-session decay removed",
+      "v51_dsl_sha256": "447d1ce84dfa9dc74195bad770176aae9eeff7c160fcf36ab0a43ea88a424778"
+    },
+    {
+      "id": "seasonality_same_month",
+      "change": "smoothing",
+      "detail": "fast sleeve (tau 0.0938 >= 0.08): 21-session decay removed; window re-centred to [t-252, t-231] (the delay 224 / 245 shift only offset the decay)",
+      "v51_dsl_sha256": "4c8c528e753178942b51b33719a0efca23e7439b0a5baa064e892a1ae292fba6"
+    },
+    {
+      "id": "iv_rv_spread",
+      "change": "smoothing",
+      "detail": "fast sleeve (tau 0.0898 >= 0.08): 21-session decay removed",
+      "v51_dsl_sha256": "38a3ba11de34246d024e0cbbbefc33354069f30386e14d88f659ff433833278f"
+    },
+    {
+      "id": "opex_at",
+      "change": "smoothing",
+      "detail": "decay_linear(R(x), 21) -> R(decay_linear(x, 21)): x holds no Cs op, so the 21-session membership blackout is removed",
+      "v51_dsl_sha256": "ce0846529d5bc235f25383637c1fe568f361c2ec98b2148b5fba5a732941446d"
+    },
+    {
+      "id": "low_ivol",
+      "change": "removed",
+      "detail": "replaced by bac and smax (prereg V6-L: replace low_beta / low_ivol / low_max)",
+      "v51_dsl_sha256": "c1aeb16134888ed409ced1bc23b176e9eff35c612dc3ec43aa4b77c37625c1ab"
+    },
+    {
+      "id": "lowvol_ind",
+      "change": "removed",
+      "detail": "spanned by the price-risk-v1 vol63 regressor (see LOWVOL_IND_ARGUMENT)",
+      "v51_dsl_sha256": "1d0e10c4382db4158f6689766733bf85e3e74be8eb024926368097ce5a0751e7"
+    },
+    {
+      "id": "cfoa",
+      "change": "replaced by cbop",
+      "detail": "cash-based operating profitability replaces cfoa (cfo_ttm / average assets, which cited the same paper): one variant per hypothesis",
+      "v51_dsl_sha256": "d4f59d63b44ee7104eb5c81ce9bf57dd09d50298d0d9afee91e1c15ef3a8b079"
+    },
+    {
+      "id": "low_beta",
+      "change": "replaced by bac",
+      "detail": "betting against correlation replaces low_beta (prereg V6-L)",
+      "v51_dsl_sha256": "7ca397c27145173a2ebe3020f436cbc9ab1e1382c3380ec1c884b4c5935f395d"
+    },
+    {
+      "id": "low_max",
+      "change": "replaced by smax",
+      "detail": "scaled MAX replaces low_max (prereg V6-L)",
+      "v51_dsl_sha256": "bdd54092a75dadd07761cc8e18041d889d805afb1e7b4cd929711f6d45fbcb4e"
+    }
+  ],
+  "lowvol_ind_argument": "lowvol_ind = -(v - m) with v = sd(ret, 252) and m its FF12 mean. price-risk-v1 regresses the target on z(vol63) (and z(beta252), ladv63) and keeps the residual; cross-sectionally vol252 and vol63 measure the same level, so write v = m + w (between- and within-industry parts, w orthogonal to m). The residual of s = -w on v is -(var(m) / var(v)) w + (var(w) / var(v)) m. Within-industry dispersion is the larger part of cross-sectional volatility, so the prior-consistent -w part is mostly projected out and the surviving residual loads POSITIVELY on the industry-mean volatility m: a long-high-volatility-industry bet, the opposite of the low-risk prior (Asness, Frazzini and Pedersen 2014 find low risk works within and across industries). The window mismatch (252 vs 63) adds estimation noise, not a prior. Hence spanned: removed. Uses no return statistic.",
+  "ear_centred_earnings_momentum": "kept as ear: the event-date field earn_recent exists and ear is already the [-1, +1] market-adjusted return around the vendor reaction session, carried to the next announcement (<= 126 sessions); a second EAR variant would break one variant per hypothesis. Industry adjustment and event-time decay (v6-literature 3.1) are not adopted",
+  "needs_new_field": [
+    {
+      "theme": "reversal_seasonality",
+      "hypothesis": "Heston-Sadka (2008) multi-lag seasonality: mean same-calendar-month return at annual lags 12, 24, 36 months",
+      "blocker": "lags 24 and 36 need 504 and 756 prior sessions: above the 314-bar DSL lookback bound (the IC runner admits lookback <= score_begin - 63 = 336 on TRAIN role v2) and before the role's first session (2018-06-01) for the first scoring dates",
+      "needs": "a producer field, e.g. seas_same_month_y2_y5 = mean of the same-calendar-month return at annual lags 2..5 (point in time, from a long adjusted-close history), or a role with >= 820 warm-up sessions",
+      "v6": "seasonality_same_month (lag 12) kept; no second seasonality variant"
+    },
+    {
+      "theme": "short_interest",
+      "hypothesis": "long-window FINRA shorting flow (Wang-Yan-Zheng 2020): 63-126 session mean of daily short-sale volume / volume",
+      "blocker": "fields-v6 has FINRA short INTEREST (si_shares, si_dtc) only; no daily Reg SHO short-sale volume",
+      "needs": "finra_short_volume: daily consolidated short-sale volume (FINRA TRF + exchange files), known after the session's publication, same share basis as volume; then -ts_mean(finra_short_volume / volume, 126)",
+      "v6": "no candidate"
+    },
+    {
+      "theme": "value",
+      "hypothesis": "intangible-adjusted value (Eisfeldt-Kim-Papanikolaou 2022): (BE + intangible capital) / ME",
+      "blocker": "no SG&A field (xsga_ttm) for organization capital; R&D knowledge capital needs a perpetual inventory over ~10 years of R&D, beyond the 314-bar bound",
+      "needs": "xsga_ttm and a producer intangible-capital field (R&D at 15% and 30% of SG&A at 20% depreciation)",
+      "v6": "no candidate; rd_me kept"
+    },
+    {
+      "theme": "investment_issuance",
+      "hypothesis": "5-year composite issuance (Daniel-Titman 2006)",
+      "blocker": "log(ME_t / ME_t-60m) - log total return needs 1260 prior sessions (bound 314; TRAIN data start 2018-06-01)",
+      "needs": "a producer field ci_5y (or a 5-year shares-outstanding history)",
+      "v6": "fallback \"1-year net share issuance\" already present as issuance_xbrl (Pontiff-Woodgate) and issuance_vendor (1-year Daniel-Titman composite issuance): no duplicate added"
+    },
+    {
+      "theme": "investment_issuance",
+      "hypothesis": "net external financing XFIN (Bradshaw-Richardson-Sloan 2006)",
+      "blocker": "expressible only as group_rank(decay_linear(-((sstk_ttm - prstkc_ttm - dvc_ttm + debt - delay(debt, 252)) / at), 21), grp_ff12) = 6 extra fields, above the plan budget of 5; debt issuance / retirement flows are absent (balance-change proxy)",
+      "needs": "a budget ruling (<= 6 extras) or producer fields dltis_ttm / dltr_ttm or xfin_ttm",
+      "v6": "no candidate"
+    },
+    {
+      "theme": "value",
+      "hypothesis": "composite value including EBIT/EV (brief: mean rank of bm, ep, cfp, ebit_ev)",
+      "blocker": "the four ratios need be, ni_ttm, cfo_ttm, oi_ttm, me_company, debt, che, grp_ff12 = 8 extra fields (budget 5)",
+      "needs": "a budget ruling or a producer enterprise-value field (ev_company)",
+      "v6": "value_composite uses bm, ep, cfp (5 extras)"
+    },
+    {
+      "theme": "profitability_quality",
+      "hypothesis": "cash-based operating profitability, income-statement form (Ball-Gerakos-Linnainmaa-Nikolaev 2016)",
+      "blocker": "no cogs_ttm, xsga_ttm or working-capital items (receivables, inventory, prepaid, deferred revenue, payables, accrued expenses); no interest expense for the cash-flow-statement add-back",
+      "needs": "cogs_ttm, xsga_ttm, the six working-capital balances (and lags), xint_ttm",
+      "v6": "cbop uses the cash-flow-statement approximation (operating cash flow + R&D) / assets"
+    },
+    {
+      "theme": "low_risk",
+      "hypothesis": "SMAX with MAX5 (mean of the five largest daily returns)",
+      "blocker": "no top-k order-statistic operator in the DSL (ts_max, med only); an engine operator, not a field",
+      "needs": "an engine op (e.g. ts_topk_mean) or a producer max5_21d field",
+      "v6": "smax uses MAX1"
+    }
+  ],
+  "family_fixing": {
+    "fixed_before_measurement": true,
+    "measurement_consulted": false,
+    "statement": "Every change is prereg v6 V6-L as specified by the task brief, decided from the literature (v6-literature sections 2-4), the v6 signal code review (I2, I3, I5), the DSL/VM semantics and field metadata. The implementer read no TRAIN return statistic to choose any definition, sign, window or roster position and no data dated 2023 or later. Disclosed: the scorecard alpha table (per-candidate TRAIN HAC t) was in the brief's reading list and was seen; it was not used. The fast-sleeve rule reads standalone TRAIN tau (turnover, a second moment) from the v5.1 ew admission, as the brief specifies. res_mom_12_1's base is algebraically identical to the v4.2 candidate, whose v4.2 TRAIN statistics were not read here.",
+    "v51_statement": "The v4 roster (37) is frozen and copied byte-identically. The one addition, opex_at, with its theme, tier, sign, citation and DSL, is the v5.1 family R1'' (declared 2026-09-27 after the T34a breadth check, which read manifest metadata and source code only, and before any v5.1 TRAIN read), implemented verbatim. The implementer read no v4/v5 per-candidate TRAIN performance output (admission statistics, daily IC files) and no validation data. Disclosed: the operating-cost proxy includes D&A and other operating items (fields-v6 has no opex_ttm); opex/at = sale/at - oi/at shares asset turnover with gpa (sale/at - cogs/at), so a high rank correlation with gpa is expected and the redundancy screen may drop opex_at; it still counts as one disclosed trial."
+  },
+  "templates": [
+    {
+      "id": "value_composite",
+      "theme": "value",
+      "formula": "mean over k in {be, ni_ttm, cfo_ttm} of group_rank(decay_linear(k / me_company, 21), grp_ff12)",
+      "base_dsl": null,
+      "base_prior_bars": null,
+      "raw_prior_direction": 1,
+      "domain": "numerators keep their sign (negative book equity, losses and cash burn rank as expensive, the literature's negative-E flag); NaN when any of the three ratios is NaN",
+      "deviation": "three yields, not four: adding ebit_ev (oi_ttm / (me_company + debt - che)) needs 8 extra fields, above the IC-runner plan budget of 5 (NEEDS_NEW_FIELD); equal-weight mean of within-FF12 ranks (the literature proposal averages within-FF12 z-scores and adds S/EV and intangible book); each ratio is decayed before its rank (v6 smoothing form, no 21-session blackout)",
+      "smoothing_form": "mean_k R(decay_linear(x_k, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "bm",
+      "theme": "value",
+      "formula": "be / me_company",
+      "base_dsl": "((be / me_company) + (0 * log(be)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive book equity -> NaN (Fama-French)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "ep",
+      "theme": "value",
+      "formula": "ni_ttm / me_company",
+      "base_dsl": "((ni_ttm / me_company) + (0 * log(ni_ttm)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive earnings -> NaN (excluded), as in Hou, Xue and Zhang (2020)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "cfp",
+      "theme": "value",
+      "formula": "cfo_ttm / me_company",
+      "base_dsl": "((cfo_ttm / me_company) + (0 * log(cfo_ttm)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive cash flow -> NaN (excluded), as in Hou, Xue and Zhang (2020)",
+      "deviation": "LSV cash flow is earnings plus depreciation; reported operating cash flow is used",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "fcfp",
+      "theme": "value",
+      "formula": "(cfo_ttm - capx_ttm) / me_company",
+      "base_dsl": "((cfo_ttm - capx_ttm) / me_company)",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": "negative free cash flow kept (ranks lowest)",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "ebit_ev",
+      "theme": "value",
+      "formula": "oi_ttm / (me_company + debt - che)",
+      "base_dsl": "(((oi_ttm / ((me_company + debt) - che)) + (0 * log(oi_ttm))) + (0 * log(((me_company + debt) - che))))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive EBIT or enterprise value -> NaN (negative multiples excluded, Loughran-Wellman)",
+      "deviation": "EBIT (operating income) replaces EBITDA: no depreciation field; debt follows the T20 zero-fill rule",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "net_payout",
+      "theme": "value",
+      "formula": "(dvc_ttm + prstkc_ttm - sstk_ttm) / me_company",
+      "base_dsl": "(((dvc_ttm + prstkc_ttm) - sstk_ttm) / me_company)",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": "net issuers (negative yield) kept",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "sp",
+      "theme": "value",
+      "formula": "sale_ttm / me_company",
+      "base_dsl": "((sale_ttm / me_company) + (0 * log(sale_ttm)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive sales -> NaN (excluded), as in Hou, Xue and Zhang (2020)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "rd_me",
+      "theme": "value",
+      "formula": "xrd_ttm / me_company",
+      "base_dsl": "((xrd_ttm / me_company) + (0 * log(xrd_ttm)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "zero or unreported R&D -> NaN (R&D-reporting firms only, as in Chan-Lakonishok-Sougiannis)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "gpa",
+      "theme": "profitability_quality",
+      "formula": "gp_ttm / at",
+      "base_dsl": "((gp_ttm / at) + (0 * log(at)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive total assets -> NaN (house guard)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "opbe",
+      "theme": "profitability_quality",
+      "formula": "oi_ttm / be",
+      "base_dsl": "((oi_ttm / be) + (0 * log(be)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive book equity -> NaN",
+      "deviation": "operating income stands in for revenue - COGS - SG&A - interest",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "cbop",
+      "theme": "profitability_quality",
+      "formula": "(cfo_ttm + xrd_ttm) / at, unreported R&D = 0",
+      "base_dsl": "(((cfo_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive total assets -> NaN (house guard); NaN xrd_ttm (not reported) -> 0 via power(x, 1 - n) - n, n = ts_count_nans(x, 1)",
+      "deviation": "cash-flow-statement approximation: operating cash flow plus R&D expense over total assets. The paper's income-statement form (revenue - COGS - SG&A excl. R&D - changes in receivables, inventory, prepaid expenses + changes in deferred revenue, payables, accrued expenses) needs fields absent from fields-v6; CFO still deducts interest and taxes, which CbOP excludes (no interest-expense field). Relies on pow(NaN, 0) = 1 (C99 Annex F) in the VM's std::pow",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "roe_q",
+      "theme": "profitability_quality",
+      "formula": "ni_q / be_lag1q",
+      "base_dsl": "((ni_q / be_lag1q) + (0 * log(be_lag1q)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive opening book equity -> NaN",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "roa",
+      "theme": "profitability_quality",
+      "formula": "ni_ttm / at",
+      "base_dsl": "((ni_ttm / at) + (0 * log(at)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive total assets -> NaN (house guard)",
+      "deviation": "trailing-twelve-month earnings over current assets (no one-quarter-lagged assets field)",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "accruals",
+      "theme": "profitability_quality",
+      "formula": "(ni_ttm - cfo_ttm) / ((at + at_lag4) / 2)",
+      "base_dsl": "((-1 * ((ni_ttm - cfo_ttm) / ((at + at_lag4) / 2))) + (0 * log(((at + at_lag4) / 2))))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": -1,
+      "domain": "non-positive average total assets -> NaN (house guard)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "fscore",
+      "theme": "profitability_quality",
+      "formula": "fscore (producer, nine signals)",
+      "base_dsl": "fscore",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "asset_growth",
+      "theme": "investment_issuance",
+      "formula": "at / at_lag4 - 1",
+      "base_dsl": "((-1 * ((at / at_lag4) - 1)) + (0 * log(at_lag4)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": -1,
+      "domain": "non-positive lagged total assets -> NaN (house guard)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "noa",
+      "theme": "investment_issuance",
+      "formula": "noa / at_lag4",
+      "base_dsl": "((-1 * (noa / at_lag4)) + (0 * log(at_lag4)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": -1,
+      "domain": "non-positive lagged total assets -> NaN (house guard)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "issuance_xbrl",
+      "theme": "investment_issuance",
+      "formula": "log(shrs_q / shrs_q_lag4)",
+      "base_dsl": "(-1 * log((shrs_q / shrs_q_lag4)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": -1,
+      "domain": "non-positive share ratio -> NaN (log)",
+      "deviation": "weighted-average diluted (else basic) shares of the anchor quarter (else fiscal year), not period-end shares outstanding. Split consistency by the T20 contract: facts are keyed by (start, end) and a later clock overrides, so shrs_q_lag4 is the anchor filing's own prior-year comparative, which the filing presents (Reg S-X 10-01(c); ASC 260 EPS denominators for every period presented) restated retroactively for splits (ASC 260-10-55-12). No price-factor correction is applied: it would double-correct that restated pair. A filer that does not re-report the comparative leaves the pair split-contaminated; T25 checks known splitters (AAPL 2020-08, TSLA 2020-08 and 2022-08, NVDA 2021-07, AMZN 2022-06, GOOGL 2022-07)",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "issuance_vendor",
+      "theme": "investment_issuance",
+      "formula": "log(adj / adj[t-252]) with adj = shares_out * raw_close / close: log growth of line market equity minus the log total return",
+      "base_dsl": "(-1 * log((((shares_out * raw_close) / close) / delay(((shares_out * raw_close) / close), 252))))",
+      "base_prior_bars": 252,
+      "raw_prior_direction": -1,
+      "domain": "non-positive ratio -> NaN (log)",
+      "deviation": "shares_out and raw_close share the session basis, so splits and consolidations cancel; the dividend-adjusted close makes dividends count as payout (Daniel-Titman composite issuance, not the Pontiff-Woodgate share count); the vendor share count lags 90 days (A8)",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "sue",
+      "theme": "earnings_momentum",
+      "formula": "sue (producer: seasonal random walk on first-reported quarterly net income)",
+      "base_dsl": "sue",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": "filing clock (10-Q/10-K acceptance + 1 session), not the announcement date; net income, not EPS",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "droe",
+      "theme": "earnings_momentum",
+      "formula": "ni_q / be_lag1q - ni_q_lag4 / be_lag1q_lag4 (ROE_q - ROE_{q-4})",
+      "base_dsl": "((((ni_q / be_lag1q) - (ni_q_lag4 / be_lag1q_lag4)) + (0 * log(be_lag1q))) + (0 * log(be_lag1q_lag4)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive opening book equity in either quarter -> NaN",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "chtax",
+      "theme": "earnings_momentum",
+      "formula": "(txt_q - txt_q_lag4) / at_lag4",
+      "base_dsl": "(((txt_q - txt_q_lag4) / at_lag4) + (0 * log(at_lag4)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive lagged total assets -> NaN (house guard)",
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "ear",
+      "theme": "earnings_momentum",
+      "formula": "market-adjusted return over the 3 sessions [r-1, r+1] around the most recent vendor reaction session r, recorded at r+1 and carried until the next announcement, at most 126 sessions",
+      "base_dsl": "ts_backfill((ts_sum((((close / delay(close, 1)) - 1) - mkt_ret), 3) + (0 * log((earn_recent * delay(earn_recent, 1))))), 126)",
+      "base_prior_bars": 128,
+      "raw_prior_direction": 1,
+      "domain": "NaN on non-event sessions before the carry (0 * log(0)); NaN when no announcement in 126 sessions",
+      "deviation": "Chan-Jegadeesh-Lakonishok measure the abnormal return around the most recent quarterly announcement and hold six months, hence a six-month carry cap (one missed quarter keeps the name); the 3-day [-1, +1] window is the prereg choice (Brandt et al.; CJL, as recalled, use days -2..+1); equal-weight member market return (mkt_ret) as the benchmark",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "res_mom_12_1",
+      "theme": "price_momentum",
+      "formula": "sum over t-251..t-21 of (ret - beta * mkt_ret) / sd of the market-model residual over the same window; beta = OLS slope of ret on mkt_ret over that window",
+      "base_dsl": "delay((((ts_sum(((close / delay(close, 1)) - 1), 231) / stddev(((close / delay(close, 1)) - 1), 231)) - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * (ts_sum(mkt_ret, 231) / stddev(mkt_ret, 231)))) / signedpower(abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 231)))), 0.5)), 21)",
+      "base_prior_bars": 252,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": "closest expressible proxy: residual to the market only. Of the price-risk-v1 exposures (beta252, vol63, ladv63) only the market is a return factor available in the DSL (mkt_ret); vol63 / ladv63 are characteristics, not return series, and FF49 industry returns (group_mean) are member-masked Cs ops that would blank the 231-session window after any membership gap. The paper uses Fama-French three-factor residuals estimated over the prior 36 months (beyond the 314-bar bound); with an in-window fit the intercept is kept (sum of ret - beta * mkt = n * alpha), so the score is the standardized formation-window alpha. Base algebraically identical to v4.2 res_mom_12_1 (beta = rho sd_r / sd_m), respelled to fit 7 slots; v4.2 TRAIN statistics were not read here",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "mom_12_1",
+      "theme": "price_momentum",
+      "formula": "close[t-21] / close[t-252] - 1",
+      "base_dsl": "((delay(close, 21) / delay(close, 252)) - 1)",
+      "base_prior_bars": 252,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": null,
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "ind_mom_12_1",
+      "theme": "price_momentum",
+      "formula": "FF49 equal-weight mean of mom_12_1",
+      "base_dsl": "group_mean(((delay(close, 21) / delay(close, 252)) - 1), grp_ff49)",
+      "base_prior_bars": 252,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": "equal-weight FF49 industry mean (Moskowitz-Grinblatt: value-weight, 20 industries)",
+      "smoothing_form": "decay_linear(R(x), 21)",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "within_ind_mom",
+      "theme": "price_momentum",
+      "formula": "mom_12_1 - FF49 mean",
+      "base_dsl": "group_neutralize(((delay(close, 21) / delay(close, 252)) - 1), grp_ff49)",
+      "base_prior_bars": 252,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": null,
+      "smoothing_form": "decay_linear(R(x), 21)",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "high_52w",
+      "theme": "price_momentum",
+      "formula": "close / max(close over 252 sessions)",
+      "base_dsl": "(close / ts_max(close, 252))",
+      "base_prior_bars": 251,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": "adjusted close (split and dividend continuous) in both terms",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "bac",
+      "theme": "low_risk",
+      "formula": "corr(3-day ret, 3-day mkt_ret, 250)",
+      "base_dsl": "(-1 * correlation(ts_sum(((close / delay(close, 1)) - 1), 3), ts_sum(mkt_ret, 3), 250))",
+      "base_prior_bars": 252,
+      "raw_prior_direction": -1,
+      "domain": null,
+      "deviation": "window 250 sessions (paper: 5 years; lookback bound 314); the paper ranks correlation within volatility quintiles, which is not expressible (group operators need a Group classifier; quantile() yields F64), so volatility matching is left to the price-risk-v1 vol63 regressor that neutralizes the book and the admission factor; equal-weight member market",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "smax",
+      "theme": "low_risk",
+      "formula": "max(ret over 21 sessions) / sd(ret, 252)",
+      "base_dsl": "(-1 * ((ts_max(((close / delay(close, 1)) - 1), 21) / stddev(((close / delay(close, 1)) - 1), 252)) + (0 * log(stddev(((close / delay(close, 1)) - 1), 252)))))",
+      "base_prior_bars": 252,
+      "raw_prior_direction": -1,
+      "domain": "non-positive 252-session volatility -> NaN (house guard)",
+      "deviation": "MAX1 (the single largest daily return) instead of the mean of the five largest: the DSL has no top-k order statistic (NEEDS_NEW_FIELD); volatility over 252 sessions. Scaling by volatility removes the first-order volatility content that price-risk-v1 projects out",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "si_ratio",
+      "theme": "short_interest",
+      "formula": "si_shares / shares_out",
+      "base_dsl": "(-1 * (si_shares / shares_out))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": -1,
+      "domain": null,
+      "deviation": "si_shares is on the FINRA settlement-date share basis and shares_out on the session basis: from a split until the next dissemination the ratio is off by the split factor (v3 caveat)",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "dtc",
+      "theme": "short_interest",
+      "formula": "si_dtc",
+      "base_dsl": "(-1 * si_dtc)",
+      "base_prior_bars": 0,
+      "raw_prior_direction": -1,
+      "domain": null,
+      "deviation": "FINRA computes days to cover on one basis (short interest over average daily volume): no split mismatch",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    },
+    {
+      "id": "si_change",
+      "theme": "short_interest",
+      "formula": "si_ratio - si_ratio[t-21] (one month, two FINRA cycles)",
+      "base_dsl": "(-1 * ((si_shares / shares_out) - delay((si_shares / shares_out), 21)))",
+      "base_prior_bars": 21,
+      "raw_prior_direction": -1,
+      "domain": null,
+      "deviation": "Rapach-Ringgenberg-Zhou is an aggregate time-series result; the cross-sectional change is the pre-registered extrapolation; si_shares is on the FINRA settlement-date share basis and shares_out on the session basis: from a split until the next dissemination the ratio is off by the split factor (v3 caveat), so a split gives a spike and an opposite-signed echo 21 sessions later",
+      "smoothing_form": "R(x)",
+      "smoothing_sessions": 1
+    },
+    {
+      "id": "ind_adj_rev_5",
+      "theme": "reversal_seasonality",
+      "formula": "close / close[t-5] - 1 minus its FF49 mean",
+      "base_dsl": "(-1 * group_neutralize(((close / delay(close, 5)) - 1), grp_ff49))",
+      "base_prior_bars": 5,
+      "raw_prior_direction": -1,
+      "domain": null,
+      "deviation": "weekly industry-adjusted return, unsmoothed (fast sleeve; construction theta smooths); the papers use one month",
+      "smoothing_form": "R(x)",
+      "smoothing_sessions": 1
+    },
+    {
+      "id": "seasonality_same_month",
+      "theme": "reversal_seasonality",
+      "formula": "close[t-231] / close[t-252] - 1: the same 21 sessions one year before the next 21",
+      "base_dsl": "((delay(close, 231) / delay(close, 252)) - 1)",
+      "base_prior_bars": 252,
+      "raw_prior_direction": 1,
+      "domain": null,
+      "deviation": "annual lag 12 only (lags 24+ exceed the 314-bar bound; NEEDS_NEW_FIELD); unsmoothed, so the window is the undecayed [t-252, t-231]",
+      "smoothing_form": "R(x)",
+      "smoothing_sessions": 1
+    },
+    {
+      "id": "iv_rv_spread",
+      "theme": "options_implied",
+      "formula": "iv_atm_21d - sd(ret, 21) * sqrt(252)",
+      "base_dsl": "(ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - (stddev(((close / delay(close, 1)) - 1), 21) * 15.874507866387544))",
+      "base_prior_bars": 21,
+      "raw_prior_direction": 1,
+      "domain": "v3 IV guard",
+      "deviation": "implied minus realized (the negative of the paper's realized-minus-implied spread)",
+      "smoothing_form": "R(x)",
+      "smoothing_sessions": 1
+    },
+    {
+      "id": "opex_at",
+      "theme": "profitability_quality",
+      "formula": "(sale_ttm - oi_ttm) / at",
+      "base_dsl": "(((sale_ttm - oi_ttm) / at) + (0 * log(at)))",
+      "base_prior_bars": 0,
+      "raw_prior_direction": 1,
+      "domain": "non-positive total assets -> NaN (house guard)",
+      "deviation": "operating costs = revenue - operating income = COGS + SG&A (incl. R&D) + D&A + other operating items (impairments, restructuring); the paper uses COGS + XSGA, excluding DP. fields-v6 has no opex_ttm, xsga_ttm or cogs_ttm (T34a), so no producer change (prereg v5.1 R1''); OperatingIncomeLoss is single-concept, and FF12 Money revenue includes interest (ranked within its own industry only)",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21
+    }
+  ],
+  "lineage": [
+    {
+      "id": "value_composite",
+      "family": "value",
+      "roster_order": 1,
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Fama and French (1992, JF); Lakonishok, Shleifer and Vishny (1994, JF); Israel, Laursen and Richardson (2021, JPM) composite value; Asness and Frazzini (2013, JPM) current price",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Fama-French 1992; Lakonishok-Shleifer-Vishny 1994; Israel-Laursen-Richardson 2021",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "mean_k R(decay_linear(x_k, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "5a611ce6ec50066442ba982967eb984d822710c243db1e8f4d4767f44e723fdb",
+      "fields": [
+        "be",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company",
+        "ni_ttm"
+      ],
+      "v51_change": "added"
+    },
+    {
+      "id": "bm",
+      "family": "value",
+      "roster_order": 2,
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Rosenberg, Reid and Lanstein (1985, JPM); Fama and French (1992, JF); robust pre-1963 (Linnainmaa and Roberts 2018), weak 2017-2020",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Rosenberg-Reid-Lanstein 1985; Fama-French 1992",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "77d03bd2b6037431cb7ca61c39fba579980f1c0068d0b7e047f6eeb7b6322696",
+      "fields": [
+        "be",
+        "grp_ff12",
+        "me_company"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "ep",
+      "family": "value",
+      "roster_order": 3,
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Basu (1977, JF); Fama and French (1992, JF) E/P for positive earnings",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Basu 1977",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "1008a66639abd8b97dcf8941603ddc25a8761434d54d15ebbe6d23618b49a1d9",
+      "fields": [
+        "grp_ff12",
+        "me_company",
+        "ni_ttm"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "cfp",
+      "family": "value",
+      "roster_order": 4,
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Lakonishok, Shleifer and Vishny (1994, JF) cash flow to price; operating cash flow as in Desai, Rajgopal and Venkatachalam (2004, TAR)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Lakonishok-Shleifer-Vishny 1994",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "df82d0c0b2f594f626e94ea26d1e7719674c0ff107daacef10c61f9f4e19beaf",
+      "fields": [
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "fcfp",
+      "family": "value",
+      "roster_order": 5,
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Lakonishok, Shleifer and Vishny (1994, JF); free cash flow yield (Hackel, Livnat and Rai 1994, FAJ)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Lakonishok-Shleifer-Vishny 1994; Hackel-Livnat-Rai 1994",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "78755e702842cda0124d0d3cc0f87b84656ffe9d4ed3459d3124bb85e7324d0a",
+      "fields": [
+        "capx_ttm",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "ebit_ev",
+      "family": "value",
+      "roster_order": 6,
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Loughran-Wellman 2011",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "0bfa4a67bb70551a89a26a600fc02267ecb724108fb920f6805cee75e9b77ccc",
+      "fields": [
+        "che",
+        "debt",
+        "grp_ff12",
+        "me_company",
+        "oi_ttm"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "net_payout",
+      "family": "value",
+      "roster_order": 7,
+      "theme": "value",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "citation": "Boudoukh, Michaely, Richardson and Roberts (2007, JF) net payout yield",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Boudoukh-Michaely-Richardson-Roberts 2007",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "0de7136873939cf187fd2510e32edc75a40e7629615858990821e0b94c02bc02",
+      "fields": [
+        "dvc_ttm",
+        "grp_ff12",
+        "me_company",
+        "prstkc_ttm",
+        "sstk_ttm"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "sp",
+      "family": "value",
+      "roster_order": 8,
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Barbee, Mukherji and Raines (1996, FAJ) sales to price",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Barbee-Mukherji-Raines 1996",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "b580ed819ae324eef88609d551471a493f299819adf90520d757f98b6ab059e7",
+      "fields": [
+        "grp_ff12",
+        "me_company",
+        "sale_ttm"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "rd_me",
+      "family": "value",
+      "roster_order": 9,
+      "theme": "value",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Chan, Lakonishok and Sougiannis (2001, JF) R&D to market equity",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Chan-Lakonishok-Sougiannis 2001",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "bcedc098d64f331cf2c0719bccea2fb91ba777f959b7ca53d3f2df8088d05075",
+      "fields": [
+        "grp_ff12",
+        "me_company",
+        "xrd_ttm"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "gpa",
+      "family": "profitability_quality",
+      "roster_order": 10,
+      "theme": "profitability_quality",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "citation": "Novy-Marx (2013, JFE) gross profitability (works in large caps; replicated by Hou, Xue and Zhang 2020)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Novy-Marx 2013",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "a67a5691f8aea5f172752a79c2768cc5908d3317552d0baaf073ac5f24df4ac0",
+      "fields": [
+        "at",
+        "gp_ttm",
+        "grp_ff12"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "opbe",
+      "family": "profitability_quality",
+      "roster_order": 11,
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Fama and French (2015, JFE) operating profitability (RMW)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Fama-French 2015",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "1ff820cb588190898e41ba6444fd9b4c0ce79d511eb93e34d939ca210503ba0f",
+      "fields": [
+        "be",
+        "grp_ff12",
+        "oi_ttm"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "cbop",
+      "family": "profitability_quality",
+      "roster_order": 12,
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Ball, Gerakos, Linnainmaa and Nikolaev (2016, JFE) cash-based operating profitability (subsumes accruals); operating profitability excludes R&D: Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Ball-Gerakos-Linnainmaa-Nikolaev 2016",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "8ab5971b51e471e9a1aed959c9bde68aac266b5bd86036f5954d08077b61031c",
+      "fields": [
+        "at",
+        "cfo_ttm",
+        "grp_ff12",
+        "xrd_ttm"
+      ],
+      "v51_change": "replaces cfoa"
+    },
+    {
+      "id": "roe_q",
+      "family": "profitability_quality",
+      "roster_order": 13,
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Hou, Xue and Zhang (2015, RFS) q-factor ROE",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Hou-Xue-Zhang 2015",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "fea12f1f59565b4ec97e64df93219bbc3228348daa4bb8a78cdc5974a4f99be7",
+      "fields": [
+        "be_lag1q",
+        "grp_ff12",
+        "ni_q"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "roa",
+      "family": "profitability_quality",
+      "roster_order": 14,
+      "theme": "profitability_quality",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Balakrishnan, Bartov and Faurel (2010, JAE); Chen, Novy-Marx and Zhang (2011, WP)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Balakrishnan-Bartov-Faurel 2010",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "fcd1f798342235a802733141d8be82b23e109b3d9151af412e4bdd2527278645",
+      "fields": [
+        "at",
+        "grp_ff12",
+        "ni_ttm"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "accruals",
+      "family": "profitability_quality",
+      "roster_order": 15,
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Sloan (1996, TAR); Hribar and Collins (2002, JAR) cash-flow-statement accruals; decay: Green, Hand and Soliman (2011, MS)",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Sloan 1996",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "ee77bcd8f1adce746514f3047e384fa6925d758b8629d237d49d7e4dd3c1e6c7",
+      "fields": [
+        "at",
+        "at_lag4",
+        "cfo_ttm",
+        "grp_ff12",
+        "ni_ttm"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "fscore",
+      "family": "profitability_quality",
+      "roster_order": 16,
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Piotroski (2000, JAR) F-score",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Piotroski 2000",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "67d1f50140676f30cac7621fc43007601d44cb99a5994eb2c77101350d80de6e",
+      "fields": [
+        "fscore",
+        "grp_ff12"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "asset_growth",
+      "family": "investment_issuance",
+      "roster_order": 17,
+      "theme": "investment_issuance",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Cooper, Gulen and Schill (2008, JF) asset growth (weak in big stocks: Fama and French 2008)",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Cooper-Gulen-Schill 2008",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "5a931a5cf97108e7e3c5994597bd406a01816b27a50a17cb303b58bcdcce7d05",
+      "fields": [
+        "at",
+        "at_lag4",
+        "grp_ff12"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "noa",
+      "family": "investment_issuance",
+      "roster_order": 18,
+      "theme": "investment_issuance",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Hirshleifer-Hou-Teoh-Zhang 2004",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "5b9c49fb33b6b73c64cbc6ccac8b269f05c51cb94ba6ee7dfce55925c3c5e8e5",
+      "fields": [
+        "at_lag4",
+        "grp_ff12",
+        "noa"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "issuance_xbrl",
+      "family": "investment_issuance",
+      "roster_order": 19,
+      "theme": "investment_issuance",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "citation": "Pontiff and Woodgate (2008, JF) share issuance; Daniel and Titman (2006, JF); present in big stocks (Fama and French 2008)",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Pontiff-Woodgate 2008",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "9ce73869fbbec055df54939ec2d4262454d24dd2c64c21f411195d4baf029642",
+      "fields": [
+        "grp_ff12",
+        "shrs_q",
+        "shrs_q_lag4"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "issuance_vendor",
+      "family": "investment_issuance",
+      "roster_order": 20,
+      "theme": "investment_issuance",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "Daniel and Titman (2006, JF) composite equity issuance over one year; Pontiff and Woodgate (2008, JF)",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Daniel-Titman 2006",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "native_prior_bars": 272,
+      "dsl_sha256": "ff4ac4adac6298e4d1211ad467159ab8f8f2214182201c0319fba24bee9338e7",
+      "fields": [
+        "close",
+        "grp_ff12",
+        "raw_close",
+        "shares_out"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "sue",
+      "family": "earnings_momentum",
+      "roster_order": 21,
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Bernard and Thomas (1989, JAR); Livnat and Mendenhall (2006, JAR); filing-clock lag, decay: Martineau (2022, CFR)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Bernard-Thomas 1989",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "5b37b44c8fcc65827ab8201af0b78fbdad97f77ade04bf929d57d2f26ab34bdb",
+      "fields": [
+        "sue"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "droe",
+      "family": "earnings_momentum",
+      "roster_order": 22,
+      "theme": "earnings_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Hou, Mo, Xue and Zhang (2021, RF) change in ROE; Balakrishnan, Bartov and Faurel (2010, JAE)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Hou-Mo-Xue-Zhang 2021",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "ed250f74abdf4bf88d0f333a469ce8660bcd52ee426b973d4b6a323d2b2e8686",
+      "fields": [
+        "be_lag1q",
+        "be_lag1q_lag4",
+        "ni_q",
+        "ni_q_lag4"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "chtax",
+      "family": "earnings_momentum",
+      "roster_order": 23,
+      "theme": "earnings_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Thomas and Zhang (2011, JAR) tax expense surprises",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Thomas-Zhang 2011",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "1a71c16e1bfb09580d5ad30247797bcf8c84b0a161f51b49f0b166d22a113cde",
+      "fields": [
+        "at_lag4",
+        "txt_q",
+        "txt_q_lag4"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "ear",
+      "family": "earnings_momentum",
+      "roster_order": 24,
+      "theme": "earnings_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Chan, Jegadeesh and Lakonishok (1996, JF) earnings announcement return; Brandt, Kishore, Santa-Clara and Venkatachalam (2008, WP)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Chan-Jegadeesh-Lakonishok 1996; Brandt-Kishore-Santa-Clara-Venkatachalam 2008",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 148,
+      "native_prior_bars": 148,
+      "dsl_sha256": "9d38cd38ddb1e76bd43a9287375663fbe0f28ef467738a60d2ae1d3c39fead57",
+      "fields": [
+        "close",
+        "earn_recent",
+        "mkt_ret"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "res_mom_12_1",
+      "family": "price_momentum",
+      "roster_order": 25,
+      "theme": "price_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Blitz, Huij and Martens (2011, JEF) residual momentum; Blitz, Hanauer and Vidojevic (2020, JEF) idiosyncratic momentum; Grundy and Martin (2001, RFS)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Blitz-Huij-Martens 2011",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "native_prior_bars": 272,
+      "dsl_sha256": "8aafaffe1e4a5446a5163d8262fd7ec92266590d0d217e13138b5ab544b9439d",
+      "fields": [
+        "close",
+        "mkt_ret"
+      ],
+      "v51_change": "added"
+    },
+    {
+      "id": "mom_12_1",
+      "family": "price_momentum",
+      "roster_order": 26,
+      "theme": "price_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Jegadeesh and Titman (1993, JF); 12-1 as in Fama-French UMD; crash risk: Daniel and Moskowitz (2016, JFE)",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Jegadeesh-Titman 1993",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "native_prior_bars": 272,
+      "dsl_sha256": "d6906c60dbabeb3581025807a5f674981e538867081b26634bf02023f09832d9",
+      "fields": [
+        "close"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "ind_mom_12_1",
+      "family": "price_momentum",
+      "roster_order": 27,
+      "theme": "price_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Moskowitz and Grinblatt (1999, JF) industry momentum",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Moskowitz-Grinblatt 1999",
+      "ranking": "cross_section",
+      "smoothing_form": "decay_linear(R(x), 21)",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "native_prior_bars": 272,
+      "dsl_sha256": "8260a5a0dc907297e96927429685617ad3385fec387f6faf05b4b8d0f85ee025",
+      "fields": [
+        "close",
+        "grp_ff49"
+      ],
+      "v51_change": "unchanged"
+    },
+    {
+      "id": "within_ind_mom",
+      "family": "price_momentum",
+      "roster_order": 28,
+      "theme": "price_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Asness, Porter and Stevens (2000, WP) within-industry momentum",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Asness-Porter-Stevens 2000",
+      "ranking": "cross_section",
+      "smoothing_form": "decay_linear(R(x), 21)",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "native_prior_bars": 272,
+      "dsl_sha256": "2eac2b0c6a0348a2e49f77873d4c50623bc643262159569298a982c3a6676c15",
+      "fields": [
+        "close",
+        "grp_ff49"
+      ],
+      "v51_change": "unchanged"
+    },
+    {
+      "id": "high_52w",
+      "family": "price_momentum",
+      "roster_order": 29,
+      "theme": "price_momentum",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "citation": "George and Hwang (2004, JF) 52-week high",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "George-Hwang 2004",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 271,
+      "native_prior_bars": 271,
+      "dsl_sha256": "3fd5372bbc084061ba9bfa05f7c7875d3e43ed28a2f241a05e2b816635f5e77e",
+      "fields": [
+        "close"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "bac",
+      "family": "low_risk",
+      "roster_order": 30,
+      "theme": "low_risk",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Asness, Frazzini, Gormsen and Pedersen (2020, JFE) betting against correlation; correlation of overlapping 3-day returns: Frazzini and Pedersen (2014, JFE)",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Asness-Frazzini-Gormsen-Pedersen 2020",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "native_prior_bars": 272,
+      "dsl_sha256": "a760b8a09e10d13f5233216a5a1d5c84a465bb3861bd2cc403d3ffb36e14a3f9",
+      "fields": [
+        "close",
+        "mkt_ret"
+      ],
+      "v51_change": "replaces low_beta"
+    },
+    {
+      "id": "smax",
+      "family": "low_risk",
+      "roster_order": 31,
+      "theme": "low_risk",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Asness, Frazzini, Gormsen and Pedersen (2020, JFE) scaled MAX (SMAX); Bali, Cakici and Whitelaw (2011, JFE) MAX",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Asness-Frazzini-Gormsen-Pedersen 2020; Bali-Cakici-Whitelaw 2011",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 272,
+      "native_prior_bars": 272,
+      "dsl_sha256": "f1a0e0f07c27a752cb6777e800866d01f57f133be72f48047be2a2957a3a3aa4",
+      "fields": [
+        "close"
+      ],
+      "v51_change": "replaces low_max"
+    },
+    {
+      "id": "si_ratio",
+      "family": "short_interest",
+      "roster_order": 32,
+      "theme": "short_interest",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Asquith, Pathak and Ritter (2005, JFE); Boehmer, Huszar and Jordan (2010, JFE)",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Asquith-Pathak-Ritter 2005",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "22d70e1aeef635cc505774888a43e625d2ef28b7b1bb66589759c6030aae2fe9",
+      "fields": [
+        "shares_out",
+        "si_shares"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "dtc",
+      "family": "short_interest",
+      "roster_order": 33,
+      "theme": "short_interest",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "citation": "Hong, Li, Ni, Scheinkman and Yan (2015, WP) days to cover",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Hong-Li-Ni-Scheinkman-Yan 2015",
+      "ranking": "cross_section",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "1f11ac6a4cc8c632f35dc6f889ab76cc579cd9ca7f3a006042f44ac570624d8d",
+      "fields": [
+        "si_dtc"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "si_change",
+      "family": "short_interest",
+      "roster_order": 34,
+      "theme": "short_interest",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Rapach, Ringgenberg and Zhou (2016, JFE) short interest predicts lower returns (direction)",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Rapach-Ringgenberg-Zhou 2016 (direction)",
+      "ranking": "cross_section",
+      "smoothing_form": "R(x)",
+      "smoothing_sessions": 1,
+      "prior_bars": 21,
+      "native_prior_bars": 21,
+      "dsl_sha256": "8e0a405634f50fd57a280357a5882026be54d7f1a6f095627ffa333d98ab44b4",
+      "fields": [
+        "shares_out",
+        "si_shares"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "ind_adj_rev_5",
+      "family": "reversal_seasonality",
+      "roster_order": 35,
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "citation": "Da, Liu and Schaumburg (2014, MS); Hameed and Mian (2015, JFQA) within-industry reversal",
+      "raw_prior_direction": -1,
+      "prior_sign_source": "Da-Liu-Schaumburg 2014; Hameed-Mian 2015",
+      "ranking": "cross_section",
+      "smoothing_form": "R(x)",
+      "smoothing_sessions": 1,
+      "prior_bars": 5,
+      "native_prior_bars": 5,
+      "dsl_sha256": "d8670a1639dc65f9c7b6b9ef9629cad62bed98a579ac723da8fa03260cc2ce22",
+      "fields": [
+        "close",
+        "grp_ff49"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "seasonality_same_month",
+      "family": "reversal_seasonality",
+      "roster_order": 36,
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "citation": "Heston and Sadka (2008, JFE) seasonality",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Heston-Sadka 2008",
+      "ranking": "cross_section",
+      "smoothing_form": "R(x)",
+      "smoothing_sessions": 1,
+      "prior_bars": 252,
+      "native_prior_bars": 252,
+      "dsl_sha256": "4aceab7f23fe8fb97a60c1bd66e9082a7c86f609a889199ae208647b1c737527",
+      "fields": [
+        "close"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "iv_rv_spread",
+      "family": "options_implied",
+      "roster_order": 37,
+      "theme": "options_implied",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Bali and Hovakimian (2009, MS) volatility spreads: realized minus implied volatility predicts lower returns",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Bali-Hovakimian 2009",
+      "ranking": "cross_section",
+      "smoothing_form": "R(x)",
+      "smoothing_sessions": 1,
+      "prior_bars": 21,
+      "native_prior_bars": 21,
+      "dsl_sha256": "70d32c54cbdbe4fc3e709d1b4e9039b88237ef67bfa7545429e1eeae5d7d37f7",
+      "fields": [
+        "close",
+        "iv_atm_21d"
+      ],
+      "v51_change": "smoothing"
+    },
+    {
+      "id": "opex_at",
+      "family": "profitability_quality",
+      "roster_order": 38,
+      "theme": "profitability_quality",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "citation": "Novy-Marx (2011, RF) operating leverage; proxy opex = sale_ttm - oi_ttm (includes D&A) because fields-v6 has no opex_ttm",
+      "raw_prior_direction": 1,
+      "prior_sign_source": "Novy-Marx 2011",
+      "ranking": "within_industry_grp_ff12",
+      "smoothing_form": "R(decay_linear(x, 21))",
+      "smoothing_sessions": 21,
+      "prior_bars": 20,
+      "native_prior_bars": 20,
+      "dsl_sha256": "0ae8780153db7eed1f8fe905a46f31f3402d6ae5a4361e8ae2882688785a0159",
+      "fields": [
+        "at",
+        "grp_ff12",
+        "oi_ttm",
+        "sale_ttm"
+      ],
+      "v51_change": "smoothing"
+    }
+  ],
+  "data": {
+    "fields": [
+      {
+        "name": "close",
+        "basis": "role adjusted close (split and dividend continuous)"
+      },
+      {
+        "name": "raw_close",
+        "basis": "role raw close (unadjusted)"
+      },
+      {
+        "name": "volume",
+        "basis": "role raw share volume"
+      },
+      {
+        "name": "mkt_ret",
+        "basis": "equal-weight mean adjusted close-to-close return (close[d] / close[d-1] - 1) over the previous session's (d-1) as-of members, broadcast to every name present at d; produced upstream"
+      },
+      {
+        "name": "si_shares",
+        "basis": "FINRA consolidated shares short (currentShortPositionQuantity); as-of: latest row with available_at strictly before date(session), NaN when older than 45 calendar days"
+      },
+      {
+        "name": "si_dtc",
+        "basis": "FINRA days to cover (daysToCoverQuantity, floored at 1.00 by FINRA); as si_shares"
+      },
+      {
+        "name": "iv_atm_21d",
+        "basis": "vendor ATM implied volatility, annualized decimal, 21-session constant maturity; producer domain [0.02, 5] else NaN; candidates also apply the v3 guard"
+      },
+      {
+        "name": "earn_recent",
+        "basis": "indicator: 1 on the vendor earnings price-reaction session (earnFlag 0) and the session after (earnFlag 1), 0 otherwise; NaN when the vendor row is absent"
+      },
+      {
+        "name": "shares_out",
+        "basis": "vendor shares outstanding of the last line row dated <= date(session) - 90 calendar days (A8 lag), restated to the session share basis"
+      },
+      {
+        "name": "be",
+        "basis": "book equity at the anchor period_end A: stockholders equity (else equity including minority interest minus minority interest) minus preferred stock, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "at",
+        "basis": "total assets at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "at_lag4",
+        "basis": "total assets at the balance date nearest A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "che",
+        "basis": "cash and short-term investments at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "debt",
+        "basis": "short-term plus long-term debt at A, each zero-filled (flagged) when absent while assets exist, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "sale_ttm",
+        "basis": "revenue, trailing twelve months ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "gp_ttm",
+        "basis": "gross profit (else revenue minus cost of revenue), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "oi_ttm",
+        "basis": "operating income (EBIT), trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "ni_ttm",
+        "basis": "net income, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "ni_q",
+        "basis": "net income of the fiscal quarter ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "ni_q_lag4",
+        "basis": "net income of the fiscal quarter ending near A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "be_lag1q",
+        "basis": "book equity at the balance date nearest A - 91 d (opening equity of the quarter), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "be_lag1q_lag4",
+        "basis": "book equity at the balance date nearest A - 456 d (opening equity of the quarter one year earlier), USD; added in fix round 1; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "cfo_ttm",
+        "basis": "net cash from operating activities, trailing twelve months, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "capx_ttm",
+        "basis": "capital expenditure (payments for PP&E, positive), trailing twelve months, USD; NaN when not reported; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "xrd_ttm",
+        "basis": "research and development expense, trailing twelve months, USD; NaN when not reported; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "dvc_ttm",
+        "basis": "common dividends paid, trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "prstkc_ttm",
+        "basis": "purchases of common stock (buybacks), trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "sstk_ttm",
+        "basis": "proceeds from issuance of common stock, trailing twelve months, USD; zero-filled (flagged) when absent; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "txt_q",
+        "basis": "income tax expense of the fiscal quarter ending at A, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "txt_q_lag4",
+        "basis": "income tax expense of the fiscal quarter ending near A - 365 d, USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "shrs_q",
+        "basis": "weighted-average diluted shares (else basic) of the fiscal quarter ending at A (else the fiscal year ending at A), shares; as reported, split-restated by the reporting filing; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "shrs_q_lag4",
+        "basis": "the same concept and duration class ending near A - 365 d, as known at the row clock (latest filing reporting that period, so the anchor filing's split-restated comparative); the pair is NaN when abs(log10 ratio) >= 2 (XBRL scale error); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "noa",
+        "basis": "net operating assets at A: at - che - lt + debt (Hirshleifer, Hou, Teoh and Zhang 2004), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "sue",
+        "basis": "standardized unexpected earnings of the quarter ending at A: seasonal random walk on first-reported quarterly net income, (NI_q - NI_q-4) / sd of the previous <= 8 seasonal differences (>= 4 required); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "fscore",
+        "basis": "Piotroski (2000) F-score 0-9 at A, all nine signals required, producer-computed; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "me_company",
+        "basis": "company market equity: sum over the issuer's role lines of shares_out x raw_close (NaN if any linked line is NaN), USD; planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "grp_ff12",
+        "basis": "Fama-French 12-industry code of the latest visible SUB SIC (T21 grp group); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      },
+      {
+        "name": "grp_ff49",
+        "basis": "Fama-French 49-industry code of the latest visible SUB SIC (T21 grp group); planned fields-v5 name (T18 section 6, produced by T21); the producer manifest is authoritative"
+      }
+    ],
+    "producer": "atx-engine/tools/prepare_research_fields.py",
+    "field_clocks": {
+      "close": "session close mark",
+      "raw_close": "session close mark",
+      "volume": "session close mark",
+      "mkt_ret": "role-derived at the session close mark (charged one prior bar, like ret)",
+      "si_shares": "finra-asof: available_at < date(session), strict; age > 45 calendar days -> NaN",
+      "si_dtc": "finra-asof: available_at < date(session), strict; age > 45 calendar days -> NaN",
+      "iv_atm_21d": "vendor end-of-day row dated the session; known at the session close mark",
+      "earn_recent": "vendor end-of-day row dated the session; the reaction session is public by its close",
+      "shares_out": "A8: vendor share count dated <= date(session) - 90 calendar days, restated by the session factor",
+      "be": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "at": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "at_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "che": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "debt": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "sale_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "gp_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "oi_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "ni_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "ni_q": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "ni_q_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "be_lag1q": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "be_lag1q_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "cfo_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "capx_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "xrd_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "dvc_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "prstkc_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "sstk_ttm": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "txt_q": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "txt_q_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "shrs_q": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "shrs_q_lag4": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "noa": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "sue": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "fscore": "T21 fund group over the T20 atx.fundamental-events/v1 contract: the latest event row (row-level, latest clock wins; restatements enter at the restating filing's clock) of the session line's T19 primary-linked CIK whose clock (FSDS accepted_utc; FC1 fallback filed + 46 h, labelled) is before the session close mark, usable from the next session (--fund-lag-sessions 1); every item of a row shares its anchor period_end; the row is stale (all NaN) when date(session) - period_end exceeds 200 days (quarterly filer) or 400 days (annual-only); no link or no row -> NaN; values modeled/unaccepted",
+      "me_company": "T21: session close mark (shares_out keeps its A8 lag)",
+      "grp_ff12": "T21: latest visible FSDS SUB SIC event, 550-day staleness -> NaN; NaN label excluded from group statistics",
+      "grp_ff49": "T21: latest visible FSDS SUB SIC event, 550-day staleness -> NaN; NaN label excluded from group statistics"
+    },
+    "field_origin": {
+      "close": "base",
+      "raw_close": "base",
+      "volume": "base",
+      "mkt_ret": "fields_v4",
+      "si_shares": "fields_v4",
+      "si_dtc": "fields_v4",
+      "iv_atm_21d": "fields_v4",
+      "earn_recent": "fields_v4",
+      "shares_out": "fields_v4",
+      "be": "fields_v5",
+      "at": "fields_v5",
+      "at_lag4": "fields_v5",
+      "che": "fields_v5",
+      "debt": "fields_v5",
+      "sale_ttm": "fields_v5",
+      "gp_ttm": "fields_v5",
+      "oi_ttm": "fields_v5",
+      "ni_ttm": "fields_v5",
+      "ni_q": "fields_v5",
+      "ni_q_lag4": "fields_v5",
+      "be_lag1q": "fields_v5",
+      "be_lag1q_lag4": "fields_v5",
+      "cfo_ttm": "fields_v5",
+      "capx_ttm": "fields_v5",
+      "xrd_ttm": "fields_v5",
+      "dvc_ttm": "fields_v5",
+      "prstkc_ttm": "fields_v5",
+      "sstk_ttm": "fields_v5",
+      "txt_q": "fields_v5",
+      "txt_q_lag4": "fields_v5",
+      "shrs_q": "fields_v5",
+      "shrs_q_lag4": "fields_v5",
+      "noa": "fields_v5",
+      "sue": "fields_v5",
+      "fscore": "fields_v5",
+      "me_company": "fields_v5",
+      "grp_ff12": "fields_v5",
+      "grp_ff49": "fields_v5"
+    },
+    "group_fields": [
+      "grp_ff12",
+      "grp_ff49"
+    ],
+    "requires": {
+      "fields_v5": "T21 fields-v5 manifest with every declared name (runner refuses a declared extra absent from the manifest)",
+      "t22": "grp_* typed as Group by typecheck is_group_field (T22; landed at root)"
+    },
+    "causality": "row d of a signal uses fields known by the session-d close mark and is scored against returns after d; fundamentals add the declared 1-session lag; si_* are strictly before date(d); shares_out lags 90 days",
+    "daily_return": "ret = (close / delay(close, 1)) - 1; excess = ret - mkt_ret",
+    "domain_guard": "x + 0 * log(d) makes x NaN unless d > 0 (log(0) = -inf, 0 * -inf = NaN)",
+    "iv_guard": "ts_backfill(x + 0 * log((x - 0.02) * (5 - x)), 5) (v3 rule)",
+    "realized_vol": "stddev(ret, 21) * 15.874507866387544 (sqrt 252), annualized decimal like the IV field",
+    "earnings_window": "event = earn_recent * delay(earn_recent, 1) is 1 on r+1 (reaction r and r+1 flagged); ts_sum(excess, 3) at r+1 spans r-1..r+1",
+    "unused_producer_fields": [
+      "iv_atm_63d",
+      "iv_atm_126d",
+      "lt",
+      "noa_lag4",
+      "grp_sic2",
+      "mktcap_lagged",
+      "size_grp",
+      "is_common"
+    ],
+    "operating_costs": "sale_ttm - oi_ttm = COGS + SG&A (incl. R&D) + D&A + other operating items; fields-v6 32565c32 has no opex_ttm, xsga_ttm or cogs_ttm (T34a); no producer change, data pins unchanged",
+    "rd_zero_fill": "cbop: power(xrd_ttm, 1 - ts_count_nans(xrd_ttm, 1)) - ts_count_nans(xrd_ttm, 1) is xrd_ttm when reported and 0 when NaN (C99 pow(NaN, 0) = 1)",
+    "composite": "value_composite: numerators keep their sign; one NaN ratio makes the member NaN"
+  },
+  "admission": {
+    "policy": "v4-prior-v1 (T23; prereg R3; prereg v6 V6-L: admission trials = roster size)",
+    "trials": 38,
+    "v51_policy": "v4-prior-v1 (T23; prereg R3; unchanged by v5 R3' and v5.1 R1'')"
+  },
+  "composition": {
+    "policy": "prereg v6 V6-L: 1 composition (the V6-W rule, fit on this library)",
+    "themes": "unchanged 9 families (the fitter's V4_THEMES); theme merging / dropping is V6-W"
+  },
+  "trials": {
+    "generated_candidates": 38,
+    "admission_trials": 38,
+    "new_candidates": 5,
+    "changed_candidates": 31,
+    "unchanged_candidates": 2,
+    "removed_v51_candidates": 5,
+    "orientation_fits": 0,
+    "composition_recipes": 1,
+    "construction_recipes": 1,
+    "variants_per_hypothesis": 1,
+    "family_or_template_selection": false,
+    "validation_selection": false
+  },
+  "static_validation": {
+    "rule": "python re-parse (v2/v3 validator lineage + dtype rule): canonical round-trip, registry arity, declared fields, Group classifier only as a group operator's 2nd argument, positive integer windows, lookback recomputed per typecheck, dag slot bound; v5.1 adds no registry row (the pinned v4 validator, unmodified); v6 adds registry rows power, ts_count_nans (cross-checked against registry.cpp)",
+    "max_prior_bars": 272,
+    "max_native_prior_bars": 272,
+    "max_dag_nodes": 26,
+    "max_estimated_peak_slots": 7,
+    "max_estimated_peak_slots_limit": 7,
+    "extra_field_capacity": 5,
+    "max_extras_per_candidate_limit": 5,
+    "declared_extra_fields": 35,
+    "extra_field_users": {
+      "at": [
+        "gpa",
+        "cbop",
+        "roa",
+        "accruals",
+        "asset_growth",
+        "opex_at"
+      ],
+      "at_lag4": [
+        "accruals",
+        "asset_growth",
+        "noa",
+        "chtax"
+      ],
+      "be": [
+        "value_composite",
+        "bm",
+        "opbe"
+      ],
+      "be_lag1q": [
+        "roe_q",
+        "droe"
+      ],
+      "be_lag1q_lag4": [
+        "droe"
+      ],
+      "capx_ttm": [
+        "fcfp"
+      ],
+      "cfo_ttm": [
+        "value_composite",
+        "cfp",
+        "fcfp",
+        "cbop",
+        "accruals"
+      ],
+      "che": [
+        "ebit_ev"
+      ],
+      "debt": [
+        "ebit_ev"
+      ],
+      "dvc_ttm": [
+        "net_payout"
+      ],
+      "earn_recent": [
+        "ear"
+      ],
+      "fscore": [
+        "fscore"
+      ],
+      "gp_ttm": [
+        "gpa"
+      ],
+      "grp_ff12": [
+        "value_composite",
+        "bm",
+        "ep",
+        "cfp",
+        "fcfp",
+        "ebit_ev",
+        "net_payout",
+        "sp",
+        "rd_me",
+        "gpa",
+        "opbe",
+        "cbop",
+        "roe_q",
+        "roa",
+        "accruals",
+        "fscore",
+        "asset_growth",
+        "noa",
+        "issuance_xbrl",
+        "issuance_vendor",
+        "opex_at"
+      ],
+      "grp_ff49": [
+        "ind_mom_12_1",
+        "within_ind_mom",
+        "ind_adj_rev_5"
+      ],
+      "iv_atm_21d": [
+        "iv_rv_spread"
+      ],
+      "me_company": [
+        "value_composite",
+        "bm",
+        "ep",
+        "cfp",
+        "fcfp",
+        "ebit_ev",
+        "net_payout",
+        "sp",
+        "rd_me"
+      ],
+      "mkt_ret": [
+        "ear",
+        "res_mom_12_1",
+        "bac"
+      ],
+      "ni_q": [
+        "roe_q",
+        "droe"
+      ],
+      "ni_q_lag4": [
+        "droe"
+      ],
+      "ni_ttm": [
+        "value_composite",
+        "ep",
+        "roa",
+        "accruals"
+      ],
+      "noa": [
+        "noa"
+      ],
+      "oi_ttm": [
+        "ebit_ev",
+        "opbe",
+        "opex_at"
+      ],
+      "prstkc_ttm": [
+        "net_payout"
+      ],
+      "sale_ttm": [
+        "sp",
+        "opex_at"
+      ],
+      "shares_out": [
+        "issuance_vendor",
+        "si_ratio",
+        "si_change"
+      ],
+      "shrs_q": [
+        "issuance_xbrl"
+      ],
+      "shrs_q_lag4": [
+        "issuance_xbrl"
+      ],
+      "si_dtc": [
+        "dtc"
+      ],
+      "si_shares": [
+        "si_ratio",
+        "si_change"
+      ],
+      "sstk_ttm": [
+        "net_payout"
+      ],
+      "sue": [
+        "sue"
+      ],
+      "txt_q": [
+        "chtax"
+      ],
+      "txt_q_lag4": [
+        "chtax"
+      ],
+      "xrd_ttm": [
+        "rd_me",
+        "cbop"
+      ]
+    }
+  },
+  "qualification": {
+    "native_parse_vm": "pending: root --plan-only compile against fields-v6 (u phase)",
+    "empirical": "unmeasured at source freeze",
+    "prior_phase": "v1-v5.1 and v4.2 files and generators are unchanged by v6"
+  }
+}

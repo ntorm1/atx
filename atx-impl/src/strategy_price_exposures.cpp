@@ -225,6 +225,81 @@ void sum_dollars(const PriceExposureInput& in, usize first_session, usize d,
   ATX_TRY_VOID(grow(s.z, n * kCols));
   return grow(s.residual, n);
 }
+
+// ------------------------------------------------------- within-group demeaning
+constexpr usize kUnknownSlot = kMaxGroupId + 1, kFallbackSlot = kMaxGroupId + 2;
+constexpr usize kSlotSums = kCols + 1; // the target, then every z column
+static_assert(kFallbackSlot + 1 == kGroupSlots, "slots: every id, unknown, fallback");
+[[nodiscard]] co::Status reserve_group_scratch(NeutralizeScratch& s, usize n) {
+  ATX_TRY_VOID(grow(s.slot, n));
+  ATX_TRY_VOID(grow(s.slot_count, kGroupSlots));
+  return grow(s.slot_sum, kGroupSlots * kSlotSums);
+}
+// Slot of every used row (s.rows[0, stats.used)): its integer id, kUnknownSlot for
+// NaN, then kFallbackSlot when that slot holds fewer than kMinGroupNames used rows.
+// Fills stats.groups / unknown_group_names / fallback_names.
+[[nodiscard]] co::Status assign_slots(std::span<const f64> group, NeutralizeScratch& s,
+                                      NeutralizeStats& stats) {
+  const usize n = stats.used;
+  std::fill(s.slot_count.begin(), s.slot_count.end(), usize{0});
+  for (usize r = 0; r < n; ++r) {
+    const f64 id = group[s.rows[r]];
+    usize slot = kUnknownSlot;
+    if (!std::isnan(id)) {
+      // The negated range also refuses +-inf; floor rejects a fractional id.
+      if (!(id >= 0 && id <= static_cast<f64>(kMaxGroupId)) || id != std::floor(id))
+        return co::Err(co::ErrorCode::InvalidArgument, "price neutralize: group id");
+      slot = static_cast<usize>(id);
+    }
+    s.slot[r] = slot;
+    ++s.slot_count[slot];
+  }
+  for (usize r = 0; r < n; ++r) {
+    if (s.slot[r] == kUnknownSlot) ++stats.unknown_group_names;
+    if (s.slot_count[s.slot[r]] >= kMinGroupNames) continue;
+    s.slot[r] = kFallbackSlot;
+    ++stats.fallback_names;
+  }
+  for (usize slot = 0; slot < kFallbackSlot; ++slot)
+    stats.groups += s.slot_count[slot] >= kMinGroupNames ? 1U : 0U;
+  stats.groups += stats.fallback_names ? 1U : 0U;
+  return co::Ok();
+}
+// FWL step: each row's target e[r] and z columns minus its slot's means over the used
+// rows (sums in ascending row order, so equal slots give equal bits whatever the id).
+// False when a z column is spanned by the slots: its within-slot sum of squares is
+// at most kMinPivot x its sum of squares (1 - R^2 on the slot indicators), the grouped
+// twin of the Cholesky pivot floor, so a between-group-only exposure never enters the
+// fit as rounding noise.
+[[nodiscard]] bool demean_within_groups(NeutralizeScratch& s, std::span<f64> z,
+                                        std::span<f64> e) {
+  std::fill(s.slot_count.begin(), s.slot_count.end(), usize{0});
+  std::fill(s.slot_sum.begin(), s.slot_sum.end(), 0.0);
+  std::array<f64, kCols> total{}, within{};
+  for (usize r = 0; r < e.size(); ++r) {
+    const usize base = s.slot[r] * kSlotSums;
+    ++s.slot_count[s.slot[r]];
+    s.slot_sum[base] += e[r];
+    for (usize k = 0; k < kCols; ++k) {
+      const f64 x = z[r * kCols + k];
+      s.slot_sum[base + k + 1] += x;
+      total[k] += x * x;
+    }
+  }
+  for (usize r = 0; r < e.size(); ++r) {
+    const usize base = s.slot[r] * kSlotSums;
+    const f64 count = static_cast<f64>(s.slot_count[s.slot[r]]);
+    e[r] -= s.slot_sum[base] / count;
+    for (usize k = 0; k < kCols; ++k) {
+      f64& x = z[r * kCols + k];
+      x -= s.slot_sum[base + k + 1] / count;
+      within[k] += x * x;
+    }
+  }
+  for (usize k = 0; k < kCols; ++k)
+    if (!(within[k] > kMinPivot * total[k])) return false;
+  return true;
+}
 // Column k of z over rows: (x - mean) / sample SD, clipped to +-clip. False if
 // the column is constant up to rounding (or not finite).
 [[nodiscard]] bool standardize(std::span<const f64> exposures, std::span<const usize> rows,
@@ -324,21 +399,36 @@ struct Cholesky {
   for (usize k = 0; k < kParams; ++k) x[k] *= f.scale[k];
   return x;
 }
-// OLS residual of target on [1, z] over the used rows into s.residual. Touches
+// OLS residual of target on [1, z] over the used rows into s.residual; grouped: of
+// the within-slot demeaned target on [1, demeaned z] (assign_slots ran), with every
+// held row (hold[i] != 0 and target[i] == 0) reset to 0 after the demeaning. Touches
 // only scratch and stats, so a refusal leaves the caller's target unmodified.
+// Ungrouped (hold then empty), every arithmetic operation and its order is the
+// price-risk-v1 one (the target copy into s.residual precedes the factorization,
+// which never reads it).
 [[nodiscard]] co::Status fit_residual(std::span<const f64> target,
-                                      std::span<const f64> exposures, f64 clip,
-                                      NeutralizeScratch& s, NeutralizeStats& stats) {
+                                      std::span<const f64> exposures, f64 clip, bool grouped,
+                                      std::span<const u8> hold, NeutralizeScratch& s,
+                                      NeutralizeStats& stats) {
   const usize n = stats.used;
   const std::span<const usize> rows(s.rows.data(), n);
   const std::span<f64> z(s.z.data(), n * kCols), e(s.residual.data(), n);
   for (usize k = 0; k < kCols; ++k)
     if (!standardize(exposures, rows, k, clip, z))
       return co::Err(co::ErrorCode::Unavailable, "price neutralize: constant exposure");
+  for (usize r = 0; r < n; ++r) e[r] = target[rows[r]];
+  // The intercept column stays: after demeaning it is orthogonal to every other
+  // column, so its coefficient is rounding noise and the residual is the FWL one.
+  if (grouped && !demean_within_groups(s, z, e))
+    return co::Err(co::ErrorCode::Unavailable, "price neutralize: exposure spanned by groups");
+  // Locate-in-aim (review I3): an aim held at 0 keeps 0 into the fit instead of
+  // -(its slot mean); its z row stays demeaned and regressed. The intercept then
+  // absorbs the held rows' slot means (no longer rounding noise). Empty: nothing held.
+  for (usize r = 0; r < n && !hold.empty(); ++r)
+    if (hold[rows[r]] != 0 && target[rows[r]] == 0) e[r] = 0;
   Cholesky f;
   if (!factor(normal_matrix(z, n), f))
     return co::Err(co::ErrorCode::Unavailable, "price neutralize: ill-conditioned exposures");
-  for (usize r = 0; r < n; ++r) e[r] = target[rows[r]];
   Vec coef = solve(f, cross(z, e));
   subtract_fit(z, coef, e);
   // One refinement step drives X'e from normal-equation error to rounding level.
@@ -352,6 +442,55 @@ struct Cholesky {
   stats.residual_gross = gross;
   stats.coefficients = coef;
   return co::Ok();
+}
+// neutralize_target (group and hold empty) and neutralize_target_within_groups (group,
+// and hold when not empty, sized by the caller): one body, so the ungrouped path is
+// price-risk-v1 operation for operation.
+[[nodiscard]] co::Status neutralize(std::span<f64> target, std::span<const u8> member,
+                                    std::span<const f64> exposures, std::span<const u8> ok,
+                                    std::span<const f64> group, std::span<const u8> hold,
+                                    const PriceExposureConfig& cfg, NeutralizeScratch& scratch,
+                                    NeutralizeStats& stats) {
+  const bool grouped = !group.empty();
+  ATX_TRY_VOID(validate_config(cfg));
+  ATX_TRY_VOID(validate_neutralize(target, member, exposures, ok));
+  ATX_TRY_VOID(reserve_scratch(scratch, target.size()));
+  if (grouped) ATX_TRY_VOID(reserve_group_scratch(scratch, target.size()));
+  for (usize i = 0; i < target.size(); ++i) {
+    if (!member[i]) continue;
+    stats.gross += std::abs(target[i]);
+    if (ok[i]) {
+      scratch.rows[stats.used++] = i;
+    } else {
+      ++stats.excluded;
+      stats.excluded_gross += std::abs(target[i]);
+    }
+  }
+  if (stats.used < cfg.min_names)
+    return co::Err(co::ErrorCode::Unavailable, "price neutralize: too few usable names");
+  if (grouped) ATX_TRY_VOID(assign_slots(group, scratch, stats));
+  if (stats.gross == 0) return co::Ok(); // flat stays flat: nothing to remove or rescale
+  ATX_TRY_VOID(fit_residual(target, exposures, cfg.clip_z, grouped, hold, scratch, stats));
+  const f64 scale = stats.gross / stats.residual_gross;
+  for (usize i = 0; i < target.size(); ++i)
+    if (member[i] && !ok[i]) target[i] = 0;
+  for (usize r = 0; r < stats.used; ++r) target[scratch.rows[r]] = scratch.residual[r] * scale;
+  return co::Ok();
+}
+// neutralize_price_risk (group and hold empty) and its within-groups twin.
+[[nodiscard]] co::Status price_risk(const PriceExposureInput& in, const PriceExposureConfig& cfg,
+                                    usize d, std::span<f64> target, std::span<const u8> member,
+                                    std::span<const f64> group, std::span<const u8> hold,
+                                    PriceRiskScratch& scratch, NeutralizeStats& stats) {
+  const usize n = in.instruments;
+  if (target.size() != n || member.size() != n || n > kMaxReturnCells)
+    return co::Err(co::ErrorCode::InvalidArgument, "price risk: target geometry");
+  ATX_TRY_VOID(grow(scratch.exposures, n * kCols));
+  ATX_TRY_VOID(grow(scratch.ok, n));
+  const std::span<f64> exposures(scratch.exposures.data(), n * kCols);
+  const std::span<u8> ok(scratch.ok.data(), n);
+  ATX_TRY_VOID(compute_price_exposures(in, cfg, d, scratch.exposure, exposures, ok));
+  return neutralize(target, member, exposures, ok, group, hold, cfg, scratch.neutralize, stats);
 }
 } // namespace
 
@@ -389,42 +528,41 @@ co::Status neutralize_target(std::span<f64> target, std::span<const u8> member,
                              const PriceExposureConfig& cfg, NeutralizeScratch& scratch,
                              NeutralizeStats& stats) {
   stats = {};
-  ATX_TRY_VOID(validate_config(cfg));
-  ATX_TRY_VOID(validate_neutralize(target, member, exposures, ok));
-  ATX_TRY_VOID(reserve_scratch(scratch, target.size()));
-  for (usize i = 0; i < target.size(); ++i) {
-    if (!member[i]) continue;
-    stats.gross += std::abs(target[i]);
-    if (ok[i]) {
-      scratch.rows[stats.used++] = i;
-    } else {
-      ++stats.excluded;
-      stats.excluded_gross += std::abs(target[i]);
-    }
-  }
-  if (stats.used < cfg.min_names)
-    return co::Err(co::ErrorCode::Unavailable, "price neutralize: too few usable names");
-  if (stats.gross == 0) return co::Ok(); // flat stays flat: nothing to remove or rescale
-  ATX_TRY_VOID(fit_residual(target, exposures, cfg.clip_z, scratch, stats));
-  const f64 scale = stats.gross / stats.residual_gross;
-  for (usize i = 0; i < target.size(); ++i)
-    if (member[i] && !ok[i]) target[i] = 0;
-  for (usize r = 0; r < stats.used; ++r) target[scratch.rows[r]] = scratch.residual[r] * scale;
-  return co::Ok();
+  return neutralize(target, member, exposures, ok, {}, {}, cfg, scratch, stats);
 }
 
 co::Status neutralize_price_risk(const PriceExposureInput& in, const PriceExposureConfig& cfg,
                                  usize d, std::span<f64> target, std::span<const u8> member,
                                  PriceRiskScratch& scratch, NeutralizeStats& stats) {
   stats = {};
-  const usize n = in.instruments;
-  if (target.size() != n || member.size() != n || n > kMaxReturnCells)
-    return co::Err(co::ErrorCode::InvalidArgument, "price risk: target geometry");
-  ATX_TRY_VOID(grow(scratch.exposures, n * kCols));
-  ATX_TRY_VOID(grow(scratch.ok, n));
-  const std::span<f64> exposures(scratch.exposures.data(), n * kCols);
-  const std::span<u8> ok(scratch.ok.data(), n);
-  ATX_TRY_VOID(compute_price_exposures(in, cfg, d, scratch.exposure, exposures, ok));
-  return neutralize_target(target, member, exposures, ok, cfg, scratch.neutralize, stats);
+  return price_risk(in, cfg, d, target, member, {}, {}, scratch, stats);
+}
+
+co::Status neutralize_target_within_groups(std::span<f64> target, std::span<const u8> member,
+                                           std::span<const f64> exposures,
+                                           std::span<const u8> ok, std::span<const f64> group,
+                                           const PriceExposureConfig& cfg,
+                                           NeutralizeScratch& scratch, NeutralizeStats& stats,
+                                           std::span<const u8> hold_zero) {
+  stats = {};
+  // An empty group span would silently select the ungrouped path.
+  if (target.empty() || group.size() != target.size() ||
+      (!hold_zero.empty() && hold_zero.size() != target.size()))
+    return co::Err(co::ErrorCode::InvalidArgument, "price neutralize: group geometry");
+  return neutralize(target, member, exposures, ok, group, hold_zero, cfg, scratch, stats);
+}
+
+co::Status neutralize_price_risk_within_groups(const PriceExposureInput& in,
+                                               const PriceExposureConfig& cfg, usize d,
+                                               std::span<f64> target,
+                                               std::span<const u8> member,
+                                               std::span<const f64> group,
+                                               PriceRiskScratch& scratch, NeutralizeStats& stats,
+                                               std::span<const u8> hold_zero) {
+  stats = {};
+  if (!in.instruments || group.size() != in.instruments ||
+      (!hold_zero.empty() && hold_zero.size() != in.instruments))
+    return co::Err(co::ErrorCode::InvalidArgument, "price risk: group geometry");
+  return price_risk(in, cfg, d, target, member, group, hold_zero, scratch, stats);
 }
 } // namespace atx::impl::strategy

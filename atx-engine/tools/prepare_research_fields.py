@@ -20,6 +20,21 @@ Sources (all read-only; exact bytes hashed, pinned against their producers' rece
   date(session); line_types: static (non point-in-time) line classification.
 * the role payload itself (``mkt_ret``): equal-weight mean of guarded adjusted close-to-close
   returns of the prior session's decision members, broadcast to every present cell of the session.
+* issuer-level fields (opt-in, ``ISSUER_FIELDS``; library v4): a pinned identity bridge (T19,
+  ``prepare_identity_bridge.py``: dated securityID -> CIK links, P/J, available_at) and a pinned
+  fundamental events artifact (T20, ``build_fundamental_events.py``: one snapshot row per filing event
+  and a SIC event table). Line i at session d links to a CIK through a bridge row whose [start, end_incl]
+  contains d (bridge rows are already point in time: available_at <= start 22:00 UTC, asserted and
+  counted per row; a violating row is also gated by available_at <= d 22:00 UTC). Fundamental items and industry groups (``grp_sic2``,
+  ``grp_ff12``, ``grp_ff49``) read the CIK's latest row with clock < the mark of session d-L, L =
+  ``--fund-lag-sessions`` (declared 1), with 200/400/550-day staleness, on primary (P) lines only;
+  ``me_company`` sums shares_out x raw_close over every role line (P and J) of the issuer. The input
+  contracts (``atx.identity-bridge/v1``, ``atx.fundamental-events/v1``) are bound in ``BRIDGE_ADAPTER``,
+  ``EVENTS_ADAPTER`` and ``SIC_ADAPTER``.
+* FINRA daily short sale volume (opt-in ``sv_ratio126``; library v6.1): the CNMSshvolYYYYMMDD.txt.gz files of
+  ``--finra-short-volume``, streamed one day at a time and each verified against the downloader's receipt
+  (manifest.csv), mapped to role lines with the short-interest producer's PIT symbol map over the role's own
+  TickerHistory3 ``ticker_tk`` (``SV_MAP_RULE``); the 126-session ratio uses the files dated d-126..d-1 only.
 
 Every manifest field entry carries a machine-readable ``point_in_time`` flag (see
 ``POINT_IN_TIME_DEFINITION``); a false flag names its reason and the non-PIT aspect (values or
@@ -37,12 +52,14 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import gzip
 import hashlib
 import io
 import json
 import math
 import os
 from pathlib import Path
+import re
 import time
 
 import numpy as np
@@ -244,6 +261,222 @@ EXCLUDED_SOURCE_COLUMNS = [
     {"columns": "earnFlag == -1", "reason": "presumes a known future event date; mapped to 0 (same as N)"},
     {"columns": "same-date vendor shares", "reason": "A8: vendor runs start at the filing cover date; replaced by the 90-day lag (shares_out)"},
 ]
+
+# ---------------------------------------------------------------------------
+# Issuer-level fields (library v4, T21): fundamentals, company market equity, industry groups.
+# Kept in their own registry: FIELDS, DEFAULT_FIELDS and every legacy output byte are unchanged
+# when none of these is requested. All are point in time and opt-in (they need pinned inputs).
+# Rulings: v4-prereg.md R2 (declared 2026-09-27 before any v4 TRAIN read) and T18 report section 7.
+# ---------------------------------------------------------------------------
+
+FUND_LAG_SESSIONS_DECLARED = 1   # v4-prereg R2: +1 declared lag session (--fund-lag-sessions 1)
+# Link rule (controller ruling, T21): T19 rows are already point in time (r4 links_asof applied; every row has
+# available_at <= start 22:00 UTC), so a line matches on start <= date(session) <= end_incl only. The invariant is
+# asserted per row and violations are counted; a violating row is also gated by available_at <= date(session)
+# 22:00 UTC, which never binds on a row that meets the invariant.
+FUND_STALE_DAYS = 200            # rows of quarterly filers (events staleness_days)
+FUND_STALE_DAYS_ANNUAL = 400     # rows of annual-only filers
+GRP_STALE_DAYS = 550
+MARK_NS = 22 * 3_600_000_000_000  # the role close mark: session date 22:00 UTC
+SEAL_NS = (SEAL - EPOCH).days * DAY_NS
+OPEN_END_DAY = np.iinfo(np.int64).max
+NULL_PERIOD_DAY = -(1 << 40)     # a null period_end is never fresh
+SIC_RANGE = (100, 9999)          # atx_db.reference_classifications SIC_MIN / SIC_MAX
+# French's Fama-French 12 numbering (Siccodes12): 1 NoDur .. 12 Other.
+FF12_NUMBERS = {"NoDur": 1, "Durbl": 2, "Manuf": 3, "Enrgy": 4, "Chems": 5, "BusEq": 6, "Telcm": 7, "Utils": 8,
+                "Shops": 9, "Hlth": 10, "Money": 11, "Other": 12}
+SIC_MAPPING_VERSIONS = {"ff12": "french_siccodes12_v2", "ff49": "french_siccodes49_v1"}
+
+LINK_RULE = (
+    "line -> CIK: the pinned identity-bridge row of the line whose [start, end_incl] contains date(session t) (bridge "
+    "rows are point in time: available_at <= start 22:00 UTC, asserted per row; a violating row, counted, is also gated "
+    "by available_at <= date(session t) 22:00 UTC); the value is published on primary (P) lines only (secondary J lines, "
+    "unlinked lines and lines with two qualifying rows for different CIKs -> NaN)")
+FUND_CLOCK = (
+    "fund-events-lagged-v1: the linked CIK's latest events row with clock < date(session t-L) 22:00 UTC, L = {lag} declared "
+    "lag session(s) on the role calendar (--fund-lag-sessions): usable from the first session whose 22:00 UTC mark follows "
+    "the clock, plus L sessions; sessions t < L -> NaN; clock = events accepted_utc (FSDS SUB accepted_utc of the "
+    "filing, else FC1 = filed 00:00 UTC + 46 h, clock_basis cf_fc1); consumer selection rule of atx.fundamental-events/v1 "
+    "(row-level, latest-clock-wins): for a CIK and mark, take the latest visible row (max accepted_utc, tie by accession). "
+    + LINK_RULE)
+FUND_STALENESS = (
+    "atx.fundamental-events/v1 rule: every item is that row's value (NaN stays NaN; do not fall back to an older row per "
+    "item, so paired items always share one anchor); the whole row is stale, and every item NaN, when date(d) - "
+    "period_end > staleness_days, where staleness_days = 200 if the CIK has a 10-Q/10-QT (or /A) accession with clock in "
+    "(clock - 400 d, clock], else 400 (annual-only filer); only 200 and 400 are admitted; no visible row or null "
+    "period_end -> NaN; restatements are latest-clock-wins: a restated value enters at the restating filing's clock and "
+    "is never backdated")
+FUND_CAVEATS = [
+    "values modeled/unaccepted (not F.1-accepted): bounded v4 events producer over the CompanyFacts CF-R snapshot "
+    "2026-09-20 (us-gaap + dei only: IFRS filers and most ADRs have no values) and FSDS SUB acceptance clocks",
+    "identity from the pinned identity bridge (r4 rehearsal links, rehearsal_identity recorded in source_checks; "
+    "scope_complete=false: about 60% of role member cells are linked, TRAIN and VAL alike)",
+    "FC1 fallback clock (filed + 46 h) where FSDS SUB lacks the accession: counted per field (fc1_finite_member_cells)",
+    "item definitions (concept chains, TTM and discrete-quarter derivation, zero-fill rules for debt, dvc_ttm, "
+    "prstkc_ttm, sstk_ttm) belong to the events producer (atx-engine/tools/fundamental_events_schema.md, "
+    "atx.fundamental-events/v1); the events manifest SHA-256 is pinned in sources",
+]
+ME_CLOCK = (
+    "role-close-mark: sum over every role line with a qualifying P or J identity-bridge link to the CIK at session t of "
+    "shares_out[t] x raw_close[t] (this run's shares_out field; role raw_close.f64 of present lines); published on the "
+    "CIK's primary lines. " + LINK_RULE)
+ME_STALENESS = (
+    "no fill: NaN when any role line linked to the CIK at session t has a non-finite or non-positive shares_out x "
+    "raw_close (absent, unpriced, or shares_out NaN); NaN on unlinked, secondary (J) and ambiguous lines")
+ME_CAVEATS = [
+    "issuer market equity is line-summed vendor ME (shares_out: 90-day lagged vendor shares restated to the session "
+    "basis), not DEI entity shares",
+    "share classes outside the role (not in its ADV universe) or without a qualifying link are missing: multi-class "
+    "issuers can be understated",
+    "identity from the pinned identity bridge (r4 rehearsal links, rehearsal_identity recorded in source_checks)",
+]
+GRP_CLOCK = (
+    "fund-events-lagged-v1 applied to the SIC events table: the linked CIK's latest SIC row (FSDS SUB sic as of the "
+    "filing; max accepted_utc, tie by accession) with accepted_utc < date(session t-L) 22:00 UTC, L = {lag}; sessions "
+    "t < L -> NaN; a row whose sic is null or "
+    "outside [100, 9999] carries no SIC and is skipped (counted). " + LINK_RULE)
+GRP_STALENESS = (
+    "age = date(session) - UTC date of the visible SIC row's accepted_utc, calendar days; age > 550 -> NaN; no visible "
+    "SIC row -> "
+    "NaN; NaN is an unknown label (the VM keeps NaN labels out of every group)")
+GRP_CAVEATS = [
+    "SIC as of each filing (FSDS SUB), not the SEC's current snapshot: about 11% of CIKs changed SIC in 2015-2024",
+    "mapping from atx_db.reference_classifications (French Siccodes12 v2 / Siccodes49 v1); module code identity and a "
+    "digest of the full SIC -> code tables are in source_checks.issuer.sic_mapping",
+    "identity from the pinned identity bridge (r4 rehearsal links, rehearsal_identity recorded in source_checks)",
+]
+# (field/item name, units, what the events producer's item holds). Items are the T18 section 6 proposal plus
+# be_lag1q_lag4 (the lag-4 opening equity that dROE needs).
+FUND_ITEMS = (
+    ("be", "USD", "book equity at the latest period end"),
+    ("at", "USD", "total assets at the latest period end"),
+    ("at_lag4", "USD", "total assets four fiscal quarters before the latest period end"),
+    ("lt", "USD", "total liabilities at the latest period end"),
+    ("che", "USD", "cash and short-term investments at the latest period end"),
+    ("debt", "USD", "total debt at the latest period end"),
+    ("sale_ttm", "USD", "revenue, trailing twelve months"),
+    ("gp_ttm", "USD", "gross profit, trailing twelve months"),
+    ("oi_ttm", "USD", "operating income, trailing twelve months"),
+    ("ni_ttm", "USD", "net income, trailing twelve months"),
+    ("ni_q", "USD", "net income, latest discrete fiscal quarter"),
+    ("ni_q_lag4", "USD", "net income, the same fiscal quarter one year earlier"),
+    ("be_lag1q", "USD", "book equity one quarter before the latest period end (opening equity of the quarter)"),
+    ("be_lag1q_lag4", "USD", "opening book equity of the same fiscal quarter one year earlier"),
+    ("cfo_ttm", "USD", "net cash from operating activities, trailing twelve months"),
+    ("capx_ttm", "USD", "capital expenditures, trailing twelve months"),
+    ("xrd_ttm", "USD", "research and development expense, trailing twelve months"),
+    ("dvc_ttm", "USD", "common dividends paid, trailing twelve months"),
+    ("prstkc_ttm", "USD", "repurchases of common stock, trailing twelve months"),
+    ("sstk_ttm", "USD", "proceeds from issuance of common stock, trailing twelve months"),
+    ("txt_q", "USD", "income tax expense, latest discrete fiscal quarter"),
+    ("txt_q_lag4", "USD", "income tax expense, the same fiscal quarter one year earlier"),
+    ("shrs_q", "shares", "weighted-average diluted (else basic) shares of the fiscal quarter (else year) ending at "
+                         "the latest period end"),
+    ("shrs_q_lag4", "shares", "the same share concept ending four fiscal quarters earlier (pair NaN on a scale error)"),
+    ("noa", "USD", "net operating assets at the latest period end: at - che - lt + debt"),
+    ("noa_lag4", "USD", "net operating assets four fiscal quarters earlier"),
+    ("sue", "unitless", "seasonal-random-walk SUE of the quarter ending at the latest period end on first-reported "
+                        "quarterly net income (not EPS): (NI_q - NI_q-4) / sd of the previous <= 8 seasonal differences, "
+                        ">= 4 required, sd > 0"),
+    ("fscore", "count 0-9", "Piotroski F-score, all nine terms required"),
+)
+ISSUER_FIELDS = {}
+for _name, _units, _what in FUND_ITEMS:
+    ISSUER_FIELDS[_name] = {
+        "group": "issuer", "kind": "fund", "item": _name, "point_in_time": True, "lagged": True,
+        "source_columns": [_name, "cik", "accepted_utc", "accession", "period_end", "staleness_days"],
+        "units": _units, "clock": FUND_CLOCK, "staleness": FUND_STALENESS, "caveats": FUND_CAVEATS,
+        "definition": f"{_what}: item `{_name}` of the pinned fundamental events artifact, value of the linked CIK's "
+                      f"latest visible events row (see clock and staleness)"}
+ISSUER_FIELDS["me_company"] = {
+    "group": "issuer", "kind": "me", "point_in_time": True, "lagged": False, "requires": ["shares_out"],
+    "source_columns": ["shares_out", "raw_close.f64", "present.u8", "identity-bridge links"],
+    "units": "USD: issuer market equity, sum of shares_out x raw_close over the issuer's role lines",
+    "clock": ME_CLOCK, "staleness": ME_STALENESS, "caveats": ME_CAVEATS,
+    "definition": "me_company[t, i] = sum over role lines j linked (P or J) at t to the CIK of primary line i of "
+                  "shares_out[t, j] x raw_close[t, j]; NaN when any term is not finite and positive"}
+for _name, _code, _units in (
+        ("grp_sic2", "sic2", "categorical code: SIC major group floor(sic / 100), 1-99, stored as f64"),
+        ("grp_ff12", "ff12", "categorical code: Fama-French 12-industry number (1 NoDur, 2 Durbl, 3 Manuf, 4 Enrgy, "
+                             "5 Chems, 6 BusEq, 7 Telcm, 8 Utils, 9 Shops, 10 Hlth, 11 Money, 12 Other), stored as f64"),
+        ("grp_ff49", "ff49", "categorical code: Fama-French 49-industry number 1-49, stored as f64; a SIC listed under "
+                             "no FF49 industry -> NaN (never 49 Other)")):
+    ISSUER_FIELDS[_name] = {
+        "group": "issuer", "kind": "grp", "code": _code, "point_in_time": True, "lagged": True,
+        "source_columns": ["sic", "cik", "accepted_utc", "accession"], "units": _units, "clock": GRP_CLOCK,
+        "staleness": GRP_STALENESS,
+        "caveats": GRP_CAVEATS,
+        "definition": f"{_code} of the linked CIK's latest visible valid SIC row: sic2 = floor(sic / 100); ff12 / ff49 = "
+                      f"atx_db.reference_classifications fama_french_12_for_sic / fama_french_49_for_sic "
+                      f"({SIC_MAPPING_VERSIONS['ff12']} / {SIC_MAPPING_VERSIONS['ff49']}) as French's industry number"}
+del _name, _units, _what, _code
+
+# ---------------------------------------------------------------------------
+# FINRA daily short sale volume (library v6.1, v4-prereg.md "## v6.1 sub-alpha", declared before any read of the
+# field or its returns). Own registry, opt-in (needs --finra-short-volume): FIELDS, DEFAULT_FIELDS and every other
+# field's output bytes are unchanged whether or not it is requested.
+# ---------------------------------------------------------------------------
+SV_FORMULA_ID = "finra-cnms-ratio126-lag1-v1"
+SV_WINDOW = 126                  # sessions d-126..d-1
+SV_MIN_SESSIONS = 63             # fewer sessions with a mapped row -> NaN
+SV_LAG_SESSIONS = 1              # the file dated d is never used at d
+SV_FILE_PATTERN = r"^CNMSshvol(\d{8})\.txt\.gz$"
+SV_HEADER = b"Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market"
+SV_RECEIPT = "manifest.csv"      # the downloader's receipt: sha256 / bytes / rows of each DECOMPRESSED file
+# PIT FINRA symbol map of the short-interest producer (build-equity/audits/iteration21_finra_si_asof.py, the
+# mapping_report.json behind si_shares / si_dtc), ported verbatim: canonicaliser, 7-day ticker lookback,
+# ambiguity drop and exact-match collision rule. The CNMS files spell FINRA/CQS suffixes as lowercase markers
+# ("CpK" preferred K, "GCVr" rights, "GTXw" when-issued, "BF/B" class B) where the short-interest symbolCode
+# (and ORATS ticker_tk: "C.PRK", "ACP.RT", "AAN.WI", "BF.B") spell them PR / RT / WI: the markers are rewritten to
+# that spelling BEFORE the unchanged canonicaliser, so a class share or preferred is handled exactly as in the
+# short-interest map (without it "CpK" canonicalises to "CPK", collides with Chesapeake Utilities' CPK and the
+# collision rule drops both).
+SV_TICKER_LOOKBACK_DAYS = 7      # iteration21_finra_si_asof.LOOKBACK_DAYS
+SI_CANON_PATTERN = r"[.\s/\-]"   # iteration21_finra_si_asof._CANON_RE
+CNMS_SUFFIX_MARKERS = (("p", "PR"), ("r", "RT"), ("w", "WI"))
+SV_SYMBOL_PATTERN = r"^[A-Za-z0-9./\-]+$"
+SV_MAP_RULE = (
+    "finra-si-symbol-map-v1 (the short-interest producer's rule): CNMS Symbol -> short-interest spelling (lowercase "
+    "suffix markers p -> PR, r -> RT, w -> WI; '/' is dropped by the canonicaliser) -> canonical = upper-case, strip "
+    "'.', whitespace, '/', '-' (the same canonicaliser on ORATS ticker_tk); ticker source = the role's TickerHistory3 "
+    "ticker_tk on the last vendor trading date <= the file date within 7 calendar days (rows with securityID > 0 and "
+    "a non-blank ticker; a trading date = a date with any such row); a canonical ticker held by more than one "
+    "securityID that date is ambiguous and dropped; several symbols of one file on one securityID keep the one "
+    "whose short-interest spelling equals a raw ticker (strip, upper) of that securityID that date, else all are "
+    "dropped; within a file the last row of a symbol wins")
+SV_CLOCK = (
+    f"{SV_FORMULA_ID}: role session d uses the CNMS files dated on the {SV_WINDOW} sessions before d (d-{SV_WINDOW}.."
+    "d-1; role calendar, extended before the role's first session by the FINRA file dates, one file per US equity "
+    "session); the file dated d is never used at d (lag 1 session; FINRA publishes it the evening of d). Ticker map "
+    "of each file: TickerHistory3 rows dated <= the file date (a row dated s is known at the s 22:00 UTC mark)")
+SV_FIELDS = {
+    "sv_ratio126": {
+        "group": "finra_sv", "point_in_time": True,
+        "source_columns": ["Date", "Symbol", "ShortVolume", "TotalVolume", "ticker_tk", "tradingDate", "securityID"],
+        "units": "ratio (decimal, [0, 1]): summed FINRA consolidated NMS short sale volume / summed total volume",
+        "clock": SV_CLOCK,
+        "staleness": (f"NaN when fewer than {SV_MIN_SESSIONS} of the sessions d-{SV_WINDOW}..d-1 carry a mapped row "
+                      "of the instrument (its PIT ticker absent from the file, unmapped, ambiguous or dropped by the "
+                      "collision rule, or no file that session) or when the summed TotalVolume is 0; no fill"),
+        "definition": (f"sv_ratio126[d, i] = sum over s in S of ShortVolume[s, i] / sum over s in S of "
+                       f"TotalVolume[s, i]; S = the sessions among d-{SV_WINDOW}..d-1 whose CNMSshvol file has a row "
+                       f"mapped to instrument i ({SV_MAP_RULE}); NaN when |S| < {SV_MIN_SESSIONS} or the TotalVolume "
+                       f"sum is 0. Formula id {SV_FORMULA_ID}"),
+        "caveats": [
+            "FINRA Reg SHO daily files (consolidated NMS: FINRA TRFs/ADF plus exchange short sale volume) count "
+            "market-maker short sales that hedge customer buying: the daily ratio is mostly liquidity provision "
+            "(about half of off-exchange volume); only the long-window aggregate is the pre-registered signal",
+            "file bytes as downloaded from the FINRA CDN (receipt manifest.csv; downloaded_at range in "
+            "short_volume.files), long after the trade date: whether FINRA re-published a file after its trade "
+            "date is unverified (vintage risk)",
+            "symbology gaps: symbols whose PIT ORATS ticker differs beyond the canonicaliser (renames between the "
+            "vendor and FINRA, units, when-issued lines) are unmapped; see short_volume.mapping per-year counts",
+            "a session without a CNMS file (FINRA outage) simply contributes no row; counted in "
+            "short_volume.calendar"]},
+}
+# Every producible field: the legacy registry first (its order is the manifest order), then the issuer fields,
+# then the short-volume field.
+ALL_FIELDS = {**FIELDS, **ISSUER_FIELDS, **SV_FIELDS}
 
 
 def canonical(value) -> str:
@@ -1241,28 +1474,834 @@ def market_return_field(role: Role, output: Path, budget: Budget):
 
 
 # ---------------------------------------------------------------------------
+# Issuer-level fields: input adapter (T19 bridge, T20 events), links, per-session joins
+# ---------------------------------------------------------------------------
+
+# Adapter: the committed input contracts. T19 `atx.identity-bridge/v1` (prepare_identity_bridge.py docstring,
+# commit 83fbbf84) and T20 `atx.fundamental-events/v1` (fundamental_events_schema.md, commit 77771dd2). Each
+# input is one manifest-listed parquet file, verified against the manifest's bytes and SHA-256 before parsing.
+BRIDGE_ADAPTER = {
+    "schema": "atx.identity-bridge/v1", "file": "links.parquet",
+    "columns": ("sr_id", "cik", "start", "end_incl", "available_at", "primary", "basis"),
+}
+EVENTS_ADAPTER = {
+    "schema": "atx.fundamental-events/v1", "file": "fundamental_events.parquet",
+    "columns": ("cik", "accepted_utc", "accession", "clock_basis", "period_end", "staleness_days"),
+}
+SIC_ADAPTER = {
+    "schema": "atx.fundamental-events/v1", "file": "sic_events.parquet",
+    "columns": ("cik", "accepted_utc", "accession", "sic"),
+}
+BRIDGE_KINDS = ("P", "J")                              # any other primary value (N, ...) is dropped and counted
+BRIDGE_EXCLUDED_BASES = ("current_ticker_verified",)   # T18: starts at the 2026 snapshot, never backfills history
+STALENESS_DAYS_ALLOWED = (FUND_STALE_DAYS, FUND_STALE_DAYS_ANNUAL)  # v4-prereg R2: 200 / 400 only
+
+
+def pinned_manifest(directory: Path, expected_sha256: str, what: str, schema: str):
+    blob = (directory / "manifest.json").read_bytes()
+    digest = sha_bytes(blob)
+    if digest != str(expected_sha256).lower():
+        raise ValueError(f"{what} manifest SHA-256 does not match --{what}-sha256")
+    m = json.loads(blob)
+    if m.get("schema") != schema or m.get("status") != "complete":
+        raise ValueError(f"{what} manifest is not a complete {schema} artifact")
+    return m, {"path": str((directory / "manifest.json").resolve()), "bytes": len(blob), "sha256": digest}
+
+
+def read_listed(directory: Path, manifest: dict, adapter: dict, what: str, budget: Budget, extra=()):
+    """The adapter's manifest-listed parquet file, hash-verified from the exact bytes parsed; contract columns plus
+    `extra` (requested items) must all be present."""
+    entry = (manifest.get("files") or {}).get(adapter["file"])
+    if not isinstance(entry, dict):
+        raise ValueError(f"{what}: manifest does not list {adapter['file']}")
+    blob = (directory / adapter["file"]).read_bytes()
+    digest = sha_bytes(blob)
+    if len(blob) != int(entry.get("bytes", -1)) or digest != entry.get("sha256"):
+        raise ValueError(f"{what}: {adapter['file']} does not match its manifest entry")
+    names = pq.read_schema(pa.BufferReader(blob)).names
+    missing = [c for c in adapter["columns"] if c not in names]
+    if missing:
+        raise ValueError(f"{what}: {adapter['file']} lacks contract column(s) {missing}")
+    missing = [c for c in extra if c not in names]
+    if missing:
+        raise ValueError(f"{what}: {adapter['file']} lacks requested column(s) {missing}")
+    table = pq.read_table(pa.BufferReader(blob), columns=list(adapter["columns"]) + [c for c in extra
+                                                                                     if c not in adapter["columns"]])
+    budget.check(f"{what}-read")
+    return table, [{"path": str((directory / adapter["file"]).resolve()), "bytes": len(blob), "sha256": digest}]
+
+
+def column_of(table, name: str):
+    col = table.column(name)
+    return col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col
+
+
+def as_instants_ns(col, what: str) -> np.ndarray:
+    """A timestamp column (any unit; tz-aware is a UTC instant, naive is declared UTC) as i64 ns since the epoch."""
+    if not pa.types.is_timestamp(col.type):
+        raise ValueError(f"{what} is {col.type}, expected a timestamp (UTC instant)")
+    if col.null_count:
+        raise ValueError(f"{what} has null values")
+    return pc.cast(pc.cast(col, pa.timestamp("ns", tz=col.type.tz)), pa.int64()).to_numpy(zero_copy_only=False)
+
+
+def as_days(col, what: str, null_day=None) -> np.ndarray:
+    if not pa.types.is_date32(col.type):
+        raise ValueError(f"{what} is {col.type}, expected date32")
+    if col.null_count and null_day is None:
+        raise ValueError(f"{what} has null values")
+    days = pc.fill_null(pc.cast(col, pa.int32()), 0).to_numpy(zero_copy_only=False).astype(np.int64)
+    if col.null_count:
+        days = np.where(col.is_null().to_numpy(zero_copy_only=False), null_day, days)
+    return days
+
+
+def as_ids(col, what: str) -> np.ndarray:
+    if not pa.types.is_integer(col.type) or col.null_count:
+        raise ValueError(f"{what} is not a non-null integer column")
+    ids = pc.cast(col, pa.int64()).to_numpy(zero_copy_only=False).astype(np.int64)
+    if np.any(ids <= 0):
+        raise ValueError(f"{what} is not a positive id")
+    return ids
+
+
+def as_f64(col, what: str) -> np.ndarray:
+    if not (pa.types.is_floating(col.type) or pa.types.is_integer(col.type)):
+        raise ValueError(f"{what} is {col.type}, expected a number")
+    return pc.fill_null(pc.cast(col, pa.float64()), np.nan).to_numpy(zero_copy_only=False).astype(np.float64)
+
+
+def as_text(col) -> pa.Array:
+    return pc.fill_null(pc.cast(col, pa.string()), "")
+
+
+def load_bridge(directory: Path, expected_sha256: str, role: Role, budget: Budget):
+    """T19 identity bridge -> link rows on the role axis (column, CIK, start/end day, available_at ns, P flag)."""
+    m, man_src = pinned_manifest(directory, expected_sha256, "identity-bridge", BRIDGE_ADAPTER["schema"])
+    if not isinstance(m.get("rehearsal_identity"), bool):
+        raise ValueError("identity-bridge manifest carries no boolean rehearsal_identity flag")
+    table, sources = read_listed(directory, m, BRIDGE_ADAPTER, "identity-bridge", budget)
+    sid = as_ids(column_of(table, "sr_id"), "identity-bridge sr_id")
+    cik = as_ids(column_of(table, "cik"), "identity-bridge cik")
+    start = as_days(column_of(table, "start"), "identity-bridge start")
+    end = as_days(column_of(table, "end_incl"), "identity-bridge end_incl", null_day=OPEN_END_DAY)
+    avail = as_instants_ns(column_of(table, "available_at"), "identity-bridge available_at")
+    kind = as_text(column_of(table, "primary"))
+    is_p = pc.equal(kind, "P").to_numpy(zero_copy_only=False)
+    known = pc.is_in(kind, value_set=pa.array(list(BRIDGE_KINDS))).to_numpy(zero_copy_only=False)
+    excluded = pc.is_in(as_text(column_of(table, "basis")),
+                        value_set=pa.array(list(BRIDGE_EXCLUDED_BASES))).to_numpy(zero_copy_only=False)
+    if np.any(start > end):
+        raise ValueError("identity-bridge link with start after end_incl")
+    sealed = avail >= SEAL_NS
+    pos, on = role.columns_of(sid)
+    keep = known & ~excluded & ~sealed & on
+    late = keep & (avail > start * DAY_NS + MARK_NS)  # T19 invariant: available_at <= start 22:00 UTC
+    st = {"rehearsal_identity": m["rehearsal_identity"], "rule": m.get("rule"),
+          "scope_complete": (m.get("source") or {}).get("scope_complete"), "rows_total": int(len(sid)),
+          "rows_dropped_kind_not_p_or_j": int(np.count_nonzero(~known)),
+          "rows_dropped_excluded_basis": int(np.count_nonzero(known & excluded)),
+          "rows_available_on_or_after_2025_dropped": int(np.count_nonzero(known & ~excluded & sealed)),
+          "rows_ignored_off_axis": int(np.count_nonzero(known & ~excluded & ~sealed & ~on)),
+          "rows_used": int(np.count_nonzero(keep)), "rows_used_primary": int(np.count_nonzero(keep & is_p)),
+          "rows_used_available_after_start_mark": int(np.count_nonzero(late)),
+          "rows_used_available_exactly_at_start_mark": int(np.count_nonzero(keep & (avail == start * DAY_NS + MARK_NS))),
+          "link_rule": "start <= date(session) <= end_incl; rows with available_at > start 22:00 UTC (invariant "
+                       "violations, counted) are also gated by available_at <= date(session) 22:00 UTC"}
+    links = {"col": pos[keep].astype(np.int64), "cik": cik[keep], "start": start[keep], "end": end[keep],
+             "avail": avail[keep], "primary": is_p[keep]}
+    return links, [man_src] + sources, st
+
+
+def resolve_links(links: dict, role: Role, marks: np.ndarray, budget: Budget):
+    """Session x line matrix of the dense CIK index (-1 unlinked, -2 ambiguous) and a primary flag.
+
+    A row qualifies at session t when start <= date(t) <= end_incl and available_at <= mark(t); the second
+    condition never binds on a row meeting T19's invariant (available_at <= start mark). Two qualifying rows of one
+    line for different CIKs make the cell ambiguous (T19 guarantees disjoint intervals per line; kept as a guard);
+    P and J rows for one CIK make it primary."""
+    ciks = np.unique(links["cik"])
+    cidx = np.searchsorted(ciks, links["cik"]).astype(np.int32)
+    link = np.full((role.n_dates, role.n), -1, dtype=np.int32)
+    primary = np.zeros((role.n_dates, role.n), dtype=bool)
+    t_lo = np.maximum(np.searchsorted(role.days, links["start"], side="left"),
+                      np.searchsorted(marks, links["avail"], side="left"))
+    t_hi = np.searchsorted(role.days, links["end"], side="right")
+    never = 0
+    for k in np.lexsort((links["avail"], links["start"], links["col"])):
+        a, b, j, c = int(t_lo[k]), int(t_hi[k]), int(links["col"][k]), cidx[k]
+        if a >= b:
+            never += 1
+            continue
+        seg = link[a:b, j]
+        free, same = seg == -1, seg == c
+        seg[~free & ~same] = -2
+        seg[free] = c
+        if links["primary"][k]:
+            primary[a:b, j] |= free | same
+    budget.check("issuer-links")
+    st = {"linked_ciks": int(len(ciks)), "rows_never_qualifying_on_role": never,
+          "ambiguous_cells": int(np.count_nonzero(link == -2))}
+    return ciks, link, primary, st
+
+
+def load_events(directory: Path, manifest: dict, adapter: dict, items, ciks: np.ndarray, what: str, budget: Budget):
+    """Rows of linked CIKs, sealed rows dropped, ordered by (accepted_utc, accession): the contract's
+    latest-row selection (max accepted_utc, tie by accession) is then the last row visible before a mark."""
+    table, sources = read_listed(directory, manifest, adapter, what, budget, extra=tuple(items))
+    cik = as_ids(column_of(table, "cik"), f"{what} cik")
+    clock = as_instants_ns(column_of(table, "accepted_utc"), f"{what} accepted_utc")
+    accession = as_text(column_of(table, "accession"))
+    sealed = clock >= SEAL_NS
+    pos = np.minimum(np.searchsorted(ciks, cik), max(len(ciks) - 1, 0))
+    linked = (ciks[pos] == cik) if len(ciks) else np.zeros(len(cik), dtype=bool)
+    keep = ~sealed & linked
+    by_clock = pc.sort_indices(pa.table({"c": clock, "a": accession, "i": np.arange(len(cik))}),
+                               sort_keys=[("c", "ascending"), ("a", "ascending"), ("i", "ascending")])
+    order = by_clock.to_numpy(zero_copy_only=False).astype(np.int64)
+    order = order[keep[order]]
+    ev = {"clock": clock[order], "cidx": pos[order].astype(np.int64)}
+    st = {"schema": manifest.get("schema"), "values_label": manifest.get("values_label"),
+          "rehearsal_identity": manifest.get("rehearsal_identity"), "rows_total": int(len(cik)),
+          "rows_available_on_or_after_2025_dropped": int(np.count_nonzero(sealed)),
+          "rows_ignored_unlinked_cik": int(np.count_nonzero(~sealed & ~linked)), "rows_used": int(len(order))}
+    key = np.lexsort((ev["clock"], ev["cidx"]))
+    st["rows_sharing_cik_and_clock"] = int(np.count_nonzero((np.diff(ev["cidx"][key]) == 0)
+                                                            & (np.diff(ev["clock"][key]) == 0)))
+    if "period_end" in adapter["columns"]:
+        pe = as_days(column_of(table, "period_end"), f"{what} period_end", null_day=NULL_PERIOD_DAY)[order]
+        ev["period_end"] = pe
+        st["rows_null_period_end"] = int(np.count_nonzero(pe == NULL_PERIOD_DAY))
+        stale = column_of(table, "staleness_days")
+        if not pa.types.is_integer(stale.type) or stale.null_count:
+            raise ValueError(f"{what} staleness_days is not a non-null integer column")
+        ev["stale_days"] = pc.cast(stale, pa.int64()).to_numpy(zero_copy_only=False).astype(np.int64)[order]
+        if np.any(~np.isin(ev["stale_days"], STALENESS_DAYS_ALLOWED)):
+            raise ValueError(f"{what} staleness_days outside the declared {list(STALENESS_DAYS_ALLOWED)}")
+        st["rows_used_staleness_400"] = int(np.count_nonzero(ev["stale_days"] == FUND_STALE_DAYS_ANNUAL))
+        basis = pc.utf8_lower(as_text(column_of(table, "clock_basis")))
+        ev["fc1"] = pc.match_substring(basis, "fc1").to_numpy(zero_copy_only=False).astype(bool)[order]
+        st["rows_used_fc1_clock"] = int(np.count_nonzero(ev["fc1"]))
+    if "sic" in adapter["columns"]:
+        sic = as_f64(column_of(table, "sic"), f"{what} sic")[order]
+        valid = np.isfinite(sic) & (sic == np.floor(sic)) & (sic >= SIC_RANGE[0]) & (sic <= SIC_RANGE[1])
+        st["rows_used_invalid_sic_skipped"] = int(np.count_nonzero(~valid))
+        for k in ("clock", "cidx"):
+            ev[k] = ev[k][valid]
+        ev["sic"] = sic[valid].astype(np.int64)
+        st["rows_used"] = int(np.count_nonzero(valid))
+    ev["values"] = {x: as_f64(column_of(table, x), f"{what} {x}")[order] for x in items}
+    del table
+    budget.check(f"{what}-events")
+    return ev, sources, st
+
+
+def sic_mapping():
+    """SIC -> (FF12 number, FF49 number) tables for SIC 0..9999 from the pinned atx-db helpers."""
+    import sys
+    src = Path(__file__).resolve().parents[2] / "atx-db" / "src"
+    if "atx_db" not in sys.modules and str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    from atx_db import reference_classifications as rc  # noqa: PLC0415 - only when group fields are requested
+    versions = {"ff12": rc.FF12_MAPPING_VERSION, "ff49": rc.FF49_MAPPING_VERSION}
+    if versions != SIC_MAPPING_VERSIONS:
+        raise ValueError(f"SIC mapping versions {versions} differ from the declared {SIC_MAPPING_VERSIONS}")
+    ff49_numbers = {code: number for number, code, *_ in rc.FF49_INDUSTRIES}
+    ff12, ff49 = np.full(SIC_RANGE[1] + 1, np.nan), np.full(SIC_RANGE[1] + 1, np.nan)
+    for sic in range(SIC_RANGE[0], SIC_RANGE[1] + 1):
+        ff12[sic] = FF12_NUMBERS[rc.fama_french_12_for_sic(sic)]
+        code = rc.fama_french_49_for_sic(sic)
+        ff49[sic] = ff49_numbers[code] if code is not None else np.nan
+    table = np.stack([ff12, ff49]).astype("<f8")
+    provenance = {"module_path": str(Path(rc.__file__).resolve()), **code_identity(Path(rc.__file__)),
+                  "versions": versions, "ff12_numbering": FF12_NUMBERS,
+                  "table_sha256": sha_bytes(table.tobytes()),
+                  "table_rule": "sha256 of the <f8 bytes of [ff12[0..9999], ff49[0..9999]] (NaN outside [100, 9999] or unlisted)"}
+    return ff12, ff49, provenance
+
+
+def advance(ev: dict, latest: np.ndarray, p: int, mark: int) -> int:
+    """Move the clock-ordered pointer to every row with clock < mark; latest[c] = the last such row of CIK c."""
+    p2 = int(np.searchsorted(ev["clock"], mark, side="left"))
+    if p2 > p:
+        np.maximum.at(latest, ev["cidx"][p:p2], np.arange(p, p2, dtype=np.int64))
+    return p2
+
+
+def issuer_fields(names, role: Role, output: Path, budget: Budget, *, bridge: Path, bridge_sha256: str,
+                  events: Path | None, events_sha256: str | None, lag: int):
+    nd, n = role.n_dates, role.n
+    fund_names = [x for x in names if ISSUER_FIELDS[x]["kind"] == "fund"]
+    grp_names = [x for x in names if ISSUER_FIELDS[x]["kind"] == "grp"]
+    want_me = "me_company" in names
+    budget.admit(nd * n * 5 + (64 << 20), "issuer-link-matrix")
+    links, bridge_sources, bridge_st = load_bridge(bridge, bridge_sha256, role, budget)
+    marks = role.days * DAY_NS + MARK_NS
+    ciks, link, primary, link_st = resolve_links(links, role, marks, budget)
+    del links
+    st = {"fund_lag_sessions": lag, "identity_bridge": {**bridge_st, **link_st}}
+    fund = sic = None
+    sources = {x: list(bridge_sources) for x in names}
+    extras = {}
+    if fund_names or grp_names:
+        m, man_src = pinned_manifest(events, events_sha256, "fund-events", EVENTS_ADAPTER["schema"])
+        st["fund_events_manifest"] = {"sha256": man_src["sha256"], "values_label": m.get("values_label"),
+                                      "rehearsal_identity": m.get("rehearsal_identity"), "items": m.get("items")}
+    if fund_names:
+        items = [ISSUER_FIELDS[x]["item"] for x in fund_names]
+        fund, src, st["fund_events"] = load_events(events, m, EVENTS_ADAPTER, items, ciks, "fund-events", budget)
+        for x in fund_names:
+            sources[x] += [man_src] + src
+    if grp_names:
+        sic, src, st["sic_events"] = load_events(events, m, SIC_ADAPTER, [], ciks, "sic-events", budget)
+        ff12, ff49, st["sic_mapping"] = sic_mapping()
+        codes = {"sic2": None, "ff12": ff12, "ff49": ff49}
+        for x in grp_names:
+            sources[x] += [man_src] + src
+    budget.report("issuer-inputs", linked_ciks=len(ciks), fund_rows=len(fund["clock"]) if fund else 0,
+                  sic_rows=len(sic["clock"]) if sic else 0)
+    link_counts = {"member_cells": 0, "unlinked": 0, "ambiguous": 0, "secondary": 0, "primary": 0}
+    reasons = {x: {"no_visible_row": 0, "stale": 0, "visible_nan": 0, "fc1_finite_member_cells": 0} for x in fund_names}
+    reasons.update({x: {"no_visible_row": 0, "stale": 0, "unmapped": 0} for x in grp_names})
+    if want_me:
+        reasons["me_company"] = {"own_line_nan": 0, "other_linked_line_nan": 0, "multi_line_finite": 0}
+    fund_latest = np.full(len(ciks), -1, dtype=np.int64)
+    sic_latest = np.full(len(ciks), -1, dtype=np.int64)
+    fp = sp = 0
+    writers, stream, so_file = {}, None, None
+    try:
+        for x in names:
+            writers[x] = FieldWriter(output, x, role)
+        if want_me:
+            so_path = output / "shares_out.f64"
+            if so_path.stat().st_size != nd * n * 8:
+                raise ValueError("me_company: this run's shares_out.f64 has the wrong size")
+            stream = RoleRows(role, ("raw_close.f64", "present.u8"))
+            so_file = so_path.open("rb")
+        for t in range(nd):
+            day = int(role.days[t])
+            member = role.member[t] != 0
+            lk = link[t]
+            safe = np.maximum(lk, 0)
+            pline = (lk >= 0) & primary[t]
+            link_counts["member_cells"] += int(np.count_nonzero(member))
+            link_counts["unlinked"] += int(np.count_nonzero(member & (lk == -1)))
+            link_counts["ambiguous"] += int(np.count_nonzero(member & (lk == -2)))
+            link_counts["secondary"] += int(np.count_nonzero(member & (lk >= 0) & ~pline))
+            link_counts["primary"] += int(np.count_nonzero(member & pline))
+            if t >= lag:
+                mark = int(marks[t - lag])
+                if fund is not None:
+                    fp = advance(fund, fund_latest, fp, mark)
+                if sic is not None:
+                    sp = advance(sic, sic_latest, sp, mark)
+            if fund_names:
+                e = np.where(pline, fund_latest[safe], -1)
+                has = e >= 0
+                es = np.maximum(e, 0)
+                if len(fund["clock"]):
+                    fresh = has & ((day - fund["period_end"][es]) <= fund["stale_days"][es])
+                    fc1 = fund["fc1"][es]
+                else:
+                    fresh = fc1 = np.zeros(n, dtype=bool)
+                for x in fund_names:
+                    v = fund["values"][ISSUER_FIELDS[x]["item"]]
+                    row = np.where(fresh, v[es], np.nan) if len(v) else np.full(n, np.nan)
+                    writers[x].write(row)
+                    r = reasons[x]
+                    finite = np.isfinite(row)
+                    r["no_visible_row"] += int(np.count_nonzero(member & pline & ~has))
+                    r["stale"] += int(np.count_nonzero(member & has & ~fresh))
+                    r["visible_nan"] += int(np.count_nonzero(member & fresh & ~finite))
+                    r["fc1_finite_member_cells"] += int(np.count_nonzero(member & finite & fc1))
+            if grp_names:
+                s = np.where(pline, sic_latest[safe], -1)
+                has = s >= 0
+                ss = np.maximum(s, 0)
+                if len(sic["clock"]):
+                    fresh = has & ((day - sic["clock"][ss] // DAY_NS) <= GRP_STALE_DAYS)
+                    code = sic["sic"][ss]
+                else:
+                    fresh, code = np.zeros(n, dtype=bool), np.zeros(n, dtype=np.int64)
+                for x in grp_names:
+                    kind = ISSUER_FIELDS[x]["code"]
+                    value = (code // 100).astype(np.float64) if kind == "sic2" else codes[kind][code]
+                    row = np.where(fresh, value, np.nan)
+                    writers[x].write(row)
+                    r = reasons[x]
+                    r["no_visible_row"] += int(np.count_nonzero(member & pline & ~has))
+                    r["stale"] += int(np.count_nonzero(member & has & ~fresh))
+                    r["unmapped"] += int(np.count_nonzero(member & fresh & np.isnan(row)))
+            if want_me:
+                raw, present = stream.row("raw_close.f64"), stream.row("present.u8") != 0
+                blob = so_file.read(n * 8)
+                if len(blob) != n * 8:
+                    raise ValueError("me_company: this run's shares_out.f64 is truncated")
+                so = np.frombuffer(blob, dtype="<f8")
+                with np.errstate(invalid="ignore", over="ignore"):
+                    line_me = np.where(present, so * raw, np.nan)
+                ok = np.isfinite(line_me) & (line_me > 0)
+                linked = lk >= 0
+                idx = lk[linked]
+                total = np.bincount(idx, weights=np.where(ok, line_me, 0.0)[linked], minlength=len(ciks))
+                bad = np.bincount(idx, weights=(~ok)[linked].astype(np.float64), minlength=len(ciks))
+                lines = np.bincount(idx, minlength=len(ciks))
+                company = np.where(bad == 0, total, np.nan)
+                row = np.where(pline, company[safe] if len(ciks) else np.nan, np.nan)
+                writers["me_company"].write(row)
+                r = reasons["me_company"]
+                r["own_line_nan"] += int(np.count_nonzero(member & pline & ~ok))
+                r["other_linked_line_nan"] += int(np.count_nonzero(member & pline & ok & ~np.isfinite(row)))
+                r["multi_line_finite"] += int(np.count_nonzero(member & np.isfinite(row) & (lines[safe] > 1)))
+            if t % 256 == 0:
+                budget.check("issuer-write")
+        if want_me:
+            if so_file.read(1):
+                raise ValueError("me_company: this run's shares_out.f64 is longer than the role shape")
+            role_inputs = stream.verify()
+            sources["me_company"] += role_inputs
+    except BaseException:
+        for w in writers.values():
+            w.f.close()  # refused: partial files stay unpublished (no manifest), handles released
+        raise
+    finally:
+        if stream is not None:
+            stream.close()
+        if so_file is not None:
+            so_file.close()
+    for w in writers.values():
+        w.close()
+    st["link_member_cells"] = link_counts
+    for x in names:
+        extras[x] = {"nan_reasons_member_cells": reasons[x]}
+        if ISSUER_FIELDS[x]["lagged"]:
+            extras[x]["fund_lag_sessions"] = lag
+    return writers, sources, st, extras
+
+
+# ---------------------------------------------------------------------------
+# FINRA daily short sale volume (sv_ratio126; library v6.1)
+# ---------------------------------------------------------------------------
+
+_SI_CANON = re.compile(SI_CANON_PATTERN)
+_SV_FILE = re.compile(SV_FILE_PATTERN)
+SV_COLUMNS = ("Date", "Symbol", "ShortVolume", "ShortExemptVolume", "TotalVolume", "Market")
+SV_VOLUMES = ("ShortVolume", "ShortExemptVolume", "TotalVolume")
+SV_TH_TYPES = {"tradingDate": pa.date32(), "securityID": pa.int64(), "ticker_tk": pa.string()}
+SV_CODE_BITS = 21                # canonical / raw ticker codes < 2^21; days < 2^21 (keys fit an int64)
+SV_FILES_LIST_RULE = ("sha256 of canonical JSON (sorted keys, separators ',' ':') of the list of [file name, file "
+                      "bytes, file SHA-256] of every CNMS file read (the .gz bytes as read), sorted by name")
+
+
+def si_canon(ticker: str) -> str:
+    """iteration21_finra_si_asof.canon, verbatim: upper-case, then strip '.', whitespace, '/', '-'."""
+    return _SI_CANON.sub("", ticker.strip().upper())
+
+
+def si_raw(ticker: str) -> str:
+    """The producer's exact-match spelling (``t.strip().upper()``) of an ORATS ticker or a FINRA symbol."""
+    return ticker.strip().upper()
+
+
+def cnms_to_si(symbol: str) -> str:
+    """A CNMS symbol in the short-interest symbolCode spelling: lowercase suffix markers p/r/w -> PR/RT/WI."""
+    for marker, spelled in CNMS_SUFFIX_MARKERS:
+        symbol = symbol.replace(marker, spelled)
+    return symbol
+
+
+def sv_listing(directory: Path) -> list:
+    """(day, name) of every CNMSshvolYYYYMMDD.txt.gz in the directory, ascending; other CNMS* names refuse."""
+    out = []
+    for path in directory.iterdir():
+        m = _SV_FILE.match(path.name)
+        if m is None:
+            if path.name.startswith("CNMS"):
+                raise ValueError(f"short volume: unexpected file name {path.name}")
+            continue
+        out.append((day_of(dt.date(int(m[1][:4]), int(m[1][4:6]), int(m[1][6:]))), path.name))
+    out.sort()
+    return out
+
+
+def read_sv_receipt(directory: Path):
+    """The downloader's receipt: file name -> (decompressed bytes, decompressed SHA-256, rows, downloaded_at)."""
+    blob = (directory / SV_RECEIPT).read_bytes()
+    rows = list(csv.DictReader(io.StringIO(blob.decode("utf-8"))))
+    need = {"date", "file", "bytes", "sha256_of_raw_bytes", "rows", "http_status", "downloaded_at"}
+    if not rows or not need <= set(rows[0]):
+        raise ValueError(f"short volume: {SV_RECEIPT} lacks the columns {sorted(need)}")
+    receipt = {}
+    for r in rows:
+        if not r["file"]:
+            continue  # a probe of a non-session date (HTTP 403) carries no file
+        m = _SV_FILE.match(r["file"])
+        if m is None or r["http_status"] != "200" or r["date"] != f"{m[1][:4]}-{m[1][4:6]}-{m[1][6:]}":
+            raise ValueError(f"short volume: {SV_RECEIPT} row for {r['file']!r} is inconsistent")
+        entry = (int(r["bytes"]), r["sha256_of_raw_bytes"].lower(), int(r["rows"]), r["downloaded_at"])
+        if receipt.setdefault(r["file"], entry)[:3] != entry[:3]:
+            raise ValueError(f"short volume: {SV_RECEIPT} lists {r['file']} twice with different bytes")
+    return receipt, {"path": str((directory / SV_RECEIPT).resolve()), "bytes": len(blob), "sha256": sha_bytes(blob)}
+
+
+def parse_cnms(raw: bytes, day: int, name: str):
+    """Strict CNMSshvol contract -> (symbols, ShortVolume f64, TotalVolume f64) in file order.
+
+    Exact header; the last line is the row count; every Date is the file's date; symbols match
+    ``SV_SYMBOL_PATTERN``; the three volumes are non-negative decimals, ShortVolume <= TotalVolume."""
+    nl = raw.find(b"\n")
+    if nl < 0 or raw[:nl].rstrip(b"\r") != SV_HEADER:
+        raise ValueError(f"{name}: header is not {SV_HEADER.decode()}")
+    stripped = raw.rstrip(b"\r\n")
+    last = stripped.rfind(b"\n")
+    trailer = stripped[last + 1:].rstrip(b"\r")
+    if last < nl or not trailer.isdigit():
+        raise ValueError(f"{name}: no row-count trailer line")
+    body = raw[nl + 1:last + 1]
+    if b"\n\n" in body or b"\n\r\n" in body or body.startswith((b"\n", b"\r\n")):
+        raise ValueError(f"{name}: empty line")
+    if not body:
+        if int(trailer):
+            raise ValueError(f"{name}: trailer counts {int(trailer)} rows, file has 0")
+        return [], np.empty(0), np.empty(0)
+    table = pacsv.read_csv(
+        io.BytesIO(body),
+        read_options=pacsv.ReadOptions(column_names=list(SV_COLUMNS), use_threads=False, block_size=1 << 22),
+        parse_options=pacsv.ParseOptions(delimiter="|", quote_char=False, double_quote=False, escape_char=False,
+                                         newlines_in_values=False),
+        convert_options=pacsv.ConvertOptions(column_types={c: pa.string() for c in SV_COLUMNS},
+                                             strings_can_be_null=False))
+    if table.num_rows != int(trailer):
+        raise ValueError(f"{name}: trailer counts {int(trailer)} rows, file has {table.num_rows}")
+    col = {c: table.column(c).combine_chunks() for c in SV_COLUMNS}
+    if not pc.all(pc.equal(col["Date"], date_of(day).replace("-", ""))).as_py():
+        raise ValueError(f"{name}: a Date differs from the file date")
+    if not pc.all(pc.match_substring_regex(col["Symbol"], SV_SYMBOL_PATTERN)).as_py():
+        raise ValueError(f"{name}: a Symbol outside {SV_SYMBOL_PATTERN}")
+    vol = {}
+    for c in SV_VOLUMES:
+        if not pc.all(pc.match_substring_regex(col[c], r"^([0-9]+\.?[0-9]*|\.[0-9]+)$")).as_py():
+            raise ValueError(f"{name}: {c} is not a non-negative decimal")
+        vol[c] = pc.cast(col[c], pa.float64()).to_numpy(zero_copy_only=False)
+        if not np.all(np.isfinite(vol[c])):
+            raise ValueError(f"{name}: {c} is not finite")
+    if np.any(vol["ShortVolume"] > vol["TotalVolume"]):
+        raise ValueError(f"{name}: ShortVolume above TotalVolume")
+    return col["Symbol"].to_pylist(), vol["ShortVolume"], vol["TotalVolume"]
+
+
+class SvTickerMap:
+    """The PIT ticker map (``SV_MAP_RULE``) over the role's TickerHistory3 for vendor dates [lo, hi].
+
+    Only what can reach a role line is kept: keys (day, canonical code) of role rows, each with its role column or
+    -1 when the canonical ticker is held by more than one securityID that day (role or not), and the (day,
+    canonical, raw) triples of role rows for the exact-match collision rule."""
+
+    def __init__(self, th: Path, role: Role, lo: int, hi: int, budget: Budget, known_digest=None):
+        captured = identity(th)
+        pf = pq.ParquetFile(th, memory_map=False)
+        for c, typ in SV_TH_TYPES.items():
+            if pf.schema_arrow.field(c).type != typ:
+                raise ValueError(f"TickerHistory column {c} is {pf.schema_arrow.field(c).type}, expected {typ}")
+        if known_digest is not None and known_digest[0] == captured:
+            digest = known_digest[1]  # hashed by this run's TickerHistory group; same file identity
+        else:
+            budget.report("sv-th-hash-start", bytes=captured[2])
+            digest = sha_file(th, budget)
+        if role.source_sha256 is None or digest != role.source_sha256:
+            raise ValueError("TickerHistory SHA-256 differs from the role's source_sha256 (a different vendor file)")
+        if identity(th) != captured:
+            raise ValueError("TickerHistory changed during hashing")
+        self.lo, self.hi = lo, hi
+        self.canon_ids, self.raw_ids, codes = {}, {}, {}
+
+        def code_of(ticker: str):
+            got = codes.get(ticker)
+            if got is None:
+                got = (-1, -1) if not ticker.strip() else (
+                    self.canon_ids.setdefault(si_canon(ticker), len(self.canon_ids)),
+                    self.raw_ids.setdefault(si_raw(ticker), len(self.raw_ids)))
+                codes[ticker] = got
+            return got
+
+        st = {"rows_scanned": 0, "rows_in_range_valid": 0, "role_rows": 0, "non_role_rows_sharing_a_role_key": 0}
+
+        def rows():
+            """(day, securityID, canonical code, raw code) of the valid rows dated in [lo, hi], per batch."""
+            for batch in pf.iter_batches(batch_size=65536, columns=list(SV_TH_TYPES), use_threads=False):
+                budget.check("sv-th-batch")
+                d = pc.fill_null(batch.column(0).cast(pa.int32()), -1).to_numpy().astype(np.int64)
+                sid = pc.fill_null(batch.column(1), 0).to_numpy()
+                tk = batch.column(2)
+                idx = np.flatnonzero((d >= lo) & (d <= hi) & (sid > 0) & tk.is_valid().to_numpy(zero_copy_only=False))
+                if not len(idx):
+                    yield batch.num_rows, None
+                    continue
+                enc = pc.dictionary_encode(tk.take(pa.array(idx, type=pa.int64())))
+                pairs = np.array([code_of(t) for t in enc.dictionary.to_pylist()], dtype=np.int64).reshape(-1, 2)
+                ind = enc.indices.to_numpy(zero_copy_only=False)
+                cc, rc = pairs[ind, 0], pairs[ind, 1]
+                ok = cc >= 0  # blank tickers dropped (producer: ticker_tk.strip() != "")
+                yield batch.num_rows, (d[idx][ok], sid[idx][ok], cc[ok], rc[ok])
+
+        seen = np.zeros(hi - lo + 1, dtype=bool)
+        parts = []
+        for scanned, got in rows():  # pass 1: trading dates and role rows
+            st["rows_scanned"] += scanned
+            if got is None:
+                continue
+            d, sid, cc, rc = got
+            seen[d - lo] = True
+            st["rows_in_range_valid"] += len(d)
+            pos, on = role.columns_of(sid)
+            parts.append(np.stack((d[on], pos[on], cc[on], rc[on])).astype(np.int32))  # all < 2^21
+        budget.check("sv-th-pass1")
+        if max(len(self.canon_ids), len(self.raw_ids), hi + 1, role.n) >= (1 << SV_CODE_BITS):
+            raise ValueError("short volume: ticker code or day beyond the key width")
+        rows4 = np.concatenate(parts, axis=1) if parts else np.empty((4, 0), np.int32)
+        parts.clear()
+        rd, rcol, rcc, rrc = (rows4[i].astype(np.int64) for i in range(4))
+        del rows4
+        st["role_rows"] = len(rd)
+        self.kraw = np.unique((rd << (2 * SV_CODE_BITS)) | (rcc << SV_CODE_BITS) | rrc)
+        # a role line carrying two canonical tickers on one day (two vendor rows): the collision rule decides
+        line_day = np.unique((rd << (2 * SV_CODE_BITS)) | (rcol << SV_CODE_BITS) | rcc) >> SV_CODE_BITS
+        st["role_line_days_with_several_canonical_tickers"] = int(np.count_nonzero(
+            np.unique(line_day, return_counts=True)[1] > 1))
+        del line_day, rrc
+        rk = (rd << SV_CODE_BITS) | rcc
+        rsid = role.ids[rcol]
+        del rd, rcol, rcc
+        uk = np.unique(rk)
+        nk, ns = [], []
+        if len(uk):
+            for _, got in rows():  # pass 2: non-role rows sharing a (day, canonical) key with a role row
+                if got is None:
+                    continue
+                d, sid, cc, _ = got
+                off = ~role.columns_of(sid)[1]
+                k = (d[off] << SV_CODE_BITS) | cc[off]
+                hit = uk[np.minimum(np.searchsorted(uk, k), len(uk) - 1)] == k
+                nk.append(k[hit])
+                ns.append(sid[off][hit])
+        if identity(th) != captured:
+            raise ValueError("TickerHistory changed while reading")
+        nk = np.concatenate(nk) if nk else np.empty(0, np.int64)
+        ns = np.concatenate(ns) if ns else np.empty(0, np.int64)
+        st["non_role_rows_sharing_a_role_key"] = len(nk)
+        keys, sids = np.concatenate((rk, nk)), np.concatenate((rsid, ns))
+        del rk, rsid, nk, ns
+        o = np.lexsort((sids, keys))
+        keys, sids = keys[o], sids[o]
+        del o
+        budget.check("sv-th-keys")
+        distinct = np.ones(len(keys), dtype=bool)
+        distinct[1:] = (keys[1:] != keys[:-1]) | (sids[1:] != sids[:-1])
+        keys, sids = keys[distinct], sids[distinct]
+        start = np.searchsorted(keys, uk)
+        count = np.diff(np.append(start, len(keys)))
+        self.uk = uk
+        self.ucol = np.where(count == 1, role.columns_of(sids[start])[0], -1).astype(np.int64)
+        st["ambiguous_role_keys"] = int(np.count_nonzero(count > 1))
+        st["trading_dates"] = int(np.count_nonzero(seen))
+        st["distinct_canonical_tickers"] = len(self.canon_ids)
+        self.dates = lo + np.flatnonzero(seen).astype(np.int64)
+        self.stats = st
+        self.source = {"path": str(th.resolve()), "bytes": captured[2], "sha256": digest,
+                       "columns": list(SV_TH_TYPES), "dates": [date_of(lo), date_of(hi)]}
+
+    def ticker_date(self, day: int):
+        """The last vendor trading date <= day within the lookback, else None."""
+        k = int(np.searchsorted(self.dates, day, side="right")) - 1
+        if k < 0 or day - int(self.dates[k]) > SV_TICKER_LOOKBACK_DAYS:
+            return None
+        return int(self.dates[k])
+
+    def map_symbols(self, symbols: list, tday: int, cache: dict):
+        """Role column (-1 ambiguous, -2 no role key) and exact flag per symbol at ticker date ``tday``."""
+        coded = []
+        for s in symbols:
+            got = cache.get(s)
+            if got is None:
+                t = cnms_to_si(s)
+                got = (self.canon_ids.get(si_canon(t), -1), self.raw_ids.get(si_raw(t), -1),
+                       int(any(ch.islower() for ch in t)))
+                cache[s] = got
+            coded.append(got)
+        coded = np.array(coded, dtype=np.int64).reshape(-1, 3)
+        cc, rc = coded[:, 0], coded[:, 1]
+        known = cc >= 0
+        key = (tday << SV_CODE_BITS) | np.where(known, cc, 0)
+        p = np.minimum(np.searchsorted(self.uk, key), max(len(self.uk) - 1, 0))
+        found = known & (self.uk[p] == key) if len(self.uk) else np.zeros(len(key), dtype=bool)
+        col = np.where(found, self.ucol[p] if len(self.uk) else -2, -2)
+        triple = (tday << (2 * SV_CODE_BITS)) | (np.where(known, cc, 0) << SV_CODE_BITS) | np.where(rc >= 0, rc, 0)
+        q = np.minimum(np.searchsorted(self.kraw, triple), max(len(self.kraw) - 1, 0))
+        exact = found & (rc >= 0) & (self.kraw[q] == triple) if len(self.kraw) else np.zeros(len(key), dtype=bool)
+        return col, exact, coded[:, 2].astype(bool)
+
+
+def sv_resolve_collisions(col: np.ndarray, exact: np.ndarray) -> np.ndarray:
+    """Producer rule: several rows on one securityID keep the single exact-spelling row, else all drop."""
+    mapped = col >= 0
+    keep = mapped.copy()
+    if mapped.any():
+        mc, me = col[mapped], exact[mapped]
+        _, inv, cnt = np.unique(mc, return_inverse=True, return_counts=True)
+        nex = np.bincount(inv, weights=me.astype(np.float64)).astype(np.int64)
+        keep[mapped] = (cnt[inv] == 1) | ((nex[inv] == 1) & me)
+    return keep
+
+
+def sv_field(role: Role, output: Path, budget: Budget, directory: Path, th: Path, known_digest=None):
+    """sv_ratio126 (``SV_FIELDS``): streams the CNMS files one session at a time through a 126-session ring."""
+    listing = sv_listing(directory)
+    receipt, receipt_source = read_sv_receipt(directory)
+    fdays = np.array([d for d, _ in listing], dtype=np.int64)
+    names = dict(listing)
+    first, last = int(role.days[0]), int(role.days[-1])
+    prefix = fdays[fdays < first][-SV_WINDOW:]
+    ext = np.concatenate((prefix, role.days)).astype(np.int64)  # the session calendar of the windows
+    e0 = len(prefix)
+    on_ext = set(int(x) for x in ext[:-1])  # the last session's file is never inside a window
+    need = sorted(d for d in names if d in on_ext)
+    if not need:
+        raise ValueError("short volume: no CNMS file dated on a session before the role's last session")
+    span = [d for d in names if int(ext[0]) <= d < last]
+    off_calendar = sorted(d for d in span if d not in on_ext)
+    missing = [int(x) for x in ext[:-1] if int(x) >= int(fdays[0]) and int(x) not in names]
+    tmap = SvTickerMap(th, role, need[0] - SV_TICKER_LOOKBACK_DAYS, need[-1], budget, known_digest)
+    budget.report("sv-ticker-map", **tmap.stats)
+    n, W = role.n, SV_WINDOW
+    budget.admit(W * n * 17 + (32 << 20), "sv-ring")
+    ring_s, ring_t = np.zeros((W, n)), np.zeros((W, n))
+    ring_c = np.zeros((W, n), dtype=bool)
+    per_year, files, downloaded, cache = {}, [], [], {}
+    counters = ("files", "rows", "duplicate_symbol_rows", "files_without_ticker_date", "rows_mapped_role",
+                "rows_ambiguous", "rows_no_role_key", "rows_collision_dropped", "rows_kept",
+                "rows_kept_canonical_only", "rows_unknown_lowercase_marker")
+    writer = FieldWriter(output, "sv_ratio126", role)
+    try:
+        for e in range(len(ext)):
+            day = int(ext[e])
+            if e >= e0:
+                count = np.count_nonzero(ring_c, axis=0)
+                short, total = ring_s.sum(axis=0), ring_t.sum(axis=0)
+                ok = (count >= SV_MIN_SESSIONS) & (total > 0)
+                writer.write(np.where(ok, short / np.where(ok, total, 1.0), np.nan))
+            if e == len(ext) - 1:
+                break
+            slot = e % W  # session e - W leaves the window of session e + 1
+            ring_s[slot], ring_t[slot], ring_c[slot] = 0.0, 0.0, False
+            name = names.get(day)
+            if name is None:
+                continue
+            blob = (directory / name).read_bytes()
+            rec = receipt.get(name)
+            if rec is None:
+                raise ValueError(f"short volume: {name} has no {SV_RECEIPT} row")
+            raw = gzip.decompress(blob)
+            if len(raw) != rec[0] or sha_bytes(raw) != rec[1]:
+                raise ValueError(f"short volume: {name} does not match its {SV_RECEIPT} row")
+            symbols, short, total = parse_cnms(raw, day, name)
+            if len(symbols) != rec[2]:
+                raise ValueError(f"short volume: {name} row count differs from {SV_RECEIPT}")
+            files.append([name, len(blob), sha_bytes(blob)])
+            downloaded.append(rec[3])
+            y = per_year.setdefault(date_of(day)[:4], dict.fromkeys(counters, 0))
+            y["files"] += 1
+            y["rows"] += len(symbols)
+            lastpos = {s: k for k, s in enumerate(symbols)}  # the last row of a symbol wins (producer rule)
+            y["duplicate_symbol_rows"] += len(symbols) - len(lastpos)
+            idx = np.array(sorted(lastpos.values()), dtype=np.int64)
+            tday = tmap.ticker_date(day)
+            if tday is None:
+                y["files_without_ticker_date"] += 1
+                continue
+            col, exact, lower = tmap.map_symbols([symbols[k] for k in idx], tday, cache)
+            keep = sv_resolve_collisions(col, exact)
+            y["rows_mapped_role"] += int(np.count_nonzero(col >= 0))
+            y["rows_ambiguous"] += int(np.count_nonzero(col == -1))
+            y["rows_no_role_key"] += int(np.count_nonzero(col == -2))
+            y["rows_collision_dropped"] += int(np.count_nonzero((col >= 0) & ~keep))
+            y["rows_kept"] += int(np.count_nonzero(keep))
+            y["rows_kept_canonical_only"] += int(np.count_nonzero(keep & ~exact))
+            y["rows_unknown_lowercase_marker"] += int(np.count_nonzero(lower))
+            cols, rows = col[keep], idx[keep]
+            ring_s[slot, cols], ring_t[slot, cols], ring_c[slot, cols] = short[rows], total[rows], True
+            if len(files) % 32 == 0:
+                budget.report("sv-files", files=len(files), last=name)
+    except BaseException:
+        writer.f.close()  # refused: the partial file stays unpublished (no manifest), but its handle is released
+        raise
+    writer.close()
+    files.sort()
+    list_sha = sha_bytes(canonical(files).encode("utf-8"))
+    source = {"path": str(directory.resolve()), "files_read": len(files), "files_sha256": list_sha,
+              "files_list_rule": SV_FILES_LIST_RULE, "first_file_date": date_of(need[0]),
+              "last_file_date": date_of(need[-1])}
+    totals = {k: sum(v[k] for v in per_year.values()) for k in counters}
+    extra = {"short_volume": {
+        "formula_id": SV_FORMULA_ID, "window_sessions": SV_WINDOW, "min_sessions": SV_MIN_SESSIONS,
+        "lag_sessions": SV_LAG_SESSIONS,
+        "files": {**source, "downloaded_at_first": min(downloaded), "downloaded_at_last": max(downloaded),
+                  "receipt": receipt_source, "listed": len(listing),
+                  "listed_first_date": date_of(fdays[0]), "listed_last_date": date_of(fdays[-1])},
+        "calendar": {"rule": "role sessions, preceded by the last <= 126 FINRA file dates before the role's first "
+                             "session; the last role session's file is never read",
+                     "prefix_sessions": e0,
+                     "role_sessions_without_file": len(missing), "role_sessions_without_file_first": [
+                         date_of(x) for x in missing[:20]],
+                     "files_off_role_calendar": len(off_calendar), "files_off_role_calendar_first": [
+                         date_of(x) for x in off_calendar[:20]],
+                     "files_not_read_outside_windows": len(listing) - len(files) - len(off_calendar)},
+        "mapping": {"rule": SV_MAP_RULE, "suffix_markers": {a: b for a, b in CNMS_SUFFIX_MARKERS},
+                    "canonicaliser": SI_CANON_PATTERN, "ticker_lookback_days": SV_TICKER_LOOKBACK_DAYS,
+                    "ported_from": "build-equity/audits/iteration21_finra_si_asof.py (si_shares / si_dtc producer)",
+                    "totals": totals, "per_year": dict(sorted(per_year.items())),
+                    "tickerhistory": tmap.stats}}}
+    stats = {"files_read": len(files), "files_sha256": list_sha, **{k: totals[k] for k in (
+        "rows", "rows_kept", "rows_ambiguous", "rows_collision_dropped")}}
+    return writer, [source, receipt_source, tmap.source], stats, extra
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
 def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *, max_rss_mib=700,
         max_seconds=1800.0, finra: Path = DEFAULT_FINRA, tickerhistory: Path = DEFAULT_TICKERHISTORY,
-        lake: Path = DEFAULT_LAKE):
+        lake: Path = DEFAULT_LAKE, identity_bridge: Path | None = None, identity_bridge_sha256: str | None = None,
+        fund_events: Path | None = None, fund_events_sha256: str | None = None,
+        fund_lag_sessions: int = FUND_LAG_SESSIONS_DECLARED, finra_short_volume: Path | None = None):
     fields = list(fields)
-    if not fields or len(set(fields)) != len(fields) or any(f not in FIELDS for f in fields):
-        raise ValueError(f"--fields must be distinct names from {', '.join(FIELDS)}")
-    selected = [f for f in FIELDS if f in fields]  # registry order: stable manifests
+    if not fields or len(set(fields)) != len(fields) or any(f not in ALL_FIELDS for f in fields):
+        raise ValueError(f"--fields must be distinct names from {', '.join(ALL_FIELDS)}")
+    selected = [f for f in ALL_FIELDS if f in fields]  # registry order: stable manifests
     for f in selected:
-        missing = [x for x in FIELDS[f].get("requires", []) if x not in selected]
+        missing = [x for x in ALL_FIELDS[f].get("requires", []) if x not in selected]
         if missing:
             raise ValueError(f"--fields: {f} requires {', '.join(missing)} in the same run (its units rule reads it)")
+    issuer = [f for f in selected if f in ISSUER_FIELDS]
+    if issuer:
+        if identity_bridge is None or not identity_bridge_sha256:
+            raise ValueError("--fields: issuer fields need --identity-bridge and --identity-bridge-sha256")
+        if any(ISSUER_FIELDS[f]["kind"] != "me" for f in issuer) and (fund_events is None or not fund_events_sha256):
+            raise ValueError("--fields: fundamental and group fields need --fund-events and --fund-events-sha256")
+        if isinstance(fund_lag_sessions, bool) or not isinstance(fund_lag_sessions, int) or not 0 <= fund_lag_sessions <= 5:
+            raise ValueError("--fund-lag-sessions must be an integer in [0, 5] (declared: 1)")
+    if any(f in SV_FIELDS for f in selected) and finra_short_volume is None:
+        raise ValueError("--fields: sv_ratio126 needs --finra-short-volume (the CNMSshvol*.txt.gz directory)")
     budget = Budget(max_rss_mib, max_seconds)
     role = Role(role_dir, role_sha256)
     budget.report("role-admitted", dates=role.n_dates, instruments=role.n)
     output.mkdir(parents=False, exist_ok=False)  # exclusive; never reuse or replace
     outcome = {}
     source_checks = {}
-    groups = {g: [f for f in selected if FIELDS[f]["group"] == g] for g in ("role", "finra", "th", "lake")}
+    groups = {g: [f for f in selected if ALL_FIELDS[f]["group"] == g]
+              for g in ("role", "finra", "th", "lake", "issuer", "finra_sv")}
     field_stats, field_extras = {}, {}
+    th_known = None  # (file identity, SHA-256) of the TickerHistory hashed by the th group, reused by finra_sv
     if groups["role"]:
         w, src, stats = market_return_field(role, output, budget)
         outcome["mkt_ret"] = (w, src, w.coverage())
@@ -1277,7 +2316,9 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
             field_extras[name] = extra
             budget.report(f"{name}-complete", **{k: cov[k] for k in ("finite_member_frac",)})
     if groups["th"]:
-        writers, src, stats, _, extras = tickerhistory_fields(groups["th"], tickerhistory, role, output, budget)
+        before = identity(tickerhistory)
+        writers, src, stats, th_digest, extras = tickerhistory_fields(groups["th"], tickerhistory, role, output, budget)
+        th_known = (before, th_digest)
         source_checks["tickerhistory"] = stats
         field_extras.update(extras)
         for name, w in writers.items():
@@ -1289,6 +2330,21 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         for name, w in writers.items():
             outcome[name] = (w, src, w.coverage())
         budget.report("lake-complete")
+    if groups["issuer"]:  # after th: me_company reads this run's published shares_out.f64
+        writers, src, stats, extras = issuer_fields(
+            groups["issuer"], role, output, budget, bridge=identity_bridge, bridge_sha256=identity_bridge_sha256,
+            events=fund_events, events_sha256=fund_events_sha256, lag=fund_lag_sessions)
+        source_checks["issuer"] = stats
+        field_extras.update(extras)
+        for name, w in writers.items():
+            outcome[name] = (w, src[name], w.coverage())
+        budget.report("issuer-complete")
+    if groups["finra_sv"]:
+        w, src, stats, extra = sv_field(role, output, budget, finra_short_volume, tickerhistory, th_known)
+        outcome["sv_ratio126"] = (w, src, w.coverage())
+        source_checks["finra_short_volume"] = stats
+        field_extras["sv_ratio126"] = extra
+        budget.report("sv_ratio126-complete", finite_member_frac=outcome["sv_ratio126"][2]["finite_member_frac"])
     files, entries = {}, []
     for name in selected:
         w, src, cov = outcome[name]
@@ -1298,9 +2354,10 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         digest, quantiles = digest_and_quantiles(w.path, role, w.vcount, budget)
         files[w.path.name] = {"bytes": size, "sha256": digest}
         cov["member_finite_quantiles"] = quantiles
-        spec = FIELDS[name]
+        spec = ALL_FIELDS[name]
+        clock = spec["clock"].format(lag=fund_lag_sessions) if spec.get("lagged") else spec["clock"]
         entry = {"name": name, "file": w.path.name, "dtype": "<f8", "layout": "date-major",
-                 "shape": [role.n_dates, role.n], "units": spec["units"], "clock": spec["clock"],
+                 "shape": [role.n_dates, role.n], "units": spec["units"], "clock": clock,
                  "staleness": spec["staleness"], "source_columns": spec["source_columns"],
                  "sources": src, "caveats": spec["caveats"], "coverage": cov,
                  "sha256": files[w.path.name]["sha256"], "point_in_time": spec["point_in_time"],
@@ -1351,16 +2408,29 @@ def main(argv=None):
     p.add_argument("--role-sha256", required=True, help="SHA-256 of the role's manifest.json")
     p.add_argument("--output", required=True, type=Path, help="new exclusive output directory")
     p.add_argument("--fields", default=",".join(DEFAULT_FIELDS),
-                   help="comma-separated subset of: " + ",".join(FIELDS) + " (default: the point-in-time fields "
-                        + ",".join(DEFAULT_FIELDS) + "; non-point-in-time fields are produced only when named)")
+                   help="comma-separated subset of: " + ",".join(ALL_FIELDS) + " (default: the point-in-time fields "
+                        + ",".join(DEFAULT_FIELDS) + "; non-point-in-time fields, the issuer fields "
+                        + ",".join(ISSUER_FIELDS) + " and " + ",".join(SV_FIELDS) + " are produced only when named)")
     p.add_argument("--max-rss-mib", type=int, default=700)
     p.add_argument("--max-seconds", type=float, default=1800.0)
     p.add_argument("--finra", type=Path, default=DEFAULT_FINRA, help="FINRA short-interest root (asof/, dissemination_schedule.csv)")
     p.add_argument("--tickerhistory", type=Path, default=DEFAULT_TICKERHISTORY)
     p.add_argument("--lake", type=Path, default=DEFAULT_LAKE, help="research lake snapshot directory")
+    p.add_argument("--identity-bridge", type=Path, help="published identity-bridge directory (issuer fields)")
+    p.add_argument("--identity-bridge-sha256", help="SHA-256 of the identity bridge's manifest.json")
+    p.add_argument("--fund-events", type=Path, help="published fundamental events directory (fundamental and group fields)")
+    p.add_argument("--fund-events-sha256", help="SHA-256 of the fundamental events' manifest.json")
+    p.add_argument("--fund-lag-sessions", type=int, default=FUND_LAG_SESSIONS_DECLARED,
+                   help="declared extra lag (role sessions) after the first session whose close follows a filing clock "
+                        f"(default {FUND_LAG_SESSIONS_DECLARED}, v4-prereg R2)")
+    p.add_argument("--finra-short-volume", type=Path,
+                   help="FINRA daily short sale volume directory (CNMSshvolYYYYMMDD.txt.gz + manifest.csv; sv_ratio126)")
     a = p.parse_args(argv)
     run(a.role, a.role_sha256, a.output, [x.strip() for x in a.fields.split(",") if x.strip()],
-        max_rss_mib=a.max_rss_mib, max_seconds=a.max_seconds, finra=a.finra, tickerhistory=a.tickerhistory, lake=a.lake)
+        max_rss_mib=a.max_rss_mib, max_seconds=a.max_seconds, finra=a.finra, tickerhistory=a.tickerhistory, lake=a.lake,
+        identity_bridge=a.identity_bridge, identity_bridge_sha256=a.identity_bridge_sha256,
+        fund_events=a.fund_events, fund_events_sha256=a.fund_events_sha256, fund_lag_sessions=a.fund_lag_sessions,
+        finra_short_volume=a.finra_short_volume)
 
 
 if __name__ == "__main__":

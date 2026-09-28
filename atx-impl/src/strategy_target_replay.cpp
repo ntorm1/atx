@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -53,8 +54,28 @@ u32 calendar_month(i64 session) {
          static_cast<u32>(static_cast<unsigned>(date.month()));
 }
 bool neutralizing(const TargetReplayConfig& cfg) {
-  return cfg.neutralize == TargetNeutralize::PriceRiskV1;
+  return cfg.neutralize == TargetNeutralize::PriceRiskV1 || neutralize_by_industry(cfg.neutralize);
 }
+// Stable spelling of a neutralization id (recipe, rule id, summary, CLI).
+const char* neutralize_name(TargetNeutralize id) {
+  switch (id) {
+  case TargetNeutralize::None: return "none";
+  case TargetNeutralize::PriceRiskV1: return "price-risk-v1";
+  case TargetNeutralize::PriceRiskIndV1: return "price-risk-ind-v1";
+  case TargetNeutralize::PriceRiskIndV2: return "price-risk-ind-v2";
+  }
+  return "unknown";
+}
+bool aim_partial(const TargetReplayConfig& cfg) {
+  return cfg.rule == TargetReplayRule::AimPartialV5;
+}
+// v6 prereg C2: nonmembers decay at exit_rate instead of exiting at once (1 = off).
+bool decaying_exit(const TargetReplayConfig& cfg) { return cfg.exit_rate != 1.0; }
+// Rate of the aim-partial-v5 move in the target replay: one fixed theta
+// (trade_fraction) for every name. The per-name rate (T36, rate per-name-v1) needs a
+// NAV and liquidity, so it is the NAV replay's own option: it fills the update_weights
+// per_name_rate span and overrides this spelling in its recipe and summary.
+const char* aim_rate(const TargetReplayConfig&) { return "fixed"; }
 // The compute_price_exposures config contract documented in
 // strategy_price_exposures.hpp, checked up front so a bad recipe is refused once
 // instead of surfacing as an error at every decision.
@@ -66,7 +87,7 @@ bool price_risk_valid(const PriceExposureConfig& c) {
 }
 co::Status validate_config(const TargetReplayConfig& cfg) {
   if ((cfg.rule != TargetReplayRule::BaselineTargetV1 &&
-       cfg.rule != TargetReplayRule::MonthlyTargetBudgetV2) || !cfg.cadence ||
+       cfg.rule != TargetReplayRule::MonthlyTargetBudgetV2 && !aim_partial(cfg)) || !cfg.cadence ||
       cfg.cadence > max_dates || !std::isfinite(cfg.trade_fraction) ||
       cfg.trade_fraction <= 0 || cfg.trade_fraction > 1 ||
       !std::isfinite(cfg.monthly_budget) || cfg.monthly_budget <= 0 ||
@@ -82,16 +103,45 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
         !(cfg.neutralize_max_amplification > 0) ||
         !(cfg.neutralize_max_excluded_share >= 0 && cfg.neutralize_max_excluded_share <= 1))))
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: invalid construction recipe");
+  // The id alone names the windows of price-risk-ind-v2, so no other pair can ride on it.
+  if (cfg.neutralize == TargetNeutralize::PriceRiskIndV2 &&
+      (cfg.price_risk.vol_window != price_risk_ind_v2_vol_window ||
+       cfg.price_risk.adv_window != price_risk_ind_v2_adv_window))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: price-risk-ind-v2 needs vol_window 126 and adv_window 252");
+  // aim-partial-v5 (theta = trade_fraction, already in (0, 1] above): no no-trade band
+  // (the dust band replaces it), dust_multiple in [0, 0.5], aim_leverage in [1, 2].
+  // The negated ranges also refuse NaN. Its parameters are refused under every other
+  // rule, so a baseline or v2 recipe cannot silently carry them.
+  if (aim_partial(cfg) &&
+      (cfg.band_multiple != 0 || !(cfg.dust_multiple >= 0 && cfg.dust_multiple <= 0.5) ||
+       !(cfg.aim_leverage >= 1 && cfg.aim_leverage <= 2)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: aim-partial-v5 needs band_multiple 0, dust_multiple in "
+                   "[0, 0.5] and aim_leverage in [1, 2]");
+  if (!aim_partial(cfg) && (cfg.aim_leverage != 1.0 || cfg.dust_multiple != 0))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: aim_leverage/dust_multiple are aim-partial-v5 only");
+  // exit_rate in (0, 1] (NaN refused); below 1 the decaying exit snaps inside the dust
+  // band, so it needs aim-partial-v5 with dust_multiple > 0 (else an exit never ends).
+  if (!(cfg.exit_rate > 0 && cfg.exit_rate <= 1) ||
+      (decaying_exit(cfg) && (!aim_partial(cfg) || !(cfg.dust_multiple > 0))))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: exit_rate must be in (0, 1]; below 1 it needs "
+                   "aim-partial-v5 with dust_multiple > 0");
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
-// session logs, dollar sums, exposures/ok and regression rows (rounded up), plus
-// the per-interval market. Zero unless neutralizing (and for an invalid price-risk
-// recipe, which validate_config refuses on its own; windows are then <= 4096).
+// session logs, dollar sums, exposures/ok and regression rows (rounded up; with the
+// industry ids' group slot per row, 113 of the 128 bytes), plus the per-interval
+// market and, for the industry ids, the group slot table. Zero unless neutralizing
+// (and for an invalid price-risk recipe, which validate_config refuses on its own;
+// windows are then <= 4096).
 u64 price_risk_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
   if (!neutralizing(cfg) || !price_risk_valid(cfg.price_risk)) return 0;
   const u64 block = std::max(cfg.price_risk.beta_window, cfg.price_risk.vol_window);
-  return u64{instruments} * (block * sizeof(f64) + 128) + block * sizeof(f64);
+  const u64 groups = neutralize_by_industry(cfg.neutralize) ? kGroupTableBytes : 0;
+  return u64{instruments} * (block * sizeof(f64) + 128) + block * sizeof(f64) + groups;
 }
 co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
   ATX_TRY_VOID(validate_config(cfg));
@@ -109,7 +159,8 @@ co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig&
       in.session_keys.size() != in.dates || in.instrument_ids.size() != in.instruments ||
       (prices && (in.close.size() != cells || in.raw_close.size() != cells ||
                   in.present.size() != cells)) ||
-      (!in.volume.empty() && in.volume.size() != cells))
+      (!in.volume.empty() && in.volume.size() != cells) ||
+      (!in.industry.empty() && in.industry.size() != cells))
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: span geometry");
   if (in.session_keys.front() <= 0 || in.session_keys.back() >= 4'102'444'800'000'000'000LL ||
       std::adjacent_find(in.session_keys.begin(), in.session_keys.end(),
@@ -152,16 +203,116 @@ void desired_target(std::span<const f64> signal, std::span<const u8> member,
   }
   if (gross > 0) for (const auto& value : row) target[value.second] /= gross;
 }
-void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
-                    bool rebalance, f64 spent, const std::vector<f64>& desired,
-                    std::vector<f64>& current, TargetReplayDay& out) {
+usize members_at(const TargetReplayInput& in, usize d) {
+  const auto offset = d * in.instruments;
+  usize members = 0;
+  for (usize i = 0; i < in.instruments; ++i) members += in.member[offset + i] ? 1U : 0U;
+  return members;
+}
+// aim-partial-v5 (TargetReplayConfig): on a rebalance decision each member moves by
+// theta_i toward aim = aim_leverage * desired unless its gap is inside the dust band
+// dust_multiple / N_d (it then keeps its weight: a small gap, never a large entry);
+// otherwise members keep their weights. Nonmembers exit to 0 every decision (exit_rate 1;
+// below 1 see the decaying exit below).
+// With theta 1, aim_leverage 1 and dust 0 each operation is baseline-v1's (band 0,
+// fraction 1): aim = 1.0 * desired is exact and the move is the same expression
+// current + theta * (aim - current), so the plan is bit-identical (also when fused,
+// as 1.0 * gap is exact). Deliberately no theta == 1 shortcut to `next = aim`: it
+// would round differently from baseline (amended ruling R-a).
+// exit_rate r < 1 (v6 prereg C2): a nonmember present at d moves current * (1 - r) at every
+// decision and snaps to 0 inside the exit band dust_multiple / N_d (+inf when N_d = 0);
+// an absent nonmember keeps the immediate exit. r == 1 never reaches that branch, so
+// the default exit is the `next = 0` above bit for bit.
+void aim_partial_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
+                         bool rebalance, const std::vector<f64>& desired,
+                         std::vector<f64>& current, std::span<const f64> per_name_rate,
+                         TargetReplayDay& out) {
+  const auto offset = d * in.instruments;
+  // -1 (off) dusts nothing, since every |gap| >= 0.
+  f64 dust = -1;
+  if (rebalance && cfg.dust_multiple > 0) {
+    const usize members = members_at(in, d);
+    if (members) dust = cfg.dust_multiple / static_cast<f64>(members);
+  }
+  const bool decaying = decaying_exit(cfg);
+  f64 exit_band = 0;
+  if (decaying) { // validate_config: dust_multiple > 0; update_weights: presence given
+    const usize members = members_at(in, d);
+    exit_band = members ? cfg.dust_multiple / static_cast<f64>(members)
+                        : std::numeric_limits<f64>::infinity();
+  }
+  const f64 keep = 1.0 - cfg.exit_rate;
+  // update_weights refused any other span (check_rates): empty, or one rate per name.
+  assert(per_name_rate.empty() || per_name_rate.size() == in.instruments);
+  const bool per_name = !per_name_rate.empty();
+  out.applied_fraction = rebalance ? cfg.trade_fraction : 0;
+  f64 squared = 0, rate_sum = 0;
+  usize rated = 0;
+  for (usize i = 0; i < in.instruments; ++i) {
+    const bool live = in.member[offset + i] != 0;
+    f64 next = 0;
+    if (live && !rebalance) {
+      next = current[i];
+    } else if (live) {
+      const f64 aim = cfg.aim_leverage * desired[i];
+      const f64 gap = aim - current[i];
+      const bool dusted = std::abs(gap) <= dust;
+      if (dusted) ++out.construction.banded_names;
+      const f64 theta = per_name ? per_name_rate[i] : cfg.trade_fraction;
+      rate_sum += theta; ++rated;
+      next = dusted ? current[i] : current[i] + theta * gap;
+    } else if (decaying && in.present[offset + i]) {
+      next = current[i] * keep;
+      if (std::abs(next) <= exit_band) next = 0;
+    }
+    const f64 trade = std::abs(next - current[i]);
+    out.turnover += trade;
+    if (!live) out.forced_turnover += trade; else out.discretionary_turnover += trade;
+    current[i] = next;
+    out.gross += std::abs(next); out.net += next;
+    out.long_weight += std::max(0.0, next); out.short_weight += std::max(0.0, -next);
+    out.max_abs_weight = std::max(out.max_abs_weight, std::abs(next));
+    out.held_names += next != 0 ? 1U : 0U; squared += next * next;
+  }
+  out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
+  // Per-name rates: the reported fraction is the members' mean rate (dusted included).
+  if (per_name && rebalance) out.applied_fraction = rated ? rate_sum / static_cast<f64>(rated) : 0;
+}
+// A per-name rate span is aim-partial-v5 only and holds exactly one finite rate in
+// [0, 1] per name; any other non-empty span is refused before a weight moves, never
+// silently replaced by the fixed theta (T30 review Minor 2, T36 ruling R-c).
+co::Status check_rates(const TargetReplayInput& in, const TargetReplayConfig& cfg,
+                       std::span<const f64> per_name_rate) {
+  if (per_name_rate.empty()) return co::Ok();
+  if (!aim_partial(cfg) || per_name_rate.size() != in.instruments ||
+      !std::all_of(per_name_rate.begin(), per_name_rate.end(),
+                   [](f64 rate) { return rate >= 0 && rate <= 1; }))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: per-name rates need aim-partial-v5 and exactly one rate in "
+                   "[0, 1] per name");
+  return co::Ok();
+}
+[[nodiscard]] co::Status update_weights(const TargetReplayInput& in,
+                                        const TargetReplayConfig& cfg, usize d, bool rebalance,
+                                        f64 spent, const std::vector<f64>& desired,
+                                        std::vector<f64>& current, TargetReplayDay& out,
+                                        std::span<const f64> per_name_rate = {}) {
+  ATX_TRY_VOID(check_rates(in, cfg, per_name_rate));
+  // A decaying exit holds only nonmembers PRESENT at d: presence is required (checked
+  // here, not at admission, because the saved blend is admitted before its prices load).
+  if (decaying_exit(cfg) && in.present.size() != in.dates * in.instruments)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: exit_rate below 1 needs prices (presence; --role)");
+  if (aim_partial(cfg)) {
+    aim_partial_weights(in, cfg, d, rebalance, desired, current, per_name_rate, out);
+    return co::Ok();
+  }
   const auto offset = d * in.instruments;
   // No-trade band on rebalance decisions: -1 (off) bands nothing, since every
   // |desired - current| >= 0, so the default path is the unbanded arithmetic.
   f64 band = -1;
   if (rebalance && cfg.band_multiple > 0) {
-    usize members = 0;
-    for (usize i = 0; i < in.instruments; ++i) members += in.member[offset + i] ? 1U : 0U;
+    const usize members = members_at(in, d);
     if (members) band = cfg.band_multiple / static_cast<f64>(members);
   }
   f64 forced = 0, distance = 0;
@@ -192,26 +343,49 @@ void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, 
     out.held_names += next != 0 ? 1U : 0U; squared += next * next;
   }
   out.effective_names = squared > 0 ? out.gross * out.gross / squared : 0;
+  return co::Ok();
 }
-// Rebalance decision d: the tied-rank desired target, then price-risk-v1. The
+// Rebalance decision d: the tied-rank desired target, then price-risk-v1 (or, for the
+// industry ids, its within-groups twin on the decision's industry row). The
 // exposures are computed once here per decision (target-independent; the NAV
 // replay calls this once per decision for all its scenario books). Guard: a data
 // refusal (Unavailable), amplification entry/residual gross above the cap, or an
 // excluded-row gross share above the cap skips the rebalance. Contract and
 // allocation errors are not data refusals and abort the replay.
+// Locate-in-aim (NAV, v6 prereg C3): before the post-processing, a member that may not be
+// shorted (no_short) keeps no negative desired weight, so the neutralization's
+// intercept and beta columns re-balance the book around the zeroed shorts. Under the
+// industry ids no_short is also the hold mask (review I3): a special-tier aim at 0 is
+// reset to 0 after the within-group demeaning, so it cannot return as -(group mean).
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                               usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
-                              PriceRiskScratch& scratch, ConstructionDay& out) {
+                              PriceRiskScratch& scratch, ConstructionDay& out,
+                              std::span<const u8> no_short = {}) {
   const usize n = in.instruments, offset = d * n;
+  if (!no_short.empty() && no_short.size() != n)
+    return co::Err(co::ErrorCode::InvalidArgument, "target replay: no-short mask geometry");
   const auto member = in.member.subspan(offset, n);
   desired_target(in.signal.subspan(offset, n), member, row, desired);
+  for (usize i = 0; i < no_short.size(); ++i) {
+    if (!member[i] || !no_short[i] || !(desired[i] < 0)) continue;
+    desired[i] = 0; ++out.locate_zeroed;
+  }
   if (!neutralizing(cfg)) return co::Ok(true);
   const PriceExposureInput prices{in.dates, n, in.close, in.raw_close, in.volume, in.present};
+  const bool industry = neutralize_by_industry(cfg.neutralize);
+  if (industry && in.industry.size() != in.dates * n)
+    return co::Err(co::ErrorCode::InvalidArgument, "target replay: industry ids need the field");
   NeutralizeStats stats;
-  const auto status = neutralize_price_risk(prices, cfg.price_risk, d, desired, member, scratch,
-                                            stats);
+  const auto status = industry
+      ? neutralize_price_risk_within_groups(prices, cfg.price_risk, d, desired, member,
+                                            in.industry.subspan(offset, n), scratch, stats,
+                                            no_short)
+      : neutralize_price_risk(prices, cfg.price_risk, d, desired, member, scratch, stats);
   if (!status && status.error().code() != co::ErrorCode::Unavailable) return co::Err(status.error());
   out.neutralize_used = stats.used; out.neutralize_excluded = stats.excluded;
+  out.neutralize_groups = stats.groups;
+  out.neutralize_unknown_group_names = stats.unknown_group_names;
+  out.neutralize_fallback_names = stats.fallback_names;
   out.neutralize_excluded_share = stats.gross > 0 ? stats.excluded_gross / stats.gross : 0.0;
   out.neutralize_amplification =
       status && stats.residual_gross > 0 ? stats.gross / stats.residual_gross : nan;
@@ -270,6 +444,9 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
     if (neutralizing(cfg) && (in.close.empty() || in.volume.size() != in.dates * in.instruments))
       return co::Err(co::ErrorCode::InvalidArgument,
                      "target replay: price-risk neutralization requires prices and volume");
+    if (neutralize_by_industry(cfg.neutralize) && in.industry.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: industry neutralization requires the industry field");
     std::vector<f64> current(in.instruments), desired(in.instruments);
     std::vector<Ranked> row; row.reserve(in.instruments);
     PriceRiskScratch price; // grows only when neutralizing
@@ -284,7 +461,7 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
         ATX_TRY(rebalance, form_desired(in, cfg, d, row, desired, price, day.construction));
       }
       day.construction.rebalance = rebalance;
-      update_weights(in, cfg, d, rebalance, spent, desired, current, day);
+      ATX_TRY_VOID(update_weights(in, cfg, d, rebalance, spent, desired, current, day));
       spent += day.turnover; day.month_turnover = spent;
       if (cfg.rule == TargetReplayRule::MonthlyTargetBudgetV2)
         day.budget_excess = std::max(0.0, spent - cfg.monthly_budget);
@@ -484,12 +661,20 @@ co::Status load_prices(const TargetReplayRunConfig& cfg, SavedBlend& out,
   return co::Ok();
 }
 const char* rule_name(TargetReplayRule rule) {
-  return rule == TargetReplayRule::BaselineTargetV1 ? "baseline-target-v1" : "monthly-target-budget-v2";
+  switch (rule) {
+  case TargetReplayRule::BaselineTargetV1: return "baseline-target-v1";
+  case TargetReplayRule::MonthlyTargetBudgetV2: return "monthly-target-budget-v2";
+  case TargetReplayRule::AimPartialV5: return "aim-partial-v5";
+  }
+  return "unknown";
 }
 
-// ---- construction options (neutralization, no-trade band): recipe, rule id, CSV,
-// summary. Nothing here is emitted unless an option is non-default.
-bool construction_on(const TargetReplayConfig& c) { return neutralizing(c) || c.band_multiple > 0; }
+// ---- construction options (neutralization, no-trade band, the aim-partial-v5 rule):
+// recipe, rule id, CSV, summary. Nothing here is emitted unless an option is
+// non-default or the rule is aim-partial-v5 (whose CSV banded_names is the dust count).
+bool construction_on(const TargetReplayConfig& c) {
+  return neutralizing(c) || c.band_multiple > 0 || aim_partial(c);
+}
 std::string decimal(f64 x) { // shortest round-trip spelling
   std::array<char, 64> text{};
   const auto written = std::to_chars(text.data(), text.data() + text.size(), x);
@@ -497,7 +682,7 @@ std::string decimal(f64 x) { // shortest round-trip spelling
 }
 std::string rule_id(const TargetReplayConfig& c) {
   std::string id = rule_name(c.rule);
-  if (neutralizing(c)) id += "+neutral-price-risk-v1";
+  if (neutralizing(c)) id += std::string("+neutral-") + neutralize_name(c.neutralize);
   if (c.band_multiple > 0) id += "+band-" + decimal(c.band_multiple);
   return id;
 }
@@ -520,20 +705,46 @@ f64 quantile(std::span<const f64> sorted, f64 q) {
   return sorted[lo] + (h - static_cast<f64>(lo)) * (sorted[hi] - sorted[lo]);
 }
 Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
+constexpr const char* exit_rate_rule_declaration =
+    "exit_rate r < 1 (v6 prereg C2): at every decision a nonmember present at d moves next = "
+    "current * (1 - r) and is set to 0 when |next| <= dust_multiple / N_d (N_d = members at "
+    "d; every name when N_d = 0); a nonmember absent at d exits to 0 at once (stale carry "
+    "and write-off unchanged); the moves count as forced turnover; r = 1 is the immediate "
+    "exit";
+// The aim_partial declarations' nonmember clause: the immediate exit (exit_rate 1: the
+// default text byte for byte) or, below 1, a pointer to exit_rate_rule.
+const char* nonmember_exit(const TargetReplayConfig& c) {
+  return decaying_exit(c) ? "nonmembers follow exit_rate_rule" : "nonmembers exit to 0";
+}
 Json construction_recipe(const TargetReplayConfig& c) {
   Json j = Json::object();
   if (neutralizing(c)) {
     const auto& p = c.price_risk;
-    j["neutralize"] = "price-risk-v1";
-    j["desired_target_postprocess"] = "price-risk-v1";
+    const bool industry = neutralize_by_industry(c.neutralize);
+    j["neutralize"] = neutralize_name(c.neutralize);
+    j["desired_target_postprocess"] = neutralize_name(c.neutralize);
     j["price_risk"] = Json{{"beta_window", p.beta_window}, {"vol_window", p.vol_window},
         {"adv_window", p.adv_window}, {"min_return_pairs", p.min_return_pairs},
         {"min_names", p.min_names}, {"clip_z", p.clip_z},
         {"exposures", "trailing beta vs equal-weight market, sample vol, log mean raw dollar "
                       "volume; windows end at the decision session (strategy_price_exposures)"},
-        {"method", "OLS residual of the tied-rank target on [1, z_beta, z_vol, z_log_adv] "
-                   "(clipped z over member&ok rows), rescaled to the entry gross; "
-                   "member&!ok rows to zero; exposures computed once per decision"}};
+        {"method", industry
+             ? "OLS residual of the tied-rank target on [industry group indicators, z_beta, "
+               "z_vol, z_log_adv] by Frisch-Waugh-Lovell (clipped z over member&ok rows, then "
+               "target and z demeaned within group, then OLS on [1, demeaned z]), rescaled "
+               "to the entry gross; member&!ok rows to zero; exposures computed once per "
+               "decision"
+             : "OLS residual of the tied-rank target on [1, z_beta, z_vol, z_log_adv] "
+               "(clipped z over member&ok rows), rescaled to the entry gross; "
+               "member&!ok rows to zero; exposures computed once per decision"}};
+    if (industry)
+      j["industry"] = Json{{"field", industry_group_field}, {"min_group_names", kMinGroupNames},
+          {"max_group_id", kMaxGroupId},
+          {"unknown", "a NaN id: all such names form one residual group"},
+          {"fallback", "a group (the residual one included) with fewer than min_group_names "
+                       "member&ok names has no own level: it loads on the common intercept, "
+                       "i.e. all such names are demeaned together as one pooled group"},
+          {"clock", "the decision session's row of the pinned point-in-time field"}};
     j["neutralize_guard"] = Json{{"max_amplification", c.neutralize_max_amplification},
         {"max_excluded_gross_share", c.neutralize_max_excluded_share},
         {"amplification", "entry gross / residual gross before rescale"},
@@ -546,7 +757,64 @@ Json construction_recipe(const TargetReplayConfig& c) {
                 "(N_d = members at d) keeps its current weight, others move by the rule's "
                 "fraction; banded names are excluded from the monthly-budget-v2 distance";
   }
+  if (aim_partial(c)) {
+    j["theta"] = c.trade_fraction;
+    j["dust_multiple"] = c.dust_multiple;
+    j["aim_leverage"] = c.aim_leverage;
+    j["rate"] = aim_rate(c);
+    j["aim_partial"] = std::string("rebalance decision: each member moves next = current + "
+        "theta * (aim_leverage * desired - current) unless |aim_leverage * desired - "
+        "current| <= dust_multiple / N_d (N_d = members at d; 0 = off), which keeps its "
+        "weight and is counted in banded_names; non-rebalance decisions keep member "
+        "weights; ") + nonmember_exit(c) + "; theta = trade_fraction (rate fixed); "
+        "monthly_budget unused";
+  }
+  if (decaying_exit(c)) { // aim-partial-v5 only (validate_config); absent by default
+    j["exit_rate"] = c.exit_rate;
+    j["exit_rate_rule"] = exit_rate_rule_declaration;
+  }
   return j;
+}
+// construction.v5 (see detail::aim_partial_summary_json).
+Json aim_partial_summary(const TargetReplayConfig& c,
+                         std::span<const detail::AimPartialDecision> decisions) {
+  f64 gross = 0, net = 0, share = 0;
+  usize shared = 0;
+  for (const auto& d : decisions) {
+    gross += d.gross; net += d.net;
+    if (!d.members) continue;
+    share += static_cast<f64>(d.held_names) / static_cast<f64>(d.members); ++shared;
+  }
+  const auto mean = [](f64 sum, usize count) {
+    return count ? Json(sum / static_cast<f64>(count)) : Json(nullptr);
+  };
+  auto j = Json{{"theta", c.trade_fraction}, {"dust_multiple", c.dust_multiple},
+      {"aim_leverage", c.aim_leverage}, {"rate", aim_rate(c)}, {"decisions", decisions.size()},
+      {"mean_gross", mean(gross, decisions.size())}, {"mean_net", mean(net, decisions.size())},
+      {"mean_held_share", mean(share, shared)}};
+  if (decaying_exit(c)) j["exit_rate"] = c.exit_rate;
+  return j;
+}
+// Industry ids, over the applied decisions: demeaning groups (the pooled fallback
+// counts as one), unknown-id names and fallback-pooled names (min / median / max;
+// null without an applied decision).
+Json industry_summary(std::span<const ConstructionDay> decisions) {
+  std::vector<f64> groups, unknown, fallback;
+  for (const auto& d : decisions) {
+    if (d.neutralize != NeutralizeOutcome::Applied) continue;
+    groups.push_back(static_cast<f64>(d.neutralize_groups));
+    unknown.push_back(static_cast<f64>(d.neutralize_unknown_group_names));
+    fallback.push_back(static_cast<f64>(d.neutralize_fallback_names));
+  }
+  const auto spread = [](std::vector<f64>& v) {
+    std::sort(v.begin(), v.end());
+    return Json{{"min", v.empty() ? Json(nullptr) : Json(v.front())},
+                {"median", finite_or_null(quantile(v, .5))},
+                {"max", v.empty() ? Json(nullptr) : Json(v.back())}};
+  };
+  return Json{{"field", industry_group_field}, {"applied_decisions", groups.size()},
+              {"groups", spread(groups)}, {"unknown_group_names", spread(unknown)},
+              {"fallback_names", spread(fallback)}};
 }
 Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
   usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
@@ -580,7 +848,7 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
       amplification.empty() ? Json(nullptr) : Json(amplification.back());
   Json skips{{"too-few-names", too_few}, {"excluded-share", excluded}, {"refused", refused},
              {"amplification", amplified}};
-  Json body{{"rule_id", rule_id(c)}, {"neutralize", neutralizing(c) ? "price-risk-v1" : "none"},
+  Json body{{"rule_id", rule_id(c)}, {"neutralize", neutralize_name(c.neutralize)},
       {"band_multiple", c.band_multiple}, {"decisions", decisions.size()},
       {"cadence_rebalance_decisions", cadence_days}, {"rebalanced_decisions", rebalanced},
       {"neutralize_attempted_decisions", attempted}, {"neutralize_applied_decisions", applied},
@@ -594,12 +862,24 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
       {"banded_names_total", banded},
       {"mean_banded_names_per_rebalance",
        rebalanced ? static_cast<f64>(banded) / static_cast<f64>(rebalanced) : 0.0}};
+  if (neutralize_by_industry(c.neutralize))
+    body["neutralize_industry"] = industry_summary(decisions);
   return Json{{"construction", std::move(body)}};
 }
-bool parse_neutralize(std::string_view value, TargetNeutralize& out) {
-  if (value == "none") out = TargetNeutralize::None;
-  else if (value == "price-risk-v1") out = TargetNeutralize::PriceRiskV1;
+// The id's CLI spelling; price-risk-ind-v2 also sets its declared vol/log-ADV windows
+// (the only price_risk fields any CLI sets). false (cfg untouched) otherwise.
+bool parse_neutralize(std::string_view value, TargetReplayConfig& cfg) {
+  TargetNeutralize id = TargetNeutralize::None;
+  if (value == "none") id = TargetNeutralize::None;
+  else if (value == "price-risk-v1") id = TargetNeutralize::PriceRiskV1;
+  else if (value == "price-risk-ind-v1") id = TargetNeutralize::PriceRiskIndV1;
+  else if (value == "price-risk-ind-v2") id = TargetNeutralize::PriceRiskIndV2;
   else return false;
+  cfg.neutralize = id;
+  if (id == TargetNeutralize::PriceRiskIndV2) {
+    cfg.price_risk.vol_window = price_risk_ind_v2_vol_window;
+    cfg.price_risk.adv_window = price_risk_ind_v2_adv_window;
+  }
   return true;
 }
 constexpr const char* construction_columns =
@@ -626,6 +906,8 @@ Json recipe(const TargetReplayRunConfig& cfg) {
       {"cost_basis", "target-change-no-drift;short-target/252;not-fills"},
       {"max_working_bytes", cfg.target.max_working_bytes}};
   if (construction_on(cfg.target)) j.update(construction_recipe(cfg.target));
+  if (decaying_exit(cfg.target))
+    j["forced_exits"] = "decay-at-exit-rate;snap-inside-dust-band;absent-immediate";
   return j;
 }
 co::Status write_json(const std::filesystem::path& path, const Json& j) {
@@ -719,6 +1001,10 @@ co::Status run_target_replay(const TargetReplayRunConfig& cfg, std::ostream& pro
     if (neutralizing(cfg.target) && cfg.role_path.empty())
       return co::Err(co::ErrorCode::InvalidArgument,
                      "target replay: --neutralize price-risk-v1 requires --role");
+    // The target replay loads no role fields; the NAV replay's --fields carries them.
+    if (neutralize_by_industry(cfg.target.neutralize))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: the industry ids need the grp_ff12 field (nav --fields)");
     // Neutralization reads the role's volume (log ADV); otherwise nothing changes.
     const bool with_volume = neutralizing(cfg.target);
     SavedBlend blend; ATX_TRY_VOID(admit_saved(cfg, blend, with_volume));
@@ -737,6 +1023,13 @@ co::Status run_target_replay(const TargetReplayRunConfig& cfg, std::ostream& pro
       std::vector<ConstructionDay> decisions; decisions.reserve(result.days.size());
       for (const auto& d : result.days) decisions.push_back(d.construction);
       summary.update(construction_summary(cfg.target, decisions));
+      if (aim_partial(cfg.target)) {
+        std::vector<detail::AimPartialDecision> aim; aim.reserve(result.days.size());
+        const auto view = blend.view();
+        for (const auto& d : result.days)
+          aim.push_back({d.gross, d.net, d.held_names, members_at(view, d.decision)});
+        summary["construction"]["v5"] = aim_partial_summary(cfg.target, aim);
+      }
     }
     summary["schema"] = "atx.dsl-target-replay-summary/v1"; summary["status"] = "complete";
     summary["recipe_sha256"] = method_sha; summary["combined_sha256"] = cfg.combined_sha256;
@@ -759,9 +1052,12 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
       const std::string key = argv[i];
       if (key == "--help") {
         out << "--combined PATH --combined-sha256 SHA --output DIR "
-               "[--rule baseline-v1|monthly-budget-v2] [--cadence 5] [--trade-fraction .25] "
+               "[--rule baseline-v1|monthly-budget-v2|aim-partial-v5] [--cadence 5] "
+               "[--trade-fraction .25 (aim-partial-v5: theta)] "
                "[--monthly-budget .30] [--role PATH --role-sha256 SHA] "
                "[--neutralize none|price-risk-v1 (needs --role)] [--band-multiple 0] "
+               "[--dust-multiple 0 --aim-leverage 1 (aim-partial-v5 only)] "
+               "[--exit-rate 1 (below 1: aim-partial-v5, dust > 0, --role)] "
                "[--one-way-bps 0 --annual-borrow-bps 0] [--max-bytes 536870912]\n";
         return 0;
       }
@@ -792,12 +1088,16 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
       else if (key == "--annual-borrow-bps") cfg.target.annual_borrow_bps = real();
       else if (key == "--max-bytes") cfg.target.max_working_bytes = integer();
       else if (key == "--band-multiple") cfg.target.band_multiple = real();
+      else if (key == "--dust-multiple") cfg.target.dust_multiple = real();
+      else if (key == "--aim-leverage") cfg.target.aim_leverage = real();
+      else if (key == "--exit-rate") cfg.target.exit_rate = real();
       else if (key == "--neutralize") {
-        if (!parse_neutralize(value, cfg.target.neutralize))
+        if (!parse_neutralize(value, cfg.target))
           throw std::invalid_argument("unknown --neutralize (none|price-risk-v1)");
       } else if (key == "--rule") {
         if (value == "baseline-v1") cfg.target.rule = TargetReplayRule::BaselineTargetV1;
         else if (value == "monthly-budget-v2") cfg.target.rule = TargetReplayRule::MonthlyTargetBudgetV2;
+        else if (value == "aim-partial-v5") cfg.target.rule = TargetReplayRule::AimPartialV5;
         else throw std::invalid_argument("unknown target rule");
       } else throw std::invalid_argument("unknown flag: " + key);
     }
@@ -850,15 +1150,21 @@ void desired_target(std::span<const f64> signal, std::span<const u8> member,
                     std::vector<std::pair<f64, usize>>& row, std::vector<f64>& target) {
   ::atx::impl::strategy::desired_target(signal, member, row, target);
 }
-void update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
-                    bool rebalance, f64 spent, const std::vector<f64>& desired,
-                    std::vector<f64>& current, TargetReplayDay& out) {
-  ::atx::impl::strategy::update_weights(in, cfg, d, rebalance, spent, desired, current, out);
+co::Status update_weights(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
+                          bool rebalance, f64 spent, const std::vector<f64>& desired,
+                          std::vector<f64>& current, TargetReplayDay& out,
+                          std::span<const f64> per_name_rate) {
+  return ::atx::impl::strategy::update_weights(in, cfg, d, rebalance, spent, desired, current,
+                                               out, per_name_rate);
+}
+usize members_at(const TargetReplayInput& in, usize d) {
+  return ::atx::impl::strategy::members_at(in, d);
 }
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
                               std::vector<std::pair<f64, usize>>& row, std::vector<f64>& desired,
-                              PriceRiskScratch& scratch, ConstructionDay& out) {
-  return ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, scratch, out);
+                              PriceRiskScratch& scratch, ConstructionDay& out,
+                              std::span<const u8> no_short) {
+  return ::atx::impl::strategy::form_desired(in, cfg, d, row, desired, scratch, out, no_short);
 }
 bool construction_active(const TargetReplayConfig& cfg) { return construction_on(cfg); }
 std::string construction_rule_id(const TargetReplayConfig& cfg) { return rule_id(cfg); }
@@ -869,6 +1175,10 @@ std::string construction_summary_json(const TargetReplayConfig& cfg,
                                       std::span<const ConstructionDay> decisions) {
   return construction_on(cfg) ? construction_summary(cfg, decisions).dump() : std::string{};
 }
+std::string aim_partial_summary_json(const TargetReplayConfig& cfg,
+                                     std::span<const AimPartialDecision> decisions) {
+  return aim_partial(cfg) ? aim_partial_summary(cfg, decisions).dump() : std::string{};
+}
 u64 construction_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
   return price_risk_scratch_bytes(cfg, instruments);
 }
@@ -876,11 +1186,12 @@ const char* construction_csv_columns() { return construction_columns; }
 void write_construction_csv(std::ostream& out, const ConstructionDay& day) {
   write_construction(out, day);
 }
-bool parse_neutralize(std::string_view value, TargetNeutralize& out) {
-  return ::atx::impl::strategy::parse_neutralize(value, out);
+bool parse_neutralize(std::string_view value, TargetReplayConfig& cfg) {
+  return ::atx::impl::strategy::parse_neutralize(value, cfg);
 }
 const char* neutralize_outcome_label(NeutralizeOutcome outcome) { return outcome_label(outcome); }
 f64 sorted_quantile(std::span<const f64> sorted, f64 q) { return quantile(sorted, q); }
 u32 calendar_month(i64 session_ns) { return ::atx::impl::strategy::calendar_month(session_ns); }
+const char* nonmember_exit_clause(const TargetReplayConfig& cfg) { return nonmember_exit(cfg); }
 } // namespace detail
 } // namespace atx::impl::strategy

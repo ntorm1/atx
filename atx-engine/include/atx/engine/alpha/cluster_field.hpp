@@ -10,7 +10,7 @@
 //  indneutralize / group_zscore / group_rank / group_scale / group_count /
 //  cs_residualize) already keys its group-id argument PURELY BY FIELD NAME:
 //  typecheck.hpp's `is_group_field()` treats a field as a `Group` dtype iff it is
-//  named `sector` OR carries the `IndClass.` prefix. So a field literally named
+//  named `sector` OR carries the `IndClass.` or `grp_` prefix. So a field literally named
 //  `IndClass.cluster` is ALREADY group-typed with zero typecheck/registry/VM
 //  change. This unit's only job is to PRODUCE that f64 column from a built (or
 //  store-loaded) ClusterPanel and feed it to the existing consumers:

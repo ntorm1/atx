@@ -47,6 +47,11 @@ struct Fixture {
   st::TargetReplayInput input() const {
     return {d, n, 0, d, signal, member, sessions, ids, close, raw, present};
   }
+  [[nodiscard]] usize members_at(usize t) const {
+    usize count = 0;
+    for (usize i = 0; i < n; ++i) count += member[t * n + i] ? 1U : 0U;
+    return count;
+  }
 };
 struct Directory {
   std::filesystem::path path;
@@ -578,4 +583,649 @@ TEST(StrategyTargetReplay, ConstructionOptionsAreRecordedOnlyWhenNonDefault) {
   std::vector<char*> argv;
   for (auto& arg : args) argv.push_back(arg.data());
   EXPECT_EQ(st::dispatch_target_replay(static_cast<int>(argv.size()), argv.data(), out, err), 2);
+}
+
+// ---- aim-partial-v5 (T30) ----
+namespace {
+// Random member signals (distinct ranks) on consecutive daily sessions, no prices.
+Fixture random_fixture(usize dates, usize names, u64 seed) {
+  Fixture f(dates, names);
+  Lcg rng{seed};
+  for (auto& s : f.signal) s = rng.uniform() - 0.5;
+  return f;
+}
+// A role whose signal never changes (distinct per name): the desired target, hence
+// the aim, is the same at every decision.
+Fixture constant_signal(usize dates, usize names) {
+  Fixture f(dates, names);
+  for (usize t = 0; t < dates; ++t)
+    for (usize i = 0; i < names; ++i)
+      f.signal[t * names + i] = static_cast<f64>((i * 7) % names);
+  return f;
+}
+st::TargetReplayConfig aim_partial(f64 theta, f64 dust, f64 leverage = 1) {
+  st::TargetReplayConfig c;
+  c.rule = st::TargetReplayRule::AimPartialV5; c.cadence = 1;
+  c.trade_fraction = theta; c.dust_multiple = dust; c.aim_leverage = leverage;
+  return c;
+}
+void expect_same_target_day(const st::TargetReplayDay& a, const st::TargetReplayDay& b,
+                            usize d) {
+  EXPECT_EQ(bits(a.turnover), bits(b.turnover)) << d;
+  EXPECT_EQ(bits(a.forced_turnover), bits(b.forced_turnover)) << d;
+  EXPECT_EQ(bits(a.discretionary_turnover), bits(b.discretionary_turnover)) << d;
+  EXPECT_EQ(bits(a.deployment_turnover), bits(b.deployment_turnover)) << d;
+  EXPECT_EQ(bits(a.month_turnover), bits(b.month_turnover)) << d;
+  EXPECT_EQ(bits(a.budget_excess), bits(b.budget_excess)) << d;
+  EXPECT_EQ(bits(a.applied_fraction), bits(b.applied_fraction)) << d;
+  EXPECT_EQ(bits(a.gross), bits(b.gross)) << d;
+  EXPECT_EQ(bits(a.net), bits(b.net)) << d;
+  EXPECT_EQ(bits(a.long_weight), bits(b.long_weight)) << d;
+  EXPECT_EQ(bits(a.short_weight), bits(b.short_weight)) << d;
+  EXPECT_EQ(bits(a.max_abs_weight), bits(b.max_abs_weight)) << d;
+  EXPECT_EQ(bits(a.effective_names), bits(b.effective_names)) << d;
+  EXPECT_EQ(a.held_names, b.held_names) << d;
+  EXPECT_EQ(a.construction.rebalance, b.construction.rebalance) << d;
+  EXPECT_EQ(a.construction.banded_names, b.construction.banded_names) << d;
+}
+} // namespace
+
+// Review focus 1: theta 1, dust 0, aim_leverage 1 is baseline-v1 (band 0, fraction 1)
+// bit for bit: every day field, and the weights themselves through the shared seam,
+// with forced exits (random nonmember cells) and on non-rebalance days (cadence 3).
+TEST(TargetReplayV5, AimPartialV5_ThetaOne_MatchesBaseline) {
+  auto f = random_fixture(30, 50, 11);
+  Lcg drop{12};
+  for (usize k = 0; k < f.signal.size(); ++k)
+    if (drop.uniform() < 0.1) { f.member[k] = 0; f.signal[k] = missing; }
+  for (const usize cadence : {usize{1}, usize{3}}) {
+    st::TargetReplayConfig base; base.cadence = cadence; base.trade_fraction = 1;
+    auto v5 = aim_partial(1, 0, 1); v5.cadence = cadence;
+    const auto a = st::replay_targets(f.input(), base);
+    const auto b = st::replay_targets(f.input(), v5);
+    ASSERT_TRUE(a) << a.error().to_string();
+    ASSERT_TRUE(b) << b.error().to_string();
+    ASSERT_EQ(a->days.size(), b->days.size());
+    for (usize d = 0; d < a->days.size(); ++d) expect_same_target_day(a->days[d], b->days[d], d);
+    EXPECT_EQ(bits(a->total_turnover), bits(b->total_turnover)) << cadence;
+    EXPECT_EQ(bits(a->forced_turnover), bits(b->forced_turnover)) << cadence;
+    EXPECT_EQ(bits(a->discretionary_turnover), bits(b->discretionary_turnover)) << cadence;
+    EXPECT_EQ(bits(a->deployment_turnover), bits(b->deployment_turnover)) << cadence;
+    EXPECT_EQ(a->deployment_date, b->deployment_date) << cadence;
+    EXPECT_GT(a->forced_turnover, 0) << cadence; // exits are exercised
+  }
+  const auto in = f.input();
+  const auto v5 = aim_partial(1, 0, 1);
+  const st::TargetReplayConfig base = [] {
+    st::TargetReplayConfig c; c.cadence = 1; c.trade_fraction = 1; return c;
+  }();
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(f.n), wa(f.n), wb(f.n);
+  for (usize d = 0; d < f.d; ++d) {
+    st::detail::desired_target(std::span<const f64>(f.signal).subspan(d * f.n, f.n),
+                               std::span<const u8>(f.member).subspan(d * f.n, f.n), row,
+                               desired);
+    st::TargetReplayDay da, db;
+    ASSERT_TRUE(st::detail::update_weights(in, base, d, true, 0, desired, wa, da));
+    ASSERT_TRUE(st::detail::update_weights(in, v5, d, true, 0, desired, wb, db));
+    for (usize i = 0; i < f.n; ++i) EXPECT_EQ(bits(wa[i]), bits(wb[i])) << d << ' ' << i;
+  }
+}
+
+// Review focus 2: the dust band never blocks entry. From flat, every member whose
+// |aim| exceeds dust_multiple / N_d trades on the first rebalance; only the members
+// whose |desired| <= 0.1/N (tied ranks spread desired over [-2/N, 2/N]: here 4-6 of
+// 100) stay flat. Gross lies in [0.9, 1] x theta x G, G the un-dusted aim's gross.
+TEST(TargetReplayV5, AimPartialV5_DustDoesNotBlockEntry) {
+  const auto f = random_fixture(10, 100, 21);
+  const auto v5 = aim_partial(0.05, 0.1);
+  const auto r = st::replay_targets(f.input(), v5);
+  ASSERT_TRUE(r) << r.error().to_string();
+  const auto u = st::replay_targets(f.input(), aim_partial(0.05, 0));
+  ASSERT_TRUE(u) << u.error().to_string();
+  const f64 capped = u->days[0].gross; // theta * G with no dust
+  EXPECT_NEAR(capped, 0.05, 1e-12);    // G = 1: gross-1 desired, aim_leverage 1
+  const auto& first = r->days[0];
+  EXPECT_GE(first.held_names, f.members_at(0) * 9 / 10);
+  EXPECT_EQ(first.held_names + first.construction.banded_names, f.members_at(0));
+  EXPECT_GT(first.construction.banded_names, 0U);
+  EXPECT_GE(first.gross, 0.9 * capped);
+  EXPECT_LE(first.gross, capped);
+  // Name by name: |aim| > dust / N_d  <=>  entered at theta * aim.
+  const auto in = f.input();
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(f.n), w(f.n);
+  st::detail::desired_target(std::span<const f64>(f.signal).subspan(0, f.n),
+                             std::span<const u8>(f.member).subspan(0, f.n), row, desired);
+  st::TargetReplayDay day;
+  ASSERT_TRUE(st::detail::update_weights(in, v5, 0, true, 0, desired, w, day));
+  const f64 dust = 0.1 / static_cast<f64>(f.members_at(0));
+  for (usize i = 0; i < f.n; ++i) {
+    if (std::abs(desired[i]) > dust) {
+      EXPECT_EQ(bits(w[i]), bits(0.05 * desired[i])) << i;
+    } else {
+      EXPECT_EQ(w[i], 0) << i;
+    }
+  }
+}
+
+// A constant aim is approached geometrically, gross_t = L (1 - (1 - theta)^(t+1)), and
+// reached (80 steps at theta .25); the dust band stops the approach within
+// dust_multiple of the aim's gross, after which nothing trades.
+TEST(TargetReplayV5, AimPartialV5_ConvergesToAimGross) {
+  const auto f = constant_signal(80, 40);
+  const auto r = st::replay_targets(f.input(), aim_partial(0.25, 0));
+  ASSERT_TRUE(r) << r.error().to_string();
+  EXPECT_NEAR(r->days[0].gross, 0.25, 1e-12);
+  EXPECT_NEAR(r->days[1].gross, 1 - 0.75 * 0.75, 1e-12);
+  EXPECT_NEAR(r->days.back().gross, 1.0, 1e-6);
+  EXPECT_NEAR(r->days.back().net, 0.0, 1e-12);
+  EXPECT_EQ(r->days.back().held_names, 40U);
+  const auto levered = st::replay_targets(f.input(), aim_partial(0.25, 0, 1.5));
+  ASSERT_TRUE(levered) << levered.error().to_string();
+  EXPECT_NEAR(levered->days[0].gross, 0.375, 1e-12);
+  EXPECT_NEAR(levered->days.back().gross, 1.5, 1e-6);
+  const auto dusted = st::replay_targets(f.input(), aim_partial(0.25, 0.1));
+  ASSERT_TRUE(dusted) << dusted.error().to_string();
+  const auto& last = dusted->days.back();
+  EXPECT_GE(last.gross, 0.9);
+  EXPECT_LE(last.gross, 1.0 + 1e-12);
+  EXPECT_EQ(last.construction.banded_names, 40U);
+  EXPECT_EQ(last.turnover, 0);
+}
+
+TEST(TargetReplayV5, RefusesBandUnderV5) {
+  const auto f = random_fixture(5, 4, 3);
+  auto bad = aim_partial(0.25, 0); bad.band_multiple = 1;
+  const auto refused = st::replay_targets(f.input(), bad);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  bad.band_multiple = 0;
+  EXPECT_TRUE(st::replay_targets(f.input(), bad)); // control
+}
+
+// R-e: aim_leverage in [1, 2], dust_multiple in [0, 0.5], theta in (0, 1] (NaN
+// refused); the v5 parameters are refused under the other rules.
+TEST(TargetReplayV5, RefusesOutOfRangeAndForeignParameters) {
+  const auto f = random_fixture(5, 4, 3);
+  const auto runs = [&](const st::TargetReplayConfig& c) {
+    return static_cast<bool>(st::replay_targets(f.input(), c));
+  };
+  EXPECT_TRUE(runs(aim_partial(1, 0.5, 2)));
+  EXPECT_TRUE(runs(aim_partial(0.01, 0, 1)));
+  for (const f64 leverage : {0.99, 2.01, missing})
+    EXPECT_FALSE(runs(aim_partial(0.5, 0, leverage)));
+  for (const f64 dust : {-0.01, 0.51, missing}) EXPECT_FALSE(runs(aim_partial(0.5, dust, 1)));
+  for (const f64 theta : {0.0, 1.01, missing}) EXPECT_FALSE(runs(aim_partial(theta, 0, 1)));
+  st::TargetReplayConfig baseline; baseline.aim_leverage = 1.5;
+  EXPECT_FALSE(runs(baseline));
+  baseline.aim_leverage = 1; baseline.dust_multiple = 0.1;
+  EXPECT_FALSE(runs(baseline));
+  st::TargetReplayConfig v2; v2.rule = st::TargetReplayRule::MonthlyTargetBudgetV2;
+  v2.aim_leverage = 1.2;
+  EXPECT_FALSE(runs(v2));
+  v2.aim_leverage = 1;
+  EXPECT_TRUE(runs(v2));
+}
+
+// The pinned run and CLI: v5 records its recipe keys (rule aim-partial-v5, theta,
+// dust_multiple, aim_leverage, rate fixed), the construction CSV columns (banded_names
+// = dust count) and summary construction.v5; baseline carries none of them.
+TEST(TargetReplayV5, PinnedRunRecordsRecipeSummaryAndCli) {
+  const auto f = random_fixture(8, 6, 5);
+  std::ostringstream progress;
+  constexpr std::array<const char*, 5> v5_keys{"theta", "dust_multiple", "aim_leverage", "rate",
+                                               "aim_partial"};
+  {
+    Directory dir; auto cfg = artifact(dir.path, f);
+    ASSERT_TRUE(st::run_target_replay(cfg, progress));
+    const auto recipe = read_json(dir.path / "out" / "recipe.json");
+    for (const auto* key : v5_keys) EXPECT_FALSE(recipe.contains(key)) << key;
+    EXPECT_EQ(recipe.at("rule"), "baseline-target-v1");
+    EXPECT_EQ(first_line(dir.path / "out" / "daily.csv"), default_daily_header);
+    EXPECT_FALSE(read_json(dir.path / "out" / "summary.json").contains("construction"));
+  }
+  Directory dir; const auto cfg = artifact(dir.path, f);
+  std::ostringstream out, err;
+  const auto dispatch = [&](std::vector<std::string> args) {
+    std::vector<char*> argv;
+    for (auto& arg : args) argv.push_back(arg.data());
+    return st::dispatch_target_replay(static_cast<int>(argv.size()), argv.data(), out, err);
+  };
+  const auto base_args = [&](const std::string& output) {
+    return std::vector<std::string>{"targets", "--combined", cfg.combined_path,
+                                    "--combined-sha256", cfg.combined_sha256, "--output",
+                                    (dir.path / output).string(), "--cadence", "1"};
+  };
+  auto args = base_args("v5");
+  for (const auto* extra : {"--rule", "aim-partial-v5", "--trade-fraction", ".5",
+                            "--dust-multiple", ".1", "--aim-leverage", "1.5"})
+    args.emplace_back(extra);
+  ASSERT_EQ(dispatch(args), 0) << err.str();
+  const auto recipe = read_json(dir.path / "v5" / "recipe.json");
+  EXPECT_EQ(recipe.at("rule"), "aim-partial-v5");
+  EXPECT_EQ(recipe.at("theta"), 0.5);
+  EXPECT_EQ(recipe.at("trade_fraction"), 0.5);
+  EXPECT_EQ(recipe.at("dust_multiple"), 0.1);
+  EXPECT_EQ(recipe.at("aim_leverage"), 1.5);
+  EXPECT_EQ(recipe.at("rate"), "fixed");
+  EXPECT_TRUE(recipe.at("aim_partial").is_string());
+  EXPECT_FALSE(recipe.contains("band_multiple"));
+  EXPECT_EQ(first_line(dir.path / "v5" / "daily.csv"),
+            std::string(default_daily_header) +
+                ",rebalance,neutralize,neutralize_used,neutralize_excluded,"
+                "neutralize_excluded_share,neutralize_amplification,banded_names");
+  const auto summary = read_json(dir.path / "v5" / "summary.json");
+  const auto& construction = summary.at("construction");
+  EXPECT_EQ(construction.at("rule_id"), "aim-partial-v5");
+  const auto& v5 = construction.at("v5");
+  for (const auto* key : {"theta", "dust_multiple", "aim_leverage", "rate", "mean_gross",
+                          "mean_net", "mean_held_share"})
+    EXPECT_TRUE(v5.contains(key)) << key;
+  EXPECT_EQ(v5.at("theta"), 0.5);
+  EXPECT_EQ(v5.at("rate"), "fixed");
+  EXPECT_EQ(v5.at("decisions"), f.d);
+  EXPECT_GT(v5.at("mean_gross").get<f64>(), 0);
+  EXPECT_LE(v5.at("mean_gross").get<f64>(), 1.5 + 1e-12);
+  EXPECT_GT(v5.at("mean_held_share").get<f64>(), 0);
+  EXPECT_LE(v5.at("mean_held_share").get<f64>(), 1);
+  // Refusals: band under v5, v5 parameters under baseline, out-of-range leverage;
+  // an unknown rule spelling is a usage error.
+  auto band = base_args("band");
+  for (const auto* extra : {"--rule", "aim-partial-v5", "--band-multiple", "1"})
+    band.emplace_back(extra);
+  EXPECT_EQ(dispatch(band), 1);
+  auto foreign = base_args("foreign");
+  for (const auto* extra : {"--dust-multiple", ".1"}) foreign.emplace_back(extra);
+  EXPECT_EQ(dispatch(foreign), 1);
+  auto levered = base_args("levered");
+  for (const auto* extra : {"--rule", "aim-partial-v5", "--aim-leverage", "2.5"})
+    levered.emplace_back(extra);
+  EXPECT_EQ(dispatch(levered), 1);
+  auto unknown = base_args("unknown");
+  for (const auto* extra : {"--rule", "aim-partial-v6"}) unknown.emplace_back(extra);
+  EXPECT_EQ(dispatch(unknown), 2);
+  for (const auto* name : {"band", "foreign", "levered", "unknown"})
+    EXPECT_FALSE(std::filesystem::exists(dir.path / name)) << name;
+}
+
+// T36 ruling R-c (T30 review Minor 2): a per-name rate span is used only under
+// aim-partial-v5 and only with exactly one rate in [0, 1] per name (nonmember entries
+// included); anything else is refused with InvalidArgument before a weight moves,
+// never silently traded at the fixed theta. With a good span each member moves by its
+// own rate and applied_fraction is the members' mean rate.
+TEST(TargetReplayV5, PerNameRateSpanIsChecked) {
+  auto f = random_fixture(3, 10, 41);
+  f.member[3] = 0; f.signal[3] = missing; // one nonmember at decision 0
+  const auto in = f.input();
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(f.n);
+  st::detail::desired_target(std::span<const f64>(f.signal).subspan(0, f.n),
+                             std::span<const u8>(f.member).subspan(0, f.n), row, desired);
+  const auto v5 = aim_partial(0.05, 0);
+  std::vector<f64> rates(f.n);
+  for (usize i = 0; i < f.n; ++i) rates[i] = 0.01 * static_cast<f64>(i + 1);
+  std::vector<f64> w(f.n, 0.0);
+  st::TargetReplayDay day;
+  const auto ok = st::detail::update_weights(in, v5, 0, true, 0, desired, w, day, rates);
+  ASSERT_TRUE(ok) << ok.error().to_string();
+  f64 sum = 0;
+  usize members = 0;
+  for (usize i = 0; i < f.n; ++i) {
+    if (!f.member[i]) { EXPECT_EQ(w[i], 0) << i; continue; }
+    EXPECT_EQ(bits(w[i]), bits(rates[i] * (1.0 * desired[i]))) << i; // from flat: theta_i * aim
+    sum += rates[i]; ++members;
+  }
+  EXPECT_EQ(members, f.n - 1);
+  EXPECT_EQ(bits(day.applied_fraction), bits(sum / static_cast<f64>(members)));
+  const auto refused = [&](const st::TargetReplayConfig& c, std::span<const f64> per_name) {
+    std::vector<f64> weights(f.n, 0.25);
+    st::TargetReplayDay record;
+    const auto status = st::detail::update_weights(in, c, 0, true, 0, desired, weights, record,
+                                                   per_name);
+    const bool untouched = record.turnover == 0 &&
+        std::all_of(weights.begin(), weights.end(), [](f64 x) { return x == 0.25; });
+    return !status && status.error().code() == co::ErrorCode::InvalidArgument && untouched;
+  };
+  const std::vector<f64> short_span(f.n - 1, 0.05), long_span(f.n + 1, 0.05);
+  EXPECT_TRUE(refused(v5, short_span));
+  EXPECT_TRUE(refused(v5, long_span));
+  st::TargetReplayConfig baseline; baseline.cadence = 1;
+  EXPECT_TRUE(refused(baseline, rates)); // per-name rates are aim-partial-v5 only
+  for (const f64 bad : {missing, -0.01, 1.01, std::numeric_limits<f64>::infinity()}) {
+    auto broken = rates; broken[5] = bad;
+    EXPECT_TRUE(refused(v5, broken)) << bad;
+  }
+  auto unused = rates; unused[3] = missing; // the nonmember's entry is checked too
+  EXPECT_TRUE(refused(v5, unused));
+  // Controls: an empty span is the fixed theta; the bounds 0 and 1 are admitted.
+  std::vector<f64> fixed_weights(f.n, 0.0);
+  st::TargetReplayDay fixed_day;
+  ASSERT_TRUE(st::detail::update_weights(in, v5, 0, true, 0, desired, fixed_weights, fixed_day));
+  EXPECT_EQ(fixed_day.applied_fraction, 0.05);
+  auto bounds = rates; bounds[0] = 0; bounds[1] = 1;
+  std::vector<f64> bound_weights(f.n, 0.0);
+  st::TargetReplayDay bound_day;
+  EXPECT_TRUE(st::detail::update_weights(in, v5, 0, true, 0, desired, bound_weights, bound_day,
+                                         bounds));
+}
+
+// ---- v6 prereg C2: the nonmember exit rate ----
+namespace {
+st::TargetReplayConfig decaying(f64 theta, f64 dust, f64 exit_rate) {
+  auto c = aim_partial(theta, dust);
+  c.exit_rate = exit_rate;
+  return c;
+}
+// Role(70, 20) with prices: name 0 always ranks top (a constant aim) and leaves
+// membership while still present from decision 3 on; name 1 is absent (no price, not a
+// member) at decision 3 only.
+Role exit_role() {
+  Role r(70, 20, 9);
+  for (usize t = 0; t < r.d; ++t) r.signal[t * r.n] = 10.0;
+  for (usize t = 3; t < r.d; ++t) r.nonmember(t, 0);
+  const usize k = 3 * r.n + 1;
+  r.present[k] = 0; r.member[k] = 0; r.signal[k] = missing;
+  r.close[k] = missing; r.raw[k] = missing; r.volume[k] = missing;
+  return r;
+}
+usize members_of(const Role& r, usize t) {
+  usize count = 0;
+  for (usize i = 0; i < r.n; ++i) count += r.member[t * r.n + i] ? 1U : 0U;
+  return count;
+}
+} // namespace
+
+// Exit rate .05 at theta 1, dust .1: name 0 (constant top aim, .5 / (100 / 19)) leaves
+// membership while present at decision 3 and then moves current * (1 - .05) per decision,
+// bit for bit, until |next| <= .1 / N_d sets it to exactly 0 (where it stays); name 1,
+// absent at decision 3, exits at once. Forced turnover is exactly those moves.
+TEST(TargetReplayV6, ExitRateDecaysPresentNonmemberAndSnapsInsideTheDustBand) {
+  const auto r = exit_role();
+  const auto in = r.input();
+  const auto cfg = decaying(1, 0.1, 0.05);
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(r.n), w(r.n, 0.0);
+  usize snapped = 0;
+  for (usize d = 0; d < r.d; ++d) {
+    st::detail::desired_target(std::span<const f64>(r.signal).subspan(d * r.n, r.n),
+                               std::span<const u8>(r.member).subspan(d * r.n, r.n), row,
+                               desired);
+    const f64 prev0 = w[0], prev1 = w[1];
+    st::TargetReplayDay day;
+    const auto ok = st::detail::update_weights(in, cfg, d, true, 0, desired, w, day);
+    ASSERT_TRUE(ok) << ok.error().to_string();
+    if (d < 3) {
+      EXPECT_NEAR(w[0], 0.5 / (100.0 / 19.0), 1e-15) << d; // at its constant top aim
+      EXPECT_EQ(day.forced_turnover, 0) << d;
+      continue;
+    }
+    const f64 band = 0.1 / static_cast<f64>(members_of(r, d));
+    f64 expected = prev0 * (1 - 0.05);
+    if (std::abs(expected) <= band) expected = 0;
+    EXPECT_EQ(bits(w[0]), bits(expected)) << d;
+    f64 forced = std::abs(expected - prev0); // name order: name 0, then name 1
+    if (d == 3) {
+      EXPECT_EQ(w[1], 0); // absent: the immediate exit
+      forced += std::abs(prev1);
+    }
+    EXPECT_EQ(bits(day.forced_turnover), bits(forced)) << d;
+    if (w[0] == 0 && prev0 != 0) snapped = d;
+  }
+  // .095 x .95^k <= .1 / 19 first at k = 57: decision 59.
+  EXPECT_EQ(snapped, 59U);
+  EXPECT_EQ(w[0], 0);
+  EXPECT_EQ(members_of(r, 3), 18U);
+  EXPECT_EQ(members_of(r, 4), 19U);
+}
+
+// exit_rate 1 is the immediate exit bit for bit (every day field and total), and the
+// decaying exit trades the same total forced turnover (the moves telescope to the
+// weight) spread over decisions: less at the exit decision, some after it.
+TEST(TargetReplayV6, ExitRateOneIsTheImmediateExitAndDecaySpreadsTheSameTotal) {
+  const auto r = exit_role();
+  const auto base = aim_partial(0.25, 0.1);
+  const auto a = st::replay_targets(r.input(), base);
+  const auto b = st::replay_targets(r.input(), decaying(0.25, 0.1, 1));
+  const auto slow = st::replay_targets(r.input(), decaying(0.25, 0.1, 0.05));
+  ASSERT_TRUE(a) << a.error().to_string();
+  ASSERT_TRUE(b) << b.error().to_string();
+  ASSERT_TRUE(slow) << slow.error().to_string();
+  ASSERT_EQ(a->days.size(), b->days.size());
+  for (usize d = 0; d < a->days.size(); ++d) expect_same_target_day(a->days[d], b->days[d], d);
+  EXPECT_EQ(bits(a->total_turnover), bits(b->total_turnover));
+  EXPECT_EQ(bits(a->forced_turnover), bits(b->forced_turnover));
+  EXPECT_GT(a->days[3].forced_turnover, 0);
+  EXPECT_EQ(a->days[4].forced_turnover, 0); // gone at once
+  EXPECT_LT(slow->days[3].forced_turnover, a->days[3].forced_turnover);
+  EXPECT_GT(slow->days[4].forced_turnover, 0); // still decaying
+  for (usize d = 0; d < 3; ++d) expect_same_target_day(a->days[d], slow->days[d], d);
+  EXPECT_NEAR(slow->forced_turnover, a->forced_turnover, 1e-12);
+}
+
+// Refusals: exit_rate in (0, 1] (NaN refused); below 1 only under aim-partial-v5 with a
+// dust band; without prices (no presence) the replay is refused and the seam moves nothing.
+TEST(TargetReplayV6, ExitRateRefusals) {
+  const auto r = exit_role();
+  const auto runs = [&](const st::TargetReplayConfig& c) {
+    return static_cast<bool>(st::replay_targets(r.input(), c));
+  };
+  EXPECT_TRUE(runs(decaying(0.25, 0.1, 0.05)));
+  EXPECT_TRUE(runs(decaying(0.25, 0.1, 1)));
+  EXPECT_TRUE(runs(decaying(0.25, 0, 1))); // the immediate exit needs no band
+  for (const f64 bad : {0.0, -0.1, 1.01, missing})
+    EXPECT_FALSE(runs(decaying(0.25, 0.1, bad))) << bad;
+  EXPECT_FALSE(runs(decaying(0.25, 0, 0.05))); // no band: an exit would never end
+  st::TargetReplayConfig baseline; baseline.cadence = 1; baseline.exit_rate = 0.05;
+  EXPECT_FALSE(runs(baseline));
+  const auto f = random_fixture(5, 6, 3); // no prices
+  const auto refused = st::replay_targets(f.input(), decaying(0.25, 0.1, 0.05));
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> desired(f.n), w(f.n, 0.25);
+  st::detail::desired_target(std::span<const f64>(f.signal).subspan(0, f.n),
+                             std::span<const u8>(f.member).subspan(0, f.n), row, desired);
+  st::TargetReplayDay day;
+  const auto status =
+      st::detail::update_weights(f.input(), decaying(0.25, 0.1, 0.05), 0, true, 0, desired, w, day);
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().code(), co::ErrorCode::InvalidArgument);
+  EXPECT_EQ(day.turnover, 0);
+  for (const f64 x : w) EXPECT_EQ(x, 0.25);
+}
+
+// ---- v6 C2: industry neutralization ids ----
+namespace {
+// grp_ff12 of a Role on every row: names 0-5 id 4 (6 names), 6-9 id 7 (4 names, pooled
+// into the fallback) and 10-11 unknown (2 names, pooled too).
+std::vector<f64> role_industry(const Role& role) {
+  std::vector<f64> ids(role.d * role.n);
+  for (usize t = 0; t < role.d; ++t)
+    for (usize i = 0; i < role.n; ++i)
+      ids[t * role.n + i] = i < 6 ? 4.0 : i < 10 ? 7.0 : missing;
+  return ids;
+}
+st::TargetReplayConfig industry_daily(st::TargetNeutralize id) {
+  auto c = neutral_daily(); c.neutralize = id; return c;
+}
+} // namespace
+
+// The CLI ids: ind-v2 carries its declared windows (vol 126, log ADV 252; beta stays
+// 252) and refuses any other pair; ind-v1 keeps price_risk as it is; an unknown id
+// leaves the config untouched; a short industry span is refused.
+TEST(TargetReplayV6, IndustryIdsParseWithTheirWindowsAndRefuseOtherPairs) {
+  st::TargetReplayConfig v2;
+  ASSERT_TRUE(st::detail::parse_neutralize("price-risk-ind-v2", v2));
+  EXPECT_EQ(v2.neutralize, st::TargetNeutralize::PriceRiskIndV2);
+  EXPECT_EQ(v2.price_risk.vol_window, 126U);
+  EXPECT_EQ(v2.price_risk.adv_window, 252U);
+  EXPECT_EQ(v2.price_risk.beta_window, 252U);
+  st::TargetReplayConfig v1;
+  ASSERT_TRUE(st::detail::parse_neutralize("price-risk-ind-v1", v1));
+  EXPECT_EQ(v1.neutralize, st::TargetNeutralize::PriceRiskIndV1);
+  EXPECT_EQ(v1.price_risk.vol_window, 63U);
+  EXPECT_EQ(v1.price_risk.adv_window, 63U);
+  ASSERT_TRUE(st::detail::parse_neutralize("price-risk-v1", v1));
+  EXPECT_EQ(v1.neutralize, st::TargetNeutralize::PriceRiskV1);
+  EXPECT_FALSE(st::detail::parse_neutralize("price-risk-ind-v3", v1));
+  EXPECT_EQ(v1.neutralize, st::TargetNeutralize::PriceRiskV1);
+  EXPECT_TRUE(st::neutralize_by_industry(st::TargetNeutralize::PriceRiskIndV1));
+  EXPECT_TRUE(st::neutralize_by_industry(st::TargetNeutralize::PriceRiskIndV2));
+  EXPECT_FALSE(st::neutralize_by_industry(st::TargetNeutralize::PriceRiskV1));
+  EXPECT_FALSE(st::neutralize_by_industry(st::TargetNeutralize::None));
+  const Role role(30, 12, 3);
+  const auto industry = role_industry(role);
+  auto in = role.input();
+  in.industry = industry;
+  const auto wrong = industry_daily(st::TargetNeutralize::PriceRiskIndV2); // windows 40/20/10
+  const auto refused = st::replay_targets(in, wrong);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  auto right = wrong;
+  right.price_risk.vol_window = st::price_risk_ind_v2_vol_window;
+  right.price_risk.adv_window = st::price_risk_ind_v2_adv_window;
+  const auto early = st::replay_targets(in, right); // no full log-ADV window yet: all skipped
+  ASSERT_TRUE(early) << early.error().to_string();
+  EXPECT_EQ(count_outcome(*early, st::NeutralizeOutcome::SkippedTooFewNames), role.d);
+  const std::vector<f64> short_industry(industry.begin(), industry.end() - 1);
+  in.industry = short_industry;
+  EXPECT_FALSE(st::replay_targets(in, industry_daily(st::TargetNeutralize::PriceRiskIndV1)));
+}
+
+// ind-v1 at a decision is the within-groups primitive on that decision's industry row,
+// bit for bit, with its group record; every applied decision leaves both demeaning
+// groups flat and (at fraction 1) a gross-1, net-0 plan; the replay and the shared
+// construction refuse the id without the field; the pinned target replay (no fields)
+// refuses it before output.
+TEST(TargetReplayV6, IndustryConstructionIsTheWithinGroupsPrimitive) {
+  const Role role(70, 12, 21);
+  const auto cfg = industry_daily(st::TargetNeutralize::PriceRiskIndV1);
+  constexpr usize d = 60;
+  const auto industry = role_industry(role);
+  auto in = role.input();
+  in.industry = industry;
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> expected(role.n);
+  st::detail::desired_target(std::span<const f64>(role.signal).subspan(d * role.n, role.n),
+                             std::span<const u8>(role.member).subspan(d * role.n, role.n), row,
+                             expected);
+  const std::vector<u8> members(role.n, 1);
+  st::PriceRiskScratch primitive;
+  st::NeutralizeStats stats;
+  const auto direct = st::neutralize_price_risk_within_groups(
+      role.prices(), cfg.price_risk, d, expected, members,
+      std::span<const f64>(industry).subspan(d * role.n, role.n), primitive, stats);
+  ASSERT_TRUE(direct) << direct.error().to_string();
+  EXPECT_EQ(stats.groups, 2U);
+  EXPECT_EQ(stats.fallback_names, 6U);
+  EXPECT_EQ(stats.unknown_group_names, 2U);
+  std::vector<f64> desired(role.n);
+  st::PriceRiskScratch scratch;
+  st::ConstructionDay record;
+  const auto rebalance = st::detail::form_desired(in, cfg, d, row, desired, scratch, record);
+  ASSERT_TRUE(rebalance) << rebalance.error().to_string();
+  EXPECT_TRUE(*rebalance);
+  for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(desired[i]), bits(expected[i])) << i;
+  EXPECT_EQ(record.neutralize, st::NeutralizeOutcome::Applied);
+  EXPECT_EQ(record.neutralize_used, 12U);
+  EXPECT_EQ(record.neutralize_groups, 2U);
+  EXPECT_EQ(record.neutralize_fallback_names, 6U);
+  EXPECT_EQ(record.neutralize_unknown_group_names, 2U);
+  EXPECT_EQ(bits(record.neutralize_amplification), bits(stats.gross / stats.residual_gross));
+  f64 own = 0, pooled = 0, gross = 0;
+  for (usize i = 0; i < role.n; ++i) {
+    (i < 6 ? own : pooled) += desired[i];
+    gross += std::abs(desired[i]);
+  }
+  EXPECT_LE(std::abs(own), 1e-12);
+  EXPECT_LE(std::abs(pooled), 1e-12);
+  EXPECT_NEAR(gross, 1.0, 1e-12);
+  auto replay = st::replay_targets(in, cfg);
+  ASSERT_TRUE(replay) << replay.error().to_string();
+  usize applied = 0;
+  for (const auto& day : replay->days) {
+    if (day.construction.neutralize != st::NeutralizeOutcome::Applied) continue;
+    ++applied;
+    EXPECT_NEAR(day.gross, 1.0, 1e-12) << day.decision;
+    EXPECT_NEAR(day.net, 0.0, 1e-12) << day.decision;
+  }
+  EXPECT_GT(applied, 0U);
+  const auto without = st::replay_targets(role.input(), cfg);
+  ASSERT_FALSE(without);
+  EXPECT_EQ(without.error().code(), co::ErrorCode::InvalidArgument);
+  const auto shared = st::detail::form_desired(role.input(), cfg, d, row, desired, scratch, record);
+  ASSERT_FALSE(shared);
+  EXPECT_EQ(shared.error().code(), co::ErrorCode::InvalidArgument);
+  Fixture f(6, 3);
+  for (usize t = 0; t < f.d; ++t)
+    for (usize i = 0; i < f.n; ++i) f.signal[t * f.n + i] = static_cast<f64>((i + t) % 3);
+  Directory dir; auto run = artifact(dir.path, f); run.target = cfg;
+  std::ostringstream progress;
+  const auto pinned = st::run_target_replay(run, progress);
+  ASSERT_FALSE(pinned);
+  EXPECT_EQ(pinned.error().code(), co::ErrorCode::InvalidArgument);
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "out"));
+}
+
+// Locate-in-aim under ind-v1 (review I3): form_desired zeroes the special-tier shorts and
+// hands the no-short mask to the within-groups primitive as its hold mask, bit for bit, so
+// the zeroed names (3, 4, 5 of group 4) are reset to 0 after the group demeaning instead
+// of inheriting -(group mean): they end less short than unheld. price-risk-v1 with the
+// same mask is the v1 primitive on the zeroed target (no hold; C1's path unchanged).
+TEST(TargetReplayV6, LocateInAimHoldsZeroedShortsThroughTheIndustryDemeaning) {
+  const Role role(70, 12, 21);
+  const auto cfg = industry_daily(st::TargetNeutralize::PriceRiskIndV1);
+  constexpr usize d = 60;
+  const auto industry = role_industry(role);
+  auto in = role.input();
+  in.industry = industry;
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> zeroed(role.n);
+  st::detail::desired_target(std::span<const f64>(role.signal).subspan(d * role.n, role.n),
+                             std::span<const u8>(role.member).subspan(d * role.n, role.n), row,
+                             zeroed);
+  std::vector<u8> no_short(role.n, 0);
+  usize shorts = 0;
+  for (usize i = 0; i < 6; ++i) { // group 4 is in the special tier
+    no_short[i] = 1;
+    if (zeroed[i] < 0) { zeroed[i] = 0; ++shorts; }
+  }
+  ASSERT_EQ(shorts, 3U);
+  const std::vector<u8> members(role.n, 1);
+  const auto group = std::span<const f64>(industry).subspan(d * role.n, role.n);
+  st::PriceRiskScratch primitive;
+  st::NeutralizeStats stats;
+  auto held = zeroed, unheld = zeroed;
+  ASSERT_TRUE(st::neutralize_price_risk_within_groups(role.prices(), cfg.price_risk, d, held,
+                                                      members, group, primitive, stats,
+                                                      no_short));
+  ASSERT_TRUE(st::neutralize_price_risk_within_groups(role.prices(), cfg.price_risk, d, unheld,
+                                                      members, group, primitive, stats));
+  std::vector<f64> desired(role.n);
+  st::PriceRiskScratch scratch;
+  st::ConstructionDay record;
+  const auto rebalance =
+      st::detail::form_desired(in, cfg, d, row, desired, scratch, record, no_short);
+  ASSERT_TRUE(rebalance) << rebalance.error().to_string();
+  EXPECT_TRUE(*rebalance);
+  EXPECT_EQ(record.neutralize, st::NeutralizeOutcome::Applied);
+  EXPECT_EQ(record.locate_zeroed, shorts);
+  for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(desired[i]), bits(held[i])) << i;
+  f64 held_short = 0, unheld_short = 0;
+  for (usize i = 3; i < 6; ++i) {
+    held_short += held[i];
+    unheld_short += unheld[i];
+  }
+  EXPECT_GT(held_short, unheld_short);
+  const auto v1_cfg = neutral_daily();
+  auto v1 = zeroed;
+  ASSERT_TRUE(st::neutralize_price_risk(role.prices(), v1_cfg.price_risk, d, v1, members,
+                                        primitive, stats));
+  record = {};
+  const auto v1_rebalance =
+      st::detail::form_desired(role.input(), v1_cfg, d, row, desired, scratch, record, no_short);
+  ASSERT_TRUE(v1_rebalance) << v1_rebalance.error().to_string();
+  EXPECT_EQ(record.locate_zeroed, shorts);
+  for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(desired[i]), bits(v1[i])) << i;
 }
