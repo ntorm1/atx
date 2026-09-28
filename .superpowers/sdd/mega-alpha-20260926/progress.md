@@ -1,5 +1,26 @@
 # Active task: recent-data DSL ensemble
 
+## v6.1 RESULT: sv_flow passes P1-P3 -> PROMOTED (pending the scoped correctness review) (2026-09-28 ~03:10)
+Merged into pool-2: b279555a (field sv_ratio126), db1a6384 (library v6.1 db35c276..., recipe 9bf278a6...), cb76a6a3
+(studies/v61_train.sh). Field tests 11 passed (67 total in the child's run). Fields lo1-fields-v7 (41 fields; coverage 100%
+2019-2022). Library check ok (39 <= 48).
+P1 admission (v4-prior-v1, lo1): sv_flow ADMITTED; runner sign +1 = prior +1 (DSL carries the -1, house convention as
+si_ratio / dtc); HAC t 1.04; tau .0333 (limit .7); max |rho| .395 (with ind_adj_rev_5) -> not redundant with si_ratio /
+dtc; 0 status changes among the 38 v6 members. PASS.
+P2/P3 book: build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247 (weights f1a2213d, L fixed 1.247):
+S2 net +1.239 (v6 final +1.182), gross SR 1.594, HAC t 2.22, vol 4.72%, MDD .045, years 2020 +.016 / 2021 +.078 / 2022 +.084;
+tau .0379 / .0481; cost_bps 13.55; gross_lev_all_rows .9683; net +.0044. S1 +1.381; S3 +0.359; flat-300 +1.069; engine-tiers
++1.191. Paired dSR vs v6 final +0.058 (Memmel SE .083, t .70; CBB [-.107, +.238]) > 0 -> P2 PASS. Mechanics all pass and
+S2 net >= 1.0 -> P3 PASS. 2020 improved (+.001 -> +.016).
+Cross-cell DSR (N = 29, build-equity/mega-nav-v61-summ-n29.{txt,json}): 0.9108 (SR0 0.413 ann) -- up from .904 but still
+below the .95 freeze gate. Lo single-cell DSR .531.
+Appendix A: admission +1 (sv_flow); composition +1 (ew-theme-v1 on library v6.1, lo1); construction +1; DSR N 29.
+Promotion: the v6.1 cell replaces the v6 final cell as the frozen candidate in the owner packet, subject to the Sonnet
+correctness review (task-V61-review.md) returning PASS. U1 still required for validation trial #3.
+Owner asked to merge into local main: blocked by the permission classifier ("Modify Shared Resources": main is checked out
+in C:/atx with the tier1-v2 session's 41 uncommitted files). Trial merge-tree of feat/aes-codex-integration-20260925 into
+main: clean, no overlap with those files. Left to the owner (command given).
+
 - Owner (2026-09-28 ~02:00): "Dont focus on memory usage, lets test the alphas quickly for now." Ruling: for v6.1 the child
   drops streaming/memory work and minimal tests suffice; the root may raise the bounded runner's --max-rss-mib / --seconds
   for v6.1 phases if a phase is refused on resources (recorded per run) -- why: owner override of the RAM rule for speed;
