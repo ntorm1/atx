@@ -1,5 +1,19 @@
 # Active task: recent-data DSL ensemble
 
+## v6.1 START: owner-directed FINRA shorting-flow sub-alpha (2026-09-28 ~01:50)
+Owner: "Implement a sub alpha from this [FINRA daily short volume] and see if it passes the tests and can be promoted into
+production". Source: C:/atx/atx-db/data/raw/finra_short_volume (2,045 CNMS daily files from 2018-08-01; read-only; the
+alpha-panel build in C:/atx is unfinished and not used). Pre-registered in v4-prereg.md "## v6.1 sub-alpha" (commit
+17a12949) BEFORE any read: field sv_ratio126 (126-session short/total volume ratio, lag 1, min 63 days), candidate sv_flow
+(FF12-demeaned, prior -1, theme short_interest), promotion tests P1 admission / P2 paired dSR > 0 vs the v6 final cell at
+L fixed 1.247 / P3 mechanics + S2 net >= 1.0.
+- Ruling: this is a new disclosed trial set despite the earlier "no further cells to move the DSR" ruling -- why: the owner
+  directed it explicitly, and it tests a new pre-registered hypothesis, not a re-roll of existing cells; DSR is reported
+  with N = 29 and the .95 freeze gate is unchanged -- cost if wrong: DSR of the final cell can only fall.
+- Ruling: L stays 1.247 for the v6.1 cell (no re-derivation) -- why: one construction trial, not two; a gross drift out of
+  [.90, 1.05] fails P3 rather than earning a second cell -- cost if wrong: a marginal member may fail on leverage alone.
+Implementer (Opus) dispatched in pool-10: task-V61-brief.md. Report lane V6-R still running in pool-4.
+
 ## v6 GOAL-2 SPRINT CLOSED ON TRAIN -- STOP (owner: "stop after score card is generated") (2026-09-28 ~01:20)
 Handoff 5: docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md (no freeze proposal; DSR .904 < .95; U1 decision to the owner;
 30 rulings; D1-D15 disclosures; next-goal prompt). Scorecard v6: docs/plans/2026-09-28-mega-alpha-scorecard-v6.md
