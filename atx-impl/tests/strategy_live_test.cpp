@@ -831,16 +831,24 @@ TEST(StrategyLive, HealthFlagsSkipAsErrorAndBandsLocatesAsWarnings) {
     const f64 current = std::stod(cells[7]), target = std::stod(cells[11]);
     EXPECT_GE(target, std::min(current, 0.0)) << row;
   }
-  // Positions refusals: an unknown instrument, a NAV that differs from nav_post.
+  // Positions refusals: an unknown instrument, a NAV that differs from nav_post. Each is
+  // refused for its own reason before its (fresh) output directory is created; the fixture
+  // already owns dir/"nav" (its NAV run), so these outputs must not reuse that name.
   std::ofstream unknown(dir.path / "unknown.csv", std::ios::binary);
   unknown << "instrument_id,held_dollars\n999999,1000\n";
   unknown.close();
-  auto stray = decide_config(fx, 170, dir.path / "stray");
+  auto stray = decide_config(fx, 170, dir.path / "decide-stray");
   stray.positions_path = (dir.path / "unknown.csv").string(); stray.nav = 1e9;
-  EXPECT_FALSE(st::run_decide(stray, progress));
-  auto nav = decide_config(fx, 170, dir.path / "nav");
-  nav.nav = 123.0;
-  EXPECT_FALSE(st::run_decide(nav, progress));
-  EXPECT_FALSE(std::filesystem::exists(dir.path / "stray"));
-  EXPECT_FALSE(std::filesystem::exists(dir.path / "nav"));
+  const auto stray_outcome = st::run_decide(stray, progress);
+  ASSERT_FALSE(stray_outcome);
+  EXPECT_NE(stray_outcome.error().to_string().find("outside the role"), std::string::npos)
+      << stray_outcome.error().to_string();
+  auto differs = decide_config(fx, 170, dir.path / "decide-nav-differs");
+  differs.nav = 123.0;
+  const auto differs_outcome = st::run_decide(differs, progress);
+  ASSERT_FALSE(differs_outcome);
+  EXPECT_NE(differs_outcome.error().to_string().find("--nav differs"), std::string::npos)
+      << differs_outcome.error().to_string();
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "decide-stray"));
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "decide-nav-differs"));
 }
