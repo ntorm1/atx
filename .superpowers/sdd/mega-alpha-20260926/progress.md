@@ -1,5 +1,24 @@
 # Active task: recent-data DSL ensemble
 
+## Conditional cells (on delta x.05): C3 locate-in-aim BEST +0.975; theta .03 rejected; dust .2 marginal (2026-09-27 ~22:15)
+S2 net / dSR vs v6l parent (SE) / tau / cost_bps / gross_all / net_all:
+  +loc (C3)        +0.975 / +0.060 (.101) / .0389 / 11.15 / .7611 / +.0040  <- gross SR 1.304, HAC t 1.77, vol 3.62%; gate |net| fixed
+  theta .03        +0.914 / -0.001 (.133) / .0306 / 10.38 / .7084 / +.0182  -> REJECTED (sign)
+  dust .05         +0.958 / +0.043 (.125) / .0391 / 11.08 / .7764 / +.0227  -> no gain vs dust .1 (+0.959)
+  dust .2          +0.966 / +0.051 (.124) / .0381 / 11.32 / .7696 / +.0213  -> +0.007 vs dust .1; sign +, accepted as a
+                                                                              candidate for the final stack (declared: the
+                                                                              final cell uses dust .2 only if loc x dust .2
+                                                                              is not worse than loc x dust .1; else dust .1)
+DSR N = 23. Appendix A: v6 construction cells 10 (1 parent + 5 grid + 4 conditional). Locate-in-aim raised gross SR
+(1.279 -> 1.304) and cut net leverage 5x with tau unchanged: the special-tier shorts were adding noise, not alpha.
+Best gate-compatible construction so far: aim-partial-v5, theta .05, dust .1, fixed rate, delta orders, exit rate .05,
+locate-in-aim, liquidity cache; at L 1 gross_lev .76 -> L re-derivation (post-ramp .7834 -> L ~1.276) is reserved for the
+final stacked cell (prereg V6-F). Expected net at L ~1.28: ~0.94-0.95 (v5 precedent -.03) -> W / C5 / U still needed.
+C1 fix round 1 (pool-10 2bcfe646, 335c955e) cherry-picked into pool-2; scoped re-review dispatched (Sonnet).
+- Ruling: the 10 cells above stand although the recipe key exit_rule was renamed exit_rate_rule by the fix -- why: daily
+  CSVs and every statistic are unaffected; only a JSON key name in cells with exit rate < 1 differs from what the v6-1
+  binary would write; the final cell is re-run on the final binary -- cost if wrong: none for the statistics.
+
 ## V6-C GRID RESULT (5 cells, parent mega-nav-v6l-ew-t.05-d.1-fixed net +0.915) -- all ACCEPTED (2026-09-27 ~22:00)
 S2 net / dSR vs parent (Memmel SE) / tau mean / cost_bps / gross_all / net_all:
   target x.05   +0.938 / +0.023 (.050) / .0454 / 12.14 / .7721 / +.0197

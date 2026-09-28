@@ -256,3 +256,63 @@ Run `DRY=1 ...` first to print the exact command lines.
    conversion is exercised only in the no-drift identity test, not in a drift test.
 8. The liquidity cache leaves no trace in the output files (only in the console / `stdout.log`). This is required for
    byte identity.
+
+## Fix round 1 (review task-V6C1-review.md: FIX REQUIRED I1, plus M3 and M5)
+
+Commits on `feat/mega-alpha-v6-c1-20260927`, on top of `5e1c7f6d`:
+- `2bcfe646` fixes I1 and M3 (C++ source and tests).
+- `335c955e` fixes M5 (`v6_train.sh`).
+
+Nothing was built and no real data was used.
+
+- **I1, the dangling temporary** (`atx-impl/tests/strategy_nav_replay_test.cpp`, the `exit_summary` binding at about
+  line 2527).
+  - The fix binds `read_json(...exit/summary.json)` to a named local before the range-for.
+  - I checked both replay test files for the same pattern: every range-for with a call in its range, and every
+    `const auto& x = <call>...` binding.
+  - Every other case iterates or binds a named object, or binds a temporary directly (`{...}` lists,
+    `directory_iterator(dir)`), which the language keeps alive for the loop. No other site is affected.
+- **M3, key naming and stale text.**
+  - The recipe key `exit_rule` is now `exit_rate_rule` (target `cpp:724`; the constant is now
+    `exit_rate_rule_declaration`). The summary key stays `construction.v5.exit_rate`; it has no `_rule` companion.
+  - The aim_partial text's nonmember clause now comes from `detail::nonmember_exit_clause(cfg)` (`detail.hpp:127`,
+    target `cpp:681`). The clause is "nonmembers exit to 0" at exit_rate 1 and "nonmembers follow exit_rate_rule" below
+    1. It is used by the target replay's fixed `aim_partial` text and by the NAV per-name text
+    (`per_name_rate_head` + clause + `per_name_rate_tail`, nav `cpp:1127-1135` and `cpp:1237-1238`).
+  - Comments in `strategy_target_replay.hpp` were updated to match.
+  - **Default path.** No key is emitted or changed on the default path. `exit_rate`, `exit_rate_rule` and the changed
+    clause appear only with `--exit-rate` < 1.
+  - **Default bytes.** At exit_rate 1 both aim_partial strings are the pre-fix bytes. I checked this mechanically:
+    evaluating the C literal concatenations from HEAD and from the working tree gives identical strings for the target
+    text (374 chars) and the per-name text (903 chars).
+  - **Tests.**
+    - The recipe pins `d53f0c09` and `73cb45f1` still apply unchanged.
+    - New assertions: the rename (`exit_rate_rule` present, `exit_rule` absent) and the default text "nonmembers exit
+      to 0" in the v5 recipe and in the plain `targets` recipe.
+    - The decaying clause is asserted in the fixed NAV recipe, in a new per-name + `--exit-rate .05` NAV run (`exitpn`,
+      which also shares the same `exit_rate_rule` text), and in the `targets` verb.
+- **M5 (`v6_train.sh`).**
+  - `set -uo pipefail`.
+  - `REF_CHECK` must be 0 or 1; anything else exits 2.
+  - With `REF_CHECK=1` (default) and REF absent, the script **exits 3 before anything runs**; a DRY run reports this.
+    The old "skipped" branch now also exits 3, though it is unreachable.
+  - A failed `nav_summ` exits 1, read from `PIPESTATUS[0]` so that grep's no-match status cannot be mistaken for a
+    failure. With `REF_CHECK=0` and REF absent, nav_summ runs unpaired, as before.
+  - Verified: `bash -n`. DRY runs of the reference cell (REF-absent note, rc 0), delta x.05 (rc 0), `REF_CHECK=2` (rc
+    2), `REF_CHECK=0` (no note, rc 0) and `EXIT_RATE=0` (rc 2). A stub harness ran the non-DRY gate and tail, extracted
+    verbatim from the script:
+    - REF absent with `REF_CHECK=1`: rc 3.
+    - REF absent with `REF_CHECK=0`: rc 0, unpaired.
+    - REF present: rc 0, `--reference` passed.
+    - nav_summ exiting 4: rc 1.
+- M1, M2, M4, M6 and M7 were not addressed, as instructed. They remain open, disclosure-only items.
+
+**Root re-run (after merging `335c955e`):**
+```powershell
+powershell scripts\atx-build.ps1 build atx-impl-strategy-target-tests atx-equity-strategy-targets
+<build>\...\atx-impl-strategy-target-tests.exe --gtest_filter=TargetReplayV5.*:NavV5*:*BitIdentical*:*V6*
+```
+Expected: all pass, including `NavV6.RecipeSummaryKeysAndCliRefusals`, with the same test count as before.
+`NavV6.OrderBasisTargetAndExitRateOneAreBitIdentical` and `NavV5.*` re-prove the default recipe bytes. A re-run of the
+real-data default cell is not needed for M3, because the default text is byte-identical, but the obtarget-x1 cell's
+REF check covers it anyway.
