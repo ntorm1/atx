@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <charconv>
 #include <cmath>
@@ -25,6 +26,7 @@
 #include "atx/engine/book/replay_cost.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
 #include "atx/engine/eval/hac.hpp"
+#include "strategy_nav_replay_detail.hpp"
 #include "strategy_target_replay_detail.hpp"
 
 namespace atx::impl::strategy {
@@ -52,6 +54,9 @@ constexpr u64 tier_name_bytes = 2 + sizeof(usize);
 // Shared per-name rate state per name (only with rate per-name-v1 or the liquidity
 // cache): the session's liquidity cache (ADV, sigma) and one book's rates.
 constexpr u64 rate_name_bytes = 3 * sizeof(f64);
+// --emit-holdings only: the observed book's per-name trace (four f64 and a status byte)
+// and one reported row per name in the session buffer.
+constexpr u64 holdings_name_bytes = 4 * sizeof(f64) + 1 + sizeof(NavHolding);
 // Borrow-tier clocks (role clock_recipe modeled-session+22h-mark+23h-decision-v1):
 // every field cell of row d is visible by the session-date 22:00 UTC mark.
 constexpr i64 fields_mark_ns = 22 * hour_ns, decision_clock_ns = 23 * hour_ns;
@@ -231,6 +236,21 @@ struct Ctx {
   f64 long_rate{};                  // TieredSwapV1: long spread, annual fraction
   std::array<f64, 4> short_rate{}; // TieredSwapV1: short spread + fee, by BorrowTier value
 };
+// --emit-holdings: the observed book's per-name outcomes of the current session, written
+// beside (never read by) the book's arithmetic. EXECUTE fields are cleared every session;
+// `rule` is the rule's plan of the latest decision (plan_weights).
+struct Trace {
+  explicit Trace(usize n) : filled(n), cost(n), unfilled(n), rule(n, nan), fill(n) {}
+  void clear() {
+    std::fill(filled.begin(), filled.end(), 0.0); std::fill(cost.begin(), cost.end(), 0.0);
+    std::fill(unfilled.begin(), unfilled.end(), 0.0); std::fill(fill.begin(), fill.end(), u8{0});
+  }
+  void record(usize i, NavFillStatus status, f64 dollars, f64 fee, f64 left) {
+    fill[i] = static_cast<u8>(status); filled[i] = dollars; cost[i] = fee; unfilled[i] = left;
+  }
+  std::vector<f64> filled, cost, unfilled, rule;
+  std::vector<u8> fill; // NavFillStatus
+};
 struct Book {
   Book(usize n, bool delta_basis) : names(n, delta_basis) {}
   NameState names;
@@ -239,6 +259,7 @@ struct Book {
   ParticipationHistogram participation;
   RateStatistics rates; // rate per-name-v1 only
   NavReplayResult result;
+  std::unique_ptr<Trace> trace; // the observed book of --emit-holdings only
 };
 
 // The shared per-session liquidity cache: always under rate per-name-v1 (its rates read
@@ -390,14 +411,15 @@ struct WindowLiquidity {
 // zero; never rescaled) and the sample SD of adjusted simple returns over adjacent
 // present, unguarded pairs (k-1, k), k in [t-w, t), as strategy_runner.cpp does.
 // Fewer than min_vol_pairs pairs -> the scenario's declared fallback sigma.
-WindowLiquidity window_liquidity(const Ctx& c, usize t, usize i) {
-  const auto& x = c.x; const usize n = x.instruments, w = c.cfg.liquidity_window;
+WindowLiquidity window_liquidity(const TargetReplayInput& x, std::span<const f64> volume,
+                                 const NavReplayConfig& cfg, usize t, usize i) {
+  const usize n = x.instruments, w = cfg.liquidity_window;
   const usize first = t > w ? t - w : 0;
   f64 dollars = 0, mean = 0, m2 = 0; usize pairs = 0;
   for (usize k = first; k < t; ++k) {
     const usize b = k * n + i;
     if (!x.present[b]) continue;
-    dollars += x.raw_close[b] * c.volume[b];
+    dollars += x.raw_close[b] * volume[b];
     if (k == 0 || !x.present[b - n] ||
         guarded_move(x.close[b - n], x.close[b], x.raw_close[b - n], x.raw_close[b]))
       continue;
@@ -407,9 +429,12 @@ WindowLiquidity window_liquidity(const Ctx& c, usize t, usize i) {
   }
   // Not a fallback: pairs >= min_vol_pairs >= 2 and m2 finite >= 0, so sigma is a
   // finite number >= 0; NaN marks the fallback exactly.
-  const bool fallback = pairs < c.cfg.min_vol_pairs || !std::isfinite(m2) || m2 < 0;
+  const bool fallback = pairs < cfg.min_vol_pairs || !std::isfinite(m2) || m2 < 0;
   return {dollars / static_cast<f64>(w),
           fallback ? nan : std::sqrt(m2 / static_cast<f64>(pairs - 1))};
+}
+WindowLiquidity window_liquidity(const Ctx& c, usize t, usize i) {
+  return window_liquidity(c.x, c.volume, c.cfg, t, i);
 }
 // The scenario's row over a window: its half spread, and its declared fallback sigma
 // when the window has too few pairs. The same values as computing it in one piece.
@@ -625,10 +650,15 @@ co::Status mark_session(const Ctx& c, Book& b, const BorrowTiers& tiers, usize t
 co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& cache,
                           NavReplayDay& day) {
   const auto& x = c.x; auto& s = b.names; const usize n = x.instruments;
+  Trace* const trace = b.trace.get(); // --emit-holdings observer; never read back
   f64 cost = 0, traded = 0;
   for (usize i = 0; i < n; ++i) {
     if (!s.active[i]) continue;
-    if (!x.present[t * n + i]) { ++day.blocked_absent; continue; }
+    if (!x.present[t * n + i]) {
+      ++day.blocked_absent;
+      if (trace) trace->record(i, NavFillStatus::BlockedAbsent, 0, 0, 0);
+      continue;
+    }
     const bool delta = delta_order(s, i);
     const f64 requested = s.order[i] - (delta ? s.anchor[i] : s.held[i]);
     if (requested == 0) { s.active[i] = 0; continue; }
@@ -645,9 +675,13 @@ co::Status execute_orders(const Ctx& c, Book& b, usize t, const LiquidityCache& 
     const f64 filled = priced.filled_dollars, size = std::abs(filled);
     if (filled == 0) {
       ++day.blocked_liquidity; day.unfilled_dollars += std::abs(requested);
+      if (trace) trace->record(i, NavFillStatus::BlockedLiquidity, 0, 0, std::abs(requested));
       continue;
     }
     const bool complete = filled == requested;
+    if (trace)
+      trace->record(i, complete ? NavFillStatus::Complete : NavFillStatus::Capped, filled,
+                    priced.cost_dollars, complete ? 0.0 : std::abs(requested) - size);
     // A complete target fill lands exactly on the decision-dollar target; a complete
     // delta fill on that target plus the drift since the decision (held - anchor, an
     // exact 0 without drift, so it is then the target fill bit for bit).
@@ -738,18 +772,71 @@ co::Status classify_borrow(const TargetReplayInput& x, const NavFinancingFields&
   }
   return co::Ok();
 }
+// A name that may not open or grow a short at the decision: the special tier, or (decide
+// --locates only; the replay passes none) no locate.
+bool short_guarded(const BorrowTiers& tiers, std::span<const u8> no_locate, usize i) {
+  return tiers.tier[i] == tier_special || (!no_locate.empty() && no_locate[i] != 0);
+}
+// DECIDE, the part shared by every book of decision d: the borrow tiers of d, the
+// locate-in-aim mask (allocated only under it), and on a cadence decision the desired
+// target (form_desired_target). Returns the effective rebalance (false when the guard
+// skips it); `construction` receives the decision's record.
+co::Result<bool> decide_construction(const TargetReplayInput& x, const NavFinancingFields& fields,
+                                     const TargetReplayConfig& target, usize d, bool cadence,
+                                     std::span<const u8> no_locate, Construction& shared,
+                                     BorrowTiers& tiers, TierCensus& census,
+                                     ConstructionDay& construction) {
+  if (tiers.active) ATX_TRY_VOID(classify_borrow(x, fields, d, tiers, census));
+  // Locate-in-aim: this decision's special tier, classified just above, guards the aim
+  // (replay_nav_scenarios and nav_decide refuse locate-in-aim without borrow fields).
+  for (usize i = 0; i < shared.no_short.size(); ++i)
+    shared.no_short[i] = short_guarded(tiers, no_locate, i) ? u8{1} : u8{0};
+  bool rebalance = cadence;
+  if (rebalance) {
+    ATX_TRY(rebalance, form_desired_target(x, target, d, shared, construction));
+  }
+  construction.rebalance = rebalance;
+  return co::Ok(rebalance);
+}
 // Locate rule on the planned weights: a special-tier name may not open or grow a
 // short, next = max(next, min(cur, 0)); refused growth is counted in decision-NAV
 // dollars.
-void block_special_plan(const BorrowTiers& tiers, Book& b, NavReplayDay& day) {
-  auto& s = b.names;
-  for (usize i = 0; i < s.planned.size(); ++i) {
-    if (tiers.tier[i] != tier_special) continue;
-    const f64 floor = std::min(s.current[i], 0.0);
-    if (!(s.planned[i] < floor)) continue;
-    day.blocked_short_dollars += (floor - s.planned[i]) * b.nav_post;
-    ++day.blocked_short_names; s.planned[i] = floor;
+void block_special_plan(const BorrowTiers& tiers, std::span<const u8> no_locate,
+                        const std::vector<f64>& current, std::vector<f64>& planned, f64 nav_post,
+                        NavReplayDay& day) {
+  for (usize i = 0; i < planned.size(); ++i) {
+    if (!short_guarded(tiers, no_locate, i)) continue;
+    const f64 floor = std::min(current[i], 0.0);
+    if (!(planned[i] < floor)) continue;
+    day.blocked_short_dollars += (floor - planned[i]) * nav_post;
+    ++day.blocked_short_names; planned[i] = floor;
   }
+}
+// What every book's weight plan at decision d shares.
+struct PlanInputs {
+  const TargetReplayInput& x;
+  const NavReplayConfig& cfg; // the book's (its scenario's locate rule)
+  usize d{};
+  bool rebalance{};           // effective
+  const std::vector<f64>& desired;
+  const BorrowTiers& tiers;
+  std::span<const u8> no_locate; // decide --locates only; empty in the replay
+};
+// CONSTRUCTION-RULE DISPATCH SITE, shared by the NAV replay (plan_decision) and the
+// daily decide path (detail::nav_decide), so a rule added here runs in both. `planned`
+// becomes the target rule's plan from `current` toward p.desired (`spent`: the book's
+// month-to-date plan, v2 only; `rates`: the per-name-v1 rates or empty), copied into
+// `rule` when that is non-empty, then the scenario's locate block at the decision NAV.
+co::Status plan_weights(const PlanInputs& p, f64 spent, std::span<const f64> rates,
+                        const std::vector<f64>& current, std::vector<f64>& planned, f64 nav_post,
+                        std::span<f64> rule, TargetReplayDay& plan, NavReplayDay& day) {
+  std::copy(current.begin(), current.end(), planned.begin());
+  ATX_TRY_VOID(detail::update_weights(p.x, p.cfg.target, p.d, p.rebalance, spent, p.desired,
+                                      planned, plan, rates));
+  if (!rule.empty()) std::copy(planned.begin(), planned.end(), rule.begin());
+  if (p.cfg.scenario.financing.block_special_shorts)
+    block_special_plan(p.tiers, p.no_locate, current, planned, nav_post, day);
+  return co::Ok();
 }
 // A working order an earlier decision placed and this one keeps (unchanged plan on
 // a non-rebalance day) must not open or grow a short once the name is special:
@@ -804,16 +891,16 @@ co::Status plan_decision(const Ctx& c, Book& b, const Construction& shared,
   const auto& x = c.x; auto& s = b.names; const usize n = x.instruments;
   if (day.calendar_month != b.month) { b.month = day.calendar_month; b.spent = 0; }
   for (usize i = 0; i < n; ++i) s.current[i] = s.held[i] / b.nav_post;
-  std::copy(s.current.begin(), s.current.end(), s.planned.begin());
   TargetReplayDay plan;
   plan.decision = d; plan.session = x.session_keys[d]; plan.calendar_month = day.calendar_month;
   std::span<const f64> rates;
   if (c.cfg.rate == NavRateRule::PerNameV1) { per_name_rates(c, b, d, cache); rates = cache.rate; }
-  ATX_TRY_VOID(detail::update_weights(x, c.cfg.target, d, rebalance, b.spent, shared.desired,
-                                      s.planned, plan, rates));
+  const PlanInputs inputs{x, c.cfg, d, rebalance, shared.desired, tiers, {}};
+  const auto rule = b.trace ? std::span<f64>(b.trace->rule) : std::span<f64>{};
+  ATX_TRY_VOID(plan_weights(inputs, b.spent, rates, s.current, s.planned, b.nav_post, rule, plan,
+                            day));
   b.spent += plan.turnover;
   const bool blocking = c.cfg.scenario.financing.block_special_shorts;
-  if (blocking) block_special_plan(tiers, b, day);
   const bool delta_basis = c.cfg.order_basis == NavOrderBasis::Delta;
   for (usize i = 0; i < n; ++i) {
     if (s.planned[i] != s.current[i]) {
@@ -874,15 +961,54 @@ co::Status report_unresolved(const Ctx& c, Book& b, usize t) {
   }
   return co::Ok();
 }
+// Bitwise nonzero: -0.0 counts, so a reported row set is exact (a plan of -0 is state).
+bool nonzero_bits(f64 x) { return std::bit_cast<u64>(x) != 0; }
+// --emit-holdings: the observed book's names with any state at the end of session t
+// (a decision or execution session), in index order, to the sink. Reads only.
+co::Status emit_holdings(const TargetReplayInput& x, const Book& b, const Construction& shared,
+                         const BorrowTiers& tiers, const NavReplayDay& day, usize t,
+                         std::vector<NavHolding>& rows, NavHoldingsSink& sink) {
+  const auto& s = b.names; const auto& trace = *b.trace; const usize n = x.instruments;
+  rows.clear();
+  for (usize i = 0; i < n; ++i) {
+    const auto fill = static_cast<NavFillStatus>(trace.fill[i]);
+    const bool planned = day.decision && nonzero_bits(s.planned[i]);
+    if (!nonzero_bits(s.held[i]) && !planned && !s.active[i] && fill == NavFillStatus::None)
+      continue;
+    NavHolding h;
+    h.index = i; h.instrument_id = x.instrument_ids[i];
+    h.member = x.member[t * n + i] != 0; h.stale = s.held[i] != 0 && s.absent[i] != 0;
+    if (tiers.active) { h.tier = tiers.tier[i]; h.tier_missing = tiers.missing[i]; }
+    h.held_dollars = s.held[i]; h.held_weight = s.held[i] / b.nav_post;
+    h.fill = fill; h.filled_dollars = trace.filled[i]; h.fill_cost_dollars = trace.cost[i];
+    h.unfilled_dollars = trace.unfilled[i];
+    h.desired = day.rebalance ? shared.desired[i] : nan;
+    h.rule_weight = day.decision ? trace.rule[i] : nan;
+    h.target_weight = day.decision ? s.planned[i] : nan;
+    h.order_placed = day.decision && s.planned[i] != s.current[i];
+    h.locate_blocked = day.decision && s.planned[i] != trace.rule[i];
+    h.order_working = s.active[i] != 0;
+    h.order_dollars = s.active[i] ? s.order[i] : nan;
+    rows.push_back(h);
+  }
+  return sink.session(day, rows);
+}
+// The --emit-holdings observer of run_books: book `book` reported to `sink`.
+struct Observer {
+  NavHoldingsSink* sink{};
+  usize book{};
+};
 // Sessions [begin, end): MARK (t > begin) -> EXECUTE (begin < t <= end-2) ->
 // DECIDE (t < end-2). Row t reads data at rows <= t only. The scenario books run in
 // lockstep: each book performs exactly its own single-book sequence (mark, execute,
 // decide, close) on its own state; only the decision's desired target and borrow
 // tiers (and, with rate per-name-v1, the session's liquidity windows) are formed once
-// and shared, so every book is bit-identical to a replay on its own.
+// and shared, so every book is bit-identical to a replay on its own. An observer only
+// reads the observed book (its trace is written beside, never read by, the arithmetic).
 co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    const NavFinancingFields& fields,
-                                                   std::span<const Ctx> ctxs) {
+                                                   std::span<const Ctx> ctxs,
+                                                   const Observer& observer = {}) {
   const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
   const auto& target = ctxs.front().cfg.target; // identical for every book
   // The rate, order basis, locate-in-aim and cache (like the target) are the base
@@ -903,6 +1029,11 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
   // per-name-v1 caches its decision windows too; --liquidity-cache only execution's.
   const bool per_name = base.rate == NavRateRule::PerNameV1;
   LiquidityCache cache(x.instruments, liquidity_cached(base), per_name);
+  std::vector<NavHolding> holdings;
+  if (observer.sink) {
+    books[observer.book]->trace = std::make_unique<Trace>(x.instruments);
+    holdings.reserve(x.instruments);
+  }
   std::vector<NavReplayDay> days(count);
   for (usize t = begin; t < end; ++t) {
     const bool execution = t > begin && t + 2 <= end, decision = t + 2 < end;
@@ -912,6 +1043,7 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
     for (usize k = 0; k < count; ++k) {
       const auto& c = ctxs[k]; auto& b = *books[k]; auto& day = days[k];
       auto& r = b.result;
+      if (b.trace) b.trace->clear();
       day = NavReplayDay{};
       day.session_index = t; day.session = x.session_keys[t];
       day.calendar_month = detail::calendar_month(day.session);
@@ -930,17 +1062,10 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
     }
     if (decision) {
       TierCensus census;
-      if (tiers.active) ATX_TRY_VOID(classify_borrow(x, fields, t, tiers, census));
-      // Locate-in-aim: this decision's special tier, classified just above, guards the aim
-      // (replay_nav_scenarios refuses locate-in-aim without borrow fields).
-      for (usize i = 0; i < shared.no_short.size(); ++i)
-        shared.no_short[i] = tiers.tier[i] == tier_special ? u8{1} : u8{0};
       ConstructionDay construction;
-      bool rebalance = (t - begin) % target.cadence == 0;
-      if (rebalance) {
-        ATX_TRY(rebalance, form_desired_target(x, target, t, shared, construction));
-      }
-      construction.rebalance = rebalance;
+      const bool cadence = (t - begin) % target.cadence == 0;
+      ATX_TRY(const bool rebalance, decide_construction(x, fields, target, t, cadence, {},
+                                                        shared, tiers, census, construction));
       for (usize k = 0; k < count; ++k) {
         ATX_TRY_VOID(plan_decision(ctxs[k], *books[k], shared, tiers, cache, t, rebalance,
                                    construction, days[k]));
@@ -952,6 +1077,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       auto& b = *books[k];
       ATX_TRY_VOID(close_day(ctxs[k], b, days[k]));
       if (t + 1 == end) ATX_TRY_VOID(report_unresolved(ctxs[k], b, t));
+      if (b.trace && (decision || execution))
+        ATX_TRY_VOID(emit_holdings(x, b, shared, tiers, days[k], t, holdings, *observer.sink));
       b.result.days.push_back(days[k]);
     }
   }
@@ -1650,6 +1777,39 @@ co::Result<RoleGeometry> role_geometry(const TargetReplayRunConfig& cfg) {
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: role geometry");
   return co::Ok(RoleGeometry{static_cast<usize>(names), static_cast<usize>(end - begin)});
 }
+struct AdmittedRun {
+  detail::LoadedSavedBlend blend;
+  LoadedFields fields;
+};
+// Admission and load of one pinned run, shared by run_nav_replay and the decide path:
+// the workspace reserve of `books` books at the pinned role's own geometry (manifest
+// only), then the fields (pinned and role-checked) and the blend charged against what
+// remains, so input + all results fit one budget.
+co::Result<AdmittedRun> admit_and_load(const TargetReplayRunConfig& cfg,
+                                       const NavReplayConfig& base, const NavFieldsPin& fields,
+                                       usize books, bool holdings) {
+  const bool tiered = !fields.manifest_path.empty();
+  ATX_TRY(const auto geometry, role_geometry(cfg));
+  const u64 reserve = nav_workspace_reserve_bytes(base, books, tiered, geometry.names,
+                                                  geometry.sessions, holdings);
+  if (cfg.target.max_working_bytes <= reserve)
+    return co::Err(co::ErrorCode::OutOfRange, "nav replay: budget below NAV workspace reserve");
+  u64 remaining = cfg.target.max_working_bytes - reserve;
+  AdmittedRun out;
+  if (tiered) {
+    // Pinned and role-checked before the blend is loaded or anything is written.
+    ATX_TRY(out.fields, load_fields(fields, cfg, remaining));
+    remaining -= (out.fields.shares_out.size() + out.fields.si_shares.size() +
+                  out.fields.industry.size()) * sizeof(f64);
+  }
+  auto load = cfg; load.target.max_working_bytes = remaining;
+  ATX_TRY(out.blend, detail::load_saved_blend(load, true));
+  // The reserve's geometry is the loaded one (same pinned role manifest).
+  if (out.blend.names != geometry.names || out.blend.end - out.blend.begin != geometry.sessions ||
+      (tiered && out.fields.shares_out.size() != out.blend.signal.size()))
+    return co::Err(co::ErrorCode::InvalidArgument, "nav replay: fields/blend geometry");
+  return co::Ok(std::move(out));
+}
 } // namespace
 
 std::vector<NavFinancing> nav_financing_scenarios() {
@@ -1713,19 +1873,25 @@ std::vector<NavScenario> nav_scenario_matrix(bool tiered) {
 // borrow tiers, the shared liquidity cache (per-name-v1, or --liquidity-cache at a
 // fixed rate: validate_nav_input's predicate) and publication. books <= max_scenarios.
 u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool tiered,
-                                usize names, usize sessions) {
+                                usize names, usize sessions, bool holdings) {
   const bool cached = liquidity_cached(base);
   return publication_slack_bytes + u64{books} * fixed_workspace_bytes +
          u64{names} * (u64{books} * per_name_bytes + shared_name_bytes +
-                       (tiered ? tier_name_bytes : 0) + (cached ? rate_name_bytes : 0)) +
+                       (tiered ? tier_name_bytes : 0) + (cached ? rate_name_bytes : 0) +
+                       (holdings ? holdings_name_bytes : 0)) +
          detail::construction_scratch_bytes(base.target, names) +
          u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent));
 }
 
-co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
-    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios) {
+namespace {
+co::Result<std::vector<NavReplayResult>> replay_observed(const NavReplayInput& in,
+                                                         const NavReplayConfig& base,
+                                                         std::span<const NavScenario> scenarios,
+                                                         const Observer& observer) {
   if (scenarios.empty() || scenarios.size() > max_scenarios)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: 1..8 scenarios per replay");
+  if (observer.sink && observer.book >= scenarios.size())
+    return co::Err(co::ErrorCode::InvalidArgument, "nav replay: observed book out of range");
   // The NAV volume is authoritative, also for price-risk neutralization.
   TargetReplayInput x = in.target;
   x.volume = in.volume;
@@ -1767,12 +1933,24 @@ co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
       }
       ctxs.push_back(ctx);
     }
-    return run_books(x, in.financing, ctxs);
+    return run_books(x, in.financing, ctxs, observer);
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: allocation failed");
   } catch (const std::length_error&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: allocation extent");
   }
+}
+} // namespace
+
+co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios) {
+  return replay_observed(in, base, scenarios, Observer{});
+}
+
+co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
+    NavHoldingsSink& sink, usize observed) {
+  return replay_observed(in, base, scenarios, Observer{&sink, observed});
 }
 
 co::Result<NavReplayResult> replay_nav(const NavReplayInput& in, const NavReplayConfig& cfg) {
@@ -2013,6 +2191,124 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
   }
   return write_json(dir / "summary.json", summary);
 }
+
+// ---- --emit-holdings (v7 B3) ----
+constexpr const char* holdings_days_columns =
+    "session_ns,decision,rebalance,executed,pretrade_nav,posttrade_nav,rows,held_names,"
+    "long_dollars,short_dollars,gross_leverage,net_leverage,traded_dollars,fills,capped_fills,"
+    "blocked_absent,blocked_liquidity,unfilled_dollars,planned_turnover,planned_gross,"
+    "planned_net,orders_placed,blocked_short_names,blocked_short_dollars,neutralize,"
+    "neutralize_skipped,locate_zeroed";
+constexpr const char* holdings_declaration =
+    "primary book; one holdings.csv row per name with any state at the end of each decision "
+    "or execution session t (held, the decision's plan, a working order or an EXECUTE outcome "
+    "nonzero; -0 counts; an omitted name has every weight 0): held_dollars after EXECUTE at t "
+    "(what DECIDE at t reads), held_weight = held_dollars / nav_post (the plan's current "
+    "weight, bit for bit); fill/filled_dollars/fill_cost_dollars/unfilled_dollars = EXECUTE at "
+    "the close of t (orders placed at earlier decisions); desired_weight = the shared desired "
+    "target on effective rebalances (else nan); rule_weight = the target rule's plan and "
+    "target_weight = the planned weight after the locate block; planned_trade_weight = "
+    "target_weight - held_weight; planned_trade_dollars = order_dollars - held_dollars when "
+    "order_placed (else 0); order_dollars = the working order in decision-NAV dollars after "
+    "DECIDE (nan when none); decision fields are nan on the final execution-only session; "
+    "holdings_days.csv: one row per session, neutralize_skipped = a cadence rebalance the "
+    "neutralization guard skipped (ERROR: the book kept its weights)";
+bool neutralize_skipped(NeutralizeOutcome outcome) {
+  return outcome != NeutralizeOutcome::NotAttempted && outcome != NeutralizeOutcome::Applied;
+}
+const char* side_label(f64 held) { return held > 0 ? "long" : held < 0 ? "short" : "flat"; }
+// Streams holdings.csv and holdings_days.csv, one session at a time (O(names) memory).
+class HoldingsCsv final : public NavHoldingsSink {
+public:
+  co::Status open(const std::filesystem::path& dir) {
+    if (!std::filesystem::create_directory(dir))
+      return co::Err(co::ErrorCode::AlreadyExists,
+                     "nav replay: --emit-holdings directory must not exist");
+    dir_ = dir;
+    names_.open(dir / "holdings.csv", std::ios::binary);
+    days_.open(dir / "holdings_days.csv", std::ios::binary);
+    if (!names_ || !days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings output");
+    for (auto* file : {&names_, &days_}) {
+      file->imbue(std::locale::classic()); *file << std::setprecision(17);
+    }
+    names_ << detail::holdings_csv_columns() << '\n';
+    days_ << holdings_days_columns << '\n';
+    return co::Ok();
+  }
+  co::Status session(const NavReplayDay& d, std::span<const NavHolding> names) override {
+    usize placed = 0;
+    for (const auto& h : names) {
+      write_name(d, h);
+      placed += h.order_placed ? 1U : 0U;
+    }
+    const bool skipped = neutralize_skipped(d.construction.neutralize);
+    days_ << d.session << ',' << d.decision << ',' << d.rebalance << ',' << d.executed << ','
+          << d.pretrade_nav << ',' << d.posttrade_nav << ',' << names.size() << ','
+          << d.held_names << ',' << d.long_dollars << ',' << d.short_dollars << ','
+          << d.gross_leverage << ',' << d.net_leverage << ',' << d.traded_dollars << ','
+          << d.fills << ',' << d.capped_fills << ',' << d.blocked_absent << ','
+          << d.blocked_liquidity << ',' << d.unfilled_dollars << ',' << d.planned_turnover << ','
+          << d.planned_gross << ',' << d.planned_net << ',' << placed << ','
+          << d.blocked_short_names << ',' << d.blocked_short_dollars << ','
+          << detail::neutralize_outcome_label(d.construction.neutralize) << ',' << skipped << ','
+          << d.construction.locate_zeroed << '\n';
+    ++sessions; rows += names.size();
+    decisions += d.decision ? 1U : 0U; skipped_rebalances += skipped ? 1U : 0U;
+    if (!names_ || !days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings write");
+    return co::Ok();
+  }
+  co::Status close() {
+    names_.close(); days_.close();
+    if (!names_ || !days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings close");
+    return co::Ok();
+  }
+  [[nodiscard]] const std::filesystem::path& directory() const { return dir_; }
+  u64 rows{};
+  usize sessions{}, decisions{}, skipped_rebalances{};
+
+private:
+  void write_name(const NavReplayDay& d, const NavHolding& h) {
+    auto& f = names_;
+    f << d.session << ',' << h.instrument_id << ',' << h.member << ',' << h.stale << ','
+      << detail::borrow_tier_label(h.tier) << ',' << unsigned{h.tier_missing} << ','
+      << side_label(h.held_dollars) << ',' << h.held_dollars << ',' << h.held_weight << ','
+      << d.posttrade_nav << ',' << detail::fill_status_label(h.fill) << ',' << h.filled_dollars
+      << ',' << h.fill_cost_dollars << ',' << h.unfilled_dollars << ',';
+    write_value(f, h.desired); f << ',';
+    write_value(f, h.rule_weight); f << ',';
+    write_value(f, h.target_weight); f << ',';
+    write_value(f, d.decision ? h.target_weight - h.held_weight : nan); f << ',';
+    f << (h.order_placed ? h.order_dollars - h.held_dollars : 0.0) << ',' << h.order_placed
+      << ',' << h.locate_blocked << ',' << h.order_working << ',';
+    write_value(f, h.order_dollars); f << '\n';
+  }
+  std::filesystem::path dir_;
+  std::ofstream names_, days_;
+};
+// manifest.json LAST (after the NAV directory): CSV SHAs and the NAV recipe SHA.
+co::Status publish_holdings(const NavRun& run, const HoldingsCsv& csv, std::ostream& progress) {
+  const bool tiered = !run.fields.is_null();
+  const auto method = nav_recipe(run.cfg, run.base, run.scenarios, run.limits, run.fields);
+  ATX_TRY(auto method_sha, co::sha256_hex(method.dump()));
+  const auto& dir = csv.directory();
+  ATX_TRY(auto names_sha, co::sha256_file((dir / "holdings.csv").string()));
+  ATX_TRY(auto days_sha, co::sha256_file((dir / "holdings_days.csv").string()));
+  const auto book = scenario_label(run.scenarios[nav_primary_scenario_index], tiered);
+  const Json manifest{{"schema", "atx.nav-holdings/v1"}, {"status", "complete"},
+      {"book", book}, {"nav_recipe_sha256", method_sha},
+      {"combined_sha256", run.cfg.combined_sha256}, {"role_sha256", run.cfg.role_sha256},
+      {"rule", detail::construction_rule_id(run.cfg.target)},
+      {"sessions", csv.sessions}, {"decision_sessions", csv.decisions}, {"rows", csv.rows},
+      {"neutralize_skipped_rebalances", csv.skipped_rebalances},
+      {"files", {{"holdings.csv", names_sha}, {"holdings_days.csv", days_sha}}},
+      {"columns", holdings_declaration}};
+  progress << "nav replay holdings " << book << ": " << csv.rows << " rows over "
+           << csv.sessions << " sessions\n";
+  if (csv.skipped_rebalances)
+    progress << "nav replay holdings ERROR: " << csv.skipped_rebalances
+             << " cadence rebalance(s) skipped by the neutralization guard\n";
+  return write_json(dir / "manifest.json", manifest);
+}
 } // namespace
 
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
@@ -2029,6 +2325,13 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
                           const NavFieldsPin& fields, const NavRateOptions& rate,
                           const NavExecutionOptions& execution, std::ostream& progress) {
+  return run_nav_replay(cfg, limits, fields, rate, execution, NavEmitOptions{}, progress);
+}
+
+co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
+                          const NavFieldsPin& fields, const NavRateOptions& rate,
+                          const NavExecutionOptions& execution, const NavEmitOptions& emit,
+                          std::ostream& progress) {
   try {
     if (cfg.role_path.empty() || cfg.role_sha256.empty() || cfg.output_directory.empty())
       return co::Err(co::ErrorCode::InvalidArgument, "nav replay: pinned role and output required");
@@ -2051,35 +2354,36 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     base.rate_min = rate.rate_min; base.rate_max = rate.rate_max;
     base.order_basis = execution.order_basis; base.locate_in_aim = execution.locate_in_aim;
     base.liquidity_cache = execution.liquidity_cache;
-    // Admission: the fields and then the loader are charged against what remains
-    // after the NAV workspace reserve, so input + all scenario results fit one budget.
-    // The reserve is charged at the pinned role's own geometry (manifest only).
-    ATX_TRY(const auto geometry, role_geometry(cfg));
-    const u64 reserve = nav_workspace_reserve_bytes(base, scenarios.size(), tiered,
-                                                    geometry.names, geometry.sessions);
-    if (cfg.target.max_working_bytes <= reserve)
-      return co::Err(co::ErrorCode::OutOfRange, "nav replay: budget below NAV workspace reserve");
-    u64 remaining = cfg.target.max_working_bytes - reserve;
-    LoadedFields loaded;
-    if (tiered) {
-      // Pinned and role-checked before the blend is loaded or anything is written.
-      ATX_TRY(loaded, load_fields(fields, cfg, remaining));
-      remaining -= (loaded.shares_out.size() + loaded.si_shares.size() + loaded.industry.size()) *
-                   sizeof(f64);
+    const bool holdings = !emit.holdings_directory.empty();
+    if (holdings) {
+      const auto nav_dir = std::filesystem::path(cfg.output_directory);
+      const auto holdings_dir = std::filesystem::path(emit.holdings_directory);
+      if (nav_dir.lexically_normal() == holdings_dir.lexically_normal() ||
+          std::filesystem::exists(nav_dir) || std::filesystem::exists(holdings_dir))
+        return co::Err(co::ErrorCode::AlreadyExists,
+                       "nav replay: --output and --emit-holdings must differ and not exist");
     }
-    auto load = cfg; load.target.max_working_bytes = remaining;
-    ATX_TRY(auto blend, detail::load_saved_blend(load, true));
-    // The reserve's geometry is the loaded one (same pinned role manifest).
-    if (blend.names != geometry.names || blend.end - blend.begin != geometry.sessions ||
-        (tiered && loaded.shares_out.size() != blend.signal.size()))
-      return co::Err(co::ErrorCode::InvalidArgument, "nav replay: fields/blend geometry");
+    // Admission (the reserve at the pinned role's own geometry, then the fields and the
+    // loader against the rest) and the pinned load.
+    ATX_TRY(auto admitted, admit_and_load(cfg, base, fields, scenarios.size(), holdings));
+    const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
     auto view = blend.view();
     view.industry = loaded.industry; // empty unless an industry id
     const NavReplayInput input{view, blend.volume,
                                NavFinancingFields{loaded.shares_out, loaded.si_shares}};
     // All scenarios in lockstep: the desired target (and its price exposures) and
-    // the borrow tiers are formed once per decision for every scenario book.
-    ATX_TRY(auto results, replay_nav_scenarios(input, base, scenarios));
+    // the borrow tiers are formed once per decision for every scenario book. With
+    // --emit-holdings the primary book is observed (read only) while it runs.
+    std::vector<NavReplayResult> results;
+    HoldingsCsv csv;
+    if (holdings) {
+      ATX_TRY_VOID(csv.open(emit.holdings_directory));
+      ATX_TRY(results, replay_nav_scenarios(input, base, scenarios, csv,
+                                            nav_primary_scenario_index));
+      ATX_TRY_VOID(csv.close());
+    } else {
+      ATX_TRY(results, replay_nav_scenarios(input, base, scenarios));
+    }
     std::vector<NavSummary> summaries; summaries.reserve(scenarios.size());
     for (const auto& result : results) {
       ATX_TRY(auto summary, summarize_nav(result, limits));
@@ -2089,7 +2393,8 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
                      loaded.binding};
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
-    return publish_nav(run, progress);
+    ATX_TRY_VOID(publish_nav(run, progress));
+    return holdings ? publish_holdings(run, csv, progress) : co::Ok();
   } catch (const std::exception& e) {
     return co::Err(co::ErrorCode::InvalidArgument, std::string("nav replay: ") + e.what());
   }
@@ -2098,7 +2403,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
 int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& err) {
   try {
     TargetReplayRunConfig cfg; NavTurnoverLimits limits; NavFieldsPin fields;
-    NavRateOptions rate; NavExecutionOptions execution;
+    NavRateOptions rate; NavExecutionOptions execution; NavEmitOptions emit;
     std::set<std::string> seen;
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
@@ -2123,7 +2428,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--fields FIELDS/manifest.json --fields-sha256 SHA] [--max-bytes 536870912] "
                "[--order-basis target|delta] [--exit-rate 1 (below 1: aim-partial-v5, "
                "dust > 0)] [--locate-in-aim (needs --fields and --neutralize)] "
-               "[--liquidity-cache]\n"
+               "[--liquidity-cache] [--emit-holdings NEWDIR (primary book per-name "
+               "holdings, streamed; manifest.json last)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -2155,6 +2461,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--role-sha256") cfg.role_sha256 = value;
       else if (key == "--fields") fields.manifest_path = value;
       else if (key == "--fields-sha256") fields.manifest_sha256 = value;
+      else if (key == "--emit-holdings") emit.holdings_directory = value;
       else if (key == "--cadence") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("cadence exceeds bound");
@@ -2202,9 +2509,139 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
     for (const char* flag : {"--rate-rra", "--rate-lambda", "--rate-min", "--rate-max"})
       if (seen.count(flag) && rate.rate != NavRateRule::PerNameV1)
         throw std::invalid_argument(std::string(flag) + " needs --rate per-name-v1");
-    const auto status = run_nav_replay(cfg, limits, fields, rate, execution, out);
+    const auto status = run_nav_replay(cfg, limits, fields, rate, execution, emit, out);
     if (!status) { err << status.error().to_string() << '\n'; return 1; }
     return 0;
   } catch (const std::exception& e) { err << "nav replay: " << e.what() << '\n'; return 2; }
 }
+
+// Seams of the daily decide path (strategy_nav_replay_detail.hpp): the replay's own
+// admission, loader, recipe and DECIDE functions, never a copy of them.
+namespace detail {
+const char* borrow_tier_label(u8 tier) {
+  switch (tier) {
+  case tier_gc: return "gc";
+  case tier_warm: return "warm";
+  case tier_special: return "special";
+  default: return "none";
+  }
+}
+const char* fill_status_label(NavFillStatus fill) {
+  switch (fill) {
+  case NavFillStatus::None: return "none";
+  case NavFillStatus::Complete: return "complete";
+  case NavFillStatus::Capped: return "capped";
+  case NavFillStatus::BlockedAbsent: return "blocked-absent";
+  case NavFillStatus::BlockedLiquidity: return "blocked-liquidity";
+  }
+  return "unknown";
+}
+const char* holdings_csv_columns() {
+  return "session_ns,instrument_id,member,stale,tier,tier_missing,side,held_dollars,"
+         "held_weight,nav_post,fill,filled_dollars,fill_cost_dollars,unfilled_dollars,"
+         "desired_weight,rule_weight,target_weight,planned_trade_weight,planned_trade_dollars,"
+         "order_placed,locate_blocked,order_working,order_dollars";
+}
+
+NavReplayInput NavDeployLoad::view() const {
+  auto x = blend.view();
+  x.industry = industry; // empty unless an industry id
+  return NavReplayInput{x, blend.volume, NavFinancingFields{shares_out, si_shares}};
+}
+
+co::Result<NavDeployLoad> load_nav_deploy(const TargetReplayRunConfig& cfg,
+                                          const NavReplayConfig& base,
+                                          const NavTurnoverLimits& limits,
+                                          const NavFieldsPin& fields) {
+  try {
+    if (cfg.role_path.empty() || cfg.role_sha256.empty() ||
+        fields.manifest_path.empty() != fields.manifest_sha256.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav deploy: pinned role required; fields path and SHA go together");
+    const bool tiered = !fields.manifest_path.empty();
+    if (neutralize_by_industry(cfg.target.neutralize) && !tiered)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav deploy: the industry ids need the fields (grp_ff12)");
+    ATX_TRY_VOID(validate_nav_config(base));
+    ATX_TRY(auto admitted, admit_and_load(cfg, base, fields, 1, false));
+    // The recipe run_nav_replay publishes for the same (cfg, base, limits, fields).
+    const auto method = nav_recipe(cfg, base, nav_scenario_matrix(tiered), limits,
+                                   admitted.fields.binding);
+    ATX_TRY(auto digest, co::sha256_hex(method.dump()));
+    NavDeployLoad out;
+    out.blend = std::move(admitted.blend);
+    out.shares_out = std::move(admitted.fields.shares_out);
+    out.si_shares = std::move(admitted.fields.si_shares);
+    out.industry = std::move(admitted.fields.industry);
+    out.recipe_sha256 = std::move(digest);
+    return co::Ok(std::move(out));
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "nav deploy: allocation failed");
+  } catch (const std::exception& e) {
+    return co::Err(co::ErrorCode::InvalidArgument, std::string("nav deploy: ") + e.what());
+  }
+}
+
+co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConfig& cfg, usize d,
+                                   std::span<const f64> held, f64 nav_post,
+                                   std::span<const u8> no_locate) {
+  try {
+    // As replay_nav_scenarios: the NAV volume is authoritative, also for price risk.
+    TargetReplayInput x = in.target;
+    x.volume = in.volume;
+    const NavReplayInput input{x, in.volume, in.financing};
+    const bool tiered = !in.financing.shares_out.empty();
+    if ((cfg.scenario.financing.rule == NavFinancingRule::TieredSwapV1 || cfg.locate_in_aim) &&
+        !tiered)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav decide: tiered financing and locate-in-aim need the borrow fields");
+    if (cfg.rate != NavRateRule::Fixed ||
+        cfg.target.rule == TargetReplayRule::MonthlyTargetBudgetV2)
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav decide: rate per-name-v1 and monthly-budget-v2 carry book state "
+                     "(pre-trade NAV, month-to-date plan) that positions do not");
+    ATX_TRY_VOID(validate_nav_input(input, cfg, 1));
+    const usize n = x.instruments;
+    if (d < x.decision_begin || d >= x.decision_end)
+      return co::Err(co::ErrorCode::OutOfRange, "nav decide: as-of row outside the score window");
+    if (held.size() != n || !std::all_of(held.begin(), held.end(), [](f64 h) {
+          return std::isfinite(h);
+        }) || !std::isfinite(nav_post) || !(nav_post > 0) ||
+        (!no_locate.empty() && no_locate.size() != n))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav decide: one finite position per name, NAV > 0, locate mask geometry");
+    NavDecision out;
+    Construction shared(n, cfg.locate_in_aim);
+    BorrowTiers tiers(n, tiered);
+    TierCensus census;
+    out.cadence = (d - x.decision_begin) % cfg.target.cadence == 0;
+    ATX_TRY(out.rebalance, decide_construction(x, in.financing, cfg.target, d, out.cadence,
+                                               no_locate, shared, tiers, census,
+                                               out.construction));
+    out.current.resize(n); out.target.resize(n); out.rule.resize(n);
+    for (usize i = 0; i < n; ++i) out.current[i] = held[i] / nav_post;
+    out.plan.decision = d; out.plan.session = x.session_keys[d];
+    out.plan.calendar_month = calendar_month(out.plan.session);
+    NavReplayDay day; // receives the locate block's counts
+    const PlanInputs inputs{x, cfg, d, out.rebalance, shared.desired, tiers, no_locate};
+    ATX_TRY_VOID(plan_weights(inputs, 0.0, {}, out.current, out.target, nav_post, out.rule,
+                              out.plan, day));
+    out.construction.banded_names = out.plan.construction.banded_names;
+    out.members = members_at(x, d);
+    out.blocked_short_names = day.blocked_short_names;
+    out.blocked_short_dollars = day.blocked_short_dollars;
+    out.member_tiers = census.members; out.member_missing_predictors = census.missing;
+    out.sigma.assign(n, nan);
+    for (usize i = 0; i < n; ++i)
+      if (x.member[d * n + i]) out.sigma[i] = window_liquidity(x, in.volume, cfg, d, i).sigma;
+    out.desired = std::move(shared.desired); out.no_short = std::move(shared.no_short);
+    out.tier = std::move(tiers.tier); out.tier_missing = std::move(tiers.missing);
+    return co::Ok(std::move(out));
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "nav decide: allocation failed");
+  } catch (const std::length_error&) {
+    return co::Err(co::ErrorCode::OutOfRange, "nav decide: allocation extent");
+  }
+}
+} // namespace detail
 } // namespace atx::impl::strategy
