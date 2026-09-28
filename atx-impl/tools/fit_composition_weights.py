@@ -15,6 +15,8 @@ Inputs are pinned by SHA-256: the library, the TRAIN role manifest, the runner's
 candidate cache layout: ``roles[train].candidate_cache.directory`` (ROOT/<train manifest sha>, base
 candidates), ``.fields_directory`` (ROOT/<fields manifest sha>, candidates reading extra research
 fields) and ``.vm_identity``. Sidecars are checked as the runner's ``cached_payload_sha`` does.
+A v2 runner's summary also lists ``.entries[]`` (id, layout v1|v2, sidecar, payload, SHAs): each
+candidate is then read from its named entry, v2 ``<id>.<dsl16>.{f64,json}`` or v1 read in place.
 Nothing after 2022-12-31 is read: the role must end by 2023-01-01T00:00Z, every cache sidecar must
 name the ``train`` role, and the summary must describe a TRAIN-only run.
 
@@ -192,6 +194,10 @@ LIBRARY_SCHEMA = "atx.dsl-ic-library/v1"
 ORIENTATIONS_SCHEMA = "atx.dsl-ic-orientations/v1"
 ROLE_SCHEMA = "atx.recent-research-role/v1"
 CACHE_SCHEMA = "atx.dsl-candidate-signal/v1"
+# strategy_ic_runner.cpp v2 content-keyed entries: ROOT/<role sha>/[fp_<fk16>/]<id>.<dsl16>.{f64,json},
+# named per candidate by the summary's candidate_cache.entries[] (v1 entries read in place too).
+CACHE_SCHEMA_V2 = "atx.dsl-candidate-signal/v2"
+SIGNAL_KEY_SCHEMA = "atx.dsl-candidate-signal-key/v2"
 CACHE_LAYOUT = "date-major-little-endian-f64;non-finite-stored-as-quiet-NaN"
 VM_EVAL_MODE = "ResearchFast;full-historical-asof-member-mask"
 FACTOR_SCHEMA = "atx.fit-candidate-factor/v1"
@@ -482,13 +488,31 @@ class CacheLayout:
             self.fields_directory = Path(cache["fields_directory"])
             require(self.fields_directory.name == self.fields_sha and self.fields_directory.parent == root,
                     "runner summary: fields_directory is not ROOT/<fields manifest sha>")
+        # A v2 runner names every candidate's exact entry (either layout); a v1 summary has none and
+        # its entries are probed under directory / fields_directory.
+        self.entries = None
+        if "entries" in cache:
+            listed = cache["entries"]
+            require(isinstance(listed, list), "runner summary: candidate_cache.entries must be a list")
+            self.entries = {}
+            for e in listed:
+                require(isinstance(e, dict) and isinstance(e.get("id"), str) and e.get("layout") in ("v1", "v2") and
+                        isinstance(e.get("sidecar"), str) and isinstance(e.get("payload"), str) and
+                        is_hash(e.get("payload_sha256")) and isinstance(e.get("field_payload_sha256"), dict) and
+                        all(isinstance(k, str) and is_hash(v) for k, v in e["field_payload_sha256"].items()),
+                        "runner summary: malformed candidate_cache entry")
+                require(e["id"] not in self.entries, f"runner summary: duplicate candidate_cache entry {e['id']}")
+                self.entries[e["id"]] = e
 
     def resolve(self, cand: dict, role: "RoleManifest") -> dict:
         """The one cache entry of this candidate, validated as cached_payload_sha() does.
 
-        An entry is the candidate's when its sidecar names this id and DSL SHA; a same-id entry of
+        With ``entries`` (v2 runner) the summary names it (resolve_listed). Otherwise (v1 runner) an
+        entry is the candidate's when its sidecar names this id and DSL SHA; a same-id entry of
         another DSL (an older library) is ignored. Exactly one entry must be the candidate's.
         """
+        if self.entries is not None:
+            return self.resolve_listed(cand, role)
         cid = cand["id"]
         found = []
         for directory, fields_sha in ((self.directory, None), (self.fields_directory, self.fields_sha)):
@@ -520,13 +544,87 @@ class CacheLayout:
         require(fields_match, f"candidate cache: fields manifest mismatch {cid}")
         require(vm_match, f"candidate cache: VM identity mismatch {cid}")
         require(j.get("role") == "train", f"candidate cache: entry {cid} is not a TRAIN-role signal")
-        return {"id": cid, "directory": directory, "payload_sha256": sha, "fields_manifest_sha256": fields_sha}
+        return {"id": cid, "directory": directory, "payload": directory / f"{cid}.f64", "payload_sha256": sha,
+                "fields_manifest_sha256": fields_sha}
+
+    def resolve_listed(self, cand: dict, role: "RoleManifest") -> dict:
+        """The summary-named entry of this candidate, checked against its sidecar.
+
+        v2: ROOT/<train sha>/<id>.<dsl16>.json for a base candidate, ROOT/<train sha>/fp_<fk16>/... for
+        a field candidate (fk16 = SHA-256 of its field lines); the sidecar must record the runner's
+        signal key, recomputed here. v1 (read in place): ROOT/<train sha>/<id>.json, or
+        ROOT/<fields manifest sha>/<id>.json for a field candidate -- possibly an older manifest whose
+        field payloads the runner matched (--cache-legacy-fields). Base vs field is the entry's
+        field_payload_sha256; a field candidate's work is keyed by the pinned fields manifest either
+        way, so records and admission rows do not depend on the layout.
+        """
+        cid = cand["id"]
+        e = self.entries.get(cid)
+        require(e is not None, f"candidate cache: missing entry {cid} (run the TRAIN IC runner with --candidate-cache)")
+        fields, v2 = e["field_payload_sha256"], e["layout"] == "v2"
+        require(not fields or self.fields_sha is not None,
+                f"candidate cache: field entry {cid} without a pinned research fields manifest")
+        sidecar, payload = Path(e["sidecar"]), Path(e["payload"])
+        directory = sidecar.parent
+        stem = f"{cid}.{cand['dsl_sha256'][:16]}" if v2 else cid
+        if not fields:
+            where = directory == self.directory
+        elif v2:
+            where = directory == self.directory / f"fp_{hashlib.sha256(field_lines(fields).encode()).hexdigest()[:16]}"
+        else:
+            where = directory.parent == self.directory.parent and is_hash(directory.name)
+        require(where and sidecar.name == f"{stem}.json" and payload == directory / f"{stem}.f64",
+                f"candidate cache: entry path mismatch {cid}")
+        require(sidecar.is_file(), f"candidate cache: missing entry {cid} (run the TRAIN IC runner with --candidate-cache)")
+        data = sidecar.read_bytes()
+        require(0 < len(data) <= METADATA_LIMIT, f"candidate cache: sidecar extent {cid}")
+        j = unique_json(data, f"candidate cache {cid}")
+        require(isinstance(j, dict) and j.get("candidate_id") == cid and j.get("dsl_sha256") == cand["dsl_sha256"],
+                f"candidate cache: entry {cid} records another candidate or DSL")
+        require(j.get("role_manifest_sha256") == role.sha and j.get("eval_mode") == VM_EVAL_MODE and
+                j.get("layout") == CACHE_LAYOUT and j.get("dates") == role.dates and
+                j.get("instruments") == role.instruments and j.get("bytes") == role.dates * role.instruments * 8 and
+                j.get("payload") == f"{stem}.f64" and j.get("payload_sha256") == e["payload_sha256"],
+                f"candidate cache: entry mismatch {cid}")
+        if v2:
+            key = signal_key_sha256(self.vm_identity, role, cand["dsl_sha256"], fields)
+            require(j.get("schema") == CACHE_SCHEMA_V2 and j.get("field_payload_sha256") == fields and
+                    j.get("signal_key_sha256") == key and e.get("signal_key_sha256") == key,
+                    f"candidate cache: signal key mismatch {cid}")
+            fields_match, vm_match = True, j.get("vm_identity") == self.vm_identity
+        else:
+            require(j.get("schema") == CACHE_SCHEMA, f"candidate cache: entry mismatch {cid}")
+            fields_match = (j.get("fields_manifest_sha256") == directory.name if fields
+                            else "fields_manifest_sha256" not in j)
+            if "vm_identity" in j:
+                vm_match = j.get("vm_identity") == self.vm_identity
+            else:  # keyless sidecars: base entries recorded by the verified legacy builds only
+                vm_match = (self.vm_identity == LEGACY_VM_IDENTITY and not fields and
+                            j.get("engine_git_sha") in LEGACY_ENGINE_SHAS)
+        require(fields_match, f"candidate cache: fields manifest mismatch {cid}")
+        require(vm_match, f"candidate cache: VM identity mismatch {cid}")
+        require(j.get("role") == "train", f"candidate cache: entry {cid} is not a TRAIN-role signal")
+        return {"id": cid, "directory": directory, "payload": payload, "payload_sha256": e["payload_sha256"],
+                "fields_manifest_sha256": self.fields_sha if fields else None}
+
+
+def field_lines(fields: dict) -> str:
+    """strategy_ic_runner.cpp field_lines(): one ``field=<name>:<payload sha256>`` line per field, by name."""
+    return "".join(f"field={name}:{fields[name]}\n" for name in sorted(fields))
+
+
+def signal_key_sha256(vm_identity: str, role: "RoleManifest", dsl_sha: str, fields: dict) -> str:
+    """strategy_ic_runner.cpp signal_key_text(), hashed: the v2 candidate signal cache key."""
+    text = (f"{SIGNAL_KEY_SCHEMA}\nvm_identity={vm_identity}\neval_mode={VM_EVAL_MODE}\nlayout={CACHE_LAYOUT}\n"
+            f"role_manifest_sha256={role.sha}\ndates={role.dates}\ninstruments={role.instruments}\n"
+            f"dsl_sha256={dsl_sha}\n{field_lines(fields)}")
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def load_candidate_signal(entry: dict, role: "RoleManifest") -> np.ndarray:
     """The verified raw (unoriented) VM signal, date-major (dates, instruments)."""
     cid, size = entry["id"], role.dates * role.instruments * 8
-    payload = (entry["directory"] / f"{cid}.f64").read_bytes()
+    payload = Path(entry["payload"]).read_bytes()
     require(len(payload) == size, f"candidate cache: payload extent {cid}")
     require(hashlib.sha256(payload).hexdigest() == entry["payload_sha256"],
             f"candidate cache: payload SHA-256 mismatch {cid}")
