@@ -1,5 +1,18 @@
 # Active task: recent-data DSL ensemble
 
+## Task V6.1: complete -- correctness review PASS -> sv_flow PROMOTED; v6.1 cell is the frozen candidate (2026-09-28 ~03:20)
+task-V61-review.md: PASS, 0 Critical. Confirmed: lag 1 (day d's file never visible at d; ring eviction exactly d-126),
+sum/sum ratio with 63-row minimum and zero-total NaN, symbol map ported from the si_shares producer with its ambiguity and
+collision rules, DSL/prior convention = si_ratio / dtc, P1 gate and nav flags identical to the v6 final cell (L 1.247).
+- Parked (Important, not blocking): cnms_to_si rewrites lowercase p/r/w anywhere in a symbol, not only as a trailing marker
+  (prepare_research_fields.py ~:2126). Ruling: parked -- a bad rewrite yields "no role key" (dropped row), never a wrong
+  instrument, because of the exact-match collision and TickerHistory ambiguity checks; coverage is 100% 2019-2022 --
+  cost if wrong: a few symbols lose the field (NaN), slightly less breadth. Fix = anchor the marker regex; any fix rebuilds
+  fields-v7 and re-runs the v6.1 cell (a new trial).
+Frozen candidate for the owner packet: build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247 (library v6.1
+db35c276, weights f1a2213d on lo1, fields lo1-fields-v7, NAV exe f55537fc). S2 net +1.239; DSR N29 .911 < .95 (freeze gate not
+met; U1 decides validation trial #3).
+
 ## v6.1 RESULT: sv_flow passes P1-P3 -> PROMOTED (pending the scoped correctness review) (2026-09-28 ~03:10)
 Merged into pool-2: b279555a (field sv_ratio126), db1a6384 (library v6.1 db35c276..., recipe 9bf278a6...), cb76a6a3
 (studies/v61_train.sh). Field tests 11 passed (67 total in the child's run). Fields lo1-fields-v7 (41 fields; coverage 100%
