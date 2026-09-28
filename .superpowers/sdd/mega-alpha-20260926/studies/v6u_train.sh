@@ -23,7 +23,7 @@ FS=32565c3212a0b06a4a0a1185aabf07aea2fc043906ff767e8489233a0ddfd7a8
 BRIDGE=build-equity/identity-bridge-r4-v1;  BRIDGE_S=ddf9716459a1116b85f713ca9cb788c3db753a6e1fea8eba335ed34320baebaa
 EVENTS=build-equity/fundamental-events-v2;  EVENTS_S=74ed9a50ea686e0b0842ff9b09e78d6653ddeedd0d42f37893873ce269e3dd71
 R2LO_DIR=build-equity/recent-fast-train-2020-2022-v2-lo1
-FDLO=build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v6
+FDLO=build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v6b   # b: field list = the fields-v6 manifest (the env example omitted grp_ff49)
 CC=build-equity/mega-candidate-cache-v6u
 U=build-equity/mega-v6u-train-u
 WORK=build-equity/mega-fit-work-v6u
@@ -57,7 +57,7 @@ do_fields() {
   echo "== fields-v6 recipe on the restricted role (not the bounded runner: builder caps 700 MiB / 1800 s)"
   R2LOS=$(sha $R2LO)
   "$PY" atx-engine/tools/prepare_research_fields.py --role $R2LO_DIR --role-sha256 $R2LOS --output $FDLO \
-    --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret,be,at,at_lag4,lt,che,debt,sale_ttm,gp_ttm,oi_ttm,ni_ttm,ni_q,ni_q_lag4,be_lag1q,be_lag1q_lag4,cfo_ttm,capx_ttm,xrd_ttm,dvc_ttm,prstkc_ttm,sstk_ttm,txt_q,txt_q_lag4,shrs_q,shrs_q_lag4,noa,noa_lag4,sue,fscore,me_company,grp_sic2,grp_ff12 \
+    --fields si_shares,si_dtc,iv_atm_21d,iv_atm_63d,iv_atm_126d,earn_recent,shares_out,mkt_ret,be,at,at_lag4,lt,che,debt,sale_ttm,gp_ttm,oi_ttm,ni_ttm,ni_q,ni_q_lag4,be_lag1q,be_lag1q_lag4,cfo_ttm,capx_ttm,xrd_ttm,dvc_ttm,prstkc_ttm,sstk_ttm,txt_q,txt_q_lag4,shrs_q,shrs_q_lag4,noa,noa_lag4,sue,fscore,me_company,grp_sic2,grp_ff12,grp_ff49n_recent,shares_out,mkt_ret,be,at,at_lag4,lt,che,debt,sale_ttm,gp_ttm,oi_ttm,ni_ttm,ni_q,ni_q_lag4,be_lag1q,be_lag1q_lag4,cfo_ttm,capx_ttm,xrd_ttm,dvc_ttm,prstkc_ttm,sstk_ttm,txt_q,txt_q_lag4,shrs_q,shrs_q_lag4,noa,noa_lag4,sue,fscore,me_company,grp_sic2,grp_ff12 \
     --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet \
     --identity-bridge $BRIDGE --identity-bridge-sha256 $BRIDGE_S --fund-events $EVENTS --fund-events-sha256 $EVENTS_S \
     --fund-lag-sessions 1 --max-rss-mib 700 --max-seconds 1800 2>&1 | tail -3
