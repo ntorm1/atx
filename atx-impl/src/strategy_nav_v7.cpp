@@ -326,7 +326,7 @@ bool claims_nav_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view key = argv[i];
     if (key == "--cost-v2" || key == "--capacity-curve" || key == "--cost-shrink-kappa" ||
-        key == "--band-b" || key == "--rate-clip")
+        key == "--band-b" || key == "--band-exponent" || key == "--rate-clip")
       return true;
     if (key == "--rule" && i + 1 < argc && std::string_view(argv[i + 1]) == "aim-partial-v6")
       return true;
@@ -443,10 +443,11 @@ void append_help(std::ostream& out) {
          "<output>/capacity_curve.csv; fixed rate only; --emit-holdings observes the main "
          "pass only)] [--rule aim-partial-v6 (aim-partial-v5 flags plus a cost-scaled target, "
          "band and regime rate; fixed rate only) --cost-shrink-kappa 1 --band-b "
-         "<--dust-multiple> --rate-clip .5,1.5]\n";
+         "<--dust-multiple> --band-exponent .3333 (1/3; 0: the uniform dust band) "
+         "--rate-clip .5,1.5; kappa 0, band exponent 0 and clip 1,1 = aim-partial-v5]\n";
 }
 
-int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err) {
+co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
   try {
     NavV7Options o;
     std::vector<std::string> args;
@@ -468,7 +469,8 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
         (key == "--cost-v2" ? o.stress : o.capacity) = true;
         continue;
       }
-      if (key == "--cost-shrink-kappa" || key == "--band-b" || key == "--rate-clip") {
+      if (key == "--cost-shrink-kappa" || key == "--band-b" || key == "--band-exponent" ||
+          key == "--rate-clip") {
         if (!seen.insert(key).second || i + 1 >= argc)
           throw std::invalid_argument("duplicate/missing value: " + key);
         const std::string value = argv[++i];
@@ -477,6 +479,8 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
           o.v6.kappa = number(value);
         } else if (key == "--band-b") {
           o.v6.band_b = number(value); band_given = true;
+        } else if (key == "--band-exponent") {
+          o.v6.band_exponent = number(value);
         } else {
           const auto comma = value.find(',');
           if (comma == std::string::npos) throw std::invalid_argument("--rate-clip LO,HI");
@@ -503,7 +507,8 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
     const auto* theta = value_of("--trade-fraction");
     const auto* dust = value_of("--dust-multiple");
     if (v6_params && !o.aim_v6)
-      throw std::invalid_argument("--cost-shrink-kappa/--band-b/--rate-clip need --rule aim-partial-v6");
+      throw std::invalid_argument(
+          "--cost-shrink-kappa/--band-b/--band-exponent/--rate-clip need --rule aim-partial-v6");
     if (!output || output->empty()) throw std::invalid_argument("--output is required");
     if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed")
       throw std::invalid_argument("aim-partial-v6 and --capacity-curve need the fixed rate "
@@ -513,13 +518,27 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
       const auto valid = cost_v2::validate_aim_v6(o.v6, theta ? number(*theta) : 0.25);
       if (!valid) throw std::invalid_argument(valid.error().to_string());
     }
+    std::string output_dir = *output; // points into args: copy before the move
+    NavV7Command command{o, std::move(args), std::move(output_dir)};
+    return co::Ok(std::move(command));
+  } catch (const std::exception& e) {
+    return co::Err(co::ErrorCode::InvalidArgument, std::string("nav v7: ") + e.what());
+  }
+}
+
+int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err) {
+  try {
+    auto parsed = parse_nav_v7_args(argc, argv);
+    if (!parsed) { err << parsed.error().to_string() << '\n'; return 2; }
+    const NavV7Options& o = parsed->options;
+    const std::vector<std::string>& args = parsed->args;
     const auto run = [&](std::vector<std::string> tokens) {
       std::vector<char*> pointers;
       pointers.reserve(tokens.size());
       for (auto& token : tokens) pointers.push_back(token.data());
       return dispatch_nav_replay(static_cast<int>(pointers.size()), pointers.data(), out, err);
     };
-    const std::filesystem::path dir(*output);
+    const std::filesystem::path dir(parsed->output);
     ScopedNavExtension extension(o);
     extension.begin_run(NavV7Pass::Main);
     if (const int code = run(args); code != 0) return code;

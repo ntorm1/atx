@@ -364,7 +364,7 @@ TEST(NavV7Hook, HelpListsTheV7FlagsAndV6RelabelsTheHoldingsManifest) {
   std::ostringstream help;
   v7::append_help(help);
   for (const char* flag : {"--cost-v2", "--capacity-curve", "aim-partial-v6", "--cost-shrink-kappa",
-                           "--band-b", "--rate-clip"})
+                           "--band-b", "--band-exponent", "--rate-clip"})
     EXPECT_NE(help.str().find(flag), std::string::npos) << flag;
   v7::NavV7Options o; o.aim_v6 = true;
   const v7::ScopedNavExtension extension(o);
@@ -435,5 +435,84 @@ TEST(NavV7Hook, AimV6DefaultParametersChangeThePlanButKeepTheBookDollarNeutral) 
     if (hooked->days[t].decision) EXPECT_LT(std::abs(hooked->days[t].planned_net), 0.2) << t;
   }
   EXPECT_TRUE(differs);
+}
+// The CLI path (parse_nav_v7_args) of the pre-registered identity cell: kappa 0, band exponent
+// 0, clip 1,1 and the default band b = --dust-multiple replay aim-partial-v5 bit for bit.
+atx::core::Result<v7::NavV7Command> parse_v7(std::vector<std::string> args) {
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  return v7::parse_nav_v7_args(static_cast<int>(argv.size()), argv.data());
+}
+std::vector<std::string> v6_args(std::initializer_list<std::string> extra) {
+  std::vector<std::string> args{"nav", "--rule", "aim-partial-v6", "--cost-shrink-kappa", "0",
+                                "--rate-clip", "1,1", "--dust-multiple", "0.1",
+                                "--trade-fraction", "0.25", "--output", "x"};
+  args.insert(args.end(), extra.begin(), extra.end());
+  return args;
+}
+TEST(NavV7Hook, ParsedIdentityCellBandExponentZeroReplaysV5BitForBit) {
+  const Role role(40, 12, 31);
+  const auto cfg = nav_config(s2(), 1e8);
+  auto plain = st::replay_nav(role.nav(), cfg);
+  ASSERT_TRUE(plain) << plain.error().to_string();
+  const auto parsed = parse_v7(v6_args({"--band-exponent", "0"}));
+  ASSERT_TRUE(parsed) << parsed.error().to_string();
+  const auto& o = parsed->options;
+  EXPECT_TRUE(o.aim_v6);
+  EXPECT_EQ(bits(o.v6.kappa), bits(0.0));
+  EXPECT_EQ(bits(o.v6.band_exponent), bits(0.0));
+  EXPECT_EQ(bits(o.v6.band_b), bits(cfg.target.dust_multiple)); // b defaults to the dust
+  EXPECT_EQ(bits(o.v6.clip_lo), bits(1.0)); EXPECT_EQ(bits(o.v6.clip_hi), bits(1.0));
+  const std::vector<std::string> replay{"nav", "--rule", "aim-partial-v5", "--dust-multiple", "0.1",
+                                        "--trade-fraction", "0.25", "--output", "x"};
+  EXPECT_EQ(parsed->args, replay); // v7 tokens consumed, the rule rewritten, order kept
+  EXPECT_EQ(parsed->output, "x");
+  v7::ScopedNavExtension extension(o);
+  auto hooked = st::replay_nav(role.nav(), cfg);
+  ASSERT_TRUE(hooked) << hooked.error().to_string();
+  expect_same_days(*plain, *hooked);
+  ASSERT_EQ(plain->days.size(), hooked->days.size());
+  for (usize t = 0; t < plain->days.size(); ++t)
+    EXPECT_EQ(plain->days[t].construction.banded_names, hooked->days[t].construction.banded_names) << t;
+}
+TEST(NavV7Hook, ParsedDefaultBandExponentIsOneThirdAndChangesBandedNames) {
+  const Role role(60, 24, 43);
+  const auto cfg = nav_config(s2(), 1e8);
+  const auto banded = [&](std::vector<std::string> args, f64 exponent) {
+    std::vector<usize> out;
+    const auto parsed = parse_v7(std::move(args));
+    EXPECT_TRUE(parsed);
+    if (!parsed) return out;
+    EXPECT_EQ(bits(parsed->options.v6.band_exponent), bits(exponent));
+    v7::ScopedNavExtension extension(parsed->options);
+    const auto result = st::replay_nav(role.nav(), cfg);
+    EXPECT_TRUE(result);
+    if (!result) return out;
+    for (const auto& day : result->days) out.push_back(day.construction.banded_names);
+    return out;
+  };
+  // A wide band (b .5, the maximum) so that many gaps sit near its edge.
+  const auto uniform = banded(v6_args({"--band-b", "0.5", "--band-exponent", "0"}), 0.0);
+  const auto scaled = banded(v6_args({"--band-b", "0.5"}), 1.0 / 3.0);
+  ASSERT_EQ(uniform.size(), scaled.size());
+  ASSERT_FALSE(uniform.empty());
+  usize differing = 0, dusted = 0;
+  for (usize t = 0; t < uniform.size(); ++t) {
+    differing += uniform[t] != scaled[t] ? 1U : 0U;
+    dusted += uniform[t];
+  }
+  EXPECT_GT(dusted, 0U);
+  EXPECT_GT(differing, 0U);
+}
+TEST(NavV7Hook, ParseRefusesV6ParametersWithoutTheRuleAndOutOfRangeExponents) {
+  EXPECT_FALSE(parse_v7({"nav", "--band-exponent", "0", "--output", "x"}));
+  EXPECT_FALSE(parse_v7(v6_args({"--band-exponent", "2"})));
+  EXPECT_FALSE(parse_v7(v6_args({"--band-exponent", "0", "--band-exponent", "0"})));
+  EXPECT_FALSE(parse_v7(v6_args({"--rate", "per-name-v1"})));
+  EXPECT_TRUE(parse_v7(v6_args({"--band-exponent", "1"})));
+  std::vector<std::string> claimed{"nav", "--band-exponent", "0"};
+  std::vector<char*> argv;
+  for (auto& a : claimed) argv.push_back(a.data());
+  EXPECT_TRUE(v7::claims_nav_args(static_cast<int>(argv.size()), argv.data()));
 }
 } // namespace
