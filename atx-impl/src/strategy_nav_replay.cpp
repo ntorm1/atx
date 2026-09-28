@@ -1710,13 +1710,14 @@ std::vector<NavScenario> nav_scenario_matrix(bool tiered) {
 // run's own geometry (v6 C4; the charge was at max_names x max_dates before): all
 // scenario results (days + events at cap), every lockstep book's per-name state, the
 // shared construction (with its price-risk scratch when neutralizing), the shared
-// borrow tiers, the per-name rate cache and publication. books <= max_scenarios.
+// borrow tiers, the shared liquidity cache (per-name-v1, or --liquidity-cache at a
+// fixed rate: validate_nav_input's predicate) and publication. books <= max_scenarios.
 u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool tiered,
                                 usize names, usize sessions) {
-  const bool per_name_rate = base.rate == NavRateRule::PerNameV1;
+  const bool cached = liquidity_cached(base);
   return publication_slack_bytes + u64{books} * fixed_workspace_bytes +
          u64{names} * (u64{books} * per_name_bytes + shared_name_bytes +
-                       (tiered ? tier_name_bytes : 0) + (per_name_rate ? rate_name_bytes : 0)) +
+                       (tiered ? tier_name_bytes : 0) + (cached ? rate_name_bytes : 0)) +
          detail::construction_scratch_bytes(base.target, names) +
          u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent));
 }

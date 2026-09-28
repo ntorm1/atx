@@ -484,7 +484,28 @@ TEST(StrategyPriceNeutralizeV6, PriceRiskV1BytesArePinnedOnTheExistingFixture) {
     EXPECT_EQ(std::bit_cast<u64>(stats.coefficients[k]), coefficients[k]) << k;
   EXPECT_EQ(std::bit_cast<u64>(w[1]), 0x3f9769edb54fe169ULL);
   EXPECT_EQ(std::bit_cast<u64>(w[89]), 0xbf9082ec91c7fcb6ULL);
-  EXPECT_EQ(stats.groups, usize{0}); // the within-groups fields stay zero on this path
+}
+
+// The within-groups fields stay 0 on the price-risk-v1 path, also when a within-groups
+// call filled them in the same stats object before (stats is reset on entry). Kept out
+// of (a) so that (a) compiles verbatim at the base commit, which has no such fields.
+TEST(StrategyPriceNeutralizeV6, PriceRiskV1LeavesTheWithinGroupsFieldsZero) {
+  constexpr usize n = 40;
+  const Section s = section(n, 9);
+  std::vector<f64> ids(n);
+  for (usize i = 0; i < n; ++i) ids[i] = i % 2 ? 1.0 : 2.0;
+  st::PriceExposureConfig cfg;
+  cfg.min_names = 10;
+  st::NeutralizeScratch scratch;
+  st::NeutralizeStats stats;
+  auto grouped = s.target;
+  ASSERT_TRUE(st::neutralize_target_within_groups(grouped, s.member, s.exposures, s.ok, ids,
+                                                  cfg, scratch, stats));
+  ASSERT_EQ(stats.groups, usize{2});
+  auto w = s.target;
+  ASSERT_TRUE(st::neutralize_target(w, s.member, s.exposures, s.ok, cfg, scratch, stats));
+  EXPECT_EQ(stats.groups, usize{0});
+  EXPECT_EQ(stats.unknown_group_names, usize{0});
   EXPECT_EQ(stats.fallback_names, usize{0});
 }
 
@@ -663,4 +684,72 @@ TEST(StrategyPriceNeutralizeV6, WithinGroupsOneCallStepMatchesPrimitives) {
                                                       stats),
               co::ErrorCode::InvalidArgument);
   expect_bits(w, target);
+}
+
+// Locate-in-aim under the industry ids (review I3): a held row (hold_zero set, entering
+// at 0) is reset to 0 after the within-group demeaning, so it cannot come back as -(its
+// group mean). Three zero-aim names of the positively loaded group 7 carry that group's
+// mean exposures, so their demeaned z rows vanish and the fit reaches them only through
+// the intercept: unheld each ends at -(group mean) x scale; held, at -(intercept) x scale
+// with intercept = 3 x (group mean) / 60 used rows, and group 7 keeps 3 x (group mean) -
+// 30 x intercept before the rescale. A hold byte on a nonzero aim changes nothing; a hold
+// span of another length is refused with the target unmodified.
+TEST(StrategyPriceNeutralizeV6, HeldZeroAimsAreResetAfterTheGroupDemeaning) {
+  constexpr usize n = 60;
+  std::vector<f64> ids(n), shift(n, 0.0);
+  for (usize i = 0; i < n; ++i) {
+    ids[i] = i % 2 ? 3.0 : 7.0;
+    if (ids[i] == 7.0) shift[i] = 0.01;
+  }
+  Section s = loaded_section(n, 31, shift);
+  constexpr std::array<usize, 3> held{4, 20, 36}; // group 7
+  std::array<f64, kCols> mean{};
+  for (usize i = 0; i < n; ++i) {
+    if (ids[i] != 7.0 || std::find(held.begin(), held.end(), i) != held.end()) continue;
+    for (usize k = 0; k < kCols; ++k) mean[k] += s.exposures[i * kCols + k];
+  }
+  std::vector<u8> hold(n, 0);
+  for (const usize h : held) {
+    s.target[h] = 0;
+    hold[h] = 1;
+    for (usize k = 0; k < kCols; ++k) s.exposures[h * kCols + k] = mean[k] / 27.0;
+  }
+  f64 group_sum_7 = 0; // group 7's entry target, held rows (0) included
+  for (usize i = 0; i < n; ++i)
+    if (ids[i] == 7.0) group_sum_7 += s.target[i];
+  const f64 group_mean = group_sum_7 / 30.0;
+  ASSERT_GT(group_mean, 1e-3); // the group bet a zeroed short would inherit, negated
+  st::PriceExposureConfig cfg;
+  cfg.min_names = 20;
+  st::NeutralizeScratch scratch;
+  st::NeutralizeStats unheld_stats, held_stats;
+  auto unheld = s.target, w = s.target;
+  ASSERT_TRUE(st::neutralize_target_within_groups(unheld, s.member, s.exposures, s.ok, ids, cfg,
+                                                  scratch, unheld_stats));
+  ASSERT_TRUE(st::neutralize_target_within_groups(w, s.member, s.exposures, s.ok, ids, cfg,
+                                                  scratch, held_stats, hold));
+  const f64 unheld_scale = unheld_stats.gross / unheld_stats.residual_gross;
+  const f64 held_scale = held_stats.gross / held_stats.residual_gross;
+  const f64 intercept = 3.0 * group_mean / static_cast<f64>(n);
+  for (const usize h : held) {
+    EXPECT_NEAR(unheld[h], -group_mean * unheld_scale, 1e-12) << h;
+    EXPECT_NEAR(w[h], -intercept * held_scale, 1e-12) << h;
+  }
+  EXPECT_NEAR(held_stats.coefficients[0], intercept, 1e-12);
+  EXPECT_NEAR(group_sum(w, s, ids, 7.0), (3.0 * group_mean - 30.0 * intercept) * held_scale,
+              1e-12);
+  EXPECT_NEAR(gross_of(w), held_stats.gross, 1e-12);
+  const std::vector<u8> every(n, 1); // only the zero aims are held
+  auto same = s.target;
+  st::NeutralizeStats same_stats;
+  ASSERT_TRUE(st::neutralize_target_within_groups(same, s.member, s.exposures, s.ok, ids, cfg,
+                                                  scratch, same_stats, every));
+  expect_bits(same, w);
+  auto refused = s.target;
+  st::NeutralizeStats refused_stats;
+  expect_code(st::neutralize_target_within_groups(refused, s.member, s.exposures, s.ok, ids, cfg,
+                                                  scratch, refused_stats,
+                                                  std::span<const u8>(hold).first(n - 1)),
+              co::ErrorCode::InvalidArgument);
+  expect_bits(refused, s.target);
 }

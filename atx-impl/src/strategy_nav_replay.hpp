@@ -151,8 +151,9 @@ struct NavReplayConfig {
   // Locate-in-aim (v6 prereg C3): at each rebalance decision a member in the special borrow
   // tier of that decision gets no negative desired weight BEFORE the neutralization
   // (detail::form_desired no_short), shared by every book; each book's post-rule
-  // locate block stays as a safety net. Requires the borrow fields and a neutralizing
-  // construction (target.neutralize != None).
+  // locate block stays as a safety net. Under the industry ids those aims are also held
+  // at 0 through the group demeaning (review I3). Requires the borrow fields and a
+  // neutralizing construction (target.neutralize != None).
   bool locate_in_aim{};
   // Execution liquidity from the shared per-session cache also at a fixed rate (v6 review F8):
   // each execution session forms every working order's window once for all books
@@ -395,10 +396,11 @@ struct NavFieldsPin {
 // Workspace a pinned run reserves before it loads any payload (v6 C4): publication
 // slack, every book's fixed workspace, per-name state, days and events (at the
 // max_events cap), the shared construction (with its neutralization scratch), the
-// borrow tiers (tiered) and the per-name rate cache, at the ACTUAL geometry: `names`
-// instruments and `sessions` = score_end - score_begin rows per book, read from the
-// pinned role manifest. run_nav_replay refuses (OutOfRange) when max_working_bytes
-// <= this reserve and charges the fields and the saved-blend loader against the rest.
+// borrow tiers (tiered) and the shared liquidity cache (rate per-name-v1 or
+// base.liquidity_cache), at the ACTUAL geometry: `names` instruments and `sessions` =
+// score_end - score_begin rows per book, read from the pinned role manifest.
+// run_nav_replay refuses (OutOfRange) when max_working_bytes <= this reserve and
+// charges the fields and the saved-blend loader against the rest.
 [[nodiscard]] atx::u64 nav_workspace_reserve_bytes(const NavReplayConfig& base,
                                                    atx::usize books, bool tiered,
                                                    atx::usize names, atx::usize sessions);

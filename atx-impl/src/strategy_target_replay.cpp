@@ -354,7 +354,9 @@ co::Status check_rates(const TargetReplayInput& in, const TargetReplayConfig& cf
 // allocation errors are not data refusals and abort the replay.
 // Locate-in-aim (NAV, v6 prereg C3): before the post-processing, a member that may not be
 // shorted (no_short) keeps no negative desired weight, so the neutralization's
-// intercept and beta columns re-balance the book around the zeroed shorts.
+// intercept and beta columns re-balance the book around the zeroed shorts. Under the
+// industry ids no_short is also the hold mask (review I3): a special-tier aim at 0 is
+// reset to 0 after the within-group demeaning, so it cannot return as -(group mean).
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                               usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
                               PriceRiskScratch& scratch, ConstructionDay& out,
@@ -376,7 +378,8 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
   NeutralizeStats stats;
   const auto status = industry
       ? neutralize_price_risk_within_groups(prices, cfg.price_risk, d, desired, member,
-                                            in.industry.subspan(offset, n), scratch, stats)
+                                            in.industry.subspan(offset, n), scratch, stats,
+                                            no_short)
       : neutralize_price_risk(prices, cfg.price_risk, d, desired, member, scratch, stats);
   if (!status && status.error().code() != co::ErrorCode::Unavailable) return co::Err(status.error());
   out.neutralize_used = stats.used; out.neutralize_excluded = stats.excluded;

@@ -149,26 +149,36 @@ struct NeutralizeStats {
 //  4. the target and every z column demeaned within slot (means over the used rows,
 //     summed in ascending row order); a z column the slots span (within-slot sum of
 //     squares <= 1e-8 x its sum of squares, the pivot floor) refuses Unavailable;
-//  5. the demeaned target regressed on [1, demeaned z] by neutralize_target's OLS (the
-//     intercept coefficient is 0 up to rounding: every demeaned column sums to 0) and
-//     replaced by the residual;
+//     then every HELD used row (hold_zero[i] != 0 and target[i] == 0 on entry) has its
+//     demeaned target reset to 0 (NAV locate-in-aim, review I3: a zeroed special-tier
+//     short cannot come back as -(its group mean)); its z row stays in the fit;
+//  5. the demeaned target regressed on [1, demeaned z] by neutralize_target's OLS
+//     (with no held row the intercept coefficient is 0 up to rounding: every demeaned
+//     column sums to 0) and replaced by the residual;
 //  6. rescaled to the entry gross; member && !ok rows to 0; nonmembers untouched.
 // By Frisch-Waugh-Lovell the result is orthogonal to every slot indicator (within-slot
-// sums 0) and to the clipped z. group: one id per instrument (target.size()), read only
-// on the used rows. Same preconditions, refusals and strong guarantee as
-// neutralize_target, plus InvalidArgument for a group span of another length or a
-// finite id on a used row that is not an integer in [0, kMaxGroupId].
+// sums 0) and to the clipped z. With held rows it stays orthogonal to the intercept
+// and the demeaned z only. Before the rescale, slot G sums to h_G m_G - n_G c (h_G held
+// and n_G used rows, m_G the slot mean of the entry target, c the intercept, up to
+// rounding sum_G h_G m_G / used rows) and a held row's residual is -(c + its demeaned
+// z row's fit).
+// group: one id per instrument (target.size()), read only on the used rows. hold_zero:
+// empty (the default: nothing held, the path above bit for bit) or one byte per
+// instrument. Same preconditions, refusals and strong guarantee as neutralize_target,
+// plus InvalidArgument for a group (or non-empty hold_zero) span of another length or
+// a finite id on a used row that is not an integer in [0, kMaxGroupId].
 [[nodiscard]] atx::core::Status neutralize_target_within_groups(
     std::span<atx::f64> target, std::span<const atx::u8> member,
     std::span<const atx::f64> exposures, std::span<const atx::u8> ok,
     std::span<const atx::f64> group, const PriceExposureConfig&, NeutralizeScratch&,
-    NeutralizeStats&);
+    NeutralizeStats&, std::span<const atx::u8> hold_zero = {});
 
 // One-call decision step of the industry ids: compute_price_exposures at d, then
-// neutralize_target_within_groups with that decision's member row and group row (both
-// instruments long). Target unmodified on any error.
+// neutralize_target_within_groups with that decision's member row, group row and hold
+// mask (all instruments long; hold_zero may be empty). Target unmodified on any error.
 [[nodiscard]] atx::core::Status neutralize_price_risk_within_groups(
     const PriceExposureInput&, const PriceExposureConfig&, atx::usize d,
     std::span<atx::f64> target, std::span<const atx::u8> member,
-    std::span<const atx::f64> group, PriceRiskScratch&, NeutralizeStats&);
+    std::span<const atx::f64> group, PriceRiskScratch&, NeutralizeStats&,
+    std::span<const atx::u8> hold_zero = {});
 } // namespace atx::impl::strategy

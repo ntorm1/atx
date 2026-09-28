@@ -400,13 +400,16 @@ struct Cholesky {
   return x;
 }
 // OLS residual of target on [1, z] over the used rows into s.residual; grouped: of
-// the within-slot demeaned target on [1, demeaned z] (assign_slots ran). Touches
+// the within-slot demeaned target on [1, demeaned z] (assign_slots ran), with every
+// held row (hold[i] != 0 and target[i] == 0) reset to 0 after the demeaning. Touches
 // only scratch and stats, so a refusal leaves the caller's target unmodified.
-// Ungrouped, every arithmetic operation and its order is the price-risk-v1 one (the
-// target copy into s.residual precedes the factorization, which never reads it).
+// Ungrouped (hold then empty), every arithmetic operation and its order is the
+// price-risk-v1 one (the target copy into s.residual precedes the factorization,
+// which never reads it).
 [[nodiscard]] co::Status fit_residual(std::span<const f64> target,
                                       std::span<const f64> exposures, f64 clip, bool grouped,
-                                      NeutralizeScratch& s, NeutralizeStats& stats) {
+                                      std::span<const u8> hold, NeutralizeScratch& s,
+                                      NeutralizeStats& stats) {
   const usize n = stats.used;
   const std::span<const usize> rows(s.rows.data(), n);
   const std::span<f64> z(s.z.data(), n * kCols), e(s.residual.data(), n);
@@ -418,6 +421,11 @@ struct Cholesky {
   // column, so its coefficient is rounding noise and the residual is the FWL one.
   if (grouped && !demean_within_groups(s, z, e))
     return co::Err(co::ErrorCode::Unavailable, "price neutralize: exposure spanned by groups");
+  // Locate-in-aim (review I3): an aim held at 0 keeps 0 into the fit instead of
+  // -(its slot mean); its z row stays demeaned and regressed. The intercept then
+  // absorbs the held rows' slot means (no longer rounding noise). Empty: nothing held.
+  for (usize r = 0; r < n && !hold.empty(); ++r)
+    if (hold[rows[r]] != 0 && target[rows[r]] == 0) e[r] = 0;
   Cholesky f;
   if (!factor(normal_matrix(z, n), f))
     return co::Err(co::ErrorCode::Unavailable, "price neutralize: ill-conditioned exposures");
@@ -435,12 +443,14 @@ struct Cholesky {
   stats.coefficients = coef;
   return co::Ok();
 }
-// neutralize_target (group empty) and neutralize_target_within_groups (group sized by
-// the caller): one body, so the ungrouped path is price-risk-v1 operation for operation.
+// neutralize_target (group and hold empty) and neutralize_target_within_groups (group,
+// and hold when not empty, sized by the caller): one body, so the ungrouped path is
+// price-risk-v1 operation for operation.
 [[nodiscard]] co::Status neutralize(std::span<f64> target, std::span<const u8> member,
                                     std::span<const f64> exposures, std::span<const u8> ok,
-                                    std::span<const f64> group, const PriceExposureConfig& cfg,
-                                    NeutralizeScratch& scratch, NeutralizeStats& stats) {
+                                    std::span<const f64> group, std::span<const u8> hold,
+                                    const PriceExposureConfig& cfg, NeutralizeScratch& scratch,
+                                    NeutralizeStats& stats) {
   const bool grouped = !group.empty();
   ATX_TRY_VOID(validate_config(cfg));
   ATX_TRY_VOID(validate_neutralize(target, member, exposures, ok));
@@ -460,18 +470,18 @@ struct Cholesky {
     return co::Err(co::ErrorCode::Unavailable, "price neutralize: too few usable names");
   if (grouped) ATX_TRY_VOID(assign_slots(group, scratch, stats));
   if (stats.gross == 0) return co::Ok(); // flat stays flat: nothing to remove or rescale
-  ATX_TRY_VOID(fit_residual(target, exposures, cfg.clip_z, grouped, scratch, stats));
+  ATX_TRY_VOID(fit_residual(target, exposures, cfg.clip_z, grouped, hold, scratch, stats));
   const f64 scale = stats.gross / stats.residual_gross;
   for (usize i = 0; i < target.size(); ++i)
     if (member[i] && !ok[i]) target[i] = 0;
   for (usize r = 0; r < stats.used; ++r) target[scratch.rows[r]] = scratch.residual[r] * scale;
   return co::Ok();
 }
-// neutralize_price_risk (group empty) and its within-groups twin.
+// neutralize_price_risk (group and hold empty) and its within-groups twin.
 [[nodiscard]] co::Status price_risk(const PriceExposureInput& in, const PriceExposureConfig& cfg,
                                     usize d, std::span<f64> target, std::span<const u8> member,
-                                    std::span<const f64> group, PriceRiskScratch& scratch,
-                                    NeutralizeStats& stats) {
+                                    std::span<const f64> group, std::span<const u8> hold,
+                                    PriceRiskScratch& scratch, NeutralizeStats& stats) {
   const usize n = in.instruments;
   if (target.size() != n || member.size() != n || n > kMaxReturnCells)
     return co::Err(co::ErrorCode::InvalidArgument, "price risk: target geometry");
@@ -480,7 +490,7 @@ struct Cholesky {
   const std::span<f64> exposures(scratch.exposures.data(), n * kCols);
   const std::span<u8> ok(scratch.ok.data(), n);
   ATX_TRY_VOID(compute_price_exposures(in, cfg, d, scratch.exposure, exposures, ok));
-  return neutralize(target, member, exposures, ok, group, cfg, scratch.neutralize, stats);
+  return neutralize(target, member, exposures, ok, group, hold, cfg, scratch.neutralize, stats);
 }
 } // namespace
 
@@ -518,26 +528,28 @@ co::Status neutralize_target(std::span<f64> target, std::span<const u8> member,
                              const PriceExposureConfig& cfg, NeutralizeScratch& scratch,
                              NeutralizeStats& stats) {
   stats = {};
-  return neutralize(target, member, exposures, ok, {}, cfg, scratch, stats);
+  return neutralize(target, member, exposures, ok, {}, {}, cfg, scratch, stats);
 }
 
 co::Status neutralize_price_risk(const PriceExposureInput& in, const PriceExposureConfig& cfg,
                                  usize d, std::span<f64> target, std::span<const u8> member,
                                  PriceRiskScratch& scratch, NeutralizeStats& stats) {
   stats = {};
-  return price_risk(in, cfg, d, target, member, {}, scratch, stats);
+  return price_risk(in, cfg, d, target, member, {}, {}, scratch, stats);
 }
 
 co::Status neutralize_target_within_groups(std::span<f64> target, std::span<const u8> member,
                                            std::span<const f64> exposures,
                                            std::span<const u8> ok, std::span<const f64> group,
                                            const PriceExposureConfig& cfg,
-                                           NeutralizeScratch& scratch, NeutralizeStats& stats) {
+                                           NeutralizeScratch& scratch, NeutralizeStats& stats,
+                                           std::span<const u8> hold_zero) {
   stats = {};
   // An empty group span would silently select the ungrouped path.
-  if (target.empty() || group.size() != target.size())
+  if (target.empty() || group.size() != target.size() ||
+      (!hold_zero.empty() && hold_zero.size() != target.size()))
     return co::Err(co::ErrorCode::InvalidArgument, "price neutralize: group geometry");
-  return neutralize(target, member, exposures, ok, group, cfg, scratch, stats);
+  return neutralize(target, member, exposures, ok, group, hold_zero, cfg, scratch, stats);
 }
 
 co::Status neutralize_price_risk_within_groups(const PriceExposureInput& in,
@@ -545,10 +557,12 @@ co::Status neutralize_price_risk_within_groups(const PriceExposureInput& in,
                                                std::span<f64> target,
                                                std::span<const u8> member,
                                                std::span<const f64> group,
-                                               PriceRiskScratch& scratch, NeutralizeStats& stats) {
+                                               PriceRiskScratch& scratch, NeutralizeStats& stats,
+                                               std::span<const u8> hold_zero) {
   stats = {};
-  if (!in.instruments || group.size() != in.instruments)
+  if (!in.instruments || group.size() != in.instruments ||
+      (!hold_zero.empty() && hold_zero.size() != in.instruments))
     return co::Err(co::ErrorCode::InvalidArgument, "price risk: group geometry");
-  return price_risk(in, cfg, d, target, member, group, scratch, stats);
+  return price_risk(in, cfg, d, target, member, group, hold_zero, scratch, stats);
 }
 } // namespace atx::impl::strategy

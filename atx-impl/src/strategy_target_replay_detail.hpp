@@ -74,7 +74,10 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // no_short (NAV locate-in-aim, v6 prereg C3): empty (the default: unchanged), or one byte per
 // name; a member with no_short[i] != 0 and a negative tied-rank weight is set to 0
 // BEFORE the post-processing, so price-risk-v1 re-balances net and beta around it
-// (counted in out.locate_zeroed). A span of any other length is InvalidArgument.
+// (counted in out.locate_zeroed). A span of any other length is InvalidArgument. Under
+// the industry ids no_short is also the within-groups hold mask (review I3): every
+// member with no_short[i] != 0 whose aim is 0 there (the zeroed shorts, and an exact-0
+// tied-rank aim) is reset to 0 after the group demeaning, before the OLS.
 [[nodiscard]] atx::core::Result<bool> form_desired(
     const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d,
     std::vector<std::pair<atx::f64, atx::usize>>& row, std::vector<atx::f64>& desired,

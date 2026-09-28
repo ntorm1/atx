@@ -1167,3 +1167,65 @@ TEST(TargetReplayV6, IndustryConstructionIsTheWithinGroupsPrimitive) {
   EXPECT_EQ(pinned.error().code(), co::ErrorCode::InvalidArgument);
   EXPECT_FALSE(std::filesystem::exists(dir.path / "out"));
 }
+
+// Locate-in-aim under ind-v1 (review I3): form_desired zeroes the special-tier shorts and
+// hands the no-short mask to the within-groups primitive as its hold mask, bit for bit, so
+// the zeroed names (3, 4, 5 of group 4) are reset to 0 after the group demeaning instead
+// of inheriting -(group mean): they end less short than unheld. price-risk-v1 with the
+// same mask is the v1 primitive on the zeroed target (no hold; C1's path unchanged).
+TEST(TargetReplayV6, LocateInAimHoldsZeroedShortsThroughTheIndustryDemeaning) {
+  const Role role(70, 12, 21);
+  const auto cfg = industry_daily(st::TargetNeutralize::PriceRiskIndV1);
+  constexpr usize d = 60;
+  const auto industry = role_industry(role);
+  auto in = role.input();
+  in.industry = industry;
+  std::vector<std::pair<f64, usize>> row;
+  std::vector<f64> zeroed(role.n);
+  st::detail::desired_target(std::span<const f64>(role.signal).subspan(d * role.n, role.n),
+                             std::span<const u8>(role.member).subspan(d * role.n, role.n), row,
+                             zeroed);
+  std::vector<u8> no_short(role.n, 0);
+  usize shorts = 0;
+  for (usize i = 0; i < 6; ++i) { // group 4 is in the special tier
+    no_short[i] = 1;
+    if (zeroed[i] < 0) { zeroed[i] = 0; ++shorts; }
+  }
+  ASSERT_EQ(shorts, 3U);
+  const std::vector<u8> members(role.n, 1);
+  const auto group = std::span<const f64>(industry).subspan(d * role.n, role.n);
+  st::PriceRiskScratch primitive;
+  st::NeutralizeStats stats;
+  auto held = zeroed, unheld = zeroed;
+  ASSERT_TRUE(st::neutralize_price_risk_within_groups(role.prices(), cfg.price_risk, d, held,
+                                                      members, group, primitive, stats,
+                                                      no_short));
+  ASSERT_TRUE(st::neutralize_price_risk_within_groups(role.prices(), cfg.price_risk, d, unheld,
+                                                      members, group, primitive, stats));
+  std::vector<f64> desired(role.n);
+  st::PriceRiskScratch scratch;
+  st::ConstructionDay record;
+  const auto rebalance =
+      st::detail::form_desired(in, cfg, d, row, desired, scratch, record, no_short);
+  ASSERT_TRUE(rebalance) << rebalance.error().to_string();
+  EXPECT_TRUE(*rebalance);
+  EXPECT_EQ(record.neutralize, st::NeutralizeOutcome::Applied);
+  EXPECT_EQ(record.locate_zeroed, shorts);
+  for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(desired[i]), bits(held[i])) << i;
+  f64 held_short = 0, unheld_short = 0;
+  for (usize i = 3; i < 6; ++i) {
+    held_short += held[i];
+    unheld_short += unheld[i];
+  }
+  EXPECT_GT(held_short, unheld_short);
+  const auto v1_cfg = neutral_daily();
+  auto v1 = zeroed;
+  ASSERT_TRUE(st::neutralize_price_risk(role.prices(), v1_cfg.price_risk, d, v1, members,
+                                        primitive, stats));
+  record = {};
+  const auto v1_rebalance =
+      st::detail::form_desired(role.input(), v1_cfg, d, row, desired, scratch, record, no_short);
+  ASSERT_TRUE(v1_rebalance) << v1_rebalance.error().to_string();
+  EXPECT_EQ(record.locate_zeroed, shorts);
+  for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(desired[i]), bits(v1[i])) << i;
+}

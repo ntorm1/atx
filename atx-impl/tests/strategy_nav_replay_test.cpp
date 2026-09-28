@@ -2681,6 +2681,25 @@ TEST(NavV6, WorkspaceReserveIsChargedAtTheRunGeometry) {
   }
 }
 
+// Review I2 (the C1 x C2 merge): the reserve charges the shared liquidity cache whenever
+// the run holds it -- rate per-name-v1, or --liquidity-cache at a fixed rate -- with the
+// predicate validate_nav_input's budget uses, one cache row per name; a fixed rate
+// without the cache charges none.
+TEST(NavV6, WorkspaceReserveChargesTheLiquidityCacheAtAFixedRate) {
+  const usize books = st::nav_scenario_matrix(true).size(), names = 11, sessions = 9;
+  const auto reserve = [&](const st::NavReplayConfig& base) {
+    return st::nav_workspace_reserve_bytes(base, books, true, names, sessions);
+  };
+  const st::NavReplayConfig fixed{};
+  auto cached = fixed; cached.liquidity_cache = true;
+  auto per_name = fixed; per_name.rate = st::NavRateRule::PerNameV1;
+  auto both = per_name; both.liquidity_cache = true;
+  ASSERT_GT(reserve(cached), reserve(fixed));
+  EXPECT_EQ((reserve(cached) - reserve(fixed)) % names, 0U);
+  EXPECT_EQ(reserve(cached), reserve(per_name));
+  EXPECT_EQ(reserve(both), reserve(per_name));
+}
+
 // price-risk-ind-v1 end to end: the NAV forms exactly the target replay's industry
 // construction (outcomes, amplification, group record) in every lockstep book; the
 // pinned run loads grp_ff12 from --fields and publishes the id, the industry recipe and
