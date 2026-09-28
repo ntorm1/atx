@@ -69,6 +69,10 @@ def test_cscv_vectorised_equals_literal_reference():
     np.testing.assert_allclose(got["logits"], ref, rtol=0, atol=1e-12)
     assert got["pbo"] == pytest.approx(np.mean(np.array(ref) <= 0), abs=0)
     assert got["dropped_tail_sessions"] == 3 and got["block_width"] == 12 and got["exhaustive"]
+    dist = got["logit_distribution"]
+    assert sum(dist["splits"]) == got["splits"] and len(dist["logit"]) == 5
+    for k, c in enumerate(dist["splits"]):  # every split's logit is the logit of its rank
+        assert c == int(np.sum(np.isclose(got["logits"], dist["logit"][k], rtol=0, atol=1e-12)))
 
 
 def test_cscv_iid_cells_pbo_near_half_and_dominant_cell_zero():

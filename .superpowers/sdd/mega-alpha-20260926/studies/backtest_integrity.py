@@ -204,14 +204,15 @@ def cscv_pbo(returns, blocks: int = PBO_BLOCKS, max_splits: int | None = None, s
     if masks.shape[0] > 1 and np.var(iw) > 0:
         slope = float(np.cov(iw, ow, ddof=1)[0, 1] / np.var(iw, ddof=1))
     q = np.quantile(logits, [0.05, 0.25, 0.5, 0.75, 0.95])
-    edges = np.linspace(-math.log(n), math.log(n), 9)
-    hist, _ = np.histogram(logits, bins=edges)
+    ranks = np.bincount(rank, minlength=n)   # the exact logit distribution: logit is a function of the rank alone
     return {"pbo": float(np.mean(logits <= 0.0)), "n_candidates": n, "sessions": t, "blocks": blocks,
             "block_width": width, "dropped_tail_sessions": t - used, "splits": int(masks.shape[0]),
             "splits_total": int(total), "exhaustive": not subsampled, "seed": seed if subsampled else None,
             "logit_mean": float(logits.mean()), "logit_quantiles": dict(zip(("p5", "p25", "p50", "p75", "p95"),
                                                                               map(float, q))),
-            "logit_histogram": {"edges": [float(e) for e in edges], "counts": [int(c) for c in hist]},
+            "logit_distribution": {"oos_rank": list(range(n)),
+                                   "logit": [math.log((k + 1.0) / (n - k)) for k in range(n)],
+                                   "splits": [int(c) for c in ranks]},
             "winner_is_sr_annual_mean": float(iw.mean() * math.sqrt(ANNUAL)),
             "winner_oos_sr_annual_mean": float(ow.mean() * math.sqrt(ANNUAL)),
             "prob_winner_oos_loss": float(np.mean(ow < 0.0)),

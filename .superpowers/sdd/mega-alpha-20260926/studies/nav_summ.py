@@ -560,8 +560,9 @@ def print_pbo(res: dict, cells: list[str], common: list[int]) -> None:
           f"p75 {q['p75']:+.3f} p95 {q['p95']:+.3f} | IS winner SR {res['winner_is_sr_annual_mean']:+.3f} ann -> OOS "
           f"{res['winner_oos_sr_annual_mean']:+.3f} ann, P[OOS SR < 0] {res['prob_winner_oos_loss']:.3f}, degradation "
           f"slope {fmt(res['degradation_slope'], '+.3f')}")
-    print(f"   logit histogram edges {[round(e, 3) for e in res['logit_histogram']['edges']]} counts "
-          f"{res['logit_histogram']['counts']}")
+    dist = res["logit_distribution"]
+    print(f"   logit distribution (IS winner's OOS rank 0 = worst .. {res['n_candidates'] - 1} = best; logit "
+          f"{dist['logit'][0]:+.3f} .. {dist['logit'][-1]:+.3f}): splits {dist['splits']}")
     for c, w in zip(cells, res["winner_counts"]):
         print(f"   IS winner {w:6d}x  {c}")
 
