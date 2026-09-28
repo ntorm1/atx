@@ -1,0 +1,211 @@
+{
+  "schema": "atx.research-cycle-spec/v1",
+  "name": "v61",
+  "description": "v6.1 cell (v4-prereg.md '## v6.1 sub-alpha'): library v6.1 = v6 + sv_flow on the restricted TRAIN role lo1 (linked-operating-v1), fields-v6b list + sv_ratio126, ew-theme-v1 refit, final v6 construction with L fixed 1.247, paired vs the v6 final cell, DSR N 29. Reproduces .superpowers/sdd/mega-alpha-20260926/studies/v61_train.sh pin for pin. TRAIN 2020-2022 only.",
+  "python": "C:/Program Files/Python312/python.exe",
+  "env_path_prepend": [
+    "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
+    "C:/atx-cache/vcpkg_installed/x64-windows/bin"
+  ],
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 180,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "exes": {
+    "ic": "build-equity/bin/atx-equity-strategy-ic.exe",
+    "nav": "build-equity/bin/atx-equity-strategy-targets.exe"
+  },
+  "inputs": {
+    "library": {
+      "path": "atx-impl/strategies/fund_industry_ic_v61.json",
+      "sha256": "db35c2769f6c13a8d9d5b2897a9e6968855bffbe6214ff96a12f6869cb59f9b5"
+    },
+    "recipe": {
+      "path": "atx-impl/strategies/fund_industry_ic_v61.recipe.json",
+      "sha256": "9bf278a6f3dfa78edd506ab3e499b2e8dd1ce34899752fe81df573e65550f547"
+    },
+    "baseline_library": {
+      "path": "atx-impl/strategies/fund_industry_ic_v6.json",
+      "sha256": "5ee66d137c60527c4b00f948e8b15c04f2bddc789e988b660a4254a6df6e896a"
+    },
+    "role": {
+      "dir": "build-equity/recent-fast-train-2020-2022-v2-lo1",
+      "path": "build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.json",
+      "universe": "linked-operating-v1",
+      "sha256": "3e79978a858cbf6b723ff7a896d56814f7505dde11b805c30c5b909783ebb809"
+    },
+    "identity_bridge": {
+      "dir": "build-equity/identity-bridge-r4-v1",
+      "path": "build-equity/identity-bridge-r4-v1/manifest.json",
+      "sha256": "ddf9716459a1116b85f713ca9cb788c3db753a6e1fea8eba335ed34320baebaa"
+    },
+    "fund_events": {
+      "dir": "build-equity/fundamental-events-v2",
+      "path": "build-equity/fundamental-events-v2/manifest.json",
+      "sha256": "74ed9a50ea686e0b0842ff9b09e78d6653ddeedd0d42f37893873ce269e3dd71"
+    },
+    "baseline_fields": {
+      "dir": "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v6b",
+      "path": "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v6b/manifest.json",
+      "sha256": "c69b9c0faf76e333f69b480a698e57b1309f2882b74a40092d9ebb91b9fa82c8"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v6u-ew/admission.json",
+      "sha256": "78ccf155428bb086e16120727ab71262bd9fcd25b9b3ccc5d94716e8b2ff763a"
+    },
+    "reference_cell": {
+      "dir": "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "path": "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+      "sha256": "29921e2be27dddf22929673060b8966bc71692a3d3107d826c5636ecdbf782f5"
+    }
+  },
+  "fields": {
+    "builder": "atx-engine/tools/prepare_research_fields.py",
+    "output": "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v7",
+    "list": [
+      "si_shares",
+      "si_dtc",
+      "iv_atm_21d",
+      "iv_atm_63d",
+      "iv_atm_126d",
+      "earn_recent",
+      "shares_out",
+      "mkt_ret",
+      "be",
+      "at",
+      "at_lag4",
+      "lt",
+      "che",
+      "debt",
+      "sale_ttm",
+      "gp_ttm",
+      "oi_ttm",
+      "ni_ttm",
+      "ni_q",
+      "ni_q_lag4",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "cfo_ttm",
+      "capx_ttm",
+      "xrd_ttm",
+      "dvc_ttm",
+      "prstkc_ttm",
+      "sstk_ttm",
+      "txt_q",
+      "txt_q_lag4",
+      "shrs_q",
+      "shrs_q_lag4",
+      "noa",
+      "noa_lag4",
+      "sue",
+      "fscore",
+      "me_company",
+      "grp_sic2",
+      "grp_ff12",
+      "grp_ff49",
+      "sv_ratio126"
+    ],
+    "sources": {
+      "finra": "C:/atx/data/finra_short_interest",
+      "tickerhistory": "C:/Users/natha/Downloads/TickerHistory3.parquet",
+      "finra_short_volume": "C:/atx/atx-db/data/raw/finra_short_volume"
+    },
+    "fund_lag_sessions": 1,
+    "max_rss_mib": 1536,
+    "max_seconds": 1800,
+    "check": {
+      "baseline": "baseline_fields",
+      "expect_added": [
+        "sv_ratio126"
+      ],
+      "short_volume_files_sha256": "6a968e5aafd820e1e19c014c0f17f4adb6dd55d2b9c395299ad2c5460593d081"
+    }
+  },
+  "static_check": {
+    "script": "atx-impl/strategies/check_fund_ic_v6.py",
+    "args": [
+      "--require-baseline-prefix"
+    ],
+    "expect_added": [
+      "sv_flow"
+    ]
+  },
+  "ic": {
+    "u_output": "build-equity/mega-v61-train-u",
+    "w_output": "build-equity/mega-v61w-train-ew",
+    "cache": "build-equity/mega-candidate-cache-v61",
+    "flags": [
+      "--max-memory-mib",
+      "1536",
+      "--min-names",
+      "1000",
+      "--workers",
+      "4",
+      "--save-combined"
+    ]
+  },
+  "fit": {
+    "script": "atx-impl/tools/fit_composition_weights.py",
+    "output": "build-equity/mega-weights-v61-ew",
+    "work_dir": "build-equity/mega-fit-work-v61",
+    "flags": [
+      "--orientation",
+      "prior",
+      "--screen",
+      "v4-prior-v1",
+      "--composition",
+      "ew-theme-v1"
+    ],
+    "max_seconds": 150,
+    "max_passes": 3
+  },
+  "gate": {
+    "name": "p1",
+    "admitted": [
+      "sv_flow"
+    ],
+    "sign_agrees": true,
+    "report": [
+      "si_ratio",
+      "dtc",
+      "si_change"
+    ]
+  },
+  "nav": {
+    "output": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+    "rule": "aim-partial-v5",
+    "leverage": "1.247",
+    "flags": [
+      "--cadence",
+      "1",
+      "--trade-fraction",
+      ".05",
+      "--dust-multiple",
+      ".1",
+      "--aim-leverage",
+      "{leverage}",
+      "--daily-turnover-mean-max",
+      ".20",
+      "--daily-turnover-p95-max",
+      ".30",
+      "--neutralize",
+      "price-risk-v1",
+      "--max-bytes",
+      "1073741824",
+      "--order-basis",
+      "delta",
+      "--exit-rate",
+      ".05",
+      "--locate-in-aim",
+      "--liquidity-cache"
+    ]
+  },
+  "summ": {
+    "script": ".superpowers/sdd/mega-alpha-20260926/studies/nav_summ.py",
+    "dsr_n": 29,
+    "extra": [],
+    "ledger_kind": "construction"
+  }
+}
