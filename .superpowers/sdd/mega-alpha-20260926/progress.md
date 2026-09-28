@@ -1,5 +1,16 @@
 # Active task: recent-data DSL ensemble
 
+## Task V6-C1: complete (re-review ALL ADDRESSED). V6-W fix round 1 landed and cherry-picked; build v6-1 (IC) running (2026-09-27 ~22:40)
+task-V6C1fix-rereview.md: ALL ADDRESSED, no new Critical/Important; default-path bytes traced identical at exit_rate 1;
+M1/M2/M4/M6/M7 open by design (disclosures). Pool-2 now has C1 + fix (144071a3, 64e5fe98).
+V6-W fix round 1 (pool-4 c126ef26, c9bbfbbe, 3481cd95): schema atx.dsl-composition-weights/v2 for ew-theme-v6 only, runner
+gate v2<->block present, old binary refuses; SIC 6792/6795 excluded; numpy-2-safe counts; env example keeps the 1536 MiB cap.
+All 7 W commits cherry-picked into pool-2 (4d239a9d .. a48677cb, clean). pytest in pool-2: 92 passed (fitter + universe).
+Scoped re-review (Sonnet) dispatched -> task-V6Wfix-rereview.md. Build tag v6-1 = atx-equity-strategy-ic +
+atx-impl-strategy-ic-tests (W's C++); NAV C2 will be tag v6-2 after the rebase lands.
+- Ruling: two build tags (v6-1 IC now, v6-2 NAV later) instead of one -- why: the ew-theme-v6 fit on library v6 can run
+  while the C2 rebase is still in progress -- cost if wrong: one extra tag.
+
 ## Conditional cells (on delta x.05): C3 locate-in-aim BEST +0.975; theta .03 rejected; dust .2 marginal (2026-09-27 ~22:15)
 S2 net / dSR vs v6l parent (SE) / tau / cost_bps / gross_all / net_all:
   +loc (C3)        +0.975 / +0.060 (.101) / .0389 / 11.15 / .7611 / +.0040  <- gross SR 1.304, HAC t 1.77, vol 3.62%; gate |net| fixed

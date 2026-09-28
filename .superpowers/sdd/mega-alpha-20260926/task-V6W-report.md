@@ -244,3 +244,35 @@ Before step 2, check `min(kept_member_counts[399:])` against `--min-names 1000`;
    - An ADR linked to a filing issuer with common-class evidence stays. V6-U drops ADRs without a link, and no point-in-time ADR flag exists in the u-pass inputs.
 7. **V6-U side effects.** It needs a fields rebuild on the new role. `mkt_ret` then becomes the equal-weight market of the restricted members, and it feeds `ear`, `low_beta` and `low_ivol`.
 8. **Work directory.** The fitter's script SHA changed, so the V6-W fit needs a new `--work-dir`. Records in `mega-fit-work-v51` never match now and would all be recomputed.
+
+## Fix round 1
+
+Commits on `feat/mega-alpha-v6-w-20260927` (pool-4), on top of 34006519:
+
+| Commit | Item | Change |
+|---|---|---|
+| c126ef26 | I1, I3 | Fitter: ew-theme-v6 emits `atx.dsl-composition-weights/v2` (`WEIGHTS_SCHEMA_V2`); ew-theme-v1 / ew-theme-aim-v1 stay v1 with bytes unchanged. Runner: `composition_weights()` accepts v1 or v2; after `composition_themes()` it refuses "schema ...v2 requires a theme_redistribution block" and "theme_redistribution requires composition weights schema ...v2". An old binary refuses v2 through "composition weights schema/library identity". The usage text is updated. Two new runner gtests (see below). |
+| c9bbfbbe | I2, ruling | `NON_OPERATING_SIC` gains 6792 / 6795 (royalty trusts); REITs 6798 stay. The docstring, the rule text and the classifier test are updated. The uint8 builtin `sum` is replaced by int64 counts throughout the restriction test. |
+| 3481cd95 | m1 | `W_MAX_RSS_MIB` and the "raise --max-rss-mib" line are removed. `W_MAX_MEMORY_MIB=2304` is documented as the admit estimate only; the RSS cap stays 1536 MiB. The header says an old binary refuses v2. |
+
+**New runner gtests** (in `strategy_ic_runner_test.cpp`; written but not built):
+
+- `StrategyIcRunner.ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput`:
+  - Admitted under `--plan-only`: v2 with one theme, v2 with two themes, v2 where a zero-weight candidate has no theme, and v1 without a block.
+  - Refusals, each run both under `--plan-only` and as a full run, with payloads deleted, no output and no progress: v2 without a block, v1 with a block, a v3 schema, a non-object block, a wrong rule, a wrong composition, a missing `themes`, an array `themes`, an unknown id, an uppercase name, a hyphenated name, an empty name, a non-string name, a 65-character name, a missing theme for a weighted id, and zero weighted themes.
+  - A 33-candidate library: 33 themes are refused and 32 are admitted.
+- `StrategyIcRunner.ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned`, with the weights plain v1, themed v2 and signed themed v2:
+  - The recipe `composition` string is correct in both signs variants, and `composition_redistribution` is `within-theme-v1`.
+  - The summary has `composition_weights.redistribution`.
+  - Both `<role>_combined.json` files have `composition_redistribution`, and `signal_semantics` is unchanged.
+  - The plain v1 recipe has no new key; apart from those keys it equals the themed recipe.
+  - The themed blend is `2 * centered rank` for d >= 63.
+
+**Tests run** (both Python files, under numpy 1.26.4 at `C:/Program Files/Python312/python.exe` and numpy 2.5.2 as `python` on PATH):
+
+- `test_fit_composition_weights`: 81 OK under each. This includes the new `test_schema_v2_only_for_v6`, and the `runner_accepts` port now enforces v2 iff the block is present.
+- `test_prepare_recent_research`: 11 OK under each.
+
+**Not done:** no C++ build or run, per the no-build rule. The root must build `atx-impl` tests and run `StrategyIcRunner.ThemeRedistribution*` and `StrategyIcComposition.*`.
+
+Concern 2 above is resolved by I1. Concern 3 is superseded by m1: the RSS cap is not raised.
