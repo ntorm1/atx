@@ -1,5 +1,15 @@
 # Active task: recent-data DSL ensemble
 
+## V6-U started: restricted role built and gated; fields-v6 rebuild running; whole-branch review dispatched (2026-09-27 ~23:55)
+studies/v6u_train.sh (restrict -> gate -> fields -> u -> fit ew-theme-v1 -> w -> nav on the accepted construction; own
+candidate cache mega-candidate-cache-v6u; nav paired vs the loc cell; DSR N 27). Restricted role
+build-equity/recent-fast-train-2020-2022-v2-lo1 (linked-operating-v1; bounded runner exit 0): min kept members in the
+score window 1675 (gate >= 1000 PASS); dropped member share .4031 (review I1 predicted .394); reasons: unlinked 899,105,
+non_operating_sic 5,343, secondary_line 3,068, no_visible_sic 34, class_not_common 0, ambiguous 0.
+Fields rebuild (prepare_research_fields.py, builder caps 700 MiB / 1800 s; not the bounded runner -- a data step, disclosed):
+mkt_ret becomes the equal-weight market of the restricted members (disclosed consequence).
+Whole-branch adversarial review dispatched (Opus): review-v6-branch.diff (23 files, +7308/-196) -> task-V6-branch-review.md.
+
 ## ew-theme-v6 REJECTED; C5 ind-v1 / ind-v2 REJECTED (sign rule) -- stack fixed on ew-theme-v1 x price-risk-v1 (2026-09-27 ~23:40)
 Parent for all three: mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc (net +0.975). S2 net / dSR (SE) / gross SR / vol / tau / 2020:
   ew6 (W: drop low_risk, merge options->SI, fast x1/3)  +0.921 / -0.055 (.297) / 1.203 / 3.80% / .0293 / +.002  -> REJECTED
