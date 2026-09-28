@@ -50,7 +50,8 @@ ADDS lines / JSON keys; without them the output is byte-identical to the v6.1 na
   --ledger PATH          append each listed dir to the atx.trial-ledger/v1 JSONL (R5.1) as one trial of --ledger-kind
                          (admission|composition|construction|universe|data; default construction; --ledger-count per
                          line, --ledger-note), with its pins, TRAIN window, daily CSV path + SHA-256 and S2 net SR.
-                         Idempotent on (kind, cell, series SHA-256); a series with a session >= 2023-01-01 is refused.
+                         Idempotent on (kind, daily series SHA-256): an identity re-run adds no trial; a series with a
+                         session >= 2023-01-01 is refused.
   --ledger-n PATH        print the Appendix A block: trials by kind and window from that ledger (no dirs needed).
   --effective-n SOURCE   effective-N DSR beside the cell-count DSR and the Lo null: ONC clusters (Lopez de Prado &
                          Lewis 2019) of the trial series of SOURCE = "dirs" (the listed dirs) or a ledger PATH (its

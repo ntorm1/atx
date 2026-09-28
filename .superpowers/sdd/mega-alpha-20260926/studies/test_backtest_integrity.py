@@ -173,6 +173,11 @@ def test_ledger_append_is_idempotent_and_counts_by_kind_and_window(tmp_path):
     assert len(added) == 3 and not skipped
     added, skipped = BI.ledger_append(ledger, recs[:2])          # identity re-run: no new trial
     assert not added and len(skipped) == 2
+    import shutil
+    twin = shutil.copytree(dirs[0], Path(dirs[0]).parent / "cell0-r7")   # same bytes under a suffixed cell name
+    rec = BI.ledger_record("construction", str(twin), twin / "summary.json", twin / f"daily_{SCEN}.csv", SCEN,
+                           NS.net_series(NS.load_daily(twin, SCEN)), 1.0)
+    assert BI.ledger_append(ledger, [rec]) == ([], [rec])
     rows = BI.ledger_read(ledger)
     assert len(rows) == 3 and {r["kind"] for r in rows} == {"construction"}
     w = rows[0]["window"]

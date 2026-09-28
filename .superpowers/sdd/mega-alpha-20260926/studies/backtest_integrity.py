@@ -2,7 +2,8 @@
 
   trial ledger    atx.trial-ledger/v1 JSON lines (R5.1): one line per cell/run with its kind (admission, composition,
                   construction, universe, data), cell dir, pins, window, daily net series path + SHA-256 and S2 net SR.
-                  Appends are idempotent on (kind, cell, series SHA-256): an identity re-run never adds a trial.
+                  Appends are idempotent on (kind, daily series SHA-256): an identity re-run (the same daily net
+                  series under any cell name, e.g. a research_cycle --suffix re-run) never adds a trial.
                   Only TRAIN series (every session before 2023-01-01) are accepted; anything later is refused.
   effective N     ONC clustering (Lopez de Prado & Lewis 2019, QF 19(9); code as Lopez de Prado 2020, "Machine
                   Learning for Asset Managers", snippets 4.1-4.2) of the trials' daily net series on their common
@@ -506,8 +507,8 @@ def ledger_record(kind: str, cell: str, summary_path: Path, daily_path: Path, sc
         rec["note"] = note
     if run:
         rec["recorded_by"] = run
-    rec["trial_id"] = hashlib.sha256(json.dumps([kind, rec["cell"], series_sha], separators=(",", ":"))
-                                     .encode()).hexdigest()[:16]
+    # identity: the kind and the series bytes (a byte-identical re-run under another cell name is the same trial)
+    rec["trial_id"] = hashlib.sha256(json.dumps([kind, series_sha], separators=(",", ":")).encode()).hexdigest()[:16]
     return rec
 
 
