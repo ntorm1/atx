@@ -10,9 +10,13 @@ Validates, independently of the generator:
     value depends on the panel's first date (and the multi-output test builtin);
   * IC-runner static limits: DSL <= 4096 bytes, <= 5 extra (non-base) fields per candidate;
 and prints the diff against the baseline library (v5.1): added, removed and changed (same id, new DSL) ids.
+With --require-baseline-prefix (library v6.1 against baseline v6), the baseline's candidate entries must be an
+identical prefix of the library's (same objects, same order) and --expect-added the exact appended ids.
 Exit status 1 on any failure. The manifest is metadata only (field names); no field values are read.
 
 Run: "C:/Program Files/Python312/python.exe" atx-impl/strategies/check_fund_ic_v6.py --manifest <fields manifest.json>
+v6.1: ... check_fund_ic_v6.py --manifest <fields-v7 manifest.json> --library atx-impl/strategies/fund_industry_ic_v61.json
+      --baseline atx-impl/strategies/fund_industry_ic_v6.json --require-baseline-prefix --expect-added sv_flow
 """
 from __future__ import annotations
 
@@ -104,6 +108,17 @@ def check(library: dict, fields_available: set[str], max_roster: int) -> list[st
     return errors
 
 
+def prefix_errors(library: dict, baseline: dict, expect_added: list[str] | None) -> list[str]:
+    """The baseline's candidate entries must open the library's list unchanged; the rest are the expected additions."""
+    new, old = library['candidates'], baseline['candidates']
+    errors = [f'baseline candidate {k} ({o.get("id")}) is not identical at the same position'
+              for k, o in enumerate(old) if k >= len(new) or new[k] != o]
+    added = [c.get('id') for c in new[len(old):]]
+    if expect_added is not None and added != expect_added:
+        errors.append(f'appended ids {added} != expected {expect_added}')
+    return errors
+
+
 def diff(library: dict, baseline: dict) -> dict[str, list[str]]:
     new = {c['id']: c['dsl'] for c in library['candidates']}
     old = {c['id']: c['dsl'] for c in baseline['candidates']}
@@ -118,6 +133,9 @@ def main() -> None:
     parser.add_argument('--library', type=Path, default=HERE / 'fund_industry_ic_v6.json')
     parser.add_argument('--baseline', type=Path, default=HERE / 'fund_industry_ic_v5.json')
     parser.add_argument('--max-roster', type=int, default=48)
+    parser.add_argument('--require-baseline-prefix', action='store_true',
+                        help='the baseline candidate entries must be an identical prefix of the library (v6.1 vs v6)')
+    parser.add_argument('--expect-added', default=None, help='comma-separated ids appended after the baseline prefix')
     args = parser.parse_args()
     blob = args.library.read_bytes()
     library, baseline = json.loads(blob), json.loads(args.baseline.read_bytes())
@@ -126,6 +144,11 @@ def main() -> None:
           f'{len(library["candidates"])}; manifest {args.manifest} ({len(available)} fields, sha256 '
           f'{hashlib.sha256(args.manifest.read_bytes()).hexdigest()})')
     errors = check(library, available, args.max_roster)
+    if args.require_baseline_prefix:
+        expect = [x for x in args.expect_added.split(',') if x] if args.expect_added is not None else None
+        prefix = prefix_errors(library, baseline, expect)
+        errors += prefix
+        print(f'baseline prefix: {len(baseline["candidates"])} entries ' + ('identical' if not prefix else 'DIFFER'))
     d = diff(library, baseline)
     print(f'vs {args.baseline.name}: added {len(d["added"])} {d["added"]}')
     print(f'  removed {len(d["removed"])} {d["removed"]}')
