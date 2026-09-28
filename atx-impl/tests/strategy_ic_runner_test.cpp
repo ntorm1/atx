@@ -1606,6 +1606,48 @@ TEST(StrategyIcRunner, CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests)
   EXPECT_NE(refused.error.find("--cache-legacy-fields"),std::string::npos) << refused.error;
   EXPECT_FALSE(std::filesystem::exists(dir.path/"bad"));
 }
+// Windows without long-path opt-in caps a path at 259 characters. The deepest
+// committed file of the v2 layout is a field candidate's IC result,
+// ROOT/<role>/fp_<16>/ic1_<16>/<id>.<dsl16>.json. With the cache directory padded
+// so that path is exactly 255 characters, every write still lands: a transient
+// partial is never deeper than the file it publishes (the former
+// ".<final name>.<nonce>.partial" was ~26 characters deeper and failed to open).
+TEST(StrategyIcRunner, CandidateCacheWritesFitWithinTheDeepestCommittedPath) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares","mkt_ret"},
+      {{"si_ratio","si_shares / volume"},{"market_shift","volume + mkt_ret"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares","mkt_ret"}));
+  // A shallow run shows the layout below the cache directory (identity level,
+  // fp_ and ic1_ names) for this build.
+  auto shallow=cfg; shallow.candidate_cache_directory=(dir.path/"c").string();
+  const auto probe=run_named(dir,shallow,"probe"); ASSERT_TRUE(probe.ok) << probe.error;
+  const auto probe_summary=dir.path/"probe"/"summary.json";
+  const auto ic_subdirectory=read_json(probe_summary).at("roles").at(0).at("candidate_cache")
+      .at("ic_results").at("subdirectory").get<std::string>();
+  const auto deepest=[&ic_subdirectory](const std::filesystem::path& summary) {
+    const auto sidecar=cache_entry(summary,"train","market_shift").sidecar;
+    return sidecar.parent_path()/ic_subdirectory/sidecar.filename();
+  };
+  const usize below=deepest(probe_summary).string().size()-shallow.candidate_cache_directory.size();
+  constexpr usize budget=255;
+  const usize parent=dir.path.string().size()+1;
+  if (parent+1+below>budget) GTEST_SKIP() << "temp directory too deep for the path budget: " << dir.path;
+  cfg.candidate_cache_directory=(dir.path/std::string(budget-below-parent,'d')).string();
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto ic_result=deepest(dir.path/"cold"/"summary.json");
+  EXPECT_EQ(ic_result.string().size(),budget) << ic_result;
+  EXPECT_TRUE(std::filesystem::exists(ic_result)) << ic_result;
+  // Warm at that depth: every signal and IC result hits; no partial is left behind.
+  const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  EXPECT_EQ(warm.log.find("IC cache-miss"),std::string::npos);
+  const auto warm_summary=read_json(dir.path/"warm"/"summary.json");
+  for (const auto& role_result:warm_summary.at("roles")) {
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),4);
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),4);
+  }
+  for (const auto& entry:std::filesystem::recursive_directory_iterator(cfg.candidate_cache_directory))
+    EXPECT_FALSE(entry.path().filename().string().ends_with(".partial")) << entry.path();
+}
 // --cache-report: metadata only, no output directory; hits and misses per role,
 // and every entry under ROOT that no candidate resolves to, with its bytes.
 TEST(StrategyIcRunner, CacheReportAccountsHitsMissesAndUnreferencedEntries) {

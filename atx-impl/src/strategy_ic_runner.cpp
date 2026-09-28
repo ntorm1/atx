@@ -1284,16 +1284,21 @@ co::Status cache_load(const CacheHit& hit,usize cells,std::vector<f64>& out,Hash
   return load_pinned_f64(hit.dir/(hit.stem+".f64"),hit.payload_sha,cells,out,"candidate cache payload",&meter);
 }
 // Unique per attempt so a concurrent or killed writer never shares a partial.
+// The name is ".<16-hex nonce>.partial" (25 characters) beside `final`, never
+// derived from the final name: a partial path must not be the deepest path of an
+// entry. Windows without long-path opt-in caps a path at 259 characters, and the
+// v2 layout already spends ROOT/<64-hex role>/fp_<16>/ic1_<16>/<id>.<dsl16>.json;
+// a ".<final name>.<nonce>.partial" name added ~26 characters on top of that and
+// failed to open under deep roots while every final path still fit.
 struct PartialFile {
   std::filesystem::path path;
   explicit PartialFile(const std::filesystem::path& final) {
     std::random_device entropy;
     const auto nonce=((static_cast<u64>(entropy())<<32)^static_cast<u64>(entropy()))^
         static_cast<u64>(std::chrono::steady_clock::now().time_since_epoch().count());
-    // Short fixed-width tag: cache paths already carry a 64-hex role directory.
     constexpr char digits[]="0123456789abcdef"; std::string tag(16,'0');
     for (usize i=0;i<tag.size();++i) tag[i]=digits[(nonce>>(4*i))&15U];
-    path=final.parent_path()/("."+final.filename().string()+"."+tag+".partial");
+    path=final.parent_path()/("."+tag+".partial");
   }
   PartialFile(const PartialFile&)=delete;
   PartialFile& operator=(const PartialFile&)=delete;
@@ -1315,7 +1320,8 @@ co::Result<bool> publish_new(const std::filesystem::path& partial,const std::fil
 co::Result<std::string> write_partial(const PartialFile& partial,std::span<const std::byte> bytes,
                                       HashMeter* meter=nullptr) {
   std::ofstream out(partial.path,std::ios::binary); co::Sha256 digest;
-  if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache partial output");
+  if (!out)
+    return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache partial output: "+partial.path.string());
   for (usize offset=0;offset<bytes.size();) {
     const auto chunk=bytes.subspan(offset,std::min(io_chunk,bytes.size()-offset));
     // SAFETY: char reads the object representation of the caller's byte span.
