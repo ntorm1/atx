@@ -17,6 +17,19 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 L2 merged (21663eed) -- acceptance in progress
+- L2 (pool-11, HEAD 6332d686, 104 tests): research_cycle.py (plan/lock/run/status, hard-stop on refused receipt),
+  prepare_research_fields.py --reuse, studies/backtest_integrity.py + nav_summ.py (trial ledger, ONC effective-N DSR,
+  CSCV PBO, PSR/MinTRL). Stretch WorkStore skipped (needs L1 sidecar). Merged before L1 (no C++ touched).
+- Accepted so far: (1) `plan specs/v61.json --lines-only` == v61_train.sh DRY fixture (diff empty). (5) integrity stats on
+  the 29 cells, two runs byte-identical, ledger 29 lines then +0. Final cell v61u L1.247: effective-N DSR .9491 (ONC
+  N_eff 5 of 29; mean off-diagonal rho .931) beside cell-count DSR .9108 and Lo .5305; PSR(0) .978, MinTRL 95% 501 sessions
+  (1.99 y); PSR(.5) .886. CSCV PBO over all 29 cells .357 (exhaustive 12,870 splits, 16 x 47 sessions; IS winner +1.350 ->
+  OOS +.978, P[OOS<0] .069). Reported only; the v6 gate is NOT re-scored (R5.2). Note: the 29-cell grid mixes v5 and v6
+  lineages, so this PBO is an upper-bound-ish reading for the v6 ladder; the v7 grid PBO will be over {baseline, C1-C3}.
+- Pending: (2) full reproduction run --suffix r7 (S2 daily CSV SHA must equal 1adf0e8f...), (3) --reuse-fields from v6b,
+  (4) refusal stop with max_rss_mib=64.
+
 ## 2026-09-28 P2 landed; plan v7; lanes L1-L4 dispatched; A5 A/B
 - P2 literature-v7.md (451 lines). Top: integrity tooling (trial ledger, effective-N DSR, CSCV PBO) first; cost model v2
   (KO/FIM) + replayed capacity curve; USE4-style risk model + bias harness; GP cost-aware optimiser (L, after risk + cost);
