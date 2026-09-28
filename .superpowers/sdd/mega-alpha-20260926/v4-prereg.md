@@ -133,3 +133,27 @@ V6-F Final: best construction x V6-U x V6-W x V6-L in one cell, L re-derived (C4
 Not done (pre-declared exclusions): IC/HAC/MV-fitted weights on TRAIN; ML stacking; valuation timing; book-level vol
   targeting; cash-PB financing scenario as a route to 1.0; any cost-model relaxation. Borrow realism: swap-fin-v1 already
   tiers GC/warm/special (30/100/500 bps); kept as S2.
+
+## v6.1 sub-alpha: long-horizon FINRA shorting flow (owner-directed 2026-09-28; declared BEFORE any read of the field or its returns)
+Source: FINRA consolidated NMS daily short sale volume files (CNMSshvolYYYYMMDD.txt.gz; columns Date|Symbol|ShortVolume|
+ShortExemptVolume|TotalVolume|Market), read-only from C:/atx/atx-db/data/raw/finra_short_volume (2018-08-01 onward).
+Literature: Wang, Yan & Zheng (2020, JFE) -- long-term shorting flows predict negative returns for about a year; short-term
+abnormal flows do not. FINRA short volume is contaminated by market-maker shorting, so only long-window aggregates carry
+signal (v6-literature.md §3.8, §4).
+Field `sv_ratio126` (fields builder): at session d, sum(ShortVolume) / sum(TotalVolume) over the sessions d-126..d-1 on
+which the instrument's PIT ticker appears in the file (lag 1 session: day d's file is never used at d); NaN when fewer than
+63 such sessions or the sum of TotalVolume is 0. Ticker -> instrument mapping = the builder's existing PIT FINRA symbol map.
+Candidate `sv_flow` (library v6.1 = library v6 + this one member, theme short_interest, tier B-): the field demeaned within
+FF12 industry (the DSL's existing group-demean op), prior sign NEGATIVE (higher shorting flow -> lower future return). One
+variant; no window or sign search.
+Promotion tests, all required, in order (stop at the first failure):
+  P1 admission v4-prior-v1 on the restricted TRAIN role lo1: runner sign agrees with the prior, not redundant (|rho| <= .90
+     with every admitted member, incl. si_ratio / dtc / si_change), tau within the screen limit.
+  P2 book: library v6.1 x ew-theme-v1 refit on lo1 x the final construction (aim-partial-v5 theta .05 dust .1 fixed, delta
+     orders, exit .05, locate-in-aim, liquidity cache, price-risk-v1) with L FIXED at 1.247; paired dSR(net) vs the final
+     cell mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247 must be > 0.
+  P3 R6' mechanics on that cell (all-rows gross in [.90, 1.05], |mean net| <= .02, tau mean <= .20 / p95 <= .30) and S2 net
+     >= 1.0.
+Promotion = the v6.1 cell replaces the v6 final cell as the frozen candidate in the owner packet (still subject to U1; the
+freeze DSR gate stays .95 and is reported with N = 29). Trial accounting: admission +1 (only sv_flow is new; the 38 v6
+members are identical definitions on identical data), composition +1, construction +1.
