@@ -33,3 +33,24 @@ Fields: extents are stat'ed. A field is hashed once, before the role loads, only
 3. Nothing was compiled. The SHA-NI data flow was checked against hashlib with a Python model of the intrinsics. If clang-cl rejects the direct intrinsic includes, fall back to `/clang:-msha /clang:-msse4.1` on sha256.cpp.
 4. Paths grow by about 37 characters (fp_ directory + .dsl16). The longest write is about 209 + len(id) for a 56-character root; the longest id today is 33.
 5. v1 hits are not promoted to v2, so every run that needs a cross-manifest v1 hit must pass --cache-legacy-fields.
+
+## Follow-up: v2 readers (closes risk 1)
+Rebased onto 31f79c0e with no conflicts: 9f92d22c sha, dcbf4a53 runner. New commits: 0ce9d240 fitter, 50e03c4f pitch. HEAD is 50e03c4f.
+- **fit_composition_weights.py**: when the summary has `candidate_cache.entries[]`, `CacheLayout.resolve_listed` resolves each candidate from it.
+  - Path shape: v2 is ROOT/<train>/[fp_<fk16>/]<id>.<dsl16>. v1 is ROOT/<train>/<id>, or ROOT/<manifest sha>/<id> for field candidates.
+  - The sidecar must match the entry: id, DSL, role, geometry, payload name and SHA, role=train, VM identity.
+  - For v2 the signal key is recomputed (`signal_key_sha256` mirrors `signal_key_text`).
+  - A v1 field sidecar must name the manifest of its own directory. An older manifest is accepted there, because the runner already matched its payloads via `--cache-legacy-fields`.
+  - A summary without entries keeps the old v1 probe unchanged.
+  - Field work stays keyed by the pinned manifest, so WorkStore records are shared across layouts.
+- **Admission identity: yes.** admission.json, admission.csv and composition_weights.json are byte-identical across v1, v2 and v1-read-in-place caches once the runner-summary pin is swapped back. That pin necessarily differs, and so does the admission SHA the weights file records.
+- **pitch.py an_sig_corr** tries the summary entries (`u_pass/summary.json`) first, then scans [<identity>/]<sha>/ and fp_*/.
+  - v1 keeps the strict library filter. For v2, an entry recorded by this library wins, otherwise a unique entry is taken; an id with several entries is reported as ambiguous.
+  - Unreadable inputs are skipped. Failures become the analysis `_error` (rendered as n/a). `res['source']` records which path served the payloads.
+- **Tests** (pytest, 111 passed incl. repair tests):
+  - `test_fit_composition_weights.py::CacheLayoutV2` (6 new): paths, every-layout bytes and shared records, admission identity, v1 older manifest read in place, summary-entry refusals, sidecar/payload refusals.
+  - New `test_mega_report_sig_corr.py` (8).
+- **Root**:
+  - `"C:/Program Files/Python312/python.exe" -m pytest atx-impl/tools/test_fit_composition_weights.py atx-impl/tools/test_mega_report_sig_corr.py -q`
+  - The fit command line is unchanged; only the new summary SHA pin goes in.
+- **Note**: the report's FORBIDDEN guard (2023|2024|2025) also matches hex paths. A dsl16 or fk16 name hits it at about 0.06% per name, and 64-hex directories were already exposed at about 0.3%. Such a sidecar is refused, so sig_corr shows n/a rather than a wrong value.
