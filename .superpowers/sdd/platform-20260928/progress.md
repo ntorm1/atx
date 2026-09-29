@@ -17,6 +17,20 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 atx-db delivered most of the data request -> wave 3 opened
+- ALPHA_PANEL_REQUEST_V7_RESPONSE.md (atx-db, 20:44): U1 link table met (95.6-99.1% linked/yr), U2 dead-line 91-93%, U3
+  security master, U4 delisting 85.8% classified (imputed returns), D1 13F 2013q2-2026q2 (124.4M rows), D2 earnings
+  calendar with expected next date, D3 short volume splits + FTD + Reg SHO (NYSE landing still running), D6 all 15
+  statement items, D7 history (fundamentals 2010+, prices 2012-03+), D10 corporate actions, D11 Form 4 (4.90M), D12 8-K
+  metadata. Not available: consensus, borrow fee/utilisation, GICS/NAICS, options skew/OI, VWAP, index add/drop. S2
+  coverage improved but most targets short (gp_ttm .753 linked-USD vs .90; xrd .895 vs .95; fscore_partial .922 MET).
+  Panel v2 assembly, borrow proxy, metrics and the lo1 aligned export are pending on their side (1.5-2.5 h).
+- Ruling: consume the delivered stage exports directly (not the pending panel) through new PIT field modules; role
+  variant linked-operating-v2 on identity-bridge-v2-pit; library v7 pre-registered from a read-only draft before any IC
+  run -- data before definitions would bias admission -- cost if wrong: rework when the panel lands. Lanes: W5a pool-8
+  (earnings calendar, Form 4, 8-K fields), W5b pool-9 (13F, FTD/Reg SHO fields + role v2 + delisting returns), P3
+  read-only library-v7 draft. Owner pointer: C:/atx/atx-db/docs/ALPHA_PANEL_STATUS.md.
+
 ## 2026-09-28 R1 review landed (1 I, 7 M, 16 m) -- routed
 - I-1 v6 capacity pass prices c_i at base scale (v5 capacity curve unaffected) -> F1. M-1..M-3 decide (flat-book default
   when the as-of row is missing; no positions/locates SHA in decision.json; TC definition differs from the replay's
