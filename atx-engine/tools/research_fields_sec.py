@@ -110,8 +110,8 @@ EA_FRESH = (f"no visible primary announcement, or the latest one's session_date 
             "before the session -> NaN")
 INS_PRESENT = (f"NaN unless the issuer has a visible insider transaction row (any form, code or owner) with "
                f"available_at within {INS_PRESENCE_DAYS} days before the 22:00 UTC mark of t-1 (Section 16 presence; "
-               "else 0 would mean 'no trades' for an issuer that files no Form 4); NaN while the window or the presence lookback "
-               "starts before the stage's first filing quarter")
+               "else 0 would mean 'no trades' for an issuer that files no Form 4); NaN while the window or the presence "
+               "lookback starts before the stage's first filing quarter")
 INS_RATIO_NAN = ("shares_out not finite and positive -> NaN; |net shares| > shares_out (outside the declared domain "
                  "[-1, 1]: a shares_out units defect or a split the Form 4 counts do not restate) -> NaN, counted")
 K8_PRESENT = (f"NaN unless the CIK has a visible original 8-K with available_at within {K8_PRESENCE_DAYS} days before "
