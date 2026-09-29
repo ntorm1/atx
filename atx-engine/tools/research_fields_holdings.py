@@ -924,20 +924,27 @@ def build_svx(ctx: Ctx, names, stage: Stage):
     x = names[0]
     w = ns["FieldWriter"](ctx.output, x, role)
     rs, rv, rn = np.zeros(n), np.zeros(n), np.zeros(n, dtype=np.int64)
-    late_sessions = 0
+    late_sessions, pending = 0, []
     entered = np.zeros(nd, dtype=bool)
     try:
         for t in range(nd):
-            add, rem = t - 2, t - 2 - SVX_WINDOW
-            if add >= 0:
-                if avail[add] < ctx.pm[t]:
-                    c = contrib_ok[add]
-                    rs += np.where(c, short[add], 0.0)
-                    rv += np.where(c, vol[add], 0.0)
+            rem = t - 2 - SVX_WINDOW
+            if t >= 2:
+                pending.append(t - 2)
+                late_sessions += int(avail[t - 2] >= ctx.pm[t])
+            waiting = []
+            for s in pending:  # a session enters the running window once its rows are visible, if still inside
+                if s <= rem:
+                    continue
+                if avail[s] < ctx.pm[t]:
+                    c = contrib_ok[s]
+                    rs += np.where(c, short[s], 0.0)
+                    rv += np.where(c, vol[s], 0.0)
                     rn += c
-                    entered[add] = True
-                elif has[add].any():
-                    late_sessions += 1
+                    entered[s] = True
+                else:
+                    waiting.append(s)
+            pending = waiting
             if rem >= 0 and entered[rem]:
                 c = contrib_ok[rem]
                 rs -= np.where(c, short[rem], 0.0)
@@ -963,7 +970,7 @@ def build_svx(ctx: Ctx, names, stage: Stage):
         w.f.close()
         raise
     w.close()
-    st["sessions_not_visible_when_entering_the_window"] = late_sessions
+    st["sessions_not_yet_visible_at_window_entry"] = late_sessions
     return {x: w}, st, {x: {"nan_reasons_member_cells": reasons[x]}}, role_sources
 
 

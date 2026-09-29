@@ -226,12 +226,19 @@ def svx_rows():
     return rows
 
 
+SVX_LATE = dt.date(2024, 11, 6)      # a trade date published 10 days late: enters the window only once visible
+
+
+def svx_available(d):
+    return instant(d + dt.timedelta(days=11 if d == SVX_LATE else 1))
+
+
 def write_svx(root: Path):
     rows = svx_rows()
     table = pa.table({"security_id": pa.array([r[0] for r in rows], pa.int64()),
                       "trade_date": pa.array([r[1] for r in rows], pa.date32()),
                       "short_volume": [r[2] for r in rows], "total_volume": [r[3] for r in rows],
-                      "available_at": ts([instant(r[1] + dt.timedelta(days=1)) for r in rows])})
+                      "available_at": ts([svx_available(r[1]) for r in rows])})
     return write_stage(root, "short_volume_ext", {"year=2024/short_volume_ext.parquet": table})
 
 
@@ -498,10 +505,11 @@ class HoldingsFields(unittest.TestCase):
         for t in range(1, len(SESSIONS)):
             if t - 2 - 126 + 1 < 0:
                 continue
+            mark = instant(SESSIONS[t - 1], 22)
             for i, sid in enumerate(IDS):
                 s = v = n = 0
                 for k in range(t - 127, t - 1):
-                    if (sid, SESSIONS[k]) in rows and present[k, i]:
+                    if (sid, SESSIONS[k]) in rows and present[k, i] and svx_available(SESSIONS[k]) < mark:
                         s += rows[(sid, SESSIONS[k])]
                         v += 1e4
                         n += 1
@@ -516,6 +524,7 @@ class HoldingsFields(unittest.TestCase):
         self.assertTrue(np.isfinite(got[-1, col(202)]))
         c = self.manifest["source_checks"]["holdings"]["short_volume_ext"]
         self.assertEqual(c["finra_total_over_vendor_volume_member_cells"]["2024"] > 0, True)
+        self.assertEqual(c["sessions_not_yet_visible_at_window_entry"], 1)
 
     def test_manifest_entries(self):
         m = self.manifest
