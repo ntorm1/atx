@@ -17,6 +17,24 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 SESSION 2 PAUSED by owner; v7 pitch rendered on the v7.1 cell; all lanes stopped
+- Descriptive run on the v7.1 cell (no trial): build-equity/v7-71-nav-stress (--cost-v2 --capacity-curve, 52.0 s, 351
+  MiB); its S2 daily CSV is byte-identical to the cell. Capacity net SR 1.448 / 1.405 / 1.357 / 1.236 / 1.082 at
+  .5 / 1 / 2 / 4 / 8 x $1bn; S2-KO 1.441, S2-FIM 1.528, engine-tiers 1.349.
+- P6 merged (47a7ca67): docs/plans/mega-alpha-v7-pitch.config.json. Rendered and committed (eee1fd81):
+  docs/plans/2026-09-29-mega-alpha-v7-pitch.html, 2,554,479 bytes, n/a markers 840, unavailable blocks 2. No new test
+  (owner: speed over polish). The v6 report and pitch were NOT regenerated.
+- Open defect P6-F1: the two unavailable blocks are the signal-correlation analysis and figure. The droe candidate is
+  cached under a hash-named folder `fp_2e2025f0...` and the report's validation-seal check refuses any path containing
+  "2025". The seal check is a guardrail and was NOT loosened (a lane's attempt to edit data.py was denied and
+  reverted). Owner decision: match the seal on date-shaped path components only, or leave the block unavailable.
+- Not done in this session: V7-F cell (needs L9), scorecard v7 markdown, v6 report regeneration, artifact publish of
+  the pitch (2.5 MB: not read in full by root, so not published), quiet-host Release A/B, merge to local main, U1.
+- Lanes: all stopped, all pools clean. Pools: 3 W1b 116c23e3, 7 F3 b3d03b38, 9 U2 9105bcbc, 10 L9 0e2a7f4d (design
+  only), 11 P6 47a7ca67; every commit but L9's report is merged into pool-2.
+- Appendix A unchanged: TRAIN construction cells 37; admission trials this sprint 9; validation trials 2 spent; 2025+
+  reserved; no per-candidate VAL statistic read.
+
 ## 2026-09-29 library v7.1 (wave 2) ACCEPTED under its pre-registration; N 37; owner asked to stop after this cell
 - L8 merged (library v7.1 787c802e..., recipe 7f8a2643..., spec scripts/specs/v71.json; research_cycle gained as-built
   fields pins, a `ref` NAV phase, generic `compare` identity steps, a ledger-driven summ grid). dsr_n set to 37.
