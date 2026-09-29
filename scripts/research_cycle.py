@@ -12,8 +12,14 @@ up next to this script, so ``specs/v61.json`` works from the worktree root). Pat
 (default: this script's worktree). Phases, in order (a phase the spec leaves out is skipped):
 
   fields  prepare_research_fields.py (direct: the builder carries its own RSS/time caps), optional --reuse; then the
-          fields check (baseline fields byte-identical, the expected fields added, short-volume file-set pin)
+          fields check (baseline fields byte-identical, the expected fields added, short-volume file-set pin).
+          fields.manifest_sha256 pins an AS-BUILT fields dir instead: no builder line, never rebuilt or suffixed; the
+          phase is done iff DIR/manifest.json hashes to the pin (a different hash is a pin stop, exit 3; a missing
+          one a hard stop), and fields.list (optional) must equal the manifest's field names in order
   check   the library static check (direct)
+  ref     NAV replay of the REFERENCE construction on this cycle's fields (bounded; output ref.output, receipt
+          <output>-run): the nav section's rule / leverage / flags (ref may override them) on the pinned input
+          ref.combined (e.g. the reference cell's combined signal); an identity check, never a trial
   u       IC runner, unweighted pass            (bounded runner; output U-<attempt>, receipt U-run<attempt>)
   fit     fit_composition_weights.py            (bounded; output W, receipt W-run<pass>; exit 3 = documented
           "incomplete, rerun resumes" protocol -> the next pass runs, up to fit.max_passes; anything else stops)
@@ -30,11 +36,28 @@ up next to this script, so ``specs/v61.json`` works from the worktree root). Pat
   summ    nav_summ.py vs the reference cell with DSR N (direct); summ.cells (optional) lists the prior trial cells'
           NAV dirs, which go with this cycle's NAV output into one positional block right after --reference (the
           grid --effective-n dirs / --pbo / V[SR_n] read; len(cells) + 1 must equal dsr_n); summ.ledger (optional)
-          is the default of --ledger
+          is the default of --ledger. summ.cells_from_ledger: true (instead of cells; needs summ.ledger) reads the
+          grid from the trial ledger at plan / run time (every line's "cell", in ledger order, this cycle's own cell
+          excluded): cross-cell N = ledger lines + 1, so summ.dsr_n is the one key root changes when another cell
+          was ledgered first (a mismatch stops with exit 3 and names the value)
+
+compare   ``compare`` (optional list) adds identity checks after a named phase: each item {name, after, mode, a, b}
+          runs as the internal step "<after>-compare" right after that phase, on every run and resume, and a miss is
+          a HARD STOP (exit 4: no later phase runs, no trial). Operands are root-relative paths with {input:KEY}
+          (a pinned input's path) and {out:PHASE} (fields, ref, u, fit, card, w, nav, monitor: this cycle's
+          resolved output dir). Modes: "file" (SHA-256 of a == SHA-256 of b, bit for bit); "csv-rows" (unquoted
+          CSV: same header, and the rows of b whose key column (key, default "id") is one of the compared keys are
+          a's rows of those keys byte for byte, in order; b may add rows of other keys); "json-rows" (the objects of
+          b's array (array, default "candidates") with a compared key are a's, in order, as canonical JSON (sorted
+          keys, exact numbers); b may add objects of other keys). The compared keys are a's keys, or, with the
+          operand "keys" (a library JSON, e.g. {input:baseline_library}), its candidate ids -- the parent's member
+          rows, so a series of another key in both files (the IC runner's __combined__ book) is not compared; a
+          must hold every one of them
 
 Pins: every input (library, recipe, baseline library, role, identity bridge, fundamental events, SIC events (the
 atx-db fundamentals stage manifest: the grp_* fields' --sic-events), baseline fields, reference admission, reference
-cell) is pinned in the spec by ``lock``, which computes the SHA-256 from the file
+cell, and the reference files an identity phase reads: reference combined signal, reference daily CSV, reference
+orientations, reference daily IC) is pinned in the spec by ``lock``, which computes the SHA-256 from the file
 (never hand-typed); ``plan``/``run`` re-hash and stop on any mismatch (exit 3). Every intermediate pin (fields
 manifest, orientations, runner summary, weights, combined signal) is computed from the file the previous phase wrote.
 
@@ -58,11 +81,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 SCHEMA = "atx.research-cycle-spec/v1"
-PHASES = ("fields", "check", "u", "fit", "card", "gate", "w", "nav", "monitor", "summ")
+PHASES = ("fields", "check", "ref", "u", "fit", "card", "gate", "w", "nav", "monitor", "summ")
+COMPARE_SUFFIX = "-compare"            # the internal identity step after phase P is "P-compare"
+STOP_PHASES = PHASES + tuple(p + COMPARE_SUFFIX for p in PHASES)
+COMPARE_MODES = ("file", "csv-rows", "json-rows")
+OUT_PHASES = ("fields", "ref", "u", "fit", "card", "w", "nav", "monitor")  # {out:PHASE} operands
 ATTEMPT_PHASES = ("u", "fit", "w", "nav")
 EXIT_OK, EXIT_USAGE, EXIT_PIN, EXIT_STOP, EXIT_GATE = 0, 2, 3, 4, 10
 FIT_INCOMPLETE = 3                     # fit_composition_weights.py: "incomplete (rerun resumes)"
@@ -70,7 +98,9 @@ MAX_ATTEMPTS = 9
 GATE_REQUIRE = ("all", "any")          # gate.require: every listed candidate admitted, or at least one
 REQUIRED = {"schema", "name", "python", "runner", "inputs"}
 INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge", "fund_events", "baseline_fields",
-              "reference_admission", "reference_cell", "sic_events")
+              "reference_admission", "reference_cell", "sic_events", "reference_combined", "reference_daily",
+              "reference_orientations", "reference_daily_ic")
+OPERAND = re.compile(r"\{(input|out):([A-Za-z0-9_]+)\}")
 SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("lake", "--lake"),
                 ("finra_short_volume", "--finra-short-volume"))
 
@@ -130,12 +160,25 @@ def validate_spec(spec: dict) -> None:
     r = spec["runner"]
     if not all(k in r for k in ("script", "seconds", "max_rss_mib", "min_free_mib")):
         raise CycleError("spec runner needs script, seconds, max_rss_mib, min_free_mib", EXIT_USAGE)
-    need = {"fields": ("output", "builder", "list"), "static_check": ("script",), "ic": ("u_output", "cache", "flags"),
+    need = {"fields": ("output",), "static_check": ("script",), "ic": ("u_output", "cache", "flags"),
             "fit": ("script", "output", "work_dir", "flags"), "gate": ("admitted",), "nav": ("output", "rule", "flags"),
-            "summ": ("script", "dsr_n"), "card": ("script", "output"), "monitor": ("script", "output")}
+            "summ": ("script", "dsr_n"), "card": ("script", "output"), "monitor": ("script", "output"),
+            "ref": ("output", "combined")}
     for section, keys in need.items():
         if section in spec and not all(k in spec[section] for k in keys):
             raise CycleError(f"spec {section} needs {', '.join(keys)}", EXIT_USAGE)
+    f = spec.get("fields")
+    if f is not None and not f.get("manifest_sha256") and not all(k in f for k in ("builder", "list")):
+        raise CycleError("spec fields needs builder and list (a built fields dir) or manifest_sha256 (as built)",
+                         EXIT_USAGE)
+    if f is not None and "manifest_sha256" in f and (not isinstance(f["manifest_sha256"], str) or
+                                                     len(f["manifest_sha256"]) != 64):
+        raise CycleError("spec fields.manifest_sha256 must be a SHA-256 hex digest", EXIT_USAGE)
+    if "ref" in spec:
+        ref = spec["ref"]
+        if "nav" not in spec or ref["combined"] not in spec["inputs"] or ref["output"] == spec["nav"]["output"]:
+            raise CycleError("spec ref needs nav (its construction), inputs.<ref.combined> and an output of its own",
+                             EXIT_USAGE)
     if "nav" in spec and "w_output" not in spec.get("ic", {}):
         raise CycleError("spec nav needs ic.w_output (the weighted pass feeds the NAV)", EXIT_USAGE)
     if ("fit" in spec and "ic" not in spec) or ("gate" in spec and "fit" not in spec) or \
@@ -156,7 +199,12 @@ def validate_spec(spec: dict) -> None:
         raise CycleError("spec static_check needs inputs.baseline_library", EXIT_USAGE)
     if spec.get("gate", {}).get("require", "all") not in GATE_REQUIRE:
         raise CycleError(f"spec gate.require must be one of {', '.join(GATE_REQUIRE)}", EXIT_USAGE)
-    cells = spec.get("summ", {}).get("cells")
+    sm = spec.get("summ", {})
+    if "cells_from_ledger" in sm and (sm["cells_from_ledger"] is not True or "cells" in sm or not sm.get("ledger")):
+        raise CycleError("spec summ.cells_from_ledger must be true, excludes summ.cells and needs summ.ledger",
+                         EXIT_USAGE)
+    validate_compare(spec)
+    cells = sm.get("cells")
     if cells is not None:
         if not isinstance(cells, list) or not cells or not all(isinstance(c, str) and c for c in cells) or \
                 len(set(cells)) != len(cells) or spec["nav"]["output"] in cells:
@@ -165,6 +213,45 @@ def validate_spec(spec: dict) -> None:
         if len(cells) + 1 != spec["summ"]["dsr_n"]:
             raise CycleError(f"spec summ.cells lists {len(cells)} prior cells + this one, dsr_n is "
                              f"{spec['summ']['dsr_n']}: the listed grid must be the declared N trials", EXIT_USAGE)
+
+
+def phase_present(spec: dict, phase: str) -> bool:
+    """Whether the spec runs `phase` (its section is present)."""
+    if phase == "w":
+        return "w_output" in spec.get("ic", {})
+    return {"check": "static_check", "u": "ic"}.get(phase, phase) in spec
+
+
+def validate_compare(spec: dict) -> None:
+    items = spec.get("compare")
+    if items is None:
+        return
+    if not isinstance(items, list) or not items:
+        raise CycleError("spec compare must be a non-empty list", EXIT_USAGE)
+    names = set()
+    for c in items:
+        if not isinstance(c, dict) or not all(isinstance(c.get(k), str) and c[k] for k in ("name", "after", "mode",
+                                                                                           "a", "b")):
+            raise CycleError("spec compare items need name, after, mode, a and b (strings)", EXIT_USAGE)
+        if c["name"] in names:
+            raise CycleError(f"spec compare: duplicate name {c['name']}", EXIT_USAGE)
+        names.add(c["name"])
+        if c["after"] not in PHASES or not phase_present(spec, c["after"]):
+            raise CycleError(f"spec compare {c['name']}: after {c['after']!r} is not a phase this spec runs",
+                             EXIT_USAGE)
+        if c["mode"] not in COMPARE_MODES:
+            raise CycleError(f"spec compare {c['name']}: mode must be one of {', '.join(COMPARE_MODES)}", EXIT_USAGE)
+        if "keys" in c and (c["mode"] == "file" or not isinstance(c["keys"], str) or not c["keys"]):
+            raise CycleError(f"spec compare {c['name']}: keys (a library JSON path) is for the row modes only",
+                             EXIT_USAGE)
+        for side in [s for s in ("a", "b", "keys") if s in c]:
+            for kind, key in OPERAND.findall(c[side]):
+                ok = key in spec["inputs"] if kind == "input" else key in OUT_PHASES and phase_present(spec, key)
+                if not ok:
+                    raise CycleError(f"spec compare {c['name']}: operand {{{kind}:{key}}} names no {kind} of this "
+                                     "spec", EXIT_USAGE)
+            if "{" in OPERAND.sub("", c[side]) or "}" in OPERAND.sub("", c[side]):
+                raise CycleError(f"spec compare {c['name']}: malformed operand {c[side]!r}", EXIT_USAGE)
 
 
 def parse_runner_overrides(items: list[str]) -> dict:
@@ -236,9 +323,10 @@ def placeholder(rel: str) -> str:
 # ------------------------------------------------------------------ the cycle
 class Step:
     def __init__(self, phase: str, kind: str, argv=None, output=None, run_dir=None, attempt=None, state="pending",
-                 note=""):
+                 note="", checks=None):
         self.phase, self.kind, self.argv, self.output, self.run_dir = phase, kind, argv, output, run_dir
         self.attempt, self.state, self.note = attempt, state, note
+        self.checks = checks or []  # compare steps: the resolved comparisons
 
     @property
     def done(self) -> bool:
@@ -251,6 +339,9 @@ class Cycle:
                  keep_fields: bool = False, runner_overrides: dict | None = None):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
+        if reuse_fields and spec.get("fields", {}).get("manifest_sha256"):
+            raise CycleError("--reuse-fields: the spec pins an as-built fields dir (fields.manifest_sha256); nothing "
+                             "is built", EXIT_USAGE)
         spec = json.loads(json.dumps(spec))
         spec["runner"].update(runner_overrides or {})
         self.spec, self.res, self.suffix, self.keep_fields = spec, res, suffix, keep_fields
@@ -358,7 +449,8 @@ class Cycle:
         lib, lib_sha = self.ipath("library"), self.pin("library")
         fd = ""                                  # validate_spec: ic and the static check need fields
         if "fields" in s:
-            fd = s["fields"]["output"] if self.keep_fields else self.out(s["fields"]["output"])
+            as_built = bool(s["fields"].get("manifest_sha256"))  # a pinned input dir: never suffixed or rebuilt
+            fd = s["fields"]["output"] if self.keep_fields or as_built else self.out(s["fields"]["output"])
         fdm = f"{fd}/manifest.json" if fd else ""
         if "fields" in s:
             out.append(self.fields_step(fd, fdm, role_sha))
@@ -369,6 +461,11 @@ class Cycle:
             if sc.get("expect_added"):
                 argv += ["--expect-added", ",".join(sc["expect_added"])]
             out.append(Step("check", "direct", argv, state="always", note="library static check"))
+        if "ref" in s:
+            ref = s["ref"]
+            nav = dict(s["nav"], **{k: ref[k] for k in ("rule", "leverage", "flags") if k in ref})
+            out.append(self.nav_step("ref", self.out(ref["output"]), self.ipath(ref["combined"]),
+                                     self.pin(ref["combined"]), nav, fdm, role_m, role_sha))
         u_out = ""
         if "ic" in s:
             ic = s["ic"]
@@ -407,23 +504,9 @@ class Cycle:
             out.append(Step("w", "bounded", argv, wt_out, run_dir, n, state, note))
         n_out = ""
         if "nav" in s:
-            nav = s["nav"]
-            n_out = self.out(nav["output"])
-            k = self.attempts.get("nav", 1)
-            run_dir = f"{n_out}-run" if k == 1 else f"{n_out}-run{k}"
+            n_out = self.out(s["nav"]["output"])
             comb = f"{wt_out}/train_combined.json"
-            flags = [str(nav.get("leverage")) if f == "{leverage}" else f for f in nav["flags"]]
-            argv = self.runner(run_dir, [s["exes"]["nav"], comb, fdm]) + [
-                s["exes"]["nav"], "nav", "--combined", comb, "--combined-sha256", self.rt_sha(comb), "--role", role_m,
-                "--role-sha256", role_sha, "--fields", fdm, "--fields-sha256", self.rt_sha(fdm), "--output", n_out,
-                "--rule", nav["rule"], *flags]
-            if self.res.exists(f"{n_out}/summary.json"):
-                state, note = "done", ""
-            elif self.res.exists_dir(n_out) or self.res.exists_dir(run_dir):
-                state, note = "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
-            else:
-                state, note = "pending", ""
-            out.append(Step("nav", "bounded", argv, n_out, run_dir, k, state, note))
+            out.append(self.nav_step("nav", n_out, comb, self.rt_sha(comb), s["nav"], fdm, role_m, role_sha))
         if "monitor" in s:
             out.append(self.monitor_step(u_out, w_dir, card_out))
         if "summ" in s:
@@ -433,7 +516,7 @@ class Cycle:
                 argv += ["--weights", f"{w_dir}/composition_weights.json"]
             if "reference_cell" in s["inputs"]:
                 argv += ["--reference", self.idir("reference_cell")]
-            cells = sm.get("cells") or []
+            cells = self.ledger_cells(n_out) if sm.get("cells_from_ledger") else (sm.get("cells") or [])
             if cells:  # one positional block (argparse), before the options: a trailing nargs-* --pbo takes none
                 argv += [*cells, n_out]
             argv += ["--dsr-n", str(sm["dsr_n"]), *sm.get("extra", [])]
@@ -443,10 +526,87 @@ class Cycle:
             if not cells:
                 argv.append(n_out)
             out.append(Step("summ", "direct", argv, state="always", note="nav_summ vs the reference cell"))
-        return out
+        return self.with_compares(out)
+
+    def with_compares(self, steps: list[Step]) -> list[Step]:
+        """The spec's compare items as one internal "<after>-compare" step right after each named phase."""
+        items = self.spec.get("compare") or []
+        if not items:
+            return steps
+        outs = {st.phase: st.output for st in steps if st.phase in OUT_PHASES and st.output}
+
+        def operand(text: str) -> str:
+            return OPERAND.sub(lambda m: self.ipath(m[2]) if m[1] == "input" else outs[m[2]], text)
+        done = []
+        for st in steps:
+            done.append(st)
+            mine = [dict(c, **{s: operand(c[s]) for s in ("a", "b", "keys") if s in c})
+                    for c in items if c["after"] == st.phase]
+            if mine:
+                note = "identity: " + "; ".join(f"{c['name']} [{c['mode']}]" for c in mine) + " (a miss hard-stops)"
+                done.append(Step(st.phase + COMPARE_SUFFIX, "compare", None, state="always", note=note, checks=mine))
+        return done
+
+    def nav_step(self, phase: str, n_out: str, comb: str, comb_sha: str, nav: dict, fdm: str, role_m: str,
+                 role_sha: str) -> Step:
+        """A NAV replay (the cycle's cell, or the reference construction for the ref phase)."""
+        s = self.spec
+        k = self.attempts.get("nav", 1) if phase == "nav" else 1
+        run_dir = f"{n_out}-run" if k == 1 else f"{n_out}-run{k}"
+        flags = [str(nav.get("leverage")) if f == "{leverage}" else f for f in nav["flags"]]
+        argv = self.runner(run_dir, [s["exes"]["nav"], comb, fdm]) + [
+            s["exes"]["nav"], "nav", "--combined", comb, "--combined-sha256", comb_sha, "--role", role_m,
+            "--role-sha256", role_sha, "--fields", fdm, "--fields-sha256", self.rt_sha(fdm), "--output", n_out,
+            "--rule", nav["rule"], *flags]
+        if self.res.exists(f"{n_out}/summary.json"):
+            state, note = "done", ""
+        elif self.res.exists_dir(n_out) or self.res.exists_dir(run_dir):
+            state, note = "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
+        else:
+            state, note = "pending", "" if phase == "nav" else "reference construction on this cycle's fields"
+        return Step(phase, "bounded", argv, n_out, run_dir, k, state, note)
+
+    def ledger_cells(self, n_out: str) -> list[str]:
+        """summ.cells_from_ledger: every ledger line's cell, in ledger order, this cycle's own cell excluded; the
+        declared dsr_n must be their count + 1 (cross-cell N = ledger lines + 1)."""
+        sm = self.spec["summ"]
+        rel = self.ledger or sm["ledger"]
+        p = self.res.path(rel)
+        if not p.is_file():
+            raise CycleError(f"summ.cells_from_ledger: no trial ledger at {rel}", EXIT_PIN)
+        cells = []
+        for k, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                cell = json.loads(line).get("cell")
+            except (ValueError, AttributeError) as exc:
+                raise CycleError(f"summ.cells_from_ledger: {rel} line {k} is not a JSON object", EXIT_PIN) from exc
+            if not isinstance(cell, str) or not cell:
+                raise CycleError(f"summ.cells_from_ledger: {rel} line {k} has no cell", EXIT_PIN)
+            cells.append(cell)
+        prior = [c for c in cells if c != n_out]
+        if len(set(prior)) != len(prior):
+            raise CycleError(f"summ.cells_from_ledger: {rel} lists a cell twice", EXIT_PIN)
+        if len(prior) + 1 != sm["dsr_n"]:
+            raise CycleError(f"summ.cells_from_ledger: {rel} lists {len(prior)} prior cells, so cross-cell N = "
+                             f"{len(prior) + 1}, but the spec declares summ.dsr_n {sm['dsr_n']}: set summ.dsr_n to "
+                             f"{len(prior) + 1}", EXIT_PIN)
+        return prior
 
     def fields_step(self, fd: str, fdm: str, role_sha: str) -> Step:
         f, s = self.spec["fields"], self.spec
+        pin = f.get("manifest_sha256")
+        if pin:  # as built: an input, never (re)built by the cycle
+            got = self.res.sha(fdm)
+            if got is None:
+                state, note = "failed", (f"pinned fields manifest missing: {fdm} (as built; the cycle never builds a "
+                                         "pinned fields dir)")
+            elif got != pin:
+                raise CycleError(f"PIN MISMATCH fields: {fdm} is {got}, spec pins {pin}", EXIT_PIN)
+            else:
+                state, note = "done", f"as built, manifest sha256 {pin} (pinned)"
+            return Step("fields", "pinned", None, fd, None, None, state, note)
         argv = [self.py, f["builder"], "--role", self.idir("role"), "--role-sha256", role_sha, "--output", fd,
                 "--fields", ",".join(f["list"])]
         for key, flag in SOURCE_FLAGS:
@@ -550,7 +710,15 @@ class Cycle:
 
 # ------------------------------------------------------------------ internal checks
 def fields_check(cycle: Cycle, fdm: str, log=print) -> None:
-    chk = cycle.spec["fields"].get("check")
+    f = cycle.spec["fields"]
+    if f.get("manifest_sha256") and "list" in f:  # as built: the pinned manifest's rows are the declared list
+        doc = cycle.res.read_json(fdm) or {}
+        names = [row.get("name") for row in doc.get("fields", [])]
+        log(f"fields check: pinned {fdm} sha256 {f['manifest_sha256']}: {len(names)} rows"
+            f"{' == the spec list' if names == f['list'] else ' DIFFER from the spec list'}")
+        if names != f["list"]:
+            raise CycleError("fields check FAILED (the pinned manifest's field rows differ from fields.list)")
+    chk = f.get("check")
     if not chk:
         return
     res = cycle.res
@@ -623,6 +791,100 @@ def gate(cycle: Cycle, w_dir: str, log=print) -> None:
         raise CycleError("gate failed", EXIT_GATE)
 
 
+def _lines(data: bytes) -> list[bytes]:
+    lines = data.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    return lines
+
+
+def _first_diff(a: list, b: list) -> int:
+    return next((k for k, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+
+
+def compare_keys(res: Resolver, rel: str) -> list[str]:
+    """The compared keys of a row compare with `keys`: the candidate ids of a library JSON (candidates[].id)."""
+    p = res.path(rel)
+    try:
+        ids = [row["id"] for row in json.loads(p.read_bytes())["candidates"]]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CycleError(f"compare keys: no candidates[].id in {rel} ({exc})") from exc
+    if not ids or not all(isinstance(i, str) and i for i in ids) or len(set(ids)) != len(ids):
+        raise CycleError(f"compare keys: {rel} needs distinct non-empty candidate ids")
+    return ids
+
+
+def compare_files(res: Resolver, c: dict) -> str:
+    """One identity comparison (see the module doc, `compare`); returns its summary, raises CycleError on a miss.
+    Row modes compare the rows whose key is one of `keys` (a library's candidate ids) when given, else of a's keys."""
+    name, mode, a, b = c["name"], c["mode"], c["a"], c["b"]
+
+    def miss(why: str) -> CycleError:
+        return CycleError(f"IDENTITY MISMATCH [{name}] ({mode}) {a} vs {b}: {why} -- hard stop, no trial")
+    pa, pb = res.path(a), res.path(b)
+    for rel, p in ((a, pa), (b, pb)):
+        if not p.is_file():
+            raise miss(f"{rel} is missing")
+    if mode == "file":
+        sa, sb = sha256_file(pa), sha256_file(pb)
+        if sa != sb:
+            raise miss(f"sha256 {sa} != {sb}")
+        return f"bit for bit ({pa.stat().st_size} bytes, sha256 {sa})"
+    members = compare_keys(res, c["keys"]) if c.get("keys") else None
+    if mode == "csv-rows":
+        la, lb = _lines(pa.read_bytes()), _lines(pb.read_bytes())
+        if not la or not lb or la[0] != lb[0]:
+            raise miss("headers differ")
+        key = c.get("key", "id").encode()
+        cols = la[0].split(b",")
+        if key not in cols:
+            raise miss(f"no key column {key.decode()}")
+        k = cols.index(key)
+
+        def key_of(row: bytes) -> bytes:
+            parts = row.split(b",")
+            return parts[k] if k < len(parts) else b""
+        keys = {m.encode() for m in members} if members is not None else {key_of(row) for row in la[1:]}
+        ref = [row for row in la[1:] if key_of(row) in keys]
+        if {key_of(row) for row in ref} != keys:
+            raise miss(f"a lacks rows of {len(keys - {key_of(row) for row in ref})} of the {len(keys)} keys")
+        mine = [row for row in lb[1:] if key_of(row) in keys]
+        if mine != ref:
+            j = _first_diff(ref, mine)
+            at = ref[j] if j < len(ref) else b"<end>"
+            raise miss(f"{len(ref)} rows of {len(keys)} keys vs {len(mine)} matching rows; first difference at "
+                       f"key row {j + 1} ({at[:80].decode(errors='replace')})")
+        other = {key_of(row) for row in lb[1:]} - keys
+        return (f"{len(ref)} rows of {len(keys)} keys byte for byte (a has {len(la) - 1 - len(ref)} rows of other "
+                f"keys); b adds {len(lb) - 1 - len(mine)} rows of {len(other)} other keys")
+    array, key = c.get("array", "candidates"), c.get("key", "id")
+    try:
+        ra, rb = json.loads(pa.read_bytes())[array], json.loads(pb.read_bytes())[array]
+        ids = [r[key] for r in ra]
+        wanted = set(members) if members is not None else set(ids)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise miss(f"no {array}[].{key} rows ({exc})") from exc
+    if members is None and len(wanted) != len(ids):
+        raise miss(f"a lists a {key} twice")
+    ra = [r for r in ra if r[key] in wanted]
+    if sorted(r[key] for r in ra) != sorted(wanted):
+        raise miss(f"a does not list each of the {len(wanted)} keys exactly once")
+    canon = lambda r: json.dumps(r, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    sel = [r for r in rb if isinstance(r, dict) and r.get(key) in wanted]
+    ca, cb = [canon(r) for r in ra], [canon(r) for r in sel]
+    if ca != cb:
+        j = _first_diff(ca, cb)
+        raise miss(f"{len(ca)} objects vs {len(cb)} matching; first difference at {key} "
+                   f"{ra[j][key] if j < len(ra) else '<end>'}")
+    return f"{len(ca)} {array} objects identical (canonical JSON); b adds {len(rb) - len(sel)} objects"
+
+
+def compare(cycle: Cycle, st: Step, log=print) -> None:
+    for c in st.checks:
+        log(f"compare {c['name']} [{c['mode']}]: {c['a']} vs {c['b']}")
+        log(f"   IDENTICAL: {compare_files(cycle.res, c)}")
+
+
 # ------------------------------------------------------------------ plan / status / run
 def header(cycle: Cycle) -> list[str]:
     spec_sha = sha256_file(cycle.spec_path) if cycle.spec_path else None
@@ -641,6 +903,8 @@ def plan_lines(cycle: Cycle, lines_only: bool = False) -> list[str]:
             where = f" -> {st.output}" if st.output else ""
             rd = f" (receipt {st.run_dir})" if st.run_dir else ""
             out.append(f"# phase {st.phase} [{st.kind}; {st.state}{'; ' + st.note if st.note else ''}]{where}{rd}")
+            for c in st.checks:
+                out.append(f"#   compare {c['name']} [{c['mode']}]: {c['a']} vs {c['b']}")
         if st.argv:
             out.append(fmt_argv(st.argv))
     return out
@@ -660,7 +924,7 @@ def status_lines(cycle: Cycle) -> list[str]:
         if st.note:
             line += f" | {st.note}"
         out.append(line)
-        if st.phase == "nav" and st.done:
+        if st.phase in ("nav", "ref") and st.done:
             summ = cycle.res.read_json(f"{st.output}/summary.json") or {}
             scen = summ.get("primary_scenario")
             csv = f"{st.output}/daily_{scen}.csv"
@@ -707,6 +971,8 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
         elif st.kind == "internal":
             w_dir = next(x.output for x in steps if x.phase == "fit")
             gate(cycle, w_dir, log)
+        elif st.kind == "compare":
+            compare(cycle, st, log)
         else:
             if "<sha256:" in " ".join(st.argv):
                 raise CycleError(f"HARD-STOP [{st.phase}]: an upstream pin is unresolved (upstream output missing)")
@@ -736,7 +1002,7 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 if st.kind == "direct" and done.returncode != 0:
                     raise CycleError(f"HARD-STOP [{st.phase}]: exit {done.returncode}")
             post = cycle.steps()[phase_idx]
-            if st.phase in ("u", "w", "fit", "nav", "fields", "card", "monitor") and not post.done:
+            if st.phase in ("u", "w", "fit", "nav", "ref", "fields", "card", "monitor") and not post.done:
                 raise CycleError(f"HARD-STOP [{st.phase}]: exit 0 but its output is incomplete ({st.output})")
             if st.phase == "fields":
                 fields_check(cycle, f"{st.output}/manifest.json", log)
@@ -785,7 +1051,7 @@ def main(argv=None) -> int:
     ap.add_argument("--keep-fields", action="store_true", help="--suffix leaves the fields dir name unchanged")
     ap.add_argument("--runner-override", action="append", default=[], help="seconds|max_rss_mib|min_free_mib=N")
     ap.add_argument("--lines-only", action="store_true", help="plan: the command lines only")
-    ap.add_argument("--stop-after", choices=PHASES, default=None)
+    ap.add_argument("--stop-after", choices=STOP_PHASES, default=None)
     ap.add_argument("--relock", action="store_true", help="lock: replace pins that differ from the files")
     ap.add_argument("--write", action="store_true", help="lock: write the pins back into SPEC")
     a = ap.parse_args(argv)

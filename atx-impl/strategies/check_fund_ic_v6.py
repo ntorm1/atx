@@ -22,6 +22,9 @@ v6.1: ... check_fund_ic_v6.py --manifest <fields-v7 manifest.json> --library atx
 v7.0: ... check_fund_ic_v6.py --manifest <fields-v7 manifest.json> --library atx-impl/strategies/fund_industry_ic_v70.json
       --baseline atx-impl/strategies/fund_industry_ic_v61.json --max-roster 56 --require-baseline-prefix
       --expect-added qmj_safety,nincr,q5_eg,smax5,res_mom_ind
+v7.1: ... check_fund_ic_v6.py --manifest <fields-v9 manifest.json> --library atx-impl/strategies/fund_industry_ic_v71.json
+      --baseline atx-impl/strategies/fund_industry_ic_v70.json --max-roster 56 --require-baseline-prefix
+      --expect-added ins_opp,inst_best_ideas,ftd_fail,ea_overdue   (no rule change: rank, decay_linear, max, sign)
 """
 from __future__ import annotations
 

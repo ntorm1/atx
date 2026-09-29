@@ -1,0 +1,9 @@
+{
+  "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v9/manifest.json": "8fd00e9f44b475116f483e133c03fe031618390060b8374180278f1cd7b8769b",
+  "build-equity/mega-weights-v70-ew/admission.json": "7f9b4420b3b3c1c384b42fb1ab36493aeb17b1d41cc01c3074800902342a26b6",
+  "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json": "3d0e3377e280ae3a043c619958eb3f10e2ede299d6f49832d48f16bc3cc6f89c",
+  "build-equity/mega-v70w-train-ew-1/train_combined.json": "7c2961c6d2c7dad02567bc04ba1b9c061359b343337975b2429c7c00dd04c93c",
+  "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "9c23f072cf51799f889641cc4c364320c04b911187a6e0c6d8e8e6d6cdc9f25f",
+  "build-equity/mega-v70-train-u-1/orientations.json": "232ad4164ca3ddd1aa353beac8a919bebc31d144a440df162a7bab6c77f35c2b",
+  "build-equity/mega-v70-train-u-1/train_daily_ic.csv": "9453c1da36780961434369171e4f90f76f701a58d5ee17402a51d83e7996ee05"
+}

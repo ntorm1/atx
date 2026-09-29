@@ -62,7 +62,7 @@ def test_plan_live_root_equals_the_fixture():
 def test_v61_states_pins_and_phase_order(tmp_path):
     c = v61_cycle(tmp_path)
     steps = c.steps()
-    assert [s.phase for s in steps] == [p for p in RC.PHASES if p not in ("card", "monitor")]  # W3 phases: v61-ops
+    assert [s.phase for s in steps] == [p for p in RC.PHASES if p not in ("card", "monitor", "ref")]  # W3: v61-ops
     assert {s.phase: s.state for s in steps} == {"fields": "done", "check": "always", "u": "done", "fit": "done",
                                                  "gate": "always", "w": "done", "nav": "done", "summ": "always"}
     pins = json.loads((FIX / "v61_pins.json").read_text())
@@ -209,11 +209,13 @@ elif "fit.py" in " ".join(cmd):
         {"id": "new_alpha", "status": "admitted", "sign_agrees": True, "failed_checks": []}]})))
 elif "nav" in cmd:
     (child / "summary.json").write_text(json.dumps({"status": "complete", "primary_scenario": "s2"}))
-    (child / "daily_s2.csv").write_text("net_return\n0.001\n")
+    (child / "daily_s2.csv").write_text(beh.get("daily", {}).get(child.name, "net_return\n0.001\n"))
 else:
     (child / "summary.json").write_text(json.dumps({"status": "complete" if b != "incomplete-output" else "partial"}))
     (child / "orientations.json").write_text("{}")
     (child / "train_combined.json").write_text("{}")
+    for name, text in beh.get("ic_files", {}).get(child.name, {}).items():  # L8: identity-compare fixtures
+        (child / name).write_bytes(text.encode())
 receipt("completed", 0)
 '''
 
@@ -456,7 +458,7 @@ def test_v61_ops_plan_adds_the_card_after_fit_and_the_monitor_after_nav(tmp_path
     known = json.loads((FIX / "v61_pins.json").read_text(encoding="utf-8"))
     c = RC.Cycle(RC.load_spec(V61_OPS), RC.Resolver(tmp_path, known), spec_path=V61_OPS)
     steps = c.steps()
-    assert [s.phase for s in steps] == list(RC.PHASES)
+    assert [s.phase for s in steps] == [p for p in RC.PHASES if p != "ref"]  # L8's ref phase: identity specs only
     lines = RC.plan_lines(c, lines_only=True)
     base = (FIX / "v61_train_dry.txt").read_text(encoding="utf-8").splitlines()
     card, monitor = (next(s for s in steps if s.phase == p) for p in ("card", "monitor"))
@@ -635,7 +637,7 @@ def test_v70_plan_dry_run_resolves_every_input_pin(tmp_path):
         assert item["sha256"] == known[item["path"]], key
     assert all(how == "locked (hash-only)" for _, _, how in c.pins.values())
     steps = {s.phase: s for s in c.steps()}
-    assert list(steps) == list(RC.PHASES)
+    assert list(steps) == [p for p in RC.PHASES if p != "ref"]
     assert {p: s.state for p, s in steps.items()} == {
         "fields": "done", "check": "always", "u": "pending", "fit": "pending", "card": "pending", "gate": "always",
         "w": "pending", "nav": "pending", "monitor": "pending", "summ": "always"}
@@ -742,3 +744,382 @@ def test_summ_cells_are_refused_unless_they_are_the_declared_grid(tmp_path, cell
     with pytest.raises(RC.CycleError) as e:
         RC.load_spec(sp)
     assert e.value.code == RC.EXIT_USAGE and why in str(e.value)
+
+
+# ------------------------------------------------------------------ L8: as-built fields, ref phase, compare, ledger grid
+V71 = HERE.parent / "specs" / "v71.json"
+WAVE2 = ["ins_opp", "inst_best_ideas", "ftd_fail", "ea_overdue"]
+FIELDS_V9 = "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v9"
+FIELDS_V9_SHA256 = "8fd00e9f44b475116f483e133c03fe031618390060b8374180278f1cd7b8769b"
+V71_CELL = "build-equity/mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+REF_V9 = "build-equity/mega-nav-v70u-ref-fields-v9"
+S2_CSV = "daily_modeled-1bn-stale5-v1+swap-fin-v1.csv"
+LO3_CELL = "build-equity/mega-nav-v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+
+
+def v71_known() -> dict:
+    """Hash-only pins: the v6.1 fixture pins, the pool-2 files v7.1 pins (fixtures/v71_pins.json, captured from the
+    files) and the committed v7.0 / v7.1 library files."""
+    known = json.loads((FIX / "v61_pins.json").read_text(encoding="utf-8"))
+    known.update(json.loads((FIX / "v71_pins.json").read_text(encoding="utf-8")))
+    for name in ("fund_industry_ic_v70.json", "fund_industry_ic_v71.json", "fund_industry_ic_v71.recipe.json"):
+        rel = f"atx-impl/strategies/{name}"
+        known[rel] = RC.sha256_file(HERE.parents[1] / rel)
+    return known
+
+
+def write_ledger(root: Path, cells: list[str]) -> None:
+    p = root / "build-equity" / "trials.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("".join(json.dumps({"kind": "construction", "cell": c}) + "\n" for c in cells), encoding="utf-8")
+
+
+def v70_grid() -> list[str]:
+    """The 34 ledger lines when v7.1 was declared: the n33 grid of spec v70, then the v7.0 cell."""
+    return RC.load_spec(V70)["summ"]["cells"] + [V70_CELL]
+
+
+def v71_cycle(root: Path, spec: dict | None = None, **kw) -> RC.Cycle:
+    return RC.Cycle(spec or RC.load_spec(V71), RC.Resolver(root, v71_known()), spec_path=V71, **kw)
+
+
+def test_v71_spec_is_v70_with_the_declared_changes_only():
+    v71, v70 = RC.load_spec(V71), RC.load_spec(V70)
+    same = ("schema", "python", "env_path_prepend", "runner", "exes")
+    assert {k: v71[k] for k in same} == {k: v70[k] for k in same}
+    inp = v71["inputs"]
+    assert inp["library"]["path"] == "atx-impl/strategies/fund_industry_ic_v71.json"
+    assert inp["baseline_library"] == dict(v70["inputs"]["library"])            # the parent: library v7.0
+    for key in ("role", "baseline_fields"):
+        assert inp[key] == v70["inputs"][key], key
+    assert "identity_bridge" not in inp and "fund_events" not in inp            # fields as built: nothing to build
+    assert inp["reference_cell"]["dir"] == V70_CELL == v70["nav"]["output"]     # Ruling W2-a: the v7.0 cell
+    assert inp["reference_admission"]["path"] == f"{v70['fit']['output']}/admission.json"
+    assert inp["reference_combined"]["path"] == f"{v70['ic']['w_output']}-1/train_combined.json"
+    assert inp["reference_daily"]["path"] == f"{V70_CELL}/{S2_CSV}"
+    assert inp["reference_orientations"]["path"] == f"{v70['ic']['u_output']}-1/orientations.json"
+    assert inp["reference_daily_ic"]["path"] == f"{v70['ic']['u_output']}-1/train_daily_ic.csv"
+    f = v71["fields"]
+    assert (f["output"], f["manifest_sha256"]) == (FIELDS_V9, FIELDS_V9_SHA256) and "builder" not in f
+    assert len(f["list"]) == 63 and f["list"][:41] == v70["fields"]["list"]
+    assert f["check"] == dict(v70["fields"]["check"], expect_added=f["list"][41:])
+    assert v71["static_check"] == dict(v70["static_check"], expect_added=WAVE2)
+    assert v71["ref"] == {"output": REF_V9, "combined": "reference_combined"}
+    assert [(c["name"], c["after"], c["mode"], c["a"], c["b"], c.get("keys")) for c in v71["compare"]] == [
+        ("ref-v9-s2-daily", "ref", "file", "{input:reference_daily}", "{out:ref}/" + S2_CSV, None),
+        ("parent-orientations", "u", "json-rows", "{input:reference_orientations}", "{out:u}/orientations.json",
+         "{input:baseline_library}"),                                  # the 44 parent members' rows only
+        ("parent-train-daily-ic", "u", "csv-rows", "{input:reference_daily_ic}", "{out:u}/train_daily_ic.csv",
+         "{input:baseline_library}")]
+    assert v71["ic"] == dict(v70["ic"], u_output="build-equity/mega-v71-train-u", w_output="build-equity/mega-v71w-"
+                             "train-ew", cache="build-equity/mega-candidate-cache-v71")  # flags unchanged
+    assert v71["fit"] == dict(v70["fit"], output="build-equity/mega-weights-v71-ew",
+                              work_dir="build-equity/mega-fit-work-v71")
+    assert v71["card"] == dict(v70["card"], output="build-equity/mega-cards-v71")
+    assert v71["monitor"] == dict(v70["monitor"], output="build-equity/mega-monitor-v71")
+    assert v71["gate"] == {"name": "p1-v71", "admitted": WAVE2, "require": "any", "sign_agrees": True,
+                           "report": ["mom_12_1", "si_ratio", "dtc", "sv_flow", "iv_rv_spread", "ear", "sue", "droe"]}
+    assert v71["nav"] == dict(v70["nav"], output=V71_CELL)                       # the reference construction
+    assert v71["summ"] == {"script": v70["summ"]["script"], "dsr_n": 35, "cells_from_ledger": True,
+                           "extra": v70["summ"]["extra"], "ledger": v70["summ"]["ledger"],
+                           "ledger_kind": "construction"}
+
+
+def test_v71_plan_dry_run_resolves_every_pin_and_the_identity_phases(tmp_path):
+    write_ledger(tmp_path, v70_grid())
+    c = v71_cycle(tmp_path)
+    spec, known = RC.load_spec(V71), v71_known()
+    for key, item in spec["inputs"].items():  # every pin is the file's SHA-256 (as `lock` computed it)
+        assert item["sha256"] == known[item["path"]], key
+    assert all(how == "locked (hash-only)" for _, _, how in c.pins.values())
+    steps = {s.phase: s for s in c.steps()}
+    assert list(steps) == ["fields", "check", "ref", "ref-compare", "u", "u-compare", "fit", "card", "gate", "w",
+                           "nav", "monitor", "summ"]
+    assert {p: s.state for p, s in steps.items()} == {
+        "fields": "done", "check": "always", "ref": "pending", "ref-compare": "always", "u": "pending",
+        "u-compare": "always", "fit": "pending", "card": "pending", "gate": "always", "w": "pending", "nav": "pending",
+        "monitor": "pending", "summ": "always"}
+    assert steps["fields"].argv is None and steps["fields"].output == FIELDS_V9   # as built: no builder line
+    fdm = f"{FIELDS_V9}/manifest.json"
+    # ref: the v7.0 cell's own NAV command (its receipt), with only the fields pin and the output changed
+    receipt = json.loads((FIX / "v70_nav_receipt_command.json").read_text(encoding="utf-8"))
+    assert (receipt["outcome"], receipt["exit_code"]) == ("completed", 0)
+    want = list(receipt["command"][1:])
+    for flag, value in (("--fields", fdm), ("--fields-sha256", FIELDS_V9_SHA256), ("--output", REF_V9)):
+        want[want.index(flag) + 1] = value
+    ref = steps["ref"].argv
+    k = ref.index("--")
+    assert ref[k + 1] == spec["exes"]["nav"] and ref[k + 2:] == want
+    assert steps["ref"].run_dir == f"{REF_V9}-run" and ref[ref.index("--output") + 1] == f"{REF_V9}-run"
+    assert [(x["a"], x["b"]) for x in steps["ref-compare"].checks] == [
+        (f"{V70_CELL}/{S2_CSV}", f"{REF_V9}/{S2_CSV}")]
+    u_out = "build-equity/mega-v71-train-u-1"
+    lib70 = "atx-impl/strategies/fund_industry_ic_v70.json"
+    assert [(x["mode"], x["a"], x["b"], x["keys"]) for x in steps["u-compare"].checks] == [
+        ("json-rows", "build-equity/mega-v70-train-u-1/orientations.json", f"{u_out}/orientations.json", lib70),
+        ("csv-rows", "build-equity/mega-v70-train-u-1/train_daily_ic.csv", f"{u_out}/train_daily_ic.csv", lib70)]
+    assert len(RC.compare_keys(RC.Resolver(HERE.parents[1]), lib70)) == 44
+    u = steps["u"].argv
+    assert u[u.index("--train-fields") + 1] == FIELDS_V9 and u[u.index("--train-fields-sha256") + 1] == FIELDS_V9_SHA256
+    assert u[u.index("--library-sha256") + 1] == known["atx-impl/strategies/fund_industry_ic_v71.json"]
+    assert u[u.index("--cache-legacy-fields") + 1] == FIELDS_V7
+    assert u[-2:] == ["--candidate-cache", "build-equity/mega-candidate-cache-v71"] and steps["u"].output == u_out
+    ck = steps["check"].argv
+    assert ck[ck.index("--manifest") + 1] == fdm and ck[-2:] == ["--expect-added", ",".join(WAVE2)]
+    nav = steps["nav"].argv
+    assert nav[nav.index("--fields") + 1] == fdm and nav[nav.index("--fields-sha256") + 1] == FIELDS_V9_SHA256
+    assert nav[nav.index("--rule") + 1] == "aim-partial-v5" and nav[nav.index("--aim-leverage") + 1] == "1.247"
+    assert nav[nav.index("--output") + 1] == f"{V71_CELL}-run"
+    summ = steps["summ"].argv
+    r, grid = summ.index("--reference"), v70_grid() + [V71_CELL]
+    assert summ[r + 1] == V70_CELL and summ[r + 2:r + 37] == grid                # 34 ledger cells + this one
+    assert summ[r + 37:] == ["--dsr-n", "35", "--effective-n", "dirs", "--psr", "--pbo", "--ledger",
+                             "build-equity/trials.jsonl", "--ledger-kind", "construction"]
+    ns = nav_summ_args(summ[2:])
+    assert (ns.dirs, ns.pbo, ns.dsr_n, ns.reference) == (grid, [], 35, V70_CELL)
+    lines = RC.plan_lines(c)
+    assert sum(x.startswith("#   compare ") for x in lines) == 3 and len([x for x in lines if x.startswith("# pin ")]) == 11
+    assert len(RC.plan_lines(c, lines_only=True)) == 9  # check, ref, u, fit, card, w, nav, monitor, summ
+
+
+def test_v71_ledger_grid_follows_the_ledger_and_dsr_n_is_the_one_key(tmp_path):
+    write_ledger(tmp_path, v70_grid() + [LO3_CELL])  # another cell ledgered before v7.1 runs (e.g. U-lo3)
+    with pytest.raises(RC.CycleError) as e:
+        v71_cycle(tmp_path).steps()
+    assert e.value.code == RC.EXIT_PIN and "lists 35 prior cells" in str(e.value)
+    assert "set summ.dsr_n to 36" in str(e.value)
+    spec = RC.load_spec(V71)
+    spec["summ"]["dsr_n"] = 36                       # root's one-key change
+    summ = next(s for s in v71_cycle(tmp_path, spec).steps() if s.phase == "summ").argv
+    r = summ.index("--reference")
+    assert summ[r + 2:summ.index("--dsr-n")] == v70_grid() + [LO3_CELL, V71_CELL]
+    assert summ[summ.index("--dsr-n") + 1] == "36"
+    write_ledger(tmp_path, v70_grid() + [LO3_CELL, V71_CELL])  # after its own summ: this cell is not a prior cell
+    assert next(s for s in v71_cycle(tmp_path, spec).steps() if s.phase == "summ").argv == summ
+    (tmp_path / "build-equity" / "trials.jsonl").unlink()
+    with pytest.raises(RC.CycleError, match="no trial ledger") as e:
+        v71_cycle(tmp_path).steps()
+    assert e.value.code == RC.EXIT_PIN
+
+
+@pytest.mark.skipif(not os.environ.get("RESEARCH_CYCLE_LIVE_ROOT"), reason="set RESEARCH_CYCLE_LIVE_ROOT to hash the "
+                                                                          "real pool-2 files (after the L8 merge)")
+def test_v71_plan_live_root_resolves():
+    cycle = RC.Cycle(RC.load_spec(V71), RC.Resolver(Path(os.environ["RESEARCH_CYCLE_LIVE_ROOT"])), spec_path=V71)
+    assert all(how == "locked, verified" for _, _, how in cycle.pins.values())
+    assert next(s for s in cycle.steps() if s.phase == "fields").state == "done"
+
+
+# ---------------------------------------------------------------- generic: fake tools in a temporary root
+def l8_root(tmp_path: Path, **spec_over) -> tuple[Path, Path]:
+    """make_root plus a ref phase and identity compares (their inputs are files in the temporary root)."""
+    root, sp = make_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    (root / "ref-w" / "train_combined.json").write_text('{"ref": 1}')
+    (root / "ref-cell" / "daily_s2.csv").write_text("net_return\n0.001\n")  # text mode, as the fake NAV writes it
+    (root / "ref-u").mkdir()
+    (root / "ref-u" / "daily.csv").write_bytes(b"id,h,v\np1,5,0.1\np1,21,0.2\np2,5,0.3\n")  # bytes, as the fake IC
+    (root / "ref-u" / "orientations.json").write_bytes(json.dumps({"candidates": [{"id": "p1", "sign": 1},
+                                                                                  {"id": "p2", "sign": -1}]}).encode())
+    spec["inputs"].update({k: {"path": p, "sha256": None} for k, p in (
+        ("reference_combined", "ref-w/train_combined.json"), ("reference_daily", "ref-cell/daily_s2.csv"),
+        ("reference_daily_ic", "ref-u/daily.csv"), ("reference_orientations", "ref-u/orientations.json"))})
+    spec["ref"] = {"output": "out/REF", "combined": "reference_combined"}
+    spec["compare"] = [
+        {"name": "ref-s2", "after": "ref", "mode": "file", "a": "{input:reference_daily}", "b": "{out:ref}/daily_s2.csv"},
+        {"name": "rows-ic", "after": "u", "mode": "csv-rows", "a": "{input:reference_daily_ic}",
+         "b": "{out:u}/train_daily_ic.csv"},
+        {"name": "rows-or", "after": "u", "mode": "json-rows", "a": "{input:reference_orientations}",
+         "b": "{out:u}/orientations.json"}]
+    spec.update(spec_over)
+    sp.write_text(json.dumps(spec), encoding="utf-8")
+    return root, sp
+
+
+GOOD_U = {"U-1": {"train_daily_ic.csv": "id,h,v\np1,5,0.1\np1,21,0.2\np2,5,0.3\nn1,5,0.9\n",
+                  "orientations.json": json.dumps({"schema": "x", "candidates": [
+                      {"sign": 1, "id": "p1"}, {"id": "p2", "sign": -1}, {"id": "n1", "sign": 1}]})}}
+
+
+def test_ref_phase_and_identity_compares_run_in_order_and_resume(tmp_path):
+    root, sp = l8_root(tmp_path)
+    behave(root, ic_files=GOOD_U)
+    log = []
+    assert run(root, sp, log) == RC.EXIT_OK
+    assert calls(root)[:5] == ["fields ", "check", "REF-run", "U-run1", "W-run1"]
+    assert log.index("== ref (attempt 1)") < log.index("compare ref-s2 [file]: ref-cell/daily_s2.csv vs out/REF/daily_s2.csv") \
+        < log.index("== u (attempt 1)") < log.index("compare rows-ic [csv-rows]: ref-u/daily.csv vs "
+                                                    "out/U-1/train_daily_ic.csv")
+    size, sha = (root / "ref-cell/daily_s2.csv").stat().st_size, RC.sha256_file(root / "ref-cell/daily_s2.csv")
+    assert f"   IDENTICAL: bit for bit ({size} bytes, sha256 {sha})" in log
+    assert ("   IDENTICAL: 3 rows of 2 keys byte for byte (a has 0 rows of other keys); b adds 1 rows of 1 other "
+            "keys") in log
+    assert "   IDENTICAL: 2 candidates objects identical (canonical JSON); b adds 1 objects" in log
+    ref = next(s for s in cycle_of(root, sp).steps() if s.phase == "ref").argv
+    assert ref[ref.index("--combined") + 1] == "ref-w/train_combined.json"
+    assert ref[ref.index("--combined-sha256") + 1] == RC.sha256_file(root / "ref-w/train_combined.json")
+    assert ref[ref.index("--aim-leverage") + 1] == "1.247" and ref[ref.index("--rule") + 1] == "aim-partial-v5"
+    n = len(calls(root))
+    assert run(root, sp) == RC.EXIT_OK                  # resume: nothing re-executed, the compares re-verified
+    assert calls(root)[n:] == ["check", calls(root)[n - 1]]
+    st = RC.status_lines(cycle_of(root, sp))
+    assert any(x.startswith("ref    done") for x in st) and any(x.startswith("u-compare always") for x in st)
+
+
+def test_a_reference_mismatch_hard_stops_before_the_u_pass(tmp_path):
+    root, sp = l8_root(tmp_path)
+    behave(root, daily={"REF": "net_return\n0.0010000001\n"}, ic_files=GOOD_U)
+    with pytest.raises(RC.CycleError) as e:
+        run(root, sp)
+    assert e.value.code == RC.EXIT_STOP and "IDENTITY MISMATCH [ref-s2] (file)" in str(e.value)
+    assert "no trial" in str(e.value) and calls(root) == ["fields ", "check", "REF-run"]
+
+
+@pytest.mark.parametrize("files, needle", [
+    ({"train_daily_ic.csv": "id,h,v\np1,5,0.1\np1,21,0.25\np2,5,0.3\n"}, "rows-ic"),          # a changed value
+    ({"train_daily_ic.csv": "id,h,v\np1,5,0.1\np2,5,0.3\n"}, "rows-ic"),                      # a missing row
+    ({"train_daily_ic.csv": "id,h,v\np2,5,0.3\np1,5,0.1\np1,21,0.2\n"}, "rows-ic"),          # another order
+    ({"train_daily_ic.csv": "id,h,value\np1,5,0.1\np1,21,0.2\np2,5,0.3\n"}, "headers differ"),
+    ({"orientations.json": json.dumps({"candidates": [{"id": "p1", "sign": 1}, {"id": "p2", "sign": 1}]})},
+     "rows-or"),
+    ({"orientations.json": json.dumps({"candidates": [{"id": "p1", "sign": 1.0}, {"id": "p2", "sign": -1}]})},
+     "rows-or"),                                                                             # 1 vs 1.0: bytes differ
+])
+def test_a_parent_row_mismatch_after_u_hard_stops_before_the_fit(tmp_path, files, needle):
+    root, sp = l8_root(tmp_path)
+    behave(root, ic_files={"U-1": dict(GOOD_U["U-1"], **files)})
+    with pytest.raises(RC.CycleError) as e:
+        run(root, sp)
+    assert e.value.code == RC.EXIT_STOP and "IDENTITY MISMATCH" in str(e.value) and needle in str(e.value)
+    assert calls(root)[-1] == "U-run1" and "W-run1" not in calls(root)
+
+
+def test_member_keys_leave_the_combined_book_series_out(tmp_path):
+    """keys = a library's candidate ids: the parent's member rows, not the runner's __combined__ series (which
+    moves with every library change)."""
+    res = RC.Resolver(tmp_path)
+    (tmp_path / "lib.json").write_text(json.dumps({"candidates": [{"id": "p1"}, {"id": "p2"}]}))
+    (tmp_path / "a.csv").write_bytes(b"id,h,v\np1,5,0.1\np2,5,0.3\n__combined__,5,0.7\n")
+    (tmp_path / "b.csv").write_bytes(b"id,h,v\np1,5,0.1\np2,5,0.3\nn1,5,0.9\n__combined__,5,0.8\n")
+    c = {"name": "m", "mode": "csv-rows", "a": "a.csv", "b": "b.csv"}
+    with pytest.raises(RC.CycleError, match="IDENTITY MISMATCH"):
+        RC.compare_files(res, c)                                     # a's keys include __combined__
+    assert RC.compare_files(res, dict(c, keys="lib.json")) == (
+        "2 rows of 2 keys byte for byte (a has 1 rows of other keys); b adds 2 rows of 2 other keys")
+    (tmp_path / "lib.json").write_text(json.dumps({"candidates": [{"id": "p1"}, {"id": "p3"}]}))
+    with pytest.raises(RC.CycleError, match="a lacks rows of 1 of the 2 keys"):
+        RC.compare_files(res, dict(c, keys="lib.json"))
+    (tmp_path / "a.json").write_text(json.dumps({"candidates": [{"id": "p1", "s": 1}, {"id": "x", "s": 0}]}))
+    (tmp_path / "b.json").write_text(json.dumps({"candidates": [{"id": "p1", "s": 1}, {"id": "x", "s": 2}]}))
+    (tmp_path / "lib.json").write_text(json.dumps({"candidates": [{"id": "p1"}]}))
+    j = {"name": "j", "mode": "json-rows", "a": "a.json", "b": "b.json", "keys": "lib.json"}
+    assert RC.compare_files(res, j) == "1 candidates objects identical (canonical JSON); b adds 1 objects"
+    with pytest.raises(RC.CycleError, match="IDENTITY MISMATCH"):
+        RC.compare_files(res, {k: v for k, v in j.items() if k != "keys"})
+    (tmp_path / "lib.json").write_text(json.dumps({"candidates": []}))
+    with pytest.raises(RC.CycleError, match="compare keys"):
+        RC.compare_files(res, j)
+
+
+def test_compare_files_modes(tmp_path):
+    res = RC.Resolver(tmp_path)
+    (tmp_path / "a.csv").write_bytes(b"id,x\np,1\n")
+    (tmp_path / "b.csv").write_bytes(b"id,x\np,1\n")
+    c = {"name": "n", "mode": "file", "a": "a.csv", "b": "b.csv"}
+    assert RC.compare_files(res, c).startswith("bit for bit")
+    (tmp_path / "b.csv").write_bytes(b"id,x\np,1")                   # the missing final newline is a byte
+    with pytest.raises(RC.CycleError, match="sha256"):
+        RC.compare_files(res, c)
+    assert RC.compare_files(res, dict(c, mode="csv-rows")).startswith("1 rows of 1 keys")  # rows: same lines
+    with pytest.raises(RC.CycleError, match="missing"):
+        RC.compare_files(res, dict(c, b="nope.csv"))
+    with pytest.raises(RC.CycleError, match="no key column"):
+        RC.compare_files(res, dict(c, mode="csv-rows", key="cid"))
+    (tmp_path / "a.json").write_text(json.dumps({"rows": [{"k": "p", "v": 0.0}]}))
+    (tmp_path / "b.json").write_text(json.dumps({"rows": [{"v": -0.0, "k": "p"}]}))
+    j = {"name": "j", "mode": "json-rows", "a": "a.json", "b": "b.json", "array": "rows", "key": "k"}
+    with pytest.raises(RC.CycleError, match="first difference at k p"):
+        RC.compare_files(res, j)                                     # -0.0 is not 0.0 byte for byte
+    (tmp_path / "b.json").write_text(json.dumps({"rows": [{"v": 0.0, "k": "p"}, {"k": "q"}]}))
+    assert RC.compare_files(res, j) == "1 rows objects identical (canonical JSON); b adds 1 objects"
+    with pytest.raises(RC.CycleError, match="no candidates"):
+        RC.compare_files(res, dict(j, array="candidates"))
+
+
+def test_as_built_fields_are_pinned_never_rebuilt_or_suffixed(tmp_path):
+    root, sp = make_root(tmp_path)
+    (root / "fields-v9").mkdir()
+    man = {"fields": [{"name": "fa"}, {"name": "fb"}], "files": {"fa.f64": {"sha256": "a" * 64, "bytes": 8},
+                                                                  "fb.f64": {"sha256": "b" * 64, "bytes": 8}}}
+    (root / "fields-v9" / "manifest.json").write_text(json.dumps(man))
+    pin = RC.sha256_file(root / "fields-v9" / "manifest.json")
+    fields = {"output": "fields-v9", "manifest_sha256": pin, "list": ["fa", "fb"],
+              "check": {"baseline": "baseline_fields", "expect_added": ["fb"]}}
+    spec = json.loads(sp.read_text())
+    sp.write_text(json.dumps(dict(spec, fields=fields)), encoding="utf-8")
+    log = []
+    assert run(root, sp, log) == RC.EXIT_OK
+    assert calls(root)[:2] == ["check", "U-run1"]                    # no builder call
+    assert "fields check: pinned fields-v9/manifest.json sha256 " + pin + ": 2 rows == the spec list" in log
+    u = next(s for s in cycle_of(root, sp, suffix="r2").steps() if s.phase == "u").argv
+    u = u[u.index("--") + 1:]  # the IC command after the bounded runner's options
+    assert u[u.index("--train-fields") + 1] == "fields-v9" and u[u.index("--output") + 1] == "out/U-r2-1"
+    assert u[u.index("--train-fields-sha256") + 1] == pin
+    with pytest.raises(RC.CycleError) as e:
+        cycle_of(root, sp, reuse_fields="fields-base")
+    assert e.value.code == RC.EXIT_USAGE
+    sp.write_text(json.dumps(dict(spec, fields=dict(fields, manifest_sha256="0" * 64))), encoding="utf-8")
+    with pytest.raises(RC.CycleError) as e:
+        cycle_of(root, sp).steps()
+    assert e.value.code == RC.EXIT_PIN and "PIN MISMATCH fields" in str(e.value)
+    sp.write_text(json.dumps(dict(spec, fields=dict(fields, list=["fb", "fa"]))), encoding="utf-8")
+    with pytest.raises(RC.CycleError, match="field rows differ"):
+        run(root, sp)
+    sp.write_text(json.dumps(dict(spec, fields=dict(fields, output="fields-v10"))), encoding="utf-8")
+    with pytest.raises(RC.CycleError, match=r"HARD-STOP \[fields\]: pinned fields manifest missing"):
+        run(root, sp)
+
+
+@pytest.mark.parametrize("over, why", [
+    (dict(compare=[{"name": "x", "after": "zz", "mode": "file", "a": "a", "b": "b"}]), "not a phase"),
+    (dict(compare=[{"name": "x", "after": "ref", "mode": "file", "a": "a", "b": "b"}], ref=None), "not a phase"),
+    (dict(compare=[{"name": "x", "after": "u", "mode": "diff", "a": "a", "b": "b"}]), "mode must be"),
+    (dict(compare=[{"name": "x", "after": "u", "mode": "file", "a": "{input:nope}", "b": "b"}]), "names no input"),
+    (dict(compare=[{"name": "x", "after": "u", "mode": "file", "a": "{out:gate}", "b": "b"}]), "names no out"),
+    (dict(compare=[{"name": "x", "after": "u", "mode": "file", "a": "{out:u", "b": "b"}]), "malformed"),
+    (dict(compare=[{"name": "x", "after": "u", "mode": "file", "a": "a", "b": "b"}] * 2), "duplicate"),
+    (dict(compare=[]), "non-empty"),
+    (dict(compare=[{"name": "x", "after": "u", "mode": "file", "a": "a", "b": "b", "keys": "{input:library}"}]),
+     "row modes only"),
+    (dict(compare=[{"name": "x", "after": "u", "mode": "csv-rows", "a": "a", "b": "b", "keys": "{input:nope}"}]),
+     "names no input"),
+    (dict(ref={"output": "out/N", "combined": "reference_combined"}), "output of its own"),
+    (dict(ref={"output": "out/R", "combined": "library_x"}), "inputs.<ref.combined>"),
+    (dict(ref={"output": "out/R"}), "spec ref needs"),
+    (dict(fields={"output": "F"}), "builder and list"),
+    (dict(fields={"output": "F", "manifest_sha256": "abc"}), "SHA-256"),
+    (dict(summ={"script": "s", "dsr_n": 3, "cells_from_ledger": True}), "needs summ.ledger"),
+    (dict(summ={"script": "s", "dsr_n": 3, "cells_from_ledger": True, "ledger": "L", "cells": ["a", "b"]}),
+     "excludes summ.cells"),
+    (dict(summ={"script": "s", "dsr_n": 3, "cells_from_ledger": 1, "ledger": "L"}), "must be true"),
+])
+def test_identity_spec_sections_are_validated(tmp_path, over, why):
+    _, sp = l8_root(tmp_path)
+    spec = json.loads(sp.read_text())
+    for k, v in over.items():
+        if v is None:
+            spec.pop(k)
+        else:
+            spec[k] = v
+    with pytest.raises(RC.CycleError) as e:
+        RC.validate_spec(spec)
+    assert e.value.code == RC.EXIT_USAGE and why in str(e.value)
+
+
+def test_stop_after_a_compare_step(tmp_path):
+    root, sp = l8_root(tmp_path)
+    behave(root, ic_files=GOOD_U)
+    log = []
+    assert run(root, sp, log, stop_after="u-compare") == RC.EXIT_OK
+    assert calls(root)[-1] == "U-run1" and log[-1] == "== stopped after u-compare (--stop-after)"
+    assert "u-compare" in RC.STOP_PHASES and "ref" in RC.PHASES
