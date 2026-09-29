@@ -49,10 +49,11 @@ using atx::engine::alpha::Library;
 using atx::engine::alpha::Panel;
 using atx::engine::alpha::Program;
 
-// PIN: captured at the W2 base + this test (see CAPTURE PROTOCOL). 0 = unpinned.
-constexpr std::uint64_t kGoldenVmAuditExact = 0x0ULL;
-constexpr std::uint64_t kGoldenVmResearchFast = 0x0ULL;
-constexpr std::uint64_t kGoldenOracle = 0x0ULL;
+// PIN: captured by root on the merged W2 HEAD (pool-2 96f3ed96, build v7-w2) — the
+// pre-W2 opcode battery; any change here means an existing opcode's bits moved.
+constexpr std::uint64_t kGoldenVmAuditExact = 0x971c3da60ca89aa3ULL;
+constexpr std::uint64_t kGoldenVmResearchFast = 0xe9e7128fd5359900ULL;
+constexpr std::uint64_t kGoldenOracle = 0x971c3da60ca89aa3ULL;
 
 constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 
