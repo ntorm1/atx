@@ -17,6 +17,13 @@
 //     --band-exponent P       (default 1/3; 0 = the uniform dust band)
 //     --rate-clip LO,HI       (default .5,1.5)
 //   kappa 0 + --band-exponent 0 + --rate-clip 1,1 (band b = dust) is aim-partial-v5 bit for bit.
+//   --rule spo-v1             the cost-aware single-period optimiser (wave 2 W1, strategy_spo.hpp;
+//                             base: aim-partial-v5 flags) --risk-model DIR --risk-model-sha256 SHA
+//                             (the `risk` verb's output with --emit-exposures all, same role)
+//     [--gamma G] [--ic-book .02] [--w-max .01] [--adv-cap-q .05] [--adv-trade-p .01]
+//     [--spo-iters 500] [--spo-tol 1e-8] [--target-vol .05] [--spo-horizon 1/theta]
+//     [--spo-books all|primary]; adds <output>/spo_diagnostics.csv; fixed rate, no capacity
+//     curve, not with aim-partial-v6.
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
 // Every hooked run also writes <output>/v7_transfer_coefficient.csv (TC per rebalance
 // decision and book) and <output>/v7_extras.json (extras' SHA-256, capacity table) after
@@ -35,6 +42,7 @@
 #include "atx/engine/book/replay_cost.hpp"
 #include "strategy_cost_v2.hpp"
 #include "strategy_nav_replay.hpp"
+#include "strategy_spo.hpp"
 #include "strategy_target_replay.hpp"
 
 namespace atx::impl::strategy::v7 {
@@ -44,6 +52,9 @@ struct NavV7Options {
   bool capacity{}; // --capacity-curve
   bool aim_v6{};   // --rule aim-partial-v6
   cost_v2::AimV6Params v6{};
+  bool spo_v1{};   // --rule spo-v1
+  spo::SpoParams spo_params{};
+  std::shared_ptr<const spo::RiskStore> spo_risk; // opened by dispatch_nav_v7
 };
 enum class NavV7Pass : atx::u8 { Main = 0, Capacity = 1 };
 
@@ -81,6 +92,8 @@ public:
   void begin_run(NavV7Pass pass);
   [[nodiscard]] std::span<const TcRecord> tc_records() const noexcept;
   [[nodiscard]] std::span<const BookRecord> books() const noexcept;
+  // The spo-v1 engine (nullptr without --rule spo-v1).
+  [[nodiscard]] const spo::Engine* spo_engine() const noexcept;
   struct State;
 
 private:
@@ -96,6 +109,7 @@ struct NavV7Command {
   NavV7Options options;
   std::vector<std::string> args;
   std::string output;
+  std::string risk_model, risk_model_sha256; // --rule spo-v1 only
 };
 [[nodiscard]] atx::core::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv);
 
@@ -109,12 +123,16 @@ struct NavV7Command {
 [[nodiscard]] atx::core::Result<std::unique_ptr<const atx::engine::book::ReplayCostModel>>
 extension_cost_model(const NavScenario& scenario);
 // The weight update of one book at decision d: detail::update_weights (the extension only
-// observes the transfer coefficient), or aim-partial-v6 on rebalance decisions.
+// observes the transfer coefficient), or aim-partial-v6 / spo-v1 on rebalance decisions.
+// tier: the decision's borrow tier per name (empty without tiers); no_locate: decide
+// --locates (empty in the replay). Only spo-v1 reads them (its locate floor and financing).
 [[nodiscard]] atx::core::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg,
                                      atx::usize d, bool rebalance, atx::f64 spent,
                                      atx::f64 nav_post, const std::vector<atx::f64>& desired,
                                      std::vector<atx::f64>& planned, TargetReplayDay& out,
-                                     std::span<const atx::f64> rates);
+                                     std::span<const atx::f64> rates,
+                                     std::span<const atx::u8> tier = {},
+                                     std::span<const atx::u8> no_locate = {});
 void capture(std::span<const NavScenario> scenarios, std::span<const NavReplayResult> results,
              std::span<const NavSummary> summaries);
 // Reserved-id cost labels always; v7 declarations and the v6 rule id with an extension.

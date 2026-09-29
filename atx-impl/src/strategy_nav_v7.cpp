@@ -35,7 +35,8 @@ std::string book_label(const NavScenario& s) { return s.id + "+" + s.financing.i
 // buffer and the decision, so every book of one lockstep decision shares one computation.
 struct ScopedNavExtension::State {
   explicit State(const NavV7Options& o)
-      : options(o), s2(fixed_nav_scenarios()[nav_primary_scenario_index]) {}
+      : options(o), s2(fixed_nav_scenarios()[nav_primary_scenario_index]),
+        engine(o.spo_v1 ? std::make_unique<spo::Engine>(o.spo_params, o.spo_risk) : nullptr) {}
   NavV7Options options;
   NavScenario s2; // the primary S2 law: the v6 marginal cost c_i of every book
   NavV7Pass pass{NavV7Pass::Main};
@@ -47,10 +48,12 @@ struct ScopedNavExtension::State {
   std::vector<BookRecord> books;
   std::vector<f64> costs;
   cost_v2::AimV6Decision decision;
+  std::unique_ptr<spo::Engine> engine; // --rule spo-v1
   [[nodiscard]] co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
                                 bool rebalance, f64 spent, f64 nav_post,
                                 const std::vector<f64>& desired, std::vector<f64>& planned,
-                                TargetReplayDay& out, std::span<const f64> rates);
+                                TargetReplayDay& out, std::span<const f64> rates,
+                                std::span<const u8> tier, std::span<const u8> no_locate);
 };
 
 namespace {
@@ -62,10 +65,21 @@ f64 reference_cost(const std::vector<f64>& history) {
   for (const f64 c : history) sum += c;
   return sum / static_cast<f64>(history.size());
 }
-std::string relabel_v6(const std::string& rule) {
+std::string relabel_v6(const std::string& rule, const char* id = "aim-partial-v6") {
   constexpr std::string_view v5 = "aim-partial-v5";
   if (rule.compare(0, v5.size(), v5) != 0) return rule;
-  return "aim-partial-v6" + rule.substr(v5.size());
+  return id + rule.substr(v5.size());
+}
+// The construction rule the extension runs instead of aim-partial-v5 (nullptr: v5 itself).
+const char* rule_id(const NavV7Options& o) {
+  return o.aim_v6 ? "aim-partial-v6" : o.spo_v1 ? "spo-v1" : nullptr;
+}
+// The spo-v1 value flags (each takes one value).
+bool spo_flag(std::string_view key) {
+  return key == "--risk-model" || key == "--risk-model-sha256" || key == "--gamma" ||
+         key == "--ic-book" || key == "--w-max" || key == "--adv-cap-q" ||
+         key == "--adv-trade-p" || key == "--spo-iters" || key == "--spo-tol" ||
+         key == "--target-vol" || key == "--spo-horizon" || key == "--spo-books";
 }
 const char* pass_name(NavV7Pass pass) { return pass == NavV7Pass::Main ? "main" : "capacity"; }
 Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
@@ -148,6 +162,15 @@ Json declarations(const ScopedNavExtension::State& s) {
         {"band_b", v6.band_b}, {"band_exponent", v6.band_exponent},
         {"rate_clip", Json::array({v6.clip_lo, v6.clip_hi})},
         {"reference_decisions", v6.reference_decisions}};
+  if (s.engine) {
+    Json block{{"rule", spo::declaration()},
+               {"parameters", spo::parameters_json(s.options.spo_params, s.engine->horizon())},
+               {"calibration", spo::calibration_json(s.engine->calibration())}};
+    if (s.options.spo_risk)
+      block["risk_model"] = Json{{"directory", s.options.spo_risk->directory()},
+                                 {"manifest_sha256", s.options.spo_risk->manifest_sha256()}};
+    j["spo_v1"] = std::move(block);
+  }
   return j;
 }
 
@@ -249,6 +272,16 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
     extras["capacity_x1_equals_primary_bit_for_bit"] =
         primary && unit && same_bits(primary->net_returns, unit->net_returns);
   }
+  if (const auto* engine = ext.spo_engine()) {
+    const auto path = dir / "spo_diagnostics.csv";
+    ATX_TRY_VOID(write_text(path, spo::diagnostics_csv(engine->rows())));
+    ATX_TRY(auto sha, co::sha256_file(path.string()));
+    files["spo_diagnostics.csv"] = sha;
+    extras["spo_v1"] =
+        Json{{"parameters", spo::parameters_json(engine->params(), engine->horizon())},
+             {"calibration", spo::calibration_json(engine->calibration())},
+             {"books", spo::summary_json(engine->rows())}};
+  }
   extras["files"] = std::move(files);
   return write_text(dir / "v7_extras.json", extras.dump(2) + "\n");
 }
@@ -258,13 +291,15 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
                                            usize d, bool rebalance, f64 spent, f64 nav_post,
                                            const std::vector<f64>& desired,
                                            std::vector<f64>& planned, TargetReplayDay& out,
-                                           std::span<const f64> rates) {
+                                           std::span<const f64> rates, std::span<const u8> tier,
+                                           std::span<const u8> no_locate) {
   const bool v6 = options.aim_v6, observe = pass == NavV7Pass::Main;
-  if (v6 && !rates.empty())
+  if ((v6 || engine) && !rates.empty())
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "aim-partial-v6: the per-name rate is not part of the rule (--rate fixed)");
+                   "aim-partial-v6 / spo-v1: the per-name rate is not part of the rule "
+                   "(--rate fixed)");
   // Non-rebalance decisions keep every member and only trade exits: aim-partial-v5's move.
-  if (!rebalance || (!v6 && !observe))
+  if (!rebalance || (!v6 && !engine && !observe))
     return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
   const usize n = x.instruments;
   if (d >= x.dates || desired.size() != n || planned.size() != n)
@@ -297,6 +332,9 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
     ATX_TRY_VOID(cost_v2::aim_partial_v6_weights(x, cfg.target, d, true, decision, planned, out));
     record.c_bar = c_bar; record.c_ref = c_ref; record.theta = decision.theta;
     record.costed = decision.costed;
+  } else if (engine) {
+    const spo::BookDecision in{x, cfg, s2, d, nav_post, desired, tier, no_locate, liquidity, book};
+    ATX_TRY_VOID(engine->plan(in, planned, out));
   } else {
     ATX_TRY_VOID(detail::update_weights(x, cfg.target, d, true, spent, desired, planned, out, rates));
   }
@@ -318,17 +356,21 @@ void ScopedNavExtension::begin_run(NavV7Pass pass) {
   state_->liquidity_key = nullptr;
   state_->liquidity_decision = no_decision;
   state_->c_history.clear();
+  if (state_->engine) state_->engine->begin_run();
 }
 std::span<const TcRecord> ScopedNavExtension::tc_records() const noexcept { return state_->tc; }
 std::span<const BookRecord> ScopedNavExtension::books() const noexcept { return state_->books; }
+const spo::Engine* ScopedNavExtension::spo_engine() const noexcept { return state_->engine.get(); }
 
 bool claims_nav_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view key = argv[i];
     if (key == "--cost-v2" || key == "--capacity-curve" || key == "--cost-shrink-kappa" ||
-        key == "--band-b" || key == "--band-exponent" || key == "--rate-clip")
+        key == "--band-b" || key == "--band-exponent" || key == "--rate-clip" || spo_flag(key))
       return true;
-    if (key == "--rule" && i + 1 < argc && std::string_view(argv[i + 1]) == "aim-partial-v6")
+    if (key == "--rule" && i + 1 < argc &&
+        (std::string_view(argv[i + 1]) == "aim-partial-v6" ||
+         std::string_view(argv[i + 1]) == "spo-v1"))
       return true;
   }
   return false;
@@ -339,6 +381,9 @@ std::vector<NavScenario> run_scenarios(std::vector<NavScenario> matrix) {
   if (!s || matrix.size() <= nav_primary_scenario_index) return matrix;
   const NavScenario primary = matrix[nav_primary_scenario_index];
   if (s->pass == NavV7Pass::Capacity) return cost_v2::capacity_scenarios(primary);
+  // spo-v1 --spo-books primary: S1 and the primary S2 only (the replay keeps S2 at index 1).
+  if (s->options.spo_v1 && !s->options.spo_params.all_books)
+    matrix.resize(nav_primary_scenario_index + 1);
   if (s->options.stress) {
     matrix.push_back(cost_v2::ko_scenario(primary));
     matrix.push_back(cost_v2::fim_scenario(primary));
@@ -352,9 +397,11 @@ co::Result<std::unique_ptr<const bk::ReplayCostModel>> extension_cost_model(cons
 
 co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d, bool rebalance,
                 f64 spent, f64 nav_post, const std::vector<f64>& desired,
-                std::vector<f64>& planned, TargetReplayDay& out, std::span<const f64> rates) {
+                std::vector<f64>& planned, TargetReplayDay& out, std::span<const f64> rates,
+                std::span<const u8> tier, std::span<const u8> no_locate) {
   if (auto* s = active_state)
-    return s->plan(x, cfg, d, rebalance, spent, nav_post, desired, planned, out, rates);
+    return s->plan(x, cfg, d, rebalance, spent, nav_post, desired, planned, out, rates, tier,
+                   no_locate);
   return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
 }
 
@@ -392,8 +439,9 @@ void extend_recipe(Json& recipe) {
   const auto* s = active_state;
   if (!s || !recipe.is_object()) return;
   recipe["v7"] = declarations(*s);
-  if (s->options.aim_v6 && recipe.contains("rule") && recipe.at("rule").is_string())
-    recipe["rule"] = relabel_v6(recipe.at("rule").get<std::string>());
+  if (const char* id = rule_id(s->options);
+      id && recipe.contains("rule") && recipe.at("rule").is_string())
+    recipe["rule"] = relabel_v6(recipe.at("rule").get<std::string>(), id);
 }
 
 void extend_summary(Json& summary) {
@@ -421,18 +469,22 @@ void extend_summary(Json& summary) {
     books[book] = std::move(entry);
   }
   summary["v7"] = Json{{"declarations", declarations(*s)}, {"books", std::move(books)},
-      {"extras", "v7_transfer_coefficient.csv, capacity_curve.csv (with --capacity-curve) and "
-                 "v7_extras.json are written after this summary"}};
-  if (s->options.aim_v6 && summary.contains("rule") && summary.at("rule").is_string())
-    summary["rule"] = relabel_v6(summary.at("rule").get<std::string>());
+      {"extras", "v7_transfer_coefficient.csv, capacity_curve.csv (with --capacity-curve), "
+                 "spo_diagnostics.csv (spo-v1) and v7_extras.json are written after this "
+                 "summary"}};
+  if (s->engine) summary["v7"]["spo_v1_books"] = spo::summary_json(s->engine->rows());
+  if (const char* id = rule_id(s->options);
+      id && summary.contains("rule") && summary.at("rule").is_string())
+    summary["rule"] = relabel_v6(summary.at("rule").get<std::string>(), id);
 }
 
 void extend_holdings(Json& manifest) {
   const auto* s = active_state;
   if (!s || !manifest.is_object()) return;
   manifest["v7"] = declarations(*s);
-  if (s->options.aim_v6 && manifest.contains("rule") && manifest.at("rule").is_string())
-    manifest["rule"] = relabel_v6(manifest.at("rule").get<std::string>());
+  if (const char* id = rule_id(s->options);
+      id && manifest.contains("rule") && manifest.at("rule").is_string())
+    manifest["rule"] = relabel_v6(manifest.at("rule").get<std::string>(), id);
 }
 
 void append_help(std::ostream& out) {
@@ -444,7 +496,13 @@ void append_help(std::ostream& out) {
          "pass only)] [--rule aim-partial-v6 (aim-partial-v5 flags plus a cost-scaled target, "
          "band and regime rate; fixed rate only) --cost-shrink-kappa 1 --band-b "
          "<--dust-multiple> --band-exponent .3333 (1/3; 0: the uniform dust band) "
-         "--rate-clip .5,1.5; kappa 0, band exponent 0 and clip 1,1 = aim-partial-v5]\n";
+         "--rate-clip .5,1.5; kappa 0, band exponent 0 and clip 1,1 = aim-partial-v5] "
+         "[--rule spo-v1 (cost-aware single-period optimiser around the GP aim, aim-partial-v5 "
+         "flags plus) --risk-model DIR (risk verb output, --emit-exposures all, same role) "
+         "--risk-model-sha256 SHA [--gamma G (default: calibrated, --target-vol .05)] "
+         "[--ic-book .02] [--w-max .01] [--adv-cap-q .05] [--adv-trade-p .01] "
+         "[--spo-iters 500] [--spo-tol 1e-8] [--spo-horizon (default 1/theta)] "
+         "[--spo-books all|primary] (adds <output>/spo_diagnostics.csv; fixed rate only)]\n";
 }
 
 co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
@@ -453,12 +511,20 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     std::vector<std::string> args;
     args.emplace_back(argc > 0 ? argv[0] : "nav");
     std::set<std::string> seen;
-    bool band_given = false, v6_params = false;
+    bool band_given = false, v6_params = false, spo_params = false;
+    std::string risk_model, risk_model_sha256;
     const auto number = [](const std::string& value) {
       usize used = 0;
       const f64 x = std::stod(value, &used);
       if (used != value.size()) throw std::invalid_argument("invalid number: " + value);
       return x;
+    };
+    const auto count = [](const std::string& value) {
+      usize used = 0;
+      const unsigned long long x = std::stoull(value, &used);
+      if (used != value.size() || value.front() == '-')
+        throw std::invalid_argument("invalid count: " + value);
+      return static_cast<usize>(x);
     };
     // Token scan: only the v7 tokens (and --rule aim-partial-v6) are consumed; every other
     // token passes through in order, so the replay parses its own flags unchanged.
@@ -489,8 +555,32 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
         }
         continue;
       }
-      if (key == "--rule" && i + 1 < argc && std::string_view(argv[i + 1]) == "aim-partial-v6") {
-        o.aim_v6 = true;
+      if (spo_flag(key)) {
+        if (!seen.insert(key).second || i + 1 >= argc)
+          throw std::invalid_argument("duplicate/missing value: " + key);
+        const std::string value = argv[++i];
+        spo_params = true;
+        auto& sp = o.spo_params;
+        if (key == "--risk-model") risk_model = value;
+        else if (key == "--risk-model-sha256") risk_model_sha256 = value;
+        else if (key == "--gamma") sp.gamma = number(value);
+        else if (key == "--ic-book") sp.ic_book = number(value);
+        else if (key == "--w-max") sp.w_max = number(value);
+        else if (key == "--adv-cap-q") sp.adv_cap_q = number(value);
+        else if (key == "--adv-trade-p") sp.adv_trade_p = number(value);
+        else if (key == "--spo-iters") sp.max_iterations = count(value);
+        else if (key == "--spo-tol") sp.tolerance = number(value);
+        else if (key == "--target-vol") sp.target_vol = number(value);
+        else if (key == "--spo-horizon") sp.horizon = number(value);
+        else if (value == "all" || value == "primary") sp.all_books = value == "all";
+        else throw std::invalid_argument("--spo-books all|primary");
+        continue;
+      }
+      if (key == "--rule" && i + 1 < argc &&
+          (std::string_view(argv[i + 1]) == "aim-partial-v6" ||
+           std::string_view(argv[i + 1]) == "spo-v1")) {
+        if (!seen.insert(key).second) throw std::invalid_argument("duplicate flag --rule");
+        (std::string_view(argv[i + 1]) == "spo-v1" ? o.spo_v1 : o.aim_v6) = true;
         args.emplace_back("--rule"); args.emplace_back("aim-partial-v5");
         ++i;
         continue;
@@ -509,6 +599,17 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     if (v6_params && !o.aim_v6)
       throw std::invalid_argument(
           "--cost-shrink-kappa/--band-b/--band-exponent/--rate-clip need --rule aim-partial-v6");
+    if (spo_params && !o.spo_v1)
+      throw std::invalid_argument("--risk-model, --gamma, ... --spo-books need --rule spo-v1");
+    if (o.spo_v1) {
+      if (o.capacity)
+        throw std::invalid_argument("spo-v1 does not run the capacity curve (--capacity-curve)");
+      if (rate && *rate != "fixed") throw std::invalid_argument("spo-v1 needs the fixed rate");
+      if (risk_model.empty() || risk_model_sha256.empty())
+        throw std::invalid_argument("spo-v1 needs --risk-model and --risk-model-sha256");
+      const auto valid = spo::validate_params(o.spo_params);
+      if (!valid) throw std::invalid_argument(valid.error().to_string());
+    }
     if (!output || output->empty()) throw std::invalid_argument("--output is required");
     if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed")
       throw std::invalid_argument("aim-partial-v6 and --capacity-curve need the fixed rate "
@@ -519,7 +620,8 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       if (!valid) throw std::invalid_argument(valid.error().to_string());
     }
     std::string output_dir = *output; // points into args: copy before the move
-    NavV7Command command{o, std::move(args), std::move(output_dir)};
+    NavV7Command command{o, std::move(args), std::move(output_dir), std::move(risk_model),
+                         std::move(risk_model_sha256)};
     return co::Ok(std::move(command));
   } catch (const std::exception& e) {
     return co::Err(co::ErrorCode::InvalidArgument, std::string("nav v7: ") + e.what());
@@ -530,8 +632,16 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
   try {
     auto parsed = parse_nav_v7_args(argc, argv);
     if (!parsed) { err << parsed.error().to_string() << '\n'; return 2; }
-    const NavV7Options& o = parsed->options;
+    NavV7Options& o = parsed->options;
     const std::vector<std::string>& args = parsed->args;
+    if (o.spo_v1) { // the pinned risk model of the same role (refused before any replay work)
+      std::string role_sha;
+      for (usize k = 1; k + 1 < args.size(); ++k)
+        if (args[k] == "--role-sha256") role_sha = args[k + 1];
+      auto store = spo::RiskStore::open(parsed->risk_model, parsed->risk_model_sha256, role_sha);
+      if (!store) { err << store.error().to_string() << '\n'; return 2; }
+      o.spo_risk = std::make_shared<const spo::RiskStore>(std::move(*store));
+    }
     const auto run = [&](std::vector<std::string> tokens) {
       std::vector<char*> pointers;
       pointers.reserve(tokens.size());
@@ -557,6 +667,13 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
     }
     const auto status = write_extras(dir, extension, o);
     if (!status) { err << status.error().to_string() << '\n'; return 1; }
+    // Console only: solve timing is not a published byte.
+    if (const auto* engine = extension.spo_engine()) {
+      const auto t = engine->timing();
+      out << "nav v7: spo-v1 " << t.solves << " solves, " << t.seconds << " s, mean "
+          << (t.solves ? 1e3 * t.seconds / static_cast<f64>(t.solves) : 0.0) << " ms, max "
+          << 1e3 * t.max_seconds << " ms; gamma " << engine->calibration().gamma << '\n';
+    }
     out << "nav v7: extras written to " << dir.string() << '\n';
     return 0;
   } catch (const std::exception& e) {
