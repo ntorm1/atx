@@ -52,3 +52,19 @@ Acceptance vs the v6.1 baseline: paired S2 net dSR > 0 (sign-only inside one SE)
 dollar not higher; PBO over {baseline, C1, C2, C3, spo-v1} reported; effective-N DSR beside cell-count DSR (N 33).
 Identity requirement before the cell: flag-off (aim-partial-v5) outputs byte-identical to the v6.1 cell on the v7-w1 exe.
 Any further spo-v1 cell (gamma override, other books, other ic-book) is a new construction trial.
+
+## Library v7.0 = library v6.1 + wave 1 (declared 2026-09-28 before any IC pass; by reference)
+Pre-registration text: `.superpowers/sdd/platform-20260928/library-v7-draft.md` §0 (conventions) and §1 (wave 1) as
+committed at f43e54d9. Candidates, in the draft's order: qmj_safety (low_risk), nincr (earnings_momentum), q5_eg
+(investment_issuance), smax5 (low_risk), res_mom_ind (price_momentum); 5 admission trials. Rulings: q5_eg's six extra
+fields are allowed (fields v8 = fields v7 + those six; every v7 payload byte-identical via --reuse); the generator roster
+cap rises 48 -> 56; theme `ownership_flow` is added to the fitter's theme list now (empty in v7.0; used by wave 2).
+Admission v4-prior-v1 unchanged (prior sign, |rho| > .90 redundancy, tau .70); composition ew-theme-v1 unchanged;
+the v6.1 members must be byte-identical in the generator output. One composition cell (fit) and one construction cell
+(the v6.1 final construction, aim-partial-v5, L 1.247 fixed) -> cross-cell N 33 -> 34 (after spo-v1). Acceptance of
+v7.0 as a whole: P2 paired S2 net dSR > 0 vs the v6.1 cell (sign-only inside one SE) AND mechanics; otherwise wave 1 is
+rejected whole and the draft's ranking is not re-tuned on TRAIN. Admitted-but-losing members are disclosed, not dropped
+one by one. Wave 2 (§2 of the draft minus eap_8k = 4 trials: ins_opp, inst_best_ideas, ftd_fail, ea_overdue) is
+pre-registered only when the W5a/W5b fields exist and their semantics are checked against the draft; not before.
+Root checks before the run: W2 op spellings in the DSL; q5 slopes against the RoF 2021 version (the draft cites the NBER
+WP); if a slope differs, the RoF value is used and disclosed.
