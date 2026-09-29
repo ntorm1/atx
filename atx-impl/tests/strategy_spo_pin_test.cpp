@@ -13,8 +13,8 @@
 // strategy_spo_fixture.hpp use ONLY the API of the pre-W1b commit c8503bb3, so the commit that
 // introduces them compiles on that base unchanged. Root builds atx-impl-strategy-target-tests
 // at that commit, runs --gtest_filter=SpoPin.*, reads the printed `[spo-pin]` digests and pins
-// them below; the W1b head must print the SAME two values. Until pinned (both zero) the test
-// fails and prints the digests.
+// them below; the W1b head must print the SAME two values. Pinned (see PIN below); zero
+// constants would mean unpinned (the test then fails and prints the digests).
 //
 // Naming: Subject_Condition_ExpectedResult.
 
@@ -39,9 +39,12 @@ namespace st = atx::impl::strategy;
 namespace sp = atx::impl::strategy::spo;
 namespace v7 = atx::impl::strategy::v7;
 
-// PIN: captured by root on the pre-W1b base (c8503bb3 + this file); zero = unpinned.
-constexpr u64 pinned_weights = 0x0ULL;
-constexpr u64 pinned_replay = 0x0ULL;
+// PIN: captured by root on the pre-W1b base (pool-2 decdf947 = the c8503bb3 line + cd01f74e
+// only, build v7-4: weights over 54 diagnostics rows, replay over 40 days) and reproduced
+// identically on the W1b head (pool-2 66e0774d = 4c4ce75f + F3, build v7-5): spo-v1 is bit
+// for bit. Any change here means a spo-v1 planned weight moved.
+constexpr u64 pinned_weights = 0xda6b6871e7e267c5ULL;
+constexpr u64 pinned_replay = 0xaabdbb72f99a6e13ULL;
 
 constexpr u64 fnv_basis = 0xcbf29ce484222325ULL;
 constexpr u64 fnv_prime = 0x100000001b3ULL;

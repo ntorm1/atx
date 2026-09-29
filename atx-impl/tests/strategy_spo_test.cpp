@@ -1033,9 +1033,11 @@ TEST(SpoHook, SpoV2BindsTheGrossBudgetOnPostRampDecisionsWithPlannedGrossG) {
 
 // R2 M-1: the ceiling hides a corrupt input rather than repairing it. a_i ~ sqrt(D_i), so a
 // clamped name still carries an alpha ~ 1/sigma_true times too large (1 / .024 ~ 42x here):
-// the corrupt decisions' shadow scores move (the shadow book is the same plan in both runs and
-// every other decision is bit-identical). Hence the tripwire: with --specific-ceiling-void on
-// (spo-v2's default) capture() voids the run before anything is published; off, it records.
+// the corrupt decisions' shadow scores move wherever the clamped name's signal is nonzero (the
+// shadow book is the same plan in both runs and is scored with the optimiser's own alpha
+// vector; every other decision is bit-identical). Hence the tripwire: with
+// --specific-ceiling-void on (spo-v2's default) capture() voids the run before anything is
+// published; off, it records.
 TEST(SpoTripwire, TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture) {
   const Role role(30, 12, 71);
   const std::vector<u8> forecast(role.d, u8{1});
@@ -1087,7 +1089,23 @@ TEST(SpoTripwire, TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture) {
       if (role.sessions[d] == session) return true;
     return false;
   };
-  usize corrupt_rows = 0;
+  // Name 3's desired target at a decision: the replay's tied-rank target of that row (no
+  // neutralization in nav_config). On 10..14 name 11 is a nonmember, so 11 members rank and
+  // the median one has desired 0 (up to the rounding of the mean): z = 0, alpha = 0 whatever
+  // D -- the clamp has nothing to inflate there (W1b fix-up: the only row where the shadow
+  // score cannot move).
+  const auto desired_of_3 = [&](i64 session) {
+    usize d = 0;
+    while (d < role.d && role.sessions[d] != session) ++d;
+    if (d == role.d) return missing; // not a session of the role (never: rows are the replay's)
+    std::vector<std::pair<f64, usize>> ranked;
+    std::vector<f64> target(role.n, 0.0);
+    st::detail::desired_target(std::span<const f64>(role.signal).subspan(d * role.n, role.n),
+                               std::span<const u8>(role.member).subspan(d * role.n, role.n),
+                               ranked, target);
+    return target[3];
+  };
+  usize corrupt_rows = 0, moved = 0;
   for (usize k = 0; k < clean.rows.size(); ++k) {
     const auto& a = clean.rows[k];
     const auto& b = dirty.rows[k];
@@ -1097,13 +1115,17 @@ TEST(SpoTripwire, TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture) {
     EXPECT_EQ(a.capped_specific, 0U) << k;
     EXPECT_EQ(b.capped_specific, bad ? 1U : 0U) << k;
     EXPECT_EQ(bits(a.gross_shadow), bits(b.gross_shadow)) << k; // the same shadow plan
-    if (bad) {
-      EXPECT_NE(bits(a.alpha_shadow), bits(b.alpha_shadow)) << k; // alpha moved
-    } else {
+    if (!bad) {
       EXPECT_EQ(bits(a.alpha_shadow), bits(b.alpha_shadow)) << k;
+    } else if (std::abs(desired_of_3(a.session)) > 1e-9) {
+      EXPECT_NE(bits(a.alpha_shadow), bits(b.alpha_shadow)) << k; // alpha moved
+      ++moved;
+    } else { // z_3 = 0: a_3 = 0 with or without the clamp
+      EXPECT_NEAR(a.alpha_shadow, b.alpha_shadow, 1e-9 * std::abs(a.alpha_shadow)) << k;
     }
   }
   ASSERT_GT(corrupt_rows, 0U);
+  EXPECT_GT(moved, 0U) << "no corrupt decision with a nonzero signal on the clamped name";
   // The inflation of the clamped name's alpha: sqrt(ceiling) / sigma_true = 1 / .024.
   const f64 true_d = 0.024 * 0.024;
   EXPECT_NEAR(sp::gk_alpha(0.02, 1.0, 1.0, 21.0) / sp::gk_alpha(0.02, true_d, 1.0, 21.0),
