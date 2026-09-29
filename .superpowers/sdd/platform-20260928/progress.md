@@ -17,6 +17,17 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 pitch fix after owner read: equity figure now labels every line with NAV and Sharpe
+- Owner: "the equity curve in section 8 has no Sharpe 1.405 line". Cause: the v7.1 S2 line was there but labelled by end
+  NAV only (1.187), and it ends on top of the v6.1 line (1.187), drawn in the same colour. Root edit (lanes stopped):
+  mega_report/report.py `_nav_series` computes the annualised net Sharpe per line; legend and end labels show
+  "NAV x, SR y"; caption explains it; config: v6.1 line in its own colour, v7.0-lo3 line added. Re-rendered 2,574,171
+  bytes, unavailable blocks 2 (unchanged); mega_report tests 38/38.
+- FINDING P6-F2 (matters for the pitch narrative): v6.1 -> v7.1 raises S2 net SR 1.239 -> 1.405 with the SAME return:
+  annualised net return 5.84% -> 5.80%, volatility 4.71% -> 4.13%; end NAV 1.1871 vs 1.1866. The whole v7 library gain is
+  lower volatility (diversification across more members and a tenth theme) at fixed L 1.247, not more return. At equal
+  risk the book could run ~14% more gross; L was held fixed by pre-registration and re-deriving it is a new cell.
+
 ## 2026-09-29 SESSION 2 PAUSED by owner; v7 pitch rendered on the v7.1 cell; all lanes stopped
 - Descriptive run on the v7.1 cell (no trial): build-equity/v7-71-nav-stress (--cost-v2 --capacity-curve, 52.0 s, 351
   MiB); its S2 daily CSV is byte-identical to the cell. Capacity net SR 1.448 / 1.405 / 1.357 / 1.236 / 1.082 at
