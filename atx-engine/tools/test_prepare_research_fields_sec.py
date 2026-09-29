@@ -175,11 +175,12 @@ def announcements_table(rows=ANN):
 
 # ---- Form 4 --------------------------------------------------------------------------------------------------------
 def tx(issuer, owner, txn, avail, code="P", shares=100.0, form="4", table="non_derivative", director=True,
-       officer=False, direction=None):
+       officer=False, direction=None, owners=1, ten=False):
     return {"issuer_cik": issuer, "owner_cik": owner, "form": form, "is_amendment": form.endswith("/A"),
             "table_type": table, "transaction_code": code,
             "acquired_disposed": direction or ("A" if code in ("P", "A", "M") else "D"), "shares": shares,
-            "transaction_date": txn, "any_director": director, "any_officer": officer, "available_at": avail}
+            "transaction_date": txn, "any_director": director, "any_officer": officer, "any_ten_percent_owner": ten,
+            "n_reporting_owners": owners, "available_at": avail}
 
 
 def day_after(d, hh=21):
@@ -211,9 +212,12 @@ TXS = [
     tx(1001, 17, D("2024-10-14"), at(2024, 10, 15, 20), "P", 88, table="derivative"),            # derivative
     tx(1001, 18, D("2024-10-14"), at(2024, 10, 15, 20), "P", 99, direction="D"),                 # direction mismatch
     tx(1001, 22, D("2024-10-14"), at(2024, 10, 15, 20), "P", 0.0),                               # zero shares
+    tx(1001, 23, D("2024-10-16"), at(2024, 10, 17, 20), "S", 7000, owners=3, ten=True),  # sponsor group + director
+    tx(1001, 24, D("2024-09-16"), at(2024, 9, 17, 20), "P", 30, ten=True),               # founder director, 10%, alone
     tx(1001, 11, D("2024-11-20"), at(2024, 11, 21, 20), "M", 123),           # exercise: presence only
     # CIK 2002: an award only (Section 16 present, no open-market trade)
     tx(2002, 31, D("2024-06-03"), at(2024, 6, 4, 20), "A", 1000),
+    tx(2002, 32, D("2024-12-02"), at(2024, 12, 3, 20), "S", 5e6),   # |net| > shares_out: ratio NaN, seller counted
     # CIK 4004: last Section 16 row 2023-10-20 -> presence ends inside the role
     tx(4004, 41, D("2023-10-19"), at(2023, 10, 20, 20), "M", 10),
     # CIK 5005 (linked from 11-01; shares_out NaN on line 505)
@@ -224,11 +228,13 @@ TXS = [
     tx(1001, 11, D("2025-01-06"), at(2025, 1, 7, 20), "S", 1),
 ]
 INS_COLS = ("issuer_cik", "owner_cik", "form", "is_amendment", "table_type", "transaction_code", "acquired_disposed",
-            "shares", "transaction_date", "any_director", "any_officer", "available_at")
+            "shares", "transaction_date", "any_director", "any_officer", "any_ten_percent_owner", "n_reporting_owners",
+            "available_at")
 INS_TYPES = {"issuer_cik": pa.int64(), "owner_cik": pa.int64(), "form": pa.string(), "is_amendment": pa.bool_(),
              "table_type": pa.string(), "transaction_code": pa.string(), "acquired_disposed": pa.string(),
              "shares": pa.float64(), "transaction_date": pa.date32(), "any_director": pa.bool_(),
-             "any_officer": pa.bool_(), "available_at": pa.timestamp("us")}
+             "any_officer": pa.bool_(), "any_ten_percent_owner": pa.bool_(), "n_reporting_owners": pa.int64(),
+             "available_at": pa.timestamp("us")}
 
 
 def insider_tables(rows=TXS, first=(2015, 1), last=(2025, 2)):
@@ -330,6 +336,7 @@ def oracle_ea(t, sid):
 def trades():
     return [r for r in TXS if r["table_type"] == "non_derivative" and r["transaction_code"] in ("P", "S")
             and r["form"] == "4" and (r["any_director"] or r["any_officer"]) and r["shares"] > 0
+            and not (r["n_reporting_owners"] > 1 and r["any_ten_percent_owner"])
             and r["acquired_disposed"] == ("A" if r["transaction_code"] == "P" else "D")]
 
 
@@ -366,7 +373,8 @@ def oracle_ins(t, sid, so):
     out.update(ins_n_buyers=float(len(buyers)), ins_n_sellers=float(len(sellers)),
                ins_cluster_buy=float(len(cluster) >= 3))
     if math.isfinite(so) and so > 0:
-        out.update(ins_net_buy_ratio=net / so, ins_opportunistic_net=opp / so)
+        out.update({k: v / so if abs(v) <= so else NAN for k, v in (("ins_net_buy_ratio", net),
+                                                                     ("ins_opportunistic_net", opp))})
     return out
 
 
@@ -435,8 +443,8 @@ class SecFields(unittest.TestCase):
         # 8-K of the same filing: 10-30 still counts the 09-03 8-K12B as latest; 10-31 counts the new one
         self.assertEqual(self.at_("k8_days_since_any", "2024-10-31", 101), 1.0)
         # Form 4 accepted 22:30 UTC on 10-22: not a buyer on 10-23, a buyer on 10-24
-        self.assertEqual(self.at_("ins_n_buyers", "2024-10-23", 101), 0.0)
-        self.assertEqual(self.at_("ins_n_buyers", "2024-10-24", 101), 1.0)
+        self.assertEqual(self.at_("ins_n_buyers", "2024-10-23", 101), 1.0)   # owner 24 only
+        self.assertEqual(self.at_("ins_n_buyers", "2024-10-24", 101), 2.0)   # + owner 12
         # 21:59 UTC on d-1 is usable on d
         self.assertEqual(self.at_("ea_days_since", "2024-11-08", 202), 0.0)   # post-market 11-07 -> reaction 11-08
         self.assertEqual(self.at_("ins_cluster_buy", "2024-11-05", 101), 1.0)  # 12, 13 and 14 (usable 11-05)
@@ -469,13 +477,15 @@ class SecFields(unittest.TestCase):
         self.assertEqual(classify(1001, 21, 2024), "unclassified")   # its 2023 trade was filed in 2024
         t, i = SESSIONS.index(D("2024-11-12")), IDS.index(101)
         so = self.so[t, i]
-        # window: 11 S 1000, 12 P 500.5, 13 P 300, 14 P 200, 21 S 40.25, 20 S 250 (late filing, trade inside)
-        self.assertEqual(self.got("ins_net_buy_ratio")[t, i], (500.5 + 300 + 200 - 1000 - 40.25 - 250) / so)
+        # window: 11 S 1000, 12 P 500.5, 13 P 300, 14 P 200, 21 S 40.25, 20 S 250 (late filing, trade inside), 24 P 30
+        self.assertEqual(self.got("ins_net_buy_ratio")[t, i], (500.5 + 300 + 200 + 30 - 1000 - 40.25 - 250) / so)
         self.assertEqual(self.got("ins_opportunistic_net")[t, i], 500.5 / so)
-        self.assertEqual(self.got("ins_n_buyers")[t, i], 3.0)
+        self.assertEqual(self.got("ins_n_buyers")[t, i], 4.0)
         self.assertEqual(self.got("ins_n_sellers")[t, i], 3.0)
         # 2002: awards only -> present with zero trades; 4004: presence expires; 505: shares_out NaN
         self.assertEqual(self.at_("ins_net_buy_ratio", "2024-11-12", 202), 0.0)
+        self.assertTrue(math.isnan(self.at_("ins_net_buy_ratio", "2024-12-04", 202)))   # 5e6 sold > shares_out
+        self.assertEqual(self.at_("ins_n_sellers", "2024-12-04", 202), 1.0)
         self.assertEqual(self.at_("ins_n_buyers", "2024-10-21", 404), 0.0)
         self.assertTrue(math.isnan(self.at_("ins_n_buyers", "2024-10-23", 404)))
         self.assertEqual(self.at_("ins_n_buyers", "2024-11-15", 505), 1.0)
@@ -520,6 +530,9 @@ class SecFields(unittest.TestCase):
         self.assertEqual(checks["insider"]["dropped_not_director_or_officer"], 1)
         self.assertEqual(checks["insider"]["dropped_code_direction_mismatch"], 1)
         self.assertEqual(checks["insider"]["dropped_shares_not_positive"], 1)
+        self.assertEqual(checks["insider"]["dropped_joint_filing_with_ten_percent_owner"], 1)
+        self.assertEqual(entries["ins_net_buy_ratio"]["domain"], [-1.0, 1.0])
+        self.assertGreater(entries["ins_net_buy_ratio"]["outside_domain_member_cells"], 0)
         self.assertEqual(checks["sec_filings"]["accessions_used"], 9)
 
     def test_min_history_rules(self):

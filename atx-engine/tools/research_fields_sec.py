@@ -59,6 +59,7 @@ INS_CLUSTER_MIN = 3
 INS_PRESENCE_DAYS = 365          # atx-db declared Form 4 staleness
 INS_ROUTINE_YEARS = 3
 INS_SHARE_SCALE = 1000           # shares accumulated exactly as integer milli-shares
+INS_RATIO_DOMAIN = (-1.0, 1.0)   # |net shares| cannot exceed shares outstanding
 INS_SKIP_MARGIN_DAYS = 31        # a filing quarter starting > 31 days after the role's last session is not read
 # 8-K metadata (D12)
 K8_COUNT_WINDOW = 63
@@ -87,8 +88,10 @@ EA_CAVEATS = [
     LINK_NOTE]
 INS_CAVEATS = [
     "trades = non-derivative open-market purchases (P) and sales (S) on original Form 4 (no 4/A, no Form 5) filed by "
-    "a director or officer (any reporting owner on the filing); pure 10% owners and 'other' owners are excluded; "
-    "the insider is the filing's primary reporting owner (smallest owner CIK, atx-db rule)",
+    "a director or officer (any reporting owner on the filing); pure 10% owners and 'other' owners are excluded, and "
+    "so are joint filings (more than one reporting owner) that include a 10% owner: sponsor / fund groups whose "
+    "filing lists a deputized director would otherwise count block sales of the fund's shares; the insider is the "
+    "filing's primary reporting owner (smallest owner CIK, atx-db rule)",
     "Form 4 share counts are in the issuer's share units at the trade date and are not restated for later splits, "
     "while shares_out is restated to the session basis: a split inside the window distorts the ratio",
     "foreign private issuers are exempt from Section 16 and have no Form 4 (NaN by the presence rule); an ADR line "
@@ -108,6 +111,8 @@ INS_PRESENT = (f"NaN unless the issuer has a visible insider transaction row (an
                f"within {INS_PRESENCE_DAYS} days before the 22:00 UTC mark of t-1 (Section 16 presence; else 0 would "
                "mean 'no trades' for an issuer that files no Form 4); NaN while the window or the presence lookback "
                "starts before the stage's first filing quarter")
+INS_RATIO_NAN = ("shares_out not finite and positive -> NaN; |net shares| > shares_out (outside the declared domain "
+                 "[-1, 1]: a shares_out units defect or a split the Form 4 counts do not restate) -> NaN, counted")
 K8_PRESENT = (f"NaN unless the CIK has a visible original 8-K with available_at within {K8_PRESENCE_DAYS} days before "
               "the 22:00 UTC mark of t-1 (8-K filer presence)")
 
@@ -115,12 +120,14 @@ FIELDS = {}
 
 
 def _spec(name, stages, units, definition, staleness, caveats, formula, lag_note, min_history, source_columns,
-          requires=None):
+          requires=None, domain=None):
     spec = {"group": GROUP, "point_in_time": True, "lagged": False, "stages": stages, "units": units,
             "clock": SEC_CLOCK, "staleness": staleness, "caveats": caveats, "definition": definition,
             "source_columns": source_columns, "formula_id": formula, "lag": lag_note, "min_history": min_history}
     if requires:
         spec["requires"] = requires
+    if domain:
+        spec["domain"] = domain
     FIELDS[name] = spec
 
 
@@ -159,15 +166,16 @@ _spec("ea_time_of_day", ["earnings_calendar"], "categorical code: 0 pre_market (
       "acceptance time against the NYSE session)", EA_FRESH, EA_CAVEATS, "sec-ea-time-of-day-v1", _EA_LAG, _EA_MIN,
       _EA_COLS)
 _INS_COLS = ["issuer_cik", "owner_cik", "form", "is_amendment", "table_type", "transaction_code", "acquired_disposed",
-             "shares", "transaction_date", "any_director", "any_officer", "available_at"]
+             "shares", "transaction_date", "any_director", "any_officer", "any_ten_percent_owner",
+             "n_reporting_owners", "available_at"]
 _INS_TRADES = (f"trades visible at t (available_at < mark(t-1)) whose transaction_date is on or after session t-{INS_WINDOW} "
                f"(the {INS_WINDOW} sessions t-{INS_WINDOW}..t-1; a late filing counts once it is visible)")
 _INS_LAG = "trade usable from the session after the first session whose 22:00 UTC mark follows the Form 4 acceptance"
 _INS_MIN = "window and presence lookback on or after the stage's first filing quarter (2015q1)"
 _spec("ins_net_buy_ratio", ["insider"], "ratio (signed): net open-market shares bought / shares outstanding",
       f"(sum of P shares - sum of S shares) over {_INS_TRADES} / shares_out[t] of the line (this run's shares_out)",
-      f"{INS_PRESENT}; shares_out not finite and positive -> NaN", INS_CAVEATS, "sec-ins-net-buy-ratio126-v1",
-      _INS_LAG, _INS_MIN, _INS_COLS + ["shares_out"], requires=["shares_out"])
+      f"{INS_PRESENT}; {INS_RATIO_NAN}", INS_CAVEATS, "sec-ins-net-buy-ratio126-v1",
+      _INS_LAG, _INS_MIN, _INS_COLS + ["shares_out"], requires=["shares_out"], domain=INS_RATIO_DOMAIN)
 _spec("ins_n_buyers", ["insider"], "count of distinct insiders with an open-market purchase",
       f"distinct primary reporting owners (owner_cik) with a P trade among {_INS_TRADES}", INS_PRESENT, INS_CAVEATS,
       "sec-ins-n-buyers126-v1", _INS_LAG, _INS_MIN, _INS_COLS)
@@ -181,10 +189,10 @@ _spec("ins_opportunistic_net", ["insider"], "ratio (signed): opportunistic insid
       f"Y-1, Y-2 and Y-3, opportunistic if each of those years has a trade but no month repeats in all three, else "
       f"unclassified (excluded); divided by shares_out[t]",
       f"{INS_PRESENT}; the window starting before 2018-01-01 (a trade year without {INS_ROUTINE_YEARS} prior years of "
-      "stage history) -> NaN; shares_out not finite and positive -> NaN", INS_CAVEATS,
+      f"stage history) -> NaN; {INS_RATIO_NAN}", INS_CAVEATS,
       "sec-ins-opportunistic-net126-cmp3y-v1", _INS_LAG,
       f"{_INS_MIN}; classification needs {INS_ROUTINE_YEARS} full prior calendar years (first classifiable trade year "
-      "2018)", _INS_COLS + ["shares_out"], requires=["shares_out"])
+      "2018)", _INS_COLS + ["shares_out"], requires=["shares_out"], domain=INS_RATIO_DOMAIN)
 _spec("ins_cluster_buy", ["insider"], f"indicator: 1 when >= {INS_CLUSTER_MIN} distinct insiders bought",
       f"1 if at least {INS_CLUSTER_MIN} distinct primary reporting owners have a P trade visible at t with "
       f"transaction_date on or after session t-{INS_CLUSTER_WINDOW} ({INS_CLUSTER_WINDOW} sessions), else 0",
@@ -553,7 +561,8 @@ class SecFieldModule:
               "first_filing_day": str(qdays[0]), "files_read": 0, "files_not_read_after_role": 0, "rows_total": 0,
               "rows_sealed": 0, "rows_after_role": 0, "rows_unlinked_issuer": 0, "presence_rows": 0,
               "trade_rows": 0, "dropped_not_ps_or_derivative": 0, "dropped_form_not_original_4": 0,
-              "dropped_not_director_or_officer": 0, "dropped_shares_not_positive": 0,
+              "dropped_not_director_or_officer": 0, "dropped_joint_filing_with_ten_percent_owner": 0,
+              "dropped_shares_not_positive": 0,
               "dropped_code_direction_mismatch": 0}
         files, pres_c, pres_a, tr = [], [], [], {k: [] for k in ("c", "o", "a", "d", "sh", "buy")}
         for rel, qday in zip(rels, qdays):
@@ -575,8 +584,9 @@ class SecFieldModule:
                 st["rows_after_role"] += int(np.count_nonzero(late))
                 st["rows_unlinked_issuer"] += int(np.count_nonzero(~sealed & ~late & ~linked))
                 use = ~sealed & ~late & linked
-                pres_c.append(pos[use])
-                pres_a.append(avail[use])
+                pair = np.unique(np.stack((avail[use], pos[use])), axis=1)   # one row per (filing clock, CIK)
+                pres_a.append(pair[0])
+                pres_c.append(pair[1])
                 st["presence_rows"] += int(np.count_nonzero(use))
                 code = h.as_text(h.column_of(tb, "transaction_code"))
                 ps = (pc.equal(h.as_text(h.column_of(tb, "table_type")), "non_derivative").to_numpy(zero_copy_only=False)
@@ -585,6 +595,8 @@ class SecFieldModule:
                          & ~pc.fill_null(h.column_of(tb, "is_amendment"), True).to_numpy(zero_copy_only=False))
                 insider = (pc.fill_null(h.column_of(tb, "any_director"), False).to_numpy(zero_copy_only=False)
                            | pc.fill_null(h.column_of(tb, "any_officer"), False).to_numpy(zero_copy_only=False))
+                joint10 = ((pc.fill_null(h.column_of(tb, "n_reporting_owners"), 1).to_numpy(zero_copy_only=False) > 1)
+                           & pc.fill_null(h.column_of(tb, "any_ten_percent_owner"), False).to_numpy(zero_copy_only=False))
                 shares = h.as_f64(h.column_of(tb, "shares"), "insider shares")
                 buy = pc.equal(code, "P").to_numpy(zero_copy_only=False)
                 direction = h.as_text(h.column_of(tb, "acquired_disposed"))
@@ -596,7 +608,9 @@ class SecFieldModule:
                 st["dropped_not_ps_or_derivative"] += int(np.count_nonzero(use & ~ps))
                 st["dropped_form_not_original_4"] += int(np.count_nonzero(use & ps & ~orig4))
                 st["dropped_not_director_or_officer"] += int(np.count_nonzero(use & ps & orig4 & ~insider))
-                ok = use & ps & orig4 & insider
+                st["dropped_joint_filing_with_ten_percent_owner"] += int(np.count_nonzero(use & ps & orig4 & insider
+                                                                                          & joint10))
+                ok = use & ps & orig4 & insider & ~joint10
                 good = np.isfinite(shares) & (shares > 0) & (owner > 0) & has_date
                 st["dropped_shares_not_positive"] += int(np.count_nonzero(ok & ~good))
                 st["dropped_code_direction_mismatch"] += int(np.count_nonzero(ok & good & ~agree))
@@ -774,10 +788,12 @@ class SecFieldModule:
                     ins = data
                 else:
                     k8 = data
+                pa.default_memory_pool().release_unused()   # decoded Arrow buffers are dead once the arrays are built
                 budget.report(f"sec-{key}-loaded", **{k: v for k, v in s.items() if k.endswith("used")
                                                       or k in ("trade_rows", "accessions_used", "files_read")})
         need_so = bool(want & {"ins_net_buy_ratio", "ins_opportunistic_net"})
         reasons = {x: {"not_primary_link": 0, "absent_or_stale": 0, "out_of_rule": 0} for x in names}
+        domain_nan = {"ins_net_buy_ratio": 0, "ins_opportunistic_net": 0}
         per_year = {}
         writers, so_file = {}, None
         try:
@@ -843,8 +859,13 @@ class SecFieldModule:
                         with np.errstate(invalid="ignore", divide="ignore"):
                             ratio = net / INS_SHARE_SCALE / np.where(sok, so, 1.0)
                             oratio = opp / INS_SHARE_SCALE / np.where(sok, so, 1.0)
-                        rows["ins_net_buy_ratio"] = (np.where(present & sok, ratio, np.nan), present)
-                        rows["ins_opportunistic_net"] = (np.where(present & sok & opp_ok, oratio, np.nan), present)
+                        lo, hi = INS_RATIO_DOMAIN
+                        rows["ins_net_buy_ratio"] = (np.where(present & sok & (ratio >= lo) & (ratio <= hi), ratio,
+                                                              np.nan), present)
+                        rows["ins_opportunistic_net"] = (np.where(present & sok & opp_ok & (oratio >= lo)
+                                                                  & (oratio <= hi), oratio, np.nan), present)
+                        for x, r in (("ins_net_buy_ratio", ratio), ("ins_opportunistic_net", oratio)):
+                            domain_nan[x] += int(np.count_nonzero(member & present & sok & ((r < lo) | (r > hi))))
                     rows["ins_n_buyers"] = (np.where(present, nb.astype(np.float64), np.nan), present)
                     rows["ins_n_sellers"] = (np.where(present, ns_.astype(np.float64), np.nan), present)
                     rows["ins_cluster_buy"] = (np.where(present, (cl >= INS_CLUSTER_MIN).astype(np.float64), np.nan),
@@ -902,5 +923,8 @@ class SecFieldModule:
                                                  "finite_frac": round(v[x] / v["member_primary_cells"], 6)
                                                  if v["member_primary_cells"] else None}
                                             for yr, v in sorted(per_year.items())}}
+            if "domain" in spec:
+                field_extras[x]["domain"] = list(spec["domain"])
+                field_extras[x]["outside_domain_member_cells"] = domain_nan[x]
             outcome[x] = (writers[x], sources[x], writers[x].coverage())
         budget.report("sec-complete", fields=len(names))
