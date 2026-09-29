@@ -17,6 +17,32 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 spo-v2 cell REJECTED (a research result this time, not a defect); N 36; spo line closed for v7
+- W1b fix-up 116c23e3 merged (digests pinned; the tripwire failure was a wrong test expectation: the middle-ranked
+  member's alpha is 0 on the corrupt session, so nothing can inflate). Build mega-v7-6 exit 0; tests 132/132.
+- Identities before the cell, all passed, none a trial: (a) flag-off aim-partial-v5 on the v7-6 exe -> 10/10 daily /
+  events files byte-identical to the v7.0-lo3 cell (build-equity/v7-6-id-lo3, 27.4 s); (b) `--rule spo-v1` with its
+  pre-registered flags on pin 897ffdf2 -> 4/4 daily / events files and spo_diagnostics.csv columns 1-38 (1,509 rows)
+  byte-identical to the rejected spo-v1 cell (build-equity/v7-6-id-spo-v1, 53.8 s); (c) gtest digest pins.
+- Cell mega-nav-v70-lo3-spo-v2-G1.0 (pre-registered flags, risk pin 786cb601 lo3 atx-risk-v1.1): exit 0, 47.2 s, 349
+  MiB, 1,508 solves at 11.0 ms mean (max 33.5), gamma 48.16 (= gamma_vol; aim gross 8.24 at 5% vol; gamma_bind not
+  reached, report-only). TRIPWIRE CLEAR (capped_specific_decisions 0), read before any return.
+  S2 net SR +0.538 vs +1.332 (v7.0-lo3); gross SR 1.242 vs 1.715; cost 16.99 vs 13.38 bps/$; tau mean .0436 (p95
+  .0644); held names 1,514 vs 1,930. Paired dSR -0.794, rho .663, Memmel SE .476 (t -1.67), CBB 95% [-1.680, -0.030],
+  LW p .070. Mechanics PASS (gross all rows .9735, post-ramp .9993, |net| .0003, tau within limits): the I-1 fix works.
+- VERDICT: REJECTED on two of three criteria (dSR < 0; cost per traded dollar higher, +27%). The optimiser now deploys
+  the budget and trades at the intended rate, but it loses a quarter of the gross SR and pays more per dollar: as R2
+  M-3 predicted from a synthetic check, a vol-scaled alpha a = IC sigma z under a binding gross cap tilts to high
+  specific-vol, lower-ADV names. Lesson G2: with a binding gross budget the risk term does not discipline the book;
+  the alpha scaling does. By ruling spo-b no further spo cell is run in v7; the optimiser stays behind its flag;
+  aim-partial-v5 stays the construction.
+- Integrity (N 36) for the spo-v2 cell: cell-count DSR .314, effective-N DSR .519, PSR(0) .822; PBO over 36 cells .268.
+  JSON build-equity/mega-nav-v70-lo3-spo-v2-summ-n36.json, -pbo-n36.json.
+- Appendix A: TRAIN construction cells 36 (29 v6 era; C1-C3, spo-v1, spo-v2 rejected; v7.0, U-lo3 accepted); ledger
+  36 lines. Admission trials this sprint 5. Validation trials 2 spent. 2025+ reserved. No VAL statistic read.
+  Current accepted book: library v7.0 on role lo3, S2 net +1.332. Freeze gate UNMET (cell-count DSR .798 at N 35;
+  to be re-scored at the final N).
+
 ## 2026-09-29 F3 (risk model atx-risk-v1.1) ACCEPTED; W1b merged (one test fix-up pending); spo-v2 pre-registered
 - Merges: W1b step 0 cd01f74e (digest pin test on the base API), W1b 4c4ce75f, F3 b3d03b38. Builds: mega-v7-4 (pin
   capture on the base, exit 0), mega-v7-5 (W1b + F3, 10 TUs, 35 s, exit 0 under /W4 /WX, no compile fix-up needed).
