@@ -1,13 +1,18 @@
 """Consumer export of stage F in the ``atx.fundamental-events/v1`` contract (mega-alpha field loader).
 
-Reads the published ``fundamentals/`` stage (``events.parquet``, ``sic_events.parquet``, ``manifest.json``) and
-writes ``<build root>/export/fundamental-events-v1/``:
+Reads the published stage F (env ``ATX_FUND_STAGE``, default ``fundamentals``: ``events.parquet``,
+``catalog.parquet``, ``sic_events.parquet``, ``manifest.json``) and writes ``<build root>/export/<name>/`` (env
+``ATX_FUND_EXPORT``, default ``fundamental-events-v2``; the contract and its schema id are unchanged from v1, the
+columns are additive):
 
-* ``fundamental_events.parquet``: ``cik, accession, accepted_utc`` (timestamp[us, tz=UTC]), ``clock_basis``
-  (``fsds_accepted_utc`` or ``cf_fc1``), ``filed, form, period_end, fiscal_year, fiscal_period,
-  staleness_days`` (int32, 200 or 400), every item column (float64, NaN when not derivable, never null),
-  ``zero_filled`` and the v2 descriptors (``currency, fin_template, sale_src, gp_src, oi_src, shrs_src,
-  xrd_reported_zero``); sorted ``(cik, accepted_utc, accession)``.
+* ``fundamental_events.parquet``: ``cik, accession, accepted_utc`` (timestamp[us, tz=UTC]; the visibility clock
+  = the event's ``available_at`` = max(filing acceptance, FX rate clock)), ``filing_accepted_utc`` (the filing's own
+  clock), ``clock_basis`` (``fsds_accepted_utc`` or ``cf_fc1``), ``filed, form, period_end, fiscal_year,
+  fiscal_period, staleness_days`` (int32, 200 or 400), every item column (the stage items and the S4.2 catalog
+  items; float64, NaN when not derivable, never null), ``zero_filled``, ``catalog_zero_filled`` and the descriptors
+  (``currency, fin_template, sale_src, gp_src, oi_src, shrs_src, xrd_reported_zero, fx_converted, fx_rate,
+  fx_rate_avg_q, fx_rate_avg_ttm, is_amendment, is_restated, restated_items, nonreliance_402_at``); sorted
+  ``(cik, accepted_utc, accession)``.
 * ``sic_events.parquet``: ``cik, accession, accepted_utc, clock_basis, filed, form, sic`` (+ ``sic_basis, sic2,
   ff12, ff49``); sorted ``(cik, accepted_utc, accession)``.
 * ``manifest.json`` (written last): ``schema``, ``status = complete``, ``files {name: {bytes, sha256, rows}}``,
@@ -30,20 +35,27 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from . import common
+from . import fund_catalog as fcat
 from . import fund_items as fi
 from . import fundamentals as fu
 
 SCHEMA = "atx.fundamental-events/v1"
-EXPORT_NAME = "fundamental-events-v1"
+EXPORT_NAME = os.environ.get("ATX_FUND_EXPORT", "fundamental-events-v2")
 CONSUMER = Path(r"C:\atx-wt\pool-2\atx-engine\tools\prepare_research_fields.py")
-DESCRIPTORS = ("currency", "fin_template", "sale_src", "gp_src", "oi_src", "shrs_src", "xrd_reported_zero")
+DESCRIPTORS = ("currency", "fin_template", "sale_src", "gp_src", "oi_src", "shrs_src", "xrd_reported_zero",
+               "fx_converted", "fx_rate", "fx_rate_avg_q", "fx_rate_avg_ttm", "is_amendment", "is_restated",
+               "restated_items", "nonreliance_402_at")
+ITEMS = fi.ALL_ITEMS + fcat.CAT_COLUMNS
 UNITS = {c: "USD" for c in fi.MONEY_ITEMS}
+UNITS.update({c.col: ("USD/share" if c.kind == "per_share" else "shares" if c.col in fi.CAT_SHARES else "USD")
+              for c in fcat.CATALOG})
 UNITS.update({"shrs_q": "shares", "shrs_q_lag4": "shares", "sue": "unitless", "fscore": "count 0-9",
               "fscore_n": "count 0-9", "fscore_partial": "count 0-9"})
 UNITS.update({t: "0/1" for t in fi.FSCORE_TERMS})
@@ -51,9 +63,14 @@ CAVEATS = [
     "values modeled/unaccepted, derived from the SEC Company Facts archive snapshot 2026-09-20 (us-gaap, ifrs-full, dei) "
     "and FSDS v2 (SUB acceptance clocks and SIC, NUM class-of-stock share sums, PRE statement lines)",
     "CIK scope: every Company Facts CIK with periodic-form facts (not only rehearsal-bridge CIKs); rehearsal_identity=false",
-    "money columns are USD facts only (no point-in-time FX source): filings reporting in another currency have NaN money "
-    "items; their currency-invariant items (sue, f_* terms, fscore, fscore_n, fscore_partial) are computed in the "
-    "reporting currency; `currency` names it",
+    "money columns are USD: filings reporting in an FRED H.10 currency are converted (balances at the period-end "
+    "rate, flows at the period-average rate; fx_converted, fx_rate*; accepted_utc = max(filing clock, rate clock)); "
+    "filings in other currencies keep USD facts only (mostly NaN); currency-invariant items (sue, f_* terms, fscore, "
+    "fscore_n, fscore_partial) are computed in the reporting currency; `currency` names it",
+    "catalog items (S4.2, parameters.catalog) follow Compustat mnemonics; zero fills of catalog items are listed in "
+    "catalog_zero_filled; industry items are NaN outside their SIC ranges (structural)",
+    "vintage flags: is_amendment (form /A), is_restated (the filing changed an earlier reported value by > 0.5%), "
+    "restated_items, nonreliance_402_at (8-K Item 4.02 within 365 days before accepted_utc)",
     "no producer seal: rows run to the 2026-09-20 snapshot; the consumer applies its own seal (accepted_utc >= 2025-01-01 "
     "dropped by prepare_research_fields.load_events)",
     "FC1 fallback clock (filed + 46 h, clock_basis cf_fc1) where FSDS SUB lacks the accession (all filings after 2026q2)",
@@ -80,30 +97,36 @@ def build() -> dict[str, Any]:
     stage_manifest = stage / "manifest.json"
     sm = common.read_json(stage_manifest)
     if sm.get("status") != "complete" or sm.get("rule") != fu.RULE:
-        raise SystemExit("fundamentals stage manifest is not a complete fund-events-pit-v2 publication")
+        raise SystemExit(f"stage manifest {stage_manifest} is not a complete {fu.RULE} publication")
     out = export_dir()
     man_path = out / "manifest.json"
     if man_path.exists():
         man_path.unlink()  # publish last
     ev, sic = (stage / "events.parquet").as_posix(), (stage / "sic_events.parquet").as_posix()
-    items = list(fi.ALL_ITEMS)
-    item_sql = ", ".join(f'CAST(coalesce("{c}", \'NaN\'::DOUBLE) AS DOUBLE) AS "{c}"' for c in items)
-    con = common.connect(memory="450MB", threads=2)
+    cat = (stage / "catalog.parquet").as_posix()
+    items = list(ITEMS)
+    item_sql = ", ".join(f'CAST(coalesce(x."{c}", \'NaN\'::DOUBLE) AS DOUBLE) AS "{c}"' for c in items)
+    cat_cols = ", ".join(f'c."{c}"' for c in fcat.CAT_COLUMNS)
+    con = common.connect(memory=os.environ.get("ATX_FUND_DUCKDB_MEM", "450MB"), threads=2)
     try:
         n_ev = common.copy_to_parquet(
             con,
             f"""
-            SELECT cik, accession, CAST(clock_utc AS TIMESTAMPTZ) AS accepted_utc,
-                   CASE WHEN clock_basis = 'fsds_accepted_utc' THEN 'fsds_accepted_utc' ELSE 'cf_fc1' END AS clock_basis,
-                   filed, form, period_end, fiscal_year, fiscal_period, CAST(staleness_days AS INTEGER) AS staleness_days,
-                   {item_sql}, zero_filled, {", ".join(DESCRIPTORS)}
-            FROM read_parquet('{ev}') ORDER BY cik, accepted_utc, accession
+            SELECT x.cik, x.accession, CAST(x.available_at AS TIMESTAMPTZ) AS accepted_utc,
+                   CAST(x.clock_utc AS TIMESTAMPTZ) AS filing_accepted_utc,
+                   CASE WHEN x.clock_basis = 'fsds_accepted_utc' THEN 'fsds_accepted_utc' ELSE 'cf_fc1' END AS clock_basis,
+                   x.filed, x.form, x.period_end, x.fiscal_year, x.fiscal_period,
+                   CAST(x.staleness_days AS INTEGER) AS staleness_days,
+                   {item_sql}, x.zero_filled, x.catalog_zero_filled, {", ".join("x." + d for d in DESCRIPTORS)}
+            FROM (SELECT e.*, {cat_cols}, c.catalog_zero_filled
+                  FROM read_parquet('{ev}') e LEFT JOIN read_parquet('{cat}') c USING (cik, accession)) x
+            ORDER BY x.cik, accepted_utc, x.accession
             """,
-            out / "fundamental_events.parquet")
+            out / "fundamental_events.parquet", row_group_size=32768)
         n_sic = common.copy_to_parquet(
             con,
             f"""
-            SELECT s.cik, s.accession, CAST(s.clock_utc AS TIMESTAMPTZ) AS accepted_utc,
+            SELECT s.cik, s.accession, CAST(e.available_at AS TIMESTAMPTZ) AS accepted_utc,
                    CASE WHEN e.clock_basis = 'fsds_accepted_utc' THEN 'fsds_accepted_utc' ELSE 'cf_fc1' END AS clock_basis,
                    e.filed, e.form, CAST(s.sic AS INTEGER) AS sic, s.sic_basis, s.sic2, s.ff12, s.ff49
             FROM read_parquet('{sic}') s JOIN read_parquet('{ev}') e USING (cik, accession)
@@ -135,19 +158,21 @@ def build() -> dict[str, Any]:
         files[name] = {"bytes": p.stat().st_size, "sha256": common.sha256_file(p), "rows": rows}
     manifest = {
         "schema": SCHEMA, "status": "complete", "values_label": "modeled_unaccepted", "rehearsal_identity": False,
-        "producer": "atx_db.alpha_panel.fund_export (stage F rule " + fu.RULE + ")",
+        "producer": "atx_db.alpha_panel.fund_export (stage F rule " + fu.RULE + ", stage " + stage.name + ")",
         "seal": None, "emit_from": fu.EMIT_FROM.date().isoformat(),
         "files": files, "items": items, "item_units": {c: UNITS[c] for c in items},
-        "descriptor_columns": ["zero_filled", *DESCRIPTORS],
+        "descriptor_columns": ["zero_filled", "catalog_zero_filled", "filing_accepted_utc", *DESCRIPTORS],
         "code_sha256": common.code_identity("fund_export", *fu.MODULES),
         "inputs": {"fundamentals_manifest": {"path": str(stage_manifest), "bytes": stage_manifest.stat().st_size,
                                              "sha256": common.sha256_file(stage_manifest)},
                    "fundamentals_files": sm.get("files")},
         "parameters": {"staleness_rule": fu.STALENESS_RULE, "currency_rule": fu.CURRENCY_RULE,
                        "template_rule": fi.TEMPLATE_RULE, "structural_na": fu.structural_na(),
-                       "item_rules": fu.ITEM_RULES, "rule_text": fu.RULE_TEXT,
-                       "clock": "accepted_utc = FSDS SUB accepted_utc of the accession, else filed 00:00 UTC + 46 h "
-                                "(clock_basis cf_fc1); a row is visible at session d iff accepted_utc < d 22:00 UTC"},
+                       "item_rules": fu.ITEM_RULES, "rule_text": fu.RULE_TEXT, "fx_rule": sm.get("fx_rule"),
+                       "catalog": sm.get("catalog"), "nonreliance_rule": sm.get("nonreliance_rule"),
+                       "clock": "accepted_utc = max(FSDS SUB accepted_utc of the accession (else filed 00:00 UTC + 46 h, "
+                                "clock_basis cf_fc1), clock of every FX rate used); filing_accepted_utc = the filing "
+                                "clock alone; a row is visible at session d iff accepted_utc < 22:00 UTC of session d-1"},
         "counts": counts, "caveats": CAVEATS,
         "created_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         "seconds": round(time.perf_counter() - t0, 2),
@@ -187,7 +212,7 @@ def verify(consumer: Path = CONSUMER) -> dict[str, Any]:
     res["finite_share_consumer_items_rows_used"] = {
         c: round(float(np.isfinite(ev["values"][c]).mean()), 4) for c in consumer_items}
     del ev
-    new_items = [c for c in fi.ITEM_COLUMNS_V2]
+    new_items = list(fi.ITEM_COLUMNS_V2) + list(fcat.CAT_COLUMNS)
     ev, _src, st = mod.load_events(out, m, mod.EVENTS_ADAPTER, new_items, ciks, "fund-events", budget)
     res["load_events_v2_items"] = {"rows_used": st["rows_used"], "items": len(new_items)}
     del ev
