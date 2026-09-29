@@ -17,6 +17,13 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 SESSION CLOSED by owner ("stop here") -- handoff written
+- docs/plans/2026-09-28-platform-v7-handoff-1.md (state, lanes, evidence, open decisions, next steps, commands, pitfalls)
+  and docs/plans/2026-09-28-platform-v7-next-goal-prompt.md (the /goal text for the next PM).
+- In flight at close: L7 (pool-10, library v7.0), W1 (pool-3, spo root-cause), P4 (read-only wave-2 prereg). Their
+  commits live in their pools; hand-backs to this session are lost. Nothing was run after the fields-v9 build.
+- Not in local main yet: everything since c0dc376f. Merge command in the handoff §0.
+
 ## 2026-09-28 role linked-operating-v2 built (lo2); fields v9 building
 - lo2 (identity-bridge-v2-pit, share-class letters allowed, delisting block): kept member cells 1,967,838 vs lo1
   1,940,364; min kept in the score window 1,697 vs 1,675; dropped share .3956 vs .4031. Dropped by reason (score window):
