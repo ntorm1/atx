@@ -1,6 +1,7 @@
 // atx-risk-v1 (platform v7 lane L4): the constrained WLS, the recursive EWMA/Newey-West
 // estimator against atx-engine risk V2, the bias statistic, and the model end to end on a
-// planted factor panel. Synthetic inputs only.
+// planted factor panel; F2: structural forecasts for short-history factors, the per-date
+// residual-slot merge, and the optimiser's view of them. Synthetic inputs only.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -18,12 +19,14 @@
 #include <string>
 #include <system_error>
 #include <vector>
+#include <Eigen/Dense>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/core/linalg/linalg.hpp"
 #include "atx/engine/risk/cov_ewma.hpp"
 #include "../src/strategy_risk_model.hpp"
+#include "../src/strategy_spo.hpp"
 
 namespace {
 using namespace atx;
@@ -439,22 +442,30 @@ const rk::BiasSeries& named(const rk::BiasHarness& h, const std::string& name) {
     if (s.name == name) return s;
   throw std::runtime_error("no series " + name);
 }
-TEST(RiskBias, ShortHistoryFactorExposureIsExcludedWholeCountedAndRefused) {
+// ---- F2: structural forecasts for short-history factors -------------------------------------
+// A factor born after the model is live: FF49 industry 4 appears 20 sessions after the pre-F2
+// random series' first kept observation. With structural forecasts every random observation
+// exposed to it is kept (none dropped, the series stays ok) and its own series is evaluated from
+// its first return. The pre-F2 model (structural_factor_forecast off) on the same panel still
+// shows the M-5 counters and the 5% refusal, which stay armed.
+TEST(RiskBias, ShortHistoryFactorIsForecastStructurallyAndNothingIsDropped) {
   constexpr usize portfolios = 6;
   const rk::RiskModelConfig cfg;
+  rk::RiskModelConfig pre_f2;
+  pre_f2.structural_factor_forecast = false;
   const Planted base(460, 300, 61);
   const auto base_panel = base.panel();
-  rk::BiasHarness before(base_panel, portfolios, 7, {});
-  std::array<rk::RiskSink*, 1> one{&before};
+  rk::BiasHarness before(base_panel, portfolios, 7, {}), before_pre(base_panel, portfolios, 7, {});
+  std::array<rk::RiskSink*, 1> one{&before}, one_pre{&before_pre};
   ASSERT_TRUE(rk::run_risk_model(base_panel, cfg, one));
-  const auto& b0 = before.series().front();
+  ASSERT_TRUE(rk::run_risk_model(base_panel, pre_f2, one_pre));
+  const auto& b0 = before_pre.series().front();
   ASSERT_EQ(b0.family, "random");
   ASSERT_FALSE(b0.z.empty());
-  EXPECT_GT(b0.warmup_excluded, 0U); // styles (momentum) are exposed before they are forecast
-  EXPECT_EQ(b0.dropped_factor_exposures, 0U);
-  EXPECT_EQ(rk::series_status(b0), rk::SeriesStatus::Ok);
+  EXPECT_GT(b0.warmup_excluded, 0U); // pre-F2: momentum is exposed before it is forecast
+  EXPECT_EQ(before.series().front().warmup_excluded, 0U); // F2: momentum is structural until then
+  EXPECT_GT(before.series().front().z.size(), b0.z.size());
   EXPECT_EQ(rk::series_status(named(before, "ind_ff4")), rk::SeriesStatus::Empty);
-  // The new industry appears 20 sessions after the random series' first kept observation.
   const auto first =
       std::lower_bound(base.sessions.begin(), base.sessions.end(), b0.sessions.front());
   const usize from = static_cast<usize>(first - base.sessions.begin()) + 20;
@@ -462,26 +473,266 @@ TEST(RiskBias, ShortHistoryFactorExposureIsExcludedWholeCountedAndRefused) {
   Planted planted = base;
   plant_new_industry(planted, from);
   const auto panel = planted.panel();
-  rk::BiasHarness after(panel, portfolios, 7, {});
-  std::array<rk::RiskSink*, 1> sinks{&after};
+  rk::BiasHarness after(panel, portfolios, 7, {}), after_pre(panel, portfolios, 7, {});
+  std::array<rk::RiskSink*, 1> sinks{&after}, sinks_pre{&after_pre};
   ASSERT_TRUE(rk::run_risk_model(panel, cfg, sinks));
+  ASSERT_TRUE(rk::run_risk_model(panel, pre_f2, sinks_pre));
   for (usize q = 0; q < portfolios; ++q) {
     const auto& s = after.series()[q];
     const auto& r = before.series()[q];
-    // Exposed to the new factor on every session before its 63rd return: never a partial x'Fx.
-    EXPECT_EQ(s.dropped_factor_exposures, cfg.min_factor_history) << s.name;
+    EXPECT_EQ(s.dropped_factor_exposures, 0U) << s.name;
     EXPECT_EQ(s.uncovered_name_returns, 0U) << s.name;
     EXPECT_EQ(s.warmup_excluded, r.warmup_excluded) << s.name;
-    EXPECT_EQ(s.z.size() + s.dropped_factor_exposures, r.z.size()) << s.name; // none lost silently
-    EXPECT_GT(rk::dropped_share(s), rk::max_dropped_share) << s.name;
-    EXPECT_EQ(rk::series_status(s), rk::SeriesStatus::Refused) << s.name;
+    EXPECT_EQ(s.z.size(), r.z.size()) << s.name; // every observation kept
+    EXPECT_EQ(rk::series_status(s), rk::SeriesStatus::Ok) << s.name;
+    // Pre-F2: exposed to the new factor before its 63rd return, excluded whole and counted.
+    const auto& sp = after_pre.series()[q];
+    const auto& rp = before_pre.series()[q];
+    EXPECT_EQ(sp.dropped_factor_exposures, cfg.min_factor_history) << sp.name;
+    EXPECT_EQ(sp.uncovered_name_returns, 0U) << sp.name;
+    EXPECT_EQ(sp.warmup_excluded, rp.warmup_excluded) << sp.name;
+    EXPECT_EQ(sp.z.size() + sp.dropped_factor_exposures, rp.z.size()) << sp.name;
+    EXPECT_GT(rk::dropped_share(sp), rk::max_dropped_share) << sp.name;
+    EXPECT_EQ(rk::series_status(sp), rk::SeriesStatus::Refused) << sp.name;
   }
-  // The factor's own series starts at its first forecast: its first 63 returns are warm-up.
+  // The factor's own series: from its first return (structural), from its 64th pre-F2.
   const auto& born = named(after, "ind_ff4");
-  EXPECT_EQ(born.warmup_excluded, cfg.min_factor_history);
+  EXPECT_EQ(born.warmup_excluded, 0U);
   EXPECT_EQ(born.dropped_factor_exposures, 0U);
-  EXPECT_EQ(born.z.size(), planted.d - from - cfg.min_factor_history - 1);
+  EXPECT_EQ(born.z.size(), planted.d - from - 1);
   EXPECT_EQ(rk::series_status(born), rk::SeriesStatus::Ok);
+  const auto& born_pre = named(after_pre, "ind_ff4");
+  EXPECT_EQ(born_pre.warmup_excluded, cfg.min_factor_history);
+  EXPECT_EQ(born_pre.z.size(), planted.d - from - cfg.min_factor_history - 1);
+}
+
+// Every session's factor-forecast audit; the covariance, flags and exposures from `from` on.
+struct DayLog final : rk::RiskSink {
+  usize from{};
+  std::vector<std::array<f64, rk::factor_count>> factor;
+  std::vector<f64> lambda2, scale;
+  std::vector<usize> structural, flags, unforecast, residual;
+  std::vector<u8> forecast;
+  std::vector<std::vector<f64>> cov;
+  std::vector<std::vector<u8>> flag, slot, eligible;
+  co::Status on_day(const rk::RiskDay& day) override {
+    std::array<f64, rk::factor_count> f{};
+    std::copy(day.factor_return.begin(), day.factor_return.end(), f.begin());
+    factor.push_back(f);
+    lambda2.push_back(day.lambda2_factor); scale.push_back(day.structural_scale);
+    structural.push_back(day.structural_factors);
+    unforecast.push_back(day.unforecast_exposed_factors);
+    residual.push_back(day.residual_names); forecast.push_back(static_cast<u8>(day.forecast));
+    usize count = 0;
+    for (const u8 x : day.factor_structural) count += x;
+    flags.push_back(count);
+    if (day.date >= from) {
+      cov.emplace_back(day.covariance.begin(), day.covariance.end());
+      flag.emplace_back(day.factor_structural.begin(), day.factor_structural.end());
+      slot.emplace_back(day.industry_slot.begin(), day.industry_slot.end());
+      eligible.emplace_back(day.eligible.begin(), day.eligible.end());
+    }
+    return co::Ok();
+  }
+  [[nodiscard]] f64 at(usize t, usize a, usize b) const {
+    return cov[t - from][a * rk::factor_count + b];
+  }
+};
+// Two factors born at `born`: FF49 industry 4 (every 20th name moves to it) and the
+// earnings-yield style (its descriptor starts, fixed per name). Keep it in place: panel() views it.
+struct BornPanel {
+  Planted planted;
+  std::vector<f32> earnings;
+  usize born{};
+  BornPanel(usize dates, usize names, u64 seed, usize birth)
+      : planted(dates, names, seed),
+        earnings(dates * names, std::numeric_limits<f32>::quiet_NaN()), born(birth) {
+    plant_new_industry(planted, born);
+    Normal rng{seed + 1};
+    std::vector<f32> v(names);
+    for (auto& x : v) x = static_cast<f32>(rng());
+    for (usize t = born; t < dates; ++t)
+      for (usize i = 0; i < names; ++i) earnings[t * names + i] = v[i];
+  }
+  [[nodiscard]] rk::RiskPanel panel() const {
+    auto p = planted.panel();
+    p.descriptors[1] = earnings;
+    return p;
+  }
+};
+constexpr usize born_industry = rk::industry_factor(3); // FF49 4 -> slot 3
+constexpr usize born_style = rk::style_factor(static_cast<usize>(rk::Style::EarningsYield));
+
+// The declared structural rule on factors observed 0..20 sessions: variance = lambda^2 (w own +
+// (1 - w) prior), w = n / 63, own = the factor's EWMA + NW variance (replicated per column), the
+// prior = the cap-weighted mean fully observed industry variance (industry) or the mean fully
+// observed style variance (style); correlations = s w rho with the market and s w w rho with each
+// other (s = the reported PSD scale); F stays positive definite.
+TEST(RiskModel, ShortHistoryFactorVarianceIsTheClassPriorBlend) {
+  const BornPanel born(360, 300, 71, 339); // 20 returns at the last session
+  const auto panel = born.panel();
+  DayLog days;
+  days.from = born.born;
+  std::array<rk::RiskSink*, 1> sinks{&days};
+  const rk::RiskModelConfig cfg;
+  ASSERT_TRUE(rk::run_risk_model(panel, cfg, sinks));
+  const Planted& p = born.planted;
+  // A diagonal column's moments depend on that column only, a pair's on its two columns.
+  rk::LaggedEwma fast(2, cfg.vol_halflife, 0, false);
+  rk::LaggedEwma nw(2, cfg.nw_halflife, cfg.variance_nw_lags, false);
+  rk::LaggedEwma corr(3, cfg.correlation_halflife, cfg.correlation_nw_lags, true);
+  const auto rho = [&](usize a, usize b) {
+    const f64 ca = corr.covariance(a, a), cb = corr.covariance(b, b), cab = corr.covariance(a, b);
+    const f64 denom = std::sqrt(std::max(0.0, ca)) * std::sqrt(std::max(0.0, cb));
+    return denom > 0 && std::isfinite(cab) ? std::clamp(cab / denom, -1.0, 1.0) : 0.0;
+  };
+  const std::array<usize, 2> factors{born_industry, born_style};
+  for (usize t = 0; t < p.d; ++t) EXPECT_EQ(days.structural[t], days.flags[t]) << t;
+  for (usize t = 1; t < p.d; ++t) {
+    const auto& f = days.factor[t];
+    const std::array<f64, 2> own_row{f[born_industry], f[born_style]};
+    const std::array<f64, 3> corr_row{f[born_industry], f[born_style], f[0]};
+    fast.push(own_row); nw.push(own_row); corr.push(corr_row);
+    if (t < born.born) continue;
+    SCOPED_TRACE(t);
+    const usize obs = t - born.born, d = t - days.from;
+    ASSERT_TRUE(days.forecast[t]);
+    EXPECT_EQ(days.structural[t], 2U); // the born two (momentum is fully observed by now)
+    EXPECT_EQ(days.unforecast[t], 0U);
+    const f64 l2 = days.lambda2[t], s = days.scale[t];
+    EXPECT_GT(s, 0.0); EXPECT_LE(s, 1.0);
+    std::array<f64, rk::industry_slots> cap_by{};
+    for (usize i = 0; i < p.n; ++i)
+      if (days.eligible[d][i] && days.slot[d][i] < rk::industry_slots)
+        cap_by[days.slot[d][i]] += p.cap[t * p.n + i];
+    f64 cap_sum = 0, cap_var = 0, style_sum = 0;
+    usize styles = 0;
+    for (usize k = 1; k < rk::factor_count; ++k) {
+      const f64 v = days.at(t, k, k);
+      if (days.flag[d][k] || !std::isfinite(v)) continue; // fully observed factors only
+      if (k <= rk::industry_slots) { cap_sum += cap_by[k - 1]; cap_var += cap_by[k - 1] * v; }
+      else { style_sum += v; ++styles; }
+    }
+    ASSERT_GT(cap_sum, 0.0);
+    ASSERT_GT(styles, 0U);
+    const std::array<f64, 2> prior{cap_var / cap_sum, style_sum / static_cast<f64>(styles)};
+    const f64 w = static_cast<f64>(obs) / static_cast<f64>(cfg.min_factor_history);
+    for (usize c = 0; c < factors.size(); ++c) {
+      const usize k = factors[c];
+      EXPECT_EQ(static_cast<usize>(days.flag[d][k]), 1U) << rk::factor_name(k);
+      ASSERT_EQ(fast.observations(c), obs);
+      const f64 own = obs ? std::max(0.0, rk::serial_adjusted_variance(fast, nw, c)) : 0.0;
+      const f64 expected = l2 * w * own + (1.0 - w) * prior[c];
+      EXPECT_NEAR(days.at(t, k, k) / expected, 1.0, 1e-12) << rk::factor_name(k);
+    }
+    const auto correlation_of = [&](usize a, usize b) {
+      return days.at(t, a, b) / std::sqrt(days.at(t, a, a) * days.at(t, b, b));
+    };
+    EXPECT_NEAR(correlation_of(born_industry, 0), s * w * rho(0, 2), 1e-10);
+    EXPECT_NEAR(correlation_of(born_style, 0), s * w * rho(1, 2), 1e-10);
+    EXPECT_NEAR(correlation_of(born_industry, born_style), s * w * w * rho(0, 1), 1e-10);
+    std::vector<usize> forecast;
+    for (usize k = 0; k < rk::factor_count; ++k)
+      if (std::isfinite(days.at(t, k, k))) forecast.push_back(k);
+    Eigen::MatrixXd m(static_cast<Eigen::Index>(forecast.size()),
+                      static_cast<Eigen::Index>(forecast.size()));
+    for (usize a = 0; a < forecast.size(); ++a)
+      for (usize b = 0; b < forecast.size(); ++b)
+        m(static_cast<Eigen::Index>(a), static_cast<Eigen::Index>(b)) =
+            days.at(t, forecast[a], forecast[b]);
+    EXPECT_EQ(Eigen::LLT<Eigen::MatrixXd>(m).info(), Eigen::Success);
+  }
+}
+
+// Identity for fully observed factors: every covariance entry between factors the pre-F2 model
+// forecasts, the VRA lambda^2, and every pre-F2 factor-family z are bit-identical with structural
+// forecasts on; F2 only adds structural rows and columns, and leaves no exposed factor unforecast
+// on a forecast session where pre-F2 left some (momentum before 63 returns, the born two).
+TEST(RiskModel, FullyObservedFactorsAreBitIdenticalWithStructuralForecasts) {
+  const BornPanel born(360, 300, 71, 339);
+  const auto panel = born.panel();
+  rk::RiskModelConfig pre_f2;
+  pre_f2.structural_factor_forecast = false;
+  DayLog on, off;
+  rk::BiasHarness on_bias(panel, 4, 7, {}), off_bias(panel, 4, 7, {});
+  std::array<rk::RiskSink*, 2> on_sinks{&on, &on_bias}, off_sinks{&off, &off_bias};
+  ASSERT_TRUE(rk::run_risk_model(panel, rk::RiskModelConfig{}, on_sinks));
+  ASSERT_TRUE(rk::run_risk_model(panel, pre_f2, off_sinks));
+  constexpr usize cells = rk::factor_count * rk::factor_count;
+  usize compared = 0, differing = 0, added = 0, stray = 0, pre_gaps = 0;
+  std::array<bool, rk::factor_count> structural_on_forecast{};
+  for (usize t = 0; t < born.planted.d; ++t) {
+    EXPECT_EQ(on.lambda2[t], off.lambda2[t]) << t;
+    EXPECT_EQ(off.flags[t], 0U) << t;
+    for (usize c = 0; c < cells; ++c) {
+      const f64 a = on.cov[t][c], b = off.cov[t][c];
+      if (std::isfinite(b)) { ++compared; differing += a == b ? 0U : 1U; continue; }
+      if (!std::isfinite(a)) continue;
+      ++added;
+      stray += on.flag[t][c / rk::factor_count] || on.flag[t][c % rk::factor_count] ? 0U : 1U;
+    }
+    if (!on.forecast[t]) continue;
+    for (usize k = 0; k < rk::factor_count; ++k)
+      if (on.flag[t][k]) structural_on_forecast[k] = true;
+    EXPECT_EQ(on.unforecast[t], 0U) << t;
+    pre_gaps += off.unforecast[t];
+  }
+  EXPECT_GT(compared, 0U);
+  EXPECT_EQ(differing, 0U);
+  EXPECT_GT(added, 0U);
+  EXPECT_EQ(stray, 0U);
+  EXPECT_GT(pre_gaps, 0U);
+  for (usize k = 0; k < rk::factor_count; ++k) {
+    const auto& a = on_bias.series()[4 + k];
+    const auto& b = off_bias.series()[4 + k];
+    ASSERT_EQ(a.name, b.name);
+    for (usize j = 0; j < b.sessions.size(); ++j) {
+      const auto it = std::find(a.sessions.begin(), a.sessions.end(), b.sessions[j]);
+      ASSERT_NE(it, a.sessions.end()) << b.name;
+      EXPECT_EQ(a.z[static_cast<usize>(it - a.sessions.begin())], b.z[j]) << b.name;
+    }
+    if (structural_on_forecast[k]) continue; // its series gains the structural observations
+    EXPECT_EQ(a.z, b.z) << b.name;
+    if (b.z.size() >= 2) EXPECT_EQ(rk::bias_statistic(a.z), rk::bias_statistic(b.z)) << b.name;
+  }
+}
+
+// Industries under min_industry_names pool into the residual slot per date: FF49 industry 5
+// has exactly 10 member names except on two blocks where one is a non-member, and then all 10
+// sit in the residual slot. Whenever names are in the residual slot it has a forecast
+// (structural: it never reaches 63 returns), no exposed factor lacks one, and the per-date
+// counts (residual names, structural factors) are the model's.
+TEST(RiskModel, IndustryMergeIsPerDateAndTheResidualSlotIsAlwaysForecast) {
+  Planted planted(360, 300, 73);
+  const auto merged_at = [](usize t) { return (t >= 270 && t < 290) || (t >= 320 && t < 335); };
+  for (usize t = 0; t < planted.d; ++t) {
+    for (usize i = 1; i < planted.n; i += 30) planted.industry[t * planted.n + i] = 5;
+    if (merged_at(t)) planted.member[t * planted.n + 1] = 0;
+  }
+  const auto panel = planted.panel();
+  DayLog days;
+  days.from = 250;
+  std::array<rk::RiskSink*, 1> sinks{&days};
+  ASSERT_TRUE(rk::run_risk_model(panel, rk::RiskModelConfig{}, sinks));
+  const usize residual = rk::industry_factor(rk::residual_industry);
+  usize merged_forecasts = 0;
+  for (usize t = days.from; t < planted.d; ++t) {
+    SCOPED_TRACE(t);
+    const usize d = t - days.from;
+    const bool merged = merged_at(t);
+    EXPECT_EQ(days.residual[t], merged ? 10U : 0U);
+    const usize slot = merged ? rk::residual_industry : usize{4}; // FF49 5 -> slot 4
+    for (usize i = 1; i < planted.n; i += 30)
+      EXPECT_EQ(static_cast<usize>(days.slot[d][i]), slot) << i;
+    EXPECT_EQ(days.structural[t], days.flags[t]);
+    if (!days.forecast[t]) continue;
+    EXPECT_EQ(days.unforecast[t], 0U);
+    if (!merged) continue;
+    ++merged_forecasts;
+    EXPECT_GT(days.at(t, residual, residual), 0.0); // finite and positive
+    EXPECT_EQ(static_cast<usize>(days.flag[d][residual]), 1U);
+  }
+  EXPECT_EQ(merged_forecasts, 35U);
 }
 
 // ---- restricted roles: membership independent of presence -----------------------------------
@@ -658,9 +909,13 @@ TEST(RiskVerb, RestrictedRoleWithAbsentMembersRunsAndMalformedMasksAreRefused) {
                             "dropped_factor_exposures", "uncovered_name_returns", "dropped_share"})
       EXPECT_TRUE(f.contains(key)) << family << ' ' << key;
   }
-  // 300 sessions: momentum (exposed from 252) is never forecast, so every random portfolio is
-  // warm-up and the family has nothing to summarise.
-  EXPECT_GT(bias.at("families").at("random").at("warmup_excluded").get<usize>(), 0U);
+  // 300 sessions: momentum (exposed from 252) never reaches 63 returns; its structural forecast
+  // (F2) keeps every random observation from the first specific forecast on.
+  const auto& random = bias.at("families").at("random");
+  EXPECT_EQ(random.at("status"), "ok");
+  EXPECT_GT(random.at("observations").get<usize>(), 0U);
+  EXPECT_EQ(random.at("warmup_excluded").get<usize>(), 0U);
+  EXPECT_EQ(random.at("dropped_factor_exposures").get<usize>(), 0U);
   // A non-binary mask is refused.
   Planted bad_mask = planted;
   bad_mask.member[10 * bad_mask.n + 1] = 2;
@@ -696,5 +951,117 @@ TEST(RiskVerb, RoleReachingTheSealNeedsAnOwnerAndTheManifestNamesTheProducer) {
   EXPECT_EQ(manifest.at("seal").at("role_last_session_ns").get<i64>(), planted.sessions.back());
   EXPECT_TRUE(manifest.at("producer").contains("executable_sha256"));
   EXPECT_FALSE(manifest.at("producer").at("engine_git_sha").get<std::string>().empty());
+}
+
+std::vector<std::string> split_csv(const std::string& line) {
+  std::vector<std::string> cells;
+  std::string cell;
+  std::istringstream stream(line);
+  while (std::getline(stream, cell, ',')) cells.push_back(cell);
+  return cells;
+}
+std::vector<u8> file_bytes(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
+  if (!in) throw std::runtime_error("fixture read " + path.string());
+  std::vector<u8> out(static_cast<usize>(in.tellg()));
+  in.seekg(0);
+  // SAFETY: char reads the object representation of a contiguous byte buffer.
+  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
+  if (!in) throw std::runtime_error("fixture read " + path.string());
+  return out;
+}
+// F2 through the verb: a factor born 20 sessions before the end (FF49 industry 4, 10 of 200
+// names) is marked structural per date in the manifest and factor_structural.u8, diagnostics.csv
+// counts the structural factors, the random family drops nothing, and the optimiser's accessor
+// (spo-v1 RiskStore, the same F) reads a positive variance for it: a name loading on it
+// carries that factor risk.
+TEST(RiskVerb, StructuralFactorsAreMarkedAndTheOptimiserReadsTheirVariance) {
+  Directory dir;
+  Planted planted(300, 200, 79);
+  const usize born = planted.d - 21;
+  plant_new_industry(planted, born);
+  const auto pinned = write_role_and_fields(dir.path / "born", planted);
+  const auto out = dir.path / "born" / "out";
+  std::string error;
+  ASSERT_EQ(run_verb(pinned, out, error, {"--emit-exposures", "all"}), 0) << error;
+  Json manifest;
+  {
+    std::ifstream in(out / "manifest.json");
+    in >> manifest;
+  }
+  const auto& recipe = manifest.at("recipe").at("factor_covariance").at("structural");
+  EXPECT_TRUE(recipe.at("enabled").get<bool>());
+  bool listed = false;
+  for (const auto& f : manifest.at("structural_factors").at("factors")) {
+    if (f.at("factor") != "ind_ff4") continue;
+    listed = true;
+    EXPECT_EQ(f.at("structural_sessions").get<usize>(), 21U);
+    EXPECT_EQ(f.at("first_session_ns").get<i64>(), planted.sessions[born]);
+    EXPECT_EQ(f.at("last_session_ns").get<i64>(), planted.sessions.back());
+  }
+  EXPECT_TRUE(listed);
+  EXPECT_EQ(manifest.at("structural_factors").at("forecast_sessions_with_unforecast_exposure")
+                .get<usize>(), 0U);
+  // The side file: dates x factors, 1 where the forecast is structural.
+  const usize k = born_industry;
+  const auto flags = file_bytes(out / "factor_structural.u8");
+  ASSERT_EQ(flags.size(), planted.d * rk::factor_count);
+  EXPECT_EQ(manifest.at("files").at("factor_structural.u8").at("bytes").get<usize>(), flags.size());
+  for (usize t = 0; t < planted.d; ++t)
+    EXPECT_EQ(static_cast<usize>(flags[t * rk::factor_count + k]), t >= born ? 1U : 0U) << t;
+  // diagnostics.csv: the last session forecasts the born industry and momentum (47 returns).
+  std::ifstream diagnostics(out / "diagnostics.csv");
+  std::string line, last;
+  ASSERT_TRUE(std::getline(diagnostics, line));
+  const auto header = split_csv(line);
+  ASSERT_EQ(line.rfind("session,forecast,", 0), 0U); // spo-v1 reads the first two columns
+  while (std::getline(diagnostics, line))
+    if (!line.empty()) last = line;
+  const auto row = split_csv(last);
+  ASSERT_EQ(row.size(), header.size());
+  const auto cell = [&](const char* column) -> std::string {
+    const auto it = std::find(header.begin(), header.end(), column);
+    if (it == header.end()) return "missing";
+    return row[static_cast<usize>(it - header.begin())];
+  };
+  EXPECT_EQ(cell("structural_factors"), "2");
+  EXPECT_EQ(cell("unforecast_exposed_factors"), "0");
+  EXPECT_EQ(cell("residual_names"), "0");
+  EXPECT_NE(cell("structural_correlation_scale"), "missing");
+  Json bias;
+  {
+    std::ifstream in(out / "bias_summary.json");
+    in >> bias;
+  }
+  const auto& random = bias.at("families").at("random");
+  EXPECT_EQ(random.at("status"), "ok");
+  EXPECT_EQ(random.at("dropped_factor_exposures").get<usize>(), 0U);
+  // The optimiser's accessor at the last session.
+  namespace spo = atx::impl::strategy::spo;
+  const auto sha = co::sha256_file((out / "manifest.json").string());
+  ASSERT_TRUE(sha);
+  const auto store = spo::RiskStore::open(out.string(), *sha, pinned.role_sha);
+  ASSERT_TRUE(store) << store.error().to_string();
+  spo::RiskSlice slice;
+  const auto read = store->read(planted.d - 1, slice);
+  ASSERT_TRUE(read) << read.error().to_string();
+  EXPECT_GT(slice.covariance[k * rk::factor_count + k], 0.0);
+  constexpr usize name = 20; // every 20th name is in FF49 industry 4 from `born`
+  ASSERT_EQ(static_cast<usize>(slice.slot[name]), 3U);
+  std::vector<f64> x(rk::factor_count, 0.0);
+  x[0] = 1.0; x[k] = 1.0;
+  for (usize s = 0; s < rk::style_count; ++s)
+    x[rk::style_factor(s)] = slice.styles[name * rk::style_count + s];
+  const auto factor_variance = [&](const std::vector<f64>& y) {
+    f64 v = 0;
+    for (usize a = 0; a < rk::factor_count; ++a)
+      for (usize b = 0; b < rk::factor_count; ++b)
+        v += y[a] * slice.covariance[a * rk::factor_count + b] * y[b];
+    return v;
+  };
+  const f64 with = factor_variance(x);
+  x[k] = 0.0;
+  EXPECT_GT(with, 0.0);
+  EXPECT_NE(with, factor_variance(x)); // the short-history factor carries risk
 }
 } // namespace

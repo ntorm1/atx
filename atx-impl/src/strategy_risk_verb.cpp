@@ -336,13 +336,16 @@ public:
         returns_(dir / "factor_returns.csv", std::ios::binary),
         diagnostics_(dir / "diagnostics.csv", std::ios::binary),
         covariance_(dir / "factor_covariance.f64", std::ios::binary),
-        specific_(dir / "specific_variance.f64", std::ios::binary) {
+        specific_(dir / "specific_variance.f64", std::ios::binary),
+        structural_(dir / "factor_structural.u8", std::ios::binary) {
     for (auto* s : {&returns_, &diagnostics_}) s->imbue(std::locale::classic());
     returns_ << "session,date_index,fitted,regression_rows,active_industries,r2";
     for (usize k = 0; k < factor_count; ++k) returns_ << ',' << factor_name(k);
     returns_ << '\n';
+    // Columns after the first two are appended only (spo-v1 reads session and forecast).
     diagnostics_ << "session,forecast,lambda2_factor,lambda2_specific,bias_factor,bias_specific,"
-                    "structural_names,specific_names\n";
+                    "structural_names,specific_names,structural_factors,"
+                    "structural_correlation_scale,unforecast_exposed_factors,residual_names\n";
     if (emit_ == ExposureEmit::All) {
       styles_.open(dir / "style_exposures.f32", std::ios::binary);
       slots_.open(dir / "industry_slot.u8", std::ios::binary);
@@ -356,9 +359,13 @@ public:
     diagnostics_ << d.session << ',' << (d.forecast ? 1 : 0) << ',' << number(d.lambda2_factor)
                  << ',' << number(d.lambda2_specific) << ',' << number(d.bias_factor) << ','
                  << number(d.bias_specific) << ',' << d.structural_names << ','
-                 << d.specific_names << '\n';
+                 << d.specific_names << ',' << d.structural_factors << ','
+                 << number(d.structural_scale) << ',' << d.unforecast_exposed_factors << ','
+                 << d.residual_names << '\n';
     write_binary(covariance_, d.covariance);
     write_binary(specific_, d.specific_variance);
+    write_binary(structural_, d.factor_structural);
+    structural_stats(d);
     forecasts_ += d.forecast ? 1U : 0U;
     if (d.forecast && first_forecast_ < 0) first_forecast_ = d.session;
     if (d.fitted) { r2_sum_ += d.r2; ++fitted_; }
@@ -373,17 +380,19 @@ public:
       last_eligible_.assign(d.eligible.begin(), d.eligible.end());
       last_styles_.assign(d.styles.begin(), d.styles.end());
     }
-    if (!returns_ || !diagnostics_ || !covariance_ || !specific_)
+    if (!returns_ || !diagnostics_ || !covariance_ || !specific_ || !structural_)
       return co::Err(co::ErrorCode::IoError, "risk: output stream");
     return co::Ok();
   }
   co::Status close(Json& files) {
-    for (auto* s : {&returns_, &diagnostics_, &covariance_, &specific_, &styles_, &slots_})
+    for (auto* s : {&returns_, &diagnostics_, &covariance_, &specific_, &structural_, &styles_,
+                    &slots_})
       if (s->is_open()) s->close();
-    if (!returns_ || !diagnostics_ || !covariance_ || !specific_ || (emit_ == ExposureEmit::All && (!styles_ || !slots_)))
+    if (!returns_ || !diagnostics_ || !covariance_ || !specific_ || !structural_ ||
+        (emit_ == ExposureEmit::All && (!styles_ || !slots_)))
       return co::Err(co::ErrorCode::IoError, "risk: output close");
     std::vector<std::string> names{"factor_returns.csv", "diagnostics.csv", "factor_covariance.f64",
-                                   "specific_variance.f64"};
+                                   "specific_variance.f64", "factor_structural.u8"};
     if (emit_ == ExposureEmit::All) { names.emplace_back("style_exposures.f32"); names.emplace_back("industry_slot.u8"); }
     if (emit_ != ExposureEmit::None) {
       std::ofstream last(dir_ / "exposures_last.csv", std::ios::binary);
@@ -414,12 +423,57 @@ public:
         {"fitted_sessions", fitted_},
         {"mean_r2", fitted_ ? Json(r2_sum_ / static_cast<f64>(fitted_)) : Json(nullptr)}};
   }
+  // The structural factor audit (F2): every factor ever forecast structurally with its count of
+  // such sessions and the first and last; sessions with a structural factor, those whose
+  // structural terms needed a scale s < 1 (and the smallest s); forecast sessions where a
+  // present name was exposed to a factor without a forecast; sessions with residual-slot names.
+  [[nodiscard]] Json structural_json() const {
+    Json factors = Json::array();
+    for (usize k = 0; k < factor_count; ++k) {
+      const auto& f = per_factor_[k];
+      if (!f.sessions) continue;
+      factors.push_back(Json{{"factor", factor_name(k)}, {"structural_sessions", f.sessions},
+          {"first_session_ns", f.first}, {"last_session_ns", f.last}});
+    }
+    return Json{{"side_file", "factor_structural.u8"}, {"factors", std::move(factors)},
+        {"factor_sessions", factor_sessions_}, {"sessions_with_structural", structural_sessions_},
+        {"sessions_scaled", scaled_sessions_},
+        {"min_correlation_scale", scaled_sessions_ ? Json(min_scale_) : Json(1.0)},
+        {"forecast_sessions_with_unforecast_exposure", unforecast_sessions_},
+        {"sessions_with_residual_names", residual_sessions_}};
+  }
 
 private:
+  struct StructuralFactor {
+    usize sessions{};
+    i64 first{-1}, last{-1};
+  };
+  void structural_stats(const RiskDay& d) {
+    for (usize k = 0; k < d.factor_structural.size() && k < factor_count; ++k) {
+      if (!d.factor_structural[k]) continue;
+      auto& f = per_factor_[k];
+      if (!f.sessions) f.first = d.session;
+      f.last = d.session;
+      ++f.sessions; ++factor_sessions_;
+    }
+    if (d.structural_factors) {
+      ++structural_sessions_;
+      if (d.structural_scale < 1.0) {
+        ++scaled_sessions_;
+        min_scale_ = std::min(min_scale_, d.structural_scale);
+      }
+    }
+    if (d.forecast && d.unforecast_exposed_factors) ++unforecast_sessions_;
+    if (d.residual_names) ++residual_sessions_;
+  }
   std::filesystem::path dir_;
   const RiskPanel& panel_;
   ExposureEmit emit_{};
-  std::ofstream returns_, diagnostics_, covariance_, specific_, styles_, slots_;
+  std::ofstream returns_, diagnostics_, covariance_, specific_, structural_, styles_, slots_;
+  std::array<StructuralFactor, factor_count> per_factor_{};
+  usize factor_sessions_{}, structural_sessions_{}, scaled_sessions_{}, unforecast_sessions_{};
+  usize residual_sessions_{};
+  f64 min_scale_{1.0};
   usize forecasts_{}, fitted_{};
   i64 first_forecast_{-1};
   f64 r2_sum_{};
@@ -546,8 +600,9 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
                      "family's pooled kurtosis (USE4 Appendix A, asymptotic)"},
       {"exclusion_rule", "complete forecasts only: an observation whose portfolio holds a name "
                          "without a forecast (no exposure row or specific variance) or has a "
-                         "nonzero exposure to a factor without a forecast (< min_factor_history "
-                         "returns) is excluded whole, never priced by a partial x'Fx or realized "
+                         "nonzero exposure to a factor without a forecast (a short-history factor "
+                         "is forecast structurally once its class has a fully observed factor) "
+                         "is excluded whole, never priced by a partial x'Fx or realized "
                          "on a sub-book; exclusions before a series' first kept observation are "
                          "warmup_excluded, later ones dropped_factor_exposures / "
                          "uncovered_name_returns; a series whose dropped share (dropped / "
@@ -578,7 +633,25 @@ Json recipe_json(const RiskModelConfig& c) {
           {"vra_halflife", c.vra_halflife}, {"vra_min_dates", c.vra_min_dates},
           {"min_factor_history", c.min_factor_history},
           {"source", "USE4S (Menchero-Orr-Wang 2011): 84/504, NW 5/2, VRA 42; estimator = atx-engine "
-                     "risk V2 cov_ewma (recursive twin); PSD eigenvalue floor"}}},
+                     "risk V2 cov_ewma (recursive twin); PSD eigenvalue floor"},
+          {"vra_factors", "fully observed factors only (>= min_factor_history returns)"},
+          {"structural", {{"enabled", c.structural_factor_forecast},
+              {"applies_to", "a non-market factor with n < min_factor_history returns that has a "
+                             "history (n >= 1) or a present name exposed to it at t"},
+              {"weight", "w = n / min_factor_history (own), 1 - w (class prior)"},
+              {"variance", "w own + (1 - w) prior; own = the factor's EWMA + NW variance (the "
+                           "fully observed estimator, clamped at 0; w = 0 without one)"},
+              {"prior", "industries: mean fully observed industry variance at t weighted by the "
+                        "industry's eligible cap at t (equal weights when none holds cap); "
+                        "styles: equal-weighted mean fully observed style variance; pre-VRA, then "
+                        "x lambda^2 like every entry"},
+              {"correlation", "w rho with a fully observed factor, w w' rho with a structural one "
+                              "(rho = the correlation estimator's value, 0 without joint history)"},
+              {"psd", "the fully observed block is never altered; every structural off-diagonal "
+                      "term is scaled by the largest s = 2^-j (j = 0..30, else 0) that keeps F "
+                      "positive definite (diagnostics.csv structural_correlation_scale)"},
+              {"source", "USE4 structural fallback for short-history factors (R3.1; platform "
+                         "v7 F2); weights declared, not fitted"}}}}},
       {"specific_risk", {{"halflife", c.specific_halflife}, {"nw_lags", c.specific_nw_lags},
           {"structural_history", c.structural_history}, {"bayesian_q", c.bayesian_q},
           {"rule", "sigma = gamma sigma_TS + (1-gamma) sigma_STR, gamma = min(1, h/252), "
@@ -655,8 +728,15 @@ void print_bias(std::ostream& progress, const Json& bias) {
              << f.at("dropped_share") << " (max " << max_dropped_share << ")\n";
   }
 }
+void print_structural(std::ostream& progress, const Json& s) {
+  progress << "risk structural: " << s.at("factors").size() << " factors structural on "
+           << s.at("sessions_with_structural") << " sessions (" << s.at("factor_sessions")
+           << " factor-sessions), scaled " << s.at("sessions_scaled") << " (min scale "
+           << s.at("min_correlation_scale") << "); forecast sessions with an unforecast exposed "
+           << "factor " << s.at("forecast_sessions_with_unforecast_exposure") << '\n';
+}
 Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const RiskModelConfig& cfg,
-                   const Json& bias, Json run_stats, Json files) {
+                   const Json& bias, Json run_stats, Json structural, Json files) {
   Json descriptors_used = Json::array();
   for (usize d = 0; d < descriptor_count; ++d)
     if (!in.descriptors[d].empty()) descriptors_used.push_back(descriptor_names[d]);
@@ -684,9 +764,13 @@ Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const R
                         {"seed", a.seed}, {"max_dropped_share", max_dropped_share},
                         {"families", bias.at("families")}}},
       {"run", std::move(run_stats)},
+      {"structural_factors", std::move(structural)},
       {"layouts", {{"factor_covariance.f64", "little-endian f64, dates x factors x factors "
                                             "row-major, forecast at the session's close for the "
                                             "next session, NaN where not forecast"},
+                   {"factor_structural.u8", "dates x factors, 1 = the factor's forecast in "
+                                           "factor_covariance.f64 at the session is structural "
+                                           "(recipe.factor_covariance.structural), else 0"},
                    {"specific_variance.f64", "little-endian f64, dates x instruments, daily "
                                              "variance forecast, NaN where none"},
                    {"style_exposures.f32", "(--emit-exposures all) little-endian f32, dates x "
@@ -719,14 +803,16 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
   ATX_TRY_VOID(files_sink.close(files));
   Json bias;
   ATX_TRY_VOID(write_bias(dir, harness, files, bias));
-  const Json manifest =
-      risk_manifest(a, in, book.size(), cfg, bias, files_sink.run_stats(), std::move(files));
+  const Json structural = files_sink.structural_json();
+  const Json manifest = risk_manifest(a, in, book.size(), cfg, bias, files_sink.run_stats(),
+                                      structural, std::move(files));
   std::ofstream out(dir / "manifest.json", std::ios::binary);
   out << manifest.dump(2) << '\n';
   out.close();
   if (!out) return co::Err(co::ErrorCode::IoError, "risk: manifest.json");
   progress << "risk: " << in.dates << " sessions x " << in.names << " names, "
            << files_sink.run_stats().dump() << '\n';
+  print_structural(progress, structural);
   print_bias(progress, bias);
   return co::Ok();
 }
