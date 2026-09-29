@@ -308,7 +308,7 @@
   },
   "summ": {
     "script": ".superpowers/sdd/mega-alpha-20260926/studies/nav_summ.py",
-    "dsr_n": 35,
+    "dsr_n": 37,
     "cells_from_ledger": true,
     "extra": [
       "--effective-n",
