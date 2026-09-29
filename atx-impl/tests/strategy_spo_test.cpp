@@ -184,12 +184,25 @@ TEST(SpoSolver, CostFreeUnboundedSolutionIsTheClosedFormMarkowitz) {
   for (const f64 v : sol->w) net += v;
   EXPECT_LT(std::abs(net), 1e-12);
 }
+f64 beta_of(const sp::Problem& p, std::span<const f64> w) {
+  f64 b = 0;
+  for (usize i = 0; i < p.n; ++i) b += p.beta[i] * w[i];
+  return b;
+}
 TEST(SpoSolver, NetGrossBetaAndBoxesHoldTo1e10) {
   auto p = random_problem(60, 5);
-  // Fixed positions outside the problem: net -0.004 held there, so the problem's net is +0.004;
-  // a tight beta band and a beta-tilted alpha make the beta constraint bind.
-  p.net = 0.004; p.gross = 0.2; p.beta_lo = -0.002; p.beta_hi = 0.002;
+  // Fixed positions outside the problem: net -0.004 held there, so the problem's net is +0.004.
+  p.net = 0.004; p.gross = 0.2; p.beta_lo = -inf; p.beta_hi = inf;
   for (usize i = 0; i < p.n; ++i) p.alpha[i] += 3e-4 * (p.beta[i] - 1.0);
+  // Beta free first: its optimum's beta b_free. A band of half |b_free| around 0 excludes that
+  // optimum, so (strict convexity) the constrained optimum lies on the band's edge.
+  const auto free = sp::solve(p, p.w0, options(20000, 1e-9));
+  ASSERT_TRUE(free) << free.error().to_string();
+  EXPECT_EQ(free->multipliers.rho, 0.0); // no band, no beta multiplier
+  const f64 b_free = beta_of(p, free->w);
+  ASSERT_GT(std::abs(b_free), 1e-6);
+  p.beta_lo = -0.5 * std::abs(b_free); p.beta_hi = 0.5 * std::abs(b_free);
+  const f64 edge = b_free > 0 ? p.beta_hi : p.beta_lo;
   const auto sol = sp::solve(p, p.w0, options(20000, 1e-9));
   ASSERT_TRUE(sol) << sol.error().to_string();
   EXPECT_TRUE(sol->converged) << sol->iterations;
@@ -205,8 +218,41 @@ TEST(SpoSolver, NetGrossBetaAndBoxesHoldTo1e10) {
   EXPECT_LE(gross, p.gross + 1e-10);
   EXPECT_GE(beta, p.beta_lo - 1e-10);
   EXPECT_LE(beta, p.beta_hi + 1e-10);
+  // The gross budget binds with a positive multiplier mu = (alpha+ + alpha-) / 2 and is met
+  // with equality; the beta band binds on the side of b_free with the multiplier's sign.
   EXPECT_TRUE(sol->multipliers.gross_binding);
-  EXPECT_NE(sol->multipliers.rho, 0.0); // the beta band binds
+  EXPECT_GT(sol->multipliers.pos + sol->multipliers.neg, 0.0);
+  EXPECT_NEAR(gross, p.gross, 1e-10);
+  EXPECT_NEAR(beta, edge, 1e-10);
+  EXPECT_NE(sol->multipliers.rho, 0.0);
+  EXPECT_EQ(sol->multipliers.rho > 0, b_free > 0);
+}
+// The quantities the gamma calibration bisects on the cost-free aim (no gross cap, so no gross
+// multiplier): its variance is nonincreasing in gamma (Markowitz), and its gross crosses a target
+// inside the bracket (near the caps at low gamma, shrunk at high gamma).
+TEST(SpoSolver, CostFreeAimVarianceFallsAndGrossCrossesWithGamma) {
+  auto p = random_problem(50, 29);
+  const usize n = p.n;
+  p.linear_cost.assign(n, 0.0); p.impact_cost.assign(n, 0.0);
+  p.long_rate.assign(n, 0.0); p.short_rate.assign(n, 0.0);
+  p.w0.assign(n, 0.0); p.lower.assign(n, -0.01); p.upper.assign(n, 0.01);
+  p.gross = inf; p.net = 0; p.beta_lo = -0.02; p.beta_hi = 0.02;
+  f64 previous = inf;
+  for (const f64 gamma : {1.0, 10.0, 100.0, 1000.0, 10000.0}) {
+    p.gamma = gamma;
+    const auto sol = sp::solve(p, std::vector<f64>(n, 0.0), options(20000, 1e-10));
+    ASSERT_TRUE(sol) << sol.error().to_string();
+    EXPECT_TRUE(sol->converged) << gamma;
+    EXPECT_FALSE(sol->multipliers.gross_binding) << gamma;
+    f64 gross = 0;
+    for (const f64 w : sol->w) gross += std::abs(w);
+    const f64 variance = sp::objective_terms(p, sol->w).variance;
+    EXPECT_GT(gross, 0.0) << gamma;
+    EXPECT_LE(variance, previous * (1.0 + 1e-6)) << gamma;
+    if (gamma == 1.0) EXPECT_GT(gross, 0.3) << "near the caps at low gamma";
+    if (gamma == 10000.0) EXPECT_LT(gross, 0.3) << "shrunk at high gamma";
+    previous = variance;
+  }
 }
 TEST(SpoSolver, WarmAndColdStartsAgreeAndRepeatBitForBit) {
   const auto p = random_problem(50, 17);
@@ -560,6 +606,36 @@ TEST(SpoHook, ReplayPlansNeutralBudgetedBooksAndRelabelsTheRule) {
   ASSERT_EQ(repeat->days.size(), result->days.size());
   for (usize t = 0; t < result->days.size(); ++t)
     EXPECT_EQ(bits(repeat->days[t].planned_gross), bits(result->days[t].planned_gross)) << t;
+}
+TEST(SpoHook, CalibrationMeetsTheBindingOfTheVolTargetAndTheGrossBudget) {
+  const Directory dir;
+  const Role role(30, 12, 71);
+  const std::vector<u8> forecast(role.d, u8{1});
+  const auto sha = write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", 9);
+  auto store = sp::RiskStore::open(dir.path.string(), sha, "role-sha");
+  ASSERT_TRUE(store) << store.error().to_string();
+  v7::NavV7Options o;
+  o.spo_v1 = true;
+  o.spo_params.w_max = 0.5; // 12 names at 0.5 reach gross 6 > L = 1.2: both targets reachable
+  o.spo_risk = std::make_shared<const sp::RiskStore>(std::move(*store));
+  const auto cfg = nav_config();
+  const v7::ScopedNavExtension extension(o);
+  const auto result = st::replay_nav(role.nav(), cfg);
+  ASSERT_TRUE(result) << result.error().to_string();
+  const auto& c = extension.spo_engine()->calibration();
+  ASSERT_TRUE(c.done);
+  EXPECT_FALSE(c.from_flag);
+  EXPECT_TRUE(c.vol_reached);
+  EXPECT_TRUE(c.bind_reached);
+  EXPECT_EQ(c.gamma, std::max(c.gamma_vol, c.gamma_bind));
+  const f64 gross_ratio = c.aim_gross / cfg.target.aim_leverage;
+  const f64 vol_ratio = c.aim_vol / o.spo_params.target_vol;
+  EXPECT_LE(vol_ratio, 1.0 + 1e-4); // gamma >= gamma_vol and the aim's vol falls with gamma
+  if (c.gamma_bind >= c.gamma_vol) {
+    EXPECT_NEAR(gross_ratio, 1.0, 1e-4); // the gross budget binds
+  } else {
+    EXPECT_NEAR(vol_ratio, 1.0, 1e-4); // the vol target binds
+  }
 }
 TEST(SpoHook, ReplayRefusesWhenTheRiskModelLacksADecisionDate) {
   const Directory dir;
