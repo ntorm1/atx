@@ -1,0 +1,2575 @@
+{
+  "schema": "atx.mega-report-config/v2",
+  "title": "Mega-alpha v7.1: strategy pitch",
+  "kicker": "atx mega-alpha \u00b7 library v7.1 \u00b7 in-sample TRAIN 2020-2022 \u00b7 2026-09-29 \u00b7 for a quantitative PM",
+  "root": "C:/atx-wt/pool-2",
+  "train_window": {
+    "label": "TRAIN 2020-2022"
+  },
+  "sessions_per_year": 252,
+  "dsr_n": 37,
+  "check_tolerance": 1e-09,
+  "cell_prefix": "mega-nav-",
+  "receipt_suffix": "-run/receipt.json",
+  "exe_tags": {
+    "212d9e22": "v6-0",
+    "f55537fc": "v6-2",
+    "fb2d3e94": "v5-1",
+    "59b4e944": "v5-2"
+  },
+  "inputs": {
+    "nav_summ_json": "build-equity/mega-nav-v71-summ-n37.json",
+    "extra_json": {
+      "n32": "build-equity/mega-nav-v7-summ-n32.json",
+      "n33": "build-equity/mega-nav-v7-summ-n33.json",
+      "n34": "build-equity/mega-nav-v70-summ-n34.json",
+      "n35": "build-equity/mega-nav-v70-lo3-summ-n35.json",
+      "n36": "build-equity/mega-nav-v70-lo3-spo-v2-summ-n36.json",
+      "risk11": "build-equity/v7-f3-risk/manifest.json"
+    }
+  },
+  "analysis": {
+    "u_pass": "build-equity/mega-v71-train-u-1",
+    "w_pass": "build-equity/mega-v71w-train-ew-1",
+    "role": "build-equity/recent-fast-train-2020-2022-v2-lo1",
+    "candidate_cache": "build-equity/mega-candidate-cache-v71",
+    "fields_manifest": "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v9/manifest.json",
+    "horizons": [
+      5,
+      21,
+      63
+    ],
+    "ic_corr_horizon": 5,
+    "theme_year_horizon": 21,
+    "tau_ic_horizon": 5,
+    "sig_corr_stride": 1,
+    "drawdowns": 5,
+    "compare_cell": "v5-ew-t.05-d.1-fixed-L1.279",
+    "e2e_reference": "v5-ew-t.05-d.1-fixed",
+    "capacity": [
+      {
+        "label": "V6-U pair (L 1 vs L 1.247)",
+        "cells": [
+          "v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+          "v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+        ]
+      },
+      {
+        "label": "v5 pair (L 1 vs L 1.279)",
+        "cells": [
+          "v5-ew-t.05-d.1-fixed",
+          "v5-ew-t.05-d.1-fixed-L1.279"
+        ]
+      }
+    ],
+    "theme_classes": {
+      "value": "fundamental",
+      "profitability_quality": "fundamental",
+      "investment_issuance": "fundamental",
+      "earnings_momentum": "fundamental",
+      "price_momentum": "price",
+      "low_risk": "price",
+      "reversal_seasonality": "price",
+      "short_interest": "positioning",
+      "options_implied": "positioning",
+      "ownership_flow": "positioning"
+    }
+  },
+  "scenarios": [
+    {
+      "key": "S2",
+      "id": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "label": "S2 modeled $1bn",
+      "short": "S2",
+      "token": "s2"
+    },
+    {
+      "key": "S1",
+      "id": "linear-6bps-stale5-v1+swap-fin-v1",
+      "label": "S1 linear 6 bps",
+      "short": "S1",
+      "token": "s1"
+    },
+    {
+      "key": "tiers",
+      "id": "modeled-1bn-stale5-v1+engine-tiers-v1",
+      "label": "S2 x engine-tiers",
+      "short": "engine-tiers",
+      "token": "tiers"
+    },
+    {
+      "key": "flat300",
+      "id": "modeled-1bn-stale5-v1+flat-300-v0",
+      "label": "S2 x flat-300",
+      "short": "flat-300",
+      "token": "flat"
+    },
+    {
+      "key": "S3",
+      "id": "modeled-1bn-terminal-adverse-v1+swap-fin-v1",
+      "label": "S3 terminal-adverse",
+      "short": "S3",
+      "token": "s3"
+    }
+  ],
+  "primary_scenario": "S2",
+  "final": "v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+  "reference": "v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+  "groups": [
+    {
+      "key": "v7-final",
+      "label": "v7.1 (pitched)",
+      "token": "g-final"
+    },
+    {
+      "key": "v7-accepted",
+      "label": "v7 accepted",
+      "token": "g-parent"
+    },
+    {
+      "key": "v7-rejected",
+      "label": "v7 rejected",
+      "token": "g-rejected",
+      "hollow": true
+    },
+    {
+      "key": "final",
+      "label": "v6.1 baseline",
+      "token": "g-v5-reference"
+    },
+    {
+      "key": "parent",
+      "label": "Parent",
+      "token": "g-parent"
+    },
+    {
+      "key": "grid",
+      "label": "Grid",
+      "token": "g-grid"
+    },
+    {
+      "key": "conditional",
+      "label": "Conditional",
+      "token": "g-conditional"
+    },
+    {
+      "key": "rejected",
+      "label": "Rejected",
+      "token": "g-rejected"
+    },
+    {
+      "key": "v5-reference",
+      "label": "v5 reference",
+      "token": "g-v5-reference"
+    },
+    {
+      "key": "v5-grid",
+      "label": "v5 grid",
+      "token": "g-v5-grid",
+      "hollow": true
+    }
+  ],
+  "cells": [
+    {
+      "dir": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "label": "v5 REF",
+      "group": "v5-reference",
+      "verdict": "nav_summ reference"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-ew-t.03-d.1-fixed",
+      "label": "v5 ew theta .03",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-ew-t.08-d.1-fixed",
+      "label": "v5 ew theta .08",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-ew-t.05-d0-fixed",
+      "label": "v5 ew dust 0",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-ew-t.05-d.1-per-name",
+      "label": "v5 ew per-name",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed-L1.279",
+      "label": "v5 deployable",
+      "group": "v5-reference",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 deployable book"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-aim-t.05-d.1-fixed",
+      "label": "v5 aim",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-aim-t.03-d.1-fixed",
+      "label": "v5 aim theta .03",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-aim-t.08-d.1-fixed",
+      "label": "v5 aim theta .08",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-aim-t.05-d0-fixed",
+      "label": "v5 aim dust 0",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-aim-t.05-d.1-per-name",
+      "label": "v5 aim per-name",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v5-aim-t.05-d.1-fixed-L1.279",
+      "label": "v5 aim L 1.279",
+      "group": "v5-grid",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "v5 grid"
+    },
+    {
+      "dir": "build-equity/mega-nav-v51-ew-t.05-d.1-fixed",
+      "label": "v5.1 ew",
+      "group": "v5-reference",
+      "parent": "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "verdict": "library v5.1"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "label": "V6-L parent",
+      "group": "parent",
+      "parent": "build-equity/mega-nav-v51-ew-t.05-d.1-fixed",
+      "lever": "library v6",
+      "verdict": "ACCEPTED"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-x.05",
+      "label": "C2 exit .05",
+      "group": "grid",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "exit .05, target orders",
+      "verdict": "accepted (sign)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-x.1",
+      "label": "C2 exit .1",
+      "group": "grid",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "exit .1, target orders",
+      "verdict": "accepted (sign)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta",
+      "label": "C1 delta",
+      "group": "grid",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "delta orders, exit 1",
+      "verdict": "accepted (sign)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05",
+      "label": "C1 delta, exit .05",
+      "group": "grid",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "delta + exit .05",
+      "verdict": "ACCEPTED (best grid cell)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.1",
+      "label": "C1 delta, exit .1",
+      "group": "grid",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "delta + exit .1",
+      "verdict": "accepted (sign)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "label": "C3 locate-in-aim",
+      "group": "conditional",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "locate-in-aim on delta x.05",
+      "verdict": "ACCEPTED"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.03-d.1-fixed-obdelta-x.05",
+      "label": "theta .03",
+      "group": "rejected",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "theta .03 on delta x.05",
+      "verdict": "REJECTED (sign)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.05-fixed-obdelta-x.05",
+      "label": "dust .05",
+      "group": "conditional",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "dust .05 on delta x.05",
+      "verdict": "not adopted"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.2-fixed-obdelta-x.05",
+      "label": "dust .2",
+      "group": "conditional",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "lever": "dust .2 on delta x.05",
+      "verdict": "sign +, not carried"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew6-t.05-d.1-fixed-obdelta-x.05-loc",
+      "label": "V6-W ew-theme-v6",
+      "group": "rejected",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "lever": "ew-theme-v6 composition",
+      "verdict": "REJECTED (sign)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc-nind-v1",
+      "label": "C5 ind-v1",
+      "group": "rejected",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "lever": "price-risk-ind-v1",
+      "verdict": "REJECTED (sign)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc-nind-v2",
+      "label": "C5 ind-v2",
+      "group": "rejected",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "lever": "price-risk-ind-v2",
+      "verdict": "REJECTED (sign)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "label": "V6-U (L 1)",
+      "group": "parent",
+      "parent": "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "lever": "linked-operating-v1 universe",
+      "verdict": "ACCEPTED"
+    },
+    {
+      "dir": "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "label": "V6-F (v6)",
+      "group": "parent",
+      "parent": "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "lever": "V6-U stack at L 1.247",
+      "verdict": "ACCEPTED; superseded by v6.1"
+    },
+    {
+      "dir": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "label": "V6.1 baseline",
+      "group": "final",
+      "parent": "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "sv_flow: FINRA long-horizon shorting flow",
+      "verdict": "baseline (reference): promoted in v6.1, superseded by v7.0",
+      "verdict_kind": "baseline"
+    },
+    {
+      "dir": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C1",
+      "label": "v7 C1",
+      "group": "v7-rejected",
+      "parent": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "aim-partial-v6 C1 (kappa .5, clip [.5, 1.5])",
+      "verdict": "REJECTED (dSR < 0)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C2",
+      "label": "v7 C2",
+      "group": "v7-rejected",
+      "parent": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "aim-partial-v6 C2 (kappa 1, clip [.5, 1.5])",
+      "verdict": "REJECTED (dSR < 0)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C3",
+      "label": "v7 C3",
+      "group": "v7-rejected",
+      "parent": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "aim-partial-v6 C3 (kappa 1, no regime rate)",
+      "verdict": "REJECTED (dSR < 0)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v61u-spo-v1-L1.247",
+      "label": "v7 spo-v1",
+      "group": "v7-rejected",
+      "parent": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "spo-v1 optimiser construction",
+      "verdict": "REJECTED as a defect (implementation defects, root-caused in spo-v2)",
+      "verdict_kind": "defect"
+    },
+    {
+      "dir": "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "label": "v7.0 (wave 1)",
+      "group": "v7-accepted",
+      "parent": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "library v7.0 = v6.1 + wave 1 (q5_eg, smax5 admitted)",
+      "verdict": "ACCEPTED (wave 1); superseded by v7.1"
+    },
+    {
+      "dir": "build-equity/mega-nav-v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "label": "U-lo3 (v7.0 on lo3)",
+      "group": "v7-accepted",
+      "parent": "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "role lo1 -> lo3 (linked-operating-v3)",
+      "verdict": "ACCEPTED (universe trial); its combination with v7.1 (V7-F) not run"
+    },
+    {
+      "dir": "build-equity/mega-nav-v70-lo3-spo-v2-G1.0",
+      "label": "spo-v2 (on v7.0-lo3)",
+      "group": "v7-rejected",
+      "parent": "build-equity/mega-nav-v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "spo-v2 optimiser, gross budget 1.0, risk atx-risk-v1.1",
+      "verdict": "REJECTED (research result: dSR < 0 and higher cost per traded $)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "label": "V7.1 final",
+      "group": "v7-final",
+      "parent": "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "library v7.1 = v7.0 + wave 2 (tenth theme ownership_flow)",
+      "verdict": "ACCEPTED (wave 2); the pitched book"
+    }
+  ],
+  "kpis": [
+    {
+      "label": "Net Sharpe",
+      "metrics": [
+        "summ.net_sharpe"
+      ],
+      "fmt": "+.3f",
+      "sub": "S2 modeled $1bn"
+    },
+    {
+      "label": "Gross Sharpe",
+      "metrics": [
+        "summ.gross_sharpe"
+      ],
+      "fmt": ".3f",
+      "sub": "before costs and financing"
+    },
+    {
+      "label": "HAC t",
+      "metrics": [
+        "summ.hac_t"
+      ],
+      "fmt": ".2f",
+      "sub": "net, Bartlett"
+    },
+    {
+      "label": "Gross lev, all rows",
+      "metrics": [
+        "summ.mean_gross_leverage_all_rows"
+      ],
+      "fmt": ".3f",
+      "sub": "post-ramp {summ.mean_gross_leverage_post_ramp|.3f}"
+    },
+    {
+      "label": "|Net lev|, all rows",
+      "metrics": [
+        "summ.mean_net_leverage_all_rows"
+      ],
+      "fmt": "abs:.4f",
+      "sub": "mean net {summ.mean_net_leverage_all_rows|+.4f}"
+    },
+    {
+      "label": "Tau mean / p95",
+      "metrics": [
+        "summ.tau_gmv_mean",
+        "summ.tau_gmv_p95"
+      ],
+      "fmt": ".4f",
+      "sub": "{summ.tau_gmv_sessions|d} sessions"
+    },
+    {
+      "label": "Cost bps/$",
+      "metrics": [
+        "summ.cost_bps_traded"
+      ],
+      "fmt": ".2f",
+      "sub": "per traded dollar"
+    },
+    {
+      "label": "Max drawdown",
+      "metrics": [
+        "scen.max_drawdown"
+      ],
+      "fmt": "pct1",
+      "sub": "net NAV"
+    },
+    {
+      "label": "DSR cell-count / eff-N / Lo",
+      "metrics": [
+        "summ.deflated.dsr",
+        "summ.deflated_effective_n.dsr",
+        "lo.dsr"
+      ],
+      "fmt": ".3f",
+      "sub": "N {summ.deflated.n|d}; N_eff {summ.deflated_effective_n.n_eff|d}; the gate reads the cell-count figure only"
+    }
+  ],
+  "gate_title": "Pre-registered freeze conditions (v7), pitched cell: library v7.1 on role lo1",
+  "gates": [
+    {
+      "name": "Gross leverage, mean over all rows",
+      "checks": [
+        {
+          "metric": "summ.mean_gross_leverage_all_rows",
+          "op": "between",
+          "lo": 0.9,
+          "hi": 1.05
+        }
+      ],
+      "fmt": ".4f",
+      "threshold_fmt": ".2f",
+      "mechanics": true
+    },
+    {
+      "name": "Net leverage, mean over all rows",
+      "checks": [
+        {
+          "metric": "summ.mean_net_leverage_all_rows",
+          "op": "abs_le",
+          "value": 0.02
+        }
+      ],
+      "fmt": "+.4f",
+      "threshold_fmt": ".2f",
+      "mechanics": true
+    },
+    {
+      "name": "Daily turnover tau, mean / p95",
+      "checks": [
+        {
+          "metric": "summ.tau_gmv_mean",
+          "op": "le",
+          "value": 0.2
+        },
+        {
+          "metric": "summ.tau_gmv_p95",
+          "op": "le",
+          "value": 0.3
+        }
+      ],
+      "fmt": ".4f",
+      "threshold_fmt": ".2f",
+      "mechanics": true
+    },
+    {
+      "name": "Net Sharpe, S2",
+      "checks": [
+        {
+          "metric": "summ.net_sharpe",
+          "op": "ge",
+          "value": 1.0
+        }
+      ],
+      "fmt": "+.3f",
+      "threshold_fmt": ".2f"
+    },
+    {
+      "name": "Deflated Sharpe, cross-cell, N {summ.deflated.n|d}",
+      "checks": [
+        {
+          "metric": "summ.deflated.dsr",
+          "op": "ge",
+          "value": 0.95
+        }
+      ],
+      "fmt": ".3f",
+      "threshold_fmt": ".2f"
+    }
+  ],
+  "writeoff_kind": "write-off",
+  "equity": {
+    "scenarios": [
+      "S2",
+      "S1",
+      "tiers",
+      "flat300",
+      "S3"
+    ],
+    "extra": [
+      {
+        "cell": "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "V6.1 baseline",
+        "short": "v6.1",
+        "scenario": "S2",
+        "color": "s2",
+        "dash": "5 4",
+        "width": 1.4
+      },
+      {
+        "cell": "v5-ew-t.05-d.1-fixed-L1.279",
+        "label": "v5 deployable",
+        "short": "v5 deployable",
+        "scenario": "S2",
+        "color": "ref",
+        "width": 1.8
+      }
+    ]
+  },
+  "rolling": {
+    "window": 63,
+    "scenario": "S2",
+    "cells": [
+      {
+        "cell": "v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "V7.1 final",
+        "short": "V7.1",
+        "color": "s2",
+        "width": 2.2,
+        "emph": true
+      },
+      {
+        "cell": "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "V6.1 baseline",
+        "short": "V6.1",
+        "color": "s1",
+        "width": 1.4
+      },
+      {
+        "cell": "v5-ew-t.05-d.1-fixed-L1.279",
+        "label": "v5 deployable",
+        "short": "v5 deployable",
+        "color": "ref",
+        "width": 1.8
+      }
+    ]
+  },
+  "ladder": {
+    "cells": [
+      {
+        "cell": "v5-ew-t.05-d.1-fixed",
+        "label": "v5 REF"
+      },
+      {
+        "cell": "v51-ew-t.05-d.1-fixed",
+        "label": "v5.1 library"
+      },
+      {
+        "cell": "v6l-ew-t.05-d.1-fixed",
+        "label": "library v6"
+      },
+      {
+        "cell": "v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+        "label": "delta, exit .05,\nlocate-in-aim"
+      },
+      {
+        "cell": "v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+        "label": "linked-operating\nuniverse"
+      },
+      {
+        "cell": "v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "L 1.247"
+      },
+      {
+        "cell": "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "sv_flow"
+      },
+      {
+        "cell": "v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "wave 1\n(v7.0)"
+      },
+      {
+        "cell": "v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "wave 2\n(v7.1)",
+        "end_label": "V7.1 final"
+      }
+    ]
+  },
+  "scatter": {
+    "labels": [
+      "v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "v5-ew-t.05-d.1-fixed",
+      "v5-ew-t.05-d.1-fixed-L1.279"
+    ]
+  },
+  "turnover": {
+    "groups": [
+      "v7-final",
+      "v7-accepted",
+      "v7-rejected",
+      "final",
+      "parent",
+      "grid",
+      "conditional",
+      "rejected"
+    ]
+  },
+  "alphas": {
+    "library": "atx-impl/strategies/fund_industry_ic_v71.json",
+    "recipe": "atx-impl/strategies/fund_industry_ic_v71.recipe.json",
+    "changes_key": "v6_changes",
+    "change_labels": {
+      "smoothing": {
+        "default": "R(decay(x))",
+        "contains": {
+          "fast sleeve": "decay removed (fast sleeve)"
+        }
+      }
+    },
+    "roles": [
+      {
+        "key": "lo1",
+        "label": "lo1 (v7.1)",
+        "primary": true,
+        "admission": "build-equity/mega-weights-v71-ew/admission.json",
+        "weights": "build-equity/mega-weights-v71-ew/composition_weights.json"
+      },
+      {
+        "key": "lo3",
+        "label": "lo3 (v7.0)",
+        "admission": "build-equity/mega-weights-v70-lo3-ew/admission.json",
+        "weights": "build-equity/mega-weights-v70-lo3-ew/composition_weights.json"
+      }
+    ]
+  },
+  "trial_accounting": {
+    "title": "Appendix A, trial accounting (TRAIN only, through v7.1)",
+    "rows": [
+      {
+        "family": "v3 era: admission",
+        "count": 169,
+        "detail": "48 + 121",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "  v3 era: admission 48 + 121"
+        }
+      },
+      {
+        "family": "v3 era: composition",
+        "count": 11,
+        "detail": "4 + 7",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "  v3 era: admission 48 + 121"
+        }
+      },
+      {
+        "family": "v3 era: construction",
+        "count": 14,
+        "detail": "construction 14",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "  v3 era: admission 48 + 121"
+        }
+      },
+      {
+        "family": "run #1 to v5: library admission",
+        "count": 115,
+        "detail": "v4 37, v4.2 40, v5.1 38",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "  since run #1: libraries v4 (37)",
+          "lines": 2
+        }
+      },
+      {
+        "family": "run #1 to v5: compositions",
+        "count": 5,
+        "detail": "v4, v4.2, ew-theme-aim-v1, v5.1 x2",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "  since run #1: libraries v4 (37)",
+          "lines": 2
+        }
+      },
+      {
+        "family": "run #1 to v5: construction",
+        "count": 21,
+        "detail": "v4 1 + v4.1 grid 5 + v4.2 2 + v5 grid 10 + 2 L re-run + 1 v5.1",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "  construction v4 1 + v4.1 grid 5"
+        }
+      },
+      {
+        "family": "v6: admission",
+        "count": 76,
+        "detail": "38 on role v2 + 38 on the restricted role",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "Appendix A (TRAIN 2020-2022 only; no 2023+ read",
+          "lines": 2
+        }
+      },
+      {
+        "family": "v6: compositions",
+        "count": 3,
+        "detail": "ew-theme-v1 x2, ew-theme-v6",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "role v2, then on the restricted role; res_mom_12_1 re-trial of v4.2); compositions 3"
+        }
+      },
+      {
+        "family": "v6: universe",
+        "count": 1,
+        "detail": "linked-operating-v1",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "1; construction cells 15 (parent, 5 grid"
+        }
+      },
+      {
+        "family": "v6 + v6.1: construction cells",
+        "count": 16,
+        "detail": "15 v6 + 1 v6.1",
+        "computed": "groups:final,parent,grid,conditional,rejected",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "1; construction cells 15 (parent, 5 grid"
+        }
+      },
+      {
+        "family": "v6.1: admission / composition",
+        "count": 2,
+        "detail": "sv_flow admission +1; ew-theme-v1 on library v6.1 +1",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "Appendix A: admission +1 (sv_flow)"
+        }
+      },
+      {
+        "family": "Cumulative DSR N (NAV cells)",
+        "count": 37,
+        "detail": "29 v6 era + 8 v7 (C1-C3, spo-v1, v7.0, U-lo3, spo-v2, v7.1)",
+        "computed": "final:summ.deflated.n",
+        "source": {
+          "path": ".superpowers/sdd/platform-20260928/progress.md",
+          "match": "- Integrity (N 37): cell-count DSR"
+        }
+      },
+      {
+        "family": "NAV cells in the nav_summ run",
+        "count": 37,
+        "detail": "rows of the nav_summ --json file",
+        "computed": "nav_summ_rows",
+        "source": {
+          "path": ".superpowers/sdd/platform-20260928/progress.md",
+          "match": "- Integrity (N 37): cell-count DSR"
+        }
+      },
+      {
+        "family": "Not trials: identity checks",
+        "count": 3,
+        "detail": "D2 identity cell, I1 identity cell, m1 IC re-run",
+        "source": {
+          "path": "docs/plans/2026-09-28-mega-alpha-scorecard-v6.md",
+          "match": "  Not trials: D2 identity cell",
+          "lines": 2
+        }
+      },
+      {
+        "family": "v7: construction cells",
+        "count": 8,
+        "detail": "C1-C3, spo-v1, spo-v2 rejected; v7.0, U-lo3, v7.1 accepted",
+        "computed": "groups:v7-final,v7-accepted,v7-rejected",
+        "source": {
+          "path": ".superpowers/sdd/platform-20260928/progress.md",
+          "match": "- Appendix A: TRAIN construction cells 37 (29 v6 era;",
+          "lines": 2
+        }
+      },
+      {
+        "family": "v7: admission (waves 1 and 2)",
+        "count": 9,
+        "detail": "wave 1: 5 (v7.0), wave 2: 4 (v7.1)",
+        "source": {
+          "path": ".superpowers/sdd/platform-20260928/progress.md",
+          "match": "  ledger 37 lines. Admission trials this sprint 9",
+          "lines": 2
+        }
+      },
+      {
+        "family": "Trial ledger lines (build-equity/trials.jsonl)",
+        "count": 37,
+        "detail": "one line per scored TRAIN construction cell",
+        "source": {
+          "path": ".superpowers/sdd/platform-20260928/progress.md",
+          "match": "  ledger 37 lines. Admission trials this sprint 9"
+        }
+      },
+      {
+        "family": "Validation trials spent",
+        "count": 2,
+        "detail": "#1 (v3), #2 (v4.1); #3 unspent",
+        "source": {
+          "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
+          "match": "validation trials spent: #1 (v3), #2 (v4.1)"
+        }
+      }
+    ]
+  },
+  "narrative": {
+    "summary": {
+      "paragraphs": [
+        "**Thesis.** A dollar- and price-risk-neutral US equity long/short book. It blends {a:adm.n_admitted|d} literature-signed anomaly signals from {a:adm.n_themes|d} themes with equal theme weights, trades a fraction of the way toward its aim every session, and is costed at $1bn with square-root impact and tiered borrow. The pitched cell is library v7.1 on role lo1: on TRAIN 2020-2022 it earns S2 net Sharpe {summ.net_sharpe|+.3f} (gross {summ.gross_sharpe|.3f}, HAC t {summ.hac_t|.2f}) at all-rows gross leverage {summ.mean_gross_leverage_all_rows|.3f}, daily turnover {summ.tau_gmv_mean|.4f} of GMV, {summ.cost_bps_traded|.2f} bps per traded dollar and a maximum drawdown of {scen.max_drawdown|pct1}.",
+        "**How v7 got here.** From the v6.1 baseline ({@v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247:summ.net_sharpe|+.3f}) the v7 sprint scored eight TRAIN cells. Three construction variants (C1-C3) and the spo-v1 optimiser were rejected, spo-v1 as an implementation defect. Library v7.0 (wave 1) was accepted at {@v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247:summ.net_sharpe|+.3f}; role lo3 (U-lo3) on v7.0 was accepted at {@v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247:summ.net_sharpe|+.3f}; the corrected optimiser spo-v2 on that book was rejected as a research result at {@v70-lo3-spo-v2-G1.0:summ.net_sharpe|+.3f}; library v7.1 (wave 2) on lo1 was accepted at {summ.net_sharpe|+.3f}. aim-partial-v5 stays the construction.",
+        "**What it is not yet.** Five facts, each with its number, come before any ask.",
+        {
+          "list": [
+            "**Freeze gate UNMET.** Cell-count DSR {summ.deflated.dsr|.4f} is below .95 at N {summ.deflated.n|d} (SR0 {summ.deflated.sr0_annual|.3f} annualised). The effective-N DSR, {summ.deflated_effective_n.dsr|.4f} with {summ.deflated_effective_n.n_eff|d} ONC clusters, is shown beside it and never substituted.",
+            "**Each accepted step is a sign result at or inside about one SE.** Wave 1 (v7.0 vs v6.1) dSR {j:n34.33.paired.dsr|+.3f} (Memmel SE {j:n34.33.paired.memmel_se|.3f}); U-lo3 (lo3 vs lo1 on v7.0) {j:n35.34.paired.dsr|+.3f} (SE {j:n35.34.paired.memmel_se|.3f}); wave 2 (v7.1 vs v7.0) {summ.paired.dsr|+.3f} (SE {summ.paired.memmel_se|.3f}, t {summ.paired.t|.2f}; CBB 95% [{summ.paired.cbb_ci95|+.3f}]).",
+            "**Wave 2 reads as diversification, not as four new signals.** Standalone TRAIN HAC t: ins_opp {a:adm.row.ins_opp.hac_t|+.2f}, inst_best_ideas {a:adm.row.inst_best_ideas.hac_t|+.2f}, ftd_fail {a:adm.row.ftd_fail.hac_t|+.2f}, ea_overdue {a:adm.row.ea_overdue.hac_t|+.2f}; none above 1 in absolute value. ins_opp's TRAIN IC sign ({a:adm.row.ins_opp.runner_sign|+.0f}) is against its prior ({a:adm.row.ins_opp.prior_sign|+.0f}); the rule orients by the prior and vetoes only below t -2, so it is admitted with the prior sign and currently subtracts. The gain is best read as diversification from a tenth theme (ownership_flow; {a:adm.n_themes|d} themes at 1/{a:adm.n_themes|d} each) diluting the other nine.",
+            "**Correction.** The earlier handoff quoted the v6.1 baseline at \"N 33\"; its figure was the N {j:n32.28.deflated.n|d} value ({j:n32.28.deflated.dsr|.4f}). With the defective spo-v1 cell inside the cross-cell variance the baseline scores {j:n33.28.deflated.dsr|.4f} at N {j:n33.28.deflated.n|d} (ruling 7.0-e: the variance stays \"all ledgered cells\"; whether defect cells belong in it is an owner question).",
+            "**TRAIN only.** {a:misc.years|.2f} years, 2020-2022. The 2023-2024 window was read twice at book level (validation trials #1, v3, and #2, v4.1) and never in v6, v6.1 or v7; a third read (#3) needs the owner (U1). 2025 onward is reserved."
+          ]
+        },
+        "**V7-F is pre-registered, both of its conditions are met, and it has NOT been run.** V7-F is library v7.1 on role lo3: it was declared to run only if both v7.1 (wave 2, on lo1) and U-lo3 (lo3, on v7.0) were accepted, and both were. The owner asked to stop at the next logical point, and V7-F needs the fields-v9 stage on lo3, whose cycle plumbing was stopped at design. Their combination is untested; it would be cell N 38.",
+        "**The ask.** Owner decision U1: spend the one remaining validation trial (#3, 2023-2024, book level only) on a single frozen cell, with the read-out rule declared before the read (section 9), or first decide whether V7-F is run. Two validation years give SE(SR) of about {a:misc.val_se_2y|.2f}, so validation can falsify the book (net at or below 0) but cannot confirm a Sharpe of 1."
+      ],
+      "check": [
+        "The KPI strip and the gate panel read one nav_summ row (N {summ.deflated.n|d}); the appendix recomputes net SR, tau, drawdown and yearly returns from the daily CSV.",
+        "Gross-to-net gap: {summ.gross_sharpe|.3f} gross vs {summ.net_sharpe|+.3f} net at {summ.cost_bps_traded|.2f} bps per traded dollar (section 6).",
+        "Year split: 2020 {scen.calendar_year_returns.0.net_compounded_return|+pct1}, 2021 {scen.calendar_year_returns.1.net_compounded_return|+pct1}, 2022 {scen.calendar_year_returns.2.net_compounded_return|+pct1}.",
+        "The caveats box is part of the pitch, not a disclaimer: each item has a number behind it later in the report."
+      ]
+    },
+    "glossary": {
+      "paragraphs": [
+        "Every symbol and abbreviation used in this report is defined below, grouped by topic. Scenario keys (S1, S2, S3) name cost scenarios, not Sharpe ratios. \"Net\" always means after trading costs and financing; \"all rows\" means a mean over every CSV row including the deployment ramp, which is the basis of the mechanics gate.",
+        "A NAV cell's directory name encodes its full construction. The cell-name table below decodes the final cell's name and cross-checks each token against its recipe."
+      ],
+      "check": [
+        "Gross leverage is quoted two ways: all rows {summ.mean_gross_leverage_all_rows|.3f} (gate basis) and post-ramp {summ.mean_gross_leverage_post_ramp|.3f} (the L calibration basis).",
+        "DSR is quoted three ways: cell-count {summ.deflated.dsr|.3f} (the gate), effective-N {summ.deflated_effective_n.dsr|.3f} and Lo {lo.dsr|.3f}; they differ only in the null benchmark SR0 and only the first gates."
+      ]
+    },
+    "data": {
+      "paragraphs": [
+        "**Universe.** The research role starts from the top 3000 US listings each session by 63-session dollar ADV (price above $5, ADV above $5M, one-session lag); the base median is {a:univ.base_median|int} members. The linked-operating-v1 restriction then keeps names with exactly one point-in-time issuer link on the primary line, a common share class, and a visible SIC code under 550 days old that is not a pooled vehicle, blank check or royalty trust. It drops {a:univ.dropped_share|pct1} of base member-sessions in the TRAIN window, almost all as unlinked ({a:univ.reason_share.unlinked|pct1}); the kept universe holds {a:univ.kept_min|int} to {a:univ.kept_max|int} names (median {a:univ.kept_median|int}).",
+        "**Fields.** {a:fields.n_fields|d} research fields, {a:fields.n_pit|d} flagged point in time. Every finite cell is known by 22:00 UTC on its session date, before the 23:00 UTC decision. Fundamentals (SEC financial statement data) become usable from the first session after the filing's acceptance time plus {a:fields.fund_lag|d} declared lag session; nothing available on or after 2025-01-01 is read. The lowest TRAIN coverage of any field is {a:fields.min_score_cov|pct1}.",
+        "**Why the restriction matters.** Before it, about 39% of member cells were ETFs, SPACs and unlinked ADRs that the fundamental signals cannot score, so they were ranked on price signals alone (v6-code-review-signal.md). The restriction was the largest single step of v6 (section 5) and it is also the step with the weakest data foundation (below).",
+        "**Role lo3.** The universe trial U-lo3 replaced lo1 by linked-operating-v3 (the SIC table of the atx-db fundamentals stage) on library v7.0 and was accepted ({@v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247:summ.net_sharpe|+.3f} vs {@v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247:summ.net_sharpe|+.3f}). The pitched v7.1 cell is on lo1 with fields-v9; v7.1 on lo3 (V7-F) has not been run."
+      ],
+      "check": [
+        "Coverage by year (field table): a field that is thin in 2020 cannot carry 2020 alpha.",
+        "The identity bridge is a rehearsal (scope_complete {a:univ.scope_complete}); {a:fields.bridge.linked_ciks|int} linked CIKs. Unbridged operating stocks drop out.",
+        "Vintage: historical_vintage_verified is {a:fields.historical_vintage_verified}; common_stock_verified is {a:fields.common_stock_verified}. Vendor and FINRA files were downloaded long after their dates.",
+        "FINRA short-volume files read: {a:fields.finra_sv_files|int} (sv_ratio126, lag 1 session)."
+      ]
+    },
+    "alphas": {
+      "paragraphs": [
+        "**Design.** Library v7.1 holds {a:adm.n|d} candidates in {a:adm.n_themes|d} themes. Each is one canonical variant of a published anomaly, written in a small expression DSL with the literature sign embedded (higher value = long), so no sign is ever estimated from TRAIN. Firm-level accounting ratios are ranked within FF12 industry. Slow signals are smoothed with a 21-session linear decay of the raw value before the rank; the v5.1 fast sleeves (si_change, ind_adj_rev_5, seasonality_same_month, iv_rv_spread) and sv_flow are not smoothed; the v7 members keep their registered forms (DSL table).",
+        "**What three years can say about them.** The median admitted candidate has HAC t {a:adm.median_t|.2f}; {a:adm.n_t_gt_2|d} exceed 2 and {a:adm.n_t_gt_1|d} exceed 1, while {a:adm.n_neg_t_admitted|d} admitted members have a negative t ({a:adm.neg_t_admitted}). This is what an un-mined library looks like on 750 days: individually insignificant signals whose blend has a mean daily rank IC of {a:combined.w5.mean|+.4f} at h 5 (Newey-West SE {a:combined.w5.se|.4f}), positive on {a:combined.w5.pos_share|pct0} of days.",
+        "**What changed.** v5.1 to v6 replaced weak or mis-specified members with their stronger published forms and moved smoothing in front of the rank; v6.1 added sv_flow. v7.0 (wave 1) added five candidates: q5_eg (HAC t {a:adm.row.q5_eg.hac_t|+.2f}) and smax5 ({a:adm.row.smax5.hac_t|+.2f}) were admitted, qmj_safety was vetoed (t {a:adm.row.qmj_safety.hac_t|+.2f}), nincr was redundant with {a:adm.row.nincr.redundant_with} (|rho| {a:adm.row.nincr.redundant_rho|.2f}) and res_mom_ind with {a:adm.row.res_mom_ind.redundant_with} ({a:adm.row.res_mom_ind.redundant_rho|.2f}). v7.1 (wave 2) added four, all admitted: ins_opp, inst_best_ideas, ftd_fail and ea_overdue, and with them the tenth theme ownership_flow. The library-changes table lists the v6 and v6.1 changes with their cited reasons; the v7 members are in the DSL table and on their report cards."
+      ],
+      "check": [
+        "Decay figure: the combined IC rises with horizon, {a:combined.w5.mean|+.3f} / {a:combined.w21.mean|+.3f} / {a:combined.w63.mean|+.3f} at h 5 / 21 / 63, so the information is slow. The book's theta .05 has a half-life of about {a:misc.half_life|.0f} sessions.",
+        "Fast sleeves (standalone tau at or above .08): {a:adm.fast}. They carry {a:adm.fast_weight|pct1} of the composition weight and most of the standalone turnover (turnover vs |IC| figure).",
+        "Theme-by-year heatmap: which themes paid in 2020, the weakest year of the book.",
+        "The DSL table is verbatim; the words column is a paraphrase written for this report.",
+        "Seven candidates (ep, ebit_ev, rd_me, gpa, opbe, fscore, opex_at) are marked insufficient-evidence by the IC runner (IC inference undefined in train_candidates.jsonl); their IC cells read n/a."
+      ]
+    },
+    "admission": {
+      "paragraphs": [
+        "**Admission v4-prior-v1 estimates neither signs nor weights.** A candidate is rejected only if it has fewer than {a:adm.rules.min_train_days|d} TRAIN days, standalone turnover above {a:adm.rules.tau_limit|.2f}, a HAC t below {a:adm.rules.veto_t|+.1f} (a clear contradiction of its prior), or a factor-return |rho| above {a:adm.rules.rho_limit|.2f} with a member admitted before it in (tier, roster) order, never in TRAIN-Sharpe order. On lo1: {a:adm.n_admitted|d} admitted, {a:adm.n_redundant|d} redundant, {a:adm.n_veto|d} vetoed ({a:adm.veto}).",
+        "**Composition ew-theme-v1** gives every theme with an admitted member the same weight, split equally among its members. The reason is statistical: with about 750 days, estimated means are noise, and sample mean-variance needs thousands of months to beat 1/N (DeMiguel, Garlappi and Uppal 2009). The project learned this directly: v3 used TRAIN-estimated signs and mean-variance weights and went from TRAIN SR 1.81 to validation -1.27 (v6-literature.md, lever X). The one challenger, ew-theme-v6 (drop low_risk, merge options into short_interest, shrink fast sleeves), had paired dSR {@v6l-ew6-t.05-d.1-fixed-obdelta-x.05-loc:parent.dsr|+.3f} (SE {@v6l-ew6-t.05-d.1-fixed-obdelta-x.05-loc:parent.se|.3f}) against its parent: the wrong sign, so it was rejected.",
+        "**Diversification.** Admitted signals are weakly correlated: mean off-diagonal cross-sectional correlation {a:sig_corr.admitted.mean|+.3f}, within themes {a:theme_corr.sig_corr.within|+.2f}, between themes {a:theme_corr.sig_corr.between|+.2f}. Daily IC series co-move more ({a:ic_corr.admitted.mean|+.3f} off-diagonal), because a factor-rotation day moves many signals at once."
+      ],
+      "check": [
+        "Largest signal pair among all candidates: {a:sig_corr.max_pair} at {a:sig_corr.max|+.2f}; among admitted members: {a:sig_corr.admitted.max_pair} at {a:sig_corr.admitted.max|+.2f}.",
+        "Redundancy is measured on factor returns, not on signals, so two members with correlated signals can both be admitted.",
+        "Largest member weight {a:adm.max_w|.4f}: a single-member theme gets the full theme weight.",
+        "Negative-t admitted members stay in: dropping them on TRAIN t is exactly the selection the protocol forbids."
+      ]
+    },
+    "construction": {
+      "paragraphs": [
+        "Construction turns the blended rank signal into dollar positions with one rule, aim-partial-v5, run every session. Levers were added one at a time, each paired against its declared parent and accepted on the sign of dSR only (steps table). v7 tried to replace the rule and failed: the aim-partial-v6 variants C1-C3 lost to v6.1, spo-v1 was a defect, and spo-v2 (S2 net {@v70-lo3-spo-v2-G1.0:summ.net_sharpe|+.3f}, dSR {j:n36.35.paired.dsr|+.3f} vs its parent) lost a large part of the gross Sharpe and paid more per traded dollar ({@v70-lo3-spo-v2-G1.0:summ.cost_bps_traded|.2f} vs {@v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247:summ.cost_bps_traded|.2f} bps). The ladder shows the cumulative path from the v5 reference to the pitched cell.",
+        "The book is balanced: mean long {a:expo.long_mean|.3f} and short {a:expo.short_mean|.3f} of NAV, max |net| {a:expo.net_max_abs|.4f}, about {a:expo.held_mean|int} names held. Execution frictions are small: capped fills are {a:fills.capped_share|pct2} of fills, unfilled dollars average {a:fills.unfilled_bps.mean|.1f} bps of NAV per session, and forced nonmember exits are {a:fills.forced_share.mean|pct1} of planned turnover."
+      ],
+      "check": [
+        "Mechanics gate: all-rows gross {summ.mean_gross_leverage_all_rows|.3f} (post-ramp {summ.mean_gross_leverage_post_ramp|.3f}), mean net {summ.mean_net_leverage_all_rows|+.4f}, tau {summ.tau_gmv_mean|.4f} / p95 {summ.tau_gmv_p95|.4f}.",
+        "L {scen.construction.v5.aim_leverage|g} = 1 / post-ramp gross of the L 1 parent, rounded and declared single-shot before the read; v6.1 and v7 kept it fixed.",
+        "Held share {summ.held_share|.3f} is above 1: exited nonmembers linger about 60 sessions under exit rate .05 (disclosure D9), and the member-only neutraliser does not hedge them.",
+        "Rejected steps (sign against the prior) and the defect cell stay in the table and in DSR N."
+      ]
+    },
+    "costs": {
+      "paragraphs": [
+        "**S2, the primary scenario, is a declared, unfitted $1bn cost model.** Every traded dollar pays half-spread {recsc:S2.half_spread_bps|g} bps plus commission {recsc:S2.commission_bps|g} bps, plus square-root impact Y x sigma63 x (|q| / ADV63)^{recsc:S2.impact_delta|g} with Y {recsc:S2.impact_y|g}; fills are capped at {recsc:S2.max_participation|pct0} of 63-day ADV. Financing is a swap (ACT/360): long {recsc:S2.financing.long_spread_bps|g} bps, short {recsc:S2.financing.short_spread_bps|g} bps plus a tier fee of {recsc:S2.financing.tier_fee_bps.gc|g} (GC), {recsc:S2.financing.tier_fee_bps.warm|g} (warm) or {recsc:S2.financing.tier_fee_bps.special|g} bps (special). S1 swaps the trading cost for a flat {recsc:S1.flat_bps|g} bps; S3 writes off names after {recsc:S3.stale_exit_sessions|d} absent session at an adverse haircut.",
+        "**Where the money goes** (TRAIN, S2, sums of daily returns): gross {a:costdec.tot.S2.gross_ex_wo|+pct1} of NAV, trading costs {a:costdec.tot.S2.trade|pct1}, financing {a:costdec.fin_share|pct0} of the total drag, net {a:costdec.tot.S2.net|+pct1}. Impact ({a:costdec.tot.S2.imp_bps|.2f} bps per traded $) is {a:costdec.share.impact|pct0} of the drag, the largest component and the one that grows with size.",
+        "**Capacity is measured at one point.** Raising L from 1 to 1.247 (+{a:cap.p.V6-U.d_scale_pct|pct0} gross) raised cost per traded $ by {a:cap.p.V6-U.d_cost|.2f} bps, all of it impact; the square-root law predicts {a:cap.p.V6-U.points.1.imp_pred|.2f} bps of impact vs {a:cap.p.V6-U.points.1.imp_bps|.2f} observed. Two points per pair give a local slope; the capacity curve at the end of this section replays the whole book from ${a:capcurve.rows.0.nav_bn|g}bn to ${a:capcurve.max.nav_bn|g}bn."
+      ],
+      "check": [
+        "Stresses: S1 {scen:S1.net_sharpe|+.3f}, engine-tiers {scen:tiers.net_sharpe|+.3f}, flat-300 {scen:flat300.net_sharpe|+.3f}, S3 {scen:S3.net_sharpe|+.3f} (S3 write-offs {a:costdec.tot.S3.writeoff|+pct1} of NAV).",
+        "Borrow mix: GC carries {scen.financing.short_dollar_share_by_tier.mean.gc|pct0} of short dollars, warm {scen.financing.short_dollar_share_by_tier.mean.warm|pct0}, special {scen.financing.short_dollar_share_by_tier.mean.special|pct2}.",
+        "Cost per traded $ by year (decomposition table): a jump would signal a liquidity regime the model does not capture.",
+        "The spread is a constant 5 bps for every name; small, cheap names are under-charged and large names over-charged."
+      ]
+    },
+    "protocol": {
+      "paragraphs": [
+        "**Pre-registration.** Every lever set is declared in v4-prereg.md (v7: v7-prereg.md) before any TRAIN read of it, and every result goes into the ledger with a cumulative trial count (Appendix A). A step is accepted if the sign of its paired dSR(net) against its parent matches the declared prior; the size is not a criterion, because over {a:misc.years|.2f} years SE(SR) is about {a:misc.sr_se|.2f} (Lo 2002) and no single lever could clear it.",
+        "**Paired statistics.** dSR is the difference of annualised net Sharpe ratios on common sessions. Its Memmel (2003) SE uses the correlation of the two return series (rho {summ.paired.rho|.3f} for the v7.1 step, {a:e2e.rho|.3f} end to end vs v5 REF), which is why the paired SE of a one-lever step is an order of magnitude below an unpaired one. A circular block bootstrap (CBB, block 21, 2000 draws) and the Ledoit-Wolf studentized bootstrap give an interval and a p-value. The deflated Sharpe ratio (Bailey and Lopez de Prado 2014) is computed against two nulls: cross-cell (SR0 from the variance of the N cells' per-session Sharpe ratios) and Lo (variance (1 + SR^2/2) / T of a single cell).",
+        "**Why validation #3 is unspent.** The freeze gate needs a cell-count DSR of at least .95 and the pitched cell has {summ.deflated.dsr|.4f} at N {summ.deflated.n|d}. Every further TRAIN cell raises N, so the pre-registered condition binds; the effective-N figure ({summ.deflated_effective_n.dsr|.4f}) does not replace it. Whether to spend validation #3 anyway, with the shortfall disclosed, is the owner's call (U1)."
+      ],
+      "check": [
+        "N = {summ.deflated.n|d} counts NAV cells only: the admission trials (76 in v6, 9 in v7) and the library-design choices are not in N, so the DSR is optimistic on the signal side.",
+        "Skew {summ.deflated.skew|+.2f} and kurtosis {summ.deflated.kurtosis|.1f} of daily net returns enter the DSR; fat tails lower it.",
+        "TRAIN holds only about {a:misc.nonoverlap63|.0f} non-overlapping 63-session windows.",
+        "The appendix trial table quotes each count verbatim from the ledger line it comes from."
+      ]
+    },
+    "results": {
+      "paragraphs": [
+        "The final cell compounds {scen.total_net_return|+pct1} over TRAIN at {scen.ann_vol|pct2} annualised volatility. Its deepest drawdown is {a:dd.rows.0.depth|pct2}, from {a:dd.rows.0.peak} to {a:dd.rows.0.trough}, recovered on {a:dd.rows.0.recovery}; the first figure shows all five cost scenarios with the v6.1 baseline and the v5 deployable book for reference.",
+        "Daily net returns are left-skewed ({a:rstats.final.daily.skew|+.2f}) and fat-tailed (raw kurtosis {a:rstats.final.daily.kurt|.1f}); {a:rstats.final.monthly.pos_share|pct0} of months are positive and the worst month is {a:rstats.final.monthly.min|+pct2}. 2020 contributes {scen.calendar_year_returns.0.net_compounded_return|+pct1}; 2021 and 2022 carry the result."
+      ],
+      "check": [
+        "Rolling 63-session Sharpe: its TRAIN 5th percentile is {a:monitor.roll63.p5|+.2f}, so negative quarters are normal for this book.",
+        "Attribution by scenario: gross is almost the same across scenarios; the S1 vs S2 gap is impact.",
+        "The {summ.deflated.n|d}-cell table lists every NAV cell that counts in DSR N, with its verdict.",
+        "Worst days vs the v5 deployable book: losses on the same sessions point to a shared factor exposure, not to v6 or v7 levers."
+      ]
+    },
+    "risks": {
+      "paragraphs": [
+        "The risks that decide production are statistical before they are operational. The register pairs each with the TRAIN number that evidences it and the response or open item. The decisions requested now are U1 and whether V7-F is run first.",
+        "**Path to production** if U1 is granted and the read-out is consistent: freeze every pin in the appendix; paper-trade the same NAV engine on live data; track the metrics below against their TRAIN distributions. U2 (pre-2020 history) is the most direct way to shrink the statistical uncertainty; U3 (bridge coverage, delisting returns) and U4 (cost target, AUM) follow."
+      ],
+      "check": [
+        "The alarm rules are proposals, not pre-registered tests.",
+        "Proposed U1 read-out: \"consistent\" if validation S2 net is above 0 and the mechanics hold on all rows; the 63-session ramp is about 12% of a two-year window, so post-ramp figures are reported alongside."
+      ]
+    },
+    "appendix": {
+      "paragraphs": [
+        "Recipe pins per cell, recomputation checks of the headline numbers against the daily CSV, the trial accounting with each count quoted from its source line, and the SHA-256 of every input file the generator read. Regenerate with: `python atx-impl/tools/mega_report --config docs/plans/mega-alpha-v7-pitch.config.json --out docs/plans/2026-09-29-mega-alpha-v7-pitch.html`."
+      ],
+      "check": [
+        "Every recomputation check should read MATCH at tolerance {cfg.check_tolerance|g}.",
+        "Validation trials spent: #1 (v3) and #2 (v4.1), both at book level; #3 unspent (owner gate U1); 2025+ reserved."
+      ]
+    }
+  },
+  "narrative_blocks": {
+    "aim_equations": {
+      "paragraphs": [
+        {
+          "h": "aim-partial-v5, in words"
+        },
+        {
+          "list": [
+            "**Timing.** Mark at session d (data known by 22:00 UTC), decide at 23:00 UTC, fill at the close of d+1; the first return row is d+2.",
+            "**Desired weights.** Centred tied rank of the combined signal over the session's members, then price-risk-v1: the OLS residual on [1, beta252 vs the equal-weight market, vol63, log ADV63] (clipped z-scores), rescaled to gross 1.",
+            "**Aim and partial step.** aim_i = L x desired_i with L {scen.construction.v5.aim_leverage|g}; next_i = cur_i + theta x (aim_i - cur_i) with theta {scen.construction.v5.theta|g}, unless |aim_i - cur_i| is at most dust / N_d (dust {scen.construction.v5.dust_multiple|g}, N_d members), in which case the name does not trade.",
+            "**Delta orders.** The order is the planned change in decision-NAV dollars; price drift between decision and fill rides instead of being traded back. The target basis traded back 17-18% of executed dollars as drift (v6-code-review-exec.md F1).",
+            "**Exit rate.** A name that leaves the universe decays as cur x (1 - {scen.construction.v5.exit_rate|g}) per session and snaps to 0 inside the dust band, instead of a forced full exit (19-22% of planned turnover at rate 1, review F2).",
+            "**Locate-in-aim.** A member in the special borrow tier with a negative desired weight is set to 0 before neutralisation, so the neutraliser sees the book the broker would allow; {sum.locate_in_aim.zeroed_special_short_aims|int} member-decisions were zeroed.",
+            "**Missing prints.** A name that stops printing is carried at its last mark with orders blocked and written off after {recsc:S2.stale_exit_sessions|d} absent sessions (S3: {recsc:S3.stale_exit_sessions|d}, with an adverse haircut)."
+          ]
+        }
+      ]
+    }
+  },
+  "callouts": {
+    "caveats": {
+      "title": "Honest caveats (read before U1)",
+      "kind": "caveat",
+      "items": [
+        "**Freeze gate UNMET.** Cell-count DSR {summ.deflated.dsr|.4f} is below .95 at N {summ.deflated.n|d} (SR0 {summ.deflated.sr0_annual|.3f} annualised). The effective-N DSR, {summ.deflated_effective_n.dsr|.4f} with {summ.deflated_effective_n.n_eff|d} ONC clusters, is shown beside it and never substituted.",
+        "**Each accepted step is a sign result at or inside about one SE.** Wave 1 (v7.0 vs v6.1) dSR {j:n34.33.paired.dsr|+.3f} (Memmel SE {j:n34.33.paired.memmel_se|.3f}); U-lo3 (lo3 vs lo1 on v7.0) {j:n35.34.paired.dsr|+.3f} (SE {j:n35.34.paired.memmel_se|.3f}); wave 2 (v7.1 vs v7.0) {summ.paired.dsr|+.3f} (SE {summ.paired.memmel_se|.3f}, t {summ.paired.t|.2f}; CBB 95% [{summ.paired.cbb_ci95|+.3f}]).",
+        "**Wave 2 reads as diversification, not as four new signals.** Standalone TRAIN HAC t: ins_opp {a:adm.row.ins_opp.hac_t|+.2f}, inst_best_ideas {a:adm.row.inst_best_ideas.hac_t|+.2f}, ftd_fail {a:adm.row.ftd_fail.hac_t|+.2f}, ea_overdue {a:adm.row.ea_overdue.hac_t|+.2f}; none above 1 in absolute value. ins_opp's TRAIN IC sign ({a:adm.row.ins_opp.runner_sign|+.0f}) is against its prior ({a:adm.row.ins_opp.prior_sign|+.0f}); the rule orients by the prior and vetoes only below t -2, so it is admitted with the prior sign and currently subtracts. The gain is best read as diversification from a tenth theme (ownership_flow; {a:adm.n_themes|d} themes at 1/{a:adm.n_themes|d} each) diluting the other nine.",
+        "**Correction.** The earlier handoff quoted the v6.1 baseline at \"N 33\"; its figure was the N {j:n32.28.deflated.n|d} value ({j:n32.28.deflated.dsr|.4f}). With the defective spo-v1 cell inside the cross-cell variance the baseline scores {j:n33.28.deflated.dsr|.4f} at N {j:n33.28.deflated.n|d} (ruling 7.0-e: the variance stays \"all ledgered cells\"; whether defect cells belong in it is an owner question).",
+        "**TRAIN only.** {a:misc.years|.2f} years, 2020-2022. The 2023-2024 window was read twice at book level (validation trials #1, v3, and #2, v4.1) and never in v6, v6.1 or v7; a third read (#3) needs the owner (U1). 2025 onward is reserved.",
+        "**V7-F is pre-registered, both of its conditions are met, and it has NOT been run.** V7-F is library v7.1 on role lo3: it was declared to run only if both v7.1 (wave 2, on lo1) and U-lo3 (lo3, on v7.0) were accepted, and both were. The owner asked to stop at the next logical point, and V7-F needs the fields-v9 stage on lo3, whose cycle plumbing was stopped at design. Their combination is untested; it would be cell N 38.",
+        "**2020 contributes little.** 2020 is {a:misc.first_year_share|pct0} of the summed yearly returns; the universe restriction lifted 2021-2022 and removed most of the 2020 alpha that the unrestricted role had (the unrestricted loc cell made {@v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc:scen.calendar_year_returns.0.net_compounded_return|+pct1} in 2020).",
+        "**Costs are declared, not fitted.** Measured on V6-U, cost per traded $ rises from {a:cap.p.V6-U.points.0.cost_bps|.2f} to {a:cap.p.V6-U.points.1.cost_bps|.2f} bps between L 1 and L 1.247: impact is convex, so more AUM or more gross loses more.",
+        "**Borrow is predicted, not quoted.** Tiers come from public characteristics (market cap, price, short-interest ratio, IPO age). Special-tier short aims are zeroed ({sum.locate_in_aim.zeroed_special_short_aims|int} member-decisions); hard-to-borrow cost may still be understated.",
+        "**Identity.** The universe restriction, the largest v6 step, rests on a rehearsal identity bridge (scope_complete {a:univ.scope_complete})."
+      ]
+    },
+    "survivorship": {
+      "title": "Survivorship and look-ahead",
+      "kind": "note",
+      "items": [
+        "Membership is point in time (as-of member mask, one-session lag), so names that later delisted are in the panel while they traded.",
+        "Delisting returns are not modelled. A name that stops printing is written off at its last mark after {recsc:S2.stale_exit_sessions|d} absent sessions in S2; S3 writes it off after {recsc:S3.stale_exit_sessions|d} session with haircuts long {recsc:S3.terminal_haircut_long|+pct0} / short {recsc:S3.terminal_haircut_short|+pct0} and is the stress for this gap (S3 net {scen:S3.net_sharpe|+.3f}).",
+        "The membership recipe keeps the ADV top-N rule as an upper envelope; the linked-operating restriction is applied on top of it.",
+        "Nothing available on or after 2025-01-01 is read (the seal is asserted in the fields manifest)."
+      ]
+    },
+    "cost_gaps": {
+      "title": "What the cost model does not include",
+      "kind": "caveat",
+      "items": [
+        "Name-level borrow fees and recalls: tiers are predicted (market cap below $1bn, price below $5, SI ratio at least .10, IPO age under one year), not quoted. engine-tiers ({recsc:tiers.financing.tier_fee_bps.special|g} bps special, {recsc:tiers.financing.tier_fee_bps.warm|g} bps warm) is the stress.",
+        "Short-sale constraints beyond the special-tier block: no locate failures, no recalls, no short-sale price test.",
+        "Closing-auction realism: fills at the close at a modelled cost, with no auction-imbalance or queue model beyond the {recsc:S2.max_participation|pct0} ADV cap.",
+        "A constant spread for every name, and an impact coefficient that is declared, not fitted to fills.",
+        "No rebate on short proceeds and no interest on cash (excess-return accounting)."
+      ]
+    },
+    "one_se": {
+      "title": "What \"one SE\" means for a three-year window",
+      "kind": "note",
+      "paragraphs": [
+        "With T = {a:misc.years|.2f} years, the Lo SE of an annualised Sharpe near {summ.net_sharpe|.2f} is {a:misc.sr_se|.2f}, so its 95% interval runs from {a:misc.sr_ci_lo|+.2f} to {a:misc.sr_ci_hi|+.2f}. Separating nearby Sharpe ratios without pairing would take decades. Pairing near-identical books is far tighter (Memmel SE {summ.paired.memmel_se|.3f} for the v7.1 step), yet no accepted step cleared about one SE: the evidence for any single lever is its literature prior, not TRAIN."
+      ]
+    },
+    "v7f": {
+      "title": "V7-F: pre-registered, conditions met, not run",
+      "kind": "note",
+      "paragraphs": [
+        "**V7-F is pre-registered, both of its conditions are met, and it has NOT been run.** V7-F is library v7.1 on role lo3: it was declared to run only if both v7.1 (wave 2, on lo1) and U-lo3 (lo3, on v7.0) were accepted, and both were. The owner asked to stop at the next logical point, and V7-F needs the fields-v9 stage on lo3, whose cycle plumbing was stopped at design. Their combination is untested; it would be cell N 38."
+      ]
+    }
+  },
+  "facts": {
+    "headline": {
+      "caption": "The book in numbers (final cell, TRAIN, S2 unless stated); every value is filled from the report inputs at build time.",
+      "rows": [
+        {
+          "label": "Universe",
+          "value": "linked-operating-v1, {a:univ.kept_median|int} members (median), {a:univ.kept_min|int}-{a:univ.kept_max|int}",
+          "source": "role manifest universe block"
+        },
+        {
+          "label": "Signals",
+          "value": "{a:adm.n_admitted|d} of {a:adm.n|d} candidates admitted, {a:adm.n_themes|d} themes, equal theme weight",
+          "source": "admission.json (mega-weights-v71-ew)"
+        },
+        {
+          "label": "Holdings",
+          "value": "{a:expo.held_mean|int} names; long {a:expo.long_mean|.3f} / short {a:expo.short_mean|.3f} of NAV",
+          "source": "daily S2 CSV"
+        },
+        {
+          "label": "Turnover",
+          "value": "{summ.tau_gmv_mean|.4f} of GMV per day (p95 {summ.tau_gmv_p95|.4f})",
+          "source": "nav_summ"
+        },
+        {
+          "label": "Return / risk",
+          "value": "{scen.ann_mean|+pct2} per year at {scen.ann_vol|pct2} vol; max drawdown {scen.max_drawdown|pct2}",
+          "source": "summary.json S2"
+        },
+        {
+          "label": "Costs",
+          "value": "{summ.cost_bps_traded|.2f} bps per traded $; total drag {a:costdec.total_drag|pct1} of NAV over TRAIN",
+          "source": "nav_summ; daily S2 CSV"
+        },
+        {
+          "label": "Evidence",
+          "value": "HAC t {summ.hac_t|.2f}; cell-count DSR {summ.deflated.dsr|.3f} (N {summ.deflated.n|d}); effective-N DSR {summ.deflated_effective_n.dsr|.3f} (beside, not instead); Lo DSR {lo.dsr|.3f}",
+          "source": "nav_summ n37; computed here"
+        },
+        {
+          "label": "vs v5 reference",
+          "value": "dSR {a:e2e.dsr|+.3f}, Memmel SE {a:e2e.se|.3f}, t {a:e2e.t|.2f}",
+          "source": "computed here from the daily CSVs"
+        },
+        {
+          "label": "Freeze gate",
+          "value": "UNMET: cell-count DSR {summ.deflated.dsr|.4f} < .95 at N {summ.deflated.n|d}; S2 net and mechanics pass",
+          "source": "nav_summ n37"
+        }
+      ]
+    },
+    "stats": {
+      "caption": "The statistics behind the verdict. Lo SE and the end-to-end pair are computed here from the daily CSVs; the rest are read from the nav_summ JSON rows.",
+      "label_head": "Statistic",
+      "value_head": "Value",
+      "rows": [
+        {
+          "label": "Net SR (S2), annualised; HAC t (Bartlett, lag 5)",
+          "value": "{summ.net_sharpe|+.3f}; {summ.hac_t|.2f}",
+          "source": "nav_summ n37"
+        },
+        {
+          "label": "Lo SE of the SR, T = {a:misc.years|.2f} years; 95% interval",
+          "value": "{a:misc.sr_se|.3f}; [{a:misc.sr_ci_lo|+.2f}, {a:misc.sr_ci_hi|+.2f}]",
+          "source": "computed here, Lo (2002)"
+        },
+        {
+          "label": "v7.1 vs v7.0 (wave 2): dSR (Memmel SE, t)",
+          "value": "{summ.paired.dsr|+.3f} ({summ.paired.memmel_se|.3f}, {summ.paired.t|.2f}); rho {summ.paired.rho|.3f}",
+          "source": "nav_summ n37 paired"
+        },
+        {
+          "label": "v7.1 vs v7.0: CBB 95%; LW p",
+          "value": "[{summ.paired.cbb_ci95|+.3f}]; {summ.paired.lw.p_value|.3f}",
+          "source": "nav_summ n37 paired"
+        },
+        {
+          "label": "v7.0 vs v6.1 (wave 1): dSR (Memmel SE, t)",
+          "value": "{j:n34.33.paired.dsr|+.3f} ({j:n34.33.paired.memmel_se|.3f}, {j:n34.33.paired.t|.2f})",
+          "source": "nav_summ n34 paired"
+        },
+        {
+          "label": "U-lo3 vs v7.0: dSR (Memmel SE, t)",
+          "value": "{j:n35.34.paired.dsr|+.3f} ({j:n35.34.paired.memmel_se|.3f}, {j:n35.34.paired.t|.2f})",
+          "source": "nav_summ n35 paired"
+        },
+        {
+          "label": "spo-v2 vs U-lo3 (rejected): dSR (Memmel SE, t)",
+          "value": "{j:n36.35.paired.dsr|+.3f} ({j:n36.35.paired.memmel_se|.3f}, {j:n36.35.paired.t|.2f})",
+          "source": "nav_summ n36 paired"
+        },
+        {
+          "label": "v7.1 vs v5 REF end to end: dSR (SE, t)",
+          "value": "{a:e2e.dsr|+.3f} ({a:e2e.se|.3f}, {a:e2e.t|.2f})",
+          "source": "computed here"
+        },
+        {
+          "label": "Cell-count DSR (the gate); N; SR0 annualised",
+          "value": "{summ.deflated.dsr|.4f}; {summ.deflated.n|d}; {summ.deflated.sr0_annual|.3f}",
+          "source": "nav_summ n37 deflated"
+        },
+        {
+          "label": "Effective-N DSR (beside, never instead); N_eff of N; SR0",
+          "value": "{summ.deflated_effective_n.dsr|.4f}; {summ.deflated_effective_n.n_eff|d} of {summ.deflated_effective_n.n_trials|d}; {summ.deflated_effective_n.sr0_annual|.3f}",
+          "source": "nav_summ n37 deflated_effective_n"
+        },
+        {
+          "label": "V6.1 baseline cell-count DSR at N 32 / N 33",
+          "value": "{j:n32.28.deflated.dsr|.4f} / {j:n33.28.deflated.dsr|.4f}",
+          "source": "nav_summ n32, n33"
+        },
+        {
+          "label": "Lo DSR; SR0 annualised",
+          "value": "{lo.dsr|.3f}; {lo.sr0_annual|.3f}",
+          "source": "computed here"
+        },
+        {
+          "label": "PSR(0); MinTRL at 95%, sessions",
+          "value": "{summ.psr.benchmarks.0.psr|.4f}; {summ.psr.benchmarks.0.min_trl_sessions|.0f}",
+          "source": "nav_summ n37 psr"
+        },
+        {
+          "label": "SE(SR) of a two-year validation",
+          "value": "{a:misc.val_se_2y|.2f}",
+          "source": "computed here, Lo (2002)"
+        }
+      ]
+    }
+  },
+  "risks": [
+    {
+      "risk": "**Two-year dependence.** The Sharpe rests on 2021-2022.",
+      "evidence": "2020 {scen.calendar_year_returns.0.net_compounded_return|+pct1}, 2021 {scen.calendar_year_returns.1.net_compounded_return|+pct1}, 2022 {scen.calendar_year_returns.2.net_compounded_return|+pct1}; 2020 = {a:misc.first_year_share|pct0} of the summed yearly returns.",
+      "response": "U2: extend TRAIN before 2020 under a new pre-registration and re-measure the frozen recipe. Open: why the restriction removed the 2020 alpha (a disclosed diagnostic, not a lever)."
+    },
+    {
+      "risk": "**Selection.** The cell is the best of many trials.",
+      "evidence": "Cell-count DSR {summ.deflated.dsr|.3f} < .95 at N {summ.deflated.n|d} (effective-N {summ.deflated_effective_n.dsr|.3f}, beside); Lo DSR {lo.dsr|.3f}; N omits admission trials.",
+      "response": "Every further TRAIN cell raises N. Owner decides U1 with the shortfall disclosed, and whether defect cells belong in the variance (ruling 7.0-e)."
+    },
+    {
+      "risk": "**Weak step evidence.** Levers were accepted on sign only.",
+      "evidence": "v7 steps: wave 1 dSR {j:n34.33.paired.dsr|+.3f} (SE {j:n34.33.paired.memmel_se|.3f}), U-lo3 {j:n35.34.paired.dsr|+.3f} (SE {j:n35.34.paired.memmel_se|.3f}), wave 2 {summ.paired.dsr|+.3f} (SE {summ.paired.memmel_se|.3f}); end to end vs v5 REF t {a:e2e.t|.2f}.",
+      "response": "Treat each lever as a literature prior; judge the book once, at book level, on validation."
+    },
+    {
+      "risk": "**Wave 2 members.** The last accepted step rests on weak or wrong-signed signals.",
+      "evidence": "HAC t ins_opp {a:adm.row.ins_opp.hac_t|+.2f} (TRAIN IC against its prior), inst_best_ideas {a:adm.row.inst_best_ideas.hac_t|+.2f}, ftd_fail {a:adm.row.ftd_fail.hac_t|+.2f}, ea_overdue {a:adm.row.ea_overdue.hac_t|+.2f}.",
+      "response": "Read the step as diversification from a tenth theme; members are disclosed, never dropped one by one on TRAIN (pre-registration)."
+    },
+    {
+      "risk": "**Untested combination.** V7-F (v7.1 on lo3) is pre-registered with both conditions met, not run.",
+      "evidence": "v7.1 on lo1 {summ.net_sharpe|+.3f}; v7.0 on lo3 {@v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247:summ.net_sharpe|+.3f}; their combination unmeasured.",
+      "response": "Owner: run V7-F (cell N 38) before U1, or freeze v7.1 on lo1 as pitched."
+    },
+    {
+      "risk": "**Cost model and capacity.**",
+      "evidence": "Cost per traded $ {a:cap.p.V6-U.points.0.cost_bps|.2f} to {a:cap.p.V6-U.points.1.cost_bps|.2f} bps from L 1 to 1.247; impact {a:costdec.share.impact|pct0} of the drag; S1 net {scen:S1.net_sharpe|+.3f} vs S2 {summ.net_sharpe|+.3f}.",
+      "response": "U4: fix the cost target and AUM before live; do not scale beyond $1bn without a capacity study; calibrate Y on paper-trading fills."
+    },
+    {
+      "risk": "**Borrow realism.**",
+      "evidence": "Special tier {scen.financing.short_dollar_share_by_tier.mean.special|pct2} of short $; {scen.financing.blocked_short_name_decisions|int} special-tier short name-decisions blocked; engine-tiers net {scen:tiers.net_sharpe|+.3f}.",
+      "response": "Replace predicted tiers with prime-broker locate and fee data before live; keep locate-in-aim."
+    },
+    {
+      "risk": "**Universe and identity.** The largest step rests on a rehearsal bridge.",
+      "evidence": "V6-U step dSR {@v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc:parent.dsr|+.3f} (SE {@v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc:parent.se|.3f}); scope_complete {a:univ.scope_complete}; {a:univ.dropped_share|pct1} of base member-sessions dropped.",
+      "response": "U3(a): complete the CIK bridge and re-run the restriction; V6-U also changed the market proxy and re-ran admission (disclosure D14)."
+    },
+    {
+      "risk": "**Data vintage.**",
+      "evidence": "historical_vintage_verified {a:fields.historical_vintage_verified}; FINRA short-volume files downloaded in 2026 for 2018-2022 dates.",
+      "response": "Vintage audit (re-publication check) before live; live data is by construction first-vintage."
+    },
+    {
+      "risk": "**Unhedged nonmember exits.**",
+      "evidence": "Held share {summ.held_share|.3f}; exit decay lingers about 60 sessions (D9).",
+      "response": "Monitor nonmember gross; any exit-rate re-tune is a new pre-registered trial."
+    },
+    {
+      "risk": "**Left tail.**",
+      "evidence": "Daily skew {a:rstats.final.daily.skew|+.2f}, kurtosis {a:rstats.final.daily.kurt|.1f}, worst day {a:rstats.final.daily.min|+pct2}; max drawdown {scen.max_drawdown|pct2}.",
+      "response": "Daily loss limit set from the TRAIN tail; S3 as the standing stress."
+    },
+    {
+      "risk": "**Parked review findings.**",
+      "evidence": "cnms_to_si marker rewrite (Important, parked); branch-review minors m2-m8; disclosures D1-D15.",
+      "response": "Carry in the merge description (U5); fix before a live build (a fix that changes bytes is a new trial)."
+    }
+  ],
+  "monitoring": [
+    {
+      "metric": "Daily turnover tau (GMV units)",
+      "series": "tau",
+      "fmt": ".4f",
+      "rule": "21-session mean above the TRAIN p95 {a:monitor.tau.p95|.4f}, or any day above .30"
+    },
+    {
+      "metric": "Gross leverage, post-ramp",
+      "series": "gross_post_ramp",
+      "fmt": ".3f",
+      "rule": "outside [.90, 1.05] for 5 sessions"
+    },
+    {
+      "metric": "Net leverage",
+      "series": "net_lev",
+      "fmt": "+.4f",
+      "rule": "|net| above .02 for 5 sessions (gate)"
+    },
+    {
+      "metric": "Rolling 63-session net Sharpe",
+      "series": "roll63",
+      "fmt": "+.2f",
+      "rule": "below the TRAIN p5 {a:monitor.roll63.p5|+.2f}: review; below p1 {a:monitor.roll63.p1|+.2f} for 21 sessions: de-risk"
+    },
+    {
+      "metric": "Monthly net return",
+      "series": "monthly",
+      "fmt": "+pct2",
+      "rule": "below the TRAIN minimum {a:monitor.monthly.min|+pct2}: review"
+    },
+    {
+      "metric": "Daily net return",
+      "series": "daily",
+      "fmt": "+pct2",
+      "rule": "below the TRAIN p1 {a:monitor.daily.p1|+pct2}: incident review"
+    },
+    {
+      "metric": "Names held",
+      "series": "held",
+      "fmt": "int",
+      "rule": "outside the TRAIN range"
+    },
+    {
+      "metric": "Capped fills per session",
+      "series": "capped",
+      "fmt": ".1f",
+      "rule": "above the TRAIN p99 {a:monitor.capped.p99|.0f}: liquidity review"
+    },
+    {
+      "metric": "Unfilled dollars, bps of NAV",
+      "series": "unfilled_bps",
+      "fmt": ".1f",
+      "rule": "above the TRAIN p95 {a:monitor.unfilled_bps.p95|.1f} for 5 sessions"
+    },
+    {
+      "metric": "Combined rank IC h5, monthly mean",
+      "series": "ic5_month",
+      "fmt": "+.4f",
+      "rule": "three consecutive months below 0: signal review"
+    },
+    {
+      "metric": "Cost bps per traded $, yearly",
+      "series": "cost_bps_year",
+      "fmt": ".2f",
+      "rule": "above the TRAIN maximum by 10%: cost-model review"
+    }
+  ],
+  "glossary": [
+    {
+      "group": "Cost scenarios",
+      "term": "S2",
+      "def": "Primary scenario `modeled-1bn-stale5-v1+swap-fin-v1`: $1bn book; half-spread {recsc:S2.half_spread_bps|g} bps + commission {recsc:S2.commission_bps|g} bps + square-root impact (Y {recsc:S2.impact_y|g}); fills capped at {recsc:S2.max_participation|pct0} of ADV63; write-off after {recsc:S2.stale_exit_sessions|d} absent sessions; swap financing swap-fin-v1."
+    },
+    {
+      "group": "Cost scenarios",
+      "term": "S1",
+      "def": "`linear-6bps-stale5-v1+swap-fin-v1`: a flat {recsc:S1.flat_bps|g} bps per traded dollar, no impact, no participation cap; same financing as S2."
+    },
+    {
+      "group": "Cost scenarios",
+      "term": "S3",
+      "def": "`modeled-1bn-terminal-adverse-v1+swap-fin-v1`: S2 costs, but a name is written off after {recsc:S3.stale_exit_sessions|d} absent session with haircut long {recsc:S3.terminal_haircut_long|+pct0} / short {recsc:S3.terminal_haircut_short|+pct0}; the delisting stress."
+    },
+    {
+      "group": "Cost scenarios",
+      "term": "flat-300",
+      "def": "S2 trading costs with financing `flat-300-v0`: a flat {recsc:flat300.financing.flat_short_bps|g} bps a year on shorts (ACT/365), no long spread, special shorts not blocked."
+    },
+    {
+      "group": "Cost scenarios",
+      "term": "engine-tiers",
+      "def": "S2 trading costs with financing `engine-tiers-v1`: tier fees GC {recsc:tiers.financing.tier_fee_bps.gc|g}, warm {recsc:tiers.financing.tier_fee_bps.warm|g}, special {recsc:tiers.financing.tier_fee_bps.special|g} bps a year."
+    },
+    {
+      "group": "Cost scenarios",
+      "term": "swap-fin-v1; GC / warm / special",
+      "def": "Swap financing, ACT/360: long {recsc:S2.financing.long_spread_bps|g} bps, short {recsc:S2.financing.short_spread_bps|g} bps plus a tier fee of {recsc:S2.financing.tier_fee_bps.gc|g} / {recsc:S2.financing.tier_fee_bps.warm|g} / {recsc:S2.financing.tier_fee_bps.special|g} bps. The tier is predicted per name per decision from public flags (market cap below $1bn, price below $5, SI ratio at least .10, IPO age under 365 days): 0 flags GC, 1 warm, 2 or more special. Special shorts are blocked."
+    },
+    {
+      "group": "Cost scenarios",
+      "term": "Cost bps/$",
+      "def": "Trading cost dollars (spread + commission + impact) per traded dollar of fills, in basis points."
+    },
+    {
+      "group": "Book statistics",
+      "term": "Net SR / gross SR",
+      "def": "Annualised Sharpe ratio (x sqrt 252) of daily NAV returns after / before trading costs and financing; excess-return accounting (no cash interest)."
+    },
+    {
+      "group": "Book statistics",
+      "term": "HAC t",
+      "def": "t statistic of the mean daily net return with a Newey-West (Bartlett kernel) long-run variance."
+    },
+    {
+      "group": "Book statistics",
+      "term": "tau",
+      "def": "Daily one-way turnover in GMV units: sum of |filled dollars| / pre-trade gross, executed fills only, deployment session excluded. Candidate tau (admission) is the same on a candidate's standalone factor."
+    },
+    {
+      "group": "Book statistics",
+      "term": "Gross / net leverage, all rows",
+      "def": "(long$ + short$) / NAV and (long$ - short$) / NAV averaged over every daily CSV row, including the deployment ramp; the R6' gate basis."
+    },
+    {
+      "group": "Book statistics",
+      "term": "Post-ramp",
+      "def": "The same means over rows after the first 63 sessions, once the partial-step book has deployed; the basis for calibrating L."
+    },
+    {
+      "group": "Book statistics",
+      "term": "Held share",
+      "def": "Names held / members; above 1 when exited nonmembers are still decaying out."
+    },
+    {
+      "group": "Book statistics",
+      "term": "MDD",
+      "def": "Maximum peak-to-trough drawdown of the net NAV."
+    },
+    {
+      "group": "Construction",
+      "term": "aim-partial-v5",
+      "def": "The construction rule: each session every member moves next = cur + theta x (L x desired - cur), unless inside the dust band (section 5)."
+    },
+    {
+      "group": "Construction",
+      "term": "L",
+      "def": "Aim leverage, the multiplier on the gross-1 desired book; final cell {scen.construction.v5.aim_leverage|g}."
+    },
+    {
+      "group": "Construction",
+      "term": "theta",
+      "def": "Trade fraction: the share of the gap between aim and current closed per session ({scen.construction.v5.theta|g}; half-life about {a:misc.half_life|.0f} sessions)."
+    },
+    {
+      "group": "Construction",
+      "term": "dust",
+      "def": "No-trade band multiple: a name trades only if |aim - cur| exceeds dust / N_d ({scen.construction.v5.dust_multiple|g})."
+    },
+    {
+      "group": "Construction",
+      "term": "Exit rate",
+      "def": "Per-session decay rate of a nonmember's position ({scen.construction.v5.exit_rate|g}); rate 1 is the immediate exit."
+    },
+    {
+      "group": "Construction",
+      "term": "Delta / target orders",
+      "def": "Delta: the order is the planned dollar change at decision NAV, so drift rides. Target: the order re-targets the planned weight at fill, trading drift back."
+    },
+    {
+      "group": "Construction",
+      "term": "Locate-in-aim",
+      "def": "Special-tier short aims set to 0 before neutralisation (v6 prereg C3)."
+    },
+    {
+      "group": "Construction",
+      "term": "price-risk-v1",
+      "def": "Neutraliser: OLS residual of the tied-rank target on [1, beta252 vs the equal-weight market, vol63, log ADV63], rescaled to the entry gross. price-risk-ind-v1 / v2 add FF12 demeaning (v2 with vol126 / ADV252); both rejected."
+    },
+    {
+      "group": "Construction",
+      "term": "Ramp",
+      "def": "The first ~63 sessions, when the book deploys from zero at rate theta."
+    },
+    {
+      "group": "Signals",
+      "term": "IC, rank IC, h",
+      "def": "Information coefficient: the cross-sectional (rank) correlation of a signal at decision d with the forward return close[d+1+h] / close[d+1] - 1; h in sessions (5, 21, 63)."
+    },
+    {
+      "group": "Signals",
+      "term": "DSL",
+      "def": "The expression language the alphas are written in (rank, group_rank, decay_linear, delay, ts_sum, correlation, group_neutralize, ...)."
+    },
+    {
+      "group": "Signals",
+      "term": "R(decay(x)) / decay(R(x))",
+      "def": "Rank of the 21-session linear-decayed raw value vs the decayed rank; v6 moved smoothing before the rank for slow signals and removed it for fast sleeves."
+    },
+    {
+      "group": "Signals",
+      "term": "Prior sign, raw dir",
+      "def": "The literature direction; embedded in the DSL (a -1 multiplier where the raw direction is -1), so every candidate's prior sign is +1."
+    },
+    {
+      "group": "Signals",
+      "term": "Tier",
+      "def": "Literature evidence grade A+ to D (replication, post-publication decay, large-cap evidence); orders the redundancy screen."
+    },
+    {
+      "group": "Signals",
+      "term": "Theme",
+      "def": "The composition unit: value, profitability_quality, investment_issuance, earnings_momentum, price_momentum, low_risk, short_interest, reversal_seasonality, options_implied."
+    },
+    {
+      "group": "Signals",
+      "term": "Fast sleeve",
+      "def": "A candidate with standalone tau at or above .08."
+    },
+    {
+      "group": "Signals",
+      "term": "v4-prior-v1",
+      "def": "Admission screen: prior signs, reject on too few days, turnover above {a:adm.rules.tau_limit|.2f}, HAC t below {a:adm.rules.veto_t|+.1f} or |rho| above {a:adm.rules.rho_limit|.2f}; no sign or weight estimation."
+    },
+    {
+      "group": "Signals",
+      "term": "ew-theme-v1",
+      "def": "Composition: equal weight per theme with an admitted member, equal within theme. ew-theme-v6 (rejected) dropped low_risk, merged options into short_interest and shrank fast sleeves; ew-theme-aim-v1 (v5) weighted by aim gain."
+    },
+    {
+      "group": "Statistics",
+      "term": "dSR",
+      "def": "Paired difference of annualised net Sharpe ratios of two cells on common return sessions (S2)."
+    },
+    {
+      "group": "Statistics",
+      "term": "Memmel SE",
+      "def": "Standard error of dSR under the Jobson-Korkie test with the Memmel (2003) correction; uses the return correlation rho of the two cells."
+    },
+    {
+      "group": "Statistics",
+      "term": "CBB",
+      "def": "Circular block bootstrap of dSR: blocks of 21 sessions, 2000 draws, 95% percentile interval."
+    },
+    {
+      "group": "Statistics",
+      "term": "LW",
+      "def": "Ledoit-Wolf (2008) studentized circular block bootstrap test of equal Sharpe ratios; reported as a p-value."
+    },
+    {
+      "group": "Statistics",
+      "term": "DSR cross-cell / Lo",
+      "def": "Deflated Sharpe ratio (Bailey and Lopez de Prado 2014): the probability that the true SR exceeds SR0, the expected maximum of N null Sharpe ratios. Cross-cell takes the variance of SR from the N cells; Lo takes (1 + SR^2/2) / T for the cell alone."
+    },
+    {
+      "group": "Statistics",
+      "term": "N, SR0, T",
+      "def": "N: number of NAV cells counted as trials ({summ.deflated.n|d}); SR0: the deflation benchmark; T: return sessions ({summ.return_rows|d})."
+    },
+    {
+      "group": "Statistics",
+      "term": "HAC SE (IC)",
+      "def": "Newey-West SE of a mean daily IC series with lag 2h (overlapping forward returns)."
+    },
+    {
+      "group": "Data",
+      "term": "Role; lo1; lo3; role v2",
+      "def": "A role is the pinned research panel (sessions x instruments, member mask, prices). Role v2 is the top-3000-by-ADV TRAIN role; lo1 is role v2 restricted by linked-operating-v1. lo3 is the v2 rule with the SIC table of the atx-db fundamentals stage (linked-operating-v3), accepted as a universe trial on library v7.0."
+    },
+    {
+      "group": "Data",
+      "term": "linked-operating-v1",
+      "def": "Universe restriction: one PIT issuer link on the primary line, common class, visible SIC under 550 days old, not a pooled vehicle, blank check or royalty trust (SIC {a:univ.non_operating_sic})."
+    },
+    {
+      "group": "Data",
+      "term": "fields-v7",
+      "def": "The lo1 field set: the {a:fields.n_fields|d} research fields (fields-v6b plus sv_ratio126), each with a clock, staleness rule and coverage."
+    },
+    {
+      "group": "Data",
+      "term": "PIT",
+      "def": "Point in time: a cell's value and whether it is missing use only information available by the decision (22:00 UTC mark, 23:00 UTC decision)."
+    },
+    {
+      "group": "Data",
+      "term": "FF12 / FF49",
+      "def": "Fama-French 12 / 49 industry groups from the SIC code; used for within-industry ranks and demeaning."
+    },
+    {
+      "group": "Data",
+      "term": "Identity bridge",
+      "def": "The dated CIK-to-security link table (r4 rehearsal, scope_complete false) that joins filings to listings."
+    },
+    {
+      "group": "Protocol",
+      "term": "TRAIN / VAL / holdout",
+      "def": "TRAIN = 2020-2022 (all selection and estimation). VAL = 2023-2024, three book-level validation trials in total, two spent. Holdout = 2025 onward, reserved and never read."
+    },
+    {
+      "group": "Protocol",
+      "term": "Trial",
+      "def": "Any run whose statistic could influence a choice: each admission candidate, composition, universe and NAV cell. Reproductions with identical bytes are not trials."
+    },
+    {
+      "group": "Protocol",
+      "term": "Appendix A",
+      "def": "The cumulative trial-accounting block every TRAIN result carries in the ledger."
+    },
+    {
+      "group": "Protocol",
+      "term": "R6'",
+      "def": "The mechanics gate: all-rows gross in [.90, 1.05], |mean net| at most .02, tau mean at most .20 and p95 at most .30."
+    },
+    {
+      "group": "Protocol",
+      "term": "V6-L / C / U / W / F; P1-P3",
+      "def": "v6 pre-registered lanes: library, construction levers C1-C5, universe, composition, final cell. P1-P3: the v6.1 promotion tests (admission, paired dSR above 0, mechanics and net at least 1.0)."
+    },
+    {
+      "group": "Protocol",
+      "term": "U1-U5; D1-D15",
+      "def": "Owner decision gates (U1 validation #3, U2 pre-2020 history, U3 data, U4 cost target and AUM, U5 merge) and the disclosures carried with the branch (handoff 5)."
+    },
+    {
+      "group": "Naming",
+      "term": "Cell name",
+      "def": "`mega-nav-<lib><role>-<comp>-t<theta>-d<dust>-<rate>-ob<basis>-x<exit>[-loc][-L<lev>]`; for example the final cell {cfg.final}. Table below."
+    },
+    {
+      "group": "Statistics",
+      "term": "DSR effective N",
+      "def": "The deflated Sharpe ratio with N replaced by the number of ONC clusters of the ledgered trial series. Reported beside the cell-count DSR; the pre-registered gate reads the cell-count figure only."
+    },
+    {
+      "group": "Protocol",
+      "term": "Wave 1 / wave 2",
+      "def": "The v7 library additions: wave 1 (v7.0: qmj_safety, nincr, q5_eg, smax5, res_mom_ind) and wave 2 (v7.1: ins_opp, inst_best_ideas, ftd_fail, ea_overdue), each accepted or rejected whole."
+    },
+    {
+      "group": "Protocol",
+      "term": "C1-C3; spo-v1 / spo-v2",
+      "def": "v7 construction trials: aim-partial-v6 variants C1-C3, and the single-period optimiser (spo) in two versions; all rejected, spo-v1 as an implementation defect, spo-v2 as a research result."
+    },
+    {
+      "group": "Protocol",
+      "term": "V7-F",
+      "def": "The pre-registered final cell library v7.1 on role lo3, to be run only if both v7.1 and U-lo3 were accepted. Both were; the cell has not been run (owner stop)."
+    },
+    {
+      "group": "Signals",
+      "term": "ownership_flow",
+      "def": "The tenth theme, declared in v7.1: insider and institutional ownership flows (ins_opp, inst_best_ideas)."
+    }
+  ],
+  "cellname_tokens": {
+    "lib": "Library: v5, v51 (v5.1), v6, v61 (v6.1 = v6 + sv_flow), v70 (v7.0 = v6.1 + wave 1), v71 (v7.1 = v7.0 + wave 2, {a:adm.n|d} candidates).",
+    "role": "Role / pass: u = the linked-operating-v1 role lo1; lo3 = linked-operating-v3; l = library v6 on role v2; none = the v5 role v2.",
+    "comp": "Composition: ew = ew-theme-v1 (ew6 = ew-theme-v6, aim = ew-theme-aim-v1).",
+    "theta": "Trade fraction theta = {scen.construction.v5.theta|g}.",
+    "dust": "No-trade band dust multiple = {scen.construction.v5.dust_multiple|g}.",
+    "rate": "fixed: one theta for every name (per-name: rate scaled by name risk, v5 only).",
+    "basis": "Order basis {sum.order_basis}; absent = target orders.",
+    "exit": "Nonmember exit rate {scen.construction.v5.exit_rate|g}; absent = 1 (immediate exit).",
+    "loc": "Locate-in-aim on ({sum.locate_in_aim.zeroed_special_short_aims|int} special-tier short aims zeroed).",
+    "lev": "Aim leverage L = {scen.construction.v5.aim_leverage|g}; absent = 1."
+  },
+  "flow": [
+    {
+      "title": "1 Market data",
+      "lines": [
+        "prices, volume, shares out",
+        "{a:univ.instruments|int} instruments",
+        "top-3000 by 63d $ADV",
+        "median {a:univ.base_median|int} members"
+      ]
+    },
+    {
+      "title": "2 Identity + universe",
+      "lines": [
+        "r4 CIK bridge (rehearsal)",
+        "linked-operating-v1",
+        "drops {a:univ.dropped_share|pct0} of cells",
+        "median {a:univ.kept_median|int} members"
+      ]
+    },
+    {
+      "title": "3 PIT fields",
+      "lines": [
+        "{a:fields.n_fields|d} fields, 22:00 UTC mark",
+        "SEC filings + {a:fields.fund_lag|d} session lag",
+        "FINRA SI + short volume",
+        "seal: nothing from 2025"
+      ]
+    },
+    {
+      "title": "4 DSL alphas",
+      "lines": [
+        "{a:adm.n|d} candidates, {a:adm.n_themes|d} themes",
+        "one variant per paper",
+        "prior sign embedded",
+        "ranks within FF12"
+      ]
+    },
+    {
+      "title": "5 Admission",
+      "lines": [
+        "v4-prior-v1, no fitting",
+        "veto HAC t < {a:adm.rules.veto_t|+.0f}",
+        "redundant |rho| > {a:adm.rules.rho_limit|.2f}",
+        "{a:adm.n_admitted|d} admitted"
+      ]
+    },
+    {
+      "title": "6 Composition",
+      "lines": [
+        "ew-theme-v1",
+        "1/{a:adm.n_themes|d} per theme",
+        "equal within theme",
+        "combined rank signal"
+      ]
+    },
+    {
+      "title": "7 Construction",
+      "kind": "key",
+      "lines": [
+        "aim-partial-v5, theta {scen.construction.v5.theta|g}",
+        "delta orders, exit {scen.construction.v5.exit_rate|g}",
+        "locate-in-aim, price-risk-v1",
+        "L {scen.construction.v5.aim_leverage|g}, cadence 1"
+      ]
+    },
+    {
+      "title": "8 Costs + financing",
+      "lines": [
+        "S2: {recsc:S2.half_spread_bps|g}+{recsc:S2.commission_bps|g} bps + sqrt impact",
+        "cap {recsc:S2.max_participation|pct0} ADV63, swap-fin-v1",
+        "stresses S1 S3 tiers flat-300",
+        "$1bn, TRAIN 2020-2022"
+      ]
+    },
+    {
+      "title": "9 Statistics",
+      "lines": [
+        "paired dSR, Memmel SE",
+        "CBB and LW bootstrap",
+        "DSR cross-cell and Lo",
+        "N = {summ.deflated.n|d} NAV cells"
+      ]
+    },
+    {
+      "title": "10 Gates",
+      "kind": "key",
+      "lines": [
+        "R6' mechanics: pass",
+        "S2 net >= 1.0: pass",
+        "cell-count DSR >= .95: {summ.deflated.dsr|.3f}, fail",
+        "validation #3: owner U1"
+      ]
+    }
+  ],
+  "alpha_words": {
+    "value_composite": "Mean of the within-FF12 ranks of book-to-market, earnings yield and cash-flow yield (3 of the 4 intended ratios).",
+    "bm": "Book equity / market equity, ranked within FF12.",
+    "ep": "Trailing net income / market equity, ranked within FF12.",
+    "cfp": "Trailing operating cash flow / market equity, ranked within FF12.",
+    "fcfp": "Trailing (operating cash flow - capex) / market equity, ranked within FF12.",
+    "ebit_ev": "Trailing operating income / enterprise value (market equity + debt - cash), ranked within FF12.",
+    "net_payout": "Trailing (dividends + buybacks - issuance) / market equity, ranked within FF12.",
+    "sp": "Trailing sales / market equity, ranked within FF12.",
+    "rd_me": "Trailing R&D / market equity, ranked within FF12.",
+    "gpa": "Trailing gross profit / total assets, ranked within FF12.",
+    "opbe": "Trailing operating income / book equity, ranked within FF12.",
+    "cbop": "Cash-based operating profitability: operating cash flow plus R&D (when reported) / total assets, ranked within FF12.",
+    "roe_q": "Quarterly net income / lagged quarterly book equity, ranked within FF12.",
+    "roa": "Trailing net income / total assets, ranked within FF12.",
+    "accruals": "Low accruals: -(net income - operating cash flow) / average assets, ranked within FF12.",
+    "fscore": "Piotroski F-score (0-9 fundamental health), ranked within FF12.",
+    "asset_growth": "Low asset growth: -(assets / assets a year ago - 1), ranked within FF12.",
+    "noa": "Low net operating assets / lagged assets, ranked within FF12.",
+    "issuance_xbrl": "Low share issuance: -log of filing share count vs a year ago, ranked within FF12.",
+    "issuance_vendor": "Low composite issuance: -log of split-adjusted vendor shares vs 252 sessions ago, ranked within FF12.",
+    "sue": "Standardised unexpected earnings of the latest filing, ranked.",
+    "droe": "Change in quarterly ROE vs the same quarter a year ago, ranked.",
+    "chtax": "Change in quarterly tax expense vs a year ago / lagged assets, ranked.",
+    "ear": "Market-adjusted 3-session return around the latest earnings announcement, carried forward up to 126 sessions, ranked.",
+    "res_mom_12_1": "Residual momentum: 12-1 month return net of beta to the equal-weight member market, scaled by residual volatility.",
+    "mom_12_1": "Return from 252 to 21 sessions ago (12-1 momentum), ranked.",
+    "ind_mom_12_1": "Mean 12-1 momentum of the stock's FF49 industry, ranked.",
+    "within_ind_mom": "12-1 momentum demeaned within FF49 industry, ranked.",
+    "high_52w": "Price / 52-week high, ranked.",
+    "bac": "Betting against correlation: low correlation of 3-day returns with the market over 250 sessions, ranked.",
+    "smax": "Low scaled MAX: -(max daily return over 21 sessions / 252-session volatility), ranked.",
+    "si_ratio": "Low short interest / shares outstanding, ranked.",
+    "dtc": "Low days to cover (short interest / average volume), ranked.",
+    "si_change": "Low 21-session change in the short-interest ratio, ranked (fast sleeve).",
+    "ind_adj_rev_5": "Short-term reversal: -(5-session return demeaned within FF49), ranked (fast sleeve).",
+    "seasonality_same_month": "Same-calendar-month return one year ago (Heston-Sadka lag 12), ranked (fast sleeve).",
+    "iv_rv_spread": "21-day ATM implied volatility minus annualised 21-day realised volatility, ranked (fast sleeve).",
+    "opex_at": "Operating leverage: (sales - operating income) / total assets, ranked within FF12.",
+    "sv_flow": "Low long-horizon shorting flow: -(126-session FINRA short volume / total volume, demeaned within FF12), ranked.",
+    "qmj_safety": "AFP safety: mean rank of low beta, low leverage and low earnings volatility (decayed).",
+    "nincr": "Number of consecutive quarters (0-5) with net income above the same quarter a year earlier.",
+    "q5_eg": "q5 expected investment growth from published slopes on log Tobin's q, cash-flow-to-assets and the change in ROE; nothing fitted on TRAIN.",
+    "smax5": "Mean of the 5 largest daily returns over 21 sessions over 21-session volatility; lottery demand, prior short.",
+    "res_mom_ind": "Industry-residual momentum: mean / sd of the FF49 industry-excess return over t-251..t-21.",
+    "ins_opp": "Net shares bought by opportunistic insiders over 126 trade days (Form 4), per share outstanding.",
+    "inst_best_ideas": "13F best ideas: summed manager overweight versus the 13F market weight, decayed 21 sessions.",
+    "ftd_fail": "SEC fails-to-deliver over 21 settlement dates per share outstanding; prior short.",
+    "ea_overdue": "Flag: the expected earnings date has passed with no 8-K 2.02 yet; prior short."
+  },
+  "change_rationale": {
+    "value_composite": "Composite value averages measurement noise across ratios (Israel, Laursen and Richardson 2021; v6-literature.md section 3.9).",
+    "cbop": "Cash-based operating profitability subsumes accruals and cfoa (Ball, Gerakos, Linnainmaa and Nikolaev 2016); one variant per hypothesis.",
+    "cfoa": "Replaced by cbop, which cites the same paper in its stronger form.",
+    "res_mom_12_1": "Residual momentum has about half the crash risk of raw momentum (Blitz, Huij and Martens 2011); re-trial of the v4.2 candidate.",
+    "ind_mom_12_1": "Left byte-identical: the member-masked cross-sectional op means the 21-session blackout binds under either smoothing order.",
+    "within_ind_mom": "Left byte-identical for the same reason as ind_mom_12_1.",
+    "bac": "Betting against correlation isolates the correlation part of low beta (Asness, Frazzini, Gormsen and Pedersen 2020).",
+    "low_beta": "Replaced by bac (prereg V6-L); low beta is largely projected out by the price-risk-v1 beta regressor.",
+    "smax": "Scaled MAX separates lottery demand from volatility (Asness, Frazzini, Gormsen and Pedersen 2020).",
+    "low_max": "Replaced by smax (prereg V6-L).",
+    "low_ivol": "Removed: replaced by bac and smax, and spanned by the vol63 neutralisation regressor.",
+    "lowvol_ind": "Removed: spanned by the price-risk-v1 vol63 regressor.",
+    "sv_flow": "Long-term shorting flows predict negative returns for about a year; short-term flows do not (Wang, Yan and Zheng 2020); prereg v6.1.",
+    "_smoothing": "Decaying the raw value before ranking removes the 21-session blackout that decay(rank) imposes on names entering the universe, and part of the double smoothing with theta (v6-code-review-signal.md); fast sleeves lose the decay because their alpha is gone within weeks (Da, Liu and Schaumburg 2014)."
+  },
+  "verdict_badges": {
+    "rules": []
+  },
+  "capacity_curve": {
+    "label": "the v7.1 pitched construction",
+    "dir": "build-equity/v7-71-nav-stress",
+    "extras": {
+      "path": "build-equity/v7-71-nav-stress/v7_extras.json",
+      "sha256": "b4f10fce0a03cc3df252e84cd5c8437df222f236b0dd7131d2964548d222e69b"
+    },
+    "summary": {
+      "path": "build-equity/v7-71-nav-stress/summary.json",
+      "sha256": "06942365dfd923541b66354b72721cd3bb86667a504fa2d4136197caf30df046"
+    },
+    "sr_threshold": 1.0,
+    "primary": {
+      "label": "S2",
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "token": "s2"
+    },
+    "beside": [
+      {
+        "label": "S2-KO",
+        "scenario": "modeled-1bn-ko-v1+swap-fin-v1",
+        "token": "flat"
+      },
+      {
+        "label": "S2-FIM",
+        "scenario": "modeled-1bn-fim-v1+swap-fin-v1",
+        "token": "tiers"
+      }
+    ]
+  },
+  "risk_bias": {
+    "label": "atx-risk-v1.1 (F3 robust rebuild; role lo1, TRAIN)",
+    "summary": {
+      "path": "build-equity/v7-f3-risk/bias_summary.json",
+      "sha256": "d479ed3307e74f2b69d8f8896316e6866fa811ad49628969e43b8a2f98d4c72d"
+    },
+    "manifest": {
+      "path": "build-equity/v7-f3-risk/manifest.json",
+      "sha256": "312aff19e746e49180e4f7440c6e918ee2a0ff6e51dd4f3bc09e39b47f174eab"
+    },
+    "families": [
+      "factor",
+      "random",
+      "book"
+    ]
+  },
+  "report_cards": {
+    "horizons": [
+      5,
+      21,
+      63
+    ],
+    "runner_tolerance": 0.0005,
+    "sets": [
+      {
+        "key": "v71",
+        "label": "library v7.1 = v7.0 + wave 2 (the pitched library; TRAIN)",
+        "dir": "build-equity/mega-cards-v71"
+      },
+      {
+        "key": "v70",
+        "label": "library v7.0 = v6.1 + wave 1 (TRAIN)",
+        "dir": "build-equity/mega-cards-v70"
+      },
+      {
+        "key": "v61",
+        "label": "library v6.1 on the v7l1 IC pass (TRAIN; the baseline)",
+        "dir": "build-equity/v7-w3-cards"
+      }
+    ]
+  },
+  "monitor_baseline": {
+    "path": {
+      "path": "build-equity/mega-monitor-v71/monitor.json",
+      "sha256": "47190809d99e3fd2f9d53076db3e4608b82c12bf274c36fbb62b01d6c45c5b29"
+    }
+  },
+  "ops_loop": {
+    "decisions": [
+      {
+        "asof": "2020-08-06",
+        "dir": "build-equity/v7-w4-decide/2020-08-06",
+        "run": "build-equity/v7-w4-decide-2020-08-06-run"
+      },
+      {
+        "asof": "2021-08-04",
+        "dir": "build-equity/v7-w4-decide/2021-08-04",
+        "run": "build-equity/v7-w4-decide-2021-08-04-run"
+      },
+      {
+        "asof": "2022-10-12",
+        "dir": "build-equity/v7-w4-decide/2022-10-12",
+        "run": "build-equity/v7-w4-decide-2022-10-12-run"
+      }
+    ],
+    "reconcile": [
+      {
+        "label": "self: broker file = expected holdings",
+        "dir": "build-equity/v7-w4-recon-self",
+        "expect": {
+          "missing": 0,
+          "extra": 0,
+          "quantity": 0,
+          "unexplained_breaks": 0
+        }
+      },
+      {
+        "label": "planted: 3 breaks + a 2:1 split",
+        "dir": "build-equity/v7-w4-recon-mut",
+        "expect": {
+          "missing": 1,
+          "extra": 1,
+          "quantity": 1,
+          "explained": 1,
+          "unexplained_breaks": 3
+        }
+      }
+    ],
+    "nav_runs": {
+      "off": "build-equity/v7-w4-nav-off-run",
+      "on": "build-equity/v7-w4-nav-on-run",
+      "max_ratio": 1.3
+    },
+    "holdings": "build-equity/v7-w4-holdings/manifest.json",
+    "flow_per_row": 3,
+    "flow_caption": "The daily operating loop as built, measured on the v6.1 book (the v7-w4-* runs; the v7.1 book uses the same code and has not been replayed through it): the NAV replay writes per-name holdings; decide rebuilds the target from the actual positions with the replay's own functions; orders are lot-rounded shares for a market-on-close fill; the next day's broker positions are reconciled against the expected holdings; the monitor flags drift. Every arrow is a pinned file. Sources: task-W4 and task-W3 reports.",
+    "flow": [
+      {
+        "title": "NAV replay, --emit-holdings",
+        "lines": [
+          "per-name held / target / order state",
+          "{a:ops.holdings_rows|int} rows, {a:ops.holdings_sessions|int} sessions",
+          "binary f64 + index, SHA-pinned"
+        ]
+      },
+      {
+        "title": "decide --asof D",
+        "kind": "key",
+        "lines": [
+          "targets from the actual positions",
+          "the replay's own DECIDE code",
+          "health, freshness, TC band"
+        ]
+      },
+      {
+        "title": "orders_shares.csv",
+        "lines": [
+          "lot-rounded shares at the D close",
+          "min notional; exits always kept",
+          "MOC fill at D+1, 1% ADV cap"
+        ]
+      },
+      {
+        "title": "Broker (outside the platform)",
+        "lines": [
+          "fills and positions at D+1",
+          "corporate actions file"
+        ]
+      },
+      {
+        "title": "reconcile",
+        "kind": "key",
+        "lines": [
+          "expected vs broker shares",
+          "splits explained by actions",
+          "exit 5 on unexplained breaks"
+        ]
+      },
+      {
+        "title": "book monitor M1-M4",
+        "lines": [
+          "risk-model bias, sleeve drift",
+          "execution cost, crowding",
+          "flags only; owner decides"
+        ]
+      }
+    ]
+  },
+  "integrity": {
+    "runs": [
+      {
+        "label": "n32 (v7 grid C1-C3)",
+        "nav_summ": {
+          "path": "build-equity/mega-nav-v7-summ-n32.json",
+          "sha256": "e28eb287692805251f292021a883b9dc4b36cb62d0ff0c5197e87d942e2078e5"
+        }
+      },
+      {
+        "label": "n33 (+ spo-v1)",
+        "nav_summ": {
+          "path": "build-equity/mega-nav-v7-summ-n33.json",
+          "sha256": "a090d246fdb76b966cf4732d610a7c70035f85d034c115e912d69c48194e09eb"
+        }
+      },
+      {
+        "label": "n34 (+ v7.0)",
+        "nav_summ": {
+          "path": "build-equity/mega-nav-v70-summ-n34.json",
+          "sha256": "8c758a0f1600cbd95deeb5947353a5a1386e7382b1d429a1506cbc99f1f74444"
+        }
+      },
+      {
+        "label": "n35 (+ U-lo3)",
+        "nav_summ": {
+          "path": "build-equity/mega-nav-v70-lo3-summ-n35.json",
+          "sha256": "ffa05cbdd37ce5e06b1d1eedad2551cb78e20cf1f59a779b7be18cb00d07d610"
+        }
+      },
+      {
+        "label": "n36 (+ spo-v2)",
+        "nav_summ": {
+          "path": "build-equity/mega-nav-v70-lo3-spo-v2-summ-n36.json",
+          "sha256": "9f8c3cdac517acfabb390ce1c7d092aac7937599d558ba5e681b4a8560c3eb9e"
+        }
+      },
+      {
+        "label": "n37 (+ v7.1)",
+        "primary": true,
+        "nav_summ": {
+          "path": "build-equity/mega-nav-v71-summ-n37.json",
+          "sha256": "98b44b246d53296b37bd0f1e7157f785d3b67e107d6f5bde078f71bb76089f98"
+        }
+      }
+    ],
+    "final": "v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+    "cells": [
+      {
+        "dir": "v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "V7.1 final (pitched)"
+      },
+      {
+        "dir": "v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "U-lo3 (v7.0 on lo3)"
+      },
+      {
+        "dir": "v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "v7.0 (wave 1)"
+      },
+      {
+        "dir": "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+        "label": "V6.1 baseline"
+      },
+      {
+        "dir": "v70-lo3-spo-v2-G1.0",
+        "label": "spo-v2 (rejected)"
+      },
+      {
+        "dir": "v61u-spo-v1-L1.247",
+        "label": "spo-v1 (defect)"
+      }
+    ],
+    "pbo": [
+      {
+        "label": "all 29 v5-v6.1 cells",
+        "path": "build-equity/mega-nav-v61-pbo-n29-1.json",
+        "sha256": "c41ec91a1b6c553c1861903fdf21128d5fc9a70aa7a7dba008e8ff7c1309b42e"
+      },
+      {
+        "label": "v7 grid: v6.1 + C1-C3",
+        "path": "build-equity/mega-nav-v7-pbo-grid.json",
+        "sha256": "8cf49a302faf7c1fd78fbe539a640037295d18b550478a3a31c65517fe9aa4a5"
+      },
+      {
+        "label": "v7 grid + spo-v1",
+        "path": "build-equity/mega-nav-v7-pbo-grid5.json",
+        "sha256": "5164fd6cf1114cd85298522a114c6e7267460837974ad25b6864ffe5e21dc922"
+      },
+      {
+        "label": "v7 grid + spo-v1 + v7.0",
+        "path": "build-equity/mega-nav-v70-pbo-grid6.json",
+        "sha256": "f51ac0d4d9255e3a00ee3518c54676f5a29aa0c27559e6b7d5211240c248e389"
+      },
+      {
+        "label": "all 34 cells",
+        "path": "build-equity/mega-nav-v70-pbo-n34.json",
+        "sha256": "d82990aa1d7d316ea52c3f97454f4c39ac237ce97002e577f15a158be323b209"
+      },
+      {
+        "label": "all 35 cells (+ U-lo3)",
+        "path": "build-equity/mega-nav-v70-lo3-pbo-n35.json",
+        "sha256": "efe95953669f2e9bcd183717bfa9765bc97497bccb939a1a2542cd9cd9fe462a"
+      },
+      {
+        "label": "all 36 cells (+ spo-v2)",
+        "path": "build-equity/mega-nav-v70-lo3-spo-v2-pbo-n36.json",
+        "sha256": "df74fd29869a17183c24ee96f062abbf9416bea83eae713623567e20c3cbb0e1"
+      },
+      {
+        "label": "all 37 cells (+ v7.1)",
+        "path": "build-equity/mega-nav-v71-pbo-n37.json",
+        "sha256": "bc112b38f95aef57bd3d355b594fd6fb9d9758952422c4193e43f0464d9bb1ca"
+      }
+    ],
+    "pbo_max": 0.2,
+    "freeze_gate": {
+      "name": "Freeze gate (pre-registered: S2 net >= 1.0 AND mechanics AND cell-count DSR >= .95)",
+      "checks": [
+        {
+          "label": "Net Sharpe, S2",
+          "metric": "net_sharpe",
+          "op": "ge",
+          "value": 1.0,
+          "fmt": "+.3f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Gross leverage, mean over all rows",
+          "metric": "mean_gross_leverage_all_rows",
+          "op": "between",
+          "lo": 0.9,
+          "hi": 1.05,
+          "fmt": ".4f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Net leverage, mean over all rows",
+          "metric": "mean_net_leverage_all_rows",
+          "op": "abs_le",
+          "value": 0.02,
+          "fmt": "+.4f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Daily turnover tau, mean",
+          "metric": "tau_gmv_mean",
+          "op": "le",
+          "value": 0.2,
+          "fmt": ".4f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Daily turnover tau, p95",
+          "metric": "tau_gmv_p95",
+          "op": "le",
+          "value": 0.3,
+          "fmt": ".4f",
+          "threshold_fmt": ".2f"
+        },
+        {
+          "label": "Deflated Sharpe, cell count (never the effective-N figure)",
+          "metric": "deflated.dsr",
+          "op": "ge",
+          "value": 0.95,
+          "fmt": ".3f",
+          "threshold_fmt": ".2f"
+        }
+      ]
+    }
+  },
+  "trial_ledger": {
+    "path": "build-equity/trials.jsonl",
+    "kind": "construction",
+    "eras": [
+      {
+        "label": "v7 spo",
+        "match": "-spo-v\\d"
+      },
+      {
+        "label": "v7 aim-partial-v6",
+        "match": "-v6C\\d+$"
+      },
+      {
+        "label": "v7 universe trial",
+        "match": "-lo\\d+(-|$)"
+      },
+      {
+        "label": "v7.1 library",
+        "match": "^mega-nav-v71"
+      },
+      {
+        "label": "v7.0 library",
+        "match": "^mega-nav-v70"
+      },
+      {
+        "label": "v6.1",
+        "match": "^mega-nav-v61u"
+      },
+      {
+        "label": "v6 universe + L",
+        "match": "^mega-nav-v6u"
+      },
+      {
+        "label": "v6 library + construction",
+        "match": "^mega-nav-v6l"
+      },
+      {
+        "label": "v5.1",
+        "match": "^mega-nav-v51"
+      },
+      {
+        "label": "v5 grid",
+        "match": "^mega-nav-v5-"
+      }
+    ],
+    "verdicts": {},
+    "validation": {
+      "spent": 2,
+      "budget": 3,
+      "window": "2023-2024: #1 (v3), #2 (v4.1);",
+      "note": "#3 needs the owner's gate U1; nothing of 2023+ was read in v6, v6.1 or v7"
+    },
+    "holdout": {
+      "window": "2025+",
+      "status": "reserved"
+    }
+  },
+  "layout": [
+    {
+      "id": "summary",
+      "num": "0",
+      "title": "Executive summary",
+      "blocks": [
+        "kpi",
+        "gates",
+        {
+          "type": "callout",
+          "key": "caveats"
+        },
+        {
+          "type": "t_facts",
+          "key": "headline"
+        }
+      ]
+    },
+    {
+      "id": "glossary",
+      "num": "1",
+      "title": "Symbology and glossary",
+      "blocks": [
+        "glossary",
+        {
+          "type": "t_cellname"
+        }
+      ]
+    },
+    {
+      "id": "data",
+      "num": "2",
+      "title": "Data and universe",
+      "blocks": [
+        {
+          "type": "fig_flow",
+          "per_row": 4,
+          "caption": "The pipeline from raw data to the gated book; every box is a pinned artefact or a pre-registered rule. Sources: v4-prereg.md, handoff 5 section 3."
+        },
+        "t_fields",
+        "universe",
+        {
+          "type": "callout",
+          "key": "survivorship"
+        }
+      ]
+    },
+    {
+      "id": "alphas",
+      "num": "3",
+      "title": "Alpha library",
+      "blocks": [
+        "t_library",
+        "fig_ic_panel",
+        "fig_decay",
+        "fig_tau_ic",
+        "fig_theme_year",
+        "t_changes",
+        "t_dsl",
+        {
+          "type": "h3",
+          "text": "Alpha report cards"
+        },
+        {
+          "type": "prose",
+          "paragraphs": [
+            "**One card per member.** Three card sets: v7.1 (the pitched library, first), v7.0 and the v6.1 baseline. Each library member has a report card built from the TRAIN data the admission used: rank IC by horizon and year, IC decay, turnover and Sharpe of its own dollar-neutral rank book, size and industry splits, coverage, and its correlation with every admitted member. The card recomputes the IC and checks it against the IC runner at every horizon: in the v7.1 set {a:cards.runner_pass|d} of {a:cards.n|d} members pass, {a:cards.runner_fail|d} fail and {a:cards.runner_na|d} have no runner IC to compare (their IC columns are n/a)."
+          ]
+        },
+        "t_report_cards"
+      ]
+    },
+    {
+      "id": "admission",
+      "num": "4",
+      "title": "Admission and composition",
+      "blocks": [
+        "t_rules",
+        "fig_alpha_t",
+        "fig_theme_weights",
+        {
+          "type": "fig_corr",
+          "kind": "ic"
+        },
+        {
+          "type": "fig_corr",
+          "kind": "signal"
+        },
+        {
+          "type": "fig_corr",
+          "kind": "theme",
+          "source": "sig_corr"
+        },
+        "t_theme_corr",
+        "t_alphas"
+      ]
+    },
+    {
+      "id": "construction",
+      "num": "5",
+      "title": "Portfolio construction",
+      "blocks": [
+        {
+          "type": "prose",
+          "key": "aim_equations"
+        },
+        "fig_ladder",
+        {
+          "type": "t_steps",
+          "id": "t-steps",
+          "prior": "+",
+          "caption": "Every v6, v6.1 and v7 construction, universe, composition and library step, paired against its own pre-registered parent (S2).",
+          "cells": [
+            "v6l-ew-t.05-d.1-fixed",
+            "v6l-ew-t.05-d.1-fixed-x.05",
+            "v6l-ew-t.05-d.1-fixed-x.1",
+            "v6l-ew-t.05-d.1-fixed-obdelta",
+            "v6l-ew-t.05-d.1-fixed-obdelta-x.05",
+            "v6l-ew-t.05-d.1-fixed-obdelta-x.1",
+            "v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+            "v6l-ew-t.03-d.1-fixed-obdelta-x.05",
+            "v6l-ew-t.05-d.05-fixed-obdelta-x.05",
+            "v6l-ew-t.05-d.2-fixed-obdelta-x.05",
+            "v6l-ew6-t.05-d.1-fixed-obdelta-x.05-loc",
+            "v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc-nind-v1",
+            "v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc-nind-v2",
+            "v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+            "v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+            "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+            "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C1",
+            "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C2",
+            "v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C3",
+            "v61u-spo-v1-L1.247",
+            "v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+            "v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+            "v70-lo3-spo-v2-G1.0",
+            "v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+          ]
+        },
+        "fig_exposure",
+        "fig_fills",
+        "fig_turnover",
+        "fig_scatter"
+      ]
+    },
+    {
+      "id": "costs",
+      "num": "6",
+      "title": "Cost model and capacity",
+      "blocks": [
+        "t_cost_model",
+        "t_financing",
+        "costdec",
+        "fig_cost_drag",
+        "capacity",
+        {
+          "type": "h3",
+          "text": "Capacity curve by replay"
+        },
+        {
+          "type": "prose",
+          "paragraphs": [
+            "**How much capital the book takes.** The capacity pass replays the final book at ${a:capcurve.rows.0.nav_bn|g}bn to ${a:capcurve.max.nav_bn|g}bn: the square-root impact is scaled to each NAV and the 1%-of-ADV participation cap binds on the larger book. Net Sharpe falls from {a:capcurve.x1.net_sharpe|+.3f} at ${a:capcurve.base_nav_bn|g}bn to {a:capcurve.max.net_sharpe|+.3f} at ${a:capcurve.max.nav_bn|g}bn ({a:capcurve.sr_retained_max|pct0} retained), and cost per traded dollar rises from {a:capcurve.x1.cost_bps_per_traded_dollar|.2f} to {a:capcurve.max.cost_bps_per_traded_dollar|.2f} bps. Against a net-SR threshold of {a:capcurve.threshold|g} the curve is {a:capcurve.cross_how} (the crossing is interpolated in log NAV when there is one). At the top of the grid {a:capcurve.max.capped_share|pct1} of fills hit the cap, so fills are rationed as well as priced higher.",
+            "**Impact-law risk.** The same $1bn book priced with the Kyle-Obizhaeva invariance law (S2-KO) or the Frazzini-Israel-Moskowitz fit (S2-FIM) instead of the square-root law nets {a:capcurve.book.S2-KO.net_sharpe|+.3f} and {a:capcurve.book.S2-FIM.net_sharpe|+.3f}, against {a:capcurve.book.S2.net_sharpe|+.3f} under S2. S2 stays the primary scenario as pre-registered; the alternatives are reported, not chosen."
+          ],
+          "check": [
+            "The capacity rows scale impact by m^0.5 and the participation cap by 1/m on the same construction; the book does not adapt to its size (no capacity-aware optimiser yet), so the curve is a lower bound on what a size-aware book could do.",
+            "The x1 row must equal S2 bit for bit (flag in the extras file; the stress run's S2 daily CSV is byte-identical to the v7.1 cell); the cost-law books share the S2 construction, financing and 1% cap."
+          ]
+        },
+        "capacity_curve",
+        {
+          "type": "callout",
+          "key": "cost_gaps"
+        }
+      ]
+    },
+    {
+      "id": "protocol",
+      "num": "7",
+      "title": "Backtest protocol and statistics",
+      "blocks": [
+        {
+          "type": "t_facts",
+          "key": "stats"
+        },
+        {
+          "type": "callout",
+          "key": "one_se"
+        },
+        {
+          "type": "h3",
+          "text": "Integrity statistics after the v7 trials"
+        },
+        {
+          "type": "prose",
+          "paragraphs": [
+            "**How honest the statistics are.** The pitched cell is scored at N {a:integrity.final.n|d}, every scored TRAIN construction cell in the ledger. Its cell-count DSR is {a:integrity.final.dsr|.4f} (SR0 {a:integrity.final.sr0|.3f}): the freeze gate asks for .95 and is UNMET. Against the effective number of independent trials ({a:integrity.final.n_eff|d} ONC clusters of {a:integrity.final.n_trials|d}) it is {a:integrity.final.dsr_eff|.4f}; that figure is reported beside the gate statistic and never replaces it. The table shows how the same cells moved as N grew: the v6.1 baseline scored {j:n32.28.deflated.dsr|.4f} at N {j:n32.28.deflated.n|d} and {j:n33.28.deflated.dsr|.4f} at N {j:n33.28.deflated.n|d}, once the defective spo-v1 cell (S2 net {@v61u-spo-v1-L1.247:summ.net_sharpe|+.3f}) entered the cross-cell variance; the earlier handoff's \"N 33\" figure for the baseline was the N {j:n32.28.deflated.n|d} value. The protocol's variance is all ledgered cells (ruling 7.0-e); whether defect cells belong in it is an owner question. PSR(0) is {a:integrity.final.psr0|.4f}, and rejecting SR 0 at 95% needs a track record of {a:integrity.final.mintrl0_y|.1f} years ({a:integrity.final.mintrl0_s|int} sessions). CSCV PBO over all {a:integrity.pbo.-1.n|d} cells is {a:integrity.pbo.-1.pbo|.3f}, against a pre-registered limit of {a:integrity.pbo_max|g}."
+          ]
+        },
+        "t_integrity",
+        {
+          "type": "h3",
+          "text": "Trial ledger"
+        },
+        {
+          "type": "prose",
+          "paragraphs": [
+            "Every scored TRAIN construction cell is a line in the append-only ledger, identified by the SHA-256 of its daily return series, so a re-run adds no trial. The ledger's N is the N of the cell-count DSR. Admission and composition trials are counted in Appendix A; they are not in this N. Every line carries its verdict from the cell table: the v7 lines are C1-C3 and spo-v2 rejected, spo-v1 rejected as a defect, v7.0, U-lo3 and v7.1 accepted. Validation: 2 of 3 trials spent (2023-2024, book level, #1 v3 and #2 v4.1); 2025 onward reserved."
+          ]
+        },
+        "t_trial_ledger"
+      ]
+    },
+    {
+      "id": "results",
+      "num": "8",
+      "title": "Results",
+      "blocks": [
+        "fig_equity",
+        "t_drawdowns",
+        "fig_returns",
+        "fig_rolling",
+        "t_retstats",
+        "t_attrib",
+        "t_stress",
+        "t_cells",
+        {
+          "type": "callout",
+          "key": "v7f"
+        }
+      ]
+    },
+    {
+      "id": "risks",
+      "num": "9",
+      "title": "Risks, open items and path to production",
+      "blocks": [
+        "t_risks",
+        {
+          "type": "h3",
+          "text": "Risk model: forecast bias"
+        },
+        {
+          "type": "prose",
+          "paragraphs": [
+            "**Is the risk forecast honest?** A risk model is unbiased when realised returns divided by the forecast volatility have a standard deviation of 1 (the bias statistic b); b below 1 means realised risk came in under the forecast. Under {j:risk11.model} over 252-session windows b averages {a:bias.fam.factor.b252|.3f} for the factor-mimicking portfolios and {a:bias.fam.random.b252|.3f} for random dollar-neutral portfolios. {a:bias.structural_factors|d} short-history factors are forecast structurally, and {a:bias.dropped_total|d} observations were dropped for an unforecast exposure.",
+            "**Why v1.1: atx-risk-v1 was corrupt at the source.** The R2 review of spo-v2 (ledger, 2026-09-29) found that one asset_growth outlier collapsed that style into a one-name dummy on 259 dates; the resulting structural specific variance reached 3.9e12 and decile shrinkage spread it to 176 names (the F2 pin's maximum daily specific variance was 9.0e12). v1.1 fences every descriptor at a robust MAD bound, does not regress a style below {j:risk11.robustness.style_floor_effective_names|g} effective names, and refuses any specific variance outside (0, {j:risk11.robustness.specific_variance_bound|g}) instead of clamping it: the largest daily specific variance is now {j:risk11.robustness.max_daily_specific_variance.value|.3f}, with {j:risk11.robustness.invariant_refusals|d} refusals and {j:risk11.robustness.style_dates_dropped|d} style-dates dropped. The risk model is descriptive in v7: it is not an input of the pitched book, and spo-v2, the one construction that used it, was rejected."
+          ]
+        },
+        "t_risk_bias",
+        {
+          "type": "h3",
+          "text": "Monitoring plan"
+        },
+        "t_monitor"
+      ]
+    },
+    {
+      "id": "operations",
+      "num": "10",
+      "title": "Running the book: decisions, orders, reconciliation, monitoring",
+      "blocks": [
+        {
+          "type": "prose",
+          "paragraphs": [
+            "**From model to orders (measured on the v6.1 book).** The loop below was built and measured in task W4 on the v6.1 book (the v7-w4-* runs); the v7.1 book uses the same code and has not been replayed through it. Each day the replay's own code turns the actual positions into target weights (`decide`), then into lot-rounded share orders for a market-on-close fill; the next day's broker positions are reconciled against the expected holdings. At {a:ops.n_decisions_read|d} TRAIN as-of dates the decided targets equal the replay's bit for bit ({a:ops.parity_total|d} mismatches), at most {a:ops.wall_max|.1f} s per decision. Reconciliation finds {a:ops.self_breaks|d} breaks when the broker file is the expected one, and {a:ops.expect_met|d} of {a:ops.expect_n|d} reconcile runs give exactly the expected counts, the planted breaks included. Emitting the holdings costs {a:ops.wall_ratio|.2f}x the NAV wall time."
+          ],
+          "check": [
+            "All as-of dates are TRAIN dates; no live data or broker has touched the loop yet.",
+            "Health warnings (no locate file, stale names, data freshness under --allow-stale) are expected on a historical replay and are named per decision."
+          ]
+        },
+        "ops_loop",
+        {
+          "type": "h3",
+          "text": "Monitor baseline (M1-M4)"
+        },
+        {
+          "type": "prose",
+          "paragraphs": [
+            "The daily book monitor replayed over TRAIN puts {a:monitor_base.sleeve_counts.alarm|d} sleeve(s) in alarm ({a:monitor_base.alarming_names}), {a:monitor_base.sleeve_counts.warn|d} on warn and {a:monitor_base.sleeve_counts.ok|d} at ok. It raises flags only; retiring or reweighting a sleeve stays an owner decision. M1, the bias test of the book itself, reads {a:monitor_base.checks.M1.status}: it needs a risk run that includes the book's holdings. Because the baseline sets its thresholds on the same TRAIN window it is checked on, this is a calibration, not a test; the first live read is the test."
+          ]
+        },
+        "t_monitor_baseline"
+      ]
+    },
+    {
+      "id": "appendix",
+      "num": "A",
+      "title": "Appendix: reproducibility, trial accounting, input files",
+      "blocks": [
+        "t_pins",
+        "checks",
+        "t_trials",
+        "t_files"
+      ]
+    }
+  ]
+}
