@@ -2445,7 +2445,9 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
       ATX_TRY(auto summary, summarize_nav(result, limits));
       summaries.push_back(std::move(summary));
     }
-    v7::capture(scenarios, results, summaries); // L4 hook
+    // L4 hook: records the books; spo's specific-ceiling tripwire voids the run here, before
+    // publish_nav creates the output directory (Ok without an extension).
+    ATX_TRY_VOID(v7::capture(scenarios, results, summaries));
     const NavRun run{cfg, limits, base, scenarios, results, summaries, blend.manifest_json,
                      loaded.binding};
     // Console provenance only: the cache changes no published byte, so no file records it.

@@ -49,6 +49,7 @@ struct ScopedNavExtension::State {
   std::vector<f64> costs;
   cost_v2::AimV6Decision decision;
   std::unique_ptr<spo::Engine> engine; // --rule spo-v1
+  std::string void_reason;             // capture(): the tripwire voided the run
   [[nodiscard]] co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
                                 bool rebalance, f64 spent, f64 nav_post,
                                 const std::vector<f64>& desired, std::vector<f64>& planned,
@@ -80,7 +81,8 @@ bool spo_flag(std::string_view key) {
          key == "--ic-book" || key == "--w-max" || key == "--adv-cap-q" ||
          key == "--adv-trade-p" || key == "--spo-iters" || key == "--spo-tol" ||
          key == "--target-vol" || key == "--spo-horizon" || key == "--spo-books" ||
-         key == "--alpha-horizon" || key == "--specific-ceiling";
+         key == "--alpha-horizon" || key == "--specific-ceiling" ||
+         key == "--specific-ceiling-void" || key == "--spo-gross";
 }
 bool spo_rule(std::string_view rule) { return rule == "spo-v1" || rule == "spo-v2"; }
 const char* pass_name(NavV7Pass pass) { return pass == NavV7Pass::Main ? "main" : "capacity"; }
@@ -171,13 +173,15 @@ Json declarations(const ScopedNavExtension::State& s) {
         {"rate_clip", Json::array({v6.clip_lo, v6.clip_hi})},
         {"reference_decisions", v6.reference_decisions}};
   if (s.engine) {
-    Json block{{"rule", spo::declaration(s.options.spo_params)},
-               {"parameters", spo::parameters_json(s.options.spo_params, s.engine->horizon())},
+    const auto& p = s.options.spo_params;
+    Json block{{"rule", spo::declaration(p)},
+               {"parameters",
+                spo::parameters_json(p, s.engine->horizon(), s.engine->gross_budget())},
                {"calibration", spo::calibration_json(s.engine->calibration())}};
     if (s.options.spo_risk)
       block["risk_model"] = Json{{"directory", s.options.spo_risk->directory()},
                                  {"manifest_sha256", s.options.spo_risk->manifest_sha256()}};
-    j["spo_v1"] = std::move(block);
+    j[spo::json_key(p)] = std::move(block);
   }
   return j;
 }
@@ -253,14 +257,20 @@ std::string capacity_csv(const Json& rows) {
   }
   return text;
 }
+// A complete run's extras, or (void_reason non-empty) a voided run's: the spo diagnostics
+// and the transfer coefficients only, with status "void" -- no NAV or return quantity.
 co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtension& ext,
-                        const NavV7Options& o) {
+                        const NavV7Options& o, const std::string& void_reason) {
   Json files = Json::object();
   const auto tc_path = dir / "v7_transfer_coefficient.csv";
   ATX_TRY_VOID(write_text(tc_path, tc_csv(ext.tc_records())));
   ATX_TRY(auto tc_sha, co::sha256_file(tc_path.string()));
   files["v7_transfer_coefficient.csv"] = tc_sha;
   Json extras{{"schema", "atx.nav-v7-extras/v1"}, {"capacity_curve", o.capacity}};
+  if (!void_reason.empty()) {
+    extras["status"] = "void";
+    extras["void_reason"] = void_reason;
+  }
   if (o.capacity) {
     Json rows = Json::array();
     const BookRecord* primary = nullptr;
@@ -286,9 +296,12 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
     ATX_TRY_VOID(write_text(path, spo::diagnostics_csv(engine->rows())));
     ATX_TRY(auto sha, co::sha256_file(path.string()));
     files["spo_diagnostics.csv"] = sha;
-    extras["spo_v1"] =
-        Json{{"parameters", spo::parameters_json(engine->params(), engine->horizon())},
+    const auto& p = engine->params();
+    extras[spo::json_key(p)] =
+        Json{{"parameters", spo::parameters_json(p, engine->horizon(), engine->gross_budget())},
              {"calibration", spo::calibration_json(engine->calibration())},
+             {"tripwire", spo::tripwire_json(p, engine->rows())},
+             {"diagnostics_units", spo::diagnostics_units_json()},
              {"books", spo::summary_json(engine->rows())}};
   }
   extras["files"] = std::move(files);
@@ -385,6 +398,7 @@ void ScopedNavExtension::begin_run(NavV7Pass pass) {
 std::span<const TcRecord> ScopedNavExtension::tc_records() const noexcept { return state_->tc; }
 std::span<const BookRecord> ScopedNavExtension::books() const noexcept { return state_->books; }
 const spo::Engine* ScopedNavExtension::spo_engine() const noexcept { return state_->engine.get(); }
+const std::string& ScopedNavExtension::void_reason() const noexcept { return state_->void_reason; }
 
 bool claims_nav_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
@@ -428,10 +442,22 @@ co::Status plan(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
   return detail::update_weights(x, cfg.target, d, rebalance, spent, desired, planned, out, rates);
 }
 
-void capture(std::span<const NavScenario> scenarios, std::span<const NavReplayResult> results,
-             std::span<const NavSummary> summaries) {
+co::Status capture(std::span<const NavScenario> scenarios,
+                   std::span<const NavReplayResult> results,
+                   std::span<const NavSummary> summaries) {
   auto* s = active_state;
-  if (!s || scenarios.size() != results.size() || results.size() != summaries.size()) return;
+  if (!s) return co::Ok();
+  // The spo specific-ceiling tripwire (R2 M-1), read before any byte is published: the
+  // replay returns this error before its output directory exists, so no NAV or return file
+  // (and no return statistic on the console) exists for a void run.
+  if (s->engine) {
+    auto tripwire = spo::ceiling_tripwire(s->engine->params(), s->engine->rows());
+    if (!tripwire) {
+      s->void_reason = tripwire.error().message();
+      return tripwire;
+    }
+  }
+  if (scenarios.size() != results.size() || results.size() != summaries.size()) return co::Ok();
   for (usize k = 0; k < scenarios.size(); ++k) {
     BookRecord b;
     b.pass = s->pass; b.book = book_label(scenarios[k]);
@@ -447,6 +473,7 @@ void capture(std::span<const NavScenario> scenarios, std::span<const NavReplayRe
     b.participation_p95 = r.participation_p95; b.participation_max = r.participation_max;
     s->books.push_back(std::move(b));
   }
+  return co::Ok();
 }
 
 void extend_recipe(Json& recipe) {
@@ -493,9 +520,14 @@ void extend_summary(Json& summary) {
   }
   summary["v7"] = Json{{"declarations", declarations(*s)}, {"books", std::move(books)},
       {"extras", "v7_transfer_coefficient.csv, capacity_curve.csv (with --capacity-curve), "
-                 "spo_diagnostics.csv (spo-v1) and v7_extras.json are written after this "
+                 "spo_diagnostics.csv (spo-v1/v2) and v7_extras.json are written after this "
                  "summary"}};
-  if (s->engine) summary["v7"]["spo_v1_books"] = spo::summary_json(s->engine->rows());
+  if (s->engine) {
+    const auto& p = s->engine->params();
+    const std::string key = spo::json_key(p);
+    summary["v7"][key + "_books"] = spo::summary_json(s->engine->rows());
+    summary["v7"][key + "_tripwire"] = spo::tripwire_json(p, s->engine->rows());
+  }
   if (const char* id = rule_id(s->options);
       id && summary.contains("rule") && summary.at("rule").is_string())
     summary["rule"] = relabel_v6(summary.at("rule").get<std::string>(), id);
@@ -526,9 +558,13 @@ void append_help(std::ostream& out) {
          "[--ic-book .02] [--w-max .01] [--adv-cap-q .05] [--adv-trade-p .01] "
          "[--spo-iters 500] [--spo-tol 1e-8] [--spo-horizon (default 1/theta)] "
          "[--spo-books all|primary] [--alpha-horizon (default 1)] [--specific-ceiling "
-         "(default inf)] (adds <output>/spo_diagnostics.csv; fixed rate only)] [--rule spo-v2 "
-         "(spo-v1 flags; defaults --alpha-horizon = the spo horizon, --specific-ceiling 1, "
-         "gamma = the vol-target gamma)]\n";
+         "(default inf)] [--specific-ceiling-void on|off (default off)] [--spo-gross G (the "
+         "hard cap on planned gross; default --aim-leverage; (0, 1.5 x --aim-leverage])] "
+         "(adds <output>/spo_diagnostics.csv; fixed rate only)] [--rule spo-v2 (spo-v1 "
+         "flags; defaults --alpha-horizon 21 (independent of --spo-horizon), --spo-gross 1, "
+         "--specific-ceiling 1, --specific-ceiling-void on (a clamp voids the run: exit 3, "
+         "diagnostics only, no NAV or return file; not with --emit-holdings), gamma = the "
+         "vol-target gamma)]\n";
 }
 
 co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
@@ -636,7 +672,15 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       else if (key == "--spo-horizon") sp.horizon = number(value);
       else if (key == "--alpha-horizon") sp.alpha_horizon = number(value);
       else if (key == "--specific-ceiling") sp.specific_ceiling = number(value);
-      else if (value == "all" || value == "primary") sp.all_books = value == "all";
+      else if (key == "--spo-gross" && !std::isnan(number(value))) // NaN would read as L
+        sp.gross_budget = number(value);
+      else if (key == "--spo-gross") throw std::invalid_argument("--spo-gross G, a number");
+      else if (key == "--specific-ceiling-void" && (value == "on" || value == "off"))
+        sp.void_on_capped = value == "on";
+      else if (key == "--specific-ceiling-void")
+        throw std::invalid_argument("--specific-ceiling-void on|off");
+      else if (key == "--spo-books" && (value == "all" || value == "primary"))
+        sp.all_books = value == "all";
       else throw std::invalid_argument("--spo-books all|primary");
     }
     if (o.spo_v1) {
@@ -647,6 +691,20 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
         throw std::invalid_argument("spo-v1 needs --risk-model and --risk-model-sha256");
       const auto valid = spo::validate_params(o.spo_params);
       if (!valid) throw std::invalid_argument(valid.error().to_string());
+      // G against the replay's --aim-leverage (its default when absent). spo-v1 without
+      // --spo-gross is G = L: nothing new to refuse.
+      if (!std::isnan(o.spo_params.gross_budget)) {
+        const auto* leverage = value_of("--aim-leverage");
+        const f64 aim = leverage ? number(*leverage) : TargetReplayConfig{}.aim_leverage;
+        const auto budget = spo::validate_gross_budget(o.spo_params.gross_budget, aim);
+        if (!budget) throw std::invalid_argument(budget.error().to_string());
+      }
+      // The void promise (no NAV file before the tripwire is read) excludes the holdings
+      // stream, which writes NAV during the replay.
+      if (o.spo_params.void_on_capped && value_of("--emit-holdings"))
+        throw std::invalid_argument("--specific-ceiling-void on and --emit-holdings: the "
+                                    "holdings stream writes NAV before the tripwire is read "
+                                    "(pass --specific-ceiling-void off to emit holdings)");
     }
     if (!output || output->empty()) throw std::invalid_argument("--output is required");
     if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed")
@@ -689,7 +747,20 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
     const std::filesystem::path dir(parsed->output);
     ScopedNavExtension extension(o);
     extension.begin_run(NavV7Pass::Main);
-    if (const int code = run(args); code != 0) return code;
+    if (const int code = run(args); code != 0) {
+      if (extension.void_reason().empty()) return code;
+      // A void run (spo tripwire in capture()): the replay stopped before its output
+      // directory existed; the diagnostics go to a fresh <output> with no NAV or return file.
+      if (!std::filesystem::create_directory(dir)) {
+        err << "nav v7: void run; " << dir.string() << " exists, diagnostics not written\n";
+        return 1;
+      }
+      const auto status = write_extras(dir, extension, o, extension.void_reason());
+      if (!status) { err << status.error().to_string() << '\n'; return 1; }
+      out << "nav v7: run VOID (" << extension.void_reason() << "); spo diagnostics written to "
+          << dir.string() << '\n';
+      return 3;
+    }
     if (o.capacity) {
       std::vector<std::string> tokens{args.front()};
       for (usize k = 1; k < args.size(); ++k) {
@@ -703,7 +774,7 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
       extension.begin_run(NavV7Pass::Capacity);
       if (const int code = run(std::move(tokens)); code != 0) return code;
     }
-    const auto status = write_extras(dir, extension, o);
+    const auto status = write_extras(dir, extension, o, std::string());
     if (!status) { err << status.error().to_string() << '\n'; return 1; }
     // Console only: solve timing is not a published byte.
     if (const auto* engine = extension.spo_engine()) {

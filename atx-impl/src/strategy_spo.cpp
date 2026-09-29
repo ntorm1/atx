@@ -11,6 +11,7 @@
 #include <limits>
 #include <locale>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -378,20 +379,23 @@ bool coupling_met(const Problem& p, std::span<const f64> w) {
 // ---- parameters and problem validation ---------------------------------------------------
 SpoParams v2_params() {
   SpoParams p;
-  p.alpha_horizon = unset;  // h = H
-  p.specific_ceiling = 1.0; // daily specific vol 100%
+  p.alpha_horizon = 21.0;   // the IC's measurement horizon, independent of H
+  p.gross_budget = 1.0;     // a hard cap on planned gross (R6': mean gross in [.90, 1.05])
+  p.specific_ceiling = 1.0; // daily specific vol 100%, a tripwire:
+  p.void_on_capped = true;  // one clamped entry voids the run
   p.gamma_rule = GammaRule::Vol;
   p.version = 2;
   return p;
 }
 const char* rule_name(const SpoParams& p) { return p.version == 2 ? "spo-v2" : "spo-v1"; }
+const char* json_key(const SpoParams& p) { return p.version == 2 ? "spo_v2" : "spo_v1"; }
 
 co::Status validate_params(const SpoParams& p) {
   const bool gamma_ok = std::isnan(p.gamma) || (finite_positive(p.gamma) && p.gamma <= 1e12);
   const bool horizon_ok = std::isnan(p.horizon) || (p.horizon >= 1 && p.horizon <= 10000);
-  const bool alpha_ok =
-      std::isnan(p.alpha_horizon) || (p.alpha_horizon >= 1 && p.alpha_horizon <= 10000);
-  if (!gamma_ok || !horizon_ok || !alpha_ok || !(p.ic_book > 0 && p.ic_book <= 1) ||
+  const bool alpha_ok = p.alpha_horizon >= 1 && p.alpha_horizon <= 10000; // NaN refused
+  const bool budget_ok = std::isnan(p.gross_budget) || finite_positive(p.gross_budget);
+  if (!gamma_ok || !horizon_ok || !alpha_ok || !budget_ok || !(p.ic_book > 0 && p.ic_book <= 1) ||
       !(p.w_max > 0 && p.w_max <= 1) || !(p.adv_cap_q > 0 && p.adv_cap_q <= 1) ||
       !(p.adv_trade_p > 0 && p.adv_trade_p <= 1) || p.max_iterations == 0 ||
       p.max_iterations > 100000 || !(p.tolerance > 0 && p.tolerance <= 1e-3) ||
@@ -399,8 +403,18 @@ co::Status validate_params(const SpoParams& p) {
       !(p.specific_ceiling > 0) || (p.version != 1 && p.version != 2))
     return co::Err(co::ErrorCode::InvalidArgument,
                    "spo: gamma > 0, IC in (0, 1], w_max/q/p in (0, 1], 1..100000 iterations, "
-                   "tolerance in (0, 1e-3], target vol in (0, 1], horizons in [1, 10000], "
-                   "specific ceiling > 0");
+                   "tolerance in (0, 1e-3], target vol in (0, 1], horizons in [1, 10000] "
+                   "(--alpha-horizon a number), specific ceiling > 0, --spo-gross > 0");
+  return co::Ok();
+}
+f64 gross_budget_of(const SpoParams& p, f64 aim_leverage) noexcept {
+  return std::isnan(p.gross_budget) ? aim_leverage : p.gross_budget;
+}
+co::Status validate_gross_budget(f64 budget, f64 aim_leverage) {
+  if (!(finite_positive(budget) && budget <= gross_budget_sanity * aim_leverage))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "spo: --spo-gross " + std::to_string(budget) +
+                       " outside (0, 1.5 x --aim-leverage " + std::to_string(aim_leverage) + "]");
   return co::Ok();
 }
 
@@ -810,22 +824,44 @@ co::Status calibrate_gamma(const Problem& base, const SpoParams& params, f64 bud
   const f64 vol_guess = std::sqrt(sessions_per_year * a2d) / params.target_vol;
   const f64 u_vol = root(true, params.target_vol, vol_guess, calibration.vol_reached);
   ATX_TRY_VOID(failure);
-  const f64 u_bind = root(false, budget, ad / budget, calibration.bind_reached);
-  ATX_TRY_VOID(failure);
   calibration.gamma_vol = std::exp(u_vol);
-  calibration.gamma_bind = std::exp(u_bind);
-  const bool vol_only = params.gamma_rule == GammaRule::Vol;
-  const f64 gamma = vol_only ? calibration.gamma_vol
-                             : std::max(calibration.gamma_vol, calibration.gamma_bind);
+  if (params.gamma_rule == GammaRule::VolAndBind) {
+    // spo-v1 as pre-registered: the same evaluation sequence (vol root, bind root, aim).
+    const f64 u_bind = root(false, budget, ad / budget, calibration.bind_reached);
+    ATX_TRY_VOID(failure);
+    calibration.gamma_bind = std::exp(u_bind);
+    const f64 gamma = std::max(calibration.gamma_vol, calibration.gamma_bind);
+    if (!evaluate(gamma)) return failure;
+    calibration.aim_vol = vol; calibration.aim_gross = gross;
+    calibration.gamma = gamma; calibration.names = n;
+    calibration.done = true;
+    return co::Ok();
+  }
+  // spo-v2: the aim at gamma_vol first, so the report-only bind root cannot move it.
+  const f64 gamma = calibration.gamma_vol;
   if (!evaluate(gamma)) return failure;
   calibration.aim_vol = vol; calibration.aim_gross = gross;
   calibration.gamma = gamma; calibration.names = n;
   // spo-v2 declares the vol target: a bracket end (the target out of reach of the aim at
   // every gamma in guess x 1e-4..1e4) is refused, never used.
-  if (vol_only && !(std::abs(vol / params.target_vol - 1.0) <= 1e-3))
+  if (!(std::abs(vol / params.target_vol - 1.0) <= 1e-3))
     return co::Err(co::ErrorCode::Unavailable,
                    "spo-v2: the cost-free aim cannot reach --target-vol (ex-ante vol " +
                        std::to_string(vol) + "); pass --gamma or a reachable target");
+  // gamma_bind, report only (R2 m-3): a solver failure or a bracket end is recorded as NaN
+  // with the reason; the run goes on with gamma_vol.
+  const f64 u_bind = root(false, budget, ad / budget, calibration.bind_reached);
+  if (!failure) {
+    calibration.gamma_bind = nan;
+    calibration.bind_note = "gamma_bind root failed: " + failure.error().to_string();
+    calibration.bind_reached = false;
+  } else if (!calibration.bind_reached) {
+    calibration.gamma_bind = nan;
+    calibration.bind_note = "gamma_bind root not reached: the cost-free aim's gross stays on "
+                            "one side of G over gamma guess x 1e-4..1e4";
+  } else {
+    calibration.gamma_bind = std::exp(u_bind);
+  }
   calibration.done = true;
   return co::Ok();
 }
@@ -908,6 +944,7 @@ struct Engine::Impl {
   std::shared_ptr<const RiskStore> risk;
   bool axes_checked{};
   f64 gamma{nan}, horizon{nan}, alpha_h{nan};
+  f64 budget{nan}; // G in effect (--spo-gross, else the book's --aim-leverage)
   Calibration calibration;
   DateData date;
   std::map<std::string, BookState, std::less<>> books;
@@ -1021,8 +1058,7 @@ co::Status Engine::Impl::calibrate(const BookDecision& in) {
     calibration.done = true; calibration.from_flag = true; calibration.gamma = gamma;
     return co::Ok();
   }
-  ATX_TRY_VOID(calibrate_gamma(date.base, params, in.cfg.target.aim_leverage, date.scale,
-                               calibration));
+  ATX_TRY_VOID(calibrate_gamma(date.base, params, budget, date.scale, calibration));
   gamma = calibration.gamma;
   return co::Ok();
 }
@@ -1041,8 +1077,13 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
     horizon = std::isfinite(params.horizon) ? params.horizon : 1.0 / cfg.target.trade_fraction;
     if (!(horizon >= 1 && horizon <= 10000))
       return co::Err(co::ErrorCode::InvalidArgument, "spo: horizon 1 / theta out of [1, 1e4]");
-    alpha_h = std::isnan(params.alpha_horizon) ? horizon : params.alpha_horizon;
+    alpha_h = params.alpha_horizon; // independent of H (R2 M-2)
   }
+  // G: the hard cap on the book's planned gross. Without --spo-gross it is the book's own
+  // --aim-leverage, spo-v1's budget bit for bit (and not re-validated: no new refusal).
+  budget = gross_budget_of(params, cfg.target.aim_leverage);
+  if (!std::isnan(params.gross_budget))
+    ATX_TRY_VOID(validate_gross_budget(budget, cfg.target.aim_leverage));
   ATX_TRY_VOID(prepare(in));
   if (!calibration.done) ATX_TRY_VOID(calibrate(in));
   const auto& r = date.slice;
@@ -1120,7 +1161,7 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
     }
   }
   p.net = -net_fixed;
-  p.gross = std::max(0.0, cfg.target.aim_leverage - gross_fixed);
+  p.gross = std::max(0.0, budget - gross_fixed);
   p.beta_lo = -params.beta_max - beta_fixed;
   p.beta_hi = params.beta_max - beta_fixed;
   auto& book = books[std::string(in.book)];
@@ -1224,23 +1265,32 @@ const Calibration& Engine::calibration() const noexcept { return impl_->calibrat
 const SpoParams& Engine::params() const noexcept { return impl_->params; }
 Timing Engine::timing() const noexcept { return impl_->timing; }
 f64 Engine::horizon() const noexcept { return impl_->horizon; }
+f64 Engine::gross_budget() const noexcept { return impl_->budget; }
 
 // ---- declarations and outputs ------------------------------------------------------------
 std::string declaration(const SpoParams& params) {
   const bool v2 = params.version == 2;
+  const auto pick = [v2](const char* two, const char* one) {
+    return std::string(v2 ? two : one);
+  };
   return std::string(rule_name(params)) +
-         " (literature-v7 R2.1 + R3.4; platform v7 W1" + (v2 ? ", fix-up 2" : "") +
+         " (literature-v7 R2.1 + R3.4; platform v7 W1" + pick(", fix-up 2, W1b", "") +
          "): on every rebalance decision d "
          "each book solves max_w a'w - (gamma/2) w'(X F X' + D) w - (1/H) sum_i [s_i |dw_i| + "
          "eta_i |dw_i|^1.5] - sum_i [b_i max(-w_i, 0) + l_i max(w_i, 0)] s.t. book net 0, "
-         "|book beta| <= beta_max, book gross <= aim_leverage, |w_i| <= min(w_max, q ADV_i / "
+         "|book beta| <= beta_max, book gross <= G (the gross budget, a hard cap on planned "
+         "gross: --spo-gross, default " + pick("1.0", "--aim-leverage") +
+         "; refused outside (0, 1.5 x --aim-leverage]), |w_i| <= min(w_max, q ADV_i / "
          "NAV), |dw_i| <= p ADV_i / NAV, w_i >= min(w0_i, 0) where the book's locate rule "
          "guards the name; a_i = IC_book sqrt(D_i) z_i / sqrt(h) (Grinold-Kahn per session "
          "of an h-session forecast, z = desired / its members' SD; h = --alpha-horizon, " +
-         (v2 ? std::string("default H") : std::string("default 1")) +
-         "), X/F/D = atx-risk-v1 at the close of d (NaN factor entries 0; specific variance "
-         "above --specific-ceiling clamped, " +
-         (v2 ? std::string("default 1") : std::string("default off")) + "), beta = "
+         pick("default 21 (the IC's measurement horizon), independent of H", "default 1") +
+         "; one uniform 1/sqrt(h) for every sleeve: the per-sleeve decay of R2.1 is not "
+         "modeled), X/F/D = atx-risk-v1 at the close of d (NaN factor entries 0; specific "
+         "variance above --specific-ceiling clamped, " + pick("default 1", "default off") +
+         "; --specific-ceiling-void, default " + pick("on", "off") +
+         ": a clamped entry at any decision voids the run, which exits non-zero after writing "
+         "spo_diagnostics.csv and v7_extras.json and before any NAV or return file), beta = "
          "Sigma m / m'Sigma m with m the equal-weight portfolio of the optimized names, s_i = "
          "(half spread + commission) and eta_i = impact_y sigma_i sqrt(NAV / ADV_i) of the "
          "primary S2 law on the decision liquidity window (sigma fallback .05), b_i / l_i = "
@@ -1249,15 +1299,17 @@ std::string declaration(const SpoParams& params) {
          "nonmembers follow aim-partial-v5's exit rule and unpriced members keep their weight "
          "(fixed positions in the book constraints and the risk); a position outside its box "
          "by more than one session's trade limit moves by the limit toward it; gamma = --gamma "
-         "or " + (v2 ? std::string("gamma_vol (refused when out of reach)")
-                     : std::string("max(gamma_vol, gamma_bind)")) +
+         "or " + pick("gamma_vol (refused when out of reach; gamma_bind reported only, NaN "
+                      "with a note when its root fails or leaves the bracket)",
+                      "max(gamma_vol, gamma_bind)") +
          " on the cost-free aim of the first rebalance decision (|w_i| <= w_max, net 0, |beta| "
-         "<= beta_max; gamma_vol: ex-ante vol --target-vol, gamma_bind: gross L); solver FISTA "
-         "with adaptive restart in the metric sigma gamma D, exact coupled prox, stop at "
-         "prox-gradient residual <= --spo-tol or --spo-iters; non-rebalance decisions are "
-         "aim-partial-v5's (exits only); diagnostics beside each book: a plan-level "
-         "aim-partial-v5 shadow book (same desired target, full fills, no drift) scored with "
-         "the same alpha and S2 law";
+         "<= beta_max; gamma_vol: annualised ex-ante vol --target-vol, gamma_bind: gross G); "
+         "solver FISTA with adaptive restart in the metric sigma gamma D, exact coupled prox, "
+         "stop at prox-gradient residual <= --spo-tol or --spo-iters; non-rebalance decisions "
+         "are aim-partial-v5's (exits only); diagnostics beside each book: a plan-level "
+         "aim-partial-v5 shadow book (same desired target, --aim-leverage, full fills, no "
+         "drift) scored with the same alpha and S2 law; exante_vol columns are annualised "
+         "(sqrt(252 x daily variance)), the other money columns per session";
 }
 
 namespace {
@@ -1305,14 +1357,30 @@ std::string diagnostics_csv(std::span<const DiagnosticRow> rows) {
   return text;
 }
 
-Json parameters_json(const SpoParams& p, f64 horizon) {
-  const f64 alpha_h = std::isnan(p.alpha_horizon) ? horizon : p.alpha_horizon;
+Json diagnostics_units_json() {
+  constexpr const char* annualised = "annualised: sqrt(252 x daily ex-ante variance)";
+  constexpr const char* session = "per session, NAV fraction";
+  return Json{{"exante_vol", annualised}, {"exante_vol_current", annualised},
+              {"exante_vol_shadow", annualised}, {"alpha", session}, {"risk", session},
+              {"trade_cost", "per decision, NAV fraction (unamortized)"},
+              {"amortized_cost", "trade_cost / H"}, {"financing", session},
+              {"objective", session}, {"alpha_shadow", session},
+              {"trade_cost_shadow", "per decision, NAV fraction (unamortized)"}};
+}
+
+Json parameters_json(const SpoParams& p, f64 horizon, f64 gross_budget) {
   return Json{{"rule", rule_name(p)}, {"version", p.version},
               {"gamma", finite_or_null(p.gamma)},
               {"gamma_rule", std::isfinite(p.gamma) ? "--gamma" : gamma_rule_text(p.gamma_rule)},
-              {"alpha_horizon", finite_or_null(alpha_h)},
-              {"alpha_horizon_rule", std::isnan(p.alpha_horizon) ? "H" : "--alpha-horizon"},
+              {"gross_budget", finite_or_null(gross_budget)},
+              {"gross_budget_rule",
+               std::isnan(p.gross_budget) ? "--aim-leverage" : "--spo-gross (hard cap on "
+                                                               "planned gross; the shadow keeps "
+                                                               "--aim-leverage)"},
+              {"alpha_horizon", finite_or_null(p.alpha_horizon)},
+              {"alpha_scaling", "uniform 1/sqrt(h) for every sleeve, independent of H"},
               {"specific_ceiling", finite_or_null(p.specific_ceiling)},
+              {"specific_ceiling_void", p.void_on_capped},
               {"ic_book", p.ic_book}, {"w_max", p.w_max}, {"adv_cap_q", p.adv_cap_q},
               {"adv_trade_p", p.adv_trade_p}, {"spo_iters", p.max_iterations},
               {"spo_tol", p.tolerance}, {"target_vol", p.target_vol},
@@ -1326,9 +1394,54 @@ Json calibration_json(const Calibration& c) {
               {"rule", gamma_rule_text(c.rule)},
               {"gamma", finite_or_null(c.gamma)}, {"gamma_vol", finite_or_null(c.gamma_vol)},
               {"gamma_bind", finite_or_null(c.gamma_bind)}, {"vol_reached", c.vol_reached},
-              {"bind_reached", c.bind_reached}, {"aim_vol", finite_or_null(c.aim_vol)},
+              {"bind_reached", c.bind_reached},
+              {"gamma_bind_note", c.bind_note.empty() ? Json(nullptr) : Json(c.bind_note)},
+              {"aim_vol", finite_or_null(c.aim_vol)},
               {"aim_gross", finite_or_null(c.aim_gross)}, {"evaluations", c.evaluations},
               {"names", c.names}};
+}
+
+namespace {
+struct CeilingCount {
+  usize decisions{}, names_max{};
+};
+// Distinct decisions (sessions) whose risk slice had a clamped entry, and the most entries
+// clamped at one decision (every book of a decision reads the same slice).
+CeilingCount count_capped(std::span<const DiagnosticRow> rows) {
+  std::set<i64> sessions;
+  CeilingCount c;
+  for (const auto& r : rows) {
+    if (r.capped_specific == 0) continue;
+    sessions.insert(r.session);
+    c.names_max = std::max(c.names_max, r.capped_specific);
+  }
+  c.decisions = sessions.size();
+  return c;
+}
+} // namespace
+
+co::Status ceiling_tripwire(const SpoParams& p, std::span<const DiagnosticRow> rows) {
+  if (!p.void_on_capped) return co::Ok();
+  const auto c = count_capped(rows);
+  if (c.decisions == 0) return co::Ok();
+  return co::Err(co::ErrorCode::Unavailable,
+                 std::string(rule_name(p)) + ": specific-ceiling tripwire: " +
+                     std::to_string(c.decisions) +
+                     " decisions had a daily specific variance above " +
+                     number(p.specific_ceiling) + " (at most " + std::to_string(c.names_max) +
+                     " entries at one decision); the run is VOID (--specific-ceiling-void on): "
+                     "no NAV or return file is written");
+}
+
+Json tripwire_json(const SpoParams& p, std::span<const DiagnosticRow> rows) {
+  const auto c = count_capped(rows);
+  const char* status = c.decisions == 0 ? "clear"
+                       : p.void_on_capped ? "void"
+                                          : "tripped (not voiding: --specific-ceiling-void off)";
+  return Json{{"specific_ceiling", finite_or_null(p.specific_ceiling)},
+              {"specific_ceiling_void", p.void_on_capped},
+              {"capped_specific_decisions", c.decisions},
+              {"capped_specific_names_max", c.names_max}, {"status", status}};
 }
 
 Json summary_json(std::span<const DiagnosticRow> rows) {
@@ -1367,7 +1480,7 @@ Json summary_json(std::span<const DiagnosticRow> rows) {
                        {"mean_gross", gross / count}, {"mean_turnover", turnover / count},
                        {"holding_sessions", ratio(gross, turnover)},
                        {"capped_specific_decisions", capped_decisions},
-                       {"max_capped_specific", capped_max},
+                       {"capped_specific_names_max", capped_max},
                        {"shadow", Json{{"rule", "plan-level aim-partial-v5 (full fills, no drift)"},
                                        {"mean_alpha", finite_or_null(alpha_s / count)},
                                        {"mean_trade_cost", finite_or_null(cost_s / count)},
