@@ -390,6 +390,19 @@ def _sha(blob: bytes) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+def _identity(path: Path):
+    st = Path(path).stat()
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _sha_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        while chunk := f.read(8 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def pin_stage(directory: Path, expected_sha256: str, key: str):
     blob = (Path(directory) / "manifest.json").read_bytes()
     digest = _sha(blob)
@@ -427,6 +440,25 @@ class Stage:
         if src not in self.read:
             self.read.append(src)
         return blob
+
+    def verified_path(self, rel: str):
+        """A large file hashed by streaming (not held in memory) and pinned by its file identity: the caller parses
+        it from the path and calls ``unchanged`` afterwards (the identity must not move while it is read)."""
+        entry = self.manifest["files"].get(rel)
+        if not isinstance(entry, dict):
+            raise ValueError(f"{self.key}: stage manifest does not list {rel}")
+        path = self.dir / rel
+        before = _identity(path)
+        if before[2] != int(entry.get("bytes", -1)) or _sha_file(path) != entry.get("sha256") or _identity(path) != before:
+            raise ValueError(f"{self.key}: {rel} does not match its stage manifest entry")
+        src = {"path": str(path.resolve()), "bytes": before[2], "sha256": entry["sha256"]}
+        if src not in self.read:
+            self.read.append(src)
+        return path, before
+
+    def unchanged(self, path: Path, before):
+        if _identity(path) != before:
+            raise ValueError(f"{self.key}: {path} changed while it was read")
 
     def table(self, rel: str, columns) -> pa.Table:
         return pq.read_table(pa.BufferReader(self.blob(rel)), columns=list(columns))
@@ -600,10 +632,10 @@ def build_13f(ctx: Ctx, names, stage: Stage):
             ksid = cm_sid[cm]
             rows = {"filer": [], "sid": [], "shares": [], "value": []}
             for part in sorted(set(src_all[mine].tolist())):
-                blob = stage.blob(f"parts/source={part}/holdings.parquet")
-                pf = pq.ParquetFile(pa.BufferReader(blob))
-                for batch in pf.iter_batches(batch_size=262_144, columns=["accession", "cusip", "shares", "sshprnamt_type",
-                                                                          "put_call", "value_usd"], use_threads=False):
+                path, ident = stage.verified_path(f"parts/source={part}/holdings.parquet")
+                pf = pq.ParquetFile(path)
+                for batch in pf.iter_batches(batch_size=65_536, columns=["accession", "cusip", "shares", "sshprnamt_type",
+                                                                         "put_call", "value_usd"], use_threads=False):
                     ai = pc.fill_null(pc.index_in(batch.column("accession"), value_set=acc_q), -1).to_numpy(
                         zero_copy_only=False)
                     ok = ai >= 0
@@ -623,7 +655,9 @@ def build_13f(ctx: Ctx, names, stage: Stage):
                     rows["sid"].append(np.where(ci >= 0, ksid[np.maximum(ci, 0)], -1))
                     rows["shares"].append(sh[k])
                     rows["value"].append(val[k] * ufp[ai[k]])
-                del blob, pf
+                pf.close()
+                stage.unchanged(path, ident)
+                del pf
                 _release()
                 ctx.budget.check("13f-holdings")
             cat = {k: np.concatenate(v) if v else np.zeros(0) for k, v in rows.items()}
@@ -1038,15 +1072,16 @@ def open_stages(names, inputs: dict) -> dict:
 
 def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifest: dict, budget, stages: dict):
     """Compute ``names`` into ``output`` and extend ``manifest`` (entries, files, source_checks.holdings)."""
+    _release()  # whatever the builder's own groups left in the pools
     role = ns["Role"](role_dir, role_sha256)
     so = None
     if any("shares_out" in HOLD_FIELDS[x].get("requires", []) for x in names):
         pin = manifest["files"].get("shares_out.f64")
         path = Path(output) / "shares_out.f64"
-        blob = path.read_bytes()
-        if pin is None or len(blob) != pin["bytes"] or _sha(blob) != pin["sha256"]:
+        before = _identity(path)
+        if pin is None or before[2] != pin["bytes"] or _sha_file(path) != pin["sha256"] or _identity(path) != before:
             raise ValueError("holdings: this run's shares_out.f64 does not match the manifest being published")
-        so = np.frombuffer(blob, dtype="<f8").reshape(role.n_dates, role.n)
+        so = np.memmap(path, dtype="<f8", mode="r", shape=(role.n_dates, role.n))  # rows read on demand
         so_source = {"path": str(path.resolve()), "bytes": pin["bytes"], "sha256": pin["sha256"]}
     ctx = Ctx(ns, role, output, budget, so)
     writers, extras, sources, checks = {}, {}, {}, {}
@@ -1120,6 +1155,7 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
     manifest["source_checks"]["holdings"] = {
         "code": {"module": Path(__file__).name, **code}, "visibility_rule": VISIBILITY_RULE,
         "stages": {k: s.check() for k, s in stages.items()}, **checks}
+    del ctx, so  # release the shares_out map before the manifest is published
     budget.report("holdings-complete", fields=len(names), peak_rss_mib=budget.peak >> 20)
 
 
