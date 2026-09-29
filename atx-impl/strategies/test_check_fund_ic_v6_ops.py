@@ -98,6 +98,15 @@ def test_denied_operator_is_still_refused_next_to_w2_ops(op: str):
     assert f'bad: forbidden operator {op}' in errs
 
 
+def test_vec_sum_is_allowed_only_as_an_explicit_policy_entry():
+    assert chk.POLICY_OPS == frozenset({'vec_sum'}) and 'vec_sum' in chk.ALLOWED_OPS
+    assert 'vec_avg' not in chk.ALLOWED_OPS
+    resid = 'cs_resid_on(delay(log(ni_q), 252) + 0 * (at - delay(at, 252)), delay(be, 252), delay(sale, 252))'
+    slope = f'vec_sum({resid} * (at - delay(at, 252))) / vec_sum(power({resid}, 2))'
+    q5_like = f'rank(ts_mean_mp({slope}, 252, 63) * log(ni_q))'
+    assert chk.check(_library({'w2_q5_like': q5_like}), MANIFEST, max_roster=48) == []
+
+
 def test_w2_op_field_outside_manifest_is_refused():
     errs = chk.check(_library({'bad': 'rank(ts_resid_on(close, ff_rmw, 63))'}), MANIFEST, max_roster=48)
     assert "bad: field 'ff_rmw' not in the manifest" in errs

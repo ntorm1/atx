@@ -44,6 +44,12 @@ ALLOWED_OPS = frozenset({
     'rank', 'group_rank', 'group_neutralize', 'group_mean',      # cross-sectional (member-masked)
     'delay', 'ts_sum', 'stddev', 'ts_max', 'ts_backfill', 'decay_linear', 'correlation', 'ts_count_nans',  # trailing
 }) | W2_OPS
+# Explicit policy entries beyond the v6 set, each with its reason (root decision, platform-v7 W2):
+POLICY_OPS = frozenset({
+    'vec_sum',  # cross-sectional sum (engine CsVecSum): the q5 expected-growth FWL slope vec_sum(resid * g) /
+                # vec_sum(resid^2) (Hou, Mo, Xue and Zhang 2021; task-W2-report.md)
+})
+ALLOWED_OPS = ALLOWED_OPS | POLICY_OPS
 DENIED_OPS = frozenset({'trade_when', 'hump', 'kalman_level', 'ou_filter', 'kalman', 'split2'})
 GROUP_OPS = frozenset({'group_rank', 'group_neutralize', 'group_mean'})
 GROUP_BUILDERS = frozenset({'bucket', 'group_cross'})  # yield a Group classifier, never a signal
