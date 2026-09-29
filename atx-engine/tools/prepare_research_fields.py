@@ -488,6 +488,11 @@ SV_FIELDS = {
 # Every producible field: the legacy registry first (its order is the manifest order), then the issuer fields,
 # then the short-volume field.
 ALL_FIELDS = {**FIELDS, **ISSUER_FIELDS, **SV_FIELDS}
+# W5a registry hook: opt-in field modules (research_fields_sec.py: SEC earnings calendar, Form 4, 8-K). Each appends its
+# registry after every field above and runs via the FIELD_MODULES loops in run()/main(); its fields are never --reuse'd.
+import research_fields_sec  # noqa: E402  (same directory; it does not import this module)
+FIELD_MODULES = [research_fields_sec.bind(globals())]
+ALL_FIELDS.update(research_fields_sec.FIELDS)
 
 # Field reuse (--reuse). A field's formula id pins its spec-level definition; bump its revision here whenever its
 # computation changes without its registry text changing (otherwise --reuse would copy a stale payload).
@@ -2298,7 +2303,8 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         lake: Path = DEFAULT_LAKE, identity_bridge: Path | None = None, identity_bridge_sha256: str | None = None,
         fund_events: Path | None = None, fund_events_sha256: str | None = None,
         fund_lag_sessions: int = FUND_LAG_SESSIONS_DECLARED, finra_short_volume: Path | None = None,
-        reuse: Path | None = None, reuse_sha256: str | None = None, reuse_hardlink: bool = False):
+        reuse: Path | None = None, reuse_sha256: str | None = None, reuse_hardlink: bool = False,
+        module_options: dict | None = None):
     fields = list(fields)
     if not fields or len(set(fields)) != len(fields) or any(f not in ALL_FIELDS for f in fields):
         raise ValueError(f"--fields must be distinct names from {', '.join(ALL_FIELDS)}")
@@ -2317,6 +2323,8 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
             raise ValueError("--fund-lag-sessions must be an integer in [0, 5] (declared: 1)")
     if any(f in SV_FIELDS for f in selected) and finra_short_volume is None:
         raise ValueError("--fields: sv_ratio126 needs --finra-short-volume (the CNMSshvol*.txt.gz directory)")
+    for m in FIELD_MODULES:  # W5a registry hook: each opt-in module checks its inputs before any output
+        m.check(selected, module_options or {})
     budget = Budget(max_rss_mib, max_seconds)
     role = Role(role_dir, role_sha256)
     budget.report("role-admitted", dates=role.n_dates, instruments=role.n)
@@ -2379,6 +2387,9 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         source_checks["finra_short_volume"] = stats
         field_extras["sv_ratio126"] = extra
         budget.report("sv_ratio126-complete", finite_member_frac=outcome["sv_ratio126"][2]["finite_member_frac"])
+    for m in FIELD_MODULES:  # W5a registry hook: each opt-in module computes its requested, non-reused fields
+        m.compute([f for f in selected if f in m.FIELDS and f not in reused], role, output, budget,
+                  module_options or {}, outcome, source_checks, field_extras)
     files, entries = {}, []
     for name in selected:
         if name in reused:
@@ -2663,13 +2674,15 @@ def main(argv=None):
     p.add_argument("--reuse", type=Path, help="prior fields directory: copy unchanged fields instead of recomputing")
     p.add_argument("--reuse-sha256", help="SHA-256 of the prior fields directory's manifest.json (checked when given)")
     p.add_argument("--reuse-hardlink", action="store_true", help="hardlink reused payloads instead of copying them")
+    for m in FIELD_MODULES:  # W5a registry hook: each opt-in module adds its own options
+        m.add_arguments(p)
     a = p.parse_args(argv)
     run(a.role, a.role_sha256, a.output, [x.strip() for x in a.fields.split(",") if x.strip()],
         max_rss_mib=a.max_rss_mib, max_seconds=a.max_seconds, finra=a.finra, tickerhistory=a.tickerhistory, lake=a.lake,
         identity_bridge=a.identity_bridge, identity_bridge_sha256=a.identity_bridge_sha256,
         fund_events=a.fund_events, fund_events_sha256=a.fund_events_sha256, fund_lag_sessions=a.fund_lag_sessions,
         finra_short_volume=a.finra_short_volume, reuse=a.reuse, reuse_sha256=a.reuse_sha256,
-        reuse_hardlink=a.reuse_hardlink)
+        reuse_hardlink=a.reuse_hardlink, module_options={k: getattr(a, k) for m in FIELD_MODULES for k in m.OPTIONS})
 
 
 if __name__ == "__main__":
