@@ -426,7 +426,8 @@ TEST(SpoCalibration, V2GammaBindFailureIsReportedAsNaNWithANoteAndNeverAborts) {
   sp::Calibration reference;
   ASSERT_TRUE(sp::calibrate_gamma(p, v2, 0.2, scale, reference));
   ASSERT_TRUE(reference.vol_reached);
-  for (const f64 budget : {1e3, 1e-310}) {
+  const f64 tiny = std::numeric_limits<f64>::min() / 64.0; // denormal: ad / tiny is inf
+  for (const f64 budget : {1e3, tiny}) {
     sp::Calibration c;
     const auto status = sp::calibrate_gamma(p, v2, budget, scale, c);
     ASSERT_TRUE(status) << budget << ": " << status.error().to_string();
@@ -448,7 +449,7 @@ TEST(SpoCalibration, V2GammaBindFailureIsReportedAsNaNWithANoteAndNeverAborts) {
   EXPECT_FALSE(kept.bind_reached);
   EXPECT_TRUE(std::isfinite(kept.gamma_bind)); // spo-v1: the bracket end, as pre-registered
   EXPECT_TRUE(kept.bind_note.empty());
-  EXPECT_FALSE(sp::calibrate_gamma(p, v1, 1e-310, scale, aborted));
+  EXPECT_FALSE(sp::calibrate_gamma(p, v1, tiny, scale, aborted));
 }
 
 // ---- synthetic atx-risk-v1 output (strategy_spo_fixture.hpp) ---------------------------------
