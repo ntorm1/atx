@@ -5,10 +5,11 @@ allowlist, so it has no ``ifrs-full`` facts and misses the fallback concepts sta
 interest expense, cost of sales variants, payables, goodwill, ...). This module re-reads the pinned archive
 ``data/cache/companyfacts.zip`` (same snapshot, sha256 ``ee099c73...``) member by member and writes
 
-* ``fundamentals/_work/cf/batch-NNNN.parquet``: one row per fact of a periodic form (10-K, 10-Q, 10-KT,
-  10-QT, 20-F, 40-F and their ``/A``) whose unit is ``shares`` or an ISO-4217-like currency code
-  (three capital letters), for (a) us-gaap concepts matching ``USGAAP_PATTERN`` or named in
-  ``fund_items.CHAINS``, (b) every ``ifrs-full`` concept, (c) dei ``EntityCommonStockSharesOutstanding``.
+* ``<stage>/_work/cf/batch-NNNN.parquet`` (``<stage>`` = env ``ATX_FUND_STAGE``, default ``fundamentals``):
+  one row per fact of a periodic form (10-K, 10-Q, 10-KT, 10-QT, 20-F, 40-F and their ``/A``) whose unit is
+  ``shares``, an ISO-4217-like currency code (three capital letters) or a per-share unit ``CCY/shares``, for
+  (a) every us-gaap concept (v3; v2 kept only ``USGAAP_PATTERN`` and the chain concepts, which starved the
+  catalog expansion), (b) every ``ifrs-full`` concept, (c) dei ``EntityCommonStockSharesOutstanding``.
   Columns: ``cik, taxonomy, concept, unit, period_start, period_end, filed_date, fiscal_year,
   fiscal_period, form, accession_number, value`` (value = the JSON number as float64);
 * ``batch-NNNN.stats.parquet``: ``(taxonomy, concept, unit, n_facts, n_ciks)`` over every fact of a
@@ -29,6 +30,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
 import time
@@ -44,15 +46,17 @@ import pyarrow.parquet as pq
 from . import common
 from . import fund_items as fi
 
-CODE_VERSION = "fund-extract-v2"
+CODE_VERSION = "fund-extract-v3"
 ARCHIVE = common.PACKAGE_ROOT / "data" / "cache" / "companyfacts.zip"
 TARGET_UNCOMPRESSED = 230_000_000
 ROW_GROUP = 131_072
 MEMBER_RE = re.compile(r"CIK([0-9]{10})\.json$")
 CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+PER_SHARE_RE = re.compile(r"^[A-Z]{3}/shares$")
+STAGE_ENV = "ATX_FUND_STAGE"
 BASE_FORMS = ("10-K", "10-Q", "10-KT", "10-QT", "20-F", "40-F")
 FORMS = frozenset(BASE_FORMS + tuple(f + "/A" for f in BASE_FORMS))
-# Generous us-gaap allowlist: every concept family stage F reads or may mine for fallbacks.
+# v2 us-gaap allowlist (kept for the record in plan.json; v3 keeps every us-gaap concept).
 USGAAP_PATTERN = re.compile(
     r"Revenue|Sales|CostOf|CostsAndExpenses|GrossProfit|OperatingIncome|OperatingExpenses|"
     r"IncomeLoss|NetIncome|ProfitLoss|InterestExpense|InterestAndDebtExpense|InterestIncomeExpense|"
@@ -80,8 +84,13 @@ STATS_SCHEMA = pa.schema([("taxonomy", pa.string()), ("concept", pa.string()), (
                           ("n_facts", pa.int64()), ("n_ciks", pa.int64())])
 
 
+def stage_name() -> str:
+    """Stage directory of stage F under the build root: env ``ATX_FUND_STAGE``, default ``fundamentals``."""
+    return os.environ.get(STAGE_ENV, "fundamentals")
+
+
 def out_dir() -> Path:
-    path = common.stage_dir("fundamentals") / "_work" / "cf"
+    path = common.stage_dir(stage_name()) / "_work" / "cf"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -100,9 +109,7 @@ def chain_concepts() -> frozenset[str]:
 
 
 def keep_concept(taxonomy: str, concept: str, chain: frozenset[str]) -> bool:
-    if taxonomy == "us-gaap":
-        return concept in chain or USGAAP_PATTERN.search(concept) is not None
-    if taxonomy == "ifrs-full":
+    if taxonomy in ("us-gaap", "ifrs-full"):
         return True
     if taxonomy == "dei":
         return concept in DEI_KEEP
@@ -110,7 +117,7 @@ def keep_concept(taxonomy: str, concept: str, chain: frozenset[str]) -> bool:
 
 
 def keep_unit(unit: str) -> bool:
-    return unit == "shares" or CURRENCY_RE.match(unit) is not None
+    return unit == "shares" or CURRENCY_RE.match(unit) is not None or PER_SHARE_RE.match(unit) is not None
 
 
 def plan(z: zipfile.ZipFile) -> list[list[zipfile.ZipInfo]]:

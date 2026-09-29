@@ -59,7 +59,8 @@ def test_class_sum_rules(tmp_path):
     assert "coreg" not in out and "custom" not in out and "plain" not in out
 
 
-PRE_SCHEMA = pa.schema([("adsh", pa.string()), ("stmt", pa.string()), ("inpth", pa.bool_()), ("tag", pa.string())])
+PRE_SCHEMA = pa.schema([("adsh", pa.string()), ("stmt", pa.string()), ("inpth", pa.bool_()), ("tag", pa.string()),
+                        ("plabel", pa.string())])
 
 
 def test_pre_flags(tmp_path):
@@ -95,6 +96,66 @@ def test_pre_flags(tmp_path):
     assert got["mkt"]["is_rev"] is False            # marketing expense and cost of sales are not revenue lines
     assert got["mkt"]["has_cf"] is False
     assert got["asc606"]["is_rev"] is True           # the ASC 606 revenue tag ends in "Tax"
+
+
+PRE_SCHEMA_V2 = pa.schema([("adsh", pa.string()), ("stmt", pa.string()), ("inpth", pa.bool_()), ("tag", pa.string()),
+                           ("version", pa.string()), ("plabel", pa.string())])
+
+
+def _pre(adsh, stmt, tag, label, custom=True, inpth=False):
+    return {"adsh": adsh, "stmt": stmt, "inpth": inpth, "tag": tag, "version": adsh if custom else "us-gaap/2023",
+            "plabel": label}
+
+
+def test_catalog_pre_flags(tmp_path):
+    rows = [_pre("a", "BS", "Assets", "Total assets", custom=False),
+            _pre("a", "BS", "TreasuryStockValue", "Treasury stock, at cost", custom=False),
+            _pre("a", "CF", "MyBorrowings", "Proceeds from term loan"),
+            _pre("b", "IS", "NetIncomeLoss", "Net income", custom=False)]
+    path = tmp_path / "pre.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=PRE_SCHEMA_V2), path)
+    con = duckdb.connect()
+    try:
+        got = {r[0]: r[1:] for r in con.execute(
+            f'SELECT adsh, has_bs, "c_tstk", "c_dltis_ttm", "c_aqc_ttm", "c_do_ttm" FROM ({fu.pre_flags_sql(path.as_posix())})'
+        ).fetchall()}
+    finally:
+        con.close()
+    assert got["a"] == (True, True, True, False, False)        # the custom 'Proceeds from term loan' line counts
+    assert got["b"][0] is False and got["b"][4] is False
+
+
+def test_label_lines(tmp_path):
+    pre = [_pre("v", "IS", "CostOfRevenueNetwork", "Cost of revenue"),          # single custom line
+           _pre("v", "IS", "OperatingIncomeLoss", "Operating income", custom=False),  # standard tag: not a label line
+           _pre("m", "IS", "CostProducts", "Cost of products"),
+           _pre("m", "IS", "CostServices", "Cost of services"),
+           _pre("m", "IS", "CostTotal", "Total cost of revenues"),                # the total wins over components
+           _pre("x", "IS", "CostA", "Cost of sales"), _pre("x", "IS", "CostB", "Cost of goods sold"),  # ambiguous
+           _pre("g", "IS", "GrossMargin", "Gross margin"),
+           _pre("p", "IS", "CostOfRevenueParen", "Cost of revenue", inpth=True)]
+    num = [_num("v", None, 500, tag="CostOfRevenueNetwork", qtrs=4, version="v"),
+           _num("v", None, 900, tag="OperatingIncomeLoss", qtrs=4),
+           _num("m", None, 100, tag="CostProducts", qtrs=4, version="m"),
+           _num("m", None, 50, tag="CostServices", qtrs=4, version="m"),
+           _num("m", None, 150, tag="CostTotal", qtrs=4, version="m"),
+           _num("x", None, 1, tag="CostA", qtrs=4, version="x"), _num("x", None, 2, tag="CostB", qtrs=4, version="x"),
+           _num("g", None, 70, tag="GrossMargin", qtrs=1, version="g"),
+           _num("g", "BusinessSegments=A;", 30, tag="GrossMargin", qtrs=1, version="g"),
+           _num("p", None, 9, tag="CostOfRevenueParen", qtrs=4, version="p")]
+    for r in num:
+        r["uom"] = "USD"
+    pp, npth = tmp_path / "pre.parquet", tmp_path / "num.parquet"
+    pq.write_table(pa.Table.from_pylist(pre, schema=PRE_SCHEMA_V2), pp)
+    pq.write_table(pa.Table.from_pylist(num, schema=NUM_SCHEMA), npth)
+    con = duckdb.connect()
+    try:
+        got = {(r[0], r[1]): r[2:] for r in con.execute(
+            f"SELECT adsh, concept, qtrs, value FROM ({fu.label_lines_sql(pp.as_posix(), npth.as_posix())})").fetchall()}
+    finally:
+        con.close()
+    assert got == {("v", "CostOfRevenue"): (4, 500.0), ("m", "CostOfRevenue"): (4, 150.0),
+                   ("g", "GrossProfit"): (1, 70.0)}
 
 
 def test_structural_na_manifest_shape():

@@ -26,6 +26,8 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from . import fund_catalog as fcat
+
 DAY = dt.timedelta(days=1)
 
 USGAAP = "us-gaap"
@@ -33,6 +35,7 @@ IFRS = "ifrs-full"
 DEI = "dei"
 CLS = "cls"          # FSDS NUM class-of-stock sums built by fundamentals.prepare (pseudo taxonomy)
 POS = "pos"          # FSDS NUM ProductOrService member sums of cost of revenue (pseudo taxonomy)
+LBL = "lbl"          # FSDS PRE label fallback: custom-tag statement lines by label (pseudo taxonomy, S4.2)
 X = "~x"             # suffix of the extension tier of a chain
 
 # ---------------------------------------------------------------------------
@@ -171,18 +174,19 @@ CHAINS_EXT: dict[str, tuple[str, ...]] = {
              "OperatingLeasesIncomeStatementLeaseRevenue", "RealEstateRevenueNet", "OilAndGasRevenue",
              "OilAndGasSalesRevenue", "FinancialServicesRevenue", "RevenueMineralSales", "ContractsRevenue")
             + _ifrs("Revenue", "RevenueFromContractsWithCustomers", "RevenueFromSaleOfGoods",
-                    "RevenueFromRenderingOfServices"),
+                    "RevenueFromRenderingOfServices") + (f"{LBL}:Revenues",),
     "cogs": ("CostOfServicesExcludingDepreciationDepletionAndAmortization", "CostOfRealEstateRevenue",
              "CostOfRealEstateSales", "DirectCostsOfLeasedAndRentedPropertyOrEquipment",
              "CostOfOtherPropertyOperatingExpense", "DirectCostsOfHotels") + _ifrs("CostOfSales") + (
-        f"{POS}:CostOfGoodsAndServicesSold", f"{POS}:CostOfRevenue", f"{POS}:CostOfGoodsSold", f"{POS}:CostOfServices"),
+        f"{POS}:CostOfGoodsAndServicesSold", f"{POS}:CostOfRevenue", f"{POS}:CostOfGoodsSold", f"{POS}:CostOfServices",
+        f"{LBL}:CostOfRevenue"),
     # total costs and expenses (Compustat-style cost of revenue = total costs - SG&A - R&D - D&A)
     "opcost": ("CostsAndExpenses", "OperatingCostsAndExpenses"),
     "xsga": _ifrs("SellingGeneralAndAdministrativeExpense"),
     "xga": _ifrs("AdministrativeExpense", "GeneralAndAdministrativeExpense"),
     "xsm": _ifrs("DistributionCosts", "SellingExpense", "SalesAndMarketingExpense"),
-    "gp": _ifrs("GrossProfit"),
-    "oi": _ifrs("ProfitLossFromOperatingActivities"),
+    "gp": _ifrs("GrossProfit") + (f"{LBL}:GrossProfit",),
+    "oi": _ifrs("ProfitLossFromOperatingActivities") + (f"{LBL}:OperatingIncomeLoss",),
     "ni": _ifrs("ProfitLossAttributableToOwnersOfParent", "ProfitLoss"),
     "cfo": _ifrs("CashFlowsFromUsedInOperatingActivities", "CashFlowsFromUsedInOperatingActivitiesContinuingOperations"),
     "capx": ("PaymentsToAcquireOilAndGasPropertyAndEquipment", "PaymentsToAcquireOilAndGasProperty",
@@ -285,6 +289,17 @@ def concept_table() -> list[tuple[int, str, str, str, str, bool]]:
         seen.add((tax, c))
         unit = "shares" if full in SHARE_CONCEPTS_EXT else "money"
         rows.append((len(rows), tax, c, unit, "instant" if full in ext_instants else "duration", tax == IFRS))
+    # S4.2 catalog concepts (appended: every earlier id and order is unchanged; never period defining)
+    for item in fcat.CATALOG:
+        for full in item.chain:
+            tax, c = split_concept(full)
+            if (tax, c) in seen:
+                continue
+            seen.add((tax, c))
+            unit = {"per_share": "per_share", "avg_shares": "shares"}.get(item.kind, "money")
+            if item.col == "cshi":
+                unit = "shares"
+            rows.append((len(rows), tax, c, unit, "instant" if item.kind == "stock" else "duration", False))
     return rows
 
 
@@ -295,9 +310,13 @@ for _cid, _tax, _c, _u, _k, _p in CONCEPTS:
 del _cid, _tax, _c, _u, _k, _p
 CHAIN_IDS: dict[str, tuple[int, ...]] = {k: tuple(CID[c] for c in v) for k, v in CHAINS.items()}
 CHAIN_EXT_IDS: dict[str, tuple[int, ...]] = {k: tuple(CID[c] for c in v) for k, v in CHAINS_EXT.items()}
+CAT = "c_"            # key prefix of the S4.2 catalog chains (single tier)
+CHAIN_CAT_IDS: dict[str, tuple[int, ...]] = {CAT + it.col: tuple(dict.fromkeys(CID[c] for c in it.chain))
+                                             for it in fcat.CATALOG if it.chain}
 CLS_IDS = {k: CID[v] for k, v in CLS_CONCEPTS.items()}
 DEI_CID = CID[DEI_SHARES]
 SHARE_CIDS = frozenset(cid for cid, _, _, u, _, _ in CONCEPTS if u == "shares")
+PER_SHARE_CIDS = frozenset(cid for cid, _, _, u, _, _ in CONCEPTS if u == "per_share")
 FIRST_TRACKED = frozenset(CID[c] for c in SHARE_CONCEPTS) | frozenset(
     CID[c] for c in SHARE_CONCEPTS_EXT if not c.startswith(CLS + ":"))
 CLS_CIDS = frozenset(CLS_IDS.values())
@@ -306,6 +325,14 @@ MAIN_CIDS = frozenset(CID[c] for c in MAIN_STATEMENT_CONCEPTS) | frozenset(CID[c
 NI_CIDS = frozenset(CHAIN_IDS["ni"]) | frozenset(CHAIN_EXT_IDS["ni"])
 NIL_CID_CHAIN = {cid: name for name in NIL_CHAINS for cid in CHAIN_IDS.get(name, ()) + CHAIN_EXT_IDS.get(name, ())}
 RAW_SHARE_CIDS = (DEI_CID, CID["CommonStockSharesOutstanding"], CID[f"{IFRS}:NumberOfSharesOutstanding"])
+# S4.6 restatement flag: chains whose concepts' earlier-reported values are watched (both tiers, reported
+# taxonomies only); a change by more than RESTATE_REL of the larger magnitude marks the filing ``is_restated``
+RESTATE_CHAINS = ("at", "lt", "seq", "sale", "cogs", "gp", "oi", "ni", "cfo", "capx", "txt", "xsga", "xrd", "dp",
+                  "pretax")
+RESTATE_REL = 0.005
+RESTATE_CID_CHAIN = {cid: name for name in reversed(RESTATE_CHAINS)
+                     for cid in CHAIN_IDS.get(name, ()) + CHAIN_EXT_IDS.get(name, ())
+                     if CONCEPTS[cid][1] in (USGAAP, IFRS)}
 
 ITEM_COLUMNS = (
     "at", "lt", "che", "debt", "be", "seq", "sale_q", "sale_ttm", "cogs_ttm", "xsga_ttm", "gp_ttm", "oi_ttm",
@@ -335,6 +362,22 @@ HISTORY_FLOWS = ("sale_q", "cogs_q", "gp_q", "xsga_q", "oi_q", "ebitda_q", "xint
 HISTORY_STOCKS = ("at", "lt", "che", "debt", "be", "seq", "act", "lct", "invt", "rect", "ap", "drev", "ppe", "ppegt",
                   "gdwl", "intan", "mib", "pstk", "shrs")
 HISTORY_ITEMS = HISTORY_FLOWS + HISTORY_STOCKS
+# FX classes of the money items (S4.3): balances at the period-end rate, flows at the period-average rate, lags at
+# their own period end (LAG_ENDS_KEY holds those ends in compute_items' output; issuer_events pops it)
+LAG_ENDS_KEY = "_lag_ends"
+FX_BALANCE = ("at", "lt", "che", "debt", "be", "seq", "noa", "invt", "rect", "ppe", "act", "lct", "ap", "drev",
+              "ppegt", "gdwl", "intan", "mib", "pstk", "buyback_authorized", "buyback_remaining")
+FX_FLOW_TTM = ("sale_ttm", "cogs_ttm", "xsga_ttm", "gp_ttm", "oi_ttm", "ni_ttm", "cfo_ttm", "capx_ttm", "xrd_ttm",
+               "dvc_ttm", "prstkc_ttm", "sstk_ttm", "dp_ttm", "xint_ttm", "ebitda_ttm", "dvt_ttm")
+FX_FLOW_Q = ("sale_q", "ni_q", "txt_q", "cogs_q", "xsga_q", "gp_q", "oi_q", "xint_q", "dp_q", "ebitda_q", "dvt_q")
+FX_LAG_BALANCE = ("at_lag4", "noa_lag4", "be_lag1q", "be_lag1q_lag4")
+FX_LAG_FLOW_Q = ("ni_q_lag4", "txt_q_lag4", "sale_q_lag4")
+FX_COLUMNS = ("fx_converted", "fx_rate", "fx_rate_avg_q", "fx_rate_avg_ttm", "available_at")
+CAT_SHARES = ("cshpri", "cshfd", "cshi")
+CAT_DERIVED_STOCKS = ("intano", "dlc", "dltt", "txditc", "ceq", "teq", "wcap")
+CAT_FX_BALANCE = tuple(c.col for c in fcat.CATALOG if (c.kind == "stock" and c.col not in CAT_SHARES)
+                       or c.col in CAT_DERIVED_STOCKS)
+CAT_FX_FLOW = tuple(c.col for c in fcat.CATALOG if c.col not in CAT_FX_BALANCE and c.col not in CAT_SHARES)
 
 # Period and tolerance policy (days).
 Q_MIN, Q_MAX = 80, 120          # a discrete quarter: 12-17 weeks (13/14-week, 12/16-week retail calendars)
@@ -352,6 +395,7 @@ CLS_TOL = 16                    # FSDS ddate is rounded to the nearest month end
 QUARTERLY_LOOKBACK = 400        # staleness_days = 200 if a 10-Q/10-QT (/A) clock in (clock - 400d, clock]
 STALE_QUARTERLY, STALE_ANNUAL = 200, 400
 FSCORE_PARTIAL_MIN = 6
+HISTORY_DEPENDENT_DAYS = FY_MAX - Q_MIN  # a duration end can feed quarters ending up to 300 days later
 QUARTERLY_FORMS = frozenset({"10-Q", "10-QT", "10-Q/A", "10-QT/A"})
 
 # ---------------------------------------------------------------------------
@@ -399,7 +443,8 @@ def is_structural(template: str, item: str) -> bool:
 # FSDS PRE statement flags (built by fundamentals.prepare): which lines a filing's own statements show
 # ---------------------------------------------------------------------------
 
-PRE_FLAGS = ("has_is", "has_cf", "is_rd", "is_rev", "is_tax", "is_int", "cf_capx")
+PRE_FLAGS = ("has_is", "has_cf", "is_rd", "is_rev", "is_tax", "is_int", "cf_capx", "has_bs") + tuple(
+    CAT + it.col for it in fcat.CATALOG if it.stmt)
 
 
 def _dur_days(start: dt.date, end: dt.date) -> int:
@@ -416,11 +461,12 @@ def _near_offsets(tol: int) -> Iterable[int]:
 class Knowledge:
     """Latest-clock value of every retained fact of one issuer."""
 
-    __slots__ = ("by_end", "by_start", "cls_clock", "dur", "inst", "present", "share_changes", "share_first",
-                 "share_last")
+    __slots__ = ("by_end", "by_start", "cls_clock", "dur", "dur_ends", "inst", "present", "share_changes",
+                 "share_first", "share_last")
 
     def __init__(self) -> None:
         self.dur: dict[int, dict[tuple[dt.date, dt.date], float]] = {}
+        self.dur_ends: set[dt.date] = set()   # every duration end (history recomputes dependent quarter ends)
         self.by_end: dict[int, dict[dt.date, set[dt.date]]] = {}
         self.by_start: dict[int, dict[dt.date, set[dt.date]]] = {}
         self.inst: dict[int, dict[dt.date, float]] = {}
@@ -449,6 +495,7 @@ class Knowledge:
             self.inst.setdefault(cid, {})[end] = value
             return
         self.dur.setdefault(cid, {})[(start, end)] = value
+        self.dur_ends.add(end)
         self.by_end.setdefault(cid, {}).setdefault(end, set()).add(start)
         self.by_start.setdefault(cid, {}).setdefault(start, set()).add(end)
 
@@ -468,6 +515,8 @@ class Snapshot:
         for name, ids in CHAIN_EXT_IDS.items():
             self.chains[name + X] = tuple(c for c in ids if c in k.present)
             self.chains.setdefault(name, ())
+        for name, ids in CHAIN_CAT_IDS.items():
+            self.chains[name] = tuple(c for c in ids if c in k.present)
 
     def tiers(self, name: str) -> tuple[str, ...]:
         return (name, name + X) if name + X in self.chains else (name,)
@@ -532,17 +581,91 @@ class Snapshot:
                         return dur[(s, end)] - dur[(s, e0)], e0 + DAY
         return None
 
-    def _q(self, key: str, end: dt.date) -> tuple[float, dt.date] | None:
+    def _q(self, key: str, end: dt.date, cross: bool = True) -> tuple[float, dt.date] | None:
+        """Discrete quarter of one chain tier: the first concept (priority order) with a single-concept quarter;
+        else (``cross``) the cross-concept difference ``_q_cross`` (S4.1)."""
         mk = ("q", key, end)
         if mk in self.memo:
-            return self.memo[mk]
-        out = None
-        for cid in self.chains[key]:
-            out = self.q_one(cid, end)
-            if out is not None:
-                break
-        self.memo[mk] = out
+            out = self.memo[mk]
+        else:
+            out = None
+            for cid in self.chains[key]:
+                out = self.q_one(cid, end)
+                if out is not None:
+                    break
+            self.memo[mk] = out
+        if out is None and cross:
+            mk = ("qx", key, end)
+            if mk not in self.memo:
+                self.memo[mk] = None  # re-entrancy guard (the recursion only ever reaches earlier ends)
+                self.memo[mk] = self._q_cross(key, end)
+            out = self.memo[mk]
         return out
+
+    def _ends_between(self, key: str, lo: dt.date, hi: dt.date) -> list[dt.date]:
+        ends: set[dt.date] = set()
+        for cid in self.chains[key]:
+            ends.update(e for e in self.k.by_end.get(cid, {}) if lo <= e <= hi)
+        return sorted(ends, reverse=True)
+
+    def _chain_back(self, key: str, end: dt.date, start: dt.date) -> tuple[float, dt.date] | None:
+        """Sum of the discrete quarters (any concept of the tier) chaining back from the quarter ending one quarter
+        before ``end`` to a quarter starting within 10 days of ``start``: (sum, day after the last quarter end)."""
+        for e0 in self._ends_between(key, end - dt.timedelta(days=Q_MAX), end - dt.timedelta(days=Q_MIN)):
+            total, e = 0.0, e0
+            for _ in range(3):
+                qv = self._q(key, e)
+                if qv is None:
+                    break
+                total += qv[0]
+                if abs((qv[1] - start).days) <= CHAIN_TOL:
+                    return total, e0 + DAY
+                nxt = None
+                for off in _near_offsets(CHAIN_TOL):
+                    d = qv[1] - DAY + dt.timedelta(days=off)
+                    if self._q(key, d) is not None:
+                        nxt = d
+                        break
+                if nxt is None:
+                    break
+                e = nxt
+        return None
+
+    def _q_cross(self, key: str, end: dt.date) -> tuple[float, dt.date] | None:
+        """S4.1 cross-concept quarter: a longer period (4-12 months: fiscal year or year to date) of one concept ending
+        at ``end`` minus, from the same start, (a) the year to date of another concept of the tier ending one quarter
+        earlier, else (b) the discrete quarters (any concept) chaining back to that start. Concepts in priority order.
+        Every component is in the knowledge, so the value first exists at the latest component's clock."""
+        ids = self.chains[key]
+        for cid in ids:
+            starts = self.k.by_end.get(cid, {}).get(end)
+            if not starts:
+                continue
+            for s in sorted(starts):
+                if not (Q_MAX < _dur_days(s, end) <= FY_MAX):
+                    continue
+                long_v = self.k.dur[cid][(s, end)]
+                for cid2 in ids:
+                    if cid2 == cid:
+                        continue
+                    for e0 in sorted(self.k.by_start.get(cid2, {}).get(s, ()), reverse=True):
+                        if Q_MIN <= (end - e0).days <= Q_MAX:
+                            return long_v - self.k.dur[cid2][(s, e0)], e0 + DAY
+                back = self._chain_back(key, end, s)
+                if back is not None:
+                    return long_v - back[0], back[1]
+        # (c) two contiguous stub periods (predecessor / successor around fresh-start or merger accounting, each
+        # shorter than a quarter) that together span a quarter
+        for cid in ids:
+            for s2 in sorted(self.k.by_end.get(cid, {}).get(end, ())):
+                if _dur_days(s2, end) >= Q_MIN:
+                    continue
+                e1 = s2 - DAY
+                for cid1 in ids:
+                    for s1 in sorted(self.k.by_end.get(cid1, {}).get(e1, ())):
+                        if _dur_days(s1, e1) < Q_MIN and Q_MIN <= _dur_days(s1, end) <= Q_MAX:
+                            return self.k.dur[cid][(s2, end)] + self.k.dur[cid1][(s1, e1)], s1
+        return None
 
     def q(self, name: str, end: dt.date) -> tuple[float, dt.date] | None:
         for key in self.tiers(name):
@@ -583,29 +706,70 @@ class Snapshot:
         self.memo[mk] = out
         return out
 
+    def _chain4(self, key: str, end: dt.date, cross: bool) -> float | None:
+        """Four chained discrete quarters ending at ``end`` (each previous end within 10 days of start - 1)."""
+        cur = self._q(key, end, cross)
+        if cur is None:
+            return None
+        total, start = cur[0], cur[1]
+        for _ in range(3):
+            prev = None
+            target = start - DAY
+            for off in _near_offsets(CHAIN_TOL):
+                prev = self._q(key, target + dt.timedelta(days=off), cross)
+                if prev is not None:
+                    break
+            if prev is None:
+                return None
+            total += prev[0]
+            start = prev[1]
+        return total
+
     def _ttm(self, key: str, end: dt.date) -> float | None:
+        """FY fact; else four single-concept quarters; else YTD + prior FY - prior YTD within one concept (the v9
+        paths, unchanged); else (S4.1) four quarters admitting cross-concept quarters; else the YTD path with each
+        leg from any concept of the tier."""
         if not self.chains[key]:
             return None
         fy = self._annual(key, end)
         if fy is not None:
             return fy
-        cur = self._q(key, end)
-        if cur is not None:
-            total, start, ok = cur[0], cur[1], True
-            for _ in range(3):
-                prev = None
-                target = start - DAY
+        v = self._chain4(key, end, False)
+        if v is not None:
+            return v
+        v = self._ttm_ytd(key, end)
+        if v is not None:
+            return v
+        v = self._chain4(key, end, True)
+        if v is not None:
+            return v
+        return self._ttm_ytd_cross(key, end)
+
+    def _ttm_ytd_cross(self, key: str, end: dt.date) -> float | None:
+        """YTD + prior FY - prior same-length YTD, each leg from any concept of the tier (priority order)."""
+        ids = self.chains[key]
+        by_end = self.k.by_end
+        for cid in ids:
+            for s in sorted(by_end.get(cid, {}).get(end, ())):
+                n = _dur_days(s, end)
+                if not (Q_MIN <= n < FY_MIN):
+                    continue
                 for off in _near_offsets(CHAIN_TOL):
-                    prev = self._q(key, target + dt.timedelta(days=off))
-                    if prev is not None:
-                        break
-                if prev is None:
-                    ok = False
-                    break
-                total += prev[0]
-                start = prev[1]
-            if ok:
-                return total
+                    fy_end = s - DAY + dt.timedelta(days=off)
+                    for cf in ids:
+                        for fs in sorted(by_end.get(cf, {}).get(fy_end, ())):
+                            if not (FY_MIN <= _dur_days(fs, fy_end) <= FY_MAX):
+                                continue
+                            for off2 in _near_offsets(YEAR_TOL):
+                                pe = end - dt.timedelta(days=365 - off2)
+                                for cp in ids:
+                                    for ps in sorted(by_end.get(cp, {}).get(pe, ())):
+                                        if abs((ps - fs).days) <= CHAIN_TOL and abs(_dur_days(ps, pe) - n) <= CHAIN_TOL:
+                                            return (self.k.dur[cid][(s, end)] + self.k.dur[cf][(fs, fy_end)]
+                                                    - self.k.dur[cp][(ps, pe)])
+        return None
+
+    def _ttm_ytd(self, key: str, end: dt.date) -> float | None:
         # YTD + prior FY - prior same YTD, within one concept.
         for cid in self.chains[key]:
             starts = self.k.by_end.get(cid, {}).get(end)
@@ -631,6 +795,43 @@ class Snapshot:
                                     return dur[(s, end)] + dur[(fs, fy_end)] - dur[(ps, pe)]
         return None
 
+    def ttm_avg(self, name: str, end: dt.date | None) -> float | None:
+        """Average over the trailing year of a per-period quantity (weighted-average shares): the fiscal-year fact
+        at ``end``, else the mean of four chained reported 3-month facts (no year-to-date differences: averages do
+        not subtract)."""
+        if end is None:
+            return None
+
+        def direct(key: str, e: dt.date) -> tuple[float, dt.date] | None:
+            for cid in self.chains[key]:
+                for st in sorted(self.k.by_end.get(cid, {}).get(e, ())):
+                    if Q_MIN <= _dur_days(st, e) <= Q_MAX:
+                        return self.k.dur[cid][(st, e)], st
+            return None
+
+        for key in self.tiers(name):
+            if not self.chains[key]:
+                continue
+            v = self._annual(key, end)
+            if v is not None:
+                return v
+            cur = direct(key, end)
+            if cur is None:
+                continue
+            total, start, n = cur[0], cur[1], 1
+            while n < 4:
+                prev = None
+                for off in _near_offsets(CHAIN_TOL):
+                    prev = direct(key, start - DAY + dt.timedelta(days=off))
+                    if prev is not None:
+                        break
+                if prev is None:
+                    break
+                total, start, n = total + prev[0], prev[1], n + 1
+            if n == 4:
+                return total / 4.0
+        return None
+
     def has_recent_flow(self, name: str, end: dt.date, days: int) -> bool:
         """Any non-zero fact of the chain (either tier; durations by end, instants by date) within ``days``.
 
@@ -648,12 +849,14 @@ class Snapshot:
         return False
 
     def year_ago_q_end(self, name: str, end: dt.date) -> dt.date | None:
+        """Year-ago quarter end: the v9 search on single-concept quarters first, then admitting cross-concept ones."""
         target = end - dt.timedelta(days=365)
-        for key in self.tiers(name):
-            for off in _near_offsets(YEAR_TOL):
-                d = target + dt.timedelta(days=off)
-                if self._q(key, d) is not None:
-                    return d
+        for cross in (False, True):
+            for key in self.tiers(name):
+                for off in _near_offsets(YEAR_TOL):
+                    d = target + dt.timedelta(days=off)
+                    if self._q(key, d, cross) is not None:
+                        return d
         return None
 
     def ttm_year_ago(self, name: str, end: dt.date) -> float | None:
@@ -739,7 +942,7 @@ class ItemCalc:
             noa = (at - (che or 0.0)) - (at - (debt or 0.0) - (mib or 0.0) - ps - ceq)
         out = {"at": at, "lt": lt, "che": che, "debt": debt, "be": be, "seq": seq, "noa": noa,
                "ltd_nc": ltd_nc_z, "act": s.inst("act", end), "lct": s.inst("lct", end), "mib": mib,
-               "pstk": pstk, "seq_nci": seq_nci}
+               "pstk": pstk, "seq_nci": seq_nci, "st": st}
         s.memo[key] = out
         return out
 
@@ -996,6 +1199,32 @@ def _no_line(ctx: Ctx, s: Snapshot, chain: str, flag: str, stmt: str, end: dt.da
     return None
 
 
+def item_ttm_quarters(s: Snapshot, qfun: Any, end: dt.date) -> float | None:
+    """S4.1 last-resort TTM of a composite item: the item-level discrete quarter (``qfun(end)``, every fallback of
+    the item) at ``end`` plus the three preceding item-level quarters, each ending 80-120 days before the next
+    (candidate ends: the issuer's duration ends, nearest to 91 days first). Quarters may come from different
+    fallback levels of the item (source ``quarters_mixed``)."""
+    v = qfun(end)
+    if v is None:
+        return None
+    total, e = v, end
+    ends = s.k.dur_ends
+    for _ in range(3):
+        lo, hi = e - dt.timedelta(days=Q_MAX), e - dt.timedelta(days=Q_MIN)
+        target = e - dt.timedelta(days=PREV_Q_TARGET)
+        nxt = None
+        for d in sorted((d for d in ends if lo <= d <= hi), key=lambda d: (abs((d - target).days), d)):
+            w = qfun(d)
+            if w is not None:
+                nxt = (d, w)
+                break
+        if nxt is None:
+            return None
+        total += nxt[1]
+        e = nxt[0]
+    return total
+
+
 def sale_q(s: Snapshot, end: dt.date | None) -> float | None:
     """v1 sale_q: sale chain, else the bank fallback (both v1 tier first, then the extension tier)."""
     v = s.qv("sale", end)
@@ -1033,9 +1262,19 @@ def _sale(s: Snapshot, ctx: Ctx, end: dt.date, quarterly: bool) -> tuple[float |
     v = v[0] if quarterly and v is not None else v
     if v is not None:
         return v, "chain_ext"
+    if not quarterly:
+        v = item_ttm_quarters(s, lambda e: _sale_q_nonzero(s, ctx, e), end)
+        if v is not None:
+            return v, "quarters_mixed"
     if ctx.template not in ("bank", "insurer", "reit") and _no_line(ctx, s, "sale", "is_rev", "has_is", end, None):
         return 0.0, "zero_no_revenue_line"
     return None, None
+
+
+def _sale_q_nonzero(s: Snapshot, ctx: Ctx, end: dt.date) -> float | None:
+    """Item-level revenue quarter without the zero fill (the building block of ``quarters_mixed``)."""
+    v, src = _sale(s, ctx, end, True)
+    return None if src == "zero_no_revenue_line" else v
 
 
 def _xsga(s: Snapshot, end: dt.date, quarterly: bool) -> float | None:
@@ -1137,7 +1376,15 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
     out["cogs_ttm"] = _cogs(s, end, False)
     out["xsga_ttm"] = _xsga(s, end, False)
     out["gp_ttm"], out["gp_src"] = _gp(s, end, out["sale_ttm"], False)
+    if out["gp_ttm"] is None:
+        v = item_ttm_quarters(s, lambda e: _gp(s, e, _sale_q_nonzero(s, ctx, e), True)[0], end)
+        if v is not None:
+            out["gp_ttm"], out["gp_src"] = v, "quarters_mixed"
     out["oi_ttm"], out["oi_src"] = _oi(s, ctx, end, out["debt"], False)
+    if out["oi_ttm"] is None and (ctx.oi_fallback or s.chains["oi"] or s.chains["oi" + X]):
+        v = item_ttm_quarters(s, lambda e: _oi(s, ctx, e, calc.bs(e).get("debt"), True)[0], end)
+        if v is not None:
+            out["oi_ttm"], out["oi_src"] = v, "quarters_mixed"
     out["ni_q"] = s.qv("ni", end)
     out["ni_ttm"] = s.ttm("ni", end)
     out["cfo_ttm"] = s.ttm("cfo", end)
@@ -1243,8 +1490,9 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
     out["noa_lag4"] = bs4.get("noa")
     e1_bs, bs1 = calc.bs_near(end - dt.timedelta(days=PREV_Q_TARGET), PREV_Q_TOL)
     out["be_lag1q"] = bs1.get("be")
+    e15_bs = None
     if e1_bs is not None:
-        _, bs15 = calc.bs_near(e1_bs - dt.timedelta(days=365), YEAR_TOL)
+        e15_bs, bs15 = calc.bs_near(e1_bs - dt.timedelta(days=365), YEAR_TOL)
         out["be_lag1q_lag4"] = bs15.get("be")
     e4_ni = s.year_ago_q_end("ni", end)
     out["ni_q_lag4"] = s.qv("ni", e4_ni)
@@ -1256,7 +1504,11 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
                                             s.qv("ni", lag_end) is not None, tol=YEAR_TOL, period_only=True):
             out["txt_q_lag4"] = 0.0
             zero.append("txt_q_lag4")
-    out["sale_q_lag4"] = sale_q(s, s.year_ago_q_end("sale", end) or s.year_ago_q_end("int_inc", end))
+    e4_sale = s.year_ago_q_end("sale", end) or s.year_ago_q_end("int_inc", end)
+    out["sale_q_lag4"] = sale_q(s, e4_sale)
+    # period ends of the lag items (the FX pass converts each lag at its own date)
+    out[LAG_ENDS_KEY] = {"at_lag4": e4_bs, "noa_lag4": e4_bs, "be_lag1q": e1_bs, "be_lag1q_lag4": e15_bs,
+                         "ni_q_lag4": e4_ni, "txt_q_lag4": e4_txt or e4_ni or e4_bs, "sale_q_lag4": e4_sale}
 
     # year-ago shares, split-consistent with shrs_q
     e4_sh = e4_bs or e4_ni or (end - dt.timedelta(days=365))
@@ -1287,7 +1539,113 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
     else:
         counters["fscore_incomplete"] = counters.get("fscore_incomplete", 0) + 1
     out["zero_filled"] = ",".join(sorted(zero))
+    out["catalog_zero_filled"] = ",".join(sorted(catalog_items(s, calc, ctx, end, out)))
     return out
+
+
+CAT_EVIDENCE = {"BS": ("has_bs", "at"), "IS": ("has_is", "ni_ttm"), "CF": ("has_cf", "cfo_ttm")}
+# catalog items structurally absent by template (as the v9 items they derive from)
+CAT_STRUCTURAL: dict[str, frozenset[str]] = {
+    "bank": frozenset({"wcap", "xopr_ttm"}), "insurer": frozenset({"wcap"}), "reit": frozenset({"wcap"}),
+    "utility": frozenset(), "other": frozenset()}
+
+
+def cat_structural(template: str, sic: int | None, col: str) -> bool:
+    """A catalog item is structurally NaN for an industry item outside its SIC ranges or a template rule."""
+    return (not fcat.applicable(fcat.BY_COL[col], sic)) or col in CAT_STRUCTURAL.get(template, frozenset())
+
+
+def catalog_items(s: Snapshot, calc: ItemCalc, ctx: Ctx, end: dt.date, out: dict[str, Any]) -> list[str]:
+    """S4.2: compute every ``fund_catalog.CATALOG`` column into ``out`` (after the v9 items); returns the columns
+    whose value is a zero fill. Structurally absent items stay None."""
+    zero: list[str] = []
+    cur = calc.bs(end)
+
+    def chain_value(it: fcat.CatItem) -> float | None:
+        key = CAT + it.col
+        if key not in s.chains:
+            return None
+        if it.kind == "stock":
+            return s.inst(key, end)
+        if it.kind == "avg_shares":
+            return s.ttm_avg(key, end)
+        return s.ttm(key, end)
+
+    def zero_rule(it: fcat.CatItem) -> bool:
+        if it.stmt is None:
+            return False
+        flag_stmt, evidence = CAT_EVIDENCE[it.stmt]
+        key = CAT + it.col
+        knowledge = (out.get(evidence) is not None) if it.knowledge_zero else None
+        return _no_line(ctx, s, key, key, flag_stmt, end, knowledge) is not None
+
+    for it in fcat.CATALOG:
+        c = it.col
+        if cat_structural(ctx.template, ctx.sic, c):
+            out[c] = None
+            continue
+        v = chain_value(it) if it.kind != "derived" else None
+        if v is None and it.kind != "derived" and zero_rule(it):
+            v = 0.0
+            zero.append(c)
+        out[c] = v
+    # derived items and fallbacks (after the chain values: some use them)
+    ni, dp, oi, sale = out.get("ni_ttm"), out.get("dp_ttm"), out.get("oi_ttm"), out.get("sale_ttm")
+    gw, intan = out.get("gdwl"), out.get("intan")
+    if gw is not None and intan is not None:
+        out["intano"] = gw + intan
+    else:
+        out["intano"] = s.inst("intan_gw", end)
+    at = out.get("at")
+    out["dlc"] = cur.get("st") if cur.get("st") is not None else (0.0 if at is not None else None)
+    out["dltt"] = cur.get("ltd_nc") if at is not None or cur.get("ltd_nc") is not None else None
+    txditc = s.inst_carry("txditc", end, CARRY_DAYS)
+    out["txditc"] = txditc if txditc is not None else (0.0 if at is not None else None)
+    seq, pstk, mib = out.get("seq"), out.get("pstk"), out.get("mib")
+    out["ceq"] = None if seq is None else seq - (pstk or 0.0)
+    teq = cur.get("seq_nci")
+    out["teq"] = teq if teq is not None else (None if seq is None else seq + (mib or 0.0))
+    if out.get("lse") is None:
+        out["lse"] = at
+    act, lct = out.get("act"), out.get("lct")
+    if not cat_structural(ctx.template, ctx.sic, "wcap"):
+        out["wcap"] = None if act is None or lct is None else act - lct
+    if not cat_structural(ctx.template, ctx.sic, "xopr_ttm"):
+        out["xopr_ttm"] = None if sale is None or oi is None or dp is None else sale - (oi + dp)
+    txt = s.ttm("txt", end)
+    if txt is None and _no_line(ctx, s, "txt", "is_tax", "has_is", end, ni is not None):
+        txt = 0.0
+        zero.append("txt_ttm")
+    out["txt_ttm"] = txt
+    if out.get("pi_ttm") is None and ni is not None and txt is not None:
+        out["pi_ttm"] = ni + txt
+    do = out.get("do_ttm")
+    if out.get("ib_ttm") is None and ni is not None and do is not None:
+        out["ib_ttm"] = ni - do
+    dvp = out.get("dvp_ttm")
+    if out.get("nicon_ttm") is None and ni is not None and dvp is not None:
+        out["nicon_ttm"] = ni - dvp
+    if do == 0.0:
+        if out.get("epspi_ttm") is None:
+            out["epspi_ttm"] = out.get("epspx_ttm")
+        if out.get("epsfi_ttm") is None:
+            out["epsfi_ttm"] = out.get("epsfx_ttm")
+    dv = None  # total dividends: PaymentsOfDividends (the v1 dvc chain's second concept) first
+    for cid in CHAIN_IDS["dvc"]:
+        if CONCEPTS[cid][2] == "PaymentsOfDividends" and cid in s.k.present:
+            dv = _ttm_one(s, cid, end)
+    if dv is None and out.get("dvc_ttm") is not None:
+        dv = out["dvc_ttm"] + (out.get("dvpd_ttm") or 0.0)
+    out["dv_ttm"] = dv
+    return zero
+
+
+def _ttm_one(s: Snapshot, cid: int, end: dt.date) -> float | None:
+    """TTM of a single concept (its own chain of one)."""
+    key = f"_one{cid}"
+    if key not in s.chains:
+        s.chains[key] = (cid,)
+    return s._ttm_key(key, end)
 
 
 def _ratio(a: float | None, b: float | None) -> float | None:
@@ -1510,23 +1868,30 @@ def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, coun
             if a is None:
                 a = accns[accn] = {"forms": {}, "filed": filed, "fy": {}, "basis": basis, "own_pe": None,
                                    "any_end": None, "ni_ends": set(), "units": Counter(), "ends": set(),
-                                   "durs": []}
+                                   "durs": [], "restated": set()}
             a["forms"][form] = a["forms"].get(form, 0) + 1
             if fy is not None or fp is not None:
                 a["fy"][(fy, fp)] = a["fy"].get((fy, fp), 0) + 1
             share = cid in SHARE_CIDS
-            if not share:
+            per_share = cid in PER_SHARE_CIDS
+            if not share and not per_share:
                 a["units"][unit] += 1
             if cid in MAIN_CIDS and (a["own_pe"] is None or end > a["own_pe"]):
                 a["own_pe"] = end
             if cid != DEI_CID and cid in PERIOD_DEF_CIDS and (a["any_end"] is None or end > a["any_end"]):
                 a["any_end"] = end
-            if not (unit == "shares" if share else unit == money_unit):
+            if not (unit == "shares" if share else
+                    (unit == money_unit + "/shares" if per_share else unit == money_unit)):
                 continue
             key = (cid, start, end)
             prev = seen_keys.get(key)
             if prev is not None and prev != value:
                 counters["same_clock_conflicts"] = counters.get("same_clock_conflicts", 0) + 1
+            elif prev is None and cid in RESTATE_CID_CHAIN:
+                # S4.6: a value an earlier filing reported for the same (concept, period) changed materially
+                old = k.inst.get(cid, {}).get(end) if start is None else k.dur.get(cid, {}).get((start, end))
+                if old is not None and abs(value - old) > RESTATE_REL * max(abs(old), abs(value), 1e-9):
+                    a["restated"].add(RESTATE_CID_CHAIN[cid])
             seen_keys[key] = value
             k.apply(cid, start, end, value, clock)
             if cid != DEI_CID:
@@ -1571,7 +1936,12 @@ def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, coun
         if history is not None:
             done: set[dt.date] = set()
             for accn in sorted(accns):
-                for e in sorted(accns[accn]["ends"]):
+                a = accns[accn]
+                # the ends the filing reports, plus the later duration ends whose quarter may now be derivable across
+                # concepts from a period this filing (re)reports (S4.1: Q4 = FY - 9M with the 9M arriving later)
+                dep = {e2 for e0 in {d[2] for d in a["durs"]} for e2 in k.dur_ends
+                       if e0 < e2 <= e0 + dt.timedelta(days=HISTORY_DEPENDENT_DAYS)}
+                for e in sorted(a["ends"] | dep):
                     if e in done:
                         continue
                     done.add(e)
@@ -1596,25 +1966,75 @@ def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, coun
             out.append({"cik": cik, "accession": accn, "form": a["form"], "filed": a["filed"], "clock_utc": clock,
                         "clock_basis": a["basis"], "period_end": latest_pe, "fiscal_year": fy,
                         "fiscal_period": fp, **items, "currency": currency_by_accn[accn],
-                        "fin_template": ctx.template, "sic_in_force": sic, "staleness_days": stale})
+                        "fin_template": ctx.template, "sic_in_force": sic, "staleness_days": stale,
+                        "fx_converted": False, "fx_rate": None, "fx_rate_avg_q": None, "fx_rate_avg_ttm": None,
+                        "available_at": clock, "is_amendment": a["form"].endswith("/A"),
+                        "is_restated": bool(a["restated"]), "restated_items": ",".join(sorted(a["restated"]))})
     return out, currency_by_accn
 
 
 def native_currency(rows: Sequence[tuple]) -> str | None:
     """The issuer's most frequent non-USD money unit (None when every money fact is USD)."""
-    units = Counter(r[6] for r in rows if r[2] not in SHARE_CIDS and r[6] != "USD")
+    units = Counter(r[6] for r in rows if r[2] not in SHARE_CIDS and r[2] not in PER_SHARE_CIDS and r[6] != "USD")
     if not units:
         return None
     return min(units.items(), key=lambda kv: (-kv[1], kv[0]))[0]
 
 
+def fx_convert(e: dict[str, Any], ne: dict[str, Any], ccy: str, fx: Any) -> bool:
+    """Replace the money items of event ``e`` by the reporting-currency values of ``ne`` (the same event computed
+    from the ``ccy`` knowledge) converted with ``fx`` (``fund_fx.FxTable``): balances at the period-end rate,
+    flows at the period-average rate, lags at their own period end; sets ``fx_*`` and ``available_at``. Returns
+    False (``e`` untouched) when the period-end rate is missing."""
+    pe = e["period_end"]
+    spot = fx.spot(ccy, pe)
+    if spot is None:
+        return False
+    clocks = [e["clock_utc"], spot[1]]
+    avg_q, avg_ttm = fx.flow_q(ccy, pe), fx.flow_ttm(ccy, pe)
+
+    def conv(v: float | None, rate: tuple[float, dt.datetime] | None) -> float | None:
+        if v is None or rate is None:
+            return None
+        clocks.append(rate[1])
+        return v * rate[0]
+
+    for c in FX_BALANCE:
+        e[c] = conv(ne.get(c), spot)
+    for c in FX_FLOW_TTM:
+        e[c] = conv(ne.get(c), avg_ttm)
+    for c in FX_FLOW_Q:
+        e[c] = conv(ne.get(c), avg_q)
+    lag_ends = ne.get(LAG_ENDS_KEY) or {}
+    for c in FX_LAG_BALANCE:
+        d = lag_ends.get(c)
+        e[c] = conv(ne.get(c), fx.spot(ccy, d) if d is not None else None)
+    for c in FX_LAG_FLOW_Q:
+        d = lag_ends.get(c)
+        e[c] = conv(ne.get(c), fx.flow_q(ccy, d) if d is not None else None)
+    for c in fcat.CAT_COLUMNS:
+        if c in CAT_SHARES:
+            e[c] = ne.get(c)
+        else:
+            e[c] = conv(ne.get(c), spot if c in CAT_FX_BALANCE else avg_ttm)
+    for c in ("sale_src", "gp_src", "oi_src", "xrd_reported_zero", "zero_filled", "catalog_zero_filled"):
+        e[c] = ne.get(c)
+    e["fx_converted"] = True
+    e["fx_rate"] = spot[0]
+    e["fx_rate_avg_q"] = avg_q[0] if avg_q else None
+    e["fx_rate_avg_ttm"] = avg_ttm[0] if avg_ttm else None
+    e["available_at"] = max(clocks)
+    return True
+
+
 def issuer_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, counters: dict[str, int],
                   sic_by_accn: dict[str, int] | None = None, pre_by_accn: dict[str, dict[str, bool]] | None = None,
-                  history: list[tuple] | None = None) -> list[dict[str, Any]]:
+                  history: list[tuple] | None = None, fx: Any = None) -> list[dict[str, Any]]:
     """Events of one issuer: money and share items from the USD knowledge; when the issuer reports money
     facts in another currency, the currency-invariant items (``UNITLESS_ITEMS``) of events whose filing
     reports in that currency come from that currency's knowledge, and so do their quarterly-history rows
-    (tuples gain an eighth element, the currency)."""
+    (tuples gain an eighth element, the currency). With ``fx`` (``fund_fx.FxTable``, ruling D4) covering that
+    currency, those events' money items are the reporting-currency values converted to USD (``fx_convert``)."""
     hist_usd: list[tuple] | None = [] if history is not None else None
     events, cur_by_accn = company_events(cik, rows, emit_from, counters, "USD", sic_by_accn, pre_by_accn, hist_usd)
     native = native_currency(rows)
@@ -1625,12 +2045,21 @@ def issuer_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, count
         hist_nat = [] if history is not None else None
         nat_events, _ = company_events(cik, rows, emit_from, scratch, native, sic_by_accn, pre_by_accn, hist_nat)
         by_accn = {e["accession"]: e for e in nat_events}
+        covered = fx is not None and fx.covers(native)
         for e in events:
             if e["currency"] == native and e["accession"] in by_accn:
                 ne = by_accn[e["accession"]]
-                for c in UNITLESS_ITEMS:
+                for c in UNITLESS_ITEMS + ("is_restated", "restated_items"):
                     e[c] = ne[c]
                 counters["events_unitless_from_native"] = counters.get("events_unitless_from_native", 0) + 1
+                if covered:
+                    ok = fx_convert(e, ne, native, fx)
+                    key = "events_fx_converted" if ok else "events_fx_no_period_end_rate"
+                    counters[key] = counters.get(key, 0) + 1
+                elif fx is not None:
+                    counters["events_fx_currency_not_covered"] = counters.get("events_fx_currency_not_covered", 0) + 1
+    for e in events:
+        e.pop(LAG_ENDS_KEY, None)
     if history is not None:
         for row in hist_usd or ():
             if native is None or cur_by_accn.get(row[3]) != native:

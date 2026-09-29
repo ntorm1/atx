@@ -48,54 +48,64 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from . import common
+from . import fund_catalog as fcat
 from . import fund_extract as fx
+from . import fund_fx as ffx
 from . import fund_items as fi
 
-CODE_VERSION = "fundamentals-v9"
-RULE = "fund-events-pit-v2"
+CODE_VERSION = "fundamentals-v10"
+RULE = "fund-events-pit-v3"
 SCHEMA = "atx.alpha-panel.fundamentals/v2"
 EMIT_FROM = dt.datetime(2010, 1, 1)
 SCOPE_LINK_END_MIN = dt.date(2017, 1, 1)
 FC1_HOURS = 46
 FORMS = tuple(sorted(fx.FORMS))
 COVERAGE_YEARS = tuple(range(2016, 2027))
-MODULES = ("fundamentals", "fund_items", "fund_extract", "common")
+MODULES = ("fundamentals", "fund_items", "fund_extract", "fund_fx", "fund_catalog", "common")
 
 RULE_TEXT = (
-    "fund-events-pit-v2: one event per (cik, accession) of forms 10-K/10-Q/10-KT/10-QT/20-F/40-F (+/A) "
-    "whose Company Facts rows carry us-gaap or ifrs-full money/share facts or dei EntityCommonStockSharesOutstanding, "
-    "for every CIK of the Company Facts archive (snapshot 2026-09-20). Clock = FSDS sub accepted_utc "
-    "(naive UTC), else filed 00:00 UTC + 46h (fc1). Facts with end > filed or start > end are dropped. "
-    "Filings are applied to the issuer knowledge in (clock, accession) order: for every (concept, start, end) "
+    "fund-events-pit-v3: one event per (cik, accession) of forms 10-K/10-Q/10-KT/10-QT/20-F/40-F (+/A) "
+    "whose Company Facts rows carry us-gaap or ifrs-full money/share/per-share facts or dei "
+    "EntityCommonStockSharesOutstanding, for every CIK of the Company Facts archive (snapshot 2026-09-20). Clock = "
+    "FSDS sub accepted_utc (naive UTC), else filed 00:00 UTC + 46h (fc1). Facts with end > filed or start > end are "
+    "dropped. Filings are applied to the issuer knowledge in (clock, accession) order: for every (concept, start, end) "
     "the latest-clock value wins (restatements enter on their own clock). Event period_end = max(latest "
     "period end of the filing's main statements, the issuer's previous period_end); items are computed at "
     "period_end from the knowledge after the event (same-clock filings applied together). Quarterly flows: "
-    "discrete-quarter (80-120 day) facts, else YTD differences within one concept (Q4 = FY - 9M); TTM = fiscal-year "
-    "(350-380 day) fact at period_end, else four chained quarters (previous end within 10 days of start-1), "
-    "else YTD + prior FY - prior YTD. Year-ago = period end within 20 days of end - 365. Every lookup runs on "
-    "the v1 concept tier first and on the v2 extension tier (us-gaap fallbacks, ifrs-full) only when the v1 "
-    "tier has no value. Money columns hold USD facts only (no FX source: non-USD reporters have NaN money "
-    "items); currency-invariant items (sue, F-score terms) are computed in the filing's reporting currency. "
-    "Emitted events: clock >= 2010-01-01; knowledge is built from every filing since 2009."
+    "discrete-quarter (80-120 day) facts, else YTD differences within one concept (Q4 = FY - 9M), else (S4.1) across "
+    "the tier's concepts: a longer period of one concept minus the YTD of another concept from the same start, else "
+    "minus the discrete quarters chaining back to that start, else two contiguous stub periods (predecessor/"
+    "successor) spanning a quarter. TTM = fiscal-year (350-380 day) fact at period_end, else four chained single-"
+    "concept quarters, else YTD + prior FY - prior YTD within one concept (the v9 paths), else four chained quarters "
+    "admitting cross-concept quarters, else the YTD path across concepts; sale/gp/oi finally chain four item-level "
+    "quarters of any fallback level (src quarters_mixed). Every component is in the knowledge, so a derived value "
+    "exists from the latest component's clock (quarterly_history recomputes the quarter ends a filing's periods can "
+    "feed). Year-ago = period end within 20 days of end - 365. Every lookup runs on the v1 concept tier first and on "
+    "the extension tier (us-gaap fallbacks, ifrs-full, FSDS product/service sums, FSDS PRE label lines) only when "
+    "the v1 tier has no value. Non-USD filings in an H.10 currency are converted (fx_rule); others keep USD facts "
+    "only. Catalog items (catalog.parquet) per fund_catalog. is_amendment = form /A; is_restated = the filing "
+    "changed a previously reported value of a watched chain by more than 0.5%. Emitted events: clock >= 2010-01-01; "
+    "knowledge is built from every filing since 2009."
 )
 STALENESS_RULE = (
     "staleness_days = 200 if the CIK has a 10-Q/10-QT (or /A) accession with clock in (clock - 400 d, clock], "
     "else 400 (annual-only filer, e.g. 20-F/40-F); consumer rule (atx.fundamental-events/v1): the whole row is "
     "stale, every item NaN, when date(d) - period_end > staleness_days")
 CURRENCY_RULE = (
-    "No point-in-time FX source exists in atx-db. Event money columns (USD in every consumer contract, which "
-    "takes ratios against USD market equity) hold only facts reported in USD: a filing that reports in another "
-    "currency has NaN money items (USD convenience-translation facts, where filed, are used as in v1). "
-    "`currency` is the filing's reporting currency (most frequent money unit of its facts). Currency-invariant "
-    "items (sue, f_* terms, fscore, fscore_n, fscore_partial) of such filings are computed from the knowledge in "
-    "the reporting currency, and quarterly_history.parquet carries every value in its own `currency`, so ratios "
-    "within one filer (margins, growth, accruals, asset-scaled items) are available for non-USD reporters.")
+    "Event money columns are USD. A filing whose reporting currency (most frequent money unit of its facts) is covered "
+    "by reference/fx_daily.parquet (FRED H.10) takes its money items from the reporting-currency knowledge converted "
+    "per fx_rule (fx_converted = true, fx_rate / fx_rate_avg_q / fx_rate_avg_ttm, available_at = max(filing clock, "
+    "rate clocks)); a filing in an uncovered currency keeps the v9 rule (USD facts only, usually NaN). `currency` is "
+    "the reporting currency. Currency-invariant items (sue, f_* terms, fscore, fscore_n, fscore_partial) of non-USD "
+    "filings come from the reporting-currency knowledge, and quarterly_history.parquet keeps every value in its own "
+    "`currency` (the reporting-currency values of converted events).")
 
 WORK = "_work"
 
 
 def fund_dir() -> Path:
-    return common.stage_dir("fundamentals")
+    """The stage directory (env ``ATX_FUND_STAGE``, default ``fundamentals``; the v10 build uses ``fundamentals_v10``)."""
+    return common.stage_dir(fx.stage_name())
 
 
 def work_dir() -> Path:
@@ -130,12 +140,46 @@ def pos_sums_path() -> Path:
     return work_dir() / "pos_sums.parquet"
 
 
+def label_lines_path() -> Path:
+    return work_dir() / "label_lines.parquet"
+
+
 def links_path() -> Path:
     return common.build_root() / "identity" / "links.parquet"
 
 
 def cf_batches() -> list[Path]:
     return fx.batch_files()
+
+
+def eight_k_path() -> Path:
+    return common.build_root() / "sec_filings" / "eight_k_items.parquet"
+
+
+NONRELIANCE_DAYS = 365
+NONRELIANCE_RULE = (
+    f"nonreliance_402_at = available_at of the issuer's latest 8-K (or 8-K/A) Item 4.02 (non-reliance on previously "
+    f"issued financial statements) from sec_filings/eight_k_items.parquet with available_at <= the event's "
+    f"available_at and within {NONRELIANCE_DAYS} days before it, else NULL")
+
+
+def input_manifests() -> dict[str, Any]:
+    """SHA-256 of every input stage manifest the build reads (plan invariant 5)."""
+    out: dict[str, Any] = {}
+    for rel in ("identity/manifest.json", "sec_filings/manifest.json", "reference/manifest.json"):
+        path = common.build_root() / rel
+        out[rel] = common.sha256_file(path) if path.exists() else None
+    return out
+
+
+def catalog_manifest() -> dict[str, Any]:
+    """The S4.2 catalog definition as published (per item: Compustat mnemonic, seed item, kind, chain, rules)."""
+    return {"rule": fcat.__doc__, "label_rule": LABEL_RULE, "pre_rule": CATALOG_PRE_RULE,
+            "structural_by_template": {k: sorted(v) for k, v in fi.CAT_STRUCTURAL.items()},
+            "items": [{"col": it.col, "mnemonic": it.mnemonic, "seed_item_id": it.seed, "kind": it.kind,
+                       "chain": list(it.chain), "zero_statement": it.stmt, "zero_line_pattern": it.line,
+                       "knowledge_zero": it.knowledge_zero, "sic_ranges": [list(r) for r in it.sic],
+                       "note": it.note} for it in fcat.CATALOG]}
 
 
 # ---------------------------------------------------------------------------
@@ -234,18 +278,74 @@ def pos_sum_sql(num_glob: str) -> str:
 
 
 def pre_flags_sql(pre_glob: str) -> str:
-    """Statement-line flags per accession over FSDS PRE parquet files (see ``PRE_RULE``)."""
+    """Statement-line flags per accession over FSDS PRE parquet files (see ``PRE_RULE`` and ``CATALOG_PRE_RULE``)."""
     is_cols = ",\n".join(
         f"bool_or(stmt IN ('IS', 'CI') AND regexp_matches(lower(tag), '{pat}')"
         + (f" AND NOT regexp_matches(lower(tag), '{PRE_REV_EXCLUDE}')" if name == "is_rev" else "")
         + f") AS {name}"
         for name, pat in PRE_PATTERNS.items() if name != "cf_capx")
+    cat_cols = "".join(
+        f",\n               bool_or(stmt IN ({', '.join(repr(x) for x in fcat.PRE_STMTS[it.stmt])}) AND "
+        f"regexp_matches(lower(tag) || ' ' || lower(coalesce(plabel, '')), '{it.line}')) AS \"{fi.CAT}{it.col}\""
+        for it in fcat.CATALOG if it.stmt)
     return f"""
         SELECT adsh, bool_or(stmt IN ('IS', 'CI')) AS has_is, bool_or(stmt = 'CF') AS has_cf,
                {is_cols},
-               bool_or(stmt = 'CF' AND regexp_matches(lower(tag), '{PRE_PATTERNS["cf_capx"]}')) AS cf_capx
+               bool_or(stmt = 'CF' AND regexp_matches(lower(tag), '{PRE_PATTERNS["cf_capx"]}')) AS cf_capx,
+               bool_or(stmt = 'BS') AS has_bs{cat_cols}
         FROM read_parquet('{pre_glob}') WHERE NOT coalesce(inpth, false)
         GROUP BY adsh
+    """
+
+
+# S4.2(c) FSDS PRE label fallback: custom-tag (version = adsh) income-statement lines identified by their label.
+LABEL_CONCEPTS = {
+    "GrossProfit": r"^(total )?gross (profit|margin|income)( \(loss\))?(, net)?$|^gross (loss|profit \(loss\))$",
+    "CostOfRevenue": (r"^(total )?costs? of (net )?(revenues?|sales|goods sold|goods and services sold|products sold"
+                      r"|products and services|products|services|merchandise sold|goods|sales and services)"
+                      r"( \((exclusive|excluding|excludes|exclusive of)[^)]*\))?$"),
+    "OperatingIncomeLoss": (r"^(total )?(operating (income|profit|earnings|loss)( \(loss\))?|(income|earnings|profit)"
+                            r"( \(loss\))? from operations|operating income \(loss\)|loss from operations"
+                            r"|income \(loss\) from operations|operating \(loss\) income|\(loss\) income from operations)$"),
+    "Revenues": r"^(total )?(net )?(operating )?(revenues?|sales)(, net)?$",
+}
+LABEL_RULE = (
+    "lbl-label-v1 (S4.2c): FSDS PRE income-statement lines (IS/CI, not parenthetical) whose tag is custom (version = "
+    "adsh) and whose lower-case label matches: " + "; ".join(f"{k}: /{v}/" for k, v in LABEL_CONCEPTS.items())
+    + ". Value = the FSDS NUM fact of that custom tag (no segments, no co-registrant, currency uom, qtrs > 0); per "
+    "(accession, concept, ddate, qtrs, uom) the single matching line, or the single 'total ...' line when several "
+    "match (else none); mapped onto the accession's own Company Facts duration like pos-sum-v1; the last tier of the "
+    "revenue, cost-of-revenue, gross-profit and operating-income chains (pseudo taxonomy lbl)")
+CATALOG_PRE_RULE = (
+    "catalog statement-line flags: has_bs = any BS line; c_<item> = a line of the item's statement (BS; IS or CI; "
+    "CF) whose 'lower(tag) lower(plabel)' matches the item's fund_catalog line pattern")
+
+
+def label_lines_sql(pre_glob: str, num_glob: str) -> str:
+    """lbl-label-v1 over FSDS PRE and NUM parquet files (see ``LABEL_RULE``)."""
+    cases = " ".join(f"WHEN regexp_matches(lab, '{pat}') THEN '{name}'" for name, pat in LABEL_CONCEPTS.items())
+    return f"""
+        WITH m AS (
+            SELECT DISTINCT adsh, tag, CASE {cases} END AS concept, starts_with(lab, 'total') AS is_total
+            FROM (SELECT adsh, tag, lower(trim(plabel)) AS lab FROM read_parquet('{pre_glob}')
+                  WHERE NOT coalesce(inpth, false) AND stmt IN ('IS', 'CI') AND version = adsh AND plabel IS NOT NULL)
+        ), m2 AS (SELECT * FROM m WHERE concept IS NOT NULL),
+        n AS (
+            SELECT adsh, tag, ddate, qtrs, uom, max(CAST(value AS DOUBLE)) AS v
+            FROM read_parquet('{num_glob}')
+            WHERE version = adsh AND segments IS NULL AND (coreg IS NULL OR coreg = '') AND qtrs > 0
+              AND regexp_matches(uom, '^[A-Z]{{3}}$') AND value IS NOT NULL
+              AND adsh IN (SELECT adsh FROM m2)
+            GROUP BY ALL
+        )
+        SELECT * FROM (
+            SELECT m2.adsh, m2.concept, n.ddate, n.qtrs, n.uom, count(*) AS n_lines,
+                   count(*) FILTER (WHERE is_total) AS n_total,
+                   CASE WHEN count(*) FILTER (WHERE is_total) = 1 THEN max(n.v) FILTER (WHERE is_total)
+                        WHEN count(*) = 1 THEN max(n.v) END AS value
+            FROM m2 JOIN n USING (adsh, tag)
+            GROUP BY m2.adsh, m2.concept, n.ddate, n.qtrs, n.uom
+        ) WHERE value IS NOT NULL
     """
 
 
@@ -282,7 +382,13 @@ def prepare() -> dict[str, Any]:
             receipt["pos_sum_rows"] = common.copy_to_parquet(con, pos_sum_sql(num_glob), pos_sums_path())
         with common.timed(receipt, "pre_flags"):
             pre_glob = (common.FSDS_DIR / "pre" / "*.parquet").as_posix()
-            receipt["pre_flag_rows"] = common.copy_to_parquet(con, pre_flags_sql(pre_glob), pre_flags_path())
+            receipt["pre_flag_rows"] = common.copy_to_parquet(con, pre_flags_sql(pre_glob), pre_flags_path(),
+                                                              row_group_size=32768)
+        with common.timed(receipt, "label_lines"):
+            receipt["label_line_rows"] = common.copy_to_parquet(con, label_lines_sql(pre_glob, num_glob),
+                                                                label_lines_path())
+            receipt["label_lines_by_concept"] = dict(con.execute(
+                f"SELECT concept, count(*) FROM read_parquet('{label_lines_path().as_posix()}') GROUP BY 1").fetchall())
         with common.timed(receipt, "scope"):
             n = common.copy_to_parquet(
                 con,
@@ -298,6 +404,8 @@ def prepare() -> dict[str, Any]:
     receipt["class_rule"] = CLASS_RULE
     receipt["pre_rule"] = PRE_RULE
     receipt["pos_rule"] = POS_RULE
+    receipt["label_rule"] = LABEL_RULE
+    receipt["catalog_pre_rule"] = CATALOG_PRE_RULE
     common.write_json_atomic(work_dir() / "prepare.json", receipt)
     return receipt
 
@@ -315,6 +423,16 @@ EVENT_SCHEMA = pa.schema(
     + [("currency", pa.string()), ("fin_template", pa.string()), ("sic_in_force", pa.int32()),
        ("staleness_days", pa.int32()), ("xrd_reported_zero", pa.bool_()), ("zero_filled", pa.string())]
     + [(c, pa.string()) for c in fi.SRC_COLUMNS]
+    + [("fx_converted", pa.bool_()), ("fx_rate", pa.float64()), ("fx_rate_avg_q", pa.float64()),
+       ("fx_rate_avg_ttm", pa.float64()), ("available_at", pa.timestamp("us")),
+       ("is_amendment", pa.bool_()), ("is_restated", pa.bool_()), ("restated_items", pa.string())]
+)
+CATALOG_SCHEMA = pa.schema(
+    [("cik", pa.int64()), ("accession", pa.string()), ("clock_utc", pa.timestamp("us")),
+     ("available_at", pa.timestamp("us")), ("period_end", pa.date32()), ("fiscal_year", pa.int32()),
+     ("fiscal_period", pa.string()), ("form", pa.string()), ("currency", pa.string()), ("fin_template", pa.string()),
+     ("sic_in_force", pa.int32())]
+    + [(c, pa.float64()) for c in fcat.CAT_COLUMNS] + [("catalog_zero_filled", pa.string())]
 )
 SIC_PART_SCHEMA = pa.schema(
     [("cik", pa.int64()), ("clock_utc", pa.timestamp("us")), ("accession", pa.string()), ("sic", pa.int32()),
@@ -349,14 +467,19 @@ def _batch_source_identity(batch: Path) -> dict[str, Any]:
     return ident
 
 
-def _batch_done(batch: Path, receipt_path: Path) -> bool:
+def _fx_identity(fx: ffx.FxTable | None) -> dict[str, Any] | None:
+    return None if fx is None else {k: fx.source.get(k) for k in ("path", "bytes", "sha256", "rows")}
+
+
+def _batch_done(batch: Path, receipt_path: Path, fx: ffx.FxTable | None = None) -> bool:
     if not receipt_path.exists():
         return False
     r = common.read_json(receipt_path)
     ident = _batch_source_identity(batch)
     return (r.get("code_version") == CODE_VERSION and r.get("source", {}).get("bytes") == ident["bytes"]
             and r.get("source", {}).get("mtime_ns") == ident["mtime_ns"]
-            and all((parts_dir() / r[k]).exists() for k in ("events_file", "sic_file", "history_file")))
+            and r.get("fx_source") == _fx_identity(fx)
+            and all((parts_dir() / r[k]).exists() for k in ("events_file", "sic_file", "history_file", "catalog_file")))
 
 
 def _base_sql(src: str, cik_filter: str = "") -> str:
@@ -365,6 +488,7 @@ def _base_sql(src: str, cik_filter: str = "") -> str:
     sub = sub_clock_path().as_posix()
     cls_path = class_shares_path().as_posix()
     pos_path = pos_sums_path().as_posix()
+    lbl_path = label_lines_path().as_posix()
     return f"""
         WITH f AS (
             SELECT CAST(b.cik AS BIGINT) AS cik, b.accession_number AS accn, c.cid, c.kind,
@@ -373,6 +497,7 @@ def _base_sql(src: str, cik_filter: str = "") -> str:
             FROM read_parquet('{src}') b
             JOIN concepts c ON b.taxonomy = c.taxonomy AND b.concept = c.concept
                  AND ((c.unit = 'shares') = (b.unit = 'shares'))
+                 AND ((c.unit = 'per_share') = (b.unit LIKE '%/shares'))
             WHERE b.form IN (SELECT form FROM forms) {cik_filter}
         ),
         acc AS (
@@ -408,7 +533,18 @@ def _base_sql(src: str, cik_filter: str = "") -> str:
                  AND abs(datediff('day', d.period_start, d.period_end) + 1 - x.qtrs * 91.3) <= 20
             JOIN concepts c ON c.taxonomy = '{fi.POS}' AND c.concept = x.tag
         ),
-        facts AS (SELECT * FROM f UNION ALL SELECT * FROM cls UNION ALL SELECT * FROM pos)
+        lbl AS (
+            SELECT DISTINCT a.cik, x.adsh AS accn, c.cid, c.kind, d.period_start, d.period_end, x.value, x.uom AS unit,
+                   a.form, a.filed AS filed_date, CAST(NULL AS INTEGER) AS fiscal_year,
+                   CAST(NULL AS VARCHAR) AS fiscal_period
+            FROM read_parquet('{lbl_path}') x
+            JOIN clk a ON a.accn = x.adsh
+            JOIN (SELECT DISTINCT accn, period_start, period_end FROM f WHERE period_start IS NOT NULL) d
+                 ON d.accn = x.adsh AND abs(datediff('day', x.ddate, d.period_end)) <= 16
+                 AND abs(datediff('day', d.period_start, d.period_end) + 1 - x.qtrs * 91.3) <= 20
+            JOIN concepts c ON c.taxonomy = '{fi.LBL}' AND c.concept = x.concept
+        ),
+        facts AS (SELECT * FROM f UNION ALL SELECT * FROM cls UNION ALL SELECT * FROM pos UNION ALL SELECT * FROM lbl)
     """
 
 
@@ -495,12 +631,13 @@ class _HistoryWriter:
         return self.rows
 
 
-def process_batch(con, batch: Path) -> dict[str, Any]:
+def process_batch(con, batch: Path, fx_table: ffx.FxTable | None = None) -> dict[str, Any]:
     t0 = time.perf_counter()
     bid = batch.stem.split("-")[1]
     ev_path = parts_dir() / f"events-{bid}.parquet"
     sic_path = parts_dir() / f"sic-{bid}.parquet"
     hist_path = parts_dir() / f"history-{bid}.parquet"
+    cat_path = parts_dir() / f"catalog-{bid}.parquet"
     base = _base_sql(batch.as_posix())
     counts = dict(con.execute(
         base + """
@@ -512,8 +649,9 @@ def process_batch(con, batch: Path) -> dict[str, Any]:
         UNION ALL SELECT 'drop_start_after_end', count(*) FROM f WHERE period_start > period_end
         UNION ALL SELECT 'class_share_rows', count(*) FROM cls
         UNION ALL SELECT 'pos_cogs_rows', count(*) FROM pos
+        UNION ALL SELECT 'label_fallback_rows', count(*) FROM lbl
         UNION ALL SELECT 'rows_non_usd_money', count(*) FROM f
-            WHERE unit NOT IN ('USD', 'shares')
+            WHERE unit NOT IN ('USD', 'shares') AND unit NOT LIKE '%/shares'
         """
     ).fetchall())
     sic_by, pre_by, basis_by, sic_rows = _issuer_extras(con, base)
@@ -526,7 +664,8 @@ def process_batch(con, batch: Path) -> dict[str, Any]:
             ciks_seen += 1
             n_rows += len(rows)
             h: list[tuple] = []
-            events.extend(fi.issuer_events(cik, rows, EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik), h))
+            events.extend(fi.issuer_events(cik, rows, EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik), h,
+                                           fx=fx_table))
             hist.add(cik, h, basis_by)
         n_hist = hist.close()
     except BaseException:
@@ -552,12 +691,17 @@ def process_batch(con, batch: Path) -> dict[str, Any]:
     tmp = sic_path.with_name(sic_path.name + ".partial")
     pq.write_table(pa.Table.from_pylist(sic_out, schema=SIC_PART_SCHEMA), tmp, compression="zstd")
     tmp.replace(sic_path)
+    tmp = cat_path.with_name(cat_path.name + ".partial")
+    pq.write_table(pa.Table.from_pylist(events, schema=CATALOG_SCHEMA), tmp, compression="zstd")
+    tmp.replace(cat_path)
     receipt = {
         "code_version": CODE_VERSION,
         "source": _batch_source_identity(batch),
+        "fx_source": _fx_identity(fx_table),
         "events_file": ev_path.name,
         "sic_file": sic_path.name,
         "history_file": hist_path.name,
+        "catalog_file": cat_path.name,
         "fact_rows_used": n_rows,
         "ciks": ciks_seen,
         "events": len(events),
@@ -576,6 +720,8 @@ def run_batches(only: tuple[int, int] | None = None) -> None:
     if not fx.complete():
         raise SystemExit("Company Facts extract incomplete: run `python -m atx_db.alpha_panel.fund_extract run`")
     batches = cf_batches()
+    fx_table = ffx.load_optional()
+    print(f"fx: {_fx_identity(fx_table)}", flush=True)
     con = common.connect(memory="300MB", threads=2)
     try:
         _register_static(con)
@@ -584,9 +730,9 @@ def run_batches(only: tuple[int, int] | None = None) -> None:
             if only and not (only[0] <= bid <= only[1]):
                 continue
             receipt_path = parts_dir() / f"batch-{bid:04d}.json"
-            if _batch_done(batch, receipt_path):
+            if _batch_done(batch, receipt_path, fx_table):
                 continue
-            r = process_batch(con, batch)
+            r = process_batch(con, batch, fx_table)
             print(f"batch {bid:04d}: ciks={r['ciks']} rows={r['fact_rows_used']} events={r['events']} "
                   f"history={r['history_rows']} {r['seconds']}s", flush=True)
     finally:
@@ -649,16 +795,18 @@ def coverage_by_year(con, ev: Path, items: tuple[str, ...] = fi.ALL_ITEMS,
 def finalize() -> dict[str, Any]:
     t0 = time.perf_counter()
     batches = cf_batches()
+    fx_table = ffx.load_optional()
     missing = [b.name for b in batches
-               if not _batch_done(b, parts_dir() / f"batch-{b.stem.split('-')[1]}.json")]
+               if not _batch_done(b, parts_dir() / f"batch-{b.stem.split('-')[1]}.json", fx_table)]
     if missing:
         raise SystemExit(f"{len(missing)} batches not complete: {missing[:5]}")
     receipts = [common.read_json(parts_dir() / f"batch-{b.stem.split('-')[1]}.json") for b in batches]
     out_dir = fund_dir()
     ev_dest, sic_dest = out_dir / "events.parquet", out_dir / "sic_events.parquet"
     hist_dest = out_dir / "quarterly_history.parquet"
+    cat_dest = out_dir / "catalog.parquet"
     manifest: dict[str, Any] = {"rule": RULE, "code_version": CODE_VERSION, "rule_text": RULE_TEXT,
-                                "staleness_rule": STALENESS_RULE, "currency_rule": CURRENCY_RULE,
+                                "staleness_rule": STALENESS_RULE, "currency_rule": CURRENCY_RULE, "fx_rule": ffx.RULE,
                                 "template_rule": fi.TEMPLATE_RULE, "structural_na": structural_na(),
                                 "class_share_rule": CLASS_RULE, "pre_flag_rule": PRE_RULE, "pos_cogs_rule": POS_RULE,
                                 "nil_zero_rule": fi.nil_zeros.__doc__.split("\n\n")[0].replace("\n    ", " "),
@@ -673,8 +821,20 @@ def finalize() -> dict[str, Any]:
     try:
         parts = (parts_dir() / "events-*.parquet").as_posix()
         with common.timed(manifest, "events"):
-            n_ev = common.copy_to_parquet(
-                con, f"SELECT * FROM read_parquet('{parts}') ORDER BY cik, clock_utc, accession", ev_dest)
+            ek = eight_k_path()
+            if ek.exists():
+                src = f"""
+                    SELECT e.*, CASE WHEN k.t402 > e.available_at - INTERVAL {NONRELIANCE_DAYS} DAY THEN k.t402 END
+                                AS nonreliance_402_at
+                    FROM read_parquet('{parts}') e
+                    ASOF LEFT JOIN (SELECT cik, available_at AS t402 FROM read_parquet('{ek.as_posix()}')
+                                    WHERE item = '4.02' AND available_at IS NOT NULL) k
+                      ON e.cik = k.cik AND e.available_at >= k.t402"""
+            else:
+                src = f"SELECT *, CAST(NULL AS TIMESTAMP) AS nonreliance_402_at FROM read_parquet('{parts}')"
+            n_ev = common.copy_to_parquet(con, f"SELECT * FROM ({src}) ORDER BY cik, clock_utc, accession", ev_dest,
+                                          row_group_size=32768)
+            manifest["nonreliance_rule"] = NONRELIANCE_RULE
             dup = con.execute(
                 f"SELECT count(*) - count(DISTINCT (cik, accession)) FROM read_parquet('{ev_dest.as_posix()}')"
             ).fetchone()[0]
@@ -704,6 +864,12 @@ def finalize() -> dict[str, Any]:
                 f"FROM read_parquet('{hist_dest.as_posix()}')").fetchone()[0]
             if dup:
                 raise AssertionError(f"{dup} duplicate quarterly_history keys")
+        with common.timed(manifest, "catalog"):
+            cparts = (parts_dir() / "catalog-*.parquet").as_posix()
+            n_cat = common.copy_to_parquet(
+                con, f"SELECT * FROM read_parquet('{cparts}') ORDER BY cik, clock_utc, accession", cat_dest,
+                row_group_size=32768)
+            manifest["catalog"] = catalog_manifest()
         with common.timed(manifest, "stats"):
             manifest["stats"] = _stats(con, ev_dest, sic_dest, hist_dest)
             manifest["coverage_by_year"] = coverage_by_year(con, ev_dest)
@@ -721,13 +887,15 @@ def finalize() -> dict[str, Any]:
     manifest["batch_seconds_total"] = round(sum(r["seconds"] for r in receipts), 1)
     manifest["fact_rows_used"] = sum(r["fact_rows_used"] for r in receipts)
     manifest["sources"] = _sources(batches)
+    manifest["sources"]["fx_daily"] = _fx_identity(fx_table)
+    manifest["input_manifests_sha256"] = input_manifests()
     manifest["outputs"] = {"events.parquet": {"rows": n_ev}, "sic_events.parquet": {"rows": n_sic},
-                           "quarterly_history.parquet": {"rows": n_hist}}
+                           "quarterly_history.parquet": {"rows": n_hist}, "catalog.parquet": {"rows": n_cat}}
     if "guard" in old:
         manifest["guard_previous"] = old["guard"]
     manifest["timings_s"]["total_finalize"] = round(time.perf_counter() - t0, 3)
     manifest["created_utc"] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
-    common.write_stage_manifest("fundamentals", SCHEMA, MODULES, manifest, pattern="*.parquet")
+    common.write_stage_manifest(fx.stage_name(), SCHEMA, MODULES, manifest, pattern="*.parquet")
     return manifest
 
 
