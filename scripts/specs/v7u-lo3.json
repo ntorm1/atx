@@ -1,0 +1,198 @@
+{
+  "schema": "atx.research-cycle-spec/v1",
+  "name": "v7u-lo3",
+  "description": "TEMPLATE, universe trial U-lo3 (draft pre-registration: task-U2-report.md; declare it in v7-prereg.md before any run). Held fixed: library LIB and its recipe (root fills in), admission v4-prior-v1, ew-theme-v1 refit, the final construction (aim-partial-v5, theta .05, dust .1, fixed, delta orders, exit .05, locate-in-aim, liquidity cache, price-risk-v1, L fixed 1.247), cost model S2, fundamental items from pool-2 fundamental-events-v2, every non-issuer field source. Changed: role lo1 -> lo3 (linked-operating-v3 = identity-bridge-v2-pit, v2 class rule, atx-db fundamentals-stage SIC; delisting attributes only, --delisting-returns off) and the fields-v7 list rebuilt on lo3 with the same bridge and the same SIC table (--sic-events). Paired vs the same library's lo1 cell (reference_cell). TRAIN 2020-2022 only.",
+  "template": {
+    "status": "plan exits 3 (inputs missing) until every item below is filled",
+    "fill": [
+      "every LIB token (paths and output names): the held-fixed library id, e.g. v61 (atx-impl/strategies/fund_industry_ic_v61.json) or v70 once accepted",
+      "inputs.reference_admission / inputs.reference_cell: that library's lo1 fit admission.json and NAV cell summary.json (the paired parent)",
+      "summ.dsr_n: the TRAIN trials ledger N at run time + 1; ledger kind universe",
+      "inputs.role.sha256 after role_command (then `research_cycle.py lock specs/v7u-lo3.json --write`)"
+    ],
+    "role_command": "python atx-engine/tools/prepare_recent_research.py role --universe linked-operating-v3 --out build-equity/recent-fast-train-2020-2022-v2-lo3 --base-role build-equity/recent-fast-train-2020-2022-v2 --base-role-sha256 210fff9687aa6b16e74c65104d77a916d708dca6986e77b06bac27556c48d1de --identity-bridge C:/atx/atx-db/data/alpha_panel/v1/export/identity-bridge-v2-pit --identity-bridge-sha256 09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01 --sic-events C:/atx/atx-db/data/alpha_panel/v1/fundamentals --sic-events-sha256 9f9b2f85f6bcd5c7f3a55aee097893094a5cb85ab2b4edbfb582297dab06816b --delisting C:/atx/atx-db/data/alpha_panel/v1/delisting --delisting-sha256 1b1166b61e5a77d8dbe007f2de3261392424fb86a59c1118028862abc264c37f",
+    "fields_reuse": "none: REUSE_RULE binds a prior fields dir to its role (member SHA-256); no fields dir exists on lo3 yet. A rebuild on lo3 may pass --reuse-fields <this cycle's fields dir>"
+  },
+  "python": "C:/Program Files/Python312/python.exe",
+  "env_path_prepend": [
+    "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
+    "C:/atx-cache/vcpkg_installed/x64-windows/bin"
+  ],
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 180,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "exes": {
+    "ic": "build-equity/bin/atx-equity-strategy-ic.exe",
+    "nav": "build-equity/bin/atx-equity-strategy-targets.exe"
+  },
+  "inputs": {
+    "library": {
+      "path": "atx-impl/strategies/fund_industry_ic_LIB.json",
+      "sha256": null
+    },
+    "recipe": {
+      "path": "atx-impl/strategies/fund_industry_ic_LIB.recipe.json",
+      "sha256": null
+    },
+    "role": {
+      "dir": "build-equity/recent-fast-train-2020-2022-v2-lo3",
+      "path": "build-equity/recent-fast-train-2020-2022-v2-lo3/manifest.json",
+      "universe": "linked-operating-v3",
+      "sha256": null
+    },
+    "identity_bridge": {
+      "dir": "C:/atx/atx-db/data/alpha_panel/v1/export/identity-bridge-v2-pit",
+      "path": "C:/atx/atx-db/data/alpha_panel/v1/export/identity-bridge-v2-pit/manifest.json",
+      "sha256": "09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01"
+    },
+    "fund_events": {
+      "dir": "build-equity/fundamental-events-v2",
+      "path": "build-equity/fundamental-events-v2/manifest.json",
+      "sha256": "74ed9a50ea686e0b0842ff9b09e78d6653ddeedd0d42f37893873ce269e3dd71"
+    },
+    "sic_events": {
+      "dir": "C:/atx/atx-db/data/alpha_panel/v1/fundamentals",
+      "path": "C:/atx/atx-db/data/alpha_panel/v1/fundamentals/manifest.json",
+      "sha256": "9f9b2f85f6bcd5c7f3a55aee097893094a5cb85ab2b4edbfb582297dab06816b"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-LIB-ew/admission.json",
+      "sha256": null
+    },
+    "reference_cell": {
+      "dir": "build-equity/mega-nav-LIB-lo1-cell",
+      "path": "build-equity/mega-nav-LIB-lo1-cell/summary.json",
+      "sha256": null
+    }
+  },
+  "fields": {
+    "builder": "atx-engine/tools/prepare_research_fields.py",
+    "output": "build-equity/recent-fast-train-2020-2022-v2-lo3-fields-v7",
+    "list": [
+      "si_shares",
+      "si_dtc",
+      "iv_atm_21d",
+      "iv_atm_63d",
+      "iv_atm_126d",
+      "earn_recent",
+      "shares_out",
+      "mkt_ret",
+      "be",
+      "at",
+      "at_lag4",
+      "lt",
+      "che",
+      "debt",
+      "sale_ttm",
+      "gp_ttm",
+      "oi_ttm",
+      "ni_ttm",
+      "ni_q",
+      "ni_q_lag4",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "cfo_ttm",
+      "capx_ttm",
+      "xrd_ttm",
+      "dvc_ttm",
+      "prstkc_ttm",
+      "sstk_ttm",
+      "txt_q",
+      "txt_q_lag4",
+      "shrs_q",
+      "shrs_q_lag4",
+      "noa",
+      "noa_lag4",
+      "sue",
+      "fscore",
+      "me_company",
+      "grp_sic2",
+      "grp_ff12",
+      "grp_ff49",
+      "sv_ratio126"
+    ],
+    "sources": {
+      "finra": "C:/atx/data/finra_short_interest",
+      "tickerhistory": "C:/Users/natha/Downloads/TickerHistory3.parquet",
+      "finra_short_volume": "C:/atx/atx-db/data/raw/finra_short_volume"
+    },
+    "fund_lag_sessions": 1,
+    "max_rss_mib": 1536,
+    "max_seconds": 1800,
+    "check": {
+      "short_volume_files_sha256": "6a968e5aafd820e1e19c014c0f17f4adb6dd55d2b9c395299ad2c5460593d081"
+    }
+  },
+  "ic": {
+    "u_output": "build-equity/mega-LIB-lo3-train-u",
+    "w_output": "build-equity/mega-LIB-lo3w-train-ew",
+    "cache": "build-equity/mega-candidate-cache-LIB-lo3",
+    "flags": [
+      "--max-memory-mib",
+      "1536",
+      "--min-names",
+      "1000",
+      "--workers",
+      "4",
+      "--save-combined"
+    ]
+  },
+  "fit": {
+    "script": "atx-impl/tools/fit_composition_weights.py",
+    "output": "build-equity/mega-weights-LIB-lo3-ew",
+    "work_dir": "build-equity/mega-fit-work-LIB-lo3",
+    "flags": [
+      "--orientation",
+      "prior",
+      "--screen",
+      "v4-prior-v1",
+      "--composition",
+      "ew-theme-v1"
+    ],
+    "max_seconds": 150,
+    "max_passes": 3
+  },
+  "gate": {
+    "name": "u-lo3-readout",
+    "admitted": [],
+    "report": []
+  },
+  "nav": {
+    "output": "build-equity/mega-nav-LIB-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+    "rule": "aim-partial-v5",
+    "leverage": "1.247",
+    "flags": [
+      "--cadence",
+      "1",
+      "--trade-fraction",
+      ".05",
+      "--dust-multiple",
+      ".1",
+      "--aim-leverage",
+      "{leverage}",
+      "--daily-turnover-mean-max",
+      ".20",
+      "--daily-turnover-p95-max",
+      ".30",
+      "--neutralize",
+      "price-risk-v1",
+      "--max-bytes",
+      "1073741824",
+      "--order-basis",
+      "delta",
+      "--exit-rate",
+      ".05",
+      "--locate-in-aim",
+      "--liquidity-cache"
+    ]
+  },
+  "summ": {
+    "script": ".superpowers/sdd/mega-alpha-20260926/studies/nav_summ.py",
+    "dsr_n": "FILL-N-PLUS-1",
+    "extra": [],
+    "ledger_kind": "universe"
+  }
+}

@@ -39,6 +39,14 @@ byte) applies ``DELISTING_RETURN_RULE``: on the termination session (the role se
 last vendor session L) a line with a stage dlret gets close = close[L] x (1 + dlret), raw_close =
 raw_close[L] x (1 + dlret), volume 0 and present 1, and is not a member there, so a position held
 from L realises the imputed delisting return; skipped cases are counted by reason.
+
+``linked-operating-v3`` (platform v7 U2) is ``linked-operating-v2`` with one change: the SIC table is the atx-db
+fundamentals stage's ``sic_events.parquet`` (``--sic-events`` = the stage directory, ``--sic-events-sha256`` = its
+manifest SHA-256), read through ``prepare_research_fields.SIC_STAGE_MAPPING`` (clock_utc -> accepted_utc, same clock
+definition; carried rows are the SIC in force and are used; the stage's FF labels are never used). The SIC clock is
+unchanged: a row is visible at session t when its clock is before date(t-1) 22:00 UTC and is used while date(t) minus its
+UTC date is <= 550 days. The grp_* fields must be built from the same table (``prepare_research_fields --sic-events``);
+``--check-fields`` then also requires the fields' grp_ff12 to name this stage manifest.
 """
 from __future__ import annotations
 
@@ -67,7 +75,9 @@ CLOCK = "modeled-session+22h-mark+23h-decision-v1"
 DEFAULT_UNIVERSE = "research-prior63-usd-adv-topn-v1"   # the membership rule above (unchanged)
 LINKED_OPERATING_UNIVERSE = "linked-operating-v1"       # v6 revision V6-U
 LINKED_OPERATING_V2_UNIVERSE = "linked-operating-v2"    # platform v7 W5b: atx-db identity bridge v2 + delisting
-UNIVERSES = (DEFAULT_UNIVERSE, LINKED_OPERATING_UNIVERSE, LINKED_OPERATING_V2_UNIVERSE)
+LINKED_OPERATING_V3_UNIVERSE = "linked-operating-v3"    # platform v7 U2: v2 + the atx-db fundamentals-stage SIC table
+UNIVERSES = (DEFAULT_UNIVERSE, LINKED_OPERATING_UNIVERSE, LINKED_OPERATING_V2_UNIVERSE, LINKED_OPERATING_V3_UNIVERSE)
+LINKED_UNIVERSES = (LINKED_OPERATING_UNIVERSE, LINKED_OPERATING_V2_UNIVERSE, LINKED_OPERATING_V3_UNIVERSE)
 UNIVERSE_SIC_LAG_SESSIONS = 1     # the grp_* / fundamentals clock of fields-v6 (v4-prereg R2 --fund-lag-sessions 1)
 UNIVERSE_SIC_STALE_DAYS = 550     # prepare_research_fields.GRP_STALE_DAYS (asserted at run time)
 # Not operating companies: asset-backed (6189), commodity pools (6221), open-end funds (6722), unit investment
@@ -106,6 +116,22 @@ UNIVERSE_V2_LIMITS = [
     "only at the 2026 snapshot stay unlinked)",
     "SIC comes from the pinned --sic-events: CIKs linked by the v2 bridge but absent from those events drop as "
     "no_visible_sic",
+    "membership_recipe keeps the base ADV top-N rule (an upper envelope); the universe block is the restriction",
+]
+# linked-operating-v3 (platform v7 U2)
+LINKED_OPERATING_V3_RULE = (
+    "linked-operating-v3: linked-operating-v2 (identity bridge identity-bridge-v2-pit, its class test, delisting "
+    "attributes) with the SIC table replaced by the atx-db fundamentals stage sic_events.parquet (pinned by the stage "
+    "manifest SHA-256; prepare_research_fields SIC_STAGE_MAPPING): the linked CIK's latest stage row with clock_utc < "
+    "date(t-1) 22:00 UTC (lag 1 session) is <= 550 days old AND its SIC is not in non_operating_sic; link rule, class "
+    "test, lag, staleness, non_operating_sic and reason order unchanged")
+UNIVERSE_V3_LIMITS = [
+    "identity is the atx-db v2 point-in-time bridge (strict + name tiers; the backfill tier is excluded, so lines alive "
+    "only at the 2026 snapshot stay unlinked)",
+    "SIC comes from the atx-db fundamentals stage (every Company Facts CIK with a periodic-form filing event since "
+    "2010); a linked CIK with no such event still drops as no_visible_sic",
+    "the grp_* fields must be built from the same stage (prepare_research_fields --sic-events), else finite(grp_ff12) "
+    "differs from linked-P & visible SIC; fundamental items still come from the fields' --fund-events",
     "membership_recipe keeps the base ADV top-N rule (an upper envelope); the universe block is the restriction",
 ]
 DELISTING_ADAPTER = {
@@ -580,9 +606,10 @@ def _bridge_class(prf, bridge: Path, bridge_sha256: str, role, links: dict, budg
 
 
 def _check_fields(prf, fields: Path, fields_sha256: str, base_sha256: str, visible: np.ndarray, link_counts: dict,
-                  limits: Limits) -> dict:
+                  limits: Limits, sic_manifest_sha256: str | None = None) -> dict:
     """The u pass's fields manifest agrees with this classification: same role, same SIC lag, same
-    link_member_cells, and finite(grp_ff12) == primary-linked & visible SIC on every cell."""
+    link_member_cells, and finite(grp_ff12) == primary-linked & visible SIC on every cell (linked-operating-v3: and
+    grp_ff12 was built from the same SIC stage, ``sic_manifest_sha256``)."""
     blob = (fields / "manifest.json").read_bytes()
     if hashlib.sha256(blob).hexdigest() != fields_sha256.lower():
         raise ValueError("fields manifest SHA-256 does not match --check-fields-sha256")
@@ -600,6 +627,10 @@ def _check_fields(prf, fields: Path, fields_sha256: str, base_sha256: str, visib
     entry = next((f for f in fm.get("fields", []) if f.get("name") == "grp_ff12"), None)
     if entry is None or entry.get("shape") != list(visible.shape):
         raise ValueError("--check-fields has no grp_ff12 on the base role's axes")
+    if sic_manifest_sha256 is not None and not any(
+            isinstance(s, dict) and s.get("sha256") == sic_manifest_sha256.lower() for s in entry.get("sources") or []):
+        raise ValueError("--check-fields grp_ff12 was not built from the --sic-events stage (prepare_research_fields "
+                         "--sic-events): role and fields would use two SIC tables")
     path = fields / entry["file"]
     if sha_file(path, limits) != entry["sha256"]:
         raise ValueError("grp_ff12 bytes do not match the fields manifest")
@@ -610,24 +641,33 @@ def _check_fields(prf, fields: Path, fields_sha256: str, base_sha256: str, visib
         del grid
     if mismatched:
         raise ValueError(f"finite(grp_ff12) differs from primary-linked & visible SIC on {mismatched} cells")
-    return {"fields_manifest_sha256": fields_sha256.lower(), "grp_ff12_sha256": entry["sha256"],
-            "link_member_cells_equal": True, "grp_ff12_finite_equals_linked_primary_visible_sic_cells": int(visible.size)}
+    out = {"fields_manifest_sha256": fields_sha256.lower(), "grp_ff12_sha256": entry["sha256"],
+           "link_member_cells_equal": True, "grp_ff12_finite_equals_linked_primary_visible_sic_cells": int(visible.size)}
+    if sic_manifest_sha256 is not None:
+        out["grp_ff12_sic_events_manifest_sha256"] = sic_manifest_sha256.lower()
+    return out
 
 
 def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *, bridge: Path, bridge_sha256: str,
                   sic_events: Path, sic_events_sha256: str, fields: Path | None = None,
                   fields_sha256: str | None = None, universe: str = LINKED_OPERATING_UNIVERSE,
                   delisting: Path | None = None, delisting_sha256: str | None = None, delisting_returns: bool = False):
-    """``--universe linked-operating-v1`` / ``-v2``: a new role = the base role with member.u8 restricted (see module
-    doc); v2 also marks delisting terminations and, with ``delisting_returns``, applies their imputed returns."""
+    """``--universe linked-operating-v1`` / ``-v2`` / ``-v3``: a new role = the base role with member.u8 restricted (see
+    module doc); v2 and v3 also mark delisting terminations and, with ``delisting_returns``, apply their imputed
+    returns; v3 reads SIC from the atx-db fundamentals stage (``sic_events`` = the stage directory)."""
     import prepare_research_fields as prf  # same directory: the fields' own link / SIC semantics
-    if universe not in (LINKED_OPERATING_UNIVERSE, LINKED_OPERATING_V2_UNIVERSE):
-        raise ValueError(f"restrict_role implements {LINKED_OPERATING_UNIVERSE} and {LINKED_OPERATING_V2_UNIVERSE} only")
-    v2 = universe == LINKED_OPERATING_V2_UNIVERSE
+    if universe not in LINKED_UNIVERSES:
+        raise ValueError(f"restrict_role implements {', '.join(LINKED_UNIVERSES)} only")
+    v2 = universe in (LINKED_OPERATING_V2_UNIVERSE, LINKED_OPERATING_V3_UNIVERSE)  # the v2 identity/class/delisting
+    v3 = universe == LINKED_OPERATING_V3_UNIVERSE                                   # + the stage SIC table
+    if v3:
+        sic_events = prf.sic_stage_dir(sic_events)
     if (delisting is None) != (delisting_sha256 is None) or v2 != (delisting is not None):
-        raise ValueError(f"--delisting and --delisting-sha256 go together, with {LINKED_OPERATING_V2_UNIVERSE} only")
+        raise ValueError(f"--delisting and --delisting-sha256 go together, with {LINKED_OPERATING_V2_UNIVERSE} / "
+                         f"{LINKED_OPERATING_V3_UNIVERSE} only")
     if delisting_returns and not v2:
-        raise ValueError(f"--delisting-returns applies to {LINKED_OPERATING_V2_UNIVERSE} only")
+        raise ValueError(f"--delisting-returns applies to {LINKED_OPERATING_V2_UNIVERSE} / "
+                         f"{LINKED_OPERATING_V3_UNIVERSE} only")
     if prf.GRP_STALE_DAYS != UNIVERSE_SIC_STALE_DAYS:
         raise ValueError("prepare_research_fields.GRP_STALE_DAYS changed; the universe SIC staleness is declared 550")
     if (fields is None) != (fields_sha256 is None):
@@ -652,8 +692,13 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
     for k in np.flatnonzero(~common_rows):
         if t_lo[k] < t_hi[k]:
             not_common[int(t_lo[k]):int(t_hi[k]), int(links["col"][k])] = True
-    em, events_source = prf.pinned_manifest(sic_events, sic_events_sha256, "fund-events", prf.EVENTS_ADAPTER["schema"])
-    sic, sic_sources, sic_st = prf.load_events(sic_events, em, prf.SIC_ADAPTER, [], ciks, "sic-events", budget)
+    if v3:  # the atx-db fundamentals stage, through the fields builder's own adapter (one SIC table for both)
+        sic, sic_sources, sic_st = prf.load_sic_stage(sic_events, sic_events_sha256, ciks, budget)
+    else:
+        em, events_source = prf.pinned_manifest(sic_events, sic_events_sha256, "fund-events",
+                                                prf.EVENTS_ADAPTER["schema"])
+        sic, sic_sources, sic_st = prf.load_events(sic_events, em, prf.SIC_ADAPTER, [], ciks, "sic-events", budget)
+        sic_sources = [events_source] + sic_sources
     limits.check("universe-inputs")
     latest = np.full(len(ciks), -1, dtype=np.int64)
     pointer = 0
@@ -693,7 +738,8 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
             limits.report("universe", dates=t + 1, base_members=base_counts[-1], kept=kept_counts[-1])
     crosscheck = None
     if fields is not None:
-        crosscheck = _check_fields(prf, fields, fields_sha256, base_sha256, visible_all, link_counts, limits)
+        crosscheck = _check_fields(prf, fields, fields_sha256, base_sha256, visible_all, link_counts, limits,
+                                   sic_events_sha256 if v3 else None)
     del visible_all, not_common, link, primary
     delist, patched = None, {}
     if v2:  # marked (and applied) before the output directory exists: a refusal leaves nothing behind
@@ -737,8 +783,10 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
     result["files"] = files
     result["score_member_counts"] = kept_counts[role.score_begin:]
     result["universe"] = {
-        "id": universe, "rule": LINKED_OPERATING_V2_RULE if v2 else LINKED_OPERATING_RULE,
-        "point_in_time": UNIVERSE_PIT, "limits": UNIVERSE_V2_LIMITS if v2 else UNIVERSE_LIMITS,
+        "id": universe,
+        "rule": LINKED_OPERATING_V3_RULE if v3 else LINKED_OPERATING_V2_RULE if v2 else LINKED_OPERATING_RULE,
+        "point_in_time": UNIVERSE_PIT,
+        "limits": UNIVERSE_V3_LIMITS if v3 else UNIVERSE_V2_LIMITS if v2 else UNIVERSE_LIMITS,
         "base_role": {"path": str(base.resolve()), "manifest_sha256": base_sha256.lower(),
                       "membership_recipe": m["membership_recipe"], "member_sha256": m["files"]["member.u8"]["sha256"]},
         "class_status_required": V2_CLASS_RULE if v2 else UNIVERSE_CLASS, "sic_lag_sessions": UNIVERSE_SIC_LAG_SESSIONS,
@@ -746,7 +794,7 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
         "reasons": list(UNIVERSE_REASONS),
         "inputs": {"identity_bridge": {"manifest_sha256": bridge_sha256.lower(), "sources": bridge_sources,
                                        "checks": {**bridge_st, **link_st}, "class_status_rows": class_tally},
-                   "sic_events": {"manifest_sha256": sic_events_sha256.lower(), "sources": [events_source] + sic_sources,
+                   "sic_events": {"manifest_sha256": sic_events_sha256.lower(), "sources": sic_sources,
                                   "checks": sic_st},
                    "link_rule": prf.LINK_RULE,
                    "code": {"prepare_recent_research": prf.code_identity(Path(__file__).resolve()),
@@ -764,6 +812,9 @@ def restrict_role(base: Path, base_sha256: str, output: Path, limits: Limits, *,
     if v2:
         result["universe"]["inputs"]["delisting"] = delist.pop("inputs")
         result["universe"]["delisting"] = delist
+    if v3:
+        result["universe"]["inputs"]["sic_events"].update(
+            {"adapter": prf.SIC_STAGE_ADAPTER["schema"], "column_mapping": prf.SIC_STAGE_MAPPING})
     publish(output / "manifest.json", result, limits)
     limits.report("universe-complete", universe=universe, base_member_cells=base_cells, kept_member_cells=kept_cells)
     return result
@@ -871,14 +922,19 @@ def main():
     p.add_argument("--max-output-mib", type=int, default=1024); p.add_argument("--max-seconds", type=float, default=300)
     p.add_argument("--universe", choices=UNIVERSES, default=DEFAULT_UNIVERSE,
                    help=f"role membership universe: {DEFAULT_UNIVERSE} (default; ADV top-N from --cache) or "
-                        f"{LINKED_OPERATING_UNIVERSE} (restricts --base-role with the pinned identity bridge and SIC events)")
+                        f"{', '.join(LINKED_UNIVERSES)} (restrict --base-role with the pinned identity bridge and SIC "
+                        "events; see the module doc)")
     p.add_argument("--base-role", type=Path); p.add_argument("--base-role-sha256")
     p.add_argument("--identity-bridge", type=Path); p.add_argument("--identity-bridge-sha256")
-    p.add_argument("--sic-events", type=Path, help="fundamental events directory holding sic_events.parquet")
+    p.add_argument("--sic-events", type=Path,
+                   help="fundamental events directory holding sic_events.parquet (atx.fundamental-events/v1); "
+                        f"{LINKED_OPERATING_V3_UNIVERSE}: the atx-db fundamentals stage directory (or its "
+                        "sic_events.parquet), pinned by the stage manifest SHA-256")
     p.add_argument("--sic-events-sha256")
     p.add_argument("--check-fields", type=Path, help="optional: the base role's fields directory to cross-check")
     p.add_argument("--check-fields-sha256")
-    p.add_argument("--delisting", type=Path, help=f"{LINKED_OPERATING_V2_UNIVERSE}: atx-db delisting stage directory")
+    p.add_argument("--delisting", type=Path,
+                   help=f"{LINKED_OPERATING_V2_UNIVERSE} / {LINKED_OPERATING_V3_UNIVERSE}: atx-db delisting stage directory")
     p.add_argument("--delisting-sha256")
     p.add_argument("--delisting-returns", type=Path,
                    help="apply the imputed delisting returns of this delisting stage (must be the --delisting stage; "
@@ -896,17 +952,18 @@ def main():
         if a.cache is None: p.error("role requires --cache")
         if any(x is not None for x in linked + v2_args):
             p.error(f"--base-role/--identity-bridge/--sic-events/--check-fields/--delisting need --universe "
-                    f"{LINKED_OPERATING_UNIVERSE} or {LINKED_OPERATING_V2_UNIVERSE}")
+                    f"{' or '.join(LINKED_UNIVERSES)}")
         create_role(a.cache, a.out, a.start, a.score_start, a.end, limits, a.top_n, a.max_union, a.max_output_mib << 20)
     else:
-        if a.cache is not None: p.error(f"--universe {LINKED_OPERATING_UNIVERSE} restricts --base-role; --cache is not read")
+        if a.cache is not None: p.error(f"--universe {a.universe} restricts --base-role; --cache is not read")
         if any(x is None for x in linked[:6]):
-            p.error(f"--universe {LINKED_OPERATING_UNIVERSE} requires --base-role/--identity-bridge/--sic-events and "
+            p.error(f"--universe {a.universe} requires --base-role/--identity-bridge/--sic-events and "
                     "their -sha256 pins")
         if a.universe == LINKED_OPERATING_UNIVERSE and any(x is not None for x in v2_args):
-            p.error(f"--delisting/--delisting-returns need --universe {LINKED_OPERATING_V2_UNIVERSE}")
-        if a.universe == LINKED_OPERATING_V2_UNIVERSE and (a.delisting is None or a.delisting_sha256 is None):
-            p.error(f"--universe {LINKED_OPERATING_V2_UNIVERSE} requires --delisting and --delisting-sha256")
+            p.error(f"--delisting/--delisting-returns need --universe {LINKED_OPERATING_V2_UNIVERSE} or "
+                    f"{LINKED_OPERATING_V3_UNIVERSE}")
+        if a.universe != LINKED_OPERATING_UNIVERSE and (a.delisting is None or a.delisting_sha256 is None):
+            p.error(f"--universe {a.universe} requires --delisting and --delisting-sha256")
         if a.delisting_returns is not None and delisting_dir(a.delisting_returns) != delisting_dir(a.delisting):
             p.error("--delisting-returns must name the --delisting stage")
         restrict_role(a.base_role, a.base_role_sha256, a.out, limits, bridge=a.identity_bridge,

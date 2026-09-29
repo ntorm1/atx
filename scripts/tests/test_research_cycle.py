@@ -107,6 +107,28 @@ def minimal_spec(**over):
     return spec
 
 
+def test_sic_events_input_reaches_the_fields_builder_and_the_lo3_template_refuses_until_filled(tmp_path):
+    # platform v7 U2: inputs.sic_events (the atx-db fundamentals stage manifest) -> --sic-events DIR --sic-events-sha256
+    pins = {"lib.json": "a" * 64, "role/manifest.json": "b" * 64, "stage/manifest.json": "c" * 64}
+    inputs = {"library": {"path": "lib.json", "sha256": None},
+              "role": {"dir": "role", "path": "role/manifest.json", "sha256": None},
+              "sic_events": {"dir": "stage", "path": "stage/manifest.json", "sha256": "c" * 64}}
+    fields = {"builder": "b.py", "output": "F", "list": ["grp_ff12"]}
+    for with_sic in (True, False):
+        spec = minimal_spec(inputs={k: v for k, v in inputs.items() if with_sic or k != "sic_events"}, fields=fields)
+        argv = RC.Cycle(spec, RC.Resolver(tmp_path, pins)).fields_step("F", "F/manifest.json", "b" * 64).argv
+        if with_sic:
+            i = argv.index("--sic-events")
+            assert argv[i:i + 4] == ["--sic-events", "stage", "--sic-events-sha256", "c" * 64]
+        else:
+            assert "--sic-events" not in argv
+    spec = RC.load_spec(HERE.parent / "specs" / "v7u-lo3.json")   # the template validates ...
+    assert spec["inputs"]["role"]["universe"] == "linked-operating-v3" and "sic_events" in spec["inputs"]
+    with pytest.raises(RC.CycleError) as e:                         # ... and stops before any phase until filled
+        RC.Cycle(spec, RC.Resolver(tmp_path))
+    assert e.value.code == RC.EXIT_PIN
+
+
 def test_spec_validation_refuses_malformed_specs():
     RC.validate_spec(minimal_spec())
     for bad in (dict(minimal_spec(), schema="x"), {k: v for k, v in minimal_spec().items() if k != "runner"},
