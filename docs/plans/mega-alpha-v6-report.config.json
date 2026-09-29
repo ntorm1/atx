@@ -7,7 +7,7 @@
     "label": "TRAIN 2020-2022"
   },
   "sessions_per_year": 252,
-  "dsr_n": 29,
+  "dsr_n": 32,
   "check_tolerance": 1e-09,
   "cell_prefix": "mega-nav-",
   "receipt_suffix": "-run/receipt.json",
@@ -15,10 +15,11 @@
     "212d9e22": "v6-0",
     "f55537fc": "v6-2",
     "fb2d3e94": "v5-1",
-    "59b4e944": "v5-2"
+    "59b4e944": "v5-2",
+    "d96e6fec": "v7-2"
   },
   "inputs": {
-    "nav_summ_json": "build-equity/mega-nav-v61-summ-n29.json"
+    "nav_summ_json": "build-equity/mega-nav-v7-summ-n32.json"
   },
   "scenarios": [
     {
@@ -316,6 +317,30 @@
       "parent": "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
       "lever": "sv_flow: FINRA long-horizon shorting flow",
       "verdict": "PROMOTED"
+    },
+    {
+      "dir": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C1",
+      "label": "v7 C1",
+      "group": "rejected",
+      "parent": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "aim-partial-v6: kappa .5, band^(1/3), rate clip [.5,1.5]",
+      "verdict": "REJECTED (dSR < 0)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C2",
+      "label": "v7 C2",
+      "group": "rejected",
+      "parent": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "aim-partial-v6: kappa 1, band^(1/3), rate clip [.5,1.5]",
+      "verdict": "REJECTED (dSR < 0)"
+    },
+    {
+      "dir": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C3",
+      "label": "v7 C3",
+      "group": "rejected",
+      "parent": "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "lever": "aim-partial-v6: kappa 1, band^(1/3), no regime rate",
+      "verdict": "REJECTED (dSR < 0)"
     }
   ],
   "kpis": [
@@ -736,6 +761,15 @@
         "source": {
           "path": ".superpowers/sdd/mega-alpha-20260926/progress.md",
           "match": "validation trials spent: #1 (v3), #2 (v4.1)"
+        }
+      },
+      {
+        "family": "v7: construction (aim-partial-v6 grid C1-C3, all rejected)",
+        "count": 3,
+        "detail": "29 -> 32 cross-cell",
+        "source": {
+          "path": ".superpowers/sdd/platform-20260928/progress.md",
+          "match": "TRAIN construction cells 29 -> 32"
         }
       }
     ]
