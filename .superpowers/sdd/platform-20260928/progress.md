@@ -33,6 +33,8 @@ docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega
   .026). Effective-N (ONC) over the 32 trial series: N_eff 5; ledger 32 lines.
 - Appendix A trial accounting: TRAIN construction cells 29 -> 32 (C1-C3 disclosed above, all rejected). Validation
   trials 2 spent (unchanged). 2025+ reserved. No per-candidate VAL statistic read.
+- Baseline v6.1 at N 32: effective-N DSR .9512 (N_eff 5) beside cell-count DSR .9032 and Lo .5153. Reported only; the
+  freeze gate remains the pre-registered cell-count DSR >= .95 (unmet at .903).
 - Note: PBO .35 > .2 threshold in v7-prereg applies only to accepting a NEW winner; the baseline was not chosen on this
   grid, so nothing is accepted or gated by it. Recorded for the pitch's honesty section.
 
