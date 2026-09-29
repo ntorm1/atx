@@ -433,20 +433,53 @@ Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); 
 Json band_json(Band b) { return Json::array({finite_or_null(b.lo), finite_or_null(b.hi)}); }
 bool inside(f64 b, Band band) { return std::isfinite(b) && b >= band.lo && b <= band.hi; }
 
-// USE4 Appendix A summary of one family: full-sample b per series against 1 +- sqrt(2/T) and
-// the kurtosis-widened band (pooled kurtosis of the family's z), and rolling 63/252 windows.
-Json family_summary(const std::vector<const BiasSeries*>& family) {
+// Exclusion counts and status of one family (R1 M-5): series with no kept observation are
+// empty, series whose dropped share exceeds max_dropped_share are refused; only the rest (ok)
+// are summarised. Family status: ok (none refused), partial, refused (none ok) or empty.
+Json family_exclusions(const std::vector<const BiasSeries*>& family,
+                       std::vector<const BiasSeries*>& ok) {
+  Json refused = Json::array();
+  usize empty = 0, kept = 0, warmup = 0, factor_drops = 0, name_drops = 0;
+  for (const auto* s : family) {
+    kept += s->z.size(); warmup += s->warmup_excluded;
+    factor_drops += s->dropped_factor_exposures; name_drops += s->uncovered_name_returns;
+    switch (series_status(*s)) {
+    case SeriesStatus::Ok: ok.push_back(s); break;
+    case SeriesStatus::Refused: refused.push_back(s->name); break;
+    case SeriesStatus::Empty: ++empty; break;
+    }
+  }
+  const usize dropped = factor_drops + name_drops;
+  const char* status = refused.empty() ? (ok.empty() ? "empty" : "ok")
+                                       : (ok.empty() ? "refused" : "partial");
+  const f64 share = dropped + kept ? static_cast<f64>(dropped) / static_cast<f64>(dropped + kept)
+                                   : 0.0;
+  const usize refused_count = refused.size();
+  return Json{{"status", status}, {"series_ok", ok.size()}, {"series_refused", refused_count},
+      {"series_empty", empty}, {"refused_series", std::move(refused)}, {"observations", kept},
+      {"warmup_excluded", warmup}, {"dropped_factor_exposures", factor_drops},
+      {"uncovered_name_returns", name_drops}, {"dropped_share", share},
+      {"max_dropped_share", max_dropped_share}};
+}
+
+// USE4 Appendix A summary of one family over its ok series: full-sample b per series against
+// 1 +- sqrt(2/T) and the kurtosis-widened band (pooled kurtosis of those series' z), and
+// rolling 63/252 windows; plus the family's exclusion counts and status.
+Json family_summary(const std::vector<const BiasSeries*>& all) {
+  std::vector<const BiasSeries*> family;
+  Json out = family_exclusions(all, family);
+  usize missing = 0, uncovered = 0;
+  for (const auto* s : all) { missing += s->missing_returns; uncovered += s->uncovered_names; }
   std::vector<f64> pooled;
   for (const auto* s : family) pooled.insert(pooled.end(), s->z.begin(), s->z.end());
   const f64 kurtosis = sample_kurtosis(pooled);
   std::vector<f64> full;
-  usize in_band = 0, in_kband = 0, missing = 0, uncovered = 0;
+  usize in_band = 0, in_kband = 0;
   for (const auto* s : family) {
     const f64 b = bias_statistic(s->z);
     full.push_back(b);
     in_band += inside(b, bias_band(s->z.size())) ? 1U : 0U;
     in_kband += inside(b, kurtosis_band(s->z.size(), kurtosis)) ? 1U : 0U;
-    missing += s->missing_returns; uncovered += s->uncovered_names;
   }
   Json rolling = Json::object();
   for (const usize window : {usize{63}, usize{252}}) {
@@ -472,12 +505,15 @@ Json family_summary(const std::vector<const BiasSeries*>& family) {
   f64 sum = 0; usize count = 0;
   for (const f64 b : full)
     if (std::isfinite(b)) { sum += b; ++count; }
-  return Json{{"series", family.size()}, {"pooled_kurtosis", finite_or_null(kurtosis)},
-      {"full_sample", {{"b_mean", count ? Json(sum / static_cast<f64>(count)) : Json(nullptr)},
-                       {"b_median", finite_or_null(median_of(full))},
-                       {"series_in_band", in_band}, {"series_in_kurtosis_band", in_kband}}},
-      {"rolling", std::move(rolling)}, {"missing_returns", missing},
-      {"uncovered_book_names", uncovered}};
+  out["series"] = all.size();
+  out["pooled_kurtosis"] = finite_or_null(kurtosis);
+  out["full_sample"] = Json{{"b_mean", count ? Json(sum / static_cast<f64>(count)) : Json(nullptr)},
+                            {"b_median", finite_or_null(median_of(full))},
+                            {"series_in_band", in_band}, {"series_in_kurtosis_band", in_kband}};
+  out["rolling"] = std::move(rolling);
+  out["missing_returns"] = missing;
+  out["uncovered_book_names"] = uncovered;
+  return out;
 }
 
 co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harness, Json& files,
@@ -498,11 +534,21 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
   if (!csv) return co::Err(co::ErrorCode::IoError, "risk: bias.csv");
   Json fam = Json::object();
   for (const auto& [name, family] : families) fam[name] = family_summary(family);
-  summary = Json{{"schema", "atx.risk-bias/v1"},
+  summary = Json{{"schema", "atx.risk-bias/v2"},
       {"definition", "z_t = realized return over (t-1, t] / forecast vol at t-1 (x'Fx + sum "
                      "w^2 D); bias statistic b = sample SD of z over a window of T; band 1 +- "
                      "sqrt(2/T); kurtosis-widened band 1 +- 1.96 sqrt((k-1)/(4T)) with k the "
                      "family's pooled kurtosis (USE4 Appendix A, asymptotic)"},
+      {"exclusion_rule", "complete forecasts only: an observation whose portfolio holds a name "
+                         "without a forecast (no exposure row or specific variance) or has a "
+                         "nonzero exposure to a factor without a forecast (< min_factor_history "
+                         "returns) is excluded whole, never priced by a partial x'Fx or realized "
+                         "on a sub-book; exclusions before a series' first kept observation are "
+                         "warmup_excluded, later ones dropped_factor_exposures / "
+                         "uncovered_name_returns; a series whose dropped share (dropped / "
+                         "(dropped + kept)) exceeds max_dropped_share is refused and, like an "
+                         "empty series, left out of every b statistic (bias.csv keeps its rows)"},
+      {"max_dropped_share", max_dropped_share},
       {"families", std::move(fam)}};
   const std::string text = summary.dump(2) + "\n";
   std::ofstream js(dir / "bias_summary.json", std::ios::binary);
@@ -610,7 +656,8 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
                                "non-members get exposures and specific risk, never enter a fit"}}},
       {"cap_rule", in.cap_rule}, {"descriptors_used", std::move(descriptors_used)},
       {"unavailable", in.unavailable}, {"recipe", recipe_json(cfg)},
-      {"bias_harness", {{"random_portfolios", a.random}, {"seed", a.seed},
+      {"bias_harness", {{"schema", bias.at("schema")}, {"random_portfolios", a.random},
+                        {"seed", a.seed}, {"max_dropped_share", max_dropped_share},
                         {"families", bias.at("families")}}},
       {"run", files_sink.run_stats()},
       {"layouts", {{"factor_covariance.f64", "little-endian f64, dates x factors x factors "
@@ -629,6 +676,16 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
   if (!out) return co::Err(co::ErrorCode::IoError, "risk: manifest.json");
   progress << "risk: " << in.dates << " sessions x " << in.names << " names, "
            << files_sink.run_stats().dump() << '\n';
+  for (const auto& item : bias.at("families").items()) {
+    const Json& f = item.value();
+    progress << "risk bias " << item.key() << ": " << f.at("status").get<std::string>()
+             << " (series ok " << f.at("series_ok") << ", refused " << f.at("series_refused")
+             << ", empty " << f.at("series_empty") << "); observations " << f.at("observations")
+             << ", dropped_factor_exposures " << f.at("dropped_factor_exposures")
+             << ", uncovered_name_returns " << f.at("uncovered_name_returns")
+             << ", warmup_excluded " << f.at("warmup_excluded") << ", dropped share "
+             << f.at("dropped_share") << " (max " << max_dropped_share << ")\n";
+  }
   return co::Ok();
 }
 } // namespace
