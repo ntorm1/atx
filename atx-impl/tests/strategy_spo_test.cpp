@@ -368,7 +368,7 @@ TEST(SpoRisk, RefusesADateWithoutForecastAnotherRoleAndAnotherPin) {
   EXPECT_FALSE(store->check_axes(sessions, 5));
   EXPECT_FALSE(sp::RiskStore::open(dir.path.string(), sha, "another-role"));
   EXPECT_FALSE(sp::RiskStore::open(dir.path.string(), std::string(64, '0'), "role-sha"));
-  std::filesystem::remove(dir.path / "style_exposures.f32"); // not --emit-exposures all
+  ASSERT_TRUE(std::filesystem::remove(dir.path / "style_exposures.f32")); // not "all"
   EXPECT_FALSE(sp::RiskStore::open(dir.path.string(), sha, "role-sha"));
 }
 
