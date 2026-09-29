@@ -1,6 +1,7 @@
-// The `risk` verb of atx-equity-strategy-risk: pinned role + fields -> atx-risk-v1 outputs and
-// the bias harness (strategy_risk_model.hpp). Loads, checks and derives the descriptors,
-// streams per-session outputs, writes manifest.json LAST.
+// The `risk` verb of atx-equity-strategy-risk: pinned role + fields -> atx-risk-v1.1 outputs
+// (schema atx.risk-model/v1) and the bias harness (strategy_risk_model.hpp). Loads, checks and
+// derives the descriptors, streams per-session outputs, writes manifest.json LAST; a
+// specific-variance invariant refusal leaves no manifest.
 
 #include <algorithm>
 #include <array>
@@ -328,6 +329,27 @@ void write_binary(std::ofstream& file, std::span<const T> values) {
 
 enum class ExposureEmit : u8 { None, Last, All };
 
+// Session t's factor-regression style audit (F3): styles dropped as degenerate, and the smallest
+// effective names and z dispersion (with the style) among the styles regressed.
+struct StyleAudit {
+  usize dropped{}, min_effective_style{}, min_dispersion_style{};
+  f64 min_effective{nan}, min_dispersion{nan};
+};
+StyleAudit style_audit(const RiskDay& d) {
+  StyleAudit a;
+  for (usize s = 0; s < style_count; ++s) {
+    if (d.style_dropped[s]) { ++a.dropped; continue; }
+    const f64 e = d.style_effective_names[s], v = d.style_dispersion[s];
+    if (std::isfinite(e) && (std::isnan(a.min_effective) || e < a.min_effective)) {
+      a.min_effective = e; a.min_effective_style = s;
+    }
+    if (std::isfinite(v) && (std::isnan(a.min_dispersion) || v < a.min_dispersion)) {
+      a.min_dispersion = v; a.min_dispersion_style = s;
+    }
+  }
+  return a;
+}
+
 // Streams every session's outputs; the last session's exposures are kept for the CSV.
 class FileSink final : public RiskSink {
 public:
@@ -345,7 +367,10 @@ public:
     // Columns after the first two are appended only (spo-v1 reads session and forecast).
     diagnostics_ << "session,forecast,lambda2_factor,lambda2_specific,bias_factor,bias_specific,"
                     "structural_names,specific_names,structural_factors,"
-                    "structural_correlation_scale,unforecast_exposed_factors,residual_names\n";
+                    "structural_correlation_scale,unforecast_exposed_factors,residual_names,"
+                    "fenced_values,unscaled_descriptors,styles_dropped,min_style_effective_names,"
+                    "min_style_dispersion,max_specific_variance,structural_sigma_lower,"
+                    "structural_sigma_upper,structural_bounded_names,structural_clamped_names\n";
     if (emit_ == ExposureEmit::All) {
       styles_.open(dir / "style_exposures.f32", std::ios::binary);
       slots_.open(dir / "industry_slot.u8", std::ios::binary);
@@ -361,7 +386,14 @@ public:
                  << number(d.bias_specific) << ',' << d.structural_names << ','
                  << d.specific_names << ',' << d.structural_factors << ','
                  << number(d.structural_scale) << ',' << d.unforecast_exposed_factors << ','
-                 << d.residual_names << '\n';
+                 << d.residual_names;
+    const StyleAudit audit = style_audit(d);
+    diagnostics_ << ',' << d.fenced_values << ',' << d.unscaled_descriptors << ',' << audit.dropped
+                 << ','
+                 << number(audit.min_effective) << ',' << number(audit.min_dispersion) << ','
+                 << number(d.max_specific_variance) << ',' << number(d.structural_sigma_lower)
+                 << ',' << number(d.structural_sigma_upper) << ',' << d.structural_bounded_names
+                 << ',' << d.structural_clamped_names << '\n';
     write_binary(covariance_, d.covariance);
     write_binary(specific_, d.specific_variance);
     write_binary(structural_, d.factor_structural);
@@ -492,6 +524,112 @@ Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); 
 Json band_json(Band b) { return Json::array({finite_or_null(b.lo), finite_or_null(b.hi)}); }
 bool inside(f64 b, Band band) { return std::isfinite(b) && b >= band.lo && b <= band.hi; }
 
+// The v1.1 robustness audit over the run (F3; R2 finding I-2): the largest daily specific
+// variance with its instrument and session, the smallest effective names and z dispersion of a
+// regressed style column with the style and session, style-sessions dropped as degenerate (per
+// style), structural names (history < 252) at a sigma bound or with a clamped exposure
+// (name-sessions), and the descriptor values the robust fence moved.
+class RobustnessSink final : public RiskSink {
+public:
+  RobustnessSink(const RiskPanel& panel, const RiskModelConfig& cfg)
+      : panel_(panel), cfg_(cfg) {}
+  co::Status on_day(const RiskDay& d) override {
+    if (std::isfinite(d.max_specific_variance) &&
+        (std::isnan(max_d_.value) || d.max_specific_variance > max_d_.value) &&
+        d.max_specific_instrument < panel_.instruments)
+      max_d_ = {d.max_specific_variance, d.session, panel_.ids[d.max_specific_instrument]};
+    const StyleAudit audit = style_audit(d);
+    if (std::isfinite(audit.min_effective) &&
+        (std::isnan(min_effective_.value) || audit.min_effective < min_effective_.value))
+      min_effective_ = {audit.min_effective, d.session, audit.min_effective_style};
+    if (std::isfinite(audit.min_dispersion) &&
+        (std::isnan(min_dispersion_.value) || audit.min_dispersion < min_dispersion_.value))
+      min_dispersion_ = {audit.min_dispersion, d.session, audit.min_dispersion_style};
+    for (usize s = 0; s < style_count; ++s) dropped_[s] += d.style_dropped[s];
+    bounded_ += d.structural_bounded_names;
+    clamped_ += d.structural_clamped_names;
+    sessions_at_bounds_ += (d.structural_bounded_names || d.structural_clamped_names) ? 1U : 0U;
+    fenced_ += d.fenced_values;
+    unscaled_ += d.unscaled_descriptors;
+    return co::Ok();
+  }
+  [[nodiscard]] Json json() const {
+    Json by_style = Json::object();
+    usize dropped = 0;
+    for (usize s = 0; s < style_count; ++s) {
+      by_style[style_names[s]] = dropped_[s];
+      dropped += dropped_[s];
+    }
+    const auto style_extreme = [](const StyleExtreme& e) {
+      return Json{{"value", finite_or_null(e.value)},
+          {"style", e.session >= 0 ? Json(style_names[e.style]) : Json(nullptr)},
+          {"session_ns", e.session >= 0 ? Json(e.session) : Json(nullptr)}};
+    };
+    return Json{{"model", risk_model_id},
+        {"specific_variance_bound", cfg_.max_specific_variance},
+        {"invariant", "every forecast daily specific variance lies in (0, "
+                      "specific_variance_bound) or the run is refused naming the instrument and "
+                      "session (nothing is clamped); a complete output therefore has 0 refusals"},
+        {"invariant_refusals", 0},
+        {"max_daily_specific_variance",
+         {{"value", finite_or_null(max_d_.value)},
+          {"session_ns", max_d_.session >= 0 ? Json(max_d_.session) : Json(nullptr)},
+          {"instrument_id", max_d_.session >= 0 ? Json(max_d_.id) : Json(nullptr)}}},
+        {"min_style_effective_names", style_extreme(min_effective_)},
+        {"min_style_dispersion", style_extreme(min_dispersion_)},
+        {"style_floor_effective_names", cfg_.min_style_effective_names},
+        {"style_dates_dropped", dropped}, {"style_dates_dropped_by_style", std::move(by_style)},
+        {"structural_names_at_sigma_bound", bounded_},
+        {"structural_names_with_clamped_exposure", clamped_},
+        {"sessions_with_structural_names_at_bounds", sessions_at_bounds_},
+        {"fenced_descriptor_values", fenced_},
+        {"unscaled_descriptor_dates", unscaled_},
+        {"definitions",
+         {{"style_dispersion", "equal-weighted SD of a regressed style's z over the factor "
+                               "regression's rows (session t regresses on X_{t-1})"},
+          {"style_effective_names", "(sum w z^2)^2 / sum (w z^2)^2 over those rows, w = "
+                                    "sqrt(cap); a style below the floor is not regressed"},
+          {"structural_names", "names with fewer than structural_history residuals in the "
+                               "last structural_history sessions (their sigma uses the "
+                               "structural model)"},
+          {"unscaled_descriptor_dates", "descriptor-sessions (11 styles + 2 SI components) with "
+                                        ">= 2 eligible values but a zero MAD (over half tied) "
+                                        "or zero dispersion: that style (component) is 0 then"}}}};
+  }
+
+private:
+  struct DailyExtreme {
+    f64 value{nan};
+    i64 session{-1};
+    u64 id{};
+  };
+  struct StyleExtreme {
+    f64 value{nan};
+    i64 session{-1};
+    usize style{};
+  };
+  const RiskPanel& panel_;
+  const RiskModelConfig& cfg_;
+  DailyExtreme max_d_{};
+  StyleExtreme min_effective_{}, min_dispersion_{};
+  std::array<usize, style_count> dropped_{};
+  usize bounded_{}, clamped_{}, sessions_at_bounds_{}, fenced_{}, unscaled_{};
+};
+void print_robustness(std::ostream& progress, const Json& r) {
+  const auto& d = r.at("max_daily_specific_variance");
+  progress << "risk robustness (" << r.at("model").get<std::string>() << "): max daily D "
+           << d.at("value") << " (instrument " << d.at("instrument_id") << ", session "
+           << d.at("session_ns") << ", bound " << r.at("specific_variance_bound")
+           << "); min style dispersion " << r.at("min_style_dispersion").at("value") << " ("
+           << r.at("min_style_dispersion").at("style") << "); min style effective names "
+           << r.at("min_style_effective_names").at("value") << "; style-dates dropped "
+           << r.at("style_dates_dropped") << "; structural names at sigma bound "
+           << r.at("structural_names_at_sigma_bound") << ", with clamped exposure "
+           << r.at("structural_names_with_clamped_exposure") << "; fenced descriptor values "
+           << r.at("fenced_descriptor_values") << ", unscaled descriptor-dates "
+           << r.at("unscaled_descriptor_dates") << '\n';
+}
+
 // Exclusion counts and status of one family (R1 M-5): series with no kept observation are
 // empty, series whose dropped share exceeds max_dropped_share are refused; only the rest (ok)
 // are summarised. Family status: ok (none refused), partial, refused (none ok) or empty.
@@ -575,8 +713,8 @@ Json family_summary(const std::vector<const BiasSeries*>& all) {
   return out;
 }
 
-co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harness, Json& files,
-                      Json& summary) {
+co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harness,
+                      const Json& robustness, Json& files, Json& summary) {
   std::ofstream csv(dir / "bias.csv", std::ios::binary);
   csv.imbue(std::locale::classic());
   csv << "family,name,session,forecast_vol,realized_return,z,b63,b252\n";
@@ -609,7 +747,8 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
                          "(dropped + kept)) exceeds max_dropped_share is refused and, like an "
                          "empty series, left out of every b statistic (bias.csv keeps its rows)"},
       {"max_dropped_share", max_dropped_share},
-      {"families", std::move(fam)}};
+      {"families", std::move(fam)},
+      {"risk_model_robustness", robustness}};
   const std::string text = summary.dump(2) + "\n";
   std::ofstream js(dir / "bias_summary.json", std::ios::binary);
   js << text;
@@ -625,7 +764,7 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
 Json recipe_json(const RiskModelConfig& c) {
   Json factors = Json::array();
   for (usize k = 0; k < factor_count; ++k) factors.push_back(factor_name(k));
-  return Json{{"model", "atx-risk-v1"},
+  return Json{{"model", risk_model_id},
       {"factors", std::move(factors)},
       {"factor_covariance", {{"vol_halflife", c.vol_halflife},
           {"variance_nw_lags", c.variance_nw_lags}, {"correlation_halflife", c.correlation_halflife},
@@ -654,16 +793,41 @@ Json recipe_json(const RiskModelConfig& c) {
                          "v7 F2); weights declared, not fitted"}}}}},
       {"specific_risk", {{"halflife", c.specific_halflife}, {"nw_lags", c.specific_nw_lags},
           {"structural_history", c.structural_history}, {"bayesian_q", c.bayesian_q},
+          {"structural_sigma_quantile", c.structural_sigma_quantile},
+          {"max_specific_variance", c.max_specific_variance},
           {"rule", "sigma = gamma sigma_TS + (1-gamma) sigma_STR, gamma = min(1, h/252), "
                    "sigma_STR = E0 exp(x b) from the constrained WLS of ln sigma_TS on X_t over "
-                   "full-history eligible names (sqrt-cap weights), then Bayesian shrinkage to the "
-                   "cap-weighted size-decile mean (engine specific_risk_v2 formula), then VRA"}}},
+                   "full-history eligible names (sqrt-cap weights; styles under the effective-"
+                   "names floor left out), each style exposure of x clamped to the fitted names' "
+                   "[min, max] and sigma_STR bounded to the fitted names' type-7 [q, 1-q] sigma_TS "
+                   "quantiles (fallback without a fit: their cap-weighted median, same bounds), "
+                   "then Bayesian shrinkage to the lower cap-weighted size-decile median (engine "
+                   "specific_risk_v2 formula with a robust target), then VRA"},
+          {"invariant", "every forecast daily specific variance in (0, max_specific_variance) or "
+                        "the run is refused naming the instrument and session; nothing clamped"},
+          {"source", "USE4 structural + Bayesian specific risk (Menchero-Orr-Wang 2011); F3: no "
+                     "extrapolation outside the fit (R2 I-2), [p1, p99] = the conventional 1%/99% "
+                     "cross-sectional winsorisation, quantiles Hyndman-Fan (1996) type 7"}}},
       {"exposures", {{"min_industry_names", c.min_industry_names}, {"beta_window", c.beta_window},
           {"min_beta_pairs", c.min_beta_pairs}, {"momentum_window", c.momentum_window},
           {"momentum_skip", c.momentum_skip}, {"adv_window", c.adv_window},
-          {"winsor_sd", c.winsor_sd}, {"clip_z", c.clip_z},
-          {"standardization", "cap-weighted mean 0, equal-weighted SD 1 over eligible names "
-                              "(member, present, cap > 0), winsorized then clipped, missing 0"},
+          {"winsor_k", c.winsor_k}, {"mad_consistency", mad_consistency}, {"clip_z", c.clip_z},
+          {"standardization", "fence at median +- winsor_k x 1.4826 MAD of the eligible names' "
+                              "values (member, present, cap > 0), then cap-weighted mean 0 and "
+                              "equal-weighted SD 1 of the fenced values over them (USE4), clipped "
+                              "at clip_z, missing 0; a MAD of 0 (over half tied) leaves the style "
+                              "0 that date"},
+          {"standardization_source", "k = 3.5: Iglewicz-Hoaglin (1993) modified z-score cutoff; "
+                                     "1.4826 = 1/Phi^-1(3/4), the MAD's normal consistency "
+                                     "constant (Hampel 1974; Rousseeuw-Croux 1993); one outlier "
+                                     "moves the others' z by O(cap share + 1/n), not O(1)"},
+          {"style_validity", {{"min_effective_names", c.min_style_effective_names},
+              {"rule", "a style column enters a cross-sectional fit only when its effective names "
+                       "(sum w z^2)^2 / sum (w z^2)^2 over the fit's rows reach the floor; "
+                       "otherwise its factor return is missing that session (the F2 structural "
+                       "forecast covers a factor short of history)"},
+              {"source", "numbers-equivalent of the Herfindahl index (Adelman 1969); floor = "
+                         "min_industry_names, the model's thin-industry floor"}}},
           {"styles", "size ln cap; beta and residual_vol from the rolling 252-interval OLS on the "
                      "equal-weight member market (>= 126 pairs); momentum ln(close[t-21] / "
                      "close[t-252]); value be/cap; earnings_yield ni_ttm/cap; profitability "
@@ -672,7 +836,8 @@ Json recipe_json(const RiskModelConfig& c) {
                      "z(si_dtc), re-standardized"}}},
       {"regression", {{"min_regression_names", c.min_regression_names},
           {"rule", "session-t simple returns on X_{t-1}, WLS weights sqrt(cap_{t-1}), market + "
-                   "active industries + styles, sum_k cap_k f_k = 0 over active industries"}}}};
+                   "active industries + styles with at least min_effective_names effective names "
+                   "(exposures.style_validity), sum_k cap_k f_k = 0 over active industries"}}}};
 }
 
 struct RiskArgs {
@@ -736,11 +901,14 @@ void print_structural(std::ostream& progress, const Json& s) {
            << "factor " << s.at("forecast_sessions_with_unforecast_exposure") << '\n';
 }
 Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const RiskModelConfig& cfg,
-                   const Json& bias, Json run_stats, Json structural, Json files) {
+                   const Json& bias, Json run_stats, Json structural, Json robustness,
+                   Json files) {
   Json descriptors_used = Json::array();
   for (usize d = 0; d < descriptor_count; ++d)
     if (!in.descriptors[d].empty()) descriptors_used.push_back(descriptor_names[d]);
-  return Json{{"schema", "atx.risk-model/v1"}, {"status", "complete"},
+  // The directory schema is unchanged (readers such as spo-v1 RiskStore accept it); the model
+  // that filled it is `model` (v1 pins stay valid as v1 data directories).
+  return Json{{"schema", "atx.risk-model/v1"}, {"status", "complete"}, {"model", risk_model_id},
       {"role", {{"path", a.role}, {"manifest_sha256", a.role_sha}}},
       {"fields", {{"path", a.fields}, {"manifest_sha256", a.fields_sha},
                   {"fields_used", in.fields_used}}},
@@ -765,6 +933,7 @@ Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const R
                         {"families", bias.at("families")}}},
       {"run", std::move(run_stats)},
       {"structural_factors", std::move(structural)},
+      {"robustness", std::move(robustness)},
       {"layouts", {{"factor_covariance.f64", "little-endian f64, dates x factors x factors "
                                             "row-major, forecast at the session's close for the "
                                             "next session, NaN where not forecast"},
@@ -796,16 +965,19 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
     return co::Err(co::ErrorCode::AlreadyExists, "risk: output must not exist");
   const RiskPanel panel = panel_of(in);
   FileSink files_sink(dir, panel, a.emit);
+  RobustnessSink robust_sink(panel, cfg);
   BiasHarness harness(panel, a.random, a.seed, book);
-  std::array<RiskSink*, 2> sinks{&files_sink, &harness};
+  std::array<RiskSink*, 3> sinks{&files_sink, &robust_sink, &harness};
+  // An invariant refusal (F3) returns here: no manifest.json is written, the output is void.
   ATX_TRY_VOID(run_risk_model(panel, cfg, sinks));
   Json files = Json::object();
   ATX_TRY_VOID(files_sink.close(files));
+  const Json robustness = robust_sink.json();
   Json bias;
-  ATX_TRY_VOID(write_bias(dir, harness, files, bias));
+  ATX_TRY_VOID(write_bias(dir, harness, robustness, files, bias));
   const Json structural = files_sink.structural_json();
   const Json manifest = risk_manifest(a, in, book.size(), cfg, bias, files_sink.run_stats(),
-                                      structural, std::move(files));
+                                      structural, robustness, std::move(files));
   std::ofstream out(dir / "manifest.json", std::ios::binary);
   out << manifest.dump(2) << '\n';
   out.close();
@@ -813,6 +985,7 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
   progress << "risk: " << in.dates << " sessions x " << in.names << " names, "
            << files_sink.run_stats().dump() << '\n';
   print_structural(progress, structural);
+  print_robustness(progress, robustness);
   print_bias(progress, bias);
   return co::Ok();
 }
