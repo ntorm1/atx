@@ -17,6 +17,17 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 F2 merged (10a723a7) and ACCEPTED; W5b merged
+- F2 structural forecast: build mega-v7-f2 exit 0; Risk*/Spo*/NavV7Hook*/StrategyLive* 60/60. Risk verb on lo1 with
+  per-date exposures (build-equity/v7-f2-risk, 21.9 s, 455 MiB): 11 factors structural on 1,029 sessions, "forecast
+  sessions with an unforecast exposed factor 0"; bias factor family ok (52 series, dropped 0), random family OK (64
+  series, 53,696 obs, dropped 0). F1-F1 CLOSED. Manifest sha 17f9328f...138bbe9f = the risk model pin for any spo trial #2.
+- W5b research_fields_holdings.py (+5-line hook): 8 PIT fields (13F 5, FTD 1, Reg SHO 1, off-exchange SV 1), 86 tests;
+  role rule linked-operating-v2 on identity-bridge-v2-pit with delisting terminations in the manifest and optional
+  --delisting-returns (off by default; v1 rule byte-identical). Kept member cells 1,940,364 -> 1,967,838 (+1.4%; W5b-F1:
+  53.7k newly linked cells lack SIC in fundamental-events-v2 -> rerun with atx-db SIC events later). Reg SHO field ~.43
+  coverage until the NYSE lists land (NaN, not zero). Fields total with W5a = 63 of the runner's 64 limit (W5a-F1).
+
 ## 2026-09-28 W5a merged (6b12220c) and ACCEPTED; fields v8 built
 - W5a research_fields_sec.py + 15-line FIELD_MODULES hook: 14 PIT fields (earnings calendar 6, Form 4 5, 8-K 3), 66
   pytests. Two data rules pre-registered (10%-owner joint Form 4 dropped; insider ratios NaN outside [-1,1]).
