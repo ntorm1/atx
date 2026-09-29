@@ -17,6 +17,15 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 W5a merged (6b12220c) and ACCEPTED; fields v8 built
+- W5a research_fields_sec.py + 15-line FIELD_MODULES hook: 14 PIT fields (earnings calendar 6, Form 4 5, 8-K 3), 66
+  pytests. Two data rules pre-registered (10%-owner joint Form 4 dropped; insider ratios NaN outside [-1,1]).
+- Root build lo1-fields-v8 (55 fields; --reuse fields-v7 hardlinked): 55.9 s, peak 399 MiB; every fields-v7 payload
+  byte-identical (see check line above); coverage on member cells 2020-2022: ea_* .93-.96, ins_* .97, k8_* .97-.98.
+  Field count 55 of the runner's 64 limit (W5b adds ~8 -> 63; W5a-F1: the limit will bind at the next wave).
+- Note: L7 found the draft's "six extra q5 fields" are existing fields-v7 fields; prereg corrected, no fields v8 needed
+  for wave 1 (wave 1 runs on fields-v7; wave 2 on v8/v9).
+
 ## 2026-09-28 spo-v1 cell REJECTED (implementation defect, not a research result); N 33
 - mega-nav-v61u-spo-v1-L1.247 (pre-registered params): exit 0, 59.5 s, 365 MiB, 1,508 solves at 14.2 ms mean (max 35.6),
   gamma 1575. S2 net SR -0.939 vs +1.239 (paired dSR -2.179, Memmel SE .577, t -3.77, CBB [-3.62, -1.01]); gross_lev
