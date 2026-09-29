@@ -3,10 +3,13 @@
 Run: python -m unittest discover -s atx-impl/tools -p test_fit_composition_weights.py -v
 """
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -217,16 +220,56 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def work_shape(keys: list[str], new: bool = False) -> list[str]:
+    """A work dir's file list with record names abstracted. Pre-W3 fitters name a record by its cache payload
+    SHA (``factors/<sha>[.f-<fields sha>].json``), the W3 WorkStore by its work key (``factors/k-<key>.json``);
+    ``new`` asserts the W3 names. Equal shapes = the same directories and the same number of records."""
+    out = []
+    for k in keys:
+        parts = Path(k).parts
+        if len(parts) >= 2 and (parts[-2] == "factors" or parts[-2].startswith("aim-")):
+            if new:
+                assert re.fullmatch(r"k-[0-9a-f]{64}\.json", parts[-1]), parts[-1]
+            parts = parts[:-1] + ("<record>",)
+        out.append("/".join(parts))
+    return sorted(out)
+
+
+V2_SCHEMA = "atx.dsl-candidate-signal/v2"
+# Two extra fields, listed out of name order: the key and fp_<fk16> order them by name.
+FIELD_PAYLOADS = {"sv_ratio126": "34" * 32, "book_to_price": "56" * 32}
+
+
+def v2_field_lines(fields: dict) -> str:
+    return "".join(f"field={k}:{fields[k]}\n" for k in sorted(fields))
+
+
+def v2_signal_key(vm_identity: str, role_sha: str, dates: int, instruments: int, dsl_sha: str, fields: dict) -> str:
+    """strategy_ic_runner.cpp signal_key_text() written out literally (independent of fcw)."""
+    text = ("atx.dsl-candidate-signal-key/v2\n" f"vm_identity={vm_identity}\n"
+            "eval_mode=ResearchFast;full-historical-asof-member-mask\n"
+            "layout=date-major-little-endian-f64;non-finite-stored-as-quiet-NaN\n"
+            f"role_manifest_sha256={role_sha}\ndates={dates}\ninstruments={instruments}\n"
+            f"dsl_sha256={dsl_sha}\n" + v2_field_lines(fields))
+    return sha(text.encode())
+
+
 class Fixture:
     """Role dir + library + orientations + the runner's landed candidate cache layout + TRAIN summary.json.
 
     Cache ROOT = cache/ for the legacy VM identity, else cache/<identity>/ (strategy_ic_runner.cpp
-    cache_root). Base candidates live in ROOT/<train sha>/, ``field_ids`` in ROOT/<fields sha>/.
+    cache_root). ``layout``:
+      v1         v1 runner: ROOT/<train sha>/<id>.{f64,json}, ``field_ids`` in ROOT/<fields sha>/; no entries.
+      v2         v2 runner: ROOT/<train sha>/[fp_<fk16>/]<id>.<dsl16>.{f64,json} + candidate_cache.entries[].
+      v1-listed  v2 runner reading the v1 entries in place: v1 files + candidate_cache.entries[].
     """
 
     def __init__(self, root: Path, panel=None, signals=None, signs=SIGNS, sidecar_role="train",
                  end_ns=None, ids=IDS, families=FAMILIES, vm_identity=fcw.LEGACY_VM_IDENTITY, field_ids=(),
-                 fields_sha="ef" * 32, keyless_legacy=False, sidecar_patch=None, candidate_extra=None):
+                 fields_sha="ef" * 32, keyless_legacy=False, sidecar_patch=None, candidate_extra=None,
+                 layout="v1", field_payloads=FIELD_PAYLOADS):
+        assert layout in ("v1", "v2", "v1-listed")
+        self.layout, self.field_payloads = layout, dict(field_payloads)
         self.root, self.ids = root, list(ids)
         self.p = panel if panel is not None else synthetic_panel()
         self.signals = signals if signals is not None else synthetic_signals(self.p)
@@ -270,24 +313,34 @@ class Fixture:
         self.cache = root / "cache"
         self.cache_root = self.cache if vm_identity == fcw.LEGACY_VM_IDENTITY else self.cache / vm_identity
         self.vm_identity, self.fields_sha, self.field_ids = vm_identity, fields_sha, set(field_ids)
+        entries = []
         for cid, s, dsha in zip(ids, self.signals, self.dsl_sha):
             entry = self.entry_dir(cid)
             entry.mkdir(parents=True, exist_ok=True)
             data = np.ascontiguousarray(s.astype("<f8")).tobytes()
-            (entry / f"{cid}.f64").write_bytes(data)
+            self.payload_path(cid).write_bytes(data)
             sidecar = {"schema": fcw.CACHE_SCHEMA, "candidate_id": cid, "dsl_sha256": dsha,
                        "role_manifest_sha256": self.train_sha, "role": sidecar_role,
                        "eval_mode": fcw.VM_EVAL_MODE, "layout": fcw.CACHE_LAYOUT, "dates": d, "instruments": n,
-                       "bytes": len(data), "payload": f"{cid}.f64", "payload_sha256": sha(data),
+                       "bytes": len(data), "payload": self.payload_path(cid).name, "payload_sha256": sha(data),
                        "engine_git_sha": fcw.LEGACY_ENGINE_SHAS[0], "vm_identity": vm_identity}
+            fields = self.field_payloads if cid in self.field_ids else {}
+            key = v2_signal_key(vm_identity, self.train_sha, d, n, dsha, fields)
+            if layout == "v2":
+                sidecar.update(schema=V2_SCHEMA, field_payload_sha256=fields, signal_key_sha256=key)
             if keyless_legacy:
                 del sidecar["vm_identity"]
             if cid in self.field_ids:
                 sidecar["fields_manifest_sha256"] = fields_sha
             sidecar.update((sidecar_patch or {}).get(cid, {}))
-            (entry / f"{cid}.json").write_bytes(json.dumps(sidecar, indent=2).encode())
+            self.sidecar_path(cid).write_bytes(json.dumps(sidecar, indent=2).encode())
+            entries.append({"id": cid, "layout": "v2" if layout == "v2" else "v1",
+                            "sidecar": str(self.sidecar_path(cid)), "payload": str(self.payload_path(cid)),
+                            "payload_sha256": sha(data), "field_payload_sha256": fields, "signal_key_sha256": key})
         cache_summary = {"directory": str(self.cache_root / self.train_sha), "vm_identity": vm_identity,
                          "hits": 0, "misses": len(ids)}
+        if layout != "v1":
+            cache_summary.update(layout=V2_SCHEMA, legacy_hits=0, entries=entries)
         train_role = {"role": "train", "manifest_sha256": self.train_sha, "candidate_cache": cache_summary}
         if self.field_ids:
             cache_summary["fields_directory"] = str(self.cache_root / fields_sha)
@@ -298,7 +351,22 @@ class Fixture:
         self.signs = list(signs)
 
     def entry_dir(self, cid: str) -> Path:
-        return self.cache_root / (self.fields_sha if cid in self.field_ids else self.train_sha)
+        if self.layout != "v2":
+            return self.cache_root / (self.fields_sha if cid in self.field_ids else self.train_sha)
+        base = self.cache_root / self.train_sha
+        return base / f"fp_{sha(v2_field_lines(self.field_payloads).encode())[:16]}" if cid in self.field_ids else base
+
+    def stem(self, cid: str) -> str:
+        return f"{cid}.{self.dsl_sha[self.ids.index(cid)][:16]}" if self.layout == "v2" else cid
+
+    def payload_path(self, cid: str) -> Path:
+        return self.entry_dir(cid) / f"{self.stem(cid)}.f64"
+
+    def sidecar_path(self, cid: str) -> Path:
+        return self.entry_dir(cid) / f"{self.stem(cid)}.json"
+
+    def cache_summary(self, doc=None) -> dict:
+        return (doc if doc is not None else self.summary_doc)["roles"][0]["candidate_cache"]
 
     def write_summary(self, doc=None) -> None:
         self.summary = self.root / "train" / "summary.json"
@@ -939,6 +1007,181 @@ class CacheLayoutResolution(unittest.TestCase):
         self.assertFalse((self.root / "pending_work").exists())  # refused before any compute
 
 
+class CacheLayoutV2(unittest.TestCase):
+    """A v2 runner summary's candidate_cache.entries[]: v2 content-keyed entries, v1 entries read in place."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.p = synthetic_panel(dates=200, score_begin=150)
+        self.signals = synthetic_signals(self.p)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fixture(self, name, layout="v2", **kw):
+        kw.setdefault("vm_identity", NON_DEV_IDENTITY)
+        kw.setdefault("field_ids", {"alpha_b", "tie_heavy"})
+        return Fixture(self.root / name, self.p, self.signals, layout=layout, **kw)
+
+    def refuse(self, fx, fragment, **override):
+        out = self.root / "refused"
+        with self.assertRaises(fcw.FitError) as caught:
+            fcw.fit(fx.args(out, **override))
+        self.assertIn(fragment, str(caught.exception))
+        self.assertFalse(out.exists())
+
+    def fit_files(self, fx, name, screen="none", **override):
+        out = self.root / name
+        code, summary = fcw.fit(fx.args(out, screen, **override))
+        self.assertEqual(code, fcw.EXIT_OK)
+        return {p.name: p.read_bytes() for p in out.iterdir()}, summary
+
+    def assert_same_bytes_but_summary_pin(self, files, summary_sha, ref_files, ref_summary_sha):
+        """Byte identity once the (necessarily different) runner summary pin, and with it the
+        admission.json SHA the weights file records, are swapped back."""
+        self.assertNotEqual(summary_sha, ref_summary_sha)
+        self.assertEqual(sorted(files), sorted(ref_files))
+        swaps = [(summary_sha, ref_summary_sha)]
+        if fcw.OUTPUT_ADMISSION in files:
+            swaps.append((sha(files[fcw.OUTPUT_ADMISSION]), sha(ref_files[fcw.OUTPUT_ADMISSION])))
+        for name, data in files.items():
+            for mine, ref in swaps:
+                data = data.replace(mine.encode(), ref.encode())
+            self.assertEqual(data, ref_files[name], name)
+
+    def test_v2_entries_live_at_content_keyed_paths(self):
+        fx = self.fixture("paths")
+        base = fx.cache / NON_DEV_IDENTITY / fx.train_sha
+        fk16 = sha(f"field=book_to_price:{'56' * 32}\nfield=sv_ratio126:{'34' * 32}\n".encode())[:16]
+        self.assertTrue((base / f"alpha_a.{fx.dsl_sha[0][:16]}.f64").is_file())
+        self.assertTrue((base / f"fp_{fk16}" / f"alpha_b.{fx.dsl_sha[1][:16]}.json").is_file())
+        self.assertFalse((base / "alpha_a.json").exists())
+        self.assertFalse((fx.cache / NON_DEV_IDENTITY / fx.fields_sha).exists())
+        role = fcw.RoleManifest(fx.manifest, fx.train_sha)
+        layout = fcw.CacheLayout(fx.summary, fx.summary_sha, role, fx.orientations_sha, "cd" * 32)
+        cands = fcw.load_library(fx.library, fx.library_sha)
+        got = {c["id"]: layout.resolve(c, role) for c in cands}
+        self.assertEqual(got["alpha_a"]["payload"], base / f"alpha_a.{fx.dsl_sha[0][:16]}.f64")
+        self.assertEqual((got["alpha_a"]["fields_manifest_sha256"], got["alpha_b"]["fields_manifest_sha256"]),
+                         (None, fx.fields_sha))  # a field candidate's work stays keyed by the pinned manifest
+        self.assertEqual(fcw.signal_key_sha256(NON_DEV_IDENTITY, role, fx.dsl_sha[1], FIELD_PAYLOADS),
+                         v2_signal_key(NON_DEV_IDENTITY, fx.train_sha, role.dates, role.instruments, fx.dsl_sha[1],
+                                       FIELD_PAYLOADS))
+
+    def test_every_layout_fits_the_same_bytes_and_shares_work_records(self):
+        work = self.root / "work"
+        ref = self.fixture("v1", "v1")
+        ref_files, summary = self.fit_files(ref, "v1_out", work_dir=work)
+        self.assertEqual(summary["computed_this_run"], len(IDS))
+        # W3 work key: a v1 summary lists no field payload map, so its field candidates are keyed by the fields
+        # manifest; the first listed layout recomputes those two (base shared), the next reuses everything.
+        for layout, computed in (("v2", 2), ("v1-listed", 0)):
+            fx = self.fixture(layout, layout)
+            self.assertEqual(fx.train_sha, ref.train_sha)
+            files, summary = self.fit_files(fx, f"{layout}_out", work_dir=work)
+            self.assertEqual((summary["computed_this_run"], summary["reused"]), (computed, len(IDS) - computed),
+                             layout)
+            self.assert_same_bytes_but_summary_pin(files, fx.summary_sha, ref_files, ref.summary_sha)
+        doc = json.loads(files[fcw.OUTPUT_WEIGHTS])
+        rows = {r["id"]: r for r in doc["provenance"]["candidates"]}
+        self.assertEqual([rows[i]["cache_entry"] for i in ("alpha_a", "alpha_b", "tie_heavy")], ["base", "fields", "fields"])
+        runner_accepts(files[fcw.OUTPUT_WEIGHTS], fx.library_sha, IDS, fx.train_sha)
+
+    def test_admission_bytes_do_not_depend_on_the_cache_layout(self):
+        panel, signals, ids = screen_world()
+        got = {}
+        for layout in ("v1", "v2", "v1-listed"):
+            fx = Fixture(self.root / layout, panel, signals, SCREEN_RUNNER_SIGNS, ids=ids,
+                         families=["fam"] * len(ids), vm_identity=NON_DEV_IDENTITY, field_ids={"slow_b", "flip"},
+                         layout=layout)
+            got[layout] = (fx.summary_sha, self.fit_files(fx, f"{layout}_out", "v3-admit-v1")[0])
+        ref_sha, ref_files = got["v1"]
+        self.assertIn(fcw.OUTPUT_ADMISSION, ref_files)
+        self.assertEqual(len(json.loads(ref_files[fcw.OUTPUT_ADMISSION])["candidates"]), len(ids))
+        for layout in ("v2", "v1-listed"):
+            summary_sha, files = got[layout]
+            self.assertIn(summary_sha.encode(), files[fcw.OUTPUT_ADMISSION])  # the pin is the only difference
+            self.assert_same_bytes_but_summary_pin(files, summary_sha, ref_files, ref_sha)
+
+    def test_v1_field_entry_under_an_older_manifest_is_read_in_place(self):
+        fx = self.fixture("legacy", "v1-listed")
+        old = "0a" * 32
+        old_dir = fx.cache_root / old
+        old_dir.mkdir()
+        doc = json.loads(json.dumps(fx.summary_doc))
+        for e in fx.cache_summary(doc)["entries"]:
+            if e["field_payload_sha256"]:  # --cache-legacy-fields: the runner matched these field payloads
+                cid = e["id"]
+                side = dict(json.loads(fx.sidecar_path(cid).read_bytes()), fields_manifest_sha256=old)
+                (old_dir / f"{cid}.json").write_bytes(json.dumps(side).encode())
+                fx.payload_path(cid).replace(old_dir / f"{cid}.f64")
+                fx.sidecar_path(cid).unlink()
+                e.update(sidecar=str(old_dir / f"{cid}.json"), payload=str(old_dir / f"{cid}.f64"))
+        fx.write_summary(doc)
+        files, _ = self.fit_files(fx, "legacy_out")
+        rows = {r["id"]: r for r in json.loads(files[fcw.OUTPUT_WEIGHTS])["provenance"]["candidates"]}
+        self.assertEqual((rows["alpha_b"]["cache_entry"], rows["alpha_a"]["cache_entry"]), ("fields", "base"))
+        side = json.loads((old_dir / "alpha_b.json").read_bytes())
+        (old_dir / "alpha_b.json").write_bytes(json.dumps(dict(side, fields_manifest_sha256=fx.fields_sha)).encode())
+        self.refuse(fx, "fields manifest mismatch alpha_b")  # the sidecar must name its own directory's manifest
+
+    def test_summary_entry_refusals(self):
+        fx = self.fixture("summary")
+        good = json.loads(json.dumps(fx.summary_doc))
+
+        def edited(mutate):
+            doc = json.loads(json.dumps(good))
+            mutate(fx.cache_summary(doc))
+            return doc
+
+        def entry(k, **kw):
+            return edited(lambda c: c["entries"][k].update(kw))
+
+        elsewhere = fx.cache_root / "elsewhere"
+        cases = [
+            (edited(lambda c: c["entries"].pop(0)), "missing entry alpha_a"),
+            (edited(lambda c: c["entries"].append(dict(c["entries"][0]))), "duplicate candidate_cache entry alpha_a"),
+            (edited(lambda c: c.update(entries={})), "candidate_cache.entries must be a list"),
+            (entry(0, layout="v3"), "malformed candidate_cache entry"),
+            (entry(0, payload_sha256="A" * 64), "malformed candidate_cache entry"),
+            (entry(0, payload_sha256="0" * 64), "entry mismatch alpha_a"),
+            (entry(0, signal_key_sha256="0" * 64), "signal key mismatch alpha_a"),
+            (entry(0, layout="v1"), "entry path mismatch alpha_a"),  # a v1 stem is <id>
+            (entry(0, sidecar=str(elsewhere / f"{fx.stem('alpha_a')}.json")), "entry path mismatch alpha_a"),
+            (entry(0, payload=str(elsewhere / f"{fx.stem('alpha_a')}.f64")), "entry path mismatch alpha_a"),
+            (entry(1, field_payload_sha256={"sv_ratio126": "34" * 32}), "entry path mismatch alpha_b"),  # fk16
+            (entry(0, field_payload_sha256=dict(FIELD_PAYLOADS)), "entry path mismatch alpha_a"),
+        ]
+        unpinned = edited(lambda c: c.pop("fields_directory"))
+        del unpinned["roles"][0]["research_fields"]
+        cases.append((unpinned, "field entry alpha_b without a pinned research fields manifest"))
+        for doc, fragment in cases:
+            fx.write_summary(doc)
+            self.refuse(fx, fragment)
+        fx.write_summary()
+        fcw.fit(fx.args(self.root / "summary_ok"))
+
+    def test_sidecar_and_payload_refusals(self):
+        for name, kw, fragment in [
+            ("vm", {"sidecar_patch": {"alpha_a": {"vm_identity": fcw.LEGACY_VM_IDENTITY}}}, "VM identity mismatch alpha_a"),
+            ("key", {"sidecar_patch": {"alpha_b": {"field_payload_sha256": {"sv_ratio126": "34" * 32}}}},
+             "signal key mismatch alpha_b"),
+            ("schema", {"sidecar_patch": {"alpha_a": {"schema": fcw.CACHE_SCHEMA}}}, "signal key mismatch alpha_a"),
+            ("dsl", {"sidecar_patch": {"alpha_a": {"dsl_sha256": "12" * 32}}}, "records another candidate or DSL"),
+            ("geometry", {"sidecar_patch": {"alpha_a": {"dates": 199}}}, "entry mismatch alpha_a"),
+            ("role", {"sidecar_role": "validation"}, "is not a TRAIN-role signal"),
+        ]:
+            self.refuse(self.fixture(name, **kw), fragment)
+        fx = self.fixture("payload")
+        data = bytearray(fx.payload_path("alpha_a").read_bytes())
+        data[0] ^= 1
+        fx.payload_path("alpha_a").write_bytes(bytes(data))
+        self.refuse(fx, "payload SHA-256 mismatch alpha_a")
+        fx.sidecar_path("alpha_a").unlink()
+        self.refuse(fx, "missing entry alpha_a")
+
+
 class Boundaries(unittest.TestCase):
     def test_screen_boundaries(self):
         rng = np.random.default_rng(5)
@@ -1003,9 +1246,14 @@ class CacheInvalidation(unittest.TestCase):
         self.assertEqual(json.loads((self.root / name / fcw.OUTPUT_WEIGHTS).read_bytes())["weights"], self.weights)
         return summary
 
-    def test_field_record_is_keyed_by_the_fields_manifest(self):
+    def test_v1_field_record_falls_back_to_the_fields_manifest_key(self):
+        # A v1 runner summary lists no field payload map: the field candidate's work key names the manifest.
+        entry = {"id": "alpha_b", "fields_manifest_sha256": self.fx.fields_sha, "field_payload_sha256": None}
+        text = fcw.work_key_text(self.fx.train_sha, self.fx.vm_identity, "none", self.fx.dsl_sha[1], entry)
+        self.assertTrue(text.endswith(f"dsl_sha256={self.fx.dsl_sha[1]}\nfields_manifest_sha256={self.fx.fields_sha}\n"))
         names = sorted(x.name for x in (self.store / "factors").glob("*.json"))
-        self.assertEqual(sum(f".f-{self.fx.fields_sha}." in n for n in names), 1)
+        self.assertEqual(len(names), len(IDS))
+        self.assertIn(f"k-{sha(text.encode())}.json", names)
         self.assertEqual(self.rerun("again")["computed_this_run"], 0)
 
     def test_any_script_change_recomputes_everything(self):
@@ -1025,6 +1273,94 @@ class CacheInvalidation(unittest.TestCase):
         records[1].unlink()  # forces the stored context to load
         self.assertEqual(self.rerun("rebound")["computed_this_run"], 2)
 
+
+
+# ------------------------------------------------ W3 (platform v7): WorkStore keyed on the signal content key
+class WorkStoreKeys(unittest.TestCase):
+    """Records keyed on (semantics, role, VM identity, screen, DSL, field payload map) over synthetic v2 caches."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.panel, self.signals, self.ids, self.extra = v4_world()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fixture(self, name, **kw):
+        kw.setdefault("field_ids", {"slow_b", "flip"})
+        kw.setdefault("candidate_extra", self.extra)
+        return Fixture(self.root / name, self.panel, self.signals, [1] * len(self.ids), ids=self.ids,
+                       families=["fam"] * len(self.ids), vm_identity=NON_DEV_IDENTITY, layout="v2", **kw)
+
+    def fit(self, fx, name, work=None, **args):
+        out = self.root / name
+        err = io.StringIO()
+        argv = fx.argv(out, args.pop("screen", "v4-prior-v1"), [
+            "--orientation", "prior", "--composition", args.pop("composition", "ew-theme-v1"),
+            *(["--work-dir", str(work)] if work else [])])
+        with contextlib.redirect_stdout(io.StringIO()) as sout, contextlib.redirect_stderr(err):
+            code = fcw.main(argv)
+        self.assertIn(code, (fcw.EXIT_OK, fcw.EXIT_NO_WEIGHTS), err.getvalue())  # v4-prior-v2 may admit none
+        summary = json.loads(sout.getvalue())
+        line = [x for x in err.getvalue().splitlines() if x.startswith("fit: computed ")]
+        self.assertEqual(line, [f"fit: computed {summary['computed_this_run']}, reused {summary['reused']}"])
+        return {p.name: p.read_bytes() for p in out.iterdir()}, (summary["computed_this_run"], summary["reused"])
+
+    def test_admission_bytes_identical_with_and_without_the_store(self):
+        fx, work, n = self.fixture("fx"), self.root / "work", len(self.ids)
+        bare, counts = self.fit(fx, "bare")
+        self.assertEqual(counts, (n, 0))
+        first, counts = self.fit(fx, "first", work)
+        self.assertEqual(counts, (n, 0))
+        second, counts = self.fit(fx, "second", work)
+        self.assertEqual(counts, (0, n))
+        self.assertIn(fcw.OUTPUT_ADMISSION, bare)
+        self.assertEqual(first, bare)
+        self.assertEqual(second, bare)
+        names = sorted(x.name for x in (work / fx.train_sha / fcw.SEMANTICS_TAG / "factors").iterdir())
+        self.assertEqual(len(names), n)
+        self.assertTrue(all(re.fullmatch(r"k-[0-9a-f]{64}\.json", x) for x in names))
+
+    def test_work_key_is_the_signal_content_key_plus_screen(self):
+        fx = self.fixture("fx")
+        k = self.ids.index("slow_b")
+        entry = {"id": "slow_b", "fields_manifest_sha256": fx.fields_sha, "field_payload_sha256": FIELD_PAYLOADS}
+        text = fcw.work_key_text(fx.train_sha, NON_DEV_IDENTITY, "v4-prior-v1", fx.dsl_sha[k], entry)
+        self.assertEqual(text, "atx.fit-work-key/v1\n" f"semantics_tag={fcw.SEMANTICS_TAG}\n"
+                               f"role_manifest_sha256={fx.train_sha}\nvm_identity={NON_DEV_IDENTITY}\n"
+                               f"screen=v4-prior-v1\ndsl_sha256={fx.dsl_sha[k]}\n" + v2_field_lines(FIELD_PAYLOADS))
+        base = dict(entry, field_payload_sha256={})
+        self.assertTrue(fcw.work_key_text(fx.train_sha, NON_DEV_IDENTITY, "none", fx.dsl_sha[0], base)
+                        .endswith(f"dsl_sha256={fx.dsl_sha[0]}\n"))  # a base candidate reads no field
+
+    def test_unchanged_candidates_are_reused_across_fields_manifests(self):
+        work, n = self.root / "work", len(self.ids)
+        ref, counts = self.fit(self.fixture("a", fields_sha="ef" * 32), "a_out", work)
+        self.assertEqual(counts, (n, 0))
+        # a new field joins the manifest (new manifest SHA); the candidates' own field payloads are unchanged
+        grown = self.fixture("b", fields_sha="0f" * 32)
+        files, counts = self.fit(grown, "b_out", work)
+        self.assertEqual(counts, (0, n))
+        adm_a, adm_b = json.loads(ref[fcw.OUTPUT_ADMISSION]), json.loads(files[fcw.OUTPUT_ADMISSION])
+        self.assertEqual(adm_a["candidates"], adm_b["candidates"])
+        self.assertEqual(adm_b["inputs"]["fields_manifest_sha256"], "0f" * 32)
+        # a field the two field candidates read changes: only they are recomputed
+        moved = self.fixture("c", fields_sha="1f" * 32, field_payloads=dict(FIELD_PAYLOADS, sv_ratio126="99" * 32))
+        self.assertEqual(self.fit(moved, "c_out", work)[1], (2, n - 2))
+        # a changed DSL under the same id is a new record; everything else is reused
+        extra = {i: dict(e) for i, e in self.extra.items()}
+        extra["slow_a"]["dsl"] = "rank(close) * 0 + 1e-9 * rank(volume)"
+        edited = self.fixture("d", fields_sha="1f" * 32, field_payloads=dict(FIELD_PAYLOADS, sv_ratio126="99" * 32),
+                              candidate_extra=extra)
+        self.assertEqual(self.fit(edited, "d_out", work)[1], (1, n - 1))
+
+    def test_screen_id_is_part_of_the_key(self):
+        fx, work, n = self.fixture("fx"), self.root / "work", len(self.ids)
+        self.assertEqual(self.fit(fx, "p1", work)[1], (n, 0))
+        self.assertEqual(self.fit(fx, "p2", work, screen="v4-prior-v2")[1], (n, 0))
+        self.assertEqual(self.fit(fx, "p1b", work, composition="ew-theme-v6")[1], (0, n))  # same screen, any fit
+        self.assertEqual(self.fit(fx, "p2b", work, screen="v4-prior-v2")[1], (0, n))
 
 
 # ------------------------------------------------ T13: mv-shrink-0.9-nonneg-netcost-v1
@@ -1513,7 +1849,7 @@ class PriorV1BytesUnchanged(unittest.TestCase):
                 keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                 got[tag] = (files, keys)
             self.assertEqual(got["new"][0], got["old"][0])
-            self.assertEqual(got["new"][1], got["old"][1])
+            self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]))  # W3: keys renamed
 
 
 class DefaultBytesUnchanged(unittest.TestCase):
@@ -1561,7 +1897,7 @@ class DefaultBytesUnchanged(unittest.TestCase):
                     keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                     got[tag] = (files, keys)
                 self.assertEqual(got["new"][0], got["old"][0], name)
-                self.assertEqual(got["new"][1], got["old"][1], name)  # identical work-cache paths (keys)
+                self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]), name)  # W3 keys
 
 
 # ------------------------------------------------ T31: ew-theme-aim-v1 (v5 R4' aim gains)
@@ -1968,7 +2304,7 @@ class V1BytesUnchangedByAim(unittest.TestCase):
                 self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), screen)
                 for name in got["new"][0]:
                     self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {name}")
-                self.assertEqual(got["new"][1], got["old"][1], screen)  # no aim-* directory on the v1 path
+                self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]), screen)  # no aim-*
 
 
 # ------------------------------------------------ V6-W: ew-theme-v6 (v6 revision; within-theme redistribution)
@@ -2316,7 +2652,133 @@ class V1BytesUnchangedByV6(unittest.TestCase):
                 self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), (screen, composition))
                 for name in got["new"][0]:
                     self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {composition} {name}")
-                self.assertEqual(got["new"][1], got["old"][1], (screen, composition))
+                self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]), (screen, composition))
+
+
+
+# ------------------------------------------------ platform-v7 L7: appended theme ownership_flow (library v7.0 prereg)
+def load_blob(blob: str, name: str, root: Path):
+    """The fitter at a git blob, loaded as a module (None when the git history is unavailable)."""
+    import importlib.util
+    import subprocess
+    try:
+        old = subprocess.run(["git", "cat-file", "-p", blob], capture_output=True, check=True,
+                             cwd=Path(__file__).resolve().parent).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    (root / "old").mkdir(exist_ok=True)
+    path = root / "old" / f"{name}.py"
+    path.write_bytes(old)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class OwnershipFlowTheme(unittest.TestCase):
+    """v7-prereg "Library v7.0" (library-v7-draft 3.5c): ownership_flow is appended to the fitter's theme list now,
+    empty in v7.0. A library that declares no appended theme (v6.1, v7.0) fits exactly the bytes of the pre-L7 fitter
+    except the embedded script SHA and the SHAs derived from it (the byte_stability contract of V1BytesUnchangedByAim);
+    a declared but unadmitted appended theme changes no weight; an admitted one is an ordinary ew-theme-v1 theme."""
+
+    PRE_L7_BLOB = "eb41abddd4df777e7bef7261531077e57f4b0b72"  # fit_composition_weights.py at 4929824d (L7 base)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def world(self, relabel=None):
+        panel, signals, ids, extra = v4_world()
+        for i, theme in (relabel or {}).items():
+            extra[i] = dict(extra[i], theme=theme)
+        tag = "-".join(sorted(relabel or {})) or "base"
+        fx = Fixture(self.root / f"fx-{tag}", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                     candidate_extra=extra)
+        return fx, ids
+
+    def test_declared_constants(self):
+        self.assertEqual(fcw.V7_APPENDED_THEMES, ("ownership_flow",))
+        self.assertEqual(fcw.PRIOR_THEMES, fcw.V4_THEMES + ("ownership_flow",))
+        self.assertEqual(len(fcw.V4_THEMES), 9)
+
+    def test_libraries_without_an_appended_theme_keep_the_pre_l7_bytes(self):
+        base = load_blob(self.PRE_L7_BLOB, "fcw_pre_l7", self.root)
+        if base is None:
+            self.skipTest("git history with the pre-L7 fitter blob is unavailable")
+        self.assertFalse(hasattr(base, "V7_APPENDED_THEMES"))
+        self.assertEqual((base.SEMANTICS_TAG, base.V4_THEMES), (fcw.SEMANTICS_TAG, fcw.V4_THEMES))
+        fx, _ = self.world()
+        for screen in ("v4-prior-v1", "v4-prior-v2"):
+            got = {}
+            for tag, module in (("new", fcw), ("old", base)):
+                out, work = self.root / f"{screen}-{tag}", self.root / f"work-{screen}-{tag}"
+                with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249):
+                    code, _ = module.fit(module.parse_args(fx.argv(out, screen, [
+                        "--orientation", "prior", "--composition", "ew-theme-v1", "--work-dir", str(work)])))
+                self.assertEqual(code, 0, screen)
+                adm = (out / fcw.OUTPUT_ADMISSION).read_bytes()
+                derived = {module.SCRIPT_SHA256: b"<script>", json.loads(adm)["inputs"]["context_sha256"]: b"<context>",
+                           sha(adm): b"<admission>"}
+                files = {}
+                for p in out.iterdir():
+                    data = p.read_bytes()
+                    for value, token in derived.items():
+                        data = data.replace(value.encode(), token)
+                    files[p.name] = data
+                keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
+                got[tag] = (files, keys)
+            self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), screen)
+            for name in got["new"][0]:
+                self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {name}")
+            self.assertEqual(got["new"][1], got["old"][1], screen)
+            doc = json.loads(got["new"][0][fcw.OUTPUT_WEIGHTS])
+            self.assertEqual(doc["provenance"]["themes_preregistered"], list(fcw.V4_THEMES))
+
+    def fit(self, fx, tag):
+        out = self.root / f"out-{tag}"
+        code, _ = fcw.fit(fx.args(out, **V4_ARGS))
+        self.assertEqual(code, fcw.EXIT_OK, tag)
+        return (json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes()), json.loads((out / fcw.OUTPUT_ADMISSION).read_bytes()),
+                (out / fcw.OUTPUT_WEIGHTS).read_bytes())
+
+    def test_empty_appended_theme_changes_no_weight(self):
+        doc0, adm0, _ = self.fit(self.world()[0], "base")
+        # "insufficient" (prior_sign 0 -> reject_no_prior) now declares ownership_flow: the theme has no admitted member
+        fx, ids = self.world({"insufficient": "ownership_flow"})
+        doc, adm, blob = self.fit(fx, "empty")
+        self.assertEqual((doc["weights"], doc["signs"]), (doc0["weights"], doc0["signs"]))
+        self.assertEqual([c["status"] for c in adm["candidates"]], [c["status"] for c in adm0["candidates"]])
+        prov, prov0 = doc["provenance"], doc0["provenance"]
+        self.assertEqual((prov["themes_present"], prov["themes"]), (prov0["themes_present"], prov0["themes"]))
+        self.assertNotIn("ownership_flow", prov["themes_present"])
+        self.assertEqual(prov["themes_preregistered"], list(fcw.V4_THEMES) + ["ownership_flow"])
+        self.assertIn("ownership_flow", prov["themes_declared"])
+        self.assertEqual(runner_accepts(blob, fx.library_sha, ids, fx.train_sha), [doc0["weights"][i] for i in ids])
+
+    def test_admitted_appended_theme_is_an_ordinary_theme_and_the_old_fitter_refuses_it(self):
+        fx, ids = self.world({"flip": "ownership_flow"})  # flip is admitted (short_interest in v4_world)
+        doc, _, _ = self.fit(fx, "admitted")
+        w = doc["weights"]
+        self.assertEqual({i: w[i] for i in ids if w[i] > 0}, {"slow_a_clone": 0.25, "slow_a_twin": 0.25, "flip": 0.5})
+        self.assertEqual(doc["provenance"]["themes_present"], ["ownership_flow", "value"])
+        self.assertEqual(doc["provenance"]["themes"]["ownership_flow"]["admitted"], ["flip"])
+        lib = self.root / "bad.json"
+        lib.write_bytes(json.dumps({"schema": fcw.LIBRARY_SCHEMA, "candidates": [
+            {"id": "a", "family": "f", "dsl": "rank(close)", "theme": "ownership", "tier": "B", "prior_sign": 1}]
+        }).encode())
+        with self.assertRaises(fcw.FitError) as caught:  # an unknown theme is still refused
+            fcw.load_priors(lib, sha(lib.read_bytes()), None, None, fcw.load_library(lib, sha(lib.read_bytes())))
+        self.assertIn("appended theme ('ownership_flow',)", str(caught.exception))
+        base = load_blob(self.PRE_L7_BLOB, "fcw_pre_l7_refuse", self.root)
+        if base is None:
+            self.skipTest("git history with the pre-L7 fitter blob is unavailable")
+        library = base.load_library(fx.library, fx.library_sha)
+        with self.assertRaises(base.FitError) as caught:
+            base.load_priors(fx.library, fx.library_sha, None, None, library)
+        self.assertIn("pre-registered v4 theme", str(caught.exception))
 
 
 if __name__ == "__main__":

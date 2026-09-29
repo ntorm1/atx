@@ -6,9 +6,11 @@ Validates, independently of the generator:
     is a declared family, a tier and a citation;
   * every field a DSL string names exists in the given fields manifest (research fields) or is a role base field
     (close, raw_close, volume), and is declared by the library;
-  * no forbidden operator: every call is in the allowlist below; the denylist names the stateful recurrences whose
-    value depends on the panel's first date (and the multi-output test builtin);
-  * IC-runner static limits: DSL <= 4096 bytes, <= 5 extra (non-base) fields per candidate;
+  * no forbidden operator: every call is in the allowlist below (incl. the platform-v7 W2 literature ops, W2_OPS);
+    the denylist names the stateful recurrences whose value depends on the panel's first date (and the
+    multi-output test builtin); a Group builder (bucket, group_cross) must feed a group operator;
+  * IC-runner static limits: DSL <= 4096 bytes, <= 5 extra (non-base) fields per candidate (EXTRAS_EXCEPTIONS: the
+    pre-registered per-candidate rulings, q5_eg 6 in library v7.0);
 and prints the diff against the baseline library (v5.1): added, removed and changed (same id, new DSL) ids.
 With --require-baseline-prefix (library v6.1 against baseline v6), the baseline's candidate entries must be an
 identical prefix of the library's (same objects, same order) and --expect-added the exact appended ids.
@@ -17,6 +19,12 @@ Exit status 1 on any failure. The manifest is metadata only (field names); no fi
 Run: "C:/Program Files/Python312/python.exe" atx-impl/strategies/check_fund_ic_v6.py --manifest <fields manifest.json>
 v6.1: ... check_fund_ic_v6.py --manifest <fields-v7 manifest.json> --library atx-impl/strategies/fund_industry_ic_v61.json
       --baseline atx-impl/strategies/fund_industry_ic_v6.json --require-baseline-prefix --expect-added sv_flow
+v7.0: ... check_fund_ic_v6.py --manifest <fields-v7 manifest.json> --library atx-impl/strategies/fund_industry_ic_v70.json
+      --baseline atx-impl/strategies/fund_industry_ic_v61.json --max-roster 56 --require-baseline-prefix
+      --expect-added qmj_safety,nincr,q5_eg,smax5,res_mom_ind
+v7.1: ... check_fund_ic_v6.py --manifest <fields-v9 manifest.json> --library atx-impl/strategies/fund_industry_ic_v71.json
+      --baseline atx-impl/strategies/fund_industry_ic_v70.json --max-roster 56 --require-baseline-prefix
+      --expect-added ins_opp,inst_best_ideas,ftd_fail,ea_overdue   (no rule change: rank, decay_linear, max, sign)
 """
 from __future__ import annotations
 
@@ -29,15 +37,39 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BASE_FIELDS = ('close', 'raw_close', 'volume')  # role price / volume fields (not in the research fields manifest)
+# Platform-v7 W2 literature ops (atx-engine registry.cpp literature_ops; semantics in alpha/lit_ops.hpp). Allowing
+# them here only makes a candidate expressible; admitting one is a pre-registered library revision.
+W2_OPS = frozenset({
+    'ts_topk_mean', 'ts_count_increases', 'ts_resid_on', 'ts_beta_on',                  # trailing window
+    'ts_sum_mp', 'ts_mean_mp', 'ts_std_mp', 'ts_zscore_mp', 'ts_min_mp', 'ts_max_mp',  # min-periods family
+    'decay_linear_mp', 'ts_corr_mp',
+    'cs_resid_on', 'bucket', 'group_cross',                                             # cross-sectional
+    'pack2', 'pack3',                                                                   # regressor packs
+})
 ALLOWED_OPS = frozenset({
     'abs', 'log', 'signedpower', 'power',                        # element-wise
     'rank', 'group_rank', 'group_neutralize', 'group_mean',      # cross-sectional (member-masked)
     'delay', 'ts_sum', 'stddev', 'ts_max', 'ts_backfill', 'decay_linear', 'correlation', 'ts_count_nans',  # trailing
+}) | W2_OPS
+# Explicit policy entries beyond the v6 set, each with its reason (root decision, platform-v7 W2):
+POLICY_OPS = frozenset({
+    'vec_sum',  # cross-sectional sum (engine CsVecSum): the q5 expected-growth FWL slope vec_sum(resid * g) /
+                # vec_sum(resid^2) (Hou, Mo, Xue and Zhang 2021; task-W2-report.md)
+    'sign',     # element-wise sign (engine Sign; NaN stays NaN): library v7.0 nincr's year-on-year increase
+                # indicator max(sign(ni_q - ni_q_lag4), 0) (Barth, Elliott and Finn 1999; library-v7-draft W1-2)
+    'max',      # element-wise two-operand max (engine MaxP; NaN if either operand is NaN, not std::max): the same
+                # nincr indicator (v7-prereg.md "Library v7.0" Correction: max() and sign() via POLICY_OPS)
 })
+ALLOWED_OPS = ALLOWED_OPS | POLICY_OPS
 DENIED_OPS = frozenset({'trade_when', 'hump', 'kalman_level', 'ou_filter', 'kalman', 'split2'})
 GROUP_OPS = frozenset({'group_rank', 'group_neutralize', 'group_mean'})
+GROUP_BUILDERS = frozenset({'bucket', 'group_cross'})  # yield a Group classifier, never a signal
 MAX_DSL_BYTES = 4096
 MAX_EXTRAS = 5
+# Pre-registered per-candidate exceptions to MAX_EXTRAS (id -> limit), each a root ruling declared before any read:
+EXTRAS_EXCEPTIONS = {
+    'q5_eg': 6,  # library v7.0 (v7-prereg.md "Library v7.0"; library-v7-draft 3.5a): six fields-v7 fields, no new field
+}
 TOKEN = re.compile(r'\s*(?:(\d+(?:\.\d+)?)|([A-Za-z_][A-Za-z0-9_.]*)|(.))')
 
 
@@ -101,10 +133,13 @@ def check(library: dict, fields_available: set[str], max_roster: int) -> list[st
             if f not in declared:
                 errors.append(f'{cid}: field {f!r} not declared by the library')
         extras = set(used) - set(BASE_FIELDS)
-        if len(extras) > MAX_EXTRAS:
-            errors.append(f'{cid}: {len(extras)} extra fields > {MAX_EXTRAS} (IC runner plan budget)')
+        limit = EXTRAS_EXCEPTIONS.get(cid, MAX_EXTRAS)
+        if len(extras) > limit:
+            errors.append(f'{cid}: {len(extras)} extra fields > {limit} (IC runner plan budget)')
         if any(f.startswith('grp_') for f in used) and not set(ops) & GROUP_OPS:
             errors.append(f'{cid}: a group field without a group operator')
+        if set(ops) & GROUP_BUILDERS and not set(ops) & GROUP_OPS:
+            errors.append(f'{cid}: a group builder (bucket / group_cross) without a group operator')
     return errors
 
 

@@ -1,0 +1,230 @@
+{
+  "schema": "atx.research-cycle-spec/v1",
+  "name": "v7u-lo3",
+  "description": "Universe trial U-lo3 (v7-prereg.md \"Universe trial U-lo3\"): library v7.0 held fixed, role lo1 -> lo3, fields-v7 list rebuilt on lo3 with the atx-db stage SIC; reference = the v7.0 lo1 cell.",
+  "python": "C:/Program Files/Python312/python.exe",
+  "env_path_prepend": [
+    "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
+    "C:/atx-cache/vcpkg_installed/x64-windows/bin"
+  ],
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 180,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "exes": {
+    "ic": "build-equity/bin/atx-equity-strategy-ic.exe",
+    "nav": "build-equity/bin/atx-equity-strategy-targets.exe"
+  },
+  "inputs": {
+    "library": {
+      "path": "atx-impl/strategies/fund_industry_ic_v70.json",
+      "sha256": "e7bae75c9dc3c4ac6b826289f39a50e26dc9c41ca80df4b272395a3e7362c162"
+    },
+    "recipe": {
+      "path": "atx-impl/strategies/fund_industry_ic_v70.recipe.json",
+      "sha256": "60b823004cc40b105781262c530cc7c23b77c149d1135d3886d61a47b69820fc"
+    },
+    "role": {
+      "dir": "build-equity/recent-fast-train-2020-2022-v2-lo3",
+      "path": "build-equity/recent-fast-train-2020-2022-v2-lo3/manifest.json",
+      "universe": "linked-operating-v3",
+      "sha256": "40e3d832bb6223c6b5e68dbd48150037ed78fbb79633e5890bd93d01c895b78d"
+    },
+    "identity_bridge": {
+      "dir": "C:/atx/atx-db/data/alpha_panel/v1/export/identity-bridge-v2-pit",
+      "path": "C:/atx/atx-db/data/alpha_panel/v1/export/identity-bridge-v2-pit/manifest.json",
+      "sha256": "09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01"
+    },
+    "fund_events": {
+      "dir": "build-equity/fundamental-events-v2",
+      "path": "build-equity/fundamental-events-v2/manifest.json",
+      "sha256": "74ed9a50ea686e0b0842ff9b09e78d6653ddeedd0d42f37893873ce269e3dd71"
+    },
+    "sic_events": {
+      "dir": "C:/atx/atx-db/data/alpha_panel/v1/fundamentals",
+      "path": "C:/atx/atx-db/data/alpha_panel/v1/fundamentals/manifest.json",
+      "sha256": "9f9b2f85f6bcd5c7f3a55aee097893094a5cb85ab2b4edbfb582297dab06816b"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v70-ew/admission.json",
+      "sha256": "7f9b4420b3b3c1c384b42fb1ab36493aeb17b1d41cc01c3074800902342a26b6"
+    },
+    "reference_cell": {
+      "dir": "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "path": "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+      "sha256": "3d0e3377e280ae3a043c619958eb3f10e2ede299d6f49832d48f16bc3cc6f89c"
+    }
+  },
+  "fields": {
+    "builder": "atx-engine/tools/prepare_research_fields.py",
+    "output": "build-equity/recent-fast-train-2020-2022-v2-lo3-fields-v7",
+    "list": [
+      "si_shares",
+      "si_dtc",
+      "iv_atm_21d",
+      "iv_atm_63d",
+      "iv_atm_126d",
+      "earn_recent",
+      "shares_out",
+      "mkt_ret",
+      "be",
+      "at",
+      "at_lag4",
+      "lt",
+      "che",
+      "debt",
+      "sale_ttm",
+      "gp_ttm",
+      "oi_ttm",
+      "ni_ttm",
+      "ni_q",
+      "ni_q_lag4",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "cfo_ttm",
+      "capx_ttm",
+      "xrd_ttm",
+      "dvc_ttm",
+      "prstkc_ttm",
+      "sstk_ttm",
+      "txt_q",
+      "txt_q_lag4",
+      "shrs_q",
+      "shrs_q_lag4",
+      "noa",
+      "noa_lag4",
+      "sue",
+      "fscore",
+      "me_company",
+      "grp_sic2",
+      "grp_ff12",
+      "grp_ff49",
+      "sv_ratio126"
+    ],
+    "sources": {
+      "finra": "C:/atx/data/finra_short_interest",
+      "tickerhistory": "C:/Users/natha/Downloads/TickerHistory3.parquet",
+      "finra_short_volume": "C:/atx/atx-db/data/raw/finra_short_volume"
+    },
+    "fund_lag_sessions": 1,
+    "max_rss_mib": 1536,
+    "max_seconds": 1800,
+    "check": {
+      "short_volume_files_sha256": "6a968e5aafd820e1e19c014c0f17f4adb6dd55d2b9c395299ad2c5460593d081"
+    }
+  },
+  "ic": {
+    "u_output": "build-equity/mega-v70-lo3-train-u",
+    "w_output": "build-equity/mega-v70-lo3w-train-ew",
+    "cache": "build-equity/mega-candidate-cache-v70-lo3",
+    "flags": [
+      "--max-memory-mib",
+      "1536",
+      "--min-names",
+      "1000",
+      "--workers",
+      "4",
+      "--save-combined"
+    ]
+  },
+  "fit": {
+    "script": "atx-impl/tools/fit_composition_weights.py",
+    "output": "build-equity/mega-weights-v70-lo3-ew",
+    "work_dir": "build-equity/mega-fit-work-v70-lo3",
+    "flags": [
+      "--orientation",
+      "prior",
+      "--screen",
+      "v4-prior-v1",
+      "--composition",
+      "ew-theme-v1"
+    ],
+    "max_seconds": 150,
+    "max_passes": 3
+  },
+  "gate": {
+    "name": "u-lo3-readout",
+    "admitted": [],
+    "report": []
+  },
+  "nav": {
+    "output": "build-equity/mega-nav-v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+    "rule": "aim-partial-v5",
+    "leverage": "1.247",
+    "flags": [
+      "--cadence",
+      "1",
+      "--trade-fraction",
+      ".05",
+      "--dust-multiple",
+      ".1",
+      "--aim-leverage",
+      "{leverage}",
+      "--daily-turnover-mean-max",
+      ".20",
+      "--daily-turnover-p95-max",
+      ".30",
+      "--neutralize",
+      "price-risk-v1",
+      "--max-bytes",
+      "1073741824",
+      "--order-basis",
+      "delta",
+      "--exit-rate",
+      ".05",
+      "--locate-in-aim",
+      "--liquidity-cache"
+    ]
+  },
+  "summ": {
+    "script": ".superpowers/sdd/mega-alpha-20260926/studies/nav_summ.py",
+    "dsr_n": 35,
+    "extra": [
+      "--effective-n",
+      "dirs",
+      "--psr",
+      "--pbo"
+    ],
+    "ledger_kind": "construction",
+    "cells": [
+      "build-equity/mega-nav-v5-ew-t.05-d.1-fixed",
+      "build-equity/mega-nav-v5-ew-t.03-d.1-fixed",
+      "build-equity/mega-nav-v5-ew-t.08-d.1-fixed",
+      "build-equity/mega-nav-v5-ew-t.05-d0-fixed",
+      "build-equity/mega-nav-v5-ew-t.05-d.1-per-name",
+      "build-equity/mega-nav-v5-ew-t.05-d.1-fixed-L1.279",
+      "build-equity/mega-nav-v5-aim-t.05-d.1-fixed",
+      "build-equity/mega-nav-v5-aim-t.03-d.1-fixed",
+      "build-equity/mega-nav-v5-aim-t.08-d.1-fixed",
+      "build-equity/mega-nav-v5-aim-t.05-d0-fixed",
+      "build-equity/mega-nav-v5-aim-t.05-d.1-per-name",
+      "build-equity/mega-nav-v5-aim-t.05-d.1-fixed-L1.279",
+      "build-equity/mega-nav-v51-ew-t.05-d.1-fixed",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-x.05",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-x.1",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.1",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "build-equity/mega-nav-v6l-ew-t.03-d.1-fixed-obdelta-x.05",
+      "build-equity/mega-nav-v6l-ew-t.05-d.05-fixed-obdelta-x.05",
+      "build-equity/mega-nav-v6l-ew-t.05-d.2-fixed-obdelta-x.05",
+      "build-equity/mega-nav-v6l-ew6-t.05-d.1-fixed-obdelta-x.05-loc",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc-nind-v1",
+      "build-equity/mega-nav-v6l-ew-t.05-d.1-fixed-obdelta-x.05-loc-nind-v2",
+      "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc",
+      "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C1",
+      "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C2",
+      "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C3",
+      "build-equity/mega-nav-v61u-spo-v1-L1.247",
+      "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+    ],
+    "ledger": "build-equity/trials.jsonl",
+    "note": "ledger kind construction so the 34 ledgered cells are skipped, not re-appended; the trial is a universe trial (v7-prereg.md U-lo3)"
+  }
+}

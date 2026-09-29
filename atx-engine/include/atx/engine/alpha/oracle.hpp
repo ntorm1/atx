@@ -431,6 +431,24 @@ private:
       return eval_split2(in);
     case OpCode::KalmanReg:
       return eval_kalman_reg(in);
+    // ---- platform-v7 W2 literature ops: independent twins (oracle_lit.cpp) ----
+    case OpCode::ArgPack:
+    case OpCode::GroupCross:
+    case OpCode::CsBucket:
+    case OpCode::CsResidOn:
+    case OpCode::TsTopkMean:
+    case OpCode::TsResidOn:
+    case OpCode::TsBetaOn:
+    case OpCode::TsCountIncreases:
+    case OpCode::TsSumMp:
+    case OpCode::TsMeanMp:
+    case OpCode::TsStdMp:
+    case OpCode::TsZscoreMp:
+    case OpCode::TsMinMp:
+    case OpCode::TsMaxMp:
+    case OpCode::TsDecayLinearMp:
+    case OpCode::TsCorrMp:
+      return eval_lit(in);
     case OpCode::Pin:
     case OpCode::StoreAlpha:
     case OpCode::Free:
@@ -600,6 +618,12 @@ private:
 
   // ---- time-series (per instrument column) --------------------------------
   [[nodiscard]] atx::core::Status eval_time_series(const Instr &in);
+
+  // ---- platform-v7 W2 literature ops (src/alpha/oracle_lit.cpp) ------------
+  // Restates every lit_ops.hpp rule INDEPENDENTLY (no lit_ops.hpp include) in
+  // the obviously-correct gather-then-compute style, with the SAME summation /
+  // solve order, so the VM differential is a real cross-check.
+  [[nodiscard]] atx::core::Status eval_lit(const Instr &in);
 
   // ---- stateful recurrence (forward scan, true cross-date state) -----------
   [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in);

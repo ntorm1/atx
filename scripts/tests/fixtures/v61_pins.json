@@ -1,0 +1,18 @@
+{
+  "atx-impl/strategies/fund_industry_ic_v6.json": "5ee66d137c60527c4b00f948e8b15c04f2bddc789e988b660a4254a6df6e896a",
+  "atx-impl/strategies/fund_industry_ic_v61.json": "db35c2769f6c13a8d9d5b2897a9e6968855bffbe6214ff96a12f6869cb59f9b5",
+  "atx-impl/strategies/fund_industry_ic_v61.recipe.json": "9bf278a6f3dfa78edd506ab3e499b2e8dd1ce34899752fe81df573e65550f547",
+  "build-equity/fundamental-events-v2/manifest.json": "74ed9a50ea686e0b0842ff9b09e78d6653ddeedd0d42f37893873ce269e3dd71",
+  "build-equity/identity-bridge-r4-v1/manifest.json": "ddf9716459a1116b85f713ca9cb788c3db753a6e1fea8eba335ed34320baebaa",
+  "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json": "998eca312577fb4296718cd66e964c0c9acb19951db9ae0407799bf58275fea3",
+  "build-equity/mega-nav-v6u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json": "29921e2be27dddf22929673060b8966bc71692a3d3107d826c5636ecdbf782f5",
+  "build-equity/mega-v61-train-u-1/orientations.json": "6efae7cf8f1d0a58d5611bbc0b8a3b3eb2bd9ba544705d7d53c9a68bbfc16793",
+  "build-equity/mega-v61-train-u-1/summary.json": "8b4b17ae6ef66dbc175e8e0ae356825f33af6847c9480a97b4fa6e6eb233dcc1",
+  "build-equity/mega-v61w-train-ew-1/summary.json": "0f1fce496371825d9fdf705020d5cfc2cd0ac8ed730034c09ace72a1622250db",
+  "build-equity/mega-v61w-train-ew-1/train_combined.json": "62bc30a3bf1ee047c200e35064f8cfe18c089a77adb3f651e4615b3c05d1c6c0",
+  "build-equity/mega-weights-v61-ew/composition_weights.json": "f1a2213dd1cf56493b1f3221bc661c4565d00d257657f60819b37f6d6bef7bf8",
+  "build-equity/mega-weights-v6u-ew/admission.json": "78ccf155428bb086e16120727ab71262bd9fcd25b9b3ccc5d94716e8b2ff763a",
+  "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v6b/manifest.json": "c69b9c0faf76e333f69b480a698e57b1309f2882b74a40092d9ebb91b9fa82c8",
+  "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v7/manifest.json": "1d1fa87a00d519bcf08fbec83f3fd17029e23650a98a9af26e99ddb1f1a73ee1",
+  "build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.json": "3e79978a858cbf6b723ff7a896d56814f7505dde11b805c30c5b909783ebb809"
+}

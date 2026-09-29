@@ -101,6 +101,8 @@ namespace detail {
   case OpCode::CsQuantile:
   case OpCode::CsVecSum:
   case OpCode::CsVecAvg:
+  case OpCode::CsBucket:  // W2
+  case OpCode::CsResidOn: // W2
     return true;
   default:
     return false;
@@ -230,6 +232,20 @@ namespace detail {
 // kernel unconditionally reads operand 2) without having materialized operand 2.
 // Precondition: `e.kind == Call` and `e.op != nullptr`.
 [[nodiscard]] atx::core::Status validate_node_contract(const Expr &e);
+
+// W2 literature op (is_lit_op) Call node — the op's complete rail set:
+//   * numeric-vector slots refuse Group classifiers, masks, scalars and records;
+//     group_cross refuses anything but two Group classifiers;
+//   * pack2/pack3 hold numeric vectors only; a pack is accepted ONLY as a
+//     regressor operand of ts_resid_on / ts_beta_on (<= 3 regressors) or
+//     cs_resid_on (<= 4 covariates), nowhere else (reject_record_operands);
+//   * peeled counts are integers: k in [1, w], m in [1, w], n in [2, 65535];
+//     the Ts regressions need w >= regressors + 2;
+//   * lookback = (w-1) + child for the trailing-window ops (u16 overflow refused),
+//     child lookback otherwise.
+[[nodiscard]] atx::core::Result<TypeInfo> analyze_lit_call(const Ast &ast,
+                                                           std::span<const TypeInfo> out,
+                                                           const Expr &e);
 
 // Call node: shape from the op's table-driven rule, dtype from the registry row
 // (+ group-arg validation), lookback from the temporal family. Cs*/Ts* ops

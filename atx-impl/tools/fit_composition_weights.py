@@ -15,6 +15,8 @@ Inputs are pinned by SHA-256: the library, the TRAIN role manifest, the runner's
 candidate cache layout: ``roles[train].candidate_cache.directory`` (ROOT/<train manifest sha>, base
 candidates), ``.fields_directory`` (ROOT/<fields manifest sha>, candidates reading extra research
 fields) and ``.vm_identity``. Sidecars are checked as the runner's ``cached_payload_sha`` does.
+A v2 runner's summary also lists ``.entries[]`` (id, layout v1|v2, sidecar, payload, SHAs): each
+candidate is then read from its named entry, v2 ``<id>.<dsl16>.{f64,json}`` or v1 read in place.
 Nothing after 2022-12-31 is read: the role must end by 2023-01-01T00:00Z, every cache sidecar must
 name the ``train`` role, and the summary must describe a TRAIN-only run.
 
@@ -110,9 +112,13 @@ declared before any v6 TRAIN read; the rule text is binding): the admitted non-d
 
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
-Records are keyed by (TRAIN role manifest SHA, semantics tag, cache payload SHA, fields manifest SHA
-for field candidates) and bound to the VM identity, the context digest and this script's SHA-256, so
-any edit of this file recomputes everything. ``--max-seconds``
+Records are keyed by the work key (``atx.fit-work-key/v1``: semantics tag, TRAIN role manifest SHA, VM
+identity, screen id, DSL SHA and the candidate's field payload SHAs, i.e. the summary entry's
+``field_payload_sha256`` map; a field candidate of a v1 runner summary, which lists no map, falls back to
+the fields manifest SHA), stored as ``<work>/<train-sha>/<semantics-tag>/factors/k-<key>.json``, so an
+unchanged candidate is reused when other fields or other candidates change. A record is also bound to its
+cache payload SHA, the VM identity, the context digest and this script's SHA-256, so any edit of this file
+recomputes everything. stderr reports ``fit: computed K, reused M``. ``--max-seconds``
 and ``--max-new-candidates`` stop cleanly between candidates with exit code 3 and publish nothing; a
 rerun computes only what is missing. Outputs are byte-identical whichever path produced them.
 ``ew-theme-aim-v1`` adds a per-candidate aim record (rho at the exact lags, g, half-sample gains, per-decision
@@ -177,6 +183,13 @@ ORIENTATIONS = ("train", "prior")
 V4_TAU_LIMIT, V4_RHO_LIMIT, V4_MIN_TRAIN_DAYS, V4_VETO_T, NW_LAG = 0.70, 0.90, 250, -2.0, 5
 V4_THEMES = ("value", "profitability_quality", "investment_issuance", "earnings_momentum", "price_momentum",
              "low_risk", "short_interest", "reversal_seasonality", "options_implied")
+# Platform-v7 pre-registration (v7-prereg.md "Library v7.0"; library-v7-draft 2 / 3.5c): themes appended after the v4
+# list. A prior-metadata theme may be any of PRIOR_THEMES; the weights provenance lists an appended theme under
+# themes_preregistered only when some candidate declares it, so a library without one (v6.1, v7.0: ownership_flow is
+# empty until wave 2) keeps its bytes. ew-theme-v1 counts only themes with an admitted member, so an empty theme never
+# changes a weight.
+V7_APPENDED_THEMES = ("ownership_flow",)
+PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES
 TIER_GRADES = ("A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D")  # strongest first
 V4_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_veto",
                "reject_redundant")
@@ -192,9 +205,14 @@ LIBRARY_SCHEMA = "atx.dsl-ic-library/v1"
 ORIENTATIONS_SCHEMA = "atx.dsl-ic-orientations/v1"
 ROLE_SCHEMA = "atx.recent-research-role/v1"
 CACHE_SCHEMA = "atx.dsl-candidate-signal/v1"
+# strategy_ic_runner.cpp v2 content-keyed entries: ROOT/<role sha>/[fp_<fk16>/]<id>.<dsl16>.{f64,json},
+# named per candidate by the summary's candidate_cache.entries[] (v1 entries read in place too).
+CACHE_SCHEMA_V2 = "atx.dsl-candidate-signal/v2"
+SIGNAL_KEY_SCHEMA = "atx.dsl-candidate-signal-key/v2"
 CACHE_LAYOUT = "date-major-little-endian-f64;non-finite-stored-as-quiet-NaN"
 VM_EVAL_MODE = "ResearchFast;full-historical-asof-member-mask"
 FACTOR_SCHEMA = "atx.fit-candidate-factor/v1"
+WORK_KEY_SCHEMA = "atx.fit-work-key/v1"
 CONTEXT_SCHEMA = "atx.fit-price-risk-context/v1"
 # Bump these when anything that changes the context or a factor record changes: old work is ignored.
 CONTEXT_SEMANTICS = ("price-risk-v1;beta252-min126-all-instrument-market;vol63-min32;ladv63;"
@@ -349,8 +367,9 @@ def load_priors(library_path: Path, library_sha: str, recipe_path: Path | None, 
                     used.add(name)
         missing = [key for key in PRIOR_KEYS if key not in vals]
         require(not missing, f"prior metadata: {c['id']} lacks {missing}")
-        require(isinstance(vals["theme"], str) and vals["theme"] in V4_THEMES,
-                f"prior metadata: theme of {c['id']} is not a pre-registered v4 theme {V4_THEMES}")
+        require(isinstance(vals["theme"], str) and vals["theme"] in PRIOR_THEMES,
+                f"prior metadata: theme of {c['id']} is not a pre-registered v4 theme {V4_THEMES} or appended "
+                f"theme {V7_APPENDED_THEMES}")
         sign = vals["prior_sign"]
         require(type(sign) is int and sign in (1, 0, -1), f"prior metadata: prior_sign of {c['id']}")
         require(sign != -1, f"prior metadata: prior_sign -1 for {c['id']}; v4 embeds the prior sign in the DSL (+1)")
@@ -482,13 +501,31 @@ class CacheLayout:
             self.fields_directory = Path(cache["fields_directory"])
             require(self.fields_directory.name == self.fields_sha and self.fields_directory.parent == root,
                     "runner summary: fields_directory is not ROOT/<fields manifest sha>")
+        # A v2 runner names every candidate's exact entry (either layout); a v1 summary has none and
+        # its entries are probed under directory / fields_directory.
+        self.entries = None
+        if "entries" in cache:
+            listed = cache["entries"]
+            require(isinstance(listed, list), "runner summary: candidate_cache.entries must be a list")
+            self.entries = {}
+            for e in listed:
+                require(isinstance(e, dict) and isinstance(e.get("id"), str) and e.get("layout") in ("v1", "v2") and
+                        isinstance(e.get("sidecar"), str) and isinstance(e.get("payload"), str) and
+                        is_hash(e.get("payload_sha256")) and isinstance(e.get("field_payload_sha256"), dict) and
+                        all(isinstance(k, str) and is_hash(v) for k, v in e["field_payload_sha256"].items()),
+                        "runner summary: malformed candidate_cache entry")
+                require(e["id"] not in self.entries, f"runner summary: duplicate candidate_cache entry {e['id']}")
+                self.entries[e["id"]] = e
 
     def resolve(self, cand: dict, role: "RoleManifest") -> dict:
         """The one cache entry of this candidate, validated as cached_payload_sha() does.
 
-        An entry is the candidate's when its sidecar names this id and DSL SHA; a same-id entry of
+        With ``entries`` (v2 runner) the summary names it (resolve_listed). Otherwise (v1 runner) an
+        entry is the candidate's when its sidecar names this id and DSL SHA; a same-id entry of
         another DSL (an older library) is ignored. Exactly one entry must be the candidate's.
         """
+        if self.entries is not None:
+            return self.resolve_listed(cand, role)
         cid = cand["id"]
         found = []
         for directory, fields_sha in ((self.directory, None), (self.fields_directory, self.fields_sha)):
@@ -520,13 +557,109 @@ class CacheLayout:
         require(fields_match, f"candidate cache: fields manifest mismatch {cid}")
         require(vm_match, f"candidate cache: VM identity mismatch {cid}")
         require(j.get("role") == "train", f"candidate cache: entry {cid} is not a TRAIN-role signal")
-        return {"id": cid, "directory": directory, "payload_sha256": sha, "fields_manifest_sha256": fields_sha}
+        # A v1 summary lists no per-field payload map: a base candidate reads none, a field candidate's is unknown.
+        return {"id": cid, "directory": directory, "payload": directory / f"{cid}.f64", "payload_sha256": sha,
+                "fields_manifest_sha256": fields_sha, "field_payload_sha256": {} if fields_sha is None else None}
+
+    def resolve_listed(self, cand: dict, role: "RoleManifest") -> dict:
+        """The summary-named entry of this candidate, checked against its sidecar.
+
+        v2: ROOT/<train sha>/<id>.<dsl16>.json for a base candidate, ROOT/<train sha>/fp_<fk16>/... for
+        a field candidate (fk16 = SHA-256 of its field lines); the sidecar must record the runner's
+        signal key, recomputed here. v1 (read in place): ROOT/<train sha>/<id>.json, or
+        ROOT/<fields manifest sha>/<id>.json for a field candidate -- possibly an older manifest whose
+        field payloads the runner matched (--cache-legacy-fields). Base vs field is the entry's
+        field_payload_sha256; a field candidate's work is keyed by the pinned fields manifest either
+        way, so records and admission rows do not depend on the layout.
+        """
+        cid = cand["id"]
+        e = self.entries.get(cid)
+        require(e is not None, f"candidate cache: missing entry {cid} (run the TRAIN IC runner with --candidate-cache)")
+        fields, v2 = e["field_payload_sha256"], e["layout"] == "v2"
+        require(not fields or self.fields_sha is not None,
+                f"candidate cache: field entry {cid} without a pinned research fields manifest")
+        sidecar, payload = Path(e["sidecar"]), Path(e["payload"])
+        directory = sidecar.parent
+        stem = f"{cid}.{cand['dsl_sha256'][:16]}" if v2 else cid
+        if not fields:
+            where = directory == self.directory
+        elif v2:
+            where = directory == self.directory / f"fp_{hashlib.sha256(field_lines(fields).encode()).hexdigest()[:16]}"
+        else:
+            where = directory.parent == self.directory.parent and is_hash(directory.name)
+        require(where and sidecar.name == f"{stem}.json" and payload == directory / f"{stem}.f64",
+                f"candidate cache: entry path mismatch {cid}")
+        require(sidecar.is_file(), f"candidate cache: missing entry {cid} (run the TRAIN IC runner with --candidate-cache)")
+        data = sidecar.read_bytes()
+        require(0 < len(data) <= METADATA_LIMIT, f"candidate cache: sidecar extent {cid}")
+        j = unique_json(data, f"candidate cache {cid}")
+        require(isinstance(j, dict) and j.get("candidate_id") == cid and j.get("dsl_sha256") == cand["dsl_sha256"],
+                f"candidate cache: entry {cid} records another candidate or DSL")
+        require(j.get("role_manifest_sha256") == role.sha and j.get("eval_mode") == VM_EVAL_MODE and
+                j.get("layout") == CACHE_LAYOUT and j.get("dates") == role.dates and
+                j.get("instruments") == role.instruments and j.get("bytes") == role.dates * role.instruments * 8 and
+                j.get("payload") == f"{stem}.f64" and j.get("payload_sha256") == e["payload_sha256"],
+                f"candidate cache: entry mismatch {cid}")
+        if v2:
+            key = signal_key_sha256(self.vm_identity, role, cand["dsl_sha256"], fields)
+            require(j.get("schema") == CACHE_SCHEMA_V2 and j.get("field_payload_sha256") == fields and
+                    j.get("signal_key_sha256") == key and e.get("signal_key_sha256") == key,
+                    f"candidate cache: signal key mismatch {cid}")
+            fields_match, vm_match = True, j.get("vm_identity") == self.vm_identity
+        else:
+            require(j.get("schema") == CACHE_SCHEMA, f"candidate cache: entry mismatch {cid}")
+            fields_match = (j.get("fields_manifest_sha256") == directory.name if fields
+                            else "fields_manifest_sha256" not in j)
+            if "vm_identity" in j:
+                vm_match = j.get("vm_identity") == self.vm_identity
+            else:  # keyless sidecars: base entries recorded by the verified legacy builds only
+                vm_match = (self.vm_identity == LEGACY_VM_IDENTITY and not fields and
+                            j.get("engine_git_sha") in LEGACY_ENGINE_SHAS)
+        require(fields_match, f"candidate cache: fields manifest mismatch {cid}")
+        require(vm_match, f"candidate cache: VM identity mismatch {cid}")
+        require(j.get("role") == "train", f"candidate cache: entry {cid} is not a TRAIN-role signal")
+        return {"id": cid, "directory": directory, "payload": payload, "payload_sha256": e["payload_sha256"],
+                "fields_manifest_sha256": self.fields_sha if fields else None, "field_payload_sha256": dict(fields)}
+
+
+def field_lines(fields: dict) -> str:
+    """strategy_ic_runner.cpp field_lines(): one ``field=<name>:<payload sha256>`` line per field, by name."""
+    return "".join(f"field={name}:{fields[name]}\n" for name in sorted(fields))
+
+
+def signal_key_sha256(vm_identity: str, role: "RoleManifest", dsl_sha: str, fields: dict) -> str:
+    """strategy_ic_runner.cpp signal_key_text(), hashed: the v2 candidate signal cache key."""
+    text = (f"{SIGNAL_KEY_SCHEMA}\nvm_identity={vm_identity}\neval_mode={VM_EVAL_MODE}\nlayout={CACHE_LAYOUT}\n"
+            f"role_manifest_sha256={role.sha}\ndates={role.dates}\ninstruments={role.instruments}\n"
+            f"dsl_sha256={dsl_sha}\n{field_lines(fields)}")
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def work_key_text(role_sha: str, vm_identity: str, screen: str, dsl_sha: str, entry: dict) -> str:
+    """The WorkStore key of one candidate's records (``atx.fit-work-key/v1``, one ``\\n``-terminated line each).
+
+    The content key of the signal (role, VM identity, DSL, the field payloads it reads) plus the screen id and
+    the semantics tag. A field candidate of a v1 runner summary lists no field payload map, so its key carries
+    the fields manifest SHA instead (coarser: any fields change recomputes it)."""
+    lines = [WORK_KEY_SCHEMA, f"semantics_tag={SEMANTICS_TAG}", f"role_manifest_sha256={role_sha}",
+             f"vm_identity={vm_identity}", f"screen={screen}", f"dsl_sha256={dsl_sha}"]
+    fields = entry.get("field_payload_sha256")
+    text = "".join(f"{line}\n" for line in lines)
+    if fields is None:
+        require(is_hash(entry.get("fields_manifest_sha256")), f"work key: {entry.get('id')} has no field payload "
+                                                              "map and no fields manifest")
+        return text + f"fields_manifest_sha256={entry['fields_manifest_sha256']}\n"
+    return text + field_lines(fields)
+
+
+def work_key_sha256(role_sha: str, vm_identity: str, screen: str, dsl_sha: str, entry: dict) -> str:
+    return hashlib.sha256(work_key_text(role_sha, vm_identity, screen, dsl_sha, entry).encode()).hexdigest()
 
 
 def load_candidate_signal(entry: dict, role: "RoleManifest") -> np.ndarray:
     """The verified raw (unoriented) VM signal, date-major (dates, instruments)."""
     cid, size = entry["id"], role.dates * role.instruments * 8
-    payload = (entry["directory"] / f"{cid}.f64").read_bytes()
+    payload = Path(entry["payload"]).read_bytes()
     require(len(payload) == size, f"candidate cache: payload extent {cid}")
     require(hashlib.sha256(payload).hexdigest() == entry["payload_sha256"],
             f"candidate cache: payload SHA-256 mismatch {cid}")
@@ -850,6 +983,7 @@ def factor_record(context: Context, signal: np.ndarray, entry: dict, cand: dict,
         "schema": FACTOR_SCHEMA, "context_semantics": CONTEXT_SEMANTICS, "factor_semantics": FACTOR_SEMANTICS,
         "script_sha256": SCRIPT_SHA256, "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
         "cache_payload_sha256": entry["payload_sha256"], "fields_manifest_sha256": entry["fields_manifest_sha256"],
+        "work_key_sha256": entry["work_key_sha256"], "field_payload_sha256": entry["field_payload_sha256"],
         "vm_identity": vm_identity, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
         "decisions": int(len(f)), "f_unsigned": [float(x) if ok else None for x, ok in zip(f, live)],
         "tau": standalone_turnover(q), "live_decisions": int(live.sum()),
@@ -880,6 +1014,7 @@ def aim_record(context: Context, signal: np.ndarray, entry: dict, cand: dict, vm
         "schema": AIM_SCHEMA, "aim_semantics": AIM_SEMANTICS, "context_semantics": CONTEXT_SEMANTICS,
         "script_sha256": SCRIPT_SHA256, "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
         "cache_payload_sha256": entry["payload_sha256"], "fields_manifest_sha256": entry["fields_manifest_sha256"],
+        "work_key_sha256": entry["work_key_sha256"], "field_payload_sha256": entry["field_payload_sha256"],
         "vm_identity": vm_identity, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
         "decisions": int(context.end - context.begin), "theta": AIM_THETA, "lags": list(AIM_LAGS),
         "rho": _floats_or_none(profile["rho"]), "rho_half": [_floats_or_none(r) for r in profile["rho_half"]],
@@ -902,7 +1037,7 @@ def aim_record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bo
                 j.get("context_semantics") == CONTEXT_SEMANTICS and j.get("script_sha256") == SCRIPT_SHA256 and
                 j.get("role_manifest_sha256") == role.sha and
                 j.get("cache_payload_sha256") == entry["payload_sha256"] and
-                j.get("fields_manifest_sha256") == entry["fields_manifest_sha256"] and
+                j.get("work_key_sha256") == entry["work_key_sha256"] and
                 j.get("vm_identity") == vm_identity and is_hash(j.get("context_sha256")) and
                 j.get("decisions") == t and j.get("theta") == AIM_THETA and j.get("lags") == AIM_LAGS and
                 opt(rho) and isinstance(halves, list) and len(halves) == 2 and all(opt(h) for h in halves) and
@@ -926,7 +1061,7 @@ def record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
                 j.get("factor_semantics") == FACTOR_SEMANTICS and j.get("script_sha256") == SCRIPT_SHA256 and
                 j.get("role_manifest_sha256") == role.sha and
                 j.get("cache_payload_sha256") == entry["payload_sha256"] and
-                j.get("fields_manifest_sha256") == entry["fields_manifest_sha256"] and
+                j.get("work_key_sha256") == entry["work_key_sha256"] and
                 j.get("vm_identity") == vm_identity and is_hash(j.get("context_sha256")) and
                 j.get("decisions") == role.end - role.begin and isinstance(f, list) and len(f) == role.end - role.begin
                 and all(v is None or type(v) is float for v in f) and type(j.get("tau")) is float and
@@ -936,7 +1071,10 @@ def record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
 
 
 class WorkStore:
-    """Persistent incremental state: ``<work>/<train-sha>/<semantics-tag>/{context,factors}``."""
+    """Persistent incremental state: ``<work>/<train-sha>/<semantics-tag>/{context,factors}``.
+
+    Records are named by their work key: ``factors/k-<work key sha256>.json`` (``work_key_text``). Records of
+    the pre-v7 layout (``factors/<payload sha>[.f-<fields sha>].json``) are never read."""
 
     def __init__(self, root: Path, role: RoleManifest, vm_identity: str):
         self.role, self.vm_identity = role, vm_identity
@@ -945,20 +1083,20 @@ class WorkStore:
         self.context_dir = self.base / "context"
         self.aims = self.base / f"aim-{AIM_TAG}"  # ew-theme-aim-v1 only; other compositions never touch it
 
-    def _path(self, payload_sha: str, fields_sha: str | None, directory: Path | None = None) -> Path:
-        name = f"{payload_sha}.json" if fields_sha is None else f"{payload_sha}.f-{fields_sha}.json"
-        return (directory or self.factors) / name
+    def _path(self, work_key: str, directory: Path | None = None) -> Path:
+        require(is_hash(work_key), "work store: malformed work key")
+        return (directory or self.factors) / f"k-{work_key}.json"
 
     def get(self, entry: dict) -> dict | None:
         try:
-            j = json.loads(self._path(entry["payload_sha256"], entry["fields_manifest_sha256"]).read_bytes())
+            j = json.loads(self._path(entry["work_key_sha256"]).read_bytes())
         except (OSError, ValueError):
             return None
         return j if record_valid(j, entry, self.role, self.vm_identity) else None
 
     def get_aim(self, entry: dict) -> dict | None:
         try:
-            j = json.loads(self._path(entry["payload_sha256"], entry["fields_manifest_sha256"], self.aims).read_bytes())
+            j = json.loads(self._path(entry["work_key_sha256"], self.aims).read_bytes())
         except (OSError, ValueError):
             return None
         return j if aim_record_valid(j, entry, self.role, self.vm_identity) else None
@@ -966,7 +1104,7 @@ class WorkStore:
     def put(self, record: dict, directory: Path | None = None) -> None:
         directory = directory or self.factors
         directory.mkdir(parents=True, exist_ok=True)
-        path = self._path(record["cache_payload_sha256"], record["fields_manifest_sha256"], directory)
+        path = self._path(record["work_key_sha256"], directory)
         partial = path.with_name(path.name + f".partial-{os.getpid()}")
         write_synced(partial, canonical_compact(record))
         os.replace(partial, path)
@@ -1403,6 +1541,9 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
     Returns (records, computed now, reused, aim records or None). Without ``aim`` this is exactly the
     pre-v5 path: no aim record is read, computed or written.
     """
+    screen = getattr(args, "screen", "none")
+    for e, cand in zip(entries, library):  # the records' key: content key of the signal + screen (work_key_text)
+        e["work_key_sha256"] = work_key_sha256(role.sha, vm_identity, screen, cand["dsl_sha256"], e)
     store = WorkStore(args.work_dir, role, vm_identity) if args.work_dir else None
     records: list[dict | None] = [store.get(e) if store else None for e in entries]
     aims: list[dict | None] | None = ([store.get_aim(e) if store else None for e in entries] if aim else None)
@@ -1411,6 +1552,8 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
         digests |= {a["context_sha256"] for a in aims if a is not None}
     if (all(r is not None for r in records) and (aims is None or all(a is not None for a in aims)) and
             len(digests) == 1):
+        if log:
+            log(f"fit: computed 0, reused {len(records)}")
         return records, 0, len(records), aims  # type: ignore[return-value]
     context = store.load_context() if store else None
     if context is None:
@@ -1451,6 +1594,8 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
             log(f"fit: {k + 1}/{len(library)} {library[k]['id']} tau={records[k]['tau']:.4f} "  # type: ignore[index]
                 f"live={records[k]['live_decisions']}{extra} seconds={time.perf_counter() - tick:.2f}")  # type: ignore[index]
     remaining = [library[k]["id"] for k in todo if stale(records[k]) or (aims is not None and stale(aims[k]))]
+    if log:
+        log(f"fit: computed {computed}, reused {reused}" + (f", remaining {len(remaining)}" if remaining else ""))
     if remaining:
         raise Incomplete({"status": "incomplete", "partial": True, "computed_this_run": computed, "reused": reused,
                           "remaining": len(remaining), "next": remaining[0],
@@ -1810,7 +1955,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             "rule": args.composition,
             "composition": composition_text,
             "themes": theme_table, "themes_present": sorted(theme_table),
-            "themes_declared": sorted(set(themes)), "themes_preregistered": list(V4_THEMES),
+            "themes_declared": sorted(set(themes)),
+            "themes_preregistered": list(V4_THEMES) + [t for t in V7_APPENDED_THEMES if t in themes],
             "screen": screen, "orientation": "prior", "admission_sha256": admission_sha,
             "signs": f"{screen}: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
             "prior_metadata_source": priors["source"], "recipe_sha256": priors["recipe_sha256"],
@@ -1969,8 +2115,9 @@ def parse_args(argv):
     p.add_argument("--recipe-sha256", default=None)
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     p.add_argument("--work-dir", type=Path, default=None,
-                   help="persistent incremental state (context + per-candidate factor records; aim records for "
-                        "ew-theme-aim-v1)")
+                   help="persistent incremental state (context + per-candidate factor records keyed by the work key: "
+                        "role, VM identity, screen, DSL SHA and field payload SHAs; aim records for ew-theme-aim-v1); "
+                        "stderr reports 'fit: computed K, reused M'")
     p.add_argument("--max-seconds", type=float, default=None,
                    help="soft budget: stop cleanly before a candidate that would overrun it (exit 3, stdout "
                         "{status: incomplete, partial: true}; completed candidates persist, rerun resumes)")

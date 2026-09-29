@@ -1,0 +1,11 @@
+# Task P2 report: literature review v7 (read-only + web)
+
+- **Deliverable:** `literature-v7.md`, 451 lines. It covers S0 (summary table), S1-S7 (the brief's seven questions), S8 (ranked build list) and S9 (bibliography of ~95 entries, each with a URL). No code, builds, binaries, real data, subagents or edits under C:/atx.
+- **Combination:** at N 32 sleeves and T 3 y, plug-in MV/IC weights reach an OOS SR of ≈ .63 against ≈ 1.28 for 1/N [est]. Break-even needs ~37 y of data for sleeves and ~10 y for themes. Keep EW; estimate only σ and decay. `ew-theme-aim-v1` is exactly GP Proposition 4, with aim weight 1/(1+19φ) at theta .05.
+- **Construction:** theta .05 maps to GP γ/λ = .0026 and a/γ = 19. It is GP-optimal only if costs ∝ Σ. Recommend a daily cost-aware SPO around the GP aim, with a risk model, name-level impact, a cost^{1/3} band, borrow costs and ADV caps. Precedent: FIM 2015 optimisation gave 3-6x capacity at ≤ 1% tracking error.
+- **Risk:** build a USE4-style fundamental model (EWMA 84/504, NW, eigenfactor, VRA, Bayesian specific), an NL-shrinkage statistical cross-check and a bias-statistic harness. Neutralise dollar and beta hard; penalise industries and styles through Σ.
+- **Capacity [est]:** calibrating S2 as c ≈ 6.6 + 6.3√g bps/$ gives net SR 1.18 at $1bn, 1.00 at ≈ $5bn and break-even ≈ $85bn at fixed construction. S2 is conservative against FIM realised costs (9.97 bps mean) and the KO benchmark (≈ 6 bps at 0.1% ADV).
+- **Integrity:** trial ledger, effective-N DSR (ONC), CSCV PBO, CPCV, and BRAIN-style metrics (margin, fitness, PnL-correlation ≤ .7). MinTRL for the final cell is ≈ 2.2 y against SR 0 and ≈ 6.5 y against SR .5.
+- **Families:** wave 1 from XBRL + bars is q5 expected growth, nincr and QMJ-safety. Wave 2 is data-gated: Form 4 opportunistic insiders, then the Johnson-So earnings-date delay, then the borrow screen, then 13F.
+- **Live operations:** bias statistic, sleeve CUSUM, implementation shortfall vs model, crowding. Reweight quarterly by Bayesian update with T0 ≈ 10 y. Never retire a sleeve on drawdown alone.
+- **Caveats:** every *[est]* is my arithmetic (±50%). BRAIN thresholds come from third-party practitioner sources. Some URLs are carried over from v6-literature §8; the list is at the end of the file.

@@ -1,0 +1,322 @@
+{
+  "schema": "atx.research-cycle-spec/v1",
+  "name": "v71",
+  "description": "Library v7.1 (v7.0 + wave 2: ins_opp, inst_best_ideas (ownership_flow), ftd_fail (short_interest), ea_overdue (earnings_momentum); v7-prereg.md \"Library v7.1\", rulings W2-a..e) on TRAIN 2020-2022 role lo1. Wave 1 was accepted, so the parent is v7.0 and the reference is the v7.0 cell (Ruling W2-a). Fields: lo1-fields-v9 AS BUILT (manifest pinned 8fd00e9f...d7b8769b, 63 rows; never rebuilt); its check: the 41 fields-v7 payloads byte-identical, the 22 W5a/W5b fields added. Identity before the cell (prereg section 5, a miss hard-stops without a trial): ref = the reference construction (aim-partial-v5, L 1.247, the v7.0 combined signal) re-run with --fields fields-v9 into mega-nav-v70u-ref-fields-v9, then ref-compare: its S2 daily CSV bit for bit against the v7.0 cell (Ruling W2-e, identity iv); u on the new cache mega-candidate-cache-v71 (root seeds it as a hard-link copy of mega-candidate-cache-v70: the candidate cache is content-keyed by DSL sha + field payload sha and the 55 v8 payloads are byte-identical in v9, so expect 44 hits + 4 evaluations), then u-compare: the rows of the 44 parent members (keys = the v7.0 library's candidate ids, so the runner's __combined__ book series is not compared) of orientations.json and train_daily_ic.csv byte for byte against the v7.0 u pass (identity iii). fit ew-theme-v1 / v4-prior-v1 (10 themes iff an ownership_flow member is admitted); card; gate p1-v71 prints the four wave-2 admission rows and stops before w only if none is admitted with its prior sign (require any); w; nav = the reference construction on fields-v9 with L 1.247 fixed; monitor as v70; summ paired vs the v7.0 cell over the ledger grid (summ.cells_from_ledger: every build-equity/trials.jsonl cell, 34 when declared, then this cell), --dsr-n 35 = ledger lines + 1: if another cell is ledgered first, summ.dsr_n is the one key to change (the plan stops and names the value), --effective-n dirs --psr --pbo, ledger kind construction.",
+  "python": "C:/Program Files/Python312/python.exe",
+  "env_path_prepend": [
+    "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
+    "C:/atx-cache/vcpkg_installed/x64-windows/bin"
+  ],
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 180,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "exes": {
+    "ic": "build-equity/bin/atx-equity-strategy-ic.exe",
+    "nav": "build-equity/bin/atx-equity-strategy-targets.exe"
+  },
+  "inputs": {
+    "library": {
+      "path": "atx-impl/strategies/fund_industry_ic_v71.json",
+      "sha256": "787c802ed1cdf7cfc507500b014525c3d4dff148f44e77ebd8368c0a686c2259"
+    },
+    "recipe": {
+      "path": "atx-impl/strategies/fund_industry_ic_v71.recipe.json",
+      "sha256": "7f8a264312d47487d2a9f7e0e92ecd76defb22ce2822ec319805f9ad0dffb271"
+    },
+    "baseline_library": {
+      "path": "atx-impl/strategies/fund_industry_ic_v70.json",
+      "sha256": "e7bae75c9dc3c4ac6b826289f39a50e26dc9c41ca80df4b272395a3e7362c162"
+    },
+    "role": {
+      "dir": "build-equity/recent-fast-train-2020-2022-v2-lo1",
+      "path": "build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.json",
+      "universe": "linked-operating-v1",
+      "sha256": "3e79978a858cbf6b723ff7a896d56814f7505dde11b805c30c5b909783ebb809"
+    },
+    "baseline_fields": {
+      "dir": "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v7",
+      "path": "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v7/manifest.json",
+      "sha256": "1d1fa87a00d519bcf08fbec83f3fd17029e23650a98a9af26e99ddb1f1a73ee1"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v70-ew/admission.json",
+      "sha256": "7f9b4420b3b3c1c384b42fb1ab36493aeb17b1d41cc01c3074800902342a26b6"
+    },
+    "reference_cell": {
+      "dir": "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+      "path": "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/summary.json",
+      "sha256": "3d0e3377e280ae3a043c619958eb3f10e2ede299d6f49832d48f16bc3cc6f89c"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v70w-train-ew-1/train_combined.json",
+      "sha256": "7c2961c6d2c7dad02567bc04ba1b9c061359b343337975b2429c7c00dd04c93c"
+    },
+    "reference_daily": {
+      "path": "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "sha256": "9c23f072cf51799f889641cc4c364320c04b911187a6e0c6d8e8e6d6cdc9f25f"
+    },
+    "reference_orientations": {
+      "path": "build-equity/mega-v70-train-u-1/orientations.json",
+      "sha256": "232ad4164ca3ddd1aa353beac8a919bebc31d144a440df162a7bab6c77f35c2b"
+    },
+    "reference_daily_ic": {
+      "path": "build-equity/mega-v70-train-u-1/train_daily_ic.csv",
+      "sha256": "9453c1da36780961434369171e4f90f76f701a58d5ee17402a51d83e7996ee05"
+    }
+  },
+  "fields": {
+    "output": "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v9",
+    "manifest_sha256": "8fd00e9f44b475116f483e133c03fe031618390060b8374180278f1cd7b8769b",
+    "list": [
+      "si_shares",
+      "si_dtc",
+      "iv_atm_21d",
+      "iv_atm_63d",
+      "iv_atm_126d",
+      "earn_recent",
+      "shares_out",
+      "mkt_ret",
+      "be",
+      "at",
+      "at_lag4",
+      "lt",
+      "che",
+      "debt",
+      "sale_ttm",
+      "gp_ttm",
+      "oi_ttm",
+      "ni_ttm",
+      "ni_q",
+      "ni_q_lag4",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "cfo_ttm",
+      "capx_ttm",
+      "xrd_ttm",
+      "dvc_ttm",
+      "prstkc_ttm",
+      "sstk_ttm",
+      "txt_q",
+      "txt_q_lag4",
+      "shrs_q",
+      "shrs_q_lag4",
+      "noa",
+      "noa_lag4",
+      "sue",
+      "fscore",
+      "me_company",
+      "grp_sic2",
+      "grp_ff12",
+      "grp_ff49",
+      "sv_ratio126",
+      "ea_days_to_expected",
+      "ea_days_since",
+      "ea_window_pre5",
+      "ea_window_post3",
+      "ea_delay_days",
+      "ea_time_of_day",
+      "ins_net_buy_ratio",
+      "ins_n_buyers",
+      "ins_n_sellers",
+      "ins_opportunistic_net",
+      "ins_cluster_buy",
+      "k8_count_63",
+      "k8_item_material_21",
+      "k8_days_since_any",
+      "inst_own_share",
+      "inst_breadth_chg",
+      "inst_own_chg_q",
+      "inst_best_ideas",
+      "inst_n_holders",
+      "ftd_shares_ratio21",
+      "regsho_threshold_days63",
+      "sv_offexchange_share126"
+    ],
+    "check": {
+      "baseline": "baseline_fields",
+      "expect_added": [
+        "ea_days_to_expected",
+        "ea_days_since",
+        "ea_window_pre5",
+        "ea_window_post3",
+        "ea_delay_days",
+        "ea_time_of_day",
+        "ins_net_buy_ratio",
+        "ins_n_buyers",
+        "ins_n_sellers",
+        "ins_opportunistic_net",
+        "ins_cluster_buy",
+        "k8_count_63",
+        "k8_item_material_21",
+        "k8_days_since_any",
+        "inst_own_share",
+        "inst_breadth_chg",
+        "inst_own_chg_q",
+        "inst_best_ideas",
+        "inst_n_holders",
+        "ftd_shares_ratio21",
+        "regsho_threshold_days63",
+        "sv_offexchange_share126"
+      ],
+      "short_volume_files_sha256": "6a968e5aafd820e1e19c014c0f17f4adb6dd55d2b9c395299ad2c5460593d081"
+    }
+  },
+  "static_check": {
+    "script": "atx-impl/strategies/check_fund_ic_v6.py",
+    "args": [
+      "--max-roster",
+      "56",
+      "--require-baseline-prefix"
+    ],
+    "expect_added": [
+      "ins_opp",
+      "inst_best_ideas",
+      "ftd_fail",
+      "ea_overdue"
+    ]
+  },
+  "ref": {
+    "output": "build-equity/mega-nav-v70u-ref-fields-v9",
+    "combined": "reference_combined"
+  },
+  "compare": [
+    {
+      "name": "ref-v9-s2-daily",
+      "after": "ref",
+      "mode": "file",
+      "a": "{input:reference_daily}",
+      "b": "{out:ref}/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv"
+    },
+    {
+      "name": "parent-orientations",
+      "after": "u",
+      "mode": "json-rows",
+      "array": "candidates",
+      "key": "id",
+      "keys": "{input:baseline_library}",
+      "a": "{input:reference_orientations}",
+      "b": "{out:u}/orientations.json"
+    },
+    {
+      "name": "parent-train-daily-ic",
+      "after": "u",
+      "mode": "csv-rows",
+      "key": "id",
+      "keys": "{input:baseline_library}",
+      "a": "{input:reference_daily_ic}",
+      "b": "{out:u}/train_daily_ic.csv"
+    }
+  ],
+  "ic": {
+    "u_output": "build-equity/mega-v71-train-u",
+    "w_output": "build-equity/mega-v71w-train-ew",
+    "cache": "build-equity/mega-candidate-cache-v71",
+    "flags": [
+      "--max-memory-mib",
+      "1536",
+      "--min-names",
+      "1000",
+      "--workers",
+      "4",
+      "--save-combined",
+      "--cache-legacy-fields",
+      "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v7"
+    ]
+  },
+  "fit": {
+    "script": "atx-impl/tools/fit_composition_weights.py",
+    "output": "build-equity/mega-weights-v71-ew",
+    "work_dir": "build-equity/mega-fit-work-v71",
+    "flags": [
+      "--orientation",
+      "prior",
+      "--screen",
+      "v4-prior-v1",
+      "--composition",
+      "ew-theme-v1"
+    ],
+    "max_seconds": 150,
+    "max_passes": 3
+  },
+  "card": {
+    "script": "atx-impl/tools/alpha_report_card.py",
+    "output": "build-equity/mega-cards-v71",
+    "flags": [
+      "--workers",
+      "4"
+    ]
+  },
+  "gate": {
+    "name": "p1-v71",
+    "admitted": [
+      "ins_opp",
+      "inst_best_ideas",
+      "ftd_fail",
+      "ea_overdue"
+    ],
+    "require": "any",
+    "sign_agrees": true,
+    "report": [
+      "mom_12_1",
+      "si_ratio",
+      "dtc",
+      "sv_flow",
+      "iv_rv_spread",
+      "ear",
+      "sue",
+      "droe"
+    ]
+  },
+  "nav": {
+    "output": "build-equity/mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247",
+    "rule": "aim-partial-v5",
+    "leverage": "1.247",
+    "flags": [
+      "--cadence",
+      "1",
+      "--trade-fraction",
+      ".05",
+      "--dust-multiple",
+      ".1",
+      "--aim-leverage",
+      "{leverage}",
+      "--daily-turnover-mean-max",
+      ".20",
+      "--daily-turnover-p95-max",
+      ".30",
+      "--neutralize",
+      "price-risk-v1",
+      "--max-bytes",
+      "1073741824",
+      "--order-basis",
+      "delta",
+      "--exit-rate",
+      ".05",
+      "--locate-in-aim",
+      "--liquidity-cache"
+    ]
+  },
+  "monitor": {
+    "script": "atx-impl/tools/book_monitor.py",
+    "output": "build-equity/mega-monitor-v71",
+    "holdings_days": "build-equity/v7-l3-holdings/holdings_days.csv",
+    "bias": "build-equity/v7-l4-risk/bias.csv",
+    "flags": []
+  },
+  "summ": {
+    "script": ".superpowers/sdd/mega-alpha-20260926/studies/nav_summ.py",
+    "dsr_n": 37,
+    "cells_from_ledger": true,
+    "extra": [
+      "--effective-n",
+      "dirs",
+      "--psr",
+      "--pbo"
+    ],
+    "ledger": "build-equity/trials.jsonl",
+    "ledger_kind": "construction"
+  }
+}

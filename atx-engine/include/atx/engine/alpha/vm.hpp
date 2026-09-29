@@ -95,6 +95,7 @@
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/cs_ops.hpp"
 #include "atx/engine/alpha/fusion.hpp" // Lane 2: FusedProgram / FusedKernel
+#include "atx/engine/alpha/lit_ops.hpp" // platform-v7 W2 literature kernels
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/state_ops.hpp"
@@ -851,6 +852,8 @@ private:
     case OpCode::CsQuantile:
     case OpCode::CsVecSum:
     case OpCode::CsVecAvg:
+    case OpCode::CsBucket:  // W2: date rows (lit_ops.hpp)
+    case OpCode::CsResidOn: // W2
       return true;
     default:
       return false;
@@ -863,7 +866,22 @@ private:
     const bool ts_block = v >= static_cast<atx::u8>(OpCode::TsDelay) &&
                           v <= static_cast<atx::u8>(OpCode::OuFilter);
     return ts_block || op == OpCode::KalmanReg || op == OpCode::OuTheta ||
-           op == OpCode::OuHalflife || op == OpCode::OuMean || op == OpCode::OuZscore;
+           op == OpCode::OuHalflife || op == OpCode::OuMean || op == OpCode::OuZscore ||
+           detail::is_lit_ts_op(op); // W2 trailing-window ops
+  }
+
+  // Slot offset an operand reads beyond its own slot: Pin's projected pin, and a
+  // W2 pack consumer's regressor block (width - 1; registry.hpp lit_reg_*).
+  [[nodiscard]] static atx::usize operand_extent(const Instr &in, atx::usize k) noexcept {
+    if (in.op == OpCode::Pin && k == 0) {
+      return in.param;
+    }
+    if (detail::is_pack_consumer(in.op) && (k == 1 || k == 2)) {
+      const atx::usize w =
+          (k == 1) ? detail::lit_reg_wb(in.param) : detail::lit_reg_wc(in.param);
+      return w > 1 ? w - 1 : atx::usize{0};
+    }
+    return 0;
   }
 
   [[nodiscard]] atx::usize axis_len(OpCode op, atx::usize dates, atx::usize instruments) const {
@@ -888,7 +906,7 @@ private:
       if (s == kNoSlot) {
         continue;
       }
-      const atx::usize extra = (in.op == OpCode::Pin && k == 0) ? in.param : atx::usize{0};
+      const atx::usize extra = operand_extent(in, k);
       if (static_cast<atx::usize>(s) + extra >= n) {
         return false;
       }
@@ -1278,11 +1296,154 @@ private:
     case OpCode::Pin:
       eval_pin(in, lo, hi);
       return atx::core::Ok();
+    // ---- platform-v7 W2 literature ops (lit_ops.hpp) ----
+    case OpCode::ArgPack:
+    case OpCode::GroupCross:
+      return eval_lit_map(in, lo, hi);
+    case OpCode::CsBucket:
+    case OpCode::CsResidOn:
+      return eval_lit_cs(in, instruments, lo, hi);
+    case OpCode::TsTopkMean:
+    case OpCode::TsResidOn:
+    case OpCode::TsBetaOn:
+    case OpCode::TsCountIncreases:
+    case OpCode::TsSumMp:
+    case OpCode::TsMeanMp:
+    case OpCode::TsStdMp:
+    case OpCode::TsZscoreMp:
+    case OpCode::TsMinMp:
+    case OpCode::TsMaxMp:
+    case OpCode::TsDecayLinearMp:
+    case OpCode::TsCorrMp:
+      return eval_lit_ts(in, dates, instruments, lo, hi);
     case OpCode::StoreAlpha:
     case OpCode::Free:
       ATX_UNREACHABLE(); // StoreAlpha/Free handled by evaluate(); never dispatched
     }
     ATX_UNREACHABLE(); // exhaustive switch — no valid fallthrough
+  }
+
+  // ---- platform-v7 W2 literature ops (kernels + NaN rules: lit_ops.hpp) ------
+  // pack2/pack3 copy their operands into the contiguous record block; group_cross
+  // is element-wise. Cells [lo, hi).
+  [[nodiscard]] atx::core::Status eval_lit_map(const Instr &in, atx::usize lo, atx::usize hi) {
+    if (in.op == OpCode::ArgPack) {
+      for (atx::u32 c = 0; c < in.n_out; ++c) {
+        const std::span<const atx::f64> s = src_col(in, c);
+        const std::span<atx::f64> o = wcol(in.dst + c);
+        for (atx::usize i = lo; i < hi; ++i) {
+          o[i] = s[i];
+        }
+      }
+      return atx::core::Ok();
+    }
+    const std::span<const atx::f64> g1 = src_col(in, 0);
+    const std::span<const atx::f64> g2 = src_col(in, 1);
+    const std::span<atx::f64> o = dst_col(in);
+    for (atx::usize i = lo; i < hi; ++i) {
+      o[i] = detail::lit_group_cross(g1[i], g2[i]);
+    }
+    return atx::core::Ok();
+  }
+
+  // bucket / cs_resid_on over date rows [d0, d1): the same valid-set scan as
+  // cs_one_date (non-NaN x AND the Cs eligibility mask, ascending index), serial.
+  [[nodiscard]] atx::core::Status eval_lit_cs(const Instr &in, atx::usize instruments,
+                                              atx::usize d0, atx::usize d1) {
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const std::span<atx::f64> out = dst_col(in);
+    std::array<std::span<const atx::f64>, detail::kLitMaxReg> cov{};
+    atx::usize k = 0;
+    if (in.op == OpCode::CsResidOn) {
+      const atx::usize wb = detail::lit_reg_wb(in.param);
+      const atx::usize wc = detail::lit_reg_wc(in.param);
+      for (atx::u32 c = 0; c < wb && k < cov.size(); ++c) {
+        cov[k++] = rcol(in.src[1] + c);
+      }
+      for (atx::u32 c = 0; c < wc && k < cov.size(); ++c) {
+        cov[k++] = rcol(in.src[2] + c);
+      }
+    }
+    // SAFETY: analyze_lit_call proved bucket's n an integer in [2, 65535], so the
+    // truncation to int is in range (imm[0] is 0.0 for cs_resid_on, unused).
+    const int nb = static_cast<int>(in.imm[0]);
+    std::array<std::span<const atx::f64>, detail::kLitMaxReg> crow{};
+    const std::span<const atx::u8> mask{cs_mask_};
+    for (atx::usize d = d0; d < d1; ++d) {
+      const std::span<const atx::f64> xr = x.subspan(d * instruments, instruments);
+      const std::span<atx::f64> orow = out.subspan(d * instruments, instruments);
+      const std::span<const atx::u8> mrow =
+          mask.empty() ? std::span<const atx::u8>{} : mask.subspan(d * instruments, instruments);
+      cs_valid_.clear();
+      for (atx::usize i = 0; i < instruments; ++i) {
+        orow[i] = detail::kLitNaN;
+        if (!std::isnan(xr[i]) && (mrow.empty() || mrow[i] != 0U)) {
+          cs_valid_.push_back(i);
+        }
+      }
+      if (in.op == OpCode::CsBucket) {
+        detail::lit_bucket_row(xr, cs_valid_, nb, orow, cs_scratch_);
+        continue;
+      }
+      for (atx::usize c = 0; c < k; ++c) {
+        crow[c] = cov[c].subspan(d * instruments, instruments);
+      }
+      detail::lit_cs_resid_row(xr, std::span<const std::span<const atx::f64>>{crow.data(), k},
+                               cs_valid_, orow, lit_scratch_);
+    }
+    return atx::core::Ok();
+  }
+
+  // W2 trailing-window ops over instrument columns [j0, j1): for each date the
+  // window [max(0, t-d+1), t] of every input is gathered chronologically and the
+  // shared cell kernel runs — the call StreamingEngine makes on its ring, so the
+  // two agree bit-for-bit. Full-window ops short-circuit a short window to NaN
+  // (the kernel would return NaN); the min-periods family evaluates it.
+  [[nodiscard]] atx::core::Status eval_lit_ts(const Instr &in, atx::usize dates,
+                                              atx::usize instruments, atx::usize j0,
+                                              atx::usize j1) {
+    atx::usize last = 0;
+    for (atx::usize k = 0; k < in.src.size(); ++k) {
+      if (in.src.at(k) != kNoSlot) {
+        last = k;
+      }
+    }
+    const atx::usize d = detail::tsv_window_of(src_col(in, last));
+    const atx::usize n_in = detail::lit_ts_inputs(in.op, in.param);
+    std::array<std::span<const atx::f64>, 1 + detail::kLitMaxReg> cols{};
+    cols[0] = src_col(in, 0);
+    if (in.op == OpCode::TsCorrMp) {
+      cols[1] = src_col(in, 1);
+    } else {
+      for (atx::u32 c = 1; c < n_in && c < cols.size(); ++c) {
+        cols[c] = rcol(in.src[1] + (c - 1U)); // the regressor block of operand 1
+      }
+    }
+    const std::span<atx::f64> out = dst_col(in);
+    const bool partial_ok = detail::is_lit_mp_op(in.op);
+    if (lit_win_.size() < n_in * d) {
+      lit_win_.resize(n_in * d);
+    }
+    for (atx::usize j = j0; j < j1; ++j) {
+      for (atx::usize t = 0; t < dates; ++t) {
+        const atx::usize len = std::min(t + 1, d);
+        const atx::usize cell = t * instruments + j;
+        if (d == 0 || (len < d && !partial_ok)) {
+          out[cell] = detail::kLitNaN;
+          continue;
+        }
+        const atx::usize first = t + 1 - len;
+        for (atx::usize c = 0; c < n_in; ++c) {
+          for (atx::usize i = 0; i < len; ++i) {
+            lit_win_[c * len + i] = cols[c][(first + i) * instruments + j];
+          }
+        }
+        out[cell] = detail::lit_ts_cell(in.op,
+                                        std::span<const atx::f64>{lit_win_.data(), n_in * len},
+                                        n_in, len, d, in.imm[0], lit_scratch_);
+      }
+    }
+    return atx::core::Ok();
   }
 
   // ---- leaves -------------------------------------------------------------
@@ -2005,6 +2166,8 @@ private:
   std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused
   std::vector<atx::usize> cs_valid_;   // Cs* per-date valid-index scratch; grown once, cleared per date
   detail::CsScratch cs_scratch_;       // Cs* grouped/sort scratch; grown once, reset per date
+  std::vector<atx::f64> lit_win_;      // W2 Ts gathered windows (n_in * d); grown on demand
+  detail::LitScratch lit_scratch_;     // W2 sort / OLS rows / regression-row scratch
   // S3-3: optional intra-eval column pool + PER-WORKER scratch. ts_pool_ is null by
   // default (serial). When set, the batch column loop runs over instrument bands on
   // the pool; each worker `wid` owns ts_col_thr_[wid] (x column), ts_col_b_thr_[wid]

@@ -15,6 +15,19 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_target_replay.cpp
     src/strategy_price_exposures.cpp
     src/strategy_nav_replay.cpp
+    # v7 daily decide path: deploy manifest, decide verb (the NAV replay's own DECIDE)
+    src/strategy_live.cpp
+    # v7 W4: f64 holdings layout + reader, share orders, broker reconciliation
+    src/strategy_holdings.cpp
+    src/strategy_orders.cpp
+    src/strategy_reconcile.cpp
+    # platform v7 L4: cost model v2 + aim-partial-v6 + the NAV hook; atx-risk-v1 + bias harness
+    src/strategy_cost_v2.cpp
+    src/strategy_nav_v7.cpp
+    src/strategy_risk_model.cpp
+    src/strategy_risk_verb.cpp
+    # platform v7 W1: spo-v1, the cost-aware single-period optimiser (FISTA, factor risk)
+    src/strategy_spo.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
@@ -72,8 +85,12 @@ set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEAD
 # it with the public clang driver option. LLVM ignores the inherited /RTC1.
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
+        src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
+        src/strategy_spo.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
+        src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
+        src/strategy_spo.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
@@ -134,6 +151,10 @@ target_link_libraries(atx-equity-strategy-ic PRIVATE atx-impl-core atx_warnings)
 # Reuse a saved composition for portfolio iteration without reevaluating DSLs.
 add_executable(atx-equity-strategy-targets EXCLUDE_FROM_ALL tools/equity_strategy_targets.cpp)
 target_link_libraries(atx-equity-strategy-targets PRIVATE atx-impl-core atx_warnings)
+
+# atx-risk-v1 fundamental risk model + bias harness (platform v7 L4): the `risk` verb.
+add_executable(atx-equity-strategy-risk EXCLUDE_FROM_ALL tools/equity_strategy_risk.cpp)
+target_link_libraries(atx-equity-strategy-risk PRIVATE atx-impl-core atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
