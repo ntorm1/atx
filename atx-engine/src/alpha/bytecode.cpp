@@ -88,6 +88,9 @@ atx::core::Result<Program> linearize(const Dag &dag) {
       // Pin's param is the pin index (which output of the record compute to
       // project). It differs from LoadField / Const, so it must be set here.
       instr.param = n.param;
+    } else if (detail::is_pack_consumer(n.op)) {
+      // W2: the regressor block widths build_dag recorded (registry.hpp).
+      instr.param = n.param;
     }
     instr.n_out = n.n_out;
     prog.code.push_back(instr);

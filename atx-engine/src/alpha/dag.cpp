@@ -66,6 +66,16 @@ NodeId lower_generic(Dag &dag, const Ast &ast,
     key_param = field_param;
   } else if (e.kind == Expr::Kind::Literal) {
     key_param = std::bit_cast<atx::u64>(e.value);
+  } else if (e.kind == Expr::Kind::Call && is_pack_consumer(op)) {
+    // W2: record the regressor block widths (registry.hpp is_pack_consumer) so
+    // linearize can hand them to every executor in Instr::param. Children are
+    // interned first, so their n_out (pack width, else 1) is final here.
+    const auto width = [&dag](NodeId k) -> atx::u32 {
+      return k == kNoNode ? 0U : static_cast<atx::u32>(dag.node(k).n_out);
+    };
+    const atx::u32 wc = pack_consumer_window_in_c(op) ? 0U : width(kids[2]);
+    field_param = lit_reg_param(width(kids[1]), wc);
+    key_param = field_param;
   }
 
   // pow(x,2) -> mul(x,x) BEFORE interning (emit_op/emit_kids carry the result).

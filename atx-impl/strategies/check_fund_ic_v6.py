@@ -6,8 +6,9 @@ Validates, independently of the generator:
     is a declared family, a tier and a citation;
   * every field a DSL string names exists in the given fields manifest (research fields) or is a role base field
     (close, raw_close, volume), and is declared by the library;
-  * no forbidden operator: every call is in the allowlist below; the denylist names the stateful recurrences whose
-    value depends on the panel's first date (and the multi-output test builtin);
+  * no forbidden operator: every call is in the allowlist below (incl. the platform-v7 W2 literature ops, W2_OPS);
+    the denylist names the stateful recurrences whose value depends on the panel's first date (and the
+    multi-output test builtin); a Group builder (bucket, group_cross) must feed a group operator;
   * IC-runner static limits: DSL <= 4096 bytes, <= 5 extra (non-base) fields per candidate;
 and prints the diff against the baseline library (v5.1): added, removed and changed (same id, new DSL) ids.
 With --require-baseline-prefix (library v6.1 against baseline v6), the baseline's candidate entries must be an
@@ -29,13 +30,23 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BASE_FIELDS = ('close', 'raw_close', 'volume')  # role price / volume fields (not in the research fields manifest)
+# Platform-v7 W2 literature ops (atx-engine registry.cpp literature_ops; semantics in alpha/lit_ops.hpp). Allowing
+# them here only makes a candidate expressible; admitting one is a pre-registered library revision.
+W2_OPS = frozenset({
+    'ts_topk_mean', 'ts_count_increases', 'ts_resid_on', 'ts_beta_on',                  # trailing window
+    'ts_sum_mp', 'ts_mean_mp', 'ts_std_mp', 'ts_zscore_mp', 'ts_min_mp', 'ts_max_mp',  # min-periods family
+    'decay_linear_mp', 'ts_corr_mp',
+    'cs_resid_on', 'bucket', 'group_cross',                                             # cross-sectional
+    'pack2', 'pack3',                                                                   # regressor packs
+})
 ALLOWED_OPS = frozenset({
     'abs', 'log', 'signedpower', 'power',                        # element-wise
     'rank', 'group_rank', 'group_neutralize', 'group_mean',      # cross-sectional (member-masked)
     'delay', 'ts_sum', 'stddev', 'ts_max', 'ts_backfill', 'decay_linear', 'correlation', 'ts_count_nans',  # trailing
-})
+}) | W2_OPS
 DENIED_OPS = frozenset({'trade_when', 'hump', 'kalman_level', 'ou_filter', 'kalman', 'split2'})
 GROUP_OPS = frozenset({'group_rank', 'group_neutralize', 'group_mean'})
+GROUP_BUILDERS = frozenset({'bucket', 'group_cross'})  # yield a Group classifier, never a signal
 MAX_DSL_BYTES = 4096
 MAX_EXTRAS = 5
 TOKEN = re.compile(r'\s*(?:(\d+(?:\.\d+)?)|([A-Za-z_][A-Za-z0-9_.]*)|(.))')
@@ -105,6 +116,8 @@ def check(library: dict, fields_available: set[str], max_roster: int) -> list[st
             errors.append(f'{cid}: {len(extras)} extra fields > {MAX_EXTRAS} (IC runner plan budget)')
         if any(f.startswith('grp_') for f in used) and not set(ops) & GROUP_OPS:
             errors.append(f'{cid}: a group field without a group operator')
+        if set(ops) & GROUP_BUILDERS and not set(ops) & GROUP_OPS:
+            errors.append(f'{cid}: a group builder (bucket / group_cross) without a group operator')
     return errors
 
 

@@ -58,6 +58,7 @@
 
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/cs_ops.hpp"
+#include "atx/engine/alpha/lit_ops.hpp" // W2 literature kernels (shared with the VM)
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/state_ops.hpp"
@@ -117,6 +118,15 @@ struct TsState {
   std::vector<sliding::CoMomentLane> comoment;
   sliding::ExpDecayCoefficients exp_coeff;
   std::vector<sliding::ExpDecayLane> exp_decay;
+};
+
+// Per-W2-trailing-window-instruction state (lit_ops.hpp): a ring of the last `d`
+// rows of each of the op's `n_in` inputs, row of date s at (s % d); the cell
+// kernel then runs on exactly the window the batch VM gathers.
+struct LitTsState {
+  atx::usize d{0};
+  atx::usize n_in{0};
+  std::vector<atx::f64> ring; // d * n_in * instruments
 };
 
 // Per-recurrence-instruction carried state.
@@ -350,6 +360,7 @@ private:
     scalar_.assign(n, std::array<atx::f64, 3>{0.0, 0.0, 0.0});
     ts_.assign(n, TsState{});
     rec_.assign(n, RecState{});
+    lit_.assign(n, streaming_detail::LitTsState{});
     const auto const_of = [&](SlotId s, atx::f64 &v) {
       if (s == kNoSlot || s >= producer.size() || producer[s] >= n ||
           prog_.code[producer[s]].op != OpCode::Const) {
@@ -362,6 +373,8 @@ private:
       const Instr &in = prog_.code[k];
       if (streaming_detail::is_ts_op(in.op)) {
         ATX_TRY_VOID(analyze_ts(k, in, const_of));
+      } else if (detail::is_lit_ts_op(in.op)) {
+        ATX_TRY_VOID(analyze_lit_ts(k, in, const_of));
       } else if (streaming_detail::is_cs_op(in.op)) {
         const bool needs_scalar = in.op == OpCode::CsScale || in.op == OpCode::CsWinsorize ||
                                   in.op == OpCode::CsQuantile;
@@ -389,6 +402,36 @@ private:
   [[nodiscard]] static atx::core::Status not_const(const char *what) {
     return atx::core::Err(atx::core::ErrorCode::NotImplemented,
                           std::string("StreamingEngine: non-Const ") + what);
+  }
+
+  // W2 trailing-window op: window from the last operand (a Const, as analyze_ts),
+  // then a ring of the last d rows of each input.
+  template <class ConstOf>
+  [[nodiscard]] atx::core::Status analyze_lit_ts(atx::usize k, const Instr &in,
+                                                 const ConstOf &const_of) {
+    atx::usize last = 0;
+    for (atx::usize s = 0; s < in.src.size(); ++s) {
+      if (in.src.at(s) != kNoSlot) {
+        last = s;
+      }
+    }
+    atx::f64 wv = 0.0;
+    if (!const_of(in.src.at(last), wv)) {
+      return not_const("time-series window");
+    }
+    const atx::usize d = detail::tsv_window_of(std::span<const atx::f64>{&wv, 1});
+    if (d == 0) {
+      return atx::core::Err(atx::core::ErrorCode::NotImplemented,
+                            "StreamingEngine: zero time-series window");
+    }
+    streaming_detail::LitTsState &st = lit_[k];
+    st.d = d;
+    st.n_in = detail::lit_ts_inputs(in.op, in.param);
+    st.ring.assign(d * st.n_in * inst_, detail::kLitNaN);
+    if (lit_win_.size() < st.n_in * d) {
+      lit_win_.resize(st.n_in * d);
+    }
+    return atx::core::Ok();
   }
 
   template <class ConstOf>
@@ -489,7 +532,9 @@ private:
     default:
       break;
     }
-    if (streaming_detail::is_ts_op(in.op)) {
+    if (detail::is_lit_op(in.op)) {
+      exec_lit(k, in);
+    } else if (streaming_detail::is_ts_op(in.op)) {
       exec_ts(k, in);
     } else if (streaming_detail::is_cs_op(in.op)) {
       exec_cs(k, in);
@@ -499,6 +544,105 @@ private:
       exec_rec(k, in);
     } else {
       exec_map(in);
+    }
+  }
+
+  // ---- platform-v7 W2 literature ops (lit_ops.hpp, the VM's kernels) --------
+  void exec_lit(atx::usize k, const Instr &in) {
+    const std::span<atx::f64> o = row(in.dst);
+    switch (in.op) {
+    case OpCode::ArgPack:
+      for (atx::u32 c = 0; c < in.n_out; ++c) {
+        const std::span<const atx::f64> s = row(in.src[c]);
+        const std::span<atx::f64> dst = row(in.dst + c);
+        std::copy(s.begin(), s.end(), dst.begin());
+      }
+      return;
+    case OpCode::GroupCross: {
+      const std::span<const atx::f64> g1 = src(in, 0);
+      const std::span<const atx::f64> g2 = src(in, 1);
+      for (atx::usize j = 0; j < inst_; ++j) {
+        o[j] = detail::lit_group_cross(g1[j], g2[j]);
+      }
+      return;
+    }
+    case OpCode::CsBucket:
+    case OpCode::CsResidOn:
+      exec_lit_cs(in, o);
+      return;
+    default:
+      exec_lit_ts(k, in, o);
+      return;
+    }
+  }
+
+  // bucket / cs_resid_on for today's row (valid set = non-NaN x, as exec_cs).
+  void exec_lit_cs(const Instr &in, std::span<atx::f64> o) {
+    const std::span<const atx::f64> x = src(in, 0);
+    cs_valid_.clear();
+    for (atx::usize i = 0; i < inst_; ++i) {
+      o[i] = detail::kLitNaN;
+      if (!std::isnan(x[i])) {
+        cs_valid_.push_back(i);
+      }
+    }
+    if (in.op == OpCode::CsBucket) {
+      // SAFETY: analyze_lit_call proved n an integer in [2, 65535].
+      detail::lit_bucket_row(x, cs_valid_, static_cast<int>(in.imm[0]), o, cs_scratch_);
+      return;
+    }
+    std::array<std::span<const atx::f64>, detail::kLitMaxReg> cov{};
+    atx::usize kc = 0;
+    for (atx::u32 c = 0; c < detail::lit_reg_wb(in.param) && kc < cov.size(); ++c) {
+      cov[kc++] = row(in.src[1] + c);
+    }
+    for (atx::u32 c = 0; c < detail::lit_reg_wc(in.param) && kc < cov.size(); ++c) {
+      cov[kc++] = row(in.src[2] + c);
+    }
+    detail::lit_cs_resid_row(x, std::span<const std::span<const atx::f64>>{cov.data(), kc},
+                             cs_valid_, o, lit_scratch_);
+  }
+
+  // Input c of a W2 Ts op: operand 0; ts_corr_mp's operand 1; else regressor
+  // c - 1 of operand 1's block.
+  [[nodiscard]] std::span<const atx::f64> lit_input(const Instr &in, atx::usize c) noexcept {
+    if (c == 0) {
+      return row(in.src[0]);
+    }
+    if (in.op == OpCode::TsCorrMp) {
+      return row(in.src[1]);
+    }
+    return row(in.src[1] + static_cast<SlotId>(c - 1));
+  }
+
+  // Append today's input rows to the ring, then evaluate every instrument on the
+  // window of the last min(t+1, d) dates — the window eval_lit_ts gathers.
+  void exec_lit_ts(atx::usize k, const Instr &in, std::span<atx::f64> o) {
+    streaming_detail::LitTsState &st = lit_[k];
+    const atx::usize stride = st.n_in * inst_;
+    const atx::usize base = static_cast<atx::usize>(t_ % st.d) * stride;
+    for (atx::usize c = 0; c < st.n_in; ++c) {
+      const std::span<const atx::f64> s = lit_input(in, c);
+      std::copy(s.begin(), s.end(),
+                st.ring.begin() + static_cast<std::ptrdiff_t>(base + c * inst_));
+    }
+    const atx::usize len = static_cast<atx::usize>(std::min<atx::u64>(t_ + 1, st.d));
+    const atx::u64 first = t_ + 1 - len;
+    const bool partial_ok = detail::is_lit_mp_op(in.op);
+    for (atx::usize j = 0; j < inst_; ++j) {
+      if (len < st.d && !partial_ok) {
+        o[j] = detail::kLitNaN;
+        continue;
+      }
+      for (atx::usize c = 0; c < st.n_in; ++c) {
+        for (atx::usize i = 0; i < len; ++i) {
+          const atx::usize r = static_cast<atx::usize>((first + i) % st.d);
+          lit_win_[c * len + i] = st.ring[r * stride + c * inst_ + j];
+        }
+      }
+      o[j] = detail::lit_ts_cell(in.op,
+                                 std::span<const atx::f64>{lit_win_.data(), st.n_in * len},
+                                 st.n_in, len, st.d, in.imm[0], lit_scratch_);
     }
   }
 
@@ -973,6 +1117,9 @@ private:
   std::vector<atx::f64> scratch_b_;
   std::vector<atx::usize> cs_valid_;
   detail::CsScratch cs_scratch_;
+  std::vector<streaming_detail::LitTsState> lit_; // W2 Ts rings (per instruction)
+  std::vector<atx::f64> lit_win_;                 // W2 gathered windows (n_in * d)
+  detail::LitScratch lit_scratch_;                // W2 sort / OLS scratch
 };
 
 } // namespace atx::engine::alpha

@@ -50,6 +50,19 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::OuHalflife:
   case OpCode::OuMean:
   case OpCode::OuZscore:
+  // W2 literature trailing-window ops: same (d-1)+child lookback rule.
+  case OpCode::TsTopkMean:
+  case OpCode::TsResidOn:
+  case OpCode::TsBetaOn:
+  case OpCode::TsCountIncreases:
+  case OpCode::TsSumMp:
+  case OpCode::TsMeanMp:
+  case OpCode::TsStdMp:
+  case OpCode::TsZscoreMp:
+  case OpCode::TsMinMp:
+  case OpCode::TsMaxMp:
+  case OpCode::TsDecayLinearMp:
+  case OpCode::TsCorrMp:
     return true;
   // Not rolling-window time-series ops.
   case OpCode::TsDelay:
@@ -105,6 +118,10 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::KalmanReg:
   case OpCode::StoreAlpha:
   case OpCode::Free:
+  case OpCode::ArgPack:
+  case OpCode::CsBucket:
+  case OpCode::GroupCross:
+  case OpCode::CsResidOn:
     return false;
   }
   return false; // unreachable for valid OpCode
@@ -348,8 +365,173 @@ atx::core::Status validate_scalar_literal_operand(const Ast &ast, const Expr &e)
   return atx::core::Ok();
 }
 
+// ===========================================================================
+//  W2 literature ops (A7): the complete argument rail set of every is_lit_op.
+//  Dtype refusals are strict in both directions: a Group classifier is never
+//  accepted where a numeric vector is required, and a numeric vector is never
+//  accepted where a Group classifier is required.
+// ===========================================================================
+namespace {
+
+[[nodiscard]] atx::core::Status lit_fail(const Expr &e, std::string_view what) {
+  return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                        std::string{e.op->name} + ": " + std::string{what});
+}
+
+// A numeric vector operand: F64, not a record, not a bare scalar literal.
+[[nodiscard]] bool is_f64_vector(const TypeInfo &t) noexcept {
+  return !t.is_record && t.dtype == DType::F64 && t.shape != Shape::Scalar;
+}
+
+[[nodiscard]] bool is_group_label(const TypeInfo &t) noexcept {
+  return !t.is_record && t.dtype == DType::Group;
+}
+
+// Columns a regressor operand supplies: 1 for a numeric vector, the pin count of
+// a pack2/pack3 record, 0 for anything else (Group, Mask, scalar, other record).
+[[nodiscard]] atx::usize regressor_width(const Ast &ast, std::span<const TypeInfo> out,
+                                         ExprId id) {
+  const TypeInfo &t = out[id];
+  if (is_f64_vector(t)) {
+    return 1;
+  }
+  const Expr &c = ast.node(id);
+  const bool pack = t.is_record && c.kind == Expr::Kind::Call && c.op != nullptr &&
+                    c.op->opcode == OpCode::ArgPack;
+  return pack ? t.pins.size() : 0;
+}
+
+// An integer-valued peeled count within [lo, hi]. The kernels truncate it to an
+// integer, so a fractional or out-of-range literal is a type error, not a floor.
+[[nodiscard]] bool hparam_count_in(atx::f64 v, atx::f64 lo, atx::f64 hi) noexcept {
+  return std::isfinite(v) && v == std::floor(v) && v >= lo && v <= hi;
+}
+
+// (d-1) + child lookback, refusing a u16 overflow instead of wrapping.
+[[nodiscard]] atx::core::Result<atx::u16> lit_ts_lookback(atx::u16 d, atx::u16 child) {
+  const atx::u32 lb = static_cast<atx::u32>(d) - 1U + static_cast<atx::u32>(child);
+  if (lb > std::numeric_limits<atx::u16>::max()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "lookback exceeds 65535 bars");
+  }
+  return atx::core::Ok(static_cast<atx::u16>(lb));
+}
+
+// Operand rails of the W2 trailing-window ops; `d` is the validated window.
+[[nodiscard]] atx::core::Status lit_ts_rails(const Ast &ast, std::span<const TypeInfo> out,
+                                             const Expr &e, atx::u16 d) {
+  if (!is_f64_vector(out[e.a])) {
+    return lit_fail(e, "primary operand must be a numeric (f64) vector");
+  }
+  const atx::f64 dd = static_cast<atx::f64>(d);
+  switch (e.op->opcode) {
+  case OpCode::TsTopkMean:
+    return hparam_count_in(e.hparams[0], 1.0, dd) ? atx::core::Ok()
+                                                  : lit_fail(e, "k must be an integer in [1, w]");
+  case OpCode::TsCountIncreases:
+    return atx::core::Ok();
+  case OpCode::TsResidOn:
+  case OpCode::TsBetaOn: {
+    const atx::usize k = regressor_width(ast, out, e.b);
+    if (k == 0 || k > kMaxTsRegressors) {
+      return lit_fail(e, "regressors must be 1..3 numeric (f64) vectors");
+    }
+    if (static_cast<atx::usize>(d) < k + 2) {
+      return lit_fail(e, "window must be >= regressor count + 2");
+    }
+    return atx::core::Ok();
+  }
+  case OpCode::TsCorrMp:
+    if (!is_f64_vector(out[e.b])) {
+      return lit_fail(e, "second series must be a numeric (f64) vector");
+    }
+    break;
+  default:
+    break; // the unary min-periods family
+  }
+  return hparam_count_in(e.hparams[0], 1.0, dd)
+             ? atx::core::Ok()
+             : lit_fail(e, "min periods m must be an integer in [1, w]");
+}
+
+// Operand rails of the W2 non-temporal ops (pack / bucket / group_cross /
+// cs_resid_on).
+[[nodiscard]] atx::core::Status lit_cs_rails(const Ast &ast, std::span<const TypeInfo> out,
+                                             const Expr &e) {
+  switch (e.op->opcode) {
+  case OpCode::ArgPack:
+    for (const ExprId id : std::array<ExprId, 3>{e.a, e.b, e.c}) {
+      if (id != kNoExpr && !is_f64_vector(out[id])) {
+        return lit_fail(e, "pack operands must be numeric (f64) vectors");
+      }
+    }
+    return atx::core::Ok();
+  case OpCode::CsBucket:
+    if (!is_f64_vector(out[e.a])) {
+      return lit_fail(e, "primary operand must be a numeric (f64) vector");
+    }
+    return hparam_count_in(e.hparams[0], 2.0, 65535.0)
+               ? atx::core::Ok()
+               : lit_fail(e, "bucket count n must be an integer in [2, 65535]");
+  case OpCode::GroupCross:
+    return (is_group_label(out[e.a]) && is_group_label(out[e.b]))
+               ? atx::core::Ok()
+               : lit_fail(e, "both operands must be Group classifiers");
+  case OpCode::CsResidOn: {
+    if (!is_f64_vector(out[e.a])) {
+      return lit_fail(e, "primary operand must be a numeric (f64) vector");
+    }
+    const atx::usize kb = regressor_width(ast, out, e.b);
+    const atx::usize kc = (e.c == kNoExpr) ? 0 : regressor_width(ast, out, e.c);
+    if (kb == 0 || (e.c != kNoExpr && kc == 0) || kb + kc > kMaxCsCovariates) {
+      return lit_fail(e, "covariates must be 1..4 numeric (f64) vectors");
+    }
+    return atx::core::Ok();
+  }
+  default:
+    return atx::core::Err(atx::core::ErrorCode::Internal,
+                          "analyze_lit_call: not a W2 non-temporal op");
+  }
+}
+
+} // namespace
+
+atx::core::Result<TypeInfo> analyze_lit_call(const Ast &ast, std::span<const TypeInfo> out,
+                                             const Expr &e) {
+  ATX_TRY_VOID(validate_node_contract(e));
+  for (atx::u8 k = 0; k < e.n_hparams; ++k) {
+    if (!std::isfinite(e.hparams[k])) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hyperparameter must be a compile-time constant");
+    }
+  }
+  std::array<Shape, 3> shape_buf{};
+  atx::usize n = 0;
+  for (const ExprId id : std::array<ExprId, 3>{e.a, e.b, e.c}) {
+    if (id != kNoExpr) {
+      shape_buf.at(n++) = out[id].shape;
+    }
+  }
+  const Shape shape = e.op->shape_of(std::span<const Shape>{shape_buf.data(), n});
+  const atx::u16 child_lb = max_child_lookback(out, e);
+  const OpCode op = e.op->opcode;
+  if (is_lit_ts_op(op)) {
+    ATX_TRY(const atx::u16 d, window_value(ast, e));
+    ATX_TRY_VOID(lit_ts_rails(ast, out, e, d));
+    ATX_TRY(const atx::u16 lb, lit_ts_lookback(d, child_lb));
+    return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, lb});
+  }
+  ATX_TRY_VOID(lit_cs_rails(ast, out, e));
+  if (op == OpCode::ArgPack) {
+    return atx::core::Ok(TypeInfo{shape, DType::F64, child_lb, true, e.op->pins});
+  }
+  return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, child_lb});
+}
+
 atx::core::Result<TypeInfo> analyze_call(const Ast &ast, std::span<const TypeInfo> out,
                                          const Expr &e) {
+  if (is_lit_op(e.op->opcode)) {
+    return analyze_lit_call(ast, out, e); // W2 ops own their complete rail set
+  }
   ATX_TRY_VOID(reject_record_operands(out, e));
   ATX_TRY_VOID(validate_node_contract(e));
   ATX_TRY_VOID(validate_scalar_literal_operand(ast, e)); // A-03

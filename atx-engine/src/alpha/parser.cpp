@@ -42,6 +42,51 @@ namespace detail {
   }
 }
 
+// W2 multi-regressor ops (is_pack_consumer): fold surplus regressor arguments
+// into a pack2/pack3 record so the call fits the IR's three operand slots.
+//   ts_resid_on / ts_beta_on(y, r1..rk, w): k = 1 -> (y, r1, w);
+//     k = 2, 3 -> (y, pack_k(r1..rk), w).
+//   cs_resid_on(x, r1..rk): k <= 2 -> unchanged; k = 3 -> (x, pack2(r1, r2), r3);
+//     k = 4 -> (x, pack3(r1, r2, r3), r4).
+// The rule is idempotent on its own output: unparse prints the pack by name, and
+// re-parsing `op(y, pack3(..), w)` sees k = 1, so the Ast round-trips exactly.
+// The pack node is appended before its consumer (children precede parents).
+// Precondition: `args.size()` lies in [sig.min_arity, sig.max_arity].
+[[nodiscard]] atx::core::Status pack_regressors(Parser &p, const OpSig &sig,
+                                                std::vector<ExprId> &args,
+                                                const Token &name_tok) {
+  const bool window_last = pack_consumer_window_in_c(sig.opcode);
+  const atx::usize end = window_last ? args.size() - 1 : args.size();
+  const atx::usize k = end - 1; // regressor arguments args[1 .. end)
+  atx::usize packed = 0;        // leading regressors folded into the pack
+  if (window_last) {
+    packed = (k >= 2) ? k : 0;
+  } else {
+    packed = (k >= 3) ? k - 1 : 0;
+  }
+  if (packed == 0) {
+    return atx::core::Ok();
+  }
+  const OpSig *pack = (packed == 2) ? p.lib->find("pack2") : p.lib->find("pack3");
+  if (pack == nullptr || packed > 3) {
+    return atx::core::Err(parse_error("internal: regressor pack op unavailable", name_tok));
+  }
+  Expr e;
+  e.kind = Expr::Kind::Call;
+  e.op = pack;
+  e.opcode = pack->opcode;
+  e.a = args[1];
+  e.b = args[2];
+  e.c = (packed == 3) ? args[3] : kNoExpr;
+  const ExprId pk = p.ast->add(e);
+  std::vector<ExprId> folded{args[0], pk};
+  for (atx::usize i = 1 + packed; i < args.size(); ++i) {
+    folded.push_back(args[i]);
+  }
+  args = std::move(folded);
+  return atx::core::Ok();
+}
+
 // Resolve an `IDENT(` call: look up the op, range-check arity, default-fill
 // omitted trailing args, then build a Call (folding foldable unary fns on a
 // literal). Precondition: cursor is on the '(' token.
@@ -66,6 +111,9 @@ namespace detail {
                                       name_tok));
   }
   fill_default_args(p, *sig, args);
+  if (is_pack_consumer(sig->opcode)) {
+    ATX_TRY_VOID(pack_regressors(p, *sig, args, name_tok));
+  }
 
   // Constant-fold foldable unary functions on a literal operand (log(1)→0).
   // A foldable unary is fixed-arity 1, so the materialized list is exactly one.
