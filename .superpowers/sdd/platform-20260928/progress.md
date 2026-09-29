@@ -17,6 +17,23 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 spo-v1 cell REJECTED (implementation defect, not a research result); N 33
+- mega-nav-v61u-spo-v1-L1.247 (pre-registered params): exit 0, 59.5 s, 365 MiB, 1,508 solves at 14.2 ms mean (max 35.6),
+  gamma 1575. S2 net SR -0.939 vs +1.239 (paired dSR -2.179, Memmel SE .577, t -3.77, CBB [-3.62, -1.01]); gross_lev
+  all rows .6465 (mechanics FAIL: < .90), |net| .0009, tau mean .1217 / p95 .1753 (mechanics FAIL: p95 > .30 not hit
+  but tau 3x the baseline), cost 15.06 bps/$; DSR N33 .002. REJECTED on every criterion. Cross-cell N 32 -> 33; ledger 33.
+- Diagnostics (spo_diagnostics.csv, 1,508 rows): gross_binding 0 on every date (the gross-1.247 gamma calibration never
+  binds: the book deploys at .39-.83 gross), iterations 122-178, exante_vol ~.0066/day (~10% ann vs the 5% target),
+  exante_vol_current has garbage values (mean 21.4 vs p95 .0073), trade_cost ~1.1e-4/day vs alpha 2.7e-4/day with the
+  20-session amortisation making the effective cost penalty 5.7e-6 -> the optimiser trades 12%/day. Verdict: defects in
+  gamma calibration, cost amortisation and a diagnostic column; a negative net SR from the same signals also suggests a
+  sign or scaling error in alpha_i = IC sigma_i z_i or in the delta-order mapping. Sent to W1 for root cause. Any rerun is
+  construction trial #2 for spo (new prereg line), disclosed.
+- CSCV PBO over {baseline, C1, C2, C3, spo}: .347 (IS winner baseline; OOS +1.221). Effective-N over 33 series: N_eff 2
+  (the spo series is its own cluster).
+- Appendix A: TRAIN construction cells 33 (29 v6 era + C1-C3 + spo-v1, all four rejected). Validation trials 2 spent.
+  2025+ reserved.
+
 ## 2026-09-28 W2, W3, F1, W1-fix ACCEPTED; spo-v1 cell launched
 - W2: build mega-v7-w2 exit 0 (120 TUs, 223 s); AlphaLitOps 22/22; golden digests captured on the merged build
   (vm_audit_exact 0x971c3da60ca89aa3, vm_research_fast 0xe9e7128fd5359900, oracle 0x971c3da60ca89aa3) and pinned by W2
