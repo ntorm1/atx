@@ -19,7 +19,20 @@
 //    estimator as atx-engine risk V2 (cov_ewma.cpp: ewma_variance_v2 / covariance()), kept
 //    recursively (O(K^2) per session, tested equal to the engine); PSD by eigenvalue floor;
 //    volatility regime adjustment lambda^2 = EWMA_42 of the factor cross-sectional bias
-//    B_t^2 = mean_k (f_kt / sigma_k,t-1)^2 on the prior (pre-VRA) forecasts.
+//    B_t^2 = mean_k (f_kt / sigma_k,t-1)^2 on the prior (pre-VRA) forecasts of the fully
+//    observed factors (>= min_factor_history returns).
+//  - Structural factor forecasts (platform v7 F2; R3.1 structural fallback, USE4 practice): a
+//    factor with n < min_factor_history returns that has a history (n >= 1) or an exposed name
+//    at t gets variance w own + (1 - w) prior with w = n / min_factor_history, own = its own
+//    EWMA + NW variance (clamped at 0), prior = its class's mean forecast variance at t over
+//    the fully observed factors (industries: weighted by the industry's eligible cap at t, equal
+//    weights when none holds cap; styles: equal weights; the market has no class and is never
+//    short of history while another factor has it). Its correlation with a fully observed
+//    factor is w rho, with another structural factor w w' rho (rho = the correlation
+//    estimator's value, 0 without joint history). The fully observed block is never altered
+//    (bit-identical to the model without the fallback) and structural forecasts stay out of the
+//    VRA; if the bordered matrix is not positive definite, every structural off-diagonal term is
+//    scaled by the largest s = 2^-j, j = 0..30 (else 0), that makes it so.
 //  - Specific variance: EWMA-84 residual variance with NW lags 5 (engine specific_risk_v2's
 //    time-series step), blended with a structural ln-vol model (the same constrained WLS of
 //    ln sigma on X_t over full-history names, exponentiation-corrected) by gamma =
@@ -62,7 +75,10 @@ struct RiskModelConfig {
   // weighting HL 252 (engine RiskEstimatorPolicy), VRA HL 42.
   atx::usize vol_halflife{84}, correlation_halflife{504}, variance_nw_lags{5};
   atx::usize correlation_nw_lags{2}, nw_halflife{252}, vra_halflife{42}, vra_min_dates{21};
-  atx::usize min_factor_history{63}; // observed factor returns before a factor is forecast
+  atx::usize min_factor_history{63}; // observed factor returns before a factor's own forecast
+  // Structural forecasts for factors with fewer returns (F2). false = the pre-F2 model (such
+  // factors unforecast); kept to prove the fully observed block identical.
+  bool structural_factor_forecast{true};
   // Specific risk: EWMA HL 84, NW 5, structural blend under 252 sessions, Bayesian q 0.1.
   atx::usize specific_halflife{84}, specific_nw_lags{5}, structural_history{252};
   atx::f64 bayesian_q{0.1};
@@ -181,6 +197,12 @@ struct RiskDay {
   std::span<const atx::u8> industry_slot;      // instruments, no_exposure without a row
   std::span<const atx::u8> eligible;           // instruments: member with cap (the universe)
   std::span<const atx::f64> styles;            // instruments x style_count
+  // Factor forecast audit at t (F2): factors forecast structurally, the scale s applied to their
+  // off-diagonal terms (1 = none needed), factors a present name has a nonzero exposure to but
+  // without a forecast, and present names pooled into the residual industry slot.
+  atx::usize structural_factors{}, unforecast_exposed_factors{}, residual_names{};
+  atx::f64 structural_scale{1.0};
+  std::span<const atx::u8> factor_structural;  // factor_count: 1 = structural forecast at t
 };
 class RiskSink {
 public:
@@ -203,10 +225,13 @@ public:
 // (x' F x + sum w^2 D). A missing return counts 0 and is reported.
 // Complete forecasts only (R1 M-5): an observation whose portfolio holds a name without a
 // forecast (no exposure row or specific variance) or has a nonzero exposure to a factor without
-// a forecast (fewer than min_factor_history returns) is excluded whole, never priced by a partial
-// x'Fx or realized on a sub-book. Exclusions before a series' first kept observation are its
-// warm-up; later ones are counted (dropped_factor_exposures, uncovered_name_returns) and a
-// series whose dropped share exceeds max_dropped_share is refused (no b is reported for it).
+// a forecast is excluded whole, never priced by a partial x'Fx or realized on a sub-book. With
+// structural factor forecasts (F2) a factor lacks one only while its class has no fully
+// observed factor (without them: fewer than min_factor_history returns). The factor family
+// evaluates structural forecasts like any other. Exclusions before a series' first kept
+// observation are its warm-up; later ones are counted (dropped_factor_exposures,
+// uncovered_name_returns) and a series whose dropped share exceeds max_dropped_share is refused
+// (no b is reported for it).
 struct BookWeight {
   atx::i64 session{};
   atx::u64 instrument_id{};
