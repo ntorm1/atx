@@ -55,7 +55,12 @@ class World:
         self.member[:, -3:] = 0
         (root / "role" / "member.u8").write_bytes(self.member.tobytes())
         self.cache_root = root / "cache" / identity if identity else root / "cache"
+        # the report library: the runner's dsl_sha256 is the SHA-256 of each candidate's DSL text
+        self.write_library({i: f"rank(close) * {k}" for k, i in enumerate(IDS)})
         self.dsl = {i: sha(f"rank(close) * {k}".encode()) for k, i in enumerate(IDS)}
+        (root / "fields").mkdir()
+        (root / "fields" / "manifest.json").write_text(json.dumps(
+            {"fields": [{"name": k, "sha256": v} for k, v in FIELDS.items()]}))
         rows = [self.write_entry(i, self.dsl[i], LIB_SHA) for i in IDS]
         cache = {"directory": f"cache\\{ROLE_SHA}", "hits": 0}
         if layout == "v2" and entries:
@@ -63,6 +68,10 @@ class World:
         (root / "u").mkdir()
         (root / "u" / "summary.json").write_text(json.dumps(
             {"status": "complete", "roles": [{"role": "train", "manifest_sha256": ROLE_SHA, "candidate_cache": cache}]}))
+
+    def write_library(self, dsl: dict):
+        doc = {"candidates": [{"id": i, "theme": f"t_{i}", "dsl": dsl[i]} for i in IDS]}
+        (self.root / "library.json").write_text(json.dumps(doc))
 
     def entry_dir(self, cid: str, fields: dict) -> Path:
         d = self.cache_root / ROLE_SHA
@@ -87,7 +96,8 @@ class World:
                 "payload_sha256": sha(data), "field_payload_sha256": meta.get("field_payload_sha256", {})}
 
     def ctx(self, lib_sha=LIB_SHA, **analysis):
-        cfg = {"analysis": {"u_pass": "u", "role": "role", "candidate_cache": "cache", **analysis}}
+        cfg = {"analysis": {"u_pass": "u", "role": "role", "candidate_cache": "cache", **analysis},
+               "alphas": {"library": "library.json"}}
         metrics = {"sum.source_bindings.library_sha256": lib_sha, "sum.role_sha256": ROLE_SHA}
         return SimpleNamespace(cfg=cfg, reg=D.Registry(self.root), final=object(), analyses={},
                                metric=lambda cell, path: metrics.get(path))
@@ -162,6 +172,32 @@ class SigCorrCacheLayouts(unittest.TestCase):
         res = self.sig_corr(w)
         self.assertIn("cache payloads missing for ['c']", res["_error"])
         self.assertIn("ambiguous: ['c']", res["_error"])
+
+    def test_scan_matches_the_library_dsl_not_the_recording_library(self):
+        # R1 M-7: two v2 entries for "a": the library's DSL, first written by another library (content key), and
+        # another DSL recorded by this library. The DSL decides; the recorder proves nothing.
+        w = self.world("dsl", "v2", entries=False)
+        w.write_entry("a", w.dsl["a"], "22" * 32)
+        w.write_entry("a", "99" * 32, LIB_SHA, signal=np.zeros((ND, NI)))
+        res = self.sig_corr(w)
+        self.assert_matches(res, w, "cache scan")
+        self.assertEqual(res["match"], "dsl_sha256 = the library DSL")
+        # a lone entry of another DSL is never taken: the id is reported missing
+        (w.cache_root / ROLE_SHA / f"a.{w.dsl['a'][:16]}.json").unlink()
+        self.assertIn("cache payloads missing for ['a']", self.sig_corr(w)["_error"])
+
+    def test_summary_entry_of_another_dsl_is_not_used(self):
+        w = self.world("summary_dsl", "v2")
+        w.write_library({"a": "rank(close) * 7", "b": "rank(close) * 1", "c": "rank(close) * 2"})  # "a" edited
+        self.assertIn("cache payloads missing for ['a']", self.sig_corr(w)["_error"])
+
+    def test_pinned_fields_manifest_resolves_field_payload_versions(self):
+        w = self.world("fields", "v2", entries=False)
+        w.write_entry("c", w.dsl["c"], LIB_SHA, fields={"sv_ratio126": "78" * 32})  # a second field payload version
+        self.assertIn("ambiguous: ['c']", self.sig_corr(w)["_error"])            # no fields manifest pinned
+        res = self.sig_corr(w, fields_manifest="fields/manifest.json")
+        self.assert_matches(res, w, "cache scan")
+        self.assertIn("pinned fields manifest", res["match"])
 
     def test_summary_entry_gone_falls_back_to_the_scan(self):
         w = self.world("gone", "v2")
