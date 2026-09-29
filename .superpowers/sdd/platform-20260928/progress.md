@@ -17,6 +17,18 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 L7 merged (library v7.0, spec v70); wave 2 pre-registered; rulings before the v7.0 run
+- L7b finished the stopped lane: pool-10 e1915059 + merge 36f92885; library sha e7bae75c..., recipe 60b82300...; 327
+  pytests. P4 wrote library-v7-wave2-prereg.md; v7-prereg.md "Library v7.1" appended with rulings W2-a..e (e3880d83),
+  before any wave-1 read.
+- Ruling 7.0-c (before the run): the cycle's summ scores 34 cells with bare `--pbo` (all cells, as n29) and root also
+  writes the explicit grid {v6.1, C1, C2, C3, spo-v1, v7.0} as in n33; both PBO figures are reported, neither gates
+  wave 1 (the pre-registered rule is paired S2 net dSR > 0 AND mechanics) -- keeps both earlier conventions comparable --
+  cost if wrong: one more descriptive number in the scorecard.
+- Ruling 7.0-d (before the run): the candidate cache v70 is seeded by hard links from mega-candidate-cache-v7w2 (39 v6.1
+  entries, content-keyed by DSL sha + field payload sha); the v6.1 members' orientation / daily IC rows must come out
+  byte-identical to mega-v61-train-u-1, else the run is void and no trial is counted -- cost if wrong: a recompute (~75 s).
+
 ## 2026-09-29 session 2 opened; W1 spo-v2 merged (4cd5513e), build v7-3, identity ok
 - Lanes launched (Opus 5.5): L7b pool-10 (finish library v7.0), P5 pool-11 (pitch iteration 3 sections), U2 pool-9 (role
   lo3 with atx-db SIC events + fields SIC override + universe prereg draft); read-only: P4 (wave-2 prereg text), R2
