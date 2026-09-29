@@ -78,6 +78,44 @@ def chip(state, text: str | None = None) -> str:
     return f'<span class="chip {cls}">{esc(text or ("PASS" if state else "FAIL"))}</span>'
 
 
+# badge kind -> chip style: verdicts (accepted / rejected / defect / pending) and monitor states (ok / warn / alarm)
+BADGE_STYLE = {'accepted': 'pass', 'ok': 'pass', 'pass': 'pass', 'rejected': 'fail', 'alarm': 'fail', 'fail': 'fail',
+               'defect': 'warn', 'warn': 'warn', 'pending': 'neutral', 'n/a': 'neutral'}
+# first matching rule wins (case-insensitive regex on the verdict text); no match -> kind 'other' (plain text)
+VERDICT_RULES = (('defect', r'\bdefect'), ('rejected', r'^\s*rejected'), ('accepted', r'^\s*(accepted|promoted)'),
+                 ('pending', r'^\s*(pending|not run|queued)'))
+
+
+def badge(kind: str | None, text: str | None = None) -> str:
+    """A labelled status chip (``BADGE_STYLE``); unknown kinds render neutral, None renders n/a."""
+    if kind is None:
+        return na()
+    return f'<span class="chip {BADGE_STYLE.get(kind, "neutral")}">{esc((text or kind).upper())}</span>'
+
+
+def verdict_kind(text, rules=None) -> str | None:
+    """Classify a free-text verdict: extra ``rules`` [(kind, regex)] first, then ``VERDICT_RULES``; None for no
+    text, 'other' when nothing matches."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    for kind, pat in list(rules or []) + list(VERDICT_RULES):
+        if re.search(pat, text, flags=re.I):
+            return kind
+    return 'other'
+
+
+def verdict_html(text, kind: str | None = None, rules=None) -> str | None:
+    """Badge for the verdict's kind plus the verdict text below it (when it says more than the kind); plain text for
+    kind 'other'; None (n/a) without a verdict."""
+    kind = kind or verdict_kind(text, rules)
+    if kind is None:
+        return None
+    if kind == 'other':
+        return esc(text)
+    sub = f'<span class="sub">{esc(text)}</span>' if isinstance(text, str) and text.strip().lower() != kind else ''
+    return badge(kind) + sub
+
+
 # ----------------------------------------------------------------------------------------------- scales
 class Scale:
     """Linear map from a data domain [d0, d1] to a pixel range [r0, r1]."""
@@ -1046,40 +1084,68 @@ def multiples(panels: list[dict], x_vals: list, *, cols: int = 3, width: int = 1
 
 
 def xy_chart(series: list[dict], *, x_label: str, y_label: str, x_fmt: str = '.2f', y_fmt: str = '.1f',
-             width: int = 1072, height: int = 340, aria: str = 'xy chart') -> str:
-    """Numeric x/y: each series ``{name, points [(x, y, label)], color, dash, markers}`` drawn as a line through its
-    points with markers and point labels."""
-    pts = [(x, y) for s in series for x, y, *_ in s['points'] if is_num(x) and is_num(y)]
+             width: int = 1072, height: int = 340, aria: str = 'xy chart', x_log: bool = False,
+             x_ticks: list | None = None, y_refs=()) -> str:
+    """Numeric x/y: each series ``{name, points [(x, y, label[, side])], color, dash, markers, label_side}`` drawn as a
+    line through its points with markers and point labels (side, else the series ``label_side``: 'above' right of the
+    point by default, 'below' or 'left'). ``x_log``: log10 x axis (non-positive x dropped; 1-2-5 ticks per decade unless ``x_ticks`` lists the tick
+    values); ``y_refs``: ``{'value', 'label'}`` dashed horizontal reference lines, labelled at the left end."""
+    def tx(v):
+        return math.log10(v) if x_log else v
+
+    def ok(x, y):
+        return is_num(x) and is_num(y) and (not x_log or x > 0)
+    pts = [(tx(x), y) for s in series for x, y, *_ in s['points'] if ok(x, y)]
     if not pts:
         return empty_svg(width, height, aria)
     top, right, bottom, left = 26, 190, 42, 62
     x0, x1, y0, y1 = left, width - right, top, height - bottom
     xl, xh = min(p[0] for p in pts), max(p[0] for p in pts)
-    yl, yh = min(p[1] for p in pts), max(p[1] for p in pts)
+    refs = [r for r in y_refs if is_num(r.get('value'))]
+    yl = min([p[1] for p in pts] + [r['value'] for r in refs])
+    yh = max([p[1] for p in pts] + [r['value'] for r in refs])
     sx = Scale(*pad_domain(xl, xh, 0.08), x0, x1)
     sy = Scale(*pad_domain(yl, yh, 0.12), y1, y0)
     out = []
     for t in ticks_in(*pad_domain(yl, yh, 0.1), 5):
         out.append(s_line(x0, sy(t), x1, sy(t), 'grid', 1))
         out.append(s_text(x0 - 8, sy(t), tick_label(t, y_fmt), 't-tick', 'end', dy='0.32em'))
-    for t in ticks_in(*pad_domain(xl, xh, 0.06), 6):
-        out.append(s_line(sx(t), y0, sx(t), y1, 'grid', 1))
-        out.append(s_text(sx(t), y1 + 16, tick_label(t, x_fmt), 't-tick', 'middle'))
+    if x_ticks is not None:
+        xt = [(tx(v), fmt(v, x_fmt)) for v in x_ticks if is_num(v) and (not x_log or v > 0)]
+    elif x_log:
+        xt = [(k + math.log10(m), fmt(10 ** k * m, x_fmt)) for k in range(math.floor(xl), math.ceil(xh) + 1)
+              for m in (1, 2, 5)]
+    else:
+        xt = [(t, tick_label(t, x_fmt)) for t in ticks_in(*pad_domain(xl, xh, 0.06), 6)]
+    lo_x, hi_x = pad_domain(xl, xh, 0.06)
+    for t, lab in xt:
+        if lo_x - 1e-9 <= t <= hi_x + 1e-9:
+            out.append(s_line(sx(t), y0, sx(t), y1, 'grid', 1))
+            out.append(s_text(sx(t), y1 + 16, lab, 't-tick', 'middle'))
     out.append(s_line(x0, y1, x1, y1, 'axis', 1))
     out.append(s_text(x1, y1 + 34, x_label, 't-axis', 'end'))
     out.append(s_text(x0 - 8, 12, y_label, 't-axis', 'start'))
+    for r in refs:
+        out.append(s_line(x0, sy(r['value']), x1, sy(r['value']), 'fg-3', 1, '4 3'))
+        if r.get('label'):
+            out.append(s_text(x0 + 6, sy(r['value']) - 5, r['label'], 't-lbl-2', 'start'))
     for s in series:
-        ps = [(x, y, rest[0] if rest else None) for x, y, *rest in s['points'] if is_num(x) and is_num(y)]
+        dflt = s.get('label_side', 'above')
+        ps = [(tx(x), y, rest[0] if rest else None, x, rest[1] if len(rest) > 1 else dflt)
+              for x, y, *rest in s['points'] if ok(x, y)]
         if len(ps) >= 2:
-            d = 'M' + ' L'.join(f'{_n(sx(x))},{_n(sy(y))}' for x, y, _ in ps)
+            d = 'M' + ' L'.join(f'{_n(sx(x))},{_n(sy(y))}' for x, y, *_ in ps)
             out.append(s_path(d, s['color'], s.get('width', 1.6), dash=s.get('dash'), title=s['name']))
-        for x, y, lab in ps:
+        for x, y, lab, raw, side in ps:
             if s.get('markers', True):
-                out.append(s_circle(sx(x), sy(y), 4.2, s['color'], 'bg', 1.4, title=f"{s['name']}: {fmt(x, x_fmt)}, {fmt(y, y_fmt)}"))
+                out.append(s_circle(sx(x), sy(y), 4.2, s['color'], 'bg', 1.4, title=f"{s['name']}: {fmt(raw, x_fmt)}, {fmt(y, y_fmt)}"))
             if lab:
-                out.append(s_text(sx(x) + 8, sy(y) - 8, lab, 't-val', 'start'))
+                if side == 'left':
+                    out.append(s_text(sx(x) - 8, sy(y), lab, 't-val', 'end', dy='0.32em'))
+                else:
+                    out.append(s_text(sx(x) + 8, sy(y) + (14 if side == 'below' else -8), lab, 't-val', 'start'))
         if ps and s.get('end_label'):
-            x, y, _ = ps[-1]
+            x, y = ps[-1][:2]
             out.append(s_text(x1 + 12, sy(y), s['end_label'], 't-end', 'start', dy='0.32em'))
     return svg(width, height, ''.join(out), aria)
 
@@ -1396,6 +1462,26 @@ def _selftest_gate_panel() -> str:
                     {'name': 'c', 'value': None, 'threshold': '>= 1', 'passed': None}])
     assert 'PASS' in g and 'FAIL' in g and NA_TEXT in g
     return g
+
+
+def _selftest_xy_chart() -> str:
+    s = xy_chart([{'name': 'net', 'color': 's2', 'points': [(0.5, 1.27, 'a'), (1, 1.24, None), (8, 0.91, None)],
+                   'end_label': 'net'}, {'name': 'ko', 'color': 'flat', 'points': [(1, 1.27, 'ko')]}],
+                 x_label='NAV', y_label='SR', x_fmt='g', y_fmt='.2f', x_log=True, x_ticks=[0.5, 1, 2, 4, 8],
+                 y_refs=[{'value': 1.0, 'label': 'SR 1'}])
+    assert '>8<' in s and '>0.5<' in s and 'SR 1' in s and 'ko' in s
+    assert xy_chart([{'name': 'x', 'color': 's2', 'points': [(0, 1.0)]}], x_label='a', y_label='b',
+                    x_log=True).count(NA_TEXT) == 1
+    return s
+
+
+def _selftest_badge() -> str:
+    b = verdict_html('REJECTED (dSR -2.18; defects)') + verdict_html('ACCEPTED') + verdict_html('v5 grid')
+    assert 'chip warn' in b and '>ACCEPTED<' in b and 'v5 grid' in b and b.count('class="sub"') == 1
+    assert verdict_kind('accepted (sign)') == 'accepted' and verdict_kind('') is None
+    assert verdict_kind('not adopted', [('rejected', 'not adopted')]) == 'rejected'
+    assert badge('alarm').startswith('<span class="chip fail">') and NA_TEXT in badge(None)
+    return b
 
 
 def _selftest_table() -> str:

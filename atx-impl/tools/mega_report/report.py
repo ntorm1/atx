@@ -241,6 +241,25 @@ class Ctx:
             return None
         return all(res)
 
+    # ---------------------------------------------------------------- verdict badges
+    def verdict_rules(self) -> list:
+        """Config ``verdict_badges.rules`` [{kind, match}] as (kind, regex) pairs, tried before the defaults."""
+        vb = self.cfg.get('verdict_badges')
+        rules = vb.get('rules') if isinstance(vb, dict) else None
+        return [(r['kind'], r['match']) for r in rules or [] if isinstance(r, dict) and r.get('kind') and r.get('match')]
+
+    def verdict_kind_of(self, name: str) -> str | None:
+        """A configured cell's explicit ``verdict_kind`` (overrides the text rules), by cell name."""
+        prefix = self.cfg.get('cell_prefix', '')
+        for c in self.cfg.get('cells', []):
+            base = str(c.get('dir', '')).rstrip('/').split('/')[-1]
+            if name in (base, base[len(prefix):] if prefix and base.startswith(prefix) else base):
+                return c.get('verdict_kind')
+        return None
+
+    def verdict_badge(self, name: str, text) -> str | None:
+        return C.verdict_html(text, self.verdict_kind_of(name), self.verdict_rules())
+
 
 # ============================================================================================ blocks
 def blk_kpi(ctx: Ctx) -> str:
@@ -264,6 +283,7 @@ def blk_cells(ctx: Ctx) -> str:
     years = sorted({y for c in ctx.cells for y in ctx.years(c)})
     nets = _finite(ctx.metric(c, 'summ.net_sharpe') for c in ctx.cells)
     dps = _finite(ctx.metric(c, 'parent.dsr') for c in ctx.cells)
+    badges = bool(ctx.cfg.get('verdict_badges'))
     rows = []
     for c in ctx.cells:
         yr = ctx.years(c)
@@ -281,7 +301,8 @@ def blk_cells(ctx: Ctx) -> str:
              'dref': ctx.metric(c, 'summ.paired.dsr') if ctx.metric(c, 'summ.paired.t') is not None else None,
              'dref_se': ctx.metric(c, 'summ.paired.memmel_se'),
              'dsrx': ctx.metric(c, 'summ.deflated.dsr'), 'dsrlo': ctx.metric(c, 'lo.dsr'),
-             'mech': ctx.mechanics(c), 'verdict': c.verdict, 'exe': c.exe(ctx.tags),
+             'mech': ctx.mechanics(c), 'verdict': ctx.verdict_badge(c.name, c.verdict) if badges else c.verdict,
+             'verdict__sort': c.verdict, 'exe': c.exe(ctx.tags),
              '_cls': 'hl' if c is ctx.final else ''}
         for y in years:
             r[f'y{y}'] = yr.get(y)
@@ -312,7 +333,8 @@ def blk_cells(ctx: Ctx) -> str:
              {'key': 'par', 'label': 'Parent', 'kind': 'text', 'na_title': 'no parent configured'},
              {'key': 'dref', 'label': 'dSR vs REF (SE)', 'fmt': with_se('dref')},
              {'key': 'dsrx', 'label': 'DSR x-cell', 'fmt': '.3f'}, {'key': 'dsrlo', 'label': 'DSR Lo', 'fmt': '.3f'},
-             {'key': 'mech', 'label': 'Mechanics', 'kind': 'chip'}, {'key': 'verdict', 'label': 'Verdict', 'kind': 'text'},
+             {'key': 'mech', 'label': 'Mechanics', 'kind': 'chip'},
+             {'key': 'verdict', 'label': 'Verdict', 'kind': 'html' if badges else 'text'},
              {'key': 'exe', 'label': 'NAV exe', 'kind': 'mono'}]
     n = ctx.next_tab()
     src = ctx.cfg.get('inputs', {}).get('nav_summ_json', 'nav_summ json')

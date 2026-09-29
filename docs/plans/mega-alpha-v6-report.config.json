@@ -3,6 +3,7 @@
   "title": "Mega-alpha v6.1 scorecard",
   "kicker": "atx mega-alpha \u00b7 library v6.1 \u00b7 in-sample TRAIN",
   "root": "C:/atx-wt/pool-2",
+  "verdict_badges": {"rules": []},
   "train_window": {
     "label": "TRAIN 2020-2022"
   },
