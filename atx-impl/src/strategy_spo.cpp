@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
+#include "strategy_target_replay_detail.hpp"
 
 namespace atx::impl::strategy::spo {
 namespace {
@@ -375,18 +376,46 @@ bool coupling_met(const Problem& p, std::span<const f64> w) {
 } // namespace
 
 // ---- parameters and problem validation ---------------------------------------------------
+SpoParams v2_params() {
+  SpoParams p;
+  p.alpha_horizon = unset;  // h = H
+  p.specific_ceiling = 1.0; // daily specific vol 100%
+  p.gamma_rule = GammaRule::Vol;
+  p.version = 2;
+  return p;
+}
+const char* rule_name(const SpoParams& p) { return p.version == 2 ? "spo-v2" : "spo-v1"; }
+
 co::Status validate_params(const SpoParams& p) {
   const bool gamma_ok = std::isnan(p.gamma) || (finite_positive(p.gamma) && p.gamma <= 1e12);
   const bool horizon_ok = std::isnan(p.horizon) || (p.horizon >= 1 && p.horizon <= 10000);
-  if (!gamma_ok || !horizon_ok || !(p.ic_book > 0 && p.ic_book <= 1) ||
+  const bool alpha_ok =
+      std::isnan(p.alpha_horizon) || (p.alpha_horizon >= 1 && p.alpha_horizon <= 10000);
+  if (!gamma_ok || !horizon_ok || !alpha_ok || !(p.ic_book > 0 && p.ic_book <= 1) ||
       !(p.w_max > 0 && p.w_max <= 1) || !(p.adv_cap_q > 0 && p.adv_cap_q <= 1) ||
       !(p.adv_trade_p > 0 && p.adv_trade_p <= 1) || p.max_iterations == 0 ||
       p.max_iterations > 100000 || !(p.tolerance > 0 && p.tolerance <= 1e-3) ||
-      !(p.target_vol > 0 && p.target_vol <= 1) || !(p.beta_max >= 0 && p.beta_max <= 1))
+      !(p.target_vol > 0 && p.target_vol <= 1) || !(p.beta_max >= 0 && p.beta_max <= 1) ||
+      !(p.specific_ceiling > 0) || (p.version != 1 && p.version != 2))
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "spo-v1: gamma > 0, IC in (0, 1], w_max/q/p in (0, 1], 1..100000 iterations, "
-                   "tolerance in (0, 1e-3], target vol in (0, 1], horizon in [1, 10000]");
+                   "spo: gamma > 0, IC in (0, 1], w_max/q/p in (0, 1], 1..100000 iterations, "
+                   "tolerance in (0, 1e-3], target vol in (0, 1], horizons in [1, 10000], "
+                   "specific ceiling > 0");
   return co::Ok();
+}
+
+f64 member_sd(std::span<const f64> desired, std::span<const u8> member) {
+  const usize n = std::min(desired.size(), member.size());
+  f64 sum = 0, sq = 0;
+  usize members = 0;
+  for (usize i = 0; i < n; ++i) {
+    if (!member[i]) continue;
+    ++members;
+    sum += desired[i]; sq += desired[i] * desired[i];
+  }
+  const f64 count = static_cast<f64>(members);
+  const f64 var = members > 1 ? (sq - sum * sum / count) / (count - 1.0) : 0.0;
+  return var > 0 ? std::sqrt(var) : 0.0;
 }
 
 co::Status validate_problem(const Problem& p) {
@@ -716,6 +745,91 @@ co::Status RiskStore::read(usize d, RiskSlice& out) const {
   return co::Ok();
 }
 
+usize cap_specific(RiskSlice& r, f64 ceiling) {
+  usize capped = 0;
+  for (f64& v : r.specific)
+    if (std::isfinite(v) && v > ceiling) { v = ceiling; ++capped; }
+  r.capped_specific = capped;
+  return capped;
+}
+
+// ---- gamma calibration -----------------------------------------------------------------------
+co::Status calibrate_gamma(const Problem& base, const SpoParams& params, f64 budget,
+                           f64 metric_scale, Calibration& calibration) {
+  Problem c = base;
+  const usize n = c.n;
+  f64 a2d = 0, ad = 0;
+  for (usize j = 0; j < n; ++j) {
+    a2d += c.alpha[j] * c.alpha[j] / c.specific[j];
+    ad += std::abs(c.alpha[j]) / c.specific[j];
+  }
+  if (n < 2 || !finite_positive(a2d) || !finite_positive(budget))
+    return co::Err(co::ErrorCode::Unavailable,
+                   "spo: the first rebalance decision has no alpha to calibrate gamma "
+                   "(pass --gamma)");
+  calibration.rule = params.gamma_rule;
+  c.w0.assign(n, 0.0); c.lower.assign(n, -params.w_max); c.upper.assign(n, params.w_max);
+  c.linear_cost.assign(n, 0.0); c.impact_cost.assign(n, 0.0);
+  c.long_rate.assign(n, 0.0); c.short_rate.assign(n, 0.0);
+  c.net = 0; c.gross = inf; c.beta_lo = -params.beta_max; c.beta_hi = params.beta_max;
+  c.fixed_exposure.assign(c.layout.factors(), 0.0);
+  const SolverOptions options{params.max_iterations * 4, params.tolerance, metric_scale};
+  std::vector<f64> start(n, 0.0);
+  Multipliers warm;
+  f64 last = nan, vol = nan, gross = nan;
+  co::Status failure = co::Ok();
+  const auto evaluate = [&](f64 g) {
+    c.gamma = g;
+    if (std::isfinite(last)) for (f64& v : start) v *= last / g;
+    auto sol = solve(c, start, options, warm);
+    if (!sol) { failure = co::Err(sol.error()); return false; }
+    ++calibration.evaluations;
+    start = sol->w; warm = sol->multipliers; last = g;
+    vol = std::sqrt(sessions_per_year * objective_terms(c, sol->w).variance);
+    gross = 0;
+    for (const f64 w : sol->w) gross += std::abs(w);
+    return true;
+  };
+  // ln q(gamma) - ln target is nonincreasing in u = ln gamma for q = the aim's vol (Markowitz
+  // variance is nonincreasing in risk aversion) and its gross; bracketed at guess x 1e-4..1e4.
+  const auto root = [&](bool vol_target, f64 target, f64 guess, bool& reached) {
+    const auto f = [&](f64 u) {
+      if (!evaluate(std::exp(u))) return std::pair<f64, f64>{nan, nan};
+      return std::pair<f64, f64>{std::log(vol_target ? vol : gross) - std::log(target), nan};
+    };
+    const f64 lo = std::log(guess) - std::log(1e4), hi = std::log(guess) + std::log(1e4);
+    reached = false;
+    const f64 flo = f(lo).first;
+    if (!(flo >= 0)) return lo; // unreachable even at the least risk aversion
+    const f64 fhi = f(hi).first;
+    if (!(fhi <= 0)) return hi;
+    const auto r = monotone_root(f, 0.0, std::log(guess), 1.0, 1e-7, 60, lo, hi);
+    reached = r.met;
+    return r.x;
+  };
+  const f64 vol_guess = std::sqrt(sessions_per_year * a2d) / params.target_vol;
+  const f64 u_vol = root(true, params.target_vol, vol_guess, calibration.vol_reached);
+  ATX_TRY_VOID(failure);
+  const f64 u_bind = root(false, budget, ad / budget, calibration.bind_reached);
+  ATX_TRY_VOID(failure);
+  calibration.gamma_vol = std::exp(u_vol);
+  calibration.gamma_bind = std::exp(u_bind);
+  const bool vol_only = params.gamma_rule == GammaRule::Vol;
+  const f64 gamma = vol_only ? calibration.gamma_vol
+                             : std::max(calibration.gamma_vol, calibration.gamma_bind);
+  if (!evaluate(gamma)) return failure;
+  calibration.aim_vol = vol; calibration.aim_gross = gross;
+  calibration.gamma = gamma; calibration.names = n;
+  // spo-v2 declares the vol target: a bracket end (the target out of reach of the aim at
+  // every gamma in guess x 1e-4..1e4) is refused, never used.
+  if (vol_only && !(std::abs(vol / params.target_vol - 1.0) <= 1e-3))
+    return co::Err(co::ErrorCode::Unavailable,
+                   "spo-v2: the cost-free aim cannot reach --target-vol (ex-ante vol " +
+                       std::to_string(vol) + "); pass --gamma or a reachable target");
+  calibration.done = true;
+  return co::Ok();
+}
+
 // ---- the replay rule -----------------------------------------------------------------------
 namespace {
 constexpr usize style_column = 1 + risk_industry_slots;
@@ -787,22 +901,38 @@ struct Engine::Impl {
   };
   struct BookState {
     Multipliers warm;
+    std::vector<f64> shadow; // the plan-level aim-partial-v5 shadow book (weights)
   };
   Impl(const SpoParams& p, std::shared_ptr<const RiskStore> r) : params(p), risk(std::move(r)) {}
   SpoParams params;
   std::shared_ptr<const RiskStore> risk;
   bool axes_checked{};
-  f64 gamma{nan}, horizon{nan};
+  f64 gamma{nan}, horizon{nan}, alpha_h{nan};
   Calibration calibration;
   DateData date;
   std::map<std::string, BookState, std::less<>> books;
   std::vector<DiagnosticRow> rows;
   Timing timing;
+  std::vector<f64> desired_copy, shadow_before; // scratch
 
   co::Status prepare(const BookDecision& in);
   co::Status calibrate(const BookDecision& in);
   co::Status plan(const BookDecision& in, std::vector<f64>& planned, TargetReplayDay& out);
+  co::Status shadow_step(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
+                         bool rebalance, std::span<const f64> desired, BookState& book,
+                         TargetReplayDay& day);
 };
+
+// The shadow book's aim-partial-v5 move at d: detail::update_weights on its own plan-level
+// weights (the replay's book plans from its drifted, filled holdings instead).
+co::Status Engine::Impl::shadow_step(const TargetReplayInput& x, const NavReplayConfig& cfg,
+                                     usize d, bool rebalance, std::span<const f64> desired,
+                                     BookState& book, TargetReplayDay& day) {
+  if (book.shadow.size() != x.instruments) book.shadow.assign(x.instruments, 0.0);
+  desired_copy.assign(desired.begin(), desired.end());
+  return detail::update_weights(x, cfg.target, d, rebalance, 0.0, desired_copy, book.shadow,
+                                day);
+}
 
 // The shared data of decision d (once for every book): the risk slice, the optimized names,
 // ex-ante betas to the equal-weight market of those names, alpha and the metric scale.
@@ -820,23 +950,20 @@ co::Status Engine::Impl::prepare(const BookDecision& in) {
     return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: decision geometry");
   date.key = nullptr; date.d = no_date;
   ATX_TRY_VOID(risk->read(d, date.slice));
+  cap_specific(date.slice, params.specific_ceiling); // inf (spo-v1): no change
   const auto& r = date.slice;
   const auto member = x.member.subspan(d * n_all, n_all);
   date.names.clear();
   date.position.assign(n_all, not_optimized);
   date.members = 0; date.unpriced_members = 0;
-  f64 sum = 0, sq = 0;
   for (usize i = 0; i < n_all; ++i) {
     if (!member[i]) continue;
     ++date.members;
-    sum += in.desired[i]; sq += in.desired[i] * in.desired[i];
     if (!has_row(r, i)) { ++date.unpriced_members; continue; }
     date.position[i] = static_cast<u32>(date.names.size());
     date.names.push_back(i);
   }
-  const f64 count = static_cast<f64>(date.members);
-  const f64 var = date.members > 1 ? (sq - sum * sum / count) / (count - 1.0) : 0.0;
-  const f64 sd = var > 0 ? std::sqrt(var) : 0.0;
+  const f64 sd = member_sd(in.desired, member);
   const usize n = date.names.size();
   Problem& b = date.base;
   b = Problem{};
@@ -853,7 +980,7 @@ co::Status Engine::Impl::prepare(const BookDecision& in) {
                 b.styles.begin() + static_cast<std::ptrdiff_t>(j * risk_styles));
     b.specific[j] = r.specific[i];
     const f64 z = sd > 0 ? in.desired[i] / sd : 0.0;
-    b.alpha[j] = params.ic_book * std::sqrt(r.specific[i]) * z; // Grinold-Kahn IC sigma z
+    b.alpha[j] = gk_alpha(params.ic_book, r.specific[i], z, alpha_h); // per session over h
   }
   // Ex-ante beta to the equal-weight market m of the optimized names: Sigma m / m'Sigma m.
   date.beta.assign(n_all, 0.0);
@@ -885,75 +1012,18 @@ co::Status Engine::Impl::prepare(const BookDecision& in) {
   return co::Ok();
 }
 
-// gamma = max(gamma_vol, gamma_bind) on the cost-free aim of the first rebalance decision.
+// gamma on the cost-free aim of the first rebalance decision (calibrate_gamma) or --gamma.
 co::Status Engine::Impl::calibrate(const BookDecision& in) {
   calibration.session = in.x.session_keys[in.d];
+  calibration.rule = params.gamma_rule;
   if (std::isfinite(params.gamma)) {
     gamma = params.gamma;
     calibration.done = true; calibration.from_flag = true; calibration.gamma = gamma;
     return co::Ok();
   }
-  Problem c = date.base;
-  const usize n = c.n;
-  f64 a2d = 0, ad = 0;
-  for (usize j = 0; j < n; ++j) {
-    a2d += c.alpha[j] * c.alpha[j] / c.specific[j];
-    ad += std::abs(c.alpha[j]) / c.specific[j];
-  }
-  const f64 budget = in.cfg.target.aim_leverage;
-  if (n < 2 || !finite_positive(a2d) || !finite_positive(budget))
-    return co::Err(co::ErrorCode::Unavailable,
-                   "spo-v1: the first rebalance decision has no alpha to calibrate gamma "
-                   "(pass --gamma)");
-  c.w0.assign(n, 0.0); c.lower.assign(n, -params.w_max); c.upper.assign(n, params.w_max);
-  c.linear_cost.assign(n, 0.0); c.impact_cost.assign(n, 0.0);
-  c.long_rate.assign(n, 0.0); c.short_rate.assign(n, 0.0);
-  c.net = 0; c.gross = inf; c.beta_lo = -params.beta_max; c.beta_hi = params.beta_max;
-  const SolverOptions options{params.max_iterations * 4, params.tolerance, date.scale};
-  std::vector<f64> start(n, 0.0);
-  Multipliers warm;
-  f64 last = nan, vol = nan, gross = nan;
-  co::Status failure = co::Ok();
-  const auto evaluate = [&](f64 g) {
-    c.gamma = g;
-    if (std::isfinite(last)) for (f64& v : start) v *= last / g;
-    auto sol = solve(c, start, options, warm);
-    if (!sol) { failure = co::Err(sol.error()); return false; }
-    ++calibration.evaluations;
-    start = sol->w; warm = sol->multipliers; last = g;
-    vol = std::sqrt(sessions_per_year * objective_terms(c, sol->w).variance);
-    gross = 0;
-    for (const f64 w : sol->w) gross += std::abs(w);
-    return true;
-  };
-  // ln q(gamma) - ln target is nonincreasing in u = ln gamma for q = the aim's vol (Markowitz
-  // variance is nonincreasing in risk aversion) and its gross; bracketed at guess x 1e-4..1e4.
-  const auto root = [&](bool vol_target, f64 target, f64 guess, bool& reached) {
-    const auto f = [&](f64 u) {
-      if (!evaluate(std::exp(u))) return std::pair<f64, f64>{nan, nan};
-      return std::pair<f64, f64>{std::log(vol_target ? vol : gross) - std::log(target), nan};
-    };
-    const f64 lo = std::log(guess) - std::log(1e4), hi = std::log(guess) + std::log(1e4);
-    reached = false;
-    const f64 flo = f(lo).first;
-    if (!(flo >= 0)) return lo; // unreachable even at the least risk aversion
-    const f64 fhi = f(hi).first;
-    if (!(fhi <= 0)) return hi;
-    const auto r = monotone_root(f, 0.0, std::log(guess), 1.0, 1e-7, 60, lo, hi);
-    reached = r.met;
-    return r.x;
-  };
-  const f64 vol_guess = std::sqrt(sessions_per_year * a2d) / params.target_vol;
-  const f64 u_vol = root(true, params.target_vol, vol_guess, calibration.vol_reached);
-  ATX_TRY_VOID(failure);
-  const f64 u_bind = root(false, budget, ad / budget, calibration.bind_reached);
-  ATX_TRY_VOID(failure);
-  calibration.gamma_vol = std::exp(u_vol);
-  calibration.gamma_bind = std::exp(u_bind);
-  gamma = std::max(calibration.gamma_vol, calibration.gamma_bind);
-  if (!evaluate(gamma)) return failure;
-  calibration.aim_vol = vol; calibration.aim_gross = gross;
-  calibration.gamma = gamma; calibration.names = n; calibration.done = true;
+  ATX_TRY_VOID(calibrate_gamma(date.base, params, in.cfg.target.aim_leverage, date.scale,
+                               calibration));
+  gamma = calibration.gamma;
   return co::Ok();
 }
 
@@ -970,7 +1040,8 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   if (!std::isfinite(horizon)) {
     horizon = std::isfinite(params.horizon) ? params.horizon : 1.0 / cfg.target.trade_fraction;
     if (!(horizon >= 1 && horizon <= 10000))
-      return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: horizon 1 / theta out of [1, 1e4]");
+      return co::Err(co::ErrorCode::InvalidArgument, "spo: horizon 1 / theta out of [1, 1e4]");
+    alpha_h = std::isnan(params.alpha_horizon) ? horizon : params.alpha_horizon;
   }
   ATX_TRY_VOID(prepare(in));
   if (!calibration.done) ATX_TRY_VOID(calibrate(in));
@@ -1010,10 +1081,11 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   const usize n = p.n;
   p.w0.resize(n); p.lower.resize(n); p.upper.resize(n);
   p.linear_cost.resize(n); p.impact_cost.resize(n); p.long_rate.resize(n); p.short_rate.resize(n);
-  std::vector<f64> cap(n), trade(n), floor(n, -inf);
+  std::vector<f64> cap(n), trade(n), floor(n, -inf), impact_raw(n);
   const auto& fin = cfg.scenario.financing;
   const bool tiered = fin.rule == NavFinancingRule::TieredSwapV1;
-  const f64 linear = (in.s2.half_spread_bps + in.s2.commission_bps) * 1e-4 / horizon;
+  const f64 linear_raw = (in.s2.half_spread_bps + in.s2.commission_bps) * 1e-4;
+  const f64 linear = linear_raw / horizon;
   for (usize j = 0; j < n; ++j) {
     const usize i = date.names[j];
     const f64 w0 = current[i], adv = in.liquidity.adv[i];
@@ -1033,7 +1105,8 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
     const f64 sigma = std::isnan(in.liquidity.sigma[i]) ? in.s2.fallback_daily_vol
                                                         : in.liquidity.sigma[i];
     p.linear_cost[j] = linear;
-    p.impact_cost[j] = liquid ? in.s2.impact_y * sigma * std::sqrt(nav / adv) / horizon : 0.0;
+    impact_raw[j] = liquid ? in.s2.impact_y * sigma * std::sqrt(nav / adv) : 0.0;
+    p.impact_cost[j] = impact_raw[j] / horizon;
     if (tiered) {
       const u8 tier = in.tier.empty() ? static_cast<u8>(ce::BorrowTier::Warm) : in.tier[i];
       const f64 fee = tier == static_cast<u8>(ce::BorrowTier::GeneralCollateral) ? fin.gc_bps
@@ -1111,6 +1184,22 @@ co::Status Engine::Impl::plan(const BookDecision& in, std::vector<f64>& planned,
   row.mu = m.gross_binding ? 0.5 * (m.pos + m.neg) : 0.0;
   row.nu = m.gross_binding ? 0.5 * (m.pos - m.neg) : m.pos;
   row.rho = m.rho;
+  row.capped_specific = r.capped_specific;
+  // The shadow aim-partial-v5 book at d, scored with the same alpha and S2 law.
+  if (book.shadow.size() != n_all) book.shadow.assign(n_all, 0.0);
+  shadow_before = book.shadow;
+  TargetReplayDay shadow_day;
+  ATX_TRY_VOID(shadow_step(x, cfg, d, true, in.desired, book, shadow_day));
+  f64 alpha_shadow = 0, cost_shadow = 0;
+  for (usize j = 0; j < n; ++j) {
+    const usize i = date.names[j];
+    const f64 move = std::abs(book.shadow[i] - shadow_before[i]);
+    alpha_shadow += p.alpha[j] * book.shadow[i];
+    cost_shadow += linear_raw * move + impact_raw[j] * move * std::sqrt(move);
+  }
+  row.alpha_shadow = alpha_shadow; row.gross_shadow = shadow_day.gross;
+  row.turnover_shadow = shadow_day.turnover; row.trade_cost_shadow = cost_shadow;
+  row.exante_vol_shadow = std::sqrt(sessions_per_year * book_variance(r, book.shadow));
   rows.push_back(std::move(row));
   planned = std::move(next);
   return co::Ok();
@@ -1124,6 +1213,11 @@ Engine& Engine::operator=(Engine&&) noexcept = default;
 co::Status Engine::plan(const BookDecision& in, std::vector<f64>& planned, TargetReplayDay& out) {
   return impl_->plan(in, planned, out);
 }
+co::Status Engine::hold(const TargetReplayInput& x, const NavReplayConfig& cfg, usize d,
+                        std::span<const f64> desired, std::string_view book) {
+  TargetReplayDay day;
+  return impl_->shadow_step(x, cfg, d, false, desired, impl_->books[std::string(book)], day);
+}
 void Engine::begin_run() { impl_->books.clear(); impl_->date = Impl::DateData{}; }
 std::span<const DiagnosticRow> Engine::rows() const noexcept { return impl_->rows; }
 const Calibration& Engine::calibration() const noexcept { return impl_->calibration; }
@@ -1132,14 +1226,21 @@ Timing Engine::timing() const noexcept { return impl_->timing; }
 f64 Engine::horizon() const noexcept { return impl_->horizon; }
 
 // ---- declarations and outputs ------------------------------------------------------------
-std::string declaration() {
-  return "spo-v1 (literature-v7 R2.1 + R3.4; platform v7 W1): on every rebalance decision d "
+std::string declaration(const SpoParams& params) {
+  const bool v2 = params.version == 2;
+  return std::string(rule_name(params)) +
+         " (literature-v7 R2.1 + R3.4; platform v7 W1" + (v2 ? ", fix-up 2" : "") +
+         "): on every rebalance decision d "
          "each book solves max_w a'w - (gamma/2) w'(X F X' + D) w - (1/H) sum_i [s_i |dw_i| + "
          "eta_i |dw_i|^1.5] - sum_i [b_i max(-w_i, 0) + l_i max(w_i, 0)] s.t. book net 0, "
          "|book beta| <= beta_max, book gross <= aim_leverage, |w_i| <= min(w_max, q ADV_i / "
          "NAV), |dw_i| <= p ADV_i / NAV, w_i >= min(w0_i, 0) where the book's locate rule "
-         "guards the name; a_i = IC_book sqrt(D_i) z_i (Grinold-Kahn, z = desired / its "
-         "members' SD), X/F/D = atx-risk-v1 at the close of d (NaN factor entries 0), beta = "
+         "guards the name; a_i = IC_book sqrt(D_i) z_i / sqrt(h) (Grinold-Kahn per session "
+         "of an h-session forecast, z = desired / its members' SD; h = --alpha-horizon, " +
+         (v2 ? std::string("default H") : std::string("default 1")) +
+         "), X/F/D = atx-risk-v1 at the close of d (NaN factor entries 0; specific variance "
+         "above --specific-ceiling clamped, " +
+         (v2 ? std::string("default 1") : std::string("default off")) + "), beta = "
          "Sigma m / m'Sigma m with m the equal-weight portfolio of the optimized names, s_i = "
          "(half spread + commission) and eta_i = impact_y sigma_i sqrt(NAV / ADV_i) of the "
          "primary S2 law on the decision liquidity window (sigma fallback .05), b_i / l_i = "
@@ -1148,11 +1249,15 @@ std::string declaration() {
          "nonmembers follow aim-partial-v5's exit rule and unpriced members keep their weight "
          "(fixed positions in the book constraints and the risk); a position outside its box "
          "by more than one session's trade limit moves by the limit toward it; gamma = --gamma "
-         "or max(gamma_vol, gamma_bind) on the cost-free aim of the first rebalance decision "
-         "(|w_i| <= w_max, net 0, |beta| <= beta_max; vol target and gross L); solver FISTA "
+         "or " + (v2 ? std::string("gamma_vol (refused when out of reach)")
+                     : std::string("max(gamma_vol, gamma_bind)")) +
+         " on the cost-free aim of the first rebalance decision (|w_i| <= w_max, net 0, |beta| "
+         "<= beta_max; gamma_vol: ex-ante vol --target-vol, gamma_bind: gross L); solver FISTA "
          "with adaptive restart in the metric sigma gamma D, exact coupled prox, stop at "
          "prox-gradient residual <= --spo-tol or --spo-iters; non-rebalance decisions are "
-         "aim-partial-v5's (exits only)";
+         "aim-partial-v5's (exits only); diagnostics beside each book: a plan-level "
+         "aim-partial-v5 shadow book (same desired target, full fills, no drift) scored with "
+         "the same alpha and S2 law";
 }
 
 namespace {
@@ -1163,6 +1268,10 @@ std::string number(f64 x) {
   return out.str();
 }
 Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); }
+const char* gamma_rule_text(GammaRule rule) {
+  return rule == GammaRule::Vol ? "gamma_vol on the first rebalance decision"
+                                : "max(gamma_vol, gamma_bind) on the first rebalance decision";
+}
 } // namespace
 
 std::string diagnostics_csv(std::span<const DiagnosticRow> rows) {
@@ -1171,7 +1280,8 @@ std::string diagnostics_csv(std::span<const DiagnosticRow> rows) {
       "restarts,backtracks,prox_passes,converged,coupling_met,kkt_residual,alpha,risk,"
       "trade_cost,amortized_cost,financing,objective,exante_vol,exante_vol_current,"
       "transfer_coefficient,gross,net,long,short,abs_beta,turnover,no_trade,at_cap,"
-      "at_trade_limit,at_locate_floor,gross_binding,beta_binding,mu,nu,rho\n";
+      "at_trade_limit,at_locate_floor,gross_binding,beta_binding,mu,nu,rho,capped_specific,"
+      "alpha_shadow,gross_shadow,turnover_shadow,trade_cost_shadow,exante_vol_shadow\n";
   for (const auto& r : rows) {
     const auto u = [](usize v) { return std::to_string(v); };
     const auto b = [](bool v) { return std::string(v ? "1" : "0"); };
@@ -1187,14 +1297,22 @@ std::string diagnostics_csv(std::span<const DiagnosticRow> rows) {
             number(r.short_weight) + ',' + number(r.abs_beta) + ',' + number(r.turnover) + ',' +
             u(r.no_trade) + ',' + u(r.at_cap) + ',' + u(r.at_trade_limit) + ',' +
             u(r.at_locate_floor) + ',' + b(r.gross_binding) + ',' + b(r.beta_binding) + ',' +
-            number(r.mu) + ',' + number(r.nu) + ',' + number(r.rho) + '\n';
+            number(r.mu) + ',' + number(r.nu) + ',' + number(r.rho) + ',' +
+            u(r.capped_specific) + ',' + number(r.alpha_shadow) + ',' +
+            number(r.gross_shadow) + ',' + number(r.turnover_shadow) + ',' +
+            number(r.trade_cost_shadow) + ',' + number(r.exante_vol_shadow) + '\n';
   }
   return text;
 }
 
 Json parameters_json(const SpoParams& p, f64 horizon) {
-  return Json{{"gamma", finite_or_null(p.gamma)}, {"gamma_rule", std::isfinite(p.gamma)
-                  ? "--gamma" : "max(gamma_vol, gamma_bind) on the first rebalance decision"},
+  const f64 alpha_h = std::isnan(p.alpha_horizon) ? horizon : p.alpha_horizon;
+  return Json{{"rule", rule_name(p)}, {"version", p.version},
+              {"gamma", finite_or_null(p.gamma)},
+              {"gamma_rule", std::isfinite(p.gamma) ? "--gamma" : gamma_rule_text(p.gamma_rule)},
+              {"alpha_horizon", finite_or_null(alpha_h)},
+              {"alpha_horizon_rule", std::isnan(p.alpha_horizon) ? "H" : "--alpha-horizon"},
+              {"specific_ceiling", finite_or_null(p.specific_ceiling)},
               {"ic_book", p.ic_book}, {"w_max", p.w_max}, {"adv_cap_q", p.adv_cap_q},
               {"adv_trade_p", p.adv_trade_p}, {"spo_iters", p.max_iterations},
               {"spo_tol", p.tolerance}, {"target_vol", p.target_vol},
@@ -1205,6 +1323,7 @@ Json parameters_json(const SpoParams& p, f64 horizon) {
 
 Json calibration_json(const Calibration& c) {
   return Json{{"done", c.done}, {"from_flag", c.from_flag}, {"session", c.session},
+              {"rule", gamma_rule_text(c.rule)},
               {"gamma", finite_or_null(c.gamma)}, {"gamma_vol", finite_or_null(c.gamma_vol)},
               {"gamma_bind", finite_or_null(c.gamma_bind)}, {"vol_reached", c.vol_reached},
               {"bind_reached", c.bind_reached}, {"aim_vol", finite_or_null(c.aim_vol)},
@@ -1218,16 +1337,26 @@ Json summary_json(std::span<const DiagnosticRow> rows) {
   Json books = Json::object();
   for (const auto& [book, list] : by_book) {
     usize unconverged = 0, unmet = 0, gross_binding = 0, beta_binding = 0;
+    usize capped_decisions = 0, capped_max = 0;
     f64 iterations = 0, residual = 0, vol = 0, tc = 0, alpha = 0, cost = 0, gross = 0;
+    f64 turnover = 0, alpha_s = 0, cost_s = 0, gross_s = 0, turnover_s = 0, vol_s = 0;
     usize tc_n = 0;
     for (const auto* r : list) {
       unconverged += r->converged ? 0U : 1U; unmet += r->coupling_met ? 0U : 1U;
       gross_binding += r->gross_binding ? 1U : 0U; beta_binding += r->beta_binding ? 1U : 0U;
       iterations += static_cast<f64>(r->iterations); residual = std::max(residual, r->residual);
       vol += r->exante_vol; alpha += r->alpha; cost += r->trade_cost; gross += r->gross;
+      turnover += r->turnover;
+      alpha_s += r->alpha_shadow; cost_s += r->trade_cost_shadow; gross_s += r->gross_shadow;
+      turnover_s += r->turnover_shadow; vol_s += r->exante_vol_shadow;
+      capped_decisions += r->capped_specific ? 1U : 0U;
+      capped_max = std::max(capped_max, r->capped_specific);
       if (std::isfinite(r->transfer_coefficient)) { tc += r->transfer_coefficient; ++tc_n; }
     }
     const f64 count = static_cast<f64>(list.size());
+    // Holding period of the plan (gross / one-way turnover, sessions): the amortization H
+    // presumes the book holds a traded dollar about H sessions.
+    const auto ratio = [](f64 a, f64 b) { return finite_or_null(b > 0 ? a / b : nan); };
     books[book] = Json{{"decisions", list.size()}, {"unconverged", unconverged},
                        {"coupling_unmet", unmet}, {"gross_binding", gross_binding},
                        {"beta_binding", beta_binding}, {"mean_iterations", iterations / count},
@@ -1235,7 +1364,19 @@ Json summary_json(std::span<const DiagnosticRow> rows) {
                        {"mean_transfer_coefficient",
                         finite_or_null(tc_n ? tc / static_cast<f64>(tc_n) : nan)},
                        {"mean_alpha", alpha / count}, {"mean_trade_cost", cost / count},
-                       {"mean_gross", gross / count}};
+                       {"mean_gross", gross / count}, {"mean_turnover", turnover / count},
+                       {"holding_sessions", ratio(gross, turnover)},
+                       {"capped_specific_decisions", capped_decisions},
+                       {"max_capped_specific", capped_max},
+                       {"shadow", Json{{"rule", "plan-level aim-partial-v5 (full fills, no drift)"},
+                                       {"mean_alpha", finite_or_null(alpha_s / count)},
+                                       {"mean_trade_cost", finite_or_null(cost_s / count)},
+                                       {"mean_gross", finite_or_null(gross_s / count)},
+                                       {"mean_turnover", finite_or_null(turnover_s / count)},
+                                       {"mean_exante_vol", finite_or_null(vol_s / count)},
+                                       {"holding_sessions", ratio(gross_s, turnover_s)}}},
+                       {"alpha_capture", ratio(alpha, alpha_s)},
+                       {"trade_cost_ratio", ratio(cost, cost_s)}};
   }
   return books;
 }

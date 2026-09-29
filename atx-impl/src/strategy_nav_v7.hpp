@@ -22,8 +22,11 @@
 //                             (the `risk` verb's output with --emit-exposures all, same role)
 //     [--gamma G] [--ic-book .02] [--w-max .01] [--adv-cap-q .05] [--adv-trade-p .01]
 //     [--spo-iters 500] [--spo-tol 1e-8] [--target-vol .05] [--spo-horizon 1/theta]
-//     [--spo-books all|primary]; adds <output>/spo_diagnostics.csv; fixed rate, no capacity
-//     curve, not with aim-partial-v6.
+//     [--spo-books all|primary] [--alpha-horizon h (v1: 1)] [--specific-ceiling (v1: inf)];
+//     adds <output>/spo_diagnostics.csv; fixed rate, no capacity curve, not with
+//     aim-partial-v6.
+//   --rule spo-v2             spo-v1 with the fix-up 2 defaults (strategy_spo.hpp): alpha
+//                             horizon h = H, specific ceiling 1.0, gamma = gamma_vol.
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
 // Every hooked run also writes <output>/v7_transfer_coefficient.csv (TC per rebalance
 // decision and book) and <output>/v7_extras.json (extras' SHA-256, capacity table) after
@@ -52,7 +55,7 @@ struct NavV7Options {
   bool capacity{}; // --capacity-curve
   bool aim_v6{};   // --rule aim-partial-v6
   cost_v2::AimV6Params v6{};
-  bool spo_v1{};   // --rule spo-v1
+  bool spo_v1{};   // --rule spo-v1 or spo-v2 (spo_params.version tells which)
   spo::SpoParams spo_params{};
   std::shared_ptr<const spo::RiskStore> spo_risk; // opened by dispatch_nav_v7
 };

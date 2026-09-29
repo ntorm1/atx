@@ -1,7 +1,11 @@
-// spo-v1 (platform v7 W1): the solver on synthetic factor-model problems (KKT certificate,
-// closed-form Markowitz, constraint feasibility, warm/cold determinism, a 1-D brute-force
-// check of the 3/2 cost), the pinned atx-risk-v1 store (refusals), and the NAV hook
-// (flag-off identity, CLI routing, an end-to-end replay on a synthetic role + risk model).
+// spo-v1 / spo-v2 (platform v7 W1): the solver on synthetic factor-model problems (KKT
+// certificate, closed-form Markowitz, constraint feasibility, warm/cold determinism, a 1-D
+// brute-force check of the 3/2 cost), the pinned atx-risk-v1 store (refusals), and the NAV
+// hook (flag-off identity, CLI routing, an end-to-end replay on a synthetic role + risk
+// model). Fix-up 2 (the rejected spo-v1 TRAIN cell): one test per root cause -- alpha
+// orientation and horizon (SpoAlpha, SpoSolver.HorizonConsistentAlpha...), the gamma rule
+// (SpoCalibration), the risk-model plausibility ceiling (SpoRisk.Implausible...,
+// SpoHook.ACorrupt...) -- and the aim-partial-v5 shadow book (SpoHook.ShadowBook...).
 
 #include <algorithm>
 #include <atomic>
@@ -17,6 +21,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -297,6 +302,126 @@ TEST(SpoSolver, TwoNamesMatchAOneDimensionalSearchWithTheThreeHalvesCost) {
   }
 }
 
+// ---- fix-up 2: root causes of the rejected spo-v1 TRAIN cell ----------------------------------
+// (1) No sign defect: a_i has the sign of desired_i. The scale defect: a_i = IC sigma z is the
+// forecast over the IC's horizon h; spo-v1 (h = 1) charged all of it to every session while
+// amortizing costs over H sessions -- sqrt(h) too much alpha per session.
+TEST(SpoAlpha, OrientationFollowsDesiredAndTheHorizonScalesThePerSessionForecast) {
+  const std::vector<f64> desired{0.3, -0.1, 0.0, 9.0, -0.2};
+  const std::vector<u8> member{1, 1, 1, 0, 1};
+  const f64 mean = (0.3 - 0.1 + 0.0 - 0.2) / 4.0;
+  f64 ss = 0;
+  for (usize i = 0; i < desired.size(); ++i)
+    if (member[i]) ss += (desired[i] - mean) * (desired[i] - mean);
+  const f64 sd = sp::member_sd(desired, member);
+  EXPECT_NEAR(sd, std::sqrt(ss / 3.0), 1e-15); // the members' sample SD; nonmember 9.0 ignored
+  EXPECT_EQ(sp::member_sd(desired, std::vector<u8>{0, 0, 0, 1, 0}), 0.0);
+  const f64 specific = 0.02 * 0.02, ic = 0.02, h = 20.0;
+  for (const f64 horizon : {1.0, h})
+    for (usize i = 0; i < desired.size(); ++i) {
+      const f64 a = sp::gk_alpha(ic, specific, desired[i] / sd, horizon);
+      EXPECT_EQ(a > 0, desired[i] > 0) << i;
+      EXPECT_EQ(a < 0, desired[i] < 0) << i;
+    }
+  const f64 z = 1.5;
+  // h sessions of the per-session alpha are the h-session forecast IC (sigma sqrt(h)) z.
+  EXPECT_NEAR(sp::gk_alpha(ic, specific, z, h) * h, ic * (std::sqrt(specific) * std::sqrt(h)) * z,
+              1e-17);
+  EXPECT_NEAR(sp::gk_alpha(ic, specific, z, 1.0) / sp::gk_alpha(ic, specific, z, h), std::sqrt(h),
+              1e-12);
+  EXPECT_EQ(sp::gk_alpha(ic, specific, z, 1.0), ic * std::sqrt(specific) * z); // spo-v1's alpha
+}
+// (3) The amortization defect is (1) seen from the cost side: a / sqrt(h) with gamma / sqrt(h)
+// (the same cost-free aim) is spo-v1 with costs and financing weighted sqrt(h) -- the objective
+// divided by sqrt(h), so the same solution -- and the penalized cost of a solution is
+// nonincreasing in that weight: spo-v1 buys more trading for the same aim.
+TEST(SpoSolver, HorizonConsistentAlphaIsASqrtHCostWeightAndTradesLess) {
+  const auto base = random_problem(50, 37);
+  const f64 root_h = std::sqrt(20.0);
+  auto scaled = base;
+  for (f64& a : scaled.alpha) a /= root_h;
+  scaled.gamma = base.gamma / root_h;
+  auto weighted = base;
+  for (f64& c : weighted.linear_cost) c *= root_h;
+  for (f64& c : weighted.impact_cost) c *= root_h;
+  for (f64& c : weighted.long_rate) c *= root_h;
+  for (f64& c : weighted.short_rate) c *= root_h;
+  const auto o = options(50000, 1e-11);
+  const auto v2 = sp::solve(scaled, base.w0, o);
+  const auto same = sp::solve(weighted, base.w0, o);
+  const auto v1 = sp::solve(base, base.w0, o);
+  ASSERT_TRUE(v2 && same && v1);
+  EXPECT_TRUE(v2->converged && same->converged && v1->converged);
+  EXPECT_LT(max_abs_diff(v2->w, same->w), 1e-8);
+  const auto penalty = [&](std::span<const f64> w) {
+    const auto t = sp::objective_terms(base, w);
+    return t.cost + t.financing;
+  };
+  EXPECT_LT(penalty(v2->w), penalty(v1->w));
+}
+// (2) spo-v1's gamma = max(gamma_vol, gamma_bind) >= gamma_bind puts the cost-free aim at gross
+// <= L; from flat a trade cost only shrinks the book (the L1 norm of a lasso-penalized
+// solution is nonincreasing in the penalty), so the gross budget cannot bind. spo-v2's
+// gamma_vol < gamma_bind leaves the aim above L and the budget binds.
+TEST(SpoCalibration, V1GammaKeepsTheCostedBookInsideTheBudgetAndV2Binds) {
+  const auto p = random_problem(60, 41);
+  const usize n = p.n;
+  const f64 budget = 0.2, scale = sp::estimate_metric_scale(p);
+  std::vector<f64> size(n);
+  for (usize i = 0; i < n; ++i) size[i] = std::abs(p.alpha[i]);
+  std::nth_element(size.begin(), size.begin() + static_cast<std::ptrdiff_t>(n / 2), size.end());
+  const f64 median = size[n / 2];
+  sp::SpoParams v1;
+  v1.w_max = 0.02;
+  v1.target_vol = 1.0; // out of reach at the caps: gamma = gamma_bind
+  sp::Calibration c1;
+  ASSERT_TRUE(sp::calibrate_gamma(p, v1, budget, scale, c1));
+  EXPECT_TRUE(c1.done);
+  EXPECT_FALSE(c1.vol_reached);
+  EXPECT_EQ(c1.gamma, c1.gamma_bind);
+  EXPECT_NEAR(c1.aim_gross, budget, 1e-4 * budget);
+  // The live problem: the calibration aim's constraints plus the budget and a trade cost.
+  auto live = p;
+  live.w0.assign(n, 0.0); live.lower.assign(n, -v1.w_max); live.upper.assign(n, v1.w_max);
+  live.impact_cost.assign(n, 0.0); live.long_rate.assign(n, 0.0); live.short_rate.assign(n, 0.0);
+  live.net = 0; live.beta_lo = -v1.beta_max; live.beta_hi = v1.beta_max; live.gross = budget;
+  live.gamma = c1.gamma;
+  live.linear_cost.assign(n, 0.3 * median);
+  const auto gross_of = [](std::span<const f64> w) {
+    f64 g = 0;
+    for (const f64 v : w) g += std::abs(v);
+    return g;
+  };
+  const auto inside = sp::solve(live, std::vector<f64>(n, 0.0), options(20000, 1e-10));
+  ASSERT_TRUE(inside) << inside.error().to_string();
+  EXPECT_FALSE(inside->multipliers.gross_binding);
+  EXPECT_LT(gross_of(inside->w), 0.9 * budget);
+  // spo-v2: gamma = gamma_vol for a vol target twice the aim's vol at gamma_bind.
+  sp::SpoParams v2 = sp::v2_params();
+  v2.w_max = v1.w_max;
+  v2.target_vol = 2.0 * c1.aim_vol;
+  sp::Calibration c2;
+  ASSERT_TRUE(sp::calibrate_gamma(p, v2, budget, scale, c2));
+  EXPECT_TRUE(c2.done);
+  EXPECT_EQ(c2.gamma, c2.gamma_vol);
+  EXPECT_LT(c2.gamma_vol, c2.gamma_bind);
+  EXPECT_NEAR(c2.aim_vol, v2.target_vol, 1e-3 * v2.target_vol);
+  EXPECT_GT(c2.aim_gross, budget);
+  live.gamma = c2.gamma;
+  live.linear_cost.assign(n, 0.01 * median);
+  const auto binding = sp::solve(live, std::vector<f64>(n, 0.0), options(20000, 1e-10));
+  ASSERT_TRUE(binding) << binding.error().to_string();
+  EXPECT_TRUE(binding->multipliers.gross_binding);
+  EXPECT_NEAR(gross_of(binding->w), budget, 1e-10);
+  // spo-v2 refuses a vol target the aim cannot reach instead of using a bracket end.
+  v2.target_vol = 1.0;
+  sp::Calibration c3;
+  const auto refused = sp::calibrate_gamma(p, v2, budget, scale, c3);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::Unavailable);
+  EXPECT_FALSE(c3.done);
+}
+
 // ---- synthetic atx-risk-v1 output ------------------------------------------------------------
 struct Directory {
   std::filesystem::path path;
@@ -323,11 +448,13 @@ Json write_payload(const std::filesystem::path& file, const std::vector<T>& valu
   return Json{{"bytes", bytes.size()}, {"sha256", co::sha256_file(file.string()).value()}};
 }
 // The files the `risk` verb writes with --emit-exposures all, for `sessions` x `names`;
-// forecast[d] == 0 leaves date d unforecast (NaN covariance and specific variance).
+// forecast[d] == 0 leaves date d unforecast (NaN covariance and specific variance);
+// specific_overrides sets entries (d x names + i, value) of the specific variance.
 // Returns the manifest's SHA-256.
 std::string write_risk_model(const std::filesystem::path& dir, std::span<const i64> sessions,
                              usize names, std::span<const u8> forecast, const std::string& role,
-                             u64 seed) {
+                             u64 seed,
+                             std::span<const std::pair<usize, f64>> specific_overrides = {}) {
   Lcg rng{seed};
   const usize dates = sessions.size(), k = sp::risk_factors, s = sp::risk_styles;
   std::vector<f64> cov(dates * k * k, missing), spec(dates * names, missing);
@@ -352,6 +479,7 @@ std::string write_risk_model(const std::filesystem::path& dir, std::span<const i
         cov[(d * k + a) * k + b] = v[a] * v[b] + (a == b ? var : 0.0);
     }
   }
+  for (const auto& [cell, value] : specific_overrides) spec.at(cell) = value;
   Json files = Json::object();
   files["factor_covariance.f64"] = write_payload(dir / "factor_covariance.f64", cov);
   files["specific_variance.f64"] = write_payload(dir / "specific_variance.f64", spec);
@@ -416,6 +544,26 @@ TEST(SpoRisk, RefusesADateWithoutForecastAnotherRoleAndAnotherPin) {
   EXPECT_FALSE(sp::RiskStore::open(dir.path.string(), std::string(64, '0'), "role-sha"));
   ASSERT_TRUE(std::filesystem::remove(dir.path / "style_exposures.f32")); // not "all"
   EXPECT_FALSE(sp::RiskStore::open(dir.path.string(), sha, "role-sha"));
+}
+
+// (4) exante_vol_current was computed correctly from a corrupt risk model (TRAIN: daily
+// specific variance 1e0..9e12 on 177-179 names for 20 sessions). The plausibility ceiling
+// clamps and counts such entries; inf (spo-v1) leaves the slice alone.
+TEST(SpoRisk, ImplausibleSpecificVarianceIsCappedAndCounted) {
+  sp::RiskSlice slice;
+  slice.specific = {4e-4, 1e12, missing, 0.9, 1.5e4, 1.0};
+  sp::RiskSlice untouched = slice;
+  EXPECT_EQ(sp::cap_specific(untouched, inf), 0U);
+  EXPECT_EQ(untouched.capped_specific, 0U);
+  EXPECT_EQ(untouched.specific[1], 1e12);
+  EXPECT_EQ(sp::cap_specific(slice, 1.0), 2U);
+  EXPECT_EQ(slice.capped_specific, 2U);
+  EXPECT_EQ(slice.specific[0], 4e-4);
+  EXPECT_EQ(slice.specific[1], 1.0);
+  EXPECT_TRUE(std::isnan(slice.specific[2]));
+  EXPECT_EQ(slice.specific[3], 0.9);
+  EXPECT_EQ(slice.specific[4], 1.0);
+  EXPECT_EQ(slice.specific[5], 1.0); // at the ceiling: kept, not counted
 }
 
 // ---- the NAV hook ------------------------------------------------------------------------------
@@ -556,6 +704,50 @@ TEST(SpoHook, ParseRoutesTheRuleAndRefusesBadCombinations) {
   std::vector<std::string> both = base;
   both.insert(both.end(), {"--rule", "aim-partial-v6"});
   EXPECT_FALSE(parse_v7(both));
+  // spo-v1 keeps its pre-registered semantics.
+  EXPECT_EQ(o.spo_params.version, 1U);
+  EXPECT_EQ(o.spo_params.alpha_horizon, 1.0);
+  EXPECT_TRUE(std::isinf(o.spo_params.specific_ceiling));
+  EXPECT_EQ(o.spo_params.gamma_rule, sp::GammaRule::VolAndBind);
+  EXPECT_STREQ(sp::rule_name(o.spo_params), "spo-v1");
+}
+TEST(SpoHook, ParseSpoV2AppliesTheFixUpDefaultsUnderTheFlagsGiven) {
+  const std::vector<std::string> tail{"--risk-model", "risk", "--risk-model-sha256", "abc",
+                                      "--output", "x"};
+  const auto parse = [&](std::vector<std::string> head) {
+    head.insert(head.end(), tail.begin(), tail.end());
+    return parse_v7(std::move(head));
+  };
+  const auto v2 = parse({"nav", "--rule", "spo-v2"});
+  ASSERT_TRUE(v2) << v2.error().to_string();
+  const auto& p = v2->options.spo_params;
+  EXPECT_TRUE(v2->options.spo_v1);
+  EXPECT_EQ(p.version, 2U);
+  EXPECT_TRUE(std::isnan(p.alpha_horizon)); // h = H
+  EXPECT_EQ(p.specific_ceiling, 1.0);
+  EXPECT_EQ(p.gamma_rule, sp::GammaRule::Vol);
+  EXPECT_EQ(p.ic_book, 0.02); EXPECT_EQ(p.w_max, 0.01); EXPECT_EQ(p.target_vol, 0.05);
+  EXPECT_STREQ(sp::rule_name(p), "spo-v2");
+  EXPECT_EQ(v2->args, (std::vector<std::string>{"nav", "--rule", "aim-partial-v5", "--output",
+                                                "x"}));
+  // A flag overrides the rule's default wherever it stands.
+  const auto early = parse({"nav", "--alpha-horizon", "5", "--specific-ceiling", "inf", "--rule",
+                            "spo-v2"});
+  ASSERT_TRUE(early) << early.error().to_string();
+  EXPECT_EQ(early->options.spo_params.alpha_horizon, 5.0);
+  EXPECT_TRUE(std::isinf(early->options.spo_params.specific_ceiling));
+  EXPECT_EQ(early->options.spo_params.version, 2U);
+  EXPECT_TRUE(claims({"nav", "--rule", "spo-v2"}));
+  EXPECT_TRUE(claims({"nav", "--alpha-horizon", "20"}));
+  EXPECT_FALSE(parse({"nav", "--rule", "spo-v2", "--alpha-horizon", "0.5"}));
+  EXPECT_FALSE(parse({"nav", "--rule", "spo-v2", "--specific-ceiling", "0"}));
+  EXPECT_FALSE(parse_v7({"nav", "--alpha-horizon", "5", "--output", "x"})); // no rule
+  Json recipe{{"rule", "aim-partial-v5+neutral-price-risk-v1"}};
+  {
+    const v7::ScopedNavExtension extension(v2->options);
+    v7::extend_recipe(recipe);
+  }
+  EXPECT_EQ(recipe["rule"], "spo-v2+neutral-price-risk-v1");
 }
 TEST(SpoHook, ReplayPlansNeutralBudgetedBooksAndRelabelsTheRule) {
   const Directory dir;
@@ -653,5 +845,148 @@ TEST(SpoHook, ReplayRefusesWhenTheRiskModelLacksADecisionDate) {
   ASSERT_FALSE(result);
   EXPECT_NE(result.error().message().find("no forecast"), std::string::npos)
       << result.error().to_string();
+}
+// The shadow book: the plan-level aim-partial-v5 book beside the optimiser, scored with the same
+// alpha. From flat its first plan is aim-partial-v5's own first plan.
+TEST(SpoHook, ShadowBookScoresTheAimPartialPlanBesideTheOptimiser) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const std::vector<u8> forecast(role.d, u8{1});
+  const auto sha = write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", 3);
+  auto store = sp::RiskStore::open(dir.path.string(), sha, "role-sha");
+  ASSERT_TRUE(store) << store.error().to_string();
+  const auto cfg = nav_config();
+  const auto plain = st::replay_nav(role.nav(), cfg); // aim-partial-v5, no extension
+  ASSERT_TRUE(plain) << plain.error().to_string();
+  v7::NavV7Options o;
+  o.spo_v1 = true;
+  o.spo_risk = std::make_shared<const sp::RiskStore>(std::move(*store));
+  const v7::ScopedNavExtension extension(o);
+  const auto result = st::replay_nav(role.nav(), cfg);
+  ASSERT_TRUE(result) << result.error().to_string();
+  const auto rows = extension.spo_engine()->rows();
+  ASSERT_FALSE(rows.empty());
+  const st::NavReplayDay* first = nullptr;
+  for (const auto& day : plain->days)
+    if (day.decision && day.rebalance) { first = &day; break; }
+  ASSERT_NE(first, nullptr);
+  EXPECT_EQ(rows.front().session, first->session);
+  EXPECT_DOUBLE_EQ(rows.front().gross_shadow, first->planned_gross);
+  EXPECT_DOUBLE_EQ(rows.front().turnover_shadow, first->planned_turnover);
+  for (const auto& r : rows) {
+    EXPECT_TRUE(std::isfinite(r.alpha_shadow)) << r.session;
+    EXPECT_LE(r.gross_shadow, cfg.target.aim_leverage + 1e-9) << r.session;
+    EXPECT_GE(r.turnover_shadow, 0.0) << r.session;
+    EXPECT_GE(r.trade_cost_shadow, 0.0) << r.session;
+    EXPECT_TRUE(std::isfinite(r.exante_vol_shadow)) << r.session;
+  }
+  const auto summary = sp::summary_json(rows);
+  ASSERT_FALSE(summary.empty());
+  for (const auto& entry : summary) {
+    EXPECT_TRUE(entry.contains("shadow"));
+    EXPECT_TRUE(entry.contains("alpha_capture")); // null when the shadow's alpha sums to <= 0
+    EXPECT_TRUE(entry.at("holding_sessions").is_number());
+    EXPECT_TRUE(entry.at("shadow").at("holding_sessions").is_number());
+  }
+  const auto csv = sp::diagnostics_csv(rows);
+  EXPECT_NE(csv.find(",capped_specific,alpha_shadow,gross_shadow,turnover_shadow,"
+                     "trade_cost_shadow,exante_vol_shadow\n"),
+            std::string::npos);
+}
+// spo-v2 end to end: gamma is the vol-target gamma and the alpha is the per-session share of the
+// h = H forecast (H = 1 / theta = 4 here): the shadow book is the same plan in both rules, so
+// its score halves.
+TEST(SpoHook, SpoV2CalibratesToTheVolTargetAndScalesAlphaToTheHorizon) {
+  const Directory dir;
+  const Role role(30, 12, 71);
+  const std::vector<u8> forecast(role.d, u8{1});
+  const auto sha = write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", 9);
+  auto store = sp::RiskStore::open(dir.path.string(), sha, "role-sha");
+  ASSERT_TRUE(store) << store.error().to_string();
+  const auto risk = std::make_shared<const sp::RiskStore>(std::move(*store));
+  const auto cfg = nav_config();
+  struct Run {
+    std::vector<sp::DiagnosticRow> rows;
+    sp::Calibration calibration;
+    f64 horizon{};
+  };
+  const auto run = [&](sp::SpoParams params) {
+    params.w_max = 0.5; // the vol target is reachable (see the spo-v1 calibration test)
+    v7::NavV7Options o;
+    o.spo_v1 = true;
+    o.spo_params = params;
+    o.spo_risk = risk;
+    const v7::ScopedNavExtension extension(o);
+    const auto result = st::replay_nav(role.nav(), cfg);
+    EXPECT_TRUE(result) << result.error().to_string();
+    const auto* engine = extension.spo_engine();
+    const auto rows = engine->rows();
+    return Run{std::vector<sp::DiagnosticRow>(rows.begin(), rows.end()), engine->calibration(),
+               engine->horizon()};
+  };
+  const Run v1 = run(sp::SpoParams{});
+  const Run v2 = run(sp::v2_params());
+  ASSERT_FALSE(v1.rows.empty());
+  ASSERT_FALSE(v2.rows.empty());
+  EXPECT_EQ(v2.horizon, 4.0);
+  const auto& c = v2.calibration;
+  ASSERT_TRUE(c.done);
+  EXPECT_EQ(c.rule, sp::GammaRule::Vol);
+  EXPECT_EQ(c.gamma, c.gamma_vol);
+  EXPECT_NEAR(c.aim_vol, 0.05, 1e-3 * 0.05);
+  EXPECT_EQ(sp::parameters_json(sp::v2_params(), v2.horizon)["alpha_horizon"], 4.0);
+  EXPECT_EQ(sp::parameters_json(sp::SpoParams{}, v1.horizon)["alpha_horizon"], 1.0);
+  EXPECT_EQ(v1.rows.front().session, v2.rows.front().session);
+  EXPECT_DOUBLE_EQ(v1.rows.front().gross_shadow, v2.rows.front().gross_shadow);
+  EXPECT_DOUBLE_EQ(2.0 * v2.rows.front().alpha_shadow, v1.rows.front().alpha_shadow);
+  for (const auto& r : v2.rows) EXPECT_EQ(r.capped_specific, 0U) << r.session; // clean model
+}
+// (4) end to end: a daily specific variance of 1e12 on a held name drives spo-v1's
+// exante_vol_current (a correct formula on a corrupt input) far above any plausible book vol;
+// the ceiling clamps it, counts it on exactly the corrupt decisions and bounds the column.
+TEST(SpoHook, ACorruptSpecificVarianceIsCappedAndCountedInTheDiagnostics) {
+  const Directory dir;
+  const Role role(30, 12, 71);
+  const std::vector<u8> forecast(role.d, u8{1});
+  std::vector<std::pair<usize, f64>> corrupt;
+  for (usize d = 10; d < 15; ++d) corrupt.emplace_back(d * role.n + 3, 1e12);
+  const auto sha =
+      write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", 9, corrupt);
+  auto store = sp::RiskStore::open(dir.path.string(), sha, "role-sha");
+  ASSERT_TRUE(store) << store.error().to_string();
+  const auto risk = std::make_shared<const sp::RiskStore>(std::move(*store));
+  const auto cfg = nav_config();
+  const auto rows_with = [&](f64 ceiling) {
+    v7::NavV7Options o;
+    o.spo_v1 = true;
+    o.spo_params.specific_ceiling = ceiling;
+    o.spo_risk = risk;
+    const v7::ScopedNavExtension extension(o);
+    const auto result = st::replay_nav(role.nav(), cfg);
+    EXPECT_TRUE(result) << result.error().to_string();
+    const auto rows = extension.spo_engine()->rows();
+    return std::vector<sp::DiagnosticRow>(rows.begin(), rows.end());
+  };
+  const auto raw = rows_with(inf), capped = rows_with(1.0);
+  ASSERT_FALSE(raw.empty());
+  ASSERT_EQ(raw.size(), capped.size());
+  const auto corrupt_session = [&](i64 session) {
+    for (usize d = 10; d < 15; ++d)
+      if (role.sessions[d] == session) return true;
+    return false;
+  };
+  usize corrupt_rows = 0;
+  f64 worst = 0;
+  for (usize k = 0; k < raw.size(); ++k) {
+    const bool bad = corrupt_session(raw[k].session);
+    corrupt_rows += bad ? 1U : 0U;
+    EXPECT_EQ(raw[k].capped_specific, 0U) << k;
+    EXPECT_EQ(capped[k].capped_specific, bad ? 1U : 0U) << k;
+    EXPECT_LT(capped[k].exante_vol_current, 1.0) << k;
+    EXPECT_LT(capped[k].exante_vol, 1.0) << k;
+    if (bad) worst = std::max(worst, raw[k].exante_vol_current);
+  }
+  EXPECT_GT(corrupt_rows, 0U);
+  EXPECT_GT(worst, 1.0);
 }
 } // namespace
