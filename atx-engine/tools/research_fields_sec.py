@@ -106,10 +106,11 @@ EA_NAMES = ("ea_days_to_expected", "ea_days_since", "ea_window_pre5", "ea_window
             "ea_time_of_day")
 INS_NAMES = ("ins_net_buy_ratio", "ins_n_buyers", "ins_n_sellers", "ins_opportunistic_net", "ins_cluster_buy")
 K8_NAMES = ("k8_count_63", "k8_item_material_21", "k8_days_since_any")
-EA_FRESH = f"no visible primary announcement, or the latest one's session_date is more than {EA_STALE_DAYS} days before the session -> NaN"
-INS_PRESENT = (f"NaN unless the issuer has a visible insider transaction row (any form, code or owner) with available_at "
-               f"within {INS_PRESENCE_DAYS} days before the 22:00 UTC mark of t-1 (Section 16 presence; else 0 would "
-               "mean 'no trades' for an issuer that files no Form 4); NaN while the window or the presence lookback "
+EA_FRESH = (f"no visible primary announcement, or the latest one's session_date is more than {EA_STALE_DAYS} days "
+            "before the session -> NaN")
+INS_PRESENT = (f"NaN unless the issuer has a visible insider transaction row (any form, code or owner) with "
+               f"available_at within {INS_PRESENCE_DAYS} days before the 22:00 UTC mark of t-1 (Section 16 presence; "
+               "else 0 would mean 'no trades' for an issuer that files no Form 4); NaN while the window or the presence lookback "
                "starts before the stage's first filing quarter")
 INS_RATIO_NAN = ("shares_out not finite and positive -> NaN; |net shares| > shares_out (outside the declared domain "
                  "[-1, 1]: a shares_out units defect or a split the Form 4 counts do not restate) -> NaN, counted")
@@ -152,7 +153,8 @@ _spec("ea_days_since", ["earnings_calendar"], "sessions since the latest announc
 _spec("ea_window_pre5", ["earnings_calendar"], "indicator: 1 when the expected announcement is 1..5 sessions ahead",
       "1 if 1 <= ea_days_to_expected <= 5 else 0", f"NaN wherever ea_days_to_expected is NaN", EA_CAVEATS,
       "sec-ea-window-pre5-v1", _EA_LAG, _EA_MIN, _EA_COLS)
-_spec("ea_window_post3", ["earnings_calendar"], "indicator: 1 when t is 0..3 sessions after the latest reaction session",
+_spec("ea_window_post3", ["earnings_calendar"],
+      "indicator: 1 when t is 0..3 sessions after the latest reaction session",
       "1 if 0 <= ea_days_since <= 3 else 0", "NaN wherever ea_days_since is NaN", EA_CAVEATS,
       "sec-ea-window-post3-v1", _EA_LAG, _EA_MIN, _EA_COLS)
 _spec("ea_delay_days", ["earnings_calendar"], "calendar days (signed): announced session_date minus expected date",
@@ -168,8 +170,9 @@ _spec("ea_time_of_day", ["earnings_calendar"], "categorical code: 0 pre_market (
 _INS_COLS = ["issuer_cik", "owner_cik", "form", "is_amendment", "table_type", "transaction_code", "acquired_disposed",
              "shares", "transaction_date", "any_director", "any_officer", "any_ten_percent_owner",
              "n_reporting_owners", "available_at"]
-_INS_TRADES = (f"trades visible at t (available_at < mark(t-1)) whose transaction_date is on or after session t-{INS_WINDOW} "
-               f"(the {INS_WINDOW} sessions t-{INS_WINDOW}..t-1; a late filing counts once it is visible)")
+_INS_TRADES = (f"trades visible at t (available_at < mark(t-1)) whose transaction_date is on or after session "
+               f"t-{INS_WINDOW} (the {INS_WINDOW} sessions t-{INS_WINDOW}..t-1; a late filing counts once it is "
+               "visible)")
 _INS_LAG = "trade usable from the session after the first session whose 22:00 UTC mark follows the Form 4 acceptance"
 _INS_MIN = "window and presence lookback on or after the stage's first filing quarter (2015q1)"
 _spec("ins_net_buy_ratio", ["insider"], "ratio (signed): net open-market shares bought / shares outstanding",
@@ -438,7 +441,8 @@ class SecFieldModule:
     # -- inputs --------------------------------------------------------------------------------------------------
     def _stage(self, options, stage):
         directory = Path(options["sec_stages"]) / STAGES[stage][0]
-        m, src = self.h.pinned_manifest(directory, options[f"{stage}_sha256"], stage.replace("_", "-"), STAGES[stage][1])
+        m, src = self.h.pinned_manifest(directory, options[f"{stage}_sha256"], stage.replace("_", "-"),
+                                        STAGES[stage][1])
         return directory, m, src
 
     def _verified(self, directory: Path, manifest: dict, rel: str, budget):
@@ -497,7 +501,8 @@ class SecFieldModule:
                          ("timing", timing_codes[slot]),
                          ("yoy", pc.equal(h.as_text(h.column_of(tb, "expected_rule")), "yoy_364")
                           .to_numpy(zero_copy_only=False)),
-                         ("err", h.as_f64(h.column_of(tb, "expected_error_days"), "announcements expected_error_days"))):
+                         ("err", h.as_f64(h.column_of(tb, "expected_error_days"),
+                                          "announcements expected_error_days"))):
                 parts[k].append(v)
             budget.check("sec-earnings-batch")
         del blob
@@ -546,7 +551,8 @@ class SecFieldModule:
     def _insider(self, options, ciks, cal: Calendar, end_ns: int, budget):
         h = self.h
         directory, m, man_src = self._stage(options, "insider")
-        rels = sorted(k for k in (m.get("files") or {}) if re.match(r"^transactions/year=\d{4}/\d{4}q[1-4]\.parquet$", k))
+        pattern = re.compile(r"^transactions/year=\d{4}/\d{4}q[1-4]\.parquet$")
+        rels = sorted(k for k in (m.get("files") or {}) if pattern.match(k))
         quarters = [re.search(r"(\d{4})q([1-4])", r).groups() for r in rels]
         qdays = [dt.date(int(y), 3 * int(q) - 2, 1) for y, q in quarters]
         if not rels:
@@ -589,14 +595,16 @@ class SecFieldModule:
                 pres_c.append(pair[1])
                 st["presence_rows"] += int(np.count_nonzero(use))
                 code = h.as_text(h.column_of(tb, "transaction_code"))
-                ps = (pc.equal(h.as_text(h.column_of(tb, "table_type")), "non_derivative").to_numpy(zero_copy_only=False)
+                ps = (pc.equal(h.as_text(h.column_of(tb, "table_type")), "non_derivative")
+                      .to_numpy(zero_copy_only=False)
                       & pc.is_in(code, value_set=pa.array(["P", "S"])).to_numpy(zero_copy_only=False))
                 orig4 = (pc.equal(h.as_text(h.column_of(tb, "form")), "4").to_numpy(zero_copy_only=False)
                          & ~pc.fill_null(h.column_of(tb, "is_amendment"), True).to_numpy(zero_copy_only=False))
                 insider = (pc.fill_null(h.column_of(tb, "any_director"), False).to_numpy(zero_copy_only=False)
                            | pc.fill_null(h.column_of(tb, "any_officer"), False).to_numpy(zero_copy_only=False))
                 joint10 = ((pc.fill_null(h.column_of(tb, "n_reporting_owners"), 1).to_numpy(zero_copy_only=False) > 1)
-                           & pc.fill_null(h.column_of(tb, "any_ten_percent_owner"), False).to_numpy(zero_copy_only=False))
+                           & pc.fill_null(h.column_of(tb, "any_ten_percent_owner"), False)
+                           .to_numpy(zero_copy_only=False))
                 shares = h.as_f64(h.column_of(tb, "shares"), "insider shares")
                 buy = pc.equal(code, "P").to_numpy(zero_copy_only=False)
                 direction = h.as_text(h.column_of(tb, "acquired_disposed"))
@@ -805,7 +813,8 @@ class SecFieldModule:
                     raise ValueError("SEC insider ratios: this run's shares_out.f64 is missing or has the wrong size")
                 so_file = so_path.open("rb")
             ea_latest = Latest(ea["usable"], ea["cidx"], len(ciks)) if ea is not None else None
-            ins_latest = Latest(ins["presence"]["usable"], ins["presence"]["cidx"], len(ciks)) if ins is not None else None
+            ins_latest = (Latest(ins["presence"]["usable"], ins["presence"]["cidx"], len(ciks))
+                          if ins is not None else None)
             for t in range(nd):
                 u = t + cal.prefix
                 day = int(cal.days[u])
