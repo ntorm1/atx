@@ -298,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--now", default=None, help="ISO timestamp for the future-clock check (default: now)")
     args = ap.parse_args(argv)
     root = args.root or default_root()
-    stages = registry.load()
+    stages = registry.load(strict=False)
     now = dt.datetime.fromisoformat(args.now).replace(tzinfo=dt.UTC) if args.now else None
     results = verify(root, stages, args.stage, now, not args.no_hash)
     print(render(results))

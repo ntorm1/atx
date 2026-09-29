@@ -23,6 +23,7 @@ Inputs are the stages whose files a build reads; the panel's scratch sub-stages 
 from __future__ import annotations
 
 import ast
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -320,8 +321,9 @@ BUILD_STEPS: dict[str, str | None] = {
 }
 
 
-def discover(src_root: Path = SRC_ROOT, package: str = "atx_db") -> list[Stage]:
-    """``LAKE_STAGES`` literals declared in modules under ``src_root/package`` (parsed, never imported)."""
+def discover(src_root: Path = SRC_ROOT, package: str = "atx_db", errors: list[str] | None = None) -> list[Stage]:
+    """``LAKE_STAGES`` literals declared in modules under ``src_root/package`` (parsed, never imported). With
+    ``errors`` given, an unparsable module or a bad entry is reported there and skipped instead of raising."""
     found: list[Stage] = []
     base = src_root / package
     for path in sorted(base.rglob("*.py")):
@@ -334,24 +336,57 @@ def discover(src_root: Path = SRC_ROOT, package: str = "atx_db") -> list[Stage]:
         if "LAKE_STAGES" not in text:
             continue
         dotted = ".".join(path.relative_to(src_root).with_suffix("").parts)
-        for node in ast.parse(text, filename=str(path)).body:
-            if isinstance(node, ast.Assign | ast.AnnAssign):
+        try:
+            for node in ast.parse(text, filename=str(path)).body:
+                if not isinstance(node, ast.Assign | ast.AnnAssign) or node.value is None:
+                    continue
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                if any(isinstance(t, ast.Name) and t.id == "LAKE_STAGES" for t in targets) and node.value is not None:
-                    try:
-                        entries = ast.literal_eval(node.value)
-                    except ValueError as exc:
-                        raise RegistryError(f"{path}: LAKE_STAGES must be a literal list of dicts ({exc})") from exc
-                    for e in entries:
-                        found.append(Stage.from_dict({"module": dotted, **e}))
+                if not any(isinstance(t, ast.Name) and t.id == "LAKE_STAGES" for t in targets):
+                    continue
+                try:
+                    entries = ast.literal_eval(node.value)
+                except ValueError as exc:
+                    raise RegistryError(f"{path}: LAKE_STAGES must be a literal list of dicts ({exc})") from exc
+                for e in entries:
+                    found.append(Stage.from_dict({"module": dotted, **e}))
+        except (SyntaxError, RegistryError, TypeError) as exc:
+            if errors is None:
+                raise
+            errors.append(f"{dotted}: {exc}")
     return found
 
 
-def load(src_root: Path = SRC_ROOT, extra: Iterable[Stage] = (), include_discovered: bool = True) -> list[Stage]:
-    """Every registered stage, validated, in topological order (inputs first)."""
+def load(src_root: Path = SRC_ROOT, extra: Iterable[Stage] = (), include_discovered: bool = True,
+         strict: bool = True) -> list[Stage]:
+    """Every registered stage, validated, in topological order (inputs first).
+
+    ``strict=False`` (the CLIs): a discovered entry that does not validate (bad field, unknown input, clash) is
+    dropped with a warning on stderr, so one lane's broken declaration cannot stop verify, catalog or plan."""
     stages = list(STAGES) + list(extra)
-    if include_discovered:
-        stages += discover(src_root)
+    if not include_discovered:
+        return validate(stages)
+    if strict:
+        return validate(stages + discover(src_root))
+    errors: list[str] = []
+    pending = discover(src_root, errors=errors)
+    progress = True
+    while pending and progress:
+        progress = False
+        for s in list(pending):
+            try:
+                validate([*stages, s])
+            except RegistryError:
+                continue
+            stages.append(s)
+            pending.remove(s)
+            progress = True
+    for s in pending:
+        try:
+            validate([*stages, s])
+        except RegistryError as exc:
+            errors.append(f"{s.module}: stage {s.name!r} dropped: {exc}")
+    for e in errors:
+        print(f"lake registry WARNING: {e}", file=sys.stderr)
     return validate(stages)
 
 

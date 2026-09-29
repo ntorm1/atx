@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dump", action="store_true", help="print the canonical dump SHA-256 (and write <out>.dump.txt)")
     args = ap.parse_args(argv)
     root = args.root or default_root()
-    rec = build(root, registry.load(), args.out)
+    rec = build(root, registry.load(strict=False), args.out)
     if args.dump:
         text = canonical_dump(args.out)
         rec["dump_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()

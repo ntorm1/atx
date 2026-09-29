@@ -428,7 +428,7 @@ def bind_inputs(*stages: str, root: Path | None = None) -> dict[str, str]:
         from ..alpha_panel.common import build_root
 
         root = build_root()
-    by_name = {s.name: s for s in registry.load()}
+    by_name = {s.name: s for s in registry.load(strict=False)}
     out = {}
     for name in stages:
         rel = by_name[name].manifest if name in by_name else f"{name}/manifest.json"

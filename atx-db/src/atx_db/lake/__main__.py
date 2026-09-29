@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
         return run(["--dry-run" if cmd == "plan" else "--run", *args])
     if cmd == "list":
         from . import registry
-        for s in registry.load():
+        for s in registry.load(strict=False):
             flag = " (planned)" if s.planned else ""
             print(f"{s.name:<32} {s.lane:<5} {s.manifest:<48} inputs={','.join(s.inputs) or '-'}{flag}")
         return 0

@@ -265,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", type=Path, default=None)
     args = ap.parse_args(argv)
     root = args.root or default_root()
-    stages = registry.load()
+    stages = registry.load(strict=False)
     only = [x.strip() for x in args.only.split(",")] if args.only else None
     items = plan(root, stages, only, args.start, strict_platform=args.strict_platform, fetch=args.fetch)
     print(render(items), flush=True)

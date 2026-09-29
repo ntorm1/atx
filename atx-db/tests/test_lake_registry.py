@@ -93,3 +93,19 @@ def test_live_lake_every_manifest_and_parquet_file_is_registered_and_vice_versa(
     entry to add."""
     report = coverage_report(LIVE_ROOT, registry.load())
     assert report == "", "\n" + report
+
+
+def test_non_strict_load_drops_a_broken_declaration(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    pkg = tmp_path / "atx_db" / "alpha_panel"
+    pkg.mkdir(parents=True)
+    (pkg / "good.py").write_text('LAKE_STAGES = [{"name": "good", "lane": "EVT", "schema": None, '
+                                 '"inputs": ["prices"]}]\n', encoding="utf-8")
+    (pkg / "bad.py").write_text('LAKE_STAGES = [{"name": "bad", "lane": "EVT", "schema": None, '
+                                '"inputs": ["no_such_stage"]}]\n', encoding="utf-8")
+    (pkg / "broken.py").write_text("LAKE_STAGES = [{'name': \n", encoding="utf-8")  # mid-edit syntax error
+    with pytest.raises((RegistryError, SyntaxError)):
+        registry.load(tmp_path)
+    names = {s.name for s in registry.load(tmp_path, strict=False)}
+    assert "good" in names and "bad" not in names and "prices" in names
+    err = capsys.readouterr().err
+    assert "stage 'bad' dropped" in err and "atx_db.alpha_panel.broken" in err
