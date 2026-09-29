@@ -1,0 +1,35 @@
+# Task W5a report: SEC-derived PIT fields (D2 earnings calendar, D11 Form 4, D12 8-K)
+Branch `feat/platform-v7-w5a-secfields-20260928` (pool-8), HEAD `874ed656`, base `9da38ad8`, 4 commits. No C++ was built, no IC or NAV was run, no subagents were spawned, nothing under C:/atx was written.
+
+**Code.** `atx-engine/tools/research_fields_sec.py`: FIELDS :119, `SEC_CLOCK` :73, NYSE rule calendar :249 and `Calendar` :274, loaders `_earnings` :463 / `_insider` :546 / `_opportunistic` (Cohen-Malloy-Pomorski) :662 / `_eightk` :689, `compute` :756.
+
+**Hook.** In `prepare_research_fields.py`, 15 added lines, 2 of which replace existing lines: registry :491-495, `check` :2326 (before any output), `compute` :2390 (after finra_sv), CLI :2677 and `run(module_options=)`. It is generic: W5b can add 3 lines below `# W5a registry hook` (import, `FIELD_MODULES.append(bind(globals()))`, `ALL_FIELDS.update`) and needs no other seam.
+
+**Clock and identity.** A row is usable at session t only if `available_at < 22:00 UTC` of session t-1. Sessions come from the role inside its range and the NYSE rule calendar outside; the rule matched lo1 with 0 mismatches. CIKs map to lines through a separately pinned `--sec-identity-bridge` (identity-bridge-v2-pit) with the builder's LINK_RULE, P lines only; the fundamental fields keep r4. The 2025 seal applies, every stage file is SHA-checked against its manifest, and each manifest SHA is pinned on the CLI.
+
+**Fields.** Lag: usable from the session after the acceptance's event session. Coverage: finite share of lo1 member cells, 2020 / 2021 / 2022. Each manifest entry records `formula_id`, `formula_sha256`, `lag_sessions`, `min_history`, `nan_rule`, stage-manifest and bridge SHAs, NaN reasons and per-year `coverage_linked_primary`.
+| id | formula id | NaN rule | 2020 | 2021 | 2022 |
+|---|---|---|---:|---:|---:|
+| ea_days_to_expected, ea_window_pre5 (1 if 1..5 sessions ahead) | sec-ea-days-to-expected-yoy364-consume45-fb91-v1, sec-ea-window-pre5-v1 | latest primary 2.02 older than 200 d; overdue by more than 63 sessions | .961 | .956 | .958 |
+| ea_days_since, ea_window_post3, ea_time_of_day (0 BMO, 1 intraday, 2 AMC, 3 closed) | sec-ea-days-since-reaction-v1, -window-post3-v1, -time-of-day-v1 | 200 d | .961 | .957 | .959 |
+| ea_delay_days (Johnson-So, signed days) | sec-ea-delay-days-yoy364-v1 | 200 d; expectation not yoy_364 | .930 | .915 | .933 |
+| ins_net_buy_ratio, ins_opportunistic_net (/shares_out, domain [-1, 1]) | sec-ins-net-buy-ratio126-v1, -opportunistic-net126-cmp3y-v1 | Section 16 presence 365 d; opportunistic: trade year before 2018 | .972 | .968 | .967 |
+| ins_n_buyers, ins_n_sellers, ins_cluster_buy (3 or more buyers in 21 sessions) | sec-ins-n-buyers126-v1, -n-sellers126-v1, -cluster-buy21-min3-v1 | presence 365 d | .973 | .968 | .967 |
+| k8_count_63, k8_item_material_21, k8_days_since_any | sec-k8-count63-v1, -item-material21-v1, -days-since-any-v1 | original-8-K presence 365 d | .976 | .973 | .970 |
+
+**Tests.** 12 new; 66/66 pass together with the existing suites. They cover: a brute-force oracle compared cell for cell on all 14 fields; PIT edges (22:30 UTC on d-1 not usable at d, 21:59 UTC usable); routine / opportunistic / unclassified insiders; min-history rules; refusals before any output; byte identity of legacy + issuer + sv with and without the SEC fields; the reuse path.
+
+**Real data (lo1).** Two runs were byte-identical.
+- `--reuse` fields-v7 + 14 new: 41/41 existing pins and entries identical (40 reused, `sv_ratio126` recomputed to the same bytes). 58.7 s wall; RSS peak 373 MiB sampled, 524 MiB OS working set.
+- Full recompute, no reuse: 41/41 payloads equal fields-v7. 67.9 s; 645 MiB sampled, 832 MiB working set. The 41 fields alone already reach 623 / 782 MiB.
+
+**Root command (pool-2, after merge).** Afterwards, check that the fields-v7 `manifest.files` equals the new one minus the 14 new files.
+```bash
+"C:/Program Files/Python312/python.exe" atx-engine/tools/prepare_research_fields.py --role build-equity/recent-fast-train-2020-2022-v2-lo1 --role-sha256 3e79978a858cbf6b723ff7a896d56814f7505dde11b805c30c5b909783ebb809 --output build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v8 --fields <41 fields-v7 names>,ea_days_to_expected,ea_days_since,ea_window_pre5,ea_window_post3,ea_delay_days,ea_time_of_day,ins_net_buy_ratio,ins_n_buyers,ins_n_sellers,ins_opportunistic_net,ins_cluster_buy,k8_count_63,k8_item_material_21,k8_days_since_any --reuse build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v7 --reuse-sha256 1d1fa87a00d519bcf08fbec83f3fd17029e23650a98a9af26e99ddb1f1a73ee1 --reuse-hardlink --finra C:/atx/data/finra_short_interest --tickerhistory C:/Users/natha/Downloads/TickerHistory3.parquet --finra-short-volume C:/atx/atx-db/data/raw/finra_short_volume --identity-bridge build-equity/identity-bridge-r4-v1 --identity-bridge-sha256 ddf9716459a1116b85f713ca9cb788c3db753a6e1fea8eba335ed34320baebaa --fund-events build-equity/fundamental-events-v2 --fund-events-sha256 74ed9a50ea686e0b0842ff9b09e78d6653ddeedd0d42f37893873ce269e3dd71 --fund-lag-sessions 1 --sec-stages C:/atx/atx-db/data/alpha_panel/v1 --sec-identity-bridge C:/atx/atx-db/data/alpha_panel/v1/export/identity-bridge-v2-pit --sec-identity-bridge-sha256 09aac28f757fa959b0ed4cd9296b2267940e70af98e0d2c67cc45b1df4f7fa01 --earnings-calendar-sha256 9a4a976b03d0ad04672796f01abc129d0d09e3db23d62ddf57aea68ae3c7d769 --insider-sha256 dcd3f1aa4ba6e266c03ef78568ca131c1336f51ade477f03faff2e88a62ba061 --sec-filings-sha256 5190fe99e4c2f1f13218d966a67d06995d51b7a31a73151dad2686e829aed693 --max-rss-mib 700 --max-seconds 1800
+```
+
+**Concerns.**
+1. **FPI and ADR gaps.** Foreign private issuers (6-K) have no 2.02 8-K, no Form 4 and no 8-K, so they are NaN by the presence rules rather than 0. lo1 is linked-operating, so this barely shows here; a v2 universe with FPIs will have lower coverage. ADR lines count ADS, and name-tier links inherit FINRA's 30-character name truncation.
+2. **Fiscal-period label.** `is_primary` and the expected-date match rely on atx-db's `fiscal_period_end` label, which can come from a later 10-Q/10-K. This is a small presence look-ahead, stated in the caveats. About 9.5% of 2.02 rows are non-primary and are ignored.
+3. **Rules set after looking at the field distribution (no returns).** Joint Form 4s with more than one owner that include a 10% owner are dropped (sponsor groups). The ratio domain is [-1, 1]; 13 cells were set to NaN, for example a vendor `shares_out` of 348,000 on line 6249687 on 2020-10-29, a units defect in the existing field. Pre-register both rules before any IC.
+4. **Operational limits.** The SEC fields are never reused (about 15 s per run). 55 fields plus W5b's roughly 8 gives 63, against a runner limit of 64. Form 4 share counts are not split-restated.
