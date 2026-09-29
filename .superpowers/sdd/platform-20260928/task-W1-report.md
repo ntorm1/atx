@@ -62,3 +62,15 @@ Branch feat/platform-v7-w1-spo-20260928 @ 8326d660 (pool-3, base 5b958dd2, 3 com
 - `all` (5 books, 3,750 solves): about 90-170 s. Use it only if step 4's console line shows a mean below about 25 ms per solve.
 
 **Untested (no build):** compile and /WX; every gtest; the real-data iteration counts, timing and RSS; whether the risk model forecasts every TRAIN decision date (a gap refuses the run with its session). The gtests compare to the closed-form Markowitz solution and a 1-D brute force, but the prox has not been cross-checked on a real problem with more than two names against an external solver.
+
+**Fix-up (HEAD 0079dfaa on 48b454c4): SpoSolver.NetGrossBetaAndBoxesHoldTo1e10 line 209**
+- **Cause: wrong test expectation, not a solver bug.** The failing check was the *beta* multiplier `rho`, not the gross one. The line before it, `EXPECT_TRUE(multipliers.gross_binding)`, passed. The gross multiplier is populated: mu = (alpha+ + alpha-)/2, and case A of the prox runs.
+- The fixture's +-0.002 beta band was slack at that optimum. `coupled_prox` sets rho = 0 exactly when beta'w(0) is inside the band.
+- **The gamma calibration does not depend on a gross multiplier.** gamma_bind bisects ln(gross) of the cost-free aim, which has no gross cap (gross = inf), so gross_binding is always false there. Its root is monotone and bracketed at guess x 1e-4..1e4. Nothing in the cell path reads a gross multiplier to set gamma.
+- **Targeted assertions:**
+  - The test first solves with the beta band removed and asserts rho == 0.
+  - It then sets the band to half of |beta'w_free|. That band provably binds by strict convexity.
+  - With the band binding, it asserts: gross_binding, mu > 0, gross == budget to 1e-10, beta'w == band edge to 1e-10, rho != 0, and sign(rho) == sign(beta'w_free).
+- **New tests** (covered by the existing Spo* filters):
+  - `SpoSolver.CostFreeAimVarianceFallsAndGrossCrossesWithGamma`: on the calibration's uncapped aim, gross_binding is false, variance is nonincreasing in gamma, and gross is > 0.3 at gamma = 1 and < 0.3 at gamma = 1e4.
+  - `SpoHook.CalibrationMeetsTheBindingOfTheVolTargetAndTheGrossBudget`: on the replay path with w_max 0.5, both roots are reached and gamma = max(gamma_vol, gamma_bind). The binding target is met to 1e-4 (gross = aim_leverage when gamma_bind >= gamma_vol), and vol <= target.
