@@ -474,6 +474,18 @@ def _text(col) -> np.ndarray:
     return np.asarray(pc.fill_null(pc.cast(col, pa.string()), "").to_pylist(), dtype=object)
 
 
+def _codes(col, values) -> np.ndarray:
+    """Index of each string in ``values`` (-1: null or not listed), computed in Arrow (no Python strings)."""
+    return pc.fill_null(pc.index_in(pc.cast(col, pa.string()), value_set=pa.array(list(values), pa.string())),
+                        -1).to_numpy(zero_copy_only=False).astype(np.int64)
+
+
+def _release():
+    import gc
+    gc.collect()
+    pa.default_memory_pool().release_unused()
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # Field builders: each returns ({name: row matrix producer}, stats) by streaming rows into FieldWriters
 # ---------------------------------------------------------------------------------------------------------------------
@@ -611,6 +623,7 @@ def build_13f(ctx: Ctx, names, stage: Stage):
                     rows["shares"].append(sh[k])
                     rows["value"].append(val[k] * ufp[ai[k]])
                 del blob, pf
+                _release()
                 ctx.budget.check("13f-holdings")
             cat = {k: np.concatenate(v) if v else np.zeros(0) for k, v in rows.items()}
             del rows
@@ -699,15 +712,17 @@ def build_ftd(ctx: Ctx, names, stage: Stage):
         t = stage.table(rel, ["settlement_date", "security_id", "quantity", "available_at", "map_basis"])
         d, sid, qty, av = _days(_col(t, "settlement_date")), _ids(_col(t, "security_id")), _f64(_col(t, "quantity")), \
             _instants(_col(t, "available_at"))
-        basis = _text(_col(t, "map_basis"))
+        collision = _codes(_col(t, "map_basis"), ("collision",)) == 0
         del t
         st["rows"] += len(d)
         sealed = av >= SEAL_NS
         st["rows_sealed"] += int(np.count_nonzero(sealed))
-        d, sid, qty, av, basis = d[~sealed], sid[~sealed], qty[~sealed], av[~sealed], basis[~sealed]
-        sdays.append(d)
-        sav.append(av)
-        collision = basis == "collision"
+        d, sid, qty, av, collision = d[~sealed], sid[~sealed], qty[~sealed], av[~sealed], collision[~sealed]
+        ud, inv = np.unique(d, return_inverse=True)       # this file's settlement dates and their latest clock
+        uav = np.full(len(ud), BEFORE_ALL, dtype=np.int64)
+        np.maximum.at(uav, inv, av)
+        sdays.append(ud)
+        sav.append(uav)
         st["rows_collision_excluded"] += int(np.count_nonzero(collision))
         st["rows_unmapped"] += int(np.count_nonzero(sid <= 0))
         pos, on = role.columns_of(np.maximum(sid, 0))
@@ -716,6 +731,8 @@ def build_ftd(ctx: Ctx, names, stage: Stage):
         rows["k"].append(d[keep])
         rows["col"].append(pos[keep])
         rows["qty"].append(qty[keep])
+        del d, sid, qty, av, collision, pos, on, keep
+        _release()
         ctx.budget.check("ftd-read")
     d_all, av_all = np.concatenate(sdays), np.concatenate(sav)
     cal = np.unique(d_all)
@@ -796,11 +813,11 @@ def build_regsho(ctx: Ctx, names, stage: Stage, names_stage: Stage):
     late_rows = rows_used = 0
     for rel in files:
         t = stage.table(rel, ["list_date", "market", "security_id", "on_list", "available_at"])
-        d, mk, sid = _days(_col(t, "list_date")), _text(_col(t, "market")), _ids(_col(t, "security_id"))
+        d, sid = _days(_col(t, "list_date")), _ids(_col(t, "security_id"))
+        mi = _codes(_col(t, "market"), REGSHO_MARKETS)
         onl = pc.fill_null(_col(t, "on_list"), False).to_numpy(zero_copy_only=False).astype(bool)
         av = _instants(_col(t, "available_at"))
         del t
-        mi = np.array([REGSHO_MARKETS.index(m) if m in REGSHO_MARKETS else -1 for m in mk.tolist()], dtype=np.int64)
         k = np.searchsorted(cal, d)
         oc = (k < len(cal)) & (cal[np.minimum(k, len(cal) - 1)] == d)
         pos, on = role.columns_of(np.maximum(sid, 0))
@@ -817,14 +834,17 @@ def build_regsho(ctx: Ctx, names, stage: Stage, names_stage: Stage):
     st.update(threshold_files=files, on_list_rows_on_role=rows_used, rows_later_than_their_list=late_rows)
     fn = names_stage.table("finra_names.parquet", ["security_id", "available_at", "dissemination_date", "market_class"])
     f_sid, f_av, f_dd = _ids(_col(fn, "security_id")), _instants(_col(fn, "available_at")), _days(_col(fn, "dissemination_date"))
-    f_mc = _text(_col(fn, "market_class"))
+    classes = list(REGSHO_MARKET_OF_CLASS)
+    f_cls = _codes(_col(fn, "market_class"), classes)
     del fn
+    class_market = np.array([REGSHO_MARKETS.index(REGSHO_MARKET_OF_CLASS[c]) for c in classes] + [-1], dtype=np.int64)
     fpos, fon = role.columns_of(np.maximum(f_sid, 0))
     keep = fon & (f_sid > 0) & (f_av < SEAL_NS)
     order = np.flatnonzero(keep)[np.argsort(f_av[keep], kind="stable")]
     f_av, f_dd, f_col = f_av[order], f_dd[order], fpos[order]
-    f_mkt = np.array([REGSHO_MARKETS.index(REGSHO_MARKET_OF_CLASS[c]) if c in REGSHO_MARKET_OF_CLASS else -1
-                      for c in f_mc[order].tolist()], dtype=np.int64)
+    f_mkt = class_market[f_cls[order]]                     # an unlisted class (-1) indexes the trailing -1
+    del f_sid, f_cls, fpos, fon, keep
+    _release()
     st["finra_name_rows_on_role"] = int(len(order))
     latest = np.full(n, -1, dtype=np.int64)
     p = 0
@@ -916,6 +936,8 @@ def build_svx(ctx: Ctx, names, stage: Stage):
             sel = yrs == y
             finra_total[str(y)] = finra_total.get(str(y), 0.0) + float(tv[both][okv][sel].sum())
             vendor_total[str(y)] = vendor_total.get(str(y), 0.0) + float(vv[okv][sel].sum())
+        del sid, d, sv, tv, av, k, oc, pos, on, keep, both, vv, okv
+        _release()
         ctx.budget.check("svx-read")
     st["finra_total_over_vendor_volume_member_cells"] = {
         y: round(finra_total[y] / vendor_total[y], 6) for y in sorted(finra_total) if vendor_total[y] > 0}
@@ -1037,6 +1059,7 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
         checks["thirteenf"] = st
         for x in kinds["13f"]:
             sources[x] = stages["thirteenf"].sources()
+        _release()
         budget.report("holdings-13f-complete", fields=len(kinds["13f"]))
     if "ftd" in kinds:
         w, st, ex = build_ftd(ctx, kinds["ftd"], stages["ftd"])
@@ -1045,6 +1068,7 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
         checks["ftd"] = st
         for x in kinds["ftd"]:
             sources[x] = stages["ftd"].sources()
+        _release()
         budget.report("holdings-ftd-complete")
     if "regsho" in kinds:
         w, st, ex = build_regsho(ctx, kinds["regsho"], stages["regsho_threshold"], stages["security_master"])
@@ -1053,6 +1077,7 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
         checks["regsho_threshold"] = st
         for x in kinds["regsho"]:
             sources[x] = stages["regsho_threshold"].sources() + stages["security_master"].sources()
+        _release()
         budget.report("holdings-regsho-complete")
     if "svx" in kinds:
         w, st, ex, role_src = build_svx(ctx, kinds["svx"], stages["short_volume_ext"])
@@ -1061,6 +1086,7 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
         checks["short_volume_ext"] = st
         for x in kinds["svx"]:
             sources[x] = stages["short_volume_ext"].sources() + role_src
+        _release()
         budget.report("holdings-svx-complete")
     for x in names:
         if "shares_out" in HOLD_FIELDS[x].get("requires", []):
