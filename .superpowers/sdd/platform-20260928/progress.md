@@ -17,6 +17,25 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 GRID RESULT: aim-partial-v6 C1-C3 REJECTED; baseline v6.1 stands (N 32)
+| cell | kappa | clip | S2 net | gross SR | cost bps/$ | tau mean | dSR vs v6.1 (Memmel SE, t) | DSR N32 |
+|---|---|---|---|---|---|---|---|---|
+| baseline v6.1 (aim-partial-v5) | - | - | +1.239 | 1.594 | 13.55 | .0379 | - | .9032 |
+| C1 | .5 | [.5,1.5] | +1.160 | 1.431 | 11.82 | .0372 | -0.080 (.078, -1.02) | .8790 |
+| C2 | 1.0 | [.5,1.5] | +1.121 | 1.424 | 11.34 | .0369 | -0.118 (.103, -1.15) | .8663 |
+| C3 | 1.0 | [1,1] | +1.112 | 1.425 | 11.42 | .0367 | -0.127 (.100, -1.27) | .8639 |
+- Mechanics pass on all three (gross_lev_all_rows .969-.971, |net| <= .0077, tau p95 <= .047), cost per traded dollar
+  falls 13-16%, but gross SR falls ~10%: the cost-scaled target shrink removes more alpha than cost (cheap names are not
+  the alpha-rich names). Acceptance rule (dSR > 0) fails for every cell -> REJECTED, no freeze change. Regime rate
+  (C1/C2 vs C3) adds nothing measurable. Finding G1 for the SPO lane: shrink targets by alpha-per-cost, not by cost alone
+  (that is what the optimiser objective does).
+- CSCV PBO over {baseline, C1, C2, C3}: .346 (IS winner = baseline in 9,790 of 12,870 splits; OOS +1.226 ann; P[OOS<0]
+  .026). Effective-N (ONC) over the 32 trial series: N_eff 5; ledger 32 lines.
+- Appendix A trial accounting: TRAIN construction cells 29 -> 32 (C1-C3 disclosed above, all rejected). Validation
+  trials 2 spent (unchanged). 2025+ reserved. No per-candidate VAL statistic read.
+- Note: PBO .35 > .2 threshold in v7-prereg applies only to accepting a NEW winner; the baseline was not chosen on this
+  grid, so nothing is accepted or gated by it. Recorded for the pitch's honesty section.
+
 ## 2026-09-28 v7-2 build green; identity PASS; grid C1-C3 running; wave 2 dispatched
 - Fix-ups merged: L1 short partial-file names (Windows 259-char path limit was the "partial output" cause), L4 risk-verb
   role masks + `--band-exponent` (+ test rename). Build mega-v7-2a/2b: exit 0; StrategyIcRunner 46/46; target tests
