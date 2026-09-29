@@ -99,8 +99,9 @@ def test_denied_operator_is_still_refused_next_to_w2_ops(op: str):
 
 
 def test_vec_sum_is_allowed_only_as_an_explicit_policy_entry():
-    assert chk.POLICY_OPS == frozenset({'vec_sum'}) and 'vec_sum' in chk.ALLOWED_OPS
-    assert 'vec_avg' not in chk.ALLOWED_OPS
+    # vec_sum (W2, q5 FWL slope); sign and max (L7: library v7.0 nincr's indicator max(sign(x), 0))
+    assert chk.POLICY_OPS == frozenset({'vec_sum', 'sign', 'max'}) and chk.POLICY_OPS <= chk.ALLOWED_OPS
+    assert {'vec_avg', 'min'}.isdisjoint(chk.ALLOWED_OPS)
     resid = 'cs_resid_on(delay(log(ni_q), 252) + 0 * (at - delay(at, 252)), delay(be, 252), delay(sale, 252))'
     slope = f'vec_sum({resid} * (at - delay(at, 252))) / vec_sum(power({resid}, 2))'
     q5_like = f'rank(ts_mean_mp({slope}, 252, 63) * log(ni_q))'

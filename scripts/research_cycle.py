@@ -20,13 +20,17 @@ up next to this script, so ``specs/v61.json`` works from the worktree root). Pat
   card    alpha_report_card.py over the u pass, its cache and this cycle's admission.json (bounded; output C,
           receipt C-run); before the gate, so a failed gate still leaves the cards
   gate    admission read-out of admission.json (internal; exit 10 when a required candidate is not admitted with
-          its prior sign)
+          its prior sign; gate.require "all" (default: every listed candidate) or "any" (at least one, the
+          library-wave rule: print every row, stop only when none is admitted))
   w       IC runner, weighted pass              (bounded; output WT-<attempt>, receipt WT-run<attempt>)
   nav     NAV replay                            (bounded; output N, receipt N-run)
   monitor book_monitor.py --baseline: TRAIN reference distributions from the u pass daily IC, the admission, the
           cards' daily_sleeve.csv, the fit work dir and the spec's holdings_days / bias / decide paths (direct;
           output M)
-  summ    nav_summ.py vs the reference cell with DSR N (direct)
+  summ    nav_summ.py vs the reference cell with DSR N (direct); summ.cells (optional) lists the prior trial cells'
+          NAV dirs, which go with this cycle's NAV output into one positional block right after --reference (the
+          grid --effective-n dirs / --pbo / V[SR_n] read; len(cells) + 1 must equal dsr_n); summ.ledger (optional)
+          is the default of --ledger
 
 Pins: every input (library, recipe, baseline library, role, identity bridge, fundamental events, baseline fields,
 reference admission, reference cell) is pinned in the spec by ``lock``, which computes the SHA-256 from the file
@@ -41,8 +45,8 @@ receipt and HARD-STOPS (exit 4) on a non-zero exit or any refusal (prelaunch-mem
 limit, runner error). The tree must be clean (the runner refuses otherwise). ``status`` shows each phase's state and
 receipt. ``--suffix S`` appends ``-S`` to every output name (fields, cache, U, fit work, W, WT, N) for an identity
 re-run (``--keep-fields``: every name but the fields dir, which is then reused as it is); ``--reuse-fields DIR``
-passes ``--reuse DIR --reuse-sha256 <pin>`` to the fields builder; ``--ledger PATH`` passes ``--ledger PATH
---ledger-kind <summ.ledger_kind>`` to nav_summ; ``--runner-override KEY=VALUE`` (seconds, max_rss_mib,
+passes ``--reuse DIR --reuse-sha256 <pin>`` to the fields builder; ``--ledger PATH`` (default: summ.ledger) passes
+``--ledger PATH --ledger-kind <summ.ledger_kind>`` to nav_summ; ``--runner-override KEY=VALUE`` (seconds, max_rss_mib,
 min_free_mib) changes a bounded-runner cap for this invocation (visible in every line; e.g. max_rss_mib=64 forces
 an rss-limit refusal to check the hard stop).
 """
@@ -62,6 +66,7 @@ ATTEMPT_PHASES = ("u", "fit", "w", "nav")
 EXIT_OK, EXIT_USAGE, EXIT_PIN, EXIT_STOP, EXIT_GATE = 0, 2, 3, 4, 10
 FIT_INCOMPLETE = 3                     # fit_composition_weights.py: "incomplete (rerun resumes)"
 MAX_ATTEMPTS = 9
+GATE_REQUIRE = ("all", "any")          # gate.require: every listed candidate admitted, or at least one
 REQUIRED = {"schema", "name", "python", "runner", "inputs"}
 INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge", "fund_events", "baseline_fields",
               "reference_admission", "reference_cell")
@@ -148,6 +153,17 @@ def validate_spec(spec: dict) -> None:
         raise CycleError("spec monitor needs fit and nav", EXIT_USAGE)
     if "static_check" in spec and "baseline_library" not in spec["inputs"]:
         raise CycleError("spec static_check needs inputs.baseline_library", EXIT_USAGE)
+    if spec.get("gate", {}).get("require", "all") not in GATE_REQUIRE:
+        raise CycleError(f"spec gate.require must be one of {', '.join(GATE_REQUIRE)}", EXIT_USAGE)
+    cells = spec.get("summ", {}).get("cells")
+    if cells is not None:
+        if not isinstance(cells, list) or not cells or not all(isinstance(c, str) and c for c in cells) or \
+                len(set(cells)) != len(cells) or spec["nav"]["output"] in cells:
+            raise CycleError("spec summ.cells must list distinct prior NAV dirs (not this cycle's nav.output)",
+                             EXIT_USAGE)
+        if len(cells) + 1 != spec["summ"]["dsr_n"]:
+            raise CycleError(f"spec summ.cells lists {len(cells)} prior cells + this one, dsr_n is "
+                             f"{spec['summ']['dsr_n']}: the listed grid must be the declared N trials", EXIT_USAGE)
 
 
 def parse_runner_overrides(items: list[str]) -> dict:
@@ -416,10 +432,15 @@ class Cycle:
                 argv += ["--weights", f"{w_dir}/composition_weights.json"]
             if "reference_cell" in s["inputs"]:
                 argv += ["--reference", self.idir("reference_cell")]
+            cells = sm.get("cells") or []
+            if cells:  # one positional block (argparse), before the options: a trailing nargs-* --pbo takes none
+                argv += [*cells, n_out]
             argv += ["--dsr-n", str(sm["dsr_n"]), *sm.get("extra", [])]
-            if self.ledger:
-                argv += ["--ledger", self.ledger, "--ledger-kind", sm.get("ledger_kind", "construction")]
-            argv.append(n_out)
+            ledger = self.ledger or sm.get("ledger")
+            if ledger:
+                argv += ["--ledger", ledger, "--ledger-kind", sm.get("ledger_kind", "construction")]
+            if not cells:
+                argv.append(n_out)
             out.append(Step("summ", "direct", argv, state="always", note="nav_summ vs the reference cell"))
         return out
 
@@ -566,19 +587,19 @@ def gate(cycle: Cycle, w_dir: str, log=print) -> None:
 
     def fmt(x):
         return "None" if x is None else f"{x:.4f}" if isinstance(x, float) else str(x)
-    ok = True
+    passed = []
     for cid in g["admitted"]:
         r = rows.get(cid)
         if r is None:
             log(f"gate {g.get('name', 'gate')} {cid}: not in admission.json")
-            ok = False
+            passed.append(False)
             continue
         log(f"gate {g.get('name', 'gate')} {cid}: status {r['status']} failed {r.get('failed_checks')}; runner sign "
             f"{r.get('runner_sign')} vs prior {r.get('s_k')} (agrees {r.get('sign_agrees')}); HAC t {fmt(r.get('hac_t'))}; "
             f"tau {fmt(r.get('tau'))} (limit {adm.get('rules', {}).get('tau_limit')}); max |rho| "
             f"{fmt(r.get('max_abs_rho'))} with {r.get('max_abs_rho_with')}; redundant_with {r.get('redundant_with')}; "
             f"train days {r.get('train_days')}")
-        ok = ok and r["status"] == "admitted" and (not g.get("sign_agrees", True) or r.get("sign_agrees") is True)
+        passed.append(r["status"] == "admitted" and (not g.get("sign_agrees", True) or r.get("sign_agrees") is True))
     for cid in g.get("report", []):
         if cid in rows:
             log(f"  {cid}: status {rows[cid]['status']}, max |rho| {fmt(rows[cid].get('max_abs_rho'))} with "
@@ -589,6 +610,11 @@ def gate(cycle: Cycle, w_dir: str, log=print) -> None:
             prev = {c["id"]: c["status"] for c in ref["candidates"]}
             moved = {k: (prev[k], rows[k]["status"]) for k in prev if k in rows and rows[k]["status"] != prev[k]}
             log(f"  reference members vs {cycle.ipath('reference_admission')}: {len(moved)} status changes {moved or ''}")
+    require = g.get("require", "all")
+    ok = all(passed) if require == "all" else any(passed)
+    if require != "all":
+        log(f"gate {g.get('name', 'gate')}: {sum(passed)} of {len(passed)} listed candidates admitted with the prior "
+            f"sign (require {require})")
     log(f"gate {g.get('name', 'gate')} " + ("PASS" if ok else "FAIL: stop (no later phase runs)"))
     if not ok:
         raise CycleError("gate failed", EXIT_GATE)
