@@ -330,6 +330,47 @@ f64 interval_return(const RiskPanel& p, usize t, usize i) noexcept {
 
 // ---- the daily model -----------------------------------------------------------------------
 namespace {
+// The factors present names (those with an exposure row) load on at t, each industry slot's
+// eligible cap at t, and the present names pooled into the residual slot (F2).
+struct ExposureAudit {
+  std::array<bool, factor_count> exposed{};
+  std::array<f64, industry_slots> industry_cap{};
+  usize residual_names{};
+};
+// The correlation estimator's rho of factors a and b (0 without joint history): the expression
+// of the fully observed block.
+f64 estimator_correlation(const LaggedEwma& corr, usize a, usize b) {
+  const f64 ca = corr.covariance(a, a), cb = corr.covariance(b, b), cab = corr.covariance(a, b);
+  const f64 denom = std::sqrt(std::max(0.0, ca)) * std::sqrt(std::max(0.0, cb));
+  return denom > 0 && std::isfinite(cab) ? std::clamp(cab / denom, -1.0, 1.0) : 0.0;
+}
+// Structural priors at t: the class mean of the fully observed block's (pre-VRA) variances,
+// industries weighted by their eligible cap at t (equal weights when none holds cap), styles
+// equal-weighted; NaN for a class without a fully observed factor.
+struct ClassPriors {
+  f64 industry{nan}, style{nan};
+};
+ClassPriors class_priors(std::span<const usize> keep, const Eigen::MatrixXd& full,
+                         const ExposureAudit& exposure) {
+  f64 cap_sum = 0, cap_var = 0, industry_sum = 0, style_sum = 0;
+  usize industries = 0, styles = 0;
+  for (usize a = 0; a < keep.size(); ++a) {
+    const usize k = keep[a];
+    const f64 v = full(ix(a), ix(a));
+    if (k >= 1 && k <= industry_slots) {
+      const f64 c = exposure.industry_cap[k - 1];
+      cap_sum += c; cap_var += c * v; industry_sum += v; ++industries;
+    } else if (k > industry_slots) {
+      style_sum += v; ++styles;
+    }
+  }
+  ClassPriors prior;
+  if (industries)
+    prior.industry = cap_sum > 0 ? cap_var / cap_sum : industry_sum / static_cast<f64>(industries);
+  if (styles) prior.style = style_sum / static_cast<f64>(styles);
+  return prior;
+}
+
 struct Model {
   Model(const RiskPanel& panel, const RiskModelConfig& config)
       : p(panel), cfg(config), n(panel.instruments), market(panel.dates, nan), sr(n), srr(n),
@@ -344,7 +385,7 @@ struct Model {
         observed(panel.dates * n), history(n), prior_factor_var(factor_count, nan),
         prior_spec_var(n, nan), factor_return(factor_count, nan),
         cov(factor_count * factor_count, nan), spec(n, nan), raw(n), zbuf(n), zbuf2(n),
-        sigma_ts(n, nan), sigma_str(n, nan), blend(n, nan) {}
+        sigma_ts(n, nan), sigma_str(n, nan), blend(n, nan), structural_flag(factor_count, 0) {}
   const RiskPanel& p;
   const RiskModelConfig& cfg;
   usize n;
@@ -361,13 +402,19 @@ struct Model {
   usize vra_f_n{}, vra_s_n{};
   std::vector<f64> prior_factor_var, prior_spec_var, factor_return, cov, spec;
   std::vector<f64> raw, zbuf, zbuf2, sigma_ts, sigma_str, blend;
+  std::vector<u8> structural_flag; // factor_count: 1 = structural forecast at t (F2)
 
   [[nodiscard]] f64 cap_at(usize t, usize i) const { return p.cap[t * n + i]; }
   void update_prices(usize t);
   void regress(usize t, RiskDay& day);
   void update_vra(usize t, RiskDay& day);
   void exposures(usize t);
+  [[nodiscard]] ExposureAudit audit_exposures(usize t) const;
   void factor_forecast(RiskDay& day);
+  [[nodiscard]] bool fully_observed_forecast(RiskDay& day, std::vector<usize>& keep,
+                                             Eigen::MatrixXd& f);
+  void structural_forecast(RiskDay& day, const ExposureAudit& exposure,
+                           std::span<const usize> keep, const Eigen::MatrixXd& full);
   void specific_forecast(RiskDay& day);
   [[nodiscard]] f64 vra(f64 acc, f64 mass, usize count) const {
     return count >= cfg.vra_min_dates && mass > 0 && acc > 0 ? acc / mass : 1.0;
@@ -535,11 +582,41 @@ void Model::exposures(usize t) {
   });
 }
 
-// F_t = lambda^2 * PSD(rho sigma sigma) over the factors with min_factor_history returns.
+ExposureAudit Model::audit_exposures(usize t) const {
+  ExposureAudit audit;
+  for (usize i = 0; i < n; ++i) {
+    const u8 slot = slot_cur[i];
+    if (slot == no_exposure) continue;
+    audit.exposed[0] = true;
+    audit.exposed[industry_factor(slot)] = true;
+    if (slot == residual_industry) ++audit.residual_names;
+    if (elig_cur[i]) audit.industry_cap[slot] += cap_at(t, i);
+    for (usize s = 0; s < style_count; ++s)
+      if (z_cur[i * style_count + s] != 0.0) audit.exposed[style_factor(s)] = true;
+  }
+  return audit;
+}
+
+// F_t: the fully observed block, then the structural forecasts (F2), then the audit of exposed
+// factors left without a forecast.
 void Model::factor_forecast(RiskDay& day) {
   std::fill(cov.begin(), cov.end(), nan);
   std::fill(prior_factor_var.begin(), prior_factor_var.end(), nan);
+  std::fill(structural_flag.begin(), structural_flag.end(), u8{0});
+  const ExposureAudit exposure = audit_exposures(day.date);
+  day.residual_names = exposure.residual_names;
   std::vector<usize> keep;
+  Eigen::MatrixXd full;
+  if (fully_observed_forecast(day, keep, full) && cfg.structural_factor_forecast)
+    structural_forecast(day, exposure, keep, full);
+  for (usize k = 0; k < factor_count; ++k)
+    if (exposure.exposed[k] && !std::isfinite(cov[k * factor_count + k]))
+      ++day.unforecast_exposed_factors;
+}
+
+// lambda^2 * PSD(rho sigma sigma) over the factors with min_factor_history returns (the pre-F2
+// forecast, unchanged). f = the pre-VRA block over `keep`; false when no factor qualifies.
+bool Model::fully_observed_forecast(RiskDay& day, std::vector<usize>& keep, Eigen::MatrixXd& f) {
   std::vector<f64> var;
   for (usize k = 0; k < factor_count; ++k) {
     if (factor_fast.observations(k) < cfg.min_factor_history) continue;
@@ -547,9 +624,9 @@ void Model::factor_forecast(RiskDay& day) {
     if (!finite_positive(v)) continue;
     keep.push_back(k); var.push_back(v);
   }
-  if (keep.empty()) return;
+  if (keep.empty()) return false;
   const usize m = keep.size();
-  Eigen::MatrixXd f(ix(m), ix(m));
+  f.resize(ix(m), ix(m));
   for (usize a = 0; a < m; ++a) {
     f(ix(a), ix(a)) = var[a];
     const f64 ca = factor_corr.covariance(keep[a], keep[a]);
@@ -578,6 +655,74 @@ void Model::factor_forecast(RiskDay& day) {
     for (usize b = 0; b < m; ++b)
       cov[keep[a] * factor_count + keep[b]] = day.lambda2_factor * f(ix(a), ix(b));
   }
+  return true;
+}
+
+// Structural forecasts (F2; the rule is in the header): variance w own + (1 - w) prior with
+// w = n / min_factor_history, correlations w rho (w w' rho between two structural factors),
+// every structural off-diagonal term scaled by the largest s = 2^-j keeping F positive
+// definite. Writes only structural rows and columns: `full` and prior_factor_var (the VRA's
+// input) stay the fully observed block's.
+void Model::structural_forecast(RiskDay& day, const ExposureAudit& exposure,
+                                std::span<const usize> keep, const Eigen::MatrixXd& full) {
+  const ClassPriors prior = class_priors(keep, full, exposure);
+  const f64 horizon = static_cast<f64>(cfg.min_factor_history);
+  std::vector<usize> factor;
+  std::vector<f64> weight, variance;
+  for (usize k = 1; k < factor_count; ++k) { // the market is never structural
+    const usize obs = factor_fast.observations(k);
+    if (obs >= cfg.min_factor_history || (obs == 0 && !exposure.exposed[k])) continue;
+    const f64 class_prior = k <= industry_slots ? prior.industry : prior.style;
+    if (!finite_positive(class_prior)) continue;
+    const f64 own = obs ? serial_adjusted_variance(factor_fast, factor_nw, k) : nan;
+    const bool has_own = std::isfinite(own);
+    const f64 w = has_own ? static_cast<f64>(obs) / horizon : 0.0;
+    factor.push_back(k); weight.push_back(w);
+    variance.push_back(w * (has_own ? std::max(0.0, own) : 0.0) + (1.0 - w) * class_prior);
+  }
+  if (factor.empty()) return;
+  const usize m = keep.size(), s = factor.size(), g = m + s;
+  // base = diag blocks (the fully observed block, the structural variances); off = every
+  // structural off-diagonal term, scaled below.
+  Eigen::MatrixXd base = Eigen::MatrixXd::Zero(ix(g), ix(g));
+  Eigen::MatrixXd off = Eigen::MatrixXd::Zero(ix(g), ix(g));
+  base.topLeftCorner(ix(m), ix(m)) = full;
+  for (usize u = 0; u < s; ++u) {
+    const Eigen::Index row = ix(m + u);
+    base(row, row) = variance[u];
+    for (usize a = 0; a < m; ++a) {
+      const f64 c = weight[u] * estimator_correlation(factor_corr, factor[u], keep[a]) *
+                    std::sqrt(variance[u]) * std::sqrt(full(ix(a), ix(a)));
+      off(row, ix(a)) = c; off(ix(a), row) = c;
+    }
+    for (usize v = u + 1; v < s; ++v) {
+      const f64 rho = estimator_correlation(factor_corr, factor[u], factor[v]);
+      const f64 c = weight[u] * weight[v] * rho * std::sqrt(variance[u]) * std::sqrt(variance[v]);
+      off(row, ix(m + v)) = c; off(ix(m + v), row) = c;
+    }
+  }
+  // base + s off is positive definite exactly for s in [0, s*) when base is (the eigenvalues of
+  // base^-1/2 off base^-1/2 fix s*), so the first power of two that passes is the largest one
+  // below s*. Bounded: 31 trials, then 0 (block diagonal).
+  f64 scale = 0.0;
+  for (int j = 0; j <= 30; ++j) {
+    const f64 trial = std::ldexp(1.0, -j);
+    const Eigen::LLT<Eigen::MatrixXd> llt(base + trial * off);
+    if (llt.info() == Eigen::Success) { scale = trial; break; }
+  }
+  const f64 lambda2 = day.lambda2_factor;
+  for (usize u = 0; u < s; ++u) {
+    const usize k = factor[u];
+    structural_flag[k] = 1;
+    for (usize b = 0; b < g; ++b) {
+      const usize other = b < m ? keep[b] : factor[b - m];
+      const f64 value = b == m + u ? variance[u] : scale * off(ix(m + u), ix(b));
+      cov[k * factor_count + other] = lambda2 * value;
+      cov[other * factor_count + k] = lambda2 * value;
+    }
+  }
+  day.structural_factors = s;
+  day.structural_scale = scale;
 }
 
 // D_t: time-series (EWMA + NW) / structural blend, Bayesian size-decile shrinkage, VRA.
@@ -692,6 +837,7 @@ co::Status run_risk_model(const RiskPanel& p, const RiskModelConfig& cfg,
       day.factor_return = model.factor_return; day.covariance = model.cov;
       day.specific_variance = model.spec; day.industry_slot = model.slot_cur;
       day.eligible = model.elig_cur; day.styles = model.z_cur;
+      day.factor_structural = model.structural_flag;
       for (auto* sink : sinks) ATX_TRY_VOID(sink->on_day(day));
       std::swap(model.slot_prev, model.slot_cur);
       std::swap(model.elig_prev, model.elig_cur);

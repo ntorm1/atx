@@ -17,6 +17,64 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 SESSION CLOSED by owner ("stop here") -- handoff written
+- docs/plans/2026-09-28-platform-v7-handoff-1.md (state, lanes, evidence, open decisions, next steps, commands, pitfalls)
+  and docs/plans/2026-09-28-platform-v7-next-goal-prompt.md (the /goal text for the next PM).
+- In flight at close: L7 (pool-10, library v7.0), W1 (pool-3, spo root-cause), P4 (read-only wave-2 prereg). Their
+  commits live in their pools; hand-backs to this session are lost. Nothing was run after the fields-v9 build.
+- Not in local main yet: everything since c0dc376f. Merge command in the handoff §0.
+
+## 2026-09-28 role linked-operating-v2 built (lo2); fields v9 building
+- lo2 (identity-bridge-v2-pit, share-class letters allowed, delisting block): kept member cells 1,967,838 vs lo1
+  1,940,364; min kept in the score window 1,697 vs 1,675; dropped share .3956 vs .4031. Dropped by reason (score window):
+  unlinked 820,393 (lo1 899,105), no_visible_sic 53,691 (lo1 34), secondary_line 7,901, non_operating_sic 8,711.
+  W5b-F1 confirmed: the new links mostly fall to no_visible_sic because pool-2's fundamental-events-v2 lacks their SIC ->
+  next role rebuild must take SIC from the atx-db fundamentals/sic_events stage. W5b-F2: 820k unlinked member cells on
+  the top-3000 base role = the largest remaining universe lever (P1 measured +0.22 for the v6 restriction); ask atx-db
+  which base-role names those are (ETFs/ADRs/non-filers vs link gaps).
+- Fields v9 built: 63 fields (= 64 limit - 1), 121 s, peak 571 MiB; all 55 v8 payloads byte-identical. The 14 W5a fields
+  and sv_ratio126 were recomputed, not reused: the M-6 code-identity rule keys on the builder module's code sha, which the
+  W5b hook changed (F1-F2, minor: per-module producer hashing would make reuse finer). W5b coverage on member cells:
+  inst_own_share .993, inst_best_ideas .999, ftd_shares_ratio21 .985, regsho_threshold_days63 .426 (NYSE lists pending).
+  Manifest: build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v9.
+
+## 2026-09-28 F2 merged (10a723a7) and ACCEPTED; W5b merged
+- F2 structural forecast: build mega-v7-f2 exit 0; Risk*/Spo*/NavV7Hook*/StrategyLive* 60/60. Risk verb on lo1 with
+  per-date exposures (build-equity/v7-f2-risk, 21.9 s, 455 MiB): 11 factors structural on 1,029 sessions, "forecast
+  sessions with an unforecast exposed factor 0"; bias factor family ok (52 series, dropped 0), random family OK (64
+  series, 53,696 obs, dropped 0). F1-F1 CLOSED. Manifest sha 17f9328f...138bbe9f = the risk model pin for any spo trial #2.
+- W5b research_fields_holdings.py (+5-line hook): 8 PIT fields (13F 5, FTD 1, Reg SHO 1, off-exchange SV 1), 86 tests;
+  role rule linked-operating-v2 on identity-bridge-v2-pit with delisting terminations in the manifest and optional
+  --delisting-returns (off by default; v1 rule byte-identical). Kept member cells 1,940,364 -> 1,967,838 (+1.4%; W5b-F1:
+  53.7k newly linked cells lack SIC in fundamental-events-v2 -> rerun with atx-db SIC events later). Reg SHO field ~.43
+  coverage until the NYSE lists land (NaN, not zero). Fields total with W5a = 63 of the runner's 64 limit (W5a-F1).
+
+## 2026-09-28 W5a merged (6b12220c) and ACCEPTED; fields v8 built
+- W5a research_fields_sec.py + 15-line FIELD_MODULES hook: 14 PIT fields (earnings calendar 6, Form 4 5, 8-K 3), 66
+  pytests. Two data rules pre-registered (10%-owner joint Form 4 dropped; insider ratios NaN outside [-1,1]).
+- Root build lo1-fields-v8 (55 fields; --reuse fields-v7 hardlinked): 55.9 s, peak 399 MiB; every fields-v7 payload
+  byte-identical (see check line above); coverage on member cells 2020-2022: ea_* .93-.96, ins_* .97, k8_* .97-.98.
+  Field count 55 of the runner's 64 limit (W5b adds ~8 -> 63; W5a-F1: the limit will bind at the next wave).
+- Note: L7 found the draft's "six extra q5 fields" are existing fields-v7 fields; prereg corrected, no fields v8 needed
+  for wave 1 (wave 1 runs on fields-v7; wave 2 on v8/v9).
+
+## 2026-09-28 spo-v1 cell REJECTED (implementation defect, not a research result); N 33
+- mega-nav-v61u-spo-v1-L1.247 (pre-registered params): exit 0, 59.5 s, 365 MiB, 1,508 solves at 14.2 ms mean (max 35.6),
+  gamma 1575. S2 net SR -0.939 vs +1.239 (paired dSR -2.179, Memmel SE .577, t -3.77, CBB [-3.62, -1.01]); gross_lev
+  all rows .6465 (mechanics FAIL: < .90), |net| .0009, tau mean .1217 / p95 .1753 (mechanics FAIL: p95 > .30 not hit
+  but tau 3x the baseline), cost 15.06 bps/$; DSR N33 .002. REJECTED on every criterion. Cross-cell N 32 -> 33; ledger 33.
+- Diagnostics (spo_diagnostics.csv, 1,508 rows): gross_binding 0 on every date (the gross-1.247 gamma calibration never
+  binds: the book deploys at .39-.83 gross), iterations 122-178, exante_vol ~.0066/day (~10% ann vs the 5% target),
+  exante_vol_current has garbage values (mean 21.4 vs p95 .0073), trade_cost ~1.1e-4/day vs alpha 2.7e-4/day with the
+  20-session amortisation making the effective cost penalty 5.7e-6 -> the optimiser trades 12%/day. Verdict: defects in
+  gamma calibration, cost amortisation and a diagnostic column; a negative net SR from the same signals also suggests a
+  sign or scaling error in alpha_i = IC sigma_i z_i or in the delta-order mapping. Sent to W1 for root cause. Any rerun is
+  construction trial #2 for spo (new prereg line), disclosed.
+- CSCV PBO over {baseline, C1, C2, C3, spo}: .347 (IS winner baseline; OOS +1.221). Effective-N over 33 series: N_eff 2
+  (the spo series is its own cluster).
+- Appendix A: TRAIN construction cells 33 (29 v6 era + C1-C3 + spo-v1, all four rejected). Validation trials 2 spent.
+  2025+ reserved.
+
 ## 2026-09-28 W2, W3, F1, W1-fix ACCEPTED; spo-v1 cell launched
 - W2: build mega-v7-w2 exit 0 (120 TUs, 223 s); AlphaLitOps 22/22; golden digests captured on the merged build
   (vm_audit_exact 0x971c3da60ca89aa3, vm_research_fast 0xe9e7128fd5359900, oracle 0x971c3da60ca89aa3) and pinned by W2

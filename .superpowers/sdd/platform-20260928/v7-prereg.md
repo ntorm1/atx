@@ -68,3 +68,17 @@ one by one. Wave 2 (§2 of the draft minus eap_8k = 4 trials: ins_opp, inst_best
 pre-registered only when the W5a/W5b fields exist and their semantics are checked against the draft; not before.
 Root checks before the run: W2 op spellings in the DSL; q5 slopes against the RoF 2021 version (the draft cites the NBER
 WP); if a slope differs, the RoF value is used and disclosed.
+Correction (2026-09-28, before any run; from L7): the draft's "six extra fields" for q5_eg means the candidate reads six
+existing fields-v7 fields (me_company, at, cfo_ttm, ni_q, be_lag1q, grp_ff12), one over the per-candidate budget of five.
+There are no new fields and no fields v8; library v7.0 runs on lo1-fields-v7 unchanged. The ruling "q5_eg's six extra
+fields are allowed" is read as "q5_eg's six-field read is allowed". max() and sign() are allowed in the checker via
+POLICY_OPS entries for nincr. Nothing else in the pre-registration changes.
+
+## W5a field rules (declared 2026-09-28 before any IC pass on these fields; set from field distributions only, no returns)
+1. Form 4 joint filings that include a 10% owner are dropped from every `ins_*` field (sponsor block sales are not
+   insider signals). 2. `ins_net_buy_ratio` and `ins_opportunistic_net` are NaN outside [-1, 1] (vendor shares_out unit
+   defects; 13 cells on lo1 2020-2022). Fields v8 = fields v7 (41, byte-identical via --reuse) + 14 SEC-derived fields.
+Ruling 7.0-b (2026-09-28, before any run; from L7's static check): qmj_safety needs 8 estimated peak slots (house budget 7);
+allowed as a recorded exception (recipe row), cost ~+52 MB per slot per worker in the u pass (headroom: 1,061 MiB peak vs
+1,536 cap). Wave 1 stays 5 candidates / 5 trials. q5_eg slopes: RoF 2021 Table I Panel D (-0.029 / 0.516 / 0.771) are
+used; the NBER WP values (-0.031 / 0.530 / 0.802) are disclosed as the draft's source.
