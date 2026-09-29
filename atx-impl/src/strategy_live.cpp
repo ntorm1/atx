@@ -25,8 +25,11 @@
 #include "atx/core/sha256.hpp"
 #include "build_provenance.hpp"
 #include "stage_data_provenance.hpp"
+#include "strategy_cost_v2.hpp"
+#include "strategy_holdings.hpp"
 #include "strategy_nav_replay.hpp"
 #include "strategy_nav_replay_detail.hpp"
+#include "strategy_orders.hpp"
 #include "strategy_target_replay.hpp"
 #include "strategy_target_replay_detail.hpp"
 
@@ -47,15 +50,29 @@ constexpr const char* tc_definition =
     "the member's daily-return SD over [d-w, d), the replay's execution liquidity "
     "definition) with the target weight (target) and with aim_leverage x desired (aim, "
     "effective rebalances only); NaN below 3 names or without dispersion; a diagnostic "
-    "(Clarke-de Silva-Thorley 2002), never an input";
+    "(Clarke-de Silva-Thorley 2002), never an input; the L3 definition (L3-F2), 1/sigma off "
+    "from Grinold-Kahn";
+constexpr const char* tc_replay_definition =
+    "the NAV replay's own (cost_v2::transfer_coefficient; the transfer_coefficient column of "
+    "v7_transfer_coefficient.csv at this session): corr over members with a finite sigma_i > 0 "
+    "of desired_i / sigma_i (= alpha_i / sigma_i^2 with Grinold-Kahn alpha_i = IC sigma_i z_i, "
+    "z = the neutralized rank aim) and the rule's plan before the locate block; NaN off an "
+    "effective rebalance (desired all 0)";
+constexpr const char* tc_target_definition =
+    "as transfer_coefficient but on the final target weight (after the locate block): the "
+    "book the orders build; the basis of the B9 band";
 constexpr const char* decide_limitations =
     "TRAIN-only (role class train, sessions before the research seal); targets from the "
     "replay's own DECIDE functions at one as-of row (tiers, locate-in-aim mask, desired "
-    "target with its neutralization guard, target rule, locate block); orders are weight "
-    "deltas and decision-NAV dollars (target x NAV - held), no share rounding, lots or "
-    "order types; working orders of earlier decisions are not modeled (every order is "
+    "target with its neutralization guard, target rule, locate block); orders.csv holds "
+    "weight deltas and decision-NAV dollars (target x NAV - held); orders_shares.csv the "
+    "same deltas as lot-rounded shares at the as-of raw close sized to nav_dollars "
+    "(one order type: moc, the replay's next-close fill; a name crossing zero is one "
+    "order flagged short_sale, not split); working orders of earlier decisions are not "
+    "modeled (every order is "
     "re-decided from the actual positions; the replay keeps unchanged members' working "
-    "orders on non-rebalance days); the cadence phase is the blend's score_begin; rate "
+    "orders on non-rebalance days); the cadence phase is the blend's score_begin (pinned "
+    "as nav.cadence_anchor when cadence > 1); rate "
     "per-name-v1 and monthly-budget-v2 are refused (book state positions do not carry); "
     "locates optional (without a file every short target is reported without a locate)";
 
@@ -447,51 +464,89 @@ co::Result<usize> name_index(std::span<const u64> ids, std::string_view cell, co
 struct Positions {
   std::vector<f64> held;     // per name; +0 when absent
   std::vector<f64> expected; // target_weight per name (+0 when absent); has_expected only
+  std::vector<f64> shares;   // broker shares per name (+0 when absent); has_shares only
   std::vector<u8> seen;
-  bool has_nav{}, has_expected{};
+  bool has_nav{}, has_expected{}, has_shares{};
   f64 nav{};
   usize rows{};
+  const char* layout{"csv"};
+};
+// Column positions of a positions CSV (the width when absent).
+struct PositionColumns {
+  usize id{}, held{}, nav{}, target{}, shares{};
 };
 co::Status read_position_row(const Csv& csv, std::span<const u64> ids,
-                             const std::array<usize, 4>& at, Positions& out) {
+                             const PositionColumns& at, Positions& out) {
   const auto cells = split(csv.line);
   const usize width = csv.columns.size();
   const auto bad = co::Err(co::ErrorCode::InvalidArgument,
                            "decide: positions row malformed: " + csv.line.substr(0, 120));
   if (cells.size() != width) return bad;
-  ATX_TRY(const usize i, name_index(ids, cells[at[0]], "positions"));
+  ATX_TRY(const usize i, name_index(ids, cells[at.id], "positions"));
   f64 held = 0;
-  if (!parse_cell(cells[at[1]], held) || !std::isfinite(held)) return bad;
+  if (!parse_cell(cells[at.held], held) || !std::isfinite(held)) return bad;
   if (out.seen[i]) return co::Err(co::ErrorCode::InvalidArgument, "decide: duplicate position");
   out.seen[i] = 1; out.held[i] = held; ++out.rows;
-  if (at[2] < width) {
+  if (at.nav < width) {
     f64 nav = 0;
-    if (!parse_cell(cells[at[2]], nav) || !std::isfinite(nav) ||
+    if (!parse_cell(cells[at.nav], nav) || !std::isfinite(nav) ||
         (out.has_nav && std::bit_cast<u64>(nav) != std::bit_cast<u64>(out.nav)))
       return co::Err(co::ErrorCode::InvalidArgument, "decide: positions nav_post differs by row");
     out.has_nav = true; out.nav = nav;
   }
-  if (at[3] < width) {
+  if (at.target < width) {
     f64 target = 0;
-    if (!parse_cell(cells[at[3]], target)) return bad;
+    if (!parse_cell(cells[at.target], target)) return bad;
     out.expected[i] = target;
     if (!std::isfinite(target)) out.has_expected = false; // not a decision session
   }
+  if (at.shares < width) {
+    f64 shares = 0;
+    if (!parse_cell(cells[at.shares], shares) || !std::isfinite(shares)) return bad;
+    out.shares[i] = shares;
+  }
   return co::Ok();
 }
+Positions empty_positions(usize names) {
+  Positions out;
+  out.held.assign(names, 0.0); out.seen.assign(names, u8{0});
+  out.expected.assign(names, 0.0); out.shares.assign(names, 0.0);
+  return out;
+}
+// The f64 holdings layout (v7 W4): the as-of session's rows, every file SHA verified.
+co::Result<Positions> read_f64_positions(const std::string& path, std::span<const u64> ids,
+                                         i64 asof) {
+  ATX_TRY(const auto read, holdings::read_session(path, asof));
+  Positions out = empty_positions(ids.size());
+  out.layout = "f64";
+  out.has_nav = true; out.nav = read.session.nav_post;
+  out.has_expected = true;
+  for (const auto& h : read.names) {
+    ATX_TRY(const usize i, name_index(ids, std::to_string(h.instrument_id), "positions"));
+    if (out.seen[i]) return co::Err(co::ErrorCode::InvalidArgument, "decide: duplicate position");
+    if (!std::isfinite(h.held_dollars))
+      return co::Err(co::ErrorCode::InvalidArgument, "decide: positions held_dollars not finite");
+    out.seen[i] = 1; out.held[i] = h.held_dollars; ++out.rows;
+    out.expected[i] = h.target_weight;
+    if (!std::isfinite(h.target_weight)) out.has_expected = false; // execution-only session
+  }
+  if (!out.rows) out.has_expected = false;
+  return co::Ok(std::move(out));
+}
 co::Result<Positions> read_positions(const std::string& path, std::span<const u64> ids, i64 asof) {
+  if (holdings::is_f64_layout(path)) return read_f64_positions(path, ids, asof);
   Csv csv;
   ATX_TRY_VOID(open_csv(path, csv, "positions"));
-  const std::array<usize, 4> at{csv.column("instrument_id"), csv.column("held_dollars"),
-                                csv.column("nav_post"), csv.column("target_weight")};
+  const PositionColumns at{csv.column("instrument_id"), csv.column("held_dollars"),
+                           csv.column("nav_post"), csv.column("target_weight"),
+                           csv.column("shares")};
   const usize session = csv.column("session_ns"), width = csv.columns.size();
-  if (at[0] == width || at[1] == width)
+  if (at.id == width || at.held == width)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "decide: positions need instrument_id and held_dollars columns");
-  Positions out;
-  out.held.assign(ids.size(), 0.0); out.seen.assign(ids.size(), u8{0});
-  out.expected.assign(ids.size(), 0.0);
-  out.has_expected = at[3] < width;
+  Positions out = empty_positions(ids.size());
+  out.has_expected = at.target < width;
+  out.has_shares = at.shares < width;
   while (csv.next()) {
     if (csv.line.empty()) continue;
     if (session < width) {
@@ -542,6 +597,51 @@ co::Result<usize> asof_row(const TargetReplayInput& x, i64 asof) {
     return co::Err(co::ErrorCode::InvalidArgument, "decide: the as-of is outside the score window");
   return co::Ok(d);
 }
+std::string date_text(i64 session_ns) {
+  const std::chrono::year_month_day ymd{
+      std::chrono::sys_days{std::chrono::days{session_ns / day_ns}}};
+  const auto two = [](unsigned v) {
+    return std::string{static_cast<char>('0' + v / 10), static_cast<char>('0' + v % 10)};
+  };
+  std::string out = std::to_string(static_cast<int>(ymd.year()));
+  while (out.size() < 4) out.insert(out.begin(), '0');
+  return out + '-' + two(static_cast<unsigned>(ymd.month())) + '-' +
+         two(static_cast<unsigned>(ymd.day()));
+}
+// B9 freshness (v7 W4): the as-of must be the role's last session; --allow-stale decides
+// anyway and the health check records the lag.
+struct Freshness {
+  i64 last_session{};
+  usize sessions_behind{};
+};
+co::Result<Freshness> check_freshness(const TargetReplayInput& x, usize d, bool allow_stale) {
+  const Freshness out{x.session_keys[x.dates - 1], x.dates - 1 - d};
+  if (out.sessions_behind && !allow_stale)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "decide: stale data: the as-of " + date_text(x.session_keys[d]) +
+                       " is not the role's last session " + date_text(out.last_session) + " (" +
+                       std::to_string(out.sessions_behind) +
+                       " sessions later); --allow-stale decides anyway with a health warning");
+  return co::Ok(out);
+}
+// Review R1 m-14: the cadence phase is the role's decision_begin session. With cadence > 1
+// the deploy manifest must pin it (nav.cadence_anchor, YYYY-MM-DD); when present it is
+// always checked, so a role with another start cannot shift the rebalance days.
+co::Status check_cadence_anchor(const Deploy& deploy, const TargetReplayInput& x) {
+  const auto& nav = deploy.m.at("nav");
+  const auto it = nav.find("cadence_anchor");
+  if (it == nav.end() || it->is_null()) {
+    if (deploy.run.target.cadence == 1) return co::Ok();
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "deploy manifest: nav.cadence_anchor (YYYY-MM-DD) is required with cadence > 1");
+  }
+  const auto anchor = it->is_string() ? session_of(it->get<std::string>())
+                                      : co::Result<i64>(co::Err(co::ErrorCode::InvalidArgument));
+  if (!anchor || *anchor != x.session_keys[x.decision_begin])
+    return mismatch("nav.cadence_anchor", "the role's decision_begin session is " +
+                                              date_text(x.session_keys[x.decision_begin]));
+  return co::Ok();
+}
 
 // ---- diagnostics and health ----
 f64 pearson(std::span<const f64> a, std::span<const f64> b) {
@@ -557,22 +657,35 @@ f64 pearson(std::span<const f64> a, std::span<const f64> b) {
   }
   return saa > 0 && sbb > 0 ? sab / std::sqrt(saa * sbb) : nan;
 }
+// Review R1 M-3: two transfer-coefficient definitions, both reported under explicit keys.
+// transfer_coefficient: the NAV replay's own (cost_v2::transfer_coefficient, the column of
+// v7_transfer_coefficient.csv): corr(desired_i / sigma_i, the rule plan before the locate
+// block), desired_i sigma_i being the Grinold-Kahn alpha; desired_over_sigma_target: the
+// same alpha on the final target (after the block; the B9 band's basis); the L3
+// definition signal_over_variance_{target,aim}: corr(signal_i / sigma_i^2, w) (the
+// L3-F2 values), 1/sigma off from Grinold-Kahn.
 struct Transfer {
-  f64 target{nan}, aim{nan};
-  usize names{};
+  f64 replay{nan}, desired_target{nan}, signal_target{nan}, signal_aim{nan};
+  usize signal_names{};
 };
 Transfer transfer_coefficient(const TargetReplayInput& x, usize d,
                               const detail::NavDecision& dec, f64 leverage) {
   const usize n = x.instruments;
+  const auto member = x.member.subspan(d * n, n);
+  Transfer out;
+  out.replay = cost_v2::transfer_coefficient(member, dec.desired, dec.sigma, dec.rule);
+  out.desired_target = cost_v2::transfer_coefficient(member, dec.desired, dec.sigma, dec.target);
   std::vector<f64> score, weight, aim;
   for (usize i = 0; i < n; ++i) {
     const f64 alpha = x.signal[d * n + i], sigma = dec.sigma[i];
-    if (!x.member[d * n + i] || !std::isfinite(alpha) || !std::isfinite(sigma) || !(sigma > 0))
-      continue;
+    if (!member[i] || !std::isfinite(alpha) || !std::isfinite(sigma) || !(sigma > 0)) continue;
     score.push_back(alpha / (sigma * sigma));
     weight.push_back(dec.target[i]); aim.push_back(leverage * dec.desired[i]);
   }
-  return {pearson(score, weight), dec.rebalance ? pearson(score, aim) : nan, score.size()};
+  out.signal_target = pearson(score, weight);
+  out.signal_aim = dec.rebalance ? pearson(score, aim) : nan;
+  out.signal_names = score.size();
+  return out;
 }
 const char* health_label(DecideHealth h) {
   switch (h) {
@@ -614,21 +727,35 @@ usize held_absent(const Facts& f) {
     if (f.positions.held[i] != 0 && !f.x.present[f.d * n + i]) ++count;
   return count;
 }
-// B9: leverage and turnover against the manifest's TRAIN bands (warn), a neutralization
-// skip (ERROR: the replay would silently keep the book), names without a locate, stale
-// holdings, and the source pin against the build provenance (warn).
+// The book the orders build (after the locate block): review R1 m-8 bands these, not the
+// rule plan. Summed in index order as the replay sums its plan.
+struct TargetStats {
+  f64 gross{}, net{}, turnover{};
+};
+TargetStats target_stats(const detail::NavDecision& dec) {
+  TargetStats s;
+  for (usize i = 0; i < dec.target.size(); ++i) {
+    s.turnover += std::abs(dec.target[i] - dec.current[i]);
+    s.gross += std::abs(dec.target[i]); s.net += dec.target[i];
+  }
+  return s;
+}
+DecideHealth warn_if(bool out) { return out ? DecideHealth::Warn : DecideHealth::Ok; }
+// B9: leverage and turnover of the final target against the manifest's TRAIN bands (warn),
+// a neutralization skip (ERROR: the replay would silently keep the book), names without a
+// locate, stale holdings, and the source pin against the build provenance (warn).
 Health health_checks(const Facts& f, const Bands& bands, const std::string& manifest_git,
                      const std::string& build_git) {
   Health h;
-  const auto& plan = f.dec.plan;
-  const auto warn_if = [](bool out) { return out ? DecideHealth::Warn : DecideHealth::Ok; };
-  h.add({{"check", "gross_leverage"}, {"value", plan.gross},
+  const auto book = target_stats(f.dec);
+  const std::string basis = "the final target (after the locate block)";
+  h.add({{"check", "gross_leverage"}, {"value", book.gross}, {"basis", basis},
          {"band", Json::array({bands.gross_lo, bands.gross_hi})}},
-        warn_if(!(plan.gross >= bands.gross_lo && plan.gross <= bands.gross_hi)));
-  h.add({{"check", "abs_net_leverage"}, {"value", std::abs(plan.net)},
-         {"max", bands.abs_net_max}}, warn_if(!(std::abs(plan.net) <= bands.abs_net_max)));
-  h.add({{"check", "planned_turnover"}, {"value", plan.turnover}, {"max", bands.turnover_max}},
-        warn_if(!(plan.turnover <= bands.turnover_max)));
+        warn_if(!(book.gross >= bands.gross_lo && book.gross <= bands.gross_hi)));
+  h.add({{"check", "abs_net_leverage"}, {"value", std::abs(book.net)}, {"basis", basis},
+         {"max", bands.abs_net_max}}, warn_if(!(std::abs(book.net) <= bands.abs_net_max)));
+  h.add({{"check", "planned_turnover"}, {"value", book.turnover}, {"basis", basis},
+         {"max", bands.turnover_max}}, warn_if(!(book.turnover <= bands.turnover_max)));
   const auto outcome = f.dec.construction.neutralize;
   const bool skipped = outcome != NeutralizeOutcome::NotAttempted &&
                        outcome != NeutralizeOutcome::Applied;
@@ -648,6 +775,107 @@ Health health_checks(const Facts& f, const Bands& bands, const std::string& mani
          {"meaning", "configure-time provenance (review C4); the executable SHA binds the code"}},
         warn_if(build_git != manifest_git));
   return h;
+}
+
+// ---- B9 transfer-coefficient band (v7 W4) ----
+struct PriorTc {
+  i64 asof{};
+  f64 tc{nan}; // desired_over_sigma_target; NaN when null or absent (an older decision)
+};
+struct TcBand {
+  bool supplied{};
+  usize read{}, used{}, consecutive_below{};
+};
+constexpr usize max_prior_entries = 100'000;
+// A prior decision.json of the same book strictly before the as-of, or nothing.
+co::Result<std::optional<PriorTc>> prior_decision(const std::filesystem::path& path,
+                                                  const std::string& book, i64 asof) {
+  ATX_TRY(const auto file, read_text(path.string(), max_fields_manifest_bytes, "prior decision"));
+  Json j;
+  try {
+    j = Json::parse(file.text);
+  } catch (const Json::exception&) {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "decide: prior decision unreadable: " + path.string());
+  }
+  if (!j.is_object() || j.value("schema", std::string{}) != book_decision_schema ||
+      j.value("status", std::string{}) != "complete" || j.value("book", std::string{}) != book)
+    return co::Ok(std::optional<PriorTc>{});
+  const auto at = j.find("asof_session_ns");
+  if (at == j.end() || !at->is_number_integer() || at->get<i64>() >= asof)
+    return co::Ok(std::optional<PriorTc>{});
+  PriorTc out{at->get<i64>(), nan};
+  const auto tc = j.find("transfer_coefficient");
+  if (tc != j.end() && tc->is_object()) {
+    const auto v = tc->find("desired_over_sigma_target");
+    if (v != tc->end() && v->is_number()) out.tc = v->get<f64>();
+  }
+  return co::Ok(std::optional<PriorTc>{out});
+}
+// Every DIR/<entry>/decision.json and DIR/<file>.json of this book before the as-of,
+// newest first; two records of one session must agree.
+co::Result<std::vector<PriorTc>> prior_decisions(const std::string& dir, const std::string& book,
+                                                 i64 asof, usize& read) {
+  std::error_code ec;
+  if (!std::filesystem::is_directory(dir, ec))
+    return co::Err(co::ErrorCode::InvalidArgument, "decide: --prior-decisions must be a directory");
+  std::vector<PriorTc> out;
+  usize entries = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    if (++entries > max_prior_entries)
+      return co::Err(co::ErrorCode::OutOfRange, "decide: --prior-decisions has too many entries");
+    auto path = entry.path();
+    if (entry.is_directory()) path /= "decision.json";
+    else if (path.extension() != ".json") continue;
+    if (!std::filesystem::is_regular_file(path, ec)) continue;
+    ++read;
+    ATX_TRY(const auto prior, prior_decision(path, book, asof));
+    if (prior) out.push_back(*prior);
+  }
+  std::sort(out.begin(), out.end(), [](const PriorTc& a, const PriorTc& b) {
+    return a.asof > b.asof;
+  });
+  for (usize k = 1; k < out.size(); ++k)
+    if (out[k].asof == out[k - 1].asof &&
+        std::bit_cast<u64>(out[k].tc) != std::bit_cast<u64>(out[k - 1].tc))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "decide: prior decisions disagree on the transfer coefficient at " +
+                         date_text(out[k].asof));
+  out.erase(std::unique(out.begin(), out.end(),
+                        [](const PriorTc& a, const PriorTc& b) { return a.asof == b.asof; }),
+            out.end());
+  return co::Ok(std::move(out));
+}
+// The as-of's run of low TCs over the priors (tc_band_run); a null TC ends the run.
+co::Result<TcBand> tc_band(const DecideConfig& cfg, const std::string& book, i64 asof, f64 tc) {
+  TcBand band;
+  band.supplied = !cfg.prior_decisions_directory.empty();
+  std::vector<PriorTc> priors;
+  if (band.supplied) {
+    ATX_TRY(priors, prior_decisions(cfg.prior_decisions_directory, book, asof, band.read));
+  }
+  band.used = priors.size();
+  std::vector<f64> values;
+  values.reserve(priors.size());
+  for (const auto& p : priors) values.push_back(p.tc);
+  band.consecutive_below = tc_band_run(tc, values);
+  return co::Ok(band);
+}
+void add_w4_checks(Health& h, const TcBand& band, f64 tc, const Freshness& fresh,
+                   const DecideConfig& cfg) {
+  h.add({{"check", "transfer_coefficient_band"}, {"value", finite_or_null(tc)},
+         {"basis", "transfer_coefficient.desired_over_sigma_target"}, {"min", tc_band_min},
+         {"consecutive_required", tc_band_consecutive},
+         {"consecutive_below", band.consecutive_below},
+         {"prior_decisions", band.supplied ? "supplied" : "not-supplied"},
+         {"prior_files_read", band.read}, {"prior_decisions_used", band.used},
+         {"meaning", "TC below the band for consecutive decisions: constraints (locates, ADV cap, "
+                     "neutrality, partial aim) are eating the alpha (review L3-F2, P2 R2.5)"}},
+        warn_if(!band.supplied || band.consecutive_below >= tc_band_consecutive));
+  h.add({{"check", "data_freshness"}, {"asof", cfg.asof},
+         {"role_last_session", date_text(fresh.last_session)},
+         {"sessions_behind", fresh.sessions_behind}, {"allow_stale", cfg.allow_stale}},
+        warn_if(fresh.sessions_behind > 0));
 }
 const char* reason(const Facts& f, usize i) {
   const auto& dec = f.dec;
@@ -746,19 +974,120 @@ Json decision_json(const Facts& f, const detail::NavDecision& dec) {
                         {"special", dec.member_tiers[2]},
                         {"missing_predictors", dec.member_missing_predictors}}}};
 }
+// ---- B7 share orders (v7 W4) ----
+constexpr const char* price_definition =
+    "close: the as-of session's raw (unadjusted) close of the pinned role, the price the "
+    "replay's MARK uses for raw dollars; a name absent at the as-of has no valid close and "
+    "gets no order (refused_no_close, B7); held names convert dollars to shares at their "
+    "last present raw close (mark)";
+constexpr const char* order_tag =
+    "moc: market-on-close at the next session, the replay's EXECUTE (fills at the close of "
+    "d+1, capped at the scenario's participation of the ADV that session reads)";
+// Reference prices, marks and the filling session's ADV, then the rule of strategy_orders.
+co::Result<orders::Book> share_orders(const DecideConfig& cfg, const NavReplayInput& in,
+                                      const NavReplayConfig& base, usize d,
+                                      const detail::NavDecision& dec, const Positions& p,
+                                      f64 nav, f64 nav_dollars) {
+  const auto& x = in.target;
+  const usize n = x.instruments;
+  std::vector<f64> price(n, nan), mark(n, nan);
+  for (usize i = 0; i < n; ++i) {
+    if (x.present[d * n + i]) price[i] = x.raw_close[d * n + i];
+    if (p.held[i] == 0) continue;
+    for (usize t = d + 1; t-- > 0;) {
+      if (!x.present[t * n + i]) continue;
+      mark[i] = x.raw_close[t * n + i];
+      break;
+    }
+  }
+  ATX_TRY(const auto adv, detail::execution_adv(in, base, d + 1));
+  const orders::Inputs inputs{dec.target, dec.current, p.held,
+      p.has_shares ? std::span<const f64>(p.shares) : std::span<const f64>{}, price, mark, adv,
+      nav, nav_dollars, cfg.min_notional, base.scenario.max_participation, cfg.lot_size};
+  return orders::build(inputs);
+}
+co::Status write_share_orders(const std::filesystem::path& path, const Facts& f,
+                              const orders::Book& book) {
+  std::ofstream file(path, std::ios::binary);
+  if (!file) return co::Err(co::ErrorCode::IoError, "decide: share orders output");
+  file.imbue(std::locale::classic()); file << std::setprecision(17);
+  file << "instrument_id,side,shares,notional,reference_price,adv_dollars,participation,"
+          "residual_shares,residual_notional,target_weight,current_weight,exit,short_sale,"
+          "below_min_notional,reason,tag\n";
+  for (const auto& o : book.orders) {
+    file << f.x.instrument_ids[o.index] << ',' << (o.shares > 0 ? "buy" : "sell") << ','
+         << o.shares << ',' << o.notional << ',' << o.price << ',';
+    write_value(file, o.adv); file << ',';
+    write_value(file, o.participation);
+    file << ',' << o.residual_shares << ',' << o.residual_shares * o.price << ','
+         << f.dec.target[o.index] << ',' << f.dec.current[o.index] << ',' << o.exit << ','
+         << o.short_sale << ',' << o.below_min_kept << ',' << reason(f, o.index) << ",moc\n";
+  }
+  file.close();
+  return file ? co::Ok()
+              : co::Status(co::Err(co::ErrorCode::IoError, "decide: share orders close"));
+}
+co::Status write_expected(const std::filesystem::path& path, const Facts& f,
+                          const orders::Book& book) {
+  std::ofstream file(path, std::ios::binary);
+  if (!file) return co::Err(co::ErrorCode::IoError, "decide: expected holdings output");
+  file.imbue(std::locale::classic()); file << std::setprecision(17);
+  file << "instrument_id,shares,current_shares,order_shares,reference_price,notional\n";
+  for (const auto& e : book.expected) {
+    file << f.x.instrument_ids[e.index] << ',';
+    write_value(file, e.shares); file << ',';
+    write_value(file, e.current_shares); file << ',' << e.order_shares << ',';
+    write_value(file, e.price); file << ',';
+    write_value(file, e.shares * e.price); file << '\n';
+  }
+  file.close();
+  return file ? co::Ok()
+              : co::Status(co::Err(co::ErrorCode::IoError, "decide: expected holdings close"));
+}
+Json share_orders_json(const orders::Book& book, const DecideConfig& cfg, f64 nav,
+                       f64 nav_dollars, f64 cap, bool shares_column) {
+  const auto& s = book.summary;
+  return Json{{"nav_dollars", nav_dollars},
+      {"nav_dollars_source", cfg.nav_dollars ? "--nav-dollars" : "the book NAV"},
+      {"scale", nav_dollars / nav}, {"lot_size", cfg.lot_size},
+      {"min_notional", cfg.min_notional}, {"price_source", cfg.price_source},
+      {"price_definition", price_definition}, {"rounding_rule", orders::rounding_rule},
+      {"tag", order_tag},
+      {"current_shares_source", shares_column ? "positions shares column"
+                                              : "held_dollars / mark (fractional)"},
+      {"orders", s.orders}, {"buys", s.buys}, {"sells", s.sells},
+      {"buy_notional", s.buy_notional}, {"sell_notional", s.sell_notional},
+      {"short_sales", s.short_sales}, {"exits", s.exits},
+      {"exits_below_min_notional_kept", s.exits_below_min_kept},
+      {"dropped_min_notional", {{"count", s.dropped_min_notional},
+                                {"notional", s.dropped_notional}}},
+      {"rounded_to_zero", {{"count", s.rounded_to_zero},
+                           {"raw_notional", s.rounded_to_zero_notional}}},
+      {"refused_no_close", s.refused_no_close},
+      {"residual_notional", {{"net", s.residual_notional_net}, {"abs", s.residual_notional_abs},
+                             {"max_abs", s.residual_notional_max_abs}}},
+      {"participation", {{"max", s.participation_max}, {"scenario_cap", cap},
+                         {"above_cap", s.above_participation_cap}, {"no_adv", s.no_adv}}},
+      {"expected_holdings_rows", book.expected.size()}};
+}
+
 struct Published {
-  std::string targets_sha, orders_sha;
+  std::string targets_sha, orders_sha, shares_sha, expected_sha;
   OrderTotals totals;
 };
 co::Result<Published> write_tables(const std::filesystem::path& dir, const Facts& f,
-                                   f64 leverage) {
+                                   f64 leverage, const orders::Book& book) {
   if (!std::filesystem::create_directory(dir))
     return co::Err(co::ErrorCode::AlreadyExists, "decide: output must not exist");
   ATX_TRY_VOID(write_targets(dir / "targets.csv", f, leverage));
   Published out;
   ATX_TRY(out.totals, write_orders(dir / "orders.csv", f));
+  ATX_TRY_VOID(write_share_orders(dir / "orders_shares.csv", f, book));
+  ATX_TRY_VOID(write_expected(dir / "expected_holdings.csv", f, book));
   ATX_TRY(out.targets_sha, co::sha256_file((dir / "targets.csv").string()));
   ATX_TRY(out.orders_sha, co::sha256_file((dir / "orders.csv").string()));
+  ATX_TRY(out.shares_sha, co::sha256_file((dir / "orders_shares.csv").string()));
+  ATX_TRY(out.expected_sha, co::sha256_file((dir / "expected_holdings.csv").string()));
   return co::Ok(std::move(out));
 }
 co::Status write_json(const std::filesystem::path& path, const Json& j) {
@@ -768,7 +1097,19 @@ co::Status write_json(const std::filesystem::path& path, const Json& j) {
   file.close();
   return file ? co::Ok() : co::Status(co::Err(co::ErrorCode::IoError, "decide: JSON close"));
 }
-Json pins_json(const Deploy& deploy, const std::string& recipe_sha, const std::string& exe) {
+// Positions and locates of the as-of against the loaded role, and the book NAV.
+struct Inputs {
+  Positions positions;
+  Locates locates;
+  bool locates_supplied{};
+  f64 nav{};
+  const char* nav_source{};
+  // Review R1 M-2: the bytes behind the decision (an f64 directory is pinned by its
+  // manifest.json, which binds the index, which binds holdings.f64).
+  std::string positions_sha, positions_sha_of, locates_sha;
+};
+Json pins_json(const Deploy& deploy, const std::string& recipe_sha, const DecideConfig& cfg,
+               const Inputs& in) {
   const auto& m = deploy.m;
   return Json{{"deploy_manifest_sha256", deploy.sha256},
       {"combined_sha256", deploy.run.combined_sha256}, {"role_sha256", deploy.run.role_sha256},
@@ -779,20 +1120,39 @@ Json pins_json(const Deploy& deploy, const std::string& recipe_sha, const std::s
       {"orientations_sha256", m.at("orientations").at("sha256")},
       {"composition_weights_sha256", m.at("composition").at("weights_sha256")},
       {"data_source_sha256", m.at("data_source_sha256")},
-      {"nav_recipe_sha256", recipe_sha}, {"executable_sha256", exe}};
+      {"nav_recipe_sha256", recipe_sha}, {"executable_sha256", cfg.executable_sha256},
+      {"positions", {{"path", cfg.positions_path}, {"layout", in.positions.layout},
+                     {"sha256", in.positions_sha}, {"sha256_of", in.positions_sha_of}}},
+      {"locates", in.locates_supplied
+           ? Json{{"path", cfg.locates_path}, {"sha256", in.locates_sha}} : Json(nullptr)},
+      {"nav", {{"source", in.nav_source}, {"value", in.nav},
+               {"literal", cfg.nav_text.empty() ? Json(nullptr) : Json(cfg.nav_text)}}}};
 }
-// Positions and locates of the as-of against the loaded role, and the book NAV.
-struct Inputs {
-  Positions positions;
-  Locates locates;
-  bool locates_supplied{};
-  f64 nav{};
-  const char* nav_source{};
-};
+co::Status pin_inputs(const DecideConfig& cfg, Inputs& in) {
+  if (std::string_view{in.positions.layout} == "f64") {
+    std::error_code ec;
+    const bool dir = std::filesystem::is_directory(cfg.positions_path, ec);
+    const auto file = dir ? std::filesystem::path(cfg.positions_path) / holdings::manifest_file
+                          : std::filesystem::path(cfg.positions_path);
+    ATX_TRY(in.positions_sha, co::sha256_file(file.string()));
+    in.positions_sha_of = dir ? holdings::manifest_file : "file";
+  } else {
+    ATX_TRY(in.positions_sha, co::sha256_file(cfg.positions_path));
+    in.positions_sha_of = "file";
+  }
+  if (in.locates_supplied) { ATX_TRY(in.locates_sha, co::sha256_file(cfg.locates_path)); }
+  return co::Ok();
+}
 co::Result<Inputs> read_inputs(const DecideConfig& cfg, const TargetReplayInput& x, i64 asof) {
   Inputs in;
   ATX_TRY(in.positions, read_positions(cfg.positions_path, x.instrument_ids, asof));
   const auto& p = in.positions;
+  // Review R1 M-1: a selection with no row is a data break (a wrong date, a truncated
+  // file), never silently a flat book.
+  if (!p.rows && !cfg.flat_book)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "decide: the positions select no row at the as-of (a missing row is a data "
+                   "break); --flat-book decides from a genuinely flat book");
   if (cfg.nav && p.has_nav && std::bit_cast<u64>(*cfg.nav) != std::bit_cast<u64>(p.nav))
     return co::Err(co::ErrorCode::InvalidArgument,
                    "decide: --nav differs from the positions' nav_post");
@@ -811,6 +1171,7 @@ co::Result<Inputs> read_inputs(const DecideConfig& cfg, const TargetReplayInput&
     ATX_TRY(in.locates, read_locates(cfg.locates_path, x.instrument_ids));
     in.locates_supplied = true;
   }
+  ATX_TRY_VOID(pin_inputs(cfg, in));
   return co::Ok(std::move(in));
 }
 // Every manifest, seal, executable and file pin, then the pinned load and the recomputed
@@ -830,19 +1191,105 @@ co::Result<detail::NavDeployLoad> verified_load(const Deploy& deploy, const Deci
                        loaded.recipe_sha256 + ")");
   return co::Ok(std::move(loaded));
 }
-co::Result<DecideOutcome> decide(const DecideConfig& cfg, std::ostream& progress) {
+// Arguments checked before anything is read.
+co::Status validate_config(const DecideConfig& cfg) {
   if (cfg.deploy_path.empty() || cfg.positions_path.empty() || cfg.output_directory.empty() ||
       cfg.asof.empty())
     return co::Err(co::ErrorCode::InvalidArgument,
                    "decide: --deploy, --asof, --positions and --output are required");
   if (std::filesystem::exists(cfg.output_directory))
     return co::Err(co::ErrorCode::AlreadyExists, "decide: output must not exist");
+  if (cfg.price_source != "close")
+    return co::Err(co::ErrorCode::InvalidArgument, "decide: --price-source must be close");
+  if (cfg.nav_dollars && (!std::isfinite(*cfg.nav_dollars) || !(*cfg.nav_dollars > 0)))
+    return co::Err(co::ErrorCode::InvalidArgument, "decide: --nav-dollars must be finite > 0");
+  if (!std::isfinite(cfg.min_notional) || cfg.min_notional < 0)
+    return co::Err(co::ErrorCode::InvalidArgument, "decide: --min-notional must be finite >= 0");
+  if (cfg.lot_size < 1 || cfg.lot_size > orders::max_lot_size)
+    return co::Err(co::ErrorCode::InvalidArgument, "decide: --lot-size in [1, 1000000]");
+  return co::Ok();
+}
+// Everything decision.json records, gathered once the tables are written.
+struct Record {
+  const DecideConfig& cfg;
+  const Deploy& deploy;
+  const std::string& recipe_sha;
+  i64 asof{};
+  usize d{};
+  const Inputs& inputs;
+  const Facts& facts;
+  const Transfer& tc;
+  const Health& health;
+  const Parity& parity;
+  const orders::Book& book;
+  f64 nav_dollars{};
+  const Published& published;
+};
+Json transfer_json(const Transfer& tc) {
+  return Json{{"transfer_coefficient", finite_or_null(tc.replay)},
+      {"desired_over_sigma_target", finite_or_null(tc.desired_target)},
+      {"signal_over_variance_target", finite_or_null(tc.signal_target)},
+      {"signal_over_variance_aim", finite_or_null(tc.signal_aim)},
+      {"signal_names", tc.signal_names},
+      {"definitions", {{"transfer_coefficient", tc_replay_definition},
+                       {"desired_over_sigma_target", tc_target_definition},
+                       {"signal_over_variance", tc_definition}}}};
+}
+Json decision_summary(const Record& r) {
+  const auto& in = r.inputs; const auto& published = r.published;
+  Json summary{{"schema", book_decision_schema}, {"status", "complete"},
+      {"book", r.deploy.m.at("book")}, {"asof", r.cfg.asof}, {"asof_session_ns", r.asof},
+      {"role_row", r.d}, {"rule", detail::construction_rule_id(r.deploy.base.target)},
+      {"pins_verified", pins_json(r.deploy, r.recipe_sha, r.cfg, in)},
+      {"positions", {{"rows", in.positions.rows}, {"nav_post", in.nav},
+                     {"nav_source", in.nav_source}, {"layout", in.positions.layout},
+                     {"shares_column", in.positions.has_shares},
+                     {"flat_book", r.cfg.flat_book}}},
+      {"locates", {{"supplied", in.locates_supplied}, {"names_listed", in.locates.listed},
+                   {"names_without_locate", in.locates_supplied
+                       ? Json(in.locates.without) : Json(nullptr)}}},
+      {"decision", decision_json(r.facts, r.facts.dec)},
+      {"orders", {{"count", published.totals.orders},
+                  {"buy_dollars", published.totals.buy_dollars},
+                  {"sell_dollars", published.totals.sell_dollars}}},
+      {"orders_shares", share_orders_json(r.book, r.cfg, in.nav, r.nav_dollars,
+                                          r.deploy.base.scenario.max_participation,
+                                          in.positions.has_shares)},
+      {"transfer_coefficient", transfer_json(r.tc)},
+      {"health", {{"status", health_label(r.health.worst)}, {"checks", r.health.checks}}},
+      {"files", {{"targets.csv", published.targets_sha}, {"orders.csv", published.orders_sha},
+                 {"orders_shares.csv", published.shares_sha},
+                 {"expected_holdings.csv", published.expected_sha}}},
+      {"limitations", decide_limitations}};
+  if (r.parity.checked)
+    summary["replay_parity"] = Json{{"names", r.parity.names},
+        {"mismatches", r.parity.mismatches},
+        {"first_mismatch_instrument_id",
+         r.parity.mismatches ? Json(r.parity.first_mismatch) : Json(nullptr)},
+        {"basis", "bitwise target weight vs the positions file's target_weight at the as-of "
+                  "(an absent name is +0)"}};
+  return summary;
+}
+void report(std::ostream& progress, const Record& r) {
+  const auto book = target_stats(r.facts.dec);
+  progress << "decide " << r.cfg.asof << ": " << r.published.totals.orders << " orders ("
+           << r.book.summary.orders << " share orders), gross " << std::setprecision(6)
+           << book.gross << ", turnover " << book.turnover << ", TC " << r.tc.desired_target
+           << ", health " << health_label(r.health.worst);
+  if (r.parity.checked) progress << ", replay parity mismatches " << r.parity.mismatches;
+  progress << '\n';
+}
+// The as-of decision from verified pins and inputs; decision.json is written last.
+co::Result<DecideOutcome> decide(const DecideConfig& cfg, std::ostream& progress) {
+  ATX_TRY_VOID(validate_config(cfg));
   ATX_TRY(const i64 asof, session_of(cfg.asof));
   ATX_TRY(const auto deploy, read_deploy(cfg.deploy_path));
   ATX_TRY(const auto loaded, verified_load(deploy, cfg, asof));
   const auto view = loaded.view();
   const auto& x = view.target;
   ATX_TRY(const usize d, asof_row(x, asof));
+  ATX_TRY_VOID(check_cadence_anchor(deploy, x));
+  ATX_TRY(const auto fresh, check_freshness(x, d, cfg.allow_stale));
   ATX_TRY(const auto inputs, read_inputs(cfg, x, asof));
   const auto no_locate = inputs.locates_supplied ? std::span<const u8>(inputs.locates.no_locate)
                                                  : std::span<const u8>{};
@@ -850,48 +1297,37 @@ co::Result<DecideOutcome> decide(const DecideConfig& cfg, std::ostream& progress
                                              inputs.nav, no_locate));
   const Facts facts{x, d, dec, inputs.positions,
                     inputs.locates_supplied ? &inputs.locates : nullptr, inputs.nav};
+  const f64 nav_dollars = cfg.nav_dollars.value_or(inputs.nav);
+  ATX_TRY(const auto book, share_orders(cfg, view, deploy.base, d, dec, inputs.positions,
+                                        inputs.nav, nav_dollars));
   const f64 leverage = deploy.base.target.aim_leverage;
-  const auto manifest_git = deploy.m.at("source").at("git_sha").get<std::string>();
-  const auto health = health_checks(facts, deploy.bands, manifest_git, cfg.build_source_sha);
   const auto tc = transfer_coefficient(x, d, dec, leverage);
+  const auto book_id = deploy.m.at("book").get<std::string>();
+  ATX_TRY(const auto band, tc_band(cfg, book_id, asof, tc.desired_target));
+  const auto manifest_git = deploy.m.at("source").at("git_sha").get<std::string>();
+  auto health = health_checks(facts, deploy.bands, manifest_git, cfg.build_source_sha);
+  add_w4_checks(health, band, tc.desired_target, fresh, cfg);
   const Parity parity = cfg.check_replay ? replay_parity(facts) : Parity{};
   const auto dir = std::filesystem::path(cfg.output_directory);
-  ATX_TRY(const auto published, write_tables(dir, facts, leverage));
-  Json summary{{"schema", book_decision_schema}, {"status", "complete"},
-      {"book", deploy.m.at("book")}, {"asof", cfg.asof}, {"asof_session_ns", asof},
-      {"role_row", d}, {"rule", detail::construction_rule_id(deploy.base.target)},
-      {"pins_verified", pins_json(deploy, loaded.recipe_sha256, cfg.executable_sha256)},
-      {"positions", {{"rows", inputs.positions.rows}, {"nav_post", inputs.nav},
-                     {"nav_source", inputs.nav_source}}},
-      {"locates", {{"supplied", inputs.locates_supplied},
-                   {"names_listed", inputs.locates.listed},
-                   {"names_without_locate", inputs.locates_supplied
-                       ? Json(inputs.locates.without) : Json(nullptr)}}},
-      {"decision", decision_json(facts, dec)},
-      {"orders", {{"count", published.totals.orders},
-                  {"buy_dollars", published.totals.buy_dollars},
-                  {"sell_dollars", published.totals.sell_dollars}}},
-      {"transfer_coefficient", {{"target", finite_or_null(tc.target)},
-                                {"aim", finite_or_null(tc.aim)}, {"names", tc.names},
-                                {"definition", tc_definition}}},
-      {"health", {{"status", health_label(health.worst)}, {"checks", health.checks}}},
-      {"files", {{"targets.csv", published.targets_sha}, {"orders.csv", published.orders_sha}}},
-      {"limitations", decide_limitations}};
-  if (parity.checked)
-    summary["replay_parity"] = Json{{"names", parity.names}, {"mismatches", parity.mismatches},
-        {"first_mismatch_instrument_id",
-         parity.mismatches ? Json(parity.first_mismatch) : Json(nullptr)},
-        {"basis", "bitwise target weight vs the positions file's target_weight at the as-of "
-                  "(an absent name is +0)"}};
-  ATX_TRY_VOID(write_json(dir / "decision.json", summary));
-  progress << "decide " << cfg.asof << ": " << published.totals.orders << " orders, gross "
-           << std::setprecision(6) << dec.plan.gross << ", turnover " << dec.plan.turnover
-           << ", TC " << tc.target << ", health " << health_label(health.worst);
-  if (parity.checked) progress << ", replay parity mismatches " << parity.mismatches;
-  progress << '\n';
+  ATX_TRY(const auto published, write_tables(dir, facts, leverage, book));
+  const Record record{cfg, deploy, loaded.recipe_sha256, asof, d, inputs, facts, tc, health,
+                      parity, book, nav_dollars, published};
+  ATX_TRY_VOID(write_json(dir / "decision.json", decision_summary(record)));
+  report(progress, record);
   return co::Ok(DecideOutcome{health.worst, parity.checked, parity.names, parity.mismatches});
 }
 } // namespace
+
+usize tc_band_run(f64 asof_tc, std::span<const f64> priors_newest_first) noexcept {
+  const auto below = [](f64 v) { return std::isfinite(v) && v < tc_band_min; };
+  if (!below(asof_tc)) return 0;
+  usize run = 1;
+  for (const f64 v : priors_newest_first) {
+    if (run >= tc_band_consecutive || !below(v)) break;
+    ++run;
+  }
+  return run;
+}
 
 co::Result<DecideOutcome> run_decide(const DecideConfig& cfg, std::ostream& progress) {
   try {
@@ -903,6 +1339,38 @@ co::Result<DecideOutcome> run_decide(const DecideConfig& cfg, std::ostream& prog
   }
 }
 
+namespace {
+// Valueless decide switches.
+bool decide_switch(const std::string& key, DecideConfig& cfg) {
+  if (key == "--check-replay") cfg.check_replay = true;
+  else if (key == "--allow-stale") cfg.allow_stale = true;
+  else if (key == "--flat-book") cfg.flat_book = true;
+  else return false;
+  return true;
+}
+void decide_value(const std::string& key, const std::string& value, DecideConfig& cfg) {
+  const auto real = [&value, &key]() {
+    f64 x = 0;
+    if (!parse_cell(std::string_view{value}, x)) throw std::invalid_argument("invalid " + key);
+    return x;
+  };
+  if (key == "--deploy") cfg.deploy_path = value;
+  else if (key == "--asof") cfg.asof = value;
+  else if (key == "--positions") cfg.positions_path = value;
+  else if (key == "--locates") cfg.locates_path = value;
+  else if (key == "--output") cfg.output_directory = value;
+  else if (key == "--nav") { cfg.nav = real(); cfg.nav_text = value; }
+  else if (key == "--nav-dollars") cfg.nav_dollars = real();
+  else if (key == "--min-notional") cfg.min_notional = real();
+  else if (key == "--price-source") cfg.price_source = value;
+  else if (key == "--prior-decisions") cfg.prior_decisions_directory = value;
+  else if (key == "--lot-size") {
+    if (!parse_cell(std::string_view{value}, cfg.lot_size))
+      throw std::invalid_argument("invalid --lot-size");
+  } else throw std::invalid_argument("unknown flag: " + key);
+}
+} // namespace
+
 int dispatch_decide(int argc, char** argv, std::ostream& out, std::ostream& err) {
   try {
     DecideConfig cfg;
@@ -910,27 +1378,21 @@ int dispatch_decide(int argc, char** argv, std::ostream& out, std::ostream& err)
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
       if (key == "--help") {
-        out << "decide --deploy MANIFEST.json --asof YYYY-MM-DD --positions CSV --output NEWDIR "
-               "[--locates CSV] [--nav DOLLARS] [--check-replay]\n"
+        out << "decide --deploy MANIFEST.json --asof YYYY-MM-DD --positions CSV|HOLDINGS_DIR "
+               "--output NEWDIR [--locates CSV] [--nav DOLLARS] [--check-replay] "
+               "[--flat-book] [--nav-dollars D (default: the book NAV)] [--lot-size 1] "
+               "[--min-notional 500] [--price-source close] [--prior-decisions DIR] "
+               "[--allow-stale]\n"
                "Targets and orders of the deployed book (atx.book-deploy/v1) at the as-of from "
-               "the actual positions, by the NAV replay's own DECIDE functions. Exit 0 decided, "
-               "1 refused, 2 usage, 3 health ERROR, 4 replay parity mismatch.\n";
+               "the actual positions, by the NAV replay's own DECIDE functions, plus "
+               "lot-rounded share orders and the expected book after they fill. Exit 0 "
+               "decided, 1 refused, 2 usage, 3 health ERROR, 4 replay parity mismatch.\n";
         return 0;
       }
       if (!seen.insert(key).second) throw std::invalid_argument("duplicate flag: " + key);
-      if (key == "--check-replay") { cfg.check_replay = true; continue; }
+      if (decide_switch(key, cfg)) continue;
       if (i + 1 >= argc) throw std::invalid_argument("missing value: " + key);
-      const std::string value = argv[++i];
-      if (key == "--deploy") cfg.deploy_path = value;
-      else if (key == "--asof") cfg.asof = value;
-      else if (key == "--positions") cfg.positions_path = value;
-      else if (key == "--locates") cfg.locates_path = value;
-      else if (key == "--output") cfg.output_directory = value;
-      else if (key == "--nav") {
-        f64 nav = 0;
-        if (!parse_cell(std::string_view{value}, nav)) throw std::invalid_argument("invalid --nav");
-        cfg.nav = nav;
-      } else throw std::invalid_argument("unknown flag: " + key);
+      decide_value(key, argv[++i], cfg);
     }
     const auto exe = current_executable_sha256();
     cfg.executable_sha256 = exe ? *exe : std::string{};

@@ -2,6 +2,7 @@
 
 #include <iosfwd>
 #include <optional>
+#include <span>
 #include <string>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
@@ -55,35 +56,77 @@ struct DecideConfig {
   // Post-close book NAV (cash + positions after the as-of fills). Absent: the positions
   // file's nav_post column (equal on every selected row).
   std::optional<atx::f64> nav;
+  std::string nav_text; // the --nav literal as given (recorded in decision.json pins)
+  // Review R1 M-1: positions that select no row at the as-of are refused (a data break)
+  // unless the book is declared genuinely flat.
+  bool flat_book{};
   // --check-replay: the positions file is a replay's holdings.csv; its target_weight at
   // the as-of must equal the decision bit for bit (every name; an absent name is 0).
   bool check_replay{};
   std::string executable_sha256; // the running executable (the CLI hashes itself)
   std::string build_source_sha;  // configure-time provenance (the CLI's build)
+  // ---- v7 W4 ----
+  // B7 share orders (orders_shares.csv, expected_holdings.csv): the deployment NAV the
+  // weights are sized to (absent: the book NAV), the lot, the minimum notional of a
+  // non-exit order and the reference price ("close": the as-of session's raw close).
+  std::optional<atx::f64> nav_dollars;
+  atx::u64 lot_size{1};
+  atx::f64 min_notional{500};
+  std::string price_source{"close"};
+  // B9: prior decide output directories (each holding decision.json) for the
+  // transfer-coefficient band; empty: not supplied (the check warns).
+  std::string prior_decisions_directory;
+  // B9 freshness: the as-of must be the role's last session unless this is set (then a
+  // health warning records how stale the decision is).
+  bool allow_stale{};
 };
 enum class DecideHealth : atx::u8 { Ok = 0, Warn = 1, Error = 2 };
+// B9 transfer-coefficient band (finding L3-F2; P2 R2.5): warn when TC(target) < min for
+// `consecutive` decisions in a row, the as-of one included.
+inline constexpr atx::f64 tc_band_min = 0.5;
+inline constexpr atx::usize tc_band_consecutive = 5;
+// The run of transfer coefficients below tc_band_min: the as-of's first, then the prior
+// decisions' newest first; a value not below (NaN included) ends it; capped at
+// tc_band_consecutive. The band warns when the run reaches the cap.
+[[nodiscard]] atx::usize tc_band_run(atx::f64 asof_tc,
+                                     std::span<const atx::f64> priors_newest_first) noexcept;
 struct DecideOutcome {
   DecideHealth health{DecideHealth::Ok};
   bool parity_checked{};
   atx::usize parity_names{}, parity_mismatches{};
 };
-// Positions CSV: header with columns instrument_id and held_dollars (any order, other
-// columns ignored); with a session_ns column only rows of the as-of session are read (so
-// a replay's holdings.csv is a positions file); nav_post and target_weight columns are
-// read when present. Every id must be a role instrument, at most once; dollars finite.
+// Positions, one of:
+// - a CSV with columns instrument_id and held_dollars (any order, other columns ignored);
+//   with a session_ns column only rows of the as-of session are read (so a replay's v1
+//   holdings.csv is a positions file); nav_post, target_weight and shares columns are read
+//   when present (shares: the broker's share count, used by the share orders);
+// - an f64 holdings directory of `nav --emit-holdings` (or its holdings_index.json): the
+//   as-of session's rows (held_dollars, target_weight) and nav_post, every file SHA
+//   verified; a session the replay did not report is refused.
+// Every id must be a role instrument, at most once; dollars finite.
 // Locates CSV (optional): instrument_id,locate with locate 0|1; a name not listed or
 // listed 0 has no locate: it may not open or grow a short (the locate-in-aim mask and
 // the post-rule block, OR-ed with the modeled special tier).
 // Outputs (exclusive directory; decision.json LAST): targets.csv, orders.csv,
-// decision.json (atx.book-decision/v1: pins verified, construction record, transfer
-// coefficient, health checks, replay parity when checked).
+// orders_shares.csv, expected_holdings.csv, decision.json (atx.book-decision/v1: pins
+// verified, construction record, transfer coefficient, share-order summary, health
+// checks, replay parity when checked).
+//   orders_shares.csv: instrument_id,side,shares,notional,reference_price,adv_dollars,
+//     participation,residual_shares,residual_notional,target_weight,current_weight,exit,
+//     short_sale,below_min_notional,reason,tag (strategy_orders.hpp's rule; tag moc = the
+//     replay's fill at the next session's close; participation of the raw-dollar ADV that
+//     fill reads, nan without ADV);
+//   expected_holdings.csv: instrument_id,shares,current_shares,order_shares,
+//     reference_price,notional (the book after the sent orders fill; reconcile's
+//     --expected).
 // Returns the outcome once decision.json is written; any refusal is an error and writes
 // nothing (the directory is created only after every check and the decision).
 [[nodiscard]] atx::core::Result<DecideOutcome> run_decide(const DecideConfig& cfg,
                                                           std::ostream& progress);
-// argv[0] is the "decide" verb: --deploy M --asof YYYY-MM-DD --positions CSV --output NEWDIR
-// [--locates CSV] [--nav DOLLARS] [--check-replay]. Exit codes: 0 decided (health ok or
-// warn), 1 refused, 2 usage, 3 decided with a health ERROR (review before any order),
-// 4 --check-replay mismatch.
+// argv[0] is the "decide" verb: --deploy M --asof YYYY-MM-DD --positions CSV|DIR
+// --output NEWDIR [--locates CSV] [--nav DOLLARS] [--check-replay] [--nav-dollars D]
+// [--lot-size 1] [--min-notional 500] [--price-source close] [--prior-decisions DIR]
+// [--allow-stale]. Exit codes: 0 decided (health ok or warn), 1 refused, 2 usage, 3
+// decided with a health ERROR (review before any order), 4 --check-replay mismatch.
 [[nodiscard]] int dispatch_decide(int argc, char** argv, std::ostream& out, std::ostream& err);
 } // namespace atx::impl::strategy
