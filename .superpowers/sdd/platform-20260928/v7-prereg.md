@@ -82,3 +82,29 @@ Ruling 7.0-b (2026-09-28, before any run; from L7's static check): qmj_safety ne
 allowed as a recorded exception (recipe row), cost ~+52 MB per slot per worker in the u pass (headroom: 1,061 MiB peak vs
 1,536 cap). Wave 1 stays 5 candidates / 5 trials. q5_eg slopes: RoF 2021 Table I Panel D (-0.029 / 0.516 / 0.771) are
 used; the NBER WP values (-0.031 / 0.530 / 0.802) are disclosed as the draft's source.
+
+## Library v7.1 = parent + wave 2 (declared 2026-09-29 before any IC pass of any wave-2 candidate and before the wave-1 read; by reference)
+Pre-registration text: `.superpowers/sdd/platform-20260928/library-v7-wave2-prereg.md` sections 1-5 as committed with this
+paragraph (P4, read-only; field coverage and distributions only, no returns). Candidates in order: ins_opp
+`rank(ins_opportunistic_net)` (ownership_flow), inst_best_ideas `rank(decay_linear(inst_best_ideas, 21))`
+(ownership_flow), ftd_fail `rank((-1 * ftd_shares_ratio21))` (short_interest), ea_overdue
+`rank((-1 * max(sign((-1 * ea_days_to_expected)), 0)))` (earnings_momentum); 4 admission trials; fields-v9 as built
+(manifest sha 8fd00e9f...d7b8769b, 63 rows); no budget exception. Two mechanical respellings versus the draft, both decided
+by field semantics (ins_opportunistic_net is already per share outstanding; ea_days_to_expected is signed).
+Rulings, all declared before the wave-1 result exists:
+- Ruling W2-a: parent and reference = v7.0 and its cell if wave 1 is accepted, else v6.1 and the v6.1 cell -- a rejected
+  wave must not ride into the next test and the two waves stay separable -- cost if wrong: if wave 1 is rejected for
+  noise, its members are lost to v7 (they may be re-proposed only in a later sprint with a new pre-registration).
+- Ruling W2-b: ea_overdue keeps the cut `< 0` -- it is the draft's alignment rule verbatim; moving the cut is a variant --
+  cost if wrong: .67% of cells carry a one-session false flag from the 8-K acceptance lag (disclosed).
+- Ruling W2-c: inst_best_ideas keeps the summed overweight and ins_opp keeps the net measure -- the registered
+  hypotheses; a per-holder mean or a buy-only leg is a separate later trial -- cost if wrong: a weaker member that the
+  admission rule (prior sign, HAC t veto) or the wave-level rule rejects.
+- Ruling W2-d: the 64-row fields cap is not raised for wave 2 (63 rows fit); wave 3 gets a lean manifest -- no C++ change
+  inside an open trial sequence -- cost if wrong: none for v7.1.
+- Ruling W2-e: the reference cell is re-run on fields-v9 as an identity check (S2 daily CSV bit for bit) before the
+  v7.1 cell; a mismatch aborts without a trial.
+Cross-cell N for the v7.1 construction cell = ledger lines at run time + 1 (the run order of the v7.0, spo-v2 and v7.1
+cells decides the number; each cell adds exactly one). Acceptance as in section 5 of the referenced text: wave whole,
+P2 paired S2 net dSR > 0 vs the reference (sign-only inside one SE) AND R6' mechanics; admitted-but-losing members
+disclosed, never dropped one by one. Citations to complete before the freeze (JEF 2016 authors): not a variant.
