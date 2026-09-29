@@ -32,8 +32,9 @@ up next to this script, so ``specs/v61.json`` works from the worktree root). Pat
           grid --effective-n dirs / --pbo / V[SR_n] read; len(cells) + 1 must equal dsr_n); summ.ledger (optional)
           is the default of --ledger
 
-Pins: every input (library, recipe, baseline library, role, identity bridge, fundamental events, baseline fields,
-reference admission, reference cell) is pinned in the spec by ``lock``, which computes the SHA-256 from the file
+Pins: every input (library, recipe, baseline library, role, identity bridge, fundamental events, SIC events (the
+atx-db fundamentals stage manifest: the grp_* fields' --sic-events), baseline fields, reference admission, reference
+cell) is pinned in the spec by ``lock``, which computes the SHA-256 from the file
 (never hand-typed); ``plan``/``run`` re-hash and stop on any mismatch (exit 3). Every intermediate pin (fields
 manifest, orientations, runner summary, weights, combined signal) is computed from the file the previous phase wrote.
 
@@ -69,7 +70,7 @@ MAX_ATTEMPTS = 9
 GATE_REQUIRE = ("all", "any")          # gate.require: every listed candidate admitted, or at least one
 REQUIRED = {"schema", "name", "python", "runner", "inputs"}
 INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge", "fund_events", "baseline_fields",
-              "reference_admission", "reference_cell")
+              "reference_admission", "reference_cell", "sic_events")
 SOURCE_FLAGS = (("finra", "--finra"), ("tickerhistory", "--tickerhistory"), ("lake", "--lake"),
                 ("finra_short_volume", "--finra-short-volume"))
 
@@ -456,6 +457,8 @@ class Cycle:
                      self.pin("identity_bridge")]
         if "fund_events" in s["inputs"]:
             argv += ["--fund-events", self.idir("fund_events"), "--fund-events-sha256", self.pin("fund_events")]
+        if "sic_events" in s["inputs"]:  # U2: the grp_* SIC table = the role's (atx-db fundamentals stage manifest)
+            argv += ["--sic-events", self.idir("sic_events"), "--sic-events-sha256", self.pin("sic_events")]
         if "fund_lag_sessions" in f:
             argv += ["--fund-lag-sessions", str(f["fund_lag_sessions"])]
         argv += ["--max-rss-mib", str(f.get("max_rss_mib", 1536)), "--max-seconds", str(f.get("max_seconds", 1800))]
