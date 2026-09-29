@@ -109,6 +109,11 @@ constexpr const char* capacity_declaration =
     "book is the NAV-m book divided by m: returns, Sharpe, cost per traded dollar and cap binding "
     "are the NAV-m book's; dollar columns are scaled back by m; participation p95 is the "
     "histogram bound times m); fixed rate only; x1 is S2 bit for bit";
+constexpr const char* capacity_v6_declaration =
+    "aim-partial-v6 in the capacity pass: each capacity book prices its c_i with its own law (S2 "
+    "with impact_y * m^0.5), which at the base-scale reference trade q equals the S2 law at the "
+    "NAV-m trade m q, so c_i/c_bar, band_i, theta_t and target_i are the NAV-m book's (the main "
+    "pass prices every book with the primary S2 law); x1 is the main pass's S2 v6 book bit for bit";
 constexpr const char* v6_declaration =
     "aim-partial-v6 (R2.2 + R2.3): on a rebalance decision d, c_i = marginal cost per dollar of "
     "the primary S2 law (half spread 5 + commission 1 bps + 1.5 * 0.6 * sigma_i * (q/ADV_i)^0.5) "
@@ -142,6 +147,7 @@ Json declarations(const ScopedNavExtension::State& s) {
     j["capacity"] = capacity_declaration;
     j["capacity_multiples"] = Json(std::vector<f64>(cost_v2::capacity_multiples.begin(),
                                                     cost_v2::capacity_multiples.end()));
+    if (s.options.aim_v6) j["capacity_aim_partial_v6"] = capacity_v6_declaration;
   }
   if (s.options.aim_v6)
     j["aim_partial_v6"] = Json{{"rule", v6_declaration}, {"kappa", v6.kappa},
@@ -246,6 +252,7 @@ co::Status write_extras(const std::filesystem::path& dir, const ScopedNavExtensi
     files["capacity_curve.csv"] = sha;
     extras["capacity"] = std::move(rows);
     extras["capacity_rule"] = capacity_declaration;
+    if (o.aim_v6) extras["capacity_aim_partial_v6"] = capacity_v6_declaration;
     extras["capacity_x1_equals_primary_bit_for_bit"] =
         primary && unit && same_bits(primary->net_returns, unit->net_returns);
   }
@@ -278,13 +285,24 @@ co::Status ScopedNavExtension::State::plan(const TargetReplayInput& x, const Nav
   const std::string book = book_label(cfg.scenario);
   TcRecord record{x.session_keys[d], book, nan, members, 0, 0, nan, nan, nan};
   if (v6) {
+    // Capacity pass (R1 I-1): a book here is the NAV-m book at the initial NAV. Its c_i is the
+    // S2 law at the NAV-m trade m q, which is exactly the book's own law (impact_y * m^delta,
+    // cost_v2::capacity_scenarios) at the base-scale q. The main pass prices every book with S2.
+    const NavScenario* law = &s2;
+    if (pass == NavV7Pass::Capacity) {
+      if (!std::isfinite(cost_v2::capacity_multiple(cfg.scenario.id)))
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "aim-partial-v6: capacity pass book " + cfg.scenario.id +
+                           " is not a capacity book");
+      law = &cfg.scenario;
+    }
     const f64 q = members ? cfg.target.trade_fraction * cfg.target.aim_leverage * nav_post /
                                 static_cast<f64>(members)
                           : nan;
     costs.assign(n, nan);
     for (usize i = 0; i < n; ++i)
       if (member[i])
-        costs[i] = cost_v2::marginal_cost_s2(s2, q, liquidity.adv[i], liquidity.sigma[i]);
+        costs[i] = cost_v2::marginal_cost_s2(*law, q, liquidity.adv[i], liquidity.sigma[i]);
     const f64 c_bar = cost_v2::finite_median(costs);
     auto& history = c_history[book];
     if (std::isfinite(c_bar)) {
