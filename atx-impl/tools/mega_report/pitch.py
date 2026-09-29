@@ -602,7 +602,8 @@ ANALYSES = {'ic': an_ic, 'cands': an_cands, 'ic_corr': an_ic_corr, 'sig_corr': a
 # ============================================================================================ blocks: text
 def blk_prose(ctx, spec) -> str:
     nb = (ctx.cfg.get('narrative_blocks') or {}).get(spec.get('key'), {})
-    return N.paragraphs(ctx, nb.get('paragraphs') or spec.get('paragraphs')) + N.check_list(ctx, nb.get('check'))
+    return (N.paragraphs(ctx, nb.get('paragraphs') or spec.get('paragraphs'))
+            + N.check_list(ctx, nb.get('check') or spec.get('check')))
 
 
 def blk_h3(ctx, spec) -> str:
@@ -1330,3 +1331,10 @@ BLOCKS = {'prose': blk_prose, 'h3': blk_h3, 'callout': blk_callout, 'glossary': 
           'fig_fills': blk_fills, 't_cost_model': blk_cost_model, 't_financing': blk_financing, 'costdec': blk_costdec,
           't_attrib': blk_attrib, 'capacity': blk_capacity, 't_drawdowns': blk_drawdowns, 't_retstats': blk_retstats,
           't_monitor': blk_monitor, 't_files': blk_files}
+
+# pitch iteration 3 (platform v7): capacity curve, risk-model bias, report cards, monitor baseline, operating loop,
+# integrity statistics, trial ledger -- config-driven blocks and analyses in pitch3.py
+from . import pitch3 as _P3  # noqa: E402
+
+BLOCKS.update(_P3.BLOCKS)
+ANALYSES.update(_P3.ANALYSES)
