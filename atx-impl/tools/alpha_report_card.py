@@ -572,6 +572,7 @@ def build(args, log=None) -> tuple[dict[str, bytes], dict]:
     size_labels = GroupLabels(geo, terc, 3, ["small", "mid", "large"])
     ff = ff12_groups(geo, inputs)
     ff_labels = GroupLabels(geo, ff, 12, [str(i) for i in range(1, 13)]) if ff is not None else None
+    inputs.size = inputs.ff12 = inputs.panel = None  # the geometry keeps close, presence and the guard only
     R = np.full((geo.t, k_n, geo.w), np.nan, dtype=np.float32)
     per: dict[str, dict] = {}
     pnl = np.full((geo.t, k_n), np.nan)
