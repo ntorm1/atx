@@ -2655,5 +2655,131 @@ class V1BytesUnchangedByV6(unittest.TestCase):
                 self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]), (screen, composition))
 
 
+
+# ------------------------------------------------ platform-v7 L7: appended theme ownership_flow (library v7.0 prereg)
+def load_blob(blob: str, name: str, root: Path):
+    """The fitter at a git blob, loaded as a module (None when the git history is unavailable)."""
+    import importlib.util
+    import subprocess
+    try:
+        old = subprocess.run(["git", "cat-file", "-p", blob], capture_output=True, check=True,
+                             cwd=Path(__file__).resolve().parent).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    (root / "old").mkdir(exist_ok=True)
+    path = root / "old" / f"{name}.py"
+    path.write_bytes(old)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class OwnershipFlowTheme(unittest.TestCase):
+    """v7-prereg "Library v7.0" (library-v7-draft 3.5c): ownership_flow is appended to the fitter's theme list now,
+    empty in v7.0. A library that declares no appended theme (v6.1, v7.0) fits exactly the bytes of the pre-L7 fitter
+    except the embedded script SHA and the SHAs derived from it (the byte_stability contract of V1BytesUnchangedByAim);
+    a declared but unadmitted appended theme changes no weight; an admitted one is an ordinary ew-theme-v1 theme."""
+
+    PRE_L7_BLOB = "eb41abddd4df777e7bef7261531077e57f4b0b72"  # fit_composition_weights.py at 4929824d (L7 base)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def world(self, relabel=None):
+        panel, signals, ids, extra = v4_world()
+        for i, theme in (relabel or {}).items():
+            extra[i] = dict(extra[i], theme=theme)
+        tag = "-".join(sorted(relabel or {})) or "base"
+        fx = Fixture(self.root / f"fx-{tag}", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                     candidate_extra=extra)
+        return fx, ids
+
+    def test_declared_constants(self):
+        self.assertEqual(fcw.V7_APPENDED_THEMES, ("ownership_flow",))
+        self.assertEqual(fcw.PRIOR_THEMES, fcw.V4_THEMES + ("ownership_flow",))
+        self.assertEqual(len(fcw.V4_THEMES), 9)
+
+    def test_libraries_without_an_appended_theme_keep_the_pre_l7_bytes(self):
+        base = load_blob(self.PRE_L7_BLOB, "fcw_pre_l7", self.root)
+        if base is None:
+            self.skipTest("git history with the pre-L7 fitter blob is unavailable")
+        self.assertFalse(hasattr(base, "V7_APPENDED_THEMES"))
+        self.assertEqual((base.SEMANTICS_TAG, base.V4_THEMES), (fcw.SEMANTICS_TAG, fcw.V4_THEMES))
+        fx, _ = self.world()
+        for screen in ("v4-prior-v1", "v4-prior-v2"):
+            got = {}
+            for tag, module in (("new", fcw), ("old", base)):
+                out, work = self.root / f"{screen}-{tag}", self.root / f"work-{screen}-{tag}"
+                with unittest.mock.patch.object(module, "V42_COST_TAU_LIMIT", 0.249):
+                    code, _ = module.fit(module.parse_args(fx.argv(out, screen, [
+                        "--orientation", "prior", "--composition", "ew-theme-v1", "--work-dir", str(work)])))
+                self.assertEqual(code, 0, screen)
+                adm = (out / fcw.OUTPUT_ADMISSION).read_bytes()
+                derived = {module.SCRIPT_SHA256: b"<script>", json.loads(adm)["inputs"]["context_sha256"]: b"<context>",
+                           sha(adm): b"<admission>"}
+                files = {}
+                for p in out.iterdir():
+                    data = p.read_bytes()
+                    for value, token in derived.items():
+                        data = data.replace(value.encode(), token)
+                    files[p.name] = data
+                keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
+                got[tag] = (files, keys)
+            self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), screen)
+            for name in got["new"][0]:
+                self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {name}")
+            self.assertEqual(got["new"][1], got["old"][1], screen)
+            doc = json.loads(got["new"][0][fcw.OUTPUT_WEIGHTS])
+            self.assertEqual(doc["provenance"]["themes_preregistered"], list(fcw.V4_THEMES))
+
+    def fit(self, fx, tag):
+        out = self.root / f"out-{tag}"
+        code, _ = fcw.fit(fx.args(out, **V4_ARGS))
+        self.assertEqual(code, fcw.EXIT_OK, tag)
+        return (json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes()), json.loads((out / fcw.OUTPUT_ADMISSION).read_bytes()),
+                (out / fcw.OUTPUT_WEIGHTS).read_bytes())
+
+    def test_empty_appended_theme_changes_no_weight(self):
+        doc0, adm0, _ = self.fit(self.world()[0], "base")
+        # "insufficient" (prior_sign 0 -> reject_no_prior) now declares ownership_flow: the theme has no admitted member
+        fx, ids = self.world({"insufficient": "ownership_flow"})
+        doc, adm, blob = self.fit(fx, "empty")
+        self.assertEqual((doc["weights"], doc["signs"]), (doc0["weights"], doc0["signs"]))
+        self.assertEqual([c["status"] for c in adm["candidates"]], [c["status"] for c in adm0["candidates"]])
+        prov, prov0 = doc["provenance"], doc0["provenance"]
+        self.assertEqual((prov["themes_present"], prov["themes"]), (prov0["themes_present"], prov0["themes"]))
+        self.assertNotIn("ownership_flow", prov["themes_present"])
+        self.assertEqual(prov["themes_preregistered"], list(fcw.V4_THEMES) + ["ownership_flow"])
+        self.assertIn("ownership_flow", prov["themes_declared"])
+        self.assertEqual(runner_accepts(blob, fx.library_sha, ids, fx.train_sha), [doc0["weights"][i] for i in ids])
+
+    def test_admitted_appended_theme_is_an_ordinary_theme_and_the_old_fitter_refuses_it(self):
+        fx, ids = self.world({"flip": "ownership_flow"})  # flip is admitted (short_interest in v4_world)
+        doc, _, _ = self.fit(fx, "admitted")
+        w = doc["weights"]
+        self.assertEqual({i: w[i] for i in ids if w[i] > 0}, {"slow_a_clone": 0.25, "slow_a_twin": 0.25, "flip": 0.5})
+        self.assertEqual(doc["provenance"]["themes_present"], ["ownership_flow", "value"])
+        self.assertEqual(doc["provenance"]["themes"]["ownership_flow"]["admitted"], ["flip"])
+        lib = self.root / "bad.json"
+        lib.write_bytes(json.dumps({"schema": fcw.LIBRARY_SCHEMA, "candidates": [
+            {"id": "a", "family": "f", "dsl": "rank(close)", "theme": "ownership", "tier": "B", "prior_sign": 1}]
+        }).encode())
+        with self.assertRaises(fcw.FitError) as caught:  # an unknown theme is still refused
+            fcw.load_priors(lib, sha(lib.read_bytes()), None, None, fcw.load_library(lib, sha(lib.read_bytes())))
+        self.assertIn("appended theme ('ownership_flow',)", str(caught.exception))
+        base = load_blob(self.PRE_L7_BLOB, "fcw_pre_l7_refuse", self.root)
+        if base is None:
+            self.skipTest("git history with the pre-L7 fitter blob is unavailable")
+        library = base.load_library(fx.library, fx.library_sha)
+        with self.assertRaises(base.FitError) as caught:
+            base.load_priors(fx.library, fx.library_sha, None, None, library)
+        self.assertIn("pre-registered v4 theme", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -519,3 +519,204 @@ def test_card_and_monitor_need_their_upstream_sections():
         with pytest.raises(RC.CycleError) as e:
             RC.validate_spec(bad)
         assert e.value.code == RC.EXIT_USAGE
+
+
+# ------------------------------------------------------------------ L7: library v7.0 spec (no run) and gate.require
+V70 = HERE.parent / "specs" / "v70.json"
+V61_ADMISSION = "build-equity/mega-weights-v61-ew/admission.json"
+V61_ADMISSION_SHA256 = "2c78216ddd7e30a639a77f89e7459a8deeaee2d5d8efd509863eed6a480089f0"  # the v6.1 fit (pool-2)
+WAVE1 = ["qmj_safety", "nincr", "q5_eg", "smax5", "res_mom_ind"]
+FIELDS_V7 = "build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v7"
+V61_CELL = "build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+V70_CELL = "build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247"
+STUDIES = HERE.parents[1] / ".superpowers" / "sdd" / "mega-alpha-20260926" / "studies"
+
+
+def nav_summ_args(argv: list[str]):
+    """nav_summ.py's own argparse on argv: its main() is stopped right after parse_args (no NAV dir is read)."""
+    import argparse
+    import importlib
+    from unittest import mock
+    sys.path.insert(0, str(STUDIES))
+    try:
+        module = importlib.import_module("nav_summ")
+    finally:
+        sys.path.remove(str(STUDIES))
+    real = argparse.ArgumentParser.parse_args
+
+    class Parsed(Exception):
+        pass
+
+    def stop(self, args=None, namespace=None):
+        raise Parsed(real(self, args, namespace))
+    with mock.patch.object(argparse.ArgumentParser, "parse_args", stop), pytest.raises(Parsed) as got:
+        module.main(argv)
+    return got.value.args[0]
+
+
+def v70_known() -> dict:
+    """Hash-only pins: the v6.1 fixture pins, the v6.1 admission, and the committed v7.0 library / recipe files."""
+    known = json.loads((FIX / "v61_pins.json").read_text(encoding="utf-8"))
+    known[V61_ADMISSION] = V61_ADMISSION_SHA256
+    for name in ("fund_industry_ic_v70.json", "fund_industry_ic_v70.recipe.json"):
+        rel = f"atx-impl/strategies/{name}"
+        known[rel] = RC.sha256_file(HERE.parents[1] / rel)
+    return known
+
+
+def v70_cycle(root: Path, **kw) -> RC.Cycle:
+    return RC.Cycle(RC.load_spec(V70), RC.Resolver(root, v70_known()), spec_path=V70, **kw)
+
+
+def test_v70_spec_is_v61_ops_with_the_declared_changes_only():
+    v70, ops = RC.load_spec(V70), RC.load_spec(V61_OPS)
+    assert list(v70) == list(ops)
+    same = ("schema", "python", "env_path_prepend", "runner", "exes")
+    assert {k: v70[k] for k in same} == {k: ops[k] for k in same}
+    # inputs: v7.0 library / recipe, v6.1 as the baseline library, fields-v7 as the baseline fields, the v6.1 cell
+    assert list(v70["inputs"]) == list(ops["inputs"])
+    for key in ("role", "identity_bridge", "fund_events"):
+        assert v70["inputs"][key] == ops["inputs"][key], key
+    assert v70["inputs"]["baseline_library"] == dict(ops["inputs"]["library"])
+    assert v70["inputs"]["baseline_fields"]["path"] == f"{FIELDS_V7}/manifest.json"
+    assert v70["inputs"]["reference_admission"]["path"] == V61_ADMISSION
+    assert v70["inputs"]["reference_cell"]["dir"] == ops["nav"]["output"]  # the v6.1 final cell
+    # fields: lo1-fields-v7 as-is (the same builder line), nothing added
+    strip = lambda f: {k: v for k, v in f.items() if k != "check"}
+    assert strip(v70["fields"]) == strip(ops["fields"])
+    assert v70["fields"]["output"] == ops["fields"]["output"] == FIELDS_V7
+    assert v70["fields"]["check"] == dict(ops["fields"]["check"], expect_added=[])
+    assert v70["static_check"] == {"script": ops["static_check"]["script"],
+                                   "args": ["--max-roster", "56", "--require-baseline-prefix"], "expect_added": WAVE1}
+    assert v70["ic"]["flags"] == ops["ic"]["flags"] + ["--cache-legacy-fields", FIELDS_V7]
+    assert (v70["ic"]["u_output"], v70["ic"]["w_output"], v70["ic"]["cache"]) == (
+        "build-equity/mega-v70-train-u", "build-equity/mega-v70w-train-ew", "build-equity/mega-candidate-cache-v70")
+    assert v70["fit"] == dict(ops["fit"], output="build-equity/mega-weights-v70-ew",
+                              work_dir="build-equity/mega-fit-work-v70")
+    assert v70["card"] == dict(ops["card"], output="build-equity/mega-cards-v70")
+    assert v70["gate"] == {"name": "p1-v70", "admitted": WAVE1, "require": "any", "sign_agrees": True,
+                           "report": ["bac", "smax", "droe", "sue", "cbop", "res_mom_12_1", "within_ind_mom"]}
+    assert v70["nav"] == dict(ops["nav"], output="build-equity/mega-nav-v70u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247")
+    assert v70["monitor"] == dict(ops["monitor"], output="build-equity/mega-monitor-v70")
+    cells = v70["summ"]["cells"]  # the n33 scoring grid (mega-nav-v7-summ-n33.json), then this cycle's v7.0 cell
+    assert v70["summ"] == dict(ops["summ"], dsr_n=34, cells=cells, extra=["--effective-n", "dirs", "--psr", "--pbo"],
+                               ledger="build-equity/trials.jsonl")
+    assert len(cells) == len(set(cells)) == 33 and cells[-5:] == [
+        f"{V61_CELL}{x}" for x in ("", "-v6C1", "-v6C2", "-v6C3")] + ["build-equity/mega-nav-v61u-spo-v1-L1.247"]
+    assert v70["inputs"]["reference_cell"]["dir"] == V61_CELL and v70["nav"]["output"] == V70_CELL not in cells
+
+
+def test_v70_plan_dry_run_resolves_every_input_pin(tmp_path):
+    c = v70_cycle(tmp_path)
+    spec, known = RC.load_spec(V70), v70_known()
+    for key, item in spec["inputs"].items():  # every pin is the file's SHA-256 (as `lock` computed it)
+        assert item["sha256"] == known[item["path"]], key
+    assert all(how == "locked (hash-only)" for _, _, how in c.pins.values())
+    steps = {s.phase: s for s in c.steps()}
+    assert list(steps) == list(RC.PHASES)
+    assert {p: s.state for p, s in steps.items()} == {
+        "fields": "done", "check": "always", "u": "pending", "fit": "pending", "card": "pending", "gate": "always",
+        "w": "pending", "nav": "pending", "monitor": "pending", "summ": "always"}
+    lines = RC.plan_lines(c)
+    assert lines[0].startswith("# research_cycle v70: spec") and len([x for x in lines if x.startswith("# pin ")]) == 9
+    assert len(RC.plan_lines(c, lines_only=True)) == 9  # every phase but the internal gate prints its command line
+    fdm = f"{FIELDS_V7}/manifest.json"
+    ck = steps["check"].argv
+    assert ck[ck.index("--manifest") + 1] == fdm and ck[-2:] == ["--expect-added", ",".join(WAVE1)]
+    assert ck[ck.index("--baseline") + 1] == "atx-impl/strategies/fund_industry_ic_v61.json" and "56" in ck
+    u = steps["u"].argv
+    assert u[u.index("--train-fields-sha256") + 1] == known[fdm]  # the fields pin resolves (fields-v7 exists)
+    assert u[u.index("--library-sha256") + 1] == known["atx-impl/strategies/fund_industry_ic_v70.json"]
+    assert u[u.index("--cache-legacy-fields") + 1] == FIELDS_V7
+    assert u[-2:] == ["--candidate-cache", "build-equity/mega-candidate-cache-v70"]
+    assert steps["u"].output == "build-equity/mega-v70-train-u-1"
+    nav = steps["nav"].argv
+    k = nav.index("--")
+    assert nav[nav.index("--rule") + 1] == "aim-partial-v5" and nav[nav.index("--aim-leverage") + 1] == "1.247"
+    assert nav[k + 1:k + 3] == ["build-equity/bin/atx-equity-strategy-targets.exe", "nav"]
+    summ = steps["summ"].argv
+    r, grid = summ.index("--reference"), spec["summ"]["cells"] + [V70_CELL]
+    assert summ[2:r] == ["--weights", "build-equity/mega-weights-v70-ew/composition_weights.json"]
+    assert summ[r + 1] == V61_CELL and summ[r + 2:r + 36] == grid  # the 34-cell grid, one positional block
+    assert summ[r + 36:] == ["--dsr-n", "34", "--effective-n", "dirs", "--psr", "--pbo", "--ledger",
+                             "build-equity/trials.jsonl", "--ledger-kind", "construction"]
+    ns = nav_summ_args(summ[2:])  # nav_summ's own argparse: the grid as dirs, an empty --pbo (= the dirs), the ledger
+    assert (ns.dirs, ns.pbo, ns.dsr_n, ns.reference, ns.effective_n, ns.psr) == (grid, [], 34, V61_CELL, "dirs", True)
+    assert (ns.ledger, ns.ledger_kind, ns.weights) == ("build-equity/trials.jsonl", "construction", [summ[3]])
+    assert v70_cycle(tmp_path, ledger="other.jsonl").steps()[-1].argv[-3:] == [  # the CLI --ledger overrides
+        "other.jsonl", "--ledger-kind", "construction"]
+    # the CLI prints the same plan (hash-only roots are not reachable from the CLI: resolve against a fake root)
+    assert RC.main(["plan", str(V70), "--root", str(tmp_path)]) == RC.EXIT_PIN  # inputs absent there: a pin stop
+
+
+@pytest.mark.skipif(not os.environ.get("RESEARCH_CYCLE_LIVE_ROOT"), reason="set RESEARCH_CYCLE_LIVE_ROOT to hash the "
+                                                                          "real pool-2 files (after the L7 merge)")
+def test_v70_plan_live_root_resolves():
+    cycle = RC.Cycle(RC.load_spec(V70), RC.Resolver(Path(os.environ["RESEARCH_CYCLE_LIVE_ROOT"])), spec_path=V70)
+    assert all(how == "locked, verified" for _, _, how in cycle.pins.values())
+    assert next(s for s in cycle.steps() if s.phase == "fields").state == "done"
+
+
+def two_member_root(tmp_path, admission, **gate):
+    root, sp = make_root(tmp_path, gate={"name": "p1", "admitted": ["a1", "a2"], "sign_agrees": True, **gate})
+    behave(root, admission={"rules": {}, "candidates": admission})
+    return root, sp
+
+
+def test_gate_require_any_passes_with_one_admitted_member_and_prints_every_row(tmp_path):
+    rows = [{"id": "a1", "status": "reject_redundant", "sign_agrees": True},
+            {"id": "a2", "status": "admitted", "sign_agrees": True}]
+    root, sp = two_member_root(tmp_path, rows, require="any")
+    log = []
+    assert run(root, sp, log) == RC.EXIT_OK
+    assert any(x.startswith("gate p1 a1: status reject_redundant") for x in log)
+    assert any(x.startswith("gate p1 a2: status admitted") for x in log)
+    assert "gate p1: 1 of 2 listed candidates admitted with the prior sign (require any)" in log
+    assert "gate p1 PASS" in log and "WT-run1" in calls(root)
+    root2, sp2 = two_member_root(tmp_path / "all", rows)  # default require all: the same rows stop the cycle
+    with pytest.raises(RC.CycleError) as e:
+        run(root2, sp2)
+    assert e.value.code == RC.EXIT_GATE and "WT-run1" not in calls(root2)
+
+
+def test_gate_require_any_stops_when_none_is_admitted_with_its_sign(tmp_path):
+    rows = [{"id": "a1", "status": "reject_veto", "sign_agrees": True},
+            {"id": "a2", "status": "admitted", "sign_agrees": False}]
+    root, sp = two_member_root(tmp_path, rows, require="any")
+    log = []
+    with pytest.raises(RC.CycleError) as e:
+        run(root, sp, log)
+    assert e.value.code == RC.EXIT_GATE and "gate p1 FAIL: stop (no later phase runs)" in log
+    assert "gate p1: 0 of 2 listed candidates admitted with the prior sign (require any)" in log
+    assert "WT-run1" not in calls(root)
+    with pytest.raises(RC.CycleError) as e:
+        RC.validate_spec(dict(RC.load_spec(V70), gate=dict(RC.load_spec(V70)["gate"], require="most")))
+    assert e.value.code == RC.EXIT_USAGE
+
+
+def test_summ_grid_cells_and_spec_ledger_reach_nav_summ_and_a_suffix_renames_only_this_cell(tmp_path):
+    summ = {"script": "scripts/summ.py", "dsr_n": 3, "cells": ["prior/a", "prior/b"], "extra": ["--psr", "--pbo"],
+            "ledger": "trials.jsonl"}
+    root, sp = make_root(tmp_path, summ=summ)
+    assert run(root, sp) == RC.EXIT_OK
+    assert calls(root)[-1] == ("summ --weights out/W/composition_weights.json --reference ref-cell prior/a prior/b "
+                               "out/N --dsr-n 3 --psr --pbo --ledger trials.jsonl --ledger-kind construction")
+    s = next(x for x in cycle_of(root, sp, suffix="r2").steps() if x.phase == "summ").argv
+    assert s[s.index("--reference") + 2:s.index("--dsr-n")] == ["prior/a", "prior/b", "out/N-r2"]
+    root2, sp2 = make_root(tmp_path / "plain")  # no cells, no spec ledger: the v6.1 layout (this cell last)
+    assert run(root2, sp2, ledger="L.jsonl") == RC.EXIT_OK
+    assert calls(root2)[-1].endswith("--dsr-n 29 --ledger L.jsonl --ledger-kind construction out/N")
+
+
+@pytest.mark.parametrize("cells, why", [
+    (["prior/a"], "must be the declared N"),                  # 1 + 1 != dsr_n 3
+    (["prior/a", "prior/a"], "distinct prior NAV dirs"),
+    (["prior/a", "out/N"], "distinct prior NAV dirs"),         # this cycle's own output
+    ([], "distinct prior NAV dirs"),
+    ("prior/a", "distinct prior NAV dirs"),
+])
+def test_summ_cells_are_refused_unless_they_are_the_declared_grid(tmp_path, cells, why):
+    _, sp = make_root(tmp_path, summ={"script": "scripts/summ.py", "dsr_n": 3, "cells": cells})
+    with pytest.raises(RC.CycleError) as e:
+        RC.load_spec(sp)
+    assert e.value.code == RC.EXIT_USAGE and why in str(e.value)

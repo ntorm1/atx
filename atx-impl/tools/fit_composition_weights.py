@@ -183,6 +183,13 @@ ORIENTATIONS = ("train", "prior")
 V4_TAU_LIMIT, V4_RHO_LIMIT, V4_MIN_TRAIN_DAYS, V4_VETO_T, NW_LAG = 0.70, 0.90, 250, -2.0, 5
 V4_THEMES = ("value", "profitability_quality", "investment_issuance", "earnings_momentum", "price_momentum",
              "low_risk", "short_interest", "reversal_seasonality", "options_implied")
+# Platform-v7 pre-registration (v7-prereg.md "Library v7.0"; library-v7-draft 2 / 3.5c): themes appended after the v4
+# list. A prior-metadata theme may be any of PRIOR_THEMES; the weights provenance lists an appended theme under
+# themes_preregistered only when some candidate declares it, so a library without one (v6.1, v7.0: ownership_flow is
+# empty until wave 2) keeps its bytes. ew-theme-v1 counts only themes with an admitted member, so an empty theme never
+# changes a weight.
+V7_APPENDED_THEMES = ("ownership_flow",)
+PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES
 TIER_GRADES = ("A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D")  # strongest first
 V4_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_veto",
                "reject_redundant")
@@ -360,8 +367,9 @@ def load_priors(library_path: Path, library_sha: str, recipe_path: Path | None, 
                     used.add(name)
         missing = [key for key in PRIOR_KEYS if key not in vals]
         require(not missing, f"prior metadata: {c['id']} lacks {missing}")
-        require(isinstance(vals["theme"], str) and vals["theme"] in V4_THEMES,
-                f"prior metadata: theme of {c['id']} is not a pre-registered v4 theme {V4_THEMES}")
+        require(isinstance(vals["theme"], str) and vals["theme"] in PRIOR_THEMES,
+                f"prior metadata: theme of {c['id']} is not a pre-registered v4 theme {V4_THEMES} or appended "
+                f"theme {V7_APPENDED_THEMES}")
         sign = vals["prior_sign"]
         require(type(sign) is int and sign in (1, 0, -1), f"prior metadata: prior_sign of {c['id']}")
         require(sign != -1, f"prior metadata: prior_sign -1 for {c['id']}; v4 embeds the prior sign in the DSL (+1)")
@@ -1947,7 +1955,8 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
             "rule": args.composition,
             "composition": composition_text,
             "themes": theme_table, "themes_present": sorted(theme_table),
-            "themes_declared": sorted(set(themes)), "themes_preregistered": list(V4_THEMES),
+            "themes_declared": sorted(set(themes)),
+            "themes_preregistered": list(V4_THEMES) + [t for t in V7_APPENDED_THEMES if t in themes],
             "screen": screen, "orientation": "prior", "admission_sha256": admission_sha,
             "signs": f"{screen}: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
             "prior_metadata_source": priors["source"], "recipe_sha256": priors["recipe_sha256"],
