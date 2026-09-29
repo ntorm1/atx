@@ -17,6 +17,18 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 W4 merged (8921dc2c) and ACCEPTED on real data
+- Build mega-v7-w4 exit 0 (12 TUs, 54 s), 80/80 gtests (StrategyLive 18 + identity suites). NAV v6.1 flag off 32.8 s /
+  flag on with binary holdings 39.8 s (1.21x, cap 1.3x; L3-F1 CLOSED: was 140 s / 374 MB CSV, now 118 MB f64 + index);
+  10/10 NAV files identical both ways. decide at the three dates from the binary holdings: exit 0, parity 0, 1.8-2.1 s
+  (was 16-17 s), targets.csv/orders.csv byte-identical to the L3 runs, orders_shares.csv written ($1bn NAV, lot 1, min
+  notional 500). reconcile self: 1,838 names, 0 breaks; mutated broker file: missing 1, quantity 1, extra 1 unexplained
+  (exit 5) and the x2 split explained by corporate actions -> as specified.
+- L3-F2 CLOSED as definitional: under the replay's TC definition (desired/sigma) the three dates read .723 / .695 / .755
+  (> .5); the .09-.29 values were the signal/sigma^2 definition (R1 M-3), now both reported under explicit keys.
+- R1 rows M-1, M-2, M-3, m-8, m-13, m-14 fixed in W4. Remaining review rows: I-1, M-5, M-6, M-7 in F1 (running); M-4
+  disclosed (prereg addendum A1).
+
 ## 2026-09-28 atx-db delivered most of the data request -> wave 3 opened
 - ALPHA_PANEL_REQUEST_V7_RESPONSE.md (atx-db, 20:44): U1 link table met (95.6-99.1% linked/yr), U2 dead-line 91-93%, U3
   security master, U4 delisting 85.8% classified (imputed returns), D1 13F 2013q2-2026q2 (124.4M rows), D2 earnings
