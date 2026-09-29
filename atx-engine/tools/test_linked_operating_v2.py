@@ -178,6 +178,7 @@ class LinkedOperatingV2(unittest.TestCase):
         self.assertIsNone(ev[1]["delist_return"])
         self.assertEqual(ev[1]["delist_return_if_performance"], -0.3)
         self.assertIsNone(ev[5]["termination_session"])
+        self.assertEqual(ev[3]["available_at"], self.days[STOP + 1] + "T22:00:00Z")
         self.assertFalse(any(e["returns_applied"] for e in d["events"]) or d["returns_applied"])
         self.assertNotIn("applied", d)
         self.assertEqual(u["inputs"]["delisting"]["manifest_sha256"], self.del_sha)

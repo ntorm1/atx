@@ -7,6 +7,7 @@ When some are, the builder computes the other fields, and the ``publish`` step o
 this module writes its ``<field>.f64`` payloads into the same exclusive output directory, appends its manifest entries
 (registry order, after the builder's) and ``source_checks.holdings``, and only then is the manifest published. A run
 that requests only holdings fields carries the builder's cheapest field (``mkt_ret``) and drops it before publication.
+Holdings fields are always computed: ``--reuse`` applies to the builder's own fields only.
 
 Sources (atx-db alpha panel v1 stages, read-only; each pinned by the SHA-256 of its ``manifest.json``, which must be a
 complete manifest of the declared schema with the declared clock and staleness rules; every file read is hash-checked
@@ -803,7 +804,7 @@ def build_regsho(ctx: Ctx, names, stage: Stage, names_stage: Stage):
     on_cal = (kk < len(cal)) & (cal[np.minimum(kk, len(cal) - 1)] == l_d)
     use = ok_list & on_cal & (m_idx >= 0)
     np.minimum.at(A, (m_idx[use], kk[use]), l_av[use])
-    st = {"lists_used": int(np.count_nonzero(use)), "lists_off_calendar": int(np.count_nonzero(ok_list & ~on_cal)),
+    st = {"lists_used": int(np.count_nonzero(use)), "lists_outside_the_window_calendar": int(np.count_nonzero(ok_list & ~on_cal)),
           "lists_unknown_market": int(np.count_nonzero(ok_list & (m_idx < 0))),
           "lists_by_market_on_calendar": {m: int(np.count_nonzero(A[i] < NEVER)) for i, m in enumerate(REGSHO_MARKETS)},
           "prefix_sessions": int(e0)}

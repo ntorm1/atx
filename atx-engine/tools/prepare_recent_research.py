@@ -842,7 +842,7 @@ def _delisting(prf, directory: Path, expected_sha256: str, role, base: Path, kep
                        "delist_code": cause[k], "cause_basis": basis[k] or None, "delist_return": r,
                        "delist_return_if_performance": float(dperf[k]) if np.isfinite(dperf[k]) else None,
                        "delist_return_imputed": True, "exchange": exch[k] or None,
-                       "available_at": str(np.datetime64(int(avail[k]), "us")) + "Z",
+                       "available_at": str(np.datetime64(int(avail[k]), "ns").astype("datetime64[s]")) + "Z",
                        "kept_member_at_last_session": bool(on_cal and kept[t, j] != 0), "returns_applied": done})
     budget.check("delisting")
     block = {"rule": DELISTING_MARK_RULE, "stage_rule": m.get("rule"), "returns_applied": bool(apply),
