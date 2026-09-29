@@ -17,6 +17,16 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 role linked-operating-v2 built (lo2); fields v9 building
+- lo2 (identity-bridge-v2-pit, share-class letters allowed, delisting block): kept member cells 1,967,838 vs lo1
+  1,940,364; min kept in the score window 1,697 vs 1,675; dropped share .3956 vs .4031. Dropped by reason (score window):
+  unlinked 820,393 (lo1 899,105), no_visible_sic 53,691 (lo1 34), secondary_line 7,901, non_operating_sic 8,711.
+  W5b-F1 confirmed: the new links mostly fall to no_visible_sic because pool-2's fundamental-events-v2 lacks their SIC ->
+  next role rebuild must take SIC from the atx-db fundamentals/sic_events stage. W5b-F2: 820k unlinked member cells on
+  the top-3000 base role = the largest remaining universe lever (P1 measured +0.22 for the v6 restriction); ask atx-db
+  which base-role names those are (ETFs/ADRs/non-filers vs link gaps).
+- Fields v9 = v8 (55, reused) + 8 W5b fields = 63 of 64: building.
+
 ## 2026-09-28 F2 merged (10a723a7) and ACCEPTED; W5b merged
 - F2 structural forecast: build mega-v7-f2 exit 0; Risk*/Spo*/NavV7Hook*/StrategyLive* 60/60. Risk verb on lo1 with
   per-date exposures (build-equity/v7-f2-risk, 21.9 s, 455 MiB): 11 factors structural on 1,029 sessions, "forecast
