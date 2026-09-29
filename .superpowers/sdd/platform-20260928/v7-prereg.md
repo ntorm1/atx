@@ -136,3 +136,39 @@ in v7 with another library.
 V7-F (declared now, run only if BOTH v7.1 and U-lo3 are accepted): one final cell = library v7.1 on role lo3 with
 fields-v9 rebuilt on lo3, same construction, L 1.247; acceptance paired S2 net dSR > 0 vs the better of the two accepted
 cells AND mechanics; N + 1. If only one is accepted, that cell is the v7 final cell and V7-F is not run.
+
+## Construction trial: spo-v2 (spo trial #2) (declared 2026-09-29 before any spo-v2 run; after R2, W1b, F3)
+Source of the defaults: task-R2-review.md "Proposed pre-registration" (adversarial review of b63829f0), implemented by
+W1b; none tuned on returns. One cell, `mega-nav-v70-lo3-spo-v2-G1.0`:
+- Signals and universe: the accepted book at declaration time = library v7.0, ew-theme-v1, role lo3, fields-v7 list on
+  lo3 (combined signal build-equity/mega-v70-lo3w-train-ew-1). Baseline flags unchanged (cadence 1, delta orders, exit
+  .05, dust .1, theta .05, locate-in-aim, liquidity cache, price-risk-v1, --aim-leverage 1.247 for the shadow book).
+- `--rule spo-v2`; risk model atx-risk-v1.1 on lo3, build-equity/v7-f3-risk-lo3, manifest sha
+  786cb601dd4295450872ee0fd726a752b2996f2c3ea886ab6f399f3676e14913 (F3: robust standardisation 3.5 x 1.4826 MAD, style
+  validity >= 10 effective names, structural sigma clamped to the fit and its [p1, p99], median decile target, refusal
+  outside (0, 1); measured on lo3: max daily D .361, factor b 1.002, random b .949, 0 style-dates dropped).
+- `--spo-gross 1.0` (hard cap on planned gross; R6' tests realized gross in [.90, 1.05]); `--ic-book .02` (Grinold-Kahn,
+  low end of 21-session ICs); `--alpha-horizon 21` (the IC's measurement horizon; a_i = .02 sigma_i z_i / sqrt(21));
+  spo horizon H = 1/theta = 20 (cost amortisation; Garleanu-Pedersen rate); gamma = gamma_vol at `--target-vol .05` on
+  the first rebalance decision's cost-free aim (nominal once the gross cap binds); `--w-max .01`, `--adv-cap-q .05`,
+  `--adv-trade-p .01`, `--spo-iters 500`, `--spo-tol 1e-8`, |beta| .02, `--spo-books primary`;
+  `--specific-ceiling 1 --specific-ceiling-void on` (tripwire: a clamp voids the run with exit 3 before any NAV or
+  return file exists; a void run is not a trial).
+- Expected mechanics (synthetic, not returns; R2 M-3): gross binding on >= 90% of post-ramp decisions, ~45-50% of
+  members held, ex-ante vol ~1.5-2%/yr, a tilt to higher specific-vol names (cost per dollar at risk).
+Identity before the cell, not trials: (a) flag-off aim-partial-v5 on the new exe reproduces the v7.0-lo3 cell's daily /
+events CSVs byte for byte; (b) `--rule spo-v1` with its pre-registered flags on pin 897ffdf2 reproduces the rejected
+spo-v1 cell's daily_*.csv, events_*.csv and spo_diagnostics.csv columns 1-38 byte for byte; (c) the gtest digest pins
+(weights 0xda6b6871e7e267c5, replay 0xaabdbb72f99a6e13; captured identical on the pre-W1b base and on the W1b head).
+Acceptance vs the v7.0-lo3 cell, all required: paired S2 net dSR > 0 (sign-only inside one SE); R6' mechanics (all-rows
+mean gross in [.90, 1.05], |mean net| <= .02, tau mean <= .20, p95 <= .30); cost per traded dollar not higher.
+Reported, not gating: PBO over {v6.1, C1-C3, spo-v1, v7.0, v7.0-lo3, spo-v2}; effective-N DSR beside cell-count DSR.
+Cross-cell N = ledger lines at run time + 1. Further trials: any completed run that changes a flag, the risk pin, the
+signals, or code that moves a planned weight. Not trials: identity reruns; runs refused or voided before a return
+statistic is read.
+- Ruling spo-a: the cell runs on the accepted v7.0-lo3 book, not on v6.1-lo1 as R2 drafted -- a construction rule is
+  judged on the book that would ship, and the reference must be the current accepted cell -- cost if wrong: if v7.1 /
+  V7-F is accepted later, spo on that book is one more cell (not run in v7 unless spo-v2 is accepted here).
+- Ruling spo-b: if spo-v2 is rejected, the optimiser stays in the codebase behind its flag, aim-partial-v5 stays the
+  construction, and no further spo cell is run in v7 -- two spo cells are the sprint's budget -- cost if wrong: a
+  fixable second-order defect ends the line for this sprint; it can be re-opened by a new pre-registration later.

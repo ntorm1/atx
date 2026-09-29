@@ -17,6 +17,24 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 F3 (risk model atx-risk-v1.1) ACCEPTED; W1b merged (one test fix-up pending); spo-v2 pre-registered
+- Merges: W1b step 0 cd01f74e (digest pin test on the base API), W1b 4c4ce75f, F3 b3d03b38. Builds: mega-v7-4 (pin
+  capture on the base, exit 0), mega-v7-5 (W1b + F3, 10 TUs, 35 s, exit 0 under /W4 /WX, no compile fix-up needed).
+- Tests on v7-5: 129 of 132. SpoPin x2 fail by design until pinned: digests weights 0xda6b6871e7e267c5 and replay
+  0xaabdbb72f99a6e13 are IDENTICAL on the base and on the W1b head -> spo-v1 is bit for bit (R2 M-4 closed).
+  SpoTripwire.TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture fails (alpha_shadow equal with and without the clamp):
+  sent back to W1b with the pin values. All Risk* / RiskRobust* tests pass.
+- F3 risk verb, lo1 (build-equity/v7-f3-risk, 23.1 s, 505 MiB, manifest sha 312aff19...f174eab): max daily specific
+  variance .367 (F2 pin: 9.0e12; cells > 1: 3,549 -> 0; p99.99 1.48e4 -> .126; p50 unchanged 4.5e-4); style-dates
+  dropped 0; min style dispersion .46; bias factor family b 1.004 (F2 1.004), random family b .947 (F2 .931), dropped
+  0. 116 names carry D > .05 on some date (genuinely extreme names; inside the bound). F3 ACCEPTED; R2 I-2 CLOSED.
+  The F2 pin 17f9328f and the W1 pin 897ffdf2 are superseded for any new work (897ffdf2 stays for identity (b)).
+- F3 risk verb, lo3 (build-equity/v7-f3-risk-lo3, 23.9 s, 481 MiB, manifest sha 786cb601...76e14913): max D .361,
+  factor b 1.002, random b .949, 7 structural factors. This is the spo-v2 pin.
+- v7-prereg.md "Construction trial: spo-v2 (spo trial #2)" declared with rulings spo-a (runs on the accepted v7.0-lo3
+  book) and spo-b (no further spo cell in v7 if rejected). Nothing run yet.
+- Appendix A unchanged: TRAIN construction cells 35; validation trials 2 spent; 2025+ reserved.
+
 ## 2026-09-29 universe trial U-lo3 ACCEPTED under its pre-registration; N 35; U2 and P5 merged
 - Merges: U2 9105bcbc (role linked-operating-v3, shared SIC stage for role and grp_* fields, 203 pytests in
   scripts/tests + atx-engine/tools), P5 89896acc (pitch iteration 3 sections, mega_report/pitch3.py). Pre-registration
