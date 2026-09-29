@@ -201,7 +201,37 @@ enum class OpCode : atx::u8 {
   // ---- store / free ----
   StoreAlpha,
   Free,
+  // ---- platform-v7 W2 literature ops (A7). APPENDED after Free so every
+  //      pre-W2 opcode keeps its numeric id (the u8 value is hashed by the DAG
+  //      cons table and the subtree cache and serialized with programs); the
+  //      static_asserts below freeze both ends. Kernels: lit_ops.hpp (VM +
+  //      streaming), oracle_lit.cpp (reference twin). Registry rows live in
+  //      detail::literature_ops(), NOT builtin_ops(), so the factory's op-swap
+  //      catalogue and wrapper set stay bit-identical.
+  ArgPack,          // pack2/pack3 (record): copy 2-3 operand columns into a block
+  TsTopkMean,       // ts_topk_mean(x, w, k): mean of the k largest in the window
+  CsBucket,         // bucket(x, n) -> Group: quantile(x, n)'s bucket index
+  GroupCross,       // group_cross(g1, g2) -> Group: the product classifier
+  TsResidOn,        // ts_resid_on(y, x1[, x2[, x3]], w): rolling OLS residual
+  TsBetaOn,         // ts_beta_on(y, x1[, x2[, x3]], w): rolling OLS slope on x1
+  CsResidOn,        // cs_resid_on(x, c1[, c2[, c3[, c4]]]): cross-sectional residual
+  TsCountIncreases, // ts_count_increases(x, w): consecutive trailing increases
+  TsSumMp,          // ts_sum_mp(x, w, m) ... min-periods variants (m = min periods)
+  TsMeanMp,
+  TsStdMp,
+  TsZscoreMp,
+  TsMinMp,
+  TsMaxMp,
+  TsDecayLinearMp,
+  TsCorrMp,         // ts_corr_mp(x, y, w, m)
 };
+
+// Opcode ids are part of the wire format of serialized programs and of every
+// structural hash: pre-W2 ids are frozen, W2 ids start right after Free.
+static_assert(static_cast<atx::u8>(OpCode::OuZscore) == 86, "pre-W2 opcode ids are frozen");
+static_assert(static_cast<atx::u8>(OpCode::Free) == 88, "pre-W2 opcode ids are frozen");
+static_assert(static_cast<atx::u8>(OpCode::ArgPack) == 89, "W2 opcodes start after Free");
+static_assert(static_cast<atx::u8>(OpCode::TsCorrMp) == 104, "W2 opcode ids are frozen");
 
 // =========================================================================
 //  Shape signatures (plan §4 broadcast rules).
@@ -259,10 +289,12 @@ namespace detail {
 //  OpSig — one registry row per named operator/function.
 // =========================================================================
 
-// Maximum trailing-optional arguments any op may declare. Headroom: the
-// largest optional-arg count among all planned ops is 1 (scale). Declared
-// before OpSig because the struct embeds an array of this size.
-inline constexpr atx::u8 kMaxDefaults = 2;
+// Maximum trailing-optional arguments any op may declare. The largest optional
+// count is 3 (W2 cs_resid_on: covariates c2..c4, all NaN-sentinel "absent");
+// every pre-W2 op declares at most 1, so raising the bound from 2 changes no
+// pre-W2 default fill. Declared before OpSig because the struct embeds an array
+// of this size.
+inline constexpr atx::u8 kMaxDefaults = 3;
 
 // A single output pin of a record (multi-output) op (P3d-B3).
 // `name` is a string-literal view; `dtype` is the element type of that pin's
@@ -368,8 +400,9 @@ struct OpSig {
 
 class Library {
 public:
-  // Registers all built-in operators (Appendix A). Never throws: the built-in
-  // table is statically valid (no duplicate names, every row has a shape_of).
+  // Registers all built-in operators (Appendix A), then the W2 literature ops
+  // (detail::literature_ops). The tables are statically valid (no duplicate
+  // names, every row has a shape_of); only the vector allocation can throw.
   Library();
 
   // Look up an operator by name. Returns a non-owning pointer borrowed from the
@@ -410,12 +443,106 @@ inline constexpr std::array<PinSig, 2> kSplit2Pins = {{{"hi", DType::F64}, {"lo"
 inline constexpr std::array<PinSig, 3> kKalmanRegPins = {
     {{"alpha", DType::F64}, {"beta", DType::F64}, {"resid", DType::F64}}};
 
+// Static pin tables for the W2 regressor packs pack2(a, b) / pack3(a, b, c).
+// A pack is a record whose block holds its operands' columns in order; the
+// multi-regressor ops read it as one operand (see is_pack_consumer).
+inline constexpr std::array<PinSig, 2> kPack2Pins = {{{"p0", DType::F64}, {"p1", DType::F64}}};
+inline constexpr std::array<PinSig, 3> kPack3Pins = {
+    {{"p0", DType::F64}, {"p1", DType::F64}, {"p2", DType::F64}}};
+
 namespace detail {
 
 // The complete built-in catalogue (Appendix A named functions). Kept as a
 // static span so construction is a single copy. `consteval`-friendly literals;
 // the array has static storage, so every `name` view is non-dangling forever.
 [[nodiscard]] std::span<const OpSig> builtin_ops() noexcept;
+
+// The platform-v7 W2 literature ops (A7). Registered into every Library after
+// the built-ins but kept OUT of builtin_ops(): the factory walks builtin_ops()
+// for its op-swap buckets and wrapper candidates, so these rows cannot change
+// any seeded search draw. Static storage; every `name` view is non-dangling.
+[[nodiscard]] std::span<const OpSig> literature_ops() noexcept;
+
+// ---- W2 multi-regressor ops ("pack consumers") -------------------------------
+// ts_resid_on / ts_beta_on / cs_resid_on accept more regressors than the three
+// operand slots of the IR hold. The parser therefore folds surplus regressors
+// into a pack2/pack3 record (ArgPack), and the consumer reads each regressor
+// operand as a contiguous block of columns: operand 1 (b) supplies `wb` columns
+// starting at its slot, operand 2 (c) `wc` more (0 when c is the window, as
+// for the Ts consumers, or absent). build_dag records (wb, wc) in Node::param
+// and linearize copies it to Instr::param, so every executor (VM, oracle,
+// streaming, fused / global-DAG paths, which all copy Instr verbatim) sees the
+// same layout; a plain column has width 1.
+[[nodiscard]] constexpr bool is_pack_consumer(OpCode op) noexcept {
+  return op == OpCode::TsResidOn || op == OpCode::TsBetaOn || op == OpCode::CsResidOn;
+}
+
+// True for the Ts pack consumers, whose operand 2 (c) is the window literal.
+[[nodiscard]] constexpr bool pack_consumer_window_in_c(OpCode op) noexcept {
+  return op == OpCode::TsResidOn || op == OpCode::TsBetaOn;
+}
+
+// Max regressors a pack consumer may read: 3 for the Ts ops, 4 for cs_resid_on.
+inline constexpr atx::usize kMaxTsRegressors = 3;
+inline constexpr atx::usize kMaxCsCovariates = 4;
+
+// Instr::param / Node::param encoding of a pack consumer's regressor layout.
+[[nodiscard]] constexpr atx::u32 lit_reg_param(atx::u32 wb, atx::u32 wc) noexcept {
+  return (wb & 0xFFU) | ((wc & 0xFFU) << 8U);
+}
+[[nodiscard]] constexpr atx::usize lit_reg_wb(atx::u32 param) noexcept { return param & 0xFFU; }
+[[nodiscard]] constexpr atx::usize lit_reg_wc(atx::u32 param) noexcept {
+  return (param >> 8U) & 0xFFU;
+}
+
+// True for every W2 literature opcode (the ops analyze_lit_call types and the
+// lit_ops.hpp / oracle_lit.cpp kernels evaluate).
+[[nodiscard]] constexpr bool is_lit_op(OpCode op) noexcept {
+  switch (op) {
+  case OpCode::ArgPack:
+  case OpCode::TsTopkMean:
+  case OpCode::CsBucket:
+  case OpCode::GroupCross:
+  case OpCode::TsResidOn:
+  case OpCode::TsBetaOn:
+  case OpCode::CsResidOn:
+  case OpCode::TsCountIncreases:
+  case OpCode::TsSumMp:
+  case OpCode::TsMeanMp:
+  case OpCode::TsStdMp:
+  case OpCode::TsZscoreMp:
+  case OpCode::TsMinMp:
+  case OpCode::TsMaxMp:
+  case OpCode::TsDecayLinearMp:
+  case OpCode::TsCorrMp:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// W2 trailing-window ops (per-instrument column; window = the LAST operand).
+[[nodiscard]] constexpr bool is_lit_ts_op(OpCode op) noexcept {
+  return is_lit_op(op) && op != OpCode::ArgPack && op != OpCode::CsBucket &&
+         op != OpCode::GroupCross && op != OpCode::CsResidOn;
+}
+
+// W2 min-periods family: (x, w) operands + the peeled hparam m (TsCorrMp: x, y, w).
+[[nodiscard]] constexpr bool is_lit_mp_op(OpCode op) noexcept {
+  switch (op) {
+  case OpCode::TsSumMp:
+  case OpCode::TsMeanMp:
+  case OpCode::TsStdMp:
+  case OpCode::TsZscoreMp:
+  case OpCode::TsMinMp:
+  case OpCode::TsMaxMp:
+  case OpCode::TsDecayLinearMp:
+  case OpCode::TsCorrMp:
+    return true;
+  default:
+    return false;
+  }
+}
 
 } // namespace detail
 

@@ -171,11 +171,54 @@ namespace detail {
   return kOps;
 }
 
+// Platform-v7 W2 literature ops (A7). Same positional row layout as builtin_ops.
+// NaN semantics per op are documented in lit_ops.hpp; the typechecker
+// (analyze_lit_call) owns every argument rail listed here.
+[[nodiscard]] std::span<const OpSig> literature_ops() noexcept {
+  constexpr atx::f64 kAbsent = std::numeric_limits<atx::f64>::quiet_NaN();
+  static constexpr std::array<OpSig, 17> kLit = {{
+      // pack2(a, b) / pack3(a, b, c): regressor bundle (record, one block).
+      {"pack2", 2, 2, OpCode::ArgPack, DType::F64, true, {}, &shape_elementwise, 0,
+       std::span<const PinSig>{kPack2Pins}},
+      {"pack3", 3, 3, OpCode::ArgPack, DType::F64, true, {}, &shape_elementwise, 0,
+       std::span<const PinSig>{kPack3Pins}},
+      // ts_topk_mean(x, w, k): k peeled into imm[0] (like ts_moment's k).
+      {"ts_topk_mean", 3, 3, OpCode::TsTopkMean, DType::F64, true, {}, &shape_panel, 1, {}},
+      // bucket(x, n) -> Group: n peeled into imm[0]; a classifier, not a signal.
+      {"bucket", 2, 2, OpCode::CsBucket, DType::Group, true, {}, &shape_cross_section, 1, {}},
+      // group_cross(g1, g2) -> Group: element-wise product label.
+      {"group_cross", 2, 2, OpCode::GroupCross, DType::Group, true, {}, &shape_elementwise},
+      // ts_resid_on / ts_beta_on(y, x1[, x2[, x3]], w): the parser packs x1..xk
+      // (k >= 2) into operand b; the window stays the last operand (c).
+      {"ts_resid_on", 3, 5, OpCode::TsResidOn, DType::F64, true, {kAbsent, kAbsent},
+       &shape_panel},
+      {"ts_beta_on", 3, 5, OpCode::TsBetaOn, DType::F64, true, {kAbsent, kAbsent}, &shape_panel},
+      // cs_resid_on(x, c1[, c2[, c3[, c4]]]): covariates in operands b and c.
+      {"cs_resid_on", 2, 5, OpCode::CsResidOn, DType::F64, true, {kAbsent, kAbsent, kAbsent},
+       &shape_cross_section},
+      {"ts_count_increases", 2, 2, OpCode::TsCountIncreases, DType::F64, true, {}, &shape_panel},
+      // Min-periods family: (x, w, m) with m peeled into imm[0].
+      {"ts_sum_mp", 3, 3, OpCode::TsSumMp, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_mean_mp", 3, 3, OpCode::TsMeanMp, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_std_mp", 3, 3, OpCode::TsStdMp, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_zscore_mp", 3, 3, OpCode::TsZscoreMp, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_min_mp", 3, 3, OpCode::TsMinMp, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"ts_max_mp", 3, 3, OpCode::TsMaxMp, DType::F64, true, {}, &shape_panel, 1, {}},
+      {"decay_linear_mp", 3, 3, OpCode::TsDecayLinearMp, DType::F64, true, {}, &shape_panel, 1,
+       {}},
+      {"ts_corr_mp", 4, 4, OpCode::TsCorrMp, DType::F64, true, {}, &shape_panel, 1, {}},
+  }};
+  return kLit;
+}
+
 } // namespace detail
 
 Library::Library() {
   const std::span<const OpSig> builtins = detail::builtin_ops();
+  const std::span<const OpSig> lit = detail::literature_ops();
+  ops_.reserve(builtins.size() + lit.size());
   ops_.assign(builtins.begin(), builtins.end());
+  ops_.insert(ops_.end(), lit.begin(), lit.end());
 }
 
 atx::core::Status Library::register_op(const OpSig &sig) {
