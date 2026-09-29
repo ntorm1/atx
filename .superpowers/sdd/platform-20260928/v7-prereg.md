@@ -73,3 +73,8 @@ existing fields-v7 fields (me_company, at, cfo_ttm, ni_q, be_lag1q, grp_ff12), o
 There are no new fields and no fields v8; library v7.0 runs on lo1-fields-v7 unchanged. The ruling "q5_eg's six extra
 fields are allowed" is read as "q5_eg's six-field read is allowed". max() and sign() are allowed in the checker via
 POLICY_OPS entries for nincr. Nothing else in the pre-registration changes.
+
+## W5a field rules (declared 2026-09-28 before any IC pass on these fields; set from field distributions only, no returns)
+1. Form 4 joint filings that include a 10% owner are dropped from every `ins_*` field (sponsor block sales are not
+   insider signals). 2. `ins_net_buy_ratio` and `ins_opportunistic_net` are NaN outside [-1, 1] (vendor shares_out unit
+   defects; 13 cells on lo1 2020-2022). Fields v8 = fields v7 (41, byte-identical via --reuse) + 14 SEC-derived fields.
