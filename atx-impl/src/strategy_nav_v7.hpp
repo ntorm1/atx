@@ -14,7 +14,9 @@
 //                             then <output>/capacity_curve.csv
 //   --rule aim-partial-v6     the cost-aware construction rule (base: aim-partial-v5 flags)
 //     --cost-shrink-kappa K   (default 1)   --band-b B (default: --dust-multiple)
+//     --band-exponent P       (default 1/3; 0 = the uniform dust band)
 //     --rate-clip LO,HI       (default .5,1.5)
+//   kappa 0 + --band-exponent 0 + --rate-clip 1,1 (band b = dust) is aim-partial-v5 bit for bit.
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
 // Every hooked run also writes <output>/v7_transfer_coefficient.csv (TC per rebalance
 // decision and book) and <output>/v7_extras.json (extras' SHA-256, capacity table) after
@@ -85,6 +87,17 @@ private:
   std::unique_ptr<State> state_;
   State* previous_{};
 };
+
+// The parsed v7 command line: the options and the replay's own tokens in order (v7 tokens
+// consumed, `--rule aim-partial-v6` rewritten to aim-partial-v5; args[0] is the verb).
+// InvalidArgument on a usage error (duplicate/missing value, v6 parameters without the v6
+// rule, a per-name rate with v6 or the capacity curve, parameters out of range).
+struct NavV7Command {
+  NavV7Options options;
+  std::vector<std::string> args;
+  std::string output;
+};
+[[nodiscard]] atx::core::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv);
 
 // ---- seams (strategy_nav_replay.cpp) ----
 [[nodiscard]] bool claims_nav_args(int argc, char** argv);
