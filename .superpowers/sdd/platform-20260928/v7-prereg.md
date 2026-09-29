@@ -38,3 +38,17 @@ pre-registration above, and the C1-C3 cells were run and read with it. Disclosur
 -0.08 to -0.13) were therefore obtained under a rule that redistributes weight from expensive to cheap names at constant
 gross rather than shrinking gross. No cell was accepted, so no acceptance rests on the undisclosed step. Any future
 aim-partial-v6 cell must state whether the side rescale is on, and a cell without it counts as a new construction trial.
+
+## Construction trial: spo-v1 (declared 2026-09-28 before any run; cross-cell N 32 -> 33)
+One cell, `mega-nav-v61u-spo-v1-L1.247`: library v6.1, ew-theme-v1 weights, role lo1, fields v7, same flags as the v6.1
+baseline (cadence 1, order basis delta, exit rate .05, locate-in-aim, neutralize price-risk-v1, L 1.247) with
+`--rule spo-v1` and the literature defaults from task-W1-brief.md / task-W1-report.md, none tuned on returns:
+risk model = atx-risk-v1 exposures/covariances per date (build-equity/v7-w1-risk-all, pinned by sha); ic-book .02
+(Grinold-Kahn scaling constant); w-max .01; adv-cap-q .05; adv-trade-p .01; spo-iters 500; spo-tol 1e-8; target-vol
+.05; gamma = max(gamma for the 5% ex-ante vol aim, gamma for an aim at gross 1.247) with the gross constraint expected
+to bind (ex-ante vol then ~1-2%); trade costs amortised over 1/theta = 20 sessions; books = primary (S1 + S2; S2 is
+identical with all five books). Diagnostics per date: a'w, trade cost, TC, ex-ante vol, iterations.
+Acceptance vs the v6.1 baseline: paired S2 net dSR > 0 (sign-only inside one SE) AND R6' mechanics AND cost per traded
+dollar not higher; PBO over {baseline, C1, C2, C3, spo-v1} reported; effective-N DSR beside cell-count DSR (N 33).
+Identity requirement before the cell: flag-off (aim-partial-v5) outputs byte-identical to the v6.1 cell on the v7-w1 exe.
+Any further spo-v1 cell (gamma override, other books, other ic-book) is a new construction trial.
