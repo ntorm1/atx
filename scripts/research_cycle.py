@@ -17,10 +17,15 @@ up next to this script, so ``specs/v61.json`` works from the worktree root). Pat
   u       IC runner, unweighted pass            (bounded runner; output U-<attempt>, receipt U-run<attempt>)
   fit     fit_composition_weights.py            (bounded; output W, receipt W-run<pass>; exit 3 = documented
           "incomplete, rerun resumes" protocol -> the next pass runs, up to fit.max_passes; anything else stops)
+  card    alpha_report_card.py over the u pass, its cache and this cycle's admission.json (bounded; output C,
+          receipt C-run); before the gate, so a failed gate still leaves the cards
   gate    admission read-out of admission.json (internal; exit 10 when a required candidate is not admitted with
           its prior sign)
   w       IC runner, weighted pass              (bounded; output WT-<attempt>, receipt WT-run<attempt>)
   nav     NAV replay                            (bounded; output N, receipt N-run)
+  monitor book_monitor.py --baseline: TRAIN reference distributions from the u pass daily IC, the admission, the
+          cards' daily_sleeve.csv, the fit work dir and the spec's holdings_days / bias / decide paths (direct;
+          output M)
   summ    nav_summ.py vs the reference cell with DSR N (direct)
 
 Pins: every input (library, recipe, baseline library, role, identity bridge, fundamental events, baseline fields,
@@ -52,7 +57,7 @@ import subprocess
 import sys
 
 SCHEMA = "atx.research-cycle-spec/v1"
-PHASES = ("fields", "check", "u", "fit", "gate", "w", "nav", "summ")
+PHASES = ("fields", "check", "u", "fit", "card", "gate", "w", "nav", "monitor", "summ")
 ATTEMPT_PHASES = ("u", "fit", "w", "nav")
 EXIT_OK, EXIT_USAGE, EXIT_PIN, EXIT_STOP, EXIT_GATE = 0, 2, 3, 4, 10
 FIT_INCOMPLETE = 3                     # fit_composition_weights.py: "incomplete (rerun resumes)"
@@ -121,7 +126,7 @@ def validate_spec(spec: dict) -> None:
         raise CycleError("spec runner needs script, seconds, max_rss_mib, min_free_mib", EXIT_USAGE)
     need = {"fields": ("output", "builder", "list"), "static_check": ("script",), "ic": ("u_output", "cache", "flags"),
             "fit": ("script", "output", "work_dir", "flags"), "gate": ("admitted",), "nav": ("output", "rule", "flags"),
-            "summ": ("script", "dsr_n")}
+            "summ": ("script", "dsr_n"), "card": ("script", "output"), "monitor": ("script", "output")}
     for section, keys in need.items():
         if section in spec and not all(k in spec[section] for k in keys):
             raise CycleError(f"spec {section} needs {', '.join(keys)}", EXIT_USAGE)
@@ -137,6 +142,10 @@ def validate_spec(spec: dict) -> None:
             raise CycleError(f"spec inputs needs {key}", EXIT_USAGE)
     if "summ" in spec and "nav" not in spec:
         raise CycleError("spec summ needs nav", EXIT_USAGE)
+    if "card" in spec and "fit" not in spec:
+        raise CycleError("spec card needs fit (it reads this cycle's admission.json)", EXIT_USAGE)
+    if "monitor" in spec and ("nav" not in spec or "fit" not in spec):
+        raise CycleError("spec monitor needs fit and nav", EXIT_USAGE)
     if "static_check" in spec and "baseline_library" not in spec["inputs"]:
         raise CycleError("spec static_check needs inputs.baseline_library", EXIT_USAGE)
 
@@ -358,6 +367,11 @@ class Cycle:
         if "fit" in s:
             step, w_dir = self.fit_step(u_out, lib, lib_sha, role_m, role_sha)
             out.append(step)
+        card_out = ""
+        if "card" in s:
+            step = self.card_step(u_out, w_dir, role_m, role_sha)
+            card_out = step.output
+            out.append(step)
         if "gate" in s:
             out.append(Step("gate", "internal", None, state="always",
                             note=f"admission read-out of {w_dir}/admission.json"))
@@ -393,6 +407,8 @@ class Cycle:
             else:
                 state, note = "pending", ""
             out.append(Step("nav", "bounded", argv, n_out, run_dir, k, state, note))
+        if "monitor" in s:
+            out.append(self.monitor_step(u_out, w_dir, card_out))
         if "summ" in s:
             sm = s["summ"]
             argv = [self.py, sm["script"]]
@@ -435,6 +451,41 @@ class Cycle:
         else:
             state, note = "pending", ""
         return Step("fields", "direct", argv, fd, None, None, state, note)
+
+    def card_step(self, u_out: str, w_dir: str, role_m: str, role_sha: str) -> Step:
+        c = self.spec["card"]
+        c_out = self.out(c["output"])
+        run_dir = f"{c_out}-run"
+        adm = f"{w_dir}/admission.json"
+        argv = self.runner(run_dir, [c["script"], role_m, f"{u_out}/summary.json", adm]) + [
+            self.py, c["script"], "--u-pass", u_out, "--train", role_m, "--train-sha256", role_sha, "--admission", adm,
+            "--admission-sha256", self.rt_sha(adm), *c.get("flags", []), "--output", c_out]
+        if self.res.exists(f"{c_out}/index.json"):
+            state, note = "done", ""
+        elif self.res.exists_dir(c_out) or self.res.exists_dir(run_dir):
+            state, note = "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
+        else:
+            state, note = "pending", ""
+        return Step("card", "bounded", argv, c_out, run_dir, None, state, note)
+
+    def monitor_step(self, u_out: str, w_dir: str, card_out: str) -> Step:
+        m, fit = self.spec["monitor"], self.spec["fit"]
+        m_out = self.out(m["output"])
+        argv = [self.py, m["script"], "--baseline", "--daily-ic", f"{u_out}/train_daily_ic.csv", "--admission",
+                f"{w_dir}/admission.json", "--fit-work", self.out(fit["work_dir"])]
+        if card_out:
+            argv += ["--sleeve-daily", f"{card_out}/daily_sleeve.csv"]
+        for key, flag in (("holdings_days", "--holdings-days"), ("bias", "--bias"), ("decide", "--decide")):
+            if m.get(key):
+                argv += [flag, m[key]]
+        argv += [*m.get("flags", []), "--output", m_out]
+        if self.res.exists(f"{m_out}/monitor.json"):
+            state, note = "done", ""
+        elif self.res.exists_dir(m_out):
+            state, note = "failed", f"partial monitor dir exists (never overwritten): {m_out}; use a fresh --suffix"
+        else:
+            state, note = "pending", ""
+        return Step("monitor", "direct", argv, m_out, None, None, state, note)
 
     def fit_step(self, u_out: str, lib: str, lib_sha: str, role_m: str, role_sha: str) -> tuple[Step, str]:
         s, fit = self.spec, self.spec["fit"]
@@ -656,7 +707,7 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
                 if st.kind == "direct" and done.returncode != 0:
                     raise CycleError(f"HARD-STOP [{st.phase}]: exit {done.returncode}")
             post = cycle.steps()[phase_idx]
-            if st.phase in ("u", "w", "fit", "nav", "fields") and not post.done:
+            if st.phase in ("u", "w", "fit", "nav", "fields", "card", "monitor") and not post.done:
                 raise CycleError(f"HARD-STOP [{st.phase}]: exit 0 but its output is incomplete ({st.output})")
             if st.phase == "fields":
                 fields_check(cycle, f"{st.output}/manifest.json", log)

@@ -3,10 +3,13 @@
 Run: python -m unittest discover -s atx-impl/tools -p test_fit_composition_weights.py -v
 """
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -215,6 +218,21 @@ SIGNS = [1, -1, 1, 0, 1, 1]
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def work_shape(keys: list[str], new: bool = False) -> list[str]:
+    """A work dir's file list with record names abstracted. Pre-W3 fitters name a record by its cache payload
+    SHA (``factors/<sha>[.f-<fields sha>].json``), the W3 WorkStore by its work key (``factors/k-<key>.json``);
+    ``new`` asserts the W3 names. Equal shapes = the same directories and the same number of records."""
+    out = []
+    for k in keys:
+        parts = Path(k).parts
+        if len(parts) >= 2 and (parts[-2] == "factors" or parts[-2].startswith("aim-")):
+            if new:
+                assert re.fullmatch(r"k-[0-9a-f]{64}\.json", parts[-1]), parts[-1]
+            parts = parts[:-1] + ("<record>",)
+        out.append("/".join(parts))
+    return sorted(out)
 
 
 V2_SCHEMA = "atx.dsl-candidate-signal/v2"
@@ -1056,11 +1074,14 @@ class CacheLayoutV2(unittest.TestCase):
         ref = self.fixture("v1", "v1")
         ref_files, summary = self.fit_files(ref, "v1_out", work_dir=work)
         self.assertEqual(summary["computed_this_run"], len(IDS))
-        for layout in ("v2", "v1-listed"):
+        # W3 work key: a v1 summary lists no field payload map, so its field candidates are keyed by the fields
+        # manifest; the first listed layout recomputes those two (base shared), the next reuses everything.
+        for layout, computed in (("v2", 2), ("v1-listed", 0)):
             fx = self.fixture(layout, layout)
             self.assertEqual(fx.train_sha, ref.train_sha)
             files, summary = self.fit_files(fx, f"{layout}_out", work_dir=work)
-            self.assertEqual((summary["computed_this_run"], summary["reused"]), (0, len(IDS)), layout)
+            self.assertEqual((summary["computed_this_run"], summary["reused"]), (computed, len(IDS) - computed),
+                             layout)
             self.assert_same_bytes_but_summary_pin(files, fx.summary_sha, ref_files, ref.summary_sha)
         doc = json.loads(files[fcw.OUTPUT_WEIGHTS])
         rows = {r["id"]: r for r in doc["provenance"]["candidates"]}
@@ -1225,9 +1246,14 @@ class CacheInvalidation(unittest.TestCase):
         self.assertEqual(json.loads((self.root / name / fcw.OUTPUT_WEIGHTS).read_bytes())["weights"], self.weights)
         return summary
 
-    def test_field_record_is_keyed_by_the_fields_manifest(self):
+    def test_v1_field_record_falls_back_to_the_fields_manifest_key(self):
+        # A v1 runner summary lists no field payload map: the field candidate's work key names the manifest.
+        entry = {"id": "alpha_b", "fields_manifest_sha256": self.fx.fields_sha, "field_payload_sha256": None}
+        text = fcw.work_key_text(self.fx.train_sha, self.fx.vm_identity, "none", self.fx.dsl_sha[1], entry)
+        self.assertTrue(text.endswith(f"dsl_sha256={self.fx.dsl_sha[1]}\nfields_manifest_sha256={self.fx.fields_sha}\n"))
         names = sorted(x.name for x in (self.store / "factors").glob("*.json"))
-        self.assertEqual(sum(f".f-{self.fx.fields_sha}." in n for n in names), 1)
+        self.assertEqual(len(names), len(IDS))
+        self.assertIn(f"k-{sha(text.encode())}.json", names)
         self.assertEqual(self.rerun("again")["computed_this_run"], 0)
 
     def test_any_script_change_recomputes_everything(self):
@@ -1247,6 +1273,94 @@ class CacheInvalidation(unittest.TestCase):
         records[1].unlink()  # forces the stored context to load
         self.assertEqual(self.rerun("rebound")["computed_this_run"], 2)
 
+
+
+# ------------------------------------------------ W3 (platform v7): WorkStore keyed on the signal content key
+class WorkStoreKeys(unittest.TestCase):
+    """Records keyed on (semantics, role, VM identity, screen, DSL, field payload map) over synthetic v2 caches."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.panel, self.signals, self.ids, self.extra = v4_world()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fixture(self, name, **kw):
+        kw.setdefault("field_ids", {"slow_b", "flip"})
+        kw.setdefault("candidate_extra", self.extra)
+        return Fixture(self.root / name, self.panel, self.signals, [1] * len(self.ids), ids=self.ids,
+                       families=["fam"] * len(self.ids), vm_identity=NON_DEV_IDENTITY, layout="v2", **kw)
+
+    def fit(self, fx, name, work=None, **args):
+        out = self.root / name
+        err = io.StringIO()
+        argv = fx.argv(out, args.pop("screen", "v4-prior-v1"), [
+            "--orientation", "prior", "--composition", args.pop("composition", "ew-theme-v1"),
+            *(["--work-dir", str(work)] if work else [])])
+        with contextlib.redirect_stdout(io.StringIO()) as sout, contextlib.redirect_stderr(err):
+            code = fcw.main(argv)
+        self.assertIn(code, (fcw.EXIT_OK, fcw.EXIT_NO_WEIGHTS), err.getvalue())  # v4-prior-v2 may admit none
+        summary = json.loads(sout.getvalue())
+        line = [x for x in err.getvalue().splitlines() if x.startswith("fit: computed ")]
+        self.assertEqual(line, [f"fit: computed {summary['computed_this_run']}, reused {summary['reused']}"])
+        return {p.name: p.read_bytes() for p in out.iterdir()}, (summary["computed_this_run"], summary["reused"])
+
+    def test_admission_bytes_identical_with_and_without_the_store(self):
+        fx, work, n = self.fixture("fx"), self.root / "work", len(self.ids)
+        bare, counts = self.fit(fx, "bare")
+        self.assertEqual(counts, (n, 0))
+        first, counts = self.fit(fx, "first", work)
+        self.assertEqual(counts, (n, 0))
+        second, counts = self.fit(fx, "second", work)
+        self.assertEqual(counts, (0, n))
+        self.assertIn(fcw.OUTPUT_ADMISSION, bare)
+        self.assertEqual(first, bare)
+        self.assertEqual(second, bare)
+        names = sorted(x.name for x in (work / fx.train_sha / fcw.SEMANTICS_TAG / "factors").iterdir())
+        self.assertEqual(len(names), n)
+        self.assertTrue(all(re.fullmatch(r"k-[0-9a-f]{64}\.json", x) for x in names))
+
+    def test_work_key_is_the_signal_content_key_plus_screen(self):
+        fx = self.fixture("fx")
+        k = self.ids.index("slow_b")
+        entry = {"id": "slow_b", "fields_manifest_sha256": fx.fields_sha, "field_payload_sha256": FIELD_PAYLOADS}
+        text = fcw.work_key_text(fx.train_sha, NON_DEV_IDENTITY, "v4-prior-v1", fx.dsl_sha[k], entry)
+        self.assertEqual(text, "atx.fit-work-key/v1\n" f"semantics_tag={fcw.SEMANTICS_TAG}\n"
+                               f"role_manifest_sha256={fx.train_sha}\nvm_identity={NON_DEV_IDENTITY}\n"
+                               f"screen=v4-prior-v1\ndsl_sha256={fx.dsl_sha[k]}\n" + v2_field_lines(FIELD_PAYLOADS))
+        base = dict(entry, field_payload_sha256={})
+        self.assertTrue(fcw.work_key_text(fx.train_sha, NON_DEV_IDENTITY, "none", fx.dsl_sha[0], base)
+                        .endswith(f"dsl_sha256={fx.dsl_sha[0]}\n"))  # a base candidate reads no field
+
+    def test_unchanged_candidates_are_reused_across_fields_manifests(self):
+        work, n = self.root / "work", len(self.ids)
+        ref, counts = self.fit(self.fixture("a", fields_sha="ef" * 32), "a_out", work)
+        self.assertEqual(counts, (n, 0))
+        # a new field joins the manifest (new manifest SHA); the candidates' own field payloads are unchanged
+        grown = self.fixture("b", fields_sha="0f" * 32)
+        files, counts = self.fit(grown, "b_out", work)
+        self.assertEqual(counts, (0, n))
+        adm_a, adm_b = json.loads(ref[fcw.OUTPUT_ADMISSION]), json.loads(files[fcw.OUTPUT_ADMISSION])
+        self.assertEqual(adm_a["candidates"], adm_b["candidates"])
+        self.assertEqual(adm_b["inputs"]["fields_manifest_sha256"], "0f" * 32)
+        # a field the two field candidates read changes: only they are recomputed
+        moved = self.fixture("c", fields_sha="1f" * 32, field_payloads=dict(FIELD_PAYLOADS, sv_ratio126="99" * 32))
+        self.assertEqual(self.fit(moved, "c_out", work)[1], (2, n - 2))
+        # a changed DSL under the same id is a new record; everything else is reused
+        extra = {i: dict(e) for i, e in self.extra.items()}
+        extra["slow_a"]["dsl"] = "rank(close) * 0 + 1e-9 * rank(volume)"
+        edited = self.fixture("d", fields_sha="1f" * 32, field_payloads=dict(FIELD_PAYLOADS, sv_ratio126="99" * 32),
+                              candidate_extra=extra)
+        self.assertEqual(self.fit(edited, "d_out", work)[1], (1, n - 1))
+
+    def test_screen_id_is_part_of_the_key(self):
+        fx, work, n = self.fixture("fx"), self.root / "work", len(self.ids)
+        self.assertEqual(self.fit(fx, "p1", work)[1], (n, 0))
+        self.assertEqual(self.fit(fx, "p2", work, screen="v4-prior-v2")[1], (n, 0))
+        self.assertEqual(self.fit(fx, "p1b", work, composition="ew-theme-v6")[1], (0, n))  # same screen, any fit
+        self.assertEqual(self.fit(fx, "p2b", work, screen="v4-prior-v2")[1], (0, n))
 
 
 # ------------------------------------------------ T13: mv-shrink-0.9-nonneg-netcost-v1
@@ -1735,7 +1849,7 @@ class PriorV1BytesUnchanged(unittest.TestCase):
                 keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                 got[tag] = (files, keys)
             self.assertEqual(got["new"][0], got["old"][0])
-            self.assertEqual(got["new"][1], got["old"][1])
+            self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]))  # W3: keys renamed
 
 
 class DefaultBytesUnchanged(unittest.TestCase):
@@ -1783,7 +1897,7 @@ class DefaultBytesUnchanged(unittest.TestCase):
                     keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                     got[tag] = (files, keys)
                 self.assertEqual(got["new"][0], got["old"][0], name)
-                self.assertEqual(got["new"][1], got["old"][1], name)  # identical work-cache paths (keys)
+                self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]), name)  # W3 keys
 
 
 # ------------------------------------------------ T31: ew-theme-aim-v1 (v5 R4' aim gains)
@@ -2190,7 +2304,7 @@ class V1BytesUnchangedByAim(unittest.TestCase):
                 self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), screen)
                 for name in got["new"][0]:
                     self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {name}")
-                self.assertEqual(got["new"][1], got["old"][1], screen)  # no aim-* directory on the v1 path
+                self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]), screen)  # no aim-*
 
 
 # ------------------------------------------------ V6-W: ew-theme-v6 (v6 revision; within-theme redistribution)
@@ -2538,7 +2652,7 @@ class V1BytesUnchangedByV6(unittest.TestCase):
                 self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), (screen, composition))
                 for name in got["new"][0]:
                     self.assertEqual(got["new"][0][name], got["old"][0][name], f"{screen} {composition} {name}")
-                self.assertEqual(got["new"][1], got["old"][1], (screen, composition))
+                self.assertEqual(work_shape(got["new"][1], new=True), work_shape(got["old"][1]), (screen, composition))
 
 
 if __name__ == "__main__":

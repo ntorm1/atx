@@ -112,9 +112,13 @@ declared before any v6 TRAIN read; the rule text is binding): the admitted non-d
 
 Incremental: with ``--work-dir`` the per-day price-risk context and each candidate's unsigned factor
 record (f_k, tau_k, live counts) are persisted and SHA-verified on read. A mismatch means recompute.
-Records are keyed by (TRAIN role manifest SHA, semantics tag, cache payload SHA, fields manifest SHA
-for field candidates) and bound to the VM identity, the context digest and this script's SHA-256, so
-any edit of this file recomputes everything. ``--max-seconds``
+Records are keyed by the work key (``atx.fit-work-key/v1``: semantics tag, TRAIN role manifest SHA, VM
+identity, screen id, DSL SHA and the candidate's field payload SHAs, i.e. the summary entry's
+``field_payload_sha256`` map; a field candidate of a v1 runner summary, which lists no map, falls back to
+the fields manifest SHA), stored as ``<work>/<train-sha>/<semantics-tag>/factors/k-<key>.json``, so an
+unchanged candidate is reused when other fields or other candidates change. A record is also bound to its
+cache payload SHA, the VM identity, the context digest and this script's SHA-256, so any edit of this file
+recomputes everything. stderr reports ``fit: computed K, reused M``. ``--max-seconds``
 and ``--max-new-candidates`` stop cleanly between candidates with exit code 3 and publish nothing; a
 rerun computes only what is missing. Outputs are byte-identical whichever path produced them.
 ``ew-theme-aim-v1`` adds a per-candidate aim record (rho at the exact lags, g, half-sample gains, per-decision
@@ -201,6 +205,7 @@ SIGNAL_KEY_SCHEMA = "atx.dsl-candidate-signal-key/v2"
 CACHE_LAYOUT = "date-major-little-endian-f64;non-finite-stored-as-quiet-NaN"
 VM_EVAL_MODE = "ResearchFast;full-historical-asof-member-mask"
 FACTOR_SCHEMA = "atx.fit-candidate-factor/v1"
+WORK_KEY_SCHEMA = "atx.fit-work-key/v1"
 CONTEXT_SCHEMA = "atx.fit-price-risk-context/v1"
 # Bump these when anything that changes the context or a factor record changes: old work is ignored.
 CONTEXT_SEMANTICS = ("price-risk-v1;beta252-min126-all-instrument-market;vol63-min32;ladv63;"
@@ -544,8 +549,9 @@ class CacheLayout:
         require(fields_match, f"candidate cache: fields manifest mismatch {cid}")
         require(vm_match, f"candidate cache: VM identity mismatch {cid}")
         require(j.get("role") == "train", f"candidate cache: entry {cid} is not a TRAIN-role signal")
+        # A v1 summary lists no per-field payload map: a base candidate reads none, a field candidate's is unknown.
         return {"id": cid, "directory": directory, "payload": directory / f"{cid}.f64", "payload_sha256": sha,
-                "fields_manifest_sha256": fields_sha}
+                "fields_manifest_sha256": fields_sha, "field_payload_sha256": {} if fields_sha is None else None}
 
     def resolve_listed(self, cand: dict, role: "RoleManifest") -> dict:
         """The summary-named entry of this candidate, checked against its sidecar.
@@ -605,7 +611,7 @@ class CacheLayout:
         require(vm_match, f"candidate cache: VM identity mismatch {cid}")
         require(j.get("role") == "train", f"candidate cache: entry {cid} is not a TRAIN-role signal")
         return {"id": cid, "directory": directory, "payload": payload, "payload_sha256": e["payload_sha256"],
-                "fields_manifest_sha256": self.fields_sha if fields else None}
+                "fields_manifest_sha256": self.fields_sha if fields else None, "field_payload_sha256": dict(fields)}
 
 
 def field_lines(fields: dict) -> str:
@@ -619,6 +625,27 @@ def signal_key_sha256(vm_identity: str, role: "RoleManifest", dsl_sha: str, fiel
             f"role_manifest_sha256={role.sha}\ndates={role.dates}\ninstruments={role.instruments}\n"
             f"dsl_sha256={dsl_sha}\n{field_lines(fields)}")
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def work_key_text(role_sha: str, vm_identity: str, screen: str, dsl_sha: str, entry: dict) -> str:
+    """The WorkStore key of one candidate's records (``atx.fit-work-key/v1``, one ``\\n``-terminated line each).
+
+    The content key of the signal (role, VM identity, DSL, the field payloads it reads) plus the screen id and
+    the semantics tag. A field candidate of a v1 runner summary lists no field payload map, so its key carries
+    the fields manifest SHA instead (coarser: any fields change recomputes it)."""
+    lines = [WORK_KEY_SCHEMA, f"semantics_tag={SEMANTICS_TAG}", f"role_manifest_sha256={role_sha}",
+             f"vm_identity={vm_identity}", f"screen={screen}", f"dsl_sha256={dsl_sha}"]
+    fields = entry.get("field_payload_sha256")
+    text = "".join(f"{line}\n" for line in lines)
+    if fields is None:
+        require(is_hash(entry.get("fields_manifest_sha256")), f"work key: {entry.get('id')} has no field payload "
+                                                              "map and no fields manifest")
+        return text + f"fields_manifest_sha256={entry['fields_manifest_sha256']}\n"
+    return text + field_lines(fields)
+
+
+def work_key_sha256(role_sha: str, vm_identity: str, screen: str, dsl_sha: str, entry: dict) -> str:
+    return hashlib.sha256(work_key_text(role_sha, vm_identity, screen, dsl_sha, entry).encode()).hexdigest()
 
 
 def load_candidate_signal(entry: dict, role: "RoleManifest") -> np.ndarray:
@@ -948,6 +975,7 @@ def factor_record(context: Context, signal: np.ndarray, entry: dict, cand: dict,
         "schema": FACTOR_SCHEMA, "context_semantics": CONTEXT_SEMANTICS, "factor_semantics": FACTOR_SEMANTICS,
         "script_sha256": SCRIPT_SHA256, "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
         "cache_payload_sha256": entry["payload_sha256"], "fields_manifest_sha256": entry["fields_manifest_sha256"],
+        "work_key_sha256": entry["work_key_sha256"], "field_payload_sha256": entry["field_payload_sha256"],
         "vm_identity": vm_identity, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
         "decisions": int(len(f)), "f_unsigned": [float(x) if ok else None for x, ok in zip(f, live)],
         "tau": standalone_turnover(q), "live_decisions": int(live.sum()),
@@ -978,6 +1006,7 @@ def aim_record(context: Context, signal: np.ndarray, entry: dict, cand: dict, vm
         "schema": AIM_SCHEMA, "aim_semantics": AIM_SEMANTICS, "context_semantics": CONTEXT_SEMANTICS,
         "script_sha256": SCRIPT_SHA256, "role_manifest_sha256": context.role_sha, "context_sha256": context.digest,
         "cache_payload_sha256": entry["payload_sha256"], "fields_manifest_sha256": entry["fields_manifest_sha256"],
+        "work_key_sha256": entry["work_key_sha256"], "field_payload_sha256": entry["field_payload_sha256"],
         "vm_identity": vm_identity, "candidate_id": cand["id"], "dsl_sha256": cand["dsl_sha256"],
         "decisions": int(context.end - context.begin), "theta": AIM_THETA, "lags": list(AIM_LAGS),
         "rho": _floats_or_none(profile["rho"]), "rho_half": [_floats_or_none(r) for r in profile["rho_half"]],
@@ -1000,7 +1029,7 @@ def aim_record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bo
                 j.get("context_semantics") == CONTEXT_SEMANTICS and j.get("script_sha256") == SCRIPT_SHA256 and
                 j.get("role_manifest_sha256") == role.sha and
                 j.get("cache_payload_sha256") == entry["payload_sha256"] and
-                j.get("fields_manifest_sha256") == entry["fields_manifest_sha256"] and
+                j.get("work_key_sha256") == entry["work_key_sha256"] and
                 j.get("vm_identity") == vm_identity and is_hash(j.get("context_sha256")) and
                 j.get("decisions") == t and j.get("theta") == AIM_THETA and j.get("lags") == AIM_LAGS and
                 opt(rho) and isinstance(halves, list) and len(halves) == 2 and all(opt(h) for h in halves) and
@@ -1024,7 +1053,7 @@ def record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
                 j.get("factor_semantics") == FACTOR_SEMANTICS and j.get("script_sha256") == SCRIPT_SHA256 and
                 j.get("role_manifest_sha256") == role.sha and
                 j.get("cache_payload_sha256") == entry["payload_sha256"] and
-                j.get("fields_manifest_sha256") == entry["fields_manifest_sha256"] and
+                j.get("work_key_sha256") == entry["work_key_sha256"] and
                 j.get("vm_identity") == vm_identity and is_hash(j.get("context_sha256")) and
                 j.get("decisions") == role.end - role.begin and isinstance(f, list) and len(f) == role.end - role.begin
                 and all(v is None or type(v) is float for v in f) and type(j.get("tau")) is float and
@@ -1034,7 +1063,10 @@ def record_valid(j, entry: dict, role: RoleManifest, vm_identity: str) -> bool:
 
 
 class WorkStore:
-    """Persistent incremental state: ``<work>/<train-sha>/<semantics-tag>/{context,factors}``."""
+    """Persistent incremental state: ``<work>/<train-sha>/<semantics-tag>/{context,factors}``.
+
+    Records are named by their work key: ``factors/k-<work key sha256>.json`` (``work_key_text``). Records of
+    the pre-v7 layout (``factors/<payload sha>[.f-<fields sha>].json``) are never read."""
 
     def __init__(self, root: Path, role: RoleManifest, vm_identity: str):
         self.role, self.vm_identity = role, vm_identity
@@ -1043,20 +1075,20 @@ class WorkStore:
         self.context_dir = self.base / "context"
         self.aims = self.base / f"aim-{AIM_TAG}"  # ew-theme-aim-v1 only; other compositions never touch it
 
-    def _path(self, payload_sha: str, fields_sha: str | None, directory: Path | None = None) -> Path:
-        name = f"{payload_sha}.json" if fields_sha is None else f"{payload_sha}.f-{fields_sha}.json"
-        return (directory or self.factors) / name
+    def _path(self, work_key: str, directory: Path | None = None) -> Path:
+        require(is_hash(work_key), "work store: malformed work key")
+        return (directory or self.factors) / f"k-{work_key}.json"
 
     def get(self, entry: dict) -> dict | None:
         try:
-            j = json.loads(self._path(entry["payload_sha256"], entry["fields_manifest_sha256"]).read_bytes())
+            j = json.loads(self._path(entry["work_key_sha256"]).read_bytes())
         except (OSError, ValueError):
             return None
         return j if record_valid(j, entry, self.role, self.vm_identity) else None
 
     def get_aim(self, entry: dict) -> dict | None:
         try:
-            j = json.loads(self._path(entry["payload_sha256"], entry["fields_manifest_sha256"], self.aims).read_bytes())
+            j = json.loads(self._path(entry["work_key_sha256"], self.aims).read_bytes())
         except (OSError, ValueError):
             return None
         return j if aim_record_valid(j, entry, self.role, self.vm_identity) else None
@@ -1064,7 +1096,7 @@ class WorkStore:
     def put(self, record: dict, directory: Path | None = None) -> None:
         directory = directory or self.factors
         directory.mkdir(parents=True, exist_ok=True)
-        path = self._path(record["cache_payload_sha256"], record["fields_manifest_sha256"], directory)
+        path = self._path(record["work_key_sha256"], directory)
         partial = path.with_name(path.name + f".partial-{os.getpid()}")
         write_synced(partial, canonical_compact(record))
         os.replace(partial, path)
@@ -1501,6 +1533,9 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
     Returns (records, computed now, reused, aim records or None). Without ``aim`` this is exactly the
     pre-v5 path: no aim record is read, computed or written.
     """
+    screen = getattr(args, "screen", "none")
+    for e, cand in zip(entries, library):  # the records' key: content key of the signal + screen (work_key_text)
+        e["work_key_sha256"] = work_key_sha256(role.sha, vm_identity, screen, cand["dsl_sha256"], e)
     store = WorkStore(args.work_dir, role, vm_identity) if args.work_dir else None
     records: list[dict | None] = [store.get(e) if store else None for e in entries]
     aims: list[dict | None] | None = ([store.get_aim(e) if store else None for e in entries] if aim else None)
@@ -1509,6 +1544,8 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
         digests |= {a["context_sha256"] for a in aims if a is not None}
     if (all(r is not None for r in records) and (aims is None or all(a is not None for a in aims)) and
             len(digests) == 1):
+        if log:
+            log(f"fit: computed 0, reused {len(records)}")
         return records, 0, len(records), aims  # type: ignore[return-value]
     context = store.load_context() if store else None
     if context is None:
@@ -1549,6 +1586,8 @@ def ensure_records(args, role: RoleManifest, library: list[dict], entries: list[
             log(f"fit: {k + 1}/{len(library)} {library[k]['id']} tau={records[k]['tau']:.4f} "  # type: ignore[index]
                 f"live={records[k]['live_decisions']}{extra} seconds={time.perf_counter() - tick:.2f}")  # type: ignore[index]
     remaining = [library[k]["id"] for k in todo if stale(records[k]) or (aims is not None and stale(aims[k]))]
+    if log:
+        log(f"fit: computed {computed}, reused {reused}" + (f", remaining {len(remaining)}" if remaining else ""))
     if remaining:
         raise Incomplete({"status": "incomplete", "partial": True, "computed_this_run": computed, "reused": reused,
                           "remaining": len(remaining), "next": remaining[0],
@@ -2067,8 +2106,9 @@ def parse_args(argv):
     p.add_argument("--recipe-sha256", default=None)
     p.add_argument("--output", type=Path, required=True, help="new output directory (never overwritten)")
     p.add_argument("--work-dir", type=Path, default=None,
-                   help="persistent incremental state (context + per-candidate factor records; aim records for "
-                        "ew-theme-aim-v1)")
+                   help="persistent incremental state (context + per-candidate factor records keyed by the work key: "
+                        "role, VM identity, screen, DSL SHA and field payload SHAs; aim records for ew-theme-aim-v1); "
+                        "stderr reports 'fit: computed K, reused M'")
     p.add_argument("--max-seconds", type=float, default=None,
                    help="soft budget: stop cleanly before a candidate that would overrun it (exit 3, stdout "
                         "{status: incomplete, partial: true}; completed candidates persist, rerun resumes)")
