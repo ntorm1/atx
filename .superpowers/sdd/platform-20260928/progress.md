@@ -17,6 +17,22 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 v7-2 build green; identity PASS; grid C1-C3 running; wave 2 dispatched
+- Fix-ups merged: L1 short partial-file names (Windows 259-char path limit was the "partial output" cause), L4 risk-verb
+  role masks + `--band-exponent` (+ test rename). Build mega-v7-2a/2b: exit 0; StrategyIcRunner 46/46; target tests
+  124/124 (L4 + identity + StrategyLive). HEAD debbb27f.
+- aim-partial-v6 identity (kappa 0, band exponent 0, clip [1,1]): 10/10 CSVs byte-identical to the v5 cell -> prereg
+  identity requirement met; C1-C3 launched (three cells, N 29 -> 32 as pre-registered).
+- Risk verb on lo1: exit 0, 31.4 s, 521 MiB; geometry 1,155 dates x 5,627 instruments, 62 factors (market + industries +
+  11 styles; descriptors book_to_price, earnings_yield, gross_profitability, asset_growth, leverage, si_ratio, days_to_cover;
+  unavailable []). Bias harness factor family full-sample b mean .995 / median .997; rolling-252 b mean .987 within band
+  [.911, 1.089]; pooled kurtosis 7.0. Descriptive; ACCEPTED as a working risk model v1.
+- Owner (mid-turn): spin up more sub agents, speed up. Ruling: wave 2 dispatched now, before the grid result -- wave-2
+  lanes do not touch the pre-registered grid parameters, so nothing they do can bias it -- cost if wrong: rebase work.
+  W1 pool-3 spo-v1 optimiser (FISTA/ADMM, factor risk + cost v2), W2 pool-10 DSL ops, W3 pool-11 report card + monitor +
+  fitter WorkStore, W4 pool-4 holdings writer + order file + reconcile + freshness/TC checks, R1 adversarial review of
+  cdc9c2a8..HEAD (read-only).
+
 ## 2026-09-28 L4 real data: stress + capacity ACCEPTED (descriptive); aim-partial-v6 identity FAILED (fix requested)
 - `--cost-v2 --capacity-curve` on the v6.1 cell (v7-l4-nav-stress): exit 0, 80.4 s, 368 MiB; S1/S2/S3/flat-300/engine-tiers
   10/10 files byte-identical to the v6.1 cell. New descriptive scenarios (TRAIN, no trial): S2-KO net SR 1.269, S2-FIM 1.347
