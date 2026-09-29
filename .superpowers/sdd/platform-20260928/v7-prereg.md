@@ -30,3 +30,11 @@ any C1-C3 cell is run.
 
 ## Trial accounting (Appendix A) after this grid
 TRAIN construction cells: 29 + 3 = 32. Validation trials: 2 spent (unchanged). 2025+: reserved.
+
+## Addendum A1 (2026-09-28, after the C1-C3 read) -- disclosed deviation, R1 finding M-4
+The implemented aim-partial-v6 rule rescales each side (long, short) back to its entry gross after the cost shrink
+target_i = aim_i / (1 + kappa c_i/c_bar) (strategy_cost_v2.cpp:236-250). This step was not in the L4 brief or in the
+pre-registration above, and the C1-C3 cells were run and read with it. Disclosure: the results (all three rejected, dSR
+-0.08 to -0.13) were therefore obtained under a rule that redistributes weight from expensive to cheap names at constant
+gross rather than shrinking gross. No cell was accepted, so no acceptance rests on the undisclosed step. Any future
+aim-partial-v6 cell must state whether the side rescale is on, and a cell without it counts as a new construction trial.

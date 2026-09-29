@@ -17,6 +17,15 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-28 R1 review landed (1 I, 7 M, 16 m) -- routed
+- I-1 v6 capacity pass prices c_i at base scale (v5 capacity curve unaffected) -> F1. M-1..M-3 decide (flat-book default
+  when the as-of row is missing; no positions/locates SHA in decision.json; TC definition differs from the replay's
+  v7_transfer_coefficient.csv: signal/sigma^2 vs desired/sigma -> the L3-F2 TC values are not comparable with L4's) -> W4.
+  M-4 aim-partial-v6 side rescale undisclosed -> v7-prereg.md Addendum A1 (disclosed deviation; results already read; no
+  acceptance depended on it). M-5 bias harness silently drops unforecast factors and uncovered names (b biased up ->
+  the .995 reading is optimistic until fixed) -> F1. M-6 --reuse keyed on a hand-bumped revision -> F1. M-7 pitch.py
+  cache-scan picks a v2 entry without DSL sha -> F1. F1 lane opened in pool-7.
+
 ## 2026-09-28 GRID RESULT: aim-partial-v6 C1-C3 REJECTED; baseline v6.1 stands (N 32)
 | cell | kappa | clip | S2 net | gross SR | cost bps/$ | tau mean | dSR vs v6.1 (Memmel SE, t) | DSR N32 |
 |---|---|---|---|---|---|---|---|---|
