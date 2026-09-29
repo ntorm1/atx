@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <numbers>
 #include <span>
@@ -615,10 +616,12 @@ PinnedSet write_role_and_fields(const std::filesystem::path& dir, const Planted&
   out.fields_sha = write_json(fields_dir / "manifest.json", fields);
   return out;
 }
-int run_verb(const PinnedSet& s, const std::filesystem::path& output, std::string& error) {
+int run_verb(const PinnedSet& s, const std::filesystem::path& output, std::string& error,
+             std::initializer_list<const char*> extra = {}) {
   std::vector<std::string> args{"risk", "--role", s.role, "--role-sha256", s.role_sha,
       "--fields", s.fields, "--fields-sha256", s.fields_sha, "--output", output.string(),
       "--random-portfolios", "4"};
+  args.insert(args.end(), extra.begin(), extra.end());
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   std::ostringstream out, err;
@@ -670,5 +673,28 @@ TEST(RiskVerb, RestrictedRoleWithAbsentMembersRunsAndMalformedMasksAreRefused) {
   const auto contract = write_role_and_fields(dir.path / "price", bad_price);
   EXPECT_EQ(run_verb(contract, dir.path / "price" / "out", error), 1);
   EXPECT_NE(error.find("price contract"), std::string::npos) << error;
+}
+// R1 m-5 / m-16: a role reaching 2023-01-01 (the sealed VAL/holdout) is refused unless an owner
+// admits it by name; the manifest records the seal and the producing executable and build.
+TEST(RiskVerb, RoleReachingTheSealNeedsAnOwnerAndTheManifestNamesTheProducer) {
+  Directory dir;
+  Planted planted(130, 120, 67);
+  constexpr i64 seal = 1'672'531'200LL * 1'000'000'000LL; // 2023-01-01 00:00 UTC
+  const i64 shift = seal - planted.sessions.back() + day_ns; // the last session is 2023-01-02
+  for (auto& s : planted.sessions) s += shift;
+  const auto pinned = write_role_and_fields(dir.path / "sealed", planted);
+  std::string error;
+  EXPECT_EQ(run_verb(pinned, dir.path / "sealed" / "out", error), 1);
+  EXPECT_NE(error.find("2023-01-01"), std::string::npos) << error;
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "sealed" / "out"));
+  ASSERT_EQ(run_verb(pinned, dir.path / "sealed" / "owned", error, {"--unseal", "root"}), 0)
+      << error;
+  std::ifstream in(dir.path / "sealed" / "owned" / "manifest.json");
+  Json manifest;
+  in >> manifest;
+  EXPECT_EQ(manifest.at("seal").at("unseal_owner"), "root");
+  EXPECT_EQ(manifest.at("seal").at("role_last_session_ns").get<i64>(), planted.sessions.back());
+  EXPECT_TRUE(manifest.at("producer").contains("executable_sha256"));
+  EXPECT_FALSE(manifest.at("producer").at("engine_git_sha").get<std::string>().empty());
 }
 } // namespace
