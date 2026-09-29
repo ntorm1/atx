@@ -26,6 +26,7 @@
 #include "atx/engine/book/replay_cost.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
 #include "atx/engine/eval/hac.hpp"
+#include "strategy_holdings.hpp" // v7 W4: the f64 holdings layout
 #include "strategy_nav_replay_detail.hpp"
 #include "strategy_target_replay_detail.hpp"
 #include "strategy_nav_v7.hpp" // platform-v7 L4 hook (one seam object)
@@ -2223,29 +2224,44 @@ bool neutralize_skipped(NeutralizeOutcome outcome) {
   return outcome != NeutralizeOutcome::NotAttempted && outcome != NeutralizeOutcome::Applied;
 }
 const char* side_label(f64 held) { return held > 0 ? "long" : held < 0 ? "short" : "flat"; }
-// Streams holdings.csv and holdings_days.csv, one session at a time (O(names) memory).
-class HoldingsCsv final : public NavHoldingsSink {
+// Streams the per-name rows (f64: buffered binary rows + a session table, the default;
+// csv: the v1 holdings.csv) and holdings_days.csv, one session at a time (O(names) memory
+// plus the 1 MiB binary buffer and one table entry per session, within the publication
+// slack of the workspace reserve).
+class HoldingsEmitter final : public NavHoldingsSink {
 public:
-  co::Status open(const std::filesystem::path& dir) {
+  co::Status open(const std::filesystem::path& dir, NavHoldingsFormat format,
+                  std::span<const u64> ids) {
     if (!std::filesystem::create_directory(dir))
       return co::Err(co::ErrorCode::AlreadyExists,
                      "nav replay: --emit-holdings directory must not exist");
-    dir_ = dir;
-    names_.open(dir / "holdings.csv", std::ios::binary);
-    days_.open(dir / "holdings_days.csv", std::ios::binary);
-    if (!names_ || !days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings output");
-    for (auto* file : {&names_, &days_}) {
-      file->imbue(std::locale::classic()); *file << std::setprecision(17);
-    }
-    names_ << detail::holdings_csv_columns() << '\n';
+    dir_ = dir; format_ = format; ids_ = ids;
+    days_.open(dir / holdings::days_file, std::ios::binary);
+    if (!days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings output");
+    days_.imbue(std::locale::classic()); days_ << std::setprecision(17);
     days_ << holdings_days_columns << '\n';
+    if (format_ == NavHoldingsFormat::F64) return binary_.open(dir / holdings::data_file);
+    names_.open(dir / "holdings.csv", std::ios::binary);
+    if (!names_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings output");
+    names_.imbue(std::locale::classic()); names_ << std::setprecision(17);
+    names_ << detail::holdings_csv_columns() << '\n';
     return co::Ok();
   }
   co::Status session(const NavReplayDay& d, std::span<const NavHolding> names) override {
     usize placed = 0;
-    for (const auto& h : names) {
-      write_name(d, h);
-      placed += h.order_placed ? 1U : 0U;
+    if (format_ == NavHoldingsFormat::F64) {
+      const usize ordinal = table_.size();
+      for (const auto& h : names) {
+        ATX_TRY_VOID(binary_.append(holdings::pack(ordinal, h)));
+        placed += h.order_placed ? 1U : 0U;
+      }
+      table_.push_back({d.session_index, d.session, d.posttrade_nav, d.decision, rows,
+                        names.size()});
+    } else {
+      for (const auto& h : names) {
+        write_name(d, h);
+        placed += h.order_placed ? 1U : 0U;
+      }
     }
     const bool skipped = neutralize_skipped(d.construction.neutralize);
     days_ << d.session << ',' << d.decision << ',' << d.rebalance << ',' << d.executed << ','
@@ -2260,15 +2276,34 @@ public:
           << d.construction.locate_zeroed << '\n';
     ++sessions; rows += names.size();
     decisions += d.decision ? 1U : 0U; skipped_rebalances += skipped ? 1U : 0U;
-    if (!names_ || !days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings write");
+    if (!days_ || (format_ == NavHoldingsFormat::Csv && !names_))
+      return co::Err(co::ErrorCode::IoError, "nav replay: holdings write");
     return co::Ok();
   }
+  // Closes every file; f64 then writes holdings_index.json (the session table).
   co::Status close() {
-    names_.close(); days_.close();
-    if (!names_ || !days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings close");
+    days_.close();
+    if (!days_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings close");
+    if (format_ == NavHoldingsFormat::Csv) {
+      names_.close();
+      if (!names_) return co::Err(co::ErrorCode::IoError, "nav replay: holdings close");
+      return co::Ok();
+    }
+    ATX_TRY(data_, binary_.close());
+    ATX_TRY(index_sha_, holdings::write_index(dir_ / holdings::index_file, ids_, table_, data_));
     return co::Ok();
+  }
+  // The published files and their SHA-256 (the binary rows' digest was taken as written).
+  [[nodiscard]] co::Result<Json> files() const {
+    ATX_TRY(auto days_sha, co::sha256_file((dir_ / holdings::days_file).string()));
+    if (format_ == NavHoldingsFormat::F64)
+      return co::Ok(Json{{holdings::data_file, data_.sha256},
+                         {holdings::index_file, index_sha_}, {holdings::days_file, days_sha}});
+    ATX_TRY(auto names_sha, co::sha256_file((dir_ / "holdings.csv").string()));
+    return co::Ok(Json{{"holdings.csv", names_sha}, {holdings::days_file, days_sha}});
   }
   [[nodiscard]] const std::filesystem::path& directory() const { return dir_; }
+  [[nodiscard]] NavHoldingsFormat format() const { return format_; }
   u64 rows{};
   usize sessions{}, decisions{}, skipped_rebalances{};
 
@@ -2289,25 +2324,38 @@ private:
     write_value(f, h.order_dollars); f << '\n';
   }
   std::filesystem::path dir_;
+  NavHoldingsFormat format_{NavHoldingsFormat::F64};
+  std::span<const u64> ids_; // the role order (borrowed from the loaded blend)
   std::ofstream names_, days_;
+  holdings::BinaryAppender binary_;
+  std::vector<holdings::SessionEntry> table_;
+  holdings::BinaryAppender::Closed data_;
+  std::string index_sha_;
 };
-// manifest.json LAST (after the NAV directory): CSV SHAs and the NAV recipe SHA.
-co::Status publish_holdings(const NavRun& run, const HoldingsCsv& csv, std::ostream& progress) {
+// manifest.json LAST (after the NAV directory): file SHAs and the NAV recipe SHA. The csv
+// format keeps atx.nav-holdings/v1 byte for byte; f64 is v2 (+ format, the index schema).
+co::Status publish_holdings(const NavRun& run, const HoldingsEmitter& csv,
+                            std::ostream& progress) {
   const bool tiered = !run.fields.is_null();
   const auto method = nav_recipe(run.cfg, run.base, run.scenarios, run.limits, run.fields);
   ATX_TRY(auto method_sha, co::sha256_hex(method.dump()));
   const auto& dir = csv.directory();
-  ATX_TRY(auto names_sha, co::sha256_file((dir / "holdings.csv").string()));
-  ATX_TRY(auto days_sha, co::sha256_file((dir / "holdings_days.csv").string()));
+  ATX_TRY(auto files, csv.files());
+  const bool binary = csv.format() == NavHoldingsFormat::F64;
   const auto book = scenario_label(run.scenarios[nav_primary_scenario_index], tiered);
-  Json manifest{{"schema", "atx.nav-holdings/v1"}, {"status", "complete"},
+  Json manifest{{"schema", binary ? holdings::manifest_schema_v2 : "atx.nav-holdings/v1"},
+      {"status", "complete"},
       {"book", book}, {"nav_recipe_sha256", method_sha},
       {"combined_sha256", run.cfg.combined_sha256}, {"role_sha256", run.cfg.role_sha256},
       {"rule", detail::construction_rule_id(run.cfg.target)},
       {"sessions", csv.sessions}, {"decision_sessions", csv.decisions}, {"rows", csv.rows},
       {"neutralize_skipped_rebalances", csv.skipped_rebalances},
-      {"files", {{"holdings.csv", names_sha}, {"holdings_days.csv", days_sha}}},
-      {"columns", holdings_declaration}};
+      {"files", std::move(files)}, {"columns", holdings_declaration}};
+  if (binary)
+    manifest["format"] = Json{{"id", "f64"}, {"index_schema", holdings::index_schema},
+        {"rows", "holdings.f64 (layout in holdings_index.json) carries every holdings.csv "
+                 "column of v1: the stored ones exactly, the derived ones by the declared "
+                 "expressions"}};
   v7::extend_holdings(manifest); // L4 hook: identity unless extended
   progress << "nav replay holdings " << book << ": " << csv.rows << " rows over "
            << csv.sessions << " sessions\n";
@@ -2382,9 +2430,9 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     // the borrow tiers are formed once per decision for every scenario book. With
     // --emit-holdings the primary book is observed (read only) while it runs.
     std::vector<NavReplayResult> results;
-    HoldingsCsv csv;
+    HoldingsEmitter csv;
     if (holdings) {
-      ATX_TRY_VOID(csv.open(emit.holdings_directory));
+      ATX_TRY_VOID(csv.open(emit.holdings_directory, emit.format, view.instrument_ids));
       ATX_TRY(results, replay_nav_scenarios(input, base, scenarios, csv,
                                             nav_primary_scenario_index));
       ATX_TRY_VOID(csv.close());
@@ -2438,7 +2486,9 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--order-basis target|delta] [--exit-rate 1 (below 1: aim-partial-v5, "
                "dust > 0)] [--locate-in-aim (needs --fields and --neutralize)] "
                "[--liquidity-cache] [--emit-holdings NEWDIR (primary book per-name "
-               "holdings, streamed; manifest.json last)]\n"
+               "holdings, streamed; manifest.json last) [--holdings-format f64|csv (f64: "
+               "holdings.f64 + holdings_index.json, the default; csv: the v1 holdings.csv; "
+               "ignored without --emit-holdings)]]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -2472,7 +2522,13 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--fields") fields.manifest_path = value;
       else if (key == "--fields-sha256") fields.manifest_sha256 = value;
       else if (key == "--emit-holdings") emit.holdings_directory = value;
-      else if (key == "--cadence") {
+      else if (key == "--holdings-format") {
+        // Accepted without --emit-holdings: the v7 capacity pass drops --emit-holdings
+        // and forwards every other flag (strategy_nav_v7.cpp).
+        if (value == "f64") emit.format = NavHoldingsFormat::F64;
+        else if (value == "csv") emit.format = NavHoldingsFormat::Csv;
+        else throw std::invalid_argument("unknown --holdings-format (f64|csv)");
+      } else if (key == "--cadence") {
         const auto x = integer();
         if (x > max_dates) throw std::invalid_argument("cadence exceeds bound");
         cfg.target.cadence = static_cast<usize>(x);
@@ -2651,6 +2707,22 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
     return co::Err(co::ErrorCode::OutOfRange, "nav decide: allocation failed");
   } catch (const std::length_error&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav decide: allocation extent");
+  }
+}
+
+co::Result<std::vector<f64>> execution_adv(const NavReplayInput& in, const NavReplayConfig& cfg,
+                                           usize t) {
+  const auto& x = in.target;
+  const usize n = x.instruments, cells = x.dates * n;
+  if (!t || t > x.dates || !cfg.liquidity_window || in.volume.size() != cells ||
+      x.raw_close.size() != cells || x.close.size() != cells || x.present.size() != cells)
+    return co::Err(co::ErrorCode::InvalidArgument, "nav execution ADV: session or geometry");
+  try {
+    std::vector<f64> adv(n);
+    for (usize i = 0; i < n; ++i) adv[i] = window_liquidity(x, in.volume, cfg, t, i).adv;
+    return co::Ok(std::move(adv));
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "nav execution ADV: allocation failed");
   }
 }
 } // namespace detail

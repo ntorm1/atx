@@ -70,6 +70,14 @@ struct NavDeployLoad {
                                                               const NavTurnoverLimits& limits,
                                                               const NavFieldsPin& fields);
 
+// v7 W4 (B7): the raw-dollar ADV the replay's EXECUTE at session t reads for every name,
+// by the execution liquidity definition (present raw_close x volume over [t-w, t) / w, w
+// = cfg.liquidity_window; rows < t only). t in [1, dates]: t = d + 1 is the session that
+// fills a decision at d, t = dates the session after the last role row.
+[[nodiscard]] atx::core::Result<std::vector<atx::f64>> execution_adv(const NavReplayInput& in,
+                                                                   const NavReplayConfig& cfg,
+                                                                   atx::usize t);
+
 // Stable CSV spellings shared by holdings.csv and the decide outputs.
 [[nodiscard]] const char* borrow_tier_label(atx::u8 tier); // gc|warm|special|none
 [[nodiscard]] const char* fill_status_label(NavFillStatus fill);

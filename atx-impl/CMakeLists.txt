@@ -17,6 +17,10 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_nav_replay.cpp
     # v7 daily decide path: deploy manifest, decide verb (the NAV replay's own DECIDE)
     src/strategy_live.cpp
+    # v7 W4: f64 holdings layout + reader, share orders, broker reconciliation
+    src/strategy_holdings.cpp
+    src/strategy_orders.cpp
+    src/strategy_reconcile.cpp
     # platform v7 L4: cost model v2 + aim-partial-v6 + the NAV hook; atx-risk-v1 + bias harness
     src/strategy_cost_v2.cpp
     src/strategy_nav_v7.cpp

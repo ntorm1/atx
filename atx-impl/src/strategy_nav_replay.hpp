@@ -489,15 +489,21 @@ struct NavFieldsPin {
                                                const NavRateOptions& rate,
                                                const NavExecutionOptions& execution,
                                                std::ostream& progress);
-// --emit-holdings NEWDIR (v7 B3): the PRIMARY book's per-name rows (holdings.csv) and
-// per-session summary (holdings_days.csv) for every decision or execution session,
-// streamed while the replay runs, then manifest.json (atx.nav-holdings/v1: CSV SHAs,
-// the NAV recipe SHA) LAST, after the NAV directory is published; a directory without
-// manifest.json is incomplete. Both directories must not exist and must differ. The NAV
-// directory is byte-identical with or without it; NavEmitOptions{} (empty directory) is
-// exactly the six-argument overload.
+// --emit-holdings NEWDIR (v7 B3): the PRIMARY book's per-name rows and per-session
+// summary (holdings_days.csv) for every decision or execution session, streamed while
+// the replay runs, then manifest.json (file SHAs, the NAV recipe SHA) LAST, after the NAV
+// directory is published; a directory without manifest.json is incomplete. Both
+// directories must not exist and must differ. The NAV directory is byte-identical with or
+// without it, in either format; NavEmitOptions{} (empty directory) is exactly the
+// six-argument overload.
+// Formats (v7 W4, finding L3-F1: the v1 CSV text cost ~3x the NAV run's wall time):
+//   F64 (default): holdings.f64 + holdings_index.json (strategy_holdings.hpp), manifest
+//       atx.nav-holdings/v2; every holdings.csv column recoverable bit for bit.
+//   Csv: holdings.csv, manifest atx.nav-holdings/v1, byte for byte the L3 output.
+enum class NavHoldingsFormat : atx::u8 { F64 = 0, Csv = 1 };
 struct NavEmitOptions {
   std::string holdings_directory;
+  NavHoldingsFormat format{NavHoldingsFormat::F64};
 };
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
@@ -511,7 +517,8 @@ struct NavEmitOptions {
 // --rate fixed|per-name-v1 is refused (usage error) unless --rule aim-partial-v5, and
 // --rate-rra/--rate-lambda/--rate-min/--rate-max unless --rate per-name-v1.
 // v6: --order-basis target|delta, --exit-rate R (TargetReplayConfig::exit_rate), and
-// the valueless flags --locate-in-aim and --liquidity-cache. v7: --emit-holdings NEWDIR.
+// the valueless flags --locate-in-aim and --liquidity-cache. v7: --emit-holdings NEWDIR
+// [--holdings-format f64|csv].
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
 } // namespace atx::impl::strategy
