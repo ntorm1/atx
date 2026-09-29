@@ -735,11 +735,30 @@ BiasHarness::BiasHarness(const RiskPanel& panel, usize random_portfolios, u64 se
       scores_[q * panel.instruments + i] = random_score(seed_, q, panel.ids[i]);
   for (usize q = 0; q < random_; ++q) {
     std::string name = std::to_string(q);
-    series_.push_back(BiasSeries{"random", "random-" + std::string(3 - std::min<usize>(3, name.size()), '0') + name, {}, {}, {}, {}, 0, 0});
+    const std::string pad(3 - std::min<usize>(3, name.size()), '0');
+    series_.push_back(BiasSeries{"random", "random-" + pad + name, {}, {}, {}, {}, 0, 0, 0, 0, 0});
   }
   for (usize k = 0; k < factor_count; ++k)
-    series_.push_back(BiasSeries{"factor", factor_name(k), {}, {}, {}, {}, 0, 0});
-  if (has_book_) series_.push_back(BiasSeries{"book", "book", {}, {}, {}, {}, 0, 0});
+    series_.push_back(BiasSeries{"factor", factor_name(k), {}, {}, {}, {}, 0, 0, 0, 0, 0});
+  if (has_book_) series_.push_back(BiasSeries{"book", "book", {}, {}, {}, {}, 0, 0, 0, 0, 0});
+}
+
+f64 dropped_share(const BiasSeries& s) noexcept {
+  const usize dropped = s.dropped_factor_exposures + s.uncovered_name_returns;
+  const usize total = dropped + s.z.size();
+  return total ? static_cast<f64>(dropped) / static_cast<f64>(total) : 0.0;
+}
+SeriesStatus series_status(const BiasSeries& s) noexcept {
+  if (s.z.empty()) return SeriesStatus::Empty;
+  return dropped_share(s) > max_dropped_share ? SeriesStatus::Refused : SeriesStatus::Ok;
+}
+const char* series_status_name(SeriesStatus s) noexcept {
+  switch (s) {
+  case SeriesStatus::Ok: return "ok";
+  case SeriesStatus::Refused: return "refused";
+  case SeriesStatus::Empty: return "empty";
+  }
+  return "unknown";
 }
 
 co::Status BiasHarness::on_day(const RiskDay& day) {
@@ -755,6 +774,7 @@ void BiasHarness::realize(const RiskDay& day) {
   const usize t = day.date;
   if (t == 0) return;
   const auto settle = [&](Held& held, BiasSeries& s) {
+    if (held.excluded != Excluded::None) exclude(s, held.excluded);
     if (!held.live) return;
     f64 r = 0;
     for (const auto& [i, w] : held.weights) {
@@ -768,38 +788,56 @@ void BiasHarness::realize(const RiskDay& day) {
   if (has_book_) settle(held_.back(), series_.back());
   for (usize k = 0; k < factor_count; ++k) {
     const f64 f = day.factor_return[k], v = prior_factor_var_[k];
-    if (!std::isfinite(f) || !(v > 0)) continue;
+    if (!std::isfinite(f)) continue;
     auto& s = series_[random_ + k];
+    if (!(v > 0)) { exclude(s, Excluded::FactorExposure); continue; } // the factor is unforecast
     s.sessions.push_back(day.session); s.forecast_vol.push_back(std::sqrt(v));
     s.realized.push_back(f); s.z.push_back(f / std::sqrt(v));
   }
 }
 
-f64 BiasHarness::forecast_vol(const RiskDay& day, const Held& held, usize& uncovered) const {
+void BiasHarness::apply_forecast(Held& held, Forecast forecast) noexcept {
+  held.vol = forecast.vol;
+  held.excluded = forecast.excluded;
+  held.live = forecast.excluded == Excluded::None && std::isfinite(forecast.vol);
+}
+void BiasHarness::exclude(BiasSeries& s, Excluded why) noexcept {
+  if (s.z.empty()) ++s.warmup_excluded;
+  else if (why == Excluded::FactorExposure) ++s.dropped_factor_exposures;
+  else ++s.uncovered_name_returns;
+}
+
+// x'Fx + sum w^2 D over every held name, or the reason there is no complete forecast: a held
+// name without an exposure row or specific variance, or a nonzero exposure to a factor without
+// a forecast. Nothing is dropped from the sums (R1 M-5).
+BiasHarness::Forecast BiasHarness::forecast_vol(const RiskDay& day, const Held& held) const {
   std::array<f64, factor_count> x{};
   f64 specific = 0;
   for (const auto& [i, w] : held.weights) {
     const u8 slot = day.industry_slot[i];
     const f64 d = day.specific_variance[i];
-    if (slot == no_exposure || !std::isfinite(d)) { ++uncovered; continue; }
+    if (slot == no_exposure || !std::isfinite(d)) return {nan, Excluded::UncoveredName};
     x[0] += w; x[industry_factor(slot)] += w;
     for (usize s = 0; s < style_count; ++s) x[style_factor(s)] += w * day.styles[i * style_count + s];
     specific += w * w * d;
   }
+  for (usize a = 0; a < factor_count; ++a)
+    if (x[a] != 0 && !std::isfinite(day.covariance[a * factor_count + a]))
+      return {nan, Excluded::FactorExposure};
   f64 systematic = 0;
   for (usize a = 0; a < factor_count; ++a) {
-    if (x[a] == 0 || !std::isfinite(day.covariance[a * factor_count + a])) continue;
+    if (x[a] == 0) continue;
     for (usize b = 0; b < factor_count; ++b) {
       const f64 c = day.covariance[a * factor_count + b];
       if (x[b] != 0 && std::isfinite(c)) systematic += x[a] * c * x[b];
     }
   }
   const f64 var = systematic + specific;
-  return var > 0 ? std::sqrt(var) : nan;
+  return {var > 0 ? std::sqrt(var) : nan, Excluded::None};
 }
 
 void BiasHarness::form(const RiskDay& day) {
-  for (auto& h : held_) { h.live = false; h.weights.clear(); }
+  for (auto& h : held_) { h.live = false; h.excluded = Excluded::None; h.weights.clear(); }
   std::fill(prior_factor_var_.begin(), prior_factor_var_.end(), nan);
   if (!day.forecast) return;
   for (usize k = 0; k < factor_count; ++k) prior_factor_var_[k] = day.covariance[k * factor_count + k];
@@ -819,22 +857,18 @@ void BiasHarness::form(const RiskDay& day) {
       if (!(gross > 0)) continue;
       auto& h = held_[q];
       for (const usize i : names) h.weights.emplace_back(i, (s[i] - mean) / gross);
-      usize uncovered = 0;
-      h.vol = forecast_vol(day, h, uncovered);
-      h.live = std::isfinite(h.vol);
+      apply_forecast(h, forecast_vol(day, h));
     }
   if (has_book_) {
     auto& h = held_.back();
     auto& s = series_.back();
+    // Every held name stays in the book: an uncovered one excludes the observation whole.
     for (const auto& [i, w] : book_by_date_[day.date]) {
-      if (day.industry_slot[i] == no_exposure || !std::isfinite(day.specific_variance[i])) {
-        ++s.uncovered_names; continue;
-      }
+      if (day.industry_slot[i] == no_exposure || !std::isfinite(day.specific_variance[i]))
+        ++s.uncovered_names;
       h.weights.emplace_back(i, w);
     }
-    usize ignored = 0;
-    h.vol = h.weights.empty() ? nan : forecast_vol(day, h, ignored);
-    h.live = std::isfinite(h.vol);
+    if (!h.weights.empty()) apply_forecast(h, forecast_vol(day, h));
   }
 }
 } // namespace atx::impl::strategy::risk

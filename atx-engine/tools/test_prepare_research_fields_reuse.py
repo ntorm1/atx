@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import prepare_research_fields as tool
 import test_prepare_research_fields as base
@@ -120,6 +121,19 @@ class FieldReuse(unittest.TestCase):
             self.env.produce("R3", SMALL, reuse=other)
         self.assertFalse((self.env.fx.base / "R2" / "manifest.json").exists())  # nothing published on refusal
 
+    def test_changed_sic_mapping_table_recomputes_the_group_fields(self):
+        real = tool.sic_mapping
+
+        def other_table():
+            ff12, ff49, provenance = real()
+            return ff12, ff49, {**provenance, "table_sha256": "0" * 64}
+
+        with mock.patch.object(tool, "sic_mapping", other_table):
+            s = self.env.produce("S", ["grp_ff12", "be"], reuse=self.env.path("A").parent)
+        self.assertEqual(s["reuse"]["reused"], ["be"])
+        self.assertEqual(s["reuse"]["computed"], ["grp_ff12"])
+        self.assertIn("SIC mapping table differs", s["reuse"]["not_reused"]["grp_ff12"])
+
     def test_hardlink_mode_and_cli(self):
         a_dir = self.env.path("A").parent
         h = self.env.produce("H", SMALL, reuse=a_dir, reuse_hardlink=True)
@@ -195,6 +209,127 @@ class ReuseInvalidation(unittest.TestCase):
         d = self.env.produce("D", SMALL, reuse=self.a_dir, finra=moved)   # same bytes, another source argument
         self.assertIn("outside this run's inputs", d["reuse"]["not_reused"]["si_shares"])
         self.assertEqual(d["reuse"]["computed"], ["si_shares", "si_dtc", "shares_out"])
+
+
+class ReuseProducerCode(unittest.TestCase):
+    """R1 M-6: --reuse keys on the producing code (not a hand-bumped revision) and a reused entry names the code that
+    produced its payload, never the builder that copied it. A's builder is this module; a changed module text is
+    simulated by builder_source, and git's object store (holding A's builder) by git_blob."""
+
+    ANCHOR = b"def market_return_field(role: Role, output: Path, budget: Budget):\n"
+    DOC = b'"""Stream close/raw_close/present row by row, hashing exactly the bytes used."""'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.env = Env(Path(self.temp.name))
+        self.a = self.env.produce("A", SMALL)
+        self.a_dir = self.env.path("A").parent
+        self.original = tool.builder_source().replace(b"\r\n", b"\n")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def edited(self, old: bytes, new: bytes) -> bytes:
+        self.assertEqual(self.original.count(old), 1)
+        return self.original.replace(old, new)
+
+    def produce_with(self, out, source, prior, *, store=True):
+        blobs = {self.a["code_git_blob_sha1"]: self.original} if store else {}
+        with mock.patch.object(tool, "builder_source", lambda: source), \
+                mock.patch.object(tool, "git_blob", lambda sha1: blobs.get(sha1)):
+            return self.env.produce(out, SMALL, reuse=prior)
+
+    def assert_produced_by_a(self, manifest, names):
+        blk = manifest["reuse"]
+        for e in manifest["fields"]:
+            if e["name"] not in names:
+                self.assertNotIn("reused_from", e)
+                continue
+            r = e["reused_from"]
+            self.assertEqual((r["code_sha256_lf"], r["code_sha256"], r["code_git_blob_sha1"]),
+                             (self.a["code_sha256_lf"], self.a["code_sha256"], self.a["code_git_blob_sha1"]))
+            self.assertEqual(len(r["producer_sha256"]), 64)
+            self.assertEqual(blk["producing_code_sha256_lf"][e["name"]], self.a["code_sha256_lf"])
+
+    def test_changed_builder_function_recomputes_its_fields(self):
+        src = self.edited(self.ANCHOR, self.ANCHOR + b"    assert output is not None\n")
+        b = self.produce_with("B", src, self.a_dir)
+        blk = b["reuse"]
+        self.assertEqual(blk["computed"], ["mkt_ret"])
+        self.assertEqual(sorted(blk["reused"]), sorted(set(SMALL) - {"mkt_ret"}))
+        self.assertTrue(blk["not_reused"]["mkt_ret"].startswith("producing code differs (builder closure of group "
+                                                                "role"), blk["not_reused"])
+        # the new manifest pins the new builder; the reused payloads keep A's code
+        self.assertEqual(b["code_sha256_lf"], tool.code_identity_of(src)["code_sha256_lf"])
+        self.assertNotEqual(b["code_sha256_lf"], self.a["code_sha256_lf"])
+        self.assert_produced_by_a(b, set(blk["reused"]))
+        self.assertTrue(all(e["reused_from"]["producer_code"].startswith("git blob ")
+                            for e in b["fields"] if "reused_from" in e))
+
+    def test_changed_shared_code_reuses_nothing(self):
+        src = self.edited(b"class Role:\n", b"class Role:\n    probe = 1\n")  # every builder reads the role
+        b = self.produce_with("B", src, self.a_dir)
+        self.assertEqual(b["reuse"]["reused"], [])
+        self.assertEqual(sorted(b["reuse"]["computed"]), sorted(SMALL))
+        for name in SMALL:
+            self.assertIn("producing code differs", b["reuse"]["not_reused"][name])
+
+    def test_comment_and_docstring_edits_keep_reuse(self):
+        src = self.edited(self.DOC, b'"""Edited docstring."""\n    # a comment')
+        b = self.produce_with("B", src, self.a_dir)
+        self.assertEqual(sorted(b["reuse"]["reused"]), sorted(SMALL))
+        self.assertNotEqual(b["code_sha256_lf"], self.a["code_sha256_lf"])
+        self.assert_produced_by_a(b, set(SMALL))
+
+    def test_unrecoverable_prior_code_is_not_reused(self):
+        src = self.edited(self.DOC, b'"""Edited docstring."""')
+        b = self.produce_with("B", src, self.a_dir, store=False)
+        self.assertEqual(b["reuse"]["reused"], [])
+        for name in SMALL:
+            self.assertIn("producing code not recoverable", b["reuse"]["not_reused"][name])
+
+    def test_chained_reuse_names_the_original_producer(self):
+        src = self.edited(self.DOC, b'"""Edited docstring."""')
+        b = self.produce_with("B", src, self.a_dir)            # B's builder differs from A's
+        c = self.env.produce("C", SMALL, reuse=self.env.path("B").parent)   # this builder == A's
+        self.assertEqual(sorted(c["reuse"]["reused"]), sorted(SMALL))
+        self.assertNotEqual(b["code_sha256_lf"], self.a["code_sha256_lf"])
+        self.assertEqual(c["reuse"]["code_sha256_lf"], b["code_sha256_lf"])   # the prior manifest's builder
+        self.assert_produced_by_a(c, set(SMALL))                               # but A's code produced the payloads
+        self.assertTrue(all(e["reused_from"]["producer_code"].startswith("this builder") for e in c["fields"]))
+        for name in SMALL:
+            self.assertEqual(base.sha(self.env.path("C", f"{name}.f64")), base.sha(self.env.path("A", f"{name}.f64")))
+
+    def test_chain_through_a_manifest_without_code_records_finds_the_builder(self):
+        b = self.env.produce("B", SMALL, reuse=self.a_dir)
+        path = self.env.path("B")
+        for e in b["fields"]:  # as written before --reuse recorded code identities (platform v7 L2)
+            for key in ("code_sha256", "code_git_blob_sha1", "producer_sha256", "producer_code"):
+                e["reused_from"].pop(key)
+        path.write_text(json.dumps(b, indent=2), encoding="utf-8")
+        src = self.edited(self.DOC, b'"""Edited docstring."""')
+        c = self.produce_with("C", src, path.parent)       # finds A's builder through B's record and A's manifest
+        self.assertEqual(sorted(c["reuse"]["reused"]), sorted(SMALL))
+        self.assert_produced_by_a(c, set(SMALL))
+        # A's manifest no longer hashes to B's record: the chain breaks, nothing names the producing code
+        m = json.loads((self.a_dir / "manifest.json").read_text(encoding="utf-8"))
+        (self.a_dir / "manifest.json").write_text(json.dumps(m, indent=1), encoding="utf-8")
+        d = self.produce_with("D", src, path.parent)
+        self.assertEqual(d["reuse"]["reused"], [])
+        self.assertIn("producing code not recoverable", d["reuse"]["not_reused"]["mkt_ret"])
+
+    def test_fingerprints_ignore_formatting_and_see_code(self):
+        fp = tool.producer_fingerprints(self.original)
+        self.assertEqual(set(fp), set(tool.FIELD_PRODUCERS))
+        self.assertTrue(all(isinstance(v, str) and len(v) == 64 for v in fp.values()))
+        reformatted = self.edited(self.ANCHOR, b"\n# comment\n" + self.ANCHOR)
+        self.assertEqual(tool.producer_fingerprints(reformatted), fp)
+        changed = tool.producer_fingerprints(self.edited(b"class Role:\n", b"class Role:\n    probe = 1\n"))
+        self.assertTrue(all(changed[g] != fp[g] for g in fp))
+        gone = tool.producer_fingerprints(self.edited(b"def sv_field(", b"def sv_field_renamed("))
+        self.assertIsNone(gone["finra_sv"])
+        with self.assertRaisesRegex(ValueError, "does not parse"):
+            tool.producer_fingerprints(b"def broken(:\n")
 
 
 if __name__ == "__main__":

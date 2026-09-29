@@ -8,6 +8,7 @@ raises and renders the report's one-line "not available" marker. Captions state 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import math
 import re
 from pathlib import Path
@@ -135,9 +136,42 @@ def _signal_meta(ctx, sidecar: Path, role_sha) -> dict | None:
     return m
 
 
-def _summary_signal_entries(ctx, ids, role_sha) -> dict:
+def _library_dsl(ctx) -> dict:
+    """id -> the IC runner's ``dsl_sha256`` of the report library's candidate: SHA-256 of ``candidates[].dsl`` (UTF-8),
+    recomputed from the library JSON. A candidate without a DSL string has none (no entry can match it)."""
+    out = {}
+    for c in (alphas(ctx).lib or {}).get('candidates', []):
+        if isinstance(c, dict) and isinstance(c.get('id'), str) and isinstance(c.get('dsl'), str):
+            out[c['id']] = hashlib.sha256(c['dsl'].encode('utf-8')).hexdigest()
+    return out
+
+
+def _pinned_field_payloads(ctx) -> dict | None:
+    """field name -> payload SHA-256 of the fields manifest the config names (``analysis.fields_manifest``); None when
+    not configured or unreadable (then field payload versions are not checked, and several are ambiguous)."""
+    rel = _acfg(ctx).get('fields_manifest')
+    fm = ctx.reg.read_json(rel) if rel else None
+    entries = fm.get('fields') if isinstance(fm, dict) else None
+    if not isinstance(entries, list):
+        return None
+    return {e['name']: e.get('sha256') for e in entries if isinstance(e, dict) and isinstance(e.get('name'), str)}
+
+
+def _same_signal(m: dict, dsl: dict, fields: dict | None) -> bool:
+    """The entry is the report library's signal: its ``dsl_sha256`` is the library's for its id and, when a fields
+    manifest is pinned, every field payload SHA-256 it records (v2) is that manifest's."""
+    if m.get('dsl_sha256') != dsl.get(m['candidate_id']):
+        return False
+    fp = m.get('field_payload_sha256')
+    if fields is None or not fp:
+        return True
+    return isinstance(fp, dict) and all(fields.get(k) == v for k, v in fp.items())
+
+
+def _summary_signal_entries(ctx, ids, role_sha, dsl: dict, fields: dict | None) -> dict:
     """id -> (payload, meta) named by the TRAIN IC run's ``candidate_cache.entries[]`` (a v2 runner's summary.json:
-    the exact entry, v2 ``<id>.<dsl16>`` or a v1 entry read in place). Empty when absent or unusable."""
+    the exact entry, v2 ``<id>.<dsl16>`` or a v1 entry read in place) that is the report library's signal
+    (``_same_signal``). Empty when absent or unusable."""
     u = _acfg(ctx).get('u_pass')
     s = ctx.reg.read_json(f'{u}/summary.json') if u else None
     roles = s.get('roles') if isinstance(s, dict) else None
@@ -153,7 +187,7 @@ def _summary_signal_entries(ctx, ids, role_sha) -> dict:
             sidecar, payload = (ctx.reg.path(e[k].replace('\\', '/')) for k in ('sidecar', 'payload'))
             m = _signal_meta(ctx, sidecar, role_sha)
             if (m is not None and m['candidate_id'] == e['id'] and m.get('payload_sha256') == e.get('payload_sha256')
-                    and payload.name == m['payload'] and payload.is_file()):
+                    and payload.name == m['payload'] and payload.is_file() and _same_signal(m, dsl, fields)):
                 out[e['id']] = (payload, m)
     return out
 
@@ -170,29 +204,24 @@ def _signal_dirs(root: Path) -> list[Path]:
     return [x for d in tops for x in [d, *(f for f in subdirs(d) if f.name.startswith('fp_'))]]
 
 
-def _scanned_signal_entries(ctx, root: Path, ids, role_sha, lib_sha) -> tuple[dict, list]:
-    """id -> (payload, meta) by walking the cache DIR (v1 ``<id>.json``, v2 ``<id>.<dsl16>.json``). A v1 entry must be
-    recorded by the report's library (one path per id: another library's may be another DSL). A v2 entry is shared
-    across libraries by content key, so one recorded by the report's library wins, else a unique one is taken; an id
-    left with several (other DSLs / field payloads) is ambiguous and skipped rather than guessed."""
+def _scanned_signal_entries(ctx, root: Path, ids, role_sha, lib_sha, dsl: dict,
+                            fields: dict | None) -> tuple[dict, list]:
+    """id -> (payload, meta) by walking the cache DIR (v1 ``<id>.json``, v2 ``<id>.<dsl16>.json``). Every entry must be
+    the report library's signal (``_same_signal``: the library's DSL SHA-256 for the id, recomputed from the library
+    JSON, and the pinned field payloads when configured). The recording library proves nothing for a v2 entry (shared
+    by content key, it names only its first writer); a v1 entry must also be recorded by the report's library. An id
+    left with several entries (another VM identity or field payload version) is ambiguous and skipped, not guessed."""
     found = {}
     for d in _signal_dirs(root):
         for j in sorted(d.glob('*.json')):
             m = _signal_meta(ctx, j, role_sha)
-            if m is None or m['candidate_id'] not in ids:
+            if m is None or m['candidate_id'] not in ids or not _same_signal(m, dsl, fields):
                 continue
             if lib_sha and m['schema'] == SIGNAL_SCHEMAS[0] and m.get('library_sha256') != lib_sha:
                 continue
             found.setdefault(m['candidate_id'], []).append((d / m['payload'], m))
-    metas, ambiguous = {}, []
-    for i, hits in found.items():
-        own = [h for h in hits if lib_sha and h[1].get('library_sha256') == lib_sha]
-        pick = own if own else hits
-        if len(pick) == 1:
-            metas[i] = pick[0]
-        else:
-            ambiguous.append(i)
-    return metas, sorted(ambiguous)
+    metas = {i: hits[0] for i, hits in found.items() if len(hits) == 1}
+    return metas, sorted(i for i, hits in found.items() if len(hits) > 1)
 
 
 def an_sig_corr(ctx) -> dict:
@@ -205,10 +234,11 @@ def an_sig_corr(ctx) -> dict:
         raise FileNotFoundError('role manifest')
     nd, ni = int(role['dates']), int(role['instruments'])
     ids, theme, _, admitted = _ids(ctx)
+    dsl, fields = _library_dsl(ctx), _pinned_field_payloads(ctx)
     # v2 runner: the summary names each entry; else (v1 runner, or entries gone) walk the cache for the rest
-    metas, source, ambiguous = _summary_signal_entries(ctx, set(ids), role_sha), 'summary entries', []
+    metas, source, ambiguous = _summary_signal_entries(ctx, set(ids), role_sha, dsl, fields), 'summary entries', []
     if any(i not in metas for i in ids):
-        scanned, ambiguous = _scanned_signal_entries(ctx, root, set(ids) - set(metas), role_sha, lib_sha)
+        scanned, ambiguous = _scanned_signal_entries(ctx, root, set(ids) - set(metas), role_sha, lib_sha, dsl, fields)
         source = 'summary entries + cache scan' if metas else 'cache scan'
         metas.update(scanned)
     missing = [i for i in ids if i not in metas]
@@ -234,6 +264,8 @@ def an_sig_corr(ctx) -> dict:
     res['groups'] = [theme[i] for i in ids]
     res['stride'] = stride
     res['source'] = source
+    res['match'] = ('dsl_sha256 = the library DSL' + (' and field payloads = the pinned fields manifest'
+                                                       if fields is not None else ''))
     return res
 
 
@@ -926,7 +958,7 @@ def blk_corr(ctx, spec) -> str:
                f"members/day); rows in theme / roster order, values x100. Mean off-diagonal {C.fmt(res.get('mean'), '+.3f')}, "
                f"largest {C.fmt(res.get('max'), '+.2f')} ({res.get('max_pair')}), most negative {C.fmt(res.get('min'), '+.2f')} "
                f"({res.get('min_pair')}). Source: {_acfg(ctx)['candidate_cache']} payloads (raw signals, "
-               f"date-major f64) and the role member.u8.")
+               f"date-major f64; entries matched by {res.get('match', 'dsl_sha256')}) and the role member.u8.")
     else:
         cap = (f"IC-series correlation: correlation across {res['dates']} TRAIN decisions of the candidates' daily rank IC "
                f"at h = {res['horizon']} (pairwise complete); it measures whether two signals win and lose on the same "

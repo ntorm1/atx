@@ -52,15 +52,21 @@ field is copied from a prior fields directory instead of recomputed iff (``REUSE
 complete manifest bound to this very role (manifest, sessions, ids and member SHA-256), the field's prior entry has
 the same field id and the same formula id (``formula_id``: SHA-256 of the spec-level definition -- units, clock with
 the declared lag, staleness, source columns, definition, point-in-time flags, declared domain -- plus the field's
-``FORMULA_REVISION``), the same inputs (every prior source path lies under this run's source argument for the field's
-group and still hashes to the recorded SHA-256; a source without a file SHA-256 is never reused) and every field it
-depends on is reused too. Copied payload bytes are hashed and must equal the prior manifest's pin. Reused entries are
-the prior entries verbatim plus ``reused_from``; the manifest gains a ``reuse`` block. Without ``--reuse`` nothing in
-the output changes.
+``FORMULA_REVISION``), the same producing code (``producer_fingerprints``: the AST of the field group's builder
+functions and of every module-level definition they reach, docstrings dropped, compared with the code that produced
+the prior payload -- this builder when its LF SHA-256 matches, else its recorded git blob; unrecoverable code is never
+reused; grp_* fields also need the same SIC mapping table), the same inputs (every prior source path lies under this
+run's source argument for the field's group and still hashes to the recorded SHA-256; a source without a file SHA-256
+is never reused) and every field it depends on is reused too. Copied payload bytes are hashed and must equal the prior
+manifest's pin. Reused entries are the prior entries verbatim plus ``reused_from``, which names the code that
+produced the payload (never this builder unless it is the same code); the manifest gains a ``reuse`` block. Without
+``--reuse`` nothing in the output changes.
 """
 from __future__ import annotations
 
 import argparse
+import ast
+import copy
 import csv
 import datetime as dt
 import gzip
@@ -71,6 +77,7 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 
 import numpy as np
@@ -489,18 +496,31 @@ SV_FIELDS = {
 # then the short-volume field.
 ALL_FIELDS = {**FIELDS, **ISSUER_FIELDS, **SV_FIELDS}
 
-# Field reuse (--reuse). A field's formula id pins its spec-level definition; bump its revision here whenever its
-# computation changes without its registry text changing (otherwise --reuse would copy a stale payload).
+# Field reuse (--reuse). A field's formula id pins its spec-level definition and --reuse also keys on the producing
+# code (FIELD_PRODUCERS); bump a revision here only for a change neither shows (e.g. a vendor's changed semantics).
 FORMULA_REVISION: dict = {}
 FORMULA_DEFINITION_KEYS = ("units", "clock", "staleness", "source_columns", "definition", "point_in_time",
                            "non_pit_aspects")
 REUSE_RULE = ("a field is copied from the prior fields directory iff: the prior manifest is complete and bound to this "
               "role (manifest, sessions, ids, member SHA-256); same field id; same formula id (SHA-256 of canonical "
               "{field, revision, units, clock (declared lag), staleness, source_columns, definition, point_in_time, "
-              "non_pit_aspects, domain}); same inputs (every prior source path lies under this run's source argument "
+              "non_pit_aspects, domain}); same producing code (SHA-256 of the AST, docstrings dropped, of the field "
+              "group's builder functions and every module-level definition they reach, for the code that produced "
+              "the prior payload -- this builder when its code_sha256_lf matches, else its code_git_blob_sha1 from "
+              "git, re-hashed to code_sha256_lf; not recoverable -> recomputed) and, for grp_* fields, the same SIC "
+              "mapping table SHA-256; same inputs (every prior source path lies under this run's source argument "
               "for the field's group and re-hashes to its recorded SHA-256); every field it depends on is reused; "
               "copied bytes re-hash to the prior pin")
 REUSE_SOURCE_CHECK_KEYS = {"th": "tickerhistory", "lake": "lake", "issuer": "issuer", "finra_sv": "finra_short_volume"}
+# The producing code of each field group (R1 M-6): its builder functions; producer_fingerprints adds every
+# module-level definition they reach. run() and main() orchestrate and are never part of a producer.
+FIELD_PRODUCERS = {"role": ("market_return_field",), "finra": ("read_schedule", "finra_field"),
+                   "th": ("tickerhistory_fields",), "lake": ("lake_fields",), "issuer": ("issuer_fields",),
+                   "finra_sv": ("sv_field",)}
+PRODUCER_ORCHESTRATION = frozenset({"run", "main"})
+REUSE_CODE_RULE = ("the manifest's code_sha256 is the builder of this manifest and of the computed fields; a reused "
+                   "payload was produced by the code named in its reused_from (code_sha256_lf, code_git_blob_sha1, "
+                   "producer_sha256), carried unchanged through chained reuse")
 
 
 def canonical(value) -> str:
@@ -2433,7 +2453,7 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         "fields": entries, "files": files,
         "excluded_source_columns": EXCLUDED_SOURCE_COLUMNS,
         "source_checks": source_checks,
-        **code_identity(Path(__file__)),
+        **code_identity_of(builder_source()),
         "historical_vintage_verified": False, "common_stock_verified": False,
     }
     revisions = {f: FORMULA_REVISION[f] for f in selected if FORMULA_REVISION.get(f, 1) != 1}
@@ -2481,6 +2501,170 @@ def _norm(path) -> str:
 def _under(path: str, root) -> bool:
     r = _norm(root)
     return path == r or path.startswith(r.rstrip("\\/") + os.sep)
+
+
+def builder_source() -> bytes:
+    """This builder's source bytes: what the manifest's code identity pins and --reuse compares producers with."""
+    return Path(__file__).read_bytes()
+
+
+def code_identity_of(raw: bytes) -> dict:
+    """``code_identity`` of source bytes (kept apart: code_identity is part of the issuer producer's code)."""
+    lf = raw.replace(b"\r\n", b"\n")
+    return {"code_sha256": sha_bytes(raw), "code_sha256_lf": sha_bytes(lf),
+            "code_git_blob_sha1": hashlib.sha1(b"blob %d\0" % len(lf) + lf).hexdigest()}
+
+
+def git_blob(blob_sha1) -> bytes | None:
+    """The blob ``blob_sha1`` of this module's git repository, or None (no git, unknown blob)."""
+    if not isinstance(blob_sha1, str) or not re.fullmatch(r"[0-9a-f]{40}", blob_sha1):
+        return None
+    try:
+        done = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "cat-file", "blob", blob_sha1],
+                              capture_output=True, timeout=120, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def producer_source(ident: dict) -> tuple[bytes | None, str]:
+    """(LF source, how it was found) of the builder named by a code identity, or (None, why not)."""
+    lf_sha = ident.get("code_sha256_lf")
+    if not isinstance(lf_sha, str):
+        return None, "no recorded code_sha256_lf"
+    current = builder_source().replace(b"\r\n", b"\n")
+    if sha_bytes(current) == lf_sha:
+        return current, "this builder (same code_sha256_lf)"
+    blob = git_blob(ident.get("code_git_blob_sha1"))
+    if blob is None:
+        return None, "code_sha256_lf differs from this builder and its git blob is not available"
+    lf = blob.replace(b"\r\n", b"\n")
+    if sha_bytes(lf) != lf_sha:
+        return None, "the recorded git blob does not hash to the recorded code_sha256_lf"
+    return lf, f"git blob {ident['code_git_blob_sha1']}"
+
+
+def legacy_origin(entry: dict, name: str) -> dict:
+    """Code identity of the builder of a payload reused before --reuse recorded it (a reused_from without
+    code_git_blob_sha1): follow the reused_from records through manifests that still hash to their pins, to the one
+    that built the payload (or a record that names its code); {} when the chain breaks."""
+    rec = entry.get("reused_from")
+    for _ in range(16):
+        if not isinstance(rec, dict) or not isinstance(rec.get("dir"), str):
+            return {}
+        try:
+            blob = (Path(rec["dir"]) / "manifest.json").read_bytes()
+        except OSError:
+            return {}
+        if sha_bytes(blob) != rec.get("manifest_sha256"):
+            return {}
+        m = json.loads(blob)
+        e = next((x for x in m.get("fields") or [] if isinstance(x, dict) and x.get("name") == name), None)
+        if e is None:
+            return {}
+        if not isinstance(e.get("reused_from"), dict):
+            return {k: m.get(k) for k in ("code_sha256", "code_sha256_lf", "code_git_blob_sha1")}
+        rec = e["reused_from"]
+        if rec.get("code_git_blob_sha1"):
+            return {k: rec.get(k) for k in ("code_sha256", "code_sha256_lf", "code_git_blob_sha1")}
+    return {}
+
+
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
+           ast.GeneratorExp)
+
+
+def _bound_names(stmt) -> set:
+    """Module-level names a top-level statement binds or mutates (a store, an item/attribute store or a method call
+    on the name); nested scopes (defs, lambdas, comprehensions) bind their own names."""
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {stmt.name}
+    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+        return {(a.asname or a.name).split(".")[0] for a in stmt.names}
+    names, todo = set(), [stmt]
+    while todo:
+        n = todo.pop()
+        if isinstance(n, _SCOPES):
+            continue
+        base = None
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            names.add(n.id)
+        elif isinstance(n, (ast.Subscript, ast.Attribute)) and isinstance(n.ctx, ast.Store):
+            base = n.value
+        elif isinstance(n, ast.Expr) and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Attribute):
+            base = n.value.func.value
+        while isinstance(base, (ast.Subscript, ast.Attribute)):
+            base = base.value
+        if isinstance(base, ast.Name):
+            names.add(base.id)
+        todo.extend(ast.iter_child_nodes(n))
+    return names
+
+
+def _free_names(stmt) -> set:
+    """Names a top-level statement reads (for a def or class: minus the names bound inside it)."""
+    loads = {n.id for n in ast.walk(stmt) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return loads
+    local = set()
+    for n in ast.walk(stmt):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            local.add(n.id)
+        elif isinstance(n, ast.arg):
+            local.add(n.arg)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n is not stmt:
+            local.add(n.name)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            local.update((a.asname or a.name).split(".")[0] for a in n.names)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            local.add(n.name)
+    return loads - local
+
+
+def _code_dump(stmt) -> str:
+    """The statement's AST without docstrings (no positions: comments and formatting do not count)."""
+    node = copy.deepcopy(stmt)
+    for n in ast.walk(node):
+        if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body
+                and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)
+                and isinstance(n.body[0].value.value, str)):
+            n.body = n.body[1:] or [ast.Pass()]
+    return ast.dump(node)
+
+
+def producer_fingerprints(source: bytes) -> dict:
+    """{field group: SHA-256 of its producing code} of a builder source (R1 M-6): the group's FIELD_PRODUCERS and
+    every module-level definition (function, class, constant, import) they reach by name, each as its AST without
+    docstrings. None for a group whose builder functions the source lacks; ValueError when it does not parse."""
+    try:
+        tree = ast.parse(source.decode("utf-8"))
+    except (SyntaxError, UnicodeDecodeError, ValueError) as e:
+        raise ValueError(f"builder source does not parse ({type(e).__name__})") from None
+    bindings, dumps = {}, {}
+    for stmt in tree.body:
+        for name in _bound_names(stmt):
+            bindings.setdefault(name, []).append(stmt)
+    out = {}
+    for group, entries in FIELD_PRODUCERS.items():
+        if any(e not in bindings for e in entries):
+            out[group] = None
+            continue
+        seen, todo = set(), list(entries)
+        while todo:
+            name = todo.pop()
+            if name in seen or name in PRODUCER_ORCHESTRATION or name not in bindings:
+                continue
+            seen.add(name)
+            for stmt in bindings[name]:
+                todo.extend(_free_names(stmt))
+        closure = []
+        for name in sorted(seen):
+            for stmt in bindings[name]:
+                if id(stmt) not in dumps:
+                    dumps[id(stmt)] = _code_dump(stmt)
+            closure.append([name, [dumps[id(s)] for s in bindings[name]]])
+        out[group] = sha_bytes(canonical({"group": group, "closure": closure}).encode("utf-8"))
+    return out
 
 
 def inputs_sha256(entry: dict, role_sha256: str) -> str:
@@ -2565,6 +2749,36 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
                 return f"source {x['path']} changed (SHA-256 or size differs from the prior record)"
         return None
 
+    current_fp = producer_fingerprints(builder_source().replace(b"\r\n", b"\n"))
+    producers = {}   # code_sha256_lf -> (fingerprints or None, how the producing code was found)
+    sic_table = []   # this builder's SIC mapping table SHA-256, computed once when a grp_* field asks
+
+    def producer_of(entry: dict, name: str):
+        """(code identity, group fingerprints or None, how) of the code that produced a prior entry's payload: its
+        reused_from record for a payload the prior run itself reused (an older record without a blob id: the chain,
+        legacy_origin), else the prior manifest's builder."""
+        origin = entry.get("reused_from") if isinstance(entry.get("reused_from"), dict) else prior
+        ident = {k: origin.get(k) for k in ("code_sha256", "code_sha256_lf", "code_git_blob_sha1")}
+        if origin is not prior and not ident["code_git_blob_sha1"]:
+            ident = legacy_origin(entry, name) or ident
+        key = ident["code_sha256_lf"]
+        if key not in producers:
+            src, how = producer_source(ident)
+            fps = None
+            if src is not None:
+                try:
+                    fps = producer_fingerprints(src)
+                except ValueError as err:
+                    how = str(err)
+            producers[key] = (fps, how)
+        return (ident, *producers[key])
+
+    def sic_table_ok() -> bool:
+        if not sic_table:
+            sic_table.append(sic_mapping()[2]["table_sha256"])
+        prior_sic = (((prior.get("source_checks") or {}).get("issuer") or {}).get("sic_mapping") or {})
+        return prior_sic.get("table_sha256") == sic_table[0]
+
     reasons, candidates = {}, {}
     for name in selected:
         e = entries.get(name)
@@ -2585,11 +2799,22 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
         if ALL_FIELDS[name].get("lagged") and e.get("fund_lag_sessions") not in (None, lag):
             reasons[name] = "declared fund lag differs"
             continue
+        group = ALL_FIELDS[name]["group"]
+        ident, fps, how = producer_of(e, name)
+        if fps is None:
+            reasons[name] = f"producing code not recoverable: {how}"
+            continue
+        if fps.get(group) is None or fps[group] != current_fp[group]:
+            reasons[name] = f"producing code differs (builder closure of group {group}; prior code from {how})"
+            continue
+        if ALL_FIELDS[name].get("kind") == "grp" and not sic_table_ok():
+            reasons[name] = "SIC mapping table differs (atx_db.reference_classifications)"
+            continue
         why = source_ok(name, e)
         if why:
             reasons[name] = why
             continue
-        candidates[name] = (e, pin, want)
+        candidates[name] = (e, pin, want, ident, fps[group], how)
     changed = True
     while changed:  # a reused field's inputs include the fields it depends on: those must be reused too
         changed = False
@@ -2603,13 +2828,16 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
     for name in selected:
         if name not in candidates:
             continue
-        e, pin, fid = candidates[name]
+        e, pin, fid, ident, producer, how = candidates[name]
         digest, size = _copy_payload(prior_dir / f"{name}.f64", output / f"{name}.f64", hardlink, budget)
         if digest != pin["sha256"] or size != pin["bytes"]:
             raise ValueError(f"--reuse: prior payload {name}.f64 does not match its manifest pin (corrupt prior dir)")
         entry = json.loads(canonical(e))
+        # the code that produced the payload (the origin through chained reuse), never this builder's identity
         entry["reused_from"] = {"dir": str(prior_dir.resolve()), "manifest_sha256": prior_manifest_sha,
-                                "code_sha256_lf": prior.get("code_sha256_lf"), "formula_id": fid,
+                                "code_sha256_lf": ident["code_sha256_lf"], "code_sha256": ident["code_sha256"],
+                                "code_git_blob_sha1": ident["code_git_blob_sha1"], "producer_sha256": producer,
+                                "producer_code": how, "formula_id": fid,
                                 "inputs_sha256": inputs_sha256(e, role.manifest_sha256), "payload_sha256": digest,
                                 "mode": "hardlink" if hardlink else "copy"}
         reused[name] = (entry, {"bytes": size, "sha256": digest})
@@ -2627,7 +2855,9 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
         elif key in prior_checks and any(n in reused for n in names):
             partial[key] = prior_checks[key]  # this run's group check covers only the recomputed fields
     block = {"from": str(prior_dir.resolve()), "manifest_sha256": prior_manifest_sha,
-             "code_sha256_lf": prior.get("code_sha256_lf"), "rule": REUSE_RULE,
+             "code_sha256_lf": prior.get("code_sha256_lf"), "rule": REUSE_RULE, "code_rule": REUSE_CODE_RULE,
+             "producing_code_sha256_lf": {n: reused[n][0]["reused_from"]["code_sha256_lf"]
+                                          for n in selected if n in reused},
              "mode": "hardlink" if hardlink else "copy",
              "reused": [n for n in selected if n in reused], "computed": [n for n in selected if n not in reused],
              "not_reused": {n: reasons[n] for n in selected if n in reasons},

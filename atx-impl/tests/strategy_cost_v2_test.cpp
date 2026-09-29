@@ -436,6 +436,52 @@ TEST(NavV7Hook, AimV6DefaultParametersChangeThePlanButKeepTheBookDollarNeutral) 
   }
   EXPECT_TRUE(differs);
 }
+// R1 I-1: under --capacity-curve a v6 capacity book prices c_i with its own scaled law, i.e. the
+// NAV-m book's c_i. x1 is the main pass's S2 book bit for bit, x4 at V is the v6 book at 4V
+// divided by 4, and the base-scale pricing (the main pass's S2 law on the x4 book) is not.
+TEST(NavV7Hook, AimV6CapacityBookIsTheNavMultipleBookAndX1IsTheMainPass) {
+  const Role role(40, 12, 23);
+  const auto books = cv::capacity_scenarios(s2());
+  ASSERT_EQ(books[3].id, "capacity-x4-v1");
+  v7::NavV7Options o; o.aim_v6 = true; o.capacity = true;
+  o.v6.band_b = aim_v5().dust_multiple; // else defaults: kappa 1, band exponent 1/3, clip .5,1.5
+  v7::ScopedNavExtension extension(o);
+  const auto pass = [&](v7::NavV7Pass p, const st::NavScenario& s, f64 nav) {
+    extension.begin_run(p); // a fresh c_ref history per replayed book
+    return st::replay_nav(role.nav(), nav_config(s, nav));
+  };
+  const auto main = pass(v7::NavV7Pass::Main, s2(), 1e8);
+  const auto genuine = pass(v7::NavV7Pass::Main, s2(), 4e8);          // the NAV-4 v6 book
+  const auto unit = pass(v7::NavV7Pass::Capacity, books[1], 1e8);
+  const auto x4 = pass(v7::NavV7Pass::Capacity, books[3], 1e8);
+  const auto base_priced = pass(v7::NavV7Pass::Main, books[3], 1e8); // c_i at base scale (pre-fix)
+  ASSERT_TRUE(main && genuine && unit && x4 && base_priced);
+  expect_same_days(*unit, *main);
+  ASSERT_EQ(x4->days.size(), genuine->days.size());
+  ASSERT_EQ(base_priced->days.size(), genuine->days.size());
+  usize capped = 0, rebalances = 0;
+  f64 base_gap = 0;
+  bool plan_differs = false;
+  for (usize t = 0; t < genuine->days.size(); ++t) {
+    const auto& g = genuine->days[t];
+    const auto& s = x4->days[t];
+    const auto& b = base_priced->days[t];
+    EXPECT_NEAR(s.net_return, g.net_return, 1e-12 + 1e-9 * std::abs(g.net_return)) << t;
+    EXPECT_NEAR(4.0 * s.trade_cost_dollars, g.trade_cost_dollars,
+                1e-6 + 1e-9 * g.trade_cost_dollars) << t;
+    EXPECT_NEAR(s.planned_gross, g.planned_gross, 1e-12 + 1e-9 * g.planned_gross) << t;
+    EXPECT_EQ(s.capped_fills, g.capped_fills) << t;
+    EXPECT_EQ(s.construction.banded_names, g.construction.banded_names) << t;
+    capped += g.capped_fills; rebalances += g.decision ? 1U : 0U;
+    base_gap = std::max(base_gap, std::abs(b.net_return - g.net_return));
+    plan_differs = plan_differs || bits(b.planned_gross) != bits(s.planned_gross) ||
+                   bits(b.planned_turnover) != bits(s.planned_turnover);
+  }
+  EXPECT_GT(capped, 0U);
+  EXPECT_GT(rebalances, 0U);
+  EXPECT_TRUE(plan_differs);
+  EXPECT_GT(base_gap, 1e-7); // the base-scale c_i replays another construction than the NAV-4 book
+}
 // The CLI path (parse_nav_v7_args) of the pre-registered identity cell: kappa 0, band exponent
 // 0, clip 1,1 and the default band b = --dust-multiple replay aim-partial-v5 bit for bit.
 atx::core::Result<v7::NavV7Command> parse_v7(std::vector<std::string> args) {

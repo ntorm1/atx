@@ -142,7 +142,9 @@ struct Band {
 [[nodiscard]] atx::f64 sample_kurtosis(std::span<const atx::f64> z) noexcept;
 [[nodiscard]] Band bias_band(atx::usize t) noexcept;                       // 1 +- sqrt(2/T)
 [[nodiscard]] Band kurtosis_band(atx::usize t, atx::f64 kurtosis) noexcept; // 1 +- 1.96 sqrt((k-1)/(4T))
-// b over each trailing window of `window` finite z (NaN until full), one value per input.
+// b over each trailing window of `window` entries (NaN until the first full window), one value
+// per input; a non-finite entry inside a window is skipped by bias_statistic, so that window's b
+// uses fewer values. The bias harness only ever records finite z.
 [[nodiscard]] std::vector<atx::f64> rolling_bias(std::span<const atx::f64> z, atx::usize window);
 
 // ---- in-memory driver ---------------------------------------------------------------------
@@ -199,6 +201,12 @@ public:
 // fixed per instrument id), "factor" (each factor's return over its prior forecast vol) and
 // "book" (a supplied weights file). z_t = realized return over (t-1, t] / forecast vol at t-1
 // (x' F x + sum w^2 D). A missing return counts 0 and is reported.
+// Complete forecasts only (R1 M-5): an observation whose portfolio holds a name without a
+// forecast (no exposure row or specific variance) or has a nonzero exposure to a factor without
+// a forecast (fewer than min_factor_history returns) is excluded whole, never priced by a partial
+// x'Fx or realized on a sub-book. Exclusions before a series' first kept observation are its
+// warm-up; later ones are counted (dropped_factor_exposures, uncovered_name_returns) and a
+// series whose dropped share exceeds max_dropped_share is refused (no b is reported for it).
 struct BookWeight {
   atx::i64 session{};
   atx::u64 instrument_id{};
@@ -208,8 +216,18 @@ struct BiasSeries {
   std::string family, name;
   std::vector<atx::i64> sessions;
   std::vector<atx::f64> forecast_vol, realized, z;
-  atx::usize missing_returns{}, uncovered_names{};
+  atx::usize missing_returns{}, uncovered_names{}; // name-sessions (uncovered: book only)
+  // Excluded observations (whole portfolio-sessions): before the first kept one (warm-up), then
+  // by cause: an exposure to an unforecast factor, or a held name without a forecast.
+  atx::usize warmup_excluded{}, dropped_factor_exposures{}, uncovered_name_returns{};
 };
+inline constexpr atx::f64 max_dropped_share = 0.05;
+// (dropped_factor_exposures + uncovered_name_returns) / (those + kept observations); 0 if none.
+[[nodiscard]] atx::f64 dropped_share(const BiasSeries& s) noexcept;
+enum class SeriesStatus : atx::u8 { Ok = 0, Refused, Empty };
+// Empty: no kept observation; Refused: dropped_share > max_dropped_share; else Ok.
+[[nodiscard]] SeriesStatus series_status(const BiasSeries& s) noexcept;
+[[nodiscard]] const char* series_status_name(SeriesStatus s) noexcept;
 class BiasHarness final : public RiskSink {
 public:
   // book: optional, any order; weights of sessions absent from the panel are refused by run.
@@ -219,14 +237,22 @@ public:
   [[nodiscard]] const std::vector<BiasSeries>& series() const noexcept { return series_; }
 
 private:
+  enum class Excluded : atx::u8 { None = 0, FactorExposure, UncoveredName };
   struct Held {
     std::vector<std::pair<atx::usize, atx::f64>> weights;
     atx::f64 vol{};
     bool live{};
+    Excluded excluded{Excluded::None}; // formed, but without a complete forecast
+  };
+  struct Forecast {
+    atx::f64 vol{};
+    Excluded excluded{Excluded::None};
   };
   void realize(const RiskDay& day);
   void form(const RiskDay& day);
-  [[nodiscard]] atx::f64 forecast_vol(const RiskDay& day, const Held& held, atx::usize& uncovered) const;
+  static void apply_forecast(Held& held, Forecast forecast) noexcept;
+  static void exclude(BiasSeries& s, Excluded why) noexcept;
+  [[nodiscard]] Forecast forecast_vol(const RiskDay& day, const Held& held) const;
   const RiskPanel& panel_;
   atx::usize random_{};
   atx::u64 seed_{};

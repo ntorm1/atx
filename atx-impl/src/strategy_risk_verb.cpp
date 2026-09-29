@@ -17,12 +17,15 @@
 #include <optional>
 #include <ostream>
 #include <set>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "build_provenance.hpp"
+#include "stage_data_provenance.hpp"
 #include "strategy_risk_model.hpp"
 
 namespace atx::impl::strategy::risk {
@@ -34,6 +37,8 @@ constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr u64 max_manifest_bytes = 16ULL << 20;
 constexpr usize max_dates = 4096, max_names = 20000;
 constexpr const char* role_schema = "atx.recent-research-role/v1";
+// 2023-01-01 00:00 UTC: the sealed VAL/holdout begins (R1 m-5). A role reaching it needs an owner.
+constexpr i64 seal_begin_ns = 1'672'531'200LL * 1'000'000'000LL;
 constexpr const char* fields_schema = "atx.research-role-fields/v1";
 // Bytes per cell the run holds: role prices (24) and masks (2), cap (8), industry (1), seven
 // f32 descriptors (28), three transient f64 fields while deriving (24), the residual history
@@ -433,20 +438,53 @@ Json finite_or_null(f64 x) { return std::isfinite(x) ? Json(x) : Json(nullptr); 
 Json band_json(Band b) { return Json::array({finite_or_null(b.lo), finite_or_null(b.hi)}); }
 bool inside(f64 b, Band band) { return std::isfinite(b) && b >= band.lo && b <= band.hi; }
 
-// USE4 Appendix A summary of one family: full-sample b per series against 1 +- sqrt(2/T) and
-// the kurtosis-widened band (pooled kurtosis of the family's z), and rolling 63/252 windows.
-Json family_summary(const std::vector<const BiasSeries*>& family) {
+// Exclusion counts and status of one family (R1 M-5): series with no kept observation are
+// empty, series whose dropped share exceeds max_dropped_share are refused; only the rest (ok)
+// are summarised. Family status: ok (none refused), partial, refused (none ok) or empty.
+Json family_exclusions(const std::vector<const BiasSeries*>& family,
+                       std::vector<const BiasSeries*>& ok) {
+  Json refused = Json::array();
+  usize empty = 0, kept = 0, warmup = 0, factor_drops = 0, name_drops = 0;
+  for (const auto* s : family) {
+    kept += s->z.size(); warmup += s->warmup_excluded;
+    factor_drops += s->dropped_factor_exposures; name_drops += s->uncovered_name_returns;
+    switch (series_status(*s)) {
+    case SeriesStatus::Ok: ok.push_back(s); break;
+    case SeriesStatus::Refused: refused.push_back(s->name); break;
+    case SeriesStatus::Empty: ++empty; break;
+    }
+  }
+  const usize dropped = factor_drops + name_drops;
+  const char* status = refused.empty() ? (ok.empty() ? "empty" : "ok")
+                                       : (ok.empty() ? "refused" : "partial");
+  const usize total = dropped + kept;
+  const f64 share = total > 0 ? static_cast<f64>(dropped) / static_cast<f64>(total) : 0.0;
+  const usize refused_count = refused.size();
+  return Json{{"status", status}, {"series_ok", ok.size()}, {"series_refused", refused_count},
+      {"series_empty", empty}, {"refused_series", std::move(refused)}, {"observations", kept},
+      {"warmup_excluded", warmup}, {"dropped_factor_exposures", factor_drops},
+      {"uncovered_name_returns", name_drops}, {"dropped_share", share},
+      {"max_dropped_share", max_dropped_share}};
+}
+
+// USE4 Appendix A summary of one family over its ok series: full-sample b per series against
+// 1 +- sqrt(2/T) and the kurtosis-widened band (pooled kurtosis of those series' z), and
+// rolling 63/252 windows; plus the family's exclusion counts and status.
+Json family_summary(const std::vector<const BiasSeries*>& all) {
+  std::vector<const BiasSeries*> family;
+  Json out = family_exclusions(all, family);
+  usize missing = 0, uncovered = 0;
+  for (const auto* s : all) { missing += s->missing_returns; uncovered += s->uncovered_names; }
   std::vector<f64> pooled;
   for (const auto* s : family) pooled.insert(pooled.end(), s->z.begin(), s->z.end());
   const f64 kurtosis = sample_kurtosis(pooled);
   std::vector<f64> full;
-  usize in_band = 0, in_kband = 0, missing = 0, uncovered = 0;
+  usize in_band = 0, in_kband = 0;
   for (const auto* s : family) {
     const f64 b = bias_statistic(s->z);
     full.push_back(b);
     in_band += inside(b, bias_band(s->z.size())) ? 1U : 0U;
     in_kband += inside(b, kurtosis_band(s->z.size(), kurtosis)) ? 1U : 0U;
-    missing += s->missing_returns; uncovered += s->uncovered_names;
   }
   Json rolling = Json::object();
   for (const usize window : {usize{63}, usize{252}}) {
@@ -472,12 +510,15 @@ Json family_summary(const std::vector<const BiasSeries*>& family) {
   f64 sum = 0; usize count = 0;
   for (const f64 b : full)
     if (std::isfinite(b)) { sum += b; ++count; }
-  return Json{{"series", family.size()}, {"pooled_kurtosis", finite_or_null(kurtosis)},
-      {"full_sample", {{"b_mean", count ? Json(sum / static_cast<f64>(count)) : Json(nullptr)},
-                       {"b_median", finite_or_null(median_of(full))},
-                       {"series_in_band", in_band}, {"series_in_kurtosis_band", in_kband}}},
-      {"rolling", std::move(rolling)}, {"missing_returns", missing},
-      {"uncovered_book_names", uncovered}};
+  out["series"] = all.size();
+  out["pooled_kurtosis"] = finite_or_null(kurtosis);
+  out["full_sample"] = Json{{"b_mean", count ? Json(sum / static_cast<f64>(count)) : Json(nullptr)},
+                            {"b_median", finite_or_null(median_of(full))},
+                            {"series_in_band", in_band}, {"series_in_kurtosis_band", in_kband}};
+  out["rolling"] = std::move(rolling);
+  out["missing_returns"] = missing;
+  out["uncovered_book_names"] = uncovered;
+  return out;
 }
 
 co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harness, Json& files,
@@ -498,11 +539,21 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
   if (!csv) return co::Err(co::ErrorCode::IoError, "risk: bias.csv");
   Json fam = Json::object();
   for (const auto& [name, family] : families) fam[name] = family_summary(family);
-  summary = Json{{"schema", "atx.risk-bias/v1"},
+  summary = Json{{"schema", "atx.risk-bias/v2"},
       {"definition", "z_t = realized return over (t-1, t] / forecast vol at t-1 (x'Fx + sum "
                      "w^2 D); bias statistic b = sample SD of z over a window of T; band 1 +- "
                      "sqrt(2/T); kurtosis-widened band 1 +- 1.96 sqrt((k-1)/(4T)) with k the "
                      "family's pooled kurtosis (USE4 Appendix A, asymptotic)"},
+      {"exclusion_rule", "complete forecasts only: an observation whose portfolio holds a name "
+                         "without a forecast (no exposure row or specific variance) or has a "
+                         "nonzero exposure to a factor without a forecast (< min_factor_history "
+                         "returns) is excluded whole, never priced by a partial x'Fx or realized "
+                         "on a sub-book; exclusions before a series' first kept observation are "
+                         "warmup_excluded, later ones dropped_factor_exposures / "
+                         "uncovered_name_returns; a series whose dropped share (dropped / "
+                         "(dropped + kept)) exceeds max_dropped_share is refused and, like an "
+                         "empty series, left out of every b statistic (bias.csv keeps its rows)"},
+      {"max_dropped_share", max_dropped_share},
       {"families", std::move(fam)}};
   const std::string text = summary.dump(2) + "\n";
   std::ofstream js(dir / "bias_summary.json", std::ios::binary);
@@ -553,28 +604,29 @@ Json recipe_json(const RiskModelConfig& c) {
 
 struct RiskArgs {
   std::string role, role_sha, fields, fields_sha, output, book, book_sha;
+  std::string unseal; // --unseal OWNER: the owner who admits a role reaching the seal
   usize random{64};
   u64 seed{7}, max_bytes{1'400'000'000ULL};
   ExposureEmit emit{ExposureEmit::Last};
 };
 
-co::Status run(const RiskArgs& a, std::ostream& progress) {
+co::Status check_args(const RiskArgs& a) {
   if (a.role.empty() || a.fields.empty() || a.output.empty())
     return co::Err(co::ErrorCode::InvalidArgument, "risk: --role, --fields and --output are required");
   if (a.book.empty() != a.book_sha.empty())
     return co::Err(co::ErrorCode::InvalidArgument, "risk: --book-weights and its SHA go together");
   if (a.random > 1024) return co::Err(co::ErrorCode::InvalidArgument, "risk: at most 1024 random portfolios");
-  const RiskModelConfig cfg{};
-  ATX_TRY_VOID(validate_config(cfg));
-  Inputs in;
-  ATX_TRY_VOID(load_role(a.role, a.role_sha, a.max_bytes, in));
-  ATX_TRY(auto fields, open_fields(a.fields, a.fields_sha, a.role, a.role_sha, in));
-  ATX_TRY_VOID(derive(fields, in));
-  std::vector<BookWeight> book;
-  if (!a.book.empty()) { ATX_TRY(book, load_book(a.book, a.book_sha)); }
-  const auto dir = std::filesystem::path(a.output);
-  if (!std::filesystem::create_directory(dir))
-    return co::Err(co::ErrorCode::AlreadyExists, "risk: output must not exist");
+  return co::Ok();
+}
+// The TRAIN/seal guard (R1 m-5): a role whose sessions reach 2023-01-01 is refused unless an
+// owner admits it by name (--unseal OWNER, recorded in the manifest). Book weights must lie in
+// the role's sessions (BiasHarness), so the role bounds them too.
+co::Status check_seal(std::span<const i64> sessions, const std::string& owner) {
+  if (sessions.empty() || sessions.back() < seal_begin_ns || !owner.empty()) return co::Ok();
+  return co::Err(co::ErrorCode::InvalidArgument, "risk: the role reaches 2023-01-01 (sealed "
+                                                 "VAL/holdout); refused without --unseal OWNER");
+}
+RiskPanel panel_of(const Inputs& in) {
   RiskPanel panel;
   panel.dates = in.dates; panel.instruments = in.names;
   panel.sessions = in.sessions; panel.ids = in.ids;
@@ -582,24 +634,42 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
   panel.present = in.present; panel.member = in.member; panel.cap = in.cap;
   panel.industry = in.industry;
   for (usize d = 0; d < descriptor_count; ++d) panel.descriptors[d] = in.descriptors[d];
-  FileSink files_sink(dir, panel, a.emit);
-  BiasHarness harness(panel, a.random, a.seed, book);
-  std::array<RiskSink*, 2> sinks{&files_sink, &harness};
-  ATX_TRY_VOID(run_risk_model(panel, cfg, sinks));
-  Json files = Json::object();
-  ATX_TRY_VOID(files_sink.close(files));
-  Json bias;
-  ATX_TRY_VOID(write_bias(dir, harness, files, bias));
+  return panel;
+}
+// The executable and build that wrote the outputs (R1 m-16): the running image's SHA-256
+// (null when it cannot be hashed) and the configure-time engine git SHA.
+Json producer_json() {
+  const auto exe = current_executable_sha256();
+  return Json{{"executable_sha256", exe && !exe->empty() ? Json(*exe) : Json(nullptr)},
+              {"engine_git_sha", std::string(build_engine_git_sha())}};
+}
+void print_bias(std::ostream& progress, const Json& bias) {
+  for (const auto& item : bias.at("families").items()) {
+    const Json& f = item.value();
+    progress << "risk bias " << item.key() << ": " << f.at("status").get<std::string>()
+             << " (series ok " << f.at("series_ok") << ", refused " << f.at("series_refused")
+             << ", empty " << f.at("series_empty") << "); observations " << f.at("observations")
+             << ", dropped_factor_exposures " << f.at("dropped_factor_exposures")
+             << ", uncovered_name_returns " << f.at("uncovered_name_returns")
+             << ", warmup_excluded " << f.at("warmup_excluded") << ", dropped share "
+             << f.at("dropped_share") << " (max " << max_dropped_share << ")\n";
+  }
+}
+Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const RiskModelConfig& cfg,
+                   const Json& bias, Json run_stats, Json files) {
   Json descriptors_used = Json::array();
   for (usize d = 0; d < descriptor_count; ++d)
     if (!in.descriptors[d].empty()) descriptors_used.push_back(descriptor_names[d]);
-  Json manifest{{"schema", "atx.risk-model/v1"}, {"status", "complete"},
+  return Json{{"schema", "atx.risk-model/v1"}, {"status", "complete"},
       {"role", {{"path", a.role}, {"manifest_sha256", a.role_sha}}},
       {"fields", {{"path", a.fields}, {"manifest_sha256", a.fields_sha},
                   {"fields_used", in.fields_used}}},
       {"book_weights", a.book.empty() ? Json(nullptr)
                                       : Json{{"path", a.book}, {"sha256", a.book_sha},
-                                             {"rows", book.size()}}},
+                                             {"rows", book_rows}}},
+      {"seal", {{"begin", "2023-01-01"}, {"role_last_session_ns", in.sessions.back()},
+                {"unseal_owner", a.unseal.empty() ? Json(nullptr) : Json(a.unseal)}}},
+      {"producer", producer_json()},
       {"geometry", {{"dates", in.dates}, {"instruments", in.names}, {"factors", factor_count},
                     {"styles", style_count}}},
       {"role_masks", {{"member_cells", in.member_cells},
@@ -610,9 +680,10 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
                                "non-members get exposures and specific risk, never enter a fit"}}},
       {"cap_rule", in.cap_rule}, {"descriptors_used", std::move(descriptors_used)},
       {"unavailable", in.unavailable}, {"recipe", recipe_json(cfg)},
-      {"bias_harness", {{"random_portfolios", a.random}, {"seed", a.seed},
+      {"bias_harness", {{"schema", bias.at("schema")}, {"random_portfolios", a.random},
+                        {"seed", a.seed}, {"max_dropped_share", max_dropped_share},
                         {"families", bias.at("families")}}},
-      {"run", files_sink.run_stats()},
+      {"run", std::move(run_stats)},
       {"layouts", {{"factor_covariance.f64", "little-endian f64, dates x factors x factors "
                                             "row-major, forecast at the session's close for the "
                                             "next session, NaN where not forecast"},
@@ -623,12 +694,40 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
                    {"industry_slot.u8", "(--emit-exposures all) dates x instruments, FF49 id - 1, "
                                         "49 residual, 255 no exposure row"}}},
       {"files", std::move(files)}};
+}
+
+co::Status run(const RiskArgs& a, std::ostream& progress) {
+  ATX_TRY_VOID(check_args(a));
+  const RiskModelConfig cfg{};
+  ATX_TRY_VOID(validate_config(cfg));
+  Inputs in;
+  ATX_TRY_VOID(load_role(a.role, a.role_sha, a.max_bytes, in));
+  ATX_TRY_VOID(check_seal(in.sessions, a.unseal));
+  ATX_TRY(auto fields, open_fields(a.fields, a.fields_sha, a.role, a.role_sha, in));
+  ATX_TRY_VOID(derive(fields, in));
+  std::vector<BookWeight> book;
+  if (!a.book.empty()) { ATX_TRY(book, load_book(a.book, a.book_sha)); }
+  const auto dir = std::filesystem::path(a.output);
+  if (!std::filesystem::create_directory(dir))
+    return co::Err(co::ErrorCode::AlreadyExists, "risk: output must not exist");
+  const RiskPanel panel = panel_of(in);
+  FileSink files_sink(dir, panel, a.emit);
+  BiasHarness harness(panel, a.random, a.seed, book);
+  std::array<RiskSink*, 2> sinks{&files_sink, &harness};
+  ATX_TRY_VOID(run_risk_model(panel, cfg, sinks));
+  Json files = Json::object();
+  ATX_TRY_VOID(files_sink.close(files));
+  Json bias;
+  ATX_TRY_VOID(write_bias(dir, harness, files, bias));
+  const Json manifest =
+      risk_manifest(a, in, book.size(), cfg, bias, files_sink.run_stats(), std::move(files));
   std::ofstream out(dir / "manifest.json", std::ios::binary);
   out << manifest.dump(2) << '\n';
   out.close();
   if (!out) return co::Err(co::ErrorCode::IoError, "risk: manifest.json");
   progress << "risk: " << in.dates << " sessions x " << in.names << " names, "
            << files_sink.run_stats().dump() << '\n';
+  print_bias(progress, bias);
   return co::Ok();
 }
 } // namespace
@@ -643,7 +742,8 @@ int dispatch_risk_model(int argc, char** argv, std::ostream& out, std::ostream& 
         out << "risk --role PATH/manifest.json --role-sha256 SHA --fields PATH/manifest.json "
                "--fields-sha256 SHA --output NEWDIR [--book-weights CSV (session|session_ns,"
                "instrument_id,weight|held_weight; L3 holdings.csv as is) --book-weights-sha256 SHA] [--random-portfolios 64] [--seed 7] "
-               "[--emit-exposures none|last|all] [--max-bytes 1400000000]\n";
+               "[--emit-exposures none|last|all] [--max-bytes 1400000000] [--unseal OWNER (a "
+               "role reaching 2023-01-01, the sealed VAL/holdout, is refused without it)]\n";
         return 0;
       }
       if (!seen.insert(key).second || i + 1 >= argc)
@@ -666,7 +766,10 @@ int dispatch_risk_model(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--random-portfolios") a.random = static_cast<usize>(integer());
       else if (key == "--seed") a.seed = integer();
       else if (key == "--max-bytes") a.max_bytes = integer();
-      else if (key == "--emit-exposures") {
+      else if (key == "--unseal") {
+        if (value.empty()) throw std::invalid_argument("--unseal needs an owner name");
+        a.unseal = value;
+      } else if (key == "--emit-exposures") {
         if (value == "none") a.emit = ExposureEmit::None;
         else if (value == "last") a.emit = ExposureEmit::Last;
         else if (value == "all") a.emit = ExposureEmit::All;

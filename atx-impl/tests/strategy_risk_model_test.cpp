@@ -1,6 +1,7 @@
 // atx-risk-v1 (platform v7 lane L4): the constrained WLS, the recursive EWMA/Newey-West
 // estimator against atx-engine risk V2, the bias statistic, and the model end to end on a
 // planted factor panel. Synthetic inputs only.
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <numbers>
 #include <span>
@@ -362,11 +364,18 @@ TEST(RiskModel, RecoversPlantedFactorsForecastsSpecificRiskAndIsUnbiased) {
   const f64 b_market = rk::bias_statistic(market_z);
   EXPECT_GT(b_market, 0.7); EXPECT_LT(b_market, 1.4);
 }
+// The book is held on sessions 322..351, after every exposed factor has a forecast (momentum,
+// the last style, from ~315). Name 0 is absent at 340: that session's book has a held name
+// without a forecast and is excluded whole (R1 M-5); every other observation is realized on
+// every held name (the absent name's missing return at 340 counts 0 and is reported).
 TEST(RiskModel, BookWeightsFormTheBookSeriesAndUnknownRowsAreRefused) {
-  const Planted planted(300, 150, 43);
+  Planted planted(360, 150, 43);
+  const usize absent = 340 * planted.n;
+  planted.present[absent] = 0; planted.close[absent] = missing; planted.raw[absent] = missing;
+  planted.volume[absent] = missing;
   const auto panel = planted.panel();
   std::vector<rk::BookWeight> book;
-  for (usize t = 262; t < 292; ++t)
+  for (usize t = 322; t < 352; ++t)
     for (usize i = 0; i < 10; ++i)
       book.push_back({planted.sessions[t], planted.ids[i], i % 2 ? 0.05 : -0.05});
   rk::RiskModelConfig cfg;
@@ -375,8 +384,17 @@ TEST(RiskModel, BookWeightsFormTheBookSeriesAndUnknownRowsAreRefused) {
   std::array<rk::RiskSink*, 1> sinks{&harness};
   ASSERT_TRUE(rk::run_risk_model(panel, cfg, sinks));
   const auto& series = harness.series();
-  ASSERT_EQ(series.back().family, "book");
-  EXPECT_FALSE(series.back().z.empty());
+  const auto& s = series.back();
+  ASSERT_EQ(s.family, "book");
+  EXPECT_EQ(s.warmup_excluded, 0U);
+  EXPECT_EQ(s.uncovered_names, 1U);
+  EXPECT_EQ(s.uncovered_name_returns, 1U); // the session-340 book
+  EXPECT_EQ(s.dropped_factor_exposures, 0U);
+  EXPECT_EQ(s.missing_returns, 1U);        // name 0 over (339, 340]
+  EXPECT_EQ(s.z.size(), 29U);              // 30 formed sessions, one excluded
+  const auto excluded = planted.sessions[341]; // realizes the session-340 book
+  EXPECT_EQ(std::find(s.sessions.begin(), s.sessions.end(), excluded), s.sessions.end());
+  EXPECT_EQ(rk::series_status(s), rk::SeriesStatus::Ok); // 1 / 30 <= 5%
   auto bad = book;
   bad.push_back({planted.sessions[270], 999'999, 0.1});
   rk::BiasHarness refused(panel, 4, 7, bad);
@@ -396,6 +414,76 @@ TEST(RiskModel, NamesAndReturnGuard) {
   EXPECT_TRUE(std::isfinite(rk::interval_return(p, 3, 1)));
   EXPECT_TRUE(std::isnan(rk::interval_return(p, 0, 1)));
 }
+// ---- R1 M-5: complete forecasts only -------------------------------------------------------
+TEST(RiskBias, DroppedShareAboveFivePercentRefusesTheSeries) {
+  rk::BiasSeries s;
+  EXPECT_EQ(rk::series_status(s), rk::SeriesStatus::Empty);
+  s.warmup_excluded = 40;
+  EXPECT_EQ(rk::dropped_share(s), 0.0);
+  s.z.assign(95, 1.0);
+  s.dropped_factor_exposures = 3; s.uncovered_name_returns = 2;
+  EXPECT_DOUBLE_EQ(rk::dropped_share(s), 0.05); // warm-up never counts
+  EXPECT_EQ(rk::series_status(s), rk::SeriesStatus::Ok);
+  s.uncovered_name_returns = 3;
+  EXPECT_EQ(rk::series_status(s), rk::SeriesStatus::Refused);
+  EXPECT_STREQ(rk::series_status_name(rk::SeriesStatus::Refused), "refused");
+}
+// A planted short-history factor: from session `from` on, every 20th name moves to FF49
+// industry 4 (15 of 300 names, its own slot), a factor born after the model is live.
+void plant_new_industry(Planted& p, usize from) {
+  for (usize t = from; t < p.d; ++t)
+    for (usize i = 0; i < p.n; i += 20) p.industry[t * p.n + i] = 4;
+}
+const rk::BiasSeries& named(const rk::BiasHarness& h, const std::string& name) {
+  for (const auto& s : h.series())
+    if (s.name == name) return s;
+  throw std::runtime_error("no series " + name);
+}
+TEST(RiskBias, ShortHistoryFactorExposureIsExcludedWholeCountedAndRefused) {
+  constexpr usize portfolios = 6;
+  const rk::RiskModelConfig cfg;
+  const Planted base(460, 300, 61);
+  const auto base_panel = base.panel();
+  rk::BiasHarness before(base_panel, portfolios, 7, {});
+  std::array<rk::RiskSink*, 1> one{&before};
+  ASSERT_TRUE(rk::run_risk_model(base_panel, cfg, one));
+  const auto& b0 = before.series().front();
+  ASSERT_EQ(b0.family, "random");
+  ASSERT_FALSE(b0.z.empty());
+  EXPECT_GT(b0.warmup_excluded, 0U); // styles (momentum) are exposed before they are forecast
+  EXPECT_EQ(b0.dropped_factor_exposures, 0U);
+  EXPECT_EQ(rk::series_status(b0), rk::SeriesStatus::Ok);
+  EXPECT_EQ(rk::series_status(named(before, "ind_ff4")), rk::SeriesStatus::Empty);
+  // The new industry appears 20 sessions after the random series' first kept observation.
+  const auto first =
+      std::lower_bound(base.sessions.begin(), base.sessions.end(), b0.sessions.front());
+  const usize from = static_cast<usize>(first - base.sessions.begin()) + 20;
+  ASSERT_LT(from + cfg.min_factor_history + 20, base.d);
+  Planted planted = base;
+  plant_new_industry(planted, from);
+  const auto panel = planted.panel();
+  rk::BiasHarness after(panel, portfolios, 7, {});
+  std::array<rk::RiskSink*, 1> sinks{&after};
+  ASSERT_TRUE(rk::run_risk_model(panel, cfg, sinks));
+  for (usize q = 0; q < portfolios; ++q) {
+    const auto& s = after.series()[q];
+    const auto& r = before.series()[q];
+    // Exposed to the new factor on every session before its 63rd return: never a partial x'Fx.
+    EXPECT_EQ(s.dropped_factor_exposures, cfg.min_factor_history) << s.name;
+    EXPECT_EQ(s.uncovered_name_returns, 0U) << s.name;
+    EXPECT_EQ(s.warmup_excluded, r.warmup_excluded) << s.name;
+    EXPECT_EQ(s.z.size() + s.dropped_factor_exposures, r.z.size()) << s.name; // none lost silently
+    EXPECT_GT(rk::dropped_share(s), rk::max_dropped_share) << s.name;
+    EXPECT_EQ(rk::series_status(s), rk::SeriesStatus::Refused) << s.name;
+  }
+  // The factor's own series starts at its first forecast: its first 63 returns are warm-up.
+  const auto& born = named(after, "ind_ff4");
+  EXPECT_EQ(born.warmup_excluded, cfg.min_factor_history);
+  EXPECT_EQ(born.dropped_factor_exposures, 0U);
+  EXPECT_EQ(born.z.size(), planted.d - from - cfg.min_factor_history - 1);
+  EXPECT_EQ(rk::series_status(born), rk::SeriesStatus::Ok);
+}
+
 // ---- restricted roles: membership independent of presence -----------------------------------
 // The -lo roles restrict membership (linked-operating names) and a member may be absent at a
 // session. Every 4th name is a present non-member; three members are absent at three sessions
@@ -528,10 +616,12 @@ PinnedSet write_role_and_fields(const std::filesystem::path& dir, const Planted&
   out.fields_sha = write_json(fields_dir / "manifest.json", fields);
   return out;
 }
-int run_verb(const PinnedSet& s, const std::filesystem::path& output, std::string& error) {
+int run_verb(const PinnedSet& s, const std::filesystem::path& output, std::string& error,
+             std::initializer_list<const char*> extra = {}) {
   std::vector<std::string> args{"risk", "--role", s.role, "--role-sha256", s.role_sha,
       "--fields", s.fields, "--fields-sha256", s.fields_sha, "--output", output.string(),
       "--random-portfolios", "4"};
+  args.insert(args.end(), extra.begin(), extra.end());
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   std::ostringstream out, err;
@@ -554,6 +644,23 @@ TEST(RiskVerb, RestrictedRoleWithAbsentMembersRunsAndMalformedMasksAreRefused) {
   for (const u8 m : planted.member) members += m;
   EXPECT_EQ(manifest.at("role_masks").at("member_cells").get<usize>(), members);
   EXPECT_EQ(manifest.at("role_masks").at("member_absent_cells").get<usize>(), 9U);
+  // bias_summary.json v2: exclusion counts and status per family (R1 M-5).
+  std::ifstream bias_in(dir.path / "ok" / "out" / "bias_summary.json");
+  Json bias;
+  bias_in >> bias;
+  EXPECT_EQ(bias.at("schema"), "atx.risk-bias/v2");
+  EXPECT_EQ(bias.at("max_dropped_share").get<f64>(), 0.05);
+  EXPECT_EQ(manifest.at("bias_harness").at("schema"), "atx.risk-bias/v2");
+  for (const char* family : {"random", "factor"}) {
+    const auto& f = bias.at("families").at(family);
+    for (const char* key : {"status", "series_ok", "series_refused", "series_empty",
+                            "refused_series", "observations", "warmup_excluded",
+                            "dropped_factor_exposures", "uncovered_name_returns", "dropped_share"})
+      EXPECT_TRUE(f.contains(key)) << family << ' ' << key;
+  }
+  // 300 sessions: momentum (exposed from 252) is never forecast, so every random portfolio is
+  // warm-up and the family has nothing to summarise.
+  EXPECT_GT(bias.at("families").at("random").at("warmup_excluded").get<usize>(), 0U);
   // A non-binary mask is refused.
   Planted bad_mask = planted;
   bad_mask.member[10 * bad_mask.n + 1] = 2;
@@ -566,5 +673,28 @@ TEST(RiskVerb, RestrictedRoleWithAbsentMembersRunsAndMalformedMasksAreRefused) {
   const auto contract = write_role_and_fields(dir.path / "price", bad_price);
   EXPECT_EQ(run_verb(contract, dir.path / "price" / "out", error), 1);
   EXPECT_NE(error.find("price contract"), std::string::npos) << error;
+}
+// R1 m-5 / m-16: a role reaching 2023-01-01 (the sealed VAL/holdout) is refused unless an owner
+// admits it by name; the manifest records the seal and the producing executable and build.
+TEST(RiskVerb, RoleReachingTheSealNeedsAnOwnerAndTheManifestNamesTheProducer) {
+  Directory dir;
+  Planted planted(130, 120, 67);
+  constexpr i64 seal = 1'672'531'200LL * 1'000'000'000LL; // 2023-01-01 00:00 UTC
+  const i64 shift = seal - planted.sessions.back() + day_ns; // the last session is 2023-01-02
+  for (auto& s : planted.sessions) s += shift;
+  const auto pinned = write_role_and_fields(dir.path / "sealed", planted);
+  std::string error;
+  EXPECT_EQ(run_verb(pinned, dir.path / "sealed" / "out", error), 1);
+  EXPECT_NE(error.find("2023-01-01"), std::string::npos) << error;
+  EXPECT_FALSE(std::filesystem::exists(dir.path / "sealed" / "out"));
+  ASSERT_EQ(run_verb(pinned, dir.path / "sealed" / "owned", error, {"--unseal", "root"}), 0)
+      << error;
+  std::ifstream in(dir.path / "sealed" / "owned" / "manifest.json");
+  Json manifest;
+  in >> manifest;
+  EXPECT_EQ(manifest.at("seal").at("unseal_owner"), "root");
+  EXPECT_EQ(manifest.at("seal").at("role_last_session_ns").get<i64>(), planted.sessions.back());
+  EXPECT_TRUE(manifest.at("producer").contains("executable_sha256"));
+  EXPECT_FALSE(manifest.at("producer").at("engine_git_sha").get<std::string>().empty());
 }
 } // namespace
