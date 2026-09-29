@@ -25,7 +25,11 @@ docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega
   next role rebuild must take SIC from the atx-db fundamentals/sic_events stage. W5b-F2: 820k unlinked member cells on
   the top-3000 base role = the largest remaining universe lever (P1 measured +0.22 for the v6 restriction); ask atx-db
   which base-role names those are (ETFs/ADRs/non-filers vs link gaps).
-- Fields v9 = v8 (55, reused) + 8 W5b fields = 63 of 64: building.
+- Fields v9 built: 63 fields (= 64 limit - 1), 121 s, peak 571 MiB; all 55 v8 payloads byte-identical. The 14 W5a fields
+  and sv_ratio126 were recomputed, not reused: the M-6 code-identity rule keys on the builder module's code sha, which the
+  W5b hook changed (F1-F2, minor: per-module producer hashing would make reuse finer). W5b coverage on member cells:
+  inst_own_share .993, inst_best_ideas .999, ftd_shares_ratio21 .985, regsho_threshold_days63 .426 (NYSE lists pending).
+  Manifest: build-equity/recent-fast-train-2020-2022-v2-lo1-fields-v9.
 
 ## 2026-09-28 F2 merged (10a723a7) and ACCEPTED; W5b merged
 - F2 structural forecast: build mega-v7-f2 exit 0; Risk*/Spo*/NavV7Hook*/StrategyLive* 60/60. Risk verb on lo1 with
