@@ -36,3 +36,11 @@ Branch feat/platform-v7-w1b-spo-20260929 (pool-3, base c8503bb3): cd01f74e (spo-
 - /WX and every gtest.
 - The binding test's synthetic magnitudes are estimates: diagonal GK gives an aim gross of ~4-6 against G 1, and alpha 3.9e-4 z per session against a 3e-5 amortized cost and 1.2e-4 borrow.
 - Admission of the CLI test's artifact, which reuses the nav-replay layout.
+
+## Fix-up (root build v7-5: 129/132, pool-2 66e0774d)
+- Pins: SpoPin weights 0xda6b6871e7e267c5 (54 rows) and replay 0xaabdbb72f99a6e13 (40 days) are now pinned. Root captured them on base decdf947 (build v7-4) and got the same values on the head (build v7-5), so spo-v1 is bit for bit.
+- The SpoTripwire.TheClampFeedsAlpha... failure at line 1101 was a WRONG EXPECTATION, not a defect.
+  - The shadow is scored with the optimiser's own alpha vector (p.alpha, built from the clamped slice), so the clamp does reach it.
+  - On sessions 10-14 the fixture drops name 11 from membership ([d/3, d/2)), leaving 11 members. The centred tied rank gives the median member desired 0, so z = 0 and a = 0 whatever D.
+  - On the one corrupt decision where name 3 is that median, there is no alpha to inflate.
+  - The test now computes name 3's tied-rank target per decision (st::detail::desired_target on that row). It asserts that alpha_shadow moves on the corrupt decisions with a nonzero signal (at least one) and stays within 1e-9 relative where z = 0.
