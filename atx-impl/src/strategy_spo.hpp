@@ -9,7 +9,8 @@
 //          - sum_i [b_i max(-w_i, 0) + l_i max(w_i, 0)]
 //   s.t.   1'w = 0 (book net, with the names held outside the problem)
 //          |beta'w| <= beta_max (book ex-ante beta to the equal-weight member market)
-//          sum_i |w_i| <= L (book gross; L = --aim-leverage)
+//          sum_i |w_i| <= G (book gross budget, a hard cap on planned gross: G = --spo-gross;
+//                            spo-v1 default L = --aim-leverage, spo-v2 default 1.0)
 //          |w_i| <= min(w_max, q ADV_i / NAV), |dw_i| <= p ADV_i / NAV, dw = w - w0
 //          w_i >= min(w0_i, 0) where the book's locate rule guards the name (no locate)
 //
@@ -22,8 +23,11 @@
 // commission; 0.6 sigma_i (NAV |dw| / ADV_i)^{1/2}) on the decision liquidity window, b_i /
 // l_i = the book's own short / long financing per session (tier fee at d), and H = the cost
 // amortization horizon (default 1/theta; a trade's cost is paid once and its alpha accrues
-// over the holding period, so H must be the horizon of the per-session alpha: spo-v2 ties
-// h = H). The members of d with a risk row are optimized; nonmembers follow
+// over the holding period). h is the IC's measurement horizon (--alpha-horizon; spo-v2
+// default 21, the horizon of the literature's ICs of .02-.04) and is independent of H, so a
+// change of theta does not rescale the alpha; one uniform 1/sqrt(h) serves every sleeve (the
+// per-sleeve decay of R2.1 is not modeled). The members of d with a risk row are optimized;
+// nonmembers follow
 // aim-partial-v5's exit rule and members without a risk forecast keep their weight -- both
 // enter the book constraints and the risk as fixed positions.
 //
@@ -44,22 +48,28 @@
 // gamma (when --gamma is not given) is calibrated once, on the first rebalance decision,
 // on the cost-free aim (no costs, financing, trade limits or gross cap; net, beta and
 // |w_i| <= w_max kept), gamma_vol giving the aim the annualised ex-ante vol --target-vol and
-// gamma_bind giving it gross L, each by a bracketed monotone root in ln gamma. spo-v1:
-// gamma = max(gamma_vol, gamma_bind); spo-v2: gamma = gamma_vol (gamma_bind is reported).
-// Nothing is fitted on returns.
+// gamma_bind giving it gross G, each by a bracketed monotone root in ln gamma. spo-v1:
+// gamma = max(gamma_vol, gamma_bind); spo-v2: gamma = gamma_vol, and gamma_bind is a
+// report-only root solved after the aim (a failure is reported as NaN with a note, never an
+// abort). Nothing is fitted on returns.
 //
-// spo-v1 is the rule as pre-registered for the 2026-09-28 TRAIN cell; spo-v2 changes three
-// defaults after its root cause (task-W1-report.md, fix-up 2):
-//   h = 1 -> H: v1 read IC_book = .02 as a one-session IC while amortizing costs over H = 20
-//     sessions, overstating the alpha that pays for a trade by sqrt(H) (Grinold-Kahn: IC and
+// spo-v1 is the rule as pre-registered for the 2026-09-28 TRAIN cell; spo-v2 changes these
+// defaults after its root cause (task-W1-report.md fix-up 2, task-R2-review.md):
+//   h = 1 -> 21: v1 read IC_book = .02 as a one-session IC while amortizing costs over H = 20
+//     sessions, overstating the alpha that pays for a trade by ~sqrt(20) (Grinold-Kahn: IC and
 //     vol at the forecast horizon; the fundamental law puts a one-session IC of .02 over
 //     ~1,800 names at an ex-ante IR near 13).
 //   max(gamma_vol, gamma_bind) -> gamma_vol: gamma >= gamma_bind puts the cost-free aim at
 //     gross <= L, and costs, ADV caps and trade limits pull the live book inside it, so
 //     the gross budget never bound (0 of 1,508 v1 solves).
-//   specific ceiling inf -> 1.0: a daily specific variance above 1 (vol 100% per session) is
-//     clamped and counted; the TRAIN risk model has 1e0..9e12 on 177-179 names for 20
-//     sessions from 2020-05-12, which drove exante_vol_current to 1.6e4.
+//   G = L -> 1.0: the budget binds by design in spo-v2, so planned gross = G; L = 1.247 was
+//     aim-partial's 1 / mean gross of a partially trading aim, and R6' tests mean gross in
+//     [.90, 1.05]. The aim-partial-v5 shadow book keeps --aim-leverage.
+//   specific ceiling inf -> 1.0 as a tripwire: a daily specific variance above 1 (vol 100% per
+//     session) is clamped and counted, and with --specific-ceiling-void (spo-v2 default on)
+//     one clamped entry voids the run before any NAV or return file exists. The clamp does not
+//     repair the input: a_i ~ sqrt(D_i), so a clamped name still carries an inflated alpha
+//     (the TRAIN risk model has 1e0..9e12 on 177-179 names for 20 sessions from 2020-05-12).
 // Every other default is unchanged. A plan-level aim-partial-v5 shadow book (full fills, no
 // drift) runs beside each book: its a'w, gross, turnover, modeled cost and ex-ante vol are
 // recorded per decision, so alpha capture is read apart from cost.
@@ -100,16 +110,27 @@ struct SpoParams {
   atx::f64 horizon{unset};         // --spo-horizon H (NaN: 1 / --trade-fraction)
   atx::f64 beta_max{0.02};         // |beta'w| bound (R2.1)
   bool all_books{true};            // --spo-books all|primary (primary: S1 and S2 only)
-  atx::f64 alpha_horizon{1.0};     // --alpha-horizon h (NaN: H); a_i = IC sigma_i z_i / sqrt(h)
+  atx::f64 alpha_horizon{1.0};     // --alpha-horizon h in [1, 1e4]: a_i = IC sigma z / sqrt(h)
   atx::f64 specific_ceiling{unbounded}; // --specific-ceiling: larger daily D_i clamped
+  bool void_on_capped{false};      // --specific-ceiling-void on|off: a clamp voids the run
+  atx::f64 gross_budget{unset};    // --spo-gross G (NaN: --aim-leverage)
   GammaRule gamma_rule{GammaRule::VolAndBind};
   atx::u32 version{1}; // 1: spo-v1 as pre-registered; 2: spo-v2 (v2_params)
 };
-// spo-v2's defaults: SpoParams{} with h = H (NaN), specific ceiling 1.0 (daily vol 100%) and
-// gamma = gamma_vol.
+// spo-v2's defaults: SpoParams{} with h = 21, G = 1.0, specific ceiling 1.0 (daily vol 100%)
+// as a tripwire (void on) and gamma = gamma_vol.
 [[nodiscard]] SpoParams v2_params();
 [[nodiscard]] const char* rule_name(const SpoParams& p); // "spo-v1" / "spo-v2"
+// The key of the rule's recipe / summary / extras blocks: "spo_v1" / "spo_v2".
+[[nodiscard]] const char* json_key(const SpoParams& p);
+// Ranges of every parameter; G (when given) finite > 0. The bound against --aim-leverage is
+// validate_gross_budget's (the leverage is a replay flag).
 [[nodiscard]] atx::core::Status validate_params(const SpoParams& p);
+// G in effect: --spo-gross, else aim_leverage (spo-v1 as pre-registered, bit for bit).
+[[nodiscard]] atx::f64 gross_budget_of(const SpoParams& p, atx::f64 aim_leverage) noexcept;
+// A sanity bound, not a model parameter: G in (0, 1.5 x --aim-leverage].
+inline constexpr atx::f64 gross_budget_sanity = 1.5;
+[[nodiscard]] atx::core::Status validate_gross_budget(atx::f64 budget, atx::f64 aim_leverage);
 
 // ---- the alpha (Grinold-Kahn) ------------------------------------------------------------
 // Sample SD of desired over the members (0 with fewer than two members or no dispersion).
@@ -262,13 +283,15 @@ struct DiagnosticRow {
   // (gamma/2) w'Sigma w of the whole book, modeled trade cost (unamortized) and its
   // amortized charge, financing, and the objective (alpha - risk - cost/H - financing).
   atx::f64 alpha{}, risk{}, trade_cost{}, amortized_cost{}, financing{}, objective{};
-  atx::f64 exante_vol{}, exante_vol_current{}; // annualised, whole book (priced names)
+  // ANNUALISED (sqrt(252 x daily variance)), whole book (priced names); not per session.
+  atx::f64 exante_vol{}, exante_vol_current{};
   atx::f64 transfer_coefficient{}; // corr(a_i / sigma_i^2, w_i) over the optimized names
   atx::f64 gross{}, net{}, long_weight{}, short_weight{}, abs_beta{}, turnover{};
   atx::usize no_trade{}, at_cap{}, at_trade_limit{}, at_locate_floor{};
   bool gross_binding{}, beta_binding{};
   atx::f64 mu{}, nu{}, rho{};
-  atx::usize capped_specific{}; // risk-model entries clamped at d (--specific-ceiling)
+  // Risk-model entries (every instrument of the slice) clamped at d (--specific-ceiling).
+  atx::usize capped_specific{};
   // The plan-level aim-partial-v5 shadow book at d (same desired target, same alpha a and S2
   // law; full fills, no drift): a'w over the optimized names, gross, turnover, modeled
   // (unamortized) trade cost over the optimized names, ex-ante vol (annualised).
@@ -283,11 +306,17 @@ struct Calibration {
   bool vol_reached{}, bind_reached{};
   atx::f64 aim_vol{}, aim_gross{};
   atx::usize evaluations{}, names{};
+  // gamma_rule Vol: why gamma_bind is NaN (its report-only root failed or left the bracket);
+  // empty otherwise.
+  std::string bind_note;
 };
 // gamma of the rule on the cost-free aim of `base` (its alpha, risk and beta; costs,
 // financing, trade limits and the gross cap dropped; |w_i| <= w_max, net 0 and |beta'w| <=
-// beta_max kept) for the gross budget L = budget. Unavailable when the aim has no alpha, or
-// (gamma_rule Vol) when the vol target is out of reach of the aim.
+// beta_max kept) for the gross budget G = budget. Unavailable when the aim has no alpha, or
+// (gamma_rule Vol) when the vol target is out of reach of the aim. VolAndBind (spo-v1): the
+// vol root, the bind root, then the aim at max(gamma_vol, gamma_bind); a solver failure in
+// either root aborts. Vol (spo-v2): the vol root, the aim at gamma_vol, then the bind root,
+// report only: its failure or a bracket end sets gamma_bind NaN and bind_note, never aborts.
 [[nodiscard]] atx::core::Status calibrate_gamma(const Problem& base, const SpoParams& params,
                                                 atx::f64 budget, atx::f64 metric_scale,
                                                 Calibration& out);
@@ -321,16 +350,36 @@ public:
   [[nodiscard]] const SpoParams& params() const noexcept;
   [[nodiscard]] Timing timing() const noexcept;
   [[nodiscard]] atx::f64 horizon() const noexcept; // H in effect (NaN before the first plan)
+  [[nodiscard]] atx::f64 gross_budget() const noexcept; // G in effect (NaN before the first plan)
   struct Impl;
 
 private:
   std::unique_ptr<Impl> impl_;
 };
 
+// The specific-ceiling tripwire, read after the replay and before anything is published:
+// with void_on_capped, Unavailable when any decision clamped an entry (the run is void); Ok
+// otherwise (void off, or no clamp).
+[[nodiscard]] atx::core::Status ceiling_tripwire(const SpoParams& p,
+                                                 std::span<const DiagnosticRow> rows);
+// Its record: ceiling, void flag, capped_specific_decisions (distinct decisions with a clamp),
+// capped_specific_names_max (most entries clamped at one decision) and the status.
+[[nodiscard]] nlohmann::json tripwire_json(const SpoParams& p,
+                                           std::span<const DiagnosticRow> rows);
+
 // The rule's declaration text (recipe/summary), its CSV and its JSON blocks.
 [[nodiscard]] std::string declaration(const SpoParams& p);
+// spo_diagnostics.csv, one row per (rebalance decision, book). Units: exante_vol,
+// exante_vol_current and exante_vol_shadow are ANNUALISED (sqrt(252 x daily variance));
+// alpha, risk, trade_cost, amortized_cost, financing, objective and the shadow's alpha and
+// cost are per session in NAV fractions (diagnostics_units_json).
 [[nodiscard]] std::string diagnostics_csv(std::span<const DiagnosticRow> rows);
-[[nodiscard]] nlohmann::json parameters_json(const SpoParams& p, atx::f64 horizon);
+[[nodiscard]] nlohmann::json diagnostics_units_json();
+// horizon / gross_budget: H and G in effect (Engine::horizon / Engine::gross_budget).
+[[nodiscard]] nlohmann::json parameters_json(const SpoParams& p, atx::f64 horizon,
+                                             atx::f64 gross_budget);
 [[nodiscard]] nlohmann::json calibration_json(const Calibration& c);
+// Per book: decisions, convergence, binding counts, means, capped_specific_decisions and
+// capped_specific_names_max, the shadow and alpha capture.
 [[nodiscard]] nlohmann::json summary_json(std::span<const DiagnosticRow> rows);
 } // namespace atx::impl::strategy::spo

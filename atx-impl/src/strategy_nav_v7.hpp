@@ -22,11 +22,22 @@
 //                             (the `risk` verb's output with --emit-exposures all, same role)
 //     [--gamma G] [--ic-book .02] [--w-max .01] [--adv-cap-q .05] [--adv-trade-p .01]
 //     [--spo-iters 500] [--spo-tol 1e-8] [--target-vol .05] [--spo-horizon 1/theta]
-//     [--spo-books all|primary] [--alpha-horizon h (v1: 1)] [--specific-ceiling (v1: inf)];
+//     [--spo-books all|primary] [--alpha-horizon h (v1: 1)] [--specific-ceiling (v1: inf)]
+//     [--specific-ceiling-void on|off (v1: off)] [--spo-gross G (v1: --aim-leverage)];
 //     adds <output>/spo_diagnostics.csv; fixed rate, no capacity curve, not with
-//     aim-partial-v6.
-//   --rule spo-v2             spo-v1 with the fix-up 2 defaults (strategy_spo.hpp): alpha
-//                             horizon h = H, specific ceiling 1.0, gamma = gamma_vol.
+//     aim-partial-v6. G is the hard cap on planned gross, refused outside (0, 1.5 x
+//     --aim-leverage]; the aim-partial-v5 shadow book keeps --aim-leverage.
+//   --rule spo-v2             spo-v1 with the fix-up 2 / W1b defaults (strategy_spo.hpp):
+//                             alpha horizon 21 (independent of --spo-horizon), G 1.0,
+//                             specific ceiling 1.0 with --specific-ceiling-void on, gamma =
+//                             gamma_vol (gamma_bind report only). With the void on, a clamped
+//                             entry at any decision makes the run VOID: after the replay and
+//                             before anything is published (no recipe, NAV, daily, events or
+//                             summary file), <output> gets spo_diagnostics.csv,
+//                             v7_transfer_coefficient.csv and v7_extras.json (status "void")
+//                             and the verb exits 3. --emit-holdings (which streams NAV during
+//                             the replay) is refused with the void on.
+//   spo-v1 / spo-v2 blocks are keyed "spo_v1" / "spo_v2" (recipe v7, summary v7, extras).
 // --emit-holdings (lane L3) observes the main pass only; the capacity pass drops it.
 // Every hooked run also writes <output>/v7_transfer_coefficient.csv (TC per rebalance
 // decision and book) and <output>/v7_extras.json (extras' SHA-256, capacity table) after
@@ -97,6 +108,8 @@ public:
   [[nodiscard]] std::span<const BookRecord> books() const noexcept;
   // The spo-v1 engine (nullptr without --rule spo-v1).
   [[nodiscard]] const spo::Engine* spo_engine() const noexcept;
+  // Why capture() voided the run (the spo specific-ceiling tripwire); empty otherwise.
+  [[nodiscard]] const std::string& void_reason() const noexcept;
   struct State;
 
 private:
@@ -136,8 +149,12 @@ extension_cost_model(const NavScenario& scenario);
                                      std::span<const atx::f64> rates,
                                      std::span<const atx::u8> tier = {},
                                      std::span<const atx::u8> no_locate = {});
-void capture(std::span<const NavScenario> scenarios, std::span<const NavReplayResult> results,
-             std::span<const NavSummary> summaries);
+// After the replay and before anything is published: records the books and reads the spo
+// specific-ceiling tripwire (spo::ceiling_tripwire). An error voids the run: the replay
+// returns it before its output directory exists. Ok without an extension (identity).
+[[nodiscard]] atx::core::Status capture(std::span<const NavScenario> scenarios,
+                                        std::span<const NavReplayResult> results,
+                                        std::span<const NavSummary> summaries);
 // Reserved-id cost labels always; v7 declarations and the v6 rule id with an extension.
 void extend_recipe(nlohmann::json& recipe);
 void extend_summary(nlohmann::json& summary);
