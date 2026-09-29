@@ -17,6 +17,41 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 library v7.1 (wave 2) ACCEPTED under its pre-registration; N 37; owner asked to stop after this cell
+- L8 merged (library v7.1 787c802e..., recipe 7f8a2643..., spec scripts/specs/v71.json; research_cycle gained as-built
+  fields pins, a `ref` NAV phase, generic `compare` identity steps, a ledger-driven summ grid). dsr_n set to 37.
+- Cycle `run scripts/specs/v71.json`, one invocation, no refusal: ref 28.5 s, u 23.0 s / 767 MiB (44 cache hits + 4
+  evaluations), fit 21.9 s, card 19.5 s / 968 MiB, w 14.9 s, nav 26.0 s / 346 MiB.
+- Identities (ruling W2-e, prereg section 5), both passed, no trial: (iv) the v7.0 construction re-run on fields-v9
+  reproduces the v7.0 cell's S2 daily CSV bit for bit; (iii) the 44 parent members' orientations and train_daily_ic rows
+  on fields-v9 are identical to mega-v70-train-u-1.
+- Admission v4-prior-v1 (4 trials): all four ADMITTED (38 of 48 admitted in total). ins_opp (HAC t -0.51, max |rho| .73
+  bm): its TRAIN IC sign is NEGATIVE against the prior +1; the rule orients by the prior and vetoes only below t -2, so
+  it is admitted with the prior sign and currently subtracts; disclosed, not dropped (pre-registration). inst_best_ideas
+  t +0.28 (|rho| .46 bm); ftd_fail t -0.75 oriented (|rho| .75 si_ratio; 738 train days, the FTD stale window);
+  ea_overdue t -0.49 oriented (|rho| .18, tau .24). None of the four has a standalone HAC |t| above 1.
+  ew-theme-v1 goes 9 -> 10 themes (ownership_flow), each theme 1/10.
+- Cell mega-nav-v71u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247 (lo1, fields-v9): S2 net SR +1.405 vs +1.313 (v7.0
+  lo1); gross SR 1.809 vs 1.688; cost 13.49 vs 13.44 bps/$; tau .0379 (p95 .0471); held names 1,850; HAC t 2.41.
+  Paired dSR +0.093, rho .988, Memmel SE .091 (t +1.02), CBB 95% [-.099, +.266], LW p .348.
+  Mechanics: gross all rows .9641, |net| .0046, tau mean .0379, p95 .0471 -> PASS.
+- VERDICT: wave 2 ACCEPTED whole (paired S2 net dSR > 0 AND mechanics). Reading: the gain is about one SE and the four
+  members' own ICs are weak or wrong-signed on TRAIN, so most of the gain is diversification from the tenth theme
+  diluting the other nine, not evidence for the four signals; the scorecard must say so.
+- Integrity (N 37): cell-count DSR .8247, effective-N DSR .9282 (N_eff 2), Lo null .6006, PSR(0) .9896, MinTRL 95% 382
+  sessions; PBO over 37 cells .2051. FREEZE GATE UNMET (cell-count DSR .8247 < .95).
+  Same run, other accepted cells at N 37: v7.0-lo3 DSR .790 / eff-N .908; v7.0 .781 / .903; v6.1 .743 / .881.
+- JSON: build-equity/mega-nav-v71-summ-n37.json, mega-nav-v71-pbo-n37.json; cards mega-cards-v71; monitor mega-monitor-v71.
+- OWNER INSTRUCTION (2026-09-29, mid-session): stop at the next logical stopping point, render the pitch on the current
+  best version, stop the implementer lanes, wait. Hence V7-F (library v7.1 on role lo3, pre-registered, both of its
+  conditions now met) is NOT run: it needs the L9 cycle plumbing (fields-v9 on lo3), which was stopped with only its
+  design written (pool-10 0e2a7f4d, task-L9-report.md). All lanes are stopped.
+- Current best accepted cell: library v7.1 on role lo1, S2 net +1.405. Accepted separately: role lo3 (on v7.0, +1.332).
+  Their combination is untested (V7-F, would be N 38).
+- Appendix A: TRAIN construction cells 37 (29 v6 era; C1-C3, spo-v1, spo-v2 rejected; v7.0, U-lo3, v7.1 accepted);
+  ledger 37 lines. Admission trials this sprint 9 (wave 1: 5, wave 2: 4). Validation trials 2 spent (2023-2024 read
+  twice). 2025+ reserved. No per-candidate VAL statistic read.
+
 ## 2026-09-29 spo-v2 cell REJECTED (a research result this time, not a defect); N 36; spo line closed for v7
 - W1b fix-up 116c23e3 merged (digests pinned; the tripwire failure was a wrong test expectation: the middle-ranked
   member's alpha is 0 on the corrupt session, so nothing can inflate). Build mega-v7-6 exit 0; tests 132/132.
