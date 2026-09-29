@@ -17,6 +17,30 @@ docs/plans/2026-09-28-mega-alpha-v6-handoff-5.md, docs/plans/2026-09-28-mega-alp
 docs/plans/2026-09-28-mega-alpha-v6-pitch.html (the v6.1 pitch), final cell mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247
 (S2 net +1.239, DSR N29 .911 < .95: freeze gate unmet).
 
+## 2026-09-29 universe trial U-lo3 ACCEPTED under its pre-registration; N 35; U2 and P5 merged
+- Merges: U2 9105bcbc (role linked-operating-v3, shared SIC stage for role and grp_* fields, 203 pytests in
+  scripts/tests + atx-engine/tools), P5 89896acc (pitch iteration 3 sections, mega_report/pitch3.py). Pre-registration
+  "Universe trial U-lo3" + conditional final cell V7-F declared before any lo3 IC read (rulings U-a, U-b, U-c).
+- Role lo3 built (2,037,622 kept member cells; manifest sha 40e3d832...95b78d). Spec scripts/specs/v70-lo3.json (from
+  U2's template; summ cells = the 34 ledgered; ledger kind left `construction` so ledgered cells are skipped, the trial is
+  a universe trial in meaning). Cycle in one invocation: fields-v7 list on lo3 (41 fields, peak 649 MiB), u 82.2 s /
+  1,216 MiB (cold cache), fit 21.6 s, w 13.0 s, nav 27.8 s / 347 MiB.
+- Admission refit on lo3: 34 admitted, the same 34 as on lo1; no status flip (ruling U-b: nothing confounded).
+- Cell mega-nav-v70-lo3-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247: S2 net SR +1.332 vs +1.313 (v7.0 lo1), gross SR 1.715
+  vs 1.688, cost 13.38 vs 13.44 bps/$, tau .0378 (p95 .0468), held names 1,930 vs 1,849, HAC t 2.31.
+  Paired dSR +0.019, rho .997, Memmel SE .042 (t +0.45), CBB 95% [-.067, +.098], LW p .658.
+  Mechanics: gross all rows .9645, |net| .0047, tau mean .0378, p95 .0468 -> PASS.
+- VERDICT: U-lo3 ACCEPTED (paired S2 net dSR > 0, sign-only inside one SE, AND mechanics). Again a sign result inside one
+  SE. Role lo3 replaces lo1 for the v7 final book. Cumulative vs the v6.1 cell: +1.239 -> +1.332 (two accepted steps,
+  each inside one SE).
+- Integrity (N 35): cell-count DSR .7980, effective-N DSR .8566 (N_eff 2), Lo null .5612, PSR(0) .9851, MinTRL 95% 432
+  sessions; PBO over 35 cells .2435. FREEZE GATE UNMET (cell-count DSR < .95).
+- JSON: build-equity/mega-nav-v70-lo3-summ-n35.json, mega-nav-v70-lo3-pbo-n35.json.
+- Appendix A: TRAIN construction cells 35 (29 v6 era + C1-C3 + spo-v1 rejected + v7.0 accepted + U-lo3 accepted);
+  ledger 35 lines. Admission trials this sprint 5. Validation trials 2 spent. 2025+ reserved. No VAL statistic read.
+- Next: v7.1 (wave 2) on lo1 fields-v9 vs the v7.0 cell (dsr_n becomes 36); if accepted, V7-F = v7.1 on lo3 with
+  fields-v9 rebuilt on lo3 (N 37). spo trial #2 after F3 + W1b + new risk pin + its pre-registration.
+
 ## 2026-09-29 library v7.0 (wave 1) ACCEPTED under its pre-registration; N 34; freeze gate still UNMET
 - Cycle `research_cycle.py run scripts/specs/v70.json` (three invocations: two hard-stops on a dirty tree when lane
   reports landed in the sprint dir, resumed after a commit; no phase was re-run): u 48.4 s / 1,162 MiB (cache seeded from
