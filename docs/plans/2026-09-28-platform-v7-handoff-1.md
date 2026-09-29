@@ -84,6 +84,15 @@ side); we consume stage exports directly. Stage pins used today are in task-W5a-
 | L7 library v7.0 | pool-10 | feat/platform-v7-l7-libv70-20260928 | working (10 files dirty at handoff); check `git -C C:/atx-wt/pool-10 log/status`; report task-L7-report.md when done |
 | W1 spo root-cause | pool-3 | feat/platform-v7-w1-spo-20260928 | working (5 files dirty); fix-up section in task-W1-report.md |
 | P4 wave-2 prereg | none (read-only) | -- | writes .superpowers/sdd/platform-20260928/library-v7-wave2-prereg.md |
+State after the owner's stop (all three agents were stopped by root at session close):
+- W1: COMMITTED before the stop -> pool-3 b63829f0 "fix(platform-v7 W1): spo-v2 after the spo-v1 TRAIN root cause; aim-partial
+  shadow" (tree clean). Read its fix-up section in task-W1-report.md (may be partial), merge, build, test, then write the spo
+  trial #2 prereg from the defaults it proposes.
+- L7: NOT committed -> pool-10 has 11 uncommitted files on feat/platform-v7-l7-libv70-20260928 (last message: working on the
+  gate `require` mode in research_cycle.py). Spawn a fresh Opus agent in pool-10 with task-L7-brief.md + "review the
+  uncommitted work in this tree, finish, run the pytests, commit, report".
+- P4: no output written. Re-run the P4 prompt (in progress.md / this session's ledger: reconcile library-v7-draft.md §2
+  against the W5a/W5b field semantics into library-v7-wave2-prereg.md).
 If a lane is idle with uncommitted work, spawn a fresh Opus agent in that pool with the same brief and "finish and commit".
 
 Pools: 2 root; 3 W1; 4 W4 (done, reusable); 7 F2 (done, reusable); 8 W5a (done); 9 W5b (done); 10 L7; 11 W3 (done,
